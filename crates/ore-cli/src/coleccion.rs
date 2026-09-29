@@ -43,6 +43,16 @@
 //! transacción —se dice cuál y por qué— y el testigo no avanza, así que la
 //! pasada siguiente lo vuelve a intentar. En la mantenida nada se pierde: lo
 //! retirado sigue en el lago aunque el origen ya no tenga su versión.
+//!
+//! # La retención (E8·3a)
+//!
+//! Lo que sale de la vista actual guarda **cuándo** (`retirado_ms`): la
+//! transacción es un número y los snapshots caducan, así que la fecha va en la
+//! fila. El mantenimiento (`ore collections --recoger`) quita del manifiesto lo
+//! retirado o perdido más viejo que `retention`; sin `retention`, nada caduca
+//! (spec `02` §3). Lo que deja de nombrarse, la recogida de blobs se lo lleva.
+//! Un Job que reutiliza el blob de una fila que no es actual lo **toca** antes
+//! de sellar, así que la recogida no se lo lleva por debajo.
 
 use crate::lector;
 use crate::materializar::{almacen, cabecera, campo_de, leer_puntero, programa_del_almacen};
@@ -51,6 +61,14 @@ use ore_core::json::Json;
 use ore_core::link::{Loaded, Package};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+/// Ahora, en milisegundos desde 1970.
+pub fn ahora_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// Las columnas del manifiesto, con su tipo de OOS.
 const COLUMNAS: &[(&str, &str)] = &[
@@ -65,6 +83,7 @@ const COLUMNAS: &[(&str, &str)] = &[
     ("estado", "String"),
     ("entro", "Integer"),
     ("retirado", "Integer"),
+    ("retirado_ms", "Integer"),
 ];
 
 /// Las de la mantenida: las mismas y su blob (sha256) y su tipo.
@@ -84,6 +103,8 @@ pub struct Item {
     pub estado: String,
     pub entro: i64,
     pub retirado: Option<i64>,
+    /// Cuándo salió de la vista actual (ms desde 1970): lo que la retención mide.
+    pub retirado_ms: Option<i64>,
     /// El sha256 de sus bytes en el lago (la mantenida); vacío en la virtual.
     pub blob: String,
     pub tipo: String,
@@ -113,6 +134,9 @@ impl Item {
         if let Some(r) = self.retirado {
             m.insert("retirado".into(), Json::s(r.to_string()));
         }
+        if let Some(r) = self.retirado_ms {
+            m.insert("retirado_ms".into(), Json::s(r.to_string()));
+        }
         for (k, v) in [("blob", &self.blob), ("tipo", &self.tipo)] {
             if !v.is_empty() {
                 m.insert(k.into(), Json::s(v));
@@ -136,6 +160,7 @@ impl Item {
             estado: campo_de(n, "estado")?,
             entro: e("entro").unwrap_or(0),
             retirado: e("retirado"),
+            retirado_ms: e("retirado_ms"),
             blob: c("blob"),
             tipo: c("tipo"),
         })
@@ -264,12 +289,26 @@ pub fn transaccion(
             estado: "actual".into(),
             entro: tx,
             retirado: None,
+            retirado_ms: None,
             blob: String::new(),
             tipo: String::new(),
         });
     }
     c.filas.sort_by_key(Item::id);
     c
+}
+
+/// **La fecha de lo que cambia**: lo que sale de la vista actual guarda cuándo
+/// (si no lo tenía ya: un retirado que se pierde conserva su fecha), y lo que
+/// vuelve la pierde. Aparte de [`transaccion`], que es pura en el tiempo.
+pub fn fechar(filas: &mut [Item], ahora_ms: i64) {
+    for f in filas {
+        if f.estado == "actual" {
+            f.retirado_ms = None;
+        } else if f.retirado_ms.is_none() {
+            f.retirado_ms = Some(ahora_ms);
+        }
+    }
 }
 
 /// Las colecciones mantenidas del árbol: las que tienen `from`.
@@ -299,7 +338,7 @@ fn objeto_de<'a>(pkg: &'a Package, d: &Loaded) -> Result<&'a Loaded, String> {
 }
 
 /// Las filas del manifiesto vigente, leídas del lago.
-fn manifiesto(dataset: &str, ml: &str) -> Result<Vec<Item>, String> {
+pub(crate) fn manifiesto(dataset: &str, ml: &str) -> Result<Vec<Item>, String> {
     let peticion = Json::obj([
         ("dataset", Json::s(dataset)),
         ("metadata_location", Json::s(ml)),
@@ -400,16 +439,47 @@ fn bajar_y_guardar(tipo: &str, peticion: &str) -> Result<(String, Option<String>
 /// índice del lago o del origen, por este orden (ver la cabecera).
 fn copiar_bytes(antes: &[Item], filas: &[Item], tipo: &str, url: &str) -> Result<Copia, String> {
     let mut k = Copia::default();
-    let conocidos: BTreeMap<(String, i64), (String, String)> = antes
+    // Por huella, lo que el manifiesto ya tiene; lo de una fila actual antes
+    // que lo de una retirada (esa no la puede recoger nadie).
+    let mut conocidos: BTreeMap<(String, i64), (String, String, bool)> = BTreeMap::new();
+    for i in antes
         .iter()
         .filter(|i| !i.blob.is_empty() && !i.huella.is_empty())
-        .map(|i| {
-            (
-                (i.huella.clone(), i.tamano),
-                (i.blob.clone(), i.tipo.clone()),
-            )
-        })
+    {
+        let e = conocidos.entry((i.huella.clone(), i.tamano)).or_insert((
+            i.blob.clone(),
+            i.tipo.clone(),
+            false,
+        ));
+        if i.estado == "actual" {
+            *e = (i.blob.clone(), i.tipo.clone(), true);
+        }
+    }
+    // Lo que se reutiliza de una fila que no es actual se toca antes de
+    // nombrarlo (la retención puede estar quitando esa fila ahora mismo); si
+    // la recogida ya se lo llevó, se baja.
+    let a_tocar: BTreeSet<String> = filas
+        .iter()
+        .filter(|f| f.estado == "actual" && f.blob.is_empty() && !f.huella.is_empty())
+        .filter_map(|f| conocidos.get(&(f.huella.clone(), f.tamano)))
+        .filter(|(_, _, actual)| !*actual)
+        .map(|(b, _, _)| b.clone())
         .collect();
+    if !a_tocar.is_empty() {
+        let r = almacen(
+            "blobs-tocar",
+            &Json::obj([("blobs", Json::Arr(a_tocar.iter().map(Json::s).collect()))]).jcs(),
+            None,
+        )?;
+        let faltan: BTreeSet<String> = r
+            .get("faltan")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect();
+        conocidos.retain(|_, (b, _, _)| !faltan.contains(b));
+    }
     // Lo que falta, junto por contenido: dos ítems con la misma huella y el
     // mismo tamaño se bajan una vez. Sin huella, cada uno es el suyo.
     let mut grupos: BTreeMap<(String, i64), Vec<&Item>> = BTreeMap::new();
@@ -419,7 +489,7 @@ fn copiar_bytes(antes: &[Item], filas: &[Item], tipo: &str, url: &str) -> Result
     {
         let tipo_f = tipo_de_formato(&f.formato);
         if !f.huella.is_empty()
-            && let Some((b, t)) = conocidos.get(&(f.huella.clone(), f.tamano))
+            && let Some((b, t, _)) = conocidos.get(&(f.huella.clone(), f.tamano))
         {
             let t = if t.is_empty() { tipo_f } else { t.clone() };
             k.blobs.insert(f.id(), (b.clone(), t));
@@ -716,6 +786,7 @@ pub fn una(
         });
         c.entran -= fuera;
     }
+    fechar(&mut c.filas, ahora_ms());
     let cuenta = |estado: &str| -> i64 {
         let mut vivos: BTreeMap<(String, String), &str> =
             antes.iter().map(|i| (i.id(), i.estado.as_str())).collect();
@@ -881,6 +952,151 @@ pub fn una(
     Ok(Some((linea, Json::Obj(m))))
 }
 
+/// Lo que la retención dejó de una colección: su línea, su puntero si se
+/// movió, y las filas que quedan (las que nombran blobs vivos).
+pub struct Caducado {
+    pub linea: String,
+    pub puntero: Option<Json>,
+    pub filas: Vec<Item>,
+}
+
+/// **La retención de una colección** (E8·3a): del manifiesto, lo retirado o
+/// perdido más viejo que su `retention` se va; lo retirado sin fecha (de antes
+/// de E8·3) la gana hoy. Si algo cambia, un snapshot nuevo con lo que queda
+/// (la historia se queda en los anteriores hasta que caduquen) y el puntero se
+/// mueve. Sin `retention`, o sin documento, no caduca nada.
+pub fn caducar(
+    d: Option<&Loaded>,
+    qn: &str,
+    puntero: &ore_core::parse::Node,
+    ahora_ms: i64,
+    seco: bool,
+) -> Result<Caducado, String> {
+    let (Some(ml), Some(dataset)) = (
+        campo_de(puntero, "metadata_location"),
+        campo_de(puntero, "dataset"),
+    ) else {
+        return Ok(Caducado {
+            linea: "sin transacción todavía".into(),
+            puntero: None,
+            filas: Vec::new(),
+        });
+    };
+    let filas = manifiesto(&dataset, &ml)?;
+    let declarada = d
+        .and_then(|d| d.section("retention"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let retencion = match declarada.as_deref() {
+        Some(r) => Some(
+            crate::datasets::edad_ms(r)
+                .map_err(|e| format!("la `retention` de `{qn}` no se entiende: {e}"))?,
+        ),
+        None => None,
+    };
+    let mut sin_fecha = 0usize;
+    let mut caducados = 0usize;
+    let mut quedan = Vec::with_capacity(filas.len());
+    for mut f in filas {
+        if f.estado != "actual" {
+            match (f.retirado_ms, retencion) {
+                (None, _) => {
+                    f.retirado_ms = Some(ahora_ms);
+                    sin_fecha += 1;
+                }
+                (Some(t), Some(r)) if t.saturating_add(r) <= ahora_ms => {
+                    caducados += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        quedan.push(f);
+    }
+    let ret = declarada.map_or("sin `retention`: nada caduca".to_string(), |r| {
+        format!("retención {r}")
+    });
+    let mut linea = format!(
+        "{ret} · {} filas, {caducados} caducadas{}",
+        quedan.len() + caducados,
+        if sin_fecha > 0 {
+            format!(", {sin_fecha} retiradas sin fecha la ganan hoy")
+        } else {
+            String::new()
+        }
+    );
+    if (caducados == 0 && sin_fecha == 0) || seco {
+        if seco && (caducados > 0 || sin_fecha > 0) {
+            linea = format!("en seco · {linea}");
+        }
+        return Ok(Caducado {
+            linea,
+            puntero: None,
+            filas: quedan,
+        });
+    }
+    if quedan.is_empty() {
+        // Una tabla sin filas no se sella: la colección se queda con lo que
+        // tenía hasta que entre algo.
+        return Ok(Caducado {
+            linea: format!("{linea} · se deja: no quedaría ninguna fila"),
+            puntero: None,
+            filas: quedan,
+        });
+    }
+    let virtual_ = campo_de(puntero, "virtual").as_deref() != Some("false");
+    let esquema: BTreeMap<String, ore_core::types::Type> = COLUMNAS
+        .iter()
+        .chain(if virtual_ {
+            &[][..]
+        } else {
+            COLUMNAS_MANTENIDA
+        })
+        .filter_map(|(c, t)| Some((c.to_string(), ore_core::types::parse_type(t).ok()?)))
+        .collect();
+    let plan = ore_core::digest::de_bytes(format!("coleccion:{qn}").as_bytes());
+    let testigo = puntero
+        .get("testigo")
+        .and_then(|(_, t)| campo_de(t, "valor"))
+        .unwrap_or_default();
+    let t = ("listing".to_string(), Some(testigo));
+    let clave = vec!["clave".to_string(), "version".to_string()];
+    let extra = format!("{{\"dataset\":\"{dataset}\",\"fundir\":false,\"base\":\"{ml}\",");
+    let peticion = cabecera(&plan, &esquema, &t, &clave).replacen('{', &extra, 1);
+    let texto: String = quedan.iter().map(|f| f.fila() + "\n").collect();
+    let s = almacen("sellar", &peticion, Some(&texto))?;
+    let mut m: BTreeMap<String, Json> = match Json::de_node(puntero) {
+        Json::Obj(m) => m,
+        _ => Default::default(),
+    };
+    for k in ["metadata_location", "snapshot"] {
+        if let Some(v) = campo_de(&s, k) {
+            m.insert(k.into(), Json::s(v));
+        }
+    }
+    let n = |e: &str| quedan.iter().filter(|f| f.estado == e).count() as i64;
+    m.insert(
+        "items".into(),
+        Json::obj([
+            ("actuales", Json::Int(n("actual"))),
+            ("retirados", Json::Int(n("retirado"))),
+            ("perdidos", Json::Int(n("perdido"))),
+        ]),
+    );
+    m.insert(
+        "retencion".into(),
+        Json::obj([
+            ("caducados", Json::Int(caducados as i64)),
+            ("ms", Json::Int(ahora_ms)),
+        ]),
+    );
+    Ok(Caducado {
+        linea,
+        puntero: Some(Json::Obj(m)),
+        filas: quedan,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,6 +1228,47 @@ mod tests {
         let t3 = transaccion(&d, &[], &BTreeSet::new(), &[], 3);
         assert_eq!(t3.pierden, 1, "y.pdf ya no existe como versión");
         assert_eq!(estado(&fijar(&d, &t3), "y.pdf", "null"), "perdido");
+    }
+
+    /// Lo que sale de la vista actual gana su fecha; lo perdido que ya la
+    /// tenía la conserva; lo que vuelve la pierde.
+    #[test]
+    fn lo_que_sale_guarda_cuando() {
+        let t1 = transaccion(
+            &[],
+            &[vig("a.pdf", "a1", "A"), vig("b.pdf", "b1", "B")],
+            &BTreeSet::new(),
+            &[],
+            1,
+        );
+        let mut antes = fijar(&[], &t1);
+        fechar(&mut antes, 100);
+        assert!(antes.iter().all(|i| i.retirado_ms.is_none()));
+        let existen: BTreeSet<(String, String)> = [("a.pdf".to_string(), "a1".to_string())].into();
+        let mut t2 = transaccion(&antes, &[vig("b.pdf", "b1", "B")], &existen, &[], 2);
+        fechar(&mut t2.filas, 200);
+        let d = fijar(&antes, &t2);
+        let a = d.iter().find(|i| i.clave == "a.pdf").unwrap();
+        assert_eq!((a.estado.as_str(), a.retirado_ms), ("retirado", Some(200)));
+        let mut t3 = transaccion(&d, &[vig("b.pdf", "b1", "B")], &BTreeSet::new(), &[], 3);
+        fechar(&mut t3.filas, 300);
+        let d = fijar(&d, &t3);
+        let a = d.iter().find(|i| i.clave == "a.pdf").unwrap();
+        assert_eq!(
+            (a.estado.as_str(), a.retirado_ms),
+            ("perdido", Some(200)),
+            "se pierde después, y conserva cuándo salió"
+        );
+        let mut t4 = transaccion(
+            &d,
+            &[vig("a.pdf", "a1", "A"), vig("b.pdf", "b1", "B")],
+            &BTreeSet::new(),
+            &[],
+            4,
+        );
+        fechar(&mut t4.filas, 400);
+        let a = t4.filas.iter().find(|i| i.clave == "a.pdf").unwrap();
+        assert_eq!((a.estado.as_str(), a.retirado_ms), ("actual", None));
     }
 
     #[test]

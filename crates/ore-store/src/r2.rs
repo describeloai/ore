@@ -301,6 +301,92 @@ pub fn leer_rango(
     }
 }
 
+/// Lo que hay bajo un prefijo, con tamaño y fecha, página a página (0046
+/// E8·3b): lo que la recogida de blobs necesita.
+pub fn listar_con_fecha(c: &Cuenta, prefijo: &str) -> Result<Vec<crate::almacen::Listado>, String> {
+    let mut out = Vec::new();
+    let mut sigue: Option<String> = None;
+    loop {
+        let mut consulta = format!("list-type=2&prefix={}", uri(prefijo));
+        if let Some(t) = &sigue {
+            consulta.push_str(&format!("&continuation-token={}", uri(t)));
+        }
+        let canonica = format!("/{}", c.bucket);
+        let ruta = format!("{canonica}?{consulta}");
+        let vacio = hex(&sha256(b""));
+        let cab = firmar_con_consulta(c, "GET", &canonica, &consulta, Vec::new(), &vacio);
+        let mut r = cliente()?.get(&url(c, &ruta)).set("user-agent", AGENTE);
+        for (k, v) in &cab {
+            r = r.set(k, v);
+        }
+        let x = r
+            .call()
+            .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
+            .into_string()
+            .map_err(|e| format!("la respuesta de la enumeración no se pudo leer: {e}"))?;
+        let etiqueta = |t: &str, e: &str| {
+            t.split_once(&format!("<{e}>"))
+                .and_then(|(_, r)| r.split_once(&format!("</{e}>")))
+                .map(|(v, _)| v.to_string())
+        };
+        for o in x.split("<Contents>").skip(1) {
+            let Some(clave) = etiqueta(o, "Key") else {
+                continue;
+            };
+            out.push(crate::almacen::Listado {
+                clave,
+                tamano: etiqueta(o, "Size")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                tocado_ms: etiqueta(o, "LastModified")
+                    .and_then(|f| crate::blobs::ms_de_iso(&f))
+                    .unwrap_or(i64::MAX),
+            });
+        }
+        sigue = (etiqueta(&x, "IsTruncated").as_deref() == Some("true"))
+            .then(|| etiqueta(&x, "NextContinuationToken"))
+            .flatten();
+        if sigue.is_none() {
+            return Ok(out);
+        }
+    }
+}
+
+/// Tocar: copiarlo sobre sí mismo con los metadatos reemplazados, que es lo
+/// que en S3 cambia `LastModified` sin cambiar los bytes.
+pub fn tocar(c: &Cuenta, clave: &str) -> Result<bool, String> {
+    let ruta = format!("/{}/{clave}", c.bucket);
+    let vacio = hex(&sha256(b""));
+    let cab = firmar(
+        c,
+        "PUT",
+        &ruta,
+        vec![
+            ("x-amz-copy-source".into(), uri_ruta(&ruta)),
+            ("x-amz-metadata-directive".into(), "REPLACE".into()),
+            (
+                "x-amz-meta-ore-visto".into(),
+                crate::lago::ahora_ms().to_string(),
+            ),
+        ],
+        &vacio,
+    );
+    let mut r = cliente()?.put(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.call() {
+        Ok(_) => Ok(true),
+        Err(ureq::Error::Status(404, _)) => Ok(false),
+        Err(e) => Err(format!("no se pudo tocar `{clave}`: {e}")),
+    }
+}
+
+/// Una ruta como fuente de una copia: cada segmento codificado, las barras no.
+fn uri_ruta(ruta: &str) -> String {
+    ruta.split('/').map(uri).collect::<Vec<_>>().join("/")
+}
+
 /// Enumera por prefijo. Es lo único que la recogida necesita del almacén, y R2
 /// lo honra — medido en el ADR 0015 antes de escribirlo.
 ///
@@ -424,6 +510,12 @@ impl Almacen for Cuenta {
     }
     fn poner_blob(&self, b: &crate::almacen::Blob) -> Result<bool, String> {
         poner_blob(self, b)
+    }
+    fn listar_con_fecha(&self, prefijo: &str) -> Result<Vec<crate::almacen::Listado>, String> {
+        listar_con_fecha(self, prefijo)
+    }
+    fn tocar(&self, clave: &str) -> Result<bool, String> {
+        tocar(self, clave)
     }
     fn leer_rango(
         &self,

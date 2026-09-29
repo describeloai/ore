@@ -25,11 +25,22 @@
 //! Un ítem llega del origen con **su** huella (el CRC64NVME de S3), que se
 //! conoce sin bajarlo; el sha256 sólo se sabe bajándolo. Para no bajar lo que
 //! el lago ya tiene —un reintento tras un Job cortado, el mismo contrato en
-//! otra colección— cada blob deja un objeto diminuto
-//! `ore/v2/blobs/huellas/<sha256(huella + tamaño)>` con su sha256 dentro. Se
-//! escribe **después** del blob, así que nunca apunta a uno que no llegó. La
-//! spec lo respalda: *«dos ítems con la misma huella son el mismo contenido»*
-//! (`v1alpha16/02` §5).
+//! otra colección— cada blob deja un objeto vacío
+//! `ore/v2/blobs/huellas/<sha256(huella + tamaño)>/<sha256 del blob>`: el
+//! nombre lo dice todo, así que preguntar es listar un prefijo y recogerlo
+//! es listar, sin leer ninguno. Se escribe **después** del blob, así que
+//! nunca apunta a uno que no llegó. La spec lo respalda: *«dos ítems con la
+//! misma huella son el mismo contenido»* (`v1alpha16/02` §5).
+//!
+//! # La recogida, y la carrera con un Job (E8·3b)
+//!
+//! Un blob se recoge cuando **ninguna fila de ningún manifiesto del inquilino
+//! lo nombra y nadie lo ha tocado en la gracia** (2 h por defecto: más que el
+//! plazo de un Job). Un Job que reutiliza un blob que no subió él —por el
+//! índice, o de una fila retirada— lo **toca** antes de sellar (`tocar`: un
+//! metadato en GCS, una copia sobre sí mismo en S3), así que la recogida no se
+//! lo lleva entre que el Job lo encuentra y lo nombra. Detrás, el borrado suave
+//! de GCS (7 días) deja deshacer un error.
 //!
 //! # Los verbos
 //!
@@ -37,6 +48,8 @@
 //! |---|---|---|
 //! | `blobs` | la petición en una línea (`hilos`, `temporal`) y después el flujo de tramas de un lector (`ore_driver::tramas`) | una línea por ítem (`blob`, `subido`, o `error`) y el resumen |
 //! | `blobs-hay` | `{huellas: [[huella, tamaño], …]}` | `{hay: [[huella, tamaño, sha256], …]}`: los que ya están, blob incluido |
+//! | `blobs-tocar` | `{blobs: [sha256, …]}` | cuáles se tocaron y cuáles faltan (E8·3b) |
+//! | `blobs-recoger` | `{vivos: [sha256, …], gracia_ms?, seco?}` | lo recogido: blobs que nadie nombra ni tocó en la gracia, y su índice (E8·3b) |
 //! | `blobs-cotejar` | `{blobs: [[sha256, tamaño], …], muestra?}` | cuáles están y miden lo suyo, y cuáles —de una muestra— siguen siendo su contenido |
 //! | `blob-leer` | `{blob, archivo, rango?}` | los bytes en `archivo`, y su sha256 |
 
@@ -57,12 +70,32 @@ pub fn clave_de(sha256: &str) -> String {
     format!("{RAIZ}/sha256/{sha256}")
 }
 
-/// Dónde vive el sha256 de lo que el origen llama `huella` con ese tamaño.
-pub fn clave_de_huella(huella: &str, tamano: u64) -> String {
+/// El prefijo del índice de lo que el origen llama `huella` con ese tamaño:
+/// debajo, un objeto vacío por blob, con su sha256 por nombre.
+pub fn prefijo_de_huella(huella: &str, tamano: u64) -> String {
     format!(
-        "{RAIZ}/huellas/{}",
+        "{RAIZ}/huellas/{}/",
         ore_s3::hex(&ore_s3::sha256(format!("{huella}\t{tamano}").as_bytes()))
     )
+}
+
+/// ISO-8601 de un almacén (`2026-09-29T16:27:15.682Z`) a milisegundos.
+pub fn ms_de_iso(s: &str) -> Option<i64> {
+    let (fecha, hora) = s.trim().trim_end_matches('Z').split_once('T')?;
+    let mut f = fecha.splitn(3, '-').map(|x| x.parse::<i64>().ok());
+    let (y, m, d) = (f.next()??, f.next()??, f.next()??);
+    let (hms, frac) = hora.split_once('.').unwrap_or((hora, "0"));
+    let mut h = hms.splitn(3, ':').map(|x| x.parse::<i64>().ok());
+    let (hh, mm, ss) = (h.next()??, h.next()??, h.next()??);
+    let ms: i64 = format!("{frac:0<3}")[..3].parse().ok()?;
+    // días desde 1970 (el algoritmo civil de Howard Hinnant)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let dias = era * 146_097 + doe - 719_468;
+    Some(((dias * 24 + hh) * 60 + mm) * 60_000 + ss * 1000 + ms)
 }
 
 const TABLA: [u32; 256] = {
@@ -182,8 +215,12 @@ fn subir_uno(cuenta: &dyn Almacen, l: Llegado) -> (Json, Option<bool>, u64) {
     let r = cuenta.poner_blob(&l.blob).and_then(|subido| {
         if !l.cab.huella.is_empty() {
             cuenta.subir(
-                &clave_de_huella(&l.cab.huella, l.cab.tamano),
-                l.sha.as_bytes(),
+                &format!(
+                    "{}{}",
+                    prefijo_de_huella(&l.cab.huella, l.cab.tamano),
+                    l.sha
+                ),
+                b"",
             )?;
         }
         Ok(subido)
@@ -357,8 +394,8 @@ pub fn poner(
 }
 
 /// **`blobs-hay`**: de lo que el origen llama con su huella y su tamaño, lo
-/// que el lago ya tiene, con su blob. El índice dice el sha256 y un `HEAD`
-/// comprueba que el blob sigue (la recogida pudo llevárselo).
+/// que el lago ya tiene, con su blob. El índice dice el sha256, y el blob se
+/// **toca**: si sigue, la recogida no se lo lleva mientras el Job lo nombra.
 pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
     let pares: Vec<(String, u64)> = n
         .get("huellas")
@@ -384,14 +421,16 @@ pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String
                 loop {
                     let i = siguiente.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some((h, t)) = pares.get(i) else { return };
-                    let r = cuenta
-                        .leer(&clave_de_huella(h, *t))
-                        .and_then(|sha| match sha {
-                            Some(sha) if sha.len() == 64 => {
-                                Ok(cuenta.existe(&clave_de(&sha))?.then_some(sha))
+                    let pre = prefijo_de_huella(h, *t);
+                    let r = cuenta.listar(&pre).and_then(|ks| {
+                        for k in ks {
+                            let sha = &k[pre.len()..];
+                            if sha.len() == 64 && cuenta.tocar(&clave_de(sha))? {
+                                return Ok(Some(sha.to_string()));
                             }
-                            _ => Ok(None),
-                        });
+                        }
+                        Ok(None)
+                    });
                     match r {
                         Ok(Some(sha)) => encontrados.lock().unwrap().push((
                             i,
@@ -412,6 +451,135 @@ pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String
     let mut e = encontrados.into_inner().unwrap();
     e.sort_by_key(|(i, _)| *i);
     Ok(Json::obj([("hay", Json::Arr(e.into_iter().map(|(_, j)| j).collect()))]).jcs())
+}
+
+/// **`blobs-tocar`**: marca como vistos los blobs que un Job reutiliza de
+/// filas que no son actuales (E8·3b). `{blobs: [sha256, …]}` →
+/// `{tocados, faltan: […]}`.
+pub fn tocar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+    let shas: Vec<String> = n
+        .get("blobs")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect();
+    let faltan: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let error: Mutex<Option<String>> = Mutex::new(None);
+    let siguiente = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..HILOS.min(shas.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    let i = siguiente.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(sha) = shas.get(i) else { return };
+                    match cuenta.tocar(&clave_de(sha)) {
+                        Ok(true) => {}
+                        Ok(false) => faltan.lock().unwrap().push(sha.clone()),
+                        Err(e) => {
+                            error.lock().unwrap().get_or_insert(e);
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if let Some(e) = error.into_inner().unwrap() {
+        return Err(e);
+    }
+    let mut faltan = faltan.into_inner().unwrap();
+    faltan.sort();
+    Ok(Json::obj([
+        ("tocados", Json::Int((shas.len() - faltan.len()) as i64)),
+        ("faltan", Json::Arr(faltan.iter().map(Json::s).collect())),
+    ])
+    .jcs())
+}
+
+/// Dos horas: más que el plazo de un Job de la copia (una hora).
+pub const GRACIA_MS: i64 = 2 * 3600 * 1000;
+
+/// **`blobs-recoger`** (E8·3b): los blobs que ninguna fila nombra y nadie tocó
+/// en la gracia se van, y con ellos las entradas del índice que ya no
+/// apuntan a nada. `{vivos: [sha256, …], gracia_ms?, seco?, ahora_ms?}`: los
+/// vivos son **todos** los que nombran los manifiestos del inquilino —quien
+/// llama responde de que la lista esté entera—.
+pub fn recoger(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+    let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+    let vivos: std::collections::BTreeSet<String> = n
+        .get("vivos")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect();
+    let gracia = campo("gracia_ms")
+        .and_then(|g| g.parse::<i64>().ok())
+        .unwrap_or(GRACIA_MS);
+    let seco = campo("seco").as_deref() == Some("true");
+    let ahora = campo("ahora_ms")
+        .and_then(|a| a.parse::<i64>().ok())
+        .unwrap_or_else(crate::lago::ahora_ms);
+    let pre = format!("{RAIZ}/sha256/");
+    let hay = cuenta.listar_con_fecha(&pre)?;
+    let (mut en_gracia, mut bytes) = (0i64, 0u64);
+    let mut quedan: std::collections::BTreeSet<String> = Default::default();
+    let mut muertos: Vec<String> = Vec::new();
+    for o in &hay {
+        let sha = o.clave[pre.len()..].to_string();
+        if vivos.contains(&sha) {
+            quedan.insert(sha);
+        } else if o.tocado_ms.saturating_add(gracia) > ahora {
+            en_gracia += 1;
+            quedan.insert(sha);
+        } else {
+            bytes += o.tamano;
+            muertos.push(o.clave.clone());
+        }
+    }
+    let borrar = |claves: &[String]| -> Result<(), String> {
+        if seco {
+            return Ok(());
+        }
+        let error: Mutex<Option<String>> = Mutex::new(None);
+        let siguiente = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..HILOS.min(claves.len().max(1)) {
+                s.spawn(|| {
+                    loop {
+                        let i = siguiente.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(k) = claves.get(i) else { return };
+                        if let Err(e) = cuenta.borrar(k) {
+                            error.lock().unwrap().get_or_insert(e);
+                        }
+                    }
+                });
+            }
+        });
+        error.into_inner().unwrap().map_or(Ok(()), Err)
+    };
+    borrar(&muertos)?;
+    // El índice: lo que apunta a un blob que ya no está.
+    let hpre = format!("{RAIZ}/huellas/");
+    let huellas: Vec<String> = cuenta
+        .listar(&hpre)?
+        .into_iter()
+        .filter(|k| {
+            let sha = k.rsplit('/').next().unwrap_or("");
+            !quedan.contains(sha)
+        })
+        .collect();
+    borrar(&huellas)?;
+    Ok(Json::obj([
+        ("blobs", Json::Int(hay.len() as i64)),
+        ("vivos", Json::Int(vivos.len() as i64)),
+        ("en_gracia", Json::Int(en_gracia)),
+        ("recogidos", Json::Int(muertos.len() as i64)),
+        ("bytes", Json::Int(bytes as i64)),
+        ("huellas_recogidas", Json::Int(huellas.len() as i64)),
+        ("seco", Json::Bool(seco)),
+    ])
+    .jcs())
 }
 
 /// **`blobs-cotejar`** (E8·2d): que lo que un manifiesto dice esté en el lago.
@@ -525,6 +693,8 @@ mod tests {
     #[derive(Default)]
     struct Memoria {
         objetos: Mutex<BTreeMap<String, (Vec<u8>, String)>>,
+        /// Cuándo se tocó cada uno; sin entrada, hace mucho.
+        tocados: Mutex<BTreeMap<String, i64>>,
     }
 
     impl Almacen for Memoria {
@@ -571,6 +741,31 @@ mod tests {
                 .unwrap()
                 .get(clave)
                 .map(|(b, _)| b.clone()))
+        }
+        fn listar_con_fecha(&self, prefijo: &str) -> Result<Vec<crate::almacen::Listado>, String> {
+            let t = self.tocados.lock().unwrap();
+            Ok(self
+                .objetos
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(k, _)| k.starts_with(prefijo))
+                .map(|(k, (b, _))| crate::almacen::Listado {
+                    clave: k.clone(),
+                    tamano: b.len() as u64,
+                    tocado_ms: t.get(k).copied().unwrap_or(0),
+                })
+                .collect())
+        }
+        fn tocar(&self, clave: &str) -> Result<bool, String> {
+            if !self.existe(clave)? {
+                return Ok(false);
+            }
+            self.tocados
+                .lock()
+                .unwrap()
+                .insert(clave.into(), crate::lago::ahora_ms());
+            Ok(true)
         }
         fn poner_blob(&self, b: &Blob) -> Result<bool, String> {
             let bytes = b.cuerpo.bytes()?;
@@ -650,9 +845,8 @@ mod tests {
             !o.keys().any(|k| o[k].0 == b"XXXX"),
             "lo que el lector no dio por bueno no se guarda"
         );
-        assert_eq!(
-            o[&clave_de_huella("h:d.pdf", 6)].0,
-            sha.as_bytes(),
+        assert!(
+            o.contains_key(&format!("{}{sha}", prefijo_de_huella("h:d.pdf", 6))),
             "la huella de cada ítem apunta a su blob"
         );
         let g = ore_s3::hex(&ore_s3::sha256(&grande));
@@ -684,6 +878,74 @@ mod tests {
             2,
             "a.pdf y su huella, y nada de b"
         );
+    }
+
+    /// **La recogida**: lo que un manifiesto nombra se queda; lo que un Job
+    /// tocó (lo reutiliza y aún no lo nombra) espera su gracia; lo demás se
+    /// va, con su entrada del índice. En seco no se toca nada.
+    #[test]
+    fn la_recogida_respeta_lo_vivo_y_lo_tocado() {
+        let m = Arc::new(Memoria::default());
+        let mut w = Vec::new();
+        for (c, b) in [
+            ("a.pdf", "VIVO"),
+            ("b.pdf", "TOCADO"),
+            ("c.pdf", "HUERFANO"),
+        ] {
+            trama(&mut w, c, b.as_bytes(), Ok(()));
+        }
+        poner(m.clone(), &parse("{}"), std::io::BufReader::new(&w[..])).unwrap();
+        let sha = |b: &str| ore_s3::hex(&ore_s3::sha256(b.as_bytes()));
+        // Un Job encuentra b.pdf por su huella: `hay` lo toca.
+        hay(m.clone(), &parse(r#"{"huellas":[["h:b.pdf","6"]]}"#)).unwrap();
+        let pedir = |seco: bool| {
+            recoger(
+                m.clone(),
+                &parse(&format!(
+                    r#"{{"vivos":["{}"],"gracia_ms":"3600000","seco":"{seco}"}}"#,
+                    sha("VIVO")
+                )),
+            )
+            .unwrap()
+        };
+        let r = parse(&pedir(true));
+        let v =
+            |n: &ore_core::parse::Node, k: &str| n.get(k).unwrap().1.as_str().unwrap().to_string();
+        assert_eq!(
+            (
+                v(&r, "recogidos"),
+                v(&r, "en_gracia"),
+                v(&r, "huellas_recogidas")
+            ),
+            ("1".into(), "1".into(), "1".into())
+        );
+        assert_eq!(
+            m.objetos.lock().unwrap().len(),
+            6,
+            "en seco no se borra nada"
+        );
+        pedir(false);
+        let o = m.objetos.lock().unwrap();
+        assert!(o.contains_key(&clave_de(&sha("VIVO"))));
+        assert!(o.contains_key(&clave_de(&sha("TOCADO"))), "en su gracia");
+        assert!(!o.contains_key(&clave_de(&sha("HUERFANO"))));
+        assert!(
+            !o.keys().any(|k| k.ends_with(&sha("HUERFANO"))),
+            "ni su entrada del índice: {o:?}",
+            o = o.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(o.len(), 4);
+    }
+
+    #[test]
+    fn la_fecha_de_un_almacen() {
+        assert_eq!(ms_de_iso("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            ms_de_iso("2026-09-29T16:27:15.682Z"),
+            Some(1_790_699_235_682)
+        );
+        assert_eq!(ms_de_iso("2000-02-29T00:00:01.5Z"), Some(951_782_401_500));
+        assert_eq!(ms_de_iso("ayer"), None);
     }
 
     /// `blobs-cotejar`: lo que está y mide lo que dice, bien; lo que falta, lo

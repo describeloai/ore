@@ -868,6 +868,17 @@ enum Command {
         /// Con `--cotejar`: cuantos blobs se bajan y se vuelven a hashear.
         #[arg(long, default_value_t = 0)]
         muestra: usize,
+        /// El mantenimiento: la retencion de cada coleccion y la recogida de
+        /// los blobs que ningun manifiesto nombra (lo que corre el CronJob).
+        #[arg(long)]
+        recoger: bool,
+        /// Con `--recoger`: dice lo que haria, sin tocar nada.
+        #[arg(long)]
+        seco: bool,
+        /// Con `--recoger`: cuanto se respeta un blob que nadie nombra desde
+        /// que se subio o se toco (`2h` por defecto: mas que un Job).
+        #[arg(long)]
+        gracia: Option<String>,
     },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
@@ -1069,6 +1080,9 @@ fn main() -> std::process::ExitCode {
             informe,
             cotejar,
             muestra,
+            recoger,
+            seco,
+            gracia,
         } => {
             return colecciones::colecciones(
                 path,
@@ -1082,6 +1096,9 @@ fn main() -> std::process::ExitCode {
                     informe: informe.as_deref(),
                     cotejar: cotejar.as_deref(),
                     muestra: *muestra,
+                    recoger: *recoger,
+                    seco: *seco,
+                    gracia: gracia.as_deref(),
                 },
             );
         }

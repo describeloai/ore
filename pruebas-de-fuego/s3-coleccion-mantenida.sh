@@ -18,6 +18,11 @@
 #      y no baja nada
 #   7  `ore collections --cotejar`: limpio (con la muestra vuelta a hashear);
 #      sin un blob, sale con 1 y nombra los ítems que lo usan
+#   8  `ore collections --recoger` (E8·3): con `retention: 1s`, lo retirado
+#      caduca y el puntero se mueve; el blob que sólo nombraba eso espera su
+#      gracia (lo tocó un Job), en seco no se toca nada, sin gracia se va con
+#      su huella del índice, lo de las demás colecciones sigue, y si vuelve se
+#      baja otra vez
 #
 # Uso:  ORE_S3_URL='s3://<bucket>/?region=…&access_key_id=…&secret_access_key=…' \
 #         bash pruebas-de-fuego/s3-coleccion-mantenida.sh
@@ -197,6 +202,49 @@ codigo=$?
 afirma "un blob que falta: sale con 1 y nombra sus tres ítems" \
   "$([ "$codigo" = 1 ] && grep -q "roto · $ROTO · no está en el lago" "$TMP/c2.txt" && grep "roto · $ROTO" "$TMP/c2.txt" | grep -q 'a.pdf' && grep "roto · $ROTO" "$TMP/c2.txt" | grep -q 'd.pdf' && echo 1)" \
   "$codigo · $(cat "$TMP/c2.txt")"
+
+echo "── 8 · la retención y la recogida"
+# La colección de los PDF empieza de nuevo (sin puntero: el blob que el paso
+# 7 borró se vuelve a subir) con una retención de un segundo, y retira tres.
+solo_a() {  # on | off
+  "$PY" - "$F" "$1" <<'PYEOF'
+import re,sys
+p,modo=sys.argv[1],sys.argv[2]; t=open(p,encoding="utf-8").read().replace(', match: "a.pdf"', "")
+if modo=="on": t=re.sub(r"from: \{ objectTable: ([^ }]+) \}", r'from: { objectTable: \1, match: "a.pdf" }', t)
+if "retention:" not in t: t=t.replace("  formats:", "  retention: 1s\n  formats:", 1)
+open(p,"w",encoding="utf-8").write(t)
+PYEOF
+}
+rm -f "$(find datasets -name "$PDF.json" | head -1)"
+solo_a on
+"$ORE" validate . > "$TMP/val2.txt" 2>&1 || falla "validate con retention: $(tail -3 "$TMP/val2.txt")"
+"$ORE" materialize . > "$TMP/m6.txt" 2>&1
+solo_a off; "$ORE" materialize . >> "$TMP/m6.txt" 2>&1
+solo_a on;  "$ORE" materialize . >> "$TMP/m6.txt" 2>&1
+M3=$(manifiesto "$PDF")
+afirma "tres retirados (la de a.pdf, resubida: 7 blobs otra vez)" \
+  "$([ "$(echo "$M3" | awk '$2=="retirado"' | wc -l | tr -d ' ')" = 3 ] && [ "$(blobs_en_el_lago)" = 7 ] && echo 1)" \
+  "$M3 · $(grep -A1 "$PDF" "$TMP/m6.txt" | grep -v "^--")"
+sleep 2
+"$ORE" collections . --recoger > "$TMP/r1.txt" 2>&1
+codigo=$?
+afirma "con la gracia de siempre (2 h): caducan 3 filas y el blob que sólo ellas nombraban espera" \
+  "$([ "$codigo" = 0 ] && grep -q "$PDF · retención 1s · 4 filas, 3 caducadas" "$TMP/r1.txt" && grep -q '1 en su gracia, 0 recogidos' "$TMP/r1.txt" && echo 1)" "$(cat "$TMP/r1.txt")"
+afirma "el manifiesto se queda con a.pdf, y el puntero se movió" \
+  "$([ "$(manifiesto "$PDF" | wc -l | tr -d ' ')" = 1 ] && [ "$(puntero "$PDF" retencion.caducados)" = 3 ] && echo 1)" "$(manifiesto "$PDF")"
+"$ORE" collections . --recoger --gracia 0 --seco > "$TMP/r2.txt" 2>&1
+afirma "en seco, sin gracia: diría 1 recogido y no toca nada" \
+  "$(grep -q 'en seco · blobs: 7 en el lago, 6 vivos, 0 en su gracia, 1 recogidos' "$TMP/r2.txt" && [ "$(blobs_en_el_lago)" = 7 ] && echo 1)" "$(cat "$TMP/r2.txt")"
+"$ORE" collections . --recoger --gracia 0 > "$TMP/r3.txt" 2>&1
+afirma "sin gracia: se va el de Invoice, y su huella; quedan 6" \
+  "$(grep -q '1 recogidos' "$TMP/r3.txt" && grep -q '1 huellas del índice recogidas' "$TMP/r3.txt" && [ "$(blobs_en_el_lago)" = 6 ] && echo 1)" "$(cat "$TMP/r3.txt")"
+read -r bien mal < <(cotejar "$(manifiesto "$CON")")
+afirma "lo de las otras colecciones no se toca: contratos coteja limpio" "$([ "$mal" = 0 ] && [ "$bien" = 4 ] && echo 1)" "$bien bien, $mal mal"
+solo_a off
+"$ORE" materialize . > "$TMP/m7.txt" 2>&1
+afirma "si Invoice vuelve, se baja otra vez: su huella ya no promete nada" \
+  "$([ "$(puntero "$PDF" blobs.bajados)" = 1 ] && [ "$(puntero "$PDF" items.actuales)" = 4 ] && [ "$(blobs_en_el_lago)" = 7 ] && echo 1)" \
+  "$(grep -A1 "$PDF" "$TMP/m7.txt" | tail -1)"
 
 echo
 if [ "$fallos" -eq 0 ]; then echo "s3-coleccion-mantenida · todo en verde"; exit 0; fi

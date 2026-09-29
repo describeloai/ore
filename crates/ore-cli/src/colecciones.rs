@@ -6,6 +6,7 @@
 //! | `ore collections .` | cada `MediaCollection`: su forma (virtual, mantenida, escrita), su origen, su medio y sus formatos, y el estado de su puntero (transacción, ítems actuales, retirados y perdidos) | `GET /colecciones` |
 //! | `--ficha b.s.n` | lo mismo de una, y **la historia de sus transacciones** (los snapshots de su manifiesto, `ore-store historia`) | `GET /colecciones/{b}/{s}/{n}` |
 //! | `--items b.s.n [--estado …] [--desde N] [--limite N]` | sus ítems, por estado (`actual` por defecto; `retirado`, `perdido`, `todos`), en orden de camino, paginados | `GET /colecciones/{b}/{s}/{n}/items` |
+//! | `--recoger [--seco] [--gracia 2h]` | **el mantenimiento** (E8·3): la retención de cada colección (lo retirado más viejo que su `retention` sale del manifiesto, y el puntero se mueve) y después la **recogida de blobs** del inquilino: lo que ninguna fila de ningún manifiesto nombra, y nadie tocó en la gracia, se va. Si un manifiesto no se puede leer, no se recoge nada | el CronJob de mantenimiento |
 //! | `--cotejar b.s.n [--muestra N]` | **que lo que el manifiesto de una mantenida dice esté en el lago** (E8·2d): cada blob que una fila nombra, con su tamaño; y N de ellos, bajados y vueltos a hashear. Sale con 1 si algo está roto, y dice qué ítem | el mantenimiento, o quien quiera saberlo |
 //!
 //! El puntero vive con los de los datasets (`datasets/<b>/<s>/<n>.json`, con
@@ -31,12 +32,17 @@ pub struct Opciones<'a> {
     pub informe: Option<&'a Path>,
     pub cotejar: Option<&'a str>,
     pub muestra: usize,
+    pub recoger: bool,
+    pub seco: bool,
+    pub gracia: Option<&'a str>,
 }
 
 type Fallo = (u8, String);
 
 pub fn colecciones(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    let hecho = if let Some(n) = op.cotejar {
+    let hecho = if op.recoger {
+        recoger(path, op)
+    } else if let Some(n) = op.cotejar {
         cotejar(path, n, op)
     } else if let Some(n) = op.items {
         items(path, n, op)
@@ -463,6 +469,144 @@ fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             1,
             format!(
                 "`{qn}`: {malos} blobs o ítems rotos: el manifiesto dice algo que el lago no tiene"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// **El mantenimiento de las colecciones** (E8·3): la retención de cada una y
+/// la recogida de los blobs del inquilino. Los vivos son los que nombra
+/// **cualquier** fila de **cualquier** manifiesto —de una colección con
+/// documento o de una cuyo documento ya se fue y aún tiene puntero—; si uno
+/// no se puede leer, la lista no está entera y no se recoge nada.
+fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+    let gracia = match op.gracia {
+        Some(g) => crate::datasets::edad_ms(g).map_err(|m| (64, m))?,
+        None => 2 * 3_600_000,
+    };
+    let ahora = crate::coleccion::ahora_ms();
+    let docs = todas(path);
+    let dir = dir_punteros(path, op);
+    let mut vivos: std::collections::BTreeSet<String> = Default::default();
+    let mut lineas: Vec<Json> = Vec::new();
+    let mut ilegibles: Vec<String> = Vec::new();
+    let mut movidos = 0usize;
+    for p in crate::datasets::punteros(path, &dir)
+        .into_iter()
+        .filter(|p| p.es_coleccion())
+    {
+        let d = docs
+            .iter()
+            .find(|d| d.qname().as_deref() == Some(p.nombre.as_str()));
+        match crate::coleccion::caducar(d, &p.nombre, &p.nodo, ahora, op.seco) {
+            Err(e) => {
+                ilegibles.push(format!("{}: {e}", p.nombre));
+                lineas.push(Json::obj([
+                    ("coleccion", Json::s(&p.nombre)),
+                    ("error", Json::s(&e)),
+                ]));
+            }
+            Ok(c) => {
+                vivos.extend(
+                    c.filas
+                        .iter()
+                        .filter(|f| !f.blob.is_empty())
+                        .map(|f| f.blob.clone()),
+                );
+                if let Some(nuevo) = &c.puntero {
+                    std::fs::write(&p.ruta, nuevo.pretty() + "\n").map_err(|e| {
+                        (
+                            73,
+                            format!("no se pudo escribir `{}`: {e}", p.ruta.display()),
+                        )
+                    })?;
+                    movidos += 1;
+                }
+                lineas.push(Json::obj([
+                    ("coleccion", Json::s(&p.nombre)),
+                    ("linea", Json::s(&c.linea)),
+                    ("movido", Json::Bool(c.puntero.is_some())),
+                ]));
+            }
+        }
+    }
+    let blobs = if ilegibles.is_empty() {
+        let r = almacen(
+            "blobs-recoger",
+            &Json::obj([
+                ("vivos", Json::Arr(vivos.iter().map(Json::s).collect())),
+                ("gracia_ms", Json::s(gracia.to_string())),
+                ("seco", Json::Bool(op.seco)),
+            ]),
+        )?;
+        Some(
+            ore_core::parse::parse(r.trim())
+                .map_err(|e| (69, format!("la recogida no analiza: {e:?}")))?,
+        )
+    } else {
+        None
+    };
+    let n = |k: &str| {
+        blobs
+            .as_ref()
+            .and_then(|b| campo(b, k))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
+    if op.json {
+        println!(
+            "{}",
+            Json::obj([
+                ("colecciones", Json::Arr(lineas)),
+                ("punteros_movidos", Json::Int(movidos as i64)),
+                ("seco", Json::Bool(op.seco)),
+                ("gracia_ms", Json::Int(gracia)),
+                (
+                    "blobs",
+                    match &blobs {
+                        Some(b) => Json::de_node(b),
+                        None => Json::Crudo("null".into()),
+                    }
+                ),
+            ])
+            .jcs()
+        );
+    } else {
+        for l in &lineas {
+            if let Json::Obj(m) = l {
+                let s = |k: &str| match m.get(k) {
+                    Some(Json::Str(v)) => v.clone(),
+                    _ => String::new(),
+                };
+                let texto = if s("error").is_empty() {
+                    s("linea")
+                } else {
+                    format!("no se pudo leer · {}", s("error"))
+                };
+                println!("{} · {texto}", s("coleccion"));
+            }
+        }
+        if blobs.is_some() {
+            println!(
+                "{}blobs: {} en el lago, {} vivos, {} en su gracia, {} recogidos ({} KB) · {} huellas del índice recogidas · {movidos} puntero(s) movido(s)",
+                if op.seco { "en seco · " } else { "" },
+                n("blobs"),
+                n("vivos"),
+                n("en_gracia"),
+                n("recogidos"),
+                n("bytes") / 1024,
+                n("huellas_recogidas")
+            );
+        }
+    }
+    if !ilegibles.is_empty() {
+        return Err((
+            69,
+            format!(
+                "no se recoge ningún blob: {} manifiesto(s) no se pudieron leer y la lista de vivos no está entera ({})",
+                ilegibles.len(),
+                ilegibles.join("; ")
             ),
         ));
     }

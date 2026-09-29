@@ -266,6 +266,64 @@ impl Almacen for Cuenta {
         }
     }
 
+    fn listar_con_fecha(&self, prefijo: &str) -> Result<Vec<crate::almacen::Listado>, String> {
+        let mut out = Vec::new();
+        let mut pagina: Option<String> = None;
+        loop {
+            let mut url = format!(
+                "{API}/storage/v1/b/{}/o?prefix={}&maxResults=1000&fields=items(name,size,timeCreated,updated),nextPageToken",
+                self.bucket,
+                codificar(prefijo)
+            );
+            if let Some(p) = &pagina {
+                url.push_str(&format!("&pageToken={}", codificar(p)));
+            }
+            let texto = self
+                .pide_blob("GET", &url)?
+                .call()
+                .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
+                .into_string()
+                .map_err(|e| format!("la enumeración de `{prefijo}` no se pudo leer: {e}"))?;
+            let n = ore_core::parse::parse(&texto)
+                .map_err(|e| format!("la enumeración de `{prefijo}` no analiza: {e:?}"))?;
+            if let Some((_, items)) = n.get("items") {
+                for o in items.items() {
+                    let c = |k: &str| o.get(k).and_then(|(_, v)| v.as_str()).unwrap_or("");
+                    let ms = |k: &str| crate::blobs::ms_de_iso(c(k)).unwrap_or(i64::MAX);
+                    out.push(crate::almacen::Listado {
+                        clave: c("name").to_string(),
+                        tamano: c("size").parse().unwrap_or(0),
+                        tocado_ms: ms("timeCreated").max(ms("updated").min(i64::MAX - 1)),
+                    });
+                }
+            }
+            pagina = n
+                .get("nextPageToken")
+                .and_then(|(_, v)| v.as_str().map(String::from))
+                .filter(|t| !t.is_empty());
+            if pagina.is_none() {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// Un `PATCH` de un metadato: cambia `updated`, no los bytes.
+    fn tocar(&self, clave: &str) -> Result<bool, String> {
+        let cuerpo = format!(
+            "{{\"metadata\":{{\"ore-visto\":\"{}\"}}}}",
+            crate::lago::ahora_ms()
+        );
+        match self
+            .pide_blob("PATCH", &format!("{}?fields=updated", self.objeto(clave)))?
+            .set("content-type", "application/json")
+            .send_string(&cuerpo)
+        {
+            Ok(_) => Ok(true),
+            Err(ureq::Error::Status(404, _)) => Ok(false),
+            Err(e) => Err(format!("no se pudo tocar `{clave}`: {e}")),
+        }
+    }
+
     fn poner_blob(&self, b: &crate::almacen::Blob) -> Result<bool, String> {
         match &b.cuerpo {
             crate::almacen::Cuerpo::Memoria(bytes) => self.blob_multiparte(b, bytes),

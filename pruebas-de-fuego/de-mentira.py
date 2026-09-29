@@ -35,6 +35,12 @@ PUERTO = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 OBJETOS = {}
 TIPOS = {}  # clave → content-type, como lo subió el cliente
+FECHAS = {}  # clave → LastModified (ISO), al subirlo o al copiarlo sobre sí mismo
+
+
+def ahora_iso():
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 PARTES = {}  # uploadId → {partNumber: bytes}
 CERROJO = threading.Lock()
 
@@ -107,6 +113,26 @@ class S3(BaseHTTPRequestHandler):
     def do_PUT(self):
         clave, q = self._clave()
         cuerpo = self._cuerpo()
+        # `CopyObject` (la copia sobre sí mismo con `REPLACE` es como se toca un
+        # objeto en S3: cambia `LastModified`, no los bytes).
+        fuente = self.headers.get("x-amz-copy-source")
+        if fuente:
+            src = unquote(fuente).lstrip("/").split("/", 1)[1]
+            with CERROJO:
+                if src not in OBJETOS:
+                    self.send_response(404)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
+                OBJETOS[clave] = OBJETOS[src]
+                TIPOS[clave] = TIPOS.get(src, "")
+                FECHAS[clave] = ahora_iso()
+            b = b"<CopyObjectResult><ETag>\"x\"</ETag></CopyObjectResult>"
+            self.send_response(200)
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if "uploadId" in q:
             with CERROJO:
                 PARTES.setdefault(q["uploadId"][0], {})[int(q["partNumber"][0])] = cuerpo
@@ -131,6 +157,7 @@ class S3(BaseHTTPRequestHandler):
                 return
             OBJETOS[clave] = cuerpo
             TIPOS[clave] = self.headers.get("content-type", "")
+            FECHAS[clave] = ahora_iso()
         self.send_response(200)
         self.send_header("ETag", '"x"')
         self.send_header("content-length", "0")
@@ -142,7 +169,10 @@ class S3(BaseHTTPRequestHandler):
             pref = q.get("prefix", [""])[0]
             with CERROJO:
                 claves = sorted(k for k in OBJETOS if k.startswith(pref))
-            xml = "<ListBucketResult>" + "".join("<Contents><Key>%s</Key></Contents>" % k for k in claves) + "</ListBucketResult>"
+            xml = "<ListBucketResult>" + "".join(
+                "<Contents><Key>%s</Key><Size>%d</Size><LastModified>%s</LastModified></Contents>"
+                % (k, len(OBJETOS.get(k, b"")), FECHAS.get(k, "2026-01-01T00:00:00.000Z"))
+                for k in claves) + "<IsTruncated>false</IsTruncated></ListBucketResult>"
             b = xml.encode()
             self.send_response(200)
             self.send_header("content-type", "application/xml")
@@ -190,6 +220,7 @@ class S3(BaseHTTPRequestHandler):
                 PARTES.pop(q["uploadId"][0], None)
             else:
                 OBJETOS.pop(clave, None)
+                FECHAS.pop(clave, None)
         self.send_response(204)
         self.send_header("content-length", "0")
         self.end_headers()

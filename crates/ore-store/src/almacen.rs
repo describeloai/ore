@@ -63,6 +63,16 @@ impl Cuerpo {
     }
 }
 
+/// Un objeto de un listado, con lo que la recogida de blobs necesita: su
+/// tamaño y cuándo se tocó por última vez (0046 E8·3b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listado {
+    pub clave: String,
+    pub tamano: u64,
+    /// Milisegundos desde 1970: lo último entre crearlo y [`Almacen::tocar`].
+    pub tocado_ms: i64,
+}
+
 /// Un almacén de objetos con nombre.
 pub trait Almacen: Send + Sync {
     /// La raíz por la que este almacén se nombra desde fuera, sin barra final:
@@ -99,6 +109,26 @@ pub trait Almacen: Send + Sync {
     /// Por defecto, `subir` con los bytes enteros.
     fn poner_blob(&self, b: &Blob) -> Result<bool, String> {
         self.subir(&b.clave, &b.cuerpo.bytes()?)
+    }
+    /// Lo que hay bajo un prefijo, con su tamaño y cuándo se tocó. Un almacén
+    /// que no sabe la fecha dice que todo es de ahora: así la recogida no se
+    /// lleva nada que no sepa viejo.
+    fn listar_con_fecha(&self, prefijo: &str) -> Result<Vec<Listado>, String> {
+        Ok(self
+            .listar(prefijo)?
+            .into_iter()
+            .map(|clave| Listado {
+                clave,
+                tamano: 0,
+                tocado_ms: i64::MAX,
+            })
+            .collect())
+    }
+    /// **Lo marca como visto ahora**, sin cambiar sus bytes (0046 E8·3b): lo
+    /// que un Job reutiliza no se lo lleva la recogida mientras dure su gracia.
+    /// `Ok(false)`: no está. Por defecto, sólo dice si está.
+    fn tocar(&self, clave: &str) -> Result<bool, String> {
+        self.existe(clave)
     }
     /// Un rango de un objeto (`inicio..=fin`), o entero. `None`: no está.
     fn leer_rango(

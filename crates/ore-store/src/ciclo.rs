@@ -269,6 +269,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
         "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
         "blobs-cotejar" => crate::blobs::cotejar(cuenta.clone(), &n),
+        "blobs-tocar" => crate::blobs::tocar(cuenta.clone(), &n),
+        "blobs-recoger" => crate::blobs::recoger(cuenta.clone(), &n),
         "historia" => {
             let ml = campo("metadata_location")
                 .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
@@ -278,7 +280,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
              `recoger-huerfanas`, `leer`, `pagina`, `historia`, `volcar`, `sellar-arrow`, \
-             `blobs`, `blobs-hay`, `blobs-cotejar` y `blob-leer`"
+             `blobs`, `blobs-hay`, `blobs-cotejar`, `blobs-tocar`, \
+             `blobs-recoger` y `blob-leer`"
         )),
     }
 }
@@ -2428,9 +2431,13 @@ mod tests {
         cuenta.subir("ore/v1/plan/x/y", b"ore/v1/viejo").unwrap();
         // Los blobs de una colección no son un dataset, y no se tocan aquí.
         let blob = crate::blobs::clave_de(&"a".repeat(64));
-        let huella = crate::blobs::clave_de_huella("crc64nvme:x", 3);
+        let huella = format!(
+            "{}{}",
+            crate::blobs::prefijo_de_huella("crc64nvme:x", 3),
+            "a".repeat(64)
+        );
         cuenta.subir(&blob, b"PDF").unwrap();
-        cuenta.subir(&huella, "a".repeat(64).as_bytes()).unwrap();
+        cuenta.subir(&huella, b"").unwrap();
         let n = ore_core::parse::parse(
             "{\"datasets\":[\"copias/p_a\"],\"claves\":[\"ore/v1/viejo\"],\"seco\":false}",
         )
