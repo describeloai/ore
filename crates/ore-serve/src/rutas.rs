@@ -805,6 +805,7 @@ impl Servidor {
                 )
             }
             ("POST", ["datasets", ns, n, "confirmar"]) => self.confirmar_dataset(
+                rama,
                 sujeto,
                 ns,
                 ore_core::normalize::SCHEMA_POR_DEFECTO,
@@ -812,7 +813,7 @@ impl Servidor {
                 &p.cuerpo,
             ),
             ("POST", ["datasets", b, s, n, "confirmar"]) => {
-                self.confirmar_dataset(sujeto, b, s, n, &p.cuerpo)
+                self.confirmar_dataset(rama, sujeto, b, s, n, &p.cuerpo)
             }
             // ⭐ 0036 ④: con `X-Ore-Raiz`, sólo las que tocan SUS ficheros —la
             //   pestaña «Pull requests» de un repositorio—.

@@ -441,7 +441,8 @@ es admin (su `Identidad` es persona, agente, correo y nombre; ninguna de las pot
 
 ## Apéndice C · Los datos en una rama (medido y decidido el 2026-09-29)
 
-**Estado:** decidido, medido (D0) y cotejado; los pasos D1–D6, por hacer (§ C.6). Es lo que el
+**Estado:** decidido, medido (D0) y cotejado; **D1 y D2 hechos en local** (2026-09-29,
+`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–6), en vivo tras desplegar; D3–D6 por hacer (§ C.6). Es lo que el
 punto 4 y «Lo que queda fuera» dejaban para después: aquí, y no en un ADR aparte, porque una rama
 con datos es la misma rama global con una cosa más.
 

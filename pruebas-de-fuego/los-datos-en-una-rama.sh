@@ -26,6 +26,10 @@
 #      entera, y los ficheros de base que sólo la rama nombraba) y `main` sigue
 #      entero
 #
+# Y D2 · `confirmar` en la rama:
+#   6  `POST /datasets/{ns}/{n}/confirmar` con `x-ore-rama` mueve el puntero en
+#      la rama y no en `main` (D0 M5); sin la cabecera, en `main`, como siempre
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2` (en `$ORE_TARGET` o
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -231,4 +235,19 @@ v="$(lee - base)/$(lee - soloMain)/$(lee - copiaBase) · $(lee "$RAMA" base)/$(l
 [ "$v" = "20/4/20 · 15/3/15" ] || falla "4 · tras copiar en la rama: $v · $(tr '\n' ' ' < "$T/matrama.txt" | cut -c1-300)"
 ok "4 · la rama copia y recoge con --reclaman: copiaBase 15 en la rama, y main sigue 20/4/20"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x935\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ 6 · confirmar en la rama (D2) ════════════════════════════════════════════
+esta() { git --git-dir="$FORJA" show "$1:datasets/ventas/default/$2.json" >/dev/null 2>&1 && echo sí || echo no; }
+confirma() { # rama|- nombre → código
+  local h=(); [ "$1" != - ] && h=(-H "x-ore-rama: $1")
+  curl -s -o "$T/conf.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: persona:ana' "${h[@]}" \
+    -H 'content-type: application/json' "$BASE/datasets/ventas/$2/confirmar" \
+    -d "{\"metadata_location\":\"$(puntero "$RAMA" nueva)\",\"filas\":3,\"columnas\":{\"id\":\"Integer\",\"pais\":\"String\"}}"
+}
+c=$(confirma "$RAMA" enRama)
+[ "$c" = 201 ] && [ "$(esta "$RAMA" enRama)/$(esta main enRama)" = "sí/no" ] \
+  || falla "6 · confirmar con x-ore-rama: $c, en la rama $(esta "$RAMA" enRama), en main $(esta main enRama) · $(cat "$T/conf.json")"
+c=$(confirma - enMain)
+[ "$c" = 201 ] && [ "$(esta main enMain)" = sí ] || falla "6 · confirmar sin cabecera tenía que ir a main: $c · $(cat "$T/conf.json")"
+ok "6 · confirmar: con x-ore-rama el puntero va a la rama (y no a main); sin ella, a main"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x936\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

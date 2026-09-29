@@ -70,8 +70,13 @@ impl Servidor {
 
     /// `POST /datasets/{ns}/{n}/confirmar` con
     /// `{metadata_location, esperado?, snapshot?, filas?, columnas?}`.
+    ///
+    /// ⭐ Con `x-ore-rama`, el puntero se mueve **en esa rama** (0044 C D2), como
+    ///   en `/v1`: antes iba a `main` dijera lo que dijera la cabecera (medido,
+    ///   D0 M5). Sin ella, lo de siempre.
     pub(crate) fn confirmar_dataset(
         &self,
+        rama: Option<&str>,
         sujeto: &Identidad,
         ns: &str,
         schema: &str,
@@ -126,7 +131,8 @@ impl Servidor {
             args.push("--columnas".into());
             args.push(Json::de_node(cols).jcs());
         }
-        self.escribiendo(sujeto, &format!("confirmar dataset `{nombre}`"), |raiz| {
+        let mensaje = format!("confirmar dataset `{nombre}`");
+        let hacer = |raiz: &std::path::Path| {
             let s = match mando::correr(&self.binario, raiz, &args) {
                 Ok(s) => s,
                 Err(e) => return Respuesta::error(500, e.to_string()),
@@ -168,7 +174,11 @@ impl Servidor {
                 65 => Respuesta::error(422, primera_de(&s.stderr)),
                 _ => Respuesta::error(502, primera_de(&s.stderr)),
             }
-        })
+        };
+        match rama {
+            None => self.escribiendo(sujeto, &mensaje, hacer),
+            Some(_) => self.escribiendo_en(rama, sujeto, &mensaje, hacer),
+        }
     }
 
     /// `GET /colecciones` (0046 E8·1d): cada `MediaCollection` del árbol, con
