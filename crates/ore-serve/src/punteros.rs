@@ -17,8 +17,10 @@ use ore_core::document::Kind;
 use ore_core::link::{Loaded, Package};
 use ore_core::parse;
 use ore_core::vistas::{self, Fuente};
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// La carpeta de `packages/` a la que pertenece un documento del árbol.
 pub fn paquete_de(raiz: &Path, d: &Loaded) -> Option<String> {
@@ -37,6 +39,9 @@ pub fn paquete_de(raiz: &Path, d: &Loaded) -> Option<String> {
 /// alcance. Una database lleva `discover.scope.json`; un paquete escrito a mano
 /// sobre una fuente (`olist` en `la-copia-se-decide.sh`) lleva un catálogo de
 /// OTRA fuente, y no es la fuente.
+/// La referencia de [`Indice::es_fuente`], que es lo que se usa: la prueba
+/// `el_indice_dice_lo_mismo` las compara.
+#[cfg(test)]
 pub fn es_paquete_de_fuente(dir: &Path) -> bool {
     if dir.join("discover.scope.json").is_file() {
         return false;
@@ -99,6 +104,8 @@ pub fn objetos_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Vec<&'a Loaded> {
 
 /// **La** tabla que lee: la de `from.table`, o la de una vista SQL que lee UNA
 /// sola cosa y es una tabla. Es lo que el catálogo enseña como «su tabla».
+/// La referencia de [`Indice::tabla_que_lee`].
+#[cfg(test)]
 pub fn tabla_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Option<&'a Loaded> {
     if let Some(Fuente::Tabla(qn)) = vistas::fuente(d) {
         return pkg.table(&qn);
@@ -189,6 +196,277 @@ pub fn bases_que_salen_de(raiz: &Path, pkg: &Package, n: &str) -> Vec<String> {
         }
     }
     out.into_iter().collect()
+}
+
+// ── El índice de una petición (0046 E5b) ────────────────────────────────────
+//
+// Medido con un origen de 2.000 tablas (0046 E5b): el esquema de la fuente
+// tardaba 98 s y `GET /paquetes` 105 s, y 85–91 s de ellos eran UN bucle —por
+// cada fila del catálogo, todos los documentos del árbol, y en cada uno otra
+// vez lo que lee (una vista SQL: su consulta, analizada de nuevo)—. Y cada
+// fuente lo repetía, y analizaba su catálogo tres veces. Esto recorre el
+// árbol UNA vez por petición y lo deja en mapas; quien pinta pregunta al
+// mapa. Lo que responde es lo mismo que antes: solo cambia cuántas veces se
+// calcula.
+
+/// Lo que una petición pregunta del árbol, calculado una vez.
+pub struct Indice<'a> {
+    raiz: PathBuf,
+    pkg: &'a Package,
+    /// documento → su paquete (la carpeta bajo `packages/`).
+    paquete: HashMap<&'a Path, String>,
+    /// documento por su ruta.
+    por_ruta: HashMap<&'a Path, &'a Loaded>,
+    /// (paquete, `object`) → su `Table`.
+    tablas: HashMap<(String, String), &'a Loaded>,
+    /// (paquete, `prefix`, `match`) → su `ObjectTable`.
+    objetos: HashMap<(String, String, Option<String>), &'a Loaded>,
+    /// puntero → los paquetes cuyos documentos lo leen (vistas, datasets,
+    /// colecciones), el suyo incluido.
+    lectores: HashMap<&'a Path, BTreeSet<String>>,
+    /// documento → la única tabla que lee, si lee una (`tabla_que_lee`).
+    unica: HashMap<&'a Path, &'a Loaded>,
+    /// (`datasource`, `object`) → los paquetes que tienen una `Table` de él.
+    con_tabla: HashMap<(String, String), BTreeSet<String>>,
+    /// Los catálogos y alcances ya leídos, por su ruta: un catálogo de 2.000
+    /// tablas son 0,3 s de análisis, y una petición lo pedía tres veces.
+    leidos: RefCell<HashMap<PathBuf, Option<Rc<parse::Node>>>>,
+}
+
+impl<'a> Indice<'a> {
+    pub fn nuevo(raiz: &Path, pkg: &'a Package) -> Self {
+        let mut i = Indice {
+            raiz: raiz.to_path_buf(),
+            pkg,
+            paquete: HashMap::new(),
+            por_ruta: HashMap::new(),
+            tablas: HashMap::new(),
+            objetos: HashMap::new(),
+            lectores: HashMap::new(),
+            unica: HashMap::new(),
+            con_tabla: HashMap::new(),
+            leidos: RefCell::new(HashMap::new()),
+        };
+        // Las tablas por su nombre cualificado: `pkg.table` es una búsqueda
+        // lineal, y se pedía una por documento.
+        let mut por_nombre: HashMap<String, &'a Loaded> = HashMap::new();
+        for d in &pkg.docs {
+            i.por_ruta.insert(d.path.as_path(), d);
+            if let Some(p) = paquete_de(raiz, d) {
+                i.paquete.insert(d.path.as_path(), p);
+            }
+            let texto = |k: &str| d.section(k).and_then(|v| v.as_str()).map(String::from);
+            let suyo = i.paquete.get(d.path.as_path()).cloned();
+            match d.kind {
+                Kind::Table => {
+                    if let Some(q) = d.qname() {
+                        por_nombre.entry(q).or_insert(d);
+                    }
+                    if let (Some(o), Some(p)) = (texto("object"), suyo) {
+                        i.tablas.entry((p.clone(), o.clone())).or_insert(d);
+                        if let Some(f) = texto("datasource") {
+                            i.con_tabla.entry((f, o)).or_default().insert(p);
+                        }
+                    }
+                }
+                Kind::ObjectTable => {
+                    if let (Some(p), Some(pre)) = (suyo, texto("prefix")) {
+                        i.objetos.entry((p, pre, texto("match"))).or_insert(d);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Lo que lee cada documento, UNA vez: la consulta de una vista SQL se
+        // analiza aquí y no por cada fila que pregunte.
+        for d in &pkg.docs {
+            let leidos = lee(pkg, d, &por_nombre);
+            if let Some(p) = i.paquete.get(d.path.as_path()) {
+                for x in leidos
+                    .iter()
+                    .filter(|x| matches!(x.kind, Kind::Table | Kind::ObjectTable))
+                {
+                    i.lectores
+                        .entry(x.path.as_path())
+                        .or_default()
+                        .insert(p.clone());
+                }
+            }
+            let mut distintos: Vec<&Loaded> = Vec::new();
+            for x in &leidos {
+                if !distintos.iter().any(|y| y.path == x.path) {
+                    distintos.push(x);
+                }
+            }
+            if let [uno] = distintos.as_slice()
+                && uno.kind == Kind::Table
+            {
+                i.unica.insert(d.path.as_path(), uno);
+            }
+        }
+        i
+    }
+
+    /// El árbol del que es el índice.
+    pub fn arbol(&self) -> &'a Package {
+        self.pkg
+    }
+
+    pub fn raiz(&self) -> &Path {
+        &self.raiz
+    }
+
+    /// El paquete de un documento.
+    pub fn paquete(&self, d: &Loaded) -> Option<&str> {
+        self.paquete.get(d.path.as_path()).map(String::as_str)
+    }
+
+    pub fn por_ruta(&self, p: &Path) -> Option<&'a Loaded> {
+        self.por_ruta.get(p).copied()
+    }
+
+    /// La `Table` de `paquete` que apunta a `object`.
+    pub fn tabla(&self, paquete: &str, object: &str) -> Option<&'a Loaded> {
+        self.tablas
+            .get(&(paquete.to_string(), object.to_string()))
+            .copied()
+    }
+
+    /// El `ObjectTable` de `paquete` con ese prefijo y patrón.
+    pub fn objetos(
+        &self,
+        paquete: &str,
+        prefijo: &str,
+        patron: Option<&str>,
+    ) -> Option<&'a Loaded> {
+        self.objetos
+            .get(&(
+                paquete.to_string(),
+                prefijo.to_string(),
+                patron.map(String::from),
+            ))
+            .copied()
+    }
+
+    /// Los paquetes que leen este puntero.
+    pub fn lectores(&self, puntero: &Loaded) -> impl Iterator<Item = &str> {
+        self.lectores
+            .get(puntero.path.as_path())
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+
+    /// Los paquetes con una `Table` de (`datasource`, `object`).
+    pub fn con_tabla(&self, fuente: &str, object: &str) -> impl Iterator<Item = &str> {
+        self.con_tabla
+            .get(&(fuente.to_string(), object.to_string()))
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+
+    /// La única tabla que lee un documento (`tabla_que_lee`), ya calculada.
+    pub fn tabla_que_lee(&self, d: &Loaded) -> Option<&'a Loaded> {
+        self.unica.get(d.path.as_path()).copied()
+    }
+
+    /// Un JSON del árbol analizado, una vez por petición (catálogos y
+    /// alcances). `None` si no está o no analiza.
+    pub fn leer(&self, ruta: &Path) -> Option<Rc<parse::Node>> {
+        if let Some(n) = self.leidos.borrow().get(ruta) {
+            return n.clone();
+        }
+        let n = std::fs::read_to_string(ruta)
+            .ok()
+            .and_then(|t| parse::parse(&t).ok())
+            .map(Rc::new);
+        self.leidos
+            .borrow_mut()
+            .insert(ruta.to_path_buf(), n.clone());
+        n
+    }
+
+    /// `es_paquete_de_fuente`, con el catálogo leído una vez.
+    pub fn es_fuente(&self, dir: &Path) -> bool {
+        if dir.join("discover.scope.json").is_file() {
+            return false;
+        }
+        let Some(n) = dir.file_name().and_then(|x| x.to_str()) else {
+            return false;
+        };
+        self.leer(&dir.join("discover.catalog.json"))
+            .and_then(|c| {
+                c.get("source")
+                    .and_then(|(_, v)| v.as_str().map(|s| s == n))
+            })
+            .unwrap_or(false)
+    }
+
+    /// De qué fuente sale un paquete y si se eligió: `source` del alcance, o
+    /// del catálogo si no lo tiene (un paquete escrito a mano, ninguna).
+    pub fn origen(&self, dir: &Path) -> (Option<String>, bool) {
+        let fuente = |f: &str| {
+            self.leer(&dir.join(f)).and_then(|n| {
+                n.get("source")
+                    .and_then(|(_, v)| v.as_str().map(String::from))
+            })
+        };
+        if let Some(f) = fuente("discover.scope.json") {
+            return (Some(f), true);
+        }
+        (fuente("discover.catalog.json"), false)
+    }
+
+    /// Las bases de `fuente` que eligieron `objeto` (su `only`).
+    pub fn eligen(&self, fuente: &str, objeto: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let Ok(es) = std::fs::read_dir(self.raiz.join("packages")) else {
+            return out;
+        };
+        for e in es.flatten() {
+            let Some(a) = self.leer(&e.path().join("discover.scope.json")) else {
+                continue;
+            };
+            let de_ella = a.get("source").and_then(|(_, v)| v.as_str()) == Some(fuente);
+            let la_elige = a
+                .get("only")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .any(|x| x.as_str() == Some(objeto));
+            if de_ella && la_elige {
+                out.push(e.file_name().to_string_lossy().into_owned());
+            }
+        }
+        out
+    }
+}
+
+/// Todo lo que nombra un documento como su entrada —una tabla, un
+/// `ObjectTable`, o lo que nombre su consulta SQL, analizada una sola vez—.
+fn lee<'a>(
+    pkg: &'a Package,
+    d: &'a Loaded,
+    por_nombre: &HashMap<String, &'a Loaded>,
+) -> Vec<&'a Loaded> {
+    if let Some(Fuente::Tabla(qn)) = vistas::fuente(d) {
+        return por_nombre
+            .get(ore_core::normalize::a_corto(&qn).as_ref())
+            .copied()
+            .into_iter()
+            .collect();
+    }
+    if d.kind == Kind::MediaCollection {
+        return objetos_que_lee(pkg, d);
+    }
+    if vistas::es_sql(d) {
+        return ore_core::servir::nombrados(pkg, d)
+            .into_iter()
+            .map(|n| n.doc)
+            .collect();
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -352,6 +630,40 @@ spec:
             "el árbol de prueba no compila: {diags:#?}"
         );
         ore_core::validate::cargar_paquete(d).0
+    }
+
+    /// ⭐ 0046 E5b · **El índice dice lo mismo que las funciones a las que
+    /// sustituye**, documento a documento: la tabla que lee cada uno, las
+    /// fuentes y quién lee cada puntero (`tablas_que_lee` recorrido entero,
+    /// como hacía el bucle de antes).
+    #[test]
+    fn el_indice_dice_lo_mismo() {
+        let d = arbol_nuevo("indice");
+        let pkg = cargar(&d);
+        let idx = Indice::nuevo(&d, &pkg);
+        for x in &pkg.docs {
+            assert_eq!(
+                idx.tabla_que_lee(x).map(|t| &t.path),
+                tabla_que_lee(&pkg, x).map(|t| &t.path),
+                "{}",
+                x.path.display()
+            );
+            if x.kind == Kind::Table {
+                let antes: BTreeSet<String> = pkg
+                    .docs
+                    .iter()
+                    .filter(|y| tablas_que_lee(&pkg, y).iter().any(|t| t.path == x.path))
+                    .filter_map(|y| paquete_de(&d, y))
+                    .collect();
+                let ahora: BTreeSet<String> = idx.lectores(x).map(String::from).collect();
+                assert_eq!(ahora, antes, "{}", x.path.display());
+            }
+        }
+        for p in ["pg", "tienda", "espejo"] {
+            let dir = d.join("packages").join(p);
+            assert_eq!(idx.es_fuente(&dir), es_paquete_de_fuente(&dir), "{p}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -300,7 +300,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) ✅ | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) ✅ en local | `ore source induce` escribe un `ObjectTable` por conjunto y una `Table` con `format` por grupo tabular; la base, su `MediaCollection` **según su clase** (abajo); limpieza de `objects/`; la política IAM en `credenciales.rs`; el esquema de la fuente en ore-serve. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
-| **E5b · ore-serve a escala** | índices por petición en el esquema de una fuente y en `GET /paquetes` (hoy cúbico); después, no reanalizar el árbol en cada petición | el origen de 2.000 tablas por debajo de lo que tarda `ore validate` |
+| **E5b · ore-serve a escala** · 1 ✅ | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
 | **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
 | **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
@@ -453,6 +453,33 @@ tardaba lo mismo—, y es lo siguiente: índices por petición, y después no re
 cada una. Un hallazgo más: el sufijo `_2` de dos objetos que dan el mismo identificador (`Pedidos`
 y `pedidos`) se calcula sobre el catálogo entero, así que si uno sale del origen el otro cambia de
 nombre y las bases que lo leían dejan de resolver. Era así antes; con todo escrito se verá más.
+
+**Lo que E5b·1 midió e hizo.** Cronometrado por tramos (instrumentación temporal) sobre la
+copia de victor con el origen de 2.000 tablas, en release y en caliente: cargar el árbol 1,4 s
+(2.195 documentos), su catálogo 0,3 s, buscar el puntero de cada fila 3,5 s, y **85–91 s un solo
+bucle**: por cada fila, todos los documentos, y en cada uno otra vez lo que lee —en una vista SQL,
+su consulta analizada de nuevo—, ~30 ms por fila. Ya dolía pequeño (una fuente Postgres de 48
+tablas: 2,1 s en ese bucle). `GET /paquetes` lo repetía por fuente y analizaba cada catálogo tres
+veces. Hecho: `punteros::Indice`, el árbol recorrido **una vez por petición** —el paquete de cada
+documento, lo que lee cada uno (su consulta, una vez), los punteros por (paquete, objeto) y por
+(paquete, prefijo, patrón), quién lee cada puntero, y los catálogos y alcances leídos una vez—, y el
+esquema de una fuente, las filas de una base, `GET /paquetes` y el nombre físico de una entidad le
+preguntan a él. Dice lo mismo que antes (`el_indice_dice_lo_mismo`, documento a documento, contra
+las funciones a las que sustituye). Medido después: el origen de 2.000 tablas, esquema **98 →
+1,8 s** y `GET /paquetes` **105 → 1,9 s** (por debajo de los 3,4 s de `ore validate`); victor con
+todos sus punteros 0,40 → 0,17 s, demo 0,60 → 0,21 s. Y una guarda que no depende de la máquina:
+`el_esquema_de_una_fuente_crece_lineal` —100 y 400 tablas con una vista SQL cada una, lo mejor de
+tres; ×4 objetos debe costar menos de ×12—: con el código de antes daba ×46 (160 s) y falla; con el
+índice da ×6–8. **No ×4**: resolver cada nombre de una consulta (`linaje::resolver` →
+`Package::table`, `view`…) sigue siendo una búsqueda lineal en ore-core que construye el nombre
+cualificado de cada documento; con N vistas SQL es N×D. Con 2.000 tablas no se nota (1,8 s), con una
+base de miles de vistas SQL sí. Arreglarlo es un índice por nombre en `Package` —25 constructores en
+tres crates, y también el compilador—: un paso aparte, medido.
+
+**Lo que queda para E5b·2** (medido desde fuera): en victor, con 82 YAML, `/salud` responde en
+0,15 s y `/paquetes` o cualquier esquema en 1,6–1,8 s; cargar ese árbol son ~0,1 s, así que casi
+todo es que ore-serve, en modo forja, **clona el árbol en cada petición**. Crece con el árbol (el de
+2.000 tablas, clonado en local en Windows, 8 s; sin medir en el clúster).
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar
