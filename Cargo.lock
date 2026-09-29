@@ -2181,6 +2181,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-acceso"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-entrada",
+]
+
+[[package]]
 name = "ore-cli"
 version = "0.1.0"
 dependencies = [

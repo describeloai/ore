@@ -524,6 +524,53 @@ pub fn pedir(
     testigo: Option<&str>,
     cuerpo: Option<&Json>,
 ) -> Result<(u16, String), String> {
+    let autorizacion = testigo.map(|t| format!("Bearer {t}"));
+    let cabeceras: Vec<(&str, &str)> = autorizacion
+        .as_deref()
+        .map(|a| vec![("Authorization", a)])
+        .unwrap_or_default();
+    pedir_con(
+        metodo,
+        destino,
+        camino,
+        &cabeceras,
+        cuerpo,
+        Plazos {
+            conectar: std::time::Duration::from_secs(5),
+            responder: std::time::Duration::from_secs(15),
+        },
+    )
+}
+
+/// Los dos plazos de una petición: conectar, y leer y escribir.
+#[derive(Clone, Copy, Debug)]
+pub struct Plazos {
+    pub conectar: std::time::Duration,
+    pub responder: std::time::Duration,
+}
+
+/// Como [`pedir`], con las cabeceras que se den y los plazos que se digan.
+///
+/// ⭐ Entra con 0047 A4: `ore-acceso` pregunta a `ore-iam` con DOS tokens (la
+///   celda en `Authorization`, la persona en `Ore-Sujeto`), pide el suyo al
+///   servidor de metadatos (`Metadata-Flavor: Google`), y no puede esperar 15 s
+///   a quien decide: si no contesta en su plazo, la ruta contesta 503.
+///
+/// ⛔ Una cabecera con salto de línea se niega: sería otra cabecera, o el cuerpo.
+pub fn pedir_con(
+    metodo: &str,
+    destino: &str,
+    camino: &str,
+    cabeceras: &[(&str, &str)],
+    cuerpo: Option<&Json>,
+    plazos: Plazos,
+) -> Result<(u16, String), String> {
+    if cabeceras
+        .iter()
+        .any(|(k, v)| k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']))
+    {
+        return Err("una cabecera con salto de línea no se manda".into());
+    }
     // ⛔ Y un plazo TAMBIÉN para conectar. `TcpStream::connect` no tiene ninguno:
     //   con una máquina apagada (0027 E3 I5, `modelos-e0` TERMINATED) los paquetes
     //   se tiran sin contestar y el SO tarda lo que quiera —medido: `GET /modelos`
@@ -534,7 +581,7 @@ pub fn pedir(
     let mut flujo = None;
     let mut ultimo = String::from("sin direcciones");
     for d in destinos {
-        match TcpStream::connect_timeout(&d, std::time::Duration::from_secs(5)) {
+        match TcpStream::connect_timeout(&d, plazos.conectar) {
             Ok(f) => {
                 flujo = Some(f);
                 break;
@@ -548,9 +595,8 @@ pub fn pedir(
     // ⛔ Un tiempo límite en las dos direcciones. Sin esto, un servicio que
     //   acepta la conexión y no contesta deja al plano de control colgado — y
     //   ése es exactamente el síntoma que una `NetworkPolicy` produce.
-    let plazo = std::time::Duration::from_secs(15);
-    let _ = flujo.set_read_timeout(Some(plazo));
-    let _ = flujo.set_write_timeout(Some(plazo));
+    let _ = flujo.set_read_timeout(Some(plazos.responder));
+    let _ = flujo.set_write_timeout(Some(plazos.responder));
 
     // ⭐ La forma canonica y no la indentada: esto lo lee un programa. Es la
     //   misma que usa el sellado, asi que dos peticiones identicas producen
@@ -558,8 +604,8 @@ pub fn pedir(
     let serializado = cuerpo.map(|c| c.jcs()).unwrap_or_default();
     let mut peticion =
         format!("{metodo} {camino} HTTP/1.1\r\nHost: {destino}\r\nConnection: close\r\n");
-    if let Some(t) = testigo {
-        peticion.push_str(&format!("Authorization: Bearer {t}\r\n"));
+    for (k, v) in cabeceras {
+        peticion.push_str(&format!("{k}: {v}\r\n"));
     }
     if cuerpo.is_some() {
         peticion.push_str("Content-Type: application/json\r\n");

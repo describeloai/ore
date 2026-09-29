@@ -1,0 +1,16 @@
+[package]
+name    = "ore-acceso"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "El puente de un módulo del plano de datos a ore-iam: puede y hizo (0047)"
+
+# ⭐ Sin dependencias nuevas: pregunta con el cliente de `ore-entrada` (HTTP plano,
+#   sólo a servicios del clúster y al servidor de metadatos) y lee con el
+#   analizador de `ore-core`. Lo que cualquier módulo enlaza tiene que costar
+#   poco de enlazar.
+[dependencies]
+ore-core    = { path = "../ore-core" }
+ore-entrada = { path = "../ore-entrada" }
