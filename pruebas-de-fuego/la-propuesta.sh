@@ -62,7 +62,7 @@ PUERTO_FORJA="${PUERTO_FORJA:-8918}"
 PUERTO_DIR="${PUERTO_DIR:-8919}"
 BASE="http://127.0.0.1:$PUERTO"
 TMP="$(mktemp -d)"
-SRV=""; FORJA=""; SRV2=""
+SRV=""; FORJA=""; SRV2=""; SRV3=""; SRV4=""; IAMF=""
 
 falla() {
   echo "✗ $*" >&2
@@ -70,7 +70,7 @@ falla() {
   limpiar; exit 1
 }
 dice()  { echo "  · $*"; }
-limpiar() { for p in $SRV $FORJA $SRV2; do kill "$p" 2>/dev/null; done; sleep 0.3; rm -rf "$TMP"; }
+limpiar() { for p in $SRV $FORJA $SRV2 $SRV3 $SRV4 $IAMF; do kill "$p" 2>/dev/null; done; sleep 0.3; rm -rf "$TMP"; }
 trap limpiar EXIT
 
 buscar() {
@@ -674,6 +674,119 @@ NL=$(num)
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8h · fusionada, main sigue protegida: $(cuerpo)"
 dice "8h · PUT /ramas/main/proteccion: otra rama o valor malo 422 · lo que ya es, 200 sin escribir · proteger una main libre: un commit de la persona · dejarla libre estando protegida: 202, una propuesta con SOLO la politica (ana/libera-main), 409 la segunda vez, la autora no se la fusiona, otra persona la aprueba y fusiona, y main queda libre"
 
+# ── 10 · ⭐⭐ P2 (0047 A5): ore-serve pregunta al puente ──────────────────────
+#
+# Un `ore-iam` de mentira que decide por `Ore-Sujeto` —`persona:admin` tiene las
+# tres potestades de P2; nadie más— y apunta, en orden, lo que le preguntan y lo
+# que le cuentan. Y un `ore-serve` con `--acceso` contra él, sobre la misma forja.
+cat > "$TMP/iam-de-mentira.py" <<'PYCODE'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+LOG = sys.argv[2]
+POT = {"propuesta:fusionar-sin-revision", "rama:proteger", "fuente:crear"}
+n = [0]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        cuerpo = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        sujeto = self.headers.get("Ore-Sujeto")
+        celda = self.headers.get("Authorization")
+        with open(LOG, "a") as f:
+            f.write(json.dumps({"camino": self.path, "sujeto": sujeto, "celda": celda, "cuerpo": cuerpo}) + "\n")
+        if self.path == "/access/v1/evaluation":
+            n[0] += 1
+            ok = sujeto == "persona:admin" and cuerpo["action"]["name"] in POT
+            r = {"decision": ok, "context": {"id": "dec_%d" % n[0], "version": "v", "vale": 0}}
+            if not ok:
+                r["context"]["motivo"] = "no tienes `%s` en esta organización" % cuerpo["action"]["name"]
+            codigo = 200
+        elif self.path == "/access/v1/eventos":
+            r, codigo = {"id": cuerpo.get("id")}, 201
+        else:
+            r, codigo = {"error": "no"}, 404
+        b = json.dumps(r).encode()
+        self.send_response(codigo); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PYCODE
+PUERTO_IAM=$((PUERTO + 20)); PUERTO_P2=$((PUERTO + 21)); PUERTO_P2D=$((PUERTO + 22))
+BASE_P2="http://127.0.0.1:$PUERTO_P2"
+"$PY" "$TMP/iam-de-mentira.py" "$PUERTO_IAM" "$TMP/iam.log" >"$TMP/iam.txt" 2>&1 &
+IAMF=$!
+printf 'token-de-la-celda' > "$TMP/celda.tok"
+FORJA_TOKEN=de-mentira "$SERVE" --forja "$BARE_URL" --forja-api "127.0.0.1:$PUERTO_FORJA" --ore "$ORE" \
+  --bind "127.0.0.1:$PUERTO_P2" --identidad cabecera --no-es-produccion --organizacion demo \
+  --acceso "127.0.0.1:$PUERTO_IAM" --acceso-testigo "$TMP/celda.tok" >"$TMP/arranque-p2.txt" 2>&1 &
+SRV3=$!
+# Y otro con el puente apuntando a nadie: sin quien decida.
+FORJA_TOKEN=de-mentira "$SERVE" --forja "$BARE_URL" --forja-api "127.0.0.1:$PUERTO_FORJA" --ore "$ORE" \
+  --bind "127.0.0.1:$PUERTO_P2D" --identidad cabecera --no-es-produccion --organizacion demo \
+  --acceso "127.0.0.1:1" --acceso-testigo "$TMP/celda.tok" >"$TMP/arranque-p2d.txt" 2>&1 &
+SRV4=$!
+for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE_P2/salud" && curl -s -o /dev/null "http://127.0.0.1:$PUERTO_P2D/salud" && break; sleep 0.25; done
+grep -q "acceso       puente a 127.0.0.1:$PUERTO_IAM" "$TMP/arranque-p2.txt" || falla "10 · el servidor no dijo su puente: $(cat "$TMP/arranque-p2.txt")"
+# Sin identidad, `--acceso` no arranca.
+"$SERVE" --repo "$A" --ore "$ORE" --bind "127.0.0.1:$((PUERTO + 23))" --acceso "127.0.0.1:$PUERTO_IAM" >"$TMP/sin-id.txt" 2>&1 \
+  && falla "10 · --acceso sin identidad arranco"
+grep -q 'necesita identidad' "$TMP/sin-id.txt" || falla "10 · --acceso sin identidad no dijo por que"
+
+ADMIN='authorization: Bearer persona:admin'
+ANA_T='authorization: Bearer persona:ana'
+p2() { # <metodo> <camino> <quien> [cuerpo] [rama]
+  local m=$1 c=$2 q=$3 d=${4:-} r=${5:-}
+  curl -s -o "$TMP/r.json" -w '%{http_code}' -X "$m" -H "$q" -H 'content-type: application/json' \
+    ${r:+-H "x-ore-rama: $r"} ${d:+-d "$d"} "$BASE_P2$c"
+}
+eventos() { "$PY" -c 'import json,sys; print(" ".join(e["cuerpo"]["operacion"]+"/"+e["cuerpo"]["resultado"] for e in map(json.loads, open(sys.argv[1])) if e["camino"].endswith("/eventos")))' "$TMP/iam.log"; }
+
+# ① Proteger `main` es de quien tenga `rama:proteger`: ana no, admin sí; y queda contado.
+politica ''
+[ "$(p2 PUT /ramas/main/proteccion "$ANA_T" '{"protegida":true}')" = "403" ] && tiene "'rama:proteger' in d['error'] and d['decision']" \
+  || falla "10 · ana protegio main sin la potestad: $(cuerpo)"
+[ "$(p2 GET /ramas "$ANA_T")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "10 · el 403 dejo main protegida"
+[ "$(p2 PUT /ramas/main/proteccion "$ADMIN" '{"protegida":true}')" = "200" ] && tiene "d['cambiada'] is True" || falla "10 · admin no pudo proteger: $(cuerpo)"
+[ "$(eventos)" = "rama:proteger/hecho" ] || falla "10 · proteger no quedo contado: $(eventos)"
+"$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; ev=[x for x in e if x["camino"].endswith("/eventos")][0]; assert ev["sujeto"]=="persona:admin" and ev["celda"]=="Bearer token-de-la-celda" and ev["cuerpo"]["decision"].startswith("dec_"), ev' "$TMP/iam.log" \
+  || falla "10 · el evento no lleva los dos tokens y su decision: $(tail -1 "$TMP/iam.log")"
+
+# ② Con `main` protegida, admin fusiona lo suyo sin revisión: la ficha lo dice (una
+#    CONSULTA), la huella se abre ANTES de fusionar y se cierra después, y el merge lo dice.
+[ "$(p2 POST /ramas "$ADMIN" '{"nombre":"p2"}')" = "201" ] || falla "10 · crear la rama: $(cuerpo)"
+curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$ADMIN" -H 'content-type: text/plain' -H 'x-ore-rama: admin/p2' \
+  --data-binary 'de admin' "$BASE_P2/arbol/packages/hr/notas-p2.md" | grep -qE '^20[01]$' || falla "10 · escribir en la rama: $(cuerpo)"
+[ "$(p2 POST /propuestas "$ADMIN" '{"rama":"admin/p2","titulo":"p2"}')" = "201" ] || falla "10 · proponer: $(cuerpo)"
+N2=$(num)
+[ "$(p2 GET /propuestas/$N2 "$ADMIN")" = "200" ] && tiene "d['fusion']['puede'] is True and d['fusion']['conPotestad'] is True" \
+  || falla "10 · la ficha no dice que admin puede con su potestad: $(cuerpo | head -c 400)"
+[ "$(p2 GET /propuestas/$N2 "$ANA_T")" = "200" ] && tiene "d['fusion']['puede'] is False" || falla "10 · la ficha dice que ana puede: $(cuerpo | head -c 300)"
+"$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; c=[x for x in e if x["camino"].endswith("/evaluation") and x["cuerpo"]["context"]["ruta"].startswith("GET /propuestas")]; assert c and all(x["cuerpo"]["context"]["consulta"] is True for x in c), c' "$TMP/iam.log" \
+  || falla "10 · la ficha pregunto sin decir que es una consulta"
+[ "$(p2 POST /propuestas/$N2/fusionar "$ADMIN")" = "200" ] || falla "10 · admin no pudo fusionar lo suyo con main protegida: $(cuerpo)"
+git -C "$BARE" log -1 --format=%B main | grep -q 'con `propuesta:fusionar-sin-revision`' || falla "10 · el merge no dice la potestad: $(git -C "$BARE" log -1 --format=%B main)"
+[ "$(eventos)" = "rama:proteger/hecho propuesta:fusionar-sin-revision/en-curso propuesta:fusionar-sin-revision/hecho" ] \
+  || falla "10 · saltarse la revision no se conto antes y despues: $(eventos)"
+"$PY" -c 'import json,sys; e=[json.loads(l)["cuerpo"] for l in open(sys.argv[1]) if "/eventos" in l]; assert e[2]["abre"]==e[1]["id"], e' "$TMP/iam.log" \
+  || falla "10 · el cierre no apunta al evento que abrio"
+
+# ③ Ana, sin la potestad, con `main` protegida: la regla de siempre (422), y nada contado.
+[ "$(p2 POST /ramas "$ANA_T" '{"nombre":"p2b"}')" = "201" ] || falla "10 · crear la rama de ana: $(cuerpo)"
+curl -s -o "$TMP/r.json" -X PUT -H "$ANA_T" -H 'content-type: text/plain' -H 'x-ore-rama: ana/p2b' \
+  --data-binary 'de ana' "$BASE_P2/arbol/packages/hr/notas-p2b.md" >/dev/null
+[ "$(p2 POST /propuestas "$ANA_T" '{"rama":"ana/p2b","titulo":"p2b"}')" = "201" ] || falla "10 · proponer ana: $(cuerpo)"
+N3=$(num)
+[ "$(p2 POST /propuestas/$N3/fusionar "$ANA_T")" = "422" ] && cuerpo | grep -q 'protegida' || falla "10 · ana se fusiono lo suyo sin la potestad: $(cuerpo)"
+# ④ ⛔ Sin quien decida, 503: ni la regla ni el salto. Y nada se fusiona.
+[ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$ADMIN" "http://127.0.0.1:$PUERTO_P2D/propuestas/$N3/fusionar")" = "503" ] \
+  || falla "10 · sin quien decida no dio 503: $(cuerpo)"
+[ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$ADMIN" -H 'content-type: application/json' -d '{"protegida":false}' "http://127.0.0.1:$PUERTO_P2D/ramas/main/proteccion")" = "503" ] \
+  || falla "10 · proteger sin quien decida no dio 503: $(cuerpo)"
+# ⑤ Dar de alta una fuente es de `fuente:crear`: ana, 403 y nada escrito.
+[ "$(p2 POST /fuentes "$ANA_T" '{"name":"ventas_p2","url":"bigquery://proyecto/ventas"}')" = "403" ] && cuerpo | grep -q 'fuente:crear' \
+  || falla "10 · ana dio de alta una fuente sin la potestad: $(cuerpo)"
+[ "$(p2 GET /fuentes "$ANA_T")" = "200" ] && ! cuerpo | grep -q ventas_p2 || falla "10 · el 403 dejo la fuente escrita"
+kill "$SRV3" "$SRV4" "$IAMF" 2>/dev/null
+dice "10 · P2 por el puente: proteger es de rama:proteger (ana 403 y nada escrito; admin sí, y contado con los dos tokens y su decision) · con main protegida admin fusiona lo suyo: la ficha lo dice con una CONSULTA, la huella se abre antes y se cierra despues, el merge lo dice · ana, la regla de siempre · sin quien decida, 503 · dar de alta una fuente es de fuente:crear"
+
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
 "$SERVE" --repo "$TMP/dir" --ore "$ORE" --bind "127.0.0.1:$PUERTO_DIR" --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque2.txt" 2>&1 &
@@ -684,4 +797,4 @@ for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PUERTO_DIR/salu
 [ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$ANA" "http://127.0.0.1:$PUERTO_DIR/arbol")" = "200" ] || falla "9 · sin cabecera el arbol sigue: $(cuerpo | head -c 200)"
 dice "9 · sin API de la forja: /ramas 422 · X-Ore-Rama 422 · el arbol sin cabecera, como siempre"
 
-echo "✓ la propuesta (0030 W2): 1–9 · dos personas, dos ramas, una revision"
+echo "✓ la propuesta (0030 W2): 1–10 · dos personas, dos ramas, una revision, y P2 por el puente"

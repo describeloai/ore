@@ -126,6 +126,10 @@ pub struct Servidor {
     /// En qué se diferencia una rama de la de por defecto (ramas globales,
     /// fase 2), por las dos cabezas: `GET /ramas/{r}/cambios` de memoria.
     pub cambios_cache: crate::assets::Cache,
+    /// ⭐ El puente a `ore-iam` (0047 A5). Sin él, P2 no existe y todo sigue como
+    ///   era: quien tiene sesión da de alta fuentes, protege `main` y fusiona según
+    ///   la política.
+    pub acceso: Option<std::sync::Arc<ore_acceso::Acceso>>,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -287,6 +291,12 @@ impl Servidor {
                 if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Dar de alta una fuente") {
                     return r;
                 }
+                // ⭐ P2 (0047 A5): una conexión se gobierna con potestad, no con
+                //   revisión (0044 B.7). Sin puente, lo de siempre.
+                let decision = match self.exigir(sujeto, "fuente:crear", "POST /fuentes") {
+                    Ok(d) => d,
+                    Err(r) => return r,
+                };
                 let cuerpo = p.cuerpo.clone();
                 // ⛔ EL TESTIGO DE QUIEN PIDIO, y no uno nuestro. El custodio
                 //   decide con `concesion_viva` si esa persona puede emitir, y
@@ -298,9 +308,26 @@ impl Servidor {
                     .get("authorization")
                     .and_then(|v| v.strip_prefix("Bearer "))
                     .map(str::to_string);
-                self.escribiendo(sujeto, "alta de una fuente", |r| {
+                let r = self.escribiendo(sujeto, "alta de una fuente", |r| {
                     self.alta_de_fuente(r, &cuerpo, testigo.as_deref(), sujeto)
-                })
+                });
+                if r.codigo == 201 {
+                    let nombre = match &r.cuerpo {
+                        Json::Obj(m) => match m.get("name") {
+                            Some(Json::Str(n)) => n.clone(),
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    self.contar(crate::acceso::evento(
+                        "fuente:crear",
+                        &format!("fuente/{nombre}"),
+                        "hecho",
+                        decision,
+                        crate::acceso::commit_de(&r),
+                    ));
+                }
+                r
             }
             // ⭐⭐ EN QUE ESTADO ESTA UNA FUENTE, que son TRES y no dos.
             //
@@ -561,7 +588,26 @@ impl Servidor {
             ("POST", ["ramas"]) => self.crear_rama(sujeto, &p.cuerpo),
             // P1.4 · la política de `main`: protegerla, o proponer dejarla libre.
             ("PUT", ["ramas", resto @ .., "proteccion"]) if !resto.is_empty() => {
-                self.proteger(sujeto, &resto.join("/"), &p.cuerpo)
+                // ⭐ P2 (0047 A5): cambiar la política es de quien tenga
+                //   `rama:proteger` (0044 B.7), en las dos direcciones.
+                let rama = resto.join("/");
+                let decision =
+                    match self.exigir(sujeto, "rama:proteger", "PUT /ramas/{r}/proteccion") {
+                        Ok(d) => d,
+                        Err(r) => return r,
+                    };
+                let r = self.proteger(sujeto, &rama, &p.cuerpo);
+                let cambiada = !matches!(&r.cuerpo, Json::Obj(m) if matches!(m.get("cambiada"), Some(Json::Bool(false))));
+                if r.codigo < 300 && cambiada {
+                    self.contar(crate::acceso::evento(
+                        "rama:proteger",
+                        &format!("rama/{rama}"),
+                        "hecho",
+                        decision,
+                        crate::acceso::commit_de(&r),
+                    ));
+                }
+                r
             }
             ("DELETE", ["ramas", nombre @ ..]) => self.retirar_rama(&nombre.join("/")),
             // ⭐ Traer OTRA rama a ésta (el «Merge» del menú): git merge en un clon de

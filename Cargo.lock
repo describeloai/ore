@@ -2362,6 +2362,7 @@ dependencies = [
 name = "ore-serve"
 version = "0.1.0"
 dependencies = [
+ "ore-acceso",
  "ore-core",
  "ore-entrada",
 ]

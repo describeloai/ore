@@ -148,7 +148,7 @@ fn clase(s: &Servidor, p: &Peticion) -> &'static str {
 /// es nadie pidiendo nada. En un flujo, el tiempo es lo que tardó en abrirse.
 pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
     let t = Instant::now();
-    let salida = s.atender_flujo(p);
+    let salida = crate::acceso::con_testigo(p, || s.atender_flujo(p));
     if p.ruta.trim_matches('/') != "salud" {
         let codigo = match &salida {
             Salida::Una(r) => r.codigo,

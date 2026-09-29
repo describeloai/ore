@@ -421,7 +421,9 @@ s = cat["porRol"]["SECURITYADMIN"]
 #   secreto. Si algun dia apareciera aqui una potestad que diera acceso a
 #   valores, esta linea se pone roja — y es la unica guarda automatica que tiene
 #   esa asimetria.
-assert sorted(s["anade"]) == ["actividad:leer-toda", "secreto:emitir", "secreto:listar", "secreto:retirar"], "SECURITYADMIN trae %r" % s["anade"]
+# ✏️ 2026-09-29 · la `045` (0047 A5) le da `fuente:crear`: los tres roles que
+#   emiten secretos, porque el alta de un origen con credencial ya exigía emitir.
+assert sorted(s["anade"]) == ["actividad:leer-toda", "fuente:crear", "secreto:emitir", "secreto:listar", "secreto:retirar"], "SECURITYADMIN trae %r" % s["anade"]
 assert not [p for p in s["anade"] if p.startswith("secreto") and "leer" in p], "⛔ SECURITYADMIN NO puede tener una potestad de LEER secretos: leer es una concesion"
 # ⭐ Desde la 037 el catalogo dice la verdad: emitir se ejerce desde el alta
 #   de fuentes (0022) y listar desde el cofre; retirar nace ejercida.
@@ -823,6 +825,16 @@ HN1=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'acce
 [ "$((HN1 - HN0))" = "2" ] || falla "15 · las dos denegaciones no dejaron su huella ($HN0 → $HN1)"
 [ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='acceso:negado' and quien='persona:zoe' and organizacion='$ORG' and celda is not null")" = "1" ] \
   || falla "15 · la huella de la denegacion no lleva organizacion y celda"
+# ⑤b Una CONSULTA (A5): contesta igual, y ni la denegación va a la huella ni el
+#    permiso a iam.decision — nadie intentó nada.
+HC0=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'acceso:negado'")
+DC0=$(psql "$URL" -qtAc "select count(*) from iam.decision")
+[ "$(puente "$CA" "$ZOE" evaluation '{"subject":{"type":"persona","id":"persona:zoe"},"action":{"name":"invitacion:emitir"},"resource":{"type":"organizacion","id":"-"},"context":{"consulta":true}}')" = "200" ] \
+  && [ "$(campo decision)" = "False" ] || falla "15 · la consulta no contesto como una pregunta: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$ADA" evaluation '{"subject":{"type":"persona","id":"persona:ada"},"action":{"name":"invitacion:emitir"},"resource":{"type":"organizacion","id":"-"},"context":{"consulta":true}}')" = "200" ] \
+  && [ "$(campo decision)" = "True" ] || falla "15 · la consulta de ada no permitio"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'acceso:negado'")" = "$HC0" ] || falla "15 · una consulta denegada dejo huella"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.decision")" = "$DC0" ] || falla "15 · una consulta permitida se guardo como decision"
 # ⑤ Lo que no se decide así.
 [ "$(puente "$CA" "$ADA" evaluation "$(pregunta persona:ada nada:inventada)")" = "200" ] && [ "$(campo decision)" = "False" ] \
   && grep -q 'desconocida' "$TMP/r.json" || falla "15 · una potestad desconocida no nego con su motivo: $(cat "$TMP/r.json")"

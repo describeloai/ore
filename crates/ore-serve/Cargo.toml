@@ -18,3 +18,5 @@ ore-core = { path = "../ore-core" }
 # de que es un sujeto, o sacarla. Copiarla es tener dos descripciones del mismo
 # contrato, y **la que se quede vieja no dara error: dara permiso.**
 ore-entrada = { path = "../ore-entrada" }
+# El puente a `ore-iam` (0047 A4-A5): `puede` y `hizo`, con `--acceso`.
+ore-acceso = { path = "../ore-acceso" }

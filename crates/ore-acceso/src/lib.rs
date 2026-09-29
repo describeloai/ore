@@ -318,9 +318,35 @@ impl Acceso {
         recurso: Recurso,
         ruta: &str,
     ) -> Decision {
+        self.preguntar(sujeto_token, sujeto_id, accion, recurso, ruta, false)
+    }
+
+    /// «¿Podría?»: lo mismo que [`Acceso::puede`], para que una pantalla sepa qué
+    /// enseñar. Una denegación no va a la huella —nadie intentó nada— y un permiso
+    /// no deja pasar ningún acto (su `id` no vale para `hizo`).
+    pub fn podria(
+        &self,
+        sujeto_token: &str,
+        sujeto_id: &str,
+        accion: &str,
+        recurso: Recurso,
+        ruta: &str,
+    ) -> Decision {
+        self.preguntar(sujeto_token, sujeto_id, accion, recurso, ruta, true)
+    }
+
+    fn preguntar(
+        &self,
+        sujeto_token: &str,
+        sujeto_id: &str,
+        accion: &str,
+        recurso: Recurso,
+        ruta: &str,
+        consulta: bool,
+    ) -> Decision {
         let clave: Clave = (
             sujeto_id.to_string(),
-            accion.to_string(),
+            format!("{accion}{}", if consulta { "?" } else { "" }),
             recurso.tipo.to_string(),
             recurso.id.to_string(),
         );
@@ -340,7 +366,10 @@ impl Acceso {
                 "resource",
                 Json::obj([("type", Json::s(recurso.tipo)), ("id", Json::s(recurso.id))]),
             ),
-            ("context", Json::obj([("ruta", Json::s(ruta))])),
+            (
+                "context",
+                Json::obj([("ruta", Json::s(ruta)), ("consulta", Json::Bool(consulta))]),
+            ),
         ]);
         let (codigo, texto) = match self.pedir("/access/v1/evaluation", Some(sujeto_token), &cuerpo)
         {

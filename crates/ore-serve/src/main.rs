@@ -38,6 +38,7 @@
 //! Los dos son la misma frase que el resto del proyecto: *omitir no deja nada
 //! abierto, lo CIERRA*.
 
+mod acceso;
 mod arbol;
 mod assets;
 mod cambios;
@@ -108,6 +109,13 @@ ore-serve — el plano de control de ORE
                          celda (0027 ⑥): la ficha es una fila
   --modelos-url URL      la puerta que una Function llama (por defecto,
                          `http://HOST:8000/v1` del `--modelos`)
+  --acceso HOST:PUERTO   el puente a `ore-iam` (0047 A5, P2): dar de alta una
+                         fuente, proteger `main` y fusionar sin revision pasan
+                         a pedir su potestad, y lo hecho va a la huella. Sin
+                         esto, lo de siempre
+  --acceso-testigo FICHERO  el token con el que la celda se presenta, de un
+                         fichero (el banco); sin esto, el de Workload Identity
+                         del servidor de metadatos
   --perfiles FICHERO     la lista de certificacion, de un fichero en vez de
                          la cola (`perfiles.json`): el banco de pruebas
   -h, --help             esto
@@ -150,6 +158,9 @@ struct Opciones {
     perfiles: Option<PathBuf>,
     /// `--forja-api host:puerto`: la API de la forja aparte de la URL del árbol (0030 W2).
     forja_api: Option<String>,
+    /// `--acceso host:puerto`: el puente a `ore-iam` (0047 A5).
+    acceso: Option<String>,
+    acceso_testigo: Option<PathBuf>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -172,6 +183,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         modelos_url: None,
         perfiles: None,
         forja_api: None,
+        acceso: None,
+        acceso_testigo: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -197,6 +210,10 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--jwks" => o.jwks = Some(PathBuf::from(valor("--jwks")?)),
             "--cofre" => o.cofre = Some(valor("--cofre")?),
             "--organizacion" => o.organizacion = Some(valor("--organizacion")?),
+            "--acceso" => o.acceso = Some(valor("--acceso")?),
+            "--acceso-testigo" => {
+                o.acceso_testigo = Some(PathBuf::from(valor("--acceso-testigo")?))
+            }
             "--cuenta-driver" => o.cuenta_driver = Some(valor("--cuenta-driver")?),
             "--modelos" => o.modelos = Some(valor("--modelos")?),
             "--modelos-url" => o.modelos_url = Some(valor("--modelos-url")?),
@@ -287,6 +304,56 @@ fn main() -> ExitCode {
     );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
     eprintln!("  identidad    {dicho}");
+    // ⭐ El puente (0047 A5). Con identidad y nada más: sin sujeto no hay a quién
+    //   preguntar por nadie.
+    let acceso = match (&o.acceso, con_identidad) {
+        (None, _) => {
+            eprintln!(
+                "  acceso       sin puente (`--acceso`): fuentes, proteccion y fusion, como siempre"
+            );
+            None
+        }
+        (Some(_), false) => {
+            eprintln!(
+                "✗ `--acceso` necesita identidad: sin sujeto no hay a quien preguntar por nadie"
+            );
+            return ExitCode::from(64);
+        }
+        (Some(destino), true) => {
+            let credencial: Box<dyn ore_acceso::Credencial> = match &o.acceso_testigo {
+                Some(f) => match std::fs::read_to_string(f) {
+                    Ok(t) => Box::new(ore_acceso::Fija(t.trim().to_string())),
+                    Err(e) => {
+                        eprintln!("✗ no se pudo leer `{}`: {e}", f.display());
+                        return ExitCode::from(66);
+                    }
+                },
+                None => Box::new(ore_acceso::Metadatos::nuevo("ore-iam")),
+            };
+            let pendientes = std::env::temp_dir().join("ore-acceso-pendientes");
+            eprintln!(
+                "  acceso       puente a {destino} · lo que no llegue espera en `{}`",
+                pendientes.display()
+            );
+            let a = std::sync::Arc::new(
+                ore_acceso::Acceso::nuevo(destino, credencial).con_pendientes(pendientes),
+            );
+            // Lo que no llegó a la huella se reintenta cada minuto.
+            let r = std::sync::Arc::clone(&a);
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    let (enviados, siguen) = r.reintentar();
+                    if enviados + siguen > 0 {
+                        eprintln!(
+                            "acceso · reintento: {enviados} a la huella, {siguen} siguen esperando"
+                        );
+                    }
+                }
+            });
+            Some(a)
+        }
+    };
     eprintln!();
     for (metodo, ruta, montada) in rutas::mapa(con_identidad) {
         eprintln!(
@@ -361,6 +428,7 @@ fn main() -> ExitCode {
         puestos: std::sync::Arc::new(puestos::Puestos::default()),
         assets_cache: assets::Cache::default(),
         cambios_cache: assets::Cache::default(),
+        acceso,
     };
 
     match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {

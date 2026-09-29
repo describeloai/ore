@@ -55,6 +55,11 @@ struct Pregunta {
     recurso_tipo: String,
     recurso_id: String,
     ruta: String,
+    /// ⭐ `context.consulta: true` (0047 A5): «¿podría?», para que una pantalla
+    ///   sepa qué botón enseñar. Se contesta igual, pero una denegación NO va a la
+    ///   huella —nadie intentó nada— y un permiso no se guarda como decisión: no
+    ///   deja pasar ningún acto.
+    consulta: bool,
 }
 
 impl Servidor {
@@ -243,7 +248,7 @@ impl Servidor {
         let (decision, motivo) = self.motivo(tx, celda, sujeto, q)?;
         let id = nuevo_id("dec");
         let version = version_de(tx, &celda.organizacion)?;
-        if decision {
+        if decision && !q.consulta {
             tx.ejecutar(
                 "insert into iam.decision (id, quien, agente, organizacion, celda, accion, recurso_tipo, recurso_id, decision)
                  values ($1, $2, $3, $4, $5, $6, $7, $8, true)",
@@ -262,7 +267,7 @@ impl Servidor {
                 &format!("delete from iam.decision where cuando < now() - interval '{RETENCION}'"),
                 &[],
             )?;
-        } else {
+        } else if !decision && !q.consulta {
             tx.anotar_por(
                 &sujeto.persona,
                 sujeto.agente.as_deref(),
@@ -295,7 +300,7 @@ impl Servidor {
                 ("decision", Json::Bool(decision)),
                 ("context", Json::obj(ctx)),
             ]),
-            !decision,
+            !decision && !q.consulta,
         ))
     }
 
@@ -517,6 +522,7 @@ fn pregunta_de(n: &Node, arriba: Option<&Node>) -> Result<Pregunta, String> {
         recurso_tipo: de("resource", "type").ok_or("falta `resource.type`")?,
         recurso_id: de("resource", "id").ok_or("falta `resource.id`")?,
         ruta: de("context", "ruta").unwrap_or_default(),
+        consulta: de("context", "consulta").as_deref() == Some("true"),
     })
 }
 

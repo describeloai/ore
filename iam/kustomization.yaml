@@ -86,6 +86,7 @@ configMapGenerator:
       - migraciones/042-sin-login-compartido.sql
       - migraciones/043-el-nombre-lo-ocupa-el-vivo.sql
       - migraciones/044-el-puente.sql
+      - migraciones/045-las-potestades-del-arbol.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

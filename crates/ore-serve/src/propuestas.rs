@@ -27,6 +27,7 @@
 //! - `404` la rama o la propuesta no está;
 //! - lo demás, lo que la forja dijo, con su código.
 
+use crate::acceso::Salto;
 use crate::forja::{Api, Fallo, booleano, campo, hijo, numero};
 use crate::rutas::{Arbol, Servidor};
 use ore_core::json::Json;
@@ -157,6 +158,74 @@ fn quien_fusiona(
         ));
     }
     Ok(())
+}
+
+/// El mensaje del merge cuando se salta la revisión con la potestad: queda dicho.
+fn con_potestad(mensaje: String, salto: bool) -> String {
+    if salto {
+        format!(
+            "{mensaje} (sin la revisión de otra persona, con `propuesta:fusionar-sin-revision`)"
+        )
+    } else {
+        mensaje
+    }
+}
+
+impl Servidor {
+    /// ¿Puede fusionar? La política dice (`quien_fusiona`); y si no, con puente,
+    /// la potestad de saltársela (0044 B.7). `Ok(Some(decision))` si se la salta.
+    fn autoriza_fusion(
+        &self,
+        sujeto: &Identidad,
+        n: u64,
+        protegida: bool,
+        autor: &str,
+        aprobada_por: &[String],
+    ) -> Result<Option<String>, Respuesta> {
+        match quien_fusiona(protegida, autor, &sujeto.persona, aprobada_por) {
+            Ok(()) => Ok(None),
+            Err(m) => {
+                match self.saltarse_la_revision(sujeto, &format!("POST /propuestas/{n}/fusionar")) {
+                    Salto::Si(d) => Ok(Some(d)),
+                    Salto::No => Err(Respuesta::error(422, m)),
+                    Salto::SinRespuesta(r) => Err(r),
+                }
+            }
+        }
+    }
+
+    /// ⛔ Saltarse la revisión se anota ANTES de fusionar (H15): si no se puede
+    ///   anotar, 503 y no se fusiona. Devuelve el `id` del evento que se abre.
+    fn antes_de_saltarse(&self, n: u64, salto: Option<&str>) -> Result<Option<String>, Respuesta> {
+        let Some(d) = salto else {
+            return Ok(None);
+        };
+        let e = crate::acceso::evento(
+            "propuesta:fusionar-sin-revision",
+            &format!("propuesta/{n}"),
+            "en-curso",
+            Some(d.to_string()),
+            None,
+        );
+        self.contar_antes(&e)?;
+        Ok(Some(e.id))
+    }
+
+    /// Y se cierra con lo que pasó, apuntando al que se abrió.
+    fn despues_de_saltarse(&self, n: u64, abre: Option<String>, salto: Option<String>, bien: bool) {
+        let Some(abre) = abre else {
+            return;
+        };
+        let mut e = crate::acceso::evento(
+            "propuesta:fusionar-sin-revision",
+            &format!("propuesta/{n}"),
+            if bien { "hecho" } else { "fallido" },
+            salto,
+            None,
+        );
+        e.abre = Some(abre);
+        self.contar(e);
+    }
 }
 
 /// El mensaje del commit de merge: quién propuso, quién revisó —o que nadie— y
@@ -1447,6 +1516,7 @@ impl Servidor {
                 Json::Arr(faltan.iter().map(Json::s).collect()),
             );
         }
+        let mut con_potestad_ficha = false;
         let fusion = if estado_de(&pr) != "abierta" {
             Err(format!("la propuesta está {}", estado_de(&pr)))
         } else {
@@ -1458,21 +1528,43 @@ impl Servidor {
                 .filter_map(|r| campo(r, "por"))
                 .filter(|p| *p != autor)
                 .collect();
-            self.politica_de_main(&base)
-                .map_err(|e| format!("no se pudo leer la política de `{base}`: {e}"))
-                .and_then(|p| {
-                    quien_fusiona(p.protegida, &autor, &sujeto.persona, &aprobada_por)
-                        .map(|()| aprobada_por.is_empty())
-                })
+            match self.politica_de_main(&base) {
+                Err(e) => Err(format!("no se pudo leer la política de `{base}`: {e}")),
+                Ok(p) => match quien_fusiona(p.protegida, &autor, &sujeto.persona, &aprobada_por) {
+                    Ok(()) => Ok(aprobada_por.is_empty()),
+                    // ⭐ P2 (0047 A5): ¿podría saltársela? Una CONSULTA: si no,
+                    //   no deja huella —mirar una propuesta no es intentar nada—.
+                    Err(m) => match self
+                        .podria_saltarse_la_revision(sujeto, &format!("GET /propuestas/{n}"))
+                    {
+                        Salto::Si(_) => {
+                            con_potestad_ficha = true;
+                            Ok(true)
+                        }
+                        Salto::No => Err(m),
+                        Salto::SinRespuesta(_) => Err(format!(
+                            "{m}; y no hay quien decida si puedes saltártela: se reintenta"
+                        )),
+                    },
+                },
+            }
         };
         if let Json::Obj(m) = &mut ficha {
             m.insert(
                 "fusion".into(),
                 match fusion {
-                    Ok(sin_revision) => Json::obj([
-                        ("puede", Json::Bool(true)),
-                        ("sinRevision", Json::Bool(sin_revision)),
-                    ]),
+                    Ok(sin_revision) => {
+                        let mut f = vec![
+                            ("puede", Json::Bool(true)),
+                            ("sinRevision", Json::Bool(sin_revision)),
+                        ];
+                        // Y si es por su potestad, se dice —sólo entonces: lo de
+                        // siempre sigue diciendo lo de siempre—. La consola lo enseña.
+                        if con_potestad_ficha {
+                            f.push(("conPotestad", Json::Bool(true)));
+                        }
+                        Json::obj(f)
+                    }
                     Err(porque) => {
                         Json::obj([("puede", Json::Bool(false)), ("porque", Json::s(porque))])
                     }
@@ -1617,9 +1709,10 @@ impl Servidor {
             .filter_map(|r| campo(&r, "por"))
             .filter(|p| *p != autor)
             .collect();
-        if let Err(m) = quien_fusiona(protegida, &autor, &sujeto.persona, &aprobada_por) {
-            return Respuesta::error(422, m);
-        }
+        let salto = match self.autoriza_fusion(sujeto, n, protegida, &autor, &aprobada_por) {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
         if !booleano(&pr, "mergeable").unwrap_or(true) {
             return Respuesta::error(
                 409,
@@ -1649,15 +1742,24 @@ impl Servidor {
                 ]),
             };
         }
-        let mensaje = mensaje_de_fusion(
-            n,
-            &autor,
-            "",
-            &aprobada_por,
-            &sujeto.persona,
-            &campo(&pr, "title").unwrap_or_default(),
+        let mensaje = con_potestad(
+            mensaje_de_fusion(
+                n,
+                &autor,
+                "",
+                &aprobada_por,
+                &sujeto.persona,
+                &campo(&pr, "title").unwrap_or_default(),
+            ),
+            salto.is_some(),
         );
-        match api.fusionar(n, &mensaje) {
+        let abre = match self.antes_de_saltarse(n, salto.as_deref()) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let hecho = api.fusionar(n, &mensaje);
+        self.despues_de_saltarse(n, abre, salto.clone(), hecho.is_ok());
+        match hecho {
             Ok(()) => Respuesta::ok(Json::obj([
                 ("numero", Json::Int(n as i64)),
                 ("fusionada", Json::Bool(true)),
@@ -1743,9 +1845,10 @@ impl Servidor {
             .filter_map(|r| campo(&r, "por"))
             .filter(|p| *p != autor)
             .collect();
-        if let Err(m) = quien_fusiona(protegida, &autor, &sujeto.persona, &aprobada_por) {
-            return Respuesta::error(422, m);
-        }
+        let salto = match self.autoriza_fusion(sujeto, n, protegida, &autor, &aprobada_por) {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
         match self.diagnosticos_de(nueva.clon.ruta()) {
             Ok(ds) if !ds.is_empty() => {
                 let faltan = self.faltan(&rama, &ds, &lleva);
@@ -1772,15 +1875,24 @@ impl Servidor {
         if let Err(e) = forja.empujar_a(nueva.clon.ruta(), &derivada) {
             return de_git(e);
         }
-        let mensaje = mensaje_de_fusion(
-            n,
-            &autor,
-            &format!(" ({alcance} de {rama})"),
-            &aprobada_por,
-            &sujeto.persona,
-            &titulo,
+        let mensaje = con_potestad(
+            mensaje_de_fusion(
+                n,
+                &autor,
+                &format!(" ({alcance} de {rama})"),
+                &aprobada_por,
+                &sujeto.persona,
+                &titulo,
+            ),
+            salto.is_some(),
         );
-        if let Err(e) = api.fusionar(n, &mensaje) {
+        let abre = match self.antes_de_saltarse(n, salto.as_deref()) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let hecho = api.fusionar(n, &mensaje);
+        self.despues_de_saltarse(n, abre, salto.clone(), hecho.is_ok());
+        if let Err(e) = hecho {
             return de_la_forja(e);
         }
         let al_dia = self.poner_al_dia(sujeto, &rama, &base);
