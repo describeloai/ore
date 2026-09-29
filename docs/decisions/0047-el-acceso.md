@@ -852,8 +852,8 @@ medida haya hablado; si la medida tumba la hipótesis, el paso se reescribe aqu�
 | **A6** | **La actividad**: `ore-serve` emite `hizo` en todo lo que escribe y en las denegaciones, apuntando al commit cuando lo hay; `ore-iam` la sirve por organización (`actividad:leer-toda`); la consola la enseña | A4, M1 | «qué ha pasado en mi organización», de verdad **Medido el 2026-09-29** (§ «A6, medido»): cinco pasos, A6.1–A6.5. **A6.1 y A6.2 hechos en código el 2026-09-29:** `Tx::en` y `Tx::en_celda` (la celda por id o por nombre, resuelta al anotar); los 15 actos de `ore-iam` y los 4 del custodio con su organización; `GET /organizaciones/{o}/actividad` (`actividad.rs`) con `alcance`, `desde`, cursor, `clase` y `celda`. `los-verbos.sh` 16 y `el-cofre.sh` 13. **A6.3 y A6.4 hechos en código el 2026-09-29:** `ore-serve/src/actividad.rs`, la tabla `ESCRITURAS` (método, patrón con `{}` y `**`, operación o datos) y la prueba `toda_ruta_que_escribe_se_declara`, que lee los brazos de `rutas.rs`, `catalogo.rs` y `documentos.rs`; `recuento::atendiendo` echa el evento al `Buzon` de `ore-acceso` (un hilo; el token sólo en memoria, 240 s; luego a disco si hay decisión o a `muertos/` sin token; un 4xx, a `muertos/` en el acto). ✏️ **Cuenta como `negado` el 423 y el 403 que dice el módulo, no el 409**: un 409 es casi siempre «ya existe», no una denegación. `la-propuesta.sh` 10 ⑥ y 4 pruebas del buzón |
 | **A7a** | **Un papel de base por celda** (o seguridad por fila por organización en `iam` y `cofre`): el custodio de un inquilino deja de ver a los demás. No espera al puente | M4 | el cruce entre inquilinos, cerrado |
 | **A7b** | **El custodio pasa por el puente** (`puede` con recurso para `resolver`, `hizo` antes de contestar, y una ruta de `ore-iam` para las concesiones) y su papel pierde el `select` sobre el censo | A4, M4 | «lo que hay» 5, cerrado del todo |
-| **A8** | **Leer datos pregunta, y Cedar** cuando una pregunta necesite el recurso: `puede` antes de prestar la credencial (`loadTable`, `loadView`, ejecutar una vista, los datos del puesto, M7); dueños por paquete (aprobaciones por dueño); objetos (0046) | M1, M7 y el primer consumidor que lo pida | la promesa de 0031 y el hueco de 0007, cerrados |
-| **A9** | **El token por celda** (Keycloak 26.2, intercambio estándar) | M5 | «lo que hay» 2, cerrado |
+| **A8** | ✏️ **En espera por decisión de producto (2026-09-29)**: quién lee y quién escribe qué tiene que poder gestionarlo el cliente desde la consola, sobre superficies que aún no existen. **Leer datos pregunta, y Cedar** cuando una pregunta necesite el recurso: `puede` antes de prestar la credencial (`loadTable`, `loadView`, ejecutar una vista, los datos del puesto, M7); dueños por paquete (aprobaciones por dueño); objetos (0046) | M1, M7 y el primer consumidor que lo pida | la promesa de 0031 y el hueco de 0007, cerrados |
+| **A9** | **El token por celda** (Keycloak 26.2, intercambio estándar). ✏️ **Aplazado el 2026-09-29, y en su lugar A9′** (§ «A9′, medido»): la celda comprueba pertenencia por el puente, sin tocar Keycloak | M5 | «lo que hay» 2, cerrado |
 
 ### A2, medido (2026-09-29)
 
@@ -967,6 +967,59 @@ la consola al final. **No hay flag ni malla nueva**: `ore-serve` ya habla con `o
   organización lo enciende);
 - quitar la regla de `008` del sondeo de la consola en `ore-iam`: se filtra al servir, no al
   escribir. Dejar de escribirlo es otra decisión, con su medida.
+
+### A9′, medido (2026-09-29): la celda comprueba pertenencia, en vez del token por celda
+
+**Por qué cambia A9.** Midiendo lo que costaría subir Keycloak a 26.2 (M5) salió un hueco más
+grave que el que A9 cerraba, y que A9 no cerraba:
+
+1. **El registro está abierto en `rubix`**, a propósito (`gen-realm.py`, `REGISTRO_EN_PRODUCCION`):
+   el formulario de alta sale a cualquiera (medido con una petición de lectura, sin crear cuenta).
+2. **Toda cuenta del realm recibe un token con audiencia `ore-serve`.** La consola
+   (`rubix-consola`) es un cliente público con PKCE.
+3. **Las celdas se alcanzan desde internet.** `victor.ore.paladio.io` y `demo.ore.paladio.io`
+   contestan `/salud` 200 y `/ramas` 401 sin token.
+4. **`ore-serve` no comprueba pertenencia.** `oidc.rs` verifica emisor, audiencia y reloj, y nada
+   más; `--organizacion` no se contrasta con quien llega.
+
+⇒ Una cuenta de cualquier organización, o recién registrada, entraría en la celda de otra. No se
+ha probado de punta a punta: exigía crear una cuenta en producción. Un token por celda
+(RFC 8693) no lo arreglaría si el intercambio no mira la pertenencia, y la pertenencia la sabe
+`ore-iam` (`iam.pertenencia`), no Keycloak. **No hace falta subir Keycloak.**
+
+**Quién llama a `ore-serve`** (la línea de `recuento`, en `t-victor`, desde el último arranque):
+- 172 `persona`, 35 `agente` y 1 `sin`;
+- los agentes son el puesto (`/puestos/{}/pendiente`, `/lsp/agente`), los Jobs
+  (`/paquetes/{}/copia/rehacer`) y las colecciones;
+- ningún `delegado` ni `aprovisionador`.
+
+**Cómo se reconoce cada clase:**
+- **Una persona** es `(emisor, sub)` en `iam.pertenencia` de la organización de la celda.
+- **Un agente** sale de `ore-agente-<celda>`, el cliente de cada celda, con `rubix_tipo=agente` y
+  `rubix_celda=<celda>`. Está en `iam.agente` como `(emisor, sub, organizacion)`.
+  - Las tres celdas usan el suyo: el `t-<n>-agente-cliente` de Secret Manager es
+    `ore-agente-<n>`.
+  - Hay dos registrados que ninguna celda usa: `ore-agente`, el viejo, en demo y en prueba, y
+    `ore-agente-prueba-dos`, de una celda retirada.
+- **El puente contesta hoy «un agente no tiene potestades de organización»** a todo agente.
+
+**De paso:** el contenedor del puesto que ejecuta el código de quien lo usa monta `/puesto` con
+**el cliente y el secreto del agente** de su celda (`51-el-puesto.yaml`, `traer-el-testigo`,
+0444). El código de un cuaderno puede sacar tokens de agente cuando quiera. Con la pertenencia
+comprobada sólo valen en su propia organización, pero es una credencial larga donde bastaría un
+token corto. Se apunta.
+
+**Los pasos:**
+
+| paso | qué |
+|---|---|
+| **A9′.1** | `ore-iam`: la pregunta `organizacion:leer` por el puente contesta también a un agente **registrado en la organización de la celda** (`iam.agente`), y sólo ésa. Lo demás de un agente sigue negado |
+| **A9′.2** | `ore-serve --acceso`: toda petición con sujeto pregunta `organizacion:leer` antes de atender (caché por `vale`, 30 s). Si no pertenece, 403, y la negación ya la anota `ore-iam`. `/salud` queda fuera. ⟨decidir⟩ si `ore-iam` no contesta: 503 (hoy), o gracia con la última respuesta positiva durante unos minutos, que desacopla la disponibilidad de las celdas de la de `ore-iam` a cambio de que una baja tarde en valer |
+| **A9′.3** | La prueba de fuego: dos organizaciones y dos personas; la de fuera recibe 403 en lectura y en escritura; su agente, en la suya sí y en la otra no |
+| **A9′.4** | Retirar `ore-agente` y `ore-agente-prueba-dos` de `iam.agente` y del realm |
+
+A9, el token por celda con Keycloak 26.2, queda **aplazado**: con A9′ lo que cerraba es poco (una
+celda comprometida reenviando el token de alguien a otra celda de sus propias organizaciones).
 
 ### A7a, por pasos (medido el 2026-09-28)
 
