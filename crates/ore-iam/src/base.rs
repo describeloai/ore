@@ -125,6 +125,32 @@ impl<'a> Tx<'a> {
         Ok(())
     }
 
+    /// Como `anotar`, pero con la ORGANIZACIÓN y la CELDA en sus columnas (la
+    /// `044`) y con quien lo hizo dicho aparte: el puente (0047 A2) anota lo que
+    /// una celda cuenta de una persona, y un reintento de `hizo` ya no trae su
+    /// token —el sujeto sale de la decisión que `ore-iam` tomó—.
+    #[allow(clippy::too_many_arguments)]
+    pub fn anotar_por(
+        &mut self,
+        quien: &str,
+        agente: Option<&str>,
+        operacion: &str,
+        sobre: &str,
+        detalle: Json,
+        organizacion: &str,
+        celda: &str,
+    ) -> Result<(), String> {
+        self.tx
+            .execute(
+                "insert into iam.huella (quien, agente, operacion, sobre, detalle, organizacion, celda)
+                 values ($1, $2, $3, $4, $5::text::jsonb, $6, $7)",
+                &[&quien, &agente, &operacion, &sobre, &detalle.jcs(), &organizacion, &celda],
+            )
+            .map_err(|e| format!("no se pudo anotar la huella: {e}"))?;
+        self.anotado = true;
+        Ok(())
+    }
+
     /// ⛔ Se niega a confirmar si nadie anotó. No es una comprobación de
     /// higiene: es la regla de arriba, hecha imposible de olvidar. Un verbo que
     /// cambia algo y no deja huella no llega a la base.

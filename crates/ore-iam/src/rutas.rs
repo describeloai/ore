@@ -41,6 +41,9 @@ pub struct Servidor {
     ///   Sin ella, `POST /organizaciones` funda sin celda y `POST …/celdas` se
     ///   niega diciendolo — que es mejor que inventarse un cluster.
     pub celda: Option<crate::fundar::CeldaPlataforma>,
+    /// ⭐ El emisor de las CELDAS (0047 A2): el token de Workload Identity de
+    ///   cada `ore-serve`. Sin él, las rutas del puente no se montan.
+    pub celdas: Option<ore_entrada::oidc::Emisor>,
 }
 
 impl Servidor {
@@ -48,6 +51,11 @@ impl Servidor {
         let seg = p.segmentos();
         match (p.metodo.as_str(), seg.as_slice()) {
             ("GET", ["salud"]) => Respuesta::ok(Json::obj([("ok", Json::Bool(true))])),
+            // ⭐ El puente va ANTES de `quien`: su `Authorization` es de una celda,
+            //   no del realm, y el realm lo rechazaría como de otro emisor.
+            _ if matches!(seg.as_slice(), ["access", "v1", ..]) => self
+                .puente(p, &seg)
+                .unwrap_or_else(|| Respuesta::error(404, "no hay nada en ese camino")),
             _ => match self.quien(p) {
                 Err(r) => r,
                 Ok(sujeto) => self.con_sujeto(p, &sujeto, &seg),
@@ -117,7 +125,7 @@ impl Servidor {
             ("POST", ["invitaciones", "admitir"]) => self.admitir(s, &p.cuerpo),
             ("POST", ["concesiones", c, "revocar"]) => self.revocar(s, c),
             ("POST", ["organizaciones", o, "agentes"]) => self.registrar_agente(s, o, &p.cuerpo),
-            ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c),
+            ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c, &p.cuerpo),
             ("POST", ["celdas", c, "estado"]) => self.estado(s, c, &p.cuerpo),
             // ⭐⭐ LOS DOS VERBOS DE LA 0025 E6: la cuenta, y una celda mas.
             ("POST", ["organizaciones"]) => self.fundar(s, &p.cuerpo),
@@ -754,27 +762,82 @@ impl Servidor {
     /// `POST /celdas/{celda}/aprovisionada`: la ultima pasada entera del
     /// aprovisionador sobre esa celda acabo ahora. Es lo que el patron de
     /// operador llama `status`: lo escribe quien reconcilia, no quien pide.
-    fn aprovisionada(&self, s: &Identidad, celda: &str) -> Respuesta {
-        let celda = celda.to_string();
-        self.en_transaccion(s, move |tx, _| {
-            let f = tx
+    /// `POST /celdas/{celda}/aprovisionada`: el aprovisionador dice que la celda
+    /// está lista, y —desde 0047 A2.4— **quién es** ante el puente:
+    /// `{"identidad": {"emisor": "...", "sub": "..."}}`, el `uniqueId` de la cuenta
+    /// de su `ore-serve`. Sin cuerpo, como antes.
+    ///
+    /// ⭐ Y es una OBSERVACIÓN: el aprovisionador llama en cada pasada, cada cinco
+    ///   minutos por celda, y cada llamada dejaba una fila (598 en un día, el 59 %
+    ///   de la huella, M6). Ahora deja huella sólo cuando algo cambia: la primera
+    ///   vez, o una identidad nueva.
+    fn aprovisionada(&self, s: &Identidad, celda: &str, cuerpo: &str) -> Respuesta {
+        let (celda, cuerpo) = (celda.to_string(), cuerpo.to_string());
+        self.en_transaccion_observando(s, move |tx, _| {
+            let identidad = if cuerpo.trim().is_empty() {
+                None
+            } else {
+                let n = analizar(&cuerpo)?;
+                match n.get("identidad") {
+                    None => None,
+                    Some((_, i)) => {
+                        let e = campo(i, "emisor").ok_or("`identidad` sin `emisor`")?;
+                        let sub = campo(i, "sub").ok_or("`identidad` sin `sub`")?;
+                        if e.is_empty() || sub.is_empty() {
+                            return Err("`identidad` con `emisor` o `sub` vacíos".into());
+                        }
+                        Some((e, sub))
+                    }
+                }
+            };
+            let antes = tx
                 .uno(
-                    "update iam.celda set aprovisionada = now()
-                      where nombre = $1
-                  returning id, aprovisionada::text",
+                    "select id, aprovisionada is null, identidad_emisor, identidad_sub
+                       from iam.celda where nombre = $1",
                     &[&celda],
                 )?
                 .ok_or_else(|| format!("no hay ninguna celda `{celda}`"))?;
-            let (id, cuando): (String, String) = (f.get(0), f.get(1));
-            tx.anotar(
-                "celda:aprovisionada",
-                &id,
-                Json::obj([("celda", Json::s(&celda))]),
-            )?;
-            Ok(Json::obj([
-                ("celda", Json::s(celda)),
+            let id: String = antes.get(0);
+            let primera: bool = antes.get(1);
+            let (e0, s0): (Option<String>, Option<String>) = (antes.get(2), antes.get(3));
+            let nueva_identidad = identidad
+                .as_ref()
+                .is_some_and(|(e, sub)| e0.as_deref() != Some(e) || s0.as_deref() != Some(sub));
+            let f = tx
+                .uno(
+                    "update iam.celda set aprovisionada = now(),
+                            identidad_emisor = coalesce($2, identidad_emisor),
+                            identidad_sub    = coalesce($3, identidad_sub)
+                      where id = $1
+                  returning aprovisionada::text",
+                    &[
+                        &id,
+                        &identidad.as_ref().map(|x| &x.0),
+                        &identidad.as_ref().map(|x| &x.1),
+                    ],
+                )?
+                .ok_or("la celda desapareció")?;
+            let cuando: String = f.get(0);
+            let cambia = primera || nueva_identidad;
+            if cambia {
+                let mut d = vec![("celda", Json::s(&celda))];
+                if let Some((e, sub)) = &identidad {
+                    d.push(("identidad_emisor", Json::s(e)));
+                    d.push(("identidad_sub", Json::s(sub)));
+                }
+                tx.anotar("celda:aprovisionada", &id, Json::obj(d))?;
+            }
+            let mut r = vec![
+                ("celda", Json::s(&celda)),
                 ("aprovisionada", Json::s(cuando)),
-            ]))
+            ];
+            if let Some((e, sub)) = identidad {
+                r.push((
+                    "identidad",
+                    Json::obj([("emisor", Json::s(e)), ("sub", Json::s(sub))]),
+                ));
+            }
+            Ok((Json::obj(r), cambia))
         })
     }
 
@@ -1047,8 +1110,11 @@ fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
 }
 
-pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
+pub fn mapa(con: bool, puente: bool) -> Vec<(&'static str, &'static str, bool)> {
     vec![
+        ("POST", "/access/v1/evaluation", puente),
+        ("POST", "/access/v1/evaluations", puente),
+        ("POST", "/access/v1/eventos", puente),
         ("GET", "/salud", true),
         ("GET", "/organizaciones", con),
         ("GET", "/organizaciones/{org}/miembros", con),

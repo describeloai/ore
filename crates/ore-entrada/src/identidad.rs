@@ -222,19 +222,15 @@ pub fn resolver(a: &Ajustes) -> Result<Option<(Proveedor, String)>, String> {
             let jwks = a
                 .jwks
                 .ok_or("`--identidad oidc` necesita `--jwks <fichero>`")?;
-            let texto = std::fs::read_to_string(jwks)
-                .map_err(|e| format!("no se pudo leer `{}`: {e}", jwks.display()))?;
-            let llaves = crate::oidc::Llaves::leer(&texto)?;
+            // ⭐ Del fichero, y relee ante un `kid` desconocido (0047 A2.2).
+            let emisor = crate::oidc::Emisor::del_fichero(emisor, audiencia, jwks)?;
             let dicho = format!(
-                "oidc · emisor {emisor} · audiencia {audiencia} · {} llaves de `{}`",
-                llaves.cuantas(),
+                "oidc · emisor {} · audiencia {} · {} llaves de `{}` (se relee ante un kid nuevo)",
+                emisor.iss,
+                emisor.aud,
+                emisor.cuantas(),
                 jwks.display()
             );
-            let emisor = crate::oidc::Emisor {
-                iss: emisor.to_string(),
-                aud: audiencia.to_string(),
-                llaves,
-            };
             let proveedor: Proveedor = Box::new(move |cabeceras| {
                 let cabecera = cabeceras
                     .get("authorization")

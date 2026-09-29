@@ -66,10 +66,11 @@ falla() {
     tail -20 "$TMP/arranque.txt" >&2
   fi
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
+  [ -n "${SRV2:-}" ] && kill "$SRV2" 2>/dev/null
   exit 1
 }
 dice()  { echo "  · $*"; }
-limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; rm -rf "$TMP"; }
+limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; [ -n "${SRV2:-}" ] && kill "$SRV2" 2>/dev/null; rm -rf "$TMP"; }
 trap limpiar EXIT
 
 buscar() {
@@ -162,15 +163,18 @@ def firmar(m):
 
 
 if sys.argv[1] == "jwks":
+    # Los `kid` que se pidan (por defecto `k1`): la misma llave con otro nombre
+    # basta para probar que el juego se relee (0047 A2.2).
     print(json.dumps({"keys": [{
-        "kty": "RSA", "use": "sig", "kid": "k1", "alg": "RS256",
+        "kty": "RSA", "use": "sig", "kid": k, "alg": "RS256",
         "n": b64(N.to_bytes(K, "big")), "e": b64(E.to_bytes(3, "big")),
-    }]}))
+    } for k in (sys.argv[2:] or ["k1"])]}))
     raise SystemExit(0)
 
 sub, correo, emisor, audiencia, ahora = sys.argv[1:6]
 tipo = sys.argv[6] if len(sys.argv) > 6 else None
-cabeza = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
+import os
+cabeza = {"alg": "RS256", "typ": "JWT", "kid": os.environ.get("KID", "k1")}
 # `name` es el claim estandar de OIDC. Va aqui porque sin el no se puede
 # ejercitar el refresco del nombre, que corre en cada peticion.
 cuerpo = {"iss": emisor, "aud": audiencia, "sub": sub, "email": correo,
@@ -732,4 +736,125 @@ if psql "$URL" -qtAc "select detalle::text from iam.huella where operacion = 'ce
 fi
 dice "14 · cada celda, su login: solo el aprovisionador lo da, sabe su organizacion, rota, y la huella no lleva la clave"
 
-echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, y el estado que informa el agente."
+# ── 15 · ⭐⭐ EL PUENTE (0047 A2): la celda pregunta, `ore-iam` contesta ──────
+#
+# Un segundo servidor, con el emisor de las CELDAS: el de Google en la malla,
+# uno de mentira aquí —la misma llave con otro `kid`—. Cada celda se presenta con
+# su token (`Authorization`) y la persona con el suyo (`Ore-Sujeto`). La
+# organización sale de la celda y no viaja nunca.
+EMISOR_G="https://accounts.google.com"
+"$PY" "$TMP/acunar.py" jwks c1 > "$TMP/jwks-celdas.json" || falla "15 · no se pudo escribir el JWKS de las celdas"
+celda_tok() { KID="${2:-c1}" "$PY" "$TMP/acunar.py" "$1" "" "$EMISOR_G" "ore-iam" "$AHORA"; }
+PUERTO2=$((PUERTO + 1)); BASE2="http://127.0.0.1:$PUERTO2"
+"$IAM" servir --bind "127.0.0.1:$PUERTO2" --identidad oidc \
+  --emisor "$EMISOR" --audiencia "$AUDIENCIA" --jwks "$TMP/jwks.json" \
+  --emisor-celdas "$EMISOR_G" --audiencia-celdas ore-iam --jwks-celdas "$TMP/jwks-celdas.json" \
+  > "$TMP/arranque2.txt" 2>&1 &
+SRV2=$!
+for _ in $(seq 1 60); do curl -s -o /dev/null "$BASE2/salud" && break; sleep 0.25; done
+curl -sf "$BASE2/salud" >/dev/null || falla "15 · el servidor con el puente no arranco: $(cat "$TMP/arranque2.txt")"
+grep -q '/access/v1/evaluation' "$TMP/arranque2.txt" || falla "15 · el mapa no anuncia el puente"
+# Sin el emisor de las celdas, el puente no se monta (el primer servidor).
+[ "$(pide POST /access/v1/evaluation "$ADA" '{}')" = "404" ] || falla "15 · sin --emisor-celdas el puente contesto: $(cat "$TMP/r.json")"
+# Y el emisor a medias no arranca.
+"$IAM" servir --bind "127.0.0.1:$((PUERTO + 2))" --identidad oidc --emisor "$EMISOR" --audiencia "$AUDIENCIA" \
+  --jwks "$TMP/jwks.json" --emisor-celdas "$EMISOR_G" > "$TMP/medias.txt" 2>&1 && falla "15 · arranco con el emisor de celdas a medias"
+grep -q 'entero o no va' "$TMP/medias.txt" || falla "15 · el emisor a medias no dijo por que"
+
+puente() { # token-celda sujeto|- ruta cuerpo
+  if [ "$2" = "-" ]; then
+    curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $1" \
+      -H 'Content-Type: application/json' -d "$4" "$BASE2/access/v1/$3"
+  else
+    curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $1" -H "Ore-Sujeto: $2" \
+      -H 'Content-Type: application/json' -d "$4" "$BASE2/access/v1/$3"
+  fi
+}
+ctx() { "$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['context'].get(sys.argv[2],''))" "$TMP/r.json" "$1"; }
+pregunta() { # sujeto accion
+  printf '{"subject":{"type":"persona","id":"%s"},"action":{"name":"%s"},"resource":{"type":"organizacion","id":"-"},"context":{"ruta":"POST /prueba"}}' "$1" "$2"
+}
+
+# ① El aprovisionador registra quién es cada celda, y es una OBSERVACIÓN.
+ORG_OTRA=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='otra'")
+psql "$URL" -v ON_ERROR_STOP=1 -qtAc "insert into iam.celda
+    (id, organizacion, nombre, tier, proveedor, region, cluster, puerta, arbol, entrada)
+  values ('cel_otra', '$ORG_OTRA', 'otra', 'compartido', 'gcp', 'europe-west1-b',
+          'ore-prueba', 'ore-prueba.ore.paladio.io', 'otra/arbol', 'otra.ore.paladio.io')" \
+  >/dev/null 2>&1 || falla "15 · no se pudo dar celda a \`otra\`"
+HA0=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:aprovisionada'")
+[ "$(pide POST "/celdas/acme/aprovisionada" "$APROV" "{\"identidad\":{\"emisor\":\"$EMISOR_G\",\"sub\":\"g-acme\"}}")" = "200" ] \
+  || falla "15 · el aprovisionador no pudo registrar la identidad de acme: $(cat "$TMP/r.json")"
+[ "$(pide POST "/celdas/acme/aprovisionada" "$APROV" "{\"identidad\":{\"emisor\":\"$EMISOR_G\",\"sub\":\"g-acme\"}}")" = "200" ] \
+  || falla "15 · la segunda pasada fallo"
+[ "$(pide POST "/celdas/acme/aprovisionada" "$APROV")" = "200" ] || falla "15 · sin cuerpo dejo de valer"
+[ "$(pide POST "/celdas/otra/aprovisionada" "$APROV" "{\"identidad\":{\"emisor\":\"$EMISOR_G\",\"sub\":\"g-otra\"}}")" = "200" ] \
+  || falla "15 · no se pudo registrar la identidad de otra: $(cat "$TMP/r.json")"
+HA1=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:aprovisionada'")
+# acme ya estaba aprovisionada (10): su identidad nueva, 1; las dos pasadas iguales, 0; otra, primera vez, 1.
+[ "$((HA1 - HA0))" = "2" ] || falla "15 · aprovisionada anoto $((HA1 - HA0)) filas y eran 2: sin cambio no hay huella"
+[ "$(pide POST "/celdas/otra/aprovisionada" "$APROV" "{\"identidad\":{\"emisor\":\"$EMISOR_G\",\"sub\":\"g-acme\"}}")" = "422" ] \
+  || falla "15 · ⛔ DOS CELDAS VIVAS CON LA MISMA IDENTIDAD"
+CA=$(celda_tok g-acme); CO=$(celda_tok g-otra)
+ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
+
+# ② ⭐ La llave nueva se lee SIN reiniciar (A2.2). Va primero: un `kid`
+#   desconocido relee como mucho una vez cada 30 s.
+"$PY" "$TMP/acunar.py" jwks c1 c2 > "$TMP/jwks-celdas.json"
+[ "$(puente "$(celda_tok g-acme c2)" "$ADA" evaluation "$(pregunta persona:ada invitacion:emitir)")" = "200" ] \
+  || falla "15 · una llave rotada no se leyo sin reiniciar: $(cat "$TMP/r.json")"
+
+# ③ Puede: Ada en su celda, sí; y queda la decisión, no una huella.
+HN0=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'acceso:negado'")
+[ "$(puente "$CA" "$ADA" evaluation "$(pregunta persona:ada invitacion:emitir)")" = "200" ] || falla "15 · evaluar fallo: $(cat "$TMP/r.json")"
+[ "$(campo decision)" = "True" ] || falla "15 · Ada no puede invitar en su organizacion: $(cat "$TMP/r.json")"
+DEC=$(ctx id); [ "$(ctx vale)" = "30" ] && [ -n "$(ctx version)" ] || falla "15 · la respuesta no trae vale ni version: $(cat "$TMP/r.json")"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.decision where id='$DEC' and organizacion='$ORG' and quien='persona:ada'")" = "1" ] \
+  || falla "15 · el permiso no quedo en iam.decision"
+# ④ ⛔ La organización sale de la CELDA: Zoe es ORGADMIN de `otra` y en `acme` no es nadie.
+[ "$(puente "$CA" "$ZOE" evaluation "$(pregunta persona:zoe invitacion:emitir)")" = "200" ] && [ "$(campo decision)" = "False" ] \
+  || falla "15 · ⛔ ZOE PUEDE EN ACME POR LA CELDA DE ACME: $(cat "$TMP/r.json")"
+grep -q 'no tienes' "$TMP/r.json" || falla "15 · la denegacion no dice lo que falta"
+[ "$(puente "$CO" "$ZOE" evaluation "$(pregunta persona:zoe invitacion:emitir)")" = "200" ] && [ "$(campo decision)" = "True" ] \
+  || falla "15 · Zoe no puede en su propia organizacion: $(cat "$TMP/r.json")"
+[ "$(puente "$CO" "$ADA" evaluation "$(pregunta persona:ada invitacion:emitir)")" = "200" ] && [ "$(campo decision)" = "False" ] \
+  || falla "15 · ⛔ ADA PUEDE EN OTRA POR LA CELDA DE OTRA"
+HN1=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'acceso:negado'")
+[ "$((HN1 - HN0))" = "2" ] || falla "15 · las dos denegaciones no dejaron su huella ($HN0 → $HN1)"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='acceso:negado' and quien='persona:zoe' and organizacion='$ORG' and celda is not null")" = "1" ] \
+  || falla "15 · la huella de la denegacion no lleva organizacion y celda"
+# ⑤ Lo que no se decide así.
+[ "$(puente "$CA" "$ADA" evaluation "$(pregunta persona:ada nada:inventada)")" = "200" ] && [ "$(campo decision)" = "False" ] \
+  && grep -q 'desconocida' "$TMP/r.json" || falla "15 · una potestad desconocida no nego con su motivo: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$ADA" evaluation "$(pregunta persona:zoe invitacion:emitir)")" = "400" ] || falla "15 · subject distinto del token no dio 400"
+[ "$(puente "$CA" - evaluation "$(pregunta persona:ada invitacion:emitir)")" = "401" ] || falla "15 · sin Ore-Sujeto no dio 401"
+[ "$(puente "$ADA" "$ADA" evaluation "$(pregunta persona:ada invitacion:emitir)")" = "403" ] || falla "15 · ⛔ UNA PERSONA PREGUNTO POR EL PUENTE: $(cat "$TMP/r.json")"
+[ "$(puente "$(celda_tok g-nadie)" "$ADA" evaluation "$(pregunta persona:ada invitacion:emitir)")" = "401" ] || falla "15 · una celda sin registrar no dio 401"
+# ⑥ El lote.
+[ "$(puente "$CA" "$ADA" evaluations '{"subject":{"type":"persona","id":"persona:ada"},"resource":{"type":"organizacion","id":"-"},"evaluations":[{"action":{"name":"invitacion:emitir"}},{"action":{"name":"nada:inventada"}}]}')" = "200" ] \
+  || falla "15 · el lote fallo: $(cat "$TMP/r.json")"
+[ "$("$PY" -c "import json,sys;print([e['decision'] for e in json.load(open(sys.argv[1]))['evaluations']])" "$TMP/r.json")" = "[True, False]" ] \
+  || falla "15 · el lote no contesto en orden: $(cat "$TMP/r.json")"
+dice "15 · puede: la organizacion sale de la celda (Zoe no puede en acme ni Ada en otra), las denegaciones a la huella con organizacion y celda, el permiso a iam.decision; 400, 401 y 403 donde tocan; el lote en orden; una llave rotada sin reiniciar"
+
+# ⑦ Hizo: a la huella con organización y celda, idempotente por `id`.
+EV='{"id":"ev-1","operacion":"fuente:crear","sobre":"fuente/ventas","resultado":"hecho","commit":"abc123","detalle":{"tipo":"postgres"}}'
+[ "$(puente "$CA" "$ADA" eventos "$EV")" = "201" ] || falla "15 · hizo fallo: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$ADA" eventos "$EV")" = "200" ] && [ "$(campo ya)" = "True" ] || falla "15 · el mismo evento dos veces no fue uno: $(cat "$TMP/r.json")"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where detalle->>'evento'='ev-1' and organizacion='$ORG' and quien='persona:ada' and operacion='fuente:crear' and detalle->>'commit'='abc123'")" = "1" ] \
+  || falla "15 · el evento no quedo en la huella con organizacion, quien y commit"
+# Un reintento sin el token de la persona: el sujeto sale de la decisión viva.
+[ "$(puente "$CA" - eventos "{\"id\":\"ev-2\",\"operacion\":\"fuente:crear\",\"sobre\":\"fuente/x\",\"resultado\":\"hecho\",\"decision\":\"$DEC\"}")" = "201" ] \
+  || falla "15 · el reintento por decision fallo: $(cat "$TMP/r.json")"
+[ "$(psql "$URL" -qtAc "select quien from iam.huella where detalle->>'evento'='ev-2'")" = "persona:ada" ] || falla "15 · el reintento no tomo el sujeto de la decision"
+[ "$(puente "$CA" - eventos '{"id":"ev-3","operacion":"fuente:crear","resultado":"hecho"}')" = "400" ] || falla "15 · ⛔ UN EVENTO SIN SUJETO NI DECISION ENTRO"
+[ "$(puente "$CO" - eventos "{\"id\":\"ev-4\",\"operacion\":\"x:y\",\"resultado\":\"hecho\",\"decision\":\"$DEC\"}")" = "400" ] \
+  || falla "15 · ⛔ OTRA CELDA USO UNA DECISION DE ACME"
+[ "$(puente "$CA" "$ADA" eventos '{"id":"ev 5","operacion":"x:y","resultado":"hecho"}')" = "400" ] || falla "15 · un id con espacios entro"
+[ "$(puente "$CA" "$ADA" eventos '{"id":"ev-6","operacion":"x:y","resultado":"quizas"}')" = "400" ] || falla "15 · un resultado inventado entro"
+# ⑧ La celda retirada ya no pregunta.
+psql "$URL" -qtAc "update iam.celda set estado='retirada' where id='cel_otra'" >/dev/null
+[ "$(puente "$CO" "$ZOE" evaluation "$(pregunta persona:zoe invitacion:emitir)")" = "401" ] || falla "15 · ⛔ UNA CELDA RETIRADA SIGUE PREGUNTANDO"
+dice "15 · hizo: a la huella con organizacion y celda, idempotente; un reintento toma el sujeto de la decision viva de SU organizacion; sin ninguna, 400; y la celda retirada, 401"
+
+echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, el estado que informa el agente, y el puente."

@@ -43,6 +43,17 @@
 //!
 //! **La firma va antes que los campos**, y no es una preferencia de orden: leer
 //! `iss` de un token sin verificar es leerle un dato a quien lo escribió.
+//!
+//! # Y el fichero se RELEE cuando llega una llave que no está (0047 A2.2)
+//!
+//! Hasta aquí el proceso leía el fichero una vez, al arrancar, y `50-jwks.yaml`
+//! lo dejó escrito: «refrescar el fichero no refresca al proceso». Con el realm
+//! se sobrevivía porque rota poco. Con las llaves de Google, que caducan a las
+//! seis horas, un proceso que no relee deja fuera a todas las celdas en días.
+//!
+//! ⇒ Un `kid` desconocido relee **el fichero** —local, el que el kubelet ya
+//!   actualiza—, como mucho una vez cada [`RELEER_CADA`]. No sale a la red, así
+//!   que la decisión de arriba sigue en pie: el fichero lo trae otro.
 
 use crate::identidad::{Identidad, SinIdentidad};
 use rsa::pkcs1v15::{Signature, VerifyingKey};
@@ -50,6 +61,14 @@ use rsa::signature::Verifier;
 use rsa::{BigUint, RsaPublicKey};
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+/// Cada cuánto, como mucho, un `kid` desconocido vuelve a leer el fichero. Sin
+/// techo, un token con un `kid` inventado sería una lectura de disco por
+/// petición a voluntad de quien lo manda.
+pub const RELEER_CADA: Duration = Duration::from_secs(30);
 
 /// Los algoritmos que se aceptan. **Una lista, no una exclusión.**
 ///
@@ -115,10 +134,64 @@ pub struct Emisor {
     /// La audiencia que tiene que contener. **Es nuestra**, y por eso un token
     /// emitido para otro servicio no vale aquí aunque venga del mismo realm.
     pub aud: String,
-    pub llaves: Llaves,
+    llaves: RwLock<Llaves>,
+    /// De dónde se releen, si se dijo. Sin fichero, el juego es el que se dio.
+    fichero: Option<PathBuf>,
+    releer_cada: Duration,
+    releido: Mutex<Option<Instant>>,
 }
 
 impl Emisor {
+    /// Con un juego fijo, que no se relee.
+    pub fn nuevo(iss: &str, aud: &str, llaves: Llaves) -> Emisor {
+        Emisor {
+            iss: iss.to_string(),
+            aud: aud.to_string(),
+            llaves: RwLock::new(llaves),
+            fichero: None,
+            releer_cada: RELEER_CADA,
+            releido: Mutex::new(None),
+        }
+    }
+
+    /// Con el juego de un fichero, que se relee ante un `kid` desconocido.
+    pub fn del_fichero(iss: &str, aud: &str, fichero: &std::path::Path) -> Result<Emisor, String> {
+        let texto = std::fs::read_to_string(fichero)
+            .map_err(|e| format!("no se pudo leer `{}`: {e}", fichero.display()))?;
+        let mut e = Emisor::nuevo(iss, aud, Llaves::leer(&texto)?);
+        e.fichero = Some(fichero.to_path_buf());
+        Ok(e)
+    }
+
+    pub fn cuantas(&self) -> usize {
+        self.llaves.read().map(|l| l.cuantas()).unwrap_or(0)
+    }
+
+    /// La llave de un `kid`. Si no está y hay fichero, lo relee —una vez por
+    /// intervalo— y vuelve a mirar. Un fichero que ya no analiza no borra el
+    /// juego bueno: se queda el que había.
+    fn llave(&self, kid: &str) -> Option<RsaPublicKey> {
+        if let Some(k) = self.llaves.read().ok()?.0.get(kid) {
+            return Some(k.clone());
+        }
+        let fichero = self.fichero.as_ref()?;
+        {
+            let mut ultima = self.releido.lock().ok()?;
+            if ultima.is_some_and(|t| t.elapsed() < self.releer_cada) {
+                return None;
+            }
+            *ultima = Some(Instant::now());
+        }
+        let nuevas = std::fs::read_to_string(fichero)
+            .ok()
+            .and_then(|t| Llaves::leer(&t).ok())?;
+        let k = nuevas.0.get(kid).cloned();
+        if let Ok(mut l) = self.llaves.write() {
+            *l = nuevas;
+        }
+        k
+    }
+
     /// De un `Authorization: Bearer …` a un sujeto, o al motivo de que no.
     pub fn verificar(&self, cabecera: &str, ahora: i64) -> Result<Identidad, SinIdentidad> {
         let token = cabecera
@@ -150,7 +223,7 @@ impl Emisor {
         }
 
         // 3 · la llave
-        let llave = self.llaves.0.get(&kid).ok_or_else(|| {
+        let llave = self.llave(&kid).ok_or_else(|| {
             mal(&format!(
                 "no hay llave `{kid}` en el juego cargado. Si el realm rotó, el \
                  fichero de llaves está viejo — se refresca fuera de este proceso"
@@ -162,7 +235,7 @@ impl Emisor {
         let firma = b64url(partes[2]).map_err(|_| mal("la firma no es base64url"))?;
         let firma = Signature::try_from(firma.as_slice())
             .map_err(|_| mal("la firma no tiene el tamaño de la llave"))?;
-        VerifyingKey::<Sha256>::new(llave.clone())
+        VerifyingKey::<Sha256>::new(llave)
             .verify(firmado.as_bytes(), &firma)
             .map_err(|_| mal("la firma no es válida"))?;
 
@@ -357,11 +430,54 @@ mod pruebas {
     }
 
     fn emisor(jwks: &str) -> Emisor {
-        Emisor {
-            iss: "https://login.paladio.io/realms/rubix".into(),
-            aud: "ore-serve".into(),
-            llaves: Llaves::leer(jwks).unwrap(),
-        }
+        Emisor::nuevo(
+            "https://login.paladio.io/realms/rubix",
+            "ore-serve",
+            Llaves::leer(jwks).unwrap(),
+        )
+    }
+
+    /// ⭐ 0047 A2.2: la llave que llega DESPUÉS de arrancar se lee del fichero,
+    ///   sin reiniciar. Y como mucho una vez por intervalo: dentro de él, un
+    ///   `kid` desconocido no vuelve al disco.
+    #[test]
+    fn una_llave_nueva_se_lee_del_fichero_sin_reiniciar() {
+        let (k, jwks) = banco();
+        let dir = std::env::temp_dir().join(format!("oidc-relee-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("jwks.json");
+        // Al arrancar, el fichero sólo trae la llave vieja (otro `kid`).
+        std::fs::write(&f, jwks.replace("\"k1\"", "\"vieja\"")).unwrap();
+        let mut e =
+            Emisor::del_fichero("https://login.paladio.io/realms/rubix", "ore-serve", &f).unwrap();
+        e.releer_cada = Duration::from_secs(3600);
+        let t = format!("Bearer {}", token(&k, CABEZA, &cuerpo("")));
+        // Primer `kid` desconocido: relee, y el fichero todavía no la tiene.
+        assert!(e.verificar(&t, 1_700_000_000).is_err());
+        // Rota: el fichero ya la trae. Pero dentro del intervalo no se relee.
+        std::fs::write(&f, &jwks).unwrap();
+        assert!(
+            e.verificar(&t, 1_700_000_000).is_err(),
+            "releyó dentro del intervalo"
+        );
+        // Pasado el intervalo, sí.
+        e.releer_cada = Duration::ZERO;
+        assert_eq!(
+            e.verificar(&t, 1_700_000_000).unwrap().persona,
+            "persona:ana"
+        );
+        // Y un fichero roto no borra el juego bueno.
+        std::fs::write(&f, "no es un jwks").unwrap();
+        let otra = format!(
+            "Bearer {}",
+            token(&k, r#"{"alg":"RS256","kid":"nadie"}"#, &cuerpo(""))
+        );
+        assert!(e.verificar(&otra, 1_700_000_000).is_err());
+        assert!(
+            e.verificar(&t, 1_700_000_000).is_ok(),
+            "un fichero roto borró las llaves"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     const CABEZA: &str = r#"{"alg":"RS256","typ":"JWT","kid":"k1"}"#;

@@ -53,6 +53,7 @@ pub mod base;
 pub mod fundar;
 pub mod id;
 pub mod potestad;
+pub mod puente;
 pub mod rutas;
 pub mod verbos;
 
@@ -331,7 +332,46 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
     eprintln!("ore-iam · {bind}");
     eprintln!("  identidad    {dicho}");
     eprintln!();
-    for (metodo, ruta, montada) in rutas::mapa(con_identidad) {
+    // ⭐ El emisor de las CELDAS (0047 A2): los tres o ninguno, como la celda de
+    //   plataforma. Sin ellos las rutas del puente no se montan, y se dice.
+    let celdas = match (
+        valor(args, "--emisor-celdas"),
+        valor(args, "--audiencia-celdas"),
+        valor(args, "--jwks-celdas"),
+    ) {
+        (Some(iss), Some(aud), Some(jwks)) => {
+            match ore_entrada::oidc::Emisor::del_fichero(&iss, &aud, std::path::Path::new(&jwks)) {
+                Ok(e) => {
+                    eprintln!(
+                        "  celdas       emisor {iss} · audiencia {aud} · {} llaves de `{jwks}` (se relee ante un kid nuevo)",
+                        e.cuantas()
+                    );
+                    Some(e)
+                }
+                Err(m) => {
+                    eprintln!("✗ el emisor de las celdas: {m}");
+                    return ExitCode::from(64);
+                }
+            }
+        }
+        (None, None, None) => {
+            eprintln!("  celdas       sin emisor (`--emisor-celdas`): el puente no se monta");
+            None
+        }
+        _ => {
+            eprintln!(
+                "✗ el emisor de las celdas va entero o no va: --emisor-celdas, --audiencia-celdas, --jwks-celdas"
+            );
+            return ExitCode::from(64);
+        }
+    };
+    if celdas.is_some() && !con_identidad {
+        eprintln!(
+            "✗ el puente necesita también el realm (`--identidad oidc`): con él se verifica `Ore-Sujeto`"
+        );
+        return ExitCode::from(64);
+    }
+    for (metodo, ruta, montada) in rutas::mapa(con_identidad, celdas.is_some()) {
         eprintln!(
             "  {}  {:-6} {}",
             if montada { "·" } else { "✗" },
@@ -407,6 +447,7 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
         emisor: valor(args, "--emisor").unwrap_or_default(),
         identidad: proveedor,
         celda,
+        celdas,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,
