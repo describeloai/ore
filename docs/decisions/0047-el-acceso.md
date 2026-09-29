@@ -320,6 +320,144 @@ Desde A1 cierra además los tres valores marcados **⟨M2⟩** en § «El contra
 - cuánto guarda `ore-iam` las decisiones de escritura para los reintentos de `hizo` (de partida,
   24 h), y cuántas son al día.
 
+#### M2 · Cómo se mide (preparada el 2026-09-29)
+
+Cuatro preguntas. Cada una con la fuente que la contesta, y de dónde sale esa fuente: si ya está,
+si se lee o si hay que crearla.
+
+| | pregunta | fuente | ¿existe? |
+|---|---|---|---|
+| Q1 | cuántas peticiones por minuto recibe `ore-serve`, por clase de ruta (las de M1), por inquilino y por clase de sujeto (persona, agente); la media y el pico | **una línea por petición en `ore-serve`** (M2.3) | **no**: hace falta código |
+| Q2 | cuánto cuesta preguntar a `ore-iam` desde dentro | los registros del balanceador de `ore-iam` (M2.1), y el viaje y la consulta medidos dentro (M2.4) | en parte |
+| Q3 | cuántas decisiones de escritura hay al día (lo que `ore-iam` tendría que guardar para los reintentos) | los commits de la forja de cada celda (M2.2): 48 de las 56 escrituras dejan uno (M1) | **sí**, veinte días de historia |
+| Q4 | cuántas lecturas de datos hay (el interruptor de H12) | la línea de M2.3, las clases «puesto» y «datos» | no: la misma línea |
+
+**M2.1 · La latencia de `ore-iam` vista por el balanceador. Hecha: los registros ya existen.** El
+backend de `ore-iam` registra el 100 % de las peticiones y el de `ore-serve` ninguna. Se leyeron
+las últimas 2.000 entradas, del 27 al 29 de septiembre:
+
+| ruta | peticiones | p50 | p95 |
+|---|---|---|---|
+| `GET /organizaciones` | 1.007 | 41 ms | 97 ms |
+| `GET /organizaciones/{id}/celdas` | 993 | 41 ms | 86 ms |
+
+Eso es **lo que tarda hoy una pregunta a `ore-iam` de punta a punta**: el balanceador, la
+transacción, la consulta de potestades y la fila de la huella. Es el techo: desde dentro no hay
+balanceador. Y da una medida indirecta de la consola, que pide `/organizaciones` cada vez que
+carga, unas 22 veces por hora.
+
+**M2.2 · Las escrituras de verdad, por la forja. De lectura.** Por celda, los commits de
+`ontologia.git` (el árbol y la celda) y de `trabajo.git` (la cola), agrupados por día y según su
+autor sea persona o agente. Salen de `git log` dentro del pod de la forja, y sólo se imprimen
+cuentas. Las PR, las revisiones y las fusiones salen de la API de la forja, también como cuentas.
+Contesta Q3 con veinte días de historia real, sin esperar a nada.
+
+**M2.3 · Contar las peticiones de `ore-serve`. Código: necesita tu go.** Una línea por petición,
+a la salida estándar, al terminar de atenderla:
+
+    acceso · GET /paquetes/{}/vistas/{} · 200 · 12 ms · persona
+
+- **El camino va sin nombres.** Cada segmento que no es un literal de las rutas se escribe `{}`.
+  El registro no guarda qué paquete, qué tabla ni quién: lo que mide es **cuántas y de qué
+  clase**. El vocabulario de literales sale del propio enrutador. Una prueba comprueba que cada
+  brazo de `rutas.rs` da un patrón con sentido, así que una ruta nueva no sale como `{}`.
+- **Sin flag y sin malla.** Es la salida estándar, que Cloud Logging ya recoge. No hay nada que
+  desplegar aparte del binario, así que no choca con la regla de no empujar juntos un flag nuevo
+  y la malla que lo usa.
+- **Es el primer trozo de A4.** El sitio donde se escribe esa línea es el mismo por donde pasará
+  `puede`, al entrar en cada ruta.
+
+Y **`pruebas-de-fuego/medida-el-salto.sh`** la agrega: lee las líneas de los tres `ore-serve`,
+asigna la clase con la tabla de M1 (`medida-el-acceso.py`, que ganará una salida JSON), y da por
+clase y por inquilino el total, la media por minuto y el minuto pico.
+
+**M2.4 · El salto dentro del cluster. De lectura, con un pod efímero.**
+- **El viaje:** un pod con las etiquetas del informador, el único que hoy tiene camino, pide 500
+  veces `/salud` a `ore-iam` (p50, p95, p99).
+- **La consulta:** en la base, `EXPLAIN ANALYZE` de la consulta de `potestad::exige` y de una
+  fila de la huella dentro de una transacción que se deshace.
+
+Juntos dan el coste de `puede` sin el balanceador.
+
+**Cuándo habla Q1, sin esperar a un «día cualquiera».** El recuento tiene que haber visto **cada
+clase de ruta al menos una vez en uso real**:
+- una sesión de consola que navegue el catálogo y edite en una rama;
+- una propuesta abierta y fusionada;
+- una sesión de puesto que lea una tabla (`loadTable`) y ejecute SQL;
+- una pasada del catalogador (el agente).
+
+Se provocan en `t-demo`, como los eventos de A7a.6, y se cuentan. El ritmo de esos minutos es el
+pico con una persona. Q2 × pico da lo que `puede` añade a una pantalla.
+
+**Cómo cierra los valores ⟨M2⟩:**
+- **`vale`:** el más corto que mantiene las preguntas por minuto de una sesión por debajo de lo
+  que `ore-iam` atiende sin notarlo (M2.1 da su techo actual).
+- **El tiempo de espera antes del 503:** el p99 de M2.4 con margen. Si queda muy por debajo de
+  2 s, baja.
+- **La retención de decisiones:** M2.2 dice cuántas son al día. 24 h cuesta eso por celda.
+
+#### M2 · Lo medido (2026-09-29, Q2 y Q3; Q1 y Q4 esperan a M2.3 en vivo)
+
+`pruebas-de-fuego/medida-el-salto.sh`, secciones 1 a 3. La 4 lee las líneas de M2.3 cuando
+existan.
+
+**Q3 · las escrituras, en 30 días de la forja:**
+
+| celda | árbol (persona / sistema) | cola (persona / sistema) | máx. al día | máx. en una hora | PR |
+|---|---|---|---|---|---|
+| demo | 74 / 34 | 11 / 50 | 33 | 18 | 0 |
+| prueba | 1 / 1 | 0 / 39 | 8 | 2 | 0 |
+| victor | 73 / 40 | 53 / 66 | 29 | 15 | 7 |
+
+- **Las escrituras de personas son pocas.** Unas 210 en 30 días entre las tres celdas, y el día
+  con más no pasa de 33. Guardar 24 h las decisiones de escritura son **decenas de filas por
+  celda**. ⟨M2⟩ queda cerrado: **24 h**, y sobra.
+- «Sistema» es lo que no pasó por `ore-serve`: la semilla y el aprovisionador en el árbol, y en la
+  cola los Jobs periódicos.
+
+**Q2 · el salto, desde dentro.** 500 peticiones desde `t-demo` a `ore-iam:8090/salud`, cada una
+con conexión nueva:
+
+| tramo | p50 | p95 | p99 |
+|---|---|---|---|
+| DNS | 3,6 ms | **81,5 ms** | 83,2 ms |
+| conexión | 0,3 ms | 0,7 ms | 70,8 ms |
+| respuesta | 0,7 ms | 1,7 ms | 67,7 ms |
+| total | 4,7 ms | 83,1 ms | 84,3 ms |
+
+Y en la base, 1.000 veces cada una: **la consulta de `potestad::exige`, 0,36 ms**, y **una fila
+de la huella, 0,014 ms**.
+
+**Lo que dice:**
+
+1. **Decidir es barato. Lo caro es el camino si se hace mal.** La respuesta de `ore-iam` y la
+   consulta suman alrededor de 1 ms. La cola de 80 ms es **el DNS**. El pod tiene `ndots:5` y
+   `ore-iam.identidad.svc.cluster.local` sólo lleva cuatro puntos, así que antes de dar con el
+   nombre bueno se prueban los dominios de búsqueda.
+   ⇒ **`ore-acceso` reutiliza la conexión y resuelve una vez** (o nombra con punto final). Pasa
+   a ser una condición de A4, no una optimización.
+2. **Los 41 ms de M2.1 son el balanceador**, el TLS y el camino de fuera, no `ore-iam`. Desde
+   dentro, un `puede` ronda los milisegundos.
+3. **El tiempo de espera antes del 503 puede bajar.** Con 2 s el margen es de veinte veces el
+   p99, contando el DNS. Queda en 2 s hasta que Q1 diga cuántas preguntas hace una pantalla. Si
+   con conexión reutilizada el p99 queda por debajo de 5 ms, **500 ms**.
+4. **`vale` espera a Q1.** Con un `puede` de alrededor de 1 ms, la caché sirve para quitar carga
+   a `ore-iam`, no para esconder latencia. Su valor depende de cuántas preguntas por minuto haya.
+
+**M2.3 · en código.** `crates/ore-serve/src/recuento.rs` escribe una línea por petición, salvo
+`/salud`, por la salida de error, que Cloud Logging recoge:
+
+    acceso · GET /paquetes/{}/vistas/{} · 200 · 12 ms · persona
+
+- El vocabulario de literales se lee de `rutas.rs` y de `catalogo.rs` al compilar. Tres pruebas
+  lo sujetan: cada brazo vuelve a su patrón, un nombre no sale, y en el vocabulario no entran
+  cabeceras, argumentos ni los nombres de ejemplo de las pruebas.
+- Q1 y Q4 hablan cuando corra en las celdas y hayan pasado los cuatro eventos.
+- `medida-el-acceso.py` gana `--json`, la tabla de M1 que usa la sección 4.
+- ✏️ De paso: **M1 no veía el catálogo Iceberg.** Sus rutas cuelgan de `(_, ["v1", resto @ ..])`,
+  un brazo sin método, y `loadTable` es una lectura de datos. La sección 4 lo clasifica aparte
+  (`iceberg`, e `iceberg (datos)` para `GET …/tables/{}`).
+
 ### M3 · El camino (hecha el 2026-09-29)
 
 Qué regla de red hace falta, con qué identidad se presenta `ore-serve` ante `ore-iam` (el token

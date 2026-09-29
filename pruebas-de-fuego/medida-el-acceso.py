@@ -3,7 +3,7 @@
 Cada ruta que monta `ore-serve`, con lo que hace, para saber qué le preguntaría a `ore-acceso`
 (`puede`) y qué le diría (`hizo`). Estático: lee el código, sin cluster ni red.
 
-    python pruebas-de-fuego/medida-el-acceso.py [informe.md]
+    python pruebas-de-fuego/medida-el-acceso.py [informe.md | --json]
 
 Lo que mide (0047, § M1):
 
@@ -24,6 +24,7 @@ Su límite: mira la función que atiende y sólo un nivel; lo que se decida más
 """
 
 import collections
+import json
 import pathlib
 import re
 import sys
@@ -245,6 +246,12 @@ def main():
              "una propuesta de nombre, no el catálogo.")
     informe = "\n".join(o) + "\n"
 
+    # `--json`: la tabla de rutas, para M2 (`medida-el-salto.sh` clasifica con ella lo que cuenta).
+    if sys.argv[1:2] == ["--json"]:
+        sys.stdout.write(json.dumps([{"metodo": f["metodo"], "camino": normaliza(f["camino"]),
+                                      "clase": f["clase"], "rastro": f["rastro"]} for f in filas],
+                                    ensure_ascii=False) + "\n")
+        return
     if len(sys.argv) > 1:
         pathlib.Path(sys.argv[1]).write_text(informe, encoding="utf-8", newline="\n")
     sys.stdout.reconfigure(encoding="utf-8")

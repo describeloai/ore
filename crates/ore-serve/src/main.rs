@@ -59,6 +59,7 @@ mod propuestas;
 mod proyectos;
 mod puestos;
 mod punteros;
+mod recuento;
 mod repositorios;
 mod rutas;
 mod schemas;
@@ -362,7 +363,7 @@ fn main() -> ExitCode {
         cambios_cache: assets::Cache::default(),
     };
 
-    match http::servir_con_flujos(escucha, move |p| servidor.atender_flujo(p)) {
+    match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("✗ el servidor terminó: {e}");
