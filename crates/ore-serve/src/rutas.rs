@@ -133,6 +133,8 @@ pub struct Servidor {
     /// ⭐ Y su buzón (0047 A6.4): lo que se escribe va a la actividad sin que la
     ///   respuesta espere a `ore-iam`. Con el puente, siempre; sin él, no hay.
     pub buzon: Option<ore_acceso::Buzon>,
+    /// ⭐ La última pertenencia confirmada de cada sujeto, para la gracia (A9′).
+    pub pertenencias: crate::acceso::Pertenencias,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -242,6 +244,10 @@ impl Servidor {
     /// Sin proveedor configurado esto contesta **404 y no 401**: la ruta no está
     /// porque no se montó, y decir «no autorizado» insinuaría que existe y que
     /// con la credencial correcta contestaría.
+    ///
+    /// ⛔ Y con el puente (0047 A9′), **quien llega tiene que ser de la organización
+    ///   de esta celda**: un token del realm vale en todas, y la pertenencia la sabe
+    ///   `ore-iam`. Es la única puerta de las rutas con sujeto, flujos incluidos.
     fn quien(&self, p: &Peticion) -> Result<Identidad, Respuesta> {
         let Some(proveedor) = self.identidad.as_ref() else {
             return Err(Respuesta::error(
@@ -249,10 +255,12 @@ impl Servidor {
                 "sin proveedor de identidad configurado, las rutas de datos no se montan",
             ));
         };
-        proveedor(&p.cabeceras).map_err(|e| match e {
+        let sujeto = proveedor(&p.cabeceras).map_err(|e| match e {
             SinIdentidad::Ausente => Respuesta::error(401, "esta ruta necesita un sujeto"),
             SinIdentidad::Invalida(m) => Respuesta::error(401, m),
-        })
+        })?;
+        self.pertenece(&sujeto)?;
+        Ok(sujeto)
     }
 
     fn con_sujeto(&self, p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Respuesta {

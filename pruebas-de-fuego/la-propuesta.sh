@@ -684,6 +684,8 @@ import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 LOG = sys.argv[2]
 POT = {"propuesta:fusionar-sin-revision", "rama:proteger", "fuente:crear"}
+# A9′: pertenecer a la organizacion de la celda. `persona:intrusa` no.
+MIEMBROS = {"persona:admin", "persona:ana"}
 n = [0]
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -695,7 +697,8 @@ class H(BaseHTTPRequestHandler):
             f.write(json.dumps({"camino": self.path, "sujeto": sujeto, "celda": celda, "cuerpo": cuerpo}) + "\n")
         if self.path == "/access/v1/evaluation":
             n[0] += 1
-            ok = sujeto == "persona:admin" and cuerpo["action"]["name"] in POT
+            accion = cuerpo["action"]["name"]
+            ok = sujeto in MIEMBROS if accion == "organizacion:leer" else (sujeto == "persona:admin" and accion in POT)
             r = {"decision": ok, "context": {"id": "dec_%d" % n[0], "version": "v", "vale": 0}}
             if not ok:
                 r["context"]["motivo"] = "no tienes `%s` en esta organización" % cuerpo["action"]["name"]
@@ -798,8 +801,20 @@ espera_actividad persona:admin:rama:crear/hecho persona:admin:arbol:escribir/hec
 case " $(actividad) " in *rama:proteger*|*fuente:crear*|*propuesta:fusionar/*) falla "10 · ⛔ LA ACTIVIDAD REPITIO LO DE A5 O CONTO UN 403 DE POTESTAD O UN 422: $(actividad)";; esac
 "$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; a=[x for x in e if x["camino"].endswith("/eventos") and x["cuerpo"]["operacion"]=="arbol:escribir" and x["cuerpo"]["resultado"]=="hecho"][0]; assert a["cuerpo"]["detalle"]["rama"]=="admin/p2" and a["cuerpo"].get("commit") and a["cuerpo"]["sobre"]=="arbol/packages/hr/notas-p2.md" and a["celda"]=="Bearer token-de-la-celda", a' "$TMP/iam.log"   || falla "10 · el evento de escribir no dice su rama, su commit y su camino: $(grep arbol:escribir "$TMP/iam.log" | head -2)"
 ! grep -q '"operacion": "[a-z]*:[a-z-]*", "resultado": "hecho", "sobre": "puestos' "$TMP/iam.log" || falla "10 · ⛔ LA ACTIVIDAD CONTO DATOS DEL PUESTO"
+# ⑦ (0047 A9′) La PERTENENCIA: una cuenta del realm que no es de la organizacion de la
+#    celda no entra, ni a leer ni a escribir. Y si `ore-iam` cae, quien ya paso sigue
+#    (la gracia), y quien nunca paso recibe 503.
+INTRUSA='authorization: Bearer persona:intrusa'
+[ "$(p2 GET /ramas "$INTRUSA")" = "403" ] && cuerpo | grep -q 'no perteneces' || falla "10 · ⛔ UNA CUENTA DE FUERA LEYO LAS RAMAS: $(cuerpo)"
+[ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$INTRUSA" -H 'content-type: text/plain' -H 'x-ore-rama: intrusa/x' --data-binary 'x' "$BASE_P2/arbol/packages/hr/x.md")" = "403" ]   || falla "10 · ⛔ UNA CUENTA DE FUERA ESCRIBIO: $(cuerpo)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_P2/salud")" = "200" ] || falla "10 · /salud dejo de estar abierta"
+"$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; c=[x for x in e if x["camino"].endswith("/evaluation") and x["cuerpo"]["action"]["name"]=="organizacion:leer"]; assert c and {x["sujeto"] for x in c} >= {"persona:admin","persona:intrusa"}, c' "$TMP/iam.log"   || falla "10 · la celda no pregunto la pertenencia"
+kill "$IAMF" 2>/dev/null; sleep 0.5
+[ "$(p2 GET /ramas "$ADMIN")" = "200" ] || falla "10 · sin ore-iam, quien ya paso no siguio por la gracia: $(cuerpo)"
+[ "$(p2 GET /ramas "$INTRUSA")" = "503" ] || falla "10 · ⛔ SIN ORE-IAM, QUIEN NUNCA PASO NO RECIBIO 503: $(cuerpo)"
+grep -q 'pertenencia por gracia' "$TMP/arranque-p2.txt" || falla "10 · la gracia no se dijo en el registro"
 kill "$SRV3" "$SRV4" "$IAMF" 2>/dev/null
-dice "10 · P2 por el puente: proteger es de rama:proteger (ana 403 y nada escrito; admin sí, y contado con los dos tokens y su decision) · con main protegida admin fusiona lo suyo: la ficha lo dice con una CONSULTA, la huella se abre antes y se cierra despues, el merge lo dice · ana, la regla de siempre · sin quien decida, 503 · dar de alta una fuente es de fuente:crear · y lo demas que se escribe, a la actividad por el buzon (hecho, o negado el 423), sin repetir lo de A5"
+dice "10 · P2 por el puente: proteger es de rama:proteger (ana 403 y nada escrito; admin sí, y contado con los dos tokens y su decision) · con main protegida admin fusiona lo suyo: la ficha lo dice con una CONSULTA, la huella se abre antes y se cierra despues, el merge lo dice · ana, la regla de siempre · sin quien decida, 503 · dar de alta una fuente es de fuente:crear · y lo demas que se escribe, a la actividad por el buzon (hecho, o negado el 423), sin repetir lo de A5 · A9′: una cuenta de fuera, 403 al leer y al escribir; sin ore-iam, gracia para quien ya paso y 503 para quien no"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"

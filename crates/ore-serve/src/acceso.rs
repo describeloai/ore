@@ -15,6 +15,17 @@
 //! Sin `--acceso`, nada cambia: es lo que el árbol era, y lo que un banco sin
 //! `ore-iam` necesita.
 //!
+//! # Y antes de todo, la pertenencia (0047 A9′)
+//!
+//! Con `--acceso`, **toda petición con sujeto pregunta primero si quien llega es de
+//! la organización de esta celda** ([`Servidor::pertenece`]). Sin eso, un token del
+//! realm —de cualquier organización, o de una cuenta recién registrada— valía en
+//! cualquier celda: la audiencia es `ore-serve` para todas.
+//!
+//! Si `ore-iam` no contesta, vale la última respuesta positiva de esa persona
+//! durante [`GRACIA`]: las celdas no caen con `ore-iam`, y a cambio una baja tarda
+//! eso en valer. Quien nunca pasó recibe 503.
+//!
 //! # El token de quien pide, por hilo
 //!
 //! `puede` necesita el token con el que la persona llegó (`Ore-Sujeto`), y la
@@ -28,6 +39,43 @@ use ore_core::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::Identidad;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// Cuánto vale la última pertenencia confirmada si `ore-iam` no contesta (A9′,
+/// decidido el 2026-09-29: gracia, no 503).
+pub const GRACIA: Duration = Duration::from_secs(600);
+
+/// La última vez que `ore-iam` dijo que cada sujeto pertenece.
+#[derive(Default)]
+pub struct Pertenencias(Mutex<HashMap<String, Instant>>);
+
+impl Pertenencias {
+    fn confirmar(&self, sujeto: &str) {
+        if let Ok(mut m) = self.0.lock() {
+            if m.len() > 50_000 {
+                m.retain(|_, t| t.elapsed() < GRACIA);
+            }
+            m.insert(sujeto.to_string(), Instant::now());
+        }
+    }
+
+    fn olvidar(&self, sujeto: &str) {
+        if let Ok(mut m) = self.0.lock() {
+            m.remove(sujeto);
+        }
+    }
+
+    /// ¿Pertenecía hace menos de [`GRACIA`]?
+    fn en_gracia(&self, sujeto: &str) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|m| m.get(sujeto).map(|t| t.elapsed() < GRACIA))
+            .unwrap_or(false)
+    }
+}
 
 thread_local! {
     static TESTIGO: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -82,6 +130,52 @@ pub enum Salto {
 }
 
 impl Servidor {
+    /// **¿Es quien llega de la organización de esta celda?** (0047 A9′). `Ok` sin
+    /// puente (lo de siempre), o si pertenece; si no, 403 (y `ore-iam` ya lo anotó).
+    /// Sin respuesta, la gracia; sin gracia, 503.
+    pub(crate) fn pertenece(&self, sujeto: &Identidad) -> Result<(), Respuesta> {
+        let Some(acceso) = self.acceso.as_ref() else {
+            return Ok(());
+        };
+        let Some(t) = testigo() else {
+            return Err(Respuesta::error(
+                401,
+                "esta celda necesita el token de quien pide",
+            ));
+        };
+        match acceso.puede(
+            &t,
+            &sujeto.persona,
+            ore_iam_pertenencia(),
+            Recurso::ORGANIZACION,
+            "pertenencia",
+        ) {
+            Decision::Permite { .. } => {
+                self.pertenencias.confirmar(&sujeto.persona);
+                Ok(())
+            }
+            Decision::Niega { id, .. } => {
+                self.pertenencias.olvidar(&sujeto.persona);
+                PREGUNTADO.with(|c| c.set(true));
+                Err(Respuesta {
+                    codigo: 403,
+                    cuerpo: Json::obj([
+                        (
+                            "error",
+                            Json::s("no perteneces a la organización de esta celda"),
+                        ),
+                        ("decision", Json::s(id)),
+                    ]),
+                })
+            }
+            Decision::SinRespuesta { motivo } if self.pertenencias.en_gracia(&sujeto.persona) => {
+                eprintln!("acceso · pertenencia por gracia (sin respuesta de ore-iam): {motivo}");
+                Ok(())
+            }
+            d => Err(respuesta_de(&d)),
+        }
+    }
+
     /// Exige una potestad de la organización. `Ok(None)` sin puente (lo de
     /// siempre); `Ok(Some(decision))` si puede; `Err` con la respuesta que toca.
     pub(crate) fn exigir(
@@ -180,6 +274,12 @@ impl Servidor {
             }
         })
     }
+}
+
+/// La potestad que es pertenecer (`ore_iam::puente::PERTENENCIA`; `ore-serve` no
+/// enlaza `ore-iam`, así que se repite aquí y la prueba de fuego las casa).
+fn ore_iam_pertenencia() -> &'static str {
+    "organizacion:leer"
 }
 
 /// Un evento con lo de siempre relleno.

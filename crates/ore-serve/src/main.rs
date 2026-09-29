@@ -429,6 +429,7 @@ fn main() -> ExitCode {
         puestos: std::sync::Arc::new(puestos::Puestos::default()),
         assets_cache: assets::Cache::default(),
         cambios_cache: assets::Cache::default(),
+        pertenencias: acceso::Pertenencias::default(),
         buzon: acceso
             .as_ref()
             .map(|a| ore_acceso::Buzon::nuevo(std::sync::Arc::clone(a))),

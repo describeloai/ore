@@ -1018,6 +1018,19 @@ token corto. Se apunta.
 | **A9′.3** | La prueba de fuego: dos organizaciones y dos personas; la de fuera recibe 403 en lectura y en escritura; su agente, en la suya sí y en la otra no |
 | **A9′.4** | Retirar `ore-agente` y `ore-agente-prueba-dos` de `iam.agente` y del realm |
 
+**Hecho en código el 2026-09-29.** Por pasos:
+- **A9′.1:** `puente.rs`, `PERTENENCIA`.
+- **A9′.2:** `ore-serve`, `Servidor::pertenece` en `quien()`, la única puerta de las rutas con
+  sujeto, flujos incluidos. ✏️ **Decidido: gracia de 10 minutos** (`GRACIA`) con la última
+  pertenencia confirmada si `ore-iam` no contesta; quien nunca pasó recibe 503.
+- **A9′.3:** `la-propuesta.sh` 10 ⑦ (una cuenta de fuera, 403 al leer y al escribir; sin
+  `ore-iam`, gracia para quien ya pasó y 503 para quien no) y `los-verbos.sh` 15 ⑦b.
+- **A9′.4:** la `046` y `los-verbos.sh` 17. `revoco_agente` y no `revoco`, que exige una
+  persona: la prueba lo pilló antes de producción.
+
+Comprobado contra producción antes de desplegar: los `sub` reales de los agentes de victor y demo
+(los de la huella del custodio) son los de `iam.agente`, con el mismo emisor que `ore-iam`.
+
 A9, el token por celda con Keycloak 26.2, queda **aplazado**: con A9′ lo que cerraba es poco (una
 celda comprometida reenviando el token de alguien a otra celda de sus propias organizaciones).
 

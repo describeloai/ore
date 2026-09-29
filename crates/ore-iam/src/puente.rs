@@ -62,6 +62,11 @@ struct Pregunta {
     consulta: bool,
 }
 
+/// Lo que toda celda pregunta antes de atender (0047 A9′): ¿pertenece quien llega
+/// a la organización de esta celda? Es la potestad que da pertenecer
+/// (`iam.por_defecto`); a un agente se la da estar registrado en ella.
+pub const PERTENENCIA: &str = "organizacion:leer";
+
 impl Servidor {
     /// La puerta del puente. `None` si el camino no es del puente.
     pub fn puente(&self, p: &Peticion, seg: &[&str]) -> Option<Respuesta> {
@@ -335,7 +340,24 @@ impl Servidor {
                 ),
             ));
         }
+        // ⭐ A9′: la PERTENENCIA de un agente (`organizacion:leer`, lo que toda celda
+        //   pregunta antes de atender). Un agente pertenece si está registrado en la
+        //   organización de ESTA celda (`iam.agente`, que da de alta el aprovisionador);
+        //   lo demás, un agente no lo tiene.
         if s.tipo.as_deref() == Some("agente") || s.tipo.as_deref() == Some("aprovisionador") {
+            if q.accion == PERTENENCIA && s.tipo.as_deref() == Some("agente") {
+                let suyo = tx
+                    .uno(
+                        "select 1 from iam.agente where emisor = $1 and sub = $2 and organizacion = $3",
+                        &[&self.emisor, &s.persona, &celda.organizacion],
+                    )?
+                    .is_some();
+                return Ok(if suyo {
+                    (true, String::new())
+                } else {
+                    (false, "este agente no es de esta organización".into())
+                });
+            }
             return Ok((
                 false,
                 "un agente no tiene potestades de organización".into(),

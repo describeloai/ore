@@ -864,6 +864,16 @@ EV='{"id":"ev-1","operacion":"fuente:crear","sobre":"fuente/ventas","resultado":
   || falla "15 · ⛔ OTRA CELDA USO UNA DECISION DE ACME"
 [ "$(puente "$CA" "$ADA" eventos '{"id":"ev 5","operacion":"x:y","resultado":"hecho"}')" = "400" ] || falla "15 · un id con espacios entro"
 [ "$(puente "$CA" "$ADA" eventos '{"id":"ev-6","operacion":"x:y","resultado":"quizas"}')" = "400" ] || falla "15 · un resultado inventado entro"
+# ⑦b (0047 A9′) La PERTENENCIA, que toda celda pregunta antes de atender: Ada si en acme
+#    y Zoe no; el agente de acme si, y el de nova no; y a un agente no le da nada mas.
+DEC_P=$( [ "$(puente "$CA" "$ADA" evaluation "$(pregunta persona:ada organizacion:leer)")" = "200" ] && campo decision )
+[ "$DEC_P" = "True" ] || falla "15 · Ada no pertenece a acme: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$ZOE" evaluation "$(pregunta persona:zoe organizacion:leer)")" = "200" ] && [ "$(campo decision)" = "False" ]   || falla "15 · ⛔ ZOE, DE OTRA ORGANIZACION, PERTENECE A ACME: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$AGEA" evaluation "$(pregunta maquina:agente-acme organizacion:leer)")" = "200" ] && [ "$(campo decision)" = "True" ]   || falla "15 · el agente de acme no pertenece a acme: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$AGEN" evaluation "$(pregunta maquina:agente-nova organizacion:leer)")" = "200" ] && [ "$(campo decision)" = "False" ]   || falla "15 · ⛔ EL AGENTE DE NOVA PERTENECE A ACME: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$AGEA" evaluation "$(pregunta maquina:agente-acme invitacion:emitir)")" = "200" ] && [ "$(campo decision)" = "False" ]   || falla "15 · ⛔ PERTENECER LE DIO AL AGENTE UNA POTESTAD: $(cat "$TMP/r.json")"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'acceso:negado' and quien = 'maquina:agente-nova' and organizacion = '$ORG'")" -ge 1 ]   || falla "15 · la pertenencia negada al agente de nova no quedo en la huella de acme"
+dice "15 · A9′ la pertenencia: Ada si y Zoe no; el agente de acme si y el de nova no (y anotado en la de acme); pertenecer no le da al agente ninguna potestad"
 # ⑧ La celda retirada ya no pregunta.
 psql "$URL" -qtAc "update iam.celda set estado='retirada' where id='cel_otra'" >/dev/null
 [ "$(puente "$CO" "$ZOE" evaluation "$(pregunta persona:zoe invitacion:emitir)")" = "401" ] || falla "15 · ⛔ UNA CELDA RETIRADA SIGUE PREGUNTANDO"
@@ -925,5 +935,18 @@ set -- $P1
 [ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'actividad:leer' and organizacion = '$ORG' and quien = 'persona:bea' and detalle->>'alcance' = 'propia'")" -ge 1 ] \
   || falla "16 · leer la actividad no dejo huella"
 dice "16 · por paginas (limite y el cursor desde), filtro de clase, 422 a lo inventado; y leerla deja huella"
+
+# ── 17 · los agentes que ninguna celda usa, retirados (0047 A9′.4, la 046) ───
+[ "$(pide POST "/organizaciones/acme/agentes" "$APROV" '{"sub":"maquina:el-viejo","nombre":"ore-agente"}')" = "200" ]   || falla "17 · registrar el viejo: $(cat "$TMP/r.json")"
+VIEJO=$(psql "$URL" -qtAc "select id from iam.agente where nombre = 'ore-agente'")
+psql "$URL" -qtAc "insert into iam.concesion (id, sujeto, recurso, rol, concedio, organizacion) select 'con_viejo', '$VIEJO', 'secreto/x', 'usar', id, '$ORG' from iam.persona where sub = 'persona:ada'" >/dev/null   || falla "17 · la concesion del viejo"
+psql "$URL" -v ON_ERROR_STOP=1 -qtAf "$RAIZ/iam/migraciones/046-los-agentes-sin-celda.sql" >/dev/null || falla "17 · la 046 fallo"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.agente where nombre = 'ore-agente'")" = "0" ] || falla "17 · el viejo sigue en iam.agente"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.agente where nombre = 'ore-agente-acme'")" = "1" ] || falla "17 · ⛔ LA 046 SE LLEVO UN AGENTE EN USO"
+[ "$(psql "$URL" -qtAc "select revoco_agente from iam.concesion where id = 'con_viejo' and revocada_en is not null")" = "migracion:046" ] || falla "17 · su concesion no quedo revocada (con la fila)"
+[ "$(psql "$URL" -qtAc "select detalle->>'concesiones_revocadas' from iam.huella where operacion = 'agente:retirar' and sobre = '$VIEJO' and organizacion = '$ORG'")" -ge 1 ] || falla "17 · la retirada no quedo en la huella de acme (con sus concesiones revocadas)"
+psql "$URL" -v ON_ERROR_STOP=1 -qtAf "$RAIZ/iam/migraciones/046-los-agentes-sin-celda.sql" >/dev/null || falla "17 · la 046 no se puede repetir"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'agente:retirar'")" = "1" ] || falla "17 · repetir la 046 anoto otra vez"
+dice "17 · la 046: el agente sin celda sale de iam.agente, sus concesiones se revocan (la fila se queda), queda en la huella de su organizacion, y repetirla no hace nada"
 
 echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, el estado que informa el agente, el puente, y la actividad."
