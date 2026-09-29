@@ -277,6 +277,12 @@ impl Servidor {
     /// anota **quién la pidió, de qué, y cuánto vive** en la actividad de la
     /// organización (`coleccion:servir`), porque el lago no sabe quién lee.
     ///
+    /// De una **virtual** (E9·3) los bytes están en el origen: la URL la firma su
+    /// lector con la credencial de la fuente, que `ore` no tiene. Si la pide
+    /// (`{necesita: {fuente, env}}`, 69), este proceso la lee del cofre **como el
+    /// agente de la celda** y vuelve a correr `ore` con ella en el entorno del
+    /// hijo, y sólo ahí.
+    ///
     /// Quién puede: quien lee los ítems de la colección —la pertenencia a la
     /// organización (0047 A9′)—. La decisión por recurso (`coleccion:leer`
     /// sobre esta colección) llega con 0047 A8: el motor de `ore-iam` sólo
@@ -312,10 +318,22 @@ impl Servidor {
             args.push(t.to_string());
         }
         let r = self.leyendo_en(rama, |raiz| {
-            let s = match mando::correr(&self.binario, raiz, &args) {
+            let mut s = match mando::correr(&self.binario, raiz, &args) {
                 Ok(s) => s,
                 Err(e) => return Respuesta::error(500, e.to_string()),
             };
+            if s.codigo == 69
+                && let Some((fuente, env)) = necesita(&s.stdout)
+            {
+                let valor = match self.credencial_de_la_fuente(&fuente, &env) {
+                    Ok(v) => v,
+                    Err(r) => return r,
+                };
+                s = match mando::correr_con(&self.binario, raiz, &args, &[(env, valor)]) {
+                    Ok(s) => s,
+                    Err(e) => return Respuesta::error(500, e.to_string()),
+                };
+            }
             let codigo = match s.codigo {
                 0 => 200,
                 64 => 422,
@@ -385,9 +403,24 @@ impl Servidor {
                 })
                 .collect()
         };
+        let virtual_ = m.get("virtual") == Some(&Json::Bool(true));
         let mut detalle = vec![
             ("huellas", Json::Arr(de("huella"))),
-            ("blobs", Json::Arr(de("blob"))),
+            if virtual_ {
+                // Del origen: qué versión de qué clave.
+                (
+                    "versiones",
+                    Json::Arr(
+                        de("clave")
+                            .into_iter()
+                            .zip(de("version"))
+                            .map(|(c, v)| Json::Arr(vec![c, v]))
+                            .collect(),
+                    ),
+                )
+            } else {
+                ("blobs", Json::Arr(de("blob")))
+            },
             (
                 "segundos",
                 m.get("segundos").cloned().unwrap_or(Json::Int(0)),
@@ -419,6 +452,58 @@ impl Servidor {
         buzon.echar(token, e);
     }
 
+    /// La credencial de una fuente, del cofre, **como el agente de la celda**
+    /// (0046 E9·3). El cofre decide (`usar` sobre `fuente-<n>`) y lo anota.
+    fn credencial_de_la_fuente(&self, fuente: &str, env: &str) -> Result<String, Respuesta> {
+        if token(fuente).is_err() || !crate::agente::variable_admisible(env) {
+            return Err(Respuesta::error(
+                422,
+                format!(
+                    "la fuente `{fuente}` declara `{env}`: sólo una `<ALGO>_URL` lleva su credencial"
+                ),
+            ));
+        }
+        let (Some(agente), Some(cofre), Some(org)) =
+            (&self.agente, &self.cofre, &self.organizacion)
+        else {
+            return Err(Respuesta::error(
+                503,
+                "esta celda no sabe traer la credencial de una fuente: le falta el agente \
+                 (`--agente-fichero`, `--idp`) o el custodio (`--cofre`, `--organizacion`)",
+            ));
+        };
+        let t = agente.token().map_err(|e| Respuesta::error(503, e))?;
+        match ore_entrada::http::pedir(
+            "GET",
+            cofre,
+            &format!("/organizaciones/{org}/secretos/fuente-{fuente}"),
+            Some(&t),
+            None,
+        ) {
+            Ok((200, b)) => crate::agente::valor_de(&b).ok_or_else(|| {
+                Respuesta::error(
+                    502,
+                    format!("el custodio no dio el valor de `fuente-{fuente}`"),
+                )
+            }),
+            Ok((404, _)) => Err(Respuesta::error(
+                409,
+                format!("`fuente-{fuente}` no está en el custodio: la fuente no tiene credencial"),
+            )),
+            Ok((c, b)) => Err(Respuesta::error(
+                502,
+                format!(
+                    "el custodio contestó {c} a `fuente-{fuente}`: {}",
+                    b.trim().chars().take(120).collect::<String>()
+                ),
+            )),
+            Err(e) => Err(Respuesta::error(
+                503,
+                format!("el custodio no contesta: {e}"),
+            )),
+        }
+    }
+
     /// Corre `ore` y devuelve la última línea JSON de su salida tal cual; lo
     /// que no es 0 es 502 con lo que dijo.
     fn ore_json(&self, raiz: &Path, args: &[String]) -> Respuesta {
@@ -443,6 +528,17 @@ impl Servidor {
             None => Respuesta::error(502, "`ore datasets` no devolvió JSON"),
         }
     }
+}
+
+/// `{necesita: {fuente, env}}` en la salida de `ore collections --servir`: la
+/// credencial que falta para firmar una virtual.
+fn necesita(stdout: &str) -> Option<(String, String)> {
+    stdout.lines().find_map(|l| {
+        let n = ore_core::parse::parse(l.trim()).ok()?;
+        let (_, x) = n.get("necesita")?;
+        let c = |k: &str| x.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        Some((c("fuente")?, c("env")?))
+    })
 }
 
 /// Un segmento de la ruta con sus `%XX` resueltos: una huella lleva `/`, `+`,
@@ -487,5 +583,14 @@ mod pruebas {
         assert_eq!(sin_porcentajes("%zz"), None);
         assert_eq!(sin_porcentajes("%FF"), None, "no es UTF-8");
         assert_eq!(sin_porcentajes("a%2").as_deref(), Some("a%2"));
+    }
+
+    #[test]
+    fn lo_que_ore_necesita_para_una_virtual() {
+        assert_eq!(
+            super::necesita("{\"necesita\":{\"fuente\":\"s3_x\",\"env\":\"S3_X_URL\"}}\n"),
+            Some(("s3_x".into(), "S3_X_URL".into()))
+        );
+        assert_eq!(super::necesita("{\"items\":[]}"), None);
     }
 }

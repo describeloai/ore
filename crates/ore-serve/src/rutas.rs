@@ -135,6 +135,9 @@ pub struct Servidor {
     pub buzon: Option<ore_acceso::Buzon>,
     /// ⭐ La última pertenencia confirmada de cada sujeto, para la gracia (A9′).
     pub pertenencias: crate::acceso::Pertenencias,
+    /// ⭐ El agente de la celda (0046 E9·3): con él se lee del cofre la credencial
+    ///   de una fuente para firmar en el origen los ítems de una colección virtual.
+    pub agente: Option<crate::agente::Agente>,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).

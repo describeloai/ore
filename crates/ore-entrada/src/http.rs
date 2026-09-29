@@ -574,6 +574,63 @@ pub fn pedir_con(
     cuerpo: Option<&Json>,
     plazos: Plazos,
 ) -> Result<(u16, String), String> {
+    // ⭐ La forma canonica y no la indentada: esto lo lee un programa. Es la
+    //   misma que usa el sellado, asi que dos peticiones identicas producen
+    //   bytes identicos.
+    let serializado = cuerpo.map(|c| c.jcs());
+    pedir_crudo(
+        metodo,
+        destino,
+        camino,
+        cabeceras,
+        serializado.as_deref().map(|c| ("application/json", c)),
+        plazos,
+    )
+}
+
+/// **Un formulario** (`application/x-www-form-urlencoded`) por `POST`: lo que
+/// el punto de token de un IdP entiende (0046 E9·3: `ore-serve` pide el token
+/// del agente de su celda al IdP del clúster). Mismas reglas que [`pedir_con`].
+pub fn pedir_formulario(
+    destino: &str,
+    camino: &str,
+    pares: &[(&str, &str)],
+    plazos: Plazos,
+) -> Result<(u16, String), String> {
+    let codificar = |s: &str| -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    let cuerpo = pares
+        .iter()
+        .map(|(k, v)| format!("{}={}", codificar(k), codificar(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    pedir_crudo(
+        "POST",
+        destino,
+        camino,
+        &[],
+        Some(("application/x-www-form-urlencoded", &cuerpo)),
+        plazos,
+    )
+}
+
+/// Lo común: una petición con el cuerpo ya hecho, y su tipo.
+fn pedir_crudo(
+    metodo: &str,
+    destino: &str,
+    camino: &str,
+    cabeceras: &[(&str, &str)],
+    cuerpo: Option<(&str, &str)>,
+    plazos: Plazos,
+) -> Result<(u16, String), String> {
     if cabeceras
         .iter()
         .any(|(k, v)| k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']))
@@ -607,21 +664,17 @@ pub fn pedir_con(
     let _ = flujo.set_read_timeout(Some(plazos.responder));
     let _ = flujo.set_write_timeout(Some(plazos.responder));
 
-    // ⭐ La forma canonica y no la indentada: esto lo lee un programa. Es la
-    //   misma que usa el sellado, asi que dos peticiones identicas producen
-    //   bytes identicos.
-    let serializado = cuerpo.map(|c| c.jcs()).unwrap_or_default();
     let mut peticion =
         format!("{metodo} {camino} HTTP/1.1\r\nHost: {destino}\r\nConnection: close\r\n");
     for (k, v) in cabeceras {
         peticion.push_str(&format!("{k}: {v}\r\n"));
     }
-    if cuerpo.is_some() {
-        peticion.push_str("Content-Type: application/json\r\n");
-        peticion.push_str(&format!("Content-Length: {}\r\n", serializado.len()));
+    if let Some((tipo, c)) = cuerpo {
+        peticion.push_str(&format!("Content-Type: {tipo}\r\n"));
+        peticion.push_str(&format!("Content-Length: {}\r\n", c.len()));
     }
     peticion.push_str("\r\n");
-    peticion.push_str(&serializado);
+    peticion.push_str(cuerpo.map(|(_, c)| c).unwrap_or_default());
 
     flujo
         .write_all(peticion.as_bytes())

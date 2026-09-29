@@ -8,7 +8,7 @@
 //! | `--items b.s.n [--estado …] [--desde N] [--limite N]` | sus ítems, por estado (`actual` por defecto; `retirado`, `perdido`, `todos`), en orden de camino, paginados | `GET /colecciones/{b}/{s}/{n}/items` |
 //! | (en las tres) | si el manifiesto pasa de 500.000 filas, el aviso del **techo** (E8·3c): cada transacción lo reescribe entero, y toca *merge-on-read* | quien mira la colección |
 //! | `--recoger [--seco] [--gracia 2h]` | **el mantenimiento** (E8·3): la retención de cada colección (lo retirado más viejo que su `retention` sale del manifiesto, y el puntero se mueve) y después la **recogida de blobs** del inquilino: lo que ninguna fila de ningún manifiesto nombra, y nadie tocó en la gracia, se va. Si un manifiesto no se puede leer, no se recoge nada | el CronJob de mantenimiento |
-//! | `--servir b.s.n --huella H [--huella H…] [--ttl 300]` | **servir** (0046 E9·2): de cada huella, el ítem que la lleva —el actual antes que el retirado— y una **URL firmada** a su blob, que vive `--ttl` segundos (5 min; entre 30 s y 1 h), con su tipo y su disposición dentro de la firma: `inline` sólo para lo que un navegador enseña sin ejecutar (PDF, imagen de mapa de bits, vídeo, audio); lo demás, descarga. Quién puede lo decide quien llama | `GET /colecciones/{b}/{s}/{n}/items/{huella}`, `POST …/items/resolver` |
+//! | `--servir b.s.n --huella H [--huella H…] [--ttl 300]` | **servir** (0046 E9·2 y E9·3): de cada huella, el ítem que la lleva —el actual antes que el retirado— y una **URL firmada**: a su blob en el lago (mantenida) o a su versión en el origen (virtual, con la credencial de `connectionEnv`; sin ella sale con 69 y dice `{necesita: {fuente, env}}`), que vive `--ttl` segundos (5 min; entre 30 s y 1 h), con su tipo y su disposición dentro de la firma: `inline` sólo para lo que un navegador enseña sin ejecutar (PDF, imagen de mapa de bits, vídeo, audio); lo demás, descarga. Quién puede lo decide quien llama | `GET /colecciones/{b}/{s}/{n}/items/{huella}`, `POST …/items/resolver` |
 //! | `--cotejar b.s.n [--muestra N]` | **que lo que el manifiesto de una mantenida dice esté en el lago** (E8·2d): cada blob que una fila nombra, con su tamaño; y N de ellos, bajados y vueltos a hashear. Sale con 1 si algo está roto, y dice qué ítem | el mantenimiento, o quien quiera saberlo |
 //!
 //! El puntero vive con los de los datasets (`datasets/<b>/<s>/<n>.json`, con
@@ -407,9 +407,9 @@ pub fn disposicion(tipo: &str, nombre: &str) -> (&'static str, String) {
 }
 
 /// De las filas con una huella, la que se sirve: la actual antes que la
-/// retirada, y entre iguales la de menor camino (determinista). Una sin blob
-/// no se sirve.
-fn la_que_se_sirve<'a>(filas: &'a [Node], huella: &str) -> Option<&'a Node> {
+/// retirada, y entre iguales la de menor camino (determinista). Lo perdido no
+/// se sirve; de una mantenida, tampoco una fila sin blob.
+fn la_que_se_sirve<'a>(filas: &'a [Node], huella: &str, virtual_: bool) -> Option<&'a Node> {
     let rango = |n: &Node| match campo(n, "estado").as_deref() {
         Some("actual") => 0,
         Some("retirado") => 1,
@@ -417,7 +417,11 @@ fn la_que_se_sirve<'a>(filas: &'a [Node], huella: &str) -> Option<&'a Node> {
     };
     filas
         .iter()
-        .filter(|n| campo(n, "huella").as_deref() == Some(huella) && campo(n, "blob").is_some())
+        .filter(|n| {
+            campo(n, "huella").as_deref() == Some(huella)
+                && matches!(campo(n, "estado").as_deref(), Some("actual" | "retirado"))
+                && (virtual_ || campo(n, "blob").is_some())
+        })
         .min_by(|a, b| {
             rango(a)
                 .cmp(&rango(b))
@@ -425,9 +429,14 @@ fn la_que_se_sirve<'a>(filas: &'a [Node], huella: &str) -> Option<&'a Node> {
         })
 }
 
-/// **Servir** (0046 E9·2): de cada huella, su ítem y una URL firmada a su blob.
-/// Sale con 65 si la colección o su transacción no están, con 66 si es virtual
-/// (sus bytes están en el origen: E9·3) y con 64 si lo pedido no vale.
+/// Lo que se sirve de una huella: la huella, su fila, su tipo, el modo y la
+/// cabecera `Content-Disposition`.
+type Servido<'a> = (String, &'a Node, String, &'static str, String);
+
+/// **Servir** (0046 E9·2 y E9·3): de cada huella, su ítem y una URL firmada.
+/// Sale con 65 si la colección o su transacción no están, con 66 si su origen
+/// no sabe firmar, con 69 —y `{necesita: {fuente, env}}` en la salida— si falta
+/// la credencial de una virtual, y con 64 si lo pedido no vale.
 fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let d = una(path, nombre)?;
     let qn = d.qname().unwrap_or_default();
@@ -444,12 +453,7 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     {
         return Err((64, format!("`{h}` no es una huella")));
     }
-    if crate::coleccion::es_virtual(&d) {
-        return Err((
-            66,
-            format!("`{qn}` es virtual: sus bytes están en el origen, y servirlos es E9·3"),
-        ));
-    }
+    let virtual_ = crate::coleccion::es_virtual(&d);
     let (_, lago) = puntero_de(path, &qn, op);
     let (ds, ml) = lago.ok_or_else(|| {
         (
@@ -477,16 +481,21 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         .skip(1)
         .filter_map(|l| ore_core::parse::parse(l.trim()).ok())
         .collect();
-    let mut servidos: Vec<(String, &Node, String, &'static str, String)> = Vec::new();
+    let mut servidos: Vec<Servido> = Vec::new();
     let mut no_estan: Vec<String> = Vec::new();
     for h in op.huellas {
         if servidos.iter().any(|(x, ..)| x == h) || no_estan.contains(h) {
             continue;
         }
-        match la_que_se_sirve(&filas, h) {
+        match la_que_se_sirve(&filas, h, virtual_) {
             None => no_estan.push(h.clone()),
             Some(f) => {
-                let tipo = campo(f, "tipo").unwrap_or_else(|| "application/octet-stream".into());
+                let tipo = campo(f, "tipo")
+                    .or_else(|| {
+                        campo(f, "formato")
+                            .map(|x| crate::coleccion::tipo_de_formato(&x.to_ascii_lowercase()))
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".into());
                 let camino = campo(f, "camino").unwrap_or_default();
                 let nombre = camino.rsplit('/').next().unwrap_or(&camino).to_string();
                 let (modo, cabecera) = disposicion(&tipo, &nombre);
@@ -494,49 +503,15 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             }
         }
     }
-    let mut firmadas: std::collections::BTreeMap<String, String> = Default::default();
-    let (mut segundos, mut caduca_ms) = (0i64, 0i64);
-    if !servidos.is_empty() {
-        let mut p = vec![(
-            "firmas",
-            Json::Arr(
-                servidos
-                    .iter()
-                    .map(|(_, f, tipo, _, cab)| {
-                        Json::obj([
-                            ("blob", Json::s(campo(f, "blob").unwrap_or_default())),
-                            ("tipo", Json::s(tipo)),
-                            ("disposicion", Json::s(cab)),
-                        ])
-                    })
-                    .collect(),
-            ),
-        )];
-        if let Some(t) = op.ttl {
-            p.push(("segundos", Json::s(t.to_string())));
-        }
-        let r = almacen("blob-firmar", &Json::obj(p))?;
-        let r = ore_core::parse::parse(r.trim())
-            .map_err(|e| (69, format!("la firma no analiza: {e:?}")))?;
-        let num = |k: &str| campo(&r, k).and_then(|v| v.parse().ok()).unwrap_or(0);
-        segundos = num("segundos");
-        caduca_ms = num("caduca_ms");
-        // Por posición, no por blob: dos ítems con el mismo blob pueden pedir
-        // disposiciones distintas (su nombre).
-        let urls: Vec<String> = r
-            .get("firmadas")
-            .map(|(_, v)| v.items())
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|x| campo(x, "url"))
-            .collect();
-        if urls.len() != servidos.len() {
-            return Err((69, "el almacén no firmó todo lo pedido".into()));
-        }
-        for ((h, ..), u) in servidos.iter().zip(urls) {
-            firmadas.insert(h.clone(), u);
-        }
-    }
+    let (urls, segundos, caduca_ms) = if servidos.is_empty() {
+        (Vec::new(), 0, 0)
+    } else if virtual_ {
+        firmar_en_el_origen(path, &d, &servidos, op.ttl)?
+    } else {
+        firmar_en_el_lago(&servidos, op.ttl)?
+    };
+    let firmadas: std::collections::BTreeMap<String, String> =
+        servidos.iter().map(|(h, ..)| h.clone()).zip(urls).collect();
     let items: Vec<Json> = servidos
         .iter()
         .map(|(h, f, tipo, modo, _)| {
@@ -547,7 +522,9 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
                 ("disposicion", Json::s(*modo)),
             ];
             for k in ["blob", "camino", "clave", "version", "estado"] {
-                m.push((k, Json::s(campo(f, k).unwrap_or_default())));
+                if let Some(v) = campo(f, k) {
+                    m.push((k, Json::s(v)));
+                }
             }
             m.push((
                 "tamano",
@@ -558,6 +535,7 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         .collect();
     let j = Json::obj([
         ("coleccion", Json::s(&qn)),
+        ("virtual", Json::Bool(virtual_)),
         ("segundos", Json::Int(segundos)),
         ("caduca_ms", Json::Int(caduca_ms)),
         ("items", Json::Arr(items)),
@@ -572,6 +550,131 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         println!("{}", j.pretty());
     }
     Ok(())
+}
+
+/// Las URLs de una mantenida: sus blobs, firmados por el lago
+/// (`ore-store blob-firmar`), en el orden pedido.
+fn firmar_en_el_lago(
+    servidos: &[Servido],
+    ttl: Option<u64>,
+) -> Result<(Vec<String>, i64, i64), Fallo> {
+    let mut p = vec![(
+        "firmas",
+        Json::Arr(
+            servidos
+                .iter()
+                .map(|(_, f, tipo, _, cab)| {
+                    Json::obj([
+                        ("blob", Json::s(campo(f, "blob").unwrap_or_default())),
+                        ("tipo", Json::s(tipo)),
+                        ("disposicion", Json::s(cab)),
+                    ])
+                })
+                .collect(),
+        ),
+    )];
+    if let Some(t) = ttl {
+        p.push(("segundos", Json::s(t.to_string())));
+    }
+    let r = almacen("blob-firmar", &Json::obj(p))?;
+    let r = ore_core::parse::parse(r.trim())
+        .map_err(|e| (69, format!("la firma no analiza: {e:?}")))?;
+    let num = |k: &str| campo(&r, k).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let (segundos, caduca_ms) = (num("segundos"), num("caduca_ms"));
+    // Por posición, no por blob: dos ítems con el mismo blob pueden pedir
+    // disposiciones distintas (su nombre).
+    let urls: Vec<String> = r
+        .get("firmadas")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|x| campo(x, "url"))
+        .collect();
+    if urls.len() != servidos.len() {
+        return Err((69, "el almacén no firmó todo lo pedido".into()));
+    }
+    Ok((urls, segundos, caduca_ms))
+}
+
+/// Las URLs de una virtual: **del origen**, cada ítem fijado a su versión, con
+/// la credencial de su fuente (`connectionEnv`) y firmadas por su lector
+/// (`ore-read-<tipo> firmar`, que no abre un socket). Sin la credencial, dice
+/// cuál necesita —quien sirve la trae del cofre (E9·3)— y sale con 69.
+fn firmar_en_el_origen(
+    path: &Path,
+    d: &Loaded,
+    servidos: &[Servido],
+    ttl: Option<u64>,
+) -> Result<(Vec<String>, i64, i64), Fallo> {
+    let (fuente, tipo, env) = crate::coleccion::fuente_de(path, d).map_err(|m| (65, m))?;
+    if tipo != "s3" {
+        return Err((
+            66,
+            format!("servir del origen `{fuente}` ({tipo}) no se sabe todavía: sólo de S3"),
+        ));
+    }
+    let Ok(url) = lector::url(path, &env, &fuente) else {
+        println!(
+            "{}",
+            Json::obj([(
+                "necesita",
+                Json::obj([("fuente", Json::s(&fuente)), ("env", Json::s(&env))]),
+            )])
+            .jcs()
+        );
+        return Err((
+            69,
+            format!("`{env}` no está definida: sin la credencial de `{fuente}` no se firma"),
+        ));
+    };
+    let mut p = vec![
+        ("url", Json::s(url)),
+        (
+            "items",
+            Json::Arr(
+                servidos
+                    .iter()
+                    .map(|(_, f, tipo, _, cab)| {
+                        Json::obj([
+                            ("clave", Json::s(campo(f, "clave").unwrap_or_default())),
+                            ("version", Json::s(campo(f, "version").unwrap_or_default())),
+                            ("tipo", Json::s(tipo)),
+                            ("disposicion", Json::s(cab)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ];
+    if let Some(t) = ttl {
+        p.push(("segundos", Json::s(t.to_string())));
+    }
+    let r = lector::ejecutar(
+        &format!("ore-read-{tipo}"),
+        &["firmar".into()],
+        Some(&Json::obj(p).jcs()),
+    )
+    .map_err(|f| (69, f.mensaje))?;
+    let r = ore_core::parse::parse(r.trim())
+        .map_err(|e| (69, format!("la firma del origen no analiza: {e:?}")))?;
+    let segundos: i64 = campo(&r, "segundos")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let urls: Vec<String> = r
+        .get("firmadas")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|x| campo(x, "url"))
+        .collect();
+    if urls.len() != servidos.len() {
+        return Err((69, "el lector no firmó todo lo pedido".into()));
+    }
+    Ok((
+        urls,
+        segundos,
+        crate::coleccion::ahora_ms() + segundos * 1000,
+    ))
 }
 
 /// **El cotejo** (E8·2d): cada blob que el manifiesto nombra —de lo actual y
@@ -893,10 +996,19 @@ mod tests {
             f(r#"{"huella":"g","estado":"retirado","camino":"g.pdf","blob":"4"}"#),
             f(r#"{"huella":"s","estado":"actual","camino":"s.pdf"}"#),
         ];
-        let blob = |h| la_que_se_sirve(&filas, h).and_then(|n| campo(n, "blob"));
+        let blob = |h| la_que_se_sirve(&filas, h, false).and_then(|n| campo(n, "blob"));
         assert_eq!(blob("h").as_deref(), Some("3"));
         assert_eq!(blob("g").as_deref(), Some("4"));
         assert_eq!(blob("s"), None, "sin blob no se sirve");
         assert_eq!(blob("nada"), None);
+        // De una virtual: sin blob, por su versión; lo perdido no se sirve.
+        let v = vec![
+            f(r#"{"huella":"v","estado":"perdido","camino":"a.pdf","version":"1"}"#),
+            f(r#"{"huella":"v","estado":"retirado","camino":"b.pdf","version":"2"}"#),
+            f(r#"{"huella":"p","estado":"perdido","camino":"p.pdf","version":"3"}"#),
+        ];
+        let version = |h| la_que_se_sirve(&v, h, true).and_then(|n| campo(n, "version"));
+        assert_eq!(version("v").as_deref(), Some("2"));
+        assert_eq!(version("p"), None);
     }
 }

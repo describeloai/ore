@@ -180,9 +180,22 @@ pub fn permitido(args: &[String]) -> Result<&'static str, Negado> {
 /// verbo nombra su raíz de una manera —`--path`, un posicional, dos posicionales
 /// en `diff`— y elegir por él aquí sería reimplementar su interfaz.
 pub fn correr(binario: &Path, raiz: &Path, args: &[String]) -> Result<Salida, Negado> {
+    correr_con(binario, raiz, args, &[])
+}
+
+/// Lo mismo, con variables de entorno **sólo para este proceso** (0046 E9·3: la
+/// credencial de una fuente, traída del cofre, para firmar en el origen). No
+/// tocan el entorno de `ore-serve`: mueren con el hijo.
+pub fn correr_con(
+    binario: &Path,
+    raiz: &Path,
+    args: &[String],
+    entorno: &[(String, String)],
+) -> Result<Salida, Negado> {
     permitido(args)?;
     let salida = Command::new(binario)
         .args(args)
+        .envs(entorno.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(raiz)
         // El entorno se hereda a propósito: es de donde `connectionEnv` saca el
         // secreto de una fuente. Y da igual para los verbos de la lista, que no

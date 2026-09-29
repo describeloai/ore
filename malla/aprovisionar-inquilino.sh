@@ -1479,7 +1479,11 @@ JSON
       # 3 · quien lo lee: el driver de ESTE inquilino.
       # Los Jobs (driver), el informador (0026 E2) y el puesto (0031: su init
       # trae el testigo del agente) piden como el agente: los tres leen.
-      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE"; do
+      # ⭐ Y `ore-serve` (0046 E9·3): sirve los ítems de una colección virtual
+      #   leyendo del cofre la credencial de su fuente como el agente, igual que
+      #   el Job de la copia. Antes que la malla le ponga el contenedor que lo
+      #   trae: sin esto, ese contenedor no arranca.
+      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE" "ore-serve-$NOMBRE"; do
         correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
           --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
           --role=roles/secretmanager.secretAccessor \

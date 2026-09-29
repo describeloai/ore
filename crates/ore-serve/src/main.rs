@@ -40,6 +40,7 @@
 
 mod acceso;
 mod actividad;
+mod agente;
 mod arbol;
 mod assets;
 mod cambios;
@@ -117,6 +118,12 @@ ore-serve — el plano de control de ORE
   --acceso-testigo FICHERO  el token con el que la celda se presenta, de un
                          fichero (el banco); sin esto, el de Workload Identity
                          del servidor de metadatos
+  --agente-fichero PREFIJO  el cliente y el secreto del agente de la celda, de
+                         `<PREFIJO>-cliente` y `-secreto` (0046 E9.3): con ellos
+                         se lee del cofre la credencial de una fuente para servir
+                         una coleccion virtual. Con `--idp` y `--emisor`
+  --idp HOST:PUERTO      el IdP dentro del cluster, por HTTP llano: de donde
+                         sale el token del agente
   --perfiles FICHERO     la lista de certificacion, de un fichero en vez de
                          la cola (`perfiles.json`): el banco de pruebas
   -h, --help             esto
@@ -162,6 +169,9 @@ struct Opciones {
     /// `--acceso host:puerto`: el puente a `ore-iam` (0047 A5).
     acceso: Option<String>,
     acceso_testigo: Option<PathBuf>,
+    /// `--agente-fichero` y `--idp` (0046 E9·3): la identidad del agente de la celda.
+    agente_fichero: Option<String>,
+    idp: Option<String>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -186,6 +196,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         forja_api: None,
         acceso: None,
         acceso_testigo: None,
+        agente_fichero: None,
+        idp: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -219,6 +231,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--modelos" => o.modelos = Some(valor("--modelos")?),
             "--modelos-url" => o.modelos_url = Some(valor("--modelos-url")?),
             "--perfiles" => o.perfiles = Some(PathBuf::from(valor("--perfiles")?)),
+            "--agente-fichero" => o.agente_fichero = Some(valor("--agente-fichero")?),
+            "--idp" => o.idp = Some(valor("--idp")?),
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -407,6 +421,27 @@ fn main() -> ExitCode {
         }
     );
 
+    // ⭐ 0046 E9·3: el agente, para servir una colección virtual. Los tres o nada.
+    let agente = match (&o.agente_fichero, &o.idp, &o.emisor) {
+        (Some(f), Some(idp), Some(emisor)) => match agente::Agente::de(idp, emisor, f) {
+            Ok(a) => {
+                eprintln!("  colecciones virtuales: el agente de la celda, por {idp}");
+                Some(a)
+            }
+            Err(e) => {
+                eprintln!("✗ {e}");
+                return ExitCode::from(64);
+            }
+        },
+        (None, None, _) => {
+            eprintln!("  colecciones virtuales: no (sin `--agente-fichero` ni `--idp`)");
+            None
+        }
+        _ => {
+            eprintln!("✗ `--agente-fichero` e `--idp` van juntos, y con `--emisor`");
+            return ExitCode::from(64);
+        }
+    };
     let servidor = rutas::Servidor {
         binario: o.ore,
         arbol,
@@ -434,6 +469,7 @@ fn main() -> ExitCode {
             .as_ref()
             .map(|a| ore_acceso::Buzon::nuevo(std::sync::Arc::clone(a))),
         acceso,
+        agente,
     };
 
     match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {

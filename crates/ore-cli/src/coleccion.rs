@@ -370,6 +370,22 @@ pub fn es_virtual(d: &Loaded) -> bool {
     d.section("virtual").and_then(|v| v.as_str()) == Some("true")
 }
 
+/// **De qué fuente sale una colección** (0046 E9·3): `(datasource, tipo de su
+/// lector, connectionEnv)`, lo que servir una virtual necesita para firmar en
+/// el origen.
+pub(crate) fn fuente_de(raiz: &Path, d: &Loaded) -> Result<(String, String, String), String> {
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    let o = objeto_de(&pkg, d)?;
+    let ds = o
+        .section("datasource")
+        .and_then(|v| v.as_str())
+        .ok_or("el `ObjectTable` no dice su `datasource`")?
+        .to_string();
+    let (tipo, env) =
+        lector::declaracion(raiz, &ds).map_err(|f| format!("la fuente `{ds}` · {}", f.mensaje))?;
+    Ok((ds, tipo, env))
+}
+
 /// El `ObjectTable` del que sale una colección.
 fn objeto_de<'a>(pkg: &'a Package, d: &Loaded) -> Result<&'a Loaded, String> {
     let r = d
