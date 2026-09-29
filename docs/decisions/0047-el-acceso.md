@@ -848,8 +848,8 @@ medida haya hablado; si la medida tumba la hipótesis, el paso se reescribe aqu�
 | **A2** | **`ore-iam` contesta**: primero las columnas `organizacion` y `celda` de la huella con su índice (M6; que no se edite ya lo hace la `039`); luego `POST /access/v1/evaluation` (y `/evaluations`) sobre `potestad::exige`, con su huella; y recibe eventos | A1 | `ore-iam` con las rutas nuevas y su prueba de fuego. **Hecho en código el 2026-09-29** (A2.1–A2.5: `044`, `oidc` relee las llaves, `puente.rs`, `aprovisionada` como observación, `los-verbos.sh` 15); sin encender hasta A3 |
 | **A3** | **El camino**: la regla de red de `ore-serve` a `identidad` y cómo se identifica la celda. Binario antes que malla: el flag nuevo y la malla que lo usa no se empujan juntos | A2 desplegado, M3 | la malla, empujada aparte  **Preparado el 2026-09-29, en dos empujes:** A3.1 la salida `salida-a-ore-iam` (sólo `control`), la entrada de `ore-iam` recortada a `cargas`+`control` (fuera la regla de `tenant: demo`), el CronJob `refresco-jwks-celdas` (Google, cada hora, comprobando el emisor) y el aprovisionador mandando el `uniqueId`; A3.2 las flags y el volumen, cuando el CronJob haya dejado llaves (con la semilla vacía `ore-iam` no arranca). **Hecho en vivo el 2026-09-29:** `043` y `044` aplicadas; el CronJob trajo las 2 llaves de Google; `ore-iam` monta el puente; el aprovisionador registró demo, prueba y victor con su `uniqueId`; desde `t-demo`, la cuenta de `ore-serve` llega y recibe «necesita `Ore-Sujeto`» (la celda reconocida) y la del informador «no está registrada», en 4-7 ms |
 | **A4** | **El crate `ore-acceso`**: `puede` (con caché corta, 503, identificador) y `hizo` (con espera y reintento en la celda) | A2 | el crate con sus pruebas, sin consumidores todavía  **Hecho el 2026-09-29** (`crates/ore-acceso`): `puede` con la forma de AuthZEN, caché por lo que diga `vale` (techo 30 s), 503 sin respuesta (plazo 2 s), 401 sólo si es el token de la persona; `hizo` que no hace fallar lo hecho (espera en disco y se reintenta sin `Ore-Sujeto`, con la decisión; a `muertos/` si la decisión ya no vive); `hizo_antes`, que no encola; la credencial de la celda del servidor de metadatos. `ore-entrada` gana `pedir_con` (cabeceras y plazos). 9 pruebas contra un `ore-iam` de mentira |
-| **A5** | **El primer consumidor, P2 de 0044**: las potestades `propuesta:fusionar-sin-revision`, `rama:proteger` y `fuente:crear` (o lo que M1 diga), en roles; `ore-serve` las pregunta; el merge y la liberación de `main` lo dicen; la consola obedece | A3, A4 | 0044 B.7 hecho  **Hecho en código el 2026-09-29:** `045` (las tres potestades, a ORGADMIN y ACCOUNTADMIN; `fuente:crear` también a SECURITYADMIN, los que emiten secretos); `ore-serve --acceso` (`acceso.rs`): alta de fuentes y protección, 403 sin la potestad; fusionar en `main` protegida sin revisión con la potestad, anotado ANTES (503 si no se puede) y cerrado después, y el merge lo dice; la ficha lo pregunta como consulta (`conPotestad`); sin quien decida, 503. `la-propuesta.sh` 10 y `los-verbos.sh` 15 ⑤b. La malla (`40-ore-serve.yaml`, `--acceso`) va aparte, tras el binario |
-| **A6** | **La actividad**: `ore-serve` emite `hizo` en todo lo que escribe y en las denegaciones, apuntando al commit cuando lo hay; `ore-iam` la sirve por organización (`actividad:leer-toda`); la consola la enseña | A4, M1 | «qué ha pasado en mi organización», de verdad |
+| **A5** | **El primer consumidor, P2 de 0044**: las potestades `propuesta:fusionar-sin-revision`, `rama:proteger` y `fuente:crear` (o lo que M1 diga), en roles; `ore-serve` las pregunta; el merge y la liberación de `main` lo dicen; la consola obedece | A3, A4 | 0044 B.7 hecho  **Hecho en código el 2026-09-29:** `045` (las tres potestades, a ORGADMIN y ACCOUNTADMIN; `fuente:crear` también a SECURITYADMIN, los que emiten secretos); `ore-serve --acceso` (`acceso.rs`): alta de fuentes y protección, 403 sin la potestad; fusionar en `main` protegida sin revisión con la potestad, anotado ANTES (503 si no se puede) y cerrado después, y el merge lo dice; la ficha lo pregunta como consulta (`conPotestad`); sin quien decida, 503. `la-propuesta.sh` 10 y `los-verbos.sh` 15 ⑤b. La malla (`40-ore-serve.yaml`, `--acceso`) va aparte, tras el binario. **En vivo y cerrado el 2026-09-29:** `045` aplicada; `--acceso` en demo, prueba y victor. En `t-victor`, la huella tiene `rama:proteger` (14:45, con decisión y commit `651058c`) y tres fusiones sin revisión con `main` protegida (#9, #10 y #8), cada una abierta (`en-curso`) y cerrada (`hecho`, con `abre`), con su organización y su celda. El 403 sin la potestad queda probado en `la-propuesta.sh` 10, no en vivo |
+| **A6** | **La actividad**: `ore-serve` emite `hizo` en todo lo que escribe y en las denegaciones, apuntando al commit cuando lo hay; `ore-iam` la sirve por organización (`actividad:leer-toda`); la consola la enseña | A4, M1 | «qué ha pasado en mi organización», de verdad **Medido el 2026-09-29** (§ «A6, medido»): cinco pasos, A6.1–A6.5 |
 | **A7a** | **Un papel de base por celda** (o seguridad por fila por organización en `iam` y `cofre`): el custodio de un inquilino deja de ver a los demás. No espera al puente | M4 | el cruce entre inquilinos, cerrado |
 | **A7b** | **El custodio pasa por el puente** (`puede` con recurso para `resolver`, `hizo` antes de contestar, y una ruta de `ore-iam` para las concesiones) y su papel pierde el `select` sobre el censo | A4, M4 | «lo que hay» 5, cerrado del todo |
 | **A8** | **Leer datos pregunta, y Cedar** cuando una pregunta necesite el recurso: `puede` antes de prestar la credencial (`loadTable`, `loadView`, ejecutar una vista, los datos del puesto, M7); dueños por paquete (aprobaciones por dueño); objetos (0046) | M1, M7 y el primer consumidor que lo pida | la promesa de 0031 y el hueco de 0007, cerrados |
@@ -911,6 +911,62 @@ antes de escribir nada.
 A2 es **sólo el binario**. Las flags nuevas no se encienden hasta A3 (la malla: el CronJob de
 llaves, las flags en `67-iam-servir.yaml`, la red y el aprovisionador mandando su `uniqueId`),
 como pide la regla de no empujar juntos una flag nueva y la malla que la usa.
+
+### A6, medido (2026-09-29)
+
+**Lo que hay.**
+
+1. **`ore-serve` escribe por 56 rutas** (M1, `medida-el-acceso.py --json` de hoy):
+   - 31 dejan un commit en el árbol (20 del árbol, 9 de la celda, la protección y un *transform*);
+   - 10 dejan un commit en la cola;
+   - 7 pasan por la forja;
+   - 8 no dejan nada: las 6 del puesto y las 2 de ejecutar una vista, que son datos (A8).
+
+   Sólo tres emiten `hizo` hoy, las de A5. **Un único sitio las ve todas:** `recuento::atendiendo`
+   (M2.3) ya conoce el método, el patrón, el código, la clase y la respuesta (su `commit`).
+2. **`ore-iam` no llena `organizacion` en lo suyo.** En 7 días, la huella tiene 10.641 filas.
+   Llevan la columna sólo las 8 del puente. Invitar, conceder, emitir o retirar secretos y
+   `celda:*` la dejan vacía; `secreto:resolver` la lleva sólo dentro de `detalle`. Servir «mi
+   organización» hoy daría la actividad del plano de datos sin la de gestión, que es la que más
+   importa.
+3. **El ruido sigue siendo casi todo.** De esas 10.641 filas:
+   - 4.144 son `celda:aprovisionada`;
+   - 2.221 son `organizacion:listar`;
+   - 2.168 son `celda:listar`.
+
+   Es el 99 %, y ninguna es un acto de la organización (M6 § 4).
+4. **La consola ya tiene la pantalla.** Governance / Activity (`iam/activity`) existe, y su
+   consulta `actividad` (`GET /organizaciones/{org}/actividad`, plano de control) está marcada
+   `pendiente`: «pintar una donde va la otra es mentir». Su forma (`servidas`, `consideradas`) es
+   la de un registro de consultas de datos que ORE no tiene. Hay que rehacerla sobre la huella.
+5. **Volumen.** Las escrituras de `ore-serve` son decenas al día por celda (M2: ~210 al mes).
+   Sin el puesto, `hizo` no cambia el orden de la huella.
+6. **Una trampa de `hizo`: casi ninguna escritura tiene decisión.** Sin `puede` no hay
+   `decision`, y un reintento sin `Ore-Sujeto` se rechaza (400, § «Cuándo `hizo` va antes»).
+   El token de la persona vive 300 s, y guardarlo en disco para reintentar es guardar una
+   credencial. Lo que se pierda, en cambio, sigue en su commit (H13): la historia fina no se
+   pierde, se pierde el índice.
+
+**Los pasos.**
+
+| paso | qué | sale |
+|---|---|---|
+| **A6.1** | `ore-iam`, **lo suyo con organización**. `Tx::anotar` llena `organizacion` (y `celda` cuando la hay) en toda ruta que la conoce: las de `/organizaciones/{org}/…`, las del custodio (`secreto:*`, que ya la trae) y las de celda. Las filas viejas no se tocan (la `039` no deja), así que la actividad **empieza el día de A6.1**, y la pantalla lo dice | la gestión, en la actividad |
+| **A6.2** | `ore-iam`, **`GET /organizaciones/{org}/actividad`**. Con `actividad:leer-toda`, toda; si no, sólo la propia (`quien` = yo), y `alcance` en la respuesta. Sin el ruido: fuera `*:listar`, `celda:aprovisionada` y `celda:informa`, que son sistema y sondeo (M6 § 4). Filtros `clase` (persona, agente), `celda`, `operacion`, y un cursor por `(cuando, id)` sobre el índice de la `044`. Leerla deja huella, como toda ruta de `ore-iam` (regla de `008`) | la ruta, con su prueba en `los-verbos.sh` 16 |
+| **A6.3** | `ore-serve`, **`hizo` en todo lo que escribe, desde un sitio**. En `recuento::atendiendo`, tras atender: método no `GET`, con sujeto, y no emitido ya por la ruta (el testigo de A5 lo sabe). `2xx` es `hecho`; `423` (rama protegida) y `409` (mover datos fuera de `main`) son `negado`. Un 403 de `puede` ya lo anota `ore-iam`, y no se repite. La operación sale de una tabla `(método, patrón) → operación`, y **una prueba exige que toda ruta que escribe tenga la suya** (M1 § 7: se declara con la ruta, o se desincroniza). `sobre` es el camino; `commit` el de la respuesta; `rama` (de `x-ore-rama`) va en `detalle`. **Fuera, las 8 de datos** (A8, H12) | la actividad del plano de datos |
+| **A6.4** | **Sin tapar la escritura, y sin credenciales en disco.** `hizo` va a un hilo con una cola en memoria: la respuesta no espera a `ore-iam`. El token de la persona sólo vive en esa cola, y se reintenta mientras valga (≤ 4 min). Pasado eso, el evento va a `muertos/` sin token, con su commit, y se cuenta en el log. Lo que tiene decisión (A5) sigue como está, con reintento en disco | que `ore-iam` caído no frene ni una escritura |
+| **A6.5** | **La consola**: `actividad` deja de estar `pendiente`. Es una tabla con quién, qué, sobre qué, resultado, celda, rama y cuándo, y el commit enlazado. El alcance, pintado («sólo la tuya»). «Desde el 2026-…», la fecha de A6.1 | «qué ha pasado en mi organización», de verdad |
+
+**Orden de despliegue:** `ore-iam` primero (A6.1 y A6.2), luego `ore-serve` (A6.3 y A6.4), y
+la consola al final. **No hay flag ni malla nueva**: `ore-serve` ya habla con `ore-iam`
+(`--acceso`, A5), y la ruta de actividad es del plano de control, que la consola ya alcanza.
+
+**Lo que A6 no hace:**
+
+- registrar lecturas: ni las del catálogo (nunca, § «`hizo`»), ni las de datos (A8, si la
+  organización lo enciende);
+- quitar la regla de `008` del sondeo de la consola en `ore-iam`: se filtra al servir, no al
+  escribir. Dejar de escribirlo es otra decisión, con su medida.
 
 ### A7a, por pasos (medido el 2026-09-28)
 
