@@ -274,6 +274,13 @@ spec:
             - ore-cofre.t-demo.svc.cluster.local:8095
             - --organizacion
             - demo
+            # ⭐ P2 POR EL PUENTE (0047 A5): dar de alta una fuente, proteger `main`
+            #   y fusionar sin revisión piden su potestad a `ore-iam`, y lo hecho va
+            #   a la huella de la organización. La celda se presenta con su token de
+            #   Workload Identity (M3) y el camino lo abre `salida-a-ore-iam` (A3).
+            #   Con punto final: M2 midió que ahorra la mitad de la mediana.
+            - --acceso
+            - ore-iam.identidad.svc.cluster.local.:8090
             # ⭐ LA CUENTA CON LA QUE LEEN LOS DRIVERS de esta celda: la que el
             #   cliente autoriza en su BigQuery (`GET /fuentes/credenciales`).
             #   Se ENSEÑA, no se usa aquí: este proceso no habla con Google.
