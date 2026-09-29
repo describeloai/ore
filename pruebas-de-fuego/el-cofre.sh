@@ -719,4 +719,9 @@ fi
 dice "12 · cada custodio, su organizacion: no ve, no concede, no revoca y no escribe lo de otra; ore-iam y el aprovisionador, como estaban"
 
 echo
+# ── 13 · lo del custodio, en la actividad de su organizacion (0047 A6.1) ─────
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion like 'secreto:%' and quien <> 'operador' and (organizacion is null or celda is null or celda not like 'cel_%')")" = "0" ]   || falla "13 · ⛔ HAY SECRETOS SIN ORGANIZACION O SIN EL ID DE SU CELDA: $(psql "$URL" -qtAc "select operacion, organizacion, celda from iam.huella where operacion like 'secreto:%' and (organizacion is null or celda is null)")"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'secreto:resolver' and organizacion is not null")" -ge 1 ]   || falla "13 · resolver no quedo con su organizacion"
+dice "13 · emitir, resolver y retirar llevan su organizacion y el id de su celda en columna: salen en la actividad"
+
 echo "✓ el custodio guarda, abre a quien puede, y no deja el valor en ningun otro sitio"

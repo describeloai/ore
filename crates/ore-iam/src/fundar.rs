@@ -233,6 +233,8 @@ pub fn crear_celda_en(
             &entrada,
         ],
     )?;
+    tx.en(&org_id);
+    tx.en_celda(&id);
     tx.anotar(
         "celda:crear",
         &id,
@@ -297,6 +299,8 @@ pub fn retirar_celda_en(
         "update iam.celda set estado = 'retirada' where id = $1",
         &[&id],
     )?;
+    tx.en(&org_id);
+    tx.en_celda(&id);
     tx.anotar(
         "celda:retirar",
         &id,
@@ -370,6 +374,7 @@ pub fn editar_perfil_en(
             )?;
         }
     }
+    tx.en(&org_id);
     tx.anotar(
         "organizacion:editar",
         &org_id,
@@ -564,6 +569,7 @@ pub fn registrar_agente_en(
     // ⛔ Y queda escrito. `Tx` se niega a confirmar si nadie anoto, y aqui esa
     //   regla vale doble: registrar un sujeto de maquina sin dejar rastro seria
     //   crear autoridad en silencio.
+    tx.en(&org_id);
     tx.anotar(
         if ya {
             "agente:heredar"
@@ -785,6 +791,7 @@ pub fn fundar_en(tx: &mut Tx, p: &Peticion) -> Result<(Json, bool), String> {
         None => None,
     };
 
+    tx.en(&org);
     tx.anotar(
         "organizacion:fundar",
         &org,

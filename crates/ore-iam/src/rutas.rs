@@ -119,6 +119,8 @@ impl Servidor {
             //   control y se emite desde aquí. Lo que NO dice es si responde —
             //   eso se pregunta por el camino, al `/salud` de su `ore-serve`.
             ("GET", ["organizaciones", o, "celdas"]) => self.celdas(s, o),
+            // ⭐ LA ACTIVIDAD (0047 A6.2): lo que la huella dice que pasó en ella.
+            ("GET", ["organizaciones", o, "actividad"]) => self.actividad(s, o, &p.consulta),
             ("GET", ["organizaciones", o, "invitaciones"]) => self.invitaciones(s, o),
             ("POST", ["organizaciones", o, "invitaciones"]) => self.invitar(s, o, &p.cuerpo),
             ("POST", ["organizaciones", o, "concesiones"]) => self.conceder(s, o, &p.cuerpo),
@@ -140,7 +142,7 @@ impl Servidor {
     /// Abre la transacción, corre `f`, y confirma. Si `f` falla no se confirma
     /// nada — y como la huella va dentro, un error tampoco deja rastro de algo
     /// que no ocurrió.
-    fn en_transaccion(
+    pub(crate) fn en_transaccion(
         &self,
         s: &Identidad,
         f: impl FnOnce(&mut Tx, &str) -> Result<Json, String>,
@@ -309,6 +311,7 @@ impl Servidor {
                     ])
                 })
                 .collect();
+            tx.en(&org);
             tx.anotar(
                 "miembro:listar",
                 &org,
@@ -443,6 +446,7 @@ impl Servidor {
                 .collect();
             // Toda lectura deja huella: es la regla de `confirmar()`, y CI la
             // hizo valer — sin esto, 500 «no dejó huella. No se confirma».
+            tx.en(&org);
             tx.anotar(
                 "celda:listar",
                 &org,
@@ -560,6 +564,7 @@ impl Servidor {
                 })
                 .collect();
 
+            tx.en(&org);
             tx.anotar(
                 "rol:listar",
                 &org,
@@ -611,6 +616,7 @@ impl Servidor {
                     ])
                 })
                 .collect();
+            tx.en(&org);
             tx.anotar(
                 "invitacion:listar",
                 &org,
@@ -825,6 +831,7 @@ impl Servidor {
                     d.push(("identidad_emisor", Json::s(e)));
                     d.push(("identidad_sub", Json::s(sub)));
                 }
+                tx.en_celda(&id);
                 tx.anotar("celda:aprovisionada", &id, Json::obj(d))?;
             }
             let mut r = vec![
@@ -896,6 +903,7 @@ impl Servidor {
                 .ok_or("no se pudo guardar el estado")?;
             let (medido, recibido): (String, String) = (f.get(0), f.get(1));
             if let Some(h) = hito {
+                tx.en_celda(&id);
                 tx.anotar(
                     "celda:informa",
                     &id,
@@ -1007,7 +1015,7 @@ impl Clase {
 /// El JSON del cuerpo como `Json`, para validarlo y guardarlo canonico. Un
 /// escalar con comillas es cadena; sin comillas, `true`/`false`, un entero, o
 /// —si no es ninguna de las dos— una cadena tal cual (no se pierde nada).
-fn nodo_a_json(n: &Node) -> Result<Json, String> {
+pub(crate) fn nodo_a_json(n: &Node) -> Result<Json, String> {
     Ok(match n {
         Node::Scalar { raw, style, .. } => {
             if matches!(style, parse::Style::Plain) {
@@ -1120,6 +1128,7 @@ pub fn mapa(con: bool, puente: bool) -> Vec<(&'static str, &'static str, bool)> 
         ("GET", "/organizaciones/{org}/miembros", con),
         ("GET", "/organizaciones/{org}/roles", con),
         ("GET", "/organizaciones/{org}/celdas", con),
+        ("GET", "/organizaciones/{org}/actividad", con),
         ("GET", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/concesiones", con),

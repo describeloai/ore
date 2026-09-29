@@ -49,6 +49,7 @@
 //   `0023` rechaza de Vault, y seria peor hacerlo nosotros mismos por descuido.
 //
 // ⇒ Por eso esto se expone, y `main.rs` es una llamada de cinco lineas.
+pub mod actividad;
 pub mod base;
 pub mod fundar;
 pub mod id;

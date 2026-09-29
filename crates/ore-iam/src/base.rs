@@ -32,6 +32,13 @@ pub struct Tx<'a> {
     tx: Transaction<'a>,
     sujeto: Identidad,
     anotado: bool,
+    /// De qué organización es el acto (0047 A6.1): va a su columna, la de la
+    /// `044`, que es por donde se sirve la actividad. Lo dice el verbo con
+    /// [`Tx::en`]; sin él, la fila no es de ninguna organización.
+    organizacion: Option<String>,
+    /// Y de qué celda, por su id o por su nombre dentro de la organización
+    /// ([`Tx::en_celda`]). Se resuelve al anotar: en la huella va el id.
+    celda: Option<String>,
 }
 
 /// ⛔⛔ EL MENSAJE DE POSTGRES, ENTERO.
@@ -71,7 +78,23 @@ impl<'a> Tx<'a> {
                 .map_err(|e| format!("no se pudo abrir la transacción: {e}"))?,
             sujeto: sujeto.clone(),
             anotado: false,
+            organizacion: None,
+            celda: None,
         })
+    }
+
+    /// **El acto es de esta organización** (0047 A6.1). Todo verbo que la
+    /// conoce lo dice antes de anotar: sin esto, «la actividad de mi
+    /// organización» se queda sin la gestión (medido: en 7 días, 8 filas de
+    /// 10.641 la llevaban, las del puente).
+    pub fn en(&mut self, organizacion: &str) {
+        self.organizacion = Some(organizacion.to_string());
+    }
+
+    /// **Y de esta celda**, por su id (`cel_…`) o por su nombre. Si el verbo no
+    /// dijo la organización, sale de la celda (por id).
+    pub fn en_celda(&mut self, celda: &str) {
+        self.celda = Some(celda.to_string());
     }
 
     pub fn ejecutar(
@@ -108,16 +131,29 @@ impl<'a> Tx<'a> {
     /// tiene y no quiere. Con el doble casteo el parámetro viaja como texto y
     /// es Postgres quien lo convierte, que además es quien sabe si es válido.
     pub fn anotar(&mut self, operacion: &str, sobre: &str, detalle: Json) -> Result<(), String> {
+        // ⭐ La celda se resuelve AQUÍ, en la misma sentencia: el verbo la dice
+        //   como la conoce (el custodio, por su nombre; el aprovisionador, por
+        //   su id), y en la huella va el id, como en lo que anota el puente.
         self.tx
             .execute(
-                "insert into iam.huella (quien, agente, operacion, sobre, detalle)
-                 values ($1, $2, $3, $4, $5::text::jsonb)",
+                "with c as (
+                   select id, organizacion from iam.celda
+                    where $7::text is not null
+                      and (id = $7 or (nombre = $7 and organizacion = $6))
+                    order by (id = $7) desc
+                    limit 1)
+                 insert into iam.huella (quien, agente, operacion, sobre, detalle, organizacion, celda)
+                 select $1, $2, $3, $4, $5::text::jsonb,
+                        coalesce($6::text, (select organizacion from c)),
+                        (select id from c)",
                 &[
                     &self.sujeto.persona,
                     &self.sujeto.agente,
                     &operacion,
                     &sobre,
                     &detalle.jcs(),
+                    &self.organizacion,
+                    &self.celda,
                 ],
             )
             .map_err(|e| format!("no se pudo anotar la huella: {e}"))?;

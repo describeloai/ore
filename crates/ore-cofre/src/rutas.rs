@@ -291,6 +291,8 @@ impl Servidor {
                 )?;
             }
 
+            tx.en(&org);
+            tx.en_celda(&self_celda);
             tx.anotar(
                 "secreto:emitir",
                 &id,
@@ -376,6 +378,8 @@ impl Servidor {
                 .unwrap_or(0);
             almacen.borrar(&nombre_en_almacen(&inquilino, &nombre))?;
 
+            tx.en(&org);
+            tx.en_celda(&self_celda);
             tx.anotar(
                 "secreto:retirar",
                 &id,
@@ -432,6 +436,8 @@ impl Servidor {
                     ])
                 })
                 .collect();
+            tx.en(&org);
+            tx.en_celda(&self_celda);
             tx.anotar(
                 "secreto:listar",
                 &org,
@@ -510,6 +516,8 @@ impl Servidor {
             // ⛔ La huella ANTES de contestar, y en la misma transacción: si
             //   anotar falla, el valor no sale. Un custodio que abriera sin
             //   dejar rastro sería peor que uno que no abre.
+            tx.en(&org);
+            tx.en_celda(&self_celda);
             tx.anotar(
                 "secreto:resolver",
                 &nombre,

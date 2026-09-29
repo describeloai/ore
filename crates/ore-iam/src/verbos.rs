@@ -100,6 +100,7 @@ pub fn invitar(
          values ($1, $2, $3, $4, $5, now() + ($6 || ' days')::interval, $7)",
         &[&id, &org, &correo, &rol, &quien_id, &dias.to_string(), &res],
     )?;
+    tx.en(org);
     tx.anotar(
         "invitacion:emitir",
         &id,
@@ -184,6 +185,7 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
         "update iam.invitacion set redimida_en = now(), redimio = $2 where id = $1",
         &[&id, &persona],
     )?;
+    tx.en(&org);
     tx.anotar(
         "invitacion:redimir",
         &id,
@@ -291,6 +293,7 @@ pub fn conceder(
          values ($1, $2, $3, $4, $5, $6)",
         &[&id, &a_quien, &recurso, &rol, &quien_id, &org],
     )?;
+    tx.en(org);
     tx.anotar(
         "concesion:conceder",
         &id,
@@ -349,6 +352,7 @@ pub fn revocar(tx: &mut Tx, sujeto: &Identidad, emisor: &str, id: &str) -> Resul
         "update iam.concesion set revocada_en = now(), revoco = $2 where id = $1",
         &[&id, &quien_id],
     )?;
+    tx.en(&org);
     tx.anotar(
         "concesion:revocar",
         id,

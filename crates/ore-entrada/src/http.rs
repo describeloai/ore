@@ -98,7 +98,11 @@ pub struct Peticion {
 /// `GET /colecciones/{b}/{s}/{n}/items?estado=retirado&desde=100&limite=50`.
 /// Un estado es una palabra y lo demás son números: pasan por la misma
 /// validación, y quien los usa los vuelve a comprobar.
-pub const CONSULTA_ADMITIDA: &[&str] = &["warehouse", "estado", "desde", "limite"];
+///
+/// Y los filtros de la actividad de `ore-iam` (0047 A6.2): `clase` (`persona` o
+/// `agente`) y `celda` (su id), con `desde` como cursor y `limite`.
+pub const CONSULTA_ADMITIDA: &[&str] =
+    &["warehouse", "estado", "desde", "limite", "clase", "celda"];
 
 /// `a=b&c=d` → lo admitido, con su valor decodificado y validado: letras,
 /// dígitos, `_` y `-`, hasta 64.

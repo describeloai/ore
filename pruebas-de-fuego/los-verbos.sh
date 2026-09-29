@@ -869,4 +869,58 @@ psql "$URL" -qtAc "update iam.celda set estado='retirada' where id='cel_otra'" >
 [ "$(puente "$CO" "$ZOE" evaluation "$(pregunta persona:zoe invitacion:emitir)")" = "401" ] || falla "15 · ⛔ UNA CELDA RETIRADA SIGUE PREGUNTANDO"
 dice "15 · hizo: a la huella con organizacion y celda, idempotente; un reintento toma el sujeto de la decision viva de SU organizacion; sin ninguna, 400; y la celda retirada, 401"
 
-echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, el estado que informa el agente, y el puente."
+# ── 16 · LA ACTIVIDAD de la organizacion (0047 A6) ─────────────────────────
+# A6.1: lo que anota `ore-iam` lleva su organizacion (y su celda) en columna.
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion in ('invitacion:emitir','invitacion:redimir','concesion:conceder','concesion:revocar','organizacion:fundar') and organizacion is null")" = "0" ] \
+  || falla "16 · ⛔ HAY ACTOS DE GESTION SIN ORGANIZACION: $(psql "$URL" -qtAc "select operacion, sobre from iam.huella where operacion in ('invitacion:emitir','invitacion:redimir','concesion:conceder','concesion:revocar','organizacion:fundar') and organizacion is null")"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'concesion:conceder' and organizacion = '$ORG'")" -ge 1 ] \
+  || falla "16 · conceder no quedo con la organizacion de acme"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:aprovisionada' and (organizacion is null or celda not like 'cel_%')")" = "0" ] \
+  || falla "16 · aprovisionada sin organizacion o sin el id de su celda: $(psql "$URL" -qtAc "select organizacion, celda from iam.huella where operacion = 'celda:aprovisionada'")"
+dice "16 · A6.1: los actos de gestion llevan su organizacion en columna, y los de celda el id de la celda"
+# A6.2: Ada (ORGADMIN) la ve toda; sin ruido.
+[ "$(pide GET "/organizaciones/$ORG/actividad" "$ADA")" = "200" ] || falla "16 · la actividad fallo: $(cat "$TMP/r.json")"
+"$PY" - "$TMP/r.json" <<'PY' || falla "16 · la actividad de Ada no es la de la organizacion: $(head -c 900 "$TMP/r.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+ops = [f["operacion"] for f in d["actividad"]]
+assert d["alcance"] == "organizacion", d["alcance"]
+for o in ("invitacion:emitir", "invitacion:redimir", "concesion:conceder", "concesion:revocar", "fuente:crear"):
+    assert o in ops, (o, ops)
+assert not [o for o in ops if o.endswith(":listar") or o in ("celda:aprovisionada", "celda:informa", "actividad:leer")], ops
+assert {f["quien"] for f in d["actividad"]} >= {"persona:ada", "persona:bea"}, d["actividad"]
+assert d["desde"], d
+PY
+dice "16 · A6.2: Ada ve la de todos (alcance organizacion): invitar, admitir, conceder, revocar y lo que conto una celda; sin listados, sin sondeo, sin leer esto"
+# Bea (USERADMIN, sin `actividad:leer-toda`) ve sólo la suya, y lo dice.
+[ "$(pide GET "/organizaciones/$ORG/actividad" "$BEA")" = "200" ] || falla "16 · la de Bea fallo: $(cat "$TMP/r.json")"
+"$PY" - "$TMP/r.json" <<'PY' || falla "16 · ⛔ BEA VE LA DE LOS DEMAS: $(head -c 900 "$TMP/r.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["alcance"] == "propia", d["alcance"]
+assert d["actividad"] and all(f["quien"] == "persona:bea" for f in d["actividad"]), d["actividad"]
+PY
+# Zoe no es de acme: el mismo mensaje que cualquier «no puedes».
+[ "$(pide GET "/organizaciones/$ORG/actividad" "$ZOE")" = "422" ] && grep -q "no puedes" "$TMP/r.json" \
+  || falla "16 · ⛔ ALGUIEN DE FUERA LEYO LA ACTIVIDAD: $(cat "$TMP/r.json")"
+dice "16 · Bea ve solo la suya (alcance propia); Zoe, de otra organizacion, no ve nada"
+# La página: `limite` y el cursor `desde`.
+[ "$(pide GET "/organizaciones/$ORG/actividad?limite=1" "$ADA")" = "200" ] || falla "16 · limite=1 fallo"
+P1=$("$PY" -c "import json,sys;d=json.load(open(sys.argv[1]));assert len(d['actividad'])==1;print(d['actividad'][0]['id'],d['siguiente'])" "$TMP/r.json") \
+  || falla "16 · limite=1 no dio una fila con siguiente: $(cat "$TMP/r.json")"
+set -- $P1
+[ "$1" = "$2" ] || falla "16 · siguiente no es el id de la ultima fila: $P1"
+[ "$(pide GET "/organizaciones/$ORG/actividad?limite=1&desde=$2" "$ADA")" = "200" ] || falla "16 · la segunda pagina fallo"
+[ "$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['actividad'][0]['id'])" "$TMP/r.json")" != "$1" ] \
+  || falla "16 · la segunda pagina repitio la primera"
+[ "$(pide GET "/organizaciones/$ORG/actividad?limite=500" "$ADA")" = "422" ] || falla "16 · limite=500 no dio 422"
+[ "$(pide GET "/organizaciones/$ORG/actividad?clase=robot" "$ADA")" = "422" ] || falla "16 · una clase inventada no dio 422"
+[ "$(pide GET "/organizaciones/$ORG/actividad?clase=persona" "$ADA")" = "200" ] \
+  && "$PY" -c "import json,sys;d=json.load(open(sys.argv[1]));assert all(not f['agente'] for f in d['actividad'])" "$TMP/r.json" \
+  || falla "16 · clase=persona trajo agentes: $(head -c 600 "$TMP/r.json")"
+# Y leerla deja huella, con su organizacion, aunque no salga en ella.
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'actividad:leer' and organizacion = '$ORG' and quien = 'persona:bea' and detalle->>'alcance' = 'propia'")" -ge 1 ] \
+  || falla "16 · leer la actividad no dejo huella"
+dice "16 · por paginas (limite y el cursor desde), filtro de clase, 422 a lo inventado; y leerla deja huella"
+
+echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, el estado que informa el agente, el puente, y la actividad."
