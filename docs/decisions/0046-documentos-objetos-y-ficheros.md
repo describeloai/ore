@@ -300,7 +300,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) ✅ | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) ✅ en local | `ore source induce` escribe un `ObjectTable` por conjunto y una `Table` con `format` por grupo tabular; la base, su `MediaCollection` **según su clase** (abajo); limpieza de `objects/`; la política IAM en `credenciales.rs`; el esquema de la fuente en ore-serve. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
-| **E5b · ore-serve a escala** · 1 ✅ | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
+| **E5b · ore-serve a escala** · 1 ✅ · 2 ✅ en local | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
 | **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
 | **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
@@ -480,6 +480,22 @@ tres crates, y también el compilador—: un paso aparte, medido.
 0,15 s y `/paquetes` o cualquier esquema en 1,6–1,8 s; cargar ese árbol son ~0,1 s, así que casi
 todo es que ore-serve, en modo forja, **clona el árbol en cada petición**. Crece con el árbol (el de
 2.000 tablas, clonado en local en Windows, 8 s; sin medir en el clúster).
+
+**Lo que E5b·2 midió e hizo.** Medido dentro del pod de ore-serve de victor (0,5 CPU), con el
+árbol de victor (168 ficheros): clonarlo 1,5–1,6 s (`--depth 1`, 0,56 s); sobre un clon vivo, un
+`fetch` 0,07–0,10 s, un `worktree` del commit 0,08 s y `ore validate` 0,12 s. Con el de 2.000 tablas
+(2.260 ficheros, por un *bundle*, sin red): clonarlo 1,1 s, el `worktree` 0,77 s, `ore validate`
+5,2–5,5 s. Hecho (`git.rs`, «El espejo»): un espejo `--bare` por forja en el proceso, puesto al día
+con un `fetch` de todas las ramas **en cada petición** —se lee siempre lo último, como antes—; para
+leer, el `worktree` del commit, compartido por las peticiones de ese commit mientras alguna lo use
+(se guardan ocho; uno ensuciado se rehace); para escribir, un clon local del espejo (enlaces duros,
+sin red) con `origin` en la forja, así que publicar, la carrera y el `409` no cambian; y si el espejo
+falla, el clon de siempre. La forja sigue siendo el sistema de registro: el espejo es una caché que
+se reconstruye sola. Prueba: `el_espejo_lee_lo_ultimo_y_no_se_ensucia` (lo que otro empuja se ve en
+la lectura siguiente, dos lecturas comparten árbol, uno ensuciado se rehace, `SinRama`, y lo escrito
+llega a la forja). **Sin hacer**: guardar el árbol ya cargado en memoria por commit —con 2.000
+tablas cargarlo sigue siendo lo que cuesta—; `Package` no es `Clone` y cambiaría ~29 sitios, así
+que va aparte, si hace falta.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

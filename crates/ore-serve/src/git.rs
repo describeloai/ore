@@ -1,13 +1,14 @@
 //! El árbol vive en la forja, y este proceso **no se lo queda**.
 //!
-//! # La forma: clonar por petición
+//! # La forma: lo último de la forja en cada petición
 //!
-//! No hay copia de trabajo de larga vida. Cada petición que toca el árbol
-//! clona, opera, y —si escribió— empuja y tira el clon. Suena caro y está
-//! medido que no lo es: el árbol de un almacén de 200 tablas con su historia
-//! entera son **750 KB**, y la forja está a un salto dentro del clúster.
+//! Cada petición que toca el árbol lee lo último de la forja, opera, y —si
+//! escribió— empuja. Hasta 0046 E5b·2 eso era clonar entero cada vez, y medido
+//! en victor el clon era casi toda la petición (1,5 s de 1,7). Ahora hay un
+//! espejo en este proceso que se pone al día con un `fetch` (0,1 s) antes de
+//! responder: ver [`ParaLeer`] y «El espejo», abajo. El espejo es una caché:
 //!
-//! Lo que compra es que **el servidor no tiene estado**. Se puede matar, se
+//! lo que compra seguir así es que **el servidor no tiene estado**. Se puede matar, se
 //! puede replicar, y dos réplicas no divergen porque no hay nada que diverja:
 //! el sistema de registro es la forja.
 //!
@@ -202,7 +203,19 @@ impl Forja {
     /// `main`—, que es lo que todo hacía hasta hoy. Con rama, `HEAD` del clon
     /// es esa rama, así que `publicar` empuja a ella y no a `main`: una
     /// propuesta no toca lo que Flux mira.
+    ///
+    /// ⭐ 0046 E5b·2: del espejo al día, sin red; si el espejo no se puede
+    ///   usar, de la forja como antes.
     pub fn clonar_rama(&self, rama: Option<&str>) -> Result<Prestado, Fallo> {
+        match self.clonar_del_espejo(rama) {
+            Ok(p) => Ok(p),
+            Err(Fallo::SinRama(r)) => Err(Fallo::SinRama(r)),
+            Err(_) => self.clonar_de_la_forja(rama),
+        }
+    }
+
+    /// El clon de siempre, bajado de la forja.
+    fn clonar_de_la_forja(&self, rama: Option<&str>) -> Result<Prestado, Fallo> {
         let destino = temporal();
         std::fs::create_dir_all(&destino)
             .map_err(|e| Fallo::Git(format!("no se pudo crear el directorio: {e}")))?;
@@ -715,6 +728,247 @@ fn primera(s: &str) -> String {
         .unwrap_or_default()
 }
 
+// ── El espejo: el árbol vivo (0046 E5b·2) ───────────────────────────────────
+//
+// Medido en victor, dentro del pod (0,5 CPU): clonar el árbol costaba 1,5–1,6 s
+// y era casi toda la petición —`GET /paquetes` 1,7 s con 168 ficheros—; un
+// `fetch` sobre un clon vivo, 0,07–0,10 s; un `worktree`, 0,08 s; cargar el
+// árbol, 0,12 s. Con 2.000 tablas el clon crece y el `worktree` son 0,77 s.
+//
+// ⇒ Un espejo `--bare` por forja, en este proceso, que se pone al día con un
+//   `fetch` en cada petición: se lee siempre lo último, como antes. Lo que ya
+//   no se hace es bajarlo entero cada vez:
+//   · para LEER, un `worktree` por commit, compartido por las peticiones que
+//     lean ese commit mientras alguna lo use; si alguien lo ensucia, se rehace;
+//   · para ESCRIBIR, un clon local del espejo (enlaces duros, sin red) con
+//     `origin` en la forja: publicar, la carrera y el `409` no cambian.
+//
+// ⭐ El sistema de registro sigue siendo la forja. El espejo es una caché que
+//   se reconstruye sola: matar el proceso no pierde nada, y dos réplicas no
+//   divergen porque cada una hace `fetch` antes de responder. Si el espejo
+//   falla, se clona como antes.
+
+/// Cuántos árboles por commit se guardan (los que nadie esté leyendo).
+const ARBOLES: usize = 8;
+
+struct Espejo {
+    /// El repositorio `--bare`.
+    dir: PathBuf,
+    /// El `fetch`, los `worktree` y su lista, de uno en uno.
+    estado: std::sync::Mutex<Arboles>,
+}
+
+#[derive(Default)]
+struct Arboles {
+    /// commit → su árbol, del más viejo al más nuevo.
+    hechos: Vec<(String, std::sync::Arc<PathBuf>)>,
+    creados: u64,
+}
+
+/// El árbol para leer: compartido (un `worktree` del espejo) o propio (un clon
+/// fresco, si el espejo no se pudo usar). Se suelta al salir de la petición.
+pub enum ParaLeer {
+    Compartido(std::sync::Arc<PathBuf>),
+    Propio(Prestado),
+}
+
+impl ParaLeer {
+    pub fn ruta(&self) -> &Path {
+        match self {
+            ParaLeer::Compartido(p) => p,
+            ParaLeer::Propio(p) => p.ruta(),
+        }
+    }
+}
+
+fn espejos() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Espejo>>>
+{
+    static E: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Espejo>>>,
+    > = std::sync::OnceLock::new();
+    E.get_or_init(Default::default)
+}
+
+impl Forja {
+    /// El espejo de esta forja, creado la primera vez. Por proceso: dos
+    /// servidores en la misma máquina (las pruebas) no comparten directorio.
+    fn espejo(&self) -> Result<std::sync::Arc<Espejo>, Fallo> {
+        let mut todos = espejos().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = todos.get(&self.url) {
+            return Ok(e.clone());
+        }
+        let huella = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.url.hash(&mut h);
+            h.finish()
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "ore-serve-espejo-{}-{huella:016x}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir_s = dir.to_string_lossy().into_owned();
+        self.git(
+            None,
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--quiet",
+                "--bare",
+                &self.url,
+                &dir_s,
+            ],
+        )?;
+        let e = std::sync::Arc::new(Espejo {
+            dir,
+            estado: Default::default(),
+        });
+        todos.insert(self.url.clone(), e.clone());
+        Ok(e)
+    }
+
+    /// El espejo, al día: todas las ramas de la forja, y las borradas fuera.
+    fn al_dia(&self, e: &Espejo) -> Result<(), Fallo> {
+        let d = e.dir.to_string_lossy().into_owned();
+        self.git(
+            None,
+            &[
+                "--git-dir",
+                &d,
+                "fetch",
+                "--quiet",
+                "--prune",
+                "origin",
+                "+refs/heads/*:refs/heads/*",
+            ],
+        )
+        .map(|_| ())
+    }
+
+    /// El commit de una rama del espejo (`None`: la de por defecto).
+    fn commit_de(&self, e: &Espejo, rama: Option<&str>) -> Result<String, Fallo> {
+        let d = e.dir.to_string_lossy().into_owned();
+        let r = match rama {
+            Some(r) => format!("refs/heads/{r}^{{commit}}"),
+            None => "HEAD^{commit}".to_string(),
+        };
+        self.git(
+            None,
+            &["--git-dir", &d, "rev-parse", "--verify", "--quiet", &r],
+        )
+        .map(|s| s.trim().to_string())
+        .map_err(|_| Fallo::SinRama(rama.unwrap_or("HEAD").to_string()))
+    }
+
+    /// **El árbol de una rama, para leer** (`None`: la de por defecto). Lo
+    /// último de la forja, sin clonarlo: un `fetch` y el `worktree` de su
+    /// commit, que se comparte. Si el espejo falla, un clon como antes.
+    pub fn para_leer(&self, rama: Option<&str>) -> Result<ParaLeer, Fallo> {
+        match self.leer_del_espejo(rama) {
+            Ok(a) => Ok(ParaLeer::Compartido(a)),
+            Err(Fallo::SinRama(r)) => Err(Fallo::SinRama(r)),
+            Err(_) => self.clonar_de_la_forja(rama).map(ParaLeer::Propio),
+        }
+    }
+
+    fn leer_del_espejo(&self, rama: Option<&str>) -> Result<std::sync::Arc<PathBuf>, Fallo> {
+        let e = self.espejo()?;
+        let mut a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+        self.al_dia(&e)?;
+        let c = self.commit_de(&e, rama)?;
+        if let Some(i) = a.hechos.iter().position(|(h, _)| *h == c) {
+            let (_, dir) = &a.hechos[i];
+            // Limpio, o se rehace: un árbol compartido que alguien tocó ya no
+            // es el commit que dice ser.
+            let limpio = dir.is_dir()
+                && self
+                    .git(Some(dir), &["status", "--porcelain", "--ignored"])
+                    .is_ok_and(|s| s.trim().is_empty());
+            if limpio {
+                let dir = dir.clone();
+                let par = a.hechos.remove(i);
+                a.hechos.push(par);
+                return Ok(dir);
+            }
+            let (_, viejo) = a.hechos.remove(i);
+            self.quitar_arbol(&e, &viejo);
+        }
+        a.creados += 1;
+        let dir = e.dir.with_extension(format!("arbol-{}", a.creados));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (d, dir_s) = (
+            e.dir.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+        );
+        self.git(
+            None,
+            &[
+                "--git-dir",
+                &d,
+                "-c",
+                "core.autocrlf=false",
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                &dir_s,
+                &c,
+            ],
+        )?;
+        let dir = std::sync::Arc::new(dir);
+        a.hechos.push((c, dir.clone()));
+        // Los viejos que nadie lee, fuera.
+        while a.hechos.len() > ARBOLES {
+            let Some(i) = a
+                .hechos
+                .iter()
+                .position(|(_, p)| std::sync::Arc::strong_count(p) == 1)
+            else {
+                break;
+            };
+            let (_, viejo) = a.hechos.remove(i);
+            self.quitar_arbol(&e, &viejo);
+        }
+        Ok(dir)
+    }
+
+    fn quitar_arbol(&self, e: &Espejo, dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+        let d = e.dir.to_string_lossy().into_owned();
+        let _ = self.git(None, &["--git-dir", &d, "worktree", "prune"]);
+    }
+
+    /// Un clon para escribir, del espejo al día (sin red: enlaces duros) y con
+    /// `origin` en la forja. `None` si el espejo no se pudo usar.
+    fn clonar_del_espejo(&self, rama: Option<&str>) -> Result<Prestado, Fallo> {
+        let e = self.espejo()?;
+        {
+            let _a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+            self.al_dia(&e)?;
+            self.commit_de(&e, rama)?;
+        }
+        let destino = temporal();
+        let prestado = Prestado(destino.clone());
+        let (d, destino_s) = (
+            e.dir.to_string_lossy().into_owned(),
+            destino.to_string_lossy().into_owned(),
+        );
+        let mut args = vec!["-c", "core.autocrlf=false", "clone", "--quiet"];
+        if let Some(r) = rama {
+            args.extend(["--branch", r]);
+        }
+        args.extend([d.as_str(), destino_s.as_str()]);
+        self.git(None, &args)?;
+        self.git(
+            Some(&destino),
+            &["remote", "set-url", "origin", self.url.as_str()],
+        )?;
+        Ok(prestado)
+    }
+}
+
 fn temporal() -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
@@ -824,6 +1078,112 @@ mod pruebas {
             !f.asegurar_rama("ana/puesto").unwrap(),
             "la segunda ya está"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⭐ 0046 E5b·2 · **El espejo lee siempre lo último, y no se deja
+    /// ensuciar.** Una forja pelada: lo que otro empuja se ve en la lectura
+    /// siguiente (el `fetch` de cada petición); dos lecturas del mismo commit
+    /// comparten árbol; uno ensuciado se rehace; una rama que no está es
+    /// `SinRama`; y escribir clona del espejo y empuja a la forja.
+    #[test]
+    fn el_espejo_lee_lo_ultimo_y_no_se_ensucia() {
+        let d = temporal();
+        let pelada = d.join("arbol.git");
+        let otro = d.join("otro");
+        std::fs::create_dir_all(&otro).unwrap();
+        let corre = |args: &[&str], cwd: &Path| {
+            let s = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "s")
+                .env("GIT_AUTHOR_EMAIL", "s@x")
+                .env("GIT_COMMITTER_NAME", "s")
+                .env("GIT_COMMITTER_EMAIL", "s@x")
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        corre(
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                pelada.to_str().unwrap(),
+            ],
+            &d,
+        );
+        corre(&["init", "-q", "-b", "main"], &otro);
+        std::fs::write(otro.join("a.txt"), "uno\n").unwrap();
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "uno"], &otro);
+        corre(
+            &["push", "-q", pelada.to_str().unwrap(), "HEAD:main"],
+            &otro,
+        );
+        let f = Forja {
+            url: format!("file://{}", pelada.to_string_lossy().replace('\\', "/")),
+            testigo: String::new(),
+        };
+        let leer = |f: &Forja| {
+            let a = f.para_leer(None).unwrap();
+            assert!(matches!(a, ParaLeer::Compartido(_)), "no vino del espejo");
+            (
+                a.ruta().to_path_buf(),
+                std::fs::read_to_string(a.ruta().join("a.txt")).unwrap(),
+            )
+        };
+        let (r1, t1) = leer(&f);
+        assert_eq!(t1, "uno\n");
+        let (r2, _) = leer(&f);
+        assert_eq!(r1, r2, "el mismo commit comparte árbol");
+
+        // Otro empuja: la lectura siguiente lo ve.
+        std::fs::write(otro.join("a.txt"), "dos\n").unwrap();
+        corre(&["commit", "-qam", "dos"], &otro);
+        corre(
+            &["push", "-q", pelada.to_str().unwrap(), "HEAD:main"],
+            &otro,
+        );
+        let (r3, t3) = leer(&f);
+        assert_eq!(t3, "dos\n", "el espejo no se puso al día");
+        assert_ne!(r3, r1);
+
+        // Alguien ensucia el árbol compartido: se rehace, limpio.
+        std::fs::write(r3.join("a.txt"), "roto\n").unwrap();
+        let (_, t4) = leer(&f);
+        assert_eq!(t4, "dos\n", "se sirvió un árbol ensuciado");
+
+        assert!(matches!(
+            f.para_leer(Some("no-esta")),
+            Err(Fallo::SinRama(_))
+        ));
+
+        // Escribir: un clon del espejo que empuja a la forja.
+        let sujeto = Identidad {
+            persona: "persona:ana".into(),
+            agente: None,
+            correo: None,
+            nombre: None,
+            tipo: None,
+        };
+        let clon = f.clonar().unwrap();
+        std::fs::write(clon.ruta().join("b.txt"), "nuevo\n").unwrap();
+        f.publicar(clon.ruta(), &sujeto, "b").unwrap();
+        drop(clon);
+        let a = f.para_leer(None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(a.ruta().join("b.txt")).unwrap(),
+            "nuevo\n",
+            "lo escrito no llegó a la forja, o el espejo no lo trajo"
+        );
+        drop(a);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

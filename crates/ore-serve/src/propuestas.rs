@@ -1863,12 +1863,12 @@ impl Servidor {
                 if let Err(m) = nombre_de_rama_valido(r) {
                     return Respuesta::error(422, m);
                 }
-                match forja.clonar_rama(Some(r)) {
+                match forja.para_leer(Some(r)) {
                     Err(crate::git::Fallo::SinRama(r)) => {
                         Respuesta::error(404, format!("no hay ninguna rama `{r}`"))
                     }
                     Err(e) => Respuesta::error(502, e.to_string()),
-                    Ok(prestado) => f(prestado.ruta()),
+                    Ok(arbol) => f(arbol.ruta()),
                 }
             }
         }

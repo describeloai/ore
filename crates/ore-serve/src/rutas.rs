@@ -806,14 +806,18 @@ impl Servidor {
 
     // ── Dónde se trabaja ────────────────────────────────────────────────────
 
-    /// Le da a `f` un árbol para leer. Con la forja, un clon fresco que se
-    /// borra al salir; con un directorio, el de siempre.
+    /// Le da a `f` un árbol para leer. Con la forja, lo último de ella —el
+    /// árbol de su commit en el espejo, compartido (0046 E5b·2)—; con un
+    /// directorio, el de siempre.
+    ///
+    /// ⛔ Para LEER: el árbol se comparte con las demás peticiones de ese
+    ///   commit. Quien necesite escribir va por `escribiendo`.
     pub(crate) fn leyendo(&self, f: impl FnOnce(&Path) -> Respuesta) -> Respuesta {
         match &self.arbol {
             Arbol::Directorio(d) => f(d),
-            Arbol::Forja(forja) => match forja.clonar() {
+            Arbol::Forja(forja) => match forja.para_leer(None) {
                 Err(e) => Respuesta::error(502, e.to_string()),
-                Ok(prestado) => f(prestado.ruta()),
+                Ok(arbol) => f(arbol.ruta()),
             },
         }
     }
