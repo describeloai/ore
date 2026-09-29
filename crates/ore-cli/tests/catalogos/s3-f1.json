@@ -117,6 +117,10 @@
         {
           "name": "customer_state",
           "type": "String"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -153,6 +157,10 @@
         },
         {
           "name": "geolocation_state",
+          "type": "String"
+        },
+        {
+          "name": "_rescued_data",
           "type": "String"
         }
       ],
@@ -199,6 +207,10 @@
         {
           "name": "freight_value",
           "type": "Float"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -236,6 +248,10 @@
         {
           "name": "payment_value",
           "type": "Float"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -281,6 +297,10 @@
         {
           "name": "review_answer_timestamp",
           "type": "DateTime"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -330,6 +350,10 @@
         {
           "name": "order_estimated_delivery_date",
           "type": "DateTime"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -383,6 +407,10 @@
         {
           "name": "product_width_cm",
           "type": "Integer"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -416,6 +444,10 @@
         {
           "name": "seller_state",
           "type": "String"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {
@@ -440,6 +472,10 @@
         },
         {
           "name": "product_category_name_english",
+          "type": "String"
+        },
+        {
+          "name": "_rescued_data",
           "type": "String"
         }
       ],
@@ -477,6 +513,10 @@
         },
         {
           "name": "usuario",
+          "type": "String"
+        },
+        {
+          "name": "_rescued_data",
           "type": "String"
         }
       ],
@@ -516,6 +556,10 @@
         {
           "name": "activo",
           "type": "Boolean"
+        },
+        {
+          "name": "_rescued_data",
+          "type": "String"
         }
       ],
       "format": {

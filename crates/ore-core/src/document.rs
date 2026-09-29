@@ -1169,8 +1169,39 @@ fn forma_de_tabla_de_ficheros(n: &Node) -> Option<ShapeFailure> {
             }
         }
     }
+    // `03` §1.1: la columna rescatada es de lo que se deduce —csv, jsonl—, y
+    // lo que lleva es un objeto JSON en texto.
+    if let Some((_, r)) = columnas.and_then(|c| c.get(COLUMNA_RESCATADA)) {
+        let tipo = formato.get("type").and_then(|(_, v)| v.as_str());
+        if tipo == Some("parquet") {
+            return Some((
+                format!("`{COLUMNA_RESCATADA}` en una tabla de Parquet"),
+                Some(
+                    "el tipo de un Parquet lo trae su pie: no se deduce, y no hay nada que \
+                     rescatar. La columna rescatada es de `csv` y `jsonl`"
+                        .to_string(),
+                ),
+            ));
+        }
+        if let Some(t) = r.get("type").and_then(|(_, v)| v.as_str())
+            && t != "String"
+        {
+            return Some((
+                format!("`{COLUMNA_RESCATADA}` es `{t}`"),
+                Some(
+                    "lo rescatado es un objeto JSON con el texto original y el fichero: \
+                     `type: String`"
+                        .to_string(),
+                ),
+            ));
+        }
+    }
     None
 }
+
+/// v1alpha16 · `03` §1.1. **La columna rescatada**: donde una tabla de CSV o
+/// JSONL que la declara recibe lo que no encaja con sus tipos congelados.
+pub const COLUMNA_RESCATADA: &str = "_rescued_data";
 
 /// v1alpha16 · la forma de una `MediaCollection` (`02` §7).
 fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {

@@ -521,6 +521,7 @@ fn una(
             recoger && !seco,
         );
     }
+    let fichero = fichero_de(pkg, &r);
     let filas = match leer(
         raiz_pkg,
         &r,
@@ -528,6 +529,7 @@ fn una(
         desde.as_deref(),
         testigo.1.as_deref(),
         ordena,
+        fichero.as_ref(),
     ) {
         Ok(f) => f,
         // **Y si el driver no sabe servir ese rango, se copia entera y se
@@ -554,6 +556,7 @@ fn una(
                 desde.as_deref(),
                 testigo.1.as_deref(),
                 false,
+                fichero.as_ref(),
             )?
         }
         Err(e) => return Err(e),
@@ -1401,7 +1404,7 @@ impl OrigenDelLago {
         use ore_core::json::Json;
         // La misma petición que un driver recibiría (`proyeccion`, `filtros`),
         // con las mismas negativas: un `where` con varios valores no cabe.
-        let p = peticion("", r, None, None, None, false)?;
+        let p = peticion("", r, None, None, None, false, None)?;
         let n = ore_core::parse::parse(&p).map_err(|e| format!("{e:?}"))?;
         let mut o = vec![
             ("dataset", Json::s(&self.dataset)),
@@ -1516,12 +1519,14 @@ fn leer(
     // Si el testigo del origen ORDENA. Decide si un rango sin columna tiene
     // sentido: `log` si, `snapshot` no.
     ordena: bool,
+    // 0046 E6: cómo se leen los ficheros de la tabla, si lo son.
+    fichero: Option<&ore_core::json::Json>,
 ) -> Result<Leido, String> {
     let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource)
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
     let url = lector::url(raiz_pkg, &env, &r.datasource)
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
-    let peticion = peticion(&url, r, cursor, desde, hasta, ordena)?;
+    let peticion = peticion(&url, r, cursor, desde, hasta, ordena, fichero)?;
 
     // Se pide en Arrow y se mira qué llega (ADR 0043): un flujo IPC empieza por
     // `0xFFFFFFFF`, y una fila de texto por `{`. Un driver que no sabe Arrow
@@ -1619,6 +1624,33 @@ fn encauzar(
         .map_err(|e| format!("lo que devolvió `{programa}` no analiza: {e:?}\n{texto}"))
 }
 
+/// **Cómo se leen los ficheros de la raíz** (0046 E6), si la raíz es una
+/// `Table` con `format`: el bloque tal cual, y el tipo de cada columna. `None`
+/// para cualquier otra raíz, y la petición queda como era.
+fn fichero_de(pkg: &Package, r: &vistas::Raiz) -> Option<ore_core::json::Json> {
+    use ore_core::json::Json;
+    let t = pkg.table(r.tabla.as_deref()?)?;
+    let formato = t.section("format")?;
+    let tipos = t
+        .section("columns")
+        .map(|c| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let tipo = v.get("type").and_then(|(_, t)| t.as_str())?;
+                    Some(Json::Arr(vec![Json::s(k.as_str()?), Json::s(tipo)]))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Una lista y no un objeto: el orden de las columnas es el del fichero
+    // cuando un CSV no tiene cabecera, y un objeto JSON sale ordenado.
+    Some(Json::obj([
+        ("format", Json::de_node(formato)),
+        ("tipos", Json::Arr(tipos)),
+    ]))
+}
+
 /// **La petición, armada aparte y sin tocar nada.**
 ///
 /// Se separa de [`leer`] por lo mismo que `ore-sql` separa la traducción del
@@ -1631,6 +1663,7 @@ fn peticion(
     desde: Option<&str>,
     hasta: Option<&str>,
     ordena: bool,
+    fichero: Option<&ore_core::json::Json>,
 ) -> Result<String, String> {
     let mut filtros = Vec::new();
     for (columna, valores) in &r.filtros {
@@ -1699,6 +1732,12 @@ fn peticion(
     campos.push(("filtros", Json::Arr(filtros)));
     // Una preferencia (ADR 0043): el driver que sabe contesta en Arrow.
     campos.push(("formato", Json::s("arrow")));
+    // 0046 E6: los ficheros de la tabla y sus tipos congelados, del árbol. El
+    // driver no los vuelve a deducir: lo que el catálogo dedujo y alguien
+    // confirmó es lo que manda (03 §1.1).
+    if let Some(f) = fichero {
+        campos.push(("fichero", f.clone()));
+    }
     Ok(Json::obj(campos).jcs())
 }
 
@@ -1772,7 +1811,7 @@ mod tests {
     fn los_filtros_van_con_la_forma_del_adr_0008() {
         let mut r = raiz();
         r.filtros = vec![("id".into(), vec!["7".into()])].into_iter().collect();
-        let p = peticion("x://y", &r, None, None, None, false).expect("petición");
+        let p = peticion("x://y", &r, None, None, None, false, None).expect("petición");
         assert!(
             p.contains("\"filtros\":[{\"columna\":\"id\",\"operador\":\"eq\",\"valor\":\"7\"}]"),
             "{p}"
@@ -1791,6 +1830,7 @@ mod tests {
             Some("7"),
             Some("9"),
             false,
+            None,
         )
         .expect("petición");
         assert!(p.contains("\"cursor\":\"actualizado\""), "{p}");
@@ -1806,7 +1846,8 @@ mod tests {
     /// `witness: log` se releía entero en cada refresco y nadie lo veía.
     #[test]
     fn sin_cursor_y_con_testigo_que_ordena_el_rango_va_sobre_la_posicion() {
-        let p = peticion("x://y", &raiz(), None, Some("7"), Some("9"), true).expect("petición");
+        let p =
+            peticion("x://y", &raiz(), None, Some("7"), Some("9"), true, None).expect("petición");
         assert!(!p.contains("\"cursor\""), "{p}");
         assert!(p.contains("\"start\":\"7\""), "{p}");
         assert!(p.contains("\"end\":\"9\""), "{p}");
@@ -1825,6 +1866,7 @@ mod tests {
             Some("sha256:abc"),
             Some("sha256:def"),
             false,
+            None,
         )
         .expect("petición");
         assert!(!p.contains("\"start\""), "{p}");
@@ -1835,8 +1877,16 @@ mod tests {
     /// primera copia es entera por definición.
     #[test]
     fn la_primera_copia_no_lleva_rango() {
-        let p = peticion("x://y", &raiz(), Some("actualizado"), None, Some("9"), true)
-            .expect("petición");
+        let p = peticion(
+            "x://y",
+            &raiz(),
+            Some("actualizado"),
+            None,
+            Some("9"),
+            true,
+            None,
+        )
+        .expect("petición");
         assert!(!p.contains("\"start\""), "{p}");
     }
 }

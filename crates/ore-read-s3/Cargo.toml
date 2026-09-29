@@ -23,3 +23,13 @@ ore-s3     = { path = "../ore-s3" }
 # `ore-store`), con las mismas features.
 parquet    = { version = "58", default-features = false, features = ["arrow", "snap"] }
 arrow-schema = "58"
+# 0046 E6 · leer: el lote en Arrow, el flujo IPC, el cast de un Parquet al
+# contrato y los filtros. Todas estaban ya en el arbol (las trae `ore-store`).
+arrow-array  = "58"
+arrow-ipc    = "58"
+arrow-cast   = "58"
+arrow-ord    = "58"
+arrow-arith  = "58"
+arrow-select = "58"
+bytes        = "1"
+serde_json   = "1"

@@ -100,6 +100,94 @@ pub struct Peticion {
     ///
     /// Es el *cursor field* del sector, con su nombre.
     pub cursor: Option<String>,
+
+    // ── Los ficheros · 0046 E6 ──────────────────────────────────────────────
+    /// **Cómo se leen los ficheros**, cuando el objeto es una `Table` con
+    /// `format` (v1alpha16 `03` §1). Viene del árbol —lo que el catálogo dedujo
+    /// y alguien confirmó— para que el driver **no vuelva a adivinarlo**: un
+    /// formato que se deduce al leer deja de ser el escrito. `None` para
+    /// cualquier otro objeto; los drivers que no leen ficheros no lo miran.
+    pub fichero: Option<Fichero>,
+}
+
+/// El `format` de una `Table` de ficheros, y los tipos congelados de sus
+/// columnas (v1alpha16 `03` §1 y §1.1).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Fichero {
+    /// `parquet`, `csv` o `jsonl`.
+    pub tipo: String,
+    /// El *glob* sobre la clave relativa al prefijo.
+    pub patron: Option<String>,
+    /// Las claves `k=v` del camino que son columnas.
+    pub particiones: Vec<String>,
+    /// Sólo csv. Por defecto, sí.
+    pub cabecera: bool,
+    /// Sólo csv. Por defecto, `,`.
+    pub separador: char,
+    /// Sólo csv. Por defecto, `utf-8`.
+    pub codificacion: Option<String>,
+    /// Columna física → tipo de OOS, tal como la tabla lo declara. Una columna
+    /// sin tipo no está: es texto.
+    pub tipos: Vec<(String, String)>,
+}
+
+impl Fichero {
+    /// Si la tabla declara la columna rescatada (`03` §1.1): lo que no encaja
+    /// va ahí y la lectura sigue; si no, lo que no encaja la para.
+    pub fn rescata(&self) -> bool {
+        self.tipos
+            .iter()
+            .any(|(c, _)| c == ore_core::document::COLUMNA_RESCATADA)
+    }
+}
+
+fn fichero_de(n: &ore_core::parse::Node) -> Result<Fichero, String> {
+    let f = n
+        .get("format")
+        .map(|(_, v)| v)
+        .ok_or("`fichero` sin `format`")?;
+    let cadena = |k: &str| f.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+    let tipo = cadena("type").ok_or("`fichero.format` sin `type`")?;
+    let separador = match cadena("delimiter") {
+        None => ',',
+        Some(s) => {
+            let mut cs = s.chars();
+            match (cs.next(), cs.next()) {
+                (Some(c), None) => c,
+                _ => return Err(format!("`delimiter: {s}` no es un carácter")),
+            }
+        }
+    };
+    Ok(Fichero {
+        tipo,
+        patron: cadena("match"),
+        particiones: f
+            .get("partitions")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        cabecera: cadena("header").is_none_or(|h| h != "false"),
+        separador,
+        codificacion: cadena("encoding"),
+        // `[[columna, tipo], …]`, en el orden de la tabla: sin cabecera, el
+        // orden es lo que dice qué campo es qué columna.
+        tipos: n
+            .get("tipos")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|par| match par.items() {
+                        [c, t] => Some((c.as_str()?.to_string(), t.as_str()?.to_string())),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
 }
 
 /// **El cuarto verbo: ¿responde esta fuente?**
@@ -228,6 +316,10 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         end: opcional("end"),
         cursor: opcional("cursor"),
         formato: opcional("formato"),
+        fichero: match n.get("fichero") {
+            None => None,
+            Some((_, f)) => Some(fichero_de(f)?),
+        },
     };
     if p.objeto.is_empty() {
         return Err("la petición no nombra ningún objeto".into());
@@ -440,6 +532,39 @@ mod tests {
         let f = fila(&p, &[Some("1000".into()), Some("emp-7".into())]);
         assert_eq!(f, r#"{"baseSalary":"1000","employeeId":"emp-7"}"#);
         assert!(!f.contains("base_pay"), "{f}");
+    }
+}
+
+#[cfg(test)]
+mod ficheros {
+    use super::*;
+
+    /// **El `format` de la tabla llega entero, con sus tipos**, y lo que no
+    /// dice toma el valor por defecto de la spec: cabecera sí, coma.
+    #[test]
+    fn el_formato_de_la_tabla_llega_con_sus_tipos() {
+        let p = leer_peticion(
+            r#"{"url":"s3://b","objeto":"v/pedidos/","proyeccion":{"id":"id"},
+                "fichero":{"format":{"type":"csv","delimiter":";","partitions":["fecha"]},
+                           "tipos":[["id","String"],["total","Decimal<12, 2>"],["_rescued_data","String"]]}}"#,
+        )
+        .expect("petición");
+        let f = p.fichero.expect("fichero");
+        assert_eq!(f.tipo, "csv");
+        assert_eq!(f.separador, ';');
+        assert!(f.cabecera);
+        assert_eq!(f.particiones, ["fecha"]);
+        assert!(f.rescata());
+        assert_eq!(
+            f.tipos[1],
+            ("total".to_string(), "Decimal<12, 2>".to_string())
+        );
+        let sin = leer_peticion(r#"{"url":"s3://b","objeto":"x","proyeccion":{"id":"id"}}"#)
+            .expect("petición");
+        assert!(
+            sin.fichero.is_none(),
+            "una petición sin ficheros queda como era"
+        );
     }
 }
 

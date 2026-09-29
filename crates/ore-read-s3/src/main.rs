@@ -16,7 +16,7 @@
 //! | `explorar` | las carpetas del bucket, con su URL sin credencial | la coordenada |
 //! | `catalogo <fuente>` | tablas y conjuntos de objetos (`catalogo.rs`) | la URL |
 //! | `testigo` | la huella del listado de un objeto o un prefijo | la coordenada |
-//! | `leer` | **todavía no**: llega con E6 (lo tabular) | — |
+//! | `leer` | las filas de una `Table` con `format`, en Arrow (`filas.rs`, E6) | la petición |
 //!
 //! La URL lleva la credencial y va **siempre por stdin**, nunca por `argv`, y
 //! este programa no la imprime: ni en un error (lo que dice S3 no la contiene)
@@ -24,6 +24,7 @@
 
 mod acceso;
 mod catalogo;
+mod filas;
 mod fuente;
 mod medio;
 mod origen;
@@ -75,11 +76,28 @@ fn main() -> ExitCode {
             };
             catalogo::testigo(&f.bucket, &objeto)
         }),
-        "leer" => Err(
-            "leer las filas de un bucket llega con 0046 E6 (lo tabular); hoy este lector \
-             cataloga, comprueba y fecha"
-                .to_string(),
-        ),
+        "leer" => ore_driver::leer_peticion(&entrada).and_then(|p| {
+            let f = fuente::leer(&p.url)?;
+            let salida = std::io::stdout();
+            let mut s = std::io::BufWriter::with_capacity(1 << 20, salida.lock());
+            let l = filas::leer(&f.bucket, &p, &mut s, filas::UMBRAL)?;
+            use std::io::Write as _;
+            s.flush()
+                .map_err(|e| format!("no se pudo escribir el flujo: {e}"))?;
+            let (n, b) = ore_s3::contadores();
+            avisos.push(format!(
+                "{} filas de {} ficheros, con {n} peticiones y {} KB de cuerpo",
+                l.filas,
+                l.ficheros,
+                b / 1024
+            ));
+            for (c, k) in &l.rescatados {
+                avisos.push(format!(
+                    "{k} valores de `{c}` rescatados en `_rescued_data`"
+                ));
+            }
+            Ok(String::new())
+        }),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
     for a in &avisos {

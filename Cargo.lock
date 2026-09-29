@@ -2318,11 +2318,19 @@ dependencies = [
 name = "ore-read-s3"
 version = "0.1.0"
 dependencies = [
+ "arrow-arith",
+ "arrow-array",
+ "arrow-cast",
+ "arrow-ipc",
+ "arrow-ord",
  "arrow-schema",
+ "arrow-select",
+ "bytes",
  "ore-core",
  "ore-driver",
  "ore-s3",
  "parquet",
+ "serde_json",
 ]
 
 [[package]]

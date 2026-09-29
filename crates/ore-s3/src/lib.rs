@@ -163,6 +163,18 @@ pub fn pedir(
     consulta: &[(&str, String)],
     cabeceras: Vec<(String, String)>,
 ) -> Result<Respuesta, String> {
+    let resp = enviar(b, metodo, clave, consulta, cabeceras)?;
+    respuesta(b, metodo, resp)
+}
+
+/// La petición firmada y enviada; el cuerpo, sin leer.
+fn enviar(
+    b: &Bucket,
+    metodo: &str,
+    clave: Option<&str>,
+    consulta: &[(&str, String)],
+    cabeceras: Vec<(String, String)>,
+) -> Result<ureq::Response, String> {
     let ruta = b.ruta(clave);
     let mut ps: Vec<(String, String)> = consulta
         .iter()
@@ -196,11 +208,15 @@ pub fn pedir(
             r = r.set(k, v);
         }
     }
-    let resp = match r.call() {
-        Ok(x) => x,
-        Err(ureq::Error::Status(_, x)) => x,
-        Err(e) => return Err(format!("{metodo} {}: {e}", b.host())),
-    };
+    match r.call() {
+        Ok(x) => Ok(x),
+        Err(ureq::Error::Status(_, x)) => Ok(x),
+        Err(e) => Err(format!("{metodo} {}: {e}", b.host())),
+    }
+}
+
+/// Una respuesta entera, con su cuerpo.
+fn respuesta(b: &Bucket, metodo: &str, resp: ureq::Response) -> Result<Respuesta, String> {
     let estado = resp.status();
     let cabeceras: Vec<(String, String)> = resp
         .headers_names()
@@ -321,6 +337,53 @@ pub fn cabeza(b: &Bucket, clave: &str) -> Result<Respuesta, String> {
         Some(clave),
         &[],
         vec![("x-amz-checksum-mode".into(), "ENABLED".into())],
+    )
+}
+
+/// **Un objeto entero, en flujo, y sólo si sigue siendo el listado** (0046
+/// E6): `If-Match` con su ETag. S3 es consistente por clave y no entre claves,
+/// así que una tabla de varios ficheros se lee fijando cada uno a lo que el
+/// listado dijo; si alguno cambió entre medias, `412` y la lectura se para en
+/// vez de mezclar dos versiones. El cuerpo no se guarda: se lee según llega.
+pub fn abrir(
+    b: &Bucket,
+    clave: &str,
+    etag: &str,
+) -> Result<Box<dyn std::io::Read + Send>, Respuesta> {
+    let resp = enviar(
+        b,
+        "GET",
+        Some(clave),
+        &[],
+        vec![("if-match".into(), etag.into())],
+    )
+    .map_err(|e| Respuesta {
+        estado: 0,
+        cabeceras: Vec::new(),
+        cuerpo: e.into_bytes(),
+    })?;
+    if !(200..300).contains(&resp.status()) {
+        return Err(respuesta(b, "GET", resp).unwrap_or_else(|e| Respuesta {
+            estado: 0,
+            cabeceras: Vec::new(),
+            cuerpo: e.into_bytes(),
+        }));
+    }
+    PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(Box::new(resp.into_reader()))
+}
+
+/// Un rango de bytes **de la versión que el listado dijo** (`If-Match`).
+pub fn rango_de(b: &Bucket, clave: &str, rango: &str, etag: &str) -> Result<Respuesta, String> {
+    pedir(
+        b,
+        "GET",
+        Some(clave),
+        &[],
+        vec![
+            ("range".into(), format!("bytes={rango}")),
+            ("if-match".into(), etag.into()),
+        ],
     )
 }
 

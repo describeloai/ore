@@ -36,6 +36,7 @@
 use crate::medio::{self, Clase, Formato};
 use crate::origen::Origen;
 use crate::tabular::{self, Esquema};
+use ore_core::document::COLUMNA_RESCATADA as RESCATADA;
 use ore_core::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Objetos, Tabla};
 use ore_s3::Objeto;
@@ -230,6 +231,19 @@ fn tabla(
                 ..Default::default()
             });
         }
+    }
+    // v1alpha16 `03` §1.1 (0046 E6): lo que se deduce de una muestra —un CSV,
+    // un JSONL— trae su columna rescatada, y lo que no encaje con el tipo
+    // deducido va ahí en vez de parar la copia. Un Parquet no: su tipo es el
+    // del fichero.
+    if matches!(formato, Formato::Csv | Formato::Jsonl)
+        && !esquema.columnas.iter().any(|c| c.nombre == RESCATADA)
+    {
+        esquema.columnas.push(Columna {
+            nombre: RESCATADA.into(),
+            tipo: Some("String".into()),
+            ..Default::default()
+        });
     }
     avisos.append(&mut esquema.avisos);
     let mut f: Vec<(&str, Json)> = vec![("type", Json::s(formato.nombre()))];

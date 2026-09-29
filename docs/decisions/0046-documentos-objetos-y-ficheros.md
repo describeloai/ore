@@ -300,8 +300,8 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) ✅ | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) ✅ en local | `ore source induce` escribe un `ObjectTable` por conjunto y una `Table` con `format` por grupo tabular; la base, su `MediaCollection` **según su clase** (abajo); limpieza de `objects/`; la política IAM en `credenciales.rs`; el esquema de la fuente en ore-serve. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
-| **E5b · ore-serve a escala** · 1 ✅ · 2 ✅ en local | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
-| **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
+| **E5b · ore-serve a escala** · 1 ✅ · 2 ✅ | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
+| **E6 · lo tabular** (F4) ✅ | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
 | **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
@@ -496,6 +496,41 @@ la lectura siguiente, dos lecturas comparten árbol, uno ensuciado se rehace, `S
 llega a la forja). **Sin hacer**: guardar el árbol ya cargado en memoria por commit —con 2.000
 tablas cargarlo sigue siendo lo que cuesta—; `Package` no es `Clone` y cambiaría ~29 sitios, así
 que va aparte, si hace falta.
+
+**Lo que E6 midió y decidió.** Medido contra el bucket de F1 antes de escribir: lo tabular son 12
+tablas, 126 MB y 1,23 M filas (geolocation, 61 MB y 1.000.163; reseñas, 99.224 con 5.495 saltos de
+línea dentro de comillas; 146 mil campos vacíos); bajarlo todo, 17 s desde fuera de AWS (5–9 MB/s),
+y pasarlo a Arrow en Rust, 0,1–0,5 s por fichero: **lo que cuesta es la red**. Los tipos que el
+catálogo dedujo de 64 KB encajan en **todas** las filas de Olist. Hueco hallado: la petición `leer`
+no llevaba el `format` de la tabla, así que el driver habría tenido que volver a adivinarlo. Las
+cinco decisiones, investigadas en la documentación de cada fabricante:
+
+1. **El formato viaja del árbol al driver** (`Peticion.fichero`: `format` y los tipos congelados,
+   en el orden de la tabla). Como Glue/Hive, Trino, el `FILE FORMAT` de Snowflake o Airbyte: nadie
+   vuelve a deducir al leer.
+2. **Lo que no encaja se rescata**, si la tabla declara `_rescued_data` (enmienda de v1alpha16 `03`
+   §1.1, oos `58991c4`): nulo en su columna y su texto, con el fichero, en la rescatada —el *rescued
+   data column* de Databricks—. Sin declararla, la lectura **para** con fichero, fila, columna y
+   valor (lo de BigQuery y Snowflake por defecto). Nunca un nulo callado. El catálogo de S3 la
+   ofrece en todo CSV y JSONL; un Parquet no rescata (su tipo es del fichero; `OOS1004`).
+3. **Lo vacío, la regla de `COPY` de PostgreSQL** (`03` §1.2): vacío sin comillas es nulo y `""` la
+   cadena vacía; es la que no pierde nada (Spark y DuckDB juntan las dos). Exige un analizador de CSV
+   propio, porque `arrow-csv` no ve las comillas; en Olist da igual (0 campos `""`).
+4. **Cada fichero se lee fijado a lo que el listado dijo** (`If-Match`): S3 es consistente por clave
+   y no entre claves; si uno cambia a mitad, `412` y la copia para en vez de mezclar versiones.
+5. **Parquet por rangos, con umbral** (16 MB): por debajo, un GET; por encima, el pie por sufijo y,
+   grupo de filas a grupo, sólo los trozos de las columnas pedidas, juntando los que distan menos de
+   1 MB. Probado con un Parquet sintético (el bucket es de sólo lectura): 5 peticiones y menos de una
+   décima de los bytes.
+
+Hecho (`ore-read-s3/src/filas.rs`, `ore_s3::abrir`/`rango_de`, `ore_driver::Fichero`): `leer`
+contesta sólo en Arrow —la copia es la única que pide filas a un origen—, con el tipo de cada valor
+analizado por `Fisico::analizar`, la misma forma canónica con la que el almacén estrecha; filtros de
+igualdad en su tipo; particiones Hive del camino; `match` como *glob*. **La prueba**
+(`pruebas-de-fuego/s3-leer.sh`, contra el bucket real): una base standard de las 12 tablas, copiada
+en 28 s con **exactamente** las filas contadas con pyarrow, ninguna columna sin estrechar, los tipos
+de Iceberg los congelados (`timestamp`, `decimal(12, 2)`, el código postal `string`), los 87.656
+títulos vacíos nulos, 0 rescatadas, y la segunda pasada sin leer nada (0,8 s).
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar
