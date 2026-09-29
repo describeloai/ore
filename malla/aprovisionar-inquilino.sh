@@ -588,15 +588,19 @@ else
     --default-encryption-key="projects/$PROYECTO/locations/$LUGAR/keyRings/$LLAVERO/cryptoKeys/$LLAVE" \
     && hecho "la copia gs://$COPIA, en $LUGAR, cifrada con $KEK"
 fi
+# ⚠️ `--condition=None` en las tres: desde que el puesto tiene una concesión CON
+#   condición (abajo, 83f3bdd), `gcloud` rechaza añadir una SIN ella en modo no
+#   interactivo, y estas tres fallaban en cada pasada desde el 2026-09-22 — sin
+#   daño porque ya estaban, pero una que faltara no se habría repuesto.
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectAdmin && hecho "\`ore-driver-$NOMBRE\` escribe en la copia"
+  --role=roles/storage.objectAdmin --condition=None && hecho "\`ore-driver-$NOMBRE\` escribe en la copia"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectViewer && hecho "\`ore-serve-$NOMBRE\` lee la copia"
+  --role=roles/storage.objectViewer --condition=None && hecho "\`ore-serve-$NOMBRE\` lee la copia"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectCreator && hecho "\`ore-serve-$NOMBRE\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
+  --role=roles/storage.objectCreator --condition=None && hecho "\`ore-serve-$NOMBRE\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
 # ⭐ ②b: el puesto ya no ve el bucket entero. Si venía de antes con el
 #   `objectViewer` sin condición, se le quita; la condición va por el nombre
 #   del objeto (`ore/puesto/`) y no da `objects.list`: la capa se baja por su
