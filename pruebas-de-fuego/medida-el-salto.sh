@@ -140,19 +140,25 @@ SQL
 fi
 
 if toca 4; then
-  FILTRO='resource.type="k8s_container" AND resource.labels.container_name="ore-serve" AND textPayload:"acceso ·"'
-  [ -n "$DESDE" ] && FILTRO="$FILTRO AND timestamp>=\"$DESDE\""
+  # ⛔ De `kubectl logs`, no de Cloud Logging: el cluster sólo le manda los componentes del
+  #   sistema (`loggingConfig`: SYSTEM_COMPONENTS), no las cargas. Medido el 2026-09-29. Lo que
+  #   se pierde: un pod reemplazado se lleva sus líneas, así que la ventana es la del pod vivo.
+  #   Para los cuatro eventos de M2 basta; para una serie larga habría que encender WORKLOADS.
+  if [ -n "$DESDE" ]; then DESDE_K="--since-time=$DESDE"; else DESDE_K="--since=$((DIAS * 24))h"; fi
   echo "== 4 · las peticiones: líneas \`acceso · …\` de los ore-serve${DESDE:+ desde $DESDE}"
   # ⚠️ Con `cygpath` si lo hay: en Git Bash, Python es de Windows y no ve `/tmp`.
   RUTAS="${TMPDIR:-/tmp}/m2-rutas.json"
   M1="$AQUI/medida-el-acceso.py"
   command -v cygpath >/dev/null && { RUTAS=$(cygpath -m "$RUTAS"); M1=$(cygpath -m "$M1"); }
   python "$M1" --json > "$RUTAS" || { echo "✗ medida-el-acceso.py --json falló"; exit 1; }
-  gcloud logging read "$FILTRO" --freshness="${DIAS}d" --limit=200000 \
-    --format='value(timestamp,resource.labels.namespace_name,textPayload)' 2>/dev/null \
+  for t in $INQUILINOS; do
+    kubectl logs -n "t-$t" deploy/ore-serve --timestamps "$DESDE_K" 2>/dev/null \
+      | awk -v ns="t-$t" '/ acceso · / { f = $1; $1 = ""; sub(/^ /, ""); print f "\t" ns "\t" $0 }'
+  done \
   | python -c '
 import collections, json, re, sys
 sys.stdout.reconfigure(encoding="utf-8")
+sys.stdin.reconfigure(encoding="utf-8")   # en Windows leería cp1252 y el `·` no casaría
 rutas = json.load(open(sys.argv[1], encoding="utf-8"))
 exactas = {(r["metodo"], r["camino"]): r for r in rutas}
 restos = [(r["metodo"], r["camino"][:-len("{..}")], r) for r in rutas if r["camino"].endswith("{..}")]

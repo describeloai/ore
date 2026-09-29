@@ -361,7 +361,7 @@ a la salida estándar, al terminar de atenderla:
   El registro no guarda qué paquete, qué tabla ni quién: lo que mide es **cuántas y de qué
   clase**. El vocabulario de literales sale del propio enrutador. Una prueba comprueba que cada
   brazo de `rutas.rs` da un patrón con sentido, así que una ruta nueva no sale como `{}`.
-- **Sin flag y sin malla.** Es la salida estándar, que Cloud Logging ya recoge. No hay nada que
+- **Sin flag y sin malla.** Va por la salida del proceso y se lee con `kubectl logs`. No hay nada que
   desplegar aparte del binario, así que no choca con la regla de no empujar juntos un flag nuevo
   y la malla que lo usa.
 - **Es el primer trozo de A4.** El sitio donde se escribe esa línea es el mismo por donde pasará
@@ -445,7 +445,10 @@ de la huella, 0,014 ms**.
    a `ore-iam`, no para esconder latencia. Su valor depende de cuántas preguntas por minuto haya.
 
 **M2.3 · en código.** `crates/ore-serve/src/recuento.rs` escribe una línea por petición, salvo
-`/salud`, por la salida de error, que Cloud Logging recoge:
+`/salud`, por la salida de error. ✏️ Cloud Logging **no** la recoge: el cluster sólo le manda
+los componentes del sistema (`SYSTEM_COMPONENTS`), así que la sección 4 lee con `kubectl logs`,
+y un pod reemplazado se lleva sus líneas. Para los cuatro eventos basta. Para una serie larga
+habría que encender `WORKLOADS`, que tiene coste y es una decisión aparte:
 
     acceso · GET /paquetes/{}/vistas/{} · 200 · 12 ms · persona
 
