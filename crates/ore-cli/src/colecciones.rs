@@ -6,6 +6,7 @@
 //! | `ore collections .` | cada `MediaCollection`: su forma (virtual, mantenida, escrita), su origen, su medio y sus formatos, y el estado de su puntero (transacción, ítems actuales, retirados y perdidos) | `GET /colecciones` |
 //! | `--ficha b.s.n` | lo mismo de una, y **la historia de sus transacciones** (los snapshots de su manifiesto, `ore-store historia`) | `GET /colecciones/{b}/{s}/{n}` |
 //! | `--items b.s.n [--estado …] [--desde N] [--limite N]` | sus ítems, por estado (`actual` por defecto; `retirado`, `perdido`, `todos`), en orden de camino, paginados | `GET /colecciones/{b}/{s}/{n}/items` |
+//! | `--cotejar b.s.n [--muestra N]` | **que lo que el manifiesto de una mantenida dice esté en el lago** (E8·2d): cada blob que una fila nombra, con su tamaño; y N de ellos, bajados y vueltos a hashear. Sale con 1 si algo está roto, y dice qué ítem | el mantenimiento, o quien quiera saberlo |
 //!
 //! El puntero vive con los de los datasets (`datasets/<b>/<s>/<n>.json`, con
 //! `kind: MediaCollection`): comparten el espacio de nombres del schema. El
@@ -28,12 +29,16 @@ pub struct Opciones<'a> {
     pub desde: usize,
     pub limite: usize,
     pub informe: Option<&'a Path>,
+    pub cotejar: Option<&'a str>,
+    pub muestra: usize,
 }
 
 type Fallo = (u8, String);
 
 pub fn colecciones(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    let hecho = if let Some(n) = op.items {
+    let hecho = if let Some(n) = op.cotejar {
+        cotejar(path, n, op)
+    } else if let Some(n) = op.items {
         items(path, n, op)
     } else if let Some(n) = op.ficha {
         ficha(path, n, op)
@@ -317,6 +322,149 @@ fn items(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         println!("{}", j.jcs());
     } else {
         println!("{}", j.pretty());
+    }
+    Ok(())
+}
+
+/// **El cotejo** (E8·2d): cada blob que el manifiesto nombra —de lo actual y
+/// de lo retirado, que también se sirve—, contra el lago.
+fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let d = una(path, nombre)?;
+    let qn = d.qname().unwrap_or_default();
+    if crate::coleccion::es_virtual(&d) {
+        if op.json {
+            println!(
+                "{}",
+                Json::obj([("coleccion", Json::s(&qn)), ("virtual", Json::Bool(true))]).jcs()
+            );
+        } else {
+            println!("{qn} · virtual: sus bytes están en el origen, no hay blobs que cotejar");
+        }
+        return Ok(());
+    }
+    let (_, lago) = puntero_de(path, &qn, op);
+    let (ds, ml) = lago.ok_or_else(|| {
+        (
+            65,
+            format!("`{qn}` no tiene transacción todavía: no hay manifiesto que cotejar"),
+        )
+    })?;
+    let texto = almacen(
+        "leer",
+        &Json::obj([
+            ("dataset", Json::s(&ds)),
+            ("metadata_location", Json::s(&ml)),
+        ]),
+    )?;
+    // blob → (tamaño, los ítems que lo nombran)
+    let mut blobs: std::collections::BTreeMap<String, (String, Vec<String>)> = Default::default();
+    let mut sin_blob: Vec<String> = Vec::new();
+    let mut filas = 0usize;
+    for l in texto.lines() {
+        let Ok(n) = ore_core::parse::parse(l.trim()) else {
+            continue;
+        };
+        let Some(camino) = campo(&n, "camino") else {
+            continue;
+        };
+        filas += 1;
+        let item = format!(
+            "{camino} (versión {}, {})",
+            campo(&n, "version").unwrap_or_default(),
+            campo(&n, "estado").unwrap_or_default()
+        );
+        match campo(&n, "blob") {
+            Some(b) => blobs
+                .entry(b)
+                .or_insert_with(|| (campo(&n, "tamano").unwrap_or_default(), Vec::new()))
+                .1
+                .push(item),
+            None => sin_blob.push(item),
+        }
+    }
+    let r = almacen(
+        "blobs-cotejar",
+        &Json::obj([
+            (
+                "blobs",
+                Json::Arr(
+                    blobs
+                        .iter()
+                        .map(|(b, (t, _))| Json::Arr(vec![Json::s(b), Json::s(t)]))
+                        .collect(),
+                ),
+            ),
+            ("muestra", Json::s(op.muestra.to_string())),
+        ]),
+    )?;
+    let r = ore_core::parse::parse(r.trim())
+        .map_err(|e| (69, format!("el cotejo no analiza: {e:?}")))?;
+    let rotos: Vec<(String, String, Vec<String>)> = r
+        .get("rotos")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|x| {
+            let b = campo(x, "blob")?;
+            let items = blobs.get(&b).map(|(_, i)| i.clone()).unwrap_or_default();
+            Some((b, campo(x, "motivo").unwrap_or_default(), items))
+        })
+        .collect();
+    let n = |k: &str| {
+        campo(&r, k)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
+    if op.json {
+        let j = Json::obj([
+            ("coleccion", Json::s(&qn)),
+            ("filas", Json::Int(filas as i64)),
+            ("blobs", Json::Int(n("cotejados"))),
+            ("bien", Json::Int(n("bien"))),
+            ("releidos", Json::Int(n("releidos"))),
+            (
+                "rotos",
+                Json::Arr(
+                    rotos
+                        .iter()
+                        .map(|(b, m, i)| {
+                            Json::obj([
+                                ("blob", Json::s(b)),
+                                ("motivo", Json::s(m)),
+                                ("items", Json::Arr(i.iter().map(Json::s).collect())),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "sin_blob",
+                Json::Arr(sin_blob.iter().map(Json::s).collect()),
+            ),
+        ]);
+        println!("{}", j.jcs());
+    } else {
+        println!(
+            "{qn} · {filas} filas, {} blobs: {} bien, {} vueltos a hashear",
+            n("cotejados"),
+            n("bien"),
+            n("releidos")
+        );
+        for (b, m, i) in &rotos {
+            println!("  roto · {b} · {m} · {}", i.join(", "));
+        }
+        for i in &sin_blob {
+            println!("  roto · sin blob · {i}");
+        }
+    }
+    let malos = rotos.len() + sin_blob.len();
+    if malos > 0 {
+        return Err((
+            1,
+            format!(
+                "`{qn}`: {malos} blobs o ítems rotos: el manifiesto dice algo que el lago no tiene"
+            ),
+        ));
     }
     Ok(())
 }

@@ -860,6 +860,14 @@ enum Command {
         /// Donde viven los punteros; sin esto, `<arbol>/datasets`.
         #[arg(long, value_name = "DIR")]
         informe: Option<PathBuf>,
+        /// Coteja una coleccion mantenida `<base>.<schema>.<nombre>` contra el
+        /// lago: cada blob que su manifiesto nombra esta y mide lo suyo. Sale
+        /// con 1 si algo esta roto.
+        #[arg(long, value_name = "B.S.N")]
+        cotejar: Option<String>,
+        /// Con `--cotejar`: cuantos blobs se bajan y se vuelven a hashear.
+        #[arg(long, default_value_t = 0)]
+        muestra: usize,
     },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
@@ -1059,6 +1067,8 @@ fn main() -> std::process::ExitCode {
             desde,
             limite,
             informe,
+            cotejar,
+            muestra,
         } => {
             return colecciones::colecciones(
                 path,
@@ -1070,6 +1080,8 @@ fn main() -> std::process::ExitCode {
                     desde: *desde,
                     limite: *limite,
                     informe: informe.as_deref(),
+                    cotejar: cotejar.as_deref(),
+                    muestra: *muestra,
                 },
             );
         }

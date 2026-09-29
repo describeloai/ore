@@ -268,6 +268,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
         "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
+        "blobs-cotejar" => crate::blobs::cotejar(cuenta.clone(), &n),
         "historia" => {
             let ml = campo("metadata_location")
                 .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
@@ -277,7 +278,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
              `recoger-huerfanas`, `leer`, `pagina`, `historia`, `volcar`, `sellar-arrow`, \
-             `blobs`, `blobs-hay` y `blob-leer`"
+             `blobs`, `blobs-hay`, `blobs-cotejar` y `blob-leer`"
         )),
     }
 }

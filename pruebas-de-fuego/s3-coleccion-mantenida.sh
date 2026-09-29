@@ -16,6 +16,8 @@
 #   6  un Job que subió los blobs y se cortó antes de sellar (sin puntero ni
 #      manifiesto): la pasada siguiente los encuentra en el lago por su huella
 #      y no baja nada
+#   7  `ore collections --cotejar`: limpio (con la muestra vuelta a hashear);
+#      sin un blob, sale con 1 y nombra los ítems que lo usan
 #
 # Uso:  ORE_S3_URL='s3://<bucket>/?region=…&access_key_id=…&secret_access_key=…' \
 #         bash pruebas-de-fuego/s3-coleccion-mantenida.sh
@@ -180,6 +182,21 @@ afirma "$CON: los 4 ya estaban en el lago por su huella; 0 bajados" \
   "$([ "$(puntero "$CON" items.actuales)" = 4 ] && [ "$(puntero "$CON" blobs.ya_en_el_lago)" = 4 ] && [ "$(puntero "$CON" blobs.bajados)" = 0 ] && echo 1)" \
   "$(grep -A1 "$CON" "$TMP/m5.txt" | tail -1)"
 afirma "y el lago sigue con 7 blobs" "$([ "$(blobs_en_el_lago)" = 7 ] && echo 1)" "$(blobs_en_el_lago)"
+
+echo "── 7 · el cotejo: lo que el manifiesto dice, en el lago"
+QN=$("$ORE" collections . --json | "$PY" -c 'import json,sys
+print([c["nombre"] for c in json.load(sys.stdin)["colecciones"] if c["nombre"].endswith(".'"$PDF"'")][0])')
+"$ORE" collections . --cotejar "$QN" --muestra 9 > "$TMP/c1.txt" 2>&1
+afirma "limpio: 2 blobs bien, los 2 vueltos a hashear" \
+  "$([ $? = 0 ] && grep -q '2 blobs: 2 bien, 2 vueltos a hashear' "$TMP/c1.txt" && echo 1)" "$(cat "$TMP/c1.txt")"
+ROTO=$(echo "$M1" | grep '^a.pdf' | awk '{print $4}')
+"$PY" -c 'import urllib.request,sys
+urllib.request.urlopen(urllib.request.Request(sys.argv[1]+"/copia/ore/v2/blobs/sha256/"+sys.argv[2], method="DELETE"))' "$ORE_R2_S3_ENDPOINT" "$ROTO"
+"$ORE" collections . --cotejar "$QN" > "$TMP/c2.txt" 2>&1
+codigo=$?
+afirma "un blob que falta: sale con 1 y nombra sus tres ítems" \
+  "$([ "$codigo" = 1 ] && grep -q "roto · $ROTO · no está en el lago" "$TMP/c2.txt" && grep "roto · $ROTO" "$TMP/c2.txt" | grep -q 'a.pdf' && grep "roto · $ROTO" "$TMP/c2.txt" | grep -q 'd.pdf' && echo 1)" \
+  "$codigo · $(cat "$TMP/c2.txt")"
 
 echo
 if [ "$fallos" -eq 0 ]; then echo "s3-coleccion-mantenida · todo en verde"; exit 0; fi

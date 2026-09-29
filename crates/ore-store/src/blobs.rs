@@ -37,6 +37,7 @@
 //! |---|---|---|
 //! | `blobs` | la petición en una línea (`hilos`, `temporal`) y después el flujo de tramas de un lector (`ore_driver::tramas`) | una línea por ítem (`blob`, `subido`, o `error`) y el resumen |
 //! | `blobs-hay` | `{huellas: [[huella, tamaño], …]}` | `{hay: [[huella, tamaño, sha256], …]}`: los que ya están, blob incluido |
+//! | `blobs-cotejar` | `{blobs: [[sha256, tamaño], …], muestra?}` | cuáles están y miden lo suyo, y cuáles —de una muestra— siguen siendo su contenido |
 //! | `blob-leer` | `{blob, archivo, rango?}` | los bytes en `archivo`, y su sha256 |
 
 use crate::almacen::{Almacen, Blob, Cuerpo};
@@ -413,6 +414,86 @@ pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String
     Ok(Json::obj([("hay", Json::Arr(e.into_iter().map(|(_, j)| j).collect()))]).jcs())
 }
 
+/// **`blobs-cotejar`** (E8·2d): que lo que un manifiesto dice esté en el lago.
+/// Cada blob, por su tamaño (un `HEAD`: ~600/s en paralelo, medido); y una
+/// muestra —los primeros `muestra` en el orden de su sha256, que es un orden
+/// al azar y el mismo cada vez— se baja entera y se vuelve a hashear.
+/// Entra `{blobs: [[sha256, tamaño], …], muestra?, hilos?}`; sale
+/// `{cotejados, bien, releidos, rotos: [{blob, motivo}]}`.
+pub fn cotejar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+    let mut blobs: Vec<(String, u64)> = n
+        .get("blobs")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|x| match x.items() {
+            [b, t] => Some((b.as_str()?.to_string(), t.as_str()?.parse().ok()?)),
+            _ => None,
+        })
+        .collect();
+    blobs.sort();
+    blobs.dedup();
+    let num = |k: &str, d: usize| {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str()?.parse::<usize>().ok())
+            .unwrap_or(d)
+    };
+    let muestra = num("muestra", 0);
+    let hilos = num("hilos", HILOS).clamp(1, 128);
+    let rotos: Mutex<Vec<(usize, Json)>> = Mutex::new(Vec::new());
+    let releidos = std::sync::atomic::AtomicUsize::new(0);
+    let siguiente = std::sync::atomic::AtomicUsize::new(0);
+    let roto = |i: usize, b: &str, m: String| {
+        rotos
+            .lock()
+            .unwrap()
+            .push((i, Json::obj([("blob", Json::s(b)), ("motivo", Json::s(m))])));
+    };
+    std::thread::scope(|s| {
+        for _ in 0..hilos.min(blobs.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    let i = siguiente.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((b, t)) = blobs.get(i) else { return };
+                    match cuenta.tamano(&clave_de(b)) {
+                        Err(e) => roto(i, b, e),
+                        Ok(None) => roto(i, b, "no está en el lago".into()),
+                        Ok(Some(x)) if x != *t => {
+                            roto(i, b, format!("mide {x} bytes y el manifiesto dice {t}"))
+                        }
+                        Ok(Some(_)) if i < muestra => {
+                            releidos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            match cuenta.leer_rango(&clave_de(b), None) {
+                                Ok(Some(bytes)) => {
+                                    let h = ore_s3::hex(&ore_s3::sha256(&bytes));
+                                    if h != *b {
+                                        roto(i, b, format!("sus bytes dan el sha256 {h}"));
+                                    }
+                                }
+                                Ok(None) => roto(i, b, "no está en el lago".into()),
+                                Err(e) => roto(i, b, e),
+                            }
+                        }
+                        Ok(Some(_)) => {}
+                    }
+                }
+            });
+        }
+    });
+    let mut rotos = rotos.into_inner().unwrap();
+    rotos.sort_by_key(|(i, _)| *i);
+    Ok(Json::obj([
+        ("cotejados", Json::Int(blobs.len() as i64)),
+        ("bien", Json::Int((blobs.len() - rotos.len()) as i64)),
+        ("releidos", Json::Int(releidos.into_inner() as i64)),
+        (
+            "rotos",
+            Json::Arr(rotos.into_iter().map(|(_, j)| j).collect()),
+        ),
+    ])
+    .jcs())
+}
+
 /// **`blob-leer`**: un blob (o un rango) a un fichero, con el sha256 de lo
 /// leído. Es lo que un cotejo necesita para decir que el blob es el suyo.
 pub fn leer(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
@@ -603,6 +684,48 @@ mod tests {
             2,
             "a.pdf y su huella, y nada de b"
         );
+    }
+
+    /// `blobs-cotejar`: lo que está y mide lo que dice, bien; lo que falta, lo
+    /// que mide otra cosa y —en la muestra— lo que no es su contenido, roto.
+    #[test]
+    fn el_cotejo_dice_lo_roto() {
+        let m = Arc::new(Memoria::default());
+        let mut w = Vec::new();
+        trama(&mut w, "a.pdf", b"RECIBO", Ok(()));
+        trama(&mut w, "c.jpg", b"FOTO", Ok(()));
+        poner(m.clone(), &parse("{}"), std::io::BufReader::new(&w[..])).unwrap();
+        let (a, c) = (
+            ore_s3::hex(&ore_s3::sha256(b"RECIBO")),
+            ore_s3::hex(&ore_s3::sha256(b"FOTO")),
+        );
+        let pedir = |muestra: &str, extra: &str| {
+            let r = cotejar(
+                m.clone(),
+                &parse(&format!(
+                    r#"{{"muestra":"{muestra}","blobs":[["{a}","6"],["{c}","4"]{extra}]}}"#
+                )),
+            )
+            .unwrap();
+            parse(&r)
+        };
+        let v =
+            |n: &ore_core::parse::Node, k: &str| n.get(k).unwrap().1.as_str().unwrap().to_string();
+        let r = pedir("9", "");
+        assert_eq!((v(&r, "bien"), v(&r, "releidos")), ("2".into(), "2".into()));
+        // uno que falta y uno que mide otra cosa
+        let r = pedir("0", &format!(r#",["{}","1"],["{a}","7"]"#, "0".repeat(64)));
+        assert_eq!(v(&r, "bien"), "2");
+        assert_eq!(r.get("rotos").unwrap().1.items().len(), 2);
+        // uno cuyo contenido ya no es el suyo: sólo lo ve la relectura
+        m.objetos
+            .lock()
+            .unwrap()
+            .insert(clave_de(&c), (b"FOTX".to_vec(), String::new()));
+        assert_eq!(v(&pedir("0", ""), "bien"), "2");
+        let r = pedir("9", "");
+        assert_eq!(v(&r, "bien"), "1");
+        assert!(format!("{:?}", r.get("rotos")).contains("sus bytes dan"));
     }
 
     /// `blobs-hay`: lo que el índice conoce y cuyo blob sigue; lo que el
