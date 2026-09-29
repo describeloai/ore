@@ -35,6 +35,13 @@ use std::io::Read as _;
 
 const API: &str = "https://storage.googleapis.com";
 const AGENTE: &str = "ore-store-gcs/0.1";
+/// Quien firma una URL (0046 E9·2): `signBlob` de IAM, **como la cuenta que
+/// corre y sobre sí misma** (el aprovisionador le da `TokenCreator` sobre sí,
+/// E9·1). No hay clave privada en ningún sitio: Google firma con la suya.
+const IAM: &str = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts";
+/// El correo de la cuenta, del metadata server (o `ORE_GCS_FIRMANTE` en local).
+const CORREO: &str =
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email";
 /// El intercambio de tokens de Google: de un token de la cuenta a uno **acotado**
 /// por *Credential Access Boundary* (0031 §11 ③, medido en
 /// `medida-w3-escribir.py`: dentro del prefijo 200; fuera, borrar y sobrescribir
@@ -119,6 +126,75 @@ fn base64(b: &[u8]) -> String {
         });
     }
     s
+}
+
+/// Base64 estándar a bytes: lo que `signBlob` devuelve.
+fn de_base64(s: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return Err(format!("`{}` no es base64", c as char)),
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Ok(out)
+}
+
+impl Cuenta {
+    /// El correo de la cuenta que firma, una vez por proceso.
+    fn firmante(&self) -> Result<String, String> {
+        static F: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+        F.get_or_init(|| {
+            if let Ok(f) = std::env::var("ORE_GCS_FIRMANTE") {
+                return Ok(f);
+            }
+            cliente()?
+                .get(CORREO)
+                .set("metadata-flavor", "Google")
+                .call()
+                .map_err(|e| format!("el metadata server no dice qué cuenta corre ({e}): en local, `ORE_GCS_FIRMANTE`"))?
+                .into_string()
+                .map(|s| s.trim().to_string())
+                .map_err(|e| format!("el correo de la cuenta no se pudo leer: {e}"))
+        })
+        .clone()
+    }
+
+    /// `signBlob`: los bytes, firmados por Google con la clave de la cuenta.
+    fn firmar_bytes(&self, firmante: &str, datos: &[u8]) -> Result<Vec<u8>, String> {
+        let cuerpo =
+            ore_core::json::Json::obj([("payload", ore_core::json::Json::s(base64(datos)))]).jcs();
+        let r = cliente()?
+            .post(&format!("{IAM}/{firmante}:signBlob"))
+            .set("user-agent", AGENTE)
+            .set("authorization", &format!("Bearer {}", self.token()?))
+            .set("content-type", "application/json")
+            .send_string(&cuerpo);
+        let texto = match r {
+            Ok(r) => r
+                .into_string()
+                .map_err(|e| format!("`signBlob` no se pudo leer: {e}"))?,
+            Err(ureq::Error::Status(403, _)) => {
+                return Err(format!(
+                    "`signBlob` 403: `{firmante}` no puede firmar como sí misma — le falta \
+                     `roles/iam.serviceAccountTokenCreator` sobre sí (lo pone el aprovisionador, 0046 E9·1)"
+                ));
+            }
+            Err(e) => return Err(format!("`signBlob` falla: {e}")),
+        };
+        de_base64(&campo(&texto, "signedBlob").ok_or("`signBlob` no devolvió `signedBlob`")?)
+    }
 }
 
 fn campo(json: &str, k: &str) -> Option<String> {
@@ -329,6 +405,55 @@ impl Almacen for Cuenta {
             crate::almacen::Cuerpo::Memoria(bytes) => self.blob_multiparte(b, bytes),
             crate::almacen::Cuerpo::Fichero(_) => self.blob_reanudable(b),
         }
+    }
+
+    /// **Una URL V4** (`GOOG4-RSA-SHA256`), firmada por `signBlob` (0046 E9·2,
+    /// medido en E9 punto 1: 21 ms la URL entera; rango 206; cambiar la
+    /// disposición firmada, 403; caducada, 400 `ExpiredToken`).
+    fn firmar_lectura(
+        &self,
+        clave: &str,
+        segundos: u64,
+        respuesta: &[(&str, &str)],
+    ) -> Result<String, String> {
+        let firmante = self.firmante()?;
+        let (marca, fecha) = ore_s3::firma::ahora();
+        let alcance = format!("{fecha}/auto/storage/goog4_request");
+        let mut ps: Vec<(String, String)> = vec![
+            ("X-Goog-Algorithm".into(), "GOOG4-RSA-SHA256".into()),
+            ("X-Goog-Credential".into(), format!("{firmante}/{alcance}")),
+            ("X-Goog-Date".into(), marca.clone()),
+            ("X-Goog-Expires".into(), segundos.to_string()),
+            ("X-Goog-SignedHeaders".into(), "host".into()),
+        ];
+        ps.extend(
+            respuesta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
+        let mut ps: Vec<(String, String)> = ps
+            .into_iter()
+            .map(|(k, v)| (ore_s3::firma::uri(&k), ore_s3::firma::uri(&v)))
+            .collect();
+        ps.sort();
+        let consulta = ps
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let ruta = std::iter::once(self.bucket.as_str())
+            .chain(clave.split('/'))
+            .map(ore_s3::firma::uri)
+            .fold(String::new(), |r, s| r + "/" + &s);
+        let canonica = format!(
+            "GET\n{ruta}\n{consulta}\nhost:storage.googleapis.com\n\nhost\nUNSIGNED-PAYLOAD"
+        );
+        let por_firmar = format!(
+            "GOOG4-RSA-SHA256\n{marca}\n{alcance}\n{}",
+            ore_s3::hex(&ore_s3::sha256(canonica.as_bytes()))
+        );
+        let firma = ore_s3::hex(&self.firmar_bytes(&firmante, por_firmar.as_bytes())?);
+        Ok(format!("{API}{ruta}?{consulta}&X-Goog-Signature={firma}"))
     }
 
     fn leer_rango(
@@ -606,6 +731,14 @@ impl Cuenta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_base64_de_signblob_vuelve_a_sus_bytes() {
+        for b in [&b""[..], b"f", b"fo", b"foo", b"foob", b"\xff\x00\xfe\x10"] {
+            assert_eq!(de_base64(&base64(b)).unwrap(), b);
+        }
+        assert!(de_base64("a*b").is_err());
+    }
 
     #[test]
     fn el_crc32c_es_el_de_castagnoli() {

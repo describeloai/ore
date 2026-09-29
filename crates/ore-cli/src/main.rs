@@ -879,6 +879,16 @@ enum Command {
         /// que se subio o se toco (`2h` por defecto: mas que un Job).
         #[arg(long)]
         gracia: Option<String>,
+        /// Sirve items de una coleccion mantenida `<base>.<schema>.<nombre>`:
+        /// de cada `--huella`, su item y una URL firmada a sus bytes (0046 E9.2).
+        #[arg(long, value_name = "B.S.N")]
+        servir: Option<String>,
+        /// Con `--servir`: la huella de un item (se repite, hasta 100).
+        #[arg(long = "huella", value_name = "HUELLA")]
+        huellas: Vec<String>,
+        /// Con `--servir`: cuantos segundos vive la URL (300; de 30 a 3600).
+        #[arg(long)]
+        ttl: Option<u64>,
     },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
@@ -1083,6 +1093,9 @@ fn main() -> std::process::ExitCode {
             recoger,
             seco,
             gracia,
+            servir,
+            huellas,
+            ttl,
         } => {
             return colecciones::colecciones(
                 path,
@@ -1099,6 +1112,9 @@ fn main() -> std::process::ExitCode {
                     recoger: *recoger,
                     seco: *seco,
                     gracia: gracia.as_deref(),
+                    servir: servir.as_deref(),
+                    huellas,
+                    ttl: *ttl,
                 },
             );
         }

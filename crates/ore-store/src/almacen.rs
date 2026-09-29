@@ -102,6 +102,19 @@ pub trait Almacen: Send + Sync {
     }
     /// Un objeto entero.
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String>;
+    /// **Una URL que deja leer `clave` sin credencial durante `segundos`**
+    /// (0046 E9·2): la firma cubre `respuesta` —`response-content-type` y
+    /// `response-content-disposition`—, así que quien la tenga no puede
+    /// cambiar cómo se sirve. Por defecto, no se sabe firmar.
+    fn firmar_lectura(
+        &self,
+        clave: &str,
+        segundos: u64,
+        respuesta: &[(&str, &str)],
+    ) -> Result<String, String> {
+        let _ = (clave, segundos, respuesta);
+        Err(format!("`{}` no sabe firmar una lectura", self.base()))
+    }
     /// **Sube un blob si no estaba**, cotejado por el servidor antes de que
     /// exista (medido en 0046 E8·2 A1: la subida `media` de GCS **ignora** el
     /// hash que se le manda; la multiparte y la reanudable lo cotejan).

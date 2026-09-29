@@ -52,6 +52,7 @@
 //! | `blobs-recoger` | `{vivos: [sha256, …], gracia_ms?, seco?}` | lo recogido: blobs que nadie nombra ni tocó en la gracia, y su índice (E8·3b) |
 //! | `blobs-cotejar` | `{blobs: [[sha256, tamaño], …], muestra?}` | cuáles están y miden lo suyo, y cuáles —de una muestra— siguen siendo su contenido |
 //! | `blob-leer` | `{blob, archivo, rango?}` | los bytes en `archivo`, y su sha256 |
+//! | `blob-firmar` | `{firmas: [{blob, tipo?, disposicion?}, …], segundos?}` | `{segundos, caduca_ms, firmadas: [{blob, url}, …]}`: una URL de lectura por blob, con el tipo y la disposición firmados (0046 E9·2) |
 
 use crate::almacen::{Almacen, Blob, Cuerpo};
 use ore_core::json::Json;
@@ -683,6 +684,83 @@ pub fn leer(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<Strin
     .jcs())
 }
 
+/// Lo que vive una URL firmada: 5 minutos por defecto; ni menos de 30 s ni
+/// más de una hora (una URL es un portador: quien la tenga, lee).
+pub const VIDA_POR_DEFECTO: u64 = 300;
+const VIDA_MINIMA: u64 = 30;
+const VIDA_MAXIMA: u64 = 3600;
+
+/// ¿Es `s` un sha256 en hex? Lo único que se firma son blobs.
+fn es_sha256(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// **`blob-firmar`** (0046 E9·2): una URL de lectura por blob, con el tipo y la
+/// disposición **dentro de la firma**. `{firmas: [{blob, tipo?, disposicion?}],
+/// segundos?}` → `{segundos, caduca_ms, firmadas: [{blob, url}]}`. Sólo blobs
+/// (`ore/v2/blobs/sha256/<hex>`): nada de este verbo abre otra clave del lago.
+/// Quien llama decide **quién** puede; aquí sólo se firma. En paralelo: en GCS
+/// cada una es un `signBlob` (58 ms, medido; 32 a la vez, 0,19 s).
+pub fn firmar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+    let segundos = n
+        .get("segundos")
+        .and_then(|(_, v)| v.as_str())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(VIDA_POR_DEFECTO)
+        .clamp(VIDA_MINIMA, VIDA_MAXIMA);
+    let mut pedidas: Vec<(String, Vec<(&'static str, String)>)> = Vec::new();
+    for f in n.get("firmas").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let c = |k: &str| {
+            f.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .filter(|s| !s.is_empty())
+        };
+        let sha = c("blob").ok_or("a una firma le falta `blob`: su sha256")?;
+        if !es_sha256(sha) {
+            return Err(format!("`{sha}` no es un sha256: sólo se firman blobs"));
+        }
+        let mut r = Vec::new();
+        if let Some(t) = c("tipo") {
+            r.push(("response-content-type", t.to_string()));
+        }
+        if let Some(d) = c("disposicion") {
+            r.push(("response-content-disposition", d.to_string()));
+        }
+        pedidas.push((sha.to_string(), r));
+    }
+    let caduca_ms = crate::lago::ahora_ms() + (segundos as i64) * 1000;
+    let hechas: Mutex<Vec<Option<Result<String, String>>>> = Mutex::new(vec![None; pedidas.len()]);
+    let siguiente = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..HILOS.min(pedidas.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    let i = siguiente.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((sha, r)) = pedidas.get(i) else {
+                        return;
+                    };
+                    let r: Vec<(&str, &str)> = r.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                    let u = cuenta.firmar_lectura(&clave_de(sha), segundos, &r);
+                    hechas.lock().unwrap()[i] = Some(u);
+                }
+            });
+        }
+    });
+    let mut firmadas = Vec::new();
+    for ((sha, _), u) in pedidas.iter().zip(hechas.into_inner().unwrap()) {
+        let url = u.unwrap_or_else(|| Err("sin firmar".into()))?;
+        firmadas.push(Json::obj([("blob", Json::s(sha)), ("url", Json::s(url))]));
+    }
+    Ok(Json::obj([
+        ("segundos", Json::Int(segundos as i64)),
+        ("caduca_ms", Json::Int(caduca_ms)),
+        ("firmadas", Json::Arr(firmadas)),
+    ])
+    .jcs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +844,15 @@ mod tests {
                 .unwrap()
                 .insert(clave.into(), crate::lago::ahora_ms());
             Ok(true)
+        }
+        fn firmar_lectura(
+            &self,
+            clave: &str,
+            segundos: u64,
+            r: &[(&str, &str)],
+        ) -> Result<String, String> {
+            let extra: String = r.iter().map(|(k, v)| format!("&{k}={v}")).collect();
+            Ok(format!("mem://{clave}?s={segundos}{extra}"))
         }
         fn poner_blob(&self, b: &Blob) -> Result<bool, String> {
             let bytes = b.cuerpo.bytes()?;
@@ -1010,5 +1097,39 @@ mod tests {
         .unwrap();
         let sha = ore_s3::hex(&ore_s3::sha256(b"RECIBO"));
         assert_eq!(r, format!(r#"{{"hay":[["h:a.pdf",6,"{sha}"]]}}"#));
+    }
+
+    /// `blob-firmar`: una URL por blob, en orden, con el tipo y la disposición
+    /// que se piden y la vida acotada; lo que no es un sha256 no se firma.
+    #[test]
+    fn firmar_da_una_url_por_blob_y_solo_de_blobs() {
+        let m = Arc::new(Memoria::default());
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        let r = firmar(
+            m.clone(),
+            &parse(&format!(
+                r#"{{"segundos":"99999","firmas":[{{"blob":"{a}","tipo":"application/pdf","disposicion":"inline"}},{{"blob":"{b}"}}]}}"#
+            )),
+        )
+        .unwrap();
+        let r = parse(&r);
+        assert_eq!(r.get("segundos").unwrap().1.as_str(), Some("3600"));
+        let f = r.get("firmadas").unwrap().1.items();
+        let url = |i: usize| f[i].get("url").unwrap().1.as_str().unwrap().to_string();
+        assert_eq!(
+            url(0),
+            format!(
+                "mem://ore/v2/blobs/sha256/{a}?s=3600&response-content-type=application/pdf&response-content-disposition=inline"
+            )
+        );
+        assert_eq!(url(1), format!("mem://ore/v2/blobs/sha256/{b}?s=3600"));
+        for malo in ["ore/v2/indice", "../x", &"A".repeat(64)] {
+            let e = firmar(
+                m.clone(),
+                &parse(&format!(r#"{{"firmas":[{{"blob":"{malo}"}}]}}"#)),
+            )
+            .unwrap_err();
+            assert!(e.contains("sólo se firman blobs"), "{e}");
+        }
     }
 }

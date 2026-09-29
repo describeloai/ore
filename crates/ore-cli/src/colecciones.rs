@@ -8,6 +8,7 @@
 //! | `--items b.s.n [--estado …] [--desde N] [--limite N]` | sus ítems, por estado (`actual` por defecto; `retirado`, `perdido`, `todos`), en orden de camino, paginados | `GET /colecciones/{b}/{s}/{n}/items` |
 //! | (en las tres) | si el manifiesto pasa de 500.000 filas, el aviso del **techo** (E8·3c): cada transacción lo reescribe entero, y toca *merge-on-read* | quien mira la colección |
 //! | `--recoger [--seco] [--gracia 2h]` | **el mantenimiento** (E8·3): la retención de cada colección (lo retirado más viejo que su `retention` sale del manifiesto, y el puntero se mueve) y después la **recogida de blobs** del inquilino: lo que ninguna fila de ningún manifiesto nombra, y nadie tocó en la gracia, se va. Si un manifiesto no se puede leer, no se recoge nada | el CronJob de mantenimiento |
+//! | `--servir b.s.n --huella H [--huella H…] [--ttl 300]` | **servir** (0046 E9·2): de cada huella, el ítem que la lleva —el actual antes que el retirado— y una **URL firmada** a su blob, que vive `--ttl` segundos (5 min; entre 30 s y 1 h), con su tipo y su disposición dentro de la firma: `inline` sólo para lo que un navegador enseña sin ejecutar (PDF, imagen de mapa de bits, vídeo, audio); lo demás, descarga. Quién puede lo decide quien llama | `GET /colecciones/{b}/{s}/{n}/items/{huella}`, `POST …/items/resolver` |
 //! | `--cotejar b.s.n [--muestra N]` | **que lo que el manifiesto de una mantenida dice esté en el lago** (E8·2d): cada blob que una fila nombra, con su tamaño; y N de ellos, bajados y vueltos a hashear. Sale con 1 si algo está roto, y dice qué ítem | el mantenimiento, o quien quiera saberlo |
 //!
 //! El puntero vive con los de los datasets (`datasets/<b>/<s>/<n>.json`, con
@@ -36,12 +37,17 @@ pub struct Opciones<'a> {
     pub recoger: bool,
     pub seco: bool,
     pub gracia: Option<&'a str>,
+    pub servir: Option<&'a str>,
+    pub huellas: &'a [String],
+    pub ttl: Option<u64>,
 }
 
 type Fallo = (u8, String);
 
 pub fn colecciones(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    let hecho = if op.recoger {
+    let hecho = if let Some(n) = op.servir {
+        servir(path, n, op)
+    } else if op.recoger {
         recoger(path, op)
     } else if let Some(n) = op.cotejar {
         cotejar(path, n, op)
@@ -342,6 +348,232 @@ fn items(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     Ok(())
 }
 
+/// Cuántas huellas se resuelven de una vez: una página de una lista, no un volcado.
+pub const HUELLAS_POR_LOTE: usize = 100;
+
+/// Lo que un navegador enseña **sin ejecutar nada**: se sirve `inline`. Todo lo
+/// demás —HTML, SVG, XML, texto que un navegador podría olfatear— como
+/// descarga, aunque el tipo lo diga el origen (0046 E9, lo que los grandes
+/// hacen con el contenido de sus usuarios: nunca activo en línea).
+const EN_LINEA: &[&str] = &[
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp",
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/wav",
+    "audio/webm",
+];
+
+/// `Content-Disposition` de un ítem: el modo y su nombre, en ASCII (`filename`)
+/// y en UTF-8 (`filename*`, RFC 6266), sin nada que rompa la cabecera.
+pub fn disposicion(tipo: &str, nombre: &str) -> (&'static str, String) {
+    let modo = if EN_LINEA.contains(&tipo) {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let ascii: String = nombre
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let utf8: String = nombre
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    (
+        modo,
+        format!("{modo}; filename=\"{ascii}\"; filename*=UTF-8''{utf8}"),
+    )
+}
+
+/// De las filas con una huella, la que se sirve: la actual antes que la
+/// retirada, y entre iguales la de menor camino (determinista). Una sin blob
+/// no se sirve.
+fn la_que_se_sirve<'a>(filas: &'a [Node], huella: &str) -> Option<&'a Node> {
+    let rango = |n: &Node| match campo(n, "estado").as_deref() {
+        Some("actual") => 0,
+        Some("retirado") => 1,
+        _ => 2,
+    };
+    filas
+        .iter()
+        .filter(|n| campo(n, "huella").as_deref() == Some(huella) && campo(n, "blob").is_some())
+        .min_by(|a, b| {
+            rango(a)
+                .cmp(&rango(b))
+                .then_with(|| campo(a, "camino").cmp(&campo(b, "camino")))
+        })
+}
+
+/// **Servir** (0046 E9·2): de cada huella, su ítem y una URL firmada a su blob.
+/// Sale con 65 si la colección o su transacción no están, con 66 si es virtual
+/// (sus bytes están en el origen: E9·3) y con 64 si lo pedido no vale.
+fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let d = una(path, nombre)?;
+    let qn = d.qname().unwrap_or_default();
+    if op.huellas.is_empty() || op.huellas.len() > HUELLAS_POR_LOTE {
+        return Err((
+            64,
+            format!("de 1 a {HUELLAS_POR_LOTE} huellas por vez (`--huella`)"),
+        ));
+    }
+    if let Some(h) = op
+        .huellas
+        .iter()
+        .find(|h| h.is_empty() || h.len() > 256 || h.chars().any(char::is_control))
+    {
+        return Err((64, format!("`{h}` no es una huella")));
+    }
+    if crate::coleccion::es_virtual(&d) {
+        return Err((
+            66,
+            format!("`{qn}` es virtual: sus bytes están en el origen, y servirlos es E9·3"),
+        ));
+    }
+    let (_, lago) = puntero_de(path, &qn, op);
+    let (ds, ml) = lago.ok_or_else(|| {
+        (
+            65,
+            format!("`{qn}` no tiene transacción todavía: no hay ítems que servir"),
+        )
+    })?;
+    let texto = almacen(
+        "pagina",
+        &Json::obj([
+            ("dataset", Json::s(&ds)),
+            ("metadata_location", Json::s(&ml)),
+            (
+                "filtro",
+                Json::obj([(
+                    "huella",
+                    Json::Arr(op.huellas.iter().map(Json::s).collect()),
+                )]),
+            ),
+            ("limite", Json::s("100000")),
+        ]),
+    )?;
+    let filas: Vec<Node> = texto
+        .lines()
+        .skip(1)
+        .filter_map(|l| ore_core::parse::parse(l.trim()).ok())
+        .collect();
+    let mut servidos: Vec<(String, &Node, String, &'static str, String)> = Vec::new();
+    let mut no_estan: Vec<String> = Vec::new();
+    for h in op.huellas {
+        if servidos.iter().any(|(x, ..)| x == h) || no_estan.contains(h) {
+            continue;
+        }
+        match la_que_se_sirve(&filas, h) {
+            None => no_estan.push(h.clone()),
+            Some(f) => {
+                let tipo = campo(f, "tipo").unwrap_or_else(|| "application/octet-stream".into());
+                let camino = campo(f, "camino").unwrap_or_default();
+                let nombre = camino.rsplit('/').next().unwrap_or(&camino).to_string();
+                let (modo, cabecera) = disposicion(&tipo, &nombre);
+                servidos.push((h.clone(), f, tipo, modo, cabecera));
+            }
+        }
+    }
+    let mut firmadas: std::collections::BTreeMap<String, String> = Default::default();
+    let (mut segundos, mut caduca_ms) = (0i64, 0i64);
+    if !servidos.is_empty() {
+        let mut p = vec![(
+            "firmas",
+            Json::Arr(
+                servidos
+                    .iter()
+                    .map(|(_, f, tipo, _, cab)| {
+                        Json::obj([
+                            ("blob", Json::s(campo(f, "blob").unwrap_or_default())),
+                            ("tipo", Json::s(tipo)),
+                            ("disposicion", Json::s(cab)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        )];
+        if let Some(t) = op.ttl {
+            p.push(("segundos", Json::s(t.to_string())));
+        }
+        let r = almacen("blob-firmar", &Json::obj(p))?;
+        let r = ore_core::parse::parse(r.trim())
+            .map_err(|e| (69, format!("la firma no analiza: {e:?}")))?;
+        let num = |k: &str| campo(&r, k).and_then(|v| v.parse().ok()).unwrap_or(0);
+        segundos = num("segundos");
+        caduca_ms = num("caduca_ms");
+        // Por posición, no por blob: dos ítems con el mismo blob pueden pedir
+        // disposiciones distintas (su nombre).
+        let urls: Vec<String> = r
+            .get("firmadas")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|x| campo(x, "url"))
+            .collect();
+        if urls.len() != servidos.len() {
+            return Err((69, "el almacén no firmó todo lo pedido".into()));
+        }
+        for ((h, ..), u) in servidos.iter().zip(urls) {
+            firmadas.insert(h.clone(), u);
+        }
+    }
+    let items: Vec<Json> = servidos
+        .iter()
+        .map(|(h, f, tipo, modo, _)| {
+            let mut m = vec![
+                ("huella", Json::s(h)),
+                ("url", Json::s(firmadas.get(h).cloned().unwrap_or_default())),
+                ("tipo", Json::s(tipo)),
+                ("disposicion", Json::s(*modo)),
+            ];
+            for k in ["blob", "camino", "clave", "version", "estado"] {
+                m.push((k, Json::s(campo(f, k).unwrap_or_default())));
+            }
+            m.push((
+                "tamano",
+                Json::Int(campo(f, "tamano").and_then(|t| t.parse().ok()).unwrap_or(0)),
+            ));
+            Json::obj(m)
+        })
+        .collect();
+    let j = Json::obj([
+        ("coleccion", Json::s(&qn)),
+        ("segundos", Json::Int(segundos)),
+        ("caduca_ms", Json::Int(caduca_ms)),
+        ("items", Json::Arr(items)),
+        (
+            "no_estan",
+            Json::Arr(no_estan.iter().map(Json::s).collect()),
+        ),
+    ]);
+    if op.json {
+        println!("{}", j.jcs());
+    } else {
+        println!("{}", j.pretty());
+    }
+    Ok(())
+}
+
 /// **El cotejo** (E8·2d): cada blob que el manifiesto nombra —de lo actual y
 /// de lo retirado, que también se sirve—, contra el lago.
 fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
@@ -621,4 +853,50 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solo_lo_que_no_ejecuta_va_en_linea() {
+        assert_eq!(disposicion("application/pdf", "a.pdf").0, "inline");
+        assert_eq!(disposicion("video/mp4", "v.mp4").0, "inline");
+        for activo in [
+            "text/html",
+            "image/svg+xml",
+            "application/xml",
+            "text/plain",
+            "",
+        ] {
+            assert_eq!(disposicion(activo, "x").0, "attachment", "{activo}");
+        }
+    }
+
+    #[test]
+    fn el_nombre_no_rompe_la_cabecera() {
+        let (_, c) = disposicion("application/pdf", "contrato \"ñ\"\r\n.pdf");
+        assert_eq!(
+            c,
+            "inline; filename=\"contrato _____.pdf\"; filename*=UTF-8''contrato%20%22%C3%B1%22%0D%0A.pdf"
+        );
+    }
+
+    #[test]
+    fn se_sirve_la_actual_antes_que_la_retirada() {
+        let f = |s: &str| ore_core::parse::parse(s).unwrap();
+        let filas = vec![
+            f(r#"{"huella":"h","estado":"retirado","camino":"a.pdf","blob":"1"}"#),
+            f(r#"{"huella":"h","estado":"actual","camino":"z.pdf","blob":"2"}"#),
+            f(r#"{"huella":"h","estado":"actual","camino":"b.pdf","blob":"3"}"#),
+            f(r#"{"huella":"g","estado":"retirado","camino":"g.pdf","blob":"4"}"#),
+            f(r#"{"huella":"s","estado":"actual","camino":"s.pdf"}"#),
+        ];
+        let blob = |h| la_que_se_sirve(&filas, h).and_then(|n| campo(n, "blob"));
+        assert_eq!(blob("h").as_deref(), Some("3"));
+        assert_eq!(blob("g").as_deref(), Some("4"));
+        assert_eq!(blob("s"), None, "sin blob no se sirve");
+        assert_eq!(blob("nada"), None);
+    }
 }

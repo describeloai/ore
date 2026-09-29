@@ -754,6 +754,37 @@ impl Servidor {
             ("GET", ["colecciones", b, s, n, "items"]) => {
                 self.items_de_la_coleccion(rama, b, s, n, &p.consulta)
             }
+            // 0046 E9·2: servir un ítem por su huella —el valor de un `Media<c>`—
+            // con una URL firmada, o un lote de ellas (una lista, una galería).
+            ("GET", ["colecciones", b, s, n, "items", h]) => {
+                match crate::datasets::sin_porcentajes(h) {
+                    Some(h) => self.servir_items(rama, p, b, s, n, &[h], None, true),
+                    None => Respuesta::error(422, "la huella no es UTF-8"),
+                }
+            }
+            ("POST", ["colecciones", b, s, n, "items", "resolver"]) => {
+                let c = match ore_core::parse::parse(&p.cuerpo) {
+                    Ok(c) if !p.cuerpo.trim().is_empty() => c,
+                    _ => {
+                        return Respuesta::error(
+                            400,
+                            "el cuerpo no es JSON: `{huellas: [...], ttl?}`",
+                        );
+                    }
+                };
+                let huellas: Vec<String> = c
+                    .get("huellas")
+                    .map(|(_, v)| v.items())
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect();
+                let ttl = c
+                    .get("ttl")
+                    .and_then(|(_, v)| v.as_str())
+                    .and_then(|t| t.parse().ok());
+                self.servir_items(rama, p, b, s, n, &huellas, ttl, false)
+            }
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {
@@ -3074,6 +3105,16 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         (
             "GET",
             "/colecciones/{base}/{schema}/{nombre}/items",
+            con_identidad,
+        ),
+        (
+            "GET",
+            "/colecciones/{base}/{schema}/{nombre}/items/{huella}",
+            con_identidad,
+        ),
+        (
+            "POST",
+            "/colecciones/{base}/{schema}/{nombre}/items/resolver",
             con_identidad,
         ),
         ("GET", "/funciones", con_identidad),

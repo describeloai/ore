@@ -268,6 +268,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
         "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
+        "blob-firmar" => crate::blobs::firmar(cuenta.clone(), &n),
         "blobs-cotejar" => crate::blobs::cotejar(cuenta.clone(), &n),
         "blobs-tocar" => crate::blobs::tocar(cuenta.clone(), &n),
         "blobs-recoger" => crate::blobs::recoger(cuenta.clone(), &n),
@@ -281,7 +282,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
              `recoger-huerfanas`, `leer`, `pagina`, `historia`, `volcar`, `sellar-arrow`, \
              `blobs`, `blobs-hay`, `blobs-cotejar`, `blobs-tocar`, \
-             `blobs-recoger` y `blob-leer`"
+             `blobs-recoger`, `blob-leer` y `blob-firmar`"
         )),
     }
 }
@@ -1735,7 +1736,8 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
 
 /// **`pagina`: una página de un dataset** (0046 E8·1d), para quien enseña y
 /// no quiere la tabla entera: `{dataset, metadata_location, filtro?: {col:
-/// valor}, orden?: [col…], desde?, limite?}`. La primera línea es `{"total":
+/// valor o [valores]}, orden?: [col…], desde?, limite?}` —una lista es «cualquiera
+/// de estos»: resolver un lote de huellas es una lectura (E9·2)—. La primera línea es `{"total":
 /// n}` —las filas que pasan el filtro— y después las de la página, como en
 /// `leer`. Medido con el manifiesto de una colección de 100.000 ítems: leerla
 /// entera por `leer` y filtrar en `ore` eran 4 s; aquí, lo que cuesta abrir la
@@ -1750,12 +1752,22 @@ fn pagina(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
     let ml = campo("metadata_location")
         .ok_or("a `pagina` le falta `metadata_location`: el puntero del dataset")?;
     let dataset = campo("dataset").unwrap_or_else(|| "dataset".into());
-    let filtro: Vec<(String, String)> = n
+    let filtro: Vec<(String, Vec<String>)> = n
         .get("filtro")
         .map(|(_, f)| {
             f.entries()
                 .iter()
-                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .filter_map(|(k, v)| {
+                    let vs = match v.as_str() {
+                        Some(s) => vec![s.to_string()],
+                        None => v
+                            .items()
+                            .iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect(),
+                    };
+                    Some((k.as_str()?.to_string(), vs))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -1774,7 +1786,11 @@ fn pagina(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
     let mut filas: Vec<carga::Fila> = lago
         .filas(&t)?
         .into_iter()
-        .filter(|f| filtro.iter().all(|(c, v)| f.get(c) == Some(v)))
+        .filter(|f| {
+            filtro
+                .iter()
+                .all(|(c, vs)| f.get(c).is_some_and(|v| vs.contains(v)))
+        })
         .collect();
     if !orden.is_empty() {
         filas.sort_by(|a, b| {

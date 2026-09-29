@@ -165,6 +165,9 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/puestos/{}/lsp/salida", Es::Datos),
     ("POST", "/puestos/{}/celdas/{}/salida", Es::Datos),
     ("POST", "/vistas/**/ejecutar", Es::Datos),
+    // 0046 E9·2: resolver huellas a URLs firmadas lo cuenta la ruta, con sus
+    // huellas y sus blobs (`coleccion:servir`), en `GET` y en `POST` por igual.
+    ("POST", "/colecciones/{}/{}/{}/items/resolver", Es::Datos),
 ];
 
 /// ¿Casa `ruta` con `patron`?

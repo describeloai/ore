@@ -9,7 +9,11 @@ de-mentira.py — dos servidores de mentira para probar la invocación sin red n
                                      (`?uploads`, `?partNumber&uploadId`, completar y
                                      abortar) que pyarrow y DuckDB usan al escribir.
                                      Lo justo para `ore-store-r2` y para los escritores
-                                     de Iceberg de la medida W3.6c; no comprueba SigV4.
+                                     de Iceberg de la medida W3.6c; no comprueba SigV4
+                                     en cabeceras, pero SÍ una URL prefirmada (0046
+                                     E9·2): su firma con el secreto `S3_SECRETO`
+                                     (`mentira`), su caducidad (403 las dos), y
+                                     `response-content-type`/`-disposition`.
   python de-mentira.py vllm PUERTO   `/v1/chat/completions` como el vLLM de mentira de
                                      E0 (0027): contesta por fila con un objeto JSON
                                      `{"categoriaEs": …}` traducido de una tabla corta; a
@@ -21,14 +25,16 @@ Cada uno imprime `listo` cuando escucha. Son de prueba: no se aceptan fuera de l
 máquina (escuchan en 127.0.0.1).
 """
 import base64
+import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 MODO = sys.argv[1] if len(sys.argv) > 1 else "s3"
 PUERTO = int(sys.argv[2]) if len(sys.argv) > 2 else 0
@@ -163,8 +169,43 @@ class S3(BaseHTTPRequestHandler):
         self.send_header("content-length", "0")
         self.end_headers()
 
+    def _prefirma(self):
+        """None si la URL prefirmada vale; si no, por qué (SigV4 en la consulta,
+        hecho aparte de `ore_s3::firma::prefirmar` para cotejarla de verdad)."""
+        u = urlparse(self.path)
+        q = parse_qs(u.query, keep_blank_values=True)
+        marca = q["X-Amz-Date"][0]
+        t = datetime.datetime.strptime(marca, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+        if datetime.datetime.now(datetime.timezone.utc) > t + datetime.timedelta(seconds=int(q["X-Amz-Expires"][0])):
+            return "Request has expired"
+        _, fecha, region, servicio, _ = q["X-Amz-Credential"][0].split("/")
+        e = lambda s: quote(s, safe="-_.~")
+        pares = sorted((e(k), e(v)) for k, vs in q.items() for v in vs if k != "X-Amz-Signature")
+        consulta = "&".join("%s=%s" % kv for kv in pares)
+        canon = "GET\n%s\n%s\nhost:%s\n\nhost\nUNSIGNED-PAYLOAD" % (
+            quote(unquote(u.path), safe="/-_.~"), consulta, self.headers.get("Host", ""))
+        sts = "AWS4-HMAC-SHA256\n%s\n%s/%s/%s/aws4_request\n%s" % (
+            marca, fecha, region, servicio, hashlib.sha256(canon.encode()).hexdigest())
+        h = lambda k, m: hmac.new(k, m.encode(), hashlib.sha256).digest()
+        k = h(("AWS4" + os.environ.get("S3_SECRETO", "mentira")).encode(), fecha)
+        for parte in (region, servicio, "aws4_request"):
+            k = h(k, parte)
+        if not hmac.compare_digest(h(k, sts).hex(), q.get("X-Amz-Signature", [""])[0]):
+            return "SignatureDoesNotMatch"
+        return None
+
     def do_GET(self):
         clave, q = self._clave()
+        if "X-Amz-Signature" in q:
+            motivo = self._prefirma()
+            if motivo:
+                b = ("<Error><Code>AccessDenied</Code><Message>%s</Message></Error>" % motivo).encode()
+                self.send_response(403)
+                self.send_header("content-length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+                return
+        firmado = {k: q[k][0] for k in ("response-content-type", "response-content-disposition") if k in q}
         if "list-type" in q:
             pref = q.get("prefix", [""])[0]
             with CERROJO:
@@ -194,13 +235,18 @@ class S3(BaseHTTPRequestHandler):
             trozo = b[a:z + 1]
             self.send_response(206)
             self.send_header("content-range", "bytes %d-%d/%d" % (a, z, len(b)))
+            if "response-content-type" in firmado:
+                self.send_header("content-type", firmado["response-content-type"])
             self.send_header("content-length", str(len(trozo)))
             self.end_headers()
             self.wfile.write(trozo)
             return
         self.send_response(200)
-        if TIPOS.get(clave):
-            self.send_header("content-type", TIPOS[clave])
+        tipo = firmado.get("response-content-type") or TIPOS.get(clave)
+        if tipo:
+            self.send_header("content-type", tipo)
+        if "response-content-disposition" in firmado:
+            self.send_header("content-disposition", firmado["response-content-disposition"])
         self.send_header("content-length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)

@@ -466,6 +466,26 @@ impl Almacen for Cuenta {
         format!("s3://{}", self.bucket)
     }
 
+    /// Una URL prefirmada de S3 (SigV4 en la consulta), con la clave de esta
+    /// cuenta: `ore_s3::firma::prefirmar`, la del ejemplo oficial de AWS.
+    fn firmar_lectura(
+        &self,
+        clave: &str,
+        segundos: u64,
+        respuesta: &[(&str, &str)],
+    ) -> Result<String, String> {
+        let ruta = format!("/{}/{}", uri(&self.bucket), uri_ruta(clave));
+        let q = ore_s3::firma::prefirmar(
+            &credencial(self),
+            &self.region,
+            &self.host(),
+            &ruta,
+            respuesta,
+            segundos,
+        );
+        Ok(format!("{}{ruta}?{q}", self.endpoint.trim_end_matches('/')))
+    }
+
     /// Lo que S3 y R2 entienden (`s3.*` de la spec REST): las credenciales de
     /// esta cuenta **tal cual**, sin acotar. R2 tiene credenciales temporales
     /// por API y S3 tiene STS con política inline; ninguna de las dos está

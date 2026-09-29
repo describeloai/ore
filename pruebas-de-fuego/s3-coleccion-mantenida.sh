@@ -246,6 +246,43 @@ afirma "si Invoice vuelve, se baja otra vez: su huella ya no promete nada" \
   "$([ "$(puntero "$PDF" blobs.bajados)" = 1 ] && [ "$(puntero "$PDF" items.actuales)" = 4 ] && [ "$(blobs_en_el_lago)" = 7 ] && echo 1)" \
   "$(grep -A1 "$PDF" "$TMP/m7.txt" | tail -1)"
 
+echo "── 9 · servir: de la huella, una URL firmada a los bytes (0046 E9·2)"
+QC=$("$ORE" collections . --json | "$PY" -c 'import json,sys
+print([c["nombre"] for c in json.load(sys.stdin)["colecciones"] if c["nombre"].endswith(".'"$CON"'")][0])')
+MC=$(manifiesto "$CON")
+H1=$(echo "$MC" | sed -n 1p | awk '{print $3}'); H2=$(echo "$MC" | sed -n 2p | awk '{print $3}')
+"$ORE" collections . --servir "$QC" --huella "$H1" --huella "$H2" --huella "crc64nvme:no-esta=" --json > "$TMP/s1.json" 2> "$TMP/s1.err"
+afirma "dos huellas, dos URLs; la que no está, dicha" \
+  "$([ $? = 0 ] && "$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d["items"])==2 and d["no_estan"]==["crc64nvme:no-esta="] and d["segundos"]==300' "$TMP/s1.json" && echo 1)" \
+  "$(cat "$TMP/s1.json" "$TMP/s1.err")"
+"$PY" - "$TMP/s1.json" > "$TMP/s2.txt" 2>&1 <<'PYEOF'
+import hashlib, json, sys, urllib.request, urllib.error
+d = json.load(open(sys.argv[1]))
+def get(u, h=None):
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(u, headers=h or {}))
+        return r.status, r.read(), r.headers
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), e.headers
+for i in d["items"]:
+    st, b, h = get(i["url"])
+    assert st == 200 and hashlib.sha256(b).hexdigest() == i["blob"], (st, i["camino"])
+    assert h["content-type"] == i["tipo"] == "application/pdf", h["content-type"]
+    assert h["content-disposition"].startswith('inline; filename="'), h["content-disposition"]
+    st, b, h = get(i["url"], {"Range": "bytes=0-3"})
+    assert st == 206 and len(b) == 4, st
+    st, _, _ = get(i["url"].replace("inline", "attachment"))
+    assert st == 403, ("manipulada", st)
+    print("bien", i["camino"])
+PYEOF
+afirma "cada URL da los bytes de su blob, con su tipo, en línea y a rangos; manipulada, 403" \
+  "$([ "$(grep -c '^bien' "$TMP/s2.txt")" = 2 ] && echo 1)" "$(cat "$TMP/s2.txt")"
+"$ORE" collections . --servir "$QC" --huella "$H1" --ttl 99999 --json > "$TMP/s3.json" 2>&1
+afirma "una URL vive como mucho una hora" \
+  "$(grep -q '"segundos":3600' "$TMP/s3.json" && grep -q 'X-Amz-Expires=3600' "$TMP/s3.json" && echo 1)" "$(cat "$TMP/s3.json")"
+"$ORE" collections . --servir "$QC" --json > "$TMP/s4.txt" 2>&1
+afirma "sin huellas, 64" "$([ $? = 64 ] && echo 1)" "$(cat "$TMP/s4.txt")"
+
 echo
 if [ "$fallos" -eq 0 ]; then echo "s3-coleccion-mantenida · todo en verde"; exit 0; fi
 echo "s3-coleccion-mantenida · $fallos aserciones en rojo"

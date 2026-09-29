@@ -205,9 +205,98 @@ pub fn firmar_en(
     cabeceras
 }
 
+/// **Una URL prefirmada** (0046 E9): la firma va en la consulta
+/// (`X-Amz-Signature`), sólo firma `host` y el cuerpo es `UNSIGNED-PAYLOAD`.
+/// Quien la tenga hace un `GET` sin credencial hasta que caduque. `ruta` ya
+/// canónica; `extra`, los parámetros que la firma cubre además de los suyos
+/// (`versionId`, `response-content-type`, `response-content-disposition`),
+/// sin codificar. Devuelve la consulta entera, firma incluida.
+pub fn prefirmar(
+    c: &Credencial,
+    region: &str,
+    host: &str,
+    ruta: &str,
+    extra: &[(&str, &str)],
+    segundos: u64,
+) -> String {
+    let (marca, fecha) = ahora();
+    prefirmar_en(c, region, host, ruta, extra, segundos, &marca, &fecha)
+}
+
+/// La misma prefirma en un instante dado, para probarla contra el ejemplo oficial.
+#[allow(clippy::too_many_arguments)]
+pub fn prefirmar_en(
+    c: &Credencial,
+    region: &str,
+    host: &str,
+    ruta: &str,
+    extra: &[(&str, &str)],
+    segundos: u64,
+    marca: &str,
+    fecha: &str,
+) -> String {
+    let ambito = format!("{fecha}/{region}/s3/aws4_request");
+    let mut ps: Vec<(String, String)> = vec![
+        ("X-Amz-Algorithm".into(), "AWS4-HMAC-SHA256".into()),
+        ("X-Amz-Credential".into(), format!("{}/{ambito}", c.clave)),
+        ("X-Amz-Date".into(), marca.to_string()),
+        ("X-Amz-Expires".into(), segundos.to_string()),
+        ("X-Amz-SignedHeaders".into(), "host".into()),
+    ];
+    if let Some(t) = &c.token {
+        ps.push(("X-Amz-Security-Token".into(), t.clone()));
+    }
+    for (k, v) in extra {
+        ps.push((k.to_string(), v.to_string()));
+    }
+    let mut ps: Vec<(String, String)> = ps.into_iter().map(|(k, v)| (uri(&k), uri(&v))).collect();
+    ps.sort();
+    let consulta = ps
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let peticion = format!("GET\n{ruta}\n{consulta}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD");
+    let por_firmar = format!(
+        "AWS4-HMAC-SHA256\n{marca}\n{ambito}\n{}",
+        hex(&sha256(peticion.as_bytes()))
+    );
+    let k = hmac(format!("AWS4{}", c.secreto).as_bytes(), fecha);
+    let k = hmac(&k, region);
+    let k = hmac(&k, "s3");
+    let k = hmac(&k, "aws4_request");
+    format!("{consulta}&X-Amz-Signature={}", hex(&hmac(&k, &por_firmar)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **El ejemplo de URL prefirmada de la documentación de S3** (SigV4, «query
+    /// string authentication»): `GET /test.txt` de `examplebucket`, 86400 s,
+    /// el 24-05-2013.
+    #[test]
+    fn la_prefirma_es_la_del_ejemplo_de_s3() {
+        let c = Credencial {
+            clave: "AKIAIOSFODNN7EXAMPLE".into(),
+            secreto: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+            token: None,
+        };
+        let q = prefirmar_en(
+            &c,
+            "us-east-1",
+            "examplebucket.s3.amazonaws.com",
+            "/test.txt",
+            &[],
+            86400,
+            "20130524T000000Z",
+            "20130524",
+        );
+        assert!(q.ends_with(
+            "&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"
+        ));
+        assert!(q.starts_with("X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host"));
+    }
 
     #[test]
     fn el_base64_es_el_de_siempre() {
