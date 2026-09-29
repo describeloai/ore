@@ -93,7 +93,12 @@ pub struct Peticion {
 /// Iceberg le pide a `GET /v1/config?warehouse=<base>` (la spec lo pone ahí;
 /// 0038 P4: la base es el `prefix`, como en Unity Catalog). Es un nombre, no
 /// un dato, y se valida como tal.
-pub const CONSULTA_ADMITIDA: &[&str] = &["warehouse"];
+///
+/// Y la página de los ítems de una colección (0046 E8·1):
+/// `GET /colecciones/{b}/{s}/{n}/items?estado=retirado&desde=100&limite=50`.
+/// Un estado es una palabra y lo demás son números: pasan por la misma
+/// validación, y quien los usa los vuelve a comprobar.
+pub const CONSULTA_ADMITIDA: &[&str] = &["warehouse", "estado", "desde", "limite"];
 
 /// `a=b&c=d` → lo admitido, con su valor decodificado y validado: letras,
 /// dígitos, `_` y `-`, hasta 64.

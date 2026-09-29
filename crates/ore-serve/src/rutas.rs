@@ -733,6 +733,16 @@ impl Servidor {
                     self.retirar_proyecto(r, &id)
                 })
             }
+            // 0046 E8·1d: la colección, como el dataset —lista, ficha con su
+            // historia de transacciones, e ítems por estado y paginados—.
+            ("GET", ["colecciones"]) => self.colecciones(rama),
+            ("GET", ["colecciones", b, n]) => {
+                self.ficha_de_la_coleccion(rama, b, ore_core::normalize::SCHEMA_POR_DEFECTO, n)
+            }
+            ("GET", ["colecciones", b, s, n]) => self.ficha_de_la_coleccion(rama, b, s, n),
+            ("GET", ["colecciones", b, s, n, "items"]) => {
+                self.items_de_la_coleccion(rama, b, s, n, &p.consulta)
+            }
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {
@@ -3044,6 +3054,17 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/propuestas/{n}/revisar", con_identidad),
         ("POST", "/propuestas/{n}/fusionar", con_identidad),
         ("DELETE", "/propuestas/{n}", con_identidad),
+        ("GET", "/colecciones", con_identidad),
+        (
+            "GET",
+            "/colecciones/{base}/{schema}/{nombre}",
+            con_identidad,
+        ),
+        (
+            "GET",
+            "/colecciones/{base}/{schema}/{nombre}/items",
+            con_identidad,
+        ),
         ("GET", "/funciones", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),

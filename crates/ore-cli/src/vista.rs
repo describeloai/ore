@@ -67,13 +67,60 @@ use ore_view::{
 /// `payload` del binding, porque es la misma cosa con otro dueño.
 pub(crate) const CONDUCTO: &str = "materialization.payload";
 
+/// **Las colecciones mantenidas** (0046 E8·1): su forma y su raíz —la fuente
+/// y el prefijo de su `ObjectTable`—, con la misma línea `raíz` que una vista,
+/// que es la que el Job de la copia busca. Devuelve cuántas.
+fn ver_colecciones(pkg: &ore_core::link::Package) -> usize {
+    let cs = crate::coleccion::mantenidas(pkg);
+    for c in &cs {
+        let Some(qn) = c.qname() else { continue };
+        println!("{qn}");
+        let forma = if crate::coleccion::es_virtual(c) {
+            "virtual: se sirve desde el origen"
+        } else {
+            "mantenida: copia los ficheros"
+        };
+        println!(
+            "  colección {} · {forma}",
+            c.section("media").and_then(|m| m.as_str()).unwrap_or("?")
+        );
+        let r = c
+            .section("from")
+            .and_then(|f| f.get("objectTable"))
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("?");
+        let q = ore_core::normalize::a_corto(&ore_core::link::cualificar(r, c)).into_owned();
+        match pkg
+            .docs
+            .iter()
+            .find(|o| o.kind == Kind::ObjectTable && o.qname().as_deref() == Some(q.as_str()))
+        {
+            Some(o) => println!(
+                "  raíz      {} · el listado de `{}` ({r})",
+                o.section("datasource")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("?"),
+                o.section("prefix").and_then(|d| d.as_str()).unwrap_or("")
+            ),
+            None => println!("  raíz      no resuelve · `{r}` no es un `ObjectTable` del árbol"),
+        }
+    }
+    cs.len()
+}
+
 pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     let pkg = match crate::cargar_valido(path, true) {
         Ok(p) => p,
         Err(c) => return c,
     };
+    // 0046 E8·1: las colecciones mantenidas, con su raíz. Es lo que el Job de
+    // la copia lee para saber qué fuente abrir por cada una.
+    let colecciones = ver_colecciones(&pkg);
     let vistas: Vec<&Loaded> = pkg.of_view();
     if vistas.is_empty() {
+        if colecciones > 0 {
+            return std::process::ExitCode::SUCCESS;
+        }
         println!("sin vistas · el paquete no declara ningún `kind: View`");
         return std::process::ExitCode::SUCCESS;
     }

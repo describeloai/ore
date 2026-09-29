@@ -303,7 +303,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E5b · ore-serve a escala** · 1 ✅ · 2 ✅ | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
 | **E6 · lo tabular** (F4) ✅ | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados** ✅ | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
-| **E8 · la colección** (F5) · 1 ✅ (la virtual) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
+| **E8 · la colección** (F5) · 1a–1d ✅ (la virtual, activo de primera clase) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
 | **E9b · medir la federación** | el rol IAM del cliente con *external ID* que confía en la identidad de la plataforma, sin claves que guardar ni rotar | informe aquí; decide el formulario de E10 |
 | **E10 · consola** (F7) | alta de S3 con su formulario (el de E9b), los `ObjectTable` en el árbol de orígenes, colecciones con vista previa por tipo | lo de E8 visto en la consola |
@@ -611,6 +611,19 @@ tocar la malla. Si el testigo no cambió, «al día» sin leer el manifiesto. La
 experimento: transacción 1 con `a.pdf` en su versión nueva y tres claves con una huella; al día;
 un `match` estrecho retira tres que quedan `retirado` (sus versiones siguen); sin él vuelven, sin
 pedir una huella.
+
+**E8·1d · la colección, activo de primera clase (hecho, 2026-09-29).** Al nivel del dataset:
+`ore collections` (lista con forma —virtual, mantenida, escrita—, origen, medio y estado del
+puntero; `--ficha` con la historia de sus transacciones; `--items` por estado y paginados) y en
+ore-serve `GET /colecciones`, `/colecciones/{b}/{s}/{n}` y `…/items?estado=&desde=&limite=` (los
+tres parámetros, admitidos en `ore-entrada` y validados); el índice de activos lleva su
+`puntero`; `ore datasets` ya no la cuenta aunque su puntero viva con los suyos; `ore view` da su
+línea `raíz`, que es la que el Job de la copia lee para abrir su fuente; y la cola encola las
+colecciones mantenidas —una base foránea con sólo virtuales también—, sin pedir el conducto a lo
+que no copia bytes. **Medido** con un manifiesto de 100.000 ítems: lista 0,03 s, ficha 0,07 s;
+los ítems, leídos enteros en texto y filtrados en `ore`, eran **4,1 s** → verbo nuevo
+`ore-store pagina` (filtro de igualdad, orden, desde y límite, y el total): **0,6 s**, igual por
+HTTP.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

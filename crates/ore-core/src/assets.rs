@@ -530,6 +530,31 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
     Json::Obj(m)
 }
 
+/// El resumen del puntero de una colección: su estado, su transacción, cuántos
+/// ítems tiene en cada estado y qué cambió en la última (0046 E8·1).
+fn puntero_de_coleccion(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
+    let clave = d.qname().unwrap_or_default();
+    let Some(Json::Obj(p)) = punteros.get(&clave) else {
+        return Json::Crudo("null".into());
+    };
+    let mut m: BTreeMap<String, Json> = BTreeMap::new();
+    for k in [
+        "estado",
+        "motivo",
+        "transaccion",
+        "items",
+        "cambios",
+        "virtual",
+        "snapshot",
+        "metadata_location",
+    ] {
+        if let Some(v) = p.get(k) {
+            m.insert(k.to_string(), v.clone());
+        }
+    }
+    Json::Obj(m)
+}
+
 /// Una arista, con su inversa.
 struct Arista {
     de: String,
@@ -927,6 +952,11 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         }
         if d.kind == Kind::Dataset {
             it.insert("puntero".into(), puntero_de(punteros, d));
+        }
+        // 0046 E8·1: la colección tiene puntero como un dataset —su última
+        // transacción y lo que tiene—, y el catálogo lo enseña igual.
+        if d.kind == Kind::MediaCollection {
+            it.insert("puntero".into(), puntero_de_coleccion(punteros, d));
         }
         // acceso
         let mut acceso: Vec<(&'static str, Json)> = vec![(

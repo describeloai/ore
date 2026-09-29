@@ -352,12 +352,21 @@ impl Servidor {
     ) -> Vec<(&'static str, Json)> {
         let dir = raiz.join("packages").join(paquete);
         let mut campos = vec![("copias", copias_de(raiz, paquete))];
-        // Hay algo que copiar si la base es estándar O alguna vista declara
-        // copia una a una (una foránea con tablas copiadas).
-        if clase_de(&dir) != "standard" && vistas_con_copia_de(&dir).is_empty() {
+        // Hay algo que mantener si la base es estándar, si alguna vista declara
+        // copia una a una (una foránea con tablas copiadas) O si tiene
+        // colecciones mantenidas (0046 E8·1: una foránea con sus colecciones
+        // virtuales también tiene transacciones que hacer).
+        let colecciones = colecciones_de(&dir);
+        let copia = clase_de(&dir) == "standard"
+            || !vistas_con_copia_de(&dir).is_empty()
+            || colecciones.iter().any(|(_, virtual_)| !virtual_);
+        if !copia && colecciones.is_empty() {
             return campos;
         }
-        if let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
+        // El conducto es de lo que copia bytes: una colección virtual no cruza
+        // `materialization.payload` (spec 02 §6), y una foránea que sólo tiene
+        // de ésas no lo pide.
+        if copia && let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
             // Sin conducto la copia no compila (OOS4011): un Job ahora fallaría
             // y, con la misma lista, no se volvería a encolar. Se espera al
             // dueño; la pasada de decisiones que lo traiga encola entonces.
@@ -368,7 +377,8 @@ impl Servidor {
             ));
             return campos;
         }
-        let todas = vistas_con_copia(raiz);
+        let mut todas = vistas_con_copia(raiz);
+        todas.extend(colecciones_de_todos(raiz));
         let encolado = if todas.is_empty() {
             "nada que encolar: ninguna vista declara copia todavía (esperan su clave)".to_string()
         } else {
@@ -680,6 +690,64 @@ pub(crate) fn texto_de(d: &Json) -> String {
         .join(" ")
 }
 
+/// **Las colecciones mantenidas de UN paquete** (`collections/*.yaml` con
+/// `from`, 0046 E8·1), por su nombre en el paquete como las vistas —con su
+/// schema delante si no es el de por defecto— y si son virtuales.
+fn colecciones_de(dir: &Path) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    for p in crate::rutas::yamls_del_kind(dir, "collections") {
+        let Ok(n) = std::fs::read_to_string(&p)
+            .map_err(|_| ())
+            .and_then(|t| parse::parse(&t).map_err(|_| ()))
+        else {
+            continue;
+        };
+        if campo(&n, "kind").as_deref() != Some("MediaCollection") {
+            continue;
+        }
+        let Some((_, spec)) = n.get("spec") else {
+            continue;
+        };
+        if spec.get("from").is_none() {
+            continue;
+        }
+        let virtual_ = campo(spec, "virtual").as_deref() == Some("true");
+        if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
+            let nombre = match n.get("metadata").and_then(|(_, m)| campo(m, "schema")) {
+                Some(s) if s != ore_core::normalize::SCHEMA_POR_DEFECTO => format!("{s}.{v}"),
+                _ => v,
+            };
+            out.push((nombre, virtual_));
+        }
+    }
+    out
+}
+
+/// Las colecciones mantenidas de todo el árbol, con su paquete delante: lo
+/// que el Job de la copia recibe en `VISTAS` junto a los datasets.
+fn colecciones_de_todos(raiz: &Path) -> Vec<String> {
+    let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = paquetes
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.iter()
+        .flat_map(|d| {
+            let paquete = d
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            colecciones_de(d)
+                .into_iter()
+                .map(move |(c, _)| format!("{paquete}.{c}"))
+        })
+        .collect()
+}
+
 /// Los datasets mantenidos de UN paquete (`datasets/*.yaml` con `from`), por
 /// nombre y en orden.
 fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
@@ -803,4 +871,69 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
         return None;
     }
     Some((a.to_string(), b.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Lo que se encola por una colección** (0046 E8·1d): una base foránea
+    /// que sólo tiene una colección virtual también tiene transacciones que
+    /// hacer, con el nombre que el Job busca en `ore view` —paquete, schema y
+    /// nombre—; y una colección escrita (sin `from`) no se mantiene.
+    #[test]
+    fn las_colecciones_mantenidas_van_a_la_cola() {
+        let raiz = std::env::temp_dir().join(format!("ore-serve-cola-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let archivo = raiz.join("packages/legal/archivo");
+        std::fs::create_dir_all(archivo.join("collections")).unwrap();
+        std::fs::write(
+            archivo.join("schema.yaml"),
+            "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: archivo, namespace: legal }\n",
+        )
+        .unwrap();
+        let coleccion = |nombre: &str, resto: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: {{ name: {nombre}, namespace: legal, schema: archivo }}\nspec:\n  owner: team:legal\n  media: document\n  formats: [pdf]\n{resto}"
+            )
+        };
+        std::fs::write(
+            archivo.join("collections/contratos.yaml"),
+            coleccion(
+                "contratos",
+                "  from: { objectTable: s3.docs.contratos }\n  virtual: true\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            archivo.join("collections/copiados.yaml"),
+            coleccion("copiados", "  from: { objectTable: s3.docs.contratos }\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            archivo.join("collections/escritos.yaml"),
+            coleccion("escritos", ""),
+        )
+        .unwrap();
+        std::fs::write(
+            raiz.join("packages/legal/discover.scope.json"),
+            r#"{"type": "foreign"}"#,
+        )
+        .unwrap();
+
+        let dir = raiz.join("packages/legal");
+        assert_eq!(clase_de(&dir), "foreign");
+        assert_eq!(
+            colecciones_de(&dir),
+            [
+                ("archivo.contratos".to_string(), true),
+                ("archivo.copiados".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            colecciones_de_todos(&raiz),
+            ["legal.archivo.contratos", "legal.archivo.copiados"]
+        );
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
 }

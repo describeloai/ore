@@ -12,6 +12,7 @@ mod alcance;
 mod cache;
 mod candado;
 mod coleccion;
+mod colecciones;
 mod datasets;
 mod deriva;
 mod empaquetar;
@@ -832,6 +833,34 @@ enum Command {
         #[arg(long)]
         seco: bool,
     },
+    /// Las colecciones del arbol (`MediaCollection`, 0046 E8.1): su forma, su
+    /// origen y el estado de su puntero; `--ficha` con la historia de sus
+    /// transacciones; `--items` con sus items, por estado y paginados.
+    Collections {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// La salida como una linea JSON (lo que `ore-serve` lee).
+        #[arg(long)]
+        json: bool,
+        /// Una coleccion `<base>.<schema>.<nombre>`: su puntero y su historia.
+        #[arg(long, value_name = "B.S.N")]
+        ficha: Option<String>,
+        /// Los items de una coleccion `<base>.<schema>.<nombre>`.
+        #[arg(long, value_name = "B.S.N")]
+        items: Option<String>,
+        /// Con `--items`: `actual` (por defecto), `retirado`, `perdido` o `todos`.
+        #[arg(long)]
+        estado: Option<String>,
+        /// Con `--items`: desde que item (en orden de camino).
+        #[arg(long, default_value_t = 0)]
+        desde: usize,
+        /// Con `--items`: cuantos.
+        #[arg(long, default_value_t = 100)]
+        limite: usize,
+        /// Donde viven los punteros; sin esto, `<arbol>/datasets`.
+        #[arg(long, value_name = "DIR")]
+        informe: Option<PathBuf>,
+    },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
     /// (`datasets/`), que son la misma cosa — una tabla Iceberg en el bucket.
@@ -1018,6 +1047,29 @@ fn main() -> std::process::ExitCode {
                     sql: *sql,
                     catalogo: *catalogo,
                     base: base.as_deref(),
+                },
+            );
+        }
+        Command::Collections {
+            path,
+            json,
+            ficha,
+            items,
+            estado,
+            desde,
+            limite,
+            informe,
+        } => {
+            return colecciones::colecciones(
+                path,
+                &colecciones::Opciones {
+                    json: *json,
+                    ficha: ficha.as_deref(),
+                    items: items.as_deref(),
+                    estado: estado.as_deref(),
+                    desde: *desde,
+                    limite: *limite,
+                    informe: informe.as_deref(),
                 },
             );
         }
@@ -1400,6 +1452,7 @@ fn main() -> std::process::ExitCode {
         | Command::Materialize { .. }
         | Command::Invoke { .. }
         | Command::Datasets { .. }
+        | Command::Collections { .. }
         | Command::Migrate { .. }
         | Command::Assets { .. }
         | Command::Sql { .. }

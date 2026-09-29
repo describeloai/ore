@@ -169,6 +169,13 @@ impl Puntero {
         self.campo("dataset")
             .unwrap_or_else(|| format!("datasets/{}", self.nombre.replace('.', "_")))
     }
+    /// El puntero de una colección (0046 E8·1): vive aquí —comparte el
+    /// espacio de nombres del schema— y el mantenimiento lo trata como a
+    /// cualquiera (su manifiesto es una tabla), pero no es un dataset: lo
+    /// lista `ore collections`.
+    pub fn es_coleccion(&self) -> bool {
+        self.campo("kind").as_deref() == Some("MediaCollection")
+    }
     pub fn como_json(&self) -> Json {
         let mut m = match Json::de_node(&self.nodo) {
             Json::Obj(m) => m,
@@ -275,7 +282,10 @@ fn dir_copias(path: &Path, op: &Opciones) -> PathBuf {
 }
 
 fn listar(path: &Path, op: &Opciones) -> Result<(), Fallo> {
-    let ps = punteros(path, &dir_copias(path, op));
+    let ps: Vec<Puntero> = punteros(path, &dir_copias(path, op))
+        .into_iter()
+        .filter(|p| !p.es_coleccion())
+        .collect();
     if op.json {
         println!(
             "{}",
@@ -328,7 +338,7 @@ fn almacen(verbo: &str, peticion: &Json) -> Result<Node, Fallo> {
 
 fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let ps = punteros(path, &dir_copias(path, op));
-    let Some(p) = ps.iter().find(|p| p.nombre == nombre) else {
+    let Some(p) = ps.iter().find(|p| p.nombre == nombre && !p.es_coleccion()) else {
         return Err((
             65,
             format!("no hay ningún dataset `{nombre}` en `datasets/`"),

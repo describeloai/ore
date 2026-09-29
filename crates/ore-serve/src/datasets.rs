@@ -171,6 +171,95 @@ impl Servidor {
         })
     }
 
+    /// `GET /colecciones` (0046 E8·1d): cada `MediaCollection` del árbol, con
+    /// su forma, su origen y el estado de su puntero.
+    pub(crate) fn colecciones(&self, rama: Option<&str>) -> Respuesta {
+        self.leyendo_en(rama, |raiz| {
+            self.ore_json(raiz, &["collections".into(), ".".into(), "--json".into()])
+        })
+    }
+
+    /// `GET /colecciones/{b}[/{schema}]/{n}`: la colección y la historia de sus
+    /// transacciones.
+    pub(crate) fn ficha_de_la_coleccion(
+        &self,
+        rama: Option<&str>,
+        b: &str,
+        schema: &str,
+        n: &str,
+    ) -> Respuesta {
+        if let Err(m) = token(b).and(token(schema)).and(token(n)) {
+            return Respuesta::error(422, m);
+        }
+        let nombre = ore_core::normalize::corto(b, schema, n);
+        self.leyendo_en(rama, move |raiz| {
+            self.ore_json(
+                raiz,
+                &[
+                    "collections".into(),
+                    ".".into(),
+                    "--ficha".into(),
+                    nombre,
+                    "--json".into(),
+                ],
+            )
+        })
+    }
+
+    /// `GET /colecciones/{b}/{s}/{n}/items?estado=&desde=&limite=`: sus ítems,
+    /// por estado (`actual` por defecto) y en páginas de hasta mil.
+    pub(crate) fn items_de_la_coleccion(
+        &self,
+        rama: Option<&str>,
+        b: &str,
+        schema: &str,
+        n: &str,
+        consulta: &std::collections::BTreeMap<String, String>,
+    ) -> Respuesta {
+        if let Err(m) = token(b).and(token(schema)).and(token(n)) {
+            return Respuesta::error(422, m);
+        }
+        let estado = consulta
+            .get("estado")
+            .map(String::as_str)
+            .unwrap_or("actual");
+        if !["actual", "retirado", "perdido", "todos"].contains(&estado) {
+            return Respuesta::error(422, "`estado` es `actual`, `retirado`, `perdido` o `todos`");
+        }
+        let numero = |k: &str, defecto: usize| -> Result<usize, Respuesta> {
+            match consulta.get(k) {
+                None => Ok(defecto),
+                Some(v) => v
+                    .parse::<usize>()
+                    .map_err(|_| Respuesta::error(422, format!("`{k}` es un número"))),
+            }
+        };
+        let (desde, limite) = match (numero("desde", 0), numero("limite", 100)) {
+            (Ok(d), Ok(l)) => (d, l.clamp(1, 1000)),
+            (Err(r), _) | (_, Err(r)) => return r,
+        };
+        let nombre = ore_core::normalize::corto(b, schema, n);
+        let estado = estado.to_string();
+        self.leyendo_en(rama, move |raiz| {
+            self.ore_json(
+                raiz,
+                &[
+                    "collections".into(),
+                    ".".into(),
+                    "--items".into(),
+                    nombre,
+                    "--estado".into(),
+                    estado,
+                    "--desde".into(),
+                    desde.to_string(),
+                    "--limite".into(),
+                    limite.to_string(),
+                    "--json".into(),
+                ],
+            )
+        })
+    }
+
     /// Corre `ore` y devuelve la última línea JSON de su salida tal cual; lo
     /// que no es 0 es 502 con lo que dijo.
     fn ore_json(&self, raiz: &Path, args: &[String]) -> Respuesta {
