@@ -17,6 +17,11 @@
 #     · y lo huérfano: datasets sin puntero, y sobres `ore/v1/` heredados que
 #       ningún puntero nombra.
 #
+#   Y después `ore collections . --recoger` (0046 E8·3): la retención de cada
+#   colección y la recogida de sus blobs (`ore/v2/blobs/`), que la pasada de
+#   los datasets no toca: los nombran las filas de los manifiestos, no un
+#   puntero.
+#
 # ⛔ Sobre punteros, y nada más. `ore materialize --recoger` también recoge,
 #   pero compila el árbol y le pregunta el testigo a cada ORIGEN (medido:
 #   443 ms para no hacer nada, con el driver dentro). Un mantenimiento no toca
@@ -122,15 +127,24 @@ spec:
                   cd arbol
                   echo "### mantenimiento del lago (edad: $EDAD · bucket: $ORE_GCS_BUCKET)"
                   ore datasets . --recoger --edad "$EDAD" || { echo "⚠️ el mantenimiento falló: los punteros no se tocan"; exit 1; }
+                  # ⭐ 0046 E8·3: las colecciones. La retención de cada una (lo
+                  #   retirado más viejo que su `retention` sale del manifiesto y
+                  #   su puntero se mueve) y la recogida de los blobs que ninguna
+                  #   fila nombra ni nadie tocó en dos horas. Si un manifiesto no
+                  #   se lee, no se recoge ningún blob; lo que la retención movió
+                  #   se empuja igual, y el Job acaba en error para que se vea.
+                  COLECCIONES=0
+                  ore collections . --recoger || COLECCIONES=$?
                   git add -A datasets
                   if git diff --cached --quiet; then
                     echo "· ningún puntero se movió: nada que empujar"
-                    exit 0
+                    exit "$COLECCIONES"
                   fi
                   git -c user.name=mantenimiento -c user.email=mantenimiento@invalido \
                     commit -q -m "Mantenimiento del lago: punteros movidos tras expirar"
                   git push -q origin HEAD:main
                   echo "✓ punteros empujados · $(git rev-parse --short HEAD)"
+                  exit "$COLECCIONES"
               resources:
                 requests: {cpu: "100m", memory: 256Mi}
                 limits:   {cpu: "1000m", memory: 1Gi}
