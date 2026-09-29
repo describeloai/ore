@@ -504,7 +504,7 @@ forma del arreglo:
 | **A7a.6′** | Con A7a.6: la mudanza sale de las plantillas (`PLANTILLAS` de `gen-inquilino.py`), porque un inquilino nuevo la crearía nombrando `cofre-url`, que ya no existirá (y no tiene nada que mudar) | bajo |
 | **A7a.4** ✓ | Escrita y probada (`041-cada-custodio-su-organizacion.sql`; vuelta atrás en `iam/vuelta-atras/`, fuera del runner). Al probarla salió un fallo de la guarda: `pg_has_role(…, 'member')` es verdad para un superusuario con cualquier papel, y trataba al operador como a un custodio sin celda; mira `pg_auth_members`. Migración: seguridad por fila en las tablas de arriba —una política que deja todo a `ore_iam` y `ore_aprovisionador`, y otra que a `ore_cofre` sólo le deja su organización (`iam.persona`: las que pertenecen a ella)—; las vistas a `security_invoker` con sus `grant`; y la guarda en las dos funciones | medio: una política que falte deja a alguien sin ver nada; lo cubre la prueba de fuego del paso siguiente, contra una base con dos organizaciones |
 | **A7a.5** ✓ | `el-cofre.sh` 12 (y el custodio de toda la prueba corre ya como `cofre_acme`); `el-cofre.sh` y `los-verbos.sh` enteras en verde con los binarios de Linux contra `postgres:16`. El 6 y el 10 medían «Zoe recibe el mismo error que Ada con uno inventado»; desde la 041 el custodio no ve a Zoe y le dice que no la conoce, así que miden lo que protegen: a quien no pertenece, el mismo error para un secreto que existe y para uno inventado. Prueba de fuego (`el-cofre.sh` o `los-verbos.sh`): dos organizaciones, dos papeles; el custodio de una no ve ni concede nada de la otra, y `ore-iam` sigue viéndolo todo | — |
-| **A7a.6** | Se retira `cofre_app` y el secreto `cofre-url`. ✏️ No «cuando A7a.3 lleve un día sano», que no dice qué tiene que pasar: cuando hayan salido bien, medidos, los eventos de § «A7a.6, lo que tiene que pasar» | bajo |
+| **A7a.6** | Se retira `cofre_app` y el secreto `cofre-url`. ✏️ No «cuando A7a.3 lleve un día sano», que no dice qué tiene que pasar: cuando hayan salido bien, medidos, los eventos de § «A7a.6, lo que tiene que pasar». **Hecho el 2026-09-29** | bajo |
 
 #### A7a.4, medido (2026-09-28)
 
@@ -563,6 +563,16 @@ harían falta sin ellos han salido bien, y se provocaron en vez de esperarlos:
 el código (sin el paso de `cofre-url`; sin la mudanza en las plantillas, que Flux poda de los tres
 inquilinos —su rastro está en la huella, `secreto:mudar`—); después la `042`, que retira
 `cofre_app`; y al final se borra `cofre-url`, lo único que no tiene vuelta.
+
+**Hecho el 2026-09-29**, en ese orden:
+
+1. **El código (`bac1dbc`).** Las pasadas del aprovisionador con el guion nuevo terminan con «las
+   5 celdas están al día», sin `✗` y sin el paso de `cofre-url`. `mudar-el-cofre` ya no existe en
+   `t-demo`, `t-prueba` ni `t-victor`.
+2. **La `042`.** `migrar-iam` aplicó una migración. `cofre_app` ya no existe, en `ore_cofre`
+   quedan `cofre_demo`, `cofre_prueba` y `cofre_victor`, y hay una sesión de cada uno.
+3. **`cofre-url` borrado.** Después se reinició el custodio de `prueba`: trae su base (132 bytes)
+   y conecta con su login. Los tres custodios están Ready y sin errores.
 
 El orden importa: la seguridad por fila (A7a.4) no entra hasta que ningún custodio use
 `cofre_app`, porque ese login no tiene celda y con las políticas puestas no vería nada: los tres
