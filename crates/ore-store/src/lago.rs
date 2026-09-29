@@ -1248,8 +1248,16 @@ impl Lago {
     /// que dejó una pasada que no llegó a apuntarse en el árbol, y los
     /// `metadata.json` que el registro de metadatos ya no lista. Devuelve
     /// cuántos se fueron (o se irían, en seco).
-    pub fn huerfanos(&self, tabla: &Table, seco: bool) -> Result<usize, String> {
-        let vivos = runtime().block_on(self.alcanzables(tabla))?;
+    ///
+    /// ⭐ `otras`: la MISMA tabla vista por otras ramas del árbol (0044 C.2 ②),
+    ///   cada una con su cadena de `metadata.json`. Lo que nombre cualquiera de
+    ///   ellas está vivo: sin esto, recoger desde `main` borraba lo que una rama
+    ///   escribió en la tabla (medido, D0 M1), y al revés (M2).
+    pub fn huerfanos(&self, tabla: &Table, otras: &[Table], seco: bool) -> Result<usize, String> {
+        let mut vivos = runtime().block_on(self.alcanzables(tabla))?;
+        for o in otras {
+            vivos.extend(runtime().block_on(self.alcanzables(o))?);
+        }
         let cuenta = self.cuenta().map_err(err)?;
         let prefijo = format!("{}/", self.clave(tabla.metadata().location()).map_err(err)?);
         let mut n = 0usize;

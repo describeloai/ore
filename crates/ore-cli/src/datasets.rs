@@ -83,6 +83,8 @@ pub struct Opciones<'a> {
     pub sujeto: Option<&'a str>,
     /// Dónde viven los punteros de las copias; sin él, `<árbol>/copias`.
     pub informe: Option<&'a Path>,
+    /// Con `--recoger`: los punteros propios de las demás ramas (0044 C.2 ②).
+    pub reclaman: Option<&'a Path>,
     /// `--commit`: el commit del catálogo REST (ver la cabecera).
     pub commit: bool,
     /// Con `--commit`: la tabla, cuando el cuerpo no trae `identifier`.
@@ -234,6 +236,75 @@ pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
 /// (un nombre que no existe no borra nada), nunca de menos. Medido
 /// (`medida-los-punteros.sh` M1): con sólo las vistas mantenidas, el Job de la
 /// copia se llevaba entero un dataset escrito y dejaba su puntero colgando.
+/// **Lo que reclaman las demás ramas** (0044 C.2 ②): sus punteros propios —los
+/// que difieren del punto del que salieron—, que quien clona deja en un
+/// directorio (`--reclaman`). Todo `.json` debajo es un puntero: de él salen el
+/// dataset (su `dataset`, o el de su `metadata_location`), la `metadata_location`
+/// y la `clave`. `ore` no aprende git: la lista la hace el Job, que ya tiene el
+/// clon con todas las ramas.
+#[derive(Default)]
+pub(crate) struct Ajenos {
+    pub datasets: BTreeSet<String>,
+    pub claves: BTreeSet<String>,
+    /// Por dataset, las `metadata_location` que otra rama nombra.
+    pub ubicaciones: std::collections::BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Ajenos {
+    /// ⛔ Un `--reclaman` que no es un directorio es un error, no «ninguna
+    ///   rama»: recoger sin lo que reclaman las demás es borrarlo (D0 M1).
+    pub(crate) fn de(dir: Option<&Path>) -> Result<Ajenos, String> {
+        let mut a = Ajenos::default();
+        let Some(dir) = dir else {
+            return Ok(a);
+        };
+        if !dir.is_dir() {
+            return Err(format!(
+                "`--reclaman {}` no es un directorio: sin lo que reclaman las demás ramas no se recoge",
+                dir.display()
+            ));
+        }
+        for f in ore_core::punteros::ficheros(dir) {
+            let Some(n) = std::fs::read_to_string(&f)
+                .ok()
+                .and_then(|t| ore_core::parse::parse(&t).ok())
+            else {
+                continue;
+            };
+            let ml = campo_de(&n, "metadata_location");
+            let d = campo_de(&n, "dataset").or_else(|| {
+                ml.as_deref()
+                    .and_then(ore_core::punteros::dataset_de_ubicacion)
+            });
+            if let Some(d) = d {
+                if let Some(ml) = ml {
+                    a.ubicaciones.entry(d.clone()).or_default().insert(ml);
+                }
+                a.datasets.insert(d);
+            }
+            if let Some(d) = n.get("resultado").and_then(|(_, r)| campo_de(r, "dataset")) {
+                a.datasets.insert(d);
+            }
+            if let Some(c) = campo_de(&n, "clave") {
+                a.claves.insert(c);
+            }
+        }
+        Ok(a)
+    }
+
+    /// Las `metadata_location` de `dataset` en las demás ramas, para `recoger`.
+    pub(crate) fn de_dataset(&self, dataset: &str) -> Json {
+        Json::Arr(
+            self.ubicaciones
+                .get(dataset)
+                .into_iter()
+                .flatten()
+                .map(Json::s)
+                .collect(),
+        )
+    }
+}
+
 pub(crate) fn reclamados(path: &Path, extra: Option<&Path>) -> (Vec<String>, Vec<String>) {
     let mut datasets = BTreeSet::new();
     let mut claves = BTreeSet::new();
@@ -398,6 +469,7 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         Some(e) => Some(edad_ms(e).map_err(|m| (64, m))?),
         None => None,
     };
+    let ajenos = Ajenos::de(op.reclaman).map_err(|m| (66, m))?;
     let ps = punteros(path, &dir_copias(path, op));
     let mut movidos = 0usize;
     let mut expirados = 0i64;
@@ -416,6 +488,7 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         let mut pet = vec![
             ("dataset", Json::s(p.dataset())),
             ("metadata_location", Json::s(&ml)),
+            ("tambien", ajenos.de_dataset(&p.dataset())),
         ];
         if let Some(e) = edad {
             pet.push(("edad_ms", Json::s(e.to_string())));
@@ -459,6 +532,9 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let (mas, mas_claves) = reclamados(path, None);
     datasets.extend(mas.into_iter().map(Json::s));
     claves.extend(mas_claves.into_iter().map(Json::s));
+    // Y lo que reclaman las demás ramas (0044 C.2 ②).
+    datasets.extend(ajenos.datasets.iter().map(Json::s));
+    claves.extend(ajenos.claves.iter().map(Json::s));
     let h = almacen(
         "recoger-huerfanas",
         &Json::obj([

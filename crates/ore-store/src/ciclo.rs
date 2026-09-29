@@ -217,7 +217,23 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             let ml = campo("metadata_location")
                 .ok_or("a `recoger` le falta `metadata_location`: el puntero vigente")?;
             let edad = campo("edad_ms").and_then(|v| v.parse::<i64>().ok());
-            recoger(&lago, &dataset, &ml, edad, verbo == "recoger-seco")
+            // Las `metadata_location` de la misma tabla en otras ramas (0044 C).
+            let tambien: Vec<String> = n
+                .get("tambien")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|x| x.as_str())
+                .map(String::from)
+                .collect();
+            recoger(
+                &lago,
+                &dataset,
+                &ml,
+                &tambien,
+                edad,
+                verbo == "recoger-seco",
+            )
         }
         "aplicar" => aplicar(&lago, primera),
         "esbozar" => esbozar(&lago, primera),
@@ -1921,14 +1937,24 @@ fn lago_cuenta(lago: &Lago) -> Result<Arc<dyn Almacen>, String> {
 /// —ficheros de los expirados, y lo que dejó una pasada que no llegó a
 /// apuntarse en el árbol—. Si expiró alguno hay un `metadata.json` nuevo, y se
 /// devuelve: **el puntero tiene que moverse a él**.
+///
+/// Y lo que nombran las demás ramas (`tambien`, 0044 C.2 ②) no se retira: la
+/// tabla es una y cada rama tiene su cadena. Una que ya no se abre (su
+/// `metadata.json` no está) no nombra nada.
 fn recoger(
     lago: &Lago,
     dataset: &str,
     metadata_location: &str,
+    tambien: &[String],
     edad_ms: Option<i64>,
     seco: bool,
 ) -> Result<String, String> {
     let tabla = lago.abrir(metadata_location, dataset)?;
+    let otras: Vec<_> = tambien
+        .iter()
+        .filter(|m| m.as_str() != metadata_location)
+        .filter_map(|m| lago.abrir(m, dataset).ok())
+        .collect();
     let antes = tabla.metadata().snapshots().count();
     // `edad_ms: -1` en la respuesta es «sin retención»: no se expira nada.
     let (edad, minimo) = Lago::retencion(&tabla, edad_ms);
@@ -1940,7 +1966,7 @@ fn recoger(
         }
         Some(e) => lago.expirar(&tabla, e, minimo)?,
     };
-    let ficheros = lago.huerfanos(&tabla, seco)?;
+    let ficheros = lago.huerfanos(&tabla, &otras, seco)?;
     Ok(Json::obj([
         ("edad_ms", edad.map(Json::Int).unwrap_or(Json::Int(-1))),
         ("expirados", Json::Int(expirados.len() as i64)),
@@ -2323,16 +2349,16 @@ mod tests {
         // ⑤ recoger: expiran los dos snapshots superados y se van sus ficheros
         let antes = cuenta.0.lock().unwrap().len();
         // sin edad —ni en la tabla ni en la petición— no se expira nada (§11 ⑥)
-        let nada = recoger(&lago, "copias/p_v", &ml3, None, true).expect("nada");
+        let nada = recoger(&lago, "copias/p_v", &ml3, &[], None, true).expect("nada");
         assert_eq!(campo(&nada, "expirados"), "0");
-        let seco = recoger(&lago, "copias/p_v", &ml3, Some(0), true).expect("seco");
+        let seco = recoger(&lago, "copias/p_v", &ml3, &[], Some(0), true).expect("seco");
         assert_eq!(campo(&seco, "expirados"), "2");
         assert_eq!(
             cuenta.0.lock().unwrap().len(),
             antes,
             "en seco no se toca nada"
         );
-        let r = recoger(&lago, "copias/p_v", &ml3, Some(0), false).expect("recoge");
+        let r = recoger(&lago, "copias/p_v", &ml3, &[], Some(0), false).expect("recoge");
         assert_eq!(campo(&r, "expirados"), "2");
         let ml4 = campo(&r, "metadata_location");
         assert_ne!(ml4, ml3, "expirar deja un metadata.json nuevo");
@@ -2344,7 +2370,7 @@ mod tests {
             "los ficheros de los expirados se fueron: {r}"
         );
         // y recoger otra vez no mueve el puntero
-        let r2 = recoger(&lago, "copias/p_v", &ml4, Some(0), false).expect("recoge");
+        let r2 = recoger(&lago, "copias/p_v", &ml4, &[], Some(0), false).expect("recoge");
         assert_eq!(campo(&r2, "metadata_location"), ml4);
         assert_eq!(campo(&r2, "ficheros"), "0");
 
@@ -2479,6 +2505,66 @@ mod tests {
         );
     }
 
+    /// **Dos ramas sobre la MISMA tabla** (0044 C): cada una con su cadena de
+    /// `metadata.json` desde el mismo punto. Recoger desde una sin nombrar la
+    /// otra se lleva lo de la otra —su `metadata.json` incluido— (la medida D0,
+    /// M1); con `tambien`, las dos siguen abriéndose y leyéndose.
+    #[test]
+    fn recoger_respeta_lo_que_nombra_otra_rama() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let d = "datasets/p_t";
+        let ml = |s: Result<String, String>| campo(&s.unwrap(), "metadata_location");
+        let m0 = ml(sellar(
+            &lago,
+            &cabecera("1"),
+            d,
+            None,
+            false,
+            ["{\"id\":\"1\"}"].into_iter(),
+        ));
+        let main = ml(sellar(
+            &lago,
+            &cabecera("2"),
+            d,
+            Some(&m0),
+            false,
+            ["{\"id\":\"2\"}"].into_iter(),
+        ));
+        let rama = ml(sellar(
+            &lago,
+            &cabecera("3"),
+            d,
+            Some(&m0),
+            false,
+            ["{\"id\":\"3\"}"].into_iter(),
+        ));
+        assert_ne!(main, rama);
+
+        let r = recoger(&lago, d, &main, std::slice::from_ref(&rama), None, false).unwrap();
+        assert_eq!(
+            campo(&r, "ficheros"),
+            "0",
+            "con `tambien` nada de la rama es huérfano: {r}"
+        );
+        for m in [&main, &rama] {
+            let t = lago.abrir(m, d).unwrap();
+            assert_eq!(Lago::filas_del_snapshot(&t), 1, "{m}");
+        }
+
+        let r = recoger(&lago, d, &main, &[], None, false).unwrap();
+        assert_ne!(
+            campo(&r, "ficheros"),
+            "0",
+            "sin `tambien`, lo de la rama se va: {r}"
+        );
+        assert!(
+            lago.abrir(&rama, d).is_err(),
+            "la rama ya no abre: es lo que D1 evita"
+        );
+        assert_eq!(Lago::filas_del_snapshot(&lago.abrir(&main, d).unwrap()), 1);
+    }
+
     /// El mantenimiento de una tabla no toca lo que está bajo su ubicación y
     /// es de otra: `datasets/ventas_x` y `datasets/ventas_x/default/n`.
     #[test]
@@ -2516,7 +2602,7 @@ mod tests {
         let antes = debajo();
         assert!(antes > 0);
         let ml = campo(&s1, "metadata_location");
-        let r = recoger(&lago, "datasets/ventas_x", &ml, Some(0), false).unwrap();
+        let r = recoger(&lago, "datasets/ventas_x", &ml, &[], Some(0), false).unwrap();
         assert_eq!(campo(&r, "ficheros"), "0", "{r}");
         assert_eq!(debajo(), antes);
     }
@@ -3099,7 +3185,7 @@ mod tests {
         assert_eq!(hn["snapshots"][2]["idempotencia"], "op-1");
         assert_eq!(hn["retencion"]["edad_ms"], 0);
         // y recoger obedece a la tabla (0 ms) aunque nadie mande edad
-        let r = recoger(&lago, ds, &ml3, None, true).expect("seco");
+        let r = recoger(&lago, ds, &ml3, &[], None, true).expect("seco");
         assert_eq!(campo(&r, "expirados"), "2", "{r}");
         assert_eq!(campo(&r, "edad_ms"), "0");
 

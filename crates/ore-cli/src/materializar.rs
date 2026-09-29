@@ -107,12 +107,28 @@ pub struct Opciones<'a> {
     pub preparar: Option<&'a Path>,
     /// La segunda: lo que su cálculo dejó, para sellarlo.
     pub calculado: Option<&'a Path>,
+    /// Con `--recoger`: los punteros propios de las demás ramas (0044 C.2 ②).
+    pub reclaman: Option<&'a Path>,
 }
+
+/// Lo que reclaman las demás ramas en esta pasada. Una vez por proceso, y no
+/// un parámetro más: `recoger_dataset` está en lo hondo de `ya_esta` e
+/// `informe_de`, y lo que cambia de una pasada a otra es el proceso.
+static AJENOS: std::sync::OnceLock<crate::datasets::Ajenos> = std::sync::OnceLock::new();
 
 pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // Preparar no sella ni recoge: sólo deja lo que el cálculo necesita.
     let preparando = op.preparar.is_some();
     let (seco, recoger) = (op.seco, op.recoger && !preparando);
+    match crate::datasets::Ajenos::de(op.reclaman) {
+        Ok(a) => {
+            let _ = AJENOS.set(a);
+        }
+        Err(m) => {
+            eprintln!("error: {m}");
+            return std::process::ExitCode::from(66);
+        }
+    }
     let punteros = op
         .informe
         .map(Path::to_path_buf)
@@ -151,6 +167,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             // Sin copias no es sin datasets: los escritos y los resultados
             // siguen siendo del árbol (medida-los-punteros M1).
             let (reclamados, claves) = crate::datasets::reclamados(path, op.informe);
+            let (reclamados, claves) = con_ajenos(reclamados, claves);
             match recoger_huerfanas(&reclamados, &claves) {
                 Ok(l) => println!("  {l}"),
                 Err(e) => println!("  {e}"),
@@ -370,6 +387,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             .map(|qn| dataset_de(leer_puntero(&punteros, &qn).as_ref(), &qn)),
     );
     claves.extend(heredados.iter().cloned());
+    let (reclamados, claves) = con_ajenos(reclamados, claves);
     if recoger && !seco {
         match recoger_huerfanas(&reclamados, &claves) {
             Ok(l) => println!("{l}"),
@@ -1042,6 +1060,9 @@ fn recoger_dataset(
         ("dataset", Json::s(dataset)),
         ("metadata_location", Json::s(metadata_location)),
     ];
+    if let Some(a) = AJENOS.get() {
+        peticion.push(("tambien", a.de_dataset(dataset)));
+    }
     if let Some(s) = std::env::var("ORE_RECOGER_EDAD")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
@@ -1186,6 +1207,15 @@ pub(crate) fn campo_de(n: &ore_core::parse::Node, k: &str) -> Option<String> {
 /// cuántas filas, qué columnas, con qué testigo. Lo escribe el Job de la celda
 /// y lo empuja al árbol, y ahí el commit dice cuándo y quién: es el catálogo.
 ///
+/// Lo que el árbol reclama, más lo que reclaman las demás ramas (0044 C.2 ②).
+fn con_ajenos(mut datasets: Vec<String>, mut claves: Vec<String>) -> (Vec<String>, Vec<String>) {
+    if let Some(a) = AJENOS.get() {
+        datasets.extend(a.datasets.iter().cloned());
+        claves.extend(a.claves.iter().cloned());
+    }
+    (datasets, claves)
+}
+
 /// `ore-store recoger-huerfanas` con los datasets que el árbol reclama y los
 /// sobres heredados que algún puntero todavía nombra.
 fn recoger_huerfanas(datasets: &[String], claves: &[String]) -> Result<String, String> {

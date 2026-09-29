@@ -705,6 +705,10 @@ enum Command {
         /// almacen (0027 P1 I3).
         #[arg(long, value_name = "DIR")]
         informe: Option<PathBuf>,
+        /// Con `--recoger`: un directorio con los punteros propios de las demas
+        /// ramas del arbol (0044 C). Lo que nombran no se recoge.
+        #[arg(long, value_name = "DIR")]
+        reclaman: Option<PathBuf>,
         /// No pregunta al recibo: lee el origen entero y deja el recibo
         /// apuntando a la copia nueva (la superada se borra). Para cuando
         /// cambia COMO se lee, o el testigo no se mueve aunque los datos si.
@@ -916,6 +920,10 @@ enum Command {
         /// Con `--recoger`: dice que se iria y no toca nada.
         #[arg(long)]
         seco: bool,
+        /// Con `--recoger`: un directorio con los punteros propios de las demas
+        /// ramas del arbol (0044 C). Lo que nombran no se recoge.
+        #[arg(long, value_name = "DIR")]
+        reclaman: Option<PathBuf>,
         /// El swap: el puntero de la Table del lago `<paquete>.<tabla>`.
         #[arg(long, value_name = "NS.TABLA")]
         confirmar: Option<String>,
@@ -1040,6 +1048,7 @@ fn main() -> std::process::ExitCode {
             seco,
             recoger,
             informe,
+            reclaman,
             rehacer,
             vista,
             preparar,
@@ -1055,6 +1064,7 @@ fn main() -> std::process::ExitCode {
                     solo: vista,
                     preparar: preparar.as_deref(),
                     calculado: calculado.as_deref(),
+                    reclaman: reclaman.as_deref(),
                 },
             );
         }
@@ -1159,6 +1169,7 @@ fn main() -> std::process::ExitCode {
             recoger,
             edad,
             seco,
+            reclaman,
             confirmar,
             metadata_location,
             esperado,
@@ -1196,6 +1207,7 @@ fn main() -> std::process::ExitCode {
                     columnas: columnas.as_deref(),
                     sujeto: sujeto.as_deref(),
                     informe: informe.as_deref(),
+                    reclaman: reclaman.as_deref(),
                     commit: *commit,
                     tabla: tabla.as_deref(),
                     crear: crear.as_deref(),
