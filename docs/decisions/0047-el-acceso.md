@@ -314,11 +314,80 @@ Cuántas peticiones por minuto recibe cada clase de ruta en `t-demo` y `victor`,
 una petición de `ore-serve` a `ore-iam` dentro del cluster. `ore-serve` no registra sus
 peticiones: la medida necesita, primero, contarlas.
 
-### M3 · El camino (por preparar)
+Desde A1 cierra además los tres valores marcados **⟨M2⟩** en § «El contrato»:
+- `vale`: cuánto se guarda una respuesta (de partida, 30 s);
+- el tiempo de espera antes del 503 (de partida, 2 s);
+- cuánto guarda `ore-iam` las decisiones de escritura para los reintentos de `hizo` (de partida,
+  24 h), y cuántas son al día.
+
+### M3 · El camino (hecha el 2026-09-29)
 
 Qué regla de red hace falta, con qué identidad se presenta `ore-serve` ante `ore-iam` (el token
 reenviado de la persona, más la cuenta de servicio de la celda) y cómo sabe `ore-iam` qué celda
 pregunta. El informador de 0026 es el precedente.
+
+#### M3 · Lo medido
+
+`pruebas-de-fuego/medida-el-camino.sh`, en el cluster. Lanza un pod efímero por inquilino con
+las etiquetas de `ore-serve` (`ore.dev/rol=control`), para que le apliquen sus mismas
+NetworkPolicy, y lo borra al terminar. De cada token pide sólo los *claims*: nunca lo imprime.
+
+- **No hay camino, desde ninguna celda.** Desde `t-demo`, `t-prueba` y `t-victor`, `ore-iam:8090`
+  no contesta en 5 s y el IdP da 200. Lo corta la **salida**: el namespace del inquilino sólo deja
+  salir a `identidad` por el 8080 (`salida-al-emisor`), y al 8090 sólo al informador. La
+  **entrada** de `ore-iam` es más ancha de lo que usa. Deja pasar desde **cualquier pod de un
+  namespace con `ore.dev/tenant=demo`**, una regla de antes de las celdas que nada usa, y desde el
+  balanceador, porque la consola llega a `ore-iam` por fuera. ⇒ **La red no es la frontera de
+  identidad:** `ore-iam` ya es público y decide por el token. La regla que falta es una salida
+  (`control` → `iam-servidor:8090`) y su entrada, recortada a `ore.dev/rol=control`.
+- **La celda ya tiene una identidad que no es un secreto.** Cada `ore-serve` corre con Workload
+  Identity como `ore-serve-<celda>`, y el servidor de metadatos le da **un token de Google firmado
+  con la audiencia que pida**. Medido con `aud=ore-iam` en los tres: `iss
+  https://accounts.google.com`, el correo de su cuenta, su `sub` numérico y una hora de vida.
+  **Sólo la cuenta de Kubernetes `t-<n>/ore-serve` puede ser esa cuenta**
+  (`workloadIdentityUser`, un único miembro). Y en ninguno de los tres namespaces puede nadie
+  crear pods ni pedir tokens de otra cuenta (ni `ore-serve`, ni el puesto, ni el driver, ni el
+  informador, ni el custodio). No hay nada guardado que robar: el token nace en el nodo, dura una
+  hora y sólo vale para la audiencia que dice.
+- **El agente de 0026 no sirve como identidad de la celda.** Es un cliente del realm por celda, y
+  el realm le estampa `rubix_tipo=agente` y `rubix_celda=<celda>`. Pero su credencial la leen
+  **tres** cuentas: `ore-driver-<n>`, `ore-informador-<n>` y **`ore-puesto-<n>`**, y el puesto
+  ejecuta código de la persona. Si la celda preguntara como el agente, cualquier código de un
+  puesto podría presentarse como la celda. Y en `iam` el agente es **de la organización**, no de
+  la celda (`iam.agente` no tiene columna de celda). Encima, en los datos de hoy:
+  - `ore-agente`, el cliente de antes de los agentes por celda, está **registrado en dos
+    organizaciones** (demo y prueba) con el mismo `sub`, y sigue habilitado en el realm.
+  - `ore-agente-prueba-dos` sigue habilitado y registrado **con su celda retirada**.
+- **`ore-serve` todavía no habla con `ore-iam`.** Ninguna ruta lo llama, y su organización es un
+  flag (`--organizacion`, § «Lo que hay» 3).
+
+**Lo que dice:**
+
+1. **H5 se confirma, y se concreta.** La celda se presenta con **su token de Google**
+   (`aud=ore-iam`). La persona va aparte, con su token reenviado. `ore-iam` verifica los dos: la
+   organización sale de la celda, y la celda de un dato que escribe la plataforma. **Nunca del
+   cuerpo, ni del nombre de la cuenta.** La correspondencia es por `(emisor, sub)`, como la de las
+   personas: un correo se puede volver a crear después de borrado, y un `sub` no.
+2. **`ore-iam` gana un segundo emisor, que sólo sirve para celdas.** Hoy verifica un emisor (el
+   realm) con una audiencia (`ore-serve`). La identidad de la celda trae otro
+   (`accounts.google.com`, `aud=ore-iam`), y con él una **clase** nueva, `celda`, que sólo puede
+   pedir las rutas del puente (la tabla de clases de 0025 E5 y 0026). Sus llaves se traen como las
+   del realm (`50-jwks.yaml`): por un Job, a un fichero, no por el servidor en vivo.
+3. **La correspondencia cuenta → celda la escribe el aprovisionador**, que es quien crea la cuenta.
+   Va en `iam.celda`, dentro del verbo que ya tiene (`aprovisionada`), y no se deduce del nombre.
+4. **Otro proveedor traerá otro emisor, no otro diseño.** Hoy todas las celdas activas son de
+   `gcp` y corren en `ore-mesh`. La identidad de carga de trabajo de AWS y de Azure también es un
+   token OIDC firmado, con su emisor. Por eso la tabla guarda `(emisor, sub)`, no «la cuenta de
+   Google».
+5. **Hallazgos, fuera de este paso:**
+   - el cliente viejo `ore-agente` sigue vivo y registrado en dos organizaciones;
+   - retirar una celda no retira su agente (`prueba-dos`);
+   - el puesto lee la credencial del agente de su celda, y llega al IdP y a `ore-serve` (las
+     salidas que valen para todos los pods del namespace). Con eso puede pedir un token de agente
+     y hacer `GET` en su `ore-serve`, que es lo que ya se le deja. A `ore-iam` no llega: no tiene
+     salida al 8090 ni a internet.
+
+   Se apuntan para A7b, y el primero se puede cerrar ya.
 
 ### M4 · El custodio (hecha el 2026-09-28)
 
@@ -461,6 +530,154 @@ porque el préstamo acotado ya existe. Lo que falta es **preguntar antes de pres
 entra en `loadTable` / `loadView` (y en `POST /vistas/…/ejecutar` y `/puestos/{id}/datos`), que
 son los sitios donde el plano de datos se abre (A8). Y `ore-driver` se retira.
 
+## El contrato (A1, escrito el 2026-09-29)
+
+Sale de M1 (qué se pregunta y qué rastro hay), M3 (quién pregunta y por dónde) y M6 (dónde se
+guarda). Lo que depende de M2 lleva su marca, **⟨M2⟩**, y un valor de partida que M2 confirma o
+cambia. `ore-iam` lo sirve (A2) y el crate `ore-acceso` lo habla (A4). Ningún módulo lo habla a
+mano.
+
+### Quién pregunta: dos tokens en cada llamada
+
+| cabecera | qué lleva | quién lo emite | qué saca `ore-iam` de él |
+|---|---|---|---|
+| `Authorization: Bearer …` | **la celda**: el token de Workload Identity de `ore-serve-<celda>`, `aud=ore-iam` | Google, en el nodo (M3) | `(iss, sub)` → la fila de `iam.celda` → **la organización** |
+| `Ore-Sujeto: …` | **quien pide**: el token del realm que la persona (o el agente) trajo a `ore-serve`, tal cual | el realm | `(iss, sub)` → la persona, y `act` si es delegado (RFC 8693, como ya hace la huella) |
+
+- **La organización no viaja nunca.** Ni en el cuerpo, ni en una cabecera, ni en un `resource`.
+  Una celda sólo puede preguntar por la suya, porque es lo único que `ore-iam` deduce de ella.
+- **El cuerpo lleva `subject` porque AuthZEN lo pide**, y tiene que coincidir con el token de
+  `Ore-Sujeto`. Si no coincide, 400: es un fallo de quien pregunta, no una denegación.
+- **Una celda que no está en `iam.celda`, o está retirada: 401.** Un token del realm en
+  `Authorization`, el de una persona también: **403, clase equivocada**. Las rutas del puente son
+  de la clase `celda` y de ninguna otra, con la tabla de clases que ya existe.
+- Hasta A9 el token de la persona tiene la audiencia `ore-serve` y vale en cualquier celda. **Eso
+  no abre nada aquí:** la pregunta siempre es «en la organización de esta celda», y la celda no la
+  elige quien trae el token.
+
+### `puede`: AuthZEN 1.0, sin extensiones en la forma
+
+```
+POST /access/v1/evaluation
+{ "subject":  { "type": "persona", "id": "<sub>" },
+  "action":   { "name": "propuesta:fusionar-sin-revision" },
+  "resource": { "type": "organizacion", "id": "-" },
+  "context":  { "ruta": "POST /propuestas/{n}/fusionar", "peticion": "<id de la petición>" } }
+
+200 { "decision": false,
+      "context": { "id": "dec_…", "version": "…", "vale": 30,
+                   "motivo": "no tienes `propuesta:fusionar-sin-revision` en esta organización" } }
+```
+
+- **`decision` es un booleano, y una denegación es un 200.** El código de error es para cuando no
+  se pudo decidir (400, 401, 403 de clase, 5xx). Es lo que dice AuthZEN, y deja a `ore-serve` una
+  sola regla: **todo lo que no sea `200` con `decision: true` niega**.
+- **`resource`.** Para las preguntas de la organización (las de P2, M1 § 5) es `{type:
+  organizacion, id: "-"}`: la organización es la de la celda. Las de recurso (el `resolver` del
+  custodio, M4; los datos, A8) llevan su tipo y su nombre (`{type: secreto, id: ventas-pg}`).
+  Hoy el motor de conjuntos las contesta con las concesiones, y Cedar cuando una pida más (H9).
+- **`context.id`** identifica la decisión. Viaja en el 403 que ve la persona y en el `hizo` que
+  la sigue. Es el identificador de autorización de AWS (§ 9).
+- **`context.version`** es el estado de la política de esa organización: cambia cuando cambian
+  sus roles, pertenencias o concesiones. Hoy no lo lee nadie. Existe para poder pasar un día a
+  copia local sin cambiar a quien pregunta (H4).
+- **`context.vale`** son los segundos que `puede` puede guardar la respuesta. **⟨M2⟩, de partida
+  30**, y la misma regla para las denegaciones. Con 30 s, una revocación tarda como mucho medio
+  minuto en valer. Las nubes reconocen minutos (§ 10).
+- **`context.motivo`** es para la persona y dice lo que le falta. Como hoy, «no perteneces» y «no
+  puedes» dan el mismo mensaje: el motivo no destapa quién está dentro.
+- **`POST /access/v1/evaluations`**, el lote de AuthZEN, con la semántica por defecto
+  (`execute_all`): para que una pantalla sepa de una vez qué botones enseñar.
+- **Una potestad que no está en el catálogo niega**, con motivo «potestad desconocida», y se
+  registra. Una ruta mal declarada falla cerrada, y se ve.
+
+### En `ore-serve`: tres respuestas, ninguna nueva salvo el 503
+
+| lo que pasa | lo que contesta la ruta |
+|---|---|
+| `decision: true` | lo de siempre |
+| `decision: false` | **403** `{error: <motivo>, decision: <id>}` |
+| `ore-iam` no contesta en **⟨M2⟩ 2 s**, o contesta 5xx, o 401 **de la celda** | **503** `{error: "no hay quien decida", reintentar: true}`. Nunca se deja pasar |
+| 401 **del sujeto** (su token caducó entre la puerta y la pregunta) | **401**, como si lo hubiera visto la puerta |
+
+### `hizo`: la huella, con la organización dentro
+
+```
+POST /access/v1/eventos
+{ "id": "<uuid del evento>", "operacion": "fuente:crear", "sobre": "fuente/ventas",
+  "resultado": "hecho", "decision": "dec_…", "commit": "<sha>",
+  "cuando": "2026-09-29T10:00:00Z", "detalle": { … } }
+201 { "id": "<uuid del evento>" }      (y 200 con el mismo id si ya estaba: se puede reintentar)
+```
+
+- **Va a `iam.huella`**, con las dos columnas que M6 pidió, `organizacion` y `celda`, sacadas del
+  token de la celda. `quien` y `agente` salen del token de `Ore-Sujeto`, como en el resto de
+  `ore-iam`.
+- **`resultado`** es `hecho`, `negado` o `fallido`. Las denegaciones de `puede` las registra
+  `ore-iam` al decidir (`acceso:negado`), sin esperar a que `ore-serve` lo diga (§ 13). `hizo`
+  con `negado` es para lo que niega el propio módulo: la rama protegida (`423`), mover datos
+  fuera de `main` (`409`).
+- **`commit`** apunta, no copia (H13). Es el commit del árbol, el de la cola o el de la PR. La
+  historia fina sigue en la forja de la celda.
+- **`id` lo pone quien emite**, y dos eventos con el mismo `id` son uno. Es lo que permite
+  reintentar sin duplicar (H15).
+- **Qué se registra (H12):** siempre la gestión, las escrituras y las denegaciones. Las lecturas
+  del catálogo **no**. Las de datos (el puesto, ejecutar una vista, prestar una credencial: las
+  8 rutas sin rastro de M1), **⟨M2⟩, sólo si la organización lo enciende**.
+- **Los permisos no se registran por su cuenta.** Un `puede` con `true` que no acaba en nada no
+  deja fila. Uno que acaba en un acto deja **el acto**, con el `id` de su decisión dentro, que es
+  la forma de `authorizationInfo` (§ 11). Por eso **el puente no sigue la regla de `008`** («toda
+  ruta deja huella, leer incluido»): las demás rutas de `ore-iam` la siguen cumpliendo. Aquí
+  cumplirla sería una fila por pregunta, el ruido que M6 § 4 ya nombró.
+
+### Cuándo `hizo` va antes, y cuándo después (H15)
+
+- **Después, y sin hacer fallar lo hecho:** si `ore-iam` no contesta, el evento espera en la
+  celda y se reintenta con su mismo `id`. Un commit que ya está no se deshace porque falte su
+  fila.
+- **Antes, y si no se puede no se actúa:** lo que se salta una protección
+  (`propuesta:fusionar-sin-revision`, `rama:proteger`) y lo que el custodio entrega (`resolver`,
+  M4). Se registra `resultado: "en-curso"` y se actúa. Luego se cierra con otro evento, `hecho` o
+  `fallido`, que apunta al primero (`abre: <id>`). Si la primera escritura no entra: 503.
+- **Quién es el sujeto de un reintento.** El token de la persona puede haber caducado para
+  entonces (vive 300 s). Por eso un reintento **no trae `Ore-Sujeto`, trae `decision`**, y
+  `ore-iam` toma el sujeto de la decisión que él mismo tomó. Eso le obliga a **guardar las
+  decisiones de escritura** un tiempo: **⟨M2⟩, de partida 24 h**, en una tabla aparte de la
+  huella, que se poda. Un evento sin `Ore-Sujeto` y sin una decisión viva se rechaza (400). Una
+  celda no puede atribuirle a nadie algo que `ore-iam` no autorizó.
+
+### El catálogo: cada ruta declara lo suyo
+
+- **La potestad se declara en la ruta**, en el mismo sitio que la monta, y de ahí salen el mapa
+  de arranque y el catálogo. Es la lección de M1 § 7: un mapa escrito aparte ya no anuncia 34
+  rutas.
+- **`ore-iam` es el dueño del catálogo** (`iam.potestad`, por migración: es el PAP). Una ruta que
+  declara una potestad que `ore-iam` no conoce la ve negada (arriba), y **CI lo comprueba antes**:
+  el catálogo que sale de las rutas tiene que estar contenido en el de las migraciones.
+- **Las tres primeras, para P2 (A5):** `propuesta:fusionar-sin-revision`, `rama:proteger` y
+  `fuente:crear`. Son de gestión (H3) y de la organización (H9). **Ser admin de la organización
+  no da las de datos** cuando lleguen (A8): van en otro conjunto (`DataActions`).
+
+### La red (A3)
+
+- **Una salida en el namespace de cada inquilino:** `salida-a-ore-iam`, de `ore.dev/rol=control`
+  a `identidad` / `ore.dev/rol=iam-servidor`, puerto 8090. La rinde `gen-inquilino.py`, como las
+  demás.
+- **La entrada de `ore-iam`:** se añade `ore.dev/rol=cargas` + `ore.dev/rol=control`, y se quita
+  la regla de `ore.dev/tenant=demo` (M3). Como siempre, el binario antes que la malla: la salida
+  no se abre hasta que `ore-iam` sirva las rutas.
+
+### Lo que A1 deja fijado, y lo que no
+
+| fijado | abierto, y quién lo cierra |
+|---|---|
+| los dos tokens; la organización sale de la celda | `vale`, el tiempo de espera y lo que se guardan las decisiones: **M2** |
+| AuthZEN 1.0 para `puede`, con `id`, `version`, `vale` y `motivo` en `context` | registrar las lecturas de datos, y con qué interruptor: **M2** y A6 |
+| `hizo` a `iam.huella`, con `organizacion` y `celda`, idempotente por `id` | la forma exacta de `version`: **A2** |
+| antes o después según el acto; los reintentos por `decision` | la audiencia por celda del token de la persona: **M5** y A9 |
+| cada ruta declara su potestad; el catálogo es de `ore-iam`; CI los compara | Cedar: A8 |
+| la salida `control` → `iam-servidor:8090` | |
+
 ## Los pasos
 
 Por orden, y cada uno se abre con su go. Un paso que depende de una medida no empieza hasta que la
@@ -468,8 +685,8 @@ medida haya hablado; si la medida tumba la hipótesis, el paso se reescribe aqu�
 
 | paso | qué | depende de | sale |
 |---|---|---|---|
-| **A0** | **Medir**: M1, luego M6, M4 y M7 (estáticas o de lectura), luego M3 y M2 (en el cluster, de lectura) | — | este ADR con las hipótesis confirmadas o tumbadas, y el catálogo inicial |
-| **A1** | **El contrato**, escrito: `puede` en forma AuthZEN (sujeto del token, organización de la celda, `version`, identificador de decisión), `hizo` con la forma de la huella, los códigos (403 no puedes, 503 no hay respuesta) | M1, M3, M6 | una sección «El contrato» en este ADR |
+| **A0** | **Medir**: M1, luego M6, M4 y M7 (estáticas o de lectura), luego M3 y M2 (en el cluster, de lectura). Hechas todas menos M2 y M5 | — | este ADR con las hipótesis confirmadas o tumbadas, y el catálogo inicial |
+| **A1** | **El contrato**, escrito: `puede` en forma AuthZEN (sujeto del token, organización de la celda, `version`, identificador de decisión), `hizo` con la forma de la huella, los códigos (403 no puedes, 503 no hay respuesta) | M1, M3, M6 | una sección «El contrato» en este ADR. **Escrito el 2026-09-29**, con tres valores pendientes de M2 |
 | **A2** | **`ore-iam` contesta**: primero las columnas `organizacion` y `celda` de la huella con su índice (M6; que no se edite ya lo hace la `039`); luego `POST /access/v1/evaluation` (y `/evaluations`) sobre `potestad::exige`, con su huella; y recibe eventos | A1 | `ore-iam` con las rutas nuevas y su prueba de fuego |
 | **A3** | **El camino**: la regla de red de `ore-serve` a `identidad` y cómo se identifica la celda. Binario antes que malla: el flag nuevo y la malla que lo usa no se empujan juntos | A2 desplegado, M3 | la malla, empujada aparte |
 | **A4** | **El crate `ore-acceso`**: `puede` (con caché corta, 503, identificador) y `hizo` (con espera y reintento en la celda) | A2 | el crate con sus pruebas, sin consumidores todavía |
