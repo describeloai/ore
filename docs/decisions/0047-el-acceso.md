@@ -430,17 +430,31 @@ de la huella, 0,014 ms**.
 
 **Lo que dice:**
 
-1. **Decidir es barato. Lo caro es el camino si se hace mal.** La respuesta de `ore-iam` y la
-   consulta suman alrededor de 1 ms. La cola de 80 ms es **el DNS**. El pod tiene `ndots:5` y
-   `ore-iam.identidad.svc.cluster.local` sólo lleva cuatro puntos, así que antes de dar con el
-   nombre bueno se prueban los dominios de búsqueda.
-   ⇒ **`ore-acceso` reutiliza la conexión y resuelve una vez** (o nombra con punto final). Pasa
-   a ser una condición de A4, no una optimización.
+1. **Decidir es barato, y el viaje también.** La respuesta de `ore-iam` y la consulta suman
+   alrededor de 1 ms.
+   - ✏️ **Corregido el mismo día, midiendo en A2.** La cola de 80 ms **no era el DNS**: era el
+     propio pod de medida, sin CPU. Tenía un límite de 200m y lanzaba 500 `curl`, así que el
+     reparto de CPU de Linux lo paraba en tramos de unos 80 ms, repartidos entre DNS, conexión y
+     respuesta.
+   - Repetido con `medida-el-salto.sh 2`, las tres variantes:
+
+     | variante | DNS p95 | total p50 | total p95 | total p99 |
+     |---|---|---|---|---|
+     | sin punto final, 200m | 82 ms | 4,4 ms | 83 ms | 86 ms |
+     | con punto final, 200m | 79 ms | 2,1 ms | 81 ms | 82 ms |
+     | **con punto final, 1 CPU** | **1,9 ms** | **2,1 ms** | **3,7 ms** | **5,1 ms** |
+
+   - El punto final ahorra la mitad de la mediana (4,4 → 2,1 ms), porque `ndots:5` sí prueba
+     antes los dominios de búsqueda. La cola la quita la CPU. `ore-serve` tiene un límite de
+     500m y usa 1m, y `ore-iam` 300m y usa 11m: ninguno está cerca de su techo.
+   - ⇒ **`ore-acceso` nombra a `ore-iam` con punto final.** No hace falta reutilizar la
+     conexión: ni el servidor ni el cliente de `ore-entrada` la mantienen (una petición por
+     conexión, a propósito), y abrirla cuesta 0,3 ms.
 2. **Los 41 ms de M2.1 son el balanceador**, el TLS y el camino de fuera, no `ore-iam`. Desde
-   dentro, un `puede` ronda los milisegundos.
-3. **El tiempo de espera antes del 503 puede bajar.** Con 2 s el margen es de veinte veces el
-   p99, contando el DNS. Queda en 2 s hasta que Q1 diga cuántas preguntas hace una pantalla. Si
-   con conexión reutilizada el p99 queda por debajo de 5 ms, **500 ms**.
+   dentro, un `puede` ronda los 2 ms.
+3. **El tiempo de espera antes del 503 puede bajar.** Con un p99 de 5 ms y un máximo de 9 ms, 2 s
+   son cuatrocientas veces el p99. Queda en 2 s hasta que Q1 diga cuántas preguntas hace una
+   pantalla, y entonces **500 ms**.
 4. **`vale` espera a Q1.** Con un `puede` de alrededor de 1 ms, la caché sirve para quitar carga
    a `ore-iam`, no para esconder latencia. Su valor depende de cuántas preguntas por minuto haya.
 
@@ -837,6 +851,63 @@ medida haya hablado; si la medida tumba la hipótesis, el paso se reescribe aqu�
 | **A7b** | **El custodio pasa por el puente** (`puede` con recurso para `resolver`, `hizo` antes de contestar, y una ruta de `ore-iam` para las concesiones) y su papel pierde el `select` sobre el censo | A4, M4 | «lo que hay» 5, cerrado del todo |
 | **A8** | **Leer datos pregunta, y Cedar** cuando una pregunta necesite el recurso: `puede` antes de prestar la credencial (`loadTable`, `loadView`, ejecutar una vista, los datos del puesto, M7); dueños por paquete (aprobaciones por dueño); objetos (0046) | M1, M7 y el primer consumidor que lo pida | la promesa de 0031 y el hueco de 0007, cerrados |
 | **A9** | **El token por celda** (Keycloak 26.2, intercambio estándar) | M5 | «lo que hay» 2, cerrado |
+
+### A2, medido (2026-09-29)
+
+Lo que hace falta para que `ore-iam` conteste el contrato, mirado en el código y en el cluster
+antes de escribir nada.
+
+**Lo que ya sirve tal cual:**
+- **El verificador acepta un segundo emisor sin cambios.** `oidc::Emisor { iss, aud, llaves }` y
+  su `verificar` no saben de Keycloak: comprueban RS256, `kid`, `iss`, `aud`, `exp` y `nbf`, y
+  Google firma con RS256 (dos llaves publicadas hoy). Un segundo `Emisor` para las celdas es otra
+  instancia del mismo tipo.
+- **La correspondencia cuenta → celda la puede dar el aprovisionador.** El `uniqueId` de
+  `ore-serve-<celda>` **coincide** con el `sub` del token que midió M3, en las tres celdas
+  (`106604…491`, `114362…521`, `106677…841`). El aprovisionador lo lee con `gcloud`, y ya llama a
+  `POST /celdas/{c}/aprovisionada` cada cinco minutos por celda.
+- **La consulta y la huella son baratas** (M2: 0,36 ms y 0,014 ms). `iam.huella` tiene hoy 17.027
+  filas y 7 MB: añadir dos columnas que admiten nulo y un índice es inmediato.
+- **La tabla de clases ya existe** (0025 E5, 0026): una clase `celda` más, dueña de las rutas
+  `/access/v1/*`, sigue la misma regla.
+
+**Lo que no sirve tal cual, y hay que resolver en A2:**
+1. ⛔ **Las llaves se leen una sola vez, al arrancar.** Lo dice `50-jwks.yaml` («refrescar el
+   fichero no refresca al proceso») y nadie lo arregló. Con el realm se sobrevive porque rota
+   poco. **Con Google no:** sus llaves caducan a las 6 horas (`max-age=23095`) y rotan en días. Un
+   `ore-iam` que no las relee deja de reconocer a todas las celdas, y **todo `puede` pasa a
+   503**. ⇒ **Releer el fichero cuando llega un `kid` desconocido**, como mucho una vez cada
+   30 s. Es leer un fichero local que el kubelet ya actualiza, así que el proceso no sale a la
+   red. Arregla también el hueco del realm.
+2. ⛔ **Las llaves de `ore-iam` no las refresca nadie.** El ConfigMap `identidad/jwks` se creó a
+   mano el 2026-09-08 (`kubectl-create`), y los CronJobs `refresco-jwks` sólo existen en los
+   namespaces de los inquilinos. Las de Google necesitan su CronJob en `identidad`: cada hora,
+   el mismo patrón que `50-jwks`, comprobando que lo que llega es un JWKS de
+   `accounts.google.com`. Va en A3, con la malla.
+3. **Hoy la salida de `identidad` está abierta.** No hay ninguna NetworkPolicy de salida, así que
+   ese CronJob llega a `googleapis.com` sin regla nueva. De paso: `ore-iam` y el IdP pueden salir
+   a cualquier sitio. Se nombra; cerrarlo no es de este paso.
+4. **Una sola conexión a la base, tras un `Mutex`.** `ore-iam` atiende cada petición en su hilo,
+   pero todas esperan a la misma conexión. Con 0,36 ms por consulta y el pico de M2.3 (32 por
+   minuto), cabe de sobra: se nombra y no se cambia.
+5. **El ruido de `aprovisionada`.** Deja una fila de huella en cada pasada: 598 en el último
+   día, el 59 % de la tabla según M6. Al llevar ahora la identidad de la celda, pasa a ser una
+   **observación**, como el estado de 0026: deja huella sólo cuando algo cambia (la primera vez,
+   o la identidad).
+
+**Las piezas, por orden, cada una con su go:**
+
+| pieza | qué | sale |
+|---|---|---|
+| **A2.1** | Migración `044`. `iam.huella` gana `organizacion` y `celda`, que admiten nulo, más el índice `(organizacion, cuando desc)`; las filas viejas se quedan sin ellas, porque la `039` no deja editar la huella, a nadie. `iam.celda` gana `identidad_emisor` e `identidad_sub`, únicos entre las celdas no retiradas. `iam.decision` guarda las decisiones de escritura para los reintentos de `hizo`, y se poda a las 24 h al insertar | la base |
+| **A2.2** | `ore-entrada`: releer las llaves ante un `kid` desconocido (punto 1) | el hueco de la rotación, cerrado para las dos |
+| **A2.3** | `ore-iam`: la clase `celda` y el emisor de las celdas, con flags opcionales (`--emisor-celdas`, `--audiencia-celdas`, `--jwks-celdas`); sin ellos, las rutas del puente no se montan, la misma regla de siempre. `POST /access/v1/evaluation`, `/evaluations` y `/eventos`, con la forma de § «El contrato». La huella con `organizacion` y `celda` en lo que se anota por el puente | las rutas |
+| **A2.4** | `aprovisionada` acepta `{identidad: {emisor, sub}}` y pasa a ser observación (punto 5) | el registro de cada celda |
+| **A2.5** | `los-verbos.sh`, con un emisor de celdas de mentira como el de `el-cofre.sh`. Comprueba: una celda sólo pregunta por su organización; un token del realm en `Authorization` da 403 de clase; `subject` distinto de `Ore-Sujeto` da 400; un `kid` nuevo se lee sin reiniciar; `/eventos` es idempotente por `id`; un reintento sin `Ore-Sujeto` pasa si la decisión está viva y da 400 si no; y la celda retirada, 401 | la prueba de fuego |
+
+A2 es **sólo el binario**. Las flags nuevas no se encienden hasta A3 (la malla: el CronJob de
+llaves, las flags en `67-iam-servir.yaml`, la red y el aprovisionador mandando su `uniqueId`),
+como pide la regla de no empujar juntos una flag nueva y la malla que la usa.
 
 ### A7a, por pasos (medido el 2026-09-28)
 

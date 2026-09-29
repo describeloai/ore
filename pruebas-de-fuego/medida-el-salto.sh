@@ -66,11 +66,19 @@ fi
 
 if toca 2; then
   echo "== 2 · el viaje: 500 peticiones a ore-iam:8090/salud desde t-demo (etiquetas del informador)"
-  cat > "${TMPDIR:-/tmp}/m2-viaje.yaml" <<EOF
+  # Tres variantes, para separar lo que es de cada cosa (2026-09-29):
+  #   el nombre sin punto final  ⇒ `ndots:5` prueba antes los dominios de búsqueda
+  #   con punto final            ⇒ una sola consulta de DNS
+  #   con punto y 1 CPU          ⇒ sin el techo de CPU del propio pod de medida (500 `curl`)
+  # ⛔ Un nombre de pod por ejecución: con uno fijo, si el anterior no se había ido, el `apply`
+  #   fallaba en silencio y se leían las líneas del pod VIEJO (tres medidas idénticas al decimal).
+  viaje() { # <etiqueta> <host> <cpu>
+    local pod="m2-viaje-$$-$RANDOM" y="${TMPDIR:-/tmp}/m2-viaje.yaml"
+    cat > "$y" <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
-  name: m2-viaje
+  name: $pod
   labels: {ore.dev/rol: informador, ore.dev/tenant: demo}
 spec:
   restartPolicy: Never
@@ -78,19 +86,19 @@ spec:
   containers:
   - name: m2
     image: $IMG
-    command: ["sh", "-c", "for i in \$(seq 1 500); do curl -s -o /dev/null -w '%{time_namelookup} %{time_connect} %{time_total}\\\\n' http://ore-iam.identidad.svc.cluster.local:8090/salud; done"]
-    resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    command: ["sh", "-c", "for i in \$(seq 1 500); do curl -s -o /dev/null -w '%{time_namelookup} %{time_connect} %{time_total}\\\\n' http://$2:8090/salud; done"]
+    resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: "$3", memory: 128Mi}}
     securityContext: {allowPrivilegeEscalation: false, runAsNonRoot: true, runAsUser: 1000, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
 EOF
-  kubectl delete pod -n t-demo m2-viaje --ignore-not-found --wait=true >/dev/null 2>&1
-  kubectl apply -n t-demo -f - < "${TMPDIR:-/tmp}/m2-viaje.yaml" >/dev/null
-  for _ in $(seq 1 60); do
-    case $(kubectl get pod -n t-demo m2-viaje -o jsonpath='{.status.phase}' 2>/dev/null) in
-      Succeeded|Failed) break ;;
-    esac
-    sleep 5
-  done
-  kubectl logs -n t-demo m2-viaje 2>&1 | python -c '
+    kubectl apply -n t-demo -f - < "$y" >/dev/null || { echo "   ✗ no se pudo crear el pod"; return; }
+    for _ in $(seq 1 60); do
+      case $(kubectl get pod -n t-demo "$pod" -o jsonpath='{.status.phase}' 2>/dev/null) in
+        Succeeded|Failed) break ;;
+      esac
+      sleep 5
+    done
+    echo "-- $1  ($2, cpu $3)"
+    kubectl logs -n t-demo "$pod" 2>&1 | python -c '
 import sys
 sys.stdout.reconfigure(encoding="utf-8")
 f = [[float(x) * 1000 for x in l.split()] for l in sys.stdin if len(l.split()) == 3]
@@ -100,9 +108,13 @@ p = lambda v, q: sorted(v)[min(len(v) - 1, int(len(v) * q))]
 for k, v in [("dns", [a for a, b, c in f]), ("conexión", [b - a for a, b, c in f]),
              ("respuesta", [c - b for a, b, c in f]), ("total", [c for a, b, c in f])]:
     print("   %-9s n %d · p50 %5.1f ms · p95 %5.1f ms · p99 %5.1f ms · máx %5.1f ms" % (k, len(v), p(v, .5), p(v, .95), p(v, .99), max(v)))'
-  kubectl delete pod -n t-demo m2-viaje --wait=false >/dev/null 2>&1
-  echo "   (cada petición resuelve el nombre y abre conexión: el peor caso. Un cliente que reutiliza"
-  echo "    la conexión sólo paga «respuesta»)"
+    kubectl delete pod -n t-demo "$pod" --wait=false >/dev/null 2>&1
+  }
+  viaje "sin punto final" ore-iam.identidad.svc.cluster.local 200m
+  viaje "con punto final" ore-iam.identidad.svc.cluster.local. 200m
+  viaje "con punto y 1 CPU" ore-iam.identidad.svc.cluster.local. 1
+  echo "   (cada petición resuelve el nombre y abre conexión: ni el servidor ni el cliente de"
+  echo "    ore-entrada mantienen la conexión, a propósito; ver su cabecera)"
   echo
 fi
 
