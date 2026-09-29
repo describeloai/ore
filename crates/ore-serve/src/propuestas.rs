@@ -390,12 +390,6 @@ type EnFicheros = (crate::git::Alcance, Vec<String>, Vec<(String, String)>);
 /// Sólo lo que la rama CAMBIA: lo que ya está en `main` no hace falta llevarlo.
 fn lo_que_arrastra(cambios: &[Json], llevo: &[String]) -> Vec<(String, String)> {
     let id_de = |c: &Json| campo(c, "id").unwrap_or_default();
-    let rutas_de = |c: &Json| -> Vec<String> {
-        [campo(c, "ruta"), campo(c, "rutaAntes")]
-            .into_iter()
-            .flatten()
-            .collect()
-    };
     let van: Vec<&Json> = cambios
         .iter()
         .filter(|c| llevo.contains(&id_de(c)))
@@ -432,6 +426,27 @@ fn lo_que_arrastra(cambios: &[Json], llevo: &[String]) -> Vec<(String, String)> 
         }
     }
     out
+}
+
+/// Los ficheros de un cambio de `/cambios`: su `ruta`, la de antes si se movió,
+/// y lo que lleva sin ser documento (`ficheros`: los `discover.*` de la base de
+/// un `Package`, que van con él a donde vaya).
+fn rutas_de(c: &Json) -> Vec<String> {
+    let anexos = match hijo(c, "ficheros") {
+        Some(Json::Arr(v)) => v
+            .iter()
+            .filter_map(|x| match x {
+                Json::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    [campo(c, "ruta"), campo(c, "rutaAntes")]
+        .into_iter()
+        .flatten()
+        .chain(anexos)
+        .collect()
 }
 
 /// ¿`nombrado` —lo que un diagnóstico pone entre comillas— es el cambio `c`?
@@ -1166,12 +1181,6 @@ impl Servidor {
         };
         let cambios = self.cambios_de(rama)?;
         let id_de = |c: &Json| campo(c, "id").unwrap_or_default();
-        let rutas_de = |c: &Json| -> Vec<String> {
-            [campo(c, "ruta"), campo(c, "rutaAntes")]
-                .into_iter()
-                .flatten()
-                .collect()
-        };
         let mut llevo: Vec<String> = Vec::new();
         for x in pedidos {
             match cambios

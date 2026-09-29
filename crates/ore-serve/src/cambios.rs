@@ -18,6 +18,12 @@
 //!   pueden chocar, y quien mira la rama está viendo una versión que ya no es la
 //!   de la base. Se compara el punto de partida con la base de hoy.
 //!
+//! ⭐ **Un `Package` es también sus `discover.*`** (lo que lo hace una base: de
+//!   qué origen sale y qué entró). No son documentos, pero son del paquete: si
+//!   cambian, el `Package` cambia, y viajan con él (`ficheros`). Sin eso, una
+//!   propuesta de activos llevaba la base a `main` sin `discover.scope.json`, y en
+//!   `main` no era una database (la #9 de t-victor, 2026-09-29).
+//!
 //! ⭐ De memoria por `(cabeza de la base, cabeza de la rama)`: con las dos
 //!   cabezas iguales el resultado es el mismo, y se saben sin clonar.
 
@@ -34,6 +40,51 @@ struct Activo<'a> {
     doc: &'a Loaded,
     canonico: String,
     ruta: String,
+    /// De un `Package`, sus [`DE_LA_BASE`] que existen: `ruta → contenido`.
+    anexos: BTreeMap<String, String>,
+}
+
+/// Lo que el alta de una base escribe junto a su `package.yaml` (`ore discover`,
+/// `ore-cli/src/alcance.rs`): del paquete, aunque no sean documentos.
+pub(crate) const DE_LA_BASE: [&str; 4] = [
+    "discover.scope.json",
+    "discover.catalog.json",
+    "discover.answers.json",
+    "discover.pending.json",
+];
+
+/// Los [`DE_LA_BASE`] de un `Package` que existen, por su ruta en el árbol.
+fn anexos(d: &Loaded, ruta: &str) -> BTreeMap<String, String> {
+    let (Some(sitio), Some(dir)) = (ruta.rsplit_once('/').map(|(s, _)| s), d.path.parent()) else {
+        return BTreeMap::new();
+    };
+    if d.kind != ore_core::document::Kind::Package {
+        return BTreeMap::new();
+    }
+    DE_LA_BASE
+        .iter()
+        .filter_map(|f| {
+            let c = std::fs::read_to_string(dir.join(f)).ok()?;
+            Some((format!("{sitio}/{f}"), c))
+        })
+        .collect()
+}
+
+/// Los anexos que cambian entre dos lados (nuevos, quitados, distintos o
+/// movidos: de un movimiento, las dos rutas).
+fn anexos_que_cambian(
+    antes: &BTreeMap<String, String>,
+    despues: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut out: Vec<String> = antes
+        .keys()
+        .chain(despues.keys())
+        .filter(|r| antes.get(*r) != despues.get(*r))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn activos<'a>(pkg: &'a Package, raiz: &Path) -> BTreeMap<String, Activo<'a>> {
@@ -52,6 +103,7 @@ fn activos<'a>(pkg: &'a Package, raiz: &Path) -> BTreeMap<String, Activo<'a>> {
                 Activo {
                     doc: d,
                     canonico: ore_core::normalize::document(d).jcs(),
+                    anexos: anexos(d, &ruta),
                     ruta,
                 },
             )
@@ -364,10 +416,16 @@ impl Servidor {
         let mut cambios = Vec::new();
         for id in ids {
             let (x, y) = (a.get(id), d.get(id));
+            let vacio = BTreeMap::new();
+            let ficheros = anexos_que_cambian(
+                x.map(|x| &x.anexos).unwrap_or(&vacio),
+                y.map(|y| &y.anexos).unwrap_or(&vacio),
+            );
             let estado = match (x, y) {
                 (None, Some(_)) => "nuevo",
                 (Some(_), None) => "borrado",
                 (Some(x), Some(y)) if x.canonico != y.canonico => "modificado",
+                (Some(_), Some(_)) if !ficheros.is_empty() => "modificado",
                 (Some(x), Some(y)) if x.ruta != y.ruta => "movido",
                 _ => continue,
             };
@@ -387,6 +445,13 @@ impl Servidor {
                 ("estado", Json::s(estado)),
                 ("ruta", Json::s(y.or(x).unwrap().ruta.as_str())),
             ];
+            // Lo que viaja con él sin ser documento: los `discover.*` de su base.
+            if !ficheros.is_empty() {
+                m.push((
+                    "ficheros",
+                    Json::Arr(ficheros.iter().map(Json::s).collect()),
+                ));
+            }
             // ¿La base también lo cambió desde el punto de partida? Y qué le hizo.
             let en_base = h.as_ref().and_then(|h| {
                 match (x.map(|x| &x.canonico), h.get(id).map(|z| &z.canonico)) {
@@ -559,5 +624,30 @@ impl Servidor {
             ),
             ("diagnosticos", diagnosticos),
         ])
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use std::collections::BTreeMap;
+
+    /// La #9 de t-victor: el paquete ya estaba en `main`, igual, pero sin sus
+    /// `discover.*`; la rama los tiene. Eso es un cambio del `Package`.
+    #[test]
+    fn los_discover_que_faltan_en_la_base_son_un_cambio() {
+        let r = |f: &str| format!("packages/s3/{f}");
+        let rama: BTreeMap<String, String> = super::DE_LA_BASE
+            .iter()
+            .map(|f| (r(f), "{}".to_string()))
+            .collect();
+        let main = BTreeMap::new();
+        assert_eq!(super::anexos_que_cambian(&main, &rama).len(), 4);
+        assert!(super::anexos_que_cambian(&rama, &rama).is_empty());
+        let mut otra = rama.clone();
+        otra.insert(r("discover.answers.json"), "{\"a\":1}".into());
+        assert_eq!(
+            super::anexos_que_cambian(&rama, &otra),
+            vec![r("discover.answers.json")]
+        );
     }
 }

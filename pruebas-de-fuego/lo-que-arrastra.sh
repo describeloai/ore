@@ -15,6 +15,10 @@
 #      los 7, cada uno con su porque · diagnosticos [] · faltan []
 #   1b en seco (M3): {seco: "alcance"} lo que arrastra, sin compilar; {seco: true} ademas
 #      main + eso compilado; ni PR ni derivada · la rama entera en seco, 422
+#   1c el `Package` de la base es tambien sus `discover.*` (`ficheros`): sin
+#      ellos, en main el paquete no es una database (la #9 de t-victor, 2026-09-29)
+#   2b fusionada, la base llega a main CON su `discover.scope.json`, y la rama se
+#      queda sin cambios
 #   3  lo que ya esta en main no se arrastra: con los punteros y el schema de la
 #      fuente fusionados, la siguiente propuesta de otro dataset no los lleva
 #
@@ -99,6 +103,8 @@ TODOS="['ConduitPolicy:std','Dataset:std.ventas.clientes','Dataset:std.ventas.pe
 tiene "sorted(c['id'] for c in d['cambios'])==$TODOS" || falla "1 · la rama no escribio los nueve: $(cuerpo | head -c 600)"
 tiene "[c for c in d['cambios'] if c['id']=='Dataset:std.ventas.pedidos'][0]['lee']==['Table:pg.ventas.pedidos']" || falla "1 · el dataset no dice que lee su puntero: $(cuerpo | head -c 600)"
 dice "1 · una base standard en la rama escribe 9 activos (datasets, punteros en la fuente, schemas, paquetes, politica) · cada cambio dice lo que lee"
+tiene "'packages/std/discover.scope.json' in [c for c in d['cambios'] if c['id']=='Package:std'][0]['ficheros']" || falla "1c · el paquete de la base no lleva su discover.scope.json: $(cuerpo | head -c 900)"
+dice "1c · el Package de la base lleva sus discover.* (ficheros)"
 
 # ── 1b · en seco (M3): lo que llevaria, sin abrir nada ─────────────────────
 [ "$(pide POST /propuestas "$ANA" '{"rama":"ana/std","activos":["Dataset:std.ventas.pedidos"],"seco":"alcance"}')" = "200" ] || falla "1b · en seco, el alcance: $(cuerpo)"
@@ -119,9 +125,16 @@ tiene "d['diagnosticos']==[] and d.get('faltan',[])==[]" || falla "2 · la propu
 N=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["numero"])' "$TMP/r.json")
 dice "2 · proponer SOLO los datasets: 201, lleva los 9, los 7 anadidos con su porque (lo lee, el schema de, el conducto de la copia…), compila sobre main"
 
+# ── 2b · fusionada: la base, entera, en main ────────────────────────────────
+[ "$(pide POST /propuestas/$N/fusionar "$ANA")" = "200" ] || falla "2b · fusionar (main libre): $(cuerpo)"
+git --git-dir="$BARE" cat-file -e main:packages/std/discover.scope.json 2>/dev/null || falla "2b · la base llego a main sin discover.scope.json: $(git --git-dir="$BARE" ls-tree -r --name-only main packages/std | tr '
+' ' ')"
+[ "$(git --git-dir="$BARE" diff --name-only main ana/std | wc -l | tr -d ' ')" = "0" ] || falla "2b · la rama se quedo con: $(git --git-dir="$BARE" diff --name-only main ana/std | tr '
+' ' ')"
+dice "2b · fusionada, la base esta en main con su discover.scope.json, y a la rama no le queda nada"
+
 # ── 3 ───────────────────────────────────────────────────────────────────────
 # fusionada, lo que ya esta en main no vuelve a arrastrarse
-[ "$(pide POST /propuestas/$N/fusionar "$ANA")" = "200" ] || falla "3 · fusionar (main libre): $(cuerpo)"
 [ "$(pide POST /ramas "$ANA" '{"nombre":"otra"}')" = "201" ] || falla "3 · otra rama: $(cuerpo)"
 cat > "$TMP/v.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha13
@@ -138,4 +151,4 @@ C=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$ANA" -H 'content-type
 tiene "d['activos']==['Dataset:std.ventas.pedidos_es'] and d['anadidos']==[] and d['diagnosticos']==[]" || falla "3 · arrastro lo que ya esta en main: $(cuerpo | head -c 700)"
 dice "3 · con la base en main, un dataset nuevo que lee el mismo puntero va solo: lo que ya esta en main no se arrastra"
 
-echo "✓ lo que arrastra una propuesta de activos (0044 A.2, M1 y M3): 1–3"
+echo "✓ lo que arrastra una propuesta de activos (0044 A.2, M1 y M3): 1–3, con la base entera"
