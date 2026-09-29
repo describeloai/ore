@@ -986,7 +986,7 @@ impl Servidor {
         testigo: Option<&str>,
     ) -> Result<String, (Option<u16>, String)> {
         let (Some(cofre), Some(org)) = (&self.cofre, &self.organizacion) else {
-            return Err((None, "NO guardada: este servidor no sabe de ningun custodio                     (`--cofre` y `--organizacion`)"
+            return Err((None, "NO guardada: este servidor no sabe de ningun custodio (`--cofre` y `--organizacion`)"
                 .into()));
         };
         let Some(t) = testigo else {
@@ -1280,8 +1280,9 @@ impl Servidor {
         if trae_credencial && self.cofre.is_none() {
             return Respuesta::error(
                 422,
-                "esta URL trae una credencial dentro y este servidor no sabe de                  ningun custodio (`--cofre` y `--organizacion`).
-                 `ore source add` la mandaria a `.env.local`, y un fichero en el                  disco de un pod no es un secreto guardado.",
+                "esta URL trae una credencial dentro y este servidor no sabe de ningun \
+                 custodio (`--cofre` y `--organizacion`). `ore source add` la mandaria a \
+                 `.env.local`, y un fichero en el disco de un pod no es un secreto guardado.",
             );
         }
 
@@ -1325,11 +1326,13 @@ impl Servidor {
                 // ⇒ Va al custodio, que se construyó para esto y llevaba días
                 //   con cero secretos dentro. Éste es su primer cliente.
                 //
-                // ⛔ Y DESPUÉS del árbol, no antes. Si el custodio falla, queda
-                //   una fuente declarada sin credencial — y eso se nota, porque
-                //   el catálogo dice «`X_URL` no está definida». Al revés
-                //   quedaría un secreto que nombra una fuente que no existe, y
-                //   a eso no lo mira nadie nunca.
+                // ⛔ Y DESPUÉS de escribir el árbol, pero ANTES de publicarlo:
+                //   `escribiendo` sólo empuja si esta función contesta 2xx. Si
+                //   el custodio falla, la respuesta no es 2xx y el árbol no se
+                //   publica: no queda ni fuente sin credencial ni credencial sin
+                //   fuente. (✏️ 2026-09-29: aquí se decía que la fuente quedaba
+                //   declarada igual; dejó de ser verdad cuando el empuje pasó a
+                //   depender del código, y el mensaje del 502 lo repetía en falso.)
                 let guardada = self.guardar_credencial(&nombre, &url, testigo);
 
                 // ⛔⛔ Y SI TRAIA CREDENCIAL Y NO SE GUARDO, ESTO NO ES UN 201.
@@ -1341,20 +1344,19 @@ impl Servidor {
                 // sitio, y el fallo aparecería media hora despues en el
                 // registro de otro Job.
                 //
-                // ⚠️ La fuente SÍ queda declarada — el arbol se escribio antes,
-                //   y deshacer un commit empujado no es una vuelta atras: es
-                //   otro commit. Se dice en el mensaje, que es lo que permite
-                //   reintentar solo la credencial en vez de adivinar el estado.
-                // ⭐ 0045 P1.5: un 409 del custodio es un secreto `fuente-<n>` que
-                //   sobrevivió a la baja de otra fuente con ese nombre: el nombre
-                //   está ocupado, y se dice como los demás. El árbol no se
-                //   publica —la respuesta no es 2xx— y nada se encola.
+                // ⭐ 0045 P1.5: un 409 del custodio es un secreto VIVO
+                //   `fuente-<n>` que ninguna fuente declara: un huérfano, de un
+                //   alta que guardó la credencial y no llegó a publicar el
+                //   árbol. Uno retirado ya no ocupa el nombre (la `043`). El
+                //   nombre está ocupado y se dice como los demás; el árbol no
+                //   se publica y nada se encola.
                 if let Err((Some(409), m)) = &guardada {
                     return con_sugerencia(
                         409,
                         format!(
-                            "el custodio ya guarda un secreto `fuente-{nombre}` (de una fuente \
-                             que se retiró con ese nombre): {m}"
+                            "el custodio ya guarda un secreto vivo `fuente-{nombre}` que \
+                             ninguna fuente declara (lo retira `ore-cofre \
+                             retirar-huerfanos`): {m}"
                         ),
                         nombre_libre(raiz, &format!("{nombre}_2")),
                     );
@@ -1367,8 +1369,9 @@ impl Servidor {
                     return Respuesta::error(
                         502,
                         format!(
-                            "la fuente `{nombre}` quedo declarada en el arbol, pero su                              credencial NO se guardo: {guardada}.
-                             El catalogo no podra leer el origen hasta que exista el                              secreto `fuente-{nombre}`."
+                            "la fuente `{nombre}` no se dio de alta: su credencial no se \
+                             guardó ({guardada}), y sin ella el árbol no se publica. \
+                             Se puede volver a intentar con el mismo nombre."
                         ),
                     );
                 }

@@ -591,6 +591,32 @@ POT=$(psql "$URL" -qtAc "select string_agg(rol, ' ' order by rol) from iam.rol_p
 [ "$POT" = "ACCOUNTADMIN ORGADMIN SECURITYADMIN" ] || falla "10 · la potestad secreto:retirar no esta en los roles que emiten: $POT"
 dice "10 · la baja: Zoe y el agente no pueden (mismo error que «no existe») · Ada, owner, retira: fila con retirado_en, concesiones revocadas con fecha, material fuera del almacen, huella sin el valor · despues no resuelve ni se retira dos veces"
 
+# ── 10b · ⭐⭐ EL NOMBRE LO OCUPA EL VIVO, NO EL RETIRADO (043) ──────────────
+#
+# Hasta la `043` el índice único era `(celda, nombre)` a secas, así que un nombre
+# retirado quedaba ocupado para siempre: dar de baja un origen y volver a darlo
+# de alta con el mismo nombre fallaba aquí con el texto de Postgres, un 422, y
+# `ore-serve` lo pintaba como un 502 que además mentía.
+[ "$(pide POST "/organizaciones/$ORG/secretos" "$ADA" \
+  '{"nombre":"pg-produccion","clase":"conexion","valor":"postgres://u:p@db/segunda"}')" = "200" ] \
+  || falla "10b · no se pudo volver a emitir un nombre retirado: $(cat "$TMP/r.json")"
+[ "$(pide GET "/organizaciones/$ORG/secretos/pg-produccion" "$ADA")" = "200" ] \
+  || falla "10b · el nuevo no resuelve: $(cat "$TMP/r.json")"
+grep -q "postgres://u:p@db/segunda" "$TMP/r.json" || falla "10b · resolvio otro valor que el nuevo"
+FILAS=$(psql "$URL" -qtAc "select count(*) filter (where retirado_en is null) || '/' || count(*) from cofre.secreto where nombre='pg-produccion' and organizacion='$ORG'")
+[ "$FILAS" = "1/2" ] || falla "10b · tenia que haber el retirado y el nuevo (vivos/total = 1/2): $FILAS"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.concesion_viva where recurso='secreto/pg-produccion' and organizacion='$ORG' and rol='owner'")" = "1" ] \
+  || falla "10b · el nuevo no nacio con su owner (y solo el suyo)"
+# Y sobre uno VIVO, 409 con una frase: es lo que `ore-serve` lee como «nombre ocupado».
+[ "$(pide POST "/organizaciones/$ORG/secretos" "$ADA" \
+  '{"nombre":"pg-produccion","clase":"conexion","valor":"postgres://u:p@db/tercera"}')" = "409" ] \
+  || falla "10b · emitir sobre un vivo no dio 409: $(cat "$TMP/r.json")"
+grep -q "ya hay un secreto vivo" "$TMP/r.json" || falla "10b · el 409 no lo dice con una frase: $(cat "$TMP/r.json")"
+grep -q "duplicate key" "$TMP/r.json" && falla "10b · el 409 lleva el texto de Postgres"
+[ "$(pide GET "/organizaciones/$ORG/secretos/pg-produccion" "$ADA")" = "200" ] && grep -q "db/segunda" "$TMP/r.json" \
+  || falla "10b · el 409 toco el vivo: $(cat "$TMP/r.json")"
+dice "10b · un nombre retirado se vuelve a emitir (el retirado se queda, 1 vivo de 2) · sobre uno vivo, 409 con una frase, y el vivo intacto"
+
 # ── 11 · la baja de operador (038): las credenciales de fuentes que ya no estan ──
 #
 # Lo que quedo de antes de la 037 no lo alcanza `DELETE /fuentes`: su fuente ya

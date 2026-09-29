@@ -41,6 +41,22 @@ use std::sync::Mutex;
 /// restricción violada.
 const CLASES: &[&str] = &["contrasena", "testigo", "clave-api", "conexion"];
 
+/// Un fallo con su código. Lo que llega como `String` —de la base, de las guardas— es un
+/// 422, como siempre; `Fallo(409, …)` se construye a propósito.
+struct Fallo(u16, String);
+
+impl From<String> for Fallo {
+    fn from(m: String) -> Fallo {
+        Fallo(422, m)
+    }
+}
+
+impl From<&str> for Fallo {
+    fn from(m: &str) -> Fallo {
+        Fallo(422, m.to_string())
+    }
+}
+
 pub struct Servidor {
     pub base: Mutex<Client>,
     pub emisor: String,
@@ -100,6 +116,17 @@ impl Servidor {
         s: &Identidad,
         f: impl FnOnce(&mut Tx, &str) -> Result<Json, String>,
     ) -> Respuesta {
+        self.en_transaccion_con_codigo(s, |tx, emisor| f(tx, emisor).map_err(Fallo::from))
+    }
+
+    /// Como `en_transaccion`, para una ruta que tiene que distinguir un fallo de otro: hoy
+    /// sólo `emitir`, cuyo «ese nombre ya lo tiene un secreto vivo» es un 409 y no un 422
+    /// (`ore-serve` lo lee para decir que el nombre está ocupado, 0045 P1.5).
+    fn en_transaccion_con_codigo(
+        &self,
+        s: &Identidad,
+        f: impl FnOnce(&mut Tx, &str) -> Result<Json, Fallo>,
+    ) -> Respuesta {
         let Ok(mut base) = self.base.lock() else {
             return Respuesta::error(500, "la conexión quedó envenenada");
         };
@@ -112,7 +139,7 @@ impl Servidor {
         //   `iam.persona`, a propósito. El custodio lee quién eres; quién eres
         //   lo escribe el plano de identidad.
         match f(&mut tx, &self.emisor) {
-            Err(e) => Respuesta::error(422, e),
+            Err(Fallo(codigo, e)) => Respuesta::error(codigo, e),
             Ok(j) => match tx.confirmar() {
                 Ok(()) => Respuesta::ok(j),
                 Err(e) => Respuesta::error(500, e),
@@ -126,7 +153,7 @@ impl Servidor {
         let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
         let almacen = &self.almacen;
         let self_celda = self.celda.clone();
-        self.en_transaccion(s, move |tx, emisor| {
+        self.en_transaccion_con_codigo(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`: aqui llegaba `demo` y
             //    todo lo de abajo pregunta por `org_b7b98fdd…`.
             let org = canonica(tx, &org)?;
@@ -143,7 +170,8 @@ impl Servidor {
                 return Err(format!(
                     "`{clase}` no es una clase de secreto. Son: {}",
                     CLASES.join(", ")
-                ));
+                )
+                .into());
             }
             // El mismo alfabeto que `concesion.recurso` exige para `secreto/…`.
             // Si no fueran el mismo, la concesión que se crea abajo no
@@ -170,6 +198,26 @@ impl Servidor {
                 })?;
             let (kek, celda_id, inquilino): (String, String, String) =
                 (f.get(0), f.get(1), f.get(2));
+
+            // ⭐ ¿Lo ocupa ya un secreto VIVO de esta celda? Es un 409, y con una frase: sin
+            //   esto, el `insert` de abajo chocaba con el índice y salía un 422 con el texto
+            //   de Postgres, que `ore-serve` no sabía leer como «nombre ocupado». Uno RETIRADO
+            //   no lo ocupa (la `043`): la baja deja la fila para contar que existió, no para
+            //   quedarse el nombre. Quien llega aquí ya tiene `secreto:emitir`, y el índice lo
+            //   habría dicho igual: no es un directorio de lo ajeno.
+            let ocupado = tx
+                .uno(
+                    "select 1 from cofre.secreto
+                      where celda = $1 and nombre = $2 and retirado_en is null",
+                    &[&celda_id, &nombre],
+                )?
+                .is_some();
+            if ocupado {
+                return Err(Fallo(
+                    409,
+                    format!("ya hay un secreto vivo `{nombre}` en esta celda"),
+                ));
+            }
 
             // ③ El METADATO, en la base del plano de control — y dentro de la
             //    transacción, así que si el almacén dice que no, no queda una
