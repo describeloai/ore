@@ -6,6 +6,7 @@
 //! | `ore collections .` | cada `MediaCollection`: su forma (virtual, mantenida, escrita), su origen, su medio y sus formatos, y el estado de su puntero (transacción, ítems actuales, retirados y perdidos) | `GET /colecciones` |
 //! | `--ficha b.s.n` | lo mismo de una, y **la historia de sus transacciones** (los snapshots de su manifiesto, `ore-store historia`) | `GET /colecciones/{b}/{s}/{n}` |
 //! | `--items b.s.n [--estado …] [--desde N] [--limite N]` | sus ítems, por estado (`actual` por defecto; `retirado`, `perdido`, `todos`), en orden de camino, paginados | `GET /colecciones/{b}/{s}/{n}/items` |
+//! | (en las tres) | si el manifiesto pasa de 500.000 filas, el aviso del **techo** (E8·3c): cada transacción lo reescribe entero, y toca *merge-on-read* | quien mira la colección |
 //! | `--recoger [--seco] [--gracia 2h]` | **el mantenimiento** (E8·3): la retención de cada colección (lo retirado más viejo que su `retention` sale del manifiesto, y el puntero se mueve) y después la **recogida de blobs** del inquilino: lo que ninguna fila de ningún manifiesto nombra, y nadie tocó en la gracia, se va. Si un manifiesto no se puede leer, no se recoge nada | el CronJob de mantenimiento |
 //! | `--cotejar b.s.n [--muestra N]` | **que lo que el manifiesto de una mantenida dice esté en el lago** (E8·2d): cada blob que una fila nombra, con su tamaño; y N de ellos, bajados y vueltos a hashear. Sale con 1 si algo está roto, y dice qué ítem | el mantenimiento, o quien quiera saberlo |
 //!
@@ -129,6 +130,10 @@ fn resumen(d: &Loaded, puntero: Option<&Node>) -> Json {
                     "metadata_location",
                     "snapshot",
                     "testigo",
+                    "techo",
+                    "blobs",
+                    "no_copiados",
+                    "retencion",
                 ] {
                     if let Some(v) = todo.get(k) {
                         q.insert(k.to_string(), v.clone());
@@ -213,6 +218,11 @@ fn listar(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             n("retirados"),
             n("perdidos")
         );
+        if let Some(Json::Obj(t)) = p.get("techo")
+            && let Some(Json::Str(a)) = t.get("aviso")
+        {
+            println!("          ⚠ techo · {a}");
+        }
     }
     Ok(())
 }

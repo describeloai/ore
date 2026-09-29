@@ -139,6 +139,26 @@ fn ore_collections_la_lista_y_ore_datasets_no() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 0046 E8·3c · pasado el techo, la colección lo dice donde se mira.
+#[test]
+fn el_techo_se_ve_en_la_lista() {
+    let dir = arbol("techo");
+    let p = dir.join("datasets/legal/archivo/contratos.json");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let con_techo = PUNTERO.replacen(
+        "\"transaccion\": 1,",
+        "\"transaccion\": 1,\n  \"techo\": { \"filas\": 600000, \"limite\": 500000, \"aviso\": \"600000 filas en el manifiesto: toca merge-on-read\" },",
+        1,
+    );
+    std::fs::write(&p, con_techo).unwrap();
+    let (c, s) = ore(&dir, &["collections", "."]);
+    assert_eq!(c, Some(0), "{s}");
+    assert!(s.contains("⚠ techo · 600000 filas"), "{s}");
+    let (_, j) = ore(&dir, &["collections", ".", "--json"]);
+    assert!(j.contains(r#""limite":500000"#), "{j}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn el_indice_de_activos_lleva_su_puntero() {
     let dir = arbol("activos");

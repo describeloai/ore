@@ -62,6 +62,53 @@ use ore_core::link::{Loaded, Package};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// **El techo** (E8·3c): por encima de estas filas, el manifiesto deja de
+/// ser barato. La fusión del lago es *copy-on-write*: cada transacción
+/// reescribe la tabla entera. Medido (E8·1a y E8·2 B, en el clúster): con
+/// 100.000 filas, una transacción son ~3 s y 14 MB; crece lineal, así que con
+/// un millón son ~30 s y ~140 MB por cambio, y la retención y la recogida leen
+/// lo mismo cada noche. Pasado el techo toca *merge-on-read*; hasta entonces
+/// se dice, en el puntero y en `ore collections`.
+pub const TECHO: i64 = 500_000;
+
+/// Lo que el puntero dice del techo, si se pasó.
+pub fn techo(filas: i64) -> Option<Json> {
+    (filas > TECHO).then(|| {
+        Json::obj([
+            ("filas", Json::Int(filas)),
+            ("limite", Json::Int(TECHO)),
+            (
+                "aviso",
+                Json::s(format!(
+                    "{filas} filas en el manifiesto: cada transacción lo reescribe entero (~3 s y ~14 MB por cada 100.000); por encima de {TECHO} toca merge-on-read (0046 E8·3c)"
+                )),
+            ),
+        ])
+    })
+}
+
+fn campo_de_json(j: &Json, k: &str) -> Option<String> {
+    match j {
+        Json::Obj(m) => match m.get(k) {
+            Some(Json::Str(v)) => Some(v.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Pone o quita el aviso del techo en un puntero.
+fn con_techo(m: &mut BTreeMap<String, Json>, filas: i64) {
+    match techo(filas) {
+        Some(t) => {
+            m.insert("techo".into(), t);
+        }
+        None => {
+            m.remove("techo");
+        }
+    }
+}
+
 /// Ahora, en milisegundos desde 1970.
 pub fn ahora_ms() -> i64 {
     std::time::SystemTime::now()
@@ -823,6 +870,12 @@ pub fn una(
             ));
         }
     }
+    if let Some(t) = techo(actuales + retirados + perdidos) {
+        linea.push_str(&format!(
+            " · ⚠ {}",
+            campo_de_json(&t, "aviso").unwrap_or_default()
+        ));
+    }
     // Lo que no se copió se vuelve a intentar: el testigo no avanza.
     let testigo_guardado = if copia.fallos.is_empty() {
         testigo.clone()
@@ -926,6 +979,7 @@ pub fn una(
             ("perdidos", Json::Int(perdidos)),
         ]),
     );
+    con_techo(&mut m, actuales + retirados + perdidos);
     m.insert(
         "cambios".into(),
         Json::obj([
@@ -1083,6 +1137,7 @@ pub fn caducar(
             ("perdidos", Json::Int(n("perdido"))),
         ]),
     );
+    con_techo(&mut m, quedan.len() as i64);
     m.insert(
         "retencion".into(),
         Json::obj([
@@ -1269,6 +1324,20 @@ mod tests {
         fechar(&mut t4.filas, 400);
         let a = t4.filas.iter().find(|i| i.clave == "a.pdf").unwrap();
         assert_eq!((a.estado.as_str(), a.retirado_ms), ("actual", None));
+    }
+
+    /// El techo: hasta 500.000 filas no se dice nada; pasado, el puntero
+    /// lo lleva; y si la retención baja de nuevo, se quita.
+    #[test]
+    fn el_techo_se_dice_y_se_quita() {
+        assert!(techo(TECHO).is_none());
+        let t = techo(TECHO + 1).expect("pasado el techo");
+        assert!(t.jcs().contains("merge-on-read"), "{}", t.jcs());
+        let mut m = BTreeMap::new();
+        con_techo(&mut m, 900_000);
+        assert!(m.contains_key("techo"));
+        con_techo(&mut m, 10);
+        assert!(!m.contains_key("techo"));
     }
 
     #[test]
