@@ -149,7 +149,6 @@ impl Servidor {
             Err(r) => return r,
         };
         let tenia_copias = !vistas_con_copia_de(&dir).is_empty();
-        let fuente = crate::rutas::origen_de(&dir).0;
         // fuera del árbol a un sitio temporal, por si hay que volver a ponerlo
         let aparte = raiz.join(format!(".retirando-{paquete}"));
         if let Err(e) = std::fs::rename(&dir, &aparte) {
@@ -189,31 +188,9 @@ impl Servidor {
             ("retirado", Json::Bool(true)),
             ("recibos", Json::Int(recibos as i64)),
         ];
-        // ⭐ 0045 P3′: los punteros que solo leía esta base se van de la fuente
-        //   en el mismo commit. Lo escribe su único escritor, que decide por
-        //   los alcances que quedan. Si falla, se dice: un puntero de más no
-        //   rompe el árbol.
-        if let Some(f) =
-            fuente.filter(|f| crate::punteros::es_paquete_de_fuente(&raiz.join("packages").join(f)))
-        {
-            let s = mando::correr(
-                &self.binario,
-                raiz,
-                &[
-                    "source".into(),
-                    "induce".into(),
-                    f.clone(),
-                    "--path".into(),
-                    ".".into(),
-                ],
-            );
-            let texto = match s {
-                Ok(s) if s.bien() => s.stdout.trim().to_string(),
-                Ok(s) => format!("aviso: `ore source induce {f}`: {}", s.stderr.trim()),
-                Err(e) => format!("aviso: `ore source induce {f}`: {e}"),
-            };
-            campos.push(("fuente", Json::s(texto)));
-        }
+        // ⭐ 0046 E5′: retirar una base NO toca su fuente. Sus punteros son
+        //   hechos del origen y los escribió el catálogo; se van cuando el
+        //   objeto desaparece del origen, no cuando deja de leerlos una base.
         if tenia_copias {
             // ⭐ Se encola AUNQUE no quede ninguna vista con copia: esa pasada es
             //   la que recoge del almacén lo que la base retirada dejó

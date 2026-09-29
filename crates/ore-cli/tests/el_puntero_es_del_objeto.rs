@@ -212,36 +212,78 @@ fn el_puntero_esta_una_vez_y_en_la_fuente() {
         ))),
         "{vistas:?}"
     );
+    // ⭐ 0046 E5′: la fuente exporta TODO lo catalogado —doce objetos—, lo
+    //   elija una base o no: el puntero es un hecho del origen.
     let m = std::fs::read_to_string(dir.join(format!("packages/{FUENTE}/package.yaml"))).unwrap();
-    assert!(
-        m.contains(&format!(
-            "exports: [{FUENTE}.rubix_demo_ventas.Pedidos, {FUENTE}.rubix_demo_ventas.clientes]"
-        )),
-        "{m}"
+    for e in ["Pedidos", "clientes", "evento_20190101", "v_pedidos_2019"] {
+        assert!(
+            m.contains(&format!("{FUENTE}.rubix_demo_ventas.{e}")),
+            "sin `{e}`: {m}"
+        );
+    }
+    assert_eq!(
+        ficheros(&dir, FUENTE, |t| t.contains("kind: Table")).len(),
+        12,
+        "un puntero por objeto del catálogo"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Lo que ya no usa nadie se va de la fuente, lo retire quien lo retire: el
-/// escritor decide por los alcances que quedan.
+/// ⭐ 0046 E5′ · **Un puntero se va cuando el objeto se va del origen**, no
+/// cuando deja de leerlo una base: sin bases, la fuente sigue entera; con
+/// `mov_bak` fuera del catálogo, solo `mov_bak` se retira. (Con `Pedidos` se
+/// irían dos: su gemelo `pedidos` dejaría de llamarse `pedidos_2`.)
 #[test]
-fn lo_que_no_usa_nadie_se_retira_de_la_fuente() {
+fn lo_que_sale_del_origen_se_retira_de_la_fuente() {
     let dir = arbol("retira", false);
     std::fs::remove_dir_all(dir.join("packages/fdb")).unwrap();
-    let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
-    assert_eq!(c, Some(0), "{dicho}");
-    assert!(!dicho.contains("retirado"), "sdb aún los usa: {dicho}");
-
     std::fs::remove_dir_all(dir.join("packages/sdb")).unwrap();
     let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
     assert_eq!(c, Some(0), "{dicho}");
     assert!(
-        dicho.contains("rubix_demo_ventas/tables/Pedidos.yaml"),
+        !dicho.contains("retirado"),
+        "sin bases no se retira nada: {dicho}"
+    );
+    assert_eq!(
+        ficheros(&dir, FUENTE, |t| t.contains("kind: Table")).len(),
+        12
+    );
+
+    // El origen pierde `mov_bak`: el catálogo nuevo no lo trae.
+    let ruta = dir.join(format!("packages/{FUENTE}/discover.catalog.json"));
+    let cat = std::fs::read_to_string(&ruta).unwrap();
+    let i = cat.find("\"rubix_demo_ventas.mov_bak\"").unwrap();
+    let ini = cat[..i]
+        .rfind(
+            "
+    {",
+        )
+        .unwrap();
+    let fin = cat[i..]
+        .find(
+            "
+    }",
+        )
+        .unwrap()
+        + i
+        + "
+    }"
+        .len();
+    let sin = format!("{}{}", &cat[..ini], cat[fin..].trim_start_matches(','));
+    std::fs::write(&ruta, sin).unwrap();
+    let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(
+        dicho.contains("1 retirado(s), ya no están en el origen")
+            && dicho.contains("rubix_demo_ventas/tables/mov_bak.yaml"),
         "{dicho}"
     );
-    assert!(ficheros(&dir, FUENTE, |t| t.contains("kind: Table")).is_empty());
+    assert_eq!(
+        ficheros(&dir, FUENTE, |t| t.contains("kind: Table")).len(),
+        11
+    );
     let m = std::fs::read_to_string(dir.join(format!("packages/{FUENTE}/package.yaml"))).unwrap();
-    assert!(!m.contains("exports"), "{m}");
+    assert!(!m.contains("rubix_demo_ventas.mov_bak"), "{m}");
     let (_, dicho) = ore(&dir, &["validate", "."]);
     assert!(!dicho.contains("error["), "{dicho}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -373,5 +415,89 @@ fn una_entidad_sobre_un_origen_que_solo_anexa_no_se_copia_y_se_dice() {
         errores.iter().all(|l| l.starts_with("error[OOS4011]")),
         "{dicho}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⭐⭐ 0046 E5′ · **Catalogar escribe los punteros.** `ore source catalog`
+/// con el catálogo en el paquete de la fuente —lo que hace el Job de
+/// catálogo— induce la fuente entera en el mismo acto; a stdout no toca nada.
+/// Con `ore-read-jsonl`, el lector sin red, junto al binario (lo compila
+/// `cargo test --workspace`); sin él, se salta y lo dice.
+#[test]
+fn catalogar_escribe_los_punteros_de_la_fuente() {
+    let bin = Path::new(env!("CARGO_BIN_EXE_ore"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let lector = bin.join(format!("ore-read-jsonl{}", std::env::consts::EXE_SUFFIX));
+    if !lector.is_file() {
+        eprintln!("se salta: no hay `{}`", lector.display());
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("ore-puntero-{}-catalogar", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("datos")).unwrap();
+    std::fs::write(dir.join("datos/clientes.jsonl"), "{\"id\":1,\"n\":\"a\"}\n").unwrap();
+    std::fs::write(dir.join("datos/pedidos.jsonl"), "{\"id\":1,\"t\":3}\n").unwrap();
+    ore(&dir, &["init", ".", "--name", "demo"]);
+    let datos = dir.join("datos").to_string_lossy().into_owned();
+    let (c, dicho) = ore(
+        &dir,
+        &[
+            "source", "add", "--name", "local", "--type", "jsonl", &datos,
+        ],
+    );
+    assert_eq!(c, Some(0), "{dicho}");
+    let (c, dicho) = ore(
+        &dir,
+        &[
+            "package",
+            "new",
+            "local",
+            "--owner",
+            "team:demo",
+            "--path",
+            ".",
+        ],
+    );
+    assert_eq!(c, Some(0), "{dicho}");
+    let con_lector = |args: &[&str]| {
+        let camino = std::env::join_paths(std::iter::once(bin.clone()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        let s = Command::new(env!("CARGO_BIN_EXE_ore"))
+            .args(args)
+            .current_dir(&dir)
+            .env("PATH", camino)
+            .env("DEMO_LOCAL_URL", &datos)
+            .output()
+            .unwrap();
+        (
+            s.status.code(),
+            String::from_utf8_lossy(&s.stdout).into_owned() + &String::from_utf8_lossy(&s.stderr),
+        )
+    };
+    let (c, dicho) = con_lector(&["source", "catalog", "local"]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(
+        !dir.join("packages/local/tables").exists(),
+        "a stdout no induce"
+    );
+    let (c, dicho) = con_lector(&[
+        "source",
+        "catalog",
+        "local",
+        "--out",
+        "packages/local/discover.catalog.json",
+    ]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(
+        dicho.contains("fuente `local`: 2 puntero(s) escrito(s)"),
+        "{dicho}"
+    );
+    assert!(dir.join("packages/local/tables/clientes.yaml").is_file());
+    let (_, v) = ore(&dir, &["validate", "."]);
+    assert!(!v.contains("error["), "{v}");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -107,12 +107,6 @@ impl Alcance {
         &self.fuente
     }
 
-    /// Los objetos del origen que entran (0045 P3′: la fuente escribe el
-    /// puntero de los que alguna base usa).
-    pub fn objetos(&self) -> &BTreeSet<String> {
-        &self.objetos
-    }
-
     /// Los schemas renombrados: el del origen → el del paquete.
     pub fn schemas(&self) -> &BTreeMap<String, String> {
         &self.schemas

@@ -136,10 +136,27 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
         "{z}"
     );
     let m = leer(&dir, "s3_ventas/package.yaml");
-    assert!(
-        m.contains("exports: [s3_ventas.nueva_carpeta.contratos, s3_ventas.nueva_carpeta.fotos, s3_ventas.nueva_carpeta.nueva_carpeta_zip, s3_ventas.nueva_carpeta.pedidos]"),
-        "{m}"
-    );
+    // ⭐ 0046 E5′: todo lo catalogado —12 tablas y 5 conjuntos— tiene su
+    //   puntero, lo elija una base o no.
+    for e in [
+        "s3_ventas.nueva_carpeta.contratos",
+        "s3_ventas.nueva_carpeta.nueva_carpeta_zip",
+        "s3_ventas.nueva_carpeta.olist_orders_dataset",
+        "s3_ventas.raiz_txt",
+    ] {
+        assert!(m.contains(e), "sin `{e}`: {m}");
+    }
+    let cuantos = |kind: &str| {
+        walk(&dir.join("packages/s3_ventas"))
+            .iter()
+            .filter(|p| {
+                p.parent()
+                    .and_then(|d| d.file_name())
+                    .is_some_and(|n| n == kind)
+            })
+            .count()
+    };
+    assert_eq!((cuantos("tables"), cuantos("objects")), (12, 5));
 
     // La foránea sirve en sitio; la estándar copia. Las dos, del mismo puntero.
     let f = leer(&dir, "fdb/nueva_carpeta/collections/fotos.yaml");
@@ -180,27 +197,82 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Lo que ya no elige nadie se va de la fuente, con su carpeta: el escritor
-/// decide por los alcances que quedan, igual para un conjunto que para una
-/// tabla.
+/// ⭐ 0046 E5′ · Un conjunto se va de la fuente cuando se va del origen, no
+/// cuando nadie lo elige: sin bases, los 17 punteros siguen; sin `contratos`
+/// en el catálogo, solo su `ObjectTable` se retira.
 #[test]
-fn un_conjunto_que_nadie_elige_se_retira_de_la_fuente() {
+fn un_conjunto_que_sale_del_origen_se_retira_de_la_fuente() {
     let (dir, _) = arbol("retira");
     std::fs::remove_dir_all(dir.join("packages/fdb")).unwrap();
-    let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
-    assert_eq!(c, Some(0), "{dicho}");
-    assert!(!dicho.contains("retirado"), "sdb aún los usa: {dicho}");
     std::fs::remove_dir_all(dir.join("packages/sdb")).unwrap();
     let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
     assert_eq!(c, Some(0), "{dicho}");
     assert!(
-        dicho.contains("nueva_carpeta/objects/contratos.yaml"),
+        !dicho.contains("retirado"),
+        "sin bases no se retira nada: {dicho}"
+    );
+
+    let ruta = dir.join("packages/s3_ventas/discover.catalog.json");
+    let cat = std::fs::read_to_string(&ruta).unwrap();
+    std::fs::write(&ruta, sin_entrada(&cat, "nueva_carpeta.contratos")).unwrap();
+    let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(
+        dicho.contains("1 retirado(s), ya no están en el origen")
+            && dicho.contains("nueva_carpeta/objects/contratos.yaml"),
         "{dicho}"
     );
-    assert!(!dir.join("packages/s3_ventas/nueva_carpeta").exists());
+    assert!(
+        dir.join("packages/s3_ventas/nueva_carpeta/objects/fotos.yaml")
+            .exists()
+    );
     let (_, v) = ore(&dir, &["validate", "."]);
     assert!(!v.contains("error["), "{v}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// El catálogo sin la entrada `nombre` (un objeto de `tables` u `objects`,
+/// sangrado a cuatro espacios como lo escribe el driver).
+fn sin_entrada(cat: &str, nombre: &str) -> String {
+    let i = cat.find(&format!("\"name\": \"{nombre}\"")).unwrap();
+    let ini = cat[..i]
+        .rfind(
+            "
+    {",
+        )
+        .unwrap();
+    let fin = cat[i..]
+        .find(
+            "
+    }",
+        )
+        .unwrap()
+        + i
+        + "
+    }"
+        .len();
+    let resto = &cat[fin..];
+    match resto.strip_prefix(',') {
+        Some(r) => format!("{}{r}", &cat[..ini]),
+        // Era la última: la coma sobrante es la de antes.
+        None => format!("{}{resto}", cat[..ini].trim_end_matches(',')),
+    }
+}
+
+fn walk(d: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut pila = vec![d.to_path_buf()];
+    while let Some(d) = pila.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                pila.push(p);
+            } else if p.extension().is_some_and(|x| x == "yaml") {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 /// Una errata en `--only` se dice con lo que el bucket tiene, conjuntos

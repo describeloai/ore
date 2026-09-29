@@ -162,7 +162,9 @@ fn el_puntero_pasa_a_la_fuente_y_las_bases_se_reapuntan() {
             tablas(&dir, "sdb"),
             tablas(&dir, FUENTE)
         ),
-        (0, 0, 2)
+        // ⭐ 0046 E5′: la fuente escribe todo su catálogo, no solo lo que
+        //   leían las dos bases.
+        (0, 0, 12)
     );
 
     // Lo que se contestó en la base es ahora de la fuente, y su puntero lo lleva.

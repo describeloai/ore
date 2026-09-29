@@ -424,7 +424,8 @@ COD=$(borrar espejo)
 cuerpo | grep -q '"retirado":true' || falla "7 · la respuesta no dice retirado: $(cuerpo)"
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "7 · no reencolo la copia con lo que queda: $(cuerpo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "7 · el Job no se quedo con las de tienda: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
-cuerpo | grep -q '"fuente":"' || falla "7 · retirar no paso por el escritor de la fuente (0045 P3′): $(cuerpo)"
+# ⭐ 0046 E5′: retirar una base no toca su fuente: los punteros son hechos del origen.
+! cuerpo | grep -q '"fuente":"' || falla "7 · retirar una base reindujo la fuente (0046 E5′): $(cuerpo)"
 [ -f "$REPO/packages/pg/olist/tables/orders.yaml" ] && [ -f "$REPO/packages/pg/olist/tables/customers.yaml" ] || falla "7 · retirar espejo se llevo punteros que tienda sigue leyendo: $(ls "$REPO/packages/pg/olist/tables" 2>&1)"
 COD=$(borrar espejo)
 [ "$COD" = "404" ] || falla "7 · retirar dos veces devolvio $COD"

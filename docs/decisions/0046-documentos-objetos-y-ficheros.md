@@ -300,6 +300,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) ✅ | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) ✅ en local | `ore source induce` escribe un `ObjectTable` por conjunto y una `Table` con `format` por grupo tabular; la base, su `MediaCollection` **según su clase** (abajo); limpieza de `objects/`; la política IAM en `credenciales.rs`; el esquema de la fuente en ore-serve. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
+| **E5b · ore-serve a escala** | índices por petición en el esquema de una fuente y en `GET /paquetes` (hoy cúbico); después, no reanalizar el árbol en cada petición | el origen de 2.000 tablas por debajo de lo que tarda `ore validate` |
 | **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
 | **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
@@ -425,6 +426,33 @@ como fixture: clases, retirada, errata), `un_bucket_ensena_…` y
 `s3_ensena_la_politica_de_solo_lectura`. **Sin hacer aquí**: el alta en vivo necesita que una
 persona guarde la credencial (el custodio decide con su concesión, `secreto:emitir`), así que la
 hace el usuario en la consola de victor; `drift-detect` no mira los conjuntos todavía.
+
+**E5′ · el puntero de todo lo catalogado** (decidido con el usuario al ver el origen en la
+consola, 2026-09-29; enmienda la regla de 0045 P3′). Con E5 desplegado, el origen `s3_ventas` de
+victor enseñaba sus 17 activos y ninguno abría su ficha: la fuente solo escribía el puntero de lo
+que **alguna base** elegía. Esa regla no tenía un argumento de fondo en 0045 («el Job de catálogo
+no lo lanza: cataloga una vez y en ese momento ninguna base usa nada») y contradecía el suyo: el
+puntero es un **hecho del origen** y se escribe sin revisión, así que no depende de que alguien lo
+lea. Ahora:
+
+- `ore source induce` escribe el puntero de **todo** el catálogo —tablas y conjuntos— y retira solo
+  lo que **desaparece del origen**;
+- `ore source catalog --out packages/<fuente>/discover.catalog.json` —lo que hace el Job de
+  catálogo— induce la fuente en el mismo acto: sin tocar la malla;
+- retirar una base no toca su fuente; `discover`, `review`, `model` y `copy` siguen llamando al
+  escritor, idempotente, por los árboles catalogados antes de esta regla.
+
+Medido antes, sobre copias de los árboles vivos y con binarios de release: en victor +88 punteros
+(82 → 170 YAML, `ore validate` 0,2 → 0,3 s), en demo +237 (34 → 271, 0,17 → 0,35 s), todos
+compilan sin un diagnóstico. Un origen sintético de 2.000 tablas y 32.000 columnas: 3 s de
+inducción, 4,8 MB, `ore validate` 0,3 → 3,4 s (lineal, ~1,6 ms por puntero). **Y un coste cúbico en
+ore-serve**: `GET /paquetes` 1,5 → 105 s y el esquema del origen 1 → 98 s, porque cada fila del
+catálogo recorre todos los documentos, y cada puntero, otra vez todos buscando lo que lee (sin
+índices: ~10¹⁰ comparaciones). Existía ya con la regla vieja —una base que eligiera 2.000 tablas
+tardaba lo mismo—, y es lo siguiente: índices por petición, y después no reanalizar el árbol en
+cada una. Un hallazgo más: el sufijo `_2` de dos objetos que dan el mismo identificador (`Pedidos`
+y `pedidos`) se calcula sobre el catálogo entero, así que si uno sale del origen el otro cambia de
+nombre y las bases que lo leían dejan de resolver. Era así antes; con todo escrito se verá más.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

@@ -1,17 +1,24 @@
 //! `ore source induce <fuente>` — **el único escritor del paquete de la fuente**
-//! (ADR 0045 P3′).
+//! (ADR 0045 P3′, con la regla de 0046 E5′).
 //!
-//! El puntero al origen (`Table`) vive una vez, en `packages/<fuente>/`, y las
-//! bases lo nombran: una standard con sus `Dataset`, una foreign con sus
-//! `View`. Aquí se escribe **lo que alguna base usa** —la unión de los
-//! alcances de las bases de esta fuente—, con el catálogo y las respuestas
-//! **de la fuente**, y se retira lo que ya no usa nadie.
+//! El puntero al origen (`Table`, `ObjectTable`) vive una vez, en
+//! `packages/<fuente>/`, y las bases lo nombran: una standard con sus
+//! `Dataset` y colecciones mantenidas, una foreign con sus `View` y
+//! colecciones virtuales.
 //!
-//! ⭐ Es una función de lo que hay en el árbol, no de quién la llame: la corren
-//!   `discover`, `review`, `model` y `copy` al terminar una base, y ore-serve al
-//!   retirar una. Da lo mismo en qué orden: dos bases no pueden escribir dos
-//!   punteros del mismo objeto, y ninguna tiene que saber si otra sigue
-//!   usándolo.
+//! ⭐⭐ 0046 E5′ · **SE ESCRIBE TODO LO CATALOGADO**, no lo que alguna base usa.
+//!   El puntero es un hecho del origen —existe, tiene estas columnas, emite
+//!   estos cambios— y un hecho no depende de que alguien lo lea: así cada
+//!   activo del origen tiene su ficha, entra en el índice y se puede gobernar
+//!   antes de que exista una base, y crear una base es solo elegir. Se retira
+//!   lo que **desaparece del origen** (sale del catálogo), no lo que deja de
+//!   usarse. Medido antes (0046): en victor +88 punteros, en demo +237, todo
+//!   compila; un origen de 2000 tablas son 3 s de inducción y 4,8 MB.
+//!
+//! Lo corre `ore source catalog` al escribir el catálogo en el paquete de la
+//! fuente (el Job de catálogo), y —idempotente, por los árboles catalogados
+//! antes de esta regla— `discover`, `review`, `model` y `copy` al terminar una
+//! base.
 //!
 //! ⛔ No crea el paquete de la fuente: lo crea el Job de catálogo, y que exista
 //!   es «catalogada» para ore-serve.
@@ -56,26 +63,6 @@ pub fn referencias(
     Some(inductor::referencias_a_la_fuente(&cat))
 }
 
-/// Los objetos de la fuente que alguna base usa: la unión de los alcances.
-pub fn usados(repo: &Path, fuente: &str) -> Result<BTreeSet<String>, Fallo> {
-    let mut out = BTreeSet::new();
-    let Ok(es) = std::fs::read_dir(repo.join("packages")) else {
-        return Ok(out);
-    };
-    // ⛔ Sólo directorios: `packages/.gitkeep` es un fichero, y en Linux leer
-    //   `.gitkeep/discover.scope.json` no es «no existe» sino «no es un
-    //   directorio» —un error que tumbaba la inducción entera (CI, `ec429d8`)—.
-    for e in es.flatten().filter(|e| e.path().is_dir()) {
-        let Some(a) = crate::alcance::del_paquete(&e.path()).map_err(|m| fallo(65, m))? else {
-            continue;
-        };
-        if a.fuente() == fuente {
-            out.extend(a.objetos().iter().cloned());
-        }
-    }
-    Ok(out)
-}
-
 /// **Induce el paquete de la fuente.** Sin paquete de la fuente no hace nada
 /// (`Ok(None)`): el árbol es de antes, o el CLI va suelto.
 pub fn inducir(repo: &Path, fuente: &str) -> Result<Option<Informe>, Fallo> {
@@ -103,7 +90,13 @@ pub fn inducir(repo: &Path, fuente: &str) -> Result<Option<Informe>, Fallo> {
             ),
         ));
     }
-    let usados = usados(repo, fuente)?;
+    // Todo lo catalogado: tablas y conjuntos de objetos.
+    let usados: BTreeSet<String> = cat
+        .tablas
+        .iter()
+        .map(|t| t.nombre.clone())
+        .chain(cat.objetos.iter().map(|o| o.nombre.clone()))
+        .collect();
     let dec = crate::revision::acumuladas(&d)?;
     let manifiesto = std::fs::read_to_string(d.join("package.yaml"))
         .map_err(|e| fallo(66, format!("no se pudo leer el paquete de `{fuente}`: {e}")))?;
@@ -125,7 +118,7 @@ pub fn inducir(repo: &Path, fuente: &str) -> Result<Option<Informe>, Fallo> {
     };
     let mut informe = Informe::default();
 
-    // Retirar lo inducido que ya no usa nadie: en `tables/` y en la de cada
+    // Retirar lo inducido que ya no está en el origen: en `tables/` y en la de cada
     // schema, y el `schema.yaml` que se queda sin nada. Sólo lo marcado.
     let mut carpetas = vec![String::new()];
     if let Ok(es) = std::fs::read_dir(&d) {
@@ -222,7 +215,7 @@ pub fn resumen(fuente: &str, i: &Informe) -> String {
     );
     if !i.retiradas.is_empty() {
         s.push_str(&format!(
-            " · {} retirado(s), ya no los usa nadie",
+            " · {} retirado(s), ya no están en el origen",
             i.retiradas.len()
         ));
     }

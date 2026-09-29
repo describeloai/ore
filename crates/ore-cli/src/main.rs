@@ -1316,7 +1316,28 @@ fn main() -> std::process::ExitCode {
             };
         }
         Command::Source(AccionFuente::Catalog { name, out, path }) => {
-            return lector::emitir_catalogo(path, name, out.as_deref());
+            let hecho = lector::emitir_catalogo(path, name, out.as_deref());
+            // ⭐⭐ 0046 E5′: catalogar escribe los punteros. Si el catálogo va
+            //   al paquete de la fuente —lo que hace el Job de catálogo—, se
+            //   induce la fuente entera en el mismo acto: cada activo del
+            //   origen nace con su puntero, lo elija una base o no. Si falla,
+            //   se dice y el catálogo queda: es el hecho primero.
+            if hecho == std::process::ExitCode::SUCCESS
+                && let Some(o) = out
+                && let Some(repo) = raiz_del_repositorio(path)
+                && let Some(d) = fuente_inducida::dir(&repo, name)
+                && o.parent().and_then(|p| p.canonicalize().ok()) == d.canonicalize().ok()
+            {
+                match fuente_inducida::inducir(&repo, name) {
+                    Ok(Some(i)) => print!("{}", fuente_inducida::resumen(name, &i)),
+                    Ok(None) => {}
+                    Err(f) => eprintln!(
+                        "aviso: la fuente `{name}` no se pudo inducir: {}",
+                        f.mensaje
+                    ),
+                }
+            }
+            return hecho;
         }
         Command::DriftDetect { source, from, path } => {
             let origen = match (source, from) {
