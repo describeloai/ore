@@ -27,14 +27,26 @@ use ore_acceso::{Decision, Evento, Hecho, Recurso};
 use ore_core::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::Identidad;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     static TESTIGO: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// La ruta ya contó lo suyo (A5): la actividad no lo repite (A6.3).
+    static CONTADO: Cell<bool> = const { Cell::new(false) };
+    /// `ore-iam` decidió (y si negó, ya lo anotó él).
+    static PREGUNTADO: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Atiende con el token de la petición a mano, y lo quita al terminar.
-pub fn con_testigo<T>(p: &Peticion, f: impl FnOnce() -> T) -> T {
+/// Lo que la petición dejó dicho al terminar, para la actividad (A6.3).
+pub struct Rastro {
+    pub token: Option<String>,
+    pub contado: bool,
+    pub preguntado: bool,
+}
+
+/// Atiende con el token de la petición a mano, y lo quita al terminar. Devuelve
+/// también su [`Rastro`].
+pub fn con_testigo<T>(p: &Peticion, f: impl FnOnce() -> T) -> (T, Rastro) {
     let t = p
         .cabeceras
         .get("authorization")
@@ -44,9 +56,15 @@ pub fn con_testigo<T>(p: &Peticion, f: impl FnOnce() -> T) -> T {
         })
         .map(|v| v.trim().to_string());
     TESTIGO.with(|c| *c.borrow_mut() = t);
+    CONTADO.with(|c| c.set(false));
+    PREGUNTADO.with(|c| c.set(false));
     let r = f();
-    TESTIGO.with(|c| *c.borrow_mut() = None);
-    r
+    let rastro = Rastro {
+        token: TESTIGO.with(|c| c.borrow_mut().take()),
+        contado: CONTADO.with(|c| c.replace(false)),
+        preguntado: PREGUNTADO.with(|c| c.replace(false)),
+    };
+    (r, rastro)
 }
 
 fn testigo() -> Option<String> {
@@ -75,6 +93,7 @@ impl Servidor {
         let Some(acceso) = self.acceso.as_ref() else {
             return Ok(None);
         };
+        PREGUNTADO.with(|c| c.set(true));
         let Some(t) = testigo() else {
             return Err(Respuesta::error(
                 401,
@@ -130,6 +149,7 @@ impl Servidor {
         let Some(acceso) = self.acceso.as_ref() else {
             return;
         };
+        CONTADO.with(|c| c.set(true));
         match acceso.hizo(testigo().as_deref(), &e) {
             Ok(Hecho::Encolado(m)) => eprintln!("acceso · `{}` espera: {m}", e.operacion),
             Ok(_) => {}
@@ -143,6 +163,7 @@ impl Servidor {
         let Some(acceso) = self.acceso.as_ref() else {
             return Ok(());
         };
+        CONTADO.with(|c| c.set(true));
         acceso.hizo_antes(testigo().as_deref(), e).map(|_| ()).map_err(|m| {
             Respuesta {
                 codigo: 503,

@@ -309,3 +309,137 @@ fn los_ids_no_se_repiten() {
     let a: std::collections::BTreeSet<String> = (0..1000).map(|_| nuevo_id()).collect();
     assert_eq!(a.len(), 1000);
 }
+
+// ── el buzón (0047 A6.4) ─────────────────────────────────────────────────────
+
+/// Espera a que `f` sea verdad, como mucho `ms` milisegundos.
+fn hasta(ms: u64, f: impl Fn() -> bool) -> bool {
+    let fin = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < fin {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    f()
+}
+
+fn pendientes(nombre: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("ore-acceso-{nombre}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+/// Echar vuelve en el acto; el evento llega con el token de quien lo hizo.
+#[test]
+fn el_buzon_manda_sin_hacer_esperar() {
+    let (dir, visto) = falso(|_| {
+        std::thread::sleep(Duration::from_millis(300));
+        respuesta(201, r#"{"id":"x"}"#)
+    });
+    let b = Buzon::nuevo(Arc::new(acceso(&dir)));
+    let t = Instant::now();
+    b.echar(Some("tok-ana".into()), evento("ev-b1", None));
+    assert!(
+        t.elapsed() < Duration::from_millis(100),
+        "echar esperó a ore-iam"
+    );
+    assert!(hasta(3000, || visto.lock().unwrap().len() == 1), "no llegó");
+    assert_eq!(visto.lock().unwrap()[0].1.as_deref(), Some("tok-ana"));
+}
+
+/// Sin respuesta, se reintenta con el token mientras valga, y llega cuando vuelve.
+#[test]
+fn el_buzon_reintenta_mientras_el_token_vale() {
+    let n = Arc::new(AtomicU64::new(0));
+    let m = Arc::clone(&n);
+    let (dir, visto) = falso(move |_| {
+        if m.fetch_add(1, Ordering::SeqCst) == 0 {
+            respuesta(503, r#"{"error":"de paso"}"#)
+        } else {
+            respuesta(201, r#"{"id":"x"}"#)
+        }
+    });
+    let b = Buzon::con_vida(Arc::new(acceso(&dir)), Duration::from_secs(8));
+    b.echar(Some("tok-ana".into()), evento("ev-b2", None));
+    assert!(
+        hasta(5000, || visto.lock().unwrap().len() == 2),
+        "no reintentó"
+    );
+    let v = visto.lock().unwrap();
+    assert!(
+        v.iter().all(|x| x.1.as_deref() == Some("tok-ana")),
+        "el reintento perdió el token"
+    );
+}
+
+/// ⛔ Pasada la vida del token, sin decisión: a `muertos/`, y el token no toca el
+///   disco. Un rechazo (4xx) va a `muertos/` en el acto.
+#[test]
+fn el_buzon_entierra_sin_el_token() {
+    let dir_p = pendientes("buzon");
+    let (dir, _) = falso(|p| {
+        if p.cuerpo.contains("ev-rechazado") {
+            respuesta(400, r#"{"error":"el evento necesita `Ore-Sujeto`"}"#)
+        } else {
+            respuesta(503, r#"{"error":"caido"}"#)
+        }
+    });
+    let a = Arc::new(acceso(&dir).con_pendientes(dir_p.clone()));
+    let b = Buzon::con_vida(a, Duration::from_millis(400));
+    b.echar(
+        Some("tok-secreto-de-ana".into()),
+        evento("ev-caducado", None),
+    );
+    b.echar(
+        Some("tok-secreto-de-ana".into()),
+        evento("ev-rechazado", None),
+    );
+    let muertos = dir_p.join("muertos");
+    assert!(
+        hasta(1000, || muertos.join("ev-rechazado.json").exists()),
+        "el rechazo no se enterró"
+    );
+    assert!(
+        hasta(4000, || muertos.join("ev-caducado.json").exists()),
+        "el caducado no se enterró"
+    );
+    for f in ["ev-rechazado.json", "ev-caducado.json"] {
+        let t = std::fs::read_to_string(muertos.join(f)).unwrap();
+        assert!(
+            !t.contains("tok-secreto"),
+            "⛔ EL TOKEN LLEGÓ AL DISCO: {t}"
+        );
+        assert!(t.contains("motivo"), "{t}");
+    }
+    assert!(
+        !dir_p.join("ev-caducado.json").exists(),
+        "encoló uno sin decisión"
+    );
+    let _ = std::fs::remove_dir_all(&dir_p);
+}
+
+/// Con decisión, pasada la vida del token espera en disco, como los de `hizo`.
+#[test]
+fn el_buzon_deja_en_disco_lo_que_tiene_decision() {
+    let dir_p = pendientes("buzon-dec");
+    let muerto = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    };
+    let b = Buzon::con_vida(
+        // Con un plazo corto: en Windows, conectar a un puerto cerrado tarda ~2 s.
+        Arc::new(
+            acceso(&muerto)
+                .con_plazo(Duration::from_millis(200))
+                .con_pendientes(dir_p.clone()),
+        ),
+        Duration::from_millis(300),
+    );
+    b.echar(Some("tok".into()), evento("ev-con-dec", Some("dec_7")));
+    assert!(
+        hasta(4000, || dir_p.join("ev-con-dec.json").exists()),
+        "no esperó en disco"
+    );
+    let _ = std::fs::remove_dir_all(&dir_p);
+}

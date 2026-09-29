@@ -130,6 +130,9 @@ pub struct Servidor {
     ///   era: quien tiene sesión da de alta fuentes, protege `main` y fusiona según
     ///   la política.
     pub acceso: Option<std::sync::Arc<ore_acceso::Acceso>>,
+    /// ⭐ Y su buzón (0047 A6.4): lo que se escribe va a la actividad sin que la
+    ///   respuesta espere a `ore-iam`. Con el puente, siempre; sin él, no hay.
+    pub buzon: Option<ore_acceso::Buzon>,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).

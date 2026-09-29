@@ -14,6 +14,11 @@
 //! una protección, entregar un secreto—: se registra ANTES de actuar, y si no se
 //! puede registrar, no se actúa.
 //!
+//! Y [`Buzon`], para todo lo demás que se escribe (0047 A6.4): el evento se echa y
+//! la respuesta no espera a `ore-iam`. Casi nada de eso tiene decisión, así que un
+//! reintento necesita el token de la persona: vive sólo en la memoria del buzón y
+//! se reintenta mientras valga. Pasado eso, el evento va a `muertos/` sin token.
+//!
 //! # Quién pregunta: dos tokens
 //!
 //! `Authorization` lleva **la celda** —su token de Workload Identity, que da la
@@ -34,9 +39,11 @@ use ore_core::json::Json;
 use ore_core::parse::{self, Node};
 use ore_entrada::http::{Plazos, pedir_con};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Dónde vive `ore-iam` dentro del clúster, con punto final (M2).
@@ -453,19 +460,43 @@ impl Acceso {
     }
 
     fn enviar(&self, sujeto_token: Option<&str>, e: &Evento) -> Result<Hecho, String> {
-        let (codigo, texto) = self.pedir("/access/v1/eventos", sujeto_token, &e.json())?;
+        self.enviar_con_motivo(sujeto_token, e).map_err(|(m, _)| m)
+    }
+
+    /// Como `enviar`, y el error dice si fue un RECHAZO (un 4xx: reintentar no
+    /// cambia nada) o que no hubo respuesta (reintentar, sí).
+    fn enviar_con_motivo(
+        &self,
+        sujeto_token: Option<&str>,
+        e: &Evento,
+    ) -> Result<Hecho, (String, bool)> {
+        let (codigo, texto) = self
+            .pedir("/access/v1/eventos", sujeto_token, &e.json())
+            .map_err(|m| (m, false))?;
         match codigo {
             201 => Ok(Hecho::Anotado),
             200 => Ok(Hecho::YaEstaba),
-            c => Err(format!(
-                "`ore-iam` contestó {c}{}",
-                parse::parse(&texto)
-                    .ok()
-                    .and_then(|n| texto_de(&n, &["error"]))
-                    .map(|e| format!(" · {e}"))
-                    .unwrap_or_default()
+            c => Err((
+                format!(
+                    "`ore-iam` contestó {c}{}",
+                    parse::parse(&texto)
+                        .ok()
+                        .and_then(|n| texto_de(&n, &["error"]))
+                        .map(|e| format!(" · {e}"))
+                        .unwrap_or_default()
+                ),
+                (400..500).contains(&c),
             )),
         }
+    }
+
+    /// A `muertos/`, sin token: el evento y por qué no llegó. Lo hecho sigue en su
+    /// commit (H13); esto es el índice que falta, para quien lo quiera rehacer.
+    fn enterrar(&self, e: &Evento, motivo: &str) -> Result<PathBuf, String> {
+        let Some(dir) = &self.pendientes else {
+            return Err(format!("{motivo}; y no hay directorio de pendientes"));
+        };
+        enterrar_en(dir, e, motivo)
     }
 
     fn encolar(&self, e: &Evento, motivo: &str) -> Result<Hecho, String> {
@@ -525,6 +556,151 @@ impl Acceso {
             }
         }
         (enviados, siguen)
+    }
+}
+
+fn enterrar_en(dir: &Path, e: &Evento, motivo: &str) -> Result<PathBuf, String> {
+    let muertos = dir.join("muertos");
+    std::fs::create_dir_all(&muertos)
+        .map_err(|x| format!("{motivo}; y no se pudo crear `{}`: {x}", muertos.display()))?;
+    let f = muertos.join(format!("{}.json", e.id));
+    let cuerpo = Json::obj([("evento", e.json()), ("motivo", Json::s(motivo))]);
+    std::fs::write(&f, cuerpo.jcs())
+        .map_err(|x| format!("{motivo}; y no se pudo enterrar: {x}"))?;
+    Ok(f)
+}
+
+// ── el buzón (0047 A6.4) ─────────────────────────────────────────────────────
+
+/// Cuánto vive el token de una persona en el buzón: el realm los emite por 300 s,
+/// y uno que llegó justo al caducar no sirve a los cinco minutos.
+pub const VIDA_DEL_SUJETO: Duration = Duration::from_secs(240);
+
+/// Cuántos eventos caben esperando. Pasado el techo, el que llega va a `muertos/`:
+/// un `ore-iam` caído no puede comerse la memoria de la celda.
+const CABEN: usize = 10_000;
+
+/// Un evento esperando, con el token con el que llegó y cuándo.
+struct Carta {
+    token: Option<String>,
+    evento: Evento,
+    desde: Instant,
+    intentos: u32,
+    siguiente: Instant,
+}
+
+/// **Echar un evento sin esperar a `ore-iam`** (0047 A6.4). Un hilo lo manda; si
+/// no hay respuesta, lo reintenta mientras el token valga ([`VIDA_DEL_SUJETO`]),
+/// cada vez más espaciado. Pasado eso, si tiene decisión espera en disco como
+/// los de [`Acceso::hizo`]; si no, a `muertos/`. Un rechazo (4xx) va a `muertos/`
+/// en el acto: reintentarlo no lo arregla.
+///
+/// ⛔ El token de la persona **no toca el disco**: guardarlo para reintentar
+///   sería guardar una credencial.
+pub struct Buzon {
+    cola: SyncSender<Carta>,
+    acceso: Arc<Acceso>,
+}
+
+impl Buzon {
+    pub fn nuevo(acceso: Arc<Acceso>) -> Buzon {
+        Buzon::con_vida(acceso, VIDA_DEL_SUJETO)
+    }
+
+    /// Con otra vida para el token: para las pruebas.
+    pub fn con_vida(acceso: Arc<Acceso>, vida: Duration) -> Buzon {
+        let (cola, llegan) = sync_channel::<Carta>(CABEN);
+        let a = Arc::clone(&acceso);
+        std::thread::spawn(move || cartero(&a, llegan, vida));
+        Buzon { cola, acceso }
+    }
+
+    /// Echa el evento y vuelve en el acto.
+    pub fn echar(&self, token: Option<String>, evento: Evento) {
+        let ahora = Instant::now();
+        let carta = Carta {
+            token,
+            evento,
+            desde: ahora,
+            intentos: 0,
+            siguiente: ahora,
+        };
+        match self.cola.try_send(carta) {
+            Ok(()) => {}
+            Err(TrySendError::Full(c) | TrySendError::Disconnected(c)) => {
+                muerto(&self.acceso, &c.evento, "el buzón está lleno");
+            }
+        }
+    }
+}
+
+fn muerto(acceso: &Acceso, e: &Evento, motivo: &str) {
+    match acceso.enterrar(e, motivo) {
+        Ok(f) => eprintln!(
+            "acceso · ✗ `{}` sin huella: {motivo} (en {})",
+            e.operacion,
+            f.display()
+        ),
+        Err(m) => eprintln!("acceso · ✗ `{}` sin huella: {m}", e.operacion),
+    }
+}
+
+/// El hilo del buzón: lo que llega, se manda; lo que no pudo, espera su turno.
+fn cartero(acceso: &Acceso, llegan: Receiver<Carta>, vida: Duration) {
+    let mut esperan: VecDeque<Carta> = VecDeque::new();
+    loop {
+        let plazo = esperan
+            .iter()
+            .map(|c| c.siguiente)
+            .min()
+            .map(|t| t.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_secs(3600));
+        match llegan.recv_timeout(plazo) {
+            Ok(c) => intentar(acceso, c, vida, &mut esperan),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) if esperan.is_empty() => return,
+            Err(RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(plazo.min(Duration::from_secs(1)));
+            }
+        }
+        let ahora = Instant::now();
+        let (toca, no): (Vec<Carta>, Vec<Carta>) =
+            esperan.drain(..).partition(|c| c.siguiente <= ahora);
+        esperan.extend(no);
+        for c in toca {
+            intentar(acceso, c, vida, &mut esperan);
+        }
+    }
+}
+
+fn intentar(acceso: &Acceso, mut c: Carta, vida: Duration, esperan: &mut VecDeque<Carta>) {
+    // Pasada su vida, el token ya no vale: se manda sin él (vale si tiene decisión).
+    let vivo = c.desde.elapsed() < vida;
+    let token = if vivo { c.token.as_deref() } else { None };
+    match acceso.enviar_con_motivo(token, &c.evento) {
+        Ok(_) => {}
+        Err((m, true)) => muerto(acceso, &c.evento, &m),
+        Err((m, false)) if vivo => {
+            c.intentos += 1;
+            // 2, 4, 8, 16 segundos, y como mucho 30.
+            let espera = Duration::from_secs((1u64 << c.intentos.min(5)).min(30));
+            c.siguiente = Instant::now() + espera.min(vida / 4);
+            if c.intentos == 1 {
+                eprintln!("acceso · `{}` espera: {m}", c.evento.operacion);
+            }
+            esperan.push_back(c);
+        }
+        Err((m, false)) => match acceso.encolar(&c.evento, &m) {
+            Ok(_) => eprintln!(
+                "acceso · `{}` espera en disco (con su decisión): {m}",
+                c.evento.operacion
+            ),
+            Err(_) => muerto(
+                acceso,
+                &c.evento,
+                &format!("{m}; el token de quien lo hizo ya no vale y no hay decisión"),
+            ),
+        },
     }
 }
 

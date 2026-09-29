@@ -39,6 +39,7 @@
 //! abierto, lo CIERRA*.
 
 mod acceso;
+mod actividad;
 mod arbol;
 mod assets;
 mod cambios;
@@ -428,6 +429,9 @@ fn main() -> ExitCode {
         puestos: std::sync::Arc::new(puestos::Puestos::default()),
         assets_cache: assets::Cache::default(),
         cambios_cache: assets::Cache::default(),
+        buzon: acceso
+            .as_ref()
+            .map(|a| ore_acceso::Buzon::nuevo(std::sync::Arc::clone(a))),
         acceso,
     };
 

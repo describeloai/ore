@@ -146,22 +146,30 @@ fn clase(s: &Servidor, p: &Peticion) -> &'static str {
 
 /// Atiende y deja la línea. `/salud` no: es la sonda del balanceador, cada pocos segundos, y no
 /// es nadie pidiendo nada. En un flujo, el tiempo es lo que tardó en abrirse.
+///
+/// ⭐ Y lo que escribe, a la actividad de la organización (0047 A6.3), por el
+///   buzón: la respuesta no lo espera.
 pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
     let t = Instant::now();
-    let salida = crate::acceso::con_testigo(p, || s.atender_flujo(p));
+    let (salida, rastro) = crate::acceso::con_testigo(p, || s.atender_flujo(p));
     if p.ruta.trim_matches('/') != "salud" {
         let codigo = match &salida {
             Salida::Una(r) => r.codigo,
             Salida::Flujo(_) => 200,
         };
+        let clase = clase(s, p);
         eprintln!(
             "acceso · {} {} · {} · {} ms · {}",
             p.metodo,
             patron(&p.ruta),
             codigo,
             t.elapsed().as_millis(),
-            clase(s, p)
+            clase
         );
+        // Con sujeto: alguien lo hizo.
+        if matches!(clase, "persona" | "delegado" | "agente") {
+            s.a_la_actividad(p, &salida, rastro.token, rastro.contado, rastro.preguntado);
+        }
     }
     salida
 }

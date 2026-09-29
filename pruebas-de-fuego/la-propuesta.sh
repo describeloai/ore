@@ -737,7 +737,12 @@ p2() { # <metodo> <camino> <quien> [cuerpo] [rama]
   curl -s -o "$TMP/r.json" -w '%{http_code}' -X "$m" -H "$q" -H 'content-type: application/json' \
     ${r:+-H "x-ore-rama: $r"} ${d:+-d "$d"} "$BASE_P2$c"
 }
-eventos() { "$PY" -c 'import json,sys; print(" ".join(e["cuerpo"]["operacion"]+"/"+e["cuerpo"]["resultado"] for e in map(json.loads, open(sys.argv[1])) if e["camino"].endswith("/eventos")))' "$TMP/iam.log"; }
+# Los de A5 (llevan la decisión que los dejó pasar), en orden.
+eventos() { "$PY" -c 'import json,sys; print(" ".join(e["cuerpo"]["operacion"]+"/"+e["cuerpo"]["resultado"] for e in map(json.loads, open(sys.argv[1])) if e["camino"].endswith("/eventos") and e["cuerpo"].get("decision")))' "$TMP/iam.log"; }
+# Los de la actividad (A6.3): sin decisión, por el buzón, sin orden garantizado.
+actividad() { "$PY" -c 'import json,sys; print(" ".join(sorted(set((e["sujeto"] or "-")+":"+e["cuerpo"]["operacion"]+"/"+e["cuerpo"]["resultado"] for e in map(json.loads, open(sys.argv[1])) if e["camino"].endswith("/eventos") and not e["cuerpo"].get("decision")))))' "$TMP/iam.log"; }
+# Espera (el buzón no hace esperar a la respuesta) a que la actividad lleve todo lo dicho.
+espera_actividad() { for _ in $(seq 1 40); do local a; a=" $(actividad) "; local ok=1; for x in "$@"; do case "$a" in *" $x "*) ;; *) ok=0;; esac; done; [ $ok = 1 ] && return 0; sleep 0.25; done; return 1; }
 
 # ① Proteger `main` es de quien tenga `rama:proteger`: ana no, admin sí; y queda contado.
 politica ''
@@ -746,7 +751,7 @@ politica ''
 [ "$(p2 GET /ramas "$ANA_T")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "10 · el 403 dejo main protegida"
 [ "$(p2 PUT /ramas/main/proteccion "$ADMIN" '{"protegida":true}')" = "200" ] && tiene "d['cambiada'] is True" || falla "10 · admin no pudo proteger: $(cuerpo)"
 [ "$(eventos)" = "rama:proteger/hecho" ] || falla "10 · proteger no quedo contado: $(eventos)"
-"$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; ev=[x for x in e if x["camino"].endswith("/eventos")][0]; assert ev["sujeto"]=="persona:admin" and ev["celda"]=="Bearer token-de-la-celda" and ev["cuerpo"]["decision"].startswith("dec_"), ev' "$TMP/iam.log" \
+"$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; ev=[x for x in e if x["camino"].endswith("/eventos") and x["cuerpo"].get("decision")][0]; assert ev["sujeto"]=="persona:admin" and ev["celda"]=="Bearer token-de-la-celda" and ev["cuerpo"]["decision"].startswith("dec_"), ev' "$TMP/iam.log" \
   || falla "10 · el evento no lleva los dos tokens y su decision: $(tail -1 "$TMP/iam.log")"
 
 # ② Con `main` protegida, admin fusiona lo suyo sin revisión: la ficha lo dice (una
@@ -765,7 +770,7 @@ N2=$(num)
 git -C "$BARE" log -1 --format=%B main | grep -q 'con `propuesta:fusionar-sin-revision`' || falla "10 · el merge no dice la potestad: $(git -C "$BARE" log -1 --format=%B main)"
 [ "$(eventos)" = "rama:proteger/hecho propuesta:fusionar-sin-revision/en-curso propuesta:fusionar-sin-revision/hecho" ] \
   || falla "10 · saltarse la revision no se conto antes y despues: $(eventos)"
-"$PY" -c 'import json,sys; e=[json.loads(l)["cuerpo"] for l in open(sys.argv[1]) if "/eventos" in l]; assert e[2]["abre"]==e[1]["id"], e' "$TMP/iam.log" \
+"$PY" -c 'import json,sys; e=[json.loads(l)["cuerpo"] for l in open(sys.argv[1]) if "/eventos" in l]; e=[x for x in e if x.get("decision")]; assert e[2]["abre"]==e[1]["id"], e' "$TMP/iam.log" \
   || falla "10 · el cierre no apunta al evento que abrio"
 
 # ③ Ana, sin la potestad, con `main` protegida: la regla de siempre (422), y nada contado.
@@ -784,8 +789,17 @@ N3=$(num)
 [ "$(p2 POST /fuentes "$ANA_T" '{"name":"ventas_p2","url":"bigquery://proyecto/ventas"}')" = "403" ] && cuerpo | grep -q 'fuente:crear' \
   || falla "10 · ana dio de alta una fuente sin la potestad: $(cuerpo)"
 [ "$(p2 GET /fuentes "$ANA_T")" = "200" ] && ! cuerpo | grep -q ventas_p2 || falla "10 · el 403 dejo la fuente escrita"
+# ⑥ (0047 A6.3) Lo demás que se escribe, a la actividad, por el buzón y con el token de
+#    quien lo hizo: crear la rama, escribir en ella, proponer. Un 423 (escribir en `main`
+#    protegida) es `negado`. Lo que ya contó la ruta o negó `ore-iam` (los 403 de
+#    potestad) no se repite, y lo que no es un acto (el 422 de ana) no se cuenta.
+[ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$ANA_T" -H 'content-type: text/plain' --data-binary 'directo' "$BASE_P2/arbol/packages/hr/directo.md")" = "423" ]   || falla "10 · escribir en main protegida no dio 423: $(cuerpo)"
+espera_actividad persona:admin:rama:crear/hecho persona:admin:arbol:escribir/hecho persona:admin:propuesta:abrir/hecho   persona:ana:rama:crear/hecho persona:ana:propuesta:abrir/hecho persona:ana:arbol:escribir/negado   || falla "10 · la actividad no llego entera: $(actividad)"
+case " $(actividad) " in *rama:proteger*|*fuente:crear*|*propuesta:fusionar/*) falla "10 · ⛔ LA ACTIVIDAD REPITIO LO DE A5 O CONTO UN 403 DE POTESTAD O UN 422: $(actividad)";; esac
+"$PY" -c 'import json,sys; e=[json.loads(l) for l in open(sys.argv[1])]; a=[x for x in e if x["camino"].endswith("/eventos") and x["cuerpo"]["operacion"]=="arbol:escribir" and x["cuerpo"]["resultado"]=="hecho"][0]; assert a["cuerpo"]["detalle"]["rama"]=="admin/p2" and a["cuerpo"].get("commit") and a["cuerpo"]["sobre"]=="arbol/packages/hr/notas-p2.md" and a["celda"]=="Bearer token-de-la-celda", a' "$TMP/iam.log"   || falla "10 · el evento de escribir no dice su rama, su commit y su camino: $(grep arbol:escribir "$TMP/iam.log" | head -2)"
+! grep -q '"operacion": "[a-z]*:[a-z-]*", "resultado": "hecho", "sobre": "puestos' "$TMP/iam.log" || falla "10 · ⛔ LA ACTIVIDAD CONTO DATOS DEL PUESTO"
 kill "$SRV3" "$SRV4" "$IAMF" 2>/dev/null
-dice "10 · P2 por el puente: proteger es de rama:proteger (ana 403 y nada escrito; admin sí, y contado con los dos tokens y su decision) · con main protegida admin fusiona lo suyo: la ficha lo dice con una CONSULTA, la huella se abre antes y se cierra despues, el merge lo dice · ana, la regla de siempre · sin quien decida, 503 · dar de alta una fuente es de fuente:crear"
+dice "10 · P2 por el puente: proteger es de rama:proteger (ana 403 y nada escrito; admin sí, y contado con los dos tokens y su decision) · con main protegida admin fusiona lo suyo: la ficha lo dice con una CONSULTA, la huella se abre antes y se cierra despues, el merge lo dice · ana, la regla de siempre · sin quien decida, 503 · dar de alta una fuente es de fuente:crear · y lo demas que se escribe, a la actividad por el buzon (hecho, o negado el 423), sin repetir lo de A5"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
