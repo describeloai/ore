@@ -72,12 +72,19 @@ use std::time::Duration;
 /// recurso es global: su punto es éste, no uno regional.
 const API: &str = "https://secretmanager.googleapis.com/v1";
 
+/// ⚠️ Sólo para `pruebas-de-fuego/el-cofre.sh`, que levanta un almacén de
+///   mentira por HTTP (con `ORE_GCP_TOKEN` fijo). En un pod no se pone: sin
+///   ella se habla con Google.
+const API_DE_PRUEBA: &str = "ORE_SECRETOS_API";
+
 /// Cuánto se espera a Secret Manager. Holgado: una lectura mide 0,35 s, y un
 /// custodio que se cuelga cuelga a quien le pide la credencial.
 const PLAZO: Duration = Duration::from_secs(30);
 
 /// Con qué habla y en qué proyecto y región vive el almacén.
 pub struct Almacen {
+    /// `API`, o la de `ORE_SECRETOS_API` en la prueba.
+    pub api: String,
     /// El token de la cuenta que corre (Workload Identity), renovado.
     pub credencial: ore_gcp::Credencial,
     /// HTTPS con el TLS de la plataforma.
@@ -128,6 +135,10 @@ fn mensaje(cuerpo: &str) -> String {
 impl Almacen {
     pub fn del_entorno(proyecto: String, lugar: String) -> Result<Almacen, String> {
         Ok(Almacen {
+            api: std::env::var(API_DE_PRUEBA)
+                .ok()
+                .filter(|a| !a.is_empty())
+                .unwrap_or_else(|| API.to_string()),
             credencial: ore_gcp::Credencial::del_entorno(),
             agente: ore_gcp::cliente()?,
             proyecto,
@@ -136,7 +147,7 @@ impl Almacen {
     }
 
     fn secretos(&self) -> String {
-        format!("{API}/projects/{}/secrets", self.proyecto)
+        format!("{}/projects/{}/secrets", self.api, self.proyecto)
     }
 
     /// Una llamada: `Ok(Some(cuerpo))` si 2xx, `Ok(None)` si el código está en

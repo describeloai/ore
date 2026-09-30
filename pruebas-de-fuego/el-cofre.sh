@@ -39,9 +39,14 @@
 #   El aislamiento por prefijo —que el cofre de `demo` no pueda tocar lo de
 #   `prueba`— está probado contra Google en `medida-el-almacen-por-inquilino.py`,
 #   desde dentro del pod y con la condición IAM de verdad. Lo que esto prueba es
-#   que el cofre USA el almacén como debe: el valor entra por la entrada
-#   estándar, el nombre lleva el inquilino delante, la versión es la que el
-#   almacén devuelve, y `cofre.material` se queda vacía.
+#   que el cofre USA el almacén como debe: el nombre lleva el inquilino delante,
+#   nace con la CMEK de la organización, la versión es la que el almacén
+#   devuelve, y `cofre.material` se queda vacía.
+#
+#   Desde 0046 E9·3 el cofre habla con el almacén por su API REST (no por
+#   `gcloud secrets`): el de mentira es un servidor HTTP con las MISMAS rutas y
+#   los mismos códigos (409 al crear lo que hay, 404 al borrar lo que no), y el
+#   cofre lo encuentra por `ORE_SECRETOS_API`.
 #
 #   PG_URL=postgres://postgres:x@localhost:5432 \
 #   PGHOST=localhost PGUSER=postgres PGPASSWORD=x \
@@ -54,6 +59,7 @@ BASE="http://127.0.0.1:$PUERTO"
 PG_URL="${PG_URL:-postgres://postgres:x@localhost:5432}"
 TMP="$(mktemp -d)"
 SRV=""
+ALM=""
 
 falla() {
   echo "✗ $*" >&2
@@ -62,10 +68,11 @@ falla() {
     tail -20 "$TMP/arranque.txt" >&2
   fi
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
+  [ -n "$ALM" ] && kill "$ALM" 2>/dev/null
   exit 1
 }
 dice() { echo "  · $*"; }
-limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; rm -rf "$TMP"; }
+limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; [ -n "$ALM" ] && kill "$ALM" 2>/dev/null; rm -rf "$TMP"; }
 trap limpiar EXIT
 
 buscar() {
@@ -160,11 +167,10 @@ acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
 
 # ── ⭐ EL CLIENTE DE MENTIRA, y distingue llaves ────────────────────────────
 #
-# Recibe los MISMOS argumentos que `gcloud kms` y `gcloud secrets` y habla por
-# la entrada y la salida estandar, como el de verdad. Lo que cifra lleva DENTRO
-# el nombre de la llave, asi que descifrar con otra falla — y falla diciendo
-# `PERMISSION_DENIED`, que es lo que diria Google. Y el almacen es un directorio:
-# un secreto es una carpeta, cada version un fichero numerado.
+# Recibe los MISMOS argumentos que `gcloud kms` y habla por la entrada y la
+# salida estandar, como el de verdad. Lo que cifra lleva DENTRO el nombre de la
+# llave, asi que descifrar con otra falla — y falla diciendo `PERMISSION_DENIED`,
+# que es lo que diria Google. (Solo lo usa `mudar`.)
 cat > "$TMP/kms-de-mentira" <<'KMSCODE'
 #!/usr/bin/env python3
 import base64, os, sys
@@ -177,58 +183,6 @@ def opt(n):
         if x.startswith(n + "="):
             return x.split("=", 1)[1]
     return None
-
-# ── el almacen ──────────────────────────────────────────────────────────────
-if a[0] == "secrets":
-    raiz = os.environ["ALMACEN_DE_MENTIRA"]
-    proyecto = opt("--project") or "?"
-    if a[1] == "delete":
-        # la baja (037): el secreto entero, con sus versiones; NOT_FOUND si no esta
-        import shutil
-        nombre = a[2]
-        d = os.path.join(raiz, nombre)
-        if not os.path.isdir(d):
-            sys.stderr.write("ERROR: (gcloud.secrets.delete) NOT_FOUND: Secret [%s] not found.\n" % nombre)
-            raise SystemExit(1)
-        shutil.rmtree(d)
-        raise SystemExit(0)
-    if a[1] == "create":
-        nombre = a[2]
-        d = os.path.join(raiz, nombre)
-        if os.path.isdir(d):
-            sys.stderr.write("ERROR: (gcloud.secrets.create) ALREADY_EXISTS: Secret [%s] already exists.\n" % nombre)
-            raise SystemExit(1)
-        os.makedirs(d)
-        # la CMEK con la que nace, para poder cotejarla
-        with open(opt("--replication-policy-file")) as f, open(os.path.join(d, "cmek"), "w") as g:
-            g.write(f.read())
-        raise SystemExit(0)
-    if a[1] == "versions" and a[2] == "add":
-        nombre = a[3]
-        d = os.path.join(raiz, nombre)
-        if not os.path.isdir(d):
-            sys.stderr.write("ERROR: NOT_FOUND: Secret [%s] not found.\n" % nombre)
-            raise SystemExit(1)
-        n = 1 + len([x for x in os.listdir(d) if x.isdigit()])
-        with open(os.path.join(d, str(n)), "wb") as f:
-            f.write(sys.stdin.buffer.read())
-        sys.stdout.write("projects/%s/secrets/%s/versions/%d\n" % (proyecto, nombre, n))
-        raise SystemExit(0)
-    if a[1] == "versions" and a[2] in ("access", "describe"):
-        nombre = opt("--secret")
-        d = os.path.join(raiz, nombre or "")
-        vs = sorted(int(x) for x in os.listdir(d) if x.isdigit()) if os.path.isdir(d) else []
-        if not vs:
-            sys.stderr.write("ERROR: NOT_FOUND: Secret [%s] not found or has no versions.\n" % nombre)
-            raise SystemExit(1)
-        v = vs[-1] if a[3] == "latest" else int(a[3])
-        if a[2] == "access":
-            sys.stdout.buffer.write(open(os.path.join(d, str(v)), "rb").read())
-        else:
-            sys.stdout.write("projects/%s/secrets/%s/versions/%d\n" % (proyecto, nombre, v))
-        raise SystemExit(0)
-    sys.stderr.write("ERROR: verbo de secrets desconocido %s\n" % a[1:3])
-    raise SystemExit(2)
 
 # ── el KMS ──────────────────────────────────────────────────────────────────
 verbo = a[1]
@@ -253,6 +207,80 @@ else:
     raise SystemExit(2)
 KMSCODE
 chmod +x "$TMP/kms-de-mentira"
+
+# ── ⭐ EL ALMACEN DE MENTIRA: Secret Manager por HTTP ──────────────────────
+#
+# Las rutas de la API v1 que el cofre usa, sobre un directorio: un secreto es
+# una carpeta (con `cmek`, el cuerpo con que nacio), cada version un fichero
+# numerado. Exige un `Bearer`, como Google.
+cat > "$TMP/almacen-de-mentira" <<'ALMCODE'
+#!/usr/bin/env python3
+import base64, json, os, re, shutil, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
+
+RAIZ = os.environ["ALMACEN_DE_MENTIRA"]
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def dar(self, c, cuerpo):
+        b = json.dumps(cuerpo).encode()
+        self.send_response(c)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def error(self, c, estado, m):
+        self.dar(c, {"error": {"code": c, "message": m, "status": estado}})
+    def cuerpo(self):
+        n = int(self.headers.get("content-length") or 0)
+        return self.rfile.read(n) if n else b""
+    def atender(self, metodo):
+        if not (self.headers.get("authorization") or "").startswith("Bearer "):
+            return self.error(401, "UNAUTHENTICATED", "sin token")
+        u = urlparse(self.path)
+        m = re.fullmatch(r"/v1/projects/([^/]+)/secrets(?:/([A-Za-z0-9_-]+))?(/versions/latest:access|:addVersion)?", u.path)
+        if not m:
+            return self.error(404, "NOT_FOUND", "ruta desconocida %s" % u.path)
+        proyecto, nombre, cola = m.groups()
+        if metodo == "POST" and nombre is None:
+            nombre = parse_qs(u.query).get("secretId", [""])[0]
+            d = os.path.join(RAIZ, nombre)
+            if os.path.isdir(d):
+                return self.error(409, "ALREADY_EXISTS", "Secret [%s] already exists." % nombre)
+            os.makedirs(d)
+            open(os.path.join(d, "cmek"), "wb").write(self.cuerpo())
+            return self.dar(200, {"name": "projects/%s/secrets/%s" % (proyecto, nombre)})
+        d = os.path.join(RAIZ, nombre or "")
+        if not nombre or not os.path.isdir(d):
+            return self.error(404, "NOT_FOUND", "Secret [%s] not found." % nombre)
+        if metodo == "DELETE" and cola is None:
+            shutil.rmtree(d)
+            return self.dar(200, {})
+        vs = sorted(int(x) for x in os.listdir(d) if x.isdigit())
+        if metodo == "POST" and cola == ":addVersion":
+            dato = base64.b64decode(json.loads(self.cuerpo())["payload"]["data"])
+            n = 1 + len(vs)
+            open(os.path.join(d, str(n)), "wb").write(dato)
+            return self.dar(200, {"name": "projects/%s/secrets/%s/versions/%d" % (proyecto, nombre, n)})
+        if metodo == "GET" and cola == "/versions/latest:access":
+            if not vs:
+                return self.error(404, "NOT_FOUND", "Secret [%s] has no versions." % nombre)
+            v = vs[-1]
+            dato = open(os.path.join(d, str(v)), "rb").read()
+            return self.dar(200, {"name": "projects/%s/secrets/%s/versions/%d" % (proyecto, nombre, v),
+                                  "payload": {"data": base64.b64encode(dato).decode()}})
+        return self.error(400, "INVALID_ARGUMENT", "%s %s" % (metodo, u.path))
+    def do_GET(self):
+        self.atender("GET")
+    def do_POST(self):
+        self.atender("POST")
+    def do_DELETE(self):
+        self.atender("DELETE")
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+ALMCODE
 
 # ── Dos organizaciones: la de Ada, y la de Zoe para el 6 ────────────────────
 export IAM_URL="$URL_IAM"
@@ -303,6 +331,14 @@ dice "cada celda, su login: el custodio corre como \`cofre_acme\`"
 # ── El custodio ─────────────────────────────────────────────────────────────
 mkdir -p "$TMP/almacen"
 export ALMACEN_DE_MENTIRA="$TMP/almacen"
+PUERTO_ALMACEN="${PUERTO_ALMACEN:-8906}"
+python3 "$TMP/almacen-de-mentira" "$PUERTO_ALMACEN" > "$TMP/almacen.txt" 2>&1 &
+ALM=$!
+export ORE_SECRETOS_API="http://127.0.0.1:$PUERTO_ALMACEN/v1" ORE_GCP_TOKEN="de-mentira"
+for _ in $(seq 1 50); do
+  curl -s -o /dev/null "http://127.0.0.1:$PUERTO_ALMACEN/" && break
+  sleep 0.1
+done
 COFRE_URL="$URL_COFRE" "$COFRE" servir --bind "127.0.0.1:$PUERTO" \
   --identidad oidc --emisor "$EMISOR" --audiencia "$AUDIENCIA" \
   --jwks "$TMP/jwks.json" --celda acme --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 \
