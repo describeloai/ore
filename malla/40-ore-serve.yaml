@@ -173,6 +173,16 @@ spec:
               #   imprimiera lo que trajo dejaria el secreto en el registro del
               #   pod, que es exactamente de donde lo acabamos de sacar.
               echo "testigo puesto · $(wc -c < /testigo/forja) bytes"
+              # ⭐ 0046 E9·3 · Y EL AGENTE DE LA CELDA, como en la copia (48): con él
+              #   `ore-serve` lee del cofre la credencial de una fuente para servir
+              #   los ítems de una colección virtual. El aprovisionador le deja
+              #   leer estos dos (⑦); sin eso, este contenedor no arranca.
+              for p in cliente secreto; do
+                gcloud secrets versions access latest \
+                  --secret=t-demo-agente-$p --out-file=/testigo/agente-$p
+                chmod 0400 /testigo/agente-$p
+              done
+              echo "agente puesto · $(cat /testigo/agente-cliente)"
           resources:
             requests: {cpu: "50m", memory: 128Mi}
             limits:   {cpu: "500m", memory: 256Mi}
@@ -281,6 +291,17 @@ spec:
             #   Con punto final: M2 midió que ahorra la mitad de la mediana.
             - --acceso
             - ore-iam.identidad.svc.cluster.local.:8090
+            # ⭐ 0046 E9·3 · EL AGENTE, PARA SERVIR UNA VIRTUAL. Sus bytes están en
+            #   el origen, y firmar su URL pide la credencial de la fuente, que el
+            #   cofre da a quien tenga `usar`: el agente de la celda, como en la
+            #   copia (el patrón de la conexión autorizadora). El cliente y su
+            #   secreto, del tmpfs que llena el contenedor de inicio; el token, del
+            #   IdP del clúster por HTTP llano (sin TLS, como todo aquí), y lo que
+            #   el token afirma lo coteja el cofre con el `--emisor`.
+            - --agente-fichero
+            - /testigo/agente
+            - --idp
+            - idp-service.identidad.svc.cluster.local:8080
             # ⭐ LA CUENTA CON LA QUE LEEN LOS DRIVERS de esta celda: la que el
             #   cliente autoriza en su BigQuery (`GET /fuentes/credenciales`).
             #   Se ENSEÑA, no se usa aquí: este proceso no habla con Google.
@@ -430,6 +451,18 @@ spec:
             matchLabels:
               ore.dev/rol: cofre
       ports: [{protocol: TCP, port: 8095}]
+    # ⭐ El IdP del clúster (0046 E9·3): el token del agente, para leer del
+    #   custodio la credencial de una fuente al servir una colección virtual.
+    #   Sólo sus pods (`app: keycloak`) y sólo el 8080; `entrada-al-idp` ya
+    #   admite a los namespaces `cargas`.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: identidad
+          podSelector:
+            matchLabels:
+              app: keycloak
+      ports: [{protocol: TCP, port: 8080}]
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]
