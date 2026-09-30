@@ -1,0 +1,26 @@
+[
+  {
+    "id": "medida-001",
+    "norma": "0049 · Cómo entra: el coste de recorrer",
+    "en": ["mantenida", "virtual"],
+    "op": "list",
+    "pide": { "limit": 1000, "recorrer": true },
+    "espera": { "mide": ["ms_primera_pagina", "ms_ultima_pagina", "ms_recorrido"] }
+  },
+  {
+    "id": "medida-002",
+    "norma": "0049 · Cómo entra: el coste de abrir",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "path": "docs/a.pdf", "repetir": 20 },
+    "espera": { "mide": ["ms_hasta_el_primer_byte_p50", "ms_hasta_el_primer_byte_p95"] }
+  },
+  {
+    "id": "medida-003",
+    "norma": "0049 · Cómo entra: abrir muchos a la vez",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "prefix": "lote/", "n": 500, "concurrencia": 32 },
+    "espera": { "mide": ["items_por_s", "errores"] }
+  }
+]

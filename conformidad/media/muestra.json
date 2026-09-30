@@ -1,0 +1,37 @@
+{
+  "norma": "conformidad/media/README.md · La muestra",
+  "colecciones": {
+    "mantenida": { "nombre": "conformidad.default.mantenida", "clase": "mantenida", "media": "document" },
+    "virtual": { "nombre": "conformidad.default.virtual", "clase": "virtual", "media": "document", "origen": "versionado, controlado por el ejecutor" },
+    "escrita": { "nombre": "conformidad.default.escrita", "clase": "escrita", "media": "document", "vacia": true }
+  },
+  "items": [
+    {
+      "path": "docs/a.pdf",
+      "content_type": "application/pdf",
+      "texto": "%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n"
+    },
+    {
+      "path": "docs/c.pdf",
+      "content_type": "application/pdf",
+      "versiones": [
+        { "id": "v1", "texto": "%PDF-1.4\n% version uno\n%%EOF\n" },
+        { "id": "v2", "texto": "%PDF-1.4\n% version dos, la actual\n%%EOF\n" }
+      ]
+    },
+    {
+      "path": "img/b.png",
+      "content_type": "image/png",
+      "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+    },
+    {
+      "path": "img/mentira.jpg",
+      "content_type": "image/jpeg",
+      "nota": "se llama .jpg y se declara image/jpeg, pero sus bytes son un PDF",
+      "texto": "%PDF-1.4\n% no soy una imagen\n%%EOF\n"
+    },
+    {
+      "generar": { "prefijo": "lote/", "n": 2500, "nombre": "{i:04}.txt", "content_type": "text/plain", "texto": "item {i}\n" }
+    }
+  ]
+}

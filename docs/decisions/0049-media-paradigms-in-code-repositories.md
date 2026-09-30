@@ -1,7 +1,8 @@
 # 0049 · Media paradigms in code repositories
 
-**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); la base, por
-construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); **B0 hecho**: la
+gramática en OOS v1alpha17, el contrato de ejecución en [`docs/media.md`](../media.md) y la suite
+en [`conformidad/media`](../../conformidad/media/README.md); B1–B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -313,7 +314,7 @@ conformidad** que cualquier superficie tiene que pasar. No se parchea el camino 
 
 | paso | qué | decisión |
 |---|---|---|
-| **B0 · el contrato** | la `MediaRef`, las anclas, la tabla anclada y las siete operaciones, como especificación (OOS) y como suite de conformidad | niveles 1–2 |
+| **B0 · el contrato** ✅ | la `MediaRef`, las anclas, la tabla anclada y las siete operaciones, como especificación (OOS v1alpha17) y como suite de conformidad (36 casos, neutrales al lenguaje) | niveles 1–2 |
 | **B1 · los tipos** | `Struct`, `List<Struct>`, `Vector`, `MediaRef`, `Ancla` en la gramática, el lago y SQL | D4 |
 | **B2 · servir** | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
 | **B3 · la puerta de lectura** | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |

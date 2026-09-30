@@ -1,0 +1,56 @@
+[
+  {
+    "id": "put-001",
+    "norma": "docs/media.md §2 put · el digest y el tipo los calcula la celda",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": { "path": "salida/x.pdf", "texto": "%PDF-1.4\n% escrito por codigo\n%%EOF\n", "commit": true },
+    "espera": {
+      "status": 201,
+      "ref": { "path": "salida/x.pdf", "content_type": "application/pdf" },
+      "digest_de_lo_enviado": true,
+      "size_de_lo_enviado": true,
+      "despues_en_list": ["salida/x.pdf"]
+    }
+  },
+  {
+    "id": "put-002",
+    "norma": "docs/media.md §2 put · subir lo que ya está es gratis",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": { "path": "salida/y.pdf", "texto": "%PDF-1.4\n% dos veces\n%%EOF\n", "commit": true, "repetir": 2 },
+    "espera": { "invariante": ["idempotente"] }
+  },
+  {
+    "id": "put-003",
+    "norma": "docs/media.md §2 put · abort no deja nada",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": { "path": "salida/z.pdf", "texto": "%PDF-1.4\n%%EOF\n", "abort": true },
+    "espera": { "despues_no_en_list": ["salida/z.pdf"] }
+  },
+  {
+    "id": "put-004",
+    "norma": "docs/media.md §2 put · un Repr-Digest que no casa",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": { "path": "salida/w.pdf", "texto": "%PDF-1.4\n%%EOF\n", "repr_digest": "sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:" },
+    "espera": { "error": "media/digest-no-casa", "status": 422 }
+  },
+  {
+    "id": "put-005",
+    "norma": "docs/media.md §2 put · en una mantenida no se escribe",
+    "en": ["mantenida"],
+    "op": "put",
+    "pide": { "path": "salida/v.pdf", "texto": "%PDF-1.4\n%%EOF\n" },
+    "espera": { "error": "media/no-escribible", "status": 409 }
+  },
+  {
+    "id": "verify-001",
+    "norma": "docs/media.md §2 verify",
+    "en": ["mantenida"],
+    "op": "verify",
+    "pide": { "items": [{ "path": "docs/a.pdf" }, { "path": "img/b.png" }] },
+    "espera": { "status": 200, "todos": "ok" }
+  }
+]

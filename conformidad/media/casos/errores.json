@@ -1,0 +1,37 @@
+[
+  {
+    "id": "error-001",
+    "norma": "docs/media.md §3 · todo error es problem+json con un type de la tabla",
+    "en": ["mantenida"],
+    "op": "stat",
+    "pide": { "path": "docs/no-existe.pdf" },
+    "espera": { "cabeceras": ["Content-Type: application/problem+json"], "error": "media/no-existe" }
+  },
+  {
+    "id": "error-002",
+    "norma": "docs/media.md §3 · sin permiso no dice si existe",
+    "en": ["mantenida"],
+    "op": "stat",
+    "antes": { "credencial": "sin-concesion-sobre-la-coleccion" },
+    "pide": { "path": "docs/a.pdf" },
+    "espera": { "status": 403, "error": "media/sin-permiso", "sin_cadenas": ["docs/a.pdf", "application/pdf"] }
+  },
+  {
+    "id": "error-003",
+    "norma": "docs/media.md §4 · un transform lee solo lo que declaró (0049 D6)",
+    "en": ["mantenida"],
+    "op": "open",
+    "antes": { "ambito": { "transform": true, "entradas": ["conformidad.default.escrita"] } },
+    "pide": { "path": "docs/a.pdf" },
+    "espera": { "status": 403, "error": "media/no-declarada" }
+  },
+  {
+    "id": "error-004",
+    "norma": "docs/media.md §4 · lo leído por un transform consta en su linaje",
+    "en": ["mantenida"],
+    "op": "open",
+    "antes": { "ambito": { "transform": true, "entradas": ["conformidad.default.mantenida"] } },
+    "pide": { "path": "docs/a.pdf" },
+    "espera": { "status": 200, "linaje_incluye": { "coleccion": "{coleccion}", "as_of": "*" } }
+  }
+]

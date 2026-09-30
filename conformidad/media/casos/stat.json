@@ -1,0 +1,26 @@
+[
+  {
+    "id": "stat-001",
+    "norma": "docs/media.md §2 stat · current",
+    "en": ["mantenida", "virtual"],
+    "op": "stat",
+    "pide": { "path": "docs/c.pdf" },
+    "espera": { "status": 200, "current": true, "ref": { "version": "{version:docs/c.pdf:v2}" } }
+  },
+  {
+    "id": "stat-002",
+    "norma": "docs/media.md §2 stat · una versión que ya no es la actual",
+    "en": ["mantenida", "virtual"],
+    "op": "stat",
+    "pide": { "path": "docs/c.pdf", "version": "{version:docs/c.pdf:v1}" },
+    "espera": { "status": 200, "current": false }
+  },
+  {
+    "id": "stat-003",
+    "norma": "docs/media.md §3 · lo que no existe",
+    "en": ["mantenida", "virtual"],
+    "op": "stat",
+    "pide": { "path": "docs/no-existe.pdf" },
+    "espera": { "status": 404, "error": "media/no-existe" }
+  }
+]

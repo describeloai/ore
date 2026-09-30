@@ -1,0 +1,76 @@
+[
+  {
+    "id": "open-001",
+    "norma": "docs/media.md §2 open · los bytes, iguales en mantenida y virtual (0049 D1)",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "path": "docs/a.pdf" },
+    "espera": { "status": 200, "bytes": { "de": "docs/a.pdf" }, "cabeceras": ["ETag", "ORE-Media-Version"] }
+  },
+  {
+    "id": "open-002",
+    "norma": "docs/media.md §2 open · Repr-Digest cuando se conoce",
+    "en": ["mantenida"],
+    "op": "open",
+    "pide": { "path": "docs/a.pdf" },
+    "espera": { "cabeceras": ["Repr-Digest"], "repr_digest_de": "docs/a.pdf" }
+  },
+  {
+    "id": "open-003",
+    "norma": "docs/media.md §2 read_range · 206 con el digest del entero",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "path": "docs/a.pdf", "range": [0, 3] },
+    "espera": { "status": 206, "bytes": { "de": "docs/a.pdf", "rango": [0, 3] }, "cabeceras": ["ETag"] }
+  },
+  {
+    "id": "open-004",
+    "norma": "docs/media.md §2 open · una versión anterior",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "path": "docs/c.pdf", "version": "{version:docs/c.pdf:v1}" },
+    "espera": { "status": 200, "bytes": { "de": "docs/c.pdf", "version": "v1" } }
+  },
+  {
+    "id": "open-005",
+    "norma": "docs/media.md §2 open · sin versión, se fija al abrir",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "path": "docs/c.pdf" },
+    "espera": { "bytes": { "de": "docs/c.pdf", "version": "v2" }, "invariante": ["version_fijada"] }
+  },
+  {
+    "id": "open-006",
+    "norma": "docs/media.md §2 open · el cambio a mitad corta, nunca mezcla",
+    "en": ["virtual"],
+    "op": "open",
+    "pide": { "path": "lote/0001.txt", "lento": true },
+    "durante": { "sobrescribir": { "path": "lote/0001.txt", "texto": "otro contenido\n" }, "borrar_version_leida": true },
+    "espera": { "error": "media/cambiado" }
+  },
+  {
+    "id": "open-007",
+    "norma": "OOS v1alpha17 01 §3.1 · el sha256 al paso: la virtual lo conoce tras una lectura entera",
+    "en": ["virtual"],
+    "op": "open",
+    "pide": { "path": "img/b.png", "leer_entero": true },
+    "despues": { "op": "stat", "pide": { "path": "img/b.png" } },
+    "espera": { "digest_de": "img/b.png" }
+  },
+  {
+    "id": "open-008",
+    "norma": "OOS v1alpha17 01 §3 · el tipo por los bytes",
+    "en": ["mantenida", "virtual"],
+    "op": "stat",
+    "pide": { "path": "img/mentira.jpg" },
+    "espera": { "ref": { "content_type": "image/jpeg", "content_type_detected": "application/pdf" } }
+  },
+  {
+    "id": "open-009",
+    "norma": "docs/media.md §2 open · cerrar a medias no descarga el resto",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "pide": { "path": "docs/a.pdf", "leer": 4, "cerrar": true },
+    "espera": { "mide": "bytes_transferidos_al_cerrar_a_medias" }
+  }
+]

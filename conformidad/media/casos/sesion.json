@@ -1,0 +1,20 @@
+[
+  {
+    "id": "sesion-001",
+    "norma": "docs/media.md §4 · un flujo abierto sobrevive a la renovación de la credencial",
+    "en": ["mantenida", "virtual"],
+    "op": "open",
+    "antes": { "credencial_dura_s": 30 },
+    "pide": { "path": "lote/0002.txt", "lento": { "total_s": 60 } },
+    "espera": { "status": 200, "bytes": { "de": "lote/0002.txt" } }
+  },
+  {
+    "id": "sesion-002",
+    "norma": "docs/media.md §4 · la credencial se renueva en mitad de una celda (0049 D3)",
+    "en": ["mantenida"],
+    "op": "sesion",
+    "antes": { "credencial_dura_s": 30 },
+    "pide": { "celda": [{ "op": "list", "limit": 10 }, { "esperar_s": 90 }, { "op": "stat", "path": "docs/a.pdf" }] },
+    "espera": { "sin_error": true }
+  }
+]

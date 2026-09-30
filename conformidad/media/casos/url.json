@@ -1,0 +1,26 @@
+[
+  {
+    "id": "url-001",
+    "norma": "docs/media.md §2 url · el ttl por defecto",
+    "en": ["mantenida"],
+    "op": "url",
+    "pide": { "items": [{ "path": "docs/a.pdf" }] },
+    "espera": { "status": 200, "caduca_en_s": { "max": 300 } }
+  },
+  {
+    "id": "url-002",
+    "norma": "docs/media.md §2 url · el ttl se recorta a 3600",
+    "en": ["mantenida"],
+    "op": "url",
+    "pide": { "items": [{ "path": "docs/a.pdf" }], "ttl_s": 99999 },
+    "espera": { "status": 200, "caduca_en_s": { "max": 3600 } }
+  },
+  {
+    "id": "url-003",
+    "norma": "docs/media.md §2 url · el error de uno no tumba el lote",
+    "en": ["mantenida", "virtual"],
+    "op": "url",
+    "pide": { "items": [{ "path": "docs/a.pdf" }, { "path": "docs/no-existe.pdf" }, { "path": "img/b.png" }] },
+    "espera": { "status": 200, "invariante": ["lote_parcial"], "errores_en": { "1": "media/no-existe" } }
+  }
+]

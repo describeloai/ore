@@ -1,0 +1,61 @@
+[
+  {
+    "id": "list-001",
+    "norma": "docs/media.md §2 list · sin bytes y sin URLs",
+    "en": ["mantenida", "virtual"],
+    "op": "list",
+    "pide": { "limit": 10 },
+    "espera": { "status": 200, "sin_claves": ["content", "bytes", "url", "urls"], "sin_cadenas": ["X-Amz-Signature", "X-Goog-Signature", "Signature="] }
+  },
+  {
+    "id": "list-002",
+    "norma": "docs/media.md §2 list · por cursor, una transacción",
+    "en": ["mantenida", "virtual"],
+    "op": "list",
+    "pide": { "limit": 1000, "recorrer": true },
+    "espera": { "invariante": ["recorrido_completo", "una_transaccion", "coste_por_pagina_estable"] }
+  },
+  {
+    "id": "list-003",
+    "norma": "docs/media.md §2 list · el prefijo",
+    "en": ["mantenida", "virtual"],
+    "op": "list",
+    "pide": { "prefix": "docs/" },
+    "espera": { "status": 200, "paths": ["docs/a.pdf", "docs/c.pdf"] }
+  },
+  {
+    "id": "list-004",
+    "norma": "OOS v1alpha17 01 §3 · la referencia entera",
+    "en": ["mantenida", "virtual"],
+    "op": "list",
+    "pide": { "prefix": "docs/a.pdf" },
+    "espera": {
+      "ref": {
+        "uri": "ore://{coleccion}/docs/a.pdf?v=*",
+        "collection": "{coleccion}",
+        "path": "docs/a.pdf",
+        "version": "*",
+        "size": "*",
+        "content_type": "application/pdf",
+        "checksum": "*"
+      }
+    }
+  },
+  {
+    "id": "list-005",
+    "norma": "OOS v1alpha17 01 §3.1 · en una mantenida el digest se conoce",
+    "en": ["mantenida"],
+    "op": "list",
+    "pide": { "prefix": "docs/a.pdf" },
+    "espera": { "digest_de": "docs/a.pdf" }
+  },
+  {
+    "id": "list-006",
+    "norma": "docs/media.md §2 list · as_of: lo que la colección era",
+    "en": ["mantenida", "virtual"],
+    "op": "list",
+    "antes": { "recordar_as_of": "t0", "sobrescribir": { "path": "docs/a.pdf", "texto": "%PDF-1.4\n% otra\n%%EOF\n" }, "ingerir": true },
+    "pide": { "prefix": "docs/a.pdf", "as_of": "{t0}" },
+    "espera": { "ref": { "version": "{version_en_t0}" } }
+  }
+]
