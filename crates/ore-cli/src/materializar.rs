@@ -372,9 +372,14 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         }
     }
     if let Some(dir) = informe {
+        // ⛔ Vivas son TODAS las del árbol, no las de esta pasada: con `--vista`
+        //   (rehacer, o el Job de una rama) las colecciones que no se piden
+        //   siguen en el árbol, y retirarlas borraba su puntero (medido en
+        //   `test3`, 0044 C D7: la pasada de la rama se llevó siete heredados).
         let vivas: Vec<String> = declaradas
             .iter()
-            .chain(colecciones.iter())
+            .copied()
+            .chain(crate::coleccion::mantenidas(&pkg))
             .filter_map(|v| v.qname())
             .collect();
         retirar_informes_de_nadie(dir, &vivas);

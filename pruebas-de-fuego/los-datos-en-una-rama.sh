@@ -466,7 +466,8 @@ PYEOF
   && "$ORE" source catalog s3_demo --out "$T/catalogo.json" \
   && "$ORE" discover --source s3_demo --type foreign --only default.raiz --no-model --owner team:data \
        --out packages/s3_demo --name s3_demo \
-  && git add -A && git commit -qm "la conexión s3_demo" && git push -q origin HEAD:main ) > "$T/con.txt" 2>&1 \
+  && "$ORE" materialize . --informe datasets \
+  && git add -A && git commit -qm "la conexión s3_demo, con su colección" && git push -q origin HEAD:main ) > "$T/con.txt" 2>&1 \
   || falla "16 · la conexión en main: $(tail -4 "$T/con.txt")"
 # La rama trae `main` (lo que la consola hace con «traer main»): sin la conexión
 # en su árbol no hay de qué inducir.
@@ -508,7 +509,9 @@ items() { # rama|- base → número de ítems (o el código)
 v="$(en "$RAMA" $PC)/$(en "$RAMA" $PV)/$(en main $PC)/$(en main $PV) · virtual $(virt $PC)/$(virt $PV) · ítems $(items "$RAMA" docs)/$(items "$RAMA" docsv)/$(items - docs)"
 [ "$v" = "si/si/no/no · virtual False/True · ítems 2/2/404" ] \
   || falla "17 · construir y servir en la rama (punteros rama/rama/main/main · virtual · ítems rama/rama/main): $v · $(tail -3 "$T/job.txt")"
-ok "17 · el Job construye las dos en la rama y no en main; se sirven desde la rama (2 ítems cada una) y main no las tiene"
+borrados=$(git --git-dir="$FORJA" diff --name-status --no-renames main..."$RAMA" -- datasets | awk '$1=="D"{print $2}' | tr '\n' ' ')
+[ -z "$borrados" ] || falla "17 · la pasada de la rama borró punteros heredados (la colección de s3_demo que trajo de main): $borrados"
+ok "17 · el Job construye las dos en la rama y no en main; se sirven desde la rama (2 ítems cada una) y main no las tiene; lo heredado sigue"
 
 # El mantenimiento de main, con lo que reclama la rama: los blobs de la
 # mantenida —que sólo nombra la rama— siguen.

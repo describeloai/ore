@@ -718,6 +718,13 @@ colección, virtual o mantenida—, y los dos se miden contra el punto de salida
   `RAMA`), que no ve la base —D4 sólo había mirado el alta de una *conexión*, que es `409`—; ahora
   el alta pone la rama de la copia como copiar, ascender y decidir. Prueba:
   `los-datos-en-una-rama.sh` 16–19 (el S3 de mentira es también el origen).
+  *En vivo* (`t-victor`, `test3`, 2026-09-30): dos altas en la rama (`s3_stuff` estándar,
+  `s3_foreign_stuff` foránea) encolaron `copiar-rama-*` con `RAMA=test3` y sus colecciones; la
+  pasada construyó las mantenidas (4 y 3 blobs) y las virtuales en la rama, y `main` no las tiene.
+  Y un hallazgo: la pasada con `--vista` **borró los punteros de las colecciones que la rama
+  heredó** (siete): `materialize --informe` retiraba el informe de toda colección que no fuera de
+  esta pasada. Vivas son ahora todas las del árbol (también arregla `rehacer` en `main`, que usa
+  `--vista`); la prueba 17 lo afirma.
 - *Prueba:* una base foránea nacida en una rama, con una colección virtual y otra mantenida: se
   sirve desde la rama (0046 E9 ya lee el árbol de la rama), el mantenimiento no se lleva sus blobs
   pasada la gracia, y al fusionar `main` la tiene.
