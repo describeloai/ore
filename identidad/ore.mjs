@@ -360,6 +360,27 @@ function conConsolaLocal(realm) {
   return realm;
 }
 
+// ⛔⛔ LA TERCERA PUERTA: EL REGISTRO (medido en vivo el 2026-09-30, recién saldada AAL2).
+//   Con la entrada y la reposición en REQUIRED, un usuario NUEVO se registró y entró en la
+//   consola de su cuenta con UN factor: el registro no pasa por el flujo de entrada, y
+//   Keycloak abre la sesión al terminarlo. Lo que lo cierra es una ACCIÓN POR DEFECTO: se le
+//   pone a todo usuario al crearse y se ejecuta antes de abrir la sesión. La passkey
+//   (`webauthn-register`), porque es el factor principal de `realm.mjs` (resistente a
+//   phishing); TOTP queda habilitado —no obligatorio— como recuperación.
+//
+//   ⚠️ No va dentro del realm: `requiredActions` en un import SUSTITUYE la lista entera de
+//     Keycloak. Lo concilia `aplicar.mjs` acción a acción, y `medir.mjs` lo exige.
+export const ACCIONES_POR_DEFECTO = {
+  'webauthn-register': { enabled: true, defaultAction: true },
+  CONFIGURE_TOTP: { enabled: true, defaultAction: false },
+};
+/** Las acciones que el realm `nombre` quiere, o nada si no abre el registro. */
+export function accionesDe(realm) {
+  return realm.registrationAllowed ? ACCIONES_POR_DEFECTO : {};
+}
+/** Las acciones requeridas que dejan al usuario con un segundo factor. */
+export const ACCIONES_QUE_ENROLAN = ['webauthn-register', 'webauthn-register-passwordless', 'CONFIGURE_TOTP'];
+
 /** ⭐ Los realms que ORE quiere, en el orden del manifiesto: `[[nombre, realm], …]`. */
 export function realmsDeOre() {
   const base = [

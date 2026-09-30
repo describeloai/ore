@@ -43,7 +43,7 @@
 // 📎 de la plataforma: docs/iam/03-el-programa.md `P·2·b` · aquí: identidad/realm.mjs, identidad/ore.mjs
 // ═══════════════════════════════════════════════════════════════════
 
-import { realmsDeOre } from './ore.mjs';
+import { realmsDeOre, accionesDe } from './ore.mjs';
 import {
   FLUJO_ENTRADA, factoresMinimos,
   FLUJO_REPOSICION, CREDENCIALES_DE_REPOSICION,
@@ -512,6 +512,23 @@ async function crearSiFalta(llamar, realm, deseado) {
 const contrasena = await leerContrasena();
 const llamar = api(await token(contrasena));
 
+/** ⭐ ORE (0048): las acciones requeridas —la del registro, sobre todo—. Devuelve los
+ *  cambios `[alias, antes, después]` y aplica si `aplicar`. */
+async function acciones(llamar, realm, deseado, aplicar) {
+  const quiere = accionesDe(deseado);
+  if (!Object.keys(quiere).length) return [];
+  const vivas = await llamar('GET', `/realms/${realm}/authentication/required-actions`) ?? [];
+  const cambios = [];
+  for (const [alias, q] of Object.entries(quiere)) {
+    const v = vivas.find((a) => a.alias === alias);
+    if (!v) { cambios.push([alias, 'no registrada', q]); continue; }
+    if (v.enabled === q.enabled && v.defaultAction === q.defaultAction) continue;
+    cambios.push([alias, { enabled: v.enabled, defaultAction: v.defaultAction }, q]);
+    if (aplicar) await llamar('PUT', `/realms/${realm}/authentication/required-actions/${alias}`, { ...v, ...q });
+  }
+  return cambios;
+}
+
 /** Lo que `aplicar` cambiaría en `realm`, sin tocar nada. */
 async function planificar(llamar, realm, deseado) {
   const vivo = await llamar('GET', `/realms/${realm}`);
@@ -535,6 +552,9 @@ async function planificar(llamar, realm, deseado) {
     } else if (JSON.stringify(vivo[k]) !== JSON.stringify(v)) {
       plan.push(`passkeys ${k}: ${JSON.stringify(vivo[k])} → ${JSON.stringify(v)}`);
     }
+  }
+  for (const [alias, antes, despues] of await acciones(llamar, realm, deseado, false)) {
+    plan.push(`acción ${alias}: ${JSON.stringify(antes)} → ${JSON.stringify(despues)}`);
   }
   const pub = (deseado.clients ?? []).find((c) => c.publicClient && c.standardFlowEnabled);
   if (pub) {
@@ -621,6 +641,11 @@ if (!SOLO_VERIFICAR) {
     });
     // ⭐⭐ LOS AJUSTES DEL REALM, que hasta hoy se declaraban y no se aplicaban nunca.
     const ajustes = await aplicarAjustes(llamar, realm, deseado);
+    // ⭐ ORE (0048): la tercera puerta, el registro.
+    for (const [alias, antes, despues] of await acciones(llamar, realm, deseado, true)) {
+      if (antes === 'no registrada') console.log(`   ⚠️  la acción ${alias} NO está registrada en ${realm}: el registro sigue abierto con un factor`);
+      else console.log(`   ⭐ acción ${alias}: ${JSON.stringify(antes)} → ${JSON.stringify(despues)}`);
+    }
     const cli = await aplicarCliente(llamar, realm, deseado);
     const cliente = cli?.clientId ?? null;
     // ⭐ Sólo en los realms SaaS: `rubix-interno` no administra clientes de nadie.

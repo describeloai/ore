@@ -16,12 +16,14 @@
 //   ③ la reposición no pide MENOS que la entrada, y ningún paso quita un factor
 //   ④ ninguna credencial de correo en el artefacto
 //   ⑤ ningún retorno `http://` a una máquina que no sea la propia (localhost es la consola en local)
+//   ⑥ con el registro abierto, todo usuario nuevo queda obligado a enrolar un factor (una
+//      acción por defecto): el registro abre sesión SIN pasar por el flujo de entrada
 // ═══════════════════════════════════════════════════════════════════
 
 import {
   factoresMinimos, CREDENCIALES, FLUJO_ENTRADA, CREDENCIALES_DE_REPOSICION, PASOS_QUE_QUITAN_FACTOR,
 } from './realm.mjs';
-import { realmsDeOre } from './ore.mjs';
+import { realmsDeOre, accionesDe, ACCIONES_QUE_ENROLAN } from './ore.mjs';
 
 /** CISA los nombra resistentes a phishing; excluye SMS, voz, correo y el push de aprobar. */
 const RESISTENTES = ['webauthn-authenticator', 'webauthn-authenticator-passwordless'];
@@ -65,6 +67,7 @@ for (const [nombre, r] of realmsDeOre()) {
     `credenciales=${usados.filter((a) => CREDENCIALES.includes(a)).length}`,
     `uv=${r.webAuthnPolicyUserVerificationRequirement ?? 'sin-politica'}`, `aal=${aal}`,
     `reposicion=${reposicion}`, `quitan=${quitan.length}`,
+    `registro=${r.registrationAllowed ? 'abierto' : 'cerrado'}`, `registro-enrola=${Object.entries(accionesDe(r)).filter(([, q]) => q.defaultAction).map(([a]) => a).join(',') || 'nada'}`,
     `smtp=${r.smtpServer?.host ?? 'ninguno'}`, `retornos-en-claro=${enClaro(r).length}`, `ajenos=${ajenos.length}`,
   ].join(' '));
   if (factores < 2) fallos.push(`${nombre}: la entrada exige ${factores} factor(es), no dos`);
@@ -73,6 +76,8 @@ for (const [nombre, r] of realmsDeOre()) {
   if (reposicion < factores) fallos.push(`${nombre}: la reposición pide ${reposicion} y la entrada ${factores}`);
   if (quitan.length) fallos.push(`${nombre}: la reposición quita un factor (${quitan.join(', ')})`);
   if (r.smtpServer && 'password' in r.smtpServer) fallos.push(`${nombre}: una credencial de correo en el artefacto`);
+  const obliga = Object.entries(accionesDe(r)).filter(([a, q]) => q.enabled && q.defaultAction && ACCIONES_QUE_ENROLAN.includes(a));
+  if (r.registrationAllowed && !obliga.length) fallos.push(`${nombre}: el registro abre sesión con UN factor (ninguna acción por defecto enrola uno)`);
   if (ajenos.length) fallos.push(`${nombre}: retornos en claro a otra máquina: ${ajenos.join(', ')}`);
 }
 if (fallos.length) {
