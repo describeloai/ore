@@ -8,10 +8,15 @@ on:
     branches: [main]
   pull_request:
 
-# Un empujón nuevo cancela el anterior sobre la misma rama: lo que importa es el
+# En un PR, un empujón nuevo cancela el anterior: lo que importa es el
 # veredicto de la punta, no el de un commit que ya nadie va a mirar.
+#
+# ⭐ En `main` NO (2026-09-30): cada commit es su propio grupo. Cancelar ahí
+#   tiraba a la basura media construcción cada vez que otra sesión empujaba
+#   (cinco veces en un día, medido), y el reloj volvía a cero. Quien decide
+#   qué se despliega es el trabajo `imagen`: sólo la punta, uno a la vez.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -381,9 +386,19 @@ jobs:
   #
   # ── ⭐⭐ Y el orden es la mitad del arreglo ───────────────────────────────
   #
-  #   `needs` con TODOS los trabajos de prueba. Construir antes de que pasen
+  #   `needs` con TODOS los trabajos de prueba. Desplegar antes de que pasen
   #   sería exactamente lo de antes con más pasos: lo que hace que esto sirva
-  #   no es que CI construya, es que **no pueda construir algo rojo**.
+  #   no es que CI construya, es que **nada que un manifiesto nombre pueda
+  #   salir de algo rojo**.
+  #
+  # ── ⭐ Construir sí va en paralelo con las pruebas (2026-09-30) ──────────
+  #
+  #   `construir` arranca con ellas y deja cada imagen SÓLO con la etiqueta
+  #   del commit (`:<sha>`), que ningún manifiesto nombra. Las que se nombran
+  #   —`:main`, y `:1` en los puestos— las mueve `imagen`, que sí espera a las
+  #   seis pruebas. Una imagen de un commit rojo existe, pero nadie la corre.
+  #   Medido: las pruebas eran 4,6 min del camino crítico, en serie antes de
+  #   una construcción de ~19.
   #
   # ── ⛔ Sin llaves de larga vida ───────────────────────────────────────────
   #
@@ -397,35 +412,46 @@ jobs:
   # ⚠️ `id-token: write` es lo que permite pedir ese token. Sin ese permiso el
   #   paso falla con un mensaje que no menciona OIDC.
   # ══════════════════════════════════════════════════════════════════════════
-  imagen:
-    # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
+  construir:
+    # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no construye nada.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
-    needs: [suite, graphql, descubrimiento, plano-de-control, los-verbos, fuentes-reales]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
     steps:
+      # ⭐ Sólo la punta de `main`. Un commit que ya tiene otro detrás no se
+      #   construye ni se despliega: lo hace el de detrás, con lo suyo dentro.
+      #   (Si el de detrás sale rojo no se despliega nada, igual que antes,
+      #   cuando lo cancelaba.) Y al desplegar se vuelve a preguntar: un
+      #   despliegue viejo que llega tarde no pisa uno nuevo.
+      - name: y solo si sigue siendo la punta de main
+        id: punta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PUNTA=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
+          if [ "$PUNTA" = "$GITHUB_SHA" ]; then echo "sigue=si" >> "$GITHUB_OUTPUT"
+          else echo "sigue=no" >> "$GITHUB_OUTPUT"; echo "  main ya va por ${PUNTA::12}: lo hace ese"; fi
+
       - uses: actions/checkout@v5
+        if: steps.punta.outputs.sigue == 'si'
         with:
           submodules: true
 
       - uses: google-github-actions/auth@v2
+        if: steps.punta.outputs.sigue == 'si'
         with:
           project_id: project-8853a180-450d-47be-b83
           workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
           service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 
-      # ⚠️ `kubectl` contra GKE necesita un plugin de credenciales que el runner NO
-      #   trae. Sin el, la construccion pasa y el relevo falla con un mensaje que
-      #   habla de client-go y no de que falta instalar algo.
       - uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: gke-gcloud-auth-plugin
+        if: steps.punta.outputs.sigue == 'si'
 
-      # Las cuatro, en una sola construcción: comparten la etapa `build`.
-      - name: construir las nueve imagenes
+      # Todas en una sola construcción: comparten la etapa `build`.
+      - name: construir las once imagenes, con la etiqueta del commit y ninguna otra
+        if: steps.punta.outputs.sigue == 'si'
         run: |
           # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
           #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla
@@ -439,6 +465,65 @@ jobs:
             --service-account=projects/project-8853a180-450d-47be-b83/serviceAccounts/ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com \
             --substitutions _SHA=${GITHUB_SHA::12} .
 
+  imagen:
+    # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
+    needs: [suite, graphql, descubrimiento, plano-de-control, los-verbos, fuentes-reales, construir]
+    # Un despliegue a la vez, y el que espera es el más nuevo: GitHub deja uno
+    # corriendo y uno pendiente, y un pendiente nuevo reemplaza al anterior.
+    concurrency:
+      group: desplegar-main
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # ⭐ Sólo la punta de `main`. Un commit que ya tiene otro detrás no se
+      #   construye ni se despliega: lo hace el de detrás, con lo suyo dentro.
+      #   (Si el de detrás sale rojo no se despliega nada, igual que antes,
+      #   cuando lo cancelaba.) Y al desplegar se vuelve a preguntar: un
+      #   despliegue viejo que llega tarde no pisa uno nuevo.
+      - name: y solo si sigue siendo la punta de main
+        id: punta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PUNTA=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
+          if [ "$PUNTA" = "$GITHUB_SHA" ]; then echo "sigue=si" >> "$GITHUB_OUTPUT"
+          else echo "sigue=no" >> "$GITHUB_OUTPUT"; echo "  main ya va por ${PUNTA::12}: lo hace ese"; fi
+
+      - uses: google-github-actions/auth@v2
+        if: steps.punta.outputs.sigue == 'si'
+        with:
+          project_id: project-8853a180-450d-47be-b83
+          workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
+          service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+
+      # ⚠️ `kubectl` contra GKE necesita un plugin de credenciales que el runner NO
+      #   trae. Sin el, la construccion pasa y el relevo falla con un mensaje que
+      #   habla de client-go y no de que falta instalar algo.
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.punta.outputs.sigue == 'si'
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      # ⭐ Ahora, y no al construir, las etiquetas que nombran los manifiestos.
+      #   Es mover un puntero en el registro: segundos, sin subir una capa.
+      - name: y las etiquetas que nombran los manifiestos, a este commit
+        if: steps.punta.outputs.sigue == 'si'
+        run: |
+          R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+          PIDS=""
+          for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main \
+                    ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 capa-jvm:1 idp:main; do
+            gcloud artifacts docker tags add "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" --quiet & PIDS="$PIDS $!"
+          done
+          MAL=0
+          for P in $PIDS; do wait "$P" || MAL=1; done
+          exit $MAL
+
       # ⭐⭐ Y el DESPLIEGUE no cambia la etiqueta del manifiesto. Sigue siendo
       #   `:main` con `imagePullPolicy: Always`, para que `kubectl apply -f
       #   malla/…` a mano siga diciendo la verdad. Lo que se escribe es una
@@ -446,6 +531,7 @@ jobs:
       #   árbol salió lo que está corriendo, que es lo que hoy no se podía
       #   averiguar mirando un pod.
       - name: desplegar, y dejar dicho de que commit
+        if: steps.punta.outputs.sigue == 'si'
         run: |
           gcloud container clusters get-credentials ore-mesh \
             --zone europe-west1-b --project project-8853a180-450d-47be-b83
@@ -484,7 +570,20 @@ jobs:
           # Y viaja al paso siguiente, que comprueba EXACTAMENTE esta lista.
           echo "DESTINOS=$DESTINOS" >> "$GITHUB_ENV"
 
+          # ⭐ En paralelo, en DOS OLEADAS (2026-09-30). Uno a uno eran ~6 min
+          #   de esperar `rollout status` en fila. Pero en fila había un canario
+          #   sin querer: `ore-serve` y `ore-cofre` son `Recreate`, y una imagen
+          #   que no arranca paraba el bucle en la primera celda y dejaba las
+          #   demás sirviendo. Eso se conserva a proposito: `ore-iam` y la
+          #   primera celda primero; el resto, sólo si esos quedaron en pie.
+          PRIMERA=$(kubectl get ns -l ore.dev/rol=cargas -o jsonpath='{.items[0].metadata.name}')
+          OLA1=""; OLA2=""
           for D in $DESTINOS; do
+            case "$D" in identidad/*|"$PRIMERA"/*) OLA1="$OLA1 $D";; *) OLA2="$OLA2 $D";; esac
+          done
+          relevar() {
+          PIDS=""
+          for D in "$@"; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
             # ── ⛔⛔ APPLY DEL LADO DEL SERVIDOR, Y NO UN `patch` ──────────
             #
@@ -514,14 +613,24 @@ jobs:
               "$NOMBRE" "$NS" "$GITHUB_SHA" \
               | kubectl -n "$NS" apply --server-side --field-manager=ore-ci \
                   --force-conflicts -f -
-            kubectl -n "$NS" rollout status "deployment/$NOMBRE" --timeout=300s
+            kubectl -n "$NS" rollout status "deployment/$NOMBRE" --timeout=300s > "/tmp/relevo-$NS-$NOMBRE.txt" 2>&1 &
+            PIDS="$PIDS $!"
           done
+          MAL=0
+          for P in $PIDS; do wait "$P" || MAL=1; done
+          cat /tmp/relevo-*.txt; rm -f /tmp/relevo-*.txt
+          return $MAL
+          }
+          echo "  primera oleada:$OLA1"
+          relevar $OLA1 || { echo "x la primera oleada no quedo en pie: el resto no se toca"; exit 1; }
+          [ -z "$OLA2" ] || { echo "  segunda oleada:$OLA2"; relevar $OLA2; }
 
       # ⛔ Y se COMPRUEBA que lo que quedó arriba es lo que se acaba de empujar.
       #   Un `rollout status` verde dice que hay pods listos, no que sean los
       #   nuestros: si el `patch` no hubiera cambiado nada —porque la anotación
       #   ya estuviera— no habría relevo y esto pasaría igual.
       - name: y comprobar que corre ESTE commit
+        if: steps.punta.outputs.sigue == 'si'
         run: |
           for D in $DESTINOS; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"

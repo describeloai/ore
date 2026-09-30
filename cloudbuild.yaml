@@ -15,6 +15,27 @@
 #            estaba corriendo podía haber cualquier cosa, y el 2026-09-08 hubo
 #            un pánico desplegado veinte minutos.
 #
+# ⭐ (2026-09-30) Aquí sólo se pone `:<sha>`. `:main` —y `:1` en los puestos—
+#   la mueve el trabajo `imagen` de `ci.yml` DESPUÉS de las seis pruebas, que
+#   ahora corren a la vez que esto. Así una construcción de un commit rojo no
+#   llega a nada que un manifiesto nombre.
+#
+# ── ⭐ En paralelo, y reutilizando lo que no cambió (2026-09-30) ───────────
+#
+#   Medido: ~19 min, con los once pasos en fila y cada capa rehecha y subida
+#   de nuevo (el PUSH solo, 4 min). Ahora:
+#   · `waitFor`: lo que no lleva nada de Rust (`informador`, `capa-jvm`, `idp`)
+#     arranca con `ore`; lo que copia un binario espera a `ore`, que es quien
+#     deja la etapa `build` en la caché del demonio.
+#   · BuildKit con caché EN LÍNEA: cada imagen se construye `--cache-from` la
+#     que corre hoy (`:main` o `:1`) y lleva dentro su propia caché para la
+#     siguiente. Una capa cuyas entradas no cambiaron se reutiliza tal cual —y
+#     un `COPY` de un binario se compara por CONTENIDO: el mismo commit de un
+#     crate da el mismo binario (es la tesis del perfil `release`)—, así que ni
+#     se rehace ni se sube.
+#   · `_CACHE_MAIN`/`_CACHE_UNO` sólo existen para medir esto a mano sin tocar
+#     `:main`: se apuntan a la `:<sha>` de una construcción anterior.
+#
 # ⚠️ Y el despliegue NO cambia la etiqueta del manifiesto: sigue siendo `:main`
 #   con `imagePullPolicy: Always`, para que `kubectl apply -f malla/…` a mano
 #   siga diciendo la verdad. La trazabilidad va en una anotación con el commit,
@@ -25,76 +46,112 @@ substitutions:
   # sin disparador no llega: una propia no depende de como se invoque esto.
   _SHA: sin-commit
   _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+  # De dónde sale la caché: lo que corre hoy.
+  _CACHE_MAIN: main
+  _CACHE_UNO: '1'
 
 steps:
+  # La etapa `build` —todo Rust— se compila aquí, una vez, y queda en la
+  # caché del demonio para los que copian un binario.
   - id: ore
     name: gcr.io/cloud-builders/docker
-    args: [build, --target, ore, -t, '${_REGISTRO}/ore:main', -t, '${_REGISTRO}/ore:${_SHA}', .]
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: ['-']
+    args: [build, --target, ore, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore:${_SHA}', .]
 
-  - id: drivers
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, drivers, -t, '${_REGISTRO}/ore-drivers:main', -t, '${_REGISTRO}/ore-drivers:${_SHA}', .]
-
-  - id: serve
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, serve, -t, '${_REGISTRO}/ore-serve:main', -t, '${_REGISTRO}/ore-serve:${_SHA}', .]
-
-  - id: iam
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, iam, -t, '${_REGISTRO}/ore-iam:main', -t, '${_REGISTRO}/ore-iam:${_SHA}', .]
-
-  - id: cofre
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, cofre, -t, '${_REGISTRO}/ore-cofre:main', -t, '${_REGISTRO}/ore-cofre:${_SHA}', .]
+  # Sin Rust: `curl`, `jq` y un guion.
   - id: informador
     name: gcr.io/cloud-builders/docker
-    args: [build, --target, informador, -t, '${_REGISTRO}/ore-informador:main', -t, '${_REGISTRO}/ore-informador:${_SHA}', .]
-  # El puesto Python, entorno 1 (0031 W3): un runtime, no un binario nuestro.
-  - id: puesto-python
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, puesto-python, -t, '${_REGISTRO}/puesto-python:1', -t, '${_REGISTRO}/puesto-python:${_SHA}', .]
-  # Y los de TS/JS y Java (0031 W3.4): mismo agente, otro runtime.
-  - id: puesto-node
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, puesto-node, -t, '${_REGISTRO}/puesto-node:1', -t, '${_REGISTRO}/puesto-node:${_SHA}', .]
-  - id: puesto-jvm
-    name: gcr.io/cloud-builders/docker
-    args: [build, --target, puesto-jvm, -t, '${_REGISTRO}/puesto-jvm:1', -t, '${_REGISTRO}/puesto-jvm:${_SHA}', .]
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: ['-']
+    args: [build, --target, informador, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore-informador:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-informador:${_SHA}', .]
+
   # ⭐ Y quien resuelve la capa de la JVM (0037 ③c): el mismo JDK que el puesto
   #   y Maven, sin testigo ni credencial. Su etiqueta va con la del puesto
   #   porque comparten `jars.txt`: lo que una provee es lo que la otra lleva.
   - id: capa-jvm
     name: gcr.io/cloud-builders/docker
-    args: [build, --target, capa-jvm, -t, '${_REGISTRO}/capa-jvm:1', -t, '${_REGISTRO}/capa-jvm:${_SHA}', .]
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: ['-']
+    args: [build, --target, capa-jvm, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/capa-jvm:${_CACHE_UNO}', -t, '${_REGISTRO}/capa-jvm:${_SHA}', .]
 
   # 0048 I2: el IdP, cocido y con el tema del correo. La que CORRE la fija
   # `malla/60-idp.yaml` (cambiarla reinicia el login): aquí sólo se construye.
   - id: idp
     name: gcr.io/cloud-builders/docker
-    args: [build, --target, idp, -t, '${_REGISTRO}/idp:main', -t, '${_REGISTRO}/idp:${_SHA}', .]
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: ['-']
+    args: [build, --target, idp, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/idp:${_CACHE_MAIN}', -t, '${_REGISTRO}/idp:${_SHA}', .]
+
+  # Desde aquí, los que copian binarios de `build`: esperan a `ore`.
+  - id: drivers
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, drivers, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore-drivers:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-drivers:${_SHA}', .]
+
+  - id: serve
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, serve, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore-serve:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-serve:${_SHA}', .]
+
+  - id: iam
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, iam, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore-iam:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-iam:${_SHA}', .]
+
+  - id: cofre
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, cofre, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore-cofre:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-cofre:${_SHA}', .]
+
+  # El puesto Python, entorno 1 (0031 W3): un runtime, no un binario nuestro
+  # (salvo `ore-store-gcs`, que es lo que les hace esperar a `ore`).
+  - id: puesto-python
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, puesto-python, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/puesto-python:${_CACHE_UNO}', -t, '${_REGISTRO}/puesto-python:${_SHA}', .]
+
+  # Y los de TS/JS y Java (0031 W3.4): mismo agente, otro runtime.
+  - id: puesto-node
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, puesto-node, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/puesto-node:${_CACHE_UNO}', -t, '${_REGISTRO}/puesto-node:${_SHA}', .]
+
+  - id: puesto-jvm
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [ore]
+    args: [build, --target, puesto-jvm, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/puesto-jvm:${_CACHE_UNO}', -t, '${_REGISTRO}/puesto-jvm:${_SHA}', .]
+
 images:
-  - '${_REGISTRO}/ore:main'
   - '${_REGISTRO}/ore:${_SHA}'
-  - '${_REGISTRO}/ore-drivers:main'
-  - '${_REGISTRO}/ore-drivers:${_SHA}'
-  - '${_REGISTRO}/ore-serve:main'
-  - '${_REGISTRO}/ore-serve:${_SHA}'
-  - '${_REGISTRO}/ore-iam:main'
-  - '${_REGISTRO}/ore-iam:${_SHA}'
-  - '${_REGISTRO}/ore-cofre:main'
-  - '${_REGISTRO}/ore-cofre:${_SHA}'
-  - '${_REGISTRO}/ore-informador:main'
   - '${_REGISTRO}/ore-informador:${_SHA}'
-  - '${_REGISTRO}/puesto-python:1'
-  - '${_REGISTRO}/puesto-python:${_SHA}'
-  - '${_REGISTRO}/puesto-node:1'
-  - '${_REGISTRO}/puesto-node:${_SHA}'
-  - '${_REGISTRO}/puesto-jvm:1'
-  - '${_REGISTRO}/puesto-jvm:${_SHA}'
-  - '${_REGISTRO}/capa-jvm:1'
   - '${_REGISTRO}/capa-jvm:${_SHA}'
-  - '${_REGISTRO}/idp:main'
   - '${_REGISTRO}/idp:${_SHA}'
+  - '${_REGISTRO}/ore-drivers:${_SHA}'
+  - '${_REGISTRO}/ore-serve:${_SHA}'
+  - '${_REGISTRO}/ore-iam:${_SHA}'
+  - '${_REGISTRO}/ore-cofre:${_SHA}'
+  - '${_REGISTRO}/puesto-python:${_SHA}'
+  - '${_REGISTRO}/puesto-node:${_SHA}'
+  - '${_REGISTRO}/puesto-jvm:${_SHA}'
 
 options:
   machineType: E2_HIGHCPU_8
