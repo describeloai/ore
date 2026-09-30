@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE), E3 (la superficie) y E4 (el driver) hechos ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE), E3 (la superficie) y E4 (el driver) hechos; E5–E8 hechos y en vivo; **E9 (servir y referenciar) hecho y en vivo el 2026-09-30**, salvo el 302 de la consola (E9·5) ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -333,6 +333,8 @@ F8 (procesar) queda fuera de este plan.
   puente entre IAM y el plano de control de la organización y el plano de productos y de datos:
   con él, todo consumidor del plano de datos consumirá IAM de forma centralizada y estándar. E9 se
   conecta a ese puente cuando exista; hasta entonces no se construye una comprobación propia.
+  *(Resuelto en E9, abajo: ese ADR es la `0047`; hasta su A8, quien puede servir es quien
+  pertenece a la organización, A9′, y cada ítem servido queda anotado.)*
 - **La credencial.** E4–E9 con claves de acceso (lo medido en F1); la federación sin claves se mide
   en su paso, E9b, antes de la consola.
 - **Las palabras de `changes`.** Activar la comprobación de `mode`/`witness` para todas las
@@ -683,6 +685,85 @@ acceso en espera y el permiso de firmar por dar. La recogida mira `main`: cuando
 (sesión paralela), los vivos tienen que ser los de todas. `ore-serve` no enseña todavía el cotejo ni
 lanza el mantenimiento de una colección; la consola, E10. *Merge-on-read* si alguna colección pasa el
 techo.
+
+**E9 · servir y referenciar (hecho y en vivo, 2026-09-30).** Criterio: *un `Contrato` con su PDF,
+servido*. Cumplido desde un puesto de victor, como lo haría un cliente.
+
+**Lo decidido al empezar.**
+
+1. **Servir es firmar, no pasar bytes.** ore-serve autoriza, firma y anota; el lago (la mantenida)
+   o el origen (la virtual) sirve. Nadie accede al bucket con una credencial de ORE, y ore-serve no
+   ve un byte del fichero.
+2. **La respuesta es JSON, no un 302**: `{url, caduca_ms, segundos, tipo, disposicion, …}`. Un
+   SDK, un agente o una celda quieren la URL y su caducidad; el 302 lo hace la consola (E9·5), que
+   es la que abre el PDF en el navegador.
+3. **Una URL firmada es un portador.** Vive 300 s (de 30 a 3600, `ttl`), va fijada a la versión o al
+   blob, y `inline` sólo para lo que el navegador pinta sin ejecutar (PDF, imagen raster, vídeo,
+   audio); todo lo demás, `attachment`. El nombre, en `Content-Disposition` ASCII y RFC 6266
+   (`filename*`). Una URL manipulada —cambiar `inline` por `attachment`— es un 403: la firma cubre
+   la respuesta.
+4. **Quién puede**: la pertenencia a la organización (0047 A9′) hasta que 0047 A8 dé al motor de
+   `ore-iam` decisiones por recurso. Cada ítem servido es un evento `coleccion:servir` en el buzón,
+   con sus huellas y sus blobs o versiones: el «hizo» de 0047.
+5. **La virtual**: ore-serve lee la credencial de la fuente **como el agente de su celda** (el
+   patrón de la conexión autorizadora), del custodio, y sólo para ese hijo.
+
+**E9·1 · firmar sin claves, en cada celda** (`6e6e05e`, `2e02a45`). El 403 de `signBlob` de E8 se
+cierra dando a `ore-serve-<celda>` `TokenCreator` **sobre sí misma**: firma V4 (`GOOG4-RSA-SHA256`)
+con `signBlob`, sin una llave en el clúster. Y CORS en el lago (`app.paladio.io` y `localhost:3000`,
+`GET`/`HEAD`, las cabeceras de rango y de disposición), comparado antes de escribir. Los dos en
+`malla/aprovisionar-inquilino.sh`, así que valen para toda celda que se dé de alta, no sólo para
+demo, prueba y victor, donde se aplicaron (el papel del aprovisionador gana `storage.buckets.update`).
+
+**E9·2 · la mantenida** (`1eafe87`, `b210c01`). `GET /colecciones/{b}/{s}/{n}/items/{huella}` y
+`POST …/items/resolver` (hasta 100 huellas; las que no están, en `no_estan`, sin inventar nada);
+`ore collections --servir` elige la fila (`actual` antes que `retirado`; `perdido`, nunca) y
+`ore-store blob-firmar` firma los blobs en paralelo. En vivo en victor: ~1 s, el sha256 de lo bajado
+es el del blob, y un rango es un 206 con CORS. El lote entra desde un puesto (es leer).
+
+**E9·3 · la virtual** (`80ec282`, `741906e`, `d003b4a`, `a566540`). Del origen, fijada a su
+`versionId`, prefirmada con SigV4. Dos cosas se decidieron aquí:
+
+- **El firmante sin red.** ore-serve no traía el lector de S3, y meterlo rompía la garantía de que
+  *ore-serve no puede leer un origen*. `ore-firmar-s3` firma y nada más: depende sólo de
+  `ore-sigv4` (sha2) y `serde_json`, y `dependencias.rs` exige que su cierre en `Cargo.lock` no tenga
+  TLS, ni `ureq`, ni `ore-s3` (≤ 24 crates). Firmar SigV4 es HMAC sobre una cadena: no hace falta la
+  red, y sin red no hay forma de que lea el bucket con la credencial que firma.
+- **La credencial, un paso más.** `ore collections --servir` sale con 69 y
+  `{"necesita":{"fuente","env"}}`; ore-serve pide el token del agente al IdP del clúster, lee
+  `fuente-<F>` del custodio y vuelve a correr `ore` con esa variable **sólo en el hijo**.
+
+**La latencia, medida y cerrada.** Servir un ítem virtual tardaba **9–10 s**. Medido en los pods: la
+primera pasada de `ore`, 0,6 s; la segunda (firmar), ~1 s; el resto era **el custodio**, que hablaba
+con Secret Manager lanzando `gcloud` —3,6 s sólo en arrancar— **dos veces** por secreto (`access` y
+`describe`). Por la API REST con el token del metadata server, una llamada: **0,35 s**. `ore-cofre`
+pasa a hablar con el almacén por `ore-gcp`, como `ore-store` y `ore-read-bigquery`; el KMS de la
+mudanza se queda con `gcloud`. En vivo, servir un ítem virtual: **1,7 s** un ítem (antes 9,8), **1,5 s** el lote de 4 (antes 9,3).
+
+En vivo en victor (`s3_contratos.nueva_carpeta.contratos`): 200, `application/pdf` en línea desde S3
+`eu-north-1` con su versión; bajados los 717 bytes; un rango, 206; manipulada, 403; el lote, 4 de 4
+servidos y bajados, y la huella inventada en `no_estan`.
+
+**E9·4 · `Media<c>` en lo que se lee** (`0ca9a3c`). En v1alpha16 las `View` son SQL y `Media<c>` sólo
+existe en las propiedades de una `Entity`. Así que la anotación va **en el dataset que respalda la
+entidad**: `ore_core::vistas::media_de` dice, por cada columna `Media<c>`, de qué colección es la
+huella (si dos entidades lo dicen distinto, no se dice), y `/puestos/{id}/datos` la devuelve como
+`media: {columna: "b.s.n"}`. El SDK (Python y Node): `media_de(vista)`, `media(coleccion, huella)`
+y `medias(coleccion, huellas)` en lotes de cien.
+
+En vivo, desde un puesto de victor, el criterio: se declaran el dataset
+`s3_standard.registro_contratos` y la `Entity` `Contrato` (`documento: Media<s3_standard.nueva_carpeta.contratos>`);
+se escriben 4 contratos apuntando por huella; `media_de` dice la colección **sin que el cliente la
+nombre**; `media` sirve el PDF (`application/pdf`, en línea, 300 s) y `medias` los 4; lo bajado
+empieza por `%PDF-`.
+
+Pruebas de fuego: `s3-coleccion-mantenida.sh` (paso 9), `s3-coleccion.sh` (paso 6, contra el bucket
+real), `el-sdk-sirve-un-media.py` y `.mjs`; el S3 de mentira (`de-mentira.py`) verifica la firma y la
+caducidad de lo prefirmado y honra `response-content-*`.
+
+**Sin hacer, y dónde va.** El 302 de la consola (E9·5, en la plataforma). La paridad del SDK de la
+JVM. Las decisiones por recurso cuando 0047 A8 las dé (hoy, la pertenencia). La federación sin
+claves hacia AWS, E9b.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar
