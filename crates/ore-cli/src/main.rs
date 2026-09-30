@@ -884,6 +884,11 @@ enum Command {
         /// que se subio o se toco (`2h` por defecto: mas que un Job).
         #[arg(long)]
         gracia: Option<String>,
+        /// Con `--recoger`: un directorio con los punteros propios de las demas
+        /// ramas del arbol (0044 C D7a). Los blobs que nombran sus colecciones
+        /// no se recogen.
+        #[arg(long, value_name = "DIR")]
+        reclaman: Option<PathBuf>,
         /// Sirve items de una coleccion mantenida `<base>.<schema>.<nombre>`:
         /// de cada `--huella`, su item y una URL firmada a sus bytes (0046 E9.2).
         #[arg(long, value_name = "B.S.N")]
@@ -1119,6 +1124,7 @@ fn main() -> std::process::ExitCode {
             recoger,
             seco,
             gracia,
+            reclaman,
             servir,
             huellas,
             ttl,
@@ -1138,6 +1144,7 @@ fn main() -> std::process::ExitCode {
                     recoger: *recoger,
                     seco: *seco,
                     gracia: gracia.as_deref(),
+                    reclaman: reclaman.as_deref(),
                     servir: servir.as_deref(),
                     huellas,
                     ttl: *ttl,

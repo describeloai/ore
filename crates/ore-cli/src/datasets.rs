@@ -248,6 +248,9 @@ pub(crate) struct Ajenos {
     pub claves: BTreeSet<String>,
     /// Por dataset, las `metadata_location` que otra rama nombra.
     pub ubicaciones: std::collections::BTreeMap<String, BTreeSet<String>>,
+    /// ⭐ D7a: las colecciones de las demás ramas, `(dataset, metadata_location)`:
+    ///   sus blobs cuentan vivos en `ore collections --recoger`.
+    pub colecciones: BTreeSet<(String, String)>,
 }
 
 impl Ajenos {
@@ -278,6 +281,9 @@ impl Ajenos {
             });
             if let Some(d) = d {
                 if let Some(ml) = ml {
+                    if campo_de(&n, "kind").as_deref() == Some("MediaCollection") {
+                        a.colecciones.insert((d.clone(), ml.clone()));
+                    }
                     a.ubicaciones.entry(d.clone()).or_default().insert(ml);
                 }
                 a.datasets.insert(d);

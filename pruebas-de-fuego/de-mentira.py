@@ -48,6 +48,26 @@ def ahora_iso():
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 PARTES = {}  # uploadId → {partNumber: bytes}
+
+
+def crc64nvme(b):
+    """La huella que S3 da con `x-amz-checksum-mode: ENABLED` (CRC-64/NVME, en
+    base64 de sus 8 bytes): lo que una colección fija de cada ítem (0046 E7)."""
+    c = 0xFFFFFFFFFFFFFFFF
+    for x in b:
+        c ^= x
+        for _ in range(8):
+            c = (c >> 1) ^ (0x9A6C9329AC4BC9B5 if c & 1 else 0)
+    return base64.b64encode((c ^ 0xFFFFFFFFFFFFFFFF).to_bytes(8, "big")).decode()
+
+
+def cabeceras_de_objeto(h, b):
+    """ETag y huella, como S3 en `HEAD` y `GET` (un bucket sin versiones: la
+    versión es `null`)."""
+    h.send_header("etag", '"%s"' % hashlib.md5(b).hexdigest())
+    h.send_header("x-amz-checksum-crc64nvme", crc64nvme(b))
+    h.send_header("x-amz-checksum-type", "FULL_OBJECT")
+    h.send_header("x-amz-version-id", "null")
 CERROJO = threading.Lock()
 
 
@@ -206,6 +226,23 @@ class S3(BaseHTTPRequestHandler):
                 self.wfile.write(b)
                 return
         firmado = {k: q[k][0] for k in ("response-content-type", "response-content-disposition") if k in q}
+        # `ListObjectVersions` (0046 E8·1b): sin versiones, una por clave, `null`.
+        if "versions" in q:
+            pref = q.get("prefix", [""])[0]
+            with CERROJO:
+                claves = sorted((k, OBJETOS[k]) for k in OBJETOS if k.startswith(pref))
+            xml = "<ListVersionsResult><IsTruncated>false</IsTruncated>" + "".join(
+                "<Version><Key>%s</Key><VersionId>null</VersionId><IsLatest>true</IsLatest>"
+                "<LastModified>%s</LastModified><ETag>&quot;%s&quot;</ETag><Size>%d</Size></Version>"
+                % (k, FECHAS.get(k, "2026-01-01T00:00:00.000Z"), hashlib.md5(b).hexdigest(), len(b))
+                for k, b in claves) + "</ListVersionsResult>"
+            b = xml.encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/xml")
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if "list-type" in q:
             pref = q.get("prefix", [""])[0]
             with CERROJO:
@@ -247,6 +284,7 @@ class S3(BaseHTTPRequestHandler):
             self.send_header("content-type", tipo)
         if "response-content-disposition" in firmado:
             self.send_header("content-disposition", firmado["response-content-disposition"])
+        cabeceras_de_objeto(self, b)
         self.send_header("content-length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
@@ -256,6 +294,8 @@ class S3(BaseHTTPRequestHandler):
         with CERROJO:
             b = OBJETOS.get(clave)
         self.send_response(200 if b is not None else 404)
+        if b is not None:
+            cabeceras_de_objeto(self, b)
         self.send_header("content-length", str(len(b) if b is not None else 0))
         self.end_headers()
 

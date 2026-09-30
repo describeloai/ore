@@ -661,6 +661,45 @@ del binario que lo entiende (binario primero, malla después).
   mover un byte) y nueva 3; copiaBase sigue en 20 y su reconstrucción queda encolada; la rama se
   pone al día y lo fusionado deja de ser suyo.
 
+**D7 · Lo mantenido de la rama: también las colecciones** (ORE; sin consola) — va antes de D6
+
+Encontrado el 2026-09-30, con una base creada en una rama (`s3_rol_contratos` en `test3`, con su
+colección `contratos`): el alta de una base **sí** vale en una rama (escribe en su árbol; lo que es
+de la celda es la *conexión*), pero lo que encola `tras_inducir` en una rama es
+`vistas_de_la_rama` —«las colecciones, todavía no»—, así que la colección no tiene transacción.
+Y si la tuviera, la perdería: `ore collections --recoger` cuenta vivos sólo los blobs de los
+manifiestos de `main`. Es el mismo par que D1 y D4 cerraron para los datasets, visto desde el otro
+lado; se cierra igual, **sin un caso aparte para colecciones**: lo que construye la rama y lo que
+reclama son «lo mantenido» —todo lo que tiene puntero en `datasets/`, sea dataset, copia o
+colección, virtual o mantenida—, y los dos se miden contra el punto de salida.
+
+- *D7a, la recogida reclama las colecciones de las demás ramas* (binario): `ore collections
+  --recoger` acepta el mismo `--reclaman <dir>` que D1; de cada puntero de colección ajeno se lee
+  su manifiesto y sus blobs cuentan vivos. Un manifiesto ajeno que no se lee es como uno propio:
+  no se recoge ningún blob. El manifiesto (la tabla Iceberg de la colección) ya lo protege D1,
+  porque su puntero es un puntero más.
+  *Hecho así:* `Ajenos` (el mismo lector de D1) aparta los punteros `kind: MediaCollection`;
+  `recoger` lee su manifiesto **entero** —la retención de una rama no corre aquí: lo que ella
+  retiró, ella lo guarda— y suma sus blobs a los vivos (se salta los que son el puntero de aquí).
+  Dice cuántas colecciones de otras ramas cuentan; `--reclaman` que no es un directorio es `66`, y
+  un manifiesto ajeno ilegible, `69` sin recoger ningún blob (la retención de aquí sí corre).
+  Prueba: `las-colecciones-en-una-rama.sh` 1–8 —el S3 de mentira hace de origen y de lago, y
+  aprendió `ListObjectVersions` y la huella `CRC64NVME` para ello—: con la rama, el blob que sólo
+  ella nombra sigue; sin ella, se va.
+- *D7b, la malla:* el `53` pasa `--reclaman /trabajo/ramas` también a `ore collections --recoger`
+  (después del binario de D7a, nunca junto).
+- *D7c, medir:* con la base de `test3`, ¿`recoger-huerfanas` y el `recoger` por tabla reclaman el
+  manifiesto de una colección de la rama? ¿La superposición de D3 y la fusión de D5 tratan su
+  puntero como el de un dataset (misma carpeta, `manda` por hash, «con receta» = sin
+  `escrito_por`)? ¿El Job de D4b corre la transacción de una colección y escribe su puntero en la
+  rama?
+- *D7d, encolar lo mantenido de la rama:* `vistas_de_la_rama` pasa a ser lo mantenido de la rama:
+  lo que cambió desde el punto de salida y lo que depende de ello, **con** las colecciones virtuales
+  y mantenidas (el conducto ya distingue la virtual: no cruza `payload` y no lo pide).
+- *Prueba:* una base foránea nacida en una rama, con una colección virtual y otra mantenida: se
+  sirve desde la rama (0046 E9 ya lee el árbol de la rama), el mantenimiento no se lleva sus blobs
+  pasada la gracia, y al fusionar `main` la tiene.
+
 **D6 · Cerrar**
 
 - Este apéndice pasa a hecho con sus medidas en vivo; el README de decisiones; el `409` del
@@ -673,8 +712,7 @@ del binario que lo entiende (binario primero, malla después).
   una rama viven lo que viva la rama.
 - **Combinar** los dos lados (C.4) y **las filas en el diff** de una propuesta (A.6, «más adelante»).
 - **Dar de alta una conexión en una rama** (B.2: es de la celda).
-- **Las colecciones mantenidas en una rama** (0046 E8): la copia de una rama construye datasets;
-  las colecciones siguen en la pasada de `main`.
+- ~~**Las colecciones mantenidas en una rama**~~ (0046 E8): pasa a D7.
 - **Contestar decisiones desde la consola en una rama:** ORE ya lo hace en la rama; la consola
   todavía no manda la rama en `contestar-decisiones`.
 - **Las propuestas de rama entera** (sin alcance, 0030 W2) las fusiona la forja: dos punteros

@@ -37,6 +37,8 @@ pub struct Opciones<'a> {
     pub recoger: bool,
     pub seco: bool,
     pub gracia: Option<&'a str>,
+    /// Con `recoger`: los punteros propios de las demás ramas (0044 C D7a).
+    pub reclaman: Option<&'a Path>,
     pub servir: Option<&'a str>,
     pub huellas: &'a [String],
     pub ttl: Option<u64>,
@@ -825,7 +827,13 @@ fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// **cualquier** fila de **cualquier** manifiesto —de una colección con
 /// documento o de una cuyo documento ya se fue y aún tiene puntero—; si uno
 /// no se puede leer, la lista no está entera y no se recoge nada.
+///
+/// ⭐ Y de **cualquier rama** (0044 C D7a): con `--reclaman`, también los de
+///   las colecciones que las demás ramas construyeron. Los blobs son del
+///   inquilino, no de una rama: uno que sólo nombra una rama se borraría
+///   pasada la gracia, como un dataset antes de D1.
 fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+    let ajenos = crate::datasets::Ajenos::de(op.reclaman).map_err(|m| (66, m))?;
     let gracia = match op.gracia {
         Some(g) => crate::datasets::edad_ms(g).map_err(|m| (64, m))?,
         None => 2 * 3_600_000,
@@ -876,6 +884,38 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             }
         }
     }
+    // Las de las demás ramas: lo que sus manifiestos nombran, entero (la
+    // retención de una rama no corre aquí; lo que ella retiró, ella lo guarda).
+    let propios: std::collections::BTreeSet<String> = crate::datasets::punteros(path, &dir)
+        .into_iter()
+        .filter(|p| p.es_coleccion())
+        .filter_map(|p| p.campo("metadata_location"))
+        .collect();
+    let mut de_otras = 0usize;
+    for (dataset, ml) in &ajenos.colecciones {
+        if propios.contains(ml) {
+            continue;
+        }
+        match crate::coleccion::manifiesto(dataset, ml) {
+            Ok(filas) => {
+                de_otras += 1;
+                vivos.extend(
+                    filas
+                        .into_iter()
+                        .filter(|f| !f.blob.is_empty())
+                        .map(|f| f.blob),
+                );
+            }
+            Err(e) => {
+                ilegibles.push(format!("{dataset} (de otra rama): {e}"));
+                lineas.push(Json::obj([
+                    ("coleccion", Json::s(dataset)),
+                    ("rama", Json::s("otra")),
+                    ("error", Json::s(&e)),
+                ]));
+            }
+        }
+    }
     let blobs = if ilegibles.is_empty() {
         let r = almacen(
             "blobs-recoger",
@@ -905,6 +945,7 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             Json::obj([
                 ("colecciones", Json::Arr(lineas)),
                 ("punteros_movidos", Json::Int(movidos as i64)),
+                ("de_otras_ramas", Json::Int(de_otras as i64)),
                 ("seco", Json::Bool(op.seco)),
                 ("gracia_ms", Json::Int(gracia)),
                 (
@@ -931,6 +972,9 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 };
                 println!("{} · {texto}", s("coleccion"));
             }
+        }
+        if op.reclaman.is_some() {
+            println!("de las demás ramas: {de_otras} colección(es) con blobs que no son de aquí");
         }
         if blobs.is_some() {
             println!(
