@@ -514,6 +514,8 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         "metadata_location",
         "cuando",
         "escrito_por",
+        // 0044 C.2 ③: en una rama, de dónde sale (`main` al día, o `rama`).
+        "de",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());

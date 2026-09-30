@@ -69,7 +69,16 @@ impl Cache {
 /// compilado, la proyección, y `version` por fichero si hay historia.
 pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let punteros = ore_core::punteros::del_arbol(raiz);
+    let mut punteros = ore_core::punteros::del_arbol(raiz);
+    // ⭐ 0044 C.2 ③: en una rama, cada puntero dice de dónde sale.
+    if let Some(de) = crate::datasets::de_main(raiz) {
+        for (k, v) in punteros.iter_mut() {
+            if let Json::Obj(m) = v {
+                let d = if de.contains(k) { "main" } else { "rama" };
+                m.insert("de".into(), Json::s(d));
+            }
+        }
+    }
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
     // `version` por fichero, sólo si el árbol tiene historia. Un proyecto
     // (0035 ①) tiene ruta como cualquier otra cosa —su manifiesto—, así que

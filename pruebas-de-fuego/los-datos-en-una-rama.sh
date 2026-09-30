@@ -276,7 +276,13 @@ print(" ".join(k+"="+d.get(k,"-") for k in ["ventas.base","ventas.nueva","ventas
   || falla "7 · GET /datasets en la rama: $c · $de"
 c=$(curl -s -o "$T/ficha.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/datasets/ventas/soloMain")
 [ "$c" = 200 ] && grep -q '"de":"main"' "$T/ficha.json" || falla "7 · la ficha de soloMain en la rama: $c $(head -c 200 "$T/ficha.json")"
-ok "7 · desde la rama: soloMain 4 (nació en main después) y copiaBase 20 (la de main de hoy); base 25 y nueva 3, suyas; la lista y la ficha dicen de: main | rama"
+c=$(curl -s -o "$T/assets.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/assets")
+as=$("$PY" -c 'import json,sys
+it=json.load(open(sys.argv[1]))["items"].values()
+d={x["ref"].split(":")[-1]:(x.get("puntero") or {}) for x in it if x.get("kind")=="Dataset"}
+print(" ".join(k+"="+str(d.get(k,{}).get("de","-"))+"/"+str(d.get(k,{}).get("filas","-")) for k in ["ventas.base","ventas.copiaBase"]))' "$T/assets.json" 2>&1)
+[ "$c/$as" = "200/ventas.base=rama/25 ventas.copiaBase=main/20" ] || falla "7 · /assets en la rama: $c · $as"
+ok "7 · desde la rama: soloMain 4 (nació en main después) y copiaBase 20 (la de main de hoy); base 25 y nueva 3, suyas; la lista, la ficha y /assets dicen de: main | rama"
 
 r=$(cli "$RAMA" anexar soloMain 2)
 [ "$r" = ok ] || falla "8 · anexar en la rama a lo heredado: $r"

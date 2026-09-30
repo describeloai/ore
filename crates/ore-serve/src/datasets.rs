@@ -37,7 +37,7 @@ use crate::rutas::{Servidor, token};
 /// **Los datasets que en este árbol se leen de `main` al día** (0044 C.2 ③):
 /// los que dice [`crate::git::AL_DIA`], por su nombre corto. `None` si el
 /// árbol no es el de una rama con lo no tocado al día.
-fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>> {
+pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>> {
     let t = std::fs::read_to_string(raiz.join(crate::git::AL_DIA)).ok()?;
     let n = ore_core::parse::parse(&t).ok()?;
     let rutas = n.get("rutas")?.1.entries().to_vec();
