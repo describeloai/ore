@@ -70,10 +70,53 @@ const POLITICA_S3: &str = r#"{
   ]
 }"#;
 
+/// ⭐ 0046 E9b · La confianza del rol que el cliente crea en SU cuenta de AWS: sólo
+/// las dos cuentas de Google de ESTA celda —la del driver, que lee, y la de
+/// `ore-serve`, que sirve— por su ID único (`sub`, y `aud` = `azp`), y la
+/// audiencia del token (`oaud`). `AssumeRoleWithWebIdentity` no admite
+/// `ExternalId`: lo que aísla a un cliente de otro es que otra celda corre con
+/// otras cuentas (medido: la de demo, `AccessDenied`).
+const CONFIANZA_S3: &str = r#"{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Federated": "accounts.google.com" },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "accounts.google.com:aud": ["{idDriver}", "{idServe}"],
+          "accounts.google.com:sub": ["{idDriver}", "{idServe}"],
+          "accounts.google.com:oaud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}"#;
+
+/// Los IDs únicos de las dos cuentas de la celda, si el despliegue los dio
+/// (`ORE_ID_DRIVER` y `ORE_ID_SERVE`, del ConfigMap `ids-de-la-celda` que
+/// escribe el aprovisionador). No son secretos: son lo que el cliente pega en
+/// la confianza de su rol.
+pub fn ids_de_la_celda() -> Option<(String, String)> {
+    let v = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    };
+    Some((v("ORE_ID_DRIVER")?, v("ORE_ID_SERVE")?))
+}
+
 /// La respuesta de `GET /fuentes/credenciales/{tipo}`. `cuenta` es la de la
 /// celda (`--cuenta-driver`); sin ella el modo se enseña igual, sin email, y
 /// se dice por qué falta.
 pub fn de(tipo: &str, cuenta: Option<&str>) -> Json {
+    de_con(tipo, cuenta, ids_de_la_celda())
+}
+
+/// Lo mismo, con los IDs de la celda dados (las pruebas no tocan el entorno).
+pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -> Json {
     match tipo {
         "bigquery" => {
             let mut celda = vec![
@@ -136,29 +179,36 @@ pub fn de(tipo: &str, cuenta: Option<&str>) -> Json {
         // lo que se enseña es la política que ese usuario necesita, que es
         // SOLO de lectura. Las cuatro acciones son las que `check` prueba y
         // `leer` usa; ninguna escribe.
+        //
+        // ⭐ 0046 E9b: y antes, el ROL —recomendado—: el cliente crea en su cuenta
+        //   un rol con la misma política de lectura y una confianza en las dos
+        //   cuentas de esta celda; la URL lleva su ARN y ningún secreto.
         "s3" => Json::obj([
             ("tipo", Json::s("s3")),
             (
                 "modos",
-                Json::Arr(vec![Json::obj([
-                    ("modo", Json::s("cadena")),
-                    ("recomendado", Json::Bool(true)),
-                    (
-                        "dice",
-                        Json::s(
-                            "La clave de acceso de un usuario IAM va dentro de la URL, cifrada \
+                Json::Arr(vec![
+                    modo_rol_s3(ids),
+                    Json::obj([
+                        ("modo", Json::s("cadena")),
+                        ("recomendado", Json::Bool(false)),
+                        (
+                            "dice",
+                            Json::s(
+                                "La clave de acceso de un usuario IAM va dentro de la URL, cifrada \
                              en el custodio. Dale a ese usuario solo esta política: lectura, \
                              sobre este bucket.",
+                            ),
                         ),
-                    ),
-                    (
-                        "formato",
-                        Json::s(
-                            "s3://<bucket>[/<prefijo>]?region=<región>&access_key_id=<clave>&secret_access_key=<secreto>",
+                        (
+                            "formato",
+                            Json::s(
+                                "s3://<bucket>[/<prefijo>]?region=<región>&access_key_id=<clave>&secret_access_key=<secreto>",
+                            ),
                         ),
-                    ),
-                    ("politica", Json::s(POLITICA_S3)),
-                ])]),
+                        ("politica", Json::s(POLITICA_S3)),
+                    ]),
+                ]),
             ),
             (
                 "noAdmitidos",
@@ -193,6 +243,58 @@ pub fn de(tipo: &str, cuenta: Option<&str>) -> Json {
             ),
         ]),
     }
+}
+
+/// ⭐ 0046 E9b · El modo «rol» de S3: la confianza ya rellena con los IDs de la
+/// celda (o con sus huecos, y dicho por qué), la misma política de lectura, y la
+/// forma de la URL, que no lleva ningún secreto.
+fn modo_rol_s3(ids: Option<(String, String)>) -> Json {
+    let mut m = vec![
+        ("modo", Json::s("rol")),
+        ("recomendado", Json::Bool(true)),
+        (
+            "dice",
+            Json::s(
+                "Crea en tu cuenta de AWS un rol que confíe en las dos cuentas de esta celda y \
+                 dale solo esta política: lectura, sobre este bucket. La URL lleva su ARN y ningún \
+                 secreto: la celda pide una credencial de una hora cada vez que lee.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s(
+                "s3://<bucket>[/<prefijo>]?region=<región>&role_arn=arn:aws:iam::<cuenta>:role/<rol>",
+            ),
+        ),
+        ("politica", Json::s(POLITICA_S3)),
+    ];
+    match ids {
+        Some((driver, serve)) => {
+            m.push((
+                "confianza",
+                Json::s(
+                    CONFIANZA_S3
+                        .replace("{idDriver}", &driver)
+                        .replace("{idServe}", &serve),
+                ),
+            ));
+            m.push((
+                "ids",
+                Json::obj([("driver", Json::s(&driver)), ("serve", Json::s(&serve))]),
+            ));
+        }
+        None => {
+            m.push(("confianza", Json::s(CONFIANZA_S3)));
+            m.push((
+                "sinIds",
+                Json::s(
+                    "esta celda no dice todavía los IDs de sus cuentas (`ids-de-la-celda`): la \
+                     confianza sale con sus huecos, `{idDriver}` y `{idServe}`",
+                ),
+            ));
+        }
+    }
+    Json::obj(m)
 }
 
 #[cfg(test)]
@@ -245,6 +347,29 @@ mod tests {
         }
         assert!(!j.contains("Put") && !j.contains("Delete"), "{j}");
         assert!(j.contains("\"modo\":\"cadena\""), "{j}");
+    }
+
+    /// ⭐ 0046 E9b · El rol va primero y recomendado; su confianza nombra las dos
+    /// cuentas de la celda por su ID, y la URL no lleva ningún secreto.
+    #[test]
+    fn s3_recomienda_el_rol_con_la_confianza_de_la_celda() {
+        let j = de_con("s3", None, Some(("111".into(), "222".into()))).jcs();
+        let rol = j.find("\"modo\":\"rol\"").expect("modo rol");
+        let cadena = j.find("\"modo\":\"cadena\"").expect("modo cadena");
+        assert!(rol < cadena, "el rol va primero: {j}");
+        for x in [
+            "sts:AssumeRoleWithWebIdentity",
+            "accounts.google.com:oaud",
+            "\\\"111\\\"",
+            "\\\"222\\\"",
+            "role_arn=",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert!(!j.contains("{idDriver}") && !j.contains("sinIds"), "{j}");
+        // Sin IDs, los huecos y el porqué.
+        let j = de_con("s3", None, None).jcs();
+        assert!(j.contains("{idDriver}") && j.contains("sinIds"), "{j}");
     }
 
     /// Las demás familias: la credencial va en la cadena.

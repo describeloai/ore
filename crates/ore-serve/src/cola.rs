@@ -358,10 +358,41 @@ pub fn rendir_comprobacion(
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
 /// la cuenta de la celda y no llevan credencial dentro: hoy, BigQuery.
 pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
+    // ⭐ 0046 E9b · Un bucket de S3 por ROL tampoco lleva secreto: su URL nombra el
+    //   rol (`role_arn`), y la credencial la pide el driver en el Job, de una hora.
+    if let Some(resto) = url.strip_prefix("s3://") {
+        let (autoridad, consulta) = resto.split_once('?').unwrap_or((resto, ""));
+        if autoridad.contains('@') || url.contains('#') {
+            return Err("la URL de S3 es `s3://<bucket>[/<prefijo>]?region=…&role_arn=…`".into());
+        }
+        let claves: Vec<&str> = consulta
+            .split('&')
+            .filter_map(|p| p.split_once('=').map(|(k, _)| k))
+            .collect();
+        if !claves.contains(&"role_arn") {
+            return Err(
+                "solo se comprueba antes del alta un bucket por rol (`role_arn`): una clave de \
+                 acceso no viaja en un Job; se comprueba al catalogarlo"
+                    .into(),
+            );
+        }
+        if let Some(k) = claves.iter().find(|k| {
+            let k = k.to_ascii_lowercase();
+            ["key", "secret", "token", "pass", "credential", "sig"]
+                .iter()
+                .any(|s| k.contains(s))
+        }) {
+            return Err(format!(
+                "la URL de un rol no lleva `{k}`: no se comprueba una URL con secreto"
+            ));
+        }
+        return Ok("s3");
+    }
     let Some(resto) = url.strip_prefix("bigquery://") else {
         return Err(
             "solo se comprueba antes del alta un origen que no lleva credencial en su URL \
-             (BigQuery, con la cuenta de la celda); los demás se comprueban al catalogarlos"
+             (BigQuery, con la cuenta de la celda; S3 por rol); los demás se comprueban al \
+             catalogarlos"
                 .into(),
         );
     };
@@ -700,6 +731,15 @@ mod prueba {
         assert_eq!(url_sin_secreto("bigquery://acme/ventas"), Ok("bigquery"));
         assert!(url_sin_secreto("postgres://u:clave@h/db").is_err());
         assert!(url_sin_secreto("bigquery://u:x@acme/ventas").is_err());
+        // ⭐ 0046 E9b: S3 por rol sí; con clave, o con un rol y además un secreto, no.
+        let rol = "s3://cubo/p?region=eu-north-1&role_arn=arn:aws:iam::123456789012:role/r";
+        assert_eq!(url_sin_secreto(rol), Ok("s3"));
+        assert!(url_sin_secreto("s3://cubo?region=x&access_key_id=a&secret_access_key=b").is_err());
+        assert!(url_sin_secreto(&format!("{rol}&secret_access_key=b")).is_err());
+        assert!(url_sin_secreto(&format!("{rol}&session_token=t")).is_err());
+        assert!(
+            url_sin_secreto("s3://u:p@cubo?role_arn=arn:aws:iam::123456789012:role/r").is_err()
+        );
     }
 
     #[test]
