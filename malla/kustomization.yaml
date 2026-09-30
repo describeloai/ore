@@ -61,6 +61,11 @@ resources:
   - 30-forja.yaml
   - 31-copias-de-la-forja.yaml
   # ── La identidad ────────────────────────────────────────────────────────
+  # 0048 I2: el operador y sus CRD, que se instalaron a mano el 2026-09-08 y no
+  # estaban en ningún repositorio. Exportados de lo que corre: `kubectl diff`
+  # contra el clúster, vacío salvo la anotación `prune: disabled`.
+  - 59-crds-de-keycloak.yaml
+  - 59-el-operador-de-keycloak.yaml
   - 60-idp.yaml
   # ⛔⛔ `61-realms.yaml` NO ESTÁ, y esto lo destapó `kubectl diff -k` antes de
   #   dejar que Flux tocara nada. Los tres `KeycloakRealmImport` vivos difieren

@@ -67,6 +67,11 @@ steps:
     name: gcr.io/cloud-builders/docker
     args: [build, --target, capa-jvm, -t, '${_REGISTRO}/capa-jvm:1', -t, '${_REGISTRO}/capa-jvm:${_SHA}', .]
 
+  # 0048 I2: el IdP, cocido y con el tema del correo. La que CORRE la fija
+  # `malla/60-idp.yaml` (cambiarla reinicia el login): aquí sólo se construye.
+  - id: idp
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, idp, -t, '${_REGISTRO}/idp:main', -t, '${_REGISTRO}/idp:${_SHA}', .]
 images:
   - '${_REGISTRO}/ore:main'
   - '${_REGISTRO}/ore:${_SHA}'
@@ -88,6 +93,8 @@ images:
   - '${_REGISTRO}/puesto-jvm:${_SHA}'
   - '${_REGISTRO}/capa-jvm:1'
   - '${_REGISTRO}/capa-jvm:${_SHA}'
+  - '${_REGISTRO}/idp:main'
+  - '${_REGISTRO}/idp:${_SHA}'
 
 options:
   machineType: E2_HIGHCPU_8

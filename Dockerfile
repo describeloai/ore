@@ -547,3 +547,56 @@ RUN set -e; mkdir -p /tmp/q/arbol; \
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/opt/ore/resolver.sh"]
+
+# ── 5 · El IdP (0048 I2) ─────────────────────────────────────────────────────
+#
+# Keycloak 26.0.7, COCIDO. Vino de la plataforma (`C:\Rubix\idp\Dockerfile`) tal cual,
+# con el tema del correo dentro. Sus razones, resumidas —el texto entero está en su
+# historial y en `malla/60-idp.yaml`—:
+#
+#   · `kc.sh build` en la construcción: el sistema de ficheros puede ser de sólo
+#     lectura, cada arranque ahorra ~40 s y la etiqueta es NUESTRA;
+#   · las cinco opciones de BUILD se leyeron del StatefulSet que el operador tenía en
+#     pie (KC_DB, KC_CACHE, KC_CACHE_STACK, KC_HEALTH_ENABLED, KC_METRICS_ENABLED): con
+#     `startOptimized: true` el operador ya no puede cambiarlas, y un juego distinto
+#     arranca EN VERDE con otra configuración;
+#   · la imagen y el CR quedan ACOPLADOS: cambiar `db.vendor`, el caché o las métricas
+#     en el CR sin recocer es fallar en verde.
+#
+# ⚠️ CI la construye (`idp:main`, `idp:<sha>`), pero la que corre la fija
+#   `malla/60-idp.yaml`: cambiarla reinicia el login, y se decide aparte.
+
+FROM quay.io/keycloak/keycloak:26.0.7 AS idp-constructor
+
+# ⭐ Las cinco de BUILD, y sólo ésas. Cada una está justificada arriba contra lo que el
+#   operador ya tenía puesto — no contra lo que parecería razonable.
+ENV KC_DB=postgres
+ENV KC_CACHE=ispn
+ENV KC_CACHE_STACK=kubernetes
+ENV KC_HEALTH_ENABLED=true
+ENV KC_METRICS_ENABLED=true
+
+# ⛔ ÉSTE es el paso entero. Todo lo que este `RUN` escriba en `/opt/keycloak` es lo que
+#   deja de escribirse en cada arranque — y por eso el sistema de ficheros puede volver a
+#   ser de sólo lectura al otro lado.
+RUN /opt/keycloak/bin/kc.sh build
+
+# ── La imagen final: la misma base, con el build ya dentro ──────────
+#
+# ⚠️ Se parte OTRA VEZ de la imagen oficial en vez de seguir en la del constructor: así lo
+#    que se envía no arrastra nada de lo que el build necesitó para correr.
+FROM quay.io/keycloak/keycloak:26.0.7 AS idp
+
+COPY --from=idp-constructor /opt/keycloak/ /opt/keycloak/
+
+# ⭐ 0048 I2 · EL TEMA DEL CORREO, COCIDO. El realm dice `emailTheme: 'rubix'` (la marca
+#   y el idioma de la reposición de contraseña, `identidad/realm.mjs`), y en el clúster
+#   viejo el tema llegaba por un ConfigMap montado. En ORE no llegaba por ningún sitio: el
+#   día que el realm tenga correo, Keycloak no habría encontrado su plantilla. Un tema de
+#   CORREO no lleva CSS ni fuentes: es FreeMarker y textos, y no necesita `kc.sh build`.
+COPY identidad/tema/rubix /opt/keycloak/themes/rubix
+
+# ⛔ El ENTRYPOINT se repite a propósito. La imagen base ya lo trae, pero un `COPY` sobre
+#   `/opt/keycloak` es exactamente el sitio donde un cambio de la base podría dejarlo
+#   apuntando a algo que ya no está. Declararlo aquí cuesta una línea.
+ENTRYPOINT ["/opt/keycloak/bin/kc.sh"]
