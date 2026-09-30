@@ -461,9 +461,24 @@ jobs:
           # ⚠️ Y con cuenta propia, Cloud Build EXIGE decir donde van los logs.
           #   `logging: CLOUD_LOGGING_ONLY` ya esta en `cloudbuild.yaml`; sin el
           #   falla con un mensaje que no menciona la cuenta.
-          gcloud builds submit --config cloudbuild.yaml \
+          #
+          # ⚠️ Y `--async`, preguntando cada 20 s. Esperando, `gcloud` pregunta
+          #   CADA SEGUNDO, y la cuota es de 60 lecturas por minuto para la
+          #   cuenta entera: con dos construcciones a la vez —lo normal desde
+          #   que en `main` no se cancela— la primera en pasarse caía con
+          #   RATE_LIMIT_EXCEEDED mientras su construcción seguía, sana, en
+          #   Cloud Build (2026-09-30, medido).
+          ID=$(gcloud builds submit --async --format='value(id)' --config cloudbuild.yaml \
             --service-account=projects/project-8853a180-450d-47be-b83/serviceAccounts/ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com \
-            --substitutions _SHA=${GITHUB_SHA::12} .
+            --substitutions _SHA=${GITHUB_SHA::12} .)
+          echo "  construccion $ID"
+          while :; do
+            sleep 20
+            E=$(gcloud builds describe "$ID" --format='value(status)' 2>/dev/null) || continue
+            case "$E" in QUEUED|WORKING|PENDING|"") ;; *) break;; esac
+          done
+          echo "  $E en $(gcloud builds describe "$ID" --format='value(timing.BUILD.endTime)')"
+          if [ "$E" != SUCCESS ]; then gcloud builds log "$ID" | tail -60; exit 1; fi
 
   imagen:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
