@@ -180,10 +180,14 @@ fn main() -> ExitCode {
         eprintln!("  apuntaría a un almacén que nadie eligió.");
         return ExitCode::from(64);
     };
-    let almacen = almacen::Almacen {
-        programa: programa.clone(),
-        proyecto: proyecto.clone(),
-        lugar: lugar.clone(),
+    // ⭐ El almacén por su API (0046 E9·3). Si el TLS de la plataforma no
+    //   abre, se dice ahora y no en el primer secreto.
+    let almacen = match almacen::Almacen::del_entorno(proyecto.clone(), lugar.clone()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("✗ {e}");
+            return ExitCode::from(69);
+        }
     };
     // ⭐ De que CELDA es este cofre (0025-4): un secreto es de una celda, y el
     //   nombre en el almacen lleva la celda delante. `mudar` no la necesita:
@@ -313,8 +317,8 @@ fn main() -> ExitCode {
 
     eprintln!("ore-cofre · {bind}");
     eprintln!("  identidad    {dicho}");
-    eprintln!("  cliente      {}", almacen::ruta_de(&programa));
-    eprintln!("  almacen      proyecto {proyecto} · {lugar}");
+    eprintln!("  kms          {} (sólo la mudanza)", programa.display());
+    eprintln!("  almacen      Secret Manager por su API · proyecto {proyecto} · {lugar}");
     eprintln!();
     for (metodo, ruta, montada) in rutas::mapa(con_identidad) {
         eprintln!(

@@ -37,21 +37,51 @@
 //! nombre en el almacén lleva el inquilino DELANTE: `t-<inq>-cofre-<nombre>`.
 //! No es una convención de nombres — es el límite que la condición evalúa.
 //!
-//! # Por un subproceso, como el KMS
+//! # Por su API, y no por el cliente (0046 E9·3, medido el 2026-09-30)
 //!
-//! Misma razón que `kms.rs`: este programa no habla con el Secret Manager,
-//! habla con el **cliente**, que resuelve Workload Identity contra los
-//! metadatos. Y el valor entra por la entrada estándar (`--data-file=-`) y sale
-//! por la salida estándar: **no toca el disco**.
+//! Hasta aquí se le hablaba al **cliente** (`gcloud secrets …`) por un
+//! subproceso, con la frase de `kms.rs`. Medido en el pod del custodio de
+//! victor: arrancar `gcloud` —Python— cuesta **3,6 s** antes de hacer nada, y
+//! `leer` eran DOS llamadas (`access` y `describe`): **~8 s** por secreto
+//! resuelto. Es lo que tardaba en servirse un ítem de una colección virtual
+//! (ore-serve pide la credencial de la fuente aquí en cada petición). Por la
+//! API REST, con el token de la cuenta que corre: **0,35 s**, y `access` ya dice
+//! la versión, así que es UNA llamada.
+//!
+//! Lo que la frase protegía se queda, y dónde vive cada cosa:
+//!
+//! - **La autenticación** sigue siendo Workload Identity: el token lo da el
+//!   metadata server a través de `ore-gcp`, que es la misma puerta de
+//!   `ore-store` y `ore-read-bigquery` (que ya dejó `bq` por REST, 0042). No
+//!   hay una sola llave en el clúster.
+//! - **El TLS** es el de la plataforma (`native-tls`), como en esos dos: no hay
+//!   criptografía escrita aquí.
+//! - **El valor no toca el disco**: viaja en el cuerpo de la petición y de la
+//!   respuesta, y la política de réplica ya no pasa por un fichero temporal.
+//! - **El aislamiento** es el mismo, porque es IAM y no el cliente: la
+//!   condición por prefijo evalúa el nombre del recurso igual venga de donde
+//!   venga la llamada.
+//!
+//! ⚠️ El KMS (`kms.rs`) sigue con `gcloud`: sólo lo usa la mudanza, que corre
+//!   una vez, y por eso la imagen del custodio lo conserva.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use ore_core::json::Json;
+use std::time::Duration;
 
-/// A qué cliente se le habla y en qué proyecto y región vive el almacén.
+/// La API de Secret Manager. La réplica es `userManaged` en UNA región, pero el
+/// recurso es global: su punto es éste, no uno regional.
+const API: &str = "https://secretmanager.googleapis.com/v1";
+
+/// Cuánto se espera a Secret Manager. Holgado: una lectura mide 0,35 s, y un
+/// custodio que se cuelga cuelga a quien le pide la credencial.
+const PLAZO: Duration = Duration::from_secs(30);
+
+/// Con qué habla y en qué proyecto y región vive el almacén.
 pub struct Almacen {
-    /// El binario, como ruta. Ver `kms.rs`.
-    pub programa: PathBuf,
+    /// El token de la cuenta que corre (Workload Identity), renovado.
+    pub credencial: ore_gcp::Credencial,
+    /// HTTPS con el TLS de la plataforma.
+    pub agente: ureq::Agent,
     /// El proyecto de la celda. Hace falta ENTERO para nombrar la CMEK:
     /// `projects/<p>/locations/<lugar>/keyRings/<llavero>/cryptoKeys/<clave>`.
     pub proyecto: String,
@@ -66,48 +96,82 @@ pub fn nombre_en_almacen(inquilino: &str, nombre: &str) -> String {
     format!("t-{inquilino}-cofre-{nombre}")
 }
 
+/// ⛔ Un nombre de secreto va DENTRO de una URL: sólo lo que Secret Manager
+///   admite (`[A-Za-z0-9_-]`, hasta 255). Otra cosa —una `/`, un `?`— cambiaría
+///   el recurso al que se le habla, y el nombre es lo que la condición IAM mira.
+fn admisible(nombre: &str) -> Result<&str, String> {
+    if !nombre.is_empty()
+        && nombre.len() <= 255
+        && nombre
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        Ok(nombre)
+    } else {
+        Err(format!("`{nombre}` no es un nombre de secreto"))
+    }
+}
+
+/// El mensaje de Google, literal: un `PERMISSION_DENIED` con el prefijo dice
+/// exactamente qué condición no se cumple, y resumirlo lo esconde.
+fn mensaje(cuerpo: &str) -> String {
+    ore_core::parse::parse(cuerpo)
+        .ok()
+        .and_then(|n| {
+            n.get("error")
+                .and_then(|(_, e)| e.get("message"))
+                .and_then(|(_, m)| m.as_str().map(String::from))
+        })
+        .unwrap_or_else(|| cuerpo.trim().chars().take(200).collect())
+}
+
 impl Almacen {
-    fn correr(&self, args: &[&str], entrada: Option<&[u8]>) -> Result<Vec<u8>, String> {
-        let mut hijo = Command::new(&self.programa)
-            .args(["secrets"])
-            .args(args)
-            .args(["--project", &self.proyecto])
-            .stdin(if entrada.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                format!(
-                    "no se pudo ejecutar `{}`: {e}. Es el cliente de la nube, y este \
-                     programa no habla con el almacen: habla con el",
-                    self.programa.display()
-                )
-            })?;
-        if let Some(bytes) = entrada {
-            hijo.stdin
-                .take()
-                .ok_or("no se pudo escribir en el cliente")?
-                .write_all(bytes)
-                .map_err(|e| format!("no se pudo escribir en el cliente: {e}"))?;
+    pub fn del_entorno(proyecto: String, lugar: String) -> Result<Almacen, String> {
+        Ok(Almacen {
+            credencial: ore_gcp::Credencial::del_entorno(),
+            agente: ore_gcp::cliente()?,
+            proyecto,
+            lugar,
+        })
+    }
+
+    fn secretos(&self) -> String {
+        format!("{API}/projects/{}/secrets", self.proyecto)
+    }
+
+    /// Una llamada: `Ok(Some(cuerpo))` si 2xx, `Ok(None)` si el código está en
+    /// `tolera` (el «ya existe» de crear, el «no está» de borrar).
+    fn llamar(
+        &self,
+        que: &str,
+        r: ureq::Request,
+        cuerpo: Option<&Json>,
+        tolera: &[u16],
+    ) -> Result<Option<String>, String> {
+        let r = r
+            .set(
+                "authorization",
+                &format!("Bearer {}", self.credencial.token()?),
+            )
+            .timeout(PLAZO);
+        let respuesta = match cuerpo {
+            Some(c) => r
+                .set("content-type", "application/json")
+                .send_string(&c.jcs()),
+            None => r.call(),
+        };
+        match respuesta {
+            Ok(ok) => ok
+                .into_string()
+                .map(Some)
+                .map_err(|e| format!("el almacen contesto a `{que}` y no se pudo leer: {e}")),
+            Err(ureq::Error::Status(c, _)) if tolera.contains(&c) => Ok(None),
+            Err(ureq::Error::Status(c, r)) => Err(format!(
+                "el almacen se nego a `{que}` ({c}): {}",
+                mensaje(&r.into_string().unwrap_or_default())
+            )),
+            Err(e) => Err(format!("no se pudo hablar con el almacen (`{que}`): {e}")),
         }
-        let salida = hijo
-            .wait_with_output()
-            .map_err(|e| format!("el cliente no termino: {e}"))?;
-        if !salida.status.success() {
-            // ⚠️ El error del cliente, entero y sin el valor. Un `PERMISSION_DENIED`
-            //   con el prefijo dice exactamente qué condición no se cumple.
-            let e = String::from_utf8_lossy(&salida.stderr);
-            return Err(format!(
-                "el almacen se nego a `{}`: {}",
-                args.first().copied().unwrap_or("?"),
-                e.trim().lines().next().unwrap_or("sin motivo")
-            ));
-        }
-        Ok(salida.stdout)
     }
 
     /// La CMEK de una organización, a partir de su `kek` (`<llavero>/<clave>`).
@@ -123,84 +187,100 @@ impl Almacen {
     }
 
     /// Crea el secreto (sin versión) cifrado con la CMEK de la organización.
-    /// Idempotente: si ya existe, no pasa nada — un `emitir` que se quedó a
-    /// medias entre el almacén y la base se termina volviendo a llamar.
+    /// Idempotente: si ya existe (409), no pasa nada — un `emitir` que se quedó
+    /// a medias entre el almacén y la base se termina volviendo a llamar.
     ///
-    /// ⚠️ La política de réplica va por FICHERO porque `--kms-key-name` sólo
-    ///   vale con réplica automática, que exige una llave global; la nuestra es
-    ///   regional a propósito. El fichero no es secreto: dice dónde y con qué
-    ///   llave, no qué.
+    /// ⚠️ Réplica `userManaged` en `lugar`: la CMEK es regional a propósito, y
+    ///   la réplica automática exigiría una llave global.
     pub fn crear(&self, nombre: &str, kek: &str, inquilino: &str) -> Result<(), String> {
-        let politica = format!(
-            r#"{{"userManaged":{{"replicas":[{{"location":"{}","customerManagedEncryption":{{"kmsKeyName":"{}"}}}}]}}}}"#,
-            self.lugar,
-            self.cmek(kek)?
-        );
-        let fichero = std::env::temp_dir().join(format!("replica-{nombre}.json"));
-        std::fs::write(&fichero, politica)
-            .map_err(|e| format!("no se pudo escribir la politica de replica: {e}"))?;
-        let r = self.correr(
-            &[
-                "create",
-                nombre,
-                &format!("--replication-policy-file={}", fichero.display()),
-                &format!("--labels=proyecto=ore,inquilino={inquilino}"),
-            ],
-            None,
-        );
-        let _ = std::fs::remove_file(&fichero);
-        match r {
-            Ok(_) => Ok(()),
-            Err(e) if e.contains("already exists") || e.contains("ALREADY_EXISTS") => Ok(()),
-            Err(e) => Err(e),
-        }
+        let cuerpo = Json::obj([
+            (
+                "replication",
+                Json::obj([(
+                    "userManaged",
+                    Json::obj([(
+                        "replicas",
+                        Json::Arr(vec![Json::obj([
+                            ("location", Json::s(&self.lugar)),
+                            (
+                                "customerManagedEncryption",
+                                Json::obj([("kmsKeyName", Json::s(self.cmek(kek)?))]),
+                            ),
+                        ])]),
+                    )]),
+                )]),
+            ),
+            (
+                "labels",
+                Json::obj([
+                    ("proyecto", Json::s("ore")),
+                    ("inquilino", Json::s(inquilino)),
+                ]),
+            ),
+        ]);
+        let r = self
+            .agente
+            .post(&self.secretos())
+            .query("secretId", admisible(nombre)?);
+        self.llamar("create", r, Some(&cuerpo), &[409]).map(|_| ())
     }
 
-    /// Añade una versión con el valor, que entra por la entrada estándar y no
-    /// toca el disco. Devuelve el número de versión que el almacén le dio.
+    /// Añade una versión con el valor. Devuelve el número que el almacén le dio.
     pub fn anadir(&self, nombre: &str, valor: &[u8]) -> Result<i64, String> {
-        let salida = self.correr(
-            &[
-                "versions",
-                "add",
-                nombre,
-                "--data-file=-",
-                "--format=value(name)",
-            ],
-            Some(valor),
-        )?;
-        version_de(&String::from_utf8_lossy(&salida))
+        let url = format!("{}/{}:addVersion", self.secretos(), admisible(nombre)?);
+        let cuerpo = Json::obj([(
+            "payload",
+            Json::obj([("data", Json::s(ore_gcp::base64(valor)))]),
+        )]);
+        let r = self
+            .llamar("versions add", self.agente.post(&url), Some(&cuerpo), &[])?
+            .unwrap_or_default();
+        version_de(&campo(&r, &["name"]).unwrap_or_default())
     }
 
     /// Borra el secreto entero del almacén, con todas sus versiones. Que no
-    /// esté ya no es un error: una baja que se quedó a medias entre el almacén
-    /// y la base se termina volviendo a llamar, como `crear`.
+    /// esté (404) ya no es un error: una baja que se quedó a medias entre el
+    /// almacén y la base se termina volviendo a llamar, como `crear`.
     pub fn borrar(&self, nombre: &str) -> Result<(), String> {
-        match self.correr(&["delete", nombre, "--quiet"], None) {
-            Ok(_) => Ok(()),
-            Err(e) if e.contains("NOT_FOUND") || e.contains("not found") => Ok(()),
-            Err(e) => Err(e),
-        }
+        let url = format!("{}/{}", self.secretos(), admisible(nombre)?);
+        self.llamar("delete", self.agente.delete(&url), None, &[404])
+            .map(|_| ())
     }
 
-    /// El valor de la última versión, y cuál es. Dos llamadas y no una: el
-    /// `access` devuelve el valor crudo, sin envolver, y así no hay que
-    /// descodificar nada aquí; el `describe` dice el número.
+    /// El valor de la última versión, y cuál es. UNA llamada: `access` devuelve
+    /// el nombre de la versión junto al valor (en base64).
     pub fn leer(&self, nombre: &str) -> Result<(Vec<u8>, i64), String> {
-        let valor = self.correr(&["versions", "access", "latest", "--secret", nombre], None)?;
-        let cual = self.correr(
-            &[
-                "versions",
-                "describe",
-                "latest",
-                "--secret",
-                nombre,
-                "--format=value(name)",
-            ],
-            None,
-        )?;
-        Ok((valor, version_de(&String::from_utf8_lossy(&cual))?))
+        let url = format!(
+            "{}/{}/versions/latest:access",
+            self.secretos(),
+            admisible(nombre)?
+        );
+        let r = self
+            .llamar("versions access", self.agente.get(&url), None, &[])?
+            .unwrap_or_default();
+        de_acceso(&r)
     }
+}
+
+/// Un campo de texto anidado de una respuesta JSON.
+fn campo(json: &str, camino: &[&str]) -> Option<String> {
+    let n = ore_core::parse::parse(json).ok()?;
+    let mut v = &n;
+    for k in camino {
+        v = v.get(k)?.1;
+    }
+    v.as_str().map(String::from)
+}
+
+/// Lo que `access` devuelve → el valor y su versión.
+fn de_acceso(json: &str) -> Result<(Vec<u8>, i64), String> {
+    let datos = campo(json, &["payload", "data"])
+        .ok_or("el almacen no devolvio el valor (`payload.data`)")?;
+    let valor = ore_gcp::de_base64(&datos)?;
+    Ok((
+        valor,
+        version_de(&campo(json, &["name"]).unwrap_or_default())?,
+    ))
 }
 
 /// `projects/…/secrets/<n>/versions/<v>` → `v`.
@@ -212,13 +292,9 @@ fn version_de(nombre: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("el almacen no dijo que version es: `{}`", nombre.trim()))
 }
 
-pub fn ruta_de(p: &Path) -> String {
-    p.display().to_string()
-}
-
 #[cfg(test)]
 mod prueba {
-    use super::{nombre_en_almacen, version_de};
+    use super::{admisible, de_acceso, nombre_en_almacen, version_de};
 
     #[test]
     fn el_inquilino_va_delante() {
@@ -236,5 +312,23 @@ mod prueba {
             Ok(7)
         );
         assert!(version_de("projects/1/secrets/t-demo-cofre-x").is_err());
+    }
+
+    #[test]
+    fn el_acceso_trae_el_valor_y_la_version_en_una() {
+        // La forma de `versions/latest:access`: el valor en base64 y el nombre de
+        // la versión que resultó ser «latest».
+        let r = r#"{"name":"projects/1/secrets/t-demo-cofre-x/versions/3","payload":{"data":"czM6Ly9hOmJAYw==","dataCrc32c":"1"}}"#;
+        assert_eq!(de_acceso(r), Ok((b"s3://a:b@c".to_vec(), 3)));
+        assert!(de_acceso(r#"{"name":"projects/1/secrets/x/versions/3"}"#).is_err());
+    }
+
+    #[test]
+    fn un_nombre_no_cambia_el_recurso() {
+        // ⛔ El nombre va en la URL: una `/` o un `:` hablarían con OTRO recurso.
+        assert!(admisible("t-demo-cofre-fuente-s3_demo").is_ok());
+        for malo in ["", "t-demo/../otro", "x:access", "a?b", "a b"] {
+            assert!(admisible(malo).is_err(), "{malo}");
+        }
     }
 }

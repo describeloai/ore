@@ -2205,8 +2205,10 @@ version = "0.1.0"
 dependencies = [
  "ore-core",
  "ore-entrada",
+ "ore-gcp",
  "ore-iam",
  "postgres",
+ "ureq",
 ]
 
 [[package]]

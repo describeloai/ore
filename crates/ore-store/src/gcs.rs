@@ -97,58 +97,14 @@ fn codificar(s: &str) -> String {
     out
 }
 
+use ore_gcp::{base64, de_base64};
+
 /// CRC-32C (Castagnoli), que es el que GCS devuelve en `crc32c` (base64 del
 /// valor en big-endian). Tabla de 256 entradas, como todos.
 fn crc32c(datos: &[u8]) -> u32 {
     let mut c = crate::blobs::Crc32c::default();
     c.sumar(datos);
     c.valor()
-}
-
-fn base64(b: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::new();
-    for c in b.chunks(3) {
-        let n = (u32::from(c[0]) << 16)
-            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*c.get(2).unwrap_or(&0));
-        s.push(T[(n >> 18) as usize & 63] as char);
-        s.push(T[(n >> 12) as usize & 63] as char);
-        s.push(if c.len() > 1 {
-            T[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        s.push(if c.len() > 2 {
-            T[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    s
-}
-
-/// Base64 estándar a bytes: lo que `signBlob` devuelve.
-fn de_base64(s: &str) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return Err(format!("`{}` no es base64", c as char)),
-        };
-        acc = (acc << 6) | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Ok(out)
 }
 
 impl Cuenta {

@@ -25,10 +25,14 @@ ore-iam = { path = "../ore-iam" }
 ore-core = { path = "../ore-core" }
 ore-entrada = { path = "../ore-entrada" }
 
-# ⛔ Y NADA para hablar con el KMS. Ni TLS, ni OAuth, ni criptografía.
+# ⭐ El almacén (Secret Manager) por su API, con la puerta de `ore-store` y
+# `ore-read-bigquery`: el token de la cuenta que corre (Workload Identity, sin
+# llave) y el TLS de la plataforma. Hasta 0046 E9·3 era `gcloud` por un
+# subproceso, y arrancarlo costaba 3,6 s por llamada (medido en el pod el
+# 2026-09-30): ver `almacen.rs`. Ni OAuth ni criptografía escritos aquí.
 #
-# Se le habla al CLIENTE de la nube por un subproceso, que es lo que ya hace
-# `ore-read-bigquery` con `bq` — y su frase vale igual aquí: «este programa no
-# habla con BigQuery, habla con el». Lo que se evita con eso son tres cosas
-# cuyo modo de fallo es silencioso y en la dirección insegura.
+# ⚠️ El KMS sigue siendo `gcloud` (`kms.rs`, sólo la mudanza).
+ore-gcp = { path = "../ore-gcp" }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+
 postgres = { version = "0.19", default-features = false }

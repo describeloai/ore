@@ -230,11 +230,16 @@ ENTRYPOINT ["/bin/ore-iam"]
 #
 # Lo que se compra cediéndola:
 #
-#   · ni TLS, ni OAuth, ni criptografía en Rust. Tres cosas cuyo modo de fallo
-#     es silencioso y en la dirección insegura, que es la frase que este árbol
-#     ya tiene escrita para las firmas;
+#   · ni OAuth ni criptografía en Rust para el KMS;
 #   · la autenticación es Workload Identity y la resuelve `gcloud` sola. **No
 #     hay una sola llave en el clúster.**
+#
+# ✏️ 0046 E9·3 (2026-09-30): el ALMACÉN (Secret Manager) ya no pasa por `gcloud`.
+#   Arrancarlo costaba 3,6 s por llamada, y resolver un secreto eran dos: ~8 s
+#   en cada ítem servido de una colección virtual. Ahora va por su API con
+#   `ore-gcp` —el token del metadata server y el TLS de la plataforma, como
+#   `ore-store` y `ore-read-bigquery`—: 0,35 s. `gcloud` se queda en la imagen
+#   sólo para el KMS de la mudanza (`ore-cofre mudar`).
 #
 # Y lo que NO se pierde, que es lo que hace aceptable la cesión:
 #
