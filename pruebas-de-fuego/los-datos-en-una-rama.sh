@@ -43,6 +43,17 @@
 #      (11) y la rama sigue en su 6 (ya es suyo); `main` crea otraMain (2) y la
 #      rama la lee
 #
+# Y D4 · construir en la rama (con una cola, la plantilla de `malla/48`):
+#  10  rehacer la copia en la rama se encola CON la rama (`48-la-copia-rehacer-*`
+#      con `RAMA: bea/datos`), y en `main` sin ella (`RAMA: ""`); dar de alta
+#      una fuente en la rama sigue siendo 409 (es de la celda)
+#  11  la pasada del Job en la rama —los pasos de `malla/48`: `ore overlay
+#      --main`, `materialize` de sus vistas con `--recoger --reclaman` (todo
+#      `main` y lo propio de las demás), `ore overlay --undo`, empujar a la
+#      rama— construye copiaBase EN la rama (25, de su base) y `main` sigue en
+#      20; sólo copiaBase pasa a ser de la rama (soloMain, heredado, no); y la
+#      rama sigue leyendo soloMain de `main`
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2` (en `$ORE_TARGET` o
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -136,6 +147,7 @@ Y
   local puerto; puerto=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
   BASE="http://127.0.0.1:$puerto"
   FORJA_TOKEN=no-hace-falta "$SERVE" --forja "file://$FORJA" --ore "$ORE" --bind "127.0.0.1:$puerto" \
+    ${COLA_URL:+--cola "$COLA_URL"} \
     --identidad cabecera --no-es-produccion --organizacion lago >"$T/serve.log" 2>&1 & PIDS="$PIDS $!"
   for _ in $(seq 1 60); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
 
@@ -299,4 +311,51 @@ v="$(lee - soloMain)/$(lee "$RAMA" soloMain)/$(lee "$RAMA" otraMain)"
 [ "$v" = "11/6/2" ] || falla "9 · main avanza después: main soloMain / rama soloMain / rama otraMain = $v, y no 11/6/2"
 ok "9 · lo que main hace después se ve al momento: otraMain (2) se lee desde la rama; soloMain, ya suyo, sigue en 6 (main 11)"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x939\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ 10–11 · construir en la rama (D4) ═════════════════════════════════════════
+COLA="$TODO/cola.git"
+git init -q --bare -b main "$COLA"
+mkdir -p "$TODO/cola-semilla" && ( cd "$TODO/cola-semilla" && git init -q -b main && git config core.autocrlf false )
+"$PY" "$RAIZ/malla/gen-inquilino.py" demo --a "$TODO/rendido" >/dev/null 2>&1
+cp "$TODO/rendido/plantilla-copia.txt" "$TODO/cola-semilla/"
+( cd "$TODO/cola-semilla" && git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla" \
+  && git remote add origin "$COLA" && git push -q origin HEAD:main ) || falla "10 · no se pudo sembrar la cola"
+COLA_URL="file://$COLA"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) COLA_URL="file:///$(cd "$COLA" && pwd -W)";; esac
+montar e4
+T="$T_ACTUAL"
+rehace() { # rama|- → código; la respuesta en $T/re.json
+  local h=(); [ "$1" != - ] && h=(-H "x-ore-rama: $1")
+  curl -s -o "$T/re.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: persona:ana' "${h[@]}" "$BASE/paquetes/ventas/copia/rehacer"
+}
+fichero_de() { "$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("fichero",""))' "$T/re.json"; }
+c=$(rehace "$RAMA"); F=$(fichero_de)
+[ "$c" = 202 ] && git --git-dir="$COLA" show "main:$F" 2>/dev/null | grep -q "name: RAMA, value: \"$RAMA\"" \
+  || falla "10 · rehacer en la rama: $c $(head -c 200 "$T/re.json")"
+c=$(rehace -); F=$(fichero_de)
+[ "$c" = 202 ] && git --git-dir="$COLA" show "main:$F" 2>/dev/null | grep -q 'name: RAMA, value: ""' \
+  || falla "10 · rehacer en main: $c $(head -c 200 "$T/re.json")"
+c=$(curl -s -o "$T/alta.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" -H 'content-type: application/json' "$BASE/fuentes" -d '{"nombre":"x","tipo":"postgres"}')
+[ "$c" = 409 ] && grep -q "de la celda" "$T/alta.json" || falla "10 · alta de una fuente en la rama: $c $(head -c 200 "$T/alta.json")"
+ok "10 · rehacer en la rama se encola con RAMA=$RAMA (y en main con RAMA vacío); dar de alta una fuente en la rama sigue siendo 409: es de la celda"
+
+# La pasada del Job en la rama: los pasos de malla/48, tal cual.
+git clone -q -b "$RAMA" "$FORJA" "$T/job"; git -C "$T/job" config core.autocrlf false
+( cd "$T/job" && "$ORE" overlay . --main origin/main ) > "$T/job.txt" 2>&1 || falla "11 · ore overlay --main: $(cat "$T/job.txt")"
+( cd "$T/job" && reclaman "$RAMA" "$T/ramas-job" )
+[ -f "$T/ramas-job/main/datasets/ventas/default/soloMain.json" ] || falla "11 · desde la rama, reclaman tenía que traer todo main"
+( cd "$T/job" && "$ORE" materialize . --vista ventas.copiaBase --recoger --reclaman "$T/ramas-job" --informe datasets ) >> "$T/job.txt" 2>&1 \
+  || falla "11 · materialize en la rama: $(tail -5 "$T/job.txt")"
+( cd "$T/job" && "$ORE" overlay . --undo ) >> "$T/job.txt" 2>&1 || falla "11 · ore overlay --undo: $(tail -3 "$T/job.txt")"
+( cd "$T/job" && git add -A datasets && git -c user.name=copiador -c user.email=copiador@invalido commit -qm "Copia: ventas.copiaBase en $RAMA" && git push -q origin HEAD:"$RAMA" ) \
+  || falla "11 · no se pudo empujar la copia a la rama: $(cd "$T/job" && git status --short | head -5)"
+v="$(lee "$RAMA" copiaBase)/$(lee - copiaBase)/$(lee "$RAMA" soloMain)"
+[ "$v" = "25/20/4" ] || falla "11 · tras construir en la rama: rama copiaBase / main copiaBase / rama soloMain = $v, y no 25/20/4 · $(tail -4 "$T/job.txt")"
+B=$(git --git-dir="$FORJA" merge-base main "$RAMA")
+propios=$(git --git-dir="$FORJA" diff --name-only "$B" "$RAMA" -- datasets | tr '\n' ' ')
+[ "$propios" = "datasets/ventas/default/base.json datasets/ventas/default/copiaBase.json datasets/ventas/default/nueva.json " ] \
+  || falla "11 · lo propio de la rama tras construir: $propios (y no base, copiaBase y nueva)"
+[ -e "$T/job/.ore-al-dia.json" ] && falla "11 · quedó .ore-al-dia.json en el clon"
+git --git-dir="$FORJA" show "$RAMA:.ore-al-dia.json" >/dev/null 2>&1 && falla "11 · .ore-al-dia.json llegó a la rama"
+ok "11 · la pasada del Job en la rama construye copiaBase en ella (25, de su base) y main sigue en 20; sólo lo construido es suyo ($propios) y soloMain se sigue leyendo de main"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9311\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

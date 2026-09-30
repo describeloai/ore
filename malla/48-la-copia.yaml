@@ -182,6 +182,8 @@ spec:
             - { name: GIT_CONFIG_VALUE_1, value: "*" }
             - { name: VISTAS, value: "olist.customers" }
             - { name: REHACER, value: "" }
+            # ⭐ 0044 C D4: vacío es `main`; con rama, se construye en ella.
+            - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
           volumeMounts:
@@ -193,14 +195,26 @@ spec:
               set -e
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
               cd /trabajo
-              git clone --quiet \
+              git clone --quiet ${RAMA:+--branch "$RAMA"} \
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
               mkdir -p /trabajo/calculo
+              # ⭐ 0044 C D4 · EN UNA RAMA: lo que no tocó, de `main` al día (③) —las
+              #   entradas de sus copias son las de `main` de hoy, invisibles para
+              #   git—, y se construye SÓLO lo que ella cambió y lo que depende de
+              #   ello (`VISTAS`, que `ore-serve` calculó). Lo demás lo sirve `main`.
+              if [ -n "$RAMA" ]; then
+                ore overlay . --main origin/main
+              fi
               if [ -n "$REHACER" ]; then
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
                 # shellcheck disable=SC2086
                 ore materialize . --preparar /trabajo/calculo --rehacer $SOLO \
+                  || echo "⚠️ alguna copia por consulta no se preparó: su informe lo dirá"
+              elif [ -n "$RAMA" ]; then
+                SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+                # shellcheck disable=SC2086
+                ore materialize . --preparar /trabajo/calculo $SOLO \
                   || echo "⚠️ alguna copia por consulta no se preparó: su informe lo dirá"
               else
                 ore materialize . --preparar /trabajo/calculo \
@@ -259,6 +273,8 @@ spec:
             #   al puntero, lee el origen entero SOLO para `VISTAS`, y sobrescribe
             #   el dataset (un snapshot nuevo). Dos peticiones son dos Jobs.
             - { name: REHACER, value: "" }
+            # ⭐ 0044 C D4: vacío es `main`; con rama, se construye en ella.
+            - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
             # Cuánta historia conserva `--recoger` (segundos): siete días.
             - { name: ORE_RECOGER_EDAD, value: "604800" }
@@ -367,11 +383,16 @@ spec:
               #   sus punteros PROPIOS —los que difieren de su punto de salida—; lo heredado
               #   no alarga la vida a lo viejo de `main`. El clon ya trae todas las ramas.
               #   Es el guion de `pruebas-de-fuego/los-datos-en-una-rama.sh` (`reclaman`).
+              #   Desde una rama (D4), `main` entero es de «las demás».
               rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
               for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
-                [ "$R" = HEAD ] || [ "$R" = main ] && continue
-                B=$(git merge-base origin/main "origin/$R") || continue
-                git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados | while read -r F; do
+                [ "$R" = HEAD ] || [ "$R" = "${RAMA:-main}" ] && continue
+                if [ "$R" = main ]; then
+                  git ls-tree -r --name-only origin/main -- datasets copias resultados
+                else
+                  B=$(git merge-base origin/main "origin/$R") || continue
+                  git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados
+                fi | while read -r F; do
                   case "$F" in *.json) mkdir -p "/trabajo/ramas/$R/$(dirname "$F")"; git show "origin/$R:$F" > "/trabajo/ramas/$R/$F" ;; esac
                 done
               done
@@ -382,10 +403,21 @@ spec:
                 # shellcheck disable=SC2086
                 ore materialize . --rehacer $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se rehizo: su informe en datasets/ lo dice"
+              elif [ -n "$RAMA" ]; then
+                echo "### construyendo en \`$RAMA\`: $VISTAS (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
+                SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+                # shellcheck disable=SC2086
+                ore materialize . $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
+                  || echo "⚠️ algún dataset no se construyó: su informe en datasets/ lo dice"
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 ore materialize . --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
+              fi
+              # En una rama, lo superpuesto que la pasada no tocó vuelve a como
+              # estaba: sólo lo construido pasa a ser de la rama.
+              if [ -n "$RAMA" ]; then
+                ore overlay . --undo
               fi
 
               git add -A datasets
@@ -394,8 +426,8 @@ spec:
                 exit 0
               fi
               git -c user.name=copiador -c user.email=copiador@invalido \
-                commit -q -m "Copia: $VISTAS"
-              git push -q origin HEAD:main
+                commit -q -m "Copia: $VISTAS${RAMA:+ en $RAMA}"
+              git push -q origin HEAD:${RAMA:-main}
               echo "✓ copia empujada · $(git rev-parse --short HEAD)"
           resources:
             requests: {cpu: "200m", memory: 512Mi}

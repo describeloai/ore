@@ -1223,7 +1223,8 @@ else
       #   conserva mientras su trabajo siga pendiente: un `44-*` cuya fuente
       #   no tiene paquete todavia, el `48-la-copia.yaml` si esta pasada no
       #   rindio otro, los `48-la-copia-rehacer-*` (0030 W1: un rehacer
-      #   pedido a mano, con su instante), y los `49-*` (invocaciones, 0029 F4a I3: solo los
+      #   pedido a mano, con su instante), los `48-la-copia-rama-*` (0044 C
+      #   D4: construir en una rama, pedido a mano), y los `49-*` (invocaciones, 0029 F4a I3: solo los
       #   encola `ore-serve`; el nombre lleva la corrida, y el siguiente de
       #   la misma funcion sustituye al fichero), los `51-el-puesto-*` (0031:
       #   la SESION de una persona; vive hasta que `DELETE /puestos` quita el
@@ -1234,7 +1235,7 @@ else
       #   retira es un catalogo cuya fuente YA tiene paquete: ese Job termino,
       #   y Flux no debe volver a crearlo.
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|55-la-capa-jvm-.*)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|55-la-capa-jvm-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
