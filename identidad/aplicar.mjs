@@ -7,7 +7,7 @@
 //     kubectl port-forward -n identidad pod/idp-0 18080:8080
 //     export ORE_IDP_ADMIN="$(kubectl -n identidad get secret idp-initial-admin -o jsonpath='{.data.username}' | base64 -d)"
 //     kubectl -n identidad get secret idp-initial-admin -o jsonpath='{.data.password}' | base64 -d \
-//       | node identidad/aplicar.mjs [--verificar] [--realm=rubix]
+//       | node identidad/aplicar.mjs [--plan | --verificar] [--realm=rubix]
 // ═══════════════════════════════════════════════════════════════════
 //
 // `P·2·b` · LA POLÍTICA DE ENTRADA, APLICADA AL SERVIDOR VIVO
@@ -60,6 +60,11 @@ if (!USUARIO) {
   process.exit(2);
 }
 const SOLO_VERIFICAR = process.argv.includes('--verificar');
+// ⭐ ORE (0048): `--plan` dice TODO lo que aplicar cambiaría —flujos, ajustes, passkeys y
+//   atributos, el cliente público, el lector, los mapeadores de organización— sólo con
+//   GET, y sale. `--verificar` sólo mide los factores; contra producción no se aplica sin
+//   haber leído el plan: el reconciliador también RESTA lo que el artefacto no dice.
+const SOLO_PLAN = process.argv.includes('--plan');
 // ⭐ `--realm=rubix-dev` para ensayar en desarrollo antes de tocar producción. Sin él se
 //   aplican los dos, que es lo correcto por defecto: dos realms que divergen es el fallo del
 //   que venimos — el 2026-08-28 los dos compartían la MISMA organización y las listas se
@@ -507,6 +512,94 @@ async function crearSiFalta(llamar, realm, deseado) {
 const contrasena = await leerContrasena();
 const llamar = api(await token(contrasena));
 
+/** Lo que `aplicar` cambiaría en `realm`, sin tocar nada. */
+async function planificar(llamar, realm, deseado) {
+  const vivo = await llamar('GET', `/realms/${realm}`);
+  if (!vivo) return [`✨ el realm ${realm} NO existe: se CREARÍA desde el artefacto`];
+  const plan = [];
+  const antes = await medirVivo(llamar, realm);
+  const quiere = factoresMinimos(deseado);
+  const quiereRep = factoresMinimos(deseado, { flujo: deseado.resetCredentialsFlow, credenciales: CREDENCIALES_DE_REPOSICION });
+  plan.push(`flujos: entrada ${antes.factores} → ${quiere} factores · reposición ${antes.reposicion} → ${quiereRep} (se borran y se vuelven a poner \`${FLUJO_ENTRADA}\` y \`${FLUJO_REPOSICION}\`)`);
+  for (const campo of AJUSTES_GOBERNADOS) {
+    if (deseado[campo] !== undefined && vivo[campo] !== deseado[campo]) {
+      plan.push(`ajuste ${campo}: ${JSON.stringify(vivo[campo])} → ${JSON.stringify(deseado[campo])}`);
+    }
+  }
+  const extras = { ...politicaDePasskeys(vivo.displayName || realm), attributes: { ...(vivo.attributes ?? {}), ...declaracionDeGarantia() } };
+  for (const [k, v] of Object.entries(extras)) {
+    if (k === 'attributes') {
+      for (const [a, x] of Object.entries(v)) {
+        if ((vivo.attributes ?? {})[a] !== x) plan.push(`atributo ${a}: ${JSON.stringify((vivo.attributes ?? {})[a])} → ${JSON.stringify(x)}`);
+      }
+    } else if (JSON.stringify(vivo[k]) !== JSON.stringify(v)) {
+      plan.push(`passkeys ${k}: ${JSON.stringify(vivo[k])} → ${JSON.stringify(v)}`);
+    }
+  }
+  const pub = (deseado.clients ?? []).find((c) => c.publicClient && c.standardFlowEnabled);
+  if (pub) {
+    const c = (await llamar('GET', `/realms/${realm}/clients?clientId=${pub.clientId}`))?.[0];
+    if (!c) plan.push(`cliente ${pub.clientId}: no existe (aplicar no lo crea)`);
+    else {
+      const dif = (nombre, a, b) => {
+        const mas = (b ?? []).filter((x) => !(a ?? []).includes(x));
+        const menos = (a ?? []).filter((x) => !(b ?? []).includes(x));
+        if (mas.length) plan.push(`${pub.clientId} ${nombre} + ${mas.join(', ')}`);
+        if (menos.length) plan.push(`${pub.clientId} ${nombre} − ${menos.join(', ')}`);
+      };
+      dif('redirectUris', c.redirectUris, pub.redirectUris);
+      dif('webOrigins', c.webOrigins, pub.webOrigins);
+      for (const [a, x] of Object.entries(pub.attributes ?? {})) {
+        if ((c.attributes ?? {})[a] !== x) plan.push(`${pub.clientId} atributo ${a}: ${JSON.stringify((c.attributes ?? {})[a])} → ${JSON.stringify(x)}`);
+      }
+      const puestos = (await llamar('GET', `/realms/${realm}/clients/${c.id}/default-client-scopes`) ?? []).map((sc) => sc.name);
+      const existen = new Set((await llamar('GET', `/realms/${realm}/client-scopes`) ?? []).map((sc) => sc.name));
+      dif('ámbitos por defecto', puestos, (pub.defaultClientScopes ?? []).filter((n) => existen.has(n)));
+      const inexistentes = (pub.defaultClientScopes ?? []).filter((n) => !existen.has(n));
+      if (inexistentes.length) plan.push(`${pub.clientId} ámbitos pedidos que NO existen: ${inexistentes.join(', ')}`);
+    }
+  }
+  const declaraLector = (deseado.clients ?? []).some((c) => c.clientId === CLIENTE_LECTOR);
+  if (deseado.organizationsEnabled && !declaraLector) plan.push(`${CLIENTE_LECTOR}: no se declara (0048): no se toca`);
+  if (deseado.organizationsEnabled && declaraLector) {
+    const l = (await llamar('GET', `/realms/${realm}/clients?clientId=${CLIENTE_LECTOR}`))?.[0];
+    if (!l) plan.push(`${CLIENTE_LECTOR}: se CREARÍA`);
+    else {
+      const su = await llamar('GET', `/realms/${realm}/clients/${l.id}/service-account-user`);
+      const g = (await llamar('GET', `/realms/${realm}/clients?clientId=realm-management`))?.[0];
+      const tiene = su && g ? (await llamar('GET', `/realms/${realm}/users/${su.id}/role-mappings/clients/${g.id}`) ?? []).map((r) => r.name) : [];
+      const faltan = PAPELES_DE_LECTURA.filter((n) => !tiene.includes(n));
+      const sobran = tiene.filter((n) => !PAPELES_DE_LECTURA.includes(n));
+      if (faltan.length) plan.push(`${CLIENTE_LECTOR} papeles + ${faltan.join(', ')}`);
+      if (sobran.length) plan.push(`${CLIENTE_LECTOR} papeles − ${sobran.join(', ')}`);
+      for (const k of ['publicClient', 'serviceAccountsEnabled', 'standardFlowEnabled', 'directAccessGrantsEnabled', 'implicitFlowEnabled']) {
+        const x = k === 'serviceAccountsEnabled';
+        if (l[k] !== x) plan.push(`${CLIENTE_LECTOR} ${k}: ${l[k]} → ${x}`);
+      }
+    }
+  }
+  if (deseado.organizationsEnabled) {
+    const sc =(await llamar('GET', `/realms/${realm}/client-scopes`) ?? []).find((x) => x.name === 'organization');
+    const m = (sc?.protocolMappers ?? []).find((x) => x.protocolMapper === 'oidc-organization-membership-mapper');
+    if (m && m.config?.addOrganizationId !== 'true') plan.push('ámbito organization: addOrganizationId → true');
+    for (const c of await llamar('GET', `/realms/${realm}/clients`) ?? []) {
+      for (const x of c.protocolMappers ?? []) {
+        if (x.protocolMapper === 'oidc-organization-membership-mapper') plan.push(`mapeador ${c.clientId}/${x.name}: se RETIRARÍA`);
+      }
+    }
+  }
+  return plan;
+}
+
+if (SOLO_PLAN) {
+  for (const [realm, deseado] of DESEADOS) {
+    if (SOLO_REALM && realm !== SOLO_REALM) continue;
+    console.log(`── ${realm}`);
+    for (const l of await planificar(llamar, realm, deseado)) console.log(`   ${l}`);
+  }
+  process.exit(0);
+}
+
 if (!SOLO_VERIFICAR) {
   for (const [realm, deseado] of DESEADOS) {
     if (SOLO_REALM && realm !== SOLO_REALM) continue;
@@ -532,7 +625,10 @@ if (!SOLO_VERIFICAR) {
     const cliente = cli?.clientId ?? null;
     // ⭐ Sólo en los realms SaaS: `rubix-interno` no administra clientes de nadie.
     let lector = null;
-    if (deseado.organizationsEnabled) lector = await aplicarLector(llamar, realm);
+    // ✏️ ORE (0048): el lector sólo si el realm deseado lo declara (hoy, no).
+    if (deseado.organizationsEnabled && (deseado.clients ?? []).some((c) => c.clientId === CLIENTE_LECTOR)) {
+      lector = await aplicarLector(llamar, realm);
+    }
     // ⭐⭐ UN SOLO MAPPER escribiendo `organization`. Va en la misma pasada porque un realm
     //   con el claim duplicado no deja entrar a NADIE — y el síntoma no nombra al culpable.
     const claim = deseado.organizationsEnabled ? await aplicarClaimDeOrganizacion(llamar, realm) : null;

@@ -648,21 +648,6 @@
           ]
         },
         {
-          "clientId": "rubix-consola-lector",
-          "name": "Rubix · consola (lectura)",
-          "description": "Cuenta de servicio de SÓLO LECTURA con la que la consola consulta el IdP.",
-          "enabled": true,
-          "protocol": "openid-connect",
-          "publicClient": false,
-          "serviceAccountsEnabled": true,
-          "standardFlowEnabled": false,
-          "directAccessGrantsEnabled": false,
-          "implicitFlowEnabled": false,
-          "attributes": {
-            "access.token.lifespan": "300"
-          }
-        },
-        {
           "clientId": "ore-serve",
           "name": "ORE · el plano de control",
           "description": "Audiencia. No inicia sesion: existe para poder decir que un token es PARA nosotros.",

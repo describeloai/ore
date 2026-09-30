@@ -332,6 +332,18 @@ function conRegistro(realm) {
   return conOrganizacionEnElRegistro(realm);
 }
 
+// ⛔ EL LECTOR NO (0048). `rubix-consola-lector` era la cuenta con la que la consola de
+//   administración de la plataforma leía organizaciones y usuarios del IdP (papeles
+//   `view-users`, `query-users`…). En ORE nadie la usa —la pertenencia la decide `ore-iam`
+//   (0047 A9′)— y su secreto vivía en el proyecto viejo. Medido con `aplicar.mjs --plan`
+//   el 2026-09-30: en vivo existe SIN papeles, y conciliarla se los habría DADO. Una cuenta
+//   que puede leer a todos los usuarios y que nadie usa es sólo riesgo: no se declara.
+const SIN_USO = ['rubix-consola-lector'];
+function sinLoQueNadieUsa(realm) {
+  realm.clients = (realm.clients ?? []).filter((c) => !SIN_USO.includes(c.clientId));
+  return realm;
+}
+
 function conConsolaLocal(realm) {
   if (realm.realm !== REGISTRO_EN_PRODUCCION.realm) return realm;
   for (const c of realm.clients ?? []) {
@@ -359,6 +371,7 @@ export function realmsDeOre() {
     if (REALMS_CON_ORE.includes(realm.realm)) realm = conOre(realm);
     realm = conRegistro(realm);
     realm = conConsolaLocal(realm);
+    realm = sinLoQueNadieUsa(realm);
     return [realm.realm, realm];
   });
 }
