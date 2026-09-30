@@ -596,9 +596,13 @@ fn firmar_en_el_lago(
     Ok((urls, segundos, caduca_ms))
 }
 
+/// El firmante de las URLs de un bucket de S3: sin red (`ore-sigv4`), así que
+/// cabe donde un lector no (la imagen de `ore-serve`).
+const FIRMANTE_S3: &str = "ore-firmar-s3";
+
 /// Las URLs de una virtual: **del origen**, cada ítem fijado a su versión, con
-/// la credencial de su fuente (`connectionEnv`) y firmadas por su lector
-/// (`ore-read-<tipo> firmar`, que no abre un socket). Sin la credencial, dice
+/// la credencial de su fuente (`connectionEnv`) y firmadas por
+/// [`FIRMANTE_S3`], que no puede abrir un socket. Sin la credencial, dice
 /// cuál necesita —quien sirve la trae del cofre (E9·3)— y sale con 69.
 fn firmar_en_el_origen(
     path: &Path,
@@ -649,12 +653,8 @@ fn firmar_en_el_origen(
     if let Some(t) = ttl {
         p.push(("segundos", Json::s(t.to_string())));
     }
-    let r = lector::ejecutar(
-        &format!("ore-read-{tipo}"),
-        &["firmar".into()],
-        Some(&Json::obj(p).jcs()),
-    )
-    .map_err(|f| (69, f.mensaje))?;
+    let r = lector::ejecutar(FIRMANTE_S3, &[], Some(&Json::obj(p).jcs()))
+        .map_err(|f| (69, f.mensaje))?;
     let r = ore_core::parse::parse(r.trim())
         .map_err(|e| (69, format!("la firma del origen no analiza: {e:?}")))?;
     let segundos: i64 = campo(&r, "segundos")

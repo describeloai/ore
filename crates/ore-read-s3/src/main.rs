@@ -19,7 +19,6 @@
 //! | `leer` | las filas de una `Table` con `format`, en Arrow (`filas.rs`, E6) | la petición |
 //! | `versiones` | lo vigente de un `ObjectTable`, con versión y huella, para la transacción de una colección (`versiones.rs`, E8·1) | la petición |
 //! | `bajar` | los bytes de los ítems de una colección mantenida, fijados a su versión y cotejados, en tramas (`bajar.rs`, E8·2) | la petición |
-//! | `firmar` | URLs prefirmadas de los ítems de una colección virtual, fijadas a su versión; sin abrir un socket (`firmar.rs`, E9·3) | la petición |
 //!
 //! La URL lleva la credencial y va **siempre por stdin**, nunca por `argv`, y
 //! este programa no la imprime: ni en un error (lo que dice S3 no la contiene)
@@ -29,7 +28,6 @@ mod acceso;
 mod bajar;
 mod catalogo;
 mod filas;
-mod firmar;
 mod fuente;
 mod medio;
 mod origen;
@@ -135,12 +133,6 @@ fn main() -> ExitCode {
                     c.fallidos
                 ));
                 Ok(String::new())
-            }),
-        "firmar" => serde_json::from_str::<serde_json::Value>(&entrada)
-            .map_err(|e| format!("la petición no es JSON: {e}"))
-            .and_then(|n| {
-                let f = fuente::leer(n.get("url").and_then(|u| u.as_str()).unwrap_or(""))?;
-                firmar::firmar(&f, &n)
             }),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };

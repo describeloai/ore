@@ -16,6 +16,8 @@ authors     = { workspace = true }
 description = "La firma SigV4 y las lecturas de S3, compartidas por el lago y el lector"
 
 [dependencies]
+# La firma, el bucket y la URL de una fuente: sin red (0046 E9.3).
+ore-sigv4 = { path = "../ore-sigv4" }
 # SHA-256 para la firma y el digest del cuerpo. HMAC no se enlaza: son seis
 # lineas sobre esto, con el vector oficial de AWS en las pruebas.
 sha2 = { workspace = true }

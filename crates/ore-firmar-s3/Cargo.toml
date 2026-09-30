@@ -1,0 +1,16 @@
+# EL FIRMANTE DE `ore-serve` (0046 E9.3): prefirma las URLs de los items de una
+# coleccion virtual con la credencial de su fuente, y NO PUEDE hablar por la
+# red: la imagen del plano de control promete que no puede leer un origen.
+# ⛔ `ore-sigv4` y `serde_json`, y nada mas: `ore-cli/tests/dependencias.rs`.
+[package]
+name        = "ore-firmar-s3"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Prefirma URLs de S3 (SigV4 en la consulta) sin poder abrir un socket"
+
+[dependencies]
+ore-sigv4  = { path = "../ore-sigv4" }
+serde_json = "1"

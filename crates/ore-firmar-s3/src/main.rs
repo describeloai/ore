@@ -1,20 +1,23 @@
-//! **`firmar`: URLs prefirmadas de los ítems de una colección virtual** (0046
-//! E9·3). Una virtual no tiene bytes en el lago: se sirven **del origen**, fijados
+//! **`ore-firmar-s3`: URLs prefirmadas de los ítems de una colección virtual**
+//! (0046 E9·3) — el firmante de `ore-serve`, **sin red**. Una virtual no tiene bytes en el lago: se sirven **del origen**, fijados
 //! a la versión que el manifiesto dice (`versionId`), con una URL SigV4 que
 //! caduca, con el tipo y la disposición dentro de la firma.
 //!
 //! Entra `{url, segundos?, items: [{clave, version, tipo?, disposicion?}]}`; sale
 //! `{segundos, firmadas: [{clave, version, url}]}`, en el orden pedido.
 //!
-//! ⭐ No abre un socket: prefirmar es una cuenta local (`ore_s3::firma::prefirmar`,
-//!   la del ejemplo oficial de AWS). La URL lleva la **clave de acceso** —no el
+//! ⭐ No PUEDE abrir un socket: depende de `ore-sigv4` (la firma, `sha2`) y de
+//!   `serde_json`, y `ore-cli/tests/dependencias.rs` lo vigila. Prefirmar es una
+//!   cuenta local (`ore_sigv4::firma::prefirmar`, la del ejemplo oficial de AWS).
+//!   Por eso cabe en la imagen de `ore-serve`, que promete no poder leer un
+//!   origen aunque tenga, al servir, la credencial de la fuente. La URL lleva la **clave de acceso** —no el
 //!   secreto— y la firma; quien la tenga lee ese objeto, en esa versión, hasta
 //!   que caduque (medido en E9: expirada 403, manipulada 403).
 //!
 //! ⚠️ La URL es tan corta como la credencial con la que se firma: con una de STS,
 //!   caduca con ella aunque `segundos` diga más.
 
-use crate::fuente::Fuente;
+use ore_sigv4::fuente::Fuente;
 use serde_json::{Value, json};
 
 /// Lo que vive una URL: 5 minutos por defecto; de 30 s a una hora.
@@ -22,7 +25,7 @@ const VIDA_POR_DEFECTO: u64 = 300;
 const VIDA_MINIMA: u64 = 30;
 const VIDA_MAXIMA: u64 = 3600;
 
-pub fn firmar(f: &Fuente, peticion: &Value) -> Result<String, String> {
+fn firmar(f: &Fuente, peticion: &Value) -> Result<String, String> {
     let segundos = peticion
         .get("segundos")
         .and_then(|s| {
@@ -53,8 +56,14 @@ pub fn firmar(f: &Fuente, peticion: &Value) -> Result<String, String> {
             extra.push(("response-content-disposition", d));
         }
         let ruta = b.ruta(Some(clave));
-        let q =
-            ore_s3::firma::prefirmar(&b.credencial, &b.region, &b.host(), &ruta, &extra, segundos);
+        let q = ore_sigv4::firma::prefirmar(
+            &b.credencial,
+            &b.region,
+            &b.host(),
+            &ruta,
+            &extra,
+            segundos,
+        );
         firmadas.push(
             json!({"clave": clave, "version": version, "url": format!("{}{ruta}?{q}", b.endpoint)}),
         );
@@ -62,12 +71,38 @@ pub fn firmar(f: &Fuente, peticion: &Value) -> Result<String, String> {
     Ok(json!({"segundos": segundos, "firmadas": firmadas}).to_string())
 }
 
+/// La petición por stdin (la URL lleva la credencial: nunca por `argv`), la
+/// respuesta por stdout, y el porqué de un fallo por stderr —sin la URL—.
+fn main() -> std::process::ExitCode {
+    let mut entrada = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut entrada).is_err() {
+        eprintln!("ore-firmar-s3: no se pudo leer stdin");
+        return std::process::ExitCode::FAILURE;
+    }
+    let hecho = serde_json::from_str::<Value>(&entrada)
+        .map_err(|e| format!("la petición no es JSON: {e}"))
+        .and_then(|n| {
+            let f = ore_sigv4::fuente::leer(n.get("url").and_then(Value::as_str).unwrap_or(""))?;
+            firmar(&f, &n)
+        });
+    match hecho {
+        Ok(s) => {
+            println!("{s}");
+            std::process::ExitCode::SUCCESS
+        }
+        Err(m) => {
+            eprintln!("ore-firmar-s3: {m}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn fuente() -> Fuente {
-        crate::fuente::leer(
+        ore_sigv4::fuente::leer(
             "s3://mi-bucket/docs/?region=eu-north-1&access_key_id=AKIAEJEMPLO&secret_access_key=secreto",
         )
         .unwrap()

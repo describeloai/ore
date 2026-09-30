@@ -2244,6 +2244,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-firmar-s3"
+version = "0.1.0"
+dependencies = [
+ "ore-sigv4",
+ "serde_json",
+]
+
+[[package]]
 name = "ore-gcp"
 version = "0.1.0"
 dependencies = [
@@ -2337,6 +2345,7 @@ dependencies = [
  "ore-core",
  "ore-driver",
  "ore-s3",
+ "ore-sigv4",
  "parquet",
  "serde_json",
 ]
@@ -2354,6 +2363,7 @@ name = "ore-s3"
 version = "0.1.0"
 dependencies = [
  "native-tls",
+ "ore-sigv4",
  "sha2 0.11.0",
  "ureq",
 ]
@@ -2373,6 +2383,13 @@ version = "0.1.0"
 dependencies = [
  "ed25519-compact",
  "ore-core",
+]
+
+[[package]]
+name = "ore-sigv4"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.11.0",
 ]
 
 [[package]]

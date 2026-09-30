@@ -136,6 +136,42 @@ fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
     );
 }
 
+/// **El firmante de `ore-serve` tampoco** (0046 E9·3). `ore-firmar-s3` prefirma
+/// con la credencial de una fuente dentro de la imagen del plano de control, que
+/// promete no poder leer un origen: lo mismo que se veta en `ore`, y además un
+/// cliente HTTP de cualquier sabor. Su cierre es `ore-sigv4`, `sha2` y
+/// `serde_json`, y se queda pequeño.
+#[test]
+fn el_firmante_no_sabe_hablar_por_la_red() {
+    let cierre = cierre_de("ore-firmar-s3");
+    let mut culpables: Vec<String> = Vec::new();
+    for nodo in &cierre {
+        let nombre = nombre_de(nodo);
+        let vetada = VETADAS
+            .iter()
+            .map(|(v, m)| (*v, *m))
+            .chain([
+                ("ureq", "un cliente HTTP: el firmante calcula, no llama"),
+                ("ore-s3", "las lecturas de S3, con su cliente HTTP"),
+            ])
+            .find(|(v, _)| nombre == *v || nombre.starts_with(&format!("{v}-")));
+        if let Some((veto, motivo)) = vetada {
+            culpables.push(format!("  {nombre} — vetada como `{veto}`: {motivo}"));
+        }
+    }
+    assert!(
+        culpables.is_empty(),
+        "`ore-firmar-s3` ha ganado lo que la imagen de `ore-serve` promete no tener:\n{}",
+        culpables.join("\n")
+    );
+    assert!(
+        cierre.len() <= 24,
+        "el cierre del firmante creció a {} crates: {}",
+        cierre.len(),
+        cierre.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+}
+
 #[test]
 fn el_arbol_no_crece_sin_que_nadie_lo_diga() {
     let cierre = cierre_de("ore-cli");

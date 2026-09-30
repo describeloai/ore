@@ -1,0 +1,15 @@
+# S3 SIN RED (0046 E9.3): la firma SigV4, el bucket y la URL de una fuente.
+# Estaba en `ore-s3` (la firma) y en `ore-read-s3` (la URL); salen aqui para que
+# `ore-firmar-s3` —el firmante de `ore-serve`— los enlace sin un cliente HTTP.
+# ⛔ Depende de `sha2` y de nada mas: `ore-cli/tests/dependencias.rs` lo vigila.
+[package]
+name        = "ore-sigv4"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "La firma SigV4 de S3, el bucket y la URL de una fuente: sin red"
+
+[dependencies]
+sha2 = { workspace = true }

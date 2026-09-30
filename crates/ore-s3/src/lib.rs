@@ -21,63 +21,12 @@
 //!   2026.JPG`): se codifican **por segmento**, una vez, y el mismo texto va a
 //!   la URL y a la firma.
 
-pub mod firma;
+// La firma y el bucket viven en `ore-sigv4`, que no sabe hablar por la red: el
+// firmante de `ore-serve` (0046 E9·3) la enlaza sin arrastrar un cliente HTTP.
+pub use ore_sigv4::{Bucket, firma};
 pub mod huella;
 
 pub use firma::{Credencial, base64, hex, sha256};
-
-/// Dónde está el bucket y con qué se firma.
-#[derive(Clone, Debug)]
-pub struct Bucket {
-    /// `https://host` sin barra final. En AWS, el del bucket virtual
-    /// (`https://<bucket>.s3.<region>.amazonaws.com`); en un S3 compatible
-    /// (R2, MinIO), el del servicio, y el bucket va en la ruta.
-    pub endpoint: String,
-    pub bucket: String,
-    pub region: String,
-    /// El bucket en la ruta (`/<bucket>/<clave>`) y no en el host.
-    pub en_ruta: bool,
-    pub credencial: Credencial,
-}
-
-impl Bucket {
-    /// Un bucket de AWS, con el host virtual de su región.
-    pub fn de_aws(bucket: &str, region: &str, credencial: Credencial) -> Bucket {
-        Bucket {
-            endpoint: format!("https://{bucket}.s3.{region}.amazonaws.com"),
-            bucket: bucket.to_string(),
-            region: region.to_string(),
-            en_ruta: false,
-            credencial,
-        }
-    }
-
-    pub fn host(&self) -> String {
-        self.endpoint
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_end_matches('/')
-            .to_string()
-    }
-
-    /// La ruta canónica de una clave (o del bucket, con `None`): cada segmento
-    /// codificado una vez, las barras intactas.
-    pub fn ruta(&self, clave: Option<&str>) -> String {
-        let clave = clave.map(|c| c.split('/').map(firma::uri).collect::<Vec<_>>().join("/"));
-        match (self.en_ruta, clave) {
-            (true, Some(c)) => format!("/{}/{c}", self.bucket),
-            (true, None) => format!("/{}", self.bucket),
-            (false, Some(c)) => format!("/{c}"),
-            (false, None) => "/".to_string(),
-        }
-    }
-
-    /// El ARN del bucket y el de sus objetos: lo que una política nombra, y lo
-    /// que un fallo de permisos tiene que decir.
-    pub fn arn(&self) -> String {
-        format!("arn:aws:s3:::{}", self.bucket)
-    }
-}
 
 /// Lo que contestó S3, **sea lo que sea**: un `403` o un `301` también son
 /// respuestas, y el código de AWS que traen es lo único accionable.

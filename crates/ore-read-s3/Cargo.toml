@@ -18,6 +18,7 @@ description = "Lector de buckets de S3: catalogo de objetos y de ficheros tabula
 ore-core   = { path = "../ore-core" }
 ore-driver = { path = "../ore-driver" }
 ore-s3     = { path = "../ore-s3" }
+ore-sigv4  = { path = "../ore-sigv4" }
 # El pie de un Parquet, leido por rangos: su esquema exacto (decimal128(12, 2),
 # timestamp[us, tz=UTC]) sin bajar el fichero. Ya estaba en el arbol (lo trae
 # `ore-store`), con las mismas features.

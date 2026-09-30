@@ -20,7 +20,9 @@
 #   ore-serve           el plano de control. Lleva `ore` y `git`, y NADA
 #                       más: no puede leer un origen —el `ore` que ejecuta es
 #                       el mismo binario sin TLS— y sí puede hablar con la
-#                       forja, que es donde vive el árbol.
+#                       forja, que es donde vive el árbol. (Y dos ayudantes:
+#                       `ore-store-gcs`, que lee SU lago, y `ore-firmar-s3`,
+#                       que prefirma sin poder abrir un socket — 0046 E9·3.)
 #
 #   ore-drivers         todo lo que `ore` puede ejecutar: los cuatro `ore-read-*`
 #                       (`ore-read-s3`, un bucket como fuente, desde 0046 E4),
@@ -47,9 +49,9 @@ COPY . .
 # hubiera hoy en el índice.
 RUN cargo build --release --locked \
       -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
-      -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 \
+      -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 -p ore-firmar-s3 \
       -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke \
- && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 \
+ && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-firmar-s3 \
              ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke; do \
       strip "target/release/$b"; \
     done
@@ -171,6 +173,12 @@ COPY --from=build /src/target/release/ore-serve /usr/local/bin/ore-serve
 # la copia del bucket es este programa — con la identidad del pod (`objectViewer`,
 # aprovisionador ③b) y nunca un origen. `ore` sigue sin abrir un socket.
 COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
+# 0046 E9·3: servir un ítem de una colección VIRTUAL es prefirmar su URL en el
+# origen con la credencial de la fuente, que este proceso trae del cofre como el
+# agente de la celda. Lo hace `ore-firmar-s3`, que NO PUEDE abrir un socket
+# (`ore-sigv4`, vigilado en `ore-cli/tests/dependencias.rs`): con la credencial
+# en la mano, esta imagen sigue sin nada que lea un origen. `ore-read-s3`, no.
+COPY --from=build /src/target/release/ore-firmar-s3 /usr/local/bin/ore-firmar-s3
 
 USER 65532:65532
 WORKDIR /trabajo
