@@ -40,13 +40,14 @@ Dos pantallas del mismo producto, dos ideas de «dónde estoy». Eso es lo que e
    lo que escribe un `CREATE VIEW` desde el workspace, va a la rama. A `main` se llega con una
    propuesta (pull request) que revisa otra persona (0030 W2). Fuera de la rama por defecto, el
    catálogo lo dice en una franja: *«Viewing branch `x` · based on `main`»*.
-4. **En una rama se trabaja con definiciones; los datos, todavía no.** Todo lo que es árbol se
-   hace en la rama: vistas, schemas, bases, modelos, código. Lo que **mueve datos** —dar de alta o
-   retirar una conexión, copiar una tabla, ascender una base a estándar, rehacer la copia,
-   contestar decisiones— escribe la cola de Jobs, y esos Jobs leen `main`: hecho desde una rama
-   habría escrito en `main` sin decirlo. Se niega con `409` y el porqué, hasta que una rama tenga
-   datos propios (lo que queda fuera, abajo). Una vista SQL no tiene datos: en una rama se lee
-   sobre lo mismo que en `main`.
+4. **En una rama se trabaja con definiciones, y con datos** (apéndice C; hasta el 2026-09-30,
+   «los datos, todavía no»). Todo lo que es árbol se hace en la rama: vistas, schemas, bases,
+   modelos, código. Lo que **mueve datos** —dar de alta una base, copiar una tabla, ascender una
+   base a estándar, rehacer la copia, contestar decisiones— encola el Job **en la rama**: clona la
+   rama, lee de `main` al día lo que ella no tocó y empuja a la rama (C.2 ④), datasets y
+   colecciones por igual (D7). Sólo **dar de alta o retirar una conexión** sigue siendo `409` fuera
+   de la rama por defecto, con el porqué: una conexión es de la celda, no del árbol (B.2). Una
+   vista SQL no tiene datos: en una rama se lee sobre lo mismo que en `main`.
 5. **«En qué se diferencia de `main`» se dice por activo y con su significado**, no por fichero
    (`GET /ramas/{r}/cambios`):
    - frente al **punto del que salió** la rama (`merge-base`), no frente al `main` de hoy: lo que
@@ -89,7 +90,8 @@ Dos pantallas del mismo producto, dos ideas de «dónde estoy». Eso es lo que e
 - **ORE**: `ore-serve` lee y escribe en la rama de `x-ore-rama` en las rutas del catálogo
   (`/fuentes`, `/paquetes`, su esquema, decisiones y copias, `/modelos`, `/funciones`; crear y
   renombrar schemas, retirar una base, modelar); lo que mueve datos, `409` fuera de la rama por
-  defecto (`solo_en_la_de_por_defecto`). `GET /ramas/{r}/cambios` (`cambios.rs`), de memoria por
+  defecto (`solo_en_la_de_por_defecto`) — desde el apéndice C, sólo la conexión: lo demás
+  construye en la rama. `GET /ramas/{r}/cambios` (`cambios.rs`), de memoria por
   las dos cabezas. `POST /puestos` no reutiliza un puesto de otra rama.
 - **La consola**: el selector de ramas del catálogo (ramas reales, `?rama=`), la franja, las
   escrituras en la rama, Create › View en la rama, el catálogo del workspace en su rama; las
@@ -110,7 +112,8 @@ Dos pantallas del mismo producto, dos ideas de «dónde estoy». Eso es lo que e
   viven en el árbol y una rama ve los de `main` congelados en el fork); un dataset o una vista
   materializada nuevos o cambiados se construyen **en la rama**, con sus bytes aparte (una rama de
   Iceberg, o una ruta por rama), y el catálogo dice *«not built on this branch»* hasta entonces;
-  al fusionar, esos bytes pasan a ser los de `main`. Hasta entonces, el `409` del punto 4.
+  al fusionar, esos bytes pasan a ser los de `main`. Hecho en el apéndice C (D1–D5 y D7), con un
+  puntero por rama y la tabla compartida en lugar de una rama de Iceberg o una ruta por rama.
 - **Crear una rama desde el catálogo** («New branch…», hoy un aviso) y **ponerla al día**: traer
   `main` a una rama que se quedó atrás (el `merge` de 0030 W2 existe en el workspace; el catálogo
   sólo lo avisa).
@@ -318,9 +321,10 @@ merge queue y CODEOWNERS, Nx *affected*, dbt *defer*, SQLMesh `--select-model`, 
    (`delete_branch_after_merge` pasa a ser justo lo correcto), y ORE **trae `main` a la rama
    global** con `traer`. Si eso choca, la rama queda como estaba y se avisa: la fusión ya ocurrió
    y es buena.
-7. **Datos.** Una propuesta nunca mueve bytes (hoy nada en una rama los tiene: el `409` de la
-   decisión 4). Cuando los tenga, los punteros de `datasets/…/*.json` tendrán que entrar en
-   `cambios` y en el alcance de la propuesta del catálogo, y sólo en ella.
+7. **Datos.** Una propuesta nunca mueve bytes. Cuando escribí esto nada en una rama los tenía; hoy
+   sí (apéndice C), y los punteros de `datasets/…/*.json` entran en `cambios` y en la propuesta del
+   catálogo, y sólo en ella: se promociona el puntero, no se copian los bytes (D5; las colecciones,
+   D7d).
 
 ### A.3 · Lo que arrastra un alcance de activos (medido y hecho el 2026-09-28)
 
@@ -441,10 +445,11 @@ es admin (su `Identidad` es persona, agente, correo y nombre; ninguna de las pot
 
 ## Apéndice C · Los datos en una rama (medido y decidido el 2026-09-29)
 
-**Estado:** decidido, medido (D0) y cotejado; **D1 y D2 hechos y en vivo** (2026-09-30: la
-pasada del mantenimiento en `demo` recoge con lo que reclaman las demás ramas); **D3, D4 y D5
-hechos en local** (`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–15, consola incluida), en vivo
-tras desplegar; D6 por hacer (§ C.6). Es lo que el
+**Estado:** decidido, medido (D0) y cotejado; **D1–D5 y D7 hechos y en vivo** (2026-09-30):
+la recogida cuenta con todas las ramas, lo no tocado se lee de `main` al día, se construye en la
+rama y se fusiona de tres vías por activo, datasets y colecciones por igual
+(`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–19, consola incluida; en vivo en `victor`, rama
+`test3`). D6 —cerrar con las medidas en vivo— por hacer (§ C.6). Es lo que el
 punto 4 y «Lo que queda fuera» dejaban para después: aquí, y no en un ADR aparte, porque una rama
 con datos es la misma rama global con una cosa más.
 
@@ -488,8 +493,8 @@ siga viva en la rama tras M1 es suerte: su snapshot aún no ha caducado (7 días
 
 ### C.2 · Lo decidido
 
-1. **Un puntero por rama; la tabla, compartida.** El estado de un dataset en una rama es su
-   puntero en esa rama (lo que ya hay): la tabla Iceberg es una, y cada rama nombra su
+1. **Un puntero por rama; la tabla, compartida.** El estado de un dataset —o de una colección,
+   D7— en una rama es su puntero en esa rama (lo que ya hay): la tabla Iceberg es una, y cada rama nombra su
    `metadata.json`. Ni una ruta por rama ni las refs de Iceberg (una ref es de una tabla, y una
    rama es del árbol entero; 0031 §7).
 2. **La recogida cuenta con todas las ramas.** Se conserva lo que nombre el puntero de **cualquier
@@ -500,9 +505,10 @@ siga viva en la rama tras M1 es suerte: su snapshot aún no ha caducado (7 días
    punto del que salió, o no existe y `main` lo tiene, manda el de `main` **de hoy**. La regla vive
    una vez (`ore_core::punteros`) y la usan `ore-serve`, `ore` y el puesto; la respuesta dice de
    dónde sale (`de: main | rama`), y el catálogo, *«from main»* o *«built on this branch»*.
-4. **Se construye en la rama.** Copiar, rehacer, ascender y decidir en una rama encolan el Job **en
-   esa rama**: clona la rama, lee lo no tocado de `main` al día (3), empuja a la rama. Construye lo
-   que la rama cambió y, a elección, **lo afectado** aguas abajo (el alcance que `GET
+4. **Se construye en la rama.** Dar de alta una base, copiar, rehacer, ascender y decidir en una
+   rama encolan el Job **en esa rama**: clona la rama, lee lo no tocado de `main` al día (3), empuja
+   a la rama. Construye **lo mantenido** que la rama cambió —datasets y colecciones, virtuales y
+   mantenidas (D7d)— y, a elección, **lo afectado** aguas abajo (el alcance que `GET
    /ramas/{r}/cambios` ya calcula). Dar de alta o retirar una conexión sigue siendo de `main`: es
    de la celda, no del árbol (B.2).
 5. **Fusionar punteros: la regla de git, y una excepción.** Un puntero es un fichero del árbol y se
@@ -512,7 +518,7 @@ siga viva en la rama tras M1 es suerte: su snapshot aún no ha caducado (7 días
    |---|---|
    | la rama no lo tocó | gana `main` |
    | sólo lo tocó la rama | gana la rama: su puntero pasa a `main`, sin mover un byte (lo que se revisó es lo que se publica) |
-   | los dos, **con receta** (un Dataset con `from`, o la salida de un trabajo o transform) | **se reconstruye en `main`** con la definición fusionada; los bytes de la rama sirvieron para revisar. Mientras, `main` sirve lo que tenía |
+   | los dos, **con receta** (un Dataset o una colección con `from`; la salida de un trabajo o transform, todavía no: C.7) | **se reconstruye en `main`** con la definición fusionada; los bytes de la rama sirvieron para revisar. Mientras, `main` sirve lo que tenía |
    | los dos, **sin receta** (un `write()` suelto, PyIceberg, DuckDB) | **conflicto** en ese activo: se elige `main` o la rama, y la consola dice qué se pierde (lo que `main` escribió desde el punto de salida). Lo aprueba el dueño (A.5) |
 
    La excepción hace desaparecer el conflicto donde el resultado es reproducible; sólo la última
@@ -570,7 +576,7 @@ del binario que lo entiende (binario primero, malla después).
   dataset se reclama) y en `recoger` por tabla (`ore-store`: lo alcanzable es la unión de lo que
   nombran todas las `metadata_location` de esa tabla, no sólo la de esta rama). `ore` no aprende
   git: la lista la hace quien clona.
-- *D1b, la malla:* `48` y `53` (y el `53` de colecciones) construyen ese fichero en el clon, que ya
+- *D1b, la malla:* `48` y `53` (las colecciones del `53`, en D7b) construyen ese fichero en el clon, que ya
   trae todas las ramas: por cada `origin/<r>`, los punteros que difieren de su `merge-base` con la
   rama que se recoge.
 - *Prueba:* la medida pasa a prueba de fuego, `pruebas-de-fuego/los-datos-en-una-rama.sh`: M1 y
@@ -618,7 +624,7 @@ del binario que lo entiende (binario primero, malla después).
 - *Hecho así (D4a–D4c):* copiar, ascender, modelar, decidir y rehacer en una rama escriben en su
   árbol (`Servidor::moviendo_datos`) y encolan con la rama (`copia::EnRama`, una marca de la
   petición: el encolado está en lo hondo de `tras_inducir`). Lo que se construye lo calcula
-  `ore-serve` (`vistas_de_la_rama`): los mantenidos cuyo documento difiere del punto de salida
+  `ore-serve` (`vistas_de_la_rama`, hoy `lo_mantenido_de_la_rama`: D7d): los mantenidos cuyo documento difiere del punto de salida
   —lo recién escrito cuenta— y lo que sale de ellos por `from: { dataset }`, hasta el final. La
   cola lleva `48-la-copia-rama-<h>.yaml` (`copiar-rama-<h>`, la rama dentro del resumen), que la
   convergencia conserva como los de rehacer; una plantilla sin el hueco `RAMA` es un error, no una

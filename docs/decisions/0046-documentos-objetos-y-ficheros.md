@@ -621,7 +621,8 @@ ore-serve `GET /colecciones`, `/colecciones/{b}/{s}/{n}` y `…/items?estado=&de
 tres parámetros, admitidos en `ore-entrada` y validados); el índice de activos lleva su
 `puntero`; `ore datasets` ya no la cuenta aunque su puntero viva con los suyos; `ore view` da su
 línea `raíz`, que es la que el Job de la copia lee para abrir su fuente; y la cola encola las
-colecciones mantenidas —una base foránea con sólo virtuales también—, sin pedir el conducto a lo
+colecciones mantenidas —una base foránea con sólo virtuales también; en una rama, las que ella
+cambió, con la rama (0044 C D7d)—, sin pedir el conducto a lo
 que no copia bytes. **Medido** con un manifiesto de 100.000 ítems: lista 0,03 s, ficha 0,07 s;
 los ítems, leídos enteros en texto y filtrados en `ore`, eran **4,1 s** → verbo nuevo
 `ore-store pagina` (filtro de igualdad, orden, desde y límite, y el total): **0,6 s**, igual por
@@ -681,8 +682,8 @@ que ningún lago tenía índice todavía; victor sí lo tenía.) Pruebas de fueg
 `s3-coleccion.sh` sigue verde.
 
 **Sin hacer, y dónde va.** Servir un ítem (URL firmada o ore-serve pasando los bytes) es E9, con el
-acceso en espera y el permiso de firmar por dar. La recogida mira `main`: cuando una rama copie
-(sesión paralela), los vivos tienen que ser los de todas. `ore-serve` no enseña todavía el cotejo ni
+acceso en espera y el permiso de firmar por dar. La recogida miraba sólo `main`; desde 0044 C D7a–D7b
+(2026-09-30) los vivos son los de todas las ramas (`ore collections --recoger --reclaman`). `ore-serve` no enseña todavía el cotejo ni
 lanza el mantenimiento de una colección; la consola, E10. *Merge-on-read* si alguna colección pasa el
 techo.
 
