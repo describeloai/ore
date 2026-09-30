@@ -1,0 +1,391 @@
+# 0049 · Media paradigms in code repositories
+
+**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); la base, por
+construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
+
+## La pregunta
+
+¿Qué tiene que ser verdad para que un code repository de ORE sea **el mejor lugar para trabajar
+con media** —el más cómodo y el más flexible—? Trabajar con media es, sobre todo, **convertirla en
+activos tabulares**: inferencia en lote, OCR, texto con maquetación, trozos y vectores para RAG,
+clasificación, detección y segmentación, transcripción, eventos en audio y vídeo, entidades. En
+cuatro paradigmas: SQL, Python, JVM y Node.
+
+La respuesta de este documento es una **base común** —un modelo, un contrato y la plataforma que
+los sostiene— sobre la que cada paradigma es una superficie idiomática. Se define **la base ideal**
+primero; se construye sin mirar atrás; y entra como una pieza cuando es una realidad comprobada.
+
+## Cómo se lee
+
+De lo más abstracto a lo más concreto. Cada nivel solo depende de los de arriba:
+
+| nivel | qué fija | quién lo tiene que leer |
+|---|---|---|
+| **0 · principios** | qué es la media para el código | todos |
+| **1 · el modelo** | la referencia, las anclas, la tabla de resultados, la identidad | todo lo que escribe o lee resultados |
+| **2 · el contrato** | las siete operaciones y su semántica | cada superficie |
+| **3 · la plataforma** | las siete decisiones que lo hacen posible | ORE |
+| **4 · las superficies** | Python y SQL primero; JVM y Node después | quien programa |
+
+Detrás: lo que hay hoy (medido), cómo se construye y cómo entra, qué se acepta a cambio, y el
+estado del arte en que se apoya (resumido aquí; entero en
+[`docs/investigacion/e11-media-en-codigo-estado-del-arte.md`](../investigacion/e11-media-en-codigo-estado-del-arte.md)).
+
+## La visión
+
+Una persona abre un repositorio, arrastra la colección `legal.default.contratos` a una celda y
+escribe:
+
+```python
+@ore.modelo(gpus=1, lote=16)
+class Paginas:
+    def __init__(self):            # una vez por trabajador
+        self.m = cargar("docling")
+    def __call__(self, item):      # 1 ítem → N anclas
+        with item.open() as f:     # fijado a su versión; rangos si hace falta
+            for bloque in self.m.convertir(f):
+                yield ore.Ancla.region(bloque.pagina, bloque.bbox, texto=bloque.texto)
+
+@transform(inputs=[ore.coleccion("legal.default.contratos")], output="legal.default.bloques")
+def bloques(contratos):
+    return contratos.items().where(tipo="application/pdf").aplicar(Paginas(), en_error="registrar")
+```
+
+Y ocurre esto, sin que lo pida:
+
+- Solo se procesan los ítems **nuevos o cambiados**, y los que cambiaron de modelo o de parámetros;
+  los que fallaron se reintentan con `reintentar_errores`, y su error es una fila, no un job caído.
+- La tabla `bloques` tiene **tipos de verdad** —página, caja con su sistema de coordenadas, texto,
+  confianza, procedencia— y se consulta en SQL como cualquier otra.
+- Su **linaje** dice qué colección, en qué transacción, con qué función y modelo.
+- La colección es **virtual** (vive en el S3 del cliente) y da igual: el código lee igual una
+  virtual que una mantenida.
+- Una celda de dos horas no pierde el acceso; recorrer cien mil ítems no se degrada.
+- `estimar()` dijo antes cuántos ítems, páginas y cuánto coste.
+
+En SQL, la misma colección es una tabla —su listado— y un resultado se une a su ítem por la
+referencia. En Java y Node, lo mismo con el handle de cada lenguaje.
+
+## Nivel 0 · Los principios
+
+Lo que el estado del arte repite en los cuatro paradigmas (fuentes en el anexo):
+
+1. **Tres capas: referencia → handle → bytes.** Listar no lee contenido. La referencia viaja por
+   la tabla; el handle se abre cuando se pide; los bytes llegan al final. Quien las aplana (Spark
+   `binaryFile`, `read_files` con `content`) paga un techo de ~2 GiB y todo en memoria.
+2. **La referencia es un valor tipado**, no una cadena ni una URL.
+3. **La identidad es del contenido, y la da la plataforma.** Ningún almacén garantiza que su
+   referencia siga al origen; ni el ETag ni un CRC son identidad.
+4. **Se lee fijado, o se falla.** Mejor un error que otro contenido.
+5. **La autorización la decide el catálogo; la URL solo transporta.** Una URL firmada es
+   derivada, corta y al portador: nunca se guarda.
+6. **Un resultado sobre media está anclado** a una parte del medio (página, región, intervalo,
+   rango de texto), con su geometría declarada.
+7. **El error de un ítem es un dato del ítem**, no del job.
+8. **Lo derivado sabe de qué deriva**: contenido, función, versión, modelo, parámetros. Si algo de
+   eso cambia, se recalcula; si no, no.
+9. **La media se trata según su tipo** (lo que admite un PDF no es lo que admite un vídeo), y el
+   tipo se detecta por los bytes, no por la extensión.
+
+## Nivel 1 · El modelo
+
+### La referencia: `MediaRef`
+
+La forma es la del tipo lógico **`FILE` de Parquet** (`uri`, `offset`, `size`, `content_type`,
+`checksum`, `inline`), que Databricks ya usa (`FILE`, Beta) e Iceberg propone para v4
+(apache/iceberg#17919). ORE la adopta con sus campos:
+
+| campo | estándar | regla |
+|---|---|---|
+| `uri` | Parquet `FILE.uri` | `ore://<base>.<schema>.<colección>/<ruta>?v=<versión>` |
+| `collection`, `path` | — | el localizador lógico; la ruta **no** es identidad |
+| `version` | S3 `VersionId`, GCS generation | fija los bytes |
+| `digest` | descriptor OCI, RFC 9530 | `sha256:<hex>`; la identidad del contenido (abajo) |
+| `size` | Parquet `size`, OCI | obligatorio |
+| `content_type` | RFC 6838 | el tipo efectivo |
+| `content_type_detected` | WHATWG MIME Sniffing | por firma; si contradice al declarado, se marca, no se corrige solo |
+| `checksum` | Parquet `checksum`, S3 `x-amz-checksum-*` | CRC64NVME: validador y deduplicación, **no** identidad |
+| `annotations` | OCI `annotations`, Dublin Core, Exif/XMP | lo técnico y barato (ancho, alto, duración, páginas); la posición GPS, no por defecto |
+
+Nunca en una `MediaRef`: la URL firmada ni quién autoriza.
+
+### La identidad
+
+- **Identidad = `digest`** cuando se conoce. Dos referencias con el mismo `sha256` son el mismo
+  contenido, cambien la ruta, el ETag o el checksum.
+- **Mientras no se conoce** (una virtual que aún no se ha leído entera), la identidad es el
+  **localizador fijado** `(colección de origen, clave, VersionId)`: en un bucket versionado es
+  inmutable. El `digest` se calcula **al paso** la primera vez que los bytes cruzan la celda
+  (D1), sin lectura extra.
+- Un bucket sin versiones no da identidad fuerte: se dice, y la referencia lleva `checksum` y
+  `etag` como validadores.
+
+### Las anclas: un selector tipado
+
+Alineado con **W3C Web Annotation** (target = fuente + selector + estado) y sus equivalentes de
+URL (Media Fragments, RFC 8118 para PDF, rangos RFC 9110):
+
+| ancla | campos | equivale a |
+|---|---|---|
+| `Item` | — | el medio entero |
+| `Pagina` | `n` | `#page=n` |
+| `Region` | `pagina?`, `bbox {x, y, w, h}`, `poligono?`, `sistema` (px, pt, normalizado + ancho y alto) | `#xywh=`, COCO, Docling `prov` |
+| `Intervalo` | `t_ini`, `t_fin` (s) | `#t=`, WebVTT, segmentos de Whisper |
+| `Fotograma` | `t`, `indice?` | — |
+| `Texto` | `char_ini`, `char_fin` (sobre un texto derivado con su id) | `TextPositionSelector` |
+| `Bytes` | `offset`, `length` | `Range`, Parquet `offset/size` |
+
+Cada herramienta ancla con su geometría (Unstructured, polígono antihorario; marker, horario;
+Docling, `bbox` por página): **se normaliza al entrar**, y el sistema de coordenadas va declarado.
+
+### La tabla anclada
+
+La forma canónica de **todo** resultado sobre media. Una fila por ancla:
+
+| grupo | columnas |
+|---|---|
+| referencia | `item: MediaRef` |
+| ancla | `ancla_id` (determinista: sha256 de ítem + tipo + ancla + función), `ancla_padre`, `ancla: Ancla` |
+| carga | `etiqueta`, `texto`, `valor` (struct tipado por el esquema de la función), `vector: Vector<Float32, n>`, `confianza` |
+| procedencia | `fn`, `fn_version`, `modelo`, `modelo_rev`, `params_hash`, `ejecucion`, `creado` |
+| estado | `estado` (`ok`, `error`), `error_tipo`, `error_msg`, `intentos` |
+
+COCO, WebVTT, ALTO, hOCR y PAGE XML son **exportaciones** de esta tabla, no su almacén. El
+documento entero que devuelva un parser (p. ej. el JSON de Docling) puede guardarse como ítem de
+una colección de salida, referenciado desde sus filas.
+
+### Los tipos que esto exige
+
+`Struct`, `List<Struct>`, `Vector<Float32, n>` (dimensión fija), `MediaRef` y `Ancla`, en la
+gramática (`ore-core`), en la escritura del lago y en su lectura por SQL. Sin ellos, cualquier
+resultado es JSON en un string: el defecto que el estado del arte señala en Foundry.
+
+## Nivel 2 · El contrato
+
+Siete operaciones, las mismas en los cuatro paradigmas; el nombre y el handle, idiomáticos:
+
+| operación | semántica |
+|---|---|
+| `list(colección, prefijo?, as_of?)` | el listado como filas de `MediaRef`, **sin bytes**, por cursor; `as_of` es la transacción de la colección |
+| `stat(ref)` | metadatos frescos; dice si la versión sigue siendo la actual |
+| `open(ref)` | un flujo **fijado** a la versión; verifica tamaño y, si se conoce, `digest` al terminar; cerrar a medias no descarga el resto |
+| `read_range(ref, offset, length)` | 206 con validador fuerte; si el origen no da rangos, lo dice |
+| `url(ref, ttl)` | derivada, corta, al portador; para quien necesite HTTP (un navegador, un modelo externo) |
+| `put(bytes \| flujo, ruta, tipo?)` | sube, calcula `sha256` al paso, detecta el tipo; idempotente por `digest`; dentro de una transacción |
+| `verify(ref)` | recalcula el `digest` |
+
+Y cuatro reglas que valen para todas:
+
+- **Fijado:** un transform lee una colección **en una transacción** (`as_of`) y la registra.
+- **Error por ítem:** una operación sobre un ítem que falla devuelve su error como valor
+  (`{valor, error}` en SQL; `en_error="registrar"` en código). Solo un fallo de la plataforma
+  aborta.
+- **Derivación:** todo lo que produce la tabla anclada lleva la clave
+  `(identidad, fn, fn_version, modelo_rev, params_hash)` y el estado `ok | error | pendiente`.
+- **Lo que no se hace en SQL**: ordenar o agrupar por la referencia, servir rangos, transcodificar.
+  Eso es del handle.
+
+## Nivel 3 · La plataforma: las siete decisiones
+
+Cada una dice qué se decide, qué se descarta y qué se acepta a cambio.
+
+### D1 · La media se lee a través de la celda, no del origen
+
+El código lee cualquier ítem —mantenido o virtual— por una **puerta de lectura de la celda** que
+el puesto alcanza: para una mantenida, firma el blob del lago; para una virtual, lee el origen con
+la credencial de la celda (el rol de E9b), **en flujo, fijado a la versión**, sirve rangos, calcula
+el `sha256` al paso y puede dejar el ítem en el lago como caché (lo que Foundry llama *access
+patterns* con persistencia).
+
+- **Descartado:** abrir la salida del puesto a S3 (el puesto dejaría de estar aislado y el código
+  del usuario tocaría la credencial del cliente); materializar toda virtual (dejaría de serlo).
+- **A cambio:** los bytes de una virtual cruzan la celda —coste de red y CPU, y un servicio más que
+  dimensionar—.
+
+### D2 · Servir es un servicio
+
+Un **índice de ítems** consultable por ruta, identidad y cursor sin leer el manifiesto entero; la
+firma, en proceso; sin procesos ni `git fetch` por petición; lotes grandes; réplicas.
+
+- **Descartado:** seguir con `ore` como subproceso por petición (1,4–2,1 s medido, crece con el
+  cuadrado del recorrido).
+- **A cambio:** el índice es estado nuevo que mantener coherente con las transacciones de la
+  colección.
+
+### D3 · La credencial del código se renueva sola
+
+El SDK pide su token cuando va a caducar, también en mitad de una celda, y una celda larga da
+latido.
+
+- **Descartado:** alargar la vida del token (más ventana si se filtra).
+- **A cambio:** el agente expone al SDK un proveedor de credencial, no una cabecera fija.
+
+### D4 · Tipos nativos antes que cualquier función de media
+
+`Struct`, `List<Struct>`, `Vector<Float32, n>`, `MediaRef`, `Ancla`: en la gramática, en la
+escritura del lago (Iceberg), en DuckDB y en la consola.
+
+- **Descartado:** JSON en un string como forma transitoria (se queda para siempre).
+- **A cambio:** una versión de la gramática y el trabajo de mapear cada tipo en el lago y en SQL
+  antes de ver un solo OCR.
+
+### D5 · Un solo modelo incremental por ítem
+
+Un **registro de derivación** por clave `(identidad, fn, fn_version, modelo_rev, params_hash)` con
+estado `ok | error | pendiente`: procesar solo lo pendiente, `reintentar_errores`, recalcular al
+cambiar de versión, y mover una ruta sin cambiar el contenido no recalcula nada.
+
+- **Descartado:** el checkpoint opaco (Databricks: da por visto lo que falló; identidad por ruta)
+  y dos políticas de transacción (Foundry: tope de 10 000 frente a sin snapshot).
+- **A cambio:** el registro es otra tabla por salida, y la versión de una función la declara quien
+  la escribe (o se deriva del código).
+
+### D6 · La colección es una entrada declarada
+
+`inputs=[ore.coleccion(...)]`: el linaje la registra con su transacción y el permiso se comprueba
+en el catálogo al abrir el trabajo; toda lectura de media desde código pasa por ahí.
+
+- **Descartado:** leer por ruta o desde dentro de una función sin declarar (Databricks: se sale del
+  linaje); que el permiso dependa de declarar la entrada (Foundry: acceso y linaje mezclados).
+- **A cambio:** una lectura no declarada se rechaza en un transform (se permite en una sesión
+  interactiva, y se registra).
+
+### D7 · Cómputo para IA
+
+Perfiles de recurso **por trabajo** (CPU, memoria, GPU), paralelismo dentro del puesto (varios
+trabajadores con el modelo cargado una vez), y **los pesos de un modelo como activo del lago** (el
+puesto no sale a internet, y así debe seguir).
+
+- **Descartado:** un tamaño de puesto para todo.
+- **A cambio:** la GPU es infraestructura y coste nuevos (hoy la cuota de la región es 0); **cuándo
+  entra es una decisión aparte**. La base no depende de ella: todo lo anterior funciona en CPU.
+
+## Nivel 4 · Las superficies
+
+### Python (primero)
+
+- La colección como entrada; `items()` perezoso, por lotes, filtrable sobre el listado.
+- El handle: un objeto fichero con `seek` y rangos (`io.RawIOBase`) que pide su acceso al leer y lo
+  renueva.
+- `@ore.modelo`: estado por trabajador (`__init__`/`__call__`), recursos, lote, reintentos,
+  `en_error`; el esquema de salida, de los tipos o de Pydantic.
+- `aplicar()`: generador 1 → N, incremental por D5, que escribe la tabla anclada.
+- **Operaciones por tipo de medio**, listas: texto con maquetación y páginas a imagen (documento),
+  OCR y embeddings (imagen), transcripción con segmentos (audio), escenas y fotogramas (vídeo).
+  Cada una escribe la tabla anclada con sus columnas fijas.
+- `estimar()`: ítems, páginas, minutos y coste, en seco.
+- Después, el bucle de Document Intelligence de Foundry: comparar estrategias sobre una muestra,
+  medir calidad, tiempo y coste, y desplegar la ganadora como transform versionado.
+
+### SQL (acotado)
+
+- La colección es una tabla: su listado, con `item: MediaRef` y sus metadatos.
+- Escalares `stat(item)`, `url(item, ttl)`; funciones de tabla con `LATERAL` para lo que da N filas.
+- `{valor, error}` siempre, sin opción.
+- Materializar como vista mantenida incremental con la clave de D5; `reintentar_errores(t)`.
+
+### JVM y Node (al final)
+
+La misma `MediaRef`, la misma tabla anclada, el mismo contrato. El handle: `SeekableByteChannel`
+con `close` y `abort` distintos en la JVM; `Blob` y `ReadableStream` web en Node, con el trabajo
+pesado fuera del bucle de eventos.
+
+## Lo que hay hoy (auditado el 2026-09-30)
+
+| | hallazgo |
+|---|---|
+| ⛔ | una **virtual no se lee desde código**: la URL apunta al S3 del cliente y el puesto solo sale a Google (`malla/21-el-puesto.yaml`, a propósito); E9·4 funcionó con una mantenida |
+| ⛔ | **servir** lanza `ore` → `ore-store pagina` + `blob-firmar` y un `git fetch`, y `pagina` lee el manifiesto entero (`ore-store/src/ciclo.rs:1802`): 1,4–2,1 s por llamada; ore-serve, 1 réplica y 500m |
+| ⛔ | el **token** del agente dura 300 s (`malla/61-realms.yaml`) y se renueva solo entre celdas (`puesto/python/agente.py:403,431`) |
+| ⛔ | **sin GPU** ni recursos por trabajo (1–2 CPU, 2–4 Gi fijos; una celda cada vez) |
+| ⛔ | **sin tipos** de resultado: `write()` rechaza listas, structs y binario (`puesto/python/ore/__init__.py:637-663`) |
+| △ | `@transform` no admite una colección; `media()` no pasa por el linaje; sin listado de ítems en el SDK |
+| △ | sin incremental, sin error por ítem, sin memoización; `write()` rechaza una tabla vacía |
+| △ | `over()` materializa la tabla entera; la huella es CRC64NVME (`sha256` solo en las mantenidas) |
+| ✓ | la cola con cuota por inquilino; ore-serve no pasa bytes; blobs por `sha256` con 32 hilos; lectura fijada con `If-Match` (412); procedencia de lo escrito; DuckDB con tope y derrame; S3 por rol (E9b) |
+
+## Cómo se construye, y cómo entra
+
+La base se construye **completa y aparte**, con su contrato escrito primero y una **suite de
+conformidad** que cualquier superficie tiene que pasar. No se parchea el camino de hoy
+(`media`/`medias`), que sigue sirviendo hasta el relevo.
+
+| paso | qué | decisión |
+|---|---|---|
+| **B0 · el contrato** | la `MediaRef`, las anclas, la tabla anclada y las siete operaciones, como especificación (OOS) y como suite de conformidad | niveles 1–2 |
+| **B1 · los tipos** | `Struct`, `List<Struct>`, `Vector`, `MediaRef`, `Ancla` en la gramática, el lago y SQL | D4 |
+| **B2 · servir** | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
+| **B3 · la puerta de lectura** | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
+| **B4 · la entrada** | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
+| **B5 · la derivación** | el registro por clave, `aplicar()`, `reintentar_errores`, la tabla anclada | D5 |
+| **B6 · el relevo** | la suite pasa en vivo; la base entra como pieza y `media`/`medias` pasan a ser azúcar sobre ella | — |
+
+Después, sobre la base: las operaciones por tipo de medio, `estimar()`, SQL, el bucle de
+evaluación y, cuando se decida, D7 con GPU. JVM y Node, al final.
+
+**Entra como pieza cuando** (cada objetivo se fija midiendo en B0, no antes):
+
+- una colección **virtual** se lee desde un puesto, por rangos, fijada a su versión;
+- se recorre el listado de una colección grande por cursor sin que cada página cueste más que la
+  anterior;
+- una celda de más de una hora conserva el acceso;
+- una tabla anclada con `Region`, `Vector` y `valor` tipado se escribe desde Python y se lee desde
+  SQL;
+- una segunda pasada sin cambios no procesa nada, y un error se reintenta solo;
+- el linaje de la salida nombra la colección y su transacción.
+
+## Lo que no se hace aquí
+
+- Las funciones concretas de IA (qué OCR, qué modelo de transcripción): se eligen sobre la base,
+  midiendo, y son F8 de 0046.
+- La GPU (D7): decisión de coste aparte.
+- Permisos **por ítem**: el estado del arte los echa en falta (Foundry, Databricks), pero son de
+  0047; la tabla de listado ya permite filtrar por fila.
+- C2PA y la procedencia criptográfica del medio: se registra si hay manifiesto; validarlo, después.
+
+## Qué se acepta a cambio
+
+- **Construir antes de ver resultados.** B0–B5 no enseñan un solo OCR; es el precio de no heredar
+  JSON en strings ni un incremental que miente.
+- **Un servicio más en la celda** (D1, D2): estado, réplicas y un camino de bytes que antes no
+  cruzaba ORE.
+- **Una versión de la gramática** (D4) y la migración de lo que ya declara `Media<c>`.
+- **Una forma propia hasta que Iceberg tenga `FILE`**: la `MediaRef` se guarda como struct con los
+  nombres de Parquet `FILE`, y adoptará el tipo cuando exista.
+- **El esquema `ore://`** es propio y no está registrado.
+
+## Anexo · El estado del arte, resumido
+
+**SQL.** Snowflake: tipo `FILE` (referencia con `CONTENT_TYPE`, `SIZE`, `ETAG`), directory tables,
+tres URLs (scoped, de stage, presigned). BigQuery: `ObjectRef` (`uri`, `version`, `authorizer`,
+`details`), object tables con bytes en pseudocolumna oculta. DuckDB `read_blob` con proyección
+perezosa. Ninguno garantiza que la referencia siga al origen; las funciones de IA reciben la
+referencia, no los bytes.
+
+**Python.** Daft (`daft.File` perezoso, UDF con `gpus`, `on_error`), Ray Data (actores con el modelo
+cargado una vez, contrapresión, `ray.data.llm` con vLLM, checkpoint), Lance (blob v2, `take_blobs`
+perezoso, versiones), Pixeltable (columnas calculadas incrementales, `errors_only`), HF `datasets`
+(`decode=False`), WebDataset. Ninguno direcciona por contenido al escribir.
+
+**JVM.** Beam `match → readMatches → ReadableFile` (las tres capas explícitas), Spark `binaryFile`
+(el contraejemplo), Flink `FileSink` exactly-once, Tika, PDFBox con caché acotada, AWS SDK v2
+(`close` drena, `abort` corta).
+
+**Node.** `Blob`/`File`/`ReadableStream` iguales en Node, navegador y Workers; `fs.openAsBlob`
+falla si el fichero cambia; `file-type` detecta por firma; sharp con límites; `fluent-ffmpeg`
+archivado (2025).
+
+**Estándares.** Parquet `FILE` e Iceberg v4 `file`; descriptor OCI (`mediaType`, `digest`,
+`size`); RFC 9530 (`sha-256`; `crc32c` y `md5`, no como identidad); RFC 6838 y WHATWG MIME
+Sniffing; RFC 9110 (rangos), Media Fragments, RFC 8118, IIIF; W3C Web Annotation; COCO, WebVTT,
+ALTO/hOCR/PAGE; OpenLineage; C2PA 2.2.
+
+**Foundry.** Lo mejor: la media reference como tipo de columna, operaciones por tipo de medio con
+salida fija, `suppress_errors`, incremental `added/previous/current`, *access patterns*, Document
+Intelligence. Lo peor: resultados en JSON string, permiso por media set, dos políticas de
+transacción, streams sin acceso aleatorio, virtuales sin STS.
+
+**Databricks.** Lo mejor: `FILE` (Beta), `ai_parse_document` con `bbox` y confianza, error por fila.
+Lo peor: Auto Loader da por visto lo que falló e identifica por ruta, tres formas de error, las
+funciones de IA rompen el incremental, el acceso por ruta se sale del linaje.

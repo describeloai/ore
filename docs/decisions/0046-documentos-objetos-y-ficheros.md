@@ -307,6 +307,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
 | **E9b · medir la federación** | el rol IAM del cliente que confía en la identidad de la plataforma, sin claves que guardar ni rotar (*sin* external ID: abajo) | informe aquí; decide el formulario de E10 |
 | **E10 · consola** (F7) | alta de S3 con su formulario (el de E9b), los `ObjectTable` en el árbol de orígenes, colecciones con vista previa por tipo | lo de E8 visto en la consola |
+| **E11 · media en código** | promovido a su propio ADR: [0049](0049-media-paradigms-in-code-repositories.md) (lo que era E10 C: consultar colecciones desde SQL y código, las celdas `Media<c>`, crear una colección desde código) | 0049 |
 
 F8 (procesar) queda fuera de este plan.
 
