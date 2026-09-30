@@ -807,6 +807,15 @@ puede asumir otro; y el `sub` no es un secreto que se pueda filtrar ni adivinar 
    temporal deja de valer cuando ella caduca, diga lo que diga su `X-Amz-Expires`: ore-serve pide
    como mucho lo que le queda, menos 30 s.
 
+**En vivo (2026-09-30, victor).** La fuente `s3_rol` se dio de alta en la consola con la URL del rol:
+en el custodio, `role_arn` y **ninguna clave**. Su catálogo (el driver asumiendo el rol): 12 objetos
+y 20 punteros, lo mismo que con la clave. Una base foránea sobre ella en `main`
+(`s3_foreign_contract`): la transacción 1, 4 contratos. Servir: la primera petición 2,1 s (custodio
++ STS + firmar), las siguientes 1,4–1,5 s (la temporal guardada; lo que queda son las dos pasadas
+de `ore`); la URL lleva `X-Amz-Security-Token` y una clave `ASIA…`, 206 y `%PDF-` fijado a su
+versión, manipulada 403; un lote con `ttl=3600` sale con **3564 s**, lo que le quedaba a la
+credencial menos 30.
+
 **Límite, dicho:** la credencial no se renueva. Un Job de copia de más de una hora sobre una fuente
 rol fallaría a mitad; el cliente puede subir `MaxSessionDuration` del rol (hasta 12 h), y renovar
 dentro del Job queda por hacer si hace falta.
