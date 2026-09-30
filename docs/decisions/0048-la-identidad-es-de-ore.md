@@ -1,6 +1,6 @@
 # 0048 · La identidad es de ORE
 
-**Estado:** aceptado · I1–I3 hechos en el código (2026-09-30); el realm vivo, por conciliar.
+**Estado:** aceptado · I1–I3 hechos, y `rubix` conciliado en vivo (2026-09-30): AAL2 en las tres puertas.
 
 ## El contexto, medido
 
@@ -64,12 +64,32 @@ tokens, y pide una migración como la `034`.
 - `pruebas-de-fuego/el-segundo-factor.sh` (en CI) corre esa medida, exige las dos puertas en
   `REQUIRED` y que `61-realms.yaml` sea **exactamente** lo que emite `ore.mjs`.
 
+## En vivo (2026-09-30)
+
+`aplicar.mjs --plan` primero (sólo GET: dice TODO lo que cambiaría, porque el reconciliador
+también resta) y después aplicado en `rubix` por una persona, con el admin de arranque:
+
+| | antes | después |
+|---|---|---|
+| la entrada | **1 factor** (declaraba `aal=AAL2`) | 2: passkey o TOTP |
+| la reposición | 1 | 2 |
+| **el registro** | **abría sesión con 1** | la passkey es acción por defecto: se enrola antes de entrar |
+
+- **La tercera puerta la encontró la prueba, no la guarda.** Recién aplicadas las dos, un
+  usuario nuevo se registró y entró con UN factor: el registro no pasa por el flujo de
+  entrada. Se cierra con `webauthn-register` como acción por defecto (`ore.mjs`), y
+  `medir.mjs` gana la regla ⑥. Comprobado en vivo: el registro pide la passkey, una cuenta
+  existente sin factor lo pide al entrar, y la consola entra con la passkey.
+- **El lector no se declara.** El plan dijo que `rubix-consola-lector` ganaría `view-users`,
+  `query-users`, `view-realm` y `view-clients`. Nadie en ORE ni en la consola lo usa y su
+  secreto vivía en el proyecto viejo: sale de `realmsDeOre()`, y en vivo sigue sin papeles.
+- Lo demás del plan: `acr` en la consola, `addOrganizationId`, el mapeador de organización
+  duplicado de la consola fuera (el claim sigue saliendo por el ámbito).
+
 ## Lo que queda, y de quién
 
-- **El realm vivo.** El artefacto dice AAL2; el realm, hasta que se concilie, no.
-  `aplicar.mjs --verificar` y después sin él (la contraseña del admin por tubería: lo
-  ejecuta una persona). Probar con un usuario sin segundo factor que Keycloak **pide
-  registrarlo** y no bloquea.
+- `rubix-interno` (sin personas): conciliarlo igual, para que lo vivo diga lo que el artefacto.
+- Los usuarios de prueba del registro, a borrar.
 - **La imagen nueva del IdP** (con el tema): pasar `60-idp.yaml` a una `idp:<sha>` cuando se
   decida el reinicio del login.
 - **El correo.** El artefacto declara `smtp-relay.gmail.com` (por IP, sin credencial) y el
