@@ -377,9 +377,16 @@ impl Servidor {
             if s.codigo == 69
                 && let Some((fuente, env)) = necesita(&s.stdout)
             {
-                let valor = match self.credencial_de_la_fuente(&fuente, &env) {
+                let (valor, caduca) = match self.credencial_de_la_fuente(&fuente, &env) {
                     Ok(v) => v,
                     Err(r) => return r,
+                };
+                // ⭐ 0046 E9b: una URL firmada con una credencial temporal deja de
+                //   valer cuando caduca la credencial, diga lo que diga su
+                //   `X-Amz-Expires`. Se pide, entonces, lo que le queda.
+                let args = match caduca {
+                    Some(c) => con_ttl_hasta(&args, ttl, c, ahora_ms()),
+                    None => args.clone(),
                 };
                 s = match mando::correr_con(&self.binario, raiz, &args, &[(env, valor)]) {
                     Ok(s) => s,
@@ -506,7 +513,17 @@ impl Servidor {
 
     /// La credencial de una fuente, del cofre, **como el agente de la celda**
     /// (0046 E9·3). El cofre decide (`usar` sobre `fuente-<n>`) y lo anota.
-    fn credencial_de_la_fuente(&self, fuente: &str, env: &str) -> Result<String, Respuesta> {
+    ///
+    /// ⭐ Si la fuente es un ROL de AWS (0046 E9b: `role_arn` en la URL, sin
+    ///   clave), se canjea por una credencial temporal con `ore-asumir-rol` —este
+    ///   proceso no habla TLS— y se guarda mientras le quede
+    ///   [`crate::agente::VIGENTE`]: servir no vuelve al custodio ni a STS en
+    ///   una hora. Devuelve también cuándo caduca, que acota la URL firmada.
+    fn credencial_de_la_fuente(
+        &self,
+        fuente: &str,
+        env: &str,
+    ) -> Result<(String, Option<u64>), Respuesta> {
         if token(fuente).is_err() || !crate::agente::variable_admisible(env) {
             return Err(Respuesta::error(
                 422,
@@ -524,8 +541,11 @@ impl Servidor {
                  (`--agente-fichero`, `--idp`) o el custodio (`--cofre`, `--organizacion`)",
             ));
         };
+        if let Some((url, caduca)) = agente.temporal(fuente, ahora_ms()) {
+            return Ok((url, Some(caduca)));
+        }
         let t = agente.token().map_err(|e| Respuesta::error(503, e))?;
-        match ore_entrada::http::pedir(
+        let valor = match ore_entrada::http::pedir(
             "GET",
             cofre,
             &format!("/organizaciones/{org}/secretos/fuente-{fuente}"),
@@ -553,7 +573,37 @@ impl Servidor {
                 503,
                 format!("el custodio no contesta: {e}"),
             )),
+        }?;
+        if !valor.contains("role_arn=") {
+            return Ok((valor, None));
         }
+        let canjeador = self.binario.with_file_name("ore-asumir-rol");
+        let s = mando::con_entrada(&canjeador, &["--sesion", "ore-serve"], &valor)
+            .map_err(|e| Respuesta::error(500, e))?;
+        if s.codigo != 0 {
+            return Err(Respuesta::error(
+                502,
+                format!(
+                    "no se pudo asumir el rol de `{fuente}`: {}",
+                    primera_de(&s.stderr).trim_start_matches("✗ ")
+                ),
+            ));
+        }
+        let n = ore_core::parse::parse(s.stdout.trim())
+            .map_err(|_| Respuesta::error(502, "`ore-asumir-rol` no devolvió JSON".to_string()))?;
+        let url = n.get("url").and_then(|(_, v)| v.as_str()).map(String::from);
+        let caduca = n
+            .get("caduca_ms")
+            .and_then(|(_, v)| v.as_str())
+            .and_then(|c| c.parse::<u64>().ok());
+        let (Some(url), Some(caduca)) = (url, caduca) else {
+            return Err(Respuesta::error(
+                502,
+                "`ore-asumir-rol` no dio la credencial temporal",
+            ));
+        };
+        agente.guardar_temporal(fuente, url.clone(), caduca);
+        Ok((url, Some(caduca)))
     }
 
     /// Corre `ore` y devuelve la última línea JSON de su salida tal cual; lo
@@ -620,8 +670,60 @@ fn primera_de(stderr: &str) -> String {
         .unwrap_or_else(|| "falló sin decir por qué".into())
 }
 
+/// Lo que vive una URL firmada si nadie dice `ttl` (el de `ore collections --servir`).
+const TTL_POR_DEFECTO: u64 = 300;
+
+fn ahora_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Los argumentos de `ore collections --servir` con un `--ttl` que no pasa de lo
+/// que le queda a la credencial (menos 30 s de holgura), y nunca de 30 s.
+fn con_ttl_hasta(args: &[String], ttl: Option<u64>, caduca_ms: u64, ahora_ms: u64) -> Vec<String> {
+    let queda = caduca_ms.saturating_sub(ahora_ms) / 1000;
+    let tope = queda.saturating_sub(30).max(30);
+    let pedido = ttl.unwrap_or(TTL_POR_DEFECTO);
+    if pedido <= tope {
+        return args.to_vec();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(args.len() + 2);
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--ttl" {
+            i += 2;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out.push("--ttl".into());
+    out.push(tope.to_string());
+    out
+}
+
 #[cfg(test)]
 mod pruebas {
+    #[test]
+    fn la_url_no_vive_mas_que_la_credencial_temporal() {
+        let a = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let base = a(&["collections", ".", "--servir", "b.s.n", "--json"]);
+        // Le queda una hora: los 300 s por defecto caben, nada cambia.
+        assert_eq!(super::con_ttl_hasta(&base, None, 3_600_000, 0), base);
+        // Le quedan 200 s: se piden 170, aunque nadie dijera `ttl`.
+        let r = super::con_ttl_hasta(&base, None, 200_000, 0);
+        assert_eq!(r[r.len() - 2..], a(&["--ttl", "170"])[..]);
+        // Un `--ttl 3600` con 20 minutos: 1170, y el viejo fuera.
+        let con = a(&["collections", ".", "--ttl", "3600", "--json"]);
+        let r = super::con_ttl_hasta(&con, Some(3600), 1_200_000, 0);
+        assert_eq!(r, a(&["collections", ".", "--json", "--ttl", "1170"]));
+        // Nunca por debajo de 30 s (lo mínimo que `ore` acepta).
+        let r = super::con_ttl_hasta(&base, None, 10_000, 0);
+        assert_eq!(r[r.len() - 1], "30");
+    }
+
     use super::sin_porcentajes;
 
     /// Una huella de S3 viaja en la ruta con su `/`, `+`, `=` y `:` codificados.

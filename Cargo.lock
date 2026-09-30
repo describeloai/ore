@@ -2348,6 +2348,7 @@ dependencies = [
  "ore-driver",
  "ore-s3",
  "ore-sigv4",
+ "ore-sts",
  "parquet",
  "serde_json",
 ]
@@ -2428,6 +2429,15 @@ dependencies = [
  "typetag",
  "ureq",
  "uuid",
+]
+
+[[package]]
+name = "ore-sts"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-gcp",
+ "ureq",
 ]
 
 [[package]]

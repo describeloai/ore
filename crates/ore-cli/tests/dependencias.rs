@@ -136,6 +136,26 @@ fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
     );
 }
 
+/// **El canjeador del rol no sabe leer un bucket** (0046 E9b). `ore-asumir-rol`
+/// entra en la imagen de `ore-serve` y SÍ habla por la red —a STS y al metadata
+/// server—, así que lo que se veta es lo que leería un origen: el cliente de S3
+/// y la firma. Canjea un token; no firma ni lee.
+#[test]
+fn el_canjeador_del_rol_no_sabe_leer_un_bucket() {
+    let cierre = cierre_de("ore-sts");
+    let culpables: Vec<String> = cierre
+        .iter()
+        .map(|n| nombre_de(n))
+        .filter(|n| ["ore-s3", "ore-sigv4", "ore-driver", "ore-store"].contains(n))
+        .map(String::from)
+        .collect();
+    assert!(
+        culpables.is_empty(),
+        "`ore-sts` enlaza lo que lee un origen, y va en la imagen de `ore-serve`: {}",
+        culpables.join(", ")
+    );
+}
+
 /// **El firmante de `ore-serve` tampoco** (0046 E9·3). `ore-firmar-s3` prefirma
 /// con la credencial de una fuente dentro de la imagen del plano de control, que
 /// promete no poder leer un origen: lo mismo que se veta en `ore`, y además un

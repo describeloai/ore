@@ -150,6 +150,36 @@ fn pedir(url: &str) -> Result<(String, Duration), String> {
     Ok((token, vida))
 }
 
+/// El token de IDENTIDAD de la cuenta que corre (un JWT de
+/// `https://accounts.google.com`, 0046 E9b), no el de acceso: lo que otra nube
+/// acepta para federarse. `sub` y `azp` son el ID único de la cuenta, y `aud`
+/// es `audiencia`. Vive una hora y no se guarda: quien lo pide lo canjea.
+///
+/// `ORE_GCP_IDENTIDAD`, un token fijo, para probar fuera de GCP.
+pub fn identidad(audiencia: &str) -> Result<String, String> {
+    if let Ok(t) = std::env::var("ORE_GCP_IDENTIDAD")
+        && !t.is_empty()
+    {
+        return Ok(t);
+    }
+    let url = format!(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience={audiencia}&format=full"
+    );
+    ureq::get(&url)
+        .set("metadata-flavor", "Google")
+        .timeout(Duration::from_secs(5))
+        .call()
+        .map_err(|e| {
+            format!(
+                "sin `ORE_GCP_IDENTIDAD` y el metadata server no da el token de identidad ({e}): \
+                 en GCP hace falta Workload Identity"
+            )
+        })?
+        .into_string()
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("el token de identidad no se pudo leer: {e}"))
+}
+
 /// Un cliente HTTPS con el TLS de la plataforma.
 pub fn cliente() -> Result<ureq::Agent, String> {
     let tls = native_tls::TlsConnector::new()

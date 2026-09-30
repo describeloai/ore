@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE), E3 (la superficie) y E4 (el driver) hechos; E5–E8 hechos y en vivo; **E9 (servir y referenciar) hecho y en vivo el 2026-09-30**, salvo el 302 de la consola (E9·5) ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE), E3 (la superficie) y E4 (el driver) hechos; E5–E8 hechos y en vivo; **E9 (servir y referenciar) hecho y en vivo el 2026-09-30**, salvo el 302 de la consola (E9·5); **E9b (la federación sin claves) medida y decidida el 2026-09-30** ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -305,7 +305,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E7 · medir borrados** ✅ | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
 | **E8 · la colección** (F5) ✅ en vivo: la virtual (1), la mantenida (2), su vida (3) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
-| **E9b · medir la federación** | el rol IAM del cliente con *external ID* que confía en la identidad de la plataforma, sin claves que guardar ni rotar | informe aquí; decide el formulario de E10 |
+| **E9b · medir la federación** | el rol IAM del cliente que confía en la identidad de la plataforma, sin claves que guardar ni rotar (*sin* external ID: abajo) | informe aquí; decide el formulario de E10 |
 | **E10 · consola** (F7) | alta de S3 con su formulario (el de E9b), los `ObjectTable` en el árbol de orígenes, colecciones con vista previa por tipo | lo de E8 visto en la consola |
 
 F8 (procesar) queda fuera de este plan.
@@ -763,7 +763,53 @@ caducidad de lo prefirmado y honra `response-content-*`.
 
 **Sin hacer, y dónde va.** El 302 de la consola (E9·5, en la plataforma). La paridad del SDK de la
 JVM. Las decisiones por recurso cuando 0047 A8 las dé (hoy, la pertenencia). La federación sin
-claves hacia AWS, E9b.
+claves hacia AWS: E9b, abajo.
+
+**E9b · la federación sin claves (medida y decidida, 2026-09-30).** Hasta aquí, una fuente S3 era
+una clave de acceso de un usuario IAM del cliente, guardada en el custodio: un secreto que no
+caduca, que hay que rotar a mano, y que muchas organizaciones no dejan crear para un tercero. Lo
+que hacen Databricks, Snowflake o Fivetran es el rol: el cliente crea en SU cuenta un rol que
+confía en la identidad de la plataforma, y la plataforma lo asume con credenciales de una hora.
+
+**Lo medido**, desde pods de victor y de demo contra un rol de prueba (`paladio-ore-lectura-prueba`,
+en la cuenta del bucket, creado por una persona con los dos JSON que se le dieron):
+
+| medido | dato |
+|---|---|
+| el token de identidad de la cuenta de la celda (metadata, `audience=sts.amazonaws.com`) | 0,2 s; `iss` `https://accounts.google.com`, `sub` = `azp` = el **ID único** de la cuenta de servicio |
+| `AssumeRoleWithWebIdentity` con ese token | **200 en 0,3 s**, credencial de 1 h; AWS reconoce `accounts.google.com` sin dar de alta un proveedor OIDC |
+| leer con la credencial temporal (`ore-read-s3 catalogo`) | el bucket entero, 12 tablas y 7 conjuntos, 3,4 s: lo mismo que con la clave |
+| firmar sin red con el token de sesión (`ore-firmar-s3`) | la URL lleva `X-Amz-Security-Token`; **206** y `%PDF-` |
+| la cuenta de OTRA celda (demo) con el mismo rol | **403 `AccessDenied`** |
+| un token de otra audiencia | 400 |
+
+⛔ **`AssumeRoleWithWebIdentity` no admite `ExternalId`** (sólo `AssumeRole`, entre cuentas de AWS).
+Lo que aquí hace su papel es la confianza del rol: nombra el `sub` de las cuentas de **una** celda
+(`accounts.google.com:aud` y `:sub`, y `:oaud` = `sts.amazonaws.com`). Cada celda corre con sus
+propias cuentas (`ore-driver-<celda>`, `ore-serve-<celda>`), así que el rol de un cliente no lo
+puede asumir otro; y el `sub` no es un secreto que se pueda filtrar ni adivinar a propósito.
+
+**Lo decidido:**
+
+1. **Quién canjea.** El driver (`ore-read-s3`), al leer la fuente; y ore-serve, al servir una
+   virtual, que no habla TLS: lo hace `ore-asumir-rol` (crate `ore-sts`), que habla con STS y con el
+   metadata server y **no enlaza el cliente de S3 ni la firma** —la imagen del control sigue sin
+   nada que lea un origen (`dependencias.rs`)—. ore-serve guarda la credencial temporal mientras le
+   queden 10 minutos: servir no pasa por el custodio ni por STS en una hora. Sólo la temporal: una
+   clave de acceso no se guarda.
+2. **Dónde vive el rol.** En la misma URL, en el custodio: `s3://<bucket>?region=…&role_arn=arn:aws:iam::<cuenta>:role/<rol>`.
+   Sin cambio de spec ni de alta, y lo que el custodio guarda **deja de ser un secreto**.
+   `ore-sigv4` rechaza un `role_arn` sin canjear (no cae a las credenciales del entorno).
+3. **Lo que ve el cliente** (el formulario de E10): «Rol IAM» por defecto y «Claves de acceso» como
+   alternativa; en el de rol, la política de confianza ya rellena con los IDs de **su** celda,
+   para copiar y pegar, y el ARN. Hace falta una ruta que dé esos IDs: va con E10.
+4. **La duración.** Una hora (la que un rol da por defecto). Una URL firmada con una credencial
+   temporal deja de valer cuando ella caduca, diga lo que diga su `X-Amz-Expires`: ore-serve pide
+   como mucho lo que le queda, menos 30 s.
+
+**Límite, dicho:** la credencial no se renueva. Un Job de copia de más de una hora sobre una fuente
+rol fallaría a mitad; el cliente puede subir `MaxSessionDuration` del rol (hasta 12 h), y renovar
+dentro del Job queda por hacer si hace falta.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

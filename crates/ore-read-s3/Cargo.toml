@@ -19,6 +19,7 @@ ore-core   = { path = "../ore-core" }
 ore-driver = { path = "../ore-driver" }
 ore-s3     = { path = "../ore-s3" }
 ore-sigv4  = { path = "../ore-sigv4" }
+ore-sts    = { path = "../ore-sts" }
 # El pie de un Parquet, leido por rangos: su esquema exacto (decimal128(12, 2),
 # timestamp[us, tz=UTC]) sin bajar el fichero. Ya estaba en el arbol (lo trae
 # `ore-store`), con las mismas features.

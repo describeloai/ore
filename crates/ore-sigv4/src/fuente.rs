@@ -64,6 +64,14 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             .filter(|v| !v.is_empty())
     };
     let entorno = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    // ⛔ Un rol (0046 E9b) no es una credencial: se canjea ANTES, fuera de aquí
+    //   (`ore-sts`), porque esto no habla por la red y el firmante tampoco.
+    if param("role_arn").is_some() && param("access_key_id").is_none() {
+        return Err(
+            "la fuente es un rol (`role_arn`): se canjea antes por una credencial temporal              (`ore-sts`, `ore-asumir-rol`)"
+                .into(),
+        );
+    }
     let clave = param("access_key_id")
         .or_else(|| entorno("AWS_ACCESS_KEY_ID"))
         .ok_or(
@@ -146,6 +154,16 @@ mod tests {
         assert!(f.bucket.en_ruta);
         assert_eq!(f.bucket.ruta(Some("x")), "/lago/x");
         assert_eq!(f.prefijo, "");
+    }
+
+    #[test]
+    fn un_rol_sin_canjear_no_se_confunde_con_el_entorno() {
+        // Sin esto, un `role_arn` caería a `AWS_ACCESS_KEY_ID` del entorno y
+        // firmaría con OTRA credencial sin decirlo.
+        let e = leer("s3://cubo?region=x&role_arn=arn:aws:iam::123456789012:role/r")
+            .err()
+            .unwrap();
+        assert!(e.contains("role_arn") && e.contains("ore-sts"), "{e}");
     }
 
     #[test]

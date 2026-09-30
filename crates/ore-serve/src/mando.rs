@@ -209,6 +209,34 @@ pub fn correr_con(
     })
 }
 
+/// Otro binario de la imagen (no `ore`, así que sin la lista de `permitido`),
+/// con `entrada` por la entrada estándar: 0046 E9b, `ore-asumir-rol`, que recibe
+/// la URL de una fuente —una credencial— y nunca por `argv`.
+pub fn con_entrada(binario: &Path, args: &[&str], entrada: &str) -> Result<Salida, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut hijo = Command::new(binario)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", binario.display()))?;
+    hijo.stdin
+        .take()
+        .ok_or("no se pudo escribir en el hijo")?
+        .write_all(entrada.as_bytes())
+        .map_err(|e| format!("no se pudo escribir en `{}`: {e}", binario.display()))?;
+    let salida = hijo
+        .wait_with_output()
+        .map_err(|e| format!("`{}` no terminó: {e}", binario.display()))?;
+    Ok(Salida {
+        codigo: salida.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&salida.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&salida.stderr).into_owned(),
+    })
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;

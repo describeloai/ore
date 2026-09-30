@@ -1,0 +1,24 @@
+# LA FEDERACION CON AWS (0046 E9b): el token de identidad de la cuenta de la
+# celda se canjea en STS por una credencial temporal del rol que el CLIENTE
+# creo en su cuenta. Ninguna clave de AWS guardada en ORE.
+#
+# ⛔ Sin `ore-s3` ni `ore-sigv4`: esto canjea un token y nada mas; no sabe leer
+#   un bucket. Por eso puede entrar en la imagen de `ore-serve`, que promete no
+#   poder leer un origen (`ore-cli/tests/dependencias.rs`).
+[package]
+name        = "ore-sts"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Canjea la identidad de la celda por una credencial temporal de AWS (AssumeRoleWithWebIdentity)"
+
+[[bin]]
+name = "ore-asumir-rol"
+path = "src/main.rs"
+
+[dependencies]
+ore-core = { path = "../ore-core" }
+ore-gcp  = { path = "../ore-gcp" }
+ureq     = { version = "2", default-features = false, features = ["native-tls"] }

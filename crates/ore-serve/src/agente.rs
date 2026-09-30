@@ -17,6 +17,7 @@
 
 use ore_core::json::Json;
 use ore_entrada::http::{self, Plazos};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -29,7 +30,16 @@ pub struct Agente {
     cliente: PathBuf,
     secreto: PathBuf,
     guardado: Mutex<Option<(String, Instant)>>,
+    /// ⭐ 0046 E9b: la URL de cada fuente-ROL ya canjeada por su credencial
+    ///   temporal, y cuándo caduca (ms). Mientras le quede [`VIGENTE`], servir
+    ///   no pasa ni por el custodio ni por STS. Sólo credenciales de una hora:
+    ///   una clave de acceso NO se guarda aquí.
+    temporales: Mutex<HashMap<String, (String, u64)>>,
 }
+
+/// Lo que tiene que quedarle a una credencial temporal para reutilizarla: más
+/// que la URL firmada más larga que se da por defecto (300 s), con holgura.
+pub const VIGENTE: Duration = Duration::from_secs(600);
 
 /// Lo que se le quita a la vida de un token: pedir otro antes de que caduque.
 const MARGEN: Duration = Duration::from_secs(30);
@@ -48,7 +58,22 @@ impl Agente {
             cliente: PathBuf::from(format!("{prefijo}-cliente")),
             secreto: PathBuf::from(format!("{prefijo}-secreto")),
             guardado: Mutex::new(None),
+            temporales: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// La credencial temporal de `fuente`, si le queda al menos [`VIGENTE`].
+    pub fn temporal(&self, fuente: &str, ahora_ms: u64) -> Option<(String, u64)> {
+        let g = self.temporales.lock().ok()?;
+        g.get(fuente)
+            .filter(|(_, c)| *c > ahora_ms + VIGENTE.as_millis() as u64)
+            .cloned()
+    }
+
+    pub fn guardar_temporal(&self, fuente: &str, url: String, caduca_ms: u64) {
+        if let Ok(mut g) = self.temporales.lock() {
+            g.insert(fuente.to_string(), (url, caduca_ms));
+        }
     }
 
     /// Un token del agente que vale al menos [`MARGEN`].
