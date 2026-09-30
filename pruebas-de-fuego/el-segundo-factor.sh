@@ -66,6 +66,10 @@ if command -v node >/dev/null 2>&1; then
     exit 1
   fi
   echo "  ✓ malla/61-realms.yaml es lo que emite identidad/ore.mjs"
+  # ⭐ Y lo que los realms EXIGEN, recorriendo sus flujos (0048 I3, `identidad/medir.mjs`):
+  #   dos factores y uno resistente a phishing, la reposición sin rebajar, sin
+  #   credencial de correo, sin retornos en claro a otra máquina.
+  (cd "$RAIZ" && node identidad/medir.mjs | sed 's/^/  /') || { echo "✗ la entrada no exige lo que declara" >&2; exit 1; }
 else
   echo "  ⚠ sin node: no se coteja el artefacto con su generador"
 fi
