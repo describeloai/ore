@@ -148,8 +148,12 @@ spec:
                   #   fila nombra ni nadie tocó en dos horas. Si un manifiesto no
                   #   se lee, no se recoge ningún blob; lo que la retención movió
                   #   se empuja igual, y el Job acaba en error para que se vea.
+                  #
+                  # ⭐ 0044 C D7b: con lo que reclaman las demás ramas, como los
+                  #   datasets. Los blobs son del inquilino: uno que sólo nombra
+                  #   la colección de una rama se iría pasadas las dos horas.
                   COLECCIONES=0
-                  ore collections . --recoger || COLECCIONES=$?
+                  ore collections . --recoger --reclaman /trabajo/ramas || COLECCIONES=$?
                   git add -A datasets
                   if git diff --cached --quiet; then
                     echo "· ningún puntero se movió: nada que empujar"

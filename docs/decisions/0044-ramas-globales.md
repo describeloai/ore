@@ -687,7 +687,8 @@ colección, virtual o mantenida—, y los dos se miden contra el punto de salida
   aprendió `ListObjectVersions` y la huella `CRC64NVME` para ello—: con la rama, el blob que sólo
   ella nombra sigue; sin ella, se va.
 - *D7b, la malla:* el `53` pasa `--reclaman /trabajo/ramas` también a `ore collections --recoger`
-  (después del binario de D7a, nunca junto).
+  (después del binario de D7a, nunca junto). *Hecho así:* el mismo `/trabajo/ramas` que D1b ya
+  construye —los punteros de colección viven en `datasets/`, así que ya estaban dentro—.
 - *D7c, medir:* con la base de `test3`, ¿`recoger-huerfanas` y el `recoger` por tabla reclaman el
   manifiesto de una colección de la rama? ¿La superposición de D3 y la fusión de D5 tratan su
   puntero como el de un dataset (misma carpeta, `manda` por hash, «con receta» = sin
