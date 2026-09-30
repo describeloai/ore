@@ -10,7 +10,7 @@
 #    0 sesiones, 0 tokens emitidos»                          (su CR, 2026-08-26)
 #
 # ⇒ **No hay datos que mover.** La configuración no se copia: se GENERA con
-# `deploy/identidad/realm.mjs`. Esto es volver a poner en pie un despliegue
+# `deploy/identidad/realm.mjs` (hoy `identidad/realm.mjs` en ORE, 0048). Esto es volver a poner en pie un despliegue
 # declarativo, no restaurar una base.
 #
 # ⚠️ Con una condición que no se ha podido comprobar y que hay que comprobar:

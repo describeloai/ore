@@ -51,11 +51,30 @@ PLAZO="2026-09-30"
 PY=$(command -v python3 || command -v python) || { echo "✗ hace falta python" >&2; exit 1; }
 [ -f "$ARTEFACTO" ] || { echo "✗ no existe $ARTEFACTO" >&2; exit 1; }
 
+# ⭐ 0048 · EL ARTEFACTO ES LO QUE EL GENERADOR DICE, NI UN BYTE MÁS. Desde que la
+#   identidad es de ORE, `identidad/ore.mjs` emite este fichero y `identidad/aplicar.mjs`
+#   concilia el realm vivo desde LOS MISMOS realms. Un artefacto editado a mano, o un
+#   generador cambiado sin volver a emitir, sería mirar aquí un realm que nadie aplica.
+if command -v node >/dev/null 2>&1; then
+  GENERADO="$(cd "$RAIZ" && node --input-type=module -e "
+    import { pathToFileURL } from 'node:url';
+    const m = await import(pathToFileURL('identidad/ore.mjs'));
+    process.stdout.write(m.manifiesto());
+  ")" || { echo "✗ identidad/ore.mjs no emite el manifiesto" >&2; exit 1; }
+  if [ "$GENERADO" != "$(cat "$ARTEFACTO")" ]; then
+    echo "✗ malla/61-realms.yaml no es lo que emite identidad/ore.mjs: \`node identidad/ore.mjs\` y commit" >&2
+    exit 1
+  fi
+  echo "  ✓ malla/61-realms.yaml es lo que emite identidad/ore.mjs"
+else
+  echo "  ⚠ sin node: no se coteja el artefacto con su generador"
+fi
+
 "$PY" - "$ARTEFACTO" "$PLAZO" <<'PYCODE'
 # -*- coding: utf-8 -*-
 """Lee el artefacto de realms y contesta si la entrada opera a AAL2.
 
-⭐ Sin biblioteca de YAML: `gen-realm.py` emite cada CR como JSON con sangría y
+⭐ Sin biblioteca de YAML: `identidad/ore.mjs` emite cada CR como JSON con sangría y
 los une con `---`, así que JSON es todo lo que hace falta. La prueba corre donde
 corra el runner, que es la misma razón por la que `servidor-oidc.sh` firma RSA a
 mano.
@@ -120,7 +139,7 @@ if ausentes:
     raise SystemExit(1)
 
 if not relajadas:
-    print("\n✓ las dos puertas exigen segundo factor en los tres realms: AAL2.")
+    print("\n✓ las dos puertas exigen segundo factor en todos los realms: AAL2.")
     raise SystemExit(0)
 
 quedan = (datetime.date.fromisoformat(PLAZO) - hoy).days

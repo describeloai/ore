@@ -105,8 +105,8 @@ if claims:
 else:
     fila("token de agente", "✗ no se pudo acuñar (¿gcloud sin sesión, IdP caído?)")
 fila("lo que el gateway acepta hoy (E0)", "`--oidc-audience ore-serve`, y la celda de `azp = ore-agente-<celda>` (0027 ② lo permite hasta que el realm emita `rubix_celda`)")
-realm = leer("malla/gen-realm.py")
-fila("`gen-realm.py` conoce `modelos`", "sí" if "modelos" in realm else "NO: E2 añade la audiencia `modelos` a los clientes de agente")
+realm = leer("identidad/ore.mjs")
+fila("`identidad/ore.mjs` conoce `modelos`", "sí" if "modelos" in realm else "NO: E2 añade la audiencia `modelos` a los clientes de agente")
 aprov = leer("malla/aprovisionar-inquilino.sh")
 fila("el mapeador `rubix_celda` en el cliente de agente (⑦)", "sí" if "rubix_celda" in aprov else "NO: E2 lo añade en el paso ⑦ (`oidc-hardcoded-claim-mapper`, como `rubix_tipo`) — un cliente por celda, el claim es la celda")
 fila("y entonces el gateway", "`--oidc-audience modelos`, y `rubix_celda` manda sobre `azp`")
