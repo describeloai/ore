@@ -27,6 +27,35 @@ use crate::parse::Node;
 /// La carpeta de los punteros, bajo la raíz del árbol.
 pub const CARPETA: &str = "datasets";
 
+/// Las carpetas con punteros que una rama lee de `main` al día (0044 C.2 ③):
+/// los de hoy y los de antes (`copias/`).
+pub const CARPETAS_AL_DIA: [&str; 2] = [CARPETA, "copias"];
+
+/// **De dónde se lee un puntero en una rama** (0044 C.2 ③).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Manda<'a> {
+    /// El de la rama: lo cambió, o lo creó.
+    Rama,
+    /// El de `main` de hoy (su contenido, por su huella): la rama no lo tocó.
+    Main(&'a str),
+    /// Ninguno: la rama lo borró, o no lo tocó y `main` lo retiró.
+    Ninguno,
+}
+
+/// La regla, sobre la huella del puntero (el blob de git, o lo que identifique
+/// su contenido) en **la rama**, en **el punto del que salió** y en **`main`
+/// hoy**. Lo que la rama cambió o creó es suyo; lo que borró, no está; lo que
+/// no tocó se lee de `main` al día —lo que `main` creó después, también; lo
+/// que retiró, tampoco—. Es la *fallback branch* de Foundry y el `--defer` de
+/// dbt, contra `main` de hoy y no contra `main` congelado.
+pub fn manda<'a>(rama: Option<&str>, base: Option<&str>, main: Option<&'a str>) -> Manda<'a> {
+    match (rama, base) {
+        (Some(r), b) if b != Some(r) => Manda::Rama,
+        (None, Some(_)) => Manda::Ninguno,
+        _ => main.map_or(Manda::Ninguno, Manda::Main),
+    }
+}
+
 /// `(base, schema, nombre)` de una forma corta (`p.n` o `p.s.n`).
 pub fn partes(corto: &str) -> Option<(&str, &str, &str)> {
     let v: Vec<&str> = corto.split('.').collect();
@@ -206,6 +235,24 @@ pub fn del_arbol(raiz: &Path) -> BTreeMap<String, Json> {
 
 #[cfg(test)]
 mod tests {
+    /// Las siete formas de 0044 C.2 ③.
+    #[test]
+    fn manda_la_rama_lo_suyo_y_main_lo_demas() {
+        use super::{Manda, manda};
+        // la rama lo cambió, o lo creó: suyo, diga lo que diga main
+        assert_eq!(manda(Some("r"), Some("b"), Some("m")), Manda::Rama);
+        assert_eq!(manda(Some("r"), None, None), Manda::Rama);
+        // la rama lo borró: no está, aunque main siga
+        assert_eq!(manda(None, Some("b"), Some("m")), Manda::Ninguno);
+        // no lo tocó: el de main de hoy
+        assert_eq!(manda(Some("b"), Some("b"), Some("m")), Manda::Main("m"));
+        assert_eq!(manda(Some("b"), Some("b"), Some("b")), Manda::Main("b"));
+        // main lo creó después: también
+        assert_eq!(manda(None, None, Some("m")), Manda::Main("m"));
+        // no lo tocó y main lo retiró: tampoco
+        assert_eq!(manda(Some("b"), Some("b"), None), Manda::Ninguno);
+    }
+
     use super::*;
 
     #[test]

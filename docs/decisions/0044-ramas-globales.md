@@ -441,8 +441,9 @@ es admin (su `Identidad` es persona, agente, correo y nombre; ninguna de las pot
 
 ## Apéndice C · Los datos en una rama (medido y decidido el 2026-09-29)
 
-**Estado:** decidido, medido (D0) y cotejado; **D1 y D2 hechos en local** (2026-09-29,
-`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–6), en vivo tras desplegar; D3–D6 por hacer (§ C.6). Es lo que el
+**Estado:** decidido, medido (D0) y cotejado; **D1 y D2 hechos y en vivo** (2026-09-30: la
+pasada del mantenimiento en `demo` recoge con lo que reclaman las demás ramas); **D3a y D3b hechos
+en local** (`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–9), D3c (consola) y D4–D6 por hacer (§ C.6). Es lo que el
 punto 4 y «Lo que queda fuera» dejaban para después: aquí, y no en un ADR aparte, porque una rama
 con datos es la misma rama global con una cosa más.
 
@@ -588,6 +589,16 @@ del binario que lo entiende (binario primero, malla después).
   el fallback de `datos_del_puesto` por la regla). Las respuestas dicen `de`.
 - *D3c, consola:* en una rama, cada dataset dice *«from main»* o *«built on this branch»*.
 - *Prueba:* M4 da soloMain 4 y copiaBase 20 desde la rama mientras la rama no los toque.
+- *Hecho así (D3a, D3b):* la regla es `ore_core::punteros::manda`, sobre la huella del blob en
+  la rama, en su `merge-base` con `main` y en `main`. No la aplica cada lector —hay más de treinta
+  sitios que leen punteros, en `ore` y en `ore-serve`—: **el árbol de la rama se prepara al día**
+  (`Forja::superponer`), en `datasets/` y `copias/`, y deja `.ore-al-dia.json` con lo que sale de
+  `main`. Lo hacen los árboles de lectura del espejo (la caché lleva la cabeza de `main` en la
+  clave), `/assets` y **también la escritura** (`escribiendo_en`): si no, `/v1` cargaría el snapshot
+  de `main` y confirmaría contra el congelado de la rama. Antes de publicar, lo superpuesto que la
+  escritura no tocó vuelve a como está en la rama (`deshacer_al_dia`): sólo lo escrito pasa a ser
+  suyo. Medido en la prueba: una rama que anexa a un dataset heredado lo hace sobre el de `main` de
+  hoy (20 + 5 = 25), no sobre el congelado.
 
 **D4 · Construir en la rama** (ORE + malla + consola)
 

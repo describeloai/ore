@@ -10,7 +10,8 @@
 #   main:  `ventas.base` (10) y su copia mantenida `ventas.copiaBase`
 #   ── sale la rama `bea/datos` ──
 #   main:  +10 en `base` (20), `ventas.soloMain` nace (4), la copia se rehace (20)
-#   rama:  +5 en `base` (15), `ventas.nueva` nace (3)
+#   rama:  +5 en `base` —sobre lo que ve, el de `main` de hoy (D3): 25—, y
+#          `ventas.nueva` nace (3); copiaBase, sin tocar, es la de `main` (20)
 #
 # Lo que afirma (D1 · la recogida cuenta con todas las ramas):
 #   1  `reclaman`: lo que el Job deja para `--reclaman` —de cada otra rama, sus
@@ -19,8 +20,8 @@
 #   2  sin `--reclaman`, un directorio que no está: la pasada se niega (66) y no
 #      toca el bucket
 #   3  `main` recoge (el mantenimiento y el Job de la copia) con `--reclaman`: la
-#      rama sigue leyendo base 15 y nueva 3, y `main` lo suyo
-#   4  la rama copia y recoge con `--reclaman`: copiaBase 15 en la rama, y `main`
+#      rama sigue leyendo base 25 y nueva 3, y `main` lo suyo
+#   4  la rama copia y recoge con `--reclaman`: copiaBase 25 en la rama, y `main`
 #      sigue leyendo base 20, soloMain 4 y copiaBase 20
 #   5  la rama se borra: la pasada siguiente de `main` se lleva lo suyo (nueva
 #      entera, y los ficheros de base que sólo la rama nombraba) y `main` sigue
@@ -29,6 +30,18 @@
 # Y D2 · `confirmar` en la rama:
 #   6  `POST /datasets/{ns}/{n}/confirmar` con `x-ore-rama` mueve el puntero en
 #      la rama y no en `main` (D0 M5); sin la cabecera, en `main`, como siempre
+#
+# Y D3 · lo que la rama no tocó se lee de `main` al día:
+#   7  desde la rama, soloMain (nació en `main` después) se lee (4, y no 404) y
+#      copiaBase es la de `main` de hoy (20, y no la 10 congelada); base y nueva
+#      son suyas (25, 3); `GET /datasets` y la ficha dicen `de`
+#   8  escribir en la rama sobre lo heredado (anexar 2 a soloMain por `/v1`)
+#      funciona —sin el 409 de cargar el de `main` y confirmar contra el
+#      congelado—, la rama lee 6 y `main` sigue 4; sólo soloMain pasa a ser de la
+#      rama: copiaBase sigue igual que en el punto de salida
+#   9  lo que `main` hace después se ve al momento: `main` anexa 7 a soloMain
+#      (11) y la rama sigue en su 6 (ya es suyo); `main` crea otraMain (2) y la
+#      rama la lee
 #
 # Necesita `ore`, `ore-serve`, `ore-store-r2` (en `$ORE_TARGET` o
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
@@ -188,8 +201,8 @@ reclaman() { # $1 = la rama que recoge · $2 = el directorio · en el clon (cwd)
 montar e1
 T="$T_ACTUAL"
 [ "$R_ANEXA" = ok ] && [ "$R_CREA" = ok ] || falla "0 · la rama no escribió por /v1: $R_ANEXA · $R_CREA"
-[ "$(lee - base)/$(lee - soloMain)/$(lee - copiaBase)/$(lee "$RAMA" base)/$(lee "$RAMA" nueva)" = "20/4/20/15/3" ] \
-  || falla "0 · el mundo no es el de D0: main $(lee - base)/$(lee - soloMain)/$(lee - copiaBase), rama $(lee "$RAMA" base)/$(lee "$RAMA" nueva)"
+[ "$(lee - base)/$(lee - soloMain)/$(lee - copiaBase)/$(lee "$RAMA" base)/$(lee "$RAMA" nueva)" = "20/4/20/25/3" ] \
+  || falla "0 · el mundo no es el esperado: main $(lee - base)/$(lee - soloMain)/$(lee - copiaBase), rama $(lee "$RAMA" base)/$(lee "$RAMA" nueva)"
 
 git clone -q "$FORJA" "$T/mant"
 ( cd "$T/mant" && reclaman main "$T/ramas" )
@@ -208,8 +221,8 @@ ok "2 · un --reclaman que no es un directorio: 66 y el bucket intacto ($A0 obje
 "$ORE" datasets "$T/mant" --recoger --edad 7d --reclaman "$T/ramas" > "$T/mant.txt" 2>&1 || falla "3 · el mantenimiento: $(cat "$T/mant.txt")"
 ( cd "$T/mant" && "$ORE" materialize . --recoger --informe datasets --reclaman "$T/ramas" ) > "$T/matr.txt" 2>&1 || falla "3 · la copia: $(cat "$T/matr.txt")"
 v="$(lee - base)/$(lee - soloMain)/$(lee - copiaBase) · $(lee "$RAMA" base)/$(lee "$RAMA" nueva)/$(lee "$RAMA" copiaBase)"
-[ "$v" = "20/4/20 · 15/3/10" ] || falla "3 · tras recoger main: $v · $(tr '\n' ' ' < "$T/mant.txt")"
-ok "3 · main recoge con --reclaman (el mantenimiento y la copia): main 20/4/20 y la rama 15/3/10 siguen leyéndose ($A0 → $(objetos) objetos)"
+[ "$v" = "20/4/20 · 25/3/20" ] || falla "3 · tras recoger main: $v · $(tr '\n' ' ' < "$T/mant.txt")"
+ok "3 · main recoge con --reclaman (el mantenimiento y la copia): main 20/4/20 y la rama 25/3/20 siguen leyéndose ($A0 → $(objetos) objetos)"
 
 # ── 5 · la rama se borra: lo suyo se va en la pasada siguiente ────────────────
 ANTES=$(objetos); NUEVA=$(objetos catalogo/ventas/default/nueva/)
@@ -232,8 +245,8 @@ git clone -q -b "$RAMA" "$FORJA" "$T/r"
 ( cd "$T/r" && "$ORE" materialize . --recoger --informe datasets --reclaman "$T/ramas" ) > "$T/matrama.txt" 2>&1 || falla "4 · la copia en la rama: $(cat "$T/matrama.txt")"
 ( cd "$T/r" && git add -A datasets && git commit -qm "Copia en la rama" && git push -q origin HEAD:"$RAMA" ) || falla "4 · no se pudo empujar a la rama"
 v="$(lee - base)/$(lee - soloMain)/$(lee - copiaBase) · $(lee "$RAMA" base)/$(lee "$RAMA" nueva)/$(lee "$RAMA" copiaBase)"
-[ "$v" = "20/4/20 · 15/3/15" ] || falla "4 · tras copiar en la rama: $v · $(tr '\n' ' ' < "$T/matrama.txt" | cut -c1-300)"
-ok "4 · la rama copia y recoge con --reclaman: copiaBase 15 en la rama, y main sigue 20/4/20"
+[ "$v" = "20/4/20 · 25/3/25" ] || falla "4 · tras copiar en la rama: $v · $(tr '\n' ' ' < "$T/matrama.txt" | cut -c1-300)"
+ok "4 · la rama copia y recoge con --reclaman: copiaBase 25 en la rama, y main sigue 20/4/20"
 
 # ══ 6 · confirmar en la rama (D2) ════════════════════════════════════════════
 esta() { git --git-dir="$FORJA" show "$1:datasets/ventas/default/$2.json" >/dev/null 2>&1 && echo sí || echo no; }
@@ -250,4 +263,34 @@ c=$(confirma - enMain)
 [ "$c" = 201 ] && [ "$(esta main enMain)" = sí ] || falla "6 · confirmar sin cabecera tenía que ir a main: $c · $(cat "$T/conf.json")"
 ok "6 · confirmar: con x-ore-rama el puntero va a la rama (y no a main); sin ella, a main"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x936\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ 7–9 · lo no tocado, de main al día (D3) ══════════════════════════════════
+montar e3
+T="$T_ACTUAL"
+v="$(lee "$RAMA" soloMain)/$(lee "$RAMA" copiaBase)/$(lee "$RAMA" base)/$(lee "$RAMA" nueva)"
+[ "$v" = "4/20/25/3" ] || falla "7 · desde la rama (soloMain/copiaBase/base/nueva): $v, y no 4/20/25/3"
+c=$(curl -s -o "$T/lista.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/datasets")
+de=$("$PY" -c 'import json,sys
+d={x["nombre"]:x.get("de","?") for x in json.load(open(sys.argv[1]))["datasets"]}
+print(" ".join(k+"="+d.get(k,"-") for k in ["ventas.base","ventas.nueva","ventas.copiaBase","ventas.soloMain"]))' "$T/lista.json" 2>&1)
+[ "$c/$de" = "200/ventas.base=rama ventas.nueva=rama ventas.copiaBase=main ventas.soloMain=main" ] \
+  || falla "7 · GET /datasets en la rama: $c · $de"
+c=$(curl -s -o "$T/ficha.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/datasets/ventas/soloMain")
+[ "$c" = 200 ] && grep -q '"de":"main"' "$T/ficha.json" || falla "7 · la ficha de soloMain en la rama: $c $(head -c 200 "$T/ficha.json")"
+ok "7 · desde la rama: soloMain 4 (nació en main después) y copiaBase 20 (la de main de hoy); base 25 y nueva 3, suyas; la lista y la ficha dicen de: main | rama"
+
+r=$(cli "$RAMA" anexar soloMain 2)
+[ "$r" = ok ] || falla "8 · anexar en la rama a lo heredado: $r"
+v="$(lee "$RAMA" soloMain)/$(lee - soloMain)"
+[ "$v" = "6/4" ] || falla "8 · tras anexar en la rama: rama/main soloMain = $v, y no 6/4"
+B=$(git --git-dir="$FORJA" merge-base main "$RAMA")
+propios=$(git --git-dir="$FORJA" diff --name-only "$B" "$RAMA" -- datasets | tr '\n' ' ')
+[ "$propios" = "datasets/ventas/default/base.json datasets/ventas/default/nueva.json datasets/ventas/default/soloMain.json " ] \
+  || falla "8 · lo propio de la rama tras escribir: $propios (y no base, nueva y soloMain)"
+ok "8 · escribir en la rama sobre lo heredado: anexar a soloMain funciona (rama 6, main 4), y sólo lo escrito pasa a ser suyo ($propios)"
+
+cli - anexar soloMain 7 >/dev/null; cli - crear otraMain 2 >/dev/null
+v="$(lee - soloMain)/$(lee "$RAMA" soloMain)/$(lee "$RAMA" otraMain)"
+[ "$v" = "11/6/2" ] || falla "9 · main avanza después: main soloMain / rama soloMain / rama otraMain = $v, y no 11/6/2"
+ok "9 · lo que main hace después se ve al momento: otraMain (2) se lee desde la rama; soloMain, ya suyo, sigue en 6 (main 11)"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x939\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

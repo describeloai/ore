@@ -212,7 +212,17 @@ impl Servidor {
                     Some(c) => Some(c.clone()),
                     None => forja.cabeza_de(&rama_nombre),
                 };
-                let clave = cabeza.clone().map(|c| (rama_nombre.clone(), c));
+                // ⭐ 0044 C.2 ③: en una rama, lo que no tocó sale de `main` al día,
+                //   así que la clave lleva también la cabeza de `main`.
+                let de_main = match (rama.as_deref(), &commit) {
+                    (Some(r), None) if r != "main" => forja.cabeza_de("main"),
+                    _ => None,
+                };
+                let con_main = |c: String| match &de_main {
+                    Some(m) => format!("{c}+{m}"),
+                    None => c,
+                };
+                let clave = cabeza.clone().map(|c| (rama_nombre.clone(), con_main(c)));
                 if let Some(k) = &clave
                     && let Some(j) = self.assets_cache.lee(k)
                 {
@@ -222,7 +232,13 @@ impl Servidor {
                     }
                     return Respuesta::ok(j);
                 }
-                let prestado = match forja.clonar_rama(rama.as_deref()) {
+                // ⭐ 0044 C.2 ③: el catálogo de una rama lee de `main` al día lo que
+                //   ella no tocó (salvo un commit pedido: eso es la historia).
+                let clonado = match (rama.as_deref(), &commit) {
+                    (Some(r), None) => forja.clonar_rama_al_dia(r).map(|(p, _)| p),
+                    _ => forja.clonar_rama(rama.as_deref()),
+                };
+                let prestado = match clonado {
                     Err(crate::git::Fallo::SinRama(r)) => {
                         return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
                     }
@@ -248,7 +264,8 @@ impl Servidor {
                 );
                 let j = Arc::new(j);
                 if let Some(c) = cabeza_real {
-                    self.assets_cache.guarda((rama_nombre, c), j.clone());
+                    self.assets_cache
+                        .guarda((rama_nombre, con_main(c)), j.clone());
                 }
                 let mut j = (*j).clone();
                 if let Json::Obj(m) = &mut j {

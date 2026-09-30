@@ -2068,7 +2068,8 @@ impl Servidor {
                 if let Err(m) = nombre_de_rama_valido(r) {
                     return Respuesta::error(422, m);
                 }
-                let prestado = match forja.clonar_rama(Some(r)) {
+                // ⭐ 0044 C.2 ③: con lo que la rama no tocó al día, como se leyó.
+                let (prestado, al_dia) = match forja.clonar_rama_al_dia(r) {
                     Err(crate::git::Fallo::SinRama(r)) => {
                         return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
                     }
@@ -2076,7 +2077,13 @@ impl Servidor {
                     Ok(p) => p,
                 };
                 let mut resp = f(prestado.ruta());
-                if resp.codigo >= 300 || !forja.hay_cambios(prestado.ruta()) {
+                if resp.codigo >= 300 {
+                    return resp;
+                }
+                if let Err(e) = forja.deshacer_al_dia(prestado.ruta(), &al_dia) {
+                    return Respuesta::error(502, e.to_string());
+                }
+                if !forja.hay_cambios(prestado.ruta()) {
                     return resp;
                 }
                 match forja.publicar(prestado.ruta(), sujeto, mensaje) {

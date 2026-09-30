@@ -34,11 +34,62 @@ use ore_entrada::identidad::Identidad;
 use crate::mando;
 use crate::rutas::{Servidor, token};
 
+/// **Los datasets que en este árbol se leen de `main` al día** (0044 C.2 ③):
+/// los que dice [`crate::git::AL_DIA`], por su nombre corto. `None` si el
+/// árbol no es el de una rama con lo no tocado al día.
+fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let t = std::fs::read_to_string(raiz.join(crate::git::AL_DIA)).ok()?;
+    let n = ore_core::parse::parse(&t).ok()?;
+    let rutas = n.get("rutas")?.1.entries().to_vec();
+    Some(
+        rutas
+            .iter()
+            .filter(|(_, v)| v.as_str() == Some("main"))
+            .filter_map(|(ruta, _)| {
+                let rel = Path::new(ruta.as_str()?);
+                let dentro: std::path::PathBuf = rel.components().skip(1).collect();
+                let nodo = std::fs::read_to_string(raiz.join(rel))
+                    .ok()
+                    .and_then(|t| ore_core::parse::parse(&t).ok());
+                ore_core::punteros::clave_de(&dentro, nodo.as_ref())
+            })
+            .collect(),
+    )
+}
+
+/// `de: main | rama` en un dataset (o en cada uno de `datasets`) leído en una
+/// rama: de dónde sale lo que se enseña.
+fn anotar_de(raiz: &Path, mut r: Respuesta) -> Respuesta {
+    let Some(de) = de_main(raiz) else {
+        return r;
+    };
+    let marca = |m: &mut std::collections::BTreeMap<String, Json>| {
+        if let Some(Json::Str(n)) = m.get("nombre").cloned() {
+            let d = if de.contains(&n) { "main" } else { "rama" };
+            m.insert("de".into(), Json::s(d));
+        }
+    };
+    if let Json::Obj(m) = &mut r.cuerpo {
+        marca(m);
+        if let Some(Json::Arr(xs)) = m.get_mut("datasets") {
+            for x in xs {
+                if let Json::Obj(o) = x {
+                    marca(o);
+                }
+            }
+        }
+    }
+    r
+}
+
 impl Servidor {
-    /// `GET /datasets`.
+    /// `GET /datasets`. En una rama, cada uno dice `de` (0044 C.2 ③).
     pub(crate) fn datasets(&self, rama: Option<&str>) -> Respuesta {
         self.leyendo_en(rama, |raiz| {
-            self.ore_json(raiz, &["datasets".into(), ".".into(), "--json".into()])
+            anotar_de(
+                raiz,
+                self.ore_json(raiz, &["datasets".into(), ".".into(), "--json".into()]),
+            )
         })
     }
 
@@ -55,7 +106,7 @@ impl Servidor {
         }
         let nombre = ore_core::normalize::corto(ns, schema, n);
         self.leyendo_en(rama, move |raiz| {
-            self.ore_json(
+            let r = self.ore_json(
                 raiz,
                 &[
                     "datasets".into(),
@@ -64,7 +115,8 @@ impl Servidor {
                     nombre,
                     "--json".into(),
                 ],
-            )
+            );
+            anotar_de(raiz, r)
         })
     }
 

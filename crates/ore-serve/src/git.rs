@@ -760,10 +760,27 @@ struct Espejo {
 
 #[derive(Default)]
 struct Arboles {
-    /// commit → su árbol, del más viejo al más nuevo.
-    hechos: Vec<(String, std::sync::Arc<PathBuf>)>,
+    /// clave (el commit; en una rama con datos al día, `rama+main`) → su
+    /// árbol y el `git status` que tiene que tener, del más viejo al más nuevo.
+    hechos: Vec<(String, std::sync::Arc<PathBuf>, String)>,
     creados: u64,
 }
+
+/// **Lo que la superposición cambió en un árbol de rama** (0044 C.2 ③): cada
+/// ruta de puntero, y de dónde sale ahora (`main`) o que ya no está
+/// (`ninguno`), con la huella que se escribió. Queda también en el árbol, en
+/// [`AL_DIA`], para quien lee.
+#[derive(Debug, Default, Clone)]
+pub struct AlDia {
+    pub rutas: Vec<(String, &'static str, Option<String>)>,
+}
+
+/// El fichero, en la raíz de un árbol de rama, que dice qué punteros se leen de
+/// `main` al día. No se confirma nunca.
+pub const AL_DIA: &str = ".ore-al-dia.json";
+
+/// Desde aquí, lo que la superposición añadió al `info/exclude` de un clon.
+const MARCA_AL_DIA: &str = "# ore · al día (0044 C.2 ③): no tocar";
 
 /// El árbol para leer: compartido (un `worktree` del espejo) o propio (un clon
 /// fresco, si el espejo no se pudo usar). Se suelta al salir de la petición.
@@ -878,21 +895,29 @@ impl Forja {
         let mut a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
         self.al_dia(&e)?;
         let c = self.commit_de(&e, rama)?;
-        if let Some(i) = a.hechos.iter().position(|(h, _)| *h == c) {
-            let (_, dir) = &a.hechos[i];
-            // Limpio, o se rehace: un árbol compartido que alguien tocó ya no
-            // es el commit que dice ser.
+        // ⭐ 0044 C.2 ③: en una rama, lo que no tocó se lee de `main` al día, así
+        //   que el árbol depende también de la cabeza de `main`.
+        let m = self.commit_de(&e, None)?;
+        let clave = if rama.is_some() && m != c {
+            format!("{c}+{m}")
+        } else {
+            c.clone()
+        };
+        if let Some(i) = a.hechos.iter().position(|(h, _, _)| *h == clave) {
+            let (_, dir, huella) = &a.hechos[i];
+            // Como quedó, o se rehace: un árbol compartido que alguien tocó ya
+            // no es el commit que dice ser.
             let limpio = dir.is_dir()
                 && self
                     .git(Some(dir), &["status", "--porcelain", "--ignored"])
-                    .is_ok_and(|s| s.trim().is_empty());
+                    .is_ok_and(|s| s.trim() == huella.trim());
             if limpio {
                 let dir = dir.clone();
                 let par = a.hechos.remove(i);
                 a.hechos.push(par);
                 return Ok(dir);
             }
-            let (_, viejo) = a.hechos.remove(i);
+            let (_, viejo, _) = a.hechos.remove(i);
             self.quitar_arbol(&e, &viejo);
         }
         a.creados += 1;
@@ -917,18 +942,24 @@ impl Forja {
                 &c,
             ],
         )?;
+        if clave != c {
+            self.superponer(&["--git-dir", &d], &dir, &c, &m)?;
+        }
+        let huella = self
+            .git(Some(&dir), &["status", "--porcelain", "--ignored"])
+            .unwrap_or_default();
         let dir = std::sync::Arc::new(dir);
-        a.hechos.push((c, dir.clone()));
+        a.hechos.push((clave, dir.clone(), huella));
         // Los viejos que nadie lee, fuera.
         while a.hechos.len() > ARBOLES {
             let Some(i) = a
                 .hechos
                 .iter()
-                .position(|(_, p)| std::sync::Arc::strong_count(p) == 1)
+                .position(|(_, p, _)| std::sync::Arc::strong_count(p) == 1)
             else {
                 break;
             };
-            let (_, viejo) = a.hechos.remove(i);
+            let (_, viejo, _) = a.hechos.remove(i);
             self.quitar_arbol(&e, &viejo);
         }
         Ok(dir)
@@ -938,6 +969,203 @@ impl Forja {
         let _ = std::fs::remove_dir_all(dir);
         let d = e.dir.to_string_lossy().into_owned();
         let _ = self.git(None, &["--git-dir", &d, "worktree", "prune"]);
+    }
+
+    /// **Un clon de una rama para escribir, con lo que no tocó al día** (0044
+    /// C.2 ③): lo que se lee al escribir tiene que ser lo que se leyó antes —si
+    /// no, `/v1` carga el snapshot de `main` y confirma contra el congelado de
+    /// la rama—. Antes de publicar, [`Forja::deshacer_al_dia`]: lo superpuesto
+    /// que la escritura no tocó no se confirma. Sin espejo, el clon de siempre,
+    /// sin superponer.
+    pub fn clonar_rama_al_dia(&self, rama: &str) -> Result<(Prestado, AlDia), Fallo> {
+        let par = (|| {
+            let e = self.espejo()?;
+            let (c, m) = {
+                let _a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+                self.al_dia(&e)?;
+                (self.commit_de(&e, Some(rama))?, self.commit_de(&e, None)?)
+            };
+            let p = self.clonar_del_espejo(Some(rama))?;
+            let d = e.dir.to_string_lossy().into_owned();
+            let al_dia = if c != m {
+                let a = self.superponer(&["--git-dir", &d], p.ruta(), &c, &m)?;
+                self.ocultar_al_dia(p.ruta(), &a)?;
+                a
+            } else {
+                AlDia::default()
+            };
+            Ok((p, al_dia))
+        })();
+        match par {
+            Ok(x) => Ok(x),
+            Err(Fallo::SinRama(r)) => Err(Fallo::SinRama(r)),
+            Err(_) => Ok((self.clonar_de_la_forja(Some(rama))?, AlDia::default())),
+        }
+    }
+
+    /// **Lo superpuesto, invisible para git** en un clon de escritura: quien
+    /// escribe (el commit del editor hace `git add -A` y cuenta lo cambiado) no
+    /// lo ve como cambio suyo. Lo que la rama tiene, `--skip-worktree`; lo que
+    /// no tiene, en el `info/exclude` del clon (que es suyo, no del espejo).
+    fn ocultar_al_dia(&self, dir: &Path, al_dia: &AlDia) -> Result<(), Fallo> {
+        let mut excluir = vec![format!("/{AL_DIA}")];
+        for (ruta, _, _) in &al_dia.rutas {
+            if self.en_head(dir, ruta) {
+                self.git(Some(dir), &["update-index", "--skip-worktree", "--", ruta])?;
+            } else {
+                excluir.push(format!("/{ruta}"));
+            }
+        }
+        let f = dir.join(".git").join("info").join("exclude");
+        let mut t = std::fs::read_to_string(&f).unwrap_or_default();
+        if !t.is_empty() && !t.ends_with('\n') {
+            t.push('\n');
+        }
+        t.push_str(MARCA_AL_DIA);
+        t.push('\n');
+        for l in &excluir {
+            t.push_str(l);
+            t.push('\n');
+        }
+        if let Some(p) = f.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        std::fs::write(&f, t)
+            .map_err(|e| Fallo::Git(format!("no se pudo escribir `info/exclude`: {e}")))
+    }
+
+    fn en_head(&self, dir: &Path, ruta: &str) -> bool {
+        self.git(Some(dir), &["cat-file", "-e", &format!("HEAD:{ruta}")])
+            .is_ok()
+    }
+
+    /// **Lo superpuesto que la escritura no tocó, fuera** antes de confirmar:
+    /// vuelve a como está en la rama. Lo que la escritura cambió —un puntero
+    /// que partió del de `main` y ahora es otro— se queda, vuelve a ser visible
+    /// para git, y pasa a ser de la rama.
+    pub fn deshacer_al_dia(&self, dir: &Path, al_dia: &AlDia) -> Result<(), Fallo> {
+        for (ruta, de, huella) in &al_dia.rutas {
+            let f = dir.join(ruta);
+            let intacto = match (de, huella) {
+                (&"main", Some(h)) => self
+                    .git(Some(dir), &["hash-object", "--", ruta])
+                    .is_ok_and(|s| s.trim() == h),
+                _ => !f.exists(),
+            };
+            if self.en_head(dir, ruta) {
+                self.git(
+                    Some(dir),
+                    &["update-index", "--no-skip-worktree", "--", ruta],
+                )?;
+                if intacto {
+                    self.git(Some(dir), &["checkout", "-q", "HEAD", "--", ruta])?;
+                }
+            } else if intacto {
+                let _ = std::fs::remove_file(&f);
+            }
+        }
+        let _ = std::fs::remove_file(dir.join(AL_DIA));
+        // Y el `info/exclude`, como estaba: lo nuevo que la escritura dejó se ve.
+        let f = dir.join(".git").join("info").join("exclude");
+        if let Ok(t) = std::fs::read_to_string(&f)
+            && let Some((antes, _)) = t.split_once(MARCA_AL_DIA)
+        {
+            std::fs::write(&f, antes)
+                .map_err(|e| Fallo::Git(format!("no se pudo escribir `info/exclude`: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// **La superposición** (0044 C.2 ③): en `dir`, un árbol del commit `c` de
+    /// una rama, los punteros que la rama no tocó pasan a ser los de `m` (la
+    /// cabeza de `main`), por [`ore_core::punteros::manda`] sobre la huella de
+    /// cada blob en la rama, en su `merge-base` con `main` y en `main`. `pre`
+    /// dice dónde está el repositorio (`--git-dir …`). Deja [`AL_DIA`].
+    fn superponer(&self, pre: &[&str], dir: &Path, c: &str, m: &str) -> Result<AlDia, Fallo> {
+        use ore_core::punteros::{CARPETAS_AL_DIA, Manda, manda};
+        let git = |args: &[&str]| {
+            let mut v: Vec<&str> = pre.to_vec();
+            v.extend_from_slice(args);
+            self.git(None, &v)
+        };
+        let blobs = |commit: &str| -> Result<std::collections::BTreeMap<String, String>, Fallo> {
+            let mut args = vec!["ls-tree", "-r", commit, "--"];
+            args.extend(CARPETAS_AL_DIA);
+            Ok(git(&args)?
+                .lines()
+                .filter_map(|l| {
+                    let (izq, ruta) = l.split_once('\t')?;
+                    let h = izq.split_whitespace().nth(2)?;
+                    ruta.ends_with(".json")
+                        .then(|| (ruta.to_string(), h.to_string()))
+                })
+                .collect())
+        };
+        let base = git(&["merge-base", m, c])
+            .map(|s| s.trim().to_string())
+            .ok();
+        let (en_rama, en_main) = (blobs(c)?, blobs(m)?);
+        let en_base = match &base {
+            Some(b) => blobs(b)?,
+            None => Default::default(),
+        };
+        let mut rutas: std::collections::BTreeSet<&String> = en_rama.keys().collect();
+        rutas.extend(en_main.keys());
+        rutas.extend(en_base.keys());
+        let mut al_dia = AlDia::default();
+        for ruta in rutas {
+            let r = en_rama.get(ruta).map(String::as_str);
+            let f = dir.join(ruta);
+            match manda(
+                r,
+                en_base.get(ruta).map(String::as_str),
+                en_main.get(ruta).map(String::as_str),
+            ) {
+                Manda::Rama => {}
+                // Heredado y todavía igual que en `main`: no se reescribe, pero
+                // se dice que sale de `main` (quien lee lo enseña así).
+                Manda::Main(h) if Some(h) == r => {
+                    al_dia
+                        .rutas
+                        .push((ruta.clone(), "main", Some(h.to_string())));
+                }
+                Manda::Main(h) => {
+                    let texto = git(&["cat-file", "blob", h])?;
+                    if let Some(p) = f.parent() {
+                        let _ = std::fs::create_dir_all(p);
+                    }
+                    std::fs::write(&f, texto)
+                        .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
+                    al_dia
+                        .rutas
+                        .push((ruta.clone(), "main", Some(h.to_string())));
+                }
+                Manda::Ninguno if r.is_some() => {
+                    let _ = std::fs::remove_file(&f);
+                    al_dia.rutas.push((ruta.clone(), "ninguno", None));
+                }
+                Manda::Ninguno => {}
+            }
+        }
+        {
+            let j = ore_core::json::Json::obj([
+                ("main", ore_core::json::Json::s(m)),
+                ("base", ore_core::json::Json::s(base.unwrap_or_default())),
+                (
+                    "rutas",
+                    ore_core::json::Json::Obj(
+                        al_dia
+                            .rutas
+                            .iter()
+                            .map(|(r, de, _)| (r.clone(), ore_core::json::Json::s(*de)))
+                            .collect(),
+                    ),
+                ),
+            ]);
+            std::fs::write(dir.join(AL_DIA), j.pretty() + "\n")
+                .map_err(|e| Fallo::Git(format!("no se pudo escribir `{AL_DIA}`: {e}")))?;
+        }
+        Ok(al_dia)
     }
 
     /// Un clon para escribir, del espejo al día (sin red: enlaces duros) y con
