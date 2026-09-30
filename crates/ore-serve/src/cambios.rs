@@ -40,7 +40,8 @@ struct Activo<'a> {
     doc: &'a Loaded,
     canonico: String,
     ruta: String,
-    /// De un `Package`, sus [`DE_LA_BASE`] que existen: `ruta → contenido`.
+    /// De un `Package`, sus [`DE_LA_BASE`] que existen; de un `Dataset`, su
+    /// puntero (0044 C.2 ⑤): `ruta → contenido`.
     anexos: BTreeMap<String, String>,
 }
 
@@ -53,8 +54,27 @@ pub(crate) const DE_LA_BASE: [&str; 4] = [
     "discover.pending.json",
 ];
 
-/// Los [`DE_LA_BASE`] de un `Package` que existen, por su ruta en el árbol.
-fn anexos(d: &Loaded, ruta: &str) -> BTreeMap<String, String> {
+/// Los [`DE_LA_BASE`] de un `Package` que existen, por su ruta en el árbol; y
+/// de un `Dataset`, **su puntero** (0044 C.2 ⑤): sus datos viajan con él, y
+/// que la rama los construyera o escribiera es un cambio suyo aunque su
+/// definición no cambie.
+fn anexos(d: &Loaded, ruta: &str, raiz: &Path) -> BTreeMap<String, String> {
+    if d.kind == ore_core::document::Kind::Dataset {
+        let Some(q) = d.qname() else {
+            return BTreeMap::new();
+        };
+        return ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &q)
+            .and_then(|(f, _)| {
+                let rel = f
+                    .strip_prefix(raiz)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                Some((rel, std::fs::read_to_string(&f).ok()?))
+            })
+            .into_iter()
+            .collect();
+    }
     let (Some(sitio), Some(dir)) = (ruta.rsplit_once('/').map(|(s, _)| s), d.path.parent()) else {
         return BTreeMap::new();
     };
@@ -103,7 +123,7 @@ fn activos<'a>(pkg: &'a Package, raiz: &Path) -> BTreeMap<String, Activo<'a>> {
                 Activo {
                     doc: d,
                     canonico: ore_core::normalize::document(d).jcs(),
-                    anexos: anexos(d, &ruta),
+                    anexos: anexos(d, &ruta, raiz),
                     ruta,
                 },
             )
@@ -445,19 +465,35 @@ impl Servidor {
                 ("estado", Json::s(estado)),
                 ("ruta", Json::s(y.or(x).unwrap().ruta.as_str())),
             ];
-            // Lo que viaja con él sin ser documento: los `discover.*` de su base.
+            // Lo que viaja con él sin ser documento: los `discover.*` de su base,
+            // o el puntero de un dataset (y entonces son sus DATOS los que cambian).
             if !ficheros.is_empty() {
                 m.push((
                     "ficheros",
                     Json::Arr(ficheros.iter().map(Json::s).collect()),
                 ));
             }
+            if ficheros.iter().any(|f| crate::git::es_puntero(f)) {
+                m.push(("datos", Json::Bool(true)));
+            }
             // ¿La base también lo cambió desde el punto de partida? Y qué le hizo.
             let en_base = h.as_ref().and_then(|h| {
-                match (x.map(|x| &x.canonico), h.get(id).map(|z| &z.canonico)) {
+                match (x, h.get(id)) {
                     (None, Some(_)) => Some("nuevo"),
                     (Some(_), None) => Some("borrado"),
-                    (Some(a), Some(z)) if a != z => Some("modificado"),
+                    (Some(a), Some(z)) if a.canonico != z.canonico => Some("modificado"),
+                    // 0044 C.2 ⑤: `main` también movió sus datos (su puntero), y la
+                    // rama los suyos: al fusionar, eso se decide.
+                    (Some(a), Some(z))
+                        if a.anexos != z.anexos
+                            && y.is_some_and(|y| y.anexos != a.anexos)
+                            && a.anexos
+                                .keys()
+                                .chain(z.anexos.keys())
+                                .any(|f| crate::git::es_puntero(f)) =>
+                    {
+                        Some("datos")
+                    }
                     _ => None,
                 }
             });

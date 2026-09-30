@@ -54,6 +54,19 @@
 #      20; sólo copiaBase pasa a ser de la rama (soloMain, heredado, no); y la
 #      rama sigue leyendo soloMain de `main`
 #
+# Y D5 · fusionar punteros (con la forja de mentira: propuestas de activos). La
+# rama escribió `base` (25, sin receta) y creó `nueva`; construye copiaBase (con
+# receta); `main` escribió `base` (20) y rehízo copiaBase después de separarse:
+#  12  `GET /ramas/{r}/cambios`: los tres Datasets cambian con `datos`; base y
+#      copiaBase, en conflicto con `main` (`enBase: datos`)
+#  13  la propuesta en seco dice, por puntero: nueva → promoción (rama), base →
+#      conflicto (sin elegir, y qué se pierde), copiaBase → reconstruir (main)
+#  14  fusionar sin elegir: 409 con la lista; nada cambia en `main`
+#  15  fusionar eligiendo `rama` para base: `main` lee base 25 y nueva 3
+#      (promovidas, sin mover un byte), copiaBase sigue en 20 (la suya) y la
+#      reconstrucción se encola en `main`; la rama se pone al día sin conflicto
+#      y lo fusionado deja de ser suyo
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2` (en `$ORE_TARGET` o
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -122,6 +135,8 @@ montar() { # $1 = nombre del escenario
   export ORE_STORE=r2 ORE_R2_S3_ENDPOINT="http://127.0.0.1:$p" ORE_R2_BUCKET=copia \
          ORE_R2_ACCESS_KEY_ID=de ORE_R2_SECRET_ACCESS_KEY=mentira LAGO_URL="s3://copia"
   FORJA="$T/arbol.git"
+  # Con `CON_API`, la forja de mentira (propuestas): el repositorio en `<org>/<repo>.git`.
+  [ -n "${CON_API:-}" ] && { FORJA="$T/forja/t-demo/ontologia.git"; mkdir -p "$(dirname "$FORJA")"; }
   git init -q --bare -b main "$FORJA"
   git clone -q "$FORJA" "$T/semilla" 2>/dev/null
   git -C "$T/semilla" config core.autocrlf false
@@ -146,7 +161,14 @@ Y
   ( cd "$A" && git add -A && git commit -qm semilla && git push -q origin HEAD:main )
   local puerto; puerto=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
   BASE="http://127.0.0.1:$puerto"
-  FORJA_TOKEN=no-hace-falta "$SERVE" --forja "file://$FORJA" --ore "$ORE" --bind "127.0.0.1:$puerto" \
+  local api=""
+  if [ -n "${CON_API:-}" ]; then
+    local pf; pf=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+    "$PY" "$RAIZ/pruebas-de-fuego/forja-de-mentira.py" "$FORJA" "$pf" >"$T/forja.txt" 2>&1 & PIDS="$PIDS $!"
+    for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$pf/api/v1/version" && break; sleep 0.25; done
+    api="127.0.0.1:$pf"
+  fi
+  FORJA_TOKEN=no-hace-falta "$SERVE" --forja "file://$FORJA" ${api:+--forja-api "$api"} --ore "$ORE" --bind "127.0.0.1:$puerto" \
     ${COLA_URL:+--cola "$COLA_URL"} \
     --identidad cabecera --no-es-produccion --organizacion lago >"$T/serve.log" 2>&1 & PIDS="$PIDS $!"
   for _ in $(seq 1 60); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
@@ -358,4 +380,58 @@ propios=$(git --git-dir="$FORJA" diff --name-only "$B" "$RAMA" -- datasets | tr 
 git --git-dir="$FORJA" show "$RAMA:.ore-al-dia.json" >/dev/null 2>&1 && falla "11 · .ore-al-dia.json llegó a la rama"
 ok "11 · la pasada del Job en la rama construye copiaBase en ella (25, de su base) y main sigue en 20; sólo lo construido es suyo ($propios) y soloMain se sigue leyendo de main"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9311\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ 12–15 · fusionar punteros (D5) ═══════════════════════════════════════════
+CON_API=1 montar e5
+T="$T_ACTUAL"
+# la rama construye copiaBase (la pasada del Job, como en 11)
+git clone -q -b "$RAMA" "$FORJA" "$T/job"; git -C "$T/job" config core.autocrlf false
+( cd "$T/job" && "$ORE" overlay . --main origin/main && reclaman "$RAMA" "$T/ramas-job" \
+  && "$ORE" materialize . --vista ventas.copiaBase --recoger --reclaman "$T/ramas-job" --informe datasets \
+  && "$ORE" overlay . --undo && git add -A datasets \
+  && git -c user.name=copiador -c user.email=copiador@invalido commit -qm "Copia en la rama" && git push -q origin HEAD:"$RAMA" ) > "$T/job.txt" 2>&1 \
+  || falla "12 · la pasada del Job en la rama: $(tail -4 "$T/job.txt")"
+pide() { # metodo ruta [cuerpo] → código; en $T/r.json
+  if [ -n "${3:-}" ]; then curl -s -o "$T/r.json" -w '%{http_code}' -X "$1" -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' "$BASE$2" -d "$3"
+  else curl -s -o "$T/r.json" -w '%{http_code}' -X "$1" -H 'x-ore-sujeto: persona:ana' "$BASE$2"; fi
+}
+c=$(pide GET /ramas/bea/datos/cambios)
+cam=$("$PY" -c 'import json,sys
+d={x["id"]:x for x in json.load(open(sys.argv[1]))["cambios"]}
+f=lambda i:(d.get(i,{}).get("estado","-"),d.get(i,{}).get("datos",False),d.get(i,{}).get("enBase","-"))
+print(f("Dataset:ventas.base"),f("Dataset:ventas.nueva"),f("Dataset:ventas.copiaBase"))' "$T/r.json" 2>&1)
+[ "$c · $cam" = "200 · ('modificado', True, 'datos') ('nuevo', True, '-') ('modificado', True, 'datos')" ] \
+  || falla "12 · los cambios de la rama: $c · $cam"
+ok "12 · los cambios de la rama: base y copiaBase modificados en sus datos y en conflicto con main; nueva, nueva"
+
+ACT='"activos":["Dataset:ventas.base","Dataset:ventas.nueva","Dataset:ventas.copiaBase"]'
+c=$(pide POST /propuestas "{\"rama\":\"$RAMA\",$ACT,\"seco\":true}")
+datos() { "$PY" -c 'import json,sys
+d={x["activo"]:x for x in json.load(open(sys.argv[1])).get("datos",[])}
+print(" ".join(k+"="+d.get(k,{}).get("caso","-")+"/"+d.get(k,{}).get("resultado","-") for k in ["ventas.base","ventas.nueva","ventas.copiaBase"]))' "$T/r.json" 2>&1; }
+[ "$c · $(datos)" = "200 · ventas.base=conflicto/sin elegir ventas.nueva=promocion/rama ventas.copiaBase=reconstruir/main" ] \
+  || falla "13 · la propuesta en seco: $c · $(datos) · $(head -c 300 "$T/r.json")"
+grep -q '"se_pierde":"lo de main desde el punto de salida: 20 fila(s), escrito por persona:ana"' "$T/r.json" \
+  || falla "13 · el conflicto no dice qué se pierde: $(head -c 400 "$T/r.json")"
+ok "13 · en seco, por puntero: nueva se promociona, base choca sin receta (y dice qué se pierde), copiaBase se reconstruye en main"
+
+c=$(pide POST /propuestas "{\"rama\":\"$RAMA\",\"titulo\":\"los datos\",$ACT}")
+N=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("numero",""))' "$T/r.json")
+[ "$c" = 201 ] && [ -n "$N" ] || falla "14 · proponer: $c $(head -c 300 "$T/r.json")"
+ANTES=$(git --git-dir="$FORJA" rev-parse main)
+c=$(pide POST /propuestas/$N/fusionar)
+[ "$c" = 409 ] && grep -q '"resultado":"sin elegir"' "$T/r.json" && [ "$(git --git-dir="$FORJA" rev-parse main)" = "$ANTES" ] \
+  || falla "14 · fusionar sin elegir: $c · $(head -c 300 "$T/r.json")"
+ok "14 · fusionar sin elegir lo que choca sin receta: 409 con la lista, y main no se mueve"
+
+c=$(pide POST /propuestas/$N/fusionar '{"datos":{"ventas.base":"rama"}}')
+[ "$c" = 200 ] || falla "15 · fusionar eligiendo la rama: $c · $(head -c 400 "$T/r.json")"
+al_dia=$("$PY" -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("ramaAlDia"), "reconstruir" if str(d.get("reconstruir","")).startswith(("encolado","NO encolado")) else d.get("reconstruir"))' "$T/r.json")
+[ "$al_dia" = "True reconstruir" ] || falla "15 · tras fusionar (ramaAlDia, reconstruir): $al_dia · $(head -c 400 "$T/r.json")"
+v="$(lee - base)/$(lee - nueva)/$(lee - copiaBase)"
+[ "$v" = "25/3/20" ] || falla "15 · main tras fusionar (base/nueva/copiaBase): $v, y no 25/3/20"
+[ "$(puntero main base)" = "$(puntero "$RAMA" base)" ] || falla "15 · base no se promocionó tal cual (otro metadata.json en main)"
+quedan=$(git --git-dir="$FORJA" diff --name-only main "$RAMA" -- datasets/ventas/default/base.json datasets/ventas/default/nueva.json datasets/ventas/default/copiaBase.json | tr '\n' ' ')
+[ -z "$quedan" ] || falla "15 · tras ponerse al día, la rama sigue difiriendo de main en lo fusionado: $quedan"
+ok "15 · fusionar eligiendo la rama: main lee base 25 y nueva 3 (su metadata.json, sin mover un byte), copiaBase sigue en 20 y se encola su reconstrucción; la rama se pone al día y lo fusionado deja de ser suyo"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9315\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

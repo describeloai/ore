@@ -590,6 +590,25 @@ impl Servidor {
         }
     }
 
+    /// **Reconstruir en `main`** lo que se fusionó con receta (0044 C.2 ⑤): la
+    /// copia de `main`, con todas sus vistas, como tras inducir. La pasada ve
+    /// que la definición cambió y lo rehace; `main` sirve lo de antes mientras.
+    pub(crate) fn reconstruir_en_main(&self, sujeto: &Identidad) -> String {
+        let r = self.leyendo(|raiz| {
+            let mut t = vistas_con_copia(raiz);
+            t.extend(colecciones_de_todos(raiz));
+            Respuesta::ok(Json::s(if t.is_empty() {
+                "nada que reconstruir".to_string()
+            } else {
+                self.encolar_copia(&t, sujeto)
+            }))
+        });
+        match r.cuerpo {
+            Json::Str(s) => s,
+            otro => otro.jcs(),
+        }
+    }
+
     fn encolar_copia(&self, vistas: &[String], sujeto: &Identidad) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();

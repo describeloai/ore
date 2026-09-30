@@ -840,7 +840,7 @@ impl Servidor {
                 Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
             },
             ("POST", ["propuestas", n, "fusionar"]) => match n.parse::<u64>() {
-                Ok(n) => self.fusionar(sujeto, n),
+                Ok(n) => self.fusionar(sujeto, n, &p.cuerpo),
                 Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
             },
             ("DELETE", ["propuestas", n]) => match n.parse::<u64>() {

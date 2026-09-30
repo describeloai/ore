@@ -311,12 +311,15 @@ impl Forja {
     /// merge --no-ff` de `desde`, con la persona de autor y este servidor de
     /// committer, SIN empujar — el gate decide después si se empuja. `Ok(false)`
     /// es «ya estaba al día»; un conflicto deshace el merge y dice qué choca.
+    ///
+    /// `de_desde`: los punteros (rutas) en los que, si chocan, gana `desde`.
     pub fn traer(
         &self,
         dir: &Path,
         desde: &str,
         sujeto: &Identidad,
         mensaje: &str,
+        de_desde: &std::collections::BTreeSet<String>,
     ) -> Result<bool, Fallo> {
         if self
             .git(Some(dir), &["fetch", "--quiet", "origin", desde])
@@ -343,14 +346,44 @@ impl Forja {
         )
         .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
         let s = c
-            .args(["merge", "--no-ff", "--no-edit", "-m", mensaje, "FETCH_HEAD"])
+            .args(["merge", "--no-ff", "--no-commit", "FETCH_HEAD"])
             .output()
             .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
         let mut salida = String::from_utf8_lossy(&s.stdout).into_owned();
         salida.push('\n');
         salida.push_str(&String::from_utf8_lossy(&s.stderr));
-        if s.status.success() {
-            return Ok(!salida.contains("Already up to date"));
+        if salida.contains("Already up to date") {
+            return Ok(false);
+        }
+        // ⭐ 0044 C.2 ⑤: un puntero movido en los dos lados no se mezcla como
+        //   texto (medido, D0 M3). Lo que llega de `desde` gana si `de_desde`
+        //   lo dice —lo que se acaba de fusionar desde esta rama—; si no, se
+        //   queda el de la rama, que es su trabajo.
+        let (punteros_bien, quedan) = self.resolver_punteros(dir, de_desde)?;
+        if s.status.success() || (punteros_bien && quedan.is_empty()) {
+            let mut c = Command::new("git");
+            c.current_dir(dir);
+            for (k, v) in self.entorno() {
+                c.env(k, v);
+            }
+            c.env(
+                "GIT_AUTHOR_NAME",
+                sujeto.nombre.as_deref().unwrap_or(&sujeto.persona),
+            )
+            .env("GIT_AUTHOR_EMAIL", correo(&sujeto.persona))
+            .env(
+                "GIT_COMMITTER_NAME",
+                sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
+            )
+            .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
+            let h = c
+                .args(["commit", "-q", "--no-edit", "-m", mensaje])
+                .output()
+                .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
+            if h.status.success() {
+                return Ok(true);
+            }
+            salida.push_str(&String::from_utf8_lossy(&h.stderr));
         }
         let _ = self.git(Some(dir), &["merge", "--abort"]);
         let chocan: Vec<String> = salida
@@ -364,6 +397,61 @@ impl Forja {
         } else {
             Err(Fallo::Conflicto(chocan))
         }
+    }
+
+    /// En un merge a medias (`MERGE_HEAD`), cada puntero que movieron los dos
+    /// lados se resuelve por fichero entero: el de `MERGE_HEAD` si está en
+    /// `de_desde`, el de `HEAD` si no. Devuelve si pudo, y lo que sigue en
+    /// conflicto que NO es un puntero.
+    fn resolver_punteros(
+        &self,
+        dir: &Path,
+        de_desde: &std::collections::BTreeSet<String>,
+    ) -> Result<(bool, Vec<String>), Fallo> {
+        let Ok(base) = self.git(Some(dir), &["merge-base", "HEAD", "MERGE_HEAD"]) else {
+            return Ok((false, Vec::new()));
+        };
+        let base = base.trim().to_string();
+        let cambia = |a: &str| -> std::collections::BTreeSet<String> {
+            let mut args = vec!["diff", "--name-only", base.as_str(), a, "--"];
+            args.extend(ore_core::punteros::CARPETAS_AL_DIA);
+            self.git(Some(dir), &args)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| es_puntero(l))
+                .map(String::from)
+                .collect()
+        };
+        let (nuestros, suyos) = (cambia("HEAD"), cambia("MERGE_HEAD"));
+        for ruta in nuestros.intersection(&suyos) {
+            let lado = if de_desde.contains(ruta) {
+                "MERGE_HEAD"
+            } else {
+                "HEAD"
+            };
+            match self.git(Some(dir), &["show", &format!("{lado}:{ruta}")]) {
+                Ok(t) => {
+                    std::fs::write(dir.join(ruta), t)
+                        .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
+                    self.git(Some(dir), &["add", "--", ruta])?;
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(dir.join(ruta));
+                    self.git(
+                        Some(dir),
+                        &["rm", "-q", "--cached", "--ignore-unmatch", "--", ruta],
+                    )?;
+                }
+            }
+        }
+        let quedan: Vec<String> = self
+            .git(Some(dir), &["diff", "--name-only", "--diff-filter=U"])
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
+        Ok((true, quedan))
     }
 
     /// Empuja lo que el clon ya tiene commiteado (un merge). Devuelve el commit.
@@ -547,6 +635,13 @@ impl Forja {
     /// `Ok(None)` si la rama no cambia nada del repositorio ahí. Un choque con
     /// lo que `base` hizo después es `Fallo::Conflicto` con los ficheros. El
     /// commit lleva la **huella** —el parche del alcance—: es lo que se revisó.
+    ///
+    /// ⭐ **Los punteros de datos no van por el parche** (0044 C.2 ⑤): un puntero
+    ///   no se fusiona como texto. Entran en la huella —si la rama reconstruye
+    ///   después de proponer, hay que revisar otra vez— pero se resuelven por
+    ///   activo con [`Forja::fusionar_puntero`], y lo que pasó con cada uno va en
+    ///   [`Derivada::datos`]. `elegidos`: `nombre → main | rama`, lo que quien
+    ///   fusiona eligió para los que chocan sin receta.
     pub fn derivar(
         &self,
         base: &str,
@@ -554,6 +649,7 @@ impl Forja {
         alcance: &Alcance,
         sujeto: &Identidad,
         mensaje: &str,
+        elegidos: &std::collections::BTreeMap<String, String>,
     ) -> Result<Option<Derivada>, Fallo> {
         let clon = self.clonar_rama(Some(base))?;
         let dir = clon.ruta();
@@ -575,7 +671,13 @@ impl Forja {
             .git(Some(dir), &["hash-object", &fichero_s])?
             .trim()
             .to_string();
-        if let Err(e) = self.git(Some(dir), &["apply", "--3way", "--index", &fichero_s]) {
+        let punteros: Vec<&String> = ficheros.iter().filter(|f| es_puntero(f)).collect();
+        let mut aplicar: Vec<String> = vec!["apply".into(), "--3way".into(), "--index".into()];
+        aplicar.extend(punteros.iter().map(|p| format!("--exclude={p}")));
+        aplicar.push(fichero_s.clone());
+        let aplicar: Vec<&str> = aplicar.iter().map(String::as_str).collect();
+        let solo_punteros = punteros.len() == ficheros.len();
+        if !solo_punteros && let Err(e) = self.git(Some(dir), &aplicar) {
             let chocan: Vec<String> = self
                 .git(Some(dir), &["diff", "--name-only", "--diff-filter=U"])
                 .unwrap_or_default()
@@ -589,6 +691,10 @@ impl Forja {
                 Fallo::Conflicto(chocan)
             });
         }
+        let mut datos = Vec::new();
+        for p in punteros {
+            datos.push(self.fusionar_puntero(dir, &desde, "HEAD", "FETCH_HEAD", p, elegidos)?);
+        }
         self.confirmar(
             dir,
             sujeto,
@@ -601,7 +707,111 @@ impl Forja {
             clon,
             ficheros,
             fuera,
+            datos,
         }))
+    }
+
+    /// **Un puntero, fusionado de tres vías** (0044 C.2 ⑤), en el clon `dir` cuyo
+    /// índice es el resultado: `desde` es el punto de salida, `destino` lo que
+    /// recibe (`main`) y `origen` lo que llega (la rama).
+    ///
+    /// | | queda |
+    /// |---|---|
+    /// | la rama no lo tocó | el de `main` |
+    /// | sólo lo tocó la rama | el de la rama (**promoción**: su snapshot, sin mover un byte) |
+    /// | los dos, con receta | el de `main`, y se **reconstruye** en `main` |
+    /// | los dos, sin receta | **conflicto**: lo elegido, o `sin elegir` (queda el de `main`) |
+    ///
+    /// «Con receta» es el puntero de una copia —lo escribió su pasada—; uno
+    /// con `escrito_por` lo escribió alguien (`write()`, `/v1`) y no se repite.
+    fn fusionar_puntero(
+        &self,
+        dir: &Path,
+        desde: &str,
+        destino: &str,
+        origen: &str,
+        ruta: &str,
+        elegidos: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Dato, Fallo> {
+        let blob = |c: &str| -> Option<String> {
+            self.git(
+                Some(dir),
+                &["rev-parse", "--verify", "--quiet", &format!("{c}:{ruta}")],
+            )
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        };
+        let texto = |c: &str| self.git(Some(dir), &["show", &format!("{c}:{ruta}")]).ok();
+        let (b, m, r) = (blob(desde), blob(destino), blob(origen));
+        let nodo = |t: &Option<String>| t.as_deref().and_then(|t| ore_core::parse::parse(t).ok());
+        let (tm, tr) = (texto(destino), texto(origen));
+        let dentro: PathBuf = Path::new(ruta).components().skip(1).collect();
+        let activo = ore_core::punteros::clave_de(&dentro, nodo(&tr).or(nodo(&tm)).as_ref())
+            .unwrap_or_else(|| ruta.to_string());
+        let poner = |t: &Option<String>| -> Result<(), Fallo> {
+            let f = dir.join(ruta);
+            match t {
+                Some(t) => {
+                    if let Some(p) = f.parent() {
+                        let _ = std::fs::create_dir_all(p);
+                    }
+                    std::fs::write(&f, t)
+                        .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
+                    self.git(Some(dir), &["add", "--", ruta]).map(|_| ())
+                }
+                None => {
+                    let _ = std::fs::remove_file(&f);
+                    self.git(
+                        Some(dir),
+                        &["rm", "-q", "--cached", "--ignore-unmatch", "--", ruta],
+                    )
+                    .map(|_| ())
+                }
+            }
+        };
+        let resumen = |t: &Option<String>| {
+            nodo(t).map(|n| {
+                let c = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+                format!(
+                    "{} fila(s){}",
+                    c("filas").unwrap_or_else(|| "?".into()),
+                    c("escrito_por")
+                        .map(|p| format!(", escrito por {p}"))
+                        .unwrap_or_default()
+                )
+            })
+        };
+        let (caso, resultado, se_pierde) = if r == b {
+            // No lo tocó (no debería estar en el alcance): queda el de main.
+            ("promocion", "main", None)
+        } else if m == b || m == r {
+            poner(&tr)?;
+            ("promocion", "rama", None)
+        } else {
+            let con_receta = nodo(&tr).is_some_and(|n| n.get("escrito_por").is_none());
+            let se_pierde =
+                resumen(&tm).map(|s| format!("lo de main desde el punto de salida: {s}"));
+            if con_receta {
+                ("reconstruir", "main", None)
+            } else {
+                match elegidos.get(&activo).map(String::as_str) {
+                    Some("rama") => {
+                        poner(&tr)?;
+                        ("conflicto", "rama", se_pierde)
+                    }
+                    Some("main") => ("conflicto", "main", None),
+                    _ => ("conflicto", "sin elegir", se_pierde),
+                }
+            }
+        };
+        Ok(Dato {
+            ruta: ruta.to_string(),
+            activo,
+            caso,
+            resultado,
+            se_pierde,
+        })
     }
 
     /// Empuja la cabeza de este clon a `destino`, **forzando**: la derivada se
@@ -679,6 +889,49 @@ pub struct Derivada {
     pub ficheros: Vec<String>,
     /// Documentos del catálogo bajo la carpeta que la rama cambia y NO van.
     pub fuera: Vec<String>,
+    /// Lo que pasó con cada puntero de datos del alcance (0044 C.2 ⑤).
+    pub datos: Vec<Dato>,
+}
+
+/// **Un puntero de datos al fusionar** (0044 C.2 ⑤).
+#[derive(Debug, Clone)]
+pub struct Dato {
+    pub ruta: String,
+    /// El dataset, por su nombre corto.
+    pub activo: String,
+    /// `promocion` (sólo lo tocó la rama), `reconstruir` (los dos, con
+    /// receta) o `conflicto` (los dos, sin receta).
+    pub caso: &'static str,
+    /// Qué puntero queda en `main`: `rama`, `main`, o `sin elegir` (un
+    /// conflicto que nadie ha decidido: no se fusiona).
+    pub resultado: &'static str,
+    /// Lo que se pierde si gana la rama: lo que `main` escribió desde el punto
+    /// de salida (sus filas y quién), o nada.
+    pub se_pierde: Option<String>,
+}
+
+impl Dato {
+    pub fn como_json(&self) -> ore_core::json::Json {
+        use ore_core::json::Json;
+        let mut m = vec![
+            ("ruta", Json::s(&self.ruta)),
+            ("activo", Json::s(&self.activo)),
+            ("caso", Json::s(self.caso)),
+            ("resultado", Json::s(self.resultado)),
+        ];
+        if let Some(p) = &self.se_pierde {
+            m.push(("se_pierde", Json::s(p)));
+        }
+        Json::obj(m)
+    }
+}
+
+/// ¿Es un puntero de datos? (`datasets/**` y `copias/**`, `.json`.)
+pub fn es_puntero(ruta: &str) -> bool {
+    ruta.ends_with(".json")
+        && ore_core::punteros::CARPETAS_AL_DIA
+            .iter()
+            .any(|c| ruta.starts_with(&format!("{c}/")))
 }
 
 /// El correo de un sujeto que no tiene correo.

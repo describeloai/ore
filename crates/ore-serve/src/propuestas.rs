@@ -956,7 +956,8 @@ impl Servidor {
             Err(r) => return r,
         };
         let mensaje = format!("Traer `{desde}` a `{rama}` ({})", sujeto.persona);
-        match forja.traer(raiz, &desde, sujeto, &mensaje) {
+        // Un puntero que chocara se queda el de la rama: es su trabajo (0044 C.2 ⑤).
+        match forja.traer(raiz, &desde, sujeto, &mensaje, &Default::default()) {
             Ok(false) => {
                 return Respuesta::ok(Json::obj([
                     ("rama", Json::s(rama)),
@@ -1353,7 +1354,7 @@ impl Servidor {
         if let Err(m) = nombre_de_rama_valido(&derivada) {
             return Respuesta::error(422, m);
         }
-        let hecha = match forja.derivar(base, rama, &en_git, sujeto, titulo) {
+        let hecha = match forja.derivar(base, rama, &en_git, sujeto, titulo, &Default::default()) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -1395,6 +1396,17 @@ impl Servidor {
                     ),
                 ),
                 ("faltan", Json::Arr(faltan.iter().map(Json::s).collect())),
+                // 0044 C.2 ⑤: qué pasaría con cada puntero de datos.
+                (
+                    "datos",
+                    Json::Arr(
+                        hecha
+                            .datos
+                            .iter()
+                            .map(crate::git::Dato::como_json)
+                            .collect(),
+                    ),
+                ),
             ]);
             if let Json::Obj(m) = &mut j {
                 lo_que_lleva(m);
@@ -1428,6 +1440,17 @@ impl Servidor {
                     );
                     // Lo que va con los activos pedidos sin remedio, dicho.
                     lo_que_lleva(m);
+                    // 0044 C.2 ⑤: qué pasa con cada puntero de datos al fusionar.
+                    m.insert(
+                        "datos".into(),
+                        Json::Arr(
+                            hecha
+                                .datos
+                                .iter()
+                                .map(crate::git::Dato::como_json)
+                                .collect(),
+                        ),
+                    );
                     m.insert(
                         "diagnosticos".into(),
                         Json::Arr(
@@ -1695,7 +1718,24 @@ impl Servidor {
 
     /// `POST /propuestas/{n}/fusionar`: dos personas, una revisión, la rama
     /// compila, sin conflictos — y entonces `main`, que es lo que Flux mira.
-    pub(crate) fn fusionar(&self, sujeto: &Identidad, n: u64) -> Respuesta {
+    ///
+    /// ⭐ 0044 C.2 ⑤: el cuerpo puede traer `{"datos": {"<dataset>": "main" | "rama"}}`,
+    ///   lo que quien fusiona elige para los punteros que chocan sin receta.
+    pub(crate) fn fusionar(&self, sujeto: &Identidad, n: u64, cuerpo: &str) -> Respuesta {
+        let elegidos: std::collections::BTreeMap<String, String> = ore_core::parse::parse(cuerpo)
+            .ok()
+            .and_then(|c| {
+                c.get("datos").map(|(_, d)| {
+                    d.entries()
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), v.as_str()?.to_string()))
+                        })
+                        .filter(|(_, v)| v == "main" || v == "rama")
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
         let api = match self.api() {
             Ok(a) => a,
             Err(r) => return r,
@@ -1715,7 +1755,7 @@ impl Servidor {
             Err(e) => return de_la_forja(e),
         };
         if let Some(alcance) = Alcance::de(&pr) {
-            return self.fusionar_alcance(sujeto, n, &pr, &alcance, protegida);
+            return self.fusionar_alcance(sujeto, n, &pr, &alcance, protegida, &elegidos);
         }
         let aprobada_por: Vec<String> = api
             .revisiones(n)
@@ -1809,6 +1849,7 @@ impl Servidor {
         pr: &Json,
         alcance: &Alcance,
         protegida: bool,
+        elegidos: &std::collections::BTreeMap<String, String>,
     ) -> Respuesta {
         let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
             return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
@@ -1829,7 +1870,7 @@ impl Servidor {
             Ok(h) => h,
             Err(e) => return de_git(e),
         };
-        let nueva = match forja.derivar(&base, &rama, &en_git, sujeto, &titulo) {
+        let nueva = match forja.derivar(&base, &rama, &en_git, sujeto, &titulo, elegidos) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -1851,6 +1892,37 @@ impl Servidor {
                     "`{rama}` cambió `{alcance}` desde que se propuso: la propuesta #{n} ya lleva lo de ahora, y hay que revisarla otra vez"
                 ),
             );
+        }
+        // ⭐ 0044 C.2 ⑤: un puntero que movieron los dos lados, sin receta, lo
+        //   decide quien fusiona; sin elegir, no se fusiona.
+        let datos: Vec<Json> = nueva
+            .datos
+            .iter()
+            .map(crate::git::Dato::como_json)
+            .collect();
+        let sin_elegir: Vec<&crate::git::Dato> = nueva
+            .datos
+            .iter()
+            .filter(|d| d.resultado == "sin elegir")
+            .collect();
+        if !sin_elegir.is_empty() {
+            return Respuesta {
+                codigo: 409,
+                cuerpo: Json::obj([
+                    (
+                        "error",
+                        Json::s(format!(
+                            "`main` y `{rama}` escribieron los dos {} desde que se separaron, y no se puede reconstruir: elige cuál queda (`datos: {{\"<dataset>\": \"main\" | \"rama\"}}`)",
+                            sin_elegir
+                                .iter()
+                                .map(|d| format!("`{}`", d.activo))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )),
+                    ),
+                    ("datos", Json::Arr(datos)),
+                ]),
+            };
         }
         let aprobada_por: Vec<String> = api
             .revisiones(n)
@@ -1912,7 +1984,17 @@ impl Servidor {
         if let Err(e) = hecho {
             return de_la_forja(e);
         }
-        let al_dia = self.poner_al_dia(sujeto, &rama, &base);
+        // Lo que tiene receta y chocó, se reconstruye en `main` (0044 C.2 ⑤).
+        let reconstruir: Vec<&crate::git::Dato> = nueva
+            .datos
+            .iter()
+            .filter(|d| d.caso == "reconstruir")
+            .collect();
+        let reconstruido = (!reconstruir.is_empty()).then(|| self.reconstruir_en_main(sujeto));
+        // Lo fusionado deja de ser de la rama: al traer `main`, gana el de `main`.
+        let fusionados: std::collections::BTreeSet<String> =
+            nueva.datos.iter().map(|d| d.ruta.clone()).collect();
+        let al_dia = self.poner_al_dia(sujeto, &rama, &base, &fusionados);
         Respuesta::ok(Json::obj([
             ("numero", Json::Int(n as i64)),
             ("fusionada", Json::Bool(true)),
@@ -1925,18 +2007,29 @@ impl Servidor {
             ("rama", Json::s(&rama)),
             ("alcance", Json::s(&alcance)),
             ("ramaAlDia", al_dia),
+            ("datos", Json::Arr(datos)),
+            (
+                "reconstruir",
+                reconstruido.map(Json::s).unwrap_or(Json::Bool(false)),
+            ),
         ]))
     }
 
     /// Trae `base` a la rama tras fusionar una parte de ella: `true`, o lo que
     /// lo impidió (la fusión ya ocurrió; esto sólo ordena la rama).
-    fn poner_al_dia(&self, sujeto: &Identidad, rama: &str, base: &str) -> Json {
+    fn poner_al_dia(
+        &self,
+        sujeto: &Identidad,
+        rama: &str,
+        base: &str,
+        fusionados: &std::collections::BTreeSet<String>,
+    ) -> Json {
         let Some(forja) = self.forja() else {
             return Json::Bool(false);
         };
         let hecho = forja.clonar_rama(Some(rama)).and_then(|clon| {
             let mensaje = format!("Traer `{base}` a `{rama}` tras fusionar parte de ella");
-            if forja.traer(clon.ruta(), base, sujeto, &mensaje)? {
+            if forja.traer(clon.ruta(), base, sujeto, &mensaje, fusionados)? {
                 forja.empujar(clon.ruta())?;
             }
             Ok(())

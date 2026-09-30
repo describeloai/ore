@@ -442,9 +442,9 @@ es admin (su `Identidad` es persona, agente, correo y nombre; ninguna de las pot
 ## Apéndice C · Los datos en una rama (medido y decidido el 2026-09-29)
 
 **Estado:** decidido, medido (D0) y cotejado; **D1 y D2 hechos y en vivo** (2026-09-30: la
-pasada del mantenimiento en `demo` recoge con lo que reclaman las demás ramas); **D3 y D4 hechos
-en local** (`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–11, consola incluida), en vivo tras
-desplegar; D5 y D6 por hacer (§ C.6). Es lo que el
+pasada del mantenimiento en `demo` recoge con lo que reclaman las demás ramas); **D3, D4 y D5
+hechos en local** (`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–15, consola incluida), en vivo
+tras desplegar; D6 por hacer (§ C.6). Es lo que el
 punto 4 y «Lo que queda fuera» dejaban para después: aquí, y no en un ADR aparte, porque una rama
 con datos es la misma rama global con una cosa más.
 
@@ -643,6 +643,23 @@ del binario que lo entiende (binario primero, malla después).
 - Tras fusionar la rama sigue viva (A.8): sus punteros ya son los de `main`, y dejan de reclamar
   solos (D1).
 - *Prueba:* `la-propuesta.sh`, un bloque con las cuatro filas de (5).
+- *Hecho así (D5a–D5c):* `GET /ramas/{r}/cambios` trata el puntero de un Dataset como un anexo
+  suyo (como los `discover.*` de un Package): un puntero propio lo hace «modificado» con `datos` y
+  lo lleva en `ficheros`, aunque su definición no cambie; si `main` también lo movió, `enBase:
+  datos`. En la derivada (`Forja::derivar`) los punteros **entran en la huella** —si la rama
+  reconstruye tras proponer, hay que revisar otra vez— **pero no en el parche**: cada uno se
+  resuelve por la tabla de (5) (`Forja::fusionar_puntero`), y «con receta» es el puntero de una
+  copia —lo escribió su pasada, sin `escrito_por`—. La propuesta (y su seco) dice `datos: [{activo,
+  caso, resultado, se_pierde}]`; fusionar con uno `sin elegir` es `409` con la lista, y el cuerpo
+  `{"datos": {"<dataset>": "main" | "rama"}}` lo decide. Tras fusionar, lo que tenía receta se
+  reconstruye en `main` (`reconstruir_en_main`: la copia de `main`), y **poner la rama al día**
+  (`traer`) resuelve cada puntero movido en los dos lados por fichero entero: lo fusionado toma el
+  de `main`, lo demás sigue siendo de la rama (`fusionar_en_rama`, el «traer main» del workspace,
+  deja siempre el de la rama). En la consola, el modal de *Merge* pide la elección cuando ORE la
+  pide —*Keep main* / *Take this branch*, con lo que se pierde— y dice qué se promociona y qué se
+  reconstruye. Medido en la prueba 12–15: `main` lee base 25 (el `metadata.json` de la rama, sin
+  mover un byte) y nueva 3; copiaBase sigue en 20 y su reconstrucción queda encolada; la rama se
+  pone al día y lo fusionado deja de ser suyo.
 
 **D6 · Cerrar**
 
@@ -660,5 +677,10 @@ del binario que lo entiende (binario primero, malla después).
   las colecciones siguen en la pasada de `main`.
 - **Contestar decisiones desde la consola en una rama:** ORE ya lo hace en la rama; la consola
   todavía no manda la rama en `contestar-decisiones`.
+- **Las propuestas de rama entera** (sin alcance, 0030 W2) las fusiona la forja: dos punteros
+  movidos chocan como texto y la forja dice que no es fusionable (`409`). Los datos se promocionan
+  por la propuesta del catálogo (A.7).
+- **La salida de un trabajo o de un transform** cuenta hoy «sin receta» (su puntero lleva
+  `escrito_por`): reconstruirla sería volver a correr el trabajo en `main`, y eso no se encola solo.
 - **La vida del fichero de la cola de una rama:** se conserva como los de rehacer; retirarlo
   con la rama queda por hacer (hoy el Job, con su `ttl`, vuelve a pasar).
