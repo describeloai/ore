@@ -526,6 +526,12 @@ jobs:
 
       # ⭐ Ahora, y no al construir, las etiquetas que nombran los manifiestos.
       #   Es mover un puntero en el registro: segundos, sin subir una capa.
+      #
+      # ⚠️ Por el API del REGISTRO (`container images add-tag`: un PUT del
+      #   manifiesto, lo mismo que hacía `docker push`), no por el de Artifact
+      #   Registry: `artifacts docker tags add` sobre una etiqueta que ya existe
+      #   la BORRA y la crea, y `ore-ci` —`artifactregistry.writer`— no tiene
+      #   `tags.delete`, ni hace falta dárselo (medido: PERMISSION_DENIED).
       - name: y las etiquetas que nombran los manifiestos, a este commit
         if: steps.punta.outputs.sigue == 'si'
         run: |
@@ -533,7 +539,7 @@ jobs:
           PIDS=""
           for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main \
                     ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 capa-jvm:1 idp:main; do
-            gcloud artifacts docker tags add "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" --quiet & PIDS="$PIDS $!"
+            gcloud container images add-tag "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" --quiet & PIDS="$PIDS $!"
           done
           MAL=0
           for P in $PIDS; do wait "$P" || MAL=1; done
