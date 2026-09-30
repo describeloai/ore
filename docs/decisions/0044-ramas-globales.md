@@ -694,9 +694,23 @@ colección, virtual o mantenida—, y los dos se miden contra el punto de salida
   puntero como el de un dataset (misma carpeta, `manda` por hash, «con receta» = sin
   `escrito_por`)? ¿El Job de D4b corre la transacción de una colección y escribe su puntero en la
   rama?
+  *Medido* (`medida-las-colecciones-en-una-rama.sh`, 2026-09-30; forja y S3 de mentira):
+  - **M1 ✓** la pasada del Job de D4b con `--vista <paquete>.<colección>` corre la transacción
+    de una colección que nació en la rama y deja su puntero (`datasets/docs/default/raiz.json`,
+    `kind: MediaCollection`, **sin** `escrito_por`) en la rama: sólo falta que alguien la encole.
+  - **M2 ✓** la superposición trae el puntero de una colección de `main` y `git status` no lo ve.
+  - **M3 ✓** `ore datasets --recoger` en `main`, sin `--reclaman`, se llevaría el manifiesto de la
+    colección de la rama (1 huérfano); con él, nada. D1 ya lo cubre: su puntero es uno más.
+  - **M4 ✓** los blobs: 2 recogidos sin `--reclaman`, 0 con él (D7a).
+  - **M5 ✗ la fusión no lo lleva.** `/ramas/{r}/cambios` hace del puntero un anexo sólo de un
+    `Dataset` (`cambios::anexos`), así que el de una colección no es parte de su activo: no sale
+    como cambio de datos y la propuesta no lo lleva —el mismo hueco que la #13 de `test3` antes de
+    D5—. La tabla de (5) y `fusionar_puntero` sí valen tal cual (por hash; sin `escrito_por` es
+    «con receta» y se reconstruye en `main`, que ya incluye las colecciones). Va en D7d.
 - *D7d, encolar lo mantenido de la rama:* `vistas_de_la_rama` pasa a ser lo mantenido de la rama:
   lo que cambió desde el punto de salida y lo que depende de ello, **con** las colecciones virtuales
-  y mantenidas (el conducto ya distingue la virtual: no cruza `payload` y no lo pide).
+  y mantenidas (el conducto ya distingue la virtual: no cruza `payload` y no lo pide). Y lo
+  mismo en la fusión (M5): el puntero es anexo de **lo mantenido**, no sólo de un `Dataset`.
 - *Prueba:* una base foránea nacida en una rama, con una colección virtual y otra mantenida: se
   sirve desde la rama (0046 E9 ya lee el árbol de la rama), el mantenimiento no se lleva sus blobs
   pasada la gracia, y al fusionar `main` la tiene.
