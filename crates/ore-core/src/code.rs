@@ -236,6 +236,9 @@ codes! {
     // v1alpha16 · GUARDAR. El tipo de medio es del documento: una coleccion
     // de documentos no sale de un conjunto de imagenes.
     Oos2040 = "OOS2040", Reference, "una MediaCollection sale de un ObjectTable de otro tipo de medio";
+    // v1alpha17 · ANCLAR. Una referencia a medio tiene su sitio: una tabla
+    // anclada es de una coleccion, y una referencia no tiene orden.
+    Oos2041 = "OOS2041", Reference, "una referencia a medio usada fuera de su sitio";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -260,6 +263,11 @@ codes! {
     Oos3004 = "OOS3004", Type, "incompatibilidad de unidades en una derivación";
     Oos3005 = "OOS3005", Type, "cardinalidad incoherente con las claves declaradas";
     Oos3006 = "OOS3006", Type, "`via` no casa la clave del destino";
+    // v1alpha17 · el tipo compuesto mal formado. `OOS3001` sigue siendo el
+    // tipo que no existe; esto es uno que existe y esta mal escrito o mal
+    // puesto (un `Struct` vacio, un `Vector` sin dimension, una referencia
+    // dentro de un struct).
+    Oos3007 = "OOS3007", Type, "tipo compuesto mal formado";
 
     // ── OOS4xxx · gobernanza y flujo ────────────────────────────────────────
     Oos4001 = "OOS4001", Flow, "violación de la regla de flujo por propagación";
@@ -515,6 +523,9 @@ mod tests {
             Code::Oos2039,
             // v1alpha16: la coleccion y su origen, del mismo medio.
             Code::Oos2040,
+            // v1alpha17: anclar.
+            Code::Oos2041,
+            Code::Oos3007,
             Code::Oos4016,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,

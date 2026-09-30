@@ -944,6 +944,28 @@ pub fn carga_de(
             }
         }
 
+        // Vía 3b · v1alpha17: **una tabla anclada deriva de su colección**
+        // (`03` §5), sin decirlo en `derivedFrom`: cada campo lleva lo que la
+        // colección lleva. Es el mismo razonamiento que la vía 3 —el código no
+        // dice qué columna salió de qué parte del fichero—, con la lectura
+        // declarada por la propia forma.
+        if let Some(suelo) = crate::vistas::suelo(pkg, v)
+            && let Some(c) = crate::vistas::anclada_a(suelo).and_then(|q| pkg.collection(&q))
+            && let Ok(raiz) = crate::vistas::raiz(pkg, v)
+        {
+            let herencia = etiquetas_de_coleccion(pkg, lat, c, &mut Vec::new());
+            for campo in raiz.columnas.keys().chain(raiz.agrega.keys()) {
+                for (ret, (nivel, _)) in &herencia {
+                    subir(
+                        por_campo.entry(campo.clone()).or_default(),
+                        ret,
+                        nivel,
+                        Origin::Inherited,
+                    );
+                }
+            }
+        }
+
         // Vía 2 · cada entidad **de la misma cadena**, esté arriba o abajo.
         //
         // # Las dos direcciones, y por qué las dos
@@ -1077,6 +1099,13 @@ fn etiquetas_de_raices(
                 for (ret, n) in del_datasource(ds) {
                     subir_en(lat, ls, &ret, &n, Origin::Inherited);
                 }
+            }
+        } else if let Some(c) = pkg.collection(&r.doc) {
+            // v1alpha17: el listado de una colección lleva lo que la colección
+            // lleva —lo heredado de su origen y lo suyo— en cada columna
+            // (`04` §3). Lo que diga mal (`OOS4012`) lo dice su propia fase.
+            for (ret, (n, _)) in etiquetas_de_coleccion(pkg, lat, c, &mut Vec::new()) {
+                subir_en(lat, ls, &ret, &n, Origin::Inherited);
             }
         } else if let Some(d) = pkg.dataset(&r.doc) {
             if let Some(labels) = carga_de(pkg, lat, efectivas, d).get(&r.columna) {

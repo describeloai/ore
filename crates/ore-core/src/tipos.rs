@@ -98,7 +98,14 @@ impl Fisico {
                 escala: *escala,
             },
             // v1alpha16: la huella del ítem, como texto (`03` §2).
-            Type::List(_) | Type::Imported(_) | Type::Media(_) => Fisico::Texto,
+            // v1alpha17: lo compuesto, como texto hasta que el físico lo sepa
+            // escribir (0049 B1, el lago).
+            Type::List(_)
+            | Type::Imported(_)
+            | Type::Media(_)
+            | Type::Struct(_)
+            | Type::Vector(_)
+            | Type::Anchor => Fisico::Texto,
         }
     }
 

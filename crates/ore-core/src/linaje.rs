@@ -210,7 +210,12 @@ fn linaje_con(pkg: &Package, d: &Loaded, pila: &mut Vec<(Kind, String)>) -> Opti
     let qn = d.qname().unwrap_or_default();
     // El suelo: una tabla, o un dataset que lo llena código.
     // v1alpha16: un `ObjectTable` también es suelo —el listado de un origen—.
-    if matches!(d.kind, Kind::Table | Kind::ObjectTable) || vistas::es_escrito(d) {
+    // v1alpha17: y una colección leída como su listado (`04` §1).
+    if matches!(
+        d.kind,
+        Kind::Table | Kind::ObjectTable | Kind::MediaCollection
+    ) || vistas::es_escrito(d)
+    {
         return Some(
             vistas::columnas(d)
                 .into_iter()

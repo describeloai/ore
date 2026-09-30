@@ -1289,6 +1289,15 @@ fn borrador_de_v1alpha16() {
     marcador("v1alpha16", "guardar", "BORRADOR · OOS v1alpha16 · guardar");
 }
 
+/// v1alpha17: anclar. Lo que se saca de un fichero es una fila anclada a una
+/// parte de él: los tipos compuestos, `Anchor`, la referencia entera, la tabla
+/// anclada y la colección como listado (0049). Los casos se escribieron desde
+/// la spec antes que esto (B1), y se cotejan aquí.
+#[test]
+fn borrador_de_v1alpha17() {
+    marcador("v1alpha17", "anclar", "BORRADOR · OOS v1alpha17 · anclar");
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

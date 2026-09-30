@@ -195,7 +195,21 @@ pub enum Type {
         unit: String,
         precision: u32,
     },
-    List(String),
+    /// `list<T>`. Hasta v1alpha16, `T` es un escalar; v1alpha17 admite además
+    /// `Struct<…>` y `Anchor` (`01-los-tipos` §2).
+    List(Box<Type>),
+    /// v1alpha17. `Struct<a: T, b: U>`: campos con nombre y tipo, **en orden**
+    /// —el orden es parte del tipo, como en Iceberg, Parquet y DuckDB—
+    /// (`01-los-tipos` §1).
+    Struct(Vec<(String, Type)>),
+    /// v1alpha17. `Vector<n>`: exactamente `n` valores `Float32`, `1 ≤ n ≤
+    /// 16000`. No es `list<Float>` porque la dimensión es del contrato: un
+    /// índice de vecinos y un modelo de embeddings solo se entienden con ella
+    /// (`01-los-tipos` §2).
+    Vector(u16),
+    /// v1alpha17. La parte de un medio a la que se refiere un resultado: el
+    /// selector de W3C Web Annotation, tipado (`02-el-ancla`).
+    Anchor,
     /// `Decimal<p, s>` (02-entity §3.2): el decimal con su precisión y su
     /// escala, `1 ≤ p ≤ 38` y `0 ≤ s ≤ p`. `Decimal` a secas es
     /// `Scalar("Decimal")` y dice otra cosa: la precisión no se declaró.
@@ -236,7 +250,23 @@ impl std::fmt::Display for Type {
         match self {
             Type::Scalar(s) | Type::Imported(s) => f.write_str(s),
             Type::Media(c) => write!(f, "Media<{c}>"),
-            Type::List(s) => write!(f, "list<{s}>"),
+            Type::List(t) => write!(f, "list<{t}>"),
+            // La forma canónica: un espacio tras cada `:` y cada `,`
+            // (`01-los-tipos` §1). `parse_type` acepta sin espacios y esto
+            // escribe con ellos, y así el digest del paquete no depende de cómo
+            // se tecleó.
+            Type::Struct(campos) => {
+                f.write_str("Struct<")?;
+                for (i, (n, t)) in campos.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{n}: {t}")?;
+                }
+                f.write_str(">")
+            }
+            Type::Vector(n) => write!(f, "Vector<{n}>"),
+            Type::Anchor => f.write_str("Anchor"),
             Type::Decimal { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
             Type::Parametric {
                 ctor,
@@ -255,15 +285,147 @@ pub enum TypeError {
     Incompleto(String),
     /// `Decimal<p, s>` con los números fuera de rango (OOS3002).
     DecimalFueraDeRango(String),
+    /// v1alpha17. Un tipo compuesto mal formado (OOS3007), con el porqué.
+    Compuesto(String),
+}
+
+/// v1alpha17. La dimensión máxima de un `Vector<n>`: la de pgvector, que es la
+/// más baja de los que lo guardan con tipo (`01-los-tipos` §2).
+pub const DIMENSION_MAXIMA: u16 = 16000;
+
+impl Type {
+    /// v1alpha17. **Si el tipo es de v1alpha17**: lleva, a cualquier
+    /// profundidad, un `Struct`, un `Vector` o un `Anchor`. En un documento de
+    /// antes es un tipo que no existía (`OOS3001`), como `Media<…>` antes de
+    /// v1alpha16.
+    pub fn es_de_v1alpha17(&self) -> bool {
+        match self {
+            Type::Struct(_) | Type::Vector(_) | Type::Anchor => true,
+            Type::List(t) => t.es_de_v1alpha17(),
+            _ => false,
+        }
+    }
+}
+
+/// Parte `a, b<c, d>, e` por las comas de primer nivel.
+fn partir_por_comas(s: &str) -> Vec<&str> {
+    let (mut partes, mut prof, mut desde) = (Vec::new(), 0i32, 0usize);
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => prof += 1,
+            '>' => prof -= 1,
+            ',' if prof == 0 => {
+                partes.push(s[desde..i].trim());
+                desde = i + 1;
+            }
+            _ => {}
+        }
+    }
+    partes.push(s[desde..].trim());
+    partes
+}
+
+/// Lo que va dentro de `list<…>` o de un campo de `Struct<…>` (`01-los-tipos`
+/// §4): lo que no puede ir ahí es `OOS3007`, no `OOS3001`, porque el tipo
+/// existe y lo que está mal es dónde se puso.
+fn dentro(s: &str, donde: &str) -> Result<Type, TypeError> {
+    let t = parse_type(s)?;
+    let fuera =
+        |que: &str, porque: &str| Err(TypeError::Compuesto(format!("{que} {donde}: {porque}")));
+    match (&t, donde) {
+        (Type::Media(_), _) => fuera(
+            "una referencia `Media<…>`",
+            "una referencia es una columna, y el ítem se referencia una vez por fila",
+        ),
+        (Type::Scalar(e), "en un campo de `Struct`") if e == "Opaque" => {
+            fuera("`Opaque`", "lo que no se modela no se anida en lo que sí")
+        }
+        (Type::Anchor, "en un campo de `Struct`") => fuera(
+            "un `Anchor`",
+            "un ancla es una columna o un elemento de `list<Anchor>`",
+        ),
+        (Type::List(_), "en una lista") => fuera(
+            "una lista",
+            "una lista de listas se escribe como lista de structs",
+        ),
+        (Type::Vector(_), "en una lista") => fuera(
+            "un `Vector`",
+            "una lista de vectores se escribe como lista de structs con su vector",
+        ),
+        _ => Ok(t),
+    }
+}
+
+fn estructura(args: &str) -> Result<Type, TypeError> {
+    if args.trim().is_empty() {
+        return Err(TypeError::Compuesto(
+            "un `Struct` sin campos no tiene forma".into(),
+        ));
+    }
+    let mut campos: Vec<(String, Type)> = Vec::new();
+    for parte in partir_por_comas(args) {
+        let Some((nombre, tipo)) = parte.split_once(':') else {
+            return Err(TypeError::Compuesto(format!(
+                "`{parte}` no es un campo: se escribe `nombre: Tipo`"
+            )));
+        };
+        let nombre = nombre.trim();
+        let valido = nombre
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            && nombre
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !valido {
+            return Err(TypeError::Compuesto(format!(
+                "`{nombre}` no es un nombre de campo (`[a-z_][a-z0-9_]*`)"
+            )));
+        }
+        if campos.iter().any(|(n, _)| n == nombre) {
+            return Err(TypeError::Compuesto(format!(
+                "el campo `{nombre}` está dos veces"
+            )));
+        }
+        campos.push((
+            nombre.to_string(),
+            dentro(tipo.trim(), "en un campo de `Struct`")?,
+        ));
+    }
+    Ok(Type::Struct(campos))
 }
 
 pub fn parse_type(s: &str) -> Result<Type, TypeError> {
+    let s = s.trim();
+    // v1alpha17: `list<…>` admite, además de un escalar, lo compuesto
+    // (`01-los-tipos` §2). Un escalar desconocido dentro sigue siendo un tipo
+    // que no existe (`OOS3001`).
     if let Some(inner) = s.strip_prefix("list<").and_then(|r| r.strip_suffix('>')) {
-        return if ESCALARES.contains(&inner) {
-            Ok(Type::List(inner.to_string()))
-        } else {
-            Err(TypeError::Desconocido)
+        let inner = inner.trim();
+        if ESCALARES.contains(&inner) {
+            return Ok(Type::List(Box::new(Type::Scalar(inner.to_string()))));
+        }
+        return match dentro(inner, "en una lista")? {
+            t @ (Type::Struct(_) | Type::Anchor) => Ok(Type::List(Box::new(t))),
+            _ => Err(TypeError::Desconocido),
         };
+    }
+    if let Some(args) = s.strip_prefix("Struct<").and_then(|r| r.strip_suffix('>')) {
+        return estructura(args);
+    }
+    if let Some(n) = s.strip_prefix("Vector<").and_then(|r| r.strip_suffix('>')) {
+        return match n.trim().parse::<u32>() {
+            Ok(n) if (1..=u32::from(DIMENSION_MAXIMA)).contains(&n) => Ok(Type::Vector(n as u16)),
+            Ok(n) => Err(TypeError::Compuesto(format!(
+                "`Vector<{n}>`: la dimensión va de 1 a {DIMENSION_MAXIMA}"
+            ))),
+            Err(_) => Err(TypeError::Compuesto(
+                "`Vector` lleva su dimensión, `Vector<768>`: es parte del contrato".into(),
+            )),
+        };
+    }
+    if s == "Anchor" {
+        return Ok(Type::Anchor);
     }
 
     if let Some(resto) = s.strip_prefix("Decimal<") {
@@ -447,7 +609,29 @@ fn tipos_de_seccion(e: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
                     ),
                 )
             }
+            // v1alpha17: lo compuesto y el ancla, igual.
+            Ok(ty)
+                if ty.es_de_v1alpha17()
+                    && e.version()
+                        .is_some_and(|v| v < crate::document::ApiVersion::V1Alpha17) =>
+            {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos3001,
+                        &e.path,
+                        format!("`{s}` es un tipo de v1alpha17"),
+                    )
+                    .at(t.pos())
+                    .help(
+                        "`Struct<…>`, `Vector<n>` y `Anchor` llegan con v1alpha17: declara \
+                         `apiVersion: oos.dev/v1alpha17` en el documento",
+                    ),
+                )
+            }
             Ok(_) => {}
+            Err(TypeError::Compuesto(porque)) => out.push(
+                Diagnostic::new(Code::Oos3007, &e.path, format!("`{s}` · {porque}")).at(t.pos()),
+            ),
             Err(TypeError::Desconocido) => out.push(
                 Diagnostic::new(
                     Code::Oos3001,
@@ -748,6 +932,13 @@ mod tests {
         casos.push("Decimal<1, 0>".into());
         casos.push("iso.CountryAlpha2".into());
         casos.push("Media<legal.archivo.contratos>".into());
+        // v1alpha17: lo compuesto y el ancla.
+        casos.push("Struct<numero: String, total: Decimal<12, 2>, fecha: Date>".into());
+        casos.push("Struct<autor: Struct<nombre: String>, huella: Vector<8>>".into());
+        casos.push("list<Struct<t_start: Float, t_end: Float, texto: String>>".into());
+        casos.push("Vector<768>".into());
+        casos.push("Anchor".into());
+        casos.push("list<Anchor>".into());
         for c in casos {
             let t = parse_type(&c).unwrap_or_else(|_| panic!("`{c}` tenia que analizar"));
             assert_eq!(t.to_string(), c, "la vuelta no coincide");
@@ -759,6 +950,61 @@ mod tests {
             parse_type("Quantity<km,1>").unwrap().to_string(),
             "Quantity<km, 1>"
         );
+    }
+
+    /// v1alpha17 · la forma laxa de un struct converge en la canónica, y el
+    /// digest del paquete no depende de cómo se tecleó (`01-los-tipos` §1).
+    #[test]
+    fn un_struct_sin_espacios_se_escribe_con_ellos() {
+        assert_eq!(
+            parse_type("Struct<a:String,b:list<Integer>>")
+                .unwrap()
+                .to_string(),
+            "Struct<a: String, b: list<Integer>>"
+        );
+    }
+
+    /// v1alpha17 · lo que está mal puesto es `OOS3007` (el tipo existe); lo que
+    /// no existe sigue siendo `OOS3001` (`01-los-tipos` §4).
+    #[test]
+    fn lo_compuesto_mal_formado_dice_por_que() {
+        for mal in [
+            "Struct<>",
+            "Struct<a: String, a: Float>",
+            "Struct<A: String>",
+            "Struct<a>",
+            "Vector<>",
+            "Vector<0>",
+            "Vector<16001>",
+            "Struct<d: Media<legal.contratos>>",
+            "Struct<x: Opaque>",
+            "Struct<donde: Anchor>",
+            "list<list<Float>>",
+            "list<Vector<3>>",
+            "list<Media<legal.contratos>>",
+        ] {
+            assert!(
+                matches!(parse_type(mal), Err(TypeError::Compuesto(_))),
+                "`{mal}` tenía que ser OOS3007"
+            );
+        }
+        assert!(matches!(
+            parse_type("Struct<a: Cadena>"),
+            Err(TypeError::Desconocido)
+        ));
+        assert!(matches!(
+            parse_type("list<Cadena>"),
+            Err(TypeError::Desconocido)
+        ));
+        assert!(parse_type("Vector<16000>").is_ok());
+    }
+
+    #[test]
+    fn lo_de_v1alpha17_se_reconoce_a_cualquier_profundidad() {
+        assert!(parse_type("list<Anchor>").unwrap().es_de_v1alpha17());
+        assert!(parse_type("Vector<3>").unwrap().es_de_v1alpha17());
+        assert!(!parse_type("list<String>").unwrap().es_de_v1alpha17());
+        assert!(!parse_type("Media<a.b>").unwrap().es_de_v1alpha17());
     }
 
     #[test]

@@ -332,6 +332,18 @@ pub fn fuente_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Option<
         // fijas (`01` §7). Una colección no se lee con SQL: no está aquí, y su
         // nombre en un `FROM` es `OOS2018`.
         .or_else(|| pkg.resolve_object_table(nombre, desde))
+        // v1alpha17: desde una consulta de v1alpha17, sí, **como su listado**
+        // (`04` §1): la referencia y sus metadatos, nunca los bytes.
+        .or_else(|| lee_colecciones(desde).then(|| pkg.resolve_collection(nombre, desde))?)
+}
+
+/// v1alpha17. Si una consulta escrita en este documento lee colecciones como su
+/// listado: solo desde v1alpha17. Antes, una colección en un `FROM` es lo que
+/// era, `OOS2018`.
+fn lee_colecciones(desde: &Loaded) -> bool {
+    desde
+        .version()
+        .is_some_and(|v| v >= crate::document::ApiVersion::V1Alpha17)
 }
 
 /// v1alpha14. **Todo** lo que un nombre de una consulta nombra. En v1alpha14 una
@@ -344,13 +356,21 @@ pub fn fuentes_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Vec<&'
         .chain(pkg.resolve_dataset(nombre, desde))
         .chain(pkg.resolve_table(nombre, desde))
         .chain(pkg.resolve_object_table(nombre, desde))
+        .chain(
+            lee_colecciones(desde)
+                .then(|| pkg.resolve_collection(nombre, desde))
+                .flatten(),
+        )
         .collect()
 }
 
 /// v1alpha14. Las columnas que una fuente de una consulta deja nombrar: las de
 /// una tabla, o lo que una vista o un dataset exponen.
 pub fn columnas_que_expone(pkg: &Package, d: &Loaded) -> BTreeSet<String> {
-    if matches!(d.kind, Kind::Table | Kind::ObjectTable) {
+    if matches!(
+        d.kind,
+        Kind::Table | Kind::ObjectTable | Kind::MediaCollection
+    ) {
         columnas(d)
     } else {
         expone_en(pkg, d).into_keys().collect()
@@ -435,14 +455,41 @@ pub fn columnas(t: &Loaded) -> BTreeSet<String> {
     if t.kind == Kind::ObjectTable {
         return columnas_de_objetos(t).into_keys().collect();
     }
-    t.section("columns")
+    // v1alpha17: el listado de una colección (`04` §1).
+    if t.kind == Kind::MediaCollection {
+        return crate::document::COLUMNAS_DE_LISTADO
+            .iter()
+            .map(|(c, _)| c.to_string())
+            .collect();
+    }
+    let mut cols: BTreeSet<String> = t
+        .section("columns")
         .map(|c| {
             c.entries()
                 .iter()
                 .filter_map(|(k, _)| k.as_str().map(String::from))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // v1alpha17: una tabla anclada expone además las de sistema (`03` §1).
+    if anclada_a(t).is_some() {
+        cols.extend(
+            crate::document::COLUMNAS_DE_SISTEMA
+                .iter()
+                .map(|(c, _)| c.to_string()),
+        );
+    }
+    cols
+}
+
+/// v1alpha17. La colección a la que está anclada una tabla, cualificada, si lo
+/// está (`03` §1). Resolverla es del enlazado (`OOS2018`).
+pub fn anclada_a(t: &Loaded) -> Option<String> {
+    if t.kind != Kind::Dataset || !lee_colecciones(t) {
+        return None;
+    }
+    let r = t.section("anchoredTo")?.as_str()?;
+    Some(crate::link::cualificar(r, t))
 }
 
 /// v1alpha16. **Las columnas de un `ObjectTable`**: las fijas, iguales en
@@ -483,6 +530,42 @@ pub fn tipos_de_columnas(t: &Loaded) -> BTreeMap<String, crate::types::Type> {
             .filter_map(|(c, tipo)| Some((c, crate::types::parse_type(tipo).ok()?)))
             .collect();
     }
+    // v1alpha17: una tabla anclada, con sus columnas de sistema; `_item` es
+    // `Media<anchoredTo>`.
+    if let Some(c) = anclada_a(t) {
+        let mut tipos = tipos_declarados_en(t);
+        for (col, tipo) in crate::document::COLUMNAS_DE_SISTEMA {
+            let ty = if *tipo == "Media" {
+                Some(crate::types::Type::Media(c.clone()))
+            } else {
+                crate::types::parse_type(tipo).ok()
+            };
+            if let Some(ty) = ty {
+                tipos.insert(col.to_string(), ty);
+            }
+        }
+        return tipos;
+    }
+    // v1alpha17: el listado de una colección, con `_item` = `Media<ella>`.
+    if t.kind == Kind::MediaCollection {
+        let qn = t.qname().unwrap_or_default();
+        return crate::document::COLUMNAS_DE_LISTADO
+            .iter()
+            .filter_map(|(c, tipo)| {
+                let ty = if *tipo == "Media" {
+                    crate::types::Type::Media(qn.clone())
+                } else {
+                    crate::types::parse_type(tipo).ok()?
+                };
+                Some((c.to_string(), ty))
+            })
+            .collect();
+    }
+    tipos_declarados_en(t)
+}
+
+/// Los tipos que `columns` declara, tal cual.
+fn tipos_declarados_en(t: &Loaded) -> BTreeMap<String, crate::types::Type> {
     t.section("columns")
         .map(|c| {
             c.entries()
@@ -1699,6 +1782,28 @@ fn comprobar_sql(pkg: &Package, v: &Loaded, out: &mut Vec<Diagnostic>) {
         return;
     }
 
+    // OOS2041 · v1alpha17: una referencia no tiene orden (`04` §4). Se ordena
+    // por `path`, `modified` o `size`; se agrupa por `_item.digest`.
+    if lee_colecciones(v)
+        && let Some(sql) = nodo.as_str()
+        && crate::vista_sql::ordena_o_agrupa_por_la_referencia(sql)
+    {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2041,
+                &v.path,
+                format!("`{qn}` ordena o agrupa por `_item`, una referencia a medio"),
+            )
+            .at(nodo.pos())
+            .help(
+                "una referencia no tiene orden (Snowflake prohíbe lo mismo sobre `FILE`): \
+                 ordena por `path`, `modified` o `size`, y agrupa o une por `_item.digest` o \
+                 `path`",
+            ),
+        );
+        return;
+    }
+
     // OOS2018 · cada columna que la consulta nombra existe en su fuente.
     let mut nombradas: BTreeSet<&crate::vista_sql::Ref> = BTreeSet::new();
     for col in &c.columnas {
@@ -1921,6 +2026,80 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     .help(
                         "`Media<x>` apunta a un ítem de una colección; un dataset o una vista \
                         tienen filas, no ítems",
+                    ),
+                );
+            }
+        }
+    }
+
+    // v1alpha17 · la tabla anclada (`03` §6): `anchoredTo` es una colección
+    // (`OOS2018`), y una columna `Media<x>` de otra colección está fuera de su
+    // sitio (`OOS2041`). Y en un dataset de v1alpha17, una columna `Media<x>`
+    // resuelve como una propiedad.
+    for d in pkg.of(Kind::Dataset).filter(|d| lee_colecciones(d)) {
+        let qn = d.qname().unwrap_or_default();
+        let anclada = d.section("anchoredTo").map(|a| {
+            let r = a.as_str().unwrap_or("").to_string();
+            (
+                pkg.resolve_collection(&r, d).and_then(|c| c.qname()),
+                r,
+                a.pos(),
+            )
+        });
+        if let Some((None, r, pos)) = &anclada {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2018,
+                    &d.path,
+                    format!("`{qn}` está anclada a `{r}`, que no es una `MediaCollection`"),
+                )
+                .at(*pos)
+                .help(
+                    "una tabla anclada lo está a una colección: lo que sale de sus ítems. Un \
+                     dataset o una vista tienen filas, no ítems",
+                ),
+            );
+        }
+        for (k, v) in d.section("columns").map(|c| c.entries()).unwrap_or(&[]) {
+            let Some((_, t)) = v.get("type") else {
+                continue;
+            };
+            let Ok(crate::types::Type::Media(c)) =
+                crate::types::parse_type(t.as_str().unwrap_or(""))
+            else {
+                continue;
+            };
+            let col = k.as_str().unwrap_or("?");
+            let Some(destino) = pkg.resolve_collection(&c, d).and_then(|x| x.qname()) else {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2018,
+                        &d.path,
+                        format!(
+                            "`{qn}.{col}` es `Media<{c}>`, y `{c}` no es una `MediaCollection`"
+                        ),
+                    )
+                    .at(t.pos()),
+                );
+                continue;
+            };
+            if let Some((Some(propia), _, _)) = &anclada
+                && &destino != propia
+            {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2041,
+                        &d.path,
+                        format!(
+                            "`{qn}` está anclada a `{propia}` y su columna `{col}` es \
+                             `Media<{destino}>`"
+                        ),
+                    )
+                    .at(t.pos())
+                    .help(
+                        "una tabla anclada es de UNA colección: su ítem es `_item`. Lo que se \
+                         relaciona con otra colección se une por su `_anchor_id` o por el \
+                         `digest` del otro ítem",
                     ),
                 );
             }

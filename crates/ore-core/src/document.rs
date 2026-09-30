@@ -112,6 +112,13 @@ pub enum ApiVersion {
     /// medido contra un bucket real: en el mismo prefijo conviven CSV, PDF,
     /// fotos y un zip, y lo que se hace con cada uno no se parece.
     V1Alpha16,
+    /// v1alpha17. **Anclar.** Lo que se saca de un fichero es una fila anclada
+    /// a una parte de el: los tipos compuestos (`Struct`, `Vector`), el ancla
+    /// (`Anchor`), la referencia entera como valor de `Media<c>`, la tabla
+    /// anclada (`anchoredTo`) y la coleccion leida como su listado. Lo decidio
+    /// ORE 0049 (2026-09-30): sin tipos, todo resultado sobre un medio acaba
+    /// como JSON en una cadena.
+    V1Alpha17,
 }
 
 impl ApiVersion {
@@ -130,6 +137,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha14,
         ApiVersion::V1Alpha15,
         ApiVersion::V1Alpha16,
+        ApiVersion::V1Alpha17,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -148,6 +156,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha14 => "oos.dev/v1alpha14",
             ApiVersion::V1Alpha15 => "oos.dev/v1alpha15",
             ApiVersion::V1Alpha16 => "oos.dev/v1alpha16",
+            ApiVersion::V1Alpha17 => "oos.dev/v1alpha17",
         }
     }
 
@@ -290,6 +299,43 @@ pub const COLUMNAS_DE_OBJETO: &[(&str, &str)] = &[
     ("checksum", "String"),
     ("modified", "DateTimeTz"),
     ("version", "String"),
+];
+
+/// v1alpha17. **Las columnas del listado de una coleccion**: lo que una
+/// consulta lee cuando nombra una `MediaCollection` en un `FROM`
+/// (`04-la-coleccion-como-listado` §1). Ninguna es el contenido: una coleccion
+/// se lee en SQL como su listado, nunca como sus bytes. `_item` es
+/// `Media<coleccion>`, y la pone quien pregunta por los tipos.
+pub const COLUMNAS_DE_LISTADO: &[(&str, &str)] = &[
+    ("_item", "Media"),
+    ("path", "String"),
+    ("version", "String"),
+    ("digest", "String"),
+    ("size", "Integer"),
+    ("content_type", "String"),
+    ("content_type_detected", "String"),
+    ("checksum", "String"),
+    ("modified", "DateTimeTz"),
+    ("transaction", "String"),
+];
+
+/// v1alpha17. **Las columnas de sistema de una tabla anclada**: las que
+/// `anchoredTo` anade y nadie declara (`03-la-tabla-anclada` §1). `_item` es
+/// `Media<anchoredTo>`, y la pone quien pregunta por los tipos.
+pub const COLUMNAS_DE_SISTEMA: &[(&str, &str)] = &[
+    ("_item", "Media"),
+    ("_anchor", "Anchor"),
+    ("_anchor_id", "String"),
+    ("_anchor_parent", "String"),
+    (
+        "_derivation",
+        "Struct<key: String, fn: String, fn_version: String, model: String, model_rev: String, \
+         params_hash: String, run: String, created: DateTimeTz>",
+    ),
+    (
+        "_status",
+        "Struct<state: String, error_type: String, error_message: String, attempts: Integer>",
+    ),
 ];
 
 /// v1alpha16. El tipo de medio de un `ObjectTable` (`01-object-table` §4). Una
@@ -940,6 +986,22 @@ impl Kind {
             ],
             // v1alpha16: una tabla sobre ficheros dice como se leen. Antes,
             // `format` es `OOS1005`: una `Table` de antes no cambia.
+            // v1alpha17: la tabla anclada (`03-la-tabla-anclada`). Antes,
+            // `anchoredTo` es `OOS1005`.
+            Kind::Dataset if version >= ApiVersion::V1Alpha17 => &[
+                "owner",
+                "from",
+                "fields",
+                "where",
+                "groupBy",
+                "having",
+                "freshness",
+                "columns",
+                "changes",
+                "derivedFrom",
+                "history",
+                "anchoredTo",
+            ],
             Kind::Table if version >= ApiVersion::V1Alpha16 => &[
                 "datasource",
                 "object",
@@ -1534,6 +1596,16 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         ),
                     ));
                 }
+                if mantenido && tiene("anchoredTo") {
+                    return Some((
+                        "un dataset mantenido con `anchoredTo`".to_string(),
+                        Some(
+                            "una tabla anclada la escribe codigo que lee una coleccion \
+                             (v1alpha17 `03`): no sale de un plan"
+                                .to_string(),
+                        ),
+                    ));
+                }
                 if mantenido {
                     if let Some(k) = ["changes", "derivedFrom"].into_iter().find(|k| tiene(k)) {
                         return Some((
@@ -1582,42 +1654,75 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                             Some("las columnas de la tabla Iceberg, al menos una".to_string()),
                         ));
                     }
-                    let Some((_, ch)) = n.get("changes") else {
-                        return Some((
-                            "un dataset escrito sin `changes`".to_string(),
-                            Some(
-                                "que escrituras admite: `{ mode: append }` (solo altas) o \
+                    // v1alpha17: una tabla anclada se funde por `_anchor_id` y
+                    // no declara `changes`; sus columnas de sistema las pone la
+                    // gramatica (`03` §1, §2).
+                    if tiene("anchoredTo") {
+                        if tiene("changes") {
+                            return Some((
+                                "una tabla anclada con `changes`".to_string(),
+                                Some(
+                                    "se funde por `_anchor_id`, que es determinista: una fila \
+                                     se reemplaza, no se duplica. No se declara"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                        let sistema = n.get("columns").and_then(|(_, c)| {
+                            c.entries()
+                                .iter()
+                                .filter_map(|(k, _)| k.as_str())
+                                .find(|k| k.starts_with('_'))
+                                .map(String::from)
+                        });
+                        if let Some(k) = sistema {
+                            return Some((
+                                format!("una tabla anclada declara `{k}`"),
+                                Some(
+                                    "las columnas que empiezan por `_` son de la gramatica: \
+                                     `anchoredTo` anade `_item`, `_anchor`, `_anchor_id`, \
+                                     `_anchor_parent`, `_derivation` y `_status`"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                    } else {
+                        let Some((_, ch)) = n.get("changes") else {
+                            return Some((
+                                "un dataset escrito sin `changes`".to_string(),
+                                Some(
+                                    "que escrituras admite: `{ mode: append }` (solo altas) o \
                                  `{ mode: upsert, key: [...] }` (se funde por la clave)"
-                                    .to_string(),
-                            ),
-                        ));
-                    };
-                    let modo = ch.get("mode").and_then(|(_, m)| m.as_str());
-                    match modo {
-                        Some("append") => {
-                            if ch.get("key").is_some() {
-                                return Some((
+                                        .to_string(),
+                                ),
+                            ));
+                        };
+                        let modo = ch.get("mode").and_then(|(_, m)| m.as_str());
+                        match modo {
+                            Some("append") => {
+                                if ch.get("key").is_some() {
+                                    return Some((
                                     "`changes: { mode: append }` con `key`".to_string(),
                                     Some(
                                         "solo altas no funden por nada: quita `key`, o di `upsert`"
                                             .to_string(),
                                     ),
                                 ));
+                                }
                             }
-                        }
-                        Some("upsert") => {
-                            if ch.get("key").is_none_or(|(_, k)| k.items().is_empty()) {
-                                return Some((
+                            Some("upsert") => {
+                                if ch.get("key").is_none_or(|(_, k)| k.items().is_empty()) {
+                                    return Some((
                                     "`changes: { mode: upsert }` sin `key`".to_string(),
                                     Some(
                                         "un upsert funde por una clave: `key: [<columna>, ...]`"
                                             .to_string(),
                                     ),
                                 ));
+                                }
                             }
-                        }
-                        Some(otro) => {
-                            return Some((
+                            Some(otro) => {
+                                return Some((
                                 format!("`changes.mode: {otro}` no es `append` ni `upsert`"),
                                 Some(
                                     "son las dos escrituras que un dataset admite. `retract` y \
@@ -1626,23 +1731,24 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                                         .to_string(),
                                 ),
                             ));
+                            }
+                            None => {
+                                return Some((
+                                    "`changes` sin `mode`".to_string(),
+                                    Some("`append` o `upsert`".to_string()),
+                                ));
+                            }
                         }
-                        None => {
+                        if let Some((_, w)) = ch.get("witness") {
+                            let _ = w;
                             return Some((
-                                "`changes` sin `mode`".to_string(),
-                                Some("`append` o `upsert`".to_string()),
+                                "`changes.witness` en un dataset".to_string(),
+                                Some(
+                                    "es `snapshot`, siempre, porque es Iceberg: no se declara"
+                                        .to_string(),
+                                ),
                             ));
                         }
-                    }
-                    if let Some((_, w)) = ch.get("witness") {
-                        let _ = w;
-                        return Some((
-                            "`changes.witness` en un dataset".to_string(),
-                            Some(
-                                "es `snapshot`, siempre, porque es Iceberg: no se declara"
-                                    .to_string(),
-                            ),
-                        ));
                     }
                 }
                 if let Some((_, h)) = n.get("history") {

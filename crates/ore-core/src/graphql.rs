@@ -474,7 +474,12 @@ fn grafo(crudo: &str) -> Result<String, String> {
             unit,
             precision,
         } => format!("{ctor}_{unit}_{precision}"),
-        Type::List(inner) => format!("[{}!]", escalar(&inner)),
+        Type::List(inner) => format!("[{}!]", grafo(&inner.to_string())?),
+        // v1alpha17. Un vector es una lista de reales; un struct y un ancla
+        // viajan como el escalar de lo que el esquema no desglosa, hasta que
+        // la superficie de GraphQL los modele como objetos.
+        Type::Vector(_) => "[Float!]".to_string(),
+        Type::Struct(_) | Type::Anchor => escalar("Opaque").to_string(),
         // `Decimal<p, s>` es un `Decimal` para quien lee: el escalar ya viaja
         // como cadena exacta, y la precisión es del contrato de la copia, no de
         // la forma del valor. Un escalar por combinación —como `Money_EUR_2`—

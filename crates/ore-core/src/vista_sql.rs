@@ -921,6 +921,90 @@ impl Analizador<'_> {
     }
 }
 
+/// v1alpha17 (`04-la-coleccion-como-listado` §4). **Si la consulta ordena o
+/// agrupa por la referencia** —`_item`, a secas o calificada—: una referencia no
+/// tiene orden. `_item.path` sí se ordena: es un campo, no la referencia. Mira
+/// la consulta, sus `WITH`, sus subconsultas de `FROM` y los dos lados de un
+/// `UNION`.
+pub fn ordena_o_agrupa_por_la_referencia(sql: &str) -> bool {
+    let Ok(sentencias) = Parser::parse_sql(&DuckDbDialect {}, sql) else {
+        return false;
+    };
+    fn es_la_referencia(e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(i) => i.value.eq_ignore_ascii_case("_item"),
+            Expr::CompoundIdentifier(p) => p
+                .last()
+                .is_some_and(|i| i.value.eq_ignore_ascii_case("_item")),
+            Expr::Nested(x) => es_la_referencia(x),
+            _ => false,
+        }
+    }
+    fn consulta(q: &Query) -> bool {
+        if let Some(w) = &q.with
+            && w.cte_tables.iter().any(|c| consulta(&c.query))
+        {
+            return true;
+        }
+        if let Some(ob) = &q.order_by
+            && let sqlparser::ast::OrderByKind::Expressions(es) = &ob.kind
+            && es.iter().any(|e| es_la_referencia(&e.expr))
+        {
+            return true;
+        }
+        cuerpo(&q.body)
+    }
+    fn cuerpo(b: &SetExpr) -> bool {
+        match b {
+            SetExpr::Select(s) => {
+                let agrupa = matches!(
+                    &s.group_by,
+                    GroupByExpr::Expressions(es, _) if es.iter().any(es_la_referencia)
+                );
+                agrupa
+                    || s.from.iter().any(|t| {
+                        std::iter::once(&t.relation)
+                            .chain(t.joins.iter().map(|j| &j.relation))
+                            .any(|r| matches!(r, TableFactor::Derived { subquery, .. } if consulta(subquery)))
+                    })
+            }
+            SetExpr::Query(q) => consulta(q),
+            SetExpr::SetOperation { left, right, .. } => cuerpo(left) || cuerpo(right),
+            _ => false,
+        }
+    }
+    sentencias
+        .iter()
+        .any(|s| matches!(s, Statement::Query(q) if consulta(q)))
+}
+
+#[cfg(test)]
+mod pruebas_de_la_referencia {
+    use super::ordena_o_agrupa_por_la_referencia as ordena;
+
+    /// v1alpha17 (`04` §4): la referencia no tiene orden; sus campos sí.
+    #[test]
+    fn no_se_ordena_ni_se_agrupa_por_la_referencia() {
+        assert!(ordena("SELECT _item FROM c ORDER BY _item"));
+        assert!(ordena("SELECT c._item FROM c ORDER BY c._item DESC"));
+        assert!(ordena("SELECT _item, count(*) FROM c GROUP BY _item"));
+        assert!(ordena(
+            "WITH x AS (SELECT _item FROM c ORDER BY _item) SELECT * FROM x"
+        ));
+        assert!(ordena(
+            "SELECT * FROM (SELECT _item FROM c GROUP BY _item) t"
+        ));
+        assert!(ordena(
+            "SELECT path FROM a UNION ALL SELECT path FROM b GROUP BY _item"
+        ));
+        assert!(!ordena("SELECT _item, path FROM c ORDER BY path"));
+        assert!(!ordena("SELECT _item FROM c ORDER BY _item.path"));
+        assert!(!ordena(
+            "SELECT _item.digest, count(*) FROM c GROUP BY _item.digest"
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
