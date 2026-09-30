@@ -349,6 +349,15 @@ spec:
             # de este pod). La retencion con la que nace una tabla que no la
             # trae; `ore datasets --recoger` la obedece (y sin ella, nada expira).
             - { name: ORE_RETENCION, value: "7d" }
+            # ⭐ 0046 E10 B · LOS IDS DE LAS DOS CUENTAS QUE LEEN UN BUCKET POR ROL
+            #   (`ore-driver-<n>` y `ore-serve-<n>`): el asistente de alta de S3 enseña
+            #   la confianza del rol del cliente ya rellena con ellos. Los escribe el
+            #   aprovisionador en `ids-de-la-celda`; OPCIONAL: sin él, la confianza
+            #   sale con sus huecos y lo dice. No son secretos.
+            - name: ORE_ID_DRIVER
+              valueFrom: { configMapKeyRef: { name: ids-de-la-celda, key: driver, optional: true } }
+            - name: ORE_ID_SERVE
+              valueFrom: { configMapKeyRef: { name: ids-de-la-celda, key: serve, optional: true } }
             # ── ⭐⭐ EL TESTIGO YA NO VIENE DE AQUI ────────────────────────
             #
             # ✏️ 2026-09-09 · aqui habia un `FORJA_TOKEN` leido de un `Secret` de

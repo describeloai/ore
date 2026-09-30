@@ -549,6 +549,24 @@ correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   && hecho "\`ore-serve-$NOMBRE\` firma como sí mismo (URLs de los ítems), y como nadie más"
 
+# ⭐ LOS IDS DE LAS DOS CUENTAS QUE LEEN UN BUCKET POR ROL (0046 E9b, E10 B). Un
+#   cliente de S3 crea en su cuenta de AWS un rol que confía en `ore-driver-<n>`
+#   (lee) y `ore-serve-<n>` (sirve) por su ID ÚNICO —`AssumeRoleWithWebIdentity`
+#   no admite external ID: lo que aísla es que cada celda corre con las suyas—.
+#   El asistente de alta enseña esa confianza ya rellena: `ore-serve` los lee del
+#   ConfigMap `ids-de-la-celda` (opcional en `40-ore-serve.yaml`). No son secretos.
+ID_DRIVER=$("$GCLOUD" iam service-accounts describe "ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)" 2>/dev/null)
+ID_SERVE=$("$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)" 2>/dev/null)
+if [ -z "$ID_DRIVER" ] || [ -z "$ID_SERVE" ]; then
+  haria "los IDs de ore-driver-$NOMBRE y ore-serve-$NOMBRE, cuando existan las cuentas"
+elif ! kubectl get namespace "$NS" >/dev/null 2>&1; then
+  haria "ConfigMap ids-de-la-celda en $NS (driver=$ID_DRIVER serve=$ID_SERVE) cuando exista el namespace: vuelve a correr esto"
+elif [ -n "$SECO" ]; then
+  haria "ConfigMap ids-de-la-celda en $NS: driver=$ID_DRIVER serve=$ID_SERVE"
+else
+  kubectl -n "$NS" create configmap ids-de-la-celda     --from-literal=driver="$ID_DRIVER" --from-literal=serve="$ID_SERVE"     --dry-run=client -o yaml | kubectl apply -f - >/dev/null     && hecho "ids-de-la-celda en $NS: driver=$ID_DRIVER serve=$ID_SERVE"
+fi
+
 # ── ⭐⭐ LA COPIA: UN BUCKET POR INQUILINO, Y DOS PAPELES (0027 P1 I2) ─────
 #
 # Hasta el 2026-09-17 el almacén de copias era UN bucket de R2 con UNA
