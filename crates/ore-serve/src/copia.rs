@@ -44,6 +44,34 @@ fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
 }
 
+thread_local! {
+    /// La rama (no la de por defecto) en la que esta petición mueve datos.
+    static EN_RAMA: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// **Esta petición mueve datos en una rama** (0044 C.2 ④) mientras viva: la
+/// copia que encole es la de la rama, con lo que la rama cambió. Una marca y no
+/// un parámetro porque el encolado está en lo hondo de `tras_inducir`, que
+/// llaman el alta, ascender, modelar y las decisiones.
+pub(crate) struct EnRama;
+
+impl EnRama {
+    pub(crate) fn poner(rama: &str) -> EnRama {
+        EN_RAMA.with(|c| *c.borrow_mut() = Some(rama.to_string()));
+        EnRama
+    }
+}
+
+impl Drop for EnRama {
+    fn drop(&mut self) {
+        EN_RAMA.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+fn rama_de_la_copia() -> Option<String> {
+    EN_RAMA.with(|c| c.borrow().clone())
+}
+
 impl Servidor {
     /// **Ascender** una base foránea a estándar: `POST /paquetes/{n}/copia`.
     /// La clase al alcance y `ore review --reinducir`: el inductor aplica la
@@ -377,8 +405,15 @@ impl Servidor {
             ));
             return campos;
         }
-        let mut todas = vistas_con_copia(raiz);
-        todas.extend(colecciones_de_todos(raiz));
+        // ⭐ En una rama, lo que ELLA cambió y lo que depende de ello (0044 C.2 ④);
+        //   lo demás se lee de `main` al día (③). Las colecciones, todavía no.
+        let todas = if rama_de_la_copia().is_some() {
+            vistas_de_la_rama(raiz)
+        } else {
+            let mut t = vistas_con_copia(raiz);
+            t.extend(colecciones_de_todos(raiz));
+            t
+        };
         let encolado = if todas.is_empty() {
             "nada que encolar: ninguna vista declara copia todavía (esperan su clave)".to_string()
         } else {
@@ -518,10 +553,12 @@ impl Servidor {
                 );
             }
         };
-        let (fichero, texto) = match cola::rendir_rehacer(&plantilla, &vistas, &instante) {
-            Ok(v) => v,
-            Err(e) => return Respuesta::error(409, e),
-        };
+        let rama = rama_de_la_copia();
+        let (fichero, texto) =
+            match cola::rendir_rehacer(&plantilla, &vistas, &instante, rama.as_deref()) {
+                Ok(v) => v,
+                Err(e) => return Respuesta::error(409, e),
+            };
         if let Err(e) = std::fs::write(cdir.join(&fichero), &texto) {
             return Respuesta::error(502, format!("no se pudo escribir `{fichero}`: {e}"));
         }
@@ -571,7 +608,8 @@ impl Servidor {
                 );
             }
         };
-        let (fichero, texto) = match cola::rendir_copia(&plantilla, vistas) {
+        let rama = rama_de_la_copia();
+        let (fichero, texto) = match cola::rendir_copia(&plantilla, vistas, rama.as_deref()) {
             Ok(v) => v,
             Err(e) => return format!("NO encolado: {e}"),
         };
@@ -581,8 +619,12 @@ impl Servidor {
         if !forja.hay_cambios(dir) {
             return format!("ya encolado como `{fichero}`");
         }
-        match forja.publicar(dir, sujeto, &format!("Copiar {}", vistas.join(", "))) {
-            Ok(c) => format!("encolado como `{fichero}` · commit {c}"),
+        let en = rama
+            .as_deref()
+            .map(|r| format!(" en `{r}`"))
+            .unwrap_or_default();
+        match forja.publicar(dir, sujeto, &format!("Copiar {}{en}", vistas.join(", "))) {
+            Ok(c) => format!("encolado como `{fichero}`{en} · commit {c}"),
             Err(e) => format!("NO encolado: {e}"),
         }
     }
@@ -647,6 +689,110 @@ fn autorizar_conducto(raiz: &Path, dir: &Path, paquete: &str) -> Result<(), Resp
         }
     }
     Ok(())
+}
+
+/// **Lo que se construye en una rama** (0044 C.2 ④): los datasets mantenidos
+/// que la rama cambió —su documento difiere del punto del que salió, o no
+/// estaba; lo escrito ahora mismo cuenta— y lo que depende de ellos (`from: {
+/// dataset }`, hasta el final): lo cambiado y lo afectado, el
+/// `state:modified+` de dbt. Lo demás se lee de `main` al día (③).
+fn vistas_de_la_rama(raiz: &Path) -> Vec<String> {
+    let base = ["origin/main", "main"]
+        .iter()
+        .find_map(|m| crate::documentos::git(raiz, &["merge-base", "HEAD", m]))
+        .map(|s| s.trim().to_string());
+    let cambiados: std::collections::BTreeSet<String> = match &base {
+        Some(b) => {
+            let mut c: std::collections::BTreeSet<String> =
+                crate::documentos::git(raiz, &["diff", "--name-only", b, "--", "packages"])
+                    .unwrap_or_default()
+                    .lines()
+                    .map(String::from)
+                    .collect();
+            c.extend(
+                crate::documentos::git(
+                    raiz,
+                    &[
+                        "ls-files",
+                        "--others",
+                        "--exclude-standard",
+                        "--",
+                        "packages",
+                    ],
+                )
+                .unwrap_or_default()
+                .lines()
+                .map(String::from),
+            );
+            c
+        }
+        None => Default::default(),
+    };
+    // (paquete.dataset, ruta, de qué dataset sale)
+    let mut mantenidos: Vec<(String, String, Option<String>)> = Vec::new();
+    let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = paquetes
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    for d in dirs {
+        let paquete = d
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for p in crate::rutas::yamls_del_kind(&d, "datasets") {
+            let Some(n) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| parse::parse(&t).ok())
+            else {
+                continue;
+            };
+            if campo(&n, "kind").as_deref() != Some("Dataset") {
+                continue;
+            }
+            let Some((_, de)) = n.get("spec").and_then(|(_, s)| s.get("from")) else {
+                continue;
+            };
+            let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) else {
+                continue;
+            };
+            let nombre = match n.get("metadata").and_then(|(_, m)| campo(m, "schema")) {
+                Some(s) if s != ore_core::normalize::SCHEMA_POR_DEFECTO => format!("{s}.{v}"),
+                _ => v,
+            };
+            let ruta = p
+                .strip_prefix(raiz)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            mantenidos.push((format!("{paquete}.{nombre}"), ruta, campo(de, "dataset")));
+        }
+    }
+    let mut suyos: std::collections::BTreeSet<String> = mantenidos
+        .iter()
+        .filter(|(_, ruta, _)| base.is_none() || cambiados.contains(ruta))
+        .map(|(qn, _, _)| qn.clone())
+        .collect();
+    loop {
+        let antes = suyos.len();
+        for (qn, _, de) in &mantenidos {
+            if de.as_ref().is_some_and(|d| suyos.contains(d)) {
+                suyos.insert(qn.clone());
+            }
+        }
+        if suyos.len() == antes {
+            break;
+        }
+    }
+    mantenidos
+        .into_iter()
+        .map(|(qn, _, _)| qn)
+        .filter(|qn| suyos.contains(qn))
+        .collect()
 }
 
 /// `paquete.dataset` de cada dataset mantenido del árbol, en orden.
@@ -876,6 +1022,51 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Lo que se construye en una rama** (0044 C.2 ④): lo que ella cambió
+    /// —aunque aún no esté confirmado— y lo que depende de ello, hasta el
+    /// final; lo que no tocó, no.
+    #[test]
+    fn en_una_rama_se_construye_lo_cambiado_y_lo_afectado() {
+        let raiz = std::env::temp_dir().join(format!("ore-serve-rama-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let d = raiz.join("packages/v/datasets");
+        std::fs::create_dir_all(&d).unwrap();
+        let git = |args: &[&str]| {
+            let s = std::process::Command::new("git")
+                .current_dir(&raiz)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "s")
+                .env("GIT_AUTHOR_EMAIL", "s@x")
+                .env("GIT_COMMITTER_NAME", "s")
+                .env("GIT_COMMITTER_EMAIL", "s@x")
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        let ds = |n: &str, from: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: {{ name: {n}, namespace: v }}\nspec:\n  owner: team:x\n  from: {{ {from} }}\n"
+            )
+        };
+        std::fs::write(d.join("a.yaml"), ds("a", "table: v.t")).unwrap();
+        std::fs::write(d.join("b.yaml"), ds("b", "dataset: v.a")).unwrap();
+        std::fs::write(d.join("c.yaml"), ds("c", "dataset: v.b")).unwrap();
+        std::fs::write(d.join("x.yaml"), ds("x", "table: v.u")).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "main"]);
+        git(&["checkout", "-qb", "bea/datos"]);
+        // La rama cambia `a` (sin confirmar) y crea `n`, que no depende de nadie.
+        std::fs::write(d.join("a.yaml"), ds("a", "table: v.t2")).unwrap();
+        std::fs::write(d.join("n.yaml"), ds("n", "table: v.w")).unwrap();
+        assert_eq!(vistas_de_la_rama(&raiz), ["v.a", "v.b", "v.c", "v.n"]);
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
 
     /// **Lo que se encola por una colección** (0046 E8·1d): una base foránea
     /// que sólo tiene una colección virtual también tiene transacciones que

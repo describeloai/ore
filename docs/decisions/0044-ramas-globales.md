@@ -442,8 +442,9 @@ es admin (su `Identidad` es persona, agente, correo y nombre; ninguna de las pot
 ## Apéndice C · Los datos en una rama (medido y decidido el 2026-09-29)
 
 **Estado:** decidido, medido (D0) y cotejado; **D1 y D2 hechos y en vivo** (2026-09-30: la
-pasada del mantenimiento en `demo` recoge con lo que reclaman las demás ramas); **D3a y D3b hechos
-en local** (`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–9), D3c (consola) y D4–D6 por hacer (§ C.6). Es lo que el
+pasada del mantenimiento en `demo` recoge con lo que reclaman las demás ramas); **D3 y D4 hechos
+en local** (`pruebas-de-fuego/los-datos-en-una-rama.sh` 1–11, consola incluida), en vivo tras
+desplegar; D5 y D6 por hacer (§ C.6). Es lo que el
 punto 4 y «Lo que queda fuera» dejaban para después: aquí, y no en un ADR aparte, porque una rama
 con datos es la misma rama global con una cosa más.
 
@@ -614,6 +615,20 @@ del binario que lo entiende (binario primero, malla después).
   periódico es de `main`).
 - *Prueba:* la rama construye copiaBase (15), `main` sigue en 20, y la recogida de los dos lados
   los deja vivos.
+- *Hecho así (D4a–D4c):* copiar, ascender, modelar, decidir y rehacer en una rama escriben en su
+  árbol (`Servidor::moviendo_datos`) y encolan con la rama (`copia::EnRama`, una marca de la
+  petición: el encolado está en lo hondo de `tras_inducir`). Lo que se construye lo calcula
+  `ore-serve` (`vistas_de_la_rama`): los mantenidos cuyo documento difiere del punto de salida
+  —lo recién escrito cuenta— y lo que sale de ellos por `from: { dataset }`, hasta el final. La
+  cola lleva `48-la-copia-rama-<h>.yaml` (`copiar-rama-<h>`, la rama dentro del resumen), que la
+  convergencia conserva como los de rehacer; una plantilla sin el hueco `RAMA` es un error, no una
+  copia en `main`. En el Job (`malla/48`, con `RAMA` vacío es `main`, lo de siempre): clona la
+  rama, **`ore overlay . --main origin/main`** —lo de ③ en el clon, con la misma regla—, construye
+  sólo `VISTAS`, reclama con todo `main` y lo propio de las demás, **`ore overlay . --undo`** y
+  empuja a la rama. Dar de alta o retirar una fuente sigue siendo `409` en una rama (es de la
+  celda). En la consola, «Copy into cell» ya mandaba la rama; «Copy now» (rehacer, desde el code
+  workspace) la manda ahora. Medido en la prueba 11: la pasada del Job en la rama construye
+  copiaBase con la base de la rama (25) y `main` sigue en 20; sólo lo construido pasa a ser suyo.
 
 **D5 · Fusionar punteros** (ORE + consola)
 
@@ -641,3 +656,9 @@ del binario que lo entiende (binario primero, malla después).
   una rama viven lo que viva la rama.
 - **Combinar** los dos lados (C.4) y **las filas en el diff** de una propuesta (A.6, «más adelante»).
 - **Dar de alta una conexión en una rama** (B.2: es de la celda).
+- **Las colecciones mantenidas en una rama** (0046 E8): la copia de una rama construye datasets;
+  las colecciones siguen en la pasada de `main`.
+- **Contestar decisiones desde la consola en una rama:** ORE ya lo hace en la rama; la consola
+  todavía no manda la rama en `contestar-decisiones`.
+- **La vida del fichero de la cola de una rama:** se conserva como los de rehacer; retirarlo
+  con la rama queda por hacer (hoy el Job, con su `ttl`, vuelve a pasar).

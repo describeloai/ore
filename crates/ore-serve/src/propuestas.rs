@@ -2003,11 +2003,42 @@ impl Servidor {
         }
     }
 
+    /// **La rama en la que se mueven datos**, si no es la de por defecto (0044
+    /// C.2 ④): `None` es `main`, lo de siempre.
+    pub(crate) fn rama_de_datos<'a>(&self, rama: Option<&'a str>) -> Option<&'a str> {
+        let r = rama?;
+        let por_defecto = self
+            .api()
+            .ok()
+            .and_then(|a| a.rama_por_defecto().ok())
+            .unwrap_or_else(|| "main".into());
+        (r != por_defecto).then_some(r)
+    }
+
+    /// **Lo que mueve datos, en la rama de la cabecera** (0044 C.2 ④): copiar,
+    /// ascender, contestar las decisiones. En `main`, lo de siempre
+    /// (`escribiendo`); en otra rama, el árbol de esa rama (`escribiendo_en`) y
+    /// la copia que se encole es la de la rama ([`crate::copia::EnRama`]).
+    pub(crate) fn moviendo_datos(
+        &self,
+        rama: Option<&str>,
+        sujeto: &Identidad,
+        mensaje: &str,
+        f: impl FnOnce(&Path) -> Respuesta,
+    ) -> Respuesta {
+        match self.rama_de_datos(rama) {
+            None => self.escribiendo(sujeto, mensaje, f),
+            Some(r) => {
+                let _en = crate::copia::EnRama::poner(r);
+                self.escribiendo_en(Some(r), sujeto, mensaje, f)
+            }
+        }
+    }
+
     /// **Lo que mueve DATOS, sólo en la rama por defecto** (ramas globales, fase
-    /// 1). Copiar, ascender, rehacer la copia, decidir o dar de alta una fuente
-    /// escriben la cola, y los Jobs que encolan leen la rama por defecto: hecho
-    /// desde otra rama, escribiría allí sin decirlo. Los datos de una rama
-    /// llegan después; hasta entonces se niega con el porqué. `None` = adelante.
+    /// 1): desde 0044 C.2 ④, sólo dar de alta o retirar una fuente —una
+    /// conexión es de la celda, no del árbol (B.2)—; copiar, ascender, rehacer
+    /// y decidir van en la rama ([`Servidor::moviendo_datos`]). `None` = adelante.
     pub(crate) fn solo_en_la_de_por_defecto(
         &self,
         rama: Option<&str>,
@@ -2023,8 +2054,8 @@ impl Servidor {
             Respuesta::error(
                 409,
                 format!(
-                    "{que} mueve datos, y una rama todavía no tiene datos propios: los Jobs \
-                     leen `{por_defecto}`. Hazlo en `{por_defecto}` (estás en `{r}`)"
+                    "{que} es de la celda, no de una rama: una conexión se da de alta en \
+                     `{por_defecto}` (estás en `{r}`)"
                 ),
             )
         })

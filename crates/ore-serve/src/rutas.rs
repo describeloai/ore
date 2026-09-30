@@ -485,45 +485,44 @@ impl Servidor {
             // ── 0027 P1 C2 · modelar una tabla de una base (`ore model`) ──
             ("POST", ["paquetes", n, "tablas", o, "modelar"]) => {
                 let (n, o) = (n.to_string(), o.to_string());
+                // La copia que encole, la de la rama (0044 C.2 ④).
+                let _en = self.rama_de_datos(rama).map(crate::copia::EnRama::poner);
                 self.escribiendo_en(rama, sujeto, &format!("`{n}`: modelar `{o}`"), |r| {
                     self.modelar(r, &n, &o, sujeto)
                 })
             }
             // ── copiar UNA tabla de una base foránea (`ore copy`) ─────────
             ("POST", ["paquetes", n, "tablas", o, "copiar"]) => {
-                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Copiar una tabla") {
-                    return r;
-                }
                 let (n, o) = (n.to_string(), o.to_string());
-                self.escribiendo(sujeto, &format!("`{n}`: copiar `{o}` a la celda"), |r| {
-                    self.copiar_tabla(r, &n, &o, sujeto)
-                })
+                self.moviendo_datos(
+                    rama,
+                    sujeto,
+                    &format!("`{n}`: copiar `{o}` a la celda"),
+                    |r| self.copiar_tabla(r, &n, &o, sujeto),
+                )
             }
             // ── 0027 P1 I4b · ascender una base foránea a estándar ────────
             // 0030 W1 · rehacer la copia: escribe la cola, no el árbol.
             ("POST", ["paquetes", n, "copia", "rehacer"]) => {
-                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Rehacer la copia") {
-                    return r;
-                }
                 let n = n.to_string();
-                self.leyendo(move |r| self.rehacer_copia(r, &n, sujeto))
+                match self.rama_de_datos(rama) {
+                    None => self.leyendo(move |r| self.rehacer_copia(r, &n, sujeto)),
+                    Some(ra) => {
+                        let _en = crate::copia::EnRama::poner(ra);
+                        self.leyendo_en(Some(ra), move |r| self.rehacer_copia(r, &n, sujeto))
+                    }
+                }
             }
             ("POST", ["paquetes", n, "copia"]) => {
-                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Ascender a base estándar") {
-                    return r;
-                }
                 let n = n.to_string();
-                self.escribiendo(sujeto, &format!("`{n}` pasa a base estándar"), |r| {
+                self.moviendo_datos(rama, sujeto, &format!("`{n}` pasa a base estándar"), |r| {
                     self.ascender(r, &n, sujeto)
                 })
             }
             ("POST", ["paquetes", n, "decisiones"]) => {
-                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Contestar las decisiones") {
-                    return r;
-                }
                 let n = n.to_string();
                 let cuerpo = p.cuerpo.clone();
-                self.escribiendo(sujeto, &format!("decisiones de `{n}`"), |r| {
+                self.moviendo_datos(rama, sujeto, &format!("decisiones de `{n}`"), |r| {
                     self.responder(r, &n, &cuerpo, sujeto)
                 })
             }

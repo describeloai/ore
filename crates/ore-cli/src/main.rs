@@ -8,6 +8,7 @@
 //! los tres abre el socket: lo abre el programa que llaman.
 
 mod activos;
+mod al_dia;
 mod alcance;
 mod cache;
 mod candado;
@@ -894,6 +895,21 @@ enum Command {
         #[arg(long)]
         ttl: Option<u64>,
     },
+    /// Una rama con lo que no toco al dia (0044 C): en un clon de una rama, los
+    /// punteros que ella no toco pasan a ser los de `--main` de hoy, invisibles
+    /// para git; `--undo`, antes de confirmar, devuelve lo no tocado a como
+    /// estaba en la rama y deja de la rama lo que la pasada cambio. Es lo que
+    /// hace el Job de la copia en una rama.
+    Overlay {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// La cabeza de main contra la que se pone al dia (`origin/main`).
+        #[arg(long, value_name = "REF", required_unless_present = "undo")]
+        main: Option<String>,
+        /// Deshace lo superpuesto que la pasada no toco.
+        #[arg(long)]
+        undo: bool,
+    },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
     /// (`datasets/`), que son la misma cosa — una tabla Iceberg en el bucket.
@@ -1160,6 +1176,13 @@ fn main() -> std::process::ExitCode {
                     );
                     std::process::ExitCode::from(64)
                 }
+            };
+        }
+        Command::Overlay { path, main, undo } => {
+            return match (undo, main) {
+                (true, _) => al_dia::deshacer(path),
+                (false, Some(m)) => al_dia::superponer(path, m),
+                (false, None) => std::process::ExitCode::from(64),
             };
         }
         Command::Datasets {
@@ -1509,6 +1532,7 @@ fn main() -> std::process::ExitCode {
         | Command::Materialize { .. }
         | Command::Invoke { .. }
         | Command::Datasets { .. }
+        | Command::Overlay { .. }
         | Command::Collections { .. }
         | Command::Migrate { .. }
         | Command::Assets { .. }

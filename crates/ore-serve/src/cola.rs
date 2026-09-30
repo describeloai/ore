@@ -130,25 +130,54 @@ pub fn rendir_corrida(
 pub const PLANTILLA_COPIA: &str = "plantilla-copia.txt";
 const VISTAS_MODELO: &str = "olist.customers";
 
+/// El hueco de la rama en `malla/48-la-copia.yaml` (0044 C.2 ④): vacío es
+/// `main`, que es lo que la copia fue siempre.
+const RAMA_DE_LA_COPIA: &str = "name: RAMA, value: \"\"";
+
 /// Rinde el Job de la copia con la lista de vistas —`paquete.vista`, las que
 /// son datasets mantenidos en todo el árbol (0033)— y el resumen del contenido en el
 /// nombre. Es lo mismo que hace `gen-inquilino.py` con `--copias`, y por eso el
 /// fichero se llama igual: dos rendidos de la misma lista son el mismo Job.
-pub fn rendir_copia(plantilla: &str, vistas: &[String]) -> Result<(String, String), String> {
+///
+/// ⭐ **Con rama** (0044 C.2 ④) es otro Job y otro fichero —`copiar-rama-<h>`,
+///   `48-la-copia-rama-<h>.yaml`, con la rama dentro del resumen—: construye en
+///   la rama y empuja a ella, y no sustituye a la copia de `main`. Una plantilla
+///   sin el hueco `RAMA` es un error, no una copia en `main`.
+pub fn rendir_copia(
+    plantilla: &str,
+    vistas: &[String],
+    rama: Option<&str>,
+) -> Result<(String, String), String> {
     if !plantilla.contains(&format!("copiar-{RESUMEN_MODELO}")) {
         return Err(format!(
             "`{PLANTILLA_COPIA}` no trae el hueco `copiar-{RESUMEN_MODELO}`: o no es la \
              plantilla, o `malla/48-la-copia.yaml` cambió sin que esto se enterara"
         ));
     }
-    let t = plantilla.replace(
+    let mut t = plantilla.replace(
         &format!("value: \"{VISTAS_MODELO}\""),
         &format!("value: \"{}\"", vistas.join(",")),
     );
+    if let Some(r) = rama {
+        if !t.contains(RAMA_DE_LA_COPIA) {
+            return Err(format!(
+                "`{PLANTILLA_COPIA}` no sabe de ramas todavía (no trae el hueco `RAMA`): \
+                 hay que converger este inquilino"
+            ));
+        }
+        t = t.replace(RAMA_DE_LA_COPIA, &format!("name: RAMA, value: \"{r}\""));
+    }
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
-    let t = t.replace(&format!("copiar-{RESUMEN_MODELO}"), &format!("copiar-{h}"));
-    Ok(("48-la-copia.yaml".to_string(), t))
+    let (job, fichero) = match rama {
+        Some(_) => (
+            format!("copiar-rama-{h}"),
+            format!("48-la-copia-rama-{h}.yaml"),
+        ),
+        None => (format!("copiar-{h}"), "48-la-copia.yaml".to_string()),
+    };
+    let t = t.replace(&format!("copiar-{RESUMEN_MODELO}"), &job);
+    Ok((fichero, t))
 }
 
 /// **Rehacer** (0030 W1): el mismo Job de la copia, con `REHACER` puesto al
@@ -159,6 +188,7 @@ pub fn rendir_rehacer(
     plantilla: &str,
     vistas: &[String],
     instante: &str,
+    rama: Option<&str>,
 ) -> Result<(String, String), String> {
     if !plantilla.contains("name: REHACER, value: \"\"") {
         return Err(format!(
@@ -166,7 +196,7 @@ pub fn rendir_rehacer(
              `malla/48-la-copia.yaml` cambió sin que esto se enterara"
         ));
     }
-    let (_, t) = rendir_copia(plantilla, vistas)?;
+    let (_, t) = rendir_copia(plantilla, vistas, rama)?;
     let t = t.replace(
         "name: REHACER, value: \"\"",
         &format!("name: REHACER, value: \"{instante}\""),
@@ -585,6 +615,33 @@ pub fn job_de(texto: &str) -> Option<&str> {
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    /// **La copia en una rama** (0044 C.2 ④): otro Job y otro fichero, con la
+    /// rama dentro; sin rama, lo de siempre; y una plantilla sin el hueco
+    /// `RAMA` es un error, no una copia en `main`.
+    #[test]
+    fn la_copia_en_una_rama_es_otro_job() {
+        let p = "metadata:\n  name: copiar-00000000\nenv:\n  - { name: VISTAS, value: \"olist.customers\" }\n  - { name: REHACER, value: \"\" }\n  - { name: RAMA, value: \"\" }\n";
+        let v = vec!["ventas.copiaBase".to_string()];
+        let (f0, t0) = rendir_copia(p, &v, None).unwrap();
+        assert_eq!(f0, "48-la-copia.yaml");
+        assert!(t0.contains("name: RAMA, value: \"\""), "{t0}");
+        let (f1, t1) = rendir_copia(p, &v, Some("bea/datos")).unwrap();
+        assert!(
+            f1.starts_with("48-la-copia-rama-") && f1.ends_with(".yaml"),
+            "{f1}"
+        );
+        assert!(t1.contains("name: RAMA, value: \"bea/datos\""), "{t1}");
+        assert!(t1.contains("name: copiar-rama-"), "{t1}");
+        let (f2, _) = rendir_copia(p, &v, Some("otra")).unwrap();
+        assert_ne!(f1, f2, "dos ramas, dos Jobs");
+        let (fr, tr) = rendir_rehacer(p, &v, "20260930T100000Z", Some("bea/datos")).unwrap();
+        assert!(fr.starts_with("48-la-copia-rehacer-"), "{fr}");
+        assert!(tr.contains("name: RAMA, value: \"bea/datos\""), "{tr}");
+        let sin = "metadata:\n  name: copiar-00000000\nenv:\n  - { name: VISTAS, value: \"olist.customers\" }\n";
+        assert!(rendir_copia(sin, &v, None).is_ok());
+        assert!(rendir_copia(sin, &v, Some("bea/datos")).is_err());
+    }
 
     /// Volver a catalogar da OTRO Job en el MISMO fichero: sin la corrida, el
     /// nombre saldría igual y Flux no crearía nada.

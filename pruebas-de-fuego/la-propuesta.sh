@@ -14,7 +14,7 @@
 #   3c el catalogo EN la rama           GET /paquetes/{p}/esquema y /paquetes con X-Ore-Rama enseñan
 #                                       la tabla de la rama y main no · POST /paquetes/{p}/schemas
 #                                       escribe en la rama (main sin el schema) · lo que mueve datos
-#                                       (ascender a estandar) en una rama: 409 que lo dice
+#                                       (ascender a estandar) en una rama llega a la rama (0044 C D4)
 #   3d en que se diferencia la rama     GET /ramas/{r}/cambios: por ACTIVO (nuevo, modificado, borrado)
 #                                       frente al punto del que salio —lo que main hizo despues no
 #                                       es de la rama—; la columna quitada, OOS5001 atado a su vista,
@@ -240,9 +240,11 @@ spec:
 [ "$(pide POST /paquetes/hr/schemas "$ANA" '{"name":"borrador"}' ana/catalogo)" = "201" ] || falla "3c · crear el schema en la rama: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/borrador/schema.yaml "$ANA" "" ana/catalogo)" = "200" ] || falla "3c · la rama no tiene el schema: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/borrador/schema.yaml "$ANA")" = "404" ] || falla "3c · main tiene el schema de la rama: $(cuerpo)"
-[ "$(pide POST /paquetes/hr/copia "$ANA" '{}' ana/catalogo)" = "409" ] && cuerpo | grep -q 'mueve datos' || falla "3c · ascender en una rama no dio 409: $(cuerpo)"
+# ⭐ 0044 C D4: ascender en una rama ya no es 409 —se construye en ella—; llega al
+#   árbol de la rama, y ahí `hr` no es una base (422, lo que diría en main).
+[ "$(pide POST /paquetes/hr/copia "$ANA" '{}' ana/catalogo)" = "422" ] && cuerpo | grep -q 'no es una base' || falla "3c · ascender en una rama tenía que llegar a la rama (422, no es una base): $(cuerpo)"
 [ "$(pide DELETE /ramas/ana/catalogo "$ANA")" = "200" ] || falla "3c · retirar la rama del catalogo: $(cuerpo)"
-dice "3c · el catalogo EN la rama: esquema y /paquetes con la tabla de la rama (main sin ella) · el schema nuevo en la rama y no en main · ascender en una rama: 409, mueve datos"
+dice "3c · el catalogo EN la rama: esquema y /paquetes con la tabla de la rama (main sin ella) · el schema nuevo en la rama y no en main · ascender en una rama llega a la rama (0044 C D4)"
 
 # ── 3d · en que se diferencia la rama de main (ramas globales, fase 2) ──────
 # Vistas SQL (v1alpha14): su contrato es lo que `ore diff` compara (OOS5001,
