@@ -799,6 +799,46 @@ pub fn respaldo<'a>(pkg: &'a Package, e: &Loaded) -> Option<&'a Loaded> {
     pkg.resolve_lectura(r, e)
 }
 
+/// v1alpha16 · 0046 E9·4 · **Qué columnas de `d` son un `Media<c>`, y de qué
+/// colección.** La referencia la declara una Entity en su propiedad, y su valor
+/// vive en la columna del mismo nombre de lo que la respalda (`backedBy`): es la
+/// huella del ítem, como texto (`tipos`). Aquí se dice de qué colección es esa
+/// huella, cualificada desde la entidad —como la resuelve `OOS2018`— y en su
+/// forma completa, `base.schema.nombre`, que es la ruta por la que se sirve
+/// (`GET /colecciones/{b}/{s}/{n}/items/{huella}`). Si dos entidades respaldadas
+/// por lo mismo dicen colecciones distintas para una columna, no se anota.
+pub fn media_de(pkg: &Package, d: &Loaded) -> BTreeMap<String, String> {
+    let qn = d.qname();
+    let mut out: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for e in pkg.entities() {
+        if respaldo(pkg, e).and_then(|r| r.qname()) != qn {
+            continue;
+        }
+        let Some(props) = e.section("properties") else {
+            continue;
+        };
+        for (k, p) in props.entries() {
+            let (Some(col), Some(crate::types::Type::Media(c))) = (
+                k.as_str(),
+                p.get("type")
+                    .and_then(|(_, t)| t.as_str())
+                    .and_then(|t| crate::types::parse_type(t).ok()),
+            ) else {
+                continue;
+            };
+            let q = pkg
+                .resolve_collection(&c, e)
+                .and_then(|x| x.qname())
+                .map(|x| crate::normalize::completo(&x));
+            let v = out.entry(col.to_string()).or_insert(q.clone());
+            if *v != q {
+                *v = None;
+            }
+        }
+    }
+    out.into_iter().filter_map(|(k, v)| Some((k, v?))).collect()
+}
+
 /// La cadena de una vista hasta su raíz, en orden: ella primero.
 ///
 /// Es la operación que hace que *«un pipeline es una cadena de vistas»* sea

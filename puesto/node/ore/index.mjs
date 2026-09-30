@@ -268,6 +268,55 @@ function oElError(codigo, r, vista) {
   return r;
 }
 
+// ── 0046 E9·4 · Los ficheros de una colección ─────────────────────────────
+// Una propiedad `Media<c>` de una Entity guarda la HUELLA de un ítem de `c`.
+// Servirlo es pedir a ore-serve una URL firmada que vive unos minutos y se abre
+// sin credencial. Lo mismo que el SDK de Python: `media`, `medias`, `mediaDe`.
+
+function rutaDeColeccion(coleccion) {
+  const [b, s, n] = partes(corto(coleccion, "media(): la colección"));
+  return `/colecciones/${b}/${s}/${n}/items`;
+}
+
+function servido(codigo, r, que) {
+  if (codigo === 200) return r;
+  const e = new Error(`${que}: ${r?.error ?? codigo}`);
+  e.codigo = codigo;
+  throw e;
+}
+
+/** De qué colección es la huella de cada columna `Media<c>` de `vista`. */
+export async function mediaDe(vista) {
+  return { ...((await resolver(vista))?.media ?? {}) };
+}
+
+/** Las URLs de varias huellas, de cien en cien: `{huella: {url, tipo, …}}`. */
+export async function medias(coleccion, huellas, o = {}) {
+  const ruta = rutaDeColeccion(coleccion) + "/resolver";
+  const unicas = [...new Set(huellas.filter(Boolean))];
+  const out = {};
+  for (let i = 0; i < unicas.length; i += 100) {
+    const cuerpo = { huellas: unicas.slice(i, i + 100) };
+    if (o.ttl !== undefined) cuerpo.ttl = String(Math.trunc(o.ttl));
+    const [codigo, r] = await puesto.pedir("POST", ruta, cuerpo);
+    const d = servido(codigo, r, `medias(${coleccion})`);
+    for (const it of d.items ?? []) out[it.huella] = { segundos: d.segundos, caduca_ms: d.caduca_ms, ...it };
+  }
+  return out;
+}
+
+/** El ítem de `coleccion` con esta `huella`, servido: `{url, tipo, disposicion, …}`.
+ *  La `url` se abre sin credencial durante `ttl` s (300; de 30 a 3600). */
+export async function media(coleccion, huella, o = {}) {
+  if (o.ttl === undefined) {
+    const [codigo, r] = await puesto.pedir("GET", `${rutaDeColeccion(coleccion)}/${encodeURIComponent(huella)}`);
+    return servido(codigo, r, `media(${coleccion}, ${huella})`);
+  }
+  const it = (await medias(coleccion, [huella], o))[huella];
+  if (!it) throw Object.assign(new Error(`media(${coleccion}, ${huella}): ningún ítem lleva esa huella`), { codigo: 404 });
+  return it;
+}
+
 function copiasPorDefecto() {
   if (process.env.ORE_COPIAS) return process.env.ORE_COPIAS;
   try { accessSync("/trabajo", constants.W_OK); return "/trabajo/copias"; } catch { return join(tmpdir(), "ore-copias"); }
@@ -815,4 +864,4 @@ export function jsonDe(v) {
 
 /** Un valor suelto (el resultado de una celda que no es tabla) → JSON. */
 
-export default { over, sql, write, persona, puesto, nombreArrow, LIMITE, tabla, jsonDe };
+export default { over, sql, write, persona, puesto, nombreArrow, LIMITE, tabla, jsonDe, media, medias, mediaDe };

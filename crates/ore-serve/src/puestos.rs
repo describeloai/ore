@@ -2855,6 +2855,18 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             .map(|(k, v)| (k, Json::s(v)))
             .collect(),
     );
+    // 0046 E9.4: las columnas que son la huella de un item, y de que coleccion
+    // (la Entity que el dataset respalda lo declara). El SDK sirve el item por
+    // `GET /colecciones/{b}/{s}/{n}/items/{huella}`.
+    let media: std::collections::BTreeMap<String, Json> = pkg
+        .docs
+        .iter()
+        .find(|d| d.kind == Kind::Dataset && d.qname().as_deref() == Some(del_dataset.as_str()))
+        .map(|d| ore_core::vistas::media_de(&pkg, d))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (k, Json::s(v)))
+        .collect();
     let Some((_, n)) =
         ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &del_dataset)
     else {
@@ -2902,6 +2914,7 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
         ("plan", Json::s(campo("plan"))),
         ("filas", Json::s(campo("filas"))),
         ("clasificacion", clasificacion),
+        ("media", Json::Obj(media)),
         (
             "bucket",
             Json::s(std::env::var("ORE_GCS_BUCKET").unwrap_or_default()),

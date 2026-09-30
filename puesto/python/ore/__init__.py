@@ -73,7 +73,8 @@ import urllib.request
 MAGIA = b"ORECOPY1"
 
 __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
-           "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista"]
+           "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista",
+           "media", "medias", "media_de"]
 
 
 class Puesto:
@@ -1181,6 +1182,74 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
 
 
 # ── El JSON de la consola (0032 §1) ───────────────────────────────────────
+# ── 0046 E9·4 · Los ficheros de una colección ──────────────────────────────
+#
+# Una propiedad `Media<c>` de una Entity guarda **la huella** de un ítem de la
+# colección `c`: un texto. Servirlo es pedirle a ore-serve una URL firmada, que
+# vive unos minutos y se abre sin credencial (el lago, o el origen si la
+# colección es virtual, dan los bytes, a rangos). Quién puede, lo decide
+# ore-serve; lo que se sirve queda en la actividad de la organización.
+#
+#   ore.media_de("legal.registro")                → {"documento": "legal.archivo.contratos"}
+#   ore.media("legal.archivo.contratos", huella)  → {"url": …, "tipo": "application/pdf", …}
+#   ore.medias("legal.archivo.contratos", huellas) → {huella: {…}, …}  (de cien en cien)
+
+def _coleccion(coleccion):
+    """`base.schema.nombre` (o `base.nombre`) → la ruta de la colección."""
+    b, s_, n = _partes(_corto(coleccion, "media(): la colección"))
+    return "/colecciones/%s/%s/%s/items" % (b, s_, n)
+
+
+def _servido(codigo, r, que):
+    if codigo == 200:
+        return r
+    if codigo == 404:
+        raise LookupError("%s: %s" % (que, (r or {}).get("error", "no está")))
+    if codigo == 403:
+        raise PermissionError("%s: %s" % (que, (r or {}).get("error", "no se deja servir")))
+    raise RuntimeError("ore-serve contestó %s por %s: %s" % (codigo, que, (r or {}).get("error", r)))
+
+
+def media_de(vista):
+    """De qué colección es la huella de cada columna `Media<c>` de `vista` (lo que
+    la Entity que respalda declara): `{columna: "base.schema.nombre"}`."""
+    return dict((_resolver(vista) or {}).get("media") or {})
+
+
+def media(coleccion, huella, ttl=None):
+    """El ítem de `coleccion` con esta `huella`, servido: `{url, tipo, disposicion,
+    segundos, caduca_ms, camino, …}`. La `url` se abre sin credencial durante
+    `ttl` segundos (300 por defecto; de 30 a 3600): no la guardes ni la compartas."""
+    ruta = _coleccion(coleccion)
+    if ttl is None:
+        from urllib.parse import quote
+        codigo, r = puesto.pedir("GET", "%s/%s" % (ruta, quote(huella, safe="")))
+        return _servido(codigo, r, "media(%s, %s)" % (coleccion, huella))
+    item = medias(coleccion, [huella], ttl=ttl).get(huella)
+    if item is None:
+        raise LookupError("media(%s, %s): ningún ítem lleva esa huella" % (coleccion, huella))
+    return item
+
+
+def medias(coleccion, huellas, ttl=None):
+    """Los ítems de varias huellas —una lista, una galería— en lotes de cien:
+    `{huella: {url, tipo, …}}`. Las que no están, no vienen."""
+    ruta = _coleccion(coleccion) + "/resolver"
+    huellas = list(dict.fromkeys(h for h in huellas if h))
+    out = {}
+    for i in range(0, len(huellas), 100):
+        cuerpo = {"huellas": huellas[i:i + 100]}
+        if ttl is not None:
+            cuerpo["ttl"] = str(int(ttl))
+        codigo, r = puesto.pedir("POST", ruta, cuerpo)
+        r = _servido(codigo, r, "medias(%s)" % coleccion)
+        for it in r.get("items", []):
+            it.setdefault("segundos", r.get("segundos"))
+            it.setdefault("caduca_ms", r.get("caduca_ms"))
+            out[it["huella"]] = it
+    return out
+
+
 def tabla(valor, limite=200):
     """Un DataFrame (pandas o polars), una Series o una Table de Arrow → la salida
     `tabla` del contrato (0032 §1, columna «JSON de la consola»): `columnas` con el
