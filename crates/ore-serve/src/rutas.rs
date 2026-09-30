@@ -420,6 +420,12 @@ impl Servidor {
                     Err(r) => return r,
                 };
                 let cuerpo = p.cuerpo.clone();
+                // ⭐ 0044 C D7d: la copia que encole, la de la rama. Sin esto el
+                //   alta en una rama encolaba la de `main` (medido: `48-la-copia`
+                //   sin `RAMA`), que no ve la base nueva.
+                let _en = self
+                    .rama_de_datos(rama.as_deref())
+                    .map(crate::copia::EnRama::poner);
                 self.escribiendo_en(rama.as_deref(), &sujeto, "alta de una base", |r| {
                     self.alta_de_paquete(r, &cuerpo, &sujeto)
                 })

@@ -711,6 +711,13 @@ colección, virtual o mantenida—, y los dos se miden contra el punto de salida
   lo que cambió desde el punto de salida y lo que depende de ello, **con** las colecciones virtuales
   y mantenidas (el conducto ya distingue la virtual: no cruza `payload` y no lo pide). Y lo
   mismo en la fusión (M5): el puntero es anexo de **lo mantenido**, no sólo de un `Dataset`.
+  *Hecho así:* `lo_mantenido_de_la_rama` (antes `vistas_de_la_rama`) suma a los datasets las
+  colecciones cuyo documento cambió desde el punto de salida o cuyo `ObjectTable` cambió;
+  `cambios::anexos` da el puntero a un `Dataset` **o** a una `MediaCollection`. Y un hallazgo de
+  la prueba: **dar de alta una base en una rama encolaba la copia de `main`** (`48-la-copia`, sin
+  `RAMA`), que no ve la base —D4 sólo había mirado el alta de una *conexión*, que es `409`—; ahora
+  el alta pone la rama de la copia como copiar, ascender y decidir. Prueba:
+  `los-datos-en-una-rama.sh` 16–19 (el S3 de mentira es también el origen).
 - *Prueba:* una base foránea nacida en una rama, con una colección virtual y otra mantenida: se
   sirve desde la rama (0046 E9 ya lee el árbol de la rama), el mantenimiento no se lleva sus blobs
   pasada la gracia, y al fusionar `main` la tiene.

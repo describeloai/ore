@@ -405,10 +405,10 @@ impl Servidor {
             ));
             return campos;
         }
-        // ⭐ En una rama, lo que ELLA cambió y lo que depende de ello (0044 C.2 ④);
-        //   lo demás se lee de `main` al día (③). Las colecciones, todavía no.
+        // ⭐ En una rama, lo que ELLA cambió y lo que depende de ello (0044 C.2 ④),
+        //   colecciones incluidas (D7d); lo demás se lee de `main` al día (③).
         let todas = if rama_de_la_copia().is_some() {
-            vistas_de_la_rama(raiz)
+            lo_mantenido_de_la_rama(raiz)
         } else {
             let mut t = vistas_con_copia(raiz);
             t.extend(colecciones_de_todos(raiz));
@@ -715,7 +715,7 @@ fn autorizar_conducto(raiz: &Path, dir: &Path, paquete: &str) -> Result<(), Resp
 /// estaba; lo escrito ahora mismo cuenta— y lo que depende de ellos (`from: {
 /// dataset }`, hasta el final): lo cambiado y lo afectado, el
 /// `state:modified+` de dbt. Lo demás se lee de `main` al día (③).
-fn vistas_de_la_rama(raiz: &Path) -> Vec<String> {
+fn lo_mantenido_de_la_rama(raiz: &Path) -> Vec<String> {
     let base = ["origin/main", "main"]
         .iter()
         .find_map(|m| crate::documentos::git(raiz, &["merge-base", "HEAD", m]))
@@ -758,12 +758,12 @@ fn vistas_de_la_rama(raiz: &Path) -> Vec<String> {
         .filter(|p| p.is_dir())
         .collect();
     dirs.sort();
-    for d in dirs {
+    for d in &dirs {
         let paquete = d
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        for p in crate::rutas::yamls_del_kind(&d, "datasets") {
+        for p in crate::rutas::yamls_del_kind(d, "datasets") {
             let Some(n) = std::fs::read_to_string(&p)
                 .ok()
                 .and_then(|t| parse::parse(&t).ok())
@@ -807,11 +807,61 @@ fn vistas_de_la_rama(raiz: &Path) -> Vec<String> {
             break;
         }
     }
-    mantenidos
+    let mut out: Vec<String> = mantenidos
         .into_iter()
         .map(|(qn, _, _)| qn)
         .filter(|qn| suyos.contains(qn))
-        .collect()
+        .collect();
+    // ⭐ D7d: y las colecciones —virtuales y mantenidas— que la rama cambió, o
+    //   cuyo `ObjectTable` cambió (lo que depende de ello, como un dataset).
+    let tablas: std::collections::BTreeSet<String> = cambiados
+        .iter()
+        .filter(|r| r.ends_with(".yaml"))
+        .filter_map(|r| {
+            let n = parse::parse(&std::fs::read_to_string(raiz.join(r)).ok()?).ok()?;
+            (campo(&n, "kind").as_deref() == Some("ObjectTable")).then_some(())?;
+            let base = r.strip_prefix("packages/")?.split('/').next()?.to_string();
+            let (_, m) = n.get("metadata")?;
+            let schema = campo(m, "schema")
+                .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
+            Some(format!("{base}.{schema}.{}", campo(m, "name")?))
+        })
+        .collect();
+    for d in &dirs {
+        let paquete = d
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for (nombre, _, ruta, tabla) in colecciones_con_ruta(d) {
+            let ruta = ruta
+                .strip_prefix(raiz)
+                .unwrap_or(&ruta)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let de_tabla = tabla.as_deref().and_then(tres_partes);
+            if base.is_none()
+                || cambiados.contains(&ruta)
+                || de_tabla.is_some_and(|t| tablas.contains(&t))
+            {
+                out.push(format!("{paquete}.{nombre}"));
+            }
+        }
+    }
+    out
+}
+
+/// `base.schema.nombre` de una referencia de una, dos o tres partes (dos es
+/// `base.nombre`, en el schema de por defecto).
+fn tres_partes(r: &str) -> Option<String> {
+    let p: Vec<&str> = r.split('.').collect();
+    match p.as_slice() {
+        [b, s, n] => Some(format!("{b}.{s}.{n}")),
+        [b, n] => Some(format!(
+            "{b}.{}.{n}",
+            ore_core::normalize::SCHEMA_POR_DEFECTO
+        )),
+        _ => None,
+    }
 }
 
 /// `paquete.dataset` de cada dataset mantenido del árbol, en orden.
@@ -859,6 +909,14 @@ pub(crate) fn texto_de(d: &Json) -> String {
 /// `from`, 0046 E8·1), por su nombre en el paquete como las vistas —con su
 /// schema delante si no es el de por defecto— y si son virtuales.
 fn colecciones_de(dir: &Path) -> Vec<(String, bool)> {
+    colecciones_con_ruta(dir)
+        .into_iter()
+        .map(|(n, v, _, _)| (n, v))
+        .collect()
+}
+
+/// Lo mismo, con dónde vive cada una y de qué `ObjectTable` sale.
+fn colecciones_con_ruta(dir: &Path) -> Vec<(String, bool, PathBuf, Option<String>)> {
     let mut out = Vec::new();
     for p in crate::rutas::yamls_del_kind(dir, "collections") {
         let Ok(n) = std::fs::read_to_string(&p)
@@ -877,12 +935,13 @@ fn colecciones_de(dir: &Path) -> Vec<(String, bool)> {
             continue;
         }
         let virtual_ = campo(spec, "virtual").as_deref() == Some("true");
+        let tabla = spec.get("from").and_then(|(_, f)| campo(f, "objectTable"));
         if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
             let nombre = match n.get("metadata").and_then(|(_, m)| campo(m, "schema")) {
                 Some(s) if s != ore_core::normalize::SCHEMA_POR_DEFECTO => format!("{s}.{v}"),
                 _ => v,
             };
-            out.push((nombre, virtual_));
+            out.push((nombre, virtual_, p.clone(), tabla));
         }
     }
     out
@@ -1083,7 +1142,79 @@ mod tests {
         // La rama cambia `a` (sin confirmar) y crea `n`, que no depende de nadie.
         std::fs::write(d.join("a.yaml"), ds("a", "table: v.t2")).unwrap();
         std::fs::write(d.join("n.yaml"), ds("n", "table: v.w")).unwrap();
-        assert_eq!(vistas_de_la_rama(&raiz), ["v.a", "v.b", "v.c", "v.n"]);
+        assert_eq!(lo_mantenido_de_la_rama(&raiz), ["v.a", "v.b", "v.c", "v.n"]);
+
+        // ⭐ D7d: y las colecciones. `main` ya tenía `s3.docs.fotos` (sin tocar)
+        //   y `s3.docs.pdfs`, cuyo `ObjectTable` la rama cambia; y la rama da de
+        //   alta una base con su colección virtual.
+        let s3 = raiz.join("packages/s3/docs");
+        let col = |n: &str, t: &str, extra: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: {{ name: {n}, namespace: s3, schema: docs }}\nspec:\n  owner: team:x\n  media: document\n  formats: [pdf]\n  from: {{ objectTable: {t} }}\n{extra}"
+            )
+        };
+        let tabla = |n: &str, prefijo: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: {{ name: {n}, namespace: s3, schema: docs }}\nspec:\n  owner: team:x\n  prefix: {prefijo}\n"
+            )
+        };
+        git(&["stash", "-u", "-q"]);
+        git(&["checkout", "-q", "main"]);
+        std::fs::create_dir_all(s3.join("collections")).unwrap();
+        std::fs::create_dir_all(s3.join("objects")).unwrap();
+        let esquema = |n: &str, base: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: {{ name: {n}, namespace: {base} }}
+"
+            )
+        };
+        std::fs::write(s3.join("schema.yaml"), esquema("docs", "s3")).unwrap();
+        std::fs::write(s3.join("objects/t_fotos.yaml"), tabla("t_fotos", "f/")).unwrap();
+        std::fs::write(s3.join("objects/t_pdfs.yaml"), tabla("t_pdfs", "p/")).unwrap();
+        std::fs::write(
+            s3.join("collections/fotos.yaml"),
+            col("fotos", "s3.docs.t_fotos", ""),
+        )
+        .unwrap();
+        std::fs::write(
+            s3.join("collections/pdfs.yaml"),
+            col("pdfs", "s3.docs.t_pdfs", ""),
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "las colecciones de main"]);
+        git(&["checkout", "-q", "bea/datos"]);
+        git(&["merge", "-q", "main"]);
+        git(&["stash", "pop", "-q"]);
+        std::fs::write(s3.join("objects/t_pdfs.yaml"), tabla("t_pdfs", "p2/")).unwrap();
+        let nueva = raiz.join("packages/legal/archivo/collections");
+        std::fs::create_dir_all(&nueva).unwrap();
+        std::fs::write(
+            raiz.join("packages/legal/archivo/schema.yaml"),
+            esquema("archivo", "legal"),
+        )
+        .unwrap();
+        std::fs::write(
+            nueva.join("contratos.yaml"),
+            col("contratos", "s3.docs.t_pdfs", "  virtual: true\n").replace(
+                "namespace: s3, schema: docs",
+                "namespace: legal, schema: archivo",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            lo_mantenido_de_la_rama(&raiz),
+            [
+                "v.a",
+                "v.b",
+                "v.c",
+                "v.n",
+                "legal.archivo.contratos",
+                "s3.docs.pdfs"
+            ]
+        );
         let _ = std::fs::remove_dir_all(&raiz);
     }
 

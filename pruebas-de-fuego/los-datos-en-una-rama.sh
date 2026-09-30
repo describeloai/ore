@@ -67,7 +67,18 @@
 #      reconstrucción se encola en `main`; la rama se pone al día sin conflicto
 #      y lo fusionado deja de ser suyo
 #
-# Necesita `ore`, `ore-serve`, `ore-store-r2` (en `$ORE_TARGET` o
+# Y D7 · las colecciones en una rama (el S3 de mentira es también el origen):
+#  16  dar de alta dos bases EN la rama por la API —`docs` estándar y `docsv`
+#      foránea— encola, con la rama, sus colecciones (la mantenida y la
+#      virtual); antes encolaba la copia de `main`
+#  17  la pasada del Job en la rama las construye en ella y no en `main`, y se
+#      sirven desde la rama (`/colecciones/.../items` con `x-ore-rama`)
+#  18  el mantenimiento de `main` con `--reclaman` no se lleva sus blobs ni su
+#      manifiesto
+#  19  `/ramas/{r}/cambios` da la colección con `datos`; se propone como
+#      promoción y, fusionada, `main` tiene su puntero tal cual y la sirve
+#
+# Necesita `ore`, `ore-serve`, `ore-store-r2`, `ore-read-s3` (en `$ORE_TARGET` o
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
 # ══════════════════════════════════════════════════════════════════════════════
 set -u
@@ -434,4 +445,100 @@ quedan=$(git --git-dir="$FORJA" diff --name-only main "$RAMA" -- datasets/ventas
 [ -z "$quedan" ] || falla "15 · tras ponerse al día, la rama sigue difiriendo de main en lo fusionado: $quedan"
 ok "15 · fusionar eligiendo la rama: main lee base 25 y nueva 3 (su metadata.json, sin mover un byte), copiaBase sigue en 20 y se encola su reconstrucción; la rama se pone al día y lo fusionado deja de ser suyo"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9315\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ 16–19 · las colecciones en una rama (D7) ═════════════════════════════════
+# Un S3 de mentira que es también el origen: dos PDF bajo `pdfs/`, y la fuente
+# abarca sólo ese prefijo (el lago vive bajo `ore/`). `main` tiene la conexión (su paquete con el catálogo); la rama
+# da de alta dos bases por la API: `docs` estándar (su colección, mantenida) y
+# `docsv` foránea (la suya, virtual).
+DRV="$(buscar ore-read-s3)" || { echo "no hay \`ore-read-s3\`"; exit 2; }
+export PATH="$(dirname "$DRV"):$PATH"
+CON_API=1 montar e7
+T="$T_ACTUAL"
+export ORE_S3_URL="s3://copia/pdfs/?endpoint=$ORE_R2_S3_ENDPOINT&region=auto&access_key_id=de&secret_access_key=mentira"
+"$PY" - "$ORE_R2_S3_ENDPOINT" <<'PYEOF'
+import sys, urllib.request
+for k, b in (("pdfs/a.pdf", b"%PDF-1.4 a"), ("pdfs/b.pdf", b"%PDF-1.4 b, otra cosa")):
+    urllib.request.urlopen(urllib.request.Request(sys.argv[1] + "/copia/" + k, data=b, method="PUT",
+                                                  headers={"content-type": "application/pdf"}))
+PYEOF
+( cd "$T/m" && git pull -q origin main \
+  && printf 'datasources:\n  - { name: s3_demo, type: s3, connectionEnv: ORE_S3_URL }\n' >> ontology.config.yaml \
+  && "$ORE" source catalog s3_demo --out "$T/catalogo.json" \
+  && "$ORE" discover --source s3_demo --type foreign --only default.raiz --no-model --owner team:data \
+       --out packages/s3_demo --name s3_demo \
+  && git add -A && git commit -qm "la conexión s3_demo" && git push -q origin HEAD:main ) > "$T/con.txt" 2>&1 \
+  || falla "16 · la conexión en main: $(tail -4 "$T/con.txt")"
+# La rama trae `main` (lo que la consola hace con «traer main»): sin la conexión
+# en su árbol no hay de qué inducir.
+c=$(curl -s -o "$T/traer.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json'   "$BASE/ramas/$RAMA/fusionar" -d '{"desde":"main"}')
+[ "$c" = 200 ] || falla "16 · traer main a la rama: $c $(head -c 300 "$T/traer.json")"
+alta() { # nombre tipo → código; la respuesta en $T/alta-$1.json
+  curl -s -o "$T/alta-$1.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" \
+    -H 'content-type: application/json' "$BASE/paquetes" \
+    -d "{\"name\":\"$1\",\"source\":\"s3_demo\",\"type\":\"$2\",\"only\":[\"default.raiz\"]}"
+}
+encolado() { "$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("encolado",""))' "$T/alta-$1.json"; }
+ANTES=$(git --git-dir="$COLA" rev-list --count main)
+c1=$(alta docs standard); c2=$(alta docsv foreign)
+vistas=$(for f in $(git --git-dir="$COLA" diff --name-only "main~$(( $(git --git-dir="$COLA" rev-list --count main) - ANTES ))" main); do
+  git --git-dir="$COLA" show "main:$f" | grep -q "name: RAMA, value: \"$RAMA\"" || continue
+  git --git-dir="$COLA" show "main:$f" | sed -n 's/.*name: VISTAS, value: "\([^"]*\)".*/\1/p' | head -1
+done | tr ',' '\n' | sort -u | tr '\n' ' ')
+[ "$c1/$c2" = "200/200" ] && echo "$vistas" | grep -qw "docs\.raiz" && echo "$vistas" | grep -qw "docsv\.raiz" \
+  || falla "16 · el alta en la rama encola sus colecciones: $c1/$c2 · VISTAS en la rama: $vistas · $(encolado docs) · $(encolado docsv)"
+ok "16 · dar de alta una base en la rama encola, con la rama, sus colecciones —la mantenida y la virtual— ($vistas)"
+
+# La pasada del Job en la rama, con esas VISTAS (los pasos de malla/48).
+git clone -q -b "$RAMA" "$FORJA" "$T/job"; git -C "$T/job" config core.autocrlf false
+SOLO=""; for v in $vistas; do SOLO="$SOLO --vista $v"; done
+# shellcheck disable=SC2086
+( cd "$T/job" && "$ORE" overlay . --main origin/main && reclaman "$RAMA" "$T/ramas-job" \
+  && "$ORE" materialize . $SOLO --recoger --reclaman "$T/ramas-job" --informe datasets \
+  && "$ORE" overlay . --undo && git add -A datasets \
+  && git -c user.name=copiador -c user.email=copiador@invalido commit -qm "Copia en la rama" && git push -q origin HEAD:"$RAMA" ) > "$T/job.txt" 2>&1 \
+  || falla "17 · la pasada del Job en la rama: $(tail -5 "$T/job.txt")"
+PC=datasets/docs/default/raiz.json; PV=datasets/docsv/default/raiz.json
+en() { git --git-dir="$FORJA" cat-file -e "$1:$2" 2>/dev/null && echo si || echo no; }
+virt() { git --git-dir="$FORJA" show "$RAMA:$1" 2>/dev/null | "$PY" -c 'import json,sys;print(json.load(sys.stdin).get("virtual"))' 2>/dev/null; }
+items() { # rama|- base → número de ítems (o el código)
+  local h=(); [ "$1" != - ] && h=(-H "x-ore-rama: $1")
+  local c; c=$(curl -s -o "$T/it.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' "${h[@]}" "$BASE/colecciones/$2/default/raiz/items")
+  [ "$c" = 200 ] && "$PY" -c 'import json,sys;d=json.load(open(sys.argv[1]));print(len(d.get("items",d if isinstance(d,list) else [])))' "$T/it.json" || echo "$c"
+}
+v="$(en "$RAMA" $PC)/$(en "$RAMA" $PV)/$(en main $PC)/$(en main $PV) · virtual $(virt $PC)/$(virt $PV) · ítems $(items "$RAMA" docs)/$(items "$RAMA" docsv)/$(items - docs)"
+[ "$v" = "si/si/no/no · virtual False/True · ítems 2/2/404" ] \
+  || falla "17 · construir y servir en la rama (punteros rama/rama/main/main · virtual · ítems rama/rama/main): $v · $(tail -3 "$T/job.txt")"
+ok "17 · el Job construye las dos en la rama y no en main; se sirven desde la rama (2 ítems cada una) y main no las tiene"
+
+# El mantenimiento de main, con lo que reclama la rama: los blobs de la
+# mantenida —que sólo nombra la rama— siguen.
+git clone -q "$FORJA" "$T/mant7"; git -C "$T/mant7" config core.autocrlf false
+( cd "$T/mant7" && reclaman main "$T/ramas7" )
+B0=$(objetos blobs/sha256/)
+( cd "$T/mant7" && "$ORE" collections . --recoger --gracia 0 --reclaman "$T/ramas7" ) > "$T/mant7.txt" 2>&1 \
+  || falla "18 · el mantenimiento de las colecciones: $(cat "$T/mant7.txt")"
+( cd "$T/mant7" && "$ORE" datasets . --recoger --edad 0 --reclaman "$T/ramas7" ) >> "$T/mant7.txt" 2>&1 \
+  || falla "18 · el mantenimiento de los datasets: $(tail -3 "$T/mant7.txt")"
+v="$B0/$(objetos blobs/sha256/)/$(objetos colecciones/docs/default/raiz/metadata/ | grep -v '^0$' >/dev/null && echo manifiesto) · $(items "$RAMA" docs)"
+[ "$v" = "2/2/manifiesto · 2" ] || falla "18 · tras el mantenimiento de main (blobs antes/después, manifiesto · ítems en la rama): $v · $(tr '\n' ' ' < "$T/mant7.txt")"
+ok "18 · el mantenimiento de main no se lleva nada de la rama: sus 2 blobs y el manifiesto siguen, y la rama sirve sus 2 ítems"
+
+# Proponer y fusionar la base estándar: su colección viaja CON su puntero.
+c=$(pide GET /ramas/bea/datos/cambios)
+IDS=$("$PY" -c 'import json,sys
+print(",".join(json.dumps(x["id"]) for x in json.load(open(sys.argv[1]))["cambios"] if x.get("ruta","").startswith("packages/docs/")))' "$T/r.json")
+col=$("$PY" -c 'import json,sys
+c=[x for x in json.load(open(sys.argv[1]))["cambios"] if x.get("kind")=="MediaCollection" and x.get("ruta","").startswith("packages/docs/")]
+print(c[0].get("estado"), c[0].get("datos", False)) if c else print("-")' "$T/r.json")
+[ "$c · $col" = "200 · nuevo True" ] || falla "19 · la colección en los cambios de la rama: $c · $col"
+c=$(pide POST /propuestas "{\"rama\":\"$RAMA\",\"titulo\":\"la base docs\",\"activos\":[$IDS]}")
+N=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("numero",""))' "$T/r.json")
+caso=$("$PY" -c 'import json,sys;print(" ".join(d["activo"]+"="+d["caso"] for d in json.load(open(sys.argv[1])).get("datos",[])))' "$T/r.json")
+[ "$c" = 201 ] && [ -n "$N" ] && [ "$caso" = "docs.raiz=promocion" ] || falla "19 · proponer: $c · $caso · $(head -c 300 "$T/r.json")"
+c=$(pide POST /propuestas/$N/fusionar)
+blob() { git --git-dir="$FORJA" rev-parse "$1:$PC" 2>/dev/null; }
+[ "$c" = 200 ] && [ -n "$(blob main)" ] && [ "$(blob main)" = "$(blob "$RAMA")" ] && [ "$(items - docs)" = 2 ] \
+  || falla "19 · fusionar: $c · main $(blob main) · rama $(blob "$RAMA") · ítems en main $(items - docs) · $(head -c 300 "$T/r.json")"
+ok "19 · la colección se propone con sus datos (promoción) y, fusionada, main tiene su puntero tal cual y sirve sus 2 ítems"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9319\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

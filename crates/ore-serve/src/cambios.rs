@@ -59,7 +59,13 @@ pub(crate) const DE_LA_BASE: [&str; 4] = [
 /// que la rama los construyera o escribiera es un cambio suyo aunque su
 /// definición no cambie.
 fn anexos(d: &Loaded, ruta: &str, raiz: &Path) -> BTreeMap<String, String> {
-    if d.kind == ore_core::document::Kind::Dataset {
+    // ⭐ 0044 C D7d: el puntero es anexo de LO MANTENIDO —un `Dataset` o una
+    //   colección—, no sólo de un `Dataset`: sin esto la propuesta de una
+    //   colección llevaba su definición y no sus datos (medido, D7c M5).
+    if matches!(
+        d.kind,
+        ore_core::document::Kind::Dataset | ore_core::document::Kind::MediaCollection
+    ) {
         let Some(q) = d.qname() else {
             return BTreeMap::new();
         };
