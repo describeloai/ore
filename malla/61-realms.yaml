@@ -43,6 +43,11 @@
 #   > factor. No es «MFA opcional»: es que el realm ya no opera a AAL2, aunque
 #   > sus atributos lo sigan diciendo.
 #
+# ✏️ 2026-09-30 · SALDADA en el artefacto: `EXIGIR_SEGUNDO_FACTOR = true`, las dos
+#   puertas en REQUIRED en los tres realms (y las salidas, regeneradas: no lo
+#   estaban desde el 27-ago, antes de «la pertenencia es nuestra»). El realm VIVO
+#   se cambia aparte, con `aplicar-entrada.mjs` —ensayo en `rubix-dev` primero—.
+#
 # Su repositorio pone `check-entrada` en rojo mientras eso valga `false`. Esa
 # alarma NO viajaba con el artefacto — la deuda cruzo de cluster y perdio su
 # despertador. Ahora la lleva `pruebas-de-fuego/el-segundo-factor.sh`, que avisa
@@ -84,7 +89,7 @@
           ]
         }
       ],
-      "registrationAllowed": false,
+      "registrationAllowed": true,
       "resetPasswordAllowed": true,
       "rememberMe": false,
       "verifyEmail": true,
@@ -162,7 +167,7 @@
             },
             {
               "flowAlias": "browser-rubix-segundo-factor",
-              "requirement": "CONDITIONAL",
+              "requirement": "REQUIRED",
               "priority": 20,
               "autheticatorFlow": true,
               "userSetupAllowed": false
@@ -215,7 +220,7 @@
             },
             {
               "flowAlias": "reposicion-rubix-segundo-factor",
-              "requirement": "CONDITIONAL",
+              "requirement": "REQUIRED",
               "priority": 30,
               "autheticatorFlow": true,
               "userSetupAllowed": false
@@ -315,12 +320,13 @@
             "post.logout.redirect.uris": "http://localhost:3000/"
           },
           "defaultClientScopes": [
+            "basic",
+            "acr",
             "organization",
             "profile",
             "email",
             "roles",
-            "web-origins",
-            "basic"
+            "web-origins"
           ],
           "protocolMappers": [
             {
@@ -347,20 +353,6 @@
                 "included.client.audience": "rubix-api",
                 "access.token.claim": "true",
                 "id.token.claim": "false"
-              }
-            },
-            {
-              "name": "organizacion",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-organization-membership-mapper",
-              "config": {
-                "claim.name": "organization",
-                "jsonType.label": "JSON",
-                "multivalued": "true",
-                "addOrganizationId": "true",
-                "id.token.claim": "true",
-                "access.token.claim": "true",
-                "introspection.token.claim": "true"
               }
             },
             {
@@ -551,7 +543,7 @@
             },
             {
               "flowAlias": "browser-rubix-segundo-factor",
-              "requirement": "CONDITIONAL",
+              "requirement": "REQUIRED",
               "priority": 20,
               "autheticatorFlow": true,
               "userSetupAllowed": false
@@ -604,7 +596,7 @@
             },
             {
               "flowAlias": "reposicion-rubix-segundo-factor",
-              "requirement": "CONDITIONAL",
+              "requirement": "REQUIRED",
               "priority": 30,
               "autheticatorFlow": true,
               "userSetupAllowed": false
@@ -850,7 +842,7 @@
             },
             {
               "flowAlias": "browser-rubix-segundo-factor",
-              "requirement": "CONDITIONAL",
+              "requirement": "REQUIRED",
               "priority": 20,
               "autheticatorFlow": true,
               "userSetupAllowed": false
@@ -903,7 +895,7 @@
             },
             {
               "flowAlias": "reposicion-rubix-segundo-factor",
-              "requirement": "CONDITIONAL",
+              "requirement": "REQUIRED",
               "priority": 30,
               "autheticatorFlow": true,
               "userSetupAllowed": false
@@ -1005,12 +997,13 @@
             "post.logout.redirect.uris": "https://app.paladio.io/##http://localhost:3000/"
           },
           "defaultClientScopes": [
+            "basic",
+            "acr",
             "organization",
             "profile",
             "email",
             "roles",
-            "web-origins",
-            "basic"
+            "web-origins"
           ],
           "protocolMappers": [
             {
@@ -1037,20 +1030,6 @@
                 "included.client.audience": "rubix-api",
                 "access.token.claim": "true",
                 "id.token.claim": "false"
-              }
-            },
-            {
-              "name": "organizacion",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-organization-membership-mapper",
-              "config": {
-                "claim.name": "organization",
-                "jsonType.label": "JSON",
-                "multivalued": "true",
-                "addOrganizationId": "true",
-                "id.token.claim": "true",
-                "access.token.claim": "true",
-                "introspection.token.claim": "true"
               }
             },
             {

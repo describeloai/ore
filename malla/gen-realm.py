@@ -173,6 +173,11 @@ CABECERA = """# LOS REALMS — GENERADOS. No se editan aqui.
 #   > factor. No es «MFA opcional»: es que el realm ya no opera a AAL2, aunque
 #   > sus atributos lo sigan diciendo.
 #
+# ✏️ 2026-09-30 · SALDADA en el artefacto: `EXIGIR_SEGUNDO_FACTOR = true`, las dos
+#   puertas en REQUIRED en los tres realms (y las salidas, regeneradas: no lo
+#   estaban desde el 27-ago, antes de «la pertenencia es nuestra»). El realm VIVO
+#   se cambia aparte, con `aplicar-entrada.mjs` —ensayo en `rubix-dev` primero—.
+#
 # Su repositorio pone `check-entrada` en rojo mientras eso valga `false`. Esa
 # alarma NO viajaba con el artefacto — la deuda cruzo de cluster y perdio su
 # despertador. Ahora la lleva `pruebas-de-fuego/el-segundo-factor.sh`, que avisa
