@@ -45,8 +45,12 @@ fn firmar(f: &Fuente, peticion: &Value) -> Result<String, String> {
         let clave = c("clave").ok_or("un ítem sin `clave`")?;
         let version = c("version").unwrap_or("");
         let mut extra: Vec<(&str, &str)> = Vec::new();
-        // Una versión `null` (un bucket sin versionado) es «la actual»: no se fija.
-        if !version.is_empty() && version != "null" {
+        // ⭐ `null` TAMBIÉN se fija (0049 B3·0, medido): es la versión de un objeto
+        //   subido antes de activar el versionado, y en un bucket versionado
+        //   sigue ahí aunque se sobrescriba la clave. No fijarla servía la
+        //   actual —otro contenido— bajo la referencia de la vieja. S3 acepta
+        //   `versionId=null` también en un bucket que nunca se versionó.
+        if !version.is_empty() {
             extra.push(("versionId", version));
         }
         if let Some(t) = c("tipo") {
@@ -136,8 +140,8 @@ mod tests {
         assert!(!u.contains("secreto"));
         let u = r["firmadas"][1]["url"].as_str().unwrap();
         assert!(
-            !u.contains("versionId"),
-            "una versión `null` no se fija: {u}"
+            u.contains("versionId=null"),
+            "una versión `null` también se fija: {u}"
         );
     }
 }

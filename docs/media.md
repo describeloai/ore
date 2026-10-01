@@ -65,6 +65,10 @@ Range: bytes=0-1023            (opcional)
 - **Fijado**: sin `version`, la celda fija la actual **al abrir** y la devuelve en la cabecera
   `ORE-Media-Version`; todo el flujo es de esa versión. Si el origen cambia a mitad, se corta con
   un error (`media/cambiado`), nunca con bytes de otra.
+- **Cómo se fija una virtual** (0049 B3·0, medido): `versionId` —**también `null`**, la versión
+  de un objeto subido antes de activar el versionado, que en un bucket versionado sobrevive a una
+  sobrescritura— e `If-Match` con el ETag que anotó el manifiesto. Lo que el origen ya no tiene en
+  esa versión, o tiene con otro ETag, es `media/cambiado`.
 - **Da igual la clase**: una mantenida se sirve del lago; una virtual, del origen con la
   credencial de la celda. Para el código es la misma ruta (0049, D1). La celda **calcula el
   `sha256` al paso** de una lectura entera de un ítem que no lo tenía, y lo registra.
@@ -130,6 +134,7 @@ en su valor de error:
 | `media/no-declarada` | 403 | un transform lee una colección que no declaró (0049, D6) |
 | `media/cambiado` | 412 | la versión fijada ya no se puede leer entera |
 | `media/sin-rangos` | 416 | el origen no da rangos |
+| `media/rango` | 416 | el rango no cabe en el ítem, o no es de una parte (`bytes=a-b`, `a-`, `-n`) |
 | `media/corrupto` | 502 | los bytes no casan con `size` o `digest` |
 | `media/no-escribible` | 409 | `put` en una colección que no es escrita |
 | `media/digest-no-casa` | 422 | el `Repr-Digest` que trajo un `put` no es el de sus bytes |

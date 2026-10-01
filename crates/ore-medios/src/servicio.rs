@@ -54,6 +54,8 @@ pub struct Servicio {
     pub listados: Box<dyn Listados>,
     pub cuenta: Arc<dyn Almacen>,
     pub indices: Indices,
+    /// Los `sha256` que la puerta de lectura calculó al paso (B3·1).
+    pub vistos: Arc<crate::contenido::Vistos>,
 }
 
 /// Un error del contrato (RFC 9457).
@@ -69,6 +71,8 @@ fn problema_json(status: u16, tipo: &str, detalle: impl Into<String>) -> Json {
         "media/no-existe" => "No existe",
         "media/limite" => "Fuera de los límites",
         "media/origen" => "El origen falló",
+        "media/cambiado" => "La versión fijada cambió",
+        "media/rango" => "El rango no cabe",
         _ => "Petición no válida",
     };
     Json::obj([
@@ -222,6 +226,16 @@ impl Servicio {
                 let mut r = ix.referencia(it);
                 if let Json::Obj(m) = &mut r {
                     m.insert("current".into(), Json::Bool(ix.es_actual(it)));
+                    // B3·1: el sha256 que una lectura entera calculó al paso
+                    // (`open-007`), si el ítem no lo traía.
+                    let visto = it
+                        .blob
+                        .is_none()
+                        .then(|| self.vistos.de(&ix.coleccion, &it.camino, &it.version))
+                        .flatten();
+                    if let Some(h) = visto {
+                        m.insert("digest".into(), Json::s(format!("sha256:{h}")));
+                    }
                 }
                 Respuesta::ok(r)
             }
@@ -377,6 +391,7 @@ mod pruebas {
                 listados: Box::new(Contador(n.clone())),
                 cuenta: Arc::new(Firmante),
                 indices: Indices::new_para_pruebas(),
+                vistos: Arc::default(),
             },
             n,
         )
@@ -429,6 +444,18 @@ mod pruebas {
             "{b2}"
         );
         assert_eq!(cargas.load(Ordering::Relaxed), 1, "dos páginas, una carga");
+    }
+
+    #[test]
+    fn stat_da_el_sha256_visto_al_paso_si_no_lo_traia() {
+        let (s, _) = servicio();
+        let cuerpo = format!("{{{BASE},\"path\":\"docs/sin.pdf\"}}");
+        let (_, b) = pedir(&s, "/indice/item", &cuerpo);
+        assert!(b.contains("\"digest\":null"), "{b}");
+        s.vistos
+            .anotar("legal.archivo.contratos", "docs/sin.pdf", "v1", "ab12");
+        let (_, b) = pedir(&s, "/indice/item", &cuerpo);
+        assert!(b.contains("\"digest\":\"sha256:ab12\""), "{b}");
     }
 
     #[test]

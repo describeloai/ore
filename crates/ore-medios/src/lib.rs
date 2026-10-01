@@ -16,8 +16,9 @@
 //! siempre lo de la transacción que se le nombra.
 //!
 //! Las operaciones son las del contrato (`docs/media.md`): `list`, `stat` y
-//! `url`. `open` —los bytes— y la firma de una colección virtual son de B3.
+//! `url`; y `open` —los bytes, fijados— en [`contenido`] (B3).
 
+pub mod contenido;
 pub mod firma;
 pub mod indice;
 pub mod servicio;

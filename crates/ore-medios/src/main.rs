@@ -32,6 +32,7 @@ fn main() -> std::process::ExitCode {
         listados: Box::new(Lago::nuevo(cuenta.clone())),
         cuenta,
         indices: Indices::nuevo(filas),
+        vistos: Arc::default(),
     });
     let escucha = match std::net::TcpListener::bind(format!("0.0.0.0:{puerto}")) {
         Ok(e) => e,

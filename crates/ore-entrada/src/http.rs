@@ -210,10 +210,31 @@ impl Respuesta {
 // UNA RESPUESTA QUE NO TERMINA
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Lo que un manejador contesta: una respuesta, o un flujo de eventos.
+/// Lo que un manejador contesta: una respuesta, un flujo de eventos, o bytes.
 pub enum Salida {
     Una(Respuesta),
     Flujo(Flujo),
+    /// 0049 B3·1: **los bytes de un ítem**, en flujo, con su estado (`200`,
+    /// `206`) y sus cabeceras (`ETag`, `Content-Range`, `Repr-Digest`…). Lo
+    /// sirve `ore-medios`, la puerta de lectura de la celda; `ore-serve` no
+    /// pasa bytes.
+    Bytes(Bytes),
+}
+
+/// Un cuerpo de bytes que se copia de `lector` al socket según llega.
+///
+/// ⭐ Con `largo`, `content-length`; sin él, troceado. Si `lector` falla a
+///   mitad, la conexión **se corta** sin el final: quien lee ve un cuerpo
+///   corto (o sin el trozo vacío) y no puede tomarlo por entero. Un error a
+///   mitad no se puede contar con otro estado: las cabeceras ya salieron.
+///
+/// ⛔ Cuenta en el techo de los flujos, como un [`Flujo`]: una descarga dura
+///   lo que tarde el origen, no milisegundos.
+pub struct Bytes {
+    pub codigo: u16,
+    pub cabeceras: Vec<(String, String)>,
+    pub largo: Option<u64>,
+    pub lector: Box<dyn Read + Send>,
 }
 
 impl From<Respuesta> for Salida {
@@ -298,16 +319,22 @@ fn texto(codigo: u16) -> &'static str {
         200 => "OK",
         201 => "Created",
         204 => "No Content",
+        206 => "Partial Content",
+        307 => "Temporary Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
+        412 => "Precondition Failed",
         413 => "Payload Too Large",
+        416 => "Range Not Satisfiable",
         422 => "Unprocessable Content",
         423 => "Locked",
         500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "Unknown",
     }
@@ -395,6 +422,19 @@ where
     };
     match salida {
         Salida::Una(r) => responder(&mut flujo, &r),
+        Salida::Bytes(b) => {
+            if abiertos.load(Ordering::Relaxed) >= FLUJOS {
+                responder(
+                    &mut flujo,
+                    &Respuesta::error(503, "servidor al límite de flujos abiertos"),
+                );
+                return;
+            }
+            abiertos.fetch_add(1, Ordering::Relaxed);
+            let _abierto = Viva(abiertos);
+            drop(plaza);
+            emitir_bytes(&mut flujo, b);
+        }
         Salida::Flujo(f) => {
             if abiertos.load(Ordering::Relaxed) >= FLUJOS {
                 responder(
@@ -438,6 +478,59 @@ fn emitir(flujo: &mut TcpStream, f: Flujo) {
     (f.escribir)(&mut emisor);
     // El trozo vacío es el punto final. Si el otro lado ya se fue, da igual.
     let _ = flujo.write_all(b"0\r\n\r\n");
+    let _ = flujo.flush();
+}
+
+/// Escribe una respuesta de bytes (ver [`Bytes`]).
+fn emitir_bytes(flujo: &mut TcpStream, mut b: Bytes) {
+    let mut cabeza = format!("HTTP/1.1 {} {}\r\n", b.codigo, texto(b.codigo));
+    for (k, v) in &b.cabeceras {
+        // Una cabecera con un salto de línea partiría la respuesta: fuera.
+        if k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']) {
+            continue;
+        }
+        cabeza.push_str(&format!("{k}: {v}\r\n"));
+    }
+    match b.largo {
+        Some(n) => cabeza.push_str(&format!("content-length: {n}\r\n")),
+        None => cabeza.push_str("transfer-encoding: chunked\r\n"),
+    }
+    cabeza.push_str(
+        "connection: close\r\n\
+         cache-control: no-store\r\n\
+         x-content-type-options: nosniff\r\n\
+         \r\n",
+    );
+    if flujo.write_all(cabeza.as_bytes()).is_err() {
+        return;
+    }
+    let mut trozo = vec![0u8; 64 * 1024];
+    let mut escritos: u64 = 0;
+    loop {
+        let n = match b.lector.read(&mut trozo) {
+            Ok(0) => break,
+            Ok(n) => n,
+            // A mitad: se corta sin cerrar el cuerpo (ver [`Bytes`]).
+            Err(_) => return,
+        };
+        escritos += n as u64;
+        let bien = match b.largo {
+            Some(l) if escritos > l => return,
+            Some(_) => flujo.write_all(&trozo[..n]).is_ok(),
+            None => {
+                flujo.write_all(format!("{n:x}\r\n").as_bytes()).is_ok()
+                    && flujo.write_all(&trozo[..n]).is_ok()
+                    && flujo.write_all(b"\r\n").is_ok()
+            }
+        };
+        // El que leía se fue (cerró a medias): no se lee más del origen.
+        if !bien {
+            return;
+        }
+    }
+    if b.largo.is_none() {
+        let _ = flujo.write_all(b"0\r\n\r\n");
+    }
     let _ = flujo.flush();
 }
 
@@ -924,5 +1017,37 @@ mod pruebas_del_flujo {
         drop(c);
         let n = espera.recv_timeout(Duration::from_secs(30)).unwrap();
         assert!(n < 10_000, "siguió escribiendo contra nadie: {n} eventos");
+    }
+
+    /// 0049 B3·1: bytes con su estado y sus cabeceras —`206`, `content-range`—
+    /// y `content-length` si se sabe; troceados si no. Una cabecera con un
+    /// salto de línea no sale: partiría la respuesta.
+    #[test]
+    fn unos_bytes_salen_con_su_estado_y_sus_cabeceras() {
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _ = servir_con_flujos(escucha, |p| {
+                let sabido = p.ruta == "/sabido";
+                Salida::Bytes(Bytes {
+                    codigo: 206,
+                    cabeceras: vec![
+                        ("content-range".into(), "bytes 0-3/30".into()),
+                        ("x-colada".into(), "a\r\nset-cookie: x".into()),
+                    ],
+                    largo: sabido.then_some(4),
+                    lector: Box::new(std::io::Cursor::new(b"%PDF".to_vec())),
+                })
+            });
+        });
+        let t = pedir_crudo(puerto, "/sabido");
+        assert!(t.starts_with("HTTP/1.1 206 Partial Content\r\n"), "{t}");
+        assert!(t.contains("content-range: bytes 0-3/30\r\n"), "{t}");
+        assert!(t.contains("content-length: 4\r\n"), "{t}");
+        assert!(!t.contains("set-cookie") && !t.contains("x-colada"), "{t}");
+        assert!(t.ends_with("\r\n\r\n%PDF"), "{t:?}");
+        let t = pedir_crudo(puerto, "/troceado");
+        assert!(t.contains("transfer-encoding: chunked"), "{t}");
+        assert_eq!(destrocear(t.split_once("\r\n\r\n").unwrap().1), "%PDF");
     }
 }

@@ -156,6 +156,7 @@ pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
         let codigo = match &salida {
             Salida::Una(r) => r.codigo,
             Salida::Flujo(_) => 200,
+            Salida::Bytes(b) => b.codigo,
         };
         let clase = clase(s, p);
         eprintln!(

@@ -493,6 +493,86 @@ pub fn abrir_version(
     Ok((Box::new(resp.into_reader()), a))
 }
 
+/// Lo que S3 contestó a una lectura que salió bien: el estado (`200`/`206`),
+/// sus cabeceras y el cuerpo **sin leer**.
+pub struct Leido {
+    pub estado: u16,
+    pub cabeceras: Vec<(String, String)>,
+    pub lector: Box<dyn std::io::Read + Send>,
+}
+
+impl Leido {
+    pub fn cabecera(&self, k: &str) -> Option<&str> {
+        self.cabeceras
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(k))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// **Una versión, fijada dos veces, entera o por rango, en flujo** (0049 B3·1):
+/// lo que la puerta de lectura sirve de una colección virtual.
+///
+/// - `versionId` si hay versión —**también `null`**, la de un objeto anterior
+///   al versionado (medido en B3·0)—;
+/// - `If-Match` con el ETag que el manifiesto anotó: si la versión ya no es la
+///   que se listó, `412` (medido en B3·0), y quien lee lo dice como
+///   `media/cambiado` en vez de servir otros bytes;
+/// - `rango`, la cabecera `Range` tal cual (`bytes=0-1023`, `bytes=-8`).
+///
+/// Sin plazo total (un vídeo tarda lo que tarda), con el de inactividad de
+/// [`agente_de_flujo`]. Todo lo que no es 2xx vuelve como [`Respuesta`], con
+/// su código de AWS.
+pub fn leer_fijado(
+    b: &Bucket,
+    clave: &str,
+    version: &str,
+    etag: &str,
+    rango: Option<&str>,
+) -> Result<Leido, Respuesta> {
+    let fallo = |e: String| Respuesta {
+        estado: 0,
+        cabeceras: Vec::new(),
+        cuerpo: e.into_bytes(),
+    };
+    let consulta: Vec<(&str, String)> = if version.is_empty() {
+        Vec::new()
+    } else {
+        vec![("versionId", version.to_string())]
+    };
+    let mut cabeceras: Vec<(String, String)> = Vec::new();
+    if !etag.is_empty() {
+        cabeceras.push(("if-match".into(), etag.to_string()));
+    }
+    if let Some(r) = rango {
+        cabeceras.push(("range".into(), r.to_string()));
+    }
+    let resp = enviar_por(
+        &agente_de_flujo().map_err(fallo)?,
+        b,
+        "GET",
+        Some(clave),
+        &consulta,
+        cabeceras,
+    )
+    .map_err(fallo)?;
+    if !(200..300).contains(&resp.status()) {
+        return Err(respuesta(b, "GET", resp).unwrap_or_else(fallo));
+    }
+    PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let estado = resp.status();
+    let cabeceras: Vec<(String, String)> = resp
+        .headers_names()
+        .into_iter()
+        .filter_map(|n| resp.header(&n).map(|v| (n.clone(), v.to_string())))
+        .collect();
+    Ok(Leido {
+        estado,
+        cabeceras,
+        lector: Box::new(resp.into_reader()),
+    })
+}
+
 /// Un rango de bytes **de la versión que el listado dijo** (`If-Match`).
 pub fn rango_de(b: &Bucket, clave: &str, rango: &str, etag: &str) -> Result<Respuesta, String> {
     pedir(

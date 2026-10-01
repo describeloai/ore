@@ -2297,7 +2297,10 @@ dependencies = [
  "arrow-schema",
  "ore-core",
  "ore-entrada",
+ "ore-s3",
+ "ore-sigv4",
  "ore-store",
+ "sha2 0.11.0",
 ]
 
 [[package]]

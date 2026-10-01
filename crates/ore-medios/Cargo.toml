@@ -26,6 +26,13 @@ ore-entrada = { path = "../ore-entrada" }
 # `ore-store` como biblioteca. `ore-serve` sigue sin TLS y decide quién puede.
 ore-store = { path = "../ore-store" }
 
+# **El origen de una colección virtual** (0049 B3): leer S3 fijado a la versión
+# (`ore-s3`, con la firma de `ore-sigv4`) con la credencial temporal que
+# `ore-serve` canjeó por el rol (0046 E9b). Y el sha256 al paso.
+ore-s3    = { path = "../ore-s3" }
+ore-sigv4 = { path = "../ore-sigv4" }
+sha2      = { workspace = true }
+
 # Las columnas del listado de una colección, leídas de sus lotes.
 arrow-array = "58"
 

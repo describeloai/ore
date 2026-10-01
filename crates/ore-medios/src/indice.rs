@@ -30,6 +30,12 @@ pub struct Item {
     pub estado: String,
     /// La transacción de la colección en que entró.
     pub entro: Option<String>,
+    /// 0049 B3·1: **la clave en el origen** (`Nueva carpeta/contratos/a.pdf`)
+    /// y **su ETag**, con los que la puerta de lectura fija una virtual
+    /// (`versionId` + `If-Match`). El camino es relativo a la colección; la
+    /// clave, no.
+    pub clave: Option<String>,
+    pub etag: Option<String>,
 }
 
 /// Qué ítems se listan.
@@ -105,6 +111,7 @@ impl Indice {
                 col("modificado"),
                 col("entro"),
             );
+            let (clave, etag) = (col("clave"), col("etag"));
             let texto = |c: Option<&arrow_array::StringArray>, i: usize| {
                 c.filter(|c| !arrow_array::Array::is_null(*c, i))
                     .map(|c| c.value(i).to_string())
@@ -122,6 +129,8 @@ impl Indice {
                     modificado: texto(modificado, i),
                     estado: estado.value(i).to_string(),
                     entro: texto(entro, i),
+                    clave: texto(clave, i),
+                    etag: texto(etag, i),
                 });
             }
         }
