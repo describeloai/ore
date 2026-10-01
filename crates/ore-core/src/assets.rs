@@ -28,8 +28,9 @@
 //! | `define` | lo que tiene plan: `from` (la ref), `identidad` (sin `where`/`groupBy`/`having` y expone lo de abajo con sus nombres), qué claves usa, `freshness`; un escrito: `columns`, `changes` |
 //! | `expone` | lo que sale con su tipo: [`vistas::expone_en`] + las `columns` de la raíz |
 //! | `detalle` | la `Table`: `object`, `datasource`, `reads`, `changes`, `columns`, (la View que el inductor deja sobre ella es un ítem como cualquier otra vista: desde 0040 paso 6 es una vista SQL v1alpha14 de pleno derecho, y el catálogo no la trata aparte) |
+//! | `funcion` | de una `Function` (0050): su contrato tal cual (`runtime`, `entrypoint`, `input`, `output`, `limits`, `over`, `reads`, `models`, `model`, `prompt`, `effects`), `generado` (lleva la marca de procedencia de `ore functions generate`) y `codigo` (la ruta de su `.py`). Su `repositorio` y sus `proyectos` son los de **su código**: el documento vive en `functions/` del paquete |
 //! | `puntero` | el resumen de `datasets/<p>_<n>.json`, si lo hay |
-//! | `relaciones` | tipadas y **en las dos direcciones**, de lo que el documento dice: `from` → `sale_de`/`produce`; `backedBy` → `respaldada_por`/`respalda`; `over`/`reads` → `lee`/`leido_por`; `effects.writes` → `escribe`/`escrito_por`; `trainedFrom` → `sale_de`/`produce`; `implements` → `satisface`/`satisfecha_por`; `is` (el concepto de una propiedad) → `nombra`/`nombrado_por`; `model` → `usa`/`usado_por`. Una ref que no resuelve va con `rota: true`: el índice enseña lo que hay, no lo arregla |
+//! | `relaciones` | tipadas y **en las dos direcciones**, de lo que el documento dice: `from` → `sale_de`/`produce`; `backedBy` → `respaldada_por`/`respalda`; `over`/`reads` → `lee`/`leido_por`; `effects.writes` → `escribe`/`escrito_por`; `trainedFrom` → `sale_de`/`produce`; `implements` → `satisface`/`satisfecha_por`; `is` (el concepto de una propiedad) → `nombra`/`nombrado_por`; `model` y cada `models` → `usa`/`usado_por`. Lo que se lee es la vista o el dataset que exista con ese nombre. Una ref que no resuelve va con `rota: true`: el índice enseña lo que hay, no lo arregla |
 //! | `acceso` | del plano de datos: `clasificacion` (las labels del documento; en una Entity, las efectivas de sus propiedades; en lo que lee una tabla, las de las columnas que usa) y `conductos` (si `materialization.payload` compila para lo que copia, por [`flow::check`]). La concesión de `ore-iam` **no** entra: es del plano de control |
 //! | `version` | `null` aquí: la pone quien tiene la forja (ore-serve), por fichero |
 //! | `repositorio` | **en singular** (0035 ⑥): el repositorio donde vive, o `null`. Un proyecto es una lente y se solapa; un repositorio es **el sitio donde se trabaja**, y anidarlos es hondura —se lo queda el más hondo—, no solape |
@@ -231,6 +232,61 @@ fn paquete_y_carpeta(pkg: &Package, d: &Loaded) -> (Option<String>, String) {
         .filter(|c| !CARPETAS_DE_KIND.contains(c))
         .collect();
     (Some(partes[1].clone()), entre.join("/"))
+}
+
+/// El código de una `Function` de código (0050): la ruta de su `.py` desde la
+/// raíz y la carpeta donde está dentro de su paquete (`riesgo/funciones`).
+/// Su documento vive en `functions/` del paquete y no dice de qué repositorio
+/// ni de qué proyecto es: lo dice dónde está su código.
+fn codigo_de(pkg: &Package, d: &Loaded) -> Option<(String, String)> {
+    if d.kind != Kind::Function {
+        return None;
+    }
+    let e = spec_str(d, "entrypoint")?;
+    let (ruta, _) = crate::promover::entrypoint(&e)?;
+    let py = crate::promover::carpeta_del_paquete(&d.path, &pkg.root).join(ruta);
+    let rel = py.strip_prefix(&pkg.root).ok()?;
+    let partes: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if partes.len() < 3 || partes[0] != "packages" {
+        return None;
+    }
+    Some((partes.join("/"), partes[2..partes.len() - 1].join("/")))
+}
+
+/// Lo que una `Function` es, para quien la mira o la invoca: su contrato
+/// tal cual lo dice su documento, y de dónde sale.
+fn funcion_de(pkg: &Package, d: &Loaded) -> Json {
+    let mut m: Vec<(&'static str, Json)> = [
+        "runtime",
+        "entrypoint",
+        "input",
+        "output",
+        "limits",
+        "over",
+        "reads",
+        "models",
+        "model",
+        "prompt",
+        "effects",
+    ]
+    .iter()
+    .filter_map(|k| d.section(k).map(|n| (*k, Json::de_node(n))))
+    .collect();
+    let texto = std::fs::read_to_string(&d.path).unwrap_or_default();
+    m.push((
+        "generado",
+        Json::Bool(ore_code::emitir::es_generado(&texto)),
+    ));
+    m.push((
+        "codigo",
+        codigo_de(pkg, d)
+            .map(|(r, _)| Json::s(r))
+            .unwrap_or(Json::Crudo("null".into())),
+    ));
+    Json::obj(m)
 }
 
 fn ruta_de(pkg: &Package, d: &Loaded) -> String {
@@ -710,6 +766,16 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                 };
                 a("usa", "usado_por", destino);
             }
+            // 0050 P4: los modelos que una función de código puede llamar.
+            if let Some(ms) = d.section("models") {
+                for m in ms.items().iter().filter_map(|i| i.as_str()) {
+                    let destino = match pkg.resolve_model(m, d) {
+                        Some(md) => ref_doc(md),
+                        None => ref_de(Kind::Model, None, m.strip_prefix("modelo/").unwrap_or(m)),
+                    };
+                    a("usa", "usado_por", destino);
+                }
+            }
         }
         // v1alpha16: la colección mantenida sale de un `ObjectTable`.
         Kind::MediaCollection => {
@@ -917,10 +983,16 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                 .map(Json::s)
                 .unwrap_or(Json::Crudo("null".into())),
         );
+        // De qué proyecto y de qué repositorio es: de donde está; una función
+        // de código, de donde está su código (0050).
+        let codigo = codigo_de(pkg, d);
+        let alcance = codigo
+            .as_ref()
+            .map_or(carpeta.as_str(), |(_, c)| c.as_str());
         let suyos: Vec<Json> = proyectos
             .iter()
             .filter(|p| {
-                p.roto.is_none() && p.alcanza(paquete.as_deref().unwrap_or_default(), &carpeta)
+                p.roto.is_none() && p.alcanza(paquete.as_deref().unwrap_or_default(), alcance)
             })
             .map(|p| {
                 *de_proyecto.entry(p.nombre.clone()).or_default() += 1;
@@ -932,7 +1004,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         let suyo = crate::repositorios::de_item(
             &repositorios,
             paquete.as_deref().unwrap_or_default(),
-            &carpeta,
+            alcance,
         );
         it.insert(
             "repositorio".into(),
@@ -951,6 +1023,9 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         it.insert("expone".into(), expone_de(pkg, d));
         if let Some(det) = detalle_de(d) {
             it.insert("detalle".into(), det);
+        }
+        if d.kind == Kind::Function {
+            it.insert("funcion".into(), funcion_de(pkg, d));
         }
         if d.kind == Kind::Dataset {
             it.insert("puntero".into(), puntero_de(punteros, d));
@@ -991,6 +1066,21 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
 
     // Las relaciones, en las dos direcciones.
     let mut rel: BTreeMap<String, Vec<Json>> = BTreeMap::new();
+    for a in &mut aristas {
+        // Lo que se lee (`over`, `reads`) es un nombre del catálogo: una
+        // vista o un dataset, y la ref sale con `view:` porque el documento
+        // no dice cuál. Es la que exista.
+        if a.tipo == "lee"
+            && !items.contains_key(&a.a)
+            && let Some(qn) = a.a.strip_prefix("view:")
+            && let Some(otra) = ["dataset", "table"]
+                .iter()
+                .map(|k| format!("{k}:{qn}"))
+                .find(|r| items.contains_key(r))
+        {
+            a.a = otra;
+        }
+    }
     for a in &aristas {
         let rota = !items.contains_key(&a.a);
         let mut ida = vec![("tipo", Json::s(a.tipo)), ("ref", Json::s(&a.a))];

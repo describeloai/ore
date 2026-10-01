@@ -838,3 +838,81 @@ fn guardar_objetos_colecciones_y_referencias_en_el_indice() {
     let e = item(&j, "entity:legal.Contrato");
     assert!(tiene(e, "referencia", "collection:legal.archivo.contratos"));
 }
+
+/// 0050 · el activo de una función de código: su documento vive en
+/// `functions/` del paquete, y el índice dice lo que es —su contrato, que es
+/// generado y dónde está su código— y de quién es por **dónde está su
+/// código**: su repositorio y su proyecto. Lo que lee es un dataset (no una
+/// vista rota) y los modelos de `models` son aristas `usa`.
+#[test]
+fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
+    let t = arbol_en("funcion-de-codigo");
+    let r = t.path();
+    escribe(
+        r,
+        "packages/ventas/riesgo/README.md",
+        "---\nnombre: Riesgo\nplantilla: functions-python\nplantillaVersion: 7\n---\n",
+    );
+    escribe(
+        r,
+        "packages/ventas/riesgo/pyproject.toml",
+        "[project]\nname = \"riesgo\"\n",
+    );
+    escribe(
+        r,
+        "proyectos/riesgo/README.md",
+        "---\nnombre: Riesgo\ncontiene: [ventas/riesgo]\n---\n",
+    );
+    escribe(
+        r,
+        "packages/ventas/riesgo/funciones/nivel.py",
+        "from ore import function\n\n\n@function(over=\"ventas.pedidos\", models=[\"v2-lite\"], timeout=\"30s\")\ndef nivel(fila, umbral: int = 100) -> str:\n    \"\"\"El nivel de riesgo de un pedido.\"\"\"\n    return \"alto\"\n",
+    );
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let plan = ore_core::generar::plan(&pkg);
+    assert!(plan.diagnosticos.is_empty(), "{:?}", plan.diagnosticos);
+    ore_core::generar::aplicar(&plan).unwrap();
+
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let j = indice(&pkg, &punteros(r), &Cabeza::default());
+    let f = item(&j, "function:ventas.nivel");
+    assert_eq!(f["ruta"], Json::s("packages/ventas/functions/nivel.yaml"));
+    assert_eq!(f["repositorio"], Json::s("packages/ventas/riesgo"));
+    assert_eq!(f["proyectos"], Json::Arr(vec![Json::s("riesgo")]));
+    assert_eq!(
+        f["description"],
+        Json::s("El nivel de riesgo de un pedido.")
+    );
+    let Json::Obj(fun) = &f["funcion"] else {
+        panic!("{:?}", f.get("funcion"))
+    };
+    assert_eq!(fun["runtime"], Json::s("python"));
+    assert_eq!(
+        fun["entrypoint"],
+        Json::s("riesgo/funciones/nivel.py:nivel")
+    );
+    assert_eq!(
+        fun["codigo"],
+        Json::s("packages/ventas/riesgo/funciones/nivel.py")
+    );
+    assert_eq!(fun["generado"], Json::Bool(true));
+    let Json::Obj(input) = &fun["input"] else {
+        panic!("{:?}", fun.get("input"))
+    };
+    assert!(input.contains_key("umbral"), "{input:?}");
+    assert!(
+        fun.contains_key("output") && fun.contains_key("limits"),
+        "{fun:?}"
+    );
+    assert!(
+        tiene(f, "lee", "dataset:ventas.pedidos"),
+        "{:?}",
+        relaciones(f)
+    );
+    assert!(tiene(f, "usa", "model:v2-lite"), "{:?}", relaciones(f));
+    assert!(
+        relaciones(f).iter().all(|(_, _, rota)| !rota),
+        "{:?}",
+        relaciones(f)
+    );
+}
