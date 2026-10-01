@@ -21,11 +21,7 @@
 #     ella `storage.googleapis.com` resuelve a IPs públicas y esta regla las
 #     TIRA (una NetworkPolicy no rechaza: el síntoma es un timeout);
 #   · `ore-serve` (:8080) y el emisor: por `salida-al-control` y
-#     `salida-al-emisor` de `11-el-inquilino.yaml`, que ya seleccionan a todos;
-#   · `ore-medios` (:8097), la puerta de lectura de la media (0049 B3·4): el
-#     puesto lee ahí los bytes de una colección VIRTUAL con un permiso que
-#     `ore-serve` pidió para UN ítem —sin él, `401`—. El origen sigue sin
-#     alcanzarse: lo lee `ore-medios`, con la credencial de la celda.
+#     `salida-al-emisor` de `11-el-inquilino.yaml`, que ya seleccionan a todos.
 #
 # ── Lo que NO alcanza, a propósito ─────────────────────────────────────────
 #   internet (`pip install`, un origen, un webhook), la forja, el cofre, los
@@ -75,9 +71,3 @@ spec:
     - to:
         - ipBlock: { cidr: 199.36.153.8/30 }
       ports: [{protocol: TCP, port: 443}]
-    # 0049 B3·4: la puerta de lectura de la media, y sólo su puerto.
-    - to:
-        - podSelector:
-            matchLabels:
-              ore.dev/rol: medios
-      ports: [{protocol: TCP, port: 8097}]
