@@ -119,6 +119,12 @@ pub enum ApiVersion {
     /// ORE 0049 (2026-09-30): sin tipos, todo resultado sobre un medio acaba
     /// como JSON en una cadena.
     V1Alpha17,
+    /// v1alpha18. **Promover.** El codigo de un repositorio pasa a ser una
+    /// funcion cuando un documento lo nombra: `runtime: python`, un
+    /// `entrypoint` que nombra un `def` del paquete cuya cabecera es la firma,
+    /// y `models`, los modelos que el codigo puede llamar. Lo decidio ORE 0050
+    /// (2026-10-01), sobre la promocion que 0031 W3.8 dejo escrita.
+    V1Alpha18,
 }
 
 impl ApiVersion {
@@ -138,6 +144,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha15,
         ApiVersion::V1Alpha16,
         ApiVersion::V1Alpha17,
+        ApiVersion::V1Alpha18,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -157,6 +164,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha15 => "oos.dev/v1alpha15",
             ApiVersion::V1Alpha16 => "oos.dev/v1alpha16",
             ApiVersion::V1Alpha17 => "oos.dev/v1alpha17",
+            ApiVersion::V1Alpha18 => "oos.dev/v1alpha18",
         }
     }
 
@@ -907,6 +915,26 @@ impl Kind {
             // que causa sigue siendo `effects`, y ahora puede faltar: leer y
             // devolver es legitimo. Son claves de v1alpha10 y en una version
             // anterior son `OOS1005`.
+            // v1alpha18: `models`, lo que una funcion de codigo usa. En una
+            // version anterior es `OOS1005`.
+            Kind::Function if version >= ApiVersion::V1Alpha18 => &[
+                "runtime",
+                "entrypoint",
+                "source",
+                "limits",
+                "over",
+                "reads",
+                "input",
+                "output",
+                "preconditions",
+                "effects",
+                "endorsements",
+                "authorization",
+                "idempotency",
+                "model",
+                "prompt",
+                "models",
+            ],
             Kind::Function if version >= ApiVersion::V1Alpha10 => &[
                 "runtime",
                 "entrypoint",

@@ -115,6 +115,9 @@ const CONJUNTOS: &[&str] = &[
     // v1alpha11: `trainedFrom` es un conjunto por lo mismo que `reads`: las
     // vistas de las que salio un modelo no van una antes que otra.
     "trainedFrom",
+    // v1alpha18: `models` es un conjunto por lo mismo que `reads`: los modelos
+    // que el codigo puede llamar no van uno antes que otro.
+    "models",
     // v1alpha1, y esto es lo que había que ver: **la lista nunca estuvo
     // completa, ni siquiera para la versión con la que se escribió**. Tres de
     // estos se midieron dando dos digests para el mismo contenido —`reserved`,

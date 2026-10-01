@@ -1,7 +1,8 @@
 # 0050 · Functions in code repositories
 
-**Estado:** aceptado (las decisiones, 2026-10-01) · R1 en construcción, P1 (el contrato, OOS
-v1alpha18) primero. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
+**Estado:** aceptado (las decisiones, 2026-10-01) · R1 en construcción: **P1 hecho** (el contrato,
+OOS v1alpha18, oos `fd1ed1a`) y **P2 hecho** (`ore-core` habla v1alpha18: 17/17 y `ore diff` por
+parámetro, 27/27); P3–P6 por hacer. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
 se construye **sobre lo que ORE ya define** —la gramática de `Function` (OOS v1alpha10–14), el
 puesto y su promoción ([`0031`](0031-el-puesto.md) W3.8), la taxonomía de versiones de OOS
 (`91-versioning`), la red por política con nombre (0031 §7), el acceso

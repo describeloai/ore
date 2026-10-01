@@ -365,6 +365,9 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     // referencias de una `Action`. Vive en su modulo porque es la regla de
     // una version, no una mas de estas.
     crate::actuar::comprobar(pkg, &mut d);
+    // v1alpha18: la funcion de codigo. El documento promueve un `def` del
+    // paquete, y el `def` cumple el documento (ORE 0050).
+    crate::promover::comprobar(pkg, &mut d);
     // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
     // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
     // una operacion —componer renombres— que `flow` y el ejecutor tambien

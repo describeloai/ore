@@ -300,8 +300,12 @@ struct Shape {
 
 #[derive(Default)]
 struct Funcion {
-    input: Prop,
-    output: Prop,
+    /// Parámetro a parámetro (v1alpha18 01 §7, para todas las versiones):
+    /// `input` y `output` son mapas nombre → `{type, required}`. Hasta el
+    /// 2026-10-01 se leían como UN tipo (`input.type`), y quitar, añadir o
+    /// retipar un parámetro era invisible para `ore diff`.
+    input: BTreeMap<String, Prop>,
+    output: BTreeMap<String, Prop>,
     preconditions: BTreeSet<String>,
     endorsements: BTreeSet<String>,
     /// `endosante` → su quórum. Fuera del conjunto a propósito: el conjunto
@@ -472,17 +476,26 @@ fn shape(pkg: &Package) -> Shape {
                             })
                             .collect()
                     };
-                    let tipo = |sec: &str| {
+                    let tipo = |sec: &str| -> BTreeMap<String, Prop> {
                         d.section(sec)
-                            .map(|n| Prop {
-                                ty: n
-                                    .get("type")
-                                    .and_then(|(_, v)| v.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                ..Default::default()
+                            .map(|n| n.entries())
+                            .unwrap_or(&[])
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                let campo = |c: &str| {
+                                    v.get(c).and_then(|(_, x)| x.as_str()).unwrap_or_default()
+                                };
+                                Some((
+                                    k.as_str()?.to_string(),
+                                    Prop {
+                                        ty: campo("type").to_string(),
+                                        // `required` ausente es `false` (v1alpha18 01 §4.3).
+                                        required: campo("required") == "true",
+                                        ..Default::default()
+                                    },
+                                ))
                             })
-                            .unwrap_or_default()
+                            .collect()
                     };
                     s.funciones.insert(
                         qn,
@@ -878,6 +891,15 @@ fn superficie(a: &Shape, b: &Shape) -> bool {
                     )
                     .chain(std::iter::once(q.clone()))
             })
+            // v1alpha18: la superficie de una función también es superficie:
+            // un parámetro o un campo de `output` nuevo es un salto menor.
+            .chain(s.funciones.iter().flat_map(|(q, f)| {
+                f.input
+                    .keys()
+                    .map(move |p| format!("{q}.input.{p}"))
+                    .chain(f.output.keys().map(move |p| format!("{q}.output.{p}")))
+                    .chain(std::iter::once(q.clone()))
+            }))
             .collect()
     };
     nombres(a) != nombres(b)
@@ -914,8 +936,8 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
             continue;
         };
-        tipos(&format!("{qn}.input"), &antes.input, &despues.input, out);
-        tipos(&format!("{qn}.output"), &antes.output, &despues.output, out);
+        parametros(qn, "input", &antes.input, &despues.input, out);
+        parametros(qn, "output", &antes.output, &despues.output, out);
 
         // OOS5025 · exigir más. Una llamada que era legal deja de serlo, y el
         // que la hace vive en otro paquete.
@@ -1195,6 +1217,40 @@ fn entidades(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
 }
 
 /// El tipo: primero lo paramétrico, que es lo específico.
+/// `input` y `output` de una función, parámetro a parámetro, con los códigos
+/// de una propiedad (v1alpha18 01 §7): quitar uno es `OOS5001`; uno
+/// obligatorio nuevo, o uno opcional que pasa a obligatorio, `OOS5003` (en
+/// `input`: una llamada que era legal deja de serlo); el tipo, por `tipos`.
+fn parametros(
+    qn: &str,
+    lado: &str,
+    antes: &BTreeMap<String, Prop>,
+    despues: &BTreeMap<String, Prop>,
+    out: &mut Vec<Change>,
+) {
+    for (n, p) in antes {
+        let sujeto = format!("{qn}.{lado}.{n}");
+        match despues.get(n) {
+            None => out.push(Change::new(Code::Oos5001, Axis::Consumer).sujeto(&sujeto)),
+            Some(q) => {
+                if lado == "input" && q.required && !p.required {
+                    out.push(Change::new(Code::Oos5003, Axis::Consumer).sujeto(&sujeto));
+                }
+                tipos(&sujeto, p, q, out);
+            }
+        }
+    }
+    if lado == "input" {
+        for (n, q) in despues {
+            if q.required && !antes.contains_key(n) {
+                out.push(
+                    Change::new(Code::Oos5003, Axis::Consumer).sujeto(format!("{qn}.{lado}.{n}")),
+                );
+            }
+        }
+    }
+}
+
 fn tipos(sujeto: &str, p: &Prop, q: &Prop, out: &mut Vec<Change>) {
     if p.ty != q.ty {
         let base = |t: &str| t.split('<').next().unwrap_or(t).trim().to_string();
