@@ -1685,6 +1685,19 @@ impl Servidor {
         Ok(p)
     }
 
+    /// `POST /puestos/{id}/latido` (0049 B2·3): **estoy vivo, y ocupado**. Lo
+    /// manda el agente mientras corre una celda, cada 30 s: el agente no pide
+    /// trabajo mientras trabaja, y sin latido el puesto pasaba a `perdido` a los
+    /// [`SIN_LATIDO`] —una celda de OCR de diez minutos lo perdía a mitad—.
+    /// No reclama ninguna celda: sólo `reclamar`, que pone el latido.
+    pub(crate) fn latido_del_puesto(&self, sujeto: &Identidad, id: &str) -> Respuesta {
+        let mut lista = self.puestos.lista.lock().unwrap();
+        match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(_) => Respuesta::sin_contenido(),
+            Err(r) => r,
+        }
+    }
+
     /// `GET /puestos/{id}/pendiente`: la siguiente celda, esperando hasta
     /// [`ESPERA`]. `{pendiente: false}` si no hay.
     pub(crate) fn pendiente_del_puesto(&self, sujeto: &Identidad, id: &str) -> Respuesta {

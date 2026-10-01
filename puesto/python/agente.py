@@ -91,6 +91,9 @@ class Testigo:
         self.secreto = self._fichero("agente-secreto")
         self.token = None
         self.caduca = 0
+        # 0049 B2·3: la cabecera la piden a la vez la celda (por el SDK), el
+        # latido y el servidor de lenguaje: una renovación cada vez.
+        self.candado = threading.Lock()
 
     @staticmethod
     def _fichero(nombre):
@@ -104,6 +107,10 @@ class Testigo:
     def cabeceras(self):
         if self.sujeto:
             return {"x-ore-sujeto": self.sujeto}
+        with self.candado:
+            return self._cabeceras_vigentes()
+
+    def _cabeceras_vigentes(self):
         if not (self.cliente and self.secreto and self.direccion):
             raise SystemExit("agente · sin identidad: ni ORE_SUJETO ni /puesto/agente-{cliente,secreto} con DIRECCION")
         if time.time() > self.caduca - 60:
@@ -114,6 +121,37 @@ class Testigo:
             self.caduca = time.time() + int(t.get("expires_in", 300))
             log("token del agente renovado · caduca en %ds" % int(t.get("expires_in", 300)))
         return {"authorization": "Bearer " + self.token}
+
+
+# ── El latido: vivo mientras trabaja (0049 B2·3) ───────────────────────────
+class Latido:
+    """Mientras corre una celda el agente no pide trabajo, y sin latido el puesto
+    pasa a perdido a los 90 s. Esto lo da cada `CADA` segundos, en un hilo, hasta
+    que la celda termina. Un latido que falla no para la celda: se dice y sigue."""
+
+    CADA = 30
+
+    def __init__(self, puesto):
+        self.puesto = puesto
+        self.parar = threading.Event()
+        self.hilo = threading.Thread(target=self._latir, daemon=True)
+
+    def __enter__(self):
+        self.hilo.start()
+        return self
+
+    def __exit__(self, *_):
+        self.parar.set()
+        self.hilo.join(timeout=5)
+
+    def _latir(self):
+        while not self.parar.wait(self.CADA):
+            try:
+                codigo, r = self.puesto.pedir("POST", "/puestos/%s/latido" % self.puesto.id, plazo=10)
+                if codigo not in (200, 204):
+                    log("el latido contestó %s: %s" % (codigo, r))
+            except Exception as e:  # noqa: BLE001 — la red se cae; el siguiente lo intenta
+                log("el latido no llegó: %s" % e)
 
 
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
@@ -387,6 +425,10 @@ def main():
     if trabajo:
         os.environ["ORE_CODIGO"] = trabajo
     testigo = Testigo()
+    # 0049 B2·3: el SDK pide la cabecera al testigo en cada petición, también en
+    # mitad de una celda; las asignaciones de `_cabeceras` de abajo quedan como
+    # respaldo de lo que no pase por `pedir`.
+    p._proveedor = testigo.cabeceras
     kernel = Kernel()
     # La correa escucha desde el principio; el servidor de lenguaje no arranca
     # hasta que llega el primer mensaje (un pyright son ~210 MB).
@@ -426,7 +468,8 @@ def main():
                 log("el puesto es de %s" % p.persona)
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
-        salida = kernel.correr(texto, lenguaje)
+        with Latido(p):
+            salida = kernel.correr(texto, lenguaje)
         ultimo = time.time()
         p._cabeceras = testigo.cabeceras()
         try:

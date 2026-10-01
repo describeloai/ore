@@ -89,6 +89,11 @@ class Puesto:
         self.persona = ""
         # El token lo pone el agente (`agente.py`) y lo renueva; una celda no lo ve.
         self._cabeceras = {}
+        # 0049 B2·3: **quién da la cabecera**, si el agente lo dice. Una celda corre
+        # en el proceso del agente y puede durar más que el token (300 s): con el
+        # proveedor, cada petición pide la cabecera vigente —el agente la renueva a
+        # 60 s de caducar— en vez de usar la que se copió al empezar la celda.
+        self._proveedor = None
 
     def pedir(self, metodo, ruta, cuerpo=None, plazo=30, cabeceras=None):
         datos = None if cuerpo is None else json.dumps(cuerpo).encode("utf-8")
@@ -96,7 +101,7 @@ class Puesto:
         req.add_header("accept", "application/json")
         if datos is not None:
             req.add_header("content-type", "application/json")
-        for k, v in self._cabeceras.items():
+        for k, v in (self._proveedor() if self._proveedor else self._cabeceras).items():
             req.add_header(k, v)
         # Desde qué puesto: el catálogo escribe en nombre de quien lo abrió.
         if self.id:
