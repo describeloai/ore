@@ -88,10 +88,13 @@ fn escrituras(pkg: &Package, d: &Loaded, seccion: &str, out: &mut Vec<Diagnostic
 // ── OOS1004 · una función toca algo ─────────────────────────────────────────
 
 fn toca_algo(f: &Loaded, out: &mut Vec<Diagnostic>) {
-    // v1alpha18: `models` tambien es tocar algo —el codigo llama a un modelo—.
+    // v1alpha18: `models` tambien es tocar algo —el codigo llama a un modelo—,
+    // y en una funcion de codigo, `input`: sus parametros son superficie.
+    let python = f.section("runtime").and_then(|n| n.as_str()) == Some("python");
     let toca = ["over", "reads", "effects", "models"]
         .iter()
-        .any(|s| f.section(s).is_some());
+        .any(|s| f.section(s).is_some())
+        || (python && f.section("input").is_some());
     if !toca {
         out.push(
             Diagnostic::new(

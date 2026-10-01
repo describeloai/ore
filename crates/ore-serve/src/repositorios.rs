@@ -247,12 +247,18 @@ impl Servidor {
         }
         let mut semilla = Vec::new();
         for (rel, contenido) in c.plantilla.semilla {
+            if !ore_core::clases::se_siembra(rel, &paquete) {
+                continue;
+            }
             let f = dir.join(rel);
             if let Some(padre) = f.parent()
                 && let Err(e) = std::fs::create_dir_all(padre)
             {
                 return Respuesta::error(500, format!("no se pudo sembrar `{ruta}/{rel}`: {e}"));
             }
+            // 0050 P5: los huecos de la semilla (el paquete, la carpeta, un
+            // nombre de función único en el paquete).
+            let contenido = ore_core::clases::sembrar(contenido, &paquete, &carpeta);
             if let Err(e) = std::fs::write(&f, contenido) {
                 return Respuesta::error(500, format!("no se pudo sembrar `{ruta}/{rel}`: {e}"));
             }
@@ -419,6 +425,15 @@ impl Servidor {
                     {
                         return Respuesta::error(500, format!("no se pudo escribir `{rel}`: {e}"));
                     }
+                    // Los mismos huecos que al crear: `packages/<paquete>/<carpeta>`.
+                    let (paquete, carpeta) = ruta_r
+                        .strip_prefix("packages/")
+                        .and_then(|x| x.split_once('/'))
+                        .unwrap_or(("", ""));
+                    if !ore_core::clases::se_siembra(rel, paquete) {
+                        continue;
+                    }
+                    let contenido = ore_core::clases::sembrar(contenido, paquete, carpeta);
                     if let Err(e) = std::fs::write(&f, contenido) {
                         return Respuesta::error(500, format!("no se pudo escribir `{rel}`: {e}"));
                     }

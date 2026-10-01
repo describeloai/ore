@@ -293,30 +293,92 @@ print(declare({
 }))
 ";
 
-const FUNCTIONS_PY: &str = "\
-# Una función de lectura: entra una fila, sale un valor, y sin efectos. Se
-# declara como `Function` en `functions/` y se invoca con `ore invoke` (ADR
-# 0029); su clase no escribe datos (0036 ⑤), y eso no es un aviso: es el techo.
+/// La pareja de `functions-python` (0050 P5): **el contrato y el código**.
+///
+/// El documento es el contrato —lo que un consumidor ve, lo que se versiona— y
+/// el `def` lo cumple: el compilador coteja su cabecera con `input` (OOS
+/// v1alpha18). Nace **sin `over`**, trabajando solo sobre sus parámetros, para
+/// que compile e invoque en cuanto el repositorio existe, sin depender de un
+/// dataset que la plantilla no puede conocer. `{{paquete}}`, `{{carpeta}}` y
+/// `{{funcion}}` los pone [`sembrar`].
+const FUNCTIONS_YAML: &str = "\
+# El CONTRATO de una función (OOS v1alpha18, ADR 0050): lo que un consumidor
+# ve y lo que se versiona con el paquete. El código de `entrypoint` lo cumple:
+# el compilador coteja la cabecera del `def` con `input`, sin ejecutarlo.
 #
-# `over` es del SDK del puesto y ADEMAS lo pone la sesión en el espacio de la
-# celda: el import no cambia lo que corre — hace que el editor sepa de qué
-# hablas (ADR 0037 ③a).
-
-from ore import over
-
-
-# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
-# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
-FUENTE = \"mi_base.mi_schema.mi_dataset\"
-
-
-def clasificar(fila):
-    return {\"etiqueta\": \"alta\" if fila[\"total\"] > 100 else \"baja\"}
-
-
-for fila in over(FUENTE)[:5]:
-    print(fila, \"→\", clasificar(fila))
+# Para trabajar sobre un dataset, una fila por llamada, añade (en tres partes,
+# `base.schema.nombre`, 0038)
+#     over: mi_base.mi_schema.mi_dataset
+# y la fila llega como el PRIMER parámetro del `def`. Lo demás que lea, en
+#     reads: [mi_base.mi_schema.otro_dataset]
+# Y los modelos que el código pueda llamar, en
+#     models: [modelo/extractor]
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata:
+  name: {{funcion}}
+  namespace: {{paquete}}
+spec:
+  runtime: python
+  entrypoint: {{carpeta}}/funciones/ejemplo.py:ejemplo
+  input:
+    texto: { type: String, required: true }
+    veces: { type: Integer }
+  output:
+    resultado: { type: String }
+    longitud: { type: Integer }
+  limits: { timeout: 60s }
 ";
+
+const FUNCTIONS_PY: &str = "\
+# El CÓDIGO de la función `{{paquete}}.{{funcion}}`: su contrato está en
+# `functions/ejemplo.yaml` (ADR 0050). La cabecera del `def` ES la firma: un
+# parámetro por cada clave de `input`, lo obligatorio sin valor por defecto y
+# lo opcional con él. Devuelve un objeto con las claves de `output`.
+#
+# Se invoca con parámetros (`POST /funciones/{{paquete}}/{{funcion}}/invocar`,
+# o Run sobre el YAML) y corre en un trabajo de la celda. Su clase no escribe
+# datos (0036 ⑤): una función de lectura devuelve.
+#
+# Lo que el contrato declare en `over`/`reads` se lee con `over` del SDK
+# (`mi_base.mi_schema.mi_dataset`), y lo que declare en `models` se llama con
+# `modelo` (`modelo/extractor` en el contrato): impórtalos
+# de `ore` cuando los uses.
+
+
+def ejemplo(texto, veces=1):
+    resultado = \" \".join([texto] * veces)
+    return {\"resultado\": resultado, \"longitud\": len(resultado)}
+";
+
+/// Si un fichero de la semilla se siembra en `paquete`. Un documento gobernado
+/// (`functions/*.yaml`) solo vive en un paquete cuyo nombre puede ser
+/// `namespace` (`OOS2030`): uno con guion —el de un proyecto, `test-project`—
+/// no puede tenerlo, y sembrarlo haría que el commit que crea el repositorio no
+/// compilara. Ahí nace el código solo, como en la v4.
+pub fn se_siembra(rel: &str, paquete: &str) -> bool {
+    !rel.ends_with(".yaml") || crate::pertenencia::puede_ser_namespace(paquete)
+}
+
+/// Rellena los huecos de una semilla: `{{paquete}}` (el `namespace` de lo que
+/// declare), `{{carpeta}}` (dónde vive el repositorio, para su `entrypoint`) y
+/// `{{funcion}}` (un nombre de función **único en el paquete**, sacado de la
+/// carpeta: dos repositorios en el mismo paquete no siembran el mismo). Una
+/// semilla sin huecos sale igual.
+pub fn sembrar(contenido: &str, paquete: &str, carpeta: &str) -> String {
+    let ultimo = carpeta.rsplit('/').next().unwrap_or(carpeta);
+    let mut f: String = ultimo
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if !f.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        f.insert_str(0, "f_");
+    }
+    contenido
+        .replace("{{paquete}}", paquete)
+        .replace("{{carpeta}}", carpeta)
+        .replace("{{funcion}}", &format!("{f}_ejemplo"))
+}
 
 /// Las cinco clases de hoy. Añadir una es una fila más, y subir su `version`
 /// es lo que hace que un repositorio se pueda actualizar.
@@ -420,9 +482,11 @@ pub const CLASES: &[Clase] = &[
         titulo: "Functions",
         descripcion: "Write reusable code for pipelines, transforms and applications.",
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 4,
+        // 5: nace con una función de verdad, la pareja contrato + código (0050 P5).
+        version: 5,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
+            ("functions/ejemplo.yaml", FUNCTIONS_YAML),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
         ],
     },
@@ -529,6 +593,69 @@ pub fn nombres() -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// 0050 P5: un repositorio `functions-python` nace con una función que
+    /// COMPILA, en el árbol de verdad —el commit que lo crea pasa por la puerta
+    /// de «no empeorar»—. También en un paquete con guion (`test-project`, el
+    /// de `victor`), y dos repositorios en el mismo paquete no chocan.
+    #[test]
+    fn la_semilla_de_functions_compila_donde_nace() {
+        let c = de("functions-python").unwrap();
+        for paquete in ["ventas", "test-project"] {
+            let raiz =
+                std::env::temp_dir().join(format!("ore-semilla-{paquete}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&raiz);
+            let pkg = raiz.join("packages").join(paquete);
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(
+                raiz.join("ontology.config.yaml"),
+                "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\n",
+            )
+            .unwrap();
+            std::fs::write(
+                pkg.join("package.yaml"),
+                format!(
+                    "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: {{ name: {paquete}, version: 0.1.0, status: draft, domain: {paquete} }}\nspec: {{ owner: \"team:x\" }}\n"
+                ),
+            )
+            .unwrap();
+            for carpeta in ["funciones-de-riesgo", "otra"] {
+                for (rel, contenido) in c.semilla.iter().filter(|(r, _)| se_siembra(r, paquete)) {
+                    let f = pkg.join(carpeta).join(rel);
+                    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                    std::fs::write(f, sembrar(contenido, paquete, carpeta)).unwrap();
+                }
+            }
+            let contrato = pkg.join("funciones-de-riesgo/functions/ejemplo.yaml");
+            if paquete == "ventas" {
+                let yaml = std::fs::read_to_string(&contrato).unwrap();
+                assert!(yaml.contains("name: funciones_de_riesgo_ejemplo"), "{yaml}");
+                assert!(
+                    yaml.contains("entrypoint: funciones-de-riesgo/funciones/ejemplo.py:ejemplo"),
+                    "{yaml}"
+                );
+                assert!(!yaml.contains("{{"), "{yaml}");
+            } else {
+                // `test-project` no puede ser `namespace`: el código sí, el contrato no.
+                assert!(!contrato.exists());
+                assert!(
+                    pkg.join("funciones-de-riesgo/funciones/ejemplo.py")
+                        .exists()
+                );
+            }
+            let d = crate::validate::validate_package(&raiz);
+            assert!(
+                d.is_empty(),
+                "{paquete}: {:?}",
+                d.iter()
+                    .map(|x| format!("{} {}", x.code.as_str(), x.message))
+                    .collect::<Vec<_>>()
+            );
+            let _ = std::fs::remove_dir_all(&raiz);
+        }
+        // Una carpeta que empieza por número sigue dando un nombre válido.
+        assert!(sembrar("{{funcion}}", "p", "a/2024").starts_with("f_2024"));
+    }
 
     #[test]
     fn el_techo_quita_y_nunca_concede() {

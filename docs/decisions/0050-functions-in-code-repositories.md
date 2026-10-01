@@ -5,8 +5,11 @@ OOS v1alpha18, oos `fd1ed1a`) y **P2 hecho** (`ore-core` habla v1alpha18: 17/17 
 parámetro, 27/27) y **P3 hecho** (invocar: las funciones del paquete compilado, los
 parámetros contra `input`, el trabajo del puesto con el arnés y `resultados/`) y **P4 hecho**
 (`ore.modelo(ref)` acotado a `models`, y `salida-al-modelo-de-una-funcion`: la etiqueta
-`ore.dev/usa-modelo` que solo pone `ore-serve` al trabajo de una función con `models`); P5–P6 por
-hacer. La regla de red llega a un inquilino vivo al convergerlo. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
+`ore.dev/usa-modelo` que solo pone `ore-serve` al trabajo de una función con `models`) y **P5
+hecho** (`functions-python` v5 nace con la pareja contrato + código, sin `over`; v1alpha18: con
+`python`, `input` es superficie); P6 por hacer. **Medido en P5:** un paquete con guion —el de un
+proyecto, `test-project`— no puede tener contenido gobernado (`OOS2030`), así que un repositorio de
+funciones ahí nace sin su contrato. La regla de red llega a un inquilino vivo al convergerlo. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
 se construye **sobre lo que ORE ya define** —la gramática de `Function` (OOS v1alpha10–14), el
 puesto y su promoción ([`0031`](0031-el-puesto.md) W3.8), la taxonomía de versiones de OOS
 (`91-versioning`), la red por política con nombre (0031 §7), el acceso
