@@ -125,6 +125,12 @@ pub enum ApiVersion {
     /// y `models`, los modelos que el codigo puede llamar. Lo decidio ORE 0050
     /// (2026-10-01), sobre la promocion que 0031 W3.8 dejo escrita.
     V1Alpha18,
+    /// v1alpha19. **Derivar ficheros.** Una `MediaCollection` escrita dice lo
+    /// que el código leyó para escribirla —`derivedFrom`, como el dataset
+    /// escrito— y por ahí le baja la clasificación. Lo decidió ORE 0049 B4·1
+    /// (2026-10-01): sin esto, una colección generada a partir de algo `high`
+    /// llevaba sólo las etiquetas que alguien se acordara de ponerle.
+    V1Alpha19,
 }
 
 impl ApiVersion {
@@ -145,6 +151,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha16,
         ApiVersion::V1Alpha17,
         ApiVersion::V1Alpha18,
+        ApiVersion::V1Alpha19,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -165,6 +172,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha16 => "oos.dev/v1alpha16",
             ApiVersion::V1Alpha17 => "oos.dev/v1alpha17",
             ApiVersion::V1Alpha18 => "oos.dev/v1alpha18",
+            ApiVersion::V1Alpha19 => "oos.dev/v1alpha19",
         }
     }
 
@@ -1016,6 +1024,18 @@ impl Kind {
             // `format` es `OOS1005`: una `Table` de antes no cambia.
             // v1alpha17: la tabla anclada (`03-la-tabla-anclada`). Antes,
             // `anchoredTo` es `OOS1005`.
+            // v1alpha19: la colección escrita dice lo que el código leyó
+            // (`01-la-coleccion-escrita-deriva`). Antes, `derivedFrom` es
+            // `OOS1005`.
+            Kind::MediaCollection if version >= ApiVersion::V1Alpha19 => &[
+                "owner",
+                "media",
+                "formats",
+                "from",
+                "virtual",
+                "retention",
+                "derivedFrom",
+            ],
             Kind::Dataset if version >= ApiVersion::V1Alpha17 => &[
                 "owner",
                 "from",
@@ -1362,6 +1382,34 @@ fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
             "`from` sin `objectTable`".to_string(),
             Some("una coleccion mantenida sale de un `ObjectTable`".to_string()),
         ));
+    }
+    // v1alpha19 · `derivedFrom` es de la escrita (`01` §5).
+    if let Some((_, df)) = n.get("derivedFrom") {
+        if n.get("from").is_some() {
+            return Some((
+                "`derivedFrom` en una coleccion mantenida".to_string(),
+                Some(
+                    "su linaje es `from`: lo que lleva le viene de su origen. `derivedFrom` \
+                     dice lo que el codigo leyo para escribir una coleccion escrita"
+                        .to_string(),
+                ),
+            ));
+        }
+        let nombres = df.items();
+        if nombres.is_empty() {
+            return Some((
+                "`derivedFrom` esta vacio".to_string(),
+                Some("o se dice lo que el codigo leyo, o no se pone".to_string()),
+            ));
+        }
+        let mut vistos: Vec<&str> = Vec::new();
+        for i in nombres {
+            let Some(x) = i.as_str() else { continue };
+            if vistos.contains(&x) {
+                return Some((format!("`{x}` esta dos veces en `derivedFrom`"), None));
+            }
+            vistos.push(x);
+        }
     }
     if let Some((_, r)) = n.get("retention")
         && r.as_str().and_then(crate::frescura::duracion).is_none()

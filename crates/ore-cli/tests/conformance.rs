@@ -1311,6 +1311,19 @@ fn borrador_de_v1alpha18() {
     );
 }
 
+/// v1alpha19: derivar ficheros. Una `MediaCollection` escrita dice lo que el
+/// código leyó para escribirla (`derivedFrom`) y por ahí le baja la
+/// clasificación; y el `derivedFrom` de un dataset puede nombrar una colección
+/// (ORE 0049 B4·1). Los casos se escribieron desde la spec antes que esto.
+#[test]
+fn borrador_de_v1alpha19() {
+    marcador(
+        "v1alpha19",
+        "derivar ficheros",
+        "BORRADOR · OOS v1alpha19 · derivar ficheros",
+    );
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

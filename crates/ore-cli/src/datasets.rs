@@ -807,9 +807,11 @@ fn asegurar_dataset(
     // lleva etiqueta que nadie pueda ver (y el compilador negaría la
     // escritura por un nombre que no resuelve, que no es culpa de quien
     // escribió).
+    // v1alpha19 `01` §4: también una colección (lo que el código leyó de
+    // `ore.coleccion(…)`); antes se perdía aquí sin decirlo.
     let existe = |n: &str| {
         partes(n).is_ok_and(|x| {
-            ["views", "datasets"].iter().any(|carpeta| {
+            ["views", "datasets", "collections"].iter().any(|carpeta| {
                 x.carpeta(path)
                     .join(carpeta)
                     .join(format!("{}.yaml", x.tabla))

@@ -685,6 +685,9 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                 for qn in leidos.iter().filter(|q| **q != propio) {
                     let destino = if pkg.dataset(qn).is_some() {
                         ref_qn(Kind::Dataset, qn, ns, sc)
+                    } else if pkg.collection(qn).is_some() {
+                        // v1alpha19 `01` §4: lo leído puede ser una colección.
+                        ref_qn(Kind::MediaCollection, qn, ns, sc)
                     } else {
                         ref_qn(Kind::View, qn, ns, sc)
                     };
@@ -778,11 +781,26 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
             }
         }
         // v1alpha16: la colección mantenida sale de un `ObjectTable`.
+        // v1alpha19: la escrita, de lo que el código leyó (`derivedFrom`).
         Kind::MediaCollection => {
             if let Some((_, r)) = d.section("from").and_then(|f| f.get("objectTable"))
                 && let Some(s) = r.as_str()
             {
                 a("sale_de", "produce", ref_qn(Kind::ObjectTable, s, ns, sc));
+            }
+            let propio = d.qname().unwrap_or_default();
+            for i in d.section("derivedFrom").map(|n| n.items()).unwrap_or(&[]) {
+                let Some(qn) = i.as_str().filter(|q| *q != propio) else {
+                    continue;
+                };
+                let destino = if pkg.dataset(qn).is_some() {
+                    ref_qn(Kind::Dataset, qn, ns, sc)
+                } else if pkg.collection(qn).is_some() {
+                    ref_qn(Kind::MediaCollection, qn, ns, sc)
+                } else {
+                    ref_qn(Kind::View, qn, ns, sc)
+                };
+                a("sale_de", "produce", destino);
             }
         }
         Kind::TrainedModel => {

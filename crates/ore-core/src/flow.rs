@@ -252,7 +252,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 
     // 3 · Los conductos y la regla de flujo.
     let conductos = clearances(pkg, &lat);
-    colecciones(pkg, &lat, &conductos, &mut out);
+    colecciones(pkg, &lat, &efectivas, &conductos, &mut out);
     vistas_materializadas(pkg, &lat, &efectivas, &conductos, &mut out);
     canal_lateral(pkg, &lat, &efectivas, &mut out);
     indices_de_topologia(pkg, &lat, &efectivas, &conductos, &mut out);
@@ -657,6 +657,27 @@ pub fn etiquetas_de_coleccion(
     c: &Loaded,
     out: &mut Vec<Diagnostic>,
 ) -> Labels {
+    etiquetas_de_coleccion_con(pkg, lat, &BTreeMap::new(), c, out)
+}
+
+thread_local! {
+    /// Las colecciones cuyo `derivedFrom` se está siguiendo ahora: una que
+    /// deriva de una vista sobre su propio listado volvería sobre sí. La
+    /// segunda vez se toma sin lo derivado —lo que ya se está sumando—.
+    static DERIVANDO: std::cell::RefCell<BTreeSet<String>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+}
+
+/// Como [`etiquetas_de_coleccion`], con las etiquetas efectivas de las
+/// entidades: las hace falta para lo que una colección **escrita** deriva de
+/// una vista o un dataset (v1alpha19 `01` §3), cuya carga sale de ellas.
+pub fn etiquetas_de_coleccion_con(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    c: &Loaded,
+    out: &mut Vec<Diagnostic>,
+) -> Labels {
     let mut ls: Labels = BTreeMap::new();
     let origen = c
         .section("from")
@@ -679,6 +700,34 @@ pub fn etiquetas_de_coleccion(
         }
     }
     let cqn = c.qname().unwrap_or_default();
+    // v1alpha19 · **lo que deriva** (`01` §3): una escrita lleva el join de lo
+    // que nombra su `derivedFrom` —de una vista o un dataset, lo de TODOS sus
+    // campos; de una colección, lo suyo—, como un dataset escrito (vía 3).
+    let entra = c.section("from").is_none()
+        && c.section("derivedFrom").is_some()
+        && DERIVANDO.with(|d| d.borrow_mut().insert(cqn.clone()));
+    if entra {
+        for i in c.section("derivedFrom").map(|n| n.items()).unwrap_or(&[]) {
+            let Some(nombre) = i.as_str() else { continue };
+            if let Some(leido) = pkg
+                .resolve_view(nombre, c)
+                .or_else(|| pkg.resolve_dataset(nombre, c))
+            {
+                for labels in carga_de(pkg, lat, efectivas, leido).values() {
+                    for (ret, (nivel, _)) in labels {
+                        subir_en(lat, &mut ls, ret, nivel, Origin::Inherited);
+                    }
+                }
+            } else if let Some(otra) = pkg.resolve_collection(nombre, c) {
+                for (ret, (nivel, _)) in
+                    etiquetas_de_coleccion_con(pkg, lat, efectivas, otra, &mut Vec::new())
+                {
+                    subir_en(lat, &mut ls, &ret, &nivel, Origin::Inherited);
+                }
+            }
+        }
+        DERIVANDO.with(|d| d.borrow_mut().remove(&cqn));
+    }
     if let Some((_, m)) = c.root.get("metadata") {
         for (r, n, pos) in read_labels(m) {
             let heredado = ls.get(&r).map(|(nivel, _)| nivel.clone());
@@ -693,9 +742,10 @@ pub fn etiquetas_de_coleccion(
                     )
                     .at(pos)
                     .help(
-                        "una colección suma a lo que hereda de su origen y no le quita: el join \
-                         se queda en lo heredado y la etiqueta diría menos de lo que lleva. \
-                         Relajar se decide donde se declaró el suelo —el `datasource`—",
+                        "una colección suma a lo que hereda —de su origen, o de lo que deriva \
+                         (`derivedFrom`)— y no le quita: el join se queda en lo heredado y la \
+                         etiqueta diría menos de lo que lleva. Relajar se decide donde se \
+                         declaró el suelo",
                     ),
                 );
                 continue;
@@ -712,12 +762,13 @@ pub fn etiquetas_de_coleccion(
 fn colecciones(
     pkg: &Package,
     lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
     conductos: &BTreeMap<String, Labels>,
     out: &mut Vec<Diagnostic>,
 ) {
     let conducto = "materialization.payload";
     for c in pkg.of(Kind::MediaCollection) {
-        let ls = etiquetas_de_coleccion(pkg, lat, c, out);
+        let ls = etiquetas_de_coleccion_con(pkg, lat, efectivas, c, out);
         let Some(desde) = c.section("from") else {
             continue;
         };
@@ -916,6 +967,17 @@ pub fn carga_de(
                     .resolve_view(nombre, suelo)
                     .or_else(|| pkg.resolve_dataset(nombre, suelo))
                 else {
+                    // v1alpha19 `01` §4: lo leído puede ser una colección, y
+                    // cada campo lleva lo que ella lleva.
+                    if let Some(c) = pkg.resolve_collection(nombre, suelo)
+                        && vistos.insert(c.qname().unwrap_or_default())
+                    {
+                        for (ret, (nivel, _)) in
+                            etiquetas_de_coleccion_con(pkg, lat, efectivas, c, &mut Vec::new())
+                        {
+                            subir(&mut herencia, &ret, &nivel, Origin::Inherited);
+                        }
+                    }
                     continue;
                 };
                 let lqn = leido.qname().unwrap_or_default();
@@ -953,7 +1015,7 @@ pub fn carga_de(
             && let Some(c) = crate::vistas::anclada_a(suelo).and_then(|q| pkg.collection(&q))
             && let Ok(raiz) = crate::vistas::raiz(pkg, v)
         {
-            let herencia = etiquetas_de_coleccion(pkg, lat, c, &mut Vec::new());
+            let herencia = etiquetas_de_coleccion_con(pkg, lat, efectivas, c, &mut Vec::new());
             for campo in raiz.columnas.keys().chain(raiz.agrega.keys()) {
                 for (ret, (nivel, _)) in &herencia {
                     subir(
@@ -1104,7 +1166,8 @@ fn etiquetas_de_raices(
             // v1alpha17: el listado de una colección lleva lo que la colección
             // lleva —lo heredado de su origen y lo suyo— en cada columna
             // (`04` §3). Lo que diga mal (`OOS4012`) lo dice su propia fase.
-            for (ret, (n, _)) in etiquetas_de_coleccion(pkg, lat, c, &mut Vec::new()) {
+            for (ret, (n, _)) in etiquetas_de_coleccion_con(pkg, lat, efectivas, c, &mut Vec::new())
+            {
                 subir_en(lat, ls, &ret, &n, Origin::Inherited);
             }
         } else if let Some(d) = pkg.dataset(&r.doc) {
