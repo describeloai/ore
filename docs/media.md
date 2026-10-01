@@ -115,13 +115,30 @@ POST /media/{b}/{s}/{c}/urls   { "items": [{path|digest, version?}…], "ttl_s":
 ### `put` · escribir un ítem
 
 ```
-POST /media/{b}/{s}/{c}/transactions                     → 201 { "transaction": "<t>" }
-PUT  /media/{b}/{s}/{c}/transactions/{t}/items?path=     (el cuerpo en flujo)
+POST /media/{b}/{s}/{c}/transactions  { "ttl_s"? }
+→ 201 { "transaction": "<t>", "upload": "<url>", "ttl_s", "expires_ms" }
+PUT  <upload>&path=<camino>               (el cuerpo en flujo, con Content-Length)
      Content-Type: <declarado, opcional>
      Repr-Digest: sha-256=:…:  (opcional: si llega, se coteja)
-→ 201 MediaRef
-POST /media/{b}/{s}/{c}/transactions/{t}/commit | /abort
+→ 201 MediaRef + { "transaction", "stored" }
+POST /media/{b}/{s}/{c}/transactions/{t}/commit
+→ 200 { "transaccion", "metadata_location", "items", "cambios", "procedencia", "commit" }
+POST /media/{b}/{s}/{c}/transactions/{t}/abort  → 204
 ```
+
+- **Los bytes no pasan por la puerta** (0049 B4b·2): como `open` dice dónde leer, abrir una
+  transacción dice dónde subir —`upload`, `ore-medios:8098/subida?permiso=…`—, y el código sube
+  cada ítem ahí añadiendo `&path=`. `upload` es un **portador** de esa transacción mientras viva:
+  nunca se escribe en una tabla, un log ni un resultado.
+- **Quién puede** (B4b·2): la colección tiene que ser escrita (si no, `media/no-escribible`); desde
+  un puesto, la clase de su repositorio puede quitar (`media/sin-permiso`) y dentro de un transform
+  sólo se escribe su `output` (`media/no-declarada`), al abrir y al confirmar. Confirmar o abortar
+  sólo lo hace quien abrió (si no, `media/transaccion`).
+- **Confirmar escribe el puntero** (`datasets/<b>/<s>/<c>.json`, en la rama del puesto) en un
+  commit, con la **procedencia**: `{puesto, transform, inputs, fijadas}` dentro de un transform
+  —las transacciones que leyó, B4·2—, `{puesto, leidas}` en una sesión, y `transaccion` y `por`.
+  Si otro confirmó a la vez, `409` y la transacción **sigue abierta**: se confirma otra vez, sobre
+  la base nueva.
 
 - Solo en una colección **escrita** (v1alpha16 `02` §3); en una mantenida es `media/no-escribible`.
 - La celda calcula el `sha256` al paso, detecta el tipo por los bytes, y guarda el blob **por su

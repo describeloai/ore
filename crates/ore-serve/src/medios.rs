@@ -51,7 +51,7 @@ pub const ENTORNO: &str = "ORE_MEDIOS_DIRECCION";
 /// un millón de ítems son ~2 s medidos (B2·0) más la descarga de su listado.
 const PLAZO: std::time::Duration = std::time::Duration::from_secs(60);
 
-fn problema(status: u16, tipo: &str, detalle: impl Into<String>) -> Respuesta {
+pub(crate) fn problema(status: u16, tipo: &str, detalle: impl Into<String>) -> Respuesta {
     Respuesta {
         codigo: status,
         cuerpo: Json::obj([
@@ -99,6 +99,43 @@ fn documento_en(raiz: &Path, b: &str, kind: &str, s: &str, nombre: &str) -> Opti
 
 fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
+}
+
+/// **Si la colección es escrita** (0049 B4b·2): sin `from`, la llena el
+/// código. `None`: no existe.
+pub(crate) fn es_escrita(raiz: &Path, b: &str, s: &str, c: &str) -> Option<bool> {
+    let n = documento_en(raiz, b, "MediaCollection", s, c)?;
+    Some(n.get("spec").is_none_or(|(_, sp)| sp.get("from").is_none()))
+}
+
+/// Una petición a `ore-medios` (el puerto de `ore-serve`): su código y su
+/// texto. Sin `ORE_MEDIOS_DIRECCION`, o sin respuesta, `503 media/no-desplegado`.
+pub(crate) fn pedir_a_medios(ruta: &str, cuerpo: &Json) -> Result<(u16, String), Respuesta> {
+    let Some(direccion) = std::env::var(ENTORNO).ok().filter(|d| !d.is_empty()) else {
+        return Err(problema(
+            503,
+            "media/no-desplegado",
+            "esta celda no tiene `ore-medios` todavía (0049 B2)",
+        ));
+    };
+    ore_entrada::http::pedir_con(
+        "POST",
+        &direccion,
+        ruta,
+        &[],
+        Some(cuerpo),
+        ore_entrada::http::Plazos {
+            conectar: std::time::Duration::from_secs(5),
+            responder: PLAZO,
+        },
+    )
+    .map_err(|e| {
+        problema(
+            503,
+            "media/no-desplegado",
+            format!("`ore-medios` no contesta: {e}"),
+        )
+    })
 }
 
 /// La colección: si es virtual, y el `objectTable` del que sale.
@@ -504,7 +541,7 @@ impl Servidor {
 /// Dónde lee el puesto los bytes (B3·4): `ORE_MEDIOS_CONTENIDO` si se dice; si
 /// no, el host de `ORE_MEDIOS_DIRECCION` en el puerto 8098, el único de
 /// `ore-medios` al que la red deja llegar al puesto.
-fn direccion_del_contenido(direccion: &str) -> String {
+pub(crate) fn direccion_del_contenido(direccion: &str) -> String {
     if let Ok(d) = std::env::var("ORE_MEDIOS_CONTENIDO")
         && !d.trim().is_empty()
     {

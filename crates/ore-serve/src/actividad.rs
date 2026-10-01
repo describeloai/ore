@@ -173,6 +173,23 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // 0049 B2·2: firmar las URLs de unos ítems por su puerta es leer; lo firmado
     // lo cuenta la ruta (`coleccion:servir`), como el resolver de 0046.
     ("POST", "/media/{}/{}/{}/urls", Es::Datos),
+    // 0049 B4b·2: escribir una colección. Abrir y abortar son actos; confirmar
+    // mueve su puntero en el árbol, como `dataset:confirmar`.
+    (
+        "POST",
+        "/media/{}/{}/{}/transactions",
+        Es::Acto("coleccion:abrir"),
+    ),
+    (
+        "POST",
+        "/media/{}/{}/{}/transactions/{}/commit",
+        Es::Acto("coleccion:confirmar"),
+    ),
+    (
+        "POST",
+        "/media/{}/{}/{}/transactions/{}/abort",
+        Es::Acto("coleccion:abortar"),
+    ),
 ];
 
 /// ¿Casa `ruta` con `patron`?

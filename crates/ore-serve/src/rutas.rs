@@ -138,6 +138,8 @@ pub struct Servidor {
     /// ⭐ El agente de la celda (0046 E9·3): con él se lee del cofre la credencial
     ///   de una fuente para firmar en el origen los ítems de una colección virtual.
     pub agente: Option<crate::agente::Agente>,
+    /// Las transacciones abiertas de las colecciones escritas (0049 B4b·2).
+    pub escritas: crate::escritas::Escritas,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -174,6 +176,10 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             | ["colecciones", _, _, _, "items", "resolver"]
             // 0049 B2·2: la media por su puerta —listar, mirar y firmar es LEER—.
             | ["media", _, _, _, "items" | "item" | "urls" | "content"]
+            // 0049 B4b·2: escribir una colección es escribir, y se decide en
+            // la ruta (escrita, la clase, el `output` del transform).
+            | ["media", _, _, _, "transactions"]
+            | ["media", _, _, _, "transactions", _, "commit" | "abort"]
     );
     if entra {
         return None;
@@ -817,6 +823,22 @@ impl Servidor {
             ("GET", ["media", b, s, c, "content"]) => {
                 self.media(rama, p, sujeto, b, s, c, "content")
             }
+            // 0049 B4b·2: `put`, por transacciones (`escritas.rs`).
+            ("POST", ["media", b, s, c, "transactions"]) => {
+                self.abrir_transaccion(rama, p, sujeto, b, s, c)
+            }
+            (
+                "POST",
+                [
+                    "media",
+                    b,
+                    s,
+                    c,
+                    "transactions",
+                    t,
+                    op @ ("commit" | "abort"),
+                ],
+            ) => self.cerrar_transaccion(sujeto, b, s, c, t, *op == "commit"),
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {

@@ -375,6 +375,92 @@ pub(crate) fn media_en(
     MediaDelPuesto::Libre
 }
 
+/// **Quién escribe una colección desde un puesto** (0049 B4b·2): el puesto del
+/// agente que pide —como en [`media_en`], por el agente y no por la cabecera—,
+/// su persona, su rama y la procedencia de lo que escriba.
+#[derive(Debug, PartialEq)]
+pub(crate) struct EscrituraDelPuesto {
+    pub id: String,
+    pub persona: String,
+    pub rama: Option<String>,
+    /// `{puesto, transform, inputs, fijadas}` dentro de un transform;
+    /// `{puesto, leidas}` en una sesión.
+    pub procedencia: Json,
+}
+
+/// Lo que deja escribir en `coleccion` (forma corta) el puesto de quien pide.
+/// `Ok(None)`: no es un agente, o no tiene puesto vivo, y escribe como sí
+/// mismo. `Err((tipo, detalle))`: la clase del repositorio no escribe datos
+/// (0036 ⑤, sólo quita), o el transform que corre no la declaró como `output`.
+pub(crate) fn escritura_en(
+    lista: &BTreeMap<String, Puesto>,
+    sujeto: &Identidad,
+    coleccion: &str,
+) -> Result<Option<EscrituraDelPuesto>, (&'static str, String)> {
+    if !es_agente(sujeto) {
+        return Ok(None);
+    }
+    let todos: Vec<(&String, &Puesto)> = lista
+        .iter()
+        .filter(|(_, p)| {
+            p.estado != Estado::Cerrado && p.agente.as_deref() == Some(sujeto.persona.as_str())
+        })
+        .collect();
+    let Some((id, p)) = todos
+        .iter()
+        .find(|(_, p)| p.transform.is_some())
+        .or_else(|| todos.first())
+    else {
+        return Ok(None);
+    };
+    if let Some(c) = p.clase
+        && !c.escribe
+    {
+        return Err((
+            "media/sin-permiso",
+            format!(
+                "este puesto vive en un repositorio `{}`, y esa clase no escribe datos: para escribir, un repositorio `transforms` o `models`",
+                c.id
+            ),
+        ));
+    }
+    let procedencia = match &p.transform {
+        Some(t) if t.output != coleccion => {
+            return Err((
+                "media/no-declarada",
+                format!(
+                    "`{coleccion}` no es el output de `{}` (`{}`): un transform sólo escribe lo que declara",
+                    t.nombre,
+                    if t.output.is_empty() {
+                        "nada"
+                    } else {
+                        &t.output
+                    }
+                ),
+            ));
+        }
+        Some(t) => Json::obj([
+            ("puesto", Json::s(*id)),
+            ("transform", Json::s(&t.nombre)),
+            ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
+            ("fijadas", fijadas_json(&t.fijadas)),
+        ]),
+        None => Json::obj([
+            ("puesto", Json::s(*id)),
+            (
+                "leidas",
+                Json::Arr(p.colecciones_leidas.iter().map(Json::s).collect()),
+            ),
+        ]),
+    };
+    Ok(Some(EscrituraDelPuesto {
+        id: (*id).clone(),
+        persona: p.persona.clone(),
+        rama: p.rama.clone(),
+        procedencia,
+    }))
+}
+
 /// `{<colección>: <transacción>}`: lo que un transform fijó, como se enseña.
 fn fijadas_json(f: &BTreeMap<String, Fijada>) -> Json {
     Json::Obj(
@@ -2205,6 +2291,15 @@ impl Servidor {
         media_en(&mut self.puestos.lista.lock().unwrap(), sujeto, coleccion)
     }
 
+    /// [`escritura_en`], bajo el candado de la lista.
+    pub(crate) fn escritura_del_puesto(
+        &self,
+        sujeto: &Identidad,
+        coleccion: &str,
+    ) -> Result<Option<EscrituraDelPuesto>, (&'static str, String)> {
+        escritura_en(&self.puestos.lista.lock().unwrap(), sujeto, coleccion)
+    }
+
     pub(crate) fn transform_de(&self, id: &str) -> Option<Transform> {
         self.puestos
             .lista
@@ -3798,6 +3893,91 @@ mod prueba {
         assert_eq!(
             media_en(&mut lista, &ana, "legal.archivo.fotos"),
             MediaDelPuesto::Libre
+        );
+    }
+
+    /// 0049 B4b·2: desde un puesto, el `output` del transform y nada más, con
+    /// su procedencia; en una sesión, lo leído; la clase sólo quita.
+    #[test]
+    fn la_escritura_de_un_puesto_obedece_a_su_transform_y_a_su_clase() {
+        let mut lista = BTreeMap::new();
+        let mut p = un_puesto("agente:ana");
+        p.rama = Some("ana/paginas".into());
+        p.colecciones_leidas
+            .insert("legal.archivo.contratos".into());
+        lista.insert("puesto-ana".to_string(), p);
+        let ana = agente("agente:ana");
+
+        // Una sesión: escribe, y lleva lo que leyó.
+        let e = escritura_en(&lista, &ana, "legal.archivo.paginas")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (e.id.as_str(), e.persona.as_str(), e.rama.as_deref()),
+            ("puesto-ana", "persona:ana", Some("ana/paginas"))
+        );
+        assert_eq!(
+            e.procedencia,
+            Json::obj([
+                ("puesto", Json::s("puesto-ana")),
+                (
+                    "leidas",
+                    Json::Arr(vec![Json::s("legal.archivo.contratos")])
+                ),
+            ])
+        );
+
+        // Un transform: su output, con sus inputs y lo fijado; otra, 403.
+        lista.get_mut("puesto-ana").unwrap().transform = Some(Transform {
+            nombre: "paginar".into(),
+            inputs: vec!["legal.archivo.contratos".into()],
+            output: "legal.archivo.paginas".into(),
+            fijadas: BTreeMap::from([(
+                "legal.archivo.contratos".to_string(),
+                Fijada {
+                    metadata_location: "m3".into(),
+                    transaccion: "3".into(),
+                },
+            )]),
+        });
+        let e = escritura_en(&lista, &ana, "legal.archivo.paginas")
+            .unwrap()
+            .unwrap();
+        let Json::Obj(m) = &e.procedencia else {
+            panic!()
+        };
+        assert_eq!(m.get("transform"), Some(&Json::s("paginar")));
+        assert_eq!(
+            m.get("fijadas"),
+            Some(&Json::obj([("legal.archivo.contratos", Json::s("3"))]))
+        );
+        assert_eq!(
+            escritura_en(&lista, &ana, "legal.archivo.otra").map(|_| ()),
+            Err((
+                "media/no-declarada",
+                "`legal.archivo.otra` no es el output de `paginar` (`legal.archivo.paginas`): un transform sólo escribe lo que declara".to_string()
+            ))
+        );
+
+        // Una clase que no escribe quita, aunque el transform lo declare.
+        lista.get_mut("puesto-ana").unwrap().clase = ore_core::clases::de("analytics-python");
+        assert!(matches!(
+            escritura_en(&lista, &ana, "legal.archivo.paginas"),
+            Err(("media/sin-permiso", _))
+        ));
+
+        // Quien no es agente, o un agente sin puesto, escribe como sí mismo.
+        let persona = Identidad {
+            tipo: None,
+            ..agente("persona:ana")
+        };
+        assert_eq!(
+            escritura_en(&lista, &persona, "legal.archivo.paginas"),
+            Ok(None)
+        );
+        assert_eq!(
+            escritura_en(&lista, &agente("agente:nadie"), "legal.archivo.paginas"),
+            Ok(None)
         );
     }
 

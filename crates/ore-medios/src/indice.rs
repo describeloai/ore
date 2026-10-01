@@ -235,6 +235,11 @@ impl Indice {
             })
     }
 
+    /// Cuántos ítems hay en un estado (`actual`, `retirado`, `perdido`).
+    pub fn cuantos(&self, estado: &str) -> usize {
+        self.items.iter().filter(|x| x.estado == estado).count()
+    }
+
     /// Si la versión de un ítem es la actual de su camino.
     pub fn es_actual(&self, it: &Item) -> bool {
         self.por_camino(&it.camino, None)

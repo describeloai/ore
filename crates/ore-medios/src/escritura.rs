@@ -654,7 +654,10 @@ impl Servicio {
             Err(r) => return r,
         };
         let r = self.sellar_escrita(coleccion, n, base_ml, base_tx, &items);
-        if r.codigo == 200 {
+        // `cerrar: false` (B4b·2): quien escribe el puntero cierra después
+        // (`abortar`) —si pierde la carrera de la forja, la transacción sigue
+        // abierta y se vuelve a confirmar sobre la base nueva—.
+        if r.codigo == 200 && texto(n, "cerrar") != Some("false") {
             self.escrituras.quitar(id);
         } else {
             self.escrituras.reabrir(id);
@@ -706,7 +709,22 @@ impl Servicio {
             }
             filas.push(fila_nueva(camino, s, tx));
         }
+        // Lo que el puntero cuenta (`items`, como el de una mantenida).
+        let antes = |e: &str| base_ix.as_ref().map_or(0, |ix| ix.cuantos(e) as i64);
+        let (actuales, retirados, perdidos) = (
+            antes("actual") + entran,
+            antes("retirado") + cambian,
+            antes("perdido"),
+        );
         let resumen = |m: &mut BTreeMap<String, Json>| {
+            m.insert(
+                "items".into(),
+                Json::obj([
+                    ("actuales", Json::Int(actuales)),
+                    ("retirados", Json::Int(retirados)),
+                    ("perdidos", Json::Int(perdidos)),
+                ]),
+            );
             m.insert(
                 "cambios".into(),
                 Json::obj([
@@ -1019,6 +1037,8 @@ pub(crate) mod pruebas {
         assert_eq!(campo(&n, "transaccion"), "2");
         let cambios = Json::de_node(n.get("cambios").unwrap().1).jcs();
         assert_eq!(cambios, r#"{"cambian":1,"entran":0,"iguales":1}"#);
+        let items = Json::de_node(n.get("items").unwrap().1).jcs();
+        assert_eq!(items, r#"{"actuales":2,"perdidos":0,"retirados":1}"#);
         let ml2 = campo(&n, "metadata_location");
         let actual = listado(&s, &ml2, "2", "actual");
         assert!(

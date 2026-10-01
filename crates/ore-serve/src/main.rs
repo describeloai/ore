@@ -51,6 +51,7 @@ mod credenciales;
 mod datasets;
 mod documentos;
 mod entorno;
+mod escritas;
 mod forja;
 mod funciones;
 mod git;
@@ -471,6 +472,7 @@ fn main() -> ExitCode {
             .map(|a| ore_acceso::Buzon::nuevo(std::sync::Arc::clone(a))),
         acceso,
         agente,
+        escritas: escritas::Escritas::default(),
     };
 
     match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {
