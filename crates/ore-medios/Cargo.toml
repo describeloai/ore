@@ -1,0 +1,33 @@
+[package]
+name    = "ore-medios"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "La media de una celda: el índice de cada colección y las URLs firmadas, en un proceso vivo (ADR 0049 B2)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ore-medios"
+path = "src/main.rs"
+
+[dependencies]
+# La forma canónica, el analizador de JSON y cómo se sirve un ítem.
+ore-core = { path = "../ore-core" }
+
+# El servidor HTTP de ORE: el mismo que `ore-serve`, sin dependencias de fuera.
+ore-entrada = { path = "../ore-entrada" }
+
+# **El lago** (0049 B2·0): `ore-medios` es el único proceso de la celda que lo
+# lee y firma —y en B3, el único que lee un origen—, y por eso enlaza
+# `ore-store` como biblioteca. `ore-serve` sigue sin TLS y decide quién puede.
+ore-store = { path = "../ore-store" }
+
+# Las columnas del listado de una colección, leídas de sus lotes.
+arrow-array = "58"
+
+[dev-dependencies]
+arrow-schema = "58"

@@ -54,6 +54,7 @@ pub mod json;
 pub mod linaje;
 pub mod link;
 pub mod manifiesto;
+pub mod medios;
 pub mod normalize;
 pub mod odcs;
 pub mod paquetes;

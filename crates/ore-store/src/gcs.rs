@@ -52,6 +52,12 @@ const STS: &str = "https://sts.googleapis.com/v1/token";
 pub struct Cuenta {
     pub bucket: String,
     credencial: ore_gcp::Credencial,
+    /// **Un cliente para toda la vida de la cuenta** (0049 B2·0): con uno por
+    /// llamada, cada `signBlob` pagaba TCP + TLS y la carga de los certificados
+    /// del sistema —100 URLs, 52 s en el pod de ore-serve—; con las conexiones
+    /// vivas, 17 ms la firma y 100 en 0,69 s (medido desde victor). Un
+    /// `ureq::Agent` es un pool compartido entre hilos.
+    agente: ureq::Agent,
 }
 
 impl Cuenta {
@@ -61,6 +67,7 @@ impl Cuenta {
         Ok(Cuenta {
             bucket,
             credencial: ore_gcp::Credencial::del_entorno(),
+            agente: cliente()?,
         })
     }
 
@@ -69,7 +76,8 @@ impl Cuenta {
     }
 
     fn pide(&self, metodo: &str, url: &str) -> Result<ureq::Request, String> {
-        Ok(cliente()?
+        Ok(self
+            .agente
             .request(metodo, url)
             .set("user-agent", AGENTE)
             .set("authorization", &format!("Bearer {}", self.token()?)))
@@ -115,7 +123,7 @@ impl Cuenta {
             if let Ok(f) = std::env::var("ORE_GCS_FIRMANTE") {
                 return Ok(f);
             }
-            cliente()?
+            self.agente
                 .get(CORREO)
                 .set("metadata-flavor", "Google")
                 .call()
@@ -131,7 +139,8 @@ impl Cuenta {
     fn firmar_bytes(&self, firmante: &str, datos: &[u8]) -> Result<Vec<u8>, String> {
         let cuerpo =
             ore_core::json::Json::obj([("payload", ore_core::json::Json::s(base64(datos)))]).jcs();
-        let r = cliente()?
+        let r = self
+            .agente
             .post(&format!("{IAM}/{firmante}:signBlob"))
             .set("user-agent", AGENTE)
             .set("authorization", &format!("Bearer {}", self.token()?))
@@ -643,7 +652,8 @@ impl Cuenta {
             codificar(&self.token()?),
             codificar(&regla)
         );
-        let r = cliente()?
+        let r = self
+            .agente
             .post(STS)
             .set("content-type", "application/x-www-form-urlencoded")
             .set("user-agent", AGENTE)

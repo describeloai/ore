@@ -2290,6 +2290,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-medios"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "ore-core",
+ "ore-entrada",
+ "ore-store",
+]
+
+[[package]]
 name = "ore-read-bigquery"
 version = "0.1.0"
 dependencies = [
