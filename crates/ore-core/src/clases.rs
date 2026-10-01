@@ -360,6 +360,30 @@ pub fn se_siembra(rel: &str, paquete: &str) -> bool {
     !rel.ends_with(".yaml") || crate::pertenencia::puede_ser_namespace(paquete)
 }
 
+/// El ejemplo de `functions-typescript`: el mismo `def` que el de Python, como
+/// función exportada de un módulo. **Corre en la sesión** (`puesto-node`, 0031
+/// W3.4: un `.ts` con `export` se importa y sus exports quedan en el contexto)
+/// y no se invoca todavía como `Function`: `runtime: node` entra por la misma
+/// regla que `python` cuando haya quien lo ejecute (0050 R3), y la gramática no
+/// promete lo que nadie cumple. Por eso no siembra contrato. Y no siembra
+/// `package.json`: la sesión de Node nace con lo que trae su imagen.
+const FUNCTIONS_TS: &str = "\
+// Una función de TypeScript: entra lo que declara, sale un objeto. Hoy corre en
+// tu sesión (Run); publicarla como `Function` invocable con parámetros
+// —`runtime: node`, como las de Python— llega con ORE 0050 R3.
+//
+// Desde la sesión lees los datasets por su nombre en tres partes (0038),
+// `over(\"mi_base.mi_schema.mi_dataset\")`, y `sql(...)`: los pone el SDK del
+// puesto en el contexto.
+
+export function ejemplo(texto: string, veces: number = 1): { resultado: string; longitud: number } {
+  const resultado = Array(veces).fill(texto).join(\" \");
+  return { resultado, longitud: resultado.length };
+}
+
+console.log(ejemplo(\"hola\", 2));
+";
+
 /// Rellena los huecos de una semilla: `{{paquete}}` (el `namespace` de lo que
 /// declare), `{{carpeta}}` (dónde vive el repositorio, para su `entrypoint`) y
 /// `{{funcion}}` (un nombre de función **único en el paquete**, sacado de la
@@ -480,7 +504,7 @@ pub const CLASES: &[Clase] = &[
         ejecuta: true,
         perfil: None,
         titulo: "Functions",
-        descripcion: "Write reusable code for pipelines, transforms and applications.",
+        descripcion: "Write typed Python functions over your datasets and models, invocable with parameters.",
         // 4: la semilla nombra en tres partes (0038 P7).
         // 5: nace con una función de verdad, la pareja contrato + código (0050 P5).
         version: 5,
@@ -489,6 +513,21 @@ pub const CLASES: &[Clase] = &[
             ("functions/ejemplo.yaml", FUNCTIONS_YAML),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
         ],
+    },
+    // 0050: la familia `functions` en dos lenguajes, como `transforms` en
+    // tres. TypeScript corre en la sesión (`puesto-node`); invocarla como
+    // `Function` es R3 (`runtime: node`).
+    Clase {
+        id: "functions-typescript",
+        familia: "functions",
+        lenguaje: "typescript",
+        escribe: false,
+        ejecuta: true,
+        perfil: None,
+        titulo: "Functions",
+        descripcion: "Write reusable functions in TypeScript. They run in your session; publishing them as invocable Functions comes next.",
+        version: 1,
+        semilla: &[("funciones/ejemplo.ts", FUNCTIONS_TS)],
     },
     // `semantics` no siembra código: lo suyo son documentos del árbol, y
     // sembrar una `Entity` a medias sería sembrar algo que no compila.
@@ -668,7 +707,8 @@ mod pruebas {
         assert!(!de("functions-python").unwrap().escribe);
         // Y lo que no ejecuta es lo que sólo edita documentos.
         assert!(!de("semantics").unwrap().ejecuta);
-        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 6);
+        assert!(!de("functions-typescript").unwrap().escribe);
+        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 7);
     }
 
     /// ⭐ Una plantilla trae su entorno y CÓDIGO, no un comentario (⑧a).
@@ -873,11 +913,16 @@ mod pruebas {
         // `sql` corre donde corre python: no hay imagen de SQL.
         assert_eq!(entorno_de(de("transforms-sql").unwrap()), Some("python"));
         assert_eq!(entorno_de(de("semantics").unwrap()), None);
+        assert_eq!(
+            entorno_de(de("functions-typescript").unwrap()),
+            Some("node")
+        );
     }
 
     #[test]
     fn las_clases_estan_y_ninguna_siembra_fuera_de_su_carpeta() {
-        assert_eq!(CLASES.len(), 7);
+        // 8 desde 0050: `functions-typescript`.
+        assert_eq!(CLASES.len(), 8);
         for c in CLASES {
             assert!(de(c.id).is_some());
             for (ruta, _) in c.semilla {
