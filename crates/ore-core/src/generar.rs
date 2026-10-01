@@ -11,10 +11,12 @@
 //!
 //! - **El contenido** es el de `ore_code::emitir`: los mismos bytes para la
 //!   misma firma, así que generar dos veces no cambia nada.
-//! - **Dónde**: si un documento del paquete ya nombra ese `entrypoint`, ahí se
-//!   queda (§4.8: el sitio no es parte de la regla, y quien lo movió sabía por
-//!   qué). Si no, en `functions/<def>.yaml` del **repositorio** del código —la
-//!   carpeta más cercana, subiendo, con `pyproject.toml`— o del paquete.
+//! - **Dónde**: siempre en `functions/<def>.yaml` **del paquete**, nunca junto
+//!   al código. Una función publicada es un nombre del paquete
+//!   (`<paquete>.<def>`) y no del repositorio donde se escribe: es lo que se ve
+//!   en Assets → Functions, sin base ni schema que elegir. Un documento de esa
+//!   función que esté en otro sitio —el de antes, junto al repositorio— se
+//!   mueve: se borra allí y se escribe aquí.
 //! - **Lo que sobra**: un documento generado (empieza por la marca de
 //!   procedencia) cuyo `def` ya no es un `@function` se borra. Uno escrito a
 //!   mano nunca: si su `def` ya no está, eso lo dice `ore validate`.
@@ -170,10 +172,11 @@ fn plan_del_paquete(
                 continue;
             }
             let contenido = emitir::documento(firma, paquete);
-            let destino = match existentes.get(&entrypoint) {
-                Some(e) => e.ruta.clone(),
-                None => repositorio(&py, carpeta).join(emitir::ruta_del_documento(firma)),
-            };
+            let destino = carpeta.join(emitir::ruta_del_documento(firma));
+            let previo = existentes.get(&entrypoint);
+            // El suyo, en otro sitio: se mueve aquí.
+            let movido = previo.filter(|e| e.ruta != destino);
+            let movido_a_mano = movido.is_some_and(|e| !emitir::es_generado(&e.texto));
             if let Some(otro) = destinos.insert(destino.clone(), entrypoint.clone()) {
                 p.diagnosticos.push(
                     Diagnostic::new(
@@ -185,17 +188,35 @@ fn plan_del_paquete(
                 );
                 continue;
             }
-            let actual = match existentes.get(&entrypoint) {
-                Some(e) => Some(e.texto.clone()),
-                None => std::fs::read_to_string(&destino).ok(),
+            // Lo que hay en el destino, y si es el suyo.
+            let (actual, es_suyo) = match previo {
+                Some(e) if movido.is_none() => (Some(e.texto.clone()), true),
+                _ => (std::fs::read_to_string(&destino).ok(), false),
+            };
+            let borrar_el_de_antes = |p: &mut Plan| {
+                if let Some(e) = movido {
+                    p.cambios.push(Cambio {
+                        ruta: e.ruta.clone(),
+                        entrypoint: entrypoint.clone(),
+                        accion: Accion::Borrar,
+                    });
+                }
             };
             let accion = match actual {
+                None if movido_a_mano => Accion::Reescribir {
+                    contenido,
+                    a_mano: true,
+                },
                 None => Accion::Crear(contenido),
                 Some(t) if t.replace("\r\n", "\n") == contenido => {
-                    p.al_dia += 1;
+                    if movido.is_some() {
+                        borrar_el_de_antes(p);
+                    } else {
+                        p.al_dia += 1;
+                    }
                     continue;
                 }
-                Some(t) if !existentes.contains_key(&entrypoint) && !emitir::es_generado(&t) => {
+                Some(t) if !es_suyo && !emitir::es_generado(&t) => {
                     // El sitio lo ocupa un documento que no es de esta función.
                     p.diagnosticos.push(
                         Diagnostic::new(
@@ -211,9 +232,10 @@ fn plan_del_paquete(
                 }
                 Some(t) => Accion::Reescribir {
                     contenido,
-                    a_mano: !emitir::es_generado(&t),
+                    a_mano: !emitir::es_generado(&t) || movido_a_mano,
                 },
             };
+            borrar_el_de_antes(p);
             p.cambios.push(Cambio {
                 ruta: destino,
                 entrypoint,
@@ -236,22 +258,6 @@ fn plan_del_paquete(
             });
         }
     }
-}
-
-/// El repositorio de un `.py`: la carpeta más cercana, subiendo y sin salir
-/// del paquete, con `pyproject.toml`; o la del paquete.
-fn repositorio(py: &Path, carpeta: &Path) -> PathBuf {
-    let mut d = py.parent();
-    while let Some(c) = d {
-        if !c.starts_with(carpeta) || c == carpeta {
-            break;
-        }
-        if c.join("pyproject.toml").is_file() {
-            return c.to_path_buf();
-        }
-        d = c.parent();
-    }
-    carpeta.to_path_buf()
 }
 
 /// Escribe el plan en disco.

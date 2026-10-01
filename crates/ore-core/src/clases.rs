@@ -293,44 +293,24 @@ print(declare({
 }))
 ";
 
-/// La pareja de `functions-python`: **el código y su documento** (0050 G1).
+/// La semilla de `functions-python`: **solo el código** (0050 G1, G2).
 ///
-/// El código es la fuente: `@function` y las anotaciones del `def` son el
-/// contrato, y el documento `Function` se deriva de ellos (OOS v1alpha18 01
-/// §4). [`FUNCTIONS_YAML`] es **exactamente** lo que `ore-code` genera de
-/// [`FUNCTIONS_PY`] —lo comprueba `la_semilla_es_lo_que_su_codigo_da`—, y el
-/// día que el commit genere el documento (G2) dejará de sembrarse. Nace **sin
-/// `over`**, sobre sus parámetros, para que compile e invoque en cuanto el
-/// repositorio existe. `{{paquete}}`, `{{carpeta}}` y `{{funcion}}` los pone
+/// `@function` y las anotaciones del `def` son el contrato, y el documento
+/// `Function` se deriva de ellos (OOS v1alpha18 01 §4): no se siembra, lo
+/// escribe el commit que crea el repositorio, en `functions/` del paquete
+/// —Assets → Functions—, como con cualquier `@function` que se guarde. Nace
+/// **sin `over`**, sobre sus parámetros, para que compile e invoque en cuanto
+/// el repositorio existe. `{{paquete}}`, `{{carpeta}}` y `{{funcion}}` los pone
 /// [`sembrar`]: el `def` se llama como la función, para que dos repositorios
 /// del mismo paquete no choquen.
-const FUNCTIONS_YAML: &str = "\
-# generado por ore desde {{carpeta}}/funciones/ejemplo.py:{{funcion}} · se edita el def, no este fichero
-apiVersion: oos.dev/v1alpha18
-kind: Function
-metadata:
-  name: {{funcion}}
-  namespace: {{paquete}}
-  description: Repite un texto las veces que se pida.
-spec:
-  runtime: python
-  entrypoint: {{carpeta}}/funciones/ejemplo.py:{{funcion}}
-  input:
-    texto: { type: String, required: true }
-    veces: { type: Integer }
-  output:
-    resultado: { type: String, required: true }
-    longitud: { type: Integer, required: true }
-  limits: { timeout: '60s' }
-";
-
 const FUNCTIONS_PY: &str = "\
 # Una FUNCIÓN del árbol, `{{paquete}}.{{funcion}}` (ADR 0050).
 #
 # `@function` y las anotaciones del `def` son su contrato: lo que recibe (cada
 # parámetro con su tipo; con valor por defecto, opcional) y lo que devuelve (un
-# tipo, o una `@dataclass` de este fichero). El documento
-# `functions/ejemplo.yaml` se deriva de aquí sin ejecutar nada; no se edita.
+# tipo, o una `@dataclass` de este fichero). Su documento lo escribe el
+# commit, sin ejecutar nada, en `functions/` del paquete: es lo que se publica
+# en Assets → Functions. No se edita; se edita esto.
 #
 # Se invoca con parámetros (`POST /funciones/{{paquete}}/{{funcion}}/invocar`) y
 # corre en un trabajo de la celda.
@@ -517,10 +497,10 @@ pub const CLASES: &[Clase] = &[
         // 4: la semilla nombra en tres partes (0038 P7).
         // 5: nace con una función de verdad, la pareja contrato + código (0050 P5).
         // 6: el código es la fuente, `@function` con anotaciones (0050 G1).
-        version: 6,
+        // 7: sin documento: lo escribe el commit, en el paquete (0050 G2).
+        version: 7,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
-            ("functions/ejemplo.yaml", FUNCTIONS_YAML),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
         ],
     },
@@ -648,10 +628,38 @@ mod pruebas {
     /// de «no empeorar»—. También en un paquete con guion (`test-project`, el
     /// de un proyecto de antes en `victor`), y dos repositorios en el mismo
     /// paquete no chocan.
+    /// Lo que el commit escribe de la semilla, byte a byte.
+    const DOCUMENTO: &str = "\
+# generado por ore desde {{carpeta}}/funciones/ejemplo.py:{{funcion}} · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata:
+  name: {{funcion}}
+  namespace: {{paquete}}
+  description: Repite un texto las veces que se pida.
+spec:
+  runtime: python
+  entrypoint: {{carpeta}}/funciones/ejemplo.py:{{funcion}}
+  input:
+    texto: { type: String, required: true }
+    veces: { type: Integer }
+  output:
+    resultado: { type: String, required: true }
+    longitud: { type: Integer, required: true }
+  limits: { timeout: '60s' }
+";
+
     #[test]
     fn la_semilla_es_lo_que_su_codigo_da() {
-        // El documento que se siembra es, byte a byte, el que `ore-code`
-        // deriva del código que se siembra: no hay dos fuentes.
+        // La semilla es solo código, y se deriva entera: el documento que el
+        // commit escribe de ella es este.
+        assert!(
+            de("functions-python")
+                .unwrap()
+                .semilla
+                .iter()
+                .all(|(r, _)| !r.ends_with(".yaml"))
+        );
         let (paquete, carpeta) = ("ventas", "funciones-de-riesgo");
         let py = sembrar(FUNCTIONS_PY, paquete, carpeta);
         let d = ore_code::python::derivar(&py, &format!("{carpeta}/funciones/ejemplo.py"));
@@ -662,7 +670,7 @@ mod pruebas {
         let firma = f.resultado.as_ref().expect("la plantilla se deriva");
         assert_eq!(
             ore_code::emitir::documento(firma, paquete),
-            sembrar(FUNCTIONS_YAML, paquete, carpeta)
+            sembrar(DOCUMENTO, paquete, carpeta)
         );
     }
 
@@ -694,8 +702,13 @@ mod pruebas {
                     std::fs::write(f, sembrar(contenido, paquete, carpeta)).unwrap();
                 }
             }
-            let contrato = pkg.join("funciones-de-riesgo/functions/ejemplo.yaml");
+            // Lo que hace el commit que lo crea (G2): generar lo sembrado.
+            let (p, _) = crate::validate::cargar_paquete(&raiz);
+            crate::generar::aplicar(&crate::generar::plan(&p)).unwrap();
+            let contrato = pkg.join("functions/funciones_de_riesgo_ejemplo.yaml");
             if paquete == "ventas" {
+                assert!(pkg.join("functions/otra_ejemplo.yaml").exists());
+                assert!(!pkg.join("funciones-de-riesgo/functions").exists());
                 let yaml = std::fs::read_to_string(&contrato).unwrap();
                 assert!(yaml.contains("name: funciones_de_riesgo_ejemplo"), "{yaml}");
                 assert!(

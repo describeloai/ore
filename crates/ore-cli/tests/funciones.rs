@@ -79,7 +79,7 @@ fn escribir(raiz: &Path, codigo: &str) {
 fn el_codigo_escribe_sus_documentos_y_validan() {
     let raiz = arbol("ciclo");
     escribir(&raiz, CODIGO);
-    let docs = raiz.join("packages/ventas/riesgo/functions");
+    let docs = raiz.join("packages/ventas/functions");
 
     // Sin documentos, `validate` dice qué falta y cómo se arregla.
     let o = ore(&raiz, &["validate", "."]);
@@ -91,7 +91,8 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
         salida(&o)
     );
 
-    // Generar los escribe junto al código, en el repositorio.
+    // Generar los escribe en `functions/` del PAQUETE, fuera del repositorio:
+    // una función publicada es un nombre del paquete (Assets → Functions).
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(o.status.success(), "{}", salida(&o));
     let nivel = std::fs::read_to_string(docs.join("nivel.yaml")).unwrap();
@@ -149,7 +150,7 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
     assert!(!ore(&raiz, &["validate", "."]).status.success());
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(
-        salida(&o).contains("~ packages/ventas/riesgo/functions/saludo.yaml"),
+        salida(&o).contains("~ packages/ventas/functions/saludo.yaml"),
         "{}",
         salida(&o)
     );
@@ -165,7 +166,7 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
     escribir(&raiz, sin_saludo);
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(
-        salida(&o).contains("- packages/ventas/riesgo/functions/saludo.yaml"),
+        salida(&o).contains("- packages/ventas/functions/saludo.yaml"),
         "{}",
         salida(&o)
     );
@@ -182,9 +183,10 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
 fn lo_escrito_a_mano_se_dice_y_lo_que_no_se_deriva_no_se_escribe() {
     let raiz = arbol("a-mano");
     escribir(&raiz, CODIGO);
-    let docs = raiz.join("packages/ventas/riesgo/functions");
-    std::fs::create_dir_all(&docs).unwrap();
-    // Un documento escrito a mano para `nivel`, en otro sitio y con un tipo mal.
+    let docs = raiz.join("packages/ventas/functions");
+    std::fs::create_dir_all(raiz.join("packages/ventas/riesgo/functions")).unwrap();
+    // Un documento escrito a mano para `nivel`, en otro sitio —junto al
+    // repositorio, como en la v6 de la plantilla— y con un tipo mal.
     let a_mano = raiz.join("packages/ventas/riesgo/functions/el-nivel.yaml");
     std::fs::write(
         &a_mano,
@@ -198,7 +200,7 @@ fn lo_escrito_a_mano_se_dice_y_lo_que_no_se_deriva_no_se_escribe() {
         salida(&o)
     );
 
-    // Se reescribe donde está, y se dice que era a mano.
+    // Se mueve a `functions/` del paquete, reescrito, y se dice que era a mano.
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(o.status.success(), "{}", salida(&o));
     assert!(
@@ -207,11 +209,23 @@ fn lo_escrito_a_mano_se_dice_y_lo_que_no_se_deriva_no_se_escribe() {
         salida(&o)
     );
     assert!(
-        std::fs::read_to_string(&a_mano)
+        salida(&o).contains("- packages/ventas/riesgo/functions/el-nivel.yaml"),
+        "{}",
+        salida(&o)
+    );
+    assert!(!a_mano.exists(), "el de antes, fuera");
+    assert!(
+        std::fs::read_to_string(docs.join("nivel.yaml"))
             .unwrap()
             .contains("type: Decimal")
     );
-    assert!(!docs.join("nivel.yaml").exists(), "se queda donde estaba");
+    assert!(ore(&raiz, &["validate", "."]).status.success());
+    // Y otra vez, nada que mover.
+    assert!(
+        ore(&raiz, &["functions", "generate", "--check", "."])
+            .status
+            .success()
+    );
 
     // Un `@function` que no se deriva: el error en su sitio, y nada escrito.
     escribir(
