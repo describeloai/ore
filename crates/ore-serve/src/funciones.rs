@@ -357,52 +357,9 @@ impl Servidor {
         };
 
         // ── ④ la copia de `over` está hecha ───────────────────────────────
-        let Some((paquete, vista)) = over.split_once('.') else {
-            return Respuesta::error(422, format!("`over: {over}` no es `<paquete>.<vista>`"));
-        };
-        // 0033: la copia de `over` es el primer dataset bajando por su cadena
-        // (ella misma incluida si es un dataset); la de una vista SQL, el
-        // dataset que la copia entera, encima (ADR 0040 paso 4c). Se mira con el
-        // compilador, que es quien sabe dónde está; sin dataset no hay de dónde
-        // leer.
-        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-        let doc = pkg.docs.iter().find(|d| {
-            matches!(
-                d.kind,
-                ore_core::document::Kind::View | ore_core::document::Kind::Dataset
-            ) && d.qname().as_deref() == Some(over.as_str())
-        });
-        let copia_qn = doc
-            .and_then(|d| ore_core::vistas::dataset_de_lectura(&pkg, d))
-            .and_then(|c| c.qname());
-        let Some(copia_qn) = copia_qn else {
-            return Respuesta::error(
-                409,
-                format!(
-                    "`{over}` no tiene dataset debajo: una función lee la copia, nunca el origen (0029 ③). Decide la copia primero"
-                ),
-            );
-        };
-        let copia = ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &copia_qn)
-            .map(|(_, n)| n);
-        // Con qué se lee: el `metadata_location` del dataset o, mientras quede
-        // alguno, la `clave` de un sobre heredado.
-        let clave = copia.as_ref().and_then(|n| {
-            let estado = campo(n, "estado").unwrap_or_default();
-            campo(n, "metadata_location")
-                .or_else(|| campo(n, "clave"))
-                .filter(|c| !c.is_empty() && matches!(estado.as_str(), "copiada" | "al-dia"))
-        });
-        let _ = (paquete, vista);
-        let Some(clave) = clave else {
-            let estado = copia
-                .as_ref()
-                .and_then(|n| campo(n, "estado"))
-                .unwrap_or_else(|| "sin informe: el Job de la copia no ha pasado".into());
-            return Respuesta::error(
-                409,
-                format!("la copia de `{over}` no está hecha ({estado}): no hay qué leer todavía"),
-            );
+        let clave = match copia_de(raiz, &over) {
+            Ok(c) => c,
+            Err(r) => return r,
         };
 
         // ── ⑤ a la cola ───────────────────────────────────────────────────
@@ -520,6 +477,61 @@ impl Servidor {
 // lo declarado (`over` y `reads`, como el `transform` de 0031 W3.7 ⑤) y no
 // puede escribir nada: una función de lectura devuelve.
 
+/// **La copia de `over` está hecha**, y con qué se lee: lo mismo para
+/// `runtime: model` y para una función de código, antes de encolar (0029 ③:
+/// una función lee la copia, nunca el origen).
+///
+/// 0033: la copia de `over` es el primer dataset bajando por su cadena (ella
+/// misma incluida si es un dataset); la de una vista SQL, el dataset que la
+/// copia entera, encima (ADR 0040 paso 4c). Se mira con el compilador, que es
+/// quien sabe dónde está; sin dataset no hay de dónde leer.
+fn copia_de(raiz: &Path, over: &str) -> Result<String, Respuesta> {
+    if !over.contains('.') {
+        return Err(Respuesta::error(
+            422,
+            format!("`over: {over}` no es `<paquete>.<vista>`"),
+        ));
+    }
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    let doc = pkg.docs.iter().find(|d| {
+        matches!(
+            d.kind,
+            ore_core::document::Kind::View | ore_core::document::Kind::Dataset
+        ) && d.qname().as_deref() == Some(over)
+    });
+    let Some(copia_qn) = doc
+        .and_then(|d| ore_core::vistas::dataset_de_lectura(&pkg, d))
+        .and_then(|c| c.qname())
+    else {
+        return Err(Respuesta::error(
+            409,
+            format!(
+                "`{over}` no tiene dataset debajo: una función lee la copia, nunca el origen (0029 ③). Decide la copia primero"
+            ),
+        ));
+    };
+    let copia = ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &copia_qn)
+        .map(|(_, n)| n);
+    // Con qué se lee: el `metadata_location` del dataset o, mientras quede
+    // alguno, la `clave` de un sobre heredado.
+    let clave = copia.as_ref().and_then(|n| {
+        let estado = campo(n, "estado").unwrap_or_default();
+        campo(n, "metadata_location")
+            .or_else(|| campo(n, "clave"))
+            .filter(|c| !c.is_empty() && matches!(estado.as_str(), "copiada" | "al-dia"))
+    });
+    clave.ok_or_else(|| {
+        let estado = copia
+            .as_ref()
+            .and_then(|n| campo(n, "estado"))
+            .unwrap_or_else(|| "sin informe: el Job de la copia no ha pasado".into());
+        Respuesta::error(
+            409,
+            format!("la copia de `{over}` no está hecha ({estado}): no hay qué leer todavía"),
+        )
+    })
+}
+
 /// Lo decidido al leer el árbol, para lanzar fuera de la lectura.
 pub(crate) struct PlanPython {
     pub invocada: crate::puestos::Invocada,
@@ -590,6 +602,28 @@ impl Servidor {
         let over = f
             .texto("over")
             .map(|o| ore_core::normalize::a_corto(&cualificar(&o)).into_owned());
+        // Lo que trabaja fila a fila se puede leer desde el puesto —la regla
+        // del puesto, no la del Job de `runtime: model`: una vista se lee como
+        // pregunta sobre los datasets que tiene DEBAJO—, y si no, 409 antes de
+        // encolar y no un error dentro del trabajo.
+        if let Some(o) = &over {
+            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            let se_lee = pkg.docs.iter().any(|d| {
+                matches!(
+                    d.kind,
+                    ore_core::document::Kind::View | ore_core::document::Kind::Dataset
+                ) && d.qname().as_deref() == Some(o.as_str())
+                    && ore_core::vistas::se_lee_de_datasets(&pkg, d)
+            });
+            if !se_lee {
+                return Err(Respuesta::error(
+                    409,
+                    format!(
+                        "`{o}` no tiene ningún dataset debajo del que leer: una función lee la copia, nunca el origen (0029 ③). Declara un `Dataset` con `from` sobre ella"
+                    ),
+                ));
+            }
+        }
         let mut lee: Vec<String> = over.iter().cloned().collect();
         for r in f.spec.get("reads").map(|(_, v)| v.items()).unwrap_or(&[]) {
             if let Some(r) = r.as_str() {

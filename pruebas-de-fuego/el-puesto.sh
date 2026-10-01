@@ -59,6 +59,12 @@
 #                                      misma · el informe lista → GET /entorno lista, POST /entorno
 #                                      200, POST /puestos 201 con la capa en el Job · otra
 #                                      declaracion → pendiente otra vez
+#  18  la función de código (0050)   una `Function` de runtime: python en la carpeta de un
+#                                      repositorio: GET /funciones la ve · los parámetros contra
+#                                      input (422) · invocar = un trabajo con el arnés (el agente de
+#                                      verdad) · una fila por llamada, la que falla en _error ·
+#                                      trabajos/ y resultados/ · limits.timeout corta · leer fuera de
+#                                      reads y modelo() sin models: PermissionError
 #
 # Uso:  bash pruebas-de-fuego/el-puesto.sh
 set -u
@@ -900,6 +906,174 @@ PY
   dice "11 · POST /trabajos: 202 trabajo-ana-<hex> con el fichero 54-el-trabajo-… en la cola (TRABAJO=<ruta>@<commit>, la imagen de python); un agente 403, sin fichero 404, un .yaml 422, fuera del árbol 422; el agente con TRABAJO corre la celda y sale 0 → la ficha dice hecho, el informe está en trabajos/<id>.json firmado por ana, el dataset lleva procedencia {codigo, inputs, transform}, y el trabajo sale de la cola; uno roto sale 1 y el informe dice error"
 else
   dice "11 · (sin el lago: el trabajo no se prueba aquí)"
+fi
+
+# ── 18 · la función de código (0050 R1): invocar un `def` del repositorio ────
+# Una `Function` de `runtime: python` (OOS v1alpha18) dentro de la carpeta de
+# un repositorio (M1: antes no se encontraba), invocada con parámetros: corre
+# como un TRABAJO del puesto con el arnés como celda, el agente de verdad, y
+# deja su informe en `trabajos/` y en `resultados/`.
+if [ "$LAGO_OK" = si ]; then
+  # Lo que una función lee es una VISTA (OOS7014) con su copia debajo: un
+  # dataset escrito, `hr.numeros` (Iceberg, n = 1, 2, 3, como `hr.lago`), y la
+  # vista SQL `hr.numeros_v` sobre él.
+  META18=$("$PY" - "$ALMACEN_PY" "$RAIZ" <<'EOF'
+import importlib.util, os, sys, tempfile
+import pyarrow as pa
+sp = importlib.util.spec_from_file_location("ice", os.path.join(sys.argv[2], "pruebas-de-fuego", "medida-w3-iceberg.py"))
+ice = importlib.util.module_from_spec(sp); sp.loader.exec_module(ice)
+Arbol = ice.catalogo_arbol()
+bodega = os.path.join(sys.argv[1], "lago18").replace("\\", "/")
+cat = Arbol("prueba18", tempfile.mkdtemp(prefix="ore-lago18-").replace("\\", "/"), warehouse=bodega)
+cat.create_namespace("hr")
+t = pa.table({"n": pa.array([1, 2, 3], pa.int64())})
+tb = cat.create_table("hr.numeros", t.schema)
+tb.append(t)
+print(tb.metadata_location)
+EOF
+  )
+  [ -n "$META18" ] || falla "18 · no se pudo escribir hr.numeros"
+  "$PY" -c 'import json,sys; json.dump({"estado":"copiada","metadata_location":sys.argv[1],"snapshot":"1","plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$META18" "$A/datasets/hr_numeros.json"
+  cat > "$A/packages/hr/datasets/numeros.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: { name: numeros, namespace: hr }
+spec:
+  owner: team:data
+  columns: { n: { type: Integer } }
+  changes: { mode: append }
+Y
+  cat > "$A/packages/hr/views/numeros_v.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha14
+kind: View
+metadata: { name: numeros_v, namespace: hr }
+spec:
+  owner: team:data
+  dialect: duckdb
+  sql: SELECT n FROM hr.numeros
+  columns:
+    n: { type: Integer }
+Y
+  R18="$A/packages/hr/riesgo"
+  mkdir -p "$R18/functions" "$R18/funciones"
+  cat > "$R18/functions/marcar.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: marcar, namespace: hr }
+spec:
+  runtime: python
+  entrypoint: riesgo/funciones/marcar.py:marcar
+  over: hr.numeros_v
+  input:
+    umbral: { type: Integer, required: true }
+  output:
+    n: { type: Integer }
+    grande: { type: Boolean }
+Y
+  cat > "$R18/funciones/marcar.py" <<'PY'
+def marcar(fila, umbral):
+    if fila["n"] == 3:
+        raise ValueError("la tres")
+    return {"n": fila["n"], "grande": fila["n"] > umbral}
+PY
+  cat > "$R18/functions/lenta.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: lenta, namespace: hr }
+spec:
+  runtime: python
+  entrypoint: riesgo/funciones/otras.py:lenta
+  input:
+    s: { type: Integer, required: true }
+  limits: { timeout: 1s }
+Y
+  cat > "$R18/functions/curiosa.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: curiosa, namespace: hr }
+spec:
+  runtime: python
+  entrypoint: riesgo/funciones/otras.py:curiosa
+  reads: [hr.numeros_v]
+  input:
+    que: { type: String, required: true }
+  output:
+    vio: { type: String }
+Y
+  cat > "$R18/funciones/otras.py" <<'PY'
+import time
+
+from ore import over, modelo
+
+
+def lenta(s):
+    time.sleep(s)
+    return "tarde"
+
+
+def curiosa(que):
+    if que == "modelo":
+        modelo("extractor")
+    return {"vio": str(len(over(que, como="arrow")))}
+PY
+  ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "18 · el árbol con las funciones no compila: $(cd "$A" && "$ORE" validate . 2>&1 | head -5)"
+
+  # se ve donde vive (M1), con su runtime
+  [ "$(pide GET /funciones "$ANA")" = "200" ] && tiene "sorted(f['name'] for f in d['functions'] if f['runtime']=='python')==['curiosa','lenta','marcar']" || falla "18 · GET /funciones no ve las del repositorio: $(cuerpo)"
+
+  # los parámetros, contra `input`, antes de encolar
+  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{}')" = "422" ] && tiene "'umbral' in d['error']" || falla "18 · sin el obligatorio: $(cuerpo)"
+  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{"parametros":{"umbral":1,"otro":2}}')" = "422" ] && tiene "'otro' in d['error']" || falla "18 · uno que input no declara: $(cuerpo)"
+  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{"parametros":{"umbral":"uno"}}')" = "422" ] && tiene "'Integer' in d['error']" || falla "18 · uno de otro tipo: $(cuerpo)"
+  [ "$(pide POST /funciones/hr/marcar/invocar "$AG" '{"parametros":{"umbral":1}}')" = "403" ] || falla "18 · un agente lanzó la función: $(cuerpo)"
+
+  # invocar: un trabajo con el arnés, lo declarado como techo y sin salida al modelo
+  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{"parametros":{"umbral":1}}')" = "202" ] || falla "18 · invocar: $(cuerpo)"
+  tiene "d['function']=='hr.marcar' and d['runtime']=='python' and d['id'].startswith('trabajo-ana-') and d['codigo']=='packages/hr/riesgo/funciones/marcar.py'" || falla "18 · la ficha de la invocación: $(cuerpo)"
+  T18=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+  F18=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fichero"])' "$TMP/r.json")
+  C18=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["corrida"])' "$TMP/r.json")
+  en_cola "$F18" | grep -q 'usa-modelo' && falla "18 · una función sin models sale a la puerta"
+  ORE_SERVE="$BASE" PUESTO="$T18" TRABAJO="packages/hr/riesgo/funciones/marcar.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/funcion.txt" 2>&1; CODIGO=$?
+  [ "$(pide GET /trabajos/$T18 "$ANA")" = "200" ] || falla "18 · la ficha del trabajo: $(cuerpo)"
+  [ "$CODIGO" = 0 ] || falla "18 · el agente de la función salió con $CODIGO: $(cuerpo)"
+  # una fila por llamada; la que falla se dice en `_error` y las demás siguen
+  tiene "d['informe']['estado']=='hecho' and [c['name'] for c in d['informe']['salida']['columnas']]==['n','grande','_error'] and d['informe']['salida']['filas']==[[1,False,None],[2,True,None],[None,None,'ValueError: la tres']]" || falla "18 · lo que devolvió: $(cuerpo)"
+  R18J="$A/resultados/hr_marcar_$C18.json"
+  "$PY" -c 'import json,sys; i=json.load(open(sys.argv[1])); assert i["function"]=="hr.marcar" and i["runtime"]=="python" and i["parametros"]=={"umbral":1} and i["estado"]=="hecho" and i["persona"]=="persona:ana", i' "$R18J" || falla "18 · el resultado en resultados/: $(cat "$R18J" 2>/dev/null || ls "$A/resultados")"
+  [ "$(pide GET /funciones/hr/marcar/resultados "$ANA")" = "200" ] && tiene "len(d['resultados'])==1 and d['resultados'][0]['corrida']=='$C18'" || falla "18 · GET …/resultados: $(cuerpo)"
+
+  # limits.timeout corta (SIGALRM: en Linux, que es donde corre el puesto; en
+  # Windows no hay señal, y se dice): el trabajo sale con error y lo dice
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) dice "18 · (en Windows no hay SIGALRM: limits.timeout se prueba en Linux)" ;;
+    *)
+      [ "$(pide POST /funciones/hr/lenta/invocar "$ANA" '{"parametros":{"s":5}}')" = "202" ] || falla "18 · invocar la lenta: $(cuerpo)"
+      T18L=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+      ORE_SERVE="$BASE" PUESTO="$T18L" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+        "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/lenta.txt" 2>&1
+      [ "$(pide GET /trabajos/$T18L "$ANA")" = "200" ] && tiene "d['informe']['estado']=='error' and 'limits.timeout' in d['informe']['salida']['mensaje']" || falla "18 · el plazo no cortó: $(cuerpo)"
+      ;;
+  esac
+
+  # lo declarado manda: leer lo que `reads` no dice, o llamar a un modelo sin `models`
+  for que in hr.espanoles modelo; do
+    [ "$(pide POST /funciones/hr/curiosa/invocar "$ANA" "{\"parametros\":{\"que\":\"$que\"}}")" = "202" ] || falla "18 · invocar curiosa($que): $(cuerpo)"
+    TC=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+    ORE_SERVE="$BASE" PUESTO="$TC" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+      "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/curiosa.txt" 2>&1
+    [ "$(pide GET /trabajos/$TC "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and d['informe']['salida']['filas'][0][-1].startswith('PermissionError')" || falla "18 · curiosa($que) no dio PermissionError: $(cuerpo)"
+  done
+  # y lo declarado se lee
+  [ "$(pide POST /funciones/hr/curiosa/invocar "$ANA" '{"parametros":{"que":"hr.numeros_v"}}')" = "202" ] || falla "18 · invocar curiosa(hr.numeros_v): $(cuerpo)"
+  TC=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+  ORE_SERVE="$BASE" PUESTO="$TC" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/curiosa.txt" 2>&1
+  [ "$(pide GET /trabajos/$TC "$ANA")" = "200" ] && tiene "d['informe']['salida']['filas']==[['3',None]]" || falla "18 · curiosa(hr.numeros_v): $(cuerpo)"
+  dice "18 · la función de código (0050 R1): las tres del repositorio se ven en GET /funciones; los parámetros contra input (falta, sobra, tipo) son 422 y un agente 403; invocar es un trabajo con el arnés y sin salida al modelo; una fila por llamada, la que falla en _error; el informe en trabajos/ y en resultados/hr_marcar_<corrida>.json; limits.timeout corta; leer fuera de reads y modelo() sin models son PermissionError, y lo declarado se lee"
+else
+  dice "18 · (sin el lago: la función de código no se prueba aquí)"
 fi
 
 # ── 12 · la puerta del puesto (W3.7 gobierno ①): desde un puesto sólo entran los verbos ──
