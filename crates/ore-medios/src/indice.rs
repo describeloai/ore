@@ -103,14 +103,8 @@ impl Indice {
                 obligatoria("huella")?,
                 obligatoria("estado")?,
             );
-            let (blob, tipo, formato, tamano, modificado, entro) = (
-                col("blob"),
-                col("tipo"),
-                col("formato"),
-                col("tamano"),
-                col("modificado"),
-                col("entro"),
-            );
+            let (blob, tipo, formato, modificado) =
+                (col("blob"), col("tipo"), col("formato"), col("modificado"));
             let (clave, etag) = (col("clave"), col("etag"));
             let texto = |c: Option<&arrow_array::StringArray>, i: usize| {
                 c.filter(|c| !arrow_array::Array::is_null(*c, i))
@@ -125,10 +119,10 @@ impl Indice {
                     blob: texto(blob, i),
                     tipo: texto(tipo, i),
                     formato: texto(formato, i),
-                    tamano: texto(tamano, i).and_then(|t| t.parse().ok()),
+                    tamano: entero(l, "tamano", i),
                     modificado: texto(modificado, i),
                     estado: estado.value(i).to_string(),
-                    entro: texto(entro, i),
+                    entro: entero(l, "entro", i).map(|e| e.to_string()),
                     clave: texto(clave, i),
                     etag: texto(etag, i),
                 });
@@ -281,6 +275,27 @@ impl Indice {
     }
 }
 
+/// **Un entero de una columna** (0049 B3·6). El manifiesto guarda `tamano` y
+/// `entro` como `Integer` de OOS (`Int64`); leerlos como texto los dejaba
+/// vacíos en TODOS los ítems —sin `size`, el SDK no verificaba la longitud ni
+/// contaba un `seek` desde el final (medido en un puesto de victor)—. Un
+/// listado viejo o de prueba que los traiga como texto también vale.
+fn entero(l: &RecordBatch, n: &str, i: usize) -> Option<i64> {
+    use arrow_array::types::{Int32Type, Int64Type};
+    let c = l.column_by_name(n)?;
+    if arrow_array::Array::is_null(c.as_ref(), i) {
+        return None;
+    }
+    if let Some(a) = c.as_primitive_opt::<Int64Type>() {
+        return Some(a.value(i));
+    }
+    if let Some(a) = c.as_primitive_opt::<Int32Type>() {
+        return Some(i64::from(a.value(i)));
+    }
+    c.as_string_opt::<i32>()
+        .and_then(|a| a.value(i).trim().parse().ok())
+}
+
 /// El cursor: el camino y la versión del último ítem dado, en hexadecimal. Es
 /// opaco para quien lo recibe, y no lleva nada que no esté ya en la página.
 fn cursor_de(it: &Item) -> String {
@@ -400,6 +415,38 @@ pub mod pruebas {
             ],
         )
         .unwrap()
+    }
+
+    /// Como lo escribe `ore collections`: `tamano` y `entro` son `Int64`.
+    #[test]
+    fn el_tamano_y_la_entrada_enteros_se_leen() {
+        use arrow_array::Int64Array;
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("camino", DataType::Utf8, false),
+            Field::new("version", DataType::Utf8, false),
+            Field::new("huella", DataType::Utf8, false),
+            Field::new("estado", DataType::Utf8, false),
+            Field::new("tamano", DataType::Int64, true),
+            Field::new("entro", DataType::Int64, true),
+        ]));
+        let s = |v: &[&str]| Arc::new(StringArray::from(v.to_vec())) as arrow_array::ArrayRef;
+        let l = RecordBatch::try_new(
+            esquema,
+            vec![
+                s(&["a.pdf", "b.pdf"]),
+                s(&["null", "v1"]),
+                s(&["etag:a", "etag:b"]),
+                s(&["actual", "actual"]),
+                Arc::new(Int64Array::from(vec![Some(717), None])),
+                Arc::new(Int64Array::from(vec![Some(3), Some(1)])),
+            ],
+        )
+        .unwrap();
+        let ix = Indice::de_lotes("legal.archivo.contratos", true, "3", &[l]).unwrap();
+        let a = ix.por_camino("a.pdf", None).unwrap();
+        assert_eq!((a.tamano, a.entro.as_deref()), (Some(717), Some("3")));
+        assert!(ix.referencia(a).jcs().contains("\"size\":717"));
+        assert_eq!(ix.por_camino("b.pdf", None).unwrap().tamano, None);
     }
 
     fn indice() -> Indice {

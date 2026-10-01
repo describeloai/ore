@@ -146,10 +146,15 @@ class Coleccion:
         return "Coleccion(%s.%s.%s)" % (self.base, self.schema, self.nombre)
 
     def _pedir(self, op, consulta, que):
-        from . import puesto
+        from . import puesto, _rama_del_puesto
         q = urllib.parse.urlencode({k: v for k, v in consulta.items() if v is not None})
+        # B3·6: con la rama del puesto, como el resto del SDK (`over`, `sql`):
+        # una colección declarada en la rama se ve desde su puesto. Se pregunta
+        # una vez por colección (cuesta una petición a la ficha del puesto).
+        if not hasattr(self, "_rama"):
+            self._rama = _rama_del_puesto()
         codigo, r = puesto.pedir("GET", "%s/%s%s" % (self.ruta, op, "?" + q if q else ""),
-                                 seguir=False, plazo=90)
+                                 seguir=False, plazo=90, cabeceras=self._rama)
         return codigo, r
 
     def items(self, prefijo=None, estado=None, limite=1000):
@@ -268,7 +273,9 @@ class _Acceso:
             if rango:
                 req.add_header("Range", rango)
             try:
-                return _ABRIDOR.open(req, timeout=60)
+                r = _ABRIDOR.open(req, timeout=60)
+                self._aprender(r)
+                return r
             except urllib.error.HTTPError as e:
                 texto = e.read()
                 try:
@@ -281,6 +288,28 @@ class _Acceso:
                     return None  # desde el final: no queda nada
                 raise _error(e.code, cuerpo, "leer %s" % self.item.ref.path)
         raise MediaError("media/permiso", 401, "no se pudo renovar el acceso a %s" % self.item.ref.path)
+
+    def _aprender(self, r):
+        """El tamaño, de la respuesta, si el ítem no lo decía (B3·6): el total de
+        `Content-Range` (`bytes a-b/total`) o, de una lectura entera, `Content-Length`."""
+        if self.item.ref.size is not None:
+            return
+        total = None
+        cr = r.headers.get("Content-Range") or ""
+        if "/" in cr and cr.rsplit("/", 1)[1].strip().isdigit():
+            total = int(cr.rsplit("/", 1)[1])
+        elif r.status == 200 and (r.headers.get("Content-Length") or "").isdigit():
+            total = int(r.headers["Content-Length"])
+        if total is not None:
+            self.item.ref = dataclasses.replace(self.item.ref, size=total)
+
+    def tamano(self):
+        """El tamaño del ítem; si no se sabe, se pregunta un byte (`bytes=0-0`)."""
+        if self.item.ref.size is None:
+            r = self.abrir(0, 0)
+            if r is not None:
+                r.close()
+        return self.item.ref.size
 
     def rango(self, a, z):
         r = self.abrir(a, z)
@@ -329,8 +358,9 @@ class _Lector(io.RawIOBase):
         elif whence == io.SEEK_CUR:
             nueva = self.pos + offset
         elif whence == io.SEEK_END:
-            if self._size() is None:
-                raise MediaRango("media/rango", 416, "sin tamaño conocido no se cuenta desde el final")
+            # Sin tamaño conocido se pregunta (un byte): el final no se adivina.
+            if self.acceso.tamano() is None:
+                raise MediaRango("media/rango", 416, "el origen no dice el tamaño: no se cuenta desde el final")
             nueva = self._size() + offset
         else:
             raise ValueError("whence")

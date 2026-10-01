@@ -47,6 +47,7 @@ SERVE, BYTES = [], []          # (metodo, ruta, cabeceras) que llegaron a cada u
 PERMISOS = {}                  # permiso → (path, usos que le quedan)
 ESTADO = {"n": 0}
 CONTADOS = {"enviados": 0}
+RAMA = {"r": None}             # la rama que la ficha del puesto dice (c13)
 
 
 class Celda(http.server.BaseHTTPRequestHandler):
@@ -54,6 +55,8 @@ class Celda(http.server.BaseHTTPRequestHandler):
         SERVE.append(("GET", self.path, dict(self.headers)))
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
+        if u.path == "/puestos/p1":
+            return self._json(200, {"rama": RAMA["r"]} if RAMA["r"] else {})
         if u.path.endswith("/items"):
             todos = [ref("a.pdf"), ref("b.pdf", "sha256:" + SHA["b.pdf"]), ref("cambia.pdf")]
             if q.get("cursor") == "c2":
@@ -271,7 +274,41 @@ def c11():
     bien("11 · cerrar a medias: el servidor envió %d de %d bytes" % (CONTADOS["enviados"], len(A)))
 
 
-for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11], 1):
+def c12():
+    # Un ítem cuyo listado no dice su tamaño (el hallazgo de B3·6 en un puesto
+    # de victor): seek desde el final antes de leer nada, y verificar al final.
+    it = c.stat(path="a.pdf")
+    it.ref = medios.dataclasses.replace(it.ref, size=None)
+    with it.open() as f:
+        f.seek(-10, 2)
+        assert f.read() == A[-10:]
+    it = c.stat(path="a.pdf")
+    it.ref = medios.dataclasses.replace(it.ref, size=None)
+    with it.open() as f:
+        assert f.read(5) == b"%PDF-"
+        f.seek(-3, 2)
+        assert f.read() == A[-3:]
+    bien("12 · sin tamaño en el listado: se aprende de la respuesta (o de un byte) y el seek desde el final va")
+
+
+def c13():
+    # La rama del puesto viaja en las peticiones de la media, preguntada una vez.
+    RAMA["r"] = "r1/trabajo"
+    SERVE.clear()
+    try:
+        c2_ = ore.coleccion("legal.archivo.contratos")
+        c2_.stat(path="a.pdf")
+        c2_.stat(path="b.pdf")
+    finally:
+        RAMA["r"] = None
+    fichas = [r for _, r, _ in SERVE if r == "/puestos/p1"]
+    h = {k.lower(): v for k, v in SERVE[-1][2].items()}
+    assert h.get("x-ore-rama") == "r1/trabajo", h
+    assert len(fichas) == 1, fichas
+    bien("13 · la rama del puesto va en x-ore-rama (la ficha, preguntada una vez)")
+
+
+for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13], 1):
     caso(n, f)
 celda.shutdown()
 bytes_.shutdown()
