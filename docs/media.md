@@ -89,6 +89,12 @@ Range: bytes=0-1023            (opcional)
   (`io.RawIOBase`). `seek` se traduce en un `Range`; cerrar a medias **corta** la conexión, no
   descarga el resto. Al leer hasta el final verifica `size` y, si lo hay, el digest
   (`media/corrupto`).
+- Python, lo demás (0049 B3·5, `puesto/python/ore/medios.py`): la URL de `content` se lee **sin el
+  token de ORE**; un `read` no es una petición —se lee en flujo desde el cursor y sólo un `seek`
+  abre otra—; un permiso caducado se renueva con la misma versión. `item.read_bytes()` baja un
+  ítem grande por rangos en paralelo; `ore.leer_varios(items, hilos=16)` muchos a la vez, dando
+  `(item, datos, error)` —el error de uno no para los demás—. Excepciones por `type`:
+  `MediaNoExiste`, `MediaSinPermiso`, `MediaCambiado`, `MediaCorrupto`, `MediaRango`.
 
 ### `url` · para quien necesita HTTP
 

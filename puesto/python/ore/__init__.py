@@ -63,6 +63,11 @@ snapshot y en el puntero: `{inputs, transform, codigo?, puesto}` dentro de un
 transform, o `{leidas, puesto}` fuera (lo que la sesión leyó hasta ese momento). Es
 el linaje `salida ← código ← inputs`, escrito por quien lo produjo. `codigo` viene de
 `ORE_CODIGO` (`<ruta>@<commit>`), que `ore run` pone.
+
+**La media** (0049, `docs/media.md`; en `ore/medios.py`): `coleccion("b.s.c")` da
+sus ítems (`items()`, por cursor; `stat()`), y `item.open()` un fichero fijado a
+su versión, mantenida o virtual —la celda dice dónde están los bytes y el SDK los
+lee sin el token de ORE—. `leer_varios` baja muchos a la vez.
 """
 import io
 import json
@@ -74,7 +79,21 @@ MAGIA = b"ORECOPY1"
 
 __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
            "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista",
-           "media", "medias", "media_de", "modelo"]
+           "media", "medias", "media_de", "modelo",
+           "coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "MediaError",
+           "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango"]
+
+
+class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
+    """0049 B3·5: una redirección de la celda (el `307` de `content`) no se sigue
+    sola: urllib reenviaría el token de ORE a la URL de los bytes. Vuelve como
+    respuesta, con su cuerpo."""
+
+    def redirect_request(self, *a, **k):
+        return None
+
+
+_SIN_SEGUIR = urllib.request.build_opener(_SinRedirecciones())
 
 
 class Puesto:
@@ -95,7 +114,7 @@ class Puesto:
         # 60 s de caducar— en vez de usar la que se copió al empezar la celda.
         self._proveedor = None
 
-    def pedir(self, metodo, ruta, cuerpo=None, plazo=30, cabeceras=None):
+    def pedir(self, metodo, ruta, cuerpo=None, plazo=30, cabeceras=None, seguir=True):
         datos = None if cuerpo is None else json.dumps(cuerpo).encode("utf-8")
         req = urllib.request.Request(self.servidor + ruta, data=datos, method=metodo)
         req.add_header("accept", "application/json")
@@ -108,8 +127,9 @@ class Puesto:
             req.add_header("x-ore-puesto", self.id)
         for k, v in (cabeceras or {}).items():
             req.add_header(k, v)
+        abrir = urllib.request.urlopen if seguir else _SIN_SEGUIR.open
         try:
-            with urllib.request.urlopen(req, timeout=plazo) as r:
+            with abrir(req, timeout=plazo) as r:
                 texto = r.read().decode("utf-8")
                 return r.status, (json.loads(texto) if texto.strip() else None)
         except urllib.error.HTTPError as e:
@@ -1455,3 +1475,8 @@ def json_de(v, tipo=None):
         except (ValueError, AttributeError):
             pass
     return str(v)
+
+
+# 0049 B3·5: la media en código (al final: `medios` usa `puesto` y los nombres).
+from .medios import (coleccion, Coleccion, Item, MediaRef, leer_varios, MediaError,  # noqa: E402
+                     MediaNoExiste, MediaSinPermiso, MediaCambiado, MediaCorrupto, MediaRango)
