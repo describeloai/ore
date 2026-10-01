@@ -168,6 +168,18 @@ pub(crate) struct Trabajo {
     pub commit: String,
     /// El informe, cuando la celda terminó: qué quedó en `trabajos/`.
     pub informe: Option<Json>,
+    /// Si el trabajo es la invocación de una función de código (0050 P3): su
+    /// informe va también a `resultados/`, donde lo busca quien la consume.
+    pub funcion: Option<Invocada>,
+}
+
+/// La invocación de una `Function` de `runtime: python` que corre como trabajo.
+#[derive(Debug, Clone)]
+pub(crate) struct Invocada {
+    /// Su forma corta (`p.f`, `p.s.f`).
+    pub qn: String,
+    pub corrida: String,
+    pub parametros: Json,
 }
 
 #[derive(Debug)]
@@ -830,6 +842,39 @@ impl Servidor {
                 _ => return Respuesta::error(500, "el árbol no contestó"),
             },
         };
+        self.lanzar_trabajo(
+            sujeto, rama, entorno, lenguaje, codigo, commit, texto, avisos, None, None,
+        )
+    }
+
+    /// Un trabajo, ya decidido: la capa, el Job en la cola y la celda. Lo usan
+    /// `POST /trabajos` (un fichero del árbol) y la invocación de una función
+    /// de código (0050 P3: el arnés que llama al `def`), que llega con lo
+    /// declarado ya puesto —`transform`, el techo de lo que lee y escribe— y
+    /// con la función a la que informar.
+    /// La rama de un trabajo que no la pide: la de la persona, como la de
+    /// `POST /trabajos` sin `rama` (lo escrito es de quien lo escribió).
+    pub(crate) fn rama_para_trabajo(
+        &self,
+        sujeto: &Identidad,
+    ) -> Result<Option<String>, Respuesta> {
+        self.rama_del_puesto(sujeto, None, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lanzar_trabajo(
+        &self,
+        sujeto: &Identidad,
+        rama: Option<String>,
+        entorno: &str,
+        lenguaje: &str,
+        codigo: String,
+        commit: String,
+        texto: String,
+        avisos: Vec<Json>,
+        transform: Option<Transform>,
+        funcion: Option<Invocada>,
+    ) -> Respuesta {
         // La capa, como al abrir un puesto (W3.2): la del árbol si está lista;
         // si no, se encola y 409 para que se vuelva a pedir.
         let capa = match self.capa_para(entorno, rama.as_deref(), None, sujeto) {
@@ -882,11 +927,12 @@ impl Servidor {
                 codigo: codigo.clone(),
                 commit: commit.clone(),
                 informe: None,
+                funcion,
             }),
             // Un trabajo no vive en un repositorio: corre y termina (0036 ④).
             repositorio: None,
             clase: None,
-            transform: None,
+            transform,
         };
         p.celdas.insert(
             1,
@@ -1020,10 +1066,11 @@ impl Servidor {
     /// puesto se cierra y sale de la cola. Lo que la consola enseña en Data ›
     /// Jobs es el Job (por el informador); lo que queda es esto.
     fn informar_trabajo(&self, agente: &Identidad, id: &str, n: u64) {
-        let (persona, rama, fichero, mut informe) = {
+        let (persona, rama, fichero, mut informe, funcion) = {
             let lista = self.puestos.lista.lock().unwrap();
             let Some(p) = lista.get(id) else { return };
             let Some(t) = &p.trabajo else { return };
+            let funcion = t.funcion.clone();
             let Some(c) = p.celdas.get(&n) else { return };
             let salida = c.salida.clone().unwrap_or(Json::obj([]));
             let (tipo, ms) = match ore_core::parse::parse(&salida.jcs()) {
@@ -1076,6 +1123,7 @@ impl Servidor {
                     ),
                     ("salida", salida),
                 ]),
+                funcion,
             )
         };
         let quien = Identidad {
@@ -1087,15 +1135,45 @@ impl Servidor {
         };
         let ruta = format!("trabajos/{id}.json");
         let texto = informe.pretty() + "\n";
-        let r = self.escribiendo_en(rama.as_deref(), &quien, &format!("Trabajo {id}"), |raiz| {
-            let f = raiz.join(&ruta);
-            if let Some(d) = f.parent() {
-                let _ = std::fs::create_dir_all(d);
+        // 0050 P3: la invocación de una función deja además su resultado donde
+        // lo busca quien la consume (`GET /funciones/…/resultados`, la consola),
+        // con el mismo nombre que el del Job de `runtime: model`.
+        let resultado = funcion.as_ref().map(|f| {
+            let mut m = match &informe {
+                Json::Obj(m) => m.clone(),
+                _ => Default::default(),
+            };
+            m.insert("function".into(), Json::s(&f.qn));
+            m.insert("runtime".into(), Json::s("python"));
+            m.insert("corrida".into(), Json::s(&f.corrida));
+            m.insert("parametros".into(), f.parametros.clone());
+            m.insert("trabajo".into(), Json::s(id));
+            (
+                format!(
+                    "resultados/{}_{}.json",
+                    ore_core::punteros::resultados_de(&f.qn),
+                    f.corrida
+                ),
+                Json::Obj(m).pretty() + "\n",
+            )
+        });
+        let mensaje = match &funcion {
+            Some(f) => format!("Invocar: {} ({})", f.qn, f.corrida),
+            None => format!("Trabajo {id}"),
+        };
+        let r = self.escribiendo_en(rama.as_deref(), &quien, &mensaje, |raiz| {
+            for (ruta, texto) in
+                std::iter::once((&ruta, &texto)).chain(resultado.as_ref().map(|(r, t)| (r, t)))
+            {
+                let f = raiz.join(ruta);
+                if let Some(d) = f.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                if let Err(e) = std::fs::write(&f, texto) {
+                    return Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}"));
+                }
             }
-            match std::fs::write(&f, &texto) {
-                Ok(()) => Respuesta::ok(Json::obj([("fichero", Json::s(&ruta))])),
-                Err(e) => Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}")),
-            }
+            Respuesta::ok(Json::obj([("fichero", Json::s(&ruta))]))
         });
         if let Json::Obj(m) = &mut informe {
             m.insert("fichero".into(), Json::s(&ruta));

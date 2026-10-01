@@ -66,50 +66,41 @@ impl Funcion {
     }
 }
 
+/// Las `Function` del árbol, **las que el compilador ve**: en cualquier carpeta
+/// del paquete, también la de un repositorio (0050 P3). Antes se buscaban en
+/// `packages/<ns>/functions/` y en la de cada schema, y una función declarada
+/// dentro de su repositorio compilaba y salía en el catálogo, pero invocarla
+/// era 404 (medido el 2026-10-01, M1).
 fn funciones_de(raiz: &Path) -> Vec<Funcion> {
-    let mut out = Vec::new();
-    let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
-        return out;
-    };
-    let mut dirs: Vec<PathBuf> = paquetes.flatten().map(|e| e.path()).collect();
-    dirs.sort();
-    for p in dirs {
-        // La raíz del paquete y la carpeta de cada schema (0038).
-        for ruta in crate::rutas::yamls_del_kind(&p, "functions") {
-            let Ok(texto) = std::fs::read_to_string(&ruta) else {
-                continue;
-            };
-            let Ok(n) = parse::parse(&texto) else {
-                continue;
-            };
-            if campo(&n, "kind").as_deref() != Some("Function") {
-                continue;
-            }
-            let Some((_, meta)) = n.get("metadata") else {
-                continue;
-            };
-            let (Some(nombre), Some(ns)) = (campo(meta, "name"), campo(meta, "namespace")) else {
-                continue;
-            };
-            let schema = campo(meta, "schema")
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    let mut out: Vec<Funcion> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::Function)
+        .filter_map(|d| {
+            let meta = |k: &str| d.meta(k).and_then(|v| v.as_str()).map(str::to_string);
+            let (nombre, ns) = (meta("name")?, meta("namespace")?);
+            let schema = meta("schema")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
-            let spec = n
+            let spec = d
+                .root
                 .get("spec")
                 .map(|(_, s)| s.clone())
                 .unwrap_or(Node::Sequence {
                     items: Vec::new(),
-                    pos: n.pos(),
+                    pos: d.root.pos(),
                 });
-            out.push(Funcion {
-                ruta,
+            Some(Funcion {
+                ruta: d.path.clone(),
                 ns,
                 schema,
                 nombre,
                 spec,
-            });
-        }
-    }
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.ruta.cmp(&b.ruta));
     out
 }
 
@@ -241,6 +232,7 @@ impl Servidor {
     }
 
     /// `POST /funciones/{ns}[/{schema}]/{n}/invocar`: decide si se puede, y encola.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn invocar(
         &self,
         raiz: &Path,
@@ -248,6 +240,8 @@ impl Servidor {
         schema: &str,
         nombre: &str,
         sujeto: &Identidad,
+        cuerpo: &str,
+        plan: &std::cell::RefCell<Option<PlanPython>>,
     ) -> Respuesta {
         if let Err(m) = token(ns) {
             return Respuesta::error(422, format!("espacio de nombres: {m}"));
@@ -290,6 +284,26 @@ impl Servidor {
                     ),
                     ("diagnosticos", Json::Arr(propios)),
                 ]),
+            };
+        }
+
+        // ── ②′ una función de código (0050 P3): se decide aquí y corre como
+        //    un trabajo del puesto, que se lanza fuera de esta lectura ─────
+        if f.texto("runtime").as_deref() == Some("python") {
+            return match self.plan_python(raiz, f, &qn, cuerpo, sujeto) {
+                Ok(p) => {
+                    let r = Respuesta {
+                        codigo: 202,
+                        cuerpo: Json::obj([
+                            ("function", Json::s(&qn)),
+                            ("runtime", Json::s("python")),
+                            ("corrida", Json::s(&p.invocada.corrida)),
+                        ]),
+                    };
+                    *plan.borrow_mut() = Some(p);
+                    r
+                }
+                Err(r) => r,
             };
         }
 
@@ -492,5 +506,443 @@ impl Servidor {
             Ok(c) => (Some(job), format!("encolado como `{fichero}` · commit {c}")),
             Err(e) => (None, format!("NO encolado: {e}")),
         }
+    }
+}
+
+// ── 0050 P3 · la función de código ──────────────────────────────────────────
+//
+// Una `Function` de `runtime: python` (OOS v1alpha18) corre como **un trabajo
+// del puesto** (0031): la misma cola, la misma imagen, el mismo agente. Lo que
+// cambia es la celda: no es un fichero del árbol sino **el arnés**, que trae el
+// módulo tal como está en el commit, llama al `def` con la fila (si hay
+// `over`) y con los parámetros por su nombre, comprueba lo que devuelve contra
+// `output` y corta al pasar `limits.timeout`. Lo que el trabajo puede leer es
+// lo declarado (`over` y `reads`, como el `transform` de 0031 W3.7 ⑤) y no
+// puede escribir nada: una función de lectura devuelve.
+
+/// Lo decidido al leer el árbol, para lanzar fuera de la lectura.
+pub(crate) struct PlanPython {
+    pub invocada: crate::puestos::Invocada,
+    /// `packages/<p>/…/<f>.py`: el fichero del árbol que corre.
+    pub codigo: String,
+    pub commit: String,
+    pub arnes: String,
+    pub lee: Vec<String>,
+}
+
+impl Servidor {
+    fn plan_python(
+        &self,
+        raiz: &Path,
+        f: &Funcion,
+        qn: &str,
+        cuerpo: &str,
+        sujeto: &Identidad,
+    ) -> Result<PlanPython, Respuesta> {
+        if crate::puestos::es_agente(sujeto) {
+            return Err(Respuesta::error(
+                403,
+                "una función de código corre como un trabajo, y un trabajo lo lanza una persona",
+            ));
+        }
+        for (clave, por_que) in [
+            (
+                "effects",
+                "cómo propone una función de código tiene su propia especificación (0050); ésta lee y devuelve",
+            ),
+            (
+                "authorization",
+                "Cedar sobre la invocación no se evalúa todavía, y no se finge",
+            ),
+            (
+                "models",
+                "llamar a un modelo desde el código es 0050 P4: la red del trabajo todavía no llega a la puerta",
+            ),
+        ] {
+            if f.spec.get(clave).is_some() {
+                return Err(Respuesta::error(
+                    422,
+                    format!("`{qn}` declara `{clave}`: {por_que}"),
+                ));
+            }
+        }
+
+        // Los parámetros, contra `input`: nada que no declare, todo lo
+        // obligatorio, y cada valor de su tipo.
+        let parametros = parametros_de(f, cuerpo)?;
+
+        // Lo que puede leer: `over` y `reads`, en su contexto (0038).
+        let cualificar = |v: &str| ore_core::normalize::qualify_catalogo(v, Some(&f.ns), &f.schema);
+        let over = f
+            .texto("over")
+            .map(|o| ore_core::normalize::a_corto(&cualificar(&o)).into_owned());
+        let mut lee: Vec<String> = over.iter().cloned().collect();
+        for r in f.spec.get("reads").map(|(_, v)| v.items()).unwrap_or(&[]) {
+            if let Some(r) = r.as_str() {
+                lee.push(ore_core::normalize::a_corto(&cualificar(r)).into_owned());
+            }
+        }
+
+        // El código, tal como está en este commit.
+        let entrypoint = f.texto("entrypoint").unwrap_or_default();
+        let Some((ruta, def)) = ore_core::promover::entrypoint(&entrypoint) else {
+            return Err(Respuesta::error(
+                422,
+                format!("`entrypoint: {entrypoint}` no es `<ruta>.py:<def>`"),
+            ));
+        };
+        let mut carpeta = f.ruta.parent().map(Path::to_path_buf);
+        while let Some(c) = &carpeta {
+            if c.join("package.yaml").is_file() || c == raiz {
+                break;
+            }
+            carpeta = c.parent().map(Path::to_path_buf);
+        }
+        let carpeta = carpeta.unwrap_or_else(|| raiz.to_path_buf());
+        let fichero = carpeta.join(ruta);
+        let Ok(fuente) = std::fs::read_to_string(&fichero) else {
+            return Err(Respuesta::error(
+                422,
+                format!("`{ruta}` no está en el paquete (OOS2042)"),
+            ));
+        };
+        let codigo = fichero
+            .strip_prefix(raiz)
+            .unwrap_or(&fichero)
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let commit = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(raiz)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "local".into());
+
+        let plazo = f
+            .spec
+            .get("limits")
+            .and_then(|(_, l)| l.get("timeout"))
+            .and_then(|(_, t)| t.as_str())
+            .and_then(segundos)
+            .unwrap_or(0);
+        let arnes = arnes(&Arnes {
+            funcion: qn,
+            fichero: &codigo,
+            fuente: &fuente,
+            def,
+            parametros: &parametros,
+            over: over.as_deref(),
+            output: &f.output(),
+            plazo,
+        });
+        Ok(PlanPython {
+            invocada: crate::puestos::Invocada {
+                qn: qn.to_string(),
+                corrida: corrida_ahora(),
+                parametros,
+            },
+            codigo,
+            commit,
+            arnes,
+            lee,
+        })
+    }
+
+    /// Lanza lo decidido: un trabajo con el arnés como celda, lo declarado
+    /// como techo de lo que lee y nada que escribir.
+    pub(crate) fn lanzar_funcion(&self, sujeto: &Identidad, plan: PlanPython) -> Respuesta {
+        let rama = match self.rama_para_trabajo(sujeto) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
+        let qn = plan.invocada.qn.clone();
+        let corrida = plan.invocada.corrida.clone();
+        let mut r = self.lanzar_trabajo(
+            sujeto,
+            rama,
+            "python",
+            "python",
+            plan.codigo,
+            plan.commit,
+            plan.arnes,
+            Vec::new(),
+            Some(crate::puestos::Transform {
+                nombre: qn.clone(),
+                inputs: plan.lee,
+                // Nada: una función de lectura no escribe (v1alpha10 §1). El
+                // catálogo compara la tabla escrita con esto, y nada es igual.
+                output: String::new(),
+            }),
+            Some(plan.invocada),
+        );
+        if let Json::Obj(m) = &mut r.cuerpo {
+            m.insert("function".into(), Json::s(&qn));
+            m.insert("runtime".into(), Json::s("python"));
+            m.insert("corrida".into(), Json::s(&corrida));
+        }
+        r
+    }
+}
+
+/// `60s`, `5m`, `1h` → segundos.
+fn segundos(d: &str) -> Option<u64> {
+    let d = d.trim();
+    let (n, u) = d.split_at(d.find(|c: char| !c.is_ascii_digit())?);
+    let n: u64 = n.parse().ok()?;
+    match u {
+        "s" => Some(n),
+        "m" => Some(n * 60),
+        "h" => Some(n * 3600),
+        "ms" => Some(n.div_ceil(1000)),
+        _ => None,
+    }
+}
+
+/// `{"parametros": {...}}` contra `input`: los obligatorios están, no sobra
+/// ninguno, y cada valor es de su tipo. El resultado es JSON con los tipos de
+/// verdad (un `Decimal` como número), que es lo que el arnés le pasa al `def`.
+fn parametros_de(f: &Funcion, cuerpo: &str) -> Result<Json, Respuesta> {
+    let n = if cuerpo.trim().is_empty() {
+        None
+    } else {
+        Some(parse::parse(cuerpo).map_err(|_| Respuesta::error(400, "el cuerpo no es JSON"))?)
+    };
+    let dados = n
+        .as_ref()
+        .and_then(|n| n.get("parametros"))
+        .map(|(_, v)| v.entries())
+        .unwrap_or(&[]);
+    let declarados = f.spec.get("input").map(|(_, v)| v.entries()).unwrap_or(&[]);
+    for (k, _) in dados {
+        let k = k.as_str().unwrap_or("");
+        if !declarados.iter().any(|(d, _)| d.as_str() == Some(k)) {
+            return Err(Respuesta::error(
+                422,
+                format!("`{k}` no es un parámetro de la función: `input` no lo declara"),
+            ));
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for (k, decl) in declarados {
+        let k = k.as_str().unwrap_or("");
+        let tipo = campo(decl, "type").unwrap_or_default();
+        let obligatorio = campo(decl, "required").as_deref() == Some("true");
+        match dados.iter().find(|(d, _)| d.as_str() == Some(k)) {
+            None if obligatorio => {
+                return Err(Respuesta::error(
+                    422,
+                    format!("falta `{k}`: es obligatorio ({tipo})"),
+                ));
+            }
+            None => {}
+            Some((_, v)) => {
+                let j = valor_de(&tipo, v).map_err(|m| {
+                    Respuesta::error(422, format!("`{k}` tiene que ser {tipo}: {m}"))
+                })?;
+                out.insert(k.to_string(), j);
+            }
+        }
+    }
+    Ok(Json::Obj(out))
+}
+
+/// Un valor del cuerpo, de su tipo de OOS.
+fn valor_de(tipo: &str, v: &Node) -> Result<Json, String> {
+    use ore_core::parse::Style;
+    if let Some(dentro) = tipo.strip_prefix("list<").and_then(|t| t.strip_suffix('>')) {
+        let Node::Sequence { items, .. } = v else {
+            return Err("no es una lista".into());
+        };
+        return items
+            .iter()
+            .map(|i| valor_de(dentro, i))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Json::Arr);
+    }
+    let (raw, plano) = match v {
+        Node::Scalar { raw, style, .. } => (raw.as_str(), matches!(style, Style::Plain)),
+        _ => return Err("no es un valor suelto".into()),
+    };
+    let base = tipo.split('<').next().unwrap_or(tipo).trim();
+    match base {
+        "Integer" => match (plano, raw.parse::<i64>()) {
+            (true, Ok(i)) => Ok(Json::Int(i)),
+            _ => Err(format!("`{raw}` no es un entero")),
+        },
+        "Decimal" | "Float" | "Money" | "Quantity" => match (plano, raw.parse::<f64>()) {
+            (true, Ok(x)) if x.is_finite() => Ok(Json::Crudo(raw.to_string())),
+            _ => Err(format!("`{raw}` no es un número")),
+        },
+        "Boolean" => match (plano, raw) {
+            (true, "true") => Ok(Json::Bool(true)),
+            (true, "false") => Ok(Json::Bool(false)),
+            _ => Err(format!("`{raw}` no es `true` ni `false`")),
+        },
+        "Date" => {
+            let b = raw.as_bytes();
+            let ok = b.len() == 10
+                && b.iter().enumerate().all(|(i, c)| {
+                    if i == 4 || i == 7 {
+                        *c == b'-'
+                    } else {
+                        c.is_ascii_digit()
+                    }
+                });
+            if ok {
+                Ok(Json::s(raw))
+            } else {
+                Err(format!("`{raw}` no es una fecha `AAAA-MM-DD`"))
+            }
+        }
+        _ if plano && matches!(raw, "null" | "~") => Err("es nulo".into()),
+        _ => Ok(Json::s(raw)),
+    }
+}
+
+struct Arnes<'a> {
+    funcion: &'a str,
+    fichero: &'a str,
+    fuente: &'a str,
+    def: &'a str,
+    parametros: &'a Json,
+    over: Option<&'a str>,
+    output: &'a [String],
+    plazo: u64,
+}
+
+/// La celda que corre la función. Un literal de cadena JSON es un literal de
+/// cadena de Python válido, así que todo lo que viene de fuera —el código, los
+/// parámetros, los nombres— entra como cadena y se lee con `json.loads` o se
+/// compila con `compile`: nada se interpola como código.
+fn arnes(a: &Arnes<'_>) -> String {
+    let cad = |s: &str| Json::s(s).jcs();
+    let output = Json::Arr(a.output.iter().map(Json::s).collect()).jcs();
+    format!(
+        r#"# El arnés de una función de código (ORE 0050 P3): {funcion}
+import json as _json
+import signal as _signal
+import pyarrow as _pa
+
+_PARAMETROS = _json.loads({parametros})
+_OUTPUT = _json.loads({output})
+_PLAZO = {plazo}
+
+
+def _plazo(*_):
+    raise TimeoutError("la invocación pasó de limits.timeout (%ss)" % _PLAZO)
+
+
+if _PLAZO and hasattr(_signal, "SIGALRM"):
+    _signal.signal(_signal.SIGALRM, _plazo)
+    _signal.alarm(_PLAZO)
+
+_modulo = {{"__name__": "ore_funcion", "__file__": {fichero}}}
+exec(compile({fuente}, {fichero}, "exec"), _modulo)
+_f = _modulo[{def_}]
+
+
+def _una(*fila):
+    try:
+        v = _f(*fila, **_PARAMETROS)
+    except TimeoutError:
+        raise
+    except Exception as e:  # noqa: BLE001 — una fila que falla se dice y se sigue
+        return {{"_error": "%s: %s" % (type(e).__name__, e)}}
+    if _OUTPUT:
+        if not isinstance(v, dict) or set(v) != set(_OUTPUT):
+            dijo = sorted(v) if isinstance(v, dict) else type(v).__name__
+            return {{"_error": "devolvió %s y `output` declara %s" % (dijo, _OUTPUT)}}
+        return dict(v, _error=None)
+    return {{"valor": _json.dumps(v, default=str), "_error": None}}
+
+
+_over = {over}
+if _over:
+    _res = [_una(f) for f in over(_over, como="arrow").to_pylist()]
+else:
+    _res = [_una()]
+if hasattr(_signal, "SIGALRM"):
+    _signal.alarm(0)
+_pa.Table.from_pylist(_res)
+"#,
+        funcion = a.funcion,
+        parametros = cad(&a.parametros.jcs()),
+        output = cad(&output),
+        plazo = a.plazo,
+        fichero = cad(a.fichero),
+        fuente = cad(a.fuente),
+        def_ = cad(a.def),
+        over = a.over.map(cad).unwrap_or_else(|| "None".into()),
+    )
+}
+
+#[cfg(test)]
+mod tests_python {
+    use super::*;
+
+    #[test]
+    fn los_plazos_se_leen_en_segundos() {
+        assert_eq!(segundos("60s"), Some(60));
+        assert_eq!(segundos("5m"), Some(300));
+        assert_eq!(segundos("1h"), Some(3600));
+        assert_eq!(segundos("1500ms"), Some(2));
+        assert_eq!(segundos("x"), None);
+    }
+
+    #[test]
+    fn los_valores_se_leen_de_su_tipo() {
+        let v = |s: &str| {
+            parse::parse(&format!("{{\"v\": {s}}}"))
+                .unwrap()
+                .get("v")
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert_eq!(valor_de("Integer", &v("3")).unwrap().jcs(), "3");
+        assert!(valor_de("Integer", &v("\"3\"")).is_err());
+        assert_eq!(valor_de("Decimal", &v("1.5")).unwrap().jcs(), "1.5");
+        assert!(valor_de("Decimal", &v("\"x\"")).is_err());
+        assert_eq!(valor_de("Boolean", &v("true")).unwrap().jcs(), "true");
+        assert_eq!(
+            valor_de("Date", &v("\"2026-10-01\"")).unwrap().jcs(),
+            "\"2026-10-01\""
+        );
+        assert!(valor_de("Date", &v("\"01/10/2026\"")).is_err());
+        assert_eq!(
+            valor_de("list<Integer>", &v("[1, 2]")).unwrap().jcs(),
+            "[1,2]"
+        );
+        assert_eq!(
+            valor_de("String", &v("\"hola\"")).unwrap().jcs(),
+            "\"hola\""
+        );
+    }
+
+    #[test]
+    fn el_arnes_no_interpola_codigo() {
+        let p = Json::obj([("q", Json::s("\"); import os #"))]);
+        let t = arnes(&Arnes {
+            funcion: "ventas.riesgo",
+            fichero: "packages/ventas/funciones/riesgo.py",
+            fuente: "def riesgo(c, umbral):\n    return {\"n\": 1}\n",
+            def: "riesgo",
+            parametros: &p,
+            over: Some("ventas.clientes"),
+            output: &["n".to_string()],
+            plazo: 60,
+        });
+        // Lo de fuera va dentro de un literal de cadena JSON, escapado.
+        assert!(
+            t.contains(r#"_json.loads("{\"q\":\"\\\"); import os #\"}")"#),
+            "{t}"
+        );
+        assert!(t.contains("_over = \"ventas.clientes\""));
+        assert!(t.contains("_PLAZO = 60"));
+        assert!(t.contains(r#"_f = _modulo["riesgo"]"#));
     }
 }

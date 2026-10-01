@@ -883,7 +883,16 @@ impl Servidor {
                     _ => ore_core::normalize::SCHEMA_POR_DEFECTO.to_string(),
                 };
                 let (ns, n) = (ns.to_string(), n.to_string());
-                self.leyendo(move |r| self.invocar(r, &ns, &schema, &n, sujeto))
+                // 0050 P3: una función de código se decide leyendo y se lanza
+                // después, como un trabajo del puesto: lanzarlo dentro de la
+                // lectura anidaría otra (la capa, la rama).
+                let plan = std::cell::RefCell::new(None);
+                let r =
+                    self.leyendo(|r| self.invocar(r, &ns, &schema, &n, sujeto, &p.cuerpo, &plan));
+                match plan.into_inner() {
+                    Some(plan) => self.lanzar_funcion(sujeto, plan),
+                    None => r,
+                }
             }
             // ── 0030 W1 ④ · la pregunta, servida (`preguntar.rs`) ──────────
             // Síncrono y de lectura: clona, `ore ask`, y devuelve las filas.
