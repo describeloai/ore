@@ -74,7 +74,7 @@ MAGIA = b"ORECOPY1"
 
 __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
            "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista",
-           "media", "medias", "media_de"]
+           "media", "medias", "media_de", "modelo"]
 
 
 class Puesto:
@@ -495,6 +495,74 @@ def _como(tabla, como):
 
         return pl.from_arrow(tabla)
     raise ValueError("como=%r no es una forma: vale `pandas`, `arrow` o `polars`" % (como,))
+
+
+# ── El modelo desde el código (ORE 0050 P4) ───────────────────────────────
+#
+# Una `Function` de `runtime: python` declara en `models` los modelos que su
+# código puede llamar, y solo esos: `ore-serve` los resuelve al invocarla (la
+# puerta y el id servido, como para `runtime: model`) y el arnés los deja aquí.
+# Fuera de una función que los declare no hay ninguno, y la red del puesto
+# tampoco llega a la puerta: la abre `ore-serve` al trabajo de esa función.
+# La identidad es la del agente de la celda —la misma con la que la puerta
+# atiende al Job de `runtime: model`—, y su token se renueva solo (0049 B2·3).
+
+_MODELOS = None
+
+
+def _modelos_de_la_funcion(modelos):
+    """Lo que el arnés de una función declara que su código puede llamar."""
+    global _MODELOS
+    _MODELOS = dict(modelos or {})
+
+
+class Modelo:
+    """Un modelo del árbol, servido por la puerta de modelos de la plataforma."""
+
+    def __init__(self, referencia, url, servido):
+        self.referencia = referencia
+        self.url = url.rstrip("/")
+        self.servido = servido
+
+    def __repr__(self):
+        return "Modelo(%r → %s)" % (self.referencia, self.servido)
+
+    def chat(self, mensajes, plazo=120, **opciones):
+        """`POST /chat/completions` con `mensajes` (la forma de OpenAI). Devuelve
+        la respuesta entera, como JSON."""
+        cuerpo = dict({"model": self.servido, "messages": mensajes}, **opciones)
+        req = urllib.request.Request(self.url + "/chat/completions", data=json.dumps(cuerpo).encode("utf-8"),
+                                     method="POST")
+        req.add_header("content-type", "application/json")
+        for k, v in (puesto._proveedor() if puesto._proveedor else puesto._cabeceras).items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=plazo) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise RuntimeError("la puerta de modelos contestó %s para `%s`: %s"
+                               % (e.code, self.referencia, e.read().decode("utf-8", "replace")[:300])) from None
+
+    def pide(self, texto, **opciones):
+        """Un mensaje de usuario y el texto de la respuesta."""
+        opciones.setdefault("temperature", 0)
+        r = self.chat([{"role": "user", "content": texto}], **opciones)
+        return r["choices"][0]["message"]["content"]
+
+
+def modelo(referencia):
+    """El modelo `referencia` —tal como está en `models` (`extractor`,
+    `ia.chat`) o por su nombre entero (`ventas.default.extractor`)—, si la
+    función que corre lo declara."""
+    clave = referencia[len("modelo/"):] if referencia.startswith("modelo/") else referencia
+    if _MODELOS is None:
+        raise PermissionError("`modelo(%r)`: un modelo se llama desde una función que lo declara en `models` "
+                              "(ORE 0050), no desde una sesión" % referencia)
+    m = _MODELOS.get(clave)
+    if m is None:
+        raise PermissionError("`%s` no está en `models` de esta función: declara %s"
+                              % (referencia, sorted(_MODELOS) or "ninguno"))
+    return Modelo(clave, m["url"], m["model"])
 
 
 def over(vista, como="pandas"):

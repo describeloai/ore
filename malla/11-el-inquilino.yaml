@@ -292,8 +292,8 @@ spec:
 # no sabe de nombres, y esa máquina no es un servicio del clúster. Es la misma
 # figura que MAESTRO en `47-el-informador.yaml`: `gen-inquilino.py` la lleva
 # como constante nombrada (MODELOS = la reserva `modelos` de la VPC) y ⑭ exige
-# que estas dos reglas lleven exactamente esa IP y esos dos puertos, y nada más
-# hacia ella.
+# que estas reglas lleven exactamente esa IP y esos puertos, y nada más hacia
+# ella. (Dos hasta el 2026-10-01; la tercera, la de una función de código, abajo.)
 #
 # Dos reglas y no una, porque son dos sujetos y dos planos:
 #   · los Jobs (`driver`) hablan con el PLANO DE DATOS, :8000 — es donde una
@@ -340,3 +340,33 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+---
+# ── Y el trabajo de una FUNCIÓN DE CÓDIGO que declara `models` (0050 P4) ─────
+#
+# Un tercer sujeto, y por la misma clase: un puesto NO alcanza la puerta
+# (medido el 2026-10-01, M3: `salida-del-puesto` no la abre), y así sigue para
+# toda sesión interactiva. Lo que la alcanza es el TRABAJO que `ore-serve`
+# lanza para invocar una `Function` de `runtime: python` que declara `models`:
+# a ese pod, y solo a ese, `ore-serve` le pone `ore.dev/usa-modelo: "si"`
+# (`cola::con_salida_al_modelo`). La etiqueta la pone el servidor al rendir el
+# Job, no la persona: el Job lo escribe `ore-serve` en la cola. Plano de
+# DATOS, :8000, con el token de agente de la celda —el mismo que el Job de
+# `runtime: model`—.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-modelo-de-una-funcion
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: puesto
+      ore.dev/usa-modelo: "si"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.10.0.100/32
+      ports:
+        - protocol: TCP
+          port: 8000

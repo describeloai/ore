@@ -896,15 +896,22 @@ def comprobar():
     reglas = re.findall(
         r"name: (salida-al-modelo[\w-]*)\n.*?ore\.dev/rol: (\w+)\n.*?cidr: ([\d./]+)\n.*?port: (\d+)",
         t11, re.S)
-    esperado = {("salida-al-modelo", "driver", MODELOS + "/32", "8000"), ("salida-al-modelo-del-control", "control", MODELOS + "/32", "9000")}
+    # 0050 P4: y el trabajo de una función de código que declara `models`
+    # (`rol: puesto` + `ore.dev/usa-modelo`, la etiqueta que solo pone
+    # `ore-serve`), al plano de datos como el driver.
+    esperado = {("salida-al-modelo", "driver", MODELOS + "/32", "8000"),
+                ("salida-al-modelo-del-control", "control", MODELOS + "/32", "9000"),
+                ("salida-al-modelo-de-una-funcion", "puesto", MODELOS + "/32", "8000")}
     if set(reglas) != esperado:
-        fallos.append("`11-el-inquilino.yaml`: la salida al modelo no es exactamente driver→%s/32:8000 y control→%s/32:9000 (hay %s)" % (MODELOS, MODELOS, reglas))
+        fallos.append("`11-el-inquilino.yaml`: la salida al modelo no es exactamente driver→%s/32:8000, control→%s/32:9000 y puesto con usa-modelo→%s/32:8000 (hay %s)" % (MODELOS, MODELOS, MODELOS, reglas))
+    if 'ore.dev/usa-modelo: "si"' not in t11:
+        fallos.append("`11-el-inquilino.yaml`: la regla de una función de código no exige `ore.dev/usa-modelo`: abriría la puerta a toda sesión")
     for f in sorted(MALLA.glob("*.yaml")):
         if f.name == "11-el-inquilino.yaml":
             continue
         if "cidr: %s/32" % MODELOS in f.read_text(encoding="utf-8"):
             fallos.append("`%s`: abre la IP del gateway de modelos; solo 11 puede, y por clase" % f.name)
-    print("  ⭐ ⑭ la celda sale al gateway de modelos por clase: driver→%s:8000, control→%s:9000, y nadie mas" % (MODELOS, MODELOS))
+    print("  ⭐ ⑭ la celda sale al gateway de modelos por clase: driver→%s:8000, control→%s:9000, el trabajo de una funcion con models→%s:8000, y nadie mas" % (MODELOS, MODELOS, MODELOS))
 
     # ── ⑮ LA PUERTA DEJA VIVIR UN FLUJO MAS DE LO QUE EL FLUJO DURA (0037 ②)
     #

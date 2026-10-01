@@ -422,6 +422,35 @@ const ENTORNO_VALOR_MODELO: &str = "entorno-modelo";
 /// Los entornos que tienen imagen (`Dockerfile`, `cloudbuild.yaml`).
 pub const ENTORNOS: [&str; 3] = ["python", "node", "jvm"];
 
+/// La etiqueta que abre la salida al gateway de modelos a un trabajo del
+/// puesto (0050 P4): la selecciona `salida-al-modelo-de-una-funcion`
+/// (`malla/11`), junto con `ore.dev/rol: puesto`. La pone **solo** `ore-serve`,
+/// y solo al trabajo de una función que declara `models`: una sesión
+/// interactiva no la lleva nunca.
+pub const ETIQUETA_USA_MODELO: &str = "ore.dev/usa-modelo";
+
+/// La plantilla del puesto con la etiqueta de [`ETIQUETA_USA_MODELO`] en el
+/// pod, antes de rendirla: así el nombre del Job, que resume el contenido,
+/// la cuenta.
+pub fn con_salida_al_modelo(plantilla: &str) -> Result<String, String> {
+    let rol = "
+        ore.dev/rol: puesto
+";
+    if plantilla.matches(rol).count() != 1 {
+        return Err(format!(
+            "`{PLANTILLA_PUESTO}` no trae (una vez) la etiqueta `ore.dev/rol: puesto` del pod: `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    Ok(plantilla.replacen(
+        rol,
+        &format!(
+            "{rol}        {ETIQUETA_USA_MODELO}: \"si\"
+"
+        ),
+        1,
+    ))
+}
+
 /// Rinde el Job del puesto de `id` (`puesto-<persona>-<entorno>`), en `rama`
 /// (vacía = `main`), con la `capa` (el digest de `entorno.rs`, o vacía: sin
 /// capa) y sobre la imagen del `entorno`. Devuelve `(fichero, texto, nombre
@@ -740,6 +769,43 @@ mod prueba {
         assert!(
             url_sin_secreto("s3://u:p@cubo?role_arn=arn:aws:iam::123456789012:role/r").is_err()
         );
+    }
+
+    /// 0050 P4: la etiqueta que abre la puerta va en el POD (que es lo que la
+    /// `NetworkPolicy` selecciona), sobre la plantilla de verdad, y el Job sigue
+    /// rindiéndose; sin la etiqueta del rol, no se adivina dónde ponerla.
+    #[test]
+    fn la_salida_al_modelo_va_en_el_pod_del_trabajo() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        let con = con_salida_al_modelo(p).unwrap();
+        assert_eq!(con.matches("ore.dev/usa-modelo: \"si\"").count(), 1);
+        assert!(con.contains(
+            "        ore.dev/rol: puesto
+        ore.dev/usa-modelo: \"si\"
+"
+        ));
+        assert!(
+            !p.contains("usa-modelo: \"si\""),
+            "la plantilla no la lleva: la pone ore-serve"
+        );
+        let (_, t, job) = rendir_puesto(
+            &con,
+            "trabajo-ana-1a2b3c4d",
+            "",
+            "",
+            "1",
+            "python",
+            "x.py@abc",
+        )
+        .unwrap();
+        let (_, _, job_sin) =
+            rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").unwrap();
+        assert!(t.contains("ore.dev/usa-modelo"));
+        assert_ne!(
+            job, job_sin,
+            "el nombre resume el contenido, etiqueta incluida"
+        );
+        assert!(con_salida_al_modelo("kind: Job").is_err());
     }
 
     #[test]

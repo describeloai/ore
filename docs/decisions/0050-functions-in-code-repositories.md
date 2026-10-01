@@ -3,7 +3,10 @@
 **Estado:** aceptado (las decisiones, 2026-10-01) · R1 en construcción: **P1 hecho** (el contrato,
 OOS v1alpha18, oos `fd1ed1a`) y **P2 hecho** (`ore-core` habla v1alpha18: 17/17 y `ore diff` por
 parámetro, 27/27) y **P3 hecho** (invocar: las funciones del paquete compilado, los
-parámetros contra `input`, el trabajo del puesto con el arnés y `resultados/`); P4–P6 por hacer. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
+parámetros contra `input`, el trabajo del puesto con el arnés y `resultados/`) y **P4 hecho**
+(`ore.modelo(ref)` acotado a `models`, y `salida-al-modelo-de-una-funcion`: la etiqueta
+`ore.dev/usa-modelo` que solo pone `ore-serve` al trabajo de una función con `models`); P5–P6 por
+hacer. La regla de red llega a un inquilino vivo al convergerlo. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
 se construye **sobre lo que ORE ya define** —la gramática de `Function` (OOS v1alpha10–14), el
 puesto y su promoción ([`0031`](0031-el-puesto.md) W3.8), la taxonomía de versiones de OOS
 (`91-versioning`), la red por política con nombre (0031 §7), el acceso

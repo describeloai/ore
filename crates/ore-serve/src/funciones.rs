@@ -554,10 +554,6 @@ impl Servidor {
                 "authorization",
                 "Cedar sobre la invocación no se evalúa todavía, y no se finge",
             ),
-            (
-                "models",
-                "llamar a un modelo desde el código es 0050 P4: la red del trabajo todavía no llega a la puerta",
-            ),
         ] {
             if f.spec.get(clave).is_some() {
                 return Err(Respuesta::error(
@@ -570,6 +566,24 @@ impl Servidor {
         // Los parámetros, contra `input`: nada que no declare, todo lo
         // obligatorio, y cada valor de su tipo.
         let parametros = parametros_de(f, cuerpo)?;
+
+        // Los modelos que el código puede llamar (`models`, 0050 P4): cada uno
+        // resuelto aquí a su puerta y su id servido, como el de `runtime:
+        // model`. El código los pide por la referencia tal como se escribió
+        // (`extractor`) o por su nombre entero (`ventas.default.extractor`).
+        let mut modelos = std::collections::BTreeMap::new();
+        let mut usados = Vec::new();
+        for m in f.spec.get("models").map(|(_, v)| v.items()).unwrap_or(&[]) {
+            let Some(r) = m.as_str() else { continue };
+            let nombre = r.strip_prefix("modelo/").unwrap_or(r);
+            let (url, id) = self.resolver_modelo(raiz, nombre, Some(&f.ns), &f.schema)?;
+            let entero = ore_core::normalize::qualify_catalogo(nombre, Some(&f.ns), &f.schema);
+            let ficha = Json::obj([("url", Json::s(&url)), ("model", Json::s(&id))]);
+            modelos.insert(nombre.to_string(), ficha.clone());
+            modelos.insert(entero.clone(), ficha);
+            usados.push(entero);
+        }
+        let modelos = Json::Obj(modelos);
 
         // Lo que puede leer: `over` y `reads`, en su contexto (0038).
         let cualificar = |v: &str| ore_core::normalize::qualify_catalogo(v, Some(&f.ns), &f.schema);
@@ -635,6 +649,7 @@ impl Servidor {
             fuente: &fuente,
             def,
             parametros: &parametros,
+            modelos: &modelos,
             over: over.as_deref(),
             output: &f.output(),
             plazo,
@@ -644,6 +659,7 @@ impl Servidor {
                 qn: qn.to_string(),
                 corrida: corrida_ahora(),
                 parametros,
+                modelos: usados,
             },
             codigo,
             commit,
@@ -809,6 +825,7 @@ struct Arnes<'a> {
     fuente: &'a str,
     def: &'a str,
     parametros: &'a Json,
+    modelos: &'a Json,
     over: Option<&'a str>,
     output: &'a [String],
     plazo: u64,
@@ -828,6 +845,7 @@ import signal as _signal
 import pyarrow as _pa
 
 _PARAMETROS = _json.loads({parametros})
+_MODELOS = _json.loads({modelos})
 _OUTPUT = _json.loads({output})
 _PLAZO = {plazo}
 
@@ -839,6 +857,11 @@ def _plazo(*_):
 if _PLAZO and hasattr(_signal, "SIGALRM"):
     _signal.signal(_signal.SIGALRM, _plazo)
     _signal.alarm(_PLAZO)
+
+# Lo único que `ore.modelo()` deja llamar: lo declarado en `models` (0050 P4).
+import ore as _ore
+
+_ore._modelos_de_la_funcion(_MODELOS)
 
 _modulo = {{"__name__": "ore_funcion", "__file__": {fichero}}}
 exec(compile({fuente}, {fichero}, "exec"), _modulo)
@@ -871,6 +894,7 @@ _pa.Table.from_pylist(_res)
 "#,
         funcion = a.funcion,
         parametros = cad(&a.parametros.jcs()),
+        modelos = cad(&a.modelos.jcs()),
         output = cad(&output),
         plazo = a.plazo,
         fichero = cad(a.fichero),
@@ -932,6 +956,7 @@ mod tests_python {
             fuente: "def riesgo(c, umbral):\n    return {\"n\": 1}\n",
             def: "riesgo",
             parametros: &p,
+            modelos: &Json::obj([]),
             over: Some("ventas.clientes"),
             output: &["n".to_string()],
             plazo: 60,

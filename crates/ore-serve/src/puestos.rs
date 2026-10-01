@@ -180,6 +180,9 @@ pub(crate) struct Invocada {
     pub qn: String,
     pub corrida: String,
     pub parametros: Json,
+    /// Los modelos que declara (`models`), ya resueltos: si hay alguno, el
+    /// trabajo lleva la etiqueta que abre la salida al gateway (0050 P4).
+    pub modelos: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -654,7 +657,7 @@ impl Servidor {
         };
         // A la cola: Flux rinde el Job.
         let (fichero, job, dicho) =
-            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "") {
+            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "", false) {
                 Ok(v) => v,
                 Err(r) => return r,
             };
@@ -902,6 +905,7 @@ impl Servidor {
             &capa,
             entorno,
             &format!("{codigo}@{commit}"),
+            funcion.as_ref().is_some_and(|f| !f.modelos.is_empty()),
         ) {
             Ok(v) => v,
             Err(r) => return r,
@@ -2399,6 +2403,7 @@ impl Servidor {
 
     // ── la cola ─────────────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn encolar_puesto(
         &self,
         id: &str,
@@ -2407,6 +2412,7 @@ impl Servidor {
         capa: &str,
         entorno: &str,
         trabajo: &str,
+        usa_modelo: bool,
     ) -> Result<(String, String, String), Respuesta> {
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
@@ -2428,6 +2434,13 @@ impl Servidor {
                     ),
                 )
             })?;
+        // 0050 P4: el trabajo de una función que declara `models` sale al
+        // gateway, y ningún otro puesto.
+        let plantilla = if usa_modelo {
+            cola::con_salida_al_modelo(&plantilla).map_err(|e| Respuesta::error(503, e))?
+        } else {
+            plantilla
+        };
         // El instante de apertura va en el Job: reabrir (tras un TTL, un tope o
         // un relevo) rinde OTRO nombre, y Flux retira el Job viejo y crea el nuevo.
         let abierto = std::time::SystemTime::now()
