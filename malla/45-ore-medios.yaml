@@ -60,11 +60,14 @@ spec:
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             - { name: ORE_MEDIOS_PUERTO, value: "8097" }
+            # El puerto del puesto (B3·4): sólo `GET /contenido?permiso=…`.
+            - { name: ORE_MEDIOS_PUERTO_CONTENIDO, value: "8098" }
             # Filas de índice vivas entre todas las colecciones: un millón de
             # ítems es del orden de medio GB en Arrow (B2·0), y esto guarda menos.
             - { name: ORE_MEDIOS_FILAS, value: "1000000" }
           ports:
             - { name: http, containerPort: 8097 }
+            - { name: contenido, containerPort: 8098 }
           readinessProbe:
             httpGet: { path: /salud, port: 8097 }
             periodSeconds: 10
@@ -89,9 +92,12 @@ spec:
     ore.dev/rol: medios
   ports:
     - { name: http, port: 8097, targetPort: 8097 }
+    - { name: contenido, port: 8098, targetPort: 8098 }
 ---
-# Quién entra: sólo `ore-serve`. Un puesto no le habla —pasa por la puerta, que
-# decide—, ni nadie de fuera de la celda.
+# Quién entra: `ore-serve` al 8097 (el índice, la firma, los permisos: confían
+# en quien llama) y el puesto SÓLO al 8098, que no sirve más que
+# `GET /contenido` con el permiso que `ore-serve` pidió para UN ítem (0049
+# B3·4; sin permiso, `401`). Nadie de fuera de la celda.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -113,6 +119,13 @@ spec:
       ports:
         - protocol: TCP
           port: 8097
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: puesto
+      ports:
+        - protocol: TCP
+          port: 8098
 ---
 # A dónde sale: el DNS, el servidor de metadatos (su token y su correo) y
 # HTTPS fuera de las redes privadas (el lago y la firma de Google; en B3, el
