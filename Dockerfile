@@ -50,9 +50,9 @@ COPY . .
 RUN cargo build --release --locked \
       -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
       -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 -p ore-firmar-s3 -p ore-sts \
-      -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke \
+      -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios \
  && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-firmar-s3 ore-asumir-rol \
-             ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke; do \
+             ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios; do \
       strip "target/release/$b"; \
     done
 
@@ -185,6 +185,12 @@ COPY --from=build /src/target/release/ore-firmar-s3 /usr/local/bin/ore-firmar-s3
 # metadata server y NO enlaza el cliente de S3 ni la firma (vigilado igual):
 # canjea un token, no lee un bucket.
 COPY --from=build /src/target/release/ore-asumir-rol /usr/local/bin/ore-asumir-rol
+# 0049 B2·4: `ore-medios`, el índice de las colecciones y la firma en lote, en
+# un proceso vivo. Viaja en esta imagen —alpine con certificados, y ya con
+# `ore-store-gcs`— y corre en SU Deployment con su comando: es otro proceso,
+# con otra cuenta de la red, y `ore-serve` sigue sin enlazar TLS
+# (`ore-cli/tests/dependencias.rs`). Una imagen de menos que construir y etiquetar.
+COPY --from=build /src/target/release/ore-medios /usr/local/bin/ore-medios
 
 USER 65532:65532
 WORKDIR /trabajo
