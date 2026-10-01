@@ -35,8 +35,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Cómo se arregla un documento que no es el del código (G1d).
-const GENERAR: &str =
-    "el documento se deriva del código: regenéralo con `ore funciones generar`, o cambia el `def`";
+pub(crate) const GENERAR: &str =
+    "el documento se deriva del código: regenéralo con `ore functions generate`, o cambia el `def`";
 
 /// Lo que un documento puede llevar y el código no da (§4.3). Una función con
 /// cualquiera de ellos se escribe como en v1alpha10, sin `@function`.
@@ -225,16 +225,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // `test-project`). Ahí un `@function` no tiene dónde publicarse y es
     // código de la sesión, sin más. Qué hacer con esos paquetes está por
     // decidir (0050).
-    let publicables: Vec<PathBuf> = pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == Kind::Package)
-        .filter(|d| {
-            d.meta("name")
-                .and_then(Node::as_str)
-                .is_some_and(crate::pertenencia::puede_ser_namespace)
-        })
-        .filter_map(|d| d.path.parent().map(Path::to_path_buf))
+    let publicables: Vec<PathBuf> = paquetes_publicables(pkg)
+        .into_iter()
+        .map(|(c, _)| c)
         .collect();
     for carpeta in publicables {
         let mut pys = Vec::new();
@@ -338,7 +331,7 @@ pub fn entrypoint(s: &str) -> Option<(&str, &str)> {
 /// La carpeta del paquete donde vive el documento: la más cercana, subiendo,
 /// que tiene `package.yaml`. Sin ninguna dentro del árbol, la raíz (un
 /// paquete suelto).
-fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
+pub(crate) fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
     let mut d = doc.parent();
     while let Some(c) = d {
         if c.join("package.yaml").is_file() {
@@ -353,6 +346,22 @@ fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
 }
 
 // ── leer el código ──────────────────────────────────────────────────────────
+
+/// Las carpetas de los paquetes que pueden publicar funciones, con su nombre:
+/// los que tienen `package.yaml` y un nombre que puede ser `namespace`
+/// (`OOS2030`).
+pub(crate) fn paquetes_publicables(pkg: &Package) -> Vec<(PathBuf, String)> {
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == Kind::Package)
+        .filter_map(|d| {
+            let nombre = d.meta("name").and_then(Node::as_str)?;
+            let carpeta = d.path.parent()?;
+            (crate::pertenencia::puede_ser_namespace(nombre) && carpeta.is_dir())
+                .then(|| (carpeta.to_path_buf(), nombre.to_string()))
+        })
+        .collect()
+}
 
 /// Lee y deriva un `.py` una sola vez. `None` si no se puede leer.
 fn leer<'a>(
@@ -372,7 +381,7 @@ fn leer<'a>(
 
 /// Los `.py` de una carpeta, sin entrar en lo que no es del paquete: lo
 /// oculto, los entornos y las cachés.
-fn ficheros_py(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn ficheros_py(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(es) = std::fs::read_dir(dir) else {
         return;
     };
@@ -404,36 +413,42 @@ fn pos(l: &Lineas, r: Rango) -> Pos {
 }
 
 /// `OOS2043` por un fichero que no es Python del puesto —roto, o con sintaxis
-/// posterior a la suya—, una sola vez por fichero. `true` si lo es.
+/// posterior a la suya—. `None` si lo es.
+pub(crate) fn roto(fichero: &Path, fuente: &str, d: &Derivacion) -> Option<Diagnostic> {
+    let f = d.sintaxis.first().or(d.version.first())?;
+    let (mayor, menor) = python::PYTHON_DEL_PUESTO;
+    let otros = d.sintaxis.len() + d.version.len() - 1;
+    let mas = if otros > 0 {
+        format!(" (y {otros} más)")
+    } else {
+        String::new()
+    };
+    let mut diag = Diagnostic::new(
+        Code::Oos2043,
+        fichero,
+        format!(
+            "no es Python que el puesto ({mayor}.{menor}) entienda: {}{mas}",
+            f.mensaje
+        ),
+    )
+    .at(pos(&Lineas::new(fuente), f.rango));
+    if let Some(a) = &f.ayuda {
+        diag = diag.help(a.clone());
+    }
+    Some(diag)
+}
+
+/// [`roto`], una sola vez por fichero. `true` si lo es.
 fn fichero_roto(
     fichero: &Path,
     l: &Leido,
     out: &mut Vec<Diagnostic>,
     dichos: &mut BTreeSet<PathBuf>,
 ) -> bool {
-    let Some(f) = l.d.sintaxis.first().or(l.d.version.first()) else {
+    let Some(d) = roto(fichero, &l.fuente, &l.d) else {
         return false;
     };
     if dichos.insert(fichero.to_path_buf()) {
-        let (mayor, menor) = python::PYTHON_DEL_PUESTO;
-        let otros = l.d.sintaxis.len() + l.d.version.len() - 1;
-        let mas = if otros > 0 {
-            format!(" (y {otros} más)")
-        } else {
-            String::new()
-        };
-        let mut d = Diagnostic::new(
-            Code::Oos2043,
-            fichero,
-            format!(
-                "no es Python que el puesto ({mayor}.{menor}) entienda: {}{mas}",
-                f.mensaje
-            ),
-        )
-        .at(pos(&Lineas::new(&l.fuente), f.rango));
-        if let Some(a) = &f.ayuda {
-            d = d.help(a.clone());
-        }
         out.push(d);
     }
     true
@@ -441,7 +456,7 @@ fn fichero_roto(
 
 /// `OOS2043`: cada razón por la que un `@function` no se deriva, en su sitio
 /// del `.py`.
-fn no_se_deriva(
+pub(crate) fn no_se_deriva(
     fichero: &Path,
     fuente: &str,
     nombre: &str,

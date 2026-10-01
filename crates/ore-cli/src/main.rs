@@ -19,6 +19,7 @@ mod deriva;
 mod empaquetar;
 mod fuente;
 mod fuente_inducida;
+mod funciones;
 mod inductor;
 mod inicio;
 mod invocar;
@@ -86,6 +87,24 @@ struct Cli {
 /// Lo que se puede hacer con una fuente. Hoy solo darla de alta; `list` y
 /// `remove` esperan a tener más de una cosa que decir que la que ya dice el
 /// manifiesto, que se lee.
+
+#[derive(Subcommand)]
+enum AccionFunciones {
+    /// Escribe el documento `Function` de cada `@function` del árbol, con lo
+    /// que dan su firma y su decorador (OOS v1alpha18 01 §4). Lo que ya está
+    /// al día no se toca; un documento generado cuyo `def` ya no es un
+    /// `@function` se borra; uno escrito a mano, nunca.
+    Generate {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// No escribe: sale con 1 si algún documento no es el que el código da.
+        #[arg(long)]
+        check: bool,
+        /// El plan y los diagnósticos como una línea JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
 
 #[derive(Subcommand)]
 enum AccionFuente {
@@ -820,6 +839,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Las funciones de código del árbol (ORE 0050): el `Function` de cada
+    /// `@function` se deriva de su `def`, y aquí se escribe.
+    #[command(name = "functions", subcommand)]
+    Functions(AccionFunciones),
     /// Un arbol de antes pasa a despues (0033 §4): `ore migrate v1alpha12 .`
     /// convierte cada `View` con `materialized` en un `Dataset` con su plan,
     /// cada `Table` con `datasource: lago` en un `Dataset` escrito, reapunta
@@ -1061,6 +1084,9 @@ fn main() -> std::process::ExitCode {
 
     match &cli.command {
         Command::Validate { path } => return validar(path),
+        Command::Functions(AccionFunciones::Generate { path, check, json }) => {
+            return funciones::generar(path, *check, *json);
+        }
         Command::Report { path } => return informar(path),
         Command::View { path } => return vista::ver(path),
         Command::Verify { propuesta, path } => return verificar::verificar(path, propuesta),
@@ -1542,6 +1568,7 @@ fn main() -> std::process::ExitCode {
         | Command::Overlay { .. }
         | Command::Collections { .. }
         | Command::Migrate { .. }
+        | Command::Functions(_)
         | Command::Assets { .. }
         | Command::Sql { .. }
         | Command::Ask { .. }

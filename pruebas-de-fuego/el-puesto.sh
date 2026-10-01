@@ -955,9 +955,10 @@ spec:
     n: { type: Integer }
 Y
   R18="$A/packages/hr/riesgo"
-  mkdir -p "$R18/functions" "$R18/funciones"
-  # El código es la fuente (0050 G1): `@function` y sus anotaciones; cada
-  # documento es el que `ore-code` deriva (y `validate` lo coteja, OOS2013).
+  mkdir -p "$R18/funciones"
+  # El código es la fuente (0050 G1): `@function` y sus anotaciones. Los
+  # documentos no se escriben: los escribe `ore functions generate`, y
+  # `validate` los coteja con el código (OOS2013).
   cat > "$R18/funciones/marcar.py" <<'PY'
 from dataclasses import dataclass
 
@@ -976,20 +977,6 @@ def marcar(fila, umbral: int) -> Marca:
         raise ValueError("la tres")
     return Marca(fila["n"], fila["n"] > umbral)
 PY
-  cat > "$R18/functions/marcar.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha18
-kind: Function
-metadata: { name: marcar, namespace: hr }
-spec:
-  runtime: python
-  entrypoint: riesgo/funciones/marcar.py:marcar
-  over: hr.numeros_v
-  input:
-    umbral: { type: Integer, required: true }
-  output:
-    n: { type: Integer }
-    grande: { type: Boolean }
-Y
   cat > "$R18/funciones/otras.py" <<'PY'
 import time
 from dataclasses import dataclass
@@ -1014,31 +1001,11 @@ def curiosa(que: str) -> Vio:
         modelo("extractor")
     return Vio(str(len(over(que, como="arrow"))))
 PY
-  cat > "$R18/functions/lenta.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha18
-kind: Function
-metadata: { name: lenta, namespace: hr }
-spec:
-  runtime: python
-  entrypoint: riesgo/funciones/otras.py:lenta
-  input:
-    s: { type: Integer, required: true }
-  output: { type: String }
-  limits: { timeout: 1s }
-Y
-  cat > "$R18/functions/curiosa.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha18
-kind: Function
-metadata: { name: curiosa, namespace: hr }
-spec:
-  runtime: python
-  entrypoint: riesgo/funciones/otras.py:curiosa
-  reads: [hr.numeros_v]
-  input:
-    que: { type: String, required: true }
-  output:
-    vio: { type: String }
-Y
+  ( cd "$A" && "$ORE" functions generate . >/dev/null 2>&1 ) || falla "18 · ore functions generate: $(cd "$A" && "$ORE" functions generate . 2>&1 | tail -5)"
+  for f in marcar lenta curiosa; do
+    head -1 "$A/packages/hr/functions/$f.yaml" 2>/dev/null | grep -q "^# generado por ore desde riesgo/funciones/" || falla "18 · el documento de $f no lo generó ore: $(ls "$A/packages/hr/functions" 2>&1)"
+  done
+  ( cd "$A" && "$ORE" functions generate --check . >/dev/null 2>&1 ) || falla "18 · generar dos veces cambió algo"
   ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "18 · el árbol con las funciones no compila: $(cd "$A" && "$ORE" validate . 2>&1 | head -5)"
 
   # se ve donde vive (M1), con su runtime
