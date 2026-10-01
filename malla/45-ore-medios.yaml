@@ -90,8 +90,9 @@ spec:
   ports:
     - { name: http, port: 8097, targetPort: 8097 }
 ---
-# Quién entra: sólo `ore-serve`. Un puesto no le habla —pasa por la puerta, que
-# decide—, ni nadie de fuera de la celda.
+# Quién entra: `ore-serve` (el índice, la firma, el permiso) y, desde B3·4, el
+# puesto —sólo a por los bytes, con el permiso que `ore-serve` le pidió para
+# UN ítem; sin él, `401`—. Nadie de fuera de la celda.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -110,6 +111,9 @@ spec:
         - podSelector:
             matchLabels:
               ore.dev/rol: control
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: puesto
       ports:
         - protocol: TCP
           port: 8097
