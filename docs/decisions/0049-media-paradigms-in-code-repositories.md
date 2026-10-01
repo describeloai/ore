@@ -336,6 +336,25 @@ evaluación y, cuando se decida, D7 con GPU. JVM y Node, al final.
 - una segunda pasada sin cambios no procesa nada, y un error se reintenta solo;
 - el linaje de la salida nombra la colección y su transacción.
 
+### B2·0 · lo medido (2026-10-01, sonda desechable)
+
+**Dónde vive**: un servicio nuevo en la celda, **`ore-medios`** (decidido): enlaza `ore-store`, es el
+único que toca el lago y los orígenes, y ore-serve sigue sin TLS y decide quién puede. En B3 es
+también la puerta de lectura.
+
+| pregunta | medido | qué decide |
+|---|---|---|
+| **firmar** (hoy) | `ore-store-gcs blob-firmar` en el pod de ore-serve (500m): 1 URL 0,2 s; 10, 4,9 s; **100, 52 s**. En un pod de 2 CPU: 100, 14 s | firmar es el cuello de botella, no el listado |
+| **por qué** | `ore_gcp::cliente()` crea un cliente nuevo en cada llamada: cada `signBlob` paga TCP + TLS (y la carga de los certificados del sistema) en 32 hilos, contra la CPU del pod. El token sí se reusa | — |
+| **firmar con la conexión reusada** | `signBlob` desde victor con la misma cuenta: conexión nueva, 100 en 1,76 s; **reusada, 17 ms la una, 100 en 0,69 s, 500 en 1,55 s** (32 a la vez, ~320/s) | `ore-medios` firma con un cliente vivo y reusado; 75× sobre hoy. Cachear URLs hasta poco antes de caducar es un extra, no la solución |
+| **cargar el índice** | el listado de una colección (las 14 columnas de hoy), en proceso, release, lago local: 10 k filas, 11 ms y 5 MB; 100 k, 70 ms y 54 MB; **1 M, 0,63 s y 451 MB**, más 1,15 s de índice. Una página por cursor y 1000 búsquedas por huella: **< 1 ms** | el índice cabe en memoria por transacción hasta el orden del millón; por encima, proyectar sólo las columnas que sirven y guardar posiciones en los arrays en vez de copiar cadenas, con un tope de memoria y desalojo por colección |
+| **enterarse de una transacción nueva** | ya medido (0046 E5b·2): un `fetch` del espejo vivo 0,07–0,10 s, un `worktree` 0,08 s | `ore-medios` no toca git: ore-serve, que ya pone el árbol al día en cada petición, le pasa el `metadata_location` del puntero de esa rama, y el índice se guarda con esa clave. Siempre fresco, y vale para ramas |
+| **la credencial que se renueva** | una celda corre en el mismo proceso que el agente (`exec`), y el agente ya renueva su token a 60 s de caducar | el SDK pide la cabecera al agente en cada llamada (un proveedor), en vez de copiarla al empezar la celda; sin red nueva |
+
+Sin medir (por el entorno): el índice leído del lago real en GCS (sumará la descarga de sus
+Parquet: 45 MB para 1 M filas); el rendimiento del proveedor de credencial con un token de 30 s,
+que espera a B2·3 en vivo.
+
 ## Lo que no se hace aquí
 
 - Las funciones concretas de IA (qué OCR, qué modelo de transcripción): se eligen sobre la base,
