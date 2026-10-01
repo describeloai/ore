@@ -47,36 +47,48 @@ use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::path::Path;
 
-/// El identificador de un proyecto: el nombre de su carpeta.
+/// El identificador de un proyecto: el nombre de su carpeta. Se aceptan los
+/// de antes, con guion (`test-project`), para leerlos y retirarlos; uno nuevo
+/// sale de [`id_de`] y es siempre un identificador.
 fn id_valido(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 64 {
         return Err("el identificador de un proyecto tiene entre 1 y 64 letras".into());
     }
     if !id
         .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
     {
         return Err(format!(
-            "`{id}` no vale como identificador: minúsculas, números y guiones (es el nombre de una carpeta)"
+            "`{id}` no vale como identificador: minúsculas, números y `_` (es el nombre de una carpeta)"
         ));
     }
-    if id.starts_with('-') || id.ends_with('-') {
-        return Err(format!("`{id}` no puede empezar ni acabar en guion"));
+    if id.starts_with(['-', '_']) || id.ends_with(['-', '_']) {
+        return Err(format!("`{id}` no puede empezar ni acabar en `_`"));
     }
     Ok(())
 }
 
 /// De un título a un identificador: lo que la consola enseña, hecho carpeta.
+///
+/// **Y nombre de paquete que puede ser `namespace`** (0050): el proyecto nace
+/// con su paquete, `packages/<id>/`, y lo que se publique desde sus
+/// repositorios se llama `<id>.<schema>.<nombre>`. Un identificador es letra
+/// y luego letras, números y `_` (`OOS2030`); con guiones —como era hasta
+/// 2026-10-01— el paquete no podía tener un solo documento gobernado.
 pub(crate) fn id_de(titulo: &str) -> String {
     let mut out = String::new();
     for c in titulo.trim().to_lowercase().chars() {
         if c.is_ascii_lowercase() || c.is_ascii_digit() {
             out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
+        } else if !out.is_empty() && !out.ends_with('_') {
+            out.push('_');
         }
     }
-    out.trim_matches('-').chars().take(64).collect()
+    let mut id: String = out.trim_end_matches('_').chars().take(64).collect();
+    if id.starts_with(|c: char| c.is_ascii_digit()) {
+        id = format!("p_{id}").chars().take(64).collect();
+    }
+    id.trim_end_matches('_').to_string()
 }
 
 /// Un escalar del encabezado, en una línea y entre comillas: el manifiesto lo
@@ -329,6 +341,12 @@ impl Servidor {
         if suyo.join("package.yaml").is_file() {
             return Ok(());
         }
+        // ⛔ (0050) Un proyecto de antes con guion (`test-project`) no estrena
+        //   ahora un paquete que no podría publicar nada (`OOS2030`): se queda
+        //   sin sitio, como sin dueño, hasta `ore migrate proyectos`.
+        if !ore_core::pertenencia::puede_ser_namespace(id) {
+            return Ok(());
+        }
         let Some(dueno) = self.dueno_de_un_sitio(sujeto) else {
             return Ok(());
         };
@@ -463,10 +481,18 @@ mod pruebas {
 
     #[test]
     fn el_id_sale_del_titulo() {
-        assert_eq!(id_de("Customer Churn"), "customer-churn");
-        assert_eq!(id_de("  Nómina 2026 "), "n-mina-2026");
-        assert_eq!(id_de("A//B"), "a-b");
+        assert_eq!(id_de("Customer Churn"), "customer_churn");
+        assert_eq!(id_de("  Nómina 2026 "), "n_mina_2026");
+        assert_eq!(id_de("A//B"), "a_b");
+        assert_eq!(id_de("test_project"), "test_project");
+        assert_eq!(id_de("test-project"), "test_project");
+        assert_eq!(id_de("2026 Plan"), "p_2026_plan");
         assert_eq!(id_de("···"), "");
+        // ⭐ (0050) Todo id que sale de un título puede ser `namespace`: el
+        //   paquete del proyecto puede publicar lo que hagan sus repositorios.
+        for t in ["Customer Churn", "Nómina 2026", "2026 Plan", "a-b_c", "X"] {
+            assert!(ore_core::pertenencia::puede_ser_namespace(&id_de(t)), "{t}");
+        }
     }
 
     #[test]

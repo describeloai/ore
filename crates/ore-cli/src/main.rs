@@ -27,6 +27,7 @@ mod lector;
 mod materializar;
 mod mcp;
 mod migrar;
+mod migrar_proyectos;
 mod migrar_punteros;
 mod migrar_v14;
 mod paquete;
@@ -851,6 +852,9 @@ enum Command {
     /// pasa a ser su consulta SQL con su contrato; la v1alpha12 antes, si falta.
     /// `ore migrate punteros .` (ADR 0045 P4): la `Table` de cada objeto sale
     /// de las bases y la escribe su fuente, una vez; quien la leía se reapunta.
+    /// `ore migrate proyectos .` (ORE 0050): el proyecto con guion y su paquete
+    /// pasan a un identificador (`test-project` → `test_project`), y `contiene`
+    /// con ellos, para que su paquete pueda publicar.
     /// Con `--seco` dice que haria y no toca nada.
     Migrate {
         /// La version de destino: `v1alpha12` o `v1alpha14`.
@@ -1203,9 +1207,10 @@ fn main() -> std::process::ExitCode {
                 "v1alpha12" => migrar::migrar(path, &op),
                 "v1alpha14" => migrar_v14::migrar(path, &op),
                 "punteros" => migrar_punteros::migrar(path, &op),
+                "proyectos" => migrar_proyectos::migrar(path, &op),
                 _ => {
                     eprintln!(
-                        "ore migrate · se migra a `v1alpha12`, a `v1alpha14` o `punteros` (pediste `{version}`)"
+                        "ore migrate · se migra a `v1alpha12`, a `v1alpha14`, `punteros` o `proyectos` (pediste `{version}`)"
                     );
                     std::process::ExitCode::from(64)
                 }

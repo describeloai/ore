@@ -361,8 +361,9 @@ def {{funcion}}(texto: str, veces: int = 1) -> Repetido:
 
 /// Si un fichero de la semilla se siembra en `paquete`. Un documento gobernado
 /// (`functions/*.yaml`) solo vive en un paquete cuyo nombre puede ser
-/// `namespace` (`OOS2030`): uno con guion —el de un proyecto, `test-project`—
-/// no puede tenerlo, y sembrarlo haría que el commit que crea el repositorio no
+/// `namespace` (`OOS2030`): uno con guion —el de un proyecto de antes del
+/// 2026-10-01, `test-project`, hasta `ore migrate proyectos`— no puede
+/// tenerlo, y sembrarlo haría que el commit que crea el repositorio no
 /// compilara. Ahí nace el código solo, como en la v4.
 pub fn se_siembra(rel: &str, paquete: &str) -> bool {
     !rel.ends_with(".yaml") || crate::pertenencia::puede_ser_namespace(paquete)
@@ -645,7 +646,8 @@ mod pruebas {
     /// 0050 P5: un repositorio `functions-python` nace con una función que
     /// COMPILA, en el árbol de verdad —el commit que lo crea pasa por la puerta
     /// de «no empeorar»—. También en un paquete con guion (`test-project`, el
-    /// de `victor`), y dos repositorios en el mismo paquete no chocan.
+    /// de un proyecto de antes en `victor`), y dos repositorios en el mismo
+    /// paquete no chocan.
     #[test]
     fn la_semilla_es_lo_que_su_codigo_da() {
         // El documento que se siembra es, byte a byte, el que `ore-code`

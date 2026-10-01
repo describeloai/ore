@@ -221,10 +221,11 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // ── OOS2013 · cada `@function` del paquete tiene su documento ────────────
     //
     // Salvo en un paquete que no puede tener documentos gobernados: uno cuyo
-    // nombre no puede ser `namespace` (`OOS2030`; el de un proyecto,
-    // `test-project`). Ahí un `@function` no tiene dónde publicarse y es
-    // código de la sesión, sin más. Qué hacer con esos paquetes está por
-    // decidir (0050).
+    // nombre no puede ser `namespace` (`OOS2030`). Hoy es un vocabulario
+    // importado (`oos.dev`), o el paquete de un proyecto de antes del
+    // 2026-10-01 (`test-project`) hasta `ore migrate proyectos`: un proyecto
+    // nuevo nace con un identificador y su paquete publica. Ahí un `@function`
+    // no tiene dónde publicarse y es código de la sesión, sin más.
     let publicables: Vec<PathBuf> = paquetes_publicables(pkg)
         .into_iter()
         .map(|(c, _)| c)

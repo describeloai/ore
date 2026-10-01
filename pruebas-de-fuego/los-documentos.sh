@@ -523,17 +523,17 @@ dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, 
 ANTES_ITEMS=$(pide GET /assets >/dev/null; campo "len(d['items'])")
 [ "$(pide POST /proyectos '{"nombre":"Customer Churn","descripcion":"Abandono sobre la plantilla.","contiene":["hr"]}')" = "201" ] \
   || falla "20 · POST /proyectos · $(cat "$TMP/r.json")"
-cumple "d['id']=='customer-churn' and d['nombre']=='Customer Churn' and d['contiene']==['customer-churn','hr'] and d['nueva'] is True and d['commit'] and 'sinResolver' not in d" "20 · 201 con el id del titulo, SU SITIO el primero de lo que nombra, y el commit"
-cumple "d['sitio']=='packages/customer-churn'" "20 · nace con sitio propio (0035 vii.1)"
+cumple "d['id']=='customer_churn' and d['nombre']=='Customer Churn' and d['contiene']==['customer_churn','hr'] and d['nueva'] is True and d['commit'] and 'sinResolver' not in d" "20 · 201 con el id del titulo, SU SITIO el primero de lo que nombra, y el commit"
+cumple "d['sitio']=='packages/customer_churn'" "20 · nace con sitio propio (0035 vii.1)"
 [ "$(asunto)" = 'crear un proyecto' ] || falla "20 · el asunto: $(asunto)"
 git --git-dir="$FORJA" log -1 --format='%an' main | grep -q "ana" || falla "20 · el commit no es del sujeto"
 # el sitio y el manifiesto, en EL MISMO commit: un proyecto sin suelo es el fallo que vii arregla
-[ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "packages/customer-churn/package.yaml proyectos/customer-churn/README.md " ] \
+[ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "packages/customer_churn/package.yaml proyectos/customer_churn/README.md " ] \
   || falla "20 · el sitio no nacio con el proyecto: $(git --git-dir="$FORJA" show --name-only --format='' main | tr '\n' ' ')"
-git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml | grep -q 'status: draft' \
-  || falla "20 · el paquete del proyecto no nace en draft: $(git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml)"
-git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml | grep -q 'owner: "user:ana"' \
-  || falla "20 · el owner del sitio no es quien lo creo: $(git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml)"
+git --git-dir="$FORJA" show main:packages/customer_churn/package.yaml | grep -q 'status: draft' \
+  || falla "20 · el paquete del proyecto no nace en draft: $(git --git-dir="$FORJA" show main:packages/customer_churn/package.yaml)"
+git --git-dir="$FORJA" show main:packages/customer_churn/package.yaml | grep -q 'owner: "user:ana"' \
+  || falla "20 · el owner del sitio no es quien lo creo: $(git --git-dir="$FORJA" show main:packages/customer_churn/package.yaml)"
 # y el arbol sigue compilando CON el paquete vacio dentro (si no, el commit no habria entrado)
 [ "$(pide GET /arbol/diagnosticos)" = "200" ] && cumple "[x for x in d['diagnosticos'] if x['severidad']=='error']==[]" "20 · con el sitio dentro, el arbol compila igual"
 # el paquete de otro NO se adopta: nacer dentro de algo que ya estaba seria fingir que lo creo
@@ -547,7 +547,7 @@ ANTES=$(cabeza)
 [ "$(pide POST /proyectos '{"descripcion":"sin nombre"}')" = "422" ] || falla "20 · sin nombre no dio 422"
 # un proyecto que nombra lo que aun no existe: entra, y lo dice
 [ "$(pide POST /proyectos '{"nombre":"Nomina 2026","contiene":["hr/nomina"]}')" = "201" ] || falla "20 · un proyecto que nombra lo que no existe no entro · $(cat "$TMP/r.json")"
-cumple "d['id']=='nomina-2026' and d['contiene']==['nomina-2026','hr/nomina'] and d['sinResolver']==['hr/nomina']" "20 · lo que no resuelve se dice y no impide; SU SITIO si resuelve, aunque este vacio"
+cumple "d['id']=='nomina_2026' and d['contiene']==['nomina_2026','hr/nomina'] and d['sinResolver']==['hr/nomina']" "20 · lo que no resuelve se dice y no impide; SU SITIO si resuelve, aunque este vacio"
 # un proyecto de ANTES de vii.1 (escrito a mano, sin sitio): editarlo se lo da
 printf -- '---
 nombre: "Legado"
@@ -563,23 +563,23 @@ cumple "d['sitio']=='packages/legado' and d['contiene']==['legado']" "20 · edit
 # el indice de assets los trae, sin ruta nueva y sin cambiar los items
 [ "$(pide GET /assets)" = "200" ] || falla "20 · GET /assets · $(cat "$TMP/r.json")"
 cumple "len(d['items']) == $ANTES_ITEMS" "20 · los proyectos no son items: el indice no cambia"
-cumple "[p['nombre'] for p in d['proyectos']] == ['customer-churn','nomina-2026']" "20 · /assets los trae, por nombre de carpeta"
-cumple "next(p for p in d['proyectos'] if p['nombre']=='customer-churn')['items'] > 0" "20 · el que nombra el paquete hr tiene items"
-cumple "next(p for p in d['proyectos'] if p['nombre']=='nomina-2026')['items'] == 0" "20 · el que no resuelve, cero"
-cumple "next(p for p in d['proyectos'] if p['nombre']=='customer-churn')['version']['sujeto']=='persona.ana'" "20 · quien lo creo sale de su propio manifiesto"
-cumple "any(it['proyectos']==['customer-churn'] for it in d['items'].values())" "20 · y cada item dice en que proyectos esta, en plural"
+cumple "[p['nombre'] for p in d['proyectos']] == ['customer_churn','nomina_2026']" "20 · /assets los trae, por nombre de carpeta"
+cumple "next(p for p in d['proyectos'] if p['nombre']=='customer_churn')['items'] > 0" "20 · el que nombra el paquete hr tiene items"
+cumple "next(p for p in d['proyectos'] if p['nombre']=='nomina_2026')['items'] == 0" "20 · el que no resuelve, cero"
+cumple "next(p for p in d['proyectos'] if p['nombre']=='customer_churn')['version']['sujeto']=='persona.ana'" "20 · quien lo creo sale de su propio manifiesto"
+cumple "any(it['proyectos']==['customer_churn'] for it in d['items'].values())" "20 · y cada item dice en que proyectos esta, en plural"
 # PUT: el manifiesto entero
-[ "$(pide PUT /proyectos/customer-churn '{"nombre":"Customer Churn","descripcion":"Otra cosa.","contiene":["hr","sales"]}')" = "200" ] \
+[ "$(pide PUT /proyectos/customer_churn '{"nombre":"Customer Churn","descripcion":"Otra cosa.","contiene":["hr","sales"]}')" = "200" ] \
   || falla "20 · PUT /proyectos/{id} · $(cat "$TMP/r.json")"
-cumple "d['descripcion']=='Otra cosa.' and d['contiene']==['customer-churn','hr','sales'] and d['nueva'] is False and d['commit']" "20 · el manifiesto entero, reescrito — y el PUT NO le quita el sitio"
+cumple "d['descripcion']=='Otra cosa.' and d['contiene']==['customer_churn','hr','sales'] and d['nueva'] is False and d['commit']" "20 · el manifiesto entero, reescrito — y el PUT NO le quita el sitio"
 [ "$(pide PUT /proyectos/no-existe '{"nombre":"X"}')" = "404" ] || falla "20 · PUT de uno que no esta no dio 404"
 # DELETE: se va la lente, NO lo que nombraba
-[ "$(pide DELETE /proyectos/customer-churn)" = "200" ] || falla "20 · DELETE /proyectos/{id} · $(cat "$TMP/r.json")"
-cumple "d['retirado'] is True and d['siguenEnElArbol']==['customer-churn','hr','sales'] and d['sitio']=='packages/customer-churn'" "20 · lo que nombraba se dice y sigue — SU SITIO tambien, y se dice aparte"
-[ "$(pide GET /arbol/packages/customer-churn/package.yaml)" = "200" ] || falla "20 · borrar la lente se llevo su sitio"
+[ "$(pide DELETE /proyectos/customer_churn)" = "200" ] || falla "20 · DELETE /proyectos/{id} · $(cat "$TMP/r.json")"
+cumple "d['retirado'] is True and d['siguenEnElArbol']==['customer_churn','hr','sales'] and d['sitio']=='packages/customer_churn'" "20 · lo que nombraba se dice y sigue — SU SITIO tambien, y se dice aparte"
+[ "$(pide GET /arbol/packages/customer_churn/package.yaml)" = "200" ] || falla "20 · borrar la lente se llevo su sitio"
 [ "$(pide GET /documentos/Entity/hr/Employee)" = "200" ] || falla "20 · borrar el proyecto se llevo lo que nombraba"
-[ "$(pide GET /assets)" = "200" ] && cumple "len(d['items']) == $ANTES_ITEMS and [p['nombre'] for p in d['proyectos']] == ['nomina-2026']" "20 · el arbol entero sigue; la lente se fue"
-[ "$(pide DELETE /proyectos/customer-churn)" = "404" ] || falla "20 · retirado y sigue"
+[ "$(pide GET /assets)" = "200" ] && cumple "len(d['items']) == $ANTES_ITEMS and [p['nombre'] for p in d['proyectos']] == ['nomina_2026']" "20 · el arbol entero sigue; la lente se fue"
+[ "$(pide DELETE /proyectos/customer_churn)" = "404" ] || falla "20 · retirado y sigue"
 # y desde un puesto, no: un proyecto lo crea una persona (W3.7 gobierno ①)
 CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agente:puesto-ana-python'   -H 'Content-Type: application/json' -d '{"nombre":"Desde el puesto"}' "$BASE/proyectos")
 [ "$CODIGO" = "403" ] || falla "20 · un agente creo un proyecto ($CODIGO) · $(cat "$TMP/r.json")"
