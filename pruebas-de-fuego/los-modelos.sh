@@ -221,7 +221,11 @@ if [ -z "${BASTION_GATEWAY:-}" ]; then
       -d "$(echo "$fila" | sed 's/^{/{"tenant":"victor","model":"deepseek-ai\/DeepSeek-V2-Lite",/')"
   done
   curl -sf -H "$SUJ" "$BASE/modelos/ventas.v2-lite" > "$TMP/ficha.json" || falla "4h · GET /modelos/ventas.v2-lite no contesta"
-  grep -q '"hoy":{"peticiones":3,"tokens":150,"usd":"0.0012"}' "$TMP/ficha.json" || falla "4h · uso.hoy no suma las filas de hoy: $(cat "$TMP/ficha.json")"
+  # El día 1 del mes, la fila «de principio de mes» también es de hoy (medido
+  # el 2026-10-01: la prueba fallaba sólo ese día). Hoy es entonces el mes.
+  if [ "$MES" = "$HOY" ]; then USO_HOY='"hoy":{"peticiones":5,"tokens":165,"usd":"0.0015"}'
+  else USO_HOY='"hoy":{"peticiones":3,"tokens":150,"usd":"0.0012"}'; fi
+  grep -q "$USO_HOY" "$TMP/ficha.json" || falla "4h · uso.hoy no suma las filas de hoy: $(cat "$TMP/ficha.json")"
   grep -q '"mes":{"peticiones":5,"tokens":165,"usd":"0.0015"}' "$TMP/ficha.json" || falla "4h · uso.mes no suma el mes: $(cat "$TMP/ficha.json")"
   dice "4h · uso.hoy 3 peticiones/150 tokens/0.0012 · uso.mes 5/165/0.0015 · el otro modelo no cuenta"
 else
