@@ -339,10 +339,10 @@ git --git-dir="$BARE" log -1 --format='%an · %s' ana/vistas-hr | grep -q "perso
 [ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambiados']==0" || falla "3b · en seco tras forzar: $(cuerpo)"
 # y se arregla retirandolo: el arbol mejora, commit normal
 "$PY" -c 'import json,sys; json.dump({"seco": False, "mensaje": "fuera lo roto", "retirar": ["packages/hr/views/rota.yaml"]}, open(sys.argv[1],"w"))' "$TMP/commit.json"
-[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "201" ] && tiene "d['forzado'] is False and d['cambios']==[{'ruta':'packages/hr/views/rota.yaml','estado':'D','mas':0,'menos':9}] and d['diagnosticos']==[]" || falla "3b · retirar lo roto: $(cuerpo)"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "201" ] && tiene "d['forzado'] is False and d['cambios']==[{'ruta':'packages/hr/views/rota.yaml','estado':'D','mas':0,'menos':9,'generado':False}] and d['diagnosticos']==[]" || falla "3b · retirar lo roto: $(cuerpo)"
 # retirar en el mismo commit
 "$PY" -c 'import json,sys; json.dump({"seco": True, "retirar": ["packages/hr/views/portugueses.yaml"]}, open(sys.argv[1],"w"))' "$TMP/commit.json"
-[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambios']==[{'ruta':'packages/hr/views/portugueses.yaml','estado':'D','mas':0,'menos':9}]" || falla "3b · retirar en seco: $(cuerpo)"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambios']==[{'ruta':'packages/hr/views/portugueses.yaml','estado':'D','mas':0,'menos':9,'generado':False}]" || falla "3b · retirar en seco: $(cuerpo)"
 dice "3b · POST /arbol/commit: en seco, A/M con +/- de git y nada escrito · sin mensaje 422 · con mensaje, UN commit de la persona con los dos ficheros en la rama · repetido, 0 cambiados · el gate 422 forzable con diagnosticos y cambios · forzar: true commitea lo roto y lo dice (forzado, nuevos) · retirar lo roto, commit normal · retirar sale como D"
 
 # ── 4 ───────────────────────────────────────────────────────────────────────
