@@ -1,10 +1,10 @@
 # 0049 · Media paradigms in code repositories
 
-**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); **B0, B1 y B2 hechos**
-—B2 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
-[`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md) y
-`ore-medios` sirviendo; **B3 en curso** (B3·1–B3·3 y B3·5 hechos; falta la red del puesto, B3·4, y
-el cierre en vivo, B3·6); B4–B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); **B0–B3 hechos**
+—B2 y B3 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
+[`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
+`ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
+B4b, B5 y B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -319,7 +319,7 @@ conformidad** que cualquier superficie tiene que pasar. No se parchea el camino 
 | **B0 · el contrato** ✅ | la `MediaRef`, las anclas, la tabla anclada y las siete operaciones, como especificación (OOS v1alpha17) y como suite de conformidad (36 casos, neutrales al lenguaje) | niveles 1–2 |
 | **B1 · los tipos** ✅ | `Struct`, `List<Struct>`, `Vector`, `MediaRef`, `Ancla` en la gramática (v1alpha17, conformance 30/30), el lago (ids por hijo, upsert, cambio de forma; 0032 T6) y SQL (DuckDB los lee nativos) | D4 |
 | **B2 · servir** ✅ | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
-| **B3 · la puerta de lectura** (en curso) | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
+| **B3 · la puerta de lectura** ✅ | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
 | **B4 · la entrada** | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
 | **B4b · la colección escrita** | crear colecciones nuevas **desde la instancia**, en SQL (`create media collection …`) y en Python (`ore.crear_coleccion(…)`), y llenarlas: `put` con transacciones (`docs/media.md` §2), el `sha256` al paso, el tipo por los bytes, el linaje en el puntero | D4, D6 |
 | **B5 · la derivación** | el registro por clave, `aplicar()`, `reintentar_errores`, la tabla anclada | D5 |
@@ -392,8 +392,50 @@ máquina de Cloud Build (8 GB) se quedaba colgada en la fase de enlace —LTO co
 pesado en paralelo— y cada construcción moría a los 60 min (`INTERNAL_ERROR`; tres, y bloqueó el CI
 de todas las sesiones). Se enlaza aparte, solo, después del resto: +4 min por construcción.
 
-**Hallazgo abierto**: el listado de una virtual no trae `size` (en la mantenida sí). Sin tamaño el
-SDK no verifica la longitud al final ni cuenta un `seek` desde el final; va con B3·6.
+**Hallazgo**: el listado no traía `size` (cerrado en B3·6a, abajo).
+
+### B3 · hecho: la puerta de lectura (2026-10-01, victor)
+
+**El criterio** —*una colección virtual se lee desde un puesto, por rangos, fijada a su versión*—,
+cumplido desde un puesto de victor abierto por una persona: `ore.coleccion("s3_foreign_contract…")`
+y `read_bytes()` de sus cuatro contratos, que viven en el S3 del cliente (eu-north-1) sin copia
+nuestra. El puesto no alcanza S3 (comprobado); los bytes pasan por `ore-medios` con la credencial
+de la celda (el rol de 0046 E9b). Los cuatro `sha256` calculados al paso **son los de los blobs de
+la copia mantenida** de los mismos ficheros: dos caminos, la misma identidad. El rango, en vivo:
+`206`, `content-range: bytes 0-4/717`.
+
+**Lo medido antes de construir (B3·0, pod en t-victor con el rol)**: asumir el rol 0,38 s (1 h);
+**~125 ms por petición** a eu-north-1, que es lo que cuesta cada `seek`; un flujo 59 MB/s, ocho
+rangos en paralelo 114 MB/s; el `sha256` al paso −8 % en Python; `If-Match` con el ETag fija
+(`206`/`412`); los objetos subidos antes de activar el versionado tienen `versionId` `null`, y S3
+lo acepta para fijar (medido). Sin checksums guardados en el origen.
+
+**Lo construido:**
+
+| paso | qué | commit |
+|---|---|---|
+| B3·1 | `ore-medios` lee el origen fijado (`versionId` —también `null`— e `If-Match`), entero o por rango, en flujo, con el `sha256` al paso y su verificación; `Salida::Bytes` en `ore-entrada`; `ore-firmar-s3` fija también `null` (E9 servía la actual bajo la referencia de la vieja) | `0529cb2` |
+| B3·2 | el **permiso**: un identificador opaco y aleatorio que apunta a lo guardado en `ore-medios` (el ítem fijado y la credencial temporal), 5 min, todos los rangos de UN ítem; sin secreto compartido | `430d275` |
+| B3·3 | `GET /media/…/content` en ore-serve: decide y contesta **307** —al blob firmado del lago (mantenida) o a `ore-medios` con el permiso (virtual)—; la fuente sale del árbol (colección → `objectTable` → `datasource` → `connectionEnv`) | `ec284bc` |
+| B3·4 | la red: el puesto llega a `ore-medios` **sólo a su puerto del contenido** (8098), y el resto (8097: índice, firma, permisos) sigue siendo sólo de ore-serve | `1c9f538`, `8b51d45` |
+| B3·5 | el SDK: `ore.coleccion`, `items()`, `stat()`, `item.open()` (flujo desde el cursor; sólo un `seek` abre otra petición; sin el token de ORE en la URL de los bytes), `read_bytes()` por rangos en paralelo, `leer_varios()`, excepciones por `type` | `697552b` |
+| B3·6a | el `size`: el índice leía como texto columnas enteras y lo perdía en todos los ítems; el SDK además lo aprende de la respuesta; la media lleva la rama del puesto | `10ff627` |
+
+**Lo que se encontró por el camino** (cada uno, medido y cerrado):
+
+- **Un agujero, en la primera red**: abrir al puesto el 8097 le daba también `/indice/*`, que confía
+  en quien llama; una celda con un `metadata_location` podía listar y firmar sin pasar por las
+  concesiones. Encontrado con la sonda del puesto, cerrado a mano en minutos y luego por diseño:
+  **dos puertos**, y la red los separa (la sonda: 8098 `/contenido` 401, `/indice/*` 404; 8097,
+  cortado).
+- **El CI**: `ore-medios` en el mismo enlace LTO que los demás colgaba la máquina de Cloud Build
+  (B2, arriba).
+- **El `size`**: un fallo de B2·1 que sólo una celda de verdad (`seek(-8, 2)`) sacó.
+
+**Sin probar, y por qué**: `open-006` (cambiar el objeto a mitad de una lectura) necesita escribir en
+el bucket del cliente, y la credencial de prueba es de sólo lectura; el `412` está probado contra
+un S3 de mentira y en vivo con un ETag alterado. El `sha256` visto al paso vive en memoria de
+`ore-medios` (se olvida al reiniciar): escribirlo en el manifiesto es de B5.
 
 ## Lo que no se hace aquí
 
