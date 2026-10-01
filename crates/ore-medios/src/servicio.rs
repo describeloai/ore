@@ -346,6 +346,41 @@ impl Servicio {
         let segundos = texto(n, "ttl_s")
             .and_then(|t| t.parse::<u64>().ok())
             .unwrap_or(permisos::VIDA_POR_DEFECTO);
+        // B3·3: de una mantenida, los bytes los sirve el lago —el puesto llega a
+        // Google— con una URL firmada, y no pasan por la celda. Si el almacén
+        // no sabe firmar (uno local), por el permiso, como una virtual.
+        if let Origen::Lago { sha256 } = &pieza.origen {
+            let segundos = segundos.clamp(TTL_MINIMO, TTL_MAXIMO);
+            let tipo = pieza
+                .tipo
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".into());
+            let nombre = it.camino.rsplit('/').next().unwrap_or(&it.camino);
+            let (_, disposicion) = ore_core::medios::disposicion(&tipo, nombre);
+            let firmada = firma::firmar(
+                &self.cuenta,
+                &[Pedida {
+                    blob: sha256.clone(),
+                    tipo: Some(tipo),
+                    disposicion: Some(disposicion),
+                }],
+                segundos,
+            )
+            .pop();
+            if let Some(Ok(url)) = firmada {
+                return Respuesta::ok(Json::obj([
+                    ("url", Json::s(url)),
+                    ("desde", Json::s("lago")),
+                    ("ttl_s", Json::Int(segundos as i64)),
+                    (
+                        "expires_ms",
+                        Json::Int(ahora_ms() + (segundos as i64) * 1000),
+                    ),
+                    ("version", Json::s(&it.version)),
+                    ("item", ix.referencia(it)),
+                ]));
+            }
+        }
         let Some((permiso, segundos)) = self.permisos.emitir(pieza, segundos) else {
             return problema(
                 429,
@@ -355,6 +390,7 @@ impl Servicio {
         };
         Respuesta::ok(Json::obj([
             ("permiso", Json::s(permiso)),
+            ("desde", Json::s("medios")),
             ("ttl_s", Json::Int(segundos as i64)),
             (
                 "expires_ms",
@@ -655,6 +691,23 @@ mod pruebas {
             &format!("{{{BASE},\"path\":\"docs/sin.pdf\"}}"),
         );
         assert_eq!(c, 404, "sin blob no hay qué abrir");
+    }
+
+    /// Una mantenida en un lago que sabe firmar: la URL del blob, sin permiso.
+    #[test]
+    fn una_mantenida_se_abre_con_la_url_de_su_blob() {
+        let (s, _) = servicio();
+        let (c, b) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!("{{{BASE},\"path\":\"docs/a.pdf\",\"ttl_s\":120}}"),
+        );
+        assert_eq!(c, 200, "{b}");
+        assert!(
+            b.contains("blobs/sha256/aa?vida=120") && b.contains("\"desde\":\"lago\""),
+            "{b}"
+        );
+        assert!(!b.contains("permiso"), "{b}");
     }
 
     /// Una virtual sin la credencial de su fuente no se abre.

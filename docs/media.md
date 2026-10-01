@@ -55,6 +55,10 @@ la actual, `404`.
 
 ```
 GET /media/{b}/{s}/{c}/content?path=|digest=&version=
+→ 307  Location: <dónde están los bytes>
+       { "url", "version", "item", "ttl_s", "expires_ms", "desde": "lago" | "medios" }
+
+GET <url>
 Range: bytes=0-1023            (opcional)
 → 200 | 206, el cuerpo en flujo
   ETag: "<validador fuerte de esa versión>"
@@ -69,6 +73,12 @@ Range: bytes=0-1023            (opcional)
   de un objeto subido antes de activar el versionado, que en un bucket versionado sobrevive a una
   sobrescritura— e `If-Match` con el ETag que anotó el manifiesto. Lo que el origen ya no tiene en
   esa versión, o tiene con otro ETag, es `media/cambiado`.
+- **La celda dice dónde, no pasa los bytes** (0049 B3·3): `content` contesta `307`. De una
+  mantenida, a la URL firmada de su blob en el lago; de una virtual, a
+  `ore-medios/contenido?permiso=…`, un permiso opaco que vale para ese ítem en esa versión
+  (todos sus rangos) durante `ttl_s` —5 min, nunca más de lo que le queda a la credencial de
+  la fuente—. Quien no sigue redirecciones (el SDK) lee `url` del cuerpo; caducada, pide otra
+  con la misma `version`. **No se reenvía el token de ORE** a esa URL: no lo necesita.
 - **Da igual la clase**: una mantenida se sirve del lago; una virtual, del origen con la
   credencial de la celda. Para el código es la misma ruta (0049, D1). La celda **calcula el
   `sha256` al paso** de una lectura entera de un ítem que no lo tenía, y lo registra.

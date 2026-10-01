@@ -13,6 +13,10 @@
 #   4  lo que no existe → 404 media/no-existe, sin preguntar a ore-medios
 #   5  sin ore-medios desplegado → 503 media/no-desplegado
 #   6  un puesto entra (está en su lista)
+#   7  content de una virtual: la fuente sale del árbol (objectTable →
+#      datasource → connectionEnv) y su credencial, del custodio; sin custodio,
+#      503 y nada llega a ore-medios (0049 B3·3)
+#   8  content de una mantenida → 307 con Location a donde ore-medios dijo
 #
 # Lo de verdad —el índice sobre el lago y la firma— se mide en vivo (B2·4).
 set -u
@@ -38,6 +42,16 @@ PY="$(command -v python3 || command -v python)"
 cp -r "$RAIZ/vendor/oos/conformance/v1alpha17/valid/a-query-over-a-collection/input/." "$TMP/arbol/" 2>/dev/null \
   || { mkdir -p "$TMP/arbol"; cp -r "$RAIZ/vendor/oos/conformance/v1alpha17/valid/a-query-over-a-collection/input/." "$TMP/arbol/"; }
 mkdir -p "$TMP/arbol/datasets/legal/archivo"
+# una mantenida al lado, con su puntero (para `content`, 0049 B3·3)
+cat > "$TMP/arbol/packages/legal/archivo/collections/fotos.yaml" <<'EOF'
+apiVersion: oos.dev/v1alpha17
+kind: MediaCollection
+metadata: { name: fotos, namespace: legal, schema: archivo }
+spec: { owner: team:legal, media: image, formats: [jpg], from: { objectTable: s3_ventas.docs.fotos } }
+EOF
+cat > "$TMP/arbol/datasets/legal/archivo/fotos.json" <<'EOF'
+{"dataset":"colecciones/legal/archivo/fotos","metadata_location":"gs://lago/ore/v2/colecciones/legal/archivo/fotos/metadata/00001-y.metadata.json","transaccion":"1"}
+EOF
 cat > "$TMP/arbol/datasets/legal/archivo/contratos.json" <<'EOF'
 {"dataset":"colecciones/legal/archivo/contratos","metadata_location":"gs://lago/ore/v2/colecciones/legal/archivo/contratos/metadata/00003-x.metadata.json","transaccion":"3"}
 EOF
@@ -52,7 +66,8 @@ class H(http.server.BaseHTTPRequestHandler):
         open(sys.argv[2], "a").write(json.dumps({"ruta": self.path, "cuerpo": json.loads(cuerpo)}) + "\n")
         r = {"/indice/items": {"as_of": "3", "items": [], "cursor": None},
              "/indice/item": {"path": "x", "current": True},
-             "/indice/urls": {"urls": [{"item": {"checksum": "crc64nvme:A", "digest": None, "path": "a.pdf", "version": "v1"}, "url": "https://firmada", "ttl_s": 300}]}}[self.path]
+             "/indice/urls": {"urls": [{"item": {"checksum": "crc64nvme:A", "digest": None, "path": "a.pdf", "version": "v1"}, "url": "https://firmada", "ttl_s": 300}]},
+             "/indice/abrir": {"url": "https://lago/firmada", "desde": "lago", "ttl_s": 300, "version": "v1", "item": {"path": "a.jpg", "digest": None}}}[self.path]
         b = json.dumps(r).encode()
         self.send_response(200); self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
@@ -114,6 +129,20 @@ c=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" -H 'x-ore-puesto: p1' "
 if ! grep -q 'desde un puesto sólo entran' "$TMP/r.json"; then
   dice "6 · un puesto entra por la media ($c)"
 else falla "6 · al puesto se le cierra la media: $(cat "$TMP/r.json")"; fi
+
+antes=$(wc -l < "$TMP/pedidas.jsonl")
+c=$(pide GET "/media/legal/archivo/contratos/content?path=docs%2Fa.pdf")
+despues=$(wc -l < "$TMP/pedidas.jsonl")
+if [ "$c" = 503 ] && grep -q 'credencial de una fuente' "$TMP/r.json" && [ "$antes" = "$despues" ]; then
+  dice "7 · content de una virtual: su fuente sale del árbol y, sin custodio, 503 sin llegar a ore-medios"
+else falla "7 · content virtual ($c): $(cat "$TMP/r.json")"; fi
+
+c=$(curl -s -D "$TMP/h.txt" -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" "$BASE/media/legal/archivo/fotos/content?path=a.jpg")
+u=$(ultima)
+if [ "$c" = 307 ] && grep -qi '^location: https://lago/firmada' "$TMP/h.txt" && echo "$u" | grep -q '"ruta": "/indice/abrir"' \
+   && echo "$u" | grep -q '"path": "a.jpg"' && echo "$u" | grep -q '"ttl_s": 300' && grep -Eq '"digest": ?null' "$TMP/r.json"; then
+  dice "8 · content de una mantenida: 307 a donde ore-medios dijo, con el cuerpo tal cual"
+else falla "8 · content mantenida ($c): $(cat "$TMP/h.txt" "$TMP/r.json") · $u"; fi
 
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 arrancar ""

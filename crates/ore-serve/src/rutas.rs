@@ -173,7 +173,7 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             // `GET …/items/{huella}`, en lote—, y el cuerpo es sólo por la lista.
             | ["colecciones", _, _, _, "items", "resolver"]
             // 0049 B2·2: la media por su puerta —listar, mirar y firmar es LEER—.
-            | ["media", _, _, _, "items" | "item" | "urls"]
+            | ["media", _, _, _, "items" | "item" | "urls" | "content"]
     );
     if entra {
         return None;
@@ -229,7 +229,15 @@ impl Servidor {
                 _ => Salida::Una(Respuesta::error(404, "esa ruta no existe")),
             };
         }
-        Salida::Una(self.atender(p))
+        let r = self.atender(p);
+        // 0049 B3·3: el 307 de `content` sale con su `Location`.
+        if r.codigo == 307
+            && matches!(seg.as_slice(), ["media", _, _, _, "content"])
+            && let Some(s) = crate::medios::redireccion(&r)
+        {
+            return s;
+        }
+        Salida::Una(r)
     }
 
     pub fn atender(&self, p: &Peticion) -> Respuesta {
@@ -805,6 +813,8 @@ impl Servidor {
                 self.media(rama, p, b, s, c, op)
             }
             ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, b, s, c, "urls"),
+            // 0049 B3·3: `open` —dónde están los bytes, y un 307 a ellos—.
+            ("GET", ["media", b, s, c, "content"]) => self.media(rama, p, b, s, c, "content"),
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {

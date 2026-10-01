@@ -6,6 +6,16 @@
 //! | `GET /media/{b}/{s}/{c}/items?prefix=&cursor=&limit=&estado=` | `list` | |
 //! | `GET /media/{b}/{s}/{c}/item?path=&version=` o `?digest=` | `stat` | |
 //! | `POST /media/{b}/{s}/{c}/urls` `{items, ttl_s}` | `url` | y lo anota en la actividad |
+//! | `GET /media/{b}/{s}/{c}/content?path=&version=` o `?digest=` | `open` | 307 a donde están los bytes (B3·3) |
+//!
+//! **`content`** (0049 B3·3): este proceso no pasa bytes, **dice dónde están**.
+//! Una mantenida, en el lago: `ore-medios` firma su blob y se redirige a esa
+//! URL (el puesto llega a Google). Una virtual, en el origen: se trae la
+//! credencial de su fuente del custodio (la caché de 0046 E9b), `ore-medios`
+//! guarda el ítem fijado con ella y da un permiso, y se redirige a
+//! `ore-medios/contenido?permiso=…`. En los dos casos, `307` con `Location`
+//! y un cuerpo JSON (`url`, `version`, `item`, `expires_ms`) para quien no
+//! sigue redirecciones —el SDK—, y la apertura queda en la actividad.
 //!
 //! Este proceso **decide y no sirve**: autentica (antes de llegar aquí), lee la
 //! colección y su puntero en el árbol de la rama —el mismo `leyendo_en` de
@@ -49,6 +59,12 @@ fn problema(status: u16, tipo: &str, detalle: impl Into<String>) -> Respuesta {
 /// documento —`kind: MediaCollection`, su nombre y su schema— entre los YAML
 /// del paquete, sin cargar el árbol entero: el directorio es convención.
 pub(crate) fn clase_de_la_coleccion(raiz: &Path, b: &str, s: &str, c: &str) -> Option<bool> {
+    coleccion_en(raiz, b, s, c).map(|(v, _)| v)
+}
+
+/// Un documento de `kind` con ese nombre y schema, entre los YAML de
+/// `packages/<b>`.
+fn documento_en(raiz: &Path, b: &str, kind: &str, s: &str, nombre: &str) -> Option<Node> {
     let mut ficheros = Vec::new();
     crate::documentos::yamls_de(&raiz.join("packages").join(b), &mut ficheros);
     for f in ficheros {
@@ -58,8 +74,7 @@ pub(crate) fn clase_de_la_coleccion(raiz: &Path, b: &str, s: &str, c: &str) -> O
         let Ok(n) = ore_core::parse::parse(&texto) else {
             continue;
         };
-        let campo = |n: &Node, k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
-        if campo(&n, "kind").as_deref() != Some("MediaCollection") {
+        if campo(&n, "kind").as_deref() != Some(kind) {
             continue;
         }
         let Some((_, m)) = n.get("metadata") else {
@@ -67,15 +82,110 @@ pub(crate) fn clase_de_la_coleccion(raiz: &Path, b: &str, s: &str, c: &str) -> O
         };
         let schema = campo(m, "schema")
             .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
-        if campo(m, "name").as_deref() == Some(c) && schema == s {
-            let virtual_ = n
-                .get("spec")
-                .and_then(|(_, sp)| campo(sp, "virtual"))
-                .is_some_and(|v| v == "true");
-            return Some(virtual_);
+        if campo(m, "name").as_deref() == Some(nombre) && schema == s {
+            return Some(n);
         }
     }
     None
+}
+
+fn campo(n: &Node, k: &str) -> Option<String> {
+    n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
+}
+
+/// La colección: si es virtual, y el `objectTable` del que sale.
+fn coleccion_en(raiz: &Path, b: &str, s: &str, c: &str) -> Option<(bool, Option<String>)> {
+    let n = documento_en(raiz, b, "MediaCollection", s, c)?;
+    let spec = n.get("spec").map(|(_, sp)| sp);
+    let virtual_ = spec
+        .and_then(|sp| campo(sp, "virtual"))
+        .is_some_and(|v| v == "true");
+    let objeto = spec
+        .and_then(|sp| sp.get("from"))
+        .and_then(|(_, f)| campo(f, "objectTable"));
+    Some((virtual_, objeto))
+}
+
+/// **De qué fuente sale una virtual, y en qué variable vive su credencial**
+/// (B3·3): la colección nombra su `objectTable` (`b.s.n`, `s.n` o `n`, desde
+/// la colección), el `ObjectTable` su `datasource`, y `ontology.config.yaml`
+/// su `connectionEnv`. Lo mismo que `ore collections --servir` (`fuente_de`),
+/// leyendo sólo esos documentos.
+pub(crate) fn fuente_de_la_coleccion(
+    raiz: &Path,
+    b: &str,
+    s: &str,
+    c: &str,
+) -> Result<(String, String), String> {
+    let (_, objeto) = coleccion_en(raiz, b, s, c).ok_or("la colección no está en el árbol")?;
+    let objeto = objeto.ok_or("la colección no dice de qué `objectTable` sale")?;
+    let partes: Vec<&str> = objeto.split('.').collect();
+    let (ob, os, on) = match partes.as_slice() {
+        [ob, os, on] => (*ob, *os, *on),
+        [os, on] => (b, *os, *on),
+        [on] => (b, s, *on),
+        _ => return Err(format!("`{objeto}` no es `b.s.n`")),
+    };
+    let o = documento_en(raiz, ob, "ObjectTable", os, on)
+        .ok_or_else(|| format!("`{objeto}` no es un `ObjectTable` del árbol"))?;
+    let ds = o
+        .get("spec")
+        .and_then(|(_, sp)| campo(sp, "datasource"))
+        .ok_or_else(|| format!("`{objeto}` no dice su `datasource`"))?;
+    let config = std::fs::read_to_string(raiz.join("ontology.config.yaml"))
+        .map_err(|e| format!("no se pudo leer `ontology.config.yaml`: {e}"))?;
+    let config = ore_core::parse::parse(&config)
+        .map_err(|_| "`ontology.config.yaml` no analiza".to_string())?;
+    let env = config
+        .get("datasources")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .find(|d| campo(d, "name").as_deref() == Some(ds.as_str()))
+        .and_then(|d| campo(d, "connectionEnv"))
+        .ok_or_else(|| format!("la fuente `{ds}` no está declarada, o no dice `connectionEnv`"))?;
+    Ok((ds, env))
+}
+
+/// Lo que se le pide a una URL firmada con una credencial temporal: la vida
+/// de un permiso (5 min), y nunca más de lo que le queda a la credencial
+/// menos 30 s (0046 E9b).
+fn vida_hasta(caduca_ms: Option<u64>, ahora_ms: u64) -> u64 {
+    let vida = VIDA_DE_UN_PERMISO;
+    match caduca_ms {
+        Some(c) => (c.saturating_sub(ahora_ms) / 1000)
+            .saturating_sub(30)
+            .clamp(30, vida),
+        None => vida,
+    }
+}
+
+/// La vida de lo que se pide al abrir un ítem.
+pub const VIDA_DE_UN_PERMISO: u64 = 300;
+
+/// `307` con `Location`: el cuerpo de `content` (`{url, …}`) como redirección,
+/// para quien la sigue sola (un navegador, `curl -L`). `Respuesta` no lleva
+/// cabeceras; esto es la salida en bytes, con el mismo cuerpo.
+pub(crate) fn redireccion(r: &Respuesta) -> Option<ore_entrada::http::Salida> {
+    let Json::Crudo(texto) = &r.cuerpo else {
+        return None;
+    };
+    let n = ore_core::parse::parse(texto).ok()?;
+    let url = campo(&n, "url")?;
+    let mut cabeceras = vec![
+        ("location".to_string(), url),
+        ("content-type".to_string(), "application/json".to_string()),
+    ];
+    if let Some(v) = campo(&n, "version") {
+        cabeceras.push(("ore-media-version".to_string(), v));
+    }
+    let cuerpo = texto.as_bytes().to_vec();
+    Some(ore_entrada::http::Salida::Bytes(ore_entrada::http::Bytes {
+        codigo: 307,
+        cabeceras,
+        largo: Some(cuerpo.len() as u64),
+        lector: Box::new(std::io::Cursor::new(cuerpo)),
+    }))
 }
 
 impl Servidor {
@@ -163,6 +273,28 @@ impl Servidor {
                         }
                     }
                 }
+                "content" => {
+                    for k in ["path", "version", "digest"] {
+                        if let Some(v) = p.consulta.get(k) {
+                            pedido.insert(k.into(), Json::s(v));
+                        }
+                    }
+                    let mut caduca = None;
+                    if virtual_ {
+                        let (fuente, env) = match fuente_de_la_coleccion(raiz, b, s, c) {
+                            Ok(f) => f,
+                            Err(e) => return problema(502, "media/origen", e),
+                        };
+                        let (valor, c_ms) = match self.credencial_de_la_fuente(&fuente, &env) {
+                            Ok(v) => v,
+                            Err(r) => return r,
+                        };
+                        pedido.insert("fuente".into(), Json::s(valor));
+                        caduca = c_ms;
+                    }
+                    let vida = vida_hasta(caduca, crate::datasets::ahora_ms());
+                    pedido.insert("ttl_s".into(), Json::Int(vida as i64));
+                }
                 _ => {
                     let n = cuerpo_pedido.as_ref().expect("analizado arriba");
                     pedido.insert(
@@ -179,6 +311,7 @@ impl Servidor {
             let ruta = match operacion {
                 "items" => "/indice/items",
                 "item" => "/indice/item",
+                "content" => "/indice/abrir",
                 _ => "/indice/urls",
             };
             match ore_entrada::http::pedir_con(
@@ -195,6 +328,7 @@ impl Servidor {
                 // Tal cual: `de_node` volvería `null` la cadena `"null"`
                 // (medido: el `digest` de un ítem virtual). Se comprueba que
                 // es JSON y se pasa como vino.
+                Ok((200, texto)) if operacion == "content" => a_donde(&direccion, texto.trim()),
                 Ok((codigo, texto)) => match ore_core::parse::parse(texto.trim()) {
                     Ok(_) => Respuesta {
                         codigo,
@@ -211,6 +345,15 @@ impl Servidor {
         });
         if operacion == "urls" && r.codigo == 200 {
             self.anotar_las_urls(p, rama, &coleccion, &r.cuerpo);
+        }
+        // Lo abierto, a la actividad, como una URL servida (un permiso también
+        // es un portador): con la forma de `urls`, una entrada.
+        if operacion == "content"
+            && r.codigo == 307
+            && let Json::Crudo(t) = &r.cuerpo
+        {
+            let lote = Json::Crudo(format!("{{\"urls\":[{t}]}}"));
+            self.anotar_las_urls(p, rama, &coleccion, &lote);
         }
         r
     }
@@ -277,9 +420,97 @@ impl Servidor {
     }
 }
 
+/// Lo que `ore-medios` contestó a `/indice/abrir`, como la respuesta de
+/// `content`: `307`, y en el cuerpo `url` —la del lago tal cual, o la de
+/// `ore-medios` con el permiso— más lo que vino (`version`, `item`…), sin
+/// reanalizarlo (`de_node` volvería `null` la cadena `"null"`).
+fn a_donde(direccion: &str, texto: &str) -> Respuesta {
+    let Ok(n) = ore_core::parse::parse(texto) else {
+        return problema(502, "media/origen", "`ore-medios` no contestó JSON");
+    };
+    if campo(&n, "url").is_some() {
+        return Respuesta {
+            codigo: 307,
+            cuerpo: Json::Crudo(texto.to_string()),
+        };
+    }
+    let Some(permiso) = campo(&n, "permiso") else {
+        return problema(502, "media/origen", "`ore-medios` no dio ni URL ni permiso");
+    };
+    let url = format!("http://{direccion}/contenido?permiso={permiso}");
+    let resto = texto.trim_start().strip_prefix('{').unwrap_or("}");
+    Respuesta {
+        codigo: 307,
+        cuerpo: Json::Crudo(format!("{{\"url\":{},{resto}", Json::s(url).jcs())),
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn la_fuente_de_una_virtual_sale_de_su_objecttable_y_de_la_config() {
+        let d = std::env::temp_dir().join(format!("ore-medios-fuente-{}", std::process::id()));
+        let col = d.join("packages/legal/archivo");
+        let obj = d.join("packages/s3_ventas/docs");
+        std::fs::create_dir_all(&col).unwrap();
+        std::fs::create_dir_all(&obj).unwrap();
+        std::fs::write(
+            col.join("contratos.yaml"),
+            "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: { name: contratos, namespace: legal, schema: archivo }\nspec: { owner: team:legal, media: document, formats: [pdf], from: { objectTable: s3_ventas.docs.contratos }, virtual: true }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            obj.join("contratos.yaml"),
+            "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: contratos, namespace: s3_ventas, schema: docs }\nspec: { datasource: s3_ventas, prefix: \"Nueva carpeta/contratos/\", media: document }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("ontology.config.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\ndatasources:\n  - { name: s3_ventas, type: s3, connectionEnv: S3_VENTAS_URL }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fuente_de_la_coleccion(&d, "legal", "archivo", "contratos"),
+            Ok(("s3_ventas".to_string(), "S3_VENTAS_URL".to_string()))
+        );
+        assert!(fuente_de_la_coleccion(&d, "legal", "archivo", "nada").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn content_dice_a_donde_y_la_vida_no_pasa_de_la_credencial() {
+        let r = a_donde(
+            "ore-medios:8097",
+            r#"{"permiso":"ab12","version":"null","item":{"digest":null}}"#,
+        );
+        assert_eq!(r.codigo, 307);
+        let t = r.cuerpo.jcs();
+        assert!(
+            t.contains("\"url\":\"http://ore-medios:8097/contenido?permiso=ab12\""),
+            "{t}"
+        );
+        assert!(
+            t.contains("\"digest\":null"),
+            "el null sigue siendo null: {t}"
+        );
+        let r = a_donde("x", r#"{"url":"https://lago/firmada","desde":"lago"}"#);
+        assert!(r.cuerpo.jcs().contains("https://lago/firmada"));
+        let s = match redireccion(&r) {
+            Some(ore_entrada::http::Salida::Bytes(b)) => b,
+            _ => panic!("una redirección"),
+        };
+        assert_eq!(s.codigo, 307);
+        assert!(
+            s.cabeceras
+                .iter()
+                .any(|(k, v)| k == "location" && v == "https://lago/firmada")
+        );
+        assert_eq!(vida_hasta(None, 0), 300);
+        assert_eq!(vida_hasta(Some(200_000), 0), 170);
+        assert_eq!(vida_hasta(Some(10_000), 0), 30);
+    }
 
     #[test]
     fn la_clase_sale_del_documento_y_su_schema() {

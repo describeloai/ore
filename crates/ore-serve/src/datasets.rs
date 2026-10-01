@@ -519,7 +519,7 @@ impl Servidor {
     ///   proceso no habla TLS— y se guarda mientras le quede
     ///   [`crate::agente::VIGENTE`]: servir no vuelve al custodio ni a STS en
     ///   una hora. Devuelve también cuándo caduca, que acota la URL firmada.
-    fn credencial_de_la_fuente(
+    pub(crate) fn credencial_de_la_fuente(
         &self,
         fuente: &str,
         env: &str,
@@ -673,7 +673,7 @@ fn primera_de(stderr: &str) -> String {
 /// Lo que vive una URL firmada si nadie dice `ttl` (el de `ore collections --servir`).
 const TTL_POR_DEFECTO: u64 = 300;
 
-fn ahora_ms() -> u64 {
+pub(crate) fn ahora_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
