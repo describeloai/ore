@@ -59,7 +59,7 @@ pub(crate) const PUESTO: &str = "x-ore-puesto";
 use ore_core::json::Json;
 use ore_entrada::http::{Emisor, Flujo, Respuesta, Salida};
 use ore_entrada::identidad::Identidad;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -231,6 +231,11 @@ pub(crate) struct Puesto {
     /// deja escribir su `output`. Hasta ⑤ el 403 vivía sólo en el SDK y
     /// `ore.puesto.pedir()` a pelo lo rodeaba (medido).
     pub transform: Option<Transform>,
+    /// **Las colecciones que el puesto leyó sin transform** (0049 B4·2): una
+    /// sesión interactiva lee la media que quiera, y queda aquí —en su forma
+    /// corta— lo que leyó. Es la procedencia de lo que esa sesión escriba
+    /// (el `derivedFrom` de una colección escrita, v1alpha19 `01` §2).
+    pub colecciones_leidas: BTreeSet<String>,
 }
 
 /// Lo declarado por el transform que corre en este puesto.
@@ -239,6 +244,32 @@ pub(crate) struct Transform {
     pub nombre: String,
     pub inputs: Vec<String>,
     pub output: String,
+    /// **Lo fijado** (0049 B4·2): de cada input que es una colección, la
+    /// transacción que su puntero tenía al declararlo. El trabajo lee ésa
+    /// aunque la colección cambie mientras corre: una lectura que se repite
+    /// da lo mismo, y la procedencia dice *qué* transacción se leyó.
+    pub fijadas: BTreeMap<String, Fijada>,
+}
+
+/// La transacción de una colección que un transform fijó al declararla.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Fijada {
+    pub metadata_location: String,
+    pub transaccion: String,
+}
+
+/// Qué deja leer de una colección el puesto de quien pregunta (0049 B4·2).
+#[derive(Debug, PartialEq)]
+pub(crate) enum MediaDelPuesto {
+    /// Sin transform (o sin puesto): se lee la del puntero, y se anota.
+    Libre,
+    /// Declarada por el transform que corre: la fijada, si se fijó.
+    Declarada(Option<Fijada>),
+    /// El transform que corre no la declaró: 403.
+    NoDeclarada {
+        transform: String,
+        inputs: Vec<String>,
+    },
 }
 
 /// Todo lo vivo, bajo un candado, y una campana para las esperas.
@@ -313,6 +344,46 @@ pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
     sujeto.tipo.as_deref() == Some("agente") || sujeto.persona.starts_with("agente:")
 }
 
+/// [`Servidor::media_del_puesto`], sobre la lista ya bajo su candado.
+pub(crate) fn media_en(
+    lista: &mut BTreeMap<String, Puesto>,
+    sujeto: &Identidad,
+    coleccion: &str,
+) -> MediaDelPuesto {
+    if !es_agente(sujeto) {
+        return MediaDelPuesto::Libre;
+    }
+    let mut suyos: Vec<&mut Puesto> = lista
+        .values_mut()
+        .filter(|p| {
+            p.estado != Estado::Cerrado && p.agente.as_deref() == Some(sujeto.persona.as_str())
+        })
+        .collect();
+    if let Some(t) = suyos.iter().find_map(|p| p.transform.as_ref()) {
+        return if t.inputs.iter().any(|i| i == coleccion) {
+            MediaDelPuesto::Declarada(t.fijadas.get(coleccion).cloned())
+        } else {
+            MediaDelPuesto::NoDeclarada {
+                transform: t.nombre.clone(),
+                inputs: t.inputs.clone(),
+            }
+        };
+    }
+    for p in suyos.iter_mut() {
+        p.colecciones_leidas.insert(coleccion.to_string());
+    }
+    MediaDelPuesto::Libre
+}
+
+/// `{<colección>: <transacción>}`: lo que un transform fijó, como se enseña.
+fn fijadas_json(f: &BTreeMap<String, Fijada>) -> Json {
+    Json::Obj(
+        f.iter()
+            .map(|(c, x)| (c.clone(), Json::s(&x.transaccion)))
+            .collect(),
+    )
+}
+
 fn ficha(id: &str, p: &Puesto) -> Json {
     let estado = if perdido(p) {
         "perdido"
@@ -340,6 +411,17 @@ fn ficha(id: &str, p: &Puesto) -> Json {
             Json::Arr(t.inputs.iter().map(Json::s).collect()),
         );
         m.insert("output".into(), Json::s(&t.output));
+        if !t.fijadas.is_empty() {
+            m.insert("fijadas".into(), fijadas_json(&t.fijadas));
+        }
+    }
+    if let Json::Obj(m) = &mut f
+        && !p.colecciones_leidas.is_empty()
+    {
+        m.insert(
+            "colecciones_leidas".into(),
+            Json::Arr(p.colecciones_leidas.iter().map(Json::s).collect()),
+        );
     }
     if let (Some(t), Json::Obj(m)) = (&p.trabajo, &mut f) {
         m.insert("codigo".into(), Json::s(&t.codigo));
@@ -682,6 +764,7 @@ impl Servidor {
             repositorio: repositorio.clone(),
             clase,
             transform: None,
+            colecciones_leidas: BTreeSet::new(),
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -937,6 +1020,7 @@ impl Servidor {
             repositorio: None,
             clase: None,
             transform,
+            colecciones_leidas: BTreeSet::new(),
         };
         p.celdas.insert(
             1,
@@ -2041,6 +2125,16 @@ impl Servidor {
             .map(|i| ore_core::normalize::a_corto(i).into_owned())
             .collect();
         let nombre = campo("nombre").unwrap_or_else(|| "transform".into());
+        // 0049 B4·2: las colecciones de `inputs` se fijan en la rama del
+        // puesto, fuera del candado (leer el árbol hace un `fetch`).
+        let rama = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            match Self::reclamar(&mut lista, sujeto, id) {
+                Ok(p) => p.rama.clone(),
+                Err(r) => return r,
+            }
+        };
+        let fijadas = self.fijar_colecciones(rama.as_deref(), &inputs);
         let mut lista = self.puestos.lista.lock().unwrap();
         let p = match Self::reclamar(&mut lista, sujeto, id) {
             Ok(p) => p,
@@ -2055,15 +2149,18 @@ impl Servidor {
                 ),
             );
         }
+        let enseñadas = fijadas_json(&fijadas);
         p.transform = Some(Transform {
             nombre: nombre.clone(),
             inputs: inputs.clone(),
             output: output.clone(),
+            fijadas,
         });
         Respuesta::ok(Json::obj([
             ("transform", Json::s(nombre)),
             ("inputs", Json::Arr(inputs.iter().map(Json::s).collect())),
             ("output", Json::s(output)),
+            ("fijadas", enseñadas),
         ]))
     }
 
@@ -2093,6 +2190,19 @@ impl Servidor {
             .unwrap()
             .get(id)
             .and_then(|p| p.clase)
+    }
+
+    /// **Lo que una ruta `/media` deja leer a quien pregunta** (0049 B4·2).
+    ///
+    /// El puesto se busca por el agente que lo reclamó, no por `x-ore-puesto`:
+    /// la cabecera la pone el SDK y el código de la celda la puede quitar, y
+    /// lo declarado no se rodea quitando una cabecera. Si alguno de sus
+    /// puestos corre un transform, manda: sólo sus `inputs`, y de la
+    /// transacción fijada. Si no, se lee libre y la colección se anota en
+    /// sus puestos (`colecciones_leidas`). Quien no es agente —la consola, una
+    /// persona— lee libre y no se anota: no tiene puesto.
+    pub(crate) fn media_del_puesto(&self, sujeto: &Identidad, coleccion: &str) -> MediaDelPuesto {
+        media_en(&mut self.puestos.lista.lock().unwrap(), sujeto, coleccion)
     }
 
     pub(crate) fn transform_de(&self, id: &str) -> Option<Transform> {
@@ -3579,6 +3689,116 @@ mod prueba {
         assert!(corre_en("sql", "node") && corre_en("sql", "jvm") && corre_en("sql", "python"));
         assert!(corre_en("typescript", "node") && !corre_en("typescript", "python"));
         assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
+    }
+
+    fn un_puesto(agente: &str) -> Puesto {
+        Puesto {
+            persona: "persona:ana".into(),
+            entorno: "python".into(),
+            rama: None,
+            fichero: String::new(),
+            job: String::new(),
+            creado: Instant::now(),
+            estado: Estado::Vivo,
+            agente: Some(agente.into()),
+            latido: None,
+            siguiente: 1,
+            pendientes: VecDeque::new(),
+            celdas: BTreeMap::new(),
+            trabajo: None,
+            repositorio: None,
+            clase: None,
+            lsp_al_servidor: VecDeque::new(),
+            lsp_generacion: 0,
+            lsp_a_la_consola: VecDeque::new(),
+            lsp_siguiente: 0,
+            transform: None,
+            colecciones_leidas: BTreeSet::new(),
+        }
+    }
+
+    fn agente(p: &str) -> Identidad {
+        Identidad {
+            persona: p.into(),
+            agente: None,
+            correo: None,
+            nombre: None,
+            tipo: Some("agente".into()),
+        }
+    }
+
+    /// 0049 B4·2: dentro de un transform, sólo lo declarado y de lo fijado;
+    /// fuera, libre y anotado; y el puesto es el del agente, no el de la cabecera.
+    #[test]
+    fn la_media_de_un_puesto_obedece_a_su_transform() {
+        let fijada = Fijada {
+            metadata_location: "gs://lago/legal/contratos/v3.json".into(),
+            transaccion: "tx-3".into(),
+        };
+        let mut lista = BTreeMap::new();
+        lista.insert("puesto-ana".to_string(), un_puesto("agente:ana"));
+        let ana = agente("agente:ana");
+
+        // Sin transform: libre, y queda anotado lo leído.
+        assert_eq!(
+            media_en(&mut lista, &ana, "legal.archivo.contratos"),
+            MediaDelPuesto::Libre
+        );
+        assert!(
+            lista["puesto-ana"]
+                .colecciones_leidas
+                .contains("legal.archivo.contratos")
+        );
+
+        // Con transform: lo declarado, de lo fijado; lo demás, 403.
+        lista.get_mut("puesto-ana").unwrap().transform = Some(Transform {
+            nombre: "paginar".into(),
+            inputs: vec!["legal.archivo.contratos".into(), "legal.registro".into()],
+            output: "legal.archivo.paginas".into(),
+            fijadas: BTreeMap::from([("legal.archivo.contratos".to_string(), fijada.clone())]),
+        });
+        assert_eq!(
+            media_en(&mut lista, &ana, "legal.archivo.contratos"),
+            MediaDelPuesto::Declarada(Some(fijada))
+        );
+        assert_eq!(
+            media_en(&mut lista, &ana, "legal.registro"),
+            MediaDelPuesto::Declarada(None),
+            "declarado pero no era una colección al declararlo: sin fijar"
+        );
+        assert!(matches!(
+            media_en(&mut lista, &ana, "legal.archivo.fotos"),
+            MediaDelPuesto::NoDeclarada { transform, .. } if transform == "paginar"
+        ));
+        assert!(
+            !lista["puesto-ana"]
+                .colecciones_leidas
+                .contains("legal.archivo.fotos"),
+            "lo negado no se anota"
+        );
+
+        // El transform de otro agente no manda sobre éste; quien no es agente lee libre.
+        let beto = agente("agente:beto");
+        lista.insert("puesto-beto".to_string(), un_puesto("agente:beto"));
+        assert_eq!(
+            media_en(&mut lista, &beto, "legal.archivo.fotos"),
+            MediaDelPuesto::Libre
+        );
+        let persona = Identidad {
+            tipo: None,
+            ..agente("persona:ana")
+        };
+        assert_eq!(
+            media_en(&mut lista, &persona, "legal.archivo.fotos"),
+            MediaDelPuesto::Libre
+        );
+
+        // Un puesto cerrado ya no es de nadie.
+        lista.get_mut("puesto-ana").unwrap().estado = Estado::Cerrado;
+        assert_eq!(
+            media_en(&mut lista, &ana, "legal.archivo.fotos"),
+            MediaDelPuesto::Libre
+        );
     }
 
     #[test]

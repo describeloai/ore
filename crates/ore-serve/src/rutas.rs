@@ -810,11 +810,13 @@ impl Servidor {
             }
             // 0049 B2·2: la media, por `ore-medios` (`docs/media.md`).
             ("GET", ["media", b, s, c, op @ ("items" | "item")]) => {
-                self.media(rama, p, b, s, c, op)
+                self.media(rama, p, sujeto, b, s, c, op)
             }
-            ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, b, s, c, "urls"),
+            ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, sujeto, b, s, c, "urls"),
             // 0049 B3·3: `open` —dónde están los bytes, y un 307 a ellos—.
-            ("GET", ["media", b, s, c, "content"]) => self.media(rama, p, b, s, c, "content"),
+            ("GET", ["media", b, s, c, "content"]) => {
+                self.media(rama, p, sujeto, b, s, c, "content")
+            }
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {

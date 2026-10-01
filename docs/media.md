@@ -166,6 +166,15 @@ en su valor de error:
   sobrevive a la renovación: la credencial se comprueba al abrir.
 - Un transform presenta además su **ámbito** (el puesto y el trabajo): la celda comprueba que la
   colección está entre sus entradas declaradas y lo registra en el linaje.
+- **Cómo lo hace la celda** (0049 B4·2). El puesto se reconoce por el **agente** que lo reclamó,
+  no por la cabecera `x-ore-puesto`, que el código de la celda puede quitar. Mientras corre un
+  transform (`POST /puestos/{id}/transform`, o una función lanzada):
+  - una colección que no está en sus `inputs` da `media/no-declarada`;
+  - una que sí está se lee **de la transacción que su puntero tenía al declararla**: `list`,
+    `stat`, `url` y `open` ven lo mismo aunque la colección cambie mientras el trabajo corre. La
+    respuesta de declarar y la ficha del puesto lo enseñan (`fijadas: {<colección>: <transacción>}`).
+  - Sin transform, se lee la transacción de ahora y la colección queda anotada en el puesto
+    (`colecciones_leidas`): es la procedencia de lo que esa sesión escriba.
 
 ## 5. Lo que no es de este contrato
 

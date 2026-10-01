@@ -714,6 +714,8 @@ impl Servidor {
         };
         let qn = plan.invocada.qn.clone();
         let corrida = plan.invocada.corrida.clone();
+        // 0049 B4·2: lo que lee y es una colección, fijado al lanzar.
+        let fijadas = self.fijar_colecciones(rama.as_deref(), &plan.lee);
         let mut r = self.lanzar_trabajo(
             sujeto,
             rama,
@@ -729,6 +731,7 @@ impl Servidor {
                 // Nada: una función de lectura no escribe (v1alpha10 §1). El
                 // catálogo compara la tabla escrita con esto, y nada es igual.
                 output: String::new(),
+                fijadas,
             }),
             Some(plan.invocada),
         );

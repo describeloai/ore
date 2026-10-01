@@ -25,13 +25,21 @@
 //! `ore-serve` sigue sin TLS, sin Iceberg y sin poder leer un origen (lo
 //! comprueba `ore-cli/tests/dependencias.rs`).
 //!
+//! **Lo declarado manda** (0049 B4·2): desde el puesto de un transform, una
+//! colección que no está en sus `inputs` es `403 media/no-declarada`, y una que
+//! está se lee de la transacción que se fijó al declararla
+//! ([`Servidor::fijar_colecciones`]), no de la del puntero. Sin transform se
+//! lee libre y queda anotado en el puesto (`colecciones_leidas`).
+//!
 //! Las rutas de 0046 (`/colecciones/…/items`, `…/items/{huella}`,
 //! `…/items/resolver`) siguen hasta el relevo (0049 B6).
 
+use crate::puestos::{Fijada, MediaDelPuesto};
 use crate::rutas::Servidor;
 use ore_core::json::Json;
 use ore_core::parse::Node;
 use ore_entrada::http::{Peticion, Respuesta};
+use ore_entrada::identidad::Identidad;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -150,6 +158,36 @@ pub(crate) fn fuente_de_la_coleccion(
 /// Lo que se le pide a una URL firmada con una credencial temporal: la vida
 /// de un permiso (5 min), y nunca más de lo que le queda a la credencial
 /// menos 30 s (0046 E9b).
+/// [`Servidor::fijar_colecciones`] en un árbol ya abierto.
+pub(crate) fn fijar_en(raiz: &Path, inputs: &[String]) -> BTreeMap<String, Fijada> {
+    let mut fijadas = BTreeMap::new();
+    for i in inputs {
+        let completo = ore_core::normalize::completo(i);
+        let [b, s, c] = completo.split('.').collect::<Vec<_>>()[..] else {
+            continue;
+        };
+        if clase_de_la_coleccion(raiz, b, s, c).is_none() {
+            continue;
+        }
+        let puntero =
+            ore_core::punteros::leer_en(&raiz.join("datasets"), &completo).map(|(_, n)| n);
+        let de = |k: &str| {
+            puntero
+                .as_ref()
+                .and_then(|n| campo(n, k))
+                .unwrap_or_default()
+        };
+        fijadas.insert(
+            i.clone(),
+            Fijada {
+                metadata_location: de("metadata_location"),
+                transaccion: de("transaccion"),
+            },
+        );
+    }
+    fijadas
+}
+
 fn vida_hasta(caduca_ms: Option<u64>, ahora_ms: u64) -> u64 {
     let vida = VIDA_DE_UN_PERMISO;
     match caduca_ms {
@@ -189,11 +227,31 @@ pub(crate) fn redireccion(r: &Respuesta) -> Option<ore_entrada::http::Salida> {
 }
 
 impl Servidor {
+    /// **Fija las colecciones de `inputs`** (0049 B4·2): de cada nombre que es
+    /// una `MediaCollection` en esa rama, su `metadata_location` y su
+    /// `transaccion` de ahora, del puntero. Lo demás (vistas, datasets) no se
+    /// fija aquí. Una colección sin puntero todavía se fija vacía: el trabajo
+    /// la ve vacía hasta el final, aunque otro la llene mientras corre.
+    pub(crate) fn fijar_colecciones(
+        &self,
+        rama: Option<&str>,
+        inputs: &[String],
+    ) -> BTreeMap<String, Fijada> {
+        let mut fijadas = BTreeMap::new();
+        self.leyendo_en(rama, |raiz| {
+            fijadas = fijar_en(raiz, inputs);
+            Respuesta::sin_contenido()
+        });
+        fijadas
+    }
+
     /// `GET|POST /media/{b}/{s}/{c}/…`: la operación, en la rama que se lee.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn media(
         &self,
         rama: Option<&str>,
         p: &Peticion,
+        sujeto: &Identidad,
         b: &str,
         s: &str,
         c: &str,
@@ -214,6 +272,23 @@ impl Servidor {
             );
         };
         let coleccion = format!("{b}.{s}.{c}");
+        // 0049 B4·2: lo declarado manda, antes de pedir nada a `ore-medios`.
+        let corta = ore_core::normalize::a_corto(&coleccion).into_owned();
+        let fijada = match self.media_del_puesto(sujeto, &corta) {
+            MediaDelPuesto::Libre => None,
+            MediaDelPuesto::Declarada(f) => f,
+            MediaDelPuesto::NoDeclarada { transform, inputs } => {
+                return problema(
+                    403,
+                    "media/no-declarada",
+                    format!(
+                        "`{corta}` no está en los inputs de `{transform}` ({}): un transform sólo lee \
+                         lo que declara",
+                        inputs.join(", ")
+                    ),
+                );
+            }
+        };
         let cuerpo_pedido = match operacion {
             "urls" => match ore_core::parse::parse(&p.cuerpo) {
                 Ok(n) if !p.cuerpo.trim().is_empty() => Some(n),
@@ -248,11 +323,13 @@ impl Servidor {
             let mut pedido: BTreeMap<String, Json> = BTreeMap::new();
             pedido.insert("coleccion".into(), Json::s(&coleccion));
             pedido.insert("virtual".into(), Json::s(virtual_.to_string()));
-            pedido.insert(
-                "metadata_location".into(),
-                Json::s(de_puntero("metadata_location")),
-            );
-            pedido.insert("transaccion".into(), Json::s(de_puntero("transaccion")));
+            // Dentro de un transform, la transacción fijada; si no, la de ahora.
+            let (ml, tx) = match &fijada {
+                Some(f) => (f.metadata_location.clone(), f.transaccion.clone()),
+                None => (de_puntero("metadata_location"), de_puntero("transaccion")),
+            };
+            pedido.insert("metadata_location".into(), Json::s(ml));
+            pedido.insert("transaccion".into(), Json::s(tx));
             match operacion {
                 "items" => {
                     for (k, a) in [
@@ -526,6 +603,51 @@ mod pruebas {
         assert_eq!(vida_hasta(None, 0), 300);
         assert_eq!(vida_hasta(Some(200_000), 0), 170);
         assert_eq!(vida_hasta(Some(10_000), 0), 30);
+    }
+
+    #[test]
+    fn al_declarar_se_fija_la_transaccion_de_cada_coleccion() {
+        let d = std::env::temp_dir().join(format!("ore-medios-fijar-{}", std::process::id()));
+        let dir = d.join("packages/legal/archivo/collections");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(d.join("datasets/legal/archivo")).unwrap();
+        let coleccion = |n: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: {{ name: {n}, namespace: legal, schema: archivo }}\nspec: {{ owner: team:legal, media: document, formats: [pdf] }}\n"
+            )
+        };
+        std::fs::write(dir.join("contratos.yaml"), coleccion("contratos")).unwrap();
+        std::fs::write(dir.join("vacia.yaml"), coleccion("vacia")).unwrap();
+        std::fs::write(
+            d.join("datasets/legal/archivo/contratos.json"),
+            "{\"metadata_location\":\"gs://lago/m/v3.json\",\"transaccion\":\"tx-3\"}",
+        )
+        .unwrap();
+        let f = fijar_en(
+            &d,
+            &[
+                "legal.archivo.contratos".into(),
+                "legal.archivo.vacia".into(),
+                "legal.registro".into(),
+            ],
+        );
+        assert_eq!(
+            f.get("legal.archivo.contratos"),
+            Some(&Fijada {
+                metadata_location: "gs://lago/m/v3.json".into(),
+                transaccion: "tx-3".into(),
+            })
+        );
+        assert_eq!(
+            f.get("legal.archivo.vacia"),
+            Some(&Fijada::default()),
+            "sin puntero, se fija vacía"
+        );
+        assert!(
+            !f.contains_key("legal.registro"),
+            "lo que no es una colección no se fija aquí"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
