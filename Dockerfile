@@ -56,6 +56,15 @@ RUN cargo build --release --locked \
       strip "target/release/$b"; \
     done
 
+# 0049 B2·4: `ore-medios`, APARTE y DESPUÉS. Enlaza `ore-store` (Arrow, Parquet,
+# Iceberg) con LTO completo: un enlace de varios GB. Metido en el `cargo build`
+# de arriba coincidía con los otros enlaces pesados (`ore`, `ore-store-*`) y la
+# máquina de Cloud Build (8 GB) dejaba de responder (2026-10-01, tres
+# construcciones muertas a los 60 min). Aquí las dependencias ya están
+# compiladas: se compila su crate y se enlaza SOLO, sin nada más en paralelo.
+RUN cargo build --release --locked -p ore-medios \
+ && strip target/release/ore-medios
+
 # ── 1 · La fina, que no sabe hablar con nadie ───────────────────────────────
 FROM scratch AS ore
 
@@ -185,11 +194,12 @@ COPY --from=build /src/target/release/ore-firmar-s3 /usr/local/bin/ore-firmar-s3
 # metadata server y NO enlaza el cliente de S3 ni la firma (vigilado igual):
 # canjea un token, no lee un bucket.
 COPY --from=build /src/target/release/ore-asumir-rol /usr/local/bin/ore-asumir-rol
-# 0049 B2·4: `ore-medios` NO viaja aquí todavía. Con él, el paso Rust enlaza
-# un binario LTO pesado más (Arrow, Parquet, Iceberg) en paralelo con los demás,
-# y la máquina de Cloud Build (E2_HIGHCPU_8, 8 GB) dejaba de responder en la
-# fase de enlace: tres construcciones muertas a los 60 min (INTERNAL_ERROR) el
-# 2026-10-01. Vuelve cuando se decida cómo (máquina, paralelismo o su imagen).
+# 0049 B2·4: `ore-medios`, el índice de las colecciones, la firma en lote y la
+# puerta de lectura, en un proceso vivo. Viaja en esta imagen —alpine con
+# certificados, y ya con `ore-store-gcs`— y corre en SU Deployment con su
+# comando: es otro proceso, con su sitio en la red, y `ore-serve` sigue sin
+# enlazar TLS (`ore-cli/tests/dependencias.rs`). Se compila aparte (arriba).
+COPY --from=build /src/target/release/ore-medios /usr/local/bin/ore-medios
 
 USER 65532:65532
 WORKDIR /trabajo
