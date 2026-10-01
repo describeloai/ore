@@ -32,6 +32,9 @@ ore-store = { path = "../ore-store" }
 ore-s3    = { path = "../ore-s3" }
 ore-sigv4 = { path = "../ore-sigv4" }
 sha2      = { workspace = true }
+# El permiso de leer un ítem (B3·2): aleatoriedad del sistema. Ya está en el
+# cierre por `ore-store`.
+uuid = { version = "1", features = ["v4"] }
 
 # Las columnas del listado de una colección, leídas de sus lotes.
 arrow-array = "58"

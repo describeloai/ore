@@ -399,7 +399,7 @@ fn hex_a_bytes(h: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod pruebas {
+pub(crate) mod pruebas {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -524,8 +524,8 @@ mod pruebas {
         b.lector.read_to_end(&mut v).map(|_| v)
     }
 
-    fn sin_lago() -> ore_store_memoria::Memoria {
-        ore_store_memoria::Memoria::default()
+    fn sin_lago() -> Memoria {
+        Memoria::default()
     }
 
     #[test]
@@ -750,6 +750,8 @@ mod pruebas {
         assert_eq!(Rango::Sufijo(100).en(10), Some((0, 9)));
         assert_eq!(Rango::Desde(10, None).en(10), None);
     }
+
+    pub(crate) use ore_store_memoria::Memoria;
 
     /// Un lago en memoria, para las pruebas.
     mod ore_store_memoria {

@@ -8,16 +8,24 @@
 //! | `POST /indice/items` | `list` |
 //! | `POST /indice/item` | `stat` |
 //! | `POST /indice/urls` | `url` |
+//! | `POST /indice/abrir` | el permiso de leer un ítem (B3·2) |
+//! | `GET /contenido?permiso=…` | `open` / `read_range`: los bytes (B3·2) |
 //! | `GET /salud` | si vive, y cuántos índices tiene |
+//!
+//! ⭐ `/contenido` es la única que **no** viene de `ore-serve`: la pide el
+//!   puesto, con el permiso que `ore-serve` le pidió aquí (la red lo deja
+//!   entrar sólo a esa, B3·4). Sin permiso válido no hay nada que leer.
 //!
 //! Los errores van en la forma de RFC 9457 (`type`, `title`, `status`,
 //! `detail`) con los tipos del contrato; `ore-serve` los pasa tal cual.
 
+use crate::contenido::{Origen, Pieza};
 use crate::firma::{self, Pedida};
 use crate::indice::{Estado, Indice, Indices, Item};
+use crate::permisos::{self, Permisos};
 use ore_core::json::Json;
 use ore_core::parse::Node;
-use ore_entrada::http::{Peticion, Respuesta};
+use ore_entrada::http::{Peticion, Respuesta, Salida};
 use ore_store::almacen::Almacen;
 use ore_store::lago::Lago;
 use std::sync::Arc;
@@ -56,6 +64,8 @@ pub struct Servicio {
     pub indices: Indices,
     /// Los `sha256` que la puerta de lectura calculó al paso (B3·1).
     pub vistos: Arc<crate::contenido::Vistos>,
+    /// Los permisos vivos de leer un ítem (B3·2).
+    pub permisos: Permisos,
 }
 
 /// Un error del contrato (RFC 9457).
@@ -72,6 +82,7 @@ fn problema_json(status: u16, tipo: &str, detalle: impl Into<String>) -> Json {
         "media/limite" => "Fuera de los límites",
         "media/origen" => "El origen falló",
         "media/cambiado" => "La versión fijada cambió",
+        "media/permiso" => "Sin permiso válido",
         "media/rango" => "El rango no cabe",
         _ => "Petición no válida",
     };
@@ -123,13 +134,47 @@ fn pedido(n: &Node) -> Result<Pedido<'_>, Respuesta> {
 }
 
 impl Servicio {
+    /// Lo que el servidor llama: los bytes de `/contenido` en flujo, y lo
+    /// demás como una respuesta.
+    pub fn atender_flujo(&self, p: &Peticion) -> Salida {
+        if p.metodo == "GET" && p.ruta == "/contenido" {
+            return match self.contenido(p) {
+                Ok(b) => Salida::Bytes(b),
+                Err(r) => Salida::Una(r),
+            };
+        }
+        Salida::Una(self.atender(p))
+    }
+
+    /// `GET /contenido?permiso=…` (con `Range`, si se quiere).
+    fn contenido(&self, p: &Peticion) -> Result<ore_entrada::http::Bytes, Respuesta> {
+        let sin = || {
+            problema(
+                401,
+                "media/permiso",
+                "el permiso falta, caducó o no es de esta celda: pídelo otra vez a la puerta",
+            )
+        };
+        let id = p.consulta.get("permiso").ok_or_else(sin)?;
+        let permiso = self.permisos.de(id).ok_or_else(sin)?;
+        crate::contenido::abrir(
+            self.cuenta.as_ref(),
+            &permiso.pieza,
+            p.cabeceras.get("range").map(String::as_str),
+            self.vistos.clone(),
+        )
+    }
+
     pub fn atender(&self, p: &Peticion) -> Respuesta {
         match (p.metodo.as_str(), p.ruta.as_str()) {
-            ("GET", "/salud") => Respuesta::ok(Json::obj([(
-                "indices",
-                Json::Int(self.indices.cuantos() as i64),
-            )])),
-            ("POST", ruta @ ("/indice/items" | "/indice/item" | "/indice/urls")) => {
+            ("GET", "/salud") => Respuesta::ok(Json::obj([
+                ("indices", Json::Int(self.indices.cuantos() as i64)),
+                ("permisos", Json::Int(self.permisos.cuantos() as i64)),
+            ])),
+            (
+                "POST",
+                ruta @ ("/indice/items" | "/indice/item" | "/indice/urls" | "/indice/abrir"),
+            ) => {
                 let n = match ore_core::parse::parse(&p.cuerpo) {
                     Ok(n) => n,
                     Err(_) => return problema(400, "media/peticion", "el cuerpo no es JSON"),
@@ -145,6 +190,7 @@ impl Servicio {
                 match ruta {
                     "/indice/items" => self.items(&ix, &n),
                     "/indice/item" => self.item(&ix, &n),
+                    "/indice/abrir" => self.abrir(&ix, &n),
                     _ => self.urls(&ix, &n),
                 }
             }
@@ -244,6 +290,79 @@ impl Servicio {
                 cuerpo: p,
             },
         }
+    }
+
+    /// **El permiso de leer un ítem** (B3·2): el ítem, resuelto en el índice
+    /// de esta transacción y fijado a su versión, se guarda con lo que hace
+    /// falta para leerlo —de una virtual, la clave, la versión, el ETag y la
+    /// credencial temporal que `ore-serve` trajo en `fuente`—, y vuelve un
+    /// permiso opaco. `ttl_s` acota su vida (`ore-serve` no pide más de lo que
+    /// le queda a la credencial).
+    fn abrir(&self, ix: &Indice, n: &Node) -> Respuesta {
+        let it = match self.buscar(ix, n) {
+            Ok(it) => it,
+            Err(p) => {
+                return Respuesta {
+                    codigo: 404,
+                    cuerpo: p,
+                };
+            }
+        };
+        let origen = if ix.virtual_ {
+            let Some(fuente) = texto(n, "fuente") else {
+                return problema(
+                    400,
+                    "media/peticion",
+                    "una virtual se lee con la credencial de su fuente: falta `fuente`",
+                );
+            };
+            Origen::S3 {
+                fuente: fuente.to_string(),
+                clave: it.clave.clone().unwrap_or_else(|| it.camino.clone()),
+                version: it.version.clone(),
+                etag: it.etag.as_deref().map(entre_comillas).unwrap_or_default(),
+            }
+        } else {
+            match &it.blob {
+                Some(b) => Origen::Lago { sha256: b.clone() },
+                None => {
+                    return problema(404, "media/no-existe", "el ítem no tiene blob en el lago");
+                }
+            }
+        };
+        let sha256 = it
+            .blob
+            .clone()
+            .or_else(|| self.vistos.de(&ix.coleccion, &it.camino, &it.version));
+        let pieza = Pieza {
+            coleccion: ix.coleccion.clone(),
+            camino: it.camino.clone(),
+            version: it.version.clone(),
+            origen,
+            tamano: it.tamano.and_then(|t| u64::try_from(t).ok()),
+            sha256,
+            tipo: it.tipo.clone(),
+        };
+        let segundos = texto(n, "ttl_s")
+            .and_then(|t| t.parse::<u64>().ok())
+            .unwrap_or(permisos::VIDA_POR_DEFECTO);
+        let Some((permiso, segundos)) = self.permisos.emitir(pieza, segundos) else {
+            return problema(
+                429,
+                "media/limite",
+                "demasiados permisos vivos en la celda: prueba en unos minutos",
+            );
+        };
+        Respuesta::ok(Json::obj([
+            ("permiso", Json::s(permiso)),
+            ("ttl_s", Json::Int(segundos as i64)),
+            (
+                "expires_ms",
+                Json::Int(ahora_ms() + (segundos as i64) * 1000),
+            ),
+            ("version", Json::s(&it.version)),
+            ("item", ix.referencia(it)),
+        ]))
     }
 
     /// `url`: una por ítem, en su posición; el error de uno va en la suya.
@@ -351,6 +470,16 @@ impl Servicio {
     }
 }
 
+/// Un ETag va entre comillas (RFC 9110 §8.8.3); el manifiesto puede no
+/// guardarlas.
+fn entre_comillas(e: &str) -> String {
+    if e.starts_with('"') || e.starts_with("W/") {
+        e.to_string()
+    } else {
+        format!("\"{e}\"")
+    }
+}
+
 fn ahora_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -392,6 +521,7 @@ mod pruebas {
                 cuenta: Arc::new(Firmante),
                 indices: Indices::new_para_pruebas(),
                 vistos: Arc::default(),
+                permisos: Permisos::default(),
             },
             n,
         )
@@ -444,6 +574,109 @@ mod pruebas {
             "{b2}"
         );
         assert_eq!(cargas.load(Ordering::Relaxed), 1, "dos páginas, una carga");
+    }
+
+    fn bytes(s: &Servicio, permiso: &str, rango: Option<&str>) -> (u16, Vec<u8>, String) {
+        let mut cabeceras = BTreeMap::new();
+        if let Some(r) = rango {
+            cabeceras.insert("range".to_string(), r.to_string());
+        }
+        let mut consulta = BTreeMap::new();
+        consulta.insert("permiso".to_string(), permiso.to_string());
+        match s.atender_flujo(&Peticion {
+            metodo: "GET".into(),
+            ruta: "/contenido".into(),
+            cabeceras,
+            cuerpo: String::new(),
+            consulta,
+        }) {
+            Salida::Bytes(mut b) => {
+                let mut v = Vec::new();
+                // Un cuerpo que no casa con su digest se corta: aquí, código 0.
+                if std::io::Read::read_to_end(&mut b.lector, &mut v).is_err() {
+                    return (0, v, String::new());
+                }
+                let cr = b
+                    .cabeceras
+                    .iter()
+                    .find(|(k, _)| k == "content-range")
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                (b.codigo, v, cr)
+            }
+            Salida::Una(r) => (r.codigo, r.cuerpo.jcs().into_bytes(), String::new()),
+            Salida::Flujo(_) => panic!("un flujo de eventos"),
+        }
+    }
+
+    fn permiso_de(b: &str) -> String {
+        ore_core::parse::parse(b)
+            .unwrap()
+            .get("permiso")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap()
+            .to_string()
+    }
+
+    /// Una mantenida: el permiso guarda el blob, y `/contenido` da sus bytes
+    /// enteros o por rango. Sin permiso, o con uno que no es, 401.
+    #[test]
+    fn el_permiso_abre_los_bytes_de_un_item_y_solo_los_suyos() {
+        let (mut s, _) = servicio();
+        let lago = crate::contenido::pruebas::Memoria::default();
+        ore_store::almacen::Almacen::subir(&lago, &ore_store::blobs::clave_de("bb"), b"%PDF-c2")
+            .unwrap();
+        s.cuenta = Arc::new(lago);
+        let (c, b) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!("{{{BASE},\"path\":\"docs/c.pdf\",\"ttl_s\":60}}"),
+        );
+        assert_eq!(c, 200, "{b}");
+        assert!(
+            b.contains("\"version\":\"v2\"") && b.contains("\"ttl_s\":60"),
+            "la actual: {b}"
+        );
+        let p = permiso_de(&b);
+        // El blob de prueba se llama `bb` y sus bytes no son ese sha256: la
+        // lectura entera lo descubre al final y corta (B3·1).
+        let (c, _, _) = bytes(&s, &p, None);
+        assert_eq!(c, 0, "el digest no casa: se corta");
+        let (c, v, cr) = bytes(&s, &p, Some("bytes=0-3"));
+        assert_eq!((c, v.as_slice()), (206, &b"%PDF"[..]));
+        // El total, el que dice el índice.
+        assert!(cr.starts_with("bytes 0-3/"), "{cr}");
+        let (c, v, _) = bytes(&s, "0123", None);
+        assert_eq!(c, 401);
+        assert!(String::from_utf8_lossy(&v).contains("media/permiso"));
+        let (c, _) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!("{{{BASE},\"path\":\"docs/sin.pdf\"}}"),
+        );
+        assert_eq!(c, 404, "sin blob no hay qué abrir");
+    }
+
+    /// Una virtual sin la credencial de su fuente no se abre.
+    #[test]
+    fn una_virtual_pide_su_fuente() {
+        let (s, _) = servicio();
+        let (c, b) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!("{{{BASE},\"virtual\":\"true\",\"path\":\"docs/a.pdf\"}}"),
+        );
+        assert_eq!(c, 400, "{b}");
+        assert!(b.contains("`fuente`"), "{b}");
+        let (c, b) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!(
+                "{{{BASE},\"virtual\":\"true\",\"path\":\"docs/a.pdf\",\"fuente\":\"s3://cubo?region=x&access_key_id=a&secret_access_key=b\"}}"
+            ),
+        );
+        assert_eq!(c, 200, "{b}");
+        assert!(!b.contains("secret"), "la credencial no vuelve: {b}");
     }
 
     #[test]

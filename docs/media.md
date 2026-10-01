@@ -134,6 +134,7 @@ en su valor de error:
 | `media/no-declarada` | 403 | un transform lee una colección que no declaró (0049, D6) |
 | `media/cambiado` | 412 | la versión fijada ya no se puede leer entera |
 | `media/sin-rangos` | 416 | el origen no da rangos |
+| `media/permiso` | 401 | el permiso de leer un ítem falta, caducó o no es de esta celda: se pide otro |
 | `media/rango` | 416 | el rango no cabe en el ítem, o no es de una parte (`bytes=a-b`, `a-`, `-n`) |
 | `media/corrupto` | 502 | los bytes no casan con `size` o `digest` |
 | `media/no-escribible` | 409 | `put` en una colección que no es escrita |

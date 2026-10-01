@@ -33,13 +33,14 @@ fn main() -> std::process::ExitCode {
         cuenta,
         indices: Indices::nuevo(filas),
         vistos: Arc::default(),
+        permisos: Default::default(),
     });
     let escucha = match std::net::TcpListener::bind(format!("0.0.0.0:{puerto}")) {
         Ok(e) => e,
         Err(e) => return fallo(&format!("no se pudo escuchar en {puerto}: {e}")),
     };
     eprintln!("ore-medios · escucha en {puerto} · hasta {filas} filas de índice");
-    match ore_entrada::http::servir(escucha, move |p| servicio.atender(p)) {
+    match ore_entrada::http::servir_con_flujos(escucha, move |p| servicio.atender_flujo(p)) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => fallo(&e.to_string()),
     }

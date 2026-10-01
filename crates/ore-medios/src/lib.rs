@@ -21,4 +21,5 @@
 pub mod contenido;
 pub mod firma;
 pub mod indice;
+pub mod permisos;
 pub mod servicio;

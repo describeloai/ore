@@ -101,8 +101,20 @@ pub struct Peticion {
 ///
 /// Y los filtros de la actividad de `ore-iam` (0047 A6.2): `clase` (`persona` o
 /// `agente`) y `celda` (su id), con `desde` como cursor y `limite`.
-pub const CONSULTA_ADMITIDA: &[&str] =
-    &["warehouse", "estado", "desde", "limite", "clase", "celda"];
+///
+/// Y el permiso de leer un ítem de `ore-medios` (0049 B3·2): 64 hexadecimales
+/// que **son** el portador, como una URL firmada —un ítem, una versión, cinco
+/// minutos—. Viaja en la URL porque el que la sigue puede ser cualquier lector
+/// HTTP (un `Range` tras un `seek`), y no lleva nada que no sea él mismo.
+pub const CONSULTA_ADMITIDA: &[&str] = &[
+    "warehouse",
+    "estado",
+    "desde",
+    "limite",
+    "clase",
+    "celda",
+    "permiso",
+];
 
 /// Y lo de la media (0049 B2·2, `docs/media.md`): `prefix` y `path` son rutas
 /// de un ítem —con barras, puntos y espacios—, `cursor` el opaco que da `list`
