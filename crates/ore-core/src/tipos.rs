@@ -66,6 +66,84 @@ pub enum Fisico {
     Instante,
 }
 
+/// v1alpha17 (0049 B1). **La forma de una columna en el lago**: un escalar con
+/// su físico, o lo compuesto —un struct, una lista, un vector— con la forma de
+/// cada parte. Es un tipo aparte del físico, y no una variante suya, porque el
+/// físico es de un valor que viaja como texto (el protocolo del driver entrega
+/// escalares) y lo compuesto no: llega entero desde un SDK, en Arrow.
+///
+/// `Media<c>` y `Anchor` son structs con campos fijos (OOS v1alpha17 `01` §3,
+/// `02` §2): quien los escribe los manda así, y el lago los guarda así.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Forma {
+    Escalar(Fisico),
+    Struct(Vec<(String, Forma)>),
+    Lista(Box<Forma>),
+    /// `Vector<n>`: en el lago, una lista de `float32` (Iceberg no tiene lista
+    /// de tamaño fijo). La dimensión es del contrato, y la comprueba quien
+    /// escribe.
+    Vector(u16),
+}
+
+/// Los campos de una referencia a medio, en su orden y con su tipo: la forma de
+/// Parquet `FILE` y lo de ORE (v1alpha17 `01` §3). `annotations` es un struct
+/// abierto y aquí va como texto JSON hasta que tenga campos fijos.
+pub const CAMPOS_DE_MEDIA_REF: &[(&str, &str)] = &[
+    ("uri", "String"),
+    ("collection", "String"),
+    ("path", "String"),
+    ("version", "String"),
+    ("digest", "String"),
+    ("size", "Integer"),
+    ("content_type", "String"),
+    ("content_type_detected", "String"),
+    ("checksum", "String"),
+    ("annotations", "String"),
+];
+
+/// Los campos de un ancla, con el discriminante primero (v1alpha17 `02` §2).
+pub const CAMPOS_DE_ANCLA: &[(&str, &str)] = &[
+    ("kind", "String"),
+    ("page", "Integer"),
+    ("bbox", "Struct<x: Float, y: Float, w: Float, h: Float>"),
+    ("polygon", "list<Struct<x: Float, y: Float>>"),
+    ("space", "Struct<unit: String, width: Float, height: Float>"),
+    ("t_start", "Float"),
+    ("t_end", "Float"),
+    ("frame", "Integer"),
+    ("char_start", "Integer"),
+    ("char_end", "Integer"),
+    ("text_of", "String"),
+    ("offset", "Integer"),
+    ("length", "Integer"),
+];
+
+impl Forma {
+    /// La forma de un tipo de OOS.
+    pub fn de(tipo: &Type) -> Forma {
+        let campos = |cs: &[(&str, &str)]| {
+            Forma::Struct(
+                cs.iter()
+                    .map(|(n, t)| {
+                        let t = crate::types::parse_type(t).expect("un tipo de la gramática");
+                        (n.to_string(), Forma::de(&t))
+                    })
+                    .collect(),
+            )
+        };
+        match tipo {
+            Type::Struct(cs) => {
+                Forma::Struct(cs.iter().map(|(n, t)| (n.clone(), Forma::de(t))).collect())
+            }
+            Type::List(t) => Forma::Lista(Box::new(Forma::de(t))),
+            Type::Vector(n) => Forma::Vector(*n),
+            Type::Media(_) => campos(CAMPOS_DE_MEDIA_REF),
+            Type::Anchor => campos(CAMPOS_DE_ANCLA),
+            otro => Forma::Escalar(Fisico::de(otro)),
+        }
+    }
+}
+
 impl Fisico {
     /// El físico de un tipo de OOS. Es la tabla de 0032 §1.
     pub fn de(tipo: &Type) -> Fisico {

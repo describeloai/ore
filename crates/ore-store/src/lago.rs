@@ -375,15 +375,42 @@ pub fn esquema_deseado(
 ) -> Result<Schema, String> {
     let mut siguiente = base.map(|b| b.highest_field_id()).unwrap_or(0);
     let mut campos = Vec::with_capacity(columnas.len());
+    let a_iceberg = |nombre: &str, tipo: &DataType| {
+        iceberg::arrow::arrow_type_to_type(tipo)
+            .map_err(|e| format!("la columna `{nombre}` ({tipo}) no cabe en Iceberg: {e}"))
+    };
+    // v1alpha17: lo anidado lleva un id en cada hijo (Iceberg lo exige). Una
+    // columna cuya forma entera casa con la de la tabla conserva sus ids; las
+    // demás, todos nuevos (un id no cambia de tipo mientras haya un fichero
+    // vivo que lo lleve), **en el orden en que Iceberg los reparte al crear**:
+    // primero todas las columnas, después los hijos de cada una, nivel a nivel.
+    // Si no, la tabla creada renumeraría y sus ficheros no casarían.
+    let mut conservadas: Vec<Option<(iceberg::spec::Type, i32)>> =
+        Vec::with_capacity(columnas.len());
     for (nombre, tipo) in columnas {
-        let t = iceberg::arrow::arrow_type_to_type(tipo)
-            .map_err(|e| format!("la columna `{nombre}` ({tipo}) no cabe en Iceberg: {e}"))?;
-        let id = match base.and_then(|b| b.field_by_name(nombre)) {
-            Some(f) if *f.field_type == t => f.id,
-            _ => {
+        let previa = base.and_then(|b| b.field_by_name(nombre));
+        let mut prueba = siguiente;
+        let con_los_de_la_tabla = ids_anidados(tipo, previa.map(|f| &*f.field_type), &mut prueba);
+        let t = a_iceberg(nombre, &con_los_de_la_tabla)?;
+        conservadas.push(match previa {
+            Some(f) if *f.field_type == t => Some((t, f.id)),
+            _ => None,
+        });
+    }
+    let ids_de_columna: Vec<i32> = conservadas
+        .iter()
+        .map(|c| match c {
+            Some((_, id)) => *id,
+            None => {
                 siguiente += 1;
                 siguiente
             }
+        })
+        .collect();
+    for (((nombre, tipo), conservada), id) in columnas.iter().zip(conservadas).zip(ids_de_columna) {
+        let t = match conservada {
+            Some((t, _)) => t,
+            None => a_iceberg(nombre, &ids_anidados(tipo, None, &mut siguiente))?,
         };
         campos.push(Arc::new(NestedField::optional(id, nombre, t)));
     }
@@ -391,6 +418,63 @@ pub fn esquema_deseado(
         .with_fields(campos)
         .build()
         .map_err(|e| format!("el esquema no construye: {e}"))
+}
+
+/// v1alpha17 (0049 B1). **Los ids de los hijos de una columna anidada**, como
+/// metadato `PARQUET:field_id` de cada `Field`: los de `base` —la columna de la
+/// tabla que ya existe— por nombre, y uno nuevo para lo que no está. Un escalar
+/// no tiene hijos y vuelve igual.
+fn ids_anidados(
+    tipo: &DataType,
+    base: Option<&iceberg::spec::Type>,
+    siguiente: &mut i32,
+) -> DataType {
+    use arrow_schema::Field;
+    use iceberg::spec::Type as T;
+    let con_id = |f: Field, id: i32| {
+        f.with_metadata(HashMap::from([(
+            "PARQUET:field_id".to_string(),
+            id.to_string(),
+        )]))
+    };
+    let nuevo = |s: &mut i32| {
+        *s += 1;
+        *s
+    };
+    match tipo {
+        DataType::Struct(cs) => {
+            let previos = match base {
+                Some(T::Struct(s)) => s.fields(),
+                _ => &[],
+            };
+            DataType::Struct(
+                cs.iter()
+                    // primero el id de cada campo del nivel, luego sus hijos
+                    .map(|c| {
+                        let p = previos.iter().find(|x| x.name == *c.name());
+                        (c, p, p.map(|x| x.id).unwrap_or_else(|| nuevo(siguiente)))
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|(c, p, id)| {
+                        let hijo =
+                            ids_anidados(c.data_type(), p.map(|x| &*x.field_type), siguiente);
+                        con_id(Field::new(c.name(), hijo, true), id)
+                    })
+                    .collect(),
+            )
+        }
+        DataType::List(e) => {
+            let p = match base {
+                Some(T::List(l)) => Some(&l.element_field),
+                _ => None,
+            };
+            let id = p.map(|x| x.id).unwrap_or_else(|| nuevo(siguiente));
+            let hijo = ids_anidados(e.data_type(), p.map(|x| &*x.field_type), siguiente);
+            DataType::List(Arc::new(con_id(Field::new(e.name(), hijo, true), id)))
+        }
+        otro => otro.clone(),
+    }
 }
 
 /// ¿Son el mismo esquema, columna a columna (nombre, tipo e id, en orden)?
@@ -827,7 +911,17 @@ impl Lago {
                 );
             }
             filas += lote.num_rows() as u64;
-            let lote = RecordBatch::try_new(arrow.clone(), lote.columns().to_vec())
+            // v1alpha17: una columna anidada se reescribe con los hijos del
+            // esquema (sus ids); las escalares ya son las suyas.
+            let columnas = lote
+                .columns()
+                .iter()
+                .zip(arrow.fields())
+                .map(|(c, f)| carga::con_tipo(c, f.data_type()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| iceberg::Error::new(iceberg::ErrorKind::DataInvalid, e))
+                .map_err(err)?;
+            let lote = RecordBatch::try_new(arrow.clone(), columnas)
                 .map_err(|e| format!("el lote no casa con el esquema de la tabla: {e}"))?;
             if let Some(w) = escritor.as_mut() {
                 w.write(lote).await.map_err(err)?;

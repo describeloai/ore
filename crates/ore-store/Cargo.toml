@@ -90,3 +90,7 @@ ore-driver = { path = "../ore-driver" }
 # estaba en el arbol —la trae `parquet`—, asi que nombrarla no anade nada al
 # cierre: lo unico que hace es dejar de depender de un reexport.
 bytes = "1"
+
+[dev-dependencies]
+# Solo para construir listas en las pruebas (ya esta en el lock: arrow-array depende de ella).
+arrow-buffer = "58"

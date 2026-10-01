@@ -38,7 +38,7 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use ore_core::tipos::{Fisico, Valor};
+use ore_core::tipos::{Fisico, Forma, Valor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -76,8 +76,164 @@ fn arrow_de(f: &Fisico) -> DataType {
 /// El `DataType` de Arrow de un tipo de OOS tal como la cabecera lo declara:
 /// lo que `lote` le da a cada columna, para que `copiar` (en Arrow, sin pasar
 /// por el texto) escriba exactamente el mismo esquema que `sellar`.
+///
+/// v1alpha17: lo compuesto con su forma entera (0049 B1): un struct, una lista
+/// y un vector, que es una lista de `float32` en el lago.
 pub fn arrow_del_oos(oos: &str) -> DataType {
-    arrow_de(&fisico_de(oos))
+    match ore_core::types::parse_type(oos) {
+        Ok(t) => arrow_de_forma(&Forma::de(&t)),
+        Err(_) => arrow_de(&Fisico::Texto),
+    }
+}
+
+/// De la forma al `DataType`. Los hijos no llevan id: los pone el esquema de la
+/// tabla ([`crate::lago::esquema_deseado`]), que es quien los conoce.
+pub fn arrow_de_forma(f: &Forma) -> DataType {
+    match f {
+        Forma::Escalar(e) => arrow_de(e),
+        Forma::Struct(cs) => DataType::Struct(
+            cs.iter()
+                .map(|(n, f)| Field::new(n, arrow_de_forma(f), true))
+                .collect(),
+        ),
+        Forma::Lista(f) => DataType::List(Arc::new(Field::new(ELEMENTO, arrow_de_forma(f), true))),
+        Forma::Vector(_) => DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true))),
+    }
+}
+
+/// El nombre del elemento de una lista, el de Iceberg y Parquet.
+pub const ELEMENTO: &str = "element";
+
+/// **El destino de una columna que llega** (0032, y v1alpha17 para lo
+/// compuesto): cada escalar a su físico; un struct, campo a campo; una lista,
+/// su elemento. Dentro de una lista un real **no** se ensancha: `float32` es
+/// lo que un vector es (0049 B1), y `float16` sube a `float32`. Una lista de
+/// tamaño fijo —un vector de numpy o de pyarrow— es una lista.
+fn destino_de(nombre: &str, dt: &DataType, en_lista: bool) -> Result<DataType, String> {
+    Ok(match dt {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => DataType::Utf8,
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32 => DataType::Int64,
+        DataType::Float16 | DataType::Float32 if en_lista => DataType::Float32,
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => DataType::Float64,
+        DataType::Boolean => DataType::Boolean,
+        DataType::Decimal128(p, e) if *e >= 0 => DataType::Decimal128(*p, *e),
+        DataType::Date32 | DataType::Date64 => DataType::Date32,
+        DataType::Time32(_) | DataType::Time64(_) => DataType::Time64(TimeUnit::Microsecond),
+        DataType::Timestamp(_, None) => DataType::Timestamp(TimeUnit::Microsecond, None),
+        DataType::Timestamp(_, Some(_)) => {
+            DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into()))
+        }
+        DataType::Dictionary(_, v) if matches!(**v, DataType::Utf8 | DataType::LargeUtf8) => {
+            DataType::Utf8
+        }
+        DataType::Struct(cs) => {
+            if cs.is_empty() {
+                return Err(format!("la columna `{nombre}` es un struct sin campos"));
+            }
+            DataType::Struct(
+                cs.iter()
+                    .map(|c| {
+                        destino_de(&format!("{nombre}.{}", c.name()), c.data_type(), false)
+                            .map(|d| Field::new(c.name(), d, true))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+            )
+        }
+        DataType::List(e) | DataType::LargeList(e) | DataType::FixedSizeList(e, _) => {
+            if matches!(
+                e.data_type(),
+                DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..)
+            ) {
+                return Err(format!(
+                    "la columna `{nombre}` es una lista de listas: escríbela como lista de structs \
+                     (OOS v1alpha17 `01` §4)"
+                ));
+            }
+            DataType::List(Arc::new(Field::new(
+                ELEMENTO,
+                destino_de(&format!("{nombre}[]"), e.data_type(), true)?,
+                true,
+            )))
+        }
+        DataType::UInt64 => {
+            return Err(format!(
+                "la columna `{nombre}` es `uint64`: no cabe en `int64` sin mentir (0032); \
+                 conviértela antes de escribir"
+            ));
+        }
+        DataType::Null => {
+            return Err(format!(
+                "la columna `{nombre}` no tiene tipo (`null`): dale uno antes de escribir (0032)"
+            ));
+        }
+        otro => {
+            return Err(format!(
+                "la columna `{nombre}` es `{otro}`, que el contrato de tipos (0032) no tiene: \
+                 texto, entero, real, lógico, decimal, fecha, hora, fecha-hora o instante, y \
+                 (v1alpha17) struct, lista y vector"
+            ));
+        }
+    })
+}
+
+/// **El mismo tipo, sin los ids**: dos `DataType` que solo difieren en los
+/// metadatos de sus hijos (el `PARQUET:field_id` que pone el esquema de la
+/// tabla) son la misma forma.
+pub fn sin_ids(dt: &DataType) -> DataType {
+    match dt {
+        DataType::Struct(cs) => DataType::Struct(
+            cs.iter()
+                .map(|c| Field::new(c.name(), sin_ids(c.data_type()), true))
+                .collect(),
+        ),
+        DataType::List(e) => {
+            DataType::List(Arc::new(Field::new(e.name(), sin_ids(e.data_type()), true)))
+        }
+        otro => otro.clone(),
+    }
+}
+
+/// **Una columna, con el tipo de la tabla**: los mismos valores, reescritos con
+/// los hijos que `destino` declara (sus nombres y sus ids). Es lo que el
+/// escritor de Iceberg exige —el tipo del lote, byte a byte el del esquema— y
+/// lo que un `cast` no hace sobre lo anidado. Solo vale entre formas iguales
+/// ([`sin_ids`]); lo demás lo dice quien llama.
+pub fn con_tipo(col: &ArrayRef, destino: &DataType) -> Result<ArrayRef, String> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::{Array, ListArray, StructArray};
+    if col.data_type() == destino {
+        return Ok(col.clone());
+    }
+    match destino {
+        DataType::Struct(cs) => {
+            let s = col.as_struct_opt().ok_or("no es un struct")?;
+            let hijos = cs
+                .iter()
+                .zip(s.columns())
+                .map(|(c, h)| con_tipo(h, c.data_type()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Arc::new(
+                StructArray::try_new(cs.clone(), hijos, s.nulls().cloned())
+                    .map_err(|e| e.to_string())?,
+            ))
+        }
+        DataType::List(e) => {
+            let l = col.as_list_opt::<i32>().ok_or("no es una lista")?;
+            let valores = con_tipo(l.values(), e.data_type())?;
+            Ok(Arc::new(
+                ListArray::try_new(e.clone(), l.offsets().clone(), valores, l.nulls().cloned())
+                    .map_err(|e| e.to_string())?,
+            ))
+        }
+        _ => arrow_cast::cast(col, destino).map_err(|e| e.to_string()),
+    }
 }
 
 /// La vuelta: el físico que un `DataType` leído de la carga representa. Lo que
@@ -117,45 +273,7 @@ pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
     let mut columnas = Vec::with_capacity(lote.num_columns());
     for (campo, col) in lote.schema().fields().iter().zip(lote.columns()) {
         let nombre = campo.name();
-        let destino = match campo.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => DataType::Utf8,
-            DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32 => DataType::Int64,
-            DataType::Float16 | DataType::Float32 | DataType::Float64 => DataType::Float64,
-            DataType::Boolean => DataType::Boolean,
-            DataType::Decimal128(p, e) if *e >= 0 => DataType::Decimal128(*p, *e),
-            DataType::Date32 | DataType::Date64 => DataType::Date32,
-            DataType::Time32(_) | DataType::Time64(_) => DataType::Time64(TimeUnit::Microsecond),
-            DataType::Timestamp(_, None) => DataType::Timestamp(TimeUnit::Microsecond, None),
-            DataType::Timestamp(_, Some(_)) => {
-                DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into()))
-            }
-            DataType::Dictionary(_, v) if matches!(**v, DataType::Utf8 | DataType::LargeUtf8) => {
-                DataType::Utf8
-            }
-            DataType::UInt64 => {
-                return Err(format!(
-                    "la columna `{nombre}` es `uint64`: no cabe en `int64` sin mentir (0032); \
-                     conviértela antes de escribir"
-                ));
-            }
-            DataType::Null => {
-                return Err(format!(
-                    "la columna `{nombre}` no tiene tipo (`null`): dale uno antes de escribir (0032)"
-                ));
-            }
-            otro => {
-                return Err(format!(
-                    "la columna `{nombre}` es `{otro}`, que el contrato de tipos (0032) no tiene: \
-                     texto, entero, real, lógico, decimal, fecha, hora, fecha-hora o instante"
-                ));
-            }
-        };
+        let destino = destino_de(nombre, campo.data_type(), false)?;
         let valores = if col.data_type() == &destino {
             col.clone()
         } else {
@@ -165,6 +283,14 @@ pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
                     col.data_type()
                 )
             })?
+        };
+        // v1alpha17: el `cast` de lo anidado deja los hijos con los nombres de
+        // Arrow (`item`); se reescriben con los del destino (`element`).
+        let valores = if valores.data_type() == &destino {
+            valores
+        } else {
+            con_tipo(&valores, &destino)
+                .map_err(|e| format!("la columna `{nombre}` no toma su forma: {e}"))?
         };
         campos.push(Field::new(nombre, destino, true));
         columnas.push(valores);
@@ -567,6 +693,8 @@ pub fn conformar(lote: &RecordBatch, tabla: &iceberg::spec::Schema) -> Result<Re
         let col = match lote.column_by_name(f.name()) {
             None => arrow_array::new_null_array(destino, n),
             Some(c) if c.data_type() == destino => c.clone(),
+            // v1alpha17: la misma forma, sin los ids de la tabla.
+            Some(c) if sin_ids(c.data_type()) == sin_ids(destino) => con_tipo(c, destino)?,
             Some(c) if sin_perdida(c.data_type(), destino) => {
                 arrow_cast::cast_with_options(c, destino, &estricta).map_err(|e| {
                     format!(
@@ -638,6 +766,11 @@ pub fn al_esquema(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBat
             match lote.column_by_name(campo.name()) {
                 None => Ok(arrow_array::new_null_array(campo.data_type(), n)),
                 Some(col) if col.data_type() == campo.data_type() => Ok(col.clone()),
+                // v1alpha17: la misma forma con otros ids (el lote frente a la
+                // tabla) no es otro tipo: se reescribe con los del destino.
+                Some(col) if sin_ids(col.data_type()) == sin_ids(campo.data_type()) => {
+                    con_tipo(col, campo.data_type())
+                }
                 // **Un decimal solo se convierte si ensancha** (02-entity §3.4).
                 // `arrow_cast` de `decimal(38, 18)` a `decimal(10, 2)` devuelve
                 // `Ok` redondeando `0.005` a `0.01` y dejando en NULL lo que no

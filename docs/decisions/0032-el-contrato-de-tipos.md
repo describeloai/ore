@@ -416,3 +416,26 @@ sin que el compilador señalara ninguna.
 el mismo trabajo y se sacó: pide un cambio de spec, un análisis de nulabilidad en las vistas
 (una junta por la izquierda, una columna calculada), y que Iceberg no deja endurecer una tabla
 que existe. Queda para su propio ADR.
+
+### T6, hecho: lo compuesto (OOS v1alpha17, ADR 0049 B1, 2026-10-01)
+
+v1alpha17 añade `Struct<…>`, `Vector<n>` y `Anchor`, y `Media<c>` pasa a valer la referencia entera.
+Ninguno es un escalar —no viajan como texto desde un driver: llegan enteros desde un SDK, en
+Arrow—, y por eso no son filas nuevas del físico (`Fisico`, que sigue siendo de un valor) sino de
+**la forma** (`ore_core::tipos::Forma`): un escalar, o un struct, una lista o un vector de formas.
+
+| OOS | Arrow / Parquet | Iceberg | DuckDB |
+|---|---|---|---|
+| `Struct<a: T, …>` | `struct`, campos en orden | `struct`, un id por campo | `STRUCT(a T, …)` |
+| `list<T>` (T escalar, `Struct` o `Anchor`) | `list<element: T>` | `list`, un id para el elemento | `T[]` |
+| `Vector<n>` | `list<element: float>` (`float32`) | `list<float>`: la dimensión es del contrato, no del formato | `FLOAT[]`; `::FLOAT[n]` para las funciones de array |
+| `Media<c>` | `struct` con los campos de Parquet `FILE` y los de ORE (`CAMPOS_DE_MEDIA_REF`) | `struct` | `STRUCT(uri, collection, path, …)` |
+| `Anchor` | `struct` con `kind` y los campos de su clase (`CAMPOS_DE_ANCLA`) | `struct` | `STRUCT(kind, page, bbox, …)` |
+
+| | |
+|---|---|
+| al escribir | `carga::normalizar` lleva cada hoja a su físico de siempre, salvo un real **dentro de una lista**, que se queda en `float32` (es lo que un vector es; `float16` sube). Una lista de tamaño fijo (numpy, pyarrow) es una lista; una lista de listas se niega con el nombre de la columna |
+| los ids | Iceberg exige un id en cada hijo. `lago::esquema_deseado` los reparte **en el orden en que Iceberg los renumera al crear** —primero las columnas, luego los hijos de cada una, nivel a nivel—; si no, la tabla creada y sus ficheros no casaban (medido: un segundo esquema al primer `anexar`). Una columna cuya forma entera casa con la de la tabla conserva sus ids; otra forma, ids nuevos. El SDK de Python esboza con el mismo orden |
+| el lote | el escritor exige el tipo del esquema byte a byte, ids incluidos, y un `cast` no los pone: `carga::con_tipo` reescribe lo anidado con los hijos del destino |
+| medido | escribir, anexar sin esquema nuevo, upsert por clave, sobrescribir con otra forma (otro id; lo que no cambió conserva el suyo) y leer de vuelta, en `ore-store`. Los Parquet, leídos por DuckDB 1.5.4: `factura.numero`, `unnest(segmentos)`, `list_cosine_similarity(vector, …)` y `array_cosine_similarity(vector::FLOAT[3], …)` |
+| lo que no hace | comprobar al escribir que un `Vector<n>` lleva `n` valores, o que un `Media<c>` y un `Anchor` tienen su forma: el lago no conoce el contrato del dataset. Lo comprueba quien escribe contra él (0049 B4/B5) |

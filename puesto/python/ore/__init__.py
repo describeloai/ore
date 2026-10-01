@@ -639,12 +639,35 @@ ICEBERG = {"int8": "long", "int16": "long", "int32": "long", "int64": "long", "u
            "string_view": "string", "date32[day]": "date", "date64[ms]": "date"}
 
 
-def _tipo_iceberg(columna, t):
+def _tipo_iceberg(columna, t, ids=None, en_lista=False):
     """El tipo de Iceberg del esquema con el que la tabla se esboza (lo mismo que
     `ore-store` hace al escribir, 0032): lo que el contrato no tiene se niega aquí,
-    con el nombre de la columna, antes de mandar nada."""
+    con el nombre de la columna, antes de mandar nada.
+
+    v1alpha17 (0049 B1): lo anidado —un struct, una lista, un vector (una lista de
+    tamaño fijo, como la da numpy)— va con su forma y un id en cada hijo, que saca
+    de `ids` (un contador compartido por el esquema). Dentro de una lista un real
+    de 32 bits es `float`: es lo que un vector es."""
     import pyarrow as pa
 
+    if ids is None:
+        ids = iter(range(10**6, 10**7))
+    if pa.types.is_struct(t):
+        if t.num_fields == 0:
+            raise ValueError("write(): la columna `%s` es un struct sin campos" % columna)
+        hijos = [(t.field(i), next(ids)) for i in range(t.num_fields)]
+        return {"type": "struct", "fields": [
+            {"id": i, "name": f.name, "type": _tipo_iceberg("%s.%s" % (columna, f.name), f.type, ids), "required": False}
+            for f, i in hijos]}
+    if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_fixed_size_list(t):
+        e = t.value_type
+        if pa.types.is_list(e) or pa.types.is_large_list(e) or pa.types.is_fixed_size_list(e):
+            raise ValueError("write(): la columna `%s` es una lista de listas: escríbela como lista de structs" % columna)
+        i = next(ids)
+        return {"type": "list", "element-id": i, "element": _tipo_iceberg(columna + "[]", e, ids, en_lista=True),
+                "element-required": False}
+    if en_lista and str(t) in ("halffloat", "float"):
+        return "float"
     s = str(t)
     if s in ICEBERG:
         return ICEBERG[s]
@@ -1113,8 +1136,12 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:
         raise ValueError("write(): la tabla no tiene filas")
+    # Los ids como los reparte Iceberg al crear: primero las columnas, luego los
+    # hijos de cada una (v1alpha17, 0049 B1).
+    n = len(tabla_arrow.schema)
+    ids = iter(range(n + 1, 10**7))
     esquema = {"type": "struct", "schema-id": 0, "fields": [
-        {"id": i + 1, "name": f.name, "type": _tipo_iceberg(f.name, f.type), "required": False} for i, f in enumerate(tabla_arrow.schema)]}
+        {"id": i + 1, "name": f.name, "type": _tipo_iceberg(f.name, f.type, ids), "required": False} for i, f in enumerate(tabla_arrow.schema)]}
     ipc = _ipc(tabla_arrow)
     # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
     # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de

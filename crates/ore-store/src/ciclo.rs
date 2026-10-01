@@ -3004,6 +3004,260 @@ mod tests {
         aplicar(lago, &pet.to_string()).expect("aplica")
     }
 
+    /// v1alpha17 (0049 B1) · **lo anidado, de ida y vuelta**: un struct, una
+    /// lista de structs y un vector (una lista de tamaño fijo de `float32`, como
+    /// la manda numpy) entran por IPC, se escriben con un id en cada hijo, se
+    /// anexan sin cambiar el esquema —los ids se conservan— y se leen iguales.
+    #[test]
+    fn lo_anidado_se_escribe_y_se_lee() {
+        use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
+        use arrow_array::cast::AsArray;
+        use arrow_array::{
+            Array, Float64Array, Int32Array, LargeStringArray, ListArray, StringArray, StructArray,
+        };
+        use arrow_schema::{DataType, Field, Fields, Schema};
+
+        // `con_moneda`: la forma de `factura` cambia (un campo más).
+        let lote_con = |desde: i32, con_moneda: bool| -> Vec<u8> {
+            let mut campos_factura: Vec<(Arc<Field>, arrow_array::ArrayRef)> = vec![
+                (
+                    Arc::new(Field::new("numero", DataType::LargeUtf8, true)),
+                    Arc::new(LargeStringArray::from(vec![
+                        format!("F{desde}"),
+                        format!("F{}", desde + 1),
+                    ])),
+                ),
+                (
+                    Arc::new(Field::new("total", DataType::Float64, true)),
+                    Arc::new(Float64Array::from(vec![
+                        desde as f64 * 10.0 + 0.5,
+                        desde as f64 * 10.0 + 1.5,
+                    ])),
+                ),
+            ];
+            if con_moneda {
+                campos_factura.push((
+                    Arc::new(Field::new("moneda", DataType::Utf8, true)),
+                    Arc::new(StringArray::from(vec!["EUR", "USD"])),
+                ));
+            }
+            let factura = StructArray::from(campos_factura);
+            let seg_campos = Fields::from(vec![
+                Field::new("t_start", DataType::Float64, true),
+                Field::new("texto", DataType::Utf8, true),
+            ]);
+            let segs = StructArray::new(
+                seg_campos.clone(),
+                vec![
+                    Arc::new(Float64Array::from(vec![0.0, 1.5, 3.0])),
+                    Arc::new(StringArray::from(vec!["hola", "que", "tal"])),
+                ],
+                None,
+            );
+            let segmentos = ListArray::new(
+                Arc::new(Field::new("item", DataType::Struct(seg_campos), true)),
+                arrow_buffer::OffsetBuffer::new(vec![0, 2, 3].into()),
+                Arc::new(segs),
+                None,
+            );
+            let mut v = FixedSizeListBuilder::new(Float32Builder::new(), 3);
+            for fila in [[0.1f32, 0.2, 0.3], [1.0, 2.0, 3.0]] {
+                for x in fila {
+                    v.values().append_value(x);
+                }
+                v.append(true);
+            }
+            let vector = v.finish();
+            let esquema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, true),
+                Field::new("factura", factura.data_type().clone(), true),
+                Field::new("segmentos", segmentos.data_type().clone(), true),
+                Field::new("vector", vector.data_type().clone(), true),
+            ]));
+            let rb = arrow_array::RecordBatch::try_new(
+                esquema.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![desde, desde + 1])),
+                    Arc::new(factura),
+                    Arc::new(segmentos),
+                    Arc::new(vector),
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            {
+                let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+                w.write(&rb).unwrap();
+                w.finish().unwrap();
+            }
+            bytes
+        };
+
+        let lote = |desde: i32| lote_con(desde, false);
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "datasets/anidados";
+        let e1 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"sobrescribir\",\"operacion\":\"op-1\"}}"),
+            &lote(0)[..],
+        )
+        .expect("escribe lo anidado");
+        let a1 = aplicar_lo_escrito(&lago, &e1, ds, None);
+        let ml1 = campo(&a1, "metadata_location");
+
+        // ② anexar la misma forma: ni un esquema nuevo ni un id nuevo
+        let e2 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"base\":\"{ml1}\",\"operacion\":\"op-2\"}}"),
+            &lote(2)[..],
+        )
+        .expect("anexa lo anidado");
+        assert_ne!(campo(&e2, "esquema_cambiado"), "true", "{e2}");
+        let a2 = aplicar_lo_escrito(&lago, &e2, ds, Some(&ml1));
+        let t = lago.abrir(&campo(&a2, "metadata_location"), ds).unwrap();
+        assert_eq!(t.metadata().schemas_iter().count(), 1, "un solo esquema");
+
+        // los tipos del lago: el vector es una lista de float32; el real de un
+        // struct, float64 como cualquier escalar
+        let esquema = t.metadata().current_schema();
+        let tipo = |c: &str| format!("{:?}", esquema.field_by_name(c).unwrap().field_type);
+        let elemento = |c: &str| match &*esquema.field_by_name(c).unwrap().field_type {
+            iceberg::spec::Type::List(l) => l.element_field.field_type.to_string(),
+            otro => otro.to_string(),
+        };
+        assert_eq!(elemento("vector"), "float");
+        assert!(tipo("factura").contains("Double"), "{}", tipo("factura"));
+
+        // y se leen iguales
+        let lotes = lago.lotes(&t).unwrap();
+        let filas: usize = lotes.iter().map(|l| l.num_rows()).sum();
+        assert_eq!(filas, 4);
+        let l0 = lotes
+            .iter()
+            .find(|l| {
+                l.column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<arrow_array::types::Int64Type>()
+                    .value(0)
+                    == 0
+            })
+            .expect("el lote de op-1");
+        let vec0 = l0
+            .column_by_name("vector")
+            .unwrap()
+            .as_list::<i32>()
+            .value(1);
+        let vec0 = vec0.as_primitive::<arrow_array::types::Float32Type>();
+        assert_eq!(vec0.values().to_vec(), vec![1.0f32, 2.0, 3.0]);
+        let f = l0.column_by_name("factura").unwrap().as_struct();
+        assert_eq!(
+            f.column_by_name("numero")
+                .unwrap()
+                .as_string::<i32>()
+                .value(1),
+            "F1"
+        );
+        let s0 = l0
+            .column_by_name("segmentos")
+            .unwrap()
+            .as_list::<i32>()
+            .value(0);
+        assert_eq!(s0.len(), 2);
+        assert_eq!(
+            s0.as_struct()
+                .column_by_name("texto")
+                .unwrap()
+                .as_string::<i32>()
+                .value(1),
+            "que"
+        );
+
+        // Para leerlos con otro motor (DuckDB): los Parquet escritos, a un directorio.
+        if let Ok(dir) = std::env::var("ORE_VOLCAR_PARQUET") {
+            std::fs::create_dir_all(&dir).unwrap();
+            for (k, v) in cuenta.0.lock().unwrap().iter() {
+                if k.ends_with(".parquet") {
+                    let nombre = k.rsplit('/').next().unwrap();
+                    std::fs::write(format!("{dir}/{nombre}"), v).unwrap();
+                }
+            }
+        }
+
+        // ③ upsert por `id`: la 1 se reemplaza con lo nuevo, la 0 no se toca
+        let ml2 = campo(&a2, "metadata_location");
+        let e3 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"upsert\",\"clave\":[\"id\"],\"base\":\"{ml2}\",\"operacion\":\"op-3\"}}"),
+            &lote(1)[..],
+        )
+        .expect("upsert de lo anidado");
+        let a3 = aplicar_lo_escrito(&lago, &e3, ds, Some(&ml2));
+        let t3 = lago.abrir(&campo(&a3, "metadata_location"), ds).unwrap();
+        assert_eq!(
+            t3.metadata().schemas_iter().count(),
+            1,
+            "el upsert no cambia el esquema"
+        );
+        let total_de = |t: &iceberg::table::Table, id: i64| -> f64 {
+            for l in lago.lotes(t).unwrap() {
+                let ids = l
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<arrow_array::types::Int64Type>();
+                for i in 0..l.num_rows() {
+                    if ids.value(i) == id {
+                        let f = l.column_by_name("factura").unwrap().as_struct();
+                        return f
+                            .column_by_name("total")
+                            .unwrap()
+                            .as_primitive::<arrow_array::types::Float64Type>()
+                            .value(i);
+                    }
+                }
+            }
+            panic!("sin la fila {id}");
+        };
+        assert_eq!(total_de(&t3, 1), 10.5, "la fila 1 es la del upsert");
+        assert_eq!(total_de(&t3, 0), 0.5, "la 0 no se tocó");
+        let filas3: usize = lago.lotes(&t3).unwrap().iter().map(|l| l.num_rows()).sum();
+        assert_eq!(filas3, 4);
+
+        // ④ sobrescribir con otra forma: `factura` gana `moneda`. Para Iceberg
+        // es otra columna —otro id— y lo que no cambió conserva el suyo.
+        let ml3 = campo(&a3, "metadata_location");
+        let e4 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"base\":\"{ml3}\",\"operacion\":\"op-4\"}}"),
+            &lote_con(5, true)[..],
+        )
+        .expect("sobrescribe con otra forma");
+        assert_eq!(campo(&e4, "esquema_cambiado"), "true", "{e4}");
+        let a4 = aplicar_lo_escrito(&lago, &e4, ds, Some(&ml3));
+        let t4 = lago.abrir(&campo(&a4, "metadata_location"), ds).unwrap();
+        let nuevo = t4.metadata().current_schema();
+        let viejo = t3.metadata().current_schema();
+        assert_ne!(
+            nuevo.field_by_name("factura").unwrap().id,
+            viejo.field_by_name("factura").unwrap().id,
+            "otra forma, otro id"
+        );
+        assert_eq!(
+            nuevo.field_by_name("vector").unwrap().id,
+            viejo.field_by_name("vector").unwrap().id,
+            "lo que no cambió conserva su id"
+        );
+        let l4 = lago.lotes(&t4).unwrap();
+        let f4 = l4[0].column_by_name("factura").unwrap().as_struct();
+        assert_eq!(
+            f4.column_by_name("moneda")
+                .unwrap()
+                .as_string::<i32>()
+                .value(1),
+            "USD"
+        );
+    }
+
     /// **El verbo escribir en sus dos mitades, sobre un almacén en memoria.**
     /// La tabla llega por IPC con los físicos de su lenguaje; `escribir` la
     /// lleva a 0032, deja los ficheros y devuelve `requirements` + `updates`;
