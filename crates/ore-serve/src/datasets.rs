@@ -443,7 +443,7 @@ impl Servidor {
 
     /// Lo servido, a la actividad: quién, qué colección, qué huellas y blobs,
     /// y cuánto viven las URLs. Por el buzón: la respuesta no lo espera.
-    fn contar_lo_servido(
+    pub(crate) fn contar_lo_servido(
         &self,
         p: &ore_entrada::http::Peticion,
         rama: Option<&str>,

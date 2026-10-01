@@ -172,6 +172,8 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             // 0046 E9·2: resolver huellas a URLs es LEER —lo mismo que
             // `GET …/items/{huella}`, en lote—, y el cuerpo es sólo por la lista.
             | ["colecciones", _, _, _, "items", "resolver"]
+            // 0049 B2·2: la media por su puerta —listar, mirar y firmar es LEER—.
+            | ["media", _, _, _, "items" | "item" | "urls"]
     );
     if entra {
         return None;
@@ -796,6 +798,11 @@ impl Servidor {
                     .and_then(|t| t.parse().ok());
                 self.servir_items(rama, p, b, s, n, &huellas, ttl, false)
             }
+            // 0049 B2·2: la media, por `ore-medios` (`docs/media.md`).
+            ("GET", ["media", b, s, c, op @ ("items" | "item")]) => {
+                self.media(rama, p, b, s, c, op)
+            }
+            ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, b, s, c, "urls"),
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {

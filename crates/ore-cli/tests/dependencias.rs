@@ -161,6 +161,44 @@ fn el_canjeador_del_rol_no_sabe_leer_un_bucket() {
 /// promete no poder leer un origen: lo mismo que se veta en `ore`, y además un
 /// cliente HTTP de cualquier sabor. Su cierre es `ore-sigv4`, `sha2` y
 /// `serde_json`, y se queda pequeño.
+/// **`ore-serve` decide y no sirve** (0049 B2·2). Lee el árbol, autentica y
+/// pregunta; quien lee el lago, firma y —en B3— lee un origen es `ore-medios`,
+/// otro proceso. Hasta hoy era un comentario («este proceso sigue sin cliente
+/// TLS», `agente.rs`); desde aquí, un hecho del cierre.
+#[test]
+fn ore_serve_no_sabe_leer_el_lago_ni_un_origen() {
+    let cierre = cierre_de("ore-serve");
+    let culpables: Vec<String> = cierre
+        .iter()
+        .map(|n| nombre_de(n))
+        .filter(|n| {
+            [
+                "native-tls",
+                "rustls",
+                "openssl",
+                "ureq",
+                "reqwest",
+                "hyper",
+                "iceberg",
+                "ore-store",
+                "ore-gcp",
+                "ore-s3",
+                "ore-sigv4",
+                "ore-medios",
+                "ore-driver",
+            ]
+            .iter()
+            .any(|v| n == v || n.starts_with(&format!("{v}-")))
+        })
+        .map(String::from)
+        .collect();
+    assert!(
+        culpables.is_empty(),
+        "`ore-serve` enlaza lo que lee el lago o habla TLS: {}",
+        culpables.join(", ")
+    );
+}
+
 #[test]
 fn el_firmante_no_sabe_hablar_por_la_red() {
     let cierre = cierre_de("ore-firmar-s3");

@@ -485,7 +485,7 @@ pub(crate) fn kind_modelo() -> &'static Kind {
 }
 
 /// Los `.yaml` de un directorio, hacia dentro y sin entrar en los ocultos.
-fn yamls_de(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn yamls_de(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entradas) = std::fs::read_dir(dir) else {
         return;
     };

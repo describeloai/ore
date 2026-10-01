@@ -249,6 +249,8 @@ impl Servicio {
         // Cada pedido, a su ítem o a su error; los que se firman, juntos.
         let mut salida: Vec<Option<Json>> = vec![None; pedidos.len()];
         let mut firmar: Vec<(usize, Pedida)> = Vec::new();
+        // La referencia de cada uno va con su URL: quien pide sabe qué firmó.
+        let mut firmar_ref: Vec<Option<Json>> = vec![None; pedidos.len()];
         for (i, p) in pedidos.iter().enumerate() {
             match self.buscar(ix, p) {
                 Err(e) => salida[i] = Some(Json::obj([("error", e)])),
@@ -285,6 +287,7 @@ impl Servicio {
                         .unwrap_or(&it.camino)
                         .to_string();
                     let (_, cabecera) = ore_core::medios::disposicion(&tipo, &nombre);
+                    firmar_ref[i] = Some(ix.referencia(it));
                     firmar.push((
                         i,
                         Pedida {
@@ -311,6 +314,10 @@ impl Servicio {
         {
             salida[*i] = Some(match u {
                 Ok(url) => Json::obj([
+                    (
+                        "item",
+                        firmar_ref[*i].take().unwrap_or(Json::Crudo("null".into())),
+                    ),
                     ("url", Json::s(url)),
                     ("expires_ms", Json::Int(caduca_ms)),
                     ("ttl_s", Json::Int(segundos as i64)),
@@ -475,6 +482,23 @@ mod pruebas {
                 .contains("sha256/bb")
         );
         assert!(u[3].get("error").is_some(), "sin blob no se firma");
+    }
+
+    /// `ore-serve` reenvía `ttl_s` y `limit` como números JSON.
+    #[test]
+    fn los_numeros_llegan_como_numeros() {
+        let (s, _) = servicio();
+        let (_, b) = pedir(
+            &s,
+            "/indice/urls",
+            &format!("{{{BASE},\"ttl_s\":120,\"items\":[{{\"path\":\"docs/a.pdf\"}}]}}"),
+        );
+        assert!(b.contains("vida=120"), "{b}");
+        let (_, b) = pedir(&s, "/indice/items", &format!("{{{BASE},\"limit\":1}}"));
+        assert!(
+            b.contains("\"cursor\":\""),
+            "una página de 1 da cursor: {b}"
+        );
     }
 
     #[test]

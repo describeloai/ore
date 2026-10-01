@@ -104,20 +104,60 @@ pub struct Peticion {
 pub const CONSULTA_ADMITIDA: &[&str] =
     &["warehouse", "estado", "desde", "limite", "clase", "celda"];
 
+/// Y lo de la media (0049 B2·2, `docs/media.md`): `prefix` y `path` son rutas
+/// de un ítem —con barras, puntos y espacios—, `cursor` el opaco que da `list`
+/// (hexadecimal, largo), `digest` un `sha256:…` o una huella, `version` la del
+/// origen y `limit` un número. Llegan **decodificados** y se niegan con
+/// caracteres de control o más de 2048 bytes.
+pub const CONSULTA_DE_MEDIA: &[&str] = &["prefix", "path", "cursor", "digest", "version", "limit"];
+
 /// `a=b&c=d` → lo admitido, con su valor decodificado y validado: letras,
-/// dígitos, `_` y `-`, hasta 64.
+/// dígitos, `_` y `-`, hasta 64; lo de la media, con su propia regla.
 fn consulta_admitida(q: &str) -> BTreeMap<String, String> {
     q.split('&')
         .filter_map(|par| par.split_once('='))
-        .filter(|(k, _)| CONSULTA_ADMITIDA.contains(k))
-        .filter(|(_, v)| {
-            !v.is_empty()
-                && v.len() <= 64
-                && v.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        .filter_map(|(k, v)| {
+            if CONSULTA_ADMITIDA.contains(&k) {
+                let ok = !v.is_empty()
+                    && v.len() <= 64
+                    && v.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                return ok.then(|| (k.to_string(), v.to_string()));
+            }
+            if CONSULTA_DE_MEDIA.contains(&k) {
+                let v = sin_porcentajes(v)?;
+                let ok = !v.is_empty() && v.len() <= 2048 && !v.chars().any(char::is_control);
+                return ok.then(|| (k.to_string(), v));
+            }
+            None
         })
-        .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+}
+
+/// Los escapes de una cadena de consulta (por ciento y `+`), a su texto;
+/// `None` si no es UTF-8 o un escape no lleva dos dígitos hexadecimales.
+fn sin_porcentajes(v: &str) -> Option<String> {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' => {
+                let h = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+                out.push(u8::from_str_radix(h, 16).ok()?);
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 impl Peticion {
@@ -750,6 +790,27 @@ mod pruebas_de_pedir {
         assert_eq!(q["warehouse"], "ventas");
         assert!(consulta_admitida("warehouse=ventas%2F..").is_empty());
         assert!(consulta_admitida("warehouse=").is_empty());
+    }
+
+    /// 0049 B2·2: lo de la media entra decodificado, y con su regla.
+    #[test]
+    fn lo_de_la_media_entra_decodificado() {
+        let q = consulta_admitida(
+            "prefix=Nueva%20carpeta%2Fcontratos%2F&cursor=646f6373&limit=50&token=x",
+        );
+        assert_eq!(q["prefix"], "Nueva carpeta/contratos/");
+        assert_eq!(q["cursor"], "646f6373");
+        assert_eq!(q["limit"], "50");
+        assert!(!q.contains_key("token"));
+        assert!(
+            consulta_admitida("path=a%0Ab").is_empty(),
+            "un salto de línea no entra"
+        );
+        assert!(consulta_admitida("path=%ZZ").is_empty());
+        assert_eq!(
+            consulta_admitida("path=docs/a+b.pdf")["path"],
+            "docs/a b.pdf"
+        );
     }
 
     #[test]
