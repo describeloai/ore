@@ -11,16 +11,29 @@
 
 use ore_core::generar::{Accion, Plan};
 use ore_core::json::Json;
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-pub fn generar(raiz: &Path, comprobar: bool, json: bool) -> ExitCode {
+pub fn generar(raiz: &Path, comprobar: bool, json: bool, solo: &[PathBuf]) -> ExitCode {
     if !raiz.is_dir() {
         eprintln!("error: `{}` no es un árbol", raiz.display());
         return ExitCode::from(66); // EX_NOINPUT
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let plan = ore_core::generar::plan(&pkg);
+    // `--solo` como el árbol los ve: desde la raíz, y aunque ya no existan
+    // (un `.py` retirado se lleva su documento).
+    let solo: BTreeSet<PathBuf> = solo
+        .iter()
+        .map(|p| {
+            if p.is_absolute() {
+                p.clone()
+            } else {
+                raiz.join(p)
+            }
+        })
+        .collect();
+    let plan = ore_core::generar::plan_de(&pkg, (!solo.is_empty()).then_some(&solo));
     if !comprobar && let Err(e) = ore_core::generar::aplicar(&plan) {
         eprintln!("error: no se pudo escribir: {e}");
         return ExitCode::from(73); // EX_CANTCREAT

@@ -67,15 +67,30 @@ struct Existente {
 }
 
 pub fn plan(pkg: &Package) -> Plan {
+    plan_de(pkg, None)
+}
+
+/// El plan, **solo** para el código de `solo` (rutas de `.py`, existan o no):
+/// lo que deriva de esos ficheros y los documentos generados que los nombran.
+/// Es lo que hace el commit de un repositorio (G2): genera lo que ese commit
+/// toca, y nada de lo que la rama no tocó.
+pub fn plan_de(pkg: &Package, solo: Option<&BTreeSet<PathBuf>>) -> Plan {
     let mut p = Plan::default();
     for (carpeta, paquete) in paquetes_publicables(pkg) {
-        plan_del_paquete(pkg, &carpeta, &paquete, &mut p);
+        plan_del_paquete(pkg, &carpeta, &paquete, solo, &mut p);
     }
     p.cambios.sort_by(|a, b| a.ruta.cmp(&b.ruta));
     p
 }
 
-fn plan_del_paquete(pkg: &Package, carpeta: &Path, paquete: &str, p: &mut Plan) {
+fn plan_del_paquete(
+    pkg: &Package,
+    carpeta: &Path,
+    paquete: &str,
+    solo: Option<&BTreeSet<PathBuf>>,
+    p: &mut Plan,
+) {
+    let entra = |py: &Path| solo.is_none_or(|s| s.contains(py));
     // Los documentos de código del paquete, por su `entrypoint`.
     let mut existentes: BTreeMap<String, Existente> = BTreeMap::new();
     for f in pkg.of(Kind::Function) {
@@ -105,8 +120,8 @@ fn plan_del_paquete(pkg: &Package, carpeta: &Path, paquete: &str, p: &mut Plan) 
     let mut destinos: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut nombres: BTreeMap<String, String> = BTreeMap::new();
     for py in pys {
-        if carpeta_del_paquete(&py, &pkg.root) != carpeta {
-            continue; // de un paquete de dentro: lo planea él
+        if carpeta_del_paquete(&py, &pkg.root) != carpeta || !entra(&py) {
+            continue; // de un paquete de dentro, que lo planea él; o no se pidió
         }
         let Ok(fuente) = std::fs::read_to_string(&py) else {
             continue;
@@ -209,7 +224,11 @@ fn plan_del_paquete(pkg: &Package, carpeta: &Path, paquete: &str, p: &mut Plan) 
 
     // ── lo que sobra: generado, y su `def` ya no es un `@function` ──────────
     for (entrypoint, e) in &existentes {
-        if !vivas.contains(entrypoint) && emitir::es_generado(&e.texto) {
+        let fichero = entrypoint
+            .rsplit_once(':')
+            .map(|(r, _)| carpeta.join(r))
+            .unwrap_or_default();
+        if !vivas.contains(entrypoint) && emitir::es_generado(&e.texto) && entra(&fichero) {
             p.cambios.push(Cambio {
                 ruta: e.ruta.clone(),
                 entrypoint: entrypoint.clone(),

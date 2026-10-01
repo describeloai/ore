@@ -264,6 +264,15 @@ impl Servidor {
             }
             semilla.push(format!("{ruta}/{rel}"));
         }
+        // 0050 G2: el documento de cada `@function` de la semilla, en ESTE
+        // commit, como si se hubiera guardado el código.
+        let sembrados: Vec<&str> = semilla.iter().map(String::as_str).collect();
+        for g in crate::arbol::generar_funciones(raiz, &sembrados) {
+            let r = crate::arbol::ruta_de(raiz, &g);
+            if !semilla.contains(&r) {
+                semilla.push(r);
+            }
+        }
         // Y si se dijo el proyecto, que lo nombre — en ESTE commit.
         let mut en_proyecto = Json::Crudo("null".into());
         if let Some(p) = ore_core::manifiesto::campo(&n, "proyecto") {
@@ -447,6 +456,11 @@ impl Servidor {
                     );
                 }
                 escrito.push(format!("{ruta_r}/README.md"));
+                // 0050 G2: lo que derive del código que trae la plantilla.
+                let traidos: Vec<&str> = escrito.iter().map(String::as_str).collect();
+                for g in crate::arbol::generar_funciones(r, &traidos) {
+                    escrito.push(crate::arbol::ruta_de(r, &g));
+                }
                 Respuesta::ok(Json::obj([("ruta", Json::s(&ruta_r))]))
             },
         );

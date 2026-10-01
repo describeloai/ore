@@ -104,6 +104,10 @@ enum AccionFunciones {
         /// El plan y los diagnósticos como una línea JSON.
         #[arg(long)]
         json: bool,
+        /// Solo el código de este `.py` (repetible): lo que deriva de él y los
+        /// documentos generados que lo nombran. Es lo que hace un commit.
+        #[arg(long, value_name = "FICHERO.py")]
+        solo: Vec<PathBuf>,
     },
 }
 
@@ -1088,8 +1092,13 @@ fn main() -> std::process::ExitCode {
 
     match &cli.command {
         Command::Validate { path } => return validar(path),
-        Command::Functions(AccionFunciones::Generate { path, check, json }) => {
-            return funciones::generar(path, *check, *json);
+        Command::Functions(AccionFunciones::Generate {
+            path,
+            check,
+            json,
+            solo,
+        }) => {
+            return funciones::generar(path, *check, *json, solo);
         }
         Command::Report { path } => return informar(path),
         Command::View { path } => return vista::ver(path),

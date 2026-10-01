@@ -646,7 +646,7 @@ ANTES=$(cabeza)
 #   version sube (0037 iii.a le puso el `from ore import ...` a las cinco de
 #   Python), y una prueba que persiga el numero se pone roja por decir la
 #   verdad. Lo que importa es que el repositorio nace con LA DE HOY.
-cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==$VER and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja `transforms` resuelve a `transforms-python`), su version y el proyecto"
+cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==$VER and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja «transforms» resuelve a «transforms-python»), su version y el proyecto"
 cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/transforms/ejemplo.py']" "22 · la semilla es un ARBOL de ficheros: su entorno y su ejemplo (0036 viii.a)"
 [ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "22 · nacer entero costo mas de un commit"
 [ "$(asunto)" = 'crear un repositorio' ] || falla "22 · el asunto: $(asunto)"
@@ -760,6 +760,48 @@ grep -q "properties.documento: Media" "$TMP/r.json" || falla "24 · el 409 no di
 [ "$(pide DELETE /documentos/MediaCollection/hr/contratos)" = "200" ] || falla "24 · retirar la colección libre · $(cat "$TMP/r.json")"
 [ "$(asunto)" = 'retirar la colección `hr.contratos`' ] || falla "24 · el asunto: $(asunto)"
 dice "24 · ObjectTable se lee y no se escribe (405: lo escribe su fuente) · la colección entra en collections/ y en v1alpha16 · una entidad con Media<…> la retiene (409 con quién) · libre, 200"
+
+# ── 25 · el código es la fuente: guardar un @function escribe su documento (0050 G2) ──
+#
+# Antes de G2, la puerta rechazaba esto con OOS2013 («@function sin su
+# documento»): el cliente escribe Python y el documento lo escribe el commit.
+cat > "$TMP/riesgo.py" <<'PY'
+from ore import function
+
+
+@function
+def riesgo(importe: float, pais: str = "ES") -> str:
+    """El riesgo de un importe."""
+    return "alto" if importe > 100 else "bajo"
+PY
+[ "$(pon packages/hr/riesgo/funciones/riesgo.py "$TMP/riesgo.py")" = "201" ] || falla "25 · guardar un @function no dio 201 · $(cat "$TMP/r.json")"
+cumple "d['generados']==[{'ruta':'packages/hr/functions/riesgo.yaml','accion':'crear','entrypoint':'riesgo/funciones/riesgo.py:riesgo'}]" "25 · su documento, generado"
+cumple "not any(x.get('codigo') in ('OOS2013','OOS2043') for x in d['diagnosticos'])" "25 · y el árbol no se queja de él"
+[ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "packages/hr/functions/riesgo.yaml packages/hr/riesgo/funciones/riesgo.py " ] \
+  || falla "25 · el código y su documento, en el MISMO commit: $(git --git-dir="$FORJA" show --name-only --format='' main | tr '\n' ' ')"
+git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml | head -1 | grep -q '^# generado por ore desde riesgo/funciones/riesgo.py:riesgo' \
+  || falla "25 · el documento no lleva su procedencia: $(git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml | head -3)"
+# cambia la firma: el documento se rehace
+sed -i 's/pais: str = "ES"/minimo: int, pais: str = "ES"/' "$TMP/riesgo.py"
+[ "$(pon packages/hr/riesgo/funciones/riesgo.py "$TMP/riesgo.py")" = "200" ] || falla "25 · cambiar la firma · $(cat "$TMP/r.json")"
+cumple "[g['accion'] for g in d['generados']]==['reescribir']" "25 · reescrito"
+git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml | grep -q 'minimo: { type: Integer, required: true }' || falla "25 · el parámetro nuevo no está en el documento"
+# uno que no se deriva: 422 con el sitio en el .py, y nada escrito
+ANTES=$(cabeza)
+sed -i 's/importe: float/importe/' "$TMP/riesgo.py"
+[ "$(pon packages/hr/riesgo/funciones/riesgo.py "$TMP/riesgo.py")" = "422" ] || falla "25 · un parámetro sin anotar entró · $(cat "$TMP/r.json")"
+grep -q 'OOS2043' "$TMP/r.json" && grep -q 'riesgo.py' "$TMP/r.json" || falla "25 · el 422 no dice OOS2043 en el .py · $(cat "$TMP/r.json")"
+[ "$(cabeza)" = "$ANTES" ] || falla "25 · el 422 hizo commit"
+# en seco, el panel de Commit enseña lo que ore generaría
+[ "$(pide POST /arbol/commit '{"seco":true,"ficheros":[{"ruta":"packages/hr/riesgo/funciones/otra.py","texto":"from ore import function\n\n\n@function\ndef otra(x: int) -> int:\n    return x\n"}]}')" = "200" ] \
+  || falla "25 · el commit en seco · $(cat "$TMP/r.json")"
+cumple "any(c['ruta']=='packages/hr/functions/otra.yaml' and c['generado'] for c in d['cambios']) and any(c['ruta']=='packages/hr/riesgo/funciones/otra.py' and not c['generado'] for c in d['cambios'])" "25 · en seco: lo generado, marcado como generado"
+[ "$(cabeza)" = "$ANTES" ] || falla "25 · el seco hizo commit"
+# retirar el código se lleva su documento
+[ "$(pide DELETE /arbol/packages/hr/riesgo/funciones/riesgo.py)" = "200" ] || falla "25 · retirar el .py · $(cat "$TMP/r.json")"
+cumple "[g['accion'] for g in d['generados']]==['borrar']" "25 · su documento, fuera"
+git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml >/dev/null 2>&1 && falla "25 · el documento de un @function retirado sigue en main"
+dice "25 · el código es la fuente (0050 G2): guardar un @function escribe su documento en el MISMO commit, con su procedencia · cambiar la firma lo rehace · lo que no se deriva es 422 con OOS2043 en el .py y nada escrito · en seco, lo generado marcado · retirar el código se lleva su documento"
 
 echo
 echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action, ObjectTable, MediaCollection — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); /repositorios, la unidad de trabajo (0036 ②); el arbol acotado a un repositorio (0036 ④); escribir es un commit del sujeto que no empeora el arbol"

@@ -276,8 +276,10 @@ impl Servidor {
         if let Err(e) = std::fs::write(&p, texto) {
             return Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}"));
         }
+        let generados = generar_funciones(raiz, &[ruta]);
         // ── compilar antes de empujar: ¿empeora? ────────────────────────────
         if let Err(mut r) = self.empeora(raiz, &antes, &format!("`{ruta}`")) {
+            deshacer(&generados);
             match &existente {
                 Some(t) => {
                     let _ = std::fs::write(&p, t);
@@ -309,6 +311,7 @@ impl Servidor {
                 "diagnosticos",
                 Json::Arr(despues.iter().map(con_posicion).collect()),
             ),
+            ("generados", generados_json(raiz, &generados)),
         ]);
         if existente.is_none() {
             Respuesta::creado(ficha)
@@ -353,7 +356,9 @@ impl Servidor {
         if let Err(e) = std::fs::remove_file(&p) {
             return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
         }
+        let generados = generar_funciones(raiz, &[ruta]);
         if let Err(mut r) = self.empeora(raiz, &antes, &format!("retirar `{ruta}`")) {
+            deshacer(&generados);
             let _ = std::fs::write(&p, &texto);
             if let Json::Obj(m) = &mut r.cuerpo
                 && let Some(Json::Arr(ds)) = m.get("diagnosticos").cloned()
@@ -368,6 +373,7 @@ impl Servidor {
         Respuesta::ok(Json::obj([
             ("ruta", Json::s(relativo(raiz, &p))),
             ("retirado", Json::Bool(true)),
+            ("generados", generados_json(raiz, &generados)),
         ]))
     }
 
@@ -402,7 +408,9 @@ impl Servidor {
         if let Err(e) = std::fs::remove_dir_all(dir) {
             return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
         }
+        let generados = generar_de(raiz, pys_de(raiz, &dentro));
         if let Err(mut r) = self.empeora(raiz, &antes, &format!("retirar `{ruta}/`")) {
+            deshacer(&generados);
             for (f, bytes) in &dentro {
                 if let Some(padre) = f.parent() {
                     let _ = std::fs::create_dir_all(padre);
@@ -427,6 +435,7 @@ impl Servidor {
                 "ficheros",
                 Json::Arr(ficheros.iter().map(Json::s).collect()),
             ),
+            ("generados", generados_json(raiz, &generados)),
         ]))
     }
 
@@ -562,6 +571,13 @@ impl Servidor {
                 return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
             }
         }
+        // 0050 G2: el documento de cada `@function` de lo tocado, con lo demás.
+        let generados = generar_funciones(raiz, &tocadas);
+        let rutas_generadas: Vec<String> = generados
+            .iter()
+            .map(|g| relativo(raiz, &g.ruta))
+            .filter(|r| !tocadas.contains(&r.as_str()))
+            .collect();
         // `git add -A` y el índice dicen QUÉ cambió y CUÁNTO. Sin git (un
         // directorio sin historia) no hay estados: los ficheros salen con `?`.
         let _ = git(raiz, &["add", "-A"]);
@@ -596,11 +612,16 @@ impl Servidor {
             .iter()
             .map(|(_, ruta, _)| ruta.clone())
             .chain(retirar.iter().map(|(_, ruta)| ruta.clone()))
+            .chain(rutas_generadas.iter().cloned())
             .map(|ruta| {
                 let estado = estados.get(&ruta).cloned().unwrap_or_default();
                 let (mas, menos) = lineas.get(&ruta).copied().unwrap_or((0, 0));
+                // Lo que escribió `ore` y no la persona (0050 G2): la consola
+                // lo enseña como generado.
+                let generado = rutas_generadas.contains(&ruta);
                 Json::obj([
                     ("ruta", Json::s(&ruta)),
+                    ("generado", Json::Bool(generado)),
                     // `A` nuevo, `M` cambiado, `D` retirado, `` igual que estaba
                     (
                         "estado",
@@ -664,6 +685,7 @@ impl Servidor {
             ("mensaje", Json::s(mensaje.clone().unwrap_or_default())),
             ("forzado", Json::Bool(nuevos > 0)),
             ("nuevos", Json::Int(nuevos as i64)),
+            ("generados", generados_json(raiz, &generados)),
         ]);
         if seco {
             // Lo escrito se queda en el clon, que se tira: `leyendo` no publica.
@@ -785,6 +807,116 @@ pub(crate) fn intencion_del_commit(cuerpo: &str) -> (bool, String) {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     (seco || mensaje.is_empty(), mensaje)
+}
+
+// ── 0050 G2 · el documento de cada `@function`, en el mismo commit ──────────
+
+/// Un documento que el commit escribió por su cuenta, y lo que había antes:
+/// si la puerta rechaza el commit, se deja como estaba.
+pub(crate) struct Generado {
+    ruta: PathBuf,
+    accion: &'static str,
+    entrypoint: String,
+    antes: Option<Vec<u8>>,
+}
+
+/// **El código es la fuente** (0050): si un commit toca un `.py`, el documento
+/// `Function` de cada `@function` de esos ficheros entra en el MISMO commit —
+/// creado, al día o fuera si el `@function` se fue—, como lo escribiría `ore
+/// functions generate`. Sin esto, guardar un `@function` desde la consola
+/// era un 422 de la puerta (`OOS2013`: sin su documento).
+///
+/// Solo lo que el commit toca (`plan_de` con `solo`): lo que la rama no tocó
+/// se lee al día con `main` (0044 C.2 ③) y no es de este commit. Se planea en
+/// proceso —el plan es una función pura de `ore-core`— para poder deshacerlo.
+/// Lo que no se deriva no se escribe: su `OOS2043` lo dice la puerta.
+pub(crate) fn generar_funciones(raiz: &Path, tocadas: &[&str]) -> Vec<Generado> {
+    let solo: std::collections::BTreeSet<PathBuf> = tocadas
+        .iter()
+        .filter(|r| r.ends_with(".py"))
+        .map(|r| raiz.join(r.trim_matches('/')))
+        .collect();
+    generar_de(raiz, solo)
+}
+
+fn generar_de(raiz: &Path, solo: std::collections::BTreeSet<PathBuf>) -> Vec<Generado> {
+    if solo.is_empty() {
+        return Vec::new();
+    }
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    let plan = ore_core::generar::plan_de(&pkg, Some(&solo));
+    let generados: Vec<Generado> = plan
+        .cambios
+        .iter()
+        .map(|c| Generado {
+            ruta: c.ruta.clone(),
+            accion: match c.accion {
+                ore_core::generar::Accion::Crear(_) => "crear",
+                ore_core::generar::Accion::Reescribir { .. } => "reescribir",
+                ore_core::generar::Accion::Borrar => "borrar",
+            },
+            entrypoint: c.entrypoint.clone(),
+            antes: std::fs::read(&c.ruta).ok(),
+        })
+        .collect();
+    if ore_core::generar::aplicar(&plan).is_err() {
+        deshacer(&generados);
+        return Vec::new();
+    }
+    generados
+}
+
+/// Lo generado, como estaba.
+pub(crate) fn deshacer(generados: &[Generado]) {
+    for g in generados {
+        match &g.antes {
+            Some(b) => {
+                if let Some(d) = g.ruta.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                let _ = std::fs::write(&g.ruta, b);
+            }
+            None => {
+                let _ = std::fs::remove_file(&g.ruta);
+            }
+        }
+    }
+}
+
+/// La ruta de un documento generado, desde la raíz del árbol.
+pub(crate) fn ruta_de(raiz: &Path, g: &Generado) -> String {
+    relativo(raiz, &g.ruta)
+}
+
+/// Lo generado, para la respuesta: `{ruta, accion, entrypoint}`.
+pub(crate) fn generados_json(raiz: &Path, generados: &[Generado]) -> Json {
+    Json::Arr(
+        generados
+            .iter()
+            .map(|g| {
+                Json::obj([
+                    ("ruta", Json::s(relativo(raiz, &g.ruta))),
+                    ("accion", Json::s(g.accion)),
+                    ("entrypoint", Json::s(&g.entrypoint)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// Los `.py` que había dentro de una carpeta que se retira.
+fn pys_de(raiz: &Path, dentro: &[(PathBuf, Vec<u8>)]) -> std::collections::BTreeSet<PathBuf> {
+    dentro
+        .iter()
+        .filter(|(f, _)| f.extension().is_some_and(|x| x == "py"))
+        .map(|(f, _)| {
+            if f.is_absolute() {
+                f.clone()
+            } else {
+                raiz.join(f)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
