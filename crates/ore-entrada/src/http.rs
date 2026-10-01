@@ -61,6 +61,12 @@ use std::time::Duration;
 /// cola de decisiones son kilobytes; un megabyte ya es holgura.
 pub const CUERPO_MAXIMO: usize = 1 << 20;
 
+/// **Una subida** (0049 B4b·1): el cuerpo que una ruta pide en flujo
+/// ([`servir_con_subidas`]) no pasa por [`CUERPO_MAXIMO`] ni se guarda en
+/// memoria; su techo es éste —el de una sola subida de S3— y lo comprueba el
+/// `content-length` antes de leer un byte.
+pub const SUBIDA_MAXIMA: u64 = 5 << 30;
+
 /// Cuántas conexiones se atienden a la vez. Cada una es un hilo.
 const CONEXIONES: usize = 64;
 
@@ -339,6 +345,7 @@ fn texto(codigo: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
+        411 => "Length Required",
         412 => "Precondition Failed",
         413 => "Payload Too Large",
         416 => "Range Not Satisfiable",
@@ -365,6 +372,29 @@ pub fn servir_con_flujos<F>(escucha: TcpListener, manejador: F) -> std::io::Resu
 where
     F: Fn(&Peticion) -> Salida + Send + Sync + 'static,
 {
+    servir_con_subidas(escucha, |_| false, move |p, _| manejador(p))
+}
+
+/// **El cuerpo, en flujo** (0049 B4b·1): lo que `PUT` sube a una colección.
+///
+/// Para la petición que `en_flujo` acepta —mirando sólo la cabeza: método,
+/// ruta, consulta, cabeceras—, el cuerpo **no se lee**: el manejador recibe
+/// un lector acotado a su `content-length`, y lee lo que quiera, al paso
+/// (`ore-medios` hashea y sube mientras llega). Sin `content-length` es `411`
+/// (troceado no: lo que se sube tiene que decir cuánto es antes de empezar, y
+/// el techo se comprueba ahí); por encima de [`SUBIDA_MAXIMA`], `413`. Las
+/// demás peticiones, como siempre: el cuerpo en `cuerpo`, el manejador con
+/// `None`.
+pub fn servir_con_subidas<A, F>(
+    escucha: TcpListener,
+    en_flujo: A,
+    manejador: F,
+) -> std::io::Result<()>
+where
+    A: Fn(&Peticion) -> bool + Send + Sync + 'static,
+    F: Fn(&Peticion, Option<&mut Subida>) -> Salida + Send + Sync + 'static,
+{
+    let en_flujo = Arc::new(en_flujo);
     let manejador = Arc::new(manejador);
     let vivas = Arc::new(AtomicUsize::new(0));
     let abiertos = Arc::new(AtomicUsize::new(0));
@@ -387,6 +417,7 @@ where
 
         vivas.fetch_add(1, Ordering::Relaxed);
         let manejador = Arc::clone(&manejador);
+        let en_flujo = Arc::clone(&en_flujo);
         let vivas_hilo = Arc::clone(&vivas);
         let abiertos_hilo = Arc::clone(&abiertos);
         let _ = std::thread::Builder::new()
@@ -409,7 +440,13 @@ where
                 //   del repositorio: lo que hay que deshacer pase lo que pase se
                 //   deshace en `Drop`, no en la última línea del camino feliz.
                 let plaza = Viva(vivas_hilo);
-                atender(flujo, manejador.as_ref(), plaza, abiertos_hilo);
+                atender(
+                    flujo,
+                    en_flujo.as_ref(),
+                    manejador.as_ref(),
+                    plaza,
+                    abiertos_hilo,
+                );
             });
     }
     Ok(())
@@ -424,12 +461,34 @@ impl Drop for Viva {
     }
 }
 
-fn atender<F>(mut flujo: TcpStream, manejador: &F, plaza: Viva, abiertos: Arc<AtomicUsize>)
-where
-    F: Fn(&Peticion) -> Salida,
+fn atender<A, F>(
+    mut flujo: TcpStream,
+    en_flujo: &A,
+    manejador: &F,
+    plaza: Viva,
+    abiertos: Arc<AtomicUsize>,
+) where
+    A: Fn(&Peticion) -> bool,
+    F: Fn(&Peticion, Option<&mut Subida>) -> Salida,
 {
-    let salida = match leer(&mut flujo) {
-        Ok(p) => manejador(&p),
+    let salida = match leer_cabeza(&mut flujo) {
+        Ok((p, lector, largo)) if en_flujo(&p) => match subida(lector, largo) {
+            Ok(mut s) => {
+                let salida = manejador(&p, Some(&mut s));
+                // Lo que el manejador no leyó se descarta: quien sube espera
+                // la respuesta después de mandarlo todo, y cerrar con bytes sin
+                // leer le da un reset en vez de la respuesta.
+                if s.queda > 0 && s.queda < CUERPO_MAXIMO as u64 {
+                    let _ = std::io::copy(&mut s, &mut std::io::sink());
+                }
+                salida
+            }
+            Err(r) => Salida::Una(r),
+        },
+        Ok((p, lector, largo)) => match cuerpo(p, lector, largo) {
+            Ok(p) => manejador(&p, None),
+            Err(r) => Salida::Una(r),
+        },
         Err(r) => Salida::Una(r),
     };
     match salida {
@@ -546,7 +605,73 @@ fn emitir_bytes(flujo: &mut TcpStream, mut b: Bytes) {
     let _ = flujo.flush();
 }
 
-fn leer(flujo: &mut TcpStream) -> Result<Peticion, Respuesta> {
+/// **El cuerpo de una subida**, leído al paso: nunca más de su
+/// `content-length`, y lo que queda, contado.
+pub struct Subida {
+    lector: BufReader<TcpStream>,
+    /// Lo que falta por llegar.
+    pub queda: u64,
+    /// Lo que dijo `content-length`.
+    pub largo: u64,
+}
+
+impl Read for Subida {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.queda == 0 {
+            return Ok(0);
+        }
+        let tope = buf.len().min(self.queda.min(usize::MAX as u64) as usize);
+        let n = self.lector.read(&mut buf[..tope])?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "la subida no llegó entera",
+            ));
+        }
+        self.queda -= n as u64;
+        Ok(n)
+    }
+}
+
+fn subida(lector: BufReader<TcpStream>, largo: Option<u64>) -> Result<Subida, Respuesta> {
+    let Some(largo) = largo else {
+        return Err(Respuesta::error(411, "una subida dice su `content-length`"));
+    };
+    if largo > SUBIDA_MAXIMA {
+        return Err(Respuesta::error(413, "la subida excede el máximo"));
+    }
+    Ok(Subida {
+        lector,
+        queda: largo,
+        largo,
+    })
+}
+
+/// El cuerpo de una petición que no es una subida: entero, en memoria, acotado.
+fn cuerpo(
+    mut p: Peticion,
+    mut lector: BufReader<TcpStream>,
+    largo: Option<u64>,
+) -> Result<Peticion, Respuesta> {
+    let largo = largo.unwrap_or(0);
+    if largo > CUERPO_MAXIMO as u64 {
+        return Err(Respuesta::error(413, "el cuerpo excede el máximo"));
+    }
+    let mut bruto = vec![0u8; largo as usize];
+    if largo > 0 {
+        lector
+            .read_exact(&mut bruto)
+            .map_err(|_| Respuesta::error(400, "el cuerpo no llegó entero"))?;
+    }
+    p.cuerpo =
+        String::from_utf8(bruto).map_err(|_| Respuesta::error(400, "el cuerpo no es UTF-8"))?;
+    Ok(p)
+}
+
+/// La línea de la petición y sus cabeceras; el cuerpo, sin leer, en `lector`.
+fn leer_cabeza(
+    flujo: &mut TcpStream,
+) -> Result<(Peticion, BufReader<TcpStream>, Option<u64>), Respuesta> {
     let mut lector = BufReader::new(
         flujo
             .try_clone()
@@ -597,30 +722,19 @@ fn leer(flujo: &mut TcpStream) -> Result<Peticion, Respuesta> {
         }
     }
 
-    let largo: usize = cabeceras
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if largo > CUERPO_MAXIMO {
-        return Err(Respuesta::error(413, "el cuerpo excede el máximo"));
-    }
+    let largo: Option<u64> = cabeceras.get("content-length").and_then(|v| v.parse().ok());
 
-    let mut bruto = vec![0u8; largo];
-    if largo > 0 {
-        lector
-            .read_exact(&mut bruto)
-            .map_err(|_| Respuesta::error(400, "el cuerpo no llegó entero"))?;
-    }
-    let cuerpo =
-        String::from_utf8(bruto).map_err(|_| Respuesta::error(400, "el cuerpo no es UTF-8"))?;
-
-    Ok(Peticion {
-        metodo,
-        ruta,
-        cabeceras,
-        cuerpo,
-        consulta,
-    })
+    Ok((
+        Peticion {
+            metodo,
+            ruta,
+            cabeceras,
+            cuerpo: String::new(),
+            consulta,
+        },
+        lector,
+        largo,
+    ))
 }
 
 fn responder(flujo: &mut TcpStream, r: &Respuesta) {
@@ -1061,5 +1175,64 @@ mod pruebas_del_flujo {
         let t = pedir_crudo(puerto, "/troceado");
         assert!(t.contains("transfer-encoding: chunked"), "{t}");
         assert_eq!(destrocear(t.split_once("\r\n\r\n").unwrap().1), "%PDF");
+    }
+
+    /// 0049 B4b·1: una subida llega en flujo —binaria, más grande que
+    /// `CUERPO_MAXIMO`— y se cuenta al paso; sin `content-length`, 411; por
+    /// encima del techo, 413 sin leer nada; lo demás, como siempre.
+    #[test]
+    fn una_subida_se_lee_al_paso_y_dice_su_largo() {
+        use std::net::TcpStream;
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _ = servir_con_subidas(
+                escucha,
+                |p| p.metodo == "PUT",
+                |p, s| {
+                    let dicho = match s {
+                        Some(s) => {
+                            let largo = s.largo;
+                            let (mut n, mut suma) = (0u64, 0u64);
+                            let mut buf = [0u8; 65536];
+                            loop {
+                                let k = s.read(&mut buf).unwrap();
+                                if k == 0 {
+                                    break;
+                                }
+                                n += k as u64;
+                                suma += buf[..k].iter().map(|b| *b as u64).sum::<u64>();
+                            }
+                            format!("subida {largo} {n} {suma}")
+                        }
+                        None => format!("cuerpo {}", p.cuerpo),
+                    };
+                    Salida::Una(Respuesta::ok(Json::s(dicho)))
+                },
+            );
+        });
+        let pedir = |cabeza: String, cuerpo: &[u8]| {
+            let mut c = TcpStream::connect(("127.0.0.1", puerto)).unwrap();
+            c.write_all(cabeza.as_bytes()).unwrap();
+            let _ = c.write_all(cuerpo);
+            let mut t = String::new();
+            let _ = c.read_to_string(&mut t);
+            t
+        };
+        let cabeza = |metodo: &str, largo: Option<u64>| match largo {
+            Some(n) => format!("{metodo} /x HTTP/1.1\r\ncontent-length: {n}\r\n\r\n"),
+            None => format!("{metodo} /x HTTP/1.1\r\n\r\n"),
+        };
+        let grande: Vec<u8> = (0..(3 << 20)).map(|i| (i % 251) as u8 | 0x80).collect();
+        let suma: u64 = grande.iter().map(|b| *b as u64).sum();
+        let n = grande.len() as u64;
+        let t = pedir(cabeza("PUT", Some(n)), &grande);
+        assert!(t.ends_with(&format!("\"subida {n} {n} {suma}\"")), "{t}");
+        let t = pedir(cabeza("PUT", None), b"");
+        assert!(t.starts_with("HTTP/1.1 411 Length Required"), "{t}");
+        let t = pedir(cabeza("PUT", Some(SUBIDA_MAXIMA + 1)), b"");
+        assert!(t.starts_with("HTTP/1.1 413"), "{t}");
+        let t = pedir(cabeza("POST", Some(4)), b"hola");
+        assert!(t.ends_with("\"cuerpo hola\""), "{t}");
     }
 }

@@ -129,6 +129,22 @@ POST /media/{b}/{s}/{c}/transactions/{t}/commit | /abort
 - El ítem existe cuando la transacción se confirma; un `abort` no deja nada.
 - Una transacción no tiene tope de ítems (0049, D5: sin el de 10 000 de Foundry); se confirma
   entera o no.
+- **Cómo lo hace la celda** (0049 B4b·1, `crates/ore-medios/src/escritura.rs`). `ore-medios` es
+  el único que escribe en el lago; el puesto no recibe ninguna credencial suya:
+  - abrir da una transacción y un **permiso de subida** (como el de leer: opaco, en memoria, vive
+    lo que la transacción, una hora como mucho —menos que la gracia de la recogida de blobs—);
+  - los bytes van del puesto a `ore-medios:8098/subida?permiso=…&path=…` en flujo
+    (`Content-Length` obligatorio, hasta 5 GiB): el `sha256` y el `crc32c` al paso, lo grande a
+    disco, el blob por su digest; si ya estaba, se toca y no se sube. Un `Repr-Digest` que no casa
+    es `media/digest-no-casa` y no deja nada;
+  - el tipo que se sirve es **el de los bytes** (`content_type_detected`); el declarado vale
+    sólo si los bytes no dicen nada;
+  - confirmar sella el manifiesto —la tabla de una mantenida: `clave` = camino, `version` = el
+    `sha256`— **sobre la base que nombra el puntero en ese momento**: escribir un camino con otro
+    contenido retira su fila actual; con el mismo, no cambia nada (`cambios: {entran, cambian,
+    iguales}`). El puntero lo escribe `ore-serve`;
+  - una transacción que no está abierta, o es de otra colección, es `media/transaccion` (404 o
+    409).
 
 ### `verify` · recalcular
 
@@ -156,6 +172,7 @@ en su valor de error:
 | `media/corrupto` | 502 | los bytes no casan con `size` o `digest` |
 | `media/no-escribible` | 409 | `put` en una colección que no es escrita |
 | `media/digest-no-casa` | 422 | el `Repr-Digest` que trajo un `put` no es el de sus bytes |
+| `media/transaccion` | 404 / 409 | la transacción de un `put` no está abierta (caducó, se cerró, un reinicio) o es de otra colección |
 | `media/origen` | 502 | el origen falló (con su código dentro) |
 | `media/limite` | 413 / 429 | un tope o un ritmo; con `Retry-After` |
 

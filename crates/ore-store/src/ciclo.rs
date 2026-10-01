@@ -321,7 +321,10 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
 /// La cabecera —plan, esquema, testigo, clave, conducto— va como propiedades
 /// del snapshot, y `leer` la devuelve tal cual: el dataset es autodescriptivo
 /// como lo era el sobre.
-fn sellar<'a>(
+///
+/// Público para `ore-medios` (0049 B4b·1): una colección **escrita** se sella
+/// en su proceso, con el mismo manifiesto que una mantenida.
+pub fn sellar<'a>(
     lago: &Lago,
     cab: &sobre::Cabecera,
     dataset: &str,

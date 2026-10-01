@@ -45,9 +45,40 @@ pub trait Listados: Send + Sync {
         dataset: &str,
         metadata_location: &str,
     ) -> Result<Vec<arrow_array::RecordBatch>, String>;
+
+    /// **Sella un manifiesto** (B4b·1): las filas, sobre `base` si la hay
+    /// (fundidas por la clave de la cabecera). Lo que `ore-store sellar` dice,
+    /// una línea de JSON. Por defecto, este lago no escribe.
+    fn sellar(
+        &self,
+        cabecera: &ore_store::sobre::Cabecera,
+        dataset: &str,
+        base: Option<&str>,
+        filas: &[String],
+    ) -> Result<String, String> {
+        let _ = (cabecera, dataset, base, filas);
+        Err("este lago no escribe".into())
+    }
 }
 
 impl Listados for Lago {
+    fn sellar(
+        &self,
+        cabecera: &ore_store::sobre::Cabecera,
+        dataset: &str,
+        base: Option<&str>,
+        filas: &[String],
+    ) -> Result<String, String> {
+        ore_store::ciclo::sellar(
+            self,
+            cabecera,
+            dataset,
+            base,
+            base.is_some(),
+            filas.iter().map(String::as_str),
+        )
+    }
+
     fn lotes(
         &self,
         dataset: &str,
@@ -66,6 +97,8 @@ pub struct Servicio {
     pub vistos: Arc<crate::contenido::Vistos>,
     /// Los permisos vivos de leer un ítem (B3·2).
     pub permisos: Permisos,
+    /// Las transacciones abiertas de las colecciones escritas (B4b·1).
+    pub escrituras: crate::escritura::Escrituras,
 }
 
 /// Un error del contrato (RFC 9457).
@@ -84,6 +117,8 @@ fn problema_json(status: u16, tipo: &str, detalle: impl Into<String>) -> Json {
         "media/cambiado" => "La versión fijada cambió",
         "media/permiso" => "Sin permiso válido",
         "media/rango" => "El rango no cabe",
+        "media/transaccion" => "La transacción no está abierta",
+        "media/digest-no-casa" => "El digest no es el de los bytes",
         _ => "Petición no válida",
     };
     Json::obj([
@@ -95,11 +130,11 @@ fn problema_json(status: u16, tipo: &str, detalle: impl Into<String>) -> Json {
 }
 
 /// Lo común de las tres: la colección y su transacción.
-struct Pedido<'a> {
-    coleccion: &'a str,
-    virtual_: bool,
-    metadata_location: &'a str,
-    transaccion: &'a str,
+pub(crate) struct Pedido<'a> {
+    pub coleccion: &'a str,
+    pub virtual_: bool,
+    pub metadata_location: &'a str,
+    pub transaccion: &'a str,
 }
 
 fn texto<'a>(n: &'a Node, k: &str) -> Option<&'a str> {
@@ -150,6 +185,22 @@ impl Servicio {
     /// índice, la firma, los permisos— confía en quien llama porque sólo llama
     /// `ore-serve`, y por eso vive en el otro puerto, al que el puesto no llega
     /// (la red lo impone; esto, además, lo dice).
+    /// El puerto del puesto, con la subida (B4b·1): `PUT /subida` recibe el
+    /// cuerpo en flujo; lo demás, [`Servicio::atender_contenido`].
+    pub fn atender_del_puesto(
+        &self,
+        p: &Peticion,
+        subida: Option<&mut ore_entrada::http::Subida>,
+    ) -> Salida {
+        match subida {
+            Some(s) if es_subida(p) => {
+                let largo = s.largo;
+                Salida::Una(self.subir(p, s, largo))
+            }
+            _ => self.atender_contenido(p),
+        }
+    }
+
     pub fn atender_contenido(&self, p: &Peticion) -> Salida {
         if p.metodo == "GET" && p.ruta == "/contenido" {
             return self.atender_flujo(p);
@@ -188,7 +239,22 @@ impl Servicio {
             ("GET", "/salud") => Respuesta::ok(Json::obj([
                 ("indices", Json::Int(self.indices.cuantos() as i64)),
                 ("permisos", Json::Int(self.permisos.cuantos() as i64)),
+                ("transacciones", Json::Int(self.escrituras.cuantas() as i64)),
             ])),
+            (
+                "POST",
+                ruta @ ("/escritura/abrir" | "/escritura/confirmar" | "/escritura/abortar"),
+            ) => {
+                let n = match ore_core::parse::parse(&p.cuerpo) {
+                    Ok(n) => n,
+                    Err(_) => return problema(400, "media/peticion", "el cuerpo no es JSON"),
+                };
+                match ruta {
+                    "/escritura/abrir" => self.escritura_abrir(&n),
+                    "/escritura/confirmar" => self.escritura_confirmar(&n),
+                    _ => self.escritura_abortar(&n),
+                }
+            }
             (
                 "POST",
                 ruta @ ("/indice/items" | "/indice/item" | "/indice/urls" | "/indice/abrir"),
@@ -220,7 +286,7 @@ impl Servicio {
         }
     }
 
-    fn indice(&self, p: &Pedido<'_>) -> Result<Arc<Indice>, String> {
+    pub(crate) fn indice(&self, p: &Pedido<'_>) -> Result<Arc<Indice>, String> {
         let dataset = format!("colecciones/{}", p.coleccion.replace('.', "/"));
         self.indices.obtener(p.metadata_location, || {
             let lotes = self.listados.lotes(&dataset, p.metadata_location)?;
@@ -526,6 +592,11 @@ impl Servicio {
 
 /// Un ETag va entre comillas (RFC 9110 §8.8.3); el manifiesto puede no
 /// guardarlas.
+/// Lo que el puerto del puesto recibe en flujo: `PUT /subida` (B4b·1).
+pub fn es_subida(p: &Peticion) -> bool {
+    p.metodo == "PUT" && p.ruta == "/subida"
+}
+
 fn entre_comillas(e: &str) -> String {
     if e.starts_with('"') || e.starts_with("W/") {
         e.to_string()
@@ -576,6 +647,7 @@ mod pruebas {
                 indices: Indices::new_para_pruebas(),
                 vistos: Arc::default(),
                 permisos: Permisos::default(),
+                escrituras: Default::default(),
             },
             n,
         )
