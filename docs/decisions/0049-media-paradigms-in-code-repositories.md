@@ -321,8 +321,18 @@ conformidad** que cualquier superficie tiene que pasar. No se parchea el camino 
 | **B2 · servir** ✅ | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
 | **B3 · la puerta de lectura** (en curso) | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
 | **B4 · la entrada** | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
+| **B4b · la colección escrita** | crear colecciones nuevas **desde la instancia**, en SQL (`create media collection …`) y en Python (`ore.crear_coleccion(…)`), y llenarlas: `put` con transacciones (`docs/media.md` §2), el `sha256` al paso, el tipo por los bytes, el linaje en el puntero | D4, D6 |
 | **B5 · la derivación** | el registro por clave, `aplicar()`, `reintentar_errores`, la tabla anclada | D5 |
 | **B6 · el relevo** | la suite pasa en vivo; la base entra como pieza y `media`/`medias` pasan a ser azúcar sobre ella | — |
+
+**B4b, por qué aparte** (anotado el 2026-10-01): el kind ya existe —`MediaCollection` de
+v1alpha16 tiene dos formas, la **mantenida** (`from`, la llena el sistema desde un `ObjectTable`,
+y con `virtual` sirve del origen) y la **escrita** (sin `from`, la llena código)—, y la consola ya
+crea mantenidas y virtuales. Lo que falta es la escrita **desde código**: declararla en el árbol
+desde una celda (como `crear_dataset` y `crear_vista` declaran hoy su documento por Forge) y
+escribir sus ítems, que es la mitad de lo que hace falta para que una derivación deje media
+(páginas como imagen, recortes, audio troceado) y no sólo tablas. Era E10 de 0046 («crear una
+colección desde SQL y código») y entra aquí, detrás de B4.
 
 Después, sobre la base: las operaciones por tipo de medio, `estimar()`, SQL, el bucle de
 evaluación y, cuando se decida, D7 con GPU. JVM y Node, al final.
