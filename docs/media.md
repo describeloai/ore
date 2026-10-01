@@ -75,7 +75,8 @@ Range: bytes=0-1023            (opcional)
   esa versión, o tiene con otro ETag, es `media/cambiado`.
 - **La celda dice dónde, no pasa los bytes** (0049 B3·3): `content` contesta `307`. De una
   mantenida, a la URL firmada de su blob en el lago; de una virtual, a
-  `ore-medios/contenido?permiso=…`, un permiso opaco que vale para ese ítem en esa versión
+  `ore-medios:8098/contenido?permiso=…` —el puerto del puesto, que sólo sirve eso; el índice, la
+  firma y los permisos están en el 8097, sólo para ore-serve—, un permiso opaco que vale para ese ítem en esa versión
   (todos sus rangos) durante `ttl_s` —5 min, nunca más de lo que le queda a la credencial de
   la fuente—. Quien no sigue redirecciones (el SDK) lee `url` del cuerpo; caducada, pide otra
   con la misma `version`. **No se reenvía el token de ORE** a esa URL: no lo necesita.

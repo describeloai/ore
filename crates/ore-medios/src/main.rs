@@ -1,5 +1,7 @@
 //! `ore-medios`: escucha en `ORE_MEDIOS_PUERTO` (8097) y sirve el índice y las
-//! URLs de las colecciones de la celda (ver `lib.rs`). El lago es el de
+//! URLs de las colecciones de la celda (ver `lib.rs`) a `ore-serve`; y en
+//! `ORE_MEDIOS_PUERTO_CONTENIDO` (8098) sólo `GET /contenido`, que es lo único
+//! a lo que llega el puesto (0049 B3·4). El lago es el de
 //! `ORE_STORE` (`gcs` o `r2`), como en `ore-store`.
 
 use ore_medios::indice::Indices;
@@ -24,6 +26,8 @@ fn main() -> std::process::ExitCode {
         },
     };
     let puerto = std::env::var("ORE_MEDIOS_PUERTO").unwrap_or_else(|_| "8097".into());
+    let puerto_contenido =
+        std::env::var("ORE_MEDIOS_PUERTO_CONTENIDO").unwrap_or_else(|_| "8098".into());
     let filas = std::env::var("ORE_MEDIOS_FILAS")
         .ok()
         .and_then(|f| f.parse().ok())
@@ -39,7 +43,24 @@ fn main() -> std::process::ExitCode {
         Ok(e) => e,
         Err(e) => return fallo(&format!("no se pudo escuchar en {puerto}: {e}")),
     };
-    eprintln!("ore-medios · escucha en {puerto} · hasta {filas} filas de índice");
+    // El puerto del puesto: sólo los bytes, con permiso (B3·4).
+    let escucha_contenido = match std::net::TcpListener::bind(format!("0.0.0.0:{puerto_contenido}"))
+    {
+        Ok(e) => e,
+        Err(e) => return fallo(&format!("no se pudo escuchar en {puerto_contenido}: {e}")),
+    };
+    let del_puesto = servicio.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = ore_entrada::http::servir_con_flujos(escucha_contenido, move |p| {
+            del_puesto.atender_contenido(p)
+        }) {
+            eprintln!("error: el puerto del contenido se cayó: {e}");
+            std::process::exit(1);
+        }
+    });
+    eprintln!(
+        "ore-medios · escucha en {puerto} (ore-serve) y {puerto_contenido} (el puesto) · hasta {filas} filas de índice"
+    );
     match ore_entrada::http::servir_con_flujos(escucha, move |p| servicio.atender_flujo(p)) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => fallo(&e.to_string()),

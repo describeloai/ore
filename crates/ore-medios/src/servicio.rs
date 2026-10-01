@@ -146,6 +146,24 @@ impl Servicio {
         Salida::Una(self.atender(p))
     }
 
+    /// **El puerto del puesto** (B3·4): sólo `GET /contenido`. Lo demás —el
+    /// índice, la firma, los permisos— confía en quien llama porque sólo llama
+    /// `ore-serve`, y por eso vive en el otro puerto, al que el puesto no llega
+    /// (la red lo impone; esto, además, lo dice).
+    pub fn atender_contenido(&self, p: &Peticion) -> Salida {
+        if p.metodo == "GET" && p.ruta == "/contenido" {
+            return self.atender_flujo(p);
+        }
+        Salida::Una(problema(
+            404,
+            "media/no-existe",
+            format!(
+                "{} {} no es una ruta de este puerto: sólo GET /contenido",
+                p.metodo, p.ruta
+            ),
+        ))
+    }
+
     /// `GET /contenido?permiso=…` (con `Range`, si se quiere).
     fn contenido(&self, p: &Peticion) -> Result<ore_entrada::http::Bytes, Respuesta> {
         let sin = || {
@@ -708,6 +726,42 @@ mod pruebas {
             "{b}"
         );
         assert!(!b.contains("permiso"), "{b}");
+    }
+
+    /// El puerto del puesto no sirve más que `/contenido`: ni el índice, ni la
+    /// firma, ni los permisos.
+    #[test]
+    fn el_puerto_del_puesto_solo_sirve_contenido() {
+        let (s, _) = servicio();
+        for (m, r) in [
+            ("POST", "/indice/items"),
+            ("POST", "/indice/urls"),
+            ("POST", "/indice/abrir"),
+            ("GET", "/salud"),
+        ] {
+            let salida = s.atender_contenido(&Peticion {
+                metodo: m.into(),
+                ruta: r.into(),
+                cabeceras: BTreeMap::new(),
+                cuerpo: format!("{{{BASE},\"path\":\"docs/a.pdf\"}}"),
+                consulta: BTreeMap::new(),
+            });
+            match salida {
+                Salida::Una(x) => assert_eq!(x.codigo, 404, "{m} {r}"),
+                _ => panic!("{m} {r} no debía servir nada"),
+            }
+        }
+        let salida = s.atender_contenido(&Peticion {
+            metodo: "GET".into(),
+            ruta: "/contenido".into(),
+            cabeceras: BTreeMap::new(),
+            cuerpo: String::new(),
+            consulta: BTreeMap::new(),
+        });
+        match salida {
+            Salida::Una(x) => assert_eq!(x.codigo, 401, "sin permiso"),
+            _ => panic!("sin permiso no hay bytes"),
+        }
     }
 
     /// Una virtual sin la credencial de su fuente no se abre.

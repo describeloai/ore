@@ -424,6 +424,19 @@ impl Servidor {
 /// `content`: `307`, y en el cuerpo `url` —la del lago tal cual, o la de
 /// `ore-medios` con el permiso— más lo que vino (`version`, `item`…), sin
 /// reanalizarlo (`de_node` volvería `null` la cadena `"null"`).
+/// Dónde lee el puesto los bytes (B3·4): `ORE_MEDIOS_CONTENIDO` si se dice; si
+/// no, el host de `ORE_MEDIOS_DIRECCION` en el puerto 8098, el único de
+/// `ore-medios` al que la red deja llegar al puesto.
+fn direccion_del_contenido(direccion: &str) -> String {
+    if let Ok(d) = std::env::var("ORE_MEDIOS_CONTENIDO")
+        && !d.trim().is_empty()
+    {
+        return d.trim().to_string();
+    }
+    let host = direccion.rsplit_once(':').map_or(direccion, |(h, _)| h);
+    format!("{host}:8098")
+}
+
 fn a_donde(direccion: &str, texto: &str) -> Respuesta {
     let Ok(n) = ore_core::parse::parse(texto) else {
         return problema(502, "media/origen", "`ore-medios` no contestó JSON");
@@ -437,7 +450,10 @@ fn a_donde(direccion: &str, texto: &str) -> Respuesta {
     let Some(permiso) = campo(&n, "permiso") else {
         return problema(502, "media/origen", "`ore-medios` no dio ni URL ni permiso");
     };
-    let url = format!("http://{direccion}/contenido?permiso={permiso}");
+    let url = format!(
+        "http://{}/contenido?permiso={permiso}",
+        direccion_del_contenido(direccion)
+    );
     let resto = texto.trim_start().strip_prefix('{').unwrap_or("}");
     Respuesta {
         codigo: 307,
@@ -488,7 +504,7 @@ mod pruebas {
         assert_eq!(r.codigo, 307);
         let t = r.cuerpo.jcs();
         assert!(
-            t.contains("\"url\":\"http://ore-medios:8097/contenido?permiso=ab12\""),
+            t.contains("\"url\":\"http://ore-medios:8098/contenido?permiso=ab12\""),
             "{t}"
         );
         assert!(
