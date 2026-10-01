@@ -1,34 +1,66 @@
-//! v1alpha18 — **promover**: el código de un repositorio pasa a ser una
-//! función cuando un documento lo nombra (ORE 0050, sobre 0031 W3.8).
+//! v1alpha18 — **promover**: el código de un repositorio es una función
+//! (ORE 0050, sobre 0031 W3.8). Desde G1, **el código es la fuente**: el
+//! cliente escribe un `def` con `@function` y sus anotaciones, y el documento
+//! `Function` se DERIVA de él (OOS v1alpha18 01 §4) con `ore-code`, que lee el
+//! `.py` sin ejecutarlo. Aquí se comprueba, para cada función y en este orden:
 //!
-//! El documento es el contrato y el `def` lo cumple. Aquí se comprueba lo que
-//! se puede comprobar **leyendo**, sin ejecutar nada:
+//! 1. la forma del documento: `runtime: python` es de v1alpha18, lleva
+//!    `entrypoint` `<ruta>.py:<def>` dentro del paquete, y `models` es solo
+//!    suyo (`OOS1004`); cada modelo resuelve (`OOS2005`);
+//! 2. que el fichero esté y defina ese `def` en su nivel superior, sin `async`
+//!    (`OOS2042`);
+//! 3. que el `def` se pueda derivar —Python que el puesto entiende, anotado,
+//!    con tipos de OOS— (`OOS2043`, señalando el `.py` con línea y columna);
+//! 4. que el `def` lleve `@function`, que el documento sea **el que el código
+//!    da** campo a campo, y que cada `@function` del paquete tenga el suyo
+//!    (`OOS2013`: como el esquema Cedar, un artefacto generado que se quedó
+//!    atrás).
 //!
-//! - la forma: `runtime: python` es de v1alpha18, lleva `entrypoint`
-//!   `<ruta>.py:<def>` dentro del paquete, y `models` es solo suyo (`OOS1004`);
-//! - que el fichero esté y defina el `def` en su nivel superior (`OOS2042`);
-//! - que la cabecera del `def` sea la firma: la fila si hay `over`, y
-//!   exactamente las claves de `input`, con lo obligatorio sin valor por
-//!   defecto y lo opcional con él (`OOS2043`);
-//! - que cada modelo de `models` resuelva (`OOS2005`, como `model`).
+//! La precedencia es esa: `OOS2042` antes que `OOS2043` antes que `OOS2013`.
 //!
-//! # Por qué un lector de cabeceras y no un analizador de Python
+//! # Lo que no se compara
 //!
-//! La firma es **sintaxis**: los nombres de los parámetros, si tienen valor
-//! por defecto y si hay `*args`/`**kwargs`. Para eso basta con encontrar el
-//! `def` en la columna cero y leer su lista de parámetros respetando
-//! paréntesis, corchetes, llaves, cadenas y comentarios. Las anotaciones y el
-//! cuerpo no son firma (v1alpha18 01 §4.1): los tipos son los del documento.
+//! Los bytes. El documento se compara después de leerlo, campo a campo:
+//! reordenar, reindentar o cambiar las comillas no es un fallo, y un cambio de
+//! contrato siempre lo es.
 
 use crate::code::Code;
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Pos};
 use crate::document::{ApiVersion, Kind};
 use crate::link::{Loaded, Package};
 use crate::parse::Node;
-use std::collections::BTreeSet;
+use ore_code::lineas::Lineas;
+use ore_code::{Campo, Derivacion, Fallo, Firma, Rango, Salida, python};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// Cómo se arregla un documento que no es el del código (G1d).
+const GENERAR: &str =
+    "el documento se deriva del código: regenéralo con `ore funciones generar`, o cambia el `def`";
+
+/// Lo que un documento puede llevar y el código no da (§4.3). Una función con
+/// cualquiera de ellos se escribe como en v1alpha10, sin `@function`.
+const NO_SALE_DEL_CODIGO: &[&str] = &[
+    "authorization",
+    "endorsements",
+    "effects",
+    "preconditions",
+    "idempotency",
+    "model",
+    "prompt",
+    "source",
+];
+
+/// Un `.py` leído y derivado una sola vez, aunque lo nombren varios documentos.
+struct Leido {
+    fuente: String,
+    d: Derivacion,
+}
+
 pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    let mut leidos: BTreeMap<PathBuf, Option<Leido>> = BTreeMap::new();
+    let mut nombradas: BTreeSet<(PathBuf, String)> = BTreeSet::new();
+    let mut rotos: BTreeSet<PathBuf> = BTreeSet::new();
     for f in pkg.of(Kind::Function) {
         let version = f.version();
         let runtime = f.section("runtime").and_then(|n| n.as_str()).unwrap_or("");
@@ -105,7 +137,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         // ── OOS2042 · el fichero y el `def` están ────────────────────────
         let carpeta = carpeta_del_paquete(&f.path, &pkg.root);
         let fichero = carpeta.join(ruta);
-        let Ok(codigo) = std::fs::read_to_string(&fichero) else {
+        let Some(l) = leer(&mut leidos, &fichero, ruta) else {
             out.push(
                 Diagnostic::new(
                     Code::Oos2042,
@@ -120,42 +152,137 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             );
             continue;
         };
-        let cabecera = match cabecera_del_def(&codigo, nombre) {
-            Ok(c) => c,
-            Err(falta) => {
-                let (msg, ayuda) = match falta {
-                    Falta::NoEsta => (
-                        format!("`{ruta}` no define `def {nombre}(…)` en su nivel superior"),
-                        "el `entrypoint` nombra una función del módulo: no un método de una \
-                         clase, ni una función dentro de otra",
-                    ),
-                    Falta::Asincrona => (
-                        format!("`{nombre}` en `{ruta}` es un `async def`"),
-                        "el runtime llama al `def` y espera su valor; una corrutina es otra \
-                         cosa. Escríbelo como `def`",
-                    ),
-                };
-                out.push(
-                    Diagnostic::new(Code::Oos2042, &f.path, msg)
-                        .at(nodo.pos())
-                        .help(ayuda),
-                );
+        nombradas.insert((fichero.clone(), nombre.to_string()));
+        // El último `def` con ese nombre es el que vale: Python liga el nombre
+        // a la última definición.
+        let Some(def) = l.d.defs.iter().rev().find(|d| d.nombre == nombre) else {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2042,
+                    &f.path,
+                    format!("`{ruta}` no define `def {nombre}(…)` en su nivel superior"),
+                )
+                .at(nodo.pos())
+                .help(
+                    "el `entrypoint` nombra una función del módulo: no un método de una clase, \
+                     ni una función dentro de otra",
+                ),
+            );
+            continue;
+        };
+        if def.asincrona {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2042,
+                    &f.path,
+                    format!("`{nombre}` en `{ruta}` es un `async def`"),
+                )
+                .at(nodo.pos())
+                .help(
+                    "el runtime llama al `def` y espera su valor; una corrutina es otra cosa. \
+                     Escríbelo como `def`",
+                ),
+            );
+            continue;
+        }
+
+        // ── OOS2043 · el fichero es Python del puesto ────────────────────
+        if fichero_roto(&fichero, l, out, &mut rotos) {
+            continue;
+        }
+
+        // ── OOS2013 · un documento promueve un `def` sin `@function` ─────
+        if !def.decorada {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2013,
+                    &f.path,
+                    format!("`{ruta}:{nombre}` no lleva `@function`, y este documento lo promueve"),
+                )
+                .at(nodo.pos())
+                .help(
+                    "una función de código se marca en el código, `from ore import function` y \
+                     `@function` sobre el `def`, y el documento sale de ahí",
+                ),
+            );
+            continue;
+        }
+
+        // ── OOS2043 · se deriva; OOS2013 · y es este documento ───────────
+        let Some(func) = l.d.funciones.iter().rev().find(|x| x.nombre == nombre) else {
+            continue;
+        };
+        match &func.resultado {
+            Err(fallos) => no_se_deriva(&fichero, &l.fuente, nombre, fallos, out),
+            Ok(firma) => coherencia(f, firma, out),
+        }
+    }
+
+    // ── OOS2013 · cada `@function` del paquete tiene su documento ────────────
+    //
+    // Salvo en un paquete que no puede tener documentos gobernados: uno cuyo
+    // nombre no puede ser `namespace` (`OOS2030`; el de un proyecto,
+    // `test-project`). Ahí un `@function` no tiene dónde publicarse y es
+    // código de la sesión, sin más. Qué hacer con esos paquetes está por
+    // decidir (0050).
+    let publicables: Vec<PathBuf> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == Kind::Package)
+        .filter(|d| {
+            d.meta("name")
+                .and_then(Node::as_str)
+                .is_some_and(crate::pertenencia::puede_ser_namespace)
+        })
+        .filter_map(|d| d.path.parent().map(Path::to_path_buf))
+        .collect();
+    for carpeta in publicables {
+        let mut pys = Vec::new();
+        ficheros_py(&carpeta, &mut pys);
+        pys.sort();
+        for py in pys {
+            if carpeta_del_paquete(&py, &pkg.root) != carpeta {
+                continue; // de un paquete de dentro: lo mira él
+            }
+            let Ok(rel) = py.strip_prefix(&carpeta) else {
+                continue;
+            };
+            let ruta = rel.to_string_lossy().replace('\\', "/");
+            if !leidos.contains_key(&py)
+                && !std::fs::read_to_string(&py).is_ok_and(|t| python::puede_tener_funciones(&t))
+            {
                 continue;
             }
-        };
-
-        // ── OOS2043 · la cabecera es la firma ────────────────────────────
-        if let Some(m) = firma(f, &cabecera) {
-            out.push(
-                Diagnostic::new(Code::Oos2043, &f.path, format!("`{ruta}:{nombre}`: {m}"))
-                    .at(nodo.pos())
-                    .help(
-                        "con `over`, el primer parámetro es la fila; los demás, exactamente \
-                         las claves de `input`. Lo obligatorio sin valor por defecto, lo \
-                         opcional con él, y sin `*args` ni `**kwargs`: un consumidor solo \
-                         conoce el documento",
+            let Some(l) = leer(&mut leidos, &py, &ruta) else {
+                continue;
+            };
+            let sin_documento: Vec<_> =
+                l.d.funciones
+                    .iter()
+                    .filter(|x| !nombradas.contains(&(py.clone(), x.nombre.clone())))
+                    .collect();
+            if sin_documento.is_empty() || fichero_roto(&py, l, out, &mut rotos) {
+                continue;
+            }
+            let lineas = Lineas::new(&l.fuente);
+            for x in sin_documento {
+                match &x.resultado {
+                    Err(fallos) => no_se_deriva(&py, &l.fuente, &x.nombre, fallos, out),
+                    Ok(firma) => out.push(
+                        Diagnostic::new(
+                            Code::Oos2013,
+                            &py,
+                            format!(
+                                "`@function` `{}` sin su documento: ningún `Function` del paquete \
+                                 tiene `entrypoint: {}`",
+                                x.nombre, firma.entrypoint
+                            ),
+                        )
+                        .at(pos(&lineas, x.rango))
+                        .help(GENERAR),
                     ),
-            );
+                }
+            }
         }
     }
 }
@@ -225,224 +352,323 @@ fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
     raiz.to_path_buf()
 }
 
-// ── la cabecera del `def` ───────────────────────────────────────────────────
+// ── leer el código ──────────────────────────────────────────────────────────
 
-#[derive(Debug, PartialEq)]
-pub struct Parametro {
-    pub nombre: String,
-    pub por_defecto: bool,
-    /// Detrás de `*` o de `*args`: solo por nombre.
-    pub solo_nombre: bool,
+/// Lee y deriva un `.py` una sola vez. `None` si no se puede leer.
+fn leer<'a>(
+    leidos: &'a mut BTreeMap<PathBuf, Option<Leido>>,
+    fichero: &Path,
+    ruta: &str,
+) -> Option<&'a Leido> {
+    leidos
+        .entry(fichero.to_path_buf())
+        .or_insert_with(|| {
+            let fuente = std::fs::read_to_string(fichero).ok()?;
+            let d = python::derivar(&fuente, ruta);
+            Some(Leido { fuente, d })
+        })
+        .as_ref()
 }
 
-#[derive(Debug, PartialEq, Default)]
-pub struct Cabecera {
-    pub parametros: Vec<Parametro>,
-    pub args: bool,
-    pub kwargs: bool,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Falta {
-    NoEsta,
-    Asincrona,
-}
-
-/// La lista de parámetros del `def <nombre>` del nivel superior de `codigo`.
-pub fn cabecera_del_def(codigo: &str, nombre: &str) -> Result<Cabecera, Falta> {
-    let mut asincrona = false;
-    let mut inicio = None;
-    let mut desplazamiento = 0usize;
-    for linea in codigo.split_inclusive('\n') {
-        for (prefijo, es_async) in [("def ", false), ("async def ", true)] {
-            if let Some(resto) = linea.strip_prefix(prefijo)
-                && let Some(tras) = resto.strip_prefix(nombre)
-                && tras.trim_start().starts_with('(')
-            {
-                if es_async {
-                    asincrona = true;
-                } else if inicio.is_none() {
-                    let parentesis = linea.len() - tras.trim_start().len();
-                    inicio = Some(desplazamiento + parentesis + 1);
-                }
-            }
-        }
-        desplazamiento += linea.len();
-    }
-    let Some(i) = inicio else {
-        return Err(if asincrona {
-            Falta::Asincrona
-        } else {
-            Falta::NoEsta
-        });
+/// Los `.py` de una carpeta, sin entrar en lo que no es del paquete: lo
+/// oculto, los entornos y las cachés.
+fn ficheros_py(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(es) = std::fs::read_dir(dir) else {
+        return;
     };
-    Ok(leer_parametros(&codigo[i..]))
+    for e in es.flatten() {
+        let p = e.path();
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.starts_with('.')
+            || matches!(
+                n.as_str(),
+                "__pycache__" | "node_modules" | "venv" | "target"
+            )
+        {
+            continue;
+        }
+        if p.is_dir() {
+            ficheros_py(&p, out);
+        } else if n.ends_with(".py") {
+            out.push(p);
+        }
+    }
 }
 
-/// Desde justo después de `(` hasta el `)` que la cierra: los trozos de nivel
-/// superior separados por comas, sin cadenas ni comentarios que confundan.
-fn leer_parametros(s: &str) -> Cabecera {
-    let mut trozos: Vec<String> = vec![String::new()];
-    let mut nivel = 0i32;
-    let mut cadena: Option<char> = None;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if let Some(q) = cadena {
-            trozos.last_mut().unwrap().push(c);
-            if c == '\\' {
-                if let Some(n) = chars.next() {
-                    trozos.last_mut().unwrap().push(n);
-                }
-            } else if c == q {
-                cadena = None;
-            }
-            continue;
-        }
-        match c {
-            '#' => {
-                for n in chars.by_ref() {
-                    if n == '\n' {
-                        break;
-                    }
-                }
-            }
-            '\'' | '"' => {
-                cadena = Some(c);
-                trozos.last_mut().unwrap().push(c);
-            }
-            '(' | '[' | '{' => {
-                nivel += 1;
-                trozos.last_mut().unwrap().push(c);
-            }
-            ')' | ']' | '}' => {
-                if nivel == 0 {
-                    break;
-                }
-                nivel -= 1;
-                trozos.last_mut().unwrap().push(c);
-            }
-            ',' if nivel == 0 => trozos.push(String::new()),
-            _ => trozos.last_mut().unwrap().push(c),
-        }
+fn pos(l: &Lineas, r: Rango) -> Pos {
+    let (line, col) = l.de(r);
+    Pos {
+        line: line as usize,
+        col: col as usize,
     }
-
-    let mut cab = Cabecera::default();
-    let mut solo_nombre = false;
-    for t in trozos.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
-        if t == "/" {
-            continue;
-        }
-        if t == "*" {
-            solo_nombre = true;
-            continue;
-        }
-        if t.starts_with("**") {
-            cab.kwargs = true;
-            continue;
-        }
-        if t.starts_with('*') {
-            cab.args = true;
-            solo_nombre = true;
-            continue;
-        }
-        let nombre: String = t
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        cab.parametros.push(Parametro {
-            nombre,
-            por_defecto: igual_de_nivel_superior(t),
-            solo_nombre,
-        });
-    }
-    cab
 }
 
-/// Si el trozo de un parámetro lleva `=` fuera de corchetes y cadenas: su
-/// valor por defecto (`x: dict[str, int] = {}`).
-fn igual_de_nivel_superior(t: &str) -> bool {
-    let mut nivel = 0i32;
-    let mut cadena: Option<char> = None;
-    for c in t.chars() {
-        match (cadena, c) {
-            (Some(q), _) if c == q => cadena = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => cadena = Some(c),
-            (None, '(' | '[' | '{') => nivel += 1,
-            (None, ')' | ']' | '}') => nivel -= 1,
-            (None, '=') if nivel == 0 => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-// ── OOS2043 · la cabecera contra el documento ───────────────────────────────
-
-/// Lo que no casa, dicho en una frase; `None` si la cabecera es la firma.
-fn firma(f: &Loaded, cab: &Cabecera) -> Option<String> {
-    if cab.args || cab.kwargs {
-        return Some("la superficie no es cerrada: `*args` o `**kwargs`".into());
-    }
-    let mut parametros: &[Parametro] = &cab.parametros;
-    if f.section("over").is_some() {
-        let Some((fila, resto)) = parametros.split_first() else {
-            return Some("con `over`, el primer parámetro es la fila, y no hay ninguno".into());
+/// `OOS2043` por un fichero que no es Python del puesto —roto, o con sintaxis
+/// posterior a la suya—, una sola vez por fichero. `true` si lo es.
+fn fichero_roto(
+    fichero: &Path,
+    l: &Leido,
+    out: &mut Vec<Diagnostic>,
+    dichos: &mut BTreeSet<PathBuf>,
+) -> bool {
+    let Some(f) = l.d.sintaxis.first().or(l.d.version.first()) else {
+        return false;
+    };
+    if dichos.insert(fichero.to_path_buf()) {
+        let (mayor, menor) = python::PYTHON_DEL_PUESTO;
+        let otros = l.d.sintaxis.len() + l.d.version.len() - 1;
+        let mas = if otros > 0 {
+            format!(" (y {otros} más)")
+        } else {
+            String::new()
         };
-        if fila.por_defecto || fila.solo_nombre {
-            return Some(format!(
-                "con `over`, el primer parámetro es la fila, posicional y sin valor por \
-                 defecto; `{}` no lo es",
-                fila.nombre
-            ));
+        let mut d = Diagnostic::new(
+            Code::Oos2043,
+            fichero,
+            format!(
+                "no es Python que el puesto ({mayor}.{menor}) entienda: {}{mas}",
+                f.mensaje
+            ),
+        )
+        .at(pos(&Lineas::new(&l.fuente), f.rango));
+        if let Some(a) = &f.ayuda {
+            d = d.help(a.clone());
         }
-        parametros = resto;
+        out.push(d);
     }
+    true
+}
 
-    let input: Vec<(String, bool)> = f
-        .section("input")
-        .map(|n| n.entries())
+/// `OOS2043`: cada razón por la que un `@function` no se deriva, en su sitio
+/// del `.py`.
+fn no_se_deriva(
+    fichero: &Path,
+    fuente: &str,
+    nombre: &str,
+    fallos: &[Fallo],
+    out: &mut Vec<Diagnostic>,
+) {
+    let l = Lineas::new(fuente);
+    for x in fallos {
+        let mut d = Diagnostic::new(
+            Code::Oos2043,
+            fichero,
+            format!("`{nombre}` no se deriva: {}", x.mensaje),
+        )
+        .at(pos(&l, x.rango));
+        if let Some(a) = &x.ayuda {
+            d = d.help(a.clone());
+        }
+        out.push(d);
+    }
+}
+
+// ── OOS2013 · el documento es el que el código da ───────────────────────────
+
+/// `output` como un valor (§4.7): `{type: T}`, un mapa cuyo `type` no es un
+/// objeto. `Some(T)` si lo es; un mapa de campos da `None`.
+pub fn salida_valor(output: &Node) -> Option<&str> {
+    output.get("type").and_then(|(_, t)| t.as_str())
+}
+
+/// Cada diferencia entre el documento y la firma del código, en el sitio del
+/// documento donde está.
+fn coherencia(f: &Loaded, firma: &Firma, out: &mut Vec<Diagnostic>) {
+    let qn = f.qname().unwrap_or_default();
+    let raiz = f.root.pos();
+    let mut dif = |nodo: Option<&Node>, que: String| {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2013,
+                &f.path,
+                format!("`{qn}` no es el documento que su código da: {que}"),
+            )
+            .at(nodo.map(Node::pos).unwrap_or(raiz))
+            .help(GENERAR),
+        );
+    };
+
+    for k in NO_SALE_DEL_CODIGO {
+        if let Some(n) = f.section(k) {
+            dif(
+                Some(n),
+                format!(
+                    "`{k}` no sale del código; una función con `{k}` se escribe sin `@function`"
+                ),
+            );
+        }
+    }
+    let nombre = f.meta("name").and_then(Node::as_str).unwrap_or_default();
+    if nombre != firma.nombre {
+        dif(
+            f.meta("name"),
+            format!("se llama `{nombre}` y el `def`, `{}`", firma.nombre),
+        );
+    }
+    escalar(
+        f.meta("description"),
+        firma.descripcion.as_deref(),
+        "description",
+        &mut dif,
+    );
+    escalar(f.section("over"), firma.over.as_deref(), "over", &mut dif);
+    let limites = f.section("limits");
+    escalar(
+        limites.and_then(|l| l.get("timeout")).map(|(_, v)| v),
+        firma.timeout.as_deref(),
+        "limits.timeout",
+        &mut dif,
+    );
+    for (k, v) in limites.map(Node::entries).unwrap_or(&[]) {
+        if let Some(k) = k.as_str().filter(|k| *k != "timeout") {
+            dif(Some(v), format!("`limits.{k}` no sale del código"));
+        }
+    }
+    conjunto(
+        f.section("reads"),
+        firma.reads.as_deref(),
+        "reads",
+        &mut dif,
+    );
+    conjunto(
+        f.section("models"),
+        firma.models.as_deref(),
+        "models",
+        &mut dif,
+    );
+    campos(f.section("input"), &firma.entrada, "input", &mut dif);
+    let output = f.section("output");
+    match (&firma.salida, output.and_then(salida_valor)) {
+        (Salida::Valor(t), Some(d)) if mismo_tipo(d, &t.to_string()) => {}
+        (Salida::Valor(t), _) => dif(
+            output,
+            format!("el código devuelve un valor, `output: {{type: {t}}}`"),
+        ),
+        (Salida::Campos(_), Some(d)) => dif(
+            output,
+            format!("`output` es un valor (`{d}`) y el código devuelve una `@dataclass`"),
+        ),
+        (Salida::Campos(cs), None) => campos(output, cs, "output", &mut dif),
+    }
+}
+
+fn mismo_tipo(a: &str, b: &str) -> bool {
+    let sin = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    sin(a) == sin(b)
+}
+
+fn escalar(
+    nodo: Option<&Node>,
+    codigo: Option<&str>,
+    campo: &str,
+    dif: &mut impl FnMut(Option<&Node>, String),
+) {
+    let doc = nodo.and_then(Node::as_str);
+    if doc != codigo {
+        let que = match (doc, codigo) {
+            (Some(d), Some(c)) => format!("`{campo}` dice `{d}` y el código, `{c}`"),
+            (Some(d), None) => format!("`{campo}: {d}` no está en el código"),
+            (None, Some(c)) => format!("falta `{campo}: {c}`, que el código dice"),
+            (None, None) => return,
+        };
+        dif(nodo, que);
+    }
+}
+
+/// `reads` y `models`: el orden no es contrato.
+fn conjunto(
+    nodo: Option<&Node>,
+    codigo: Option<&[String]>,
+    campo: &str,
+    dif: &mut impl FnMut(Option<&Node>, String),
+) {
+    let doc: BTreeSet<&str> = nodo
+        .map(Node::items)
         .unwrap_or(&[])
         .iter()
-        .filter_map(|(k, v)| {
-            let obligatorio = v
-                .get("required")
-                .and_then(|(_, r)| r.as_str())
-                .is_some_and(|r| r == "true");
-            k.as_str().map(|k| (k.to_string(), obligatorio))
-        })
+        .filter_map(Node::as_str)
         .collect();
-    let declarados: BTreeSet<&str> = input.iter().map(|(k, _)| k.as_str()).collect();
-    let del_def: BTreeSet<&str> = parametros.iter().map(|p| p.nombre.as_str()).collect();
+    let cod: BTreeSet<&str> = codigo.unwrap_or(&[]).iter().map(String::as_str).collect();
+    for x in doc.difference(&cod) {
+        dif(nodo, format!("`{campo}` lleva `{x}` y el código no"));
+    }
+    for x in cod.difference(&doc) {
+        dif(
+            nodo,
+            format!("al `{campo}` le falta `{x}`, que el código dice"),
+        );
+    }
+}
 
-    if let Some(sobra) = del_def.difference(&declarados).next() {
-        let que = if f.section("over").is_none() && declarados.is_empty() && del_def.len() == 1 {
-            " (sin `over` no hay fila)"
-        } else {
-            ""
+/// `input` o los campos de `output`: nombre, tipo y `required` (ausente es
+/// `false`), sin orden.
+fn campos(
+    nodo: Option<&Node>,
+    codigo: &[Campo],
+    lado: &str,
+    dif: &mut impl FnMut(Option<&Node>, String),
+) {
+    let doc: BTreeMap<&str, &Node> = nodo
+        .map(Node::entries)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|(k, v)| Some((k.as_str()?, v)))
+        .collect();
+    for c in codigo {
+        let Some(v) = doc.get(c.nombre.as_str()) else {
+            let req = if c.requerido { ", required: true" } else { "" };
+            dif(
+                nodo,
+                format!(
+                    "falta `{lado}.{}: {{type: {}{req}}}`, que el código dice",
+                    c.nombre, c.tipo
+                ),
+            );
+            continue;
         };
-        return Some(format!(
-            "el `def` pide `{sobra}`, que `input` no declara{que}"
-        ));
-    }
-    if let Some(falta) = declarados.difference(&del_def).next() {
-        return Some(format!("`input` declara `{falta}` y el `def` no lo recibe"));
-    }
-    for (k, obligatorio) in &input {
-        let p = parametros.iter().find(|p| &p.nombre == k)?;
-        if *obligatorio && p.por_defecto {
-            return Some(format!(
-                "`{k}` es obligatorio en el documento y el `def` le da un valor por defecto"
-            ));
+        let tipo = v
+            .get("type")
+            .and_then(|(_, t)| t.as_str())
+            .unwrap_or_default();
+        if !mismo_tipo(tipo, &c.tipo.to_string()) {
+            dif(
+                Some(v),
+                format!(
+                    "`{lado}.{}` es `{tipo}` y en el código, `{}`",
+                    c.nombre, c.tipo
+                ),
+            );
         }
-        if !*obligatorio && !p.por_defecto {
-            return Some(format!(
-                "`{k}` es opcional en el documento (`required` ausente es `false`) y el `def` \
-                 no le da valor por defecto"
-            ));
+        let requerido = v
+            .get("required")
+            .and_then(|(_, r)| r.as_str())
+            .is_some_and(|r| r == "true");
+        if requerido != c.requerido {
+            let (d, k) = if c.requerido {
+                (
+                    "opcional",
+                    "obligatorio: sin valor por defecto y sin `Optional`",
+                )
+            } else {
+                (
+                    "obligatorio",
+                    "opcional: con valor por defecto, o `Optional`",
+                )
+            };
+            dif(
+                Some(v),
+                format!(
+                    "`{lado}.{}` es {d} en el documento y en el código, {k}",
+                    c.nombre
+                ),
+            );
         }
     }
-    None
+    for (k, v) in &doc {
+        if !codigo.iter().any(|c| c.nombre == *k) {
+            dif(Some(*v), format!("`{lado}.{k}` no está en el código"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -468,46 +694,5 @@ mod tests {
         ] {
             assert_eq!(entrypoint(malo), None, "{malo}");
         }
-    }
-
-    #[test]
-    fn la_cabecera_se_lee_sin_ejecutar() {
-        let c = cabecera_del_def(
-            "import x\n\n@dec\ndef f(\n    fila,  # la fila\n    umbral: dict[str, int] = {'a': 1},\n    *, moneda: str = \"(,)\",\n) -> dict:\n    pass\n",
-            "f",
-        )
-        .unwrap();
-        let n: Vec<_> = c
-            .parametros
-            .iter()
-            .map(|p| (p.nombre.as_str(), p.por_defecto, p.solo_nombre))
-            .collect();
-        assert_eq!(
-            n,
-            vec![
-                ("fila", false, false),
-                ("umbral", true, false),
-                ("moneda", true, true)
-            ]
-        );
-        assert!(!c.args && !c.kwargs);
-    }
-
-    #[test]
-    fn lo_que_no_esta_en_el_nivel_superior_no_cuenta() {
-        assert_eq!(
-            cabecera_del_def("class A:\n    def f(self):\n        pass\n", "f"),
-            Err(Falta::NoEsta)
-        );
-        assert_eq!(
-            cabecera_del_def("async def f(x):\n    pass\n", "f"),
-            Err(Falta::Asincrona)
-        );
-        assert_eq!(
-            cabecera_del_def("def fx(a):\n    pass\n", "f"),
-            Err(Falta::NoEsta)
-        );
-        let c = cabecera_del_def("def f(a, *rest, **kw):\n    pass\n", "f").unwrap();
-        assert!(c.args && c.kwargs);
     }
 }

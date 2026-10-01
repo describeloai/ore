@@ -293,62 +293,70 @@ print(declare({
 }))
 ";
 
-/// La pareja de `functions-python` (0050 P5): **el contrato y el código**.
+/// La pareja de `functions-python`: **el código y su documento** (0050 G1).
 ///
-/// El documento es el contrato —lo que un consumidor ve, lo que se versiona— y
-/// el `def` lo cumple: el compilador coteja su cabecera con `input` (OOS
-/// v1alpha18). Nace **sin `over`**, trabajando solo sobre sus parámetros, para
-/// que compile e invoque en cuanto el repositorio existe, sin depender de un
-/// dataset que la plantilla no puede conocer. `{{paquete}}`, `{{carpeta}}` y
-/// `{{funcion}}` los pone [`sembrar`].
+/// El código es la fuente: `@function` y las anotaciones del `def` son el
+/// contrato, y el documento `Function` se deriva de ellos (OOS v1alpha18 01
+/// §4). [`FUNCTIONS_YAML`] es **exactamente** lo que `ore-code` genera de
+/// [`FUNCTIONS_PY`] —lo comprueba `la_semilla_es_lo_que_su_codigo_da`—, y el
+/// día que el commit genere el documento (G2) dejará de sembrarse. Nace **sin
+/// `over`**, sobre sus parámetros, para que compile e invoque en cuanto el
+/// repositorio existe. `{{paquete}}`, `{{carpeta}}` y `{{funcion}}` los pone
+/// [`sembrar`]: el `def` se llama como la función, para que dos repositorios
+/// del mismo paquete no choquen.
 const FUNCTIONS_YAML: &str = "\
-# El CONTRATO de una función (OOS v1alpha18, ADR 0050): lo que un consumidor
-# ve y lo que se versiona con el paquete. El código de `entrypoint` lo cumple:
-# el compilador coteja la cabecera del `def` con `input`, sin ejecutarlo.
-#
-# Para trabajar sobre un dataset, una fila por llamada, añade (en tres partes,
-# `base.schema.nombre`, 0038)
-#     over: mi_base.mi_schema.mi_dataset
-# y la fila llega como el PRIMER parámetro del `def`. Lo demás que lea, en
-#     reads: [mi_base.mi_schema.otro_dataset]
-# Y los modelos que el código pueda llamar, en
-#     models: [modelo/extractor]
+# generado por ore desde {{carpeta}}/funciones/ejemplo.py:{{funcion}} · se edita el def, no este fichero
 apiVersion: oos.dev/v1alpha18
 kind: Function
 metadata:
   name: {{funcion}}
   namespace: {{paquete}}
+  description: Repite un texto las veces que se pida.
 spec:
   runtime: python
-  entrypoint: {{carpeta}}/funciones/ejemplo.py:ejemplo
+  entrypoint: {{carpeta}}/funciones/ejemplo.py:{{funcion}}
   input:
     texto: { type: String, required: true }
     veces: { type: Integer }
   output:
-    resultado: { type: String }
-    longitud: { type: Integer }
-  limits: { timeout: 60s }
+    resultado: { type: String, required: true }
+    longitud: { type: Integer, required: true }
+  limits: { timeout: '60s' }
 ";
 
 const FUNCTIONS_PY: &str = "\
-# El CÓDIGO de la función `{{paquete}}.{{funcion}}`: su contrato está en
-# `functions/ejemplo.yaml` (ADR 0050). La cabecera del `def` ES la firma: un
-# parámetro por cada clave de `input`, lo obligatorio sin valor por defecto y
-# lo opcional con él. Devuelve un objeto con las claves de `output`.
+# Una FUNCIÓN del árbol, `{{paquete}}.{{funcion}}` (ADR 0050).
 #
-# Se invoca con parámetros (`POST /funciones/{{paquete}}/{{funcion}}/invocar`,
-# o Run sobre el YAML) y corre en un trabajo de la celda. Su clase no escribe
-# datos (0036 ⑤): una función de lectura devuelve.
+# `@function` y las anotaciones del `def` son su contrato: lo que recibe (cada
+# parámetro con su tipo; con valor por defecto, opcional) y lo que devuelve (un
+# tipo, o una `@dataclass` de este fichero). El documento
+# `functions/ejemplo.yaml` se deriva de aquí sin ejecutar nada; no se edita.
 #
-# Lo que el contrato declare en `over`/`reads` se lee con `over` del SDK
-# (`mi_base.mi_schema.mi_dataset`), y lo que declare en `models` se llama con
-# `modelo` (`modelo/extractor` en el contrato): impórtalos
-# de `ore` cuando los uses.
+# Se invoca con parámetros (`POST /funciones/{{paquete}}/{{funcion}}/invocar`) y
+# corre en un trabajo de la celda.
+#
+# Para trabajar sobre un dataset, una fila por llamada:
+#     @function(over=\"mi_base.mi_schema.mi_dataset\")
+#     def {{funcion}}(fila, umbral: int) -> ...
+# y la fila llega como el PRIMER parámetro, sin anotar. Lo demás que lea, en
+# `reads=[...]` (y se lee con `over` del SDK); los modelos que pueda llamar, en
+# `models=[\"extractor\"]` (y se llaman con `modelo`).
+from dataclasses import dataclass
+
+from ore import function
 
 
-def ejemplo(texto, veces=1):
+@dataclass
+class Repetido:
+    resultado: str
+    longitud: int
+
+
+@function(timeout=\"60s\")
+def {{funcion}}(texto: str, veces: int = 1) -> Repetido:
+    \"\"\"Repite un texto las veces que se pida.\"\"\"
     resultado = \" \".join([texto] * veces)
-    return {\"resultado\": resultado, \"longitud\": len(resultado)}
+    return Repetido(resultado, len(resultado))
 ";
 
 /// Si un fichero de la semilla se siembra en `paquete`. Un documento gobernado
@@ -507,7 +515,8 @@ pub const CLASES: &[Clase] = &[
         descripcion: "Write typed Python functions over your datasets and models, invocable with parameters.",
         // 4: la semilla nombra en tres partes (0038 P7).
         // 5: nace con una función de verdad, la pareja contrato + código (0050 P5).
-        version: 5,
+        // 6: el código es la fuente, `@function` con anotaciones (0050 G1).
+        version: 6,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("functions/ejemplo.yaml", FUNCTIONS_YAML),
@@ -638,6 +647,24 @@ mod pruebas {
     /// de «no empeorar»—. También en un paquete con guion (`test-project`, el
     /// de `victor`), y dos repositorios en el mismo paquete no chocan.
     #[test]
+    fn la_semilla_es_lo_que_su_codigo_da() {
+        // El documento que se siembra es, byte a byte, el que `ore-code`
+        // deriva del código que se siembra: no hay dos fuentes.
+        let (paquete, carpeta) = ("ventas", "funciones-de-riesgo");
+        let py = sembrar(FUNCTIONS_PY, paquete, carpeta);
+        let d = ore_code::python::derivar(&py, &format!("{carpeta}/funciones/ejemplo.py"));
+        assert!(d.sintaxis.is_empty() && d.version.is_empty(), "{:?}", d);
+        let [f] = d.funciones.as_slice() else {
+            panic!("una función: {:?}", d.funciones)
+        };
+        let firma = f.resultado.as_ref().expect("la plantilla se deriva");
+        assert_eq!(
+            ore_code::emitir::documento(firma, paquete),
+            sembrar(FUNCTIONS_YAML, paquete, carpeta)
+        );
+    }
+
+    #[test]
     fn la_semilla_de_functions_compila_donde_nace() {
         let c = de("functions-python").unwrap();
         for paquete in ["ventas", "test-project"] {
@@ -670,7 +697,9 @@ mod pruebas {
                 let yaml = std::fs::read_to_string(&contrato).unwrap();
                 assert!(yaml.contains("name: funciones_de_riesgo_ejemplo"), "{yaml}");
                 assert!(
-                    yaml.contains("entrypoint: funciones-de-riesgo/funciones/ejemplo.py:ejemplo"),
+                    yaml.contains(
+                        "entrypoint: funciones-de-riesgo/funciones/ejemplo.py:funciones_de_riesgo_ejemplo"
+                    ),
                     "{yaml}"
                 );
                 assert!(!yaml.contains("{{"), "{yaml}");
@@ -868,7 +897,12 @@ mod pruebas {
     fn las_semillas_nombran_en_tres_partes() {
         for c in CLASES {
             for (ruta, texto) in c.semilla {
-                if ruta.ends_with(".toml") || ruta.ends_with(".xml") {
+                // Un documento generado no lleva comentarios: lo que enseña a
+                // nombrar está en el código del que sale (0050 G1).
+                if ruta.ends_with(".toml")
+                    || ruta.ends_with(".xml")
+                    || ore_code::emitir::es_generado(texto)
+                {
                     continue;
                 }
                 assert!(!texto.contains("<paquete>"), "{} · {ruta}", c.id);

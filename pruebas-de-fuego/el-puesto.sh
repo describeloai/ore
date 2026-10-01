@@ -956,6 +956,26 @@ spec:
 Y
   R18="$A/packages/hr/riesgo"
   mkdir -p "$R18/functions" "$R18/funciones"
+  # El código es la fuente (0050 G1): `@function` y sus anotaciones; cada
+  # documento es el que `ore-code` deriva (y `validate` lo coteja, OOS2013).
+  cat > "$R18/funciones/marcar.py" <<'PY'
+from dataclasses import dataclass
+
+from ore import function
+
+
+@dataclass
+class Marca:
+    n: int | None
+    grande: bool | None
+
+
+@function(over="hr.numeros_v")
+def marcar(fila, umbral: int) -> Marca:
+    if fila["n"] == 3:
+        raise ValueError("la tres")
+    return Marca(fila["n"], fila["n"] > umbral)
+PY
   cat > "$R18/functions/marcar.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha18
 kind: Function
@@ -970,11 +990,29 @@ spec:
     n: { type: Integer }
     grande: { type: Boolean }
 Y
-  cat > "$R18/funciones/marcar.py" <<'PY'
-def marcar(fila, umbral):
-    if fila["n"] == 3:
-        raise ValueError("la tres")
-    return {"n": fila["n"], "grande": fila["n"] > umbral}
+  cat > "$R18/funciones/otras.py" <<'PY'
+import time
+from dataclasses import dataclass
+
+from ore import function, modelo, over
+
+
+@dataclass
+class Vio:
+    vio: str | None
+
+
+@function(timeout="1s")
+def lenta(s: int) -> str:
+    time.sleep(s)
+    return "tarde"
+
+
+@function(reads=["hr.numeros_v"])
+def curiosa(que: str) -> Vio:
+    if que == "modelo":
+        modelo("extractor")
+    return Vio(str(len(over(que, como="arrow"))))
 PY
   cat > "$R18/functions/lenta.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha18
@@ -985,6 +1023,7 @@ spec:
   entrypoint: riesgo/funciones/otras.py:lenta
   input:
     s: { type: Integer, required: true }
+  output: { type: String }
   limits: { timeout: 1s }
 Y
   cat > "$R18/functions/curiosa.yaml" <<'Y'
@@ -1000,22 +1039,6 @@ spec:
   output:
     vio: { type: String }
 Y
-  cat > "$R18/funciones/otras.py" <<'PY'
-import time
-
-from ore import over, modelo
-
-
-def lenta(s):
-    time.sleep(s)
-    return "tarde"
-
-
-def curiosa(que):
-    if que == "modelo":
-        modelo("extractor")
-    return {"vio": str(len(over(que, como="arrow")))}
-PY
   ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "18 · el árbol con las funciones no compila: $(cd "$A" && "$ORE" validate . 2>&1 | head -5)"
 
   # se ve donde vive (M1), con su runtime

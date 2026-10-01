@@ -112,11 +112,40 @@ const VETADAS: &[(&str, &str)] = &[
 /// `sqlparser`, `sqlparser_derive` y `log` (`syn`, `quote` y `proc-macro2` ya
 /// estaban). Sin sus *features* por defecto, que traerían `recursive` →
 /// `stacker` → `psm` con `cc` y ensamblador por plataforma.
-const CIERRE: usize = 34;
+///
+/// **34 → 126 con `ore-code` (0050 G1c, 2026-10-01).** El código del cliente
+/// es la fuente del contrato: `ore validate` deriva el `Function` de cada
+/// `@function` leyendo el `.py`, y eso es compilar, que es de `ore` (como el
+/// SQL del árbol). El parser es el de Ruff, elegido en M-G1 frente a
+/// `rustpython-parser` (que no entiende 3.13+): son sus crates —el AST, sus
+/// estructuras (`compact_str`, `thin-vec`, `get-size2` y sus macros), las
+/// tablas de `unicode_names2`— y `stacker`/`psm`/`libc`, la pila que crece
+/// para que un fichero hostil no tumbe el proceso. Enlazados de verdad son 50
+/// (`cargo tree -e normal`: 35 → 85, una docena de ellos macros); el resto los
+/// usa la compilación. Ninguno habla con nadie ni lee el reloj.
+const CIERRE: usize = 126;
+
+/// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
+/// eso no se mira contra los vetos, con **quién** lo pide como dependencia de
+/// compilación (`[build-dependencies]`):
+///
+/// - `unicode_names2_generator`: genera las tablas de `unicode_names2`
+///   (`phf_generator` → `rand` → `getrandom`);
+/// - `cc`: compila el ensamblador de `psm` y `stacker` (`jobserver` →
+///   `getrandom`).
+///
+/// El lock no distingue una dependencia de compilación de una normal; esta
+/// lista lo dice, y `lo_que_solo_compila_solo_compila` comprueba que dentro del
+/// cierre de `ore` nadie más las pide.
+const SOLO_AL_COMPILAR: &[(&str, &[&str])] = &[
+    ("unicode_names2_generator", &["unicode_names2"]),
+    ("cc", &["psm", "stacker"]),
+];
 
 #[test]
 fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
-    let cierre = cierre_de("ore-cli");
+    let exentos: Vec<&str> = SOLO_AL_COMPILAR.iter().map(|(e, _)| *e).collect();
+    let cierre = cierre_sin("ore-cli", &exentos);
     let mut culpables: Vec<String> = Vec::new();
     for nodo in &cierre {
         let nombre = nombre_de(nodo);
@@ -230,6 +259,39 @@ fn el_firmante_no_sabe_hablar_por_la_red() {
     );
 }
 
+/// **Lo que solo compila, solo compila.** Cada crate de [`SOLO_AL_COMPILAR`]
+/// lo pide un único crate, y como dependencia de compilación (`[build-dependencies]`
+/// en su manifiesto). Si algún día lo enlazara alguien más, sus vetos dejarían
+/// de estar exentos y este test lo diría.
+#[test]
+fn lo_que_solo_compila_solo_compila() {
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("Cargo.lock"),
+    )
+    .expect("Cargo.lock");
+    let aristas = aristas(&lock);
+    let mut dentro = cierre_de("ore-cli");
+    dentro.insert("ore-cli".to_string());
+    for (exento, quienes) in SOLO_AL_COMPILAR {
+        let piden: BTreeSet<&str> = dentro
+            .iter()
+            .filter(|p| {
+                aristas
+                    .get(*p)
+                    .is_some_and(|ds| ds.iter().any(|d| nombre_de(d) == *exento))
+            })
+            .map(|p| nombre_de(p))
+            .collect();
+        let otros: Vec<&&str> = piden.iter().filter(|p| !quienes.contains(p)).collect();
+        assert!(
+            otros.is_empty(),
+            "`{exento}` está exento de los vetos por ser solo de compilación de {quienes:?},              y dentro de `ore` también lo piden: {otros:?}"
+        );
+    }
+}
+
 #[test]
 fn el_arbol_no_crece_sin_que_nadie_lo_diga() {
     let cierre = cierre_de("ore-cli");
@@ -289,7 +351,13 @@ fn el_compilador_no_tiene_reloj() {
 /// preguntarse si sigue haciendo falta.
 #[test]
 fn el_driver_esta_donde_esta_por_algo() {
-    let ore = cierre_de("ore-cli");
+    // Sin el parser de Python (0050 G1c): su peso es trabajo del compilador,
+    // y lo que esta costura separa es la red.
+    let codigo = cierre_de("ore-code");
+    let ore: BTreeSet<String> = cierre_de("ore-cli")
+        .into_iter()
+        .filter(|c| !codigo.contains(c))
+        .collect();
     let pg = cierre_de("ore-read-postgres");
     assert!(
         pg.len() > ore.len() * 2,
@@ -350,6 +418,11 @@ fn la_lista_de_miembros_se_deriva_y_la_derivacion_no_se_rompe_en_silencio() {
 /// los demás miembros del espacio de trabajo: lo que se mide es lo que se
 /// arrastra de fuera.
 fn cierre_de(raiz: &str) -> BTreeSet<String> {
+    cierre_sin(raiz, &[])
+}
+
+/// El cierre sin entrar en `sin` (ni en lo que solo llega a través de ellos).
+fn cierre_sin(raiz: &str, sin: &[&str]) -> BTreeSet<String> {
     let lock = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -368,6 +441,9 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
     let mut pila = vec![raiz.to_string()];
     while let Some(p) = pila.pop() {
         for d in aristas.get(&p).map(Vec::as_slice).unwrap_or(&[]) {
+            if sin.contains(&nombre_de(d)) {
+                continue;
+            }
             if vistos.insert(d.clone()) {
                 pila.push(d.clone());
             }

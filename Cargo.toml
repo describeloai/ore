@@ -11,10 +11,14 @@ exclude = ["pruebas-de-fuego/medida-w3-iceberg-rust"]
 # guardian de dependencias— pero no se construyen si no se piden.
 #
 # No es comodidad: es la misma frase del proyecto dicha en la unica sintaxis que
-# `cargo` entiende. Y tiene un efecto secundario que vale la pena nombrar: una
-# maquina sin MinGW ni MSVC compila `ore` entero y no puede compilar el driver,
-# porque `ore` no enlaza NADA nativo. La herramienta lo demuestra sin que nadie
-# se lo pida.
+# `cargo` entiende. `ore` no enlaza nada nativo **salvo una pieza, a sabiendas**:
+# el cambio de pila de `psm` (ensamblador, via `stacker`), que trae el parser de
+# Python de `ore-code` (0050 G1). El compilador lee codigo ajeno, y una pila que
+# crece en un anidamiento hostil es lo que no lo deja caer; la alternativa (una
+# pila fija medida, sin `stacker`) falla abortando el dia que la medida se queda
+# corta. No es FFI ni habla con nadie: la hermeticidad (`dependencias.rs`) no
+# cambia. Lo que cuesta: compilar `ore` pide un compilador de C (el CI y la
+# imagen lo tienen; en un Windows sin MinGW, con Docker).
 default-members = ["crates/ore-core", "crates/ore-cli"]
 
 [workspace.package]
@@ -88,9 +92,8 @@ sqlparser = { version = "0.63", default-features = false, features = ["std", "vi
 # +1,9 MB; `rustpython-parser` se quedo en 649/655 (no entiende 3.13+) y esta
 # parado. Es el parser de Ruff, ty y uv. Version EXACTA: Astral lo publica como
 # crate interno (0.0.x) y su API cambia; solo `ore-code/src/python/sintaxis.rs`
-# la toca. Trae `stacker` -> `psm` (cc y ensamblador): la pila crece en un
-# anidamiento hostil en vez de desbordarse, y por eso no entra en `ore` sin
-# decision (ver el comentario de `sqlparser` y `tests/dependencias.rs`).
+# la toca. Trae `stacker` -> `psm` (cc y ensamblador), y esta vez se acepta:
+# ver `default-members` arriba.
 ruff_python_parser = "=0.0.15"
 ruff_python_ast    = "=0.0.15"
 ruff_text_size     = "=0.0.15"

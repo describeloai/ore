@@ -12,3 +12,6 @@ saphyr-parser.workspace = true
 sha2.workspace           = true
 sqlparser.workspace      = true
 unicode-normalization.workspace = true
+# El código como fuente (0050 G1): el `Function` de un `@function` se deriva
+# del `.py` leyéndolo, y aquí se coteja con el documento (`promover`).
+ore-code = { path = "../ore-code" }

@@ -53,9 +53,12 @@ impl Funcion {
     fn texto(&self, k: &str) -> Option<String> {
         campo(&self.spec, k)
     }
+    /// Los campos de `output`. Vacío si no tiene, o si es un valor (`{type:
+    /// T}`, v1alpha18 01 §4.7): entonces sale en la columna `valor`.
     fn output(&self) -> Vec<String> {
         self.spec
             .get("output")
+            .filter(|(_, o)| ore_core::promover::salida_valor(o).is_none())
             .map(|(_, o)| {
                 o.entries()
                     .iter()
@@ -874,6 +877,7 @@ fn arnes(a: &Arnes<'_>) -> String {
     let output = Json::Arr(a.output.iter().map(Json::s).collect()).jcs();
     format!(
         r#"# El arnés de una función de código (ORE 0050 P3): {funcion}
+import dataclasses as _dc
 import json as _json
 import signal as _signal
 import pyarrow as _pa
@@ -909,6 +913,8 @@ def _una(*fila):
         raise
     except Exception as e:  # noqa: BLE001 — una fila que falla se dice y se sigue
         return {{"_error": "%s: %s" % (type(e).__name__, e)}}
+    if _dc.is_dataclass(v) and not isinstance(v, type):
+        v = {{c.name: getattr(v, c.name) for c in _dc.fields(v)}}
     if _OUTPUT:
         if not isinstance(v, dict) or set(v) != set(_OUTPUT):
             dijo = sorted(v) if isinstance(v, dict) else type(v).__name__

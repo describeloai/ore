@@ -2441,6 +2441,7 @@ name = "ore-core"
 version = "0.1.0"
 dependencies = [
  "ed25519-compact",
+ "ore-code",
  "saphyr-parser",
  "sha2 0.11.0",
  "sqlparser",

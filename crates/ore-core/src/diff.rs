@@ -477,6 +477,16 @@ fn shape(pkg: &Package) -> Shape {
                             .collect()
                     };
                     let tipo = |sec: &str| -> BTreeMap<String, Prop> {
+                        // `output` como un valor (v1alpha18 01 §4.7): uno
+                        // solo, sin nombre, con sujeto `<función>.output`.
+                        if let Some(t) = d.section(sec).and_then(crate::promover::salida_valor) {
+                            let valor = Prop {
+                                ty: t.to_string(),
+                                required: true,
+                                ..Default::default()
+                            };
+                            return BTreeMap::from([(String::new(), valor)]);
+                        }
                         d.section(sec)
                             .map(|n| n.entries())
                             .unwrap_or(&[])
@@ -1229,7 +1239,11 @@ fn parametros(
     out: &mut Vec<Change>,
 ) {
     for (n, p) in antes {
-        let sujeto = format!("{qn}.{lado}.{n}");
+        let sujeto = if n.is_empty() {
+            format!("{qn}.{lado}")
+        } else {
+            format!("{qn}.{lado}.{n}")
+        };
         match despues.get(n) {
             None => out.push(Change::new(Code::Oos5001, Axis::Consumer).sujeto(&sujeto)),
             Some(q) => {

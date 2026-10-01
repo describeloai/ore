@@ -1298,10 +1298,10 @@ fn borrador_de_v1alpha17() {
     marcador("v1alpha17", "anclar", "BORRADOR · OOS v1alpha17 · anclar");
 }
 
-/// v1alpha18: promover. El codigo de un repositorio pasa a ser una funcion
-/// cuando un documento lo nombra: `runtime: python`, el `def` y su cabecera
-/// como firma, `models` (ORE 0050). Los casos se escribieron desde la spec
-/// antes que esto (P1), y se cotejan aqui.
+/// v1alpha18: promover. El codigo de un repositorio es una funcion: un `def`
+/// con `@function`, y el documento `runtime: python` se deriva de su firma
+/// (ORE 0050, `ore-code`). Los casos se escribieron desde la spec antes que
+/// esto (P1, y G0 al pasar el codigo a ser la fuente), y se cotejan aqui.
 #[test]
 fn borrador_de_v1alpha18() {
     marcador(
@@ -1400,9 +1400,13 @@ fn el_submodulo_trae_la_suite_completa() {
     //
     // Y tres con la funcion de codigo (oos v1alpha18, ORE 0050, 2026-10-01):
     // tres de diff, parametro a parametro (OOS5001, OOS5003 y uno menor).
-    assert_eq!(casos.len(), 85, "número de casos inesperado");
+    //
+    // Y uno mas cuando el documento paso a derivarse del codigo (oos 3a7e729,
+    // ORE 0050 G1): estrechar lo que devuelve una funcion que devuelve un
+    // valor (`output: {type: T}`, OOS5002 con sujeto `<funcion>.output`).
+    assert_eq!(casos.len(), 86, "número de casos inesperado");
     assert_eq!(por_grupo.get("invalid"), Some(&34));
-    assert_eq!(por_grupo.get("diff"), Some(&27));
+    assert_eq!(por_grupo.get("diff"), Some(&28));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));
     assert_eq!(por_grupo.get("emit"), Some(&4));

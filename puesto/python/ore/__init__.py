@@ -79,7 +79,7 @@ MAGIA = b"ORECOPY1"
 
 __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
            "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista",
-           "media", "medias", "media_de", "modelo",
+           "media", "medias", "media_de", "modelo", "function",
            "coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "MediaError",
            "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango"]
 
@@ -568,6 +568,21 @@ class Modelo:
         opciones.setdefault("temperature", 0)
         r = self.chat([{"role": "user", "content": texto}], **opciones)
         return r["choices"][0]["message"]["content"]
+
+
+def function(f=None, *, over=None, reads=None, models=None, timeout=None):
+    """`@function` o `@function(over=…, reads=[…], models=[…], timeout="…")`:
+    marca el `def` como una función del árbol (ORE 0050). La firma —los
+    parámetros anotados y lo que devuelve— es el contrato: el documento
+    `Function` se deriva de ella leyendo el fichero, sin ejecutarlo, y por eso
+    los argumentos son literales. Aquí no hace nada más: el `def` sigue
+    siendo el `def`, y en la sesión se llama como cualquier otro. Lo que
+    `over`/`reads`/`models` dejan hacer lo hace cumplir el arnés al invocarla."""
+    def marca(g):
+        g.__ore_function__ = {"over": over, "reads": list(reads or []), "models": list(models or []),
+                              "timeout": timeout}
+        return g
+    return marca(f) if callable(f) else marca
 
 
 def modelo(referencia):
