@@ -1,8 +1,10 @@
 # 0049 · Media paradigms in code repositories
 
-**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); **B0 y B1 hechos**: la
-gramática en OOS v1alpha17, el contrato de ejecución en [`docs/media.md`](../media.md) y la suite
-en [`conformidad/media`](../../conformidad/media/README.md); B1–B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+**Estado:** propuesto · visión definida y estado del arte recogido (2026-09-30); **B0, B1 y B2 hechos**
+—B2 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
+[`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md) y
+`ore-medios` sirviendo; **B3 en curso** (B3·1–B3·3 y B3·5 hechos; falta la red del puesto, B3·4, y
+el cierre en vivo, B3·6); B4–B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -316,8 +318,8 @@ conformidad** que cualquier superficie tiene que pasar. No se parchea el camino 
 |---|---|---|
 | **B0 · el contrato** ✅ | la `MediaRef`, las anclas, la tabla anclada y las siete operaciones, como especificación (OOS v1alpha17) y como suite de conformidad (36 casos, neutrales al lenguaje) | niveles 1–2 |
 | **B1 · los tipos** ✅ | `Struct`, `List<Struct>`, `Vector`, `MediaRef`, `Ancla` en la gramática (v1alpha17, conformance 30/30), el lago (ids por hijo, upsert, cambio de forma; 0032 T6) y SQL (DuckDB los lee nativos) | D4 |
-| **B2 · servir** | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
-| **B3 · la puerta de lectura** | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
+| **B2 · servir** ✅ | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
+| **B3 · la puerta de lectura** (en curso) | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
 | **B4 · la entrada** | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
 | **B5 · la derivación** | el registro por clave, `aplicar()`, `reintentar_errores`, la tabla anclada | D5 |
 | **B6 · el relevo** | la suite pasa en vivo; la base entra como pieza y `media`/`medias` pasan a ser azúcar sobre ella | — |
@@ -354,6 +356,34 @@ también la puerta de lectura.
 Sin medir (por el entorno): el índice leído del lago real en GCS (sumará la descarga de sus
 Parquet: 45 MB para 1 M filas); el rendimiento del proveedor de credencial con un token de 30 s,
 que espera a B2·3 en vivo.
+
+### B2 · hecho, y lo medido en vivo (2026-10-01, victor)
+
+`ore-medios` corre en la celda (su Deployment, malla `45-ore-medios.yaml`; la imagen de ore-serve
+con otro comando) y ore-serve le habla por `/media/…`. Medido de punta a punta por la entrada
+pública, con el token del agente, desde fuera del clúster (incluye la ida y vuelta a europe-west1
+y el `fetch` del árbol de ore-serve):
+
+| operación | antes (0046, `ore` por petición) | ahora |
+|---|---|---|
+| `list`, una página | 1,4–2,1 s, y crecía con el recorrido | **0,23 s**; la segunda página, lo mismo (cursor) |
+| `stat` | — | 0,23 s |
+| `url`, 1 / **100** | 0,2 s / **52 s** | 0,35 s / **1,27 s** |
+| `content` (B3·3) de una mantenida | — | 307 en 0,27 s al blob del lago, que da `206 %PDF-` en 0,31 s |
+| `content` de una virtual | — | 307 a `ore-medios` con permiso: 0,90 s la primera (custodio + STS), 0,23 s después |
+
+Y la puerta de lectura de una virtual, desde el pod de ore-serve (la red del puesto es B3·4): `206`
+con `content-range: bytes 0-4/717` y `%PDF-`; tras una lectura entera, **`stat` da el `sha256` visto
+al paso** (`open-007`) y es el mismo que el del blob de la copia mantenida de ese contrato
+(`e17f225d…`): dos caminos, la misma identidad. Un permiso inventado, `401`.
+
+**Lo que costó desplegarlo**: con `ore-medios` en el mismo `cargo build` que los demás binarios, la
+máquina de Cloud Build (8 GB) se quedaba colgada en la fase de enlace —LTO completo, otro enlace
+pesado en paralelo— y cada construcción moría a los 60 min (`INTERNAL_ERROR`; tres, y bloqueó el CI
+de todas las sesiones). Se enlaza aparte, solo, después del resto: +4 min por construcción.
+
+**Hallazgo abierto**: el listado de una virtual no trae `size` (en la mantenida sí). Sin tamaño el
+SDK no verifica la longitud al final ni cuenta un `seek` desde el final; va con B3·6.
 
 ## Lo que no se hace aquí
 
