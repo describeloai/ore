@@ -339,6 +339,9 @@ spec:
             # renderizador lo pone por inquilino, como en 48 y 49.
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # 0049 B2·4: la media se sirve por `ore-medios` (45). Sin el, `/media/…`
+            #   contesta 503 y las rutas de 0046 siguen.
+            - { name: ORE_MEDIOS_DIRECCION, value: "ore-medios:8097" }
             # ── W3.6c (0031 §11) · EL CATALOGO REST DE ICEBERG ─────────────
             #
             # `/v1/…` es la cara por la que PyIceberg, DuckDB, Spark y el agente
@@ -460,6 +463,13 @@ spec:
             matchLabels:
               ore.dev/rol: cofre
       ports: [{protocol: TCP, port: 8095}]
+    # 0049 B2·4: `ore-medios`, que sirve la media. La regla de 443 de abajo
+    # excluye las redes privadas, y este pod vive en una.
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: medios
+      ports: [{protocol: TCP, port: 8097}]
     # ⭐ El IdP del clúster (0046 E9·3): el token del agente, para leer del
     #   custodio la credencial de una fuente al servir una colección virtual.
     #   Sólo sus pods (`app: keycloak`) y sólo el 8080; `entrada-al-idp` ya

@@ -80,6 +80,9 @@ PLANTILLAS = [
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
     "43-la-entrada.yaml",
+    # ⭐ La media de la celda (0049 B2·4): el índice de las colecciones y la
+    #   firma en lote, en un proceso vivo; `ore-serve` decide y esto sirve.
+    "45-ore-medios.yaml",
     # ✏️ 2026-09-28 (0047 A7a.6) · Aqui estaba `45-la-mudanza-del-cofre.yaml`,
     #   la mudanza del material del cofre al almacen de la celda (0024-⑤). Corrio
     #   el 14-sep en los tres inquilinos, la `028` borro `cofre.material` y ya no

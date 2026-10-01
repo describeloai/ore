@@ -1,0 +1,150 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE-MEDIOS · la media de la celda, en un proceso vivo (ADR 0049 B2·4)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# El índice de cada colección y la firma de sus URLs. Medido en B2·0: con un
+# proceso por petición, 100 URLs costaban 52 s (cada firma, una conexión TLS
+# nueva); con un cliente vivo, 0,69 s. Y el índice de un millón de ítems carga
+# en 0,63 s y contesta una página en menos de 1 ms.
+#
+# ⭐ `ore-serve` DECIDE y esto SIRVE. `ore-serve` autentica, lee la colección y
+#   su puntero en el árbol de la rama y le pasa aquí el `metadata_location`;
+#   esto no toca git ni concesiones. Sólo `ore-serve` le habla (la entrada, abajo).
+#
+# ⭐ La imagen es la de `ore-serve` con otro comando (Dockerfile, etapa `serve`):
+#   es OTRO proceso, con su sitio en la red, y `ore-serve` sigue sin enlazar TLS
+#   (`ore-cli/tests/dependencias.rs`).
+#
+# ⚠️ LA CUENTA ES LA DE `ore-serve` (`ore-serve-<celda>@`): la que ya lee el lago
+#   (`objectViewer`) y firma como sí misma (`serviceAccountTokenCreator` sobre sí,
+#   0046 E9·1) — exactamente lo que esto hace, y lo que hoy hace `ore-store-gcs`
+#   dentro del pod de `ore-serve`. Una cuenta propia, con sólo esto, es deuda
+#   anotada en 0049 (pide al aprovisionador una cuenta y su enlace).
+#
+# ⛔ SIN ESTE DEPLOYMENT, `ore-serve` contesta 503 `media/no-desplegado` en
+#   `/media/…` y las rutas de 0046 (`/colecciones/…`) siguen sirviendo.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-medios
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: medios
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: medios
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: medios
+    spec:
+      serviceAccountName: ore-serve
+      automountServiceAccountToken: false
+      nodeSelector:
+        ore.dev/pool: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ore-medios
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-serve:main
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/ore-medios"]
+          env:
+            - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            - { name: ORE_MEDIOS_PUERTO, value: "8097" }
+            # Filas de índice vivas entre todas las colecciones: un millón de
+            # ítems es del orden de medio GB en Arrow (B2·0), y esto guarda menos.
+            - { name: ORE_MEDIOS_FILAS, value: "1000000" }
+          ports:
+            - { name: http, containerPort: 8097 }
+          readinessProbe:
+            httpGet: { path: /salud, port: 8097 }
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "1", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-medios
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: medios
+spec:
+  selector:
+    ore.dev/rol: medios
+  ports:
+    - { name: http, port: 8097, targetPort: 8097 }
+---
+# Quién entra: sólo `ore-serve`. Un puesto no le habla —pasa por la puerta, que
+# decide—, ni nadie de fuera de la celda.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-medios
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: medios
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: medios
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8097
+---
+# A dónde sale: el DNS, el servidor de metadatos (su token y su correo) y
+# HTTPS fuera de las redes privadas (el lago y la firma de Google; en B3, el
+# origen de una colección virtual).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-medios
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: medios
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: medios
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]
