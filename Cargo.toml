@@ -81,6 +81,20 @@ saphyr-parser = "0.0.12"
 # recursion del propio parser sigue puesto.
 sqlparser = { version = "0.63", default-features = false, features = ["std", "visitor"] }
 
+# El analizador de Python de `ore-code` (0050 G1): el `@function` del cliente
+# es la fuente y el `Function` se deriva de el, leyendo y sin ejecutar nada.
+# Medido en M-G1 (2026-10-01, Docker, contra el `ast` de CPython 3.14): 26/26
+# derivaciones, 655/655 ficheros de la stdlib de 3.14, 8/8 rotos rechazados,
+# +1,9 MB; `rustpython-parser` se quedo en 649/655 (no entiende 3.13+) y esta
+# parado. Es el parser de Ruff, ty y uv. Version EXACTA: Astral lo publica como
+# crate interno (0.0.x) y su API cambia; solo `ore-code/src/python/sintaxis.rs`
+# la toca. Trae `stacker` -> `psm` (cc y ensamblador): la pila crece en un
+# anidamiento hostil en vez de desbordarse, y por eso no entra en `ore` sin
+# decision (ver el comentario de `sqlparser` y `tests/dependencias.rs`).
+ruff_python_parser = "=0.0.15"
+ruff_python_ast    = "=0.0.15"
+ruff_text_size     = "=0.0.15"
+
 # SHA-256. El digest es EL artefacto normativo del proyecto, no un detalle de
 # implementacion: `sha256:<64 hex>` viaja en cada bundle, se firma y lo verifica
 # un tercero. Reimplementar a mano una primitiva criptografica para ahorrar seis

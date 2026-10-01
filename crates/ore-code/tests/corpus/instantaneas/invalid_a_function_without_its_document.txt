@@ -1,0 +1,11 @@
+── repetir → functions/repetir.yaml
+# generado por ore desde funciones/invalid_a_function_without_its_document.py:repetir · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: repetir, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/invalid_a_function_without_its_document.py:repetir
+  input:
+    texto: { type: String, required: true }
+  output: { type: String }

@@ -1,0 +1,40 @@
+── avisos
+  41:9 `metodo` lleva `@function` y no está en el nivel superior del módulo
+      ayuda: una función es un `def` del módulo, no un método ni un `def` dentro de otro: así no se publica
+  47:9 `interna` lleva `@function` y no está en el nivel superior del módulo
+      ayuda: una función es un `def` del módulo, no un método ni un `def` dentro de otro: así no se publica
+── muchos no se deriva (OOS2043)
+  4:27 `@function` no tiene el argumento `extra`
+      ayuda: los suyos son `over`, `reads`, `models` y `timeout`
+  5:5 `muchos` no dice lo que devuelve
+      ayuda: anótalo: `-> str`, `-> list[int]`, o una `@dataclass` del fichero
+  5:18 `x` sin anotar
+      ayuda: la firma es lo que un consumidor ve: `x: str`, `x: int`…
+  5:21 `*args` en una función
+      ayuda: la superficie es cerrada: un consumidor solo ve lo que se nombra. Nombra cada parámetro
+  5:31 `dict` no tiene tipo en OOS
+      ayuda: una firma usa `int`, `float`, `str`, `bool`, `date`, `datetime`, `Decimal`, `list[T]` y `Optional[T]` (o `T | None`); un registro de vuelta es una `@dataclass` del mismo fichero
+  5:47 `**kw` en una función
+      ayuda: la superficie es cerrada: un consumidor solo ve lo que se nombra. Nombra cada parámetro
+── asincrona no se deriva (OOS2043)
+  10:11 `asincrona` es un `async def`
+      ayuda: el runtime llama al `def` y espera su valor; una corrutina es otra cosa. Escríbelo como `def`
+── posicional no se deriva (OOS2043)
+  14:2 `@function` con argumentos posicionales
+      ayuda: se dicen por nombre: `over=`, `reads=`, `models=`, `timeout=`
+  15:26 una lista de listas
+      ayuda: `list<T>` no lleva listas dentro
+── lista_de_opcionales no se deriva (OOS2043)
+  20:33 una lista de opcionales
+      ayuda: los elementos de una lista no faltan: `list[int]`, no `list[int | None]`
+── union_de_dos no se deriva (OOS2043)
+  25:21 una unión que no es `T | None`
+      ayuda: un parámetro tiene un tipo; `Optional[T]` o `T | None` dicen que puede faltar. Dos tipos distintos no son una firma
+── sin_fila no se deriva (OOS2043)
+  30:5 `sin_fila` trabaja sobre `over` y no recibe la fila
+      ayuda: con `over`, el primer parámetro es la fila: posicional y sin valor por defecto
+── no_literales no se deriva (OOS2043)
+  34:17 `reads` no es una lista literal de cadenas
+      ayuda: se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas
+  34:37 un elemento de `models` no es una cadena literal
+      ayuda: se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas

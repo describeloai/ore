@@ -1,0 +1,895 @@
+{
+ "ambito_alias.py": [
+  {
+   "name": "por_modulo",
+   "entrypoint": "funciones/ambito_alias.py:por_modulo",
+   "input": [
+    [
+     "dia",
+     "Date",
+     true
+    ],
+    [
+     "n",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "String"
+   }
+  },
+  {
+   "name": "por_alias",
+   "entrypoint": "funciones/ambito_alias.py:por_alias",
+   "models": [
+    "modelo/ia.chat"
+   ],
+   "input": [
+    [
+     "x",
+     "Integer",
+     false
+    ],
+    [
+     "nombre",
+     "String",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "list<Float>"
+   }
+  },
+  {
+   "name": "con_comillas",
+   "entrypoint": "funciones/ambito_alias.py:con_comillas",
+   "input": [
+    [
+     "x",
+     "DateTime",
+     true
+    ],
+    [
+     "y",
+     "list<Integer>",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Integer"
+   }
+  },
+  {
+   "name": "sin_importar",
+   "error": "OOS2043",
+   "por": "tipo sin traducción"
+  }
+ ],
+ "ambito_dataclass.py": [
+  {
+   "name": "entre_comillas",
+   "entrypoint": "funciones/ambito_dataclass.py:entre_comillas",
+   "input": [
+    [
+     "importe",
+     "Decimal",
+     true
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "id",
+      "String",
+      true
+     ],
+     [
+      "total",
+      "Decimal",
+      true
+     ],
+     [
+      "notas",
+      "list<String>",
+      false
+     ],
+     [
+      "puntos",
+      "Integer",
+      true
+     ],
+     [
+      "peso",
+      "Float",
+      false
+     ]
+    ]
+   }
+  },
+  {
+   "name": "antes_de_tiempo",
+   "error": "OOS2043",
+   "por": "tipo sin traducción: None"
+  },
+  {
+   "name": "despues",
+   "entrypoint": "funciones/ambito_dataclass.py:despues",
+   "input": [
+    [
+     "n",
+     "Integer",
+     true
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "id",
+      "String",
+      true
+     ],
+     [
+      "total",
+      "Decimal",
+      true
+     ],
+     [
+      "notas",
+      "list<String>",
+      false
+     ],
+     [
+      "puntos",
+      "Integer",
+      true
+     ],
+     [
+      "peso",
+      "Float",
+      false
+     ]
+    ]
+   }
+  },
+  {
+   "name": "devuelve_una_clase_normal",
+   "error": "OOS2043",
+   "por": "no es una @dataclass"
+  },
+  {
+   "name": "hereda_de_fuera",
+   "error": "OOS2043",
+   "por": "hereda de algo que no es una @dataclass del fichero"
+  }
+ ],
+ "ambito_futuro.py": [
+  {
+   "name": "adelantada",
+   "entrypoint": "funciones/ambito_futuro.py:adelantada",
+   "description": "La docstring empieza tarde.",
+   "over": "ventas.default.pedidos",
+   "timeout": "30s",
+   "input": [
+    [
+     "minimo",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "valor",
+      "Integer",
+      false
+     ]
+    ]
+   }
+  }
+ ],
+ "ambito_sombra.py": [
+  {
+   "name": "con_una_clase_propia",
+   "error": "OOS2043",
+   "por": "tipo sin traducción: <local>.date"
+  },
+  {
+   "name": "bien_antes",
+   "entrypoint": "funciones/ambito_sombra.py:bien_antes",
+   "input": [
+    [
+     "n",
+     "Integer",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Integer"
+   }
+  }
+ ],
+ "dificil.py": [
+  {
+   "name": "evaluar",
+   "entrypoint": "funciones/dificil.py:evaluar",
+   "description": "Evalúa una línea: «f\"{x!r:>10}\"» y nada más.",
+   "over": "ventas.default.pedidos",
+   "reads": [
+    "ventas.default.clientes",
+    "ventas.default.productos"
+   ],
+   "models": [
+    "modelo/extractor",
+    "modelo/ia.chat"
+   ],
+   "timeout": "2m",
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "desde",
+     "DateTime",
+     false
+    ],
+    [
+     "etiquetas",
+     "list<String>",
+     false
+    ],
+    [
+     "activa",
+     "Boolean",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "producto",
+      "String",
+      true
+     ],
+     [
+      "cantidad",
+      "Integer",
+      true
+     ],
+     [
+      "precio",
+      "Decimal",
+      false
+     ],
+     [
+      "nota",
+      "String",
+      false
+     ],
+     [
+      "etiquetas",
+      "list<String>",
+      false
+     ]
+    ]
+   }
+  },
+  {
+   "name": "resumir",
+   "entrypoint": "funciones/dificil.py:resumir",
+   "models": [
+    "modelo/extractor"
+   ],
+   "input": [
+    [
+     "texto",
+     "String",
+     true
+    ],
+    [
+     "maximo",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "String"
+   }
+  },
+  {
+   "name": "sin_parametros",
+   "entrypoint": "funciones/dificil.py:sin_parametros",
+   "input": [],
+   "output": {
+    "valor": "list<Decimal>"
+   }
+  },
+  {
+   "name": "con_lambda",
+   "entrypoint": "funciones/dificil.py:con_lambda",
+   "input": [
+    [
+     "n",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "Integer"
+   }
+  }
+ ],
+ "fallos.py": [
+  {
+   "name": "muchos",
+   "error": "OOS2043",
+   "por": "argumento extra"
+  },
+  {
+   "name": "asincrona",
+   "error": "OOS2043",
+   "por": "async"
+  },
+  {
+   "name": "posicional",
+   "error": "OOS2043",
+   "por": "argumento posicional"
+  },
+  {
+   "name": "lista_de_opcionales",
+   "error": "OOS2043",
+   "por": "lista de opcionales"
+  },
+  {
+   "name": "union_de_dos",
+   "error": "OOS2043",
+   "por": "una unión que no es T | None"
+  },
+  {
+   "name": "sin_fila",
+   "error": "OOS2043",
+   "por": "sin la fila"
+  },
+  {
+   "name": "no_literales",
+   "error": "OOS2043",
+   "por": "no es una lista de cadenas"
+  }
+ ],
+ "foundry.py": [
+  {
+   "name": "example_addition_function",
+   "entrypoint": "funciones/foundry.py:example_addition_function",
+   "input": [
+    [
+     "a",
+     "Integer",
+     true
+    ],
+    [
+     "b",
+     "Integer",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "String"
+   }
+  },
+  {
+   "name": "example_date_function",
+   "entrypoint": "funciones/foundry.py:example_date_function",
+   "input": [
+    [
+     "fecha",
+     "Date",
+     true
+    ],
+    [
+     "days_ahead",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "String"
+   }
+  },
+  {
+   "name": "example_fibonacci_function",
+   "entrypoint": "funciones/foundry.py:example_fibonacci_function",
+   "input": [
+    [
+     "n",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "list<Integer>"
+   }
+  }
+ ],
+ "invalid_a_document_without_its_decorator.py": [],
+ "invalid_a_function_without_its_document.py": [
+  {
+   "name": "repetir",
+   "entrypoint": "funciones/invalid_a_function_without_its_document.py:repetir",
+   "input": [
+    [
+     "texto",
+     "String",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "String"
+   }
+  }
+ ],
+ "invalid_a_function_without_its_document_otro.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_a_function_without_its_document_otro.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_a_hand_edited_document.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_a_hand_edited_document.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_a_model_that_is_not_there.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_a_model_that_is_not_there.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "models": [
+    "modelo/clasificador"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_a_non_literal_decorator_argument.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "no es una cadena"
+  }
+ ],
+ "invalid_a_parameter_the_document_does_not_declare.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_a_parameter_the_document_does_not_declare.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "divisa",
+     "String",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_a_required_input_with_a_default.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_a_required_input_with_a_default.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     false
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_an_async_def.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "async"
+  }
+ ],
+ "invalid_an_entrypoint_out_of_the_package.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_an_entrypoint_out_of_the_package.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_an_unannotated_parameter.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "sin anotar: umbral"
+  }
+ ],
+ "invalid_an_untranslatable_type.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "tipo sin traducción: builtins.dict"
+  }
+ ],
+ "invalid_kwargs_is_not_a_surface.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "*args/**kwargs"
+  }
+ ],
+ "invalid_model_with_python.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_model_with_python.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_over_without_the_row.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "sin la fila"
+  }
+ ],
+ "invalid_python_in_v1alpha17.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_python_in_v1alpha17.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_python_without_entrypoint.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/invalid_python_without_entrypoint.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "invalid_the_def_is_inside_a_class.py": [],
+ "invalid_without_a_return_annotation.py": [
+  {
+   "name": "riesgo",
+   "error": "OOS2043",
+   "por": "sin retorno"
+  }
+ ],
+ "valid_a_python_function_over_a_view.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/valid_a_python_function_over_a_view.py:riesgo",
+   "over": "ventas.clientes",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "input": [
+    [
+     "umbral",
+     "Decimal",
+     true
+    ],
+    [
+     "moneda",
+     "String",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "valid_a_python_function_over_its_parameters.py": [
+  {
+   "name": "repetir",
+   "entrypoint": "funciones/valid_a_python_function_over_its_parameters.py:repetir",
+   "input": [
+    [
+     "texto",
+     "String",
+     true
+    ],
+    [
+     "veces",
+     "Integer",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "String"
+   }
+  }
+ ],
+ "valid_a_python_function_that_uses_a_model.py": [
+  {
+   "name": "resumir",
+   "entrypoint": "funciones/valid_a_python_function_that_uses_a_model.py:resumir",
+   "reads": [
+    "ventas.pedidos"
+   ],
+   "models": [
+    "modelo/extractor"
+   ],
+   "timeout": "60s",
+   "input": [
+    [
+     "pais",
+     "String",
+     true
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "resumen",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "valid_decorators_and_keyword_only.py": [
+  {
+   "name": "riesgo",
+   "entrypoint": "funciones/valid_decorators_and_keyword_only.py:riesgo",
+   "over": "ventas.clientes",
+   "input": [
+    [
+     "umbral",
+     "Float",
+     true
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "nivel",
+      "String",
+      true
+     ]
+    ]
+   }
+  }
+ ],
+ "valid_the_docstring_optional_and_lists.py": [
+  {
+   "name": "fibonacci",
+   "entrypoint": "funciones/valid_the_docstring_optional_and_lists.py:fibonacci",
+   "description": "Los n primeros de Fibonacci.",
+   "input": [
+    [
+     "n",
+     "Integer",
+     true
+    ],
+    [
+     "desde",
+     "Date",
+     false
+    ]
+   ],
+   "output": {
+    "valor": "list<Integer>"
+   }
+  }
+ ]
+}

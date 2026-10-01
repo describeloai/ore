@@ -1,0 +1,3 @@
+── riesgo no se deriva (OOS2043)
+  15:16 `over` no es una cadena literal
+      ayuda: se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas

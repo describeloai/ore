@@ -1,0 +1,3 @@
+── riesgo no se deriva (OOS2043)
+  13:11 `riesgo` es un `async def`
+      ayuda: el runtime llama al `def` y espera su valor; una corrutina es otra cosa. Escríbelo como `def`

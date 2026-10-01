@@ -1,0 +1,62 @@
+── avisos
+  79:9 `metodo` lleva `@function` y no está en el nivel superior del módulo
+      ayuda: una función es un `def` del módulo, no un método ni un `def` dentro de otro: así no se publica
+── evaluar → functions/evaluar.yaml
+# generado por ore desde funciones/dificil.py:evaluar · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata:
+  name: evaluar
+  namespace: ventas
+  description: 'Evalúa una línea: «f"{x!r:>10}"» y nada más.'
+spec:
+  runtime: python
+  entrypoint: funciones/dificil.py:evaluar
+  over: ventas.default.pedidos
+  reads: [ventas.default.clientes, ventas.default.productos]
+  models: [modelo/extractor, modelo/ia.chat]
+  input:
+    umbral: { type: Decimal, required: true }
+    desde: { type: DateTime }
+    etiquetas: { type: list<String> }
+    activa: { type: Boolean }
+  output:
+    producto: { type: String, required: true }
+    cantidad: { type: Integer, required: true }
+    precio: { type: Decimal }
+    nota: { type: String }
+    etiquetas: { type: list<String> }
+  limits: { timeout: '2m' }
+── resumir → functions/resumir.yaml
+# generado por ore desde funciones/dificil.py:resumir · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: resumir, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/dificil.py:resumir
+  models: [modelo/extractor]
+  input:
+    texto: { type: String, required: true }
+    maximo: { type: Integer }
+  output: { type: String }
+── sin_parametros → functions/sin_parametros.yaml
+# generado por ore desde funciones/dificil.py:sin_parametros · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: sin_parametros, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/dificil.py:sin_parametros
+  output: { type: list<Decimal> }
+── con_lambda → functions/con_lambda.yaml
+# generado por ore desde funciones/dificil.py:con_lambda · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: con_lambda, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/dificil.py:con_lambda
+  input:
+    'n': { type: Integer }
+  output: { type: Integer }

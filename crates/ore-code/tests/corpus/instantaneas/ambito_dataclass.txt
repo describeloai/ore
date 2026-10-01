@@ -1,0 +1,41 @@
+── entre_comillas → functions/entre_comillas.yaml
+# generado por ore desde funciones/ambito_dataclass.py:entre_comillas · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: entre_comillas, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/ambito_dataclass.py:entre_comillas
+  input:
+    importe: { type: Decimal, required: true }
+  output:
+    id: { type: String, required: true }
+    total: { type: Decimal, required: true }
+    notas: { type: list<String> }
+    puntos: { type: Integer, required: true }
+    peso: { type: Float }
+── antes_de_tiempo no se deriva (OOS2043)
+  16:32 `Resultado` todavía no existe aquí
+      ayuda: se define más abajo, y la anotación se evalúa al definir la función (Python 3.12): muévelo arriba, o escríbelo entre comillas, `"Resultado"`
+── despues → functions/despues.yaml
+# generado por ore desde funciones/ambito_dataclass.py:despues · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: despues, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/ambito_dataclass.py:despues
+  input:
+    'n': { type: Integer, required: true }
+  output:
+    id: { type: String, required: true }
+    total: { type: Decimal, required: true }
+    notas: { type: list<String> }
+    puntos: { type: Integer, required: true }
+    peso: { type: Float }
+── devuelve_una_clase_normal no se deriva (OOS2043)
+  41:7 `NoEsDataclass` no es una `@dataclass`
+      ayuda: lo que devuelve una función es un tipo, o una `@dataclass` del mismo fichero: sus campos son `output`
+── hereda_de_fuera no se deriva (OOS2043)
+  51:12 `Rara` hereda de algo que no es una `@dataclass` del fichero
+      ayuda: sus campos no se pueden leer sin ejecutar: hereda de una `@dataclass` de aquí, o de nada

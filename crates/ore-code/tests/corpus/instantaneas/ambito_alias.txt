@@ -1,0 +1,40 @@
+── por_modulo → functions/por_modulo.yaml
+# generado por ore desde funciones/ambito_alias.py:por_modulo · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: por_modulo, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/ambito_alias.py:por_modulo
+  input:
+    dia: { type: Date, required: true }
+    'n': { type: Integer }
+  output: { type: String }
+── por_alias → functions/por_alias.yaml
+# generado por ore desde funciones/ambito_alias.py:por_alias · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: por_alias, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/ambito_alias.py:por_alias
+  models: [modelo/ia.chat]
+  input:
+    x: { type: Integer }
+    nombre: { type: String, required: true }
+  output: { type: list<Float> }
+── con_comillas → functions/con_comillas.yaml
+# generado por ore desde funciones/ambito_alias.py:con_comillas · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: con_comillas, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/ambito_alias.py:con_comillas
+  input:
+    x: { type: DateTime, required: true }
+    'y': { type: list<Integer>, required: true }
+  output: { type: Integer }
+── sin_importar no se deriva (OOS2043)
+  26:21 `Optional` no está importado
+      ayuda: `from typing import Optional`

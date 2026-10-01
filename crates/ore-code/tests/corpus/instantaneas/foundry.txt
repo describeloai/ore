@@ -1,0 +1,35 @@
+── example_addition_function → functions/example_addition_function.yaml
+# generado por ore desde funciones/foundry.py:example_addition_function · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: example_addition_function, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/foundry.py:example_addition_function
+  input:
+    a: { type: Integer, required: true }
+    b: { type: Integer, required: true }
+  output: { type: String }
+── example_date_function → functions/example_date_function.yaml
+# generado por ore desde funciones/foundry.py:example_date_function · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: example_date_function, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/foundry.py:example_date_function
+  input:
+    fecha: { type: Date, required: true }
+    days_ahead: { type: Integer }
+  output: { type: String }
+── example_fibonacci_function → functions/example_fibonacci_function.yaml
+# generado por ore desde funciones/foundry.py:example_fibonacci_function · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: example_fibonacci_function, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/foundry.py:example_fibonacci_function
+  input:
+    'n': { type: Integer }
+  output: { type: list<Integer> }

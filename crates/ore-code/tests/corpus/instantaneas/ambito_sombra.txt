@@ -1,0 +1,14 @@
+── con_una_clase_propia no se deriva (OOS2043)
+  11:31 `date` aquí es un nombre de este fichero, no el de `datetime`
+      ayuda: algo del módulo lo tapa: renómbralo
+── bien_antes → functions/bien_antes.yaml
+# generado por ore desde funciones/ambito_sombra.py:bien_antes · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: bien_antes, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/ambito_sombra.py:bien_antes
+  input:
+    'n': { type: Integer, required: true }
+  output: { type: Integer }

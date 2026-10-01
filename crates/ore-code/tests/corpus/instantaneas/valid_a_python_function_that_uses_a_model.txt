@@ -1,0 +1,15 @@
+── resumir → functions/resumir.yaml
+# generado por ore desde funciones/valid_a_python_function_that_uses_a_model.py:resumir · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: resumir, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/valid_a_python_function_that_uses_a_model.py:resumir
+  reads: [ventas.pedidos]
+  models: [modelo/extractor]
+  input:
+    pais: { type: String, required: true }
+  output:
+    resumen: { type: String, required: true }
+  limits: { timeout: '60s' }

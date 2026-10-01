@@ -1,0 +1,3 @@
+── avisos
+  8:9 `riesgo` lleva `@function` y no está en el nivel superior del módulo
+      ayuda: una función es un `def` del módulo, no un método ni un `def` dentro de otro: así no se publica

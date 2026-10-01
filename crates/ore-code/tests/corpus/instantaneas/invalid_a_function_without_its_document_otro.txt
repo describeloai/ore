@@ -1,0 +1,15 @@
+── riesgo → functions/riesgo.yaml
+# generado por ore desde funciones/invalid_a_function_without_its_document_otro.py:riesgo · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: riesgo, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/invalid_a_function_without_its_document_otro.py:riesgo
+  over: ventas.clientes
+  reads: [ventas.pedidos]
+  input:
+    umbral: { type: Decimal, required: true }
+    moneda: { type: String }
+  output:
+    nivel: { type: String, required: true }

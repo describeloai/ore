@@ -1,0 +1,13 @@
+── riesgo → functions/riesgo.yaml
+# generado por ore desde funciones/valid_decorators_and_keyword_only.py:riesgo · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: riesgo, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/valid_decorators_and_keyword_only.py:riesgo
+  over: ventas.clientes
+  input:
+    umbral: { type: Float, required: true }
+  output:
+    nivel: { type: String, required: true }

@@ -1,0 +1,15 @@
+── fibonacci → functions/fibonacci.yaml
+# generado por ore desde funciones/valid_the_docstring_optional_and_lists.py:fibonacci · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata:
+  name: fibonacci
+  namespace: ventas
+  description: Los n primeros de Fibonacci.
+spec:
+  runtime: python
+  entrypoint: funciones/valid_the_docstring_optional_and_lists.py:fibonacci
+  input:
+    'n': { type: Integer, required: true }
+    desde: { type: Date }
+  output: { type: list<Integer> }

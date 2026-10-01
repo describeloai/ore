@@ -1,0 +1,3 @@
+── riesgo no se deriva (OOS2043)
+  13:21 `umbral` sin anotar
+      ayuda: la firma es lo que un consumidor ve: `umbral: str`, `umbral: int`…
