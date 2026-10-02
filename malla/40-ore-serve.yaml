@@ -270,18 +270,12 @@ spec:
             # Las trae `50-jwks.yaml`, que es quien puede salir. ADR 0020.
             - --jwks
             - /llaves/jwks.json
-            # ── R1 · EL POD DE UN PUESTO ES ESE PUESTO ─────────────────
+            # ── R1 · EL POD DE UN PUESTO ES ESE PUESTO (en suspenso) ──────
             #
-            # Un puesto manda el token de cuenta de servicio de SU pod
-            # (`x-ore-pod`), y con esto se verifica: el emisor del clúster, sus
-            # llaves y SÓLO los pods de este namespace con la cuenta `puesto`.
-            # Así se sabe qué puesto habla sin creerse ninguna cabecera.
-            - --emisor-pods
-            - https://container.googleapis.com/v1/projects/project-8853a180-450d-47be-b83/locations/europe-west1-b/clusters/ore-mesh
-            - --jwks-pods
-            - /llaves-pods/jwks.json
-            - --pods-de
-            - t-demo
+            # `--emisor-pods`, `--jwks-pods` y `--pods-de` se quitaron el
+            # 2026-10-02: la identidad se deducía del NOMBRE del pod, y ese nombre
+            # lo pone Kubernetes (recorta a 58), no `ore-serve`. Vuelven cuando la
+            # identidad vaya DECLARADA en la audiencia del token que pone el Job.
             # ── ⭐⭐ DONDE VA LA CREDENCIAL DE UNA FUENTE ─────────────
             #
             # Hasta hoy: `ore source add` la escribia en `.env.local`,
