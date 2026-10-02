@@ -294,11 +294,13 @@ spec:
               #   conexion), CATALOGAR (esto: que hay en el origen), MODELAR
               #   (al crear una database y, tabla a tabla, al promoverla).
               #
-              # ⭐ El manifiesto lleva a la organizacion como dueno («el dueno
-              #   es la organizacion», 0027): el paquete compila desde que nace.
+              # ⭐ El manifiesto lleva de dueno a quien dio de alta el origen
+              #   (`DUENO`, que pone ore-serve al encolar; 0027, «el dueno es quien
+              #   lo crea»): el paquete compila desde que nace. Un Job encolado
+              #   antes, o rendido por la convergencia, no lo trae: la organizacion.
               echo "### leyendo el origen \`$FUENTE\`"
               [ -f "packages/$FUENTE/package.yaml" ] \
-                || ore package new "$FUENTE" --owner "team:$ORGANIZACION" --path .
+                || ore package new "$FUENTE" --owner "${DUENO:-team:$ORGANIZACION}" --path .
               # ⭐ Si falla, el DIAGNOSTICO: `ore source check` dice permiso a permiso
               #   qué falta y dónde concederlo.
               # ⛔⛔ Y SE DEJA EN EL ÁRBOL, no solo en el log del pod. Medido el
