@@ -293,7 +293,14 @@ print(declare({
 }))
 ";
 
-/// La semilla de `functions-python`: **solo el código** (0050 G1, G2).
+/// La semilla de `functions-python`: **solo el código** (0050 G1, G2, G4).
+///
+/// v8: un ejemplo que enseña lo que el contrato cumple (G3) —`Decimal` para el
+/// dinero, `date`, opcionales y una salida con un campo que puede faltar— y
+/// cómo se usa: Run en la sesión corre su bloque `if __name__ == "__main__"`
+/// (la sesión ejecuta el fichero como `__main__`; el arnés, como
+/// `ore_funcion`, así que al invocarla no corre), desde código con
+/// `ore.funcion(...)` y desde Pipelines. Nombres en inglés, como la consola.
 ///
 /// `@function` y las anotaciones del `def` son el contrato, y el documento
 /// `Function` se deriva de ellos (OOS v1alpha18 01 §4): no se siembra, lo
@@ -304,39 +311,58 @@ print(declare({
 /// [`sembrar`]: el `def` se llama como la función, para que dos repositorios
 /// del mismo paquete no choquen.
 const FUNCTIONS_PY: &str = "\
-# Una FUNCIÓN del árbol, `{{paquete}}.{{funcion}}` (ADR 0050).
+# Una FUNCIÓN publicada: `{{paquete}}.{{funcion}}` (ORE 0050).
 #
-# `@function` y las anotaciones del `def` son su contrato: lo que recibe (cada
-# parámetro con su tipo; con valor por defecto, opcional) y lo que devuelve (un
-# tipo, o una `@dataclass` de este fichero). Su documento lo escribe el
-# commit, sin ejecutar nada, en `functions/` del paquete: es lo que se publica
-# en Assets → Functions. No se edita; se edita esto.
+# Escribes Python; la plataforma hace el resto. `@function` y las anotaciones
+# del `def` son su contrato —lo que recibe y lo que devuelve— y el docstring,
+# su descripción. Al hacer commit se publica en Assets → Functions: su
+# documento lo escribe ore, no se edita.
 #
-# Se invoca con parámetros (`POST /funciones/{{paquete}}/{{funcion}}/invocar`) y
-# corre en un trabajo de la celda.
+#   · Run, en tu sesión: corre el bloque `if __name__ == \"__main__\"` de abajo.
+#   · Desde otro código: `ore.funcion` con \"{{paquete}}.{{funcion}}\", y se llama.
+#   · Desde Pipelines:   el operador Function, con sus parámetros.
 #
-# Para trabajar sobre un dataset, una fila por llamada:
-#     @function(over=\"mi_base.mi_schema.mi_dataset\")
-#     def {{funcion}}(fila, umbral: int) -> ...
-# y la fila llega como el PRIMER parámetro, sin anotar. Lo demás que lea, en
-# `reads=[...]` (y se lee con `over` del SDK); los modelos que pueda llamar, en
-# `models=[\"extractor\"]` (y se llaman con `modelo`).
+# Los tipos se cumplen: \"2026-09-15\" llega como `date` y 120.50 como `Decimal`
+# exacto; devolver otro tipo es un error que dice su línea.
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 
 from ore import function
 
 
 @dataclass
-class Repetido:
-    resultado: str
-    longitud: int
+class InvoiceStatus:
+    status: str                        # \"paid\", \"current\" u \"overdue\"
+    outstanding: Decimal
+    days: int                          # hasta el vencimiento; negativo si ya venció
+    surcharge: Decimal | None = None   # solo si venció
 
 
-@function(timeout=\"60s\")
-def {{funcion}}(texto: str, veces: int = 1) -> Repetido:
-    \"\"\"Repite un texto las veces que se pida.\"\"\"
-    resultado = \" \".join([texto] * veces)
-    return Repetido(resultado, len(resultado))
+@function(timeout=\"30s\")
+def {{funcion}}(amount: Decimal, due: date, paid: Decimal = Decimal(\"0\"),
+                today: date | None = None) -> InvoiceStatus:
+    \"\"\"The status of an invoice: what is outstanding, the days until it is due and the surcharge if it is overdue.\"\"\"
+    today = today or date.today()
+    outstanding = max(amount - paid, Decimal(\"0\"))
+    days = (due - today).days
+    if outstanding == 0:
+        return InvoiceStatus(\"paid\", outstanding, days)
+    if days >= 0:
+        return InvoiceStatus(\"current\", outstanding, days)
+    surcharge = (outstanding * Decimal(\"0.0005\") * -days).quantize(Decimal(\"0.01\"))  # 0,05 % por día
+    return InvoiceStatus(\"overdue\", outstanding, days, surcharge)
+
+
+# Sobre un dataset (una llamada por fila), lo que lee y los modelos que llama
+# se declaran en el decorador:
+#     over=\"mi_base.mi_schema.invoices\"     la fila llega como primer parámetro
+#     reads=[\"mi_base.mi_schema.clients\"]   y se lee con `ore.over`
+#     models=[\"extractor\"]                  y se llama con `ore.modelo`
+
+if __name__ == \"__main__\":
+    print({{funcion}}(Decimal(\"120.50\"), \"2026-09-15\", today=\"2026-10-02\"))
+    # InvoiceStatus(status='overdue', outstanding=Decimal('120.50'), days=-17, surcharge=Decimal('1.02'))
 ";
 
 /// Si un fichero de la semilla se siembra en `paquete`. Un documento gobernado
@@ -390,7 +416,7 @@ pub fn sembrar(contenido: &str, paquete: &str, carpeta: &str) -> String {
     contenido
         .replace("{{paquete}}", paquete)
         .replace("{{carpeta}}", carpeta)
-        .replace("{{funcion}}", &format!("{f}_ejemplo"))
+        .replace("{{funcion}}", &format!("{f}_invoice_status"))
 }
 
 /// Las cinco clases de hoy. Añadir una es una fila más, y subir su `version`
@@ -498,7 +524,8 @@ pub const CLASES: &[Clase] = &[
         // 5: nace con una función de verdad, la pareja contrato + código (0050 P5).
         // 6: el código es la fuente, `@function` con anotaciones (0050 G1).
         // 7: sin documento: lo escribe el commit, en el paquete (0050 G2).
-        version: 7,
+        // 8: un ejemplo de verdad: Decimal, date, opcionales y Run (0050 G4).
+        version: 8,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
@@ -636,17 +663,21 @@ kind: Function
 metadata:
   name: {{funcion}}
   namespace: {{paquete}}
-  description: Repite un texto las veces que se pida.
+  description: 'The status of an invoice: what is outstanding, the days until it is due and the surcharge if it is overdue.'
 spec:
   runtime: python
   entrypoint: {{carpeta}}/funciones/ejemplo.py:{{funcion}}
   input:
-    texto: { type: String, required: true }
-    veces: { type: Integer }
+    amount: { type: Decimal, required: true }
+    due: { type: Date, required: true }
+    paid: { type: Decimal }
+    today: { type: Date }
   output:
-    resultado: { type: String, required: true }
-    longitud: { type: Integer, required: true }
-  limits: { timeout: '60s' }
+    status: { type: String, required: true }
+    outstanding: { type: Decimal, required: true }
+    days: { type: Integer, required: true }
+    surcharge: { type: Decimal }
+  limits: { timeout: '30s' }
 ";
 
     #[test]
@@ -705,15 +736,15 @@ spec:
             // Lo que hace el commit que lo crea (G2): generar lo sembrado.
             let (p, _) = crate::validate::cargar_paquete(&raiz);
             crate::generar::aplicar(&crate::generar::plan(&p)).unwrap();
-            let contrato = pkg.join("functions/funciones_de_riesgo_ejemplo.yaml");
+            let contrato = pkg.join("functions/funciones_de_riesgo_invoice_status.yaml");
             if paquete == "ventas" {
-                assert!(pkg.join("functions/otra_ejemplo.yaml").exists());
+                assert!(pkg.join("functions/otra_invoice_status.yaml").exists());
                 assert!(!pkg.join("funciones-de-riesgo/functions").exists());
                 let yaml = std::fs::read_to_string(&contrato).unwrap();
-                assert!(yaml.contains("name: funciones_de_riesgo_ejemplo"), "{yaml}");
+                assert!(yaml.contains("name: funciones_de_riesgo_invoice_status"), "{yaml}");
                 assert!(
                     yaml.contains(
-                        "entrypoint: funciones-de-riesgo/funciones/ejemplo.py:funciones_de_riesgo_ejemplo"
+                        "entrypoint: funciones-de-riesgo/funciones/ejemplo.py:funciones_de_riesgo_invoice_status"
                     ),
                     "{yaml}"
                 );
