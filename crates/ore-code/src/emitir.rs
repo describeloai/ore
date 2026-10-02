@@ -12,6 +12,8 @@
 use crate::firma::{Campo, Firma, Salida};
 use std::fmt::Write;
 
+/// La de una firma que solo usa la tabla de v1alpha18; la de cada una la
+/// dice [`Firma::api_version`] (v1alpha20 `01` §6).
 pub const API_VERSION: &str = "oos.dev/v1alpha18";
 
 /// La primera línea de un documento generado. Es la marca que permite a
@@ -37,7 +39,7 @@ pub fn documento(f: &Firma, paquete: &str) -> String {
         "{MARCA} {} · se edita el def, no este fichero",
         f.entrypoint
     );
-    let _ = writeln!(s, "apiVersion: {API_VERSION}");
+    let _ = writeln!(s, "apiVersion: {}", f.api_version());
     s.push_str("kind: Function\n");
     match &f.descripcion {
         None => {

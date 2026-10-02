@@ -1,3 +1,3 @@
 ── riesgo no se deriva (OOS2043)
   13:69 `dict` no tiene tipo en OOS
-      ayuda: una firma usa `int`, `float`, `str`, `bool`, `date`, `datetime`, `Decimal`, `list[T]` y `Optional[T]` (o `T | None`); un registro de vuelta es una `@dataclass` del mismo fichero
+      ayuda: una firma usa `int`, `float`, `str`, `bool`, `date`, `time`, `datetime`, `bytes`, `Decimal`, `list[T]` y `Optional[T]` (o `T | None`); de `ore.tipos`, `DateTimeTz`, `Money["EUR", 2]`, `Quantity["km", 1]`, `Media["a.b.c"]` y `Annotated[Decimal, Precision(p, s)]`; y una `@dataclass` del mismo fichero

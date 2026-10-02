@@ -23,18 +23,24 @@ pub enum Expr {
     O(Box<Expr>, Box<Expr>, Rango),
     Nada(Rango),
     Cadena(String, Rango),
+    /// Un entero literal (v1alpha20: `Precision(12, 2)`, `Money["EUR", 2]`).
+    Entero(i64, Rango),
     Lista(Vec<Expr>, Rango),
     Llamada {
         funcion: Box<Expr>,
         posicionales: usize,
+        /// Los posicionales, en orden (v1alpha20: los de `Precision(p, s)`).
+        argumentos: Vec<Expr>,
         /// `None` como nombre es un `**algo`.
         nombrados: Vec<(Option<String>, Expr)>,
         rango: Rango,
     },
-    /// Una anotación entre comillas, ya analizada.
-    Comillas(Box<Expr>, Rango),
-    /// Entre comillas, y lo de dentro no es Python.
-    ComillasRotas(Rango),
+    /// Una anotación entre comillas, ya analizada, y su texto: dentro de
+    /// `Money["EUR", 2]` o `Media["a.b.c"]` la cadena es un literal y no una
+    /// referencia adelantada (v1alpha20).
+    Comillas(Box<Expr>, String, Rango),
+    /// Entre comillas, y lo de dentro no es Python; con su texto.
+    ComillasRotas(String, Rango),
     Otra(Rango),
 }
 
@@ -47,10 +53,11 @@ impl Expr {
             | Expr::O(_, _, r)
             | Expr::Nada(r)
             | Expr::Cadena(_, r)
+            | Expr::Entero(_, r)
             | Expr::Lista(_, r)
             | Expr::Llamada { rango: r, .. }
-            | Expr::Comillas(_, r)
-            | Expr::ComillasRotas(r)
+            | Expr::Comillas(_, _, r)
+            | Expr::ComillasRotas(_, r)
             | Expr::Otra(r) => *r,
         }
     }
@@ -496,12 +503,22 @@ impl Lector<'_> {
             }
             ast::Expr::NoneLiteral(_) => Expr::Nada(r),
             ast::Expr::StringLiteral(s) if es_anotacion => {
+                let texto: String = s.value.to_str().into();
                 match parse_type_annotation(s, self.fuente) {
-                    Ok(p) => Expr::Comillas(Box::new(self.convertir(p.expression(), true, n)), r),
-                    Err(_) => Expr::ComillasRotas(r),
+                    Ok(p) => {
+                        Expr::Comillas(Box::new(self.convertir(p.expression(), true, n)), texto, r)
+                    }
+                    Err(_) => Expr::ComillasRotas(texto, r),
                 }
             }
             ast::Expr::StringLiteral(s) => Expr::Cadena(s.value.to_str().into(), r),
+            ast::Expr::NumberLiteral(ast::ExprNumberLiteral {
+                value: ast::Number::Int(i),
+                ..
+            }) => match i.as_i64() {
+                Some(v) => Expr::Entero(v, r),
+                None => Expr::Otra(r),
+            },
             ast::Expr::List(l) => Expr::Lista(
                 l.elts.iter().map(|x| self.convertir(x, false, n)).collect(),
                 r,
@@ -509,6 +526,12 @@ impl Lector<'_> {
             ast::Expr::Call(c) => Expr::Llamada {
                 funcion: Box::new(self.convertir(&c.func, false, n)),
                 posicionales: c.arguments.args.len(),
+                argumentos: c
+                    .arguments
+                    .args
+                    .iter()
+                    .map(|x| self.convertir(x, false, n))
+                    .collect(),
                 nombrados: c
                     .arguments
                     .keywords

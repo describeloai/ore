@@ -161,3 +161,65 @@ class LlamarUnaPublicada(unittest.TestCase):
             self.ore.funcion("ventas.nadie")
         with self.assertRaisesRegex(ValueError, "<paquete>.<def>"):
             self.ore.funcion("sinpunto")
+
+
+class LosTiposDeV1alpha20(unittest.TestCase):
+    """`ore.tipos` (OOS v1alpha20 `01`): lo que Python no escribe solo, cumplido."""
+
+    def setUp(self):
+        from typing import Annotated
+
+        from ore.medios import MediaRef
+        from ore.tipos import DateTimeTz, Media, Money, Precision, Quantity
+
+        self.MediaRef = MediaRef
+
+        @dataclasses.dataclass
+        class Linea:
+            producto: str
+            precio: Money["EUR", 2]
+
+        @dataclasses.dataclass
+        class Resumen:
+            lineas: list[Linea]
+            peso: Quantity["kg", 3]
+
+        @function
+        def todo(precio: Money["EUR", 2], corte: DateTimeTz, abre: datetime.time, firma: bytes,
+                 tasa: Annotated[Decimal, Precision(5, 4)], contrato: Media["legal.archivo.contratos"],
+                 lineas: list[Linea]) -> Resumen:
+            return Resumen(lineas, Decimal("1.250"))
+
+        self.todo = todo
+        self.bien = dict(
+            precio=12.5, corte="2026-10-02T08:00:00+02:00", abre="08:30", firma="aG9sYQ==", tasa="0.1234",
+            contrato={"uri": "s3://b/c.pdf", "collection": "legal.archivo.contratos", "path": "c.pdf", "version": "v1"},
+            lineas=[{"producto": "a", "precio": 3}, {"producto": "b", "precio": "4.99"}],
+        )
+
+    def test_lo_que_viaja_en_json_llega_de_su_tipo(self):
+        r = self.todo(**json.loads(json.dumps(self.bien), parse_float=Decimal))
+        self.assertEqual(r.peso, Decimal("1.250"))
+        self.assertEqual([l.precio for l in r.lineas], [Decimal(3), Decimal("4.99")])
+        self.assertEqual(type(r.lineas[0]).__name__, "Linea")
+
+    def test_cada_tipo_dice_lo_suyo(self):
+        def mal(regex, **cambios):
+            with self.assertRaisesRegex(ErrorDeContrato, regex):
+                self.todo(**dict(self.bien, **cambios))
+
+        mal(r"`precio` es `Money<EUR, 2>` .* más de 2 decimales", precio="1.234")
+        mal(r"`corte` es `DateTimeTz` .* sin zona", corte="2026-10-02T08:00:00")
+        mal(r"`abre` es `time`", abre="8h")
+        mal(r"`firma` es `bytes` .* base64", firma="no es base64!")
+        mal(r"`tasa` es `Decimal<5, 4>` .* no cabe", tasa="12.5")
+        mal(r"`contrato` es `Media<legal.archivo.contratos>` .* `otra.col`",
+            contrato=dict(self.bien["contrato"], collection="otra.col"))
+        mal(r"`lineas\[1\].precio` es `Money<EUR, 2>`", lineas=[{"producto": "a", "precio": 1}, {"producto": "b", "precio": "x"}])
+
+    def test_la_referencia_es_un_mediaref(self):
+        ref = self.todo.__wrapped__  # el def
+        self.assertIsNotNone(ref)
+        r = convertir("c", self.bien["contrato"], self.todo.__wrapped__.__annotations__["contrato"])
+        self.assertIsInstance(r, self.MediaRef)
+        self.assertEqual(r.path, "c.pdf")

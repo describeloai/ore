@@ -1,0 +1,42 @@
+── fuera_de_rango no se deriva (OOS2043)
+  33:42 `Precision(39, 2)` está fuera de rango
+      ayuda: `1 ≤ p ≤ 38` y `0 ≤ s ≤ p`: las cifras en total y las de detrás de la coma
+── escala_mayor no se deriva (OOS2043)
+  38:40 `Precision(4, 5)` está fuera de rango
+      ayuda: `1 ≤ p ≤ 38` y `0 ≤ s ≤ p`: las cifras en total y las de detrás de la coma
+── precision_de_un_float no se deriva (OOS2043)
+  43:47 `Precision(p, s)` es de un `Decimal`
+      ayuda: `Annotated[Decimal, Precision(12, 2)]`
+── precision_no_literal no se deriva (OOS2043)
+  48:48 `Precision(p, s)` lleva dos enteros literales
+      ayuda: `Precision(12, 2)`: doce cifras, dos detrás de la coma
+── unidad_no_literal no se deriva (OOS2043)
+  53:32 la unidad de `Money[…]` es una cadena literal
+      ayuda: `Money["EUR", 2]`: se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas
+── sin_precision no se deriva (OOS2043)
+  58:22 `Quantity[…]` lleva la unidad y la precisión
+      ayuda: `Quantity["km", 1]`: la unidad, entre comillas, y los decimales
+── precision_negativa no se deriva (OOS2043)
+  63:40 la precisión de `Money[…]` es un entero literal
+      ayuda: los decimales, como número: `2`
+── unidad_con_coma no se deriva (OOS2043)
+  68:30 la unidad de `Money[…]` es una cadena literal
+      ayuda: `Money["EUR", 2]`: se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas
+── media_sin_coleccion no se deriva (OOS2043)
+  73:28 `Media` a secas no es un tipo
+      ayuda: `Media["base.schema.coleccion"]`: con lo que lo hace un tipo, entre corchetes
+── media_no_literal no se deriva (OOS2043)
+  78:25 `Media[…]` nombra una colección, entre comillas
+      ayuda: `Media["base.schema.coleccion"]`
+── recursiva no se deriva (OOS2043)
+  15:18 `Nodo` se contiene a sí misma
+      ayuda: una `@dataclass` que se contiene, directa o indirectamente, no tiene un tipo finito
+── recursiva_indirecta no se deriva (OOS2043)
+  25:8 `A` se contiene a sí misma
+      ayuda: una `@dataclass` que se contiene, directa o indirectamente, no tiene un tipo finito
+── lista_de_listas_de_struct no se deriva (OOS2043)
+  93:39 una lista de listas
+      ayuda: `list<T>` no lleva listas dentro
+── una_clase_que_no_es_dataclass no se deriva (OOS2043)
+  98:38 `Money2` es de este fichero y no tiene tipo en OOS
+      ayuda: una firma usa `int`, `float`, `str`, `bool`, `date`, `time`, `datetime`, `bytes`, `Decimal`, `list[T]` y `Optional[T]` (o `T | None`); de `ore.tipos`, `DateTimeTz`, `Money["EUR", 2]`, `Quantity["km", 1]`, `Media["a.b.c"]` y `Annotated[Decimal, Precision(p, s)]`; y una `@dataclass` del mismo fichero

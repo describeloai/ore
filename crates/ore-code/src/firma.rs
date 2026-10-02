@@ -33,7 +33,7 @@ impl Fallo {
     }
 }
 
-/// Los tipos de una firma (OOS v1alpha18 01 §4.6).
+/// Los tipos de una firma (OOS v1alpha18 01 §4.6, y v1alpha20 `01`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tipo {
     Integer,
@@ -45,6 +45,46 @@ pub enum Tipo {
     Decimal,
     /// `list<T>`, sin listas dentro.
     Lista(Box<Tipo>),
+    // ── v1alpha20 · la firma habla OOS ──────────────────────────────────
+    /// `datetime.time`.
+    Time,
+    /// `ore.tipos.DateTimeTz`: un instante, con su zona.
+    DateTimeTz,
+    /// `bytes`: lo que OOS no modela.
+    Opaque,
+    /// `Annotated[Decimal, Precision(p, s)]`.
+    DecimalPs {
+        precision: u8,
+        escala: u8,
+    },
+    /// `Money["EUR", 2]` y `Quantity["km", 1]`: la unidad es parte del tipo.
+    Unidad {
+        ctor: &'static str,
+        unidad: String,
+        precision: u32,
+    },
+    /// Una `@dataclass` del fichero que no es la vuelta: sus campos, en orden.
+    Struct(Vec<(String, Tipo)>),
+    /// `ore.tipos.Media["base.schema.coleccion"]`.
+    Media(String),
+}
+
+impl Tipo {
+    /// Si es de v1alpha20, a cualquier profundidad: lo que la tabla de
+    /// v1alpha18 no derivaba.
+    pub fn de_v1alpha20(&self) -> bool {
+        match self {
+            Tipo::Integer
+            | Tipo::Float
+            | Tipo::String
+            | Tipo::Boolean
+            | Tipo::Date
+            | Tipo::DateTime
+            | Tipo::Decimal => false,
+            Tipo::Lista(t) => t.de_v1alpha20(),
+            _ => true,
+        }
+    }
 }
 
 impl fmt::Display for Tipo {
@@ -58,6 +98,28 @@ impl fmt::Display for Tipo {
             Tipo::DateTime => f.write_str("DateTime"),
             Tipo::Decimal => f.write_str("Decimal"),
             Tipo::Lista(t) => write!(f, "list<{t}>"),
+            // Como los escribe `ore_core::types` (`Display` de `Type`): la
+            // forma canónica, un espacio tras cada `:` y cada `,`.
+            Tipo::Time => f.write_str("Time"),
+            Tipo::DateTimeTz => f.write_str("DateTimeTz"),
+            Tipo::Opaque => f.write_str("Opaque"),
+            Tipo::DecimalPs { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
+            Tipo::Unidad {
+                ctor,
+                unidad,
+                precision,
+            } => write!(f, "{ctor}<{unidad}, {precision}>"),
+            Tipo::Struct(campos) => {
+                f.write_str("Struct<")?;
+                for (i, (n, t)) in campos.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{n}: {t}")?;
+                }
+                f.write_str(">")
+            }
+            Tipo::Media(c) => write!(f, "Media<{c}>"),
         }
     }
 }
@@ -95,6 +157,24 @@ pub struct Firma {
     pub timeout: Option<String>,
     pub entrada: Vec<Campo>,
     pub salida: Salida,
+}
+
+impl Firma {
+    /// La versión más baja cuya tabla deriva esta firma (v1alpha20 `01` §6):
+    /// v1alpha18, salvo que use algo de v1alpha20. Un árbol que no usa nada
+    /// nuevo no cambia ni un byte.
+    pub fn api_version(&self) -> &'static str {
+        let nuevo = self.entrada.iter().any(|c| c.tipo.de_v1alpha20())
+            || match &self.salida {
+                Salida::Valor(t) => t.de_v1alpha20(),
+                Salida::Campos(cs) => cs.iter().any(|c| c.tipo.de_v1alpha20()),
+            };
+        if nuevo {
+            "oos.dev/v1alpha20"
+        } else {
+            "oos.dev/v1alpha18"
+        }
+    }
 }
 
 /// Un `@function` del nivel superior: su firma, o todo lo que impide sacarla.

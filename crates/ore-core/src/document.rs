@@ -131,6 +131,13 @@ pub enum ApiVersion {
     /// (2026-10-01): sin esto, una colección generada a partir de algo `high`
     /// llevaba sólo las etiquetas que alguien se acordara de ponerle.
     V1Alpha19,
+    /// v1alpha20. **La firma habla OOS.** Un `@function` deriva también a
+    /// `Time`, `Opaque`, `DateTimeTz`, `Decimal<p, s>`, `Money`, `Quantity`,
+    /// `Struct`, `list<Struct>` y `Media`: la tabla de v1alpha18 §4.6, ampliada.
+    /// No cambia ningún `kind`. Lo decidió ORE 0050 G5a (2026-10-02): lo que un
+    /// consumidor ve de una función —un pipeline, el formulario de Dry Run—
+    /// habla OOS, y la moneda de una columna se perdía en la frontera.
+    V1Alpha20,
 }
 
 impl ApiVersion {
@@ -152,6 +159,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha17,
         ApiVersion::V1Alpha18,
         ApiVersion::V1Alpha19,
+        ApiVersion::V1Alpha20,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -173,6 +181,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha17 => "oos.dev/v1alpha17",
             ApiVersion::V1Alpha18 => "oos.dev/v1alpha18",
             ApiVersion::V1Alpha19 => "oos.dev/v1alpha19",
+            ApiVersion::V1Alpha20 => "oos.dev/v1alpha20",
         }
     }
 

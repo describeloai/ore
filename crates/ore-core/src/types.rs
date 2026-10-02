@@ -527,6 +527,15 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     {
         tipos_de_seccion(d, "columns", &mut out);
     }
+    // v1alpha20: los de la firma de una función, también (OOS3001/OOS3007):
+    // un pipeline y el formulario de Dry Run los leen como tipos de OOS.
+    for f in pkg.docs.iter().filter(|d| d.kind == Kind::Function) {
+        tipos_de_seccion(f, "input", &mut out);
+        match f.section("output").and_then(|o| o.get("type")) {
+            Some((_, t)) if t.as_str().is_some() => tipo_suelto(f, t, &mut out),
+            _ => tipos_de_seccion(f, "output", &mut out),
+        }
+    }
     for e in pkg.entities() {
         tipos_declarados(e, &mut out);
         temporalidad(e, &mut out);
@@ -584,11 +593,18 @@ fn tipos_de_seccion(e: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
     let Some(ps) = e.section(seccion) else {
         return;
     };
-    for (k, v) in ps.entries() {
-        let Some((_, t)) = v.get("type") else {
-            continue;
-        };
-        let Some(s) = t.as_str() else { continue };
+    for (_, v) in ps.entries() {
+        if let Some((_, t)) = v.get("type") {
+            tipo_suelto(e, t, out);
+        }
+    }
+}
+
+/// OOS3001/OOS3002/OOS3007 sobre un `type` (el de una entrada de una sección,
+/// o el de un `output` que es un valor).
+fn tipo_suelto(e: &Loaded, t: &Node, out: &mut Vec<Diagnostic>) {
+    {
+        let Some(s) = t.as_str() else { return };
         match parse_type(s) {
             // v1alpha16: `Media<…>` es un tipo de esta versión. En un documento
             // de antes es lo que era: un tipo que no existía.
@@ -676,7 +692,6 @@ fn tipos_de_seccion(e: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
                 )),
             ),
         }
-        let _ = k;
     }
 }
 

@@ -844,33 +844,114 @@ fn parametros_de(f: &Funcion, cuerpo: &str) -> Result<Json, Respuesta> {
     Ok(Json::Obj(out))
 }
 
-/// Un valor del cuerpo, de su tipo de OOS.
+/// Un valor del cuerpo, de su tipo de OOS. Lo que se comprueba aquí, antes de
+/// encolar, es la forma (v1alpha20 `01` §7); el contrato del `def` lo convierte
+/// al tipo de Python en el arnés y comprueba el resto.
 fn valor_de(tipo: &str, v: &Node) -> Result<Json, String> {
+    match ore_core::types::parse_type(tipo) {
+        Ok(t) => valor_de_tipo(&t, v),
+        // Un tipo que no es de OOS ya lo dice el árbol (OOS3001): aquí, tal cual.
+        Err(_) => Ok(de_node(v)),
+    }
+}
+
+/// `(cifras enteras, decimales)` de un número escrito en decimal.
+fn cifras(raw: &str) -> (usize, usize) {
+    let sin_signo = raw.trim_start_matches(['-', '+']);
+    let (ent, dec) = sin_signo.split_once('.').unwrap_or((sin_signo, ""));
+    let ent = ent.trim_start_matches('0');
+    (ent.len(), dec.trim_end_matches('0').len())
+}
+
+fn valor_de_tipo(t: &ore_core::types::Type, v: &Node) -> Result<Json, String> {
     use ore_core::parse::Style;
-    if let Some(dentro) = tipo.strip_prefix("list<").and_then(|t| t.strip_suffix('>')) {
-        let Node::Sequence { items, .. } = v else {
-            return Err("no es una lista".into());
-        };
-        return items
-            .iter()
-            .map(|i| valor_de(dentro, i))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Json::Arr);
+    use ore_core::types::Type;
+    match t {
+        Type::List(dentro) => {
+            let Node::Sequence { items, .. } = v else {
+                return Err("no es una lista".into());
+            };
+            return items
+                .iter()
+                .map(|i| valor_de_tipo(dentro, i))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Json::Arr);
+        }
+        // Un objeto con esos campos y ninguno más; uno que falta es nulo.
+        Type::Struct(campos) => {
+            let Node::Mapping { entries, .. } = v else {
+                return Err("no es un objeto".into());
+            };
+            let mut out = std::collections::BTreeMap::new();
+            for (k, x) in entries {
+                let k = k.as_str().unwrap_or("");
+                let Some((_, tk)) = campos.iter().find(|(n, _)| n == k) else {
+                    return Err(format!("`{k}` no es un campo de `{t}`"));
+                };
+                let es_nulo =
+                    matches!(x, Node::Scalar { raw, style: Style::Plain, .. } if raw == "null");
+                let j = if es_nulo {
+                    Json::Crudo("null".into())
+                } else {
+                    valor_de_tipo(tk, x).map_err(|m| format!("`{k}`: {m}"))?
+                };
+                out.insert(k.to_string(), j);
+            }
+            return Ok(Json::Obj(out));
+        }
+        // La referencia a un ítem: un objeto con dónde está (v1alpha16 `03` §2).
+        Type::Media(_) => {
+            let Node::Mapping { entries, .. } = v else {
+                return Err("no es la referencia a un ítem (un objeto con `uri`, `path`…)".into());
+            };
+            if !entries
+                .iter()
+                .any(|(k, _)| matches!(k.as_str(), Some("uri" | "path")))
+            {
+                return Err("la referencia a un ítem lleva su `uri` o su `path`".into());
+            }
+            return Ok(de_node(v));
+        }
+        _ => {}
     }
     let (raw, plano) = match v {
         Node::Scalar { raw, style, .. } => (raw.as_str(), matches!(style, Style::Plain)),
         _ => return Err("no es un valor suelto".into()),
     };
-    let base = tipo.split('<').next().unwrap_or(tipo).trim();
+    let numero = |raw: &str| -> Result<(), String> {
+        match (plano, raw.parse::<f64>()) {
+            (true, Ok(x)) if x.is_finite() => Ok(()),
+            _ => Err(format!("`{raw}` no es un número")),
+        }
+    };
+    match t {
+        Type::Decimal { precision, escala } => {
+            numero(raw)?;
+            let (ent, dec) = cifras(raw);
+            if dec > usize::from(*escala) || ent > usize::from(precision - escala) {
+                return Err(format!("`{raw}` no cabe en `{t}`"));
+            }
+            return Ok(Json::Crudo(raw.to_string()));
+        }
+        Type::Parametric { precision, .. } => {
+            numero(raw)?;
+            if cifras(raw).1 > *precision as usize {
+                return Err(format!("`{raw}` tiene más de {precision} decimales"));
+            }
+            return Ok(Json::Crudo(raw.to_string()));
+        }
+        _ => {}
+    }
+    let base = match t {
+        Type::Scalar(s) => s.as_str(),
+        _ => "",
+    };
     match base {
         "Integer" => match (plano, raw.parse::<i64>()) {
             (true, Ok(i)) => Ok(Json::Int(i)),
             _ => Err(format!("`{raw}` no es un entero")),
         },
-        "Decimal" | "Float" | "Money" | "Quantity" => match (plano, raw.parse::<f64>()) {
-            (true, Ok(x)) if x.is_finite() => Ok(Json::Crudo(raw.to_string())),
-            _ => Err(format!("`{raw}` no es un número")),
-        },
+        "Decimal" | "Float" => numero(raw).map(|_| Json::Crudo(raw.to_string())),
         "Boolean" => match (plano, raw) {
             (true, "true") => Ok(Json::Bool(true)),
             (true, "false") => Ok(Json::Bool(false)),
@@ -890,6 +971,37 @@ fn valor_de(tipo: &str, v: &Node) -> Result<Json, String> {
                 Ok(Json::s(raw))
             } else {
                 Err(format!("`{raw}` no es una fecha `AAAA-MM-DD`"))
+            }
+        }
+        "Time" => {
+            let partes: Vec<&str> = raw.split(':').collect();
+            let ok = (2..=3).contains(&partes.len())
+                && partes.iter().enumerate().all(|(i, p)| {
+                    let p = if i == 2 {
+                        p.split('.').next().unwrap_or("")
+                    } else {
+                        p
+                    };
+                    p.len() == 2 && p.bytes().all(|c| c.is_ascii_digit())
+                });
+            if ok {
+                Ok(Json::s(raw))
+            } else {
+                Err(format!("`{raw}` no es una hora `HH:MM` o `HH:MM:SS`"))
+            }
+        }
+        // Un instante lleva su zona: `Z` o `±HH:MM` al final.
+        "DateTimeTz" => {
+            let zona = raw.ends_with('Z') || {
+                let b = raw.as_bytes();
+                b.len() > 6 && matches!(b[b.len() - 6], b'+' | b'-') && b[b.len() - 3] == b':'
+            };
+            if raw.len() >= 16 && raw.as_bytes().get(10) == Some(&b'T') && zona {
+                Ok(Json::s(raw))
+            } else {
+                Err(format!(
+                    "`{raw}` no es un instante ISO 8601 con zona (`…Z` o `…+02:00`)"
+                ))
             }
         }
         _ if plano && matches!(raw, "null" | "~") => Err("es nulo".into()),
@@ -961,10 +1073,20 @@ def _donde(e):
     return ""
 
 
+def _plano(v):
+    """Lo compuesto, como objetos y listas: un `Struct`, una lista de ellos, una
+    referencia a un ítem (v1alpha20)."""
+    if _dc.is_dataclass(v) and not isinstance(v, type):
+        return {{c.name: _plano(getattr(v, c.name)) for c in _dc.fields(v)}}
+    if isinstance(v, (list, tuple)):
+        return [_plano(x) for x in v]
+    return v
+
+
 def _fila(v):
     if _dc.is_dataclass(v) and not isinstance(v, type):
-        return {{c.name: getattr(v, c.name) for c in _dc.fields(v)}}
-    return {{"valor": v}}
+        return _plano(v)
+    return {{"valor": _plano(v)}}
 
 
 _over = {over}
@@ -1043,6 +1165,78 @@ mod tests_python {
             valor_de("String", &v("\"hola\"")).unwrap().jcs(),
             "\"hola\""
         );
+    }
+
+    /// v1alpha20 `01` §7: la forma de cada tipo nuevo en el cuerpo de una
+    /// invocación, antes de encolar.
+    #[test]
+    fn los_valores_de_v1alpha20_se_leen_de_su_tipo() {
+        let v = |s: &str| {
+            parse::parse(&format!("{{\"v\": {s}}}"))
+                .unwrap()
+                .get("v")
+                .unwrap()
+                .1
+                .clone()
+        };
+        let ok = |t: &str, s: &str| valor_de(t, &v(s)).map(|j| j.jcs());
+        assert_eq!(ok("Decimal<5, 2>", "123.45").unwrap(), "123.45");
+        assert!(
+            ok("Decimal<5, 2>", "1234.5")
+                .unwrap_err()
+                .contains("no cabe")
+        );
+        assert!(
+            ok("Decimal<5, 2>", "1.234")
+                .unwrap_err()
+                .contains("no cabe")
+        );
+        assert_eq!(ok("Money<EUR, 2>", "12.50").unwrap(), "12.50");
+        assert!(
+            ok("Money<EUR, 2>", "1.234")
+                .unwrap_err()
+                .contains("2 decimales")
+        );
+        assert_eq!(ok("Time", "\"08:30\"").unwrap(), "\"08:30\"");
+        assert!(ok("Time", "\"8h\"").is_err());
+        assert!(ok("DateTimeTz", "\"2026-10-02T08:00:00+02:00\"").is_ok());
+        assert!(ok("DateTimeTz", "\"2026-10-02T08:00:00Z\"").is_ok());
+        assert!(
+            ok("DateTimeTz", "\"2026-10-02T08:00:00\"")
+                .unwrap_err()
+                .contains("con zona")
+        );
+        assert_eq!(
+            ok(
+                "Struct<a: Integer, b: Money<EUR, 2>>",
+                "{\"a\": 1, \"b\": 2.5}"
+            )
+            .unwrap(),
+            "{\"a\":1,\"b\":2.5}"
+        );
+        assert!(
+            ok("Struct<a: Integer>", "{\"c\": 1}")
+                .unwrap_err()
+                .contains("`c` no es un campo")
+        );
+        assert!(
+            ok("Struct<a: Integer>", "{\"a\": \"x\"}")
+                .unwrap_err()
+                .contains("`a`")
+        );
+        assert_eq!(
+            ok("list<Struct<a: Integer>>", "[{\"a\": 1}, {\"a\": null}]").unwrap(),
+            "[{\"a\":1},{\"a\":null}]"
+        );
+        assert!(
+            ok(
+                "Media<legal.archivo.contratos>",
+                "{\"uri\": \"s3://b/c.pdf\"}"
+            )
+            .is_ok()
+        );
+        assert!(ok("Media<legal.archivo.contratos>", "\"c.pdf\"").is_err());
+        assert_eq!(ok("Opaque", "\"aG9sYQ==\"").unwrap(), "\"aG9sYQ==\"");
     }
 
     #[test]

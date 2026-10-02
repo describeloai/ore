@@ -15,8 +15,16 @@ Convertir es de lo que viaja en JSON a lo que el `def` anota, y nada más:
 `"2026-10-02"` es una `date` y `12.50` un `Decimal`, pero `"3"` no es un
 `int` —eso sería adivinar—. Lo que ya es del tipo pasa tal cual. Solo la
 biblioteca estándar.
+
+v1alpha20 (G5a): los tipos de `ore.tipos` —`DateTimeTz`, `Money`, `Quantity`,
+`Media`, `Annotated[Decimal, Precision(p, s)]`— son un `Annotated` de lo que
+Python tiene, y aquí se cumple lo que añaden: un instante lleva zona, un
+decimal no pasa de su precisión, una referencia es de su colección. Y `bytes`
+viaja en base64.
 """
 
+import base64
+import binascii
 import dataclasses
 import datetime
 import decimal
@@ -36,6 +44,16 @@ _NADA = inspect.Parameter.empty
 
 
 def _nombre(t):
+    if typing.get_origin(t) is typing.Annotated:
+        base, *metas = typing.get_args(t)
+        for m in metas:
+            if type(m).__name__ in ("_Unidad", "_DeColeccion"):
+                return repr(m)
+            if type(m).__name__ == "_ConZona":
+                return "DateTimeTz"
+            if type(m).__name__ == "Precision":
+                return "Decimal<%d, %d>" % (m.precision, m.escala)
+        return _nombre(base)
     if t is type(None):
         return "None"
     if typing.get_origin(t) in (typing.Union, types.UnionType):
@@ -64,6 +82,8 @@ def convertir(que, v, t):
     """`v` como el tipo `t` que anota `que` (un parámetro, o un campo)."""
     if t is _NADA or t is typing.Any or t is object:
         return v
+    if typing.get_origin(t) is typing.Annotated:
+        return _anotado(que, v, t)
     if v is None:
         if _opcional(t) is not None or t is type(None):
             return None
@@ -124,6 +144,15 @@ def convertir(que, v, t):
         if isinstance(v, str):
             return v
         raise mal()
+    if t is bytes:
+        if isinstance(v, (bytes, bytearray)):
+            return bytes(v)
+        if isinstance(v, str):  # en JSON, base64 (v1alpha20 `01` §7)
+            try:
+                return base64.b64decode(v, validate=True)
+            except (binascii.Error, ValueError):
+                raise mal(", que no es base64") from None
+        raise mal()
     if t is datetime.datetime:
         if isinstance(v, datetime.datetime):
             return v
@@ -169,9 +198,56 @@ def convertir(que, v, t):
     return v
 
 
+def _cifras(d):
+    """(cifras enteras, decimales) de un `Decimal` finito."""
+    signo, digitos, exp = d.normalize().as_tuple() if d != 0 else (0, (0,), 0)
+    decimales = max(0, -exp)
+    enteras = max(0, len(digitos) + exp) if exp < 0 else len(digitos) + exp
+    return enteras, decimales
+
+
+def _anotado(que, v, t):
+    """Un `Annotated` de `ore.tipos` (v1alpha20 `01`): lo de Python, y lo que OOS añade."""
+    base, *metas = typing.get_args(t)
+    marcas = {type(m).__name__: m for m in metas}
+    col = marcas.get("_DeColeccion")
+    if col is not None:
+        from .medios import MediaRef
+
+        if isinstance(v, dict):
+            try:
+                v = MediaRef.de_json(v)
+            except TypeError as e:
+                raise ErrorDeContrato("`%s` es `%r` y llegó %s: %s" % (que, col, _corto(v), e)) from None
+        if not isinstance(v, MediaRef):
+            raise ErrorDeContrato("`%s` es `%r` y llegó %s, que no es la referencia a un ítem" % (que, col, _corto(v)))
+        if v.collection and v.collection != col.coleccion:
+            raise ErrorDeContrato("`%s` es `%r` y llegó un ítem de `%s`" % (que, col, v.collection))
+        return v
+    try:
+        v = convertir(que, v, base)
+    except ErrorDeContrato as e:
+        # Con el nombre del tipo que se anotó, no el de su base de Python.
+        raise ErrorDeContrato(str(e).replace("`%s`" % _nombre(base), "`%s`" % _nombre(t), 1)) from None
+    if "_ConZona" in marcas and (v.tzinfo is None or v.utcoffset() is None):
+        raise ErrorDeContrato("`%s` es `DateTimeTz` y llegó %s, sin zona: un instante lleva `Z` o `+02:00`"
+                              % (que, _corto(v.isoformat())))
+    p = marcas.get("Precision")
+    if p is not None:
+        enteras, decimales = _cifras(v)
+        if decimales > p.escala or enteras > p.precision - p.escala:
+            raise ErrorDeContrato("`%s` es `Decimal<%d, %d>` y llegó %s, que no cabe"
+                                  % (que, p.precision, p.escala, v))
+    u = marcas.get("_Unidad")
+    if u is not None and _cifras(v)[1] > u.precision:
+        raise ErrorDeContrato("`%s` es `%r` y llegó %s: tiene más de %d decimales" % (que, u, v, u.precision))
+    return v
+
+
 def _tipos_de(f):
     try:
-        return typing.get_type_hints(f)
+        # Con los `Annotated`: son lo que `ore.tipos` añade (v1alpha20).
+        return typing.get_type_hints(f, include_extras=True)
     except Exception:  # noqa: BLE001 — una anotación que no resuelve: sin contrato para ella
         return {k: v for k, v in getattr(f, "__annotations__", {}).items() if not isinstance(v, str)}
 

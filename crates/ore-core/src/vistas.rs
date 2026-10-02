@@ -1130,6 +1130,18 @@ pub fn invertible(v: &Loaded) -> Result<(), NoInvertible> {
     Ok(())
 }
 
+/// Las colecciones que un tipo nombra, a cualquier profundidad (`Media<x>`
+/// dentro de una lista o de un `Struct`).
+fn colecciones_de(t: &crate::types::Type) -> Vec<String> {
+    use crate::types::Type;
+    match t {
+        Type::Media(c) => vec![c.clone()],
+        Type::List(x) => colecciones_de(x),
+        Type::Struct(cs) => cs.iter().flat_map(|(_, x)| colecciones_de(x)).collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod censo {
     use super::*;
@@ -2071,6 +2083,47 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                         tienen filas, no ítems",
                     ),
                 );
+            }
+        }
+    }
+
+    // v1alpha20 `01` §5: un `Media<x>` en `input` o en `output` de una
+    // función —también dentro de un `Struct` o de una lista— nombra una
+    // colección, como el de una propiedad.
+    for f in pkg.of(Kind::Function) {
+        for lado in ["input", "output"] {
+            let Some(sec) = f.section(lado) else { continue };
+            // `output` como un valor (v1alpha18 §4.7) es `{type: T}`.
+            let tipos: Vec<(String, &Node)> = match sec.get("type") {
+                Some((_, t)) if t.as_str().is_some() => vec![(lado.to_string(), t)],
+                _ => sec
+                    .entries()
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        Some((format!("{lado}.{}", k.as_str()?), v.get("type")?.1))
+                    })
+                    .collect(),
+            };
+            for (donde, t) in tipos {
+                let Ok(ty) = crate::types::parse_type(t.as_str().unwrap_or("")) else {
+                    continue;
+                };
+                for c in colecciones_de(&ty) {
+                    if pkg.resolve_collection(&c, f).is_none() {
+                        out.push(
+                            Diagnostic::new(
+                                Code::Oos2018,
+                                &f.path,
+                                format!(
+                                    "`{}`: `{donde}` nombra `Media<{c}>`, y `{c}` no es una `MediaCollection`",
+                                    f.qname().unwrap_or_default()
+                                ),
+                            )
+                            .at(t.pos())
+                            .help("`Media<x>` apunta a un ítem de una colección del árbol"),
+                        );
+                    }
+                }
             }
         }
     }

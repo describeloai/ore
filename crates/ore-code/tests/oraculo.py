@@ -1,4 +1,5 @@
-"""El ORÁCULO de `ore-code`: la derivación de OOS v1alpha18 01 §4 escrita otra
+"""El ORÁCULO de `ore-code`: la derivación de OOS v1alpha18 01 §4 (y la tabla
+de v1alpha20 `01`) escrita otra
 vez, con el `ast` de CPython —la referencia del lenguaje— en vez de con el
 parser de Ruff.
 
@@ -27,6 +28,10 @@ ESCALARES = {
     "datetime.date": "Date",
     "datetime.datetime": "DateTime",
     "decimal.Decimal": "Decimal",
+    # v1alpha20 `01` §2.
+    "datetime.time": "Time",
+    "builtins.bytes": "Opaque",
+    "ore.tipos.DateTimeTz": "DateTimeTz",
 }
 BUILTINS = {"int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes", "object", "type"}
 LISTAS = {"builtins.list", "typing.List"}
@@ -58,6 +63,7 @@ class Modulo:
         for i, s in enumerate(m.body):
             self.recoger([s], i)
         self.clases = {s.name: (i, s) for i, s in enumerate(m.body) if isinstance(s, ast.ClassDef)}
+        self.en_curso = []  # v1alpha20 `01` §4: las @dataclass que se derivan como Struct
 
     def recoger(self, sentencias, i):
         for s in sentencias:
@@ -161,9 +167,50 @@ class Modulo:
             if base == "typing.Optional" and len(args) == 1:
                 return self.tipo(args[0], hasta, en_lista)[0], True
             if base == "typing.Annotated" and len(args) >= 2:
-                return self.tipo(args[0], hasta, en_lista)
+                t, opc = self.tipo(args[0], hasta, en_lista)
+                for meta in args[1:]:
+                    if isinstance(meta, ast.Call) and self.cualificar(meta.func, hasta) == "ore.tipos.Precision":
+                        if t != "Decimal":
+                            raise NoSeDeriva("Precision de algo que no es Decimal")
+                        ps = [a.value for a in meta.args if isinstance(a, ast.Constant) and type(a.value) is int]
+                        if len(meta.args) != 2 or len(ps) != 2 or meta.keywords:
+                            raise NoSeDeriva("Precision sin dos enteros literales")
+                        p, sc = ps
+                        if not (1 <= p <= 38 and 0 <= sc <= p):
+                            raise NoSeDeriva("Precision fuera de rango")
+                        return "Decimal<%d, %d>" % (p, sc), opc
+                return t, opc
+            if base in ("ore.tipos.Money", "ore.tipos.Quantity"):
+                ctor = base.rsplit(".", 1)[1]
+                if len(args) != 2:
+                    raise NoSeDeriva("%s sin unidad y precisión" % ctor)
+                u, p = args
+                if not (isinstance(u, ast.Constant) and isinstance(u.value, str) and u.value
+                        and not any(c.isspace() or c in "<>,:\"'" for c in u.value)):
+                    raise NoSeDeriva("unidad que no es una cadena literal")
+                if not (isinstance(p, ast.Constant) and type(p.value) is int and p.value >= 0):
+                    raise NoSeDeriva("precisión que no es un entero literal")
+                return "%s<%s, %d>" % (ctor, u.value, p.value), False
+            if base == "ore.tipos.Media":
+                c = args[0] if len(args) == 1 else None
+                if not (isinstance(c, ast.Constant) and isinstance(c.value, str)
+                        and all(x and all((ch.isascii() and ch.isalnum()) or ch == "_" for ch in x) for x in c.value.split("."))):
+                    raise NoSeDeriva("Media sin una colección literal")
+                return "Media<%s>" % c.value, False
             raise NoSeDeriva("tipo sin traducción")
         q = self.cualificar(e, hasta)
+        if q and q.startswith("<local>.") and q[len("<local>."):] in self.clases:
+            n = q[len("<local>."):]
+            i, c = self.clases[n]
+            if self.es_dataclass(i, c):
+                if n in self.en_curso:
+                    raise NoSeDeriva("una @dataclass que se contiene a sí misma")
+                self.en_curso.append(n)
+                try:
+                    cs = list(self.campos(n).values())
+                finally:
+                    self.en_curso.pop()
+                return "Struct<%s>" % ", ".join("%s: %s" % (x[0], x[1]) for x in cs), False
         if q in ESCALARES:
             return ESCALARES[q], False
         raise NoSeDeriva("tipo sin traducción: %s" % q)

@@ -1,0 +1,68 @@
+── resumir → functions/resumir.yaml
+# generado por ore desde funciones/v1alpha20_tipos.py:resumir · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha20
+kind: Function
+metadata:
+  name: resumir
+  namespace: ventas
+  description: 'Resume pedidos con su dinero, su peso y sus ficheros.'
+spec:
+  runtime: python
+  entrypoint: funciones/v1alpha20_tipos.py:resumir
+  input:
+    pedido: { type: 'Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>', required: true }
+    pedidos: { type: 'list<Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>>', required: true }
+    firma: { type: Opaque, required: true }
+    contrato: { type: Media<legal.archivo.contratos>, required: true }
+    corte: { type: DateTimeTz, required: true }
+    abre: { type: Time }
+  output:
+    pedidos: { type: Integer, required: true }
+    peso: { type: 'Quantity<kg, 3>', required: true }
+    ultimo: { type: DateTimeTz }
+── lineas → functions/lineas.yaml
+# generado por ore desde funciones/v1alpha20_tipos.py:lineas · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha20
+kind: Function
+metadata: { name: lineas, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/v1alpha20_tipos.py:lineas
+  input:
+    p: { type: 'Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>', required: true }
+  output: { type: 'list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>' }
+── total → functions/total.yaml
+# generado por ore desde funciones/v1alpha20_tipos.py:total · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha20
+kind: Function
+metadata: { name: total, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/v1alpha20_tipos.py:total
+  input:
+    p: { type: 'Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>', required: true }
+  output: { type: 'Decimal<12, 2>' }
+── solo_v1alpha18 → functions/solo_v1alpha18.yaml
+# generado por ore desde funciones/v1alpha20_tipos.py:solo_v1alpha18 · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: solo_v1alpha18, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/v1alpha20_tipos.py:solo_v1alpha18
+  input:
+    a: { type: Integer, required: true }
+    b: { type: String, required: true }
+  output: { type: Date }
+── la_comilla_es_la_unidad → functions/la_comilla_es_la_unidad.yaml
+# generado por ore desde funciones/v1alpha20_tipos.py:la_comilla_es_la_unidad · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha20
+kind: Function
+metadata: { name: la_comilla_es_la_unidad, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/v1alpha20_tipos.py:la_comilla_es_la_unidad
+  input:
+    x: { type: 'Money<USD, 0>', required: true }
+    d: { type: 'Decimal<5, 5>', required: true }
+  output: { type: 'Quantity<m/s, 1>' }

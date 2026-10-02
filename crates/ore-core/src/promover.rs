@@ -514,6 +514,21 @@ fn coherencia(f: &Loaded, firma: &Firma, out: &mut Vec<Diagnostic>) {
             );
         }
     }
+    // v1alpha20 `01` §6: la regla que deriva una firma con tipos de v1alpha20
+    // es la de v1alpha20; un documento que declara una anterior no es el que
+    // el código da, aunque sus tipos coincidan.
+    if firma.api_version() == crate::document::ApiVersion::V1Alpha20.as_str()
+        && f.version()
+            .is_some_and(|v| v < crate::document::ApiVersion::V1Alpha20)
+    {
+        dif(
+            f.root.get("apiVersion").map(|(_, v)| v),
+            format!(
+                "declara `{}` y su firma usa tipos que se derivan desde `oos.dev/v1alpha20`",
+                f.version().map(|v| v.as_str()).unwrap_or("?")
+            ),
+        );
+    }
     let nombre = f.meta("name").and_then(Node::as_str).unwrap_or_default();
     if nombre != firma.nombre {
         dif(

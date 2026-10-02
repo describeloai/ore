@@ -16,9 +16,10 @@ const NO_SON_CAMPOS: &[&str] = &[
     "dataclasses.KW_ONLY",
 ];
 
-const TIPOS: &str = "una firma usa `int`, `float`, `str`, `bool`, `date`, `datetime`, `Decimal`, \
-                     `list[T]` y `Optional[T]` (o `T | None`); un registro de vuelta es una \
-                     `@dataclass` del mismo fichero";
+const TIPOS: &str = "una firma usa `int`, `float`, `str`, `bool`, `date`, `time`, `datetime`, \
+                     `bytes`, `Decimal`, `list[T]` y `Optional[T]` (o `T | None`); de `ore.tipos`, \
+                     `DateTimeTz`, `Money[\"EUR\", 2]`, `Quantity[\"km\", 1]`, `Media[\"a.b.c\"]` y \
+                     `Annotated[Decimal, Precision(p, s)]`; y una `@dataclass` del mismo fichero";
 
 fn escalar(q: &str) -> Option<Tipo> {
     Some(match q {
@@ -29,6 +30,10 @@ fn escalar(q: &str) -> Option<Tipo> {
         "datetime.date" => Tipo::Date,
         "datetime.datetime" => Tipo::DateTime,
         "decimal.Decimal" => Tipo::Decimal,
+        // v1alpha20 `01` §2.
+        "datetime.time" => Tipo::Time,
+        "builtins.bytes" => Tipo::Opaque,
+        "ore.tipos.DateTimeTz" => Tipo::DateTimeTz,
         _ => return None,
     })
 }
@@ -36,7 +41,8 @@ fn escalar(q: &str) -> Option<Tipo> {
 /// De dónde se importa un nombre que se suele olvidar importar.
 fn de_donde(n: &str) -> Option<&'static str> {
     Some(match n {
-        "date" | "datetime" => "datetime",
+        "date" | "datetime" | "time" => "datetime",
+        "DateTimeTz" | "Money" | "Quantity" | "Media" | "Precision" => "ore.tipos",
         "Decimal" => "decimal",
         "Optional" | "List" | "Union" | "Annotated" | "ClassVar" => "typing",
         "dataclass" | "field" => "dataclasses",
@@ -45,7 +51,10 @@ fn de_donde(n: &str) -> Option<&'static str> {
 }
 
 pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
-    let r = Resolutor { m };
+    let r = Resolutor {
+        m,
+        en_curso: Default::default(),
+    };
     let mut d = Derivacion {
         sintaxis: m.sintaxis.clone(),
         version: m.version.clone(),
@@ -101,6 +110,18 @@ pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
 
 struct Resolutor<'a> {
     m: &'a Modulo,
+    /// Las `@dataclass` que se están derivando como `Struct`, para no entrar
+    /// en una que se contiene a sí misma (v1alpha20 `01` §4).
+    en_curso: std::cell::RefCell<Vec<String>>,
+}
+
+/// El texto de un literal de cadena: en una anotación llega como comillas
+/// (v1alpha18 §4.6), y dentro de `Money[…]` o `Media[…]` es un literal.
+fn literal(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Comillas(_, t, _) | Expr::ComillasRotas(t, _) | Expr::Cadena(t, _) => Some(t),
+        _ => None,
+    }
 }
 
 impl Resolutor<'_> {
@@ -146,8 +167,8 @@ impl Resolutor<'_> {
         hasta: Option<usize>,
     ) -> Result<(&'e Expr, Option<usize>), Fallo> {
         match e {
-            Expr::Comillas(dentro, _) => Ok((dentro.as_ref(), None)),
-            Expr::ComillasRotas(r) => {
+            Expr::Comillas(dentro, _, _) => Ok((dentro.as_ref(), None)),
+            Expr::ComillasRotas(_, r) => {
                 Err(Fallo::new(*r, "la anotación entre comillas no es Python"))
             }
             x => Ok((
@@ -237,16 +258,182 @@ impl Resolutor<'_> {
                 (Some("typing.Optional"), [a]) => {
                     return Ok((self.tipo(a, hasta, en_lista)?.0, true));
                 }
-                (Some("typing.Annotated"), [a, _, ..]) => return self.tipo(a, hasta, en_lista),
+                (Some("typing.Annotated"), [a, metas @ ..]) if !metas.is_empty() => {
+                    return self.anotado(a, metas, hasta, en_lista);
+                }
+                // v1alpha20 `01` §3: la unidad es parte del tipo.
+                (Some(q @ ("ore.tipos.Money" | "ore.tipos.Quantity")), args) => {
+                    let (ctor, ejemplo) = if q.ends_with("Money") {
+                        ("Money", "\"EUR\", 2")
+                    } else {
+                        ("Quantity", "\"km\", 1")
+                    };
+                    let [u, p] = args else {
+                        return Err(Fallo::new(
+                            *r,
+                            format!("`{ctor}[…]` lleva la unidad y la precisión"),
+                        )
+                        .ayuda(format!(
+                            "`{ctor}[{ejemplo}]`: la unidad, entre comillas, y los decimales"
+                        )));
+                    };
+                    let unidad = literal(u)
+                        .filter(|u| es_unidad(u))
+                        .ok_or_else(|| {
+                            Fallo::new(
+                                u.rango(),
+                                format!("la unidad de `{ctor}[…]` es una cadena literal"),
+                            )
+                            .ayuda(format!("`{ctor}[{ejemplo}]`: {LITERAL}"))
+                        })?
+                        .to_string();
+                    let precision = match p {
+                        Expr::Entero(v, _) if (0..=u32::MAX as i64).contains(v) => *v as u32,
+                        _ => {
+                            return Err(Fallo::new(
+                                p.rango(),
+                                format!("la precisión de `{ctor}[…]` es un entero literal"),
+                            )
+                            .ayuda("los decimales, como número: `2`"));
+                        }
+                    };
+                    return Ok((
+                        Tipo::Unidad {
+                            ctor,
+                            unidad,
+                            precision,
+                        },
+                        false,
+                    ));
+                }
+                // v1alpha20 `01` §5.
+                (Some("ore.tipos.Media"), args) => {
+                    let c = match args {
+                        [c] => literal(c).filter(|c| {
+                            c.split('.').all(|p| {
+                                !p.is_empty()
+                                    && p.chars().all(|x| x.is_ascii_alphanumeric() || x == '_')
+                            })
+                        }),
+                        _ => None,
+                    };
+                    let Some(c) = c else {
+                        return Err(Fallo::new(
+                            *r,
+                            "`Media[…]` nombra una colección, entre comillas",
+                        )
+                        .ayuda("`Media[\"base.schema.coleccion\"]`"));
+                    };
+                    return Ok((Tipo::Media(c.to_string()), false));
+                }
                 _ => return Err(self.sin_traduccion(base, hasta, *r)),
             }
         }
         if let Expr::Nada(r) = e {
             return Err(Fallo::new(*r, "`None` no es un tipo").ayuda(TIPOS));
         }
-        match self.cualificar(e, hasta).as_deref().and_then(escalar) {
-            Some(t) => Ok((t, false)),
-            None => Err(self.sin_traduccion(e, hasta, e.rango())),
+        // v1alpha20 `01` §4: una `@dataclass` del fichero que no es la vuelta.
+        if let Some(n) = self
+            .cualificar(e, hasta)
+            .as_deref()
+            .and_then(|q| q.strip_prefix("<local>."))
+            .filter(|n| self.clase(n).is_some_and(|c| self.es_dataclass(c)))
+        {
+            return self.estructura(n, e.rango()).map(|t| (t, false));
+        }
+        match self.cualificar(e, hasta).as_deref() {
+            Some(q) if let Some(t) = escalar(q) => Ok((t, false)),
+            // Sin sus argumentos no dicen qué son.
+            Some(q @ ("ore.tipos.Money" | "ore.tipos.Quantity" | "ore.tipos.Media")) => {
+                let (n, ejemplo) = match q {
+                    "ore.tipos.Money" => ("Money", "Money[\"EUR\", 2]"),
+                    "ore.tipos.Quantity" => ("Quantity", "Quantity[\"km\", 1]"),
+                    _ => ("Media", "Media[\"base.schema.coleccion\"]"),
+                };
+                Err(
+                    Fallo::new(e.rango(), format!("`{n}` a secas no es un tipo")).ayuda(format!(
+                        "`{ejemplo}`: con lo que lo hace un tipo, entre corchetes"
+                    )),
+                )
+            }
+            _ => Err(self.sin_traduccion(e, hasta, e.rango())),
+        }
+    }
+
+    /// `Annotated[T, …]`: `T`, salvo `Annotated[Decimal, Precision(p, s)]`, que
+    /// es `Decimal<p, s>` (v1alpha20 `01` §3). Lo demás del `Annotated` no es
+    /// firma.
+    fn anotado(
+        &self,
+        a: &Expr,
+        metas: &[Expr],
+        hasta: Option<usize>,
+        en_lista: bool,
+    ) -> Result<(Tipo, bool), Fallo> {
+        let (t, opcional) = self.tipo(a, hasta, en_lista)?;
+        for m in metas {
+            let Expr::Llamada {
+                funcion,
+                argumentos,
+                nombrados,
+                rango,
+                ..
+            } = m
+            else {
+                continue;
+            };
+            if self.cualificar(funcion, hasta).as_deref() != Some("ore.tipos.Precision") {
+                continue;
+            }
+            if t != Tipo::Decimal {
+                return Err(Fallo::new(*rango, "`Precision(p, s)` es de un `Decimal`")
+                    .ayuda("`Annotated[Decimal, Precision(12, 2)]`"));
+            }
+            let ps = match (argumentos.as_slice(), nombrados.is_empty()) {
+                ([Expr::Entero(p, _), Expr::Entero(s, _)], true) => Some((*p, *s)),
+                _ => None,
+            };
+            return match ps {
+                Some((p, s)) if (1..=38).contains(&p) && (0..=p).contains(&s) => Ok((
+                    Tipo::DecimalPs {
+                        precision: p as u8,
+                        escala: s as u8,
+                    },
+                    opcional,
+                )),
+                Some((p, s)) => Err(Fallo::new(
+                    *rango,
+                    format!("`Precision({p}, {s})` está fuera de rango"),
+                )
+                .ayuda(
+                    "`1 ≤ p ≤ 38` y `0 ≤ s ≤ p`: las cifras en total y las de detrás de la coma",
+                )),
+                None => Err(
+                    Fallo::new(*rango, "`Precision(p, s)` lleva dos enteros literales")
+                        .ayuda("`Precision(12, 2)`: doce cifras, dos detrás de la coma"),
+                ),
+            };
+        }
+        Ok((t, opcional))
+    }
+
+    /// Una `@dataclass` como `Struct<…>`: sus campos, en orden, con su tipo.
+    fn estructura(&self, nombre: &str, uso: Rango) -> Result<Tipo, Fallo> {
+        if self.en_curso.borrow().iter().any(|n| n == nombre) {
+            return Err(Fallo::new(uso, format!("`{nombre}` se contiene a sí misma"))
+                .ayuda("una `@dataclass` que se contiene, directa o indirectamente, no tiene un tipo finito"));
+        }
+        self.en_curso.borrow_mut().push(nombre.to_string());
+        let r = self.campos(nombre, uso, &mut Vec::new());
+        self.en_curso.borrow_mut().pop();
+        match r {
+            Ok(cs) => Ok(Tipo::Struct(
+                cs.into_iter().map(|c| (c.nombre, c.tipo)).collect(),
+            )),
+            Err(fs) => Err(fs
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Fallo::new(uso, format!("`{nombre}` no se deriva")))),
         }
     }
 
@@ -575,6 +762,14 @@ impl Resolutor<'_> {
 }
 
 const LITERAL: &str = "se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas";
+
+/// Una unidad de `Money` o `Quantity`: lo que cabe entre `<` y `,` en el tipo.
+fn es_unidad(u: &str) -> bool {
+    !u.is_empty()
+        && !u
+            .chars()
+            .any(|c| c.is_whitespace() || "<>,:\"'".contains(c))
+}
 
 fn cadena(v: &Expr, k: &str, fallos: &mut Vec<Fallo>) -> Option<String> {
     match v {

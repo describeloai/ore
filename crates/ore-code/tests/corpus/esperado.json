@@ -766,6 +766,202 @@
    "por": "sin retorno"
   }
  ],
+ "v1alpha20_fallos.py": [
+  {
+   "name": "fuera_de_rango",
+   "error": "OOS2043",
+   "por": "Precision fuera de rango"
+  },
+  {
+   "name": "escala_mayor",
+   "error": "OOS2043",
+   "por": "Precision fuera de rango"
+  },
+  {
+   "name": "precision_de_un_float",
+   "error": "OOS2043",
+   "por": "Precision de algo que no es Decimal"
+  },
+  {
+   "name": "precision_no_literal",
+   "error": "OOS2043",
+   "por": "Precision sin dos enteros literales"
+  },
+  {
+   "name": "unidad_no_literal",
+   "error": "OOS2043",
+   "por": "unidad que no es una cadena literal"
+  },
+  {
+   "name": "sin_precision",
+   "error": "OOS2043",
+   "por": "Quantity sin unidad y precisión"
+  },
+  {
+   "name": "precision_negativa",
+   "error": "OOS2043",
+   "por": "precisión que no es un entero literal"
+  },
+  {
+   "name": "unidad_con_coma",
+   "error": "OOS2043",
+   "por": "unidad que no es una cadena literal"
+  },
+  {
+   "name": "media_sin_coleccion",
+   "error": "OOS2043",
+   "por": "tipo sin traducción: ore.tipos.Media"
+  },
+  {
+   "name": "media_no_literal",
+   "error": "OOS2043",
+   "por": "Media sin una colección literal"
+  },
+  {
+   "name": "recursiva",
+   "error": "OOS2043",
+   "por": "una @dataclass que se contiene a sí misma"
+  },
+  {
+   "name": "recursiva_indirecta",
+   "error": "OOS2043",
+   "por": "una @dataclass que se contiene a sí misma"
+  },
+  {
+   "name": "lista_de_listas_de_struct",
+   "error": "OOS2043",
+   "por": "lista de listas"
+  },
+  {
+   "name": "una_clase_que_no_es_dataclass",
+   "error": "OOS2043",
+   "por": "tipo sin traducción: <local>.Money2"
+  }
+ ],
+ "v1alpha20_tipos.py": [
+  {
+   "name": "resumir",
+   "entrypoint": "funciones/v1alpha20_tipos.py:resumir",
+   "description": "Resume pedidos con su dinero, su peso y sus ficheros.",
+   "input": [
+    [
+     "pedido",
+     "Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>",
+     true
+    ],
+    [
+     "pedidos",
+     "list<Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>>",
+     true
+    ],
+    [
+     "firma",
+     "Opaque",
+     true
+    ],
+    [
+     "contrato",
+     "Media<legal.archivo.contratos>",
+     true
+    ],
+    [
+     "corte",
+     "DateTimeTz",
+     true
+    ],
+    [
+     "abre",
+     "Time",
+     false
+    ]
+   ],
+   "output": {
+    "campos": [
+     [
+      "pedidos",
+      "Integer",
+      true
+     ],
+     [
+      "peso",
+      "Quantity<kg, 3>",
+      true
+     ],
+     [
+      "ultimo",
+      "DateTimeTz",
+      false
+     ]
+    ]
+   }
+  },
+  {
+   "name": "lineas",
+   "entrypoint": "funciones/v1alpha20_tipos.py:lineas",
+   "input": [
+    [
+     "p",
+     "Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>"
+   }
+  },
+  {
+   "name": "total",
+   "entrypoint": "funciones/v1alpha20_tipos.py:total",
+   "input": [
+    [
+     "p",
+     "Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Decimal<12, 2>"
+   }
+  },
+  {
+   "name": "solo_v1alpha18",
+   "entrypoint": "funciones/v1alpha20_tipos.py:solo_v1alpha18",
+   "input": [
+    [
+     "a",
+     "Integer",
+     true
+    ],
+    [
+     "b",
+     "String",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Date"
+   }
+  },
+  {
+   "name": "la_comilla_es_la_unidad",
+   "entrypoint": "funciones/v1alpha20_tipos.py:la_comilla_es_la_unidad",
+   "input": [
+    [
+     "x",
+     "Money<USD, 0>",
+     true
+    ],
+    [
+     "d",
+     "Decimal<5, 5>",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Quantity<m/s, 1>"
+   }
+  }
+ ],
  "valid_a_python_function_over_a_view.py": [
   {
    "name": "riesgo",
