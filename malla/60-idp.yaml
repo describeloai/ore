@@ -164,10 +164,20 @@ spec:
   # Decir «dos» y no caber sería peor que decir «una» y que arranque.
   instances: 1
 
-  # La imagen COCIDA, la suya, construida aquí desde `C:\Rubix\idp\Dockerfile`.
-  # La etiqueta lleva las dos versiones: de qué Keycloak está hecha y cuántas
-  # veces se ha cocido.
-  image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/idp:26.0.7-1
+  # La imagen COCIDA, la de ORE: el target `idp` del `Dockerfile` (0048 I2), que
+  # Cloud Build publica como `idp:main` e `idp:<sha>`. Va FIJADA POR DIGEST, no
+  # por `main`: cambiarla reinicia el login, y eso se decide con un commit aquí,
+  # no con un push que toque el `Dockerfile`.
+  #
+  # ✏️ 2026-10-02 (0048, deuda 2): de `idp:26.0.7-1` (la cocida en la plataforma,
+  #   sin tema) a ésta. Medido antes, las dos en local: las MISMAS opciones de
+  #   build persistidas (`kc.sh show-config`: db=postgres, health, metrics,
+  #   optimized), mismo usuario y entrypoint; en el sistema de ficheros sólo
+  #   cambian los jars generados (no son reproducibles) y entra
+  #   `themes/rubix/email`, el tema que `emailTheme: 'rubix'` pide y no estaba.
+  #   Copia de la base antes: `copias/idp/keycloak-20261002T073535Z.dump`.
+  #   Vuelta atrás: la línea de antes, `…/ore/idp:26.0.7-1`.
+  image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/idp@sha256:39bc18b839a18d31a0256cb327c5df812e9db9f9498fbead828b25595ec8f03a
 
   # ⛔ Obligatorio con una imagen cocida: sin esto el operador ASUME que no lo
   # está y vuelve a construir al arrancar — 40 s por reinicio y un sistema de
