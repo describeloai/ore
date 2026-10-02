@@ -1,6 +1,6 @@
 # 0051 · ORE Null Contract
 
-**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1, P2, el código de P3 y P4 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
+**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1, P2, el código de P3, P4 y P5 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
 columnas **nunca son nulas**: el origen lo **declara**, las vistas lo **derivan** y el lago lo
 **impone**, con una sola regla para cambiarlo. Cierra el «REQUIRED» de
 [0042](0042-origin-rest-bigquery.md) y la parte de nulabilidad de
@@ -362,6 +362,27 @@ aparte.
   ninguna salida cambia.
 - **Lo que se mueve:** la cabecera de la copia pasa a **P6** —cambiarla obliga a recalcular las
   copias, y sólo tiene sentido cuando se impone—; GraphQL y el SDK, a **P7**, como dijo la Fase 0.
+
+#### P5 · evolucionar antes de imponer (2026-10-02)
+
+- **La deriva ve la garantía** (`ore drift-detect`): el origen que deja de garantizar una columna
+  **estrecha** —ofrece menos— y dice a quién le duele (las vistas que la proyectan, que la
+  derivaban nunca nula); el que pasa a garantizarla ensancha. «El catálogo del que salió un
+  paquete no deriva de él» sigue valiendo: el inductor escribe justo lo que el catálogo dice.
+- **El Source Pointer quita `required`** al re-inducir (P3, sin código nuevo).
+- **El almacén, con su regla** (`lago::esquema_deseado`): recibe las columnas que se piden
+  `required` y si la escritura lo reescribe todo. **Aflojar, siempre**, con el mismo id de
+  columna; **endurecer, sólo** con una tabla nueva, una columna que ya lo era, o una escritura
+  que reescribe todos los ficheros (`sobrescribir`, `upsert`), donde el escritor rechaza el nulo
+  fila a fila. Al anexar, nunca: es la guarda de E5b, nuestra porque Iceberg no la tiene.
+- `mismo_esquema` compara también `required`: aflojar es otro esquema, y `Lago::esquema` lo dice.
+- **Medido:** cuatro pruebas de la regla y una del ciclo entero (una copia con `id` `required`
+  recibe una fila con `id` nulo: el esquema se afloja antes de escribir, la columna conserva su id
+  y entran las dos filas). Lo que la prueba del ciclo **no** demuestra, dicho: pasa también sin el
+  arreglo de `mismo_esquema`, porque `preparar` añade el esquema nuevo por su cuenta; el arreglo lo
+  fija la prueba de la regla.
+- **En vivo no cambia nada:** las dos llamadas de hoy no piden ninguna columna `required` (eso es
+  P6), y el lago no tiene ninguna.
 
 ## Lo que no se hace
 

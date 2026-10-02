@@ -369,9 +369,20 @@ impl FileWrite for Escritura {
 /// una que cambió de tipo, o es nueva, recibe uno nuevo. Es la única regla de
 /// evolución que hace falta porque cada sobrescritura reescribe todos los
 /// datos: ningún fichero vivo tiene un id con dos tipos.
+///
+/// ORE 0051 P5 · **y su nulabilidad**: `obligatorias` son las columnas que
+/// quien escribe pide `required`. Aflojar es siempre posible —lo que no se
+/// pide sale opcional, y el id se conserva—; **endurecer, sólo si ningún
+/// fichero vivo puede llevar un nulo en ella**: una tabla nueva, una columna
+/// que ya era `required`, o una escritura que lo `reescribe` todo (el escritor
+/// rechaza el nulo fila a fila). Al anexar, una columna opcional se queda
+/// opcional. Iceberg dejaría endurecer sin mirar, y un motor que se fía de la
+/// marca da entonces cifras falsas (medido en la espiga, E5b y E6).
 pub fn esquema_deseado(
     columnas: &[(String, DataType)],
+    obligatorias: &std::collections::BTreeSet<String>,
     base: Option<&Schema>,
+    reescribe: bool,
 ) -> Result<Schema, String> {
     let mut siguiente = base.map(|b| b.highest_field_id()).unwrap_or(0);
     let mut campos = Vec::with_capacity(columnas.len());
@@ -412,7 +423,15 @@ pub fn esquema_deseado(
             Some((t, _)) => t,
             None => a_iceberg(nombre, &ids_anidados(tipo, None, &mut siguiente))?,
         };
-        campos.push(Arc::new(NestedField::optional(id, nombre, t)));
+        let ya_lo_era = base
+            .and_then(|b| b.field_by_id(id))
+            .is_some_and(|f| f.required && f.name == *nombre);
+        let requerida = obligatorias.contains(nombre) && (base.is_none() || reescribe || ya_lo_era);
+        campos.push(Arc::new(if requerida {
+            NestedField::required(id, nombre, t)
+        } else {
+            NestedField::optional(id, nombre, t)
+        }));
     }
     Schema::builder()
         .with_fields(campos)
@@ -477,15 +496,19 @@ fn ids_anidados(
     }
 }
 
-/// ¿Son el mismo esquema, columna a columna (nombre, tipo e id, en orden)?
+/// ¿Son el mismo esquema, columna a columna (nombre, tipo, id y si es
+/// `required`, en orden)?
 fn mismo_esquema(a: &Schema, b: &Schema) -> bool {
     let fa = a.as_struct().fields();
     let fb = b.as_struct().fields();
     fa.len() == fb.len()
-        && fa
-            .iter()
-            .zip(fb)
-            .all(|(x, y)| x.name == y.name && x.field_type == y.field_type && x.id == y.id)
+        && fa.iter().zip(fb).all(|(x, y)| {
+            x.name == y.name
+                    && x.field_type == y.field_type
+                    && x.id == y.id
+                    // ORE 0051 P5: aflojar o endurecer también es otro esquema.
+                    && x.required == y.required
+        })
 }
 
 /// Las columnas de un lote, en su orden.
@@ -1532,4 +1555,75 @@ pub fn columnas_iceberg(tabla: &Table) -> BTreeMap<String, String> {
         .iter()
         .map(|f| (f.name.clone(), f.field_type.to_string()))
         .collect()
+}
+
+#[cfg(test)]
+mod nulabilidad {
+    //! ORE 0051 P5 · la regla de evolución de `required` en `esquema_deseado`.
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn columnas() -> Vec<(String, DataType)> {
+        vec![
+            ("id".into(), DataType::Int64),
+            ("nota".into(), DataType::Utf8),
+        ]
+    }
+
+    fn pide(c: &[&str]) -> BTreeSet<String> {
+        c.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn requeridas(s: &Schema) -> Vec<(String, i32, bool)> {
+        s.as_struct()
+            .fields()
+            .iter()
+            .map(|f| (f.name.clone(), f.id, f.required))
+            .collect()
+    }
+
+    #[test]
+    fn una_tabla_nueva_es_lo_que_se_pide() {
+        let s = esquema_deseado(&columnas(), &pide(&["id"]), None, false).unwrap();
+        assert_eq!(
+            requeridas(&s),
+            [("id".into(), 1, true), ("nota".into(), 2, false)]
+        );
+    }
+
+    /// Aflojar siempre: el origen dejó de garantizarlo, y la columna sigue
+    /// siendo la misma —el mismo id—, así que los ficheros que había se leen.
+    #[test]
+    fn aflojar_se_puede_siempre_y_conserva_el_id() {
+        let base = esquema_deseado(&columnas(), &pide(&["id"]), None, false).unwrap();
+        let s = esquema_deseado(&columnas(), &pide(&[]), Some(&base), false).unwrap();
+        assert_eq!(
+            requeridas(&s),
+            [("id".into(), 1, false), ("nota".into(), 2, false)]
+        );
+        assert!(!mismo_esquema(&base, &s), "aflojar es otro esquema");
+    }
+
+    /// Endurecer, sólo si ningún fichero vivo puede llevar un nulo: al anexar
+    /// no; al reescribirlo todo, sí; y lo que ya era `required` sigue siéndolo.
+    #[test]
+    fn endurecer_solo_reescribiendo() {
+        let base = esquema_deseado(&columnas(), &pide(&[]), None, false).unwrap();
+        let anexa = esquema_deseado(&columnas(), &pide(&["id"]), Some(&base), false).unwrap();
+        assert_eq!(requeridas(&anexa)[0], ("id".into(), 1, false));
+        assert!(mismo_esquema(&base, &anexa), "al anexar no cambia nada");
+        let reescribe = esquema_deseado(&columnas(), &pide(&["id"]), Some(&base), true).unwrap();
+        assert_eq!(requeridas(&reescribe)[0], ("id".into(), 1, true));
+        let sigue = esquema_deseado(&columnas(), &pide(&["id"]), Some(&reescribe), false).unwrap();
+        assert_eq!(requeridas(&sigue)[0], ("id".into(), 1, true));
+    }
+
+    /// Una columna nueva en una tabla con datos: las filas de antes la leerían
+    /// nula, así que al anexar llega opcional aunque se pida.
+    #[test]
+    fn una_columna_nueva_al_anexar_llega_opcional() {
+        let base = esquema_deseado(&columnas()[..1], &pide(&[]), None, false).unwrap();
+        let s = esquema_deseado(&columnas(), &pide(&["nota"]), Some(&base), false).unwrap();
+        assert_eq!(requeridas(&s)[1], ("nota".into(), 2, false));
+    }
 }

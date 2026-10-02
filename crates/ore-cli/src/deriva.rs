@@ -251,6 +251,34 @@ fn columnas(
                         duele_a: vistas_de(pkg, t, Some(d)),
                     });
                 }
+                // ORE 0051 P5 · la garantía de no nulo (v1alpha22). Perderla
+                // es que el origen ofrece menos —y duele a quien la proyecta,
+                // que la derivaba—; ganarla, que ofrece más.
+                let garantiza = t
+                    .section("columns")
+                    .and_then(|n| n.get(d))
+                    .and_then(|(_, v)| v.get("required"))
+                    .and_then(|(_, v)| v.as_str())
+                    == Some("true");
+                if garantiza != col.obligatoria {
+                    let dice = |si: bool| if si { "nunca nula" } else { "puede ser nula" };
+                    out.push(Deriva {
+                        sujeto: format!("{objeto}.{d}"),
+                        que: "la garantía de no nulo".into(),
+                        de: dice(garantiza).into(),
+                        a: dice(col.obligatoria).into(),
+                        direccion: if garantiza {
+                            Direccion::Estrecha
+                        } else {
+                            Direccion::Ensancha
+                        },
+                        duele_a: if garantiza {
+                            vistas_de(pkg, t, Some(d))
+                        } else {
+                            Vec::new()
+                        },
+                    });
+                }
             }
         }
     }

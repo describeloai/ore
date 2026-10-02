@@ -173,3 +173,37 @@ fn no_poder_preguntar_no_se_confunde_con_haber_derivado() {
     assert!(dicho.contains("sin deriva"), "{dicho}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ⭐ ORE 0051 P5 · **La garantía de no nulo también deriva.** Que el origen
+/// deje de garantizar `clientes.id` estrecha —ofrece menos— y le duele a quien
+/// la proyecta, que la derivaba nunca nula; que pase a garantizar `nom`
+/// ensancha. Sin esto, el primer nulo de un origen que aflojó llegaba a una
+/// copia que lo rechaza sin que nada lo hubiera dicho antes.
+#[test]
+fn la_garantia_de_no_nulo_deriva_con_su_direccion() {
+    let cat = std::fs::read_to_string(fixture())
+        .unwrap()
+        .replace("\r\n", "\n");
+    let dir = taller("nula", &cat);
+    let suelta = "\"name\": \"id\",\n          \"required\": true,\n";
+    assert!(cat.contains(suelta), "el catálogo cambió de forma");
+    let mutado = cat.replacen(suelta, "\"name\": \"id\",\n", 1).replacen(
+        "\"name\": \"nom\",",
+        "\"name\": \"nom\",\n          \"required\": true,",
+        1,
+    );
+    std::fs::write(dir.join("cat.json"), &mutado).unwrap();
+
+    let (codigo, dicho) = ore(&dir, &["drift-detect", "--from", "cat.json"]);
+    assert_eq!(codigo, Some(2), "{dicho}");
+    assert!(
+        dicho.contains("- rubix_demo_ventas.clientes.id · la garantía de no nulo"),
+        "perder la garantía estrecha:\n{dicho}"
+    );
+    assert!(dicho.contains("nunca nula → puede ser nula"), "{dicho}");
+    assert!(
+        dicho.contains("+ rubix_demo_ventas.clientes.nom · la garantía de no nulo"),
+        "ganarla ensancha:\n{dicho}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

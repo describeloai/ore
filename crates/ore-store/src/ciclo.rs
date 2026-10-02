@@ -1011,12 +1011,16 @@ fn destino(
     ),
     String,
 > {
-    // El esquema que el lote pide, con los ids de la tabla si la hay.
+    // El esquema que el lote pide, con los ids de la tabla si la hay. Nada se
+    // pide `required` todavía (ORE 0051 P6), y esta escritura lo reescribe todo
+    // —una tabla nueva, o `sobrescribir`—: lo que hubiera `required` se afloja.
     let deseado = lago::esquema_deseado(
         columnas_del_lote,
+        &std::collections::BTreeSet::new(),
         previa
             .as_ref()
             .map(|t| t.metadata().current_schema().as_ref()),
+        true,
     )?;
     let mut propiedades_snapshot = HashMap::from([
         (lago::PROP_CABECERA.to_string(), cab.jcs()),
@@ -1358,9 +1362,13 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         _ => lotes,
     };
     let columnas = lago::columnas_de(&lotes[0]);
+    // ORE 0051 P5: `sobrescribir` y `upsert` reescriben todos los ficheros;
+    // `anexar` deja los que había, y ahí no se endurece nada.
     let deseado = lago::esquema_deseado(
         &columnas,
+        &std::collections::BTreeSet::new(),
         base_esquema.map(|t| t.metadata().current_schema().as_ref()),
+        operacion == Operacion::Sobrescribir,
     )?;
     let tabla = match (&previa, esbozo) {
         (Some(t), _) => t.clone(),
@@ -4214,5 +4222,78 @@ mod tests {
         let n = ore_core::parse::parse("{\"plan\":\"x\"}").unwrap();
         let e = leer(&lago, &n).unwrap_err();
         assert!(e.contains("le falta `metadata_location`"), "{e}");
+    }
+
+    /// ⭐ ORE 0051 P5 · **El origen afloja y la copia siguiente pasa.** Una copia
+    /// cuya columna `id` es `required` en Iceberg recibe, en su pasada
+    /// siguiente, una fila con `id` nulo —el origen dejó de garantizarlo—: el
+    /// esquema se afloja ANTES de escribir (mismo id de columna, sin reescribir
+    /// lo de antes) y la fila entra. Antes, `mismo_esquema` no miraba `required`
+    /// y la escritura habría fallado con un nulo en una columna no nulable.
+    #[test]
+    fn el_origen_afloja_y_la_copia_siguiente_pasa() {
+        use iceberg::spec::{NestedField, PrimitiveType, Schema as Esquema, Type};
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let esquema = Esquema::builder()
+            .with_fields(vec![
+                Arc::new(NestedField::required(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Long),
+                )),
+                Arc::new(NestedField::optional(
+                    2,
+                    "nombre",
+                    Type::Primitive(PrimitiveType::String),
+                )),
+            ])
+            .build()
+            .unwrap();
+        let t = lago.crear("copias/p_v", esquema, HashMap::new()).unwrap();
+        let lote = arrow_array::RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("id", arrow_schema::DataType::Int64, true),
+                arrow_schema::Field::new("nombre", arrow_schema::DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1])) as arrow_array::ArrayRef,
+                Arc::new(arrow_array::StringArray::from(vec!["Ana"])),
+            ],
+        )
+        .unwrap();
+        let t = lago
+            .instantanea(&t, vec![lote], Operacion::Anexar, HashMap::new())
+            .unwrap()
+            .tabla;
+        let ml = t.metadata_location().unwrap().to_string();
+        assert!(
+            t.metadata()
+                .current_schema()
+                .field_by_name("id")
+                .unwrap()
+                .required
+        );
+
+        let s = sellar(
+            &lago,
+            &cabecera("8"),
+            "copias/p_v",
+            Some(&ml),
+            false,
+            ["{\"id\":\"2\",\"nombre\":\"Bea\"}", "{\"nombre\":\"Cai\"}"].into_iter(),
+        )
+        .expect("la fila con `id` nulo entra: el esquema se afloja antes");
+        let t2 = lago
+            .abrir(&campo(&s, "metadata_location"), "copias/p_v")
+            .unwrap();
+        let id = t2
+            .metadata()
+            .current_schema()
+            .field_by_name("id")
+            .unwrap()
+            .clone();
+        assert!(!id.required, "`id` queda opcional");
+        assert_eq!(id.id, 1, "y es la misma columna");
+        assert_eq!(filas_de(&lago, &campo(&s, "metadata_location")).len(), 2);
     }
 }
