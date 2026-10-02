@@ -1545,12 +1545,21 @@ JSON
       #   leyendo del cofre la credencial de su fuente como el agente, igual que
       #   el Job de la copia. Antes que la malla le ponga el contenedor que lo
       #   trae: sin esto, ese contenedor no arranca.
-      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE" "ore-serve-$NOMBRE"; do
+      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE" "ore-serve-$NOMBRE"; do
         correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
           --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
           --role=roles/secretmanager.secretAccessor \
           && hecho "\`$QUIEN\` puede leer el $parte"
       done
+      # ⛔ R1 (2026-10-02) · Y el PUESTO ya no: corre el código de una persona, y
+      #   con el secreto del agente era el agente. Habla con el token de su pod.
+      #   Se quita si venía de antes (idempotente: sin el enlace, no hay nada).
+      if "$GCLOUD" secrets get-iam-policy "$S" --format=json 2>/dev/null | grep -q "serviceAccount:ore-puesto-$NOMBRE@"; then
+        correr "$GCLOUD" secrets remove-iam-policy-binding "$S" \
+          --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+          --role=roles/secretmanager.secretAccessor \
+          && hecho "\`ore-puesto-$NOMBRE\` ya no lee el $parte del agente"
+      fi
     done
     rm -f "$TMP/kc" "$TMP/agente-secreto" "$TMP/actual"
     hecho "agente \`$AGENTE\` · sub $AGENTE_SUB"

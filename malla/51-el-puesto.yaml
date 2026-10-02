@@ -68,8 +68,6 @@ spec:
       # La RED no va por la cuenta sino por el rol.
       serviceAccountName: puesto
       volumes:
-        - name: puesto
-          emptyDir: { medium: Memory }
         - name: trabajo
           emptyDir: {}
         # ⭐ La capa (0031 §3, W3.2): las dependencias del árbol, instaladas al
@@ -92,47 +90,12 @@ spec:
                   expirationSeconds: 3600
                   path: token
       initContainers:
-        # El testigo del agente de la celda: con él el agente pide tokens al
-        # emisor (client credentials) y habla con `ore-serve` como agente.
-        #
-        # ⭐ Por HTTP y no por `gcloud` (W3.7 ④). Medido en «Lo medido para
-        #   W3.7» §5: `gcloud secrets versions access` en la imagen de drivers
-        #   tardaba **31 s** de los 48 del trabajo entero — el arranque de
-        #   gcloud, no la red—. El token del pod (Workload Identity, por el
-        #   servidor de metadatos) contra la API REST de Secret Manager
-        #   (`private.googleapis.com`, que este rol alcanza) es la misma
-        #   llamada sin el arranque: la imagen del puesto ya trae python.
-        - name: traer-el-testigo
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
-          imagePullPolicy: Always
-          env:
-            - { name: HOME, value: /tmp }
-            - { name: PROYECTO, value: "project-8853a180-450d-47be-b83" }
-            - { name: CELDA, value: t-demo }
-          volumeMounts: [{ name: puesto, mountPath: /puesto }]
-          command: ["python3", "-c"]
-          args:
-            - |
-              import base64, json, os, time, urllib.request
-              t0 = time.time()
-              r = urllib.request.Request("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", headers={"Metadata-Flavor": "Google"})
-              token = json.load(urllib.request.urlopen(r, timeout=10))["access_token"]
-              for p in ("cliente", "secreto"):
-                  u = "https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s-agente-%s/versions/latest:access" % (os.environ["PROYECTO"], os.environ["CELDA"], p)
-                  d = json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"Authorization": "Bearer " + token}), timeout=20))
-                  with open("/puesto/agente-" + p, "wb") as f:
-                      f.write(base64.b64decode(d["payload"]["data"]))
-                  os.chmod("/puesto/agente-" + p, 0o444)
-              print("agente puesto · %s · %d ms" % (open("/puesto/agente-cliente").read().strip(), (time.time() - t0) * 1000), flush=True)
-          resources:
-            requests: {cpu: "50m", memory: 128Mi}
-            limits:   {cpu: "500m", memory: 256Mi}
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-            runAsUser: 65532
-            seccompProfile: { type: RuntimeDefault }
-            capabilities: { drop: [ALL] }
+        # ✏️ 2026-10-02 · Aquí estaba `traer-el-testigo`: bajaba el cliente y el
+        #   secreto del agente DE LA CELDA a `/puesto`, legibles por el código de
+        #   la persona en el mismo proceso. Con ellos una celda era el agente: se
+        #   saltaba el techo de su repositorio y alcanzaba lo que el agente
+        #   alcanza. Desde R1 el puesto habla con el token de SU pod, que declara
+        #   qué puesto es (`token-del-pod`, arriba), y no necesita el del agente.
         # ⭐ La capa: sin `pip` contra internet (esta red no lo alcanza). Baja
         #   `ore/puesto/<capa>/` del bucket y lo instala en /capa con
         #   `--no-index`; medido: ~1 s de bajada y ~3 s de instalación (polars).
@@ -271,9 +234,6 @@ spec:
             - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
             - { name: ORE_ALMACEN, value: "gcs" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
-            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-            - { name: REALM, value: "rubix" }
-            - { name: PUESTO_DIR, value: /puesto }
             - { name: HOME, value: /tmp }
             - { name: PYTHONUNBUFFERED, value: "1" }
             # ⭐⭐ CUANTO MIDE ESTE POD, para que la sesión se lo reparta
@@ -295,7 +255,6 @@ spec:
             #   inventado expulsa pods buenos—; queda dicho para medirlo.
             - { name: ORE_MEMORIA_MB, value: "4096" }
           volumeMounts:
-            - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
             - { name: capa, mountPath: /capa, readOnly: true }
             - { name: token-del-pod, mountPath: /var/run/ore/pod, readOnly: true }

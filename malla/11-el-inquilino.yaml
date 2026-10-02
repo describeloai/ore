@@ -212,7 +212,12 @@ metadata:
   name: salida-al-emisor
   namespace: t-demo
 spec:
-  podSelector: {}
+  # ✏️ 2026-10-02 · Menos un puesto: corre el código de una persona y ya no
+  #   lleva credencial que presentar al IdP —habla con `ore-serve` con el token
+  #   de su pod (R1)—. Lo que no necesita, no lo alcanza (como el cofre, 41).
+  podSelector:
+    matchExpressions:
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto]}
   policyTypes: [Egress]
   egress:
     - to:
