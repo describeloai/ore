@@ -61,12 +61,22 @@ const MAPEADOR_AUDIENCIA = {
 /** El ámbito que lleva `sub` (Keycloak 24+): sin él, un token válido y ANÓNIMO. */
 const AMBITO_DEL_SUJETO = 'basic';
 
-/** El registro abierto en `rubix` (0025 E6), sin `verifyEmail` mientras no haya correo. */
+/** El registro abierto en `rubix` (0025 E6). Si verifica el correo, lo decide `HAY_CORREO`. */
 const REGISTRO_EN_PRODUCCION = {
   "realm": "rubix",
-  "registrationAllowed": true,
-  "verifyEmail": false
+  "registrationAllowed": true
 };
+
+// ⛔⛔ EL CORREO, UN SOLO INTERRUPTOR (0048, deuda 3). Medido el 2026-10-02: el realm vivo
+//   ofrecía «¿Olvidaste tu contraseña?» (`resetPasswordAllowed`) y el relay RECHAZABA
+//   (550, la IP de salida no era la registrada en Workspace). Es la avería que `realm.mjs`
+//   cuenta del 2026-08-26, otra vez: un enlace que promete un correo que nadie envía.
+//
+//   ⇒ Lo que depende del correo se enciende y se apaga JUNTO, desde aquí:
+//     HAY_CORREO = false   sin reposición por correo y sin verificar el correo al registrarse
+//     HAY_CORREO = true    las dos, en `rubix`; `rubix-interno` no se repone por correo nunca
+//   Se pone a `true` cuando la sonda de correo (`identidad/sonda-correo.sh`) sale verde.
+export const HAY_CORREO = false;
 
 /** El registro pregunta por la organización (035): atributo del perfil y su claim. */
 const ATRIBUTO_ORGANIZACION = {
@@ -274,8 +284,18 @@ function conOrganizacionEnElRegistro(realm) {
 function conRegistro(realm) {
   if (realm.realm !== REGISTRO_EN_PRODUCCION.realm) return realm;
   realm.registrationAllowed = REGISTRO_EN_PRODUCCION.registrationAllowed;
-  realm.verifyEmail = REGISTRO_EN_PRODUCCION.verifyEmail;
   return conOrganizacionEnElRegistro(realm);
+}
+
+function conCorreo(realm) {
+  if (!HAY_CORREO) {
+    realm.resetPasswordAllowed = false;
+    realm.verifyEmail = false;
+  } else if (realm.realm === REGISTRO_EN_PRODUCCION.realm) {
+    realm.resetPasswordAllowed = true;
+    realm.verifyEmail = true;
+  }
+  return realm;
 }
 
 // ⛔⛔ LOS RETIRADOS (0048, deuda 1). Dejar de declarar un cliente NO lo retira: el
@@ -363,6 +383,7 @@ export function realmsDeOre() {
     realm = conSujeto(realm);
     if (REALMS_CON_ORE.includes(realm.realm)) realm = conOre(realm);
     realm = conRegistro(realm);
+    realm = conCorreo(realm);
     realm = conConsolaLocal(realm);
     realm = sinRetirados(realm);
     return [realm.realm, realm];

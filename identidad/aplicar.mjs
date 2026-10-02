@@ -276,12 +276,25 @@ async function aplicarFlujo(llamar, realm, deseado, opciones = {}) {
  */
 const AJUSTES_GOBERNADOS = ['registrationAllowed', 'verifyEmail', 'resetPasswordAllowed', 'rememberMe'];
 
+// ⭐ 0048 (deuda 3): Y EL CORREO DE SALIDA, entero. Hasta aquí `smtpServer` se ponía al
+//   importar y nadie lo volvía a mirar: medido el 2026-10-02, el realm de producción
+//   firmaba sus correos como «Rubix (desarrollo)», resto de cuando se llamaba `rubix-dev`.
+//   Se compara campo a campo, en los dos sentidos: un campo vivo que el artefacto no dice
+//   (una credencial puesta a mano, p. ej.) también es deriva.
+const mismoCorreo = (a, b) => {
+  const orden = (o) => JSON.stringify(Object.entries(o ?? {}).sort(([x], [y]) => x.localeCompare(y)));
+  return orden(a) === orden(b);
+};
+
 async function aplicarAjustes(llamar, realm, deseado) {
   const vivo = await llamar('GET', `/realms/${realm}`);
   const cambios = [];
   for (const campo of AJUSTES_GOBERNADOS) {
     if (deseado[campo] === undefined) continue;
     if (vivo[campo] !== deseado[campo]) cambios.push([campo, vivo[campo], deseado[campo]]);
+  }
+  if (deseado.smtpServer && !mismoCorreo(vivo.smtpServer, deseado.smtpServer)) {
+    cambios.push(['smtpServer', vivo.smtpServer, deseado.smtpServer]);
   }
   if (!cambios.length) return { cambios: [] };
   await llamar('PUT', `/realms/${realm}`, {
@@ -580,6 +593,12 @@ async function planificar(llamar, realm, deseado) {
       plan.push(`ajuste ${campo}: ${JSON.stringify(vivo[campo])} → ${JSON.stringify(deseado[campo])}`);
     }
   }
+  if (deseado.smtpServer && !mismoCorreo(vivo.smtpServer, deseado.smtpServer)) {
+    for (const k of new Set([...Object.keys(vivo.smtpServer ?? {}), ...Object.keys(deseado.smtpServer)])) {
+      const a = (vivo.smtpServer ?? {})[k], b = deseado.smtpServer[k];
+      if (a !== b) plan.push(`correo ${k}: ${JSON.stringify(a)} → ${JSON.stringify(b)}`);
+    }
+  }
   const extras = { ...politicaDePasskeys(vivo.displayName || realm), attributes: { ...(vivo.attributes ?? {}), ...declaracionDeGarantia() } };
   for (const [k, v] of Object.entries(extras)) {
     if (k === 'attributes') {
@@ -711,7 +730,7 @@ if (!SOLO_VERIFICAR) {
         console.log(`   ⭐ ajuste ${campo}: ${JSON.stringify(antes)} → ${JSON.stringify(ahora)}`);
       }
     } else {
-      console.log(`   ✅ los ${AJUSTES_GOBERNADOS.length} ajustes gobernados ya eran los declarados`);
+      console.log(`   ✅ los ${AJUSTES_GOBERNADOS.length} ajustes gobernados y el correo ya eran los declarados`);
     }
     if (cli?.ambitos) {
       const { faltan, sobran, inexistentes } = cli.ambitos;
