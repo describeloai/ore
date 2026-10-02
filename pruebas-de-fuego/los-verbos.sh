@@ -37,6 +37,9 @@
 #      solo compartido); retirarla (no la de casa); y una USERADMIN no puede
 #  12  ⭐ EL PERFIL (035): fundar con titulo; titulo y logo por el verbo (ORGADMIN);
 #      un logo que no es imagen o pesa de mas se niega; una USERADMIN no edita
+#  18  ⭐ EL HANDLE (048, ADR 0049 · el dueño): sale del nombre de usuario la
+#      primera vez y no cambia; desempata; por el puente (`quien`) tambien desde
+#      el agente de un puesto; un agente o alguien de fuera no es dueño de nada
 #
 # El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es
 # `ORGADMIN`, que lo tiene TODO, asi que la guarda del rodeo **nunca llega a
@@ -184,6 +187,10 @@ cuerpo = {"iss": emisor, "aud": audiencia, "sub": sub, "email": correo,
 # Y la clase, si se pide: es lo que el IdP estampa a un cliente de maquina.
 if tipo:
     cuerpo["rubix_tipo"] = tipo
+# Y el nombre de usuario que eligio al registrarse, si se pide (`USUARIO`): de el
+# sale su handle (la 048).
+if os.environ.get("USUARIO"):
+    cuerpo["preferred_username"] = os.environ["USUARIO"]
 f = (b64(json.dumps(cabeza).encode()) + "." + b64(json.dumps(cuerpo).encode())).encode()
 print(f.decode() + "." + b64(firmar(f)))
 PYCODE
@@ -949,5 +956,49 @@ psql "$URL" -v ON_ERROR_STOP=1 -qtAf "$RAIZ/iam/migraciones/046-los-agentes-sin-
 psql "$URL" -v ON_ERROR_STOP=1 -qtAf "$RAIZ/iam/migraciones/046-los-agentes-sin-celda.sql" >/dev/null || falla "17 · la 046 no se puede repetir"
 [ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'agente:retirar'")" = "1" ] || falla "17 · repetir la 046 anoto otra vez"
 dice "17 · la 046: el agente sin celda sale de iam.agente, sus concesiones se revocan (la fila se queda), queda en la huella de su organizacion, y repetirla no hace nada"
+
+# ── 18 · ⭐ EL HANDLE (la 048, ADR 0049 · el dueño) ───────────────────────────
+#
+# Lo que una celda escribe en el `owner` de lo que alguien crea: `user:<handle>`.
+# Sale del nombre de usuario que la persona eligio al registrarse
+# (`preferred_username`), se asigna la PRIMERA vez que `ore-iam` ve su token, y
+# no cambia: es lo que queda escrito en el arbol.
+handle_de() { psql "$URL" -qtAc "select coalesce(handle, '-') from iam.persona where sub = '$1'"; }
+# ① Al entrar: Ada sin handle, con su usuario en el token → el suyo.
+psql "$URL" -qtAc "update iam.persona set handle = null where sub in ('persona:ada', 'persona:bea')" >/dev/null
+ADA_U=$(USUARIO="Ada.Lovelace" acunar "persona:ada" "ada@paladio.io")
+[ "$(pide GET /organizaciones "$ADA_U")" = "200" ] || falla "18 · Ada no entro: $(cat "$TMP/r.json")"
+[ "$(handle_de persona:ada)" = "ada-lovelace" ] || falla "18 · al entrar, el handle no salio del usuario: $(handle_de persona:ada)"
+# ② Y no cambia: otro usuario en el token no lo toca.
+[ "$(pide GET /organizaciones "$(USUARIO="otra-cosa" acunar "persona:ada" "ada@paladio.io")")" = "200" ] \
+  && [ "$(handle_de persona:ada)" = "ada-lovelace" ] || falla "18 · ⛔ EL HANDLE CAMBIO CON EL TOKEN: $(handle_de persona:ada)"
+dice "18 · al entrar, el handle sale del nombre de usuario (ada-lovelace) y no cambia aunque el token diga otro"
+# ③ Por el puente, con el token de la persona: el suyo, y la forma de `owner`.
+[ "$(puente "$CA" "$ADA_U" quien '{"subject":{"id":"persona:ada"}}')" = "200" ] || falla "18 · quien fallo: $(cat "$TMP/r.json")"
+[ "$(campo handle)" = "ada-lovelace" ] && [ "$(campo owner)" = "user:ada-lovelace" ] || falla "18 · quien no dio el handle: $(cat "$TMP/r.json")"
+# ④ Desempate: Bea elige un usuario que normaliza al de Ada.
+BEA_U=$(USUARIO="ada_lovelace" acunar "persona:bea" "bea@paladio.io")
+[ "$(puente "$CA" "$BEA_U" quien '{"subject":{"id":"persona:bea"}}')" = "200" ] && [ "$(campo handle)" = "ada-lovelace-2" ] \
+  || falla "18 · el desempate no dio ada-lovelace-2: $(cat "$TMP/r.json")"
+# ⑤ Desde un puesto llama el AGENTE y pregunta por la persona: el que tiene.
+[ "$(puente "$CA" "$AGEA" quien '{"subject":{"id":"persona:bea"}}')" = "200" ] && [ "$(campo handle)" = "ada-lovelace-2" ] \
+  || falla "18 · el agente no obtuvo el handle de la persona: $(cat "$TMP/r.json")"
+# ⑥ Sin handle y sin su token (no ha entrado desde la 048): del correo, una vez.
+psql "$URL" -qtAc "update iam.persona set handle = null where sub = 'persona:bea'" >/dev/null
+[ "$(puente "$CA" "$AGEA" quien '{"subject":{"id":"persona:bea"}}')" = "200" ] && [ "$(campo handle)" = "bea" ] \
+  || falla "18 · sin token, el handle no salio del correo: $(cat "$TMP/r.json")"
+[ "$(handle_de persona:bea)" = "bea" ] || falla "18 · el handle del correo no quedo en la fila"
+dice "18 · quien: el suyo con su token; desempata (ada-lovelace-2); el agente de un puesto obtiene el de la persona; sin token, del correo"
+# ⑦ ⛔ Ni un agente ni alguien de otra organizacion es dueño de nada: 404.
+[ "$(puente "$CA" "$AGEA" quien '{"subject":{"id":"maquina:agente-acme"}}')" = "404" ] || falla "18 · ⛔ UN AGENTE TIENE HANDLE: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$ZOE" quien '{"subject":{"id":"persona:zoe"}}')" = "404" ] || falla "18 · ⛔ ACME OBTUVO EL HANDLE DE ZOE: $(cat "$TMP/r.json")"
+[ "$(puente "$CA" "$ADA_U" quien '{}')" = "400" ] || falla "18 · sin subject no dio 400"
+[ "$(puente "$ADA_U" "$ADA_U" quien '{"subject":{"id":"persona:ada"}}')" = "403" ] || falla "18 · ⛔ UNA PERSONA PREGUNTO QUIEN POR EL PUENTE"
+# ⑧ Y la base guarda la forma: un handle que no es handle no entra.
+psql "$URL" -qtAc "update iam.persona set handle = 'No Vale' where sub = 'persona:bea'" >/dev/null 2>&1 \
+  && falla "18 · ⛔ LA BASE ACEPTO UN HANDLE QUE NO ES HANDLE"
+psql "$URL" -qtAc "update iam.persona set handle = 'ada-lovelace' where sub = 'persona:bea'" >/dev/null 2>&1 \
+  && falla "18 · ⛔ DOS PERSONAS CON EL MISMO HANDLE"
+dice "18 · un agente y alguien de fuera, 404; sin subject, 400; una persona por el puente, 403; la base niega la forma y el duplicado"
 
 echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, el estado que informa el agente, el puente, y la actividad."

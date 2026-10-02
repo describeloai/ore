@@ -151,6 +151,51 @@ pub fn es_handle(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// Lo más largo que se deja un handle que se DERIVA (`handle_de`). Uno escrito
+/// a mano no tiene techo: `es_handle` no lo pide y no se le añade aquí.
+pub const HANDLE_MAXIMO: usize = 39;
+
+/// **Un handle a partir de un nombre de usuario** (o de lo que haga de él): en
+/// minúsculas, las vocales con tilde y la `ñ` a su letra, todo lo demás que no
+/// sea letra o dígito a `-`, sin guiones repetidos ni en los bordes, y como mucho
+/// [`HANDLE_MAXIMO`]. Si el usuario es un correo, cuenta lo de antes de la `@`.
+/// Si empieza por dígito, `u-` delante: un handle empieza por letra (`OOS2009`).
+///
+/// Es la regla con la que `ore-iam` da a cada persona su `user:<handle>` la
+/// primera vez que la ve (la 048) y con la que `ore-serve` deriva uno cuando no
+/// hay `ore-iam` a quien preguntar. `None` si no queda nada.
+///
+/// ⚠️ Derivar no es asignar: dos usuarios distintos pueden dar el mismo
+///   (`ana.g` y `ana_g`), y quien asigna desempata.
+pub fn handle_de(usuario: &str) -> Option<String> {
+    let local = usuario.split('@').next().unwrap_or(usuario);
+    let mut h = String::new();
+    for c in local.to_lowercase().chars() {
+        let c = match c {
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            'ç' => 'c',
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() => c,
+            _ => '-',
+        };
+        if c == '-' && (h.is_empty() || h.ends_with('-')) {
+            continue;
+        }
+        h.push(c);
+    }
+    let mut h = h.trim_end_matches('-').to_string();
+    if h.starts_with(|c: char| c.is_ascii_digit()) {
+        h = format!("u-{h}");
+    }
+    h.truncate(HANDLE_MAXIMO);
+    let h = h.trim_end_matches('-').to_string();
+    es_handle(&format!("user:{h}")).then_some(h)
+}
+
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let miembros = crate::link::miembros(pkg);
     if miembros.is_empty() {
@@ -250,6 +295,29 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn un_handle_sale_del_nombre_de_usuario() {
+        for (usuario, handle) in [
+            ("victor", Some("victor")),
+            ("Victor.Garcia", Some("victor-garcia")),
+            ("ana_g", Some("ana-g")),
+            ("ana..g--", Some("ana-g")),
+            ("josé.muñoz", Some("jose-munoz")),
+            ("victor@paladio.io", Some("victor")),
+            ("21e8ffd9-5aae", Some("u-21e8ffd9-5aae")),
+            ("_x", Some("x")),
+            ("@@", None),
+            ("日本", None),
+        ] {
+            assert_eq!(handle_de(usuario).as_deref(), handle, "{usuario}");
+        }
+        let largo = handle_de(&"a".repeat(80)).unwrap();
+        assert_eq!(largo.len(), HANDLE_MAXIMO);
+        // Recortar no deja un guion al final.
+        let h = handle_de(&format!("{}-b", "a".repeat(HANDLE_MAXIMO - 1))).unwrap();
+        assert!(!h.ends_with('-') && es_handle(&format!("user:{h}")), "{h}");
+    }
 
     fn doc(ruta: &str, kind: Kind, texto: &str) -> crate::link::Loaded {
         crate::link::Loaded {

@@ -455,6 +455,7 @@ pub fn registrar_agente(
         correo: None,
         nombre: None,
         tipo: None,
+        usuario: None,
     };
     let mut tx = Tx::abrir(c, &operador)?;
     let (j, cambio) = registrar_agente_en(&mut tx, org, emisor, sub, nombre)?;
@@ -610,6 +611,7 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         correo: None,
         nombre: None,
         tipo: None,
+        usuario: None,
     };
     let mut tx = Tx::abrir(c, &operador)?;
     let (j, cambio) = fundar_en(&mut tx, p)?;

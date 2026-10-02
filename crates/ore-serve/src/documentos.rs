@@ -98,6 +98,7 @@ use crate::rutas::{Servidor, analizar, de_node, token};
 use ore_core::json::Json;
 use ore_core::parse::{self, Node, Style};
 use ore_entrada::http::Respuesta;
+use ore_entrada::identidad::Identidad;
 use std::path::{Path, PathBuf};
 
 // 0033: lo que se declara sin decir su version es de la version vigente, que
@@ -150,7 +151,7 @@ pub(crate) const KINDS: &[Kind] = &[
         nombre: "View",
         carpeta: "views",
         articulo: "la vista",
-        exige: exige_owner,
+        exige: sin_exigencias,
         escribe: None,
         version: None,
     },
@@ -259,7 +260,7 @@ pub(crate) const KINDS: &[Kind] = &[
         nombre: "MediaCollection",
         carpeta: "collections",
         articulo: "la colección",
-        exige: exige_owner,
+        exige: sin_exigencias,
         escribe: None,
         version: Some("oos.dev/v1alpha16"),
     },
@@ -301,17 +302,65 @@ fn exige_backed_by(spec: &Node) -> Option<String> {
         })
 }
 
-/// Medido: una `View` sin `owner` pasa el esquema; `owner` lo exige el
-/// emisor (`cambiame` no valida: `OOS2009`). Aquí también.
-fn exige_owner(spec: &Node) -> Option<String> {
-    spec.get("owner")
+// ── el dueño (ADR 0049 · el dueño) ──────────────────────────────────────────
+
+/// Los kinds que llevan `spec.owner` en OOS y se escriben por aquí. Los demás
+/// (una Table es un hecho; Function, Action, Model, ObjectTable no lo tienen en
+/// la especificación) no se tocan.
+fn lleva_dueno(k: &Kind) -> bool {
+    matches!(
+        k.nombre,
+        "View" | "MediaCollection" | "Dataset" | "TrainedModel"
+    )
+}
+
+/// El `spec.owner` de un documento, si lo dice y no está vacío.
+fn owner_de(texto: &str) -> Option<String> {
+    parse::parse(texto)
+        .ok()?
+        .get("spec")
+        .and_then(|(_, s)| s.get("owner"))
         .and_then(|(_, v)| v.as_str())
-        .is_none_or(str::is_empty)
-        .then(|| {
-            "falta `spec.owner`: quien responde de lo que la vista expone y con qué frescura. \
-             `ore validate` no lo exige; un `CREATE VIEW` lo pone, y este verbo lo pide"
-                .to_string()
-        })
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .map(str::to_string)
+}
+
+/// El texto con `owner` como primera clave de `spec`, sin tocar ni un byte más:
+/// en bloque (con la sangría de sus claves) o en flujo (`spec: { … }`). `None`
+/// si no hay un `spec:` de primer nivel en ninguna de las dos formas.
+fn con_owner(texto: &str, owner: &str) -> Option<String> {
+    let lineas: Vec<&str> = texto.split_inclusive('\n').collect();
+    let mut fuera = String::with_capacity(texto.len() + owner.len() + 16);
+    let mut hecho = false;
+    for (i, l) in lineas.iter().enumerate() {
+        let sin = l.trim_end_matches(['\n', '\r']);
+        let Some(resto) = sin.strip_prefix("spec:").filter(|_| !hecho) else {
+            fuera.push_str(l);
+            continue;
+        };
+        let resto = resto.trim();
+        if resto.is_empty() || resto.starts_with('#') {
+            let sangria = lineas[i + 1..]
+                .iter()
+                .map(|x| x.trim_end_matches(['\n', '\r']))
+                .find(|x| !x.trim().is_empty())
+                .map(|x| x.len() - x.trim_start().len())
+                .filter(|n| *n > 0)
+                .unwrap_or(2);
+            fuera.push_str(sin);
+            fuera.push('\n');
+            fuera.push_str(&format!("{}owner: {owner}\n", " ".repeat(sangria)));
+        } else {
+            let dentro = resto.strip_prefix('{')?.trim_start();
+            match dentro.strip_prefix('}') {
+                Some(tras) => fuera.push_str(&format!("spec: {{ owner: {owner} }}{tras}\n")),
+                None => fuera.push_str(&format!("spec: {{ owner: {owner}, {dentro}\n")),
+            }
+        }
+        hecho = true;
+    }
+    hecho.then_some(fuera)
 }
 
 /// La tabla es un hecho: no tiene dueño, y todo lo demás lo exige el esquema.
@@ -924,6 +973,7 @@ impl Servidor {
         n: &str,
         cuerpo: &str,
         si_commit: Option<&str>,
+        sujeto: &Identidad,
     ) -> Respuesta {
         let k = match kind_o_404(kind) {
             Ok(k) => k,
@@ -935,11 +985,15 @@ impl Servidor {
                 format!("{} no se escribe por `/documentos`: {verbo}", k.articulo),
             );
         }
-        self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit)
+        self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit, Some(sujeto))
     }
 
     /// La escritura del motor, para un kind ya resuelto: en `packages/<ns>[/<schema>]/<carpeta>/`,
     /// compilando antes de empujar. La usa `/documentos` y, para el `Model`, `/modelos` (0041).
+    ///
+    /// ⭐ Con `quien`, un kind con dueño que llega sin `owner` lo recibe (ADR 0049 ·
+    ///   el dueño): el que ya tenía, si se reescribe —editar no cambia el dueño—,
+    ///   o el de quien lo crea. Un `owner` explícito se respeta.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn escribir_en_su_sitio(
         &self,
@@ -950,6 +1004,7 @@ impl Servidor {
         n: &str,
         cuerpo: &str,
         si_commit: Option<&str>,
+        quien: Option<&Identidad>,
     ) -> Respuesta {
         if let Err(r) = nombres(ns, schema, n) {
             return r;
@@ -977,6 +1032,27 @@ impl Servidor {
         let (lista, _) = documentos_de(raiz);
         let existente =
             buscar(&lista, k, ns, schema, n).map(|d| (d.fichero.clone(), d.texto.clone()));
+        let texto = match quien {
+            Some(s) if lleva_dueno(k) && owner_de(&texto).is_none() => {
+                let owner = match existente.as_ref().and_then(|(_, t)| owner_de(t)) {
+                    Some(o) => o,
+                    None => match self.dueno_de_quien_crea(s) {
+                        Ok(o) => o,
+                        Err(r) => return r,
+                    },
+                };
+                match con_owner(&texto, &owner) {
+                    Some(t) => t,
+                    None => {
+                        return Respuesta::error(
+                            422,
+                            "el documento no tiene un `spec:` donde poner su `owner`",
+                        );
+                    }
+                }
+            }
+            _ => texto,
+        };
         // Uno nuevo, en la carpeta de su schema (01 §3): la del paquete en
         // `default`, `<paquete>/<schema>/` en otro.
         let carpeta = if schema == ore_core::normalize::SCHEMA_POR_DEFECTO {
@@ -1681,6 +1757,46 @@ fn escalar_yaml(raw: &str, style: Style) -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn el_owner_entra_en_spec_sin_tocar_lo_demas() {
+        let bloque = "apiVersion: oos.dev/v1alpha14\nkind: View\nmetadata:\n  name: v\n  namespace: b\nspec:\n    dialect: duckdb\n    sql: |\n      select 1\n";
+        let t = con_owner(bloque, "user:ana").unwrap();
+        assert_eq!(
+            t,
+            "apiVersion: oos.dev/v1alpha14\nkind: View\nmetadata:\n  name: v\n  namespace: b\nspec:\n    owner: user:ana\n    dialect: duckdb\n    sql: |\n      select 1\n"
+        );
+        assert_eq!(owner_de(&t).as_deref(), Some("user:ana"));
+        let flujo = "kind: MediaCollection\nmetadata: { name: c, namespace: b }\nspec: { media: image, formats: [png] }\n";
+        let t = con_owner(flujo, "user:ana").unwrap();
+        assert!(
+            t.ends_with("spec: { owner: user:ana, media: image, formats: [png] }\n"),
+            "{t}"
+        );
+        assert_eq!(owner_de(&t).as_deref(), Some("user:ana"));
+        assert_eq!(
+            con_owner("kind: X\nspec: {}\n", "user:ana").as_deref(),
+            Some("kind: X\nspec: { owner: user:ana }\n")
+        );
+        // Un `spec` anidado no es el de primer nivel; y sin `spec`, nada.
+        assert_eq!(
+            con_owner("kind: X\nmetadata:\n  spec: 1\n", "user:ana"),
+            None
+        );
+        assert_eq!(con_owner("kind: X\nspec: [1]\n", "user:ana"), None);
+        // Uno vacío no es un dueño.
+        assert_eq!(owner_de("spec: { owner: '' }\n"), None);
+    }
+
+    #[test]
+    fn solo_los_kinds_con_owner_en_oos() {
+        let con: Vec<_> = KINDS
+            .iter()
+            .filter(|k| lleva_dueno(k))
+            .map(|k| k.nombre)
+            .collect();
+        assert_eq!(con, ["View", "TrainedModel", "Dataset", "MediaCollection"]);
+    }
 
     #[test]
     fn los_diagnosticos_se_leen_tal_como_los_escribe_el_compilador() {

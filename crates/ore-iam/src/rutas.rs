@@ -160,6 +160,11 @@ impl Servidor {
         if let Err(e) = crate::verbos::refrescar_nombre(&mut tx, &self.emisor, s) {
             return Respuesta::error(500, e);
         }
+        // Y su handle (la 048), si aún no tiene: es aquí donde el token trae el
+        // nombre de usuario que eligió. Se asigna una vez y no se vuelve a tocar.
+        if let Err(e) = crate::handle::asegurar(&mut tx, &self.emisor, s) {
+            return Respuesta::error(500, e);
+        }
         match f(&mut tx, &self.emisor) {
             Err(e) => Respuesta::error(422, e),
             Ok(j) => match tx.confirmar() {
@@ -968,6 +973,11 @@ impl Servidor {
         if let Err(e) = crate::verbos::refrescar_nombre(&mut tx, &self.emisor, s) {
             return Respuesta::error(500, e);
         }
+        // Y su handle (la 048), si aún no tiene: es aquí donde el token trae el
+        // nombre de usuario que eligió. Se asigna una vez y no se vuelve a tocar.
+        if let Err(e) = crate::handle::asegurar(&mut tx, &self.emisor, s) {
+            return Respuesta::error(500, e);
+        }
         match f(&mut tx, &self.emisor) {
             Err(e) => Respuesta::error(422, e),
             Ok((j, false)) => Respuesta::ok(j),
@@ -1123,6 +1133,7 @@ pub fn mapa(con: bool, puente: bool) -> Vec<(&'static str, &'static str, bool)> 
         ("POST", "/access/v1/evaluation", puente),
         ("POST", "/access/v1/evaluations", puente),
         ("POST", "/access/v1/eventos", puente),
+        ("POST", "/access/v1/quien", puente),
         ("GET", "/salud", true),
         ("GET", "/organizaciones", con),
         ("GET", "/organizaciones/{org}/miembros", con),

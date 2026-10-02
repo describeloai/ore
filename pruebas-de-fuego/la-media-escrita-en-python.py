@@ -27,7 +27,7 @@ import hashlib  # noqa: E402
 import io  # noqa: E402
 import tempfile  # noqa: E402
 
-from banco_media import BYTES, DOCUMENTOS, LAGO, MODOS, PUNTEROS, RAMA, SERVE, bien, cabeceras, caso  # noqa: E402
+from banco_media import BYTES, DOCUMENTOS, LAGO, MODOS, PUNTEROS, QUIEN_CREA, RAMA, SERVE, bien, cabeceras, caso  # noqa: E402
 
 celda, medios_ = banco.arrancar()
 
@@ -43,12 +43,18 @@ def e1():
     assert r == {"coleccion": "legal.archivo.paginas", "creada": True}, r
     y = DOCUMENTOS[("MediaCollection", "legal", "archivo", "paginas")]
     assert "apiVersion: oos.dev/v1alpha19" in y and "from:" not in y, y
-    assert "formats: [png, webp]" in y and "owner: team:legal" in y and "gdpr.sensitivity: high" in y, y
+    assert "formats: [png, webp]" in y and "gdpr.sensitivity: high" in y, y
+    # ⭐ ADR 0049 · el dueño: el SDK no lo inventa; lo pone el servidor, y es quien crea.
+    assert y.count("owner:") == 1 and "owner: %s" % QUIEN_CREA in y, y
     r = ore.crear_coleccion("s3_standard.nueva_carpeta.copia", media="document", formatos=["pdf"])
     y = DOCUMENTOS[("MediaCollection", "s3_standard", "nueva_carpeta", "copia")]
-    assert r["creada"] and "owner: team:s3-standard" in y, y
-    bien("1 · crear_coleccion(): v1alpha19 sin `from`, formatos en minúscula, etiquetas, y el dueño por "
-         "defecto es un handle aunque la base lleve `_` (team:s3-standard)")
+    assert r["creada"] and "owner: %s" % QUIEN_CREA in y and "team:" not in y, y
+    # Y para dársela a otro, se dice.
+    ore.crear_coleccion("legal.archivo.de_bea", media="image", formatos=["png"], dueno="user:bea")
+    y = DOCUMENTOS[("MediaCollection", "legal", "archivo", "de_bea")]
+    assert "owner: user:bea" in y and QUIEN_CREA not in y, y
+    bien("1 · crear_coleccion(): v1alpha19 sin `from`, formatos en minúscula, etiquetas; sin `dueno` el SDK "
+         "no lo escribe y es de quien la crea (%s), y con `dueno` es de quien se diga" % QUIEN_CREA)
 
 
 def e2():

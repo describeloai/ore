@@ -48,6 +48,7 @@ pub fn retirar(
         correo: None,
         nombre: None,
         tipo: None,
+        usuario: None,
     };
     let mut tx = Tx::abrir(&mut c, &operador)?;
     let f = tx

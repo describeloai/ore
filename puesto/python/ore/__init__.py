@@ -1037,8 +1037,8 @@ def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, re
         lineas.append("  description: %s" % q(comentario, ensure_ascii=False))
     if etiquetas:
         lineas.append("  labels: { %s }" % ", ".join("%s: %s" % (k, v) for k, v in etiquetas.items()))
-    lineas += ["spec:", "  owner: %s" % dueno, "  media: %s" % media,
-               "  formats: [%s]" % ", ".join(formatos)]
+    lineas += ["spec:"] + _owner(dueno) + ["  media: %s" % media,
+                                         "  formats: [%s]" % ", ".join(formatos)]
     if retencion:
         lineas.append("  retention: %s" % retencion)
     return "\n".join(lineas) + "\n"
@@ -1053,7 +1053,10 @@ def crear_coleccion(nombre, media, formatos, dueno=None, comentario=None, etique
     primera, la primaria). `etiquetas` (`{"gdpr.sensitivity": "high"}`) se suman
     a lo que derive: pueden elevar, no rebajar (v1alpha19 `01` §3). Si ya existe
     es un error, o `{creada: False}` con `si_no_existe`. Un código OOS vuelve como
-    `ValueError`. Devuelve `{coleccion, creada}`."""
+    `ValueError`. Devuelve `{coleccion, creada}`.
+
+    `dueno`, sólo para dársela a otro (`user:…`, `team:…`): sin él es de quien la
+    crea —la persona que abrió el puesto—, y lo pone el servidor."""
     nombre = _corto(_nombre_de(nombre), "create media collection: el nombre")
     que = "create media collection %s" % nombre
     if media not in MEDIOS:
@@ -1070,7 +1073,6 @@ def crear_coleccion(nombre, media, formatos, dueno=None, comentario=None, etique
         if si_no_existe:
             return {"coleccion": nombre, "creada": False}
         raise RuntimeError("%s: ya hay una colección con ese nombre (`if not exists` la deja como está)" % que)
-    dueno = dueno or _dueno_por_defecto(nombre)
     _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion))
     return {"coleccion": nombre, "creada": True}
 
@@ -1162,7 +1164,7 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
         lineas.append("  schema: %s" % ns)
     if comentario:
         lineas.append("  description: %s" % json.dumps(comentario, ensure_ascii=False))
-    lineas += ["spec:", "  owner: %s" % dueno, "  dialect: duckdb", "  sql: |"]
+    lineas += ["spec:"] + _owner(dueno) + ["  dialect: duckdb", "  sql: |"]
     lineas += ["    " + l if l.strip() else "" for l in sql.replace("\r\n", "\n").strip("\n").split("\n")]
     lineas.append("  columns:")
     for c, t in contrato.items():
@@ -1171,12 +1173,11 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
     return "\n".join(lineas) + "\n"
 
 
-def _dueno_por_defecto(nombre):
-    """`team:<base>` como handle (`OOS2009`: minúsculas, dígitos y `-`): una base
-    puede llevar `_` —`s3_standard`— y un handle no (medido en un puesto de victor:
-    `team:s3_standard` no compilaba)."""
-    h = re.sub(r"[^a-z0-9-]", "-", _partes(nombre)[0].lower()).strip("-") or "datos"
-    return "team:%s" % (h if h[0].isalpha() else "b-" + h)
+def _owner(dueno):
+    """La línea `owner` de un `spec`, si se dice. Sin ella, el dueño lo pone el
+    servidor (ADR 0049 · el dueño): quien lo crea —la persona que abrió el puesto—,
+    o el que ya tenía si se reescribe. El SDK no inventa uno."""
+    return ["  owner: %s" % dueno] if dueno else []
 
 
 def _ruta_de_vista(nombre, kind="View"):
@@ -1237,7 +1238,6 @@ def crear_vista(nombre, sql, columnas=None, comentario=None, dueno=None, o_reemp
         nuevas = [c for c in contrato if c not in anterior]
         if nuevas:
             print("%s · añade %s al contrato" % (nombre, ", ".join(nuevas)))
-    dueno = dueno or _dueno_por_defecto(nombre)
     texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno)
     _poner(que, _ruta_de_vista(nombre), texto)
     hecho = {"vista": nombre, "estado": estado, "columnas": contrato}
@@ -1264,7 +1264,7 @@ def _yaml_de_copia(copia, vista, dueno):
     lineas = ["apiVersion: oos.dev/v1alpha14", "kind: Dataset", "metadata:", "  name: %s" % n, "  namespace: %s" % base]
     if ns != DEFAULT:
         lineas.append("  schema: %s" % ns)
-    lineas += ["spec:", "  owner: %s" % dueno, "  from: { view: %s }" % vista]
+    lineas += ["spec:"] + _owner(dueno) + ["  from: { view: %s }" % vista]
     return "\n".join(lineas) + "\n"
 
 

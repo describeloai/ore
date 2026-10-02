@@ -166,6 +166,12 @@ impl Servidor {
             "--sujeto".into(),
             sujeto.persona.clone(),
         ];
+        // ⭐ Si el dataset nace con esta escritura, es de quien escribe (ADR 0049 ·
+        //   el dueño); si ya estaba, `--owner` no cambia el suyo.
+        match self.dueno_de_quien_crea(sujeto) {
+            Ok(d) => args.extend(["--owner".into(), d]),
+            Err(r) => return r,
+        }
         if let Some(e) = campo("esperado") {
             args.push("--esperado".into());
             args.push(e);

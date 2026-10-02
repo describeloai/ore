@@ -1306,6 +1306,7 @@ impl Servidor {
             correo: None,
             nombre: None,
             tipo: None,
+            usuario: None,
         };
         let ruta = format!("trabajos/{id}.json");
         let texto = informe.pretty() + "\n";
@@ -2574,6 +2575,7 @@ impl Servidor {
                         correo: None,
                         nombre: None,
                         tipo: None,
+                        usuario: None,
                     },
                     rama_del_puesto.or_else(|| rama.map(String::from)),
                 ))
@@ -2886,9 +2888,10 @@ fn celda_de_sentencia(
         }
         // ADR 0040 paso 5. Lo que el árbol sabe al escribir la celda va en la
         // llamada: si ya hay una vista con ese nombre, el contrato que tenía
-        // (para decir si reemplazarla lo rompe) y el dueño que le toca —el del
-        // schema, o el de la base—. El contrato nuevo lo describe DuckDB en
-        // el puesto, que es quien sabe ejecutarla.
+        // (para decir si reemplazarla lo rompe). El contrato nuevo lo describe
+        // DuckDB en el puesto, que es quien sabe ejecutarla. ⭐ Y el dueño NO va:
+        // lo pone `PUT /documentos` —quien la crea, o el que ya tenía si se
+        // reemplaza— (ADR 0049 · el dueño).
         S::CrearVista {
             destino,
             consulta,
@@ -2936,14 +2939,13 @@ fn celda_de_sentencia(
             };
             format!(
                 "from ore import crear_vista, _resultado_de_crear\n\n\
-                 _hecho = crear_vista({}, {}, columnas={cols}, comentario={}, dueno={}, o_reemplaza={}, \
+                 _hecho = crear_vista({}, {}, columnas={cols}, comentario={}, dueno=None, o_reemplaza={}, \
                  si_no_existe={}, evolucion={}, existe={}, anterior={anterior}, materializada={})\n\
                  print(\"%s · vista · %s\" % (_hecho[\"vista\"], _hecho[\"estado\"]))\n\
                  _resultado_de_crear(\"view \" + _hecho[\"vista\"], _hecho[\"estado\"])\n",
                 c(&r),
                 c(consulta),
                 comentario.as_deref().map_or("None".to_string(), c),
-                c(&dueno_de(pkg, &destino.paquete, &destino.schema)),
                 si(*o_reemplaza),
                 si(*si_no_existe),
                 si(*evolucion),
@@ -2961,35 +2963,6 @@ fn celda_de_sentencia(
         ),
     };
     (cabeza + &cuerpo, "python")
-}
-
-/// **El dueño de lo que nace en un schema**: el suyo, si lo declara; si no, el
-/// de su base. Es el equipo, no la persona que la creó —quién la creó ya lo
-/// dice el commit— (ADR 0040 paso 5, como Unity: una vista no queda huérfana
-/// cuando alguien se va).
-fn dueno_de(pkg: &ore_core::link::Package, base: &str, schema: &str) -> String {
-    use ore_core::document::Kind;
-    let de = |d: &ore_core::link::Loaded| {
-        d.section("owner")
-            .and_then(|o| o.as_str().map(str::to_string))
-    };
-    pkg.docs
-        .iter()
-        .find(|d| {
-            d.kind == Kind::Schema
-                && d.meta("namespace").and_then(|x| x.as_str()) == Some(base)
-                && d.meta("name").and_then(|x| x.as_str()) == Some(schema)
-        })
-        .and_then(de)
-        .or_else(|| {
-            pkg.docs
-                .iter()
-                .find(|d| {
-                    d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(base)
-                })
-                .and_then(de)
-        })
-        .unwrap_or_else(|| format!("team:{base}"))
 }
 
 /// Los fallos de un `.sql` como la respuesta 422 que el editor sabe pintar.
@@ -3727,7 +3700,7 @@ mod prueba {
         );
         assert_eq!(l, "python");
         assert!(
-            c.contains("crear_vista(\"ventas.v\", \"select 1 as a, 2 as b\", columnas=[[\"a\",\"la a\"],[\"b\",None]], comentario=\"x\", dueno=\"team:ventas\", o_reemplaza=True, si_no_existe=False, evolucion=False, existe=False, anterior=None, materializada=False)"),
+            c.contains("crear_vista(\"ventas.v\", \"select 1 as a, 2 as b\", columnas=[[\"a\",\"la a\"],[\"b\",None]], comentario=\"x\", dueno=None, o_reemplaza=True, si_no_existe=False, evolucion=False, existe=False, anterior=None, materializada=False)"),
             "{c}"
         );
         // ADR 0040 paso 7: la materializada, la misma llamada y su copia
@@ -3819,6 +3792,7 @@ mod prueba {
             correo: None,
             nombre: None,
             tipo: Some("agente".into()),
+            usuario: None,
         }
     }
 
@@ -3881,6 +3855,7 @@ mod prueba {
         );
         let persona = Identidad {
             tipo: None,
+            usuario: None,
             ..agente("persona:ana")
         };
         assert_eq!(
@@ -3969,6 +3944,7 @@ mod prueba {
         // Quien no es agente, o un agente sin puesto, escribe como sí mismo.
         let persona = Identidad {
             tipo: None,
+            usuario: None,
             ..agente("persona:ana")
         };
         assert_eq!(
@@ -3989,6 +3965,7 @@ mod prueba {
             correo: None,
             nombre: None,
             tipo: Some("agente".into()),
+            usuario: None,
         };
         let b = Identidad {
             persona: "agente:puesto-ana".into(),
@@ -3996,6 +3973,7 @@ mod prueba {
             correo: None,
             nombre: None,
             tipo: None,
+            usuario: None,
         };
         let c = Identidad {
             persona: "persona:ana".into(),
@@ -4003,6 +3981,7 @@ mod prueba {
             correo: None,
             nombre: None,
             tipo: None,
+            usuario: None,
         };
         assert!(es_agente(&a) && es_agente(&b) && !es_agente(&c));
     }

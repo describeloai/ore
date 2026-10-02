@@ -4,6 +4,7 @@
 //!   POST /access/v1/evaluation    ¿puede?            AuthZEN 1.0
 //!   POST /access/v1/evaluations   ¿puede?, en lote   AuthZEN 1.0
 //!   POST /access/v1/eventos       lo que hizo        a la huella, con organización y celda
+//!   POST /access/v1/quien         su handle          `user:<handle>`, el dueño de lo que crea (la 048)
 //! ```
 //!
 //! # Dos tokens en cada llamada (0047 § «El contrato»)
@@ -170,8 +171,62 @@ impl Servidor {
             ["evaluation"] => self.evaluation(tx, &celda, sujeto.as_ref(), &cuerpo),
             ["evaluations"] => self.evaluations(tx, &celda, sujeto.as_ref(), &cuerpo),
             ["eventos"] => self.eventos(tx, &celda, sujeto.as_ref(), &cuerpo),
+            ["quien"] => self.su_handle(tx, &celda, sujeto.as_ref(), &cuerpo),
             _ => Respuesta::error(404, "no hay nada en ese camino del puente"),
         })
+    }
+
+    // ── quien ──────────────────────────────────────────────────────────────
+
+    /// **El handle de quien crea** (ADR 0049 · el dueño, la 048): lo que una celda
+    /// escribe en el `owner` de lo que alguien crea, `user:<handle>`.
+    ///
+    /// `subject.id` es el `sub` de la persona. Si `Ore-Sujeto` es el token de esa
+    /// misma persona, el handle sale del nombre de usuario que trae (si aún no
+    /// tenía); si no —desde un puesto llama el agente, y la persona es la que lo
+    /// abrió—, se lee el que tiene.
+    ///
+    /// ⛔ Sólo de personas de la organización de la celda: un agente no es dueño
+    ///   de nada, y una celda no pregunta por gente de otra. Las dos cosas son el
+    ///   mismo 404.
+    fn su_handle(
+        &self,
+        mut tx: Tx,
+        celda: &Celda,
+        sujeto: Option<&Identidad>,
+        c: &Node,
+    ) -> Respuesta {
+        let Some(sub) = c
+            .get("subject")
+            .and_then(|(_, s)| s.get("id"))
+            .and_then(|(_, v)| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            return Respuesta::error(400, "falta `subject.id`: el `sub` de la persona");
+        };
+        if let Some(s) = sujeto.filter(|s| s.persona == sub && s.agente.is_none())
+            && let Err(e) = crate::handle::asegurar(&mut tx, &self.emisor, s)
+        {
+            return Respuesta::error(500, e);
+        }
+        match crate::handle::de_la_persona(&mut tx, &self.emisor, sub, &celda.organizacion) {
+            Err(e) => Respuesta::error(500, e),
+            Ok(None) => Respuesta::error(
+                404,
+                format!(
+                    "`{sub}` no es una persona de esta organización: sólo una persona es dueña de lo que crea"
+                ),
+            ),
+            Ok(Some(h)) => cerrar(
+                tx,
+                false,
+                Json::obj([
+                    ("subject", Json::obj([("id", Json::s(sub))])),
+                    ("owner", Json::s(format!("user:{h}"))),
+                    ("handle", Json::s(h)),
+                ]),
+            ),
+        }
     }
 
     // ── puede ──────────────────────────────────────────────────────────────

@@ -52,6 +52,7 @@
 pub mod actividad;
 pub mod base;
 pub mod fundar;
+pub mod handle;
 pub mod id;
 pub mod potestad;
 pub mod puente;

@@ -81,6 +81,9 @@ pub struct Opciones<'a> {
     /// Las columnas de la `Table` del lago, como JSON `{"col": "Tipo", …}`.
     pub columnas: Option<&'a str>,
     pub sujeto: Option<&'a str>,
+    /// `--owner`: el dueño del dataset que nazca, quien lo crea (ADR 0049 · el
+    /// dueño). Sin él, el del paquete: en local no hay quien crea.
+    pub owner: Option<&'a str>,
     /// Dónde viven los punteros de las copias; sin él, `<árbol>/copias`.
     pub informe: Option<&'a Path>,
     /// Con `--recoger`: los punteros propios de las demás ramas (0044 C.2 ②).
@@ -715,8 +718,13 @@ fn documento_del_dataset(path: &Path, t: Tabla) -> Result<Option<String>, Fallo>
     Ok(Some(t))
 }
 
-/// El `owner` de un paquete (`packages/<ns>/package.yaml`), o `team:<ns>`.
-fn dueno_del_paquete(path: &Path, ns: &str) -> String {
+/// El `owner` de un dataset que nace: el que se dice (`--owner`, quien lo crea:
+/// lo pasa `ore-serve`) o, en local —donde no hay quien crea—, el de su paquete.
+/// Sin ninguno, `None`: no se inventa un `team:<ns>` que no es de nadie.
+fn dueno_del_dataset(path: &Path, ns: &str, dicho: Option<&str>) -> Option<String> {
+    if let Some(o) = dicho.map(str::trim).filter(|o| !o.is_empty()) {
+        return Some(o.to_string());
+    }
     std::fs::read_to_string(path.join("packages").join(ns).join("package.yaml"))
         .ok()
         .and_then(|t| ore_core::parse::parse(&t).ok())
@@ -725,7 +733,6 @@ fn dueno_del_paquete(path: &Path, ns: &str) -> String {
                 .and_then(|(_, s)| s.get("owner"))
                 .and_then(|(_, o)| o.as_str().map(String::from))
         })
-        .unwrap_or_else(|| format!("team:{ns}"))
 }
 
 /// Las columnas que un documento del lago declara (`spec.columns`).
@@ -758,12 +765,25 @@ fn columnas_del_documento(texto: &str) -> BTreeMap<String, String> {
 /// (el esquema evolucionó con una escritura). Con documento ajeno: se deja, y
 /// se dice si difiere. Compila sólo lo que este documento dice; si no compila,
 /// se revierte. Devuelve `(nueva, regenerada)`.
+#[cfg(test)]
 fn asegurar_dataset(
     path: &Path,
     t: Tabla,
     columnas: &BTreeMap<String, String>,
     clave: Option<&[String]>,
     leyo: Option<&Leyo>,
+) -> Result<(bool, bool), Fallo> {
+    asegurar_dataset_de(path, t, columnas, clave, leyo, None)
+}
+
+/// [`asegurar_dataset`] con el dueño que se dice para uno que nace (`--owner`).
+fn asegurar_dataset_de(
+    path: &Path,
+    t: Tabla,
+    columnas: &BTreeMap<String, String>,
+    clave: Option<&[String]>,
+    leyo: Option<&Leyo>,
+    dueno: Option<&str>,
 ) -> Result<(bool, bool), Fallo> {
     let nombre = t.corto();
     if columnas.is_empty() {
@@ -856,7 +876,26 @@ fn asegurar_dataset(
         .and_then(|t| seguir_esquema(t, columnas))
     {
         Some(s) => s,
-        None => documento_nuevo(&dueno_del_paquete(path, t.ns), t, columnas),
+        None => {
+            // Regenerar uno que ya estaba no le cambia el dueño: el suyo primero.
+            let previo = texto_previo.as_deref().and_then(|t| {
+                ore_core::parse::parse(t)
+                    .ok()?
+                    .get("spec")
+                    .and_then(|(_, s)| s.get("owner"))
+                    .and_then(|(_, o)| o.as_str().map(String::from))
+            });
+            let Some(o) = previo.or_else(|| dueno_del_dataset(path, t.ns, dueno)) else {
+                return Err((
+                    64,
+                    format!(
+                        "`{nombre}` nace sin dueño: ni `--owner` ni un `owner` en `packages/{}/package.yaml`",
+                        t.ns
+                    ),
+                ));
+            };
+            documento_nuevo(&o, t, columnas)
+        }
     };
     if let Some(c) = &cambios {
         s = con_cambios(&s, c);
@@ -1676,7 +1715,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         };
         let clave = p.cambio.clave();
         let leyo = p.cambio.leyo();
-        let (tabla_nueva, regenerada) = asegurar_dataset(
+        let (tabla_nueva, regenerada) = asegurar_dataset_de(
             path,
             Tabla {
                 ns: &p.ns,
@@ -1686,6 +1725,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             &a.columnas_oos,
             clave.as_deref(),
             leyo.as_ref(),
+            op.owner,
         )?;
         let mut campos = vec![
             ("estado", Json::s("copiada")),
@@ -1800,7 +1840,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let a = aplicado_de(&n);
-    let (tabla_nueva, _) = asegurar_dataset(path, t, &a.columnas_oos, None, None)?;
+    let (tabla_nueva, _) = asegurar_dataset_de(path, t, &a.columnas_oos, None, None, op.owner)?;
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
@@ -2161,7 +2201,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             ));
         }
         (None, true) => false,
-        (Some(cols), _) => asegurar_dataset(path, t, cols, None, None)?.0,
+        (Some(cols), _) => asegurar_dataset_de(path, t, cols, None, None, op.owner)?.0,
     };
 
     // ── el puntero ──────────────────────────────────────────────────────────
@@ -2478,6 +2518,32 @@ spec: { owner: team:ventas }
         let e = asegurar_dataset(&d, partes("ventas.francia.x").unwrap(), &cols, None, None)
             .unwrap_err();
         assert!(e.1.contains("no hay ningún schema `francia`"), "{e:?}");
+        // ⭐ ADR 0049 · el dueño: con `--owner`, el de quien lo crea, no el del
+        //   paquete; y regenerarlo con otro no le cambia el que ya tiene.
+        assert!(!doc.contains("user:"), "sin --owner, el del paquete: {doc}");
+        let t = partes("ventas.espana.lineas").unwrap();
+        assert!(
+            asegurar_dataset_de(&d, t, &cols, None, None, Some("user:ana"))
+                .unwrap()
+                .0
+        );
+        let ruta = d.join("packages/ventas/espana/datasets/lineas.yaml");
+        let doc = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            doc.contains("owner: user:ana") && !doc.contains("team:ventas"),
+            "{doc}"
+        );
+        let mas: BTreeMap<String, String> = [("id", "Integer"), ("n", "Integer")]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        asegurar_dataset_de(&d, t, &mas, None, None, Some("user:bea")).unwrap();
+        let doc = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            doc.contains("owner: user:ana") && !doc.contains("user:bea"),
+            "{doc}"
+        );
+        assert!(ore_core::validate::validate_package(&d).is_empty());
         assert_eq!(partes("ventas.default.x").unwrap().corto(), "ventas.x");
         assert!(partes("a.b.c.d").is_err());
         let _ = std::fs::remove_dir_all(&d);

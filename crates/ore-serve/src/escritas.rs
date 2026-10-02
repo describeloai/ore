@@ -219,6 +219,7 @@ impl Servidor {
                 correo: None,
                 nombre: None,
                 tipo: None,
+                usuario: None,
             },
             None => sujeto.clone(),
         };
@@ -469,6 +470,7 @@ mod pruebas {
             correo: None,
             nombre: None,
             tipo: None,
+            usuario: None,
         }
     }
 

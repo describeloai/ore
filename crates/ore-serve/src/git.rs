@@ -1726,6 +1726,7 @@ mod pruebas {
             correo: None,
             nombre: None,
             tipo: None,
+            usuario: None,
         };
         let clon = f.clonar().unwrap();
         std::fs::write(clon.ruta().join("b.txt"), "nuevo\n").unwrap();

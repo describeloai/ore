@@ -406,7 +406,7 @@ impl Servidor {
                     rama,
                     sujeto,
                     &format!("`{b}`: crear el schema `{schema}`"),
-                    |raiz| self.crear_schema(raiz, &b, &pide),
+                    |raiz| self.crear_schema(raiz, &b, &pide, sujeto),
                 );
                 match r.codigo {
                     200 | 201 => Respuesta::ok(Json::obj([
@@ -679,6 +679,11 @@ impl Servidor {
                             &format!("crear `{nombre}`"),
                             move |raiz| {
                                 let defecto = self.retencion_defecto();
+                                // ⭐ El dataset es de quien lo crea (ADR 0049 · el dueño).
+                                let dueno = match self.dueno_de_quien_crea(sujeto) {
+                                    Ok(d) => d,
+                                    Err(r) => return r,
+                                };
                                 let mut args = vec![
                                     "datasets",
                                     ".",
@@ -688,6 +693,8 @@ impl Servidor {
                                     &peticion,
                                     "--sujeto",
                                     &sujeto_s,
+                                    "--owner",
+                                    &dueno,
                                     "--json",
                                 ];
                                 if let Some(d) = &defecto {
@@ -722,6 +729,11 @@ impl Servidor {
                         &format!("escribir `{nombre}`"),
                         move |raiz| {
                             let defecto = self.retencion_defecto();
+                            // ⭐ Si la tabla nace aquí (stage-create), es de quien escribe.
+                            let dueno = match self.dueno_de_quien_crea(sujeto) {
+                                Ok(d) => d,
+                                Err(r) => return r,
+                            };
                             let mut args = vec![
                                 "datasets",
                                 ".",
@@ -732,6 +744,8 @@ impl Servidor {
                                 &peticion,
                                 "--sujeto",
                                 &sujeto_s,
+                                "--owner",
+                                &dueno,
                                 "--json",
                             ];
                             if let Some(d) = &defecto {
@@ -767,6 +781,10 @@ impl Servidor {
                 con_forma(
                     self.escribiendo_en(rama, sujeto, "escribir varias tablas", move |raiz| {
                         let defecto = self.retencion_defecto();
+                        let dueno = match self.dueno_de_quien_crea(sujeto) {
+                            Ok(d) => d,
+                            Err(r) => return r,
+                        };
                         let mut args = vec![
                             "datasets",
                             ".",
@@ -775,6 +793,8 @@ impl Servidor {
                             &peticion,
                             "--sujeto",
                             &sujeto_s,
+                            "--owner",
+                            &dueno,
                             "--json",
                         ];
                         if let Some(d) = &defecto {

@@ -94,6 +94,10 @@ def _cuerpo(h):
     return json.loads(t) if t.strip() else {}
 
 
+# Quien abrió el puesto, como lo dice `ore-iam` (la 048): lo que crea es suyo.
+QUIEN_CREA = "user:ana"
+
+
 def _doc_de(ruta):
     """`/documentos/{kind}/{b}/{n}` o `/documentos/{kind}/{b}/{s}/{n}` → clave."""
     p = ruta.split("/")[2:]
@@ -142,6 +146,12 @@ class Celda(http.server.BaseHTTPRequestHandler):
         clave = _doc_de(u.path)
         texto = _cuerpo(self).get("yaml", "")
         dueno = re.search(r"^  owner: (\S+)$", texto, re.M)
+        if not dueno:
+            # Como `PUT /documentos` (ADR 0049 · el dueño): sin `owner`, el que ya
+            # tenía si se reescribe, y si nace, quien lo crea.
+            previo = re.search(r"^  owner: (\S+)$", DOCUMENTOS.get(clave, ""), re.M)
+            texto = texto.replace("\nspec:\n", "\nspec:\n  owner: %s\n" % (
+                previo.group(1) if previo else QUIEN_CREA), 1)
         if dueno and not re.fullmatch(r"(team|user):[a-z][a-z0-9-]*", dueno.group(1)):
             # Como `ore_core::pertenencia::es_handle` (OOS2009).
             return _json(self, 422, {"error": "no compila", "diagnosticos": [

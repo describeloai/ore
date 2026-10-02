@@ -32,12 +32,12 @@
 //! con el porqué. Nacer dentro de algo que ya existía sería fingir que el
 //! proyecto lo creó.
 //!
-//! ⛔ El `owner` del paquete no se inventa: es `team:<organización>` —quien
-//! RESPONDE, como en el alta de una fuente (rutas.rs `dueno_del_arbol`)— y, si
-//! este servidor no sabe de quién es el árbol, `user:<persona>`. Si ninguno de
-//! los dos da un handle, **el proyecto se crea igual y sin sitio**, y la
-//! respuesta lo dice (`sitio: null`): más vale un proyecto sin suelo que un
-//! `owner: cambiame` que no compila (medido en ⑦.1: OOS2009, 1 error).
+//! ⛔ El `owner` del paquete no se inventa: es quien crea el proyecto,
+//! `user:<handle>` (ADR 0049 · el dueño, `dueno_de_quien_crea`). Si quien lo crea
+//! no da un handle, **el proyecto se crea igual y sin sitio**, y la respuesta lo
+//! dice (`sitio: null`): más vale un proyecto sin suelo que un `owner: cambiame`
+//! que no compila (medido en ⑦.1: OOS2009, 1 error). Si `ore-iam` no contesta,
+//! 503: no se sabe de quién sería.
 //!
 //! Y la escritura es la de siempre: el commit lo firma el sujeto y va a **su**
 //! rama (`escribiendo_en`), como todo lo demás desde 0031 W3.7 ④.
@@ -347,8 +347,10 @@ impl Servidor {
         if !ore_core::pertenencia::puede_ser_namespace(id) {
             return Ok(());
         }
-        let Some(dueno) = self.dueno_de_un_sitio(sujeto) else {
-            return Ok(());
+        let dueno = match self.dueno_de_quien_crea(sujeto) {
+            Ok(d) => d,
+            Err(r) if r.codigo == 503 => return Err(r),
+            Err(_) => return Ok(()),
         };
         std::fs::create_dir_all(&suyo)
             .and_then(|_| {
@@ -363,34 +365,6 @@ impl Servidor {
                     format!("no se pudo escribir `packages/{id}/package.yaml`: {e}"),
                 )
             })
-    }
-
-    /// De quién es el paquete de un proyecto: `team:<organización>` —quien
-    /// RESPONDE, igual que en el alta de una fuente— o, si este servidor no
-    /// sabe de quién es el árbol, `user:<persona>`.
-    ///
-    /// ⛔ `None` antes que `cambiame`: un `owner` que no es handle es `OOS2009`
-    ///   y el commit no entraría (medido en ⑦.1). Sin dueño, el proyecto nace
-    ///   sin sitio y la respuesta lo dice, que es peor pero es verdad.
-    fn dueno_de_un_sitio(&self, sujeto: &Identidad) -> Option<String> {
-        self.dueno_del_arbol().or_else(|| {
-            // El sujeto viene con su clase delante (`persona:ana`); el handle
-            // es quien es, no de qué clase es.
-            let quien = sujeto.persona.rsplit(':').next().unwrap_or(&sujeto.persona);
-            let h: String = quien
-                .to_lowercase()
-                .chars()
-                .map(|x| {
-                    if x.is_ascii_lowercase() || x.is_ascii_digit() {
-                        x
-                    } else {
-                        '-'
-                    }
-                })
-                .collect();
-            let h = format!("user:{}", h.trim_matches('-'));
-            ore_core::pertenencia::es_handle(&h).then_some(h)
-        })
     }
 
     /// `PUT /proyectos/{id}`: el manifiesto **entero**, como se escribe un

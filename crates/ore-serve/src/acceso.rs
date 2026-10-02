@@ -34,7 +34,7 @@
 //! ([`con_testigo`]), en vez de pasarlo por todas las firmas del camino.
 
 use crate::rutas::Servidor;
-use ore_acceso::{Decision, Evento, Hecho, Recurso};
+use ore_acceso::{Decision, Evento, Hecho, Recurso, SinHandle};
 use ore_core::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::Identidad;
@@ -237,6 +237,45 @@ impl Servidor {
         }
     }
 
+    /// **El dueño de lo que crea quien pide** (ADR 0049 · el dueño): `user:<handle>`,
+    /// el de la persona —desde un puesto, la que lo abrió—. Es LA regla de todo lo
+    /// que nace en el árbol con `owner`: una base, un schema, un origen, una vista,
+    /// una colección, un dataset. No se hereda del contenedor (una colección que Ana
+    /// crea en la base de otro es de Ana) y no cambia al editar: quien la reescribe
+    /// sin decir `owner` conserva el que tenía (`documentos.rs`).
+    ///
+    /// Con `--acceso`, el handle lo da `ore-iam` (la 048, `POST /access/v1/quien`):
+    /// 403 si quien pide no es una persona de la organización —un agente no es dueño
+    /// de nada—, 503 si no contesta. Lo que se iba a crear no nace con un dueño
+    /// inventado.
+    pub(crate) fn dueno_de_quien_crea(&self, sujeto: &Identidad) -> Result<String, Respuesta> {
+        let Some(acceso) = self.acceso.as_ref() else {
+            return dueno_sin_puente(sujeto).ok_or_else(|| {
+                Respuesta::error(
+                    422,
+                    format!(
+                        "`{}` no da un handle: lo que crea no puede nacer con dueño (`OOS2009`)",
+                        sujeto.persona
+                    ),
+                )
+            });
+        };
+        match acceso.quien(testigo().as_deref(), &sujeto.persona) {
+            Ok(h) => Ok(format!("user:{h}")),
+            Err(SinHandle::NoEsPersona(m)) => Err(Respuesta::error(403, m)),
+            Err(SinHandle::SinRespuesta(m)) => Err(Respuesta {
+                codigo: 503,
+                cuerpo: Json::obj([
+                    (
+                        "error",
+                        Json::s(format!("no se sabe de quién es lo que se crea: {m}")),
+                    ),
+                    ("reintentar", Json::Bool(true)),
+                ]),
+            }),
+        }
+    }
+
     /// Lo que se hizo, a la huella de la organización. No hace fallar lo hecho:
     /// si no llega, espera y se reintenta; si ni eso, se dice en el registro.
     pub(crate) fn contar(&self, e: Evento) {
@@ -302,6 +341,20 @@ pub(crate) fn evento(
     }
 }
 
+/// **El dueño de lo que alguien crea, sin puente**: `user:<handle>` con la misma
+/// regla que `ore-iam` (`handle_de`), del nombre de usuario que trae el token o,
+/// si no, del sujeto sin su clase (`persona:ana` → `ana`). Es lo que hace un banco
+/// sin `ore-iam`; con él, manda el handle que `ore-iam` asignó.
+fn dueno_sin_puente(sujeto: &Identidad) -> Option<String> {
+    let quien = sujeto.persona.rsplit(':').next().unwrap_or(&sujeto.persona);
+    sujeto
+        .usuario
+        .as_deref()
+        .and_then(ore_core::pertenencia::handle_de)
+        .or_else(|| ore_core::pertenencia::handle_de(quien))
+        .map(|h| format!("user:{h}"))
+}
+
 /// Lo que ve la persona cuando no pasa: 403 con lo que le falta y la decisión,
 /// 503 si no hubo quien decidiera, 401 si su token dejó de valer.
 fn respuesta_de(d: &Decision) -> Respuesta {
@@ -327,5 +380,39 @@ pub(crate) fn commit_de(r: &Respuesta) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    fn sujeto(persona: &str, usuario: Option<&str>) -> Identidad {
+        Identidad {
+            persona: persona.into(),
+            agente: None,
+            correo: None,
+            nombre: None,
+            tipo: None,
+            usuario: usuario.map(String::from),
+        }
+    }
+
+    #[test]
+    fn sin_puente_el_dueno_es_quien_crea() {
+        assert_eq!(
+            dueno_sin_puente(&sujeto("persona:ana", None)).as_deref(),
+            Some("user:ana")
+        );
+        assert_eq!(
+            dueno_sin_puente(&sujeto("21e8ffd9-5aae", Some("Victor.G"))).as_deref(),
+            Some("user:victor-g")
+        );
+        // Un UUID sin usuario aún da un handle: empieza por letra.
+        assert_eq!(
+            dueno_sin_puente(&sujeto("21e8ffd9-5aae", None)).as_deref(),
+            Some("user:u-21e8ffd9-5aae")
+        );
+        assert_eq!(dueno_sin_puente(&sujeto("persona:@@", None)), None);
     }
 }

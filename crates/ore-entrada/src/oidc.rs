@@ -290,6 +290,9 @@ impl Emisor {
             nombre: cadena(&cuerpo, "name"),
             // Y la clase, que es nuestra: `rubix_tipo`, un claim fijo por cliente.
             tipo: cadena(&cuerpo, "rubix_tipo"),
+            // `preferred_username`: el nombre de usuario que la persona eligió al
+            // registrarse. De él sale su handle (`ore-iam`, la 048).
+            usuario: cadena(&cuerpo, "preferred_username"),
         })
     }
 }

@@ -82,17 +82,23 @@ pub fn nombre_de_objeto(s: &str) -> String {
 ///   misma fuente — encolar dos veces no crea dos Jobs.
 #[cfg(test)]
 pub fn rendir(plantilla: &str, fuente: &str) -> Result<(String, String), String> {
-    rendir_corrida(plantilla, fuente, None)
+    rendir_corrida(plantilla, fuente, None, None)
 }
 
 /// **Volver a catalogar**: lo mismo con una corrida dentro. El nombre del Job
 /// sale del contenido, así que sin ella «otra vez» sería el mismo Job —ya
 /// `Failed`— y Flux no crearía ninguno. Con ella el fichero es el mismo
 /// (`44-el-catalogo-<obj>.yaml`: Flux poda el Job anterior) y el Job es otro.
+///
+/// Con `dueno`, el Job lleva `DUENO` junto a `FUENTE`: el `owner` del paquete que
+/// cree (ADR 0049 · el dueño, quien dio de alta el origen). Una plantilla que no
+/// lo lea sigue con el suyo, y una que lo lea sin él, también: los dos órdenes del
+/// despliegue valen.
 pub fn rendir_corrida(
     plantilla: &str,
     fuente: &str,
     corrida: Option<&str>,
+    dueno: Option<&str>,
 ) -> Result<(String, String), String> {
     if !plantilla.contains(&format!("catalogo-{FUENTE_MODELO}-{RESUMEN_MODELO}")) {
         // ⛔ Se niega en vez de escribir algo que no sustituye nada. Un Job
@@ -109,6 +115,23 @@ pub fn rendir_corrida(
         &format!("value: \"{FUENTE_MODELO}\""),
         &format!("value: \"{fuente}\""),
     );
+    let t = match dueno {
+        None => t,
+        Some(d) => {
+            let hueco = format!("{{ name: FUENTE, value: \"{fuente}\" }}");
+            t.lines()
+                .flat_map(|l| {
+                    let mut v = vec![l.to_string()];
+                    if l.trim_start().starts_with(&format!("- {hueco}")) {
+                        v.push(l.replace(&hueco, &format!("{{ name: DUENO, value: \"{d}\" }}")));
+                    }
+                    v
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + if t.ends_with('\n') { "\n" } else { "" }
+        }
+    };
     // Un comentario y no un campo: no cambia lo que el Job hace, solo quién es.
     let t = match corrida {
         Some(c) => format!("# corrida: {c}\n{t}"),
@@ -706,12 +729,40 @@ mod prueba {
     /// Volver a catalogar da OTRO Job en el MISMO fichero: sin la corrida, el
     /// nombre saldría igual y Flux no crearía nada.
     #[test]
+    fn el_job_de_catalogo_lleva_el_dueno_de_quien_dio_de_alta_el_origen() {
+        let p = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../malla/44-el-catalogo.yaml"),
+        )
+        .unwrap();
+        let (_, sin) = rendir_corrida(&p, "ventas", None, None).unwrap();
+        let (f, con) = rendir_corrida(&p, "ventas", None, Some("user:ana")).unwrap();
+        assert_eq!(f, "44-el-catalogo-ventas.yaml");
+        assert!(!sin.contains("name: DUENO"), "sin dueño no se inventa");
+        let fuente = con
+            .lines()
+            .find(|l| l.contains("{ name: FUENTE, value: \"ventas\" }"))
+            .unwrap();
+        let dueno = con
+            .lines()
+            .find(|l| l.contains("{ name: DUENO, value: \"user:ana\" }"))
+            .unwrap();
+        // Con la misma sangría: es otra entrada de la misma lista `env`.
+        assert_eq!(
+            fuente.len() - fuente.trim_start().len(),
+            dueno.len() - dueno.trim_start().len()
+        );
+        assert_ne!(job_de(&sin), job_de(&con), "otro contenido, otro Job");
+        assert_eq!(con.lines().count(), sin.lines().count() + 1);
+    }
+
+    #[test]
     fn volver_a_catalogar_da_otro_job() {
         let p =
             "metadata:\n  name: catalogo-bq-00000000\nenv:\n  - { name: FUENTE, value: \"bq\" }\n";
         let (f0, t0) = rendir(p, "ventas").unwrap();
-        let (f1, t1) = rendir_corrida(p, "ventas", Some("20260927T150000Z")).unwrap();
-        let (_, t2) = rendir_corrida(p, "ventas", Some("20260927T150001Z")).unwrap();
+        let (f1, t1) = rendir_corrida(p, "ventas", Some("20260927T150000Z"), None).unwrap();
+        let (_, t2) = rendir_corrida(p, "ventas", Some("20260927T150001Z"), None).unwrap();
         assert_eq!(f0, f1);
         let nombre = |t: &str| {
             t.lines()

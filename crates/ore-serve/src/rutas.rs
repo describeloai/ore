@@ -310,7 +310,7 @@ impl Servidor {
                 let n = n.to_string();
                 Respuesta::ok(Json::obj([(
                     "encolado",
-                    Json::s(self.encolar_catalogo_corrida(&n, sujeto, true)),
+                    Json::s(self.encolar_catalogo_corrida(&n, sujeto, true, None)),
                 )]))
             }
             ("POST", ["fuentes", "comprobaciones"]) => {
@@ -487,7 +487,7 @@ impl Servidor {
                     rama,
                     sujeto,
                     &format!("`{n}`: crear el schema `{que}`"),
-                    |r| self.crear_schema(r, &n, &cuerpo),
+                    |r| self.crear_schema(r, &n, &cuerpo, sujeto),
                 )
             }
             ("POST", ["paquetes", n, "schemas", s, "renombrar"]) => {
@@ -1037,6 +1037,7 @@ impl Servidor {
                                     &n,
                                     &cuerpo,
                                     si_commit.as_deref(),
+                                    sujeto,
                                 )
                             },
                         )
@@ -1448,6 +1449,13 @@ impl Servidor {
             );
         }
 
+        // ⭐ El dueño del origen (ADR 0049 · el dueño): quien lo da de alta. Su
+        //   paquete lo crea después el Job de catálogo, sin la persona delante,
+        //   así que se sabe aquí —antes de tocar nada— y viaja en el Job (`DUENO`).
+        let dueno = match self.dueno_de_quien_crea(sujeto) {
+            Ok(d) => d,
+            Err(r) => return r,
+        };
         let mut args = vec![
             "source".into(),
             "add".into(),
@@ -1540,7 +1548,7 @@ impl Servidor {
                 // Se encola cuando la fuente va a quedar: después de la
                 // credencial, no antes (un 502 no publica el árbol, y un Job
                 // encolado para una fuente que no existe se quedaba en la cola).
-                let encolado = self.encolar_catalogo(&nombre, sujeto);
+                let encolado = self.encolar_catalogo(&nombre, sujeto, &dueno);
 
                 Respuesta::creado(Json::obj([
                     ("name", Json::s(nombre)),
@@ -1755,13 +1763,20 @@ impl Servidor {
     /// ⚠️ La plantilla la deja el aprovisionador en la propia cola. Si no esta
     ///   —un inquilino aprovisionado antes de que esto existiera— se dice con esa
     ///   frase, que es la que manda a converger.
-    fn encolar_catalogo(&self, fuente: &str, sujeto: &Identidad) -> String {
-        self.encolar_catalogo_corrida(fuente, sujeto, false)
+    fn encolar_catalogo(&self, fuente: &str, sujeto: &Identidad, dueno: &str) -> String {
+        self.encolar_catalogo_corrida(fuente, sujeto, false, Some(dueno))
     }
 
     /// Con `otra_vez`, una corrida dentro: otro Job aunque el anterior exista
-    /// (`cola::rendir_corrida`).
-    fn encolar_catalogo_corrida(&self, fuente: &str, sujeto: &Identidad, otra_vez: bool) -> String {
+    /// (`cola::rendir_corrida`). `dueno`, el del paquete que el Job cree si aún no
+    /// está (al volver a catalogar ya está, y no se dice).
+    fn encolar_catalogo_corrida(
+        &self,
+        fuente: &str,
+        sujeto: &Identidad,
+        otra_vez: bool,
+        dueno: Option<&str>,
+    ) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); \
             lo rendira la convergencia"
@@ -1782,10 +1797,11 @@ impl Servidor {
             }
         };
         let corrida = otra_vez.then(crate::funciones::corrida_ahora);
-        let (fichero, texto) = match cola::rendir_corrida(&plantilla, fuente, corrida.as_deref()) {
-            Ok(v) => v,
-            Err(e) => return format!("NO encolado: {e}"),
-        };
+        let (fichero, texto) =
+            match cola::rendir_corrida(&plantilla, fuente, corrida.as_deref(), dueno) {
+                Ok(v) => v,
+                Err(e) => return format!("NO encolado: {e}"),
+            };
         if let Err(e) = std::fs::write(dir.join(&fichero), &texto) {
             return format!("NO encolado: no se pudo escribir `{fichero}`: {e}");
         }
@@ -1926,22 +1942,17 @@ impl Servidor {
             //   tablas y vistas, sin entidades. Modelar es otro acto.
             "--no-model".into(),
         ];
-        // ⭐⭐ EL DUEÑO ES LA ORGANIZACIÓN. `owner` en OOS es «quién responde»
-        //   como handle de forja (`team:x`, contra CODEOWNERS), y la CLI no lo
-        //   deriva porque no sabe quién la ejecuta. Este servidor SÍ sabe de
-        //   quién es el árbol (0022: el inquilino es el repositorio de la
-        //   organización; `--organizacion`), así que contesta `dueno` con
-        //   `team:<organización>` y la base nace compilando —y, si es estándar,
-        //   con la copia encolada—. Quién PULSÓ ya va en el commit (`sub`+`act`);
-        //   quién RESPONDE es la organización. Preguntárselo a la persona era
-        //   pedirle que inventase una cadena que no resuelve contra nada.
-        //   Transferir la propiedad a un equipo, cuando IAM los tenga, será otro
-        //   acto (contestar `dueno` de nuevo).
-        let dueno = self.dueno_del_arbol();
-        if let Some(o) = &dueno {
-            args.push("--owner".into());
-            args.push(o.clone());
-        }
+        // ⭐⭐ EL DUEÑO ES QUIEN LA CREA (ADR 0049 · el dueño): `user:<handle>`,
+        //   el que `ore-iam` le dio a la persona. Antes era `team:<organización>`,
+        //   que no distinguía nada —todo era de todos— y no decía a quién
+        //   preguntar. La base nace compilando y, si es estándar, con la copia
+        //   encolada. Transferirla a otro será un acto aparte.
+        let dueno = match self.dueno_de_quien_crea(sujeto) {
+            Ok(d) => d,
+            Err(r) => return r,
+        };
+        args.push("--owner".into());
+        args.push(dueno.clone());
         let salida = mando::correr(&self.binario, raiz, &args);
         let _ = std::fs::remove_file(&lista);
 
@@ -1964,21 +1975,15 @@ impl Servidor {
                     ("informe", Json::s(s.stdout.trim())),
                     ("quedan", Json::Int(pendientes(&dir) as i64)),
                 ];
-                match &dueno {
-                    Some(o) => campos.push(("owner", Json::s(o))),
-                    None => campos.push((
-                        "owner",
-                        Json::s("cambiame: este servidor no tiene organización (o su nombre no es un handle); contesta `dueno`"),
-                    )),
-                }
+                campos.push(("owner", Json::s(&dueno)));
                 campos.extend(self.tras_inducir(raiz, &nombre, sujeto));
                 Respuesta::ok(Json::obj(campos))
             }
         }
     }
 
-    /// **Una standard database vacía** (0039): `ore package new`, con el dueño
-    /// de las bases —la organización— o, si no la hay, quien la crea.
+    /// **Una standard database vacía** (0039): `ore package new`, con quien la
+    /// crea de dueño (ADR 0049 · el dueño).
     fn base_vacia(
         &self,
         raiz: &Path,
@@ -1995,24 +2000,19 @@ impl Servidor {
         if raiz.join("packages").join(nombre).exists() {
             return Respuesta::error(409, format!("ya hay un paquete `{nombre}`"));
         }
-        let dueno = self.dueno_del_arbol().or_else(|| {
-            let h = sujeto
-                .persona
-                .split_once(':')
-                .map_or(sujeto.persona.as_str(), |(_, h)| h);
-            let o = format!("user:{h}");
-            ore_core::pertenencia::es_handle(&o).then_some(o)
-        });
-        let mut args: Vec<String> = vec![
+        let dueno = match self.dueno_de_quien_crea(sujeto) {
+            Ok(d) => d,
+            Err(r) => return r,
+        };
+        let args: Vec<String> = vec![
             "package".into(),
             "new".into(),
             nombre.into(),
             "--path".into(),
             raiz.to_string_lossy().into_owned(),
+            "--owner".into(),
+            dueno.clone(),
         ];
-        if let Some(o) = &dueno {
-            args.extend(["--owner".into(), o.clone()]);
-        }
         match mando::correr(&self.binario, raiz, &args) {
             Err(e) => Respuesta::error(500, e.to_string()),
             Ok(s) if !s.bien() => Respuesta::error(
@@ -2026,20 +2026,9 @@ impl Servidor {
             Ok(_) => Respuesta::ok(Json::obj([
                 ("name", Json::s(nombre)),
                 ("type", Json::s("standard")),
-                (
-                    "owner",
-                    dueno.map(Json::s).unwrap_or_else(|| Json::s("cambiame")),
-                ),
+                ("owner", Json::s(dueno)),
             ])),
         }
-    }
-
-    /// `team:<organización>`, si este servidor sabe de quién es el árbol y el
-    /// nombre puede ser un handle. Si no, nadie: el paquete nace con `cambiame`
-    /// y la decisión `dueno` en la cola, como siempre.
-    pub(crate) fn dueno_del_arbol(&self) -> Option<String> {
-        let o = format!("team:{}", self.organizacion.as_deref()?);
-        ore_core::pertenencia::es_handle(&o).then_some(o)
     }
 
     fn responder(&self, raiz: &Path, paquete: &str, cuerpo: &str, sujeto: &Identidad) -> Respuesta {

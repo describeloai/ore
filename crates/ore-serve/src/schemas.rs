@@ -68,8 +68,15 @@ fn responder(salida: Result<mando::Salida, mando::Negado>, bien: u16) -> Respues
 }
 
 impl Servidor {
-    /// `POST /paquetes/{p}/schemas`.
-    pub(crate) fn crear_schema(&self, raiz: &Path, paquete: &str, cuerpo: &str) -> Respuesta {
+    /// `POST /paquetes/{p}/schemas`. Sin `owner`, el de quien lo crea (ADR 0049 ·
+    /// el dueño): no el de su base.
+    pub(crate) fn crear_schema(
+        &self,
+        raiz: &Path,
+        paquete: &str,
+        cuerpo: &str,
+        sujeto: &ore_entrada::identidad::Identidad,
+    ) -> Respuesta {
         if let Err(m) = token(paquete) {
             return Respuesta::error(422, format!("nombre de paquete: {m}"));
         }
@@ -104,9 +111,14 @@ impl Servidor {
             let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
             args.extend(["--description".into(), d]);
         }
-        if let Some(o) = campo("owner") {
-            args.extend(["--owner".into(), o]);
-        }
+        let dueno = match campo("owner") {
+            Some(o) => o,
+            None => match self.dueno_de_quien_crea(sujeto) {
+                Ok(d) => d,
+                Err(r) => return r,
+            },
+        };
+        args.extend(["--owner".into(), dueno]);
         responder(mando::correr(&self.binario, raiz, &args), 201)
     }
 

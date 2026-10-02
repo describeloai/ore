@@ -443,3 +443,47 @@ fn el_buzon_deja_en_disco_lo_que_tiene_decision() {
     );
     let _ = std::fs::remove_dir_all(&dir_p);
 }
+
+#[test]
+fn quien_pregunta_una_vez_y_guarda_el_handle() {
+    let (dir, visto) = falso(|p| {
+        assert_eq!(p.ruta, "/access/v1/quien");
+        assert!(p.cuerpo.contains("\"id\":\"21e8ffd9\""), "{}", p.cuerpo);
+        respuesta(
+            200,
+            r#"{"subject":{"id":"21e8ffd9"},"owner":"user:victor","handle":"victor"}"#,
+        )
+    });
+    let a = acceso(&dir);
+    assert_eq!(a.quien(Some("tok-agente"), "21e8ffd9").unwrap(), "victor");
+    assert_eq!(a.quien(None, "21e8ffd9").unwrap(), "victor");
+    let v = visto.lock().unwrap();
+    assert_eq!(v.len(), 1, "el segundo no volvió a preguntar");
+    assert_eq!(v[0].1.as_deref(), Some("tok-agente"));
+}
+
+#[test]
+fn quien_sin_persona_o_sin_respuesta_es_un_error_y_no_un_dueno() {
+    let (dir, _) =
+        falso(|_| respuesta(404, r#"{"error":"no es una persona de esta organización"}"#));
+    let e = acceso(&dir).quien(Some("t"), "maquina:x").unwrap_err();
+    assert!(
+        matches!(&e, SinHandle::NoEsPersona(m) if m.contains("no es una persona")),
+        "{e:?}"
+    );
+    // Un handle que no es handle tampoco se escribe.
+    let (dir, _) = falso(|_| respuesta(200, r#"{"handle":"Victor G"}"#));
+    assert!(matches!(
+        acceso(&dir).quien(None, "x"),
+        Err(SinHandle::SinRespuesta(_))
+    ));
+    // Y sin nadie al otro lado.
+    let e = acceso("127.0.0.1:1")
+        .con_plazo(Duration::from_millis(200))
+        .quien(None, "x")
+        .unwrap_err();
+    assert!(
+        matches!(&e, SinHandle::SinRespuesta(m) if m.contains("no se pudo preguntar")),
+        "{e:?}"
+    );
+}

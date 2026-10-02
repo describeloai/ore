@@ -14,6 +14,10 @@
 //! una protección, entregar un secreto—: se registra ANTES de actuar, y si no se
 //! puede registrar, no se actúa.
 //!
+//! Y [`Acceso::quien`] (0049 · el dueño, la 048 de `ore-iam`): el handle de quien
+//! crea, para escribir `owner: user:<handle>` en lo que nace. Un handle no cambia,
+//! así que se guarda sin plazo.
+//!
 //! Y [`Buzon`], para todo lo demás que se escribe (0047 A6.4): el evento se echa y
 //! la respuesta no espera a `ore-iam`. Casi nada de eso tiene decisión, así que un
 //! reintento necesita el token de la persona: vive sólo en la memoria del buzón y
@@ -180,6 +184,16 @@ impl Decision {
 
 type Clave = (String, String, String, String);
 
+/// Por qué no hay handle ([`Acceso::quien`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SinHandle {
+    /// `ore-iam` dice que no es una persona de la organización (un agente, alguien
+    /// de fuera). Nada nace a su nombre: 403.
+    NoEsPersona(String),
+    /// No hubo respuesta que valga: 503, y se reintenta.
+    SinRespuesta(String),
+}
+
 // ── hizo ─────────────────────────────────────────────────────────────────────
 
 /// Lo que un módulo cuenta que hizo (0047 § «`hizo`»).
@@ -257,6 +271,8 @@ pub struct Acceso {
     credencial: Box<dyn Credencial>,
     plazos: Plazos,
     cache: Mutex<HashMap<Clave, (Decision, Instant)>>,
+    /// Los handles ya preguntados, por `sub`. No caducan: `ore-iam` no los cambia.
+    handles: Mutex<HashMap<String, String>>,
     /// Donde esperan los eventos que no llegaron. Sin directorio, no se encolan.
     pendientes: Option<PathBuf>,
 }
@@ -271,6 +287,7 @@ impl Acceso {
                 responder: PLAZO,
             },
             cache: Mutex::new(HashMap::new()),
+            handles: Mutex::new(HashMap::new()),
             pendientes: None,
         }
     }
@@ -441,6 +458,53 @@ impl Acceso {
             );
         }
         d
+    }
+
+    /// **El handle de una persona** (`POST /access/v1/quien`): lo que va detrás de
+    /// `user:` en el `owner` de lo que crea. `sujeto_token` es el token con el que
+    /// llegó quien pide —la persona, o el agente de su puesto—; `sub`, la persona.
+    ///
+    /// `Err` si `ore-iam` no contesta o dice que no es una persona de la
+    /// organización: lo que se iba a crear no nace con un dueño inventado.
+    pub fn quien(&self, sujeto_token: Option<&str>, sub: &str) -> Result<String, SinHandle> {
+        if let Ok(h) = self.handles.lock()
+            && let Some(h) = h.get(sub)
+        {
+            return Ok(h.clone());
+        }
+        let cuerpo = Json::obj([("subject", Json::obj([("id", Json::s(sub))]))]);
+        let (codigo, texto) = self
+            .pedir("/access/v1/quien", sujeto_token, &cuerpo)
+            .map_err(|e| {
+                SinHandle::SinRespuesta(format!(
+                    "no se pudo preguntar a `ore-iam` quién es `{sub}`: {e}"
+                ))
+            })?;
+        let n = parse::parse(&texto).ok();
+        let campo = |k: &str| n.as_ref().and_then(|n| texto_de(n, &[k]));
+        let h = match (codigo, campo("handle")) {
+            (200, Some(h)) if ore_core::pertenencia::es_handle(&format!("user:{h}")) => h,
+            (c, _) => {
+                let m = format!(
+                    "`ore-iam` no dio el handle de `{sub}` ({c}){}",
+                    campo("error")
+                        .map(|e| format!(" · {e}"))
+                        .unwrap_or_default()
+                );
+                return Err(if c == 404 {
+                    SinHandle::NoEsPersona(m)
+                } else {
+                    SinHandle::SinRespuesta(m)
+                });
+            }
+        };
+        if let Ok(mut m) = self.handles.lock() {
+            if m.len() >= CACHE_MAXIMA {
+                m.clear();
+            }
+            m.insert(sub.to_string(), h.clone());
+        }
+        Ok(h)
     }
 
     /// Lo que se hizo, DESPUÉS de hacerlo. No hace fallar lo hecho: si `ore-iam` no

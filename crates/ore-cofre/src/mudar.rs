@@ -39,6 +39,7 @@ pub fn mudar(mut c: Client, org: &str, kms: &Kms, almacen: &Almacen) -> Result<u
         correo: None,
         nombre: None,
         tipo: None,
+        usuario: None,
     };
     let mut tx = Tx::abrir(&mut c, &operador)?;
     let f = tx

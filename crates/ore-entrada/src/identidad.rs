@@ -68,6 +68,13 @@ pub struct Identidad {
     /// claim lo pone el IdP al cliente, no el cliente a sí mismo. `None` es
     /// «el token no lo dijo», y ningún verbo lo lee como una clase concreta.
     pub tipo: Option<String>,
+    /// El nombre de usuario que la persona eligió al registrarse
+    /// (`preferred_username`), si el token lo dice.
+    ///
+    /// ⚠️ Como `nombre`: lo AFIRMA el emisor. Sirve para una cosa —que `ore-iam`
+    /// le dé a la persona su handle (`user:<handle>`) la primera vez que la ve—
+    /// y no se autoriza por él: quién es alguien lo dice `persona`.
+    pub usuario: Option<String>,
 }
 
 /// Por qué no hay sujeto.
@@ -148,6 +155,7 @@ pub fn por_cabecera() -> Proveedor {
             correo: None,
             nombre: None,
             tipo: None,
+            usuario: None,
         })
     })
 }

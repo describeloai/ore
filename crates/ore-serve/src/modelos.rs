@@ -576,6 +576,7 @@ impl Servidor {
             &nombre,
             &documento,
             None,
+            None,
         );
         if escrito.codigo != 201 {
             return escrito;

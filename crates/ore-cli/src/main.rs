@@ -999,6 +999,10 @@ enum Command {
         /// Con `--confirmar`: quien escribio (queda en el puntero).
         #[arg(long)]
         sujeto: Option<String>,
+        /// El `owner` del dataset que nazca (`user:<handle>`): quien lo crea. Lo
+        /// dice `ore-serve`; sin el, el del paquete (en local no hay quien crea).
+        #[arg(long, value_name = "HANDLE")]
+        owner: Option<String>,
         /// Donde viven los punteros de las copias; sin esto, `<arbol>/copias`.
         #[arg(long, value_name = "DIR")]
         informe: Option<PathBuf>,
@@ -1247,6 +1251,7 @@ fn main() -> std::process::ExitCode {
             filas,
             columnas,
             sujeto,
+            owner,
             informe,
             commit,
             tabla,
@@ -1276,6 +1281,7 @@ fn main() -> std::process::ExitCode {
                     filas: *filas,
                     columnas: columnas.as_deref(),
                     sujeto: sujeto.as_deref(),
+                    owner: owner.as_deref(),
                     informe: informe.as_deref(),
                     reclaman: reclaman.as_deref(),
                     commit: *commit,
