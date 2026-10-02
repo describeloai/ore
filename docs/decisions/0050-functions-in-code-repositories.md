@@ -14,7 +14,7 @@ funciones ahí nace sin su contrato. La regla de red llega a un inquilino vivo a
 se construye **sobre lo que ORE ya define** —la gramática de `Function` (OOS v1alpha10–14), el
 puesto y su promoción ([`0031`](0031-el-puesto.md) W3.8), la taxonomía de versiones de OOS
 (`91-versioning`), la red por política con nombre (0031 §7), el acceso
-([`0047`](0047-el-acceso.md))— sin piezas paralelas. Lo nuevo es poco y está dicho: `runtime: python`
+([`0047`](0047-ore-access-control.md))— sin piezas paralelas. Lo nuevo es poco y está dicho: `runtime: python`
 en la gramática, `models` como recurso que una función de código declara, el lector de firmas de
 Python en el compilador, y la invocación con parámetros. **Ejecuta** la enmienda a
 [`0029`](0029-donde-corre-una-funcion.md) que 0031 W3.8 dejó escrita.
