@@ -68,7 +68,7 @@ ore-iam — el plano de identidad y acceso
 
   ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB
                  [--correo C] [--arbol P/R] [--kek LLAVERO/CLAVE]
-                 [--agente-sub SUB]   (o `ORE_AGENTE_SUB`)
+                 [--agente-sub SUB]   (o `ORE_AGENTE_SUB`) [--agente-nombre N]
   ore-iam agente --organizacion NOMBRE --emisor URL --sub SUB [--nombre N]
   ore-iam servir [--bind DIRECCION] [--identidad MODO] …
 
@@ -202,15 +202,22 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     //   y registrar un agente es un `insert`. Meterlo alli habria roto la
     //   propiedad que costo una migracion conseguir. Fundar ya escribe.
     //
-    // ⚠️ El `sub` es configuracion de plataforma —hoy `ore-agente` es UNO para
-    //   todos— asi que sale de `ORE_AGENTE_SUB` si no se pasa. Y si no hay
-    //   ninguno, se FUNDA IGUAL y se dice: una organizacion sin agente es
-    //   legitima, y negarse a fundar por eso seria peor.
+    // ⚠️ El `sub` sale de `ORE_AGENTE_SUB` si no se pasa. Y si no hay ninguno,
+    //   se FUNDA IGUAL y se dice: una organizacion sin agente es legitima, y
+    //   negarse a fundar por eso seria peor.
+    // ✏️ 0048 (deuda 1): el NOMBRE ya no es `ore-agente` para todos. Ese era el
+    //   cliente comun de antes de un agente por celda, y esta retirado (046, y su
+    //   cliente fuera del IdP). Un agente nuevo con ese nombre seria confundible con
+    //   el retirado. Se llama como su cliente: `--agente-nombre`, o
+    //   `ore-agente-<celda>` si la celda viene, o sin nombre.
     let agente_sub = valor(args, "--agente-sub").or_else(|| {
         std::env::var("ORE_AGENTE_SUB")
             .ok()
             .filter(|s| !s.is_empty())
     });
+
+    let agente_nombre = valor(args, "--agente-nombre")
+        .or_else(|| celda.as_ref().map(|x| format!("ore-agente-{}", x.nombre)));
 
     match fundar::fundar(
         &mut c,
@@ -238,8 +245,13 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
                     eprintln!("  `ore-iam agente --organizacion {org} --emisor {emisor} --sub …`");
                 }
                 Some(sub) => {
-                    match fundar::registrar_agente(&mut c, &org, &emisor, &sub, Some("ore-agente"))
-                    {
+                    match fundar::registrar_agente(
+                        &mut c,
+                        &org,
+                        &emisor,
+                        &sub,
+                        agente_nombre.as_deref(),
+                    ) {
                         Ok(a) => println!("{}", a.pretty()),
                         // ⛔ No se deshace lo fundado: el commit ya esta. Se dice, y
                         //   registrar se reintenta solo —es idempotente— sin tener

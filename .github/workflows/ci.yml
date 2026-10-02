@@ -254,8 +254,8 @@ jobs:
       - name: y la plantilla del inquilino se puede renderizar sin dejar rastro
         run: python3 malla/gen-inquilino.py --comprobar
 
-  # ⭐ LOS VERBOS DEL PLANO DE IDENTIDAD. Lo mismo que fija
-  # `malla/98-los-cuatro-verbos.yaml`, pero SIN un cluster que alguien tenga que
+  # ⭐ LOS VERBOS DEL PLANO DE IDENTIDAD. Lo mismo que fijaba el Job
+  # `malla/98-los-cuatro-verbos.yaml` (retirado en 0048 con `iam-agente`), pero SIN un cluster que alguien tenga que
   # tener en pie: un control que solo se ejerce cuando alguien se acuerda no es
   # un control, es una costumbre.
   #

@@ -3,7 +3,8 @@
 #
 # ── ⛔ Por qué esto existe y no bastaba el Job del clúster ──────────────────
 #
-# `malla/98-los-cuatro-verbos.yaml` fija lo mismo, y muy bien — pero se corre A
+# `malla/98-los-cuatro-verbos.yaml` fijaba lo mismo (retirado en 0048: su sujeto era
+# `iam-agente`, una máquina con `ORGADMIN`) — pero se corría A
 # MANO, contra un clúster que hay que tener en pie. ⇒ el día que alguien rompa
 # la guarda del rodeo, **nada se pone rojo**. Un control que sólo se ejerce
 # cuando alguien se acuerda no es un control: es una costumbre.

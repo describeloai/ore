@@ -66,6 +66,16 @@ if command -v node >/dev/null 2>&1; then
     exit 1
   fi
   echo "  ✓ malla/61-realms.yaml es lo que emite identidad/ore.mjs"
+  # ⛔ 0048 · deuda 1: un cliente RETIRADO no vuelve. Retirarlo es borrarlo del realm vivo
+  #   (`aplicar.mjs`); que reaparezca en el manifiesto lo volvería a importar en un realm nuevo.
+  VUELVEN="$(cd "$RAIZ" && node --input-type=module -e "
+    import { pathToFileURL } from 'node:url';
+    const { RETIRADOS } = await import(pathToFileURL('identidad/ore.mjs'));
+    const a = (await import('node:fs')).readFileSync('malla/61-realms.yaml', 'utf8');
+    process.stdout.write(RETIRADOS.filter((c) => a.includes('\"clientId\": \"' + c + '\"')).join(' '));
+  ")"
+  [ -z "$VUELVEN" ] || { echo "✗ clientes RETIRADOS en el manifiesto: $VUELVEN" >&2; exit 1; }
+  echo "  ✓ ningún cliente retirado en el manifiesto"
   # ⭐ Y lo que los realms EXIGEN, recorriendo sus flujos (0048 I3, `identidad/medir.mjs`):
   #   dos factores y uno resistente a phishing, la reposición sin rebajar, sin
   #   credencial de correo, sin retornos en claro a otra máquina.

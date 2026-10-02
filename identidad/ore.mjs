@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
 // LOS REALMS DE ORE — lo que la definición (`realm.mjs`) no sabe de ORE, y el
-// manifiesto (`malla/61-realms.yaml`). ADR 0048: la identidad es de ORE.
+// manifiesto (`malla/61-realms.yaml`). ADR 0048: ORE IdP.
 //
 //   node identidad/ore.mjs          → escribe malla/61-realms.yaml
 //
@@ -44,7 +44,8 @@ const AUDIENCIA = {
   "implicitFlowEnabled": false
 };
 
-/** El mapeador que mete `ore-serve` en el `aud` (en `ore-agente` y en `rubix-consola`). */
+/** El mapeador que mete `ore-serve` en el `aud` de `rubix-consola`. Los agentes de cada celda
+ *  lo llevan desde su receta (`malla/aprovisionar-inquilino.sh`, ⑦). */
 const MAPEADOR_AUDIENCIA = {
   "name": "audiencia-ore-serve",
   "protocol": "openid-connect",
@@ -55,60 +56,6 @@ const MAPEADOR_AUDIENCIA = {
     "id.token.claim": "false",
     "access.token.claim": "true"
   }
-};
-
-/** `ore-agente`: la cuenta de servicio genérica (las de cada celda las crea el
- *  aprovisionador, ⑦). Lleva `modelos` en el `aud` (0027 E2) y `rubix_tipo=agente`. */
-const AGENTE = {
-  "clientId": "ore-agente",
-  "name": "ORE · agente",
-  "description": "Cuenta de servicio: pide tokens para `ore-serve`. Es un agente, no una persona.",
-  "enabled": true,
-  "protocol": "openid-connect",
-  "publicClient": false,
-  "standardFlowEnabled": false,
-  "directAccessGrantsEnabled": false,
-  "serviceAccountsEnabled": true,
-  "implicitFlowEnabled": false,
-  "attributes": {
-    "access.token.lifespan": "300"
-  },
-  "protocolMappers": [
-    {
-      "name": "audiencia-ore-serve",
-      "protocol": "openid-connect",
-      "protocolMapper": "oidc-audience-mapper",
-      "consentRequired": false,
-      "config": {
-        "included.client.audience": "ore-serve",
-        "id.token.claim": "false",
-        "access.token.claim": "true"
-      }
-    },
-    {
-      "name": "audiencia-modelos",
-      "protocol": "openid-connect",
-      "protocolMapper": "oidc-audience-mapper",
-      "consentRequired": false,
-      "config": {
-        "included.custom.audience": "modelos",
-        "id.token.claim": "false",
-        "access.token.claim": "true"
-      }
-    },
-    {
-      "name": "rubix-tipo-agente",
-      "protocol": "openid-connect",
-      "protocolMapper": "oidc-hardcoded-claim-mapper",
-      "consentRequired": false,
-      "config": {
-        "claim.name": "rubix_tipo",
-        "claim.value": "agente",
-        "jsonType.label": "String",
-        "access.token.claim": "true"
-      }
-    }
-  ]
 };
 
 /** El ámbito que lleva `sub` (Keycloak 24+): sin él, un token válido y ANÓNIMO. */
@@ -298,7 +245,6 @@ function conOre(realm) {
   realm.clients ??= [];
   const ya = new Set(realm.clients.map((c) => c.clientId));
   if (!ya.has('ore-serve')) realm.clients.push(copia(AUDIENCIA));
-  if (!ya.has('ore-agente')) realm.clients.push(copia(AGENTE));
   for (const c of realm.clients) {
     if (c.clientId !== 'rubix-consola') continue;
     c.protocolMappers ??= [];
@@ -332,17 +278,43 @@ function conRegistro(realm) {
   return conOrganizacionEnElRegistro(realm);
 }
 
-// ⛔ EL LECTOR NO (0048). `rubix-consola-lector` era la cuenta con la que la consola de
-//   administración de la plataforma leía organizaciones y usuarios del IdP (papeles
-//   `view-users`, `query-users`…). En ORE nadie la usa —la pertenencia la decide `ore-iam`
-//   (0047 A9′)— y su secreto vivía en el proyecto viejo. Medido con `aplicar.mjs --plan`
-//   el 2026-09-30: en vivo existe SIN papeles, y conciliarla se los habría DADO. Una cuenta
-//   que puede leer a todos los usuarios y que nadie usa es sólo riesgo: no se declara.
-const SIN_USO = ['rubix-consola-lector'];
-function sinLoQueNadieUsa(realm) {
-  realm.clients = (realm.clients ?? []).filter((c) => !SIN_USO.includes(c.clientId));
+// ⛔⛔ LOS RETIRADOS (0048, deuda 1). Dejar de declarar un cliente NO lo retira: el
+//   reconciliador resta flujos, papeles, ámbitos y mapeadores, pero un cliente que el
+//   artefacto no nombra lo dejaba vivo, con su secreto. Así siguieron `ore-agente` (fuera de
+//   `iam.agente` desde la 046) y `rubix-consola-lector` (fuera del artefacto el 2026-09-30).
+//   ⇒ Retirar es NOMBRAR: `aplicar.mjs` borra estos del realm vivo y lo dice, y la prueba de
+//   fuego exige que ninguno vuelva al manifiesto.
+//
+//   ore-agente                     el de antes de un agente por celda (024); sin uso desde el 12-sep
+//   ore-agente-prueba-dos          el de una celda retirada (0025 E6)
+//   ore-agente-cobalt-polar-camel  ídem, de `victor`
+//   ore-agente-prueba              el de `prueba`, retirada con su organización (047)
+//   iam-agente                     una máquina haciendo de persona: `ORGADMIN` de `prueba` por
+//                                  `client_credentials`, sin segundo factor (7f26c36, 98-…)
+//   rubix-consola-lector           leía todos los usuarios; nadie lo usa (la pertenencia es de `ore-iam`)
+export const RETIRADOS = Object.freeze([
+  'ore-agente',
+  'ore-agente-prueba-dos',
+  'ore-agente-cobalt-polar-camel',
+  'ore-agente-prueba',
+  'iam-agente',
+  'rubix-consola-lector',
+]);
+function sinRetirados(realm) {
+  realm.clients = (realm.clients ?? []).filter((c) => !RETIRADOS.includes(c.clientId));
   return realm;
 }
+
+/** ⭐ Los clientes vivos que el artefacto NO declara y son legítimos: los crea otro, con
+ *  nombre. El censo de `aplicar.mjs --plan` los separa de los desconocidos. */
+export const GESTIONADOS_FUERA = Object.freeze([
+  [/^ore-agente-[a-z0-9-]+$/, 'el agente de una celda (aprovisionador, ⑦)'],
+  [/^ore-aprovisionador$/, 'el aprovisionador ante ore-iam (malla/68-el-admin-del-aprovisionador.sh)'],
+]);
+/** Los que Keycloak trae en todo realm. */
+export const DE_FABRICA = Object.freeze([
+  'account', 'account-console', 'admin-cli', 'broker', 'realm-management', 'security-admin-console',
+]);
 
 function conConsolaLocal(realm) {
   if (realm.realm !== REGISTRO_EN_PRODUCCION.realm) return realm;
@@ -392,12 +364,12 @@ export function realmsDeOre() {
     if (REALMS_CON_ORE.includes(realm.realm)) realm = conOre(realm);
     realm = conRegistro(realm);
     realm = conConsolaLocal(realm);
-    realm = sinLoQueNadieUsa(realm);
+    realm = sinRetirados(realm);
     return [realm.realm, realm];
   });
 }
 
-const CABECERA = "# LOS REALMS — GENERADOS. No se editan aqui.\n#\n#   node identidad/ore.mjs\n#\n# Salen de `identidad/realm.mjs` (la definicion: flujos, passkeys, factores,\n# correo, clientes) y de `identidad/ore.mjs` (lo que ORE anade). Desde el\n# 2026-09-30 los dos viven en ORE (ADR 0048): antes el primero estaba en la\n# plataforma, escribiendo para un cluster donde ya no vive el IdP.\n#\n# ── Los dos, y ninguno sobra ────────────────────────────────────────────────\n#\n#   rubix          produccion, y el UNICO con gente (el 2026-09-14 `rubix-dev`\n#                  se renombro a `rubix`, 034). Registro abierto; la consola en\n#                  local (`localhost:3000`) entra tambien por aqui\n#   rubix-interno  sin clientes propios\n#\n# ✏️ `rubix-dev` ya no sale (0048): no existe en vivo, `ore-iam` rechaza su\n#   emisor, y el reconciliador lo CREARIA al no encontrarlo.\n#\n# ── Lo que ORE anade, en LOS TRES ───────────────────────────────────────────\n#\n#   ore-serve    una AUDIENCIA. Todos los flujos apagados: no inicia sesion de\n#                nadie. Existe para poder decir que un token es PARA nosotros\n#   ore-agente   una cuenta de servicio que pide tokens para esa audiencia\n#   y en `rubix-consola`, el mapeador que mete `ore-serve` en el `aud`\n#\n# Todo lo demas viaja tal cual: la politica de clave, los cinco flujos propios,\n# las passkeys y las organizaciones.\n#\n# ── ⭐ AAL2 en las dos puertas ───────────────────────────────────────────────\n#\n# `EXIGIR_SEGUNDO_FACTOR = true` (saldada el 2026-09-30): la entrada y la\n# reposicion piden passkey o TOTP. `pruebas-de-fuego/el-segundo-factor.sh` lo\n# vigila sobre este fichero.\n#\n# ── ⚠️ Lo que un `KeycloakRealmImport` NO hace ──────────────────────────────\n#\n# Mantener: se salta un realm que ya existe y dice `Done: True` igualmente. Por\n# eso este fichero NO esta en `malla/kustomization.yaml`, y el realm vivo lo\n# concilia `identidad/aplicar.mjs` desde ESTOS mismos realms.\n\n";
+const CABECERA = "# LOS REALMS — GENERADOS. No se editan aqui.\n#\n#   node identidad/ore.mjs\n#\n# Salen de `identidad/realm.mjs` (la definicion: flujos, passkeys, factores,\n# correo, clientes) y de `identidad/ore.mjs` (lo que ORE anade). Desde el\n# 2026-09-30 los dos viven en ORE (ADR 0048): antes el primero estaba en la\n# plataforma, escribiendo para un cluster donde ya no vive el IdP.\n#\n# ── Los dos, y ninguno sobra ────────────────────────────────────────────────\n#\n#   rubix          produccion, y el UNICO con gente (el 2026-09-14 `rubix-dev`\n#                  se renombro a `rubix`, 034). Registro abierto; la consola en\n#                  local (`localhost:3000`) entra tambien por aqui\n#   rubix-interno  sin clientes propios\n#\n# ✏️ `rubix-dev` ya no sale (0048): no existe en vivo, `ore-iam` rechaza su\n#   emisor, y el reconciliador lo CREARIA al no encontrarlo.\n#\n# ── Lo que ORE anade, en los dos ───────────────────────────────────────────\n#\n#   ore-serve    una AUDIENCIA. Todos los flujos apagados: no inicia sesion de\n#                nadie. Existe para poder decir que un token es PARA nosotros\n#   y en `rubix-consola`, el mapeador que mete `ore-serve` en el `aud`\n#\n# Los agentes NO salen de aqui: cada celda tiene el suyo (`ore-agente-<celda>`)\n# y lo crea el aprovisionador. El comun, `ore-agente`, esta RETIRADO (0048):\n# lo borra `identidad/aplicar.mjs` con los demas de `RETIRADOS` (`ore.mjs`).\n#\n# Todo lo demas viaja tal cual: la politica de clave, los cinco flujos propios,\n# las passkeys y las organizaciones.\n#\n# ── ⭐ AAL2 en las dos puertas ───────────────────────────────────────────────\n#\n# `EXIGIR_SEGUNDO_FACTOR = true` (saldada el 2026-09-30): la entrada y la\n# reposicion piden passkey o TOTP. `pruebas-de-fuego/el-segundo-factor.sh` lo\n# vigila sobre este fichero.\n#\n# ── ⚠️ Lo que un `KeycloakRealmImport` NO hace ──────────────────────────────\n#\n# Mantener: se salta un realm que ya existe y dice `Done: True` igualmente. Por\n# eso este fichero NO esta en `malla/kustomization.yaml`, y el realm vivo lo\n# concilia `identidad/aplicar.mjs` desde ESTOS mismos realms.\n\n";
 
 /** El manifiesto: un `KeycloakRealmImport` por realm, en JSON (que es YAML). */
 export function manifiesto() {

@@ -88,6 +88,7 @@ configMapGenerator:
       - migraciones/044-el-puente.sql
       - migraciones/045-las-potestades-del-arbol.sql
       - migraciones/046-los-agentes-sin-celda.sql
+      - migraciones/047-prueba-retirada.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

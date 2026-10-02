@@ -17,12 +17,15 @@
 # ✏️ `rubix-dev` ya no sale (0048): no existe en vivo, `ore-iam` rechaza su
 #   emisor, y el reconciliador lo CREARIA al no encontrarlo.
 #
-# ── Lo que ORE anade, en LOS TRES ───────────────────────────────────────────
+# ── Lo que ORE anade, en los dos ───────────────────────────────────────────
 #
 #   ore-serve    una AUDIENCIA. Todos los flujos apagados: no inicia sesion de
 #                nadie. Existe para poder decir que un token es PARA nosotros
-#   ore-agente   una cuenta de servicio que pide tokens para esa audiencia
 #   y en `rubix-consola`, el mapeador que mete `ore-serve` en el `aud`
+#
+# Los agentes NO salen de aqui: cada celda tiene el suyo (`ore-agente-<celda>`)
+# y lo crea el aprovisionador. El comun, `ore-agente`, esta RETIRADO (0048):
+# lo borra `identidad/aplicar.mjs` con los demas de `RETIRADOS` (`ore.mjs`).
 #
 # Todo lo demas viaja tal cual: la politica de clave, los cinco flujos propios,
 # las passkeys y las organizaciones.
@@ -263,57 +266,6 @@
           "directAccessGrantsEnabled": false,
           "serviceAccountsEnabled": false,
           "implicitFlowEnabled": false
-        },
-        {
-          "clientId": "ore-agente",
-          "name": "ORE · agente",
-          "description": "Cuenta de servicio: pide tokens para `ore-serve`. Es un agente, no una persona.",
-          "enabled": true,
-          "protocol": "openid-connect",
-          "publicClient": false,
-          "standardFlowEnabled": false,
-          "directAccessGrantsEnabled": false,
-          "serviceAccountsEnabled": true,
-          "implicitFlowEnabled": false,
-          "attributes": {
-            "access.token.lifespan": "300"
-          },
-          "protocolMappers": [
-            {
-              "name": "audiencia-ore-serve",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-audience-mapper",
-              "consentRequired": false,
-              "config": {
-                "included.client.audience": "ore-serve",
-                "id.token.claim": "false",
-                "access.token.claim": "true"
-              }
-            },
-            {
-              "name": "audiencia-modelos",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-audience-mapper",
-              "consentRequired": false,
-              "config": {
-                "included.custom.audience": "modelos",
-                "id.token.claim": "false",
-                "access.token.claim": "true"
-              }
-            },
-            {
-              "name": "rubix-tipo-agente",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-hardcoded-claim-mapper",
-              "consentRequired": false,
-              "config": {
-                "claim.name": "rubix_tipo",
-                "claim.value": "agente",
-                "jsonType.label": "String",
-                "access.token.claim": "true"
-              }
-            }
-          ]
         }
       ]
     }
@@ -658,57 +610,6 @@
           "directAccessGrantsEnabled": false,
           "serviceAccountsEnabled": false,
           "implicitFlowEnabled": false
-        },
-        {
-          "clientId": "ore-agente",
-          "name": "ORE · agente",
-          "description": "Cuenta de servicio: pide tokens para `ore-serve`. Es un agente, no una persona.",
-          "enabled": true,
-          "protocol": "openid-connect",
-          "publicClient": false,
-          "standardFlowEnabled": false,
-          "directAccessGrantsEnabled": false,
-          "serviceAccountsEnabled": true,
-          "implicitFlowEnabled": false,
-          "attributes": {
-            "access.token.lifespan": "300"
-          },
-          "protocolMappers": [
-            {
-              "name": "audiencia-ore-serve",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-audience-mapper",
-              "consentRequired": false,
-              "config": {
-                "included.client.audience": "ore-serve",
-                "id.token.claim": "false",
-                "access.token.claim": "true"
-              }
-            },
-            {
-              "name": "audiencia-modelos",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-audience-mapper",
-              "consentRequired": false,
-              "config": {
-                "included.custom.audience": "modelos",
-                "id.token.claim": "false",
-                "access.token.claim": "true"
-              }
-            },
-            {
-              "name": "rubix-tipo-agente",
-              "protocol": "openid-connect",
-              "protocolMapper": "oidc-hardcoded-claim-mapper",
-              "consentRequired": false,
-              "config": {
-                "claim.name": "rubix_tipo",
-                "claim.value": "agente",
-                "jsonType.label": "String",
-                "access.token.claim": "true"
-              }
-            }
-          ]
         }
       ],
       "components": {

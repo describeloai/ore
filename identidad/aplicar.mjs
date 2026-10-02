@@ -43,7 +43,7 @@
 // 📎 de la plataforma: docs/iam/03-el-programa.md `P·2·b` · aquí: identidad/realm.mjs, identidad/ore.mjs
 // ═══════════════════════════════════════════════════════════════════
 
-import { realmsDeOre, accionesDe } from './ore.mjs';
+import { realmsDeOre, accionesDe, RETIRADOS, GESTIONADOS_FUERA, DE_FABRICA } from './ore.mjs';
 import {
   FLUJO_ENTRADA, factoresMinimos,
   FLUJO_REPOSICION, CREDENCIALES_DE_REPOSICION,
@@ -529,6 +529,43 @@ async function acciones(llamar, realm, deseado, aplicar) {
   return cambios;
 }
 
+/**
+ * ⭐⭐ EL CENSO DE CLIENTES (0048, deuda 1): cada cliente vivo, con su clase. Hasta aquí el
+ *   reconciliador sólo miraba los clientes que el artefacto nombra, y un cliente que dejaba
+ *   de nombrarse seguía vivo con su secreto. Ahora todos tienen que ser algo:
+ *
+ *     de fábrica · declarado · gestionado fuera (con quién) · RETIRADO (se borra) · desconocido
+ *
+ *   ⚠️ Un desconocido se AVISA y no se borra: lo creó alguien, y borrarlo a ciegas puede
+ *   dejar sin entrada a quien lo use. Se decide y se nombra en `RETIRADOS` o se declara.
+ */
+async function censoDeClientes(llamar, realm, deseado) {
+  const declarados = new Set((deseado.clients ?? []).map((c) => c.clientId));
+  return (await llamar('GET', `/realms/${realm}/clients`) ?? []).map((c) => {
+    const id = c.clientId;
+    let clase = 'desconocido';
+    if (RETIRADOS.includes(id)) clase = 'retirado';
+    else if (DE_FABRICA.includes(id)) clase = 'de fábrica';
+    else if (declarados.has(id)) clase = 'declarado';
+    else {
+      const g = GESTIONADOS_FUERA.find(([re]) => re.test(id));
+      if (g) clase = `gestionado fuera: ${g[1]}`;
+    }
+    return { id: c.id, clientId: id, clase };
+  });
+}
+
+/** Borra los retirados que sigan vivos. Devuelve los nombres borrados y los desconocidos. */
+async function retirarClientes(llamar, realm, deseado) {
+  const censo = await censoDeClientes(llamar, realm, deseado);
+  const borrados = [];
+  for (const c of censo.filter((x) => x.clase === 'retirado')) {
+    await llamar('DELETE', `/realms/${realm}/clients/${c.id}`);
+    borrados.push(c.clientId);
+  }
+  return { borrados, desconocidos: censo.filter((x) => x.clase === 'desconocido').map((x) => x.clientId) };
+}
+
 /** Lo que `aplicar` cambiaría en `realm`, sin tocar nada. */
 async function planificar(llamar, realm, deseado) {
   const vivo = await llamar('GET', `/realms/${realm}`);
@@ -579,8 +616,12 @@ async function planificar(llamar, realm, deseado) {
       if (inexistentes.length) plan.push(`${pub.clientId} ámbitos pedidos que NO existen: ${inexistentes.join(', ')}`);
     }
   }
+  for (const c of await censoDeClientes(llamar, realm, deseado)) {
+    if (c.clase === 'retirado') plan.push(`⛔ cliente ${c.clientId}: RETIRADO, se BORRARÍA (con su secreto y su cuenta de servicio)`);
+    else if (c.clase === 'desconocido') plan.push(`⚠️  cliente ${c.clientId}: vivo y NO declarado: retirarlo o declararlo (no se toca)`);
+    else if (c.clase.startsWith('gestionado')) plan.push(`   cliente ${c.clientId}: ${c.clase}`);
+  }
   const declaraLector = (deseado.clients ?? []).some((c) => c.clientId === CLIENTE_LECTOR);
-  if (deseado.organizationsEnabled && !declaraLector) plan.push(`${CLIENTE_LECTOR}: no se declara (0048): no se toca`);
   if (deseado.organizationsEnabled && declaraLector) {
     const l = (await llamar('GET', `/realms/${realm}/clients?clientId=${CLIENTE_LECTOR}`))?.[0];
     if (!l) plan.push(`${CLIENTE_LECTOR}: se CREARÍA`);
@@ -657,7 +698,12 @@ if (!SOLO_VERIFICAR) {
     // ⭐⭐ UN SOLO MAPPER escribiendo `organization`. Va en la misma pasada porque un realm
     //   con el claim duplicado no deja entrar a NADIE — y el síntoma no nombra al culpable.
     const claim = deseado.organizationsEnabled ? await aplicarClaimDeOrganizacion(llamar, realm) : null;
+    // ⛔ Y LOS RETIRADOS FUERA (0048, deuda 1): retirar es borrar, y se nombra.
+    const ret = await retirarClientes(llamar, realm, deseado);
     console.log(`✅ aplicado en ${realm}${cliente ? ` · cliente ${cliente} con sus URIs` : ''}`);
+    if (ret.borrados.length) console.log(`   ⛔ clientes RETIRADOS (borrados): ${ret.borrados.join(', ')}`);
+    else console.log('   ✅ ningún cliente retirado sigue vivo');
+    if (ret.desconocidos.length) console.log(`   ⚠️  vivos y NO declarados (no se tocan): ${ret.desconocidos.join(', ')}`);
     // ⭐ Se nombra lo que CAMBIÓ, con el valor viejo y el nuevo. «Ajustes aplicados» a secas no
     //   distingue «había tres que corregir» de «no había nada que hacer».
     if (ajustes.cambios.length) {
