@@ -2,7 +2,7 @@
 
 **Estado:** aceptado y **en vivo** (2026-09-30). ORE es dueño de su IdP: lo corre, lo declara,
 lo concilia y lo mide. `rubix` exige AAL2 en las tres puertas, y `rubix-interno` en las dos
-suyas. Deudas 1, 2, 4 y 5 saldadas el 2026-10-02; lo que queda, al final.
+suyas. Deudas 1 a 5 saldadas el 2026-10-02; lo que queda, al final.
 
 ## Qué es
 
@@ -164,11 +164,28 @@ en el pod, `themes/` sólo tenía el README, y el realm pide `emailTheme: 'rubix
   - `--verificar`: AAL2 en los dos realms.
   - `victor` acepta tokens nuevos de agente y de persona.
 
+**Deuda 3 · hay correo.** Estaba peor de lo que decía: `rubix` ofrecía «¿Olvidaste tu
+contraseña?» y el relay **rechazaba**: `550`, la IP no era la registrada en Workspace
+(`207.175.59.130`, del clúster viejo). Y la causa era de red: `sistema-spot` tenía IP pública
+efímera y no salía por el NAT, lo que también desmentía la IP fija que se anuncia a los clientes.
+
+- **C0**: `HAY_CORREO` (`ore.mjs`), un solo interruptor para la reposición y la verificación.
+  Apagado mientras no hubo correo.
+- **C1**: `sistema-spot`, nodos privados, y el NAT con puertos dinámicos. Todo el clúster sale
+  por `34.156.87.237`.
+  - ⛔ **Costó ~13 min de caída**: el nodo nuevo no cabía en la cuota de 12 vCPU (ver
+    `malla/README.md`).
+- **C2** (la persona): `34.156.87.237` registrada en el relay de Workspace, y la vieja fuera.
+- **C3**: `aplicar.mjs` gobierna `smtpServer`. Producción firmaba «Rubix (desarrollo)».
+- **C4**: `identidad/sonda-correo.sh` en verde (`MAIL FROM` y `RCPT TO` 250, sin `DATA`).
+- **C5**: una reposición real, pedida desde la página de login. **Llegó bien.**
+- **C6**: `HAY_CORREO = true`: reposición y `verifyEmail` encendidos en `rubix`. Se acaba la
+  contradicción entre el SMTP declarado y `verifyEmail` apagado.
+
 ## Deuda y pistas
 
 | # | deuda | por qué importa | pista |
 |---|---|---|---|
-| 3 | **El correo se contradice.** `realm.mjs` declara `smtp-relay.gmail.com` (autoriza por IP, sin credencial) y `ore.mjs` apaga `verifyEmail` «porque no hay correo» | o falta el correo, o sobra la excepción; mientras tanto, la reposición por correo es incierta | probar el relay desde la IP de salida del clúster de ORE (la autorizada en Workspace era probablemente la del viejo). Si sale: `verifyEmail` encendido y la excepción fuera. Si no: registrar la IP, o quitar `correoDeSalida` |
 | 6 | **Usuarios de prueba del registro** (los de la tercera puerta) | cuentas reales en el realm de producción | listarlos con el admin y borrarlos; comprobar que no quedan en `iam.pertenencia` |
 | 7 | **El que concilia usa el admin de arranque** (`identidad/idp-initial-admin`) | es una credencial compartida y omnipotente, sin passkey | un admin nominal en `master` con passkey, y el de arranque, deshabilitado |
 | 8 | **`MFA_RELAJADA_HASTA = '2026-09-30'`** sigue en `realm.mjs` | ya no tiene efecto (`EXIGIR_SEGUNDO_FACTOR = true`), pero confunde | quitarlo, o convertirlo en historia en el comentario |
