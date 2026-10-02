@@ -141,8 +141,6 @@ struct Observado {
     /// Las clases de valor vistas, sin contar los nulos. Ordenado y sin
     /// repetir: es lo que se emite cuando hay más de una.
     clases: Vec<&'static str>,
-    /// En cuántas líneas apareció con un valor que no era nulo.
-    con_valor: usize,
 }
 
 /// La clase de un valor, **de cómo estaba escrito**.
@@ -249,12 +247,11 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
                     orden.push(col.to_string());
                     Observado::default()
                 });
-                if let Some(c) = clase(v) {
-                    o.con_valor += 1;
-                    if !o.clases.contains(&c) {
-                        o.clases.push(c);
-                        o.clases.sort_unstable();
-                    }
+                if let Some(c) = clase(v)
+                    && !o.clases.contains(&c)
+                {
+                    o.clases.push(c);
+                    o.clases.sort_unstable();
                 }
             }
         }
@@ -290,9 +287,12 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
                 nombre: col.clone(),
                 tipo,
                 origen,
-                // Obligatoria si apareció con valor en TODAS las líneas. Es un
-                // hecho de este fichero y se emite como tal.
-                obligatoria: o.con_valor == lineas,
+                // Nunca obligatoria (ORE 0051, v1alpha22 `01-nunca-nula` §3):
+                // que apareciera con valor en todas las líneas leídas es una
+                // observación de este fichero, no una garantía, y la línea
+                // siguiente puede traer un nulo. `required` en la tabla es
+                // sólo lo que el origen hace cumplir.
+                obligatoria: false,
                 ..Columna::default()
             });
         }
@@ -407,10 +407,12 @@ mod tests {
         assert!(c.contains("\"sourceType\": \"array\""), "{c}");
     }
 
-    /// `required` es un hecho de ESTE fichero: apareció con valor en todas las
-    /// líneas. Un nulo o una ausencia lo quitan.
+    /// **Lo visto no es una garantía** (ORE 0051; v1alpha22 `01-nunca-nula`
+    /// §3). `a` aparece con valor en todas las líneas, y aun así no es
+    /// `required`: un JSONL no hace cumplir nada, y la línea siguiente puede
+    /// traer un nulo. Antes salía `required`, y la tabla lo habría afirmado.
     #[test]
-    fn obligatoria_es_haber_aparecido_con_valor_en_todas_las_lineas() {
+    fn lo_visto_en_todas_las_lineas_no_es_una_garantia() {
         let (c, _) = catalogo(
             "obligatoria",
             &[(
@@ -418,10 +420,8 @@ mod tests {
                 "{\"a\": 1, \"b\": 2, \"c\": null}\n{\"a\": 3}\n",
             )],
         );
-        // `a` está en las dos con valor; `b` falta en una; `c` es nula.
-        let a = c.split("\"name\": \"a\"").nth(1).unwrap_or_default();
-        assert!(a.starts_with(",\n") || a.contains("required"), "{c}");
-        assert_eq!(c.matches("\"required\": true").count(), 1, "{c}");
+        assert!(c.contains("\"name\": \"a\""), "{c}");
+        assert!(!c.contains("\"required\""), "{c}");
     }
 
     /// **No se propone clave primaria**, aunque una columna sea única aquí.

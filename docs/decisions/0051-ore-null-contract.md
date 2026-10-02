@@ -1,6 +1,6 @@
 # 0051 · ORE Null Contract
 
-**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1 y P2 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
+**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1, P2 y el código de P3 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
 columnas **nunca son nulas**: el origen lo **declara**, las vistas lo **derivan** y el lago lo
 **impone**, con una sola regla para cambiarlo. Cierra el «REQUIRED» de
 [0042](0042-origin-rest-bigquery.md) y la parte de nulabilidad de
@@ -311,6 +311,28 @@ candidatas, todas en `victor`; **61 tienen cuenta, en 19 copias, y ninguna tiene
   árboles con `labels` en columnas de `Table` (el esquema JSON nunca las admitió, y
   `ore migrate punteros` las cuida). Cerrarlas en versiones viejas cambiaría lo que un árbol de
   ayer significa. Una tabla con `labels` en sus columnas no sube a v1alpha22 hasta quitarlas.
+
+#### P3 · declarar · el código (2026-10-02)
+
+- **El Source Pointer escribe `required: true`** en la columna que el catálogo trae obligatoria, y
+  la `Table` declara entonces v1alpha22; una sin garantías sigue en la suya.
+- **El lector JSONL deja de emitir `required`**: «con valor en todas las líneas» era una
+  observación, y N1 no deja convertirla en garantía. Arreglado en el lector, no en el inductor: el
+  inductor se fía del catálogo de cualquier driver.
+- **Los consumidores la llevan**: la ficha del activo (`assets.rs`) y las dos rutas de
+  `ore-serve` que enseñan columnas (de la `Table` y del catálogo), sólo cuando es `true`. Y la
+  migración `Table` → `Dataset` (`migrar.rs`) **la quita**: en un dataset se deriva.
+- **Aflojar sigue al origen** sin código nuevo: re-inducir regenera la tabla, y la columna que el
+  origen dejó de garantizar pierde `required`. Lo fija una prueba.
+- El comentario `# NOT NULL en el origen` de la entidad se queda: la deuda se cierra porque la
+  garantía ya va en la `Table`, y quitarlo cambiaría ficheros vivos sin necesidad.
+
+**En vivo, en seco** (`ore source induce` de cada fuente, desde su catálogo guardado, sobre copias
+de los árboles): la parte de 0051 cuadra con P0. **21 tablas de `victor` pasan a v1alpha22 con
+`required` en 70 columnas** (las 67 de `standard` y las 3 de BigQuery); en `demo` ninguna tabla
+existente cambia. **Pero re-inducir escribe además lo pendiente de 0045 E5′**: +237 punteros en
+`demo` y +70 en `victor`, y los `exports` de 7 paquetes. Aplicarlo en vivo, y cómo, se decide
+aparte.
 
 ## Lo que no se hace
 

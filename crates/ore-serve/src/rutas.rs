@@ -2259,6 +2259,11 @@ fn tablas_con(idx: &crate::punteros::Indice, dir: &Path) -> Vec<Json> {
                 if let Some(ty) = v.get("type").and_then(|(_, t)| t.as_str()) {
                     campos.push(("type", Json::s(ty)));
                 }
+                // v1alpha22 (ORE 0051): el origen garantiza que nunca es nula.
+                // Solo si lo dice: sin la clave, la columna puede serlo.
+                if v.get("required").and_then(|(_, r)| r.as_str()) == Some("true") {
+                    campos.push(("required", Json::Bool(true)));
+                }
                 columnas.push(Json::obj(campos));
             }
         }
@@ -2429,6 +2434,9 @@ fn filas_del_catalogo(cat: &Node) -> Vec<Json> {
             }
             if let Some(ty) = c.get("type").and_then(|(_, v)| v.as_str()) {
                 campos.push(("type", Json::s(ty)));
+            }
+            if c.get("required").and_then(|(_, v)| v.as_str()) == Some("true") {
+                campos.push(("required", Json::Bool(true)));
             }
             columnas.push(Json::obj(campos));
         }

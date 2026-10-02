@@ -417,6 +417,7 @@ fn expone_de(pkg: &Package, d: &Loaded) -> Json {
     match d.kind {
         Kind::Table => {
             let tipos = tipos_de_tabla(d);
+            let nulabilidad = vistas::nulabilidad_de_columnas(d);
             Json::Arr(
                 tipos
                     .into_iter()
@@ -427,6 +428,10 @@ fn expone_de(pkg: &Package, d: &Loaded) -> Json {
                         }
                         if let Some(f) = f {
                             m.push(("physicalType", Json::s(f)));
+                        }
+                        // v1alpha22 (ORE 0051): solo si el origen lo garantiza.
+                        if nulabilidad.get(&n).is_some_and(|x| x.nunca_nula()) {
+                            m.push(("required", Json::Bool(true)));
                         }
                         Json::obj(m)
                     })

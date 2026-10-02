@@ -501,3 +501,70 @@ fn catalogar_escribe_los_punteros_de_la_fuente() {
     assert!(!v.contains("error["), "{v}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// La línea de la columna `c` en el texto de una tabla.
+fn columna(t: &str, c: &str) -> String {
+    t.lines()
+        .find(|l| l.trim_start().starts_with(&format!("{c}:")))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// ⭐ ORE 0051 P3 · **La garantía del origen llega a la tabla, y solo a ella**.
+/// `clientes.id` y `cod_pais` son `REQUIRED` en BigQuery: la tabla lo dice
+/// (`required: true`) y declara v1alpha22. `Pedidos` no tiene nada garantizado
+/// y sigue en su versión. Ni la vista de la base foránea ni el dataset de la
+/// estándar lo declaran: lo que exponen se deriva. Antes la garantía llegaba en
+/// el catálogo y se quedaba en un comentario de la entidad.
+#[test]
+fn la_garantia_del_origen_llega_a_la_tabla_y_no_a_quien_la_lee() {
+    let dir = arbol("garantia", false);
+    let f = tabla(&dir, "rubix_demo_ventas.clientes");
+    assert!(f.contains("apiVersion: oos.dev/v1alpha22"), "{f}");
+    assert!(columna(&f, "id").contains("required: true"), "{f}");
+    assert!(columna(&f, "cod_pais").contains("required: true"), "{f}");
+    assert!(!columna(&f, "nom").contains("required"), "{f}");
+    let p = tabla(&dir, "rubix_demo_ventas.Pedidos");
+    assert!(
+        !p.contains("v1alpha22") && !p.contains("required"),
+        "sin garantías, la versión de siempre:\n{p}"
+    );
+    for base in ["fdb", "sdb"] {
+        let declaran = ficheros(&dir, base, |t| {
+            (t.contains("kind: View") || t.contains("kind: Dataset"))
+                && t.contains("required: true")
+        });
+        assert!(
+            declaran.is_empty(),
+            "`{base}` declara lo que se deriva: {declaran:?}"
+        );
+    }
+    // La forma de v1alpha22 se cumple: ningún `OOS1xxx`. (El árbol de prueba no
+    // declara la política del conducto de la copia, y eso es `OOS4011`.)
+    let (_, dicho) = ore(&dir, &["validate", "."]);
+    assert!(!dicho.contains("error[OOS1"), "{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⭐ ORE 0051 P3 · **Aflojar sigue al origen** (v1alpha22 `01-nunca-nula`
+/// §5). Si `clientes.id` deja de ser `REQUIRED`, la fuente vuelta a inducir
+/// desde su catálogo la deja sin `required`; `cod_pais` lo conserva.
+#[test]
+fn si_el_origen_afloja_la_tabla_deja_de_garantizarlo() {
+    let dir = arbol("afloja", false);
+    let ruta = dir.join(format!("packages/{FUENTE}/discover.catalog.json"));
+    let cat = std::fs::read_to_string(&ruta).unwrap();
+    let antes = "\"name\": \"id\",\n          \"required\": true,\n";
+    assert!(cat.contains(antes), "el catálogo cambió de forma");
+    std::fs::write(&ruta, cat.replacen(antes, "\"name\": \"id\",\n", 1)).unwrap();
+    let (c, dicho) = ore(&dir, &["source", "induce", FUENTE]);
+    assert_eq!(c, Some(0), "{dicho}");
+    let f = tabla(&dir, "rubix_demo_ventas.clientes");
+    assert!(!columna(&f, "id").contains("required"), "{f}");
+    assert!(columna(&f, "cod_pais").contains("required: true"), "{f}");
+    // La forma de v1alpha22 se cumple: ningún `OOS1xxx`. (El árbol de prueba no
+    // declara la política del conducto de la copia, y eso es `OOS4011`.)
+    let (_, dicho) = ore(&dir, &["validate", "."]);
+    assert!(!dicho.contains("error[OOS1"), "{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -259,6 +259,7 @@ pub(crate) fn plan(raiz: &Path) -> Plan {
             .cloned()
             .unwrap_or_else(|| format!("team:{ns}"));
         // Las columnas, sin `physicalType`: el físico es Iceberg y no se cita.
+        // Y sin `required` (v1alpha22): en un dataset no se declara, se deriva.
         let columnas = spec
             .get("columns")
             .map(|(_, c)| Node::Mapping {
@@ -269,7 +270,9 @@ pub(crate) fn plan(raiz: &Path) -> Plan {
                         let entries: Vec<(Node, Node)> = v
                             .entries()
                             .iter()
-                            .filter(|(kk, _)| kk.as_str() != Some("physicalType"))
+                            .filter(|(kk, _)| {
+                                !matches!(kk.as_str(), Some("physicalType" | "required"))
+                            })
                             .cloned()
                             .collect();
                         (k.clone(), Node::Mapping { entries, pos: POS })

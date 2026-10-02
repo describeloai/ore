@@ -2257,6 +2257,13 @@ fn tabla_yaml(
     clave: Option<&[String]>,
 ) -> String {
     let mut s = String::new();
+    // v1alpha22 (ORE 0051 P3): una columna que el origen garantiza no nula lo
+    // dice (`required`), y eso es de v1alpha22. Una tabla sin ninguna sigue en
+    // la versión de siempre: la más baja que la describe (`01-nunca-nula` §6).
+    let garantiza = t
+        .columnas
+        .iter()
+        .any(|c| c.obligatoria && objeto.columnas.contains(&c.nombre));
     // v1alpha16 (0046 E5): una tabla de ficheros dice DÓNDE —la clave o el
     // prefijo, que no es su nombre— y CÓMO se leen (`format`). Sin `format`,
     // un `listing` no compila (OOS1004): son las dos mitades del mismo hecho.
@@ -2268,7 +2275,9 @@ fn tabla_yaml(
          spec:\n  \
            datasource: {fuente}\n  \
            object: {}\n",
-        if t.formato.is_some() {
+        if garantiza {
+            "v1alpha22"
+        } else if t.formato.is_some() {
             "v1alpha16"
         } else {
             "v1alpha8"
@@ -2313,6 +2322,14 @@ fn tabla_yaml(
         }
         if let Some(o) = &c.origen {
             partes.push(format!("physicalType: {}", escalar_yaml(o)));
+        }
+        // Y la garantía, cuando el origen la da (v1alpha22 `01-nunca-nula`):
+        // un hecho del objeto como `physicalType`. Antes llegaba en el
+        // catálogo y se quedaba en un comentario de la entidad. Lo que el
+        // driver sólo observó no llega aquí como `obligatoria`: cada driver lo
+        // decide en su catálogo.
+        if c.obligatoria {
+            partes.push("required: true".to_string());
         }
         if partes.is_empty() {
             s.push_str(" {}\n");

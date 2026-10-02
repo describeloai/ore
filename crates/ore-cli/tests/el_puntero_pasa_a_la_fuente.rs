@@ -222,14 +222,17 @@ fn el_puntero_pasa_a_la_fuente_y_las_bases_se_reapuntan() {
 #[test]
 fn una_etiqueta_que_se_perderia_para_la_migracion() {
     let dir = arbol_de_antes("etiqueta");
+    // En `Pedidos`, que no tiene columnas garantizadas y sigue en su versión.
+    // `clientes` declara `required` y es v1alpha22, donde `labels` en una
+    // columna ya es `OOS1005` (`01-nunca-nula` §2): ahí el árbol ni carga.
     let (ruta, t) = ficheros(&dir, "fdb", |t| {
-        t.contains("kind: Table") && t.contains("object: \"rubix_demo_ventas.clientes\"")
+        t.contains("kind: Table") && t.contains("object: \"rubix_demo_ventas.Pedidos\"")
     })
     .remove(0);
     let col = t
         .lines()
-        .find(|l| l.trim_start().starts_with("id:"))
-        .expect("la columna id")
+        .find(|l| l.trim_start().starts_with("Id:"))
+        .expect("la columna Id")
         .to_string();
     let con = col.replacen(" }", ", labels: { nota: revisada } }", 1);
     assert_ne!(col, con, "{col}");
