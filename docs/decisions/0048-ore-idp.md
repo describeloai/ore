@@ -2,7 +2,7 @@
 
 **Estado:** aceptado y **en vivo** (2026-09-30). ORE es dueño de su IdP: lo corre, lo declara,
 lo concilia y lo mide. `rubix` exige AAL2 en las tres puertas, y `rubix-interno` en las dos
-suyas. Deudas 1, 4 y 5 saldadas el 2026-10-02; lo que queda, al final.
+suyas. Deudas 1, 2, 4 y 5 saldadas el 2026-10-02; lo que queda, al final.
 
 ## Qué es
 
@@ -148,11 +148,26 @@ la lápida `MUDADO-A-ORE.md`.
 
 **Deuda 5 · `rubix-interno` conciliado.** Su entrada exigía 1 factor; ahora 2, como `rubix`.
 
+**Deuda 2 · la imagen de ORE, con su tema.** Corría `idp:26.0.7-1`, la cocida en la plataforma:
+en el pod, `themes/` sólo tenía el README, y el realm pide `emailTheme: 'rubix'`.
+
+- **Medido antes, las dos imágenes en local:**
+  - `kc.sh show-config` persistido, idéntico: db=postgres, health, metrics, optimized.
+  - El mismo usuario y el mismo entrypoint.
+  - En el sistema de ficheros sólo cambian los jars generados (no reproducibles) y entra
+    `themes/rubix/email`.
+- `60-idp.yaml` la fija **por digest** (`idp@sha256:39bc18b8…`, que es `idp:main` desde el 30-sep),
+  no por `main`: reiniciar el login se decide con un commit allí.
+- Antes del cambio, una copia de la base (`keycloak-20261002T073535Z.dump`).
+- **En vivo:**
+  - El login, cortado ~1 min (09:37–09:38).
+  - `--verificar`: AAL2 en los dos realms.
+  - `victor` acepta tokens nuevos de agente y de persona.
+
 ## Deuda y pistas
 
 | # | deuda | por qué importa | pista |
 |---|---|---|---|
-| 2 | **La imagen que corre es la vieja.** `60-idp.yaml` fija `idp:26.0.7-1`, sin el tema del correo | el tema y las opciones de build declaradas no son las que corren | pasar a `idp:<sha>` de Cloud Build en una ventana avisada. Con `instances: 1`, cambiarla **corta el login** durante el reinicio. Hacer antes la copia de `62` |
 | 3 | **El correo se contradice.** `realm.mjs` declara `smtp-relay.gmail.com` (autoriza por IP, sin credencial) y `ore.mjs` apaga `verifyEmail` «porque no hay correo» | o falta el correo, o sobra la excepción; mientras tanto, la reposición por correo es incierta | probar el relay desde la IP de salida del clúster de ORE (la autorizada en Workspace era probablemente la del viejo). Si sale: `verifyEmail` encendido y la excepción fuera. Si no: registrar la IP, o quitar `correoDeSalida` |
 | 6 | **Usuarios de prueba del registro** (los de la tercera puerta) | cuentas reales en el realm de producción | listarlos con el admin y borrarlos; comprobar que no quedan en `iam.pertenencia` |
 | 7 | **El que concilia usa el admin de arranque** (`identidad/idp-initial-admin`) | es una credencial compartida y omnipotente, sin passkey | un admin nominal en `master` con passkey, y el de arranque, deshabilitado |
