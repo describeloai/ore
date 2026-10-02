@@ -174,7 +174,7 @@ admite `oos.maturity` (`OOS1005` con cualquier otra); `Table` no admite `labels`
 | `count(col)` | `OOS1004`, con la frase que manda escribir `count()` |
 | agrupar sobre una **tabla** (`count()`, `groupBy`, `having`) | pasa |
 | agrupar sobre una **vista** (`sum(baseSalary)` de `empleados`) | **fallaba** con `OOS2018` y un nombre vacío: la rama `from.view` resolvía los campos con la función que excluye los agregados, y la conformidad no lo cubría (9 casos sobre tabla, 0 sobre vista). **Arreglado** en `vistas.rs` el mismo día, con cuatro casos de conformidad (spec §4 y §5.8): agrupar sobre una vista compila; agregar lo que abajo ya es un agregado es `OOS2018` con su motivo |
-| `View` sin `owner` | **pasa** — `owner` lo exige el emisor (`cambiame` → `OOS2009`), no el compilador |
+| `View` sin `owner` | **pasa** — el compilador no lo exige; en la plataforma lo pone `PUT /documentos` (quien la crea, o el que ya tenía) |
 
 **El inductor.** `ore discover` escribe `tables/Clientes__public_clientes.yaml` con `name:
 public_clientes` (`reads: {}`, `changes: { mode: none, witness: none }`: no se sondeó, no se
@@ -219,7 +219,8 @@ Cuatro decisiones salen de aquí, y son las de I2:
    **mismo emisor que `Entity`** (`Node` → YAML en `documentos.rs`): un emisor por servidor, no
    uno por kind. Que no diverja del inductor se acepta midiendo, no prometiendo: una vista
    escrita por PUT y la misma por `view add` dan el **mismo `plan sha256`** en `ore view .`.
-   `owner` lo exige el verbo, como `backedBy` en Entity.
+   Sin `owner`, el verbo pone el de quien la crea —o conserva el que ya tenía, si la reescribe—
+   (0027, «el dueño es quien lo crea»); antes era un 422.
 4. **Reescribir desde JSON pierde los comentarios** del YAML (`acme-retail` está lleno). El PUT
    admite las dos entradas: el documento en JSON (un formulario) o `yaml` tal cual (el texto);
    las dos pasan por la misma puerta. Quien edita el texto no pierde lo que escribió.

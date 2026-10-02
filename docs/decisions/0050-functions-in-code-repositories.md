@@ -96,9 +96,10 @@ Y ocurre esto:
    que causa es la unión de sus `effects`. Nada fuera.
 2. **El documento es el contrato; el código lo implementa.** El árbol es el sistema de registro
    ([`0018`](0018-la-ontologia-es-el-sistema-de-registro.md)). Pasar de código a función es una
-   **promoción explícita** (0031 W3.8): la herramienta puede escribir el documento a partir del
-   código una vez, pero el documento no se regenera solo, y el compilador comprueba que el código lo
-   cumple.
+   **promoción explícita** (0031 W3.8): se marca el `def` con `@function`, y su documento
+   (`functions/<nombre>.yaml`) se **deriva** de la firma —`ore functions generate`, y `ore-serve`
+   lo regenera en el mismo commit cuando se guarda el código—. `OOS2013` dice cuándo el documento
+   no es el que el código da. Uno escrito a mano, sin `@function`, sigue valiendo y no se toca.
 3. **Se ejecuta en el puesto, en la celda.** El puesto es el sustrato de ejecución (0031); la
    función corre en la celda y nunca en `ore-serve` (0029 ①).
 4. **Lo publicado tiene versión, y la decide `ore diff`.** SemVer del paquete con la taxonomía de
@@ -122,6 +123,13 @@ versión). Lo que v1alpha18 añade:
 | `models: [modelo/<ref>]` | los modelos que el código **puede** llamar | `model` sigue siendo «el modelo es lo que se ejecuta» (`runtime: model`); una función de código lo **usa**, y lo usado se declara |
 | la firma del `def` | los parámetros son la fila (si hay `over`) y las claves de `input` | el compilador lo coteja sin ejecutar nada |
 | `limits.timeout` | el plazo de la invocación | ya estaba en la gramática |
+| `owner` (v1alpha21) | quién responde de la función: **quien la crea**, `user:<handle>` | no sale del código, así que `OOS2013` no lo compara; al regenerar el documento se conserva (0027, «el dueño es quien lo crea») |
+
+El documento derivado declara **la versión más baja que lo describe**: v1alpha18; v1alpha20 si la
+firma usa sus tipos (`Money`, `Struct`, `Media`…); **v1alpha21 si lleva `owner`**, que es lo que
+pasa cuando nace desde la plataforma —al guardar el código o al sembrar un repositorio—, porque
+el servidor sabe quién lo crea. Generado en local, sin plataforma, no lleva `owner` y sus bytes
+son los de siempre.
 
 ### La identidad
 
@@ -203,7 +211,7 @@ fuera sí cabe (④ + R4); una imagen del cliente es otra decisión, explícita,
 | A2 | Python es el fundamento; Node y Java después, por la misma regla | aprobada · 2026-10-01 |
 | A3 | la escritura tiene su propia especificación | aprobada · 2026-10-01 |
 | A4 | la base es lo que ORE ya define; R1 es la primera rebanada, no un camino aparte | aprobada · 2026-10-01 |
-| D1 | el documento es el contrato; el código lo implementa; promoción explícita (0031 W3.8) | cerrada · 2026-10-01 |
+| D1 | el documento es el contrato; el código lo implementa; promoción explícita con `@function`, y el documento se deriva de la firma (0031 W3.8) | cerrada · 2026-10-01 |
 | D2 | sin `apiName`: el nombre del catálogo | cerrada · 2026-10-01 |
 | D3 | la enmienda a 0029, la de 0031 W3.8; el contenedor del cliente, fuera | cerrada · 2026-10-01 |
 | D4 | el plazo es `limits.timeout` | cerrada · 2026-10-01 |

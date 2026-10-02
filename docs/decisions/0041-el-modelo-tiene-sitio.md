@@ -36,11 +36,14 @@ modelo en el árbol), [`0034`](0034-el-catalogo-de-assets.md) (el catálogo es e
    árbol sirve el mismo id.
 5. **Los de antes** (v1alpha9–14, en la raíz) se siguen leyendo, resolviendo y retirando por su
    nombre. No se migran solos: se redespliegan en su ruta.
+6. **El modelo tiene dueño** (v1alpha21, `01-el-dueno`): `POST /modelos` lo escribe en v1alpha21
+   con `owner: user:<handle>` de quien lo da de alta (0027, «el dueño es quien lo crea»). Uno de
+   v1alpha15 sin `owner` sigue valiendo.
 
 ## Aceptación
 
 `pruebas-de-fuego/los-modelos.sh`, 0–8 más 5b–5f: el alta en `packages/ventas/modelos/`
-(v1alpha15, `ref ventas.v2-lite`); sin `paquete`, 422; un schema sin declarar, 422 (`OOS2037`
+(v1alpha21, `owner: user:ana`, `ref ventas.v2-lite`); sin `paquete`, 422; un schema sin declarar, 422 (`OOS2037`
 del motor); el mismo nombre en `ventas.espana`, otro modelo, y en la misma ruta, 409; retirar
 uno de dos con el mismo id deja la suscripción; `/documentos` lee el `Model` y no lo escribe
 (405); retirar uno que una `Function` nombra, 409 con quién (el motor). `ore-core`: el índice

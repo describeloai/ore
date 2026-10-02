@@ -73,7 +73,9 @@ Las otras dos no las hace el catálogo, y las dos salieron de ejecutar el criter
 
 La décima salió de ejecutar el criterio, no de leer: el inductor escribe `owner: cambiame`
 porque no puede inventar un handle, y `cambiame` **no valida** —`OOS2009`—. Era la única
-decisión entre contestar la cola entera y un paquete en verde, y no estaba en la cola.
+decisión entre contestar la cola entera y un paquete en verde, y no estaba en la cola. En la plataforma no
+llega a la cola: `ore-serve` la contesta al inducir con quien crea la base (`discover --owner
+user:<handle>`, 0027); queda para `discover` en local.
 
 La undécima salió de medir qué hacía un concepto acuñado, y la respuesta era **nada**. La
 etiqueta de un concepto es la tercera fuente de la clasificación efectiva, y sin ella la

@@ -2,7 +2,7 @@
 --
 -- ── Por qué ────────────────────────────────────────────────────────────────
 --
---   ADR 0049 (el dueño): lo que se crea en la plataforma —una base, un schema,
+--   0027 (el dueño es quien lo crea): lo que se crea en la plataforma —una base, un schema,
 --   un origen, una vista, una colección— nace con `owner: user:<quien lo crea>`.
 --   El `owner` de OOS es un handle (`OOS2009`: una letra y luego minúsculas,
 --   dígitos y `-`), y lo único que el servidor sabía de una persona era su

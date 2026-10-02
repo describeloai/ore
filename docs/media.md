@@ -142,7 +142,9 @@ POST /media/{b}/{s}/{c}/transactions/{t}/abort  → 204
 
 - Solo en una colección **escrita** (v1alpha16 `02` §3); en una mantenida es `media/no-escribible`.
 - Python (0049 B4b·3, `puesto/python/ore/medios.py`): `ore.crear_coleccion(nombre, media, formatos)`
-  escribe el documento (v1alpha19, sin `from`); `with coleccion.transaccion() as t: t.put(path, datos)`
+  escribe el documento (v1alpha19, sin `from`) sin `owner`: la colección es de quien la crea —la
+  persona que abrió el puesto—, y lo pone el servidor (0027, «el dueño es quien lo crea»); `dueno=`
+  sólo para dársela a otro; `with coleccion.transaccion() as t: t.put(path, datos)`
   confirma al salir y aborta con una excepción. `datos` son bytes (con su `Repr-Digest`), una ruta (en
   flujo) o un fichero (si no se rebobina, se copia antes). Una subida cortada se reintenta; un commit
   que pierde la carrera de la forja (`409` sin `type`) se vuelve a confirmar. `upload` no se enseña y

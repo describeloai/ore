@@ -44,10 +44,20 @@ es de `ore-iam` (pertenencia y potestades) y lo pregunta cada módulo por `ore-a
 - **`ore-serve`** es una audiencia y no inicia sesión de nadie: existe para poder decir que un
   token es *para nosotros*.
 
+### Lo que ORE lee del token de una persona
+
+`sub` (quién es: con el emisor, su fila en `iam.persona`), `email` y `name` (copias para pintar y
+para casar una invitación), y **`preferred_username`**, el nombre de usuario que eligió al
+registrarse: de él saca `ore-iam`, una sola vez, el **handle** con el que firma como dueño
+(`user:<handle>`, 0027 y 0047 `quien`). Llega por el ámbito `profile` de `rubix-consola`. El
+handle no sigue al usuario si este cambia —es lo que queda escrito en el árbol—, así que cambiar
+el nombre de usuario en el IdP no renombra a nadie en ORE.
+
 ### Lo que no cambia, a propósito
 
 El realm `rubix`, el emisor, los flujos `browser-rubix`/`reposicion-rubix`, los clientes y los
-claims `rubix_tipo`/`rubix_celda`/`organization`. Cambiar cualquiera cambia el `iss` o los
+claims `rubix_tipo`/`rubix_celda`/`organization`, y el ámbito `profile` de la consola (trae
+`preferred_username`). Cambiar cualquiera cambia el `iss` o los
 tokens, y pide una migración como la `034`. **Los nombres `rubix` son una identidad publicada,
 no una marca.**
 

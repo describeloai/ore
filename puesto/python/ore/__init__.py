@@ -1175,7 +1175,7 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
 
 def _owner(dueno):
     """La línea `owner` de un `spec`, si se dice. Sin ella, el dueño lo pone el
-    servidor (ADR 0049 · el dueño): quien lo crea —la persona que abrió el puesto—,
+    servidor (0027 · el dueño es quien lo crea): quien lo crea —la persona que abrió el puesto—,
     o el que ya tenía si se reescribe. El SDK no inventa uno."""
     return ["  owner: %s" % dueno] if dueno else []
 

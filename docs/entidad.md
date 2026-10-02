@@ -404,8 +404,11 @@ propio está escrito en el motor, en la ayuda de la regla que obliga a `Ruleset`
 > sea un documento y no un bloque dentro de `Entity`**. En un entorno regulado, quien responde del
 > cumplimiento tiene que poder restringir la ontología sin poder editarla.»*
 
-**Un documento existe aparte cuando responde otra persona.** Y `Entity` **no tiene `owner`, ni lo
-admite**; `View` lo exige. Por el criterio de la casa, la entidad no merece documento propio.
+**Un documento existe aparte cuando responde otra persona.** Cuando se midió, `Entity` **no tenía
+`owner`, ni lo admitía**, y `View` lo exigía: por el criterio de la casa, la entidad no merecía
+documento propio. Desde v1alpha21 lo tiene —quien la crea responde de ella (0027)—, y el criterio
+apunta al otro lado: la entidad y su vista pueden responder ante personas distintas, y eso ya es
+razón para que sean dos documentos.
 
 **Una que la bloquea, y es una sola.**
 
@@ -467,11 +470,10 @@ y un renombre. Así que:
 Con eso caen los tramos 0 a 3 del espectro medido en `pruebas-de-fuego/medida-espectro-fusion.py`.
 El tramo 0 —*«DECIDIR que la vista puede llevar significado»*— tiene respuesta, y es que no.
 
-**Y el criterio de §10.7 sigue siendo cierto, y ahora es subordinado.** *«Un documento existe
-aparte cuando responde otra persona»*, y `Entity` no admite `owner` mientras `View` lo exige. Eso
-sigue diciendo que la entidad no merece **documento** propio. No dice que quepa dentro de una
-pregunta: quién responde y dónde cabe el significado son dos cosas distintas, y la segunda es la
-que decide si la fusión es posible.
+**Y el criterio de §10.7 es subordinado.** *«Un documento existe aparte cuando responde otra
+persona»*: con v1alpha21 la entidad tiene `owner` propio, y el criterio pasa a decir que **sí**
+merece documento aparte. Ni antes ni ahora decide la fusión: quién responde y dónde cabe el
+significado son dos cosas distintas, y es la segunda —la entidad es de la cadena— la que la cierra.
 
 **Lo que sobrevive del peldaño 6** es lo único que siempre fue real: `backedBy` es una flecha de
 la entidad a la vista y podría ser la contraria. Eso es mover un puntero, no fundir dos documentos.

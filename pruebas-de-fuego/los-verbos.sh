@@ -37,7 +37,7 @@
 #      solo compartido); retirarla (no la de casa); y una USERADMIN no puede
 #  12  ⭐ EL PERFIL (035): fundar con titulo; titulo y logo por el verbo (ORGADMIN);
 #      un logo que no es imagen o pesa de mas se niega; una USERADMIN no edita
-#  18  ⭐ EL HANDLE (048, ADR 0049 · el dueño): sale del nombre de usuario la
+#  18  ⭐ EL HANDLE (048, 0027 · el dueño es quien lo crea): sale del nombre de usuario la
 #      primera vez y no cambia; desempata; por el puente (`quien`) tambien desde
 #      el agente de un puesto; un agente o alguien de fuera no es dueño de nada
 #
@@ -957,7 +957,7 @@ psql "$URL" -v ON_ERROR_STOP=1 -qtAf "$RAIZ/iam/migraciones/046-los-agentes-sin-
 [ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'agente:retirar'")" = "1" ] || falla "17 · repetir la 046 anoto otra vez"
 dice "17 · la 046: el agente sin celda sale de iam.agente, sus concesiones se revocan (la fila se queda), queda en la huella de su organizacion, y repetirla no hace nada"
 
-# ── 18 · ⭐ EL HANDLE (la 048, ADR 0049 · el dueño) ───────────────────────────
+# ── 18 · ⭐ EL HANDLE (la 048, 0027 · el dueño es quien lo crea) ───────────────────────────
 #
 # Lo que una celda escribe en el `owner` de lo que alguien crea: `user:<handle>`.
 # Sale del nombre de usuario que la persona eligio al registrarse

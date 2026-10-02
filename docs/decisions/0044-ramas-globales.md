@@ -246,7 +246,7 @@ merge queue y CODEOWNERS, Nx *affected*, dbt *defer*, SQLMesh `--select-model`, 
 | Un repositorio | una carpeta bajo `packages/<p>/…` con un `README.md` que lo declara; cada fichero es del repositorio más hondo que lo contiene; **no tiene dueño** | `repositorios.rs`, 0036 |
 | `.sql` → View | un `CREATE VIEW` en el puesto escribe un **documento aparte** (`views/<n>.yaml`, v1alpha14, con el SQL dentro); el `.sql` del repositorio y la vista **no se enlazan** | `puestos.rs:2578`, `__init__.py:899` |
 | `.ts` → Function | **no existe**: sólo hay clase `functions-python`; `Function.spec.source` es texto libre que nada resuelve | `clases.rs:414`, 0036 |
-| Dueños | `spec.owner` (`team:` o `user:`) en Package, View, Dataset, Schema y otros; obligatorio en Dataset y Package, y en View al escribirla por `/documentos`; **no** en Table; el índice lo expone | `pertenencia.rs:140`, `assets.rs:786` |
+| Dueños | `spec.owner` (`team:` o `user:`) en Package, Schema, View, Dataset, MediaCollection, TrainedModel y, desde v1alpha21, Entity, Function, ObjectTable y Model; **no** en Table; obligatorio en Package, Dataset, MediaCollection y TrainedModel, opcional en los demás. En la plataforma lo escribe el servidor: **quien crea** (`user:<handle>` de `ore-iam`), y editar lo conserva (0027); el índice lo expone | `pertenencia.rs`, `acceso.rs` (`dueno_de_quien_crea`), `assets.rs` |
 | Linaje | `lee_directo` y `respaldo`, puros sobre cualquier directorio; **no** siguen las aristas de Function, Action ni TrainedModel | `vistas.rs:348`, `cambios.rs:111` |
 | Propuesta | PR de la forja de **la rama entera** a `main`; dos personas; se fusiona si compila (`ore validate` de la rama) y sin conflicto; **la forja borra la rama al fusionar** (`delete_branch_after_merge`) | `propuestas.rs:645`, `forja.rs:239` |
 | Alcance de hoy | `GET /propuestas` con `X-Ore-Raiz`: **filtra la lista** por prefijo de fichero; no cambia lo que se fusiona; la consola no lo usa | `propuestas.rs:435` |
@@ -366,8 +366,9 @@ rompería `main` por otro lado, y se dice en los diagnósticos (A.2 ④).
   o la fuente que nombra su documento: se decide en la spec), un `.sql` y su vista son **dos
   unidades**, y el compilador los une sólo cuando uno lee al otro. Proponer uno sin el otro es
   posible y no rompe nada.
-- **Aprobación de los dueños.** `spec.owner` dice el equipo; falta **quién es** el equipo
-  (pertenencia en `ore-iam`, sin medir), un dueño para los repositorios y para las tablas, y el
+- **Aprobación de los dueños.** `spec.owner` dice quién responde, y un `user:` ya es alguien
+  (`ore-iam` da y resuelve el handle de cada persona, 0027); falta **quién es** un `team:` (los
+  equipos no existen en `ore-iam`), un dueño para los repositorios y para las tablas, y el
   linaje de Function, Action y TrainedModel para saber a quién alcanza un cambio fuera de las
   vistas.
 

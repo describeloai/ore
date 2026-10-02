@@ -1462,7 +1462,7 @@ impl Servidor {
             );
         }
 
-        // ⭐ El dueño del origen (ADR 0049 · el dueño): quien lo da de alta. Su
+        // ⭐ El dueño del origen (0027 · el dueño es quien lo crea): quien lo da de alta. Su
         //   paquete lo crea después el Job de catálogo, sin la persona delante,
         //   así que se sabe aquí —antes de tocar nada— y viaja en el Job (`DUENO`).
         let dueno = match self.dueno_de_quien_crea(sujeto) {
@@ -1955,7 +1955,7 @@ impl Servidor {
             //   tablas y vistas, sin entidades. Modelar es otro acto.
             "--no-model".into(),
         ];
-        // ⭐⭐ EL DUEÑO ES QUIEN LA CREA (ADR 0049 · el dueño): `user:<handle>`,
+        // ⭐⭐ EL DUEÑO ES QUIEN LA CREA (0027 · el dueño es quien lo crea): `user:<handle>`,
         //   el que `ore-iam` le dio a la persona. Antes era `team:<organización>`,
         //   que no distinguía nada —todo era de todos— y no decía a quién
         //   preguntar. La base nace compilando y, si es estándar, con la copia
@@ -1996,7 +1996,7 @@ impl Servidor {
     }
 
     /// **Una standard database vacía** (0039): `ore package new`, con quien la
-    /// crea de dueño (ADR 0049 · el dueño).
+    /// crea de dueño (0027 · el dueño es quien lo crea).
     fn base_vacia(
         &self,
         raiz: &Path,

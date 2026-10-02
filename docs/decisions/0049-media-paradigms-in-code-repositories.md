@@ -321,7 +321,7 @@ conformidad** que cualquier superficie tiene que pasar. No se parchea el camino 
 | **B2 · servir** ✅ | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
 | **B3 · la puerta de lectura** ✅ | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
 | **B4 · la entrada** | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
-| **B4b · la colección escrita** | crear colecciones nuevas **desde la instancia**, en SQL (`create media collection …`) y en Python (`ore.crear_coleccion(…)`), y llenarlas: `put` con transacciones (`docs/media.md` §2), el `sha256` al paso, el tipo por los bytes, el linaje en el puntero | D4, D6 |
+| **B4b · la colección escrita** | crear colecciones nuevas **desde la instancia**, en SQL (`create media collection …`) y en Python (`ore.crear_coleccion(…)`), de quien las crea (0027), y llenarlas: `put` con transacciones (`docs/media.md` §2), el `sha256` al paso, el tipo por los bytes, el linaje en el puntero | D4, D6 |
 | **B5 · la derivación** | el registro por clave, `aplicar()`, `reintentar_errores`, la tabla anclada | D5 |
 | **B6 · el relevo** | la suite pasa en vivo; la base entra como pieza y `media`/`medias` pasan a ser azúcar sobre ella | — |
 

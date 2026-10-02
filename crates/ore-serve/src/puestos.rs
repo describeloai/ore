@@ -2891,7 +2891,7 @@ fn celda_de_sentencia(
         // (para decir si reemplazarla lo rompe). El contrato nuevo lo describe
         // DuckDB en el puesto, que es quien sabe ejecutarla. ⭐ Y el dueño NO va:
         // lo pone `PUT /documentos` —quien la crea, o el que ya tenía si se
-        // reemplaza— (ADR 0049 · el dueño).
+        // reemplaza— (0027 · el dueño es quien lo crea).
         S::CrearVista {
             destino,
             consulta,

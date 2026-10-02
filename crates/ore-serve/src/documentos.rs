@@ -302,7 +302,7 @@ fn exige_backed_by(spec: &Node) -> Option<String> {
         })
 }
 
-// ── el dueño (ADR 0049 · el dueño) ──────────────────────────────────────────
+// ── el dueño (0027 · el dueño es quien lo crea) ──────────────────────────────────────────
 
 /// Los kinds que llevan `spec.owner` en OOS, en la versión de este documento:
 /// View, MediaCollection, Dataset y TrainedModel siempre; Entity, Function,

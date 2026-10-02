@@ -143,7 +143,7 @@ pub enum ApiVersion {
     /// siempre (`OOS2009`)—, como ya lo decían el paquete, el schema, la vista,
     /// el dataset, la colección y el modelo entrenado. No da acceso y no se
     /// hereda; en una función de código no es parte de la firma. Lo decidió ORE
-    /// 0049 «el dueño» (2026-10-02): lo que se crea es de quien lo crea.
+    /// 0027 «el dueño es quien lo crea» (2026-10-02): lo que se crea es de quien lo crea.
     V1Alpha21,
 }
 

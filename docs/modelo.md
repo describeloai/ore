@@ -103,9 +103,15 @@ vigilan la omisión y la rebaja, no el exceso.
 
 ## 4. Quién responde
 
-`owner` es **quien responde** de un documento: exactamente uno, escrito como handle `team:` o
-`user:` para que case con `CODEOWNERS`. No es control de acceso —eso son los conductos y Cedar—:
-es responsabilidad, y `ore report` la usa para decir **qué gobierna qué y quién responde**.
+`owner` es **quien responde** de un documento: exactamente uno, escrito como handle `team:<h>` o
+`user:<h>` (`OOS2009`). No es control de acceso —eso son los conductos, Cedar y `ore-iam`—: es
+responsabilidad, y `ore report` la usa para decir **qué gobierna qué y quién responde**.
+
+**En la plataforma, quien responde es quien lo crea.** Todo lo que nace con `owner` lleva el
+`user:<handle>` de la persona que lo crea —el handle se lo da `ore-iam` a partir del nombre de
+usuario que eligió al registrarse—; no se hereda del paquete ni del schema, y editar no lo cambia:
+transferir es escribir otro (0027, «el dueño es quien lo crea»). Con la CLI, sin plataforma, nadie
+sabe quién crea: `owner` se pregunta, y sin respuesta es `cambiame`, que no compila.
 
 Un documento existe **aparte** cuando responde otra persona. Es el criterio de la casa, y está
 escrito en el motor: un `Ruleset` es un documento y no un bloque dentro de `Entity` porque *«quien
@@ -113,20 +119,25 @@ responde del cumplimiento tiene que poder restringir la ontología sin poder edi
 
 | | responde de |
 |---|---|
-| `Package` | el paquete |
-| `View` | qué se expone y con qué frescura |
+| `Package` | el paquete (obligatorio) |
+| `Schema` | el schema |
+| `View`, `Dataset`, `MediaCollection`, `TrainedModel` | qué se expone o se tiene, y con qué frescura |
+| `Entity`, `Function`, `ObjectTable`, `Model` (v1alpha21) | lo que la ontología afirma, el código que corre, el conjunto de objetos de un origen, el modelo que se sirve |
 | `ConduitPolicy` | **el techo**: hasta dónde admite cada conducto |
 | `Ruleset` | la exigencia regulatoria, y es independiente de a quién apunta |
 | `OntologyConfig` | **el suelo**: la clasificación mínima de cada fuente |
 | `Lattice` | **la escala**, y desde qué nivel se exige cobertura |
 
-Los dos últimos llegaron los últimos, y por la misma razón que el primero: *un techo del que nadie
+`ConduitPolicy`, `OntologyConfig` y `Lattice` llegaron por la misma razón: *un techo del que nadie
 responde es un hueco* — y el suelo es el lado silencioso, porque bajarlo desclasifica en cascada
 sin dar ningún síntoma.
 
-**`Entity` no tiene `owner`, ni lo admite**, y no es un olvido: pasarse de etiqueta ya arrastra un
-responsable —`requiresGovernance` obliga a que una regla cubra la propiedad, y toda regla declara
-dueño (`OOS8001`)— y quedarse corto lo acota el suelo, que ahora sí responde.
+**La entidad tiene dueño desde v1alpha21**, y no reemplaza al de la clasificación. Hasta entonces
+`Entity` no lo admitía: pasarse de etiqueta ya arrastra un responsable —`requiresGovernance` obliga
+a que una regla cubra la propiedad, y toda regla declara dueño (`OOS8001`)— y quedarse corto lo
+acota el suelo. Eso sigue siendo así. Lo que faltaba es otra pregunta: **quién responde de que la
+entidad exista y diga lo que dice** —quién la creó, a quién se pregunta antes de cambiarla—, y esa
+la contesta su `owner`. El cumplimiento sigue en el `Ruleset`, aparte, con su dueño propio.
 
 ---
 

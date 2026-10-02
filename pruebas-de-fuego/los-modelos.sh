@@ -169,13 +169,14 @@ cuerpo | grep -q '"model":"deepseek-ai/DeepSeek-V2-Lite"' || falla "4 · no resu
 cuerpo | grep -q '"url":"http://127.0.0.1:8000/v1"' || falla "4 · no da la puerta: $(cuerpo)"
 [ -f "$REPO/packages/ventas/modelos/v2-lite.yaml" ] || falla "4 · el fichero no esta en el arbol"
 grep -q "kind: Model" "$REPO/packages/ventas/modelos/v2-lite.yaml" || falla "4 · el fichero no es un Model"
-grep -q "apiVersion: oos.dev/v1alpha15" "$REPO/packages/ventas/modelos/v2-lite.yaml" || falla "4 · el fichero no declara v1alpha15"
+grep -q "apiVersion: oos.dev/v1alpha21" "$REPO/packages/ventas/modelos/v2-lite.yaml" || falla "4 · el fichero no declara v1alpha21"
+grep -qE "owner: \"?user:ana\"?" "$REPO/packages/ventas/modelos/v2-lite.yaml" || falla "4 · el modelo no es de quien lo da de alta: $(cat "$REPO/packages/ventas/modelos/v2-lite.yaml")"
 grep -q "namespace: ventas" "$REPO/packages/ventas/modelos/v2-lite.yaml" || falla "4 · el fichero no dice su paquete"
 cuerpo | grep -q '"ref":"ventas.v2-lite"' || falla "4 · el alta no da la referencia: $(cuerpo)"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "4 · el arbol no compila con el modelo escrito"
 curl -s "http://127.0.0.1:$PUERTO_GW/admin/tenants" | grep -q "deepseek-ai/DeepSeek-V2-Lite" \
   || falla "4 · la celda no quedo suscrita en el gateway: $(curl -s "http://127.0.0.1:$PUERTO_GW/admin/tenants")"
-dice "4 · 201 · packages/ventas/modelos/v2-lite.yaml (v1alpha15, ref ventas.v2-lite) · victor suscrita a deepseek-ai/DeepSeek-V2-Lite · el arbol compila"
+dice "4 · 201 · packages/ventas/modelos/v2-lite.yaml (v1alpha21, de user:ana, ref ventas.v2-lite) · victor suscrita a deepseek-ai/DeepSeek-V2-Lite · el arbol compila"
 
 curl -sf -H "$SUJ" "$BASE/modelos" > "$TMP/lista.json" || falla "4 · GET /modelos no contesta"
 grep -q '"name":"v2-lite"' "$TMP/lista.json" || falla "4 · GET /modelos no lo lista: $(cat "$TMP/lista.json")"

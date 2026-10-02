@@ -815,7 +815,9 @@ t = open(sys.argv[1], encoding="utf-8").read()
 assert "apiVersion: oos.dev/v1alpha14" in t and "dialect: duckdb" in t, t
 assert "  sql: |\n    SELECT id, nombre\n    FROM hr.demo_uc.clientes\n" in t, t
 assert 'id: { type: "Integer" }' in t and 'nombre: { type: "String", description: "el nombre de pila" }' in t, t
-assert 'description: "los clientes, por nombre"' in t and "owner: team:hr" in t, t
+assert 'description: "los clientes, por nombre"' in t, t
+# 0027 · el dueño es quien la crea (ana abrió el puesto), no el de su base.
+assert ("owner: user:ana" in t or 'owner: "user:ana"' in t) and "team:hr" not in t, t
 EOF
   "$ORE" validate "$A" >/dev/null 2>&1 || falla "10e · el árbol con la vista no compila: $("$ORE" validate "$A" 2>&1 | tail -5)"
   # otra vez: `or replace` la reemplaza; `if not exists`, la deja
@@ -841,7 +843,7 @@ EOF
   fichas "[x['salida']['filas'] for x in f]==[[['view hr.demo_uc.encima','dropped']],[['view hr.demo_uc.porNombre','dropped']],[['view hr.demo_uc.porNombre','not found']]]" || falla "10e · drop view: $(cat "$TMP/fichas.json")"
   [ ! -e "$V10E" ] || falla "10e · drop view no la quitó del árbol"
   pide GET /puestos/$P "$ANA" >/dev/null; tiene "d['pendientes']==0" || falla "10e · quedan celdas pendientes: $(cuerpo)"
-  dice "10e · CREATE VIEW: la vista nace de SQL (v1alpha14, la consulta tal cual, el contrato descrito por DuckDB con los comentarios de sus columnas, el dueño de su base) y se lee en la sentencia siguiente · compila · or replace → replaced, if not exists → already exists · añadir una columna se dice, quitarla rompe el contrato salvo with schema evolution · sin alias y el nombre de un dataset (OOS2035): error · DROP VIEW: no si otra la lee; sí, y if exists → not found"
+  dice "10e · CREATE VIEW: la vista nace de SQL (v1alpha14, la consulta tal cual, el contrato descrito por DuckDB con los comentarios de sus columnas, de quien la crea) y se lee en la sentencia siguiente · compila · or replace → replaced, if not exists → already exists · añadir una columna se dice, quitarla rompe el contrato salvo with schema evolution · sin alias y el nombre de un dataset (OOS2035): error · DROP VIEW: no si otra la lee; sí, y if exists → not found"
 fi
 
 

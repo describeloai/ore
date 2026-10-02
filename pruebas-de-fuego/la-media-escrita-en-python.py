@@ -44,7 +44,7 @@ def e1():
     y = DOCUMENTOS[("MediaCollection", "legal", "archivo", "paginas")]
     assert "apiVersion: oos.dev/v1alpha19" in y and "from:" not in y, y
     assert "formats: [png, webp]" in y and "gdpr.sensitivity: high" in y, y
-    # ⭐ ADR 0049 · el dueño: el SDK no lo inventa; lo pone el servidor, y es quien crea.
+    # ⭐ 0027 · el dueño es quien lo crea: el SDK no lo inventa; lo pone el servidor, y es quien crea.
     assert y.count("owner:") == 1 and "owner: %s" % QUIEN_CREA in y, y
     r = ore.crear_coleccion("s3_standard.nueva_carpeta.copia", media="document", formatos=["pdf"])
     y = DOCUMENTOS[("MediaCollection", "s3_standard", "nueva_carpeta", "copia")]

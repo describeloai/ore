@@ -502,11 +502,11 @@ un repositorio dentro (manifiesto + semilla) sigue saliendo **0**. Lo único que
 sí importa es el dueño: con `owner: cambiame` —lo que escribe la inducción
 cuando no lo sabe— son **`OOS2009`, 1 error**, y el commit no entraría.
 
-Por eso el dueño **no se inventa**, en este orden: `team:<organización>` —quien
-RESPONDE, el mismo `dueno_del_arbol()` del alta de una fuente— y, si este
-servidor no sabe de quién es el árbol, `user:<persona>`. Si ninguno de los dos
+Por eso el dueño **no se inventa**: es **quien crea el proyecto**, `user:<handle>`
+(0027, «el dueño es quien lo crea»: el handle lo da `ore-iam`). Si quien lo crea no
 da un handle, **el proyecto se crea igual y sin sitio**, y la ficha lo dice
-(`sitio: null`): más vale un proyecto sin suelo que un commit que no entra.
+(`sitio: null`): más vale un proyecto sin suelo que un commit que no entra. Si
+`ore-iam` no contesta, 503: no se sabe de quién sería.
 
 Y lo demás que decide ⑦.1:
 

@@ -91,6 +91,9 @@ filtro (patrón de claves) y formato esperado.
 - **Lo que lo lee:**
   - una base foránea lo lee como vistas;
   - una base standard lo copia como `Dataset` (§3) o como colección (§2).
+- **Su dueño** (v1alpha21): `spec.owner`, opcional, quien dio de alta el origen (0027, «el dueño es
+  quien lo crea»). Lo escribe su único escritor, `ore source induce`, que **todavía no lo pone**: un
+  `ObjectTable` inducido hoy sale sin `owner` y responde por él el paquete de la fuente.
 
 ### 2 · La colección de ficheros, **tipada desde el primer día**
 
@@ -319,7 +322,7 @@ F8 (procesar) queda fuera de este plan.
   la colección, en una base (`<base>/<schema>/collections/`). La **colección virtual** no es un
   kind aparte: es la `MediaCollection` con `virtual: true`. Lo que la separa de un `ObjectTable`
   es su historia —cada transacción fija qué ítems tenía (clave, huella, versión)— y su gobierno
-  (dueño, tipo, etiquetas que suman); lo que comparte con él son los bytes, que siguen en el
+  (tipo, etiquetas que suman, retención); lo que comparte con él son los bytes, que siguen en el
   origen. Su límite: la retención de una virtual vale lo que la del origen (sin versionado, un
   borrado deja el ítem roto; con él, apunta a su `versionId`). Lo mide E7.
 - **La clase de la base decide la colección** (al medir E5). Una base **estándar** copia todo lo

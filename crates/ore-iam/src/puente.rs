@@ -178,7 +178,7 @@ impl Servidor {
 
     // ── quien ──────────────────────────────────────────────────────────────
 
-    /// **El handle de quien crea** (ADR 0049 · el dueño, la 048): lo que una celda
+    /// **El handle de quien crea** (0027 · el dueño es quien lo crea; la 048): lo que una celda
     /// escribe en el `owner` de lo que alguien crea, `user:<handle>`.
     ///
     /// `subject.id` es el `sub` de la persona. Si `Ore-Sujeto` es el token de esa

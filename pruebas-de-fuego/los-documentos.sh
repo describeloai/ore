@@ -22,7 +22,7 @@
 #  11  GET /documentos/View · Table   enteras; un kind fuera de la tabla, 404 con
 #                                     la lista de los servidos
 #  12  PUT View                       201 y la vista con su plan (`ore view`);
-#                                     sin owner 422;
+#                                     sin owner, de quien la crea;
 #                                     columna que la tabla no tiene, OOS2018
 #  13  PUT con `yaml` tal cual        se guarda con sus comentarios; el nombre lo
 #                                     pone la ruta
@@ -340,15 +340,21 @@ PLAN_PUT=$(cd "$TMP/put" && "$ORE" view . 2>/dev/null | sed -n "/^hr.solo_ids$/,
 grep -q "^apiVersion" "$TMP/put/packages/hr/views/solo_ids.yaml" || falla "12 · la vista no esta en views/"
 rm -rf "$TMP/put"
 [ -n "$PLAN_PUT" ] || falla "12 · ore view no dio plan para la vista del PUT"
-# sin owner: lo exige el verbo, no el compilador
+# sin owner: es de quien la crea (0027); y reescribirla sin owner le conserva el suyo
 SIN=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); del d['spec']['owner']; print(json.dumps(d))" "$VISTA")
-[ "$(pide PUT /documentos/View/hr/otra "$SIN")" = "422" ] || falla "12 · una vista sin owner entro · $(cat "$TMP/r.json")"
-grep -q "owner" "$TMP/r.json" || falla "12 · el 422 no nombra owner"
+[ "$(pide PUT /documentos/View/hr/otra "$SIN")" = "201" ] || falla "12 · una vista sin owner no entro · $(cat "$TMP/r.json")"
+git --git-dir="$FORJA" show main:packages/hr/views/otra.yaml | grep -qE "owner: \"?user:ana\"?" \
+  || falla "12 · la vista sin owner no es de quien la crea: $(git --git-dir="$FORJA" show main:packages/hr/views/otra.yaml)"
+[ "$(pide PUT /documentos/View/hr/solo_ids "$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); del d['spec']['owner']; print(json.dumps(d))" "$VISTA")")" = "200" ] \
+  || falla "12 · reescribir sin owner fallo · $(cat "$TMP/r.json")"
+git --git-dir="$FORJA" show main:packages/hr/views/solo_ids.yaml | grep -qE "owner: \"?team:people-data\"?" \
+  || falla "12 · ⛔ REESCRIBIR LE CAMBIO EL DUEÑO: $(git --git-dir="$FORJA" show main:packages/hr/views/solo_ids.yaml)"
+[ "$(pide DELETE /documentos/View/hr/otra)" = "200" ] || falla "12 · retirar la vista sin owner no dio 200 · $(cat "$TMP/r.json")"
 # un field que la tabla no tiene: lo dice el compilador, con el nombre
 MAL='{"spec":{"owner":"team:people-data","from":{"table":"workday_worker"},"fields":{"id":"No_Existe"}}}'
 [ "$(pide PUT /documentos/View/hr/rota2 "$MAL")" = "422" ] || falla "12 · una vista rota entro · $(cat "$TMP/r.json")"
 cumple "d['diagnosticos'][0]['codigo']=='OOS2018' and 'No_Existe' in d['diagnosticos'][0]['mensaje']" "12 · OOS2018 con la columna"
-dice "12 · PUT View: 201, con plan ($PLAN_PUT), sin owner 422, columna que no esta OOS2018"
+dice "12 · PUT View: 201, con plan ($PLAN_PUT), sin owner es de quien la crea y reescribirla le conserva el suyo, columna que no esta OOS2018"
 
 # ── 13 · PUT con `yaml` tal cual: los comentarios sobreviven ────────────────
 YAML_DOC=$("$PY" -c 'import json; print(json.dumps({"yaml": "apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata:\n  name: solo_ids\n  namespace: hr\nspec:\n  owner: team:people-data\n  # este comentario es de quien escribe, y se queda\n  from: { table: workday_worker }\n  fields:\n    id: \"Worker_Reference.ID\"\n"}))')

@@ -67,7 +67,7 @@ que ya existe. En nuestro vocabulario, no en el de Databricks:
    - `create schema` → **`createNamespace` de `/v1`** (nuevo: `POST /v1/{base}/namespaces`, el
      que llamarán Spark y DuckDB) → `ore package schema new`; 409 si ya está.
    - `create [standard] database b` → el alta `POST /paquetes` **sin origen** (nuevo): `ore
-     package new`, con el dueño de las bases. Con origen, el alta de siempre, e `include (s.*)`
+     package new`, con quien la crea de dueño (0027, «el dueño es quien lo crea»). Con origen, el alta de siempre, e `include (s.*)`
      se expande contra el catálogo del origen. Desde un puesto entra por la puerta del agente.
    - Una base sin `discover.*` (sin origen) es **standard** en el índice y en `/paquetes`: lo que
      tenga sólo vive en el lago. Antes, sin nada que lo dijera, era `foreign`.

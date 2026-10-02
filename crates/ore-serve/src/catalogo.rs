@@ -679,7 +679,7 @@ impl Servidor {
                             &format!("crear `{nombre}`"),
                             move |raiz| {
                                 let defecto = self.retencion_defecto();
-                                // ⭐ El dataset es de quien lo crea (ADR 0049 · el dueño).
+                                // ⭐ El dataset es de quien lo crea (0027 · el dueño es quien lo crea).
                                 let dueno = match self.dueno_de_quien_crea(sujeto) {
                                     Ok(d) => d,
                                     Err(r) => return r,

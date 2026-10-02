@@ -1,6 +1,6 @@
 //! **`ore-acceso`**: el puente de un módulo del plano de datos a `ore-iam` (0047).
 //!
-//! Dos verbos, y nada más:
+//! Dos verbos para decidir y contar, y uno para saber de quién es lo que se crea:
 //!
 //! - [`Acceso::puede`] pregunta si alguien puede hacer algo (AuthZEN 1.0,
 //!   `POST /access/v1/evaluation`). Decide `ore-iam`; esto sólo pregunta, guarda
@@ -14,7 +14,7 @@
 //! una protección, entregar un secreto—: se registra ANTES de actuar, y si no se
 //! puede registrar, no se actúa.
 //!
-//! Y [`Acceso::quien`] (0049 · el dueño, la 048 de `ore-iam`): el handle de quien
+//! Y [`Acceso::quien`] (0027 · el dueño es quien lo crea; la 048 de `ore-iam`): el handle de quien
 //! crea, para escribir `owner: user:<handle>` en lo que nace. Un handle no cambia,
 //! así que se guarda sin plazo.
 //!

@@ -17,9 +17,9 @@
 #                                       una vez, exportados; la base no escribe ninguno)
 #                                       (0033) — la copia no espera a ninguna clave;
 #                                       orders (con clave en el origen) en `upsert`, customers
-#                                       como el origen la dijo · EL DUEÑO ES LA ORGANIZACION:
-#                                       `owner: team:demo` (ore-serve --organizacion → discover
-#                                       --owner), la cola VACIA, conduits.yaml nace, el Job con las
+#                                       como el origen la dijo · EL DUEÑO ES QUIEN LA CREA:
+#                                       `owner: user:ana` (ore-serve → discover --owner; 0027),
+#                                       la cola VACIA, conduits.yaml nace, el Job con las
 #                                       dos ENCOLADO YA, el arbol compila · discover.answers.json
 #                                       guarda `dueno` · GET /paquetes: standard, 2/0
 #   3  contestar `dueno` otra vez       200 · transferir la propiedad: `review` re-induce con
@@ -259,9 +259,9 @@ dataset tienda orders | grep -q 'from: { table: pg.olist.orders }' || falla "2 �
 grep -q 'exports: \[pg.olist.customers, pg.olist.orders\]' "$REPO/packages/pg/package.yaml" || falla "2 · la fuente no exporta sus punteros: $(cat "$REPO/packages/pg/package.yaml")"
 [ ! -d "$REPO/packages/tienda/olist/entities" ] || [ -z "$(ls -A "$REPO/packages/tienda/olist/entities" 2>/dev/null)" ] || falla "2 · el catalogo escribio entidades: $(ls "$REPO/packages/tienda/olist/entities")"
 grep -q '"entities": \[\]' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no dice que ninguna esta modelada: $(cat "$REPO/packages/tienda/discover.scope.json")"
-cuerpo | grep -q '"owner":"team:demo"' || falla "2 · la respuesta no dice el dueño: $(cuerpo)"
-grep -q 'owner: "team:demo"' "$REPO/packages/tienda/package.yaml" || falla "2 · el paquete no nacio con la organizacion como dueño: $(cat "$REPO/packages/tienda/package.yaml")"
-grep -q '"dueno/tienda": "team:demo"' "$REPO/packages/tienda/discover.answers.json" || falla "2 · discover no guardo el dueño con las respuestas: $(cat "$REPO/packages/tienda/discover.answers.json" 2>&1)"
+cuerpo | grep -q '"owner":"user:ana"' || falla "2 · la respuesta no dice el dueño: $(cuerpo)"
+grep -q 'owner: "user:ana"' "$REPO/packages/tienda/package.yaml" || falla "2 · el paquete no nacio con quien lo crea como dueño: $(cat "$REPO/packages/tienda/package.yaml")"
+grep -q '"dueno/tienda": "user:ana"' "$REPO/packages/tienda/discover.answers.json" || falla "2 · discover no guardo el dueño con las respuestas: $(cat "$REPO/packages/tienda/discover.answers.json" 2>&1)"
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "2 · con dueño de nacimiento, no encolo el Job: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no lleva la regla: $(cat "$REPO/packages/tienda/discover.scope.json")"
 dataset tienda orders | grep -q 'kind: Dataset' || falla "2 · orders (con clave) nacio sin dataset: $(dataset tienda orders)"
@@ -273,7 +273,7 @@ tabla tienda customers | grep -q "mode: none" || falla "2 · customers sin clave
 grep -q '"clave/' "$REPO/packages/tienda/discover.pending.json" && falla "2 · el catalogo pregunta por la clave: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 [ -z "$(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")" ] || falla "2 · la cola del catalogo no esta vacia: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 cuerpo | grep -q '"quedan":0' || falla "2 · la respuesta dice que quedan decisiones: $(cuerpo)"
-grep -q "owner: team:demo" "$REPO/conduits.yaml" 2>/dev/null || falla "2 · conduits.yaml no nacio con la organizacion: $(cat "$REPO/conduits.yaml" 2>&1)"
+grep -q "owner: user:ana" "$REPO/conduits.yaml" 2>/dev/null || falla "2 · conduits.yaml no nacio con quien lo creo: $(cat "$REPO/conduits.yaml" 2>&1)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "2 · el Job no esta en la cola con las dos: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "2 · el arbol no compila con la base recien nacida: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
 paquete tienda | grep -q '"type": "standard"' || falla "2 · GET /paquetes no dice standard: $(paquete tienda)"
@@ -284,7 +284,7 @@ esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entida
 esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae los punteros de la fuente que la base lee: $(esquema tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"orders",.*"key":\["order_id"\]' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"customers",.*"key":\[\]' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
-dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es la organizacion (team:demo): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
+dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es quien la crea (user:ana): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
 
 # ── 2b · Run mientras la copia esta en marcha: el 409 dice que ESTA EN MARCHA ─
 # Medido el 2026-09-18: 435 s de media por alta con la consola diciendo «not
@@ -317,12 +317,12 @@ en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.olist.customers
 NOMBRE2=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
 [ -n "$NOMBRE2" ] || falla "3 · el Job no se llama copiar-<resumen>"
 grep -q "materialization.payload" "$REPO/conduits.yaml" || falla "3 · conduits.yaml desaparecio"
-# ⚠️ El conducto nacio con la organizacion y NO sigue al paquete al transferir:
-#    es el dueño DEL CONDUCTO (la politica del inquilino), no del paquete. Se
-#    fija aqui para que un cambio lo diga.
-grep -q "owner: team:demo" "$REPO/conduits.yaml" || falla "3 · conduits.yaml cambio de dueño al transferir el paquete: $(cat "$REPO/conduits.yaml")"
+# ⚠️ El conducto nacio con quien lo creo (con la primera base estandar) y NO sigue
+#    al paquete al transferir: es el dueño DEL CONDUCTO (la politica del inquilino),
+#    no del paquete. Se fija aqui para que un cambio lo diga.
+grep -q "owner: user:ana" "$REPO/conduits.yaml" || falla "3 · conduits.yaml cambio de dueño al transferir el paquete: $(cat "$REPO/conduits.yaml")"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "3 · el arbol no compila tras transferir: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
-dice "3 · propiedad transferida a team:data: las dos copias se conservan · el Job $NOMBRE2 sigue con las dos · el conducto sigue siendo de la organizacion · compila"
+dice "3 · propiedad transferida a team:data: las dos copias se conservan · el Job $NOMBRE2 sigue con las dos · el conducto sigue siendo de quien lo creo · compila"
 
 # ── 3b · modelar una tabla: la entidad, su cola, y la copia que ahora espera ──
 modelar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/paquetes/$1/tablas/$2/modelar"; }

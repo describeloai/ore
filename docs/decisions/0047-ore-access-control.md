@@ -30,9 +30,9 @@ Junto a [0048](0048-ore-idp.md), las tres piezas de la identidad de ORE:
 
 | papel (XACML / NIST / AuthZEN) | en ORE |
 |---|---|
-| **PEP**, lo que intercepta y pregunta | el crate **`ore-acceso`**, con dos verbos: `puede` y `hizo` |
+| **PEP**, lo que intercepta y pregunta | el crate **`ore-acceso`**: `puede` y `hizo`, y `quien` (el handle de quien crea) |
 | **PDP**, lo que decide | `ore-iam`, en `/access/v1` (AuthZEN 1.0) |
-| **PIP**, de donde salen los datos | el censo de `ore-iam` (`iam.pertenencia`, roles, concesiones); los dueños, en el árbol |
+| **PIP**, de donde salen los datos | el censo de `ore-iam` (`iam.pertenencia`, roles, concesiones, el handle de cada persona); los dueños, en el árbol (`owner`, 0027) |
 | **PAP**, donde se escribe la política | las migraciones de `iam` (roles y potestades); `.arbol/` para lo que es del árbol (0044 B.1) |
 | **el registro** | `iam.huella`: sólo inserción (la `039` lo impone a todos, al superusuario también), con `organizacion` y `celda` |
 
@@ -101,6 +101,33 @@ POST /access/v1/evaluation
 en **2 s**, 5xx o 401 de la celda → **503** `{error: "no hay quien decida"}`; 401 del sujeto →
 **401**.
 
+### `quien`: el handle de quien crea
+
+```
+POST /access/v1/quien
+{ "subject": { "id": "<sub>" } }
+
+200 { "subject": { "id": "<sub>" }, "handle": "ana-garcia", "owner": "user:ana-garcia" }
+```
+
+Lo que una celda escribe en el `owner` de lo que alguien crea (0027, «el dueño es quien lo crea»).
+Cada persona tiene **un handle**, en `iam.persona.handle` (la 048): único entre todas las
+personas, con la forma de `OOS2009`, y **asignado una vez** —la primera vez que `ore-iam` ve su
+token— a partir del nombre de usuario que eligió al registrarse (`preferred_username`, 0048; si no
+lo hay, su correo; empate con `-2`, `-3`…). No cambia aunque cambie el usuario o el correo: es lo
+que queda escrito en el árbol.
+
+- `Ore-Sujeto` es opcional. Si es el token de esa misma persona, el handle sale de su usuario si
+  aún no tenía; si no —desde un puesto llama el agente y la persona es quien lo abrió—, se lee el
+  que tiene, y si aún no tiene, sale de su correo.
+- **404** si `subject.id` no es una persona de la organización de la celda: un agente no es dueño
+  de nada, y una celda no pregunta por gente de otra.
+- No deja huella: no es un acto, es el sujeto quedando dicho.
+
+**En `ore-serve`:** `Servidor::dueno_de_quien_crea` → `user:<handle>`; 404 → **403**, sin
+respuesta → **503** (lo que se iba a crear no nace con un dueño inventado). `ore-acceso` lo guarda
+sin plazo: un handle no cambia.
+
 ### `hizo`: la huella, con la organización dentro
 
 ```
@@ -152,7 +179,7 @@ escribe sin declararse hace fallar CI.
     en memoria, 240 s; después el evento va a disco si tiene decisión, o a `muertos/` sin
     credencial.
 - **`ore-iam`** sirve:
-  - `/access/v1/evaluation`, `/evaluations` y `/eventos`;
+  - `/access/v1/evaluation`, `/evaluations`, `/eventos` y `/quien`;
   - `GET /organizaciones/{org}/actividad`: toda la actividad con `actividad:leer-toda`, y si no
     sólo la propia, sin el sondeo del sistema, con cursor y filtros por clase y celda.
 
@@ -165,7 +192,9 @@ escribe sin declararse hace fallar CI.
   huella (`puesto:abrir`, `rama:crear`, `repositorio:crear`, `arbol:escribir`, `funcion:invocar`…).
 
 **Pruebas de fuego:**
-- `los-verbos.sh` 14–17: el puente, las clases, la idempotencia, los reintentos y los agentes;
+- `los-verbos.sh` 14–18: el puente, las clases, la idempotencia, los reintentos, los agentes y
+  el handle (asignado una vez, desempate, desde el agente de un puesto, 404 a agentes y a gente de
+  fuera, y la base que niega la forma y el duplicado);
 - `la-propuesta.sh` 10: P2, la actividad y la pertenencia, que da 403 a una cuenta de fuera y
   aplica la gracia sin `ore-iam`;
 - `el-cofre.sh` 12–13: un custodio por organización.

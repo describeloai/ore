@@ -702,25 +702,45 @@ raíz del árbol no lo re-induciría nadie—: la pasada de decisiones lo trae. 
 customers y conserva la de orders** —lo que el verbo a mano perdía— y el árbol compila. El verbo
 por vista se retira. `GET /copias` sigue: es lo que el Job va a copiar, con el informe.
 
-**El dueño es la organización (18 de septiembre).** En `victor`, una base recién creada desde la
-consola no corría (`Run` → OOS2009: `owner: cambiame`) y su copia no se encolaba. La consola lo
-enseñaba y no lo dejaba resolver, y las dos salidas que se probaron —un campo *Owner* en el modal
-y un «Set owner & run» en el panel— eran la misma cosa: pedirle a la persona **que se invente una
-cadena**. La raíz es una desconexión entre dos mundos: `owner` en OOS es «quién responde» como
-**handle de forja** (`team:x`, se resuelve contra CODEOWNERS, y de él heredan las políticas), y la
-CLI no lo deriva porque no sabe quién la ejecuta; en la plataforma no hay CODEOWNERS, ni equipos,
-ni handles: identidad en Keycloak, pertenencia en `ore-iam`, y **el inquilino es el repositorio
-de la organización** (0022) que nadie edita a mano. La respuesta, en la plataforma, es un hecho y
-no una decisión: **el árbol es de la organización**, y `ore-serve` ya corre con `--organizacion`.
-Así que el alta contesta `dueno` con `team:<organización>` —`discover --owner`, que entra por
-`Decisiones` y se guarda en `discover.answers.json` para que `review` no lo devuelva a
-`cambiame`— y la base nace compilando, con el conducto y la copia encolada. Quién **pulsó** ya va
-en el commit (`sub` + `act`); quién **responde** es la organización; nada se inventa. La doctrina
-de la CLI no cambia (`owner` se pregunta, no se deriva: lo contesta quien llama, que aquí sí
-sabe). Transferir la propiedad a un equipo, cuando IAM los tenga, es contestar `dueno` otra vez
-(`la-copia-se-decide` 3), y el conducto **no** sigue al paquete: es la política del inquilino, no
-del paquete. Si el nombre de la organización no puede ser un handle, se vuelve a lo de antes
-(`cambiame` y la decisión en la cola), y la respuesta del alta lo dice en `owner`.
+**El dueño es quien lo crea (2 de octubre).** `owner` en OOS es **quién responde** de un
+documento: un handle, `team:<h>` o `user:<h>` (`OOS2009`), que no concede ni niega acceso (eso es
+del gobierno del flujo y de `ore-iam`). La CLI no lo deriva —no sabe quién la ejecuta: lo pregunta,
+y sin respuesta escribe `cambiame`—, pero la plataforma sí lo sabe: **cada petición llega con la
+identidad de una persona**, y el plano de control la conoce. La regla, una y en un sitio
+(`Servidor::dueno_de_quien_crea`, `ore-serve/src/acceso.rs`):
+
+> **Todo lo que nace con `owner` es de quien lo crea: `user:<handle>` de esa persona.**
+
+- **El handle lo da el plano de control.** `ore-iam` asigna a cada persona el suyo **una vez**, la
+  primera vez que ve su token, a partir del nombre de usuario que eligió al registrarse
+  (`preferred_username`; si no lo hay, su correo; regla `ore_core::pertenencia::handle_de`, empate
+  con `-2`, `-3`…), y lo guarda en `iam.persona.handle` (la 048: único, con la forma de `OOS2009`).
+  **No cambia**: es lo que queda escrito en el árbol. Las celdas lo preguntan por el puente
+  (`POST /access/v1/quien`, 0047); sin `ore-iam` —un banco— se deriva del sujeto con la misma regla.
+- **Desde un puesto, la persona**, no el agente: lo que una celda crea es de quien abrió el puesto
+  (el `sub`; el `act` va en el commit). Un agente no es dueño de nada (403).
+- **No se hereda del contenedor.** Una colección que Ana crea en la base de Bea es de Ana; un
+  schema nuevo no toma el `owner` de su base; una vista de SQL no toma el de su schema.
+- **Editar no es transferir.** Reescribir un documento sin decir `owner` conserva el que tenía
+  (`PUT /documentos`, `ore datasets`, y la función que se regenera de su `@function`). Un `owner`
+  explícito se respeta: darle algo a otro es escribirlo.
+- **Sin respuesta no se inventa.** Si `ore-iam` no contesta, 503: lo que se iba a crear no nace con
+  un dueño que no es de nadie.
+
+Dónde se aplica: el alta de una base (vacía o inducida, `--owner`), su schema, el origen (su
+paquete lo crea el Job de catálogo, y el dueño viaja en el Job como `DUENO`), el sitio de un
+proyecto, `PUT /documentos` (View, MediaCollection, Dataset, TrainedModel; y Entity, Function,
+ObjectTable y Model desde OOS v1alpha21, que les dio `owner`), el `create view` del puesto, el
+dataset que nace de `/v1` o de `/datasets`, el `Model` de `/modelos`, y la función que nace al
+guardar código o al sembrar un repositorio. El SDK y la CLI no inventan uno: sin `dueno`, el
+documento va sin `owner` y lo pone el servidor. Lo que ya estaba en el árbol conserva el suyo.
+
+Lo que esto sustituye, y por qué: hasta el 2 de octubre el alta contestaba `dueno` con
+`team:<organización>` («el árbol es de la organización»), el SQL del puesto heredaba el del schema o
+la base (0040 paso 5) y el SDK escribía `team:<base>`. Ninguno decía de quién era nada ni a quién
+preguntar: en una organización, todo era de todos. Quién pulsó ya iba en el commit; ahora quién
+responde también es alguien. La decisión `dueno` sigue existiendo para lo que induce la CLI sin
+plataforma (`cambiame` hasta que se conteste), y transferir una base es contestarla otra vez.
 
 **El catálogo de la conexión (18 de septiembre, medido).** *«¿Al crear el source se crean tablas,
 vistas o entidades, o sólo la conexión?»*. Las dos cosas, y la segunda era la inducción del 30 de
@@ -736,8 +756,8 @@ corre en cada Save, cada Run y cada alta— **pasa de 3,06 s a 0,07 s sin ellos*
 conexión, el modal de nueva database), que trae lo mismo que el catálogo (objeto, columnas,
 `sourceType`, claves). Decisión: **tres actos, tres cosas** — *conectar* (`ore source add`: la
 conexión en `ontology.config.yaml`, la credencial en el cofre), *catalogar* (el Job deja
-`packages/<fuente>/package.yaml` con `owner: team:<organización>` y `discover.catalog.json`, y
-**nada gobernado**: compila desde que nace), *modelar* (al crear una database nacen Tables y
+`packages/<fuente>/package.yaml` con el `owner` de quien dio de alta el origen —`DUENO`, ver «el
+dueño es quien lo crea»— y `discover.catalog.json`, y **nada gobernado**: compila desde que nace), *modelar* (al crear una database nacen Tables y
 Views; la Entity, tabla a tabla, al promoverla). `GET /esquema` lee el catálogo cuando no hay
 `tables/`, con la misma forma (`la-copia-se-decide` 0b). Los paquetes de fuente que ya existían
 en demo y victor se dejaron en manifiesto + catálogo con un commit por forja: eran prescindibles,
