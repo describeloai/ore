@@ -145,7 +145,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la entidad",
         exige: exige_backed_by,
         escribe: None,
-        version: None,
+        version: Some("oos.dev/v1alpha21"),
     },
     Kind {
         nombre: "View",
@@ -216,7 +216,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la función",
         exige: sin_exigencias,
         escribe: None,
-        version: None,
+        version: Some("oos.dev/v1alpha21"),
     },
     Kind {
         nombre: "Action",
@@ -250,7 +250,7 @@ pub(crate) const KINDS: &[Kind] = &[
         escribe: Some(
             "lo escribe su fuente, una vez: `ore source induce` desde su catálogo (0045). Una base lo nombra; no lo copia",
         ),
-        version: Some("oos.dev/v1alpha16"),
+        version: Some("oos.dev/v1alpha21"),
     },
     // v1alpha16 (0046). La colección de ficheros de un tipo, lo que la base
     // tiene: se escribe y se retira por aquí. El compilador exige su forma
@@ -304,14 +304,24 @@ fn exige_backed_by(spec: &Node) -> Option<String> {
 
 // ── el dueño (ADR 0049 · el dueño) ──────────────────────────────────────────
 
-/// Los kinds que llevan `spec.owner` en OOS y se escriben por aquí. Los demás
-/// (una Table es un hecho; Function, Action, Model, ObjectTable no lo tienen en
-/// la especificación) no se tocan.
-fn lleva_dueno(k: &Kind) -> bool {
-    matches!(
-        k.nombre,
-        "View" | "MediaCollection" | "Dataset" | "TrainedModel"
-    )
+/// Los kinds que llevan `spec.owner` en OOS, en la versión de este documento:
+/// View, MediaCollection, Dataset y TrainedModel siempre; Entity, Function,
+/// ObjectTable y Model desde v1alpha21 (`01-el-dueno`) —en una anterior la clave
+/// sería `OOS1005`, y el documento dice qué gramática habla—. Los demás (una
+/// Table es un hecho; Action, Concept, Interface) no se tocan.
+fn lleva_dueno(k: &Kind, texto: &str) -> bool {
+    match k.nombre {
+        "View" | "MediaCollection" | "Dataset" | "TrainedModel" => true,
+        "Entity" | "Function" | "ObjectTable" | "Model" => parse::parse(texto)
+            .ok()
+            .and_then(|n| {
+                n.get("apiVersion")
+                    .and_then(|(_, v)| v.as_str())
+                    .and_then(ore_core::document::ApiVersion::parse)
+            })
+            .is_some_and(|v| v >= ore_core::document::ApiVersion::V1Alpha21),
+        _ => false,
+    }
 }
 
 /// El `spec.owner` de un documento, si lo dice y no está vacío.
@@ -1033,7 +1043,7 @@ impl Servidor {
         let existente =
             buscar(&lista, k, ns, schema, n).map(|d| (d.fichero.clone(), d.texto.clone()));
         let texto = match quien {
-            Some(s) if lleva_dueno(k) && owner_de(&texto).is_none() => {
+            Some(s) if lleva_dueno(k, &texto) && owner_de(&texto).is_none() => {
                 let owner = match existente.as_ref().and_then(|(_, t)| owner_de(t)) {
                     Some(o) => o,
                     None => match self.dueno_de_quien_crea(s) {
@@ -1790,12 +1800,39 @@ mod pruebas {
 
     #[test]
     fn solo_los_kinds_con_owner_en_oos() {
-        let con: Vec<_> = KINDS
-            .iter()
-            .filter(|k| lleva_dueno(k))
-            .map(|k| k.nombre)
-            .collect();
-        assert_eq!(con, ["View", "TrainedModel", "Dataset", "MediaCollection"]);
+        let en = |v: &str| format!("apiVersion: oos.dev/{v}\nspec: {{}}\n");
+        let con = |v: &str| -> Vec<_> {
+            KINDS
+                .iter()
+                .filter(|k| lleva_dueno(k, &en(v)))
+                .map(|k| k.nombre)
+                .collect()
+        };
+        assert_eq!(
+            con("v1alpha20"),
+            ["View", "TrainedModel", "Dataset", "MediaCollection"]
+        );
+        assert_eq!(
+            con("v1alpha21"),
+            [
+                "Entity",
+                "View",
+                "TrainedModel",
+                "Dataset",
+                "Function",
+                "Model",
+                "ObjectTable",
+                "MediaCollection"
+            ]
+        );
+        // Lo que nace por JSON sin `apiVersion`, en la versión que tiene dueño.
+        for k in ["Entity", "Function", "ObjectTable"] {
+            assert_eq!(
+                kind_o_404(k).ok().and_then(|k| k.version),
+                Some("oos.dev/v1alpha21"),
+                "{k}"
+            );
+        }
     }
 
     #[test]

@@ -238,6 +238,7 @@ impl Servidor {
         ruta: &str,
         texto: &str,
         si_commit: Option<&str>,
+        dueno: Option<&str>,
     ) -> Respuesta {
         let rel = match ruta_valida(ruta) {
             Ok(r) => r,
@@ -276,7 +277,7 @@ impl Servidor {
         if let Err(e) = std::fs::write(&p, texto) {
             return Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}"));
         }
-        let generados = generar_funciones(raiz, &[ruta]);
+        let generados = generar_funciones(raiz, &[ruta], dueno);
         // ── compilar antes de empujar: ¿empeora? ────────────────────────────
         if let Err(mut r) = self.empeora(raiz, &antes, &format!("`{ruta}`")) {
             deshacer(&generados);
@@ -356,7 +357,7 @@ impl Servidor {
         if let Err(e) = std::fs::remove_file(&p) {
             return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
         }
-        let generados = generar_funciones(raiz, &[ruta]);
+        let generados = generar_funciones(raiz, &[ruta], None);
         if let Err(mut r) = self.empeora(raiz, &antes, &format!("retirar `{ruta}`")) {
             deshacer(&generados);
             let _ = std::fs::write(&p, &texto);
@@ -408,7 +409,7 @@ impl Servidor {
         if let Err(e) = std::fs::remove_dir_all(dir) {
             return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
         }
-        let generados = generar_de(raiz, pys_de(raiz, &dentro));
+        let generados = generar_de(raiz, pys_de(raiz, &dentro), None);
         if let Err(mut r) = self.empeora(raiz, &antes, &format!("retirar `{ruta}/`")) {
             deshacer(&generados);
             for (f, bytes) in &dentro {
@@ -475,6 +476,7 @@ impl Servidor {
         raiz: &Path,
         cuerpo: &str,
         si_commit: Option<&str>,
+        dueno: Option<&str>,
     ) -> Respuesta {
         let n = match ore_core::parse::parse(cuerpo) {
             Ok(n) => n,
@@ -572,7 +574,7 @@ impl Servidor {
             }
         }
         // 0050 G2: el documento de cada `@function` de lo tocado, con lo demás.
-        let generados = generar_funciones(raiz, &tocadas);
+        let generados = generar_funciones(raiz, &tocadas, dueno);
         let rutas_generadas: Vec<String> = generados
             .iter()
             .map(|g| relativo(raiz, &g.ruta))
@@ -830,21 +832,32 @@ pub(crate) struct Generado {
 /// se lee al día con `main` (0044 C.2 ③) y no es de este commit. Se planea en
 /// proceso —el plan es una función pura de `ore-core`— para poder deshacerlo.
 /// Lo que no se deriva no se escribe: su `OOS2043` lo dice la puerta.
-pub(crate) fn generar_funciones(raiz: &Path, tocadas: &[&str]) -> Vec<Generado> {
+///
+/// `dueno`, el de quien guarda: el documento que NACE lleva su `owner` (v1alpha21
+/// `01` §4); el que ya estaba conserva el suyo.
+pub(crate) fn generar_funciones(
+    raiz: &Path,
+    tocadas: &[&str],
+    dueno: Option<&str>,
+) -> Vec<Generado> {
     let solo: std::collections::BTreeSet<PathBuf> = tocadas
         .iter()
         .filter(|r| r.ends_with(".py"))
         .map(|r| raiz.join(r.trim_matches('/')))
         .collect();
-    generar_de(raiz, solo)
+    generar_de(raiz, solo, dueno)
 }
 
-fn generar_de(raiz: &Path, solo: std::collections::BTreeSet<PathBuf>) -> Vec<Generado> {
+fn generar_de(
+    raiz: &Path,
+    solo: std::collections::BTreeSet<PathBuf>,
+    dueno: Option<&str>,
+) -> Vec<Generado> {
     if solo.is_empty() {
         return Vec::new();
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let plan = ore_core::generar::plan_de(&pkg, Some(&solo));
+    let plan = ore_core::generar::plan_con_dueno(&pkg, Some(&solo), dueno);
     let generados: Vec<Generado> = plan
         .cambios
         .iter()

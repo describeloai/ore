@@ -844,6 +844,57 @@ fn guardar_objetos_colecciones_y_referencias_en_el_indice() {
 /// generado y dónde está su código— y de quién es por **dónde está su
 /// código**: su repositorio y su proyecto. Lo que lee es un dataset (no una
 /// vista rota) y los modelos de `models` son aristas `usa`.
+/// v1alpha21 `01` §4: la función generada nace con el dueño de quien la crea
+/// (y entonces declara v1alpha21); regenerarla —otra persona guarda el código—
+/// le conserva el suyo; y `owner` no es parte de la firma: compila sin OOS2013.
+#[test]
+fn la_funcion_generada_es_de_quien_la_crea_y_regenerarla_no_la_transfiere() {
+    let t = arbol_en("funcion-con-dueno");
+    let r = t.path();
+    let py = "packages/ventas/riesgo/funciones/nivel.py";
+    let codigo = |doc: &str| {
+        format!(
+            "from ore import function\n\n\n@function(over=\"ventas.pedidos\")\ndef nivel(fila, umbral: int = 100) -> str:\n    \"\"\"{doc}\"\"\"\n    return \"alto\"\n"
+        )
+    };
+    escribe(r, py, &codigo("El nivel."));
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let plan = ore_core::generar::plan_con_dueno(&pkg, None, Some("user:ana"));
+    assert!(plan.diagnosticos.is_empty(), "{:?}", plan.diagnosticos);
+    ore_core::generar::aplicar(&plan).unwrap();
+    let doc = r.join("packages/ventas/functions/nivel.yaml");
+    let texto = fs::read_to_string(&doc).unwrap();
+    assert!(
+        texto.contains("apiVersion: oos.dev/v1alpha21\n")
+            && texto.contains("spec:\n  owner: user:ana\n"),
+        "{texto}"
+    );
+    let diags = ore_core::validate::validate_package(r);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| ["OOS2013", "OOS1005", "OOS2009"].contains(&d.code.as_str())),
+        "{diags:?}"
+    );
+
+    // Bea cambia el docstring: el documento se reescribe y sigue siendo de Ana.
+    escribe(r, py, &codigo("El nivel, mejor dicho."));
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let plan = ore_core::generar::plan_con_dueno(&pkg, None, Some("user:bea"));
+    ore_core::generar::aplicar(&plan).unwrap();
+    let texto = fs::read_to_string(&doc).unwrap();
+    assert!(
+        texto.contains("owner: user:ana")
+            && !texto.contains("user:bea")
+            && texto.contains("mejor dicho"),
+        "{texto}"
+    );
+    // Y sin saber quién crea (`ore functions generate` en local), está al día.
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let plan = ore_core::generar::plan(&pkg);
+    assert!(plan.cambios.is_empty(), "{:?}", plan.cambios.len());
+}
+
 #[test]
 fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
     let t = arbol_en("funcion-de-codigo");

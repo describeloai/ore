@@ -77,9 +77,20 @@ pub fn plan(pkg: &Package) -> Plan {
 /// Es lo que hace el commit de un repositorio (G2): genera lo que ese commit
 /// toca, y nada de lo que la rama no tocó.
 pub fn plan_de(pkg: &Package, solo: Option<&BTreeSet<PathBuf>>) -> Plan {
+    plan_con_dueno(pkg, solo, None)
+}
+
+/// [`plan_de`] sabiendo quién crea (v1alpha21 `01` §4): un documento que NACE
+/// lleva su `owner`; uno que ya estaba conserva el suyo —regenerar no es
+/// transferir—, y uno sin él sigue sin él.
+pub fn plan_con_dueno(
+    pkg: &Package,
+    solo: Option<&BTreeSet<PathBuf>>,
+    dueno: Option<&str>,
+) -> Plan {
     let mut p = Plan::default();
     for (carpeta, paquete) in paquetes_publicables(pkg) {
-        plan_del_paquete(pkg, &carpeta, &paquete, solo, &mut p);
+        plan_del_paquete(pkg, &carpeta, &paquete, solo, dueno, &mut p);
     }
     p.cambios.sort_by(|a, b| a.ruta.cmp(&b.ruta));
     p
@@ -90,6 +101,7 @@ fn plan_del_paquete(
     carpeta: &Path,
     paquete: &str,
     solo: Option<&BTreeSet<PathBuf>>,
+    dueno: Option<&str>,
     p: &mut Plan,
 ) {
     let entra = |py: &Path| solo.is_none_or(|s| s.contains(py));
@@ -171,9 +183,19 @@ fn plan_del_paquete(
                 );
                 continue;
             }
-            let contenido = emitir::documento(firma, paquete);
             let destino = carpeta.join(emitir::ruta_del_documento(firma));
             let previo = existentes.get(&entrypoint);
+            // El dueño: el que ya tenía su documento (aunque se mueva); si nace,
+            // el de quien lo crea.
+            let owner = match previo {
+                Some(e) => owner_de(&e.texto),
+                None => match std::fs::read_to_string(&destino) {
+                    Ok(t) if emitir::es_generado(&t) => owner_de(&t),
+                    Ok(_) => None,
+                    Err(_) => dueno.map(str::to_string),
+                },
+            };
+            let contenido = emitir::documento_con_dueno(firma, paquete, owner.as_deref());
             // El suyo, en otro sitio: se mueve aquí.
             let movido = previo.filter(|e| e.ruta != destino);
             let movido_a_mano = movido.is_some_and(|e| !emitir::es_generado(&e.texto));
@@ -261,6 +283,17 @@ fn plan_del_paquete(
 }
 
 /// Escribe el plan en disco.
+/// El `spec.owner` de un documento, si lo dice.
+fn owner_de(texto: &str) -> Option<String> {
+    crate::parse::parse(texto)
+        .ok()?
+        .get("spec")
+        .and_then(|(_, s)| s.get("owner"))
+        .and_then(|(_, v)| v.as_str())
+        .filter(|o| !o.is_empty())
+        .map(str::to_string)
+}
+
 pub fn aplicar(plan: &Plan) -> std::io::Result<()> {
     for c in &plan.cambios {
         match &c.accion {

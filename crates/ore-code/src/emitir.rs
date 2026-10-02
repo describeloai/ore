@@ -33,13 +33,29 @@ pub fn es_generado(texto: &str) -> bool {
 }
 
 pub fn documento(f: &Firma, paquete: &str) -> String {
+    documento_con_dueno(f, paquete, None)
+}
+
+/// La de un documento con `owner` (v1alpha21 `01` §4): la más baja que lo
+/// describe, porque antes la clave no existía.
+pub const API_VERSION_CON_DUENO: &str = "oos.dev/v1alpha21";
+
+/// [`documento`] con quien responde de la función (v1alpha21 `01` §4). `owner` no
+/// sale del código: lo da quien crea el documento, y al regenerarlo se conserva
+/// el que tenía. Sin él, los mismos bytes de siempre.
+pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
         "{MARCA} {} · se edita el def, no este fichero",
         f.entrypoint
     );
-    let _ = writeln!(s, "apiVersion: {}", f.api_version());
+    let version = if owner.is_some() {
+        API_VERSION_CON_DUENO
+    } else {
+        f.api_version()
+    };
+    let _ = writeln!(s, "apiVersion: {version}");
     s.push_str("kind: Function\n");
     match &f.descripcion {
         None => {
@@ -57,7 +73,11 @@ pub fn documento(f: &Firma, paquete: &str) -> String {
             let _ = writeln!(s, "  description: {}", escalar(d));
         }
     }
-    s.push_str("spec:\n  runtime: python\n");
+    s.push_str("spec:\n");
+    if let Some(o) = owner {
+        let _ = writeln!(s, "  owner: {}", escalar(o));
+    }
+    s.push_str("  runtime: python\n");
     let _ = writeln!(s, "  entrypoint: {}", escalar(&f.entrypoint));
     if let Some(o) = &f.over {
         let _ = writeln!(s, "  over: {}", escalar(o));

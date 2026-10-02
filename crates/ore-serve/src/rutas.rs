@@ -402,8 +402,12 @@ impl Servidor {
             ("GET", ["modelos"]) => self.leyendo_en(rama, |r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();
+                let dueno = match self.dueno_de_quien_crea(sujeto) {
+                    Ok(d) => d,
+                    Err(r) => return r,
+                };
                 self.escribiendo(sujeto, "alta de un modelo", |r| {
-                    self.alta_de_modelo(r, &cuerpo)
+                    self.alta_de_modelo(r, &cuerpo, &dueno)
                 })
             }
             ("GET", ["modelos", n]) => {
@@ -591,13 +595,16 @@ impl Servidor {
                 let cuerpo = p.cuerpo.clone();
                 let si_commit = p.cabeceras.get("if-match").cloned();
                 let (seco, mensaje) = arbol::intencion_del_commit(&cuerpo);
+                // El dueño de la función que nazca de un `@function` (v1alpha21):
+                // quien guarda. Sin `ore-iam`, nace sin él, como antes.
+                let dueno = self.dueno_de_quien_crea(sujeto).ok();
                 if seco {
                     self.leyendo_en(rama, |r| {
-                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref())
+                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref(), dueno.as_deref())
                     })
                 } else {
                     self.escribiendo_en(rama, sujeto, &mensaje, |r| {
-                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref())
+                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref(), dueno.as_deref())
                     })
                 }
             }
@@ -605,8 +612,9 @@ impl Servidor {
                 let ruta = ruta.join("/");
                 let cuerpo = p.cuerpo.clone();
                 let si_commit = p.cabeceras.get("if-match").cloned();
+                let dueno = self.dueno_de_quien_crea(sujeto).ok();
                 self.escribiendo_en(rama, sujeto, &format!("escribir `{ruta}`"), |r| {
-                    self.escribir_fichero(r, &ruta, &cuerpo, si_commit.as_deref())
+                    self.escribir_fichero(r, &ruta, &cuerpo, si_commit.as_deref(), dueno.as_deref())
                 })
             }
             ("DELETE", ["arbol", ruta @ ..]) => {
@@ -748,8 +756,10 @@ impl Servidor {
             // commit— y reescribir el manifiesto.
             ("POST", ["repositorios"]) => {
                 let cuerpo = p.cuerpo.clone();
+                // Las funciones que siembre su plantilla, de quien lo crea (v1alpha21).
+                let dueno = self.dueno_de_quien_crea(sujeto).ok();
                 self.escribiendo_en(rama, sujeto, "crear un repositorio", |r| {
-                    self.crear_repositorio(r, &cuerpo)
+                    self.crear_repositorio(r, &cuerpo, dueno.as_deref())
                 })
             }
             // ⭐ Actualizar la plantilla (⑧b): una RAMA y una PROPUESTA con su

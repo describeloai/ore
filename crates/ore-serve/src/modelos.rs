@@ -77,7 +77,9 @@ use ore_entrada::http::{self, Respuesta};
 use std::path::Path;
 
 /// La versión en que un `Model` tiene sitio (0041).
-const API_CON_SITIO: &str = "oos.dev/v1alpha15";
+/// v1alpha15 dio sitio al modelo; v1alpha21, dueño (`01-el-dueno`): el modelo es
+/// de quien lo da de alta.
+const API_CON_SITIO: &str = "oos.dev/v1alpha21";
 
 /// Un modelo por su referencia (`p.n`, `p.s.n`, `p.default.n` o, de antes, `n`).
 fn buscar(raiz: &Path, referencia: &str) -> Option<ModeloDelArbol> {
@@ -454,7 +456,7 @@ impl Servidor {
     ///
     /// (0041) `paquete` y `schema` son la ruta en el catálogo que el cliente
     /// elige; el documento lo escribe el motor de `/documentos` ahí.
-    pub(crate) fn alta_de_modelo(&self, raiz: &Path, cuerpo: &str) -> Respuesta {
+    pub(crate) fn alta_de_modelo(&self, raiz: &Path, cuerpo: &str, dueno: &str) -> Respuesta {
         let cuerpo = match analizar(cuerpo) {
             Ok(n) => n,
             Err(r) => return r,
@@ -560,6 +562,7 @@ impl Servidor {
         if let Some(d) = &digest {
             spec.push(("digest", Json::s(d.clone())));
         }
+        spec.insert(0, ("owner", Json::s(dueno)));
         spec.push(("tier", Json::s(tier.clone())));
         spec.push(("task", Json::s(task.clone())));
         let documento = Json::obj([

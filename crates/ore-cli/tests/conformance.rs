@@ -1565,3 +1565,12 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
         fallos.join("\n  ")
     );
 }
+
+#[test]
+fn borrador_de_v1alpha21() {
+    marcador(
+        "v1alpha21",
+        "el dueño",
+        "BORRADOR · OOS v1alpha21 · el dueño",
+    );
+}

@@ -138,6 +138,13 @@ pub enum ApiVersion {
     /// consumidor ve de una función —un pipeline, el formulario de Dry Run—
     /// habla OOS, y la moneda de una columna se perdía en la frontera.
     V1Alpha20,
+    /// v1alpha21. **El dueño.** `Entity`, `Function`, `ObjectTable` y `Model`
+    /// dicen quién responde de ellos —`spec.owner`, opcional, el handle de
+    /// siempre (`OOS2009`)—, como ya lo decían el paquete, el schema, la vista,
+    /// el dataset, la colección y el modelo entrenado. No da acceso y no se
+    /// hereda; en una función de código no es parte de la firma. Lo decidió ORE
+    /// 0049 «el dueño» (2026-10-02): lo que se crea es de quien lo crea.
+    V1Alpha21,
 }
 
 impl ApiVersion {
@@ -160,6 +167,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha18,
         ApiVersion::V1Alpha19,
         ApiVersion::V1Alpha20,
+        ApiVersion::V1Alpha21,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -182,6 +190,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha18 => "oos.dev/v1alpha18",
             ApiVersion::V1Alpha19 => "oos.dev/v1alpha19",
             ApiVersion::V1Alpha20 => "oos.dev/v1alpha20",
+            ApiVersion::V1Alpha21 => "oos.dev/v1alpha21",
         }
     }
 
@@ -927,6 +936,55 @@ impl Kind {
     /// campo que nadie lee es peor que uno que no existe, porque promete algo.
     pub fn spec_keys_en(self, version: ApiVersion) -> &'static [&'static str] {
         match self {
+            // v1alpha21 (`01-el-dueno`): quien responde. Antes, `owner` en estos
+            // cuatro es `OOS1005`. Lo demás, lo de su última versión.
+            Kind::Function if version >= ApiVersion::V1Alpha21 => &[
+                "owner",
+                "runtime",
+                "entrypoint",
+                "source",
+                "limits",
+                "over",
+                "reads",
+                "input",
+                "output",
+                "preconditions",
+                "effects",
+                "endorsements",
+                "authorization",
+                "idempotency",
+                "model",
+                "prompt",
+                "models",
+            ],
+            Kind::Entity if version >= ApiVersion::V1Alpha21 => &[
+                "owner",
+                "nature",
+                "principal",
+                "primaryKey",
+                "timeKey",
+                "uniqueKeys",
+                "temporal",
+                "properties",
+                "relations",
+                "moved",
+                "reserved",
+                "implements",
+                "backedBy",
+            ],
+            Kind::ObjectTable if version >= ApiVersion::V1Alpha21 => &[
+                "owner",
+                "datasource",
+                "prefix",
+                "match",
+                "media",
+                "partitions",
+                "reads",
+                "changes",
+            ],
+            Kind::Model if version >= ApiVersion::V1Alpha21 => {
+                &["owner", "profile", "digest", "tier", "task"]
+            }
             // v1alpha10: la superficie en los dos sentidos. `over` es la vista
             // cuyas filas son la unidad; `reads`, las demas que puede leer. Lo
             // que causa sigue siendo `effects`, y ahora puede faltar: leer y
@@ -2556,6 +2614,24 @@ pub fn shape_rules() -> Vec<ShapeRule> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn v1alpha21_es_lo_de_antes_mas_el_dueno() {
+        for (k, antes) in [
+            (Kind::Function, ApiVersion::V1Alpha20),
+            (Kind::Entity, ApiVersion::V1Alpha20),
+            (Kind::ObjectTable, ApiVersion::V1Alpha20),
+            (Kind::Model, ApiVersion::V1Alpha20),
+        ] {
+            let viejas: std::collections::BTreeSet<_> = k.spec_keys_en(antes).iter().collect();
+            let nuevas: std::collections::BTreeSet<_> =
+                k.spec_keys_en(ApiVersion::V1Alpha21).iter().collect();
+            assert!(!viejas.contains(&"owner"), "{k:?}");
+            let mut esperadas = viejas.clone();
+            esperadas.insert(&"owner");
+            assert_eq!(nuevas, esperadas, "{k:?}");
+        }
+    }
+
     use super::*;
 
     #[test]

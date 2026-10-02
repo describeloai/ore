@@ -181,7 +181,12 @@ fn prosa_de(texto: &str) -> Option<String> {
 impl Servidor {
     /// `POST /repositorios {paquete, carpeta, nombre, plantilla, proyecto?}`:
     /// 201 con la ruta; 409 si esa carpeta ya es uno; 404 si no hay paquete.
-    pub(crate) fn crear_repositorio(&self, raiz: &Path, cuerpo: &str) -> Respuesta {
+    pub(crate) fn crear_repositorio(
+        &self,
+        raiz: &Path,
+        cuerpo: &str,
+        dueno: Option<&str>,
+    ) -> Respuesta {
         let n = match ore_core::parse::parse(cuerpo) {
             Ok(n) => n,
             Err(e) => {
@@ -267,7 +272,7 @@ impl Servidor {
         // 0050 G2: el documento de cada `@function` de la semilla, en ESTE
         // commit, como si se hubiera guardado el código.
         let sembrados: Vec<&str> = semilla.iter().map(String::as_str).collect();
-        for g in crate::arbol::generar_funciones(raiz, &sembrados) {
+        for g in crate::arbol::generar_funciones(raiz, &sembrados, dueno) {
             let r = crate::arbol::ruta_de(raiz, &g);
             if !semilla.contains(&r) {
                 semilla.push(r);
@@ -458,7 +463,9 @@ impl Servidor {
                 escrito.push(format!("{ruta_r}/README.md"));
                 // 0050 G2: lo que derive del código que trae la plantilla.
                 let traidos: Vec<&str> = escrito.iter().map(String::as_str).collect();
-                for g in crate::arbol::generar_funciones(r, &traidos) {
+                // Lo que nace de la plantilla es de quien la actualiza (v1alpha21).
+                let dueno = self.dueno_de_quien_crea(sujeto).ok();
+                for g in crate::arbol::generar_funciones(r, &traidos, dueno.as_deref()) {
                     escrito.push(crate::arbol::ruta_de(r, &g));
                 }
                 Respuesta::ok(Json::obj([("ruta", Json::s(&ruta_r))]))

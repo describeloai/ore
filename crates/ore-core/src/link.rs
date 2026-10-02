@@ -765,10 +765,16 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
 fn modelos_entrenados(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // v1alpha12: y el dataset, que tambien tiene dueno y con el mismo handle.
     // v1alpha16: la coleccion responde como el dataset que es a los ficheros.
+    // v1alpha21: y la entidad, la funcion, la tabla de objetos y el modelo
+    // (`01-el-dueno`): quien crea responde, con la misma forma.
     for m in pkg
         .of(Kind::TrainedModel)
         .chain(pkg.of(Kind::Dataset))
         .chain(pkg.of(Kind::MediaCollection))
+        .chain(pkg.of(Kind::Entity))
+        .chain(pkg.of(Kind::Function))
+        .chain(pkg.of(Kind::ObjectTable))
+        .chain(pkg.of(Kind::Model))
     {
         if let Some(v) = m.section("owner") {
             let s = v.as_str().unwrap_or("");
