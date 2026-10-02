@@ -2666,7 +2666,11 @@ impl Servidor {
         p: &ore_entrada::http::Peticion,
         sujeto: &Identidad,
     ) -> Option<String> {
-        puesto_que_llama_en(&self.puestos.lista.lock().unwrap(), p.cabeceras.get(PUESTO), sujeto)
+        puesto_que_llama_en(
+            &self.puestos.lista.lock().unwrap(),
+            p.cabeceras.get(PUESTO),
+            sujeto,
+        )
     }
 
     pub(crate) fn persona_del_puesto(
@@ -3811,18 +3815,38 @@ mod prueba {
         );
         // 0036 ④: dos repositorios de la misma persona son DOS sesiones.
         let raw = id_de("persona:ana", "python", Some("packages/hr/raw"));
-        assert!(raw.starts_with("puesto-ana-python-raw-") && raw.len() == "puesto-ana-python-raw-".len() + 6, "{raw}");
-        assert_ne!(raw, id_de("persona:ana", "python", Some("packages/hr/clean")));
+        assert!(
+            raw.starts_with("puesto-ana-python-raw-")
+                && raw.len() == "puesto-ana-python-raw-".len() + 6,
+            "{raw}"
+        );
+        assert_ne!(
+            raw,
+            id_de("persona:ana", "python", Some("packages/hr/clean"))
+        );
         // R3 · Y dos con la misma carpeta en paquetes distintos, también.
-        assert_ne!(raw, id_de("persona:ana", "python", Some("packages/ventas/raw")));
+        assert_ne!(
+            raw,
+            id_de("persona:ana", "python", Some("packages/ventas/raw"))
+        );
         // Y de dos personas, aunque el `sub` empiece igual.
         assert_ne!(
-            id_de("4f0a9c2e-1b2c-4d5e-8f90-aaaa", "python", Some("packages/hr/raw")),
-            id_de("4f0a9c2e-1b2c-4d5e-8f90-bbbb", "python", Some("packages/hr/raw"))
+            id_de(
+                "4f0a9c2e-1b2c-4d5e-8f90-aaaa",
+                "python",
+                Some("packages/hr/raw")
+            ),
+            id_de(
+                "4f0a9c2e-1b2c-4d5e-8f90-bbbb",
+                "python",
+                Some("packages/hr/raw")
+            )
         );
         // El nombre del repositorio también se acorta y se limpia.
-        assert!(id_de("persona:ana", "python", Some("packages/hr/Con Espacios"))
-            .starts_with("puesto-ana-python-con-espacios-"));
+        assert!(
+            id_de("persona:ana", "python", Some("packages/hr/Con Espacios"))
+                .starts_with("puesto-ana-python-con-espacios-")
+        );
         // ⛔ R3 · El Job (`<id>-<8 hex>`) cabe en 63, con el `sub` y la carpeta más largos.
         let largo = id_de(
             "21e8ffd9-5aae-4797-a9f9-b81bde8e1780",
@@ -3910,7 +3934,10 @@ mod prueba {
             Err(("media/sin-permiso", _))
         ));
         assert_eq!(
-            escritura_en(&lista, &pod_t, "legal.archivo.paginas").unwrap().unwrap().id,
+            escritura_en(&lista, &pod_t, "legal.archivo.paginas")
+                .unwrap()
+                .unwrap()
+                .id,
             "puesto-ana-python-trans"
         );
 
@@ -3939,7 +3966,10 @@ mod prueba {
         let suyo = &lista["puesto-ana-python-funcs"];
         assert!(pod_del_puesto(&pod_f, suyo));
         assert!(!pod_del_puesto(&pod_t, suyo));
-        assert!(pod_del_puesto(&agente("agente:celda"), suyo), "un agente de celda, como antes");
+        assert!(
+            pod_del_puesto(&agente("agente:celda"), suyo),
+            "un agente de celda, como antes"
+        );
     }
 
     /// 0049 B4·2: dentro de un transform, sólo lo declarado y de lo fijado;

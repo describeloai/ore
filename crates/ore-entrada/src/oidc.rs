@@ -247,7 +247,13 @@ impl Emisor {
             .ok_or_else(|| mal("el token no es de un pod: no trae `kubernetes.io`".into()))?;
         let dentro = |a: &str, b: &str| {
             k8s.get(a)
-                .and_then(|(_, v)| if b.is_empty() { Some(v) } else { v.get(b).map(|(_, x)| x) })
+                .and_then(|(_, v)| {
+                    if b.is_empty() {
+                        Some(v)
+                    } else {
+                        v.get(b).map(|(_, x)| x)
+                    }
+                })
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         };
@@ -579,21 +585,58 @@ mod pruebas {
         };
         let e = emisor(&jwks);
         let id = e
-            .verificar_pod(&c("t-victor", "puesto", "puesto-ana-python-1-abcde"), 1_700_000_000, "t-victor", "puesto")
+            .verificar_pod(
+                &c("t-victor", "puesto", "puesto-ana-python-1-abcde"),
+                1_700_000_000,
+                "t-victor",
+                "puesto",
+            )
             .unwrap();
         assert_eq!(id.persona, "agente:pod/t-victor/puesto-ana-python-1-abcde");
         assert_eq!(id.tipo.as_deref(), Some("agente"));
         // Otro inquilino, otra cuenta: nadie.
-        assert!(e.verificar_pod(&c("t-demo", "puesto", "p"), 1_700_000_000, "t-victor", "puesto").is_err());
-        assert!(e.verificar_pod(&c("t-victor", "ore-serve", "p"), 1_700_000_000, "t-victor", "puesto").is_err());
+        assert!(
+            e.verificar_pod(
+                &c("t-demo", "puesto", "p"),
+                1_700_000_000,
+                "t-victor",
+                "puesto"
+            )
+            .is_err()
+        );
+        assert!(
+            e.verificar_pod(
+                &c("t-victor", "ore-serve", "p"),
+                1_700_000_000,
+                "t-victor",
+                "puesto"
+            )
+            .is_err()
+        );
         // Un token de persona no es un pod.
-        assert!(e.verificar_pod(&token(&k, CABEZA, &cuerpo("")), 1_700_000_000, "t-victor", "puesto").is_err());
+        assert!(
+            e.verificar_pod(
+                &token(&k, CABEZA, &cuerpo("")),
+                1_700_000_000,
+                "t-victor",
+                "puesto"
+            )
+            .is_err()
+        );
         // Y la firma manda igual: cambiar el pod rompe el token.
         let t = c("t-victor", "puesto", "puesto-ana");
         let partes: Vec<&str> = t.split('.').collect();
         let otro = c("t-victor", "puesto", "puesto-bea");
-        let falso = format!("{}.{}.{}", partes[0], otro.split('.').nth(1).unwrap(), partes[2]);
-        assert!(e.verificar_pod(&falso, 1_700_000_000, "t-victor", "puesto").is_err());
+        let falso = format!(
+            "{}.{}.{}",
+            partes[0],
+            otro.split('.').nth(1).unwrap(),
+            partes[2]
+        );
+        assert!(
+            e.verificar_pod(&falso, 1_700_000_000, "t-victor", "puesto")
+                .is_err()
+        );
     }
 
     /// RFC 8693: `act.sub` es quién actúa por la persona.
