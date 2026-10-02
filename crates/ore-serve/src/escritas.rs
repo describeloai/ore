@@ -372,7 +372,30 @@ impl Servidor {
                 );
             }
             ore_core::punteros::retirar_legado(&dir, &completa, &ruta);
+            // ⭐ B4·4 · Y EL LINAJE, en el documento y en el mismo commit
+            //   (v1alpha19 `01` §2): lo que esta transacción leyó —los `inputs`
+            //   del transform, o lo que leyó la sesión— es su `derivedFrom`. Por
+            //   ahí le baja la clasificación, que no se lee del puntero. Cada
+            //   transacción lo reescribe; si no leyó nada, no lo lleva.
+            let derivado = linaje_de(&procedencia, &corta, &completa);
+            if let Some((f, _)) =
+                crate::medios::fichero_y_documento(raiz, b, "MediaCollection", s, c)
+                && let Ok(texto) = std::fs::read_to_string(&f)
+                && let Some(nuevo) = con_linaje(&texto, &derivado)
+                && nuevo != texto
+                && let Err(e) = std::fs::write(&f, nuevo)
+            {
+                return problema(
+                    500,
+                    "media/origen",
+                    format!("el linaje de la colección no se escribió: {e}"),
+                );
+            }
             let mut m = sellado;
+            m.insert(
+                "derivedFrom".into(),
+                Json::Arr(derivado.iter().map(Json::s).collect()),
+            );
             m.insert("procedencia".into(), procedencia.clone());
             Respuesta::ok(Json::Obj(m))
         };
@@ -393,6 +416,135 @@ impl Servidor {
         }
         r
     }
+}
+
+/// **Lo que una transacción leyó** (B4·4): los `inputs` del transform que la
+/// escribió, o lo que leyó la sesión (`leidas`). Sin repetidos, en orden, y sin
+/// la colección misma (OOS2019).
+fn linaje_de(procedencia: &Json, corta: &str, completa: &str) -> Vec<String> {
+    let Json::Obj(m) = procedencia else {
+        return Vec::new();
+    };
+    let lista = m.get("inputs").or_else(|| m.get("leidas"));
+    let mut v: Vec<String> = match lista {
+        Some(Json::Arr(a)) => a
+            .iter()
+            .filter_map(|x| match x {
+                Json::Str(s) => Some(s.trim().to_string()),
+                _ => None,
+            })
+            .filter(|s| !s.is_empty() && s != corta && s != completa)
+            .collect(),
+        _ => Vec::new(),
+    };
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// **El documento con su `derivedFrom`**, sin reescribir lo demás: quita el
+/// que tuviera (en bloque o en flujo), pone `derivado` como primera clave de
+/// `spec` si no está vacío, y sube un v1alpha16–18 a v1alpha19 (la clave es de
+/// v1alpha19: OOS1005). `None` si no hay un `spec:` de primer nivel.
+fn con_linaje(texto: &str, derivado: &[String]) -> Option<String> {
+    let lista = format!("[{}]", derivado.join(", "));
+    let mut fuera = String::with_capacity(texto.len() + lista.len() + 24);
+    let mut hecho = false;
+    let mut saltando: Option<usize> = None; // la sangría de un `derivedFrom:` en bloque
+    let lineas: Vec<&str> = texto.split_inclusive('\n').collect();
+    for (i, l) in lineas.iter().enumerate() {
+        let sin = l.trim_end_matches(['\n', '\r']);
+        let sangria = sin.len() - sin.trim_start().len();
+        // lo que quedaba de un `derivedFrom:` en bloque (`- x` más adentro)
+        if let Some(s0) = saltando {
+            if sin.trim().is_empty() || (sangria > s0 && sin.trim_start().starts_with('-')) {
+                continue;
+            }
+            saltando = None;
+        }
+        let mut sin = sin.to_string();
+        for v in ["v1alpha16", "v1alpha17", "v1alpha18"] {
+            if sangria == 0
+                && sin.starts_with("apiVersion:")
+                && sin.contains(&format!("oos.dev/{v}"))
+            {
+                sin = sin.replace(&format!("oos.dev/{v}"), "oos.dev/v1alpha19");
+            }
+        }
+        if sangria > 0 && sin.trim_start().starts_with("derivedFrom:") {
+            if sin.trim_start()["derivedFrom:".len()..].trim().is_empty() {
+                saltando = Some(sangria);
+            }
+            continue;
+        }
+        let Some(resto) = sin.strip_prefix("spec:").filter(|_| !hecho) else {
+            fuera.push_str(&sin);
+            fuera.push('\n');
+            continue;
+        };
+        let resto = resto.trim();
+        if resto.is_empty() || resto.starts_with('#') {
+            let s = lineas[i + 1..]
+                .iter()
+                .map(|x| x.trim_end_matches(['\n', '\r']))
+                .find(|x| !x.trim().is_empty())
+                .map(|x| x.len() - x.trim_start().len())
+                .filter(|n| *n > 0)
+                .unwrap_or(2);
+            fuera.push_str(&sin);
+            fuera.push('\n');
+            if !derivado.is_empty() {
+                fuera.push_str(&format!("{}derivedFrom: {lista}\n", " ".repeat(s)));
+            }
+        } else {
+            let dentro = resto.strip_prefix('{')?.trim_start();
+            let dentro = sin_clave_en_flujo(dentro, "derivedFrom");
+            let dentro = dentro.trim_start();
+            match (derivado.is_empty(), dentro.strip_prefix('}')) {
+                (true, _) => fuera.push_str(&format!("spec: {{ {dentro}\n")),
+                (false, Some(tras)) => {
+                    fuera.push_str(&format!("spec: {{ derivedFrom: {lista} }}{tras}\n"))
+                }
+                (false, None) => {
+                    fuera.push_str(&format!("spec: {{ derivedFrom: {lista}, {dentro}\n"))
+                }
+            }
+        }
+        hecho = true;
+    }
+    if !texto.ends_with('\n') {
+        fuera.pop();
+    }
+    hecho.then_some(fuera)
+}
+
+/// `k: [ … ]` (y su coma) fuera de un mapa en flujo, si está.
+fn sin_clave_en_flujo(dentro: &str, k: &str) -> String {
+    let Some(i) = dentro.find(&format!("{k}:")) else {
+        return dentro.to_string();
+    };
+    let tras = &dentro[i..];
+    let Some(abre) = tras.find('[') else {
+        return dentro.to_string();
+    };
+    let Some(cierra) = tras[abre..].find(']') else {
+        return dentro.to_string();
+    };
+    let mut fin = i + abre + cierra + 1;
+    let resto = &dentro[fin..];
+    let quitar_coma = resto.trim_start().starts_with(',');
+    if quitar_coma {
+        fin += resto.find(',').unwrap() + 1;
+    }
+    let mut antes = dentro[..i].to_string();
+    if !quitar_coma {
+        // era la última: la coma de antes sobra
+        let t = antes.trim_end();
+        if let Some(sin) = t.strip_suffix(',') {
+            antes = sin.to_string() + " ";
+        }
+    }
+    format!("{antes}{}", dentro[fin..].trim_start())
 }
 
 /// `204` si la colección existe y es escrita; si no, su problema.
@@ -521,6 +673,65 @@ mod pruebas {
             e.de("t-1", "agente:puesto-ana", "legal.archivo.paginas")
                 .is_none()
         );
+    }
+
+    /// B4·4 · El linaje: de los inputs o de lo leído, sin la colección misma;
+    /// en bloque y en flujo; se reescribe y se quita; y v1alpha16 sube a 19.
+    #[test]
+    fn el_linaje_se_escribe_en_el_documento() {
+        let p = Json::obj([
+            ("transform", Json::s("t")),
+            (
+                "inputs",
+                Json::Arr(vec![
+                    Json::s("legal.archivo.contratos"),
+                    Json::s("legal.archivo.paginas"),
+                    Json::s("legal.archivo.contratos"),
+                ]),
+            ),
+        ]);
+        let d = linaje_de(&p, "legal.archivo.paginas", "legal.archivo.paginas");
+        assert_eq!(d, ["legal.archivo.contratos"]);
+        let sesion = Json::obj([("leidas", Json::Arr(vec![Json::s("b.s.x")]))]);
+        assert_eq!(linaje_de(&sesion, "b.s.c", "b.s.c"), ["b.s.x"]);
+        assert!(linaje_de(&Json::obj([]), "b.s.c", "b.s.c").is_empty());
+
+        let bloque = "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: { name: paginas, namespace: legal, schema: archivo }\nspec:\n  owner: user:ana\n  media: image\n  formats: [png]\n";
+        let a = con_linaje(bloque, &d).unwrap();
+        assert!(a.starts_with("apiVersion: oos.dev/v1alpha19\n"), "{a}");
+        assert!(
+            a.contains("spec:\n  derivedFrom: [legal.archivo.contratos]\n  owner: user:ana\n"),
+            "{a}"
+        );
+        // se reescribe: el de antes se va
+        let b = con_linaje(&a, &["x.y.z".to_string()]).unwrap();
+        assert!(
+            b.contains("  derivedFrom: [x.y.z]\n") && !b.contains("contratos"),
+            "{b}"
+        );
+        // en bloque como lista de guiones, también
+        let guiones = "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nspec:\n  owner: user:ana\n  derivedFrom:\n    - a.b\n    - c.d\n  media: image\n";
+        let g = con_linaje(guiones, &[]).unwrap();
+        assert_eq!(
+            g,
+            "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nspec:\n  owner: user:ana\n  media: image\n"
+        );
+        // sin lecturas: se quita
+        let c = con_linaje(&a, &[]).unwrap();
+        assert!(!c.contains("derivedFrom"), "{c}");
+        // en flujo
+        let flujo = "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nspec: { owner: team:legal, media: image, formats: [png], derivedFrom: [legal.archivo.viejo] }\n";
+        let f = con_linaje(flujo, &d).unwrap();
+        assert_eq!(
+            f,
+            "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nspec: { derivedFrom: [legal.archivo.contratos], owner: team:legal, media: image, formats: [png] }\n"
+        );
+        let f0 = con_linaje(flujo, &[]).unwrap();
+        assert_eq!(
+            f0,
+            "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nspec: { owner: team:legal, media: image, formats: [png] }\n"
+        );
+        assert!(con_linaje("kind: X\n", &d).is_none());
     }
 
     #[test]

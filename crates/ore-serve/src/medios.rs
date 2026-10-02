@@ -73,6 +73,18 @@ pub(crate) fn clase_de_la_coleccion(raiz: &Path, b: &str, s: &str, c: &str) -> O
 /// Un documento de `kind` con ese nombre y schema, entre los YAML de
 /// `packages/<b>`.
 fn documento_en(raiz: &Path, b: &str, kind: &str, s: &str, nombre: &str) -> Option<Node> {
+    fichero_y_documento(raiz, b, kind, s, nombre).map(|(_, n)| n)
+}
+
+/// El fichero de un documento del árbol y lo que dice (B4·4: el linaje se
+/// escribe en él).
+pub(crate) fn fichero_y_documento(
+    raiz: &Path,
+    b: &str,
+    kind: &str,
+    s: &str,
+    nombre: &str,
+) -> Option<(std::path::PathBuf, Node)> {
     let mut ficheros = Vec::new();
     crate::documentos::yamls_de(&raiz.join("packages").join(b), &mut ficheros);
     for f in ficheros {
@@ -91,7 +103,7 @@ fn documento_en(raiz: &Path, b: &str, kind: &str, s: &str, nombre: &str) -> Opti
         let schema = campo(m, "schema")
             .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
         if campo(m, "name").as_deref() == Some(nombre) && schema == s {
-            return Some(n);
+            return Some((f, n));
         }
     }
     None
