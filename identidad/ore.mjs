@@ -76,7 +76,7 @@ const REGISTRO_EN_PRODUCCION = {
 //     HAY_CORREO = false   sin reposición por correo y sin verificar el correo al registrarse
 //     HAY_CORREO = true    las dos, en `rubix`; `rubix-interno` no se repone por correo nunca
 //   Se pone a `true` cuando la sonda de correo (`identidad/sonda-correo.sh`) sale verde.
-export const HAY_CORREO = false;
+export const HAY_CORREO = true;
 
 /** El registro pregunta por la organización (035): atributo del perfil y su claim. */
 const ATRIBUTO_ORGANIZACION = {

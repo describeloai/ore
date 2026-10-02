@@ -267,9 +267,7 @@
           "serviceAccountsEnabled": false,
           "implicitFlowEnabled": false
         }
-      ],
-      "resetPasswordAllowed": false,
-      "verifyEmail": false
+      ]
     }
   }
 }
@@ -307,9 +305,9 @@
         }
       ],
       "registrationAllowed": true,
-      "resetPasswordAllowed": false,
+      "resetPasswordAllowed": true,
       "rememberMe": false,
-      "verifyEmail": false,
+      "verifyEmail": true,
       "loginWithEmailAllowed": true,
       "duplicateEmailsAllowed": false,
       "bruteForceProtected": true,
