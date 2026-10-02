@@ -733,16 +733,29 @@ impl Servidor {
         //   guarda con el puesto. Una clase que no ejecuta —`semantics`— no
         //   abre sesión: lo suyo son documentos del árbol, y decirlo aquí
         //   ahorra abrir un pod para nada.
+        //
+        // ⛔⛔ Y SE LEE DE LA RAMA POR DEFECTO, no de la del puesto (2026-10-02).
+        //   La identidad de un repositorio —que existe y de qué clase es— es un
+        //   REGISTRO, como en GitHub o en Foundry: vive en `main` (protegida) y
+        //   no en cada rama. Leída de la rama del puesto, cambiar en ella
+        //   `functions-python` por `transforms-python` en el manifiesto abría un
+        //   puesto que escribe datos: el techo se saltaba editando un fichero.
+        //   Las ramas llevan el CONTENIDO; cambiar la clase es tocar `main`, con
+        //   propuesta. Y un repositorio que sólo está en una rama no es uno.
         let clase = match &repositorio {
             None => None,
             Some(a) => {
-                let r = self.leyendo_en(
-                    rama.as_deref(),
+                let r = self.leyendo(
                     |raiz| match ore_core::repositorios::leer(raiz)
                         .into_iter()
                         .find(|r| r.ruta == *a)
                     {
-                        None => Respuesta::error(404, format!("`{a}` no es un repositorio")),
+                        None => Respuesta::error(
+                            404,
+                            format!(
+                                "`{a}` no es un repositorio registrado: un repositorio existe en la rama por defecto, y en una rama sólo vive su contenido"
+                            ),
+                        ),
                         Some(r) => Respuesta::ok(Json::obj([(
                             "plantilla",
                             r.plantilla

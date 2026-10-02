@@ -2154,6 +2154,17 @@ impl Servidor {
         })
     }
 
+    /// ¿Es `r` la rama por defecto del árbol? La de la forja, y si no se puede
+    /// preguntar, `main` —equivocarse hacia la protección, no hacia fuera—.
+    fn es_la_rama_por_defecto(&self, r: &str) -> bool {
+        let por_defecto = self
+            .api()
+            .ok()
+            .and_then(|a| a.rama_por_defecto().ok())
+            .unwrap_or_else(|| "main".into());
+        r.trim() == por_defecto
+    }
+
     /// Como `escribiendo`, en la rama que diga la cabecera: el clon ES la rama,
     /// así que `publicar` empuja a ella. Sin cabecera, `main`.
     ///
@@ -2172,6 +2183,12 @@ impl Servidor {
         mensaje: &str,
         f: impl FnOnce(&Path) -> Respuesta,
     ) -> Respuesta {
+        // ⛔⛔ LA RAMA POR DEFECTO, DICHA, ES `main` (2026-10-02). La regla miraba
+        //   si la cabecera VENÍA, no a qué rama se escribía: desde que la consola
+        //   y el puesto dicen siempre la rama, `x-ore-rama: main` escribía en
+        //   `main` protegida sin propuesta (medido: un puesto confirmó una
+        //   colección directo en `main`). Se decide por el destino.
+        let rama = rama.filter(|r| !self.es_la_rama_por_defecto(r));
         match (rama, &self.arbol) {
             (None, _) => self.escribiendo(sujeto, mensaje, |raiz| {
                 if crate::politica::Politica::de_raiz(raiz).protegida {

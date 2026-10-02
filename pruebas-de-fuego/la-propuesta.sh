@@ -639,6 +639,10 @@ politica "$PROTEGIDA"
 # P1.2 · protegida: el arbol no se escribe en main sin rama (423, nada escrito); en una rama si
 [ "$(put_fichero packages/hr/notas-p12.md "$ANA" 'en main')" = "423" ] || falla "8g · escribir en main protegida no dio 423: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/notas-p12.md "$ANA")" = "404" ] || falla "8g · el 423 dejo algo escrito en main"
+# ⛔ Y DICHA: `x-ore-rama: main` es main. La consola y el puesto dicen siempre la rama,
+#   y la regla miraba si venia la cabecera, no a donde se escribia (2026-10-02).
+[ "$(put_fichero packages/hr/notas-p12.md "$ANA" 'en main, dicha' main)" = "423" ] || falla "8g · escribir en main protegida DICIENDO main no dio 423: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/notas-p12.md "$ANA")" = "404" ] || falla "8g · el 423 con la rama dicha dejo algo escrito en main"
 "$PY" -c 'import json,sys; json.dump({"mensaje":"en main","ficheros":[{"ruta":"packages/hr/notas-p12.md","texto":"x"}]}, open(sys.argv[1],"w"))' "$TMP/p12.json"
 [ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$ANA" -H 'content-type: application/json' --data-binary "@$TMP/p12.json" "$BASE/arbol/commit")" = "423" ] || falla "8g · commit en main protegida no dio 423: $(cuerpo)"
 [ "$(pide POST /ramas "$ANA" '{"nombre":"protegida"}')" = "201" ] || falla "8g · crear rama con main protegida: $(cuerpo)"
@@ -654,7 +658,7 @@ put_fichero packages/hr/notas-p13.md "$ANA" 'sola' ana/sola | grep -qE '^20[01]$
 NS=$(num)
 [ "$(pide POST /propuestas/$NS/fusionar "$ANA")" = "200" ] && tiene "d['sinRevision'] is True and d['revisada_por']==[] and d['por']=='persona:ana'" || falla "8g · libre, ana no fusiono lo suyo: $(cuerpo)"
 git -C "$BARE" log -1 --format=%B main | grep -q "fusionada sin revisión por persona:ana" || falla "8g · el merge no dice que fue sin revision: $(git -C "$BARE" log -1 --format=%B main)"
-dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre · protegida: PUT y commit en main 423 sin escribir nada, en una rama si · libre otra vez, main se escribe · libre, la autora fusiona lo suyo sin revision y el merge lo dice"
+dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre · protegida: PUT y commit en main 423 sin escribir nada (tambien diciendo main), en una rama si · libre otra vez, main se escribe · libre, la autora fusiona lo suyo sin revision y el merge lo dice"
 
 # ── 8h · proteger main y dejarla libre (P1.4): PUT /ramas/main/proteccion ──
 [ "$(pide PUT /ramas/ana/sola/proteccion "$ANA" '{"protegida":true}')" = "422" ] || falla "8h · proteger otra rama no dio 422: $(cuerpo)"
