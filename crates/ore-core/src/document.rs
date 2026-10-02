@@ -145,6 +145,12 @@ pub enum ApiVersion {
     /// hereda; en una función de código no es parte de la firma. Lo decidió ORE
     /// 0027 «el dueño es quien lo crea» (2026-10-02): lo que se crea es de quien lo crea.
     V1Alpha21,
+    /// v1alpha22. **Nunca nula.** La columna de una `Table` dice que el origen
+    /// garantiza que nunca es nula —`columns.<c>.required`, opcional, un
+    /// booleano—. Sólo una garantía del origen, nunca lo visto en una muestra;
+    /// una `View` y un `Dataset` no lo declaran: se deriva. Lo pidió ORE 0051
+    /// «ORE Null Contract» (2026-10-02).
+    V1Alpha22,
 }
 
 impl ApiVersion {
@@ -168,6 +174,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha19,
         ApiVersion::V1Alpha20,
         ApiVersion::V1Alpha21,
+        ApiVersion::V1Alpha22,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -191,6 +198,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha19 => "oos.dev/v1alpha19",
             ApiVersion::V1Alpha20 => "oos.dev/v1alpha20",
             ApiVersion::V1Alpha21 => "oos.dev/v1alpha21",
+            ApiVersion::V1Alpha22 => "oos.dev/v1alpha22",
         }
     }
 

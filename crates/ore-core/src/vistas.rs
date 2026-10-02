@@ -514,6 +514,36 @@ fn columnas_de(t: &Loaded) -> BTreeSet<String> {
     columnas(t)
 }
 
+/// **La nulabilidad de cada columna** (ORE 0051): `Garantizada` donde una
+/// `Table` declara `columns.<c>.required: true` (v1alpha22), `Nulable` en lo
+/// demás. Lo que una vista o un dataset exponen no se lee de ellos: se deriva
+/// (v1alpha22 `01-nunca-nula` §4), y hasta que algo lo derive es `Nulable`.
+pub fn nulabilidad_de_columnas(t: &Loaded) -> BTreeMap<String, crate::types::Nulabilidad> {
+    use crate::types::Nulabilidad;
+    let declara = t.kind == Kind::Table;
+    t.section("columns")
+        .map(|c| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let requerida = declara
+                        && v.get("required")
+                            .and_then(|(_, r)| r.as_str())
+                            .is_some_and(|r| r == "true");
+                    Some((
+                        k.as_str()?.to_string(),
+                        if requerida {
+                            Nulabilidad::Garantizada
+                        } else {
+                            Nulabilidad::Nulable
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// **El tipo de cada columna de una tabla**, el que el conector tradujo:
 /// `columns.<c>.type` (0032 §3; `01-table.md` §5.0). Una columna sin `type` no
 /// está en el mapa —el conector no supo traducirla, y es texto para quien la
@@ -3585,6 +3615,26 @@ mod tests {
         assert_eq!(s("raw"), None);
         assert_eq!(s("mal"), None, "un tipo que no es de OOS no se inventa");
         assert_eq!(tipos.len(), 4);
+    }
+
+    /// v1alpha22 (ORE 0051). Lo que el origen garantiza es `Garantizada`; lo
+    /// demás —sin la clave, con `false`— `Nulable`, que es lo de siempre.
+    #[test]
+    fn la_nulabilidad_de_una_columna_es_la_que_el_origen_garantiza() {
+        use crate::types::Nulabilidad::{Garantizada, Nulable};
+        let t = tabla(
+            "employees",
+            "  datasource: erp\n  object: public.employees\n  \
+             columns:\n    employee_id: { type: String, required: true }\n    \
+             salary: { type: Decimal, required: false }\n    \
+             raw: {}\n  \
+             reads: none\n  changes: { mode: append, witness: log }\n",
+        );
+        let n = nulabilidad_de_columnas(&t);
+        assert_eq!(n.get("employee_id"), Some(&Garantizada));
+        assert_eq!(n.get("salary"), Some(&Nulable));
+        assert_eq!(n.get("raw"), Some(&Nulable));
+        assert_eq!(n.len(), 3);
     }
 
     /// Un tema: se escribe, no se pregunta. Y solo anexa, para `OOS2021`.

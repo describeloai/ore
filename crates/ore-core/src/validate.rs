@@ -232,6 +232,15 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
                 );
             }
         }
+        // Y dentro de cada columna (v1alpha22 `01-nunca-nula` §2, §4). Hasta
+        // aquí no las miraba nadie: el esquema JSON de cada versión las cerraba,
+        // pero `nullable: false` —o cualquier errata— pasaba en silencio, y en
+        // una garantía eso es una afirmación falsa que nadie ve.
+        if matches!(kind, Kind::Table | Kind::View | Kind::Dataset)
+            && let Some((_, columnas)) = spec.get("columns")
+        {
+            columnas_de(file, kind, version, columnas, &mut diags);
+        }
     }
     if !diags.is_empty() {
         return diags;
@@ -407,6 +416,82 @@ fn labels_de_vista(file: &Path, meta: &Node, out: &mut Vec<Diagnostic>) {
                  día que discrepen ninguno diría cuál manda",
             ),
         );
+    }
+}
+
+/// Las claves de cada columna de una `Table`, una `View` o un `Dataset`.
+///
+/// `required` tiene su propio mensaje, porque fuera de donde vale no es una
+/// errata sino una palabra de otro sitio: en una `Table` anterior a v1alpha22,
+/// de otra versión; en una vista o un dataset, de nadie —lo que expone una
+/// consulta se deriva—. Donde vale, es un booleano (`OOS1004`).
+fn columnas_de(
+    file: &Path,
+    kind: Kind,
+    version: document::ApiVersion,
+    columnas: &Node,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut admitidas = vec!["type", "description"];
+    if kind == Kind::Table {
+        admitidas.push("physicalType");
+        if version >= document::ApiVersion::V1Alpha22 {
+            admitidas.push("required");
+        }
+    }
+    for (k, v) in columnas.entries() {
+        let Some(nombre) = k.as_str() else { continue };
+        if !matches!(v, Node::Mapping { .. }) {
+            continue;
+        }
+        let prefijo = format!("spec.columns.{nombre}.");
+        let mut aqui = admitidas.clone();
+        if let Some((kr, valor)) = v.get("required") {
+            if admitidas.contains(&"required") {
+                if !matches!(valor.as_str(), Some("true" | "false")) {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos1004,
+                            file,
+                            format!("`{prefijo}required` es un booleano"),
+                        )
+                        .at(valor.pos())
+                        .help(
+                            "`true` dice que el origen garantiza que la columna nunca es nula; \
+                             sin la clave, o con `false`, puede serlo",
+                        ),
+                    );
+                }
+            } else {
+                let (msg, ayuda) = if kind == Kind::Table {
+                    (
+                        format!("`{prefijo}required` es de v1alpha22"),
+                        "declara `apiVersion: oos.dev/v1alpha22`: desde ahí una columna de \
+                         `Table` dice que el origen garantiza que nunca es nula",
+                    )
+                } else {
+                    (
+                        format!("una columna de `{}` no declara `required`", kind.as_str()),
+                        "lo que expone una consulta se deriva de lo que lee, no se declara: \
+                         escrito a mano, miente el día que alguien cambia un `JOIN`. La \
+                         garantía la declara la `Table` del origen (`columns.<c>.required`)",
+                    )
+                };
+                out.push(
+                    Diagnostic::new(Code::Oos1005, file, msg)
+                        .at(kr.pos())
+                        .help(ayuda),
+                );
+            }
+            aqui.push("required");
+        }
+        // Todas las claves, sólo donde la versión las enumera: una `Table` de
+        // v1alpha22. Antes, el uso fue más allá del esquema JSON —hay árboles
+        // con `labels` en sus columnas, y `ore migrate punteros` las cuida—, y
+        // cerrarlo ahora cambiaría lo que un árbol de ayer significa.
+        if kind == Kind::Table && version >= document::ApiVersion::V1Alpha22 {
+            check_keys(file, v, &aqui, &prefijo, out);
+        }
     }
 }
 
@@ -940,5 +1025,54 @@ mod tests {
              spec:\n  datasource: erp\n  object: public.employees\n  \
              columns:\n    employee_id: {}\n";
         assert_eq!(codigos(t), vec![Code::Oos1005], "{t}");
+    }
+
+    fn tabla(version: &str, columna: &str) -> String {
+        format!(
+            "apiVersion: oos.dev/{version}\nkind: Table\n\
+             metadata: {{ name: employees, namespace: erp }}\n\
+             spec:\n  datasource: erp\n  object: public.employees\n  \
+             columns:\n    employee_id: {{ {columna} }}\n  \
+             reads: {{}}\n  changes: {{ mode: none, witness: none }}\n"
+        )
+    }
+
+    /// v1alpha22 (`01-nunca-nula` §2). Las claves de una columna de `Table` se
+    /// comprueban desde v1alpha22: antes de esto, `nullable: false` —o
+    /// cualquier errata— pasaba en silencio (medido en la espiga de ORE 0051,
+    /// E1). En una versión anterior sólo `required`: lo demás que hay en uso
+    /// (`labels`) sigue significando lo de ayer.
+    #[test]
+    fn las_claves_de_una_columna_se_comprueban() {
+        for (version, columna, esperado) in [
+            ("v1alpha13", "type: String, physicalType: text", vec![]),
+            ("v1alpha13", "type: String, labels: { a.b: c }", vec![]),
+            (
+                "v1alpha22",
+                "type: String, labels: { a.b: c }",
+                vec![Code::Oos1005],
+            ),
+            ("v1alpha22", "type: String, required: true", vec![]),
+            ("v1alpha22", "type: String, required: false", vec![]),
+            (
+                "v1alpha22",
+                "type: String, nullable: false",
+                vec![Code::Oos1005],
+            ),
+            (
+                "v1alpha22",
+                "type: String, required: siempre",
+                vec![Code::Oos1004],
+            ),
+            (
+                "v1alpha21",
+                "type: String, required: true",
+                vec![Code::Oos1005],
+            ),
+            ("v1alpha22", "type: String, x-acme-nota: 1", vec![]),
+        ] {
+            let t = tabla(version, columna);
+            assert_eq!(codigos(&t), esperado, "{t}");
+        }
     }
 }

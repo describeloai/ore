@@ -277,6 +277,83 @@ impl std::fmt::Display for Type {
     }
 }
 
+/// **Si una columna puede ser nula** (ORE 0051, «ORE Null Contract»).
+///
+/// Va pegada al tipo de cada columna y es la misma en todas las capas: lo que
+/// el origen **declara** (`Table.columns.<c>.required`, v1alpha22), lo que una
+/// vista **deriva** de lo que lee, y lo que no se sabe. Ninguna capa lo decide
+/// con un `bool` suyo.
+///
+/// El orden importa: `Nulable < Derivada < Garantizada`, y combinar dos ramas
+/// toma la menor ([`Nulabilidad::y`]). Ante la duda, nulable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Nulabilidad {
+    /// Puede ser nula. Lo de siempre, y lo que vale sin una garantía.
+    #[default]
+    Nulable,
+    /// Nunca nula porque se deriva de lo que la consulta lee (v1alpha22
+    /// `01-nunca-nula` §4): una columna leída tal cual de una garantizada, un
+    /// `COUNT`.
+    Derivada,
+    /// Nunca nula porque **el origen lo garantiza**: un `NOT NULL`, un
+    /// `mode: REQUIRED`, un campo `required` de Parquet o de Iceberg.
+    Garantizada,
+}
+
+impl Nulabilidad {
+    /// ¿Nunca es nula?
+    pub const fn nunca_nula(self) -> bool {
+        !matches!(self, Nulabilidad::Nulable)
+    }
+
+    /// Dos ramas que dan la misma columna (un `CASE`, un `UNION`): nunca nula
+    /// sólo si las dos lo son.
+    pub fn y(self, otra: Nulabilidad) -> Nulabilidad {
+        self.min(otra)
+    }
+
+    /// Lo que se lee tal cual aguas abajo: la garantía del origen llega como
+    /// derivada, porque quien la afirma ya no es el origen sino la consulta.
+    pub const fn aguas_abajo(self) -> Nulabilidad {
+        match self {
+            Nulabilidad::Garantizada => Nulabilidad::Derivada,
+            otra => otra,
+        }
+    }
+
+    /// Lo que se añade a la forma de texto del tipo: `!` sólo cuando nunca es
+    /// nula. Así un tipo sin garantía se escribe como siempre, y nada que se
+    /// calcule de su texto —la cabecera de una copia, el digest de un plan—
+    /// cambia en un árbol que no declara `required`.
+    pub const fn sufijo(self) -> &'static str {
+        if self.nunca_nula() { "!" } else { "" }
+    }
+}
+
+/// **El tipo de una columna con su nulabilidad.** Se escribe como su tipo, más
+/// `!` si nunca es nula ([`Nulabilidad::sufijo`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tipado {
+    pub tipo: Type,
+    pub nulabilidad: Nulabilidad,
+}
+
+impl Tipado {
+    /// Un tipo sin garantía: lo de siempre.
+    pub fn nulable(tipo: Type) -> Tipado {
+        Tipado {
+            tipo,
+            nulabilidad: Nulabilidad::Nulable,
+        }
+    }
+}
+
+impl std::fmt::Display for Tipado {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.tipo, self.nulabilidad.sufijo())
+    }
+}
+
 /// Por qué un tipo no es válido.
 #[derive(Debug)]
 pub enum TypeError {
@@ -876,6 +953,38 @@ fn cardinalidades(e: &Loaded, out: &mut Vec<Diagnostic>) {
                 }),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod nulabilidad {
+    use super::*;
+
+    /// Sin garantía, el tipo se escribe como siempre: es lo que hace que nada
+    /// que se calcule de su texto cambie en un árbol sin `required`.
+    #[test]
+    fn sin_garantia_se_escribe_como_siempre() {
+        for t in ["Integer", "Decimal<10, 2>", "list<String>", "Money<EUR, 2>"] {
+            let tipo = parse_type(t).unwrap();
+            assert_eq!(Tipado::nulable(tipo.clone()).to_string(), tipo.to_string());
+        }
+        let id = Tipado {
+            tipo: parse_type("Integer").unwrap(),
+            nulabilidad: Nulabilidad::Garantizada,
+        };
+        assert_eq!(id.to_string(), "Integer!");
+    }
+
+    #[test]
+    fn combinar_es_conservador_y_aguas_abajo_deja_de_ser_del_origen() {
+        use Nulabilidad::*;
+        assert_eq!(Garantizada.y(Nulable), Nulable);
+        assert_eq!(Garantizada.y(Derivada), Derivada);
+        assert_eq!(Garantizada.y(Garantizada), Garantizada);
+        assert_eq!(Garantizada.aguas_abajo(), Derivada);
+        assert_eq!(Nulable.aguas_abajo(), Nulable);
+        assert_eq!(Nulabilidad::default(), Nulable);
+        assert!(!Nulable.nunca_nula() && Derivada.nunca_nula());
     }
 }
 
