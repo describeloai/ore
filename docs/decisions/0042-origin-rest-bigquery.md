@@ -1,4 +1,9 @@
-# 0042 · BigQuery por REST: el driver habla la API, y el catálogo vive en él
+# 0042 · (origin)REST BigQuery
+
+De la saga **(origins)**, la que detalla la estructura de los orígenes: cómo lee ORE un origen
+**BigQuery**. El driver habla la API REST de Google, sin el CLI `bq`, lleva su propio catálogo y
+su credencial, y su frontera es el IAM de su cuenta. La lectura en Arrow por la Storage Read API
+llegó después ([0043](0043-ore-arrow-stream.md)). (Antes: «BigQuery por REST».)
 
 **Estado:** decidido y hecho (2026-09-26, Fase A: A0–A5 en `main`) · **Decide:** cómo lee
 `ore-read-bigquery`, dónde vive su catálogo, qué credencial lleva y cuál es su frontera. Sigue a
@@ -62,14 +67,15 @@ Contra un dataset de verdad (`ventas`, semilla acotada `ore-e2e-*`, 5 + 8 filas)
 
 ## Lo que queda fuera
 
-- **REQUIRED → `required` en Iceberg**: Fase B. Pide gramática en OOS, análisis de nulabilidad en
-  las vistas, y que Iceberg no deja endurecer una tabla que ya existe.
-- **La Storage Read API** (Arrow, en paralelo): cuando una tabla no quepa en el tiempo de un Job.
-- **Conceder los roles del punto 4 a `ore-driver-*`**: es un cambio de IAM y se hace a mano, por
-  inquilino y por dataset. Hasta entonces BigQuery solo se ha ejercido fuera del clúster.
-- **La imagen `drivers` sigue sobre el SDK de Google Cloud**, pero ya no por `bq`: la usa
-  también el Job del aprovisionador, que necesita `gcloud`. Separarlas daría a los drivers una
-  base `alpine` con las CA; queda anotado, no decidido.
+✏️ Revisado el 2026-10-02.
+
+| lo que quedó fuera | hoy |
+|---|---|
+| **REQUIRED → `required` en Iceberg** | **Pendiente.** El driver ya lo lee (`obligatoria` en su catálogo, de `tables.get`), pero la spec (v1alpha21) no tiene cómo decirlo en una columna, y el almacén marca toda columna como opcional (`carga.rs`, `with_nullable(true)`). Faltan la gramática en OOS, el análisis de nulabilidad en las vistas, y resolver que Iceberg no deja endurecer una columna que ya existe |
+| **La Storage Read API** | **Hecha** en [0043](0043-ore-arrow-stream.md), ORE Arrow Stream |
+| **Los roles del punto 4** | **Hechos a mano**, como dice D4: `ore-driver-demo` y `ore-driver-victor` tienen `jobUser` (y `readSessionUser`, 0043) en el proyecto y `READER` en el dataset `ventas`. ⚠️ El aprovisionador no da ninguno: **una celda nueva no lee BigQuery** hasta que alguien se los conceda. Pendiente: concederlos al dar de alta la fuente, por dataset, o dejar escrito el paso manual |
+| **La imagen `drivers` sobre el SDK de Google** | **Igual** (`google-cloud-cli:alpine`): la usa también el aprovisionador por `gcloud`. Anotado, no decidido |
+| *(visto al revisar)* **`ore-driver`, la cuenta sin sufijo** | Tiene `dataViewer` y `jobUser` **en todo el proyecto**: justo lo que D4 prohíbe. Ninguna celda la usa. Está en la deuda de [0047](0047-ore-access-control.md) |
 
 ## Aceptación
 

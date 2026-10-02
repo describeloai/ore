@@ -10,7 +10,7 @@ Arrow».)
 viajan las filas de la fase ③ y quién las tiene en memoria. Amplía
 [`0008`](0008-el-protocolo-del-driver.md) (la petición gana `formato`) y
 [`0015`](0015-el-protocolo-del-almacen.md) (el almacén gana `sellar-flujo`). Sigue a
-[`0042`](0042-bigquery-por-rest.md).
+[`0042`](0042-origin-rest-bigquery.md).
 
 ## Lo medido
 
