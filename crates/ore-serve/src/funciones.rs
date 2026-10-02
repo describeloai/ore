@@ -123,43 +123,57 @@ fn es_corrida(s: &str) -> bool {
 /// ⚠️ Lo que sigue al prefijo tiene que ser una corrida: `ia_f_` es también el
 ///   principio de los informes de `ia.f_x`, y sin mirarlo se mezclaban.
 fn resultados_de(raiz: &Path, qn: &str) -> Vec<Json> {
-    let nombre = ore_core::punteros::resultados_de(qn);
-    let (sub, base) = nombre.rsplit_once('/').unwrap_or(("", &nombre));
-    let prefijo = format!("{base}_");
-    let Ok(es) = std::fs::read_dir(raiz.join("resultados").join(sub)) else {
+    let (sub, prefijo) = carpeta_y_prefijo(qn);
+    let Ok(es) = std::fs::read_dir(raiz.join("resultados").join(&sub)) else {
         return Vec::new();
     };
-    let mut ficheros: Vec<PathBuf> = es
+    let ficheros = es
         .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name().and_then(|f| f.to_str()).is_some_and(|f| {
-                f.strip_prefix(&prefijo)
-                    .and_then(|r| r.strip_suffix(".json"))
-                    .is_some_and(es_corrida)
-            })
+        .filter_map(|e| {
+            let nombre = e.file_name().to_str()?.to_string();
+            let texto = std::fs::read_to_string(e.path()).ok()?;
+            Some((nombre, texto, None))
         })
         .collect();
-    ficheros.sort();
-    ficheros.reverse();
-    ficheros
-        .iter()
-        .filter_map(|p| {
-            let t = std::fs::read_to_string(p).ok()?;
-            let n = parse::parse(&t).ok()?;
-            let Json::Obj(mut m) = de_node(&n) else {
-                return None;
-            };
-            let corrida = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.strip_prefix(&prefijo))
-                .unwrap_or("")
-                .to_string();
-            m.insert("corrida".into(), Json::s(corrida));
-            Some(Json::Obj(m))
-        })
-        .collect()
+    informes(&prefijo, ficheros)
+}
+
+/// Dónde están los informes de `qn` dentro de `resultados/`, y cómo empiezan.
+fn carpeta_y_prefijo(qn: &str) -> (String, String) {
+    let nombre = ore_core::punteros::resultados_de(qn);
+    let (sub, base) = nombre.rsplit_once('/').unwrap_or(("", &nombre));
+    (sub.to_string(), format!("{base}_"))
+}
+
+/// Los informes, de `(fichero, texto, rama)`: los de esa función (lo que sigue
+/// al prefijo es una corrida), cada uno con su `corrida` —y su `rama`, si no
+/// es la que se lee—, del más reciente al más viejo y sin repetir.
+fn informes(prefijo: &str, ficheros: Vec<(String, String, Option<String>)>) -> Vec<Json> {
+    let mut por_corrida: std::collections::BTreeMap<String, Json> = Default::default();
+    for (nombre, texto, rama) in ficheros {
+        let Some(corrida) = nombre
+            .strip_prefix(prefijo)
+            .and_then(|r| r.strip_suffix(".json"))
+            .filter(|c| es_corrida(c))
+        else {
+            continue;
+        };
+        if por_corrida.contains_key(corrida) {
+            continue;
+        }
+        let Ok(n) = parse::parse(&texto) else {
+            continue;
+        };
+        let Json::Obj(mut m) = de_node(&n) else {
+            continue;
+        };
+        m.insert("corrida".into(), Json::s(corrida));
+        if let Some(r) = rama {
+            m.insert("rama".into(), Json::s(r));
+        }
+        por_corrida.insert(corrida.to_string(), Json::Obj(m));
+    }
+    por_corrida.into_values().rev().collect()
 }
 
 fn ficha(raiz: &Path, f: &Funcion) -> Json {
@@ -228,9 +242,34 @@ impl Servidor {
         if funciones_de(raiz).iter().all(|f| f.qn() != qn) {
             return Respuesta::error(404, format!("no hay ninguna función `{qn}`"));
         }
+        // 0050 F4: los de `main` y los de cada rama. Una invocación confirma su
+        // informe en la rama del puesto de quien la lanzó, no en `main`.
+        let lista = match &self.arbol {
+            crate::rutas::Arbol::Forja(forja) => {
+                let (sub, prefijo) = carpeta_y_prefijo(&qn);
+                let dir = if sub.is_empty() {
+                    "resultados".to_string()
+                } else {
+                    format!("resultados/{sub}")
+                };
+                match forja.en_las_ramas(&dir, &prefijo) {
+                    Ok(fs) => informes(
+                        &prefijo,
+                        fs.into_iter()
+                            .map(|(rama, ruta, t)| {
+                                let nombre = ruta.rsplit('/').next().unwrap_or(&ruta).to_string();
+                                (nombre, t, rama)
+                            })
+                            .collect(),
+                    ),
+                    Err(_) => resultados_de(raiz, &qn),
+                }
+            }
+            crate::rutas::Arbol::Directorio(_) => resultados_de(raiz, &qn),
+        };
         Respuesta::ok(Json::obj([
             ("function", Json::s(&qn)),
-            ("resultados", Json::Arr(resultados_de(raiz, &qn))),
+            ("resultados", Json::Arr(lista)),
         ]))
     }
 

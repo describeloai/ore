@@ -1132,6 +1132,79 @@ impl Forja {
         .map_err(|_| Fallo::SinRama(rama.unwrap_or("HEAD").to_string()))
     }
 
+    /// **Los ficheros de una carpeta en TODAS las ramas** (0050 F4): los que
+    /// están directamente en `dir` y empiezan por `prefijo`, con la rama y su
+    /// texto (`None`: la rama por defecto). Del espejo, al día con la forja.
+    /// Un fichero que está en varias ramas sale una vez, de la primera que lo
+    /// tiene (la de por defecto primero).
+    ///
+    /// Lo que pide: los informes de una función. Una invocación corre como un
+    /// trabajo del puesto y su informe se confirma en la rama del puesto
+    /// (`<persona>/puesto`), no en `main`, que está protegida: leer solo
+    /// `main` las escondía todas (medido en t-victor el 2026-10-02).
+    pub fn en_las_ramas(
+        &self,
+        dir: &str,
+        prefijo: &str,
+    ) -> Result<Vec<(Option<String>, String, String)>, Fallo> {
+        let e = self.espejo()?;
+        let _a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+        self.al_dia(&e)?;
+        let d = e.dir.to_string_lossy().into_owned();
+        let principal = self
+            .git(None, &["--git-dir", &d, "symbolic-ref", "--short", "HEAD"])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let mut ramas: Vec<String> = self
+            .git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    "refs/heads",
+                ],
+            )?
+            .lines()
+            .map(str::to_string)
+            .filter(|r| !r.is_empty())
+            .collect();
+        ramas.sort_by_key(|r| (*r != principal, r.clone()));
+        let carpeta = format!("{}/", dir.trim_end_matches('/'));
+        let mut vistos = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for r in ramas {
+            let Ok(lista) = self.git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "ls-tree",
+                    "--name-only",
+                    &format!("refs/heads/{r}"),
+                    "--",
+                    &carpeta,
+                ],
+            ) else {
+                continue;
+            };
+            for ruta in lista.lines() {
+                let nombre = ruta.rsplit('/').next().unwrap_or(ruta);
+                if !nombre.starts_with(prefijo) || !vistos.insert(nombre.to_string()) {
+                    continue;
+                }
+                if let Ok(t) = self.git(
+                    None,
+                    &["--git-dir", &d, "show", &format!("refs/heads/{r}:{ruta}")],
+                ) {
+                    out.push(((r != principal).then(|| r.clone()), ruta.to_string(), t));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// **El árbol de una rama, para leer** (`None`: la de por defecto). Lo
     /// último de la forja, sin clonarlo: un `fetch` y el `worktree` de su
     /// commit, que se comparte. Si el espejo falla, un clon como antes.
@@ -1665,6 +1738,70 @@ mod pruebas {
             "lo escrito no llegó a la forja, o el espejo no lo trajo"
         );
         drop(a);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⭐ 0050 F4 · **Los informes de una función, en todas las ramas.** Una
+    /// invocación confirma su informe en la rama del puesto (`ana/puesto`) y
+    /// no en `main`: se leen los de las dos, sin repetir los que la rama trae
+    /// de `main`, y cada uno dice de qué rama es (`None`: la de por defecto).
+    #[test]
+    fn los_ficheros_de_una_carpeta_en_todas_las_ramas() {
+        let d = temporal();
+        let pelada = d.join("arbol.git");
+        let otro = d.join("otro");
+        std::fs::create_dir_all(&otro).unwrap();
+        let corre = |args: &[&str], cwd: &Path| {
+            let s = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "s")
+                .env("GIT_AUTHOR_EMAIL", "s@x")
+                .env("GIT_COMMITTER_NAME", "s")
+                .env("GIT_COMMITTER_EMAIL", "s@x")
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        let p = pelada.to_str().unwrap();
+        corre(&["init", "-q", "--bare", "-b", "main", p], &d);
+        corre(&["init", "-q", "-b", "main"], &otro);
+        std::fs::create_dir_all(otro.join("resultados")).unwrap();
+        let (de_main, de_ana) = ("{\"de\": \"main\"}", "{\"de\": \"ana\"}");
+        std::fs::write(otro.join("resultados/v_f_20261001T000000Z.json"), de_main).unwrap();
+        std::fs::write(otro.join("resultados/v_fx_20261001T000000Z.json"), "{}").unwrap();
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "main"], &otro);
+        corre(&["push", "-q", p, "HEAD:main"], &otro);
+        std::fs::write(otro.join("resultados/v_f_20261002T065806Z.json"), de_ana).unwrap();
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "invocar"], &otro);
+        corre(&["push", "-q", p, "HEAD:refs/heads/ana/puesto"], &otro);
+        let f = Forja {
+            url: format!("file://{}", pelada.to_string_lossy().replace('\\', "/")),
+            testigo: String::new(),
+        };
+        let mut v = f.en_las_ramas("resultados", "v_f_").unwrap();
+        v.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(
+            v,
+            vec![
+                (
+                    None,
+                    "resultados/v_f_20261001T000000Z.json".to_string(),
+                    de_main.to_string()
+                ),
+                (
+                    Some("ana/puesto".to_string()),
+                    "resultados/v_f_20261002T065806Z.json".to_string(),
+                    de_ana.to_string()
+                ),
+            ]
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }
