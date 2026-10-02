@@ -116,10 +116,69 @@ pub struct Opciones<'a> {
 /// `informe_de`, y lo que cambia de una pasada a otra es el proceso.
 static AJENOS: std::sync::OnceLock<crate::datasets::Ajenos> = std::sync::OnceLock::new();
 
+/// ORE 0051 P6 · **Si las copias de este árbol imponen lo que nunca es nulo.**
+/// Un fichero del árbol, `.arbol/nulos.yaml`, como `.arbol/ramas.yaml`
+/// (ore-serve `politica.rs`): se enciende celda a celda con un commit, queda
+/// en la historia y se apaga con un revert —y apagar es aflojar: la cabecera
+/// pierde `obligatorias`, la copia se rehace y sus columnas vuelven a
+/// opcionales (P5)—.
+///
+/// ```yaml
+/// imponer: true
+/// ```
+///
+/// Sin fichero, o sin `imponer: true`, o un fichero que no se entiende:
+/// apagado, que es lo que la copia era antes de P6.
+pub(crate) const NULOS: &str = ".arbol/nulos.yaml";
+static IMPONER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn imponer_de(raiz: &Path) -> bool {
+    std::fs::read_to_string(raiz.join(NULOS))
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .and_then(|n| {
+            n.get("imponer")
+                .and_then(|(_, v)| v.as_str().map(|s| s.trim() == "true"))
+        })
+        .unwrap_or(false)
+}
+
+/// **Lo que la copia de `d` impone**: de las columnas que escribe (`esq`), las
+/// que nunca son nulas —lo que el origen garantiza, o lo que se deriva de la
+/// consulta (P4, `vistas::nulabilidad_de_vista`)—, si el árbol lo enciende.
+fn obligatorias_de(
+    pkg: &Package,
+    d: &Loaded,
+    esq: &BTreeMap<String, ore_core::types::Type>,
+) -> std::collections::BTreeSet<String> {
+    if !IMPONER.get().copied().unwrap_or(false) {
+        return Default::default();
+    }
+    let n = vistas::nulabilidad_de_vista(pkg, d);
+    esq.keys()
+        .filter(|c| {
+            n.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(c))
+                .is_some_and(|(_, n)| n.nunca_nula())
+        })
+        .cloned()
+        .collect()
+}
+
+fn decir_obligatorias(o: &std::collections::BTreeSet<String>) {
+    if !o.is_empty() {
+        println!(
+            "  impone nunca nula · {}",
+            o.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+}
+
 pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // Preparar no sella ni recoge: sólo deja lo que el cálculo necesita.
     let preparando = op.preparar.is_some();
     let (seco, recoger) = (op.seco, op.recoger && !preparando);
+    let _ = IMPONER.set(imponer_de(path));
     match crate::datasets::Ajenos::de(op.reclaman) {
         Ok(a) => {
             let _ = AJENOS.set(a);
@@ -285,10 +344,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
                         &qn,
                         &ore_core::json::Json::obj([
                             ("estado", ore_core::json::Json::s("error")),
-                            (
-                                "motivo",
-                                ore_core::json::Json::s(e.lines().next().unwrap_or("")),
-                            ),
+                            ("motivo", ore_core::json::Json::s(motivo_de(&e))),
                         ]),
                     )
                 {
@@ -495,7 +551,9 @@ fn una(
     // la que el puntero guarda: si es la misma, la copia está y no se lee una
     // fila. Un HEAD al `metadata.json` apuntado, para no decir «ya está» de un
     // bucket que alguien vació.
-    let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave);
+    let obligatorias = obligatorias_de(pkg, v, &esq);
+    decir_obligatorias(&obligatorias);
+    let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave, &obligatorias);
     let huella = ore_core::digest::de_bytes(cabecera.as_bytes());
     let puntero = leer_puntero(punteros, qn);
     // El nombre en el bucket: el que el puntero diga (una copia migrada sigue
@@ -764,7 +822,9 @@ fn por_su_consulta(
     marcas.sort();
     let testigo = ("snapshot".to_string(), Some(marcas.join(",")));
     let plan = ore_core::digest::de_bytes(servida.consulta.as_bytes());
-    let cabecera = cabecera(&plan, &esq, &testigo, &[]);
+    let obligatorias = obligatorias_de(pkg, d, &esq);
+    decir_obligatorias(&obligatorias);
+    let cabecera = cabecera(&plan, &esq, &testigo, &[], &obligatorias);
     let huella = ore_core::digest::de_bytes(cabecera.as_bytes());
     let puntero = leer_puntero(punteros, qn);
     let dataset = dataset_de(puntero.as_ref(), qn);
@@ -1563,18 +1623,24 @@ fn origen_del_lago(raiz_pkg: &Path, abajo: &Loaded) -> Result<OrigenDelLago, Str
 /// `victor`; `medida-lo-que-parece-roto.py` §4). Plan, esquema, clave, testigo
 /// y conducto ya nombran lo que la copia contiene; de qué árbol salió es
 /// procedencia y va al puntero (`bundle`), no a la llave.
+///
+/// ORE 0051 P6: y `obligatorias`, lo que la copia impone, **sólo si hay
+/// alguna**: sin nada que imponer, la cabecera de antes byte a byte (la misma
+/// regla que `Cabecera::jcs` de `ore-store`, que es quien la vuelve a
+/// escribir en el snapshot).
 pub(crate) fn cabecera(
     plan: &str,
     esq: &BTreeMap<String, ore_core::types::Type>,
     testigo: &(String, Option<String>),
     clave: &[String],
+    obligatorias: &std::collections::BTreeSet<String>,
 ) -> String {
     use ore_core::json::Json;
     let t = match &testigo.1 {
         Some(v) => Json::obj([("modo", Json::s(&testigo.0)), ("valor", Json::s(v))]),
         None => Json::obj([("modo", Json::s(&testigo.0))]),
     };
-    Json::obj([
+    let mut c = Json::obj([
         ("clave", Json::Arr(clave.iter().map(Json::s).collect())),
         ("conducto", Json::s(CONDUCTO)),
         (
@@ -1587,8 +1653,14 @@ pub(crate) fn cabecera(
         ),
         ("plan", Json::s(plan)),
         ("testigo", t),
-    ])
-    .jcs()
+    ]);
+    if let (Json::Obj(m), false) = (&mut c, obligatorias.is_empty()) {
+        m.insert(
+            "obligatorias".into(),
+            Json::Arr(obligatorias.iter().map(Json::s).collect()),
+        );
+    }
+    c.jcs()
 }
 
 /// **⑤ · Las filas, del programa que sabe hablar con el origen.**
@@ -1865,6 +1937,22 @@ pub(crate) fn almacen(
         .map_err(|e| format!("lo que devolvió `{programa}` no analiza: {e:?}\n{salida}"))
 }
 
+/// **El motivo que va al puntero**: la primera línea del fallo, y si es «el
+/// almacén falló», también lo que el almacén dijo —la línea `error:` de su
+/// stderr, que [`lector::ejecutar`] deja debajo—. Con la primera línea sola,
+/// el puntero de una copia que se negó por un nulo (ORE 0051 P6) decía
+/// «`ore-store-gcs` falló (1)», y lo accionable se quedaba en el log del Job.
+fn motivo_de(e: &str) -> String {
+    let primera = e.lines().next().unwrap_or("");
+    match e
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("│ error: "))
+    {
+        Some(dice) if primera.contains("falló") => format!("{primera}: {dice}"),
+        _ => primera.to_string(),
+    }
+}
+
 /// `ore-store-r2` o `ore-store-gcs`, según `ORE_STORE`: `r2` (un S3 con clave
 /// estática, el de siempre) o `gcs` (Google Cloud Storage con el token de la
 /// cuenta que corre: la celda). Los dos hablan el mismo protocolo y sellan el
@@ -1884,6 +1972,98 @@ pub fn programa_del_almacen() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ORE 0051 P6 · Sin nada que imponer, **la cabecera de antes byte a
+    /// byte** —es lo que hace que encender `.arbol/nulos.yaml` sólo rehaga las
+    /// copias con algo garantizado—; con algo, `obligatorias` en su sitio del
+    /// JSON canónico, que es donde `ore-store` la vuelve a escribir.
+    #[test]
+    fn la_cabecera_sin_obligatorias_es_la_de_antes() {
+        let esq: BTreeMap<String, ore_core::types::Type> = [
+            (
+                "id".to_string(),
+                ore_core::types::parse_type("Integer").unwrap(),
+            ),
+            (
+                "nombre".to_string(),
+                ore_core::types::parse_type("String").unwrap(),
+            ),
+        ]
+        .into();
+        let t = ("log".to_string(), Some("7".to_string()));
+        let clave = ["id".to_string()];
+        let sin = cabecera("sha256:p", &esq, &t, &clave, &Default::default());
+        assert_eq!(
+            sin,
+            format!(
+                "{{\"clave\":[\"id\"],\"conducto\":\"{CONDUCTO}\",\"esquema\":{{\"id\":\"Integer\",\"nombre\":\"String\"}},\"plan\":\"sha256:p\",\"testigo\":{{\"modo\":\"log\",\"valor\":\"7\"}}}}"
+            )
+        );
+        let con = cabecera("sha256:p", &esq, &t, &clave, &["id".to_string()].into());
+        assert!(
+            con.contains("\"nombre\":\"String\"},\"obligatorias\":[\"id\"],\"plan\""),
+            "{con}"
+        );
+    }
+
+    #[test]
+    fn el_motivo_lleva_lo_que_el_almacen_dijo() {
+        let e = "`ore-store-r2` falló (1)
+  /usr/bin/ore-store-r2
+  │ error: la columna `id` nunca es nula";
+        assert_eq!(
+            motivo_de(e),
+            "`ore-store-r2` falló (1): la columna `id` nunca es nula"
+        );
+        assert_eq!(
+            motivo_de(
+                "el plan no se expande
+  más"
+            ),
+            "el plan no se expande"
+        );
+    }
+
+    /// El interruptor: sólo `imponer: true` lo enciende; sin fichero, con otro
+    /// valor o con un fichero que no se entiende, apagado.
+    #[test]
+    fn el_interruptor_es_un_fichero_del_arbol() {
+        let d = std::env::temp_dir().join(format!("ore-p6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join(".arbol")).unwrap();
+        assert!(!imponer_de(&d), "sin fichero");
+        for (texto, sale) in [
+            (
+                "imponer: true
+",
+                true,
+            ),
+            (
+                "imponer: false
+",
+                false,
+            ),
+            (
+                "imponer: si
+",
+                false,
+            ),
+            (
+                "otra: true
+",
+                false,
+            ),
+            (
+                "imponer: [
+",
+                false,
+            ),
+        ] {
+            std::fs::write(d.join(NULOS), texto).unwrap();
+            assert_eq!(imponer_de(&d), sale, "{texto:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn raiz() -> vistas::Raiz {
         vistas::Raiz {

@@ -498,7 +498,7 @@ fn ids_anidados(
 
 /// ¿Son el mismo esquema, columna a columna (nombre, tipo, id y si es
 /// `required`, en orden)?
-fn mismo_esquema(a: &Schema, b: &Schema) -> bool {
+pub fn mismo_esquema(a: &Schema, b: &Schema) -> bool {
     let fa = a.as_struct().fields();
     let fb = b.as_struct().fields();
     fa.len() == fb.len()
@@ -782,17 +782,24 @@ impl Lago {
     }
 
     /// **Escribe los ficheros de datos** (Parquet, SNAPPY, con las estadísticas
-    /// que Iceberg pide) y **confirma el snapshot**. Los lotes llegan con las
-    /// columnas en el orden del esquema de la tabla; se reenvuelven con el
-    /// esquema de Arrow que sale de ella para que lleven los ids de campo.
+    /// que Iceberg pide) y **confirma el snapshot**, con `esquema` —el de la
+    /// tabla o el que el lote pide—. Los lotes llegan con las columnas en el
+    /// orden del esquema; se reenvuelven con el de Arrow que sale de él para
+    /// que lleven los ids de campo.
+    ///
+    /// ORE 0051 P6 · **El esquema nuevo y el snapshot van en el mismo
+    /// commit.** Antes el esquema se confirmaba primero ([`Lago::esquema`]), y
+    /// una escritura que fallaba después dejaba la tabla con el esquema nuevo
+    /// sobre los ficheros de antes: al endurecer, `required` sobre ficheros con
+    /// nulos, que es la cifra falsa de la espiga (E5b).
     pub fn instantanea(
         &self,
         tabla: &Table,
+        esquema: Schema,
         lotes: Vec<RecordBatch>,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Escrito, String> {
-        let esquema = tabla.metadata().current_schema().as_ref().clone();
         let p = self.preparar(tabla, esquema, lotes, operacion, propiedades)?;
         let nueva = self.confirmar(tabla, p.cambios, p.requisitos)?;
         Ok(Escrito {
@@ -834,11 +841,11 @@ impl Lago {
     pub fn instantanea_flujo(
         &self,
         tabla: &Table,
+        esquema: Schema,
         lotes: impl Iterator<Item = Result<RecordBatch, String>>,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Escrito, String> {
-        let esquema = tabla.metadata().current_schema().as_ref().clone();
         let p = runtime().block_on(self.preparar_async(
             tabla,
             esquema,

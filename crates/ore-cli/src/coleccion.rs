@@ -922,7 +922,8 @@ pub fn una(
     if let Some(b) = base {
         extra.push_str(&format!("\"base\":\"{b}\","));
     }
-    let peticion = cabecera(&plan, &esquema, &t, &clave).replacen('{', &extra, 1);
+    let peticion =
+        cabecera(&plan, &esquema, &t, &clave, &Default::default()).replacen('{', &extra, 1);
     let filas: String = c.filas.iter().map(|f| f.fila() + "\n").collect();
     let s = if c.filas.is_empty() && fundir {
         // El listado cambió y la colección no (lo nuevo está fuera de sus
@@ -1132,7 +1133,8 @@ pub fn caducar(
     let t = ("listing".to_string(), Some(testigo));
     let clave = vec!["clave".to_string(), "version".to_string()];
     let extra = format!("{{\"dataset\":\"{dataset}\",\"fundir\":false,\"base\":\"{ml}\",");
-    let peticion = cabecera(&plan, &esquema, &t, &clave).replacen('{', &extra, 1);
+    let peticion =
+        cabecera(&plan, &esquema, &t, &clave, &Default::default()).replacen('{', &extra, 1);
     let texto: String = quedan.iter().map(|f| f.fila() + "\n").collect();
     let s = almacen("sellar", &peticion, Some(&texto))?;
     let mut m: BTreeMap<String, Json> = match Json::de_node(puntero) {

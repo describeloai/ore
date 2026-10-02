@@ -858,6 +858,9 @@ fn sellar_flujo(
     let mut filas = 0usize;
     let mut no_nulos = vec![0usize; esquema.fields().len()];
     let mut hecho = false;
+    // Al fundir, `confirmar_copia` mira todas las filas; sin fundir no hay
+    // otra ocasión que esta, lote a lote, antes del snapshot (ORE 0051 P6).
+    let mirar = !fundir;
     // La marca de fin se pregunta DENTRO del iterador, antes del último
     // `None`: si falta, el último elemento es un error y no hay snapshot.
     let lotes = std::iter::from_fn(|| {
@@ -868,6 +871,12 @@ fn sellar_flujo(
             Some(l) => Some(
                 l.map_err(|e| format!("un lote del flujo no se pudo leer: {e}"))
                     .and_then(|l| carga::al_contrato(&l, &esquema))
+                    .and_then(|l| {
+                        if mirar {
+                            carga::sin_nulos(&l, &cab.obligatorias, filas, &dataset)?;
+                        }
+                        Ok(l)
+                    })
                     .inspect(|l| {
                         filas += l.num_rows();
                         for (i, c) in l.columns().iter().enumerate() {
@@ -906,9 +915,9 @@ fn sellar_flujo(
     }
     let columnas_del_contrato =
         lago::columnas_de(&arrow_array::RecordBatch::new_empty(esquema.clone()));
-    let (tabla, operacion, esquema_cambiado, propiedades) =
+    let (tabla, de_la_tabla, operacion, esquema_cambiado, propiedades) =
         destino(lago, &cab, &dataset, previa, &columnas_del_contrato)?;
-    let escrito = lago.instantanea_flujo(&tabla, lotes, operacion, propiedades)?;
+    let escrito = lago.instantanea_flujo(&tabla, de_la_tabla, lotes, operacion, propiedades)?;
     Ok(respuesta(
         &escrito,
         operacion,
@@ -977,10 +986,17 @@ fn confirmar_copia(
     } else {
         lotes
     };
+    // ORE 0051 P6: lo que nunca es nulo, mirado en TODAS las filas que van a
+    // la copia —también las de antes, al fundir— y antes de tocar la tabla.
+    let mut desde = 0;
+    for l in &lotes {
+        carga::sin_nulos(l, &cab.obligatorias, desde, dataset)?;
+        desde += l.num_rows();
+    }
 
-    let (tabla, operacion, esquema_cambiado, propiedades_snapshot) =
+    let (tabla, esquema, operacion, esquema_cambiado, propiedades_snapshot) =
         destino(lago, cab, dataset, previa, &lago::columnas_de(&lotes[0]))?;
-    let escrito = lago.instantanea(&tabla, lotes, operacion, propiedades_snapshot)?;
+    let escrito = lago.instantanea(&tabla, esquema, lotes, operacion, propiedades_snapshot)?;
     Ok(respuesta(
         &escrito,
         operacion,
@@ -994,8 +1010,10 @@ fn confirmar_copia(
 }
 
 /// **La tabla donde se escribe**: la que había, con el esquema que el lote pide
-/// (`sobrescribir`), o una nueva (`anexar`); y la cabecera como propiedades del
-/// snapshot.
+/// (`sobrescribir`), o una nueva (`anexar`); el esquema con el que se escribe,
+/// que va en el mismo commit que el snapshot ([`Lago::instantanea`]); y la
+/// cabecera como propiedades del snapshot.
+#[allow(clippy::type_complexity)]
 fn destino(
     lago: &Lago,
     cab: &sobre::Cabecera,
@@ -1005,18 +1023,22 @@ fn destino(
 ) -> Result<
     (
         iceberg::table::Table,
+        iceberg::spec::Schema,
         Operacion,
         bool,
         HashMap<String, String>,
     ),
     String,
 > {
-    // El esquema que el lote pide, con los ids de la tabla si la hay. Nada se
-    // pide `required` todavía (ORE 0051 P6), y esta escritura lo reescribe todo
-    // —una tabla nueva, o `sobrescribir`—: lo que hubiera `required` se afloja.
+    // El esquema que el lote pide, con los ids de la tabla si la hay, y
+    // `required` lo que la cabecera dice que nunca es nulo (ORE 0051 P6). Esta
+    // escritura lo reescribe todo —una tabla nueva, o `sobrescribir`, que al
+    // fundir también lleva las filas de antes—, así que se puede endurecer:
+    // cada fila que queda viva pasa por `carga::sin_nulos`. Lo que la cabecera
+    // ya no pide se afloja.
     let deseado = lago::esquema_deseado(
         columnas_del_lote,
-        &std::collections::BTreeSet::new(),
+        &cab.obligatorias,
         previa
             .as_ref()
             .map(|t| t.metadata().current_schema().as_ref()),
@@ -1036,13 +1058,13 @@ fn destino(
 
     let (tabla, operacion, esquema_cambiado) = match previa {
         Some(t) => {
-            let (t, cambiado) = lago.esquema(&t, deseado)?;
+            let cambiado = !lago::mismo_esquema(t.metadata().current_schema(), &deseado);
             (t, Operacion::Sobrescribir, cambiado)
         }
         None => {
             let t = lago.crear(
                 dataset,
-                deseado,
+                deseado.clone(),
                 HashMap::from([
                     (lago::PROP_CABECERA.to_string(), cab.jcs()),
                     ("ore.conducto".to_string(), cab.conducto.clone()),
@@ -1051,7 +1073,19 @@ fn destino(
             (t, Operacion::Anexar, false)
         }
     };
-    Ok((tabla, operacion, esquema_cambiado, propiedades_snapshot))
+    // El de la tabla recién creada ya es `deseado`, con los ids que Iceberg
+    // repartió; el de una que había, el que el lote pide.
+    let esquema = match operacion {
+        Operacion::Anexar => tabla.metadata().current_schema().as_ref().clone(),
+        Operacion::Sobrescribir => deseado,
+    };
+    Ok((
+        tabla,
+        esquema,
+        operacion,
+        esquema_cambiado,
+        propiedades_snapshot,
+    ))
 }
 
 /// **Lo que `sellar`, `copiar` y `sellar-flujo` contestan**, con sus cuentas.
@@ -1736,6 +1770,7 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
                     .get("ore.conducto")
                     .cloned()
                     .unwrap_or_default(),
+                obligatorias: Default::default(),
             }
             .jcs()
         });
@@ -2131,6 +2166,17 @@ fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
             })
             .unwrap_or_default(),
         conducto: s("conducto")?,
+        // ORE 0051 P6. Sin el campo —una cabecera de antes, o de una copia
+        // que no impone nada—, ninguna.
+        obligatorias: n
+            .get("obligatorias")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -2223,6 +2269,7 @@ mod tests {
             },
             clave: vec!["id".into()],
             conducto: "materialization.payload".into(),
+            obligatorias: Default::default(),
         }
     }
 
@@ -3681,6 +3728,7 @@ mod tests {
             },
             clave: Vec::new(),
             conducto: "materialization.payload".into(),
+            obligatorias: Default::default(),
         };
         // con un filtro: el literal `2.50` contra el decimal(18,2) del origen
         let n = nodo(&peticion(
@@ -3957,6 +4005,7 @@ mod tests {
             },
             clave: Vec::new(),
             conducto: "materialization.payload".into(),
+            obligatorias: Default::default(),
         };
         let salida = dir.join("salida.arrow");
         let de_la_consulta = |cols: &[&str], archivo: &std::path::Path| {
@@ -4261,8 +4310,9 @@ mod tests {
             ],
         )
         .unwrap();
+        let esquema = t.metadata().current_schema().as_ref().clone();
         let t = lago
-            .instantanea(&t, vec![lote], Operacion::Anexar, HashMap::new())
+            .instantanea(&t, esquema, vec![lote], Operacion::Anexar, HashMap::new())
             .unwrap()
             .tabla;
         let ml = t.metadata_location().unwrap().to_string();
@@ -4295,5 +4345,199 @@ mod tests {
         assert!(!id.required, "`id` queda opcional");
         assert_eq!(id.id, 1, "y es la misma columna");
         assert_eq!(filas_de(&lago, &campo(&s, "metadata_location")).len(), 2);
+    }
+
+    // ── ORE 0051 P6 · imponer ───────────────────────────────────────────────
+
+    fn impone(testigo: &str, c: &[&str]) -> sobre::Cabecera {
+        let mut cab = cabecera(testigo);
+        cab.obligatorias = c.iter().map(|s| s.to_string()).collect();
+        cab
+    }
+
+    /// Cuántos `metadata.json` hay en el bucket: uno por commit. Es lo que dice
+    /// si una escritura que falló dejó algo confirmado.
+    fn commits(m: &Memoria) -> usize {
+        m.listar("")
+            .unwrap()
+            .iter()
+            .filter(|k| k.ends_with(".metadata.json"))
+            .count()
+    }
+
+    fn requerida(lago: &Lago, ml: &str, ds: &str, c: &str) -> (bool, i32) {
+        let t = lago.abrir(ml, ds).unwrap();
+        let f = t
+            .metadata()
+            .current_schema()
+            .field_by_name(c)
+            .unwrap()
+            .clone();
+        (f.required, f.id)
+    }
+
+    /// Lo que la cabecera dice que nunca es nulo, la copia lo escribe
+    /// `required`; lo demás, opcional. Y la cabecera del snapshot lo lleva.
+    #[test]
+    fn la_copia_impone_lo_que_nunca_es_nulo() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let s = sellar(
+            &lago,
+            &impone("1", &["id"]),
+            "copias/p_v",
+            None,
+            false,
+            ["{\"id\":\"1\",\"nombre\":\"Ana\"}", "{\"id\":\"2\"}"].into_iter(),
+        )
+        .expect("sella");
+        let ml = campo(&s, "metadata_location");
+        assert!(requerida(&lago, &ml, "copias/p_v", "id").0);
+        assert!(!requerida(&lago, &ml, "copias/p_v", "nombre").0);
+        let t = lago.abrir(&ml, "copias/p_v").unwrap();
+        let cab = t
+            .metadata()
+            .current_snapshot()
+            .unwrap()
+            .summary()
+            .additional_properties
+            .get(lago::PROP_CABECERA)
+            .cloned()
+            .unwrap();
+        assert!(cab.contains("\"obligatorias\":[\"id\"]"), "{cab}");
+    }
+
+    /// Un nulo en una columna que nunca es nula no se escribe: se dice la
+    /// columna, la copia y qué hacer, y no se confirma nada.
+    #[test]
+    fn un_nulo_en_lo_que_nunca_es_nulo_no_se_escribe() {
+        let m = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(m.clone());
+        let e = sellar(
+            &lago,
+            &impone("1", &["nombre"]),
+            "copias/p_v",
+            None,
+            false,
+            ["{\"id\":\"1\",\"nombre\":\"Ana\"}", "{\"id\":\"2\"}"].into_iter(),
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("la columna `nombre` de `copias/p_v` nunca es nula"),
+            "{e}"
+        );
+        assert!(e.contains("la fila 2"), "{e}");
+        assert!(e.contains("vuelve a catalogar"), "{e}");
+        assert_eq!(commits(&m), 0, "ni la tabla nace");
+    }
+
+    /// Endurecer una copia que ya tenía un nulo dentro: al fundir, la fila de
+    /// antes también va a la copia nueva, y también se mira. Falla, y la tabla
+    /// sigue exactamente como estaba —ni el esquema se confirma—, que es lo
+    /// que la espiga pedía (E5b: `required` sobre ficheros con nulos).
+    #[test]
+    fn endurecer_sobre_un_nulo_de_antes_no_toca_la_tabla() {
+        let m = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(m.clone());
+        let s = sellar(
+            &lago,
+            &cabecera("1"),
+            "copias/p_v",
+            None,
+            false,
+            ["{\"id\":\"1\",\"nombre\":\"Ana\"}", "{\"id\":\"2\"}"].into_iter(),
+        )
+        .unwrap();
+        let ml = campo(&s, "metadata_location");
+        let antes = commits(&m);
+        let e = sellar(
+            &lago,
+            &impone("2", &["nombre"]),
+            "copias/p_v",
+            Some(&ml),
+            true,
+            ["{\"id\":\"3\",\"nombre\":\"Cai\"}"].into_iter(),
+        )
+        .unwrap_err();
+        assert!(e.contains("la columna `nombre`"), "{e}");
+        assert_eq!(commits(&m), antes, "no se confirmó nada: ni el esquema");
+        assert!(!requerida(&lago, &ml, "copias/p_v", "nombre").0);
+    }
+
+    /// Un flujo con dos columnas (`id` texto, `n` entero) en lotes, para
+    /// probar el camino que no tiene la copia en memoria.
+    fn flujo_con(lotes: &[Vec<Option<&str>>]) -> Vec<u8> {
+        use arrow_schema::{DataType, Field, Schema};
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, true),
+            Field::new("n", DataType::Int64, true),
+        ]));
+        let mut bytes = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            for ids in lotes {
+                let l = arrow_array::RecordBatch::try_new(
+                    esquema.clone(),
+                    vec![
+                        Arc::new(arrow_array::StringArray::from(ids.clone())),
+                        Arc::new(arrow_array::Int64Array::from_iter_values(
+                            0..ids.len() as i64,
+                        )),
+                    ],
+                )
+                .unwrap();
+                w.write(&l).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn primera_con(ds: &str, base: Option<&str>, obligatorias: &str) -> String {
+        let base = base
+            .map(|b| format!("\"base\":\"{b}\","))
+            .unwrap_or_default();
+        format!(
+            "{{\"dataset\":\"{ds}\",\"fundir\":false,{base}\"clave\":[],\"conducto\":\"materialization.payload\",\"esquema\":{{\"id\":\"String\",\"n\":\"Integer\"}}{obligatorias},\"plan\":\"sha256:p\",\"testigo\":{{\"modo\":\"none\"}}}}"
+        )
+    }
+
+    /// El flujo, sobre una copia que ya existía con `id` opcional: sin nulos,
+    /// `id` se endurece —la misma columna, el mismo id— y el esquema nuevo y el
+    /// snapshot son **un** commit; con un nulo en el segundo lote, falla con su
+    /// número de fila y no se confirma nada, aunque el primer lote ya se
+    /// hubiera escrito en un fichero.
+    #[test]
+    fn el_flujo_endurece_en_un_commit_o_no_confirma_nada() {
+        let m = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(m.clone());
+        let ds = "copias/flujo";
+        let p = primera_con(ds, None, "");
+        let r = sellar_flujo(&lago, &p, &nodo(&p), &flujo_con(&[vec![Some("a")]])[..]).unwrap();
+        let ml = campo(&r, "metadata_location");
+        assert_eq!(requerida(&lago, &ml, ds, "id"), (false, 1));
+
+        let antes = commits(&m);
+        let p = primera_con(ds, Some(&ml), ",\"obligatorias\":[\"id\"]");
+        let roto = flujo_con(&[vec![Some("a"), Some("b"), Some("c")], vec![Some("d"), None]]);
+        let e = sellar_flujo(&lago, &p, &nodo(&p), &roto[..]).unwrap_err();
+        assert!(e.contains("la columna `id` de `copias/flujo`"), "{e}");
+        assert!(e.contains("la fila 5"), "{e}");
+        assert_eq!(commits(&m), antes, "no se confirmó nada");
+
+        let sano = flujo_con(&[vec![Some("a"), Some("b")], vec![Some("c")]]);
+        let r = sellar_flujo(&lago, &p, &nodo(&p), &sano[..]).unwrap();
+        assert_eq!(commits(&m), antes + 1, "esquema y snapshot, un solo commit");
+        assert_eq!(campo(&r, "esquema_cambiado"), "true", "{r}");
+        let ml = campo(&r, "metadata_location");
+        assert_eq!(requerida(&lago, &ml, ds, "id"), (true, 1));
+        assert_eq!(filas_de(&lago, &ml).len(), 3);
+
+        // Y apagar es aflojar: la cabecera sin `obligatorias`, la misma columna.
+        let p = primera_con(ds, Some(&ml), "");
+        let r = sellar_flujo(&lago, &p, &nodo(&p), &flujo_con(&[vec![None]])[..]).unwrap();
+        assert_eq!(
+            requerida(&lago, &campo(&r, "metadata_location"), ds, "id"),
+            (false, 1)
+        );
     }
 }

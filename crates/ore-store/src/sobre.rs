@@ -56,7 +56,7 @@
 //! Parquet aquí.
 
 use ore_core::json::Json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAGIA: &[u8; 8] = b"ORECOPY1";
 
@@ -75,9 +75,9 @@ pub struct Testigo {
     pub valor: Option<String>,
 }
 
-/// Lo que va en la cabecera. Cinco campos, y los cinco contestan una pregunta
-/// distinta sobre **la copia**, no sobre quien la consulta ni sobre el árbol
-/// del que salió.
+/// Lo que va en la cabecera. Cinco campos —seis con `obligatorias`—, y todos
+/// contestan una pregunta distinta sobre **la copia**, no sobre quien la
+/// consulta ni sobre el árbol del que salió.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cabecera {
     /// El digest del plan que esta copia contesta. Es lo que el View Matcher
@@ -97,6 +97,14 @@ pub struct Cabecera {
     /// El conducto que la autorizó. Sin él no se sabría bajo qué permiso
     /// existen estas filas fuera de su origen.
     pub conducto: String,
+    /// ORE 0051 P6 · **Las columnas que nunca son nulas**, y que la copia
+    /// impone: el almacén las escribe `required` y niega la fila que traiga un
+    /// nulo en una. Va aparte y no como un `!` en el tipo de `esquema`, por
+    /// dos motivos: un almacén de antes ignora el campo y escribe como
+    /// siempre (un `Integer!` sería un tipo que no conoce), y **vacía no se
+    /// escribe**, así que la cabecera —y su huella— de una copia que no impone
+    /// nada son byte a byte las de antes.
+    pub obligatorias: BTreeSet<String>,
 }
 
 impl Cabecera {
@@ -109,7 +117,7 @@ impl Cabecera {
             // proyecto no tiene nulos, y «sin poblar» ya lo dice la ausencia.
             None => Json::obj([("modo", Json::s(&self.testigo.modo))]),
         };
-        Json::obj([
+        let mut c = Json::obj([
             ("clave", Json::Arr(self.clave.iter().map(Json::s).collect())),
             ("conducto", Json::s(&self.conducto)),
             (
@@ -123,9 +131,18 @@ impl Cabecera {
             ),
             ("plan", Json::s(&self.plan)),
             ("testigo", testigo),
-        ])
-        .jcs()
+        ]);
+        if let (Json::Obj(m), false) = (&mut c, self.obligatorias.is_empty()) {
+            m.insert("obligatorias".into(), obligatorias(&self.obligatorias));
+        }
+        c.jcs()
     }
+}
+
+/// `obligatorias` en la cabecera: la lista, ordenada. La escriben igual `ore`
+/// (`materializar::cabecera`) y el almacén, porque de esos bytes sale la huella.
+pub fn obligatorias(c: &BTreeSet<String>) -> Json {
+    Json::Arr(c.iter().map(Json::s).collect())
 }
 
 /// Abre un sobre heredado: la cabecera y la carga. Es la mitad lectora de un
@@ -187,6 +204,7 @@ mod tests {
             },
             clave: vec!["id".into()],
             conducto: "materialization.payload".into(),
+            obligatorias: BTreeSet::new(),
         }
     }
 
@@ -229,6 +247,10 @@ mod tests {
         c.clave = vec!["id".into(), "pais".into()];
         variantes.push(("clave", c));
 
+        let mut c = cabecera();
+        c.obligatorias.insert("id".into());
+        variantes.push(("obligatorias", c));
+
         for (que, c) in variantes {
             assert_ne!(
                 clave(&sellar(&c, b"carga")),
@@ -252,6 +274,24 @@ mod tests {
         let mut vacio = cabecera();
         vacio.testigo.valor = Some(String::new());
         assert_ne!(clave(&sellar(&sin, b"c")), clave(&sellar(&vacio, b"c")));
+    }
+
+    /// ORE 0051 P6 · **Sin nada que imponer, la cabecera de antes**, byte a
+    /// byte: es lo que hace que encender P6 en una celda sólo rehaga las copias
+    /// que tienen algo garantizado.
+    #[test]
+    fn sin_obligatorias_la_cabecera_es_la_de_antes() {
+        let antes = "{\"clave\":[\"id\"],\"conducto\":\"materialization.payload\",\
+            \"esquema\":{\"id\":\"String\",\"total\":\"Decimal\"},\"plan\":\"sha256:aaaa\",\
+            \"testigo\":{\"modo\":\"log\",\"valor\":\"1234\"}}";
+        assert_eq!(cabecera().jcs(), antes);
+        let mut c = cabecera();
+        c.obligatorias.insert("id".into());
+        assert!(
+            c.jcs().contains("\"obligatorias\":[\"id\"],\"plan\""),
+            "{}",
+            c.jcs()
+        );
     }
 
     /// Ida y vuelta: lo que se sella se vuelve a abrir, y la carga sale entera.

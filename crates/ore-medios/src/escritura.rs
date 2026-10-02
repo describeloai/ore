@@ -472,6 +472,7 @@ pub fn cabecera(coleccion: &str, tx: i64) -> Cabecera {
         // No la autoriza un conducto: la escribe código, con el permiso que
         // `ore-serve` dio a esa transacción.
         conducto: "media.escrita".into(),
+        obligatorias: Default::default(),
     }
 }
 

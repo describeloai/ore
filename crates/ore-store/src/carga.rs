@@ -800,6 +800,40 @@ pub fn al_esquema(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBat
         .map_err(|e| format!("el lote no construye: {e}"))
 }
 
+/// ORE 0051 P6 · **Una columna que nunca es nula no trae un nulo.** Se mira
+/// antes de escribir, lote a lote, y la primera fila que lo traiga niega la
+/// copia entera con su columna y su número (`desde` es cuántas filas iban
+/// antes de este lote): no hay snapshot, y la copia de antes sigue servida.
+///
+/// El escritor de Iceberg también lo negaría —la columna es `required`—, pero
+/// con un error de Arrow que no dice ni qué fila ni qué hacer. Y lo que hay
+/// que hacer casi siempre es lo mismo: el origen dejó de garantizarlo, y
+/// catalogarlo otra vez lo afloja (P3, P5).
+pub fn sin_nulos(
+    lote: &RecordBatch,
+    obligatorias: &std::collections::BTreeSet<String>,
+    desde: usize,
+    dataset: &str,
+) -> Result<(), String> {
+    use arrow_array::Array;
+    for c in obligatorias {
+        let Some(col) = lote.column_by_name(c) else {
+            continue;
+        };
+        if col.null_count() == 0 {
+            continue;
+        }
+        let fila = (0..col.len()).find(|&i| col.is_null(i)).unwrap_or(0);
+        return Err(format!(
+            "la columna `{c}` de `{dataset}` nunca es nula —lo garantiza su origen— y la fila {} \
+             trae un nulo: la copia no se escribe. Si el origen dejó de garantizarlo, vuelve a \
+             catalogar la fuente y la columna se afloja",
+            desde + fila + 1
+        ));
+    }
+    Ok(())
+}
+
 /// **Un lote que llega de un driver, al contrato de la cabecera** (ADR 0043).
 ///
 /// Más estricto que [`al_esquema`], porque aquí nada es de un fichero viejo: el
