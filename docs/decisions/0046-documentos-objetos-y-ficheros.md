@@ -6,7 +6,7 @@ documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet,
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
 SharePoint. Abre lo que la spec dejó cerrado a propósito —*«un dataset de ficheros… se abre
 entonces, y no estirando éste»* (`oos/spec/v1alpha12/00-scope.md:95-98`)— y lo abre sobre la base
-de [`0045`](0045-el-puntero-es-de-la-fuente.md): **el puntero es de la fuente**.
+de [`0045`](0045-source-pointer.md): **el puntero es de la fuente**.
 
 ## Por qué ahora, y por qué no es «añadir S3»
 

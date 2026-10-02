@@ -1,4 +1,9 @@
-# 0045 · El puntero es de la fuente: una database standard es sus datasets
+# 0045 · Source Pointer
+
+**Source Pointer** es el objeto que apunta a una tabla del origen (la `Table` de OOS), y es **de la
+fuente**: se escribe una vez, en el paquete de la conexión, y lo nombran todas las databases que lo
+usan. Una database standard es sus datasets; una foreign, sus vistas. (Antes: «el puntero es de la
+fuente».)
 
 **Estado:** **hecho** (2026-09-28): P1, P1′, P1.5, P2, P3′ y P4 desplegados (`059373e`) y los árboles vivos migrados (`demo` `afdaa10`, `victor` `fe7a689`); P5 y lo que queda de P6, pendientes nombrados en § «Al cerrar» · **Decide:** dónde
 vive la `Table` que apunta al origen, y por tanto qué hay dentro de una database. Revisa la
