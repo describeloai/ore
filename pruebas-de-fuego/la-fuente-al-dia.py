@@ -44,6 +44,7 @@ NOMBRE = "la-fuente-al-dia"
 # Las fuentes de cada celda cuyo esquema mira `--comprobar` (las que tienen catálogo).
 FUENTES = {
     "victor": "postgresql_20260918_1920 postgresql_20260918_2038 postgresql_20260921_2055 bigquery_20260927_1428",
+    "demo": "postgresql_20260910_1719 postgresql_20260910_1924 postgresql_20260910_2024 postgresql_20260910_2146 postgresql_20260912_0928",
 }
 
 
