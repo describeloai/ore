@@ -94,6 +94,8 @@ PLANTILLAS = [
     #   empuja a ore-iam. Otro proceso con otro privilegio; ore-serve no cambia.
     "47-el-informador.yaml",
     "50-jwks.yaml",
+    # ⭐ R1 · Las llaves de los pods: un puesto se presenta con el token de SU pod.
+    "56-las-llaves-de-los-pods.yaml",
     # ⭐ El mantenimiento del lago (0031 §10, W3.6b): un CronJob por inquilino
     #   que expira lo superado y retira lo que nadie nombra, sobre punteros.
     "53-el-mantenimiento.yaml",
@@ -865,6 +867,12 @@ def comprobar():
         job = next(d for d in docs if d.get("kind") == "Job" and d["metadata"]["name"] == "refresco-jwks-inicial")
         if cj["spec"]["jobTemplate"]["spec"] != job["spec"]:
             fallos.append("`50-jwks.yaml`: el Job `refresco-jwks-inicial` ya no es el `jobTemplate` del CronJob")
+        # R1 · Y el de las llaves de los pods, igual.
+        docs = [d for d in _yaml.safe_load_all((MALLA / "56-las-llaves-de-los-pods.yaml").read_text(encoding="utf-8")) if d]
+        cj = next(d for d in docs if d.get("kind") == "CronJob")
+        job = next(d for d in docs if d.get("kind") == "Job" and d["metadata"]["name"] == "refresco-jwks-pods-inicial")
+        if cj["spec"]["jobTemplate"]["spec"] != job["spec"]:
+            fallos.append("`56-las-llaves-de-los-pods.yaml`: el Job inicial ya no es el `jobTemplate` del CronJob")
         print("  ⭐ ⑪ el refresco inicial del JWKS es el jobTemplate del CronJob, letra por letra")
     except ImportError:
         print("  ⑪ (sin pyyaml: el refresco inicial no se coteja aqui)")

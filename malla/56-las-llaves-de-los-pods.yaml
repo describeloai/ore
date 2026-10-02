@@ -1,0 +1,260 @@
+# LAS LLAVES DE LOS PODS — las del clúster, para que un puesto sea SU pod (R1)
+#
+# ── Por qué ─────────────────────────────────────────────────────────────────
+#
+# Todos los pods de una celda hablaban con `ore-serve` con la MISMA credencial,
+# la del agente de la celda. El servidor no podía saber qué pod le hablaba, y el
+# techo de la clase de un repositorio (0036 ⑤) se rodeaba quitando una cabecera
+# o dejando que «el primer puesto de este agente» fuera otro (medido en R0,
+# 2026-10-02: un repositorio `functions` escribió una colección).
+#
+# ⇒ Un puesto se presenta con el token de cuenta de servicio de SU pod:
+#   proyectado con audiencia `ore-serve`, firmado por el clúster, ligado al pod
+#   (`kubernetes.io.pod.name`) y renovado por el kubelet. `ore-serve` lo verifica
+#   (`--emisor-pods`, `--jwks-pods`, `--pods-de`) y sabe QUÉ puesto habla. No hay
+#   secreto que repartir: la cola es un repositorio git, y lo que va en un Job
+#   queda escrito allí.
+#
+# Esto trae las llaves públicas con las que el clúster firma esos tokens, al
+# ConfigMap `jwks-pods` que monta `ore-serve`. Mismo patrón que `50-jwks.yaml` y
+# `68-las-llaves-de-las-celdas.yaml`: el plano de control no sale a buscarlas.
+#
+# ── ⛔ Lo primero, preguntar CON QUIÉN se habla ──────────────────────────────
+#
+# El descubrimiento del emisor tiene que decir que su `issuer` es EL del clúster
+# y que sus llaves están en `container.googleapis.com`. Si no, no se toca nada:
+# unas llaves de otro emisor harían que `ore-serve` creyera pods que no son.
+#
+# ── ⚠️ Cada hora ─────────────────────────────────────────────────────────────
+#
+# GKE publica con `max-age=300` (medido el 2026-10-02) y rota rara vez, con las
+# dos llaves publicadas a la vez. `ore-serve` relee el fichero ante un `kid` que
+# no conoce (0047 A2.2), así que no hace falta reiniciarlo.
+#
+# ── ⚠️ Rol propio: `llaves` ──────────────────────────────────────────────────
+#
+# Sale a internet (443), y `mantenimiento` no. Compartir la etiqueta habría
+# abierto internet al mantenimiento del lago; con la suya, «quién puede salir»
+# se sigue contestando mirando el rol.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jwks-pods
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+  annotations:
+    # Lo SIEMBRA el manifiesto y lo POSEE el refresco (como `jwks` en 50): Flux
+    # lo crea y no lo vuelve a tocar. Con la semilla vacía, `ore-serve` con
+    # `--jwks-pods` se niega a arrancar —por eso sus flags van en otro empuje,
+    # cuando aquí ya hay llaves—.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+data:
+  jwks.json: |
+    {"keys":[]}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: refresco-jwks-pods
+  namespace: t-demo
+---
+# Escribir ESE ConfigMap y ningún otro.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: escribe-jwks-pods
+  namespace: t-demo
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [jwks-pods]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: escribe-jwks-pods
+  namespace: t-demo
+subjects:
+  - kind: ServiceAccount
+    name: refresco-jwks-pods
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: escribe-jwks-pods
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: refresco-jwks-pods
+  namespace: t-demo
+spec:
+  schedule: "41 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: llaves
+            ore.dev/tenant: demo
+        spec:
+          restartPolicy: Never
+          serviceAccountName: refresco-jwks-pods
+          containers:
+            - name: refresco
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              env:
+                - { name: HOME, value: /tmp }
+                # El emisor de los tokens de pod del clúster: lo que tiene que AFIRMAR ser.
+                - { name: EMISOR, value: "https://container.googleapis.com/v1/projects/project-8853a180-450d-47be-b83/locations/europe-west1-b/clusters/ore-mesh" }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  API=https://kubernetes.default.svc
+                  SA=/var/run/secrets/kubernetes.io/serviceaccount
+
+                  # 1 · ¿con quien estamos hablando? ESTO PRIMERO.
+                  curl -sSf "$EMISOR/.well-known/openid-configuration" -o /tmp/desc.json
+                  DICE=$(python3 -c 'import json;print(json.load(open("/tmp/desc.json"))["issuer"])')
+                  URI=$(python3 -c 'import json;print(json.load(open("/tmp/desc.json"))["jwks_uri"])')
+                  echo "dice ser        $DICE"
+                  echo "sus llaves en   $URI"
+                  if [ "$DICE" != "$EMISOR" ]; then
+                    echo "NO es el emisor que esperabamos ($EMISOR). No se toca nada."
+                    exit 1
+                  fi
+                  case "$URI" in
+                    https://container.googleapis.com/*) ;;
+                    *) echo "el jwks_uri no es de container.googleapis.com: no se toca nada"; exit 1 ;;
+                  esac
+
+                  # 2 · las llaves, y que sean un JWKS con al menos una RSA de firma.
+                  curl -sSf "$URI" -o /tmp/jwks.json
+                  python3 -c 'import json,sys; k=[x for x in json.load(open("/tmp/jwks.json"))["keys"] if x.get("kty")=="RSA" and x.get("use","sig")=="sig"]; print("llaves          %d" % len(k)); sys.exit(0 if k else 1)' \
+                    || { echo "lo que llego no trae ninguna llave RSA de firma"; exit 1; }
+
+                  # 3 · al ConfigMap, sobre `data` y nada mas.
+                  python3 -c 'import json;print(json.dumps({"data":{"jwks.json":open("/tmp/jwks.json").read()}}))' > /tmp/parche.json
+                  curl -sSf -X PATCH \
+                    -H "Authorization: Bearer $(cat $SA/token)" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    --cacert "$SA/ca.crt" \
+                    --data-binary @/tmp/parche.json \
+                    "$API/api/v1/namespaces/t-demo/configmaps/jwks-pods" > /dev/null
+                  echo "ok · las llaves de los pods estan al dia"
+              resources:
+                requests: {cpu: "50m", memory: 128Mi}
+                limits:   {cpu: "300m", memory: 256Mi}
+---
+# ── Por dónde sale: DNS, el maestro y las llaves de Google ─────────────────
+#
+# El maestro como en 50 (con Dataplane V2 la petición sale hacia el NODO: la
+# subred de nodos, no sólo la ClusterIP). Y 443 hacia fuera de las redes
+# privadas, que es donde está `container.googleapis.com`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-las-llaves
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: llaves
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: { cidr: 10.30.0.1/32 }
+        - ipBlock: { cidr: 10.10.0.0/20 }
+      ports: [{protocol: TCP, port: 443}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]
+---
+# ── Y una vez al nacer (como `refresco-jwks-inicial` en 50, 0025 E6) ─────────
+#
+# Copia del `jobTemplate` de arriba —`gen-inquilino.py --comprobar` (⑪) exige
+# que sigan siendo iguales—. `IfNotPresent`: Flux lo crea y no lo toca.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: refresco-jwks-pods-inicial
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: llaves
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: llaves
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: refresco-jwks-pods
+      containers:
+        - name: refresco
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            # El emisor de los tokens de pod del clúster: lo que tiene que AFIRMAR ser.
+            - { name: EMISOR, value: "https://container.googleapis.com/v1/projects/project-8853a180-450d-47be-b83/locations/europe-west1-b/clusters/ore-mesh" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              API=https://kubernetes.default.svc
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+
+              # 1 · ¿con quien estamos hablando? ESTO PRIMERO.
+              curl -sSf "$EMISOR/.well-known/openid-configuration" -o /tmp/desc.json
+              DICE=$(python3 -c 'import json;print(json.load(open("/tmp/desc.json"))["issuer"])')
+              URI=$(python3 -c 'import json;print(json.load(open("/tmp/desc.json"))["jwks_uri"])')
+              echo "dice ser        $DICE"
+              echo "sus llaves en   $URI"
+              if [ "$DICE" != "$EMISOR" ]; then
+                echo "NO es el emisor que esperabamos ($EMISOR). No se toca nada."
+                exit 1
+              fi
+              case "$URI" in
+                https://container.googleapis.com/*) ;;
+                *) echo "el jwks_uri no es de container.googleapis.com: no se toca nada"; exit 1 ;;
+              esac
+
+              # 2 · las llaves, y que sean un JWKS con al menos una RSA de firma.
+              curl -sSf "$URI" -o /tmp/jwks.json
+              python3 -c 'import json,sys; k=[x for x in json.load(open("/tmp/jwks.json"))["keys"] if x.get("kty")=="RSA" and x.get("use","sig")=="sig"]; print("llaves          %d" % len(k)); sys.exit(0 if k else 1)' \
+                || { echo "lo que llego no trae ninguna llave RSA de firma"; exit 1; }
+
+              # 3 · al ConfigMap, sobre `data` y nada mas.
+              python3 -c 'import json;print(json.dumps({"data":{"jwks.json":open("/tmp/jwks.json").read()}}))' > /tmp/parche.json
+              curl -sSf -X PATCH \
+                -H "Authorization: Bearer $(cat $SA/token)" \
+                -H "Content-Type: application/strategic-merge-patch+json" \
+                --cacert "$SA/ca.crt" \
+                --data-binary @/tmp/parche.json \
+                "$API/api/v1/namespaces/t-demo/configmaps/jwks-pods" > /dev/null
+              echo "ok · las llaves de los pods estan al dia"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "300m", memory: 256Mi}
