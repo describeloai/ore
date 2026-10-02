@@ -15,6 +15,12 @@ caducan, 412, flujos cortados). Se comprueba el SDK:
    9  read_bytes() de uno grande, por rangos en paralelo
   10  leer_varios(): muchos a la vez, el error de uno es un valor
   11  cerrar a medias no baja el resto
+  12  sin tamaño en el listado, se aprende y el seek desde el final va
+  13  la rama del puesto va en x-ore-rama (la ficha, preguntada una vez)
+  14  B4·3: una colección es un input de un transform, y se lee dentro
+  15  B4·3: dentro de un transform, una colección no declarada es PermissionError, sin preguntar
+  16  B4·3: fuera de un transform, leer una colección queda anotado en lo leído
+  17  B4·3: `as_of` dice la transacción que el listado leyó
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-media-en-python.py
 """
@@ -172,7 +178,56 @@ def c13():
     bien("13 · la rama del puesto va en x-ore-rama (la ficha, preguntada una vez)")
 
 
-for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13], 1):
+def c14():
+    banco.TRANSFORMS.clear()
+
+    @ore.transform(inputs=[ore.coleccion("legal.archivo.contratos")], output="legal.archivo.paginas")
+    def paginar():
+        return [i.ref.path for i in ore.coleccion("legal.archivo.contratos").items()]
+
+    leidos = paginar()
+    declarado = banco.TRANSFORMS[0][1]
+    assert declarado["inputs"] == ["legal.archivo.contratos"], declarado
+    assert declarado["output"] == "legal.archivo.paginas", declarado
+    assert leidos == ["a.pdf", "b.pdf", "cambia.pdf"], leidos
+    assert banco.TRANSFORMS[-1] == ("DELETE", None), banco.TRANSFORMS
+    bien("14 · inputs=[ore.coleccion(…)]: se declara por su nombre, se lee dentro, y se retira al salir")
+
+
+def c15():
+    SERVE.clear()
+
+    @ore.transform(inputs=[ore.coleccion("legal.archivo.contratos")], output="legal.archivo.paginas")
+    def fuera():
+        return list(ore.coleccion("legal.otra.fotos").items())
+
+    try:
+        fuera()
+    except PermissionError as e:
+        assert "legal.otra.fotos" in str(e), e
+        assert not [r for _, r, _ in SERVE if r.startswith("/media/legal/otra")], SERVE
+        bien("15 · una colección no declarada: PermissionError en la celda, sin preguntar al servidor")
+        return
+    raise AssertionError("debía ser PermissionError")
+
+
+def c16():
+    del ore._leidas[:]
+    ore.coleccion("legal.archivo.contratos").stat(path="b.pdf")
+    assert "legal.archivo.contratos" in ore._leidas, ore._leidas
+    assert ore._procedencia()["leidas"] == ["legal.archivo.contratos"], ore._procedencia()
+    bien("16 · fuera de un transform, leer una colección queda en lo leído (la procedencia de lo que se escriba)")
+
+
+def c17():
+    col = ore.coleccion("legal.archivo.contratos")
+    assert col.as_of is None
+    next(iter(col.items()))
+    assert col.as_of == "7", col.as_of
+    bien("17 · as_of: la transacción que el listado leyó (7)")
+
+
+for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17], 1):
     caso(n, f)
 celda.shutdown()
 bytes_.shutdown()

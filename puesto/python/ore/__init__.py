@@ -273,14 +273,22 @@ def _v1_tabla(corto):
     return "/v1/%s/namespaces/%s/tables/%s" % (b, s_, n)
 
 
+def _nombre_de(x):
+    """Un nombre del árbol, o una colección (`ore.coleccion(…)`) por su nombre."""
+    return getattr(x, "nombre_corto", x)
+
+
 def transform(inputs, output):
     """`@transform(inputs=[…], output="p.t")`: lo declarado es lo único que la
-    función puede leer (`over`, `sql`) y escribir (`write`); lo demás es
-    `PermissionError`. Lo escrito lleva `procedencia: {inputs, transform, …}`."""
+    función puede leer (`over`, `sql`, una colección) y escribir (`write`, una
+    transacción de una colección); lo demás es `PermissionError`. Lo escrito
+    lleva `procedencia: {inputs, transform, …}`. Un input o el output puede ser
+    una colección (0049 B4·3): `inputs=[ore.coleccion("legal.archivo.contratos")]`;
+    el servidor fija al declarar la transacción de cada una que se va a leer."""
     if isinstance(inputs, str):
         raise ValueError("transform(): `inputs` es una lista de `<base>.<schema>.<nombre>`")
-    inputs = [_corto(i, "transform(): cada input") for i in inputs]
-    output = _corto(output, "transform(): `output`")
+    inputs = [_corto(_nombre_de(i), "transform(): cada input") for i in inputs]
+    output = _corto(_nombre_de(output), "transform(): `output`")
     if output in inputs:
         raise ValueError("transform(): `%s` no puede ser input y output a la vez" % output)
 

@@ -139,14 +139,24 @@ def coleccion(nombre):
 class Coleccion:
     def __init__(self, nombre):
         from . import _corto, _partes
-        self.base, self.schema, self.nombre = _partes(_corto(nombre, "coleccion(): el nombre"))
+        #: El nombre en su forma corta (`base.nombre` en `default`): el que un
+        #: transform declara, y el que se anota como leído.
+        self.nombre_corto = _corto(nombre, "coleccion(): el nombre")
+        self.base, self.schema, self.nombre = _partes(self.nombre_corto)
         self.ruta = "/media/%s/%s/%s" % (self.base, self.schema, self.nombre)
+        #: La transacción que el listado leyó (B4·3): dentro de un transform,
+        #: la que el servidor fijó al declararlo, aunque la colección cambie.
+        self.as_of = None
 
     def __repr__(self):
         return "Coleccion(%s.%s.%s)" % (self.base, self.schema, self.nombre)
 
     def _pedir(self, op, consulta, que):
-        from . import puesto, _rama_del_puesto
+        from . import puesto, _rama_del_puesto, _lee
+        # B4·3: leer una colección es leer, como `over()` y `sql()`: dentro de un
+        # transform sólo sus `inputs` (PermissionError aquí, antes del 403 del
+        # servidor), y fuera queda anotada en lo que la sesión leyó.
+        _lee(self.nombre_corto)
         q = urllib.parse.urlencode({k: v for k, v in consulta.items() if v is not None})
         # B3·6: con la rama del puesto, como el resto del SDK (`over`, `sql`):
         # una colección declarada en la rama se ve desde su puesto. Se pregunta
@@ -165,6 +175,8 @@ class Coleccion:
                                               "limit": limite, "cursor": cursor}, "items")
             if codigo != 200:
                 raise _error(codigo, r, "items(%s)" % self)
+            if r.get("as_of"):
+                self.as_of = r["as_of"]
             for d in r.get("items") or []:
                 yield Item(self, MediaRef.de_json(d))
             cursor = r.get("cursor")
