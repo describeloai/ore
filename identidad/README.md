@@ -1,7 +1,7 @@
 # identidad/ — los realms de ORE
 
 El IdP (Keycloak 26.0.7, `malla/60-idp.yaml`) corre en el clúster de ORE, y desde el
-2026-09-30 **su definición también vive aquí** (ADR 0048). Antes estaba en la plataforma
+2026-09-30 **su definición también vive aquí** (ADR 0048, ORE IdP). Antes estaba en la plataforma
 (`C:\Rubix\deploy\identidad`), escribiendo para un clúster donde ya no vive el IdP.
 
 | fichero | qué |

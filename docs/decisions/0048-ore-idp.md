@@ -1,99 +1,124 @@
-# 0048 · La identidad es de ORE
+# 0048 · ORE IdP
 
-**Estado:** aceptado · I1–I3 hechos, y `rubix` conciliado en vivo (2026-09-30): AAL2 en las tres puertas.
+**Estado:** aceptado y **en vivo** (2026-09-30). ORE es dueño de su IdP: lo corre, lo declara,
+lo concilia y lo mide. `rubix` exige AAL2 en las tres puertas. La deuda, al final.
 
-## El contexto, medido
+## Qué es
 
-El IdP (Keycloak 26.0.7) corre en el clúster de ORE desde la mudanza (0020): su base, su
-entrada pública (`login.paladio.io`), sus copias (`malla/60`, `62`, `63`), el admin del
-aprovisionador (`68`) y los agentes de cada celda (paso ⑦). Pero **su definición no**:
+**ORE IdP es quién eres.** El único sitio de la casa que ve una contraseña o una passkey, y el
+que firma los tokens que todo lo demás verifica. No decide a qué perteneces ni qué puedes: eso
+es de `ore-iam` (pertenencia y potestades) y lo pregunta cada módulo por `ore-acceso` (0047).
 
-| pieza | estaba en | para qué clúster |
+```
+  persona / agente ──► ORE IdP ──token (iss, sub, aud)──► ore-serve, ore-iam, consola
+                       quién eres                         ¿perteneces? ¿puedes? → ore-iam
+```
+
+| pieza | dónde | qué |
 |---|---|---|
-| los realms: flujos, passkeys, factores, correo, clientes (`realm.mjs`, 1.254 líneas) | la plataforma, `C:\Rubix\deploy\identidad` | el viejo: ns `rubix`, CR `rubix-idp` |
-| el reconciliador vivo (`aplicar-entrada.mjs`) | la plataforma | el viejo: `rubix-idp-service`, secreto `rubix-idp-admin` |
-| la imagen cocida del IdP | la plataforma, `idp/Dockerfile` | — (ORE usaba su etiqueta) |
-| el tema del correo | la plataforma, un ConfigMap del viejo | en ORE, en ningún sitio |
-| el operador de Keycloak | **ningún repositorio**: `kubectl apply` a mano el 2026-09-08 | el nuevo |
-| el puente | ORE, `malla/gen-realm.py`: copiaba `salida/*.json` y añadía lo de ORE | — |
+| **el servidor** | `malla/60-idp.yaml`, ns `identidad` | Keycloak 26.0.7, imagen cocida (`ore/idp`), una instancia, su Postgres en el clúster |
+| **el emisor** | `https://login.paladio.io/realms/rubix` | la única entrada pública (`63-entrada-del-idp.yaml`). La consola de administración no sale: `port-forward` |
+| **el operador** | `malla/59-*.yaml` | el de Keycloak y sus CRD, exportados de lo que corre; `prune: disabled` (borrar el CRD borra el IdP) |
+| **la definición** | `identidad/realm.mjs` | flujos, passkeys, factores mínimos, correo, clientes de la consola |
+| **lo de ORE y el manifiesto** | `identidad/ore.mjs` → `malla/61-realms.yaml` | audiencias `ore-serve` y `modelos`, el ámbito `basic` (el `sub`), el registro con su organización, la consola en local. **`realmsDeOre()` es el único realm deseado** |
+| **el reconciliador** | `identidad/aplicar.mjs` | deja el realm vivo como `realmsDeOre()` dice, y también **resta**. `--plan` sólo hace GET y dice todo lo que cambiaría |
+| **la guarda** | `identidad/medir.mjs`, `pruebas-de-fuego/el-segundo-factor.sh` (CI) | mide **recorriendo los flujos**, no leyendo un campo |
+| **las copias** | `malla/62-copias-del-idp.yaml` | volcado con fecha fuera del clúster: el disco no cubre un `DROP` ni una migración de Keycloak que sale mal |
+| **el aprovisionador** | `malla/68-el-admin-del-aprovisionador.sh` | dos identidades: una administra clientes (crea `ore-agente-<celda>`), la otra se presenta ante `ore-iam`. Separadas a propósito |
+| **las llaves** | `malla/50-jwks.yaml` | el JWKS lo trae un Job; `ore-serve` no sale a buscarlo (0020) |
 
-Lo destapó la deuda del segundo factor (relajado el 2026-08-26, plazo 2026-09-30): para
-saldarla no había forma limpia de tocar el realm vivo. El script que lo haría buscaba el IdP
-en otro clúster, y **conciliaba un realm sin lo de ORE**: ejecutado, habría encendido
-`verifyEmail` (sin correo: quien se registra se queda esperando) y quitado `localhost` de la
-consola.
+### Los realms
 
-## La decisión
+| realm | para quién | cómo se entra |
+|---|---|---|
+| **`rubix`** | las personas de los clientes y los agentes de cada celda | registro abierto (con su organización, 035). Entrada, reposición y registro con **dos factores**: passkey, o TOTP de recuperación. El registro enrola la passkey antes de abrir sesión |
+| **`rubix-interno`** | nosotros (un empleado no es miembro de ninguna organización de cliente) | sin registro y sin organizaciones. Hoy no lo consume nadie: se separó antes de que hubiera dos poblaciones |
 
-**ORE es dueño de su identidad.** La definición, el reconciliador, la imagen, el tema y el
-operador viven en ORE. La plataforma pasa a ser **un cliente más** del IdP (sus variables
-`RUBIX_OIDC_EMISOR` y `RUBIX_OIDC_AUDIENCIA` y su verificación de tokens se quedan allí).
+### Quién recibe un token
 
-**Un solo realm deseado.** `identidad/ore.mjs` → `realmsDeOre()` es lo que el manifiesto
-importa en un realm nuevo **y** lo que `identidad/aplicar.mjs` concilia en uno vivo.
+- **Una persona**, por `rubix-consola`: cliente público con PKCE y `ore-serve` en el `aud`.
+- **Un agente**, por `ore-agente-<celda>`: cuenta de servicio con `rubix_tipo=agente`,
+  `rubix_celda=<celda>` y tokens de 5 minutos. La crea el aprovisionador (paso ⑦) y la registra
+  en `iam.agente`.
+- **`ore-serve`** es una audiencia y no inicia sesión de nadie: existe para poder decir que un
+  token es *para nosotros*.
 
-**Lo que no cambia**, a propósito: el realm `rubix`, el emisor
-`https://login.paladio.io/realms/rubix`, los flujos `browser-rubix`/`reposicion-rubix`, los
-clientes y los claims `rubix_tipo`/`rubix_celda`. Cambiar cualquiera cambia el `iss` o los
-tokens, y pide una migración como la `034`.
+### Lo que no cambia, a propósito
 
-## Lo hecho
+El realm `rubix`, el emisor, los flujos `browser-rubix`/`reposicion-rubix`, los clientes y los
+claims `rubix_tipo`/`rubix_celda`/`organization`. Cambiar cualquiera cambia el `iss` o los
+tokens, y pide una migración como la `034`. **Los nombres `rubix` son una identidad publicada,
+no una marca.**
 
-**I1 · el generador y el reconciliador** (`identidad/`)
-- `realm.mjs`: la definición, traída **tal cual** (la regex de organización, dentro; el CLI,
-  fuera). `ore.mjs`: lo que ORE añade, portado de `gen-realm.py` (que se va), y el manifiesto.
-  **Medido: `rubix` y `rubix-interno` salen byte a byte iguales** que con `gen-realm.py`.
-- `aplicar.mjs`: el reconciliador contra el IdP de ORE y con `realmsDeOre()`; el admin, sin
-  valor por defecto (el de arranque del operador, `identidad/idp-initial-admin`).
-- **`rubix-dev` ya no sale**: no existe en vivo (se renombró a `rubix`, 034), `ore-iam`
-  rechaza su emisor, y el reconciliador lo **crearía** al no encontrarlo.
+## De dónde viene
 
-**I2 · lo demás del IdP**
-- El operador y sus CRD, **exportados de lo que corre** (`malla/59-*.yaml`), con
-  `prune: disabled`: borrar un CRD borra todos sus CR, y aquí eso es el IdP. Medido con
-  `kubectl diff --server-side`: nada cambia salvo esa anotación.
-- La imagen: target `idp` del `Dockerfile` (Keycloak cocido, las cinco opciones de build) con
-  el tema del correo dentro (`emailTheme: 'rubix'`); Cloud Build la construye (`idp:main`,
-  `idp:<sha>`). **La que corre la fija `malla/60-idp.yaml`** y cambiarla reinicia el login.
+El IdP ya corría en ORE desde la mudanza (0020), pero su definición seguía en la plataforma
+(`C:\Rubix\deploy\identidad`), escribiendo para el clúster viejo. El operador no estaba en ningún
+repositorio (`kubectl apply` a mano el 2026-09-08), y `malla/gen-realm.py` hacía de puente.
 
-**I3 · las guardas**
-- `identidad/medir.mjs` mide **recorriendo los flujos** (no leyendo un campo): dos factores y
-  uno resistente a phishing en la entrada, lo declarado igual a lo medido, la reposición sin
-  rebajar, sin credencial de correo, sin retornos en claro a otra máquina. Medido que muerde:
-  con `EXIGIR_SEGUNDO_FACTOR = false`, sale con 1.
-- `pruebas-de-fuego/el-segundo-factor.sh` (en CI) corre esa medida, exige las dos puertas en
-  `REQUIRED` y que `61-realms.yaml` sea **exactamente** lo que emite `ore.mjs`.
+Lo destapó la deuda del segundo factor (relajado el 2026-08-26, plazo 2026-09-30). El
+reconciliador de la plataforma conciliaba un realm **sin lo de ORE**: ejecutado, habría encendido
+`verifyEmail` sin correo y quitado `localhost` de la consola.
 
-## En vivo (2026-09-30)
+**Decidido:** ORE es dueño de la definición, el reconciliador, la imagen, el tema y el operador.
+La plataforma es un cliente más del IdP (`RUBIX_OIDC_EMISOR`, `RUBIX_OIDC_AUDIENCIA` y su
+verificación de tokens se quedan allí).
 
-`aplicar.mjs --plan` primero (sólo GET: dice TODO lo que cambiaría, porque el reconciliador
-también resta) y después aplicado en `rubix` por una persona, con el admin de arranque:
+## Cómo se hizo
+
+- **I1 · el generador y el reconciliador.** `realm.mjs`, traído tal cual. `ore.mjs`, portado de
+  `gen-realm.py` (que se fue). **Medido: `rubix` y `rubix-interno` salen byte a byte iguales.**
+  `rubix-dev` desapareció: no existe en vivo (034) y el reconciliador lo habría creado.
+- **I2 · el operador y la imagen.** El operador y sus CRD, exportados de lo que corre:
+  `kubectl diff --server-side` no muestra cambios salvo la anotación. La imagen es el target
+  `idp` del `Dockerfile`, con las cinco opciones de build y el tema del correo; Cloud Build
+  publica `idp:main` e `idp:<sha>`.
+- **I3 · la guarda.** `medir.mjs` comprueba dos factores y uno resistente a phishing en la
+  entrada, que lo declarado coincida con lo medido, la reposición sin rebajar, ninguna credencial
+  de correo y ningún retorno en claro a otra máquina. Muerde: con `EXIGIR_SEGUNDO_FACTOR = false`
+  sale con 1. En CI se exige además que `61-realms.yaml` sea **exactamente** lo que emite
+  `ore.mjs`.
+
+### En vivo (2026-09-30)
+
+Primero `aplicar.mjs --plan`; después lo aplicó en `rubix` una persona, con el admin de arranque.
 
 | | antes | después |
 |---|---|---|
 | la entrada | **1 factor** (declaraba `aal=AAL2`) | 2: passkey o TOTP |
 | la reposición | 1 | 2 |
-| **el registro** | **abría sesión con 1** | la passkey es acción por defecto: se enrola antes de entrar |
+| **el registro** | **abría sesión con 1** | enrola la passkey antes de entrar |
 
-- **La tercera puerta la encontró la prueba, no la guarda.** Recién aplicadas las dos, un
-  usuario nuevo se registró y entró con UN factor: el registro no pasa por el flujo de
-  entrada. Se cierra con `webauthn-register` como acción por defecto (`ore.mjs`), y
-  `medir.mjs` gana la regla ⑥. Comprobado en vivo: el registro pide la passkey, una cuenta
-  existente sin factor lo pide al entrar, y la consola entra con la passkey.
-- **El lector no se declara.** El plan dijo que `rubix-consola-lector` ganaría `view-users`,
-  `query-users`, `view-realm` y `view-clients`. Nadie en ORE ni en la consola lo usa y su
-  secreto vivía en el proyecto viejo: sale de `realmsDeOre()`, y en vivo sigue sin papeles.
-- Lo demás del plan: `acr` en la consola, `addOrganizationId`, el mapeador de organización
-  duplicado de la consola fuera (el claim sigue saliendo por el ámbito).
+- **La tercera puerta la encontró la prueba, no la guarda.** El registro no pasa por el flujo de
+  entrada. Se cerró con `webauthn-register` como acción por defecto, y `medir.mjs` ganó la
+  regla ⑥. Comprobado: el registro pide la passkey, una cuenta sin factor lo pide al entrar, y la
+  consola entra con la passkey.
+- **`rubix-consola-lector` sale de `realmsDeOre()`.** Nadie lo usa y su secreto vivía en el
+  proyecto viejo. En vivo sigue existiendo, sin papeles.
 
-## Lo que queda, y de quién
+## Lo que se decidió no hacer
 
-- `rubix-interno` (sin personas): conciliarlo igual, para que lo vivo diga lo que el artefacto.
-- Los usuarios de prueba del registro, a borrar.
-- **La imagen nueva del IdP** (con el tema): pasar `60-idp.yaml` a una `idp:<sha>` cuando se
-  decida el reinicio del login.
-- **El correo.** El artefacto declara `smtp-relay.gmail.com` (por IP, sin credencial) y el
-  registro apaga `verifyEmail` «porque no hay correo»: una de las dos cosas está vieja.
-- **La plataforma.** Sus comprobaciones de identidad (`check-entrada.sh`, `check-idp.sh`,
-  `medir-entrada.mjs`) importan su `realm.mjs`: retirarlas o apuntarlas aquí es suyo.
-- Subir Keycloak a 26.2 (0047 M5, tokens por celda): operador, CRD e imagen a la vez.
+- **Subir Keycloak a 26.2 para tener tokens por celda (RFC 8693): no.** Al medirlo (0047 M5)
+  apareció un hueco mayor, que ese cambio no cerraba: registro abierto, celdas alcanzables desde
+  internet y `ore-serve` sin comprobar pertenencia. Cualquier cuenta habría podido entrar en
+  cualquier celda. Lo cierra **0047 A9′** sin tocar el IdP: la celda pregunta a `ore-iam`
+  (`organizacion:leer`) si quien llega es de su organización. Si `ore-iam` no contesta, hay
+  10 minutos de gracia para quien ya pasó; quien no, recibe 503. **La pertenencia la sabe
+  `ore-iam`, no Keycloak.** Con eso, el token por celda queda reducido a un caso menor (una celda
+  comprometida que reenvía un token a otra de sus propias organizaciones) y se aplaza.
+- **Renombrar `rubix` → `ore`:** no (ver *Lo que no cambia*).
+
+## Deuda y pistas
+
+| # | deuda | por qué importa | pista |
+|---|---|---|---|
+| 1 | **`ore-agente` sigue declarado.** `ore.mjs` lo añade a `realmsDeOre()` (`AGENTE`, línea ~301) y sale dos veces en `61-realms.yaml`. 0047 A9′.4 lo retiró de `iam.agente` (046), pero no del realm | es un cliente vivo con secreto, registrado en dos organizaciones antes de la 046. El reconciliador lo **mantiene**: lo vivo y lo decidido no coinciden | quitar `AGENTE` de `ore.mjs`, regenerar y correr `aplicar.mjs --plan` (debe proponer borrarlo; `ore-agente-prueba-dos` también, si sigue). Antes, mirar en el recuento que nadie pide tokens con él |
+| 2 | **La imagen que corre es la vieja.** `60-idp.yaml` fija `idp:26.0.7-1`, sin el tema del correo | el tema y las opciones de build declaradas no son las que corren | pasar a `idp:<sha>` de Cloud Build en una ventana avisada. Con `instances: 1`, cambiarla **corta el login** durante el reinicio. Hacer antes la copia de `62` |
+| 3 | **El correo se contradice.** `realm.mjs` declara `smtp-relay.gmail.com` (autoriza por IP, sin credencial) y `ore.mjs` apaga `verifyEmail` «porque no hay correo» | o falta el correo, o sobra la excepción; mientras tanto, la reposición por correo es incierta | probar el relay desde la IP de salida del clúster de ORE (la autorizada en Workspace era probablemente la del viejo). Si sale: `verifyEmail` encendido y la excepción fuera. Si no: registrar la IP, o quitar `correoDeSalida` |
+| 4 | **La plataforma conserva la identidad vieja.** `C:\Rubix\deploy\identidad` mantiene `aplicar-entrada.mjs`, `aplicar-correo.mjs` y `realm.mjs` junto a `MUDADO-A-ORE.md`; `scripts/check-entrada.sh`, `check-idp.sh` y `check-correo.sh` importan su `realm.mjs` | `aplicar-entrada.mjs` es **el reconciliador peligroso**: concilia un realm sin lo de ORE. Que siga ejecutable es una trampa | en la plataforma: borrar los scripts y dejar sólo `MUDADO-A-ORE.md`; los checks, retirarlos o apuntarlos a `identidad/medir.mjs` de ORE |
+| 5 | **`rubix-interno` sin conciliar en vivo** (no comprobado: exige el admin) | lo vivo puede no coincidir con el artefacto; hoy no lo consume nadie | `aplicar.mjs --realm=rubix-interno --plan`, y aplicar si el plan es limpio |
+| 6 | **Usuarios de prueba del registro** (los de la tercera puerta) | cuentas reales en el realm de producción | listarlos con el admin y borrarlos; comprobar que no quedan en `iam.pertenencia` |
+| 7 | **El que concilia usa el admin de arranque** (`identidad/idp-initial-admin`) | es una credencial compartida y omnipotente, sin passkey | un admin nominal en `master` con passkey, y el de arranque, deshabilitado |
+| 8 | **`MFA_RELAJADA_HASTA = '2026-09-30'`** sigue en `realm.mjs` | ya no tiene efecto (`EXIGIR_SEGUNDO_FACTOR = true`), pero confunde | quitarlo, o convertirlo en historia en el comentario |
+| 9 | **Una sola instancia** | el IdP caído significa que nadie entra; las celdas aguantan con tokens vivos y la gracia de A9′ | medir antes qué pide una segunda instancia (la caché distribuida de Keycloak, la base compartida) y cuánto cuesta |
+| 10 | **El token por celda** (aplazado, no olvidado) | sólo cubre el reenvío entre celdas de las propias organizaciones | si hace falta: 26.2 o superior, con operador, CRD e imagen subidos **a la vez** (I2 dejó los tres declarados) |

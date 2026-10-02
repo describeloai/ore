@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// ✏️ 2026-09-30 · ESTE FICHERO VIVE EN ORE (ADR 0048, «la identidad es de ORE»).
+// ✏️ 2026-09-30 · ESTE FICHERO VIVE EN ORE (ADR 0048, ORE IdP).
 //
 //   Vino de la plataforma (`C:\Rubix\deploy\identidad\realm.mjs`, db57ac0) tal
 //   cual, con dos cambios: la regex de organización va dentro y el CLI se fue (lo
