@@ -544,6 +544,71 @@ pub fn nulabilidad_de_columnas(t: &Loaded) -> BTreeMap<String, crate::types::Nul
         .unwrap_or_default()
 }
 
+/// ORE 0051 P4 · **Lo que una vista, un dataset o una tabla exponen y nunca es
+/// nulo**: de una `Table`, lo que su origen garantiza; de una vista —SQL, o
+/// estructurada por la consulta con la que el núcleo la sirve
+/// (`linaje::como_sql`)— y de un dataset mantenido, lo que se **deriva** de su
+/// consulta (`vista_sql`, `Columna::exige`) contra lo que garantiza cada fuente
+/// que lee. Lo demás —un dataset escrito, lo que no se resuelve— es
+/// `Nulable`: ante la duda, nulable (v1alpha22 `01-nunca-nula` §4).
+pub fn nulabilidad_de_vista(
+    pkg: &Package,
+    d: &Loaded,
+) -> BTreeMap<String, crate::types::Nulabilidad> {
+    use crate::types::Nulabilidad;
+    fn de(pkg: &Package, d: &Loaded, prof: usize) -> BTreeMap<String, Nulabilidad> {
+        // Un ciclo es `OOS2019`; aquí sólo no se da la vuelta para siempre.
+        if prof > 32 {
+            return BTreeMap::new();
+        }
+        let nunca = |m: &BTreeMap<String, Nulabilidad>, c: &str| {
+            m.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(c))
+                .is_some_and(|(_, n)| n.nunca_nula())
+        };
+        match d.kind {
+            Kind::Table => nulabilidad_de_columnas(d),
+            Kind::View | Kind::Dataset => {
+                let Some(sql) = crate::linaje::como_sql(d) else {
+                    return BTreeMap::new();
+                };
+                let columnas_de = |n: &str| {
+                    fuente_sql(pkg, n, d).map(|f| columnas_que_expone(pkg, f).into_iter().collect())
+                };
+                let Ok(c) = crate::vista_sql::analizar(&sql, &columnas_de) else {
+                    return BTreeMap::new();
+                };
+                let mut fuentes: BTreeMap<String, BTreeMap<String, Nulabilidad>> = BTreeMap::new();
+                c.columnas
+                    .iter()
+                    .map(|col| {
+                        let derivada = col.exige.as_ref().is_some_and(|refs| {
+                            refs.iter().all(|r| {
+                                let m = fuentes.entry(r.fuente.clone()).or_insert_with(|| {
+                                    fuente_sql(pkg, &r.fuente, d)
+                                        .map(|f| de(pkg, f, prof + 1))
+                                        .unwrap_or_default()
+                                });
+                                nunca(m, &r.columna)
+                            })
+                        });
+                        (
+                            col.nombre.clone(),
+                            if derivada {
+                                Nulabilidad::Derivada
+                            } else {
+                                Nulabilidad::Nulable
+                            },
+                        )
+                    })
+                    .collect()
+            }
+            _ => BTreeMap::new(),
+        }
+    }
+    de(pkg, d, 0)
+}
+
 /// **El tipo de cada columna de una tabla**, el que el conector tradujo:
 /// `columns.<c>.type` (0032 §3; `01-table.md` §5.0). Una columna sin `type` no
 /// está en el mapa —el conector no supo traducirla, y es texto para quien la

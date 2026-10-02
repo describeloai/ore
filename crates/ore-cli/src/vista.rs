@@ -230,6 +230,16 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
                 .collect::<Vec<_>>()
                 .join(" · ")
         );
+        // ORE 0051 P4: lo mismo que en una vista SQL, sobre la consulta con la
+        // que el núcleo sirve esta. Solo si hay algo.
+        let nunca: Vec<String> = vistas::nulabilidad_de_vista(&pkg, v)
+            .into_iter()
+            .filter(|(_, n)| n.nunca_nula())
+            .map(|(c, _)| c)
+            .collect();
+        if !nunca.is_empty() {
+            println!("  nunca nula {}", nunca.join(", "));
+        }
 
         let lin = match linaje(&plan) {
             Ok(l) => l,
@@ -596,6 +606,16 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
                     "  copia     entera de `{}`, rehecha en cada pasada",
                     s.qname().unwrap_or_default()
                 );
+            }
+            // ORE 0051 P4: lo que nunca es nulo, derivado de lo que lee. Solo si
+            // hay algo: un árbol sin garantías se enseña como siempre.
+            let nunca: Vec<String> = vistas::nulabilidad_de_vista(pkg, s)
+                .into_iter()
+                .filter(|(_, n)| n.nunca_nula())
+                .map(|(c, _)| c)
+                .collect();
+            if !nunca.is_empty() {
+                println!("  nunca nula {}", nunca.join(", "));
             }
         }
         None => {

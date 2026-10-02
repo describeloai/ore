@@ -36,9 +36,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    BinaryOperator, Expr, GroupByExpr, Join, JoinConstraint, JoinOperator, ObjectName,
-    ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, Statement,
-    TableFactor, UnaryOperator, Visit, Visitor,
+    BinaryOperator, CastKind, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments,
+    GroupByExpr, Join, JoinConstraint, JoinOperator, ObjectName, ObjectNamePart, Query, Select,
+    SelectItem, SelectItemQualifiedWildcardKind, SetExpr, Statement, TableFactor, UnaryOperator,
+    Value, Visit, Visitor,
 };
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
@@ -71,6 +72,12 @@ pub struct Columna {
     /// INDIRECT sólo hacia esta columna: las claves de grupo hacia un agregado.
     /// Las que van hacia todas están en [`Consulta::indirectas`].
     pub indirectas: BTreeSet<Ref>,
+    /// ORE 0051 · **cuándo nunca es nula**. `Some(refs)`: nunca lo es si no lo
+    /// es ninguna de `refs` en su fuente —vacío, pase lo que pase: un literal,
+    /// un `COUNT`—. `None`: puede serlo. Qué garantiza cada fuente lo sabe el
+    /// árbol ([`crate::vistas::nulabilidad_de_vista`]). Conservador: ante la
+    /// duda, `None` (v1alpha22 `01-nunca-nula` §4).
+    pub exige: Option<BTreeSet<Ref>>,
 }
 
 impl Columna {
@@ -82,6 +89,15 @@ impl Columna {
         self.directas.extend(o.directas);
         self.derivadas.extend(o.derivadas);
         self.indirectas.extend(o.indirectas);
+        // Dos orígenes para la misma columna (un `UNION`, una ambigua): nunca
+        // nula sólo si ninguno lo es.
+        self.exige = match (self.exige.take(), o.exige) {
+            (Some(mut a), Some(b)) => {
+                a.extend(b);
+                Some(a)
+            }
+            _ => None,
+        };
     }
 
     /// Lo que era directo pasa a leerse por una expresión.
@@ -92,12 +108,14 @@ impl Columna {
             directas: BTreeSet::new(),
             derivadas,
             indirectas: self.indirectas,
+            exige: self.exige,
         }
     }
 
     /// Una columna de una fuente, tal cual.
     fn de(r: Ref) -> Columna {
         Columna {
+            exige: Some([r.clone()].into()),
             directas: [r].into(),
             ..Default::default()
         }
@@ -237,6 +255,7 @@ pub fn analizar(
     let a = Analizador { columnas_de };
     let raiz = Ambito {
         rels: vec![],
+        nulas: BTreeSet::new(),
         padre: None,
     };
     let s = a.consulta(q, &raiz, &BTreeMap::new());
@@ -308,7 +327,21 @@ enum Rel {
 
 struct Ambito<'a> {
     rels: Vec<(String, Rel)>,
+    /// ORE 0051: las relaciones (por su posición en `rels`) del lado que genera
+    /// nulos de un `LEFT`, `RIGHT` o `FULL JOIN`.
+    nulas: BTreeSet<usize>,
     padre: Option<&'a Ambito<'a>>,
+}
+
+impl Ambito<'_> {
+    /// Lo que sale de una relación del lado que genera nulos puede ser nulo,
+    /// aunque su fuente lo garantice.
+    fn nula(&self, i: usize, mut c: Columna) -> Columna {
+        if self.nulas.contains(&i) {
+            c.exige = None;
+        }
+        c
+    }
 }
 
 struct Analizador<'f> {
@@ -382,6 +415,83 @@ fn refs_de(e: &Expr) -> Refs {
     r
 }
 
+/// ORE 0051 · El nombre de una columna tal cual, para cotejar lo que un
+/// `WHERE` afirma con lo que se proyecta: `(calificación, columna)`, sin
+/// mayúsculas.
+fn clave_de(e: &Expr) -> Option<(Option<String>, String)> {
+    match e {
+        Expr::Nested(i) => clave_de(i),
+        Expr::Identifier(i) => Some((None, i.value.to_lowercase())),
+        Expr::CompoundIdentifier(v) if v.len() >= 2 => Some((
+            Some(
+                v[..v.len() - 1]
+                    .iter()
+                    .map(|i| i.value.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            ),
+            v[v.len() - 1].value.to_lowercase(),
+        )),
+        _ => None,
+    }
+}
+
+/// ORE 0051 · Las funciones que dan nulo sólo si algún argumento lo es. Lo que
+/// no está aquí puede dar nulo por su cuenta —`nullif`, `sqrt(-1)`, un
+/// agregado sobre un grupo vacío— y es nulable.
+const PROPAGAN: &[&str] = &[
+    "upper",
+    "lower",
+    "ucase",
+    "lcase",
+    "length",
+    "len",
+    "char_length",
+    "character_length",
+    "strlen",
+    "trim",
+    "ltrim",
+    "rtrim",
+    "abs",
+    "round",
+    "floor",
+    "ceil",
+    "ceiling",
+    "sign",
+    "md5",
+    "sha256",
+    "substr",
+    "substring",
+    "replace",
+    "left",
+    "right",
+    "lpad",
+    "rpad",
+    "reverse",
+    "repeat",
+    "concat",
+    "date_trunc",
+    "date_part",
+    "datepart",
+    "year",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "strftime",
+];
+
+/// ORE 0051 · Las funciones de ventana que numeran: nunca dan nulo.
+const RANGOS: &[&str] = &[
+    "row_number",
+    "rank",
+    "dense_rank",
+    "ntile",
+    "percent_rank",
+    "cume_dist",
+];
+
 /// ¿Es la expresión una columna, tal cual?
 fn es_columna(e: &Expr) -> bool {
     match e {
@@ -443,51 +553,53 @@ impl Analizador<'_> {
     fn resolver(&self, a: &Ambito, calif: &Option<String>, col: &str, sal: &mut Salida) -> Columna {
         match calif {
             Some(q) => {
-                for (alias, rel) in &a.rels {
+                for (i, (alias, rel)) in a.rels.iter().enumerate() {
                     let casa = igual(alias, q)
                         || matches!(rel, Rel::Arbol(n) if igual(n, q)
                             || n.to_lowercase().ends_with(&format!(".{}", q.to_lowercase())));
                     if casa {
-                        return self.de_rel(rel, col);
+                        return a.nula(i, self.de_rel(rel, col));
                     }
                 }
             }
             None => {
                 if let [(_, rel)] = a.rels.as_slice() {
-                    return self.de_rel(rel, col);
+                    return a.nula(0, self.de_rel(rel, col));
                 }
                 // Si una subconsulta la tiene, es suya.
-                for (_, rel) in &a.rels {
+                for (i, (_, rel)) in a.rels.iter().enumerate() {
                     if let Rel::Sub(s) = rel
                         && s.cols.iter().any(|c| igual(&c.nombre, col))
                     {
-                        return self.de_rel(rel, col);
+                        return a.nula(i, self.de_rel(rel, col));
                     }
                 }
                 // Si el árbol dice las columnas de sus fuentes, de la que la tenga.
-                let arboles: Vec<&String> = a
+                let arboles: Vec<(usize, &String)> = a
                     .rels
                     .iter()
-                    .filter_map(|(_, r)| match r {
-                        Rel::Arbol(n) => Some(n),
+                    .enumerate()
+                    .filter_map(|(i, (_, r))| match r {
+                        Rel::Arbol(n) => Some((i, n)),
                         Rel::Sub(_) => None,
                     })
                     .collect();
-                let con: Vec<&&String> = arboles
+                let con: Vec<&(usize, &String)> = arboles
                     .iter()
-                    .filter(|n| {
+                    .filter(|(_, n)| {
                         (self.columnas_de)(n).is_some_and(|cs| cs.iter().any(|c| igual(c, col)))
                     })
                     .collect();
-                if let [n] = con.as_slice() {
-                    return Columna::de(Ref::new(n, col));
+                if let [(i, n)] = con.as_slice() {
+                    return a.nula(*i, Columna::de(Ref::new(n, col)));
                 }
                 if !arboles.is_empty() {
                     if arboles.len() > 1 {
                         sal.ambiguas.insert(col.to_string());
                     }
+                    // De cuál, no se sabe: puede ser nula (`exige` queda `None`).
                     let mut out = Columna::default();
-                    for n in arboles {
+                    for (_, n) in arboles {
                         out.mas(Columna::de(Ref::new(n, col)));
                     }
                     return out;
@@ -625,6 +737,7 @@ impl Analizador<'_> {
         ctes: &BTreeMap<String, Salida>,
         sal: &mut Salida,
         rels: &mut Vec<(String, Rel)>,
+        nulas: &mut BTreeSet<usize>,
     ) {
         match t {
             TableFactor::Table {
@@ -690,9 +803,9 @@ impl Analizador<'_> {
             TableFactor::NestedJoin {
                 table_with_joins, ..
             } => {
-                self.factor(&table_with_joins.relation, padre, ctes, sal, rels);
+                self.factor(&table_with_joins.relation, padre, ctes, sal, rels, nulas);
                 for j in &table_with_joins.joins {
-                    self.union(j, padre, ctes, sal, rels);
+                    self.union(j, padre, ctes, sal, rels, nulas);
                 }
             }
             TableFactor::Function { name, .. } => sal.lectoras.push(nombre(name).join(".")),
@@ -715,10 +828,26 @@ impl Analizador<'_> {
         ctes: &BTreeMap<String, Salida>,
         sal: &mut Salida,
         rels: &mut Vec<(String, Rel)>,
+        nulas: &mut BTreeSet<usize>,
     ) {
-        self.factor(&j.relation, padre, ctes, sal, rels);
+        let antes = rels.len();
+        self.factor(&j.relation, padre, ctes, sal, rels, nulas);
+        // ORE 0051: el lado que genera nulos. `ASOF` y `OUTER APPLY`, como un
+        // `LEFT`: lo conservador.
+        {
+            use JoinOperator::*;
+            match &j.join_operator {
+                Left(_) | LeftOuter(_) | OuterApply | AsOf { .. } => {
+                    nulas.extend(antes..rels.len())
+                }
+                Right(_) | RightOuter(_) => nulas.extend(0..antes),
+                FullOuter(_) => nulas.extend(0..rels.len()),
+                _ => {}
+            }
+        }
         let a = Ambito {
             rels: rels.clone(),
+            nulas: nulas.clone(),
             padre: Some(padre),
         };
         match restriccion(&j.join_operator) {
@@ -735,37 +864,192 @@ impl Analizador<'_> {
         }
     }
 
-    fn estrella(&self, r: &Rel, sal: &mut Salida) {
+    /// `nula`: la relación está del lado que genera nulos de un `OUTER JOIN`.
+    fn estrella(&self, r: &Rel, nula: bool, sal: &mut Salida) {
+        let quiza = |mut c: Columna| {
+            if nula {
+                c.exige = None;
+            }
+            c
+        };
         match r {
             Rel::Arbol(n) => match (self.columnas_de)(n) {
                 Some(cs) => {
                     for c in cs {
-                        sal.cols.push(Columna {
+                        sal.cols.push(quiza(Columna {
                             nombre: c.clone(),
                             ..Columna::de(Ref::new(n, &c))
-                        });
+                        }));
                     }
                 }
                 None => {
                     sal.estrellas.insert(n.clone());
                 }
             },
-            Rel::Sub(s) => sal.cols.extend(s.cols.iter().cloned()),
+            Rel::Sub(s) => sal.cols.extend(s.cols.iter().cloned().map(quiza)),
         }
+    }
+
+    /// ORE 0051 · **Cuándo nunca es nula una expresión** (v1alpha22
+    /// `01-nunca-nula` §4): el conjunto de columnas de origen que no pueden ser
+    /// nulas para que ella no lo sea, o `None` si puede serlo de todas formas.
+    /// Lo que no se conoce, `None`: una regla de más miente; una de menos, no.
+    fn exige(&self, e: &Expr, a: &Ambito, sal: &mut Salida) -> Option<BTreeSet<Ref>> {
+        use BinaryOperator::*;
+        let nunca = || Some(BTreeSet::new());
+        match e {
+            Expr::Identifier(i) => self.resolver(a, &None, &i.value, sal).exige,
+            Expr::CompoundIdentifier(v) if v.len() >= 2 => {
+                let calif = v[..v.len() - 1]
+                    .iter()
+                    .map(|i| i.value.clone())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.resolver(a, &Some(calif), &v[v.len() - 1].value, sal)
+                    .exige
+            }
+            Expr::Nested(x) => self.exige(x, a, sal),
+            Expr::Value(v) => (!matches!(v.value, Value::Null)).then(BTreeSet::new),
+            Expr::TypedString(_) => nunca(),
+            // Un `CAST` que no cabe falla; un `TRY_CAST`, da nulo.
+            Expr::Cast {
+                kind: CastKind::Cast | CastKind::DoubleColon,
+                expr,
+                ..
+            } => self.exige(expr, a, sal),
+            Expr::UnaryOp {
+                op: UnaryOperator::Minus | UnaryOperator::Plus | UnaryOperator::Not,
+                expr,
+            } => self.exige(expr, a, sal),
+            Expr::IsNull(_)
+            | Expr::IsNotNull(_)
+            | Expr::IsTrue(_)
+            | Expr::IsNotTrue(_)
+            | Expr::IsFalse(_)
+            | Expr::IsNotFalse(_)
+            | Expr::IsUnknown(_)
+            | Expr::IsNotUnknown(_)
+            | Expr::IsDistinctFrom(..)
+            | Expr::IsNotDistinctFrom(..)
+            | Expr::Exists { .. } => nunca(),
+            Expr::BinaryOp { op: Spaceship, .. } => nunca(),
+            // Lo que propaga el nulo y nada más. Dividir no: por cero, DuckDB da
+            // nulo con `//` y `%` (medido en 1.5.6; con `/` da `inf`, y otras
+            // versiones y motores, nulo). Ni lo demás (un `->` de JSON sin la
+            // clave).
+            Expr::BinaryOp {
+                left,
+                op:
+                    Plus | Minus | Multiply | StringConcat | Gt | Lt | GtEq | LtEq | Eq | NotEq | And
+                    | Or | BitwiseOr | BitwiseAnd | BitwiseXor,
+                right,
+            } => self.todas(&[left, right], a, sal),
+            Expr::Between {
+                expr, low, high, ..
+            } => self.todas(&[expr, low, high], a, sal),
+            Expr::InList { expr, list, .. } => {
+                let mut es: Vec<&Expr> = vec![expr];
+                es.extend(list.iter());
+                self.todas(&es, a, sal)
+            }
+            Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } => {
+                self.todas(&[expr, pattern], a, sal)
+            }
+            Expr::Extract { expr, .. } => self.exige(expr, a, sal),
+            // Sin `ELSE`, lo que no casa es nulo. Con él, nunca nula si no lo es
+            // ninguna rama.
+            Expr::Case {
+                conditions,
+                else_result: Some(otro),
+                ..
+            } => {
+                let mut es: Vec<&Expr> = conditions.iter().map(|c| &c.result).collect();
+                es.push(otro);
+                self.todas(&es, a, sal)
+            }
+            Expr::Function(f) => self.exige_funcion(f, a, sal),
+            _ => None,
+        }
+    }
+
+    /// Nunca nula si no lo es ninguna de `es`.
+    fn todas(&self, es: &[&Expr], a: &Ambito, sal: &mut Salida) -> Option<BTreeSet<Ref>> {
+        let mut out = BTreeSet::new();
+        for x in es {
+            out.extend(self.exige(x, a, sal)?);
+        }
+        Some(out)
+    }
+
+    fn exige_funcion(&self, f: &Function, a: &Ambito, sal: &mut Salida) -> Option<BTreeSet<Ref>> {
+        let n = nombre(&f.name).last()?.to_lowercase();
+        // `COUNT` cuenta: un grupo vacío es 0. Y el número de una fila, una fila.
+        if n == "count" || (f.over.is_some() && RANGOS.contains(&n.as_str())) {
+            return Some(BTreeSet::new());
+        }
+        let args: Vec<&Expr> = match &f.args {
+            FunctionArguments::None => vec![],
+            FunctionArguments::List(l) => l
+                .args
+                .iter()
+                .map(|x| match x {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?,
+            FunctionArguments::Subquery(_) => return None,
+        };
+        // `COALESCE`: nunca nula si no lo es alguno. Se toma el que menos exige:
+        // un literal al final la hace nunca nula, pase lo que pase.
+        if matches!(n.as_str(), "coalesce" | "ifnull") {
+            return args
+                .iter()
+                .filter_map(|x| self.exige(x, a, sal))
+                .min_by_key(BTreeSet::len);
+        }
+        if f.over.is_none() && f.filter.is_none() && PROPAGAN.contains(&n.as_str()) {
+            return self.todas(&args, a, sal);
+        }
+        None
     }
 
     fn select(&self, s: &Select, padre: &Ambito, ctes: &BTreeMap<String, Salida>) -> Salida {
         let mut sal = Salida::default();
         let mut rels = vec![];
+        let mut nulas = BTreeSet::new();
         for t in &s.from {
-            self.factor(&t.relation, padre, ctes, &mut sal, &mut rels);
+            self.factor(&t.relation, padre, ctes, &mut sal, &mut rels, &mut nulas);
             for j in &t.joins {
-                self.union(j, padre, ctes, &mut sal, &mut rels);
+                self.union(j, padre, ctes, &mut sal, &mut rels, &mut nulas);
             }
         }
         let a = Ambito {
             rels,
+            nulas,
             padre: Some(padre),
+        };
+        // ORE 0051. Un `ROLLUP`, un `CUBE` o unos `GROUPING SETS` añaden filas
+        // de subtotal con la clave nula: ahí nada de la clave se garantiza.
+        let subtotales = match &s.group_by {
+            GroupByExpr::Expressions(es, m) => {
+                !m.is_empty()
+                    || es.iter().any(|e| {
+                        matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_))
+                    })
+            }
+            GroupByExpr::All(m) => !m.is_empty(),
+        };
+        // Y lo que el `WHERE` afirma no nulo —un `IS NOT NULL`, una comparación
+        // que tiene que ser verdad—, por su nombre y por su origen.
+        let (afirmadas, de_origen) = match (&s.selection, subtotales) {
+            (Some(w), false) => self.afirmadas(w, &a, &mut sal),
+            _ => Default::default(),
+        };
+        let nunca_nula = |this: &Self, e: &Expr, sal: &mut Salida| {
+            if clave_de(e).is_some_and(|k| afirmadas.contains(&k)) {
+                return Some(BTreeSet::new());
+            }
+            this.exige(e, &a, sal)
         };
         for item in &s.projection {
             match item {
@@ -776,18 +1060,25 @@ impl Analizador<'_> {
                         otra => otra.to_string(),
                     };
                     let l = self.linaje(e, &a, &mut sal);
-                    sal.cols.push(Columna { nombre: n, ..l });
+                    let exige = nunca_nula(self, e, &mut sal);
+                    sal.cols.push(Columna {
+                        nombre: n,
+                        exige,
+                        ..l
+                    });
                 }
                 SelectItem::ExprWithAlias { expr, alias } => {
                     let l = self.linaje(expr, &a, &mut sal);
+                    let exige = nunca_nula(self, expr, &mut sal);
                     sal.cols.push(Columna {
                         nombre: alias.value.clone(),
+                        exige,
                         ..l
                     });
                 }
                 SelectItem::Wildcard(_) => {
-                    for (_, r) in &a.rels {
-                        self.estrella(r, &mut sal);
+                    for (i, (_, r)) in a.rels.iter().enumerate() {
+                        self.estrella(r, a.nulas.contains(&i), &mut sal);
                     }
                 }
                 SelectItem::QualifiedWildcard(
@@ -795,18 +1086,25 @@ impl Analizador<'_> {
                     _,
                 ) => {
                     let q = nombre(n).join(".");
-                    if let Some((_, r)) = a
-                        .rels
-                        .iter()
-                        .find(|(al, r)| igual(al, &q) || matches!(r, Rel::Arbol(t) if igual(t, &q)))
-                    {
-                        self.estrella(r, &mut sal);
+                    if let Some((i, (_, r))) = a.rels.iter().enumerate().find(|(_, (al, r))| {
+                        igual(al, &q) || matches!(r, Rel::Arbol(t) if igual(t, &q))
+                    }) {
+                        self.estrella(r, a.nulas.contains(&i), &mut sal);
                     }
                 }
                 otro => sal.cols.push(Columna {
                     nombre: otro.to_string(),
                     ..Default::default()
                 }),
+            }
+        }
+        for c in sal.cols.iter_mut() {
+            match &mut c.exige {
+                // Subtotales: la clave puede salir nula; lo que no depende de
+                // ninguna columna (un literal, un `COUNT`) no.
+                Some(r) if subtotales && !r.is_empty() => c.exige = None,
+                Some(r) => r.retain(|x| !de_origen.contains(x)),
+                None => {}
             }
         }
         if let Some(w) = &s.selection {
@@ -857,6 +1155,60 @@ impl Analizador<'_> {
             self.mira(q, Lugar::Qualify, &a, &mut sal);
         }
         sal
+    }
+
+    /// ORE 0051 · **Lo que un `WHERE` afirma no nulo**: en cada conjunción, la
+    /// columna de un `IS NOT NULL`, y las de una comparación, un `IN`, un
+    /// `BETWEEN` o un `LIKE`, que no pueden ser verdad con un nulo. Por su
+    /// nombre en la consulta, y por su columna de origen si se sabe.
+    fn afirmadas(
+        &self,
+        w: &Expr,
+        a: &Ambito,
+        sal: &mut Salida,
+    ) -> (BTreeSet<(Option<String>, String)>, BTreeSet<Ref>) {
+        use BinaryOperator::*;
+        let mut nombres = BTreeSet::new();
+        let mut origen = BTreeSet::new();
+        let mut pila = vec![w];
+        let mut cols: Vec<&Expr> = vec![];
+        while let Some(e) = pila.pop() {
+            match e {
+                Expr::Nested(x) => pila.push(x),
+                Expr::BinaryOp {
+                    left,
+                    op: And,
+                    right,
+                } => {
+                    pila.push(left);
+                    pila.push(right);
+                }
+                Expr::IsNotNull(x) => cols.push(x),
+                Expr::BinaryOp {
+                    left,
+                    op: Eq | NotEq | Lt | Gt | LtEq | GtEq,
+                    right,
+                } => {
+                    cols.push(left);
+                    cols.push(right);
+                }
+                Expr::InList { expr, .. }
+                | Expr::Between { expr, .. }
+                | Expr::Like { expr, .. }
+                | Expr::ILike { expr, .. } => cols.push(expr),
+                _ => {}
+            }
+        }
+        for c in cols {
+            let Some(k) = clave_de(c) else { continue };
+            if let Some(r) = self.exige(c, a, sal)
+                && r.len() == 1
+            {
+                origen.extend(r);
+            }
+            nombres.insert(k);
+        }
+        (nombres, origen)
     }
 
     fn cuerpo(&self, b: &SetExpr, padre: &Ambito, ctes: &BTreeMap<String, Salida>) -> Salida {
@@ -1304,5 +1656,136 @@ FROM v.s.p WHERE pais IN ('ES', 'PT')",
             )
             .is_err()
         );
+    }
+
+    // ── ORE 0051 · cuándo nunca es nula ─────────────────────────────────────
+
+    /// `Some(refs)` de la columna `n`, o `None`.
+    fn exige(c: &Consulta, n: &str) -> Option<BTreeSet<Ref>> {
+        col(c, n).exige.clone()
+    }
+
+    fn de(refs: &[(&str, &str)]) -> Option<BTreeSet<Ref>> {
+        Some(refs.iter().map(|(f, c)| r(f, c)).collect())
+    }
+
+    #[test]
+    fn leer_tal_cual_o_renombrar_exige_su_columna() {
+        let c = ok("select id, total as importe from ventas.s.pedidos");
+        assert_eq!(exige(&c, "id"), de(&[(P, "id")]));
+        assert_eq!(exige(&c, "importe"), de(&[(P, "total")]));
+    }
+
+    #[test]
+    fn un_literal_nunca_es_nulo_y_null_si() {
+        let c = ok("select 1 as uno, 'a' as letra, null as nada from ventas.s.pedidos");
+        assert_eq!(exige(&c, "uno"), de(&[]));
+        assert_eq!(exige(&c, "letra"), de(&[]));
+        assert_eq!(exige(&c, "nada"), None);
+    }
+
+    #[test]
+    fn el_lado_que_genera_nulos_de_un_outer_join_es_nulable() {
+        let izq = "select p.id, c.nombre from ventas.s.pedidos p \
+                   left join ventas.s.clientes c on p.cliente = c.id";
+        let c = ok(izq);
+        assert_eq!(exige(&c, "id"), de(&[(P, "id")]), "el lado que se conserva");
+        assert_eq!(exige(&c, "nombre"), None);
+        let c = ok(&izq.replace("left join", "right join"));
+        assert_eq!(exige(&c, "id"), None);
+        assert_eq!(exige(&c, "nombre"), de(&[(C, "nombre")]));
+        let c = ok(&izq.replace("left join", "full join"));
+        assert_eq!((exige(&c, "id"), exige(&c, "nombre")), (None, None));
+        let c = ok(&izq.replace("left join", "join"));
+        assert_eq!(exige(&c, "id"), de(&[(P, "id")]));
+        assert_eq!(exige(&c, "nombre"), de(&[(C, "nombre")]));
+    }
+
+    #[test]
+    fn un_case_sin_else_es_nulable_y_con_else_exige_sus_ramas() {
+        let c = ok("select case when total > 10 then 'alto' end as sin, \
+                    case when total > 10 then estado else 'bajo' end as con \
+                    from ventas.s.pedidos");
+        assert_eq!(exige(&c, "sin"), None);
+        assert_eq!(exige(&c, "con"), de(&[(P, "estado")]));
+    }
+
+    #[test]
+    fn coalesce_basta_con_uno() {
+        let c = ok(
+            "select coalesce(nota, 'sin nota') as a, coalesce(nota, estado) as b \
+                    from ventas.s.pedidos",
+        );
+        assert_eq!(exige(&c, "a"), de(&[]));
+        assert_eq!(exige(&c, "b"), de(&[(P, "nota")]));
+    }
+
+    #[test]
+    fn count_nunca_es_nulo_y_los_demas_agregados_si() {
+        let c = ok(
+            "select estado, count(*) as n, count(nota) as m, sum(total) as s, \
+                    max(total) as x from ventas.s.pedidos group by estado",
+        );
+        assert_eq!(exige(&c, "estado"), de(&[(P, "estado")]));
+        assert_eq!(exige(&c, "n"), de(&[]));
+        assert_eq!(exige(&c, "m"), de(&[]));
+        assert_eq!((exige(&c, "s"), exige(&c, "x")), (None, None));
+    }
+
+    #[test]
+    fn lo_que_el_where_afirma_no_es_nulo() {
+        let c = ok("select nota, total from ventas.s.pedidos where nota is not null and total > 0");
+        assert_eq!(exige(&c, "nota"), de(&[]));
+        assert_eq!(exige(&c, "total"), de(&[]));
+        // Incluso del lado que genera nulos: la fila sin pareja no pasa.
+        let c = ok("select c.nombre from ventas.s.pedidos p \
+                    left join ventas.s.clientes c on p.cliente = c.id \
+                    where c.nombre is not null");
+        assert_eq!(exige(&c, "nombre"), de(&[]));
+        // Un `OR` no afirma ninguno de los dos.
+        let c = ok("select nota from ventas.s.pedidos where nota is not null or total > 0");
+        assert_eq!(exige(&c, "nota"), de(&[(P, "nota")]));
+    }
+
+    #[test]
+    fn una_funcion_propaga_o_no_se_sabe() {
+        let c = ok(
+            "select upper(estado) as u, total / 2 as mitad, total * 2 as doble, \
+                    nullif(estado, 'x') as n, rara(estado) as r, try_cast(total as int) as t, \
+                    cast(total as int) as ci, total is null as es from ventas.s.pedidos",
+        );
+        assert_eq!(exige(&c, "u"), de(&[(P, "estado")]));
+        assert_eq!(exige(&c, "mitad"), None, "dividir por cero puede dar nulo");
+        assert_eq!(exige(&c, "doble"), de(&[(P, "total")]));
+        assert_eq!((exige(&c, "n"), exige(&c, "r")), (None, None));
+        assert_eq!(exige(&c, "t"), None);
+        assert_eq!(exige(&c, "ci"), de(&[(P, "total")]));
+        assert_eq!(exige(&c, "es"), de(&[]));
+    }
+
+    #[test]
+    fn un_union_exige_los_dos_lados() {
+        let c = ok("select id from ventas.s.pedidos union all select id from ventas.s.clientes");
+        assert_eq!(exige(&c, "id"), de(&[(P, "id"), (C, "id")]));
+        let c = ok("select id from ventas.s.pedidos union all select null from ventas.s.clientes");
+        assert_eq!(exige(&c, "id"), None);
+    }
+
+    #[test]
+    fn un_rollup_deja_la_clave_nulable() {
+        let c = ok("select estado, count(*) as n from ventas.s.pedidos \
+                    where estado is not null group by rollup (estado)");
+        assert_eq!(exige(&c, "estado"), None);
+        assert_eq!(exige(&c, "n"), de(&[]));
+    }
+
+    #[test]
+    fn una_subconsulta_y_un_with_llevan_lo_suyo() {
+        let c = ok("with t as (select id, null as x from ventas.s.pedidos) \
+                    select t.id, t.x, d.n from t \
+                    join (select count(*) as n from ventas.s.clientes) d on true");
+        assert_eq!(exige(&c, "id"), de(&[(P, "id")]));
+        assert_eq!(exige(&c, "x"), None);
+        assert_eq!(exige(&c, "n"), de(&[]));
     }
 }

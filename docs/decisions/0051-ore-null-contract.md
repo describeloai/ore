@@ -1,6 +1,6 @@
 # 0051 · ORE Null Contract
 
-**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1, P2 y el código de P3 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
+**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1, P2, el código de P3 y P4 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
 columnas **nunca son nulas**: el origen lo **declara**, las vistas lo **derivan** y el lago lo
 **impone**, con una sola regla para cambiarlo. Cierra el «REQUIRED» de
 [0042](0042-origin-rest-bigquery.md) y la parte de nulabilidad de
@@ -333,6 +333,35 @@ de los árboles): la parte de 0051 cuadra con P0. **21 tablas de `victor` pasan 
 existente cambia. **Pero re-inducir escribe además lo pendiente de 0045 E5′**: +237 punteros en
 `demo` y +70 en `victor`, y los `exports` de 7 paquetes. Aplicarlo en vivo, y cómo, se decide
 aparte.
+
+#### P4 · derivar (2026-10-02)
+
+- **En `vista_sql`, el mismo analizador que hace el linaje.** Cada columna de salida lleva
+  `exige`: las columnas de origen que no pueden ser nulas para que ella no lo sea (vacío: nunca,
+  pase lo que pase), o `None`. El ámbito sabe qué relaciones están del lado que genera nulos de un
+  `LEFT`, `RIGHT` o `FULL JOIN` (lo que faltaba, E3).
+- **Las reglas, conservadoras:** tal cual y renombrar conservan; literal sí, `NULL` no; `CAST` sí,
+  `TRY_CAST` no; `CASE` sólo con `ELSE` y todas sus ramas; `COALESCE` con el argumento que menos
+  exige; `COUNT` y los rangos de ventana sí, los demás agregados no; aritmética y comparaciones
+  propagan, **dividir no** (por cero, DuckDB da nulo con `//` y `%`); `IS [NOT] NULL` y `<=>`
+  nunca son nulos; una función conocida que propaga, sí; una desconocida, no; `UNION` exige los dos
+  lados; un `ROLLUP`, `CUBE` o `GROUPING SETS` deja la clave nulable; y lo que el `WHERE` afirma
+  en una conjunción (`IS NOT NULL`, una comparación, `IN`, `BETWEEN`, `LIKE`) no es nulo, también
+  del lado de un `LEFT JOIN`.
+- **El árbol resuelve** (`vistas::nulabilidad_de_vista`): contra la `Table` (lo garantizado),
+  otra vista o un dataset mantenido, cada uno por su consulta —la SQL, o la que el núcleo sirve
+  de una estructurada (`linaje::como_sql`)—. `ore view` enseña `nunca nula …` sólo cuando hay
+  algo.
+- **La propiedad, medida** (`pruebas-de-fuego/nunca-nula.py`): tablas y vistas al azar contra
+  DuckDB 1.5.6. **8 semillas, 2 084 vistas ejecutadas, 2 946 afirmaciones «nunca nula», 0 nulos.**
+  Y la prueba caza lo que debe: sin la regla del `LEFT JOIN`, 6 fallos; con `//` y `%`
+  propagando, 35. Un 15 % de las consultas al azar las rechaza DuckDB (tipos mezclados) y no
+  prueban nada.
+- **En la copia de `victor` con P3 aplicado en seco**, 42 vistas y datasets enseñan columnas que
+  nunca son nulas (las 19 de `foreign_test`, estructuradas, por su consulta). Sin P3 en vivo,
+  ninguna salida cambia.
+- **Lo que se mueve:** la cabecera de la copia pasa a **P6** —cambiarla obliga a recalcular las
+  copias, y sólo tiene sentido cuando se impone—; GraphQL y el SDK, a **P7**, como dijo la Fase 0.
 
 ## Lo que no se hace
 
