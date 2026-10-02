@@ -152,7 +152,7 @@ FUERA = {
 #   habia cambiado — lo que habia cambiado era que por fin la tocaba.
 NOMBRAN_INQUILINOS = {
     "13-el-inquilino-reconciliado.yaml":
-        "es el enganche: los de `demo` y `prueba` a mano; los demas se RINDEN de el (0025 E6).",
+        "es el enganche: el de `demo` a mano; los demas se RINDEN de el (0025 E6).",
 }
 
 # ── ⭐⭐ EL ENGANCHE, RENDIDO (0025 E6) ─────────────────────────────────────
@@ -170,10 +170,13 @@ NOMBRAN_INQUILINOS = {
 #   los escribe el— asi que no es un permiso nuevo: es el mismo, en un sitio
 #   mas. Nadie del inquilino escribe ahi.
 #
-# `demo` y `prueba` siguen a mano en `13-…`, a proposito (R2 de la 0025: los
-# canarios no se enteran). El renderizador NO emite enganche para ellos.
+# `demo` sigue a mano en `13-…`, a proposito (R2 de la 0025: los canarios no
+# se enteran). El renderizador NO emite enganche para el.
+# ✏️ 0048 (deuda 1): `prueba` ya no. Su organizacion se retiro (047): la fundo
+#   y la administraba una maquina, `iam-agente`. Su celda la desmonta el
+#   aprovisionador (⓪) y su enganche salio de `13-…`.
 ENGANCHE = "13-el-inquilino-reconciliado.yaml"
-ENGANCHADOS_A_MANO = ("demo", "prueba")
+ENGANCHADOS_A_MANO = ("demo",)
 
 
 def render_enganche(nombre, sin_cola=False):
