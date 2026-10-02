@@ -44,7 +44,11 @@ def e1():
     y = DOCUMENTOS[("MediaCollection", "legal", "archivo", "paginas")]
     assert "apiVersion: oos.dev/v1alpha19" in y and "from:" not in y, y
     assert "formats: [png, webp]" in y and "owner: team:legal" in y and "gdpr.sensitivity: high" in y, y
-    bien("1 · crear_coleccion(): v1alpha19 sin `from`, formatos en minúscula, dueño por defecto, etiquetas")
+    r = ore.crear_coleccion("s3_standard.nueva_carpeta.copia", media="document", formatos=["pdf"])
+    y = DOCUMENTOS[("MediaCollection", "s3_standard", "nueva_carpeta", "copia")]
+    assert r["creada"] and "owner: team:s3-standard" in y, y
+    bien("1 · crear_coleccion(): v1alpha19 sin `from`, formatos en minúscula, etiquetas, y el dueño por "
+         "defecto es un handle aunque la base lleve `_` (team:s3-standard)")
 
 
 def e2():

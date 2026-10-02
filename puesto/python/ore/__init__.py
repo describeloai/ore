@@ -1070,7 +1070,7 @@ def crear_coleccion(nombre, media, formatos, dueno=None, comentario=None, etique
         if si_no_existe:
             return {"coleccion": nombre, "creada": False}
         raise RuntimeError("%s: ya hay una colección con ese nombre (`if not exists` la deja como está)" % que)
-    dueno = dueno or "team:%s" % _partes(nombre)[0]
+    dueno = dueno or _dueno_por_defecto(nombre)
     _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion))
     return {"coleccion": nombre, "creada": True}
 
@@ -1171,6 +1171,14 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
     return "\n".join(lineas) + "\n"
 
 
+def _dueno_por_defecto(nombre):
+    """`team:<base>` como handle (`OOS2009`: minúsculas, dígitos y `-`): una base
+    puede llevar `_` —`s3_standard`— y un handle no (medido en un puesto de victor:
+    `team:s3_standard` no compilaba)."""
+    h = re.sub(r"[^a-z0-9-]", "-", _partes(nombre)[0].lower()).strip("-") or "datos"
+    return "team:%s" % (h if h[0].isalpha() else "b-" + h)
+
+
 def _ruta_de_vista(nombre, kind="View"):
     base, ns, v = _partes(nombre)
     return ("/documentos/%s/%s/%s" % (kind, base, v) if ns == DEFAULT
@@ -1229,7 +1237,7 @@ def crear_vista(nombre, sql, columnas=None, comentario=None, dueno=None, o_reemp
         nuevas = [c for c in contrato if c not in anterior]
         if nuevas:
             print("%s · añade %s al contrato" % (nombre, ", ".join(nuevas)))
-    dueno = dueno or "team:%s" % _partes(nombre)[0]
+    dueno = dueno or _dueno_por_defecto(nombre)
     texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno)
     _poner(que, _ruta_de_vista(nombre), texto)
     hecho = {"vista": nombre, "estado": estado, "columnas": contrato}

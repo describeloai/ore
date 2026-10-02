@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import sys
 import threading
 import http.server
@@ -140,6 +141,11 @@ class Celda(http.server.BaseHTTPRequestHandler):
             return _problema(self, 404, "media/no-existe", self.path)
         clave = _doc_de(u.path)
         texto = _cuerpo(self).get("yaml", "")
+        dueno = re.search(r"^  owner: (\S+)$", texto, re.M)
+        if dueno and not re.fullmatch(r"(team|user):[a-z][a-z0-9-]*", dueno.group(1)):
+            # Como `ore_core::pertenencia::es_handle` (OOS2009).
+            return _json(self, 422, {"error": "no compila", "diagnosticos": [
+                {"codigo": "OOS2009", "mensaje": "`owner: %s` no es un handle" % dueno.group(1)}]})
         if "media: nada" in texto or "name: rota" in texto:
             return _json(self, 422, {"error": "no compila", "diagnosticos": [
                 {"codigo": "OOS1004", "mensaje": "`media` no es un medio"}]})
