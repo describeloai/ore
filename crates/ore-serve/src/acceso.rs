@@ -137,6 +137,15 @@ impl Servidor {
         let Some(acceso) = self.acceso.as_ref() else {
             return Ok(());
         };
+        // ⭐ R1 · Un pod verificado (`agente:pod/<ns>/<pod>`) es de esta celda POR
+        //   CONSTRUCCIÓN: su token lo firmó el clúster para ESTE namespace y la
+        //   cuenta `puesto` (`--pods-de`), y sólo actúa como su puesto. `ore-iam`
+        //   no lo conoce —no es un agente registrado— y preguntarle con el token
+        //   del agente de la celda al lado daba 400 (`subject.id` no es el del
+        //   token): el puesto se quedaba arrancando, 503 tras 503 (2026-10-02).
+        if crate::puestos::es_pod(sujeto) {
+            return Ok(());
+        }
         let Some(t) = testigo() else {
             return Err(Respuesta::error(
                 401,
