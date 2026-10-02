@@ -3065,6 +3065,25 @@ fn celda_de_sentencia(
                 si(*materializada),
             )
         }
+        // ADR 0049 B4·4: la colección escrita, por el mismo verbo que Python. El
+        // dueño no va: lo pone el servidor (0027 · el dueño es quien lo crea).
+        S::CrearColeccion {
+            destino,
+            media,
+            formatos,
+            comentario,
+            si_no_existe,
+        } => format!(
+            "from ore import crear_coleccion, _resultado_de_crear\n\n\
+             _hecho = crear_coleccion({}, {}, {}, comentario={}, si_no_existe={})\n\
+             print(\"%s · media collection · %s\" % (_hecho[\"coleccion\"], \"creada\" if _hecho[\"creada\"] else \"ya estaba\"))\n\
+             _resultado_de_crear(\"media collection \" + _hecho[\"coleccion\"], _hecho[\"creada\"])\n",
+            c(&destino.referencia()),
+            c(media),
+            Json::Arr(formatos.iter().map(Json::s).collect()).jcs(),
+            comentario.as_deref().map_or("None".to_string(), c),
+            si(*si_no_existe)
+        ),
         S::BorrarVista { destino, si_existe } => format!(
             "from ore import borrar_vista, _resultado_de_crear\n\n\
              _hecho = borrar_vista({}, si_existe={})\n\

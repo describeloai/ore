@@ -26,6 +26,7 @@
 //! | `create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …` | una View v1alpha14: su consulta y su contrato, que describe DuckDB (ADR 0040 paso 5) |
 //! | `create [or replace] materialized view b.s.v … as select …` | la misma View y su copia, el dataset `b.s.v_copia` (`from: { view }`) que la copia entera; lee el lago (ADR 0040 paso 7) |
 //! | `drop view [if exists] b.s.v` | la quita del árbol; si algo la lee, no |
+//! | `create media collection [if not exists] b.s.c media <tipo> formats (ext, …) [comment '…']` | una `MediaCollection` **escrita** vacía (ADR 0049 B4·4): el código la llena con transacciones |
 //!
 //! Y `create table` se niega: una **Table** es un puntero a un objeto de un
 //! origen, nace del descubrimiento y no guarda bytes; lo que se escribe es un
@@ -144,6 +145,17 @@ pub enum Sentencia {
     },
     /// `drop view [if exists]`.
     BorrarVista { destino: Nombre, si_existe: bool },
+    /// `create media collection` (ADR 0049 B4·4): una `MediaCollection`
+    /// escrita y vacía, de quien la crea. El código la llena (`transaccion()`).
+    CrearColeccion {
+        destino: Nombre,
+        /// Uno de [`crate::document::MEDIOS`].
+        media: String,
+        /// Las extensiones que admite, la primera la primaria.
+        formatos: Vec<String>,
+        comentario: Option<String>,
+        si_no_existe: bool,
+    },
 }
 
 impl Sentencia {
@@ -173,6 +185,7 @@ impl Sentencia {
             } => "create or replace view",
             Self::CrearVista { .. } => "create view",
             Self::BorrarVista { .. } => "drop view",
+            Self::CrearColeccion { .. } => "create media collection",
         }
     }
 }
@@ -197,6 +210,7 @@ pub struct Creado {
     pub schemas: BTreeSet<(String, String)>,
     pub datasets: BTreeSet<String>,
     pub vistas: BTreeSet<String>,
+    pub colecciones: BTreeSet<String>,
 }
 
 const LA_BASE: &str =
@@ -402,6 +416,9 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
         }
         if clase.is_none() && es(&ts, 1, "schema") {
             return crear_schema(&ts, 2).map(|s| (s, Vec::new()));
+        }
+        if clase.is_none() && es(&ts, 1, "media") && es(&ts, 2, "collection") {
+            return crear_coleccion(&ts, 3);
         }
         let mut j = 1;
         let o_reemplaza = es(&ts, j, "or") && es(&ts, j + 1, "replace");
@@ -674,6 +691,160 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
         pos,
         si_no_existe,
     })
+}
+
+const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…> formats (pdf, …) [comment '…']`";
+
+/// `create media collection …` desde `i` (tras `collection`). Como `create
+/// volume` de Databricks, con lo que una colección necesita además: de qué
+/// medio es y qué extensiones admite. Se lee como frase, y no se confunde con
+/// las columnas de un dataset.
+fn crear_coleccion(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+    let (si_no_existe, i) = si_no_existe(ts, i);
+    let Some((partes, pos, mut i)) = nombre_en(ts, i) else {
+        return Err(vec![
+            Fallo::new("falta el nombre de la colección", pos_en(ts, i)).ayuda(LA_COLECCION),
+        ]);
+    };
+    let mut fallos = Vec::new();
+    let destino = nombre_de(&partes, pos, &mut fallos);
+    let palabra = |i: usize| match ts.get(i).map(|t| &t.t) {
+        Some(Token::Word(w)) => Some(w.value.clone()),
+        Some(Token::SingleQuotedString(s)) => Some(s.clone()),
+        _ => None,
+    };
+    // media <tipo>
+    let mut media = String::new();
+    if es(ts, i, "media") {
+        match palabra(i + 1) {
+            Some(m) => {
+                media = m.to_ascii_lowercase();
+                if !crate::document::MEDIOS.contains(&media.as_str()) {
+                    fallos.push(
+                        Fallo::new(format!("`{m}` no es un medio"), pos_en(ts, i + 1))
+                            .ayuda(format!("uno de: {}", crate::document::MEDIOS.join(", "))),
+                    );
+                }
+                i += 2;
+            }
+            None => {
+                fallos.push(
+                    Fallo::new("`media` va seguido del medio", pos_en(ts, i + 1))
+                        .ayuda(format!("uno de: {}", crate::document::MEDIOS.join(", "))),
+                );
+                i += 1;
+            }
+        }
+    } else {
+        fallos.push(
+            Fallo::new(
+                "una colección dice su medio: `media document`",
+                pos_en(ts, i),
+            )
+            .ayuda(LA_COLECCION),
+        );
+    }
+    // formats (ext, …)
+    let mut formatos: Vec<String> = Vec::new();
+    if es(ts, i, "formats") {
+        i += 1;
+        if !matches!(ts.get(i).map(|t| &t.t), Some(Token::LParen)) {
+            return Err(vec![
+                Fallo::new("`formats` va seguido de `(…)`", pos_en(ts, i)).ayuda(LA_COLECCION),
+            ]);
+        }
+        i += 1;
+        loop {
+            // una extensión: `pdf`, `'pdf'` o `tar.gz` (palabras unidas por `.`)
+            let fpos = pos_en(ts, i);
+            let Some(mut f) = palabra(i) else {
+                return Err(vec![
+                    Fallo::new("un formato es una extensión: `pdf`, `png`", fpos)
+                        .ayuda(LA_COLECCION),
+                ]);
+            };
+            i += 1;
+            while matches!(ts.get(i).map(|t| &t.t), Some(Token::Period)) {
+                let Some(m) = palabra(i + 1) else { break };
+                f = format!("{f}.{m}");
+                i += 2;
+            }
+            let f = f.trim_start_matches('.').to_ascii_lowercase();
+            let forma = f.starts_with(|c: char| c.is_ascii_alphanumeric())
+                && f.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || ".+-".contains(c));
+            if !forma {
+                fallos.push(Fallo::new(format!("`{f}` no es una extensión"), fpos));
+            } else if formatos.contains(&f) {
+                fallos.push(Fallo::new(format!("`{f}` está dos veces"), fpos));
+            } else {
+                formatos.push(f);
+            }
+            match ts.get(i).map(|t| &t.t) {
+                Some(Token::Comma) => i += 1,
+                Some(Token::RParen) => {
+                    i += 1;
+                    break;
+                }
+                _ => {
+                    return Err(vec![
+                        Fallo::new("falta `)` o `,` en `formats (…)`", pos_en(ts, i))
+                            .ayuda(LA_COLECCION),
+                    ]);
+                }
+            }
+        }
+    } else if fallos.is_empty() {
+        fallos.push(
+            Fallo::new(
+                "una colección dice qué extensiones admite: `formats (pdf)`",
+                pos_en(ts, i),
+            )
+            .ayuda(LA_COLECCION),
+        );
+    }
+    // comment '…'
+    let mut comentario = None;
+    if es(ts, i, "comment") {
+        match ts.get(i + 1).map(|t| &t.t) {
+            Some(Token::SingleQuotedString(s)) => {
+                comentario = Some(s.clone());
+                i += 2;
+            }
+            _ => {
+                fallos.push(
+                    Fallo::new(
+                        "`comment` va seguido de un texto entre comillas",
+                        pos_en(ts, i + 1),
+                    )
+                    .ayuda(LA_COLECCION),
+                );
+                i = ts.len();
+            }
+        }
+    }
+    if i < ts.len() {
+        fallos.push(sobra(ts, i, LA_COLECCION));
+    }
+    if !fallos.is_empty() {
+        return Err(fallos);
+    }
+    let destino = destino.expect("sin fallos hay nombre");
+    let avisos = if destino.dos_partes {
+        vec![Fallo::dos_partes(&destino)]
+    } else {
+        Vec::new()
+    };
+    Ok((
+        Sentencia::CrearColeccion {
+            destino,
+            media,
+            formatos,
+            comentario,
+            si_no_existe,
+        },
+        avisos,
+    ))
 }
 
 const LA_VISTA: &str = "`create [or replace] [materialized] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
@@ -1385,6 +1556,66 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                 }
                 creado.datasets.insert(r);
             }
+            Sentencia::CrearColeccion {
+                destino,
+                si_no_existe,
+                ..
+            } => {
+                let r = destino.referencia();
+                let ya = || {
+                    Fallo::new(format!("ya hay una colección `{r}`"), destino.pos).ayuda(format!(
+                        "`create media collection if not exists {}`, si da igual que ya esté",
+                        destino.completo()
+                    ))
+                };
+                if !hay_base_o_creada(&creado, &destino.paquete) {
+                    fallos.push(sin_base(&destino.paquete, destino.pos));
+                } else if !(hay_schema_declarado(pkg, &destino.paquete, &destino.schema)
+                    || creado
+                        .schemas
+                        .contains(&(destino.paquete.clone(), destino.schema.clone())))
+                {
+                    fallos.push(
+                        Fallo::new(
+                            format!(
+                                "no hay ningún schema `{}` en la base `{}`",
+                                destino.schema, destino.paquete
+                            ),
+                            destino.pos,
+                        )
+                        .ayuda(format!(
+                            "créalo antes en el guion: `create schema {}.{}`",
+                            destino.paquete, destino.schema
+                        )),
+                    );
+                } else {
+                    match doc_de(pkg, &r) {
+                        Some(d) if d.kind == Kind::MediaCollection && d.section("from").is_none() => {
+                            if !si_no_existe {
+                                fallos.push(ya());
+                            }
+                        }
+                        Some(d) if d.kind == Kind::MediaCollection => fallos.push(Fallo::new(
+                            format!("`{r}` es una colección mantenida: la llena su `from`"),
+                            destino.pos,
+                        )),
+                        // v1alpha14: en un schema un nombre es una cosa.
+                        Some(d) => fallos.push(Fallo::new(
+                            format!("`{r}` ya es un `{:?}`: en un schema un nombre es una cosa (OOS2035)", d.kind),
+                            destino.pos,
+                        )),
+                        None if creado.colecciones.contains(&r) && !si_no_existe => fallos.push(ya()),
+                        None if creado.datasets.contains(&r) || creado.vistas.contains(&r) => {
+                            fallos.push(Fallo::new(
+                                format!("`{r}` ya es otra cosa de este guion (OOS2035)"),
+                                destino.pos,
+                            ))
+                        }
+                        None => {}
+                    }
+                }
+                creado.colecciones.insert(r);
+            }
         }
     }
     fallos
@@ -1410,6 +1641,64 @@ INSERT INTO ventas.demo_uc.clientes (id, nombre, email, created_at) VALUES
 -- y lo que queda; un comentario con punto y coma
 SELECT * FROM ventas.demo_uc.clientes;
 ";
+
+    /// B4·4 · `create media collection`: la frase, sus partes y sus fallos.
+    #[test]
+    fn la_coleccion_se_crea_con_su_medio_y_sus_formatos() {
+        let t = trozos(
+            "create media collection if not exists legal.archivo.paginas media image formats (png, 'JPG', tar.gz) comment 'las páginas';",
+        );
+        assert_eq!(t[0].sentencia.que(), "create media collection");
+        match &t[0].sentencia {
+            Sentencia::CrearColeccion {
+                destino,
+                media,
+                formatos,
+                comentario,
+                si_no_existe,
+            } => {
+                assert_eq!(destino.referencia(), "legal.archivo.paginas");
+                assert_eq!(media, "image");
+                assert_eq!(formatos, &["png", "jpg", "tar.gz"]);
+                assert_eq!(comentario.as_deref(), Some("las páginas"));
+                assert!(*si_no_existe);
+            }
+            s => panic!("{s:?}"),
+        }
+        for (q, dice) in [
+            (
+                "create media collection legal.archivo.p media cuadro formats (png)",
+                "no es un medio",
+            ),
+            (
+                "create media collection legal.archivo.p formats (png)",
+                "dice su medio",
+            ),
+            (
+                "create media collection legal.archivo.p media image",
+                "qué extensiones",
+            ),
+            (
+                "create media collection legal.archivo.p media image formats png",
+                "va seguido de `(…)`",
+            ),
+            (
+                "create media collection legal.archivo.p media image formats (png, png)",
+                "dos veces",
+            ),
+            (
+                "create media collection legal.archivo.p media image formats (png) otra",
+                "sobra",
+            ),
+            (
+                "create media collection p media image formats (png)",
+                "no dice",
+            ),
+        ] {
+            let f = falla(q);
+            assert!(f.iter().any(|x| x.mensaje.contains(dice)), "{q}: {f:?}");
+        }
+    }
 
     fn trozos(q: &str) -> Vec<Trozo> {
         guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"))

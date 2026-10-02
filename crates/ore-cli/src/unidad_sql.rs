@@ -294,5 +294,21 @@ fn dice(s: &Sentencia) -> String {
             destino.referencia(),
             if *si_existe { " · si existe" } else { "" }
         ),
+        Sentencia::CrearColeccion {
+            destino,
+            media,
+            formatos,
+            si_no_existe,
+            ..
+        } => format!(
+            "crea la colección escrita `{}` · {media} · {}{}",
+            destino.referencia(),
+            formatos.join(", "),
+            if *si_no_existe {
+                " · si no existe"
+            } else {
+                ""
+            }
+        ),
     }
 }
