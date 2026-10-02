@@ -358,13 +358,15 @@ export function caducidadDelEnlace() {
  * ── ⚠️ Y LO QUE CUESTA, dicho ─────────────────────────────────────
  *
  *   Con `Only addresses in my domains` + IP, **cualquier cosa que salga por esa IP puede
- *   enviar como `@paladio.io`**. Hoy es el NAT del clúster, que **comparte con carbon**. Un
- *   App Password habría sido un permiso más estrecho, y conviene no fingir lo contrario.
+ *   enviar como `@paladio.io`**. Un App Password habría sido un permiso más estrecho, y
+ *   conviene no fingir lo contrario.
  *
- *   ⇒ Lo que lo hace sostenible es que la IP esté **fijada a propósito**: `carbon-nat` pasó
- *     de `AUTO_ONLY` a `MANUAL_ONLY` sobre `paladio-publica` (207.175.59.130). Con una IP
- *     rotatoria esto habría sido una avería programada — un día deja de salir correo y nadie
- *     relaciona las dos cosas.
+ *   ⇒ Lo que lo hace sostenible es que la IP esté **fijada a propósito**. ✏️ En ORE (0048,
+ *     deuda 3, 2026-10-02) es `salida-a-origenes` (34.156.87.237, `MANUAL_ONLY`), el NAT por
+ *     el que sale TODO el clúster desde que `sistema-spot` es privado. La de antes,
+ *     `paladio-publica` (207.175.59.130), era del clúster viejo y se fue con él: el correo
+ *     dejó de salir y nadie relacionó las dos cosas, que es la avería que este párrafo
+ *     avisaba. ⇒ `identidad/sonda-correo.sh` lo mide, y decide `HAY_CORREO` (`ore.mjs`).
  *
  * ⛔ Y este objeto sigue sin llevar `password` — ahora porque no existe ninguna.
  *   `check-entrada` ⑥ lo comprueba igual: una guarda no se relaja porque hoy no haya nada

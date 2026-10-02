@@ -62,6 +62,22 @@ externa**, y `default-pool` tiene la suya: sale por NAT `jobs-p` y nadie más, s
 que lo diga. ⚠️ Lo que eso arrastra: un nodo privado **futuro** en esta subred heredaría la
 salida sin que nadie lo decida. Hoy hay dos pools y se ve; con seis no.
 
+**✏️ 2026-10-02 (0048, deuda 3): ahora sale por aquí TODO el clúster.** `sistema-spot` —donde
+corren el IdP, `ore-serve`, `ore-medios`, la forja y el sistema— tenía IP pública **efímera**
+(spot: cambia con cada nodo), y sus pods salían por ella, no por el NAT. Lo destapó el correo:
+el relay de Workspace autoriza por IP y rechazaba `34.53.222.61`. Y desmentía la promesa de
+abajo: `ORE_CELDA_SALIDA` anuncia `34.156.87.237` a los clientes, pero `ore-serve` y
+`ore-medios` no salían por ella. ⇒ `node-pools update sistema-spot --enable-private-nodes`.
+
+- Antes, el NAT pasó a puertos dinámicos (256–8192 por VM; eran 64 fijos), porque con todo un
+  pool detrás 64 conexiones simultáneas a un mismo destino se agotan. Las APIs de Google no
+  pasan por él: la subred tiene Private Google Access.
+- ⛔ **Costó ~13 min de caída (09:53–10:06).** El cambio recrea el nodo por *surge* (primero
+  el nuevo), y el nuevo no cabía en la cuota `CPUS_ALL_REGIONS` (12 vCPU: dos e2-standard-4 y
+  el de `modelos`). GKE vació el viejo igualmente, y el nuevo sólo nació al liberarse sus CPU.
+  ⇒ Antes de recrear un nodo aquí, mirar la cuota (`gcloud compute project-info describe`):
+  con 12 vCPU no hay sitio para un tercer e2-standard-4.
+
 **La IP fija es el producto, no un detalle de red.** Es lo que un cliente pone en su lista
 blanca antes de dar acceso a su base: convierte «nuestro clúster puede conectarse» en «sólo
 nuestro clúster puede». Vale para Neon y para cualquier origen en la nube. ⛔ Y **no es
