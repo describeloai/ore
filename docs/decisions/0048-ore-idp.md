@@ -1,7 +1,8 @@
 # 0048 · ORE IdP
 
 **Estado:** aceptado y **en vivo** (2026-09-30). ORE es dueño de su IdP: lo corre, lo declara,
-lo concilia y lo mide. `rubix` exige AAL2 en las tres puertas. La deuda, al final.
+lo concilia y lo mide. `rubix` exige AAL2 en las tres puertas, y `rubix-interno` en las dos
+suyas. Deudas 1, 4 y 5 saldadas el 2026-10-02; lo que queda, al final.
 
 ## Qué es
 
@@ -108,15 +109,51 @@ Primero `aplicar.mjs --plan`; después lo aplicó en `rubix` una persona, con el
   comprometida que reenvía un token a otra de sus propias organizaciones) y se aplaza.
 - **Renombrar `rubix` → `ore`:** no (ver *Lo que no cambia*).
 
+## Saldado (2026-10-02)
+
+**Deuda 1 · retirar es nombrar.** Dejar de declarar un cliente no lo retiraba: el reconciliador
+resta flujos, papeles, ámbitos y mapeadores, pero no clientes. Al medirlo salió uno peor que
+`ore-agente`: **`iam-agente`**, el cliente de `98-los-cuatro-verbos.yaml`, era en `iam` una
+*persona*, fundadora y única `ORGADMIN` de `prueba`. Desde A9′, un secreto de
+`client_credentials`, sin segundo factor, administraba una organización.
+
+- `RETIRADOS` en `ore.mjs`. `aplicar.mjs --plan` hace el **censo** de todo cliente vivo (de
+  fábrica, declarado, gestionado fuera, retirado, desconocido); aplicar borra los retirados y lo
+  dice. La prueba de fuego exige que ningún retirado vuelva al manifiesto.
+- `prueba` era desechable y se retiró entera:
+  - En `iam`, la 047: celda, agente, miembro, organización y `cofre_prueba`, con huella.
+  - En GCP, el ⓪ del aprovisionador: secretos `t-prueba-*`, la copia, siete cuentas, el DNS y la
+    organización `t-prueba` de la forja.
+  - En el clúster, `t-prueba`.
+- En vivo:
+  - Borrados `iam-agente`, `ore-agente`, `ore-agente-prueba`, `ore-agente-prueba-dos` y
+    `rubix-consola-lector`, y el Secret `identidad/iam-agente`.
+  - El censo de después: sólo los de fábrica, los declarados, `ore-agente-demo`,
+    `ore-agente-victor` y `ore-aprovisionador`. Ningún desconocido.
+  - `demo` y `victor`, `/salud` 200, y sus agentes siguen entrando.
+- **Dos cosas que la poda enseñó:**
+  - La Kustomization `malla` va con `prune: false` (15-…), así que sacar `prueba` de `13-…` no la
+    borra. Se borran a mano sus dos Kustomization (esas sí podan su inventario, namespace
+    incluido), sus dos GitRepository y la cuenta de la cola.
+  - El namespace se quedó en `Terminating` por un NEG de GKE con finalizador, sin ningún backend
+    que lo usara. Borrar el NEG en GCP lo soltó.
+- **El orden importa:** la poda va *después* de la 047. Con `prueba` activa y sin enganche a
+  mano, el convergedor le habría renderizado uno.
+
+**Deuda 4 · la identidad vieja, fuera de la plataforma** (`C:\Rubix` `a5afb08`). El clúster viejo ya
+no existe, y su reconciliador era una trampa: escuchaba por defecto en `127.0.0.1:18080`, el
+mismo puerto que el túnel de ORE al IdP vivo, y conciliaba sin lo de ORE. Fuera
+`deploy/identidad`, `deploy/base/identidad`, `idp/`, `cloudbuild-idp.yaml` y cinco checks; queda
+la lápida `MUDADO-A-ORE.md`.
+
+**Deuda 5 · `rubix-interno` conciliado.** Su entrada exigía 1 factor; ahora 2, como `rubix`.
+
 ## Deuda y pistas
 
 | # | deuda | por qué importa | pista |
 |---|---|---|---|
-| 1 | **`ore-agente` sigue declarado.** `ore.mjs` lo añade a `realmsDeOre()` (`AGENTE`, línea ~301) y sale dos veces en `61-realms.yaml`. 0047 A9′.4 lo retiró de `iam.agente` (046), pero no del realm | es un cliente vivo con secreto, registrado en dos organizaciones antes de la 046. El reconciliador lo **mantiene**: lo vivo y lo decidido no coinciden | quitar `AGENTE` de `ore.mjs`, regenerar y correr `aplicar.mjs --plan` (debe proponer borrarlo; `ore-agente-prueba-dos` también, si sigue). Antes, mirar en el recuento que nadie pide tokens con él |
 | 2 | **La imagen que corre es la vieja.** `60-idp.yaml` fija `idp:26.0.7-1`, sin el tema del correo | el tema y las opciones de build declaradas no son las que corren | pasar a `idp:<sha>` de Cloud Build en una ventana avisada. Con `instances: 1`, cambiarla **corta el login** durante el reinicio. Hacer antes la copia de `62` |
 | 3 | **El correo se contradice.** `realm.mjs` declara `smtp-relay.gmail.com` (autoriza por IP, sin credencial) y `ore.mjs` apaga `verifyEmail` «porque no hay correo» | o falta el correo, o sobra la excepción; mientras tanto, la reposición por correo es incierta | probar el relay desde la IP de salida del clúster de ORE (la autorizada en Workspace era probablemente la del viejo). Si sale: `verifyEmail` encendido y la excepción fuera. Si no: registrar la IP, o quitar `correoDeSalida` |
-| 4 | **La plataforma conserva la identidad vieja.** `C:\Rubix\deploy\identidad` mantiene `aplicar-entrada.mjs`, `aplicar-correo.mjs` y `realm.mjs` junto a `MUDADO-A-ORE.md`; `scripts/check-entrada.sh`, `check-idp.sh` y `check-correo.sh` importan su `realm.mjs` | `aplicar-entrada.mjs` es **el reconciliador peligroso**: concilia un realm sin lo de ORE. Que siga ejecutable es una trampa | en la plataforma: borrar los scripts y dejar sólo `MUDADO-A-ORE.md`; los checks, retirarlos o apuntarlos a `identidad/medir.mjs` de ORE |
-| 5 | **`rubix-interno` sin conciliar en vivo** (no comprobado: exige el admin) | lo vivo puede no coincidir con el artefacto; hoy no lo consume nadie | `aplicar.mjs --realm=rubix-interno --plan`, y aplicar si el plan es limpio |
 | 6 | **Usuarios de prueba del registro** (los de la tercera puerta) | cuentas reales en el realm de producción | listarlos con el admin y borrarlos; comprobar que no quedan en `iam.pertenencia` |
 | 7 | **El que concilia usa el admin de arranque** (`identidad/idp-initial-admin`) | es una credencial compartida y omnipotente, sin passkey | un admin nominal en `master` con passkey, y el de arranque, deshabilitado |
 | 8 | **`MFA_RELAJADA_HASTA = '2026-09-30'`** sigue en `realm.mjs` | ya no tiene efecto (`EXIGIR_SEGUNDO_FACTOR = true`), pero confunde | quitarlo, o convertirlo en historia en el comentario |
