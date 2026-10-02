@@ -908,6 +908,9 @@ impl Servidor {
             },
             // ── 0029 F4a I3 · las funciones y su invocación (`funciones.rs`) ──
             ("GET", ["funciones"]) => self.leyendo_en(rama, |r| self.funciones(r)),
+            // 0050 G5b · Dry Run: la firma de un texto sin guardar. No lee el
+            // árbol ni escribe nada: es la derivación del commit, sobre el editor.
+            ("POST", ["funciones", "firma"]) => crate::firma_viva::firma(&p.cuerpo),
             // 0038 P6c: `{ns}/{n}` es de `default`; `{b}/{s}/{n}`, de su schema.
             ("GET", ["funciones", ns, n, "resultados"])
             | ("GET", ["funciones", ns, _, n, "resultados"]) => {
@@ -3183,6 +3186,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
             con_identidad,
         ),
         ("GET", "/funciones", con_identidad),
+        ("POST", "/funciones/firma", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),
         (

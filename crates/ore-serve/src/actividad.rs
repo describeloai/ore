@@ -150,6 +150,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
         "/funciones/{}/{}/{}/invocar",
         Es::Acto("funcion:invocar"),
     ),
+    // 0050 G5b: la firma de un texto sin guardar (Dry Run) no escribe nada.
+    ("POST", "/funciones/firma", Es::Datos),
     // el puesto: abrirlo y cerrarlo son actos; lo de dentro, datos
     ("POST", "/puestos", Es::Acto("puesto:abrir")),
     ("DELETE", "/puestos/{}", Es::Acto("puesto:cerrar")),

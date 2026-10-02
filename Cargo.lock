@@ -2617,6 +2617,7 @@ name = "ore-serve"
 version = "0.1.0"
 dependencies = [
  "ore-acceso",
+ "ore-code",
  "ore-core",
  "ore-entrada",
 ]

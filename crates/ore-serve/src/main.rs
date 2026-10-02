@@ -52,6 +52,7 @@ mod datasets;
 mod documentos;
 mod entorno;
 mod escritas;
+mod firma_viva;
 mod forja;
 mod funciones;
 mod git;

@@ -10,6 +10,9 @@ description = "El plano de control de ORE: atiende a un cliente y delega lo que 
 [dependencies]
 # El nucleo, para la forma canonica y el analizador.
 ore-core = { path = "../ore-core" }
+# Y la derivacion del codigo (0050 G5b): Dry Run lee la firma del texto sin
+# guardar, con la misma regla que el commit. Ya entraba por `ore-core`.
+ore-code = { path = "../ore-code" }
 
 # ── Y la entrada, que dejo de vivir aqui ────────────────────────────────────
 #
