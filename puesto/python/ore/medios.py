@@ -646,6 +646,34 @@ class Transaccion:
         raise MediaError("media/origen", 503, "put(%s): la subida se cortó %d veces: %s"
                          % (path, REINTENTOS + 1, ultimo))
 
+    def put_varios(self, pares, hilos=8):
+        """Muchos `put` a la vez: `pares` da `(path, datos)` o `(path, datos, tipo)`, y
+        esto da `(path, ref, error)` según acaban —el error de uno es un valor y no
+        para a los demás, como en `leer_varios`—. Hay `2 × hilos` en vuelo como mucho:
+        lo que `pares` produce no se lee entero de antemano."""
+        self._abierta("put_varios")
+        pares = iter(pares)
+        with _cf.ThreadPoolExecutor(max_workers=hilos) as ex:
+            vuelo = {}
+
+            def lanzar():
+                for par in pares:
+                    path, datos, *tipo = par
+                    vuelo[ex.submit(self.put, path, datos, *tipo)] = path
+                    if len(vuelo) >= 2 * hilos:
+                        return
+
+            lanzar()
+            while vuelo:
+                hecho, _ = _cf.wait(vuelo, return_when=_cf.FIRST_COMPLETED)
+                for fut in hecho:
+                    path = vuelo.pop(fut)
+                    try:
+                        yield path, fut.result(), None
+                    except Exception as e:  # noqa: BLE001 — el de uno es un valor
+                        yield path, None, e
+                lanzar()
+
     def commit(self):
         """Deja escrito lo subido —el puntero, con su procedencia— y la cierra. Si otro
         confirmó a la vez (la forja: 409 sin `type`), vuelve a confirmar sobre lo nuevo.

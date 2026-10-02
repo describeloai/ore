@@ -13,6 +13,8 @@
   11  una excepción dentro del `with`: abort, nada escrito, y la excepción sigue
   12  dentro de un transform, sólo su `output`: otra colección es PermissionError sin preguntar
   13  una colección mantenida no se escribe (MediaNoEscribible); los tipos nuevos de error
+  14  put_varios(): cien a la vez, todos en el lago, con un tope de lo que hay en vuelo
+  15  put_varios(): el error de uno es un valor y los demás entran
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-media-escrita-en-python.py
 """
@@ -234,7 +236,38 @@ def e13():
     bien("13 · una mantenida no se escribe (MediaNoEscribible, 409); digest-no-casa, transaccion y permiso, por su tipo")
 
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13], 1):
+def e14():
+    leidos = {"n": 0}
+
+    def pares():
+        for i in range(100):
+            leidos["n"] += 1
+            yield "c3/p%03d.png" % i, PNG + b"-%d" % i
+
+    with ore.coleccion(PAG).transaccion() as t:
+        primeros = []
+        for path, ref, error in t.put_varios(pares(), hilos=8):
+            if not primeros:
+                primeros.append(leidos["n"])
+            assert error is None and ref.path == path, (path, error)
+    assert len(t.subidos) == 100, len(t.subidos)
+    assert all((PNG + b"-%d" % i) in LAGO.values() for i in range(100))
+    assert primeros[0] <= 2 * 8 + 1, primeros
+    assert t.resultado["items"]["actuales"] == 100, t.resultado
+    bien("14 · put_varios(): 100 a la vez, en el lago y confirmados; al acabar el primero se habían leído %d"
+         % primeros[0])
+
+
+def e15():
+    with ore.coleccion(PAG).transaccion() as t:
+        r = {p: (ref, e) for p, ref, e in t.put_varios([("c4/a.png", PNG + b"a"), ("c4/malo.png", 42),
+                                                       ("c4/b.png", PNG + b"b", "image/png")], hilos=2)}
+    assert isinstance(r["c4/malo.png"][1], TypeError), r
+    assert r["c4/a.png"][0] and r["c4/b.png"][0] and t.resultado["items"]["actuales"] == 2, r
+    bien("15 · put_varios(): el error de uno (TypeError) es un valor; los otros dos entran y se confirman")
+
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()
