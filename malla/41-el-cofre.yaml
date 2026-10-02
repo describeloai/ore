@@ -334,8 +334,11 @@ spec:
       ore.dev/rol: cofre
   policyTypes: [Ingress]
   ingress:
+    # Cualquier pod del inquilino MENOS un puesto (R0b, abajo).
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchExpressions:
+              - {key: ore.dev/rol, operator: NotIn, values: [puesto]}
       ports: [{protocol: TCP, port: 8095}]
 ---
 # ── ⭐⭐ Y LA SALIDA, QUE ES LA OTRA MITAD ──────────────────────────────────
@@ -363,13 +366,30 @@ spec:
 # ⇒ Y son DOS los consumidores, no uno: el Job de catalogo lo PIDE, y `ore-serve`
 #   lo GUARDA cuando se da de alta una fuente. Una regla por consumidor habrian
 #   sido dos reglas identicas y una tercera el dia siguiente.
+#
+# ── ⛔⛔ MENOS UN PUESTO (R0b, 2026-10-02) ──────────────────────────────────
+#
+# Lo de arriba suponía que quien llega al cofre es código NUESTRO. Un puesto no:
+# corre el código de una persona, en el mismo proceso que el agente, y el pod
+# trae la credencial del agente de la celda —que tiene `usar` sobre TODOS los
+# secretos de fuentes—. Con la red abierta, unas líneas en una celda sacaban la
+# credencial de cualquier fuente aunque la persona no tuviera permiso sobre ella
+# (medido leyendo la malla, no explotado). El custodio no lo para: quien pide es
+# el agente, y el agente sí puede.
+#
+# ⇒ Aquí la red SÍ es una segunda cerradura: un puesto nunca habla con el cofre
+#   (sólo con `ore-serve`), así que fuera, en la entrada y en la salida. `NotIn`
+#   deja pasar a un pod sin `ore.dev/rol`, como antes. Lo de fondo —que el puesto
+#   no traiga la credencial del agente— es R1.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: salida-al-cofre
   namespace: t-demo
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto]}
   policyTypes: [Egress]
   egress:
     - to:
