@@ -1,6 +1,6 @@
 # 0051 · ORE Null Contract
 
-**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0, P1, P2, el código de P3, P4 y P5 hechos · **Decide:** cómo dice ORE, de punta a punta, qué
+**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0, P0–P5 hechos; P3′ en vivo en `victor` · **Decide:** cómo dice ORE, de punta a punta, qué
 columnas **nunca son nulas**: el origen lo **declara**, las vistas lo **derivan** y el lago lo
 **impone**, con una sola regla para cambiarlo. Cierra el «REQUIRED» de
 [0042](0042-origin-rest-bigquery.md) y la parte de nulabilidad de
@@ -383,6 +383,29 @@ aparte.
   fija la prueba de la regla.
 - **En vivo no cambia nada:** las dos llamadas de hoy no piden ninguna columna `required` (eso es
   P6), y el lago no tiene ninguna.
+
+#### P3′ · la fuente al día: la migración de los árboles que ya existían
+
+Un árbol nuevo nace con el paradigma: el inductor escribe `required` desde el primer catálogo. Uno
+que ya existía se catalogó con el inductor de antes, y nadie lo re-induce hasta que alguien vuelva
+a catalogar. **P3′ lo pone al día**: re-induce cada fuente desde el catálogo que el árbol ya
+guarda (`ore source induce`), sin abrir el origen. Es la misma operación para cualquier cambio
+futuro del inductor, y por eso trae también lo pendiente de 0045 E5′ (el puntero de todo lo
+catalogado). Herramienta: `pruebas-de-fuego/la-fuente-al-dia.py`, con la forma de
+`migrar-a-dataset.py` (0033): un Job por inquilino en el cluster, con la imagen `ore-drivers`.
+
+| paso | `victor` (2026-10-02) |
+|---|---|
+| **M0** medir en la punta | `main` en `f190eaa`: 93 ficheros |
+| **M1** el binario | la imagen escribe `required` (se comprueba induciendo un catálogo mínimo, porque `ore --version` no dice el commit) |
+| **M2** ensayo | `validate` 0 → 0 diagnósticos; `datasets` 27 → 27, los mismos; `view` las mismas 61 vistas, con 42 líneas `nunca nula` nuevas; todo lo que cambia lo escribió el inductor (tablas y schemas con su marca, y en `package.yaml` sólo `exports`). El resumen de restricciones únicas pasa de 20 a 79: las claves de los punteros nuevos (E5′) |
+| **0051** | **21 tablas existentes ganan `required` en 70 columnas** (las 67 de `standard` y las 3 de BigQuery: lo medido en P0) |
+| **E5′** | 67 punteros nuevos (con otras 155 columnas `required`), 3 schemas, 2 `package.yaml` |
+| **M3** empujar | **`305a726`**, un solo commit `ore migrate` en `main` (que no está protegida) |
+| **M4** en vivo | `ore-serve` sirve `305a726`; `GET /datasets` y el esquema de las cuatro fuentes, **idénticos** antes y después (los mismos 27 datasets con los mismos snapshots); la copia en seco en el cluster: **23 «ya está», 0 por calcular** (10 no pudieron preguntar: fuentes S3 cuya credencial sólo tiene el Job de copia). Un puesto abierto después lee el árbol sin problemas |
+| **M5** vuelta atrás | verificada sin ejecutarla: `git revert 305a726` aplica limpio y deja el árbol idéntico a `f190eaa` |
+
+`demo`, con los mismos pasos, después (+237 punteros; ninguna tabla existente gana `required`).
 
 ## Lo que no se hace
 
