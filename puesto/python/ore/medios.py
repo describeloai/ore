@@ -30,6 +30,19 @@ Lo que B3·0 midió y decide aquí:
 Un permiso (o una URL firmada) caduca a los 5 min: el lector pide otro **con la
 misma versión** y sigue donde iba. Si esa versión ya no se puede leer,
 `MediaCambiado` —nunca bytes de otra—.
+
+**Escribir** (B4b·3), en una colección escrita (`ore.crear_coleccion`):
+
+    with ore.coleccion("legal.archivo.paginas").transaccion() as t:
+        t.put("c1/p0.png", png)                  # bytes: con su Repr-Digest
+        t.put("c1/original.pdf", "/tmp/c1.pdf")  # una ruta: en flujo
+    # al salir: commit (el puntero, con su procedencia); con una excepción: abort
+
+Los bytes van a `upload` —la subida de `ore-medios`, un portador de ESA
+transacción— **sin el token de ORE**, como los de `open`. La celda calcula el
+sha256 al paso, guarda el blob por su contenido y detecta el tipo por los
+bytes: el que se declara sólo vale si los bytes no dicen nada. Dentro de un
+transform sólo se escribe su `output`.
 """
 import concurrent.futures as _cf
 import dataclasses
@@ -41,8 +54,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-__all__ = ["coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "MediaError",
-           "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango"]
+__all__ = ["coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "Transaccion", "MediaError",
+           "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango",
+           "MediaNoEscribible", "MediaTransaccion"]
 
 #: Lo que se pide de una vez cuando se baja un ítem grande por rangos.
 TROZO = 8 << 20
@@ -50,6 +64,12 @@ TROZO = 8 << 20
 EN_PARALELO_DESDE = 32 << 20
 #: Cuántas veces se pide otro permiso seguido antes de rendirse.
 RENOVACIONES = 3
+#: Cuántas veces se reintenta una subida cortada, o un commit que perdió la
+#: carrera de la forja (B4b·3).
+REINTENTOS = 3
+#: Por debajo, lo que no se puede rebobinar se guarda en memoria; por encima, a
+#: disco, mientras se calcula su sha256.
+EN_MEMORIA = 8 << 20
 
 
 # ── los errores del contrato (`docs/media.md` §3) ─────────────────────────────
@@ -82,6 +102,14 @@ class MediaRango(MediaError, ValueError):
     pass
 
 
+class MediaNoEscribible(MediaError, PermissionError):
+    """La colección no es escrita: la llena su origen (`from`), no el código."""
+
+
+class MediaTransaccion(MediaError, RuntimeError):
+    """La transacción no está abierta: caducó, se cerró, o es de otra colección."""
+
+
 _POR_TIPO = {
     "media/no-existe": MediaNoExiste,
     "media/sin-permiso": MediaSinPermiso,
@@ -90,6 +118,10 @@ _POR_TIPO = {
     "media/corrupto": MediaCorrupto,
     "media/rango": MediaRango,
     "media/sin-rangos": MediaRango,
+    "media/permiso": MediaSinPermiso,
+    "media/no-escribible": MediaNoEscribible,
+    "media/transaccion": MediaTransaccion,
+    "media/digest-no-casa": MediaCorrupto,
 }
 
 
@@ -191,6 +223,23 @@ class Coleccion:
         it = Item(self, MediaRef.de_json(r))
         it.actual = r.get("current")
         return it
+
+    def _cabeceras(self):
+        """La rama del puesto (B3·6), preguntada una vez por colección."""
+        from . import _rama_del_puesto
+        if not hasattr(self, "_rama"):
+            self._rama = _rama_del_puesto()
+        return self._rama
+
+    def transaccion(self, ttl_s=3600):
+        """**Una transacción para escribir en esta colección** (B4b·3). Como `with`:
+        commit al salir, abort con una excepción. A mano: `t.put(…)`, `t.commit()`.
+        Dentro de un transform, sólo sobre su `output`."""
+        from . import _transform
+        if _transform is not None and self.nombre_corto != _transform.output:
+            raise PermissionError("`%s` no es el output de `%s` (`%s`): un transform sólo escribe lo que declara"
+                                  % (self.nombre_corto, _transform.nombre, _transform.output))
+        return Transaccion(self, ttl_s)
 
     def _donde(self, ref):
         """`content`: a dónde ir por los bytes de `ref`, fijado a su versión."""
@@ -462,3 +511,184 @@ def leer_varios(items, hilos=16):
                 except Exception as e:  # noqa: BLE001 — el error es un valor
                     yield it, None, e
             lanzar()
+
+
+# ── escribir: la transacción (B4b·3) ──────────────────────────────────────────
+
+def _fuente(datos):
+    """`datos` → (un fichero rebobinable en su inicio, su largo, su sha256, cerrar?).
+    Bytes, una ruta, o un fichero; uno que no se puede rebobinar se copia antes
+    (a memoria o a disco), porque la subida dice su largo y se reintenta."""
+    import os
+    import tempfile
+    if isinstance(datos, (bytes, bytearray, memoryview)):
+        b = bytes(datos)
+        return io.BytesIO(b), len(b), hashlib.sha256(b).digest(), True
+    if isinstance(datos, (str, os.PathLike)):
+        f = open(datos, "rb")
+        return (f,) + _medir(f) + (True,)
+    if hasattr(datos, "read"):
+        rebobinable = getattr(datos, "seekable", lambda: False)()
+        if rebobinable:
+            return (datos,) + _medir(datos) + (False,)
+        copia = tempfile.SpooledTemporaryFile(max_size=EN_MEMORIA)
+        while True:
+            trozo = datos.read(1 << 20)
+            if not trozo:
+                break
+            copia.write(trozo)
+        copia.seek(0)
+        return (copia,) + _medir(copia) + (True,)
+    raise TypeError("put(): `datos` son bytes, una ruta o un fichero, no %s" % type(datos).__name__)
+
+
+def _medir(f):
+    """El largo y el sha256 desde donde está `f`, que vuelve a donde estaba."""
+    desde = f.tell()
+    h, n = hashlib.sha256(), 0
+    while True:
+        trozo = f.read(1 << 20)
+        if not trozo:
+            break
+        h.update(trozo)
+        n += len(trozo)
+    f.seek(desde)
+    return n, h.digest()
+
+
+class Transaccion:
+    """**Una transacción abierta** sobre una colección escrita (B4b·3): `put` sube
+    ítems, `commit` los deja escritos —y el puntero, con su procedencia—, `abort`
+    no deja nada. `upload` es un portador: no se enseña."""
+
+    def __init__(self, col, ttl_s=3600):
+        from . import puesto
+        self.coleccion = col
+        self.subidos = []
+        self.resultado = None
+        self.cerrada = False
+        codigo, r = puesto.pedir("POST", col.ruta + "/transactions", {"ttl_s": ttl_s},
+                                 plazo=60, cabeceras=col._cabeceras())
+        if codigo != 201:
+            raise _error(codigo, r, "transaccion(%s)" % col)
+        self.id = r["transaction"]
+        self._upload = r["upload"]
+
+    def __repr__(self):
+        return "Transaccion(%s, %s%s)" % (self.coleccion, self.id, ", cerrada" if self.cerrada else "")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, tipo, valor, traza):
+        if self.cerrada:
+            return False
+        if tipo is None:
+            self.commit()
+        else:
+            try:
+                self.abort()
+            except Exception:  # noqa: BLE001 — la excepción de dentro es la que importa
+                pass
+        return False
+
+    def _abierta(self, que):
+        if self.cerrada:
+            raise MediaTransaccion("media/transaccion", 409, "%s: la transacción %s ya se cerró" % (que, self.id))
+
+    def put(self, path, datos, tipo=None):
+        """Sube un ítem a `path` (relativo a la colección). `datos`: bytes, una ruta o
+        un fichero. `tipo`, el declarado: vale si los bytes no dicen nada. Devuelve su
+        `MediaRef` (el digest y el tipo que la celda vio)."""
+        self._abierta("put(%s)" % path)
+        f, largo, sha, cerrar = _fuente(datos)
+        desde = f.tell()
+        try:
+            return self._subir(path, f, desde, largo, sha, tipo)
+        finally:
+            if cerrar:
+                f.close()
+
+    def _subir(self, path, f, desde, largo, sha, tipo):
+        import base64
+        u = urllib.parse.urlsplit(self._upload)
+        destino = "%s?%s&path=%s" % (u.path, u.query, urllib.parse.quote(path, safe="/"))
+        cabeceras = {"content-length": str(largo),
+                     "repr-digest": "sha-256=:%s:" % base64.b64encode(sha).decode()}
+        if tipo:
+            cabeceras["content-type"] = tipo
+        ultimo = None
+        for intento in range(REINTENTOS + 1):
+            f.seek(desde)
+            # Sin el token de ORE: `upload` ya es el permiso, como la URL de `open`.
+            c = (http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection)(
+                u.hostname, u.port, timeout=300)
+            try:
+                c.request("PUT", destino, body=_Trozo(f, largo), headers=cabeceras)
+                r = c.getresponse()
+                texto = r.read()
+            except (OSError, http.client.HTTPException) as e:
+                # Cortada: se vuelve a subir. Es idempotente —el mismo contenido al
+                # mismo camino es la misma fila, y el blob ya está si llegó—.
+                ultimo = e
+                continue
+            finally:
+                c.close()
+            try:
+                cuerpo = json.loads(texto) if texto.strip() else {}
+            except ValueError:
+                cuerpo = {}
+            if r.status != 201:
+                raise _error(r.status, cuerpo, "put(%s)" % path)
+            ref = MediaRef.de_json(cuerpo)
+            self.subidos.append(ref)
+            return ref
+        raise MediaError("media/origen", 503, "put(%s): la subida se cortó %d veces: %s"
+                         % (path, REINTENTOS + 1, ultimo))
+
+    def commit(self):
+        """Deja escrito lo subido —el puntero, con su procedencia— y la cierra. Si otro
+        confirmó a la vez (la forja: 409 sin `type`), vuelve a confirmar sobre lo nuevo.
+        Devuelve `{transaccion, items, cambios, commit, metadata_location, …}`."""
+        import time
+        self._abierta("commit")
+        espera = 0.5
+        for intento in range(REINTENTOS + 1):
+            codigo, r = self._cerrar("commit")
+            if codigo == 200:
+                self.cerrada, self.resultado = True, r or {}
+                return self.resultado
+            carrera = codigo == 409 and not (r or {}).get("type")
+            if not carrera or intento == REINTENTOS:
+                raise _error(codigo, r, "commit(%s)" % self.id)
+            time.sleep(espera)
+            espera *= 2
+
+    def abort(self):
+        """No deja nada de lo subido, y la cierra."""
+        if self.cerrada:
+            return
+        codigo, r = self._cerrar("abort")
+        self.cerrada = True
+        if codigo not in (204, 404):
+            raise _error(codigo, r, "abort(%s)" % self.id)
+
+    def _cerrar(self, op):
+        from . import puesto
+        return puesto.pedir("POST", "%s/transactions/%s/%s" % (self.coleccion.ruta, self.id, op), {},
+                            plazo=300, cabeceras=self.coleccion._cabeceras())
+
+
+class _Trozo:
+    """Lo que `http.client` lee como cuerpo: `largo` bytes de `f`, ni uno más."""
+
+    def __init__(self, f, largo):
+        self.f, self.queda = f, largo
+
+    def read(self, n=-1):
+        if self.queda <= 0:
+            return b""
+        n = self.queda if n is None or n < 0 else min(n, self.queda)
+        b = self.f.read(n)
+        self.queda -= len(b)
+        return b

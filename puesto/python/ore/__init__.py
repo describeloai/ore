@@ -81,7 +81,8 @@ __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", 
            "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista", "crear_coleccion",
            "media", "medias", "media_de", "modelo", "function",
            "coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "MediaError",
-           "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango"]
+           "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango",
+           "Transaccion", "MediaNoEscribible", "MediaTransaccion"]
 
 
 class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
@@ -1561,5 +1562,6 @@ def json_de(v, tipo=None):
 
 
 # 0049 B3·5: la media en código (al final: `medios` usa `puesto` y los nombres).
-from .medios import (coleccion, Coleccion, Item, MediaRef, leer_varios, MediaError,  # noqa: E402
-                     MediaNoExiste, MediaSinPermiso, MediaCambiado, MediaCorrupto, MediaRango)
+from .medios import (coleccion, Coleccion, Item, MediaRef, leer_varios, Transaccion, MediaError,  # noqa: E402
+                     MediaNoExiste, MediaSinPermiso, MediaCambiado, MediaCorrupto, MediaRango,
+                     MediaNoEscribible, MediaTransaccion)
