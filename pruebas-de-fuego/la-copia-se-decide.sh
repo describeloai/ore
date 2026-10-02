@@ -227,10 +227,11 @@ paquete olist | grep -q '"copias": {"copiadas": 0, "declaradas": 0}' || falla "0
 copias olist | grep -q '"copias":\[\]' || falla "0 · GET /copias de la base a mano no esta vacio: $(copias olist)"
 dice "0 · una base a mano es foranea: GET /paquetes foreign, 0/0 · GET /copias []"
 # ── 0b · el paquete de la fuente es SOLO el catalogo, y su esquema sale de el ─
+# (0051 P3: `customer_id` es NOT NULL en el origen y el puntero lo declara: `required`.)
 # (0027, 18 de septiembre: el Job de catalogo ya no induce nada gobernado)
 [ ! -d "$REPO/packages/pg/tables" ] || falla "0b · la fuente del arbol de partida tiene tables/"
 esquema0() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
-esquema0 pg | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":false,"datasource":"pg","modeled":false,"name":"olist.customers","object":"olist.customers"' || falla "0b · el esquema de la fuente no sale del catalogo: $(esquema0 pg)"
+esquema0 pg | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","required":true,"type":"String"},{"name":"customer_city","type":"String"}\],"copied":false,"datasource":"pg","modeled":false,"name":"olist.customers","object":"olist.customers"' || falla "0b · el esquema de la fuente no sale del catalogo: $(esquema0 pg)"
 esquema0 pg | grep -q '"name":"olist.orders","object":"olist.orders"' || falla "0b · al esquema de la fuente le falta orders: $(esquema0 pg)"
 esquema0 pg | grep -q '"entities":\[\]' || falla "0b · la fuente tiene entidades: $(esquema0 pg)"
 paquete pg | grep -q '"tablas": 2' || falla "0b · GET /paquetes no cuenta las 2 tablas del catalogo: $(paquete pg)"
@@ -281,7 +282,7 @@ paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "
 paquete tienda | grep -q '"modeladas": 0' && paquete tienda | grep -q '"tablas": 2' || falla "2 · GET /paquetes no dice 2 tablas, 0 modeladas: $(paquete tienda)"
 esquema() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
 esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entidades que no hay: $(esquema tienda)"
-esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae los punteros de la fuente que la base lee: $(esquema tienda)"
+esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","required":true,"type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae los punteros de la fuente que la base lee: $(esquema tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"orders",.*"key":\["order_id"\]' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"customers",.*"key":\[\]' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
 dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es quien la crea (user:ana): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
