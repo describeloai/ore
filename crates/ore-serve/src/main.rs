@@ -298,10 +298,11 @@ fn main() -> ExitCode {
     let (proveedor, dicho) = match (proveedor, &o.emisor_pods, &o.jwks_pods, &o.pods_de) {
         (p, None, None, None) => (p, dicho),
         (Some(base), Some(iss), Some(jwks), Some(ns)) => {
-            match ore_entrada::oidc::Emisor::del_fichero(iss, "ore-serve", jwks) {
+            match ore_entrada::oidc::Emisor::del_fichero(iss, cola::AUDIENCIA_DE_PUESTOS, jwks) {
                 Ok(e) => {
                     let linea = format!(
-                        "{dicho}\n  pods         {iss} · audiencia ore-serve · {} llaves de `{}` · namespace {ns}, cuenta puesto",
+                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuenta puesto",
+                        cola::AUDIENCIA_DE_PUESTOS,
                         e.cuantas(),
                         jwks.display()
                     );

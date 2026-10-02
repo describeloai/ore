@@ -194,7 +194,7 @@ impl Emisor {
 
     /// De un `Authorization: Bearer …` a un sujeto, o al motivo de que no.
     pub fn verificar(&self, cabecera: &str, ahora: i64) -> Result<Identidad, SinIdentidad> {
-        let cuerpo = self.cuerpo_verificado(cabecera, ahora)?;
+        let cuerpo = self.cuerpo_verificado(cabecera, ahora, &|a| a == self.aud)?;
         let mal = |m: &str| SinIdentidad::Invalida(m.to_string());
         let persona = cadena(&cuerpo, "sub").ok_or_else(|| mal("el token no dice de quién es"))?;
 
@@ -221,55 +221,74 @@ impl Emisor {
         })
     }
 
-    /// **El pod que llama** (R1, un puesto por repositorio): de un token de
-    /// cuenta de servicio de Kubernetes LIGADO AL POD —proyectado con nuestra
-    /// audiencia; lo firma el clúster y lo renueva el kubelet— al agente de ESE
-    /// pod, `agente:pod/<namespace>/<pod>`.
+    /// **El puesto que llama, declarado en su credencial** (R1).
     ///
-    /// ⭐ Es lo que separa un puesto de otro: todos comparten la credencial del
-    ///   agente de la celda, y un pod no puede presentar el token de otro. El
-    ///   código de una celda puede leer el suyo, y con él sólo es su propio puesto.
+    /// Quien crea un puesto es `ore-serve`: escribe su Job en la cola, y en él la
+    /// AUDIENCIA del token de cuenta de servicio que el pod monta —
+    /// `<aud>/<id>/<apertura>`, con `aud` = `ore-serve/puestos`—. El clúster lo
+    /// firma, lo liga al pod y lo renueva; el pod no puede pedir otro (su cuenta
+    /// no tiene `serviceaccounts/token`) ni cambiar el suyo (su spec viene de la
+    /// cola). Así la identidad la DECLARA quien crea el puesto y la GARANTIZA
+    /// el clúster: no se deduce del nombre del pod, que pone Kubernetes, ni de
+    /// quién reclama primero.
+    ///
+    /// Devuelve `agente:puesto/<id>/<apertura>`: un puesto, en una apertura.
     ///
     /// ⛔ Sólo del `namespace` y de la `cuenta` que se dicen: un token de otro
     ///   inquilino, o de un pod que no es un puesto, no es nadie aquí.
-    pub fn verificar_pod(
+    pub fn verificar_puesto(
         &self,
         token: &str,
         ahora: i64,
         namespace: &str,
         cuenta: &str,
     ) -> Result<Identidad, SinIdentidad> {
-        let cuerpo = self.cuerpo_verificado(&format!("Bearer {}", token.trim()), ahora)?;
+        let prefijo = format!("{}/", self.aud);
+        let cuerpo = self.cuerpo_verificado(&format!("Bearer {}", token.trim()), ahora, &|a| {
+            a.starts_with(&prefijo)
+        })?;
         let mal = |m: String| SinIdentidad::Invalida(m);
+        let declarado: Vec<String> = audiencias(&cuerpo)
+            .into_iter()
+            .filter_map(|a| a.strip_prefix(&prefijo).map(str::to_string))
+            .collect();
+        let [declarado] = declarado.as_slice() else {
+            return Err(mal(format!(
+                "el token declara {} puestos, y es uno",
+                declarado.len()
+            )));
+        };
+        let partes: Vec<&str> = declarado.split('/').collect();
+        if partes.len() != 2 || partes.iter().any(|x| x.is_empty()) {
+            return Err(mal(format!("`{declarado}` no es `<puesto>/<apertura>`")));
+        }
         let k8s = cuerpo
             .get("kubernetes.io")
             .map(|(_, v)| v)
             .ok_or_else(|| mal("el token no es de un pod: no trae `kubernetes.io`".into()))?;
-        let dentro = |a: &str, b: &str| {
+        let dentro = |a: &str, b: Option<&str>| {
             k8s.get(a)
-                .and_then(|(_, v)| {
-                    if b.is_empty() {
-                        Some(v)
-                    } else {
-                        v.get(b).map(|(_, x)| x)
-                    }
+                .and_then(|(_, v)| match b {
+                    None => Some(v),
+                    Some(b) => v.get(b).map(|(_, x)| x),
                 })
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
+                .unwrap_or_default()
         };
-        let ns = dentro("namespace", "").unwrap_or_default();
+        let ns = dentro("namespace", None);
         if ns != namespace {
             return Err(mal(format!("el pod es de `{ns}`, no de `{namespace}`")));
         }
-        let sa = dentro("serviceaccount", "name").unwrap_or_default();
+        let sa = dentro("serviceaccount", Some("name"));
         if sa != cuenta {
             return Err(mal(format!("el pod corre como `{sa}`, no como `{cuenta}`")));
         }
-        let pod = dentro("pod", "name")
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| mal("el token no está ligado a un pod".into()))?;
+        if dentro("pod", Some("name")).is_empty() {
+            return Err(mal("el token no está ligado a un pod".into()));
+        }
         Ok(Identidad {
-            persona: format!("{PREFIJO_POD}{ns}/{pod}"),
+            persona: format!("{PREFIJO_PUESTO}{declarado}"),
             agente: None,
             correo: None,
             nombre: None,
@@ -280,7 +299,12 @@ impl Emisor {
 
     /// Los pasos 1–7 de un token: forma, algoritmo, llave, firma, emisor,
     /// audiencia y reloj. Devuelve el cuerpo, ya creíble.
-    fn cuerpo_verificado(&self, cabecera: &str, ahora: i64) -> Result<Node, SinIdentidad> {
+    fn cuerpo_verificado(
+        &self,
+        cabecera: &str,
+        ahora: i64,
+        audiencia_vale: &dyn Fn(&str) -> bool,
+    ) -> Result<Node, SinIdentidad> {
         let token = cabecera
             .strip_prefix("Bearer ")
             .or_else(|| cabecera.strip_prefix("bearer "))
@@ -338,7 +362,7 @@ impl Emisor {
 
         // 6 · la audiencia. `aud` es una cadena o una lista: las dos formas son
         // legales (RFC 7519 §4.1.3) y aceptar sólo una deja fuera medio mundo.
-        if !audiencias(&cuerpo).iter().any(|a| a == &self.aud) {
+        if !audiencias(&cuerpo).iter().any(|a| audiencia_vale(a)) {
             return Err(mal(&format!(
                 "el token no es para `{}`: su audiencia es {:?}",
                 self.aud,
@@ -361,8 +385,8 @@ impl Emisor {
     }
 }
 
-/// Cómo empieza el sujeto de un pod verificado: `agente:pod/<namespace>/<pod>`.
-pub const PREFIJO_POD: &str = "agente:pod/";
+/// Cómo empieza el sujeto de un puesto verificado: `agente:puesto/<id>/<apertura>`.
+pub const PREFIJO_PUESTO: &str = "agente:puesto/";
 
 // ── Lectura ─────────────────────────────────────────────────────────────────
 
@@ -569,74 +593,52 @@ mod pruebas {
         assert_eq!(id.agente, None);
     }
 
-    /// R1 · El token de un pod: su agente es ESE pod, y sólo del namespace y la
-    /// cuenta que se dicen.
+    /// R1 · El puesto que llama es el que DECLARA la audiencia de su token, y
+    /// sólo del namespace y la cuenta que se dicen.
     #[test]
-    fn el_token_de_un_pod_da_el_agente_de_ese_pod() {
+    fn el_token_de_un_puesto_declara_el_puesto() {
         let (k, jwks) = banco();
-        let c = |ns: &str, sa: &str, pod: &str| {
+        let c = |aud: &str, ns: &str, sa: &str| {
             token(
                 &k,
                 CABEZA,
                 &format!(
-                    r#"{{"iss":"https://login.paladio.io/realms/rubix","aud":["ore-serve"],"sub":"system:serviceaccount:{ns}:{sa}","exp":2000000000,"kubernetes.io":{{"namespace":"{ns}","pod":{{"name":"{pod}","uid":"u"}},"serviceaccount":{{"name":"{sa}","uid":"u"}}}}}}"#
+                    r#"{{"iss":"https://login.paladio.io/realms/rubix","aud":["{aud}"],"sub":"system:serviceaccount:{ns}:{sa}","exp":2000000000,"kubernetes.io":{{"namespace":"{ns}","pod":{{"name":"cualquiera-x7k2p","uid":"u"}},"serviceaccount":{{"name":"{sa}","uid":"u"}}}}}}"#
                 ),
             )
         };
-        let e = emisor(&jwks);
-        let id = e
-            .verificar_pod(
-                &c("t-victor", "puesto", "puesto-ana-python-1-abcde"),
-                1_700_000_000,
-                "t-victor",
-                "puesto",
-            )
-            .unwrap();
-        assert_eq!(id.persona, "agente:pod/t-victor/puesto-ana-python-1-abcde");
+        let e = Emisor::nuevo(
+            "https://login.paladio.io/realms/rubix",
+            "ore-serve/puestos",
+            Llaves::leer(&jwks).unwrap(),
+        );
+        let v = |t: &str| e.verificar_puesto(t, 1_700_000_000, "t-victor", "puesto");
+        let id = v(&c(
+            "ore-serve/puestos/puesto-ana-python-raw-1a2b3c/1759400000",
+            "t-victor",
+            "puesto",
+        ))
+        .unwrap();
+        assert_eq!(
+            id.persona,
+            "agente:puesto/puesto-ana-python-raw-1a2b3c/1759400000"
+        );
         assert_eq!(id.tipo.as_deref(), Some("agente"));
-        // Otro inquilino, otra cuenta: nadie.
-        assert!(
-            e.verificar_pod(
-                &c("t-demo", "puesto", "p"),
-                1_700_000_000,
-                "t-victor",
-                "puesto"
-            )
-            .is_err()
-        );
-        assert!(
-            e.verificar_pod(
-                &c("t-victor", "ore-serve", "p"),
-                1_700_000_000,
-                "t-victor",
-                "puesto"
-            )
-            .is_err()
-        );
-        // Un token de persona no es un pod.
-        assert!(
-            e.verificar_pod(
-                &token(&k, CABEZA, &cuerpo("")),
-                1_700_000_000,
-                "t-victor",
-                "puesto"
-            )
-            .is_err()
-        );
-        // Y la firma manda igual: cambiar el pod rompe el token.
-        let t = c("t-victor", "puesto", "puesto-ana");
-        let partes: Vec<&str> = t.split('.').collect();
-        let otro = c("t-victor", "puesto", "puesto-bea");
-        let falso = format!(
-            "{}.{}.{}",
-            partes[0],
-            otro.split('.').nth(1).unwrap(),
-            partes[2]
-        );
-        assert!(
-            e.verificar_pod(&falso, 1_700_000_000, "t-victor", "puesto")
-                .is_err()
-        );
+        // El nombre del pod no cuenta: lo pone Kubernetes.
+        // Otra audiencia, otro inquilino, otra cuenta: nadie.
+        assert!(v(&c("ore-serve", "t-victor", "puesto")).is_err());
+        assert!(v(&c("ore-serve/puestos/sin-apertura", "t-victor", "puesto")).is_err());
+        assert!(v(&c("ore-serve/puestos/a/b/c", "t-victor", "puesto")).is_err());
+        assert!(v(&c("ore-serve/puestos/p/1", "t-demo", "puesto")).is_err());
+        assert!(v(&c("ore-serve/puestos/p/1", "t-victor", "ore-serve")).is_err());
+        // Un token de persona no es un puesto.
+        assert!(v(&token(&k, CABEZA, &cuerpo(""))).is_err());
+        // Y la firma manda: cambiar el puesto declarado rompe el token.
+        let t = c("ore-serve/puestos/de-ana/1", "t-victor", "puesto");
+        let otro = c("ore-serve/puestos/de-bea/1", "t-victor", "puesto");
+        let p: Vec<&str> = t.split('.').collect();
+        let falso = format!("{}.{}.{}", p[0], otro.split('.').nth(1).unwrap(), p[2]);
+        assert!(v(&falso).is_err());
     }
 
     /// RFC 8693: `act.sub` es quién actúa por la persona.

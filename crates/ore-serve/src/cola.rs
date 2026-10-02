@@ -431,6 +431,12 @@ const PUESTO_MODELO: &str = "puesto-modelo";
 const RAMA_MODELO: &str = "rama-modelo";
 const CAPA_MODELO: &str = "capa-modelo";
 const ABIERTO_MODELO: &str = "abierto-modelo";
+/// R1 · **La identidad del puesto, declarada.** La audiencia del token de
+/// cuenta de servicio que el pod monta (`malla/51-el-puesto.yaml`): aquí se
+/// escribe `ore-serve/puestos/<id>/<apertura>`, el clúster la firma y
+/// `ore-serve` sabe qué puesto habla sin deducirlo de nada.
+pub const AUDIENCIA_DE_PUESTOS: &str = "ore-serve/puestos";
+const AUDIENCIA_MODELO: &str = "audience: ore-serve/puestos/puesto-modelo/abierto-modelo";
 /// El hueco del trabajo (W3.7 ④): `<ruta>@<commit>` del fichero que el Job
 /// corre como una sola celda y termina; vacío es una sesión.
 const TRABAJO_MODELO: &str = "trabajo-modelo";
@@ -526,6 +532,12 @@ pub fn rendir_puesto(
         }
     }
     let t = plantilla
+        // R1 · Opcional: una plantilla anterior no trae el hueco, y su pod no
+        //   declara puesto (habla como el agente de la celda, como antes).
+        .replace(
+            AUDIENCIA_MODELO,
+            &format!("audience: {AUDIENCIA_DE_PUESTOS}/{id}/{abierto}"),
+        )
         .replace(
             &format!("value: \"{PUESTO_MODELO}\""),
             &format!("value: \"{id}\""),
@@ -894,6 +906,30 @@ env:
                 && t.contains("{ name: ENTORNO, value: \"python\" }")
         );
         assert!(t.contains(&format!("name: {job}")));
+        // R1 · Y la credencial del pod DECLARA el puesto y la apertura.
+        let con_audiencia = format!(
+            "{p}token:
+  audience: ore-serve/puestos/puesto-modelo/abierto-modelo
+"
+        );
+        let (_, ta, _) = rendir_puesto(
+            &con_audiencia,
+            "puesto-ana-python",
+            "",
+            "",
+            "1759",
+            "python",
+            "",
+        )
+        .unwrap();
+        assert!(
+            ta.contains(
+                "audience: ore-serve/puestos/puesto-ana-python/1759
+"
+            ),
+            "{ta}"
+        );
+        assert!(!ta.contains("puesto-modelo") && !ta.contains("abierto-modelo"));
         let (_, t2, _) = rendir_puesto(p, "puesto-ana-python", "", "", "1", "python", "").unwrap();
         assert!(t2.contains("value: \"\""));
         // Reabrir en otro instante es OTRO Job (Flux retira el viejo): el fichero, el mismo.

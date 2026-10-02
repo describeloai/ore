@@ -137,13 +137,14 @@ impl Servidor {
         let Some(acceso) = self.acceso.as_ref() else {
             return Ok(());
         };
-        // ⭐ R1 · Un pod verificado (`agente:pod/<ns>/<pod>`) es de esta celda POR
-        //   CONSTRUCCIÓN: su token lo firmó el clúster para ESTE namespace y la
-        //   cuenta `puesto` (`--pods-de`), y sólo actúa como su puesto. `ore-iam`
-        //   no lo conoce —no es un agente registrado— y preguntarle con el token
-        //   del agente de la celda al lado daba 400 (`subject.id` no es el del
-        //   token): el puesto se quedaba arrancando, 503 tras 503 (2026-10-02).
-        if crate::puestos::es_pod(sujeto) {
+        // ⭐ R1 · Un puesto con credencial verificada (`agente:puesto/<id>/<ap>`)
+        //   es de esta celda POR CONSTRUCCIÓN: lo declaró `ore-serve` al crearlo,
+        //   y el clúster firmó su token para ESTE namespace y la cuenta `puesto`
+        //   (`--pods-de`). `ore-iam` no lo conoce —no es un agente registrado— y
+        //   preguntarle con el token del agente de la celda al lado daba 400: el
+        //   puesto se quedaba arrancando, 503 tras 503 (2026-10-02). La celda
+        //   responde de lo que ella misma crea.
+        if crate::puestos::declarado(sujeto).is_some() {
             return Ok(());
         }
         let Some(t) = testigo() else {

@@ -193,6 +193,9 @@ pub(crate) struct Puesto {
     pub rama: Option<String>,
     pub fichero: String,
     pub job: String,
+    /// R1 · La apertura: el instante (s) que va en su Job y en la audiencia de
+    /// la credencial de su pod (`ore-serve/puestos/<id>/<apertura>`).
+    pub apertura: String,
     pub creado: Instant,
     pub estado: Estado,
     pub agente: Option<String>,
@@ -361,45 +364,41 @@ pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
     sujeto.tipo.as_deref() == Some("agente") || sujeto.persona.starts_with("agente:")
 }
 
-/// R1 · ¿Habla un pod verificado (`agente:pod/<ns>/<pod>`)? Entonces es UN
-/// puesto concreto, y lo que diga `x-ore-puesto` no cuenta.
-pub(crate) fn es_pod(sujeto: &Identidad) -> bool {
-    sujeto.persona.starts_with(ore_entrada::oidc::PREFIJO_POD)
+/// R1 · **El puesto que declara la credencial** de quien llama: `(id, apertura)`
+/// si es `agente:puesto/<id>/<apertura>` —verificado por `ore-entrada` contra
+/// la audiencia que `ore-serve` puso en el Job—. Entonces es ESE puesto, en ESA
+/// apertura, y lo que diga `x-ore-puesto` no cuenta.
+pub(crate) fn declarado(sujeto: &Identidad) -> Option<(&str, &str)> {
+    sujeto
+        .persona
+        .strip_prefix(ore_entrada::oidc::PREFIJO_PUESTO)?
+        .split_once('/')
 }
 
-/// R1 · El puesto que habla, bajo el candado de la lista: el de su pod si es un
-/// pod verificado —el que reclamó, y ninguno más—; si no, el que dice la
+/// R1 · ¿Es esta la apertura del puesto que declara la credencial? Un puesto
+/// reabierto (TTL, tope, relevo) es otra apertura: la credencial de la vieja ya
+/// no lo es.
+fn es_su_apertura(sujeto: &Identidad, id: &str, p: &Puesto) -> bool {
+    declarado(sujeto).is_none_or(|(suyo, apertura)| suyo == id && apertura == p.apertura)
+}
+
+/// R1 · El puesto que habla, bajo el candado de la lista: el que declara su
+/// credencial, si está vivo y en esa apertura; si no la trae, el que dice la
 /// cabecera (el camino de antes, que comprueba el agente donde se usa).
 pub(crate) fn puesto_que_llama_en(
     lista: &BTreeMap<String, Puesto>,
     cabecera: Option<&String>,
     sujeto: &Identidad,
 ) -> Option<String> {
-    if es_pod(sujeto) {
+    if let Some((id, _)) = declarado(sujeto) {
         return lista
-            .iter()
-            .find(|(_, p)| {
-                p.estado != Estado::Cerrado && p.agente.as_deref() == Some(sujeto.persona.as_str())
-            })
-            .map(|(id, _)| id.clone());
+            .get(id)
+            .filter(|p| p.estado != Estado::Cerrado && es_su_apertura(sujeto, id, p))
+            .map(|_| id.to_string());
     }
     cabecera
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-}
-
-/// R1 · ¿Puede este pod reclamar este puesto? Sólo si es SU pod: el nombre de un
-/// pod de un Job empieza por el del Job. Sin esto, un pod que conociera el id
-/// de un puesto recién abierto —son predecibles— lo reclamaría antes que el suyo.
-pub(crate) fn pod_del_puesto(sujeto: &Identidad, p: &Puesto) -> bool {
-    let Some(pod) = sujeto
-        .persona
-        .strip_prefix(ore_entrada::oidc::PREFIJO_POD)
-        .and_then(|r| r.rsplit('/').next())
-    else {
-        return true;
-    };
-    !p.job.is_empty() && pod.starts_with(&format!("{}-", p.job))
 }
 
 /// [`Servidor::media_del_puesto`], sobre la lista ya bajo su candado.
@@ -458,12 +457,19 @@ pub(crate) fn escritura_en(
     if !es_agente(sujeto) {
         return Ok(None);
     }
-    let todos: Vec<(&String, &Puesto)> = lista
-        .iter()
-        .filter(|(_, p)| {
-            p.estado != Estado::Cerrado && p.agente.as_deref() == Some(sujeto.persona.as_str())
-        })
-        .collect();
+    // R1 · El que declara la credencial, si la trae; si no, los del agente.
+    let todos: Vec<(&String, &Puesto)> = match declarado(sujeto) {
+        Some(_) => puesto_que_llama_en(lista, None, sujeto)
+            .and_then(|id| lista.get_key_value(&id))
+            .into_iter()
+            .collect(),
+        None => lista
+            .iter()
+            .filter(|(_, p)| {
+                p.estado != Estado::Cerrado && p.agente.as_deref() == Some(sujeto.persona.as_str())
+            })
+            .collect(),
+    };
     let Some((id, p)) = todos
         .iter()
         .find(|(_, p)| p.transform.is_some())
@@ -471,10 +477,10 @@ pub(crate) fn escritura_en(
     else {
         // ⛔ R1 · Un pod verificado sin puesto no escribe «como sí mismo»: un
         //   pod es siempre un puesto, y uno sin él no es nadie con techo.
-        if es_pod(sujeto) {
+        if declarado(sujeto).is_some() {
             return Err((
                 "media/sin-puesto",
-                "este pod no es de ningún puesto vivo".into(),
+                "esta credencial declara un puesto que no está vivo en esta apertura".into(),
             ));
         }
         return Ok(None);
@@ -890,7 +896,7 @@ impl Servidor {
             }
         };
         // A la cola: Flux rinde el Job.
-        let (fichero, job, dicho) =
+        let (fichero, job, dicho, apertura) =
             match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "", false) {
                 Ok(v) => v,
                 Err(r) => return r,
@@ -901,6 +907,7 @@ impl Servidor {
             rama,
             fichero,
             job,
+            apertura,
             creado: Instant::now(),
             estado: Estado::Encolado,
             agente: None,
@@ -1133,7 +1140,7 @@ impl Servidor {
             "trabajo-{quien}-{}",
             &h["sha256:".len().."sha256:".len() + 8]
         );
-        let (fichero, job, dicho) = match self.encolar_puesto(
+        let (fichero, job, dicho, apertura) = match self.encolar_puesto(
             &id,
             sujeto,
             rama.as_deref(),
@@ -1151,6 +1158,7 @@ impl Servidor {
             rama,
             fichero,
             job,
+            apertura,
             creado: Instant::now(),
             estado: Estado::Encolado,
             agente: None,
@@ -1989,10 +1997,10 @@ impl Servidor {
         if p.estado == Estado::Cerrado {
             return Err(Respuesta::error(410, "el puesto está cerrado: ciérrate"));
         }
-        if !pod_del_puesto(sujeto, p) {
+        if !es_su_apertura(sujeto, id, p) {
             return Err(Respuesta::error(
                 403,
-                "ese puesto no es de este pod: un pod sólo reclama el puesto de su Job",
+                "esta credencial declara otro puesto, u otra apertura de éste: ciérrate",
             ));
         }
         match &p.agente {
@@ -2635,10 +2643,10 @@ impl Servidor {
         // ⛔ R1 · Un pod verificado es SIEMPRE su puesto, diga o no la cabecera:
         //   quitarla era escribir como el agente, sin la persona ni el techo.
         let id = self.puesto_que_llama(p, sujeto);
-        if es_pod(sujeto) && id.is_none() {
+        if declarado(sujeto).is_some() && id.is_none() {
             return Err(Respuesta::error(
                 403,
-                "este pod no es de ningún puesto vivo: ciérrate",
+                "esta credencial declara un puesto que no está vivo en esta apertura: ciérrate",
             ));
         }
         match id.as_deref() {
@@ -2709,7 +2717,7 @@ impl Servidor {
         entorno: &str,
         trabajo: &str,
         usa_modelo: bool,
-    ) -> Result<(String, String, String), Respuesta> {
+    ) -> Result<(String, String, String, String), Respuesta> {
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
                 503,
@@ -2760,6 +2768,7 @@ impl Servidor {
                 fichero.clone(),
                 job,
                 format!("ya encolado como `{fichero}`"),
+                abierto,
             ));
         }
         let que = if id.starts_with("trabajo-") {
@@ -2772,6 +2781,7 @@ impl Servidor {
                 fichero.clone(),
                 job,
                 format!("encolado como `{fichero}` · commit {c}"),
+                abierto,
             )),
             Err(e) => Err(Respuesta::error(502, format!("NO encolado: {e}"))),
         }
@@ -3882,6 +3892,7 @@ mod prueba {
             rama: None,
             fichero: String::new(),
             job: String::new(),
+            apertura: "1".into(),
             creado: Instant::now(),
             estado: Estado::Vivo,
             agente: Some(agente.into()),
@@ -3912,64 +3923,70 @@ mod prueba {
         }
     }
 
-    /// R1 · Un puesto por repositorio, y cada pod es SU puesto: el de functions
-    /// no escribe aunque el de transforms, del mismo agente de celda, sí; la
-    /// cabecera no cuenta para un pod; y un pod no reclama el puesto de otro Job.
+    /// R1 · Cada puesto es el que DECLARA su credencial: el de functions no
+    /// escribe aunque el de transforms, del mismo agente de celda, sí; la
+    /// cabecera no cuenta; otra apertura no es el puesto; y no hay «reclamar
+    /// primero» que valga para otro.
     #[test]
-    fn cada_pod_es_su_puesto_y_su_techo() {
-        let pod_f = agente("agente:pod/t-victor/puesto-ana-python-funcs-1a2b-xk2p9");
-        let pod_t = agente("agente:pod/t-victor/puesto-ana-python-trans-3c4d-q8w7e");
+    fn cada_puesto_es_el_que_declara_su_credencial() {
+        let de_f = agente("agente:puesto/puesto-ana-python-funcs/100");
+        let de_t = agente("agente:puesto/puesto-ana-python-trans/200");
         let mut lista = BTreeMap::new();
-        let mut f = un_puesto(&pod_f.persona);
-        f.job = "puesto-ana-python-funcs-1a2b".into();
+        let mut f = un_puesto(&de_f.persona);
+        f.apertura = "100".into();
         f.clase = ore_core::clases::de("functions-python");
-        let mut t = un_puesto(&pod_t.persona);
-        t.job = "puesto-ana-python-trans-3c4d".into();
+        let mut t = un_puesto(&de_t.persona);
+        t.apertura = "200".into();
         t.clase = ore_core::clases::de("transforms-python");
         lista.insert("puesto-ana-python-funcs".to_string(), f);
         lista.insert("puesto-ana-python-trans".to_string(), t);
 
         assert!(matches!(
-            escritura_en(&lista, &pod_f, "legal.archivo.paginas"),
+            escritura_en(&lista, &de_f, "legal.archivo.paginas"),
             Err(("media/sin-permiso", _))
         ));
         assert_eq!(
-            escritura_en(&lista, &pod_t, "legal.archivo.paginas")
+            escritura_en(&lista, &de_t, "legal.archivo.paginas")
                 .unwrap()
                 .unwrap()
                 .id,
             "puesto-ana-python-trans"
         );
 
-        // La cabecera no cuenta para un pod: el de functions diciendo ser el de
-        // transforms sigue siendo el suyo.
+        // La cabecera no cuenta: el de functions diciendo ser el de transforms
+        // sigue siendo el suyo.
         let otra = "puesto-ana-python-trans".to_string();
         assert_eq!(
-            puesto_que_llama_en(&lista, Some(&otra), &pod_f).as_deref(),
+            puesto_que_llama_en(&lista, Some(&otra), &de_f).as_deref(),
             Some("puesto-ana-python-funcs")
         );
-        // Un agente de celda (no pod) sigue por la cabecera, como antes.
+        // Un agente de celda (sin credencial de puesto) sigue por la cabecera.
         assert_eq!(
             puesto_que_llama_en(&lista, Some(&otra), &agente("agente:celda")).as_deref(),
             Some("puesto-ana-python-trans")
         );
 
-        // Un pod sin puesto: ni escribe como sí mismo.
-        let huerfano = agente("agente:pod/t-victor/puesto-bea-python-x-9z9z-aaaaa");
+        // Otra apertura del mismo puesto (reabierto): ya no es él.
+        let vieja = agente("agente:puesto/puesto-ana-python-funcs/99");
+        assert_eq!(puesto_que_llama_en(&lista, Some(&otra), &vieja), None);
         assert!(matches!(
-            escritura_en(&lista, &huerfano, "legal.archivo.paginas"),
+            escritura_en(&lista, &vieja, "legal.archivo.paginas"),
             Err(("media/sin-puesto", _))
         ));
-        assert_eq!(puesto_que_llama_en(&lista, Some(&otra), &huerfano), None);
+        // Y uno que no existe, tampoco.
+        let nadie = agente("agente:puesto/puesto-bea-python-x/1");
+        assert_eq!(puesto_que_llama_en(&lista, Some(&otra), &nadie), None);
 
-        // Y un pod sólo reclama el puesto de SU Job.
-        let suyo = &lista["puesto-ana-python-funcs"];
-        assert!(pod_del_puesto(&pod_f, suyo));
-        assert!(!pod_del_puesto(&pod_t, suyo));
-        assert!(
-            pod_del_puesto(&agente("agente:celda"), suyo),
-            "un agente de celda, como antes"
-        );
+        // Reclamar: sólo el suyo, en su apertura.
+        let p = &lista["puesto-ana-python-funcs"];
+        assert!(es_su_apertura(&de_f, "puesto-ana-python-funcs", p));
+        assert!(!es_su_apertura(&de_t, "puesto-ana-python-funcs", p));
+        assert!(!es_su_apertura(&vieja, "puesto-ana-python-funcs", p));
+        assert!(es_su_apertura(
+            &agente("agente:celda"),
+            "puesto-ana-python-funcs",
+            p
+        ));
     }
 
     /// 0049 B4·2: dentro de un transform, sólo lo declarado y de lo fijado;
