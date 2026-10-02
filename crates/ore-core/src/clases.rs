@@ -741,7 +741,10 @@ spec:
                 assert!(pkg.join("functions/otra_invoice_status.yaml").exists());
                 assert!(!pkg.join("funciones-de-riesgo/functions").exists());
                 let yaml = std::fs::read_to_string(&contrato).unwrap();
-                assert!(yaml.contains("name: funciones_de_riesgo_invoice_status"), "{yaml}");
+                assert!(
+                    yaml.contains("name: funciones_de_riesgo_invoice_status"),
+                    "{yaml}"
+                );
                 assert!(
                     yaml.contains(
                         "entrypoint: funciones-de-riesgo/funciones/ejemplo.py:funciones_de_riesgo_invoice_status"
