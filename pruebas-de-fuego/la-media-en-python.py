@@ -18,155 +18,19 @@ caducan, 412, flujos cortados). Se comprueba el SDK:
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-media-en-python.py
 """
-import hashlib
-import http.server
-import json
 import os
-import random
 import sys
-import threading
-import urllib.parse
 
-RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(RAIZ, "puesto", "python"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import banco_media as banco  # noqa: E402
+from banco_media import A, BYTES, CONTADOS, OBJETOS, RAMA, SERVE, SHA, bien, caso  # noqa: E402
 
-random.seed(49)
-A = b"%PDF-" + random.randbytes(3_000_000)
-OBJETOS = {"a.pdf": A, "b.pdf": b"%PDF-otro", "cambia.pdf": b"%PDF-viejo",
-           "corrupto.pdf": b"%PDF-bytes", "cortado.pdf": b"%PDF-" + b"x" * 5000}
-SHA = {k: hashlib.sha256(v).hexdigest() for k, v in OBJETOS.items()}
-
-
-def ref(path, digest=None):
-    return {"uri": "ore://legal.archivo.contratos/%s?v=v1" % path, "collection": "legal.archivo.contratos",
-            "path": path, "version": "v1", "digest": digest, "size": len(OBJETOS[path]),
-            "content_type": "application/pdf", "checksum": "etag:x", "state": "actual", "extra": "se ignora"}
-
-
-SERVE, BYTES = [], []          # (metodo, ruta, cabeceras) que llegaron a cada uno
-PERMISOS = {}                  # permiso → (path, usos que le quedan)
-ESTADO = {"n": 0}
-CONTADOS = {"enviados": 0}
-RAMA = {"r": None}             # la rama que la ficha del puesto dice (c13)
-
-
-class Celda(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        SERVE.append(("GET", self.path, dict(self.headers)))
-        u = urllib.parse.urlparse(self.path)
-        q = dict(urllib.parse.parse_qsl(u.query))
-        if u.path == "/puestos/p1":
-            return self._json(200, {"rama": RAMA["r"]} if RAMA["r"] else {})
-        if u.path.endswith("/items"):
-            todos = [ref("a.pdf"), ref("b.pdf", "sha256:" + SHA["b.pdf"]), ref("cambia.pdf")]
-            if q.get("cursor") == "c2":
-                return self._json(200, {"as_of": "7", "items": todos[2:], "cursor": None})
-            return self._json(200, {"as_of": "7", "items": todos[:2], "cursor": "c2"})
-        if u.path.endswith("/item"):
-            return self._json(200, dict(ref(q["path"]), current=True))
-        if u.path.endswith("/content"):
-            path = q["path"]
-            ESTADO["n"] += 1
-            p = "p%d" % ESTADO["n"]
-            # El primer permiso de a.pdf vale para UNA petición: obliga a renovar.
-            PERMISOS[p] = (path, 1 if (path == "a.pdf" and ESTADO["n"] == 1) else 10_000)
-            digest = {"corrupto.pdf": "sha256:" + "0" * 64}.get(path)
-            cuerpo = {"url": "http://127.0.0.1:%d/contenido?permiso=%s" % (BYTES_PUERTO, p),
-                      "desde": "medios", "version": q.get("version") or "v1", "ttl_s": 300,
-                      "item": ref(path, digest)}
-            return self._json(307, cuerpo, {"location": cuerpo["url"]})
-        self._json(404, {"type": "media/no-existe", "detail": self.path})
-
-    def _json(self, codigo, cuerpo, extra=None):
-        b = json.dumps(cuerpo).encode()
-        self.send_response(codigo)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(b)))
-        for k, v in (extra or {}).items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(b)
-
-    def log_message(self, *a):
-        pass
-
-
-class Bytes(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        BYTES.append(("GET", self.path, dict(self.headers)))
-        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
-        p = q.get("permiso")
-        if p not in PERMISOS or PERMISOS[p][1] <= 0:
-            return self._error(401, "media/permiso")
-        path, usos = PERMISOS[p]
-        PERMISOS[p] = (path, usos - 1)
-        if path == "cambia.pdf":
-            return self._error(412, "media/cambiado")
-        datos = OBJETOS[path]
-        rango = self.headers.get("Range")
-        codigo, a, z = 200, 0, len(datos) - 1
-        if rango:
-            x, y = rango.split("=", 1)[1].split("-")
-            a, z, codigo = int(x), (int(y) if y else len(datos) - 1), 206
-        trozo = datos[a:z + 1]
-        self.send_response(codigo)
-        self.send_header("content-length", str(len(trozo)))
-        if path == "cortado.pdf":
-            trozo = trozo[: len(trozo) // 2]   # promete el entero y da la mitad
-        if codigo == 206:
-            self.send_header("content-range", "bytes %d-%d/%d" % (a, z, len(datos)))
-        self.end_headers()
-        try:
-            for i in range(0, len(trozo), 16384):
-                self.wfile.write(trozo[i:i + 16384])
-                CONTADOS["enviados"] += len(trozo[i:i + 16384])
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
-
-    def _error(self, codigo, tipo):
-        b = json.dumps({"type": tipo, "status": codigo, "detail": tipo}).encode()
-        self.send_response(codigo)
-        self.send_header("content-type", "application/problem+json")
-        self.send_header("content-length", str(len(b)))
-        self.end_headers()
-        self.wfile.write(b)
-
-    def log_message(self, *a):
-        pass
-
-
-celda = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Celda)
-bytes_ = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Bytes)
-BYTES_PUERTO = bytes_.server_port
-for s in (celda, bytes_):
-    threading.Thread(target=s.serve_forever, daemon=True).start()
-os.environ["ORE_SERVE"] = "http://127.0.0.1:%d" % celda.server_port
-os.environ["PUESTO"] = "p1"
+celda, bytes_ = banco.arrancar()
 
 import ore  # noqa: E402
 from ore import medios  # noqa: E402
 
 ore.puesto._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
-fallos = 0
-
-
-def bien(m):
-    print("  ✓", m)
-
-
-def mal(m):
-    global fallos
-    fallos += 1
-    print("  ✗", m)
-
-
-def caso(n, f):
-    try:
-        f()
-    except AssertionError as e:
-        mal("%s · %s" % (n, e))
-    except Exception as e:  # noqa: BLE001
-        mal("%s · %s: %s" % (n, type(e).__name__, e))
 
 
 print("la media en python")
@@ -312,5 +176,5 @@ for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13], 
     caso(n, f)
 celda.shutdown()
 bytes_.shutdown()
-print("todo bien" if fallos == 0 else "%d fallos" % fallos)
-sys.exit(1 if fallos else 0)
+print("todo bien" if banco.fallos["n"] == 0 else "%d fallos" % banco.fallos["n"])
+sys.exit(1 if banco.fallos["n"] else 0)
