@@ -127,6 +127,13 @@ ore-serve — el plano de control de ORE
                          una coleccion virtual. Con `--idp` y `--emisor`
   --idp HOST:PUERTO      el IdP dentro del cluster, por HTTP llano: de donde
                          sale el token del agente
+  --emisor-pods URL      R1: el emisor de los tokens de pod del cluster (el de
+                         GKE, `https://container.googleapis.com/v1/…/clusters/<c>`).
+                         Con `--jwks-pods` y `--pods-de`, un puesto se presenta
+                         con el token de SU pod (`x-ore-pod`) y es ese pod
+  --jwks-pods FICHERO    R1: las llaves de ese emisor, de un fichero
+  --pods-de NAMESPACE    R1: el namespace de la celda: un token de pod de otro
+                         no es nadie aqui
   --perfiles FICHERO     la lista de certificacion, de un fichero en vez de
                          la cola (`perfiles.json`): el banco de pruebas
   -h, --help             esto
@@ -175,6 +182,11 @@ struct Opciones {
     /// `--agente-fichero` y `--idp` (0046 E9·3): la identidad del agente de la celda.
     agente_fichero: Option<String>,
     idp: Option<String>,
+    /// R1 · `--emisor-pods`, `--jwks-pods` y `--pods-de`: el puesto se presenta
+    /// con el token de su pod.
+    emisor_pods: Option<String>,
+    jwks_pods: Option<PathBuf>,
+    pods_de: Option<String>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -201,6 +213,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         acceso_testigo: None,
         agente_fichero: None,
         idp: None,
+        emisor_pods: None,
+        jwks_pods: None,
+        pods_de: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -236,6 +251,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--perfiles" => o.perfiles = Some(PathBuf::from(valor("--perfiles")?)),
             "--agente-fichero" => o.agente_fichero = Some(valor("--agente-fichero")?),
             "--idp" => o.idp = Some(valor("--idp")?),
+            "--emisor-pods" => o.emisor_pods = Some(valor("--emisor-pods")?),
+            "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
+            "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -274,6 +292,38 @@ fn main() -> ExitCode {
     let (proveedor, dicho) = match proveedor {
         Some((p, d)) => (Some(p), d),
         None => (None, "sin configurar".to_string()),
+    };
+    // ⭐ R1 · Y el pod de un puesto, como sí mismo. Las tres piezas o ninguna:
+    //   un emisor sin namespace creería el pod de cualquier inquilino.
+    let (proveedor, dicho) = match (proveedor, &o.emisor_pods, &o.jwks_pods, &o.pods_de) {
+        (p, None, None, None) => (p, dicho),
+        (Some(base), Some(iss), Some(jwks), Some(ns)) => {
+            match ore_entrada::oidc::Emisor::del_fichero(iss, "ore-serve", jwks) {
+                Ok(e) => {
+                    let linea = format!(
+                        "{dicho}\n  pods         {iss} · audiencia ore-serve · {} llaves de `{}` · namespace {ns}, cuenta puesto",
+                        e.cuantas(),
+                        jwks.display()
+                    );
+                    (
+                        Some(identidad::con_pods(base, e, ns.clone(), "puesto".into())),
+                        linea,
+                    )
+                }
+                Err(m) => {
+                    eprintln!("✗ `--jwks-pods`: {m}");
+                    return ExitCode::from(64);
+                }
+            }
+        }
+        (None, ..) => {
+            eprintln!("✗ `--emisor-pods` necesita `--identidad`: el pod es una identidad más");
+            return ExitCode::from(64);
+        }
+        _ => {
+            eprintln!("✗ `--emisor-pods`, `--jwks-pods` y `--pods-de` van juntos");
+            return ExitCode::from(64);
+        }
     };
     let con_identidad = proveedor.is_some();
 

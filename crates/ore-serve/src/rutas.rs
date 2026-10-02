@@ -858,9 +858,9 @@ impl Servidor {
             // El techo de la clase también aquí (0036 ⑤): `confirmar` mueve el
             // puntero de un dataset, que es escribir.
             ("POST", ["datasets", _, _, "confirmar"] | ["datasets", _, _, _, "confirmar"])
-                if p.cabeceras
-                    .get(crate::puestos::PUESTO)
-                    .and_then(|id| self.clase_de(id.trim()))
+                if self
+                    .puesto_que_llama(p, sujeto)
+                    .and_then(|id| self.clase_de(&id))
                     .is_some_and(|c| !c.escribe) =>
             {
                 Respuesta::error(

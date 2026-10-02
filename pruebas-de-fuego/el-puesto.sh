@@ -1235,14 +1235,16 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   # el analytics abre, y su ficha lo dice
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"python","repositorio":"packages/hr/mirar"}')" = "201" ] \
     || falla "17 · abrir el puesto del analytics: $(cuerpo)"
-  tiene "d['id']=='puesto-ana-python-mirar' and d['plantilla']=='analytics-python' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
+  tiene "d['id'].startswith('puesto-ana-python-mirar-') and d['plantilla']=='analytics-python' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
     || falla "17 · la ficha del puesto no dice su clase: $(cuerpo)"
-  ORE_SERVE="$BASE" PUESTO=puesto-ana-python-mirar ORE_SUJETO=agente:mirar ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+  # R3 · el id lleva el hash de la ruta entera: se lee de la ficha.
+  PM=$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['id'])" "$TMP/r.json")
+  ORE_SERVE="$BASE" PUESTO=$PM ORE_SUJETO=agente:mirar ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente-mirar.txt" 2>&1 &
   AGENTE2=$!
-  for _ in $(seq 1 40); do pide GET /puestos/puesto-ana-python-mirar "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
+  for _ in $(seq 1 40); do pide GET /puestos/$PM "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
   tiene "d['estado']=='vivo'" || falla "17 · el puesto del analytics no pasa a vivo: $(cuerpo)"
-  P=puesto-ana-python-mirar; LEN=python
+  P=$PM; LEN=python
   # leer, sí
   celda 'import json; c, _ = ore.puesto.pedir(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.lago\"); print(json.dumps(c))' \
     && tiene "d['salida']['texto'].strip()=='200'" || falla "17 · un analytics no pudo LEER: $(cuerpo)"
@@ -1253,7 +1255,7 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
     && tiene "'ESCRIBIO' not in d['salida'].get('texto','') and d['salida']['tipo'] in ('texto','error')" \
     || falla "17 · un analytics escribió aunque el transform lo declaraba: $(cuerpo)"
   [ ! -f "$A/datasets/hr/default/prohibida.json" ] || falla "17 · quedó el puntero de lo que no se podía escribir"
-  [ "$(pide DELETE /puestos/puesto-ana-python-mirar "$ANA")" = "200" ] || falla "17 · cerrar el puesto del analytics: $(cuerpo)"
+  [ "$(pide DELETE /puestos/$PM "$ANA")" = "200" ] || falla "17 · cerrar el puesto del analytics: $(cuerpo)"
   for _ in $(seq 1 100); do kill -0 "$AGENTE2" 2>/dev/null || break; sleep 0.25; done
   AGENTE2=""
   P=puesto-ana-python; LEN=python

@@ -59,6 +59,16 @@ class Testigo {
   }
   async cabeceras() {
     if (this.sujeto) return { "x-ore-sujeto": this.sujeto };
+    // ⭐ R1 · El token de ESTE pod, si lo trae: el servidor sabe qué puesto habla.
+    //   Se lee cada vez: el kubelet lo renueva en el sitio. Con la credencial del
+    //   agente también en el pod, van las dos (un `ore-serve` sin pods, la suya).
+    let pod = null;
+    try { pod = readFileSync(process.env.ORE_TOKEN_DEL_POD ?? "/var/run/ore/pod/token", "utf8").trim() || null; } catch { /* sin token de pod */ }
+    if (pod && !(this.cliente && this.secreto)) return { "x-ore-pod": pod };
+    const h = await this.delAgente();
+    return pod ? { ...h, "x-ore-pod": pod } : h;
+  }
+  async delAgente() {
     if (!(this.cliente && this.secreto && this.direccion)) {
       log("sin identidad: ni ORE_SUJETO ni /puesto/agente-{cliente,secreto} con DIRECCION");
       process.exit(2);

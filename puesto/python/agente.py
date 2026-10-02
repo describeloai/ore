@@ -96,6 +96,14 @@ class Testigo:
         self.candado = threading.Lock()
 
     @staticmethod
+    def _token_del_pod():
+        try:
+            with open(os.environ.get("ORE_TOKEN_DEL_POD", "/var/run/ore/pod/token"), encoding="utf-8") as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
+
+    @staticmethod
     def _fichero(nombre):
         ruta = os.path.join(os.environ.get("PUESTO_DIR", "/puesto"), nombre)
         try:
@@ -107,8 +115,17 @@ class Testigo:
     def cabeceras(self):
         if self.sujeto:
             return {"x-ore-sujeto": self.sujeto}
+        # ⭐ R1 · Si el pod trae su token (de Kubernetes, ligado a ESTE pod), se
+        #   presenta con él: el servidor sabe qué puesto habla. Se lee cada vez
+        #   porque el kubelet lo renueva en el sitio. Mientras el pod traiga
+        #   TAMBIÉN la credencial del agente, van las dos: un `ore-serve` que no
+        #   sabe de pods sigue con la de siempre, y uno que sí, con la del pod.
+        pod = self._token_del_pod()
+        if pod and not (self.cliente and self.secreto):
+            return {"x-ore-pod": pod}
         with self.candado:
-            return self._cabeceras_vigentes()
+            h = self._cabeceras_vigentes()
+        return dict(h, **{"x-ore-pod": pod}) if pod else h
 
     def _cabeceras_vigentes(self):
         if not (self.cliente and self.secreto and self.direccion):

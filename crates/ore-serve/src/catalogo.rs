@@ -263,6 +263,9 @@ impl Servidor {
             .cabeceras
             .get(DELEGACION)
             .is_some_and(|v| v.contains("vended-credentials"));
+        // R1 · Qué puesto habla: el de su pod si lo es; si no, la cabecera.
+        let del_puesto = self.puesto_que_llama(p, sujeto);
+        let desde_un_agente = crate::puestos::es_agente(sujeto);
         // Desde un puesto: quien escribe es la persona, no el agente.
         let (sujeto, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
             Ok(x) => x,
@@ -277,8 +280,8 @@ impl Servidor {
         // pelo (medido en W3.7 ⑤). Y **sólo quita**: una clase nunca concede.
         if p.metodo != "GET"
             && p.metodo != "HEAD"
-            && let Some(id) = p.cabeceras.get(crate::puestos::PUESTO)
-            && let Some(c) = self.clase_de(id.trim())
+            && let Some(id) = del_puesto.as_deref()
+            && let Some(c) = self.clase_de(id)
             && !c.escribe
         {
             return con_forma(
@@ -297,8 +300,8 @@ impl Servidor {
         // `output`. Lo demás —cargar otra tabla para escribirla, crearla,
         // commitear sobre ella— es 403 con lo declarado, en el servidor y no
         // en el SDK. Leer va por `datos`, que lo acota igual.
-        if let Some(id) = p.cabeceras.get(crate::puestos::PUESTO)
-            && let Some(t) = self.transform_de(id.trim())
+        if let Some(id) = del_puesto.as_deref()
+            && let Some(t) = self.transform_de(id)
             && let Some(tabla) = tabla_de(p, base, seg)
             && tabla != t.output
         {
@@ -315,11 +318,7 @@ impl Servidor {
         }
         // Desde un puesto —o un agente sin él—: lo que se lee pasa por el
         // conducto (0031 W3.7 gobierno ②), sea una tabla o una View.
-        let desde_puesto = p
-            .cabeceras
-            .get(crate::puestos::PUESTO)
-            .is_some_and(|s| !s.trim().is_empty())
-            || crate::puestos::es_agente(sujeto);
+        let desde_puesto = del_puesto.is_some() || desde_un_agente;
         match (p.metodo.as_str(), seg) {
             ("GET", ["config"]) => {
                 // `?warehouse=<base>`: la base es el `prefix` de lo que siga

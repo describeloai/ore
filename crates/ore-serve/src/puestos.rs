@@ -302,14 +302,31 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
             s
         }
     };
-    let quien = corto(persona.rsplit(':').next().unwrap_or(persona), 24);
+    let sin_prefijo = persona.rsplit(':').next().unwrap_or(persona);
     match repositorio
         .map(str::trim)
+        .map(|r| r.trim_matches('/'))
         .filter(|s| !s.is_empty())
-        .and_then(|r| r.trim_matches('/').rsplit('/').next().map(str::to_string))
     {
-        Some(repo) => format!("puesto-{quien}-{entorno}-{}", corto(&repo, 20)),
-        None => format!("puesto-{quien}-{entorno}"),
+        // ⭐ R3 · Un puesto por repositorio, y el repositorio ENTERO: la última
+        //   carpeta sola juntaba `a/funcs` y `b/funcs` en un puesto. Lo legible
+        //   se acorta y lo que distingue va en el hash (persona + ruta).
+        //
+        //   ⛔ Y en 63: el Job se llama `<id>-<8 hex>` y su nombre es el valor de
+        //   la etiqueta `job-name` de su pod. Antes, con un `sub` de UUID y un
+        //   repositorio largo, daba 68 y el Job no se creaba. Ahora, como mucho:
+        //   7 + 16 + 1 + 6 + 1 + 12 + 1 + 6 = 50, y con el `-<8 hex>`, 59.
+        Some(ruta) => {
+            let repo = ruta.rsplit('/').next().unwrap_or(ruta);
+            let h = ore_core::digest::de_bytes(format!("{persona}\n{ruta}").as_bytes());
+            let h = &h["sha256:".len().."sha256:".len() + 6];
+            format!(
+                "puesto-{}-{entorno}-{}-{h}",
+                corto(sin_prefijo, 16),
+                corto(repo, 12)
+            )
+        }
+        None => format!("puesto-{}-{entorno}", corto(sin_prefijo, 24)),
     }
 }
 
@@ -342,6 +359,47 @@ fn corre_en(lenguaje: &str, entorno: &str) -> bool {
 
 pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
     sujeto.tipo.as_deref() == Some("agente") || sujeto.persona.starts_with("agente:")
+}
+
+/// R1 · ¿Habla un pod verificado (`agente:pod/<ns>/<pod>`)? Entonces es UN
+/// puesto concreto, y lo que diga `x-ore-puesto` no cuenta.
+pub(crate) fn es_pod(sujeto: &Identidad) -> bool {
+    sujeto.persona.starts_with(ore_entrada::oidc::PREFIJO_POD)
+}
+
+/// R1 · El puesto que habla, bajo el candado de la lista: el de su pod si es un
+/// pod verificado —el que reclamó, y ninguno más—; si no, el que dice la
+/// cabecera (el camino de antes, que comprueba el agente donde se usa).
+pub(crate) fn puesto_que_llama_en(
+    lista: &BTreeMap<String, Puesto>,
+    cabecera: Option<&String>,
+    sujeto: &Identidad,
+) -> Option<String> {
+    if es_pod(sujeto) {
+        return lista
+            .iter()
+            .find(|(_, p)| {
+                p.estado != Estado::Cerrado && p.agente.as_deref() == Some(sujeto.persona.as_str())
+            })
+            .map(|(id, _)| id.clone());
+    }
+    cabecera
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// R1 · ¿Puede este pod reclamar este puesto? Sólo si es SU pod: el nombre de un
+/// pod de un Job empieza por el del Job. Sin esto, un pod que conociera el id
+/// de un puesto recién abierto —son predecibles— lo reclamaría antes que el suyo.
+pub(crate) fn pod_del_puesto(sujeto: &Identidad, p: &Puesto) -> bool {
+    let Some(pod) = sujeto
+        .persona
+        .strip_prefix(ore_entrada::oidc::PREFIJO_POD)
+        .and_then(|r| r.rsplit('/').next())
+    else {
+        return true;
+    };
+    !p.job.is_empty() && pod.starts_with(&format!("{}-", p.job))
 }
 
 /// [`Servidor::media_del_puesto`], sobre la lista ya bajo su candado.
@@ -411,6 +469,14 @@ pub(crate) fn escritura_en(
         .find(|(_, p)| p.transform.is_some())
         .or_else(|| todos.first())
     else {
+        // ⛔ R1 · Un pod verificado sin puesto no escribe «como sí mismo»: un
+        //   pod es siempre un puesto, y uno sin él no es nadie con techo.
+        if es_pod(sujeto) {
+            return Err((
+                "media/sin-puesto",
+                "este pod no es de ningún puesto vivo".into(),
+            ));
+        }
         return Ok(None);
     };
     if let Some(c) = p.clase
@@ -1923,6 +1989,12 @@ impl Servidor {
         if p.estado == Estado::Cerrado {
             return Err(Respuesta::error(410, "el puesto está cerrado: ciérrate"));
         }
+        if !pod_del_puesto(sujeto, p) {
+            return Err(Respuesta::error(
+                403,
+                "ese puesto no es de este pod: un pod sólo reclama el puesto de su Job",
+            ));
+        }
         match &p.agente {
             None => p.agente = Some(sujeto.persona.clone()),
             Some(a) if a != &sujeto.persona => {
@@ -2560,12 +2632,16 @@ impl Servidor {
         sujeto: &Identidad,
         rama: Option<&str>,
     ) -> Result<(Identidad, Option<String>), Respuesta> {
-        match p
-            .cabeceras
-            .get(PUESTO)
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
+        // ⛔ R1 · Un pod verificado es SIEMPRE su puesto, diga o no la cabecera:
+        //   quitarla era escribir como el agente, sin la persona ni el techo.
+        let id = self.puesto_que_llama(p, sujeto);
+        if es_pod(sujeto) && id.is_none() {
+            return Err(Respuesta::error(
+                403,
+                "este pod no es de ningún puesto vivo: ciérrate",
+            ));
+        }
+        match id.as_deref() {
             Some(id) => {
                 let (persona, rama_del_puesto) = self.persona_del_puesto(sujeto, id)?;
                 Ok((
@@ -2582,6 +2658,15 @@ impl Servidor {
             }
             None => Ok((sujeto.clone(), rama.map(String::from))),
         }
+    }
+
+    /// R1 · El puesto que habla: [`puesto_que_llama_en`], bajo el candado.
+    pub(crate) fn puesto_que_llama(
+        &self,
+        p: &ore_entrada::http::Peticion,
+        sujeto: &Identidad,
+    ) -> Option<String> {
+        puesto_que_llama_en(&self.puestos.lista.lock().unwrap(), p.cabeceras.get(PUESTO), sujeto)
     }
 
     pub(crate) fn persona_del_puesto(
@@ -3725,19 +3810,26 @@ mod prueba {
             "puesto-4f0a9c2e-1b2c-4d5e-8f90-jvm"
         );
         // 0036 ④: dos repositorios de la misma persona son DOS sesiones.
-        assert_eq!(
-            id_de("persona:ana", "python", Some("packages/hr/raw")),
-            "puesto-ana-python-raw"
-        );
+        let raw = id_de("persona:ana", "python", Some("packages/hr/raw"));
+        assert!(raw.starts_with("puesto-ana-python-raw-") && raw.len() == "puesto-ana-python-raw-".len() + 6, "{raw}");
+        assert_ne!(raw, id_de("persona:ana", "python", Some("packages/hr/clean")));
+        // R3 · Y dos con la misma carpeta en paquetes distintos, también.
+        assert_ne!(raw, id_de("persona:ana", "python", Some("packages/ventas/raw")));
+        // Y de dos personas, aunque el `sub` empiece igual.
         assert_ne!(
-            id_de("persona:ana", "python", Some("packages/hr/raw")),
-            id_de("persona:ana", "python", Some("packages/hr/clean"))
+            id_de("4f0a9c2e-1b2c-4d5e-8f90-aaaa", "python", Some("packages/hr/raw")),
+            id_de("4f0a9c2e-1b2c-4d5e-8f90-bbbb", "python", Some("packages/hr/raw"))
         );
         // El nombre del repositorio también se acorta y se limpia.
-        assert_eq!(
-            id_de("persona:ana", "python", Some("packages/hr/Con Espacios")),
-            "puesto-ana-python-con-espacios"
+        assert!(id_de("persona:ana", "python", Some("packages/hr/Con Espacios"))
+            .starts_with("puesto-ana-python-con-espacios-"));
+        // ⛔ R3 · El Job (`<id>-<8 hex>`) cabe en 63, con el `sub` y la carpeta más largos.
+        let largo = id_de(
+            "21e8ffd9-5aae-4797-a9f9-b81bde8e1780",
+            "python",
+            Some("packages/un_paquete_muy_largo/una_carpeta_de_repositorio_larguisima"),
         );
+        assert!(largo.len() + 9 <= 63, "{largo} ({})", largo.len() + 9);
         assert_eq!(
             id_de("persona:ana", "python", Some("  ")),
             "puesto-ana-python",
@@ -3794,6 +3886,60 @@ mod prueba {
             tipo: Some("agente".into()),
             usuario: None,
         }
+    }
+
+    /// R1 · Un puesto por repositorio, y cada pod es SU puesto: el de functions
+    /// no escribe aunque el de transforms, del mismo agente de celda, sí; la
+    /// cabecera no cuenta para un pod; y un pod no reclama el puesto de otro Job.
+    #[test]
+    fn cada_pod_es_su_puesto_y_su_techo() {
+        let pod_f = agente("agente:pod/t-victor/puesto-ana-python-funcs-1a2b-xk2p9");
+        let pod_t = agente("agente:pod/t-victor/puesto-ana-python-trans-3c4d-q8w7e");
+        let mut lista = BTreeMap::new();
+        let mut f = un_puesto(&pod_f.persona);
+        f.job = "puesto-ana-python-funcs-1a2b".into();
+        f.clase = ore_core::clases::de("functions-python");
+        let mut t = un_puesto(&pod_t.persona);
+        t.job = "puesto-ana-python-trans-3c4d".into();
+        t.clase = ore_core::clases::de("transforms-python");
+        lista.insert("puesto-ana-python-funcs".to_string(), f);
+        lista.insert("puesto-ana-python-trans".to_string(), t);
+
+        assert!(matches!(
+            escritura_en(&lista, &pod_f, "legal.archivo.paginas"),
+            Err(("media/sin-permiso", _))
+        ));
+        assert_eq!(
+            escritura_en(&lista, &pod_t, "legal.archivo.paginas").unwrap().unwrap().id,
+            "puesto-ana-python-trans"
+        );
+
+        // La cabecera no cuenta para un pod: el de functions diciendo ser el de
+        // transforms sigue siendo el suyo.
+        let otra = "puesto-ana-python-trans".to_string();
+        assert_eq!(
+            puesto_que_llama_en(&lista, Some(&otra), &pod_f).as_deref(),
+            Some("puesto-ana-python-funcs")
+        );
+        // Un agente de celda (no pod) sigue por la cabecera, como antes.
+        assert_eq!(
+            puesto_que_llama_en(&lista, Some(&otra), &agente("agente:celda")).as_deref(),
+            Some("puesto-ana-python-trans")
+        );
+
+        // Un pod sin puesto: ni escribe como sí mismo.
+        let huerfano = agente("agente:pod/t-victor/puesto-bea-python-x-9z9z-aaaaa");
+        assert!(matches!(
+            escritura_en(&lista, &huerfano, "legal.archivo.paginas"),
+            Err(("media/sin-puesto", _))
+        ));
+        assert_eq!(puesto_que_llama_en(&lista, Some(&otra), &huerfano), None);
+
+        // Y un pod sólo reclama el puesto de SU Job.
+        let suyo = &lista["puesto-ana-python-funcs"];
+        assert!(pod_del_puesto(&pod_f, suyo));
+        assert!(!pod_del_puesto(&pod_t, suyo));
+        assert!(pod_del_puesto(&agente("agente:celda"), suyo), "un agente de celda, como antes");
     }
 
     /// 0049 B4·2: dentro de un transform, sólo lo declarado y de lo fijado;

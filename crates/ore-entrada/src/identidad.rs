@@ -98,6 +98,10 @@ pub type Proveedor =
 pub const CABECERA_SUJETO: &str = "x-ore-sujeto";
 pub const CABECERA_AGENTE: &str = "x-ore-agente";
 
+/// R1 · El token del POD que llama (de Kubernetes, ligado al pod). Va aparte de
+/// `authorization` porque no es una sesión de nadie: dice QUÉ pod es.
+pub const CABECERA_POD: &str = "x-ore-pod";
+
 /// ⚠️ **El modo de banco** — el sujeto por cabecera.
 ///
 /// Valida igual de duro que uno de verdad: el sujeto tiene que estar, no puede
@@ -252,6 +256,23 @@ pub fn resolver(a: &Ajustes) -> Result<Option<(Proveedor, String)>, String> {
             MODOS.join(", ")
         )),
     }
+}
+
+/// **R1 · Un pod se presenta como sí mismo.** Envuelve al proveedor de siempre:
+/// si la petición trae [`CABECERA_POD`], el sujeto es el agente de ESE pod
+/// (`agente:pod/<ns>/<pod>`, [`crate::oidc::Emisor::verificar_pod`]) y no se
+/// mira nada más —un token de pod que no verifica es un 401, no un «prueba con
+/// lo otro»—. Si no la trae, lo de siempre.
+pub fn con_pods(
+    base: Proveedor,
+    emisor: crate::oidc::Emisor,
+    namespace: String,
+    cuenta: String,
+) -> Proveedor {
+    Box::new(move |cabeceras| match cabeceras.get(CABECERA_POD) {
+        Some(t) => emisor.verificar_pod(t, ahora(), &namespace, &cuenta),
+        None => base(cabeceras),
+    })
 }
 
 /// El instante, en segundos desde la época.

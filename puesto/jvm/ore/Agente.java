@@ -93,6 +93,23 @@ public final class Agente {
 
         Map<String, String> cabeceras() throws IOException, InterruptedException {
             if (sujeto != null && !sujeto.isEmpty()) return Map.of("x-ore-sujeto", sujeto);
+            // ⭐ R1 · El token de ESTE pod, si lo trae: el servidor sabe qué puesto
+            //   habla. Se lee cada vez: el kubelet lo renueva en el sitio. Con la
+            //   credencial del agente también en el pod, van las dos.
+            String pod = null;
+            try {
+                pod = Files.readString(Path.of(Ore.env("ORE_TOKEN_DEL_POD", "/var/run/ore/pod/token"))).strip();
+                if (pod.isEmpty()) pod = null;
+            } catch (IOException e) { /* sin token de pod */ }
+            if (pod != null && (cliente == null || secreto == null)) return Map.of("x-ore-pod", pod);
+            Map<String, String> h = delAgente();
+            if (pod == null) return h;
+            Map<String, String> ambas = new java.util.HashMap<>(h);
+            ambas.put("x-ore-pod", pod);
+            return ambas;
+        }
+
+        Map<String, String> delAgente() throws IOException, InterruptedException {
             if (cliente == null || secreto == null || direccion.isEmpty()) {
                 log("sin identidad: ni ORE_SUJETO ni /puesto/agente-{cliente,secreto} con DIRECCION");
                 System.exit(2);
