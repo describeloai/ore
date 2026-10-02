@@ -76,6 +76,18 @@ spec:
         #   arrancar desde la caja de ruedas del bucket (52-la-capa.yaml).
         - name: capa
           emptyDir: {}
+        # ⭐ R1 · El token de cuenta de servicio de ESTE pod, para `ore-serve`:
+        #   firmado por el clúster, ligado al pod (lleva su nombre), con nuestra
+        #   audiencia y renovado por el kubelet. El agente lo manda en `x-ore-pod`
+        #   y el servidor sabe qué puesto habla. No es un secreto que se reparta:
+        #   la cola es un repositorio git, y lo que va en el Job queda escrito.
+        - name: token-del-pod
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: ore-serve
+                  expirationSeconds: 3600
+                  path: token
       initContainers:
         # El testigo del agente de la celda: con él el agente pide tokens al
         # emisor (client credentials) y habla con `ore-serve` como agente.
@@ -283,6 +295,7 @@ spec:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
             - { name: capa, mountPath: /capa, readOnly: true }
+            - { name: token-del-pod, mountPath: /var/run/ore/pod, readOnly: true }
           workingDir: /trabajo
           resources:
             requests: {cpu: "1", memory: 2Gi}

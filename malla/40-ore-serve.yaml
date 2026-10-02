@@ -121,6 +121,11 @@ spec:
         - name: llaves
           configMap:
             name: jwks
+        # R1 · Y las del clúster, con las que firma el token de cada pod: un
+        #   puesto se presenta con el de SU pod (`56-las-llaves-de-los-pods.yaml`).
+        - name: llaves-pods
+          configMap:
+            name: jwks-pods
         # ⭐⭐ EN MEMORIA, y esa palabra es media propiedad. `medium: Memory` es
         # un tmpfs: el testigo no toca el disco del nodo, no aparece en una
         # copia del volumen y muere con el pod. Y `sizeLimit` porque un tmpfs
@@ -265,6 +270,18 @@ spec:
             # Las trae `50-jwks.yaml`, que es quien puede salir. ADR 0020.
             - --jwks
             - /llaves/jwks.json
+            # ── R1 · EL POD DE UN PUESTO ES ESE PUESTO ─────────────────
+            #
+            # Un puesto manda el token de cuenta de servicio de SU pod
+            # (`x-ore-pod`), y con esto se verifica: el emisor del clúster, sus
+            # llaves y SÓLO los pods de este namespace con la cuenta `puesto`.
+            # Así se sabe qué puesto habla sin creerse ninguna cabecera.
+            - --emisor-pods
+            - https://container.googleapis.com/v1/projects/project-8853a180-450d-47be-b83/locations/europe-west1-b/clusters/ore-mesh
+            - --jwks-pods
+            - /llaves-pods/jwks.json
+            - --pods-de
+            - t-demo
             # ── ⭐⭐ DONDE VA LA CREDENCIAL DE UNA FUENTE ─────────────
             #
             # Hasta hoy: `ore source add` la escribia en `.env.local`,
@@ -389,6 +406,9 @@ spec:
           volumeMounts:
             - name: llaves
               mountPath: /llaves
+              readOnly: true
+            - name: llaves-pods
+              mountPath: /llaves-pods
               readOnly: true
             - name: testigo
               mountPath: /testigo
