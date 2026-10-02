@@ -78,7 +78,7 @@ import urllib.request
 MAGIA = b"ORECOPY1"
 
 __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
-           "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista",
+           "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista", "crear_coleccion",
            "media", "medias", "media_de", "modelo", "function",
            "coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "MediaError",
            "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango"]
@@ -954,6 +954,66 @@ def crear_dataset(nombre, columnas, clave=None, si_no_existe=False):
     if c != 200:
         raise RuntimeError("create dataset %s: %s" % (nombre, _mensaje(r)))
     return {"dataset": nombre, "creado": True}
+
+
+# ── La colección escrita (ADR 0049 B4b·3) ──────────────────────────────────
+# `create media collection` en código: el documento `MediaCollection` de
+# v1alpha19 SIN `from` —la llena el código, por transacciones—, escrito por
+# `PUT /documentos/MediaCollection/…` en nombre de quien abrió el puesto y en su
+# rama, como `crear_vista`. No lleva `derivedFrom`: al crearla no se ha leído
+# nada; lo escribe la herramienta al confirmar lo que se escriba en ella.
+
+#: Los medios de una colección (v1alpha16 `02`): uno, y sabe lo que guarda.
+MEDIOS = ("document", "image", "audio", "video", "spreadsheet", "email")
+
+
+def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion):
+    base, ns, n = _partes(nombre)
+    q = json.dumps  # un escalar de YAML entre comillas: el de JSON vale
+    lineas = ["apiVersion: oos.dev/v1alpha19", "kind: MediaCollection", "metadata:",
+              "  name: %s" % n, "  namespace: %s" % base]
+    if ns != DEFAULT:
+        lineas.append("  schema: %s" % ns)
+    if comentario:
+        lineas.append("  description: %s" % q(comentario, ensure_ascii=False))
+    if etiquetas:
+        lineas.append("  labels: { %s }" % ", ".join("%s: %s" % (k, v) for k, v in etiquetas.items()))
+    lineas += ["spec:", "  owner: %s" % dueno, "  media: %s" % media,
+               "  formats: [%s]" % ", ".join(formatos)]
+    if retencion:
+        lineas.append("  retention: %s" % retencion)
+    return "\n".join(lineas) + "\n"
+
+
+def crear_coleccion(nombre, media, formatos, dueno=None, comentario=None, etiquetas=None,
+                    retencion=None, si_no_existe=False):
+    """`create media collection b.s.c (media, formats)`: una colección **escrita**
+    vacía, que el código llena con `ore.coleccion(nombre).transaccion()`.
+
+    `media` es uno de `MEDIOS`; `formatos`, las extensiones que admite (la
+    primera, la primaria). `etiquetas` (`{"gdpr.sensitivity": "high"}`) se suman
+    a lo que derive: pueden elevar, no rebajar (v1alpha19 `01` §3). Si ya existe
+    es un error, o `{creada: False}` con `si_no_existe`. Un código OOS vuelve como
+    `ValueError`. Devuelve `{coleccion, creada}`."""
+    nombre = _corto(_nombre_de(nombre), "create media collection: el nombre")
+    que = "create media collection %s" % nombre
+    if media not in MEDIOS:
+        raise ValueError("%s: `media` es uno de %s, no %r" % (que, ", ".join(MEDIOS), media))
+    if isinstance(formatos, str):
+        formatos = [formatos]
+    formatos = [f.lower().lstrip(".") for f in formatos or []]
+    if not formatos or len(set(formatos)) != len(formatos) or \
+            not all(re.match(r"^[a-z0-9][a-z0-9.+-]*$", f) for f in formatos):
+        raise ValueError("%s: `formatos` es una lista de extensiones distintas (`png`, `pdf`), no %r" % (que, formatos))
+    ruta = _ruta_de_vista(nombre, "MediaCollection")
+    c, _ = puesto.pedir("GET", ruta, plazo=60)
+    if c == 200:
+        if si_no_existe:
+            return {"coleccion": nombre, "creada": False}
+        raise RuntimeError("%s: ya hay una colección con ese nombre (`if not exists` la deja como está)" % que)
+    dueno = dueno or "team:%s" % _partes(nombre)[0]
+    _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion))
+    return {"coleccion": nombre, "creada": True}
 
 
 # ── La vista (ADR 0040 paso 5) ─────────────────────────────────────────────

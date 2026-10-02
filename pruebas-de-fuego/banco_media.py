@@ -140,7 +140,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
             return _problema(self, 404, "media/no-existe", self.path)
         clave = _doc_de(u.path)
         texto = _cuerpo(self).get("yaml", "")
-        if "media: nada" in texto:
+        if "media: nada" in texto or "name: rota" in texto:
             return _json(self, 422, {"error": "no compila", "diagnosticos": [
                 {"codigo": "OOS1004", "mensaje": "`media` no es un medio"}]})
         nueva = clave not in DOCUMENTOS
