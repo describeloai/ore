@@ -584,14 +584,72 @@ def function(f=None, *, over=None, reads=None, models=None, timeout=None):
     marca el `def` como una función del árbol (ORE 0050). La firma —los
     parámetros anotados y lo que devuelve— es el contrato: el documento
     `Function` se deriva de ella leyendo el fichero, sin ejecutarlo, y por eso
-    los argumentos son literales. Aquí no hace nada más: el `def` sigue
-    siendo el `def`, y en la sesión se llama como cualquier otro. Lo que
-    `over`/`reads`/`models` dejan hacer lo hace cumplir el arnés al invocarla."""
+    los argumentos son literales.
+
+    En la sesión se llama como cualquier otro `def`, **con su contrato**
+    (G3, `ore.contrato`): cada parámetro llega del tipo que anota —`"2026-10-02"`
+    es una `date`, `12.5` un `Decimal`— y lo que devuelve tiene que ser del
+    tipo que anota. Es la misma regla que el arnés aplica al invocarla: lo que
+    funciona aquí, funciona invocado. Lo que `over`/`reads`/`models` dejan
+    hacer lo hace cumplir el arnés."""
     def marca(g):
-        g.__ore_function__ = {"over": over, "reads": list(reads or []), "models": list(models or []),
-                              "timeout": timeout}
-        return g
+        from .contrato import llamada
+
+        envuelta = llamada(g)
+        envuelta.__ore_function__ = {"over": over, "reads": list(reads or []), "models": list(models or []),
+                                     "timeout": timeout}
+        return envuelta
     return marca(f) if callable(f) else marca
+
+
+_FUNCIONES = {}
+
+
+def funcion(nombre):
+    """La función publicada `nombre` (`<paquete>.<def>`, o `<paquete>.<schema>.<def>`),
+    para llamarla desde código como un `def` más (ORE 0050 G3):
+
+        eco = funcion("test_project.eco_tipos")
+        eco(importe=Decimal("12.50"), fecha=date(2026, 10, 2))
+
+    Corre **aquí**, en este proceso, con su contrato: el código es el de su
+    `entrypoint` en el árbol que mira esta sesión. Una con `over` (una
+    llamada por fila de un dataset) o con `models` no se llama así: la
+    invoca un pipeline, que es quien le da sus filas y su salida al modelo."""
+    partes = nombre.split(".")
+    if len(partes) not in (2, 3) or not all(partes):
+        raise ValueError("`funcion(%r)`: el nombre es `<paquete>.<def>` o `<paquete>.<schema>.<def>`" % nombre)
+    if nombre in _FUNCIONES:
+        return _FUNCIONES[nombre]
+    from urllib.parse import quote
+
+    from .contrato import llamada
+
+    codigo, doc = puesto.pedir("GET", "/documentos/Function/" + "/".join(quote(p, safe="") for p in partes))
+    if codigo == 404:
+        raise LookupError("no hay ninguna función `%s` publicada" % nombre)
+    if codigo != 200:
+        raise RuntimeError("leer la función `%s`: %s %s" % (nombre, codigo, (doc or {}).get("error", "")))
+    spec = doc.get("spec") or {}
+    if spec.get("runtime") != "python":
+        raise NotImplementedError("`%s` es `runtime: %s`: desde código se llaman las funciones de código"
+                                  % (nombre, spec.get("runtime")))
+    if spec.get("over") or spec.get("models"):
+        raise NotImplementedError("`%s` declara %s: se invoca desde un pipeline, que le da sus filas y su modelo"
+                                  % (nombre, "`over`" if spec.get("over") else "`models`"))
+    ruta, _, defn = str(spec.get("entrypoint", "")).rpartition(":")
+    fichero = "packages/%s/%s" % (doc.get("paquete"), ruta)
+    codigo, f = puesto.pedir("GET", "/arbol/" + "/".join(quote(p, safe="") for p in fichero.split("/")))
+    if codigo != 200 or not isinstance(f, dict) or "texto" not in f:
+        raise RuntimeError("leer el código de `%s` (%s): %s" % (nombre, fichero, codigo))
+    modulo = {"__name__": "ore_funcion_" + "_".join(partes), "__file__": fichero}
+    exec(compile(f["texto"], fichero, "exec"), modulo)
+    if defn not in modulo or not callable(modulo[defn]):
+        raise LookupError("`%s` no define `%s`" % (fichero, defn))
+    g = modulo[defn]
+    g = g if getattr(g, "__ore_contrato__", False) else llamada(g)
+    _FUNCIONES[nombre] = g
+    return g
 
 
 def modelo(referencia):

@@ -688,7 +688,6 @@ impl Servidor {
             parametros: &parametros,
             modelos: &modelos,
             over: over.as_deref(),
-            output: &f.output(),
             plazo,
         });
         Ok(PlanPython {
@@ -867,7 +866,6 @@ struct Arnes<'a> {
     parametros: &'a Json,
     modelos: &'a Json,
     over: Option<&'a str>,
-    output: &'a [String],
     plazo: u64,
 }
 
@@ -877,18 +875,21 @@ struct Arnes<'a> {
 /// compila con `compile`: nada se interpola como código.
 fn arnes(a: &Arnes<'_>) -> String {
     let cad = |s: &str| Json::s(s).jcs();
-    let output = Json::Arr(a.output.iter().map(Json::s).collect()).jcs();
     format!(
-        r#"# El arnés de una función de código (ORE 0050 P3): {funcion}
+        r#"# El arnés de una función de código (ORE 0050 P3, G3): {funcion}
 import dataclasses as _dc
+import decimal as _decimal
 import json as _json
 import signal as _signal
+import traceback as _tb
 import pyarrow as _pa
 
-_PARAMETROS = _json.loads({parametros})
+# Los números, exactos: un `Decimal` llega como `Decimal` (G3), y el contrato
+# del `def` lo baja a `int` o `float` si es lo que anota.
+_PARAMETROS = _json.loads({parametros}, parse_float=_decimal.Decimal)
 _MODELOS = _json.loads({modelos})
-_OUTPUT = _json.loads({output})
 _PLAZO = {plazo}
+_FICHERO = {fichero}
 
 
 def _plazo(*_):
@@ -901,36 +902,52 @@ if _PLAZO and hasattr(_signal, "SIGALRM"):
 
 # Lo único que `ore.modelo()` deja llamar: lo declarado en `models` (0050 P4).
 import ore as _ore
+from ore.contrato import llamada as _llamada
 
 _ore._modelos_de_la_funcion(_MODELOS)
 
-_modulo = {{"__name__": "ore_funcion", "__file__": {fichero}}}
-exec(compile({fuente}, {fichero}, "exec"), _modulo)
+_modulo = {{"__name__": "ore_funcion", "__file__": _FICHERO}}
+exec(compile({fuente}, _FICHERO, "exec"), _modulo)
 _f = _modulo[{def_}]
+# Su contrato (G3, `ore.contrato`): cada parámetro del tipo que anota, y lo
+# que devuelve del tipo que anota. El `@function` del SDK ya lo trae.
+_f = _f if getattr(_f, "__ore_contrato__", False) else _llamada(_f)
 
 
-def _una(*fila):
-    try:
-        v = _f(*fila, **_PARAMETROS)
-    except TimeoutError:
-        raise
-    except Exception as e:  # noqa: BLE001 — una fila que falla se dice y se sigue
-        return {{"_error": "%s: %s" % (type(e).__name__, e)}}
+def _donde(e):
+    """Dónde se rompió, en el `.py` de la función."""
+    for fr in reversed(_tb.extract_tb(e.__traceback__)):
+        if fr.filename == _FICHERO:
+            return " (%s, línea %d)" % (_FICHERO, fr.lineno)
+    return ""
+
+
+def _fila(v):
     if _dc.is_dataclass(v) and not isinstance(v, type):
-        v = {{c.name: getattr(v, c.name) for c in _dc.fields(v)}}
-    if _OUTPUT:
-        if not isinstance(v, dict) or set(v) != set(_OUTPUT):
-            dijo = sorted(v) if isinstance(v, dict) else type(v).__name__
-            return {{"_error": "devolvió %s y `output` declara %s" % (dijo, _OUTPUT)}}
-        return dict(v, _error=None)
-    return {{"valor": _json.dumps(v, default=str), "_error": None}}
+        return {{c.name: getattr(v, c.name) for c in _dc.fields(v)}}
+    return {{"valor": v}}
 
 
 _over = {over}
 if _over:
-    _res = [_una(f) for f in over(_over, como="arrow").to_pylist()]
+    # Una llamada por fila: la que falla se dice en `_error`, y las demás siguen.
+    _res = []
+    for _f_ in over(_over, como="arrow").to_pylist():
+        try:
+            _res.append(dict(_fila(_f(_f_, **_PARAMETROS)), _error=None))
+        except TimeoutError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            _res.append({{"_error": "%s: %s%s" % (type(e).__name__, e, _donde(e))}})
 else:
-    _res = [_una()]
+    # Una llamada: si falla, falla la invocación, con su porqué y su línea.
+    try:
+        _v = _f(**_PARAMETROS)
+    except TimeoutError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError("%s: %s%s" % (type(e).__name__, e, _donde(e))) from None
+    _res = [_fila(_v)]
 if hasattr(_signal, "SIGALRM"):
     _signal.alarm(0)
 _pa.Table.from_pylist(_res)
@@ -938,7 +955,6 @@ _pa.Table.from_pylist(_res)
         funcion = a.funcion,
         parametros = cad(&a.parametros.jcs()),
         modelos = cad(&a.modelos.jcs()),
-        output = cad(&output),
         plazo = a.plazo,
         fichero = cad(a.fichero),
         fuente = cad(a.fuente),
@@ -1001,12 +1017,11 @@ mod tests_python {
             parametros: &p,
             modelos: &Json::obj([]),
             over: Some("ventas.clientes"),
-            output: &["n".to_string()],
             plazo: 60,
         });
         // Lo de fuera va dentro de un literal de cadena JSON, escapado.
         assert!(
-            t.contains(r#"_json.loads("{\"q\":\"\\\"); import os #\"}")"#),
+            t.contains(r#"_json.loads("{\"q\":\"\\\"); import os #\"}", parse_float"#),
             "{t}"
         );
         assert!(t.contains("_over = \"ventas.clientes\""));
