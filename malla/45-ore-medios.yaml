@@ -15,14 +15,29 @@
 #   es OTRO proceso, con su sitio en la red, y `ore-serve` sigue sin enlazar TLS
 #   (`ore-cli/tests/dependencias.rs`).
 #
-# ⚠️ LA CUENTA ES LA DE `ore-serve` (`ore-serve-<celda>@`): la que ya lee el lago
-#   (`objectViewer`) y firma como sí misma (`serviceAccountTokenCreator` sobre sí,
-#   0046 E9·1) — exactamente lo que esto hace, y lo que hoy hace `ore-store-gcs`
-#   dentro del pod de `ore-serve`. Una cuenta propia, con sólo esto, es deuda
-#   anotada en 0049 (pide al aprovisionador una cuenta y su enlace).
+# ⭐ SU PROPIA CUENTA (0049 B4b), `ore-medios-<celda>@`, por la KSA `ore-medios`
+#   (abajo). Corría como `ore-serve-<celda>`, y desde B4b es el ÚNICO que escribe
+#   la media en el lago: con la de `ore-serve`, quien lo comprometiera firmaría
+#   como `ore-serve` y heredaría la confianza que un cliente de AWS le da por su
+#   ID (0046 E9b). La suya tiene sólo lo que hace (`aprovisionar-inquilino.sh`):
+#   lee la copia, crea en ella (blobs y manifiestos; ni borra ni sobrescribe),
+#   toca los blobs (`oreTocarBlobs`, sólo bajo `ore/v2/blobs/`) y firma como sí
+#   misma. La credencial de un origen virtual se la pasa `ore-serve`.
 #
 # ⛔ SIN ESTE DEPLOYMENT, `ore-serve` contesta 503 `media/no-desplegado` en
 #   `/media/…` y las rutas de 0046 (`/colecciones/…`) siguen sirviendo.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ore-medios
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: medios
+  annotations:
+    iam.gke.io/gcp-service-account: ore-medios-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,7 +57,7 @@ spec:
         ore.dev/tenant: demo
         ore.dev/rol: medios
     spec:
-      serviceAccountName: ore-serve
+      serviceAccountName: ore-medios
       automountServiceAccountToken: false
       nodeSelector:
         ore.dev/pool: system

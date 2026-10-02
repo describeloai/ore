@@ -328,6 +328,9 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
         # ⭐ Y la del puesto (0031 §11 ③): solo lee; lo que escribe lo escribe
         #   con el token que el catalogo le presta.
         t = t.replace("puesto-%s" % MODELO, "puesto-%s" % nombre)
+        # ⭐ Y la de la media (0049 B4b): `ore-medios-<n>`, la única que escribe
+        #   la media en el lago.
+        t = t.replace("medios-%s" % MODELO, "medios-%s" % nombre)
         t = t.replace("name: CELDA, value: %s }" % MODELO, "name: CELDA, value: %s }" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
         # ⛔⛔ EL NOMBRE DE LA ORGANIZACION EN `ore init`, y no es cosmetico:
