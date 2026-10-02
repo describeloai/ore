@@ -156,6 +156,8 @@ mal, n, con = [], 0, 0
 for p in sorted(glob.glob("datasets/**/*.json", recursive=True)):
     try: d = json.load(open(p, encoding="utf-8"))
     except Exception: continue
+    if d.get("estado") == "error":
+        print(f"(comprobar) {p[9:]} · error · {str(d.get('motivo'))[:400]}")
     ml = d.get("metadata_location")
     if not ml or not d.get("cabecera"): continue   # lo escrito no es una copia
     r = subprocess.run(["gcloud", "storage", "cat", ml], capture_output=True, text=True)
@@ -173,6 +175,19 @@ for p in sorted(glob.glob("datasets/**/*.json", recursive=True)):
         mal.append(f"{p}: Iceberg dice required {req} y la cabecera obligatorias {obl}"); linea += f" ✗ cabecera {obl}"
     if req or d.get("estado") not in ("al-dia", "copiada"): print(linea)
 print(f"(comprobar) {n} copias leídas del bucket · con columnas required: {con}")
+# Y cada puntero contra el de la pasada anterior que lo movió: si la cabecera
+# cambió sin imponer nada, la huella no es la de antes y algo se rehizo de más.
+for p in sorted(glob.glob("datasets/**/*.json", recursive=True)):
+    try: d = json.load(open(p, encoding="utf-8"))
+    except Exception: continue
+    if not d.get("cabecera"): continue
+    cs = subprocess.run(["git", "log", "--format=%h", "-n", "2", "--", p], capture_output=True, text=True).stdout.split()
+    if len(cs) < 2: continue
+    try: a = json.loads(subprocess.run(["git", "show", f"{cs[1]}:{p}"], capture_output=True, text=True).stdout)
+    except Exception: continue
+    t = lambda x: json.dumps(x.get("testigo"), sort_keys=True)
+    print(f"(antes) {p[9:]} · {cs[1]}→{cs[0]} · cabecera {'igual' if a.get('cabecera') == d.get('cabecera') else 'OTRA'}"
+          f" · plan {'igual' if a.get('plan') == d.get('plan') else 'OTRO'} · testigo {t(a)} → {t(d)}")
 if mal:
     print("(comprobar) ✗ " + "\n(comprobar) ✗ ".join(mal)); sys.exit(1)
 print("(comprobar) ✓ en cada copia, lo required en Iceberg es exactamente lo que su cabecera impone")

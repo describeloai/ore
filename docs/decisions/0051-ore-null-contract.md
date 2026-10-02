@@ -1,6 +1,6 @@
 # 0051 · ORE Null Contract
 
-**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0 y P0–P5 hechos; **P3 en vivo en `victor` y `demo`** (P3′); P6–P8 por hacer · **Decide:** cómo dice ORE, de punta a punta, qué
+**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0 y P0–P6 hechos; **P3 y P6 en vivo en `victor` y `demo`**; P7–P8 por hacer · **Decide:** cómo dice ORE, de punta a punta, qué
 columnas **nunca son nulas**: el origen lo **declara**, las vistas lo **derivan** y el lago lo
 **impone**, con una sola regla para cambiarlo. Cierra el «REQUIRED» de
 [0042](0042-origin-rest-bigquery.md) y la parte de nulabilidad de
@@ -221,10 +221,11 @@ sobre un almacén en disco, y leída después con DuckDB, PyIceberg y Spark 3.5.
   `required` de una entidad sin respaldo físico es el aviso de N5, no un `!`.
 
 **Sobre la abstracción**, lo medido la afina: la `Nulabilidad` va pegada al tipo, pero **se escribe
-sólo cuando es garantizada** (p. ej. `Integer!` en la forma de texto). Así la cabecera de una copia
-(`materializar::cabecera`, que hashea `t.to_string()`) y el digest de un plan **no cambian** en
-ningún árbol sin `required`, y cambian, con su recálculo, justo en las copias que pasan a
-imponer.
+sólo cuando es garantizada** (p. ej. `Integer!` en la forma de texto), así que el digest de un plan
+**no cambia** en ningún árbol sin `required`. **La cabecera de una copia no lleva el `!`** (P6): lo
+que impone va en un campo aparte, `obligatorias`, que un almacén de antes ignora (un `Integer!`
+sería para él un tipo que no conoce) y que vacío no se escribe. El `!` se queda para lo que se
+enseña (`ore view`, GraphQL en P7).
 
 ### Fase 1 · Lo robusto
 
@@ -405,6 +406,56 @@ catalogado). Herramienta: `pruebas-de-fuego/la-fuente-al-dia.py`, con la forma d
 | **M4** en vivo | `ore-serve` sirve `305a726`; `GET /datasets` y el esquema de las cuatro fuentes, **idénticos** antes y después (los mismos 27 datasets con los mismos snapshots); la copia en seco en el cluster: **23 «ya está», 0 por calcular** (10 no pudieron preguntar: fuentes S3 cuya credencial sólo tiene el Job de copia). Un puesto abierto después lee el árbol sin problemas | `ore-serve` sirve `740e182`; `GET /datasets` y el esquema de las cinco fuentes, **idénticos** (los 3 datasets con sus snapshots). La copia en seco no puede opinar: las 3 copias leen Postgres, y su credencial sólo la tiene el Job de copia (igual antes de migrar) |
 | **M5** vuelta atrás | verificada sin ejecutarla: `git revert 305a726` aplica limpio y deja el árbol idéntico a `f190eaa` | verificada sin ejecutarla: `git revert 740e182`, idéntico a `a06883e` |
 | **M6** cerrar | **P3 en vivo en las dos celdas**: los árboles que ya existían, en el paradigma de nulos (y al día con E5′) | |
+
+#### P6 · imponer (2026-10-02)
+
+**Lo que se decidió al diseñarlo**, y por qué:
+
+1. **La garantía viaja en la cabecera de la copia como `obligatorias: [col, …]`**, ordenada, y sólo
+   si hay alguna. Una copia sin nada que imponer tiene **la cabecera de antes byte a byte** (lo
+   fijan `sobre.rs` y `materializar.rs`): encender P6 sólo rehace las copias que imponen algo.
+   La calculan los dos caminos de la copia (`una`, `por_su_consulta`) con
+   `vistas::nulabilidad_de_vista` (P4): lo que el origen garantiza o lo que la consulta deriva.
+2. **El interruptor es un fichero del árbol de cada celda, `.arbol/nulos.yaml` (`imponer:
+   true`)**, como `.arbol/ramas.yaml` (0044). La plantilla de la malla es una para todas las
+   celdas (es `demo`), así que un interruptor en la malla no habría sido por celda. El fichero sí:
+   se enciende con un commit, queda en la historia y se apaga con un revert. Sin fichero, o sin
+   entenderlo, apagado.
+3. **Se impone en las copias de `ore materialize`, y nada más.** Lo que escribe `write()` (un
+   dataset escrito) sigue opcional: ahí no hay nada que derivar.
+4. **El nulo se niega antes de tocar la tabla** (`carga::sin_nulos`), en todas las filas que van a
+   la copia —también las de antes, al fundir—, con la columna, la fila y qué hacer: *«la columna
+   `id` de `…` nunca es nula —lo garantiza su origen— y la fila N trae un nulo: la copia no se
+   escribe. Si el origen dejó de garantizarlo, vuelve a catalogar la fuente y la columna se
+   afloja»*. El puntero queda en `error` con ese motivo y sigue en la copia de antes.
+5. **Apagar es aflojar**: la cabecera pierde `obligatorias`, la copia se rehace y P5 afloja cada
+   columna conservando su id.
+
+**Un fallo que destapó la prueba, y que ya no está:** `destino` confirmaba el esquema nuevo
+(`lago.esquema`) **antes** de escribir las filas. Si un nulo llegaba a mitad de un flujo
+(`sellar_flujo`, lote a lote), la tabla se quedaba `required` sobre los ficheros de antes: la cifra
+falsa de E5b, puesta por nosotros. Ahora **el esquema nuevo y el snapshot van en el mismo
+commit** (`instantanea` e `instantanea_flujo` reciben el esquema): o todo, o nada. Lo prueba
+`el_flujo_endurece_en_un_commit_o_no_confirma_nada` (un nulo en el segundo lote: cero
+`metadata.json` nuevos; sin él, exactamente uno).
+
+| paso | qué | lo medido |
+|---|---|---|
+| **P6a · la cabecera** | `obligatorias` en `materializar::cabecera` y `sobre::Cabecera` (leída tolerante: sin el campo, ninguna); el interruptor | la cabecera sin nada que imponer, idéntica a la de antes (dos pruebas, una por lado); el interruptor sólo con `imponer: true` |
+| **P6b · el almacén** | `obligatorias` → `esquema_deseado` (la copia siempre lo reescribe todo: P5 deja endurecer); `sin_nulos`; esquema y snapshot en un commit; el motivo del puntero lleva lo que dijo el almacén | 5 pruebas nuevas en `ore-store` y 3 en `ore-cli`; `fmt`, `clippy -D warnings` y el workspace en verde (salvo las dos que sólo fallan en Docker) |
+| **P6c · prueba de fuego** | `pruebas-de-fuego/nunca-nula-se-impone.sh`: jsonl → S3 de mentira → `ore-store-r2` | **4 de 4**: apagado, la copia de antes; encendido, `id` `required` con el mismo id de columna (PyIceberg 0.12 lo lee `required`) y la copia sin garantías «ya está» con la misma cabecera; un nulo inyectado falla con su fila, el puntero en `error` sigue en la copia de antes y **no hay ningún `metadata.json` nuevo**; apagar afloja. `el-lago.sh` 0–15 y `la-pregunta-se-contesta.sh` 0–9 siguen en verde. Código: ORE **`d69b90a`** |
+| **P6d · `demo`** | `pruebas-de-fuego/nunca-nula-en-vivo.py demo`: ensayo, `--encender`, `--rehacer`, `--comprobar` | M1: el `ore` de la imagen impone (un árbol mínimo dentro del Job). Ensayo: 3 copias, **ninguna impone** (las de `olist` no tienen nada garantizado). Encendido: forja **`606dae8`**. La pasada (`copiar-d9206008`, borrado y recreado por Flux) rehízo las 3 por su testigo —el LSN de Postgres avanzó, `0/71485D30` → `0/715A0260`; el plan, igual— y no por P6: en el bucket, 0 columnas `required` y ninguna cabecera con `obligatorias`. Copia empujada `a741bd6` |
+| **P6e · `victor`** | lo mismo | Ensayo sobre 34 copias: **21 imponen algo**; 20 pasan de «ya está» a «por rehacer», 1 ya lo estaba; **las 3 que no imponen nada siguen «ya está»**; 10 no pudieron preguntar (S3: su credencial sólo la tiene el Job). Encendido: forja **`b9793da`**. La pasada (`copiar-db74a164`): 21 dicen qué imponen, **20 se rehacen, 0 nulos negados**, 3 «ya está»; la que falta, `brain_embeddings`, falla en `ore-read-postgres` por una columna pgvector (`vector`) que el driver no sabe leer, igual que antes de encender. Copia empujada `929534a`. **Comprobado en el bucket**: 23 copias leídas, **20 con 66 columnas `required`** y, en cada una, lo `required` de Iceberg es exactamente lo que su cabecera impone |
+
+**La vuelta atrás** en una celda es `git revert` del commit de `.arbol/nulos.yaml` y una pasada:
+apagar es aflojar, y lo prueba P6c ④ (no se ha ejecutado en vivo). **El riesgo que queda** es el
+del diseño: un origen que afloja una columna y nadie vuelve a catalogar. La copia falla cerrada en
+el primer nulo, con el mensaje que dice qué hacer; no sirve datos falsos.
+
+**Lo que queda abierto, fuera de P6:**
+- `ore-read-postgres` no lee `vector` (pgvector): `brain_embeddings` de `victor` no se copia.
+- `motivo_de` sólo reconoce un stderr que empieza por `error:` (el del almacén). El de un driver
+  empieza por su nombre, y su puntero se queda en «`ore-read-postgres` falló (1)».
 
 ## Lo que no se hace
 
