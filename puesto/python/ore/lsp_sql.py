@@ -380,6 +380,7 @@ def lo_que_duckdb_entiende(s):
 
     El guion (0039) y la vista (ADR 0040 paso 5) tienen frases que DuckDB no
     conoce —`create dataset`, `create schema b.s`, `create standard database`,
+    `create media collection` (0049 B4·4),
     `create view … (col comment '…') with schema evolution as`, `drop view`—, y
     `explain` las marcaba como error aunque corren. Lo suyo lo dice ore-serve al
     correrlas; aquí se comprueba sólo lo que es de DuckDB: la consulta de detrás
@@ -394,6 +395,9 @@ def lo_que_duckdb_entiende(s):
         return 0, s
     k = 2 if w[1:2] in (["standard"], ["foreign"]) else 1
     if w[k:k + 1] == ["database"]:
+        return None
+    if w[1:3] == ["media", "collection"]:
+        # ADR 0049 B4·4: una colección escrita es del árbol; DuckDB no la conoce
         return None
     if w[1:2] == ["schema"]:
         # `create schema b.s` es del árbol; `create schema tmp`, de DuckDB

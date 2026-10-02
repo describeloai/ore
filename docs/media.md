@@ -139,8 +139,16 @@ POST /media/{b}/{s}/{c}/transactions/{t}/abort  → 204
   —las transacciones que leyó, B4·2—, `{puesto, leidas}` en una sesión, y `transaccion` y `por`.
   Si otro confirmó a la vez, `409` y la transacción **sigue abierta**: se confirma otra vez, sobre
   la base nueva.
+- **Y el linaje en el documento** (B4·4, v1alpha19 `01` §2): en el mismo commit, la colección recibe
+  `spec.derivedFrom` con lo que esta transacción leyó —los `inputs` del transform, o lo que leyó la
+  sesión—, sin repetidos ni ella misma. Cada transacción lo reescribe; si no leyó nada, no lo lleva.
+  Un documento v1alpha16–18 sube a v1alpha19. La respuesta del commit dice el `derivedFrom`.
 
 - Solo en una colección **escrita** (v1alpha16 `02` §3); en una mantenida es `media/no-escribible`.
+- SQL (0049 B4·4, el guion del puesto): `create media collection [if not exists] b.s.c media
+  <document|image|…> formats (pdf, …) [comment '…']` crea la misma colección escrita y vacía —es
+  `crear_coleccion` del SDK—; el guion la coteja en orden (la base y el schema, o creados antes en
+  él; un nombre una cosa; una mantenida no se crea encima). Llenarla es del código.
 - Python (0049 B4b·3, `puesto/python/ore/medios.py`): `ore.crear_coleccion(nombre, media, formatos)`
   escribe el documento (v1alpha19, sin `from`) sin `owner`: la colección es de quien la crea —la
   persona que abrió el puesto—, y lo pone el servidor (0027, «el dueño es quien lo crea»); `dueno=`

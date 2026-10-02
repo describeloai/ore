@@ -283,6 +283,10 @@ puesto no sale a internet, y así debe seguir).
 
 ### SQL (acotado)
 
+- **Crear** una colección escrita (B4·4): `create media collection [if not exists] b.s.c media
+  document formats (pdf) [comment '…']`, como `create volume` de Databricks con lo que una colección
+  necesita además. Es el verbo de Python (`crear_coleccion`), de quien la crea (0027); llenarla es
+  del código, y su `derivedFrom` lo escribe el servidor al confirmar cada transacción.
 - La colección es una tabla: su listado, con `item: MediaRef` y sus metadatos.
 - Escalares `stat(item)`, `url(item, ttl)`; funciones de tabla con `LATERAL` para lo que da N filas.
 - `{valor, error}` siempre, sin opción.
