@@ -439,7 +439,7 @@ if [ "$ESTADO" = "retirada" ]; then
     ya "la copia gs://$COPIA"
   fi
   # las cuentas
-  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE"; do
+  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE" "ore-medios-$NOMBRE"; do
     if "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)" >/dev/null 2>&1; then
       correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada"
     else
@@ -538,6 +538,14 @@ enlace "ore-driver-$NOMBRE" driver
 enlace "ore-forja-$NOMBRE" forja
 enlace "ore-informador-$NOMBRE" informador
 enlace "ore-puesto-$NOMBRE" puesto
+# ⭐ Y la de la MEDIA (0049 B4b): `ore-medios` corría como `ore-serve-<n>` (deuda
+#   dicha en 0049 y en `45-ore-medios.yaml`). Es el proceso que habla con los
+#   orígenes y recibe los bytes de los puestos, y desde B4b el ÚNICO que escribe
+#   la media en el lago: con la cuenta de `ore-serve`, quien lo comprometiera
+#   firmaría como `ore-serve` y heredaría la confianza que un cliente de AWS le
+#   da por su ID (E9b). Con la suya, tiene sólo lo que hace (abajo, en la copia).
+cuenta "ore-medios-$NOMBRE"
+enlace "ore-medios-$NOMBRE" ore-medios
 # ⭐ `ore-serve-<n>` FIRMA SIN CLAVES (0046 E9·1): sirve un ítem de una colección
 #   mantenida con una URL V4 firmada por `signBlob`, que es firmar COMO ÉL MISMO
 #   —`TokenCreator` sobre sí mismo, y sobre ninguna otra cuenta—. No hay clave
@@ -548,6 +556,12 @@ correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
   "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   && hecho "\`ore-serve-$NOMBRE\` firma como sí mismo (URLs de los ítems), y como nadie más"
+# ⭐ Y `ore-medios-<n>` igual: las URLs de los blobs de una mantenida las firma
+#   como sí mismo (B2), y sólo abren lo que él ya lee.
+correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
+  "ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
+  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  && hecho "\`ore-medios-$NOMBRE\` firma como sí mismo (URLs de los blobs), y como nadie más"
 
 # ⭐ LOS IDS DE LAS DOS CUENTAS QUE LEEN UN BUCKET POR ROL (0046 E9b, E10 B). Un
 #   cliente de S3 crea en su cuenta de AWS un rol que confía en `ore-driver-<n>`
@@ -631,6 +645,35 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --role=roles/storage.objectViewer \
   --condition="expression=resource.name.startsWith(\"projects/_/buckets/$COPIA/objects/ore/puesto/\"),title=solo-la-capa,description=W3.7 gobierno 2b: el puesto lee la capa por su nombre y nada mas; los datasets con la credencial prestada por ore-serve" \
   && hecho "\`ore-puesto-$NOMBRE\` lee la capa y nada más: los datasets con la credencial que ore-serve le presta, y escribe con la del catálogo"
+# ⭐⭐ `ore-medios-<n>` (0049 B4b): LEE (`objectViewer`: los manifiestos y los
+#   blobs que sirve), CREA (`objectCreator`: los blobs de una colección escrita
+#   —su nombre es su contenido— y los ficheros de su manifiesto, que llevan un
+#   UUID: nunca sobrescribe ni borra) y TOCA los blobs (`oreTocarBlobs`: sólo
+#   `storage.objects.update`, y sólo bajo `ore/v2/blobs/`). Tocar es cambiar un
+#   metadato de un blob que ya estaba, para que la recogida (gracia de 2 h) no se
+#   lo lleve antes de que el commit lo nombre (0046 E8·3b); `objectCreator` no lo
+#   da, y `objectUser` daría además borrar.
+#   El rol es del proyecto, de plataforma: se crea una vez.
+if "$GCLOUD" iam roles describe oreTocarBlobs --project="$PROYECTO" --format="value(name)" >/dev/null 2>&1; then
+  ya "el rol oreTocarBlobs"
+else
+  correr "$GCLOUD" iam roles create oreTocarBlobs --project="$PROYECTO" \
+    --title="ORE tocar blobs" \
+    --description="0049 B4b: marcar como visto un blob del lago (un metadato), para que la recogida no se lo lleve; ni lee, ni crea, ni borra" \
+    --permissions=storage.objects.update --stage=GA \
+    && hecho "el rol oreTocarBlobs (storage.objects.update y nada más)"
+fi
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectViewer --condition=None && hecho "\`ore-medios-$NOMBRE\` lee la copia"
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectCreator --condition=None && hecho "\`ore-medios-$NOMBRE\` crea en la copia (blobs y manifiestos), y ni borra ni sobrescribe"
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role="projects/$PROYECTO/roles/oreTocarBlobs" \
+  --condition="expression=resource.name.startsWith(\"projects/_/buckets/$COPIA/objects/ore/v2/blobs/\"),title=solo-los-blobs,description=0049 B4b: ore-medios toca los blobs del lago y nada mas" \
+  && hecho "\`ore-medios-$NOMBRE\` toca los blobs (un metadato), y nada más"
 # ⭐ CORS (0046 E9·1): la consola pide los bytes de un ítem con la URL firmada, y
 #   un visor de PDF o de vídeo los pide A RANGOS desde el navegador — sin CORS el
 #   navegador no le deja leer la respuesta. CORS no abre nada: sin firma, 403
