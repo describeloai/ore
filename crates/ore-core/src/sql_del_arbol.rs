@@ -1023,7 +1023,8 @@ pub enum EscribeEnElArbol {
     /// Crea algo del catálogo (0039): `create [standard|foreign] database b`
     /// —DuckDB no tiene bases, así que siempre es del árbol— o `create schema
     /// b.s` de una base del árbol (`create schema tmp` sigue siendo de DuckDB).
-    /// Lo que dice: `database b`, `schema b.s`.
+    /// Y `create media collection b.s.c` (ADR 0049 B4·4).
+    /// Lo que dice: `database b`, `schema b.s`, `media collection b.s.c`.
     Crea(String),
 }
 
@@ -1101,6 +1102,12 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
                 && let Some(n) = nombre(tras_si_no_existe(i + 2))
             {
                 return Some(EscribeEnElArbol::Crea(format!("schema {n}")));
+            }
+            // ADR 0049 B4·4: una colección escrita. DuckDB no la conoce, así que
+            // es del árbol aunque el nombre no resuelva: lo dice el guion.
+            if es(i + 1, "media") && es(i + 2, "collection") {
+                let n = nombre(tras_si_no_existe(i + 3)).unwrap_or_default();
+                return Some(EscribeEnElArbol::Crea(format!("media collection {n}")));
             }
             let mut j = i + 1;
             if es(j, "or") && es(j + 1, "replace") {

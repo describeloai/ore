@@ -235,6 +235,15 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         t("ventas.x")
     );
     assert_eq!(e("create temp table ventas.x as select 1"), t("ventas.x"));
+    // ADR 0049 B4·4: una colección es del árbol (DuckDB no la conoce), resuelva o no
+    assert_eq!(
+        e("create media collection if not exists ventas.s.c media document formats (pdf)"),
+        Some(E::Crea("media collection ventas.s.c".into()))
+    );
+    assert_eq!(
+        e("create media collection nada.s.c media image formats (png)"),
+        Some(E::Crea("media collection ".into()))
+    );
     // lo que se escribe es un dataset; `table` también llega aquí, y el
     // análisis dice que una Table no se crea desde SQL
     assert_eq!(
