@@ -1,478 +1,208 @@
 # 0051 · ORE Null Contract
 
-**Estado:** **aceptado · en construcción** (2026-10-02): Fase 0 y P0–P6 hechos; **P3 y P6 en vivo en `victor` y `demo`**; P7–P8 por hacer · **Decide:** cómo dice ORE, de punta a punta, qué
-columnas **nunca son nulas**: el origen lo **declara**, las vistas lo **derivan** y el lago lo
-**impone**, con una sola regla para cambiarlo. Cierra el «REQUIRED» de
-[0042](0042-origin-rest-bigquery.md) y la parte de nulabilidad de
-[0032](0032-el-contrato-de-tipos.md). Se apoya en [0045](0045-source-pointer.md) (el puntero lleva
-la verdad del objeto) y en [0043](0043-ore-arrow-stream.md) (al contrato, sin modo seguro).
+**Estado:** **aceptado · en vivo** (2026-10-03) en `victor` y `demo` · **Decide:** cómo dice ORE,
+de punta a punta, qué columnas **nunca son nulas**: el origen lo **declara**, las vistas lo
+**derivan**, lo materializado lo **impone** y lo que se expone lo **enseña**, con una sola regla
+para cambiarlo. Spec: OOS **v1alpha22** `01-nunca-nula`. Cierra el «REQUIRED» de
+[0042](0042-origin-rest-bigquery.md) y la nulabilidad de [0032](0032-el-contrato-de-tipos.md). Se
+apoya en [0045](0045-source-pointer.md) (el puntero lleva la verdad del objeto) y en
+[0043](0043-ore-arrow-stream.md) (al contrato, sin modo seguro).
 
 ## Qué es
 
-**ORE Null Contract es la garantía «esta columna nunca es nula», llevada sin perderse del origen
-al consumidor.** Hoy el **dato** llega entero y la **garantía** se pierde por el camino. Todo
-consumidor ve cualquier columna como posible nulo, los identificadores incluidos:
-- GraphQL da `String` donde debería dar `String!`, y lo mismo el SDK del puesto;
-- los motores (Spark, Trino, DuckDB) no pueden apoyarse en ella;
-- un contrato no puede afirmar que una clave nunca es nula aunque el origen lo garantice.
+**La garantía «esta columna nunca es nula», llevada sin perderse del origen al consumidor.** Los
+cuatro drivers ya la leían (`NOT NULL` de Postgres, `mode: REQUIRED` de BigQuery, el `nullable` de
+un Parquet), y se perdía por el camino: el inductor la escribía como comentario, la spec no tenía
+dónde ponerla en la capa física, el almacén escribía toda columna opcional, y GraphQL y el SDK
+daban `String` donde el origen garantizaba `String!`.
 
-No es un campo nuevo: son **tres capas**, cada una en su sitio, más una regla para cambiarla:
+## La decisión
 
-| capa | dónde | qué hace |
+### Cinco capas, cada una en su sitio
+
+| capa | dónde vive | qué hace |
 |---|---|---|
-| **declarar** | en el origen: el driver y el Source Pointer | traer la garantía del origen como verdad del objeto |
-| **derivar** | central: el compilador de vistas | calcular si una columna derivada puede ser nula |
-| **imponer** | central: el almacén, en lo que se materializa | `required` en Iceberg, y rechazar el nulo al escribir |
-| **evolucionar** | central: una regla | aflojar, libre; endurecer, sólo tras verificar o reescribir |
+| **declarar** | `Table.columns.<c>.required` (v1alpha22), escrito por el Source Pointer (`ore source induce`) desde el catálogo del driver | trae la garantía del origen como verdad del objeto. **Sólo una garantía**: lo visto en una muestra (JSONL) no es `required` |
+| **derivar** | `vista_sql` (`Columna::exige`) y `vistas::nulabilidad_de_vista` | calcula qué columnas de una vista o un dataset nunca son nulas, con reglas conservadoras: **ante la duda, nulable**. Una `View` y un `Dataset` no lo declaran nunca |
+| **imponer** | la copia (`ore materialize` → `ore-store`), encendida por celda con `.arbol/nulos.yaml` | escribe `required` en Iceberg lo que nunca es nulo, y niega la copia que traiga un nulo en una de esas columnas |
+| **evolucionar** | `lago::esquema_deseado`, `ore drift-detect` | **aflojar, siempre** (el origen manda); **endurecer, sólo** al crear o al reescribirlo todo, nunca sobre datos que no se miran |
+| **enseñar** | `ore view`, GraphQL (`ore export --format graphql`), el SDK del puesto (`over()`), `ore validate` | `nunca nula`, `T!`, Arrow no nulable; y un aviso cuando la entidad exige lo que la columna no garantiza |
 
-## Lo medido (2026-10-02)
-
-**Los cuatro drivers ya leen la garantía.** El catálogo de cada uno trae `obligatoria` por
-columna:
-
-| driver | de dónde | qué es |
-|---|---|---|
-| `ore-read-bigquery` | `tables.get` → `mode: REQUIRED` (`catalogo.rs`) | **garantía** del origen |
-| `ore-read-postgres` | `pg_attribute.attnotnull` (`main.rs:95`) | **garantía** del origen |
-| `ore-read-s3` | el `nullable` del esquema del Parquet (`tabular.rs:58`) | **garantía** del fichero |
-| `ore-read-jsonl` | «apareció con valor en todas las líneas» (`catalogo.rs:295`) | ⚠️ **observación**, no garantía: la línea siguiente puede traer un nulo |
-
-**Se pierde en tres sitios:**
-1. **El inductor la escribe como comentario** (`# NOT NULL en el origen`, `inductor.rs:1991`).
-   Sí la usa para el `required` de las relaciones de una entidad (una foránea con todas sus
-   columnas `NOT NULL`).
-2. **La spec no tiene dónde decirlo en la capa física.** En v1alpha21, una columna de `Table` sólo
-   admite `type`, `physicalType` y `description`.
-3. **El almacén pone toda columna opcional** al escribir Iceberg (`ore-store/src/carga.rs:722`,
-   `with_nullable(true)`).
-
-**Lo que OOS ya tiene, y no hay que duplicar:**
-- `required` en las propiedades de una `Entity`: la capa **semántica**, «el concepto exige el
-  valor» (`document.rs`, `property_keys`);
-- las aserciones de calidad **ODCS** en un `Ruleset`: la capa de **comprobación**.
-
-Falta la capa **física**: las columnas de `Table`, `Dataset` y `View`.
-
-## Lo que hace la industria
-
-Tres capas distintas, nunca una:
-
-1. **Declarar, en el origen.** Todo formato lleva la marca:
-   - el `mode` de BigQuery, `NOT NULL` en Postgres y Delta;
-   - `required` / `optional` en Iceberg y Parquet, el `nullable` de Arrow.
-
-   Los conectores la traen: Debezium (`"optional": false`), Airbyte (que arregló llevarla al
-   destino) y el esquema de un dataset de Foundry (`nullable`).
-2. **Derivar, en el motor.** Spark (Catalyst) y Calcite calculan la nulabilidad de cada
-   expresión: el lado que genera nulos de un `LEFT JOIN`, un `CASE` sin `ELSE`, un agregado sobre
-   un grupo vacío. **Pero casi nadie la persiste en vistas:**
-   - una tabla creada con SQL o una vista de BigQuery sale toda `NULLABLE`;
-   - Spark fuerza nulable al leer Parquet (*«una pista, no una garantía»*);
-   - **dbt no admite restricciones en vistas**: `not_null` sólo en tablas e incrementales.
-3. **Imponer, central, en lo materializado.**
-   - `NOT NULL` es una **restricción que se impone** en Databricks, Snowflake y BigQuery: la
-     escritura que la viola falla. Las claves primarias y foráneas son **informativas** (`RELY`
-     en Snowflake).
-   - dbt la mete en el DDL del contrato.
-   - Foundry la comprueba como *data expectation*.
-   - ODCS separa el `required` del esquema de sus reglas de `quality`.
-
-**La regla de evolución es universal: aflojar sí, endurecer no** sobre datos que existen.
-- BigQuery deja pasar de `REQUIRED` a `NULLABLE`, nunca al revés.
-- Iceberg igual; en v3 deja **añadir** una columna `required` si lleva `initial-default` y
-  `write-default` no nulos.
-- Databricks endurece (`SET NOT NULL`) **sólo tras comprobar todas las filas**.
-
-**La tensión, a la vista:** imponer la garantía del origen al aterrizar rompe la carga cuando el
-origen cambia (Airbyte con ClickHouse, un cursor `NOT NULL` que el origen manda nulo). Por eso los
-ingestores son tolerantes y la imposición se pone **donde se materializa**, con la deriva
-detectada.
-
-## Lo propuesto
-
-### N1 · Declarar: `required` en la columna de una `Table` (spec v1alpha22)
-
-- `columns.<c>.required: true`: **«el origen garantiza que nunca es nula»**. Sin la clave, o con
-  `false`, es nulable, que es lo de hoy: ningún árbol cambia de significado.
-- El nombre es el de Iceberg y ODCS (`required`), y el mismo que ya usa la propiedad de una
-  `Entity`. Una palabra en todas las capas.
-- **Lo escribe el Source Pointer** (`ore source induce`), desde el catálogo del driver.
-- **Sólo si es garantía.** JSONL declara una observación (lo visto en una muestra), y eso **no**
-  es `required`. Su sitio es una aserción de un `Ruleset` («hasta hoy, nunca nula»), o nada.
-
-### N2 · Derivar: las vistas calculan, no declaran
-
-- **Una `View` y un `Dataset` no escriben `required`: se deriva.** Es la lección de dbt: una vista
-  que lo declara a mano miente el día que alguien cambia un `JOIN`.
-- `ore-view` lo calcula junto al tipo, con reglas fijas y **conservadoras** (ante la duda,
-  nulable):
-  - una columna leída tal cual hereda el `required` de su origen;
-  - el lado que genera nulos de un `LEFT`, `RIGHT` o `FULL JOIN` es nulable;
-  - un `CASE` sin `ELSE`, nulable; con `ELSE`, es obligatorio sólo si todas sus ramas lo son;
-  - `COALESCE(a, …, x)` es obligatorio si **algún** argumento lo es;
-  - `COUNT(*)` y `COUNT(x)` son obligatorios; `SUM`, `MIN`, `MAX` y `AVG`, nulables (un grupo
-    vacío o todo nulo);
-  - un literal no nulo es obligatorio; un `CAST`, lo que fuera su entrada;
-  - `WHERE x IS NOT NULL` hace obligatoria a `x` aguas abajo;
-  - una función que no se conoce, nulable.
-- El resultado va al esquema de la vista, a la cabecera, a GraphQL (`!`) y al SDK.
-
-### N3 · Imponer: `required` en Iceberg, y el nulo se rechaza
-
-- **Un `Dataset` nuevo** escribe en Iceberg `required` las columnas que N2 deriva obligatorias.
-- **Al contrato** (`carga::al_contrato`, 0043): un nulo en una columna `required` **no** se
-  convierte ni se cuela. La carga falla con la tabla, la columna y la fila, sin snapshot. Es la
-  misma regla «sin modo seguro» que ya rige para tipos y decimales.
-
-### N4 · Evolucionar: aflojar sigue a la deriva, endurecer se verifica
-
-- **El origen afloja** (pasa de `REQUIRED` a `NULLABLE`): el catálogo lo ve, `ore drift-detect`
-  lo da como deriva, el Source Pointer quita el `required`, y el almacén **afloja** la columna
-  Iceberg (lo permite) **antes** de la carga siguiente. Sin esto, la copia fallaría al primer
-  nulo.
-- **El origen endurece**, o una columna pasa a obligatoria por N2: en una tabla que ya existe
-  **no se endurece Iceberg en el sitio**. Sigue opcional, y se dice (`ore lint`, la ficha), hasta
-  una reescritura explícita que verifique todas las filas, como Databricks.
-- **El lago de hoy** (todo opcional): son datos de prueba. Se reescriben al adoptar N3, o se
-  quedan opcionales; se decide en N0.
-
-### N5 · Las tres palabras, sin pisarse
+### Tres palabras, sin pisarse
 
 | dónde | qué dice | quién la escribe |
 |---|---|---|
-| `Table.columns.<c>.required` | el origen garantiza el valor (física) | el Source Pointer, del driver |
-| `View` / `Dataset` | derivado (física) | `ore-view`, nunca a mano |
-| `Entity.properties.<p>.required` | el concepto exige el valor (semántica) | quien modela |
-| aserción de un `Ruleset` | se **comprueba** que no hay nulos (calidad) | quien gobierna |
+| `Table.columns.<c>.required` | el origen **garantiza** el valor (física) | el Source Pointer, del driver |
+| una `View` o un `Dataset` | **derivado** (física) | el compilador, nunca a mano |
+| `Entity.properties.<p>.required` | el concepto **exige** el valor (semántica) | quien modela |
+| una aserción de un `Ruleset` | se **comprueba** que no hay nulos (calidad) | quien gobierna |
 
-Una propiedad `required` de una entidad mapeada a una columna **no** obligatoria es un aviso
-nuevo: la semántica pide lo que la física no garantiza, y el `Ruleset` es quien lo comprueba.
+**El `!` sale de la física, nunca de la semántica.** Una propiedad `required` sobre una columna que
+puede ser nula no pone el `!` —mentiría a quien se fía de él—: es un **aviso** (v1alpha22 `01` §8),
+y lo que la comprueba es un `Ruleset`.
 
-## La abstracción: `Nulabilidad`
-
-Hoy la garantía es un `bool` suelto en cada capa: `obligatoria` en el catálogo, un comentario en
-el inductor, un `true` fijo en el almacén. **Una sola abstracción, pegada al tipo**, la llevan
-todas las capas (como el `nullable` del tipo de Calcite):
+### La abstracción
 
 ```
-Nulabilidad = Garantizada { por: origen }   // la declara el origen (N1)
-            | Derivada                       // la calcula ore-view (N2)
-            | Nulable                        // por defecto: lo de hoy
+Nulabilidad = Garantizada   // la declara el origen
+            | Derivada      // la calcula el compilador
+            | Nulable       // por defecto: ante la duda
 ```
 
-Cada columna es `(Type, Nulabilidad)`. Hay **una** regla de combinación (la de las vistas, N2) y
-**una** regla de evolución (N4). Ninguna capa decide por su cuenta.
+`types::Nulabilidad` (`Nulable < Derivada < Garantizada`; combinar toma la menor) y
+`types::Tipado`, que se escribe con `!` **sólo** si nunca es nula: el digest de un plan no cambia
+en ningún árbol sin `required`. **La cabecera de una copia no lleva el `!`**: lo que impone va en
+un campo aparte, `obligatorias`, que un almacén de antes ignora y que vacío no se escribe.
 
-## Los pasos
+### Las reglas de derivar
 
-Los pasos se llaman **P** para no pisar las secciones **N** de lo propuesto.
+Tal cual y renombrar conservan; un literal sí, `NULL` no; `CAST` sí, `TRY_CAST` no; `CASE` sólo
+con `ELSE` y todas sus ramas; `COALESCE`, con el argumento que menos exige; `COUNT` y los rangos de
+ventana sí, los demás agregados no; aritmética y comparaciones propagan, **dividir no** (por cero,
+DuckDB da nulo con `//` y `%`); `IS [NOT] NULL` y `<=>` nunca son nulos; una función conocida que
+propaga, sí, una desconocida, no; el lado que genera nulos de un `LEFT`, `RIGHT` o `FULL JOIN`,
+nulable; `UNION` exige los dos lados; `ROLLUP`, `CUBE` y `GROUPING SETS` dejan la clave nulable; y
+lo que una conjunción del `WHERE` afirma (`IS NOT NULL`, una comparación, `IN`, `BETWEEN`, `LIKE`)
+no es nulo aguas abajo.
 
-### Fase 0 · La espiga desechable
+## Cómo se opera
 
-En un worktree aparte (`ORE-0051-espiga`) que **se borra al terminar**. Un solo hilo de punta a
-punta: una tabla de Postgres con una columna `NOT NULL`. Lo que sale es **conocimiento** (las
-respuestas y la lista de sitios reales que hay que tocar), escrito en este ADR. **El código se
-tira.** Límite: un día.
+- **Un árbol nuevo** nace con el paradigma: el inductor escribe `required` desde el primer
+  catálogo. **Uno que ya existía** se pone al día re-induciendo sus fuentes desde el catálogo que
+  guarda (`pruebas-de-fuego/la-fuente-al-dia.py`): es la misma operación para cualquier cambio
+  futuro del inductor.
+- **Imponer se enciende por celda** con un commit de `.arbol/nulos.yaml`:
 
-| # | qué se toca, a lo bruto | qué contesta |
+  ```yaml
+  imponer: true
+  ```
+
+  Sin el fichero, o sin entenderlo, apagado. Encender sólo rehace las copias que imponen algo; las
+  demás conservan su cabecera byte a byte. **Apagar es aflojar**: `git revert` del commit y una
+  pasada, y cada columna vuelve a opcional con su mismo id.
+- **Un nulo en lo que nunca es nulo** niega la copia antes de tocar la tabla, con la columna, la
+  fila y qué hacer: *«la columna `id` de `…` nunca es nula —lo garantiza su origen— y la fila N
+  trae un nulo: la copia no se escribe. Si el origen dejó de garantizarlo, vuelve a catalogar la
+  fuente y la columna se afloja»*. El puntero queda en `error` con ese motivo y la copia de antes
+  sigue servida. **Falla cerrada: no sirve una cifra falsa.**
+- **El esquema nuevo y el snapshot van en un solo commit** (`Lago::instantanea` recibe el esquema):
+  una escritura que falla a mitad no deja la tabla `required` sobre ficheros con nulos.
+- **Herramientas de operación** (un Job en el inquilino, imagen `ore-drivers`, el token de la forja
+  de Secret Manager, nada impreso): `pruebas-de-fuego/nunca-nula-en-vivo.py <celda>` — ensayo en
+  seco, `--encender`, `--rehacer` (borra el Job `copiar-<resumen>` y Flux lo recrea),
+  `--comprobar` (cada copia contra su `metadata.json`) y `--avisos` (lo que `ore validate` avisa).
+
+## Lo medido
+
+### La espiga (2026-10-02)
+
+Una tabla Iceberg real escrita con el `Lago` de `ore-store` y leída con DuckDB, PyIceberg y Spark
+3.5.6. Lo que decidió el diseño:
+
+- `iceberg` 0.10.1 crea la columna `required` y **su escritor ya rechaza el nulo**; aflojar en el
+  sitio funciona (`AddSchema`, mismo id).
+- **Pero deja endurecer en el sitio con nulos dentro**, y entonces **Spark contesta `count(id) =
+  4` y 0 nulos cuando hay uno**: se fía de la marca y la cifra sale mal sin error. La guarda que
+  no deja endurecer sin reescribir es **nuestra**.
+- **DuckDB ignora `required`**, y el puesto lee con DuckDB: GraphQL y el SDK tienen que sacar la
+  garantía **del árbol**, no del lago. Y GraphQL ignoraba el `required` escalar: sólo la clave
+  salía `ID!`.
+- Las vistas de hoy son SQL: derivar va en `vista_sql`, que tuvo que aprender qué relación está del
+  lado que genera nulos de un join.
+
+### En vivo, antes de tocar nada (P0)
+
+| origen | driver | columnas | `required` |
+|---|---|---|---|
+| olist (`demo` y `victor`) | Postgres | 342 | **88** |
+| standard (`victor`) | Postgres | 157 | **67** |
+| `bigquery_20260927_1428` (`victor`) | BigQuery | 13 | **3** |
+| S3 (`victor`): 10 CSV, 1 JSONL, 1 Parquet | S3 | 69 | **0** |
+
+En el lago, 61 columnas candidatas en 19 copias: **0 nulos**. Ningún origen había mentido (sobre
+poco dato: las tablas grandes de hoy no garantizan nada).
+
+### La derivación, contra un motor (P4)
+
+`pruebas-de-fuego/nunca-nula.py`: tablas y vistas al azar contra DuckDB 1.5.6. **8 semillas, 2 084
+vistas, 2 946 afirmaciones «nunca nula», 0 nulos.** Y la prueba caza lo que debe: sin la regla del
+`LEFT JOIN`, 6 fallos; con `//` y `%` propagando, 35.
+
+### Declarar, en vivo (P3′, 2026-10-02)
+
+| | `victor` | `demo` |
 |---|---|---|
-| **E1** | el parser acepta `required` en la columna de una `Table`, sin spec ni esquema | cuántos sitios de `ore-core` hay que tocar para que un campo nuevo de columna viaje |
-| **E2** | el inductor escribe `required: true` desde `obligatoria` | si llega intacto al Source Pointer |
-| **E3** | `ore-view` lo deja pasar en una lectura directa, sin reglas | dónde se pierde hoy entre la `Table` y el esquema de un `Dataset` |
-| **E4** | `ore-store` crea el campo Iceberg `required`; `al_contrato` rechaza un nulo | si `iceberg` 0.10.1 lo admite, y qué error da |
-| **E5** | **el riesgo mayor:** aflojar `required → optional` en una tabla Iceberg que ya existe | si se puede sin reescribir; si no, N4 cambia de forma |
-| **E6** | leer esa tabla con DuckDB y por el catálogo `/v1` desde Spark | si los motores respetan el `required` |
-| **E7** | GraphQL y el SDK del puesto | si sale `String!`, y qué se rompe |
+| lo que cambió | **21 tablas ganan `required` en 70 columnas**; y lo pendiente de 0045 E5′ (67 punteros, 3 schemas) | ninguna tabla existente (olist no garantiza nada en lo copiado); E5′: 229 punteros, 8 schemas |
+| forja | `305a726` | `740e182` |
+| lo comprobado | `validate` 0 → 0; los mismos 27 datasets con los mismos snapshots; la copia en seco: 23 «ya está», 0 por calcular | `validate` 0 → 0; los mismos 3 datasets |
 
-**E5 manda:** si no se puede aflojar sin reescribir, se para y se rediseña N4 antes de seguir.
+### Imponer, en vivo (P6, 2026-10-02)
 
-#### Lo que contestó la espiga · E1–E3 (2026-10-02)
+- **La prueba de fuego** (`pruebas-de-fuego/nunca-nula-se-impone.sh`, jsonl → S3 de mentira →
+  `ore-store-r2`): **4 de 4**. Apagado, la copia de antes; encendido, `id` `required` con el mismo
+  id de columna (PyIceberg lo lee `required`) y la copia sin garantías «ya está»; un nulo
+  inyectado falla con su fila, el puntero en `error` sigue en la copia de antes y **no hay ningún
+  `metadata.json` nuevo**; apagar afloja.
+- **`demo`** (forja `606dae8`): ninguna copia impone nada; 0 columnas `required` en el bucket.
+- **`victor`** (forja `b9793da`): de 34 copias, **21 imponen**; la pasada rehízo 20, **sin negar un
+  solo nulo**, y las 3 sin garantías siguieron «ya está». En el bucket: **20 copias con 66 columnas
+  `required`**, y en cada una lo `required` de Iceberg es exactamente lo que su cabecera impone.
 
-Hilo medido: un catálogo con `id` y `cliente` `required` y `nota` nulable → `ore discover` →
-`Table` → la `View` que induce → una `View` encadenada con una expresión → una `View` con
-`LEFT JOIN`. Compilado en Docker (`ore-core` ya no compila en local: `cedar` → `stacker` pide C).
+### Enseñar (P7, 2026-10-03)
 
-| # | respuesta | qué cambia en el plan |
-|---|---|---|
-| **E1** | **El validador nativo no mira las claves de una columna de `Table`**: `required: true` pasa hoy, y `basura: 7` también. Sólo el esquema JSON publicado (`additionalProperties: false` desde v1alpha13) lo rechazaría, y eso lo arbitra la conformidad. Leerlo es **una función** (`vistas::obligatorias_de_tabla`) | P2 debe añadir la comprobación nativa de las claves de columna (hoy es un hueco aparte de 0051), o una errata en `required` pasa en silencio |
-| **E2** | **Una línea en el inductor** y llega a la `Table` (`id: { type: Integer, physicalType: bigint, required: true }`). Pero se pierde en **cuatro consumidores** de las columnas: `assets.rs` (`tipos_de_tabla`), la API de `ore-serve` (`rutas.rs:2256`), la deriva (`deriva.rs` sólo compara `physicalType`: **hoy un origen que afloja no es deriva**) y `migrar.rs:272`, que al pasar una `Table` a `Dataset` **lo arrastraría** a un documento donde no se escribe | P3 toca esos cuatro; P5 añade «la nulabilidad» a la deriva, con su dirección (aflojar = ancha) |
-| **E3** | **Hay dos mundos de vistas.** Las estructuradas van por el IR de `ore-view` (`Lectura`, 41 sitios, y entra en el digest del plan); son la forma de antes de v1alpha14, que `migrar_v14` convierte. **Las de hoy son SQL** (`vista_sql`), y ahí **la consulta no tipa: el tipo lo declara el contrato** (`spec.columns`). Derivar es una pasada sobre `vista_sql::Consulta`: salió `nunca nula id, cliente` en la inducida, `id, quien` en la encadenada (el renombre conserva, `upper()` no), y `—` en la del `LEFT JOIN` | P4 va en `vista_sql`, no en `ore-view`. `Consulta` **no guarda el tipo de join por relación**: hay que añadirlo, o el lado conservado de un `LEFT JOIN` sale nulable (la espiga lo da todo nulable). Y una decisión nueva: en una vista SQL el contrato **declara** el tipo; la nulabilidad se deriva y el contrato, si la lleva, se **coteja** contra lo derivado |
-
-#### Lo que contestó la espiga · E4–E7 (2026-10-02)
-
-Una tabla Iceberg real (`id` `required`, `nota` opcional), escrita con el `Lago` de `ore-store`
-sobre un almacén en disco, y leída después con DuckDB, PyIceberg y Spark 3.5.6 (Iceberg 1.6.1).
-
-| # | respuesta | qué cambia en el plan |
-|---|---|---|
-| **E4** | `iceberg` 0.10.1 **crea** la columna `required` sin queja, y su esquema en Arrow sale `nullable = false`. Un lote de hoy (todo nulable en Arrow) **sin nulos se escribe**. **Un nulo lo para el propio escritor**, antes del snapshot: `Column 'id' is declared as non-nullable but contains null values`. `al_contrato`, con el destino que sale de la tabla, lo para igual. Lo leído después: 2 filas, 0 nulos | **Imponer sale casi gratis**: basta con que `esquema_deseado` (hoy siempre `NestedField::optional`) escriba `required`. El mensaje es de Arrow y **no dice la fila**: eso sí es trabajo de P6 |
-| **E5** | **Aflojar en el sitio funciona**: `AddSchema` (mismo id, `optional`) + `SetCurrentSchema`, sin reescribir; un nulo después se escribe, y se leen las 4 filas, viejas y nuevas. **Pero `Lago::esquema` no lo ve**: `mismo_esquema` compara nombre, tipo e id, no `required`, y contesta «no cambió» | **E5 pasa: N4 se queda como está.** P5 arregla `mismo_esquema` (una condición) |
-| **E5b** | **`iceberg` 0.10.1 deja endurecer en el sitio con nulos dentro**, sin comprobar nada | **La guarda es nuestra**: endurecer sólo al crear o al **sobrescribir** (todo se reescribe, y el escritor ya comprueba cada fila); nunca al anexar ni al fundir. Va en P5, **antes** de P6 |
-| **E6** | **Spark respeta `required`**: lo lee `nullable = false` y no deja escribir un nulo (`Null value appeared in non-nullable field`; con un `NULL` literal, 3.5.6 da un error interno del optimizador). **PyIceberg** también (`required` → Arrow no nulable). **DuckDB lo ignora**: `iceberg_scan` da todo `is_nullable = YES`. Y lo grave: **sobre la tabla endurecida con un nulo dentro, Spark contesta `count(id) = 4` y 0 nulos**, cuando hay uno. Se fía de la marca y la cifra sale mal sin error | Es la prueba de que **endurecer sin verificar es dar cifras falsas**, no un riesgo teórico. La guarda de E5b no es opcional |
-| **E7** | **GraphQL ignora hoy el `required` de una propiedad escalar**: con `cliente: { type: String, required: true }` sale `cliente: String`. Sólo la clave sale `ID!`; `required` sólo se usa en relaciones y en parámetros de funciones. **El SDK del puesto lee con DuckDB** (`iceberg_scan`), así que la nulabilidad del lago no le llega; el contrato de Python es sólo de las firmas de `@function` | El `!` de GraphQL y el del SDK **tienen que salir del árbol**, de lo que P4 deriva, no del lago. Y una regla: `!` sólo cuando la física lo garantiza; el `required` semántico por sí solo **no** lo pone, porque mentiría |
-
-**Lo que la Fase 0 cambia del plan, en limpio:**
-- **P4 va en `vista_sql`** y necesita guardar el tipo de join por relación (E3).
-- **P5 crece y va primero**: la deriva de la nulabilidad, `mismo_esquema` con `required`, y
-  **la guarda que no deja endurecer** al anexar o fundir (E5b, E6).
-- **P6 encoge**: el escritor ya rechaza el nulo. Queda escribir `required` en `esquema_deseado`
-  y un mensaje con tabla, columna y fila.
-- **P7**: GraphQL y el SDK leen la garantía **del árbol**. El `!` es físico y derivado; el
-  `required` de una entidad sin respaldo físico es el aviso de N5, no un `!`.
-
-**Sobre la abstracción**, lo medido la afina: la `Nulabilidad` va pegada al tipo, pero **se escribe
-sólo cuando es garantizada** (p. ej. `Integer!` en la forma de texto), así que el digest de un plan
-**no cambia** en ningún árbol sin `required`. **La cabecera de una copia no lleva el `!`** (P6): lo
-que impone va en un campo aparte, `obligatorias`, que un almacén de antes ignora (un `Integer!`
-sería para él un tipo que no conoce) y que vacío no se escribe. El `!` se queda para lo que se
-enseña (`ore view`, GraphQL en P7).
-
-### Fase 1 · Lo robusto
-
-Cada paso es **compatible hacia atrás por construcción** (sin `required`, todo significa lo de
-hoy), tiene su go y su prueba.
-
-| paso | qué | hecho cuando | riesgo | vuelta atrás |
-|---|---|---|---|---|
-| **P0 · medir en vivo** | en los catálogos de `demo` y `victor`, cuántas columnas son `obligatoria`, por driver; en el lago, **contar los nulos** de las que serían `required` (un origen que miente se ve aquí, no en producción) | una tabla en este ADR: candidatas y nulos reales (0 esperado) | ninguno, sólo lectura | — |
-| **P1 · la abstracción** | `Nulabilidad` junto a `Type` en `ore-core`; siempre `Nulable`, sin tocar la spec ni el comportamiento | `cargo test --workspace` en verde y la salida de `view`, `lint`, `report` y `datasets` idéntica byte a byte en `demo` y `victor` | bajo | revertir el commit |
-| **P2 · la spec v1alpha22** | en `C:\oos`: `required` en las columnas de `Table`, su esquema, su prosa y sus casos de conformidad (válido; inválido en `View` o `Dataset`; ausente = nulable); bump del submódulo | la conformidad en verde, los árboles v1alpha21 sin cambios | bajo | la versión es nueva; la vieja no se toca |
-| **P3 · declarar** | el Source Pointer escribe `required` desde el catálogo (BigQuery, Postgres, S3; **JSONL no**); `ore migrate` lo añade a los árboles vivos | `el_puntero_es_del_objeto.rs` con dos casos nuevos; en vivo sólo cambian las columnas medidas en P0 | bajo: aún nada lo impone | `migrate` en seco primero; revertir el commit del árbol |
-| **P4 · derivar** | `ore-view` aplica las reglas de N2; llega a la cabecera, a GraphQL (`!`) y al SDK | una prueba por regla, y **una propiedad**: nunca deriva obligatoria una columna que pueda ser nula (datos generados contra DuckDB) | medio: una regla mal hecha miente | reglas conservadoras; ante la duda, `Nulable` |
-| **P5 · evolucionar antes de imponer** | `drift-detect` ve que el origen afloja; el Source Pointer quita el `required`; el almacén afloja la columna Iceberg **antes** de cargar, por la vía que valide E5 | prueba de fuego: el origen afloja, la copia siguiente pasa y la columna queda opcional | medio | aflojar es seguro por definición |
-| **P6 · imponer** | un `Dataset` **nuevo** escribe `required` en Iceberg; `al_contrato` rechaza el nulo con tabla, columna y fila; las tablas existentes no cambian | prueba de fuego: nulo inyectado → falla sin snapshot; caso sano → `required` en el esquema Iceberg | **el más alto**: una copia puede empezar a fallar | **un interruptor por celda**; binario antes que malla; primero `demo`, luego `victor` |
-| **P7 · lo visible y el lago** | el aviso entidad ↔ columna; la ficha enseña «nunca nula · lo garantiza el origen»; el lago de prueba se reescribe o no, según P0 | consola y `lint` | bajo | — |
-| **P8 · cerrar** | este ADR, reescrito limpio con lo medido; las deudas, cerradas | «aceptado y en vivo» | — | — |
-
-**El orden no se negocia:**
-- **P5 antes que P6, siempre.** Imponer sin poder aflojar convierte el primer cambio de un origen
-  en una copia rota.
-- **La spec primero**, en `C:\oos` con bump del submódulo; **el binario antes que la malla**.
-- **En vivo sólo P3, P6 y P7**, cada uno con su go. P1, P2, P4 y P5 no cambian nada visible
-  mientras P6 esté apagado.
-
-#### P0 · lo medido en vivo (2026-10-02)
-
-Sólo lectura. Los árboles, de la forja de cada inquilino (`demo` en `a06883e`, `victor` en
-`337d53f`); los números del lago, de los punteros de cada copia (`filas` y los no nulos por columna
-de la última escritura; todas son `creada` o `sobrescrita`, así que cuentan la tabla entera).
-
-**Los catálogos**, una vez por origen (hay paquetes que repiten el mismo: `olist` sale seis veces
-en `demo` y dos en `victor`):
-
-| origen | driver | tablas | columnas | `required` |
-|---|---|---|---|---|
-| olist (`demo` y `victor`) | Postgres | 48 | 342 | **88** (26 %) |
-| standard (`victor`) | Postgres | 19 | 157 | **67** (43 %) |
-| `bigquery_20260927_1428` (`victor`) | BigQuery | 3 | 13 | **3** |
-| `bq` (`demo`, paquete `ventas`) | BigQuery | 2 | 8 | 3 |
-| `s3_demo`, `s3_rol` (`victor`) | S3: 10 CSV, 1 JSONL, 1 Parquet | 12 | 69 / 80 | **0** |
-
-- **Postgres y BigQuery declaran**, y mucho: una de cada cuatro columnas en `olist`, casi una de
-  cada dos en `standard`.
-- **S3 no declara nada.** Un CSV no puede, y el único Parquet no marca ninguna columna. **El JSONL
-  tampoco promueve lo observado**: 0, como manda N1.
-- El catálogo `ventas` de `demo` nombra una fuente `bq` que el manifiesto no declara: es un resto,
-  ajeno a 0051.
-
-**El lago**: 26 copias de una `Table` con puntero (3 en `demo`, 23 en `victor`). Hay 65 columnas
-candidatas, todas en `victor`; **61 tienen cuenta, en 19 copias, y ninguna tiene un nulo**.
-
-| | |
-|---|---|
-| copias medidas | 19: 17 de `standard_test` (Postgres) y 2 de `bq.ventas` (BigQuery) |
-| la mayor | `prueba_de_pk`, 1 000 filas; el resto, de 0 a 57 |
-| sin candidatas | las tres de `olist_copia` (`products`, 32 951 filas): `products`, `sellers` y `orders` **no tienen ningún `NOT NULL`** en el origen, ni clave primaria. Lo mismo `ore_e2e_sintetica` (2 000 000) y los pedidos de S3 (1 500) |
-| fuera | `brain_embeddings` (0 filas, sin cuentas: sus 4 candidatas), `prisma_migrations` (no la crucé: su `Table` se llama distinto del objeto) y las colecciones de medios (no son copias) |
-
-**Lo que se concluye:**
-- **Ningún origen ha mentido**: 0 nulos en 61 columnas. Pero la prueba es **sobre poco dato**: las
-  tablas grandes de hoy no tienen nada que garantizar. La prueba de verdad la da P6, que rechaza el
-  primer nulo.
-- **El lago de hoy (N4, P7) se reescribe al adoptar P6**, sin más: es poco (la mayor copia con
-  candidatas tiene 1 000 filas), y todas las copias ya se escriben enteras (`creada` o
-  `sobrescrita`), que es justo el único momento en que la guarda de E5b deja endurecer.
-- **P3 cambia, en vivo, 158 columnas**: 88 + 67 en dos orígenes de Postgres y 3 en uno de
-  BigQuery (más las 3 del resto `bq`), en cada paquete que los repite. Ninguna de S3.
-
-#### P1 · P2 · hechos (2026-10-02)
-
-- **P1 · la abstracción.** `types::Nulabilidad` (`Nulable < Derivada < Garantizada`, `y` toma la
-  menor, `aguas_abajo` convierte lo garantizado en derivado, `sufijo` es `!` sólo si nunca es
-  nula) y `types::Tipado`, que se escribe como su tipo más ese sufijo.
-  `vistas::nulabilidad_de_columnas` lee `required` de una `Table`; nadie lo consume todavía.
-  **Criterio cumplido:** `validate`, `lint`, `report`, `view` y `datasets` sobre los árboles de
-  `demo` y `victor` dan **las 10 salidas idénticas byte a byte** antes y después.
-- **P2 · la spec v1alpha22** (OOS `01-nunca-nula`): `columns.<c>.required` en `Table`, sólo
-  garantía; `View` y `Dataset` no lo declaran; aflojar sigue al origen y endurecer exige verificar.
-  Conformidad **5/5** (1 acepta; `OOS1005` antes de v1alpha22, en una vista y con
-  `nullable: false`; `OOS1004` si no es booleano).
-- **El hueco de E1 se cierra a medias, a propósito.** ORE comprueba ahora las claves de una columna,
-  pero **todas sólo en una `Table` de v1alpha22**. Antes sólo mira `required`: la suite destapó
-  árboles con `labels` en columnas de `Table` (el esquema JSON nunca las admitió, y
-  `ore migrate punteros` las cuida). Cerrarlas en versiones viejas cambiaría lo que un árbol de
-  ayer significa. Una tabla con `labels` en sus columnas no sube a v1alpha22 hasta quitarlas.
-
-#### P3 · declarar · el código (2026-10-02)
-
-- **El Source Pointer escribe `required: true`** en la columna que el catálogo trae obligatoria, y
-  la `Table` declara entonces v1alpha22; una sin garantías sigue en la suya.
-- **El lector JSONL deja de emitir `required`**: «con valor en todas las líneas» era una
-  observación, y N1 no deja convertirla en garantía. Arreglado en el lector, no en el inductor: el
-  inductor se fía del catálogo de cualquier driver.
-- **Los consumidores la llevan**: la ficha del activo (`assets.rs`) y las dos rutas de
-  `ore-serve` que enseñan columnas (de la `Table` y del catálogo), sólo cuando es `true`. Y la
-  migración `Table` → `Dataset` (`migrar.rs`) **la quita**: en un dataset se deriva.
-- **Aflojar sigue al origen** sin código nuevo: re-inducir regenera la tabla, y la columna que el
-  origen dejó de garantizar pierde `required`. Lo fija una prueba.
-- El comentario `# NOT NULL en el origen` de la entidad se queda: la deuda se cierra porque la
-  garantía ya va en la `Table`, y quitarlo cambiaría ficheros vivos sin necesidad.
-
-**En vivo, en seco** (`ore source induce` de cada fuente, desde su catálogo guardado, sobre copias
-de los árboles): la parte de 0051 cuadra con P0. **21 tablas de `victor` pasan a v1alpha22 con
-`required` en 70 columnas** (las 67 de `standard` y las 3 de BigQuery); en `demo` ninguna tabla
-existente cambia. **Pero re-inducir escribe además lo pendiente de 0045 E5′**: +237 punteros en
-`demo` y +70 en `victor`, y los `exports` de 7 paquetes. Aplicarlo en vivo, y cómo, se decide
-aparte.
-
-#### P4 · derivar (2026-10-02)
-
-- **En `vista_sql`, el mismo analizador que hace el linaje.** Cada columna de salida lleva
-  `exige`: las columnas de origen que no pueden ser nulas para que ella no lo sea (vacío: nunca,
-  pase lo que pase), o `None`. El ámbito sabe qué relaciones están del lado que genera nulos de un
-  `LEFT`, `RIGHT` o `FULL JOIN` (lo que faltaba, E3).
-- **Las reglas, conservadoras:** tal cual y renombrar conservan; literal sí, `NULL` no; `CAST` sí,
-  `TRY_CAST` no; `CASE` sólo con `ELSE` y todas sus ramas; `COALESCE` con el argumento que menos
-  exige; `COUNT` y los rangos de ventana sí, los demás agregados no; aritmética y comparaciones
-  propagan, **dividir no** (por cero, DuckDB da nulo con `//` y `%`); `IS [NOT] NULL` y `<=>`
-  nunca son nulos; una función conocida que propaga, sí; una desconocida, no; `UNION` exige los dos
-  lados; un `ROLLUP`, `CUBE` o `GROUPING SETS` deja la clave nulable; y lo que el `WHERE` afirma
-  en una conjunción (`IS NOT NULL`, una comparación, `IN`, `BETWEEN`, `LIKE`) no es nulo, también
-  del lado de un `LEFT JOIN`.
-- **El árbol resuelve** (`vistas::nulabilidad_de_vista`): contra la `Table` (lo garantizado),
-  otra vista o un dataset mantenido, cada uno por su consulta —la SQL, o la que el núcleo sirve
-  de una estructurada (`linaje::como_sql`)—. `ore view` enseña `nunca nula …` sólo cuando hay
-  algo.
-- **La propiedad, medida** (`pruebas-de-fuego/nunca-nula.py`): tablas y vistas al azar contra
-  DuckDB 1.5.6. **8 semillas, 2 084 vistas ejecutadas, 2 946 afirmaciones «nunca nula», 0 nulos.**
-  Y la prueba caza lo que debe: sin la regla del `LEFT JOIN`, 6 fallos; con `//` y `%`
-  propagando, 35. Un 15 % de las consultas al azar las rechaza DuckDB (tipos mezclados) y no
-  prueban nada.
-- **En la copia de `victor` con P3 aplicado en seco**, 42 vistas y datasets enseñan columnas que
-  nunca son nulas (las 19 de `foreign_test`, estructuradas, por su consulta). Sin P3 en vivo,
-  ninguna salida cambia.
-- **Lo que se mueve:** la cabecera de la copia pasa a **P6** —cambiarla obliga a recalcular las
-  copias, y sólo tiene sentido cuando se impone—; GraphQL y el SDK, a **P7**, como dijo la Fase 0.
-
-#### P5 · evolucionar antes de imponer (2026-10-02)
-
-- **La deriva ve la garantía** (`ore drift-detect`): el origen que deja de garantizar una columna
-  **estrecha** —ofrece menos— y dice a quién le duele (las vistas que la proyectan, que la
-  derivaban nunca nula); el que pasa a garantizarla ensancha. «El catálogo del que salió un
-  paquete no deriva de él» sigue valiendo: el inductor escribe justo lo que el catálogo dice.
-- **El Source Pointer quita `required`** al re-inducir (P3, sin código nuevo).
-- **El almacén, con su regla** (`lago::esquema_deseado`): recibe las columnas que se piden
-  `required` y si la escritura lo reescribe todo. **Aflojar, siempre**, con el mismo id de
-  columna; **endurecer, sólo** con una tabla nueva, una columna que ya lo era, o una escritura
-  que reescribe todos los ficheros (`sobrescribir`, `upsert`), donde el escritor rechaza el nulo
-  fila a fila. Al anexar, nunca: es la guarda de E5b, nuestra porque Iceberg no la tiene.
-- `mismo_esquema` compara también `required`: aflojar es otro esquema, y `Lago::esquema` lo dice.
-- **Medido:** cuatro pruebas de la regla y una del ciclo entero (una copia con `id` `required`
-  recibe una fila con `id` nulo: el esquema se afloja antes de escribir, la columna conserva su id
-  y entran las dos filas). Lo que la prueba del ciclo **no** demuestra, dicho: pasa también sin el
-  arreglo de `mismo_esquema`, porque `preparar` añade el esquema nuevo por su cuenta; el arreglo lo
-  fija la prueba de la regla.
-- **En vivo no cambia nada:** las dos llamadas de hoy no piden ninguna columna `required` (eso es
-  P6), y el lago no tiene ninguna.
-
-#### P3′ · la fuente al día: la migración de los árboles que ya existían
-
-Un árbol nuevo nace con el paradigma: el inductor escribe `required` desde el primer catálogo. Uno
-que ya existía se catalogó con el inductor de antes, y nadie lo re-induce hasta que alguien vuelva
-a catalogar. **P3′ lo pone al día**: re-induce cada fuente desde el catálogo que el árbol ya
-guarda (`ore source induce`), sin abrir el origen. Es la misma operación para cualquier cambio
-futuro del inductor, y por eso trae también lo pendiente de 0045 E5′ (el puntero de todo lo
-catalogado). Herramienta: `pruebas-de-fuego/la-fuente-al-dia.py`, con la forma de
-`migrar-a-dataset.py` (0033): un Job por inquilino en el cluster, con la imagen `ore-drivers`.
-
-| paso | `victor` (2026-10-02) | `demo` (2026-10-02) |
-|---|---|---|
-| **M0** medir en la punta | `main` en `f190eaa`: 93 ficheros | `main` en `a06883e`: 242 ficheros |
-| **M1** el binario | la imagen escribe `required` (se comprueba induciendo un catálogo mínimo, porque `ore --version` no dice el commit) | igual |
-| **M2** ensayo | `validate` 0 → 0; `datasets` 27 → 27, los mismos; `view` las mismas 61 vistas, con 42 líneas `nunca nula` nuevas; todo lo que cambia lo escribió el inductor (tablas y schemas con su marca, y en `package.yaml` sólo `exports`). Las restricciones únicas pasan de 20 a 79: las claves de los punteros nuevos (E5′) | `validate` 0 → 0; `datasets` 3 → 3; `view` las mismas 13 vistas, ninguna `nunca nula` (las de `olist` no tienen nada garantizado); restricciones únicas de 0 a 200 (E5′) |
-| **0051** | **21 tablas existentes ganan `required` en 70 columnas** (las 67 de `standard` y las 3 de BigQuery: lo medido en P0) | **ninguna tabla existente cambia** (lo medido en P0) |
-| **E5′** | 67 punteros nuevos (con otras 155 columnas `required`), 3 schemas, 2 `package.yaml` | 229 punteros nuevos (con 440 columnas `required`), 8 schemas, 5 `package.yaml` |
-| **M3** empujar | **`305a726`**, un solo commit `ore migrate` en `main` (no protegida) | **`740e182`**, igual (`main` sin `.arbol/ramas.yaml`: no protegida) |
-| **M4** en vivo | `ore-serve` sirve `305a726`; `GET /datasets` y el esquema de las cuatro fuentes, **idénticos** antes y después (los mismos 27 datasets con los mismos snapshots); la copia en seco en el cluster: **23 «ya está», 0 por calcular** (10 no pudieron preguntar: fuentes S3 cuya credencial sólo tiene el Job de copia). Un puesto abierto después lee el árbol sin problemas | `ore-serve` sirve `740e182`; `GET /datasets` y el esquema de las cinco fuentes, **idénticos** (los 3 datasets con sus snapshots). La copia en seco no puede opinar: las 3 copias leen Postgres, y su credencial sólo la tiene el Job de copia (igual antes de migrar) |
-| **M5** vuelta atrás | verificada sin ejecutarla: `git revert 305a726` aplica limpio y deja el árbol idéntico a `f190eaa` | verificada sin ejecutarla: `git revert 740e182`, idéntico a `a06883e` |
-| **M6** cerrar | **P3 en vivo en las dos celdas**: los árboles que ya existían, en el paradigma de nulos (y al día con E5′) | |
-
-#### P6 · imponer (2026-10-02)
-
-**Lo que se decidió al diseñarlo**, y por qué:
-
-1. **La garantía viaja en la cabecera de la copia como `obligatorias: [col, …]`**, ordenada, y sólo
-   si hay alguna. Una copia sin nada que imponer tiene **la cabecera de antes byte a byte** (lo
-   fijan `sobre.rs` y `materializar.rs`): encender P6 sólo rehace las copias que imponen algo.
-   La calculan los dos caminos de la copia (`una`, `por_su_consulta`) con
-   `vistas::nulabilidad_de_vista` (P4): lo que el origen garantiza o lo que la consulta deriva.
-2. **El interruptor es un fichero del árbol de cada celda, `.arbol/nulos.yaml` (`imponer:
-   true`)**, como `.arbol/ramas.yaml` (0044). La plantilla de la malla es una para todas las
-   celdas (es `demo`), así que un interruptor en la malla no habría sido por celda. El fichero sí:
-   se enciende con un commit, queda en la historia y se apaga con un revert. Sin fichero, o sin
-   entenderlo, apagado.
-3. **Se impone en las copias de `ore materialize`, y nada más.** Lo que escribe `write()` (un
-   dataset escrito) sigue opcional: ahí no hay nada que derivar.
-4. **El nulo se niega antes de tocar la tabla** (`carga::sin_nulos`), en todas las filas que van a
-   la copia —también las de antes, al fundir—, con la columna, la fila y qué hacer: *«la columna
-   `id` de `…` nunca es nula —lo garantiza su origen— y la fila N trae un nulo: la copia no se
-   escribe. Si el origen dejó de garantizarlo, vuelve a catalogar la fuente y la columna se
-   afloja»*. El puntero queda en `error` con ese motivo y sigue en la copia de antes.
-5. **Apagar es aflojar**: la cabecera pierde `obligatorias`, la copia se rehace y P5 afloja cada
-   columna conservando su id.
-
-**Un fallo que destapó la prueba, y que ya no está:** `destino` confirmaba el esquema nuevo
-(`lago.esquema`) **antes** de escribir las filas. Si un nulo llegaba a mitad de un flujo
-(`sellar_flujo`, lote a lote), la tabla se quedaba `required` sobre los ficheros de antes: la cifra
-falsa de E5b, puesta por nosotros. Ahora **el esquema nuevo y el snapshot van en el mismo
-commit** (`instantanea` e `instantanea_flujo` reciben el esquema): o todo, o nada. Lo prueba
-`el_flujo_endurece_en_un_commit_o_no_confirma_nada` (un nulo en el segundo lote: cero
-`metadata.json` nuevos; sin él, exactamente uno).
-
-| paso | qué | lo medido |
-|---|---|---|
-| **P6a · la cabecera** | `obligatorias` en `materializar::cabecera` y `sobre::Cabecera` (leída tolerante: sin el campo, ninguna); el interruptor | la cabecera sin nada que imponer, idéntica a la de antes (dos pruebas, una por lado); el interruptor sólo con `imponer: true` |
-| **P6b · el almacén** | `obligatorias` → `esquema_deseado` (la copia siempre lo reescribe todo: P5 deja endurecer); `sin_nulos`; esquema y snapshot en un commit; el motivo del puntero lleva lo que dijo el almacén | 5 pruebas nuevas en `ore-store` y 3 en `ore-cli`; `fmt`, `clippy -D warnings` y el workspace en verde (salvo las dos que sólo fallan en Docker) |
-| **P6c · prueba de fuego** | `pruebas-de-fuego/nunca-nula-se-impone.sh`: jsonl → S3 de mentira → `ore-store-r2` | **4 de 4**: apagado, la copia de antes; encendido, `id` `required` con el mismo id de columna (PyIceberg 0.12 lo lee `required`) y la copia sin garantías «ya está» con la misma cabecera; un nulo inyectado falla con su fila, el puntero en `error` sigue en la copia de antes y **no hay ningún `metadata.json` nuevo**; apagar afloja. `el-lago.sh` 0–15 y `la-pregunta-se-contesta.sh` 0–9 siguen en verde. Código: ORE **`d69b90a`** |
-| **P6d · `demo`** | `pruebas-de-fuego/nunca-nula-en-vivo.py demo`: ensayo, `--encender`, `--rehacer`, `--comprobar` | M1: el `ore` de la imagen impone (un árbol mínimo dentro del Job). Ensayo: 3 copias, **ninguna impone** (las de `olist` no tienen nada garantizado). Encendido: forja **`606dae8`**. La pasada (`copiar-d9206008`, borrado y recreado por Flux) rehízo las 3 por su testigo —el LSN de Postgres avanzó, `0/71485D30` → `0/715A0260`; el plan, igual— y no por P6: en el bucket, 0 columnas `required` y ninguna cabecera con `obligatorias`. Copia empujada `a741bd6` |
-| **P6e · `victor`** | lo mismo | Ensayo sobre 34 copias: **21 imponen algo**; 20 pasan de «ya está» a «por rehacer», 1 ya lo estaba; **las 3 que no imponen nada siguen «ya está»**; 10 no pudieron preguntar (S3: su credencial sólo la tiene el Job). Encendido: forja **`b9793da`**. La pasada (`copiar-db74a164`): 21 dicen qué imponen, **20 se rehacen, 0 nulos negados**, 3 «ya está»; la que falta, `brain_embeddings`, falla en `ore-read-postgres` por una columna pgvector (`vector`) que el driver no sabe leer, igual que antes de encender. Copia empujada `929534a`. **Comprobado en el bucket**: 23 copias leídas, **20 con 66 columnas `required`** y, en cada una, lo `required` de Iceberg es exactamente lo que su cabecera impone |
-
-**La vuelta atrás** en una celda es `git revert` del commit de `.arbol/nulos.yaml` y una pasada:
-apagar es aflojar, y lo prueba P6c ④ (no se ha ejecutado en vivo). **El riesgo que queda** es el
-del diseño: un origen que afloja una columna y nadie vuelve a catalogar. La copia falla cerrada en
-el primer nulo, con el mensaje que dice qué hacer; no sirve datos falsos.
-
-**Lo que queda abierto, fuera de P6:**
-- `ore-read-postgres` no lee `vector` (pgvector): `brain_embeddings` de `victor` no se copia.
-- `motivo_de` sólo reconoce un stderr que empieza por `error:` (el del almacén). El de un driver
-  empieza por su nombre, y su puntero se queda en «`ore-read-postgres` falló (1)».
+- **GraphQL**: un campo que no es clave sale `T!` cuando la columna del mismo nombre de lo que
+  respalda la entidad nunca es nula. Caso de conformidad `v1alpha22/emit/a-guaranteed-column-is-
+  non-null`: `email` garantizado → `String!`; `nota` → `String`; `apodo`, `required` en la entidad
+  sin garantía → `String`. v1alpha22: **6/6**.
+- **El SDK**: `GET /puestos/{id}/datos/{vista}` lleva `nunca_nulas`, y `over()` marca esas columnas
+  no nulables en Arrow (una que traiga un nulo no se marca, y se avisa).
+- **El aviso**: `ore validate` avisa, sin fallar, de cada propiedad `required` cuya columna puede
+  ser nula. En vivo (imagen `6504902`, que ya avisa: lo comprueba un árbol mínimo dentro del Job), `validate` sale con 0 y **0 avisos** en `demo` y en `victor`: ninguna entidad exige lo que su columna no garantiza. `ore-serve` sirve `6504902` en las dos celdas.
 
 ## Lo que no se hace
 
-- **Imponer en el aterrizaje crudo.** La garantía se impone donde se materializa un `Dataset`, y
-  la deriva del origen se detecta antes de cargar.
-- **`required` escrito a mano en vistas.** Se deriva.
-- **Endurecer una tabla Iceberg existente en el sitio.** Sólo con una reescritura verificada.
-- **Claves primarias o únicas impuestas.** Son otra decisión: en la industria son informativas, y
-  aquí la clave (`changes.key`) ya existe con su propio papel.
-- **Convertir una observación (JSONL) en garantía.**
+- **Imponer en el aterrizaje crudo.** Se impone donde se materializa una copia.
+- **`required` escrito a mano en vistas o datasets.** Se deriva.
+- **Endurecer una tabla Iceberg existente sin reescribirla.**
+- **Imponer lo que escribe `write()`** (un dataset escrito): ahí no hay nada que derivar.
+- **Claves primarias o únicas impuestas.** En la industria son informativas, y `changes.key` ya
+  tiene su papel.
+- **Convertir una observación en garantía.**
+
+## Lo que queda abierto
+
+- **La ficha de la consola** no enseña todavía «nunca nula · lo garantiza el origen» (el dato ya
+  está en la API de columnas de `ore-serve` desde P3).
+- **`ore-read-postgres` no lee `vector`** (pgvector): `brain_embeddings` de `victor` no se copia,
+  con o sin P6.
+- **`motivo_de`** sólo reconoce un stderr que empieza por `error:` (el del almacén); el de un
+  driver deja el puntero en «`ore-read-postgres` falló (1)».
+- **El riesgo del diseño**: un origen que deja de garantizar una columna y nadie vuelve a
+  catalogar. La copia falla cerrada en el primer nulo, con el mensaje que dice qué hacer.
+- **Las claves de columna de `Table`** se comprueban enteras sólo desde v1alpha22: hay árboles con
+  `labels` en columnas de tablas viejas, y cerrarlo hacia atrás cambiaría lo que significan.
 
 ## Deudas que cierra
 
 - [0042](0042-origin-rest-bigquery.md) · «REQUIRED → `required` en Iceberg».
 - [0032](0032-el-contrato-de-tipos.md) · la nulabilidad, que T2 llamó «cosmética» y no lo era.
-- `ore-store` · «todo opcional» (`carga.rs:722`).
+- `ore-store` · «todo opcional».
 - El inductor · la garantía del origen escrita como comentario.
+- GraphQL · el `required` escalar, ignorado.
+
+## Historia
+
+| paso | qué | dónde |
+|---|---|---|
+| espiga E1–E7 | lo que el diseño necesitaba saber, medido y tirado | — |
+| P0 | la garantía en vivo, medida | — |
+| P1 · P2 | `Nulabilidad`; la spec v1alpha22 | ORE `bab2fb1`, OOS `a678ef1` |
+| P3 | declarar | ORE `88c6c09` |
+| P4 | derivar | ORE `84ce9b6` |
+| P5 | evolucionar antes de imponer | ORE `c97fa9b` |
+| P3′ | los árboles vivos, al día | forjas `305a726` (`victor`), `740e182` (`demo`) |
+| P6 | imponer | ORE `d69b90a`; forjas `606dae8`, `b9793da` |
+| P7 | enseñar: GraphQL, el SDK y el aviso | ORE `73a6c03`, OOS `5f577fb` |
 
 ## Fuentes
 

@@ -194,6 +194,29 @@ print("(comprobar) ✓ en cada copia, lo required en Iceberg es exactamente lo q
 '''
 
 
+# P7 · lo que `ore validate` avisa en el árbol vivo: lo que una entidad exige y
+# su columna no garantiza (OOS v1alpha22 `01` §8). Sólo lectura.
+AVISOS_SH = r"""#!/bin/sh
+set -e
+export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1='*' GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+# M1 · el ore de la imagen avisa: una entidad exige `b` y su columna no lo garantiza.
+mkdir -p /tmp/m1/packages/p/tables /tmp/m1/packages/p/views /tmp/m1/packages/p/entities && cd /tmp/m1
+printf 'apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: m1, version: 0.1.0 }\ndatasources:\n  - { name: f, type: postgres, connectionEnv: X }\n' > ontology.config.yaml
+printf 'apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: p, version: 0.1.0, status: active, domain: x }\nspec: { owner: team:x }\n' > packages/p/package.yaml
+printf 'apiVersion: oos.dev/v1alpha22\nkind: Table\nmetadata: { name: t, namespace: p }\nspec:\n  datasource: f\n  object: "public.t"\n  columns:\n    a: { type: String, required: true }\n    b: { type: String }\n  reads: {}\n  changes: { mode: none, witness: none }\n' > packages/p/tables/t.yaml
+printf 'apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata: { name: v, namespace: p }\nspec:\n  owner: team:x\n  from: { table: p.t }\n  fields: { a: a, b: b }\n' > packages/p/views/v.yaml
+printf 'apiVersion: oos.dev/v1alpha1\nkind: Entity\nmetadata: { name: E, namespace: p }\nspec:\n  nature: entity\n  primaryKey: [a]\n  backedBy: v\n  properties:\n    a: { type: String }\n    b: { type: String, required: true }\n' > packages/p/entities/E.yaml
+if ore validate . 2>&1 | grep -q '^aviso: `p.E.b`'; then echo "(M1) el ore de la imagen avisa"
+else echo "(M1) EL ore DE LA IMAGEN NO AVISA: es de antes de 0051 P7"; ore validate . 2>&1 | head -5; exit 1; fi
+cd /tmp && git clone --quiet "http://forja.t-$CELDA.svc.cluster.local:3000/t-$CELDA/ontologia.git" arbol && cd arbol
+echo "(arbol) commit=$(git rev-parse --short HEAD)"
+ore validate . > /tmp/v.txt 2>&1 && echo "(validate) sale con 0" || echo "(validate) sale con error"
+echo "(validate) avisos: $(grep -c '^aviso:' /tmp/v.txt)"
+grep '^aviso:' /tmp/v.txt | sed 's/^/(validate)   /' | head -40
+"""
+
+
 def job(ns, celda, guion, encender=False):
     img = "europe-west1-docker.pkg.dev/%s/ore/ore-drivers:main" % PROYECTO
     secretos = ("set -e\ngcloud secrets versions access latest --secret=%s-forja-token --out-file=/puesto/forja\n"
@@ -222,7 +245,8 @@ def job(ns, celda, guion, encender=False):
 
 def correr(celda, guion, encender=False):
     ns = "t-" + celda
-    datos = {"guion.sh": GUION_SH, "ensayo.py": ENSAYO_PY, "comprobar.sh": COMPROBAR_SH, "comprobar.py": COMPROBAR_PY}
+    datos = {"guion.sh": GUION_SH, "ensayo.py": ENSAYO_PY, "comprobar.sh": COMPROBAR_SH, "comprobar.py": COMPROBAR_PY,
+             "avisos.sh": AVISOS_SH}
     kubectl("apply", "-f", "-", entrada=json.dumps({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": NOMBRE, "namespace": ns}, "data": datos}))
     kubectl("delete", "job", NOMBRE, "-n", ns, "--ignore-not-found", "--wait=true")
     kubectl("apply", "-f", "-", entrada=json.dumps(job(ns, celda, guion, encender)))
@@ -295,6 +319,9 @@ def main():
         if "--rehacer" in args:
             print("0051 P6 · %s · la pasada de la copia (se borra el Job, Flux lo recrea)" % c)
             bien &= rehacer(c)
+        elif "--avisos" in args:
+            print("0051 P7 · %s · lo que ore validate avisa" % c)
+            bien &= correr(c, "avisos.sh")
         elif "--comprobar" in args:
             print("0051 P6 · %s · cada copia contra su metadata.json" % c)
             bien &= correr(c, "comprobar.sh")
