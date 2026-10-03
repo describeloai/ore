@@ -134,7 +134,7 @@ son los de siempre.
 ### La identidad
 
 `<base>.<schema>.<nombre>`, como todo el catálogo ([`0038`](0038-los-tres-niveles.md),
-[`0041`](0041-el-modelo-tiene-sitio.md)). **No hay `apiName`**: el nombre del catálogo es el de la
+[`0041`](0041-model-registry.md)). **No hay `apiName`**: el nombre del catálogo es el de la
 API.
 
 ### La versión
