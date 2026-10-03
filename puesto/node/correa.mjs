@@ -44,10 +44,18 @@
 // lenguaje ni espera en su cola: se trae el repositorio tal como quedó en la
 // rama (lo guardado, no lo que hay en las pestañas), y `tsc --noEmit -p` con el
 // mismo árbol de tipos. Contesta `{ diagnosticos, errores, ficheros, ms }`.
+//
+// ── `ore/probar` (L5): las pruebas del repositorio, desde Test ─────────────
+//
+// `node --test` sobre sus `*.test.*`/`*.spec.*` —lo guardado y, encima, lo que
+// la consola manda sin guardar—, con el informe de `informe-de-pruebas.mjs`,
+// en un proceso sin la identidad de la sesión y con su tope. Contesta
+// `{ todos, ficheros, pruebas, resumen, ms }`: cada prueba con su estado, su
+// `describe`, su línea y, si falla, el mensaje, lo esperado y lo obtenido.
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const ENLACE = process.platform === "win32" ? "junction" : "dir";
@@ -115,6 +123,50 @@ export function leerTsc(salida) {
   return { diagnosticos: diagnosticos.slice(0, 500), errores, ficheros };
 }
 
+/** Los ficheros de un directorio que cumplen `re`, relativos a él, sin `node_modules`. */
+function ficherosQue(re, dir, base = "") {
+  if (!existsSync(dir)) return [];
+  const fuera = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const rel = base ? `${base}/${e.name}` : e.name;
+    if (e.isDirectory()) fuera.push(...ficherosQue(re, join(dir, e.name), rel));
+    else if (re.test(e.name)) fuera.push(rel);
+  }
+  return fuera.sort();
+}
+
+/** Los ficheros de prueba de un repositorio, relativos a él: `*.test.*` y `*.spec.*`. */
+export const ficherosDePrueba = (dir) => ficherosQue(/\.(test|spec)\.(ts|mts|cts|js|mjs|cjs)$/, dir);
+/** Lo que `materializar` trae, tal como está en disco. */
+const codigoEnDisco = (dir) => ficherosQue(DE_CODIGO, dir);
+
+/**
+ * Lo que `informe-de-pruebas.mjs` escribió (una línea JSON por cosa), como
+ * resultado de `ore/probar`: las pruebas y, por fichero, su estado, lo que
+ * imprimió y —si ni cargó— por qué.
+ */
+export function leerPruebas(texto, pedidos) {
+  const pruebas = [];
+  const porFichero = new Map(pedidos.map((f) => [f, { ruta: f, estado: "ok", salida: "" }]));
+  const fichero = (f) => porFichero.get(f) ?? porFichero.set(f, { ruta: f, estado: "ok", salida: "" }).get(f);
+  for (const linea of texto.split("\n")) {
+    if (!linea.trim()) continue;
+    let x;
+    try { x = JSON.parse(linea); } catch { continue; }
+    if (x.e === "prueba") pruebas.push(x);
+    else if (x.e === "salida" && x.fichero) fichero(x.fichero).salida += x.texto;
+    else if (x.e === "fichero" && x.fichero) Object.assign(fichero(x.fichero), { estado: "error", mensaje: x.mensaje, traza: x.traza });
+  }
+  for (const f of porFichero.values()) {
+    // Un fichero que no cargó dice POR QUÉ en lo que imprimió (el error de Node), no en el evento.
+    if (f.estado === "error" && f.salida.trim()) f.mensaje = f.salida.replace(/\n\s+at .*$/gm, "").replace(/\nNode\.js v[\d.]+\s*$/, "").trim();
+    f.salida = f.salida.slice(-20_000);
+    if (f.estado !== "error" && pruebas.some((p) => p.fichero === f.ruta && (p.estado === "fallo" || p.estado === "cancelada"))) f.estado = "fallo";
+  }
+  return { ficheros: [...porFichero.values()], pruebas };
+}
+
 export class Correa {
   /**
    * @param p        la sesión (`ore.session`): `id`, `servidor`, `pedir`
@@ -168,7 +220,13 @@ export class Correa {
         n++;
       }
     }));
-    log(`repositorio ${repo}${ficha?.rama ? ` (${ficha.rama})` : ""} en disco · ${n} fichero(s) en ${Date.now() - t0} ms`);
+    // Lo que la rama ya no tiene, tampoco el disco: una prueba borrada no corre.
+    const enLaRama = new Set(lista.map((f) => f.ruta));
+    let fuera = 0;
+    for (const rel of codigoEnDisco(join(this.trabajo, repo))) {
+      if (!enLaRama.has(`${repo}/${rel}`)) { rmSync(join(this.trabajo, repo, rel), { force: true }); fuera++; }
+    }
+    log(`repositorio ${repo}${ficha?.rama ? ` (${ficha.rama})` : ""} en disco · ${n} fichero(s)${fuera ? `, ${fuera} retirado(s)` : ""} en ${Date.now() - t0} ms`);
     return repo;
   }
 
@@ -190,6 +248,85 @@ export class Correa {
     log(`comprobar · ${result.error ?? `${result.errores} error(es) en ${result.ficheros} fichero(s)`} · ${result.ms} ms`);
     this.salientes.push(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }));
     this.entregas();
+  }
+
+  // ── `ore/probar` (L5) ────────────────────────────────────────────────────
+  /**
+   * Las pruebas del repositorio (`*.test.ts`, `*.spec.ts`, y sus `.js`), con el
+   * corredor de Node, sobre LO QUE SE VE EN EL EDITOR: lo guardado en la rama y,
+   * encima, los borradores que manda la consola. Pide `{ ficheros?, nombres?,
+   * borradores? }`: sin `ficheros`, todas; con `nombres`, sólo esas pruebas.
+   *
+   * ⛔ Unitarias: corren en un proceso aparte, SIN la identidad de la sesión
+   *   (sin `PUESTO` ni el token en su entorno): una prueba no lee datos. Con su
+   *   tope (120 s) y, en Linux, matando su grupo de procesos entero: el
+   *   corredor abre uno por fichero, y un bucle infinito no se para con
+   *   `--test-timeout`.
+   */
+  async probar(m) {
+    const t0 = Date.now();
+    const q = m.params ?? {};
+    let result;
+    try {
+      this.arbolDeTipos();
+      const repo = await this.materializar();
+      if (!repo) result = { error: "este puesto no tiene repositorio: no hay pruebas que correr" };
+      else {
+        // Los borradores de la consola, encima de lo guardado (sólo los del repositorio).
+        for (const b of Array.isArray(q.borradores) ? q.borradores : []) {
+          if (typeof b?.ruta !== "string" || typeof b?.texto !== "string" || !b.ruta.startsWith(`${repo}/`)) continue;
+          const f = resolve(this.trabajo, b.ruta);
+          if (!f.startsWith(resolve(this.trabajo, repo) + sep) || f.split(sep).includes("node_modules")) continue;
+          mkdirSync(dirname(f), { recursive: true });
+          writeFileSync(f, b.texto);
+        }
+        const todos = ficherosDePrueba(join(this.trabajo, repo)).map((f) => `${repo}/${f}`);
+        const pedidos = Array.isArray(q.ficheros) && q.ficheros.length ? todos.filter((f) => q.ficheros.includes(f)) : todos;
+        result = { repositorio: repo, todos, ...(pedidos.length ? await this.node(pedidos, Array.isArray(q.nombres) ? q.nombres : []) : { ficheros: [], pruebas: [] }) };
+      }
+    } catch (e) {
+      result = { error: String(e?.message ?? e) };
+    }
+    result.ms = Date.now() - t0;
+    if (result.pruebas) {
+      const n = (e) => result.pruebas.filter((p) => p.estado === e).length;
+      result.resumen = { total: result.pruebas.length, ok: n("ok"), fallo: n("fallo") + n("cancelada"), saltada: n("saltada") + n("pendiente"), ficherosConError: result.ficheros.filter((f) => f.estado === "error").length };
+    }
+    log(`probar · ${result.error ?? `${result.resumen.ok} bien, ${result.resumen.fallo} mal, ${result.resumen.saltada} saltada(s)`} · ${result.ms} ms`);
+    this.salientes.push(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }));
+    this.entregas();
+  }
+
+  /** `node --test` con el informe de `informe-de-pruebas.mjs`, en su proceso. */
+  node(ficheros, nombres) {
+    const argumentos = [
+      ...(Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : []),
+      "--test",
+      `--test-reporter=${pathToFileURL(join(AQUI, "informe-de-pruebas.mjs")).href}`,
+      "--test-timeout=30000",
+      ...nombres.map((n) => `--test-name-pattern=^${String(n).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$`),
+      ...ficheros,
+    ];
+    // ⛔ Sin la identidad de la sesión: sólo lo que un proceso necesita.
+    const entorno = { PATH: process.env.PATH ?? "", HOME: this.trabajo, NODE_ENV: "test", ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "" } : {}) };
+    const tope = Number(process.env.ORE_TOPE_PRUEBAS_MS ?? 120_000);
+    return new Promise((ok) => {
+      const hijo = spawn(process.execPath, argumentos, { cwd: this.trabajo, env: entorno, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      let salida = "", errores = "", vencido = false;
+      hijo.stdout.on("data", (d) => (salida += d));
+      hijo.stderr.on("data", (d) => (errores += d));
+      const reloj = setTimeout(() => {
+        vencido = true;
+        try { process.platform !== "win32" ? process.kill(-hijo.pid, "SIGKILL") : hijo.kill("SIGKILL"); } catch { /* ya no estaba */ }
+      }, tope);
+      hijo.on("close", () => {
+        clearTimeout(reloj);
+        const r = leerPruebas(salida, ficheros);
+        if (vencido) r.error = `las pruebas tardaron más de ${Math.round(tope / 1000)} s: se pararon`;
+        else if (!r.pruebas.length && errores.trim()) r.error = errores.trim().slice(-2000);
+        ok(r);
+      });
+    });
   }
 
   /** `tsc --noEmit -p <repositorio>`, y lo que dice, como diagnósticos del árbol. */
@@ -228,10 +365,11 @@ export class Correa {
   /** Un mensaje del editor, en orden: lo que llega mientras se prepara espera.
    *  Salvo `ore/comprobar`, que va por su cuenta: un `tsc` no detiene un hover. */
   escribir(crudo) {
-    if (crudo.includes('"ore/comprobar"')) {
+    if (crudo.includes('"ore/comprobar"') || crudo.includes('"ore/probar"')) {
       let m = null;
       try { m = JSON.parse(crudo); } catch { /* no era */ }
       if (m?.method === "ore/comprobar") return this.comprobar(m);
+      if (m?.method === "ore/probar") return this.probar(m);
     }
     this.cadena = this.cadena.then(() => this.entregarAlServidor(crudo)).catch((e) => log(`un mensaje se perdió (${e.message})`));
     return this.cadena;

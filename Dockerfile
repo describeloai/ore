@@ -456,8 +456,10 @@ RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.Duck
 # ERR_MODULE_NOT_FOUND y `node --check` no lo veía — por eso la comprobación
 # de abajo ARRANCA el agente (`--comprobar`: importa, crea el kernel, corre una celda).
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
-# La correa del servidor de TypeScript (0050 L3·3): el agente la importa.
+# La correa del servidor de TypeScript (0050 L3·3): el agente la importa. Y el
+# informe con el que corre las pruebas del repositorio (L5, `ore/probar`).
 COPY puesto/node/correa.mjs /opt/ore/correa.mjs
+COPY puesto/node/informe-de-pruebas.mjs /opt/ore/informe-de-pruebas.mjs
 COPY puesto/node/ore        /opt/ore/ore
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN ln -s ../ore /opt/ore/node_modules/ore \

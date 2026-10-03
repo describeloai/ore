@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -21,7 +21,13 @@ const imagen = mkdtempSync(join(tmpdir(), "imagen-"));
 symlinkSync(join(AQUI, "..", "ore"), join(imagen, "ore"), process.platform === "win32" ? "junction" : "dir");
 process.env.ORE_IMAGEN_NODE ??= imagen;
 process.env.ORE_CAPA_NODE ??= join(imagen, "no-hay-capa");
-process.env.ORE_TIPOS_NODE ??= join(imagen, "no-hay-tipos");
+// La caja de tipos de la capa: una `devDependency` de mentira, con sus tipos.
+const devDep = join(imagen, "tipos", "node_modules", "fake-dev");
+mkdirSync(devDep, { recursive: true });
+writeFileSync(join(devDep, "package.json"), '{ "name": "fake-dev", "version": "1.0.0", "type": "module", "main": "index.js", "types": "index.d.ts" }');
+writeFileSync(join(devDep, "index.js"), "export const doble = (n) => n * 2n;\n");
+writeFileSync(join(devDep, "index.d.ts"), "export declare const doble: (n: bigint) => bigint;\n");
+process.env.ORE_TIPOS_NODE ??= join(imagen, "tipos", "node_modules");
 const { Correa, enDisco, leerTsc } = await import("../correa.mjs");
 
 const REPO = "packages/ventas/riesgo";
@@ -34,6 +40,18 @@ const ARBOL = {
     include: ["**/*.ts"],
   }),
   [`${REPO}/functions/helpers.ts`]: "export function cents(d: string): bigint { return BigInt(d.replace('.', '')); }\n",
+  // L5: sus pruebas, con una `devDependency` (fake-dev) y un `describe`.
+  [`${REPO}/functions/helpers.test.ts`]: [
+    'import { test, describe } from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { doble } from "fake-dev";',
+    'import { cents } from "./helpers.ts";',
+    'test("cents", () => { assert.equal(doble(cents("1.00")), 200n); });',
+    'test("falla", () => { console.log("imprime"); assert.equal(cents("2.00"), 300n); });',
+    'describe("grupo", () => { test("dentro", () => {}); test.skip("saltada", () => {}); });',
+    "",
+  ].join("\n"),
+  [`${REPO}/functions/borrada.test.ts`]: 'import { test } from "node:test";\ntest("de la rama", () => {});\n',
   [FN]: [
     'import type { Decimal } from "ore";',
     'import { cents } from "./helpers.ts";',
@@ -174,6 +192,55 @@ test("la correa: el repositorio en disco, su tsconfig, sus vecinos y los tipos d
     assert.ok(!c.result.diagnosticos.some((x) => x.codigo === "TS2307"), "ore y el vecino se resuelven");
     assert.equal(c.result.ficheros, 1);
     assert.ok(c.result.ms > 0);
+
+    // 6 · L5 · `ore/probar`: lo guardado MÁS los borradores de la consola; una
+    //   prueba que pasa (con su devDependency y su vecino), una que falla con lo
+    //   esperado y lo obtenido, una saltada en su `describe`, un borrador nuevo,
+    //   un fichero que no carga, y lo que la rama ya no tiene, fuera.
+    delete ARBOL[`${REPO}/functions/borrada.test.ts`];
+    const borradores = [
+      { ruta: `${REPO}/functions/nuevo.test.ts`, texto: 'import { test } from "node:test";\ntest("sin guardar", () => {});\n' },
+      { ruta: `${REPO}/functions/roto.spec.ts`, texto: "const x: number = ;\n" },
+      { ruta: "packages/otro/fuera.test.ts", texto: "no es de este repositorio" },
+    ];
+    mandar({ id: 4, method: "ore/probar", params: { borradores } });
+    const t = (await esperar((m) => m.id === 4, 120_000)).result;
+    assert.equal(t.repositorio, REPO, JSON.stringify(t));
+    assert.deepEqual(t.todos, [`${REPO}/functions/helpers.test.ts`, `${REPO}/functions/nuevo.test.ts`, `${REPO}/functions/roto.spec.ts`]);
+    assert.ok(!existsSync(join(trabajo, REPO, "functions", "borrada.test.ts")), "lo que la rama no tiene, fuera");
+    assert.ok(!existsSync(join(trabajo, "packages", "otro")), "un borrador de otro repositorio no entra");
+    const de = (n) => t.pruebas.find((p) => p.nombre === n);
+    assert.equal(de("cents").estado, "ok", JSON.stringify(t.pruebas));
+    assert.equal(de("falla").estado, "fallo");
+    assert.equal(de("falla").linea, 6);
+    assert.equal(de("falla").esperado, "300n");
+    assert.equal(de("falla").obtenido, "200n");
+    assert.deepEqual(de("dentro").ruta, ["grupo"]);
+    assert.equal(de("saltada").estado, "saltada");
+    assert.equal(de("sin guardar").estado, "ok");
+    const roto = t.ficheros.find((f) => f.ruta === `${REPO}/functions/roto.spec.ts`);
+    assert.equal(roto.estado, "error", JSON.stringify(t.ficheros));
+    assert.match(roto.mensaje, /Expression expected/);
+    assert.match(t.ficheros.find((f) => f.ruta === `${REPO}/functions/helpers.test.ts`).salida, /imprime/);
+    assert.deepEqual(t.resumen, { total: 5, ok: 3, fallo: 1, saltada: 1, ficherosConError: 1 });
+
+    // 7 · y sólo lo pedido: un fichero, y en él una prueba por su nombre.
+    mandar({ id: 5, method: "ore/probar", params: { ficheros: [`${REPO}/functions/helpers.test.ts`], nombres: ["cents"] } });
+    const u = (await esperar((m) => m.id === 5, 120_000)).result;
+    assert.deepEqual(u.pruebas.filter((p) => p.estado !== "saltada").map((p) => p.nombre), ["cents"], JSON.stringify(u.pruebas));
+
+    // 8 · un bucle infinito no cuelga el puesto: el tope lo para, con su grupo de
+    //   procesos. Sólo en Linux (la imagen): en Windows matar al corredor deja
+    //   huérfano al proceso del fichero, girando.
+    if (process.platform !== "win32") {
+      process.env.ORE_TOPE_PRUEBAS_MS = "3000";
+      const bucle = [{ ruta: `${REPO}/functions/bucle.test.ts`, texto: 'import { test } from "node:test";\ntest("gira", () => { for (;;) {} });\n' }];
+      mandar({ id: 6, method: "ore/probar", params: { borradores: bucle, ficheros: [`${REPO}/functions/bucle.test.ts`] } });
+      const b = (await esperar((m) => m.id === 6, 30_000)).result;
+      delete process.env.ORE_TOPE_PRUEBAS_MS;
+      assert.match(b.error ?? "", /tardaron más de 3 s/, JSON.stringify(b));
+      assert.ok(b.ms < 15_000, `${b.ms} ms`);
+    }
   } finally {
     correa.parar();
     flujo?.end();
