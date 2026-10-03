@@ -74,7 +74,7 @@ function alias(viejo, nuevo, f) {
 /** Las claves en español de lo que el SDK devuelve → las inglesas. */
 const ES_EN = {
   tabla: "table", filas: "rows", operacion: "operation", repetida: "repeated",
-  nombre: "name", fichero: "file", nueva: "new",
+  nombre: "name", fichero: "file", nueva: "created", new: "created",
   nombres: "names", tipos: "types", columnas: "columns", truncada: "truncated",
 };
 
@@ -175,7 +175,7 @@ export async function declare(document) {
   const ruta = schema === "default" ? `/documentos/${kind}/${ns}/${nombre}` : `/documentos/${kind}/${ns}/${schema}/${nombre}`;
   const [c, r] = await puesto.pedir("PUT", ruta, cuerpo, 120_000);
   const s = r?.schema ?? schema;
-  if (c === 200 || c === 201) return conAlias({ kind: r?.kind ?? kind, name: s === "default" ? `${r?.namespace ?? ns}.${r?.name ?? nombre}` : `${r?.namespace ?? ns}.${s}.${r?.name ?? nombre}`, file: r?.fichero ?? "", commit: r?.commit ?? "", new: Boolean(r?.nueva ?? c === 201) });
+  if (c === 200 || c === 201) return conAlias({ kind: r?.kind ?? kind, name: s === "default" ? `${r?.namespace ?? ns}.${r?.name ?? nombre}` : `${r?.namespace ?? ns}.${s}.${r?.name ?? nombre}`, file: r?.fichero ?? "", commit: r?.commit ?? "", created: Boolean(r?.nueva ?? c === 201) });
   if (r?.diagnosticos?.length) throw new Error(`declare(${ns}.${nombre}): ${r.diagnosticos.map((d) => `${d.codigo ?? "?"}: ${d.mensaje ?? ""}`).join("; ")}`);
   throw new Error(`declare(${ns}.${nombre}): ${r?.error ?? "?"} (${c})`);
 }

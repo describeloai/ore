@@ -79,32 +79,31 @@ pub struct Clase {
 /// `SOURCE_DATASET_PATH` de Foundry), y es el mismo transform que la prueba de
 /// fuego ejercita contra agentes de verdad (`el-puesto.sh` 10 y 11).
 const TRANSFORMS_PY: &str = "\
-# Un transform DECLARA qué lee y qué escribe, y el servidor lo hace cumplir
-# (ADR 0031 · W3.7): mientras corre, la sesión sólo resuelve sus `inputs` y
-# sólo escribe su `output`. Pedir otra cosa es un PermissionError, no un aviso.
+# A transform DECLARES what it reads and what it writes, and the server
+# enforces it (ADR 0031 · W3.7): while it runs, the session only resolves its
+# `inputs` and only writes its `output`. Anything else is a PermissionError.
 #
-# `transform`, `over` y `write` son del SDK del puesto y ADEMAS los pone la
-# sesión en el espacio de la celda: el import no cambia lo que corre — hace que
-# el editor sepa de qué hablas (ADR 0037 ③a).
+# The session already provides `transform`, `over` and `write`; the import
+# changes nothing at run time, it lets your editor know them (ADR 0037 ③a).
 #
-# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
-# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
-# Cambia las dos referencias por las tuyas y dale a Run.
+# Names have three parts, `database.schema.name` (ADR 0038): in the `default`
+# schema, `database.name` is enough. Replace both references with yours and
+# click Run.
 
 from ore import transform, over, write
 
-ENTRADA = \"mi_base.mi_schema.mi_dataset\"
-SALIDA = \"mi_base.mi_schema.mi_resumen\"
+INPUT = \"my_db.my_schema.my_dataset\"
+OUTPUT = \"my_db.my_schema.my_summary\"
 
 
-@transform(inputs=[ENTRADA], output=SALIDA)
-def resumir():
-    tabla = over(ENTRADA, format=\"arrow\")
-    return write(SALIDA, tabla)
+@transform(inputs=[INPUT], output=OUTPUT)
+def summarize():
+    table = over(INPUT, format=\"arrow\")
+    return write(OUTPUT, table)
 
 
-escrito = resumir()
-print(\"rows\", escrito[\"rows\"])
+written = summarize()
+print(\"rows\", written[\"rows\"])
 ";
 
 /// El `pyproject.toml` de una instancia de Python: **el sitio donde declarar**.
@@ -114,16 +113,16 @@ print(\"rows\", escrito[\"rows\"])
 ///   de la celda (0036 ③). Sembrar `polars` «por si acaso» costaría construir
 ///   una capa para algo que el ejemplo no usa.
 const PYPROJECT_PY: &str = "\
-# Las dependencias de ESTE repositorio (ADR 0036 ③). Lo que declares aquí es
-# SUYO: se resuelve en su propia capa y no la cargan sus vecinos. Lo que está
-# en el paquete o en la raíz del árbol lo sigue teniendo todo el mundo.
+# The dependencies of THIS repository (ADR 0036 ③). What you declare here is
+# its own: it resolves into its own layer, and neighbouring repositories don't
+# load it. Whatever the package or the tree root declares, everyone still gets.
 #
-# Nace vacío: declarar algo que nadie usa sería construir una capa para nada.
-# Descomenta la línea de abajo, guarda y abre el repositorio — la capa se
-# resuelve sola y la sesión nace con ella.
+# It starts empty: declaring something nobody uses would build a layer for
+# nothing. Uncomment the line below, save and reopen the repository — the layer
+# resolves itself and the session starts with it.
 
 [project]
-name = \"repositorio\"
+name = \"repository\"
 version = \"0.1.0\"
 dependencies = []
 # dependencies = [\"polars\"]
@@ -141,28 +140,28 @@ dependencies = []
 ///   su plugin no corra.
 const POM_JVM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Las dependencias de ESTE repositorio (ADR 0036 iii, 0037 iii.c). Lo que
-  declares aqui es SUYO: se resuelve en su propia capa y no la cargan sus
-  vecinos. Lo que esta en el paquete o en la raiz del arbol lo sigue teniendo
-  todo el mundo.
+  The dependencies of THIS repository (ADR 0036 iii, 0037 iii.c). What you
+  declare here is its own: it resolves into its own layer, and neighbouring
+  repositories don't load it. Whatever the package or the tree root declares,
+  everyone still gets.
 
-  Nace vacio: declarar algo que nadie usa seria construir una capa para nada.
-  Descomenta el ejemplo de abajo, guarda y abre el repositorio - la capa se
-  resuelve sola y la sesion nace con ella.
+  It starts empty: declaring something nobody uses would build a layer for
+  nothing. Uncomment the example below, save and reopen the repository - the
+  layer resolves itself and the session starts with it.
 
-  DE ESTE FICHERO SE LEE "dependencies" Y NADA MAS. Ni "dependencyManagement",
-  ni "build", ni "plugins", ni "profiles": no se honran y no se finge que si.
-  Cada dependencia necesita su "version" -sin ella no hay quien la fije- y el
-  ambito "test" no baja al puesto, que la capa es lo que hace falta para CORRER.
+  ONLY "dependencies" IS READ FROM THIS FILE. "dependencyManagement", "build",
+  "plugins" and "profiles" are not honoured, and nothing pretends they are.
+  Every dependency needs its "version" - without one nothing can pin it - and
+  "test" scope never reaches the session: the layer is what it takes to RUN.
 
-  Y LO QUE TRAE LA IMAGEN, MANDA: Arrow, Jackson, slf4j y el resto del SDK
-  llegan con la sesion. Si declaras otra version de algo de eso, gana la de la
-  sesion y el informe de la capa te lo dice.
+  AND THE IMAGE WINS: Arrow, Jackson, slf4j and the rest of the SDK come with
+  the session. If you declare another version of any of them, the session's
+  version is used and the layer report tells you so.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>repositorio</groupId>
-  <artifactId>repositorio</artifactId>
+  <groupId>repository</groupId>
+  <artifactId>repository</artifactId>
   <version>0.1.0</version>
 
   <dependencies>
@@ -188,33 +187,32 @@ const POM_JVM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 ///   comentario desde W3.4. Medido con un JShell 21 de verdad: esto corre e
 ///   imprime, con el `public` y el import estático dentro.
 const TRANSFORMS_JAVA: &str = "\
-// Un transform DECLARA qué lee y qué escribe, y el servidor lo hace cumplir
-// (ADR 0031 · W3.7): mientras corre, la sesión sólo resuelve sus `inputs` y
-// sólo escribe su `output`.
+// A transform DECLARES what it reads and what it writes, and the server
+// enforces it (ADR 0031 · W3.7): while it runs, the session only resolves its
+// `inputs` and only writes its `output`.
 //
-// `transform`, `over` y `write` son del SDK del puesto (`ore.Ore`) y ADEMÁS los
-// pone la sesión: el import estático no cambia lo que corre — hace que el
-// editor sepa de qué hablas (ADR 0037 ③b).
+// `transform`, `over` and `write` come from the SDK (`ore.Ore`) and the session
+// already provides them: the static import changes nothing at run time, it lets
+// your editor know them (ADR 0037 ③b).
 //
-// ⛔ El nombre del fichero ES el nombre de la clase pública: si renombras uno,
-//   renombra el otro.
+// The file name IS the name of the public class: rename one, rename the other.
 //
-// Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
-// base de datos, su schema y el dataset. En `default` basta `base.nombre`.
-// Cambia las dos referencias por las tuyas y dale a Run.
+// Names have three parts, `database.schema.name` (ADR 0038): in the `default`
+// schema, `database.name` is enough. Replace both references with yours and
+// click Run.
 import static ore.Ore.*;
 
 import java.util.List;
 import java.util.Map;
 
-public class Ejemplo {
-    static final String ENTRADA = \"mi_base.mi_schema.mi_dataset\";
-    static final String SALIDA = \"mi_base.mi_schema.mi_resumen\";
+public class Example {
+    static final String INPUT = \"my_db.my_schema.my_dataset\";
+    static final String OUTPUT = \"my_db.my_schema.my_summary\";
 
     public static void main(String[] args) throws Exception {
-        Map<String, Object> escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA,
-                () -> write(SALIDA, over(ENTRADA)));
-        System.out.println(\"rows \" + escrito.get(\"rows\"));
+        Map<String, Object> written = transform(\"summarize\", List.of(INPUT), OUTPUT,
+                () -> write(OUTPUT, over(INPUT)));
+        System.out.println(\"rows \" + written.get(\"rows\"));
     }
 }
 ";
@@ -229,67 +227,64 @@ public class Ejemplo {
 ///   lee y lo que escribe lo dice la propia sentencia (`ore sql`), sin
 ///   `@transform` que lo repita. Medido en `medida-la-semilla-sql.sh`.
 const TRANSFORMS_SQL: &str = "\
--- Un transform escrito en SQL: UNA sentencia que escribe. Lo que lee y lo que
--- escribe lo dice la propia sentencia, y el servidor lo hace cumplir.
+-- A transform written in SQL: ONE statement that writes. The statement itself
+-- says what it reads and what it writes, and the server enforces it.
 --
--- Lo que se escribe es un dataset: `CREATE OR REPLACE DATASET … AS SELECT`
--- sobrescribe; `INSERT INTO … SELECT` anexa; `INSERT OR REPLACE INTO … SELECT`
--- hace upsert. Un `SELECT` suelto lee y no escribe.
+-- What gets written is a dataset: `CREATE OR REPLACE DATASET … AS SELECT`
+-- overwrites; `INSERT INTO … SELECT` appends; `INSERT OR REPLACE INTO … SELECT`
+-- upserts. A plain `SELECT` reads and writes nothing.
 --
--- Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
--- base de datos, su schema y el dataset. En `default` basta `base.nombre`.
--- Cambia los dos por los tuyos y dale a Run.
+-- Names have three parts, `database.schema.name` (ADR 0038): in the `default`
+-- schema, `database.name` is enough. Replace both with yours and click Run.
 
-CREATE OR REPLACE DATASET mi_base.mi_schema.mi_resumen AS
-SELECT pais, count(*) AS n
-FROM mi_base.mi_schema.mi_dataset
-GROUP BY pais
+CREATE OR REPLACE DATASET my_db.my_schema.my_summary AS
+SELECT country, count(*) AS n
+FROM my_db.my_schema.my_dataset
+GROUP BY country
 ";
 
 const ANALYTICS_PY: &str = "\
-# Un análisis LEE, y no declara nada: leer no escribe. Y su clase lo hace
-# cumplir — un `analytics` no escribe datos aunque el código lo pida (0036 ⑤),
-# así que aquí se mira, se cuenta y se decide qué hacer después.
+# An analysis READS and declares nothing. Its class enforces that: an
+# `analytics` repository writes no data even if the code asks to (ADR 0036 ⑤).
+# Here you explore, count and decide what to do next.
 #
-# `over` y `sql` son del SDK del puesto y ADEMAS los pone la sesión en el
-# espacio de la celda: el import no cambia lo que corre — hace que el editor
-# sepa de qué hablas (ADR 0037 ③a).
+# The session already provides `over` and `sql`; the import changes nothing at
+# run time, it lets your editor know them (ADR 0037 ③a).
 
 from ore import over, sql
 
-# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
-# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
-FUENTE = \"mi_base.mi_schema.mi_dataset\"
+# Names have three parts, `database.schema.name` (ADR 0038): in the `default`
+# schema, `database.name` is enough.
+SOURCE = \"my_db.my_schema.my_dataset\"
 
-filas = over(FUENTE)
-print(FUENTE, \"→\", len(filas), \"filas\")
-print(sql(f\"select count(*) as n from {FUENTE}\"))
+rows = over(SOURCE)
+print(SOURCE, \"→\", len(rows), \"rows\")
+print(sql(f\"select count(*) as n from {SOURCE}\"))
 ";
 
 const MODELS_PY: &str = "\
-# El entrenamiento de un modelo. Lo que salga se declara como `TrainedModel`
-# con su `trainedFrom`: es lo que hace que el linaje no se corte (ADR 0029).
+# Training a model. Declare the result as a `TrainedModel` with its
+# `trainedFrom`: that is what keeps the lineage unbroken (ADR 0029).
 #
-# `over` y `declare` son del SDK del puesto y ADEMAS los pone la sesión en el
-# espacio de la celda: el import no cambia lo que corre — hace que el editor
-# sepa de qué hablas (ADR 0037 ③a).
+# The session already provides `over` and `declare`; the import changes nothing
+# at run time, it lets your editor know them (ADR 0037 ③a).
 
 from ore import over, declare
 
-# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
-# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
-ENTRADA = \"mi_base.mi_schema.mi_dataset\"
-MODELO = \"mi_base.mi_schema.mi_modelo\"
-BASE, SCHEMA, NOMBRE = MODELO.split(\".\")
+# Names have three parts, `database.schema.name` (ADR 0038): in the `default`
+# schema, `database.name` is enough.
+INPUT = \"my_db.my_schema.my_dataset\"
+MODEL = \"my_db.my_schema.my_model\"
+DATABASE, SCHEMA, NAME = MODEL.split(\".\")
 
-filas = over(ENTRADA)
-# ... entrenar con lo que declares en el pyproject.toml de este repositorio ...
+rows = over(INPUT)
+# ... train with whatever you declare in this repository's pyproject.toml ...
 digest = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"
 
 print(declare({
     \"kind\": \"TrainedModel\",
-    \"metadata\": {\"name\": NOMBRE, \"namespace\": BASE, \"schema\": SCHEMA},
-    \"spec\": {\"owner\": \"team:cambiame\", \"trainedFrom\": [ENTRADA], \"digest\": digest},
+    \"metadata\": {\"name\": NAME, \"namespace\": DATABASE, \"schema\": SCHEMA},
+    \"spec\": {\"owner\": \"team:changeme\", \"trainedFrom\": [INPUT], \"digest\": digest},
 }))
 ";
 
@@ -311,19 +306,19 @@ print(declare({
 /// [`sembrar`]: el `def` se llama como la función, para que dos repositorios
 /// del mismo paquete no choquen.
 const FUNCTIONS_PY: &str = "\
-# Una FUNCIÓN publicada: `{{paquete}}.{{funcion}}` (ORE 0050).
+# A published FUNCTION: `{{paquete}}.{{funcion}}` (ORE 0050).
 #
-# Escribes Python; la plataforma hace el resto. `@function` y las anotaciones
-# del `def` son su contrato —lo que recibe y lo que devuelve— y el docstring,
-# su descripción. Al hacer commit se publica en Assets → Functions: su
-# documento lo escribe ore, no se edita.
+# You write Python; the platform does the rest. `@function` and the annotations
+# of the `def` are its contract (what it takes and what it returns), and the
+# docstring is its description. On commit it is published under Assets →
+# Functions; ore writes its document, so don't edit that.
 #
-#   · Run, en tu sesión: corre el bloque `if __name__ == \"__main__\"` de abajo.
-#   · Desde otro código: `ore.get_function(\"{{paquete}}.{{funcion}}\")`, y se llama.
-#   · Desde Pipelines:   el operador Function, con sus parámetros.
+#   · Run, in your session: runs the `if __name__ == \"__main__\"` block below.
+#   · From other code:   `ore.get_function(\"{{paquete}}.{{funcion}}\")`, then call it.
+#   · From Pipelines:    the Function operator, with its parameters.
 #
-# Los tipos se cumplen: \"2026-09-15\" llega como `date` y 120.50 como `Decimal`
-# exacto; devolver otro tipo es un error que dice su línea.
+# Types are enforced: \"2026-09-15\" arrives as a `date` and 120.50 as an exact
+# `Decimal`; returning another type is an error that points to its line.
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -333,10 +328,10 @@ from ore import function
 
 @dataclass
 class InvoiceStatus:
-    status: str                        # \"paid\", \"current\" u \"overdue\"
+    status: str                        # \"paid\", \"current\" or \"overdue\"
     outstanding: Decimal
-    days: int                          # hasta el vencimiento; negativo si ya venció
-    surcharge: Decimal | None = None   # solo si venció
+    days: int                          # until due; negative once overdue
+    surcharge: Decimal | None = None   # only when overdue
 
 
 @function(timeout=\"30s\")
@@ -350,15 +345,15 @@ def {{funcion}}(amount: Decimal, due: date, paid: Decimal = Decimal(\"0\"),
         return InvoiceStatus(\"paid\", outstanding, days)
     if days >= 0:
         return InvoiceStatus(\"current\", outstanding, days)
-    surcharge = (outstanding * Decimal(\"0.0005\") * -days).quantize(Decimal(\"0.01\"))  # 0,05 % por día
+    surcharge = (outstanding * Decimal(\"0.0005\") * -days).quantize(Decimal(\"0.01\"))  # 0.05% per day
     return InvoiceStatus(\"overdue\", outstanding, days, surcharge)
 
 
-# Sobre un dataset (una llamada por fila), lo que lee y los modelos que llama
-# se declaran en el decorador:
-#     over=\"mi_base.mi_schema.invoices\"     la fila llega como primer parámetro
-#     reads=[\"mi_base.mi_schema.clients\"]   y se lee con `ore.over`
-#     models=[\"extractor\"]                  y se llama con `ore.model`
+# Over a dataset (one call per row), what it reads and the models it calls are
+# declared in the decorator:
+#     over=\"my_db.my_schema.invoices\"     the row arrives as the first parameter
+#     reads=[\"my_db.my_schema.clients\"]   read it with `ore.over`
+#     models=[\"extractor\"]                call it with `ore.model`
 
 if __name__ == \"__main__\":
     print({{funcion}}(Decimal(\"120.50\"), \"2026-09-15\", today=\"2026-10-02\"))
@@ -383,20 +378,20 @@ pub fn se_siembra(rel: &str, paquete: &str) -> bool {
 /// promete lo que nadie cumple. Por eso no siembra contrato. Y no siembra
 /// `package.json`: la sesión de Node nace con lo que trae su imagen.
 const FUNCTIONS_TS: &str = "\
-// Una función de TypeScript: entra lo que declara, sale un objeto. Hoy corre en
-// tu sesión (Run); publicarla como `Function` invocable con parámetros
-// —`runtime: node`, como las de Python— llega con ORE 0050 R3.
+// A TypeScript function: what it declares goes in, an object comes out. Today
+// it runs in your session (Run); publishing it as a `Function` invocable with
+// parameters (`runtime: node`, like the Python ones) comes with ORE 0050 R3.
 //
-// Desde la sesión lees los datasets por su nombre en tres partes (0038),
-// `over(\"mi_base.mi_schema.mi_dataset\")`, y `sql(...)`: los pone el SDK del
-// puesto en el contexto.
+// In the session you read datasets by their three-part name (ADR 0038),
+// `over(\"my_db.my_schema.my_dataset\")`, and `sql(...)`: the SDK puts both in
+// the context.
 
-export function ejemplo(texto: string, veces: number = 1): { resultado: string; longitud: number } {
-  const resultado = Array(veces).fill(texto).join(\" \");
-  return { resultado, longitud: resultado.length };
+export function example(text: string, times: number = 1): { result: string; length: number } {
+  const result = Array(times).fill(text).join(\" \");
+  return { result, length: result.length };
 }
 
-console.log(ejemplo(\"hola\", 2));
+console.log(example(\"hello\", 2));
 ";
 
 /// Rellena los huecos de una semilla: `{{paquete}}` (el `namespace` de lo que
@@ -435,10 +430,12 @@ pub const CLASES: &[Clase] = &[
         // comentario y sin `pyproject.toml`— sale `actualizable: true`, que es
         // lo que la columna «UPGRADE» existe para decir.
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 5,
+        // 6: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`transforms/ejemplo.py`): es de quien lo tenga.
+        version: 6,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
-            ("transforms/ejemplo.py", TRANSFORMS_PY),
+            ("transforms/example.py", TRANSFORMS_PY),
         ],
     },
     Clase {
@@ -454,10 +451,12 @@ pub const CLASES: &[Clase] = &[
         // —sin `pom.xml`— sale `actualizable: true`, que es lo que la columna
         // «UPGRADE» existe para decir.
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 5,
+        // 6: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`transforms/Ejemplo.java`): es de quien lo tenga.
+        version: 6,
         semilla: &[
             ("pom.xml", POM_JVM),
-            ("transforms/Ejemplo.java", TRANSFORMS_JAVA),
+            ("transforms/Example.java", TRANSFORMS_JAVA),
         ],
     },
     Clase {
@@ -476,8 +475,10 @@ pub const CLASES: &[Clase] = &[
         // quien lo tenga.
         // 5: lo que se escribe es un DATASET (`create or replace dataset`): una
         // Table es un puntero a un objeto de un origen y no se crea desde SQL.
-        version: 5,
-        semilla: &[("transforms/ejemplo.sql", TRANSFORMS_SQL)],
+        // 6: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`transforms/ejemplo.sql`): es de quien lo tenga.
+        version: 6,
+        semilla: &[("transforms/example.sql", TRANSFORMS_SQL)],
     },
     Clase {
         id: "analytics-python",
@@ -489,10 +490,12 @@ pub const CLASES: &[Clase] = &[
         titulo: "Analytics",
         descripcion: "Analyze your datasets using your preferred data science environment.",
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 4,
+        // 5: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`analisis/ejemplo.py`): es de quien lo tenga.
+        version: 5,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
-            ("analisis/ejemplo.py", ANALYTICS_PY),
+            ("analysis/example.py", ANALYTICS_PY),
         ],
     },
     Clase {
@@ -505,10 +508,12 @@ pub const CLASES: &[Clase] = &[
         titulo: "Models",
         descripcion: "Create, test and train models for machine learning, forecasting and more.",
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 4,
+        // 5: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`modelos/entrenar.py`): es de quien lo tenga.
+        version: 5,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
-            ("modelos/entrenar.py", MODELS_PY),
+            ("models/train.py", MODELS_PY),
         ],
     },
     Clase {
@@ -525,10 +530,13 @@ pub const CLASES: &[Clase] = &[
         // 6: el código es la fuente, `@function` con anotaciones (0050 G1).
         // 7: sin documento: lo escribe el commit, en el paquete (0050 G2).
         // 8: un ejemplo de verdad: Decimal, date, opcionales y Run (0050 G4).
-        version: 9,
+        // 9: el SDK en inglés (S3).
+        // 10: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`funciones/ejemplo.py`): es de quien lo tenga.
+        version: 10,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
-            ("funciones/ejemplo.py", FUNCTIONS_PY),
+            ("functions/example.py", FUNCTIONS_PY),
         ],
     },
     // 0050: la familia `functions` en dos lenguajes, como `transforms` en
@@ -543,8 +551,10 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Functions",
         descripcion: "Write reusable functions in TypeScript. They run in your session; publishing them as invocable Functions comes next.",
-        version: 1,
-        semilla: &[("funciones/ejemplo.ts", FUNCTIONS_TS)],
+        // 2: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
+        // Actualizar deja lo de antes (`funciones/ejemplo.ts`): es de quien lo tenga.
+        version: 2,
+        semilla: &[("functions/example.ts", FUNCTIONS_TS)],
     },
     // `semantics` no siembra código: lo suyo son documentos del árbol, y
     // sembrar una `Entity` a medias sería sembrar algo que no compila.
@@ -657,7 +667,7 @@ mod pruebas {
     /// paquete no chocan.
     /// Lo que el commit escribe de la semilla, byte a byte.
     const DOCUMENTO: &str = "\
-# generado por ore desde {{carpeta}}/funciones/ejemplo.py:{{funcion}} · se edita el def, no este fichero
+# generado por ore desde {{carpeta}}/functions/example.py:{{funcion}} · se edita el def, no este fichero
 apiVersion: oos.dev/v1alpha18
 kind: Function
 metadata:
@@ -666,7 +676,7 @@ metadata:
   description: 'The status of an invoice: what is outstanding, the days until it is due and the surcharge if it is overdue.'
 spec:
   runtime: python
-  entrypoint: {{carpeta}}/funciones/ejemplo.py:{{funcion}}
+  entrypoint: {{carpeta}}/functions/example.py:{{funcion}}
   input:
     amount: { type: Decimal, required: true }
     due: { type: Date, required: true }
@@ -693,7 +703,7 @@ spec:
         );
         let (paquete, carpeta) = ("ventas", "funciones-de-riesgo");
         let py = sembrar(FUNCTIONS_PY, paquete, carpeta);
-        let d = ore_code::python::derivar(&py, &format!("{carpeta}/funciones/ejemplo.py"));
+        let d = ore_code::python::derivar(&py, &format!("{carpeta}/functions/example.py"));
         assert!(d.sintaxis.is_empty() && d.version.is_empty(), "{:?}", d);
         let [f] = d.funciones.as_slice() else {
             panic!("una función: {:?}", d.funciones)
@@ -739,7 +749,13 @@ spec:
             let contrato = pkg.join("functions/funciones_de_riesgo_invoice_status.yaml");
             if paquete == "ventas" {
                 assert!(pkg.join("functions/otra_invoice_status.yaml").exists());
-                assert!(!pkg.join("funciones-de-riesgo/functions").exists());
+                // El código vive en `<carpeta>/functions/`; su documento, no.
+                assert!(
+                    !pkg.join(
+                        "funciones-de-riesgo/functions/funciones_de_riesgo_invoice_status.yaml"
+                    )
+                    .exists()
+                );
                 let yaml = std::fs::read_to_string(&contrato).unwrap();
                 assert!(
                     yaml.contains("name: funciones_de_riesgo_invoice_status"),
@@ -747,7 +763,7 @@ spec:
                 );
                 assert!(
                     yaml.contains(
-                        "entrypoint: funciones-de-riesgo/funciones/ejemplo.py:funciones_de_riesgo_invoice_status"
+                        "entrypoint: funciones-de-riesgo/functions/example.py:funciones_de_riesgo_invoice_status"
                     ),
                     "{yaml}"
                 );
@@ -756,7 +772,7 @@ spec:
                 // `test-project` no puede ser `namespace`: el código sí, el contrato no.
                 assert!(!contrato.exists());
                 assert!(
-                    pkg.join("funciones-de-riesgo/funciones/ejemplo.py")
+                    pkg.join("funciones-de-riesgo/functions/example.py")
                         .exists()
                 );
             }
@@ -795,11 +811,11 @@ spec:
         let t = de("transforms-python").unwrap();
         let rutas: Vec<&str> = t.semilla.iter().map(|(r, _)| *r).collect();
         assert!(rutas.contains(&"pyproject.toml"), "{rutas:?}");
-        assert!(rutas.contains(&"transforms/ejemplo.py"), "{rutas:?}");
+        assert!(rutas.contains(&"transforms/example.py"), "{rutas:?}");
         let (_, py) = t
             .semilla
             .iter()
-            .find(|(r, _)| *r == "transforms/ejemplo.py")
+            .find(|(r, _)| *r == "transforms/example.py")
             .unwrap();
         let codigo = py
             .lines()
@@ -968,7 +984,7 @@ spec:
                 }
                 assert!(!texto.contains("<paquete>"), "{} · {ruta}", c.id);
                 assert!(
-                    texto.contains("mi_base.mi_schema."),
+                    texto.contains("my_db.my_schema."),
                     "{} · {ruta} no nombra en tres partes",
                     c.id
                 );
@@ -979,7 +995,7 @@ spec:
         assert!(
             sql.semilla
                 .iter()
-                .any(|(r, _)| *r == "transforms/ejemplo.sql")
+                .any(|(r, _)| *r == "transforms/example.sql")
         );
         assert!(!sql.semilla.iter().any(|(r, _)| r.ends_with(".py")));
         assert!(!sql.semilla.iter().any(|(r, _)| *r == "pyproject.toml"));

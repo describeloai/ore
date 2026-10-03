@@ -16,7 +16,7 @@ con la celda (0049, D1), y la celda decide, fija, firma y sirve.
 |---|---|---|---|
 | gramática | `MediaCollection` | — | el valor de `Media<c>` |
 | HTTP | `/media/{base}/{schema}/{coleccion}` | `?path=` o `?digest=` | JSON con los campos de v1alpha17 `01` §3 |
-| Python | `ore.coleccion("b.s.c")` | `Item` | `MediaRef` (dataclass inmutable) |
+| Python ([SDK](sdk.md#collections)) | `ore.collection("b.s.c")` | `Item` | `MediaRef` (dataclass inmutable) |
 | SQL | `b.s.c` en un `FROM` (su listado) | una fila | `_item` |
 
 `MediaRef` se serializa en JSON con los nombres de la gramática (`uri`, `collection`, `path`,
@@ -38,8 +38,8 @@ GET /media/{b}/{s}/{c}/items?prefix=&as_of=&cursor=&limit=
   siguientes la heredan por el cursor. Nunca se mezclan dos transacciones en un recorrido.
 - **Por cursor, no por desplazamiento**: el coste de una página no depende de cuántas van antes
   (hoy sí, 0049 «Lo que hay hoy»). `limit` hasta 1000; por defecto, 1000.
-- Python: `coleccion.items(prefijo=None, as_of=None)` → iterador perezoso por lotes, filtrable
-  (`.where(tipo=…)`) antes de pedir nada más.
+- Python: `collection.items(prefix=None, state=None, limit=1000)` → iterador perezoso de `Item`s
+  sin bytes, por cursor; `limit` es el tamaño de página.
 
 ### `stat` · lo fresco
 
@@ -93,9 +93,10 @@ Range: bytes=0-1023            (opcional)
 - Python, lo demás (0049 B3·5, `puesto/python/ore/medios.py`): la URL de `content` se lee **sin el
   token de ORE**; un `read` no es una petición —se lee en flujo desde el cursor y sólo un `seek`
   abre otra—; un permiso caducado se renueva con la misma versión. `item.read_bytes()` baja un
-  ítem grande por rangos en paralelo; `ore.leer_varios(items, hilos=16)` muchos a la vez, dando
-  `(item, datos, error)` —el error de uno no para los demás—. Excepciones por `type`:
-  `MediaNoExiste`, `MediaSinPermiso`, `MediaCambiado`, `MediaCorrupto`, `MediaRango`.
+  ítem grande por rangos en paralelo; `ore.read_many(items, threads=16)` muchos a la vez, dando
+  `(item, data, error)` —el error de uno no para los demás—. Excepciones por `type`
+  (subclases de `MediaError`): `MediaNotFound`, `MediaForbidden`, `MediaChanged`, `MediaCorrupt`,
+  `MediaRangeError`.
 
 ### `url` · para quien necesita HTTP
 
@@ -147,18 +148,18 @@ POST /media/{b}/{s}/{c}/transactions/{t}/abort  → 204
 - Solo en una colección **escrita** (v1alpha16 `02` §3); en una mantenida es `media/no-escribible`.
 - SQL (0049 B4·4, el guion del puesto): `create media collection [if not exists] b.s.c media
   <document|image|…> formats (pdf, …) [comment '…']` crea la misma colección escrita y vacía —es
-  `crear_coleccion` del SDK—; el guion la coteja en orden (la base y el schema, o creados antes en
+  `create_collection` del SDK—; el guion la coteja en orden (la base y el schema, o creados antes en
   él; un nombre una cosa; una mantenida no se crea encima). Llenarla es del código.
-- Python (0049 B4b·3, `puesto/python/ore/medios.py`): `ore.crear_coleccion(nombre, media, formatos)`
+- Python (0049 B4b·3, `puesto/python/ore/medios.py`; [SDK](sdk.md#writing-into-a-collection)): `ore.create_collection(name, media, formats)`
   escribe el documento (v1alpha19, sin `from`) sin `owner`: la colección es de quien la crea —la
-  persona que abrió el puesto—, y lo pone el servidor (0052 · Ownership); `dueno=`
-  sólo para dársela a otro; `with coleccion.transaccion() as t: t.put(path, datos)`
-  confirma al salir y aborta con una excepción. `datos` son bytes (con su `Repr-Digest`), una ruta (en
+  persona que abrió el puesto—, y lo pone el servidor (0052 · Ownership); `owner=`
+  sólo para dársela a otro; `with collection.transaction() as t: t.put(path, data)`
+  confirma al salir y aborta con una excepción. `data` son bytes (con su `Repr-Digest`), una ruta (en
   flujo) o un fichero (si no se rebobina, se copia antes). Una subida cortada se reintenta; un commit
   que pierde la carrera de la forja (`409` sin `type`) se vuelve a confirmar. `upload` no se enseña y
   no lleva el token de ORE. Dentro de un transform, `inputs`/`output` admiten una colección, y sólo se
-  escribe su `output`. Errores: `MediaNoEscribible`, `MediaTransaccion`, y `MediaCorrupto` si el
-  digest no casa.
+  escribe su `output`. Errores: `MediaNotWritable`, `MediaTransactionError`, y `MediaCorrupt` si el
+  digest no casa. `t.put_many(pairs, threads=8)` sube muchos a la vez, como `read_many`.
 - La celda calcula el `sha256` al paso, detecta el tipo por los bytes, y guarda el blob **por su
   digest**. Subir lo que ya está es gratis (idempotente por digest).
 - El ítem existe cuando la transacción se confirma; un `abort` no deja nada.
@@ -230,7 +231,8 @@ en su valor de error:
 
 ## 5. Lo que no es de este contrato
 
-- Cómo se deriva (el registro de derivación, `aplicar`, `reintentar_errores`): es B5, con la
-  tabla anclada de v1alpha17 `03` como forma de salida.
+- Cómo se deriva (el registro de derivación, `Collection.apply()`, `retry_errors`): es B5, con la
+  tabla anclada de v1alpha17 `03` como forma de salida; desde el SDK, en
+  [`sdk.md`](sdk.md#incremental-derivation-apply).
 - Qué función saca qué.
 - Permisos por ítem (0047).

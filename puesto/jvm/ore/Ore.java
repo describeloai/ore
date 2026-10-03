@@ -136,7 +136,7 @@ public final class Ore {
     /** Las claves en español de lo que el SDK devuelve → las inglesas. */
     static final Map<String, String> ES_EN = Map.of(
         "tabla", "table", "filas", "rows", "operacion", "operation", "repetida", "repeated",
-        "nombre", "name", "fichero", "file", "nueva", "new");
+        "nombre", "name", "fichero", "file", "nueva", "created", "new", "created");
 
     /**
      * What {@code write()} and {@code declare()} return: a map with English keys
@@ -1006,7 +1006,7 @@ public final class Ore {
             out.put("name", c.getOrDefault("namespace", ns) + "." + (s.isEmpty() || s.equals("default") ? "" : s + ".") + c.getOrDefault("name", nombre));
             out.put("file", c.getOrDefault("fichero", ""));
             out.put("commit", c.getOrDefault("commit", ""));
-            out.put("new", Boolean.TRUE.equals(c.get("nueva")) || (c.get("nueva") == null && r.codigo() == 201));
+            out.put("created", Boolean.TRUE.equals(c.get("nueva")) || (c.get("nueva") == null && r.codigo() == 201));
             return out;
         }
         if (c.get("diagnosticos") instanceof List<?> ds && !ds.isEmpty()) {

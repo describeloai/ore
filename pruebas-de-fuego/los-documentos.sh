@@ -653,13 +653,13 @@ ANTES=$(cabeza)
 #   Python), y una prueba que persiga el numero se pone roja por decir la
 #   verdad. Lo que importa es que el repositorio nace con LA DE HOY.
 cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==$VER and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja «transforms» resuelve a «transforms-python»), su version y el proyecto"
-cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/transforms/ejemplo.py']" "22 · la semilla es un ARBOL de ficheros: su entorno y su ejemplo (0036 viii.a)"
+cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/transforms/example.py']" "22 · la semilla es un ARBOL de ficheros: su entorno y su ejemplo (0036 viii.a)"
 [ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "22 · nacer entero costo mas de un commit"
 [ "$(asunto)" = 'crear un repositorio' ] || falla "22 · el asunto: $(asunto)"
 # el manifiesto, la semilla y el proyecto, en ESE commit
 git --git-dir="$FORJA" show --name-only --format= main > "$TMP/tocados.txt"
 grep -q "packages/hr/raw/README.md" "$TMP/tocados.txt" || falla "22 · el manifiesto no esta en el commit"
-grep -q "packages/hr/raw/transforms/ejemplo.py" "$TMP/tocados.txt" || falla "22 · la semilla no esta en el commit"
+grep -q "packages/hr/raw/transforms/example.py" "$TMP/tocados.txt" || falla "22 · la semilla no esta en el commit"
 grep -q "proyectos/personas/README.md" "$TMP/tocados.txt" || falla "22 · el proyecto no se actualizo en el mismo commit"
 # el indice lo trae, con su clase, y el proyecto lo nombra
 [ "$(pide GET /assets)" = "200" ] || falla "22 · GET /assets · $(cat "$TMP/r.json")"
@@ -672,7 +672,7 @@ cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['sitio']=='pac
 [ "$(pide GET /assets)" = "200" ] && cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['personas','hr/raw']" "22 · lo que cae en su sitio NO se dice dos veces (0035 vii.3)"
 [ "$(pide DELETE /arbol/packages/personas/mio)" = "200" ] || falla "22 · no se pudo retirar el repositorio de dentro"
 # viii.a · el ejemplo CORRE (no es un comentario) y el entorno se declara EN la instancia
-[ "$(pide GET /arbol/packages/hr/raw/transforms/ejemplo.py)" = "200" ]   && cumple "len([l for l in d['texto'].splitlines() if l.strip() and not l.strip().startswith('#')]) >= 5 and '@transform(' in d['texto']" "22 · el ejemplo es codigo, no un comentario"
+[ "$(pide GET /arbol/packages/hr/raw/transforms/example.py)" = "200" ]   && cumple "len([l for l in d['texto'].splitlines() if l.strip() and not l.strip().startswith('#')]) >= 5 and '@transform(' in d['texto']" "22 · el ejemplo es codigo, no un comentario"
 [ "$(pide GET /entorno "" "x-ore-raiz: packages/hr/raw")" = "200" ]   && cumple "d['alcance']=='packages/hr/raw' and d['declarado']==[]" "22 · nace sin dependencias: declarar lo que nadie usa seria una capa para nada"
 printf '[project]
 name = "x"
@@ -721,7 +721,7 @@ acotado() { # ruta-raiz
 cumple "d['raiz']=='packages/hr/raw' and d['cabeza']=='$CABEZA_ARBOL'" "23 · dice su raiz, y la cabeza es la del arbol (el arbol es uno)"
 cumple "all(f['ruta'].startswith('packages/hr/raw/') for f in d['ficheros'])" "23 · solo lo suyo"
 cumple "0 < len(d['ficheros']) < $TODOS" "23 · menos que la celda entera ($TODOS)"
-cumple "any(f['ruta']=='packages/hr/raw/README.md' for f in d['ficheros']) and any(f['ruta']=='packages/hr/raw/transforms/ejemplo.py' for f in d['ficheros'])" "23 · el manifiesto y la semilla, dentro"
+cumple "any(f['ruta']=='packages/hr/raw/README.md' for f in d['ficheros']) and any(f['ruta']=='packages/hr/raw/transforms/example.py' for f in d['ficheros'])" "23 · el manifiesto y la semilla, dentro"
 [ "$(acotado packages/hr/clean)" = "200" ] && cumple "all('clean' in f['ruta'] for f in d['ficheros'])" "23 · el de al lado ve lo suyo, no lo de este"
 [ "$(acotado otra/cosa/aqui)" = "422" ] || falla "23 · un alcance que no es una carpeta de paquete no dio 422"
 [ "$(acotado packages/hr/noexiste)" = "404" ] || falla "23 · una carpeta que no esta no dio 404"

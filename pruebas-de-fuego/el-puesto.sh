@@ -439,7 +439,7 @@ CURL=$!
 sleep 1
 MSG='{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"raiz":null}}'
 [ "$(pide POST /puestos/$P/lsp "$ANA" "{\"mensajes\":[$("$PY" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$MSG")]}")" = "202" ] || falla "3c · mandar un mensaje de LSP no dio 202: $(cuerpo)"
-ABRIR='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///transforms/ejemplo.py","languageId":"python","version":1,"text":"x = 1\n"}}}'
+ABRIR='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///transforms/example.py","languageId":"python","version":1,"text":"x = 1\n"}}}'
 [ "$(pide POST /puestos/$P/lsp "$ANA" "{\"mensajes\":[$("$PY" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$ABRIR")]}")" = "202" ] || falla "3c · el didOpen no dio 202: $(cuerpo)"
 wait $CURL 2>/dev/null || true
 grep -q "^event: lsp" "$TMP/lsp.txt" || falla "3c · no volvió ni un mensaje del servidor de lenguaje: $(cat "$TMP/lsp.txt")"
@@ -1526,17 +1526,17 @@ if [ "$JAVA_OK" = "si" ]; then
   # (diagnosticos) y con `Trees` (lo que se ve desde esa posicion). Aqui se
   # abre un fichero con un fallo, se espera el subrayado, y se pide una
   # propuesta donde el editor la pediria.
-  MAL='public class Ejemplo {\n    public static void main(String[] args) {\n        String saludo = \"hola\";\n        int n = saludo.longitud();\n        wr\n    }\n}\n'
+  MAL='public class Example {\n    public static void main(String[] args) {\n        String saludo = \"hola\";\n        int n = saludo.longitud();\n        wr\n    }\n}\n'
   curl -sN --max-time 10 -H "$ANA" "$BASE/puestos/$P/lsp/consola" >"$TMP/lspj.txt" 2>/dev/null &
   CURL=$!
   sleep 1
   mensaje() { "$PY" -c 'import json,sys; print(json.dumps({"mensajes":[sys.argv[1]]}))' "$1"; }
-  ABRIR_J="$("$PY" -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/transforms/Ejemplo.java","languageId":"java","version":1,"text":sys.argv[1]}}}))' "$(printf "$MAL")")"
+  ABRIR_J="$("$PY" -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/transforms/Example.java","languageId":"java","version":1,"text":sys.argv[1]}}}))' "$(printf "$MAL")")"
   [ "$(pide POST /puestos/$P/lsp "$ANA" "$(mensaje "$ABRIR_J")")" = "202" ] || falla "9b · el didOpen no dio 202: $(cuerpo)"
   sleep 3
-  COMP_J='{"jsonrpc":"2.0","id":31,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///trabajo/transforms/Ejemplo.java"},"position":{"line":4,"character":11}}}'
+  COMP_J='{"jsonrpc":"2.0","id":31,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///trabajo/transforms/Example.java"},"position":{"line":4,"character":11}}}'
   [ "$(pide POST /puestos/$P/lsp "$ANA" "$(mensaje "$COMP_J")")" = "202" ] || falla "9b · el completion no dio 202: $(cuerpo)"
-  HOV_J='{"jsonrpc":"2.0","id":32,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///trabajo/transforms/Ejemplo.java"},"position":{"line":2,"character":16}}}'
+  HOV_J='{"jsonrpc":"2.0","id":32,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///trabajo/transforms/Example.java"},"position":{"line":2,"character":16}}}'
   [ "$(pide POST /puestos/$P/lsp "$ANA" "$(mensaje "$HOV_J")")" = "202" ] || falla "9b · el hover no dio 202: $(cuerpo)"
   wait $CURL 2>/dev/null || true
   grep -q "publishDiagnostics" "$TMP/lspj.txt" || falla "9b · no llego ni un diagnostico: $(cat "$TMP/lspj.txt")"
