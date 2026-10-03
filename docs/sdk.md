@@ -375,7 +375,25 @@ and `person`). Everything is `async` except `person`, `table`, `toJson` and `arr
   `mediaColumns(view)`, `mediaUrl(collection, fingerprint, { ttl })`,
   `mediaUrls(collection, fingerprints, { ttl })` (these two return the items as `ore-serve`
   serves them), `ore.API`.
-- No collections, no `create_*`, no functions or models: use Python for those.
+- No collections, no `create_*`, no models, no calling a function (`get_function`): use Python for those.
+
+### Functions (OOS v1alpha23)
+
+A TypeScript function is the `export default function` of a `.ts` under a `functions/` folder,
+named like its file, with an optional `export const config = { over, reads, models, timeout }`
+(all literal). Its `Function` document is derived from the file without running it.
+
+- **Types** (`import type { … } from "ore"`, `index.d.ts`): `Integer` (a `number` the contract
+  requires exact; `bigint` for the full 64 bits), `Decimal` / `Decimal<p, s>`, `Money<"EUR", 2>`,
+  `Quantity<"km", 1>` (decimals travel as **strings with their digits**, never `number`),
+  `LocalDate`, `LocalTime`, `LocalDateTime` (ISO strings, no zone), `Media<"db.schema.collection">`,
+  `Config`. A JS `Date` is an instant (`DateTimeTz`); `number` is `Float`; `Uint8Array` is `Opaque`.
+  They are aliases: `const d: LocalDate = "2026-10-03"` needs no conversion.
+- **The contract** (`contract.call(fn, signature, args)`): each argument converted to what the
+  derived signature declares, the row first with `over`, and the output checked; a value that does
+  not fit throws `ContractError` (`.side` is `input` or `output`, `.parameter` the culprit).
+  Node erases types before running, so the contract reads the **derived signature**, not the code.
+  `contract.toWire(v)` turns a result into JSON (`bigint` → string, `Date` → ISO).
 
 ## JVM
 

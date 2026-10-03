@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "El SDK del puesto (ORE 0031 W3.4): over(), sql(), persona() desde una celda TS/JS",
   "type": "module",
-  "exports": "./index.mjs",
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./index.mjs" },
+    "./contract": { "types": "./contract.d.ts", "default": "./contract.mjs" }
+  },
+  "types": "./index.d.ts",
   "private": true
 }

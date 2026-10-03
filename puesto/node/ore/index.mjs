@@ -1002,9 +1002,20 @@ export function toJson(v) {
 /** @deprecated use {@link toJson}. */
 export const jsonDe = alias("jsonDe", "toJson", toJson);
 
+// ── el contrato de una función (0050 R3 T2) ─────────────────────────────────
+// `contract.call(fn, signature, args)`: cada parámetro del tipo que la firma
+// derivada declara, y lo devuelto comprobado (OOS v1alpha23 `01` §7). Los
+// TIPOS de una función (`Integer`, `Decimal<p, s>`, `Money<"EUR", 2>`,
+// `LocalDate`…) son de `index.d.ts`: Node los borra, y la firma los lee del
+// fichero sin ejecutarlo.
+import * as contract from "./contract.mjs";
+export { contract };
+export { ContractError } from "./contract.mjs";
+
 export default {
   API,
   over, sql, write, declare, transform, person, session, arrowName, LIMIT, EXTENSIONS, table, toJson, mediaUrl, mediaUrls, mediaColumns,
+  contract, ContractError: contract.ContractError,
   // los nombres de antes (alias, el mismo objeto)
   persona, puesto, nombreArrow, LIMITE, EXTENSIONES, tabla, jsonDe, media, medias, mediaDe,
 };

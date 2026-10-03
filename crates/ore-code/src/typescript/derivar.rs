@@ -164,7 +164,7 @@ impl<'m> Resolutor<'m> {
                 "string" => Ok((Tipo::String, false)),
                 "number" => Ok((Tipo::Float, false)),
                 "boolean" => Ok((Tipo::Boolean, false)),
-                "bigint" => Ok((Tipo::Integer, false)),
+                "bigint" => Ok((Tipo::Bigint, false)),
                 "null" | "undefined" => Err(Fallo::new(*r, format!("`{p}` solo no es un tipo"))
                     .ayuda(
                         "`T | null` dice que un valor puede faltar; `null` a secas no dice cuál",

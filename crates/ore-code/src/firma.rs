@@ -37,6 +37,11 @@ impl Fallo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tipo {
     Integer,
+    /// Un `Integer` que el código de TypeScript recibe como `bigint` (OOS
+    /// v1alpha23 `01` §6.2): el documento dice `Integer`, igual que con
+    /// `Integer`, y el contrato de Node tiene que saber cuál de los dos
+    /// entrega. Ver [`Tipo::forma`].
+    Bigint,
     Float,
     String,
     Boolean,
@@ -75,6 +80,7 @@ impl Tipo {
     pub fn de_v1alpha20(&self) -> bool {
         match self {
             Tipo::Integer
+            | Tipo::Bigint
             | Tipo::Float
             | Tipo::String
             | Tipo::Boolean
@@ -90,7 +96,7 @@ impl Tipo {
 impl fmt::Display for Tipo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Tipo::Integer => f.write_str("Integer"),
+            Tipo::Integer | Tipo::Bigint => f.write_str("Integer"),
             Tipo::Float => f.write_str("Float"),
             Tipo::String => f.write_str("String"),
             Tipo::Boolean => f.write_str("Boolean"),
@@ -120,6 +126,28 @@ impl fmt::Display for Tipo {
                 f.write_str(">")
             }
             Tipo::Media(c) => write!(f, "Media<{c}>"),
+        }
+    }
+}
+
+impl Tipo {
+    /// El tipo como lo lee el contrato de un runtime: el canónico de OOS,
+    /// salvo un entero que el código recibe como `bigint`, que es `BigInt`.
+    /// No es OOS ni va al documento: es lo que la derivación sabe y el
+    /// documento no dice, para que la frontera entregue lo que el código
+    /// declaró (ORE 0050 R3 T2).
+    pub fn forma(&self) -> String {
+        match self {
+            Tipo::Bigint => "BigInt".to_string(),
+            Tipo::Lista(t) => format!("list<{}>", t.forma()),
+            Tipo::Struct(campos) => {
+                let cs: Vec<String> = campos
+                    .iter()
+                    .map(|(n, t)| format!("{n}: {}", t.forma()))
+                    .collect();
+                format!("Struct<{}>", cs.join(", "))
+            }
+            otro => otro.to_string(),
         }
     }
 }

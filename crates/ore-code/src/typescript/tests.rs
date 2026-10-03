@@ -208,6 +208,15 @@ export default function lineas(
         f.descripcion.as_deref(),
         Some("Las líneas de un pedido que pesan.")
     );
+    // El contrato de Node sabe que `id` llega como `bigint` y `intentos` como
+    // `number`, aunque el documento diga `Integer` en los dos.
+    assert!(
+        f.entrada[0]
+            .tipo
+            .forma()
+            .starts_with("Struct<id: BigInt, lineas: list<")
+    );
+    assert_eq!(f.entrada[6].tipo.forma(), "Integer");
 }
 
 #[test]
