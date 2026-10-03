@@ -52,10 +52,8 @@ substitutions:
   # La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`); el job
   # de GitHub la pasa. Vacía (una construcción a mano), se calcula aquí.
   _BINARIOS: ''
-  # La caché de compilación (sccache) vive en el bucket
-  # project-8853a180-450d-47be-b83-ci-sccache; está apagada (CACHE_GCS vacío)
-  # mientras se aclara el segfault de los binarios sin LTO. Cloud Build rechaza
-  # una sustitución que el guion no usa: vuelve como _SCCACHE al encenderla.
+  # (sccache se fue el 2026-10-03: con él los binarios morían con SIGSEGV. Su
+  # bucket, project-8853a180-450d-47be-b83-ci-sccache, ya no lo usa nadie.)
 
 steps:
   # ⭐⭐ LOS BINARIOS, POR SU CONTENIDO (2026-10-03). Si ya hay una imagen
@@ -80,14 +78,27 @@ steps:
           echo "binarios h-$$H: ya estaban, NO se compila"
         else
           echo "binarios h-$$H: no estaban, se compilan"
-          # Se compila con `docker run` sobre la etapa `herramientas`, no con
-          # `docker build`: BuildKit no admite `--network=cloudbuild`, y sin esa
-          # red sccache no llega al servidor de metadatos —la identidad de la
-          # construccion, ore-ci, que lee y escribe el bucket—. El guion es el
-          # mismo que el de la etapa `build` (ci/compilar-binarios.sh).
-          docker build -q --target herramientas -t herramientas . >/dev/null
-          docker run --rm --network=cloudbuild -v /workspace:/src -w /src \
-            -e CACHE_GCS= -e SALIDA=/src/.binarios herramientas sh ci/compilar-binarios.sh
+          # ⭐ Las dependencias, por su receta (CI paso 2): `ore-deps:h-<D>`
+          #   trae lo de terceros ya compilado; si la receta (los manifiestos y
+          #   el Cargo.lock), el guion o las etapas no cambiaron, se baja y
+          #   sólo se compila nuestro código. Si no, se construye una vez.
+          docker build -q --target receta -t receta . >/dev/null
+          D=$$({ docker run --rm receta cat /receta.json
+                 awk '/^FROM rust:.* AS herramientas$$/ {p=1} /^FROM deps AS build$$/ {p=0} p' Dockerfile
+                 cat ci/compilar-binarios.sh rust-toolchain.toml; } | sha256sum | cut -c1-16)
+          DEPS="${_REGISTRO}/ore-deps"
+          if docker pull -q "$$DEPS:h-$$D" >/dev/null 2>&1; then
+            echo "deps h-$$D: ya estaban, sólo se compila lo nuestro"
+          else
+            echo "deps h-$$D: no estaban, se compilan (una vez)"
+            docker build -q --target deps -t "$$DEPS:h-$$D" . >/dev/null
+            docker push -q "$$DEPS:h-$$D"
+          fi
+          # El árbol en /src encima del esqueleto de cargo-chef; lo compilado
+          # sigue en /t (CARGO_TARGET_DIR de la imagen). El guion acaba
+          # arrancando cada servidor: uno que muere no se publica.
+          docker run --rm -v /workspace:/src -w /src -e SALIDA=/src/.binarios \
+            "$$DEPS:h-$$D" sh ci/compilar-binarios.sh
           printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t "$$B:h-$$H" -f - .binarios >/dev/null
           docker push -q "$$B:h-$$H"
         fi

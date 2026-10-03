@@ -48,21 +48,39 @@ FROM rust:1.90-alpine AS herramientas
 # `musl-dev` para el enlazador; OpenSSL estático sólo lo necesitan los que
 # hablan TLS. El resto del árbol no arrastra FFI, y eso es lo que afirma de sí
 # mismo.
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz
 
-# ⭐ sccache (2026-10-03): lo compilado de cada crate, guardado en un bucket por
-#   la huella de su código y sus opciones. Una máquina de Cloud Build nace
-#   vacía; con esto, lo que no cambió se baja en vez de compilarse. La versión
-#   va fijada y comprobada por su sha256. Esta etapa es también donde compila
-#   el paso `binarios` de cloudbuild.yaml (`docker run --network=cloudbuild`).
-RUN curl -sSfL -o /tmp/s.tgz https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz \
- && echo "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89  /tmp/s.tgz" | sha256sum -c - \
- && tar -xzf /tmp/s.tgz -C /tmp && mv /tmp/sccache-v0.18.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache \
- && rm -rf /tmp/s.tgz /tmp/sccache-v0.18.0-x86_64-unknown-linux-musl
+# cargo-chef: compila las dependencias de un árbol sin su código (la receta son
+# los `Cargo.toml` y el `Cargo.lock`). La versión va fijada y comprobada por su
+# sha256. (sccache se fue el 2026-10-03: con él `ore-medios` y `ore-cofre`
+# morían al arrancar con SIGSEGV, en frío y en caliente; medido.)
+RUN curl -sSfL -o /tmp/c.tar.xz https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.78/cargo-chef-x86_64-unknown-linux-musl.tar.xz  && echo "aca691abfbfbbe00d482e0ed2249eec3091b65e96a0ce92947fb5b254d48b16d  /tmp/c.tar.xz" | sha256sum -c -  && tar -xJf /tmp/c.tar.xz -C /tmp && mv /tmp/cargo-chef-x86_64-unknown-linux-musl/cargo-chef /usr/local/bin/cargo-chef  && rm -rf /tmp/c.tar.xz /tmp/cargo-chef-x86_64-unknown-linux-musl
 WORKDIR /src
+# Fuera de /src: el paso `binarios` monta el árbol en /src y lo compilado de
+# las dependencias (`deps`) tiene que seguir donde estaba.
+ENV CARGO_TARGET_DIR=/t
 
-# En local (y sin bucket): la misma compilación que en Cloud Build, aquí dentro.
-FROM herramientas AS build
+# ⭐ LAS DEPENDENCIAS, POR SU RECETA (CI paso 2, 2026-10-03). Lo de terceros
+#   (~450 crates) no cambia de un commit a otro y era la mayor parte de cada
+#   compilación. `receta` saca de los manifiestos lo que hay que compilar;
+#   `deps` lo compila con el MISMO perfil, paquetes y guion que los binarios, y
+#   cloudbuild.yaml la guarda como `ore-deps:h-<huella de la receta>`. Nuestro
+#   código se compila SIEMPRE entero encima: nada nuestro sale de una caché.
+FROM herramientas AS receta
+# Sin `rust-toolchain.toml`: la receta sale de los manifiestos y no depende del
+# compilador; con él, rustup bajaría el toolchain entero sólo para leerlos.
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo chef prepare --recipe-path /receta.json
+
+FROM herramientas AS deps
+COPY rust-toolchain.toml ./
+COPY ci/compilar-binarios.sh /ci/compilar-binarios.sh
+COPY --from=receta /receta.json /receta.json
+RUN RECETA=/receta.json sh /ci/compilar-binarios.sh
+
+# En local: la misma compilación que en Cloud Build, aquí dentro.
+FROM deps AS build
 # Sólo lo que `cargo` lee: lo demás del árbol no puede cambiar un binario (y
 # es lo que `ci/huella-de-los-binarios.sh` mira).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
