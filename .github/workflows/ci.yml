@@ -524,6 +524,24 @@ jobs:
           echo "clave=$H-$O" >> "$GITHUB_OUTPUT"
           echo "  binarios h-$H · clave $H-$O"
 
+      # ⭐ UNA COMPILACIÓN POR HUELLA (2026-10-03). Cada commit es la punta al
+      #   arrancar, así que con empujes cada pocos minutos seis runs compilaban
+      #   a la vez dos huellas. Si ya hay en Cloud Build una construcción en
+      #   curso con esta huella, se la espera: al terminar, `ore-binarios:h-<huella>`
+      #   existe y el paso `binarios` de la nuestra no compila nada. Si no se
+      #   puede listar, se sigue como antes: la espera ahorra, nunca bloquea.
+      - name: y si ya se compila esta huella, esperarla
+        if: steps.punta.outputs.sigue == 'si'
+        run: |
+          H=${{ steps.huella.outputs.binarios }}
+          for _ in $(seq 1 90); do
+            EN_CURSO=$(gcloud builds list --ongoing --format='value(id)' \
+              --filter="substitutions._BINARIOS=$H" 2>/dev/null) || break
+            [ -z "$EN_CURSO" ] && break
+            echo "  h-$H ya se compila en $(echo $EN_CURSO | tr '\n' ' '): se espera"
+            sleep 20
+          done
+
       # Todas en una sola construcción: comparten los binarios.
       - name: construir las once imagenes, con la etiqueta del commit y ninguna otra
         if: steps.punta.outputs.sigue == 'si'
