@@ -1323,7 +1323,9 @@ dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex
 #   su capa NO es la de Python aunque el árbol tenga las dos, y que el Job que
 #   encola es el suyo.
 [ "$(pide GET /entorno/jvm "$ANA")" = "200" ] && tiene "d['estado']=='sin-dependencias' and d['entorno']=='jvm' and d['declarado']==[]" || falla "6b · entorno jvm sin dependencias: $(cuerpo)"
-[ "$(pide GET /entorno/node "$ANA")" = "404" ] || falla "6b · /entorno/node deberia ser 404 (node nace con su imagen): $(cuerpo)"
+# node declara capa desde 0050 R3 T5b (`package.json`); lo que no es ninguno de los tres, 404
+[ "$(pide GET /entorno/node "$ANA")" = "200" ] && tiene "d['estado']=='sin-dependencias' and d['entorno']=='node' and d['declarado']==[]" || falla "6b · entorno node sin dependencias: $(cuerpo)"
+[ "$(pide GET /entorno/rust "$ANA")" = "404" ] || falla "6b · /entorno/rust deberia ser 404: $(cuerpo)"
 # Un pom con de todo: lo que cuenta y lo que NO se honra.
 printf '<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0">
