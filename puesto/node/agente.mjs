@@ -36,6 +36,7 @@ import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ore from "./ore/index.mjs";
+import { Correa } from "./correa.mjs";
 
 const FILAS_MAXIMAS = 200;
 const AQUI = dirname(fileURLToPath(import.meta.url));
@@ -218,6 +219,10 @@ function comoTabla(valor) { return ore.table(valor, FILAS_MAXIMAS); }
 function llano(v) { return ore.toJson(v); }
 
 // ── El bucle ───────────────────────────────────────────────────────────────
+/** La correa del servidor de lenguaje (0050 L3·3, `correa.mjs`): escucha desde
+ *  el principio, y el servidor no arranca hasta el primer mensaje del editor. */
+let correa = null;
+
 async function main() {
   const p = ore.session;
   if (!p.id) { log("sin PUESTO en el entorno"); return 2; }
@@ -228,6 +233,10 @@ async function main() {
   if (trabajo) process.env.ORE_CODIGO = trabajo;
   const testigo = new Testigo();
   const kernel = new Kernel();
+  if (!trabajo) {
+    correa = new Correa(p, testigo);
+    void correa.escuchar();
+  }
   log(`puesto ${p.id} · ore-serve ${p.servidor} · TTL ${ttl}s · almacén ${p.almacen} · node ${process.version}`);
   let ultimo = Date.now();
   const espera = (s) => new Promise((ok) => setTimeout(ok, s * 1000));
@@ -280,3 +289,6 @@ if (process.argv.includes("--comprobar")) {
   process.exit(0);
 }
 process.exitCode = await main();
+// El flujo del editor y el servidor de lenguaje no son razón para seguir vivo.
+correa?.parar();
+process.exit(process.exitCode);

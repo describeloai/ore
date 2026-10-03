@@ -1,4 +1,4 @@
-// El contrato de Node (0050 R3 T2): `node --test puesto/node/pruebas/`.
+// El contrato de Node (0050 R3 T2): `node --test "puesto/node/pruebas/*.test.mjs"`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { call, convert, checkOutput, parseType, ContractError, toWire } from "../ore/contract.mjs";

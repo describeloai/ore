@@ -182,6 +182,20 @@ spec:
                   raise SystemExit("✗ la caja de la capa no está en el bucket (%s): ¿la resolvió 57-la-capa-node?" % str(e)[:120])
               if informe.get("estado") != "lista":
                   raise SystemExit("✗ la capa %s no está lista: %s" % (os.environ["CAPA"], informe.get("estado")))
+              # ⭐ 0050 L3·3: lo que sólo tipa (`devDependencies`), en SU caja y con
+              #   SU suma, en `/capa/tipos`: nunca junto a lo que corre. Lo lee el
+              #   servidor de TypeScript del agente (`correa.mjs`).
+              if informe.get("cajaTipos"):
+                  if informe["cajaTipos"] != "tipos.tgz":
+                      raise SystemExit("✗ `%s` no es la caja de tipos de una capa de Node" % str(informe["cajaTipos"])[:80])
+                  b.blob(pre + "tipos.tgz").download_to_filename("/trabajo/tipos.tgz")
+                  with open("/trabajo/tipos.tgz", "rb") as fh:
+                      if hashlib.sha256(fh.read()).hexdigest() != informe.get("sumaTipos"):
+                          raise SystemExit("✗ tipos.tgz no es la que se resolvió (sha256 distinto del informe)")
+                  os.makedirs("/capa/tipos", exist_ok=True)
+                  with tarfile.open("/trabajo/tipos.tgz") as tf:
+                      tf.extractall("/capa/tipos", filter="data")
+                  print("### tipos de la capa %s en /capa/tipos (%s MB)" % (os.environ["CAPA"], informe.get("mbTipos", "?")), flush=True)
               if not informe.get("caja"):
                   print("### capa %s: nada que instalar (lo declarado lo trae la sesión)" % os.environ["CAPA"], flush=True)
                   raise SystemExit(0)

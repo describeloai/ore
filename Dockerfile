@@ -456,6 +456,8 @@ RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.Duck
 # ERR_MODULE_NOT_FOUND y `node --check` no lo veía — por eso la comprobación
 # de abajo ARRANCA el agente (`--comprobar`: importa, crea el kernel, corre una celda).
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
+# La correa del servidor de TypeScript (0050 L3·3): el agente la importa.
+COPY puesto/node/correa.mjs /opt/ore/correa.mjs
 COPY puesto/node/ore        /opt/ore/ore
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN ln -s ../ore /opt/ore/node_modules/ore \
@@ -489,6 +491,18 @@ RUN mkdir -p /tmp/t/functions /tmp/t/node_modules/@types && cd /tmp/t \
  && ! node /opt/ore/tipos/node_modules/typescript/bin/tsc -p . > salida.txt \
  && grep -q TS1294 salida.txt \
  && cd / && rm -rf /tmp/t
+# ⭐ L3·3 · Y LA CORREA CON SU SERVIDOR DE VERDAD: un `ore-serve` de mentira
+#   (la ficha, el índice, los ficheros, el flujo) contra el
+#   `typescript-language-server` de `/opt/ore/tipos`: el repositorio llega al
+#   disco, el `enum` es TS1294 (sólo con su `tsconfig` en disco), el vecino se
+#   resuelve, `Decimal` es el de `ore`, y lo que se edita se refleja. Con el
+#   contrato de Node (R3 T2), las pruebas de `puesto/node/pruebas`.
+COPY puesto/node/pruebas /opt/ore/pruebas
+RUN node --test "/opt/ore/pruebas/*.test.mjs" > /tmp/pruebas.txt 2>&1 \
+      || { cat /tmp/pruebas.txt; exit 1; } \
+ && grep -E '^# (pass|fail)' /tmp/pruebas.txt >> /entorno-1.txt \
+ && ! grep -q '^# skipped [1-9]' /tmp/pruebas.txt \
+ && rm -rf /opt/ore/pruebas /tmp/pruebas.txt
 
 USER 65532:65532
 WORKDIR /trabajo
