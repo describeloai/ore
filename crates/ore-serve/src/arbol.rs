@@ -822,8 +822,10 @@ pub(crate) struct Generado {
     antes: Option<Vec<u8>>,
 }
 
-/// **El código es la fuente** (0050): si un commit toca un `.py`, el documento
-/// `Function` de cada `@function` de esos ficheros entra en el MISMO commit —
+/// **El código es la fuente** (0050): si un commit toca un `.py` o un `.ts`,
+/// el documento `Function` de cada `@function` —o de la exportación por
+/// defecto de un `.ts` de `functions/`, R3— de esos ficheros entra en el MISMO
+/// commit —
 /// creado, al día o fuera si el `@function` se fue—, como lo escribiría `ore
 /// functions generate`. Sin esto, guardar un `@function` desde la consola
 /// era un 422 de la puerta (`OOS2013`: sin su documento).
@@ -842,7 +844,7 @@ pub(crate) fn generar_funciones(
 ) -> Vec<Generado> {
     let solo: std::collections::BTreeSet<PathBuf> = tocadas
         .iter()
-        .filter(|r| r.ends_with(".py"))
+        .filter(|r| r.ends_with(".py") || r.ends_with(".ts"))
         .map(|r| raiz.join(r.trim_matches('/')))
         .collect();
     generar_de(raiz, solo, dueno)

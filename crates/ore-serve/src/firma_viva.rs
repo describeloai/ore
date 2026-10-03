@@ -1,7 +1,9 @@
 //! `POST /funciones/firma` (ADR 0050 G5b · Dry Run): la firma de cada
-//! `@function` de un texto **sin guardar**, mientras se escribe.
+//! `@function` de un texto **sin guardar**, mientras se escribe. Desde R3
+//! (OOS v1alpha23), también la de un `.ts`: su exportación por defecto, si el
+//! fichero es de `functions/`. El lenguaje lo dice la extensión de `ruta`.
 //!
-//! Es la derivación del commit (`ore_code::python::derivar`, la que escribe el
+//! Es la derivación del commit (`ore_code::derivar`, la que escribe el
 //! documento `Function`), sobre el texto del editor y no sobre el árbol: no lee
 //! git, no escribe nada y no ejecuta el código. Por eso puede ir a cada pausa
 //! del teclado (microsegundos; el límite de tamaño y la pila los pone
@@ -14,6 +16,11 @@
 //! abierto. Respuesta: las funciones **en el orden del fichero**, cada una con
 //! su firma o sus fallos, y los fallos del fichero (sintaxis, versión, avisos),
 //! todos con línea y columna para señalarlos en el editor.
+//!
+//! Cada tipo va en su forma canónica (`type`) y, si el contrato de un runtime
+//! necesita saber más de lo que el documento dice, también en `forma`: hoy, un
+//! `Integer` que el código de TypeScript declaró `bigint` es `BigInt` (R3 T2,
+//! `ore/contract.mjs`).
 
 use ore_code::lineas::Lineas;
 use ore_code::{Campo, Fallo, Firma, Salida};
@@ -42,7 +49,8 @@ pub(crate) fn firma(cuerpo: &str) -> Respuesta {
 
 /// Lo que la respuesta lleva. Aparte, para probarlo sin HTTP.
 fn derivada(texto: &str, ruta: &str, paquete: &str) -> Json {
-    let d = ore_code::python::derivar(texto, ruta);
+    // Ni `.py` ni `.ts`: un fichero que no puede tener funciones.
+    let d = ore_code::derivar(texto, ruta).unwrap_or_default();
     let l = Lineas::new(texto);
     let fallos = |fs: &[Fallo]| Json::Arr(fs.iter().map(|f| fallo(&l, f)).collect());
     let funciones = d
@@ -98,25 +106,42 @@ fn campos(cs: &[Campo]) -> Json {
     Json::Arr(
         cs.iter()
             .map(|c| {
-                Json::obj([
+                let mut o = Json::obj([
                     ("nombre", Json::s(&c.nombre)),
                     ("type", Json::s(c.tipo.to_string())),
                     ("required", Json::Bool(c.requerido)),
-                ])
+                ]);
+                con_forma(&mut o, &c.tipo);
+                o
             })
             .collect(),
     )
 }
 
+/// `forma`, solo si no es el tipo canónico.
+fn con_forma(o: &mut Json, t: &ore_code::Tipo) {
+    let forma = t.forma();
+    if let Json::Obj(m) = o
+        && forma != t.to_string()
+    {
+        m.insert("forma".into(), Json::s(forma));
+    }
+}
+
 fn firma_json(f: &Firma, paquete: &str) -> Json {
     let mut o = Json::obj([
         ("entrypoint", Json::s(&f.entrypoint)),
+        ("runtime", Json::s(f.runtime())),
         ("apiVersion", Json::s(f.api_version())),
         ("input", campos(&f.entrada)),
         (
             "output",
             match &f.salida {
-                Salida::Valor(t) => Json::obj([("type", Json::s(t.to_string()))]),
+                Salida::Valor(t) => {
+                    let mut o = Json::obj([("type", Json::s(t.to_string()))]);
+                    con_forma(&mut o, t);
+                    o
+                }
                 Salida::Campos(cs) => Json::obj([("campos", campos(cs))]),
             },
         ),
@@ -252,6 +277,46 @@ def rota(x: Money[MONEDA, 2]) -> int:
         let sintaxis = arr(&obj(&r)["sintaxis"]);
         assert!(!sintaxis.is_empty());
         assert_eq!(obj(&sintaxis[0])["linea"], Json::Int(4));
+    }
+
+    #[test]
+    fn la_firma_de_un_ts_sin_guardar() {
+        let r = derivada(
+            "import type { Decimal } from \"ore\";\n\n\
+             export const config = { timeout: \"30s\" };\n\n\
+             /** El total. */\n\
+             export default async function quoteOrder(id: bigint, descuento: Decimal<5, 2> = \"0\"): Promise<{ total: number }> {\n  \
+             return { total: 0 };\n}\n",
+            "facturacion/functions/quoteOrder.ts",
+            "ventas",
+        );
+        let fs = arr(&obj(&r)["funciones"]);
+        assert_eq!(fs.len(), 1);
+        let q = obj(&fs[0]);
+        assert_eq!(s(&q["nombre"]), "quoteOrder");
+        assert_eq!(q["linea"], Json::Int(6));
+        let f = obj(&q["firma"]);
+        assert_eq!(s(&f["referencia"]), "ventas.quoteOrder");
+        assert_eq!(s(&f["runtime"]), "node");
+        assert_eq!(s(&f["entrypoint"]), "facturacion/functions/quoteOrder.ts");
+        assert_eq!(s(&f["apiVersion"]), "oos.dev/v1alpha23");
+        assert_eq!(s(&f["timeout"]), "30s");
+        assert_eq!(s(&f["description"]), "El total.");
+        let id = obj(&arr(&f["input"])[0]);
+        // El documento dice `Integer`; el contrato de Node, que llega como `bigint`.
+        assert_eq!(s(&id["type"]), "Integer");
+        assert_eq!(s(&id["forma"]), "BigInt");
+        assert!(!obj(&arr(&f["input"])[1]).contains_key("forma"));
+        assert!(obj(&f["output"]).contains_key("campos"));
+
+        // Fuera de `functions/` no es una función; un módulo de ayuda tampoco.
+        let r = derivada("export default function f(): string { return \"\"; }", "lib/f.ts", "v");
+        assert!(arr(&obj(&r)["funciones"]).is_empty());
+        let r = derivada("export function f(): string { return \"\"; }", "functions/f.ts", "v");
+        assert!(arr(&obj(&r)["funciones"]).is_empty());
+        // Ni `.py` ni `.ts`: nada.
+        let r = derivada("x", "notas.md", "v");
+        assert!(arr(&obj(&r)["funciones"]).is_empty());
     }
 
     #[test]
