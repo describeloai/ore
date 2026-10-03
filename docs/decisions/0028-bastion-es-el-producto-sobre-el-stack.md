@@ -7,7 +7,7 @@ medido) sobre RTX PRO 6000 GDDR7—; que la optimización real vive **abajo** (f
 y motor ajeno) y Bastion **la selecciona, la certifica, la hace reproducible y la envuelve**;
 que el motor propio construido en P1–P3 queda **congelado como referencia certificada**; y que
 cada máquina lleva **una etiqueta de soberanía** que el gateway respeta. Es el punto de partida
-de la construcción del producto y el sujeto del `kind: Model` de [`0027`](0027-el-modelo-vive-en-el-arbol.md).
+de la construcción del producto y el sujeto del `kind: Model` de [`0027`](0027-model-serving.md).
 
 ---
 

@@ -147,7 +147,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
         texto = _cuerpo(self).get("yaml", "")
         dueno = re.search(r"^  owner: (\S+)$", texto, re.M)
         if not dueno:
-            # Como `PUT /documentos` (0027 · el dueño es quien lo crea): sin `owner`, el que ya
+            # Como `PUT /documentos` (0052 · Ownership): sin `owner`, el que ya
             # tenía si se reescribe, y si nace, quien lo crea.
             previo = re.search(r"^  owner: (\S+)$", DOCUMENTOS.get(clave, ""), re.M)
             texto = texto.replace("\nspec:\n", "\nspec:\n  owner: %s\n" % (

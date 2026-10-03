@@ -91,7 +91,7 @@ pub fn rendir(plantilla: &str, fuente: &str) -> Result<(String, String), String>
 /// (`44-el-catalogo-<obj>.yaml`: Flux poda el Job anterior) y el Job es otro.
 ///
 /// Con `dueno`, el Job lleva `DUENO` junto a `FUENTE`: el `owner` del paquete que
-/// cree (0027 · el dueño es quien lo crea: quien dio de alta el origen). Una plantilla que no
+/// cree (0052 · Ownership: quien dio de alta el origen). Una plantilla que no
 /// lo lea sigue con el suyo, y una que lo lea sin él, también: los dos órdenes del
 /// despliegue valen.
 pub fn rendir_corrida(

@@ -49,7 +49,7 @@ es de `ore-iam` (pertenencia y potestades) y lo pregunta cada módulo por `ore-a
 `sub` (quién es: con el emisor, su fila en `iam.persona`), `email` y `name` (copias para pintar y
 para casar una invitación), y **`preferred_username`**, el nombre de usuario que eligió al
 registrarse: de él saca `ore-iam`, una sola vez, el **handle** con el que firma como dueño
-(`user:<handle>`, 0027 y 0047 `quien`). Llega por el ámbito `profile` de `rubix-consola`. El
+(`user:<handle>`, 0052 y 0047 `quien`). Llega por el ámbito `profile` de `rubix-consola`. El
 handle no sigue al usuario si este cambia —es lo que queda escrito en el árbol—, así que cambiar
 el nombre de usuario en el IdP no renombra a nadie en ORE.
 

@@ -91,8 +91,8 @@ filtro (patrón de claves) y formato esperado.
 - **Lo que lo lee:**
   - una base foránea lo lee como vistas;
   - una base standard lo copia como `Dataset` (§3) o como colección (§2).
-- **Su dueño** (v1alpha21): `spec.owner`, opcional, quien dio de alta el origen (0027, «el dueño es
-  quien lo crea»). Lo escribe su único escritor, `ore source induce`, que **todavía no lo pone**: un
+- **Su dueño** (v1alpha21): `spec.owner`, opcional, quien dio de alta el origen (0052 · Ownership). Lo
+  escribe su único escritor, `ore source induce`, que **todavía no lo pone**: un
   `ObjectTable` inducido hoy sale sin `owner` y responde por él el paquete de la fuente.
 
 ### 2 · La colección de ficheros, **tipada desde el primer día**

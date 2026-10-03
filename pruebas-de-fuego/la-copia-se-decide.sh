@@ -18,7 +18,7 @@
 #                                       (0033) — la copia no espera a ninguna clave;
 #                                       orders (con clave en el origen) en `upsert`, customers
 #                                       como el origen la dijo · EL DUEÑO ES QUIEN LA CREA:
-#                                       `owner: user:ana` (ore-serve → discover --owner; 0027),
+#                                       `owner: user:ana` (ore-serve → discover --owner; 0052),
 #                                       la cola VACIA, conduits.yaml nace, el Job con las
 #                                       dos ENCOLADO YA, el arbol compila · discover.answers.json
 #                                       guarda `dueno` · GET /paquetes: standard, 2/0

@@ -143,7 +143,7 @@ pub enum ApiVersion {
     /// siempre (`OOS2009`)—, como ya lo decían el paquete, el schema, la vista,
     /// el dataset, la colección y el modelo entrenado. No da acceso y no se
     /// hereda; en una función de código no es parte de la firma. Lo decidió ORE
-    /// 0027 «el dueño es quien lo crea» (2026-10-02): lo que se crea es de quien lo crea.
+    /// 0052 · Ownership (2026-10-02): lo que se crea es de quien lo crea.
     V1Alpha21,
     /// v1alpha22. **Nunca nula.** La columna de una `Table` dice que el origen
     /// garantiza que nunca es nula —`columns.<c>.required`, opcional, un

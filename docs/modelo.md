@@ -24,7 +24,7 @@
 | **`Entity`** | **qué es una fila** de esa respuesta | el modelo | **sí — es la única que puede** |
 | **`Model`** | **qué razona** sobre eso | quien lo certifica — nombra un perfil medido | no — lo que produce lo clasifica la función que lo invoca, por sus endosos |
 
-El cuarto llegó con v1alpha9 ([ADR 0027](decisions/0027-el-modelo-vive-en-el-arbol.md)): un
+El cuarto llegó con v1alpha9 ([ADR 0027](decisions/0027-model-serving.md)): un
 modelo que se usa es un documento del árbol, `modelos/<n>.yaml`, con `profile`, `digest`,
 `tier` y `task` y nada más — ni runtime, ni recursos, ni pesos, que son del perfil. Una
 `Function` con `runtime: model` lo invoca como `modelo/<n>` y **sigue sin aplicar: propone**.
@@ -110,7 +110,7 @@ responsabilidad, y `ore report` la usa para decir **qué gobierna qué y quién 
 **En la plataforma, quien responde es quien lo crea.** Todo lo que nace con `owner` lleva el
 `user:<handle>` de la persona que lo crea —el handle se lo da `ore-iam` a partir del nombre de
 usuario que eligió al registrarse—; no se hereda del paquete ni del schema, y editar no lo cambia:
-transferir es escribir otro (0027, «el dueño es quien lo crea»). Con la CLI, sin plataforma, nadie
+transferir es escribir otro (0052 · Ownership). Con la CLI, sin plataforma, nadie
 sabe quién crea: `owner` se pregunta, y sin respuesta es `cambiame`, que no compila.
 
 Un documento existe **aparte** cuando responde otra persona. Es el criterio de la casa, y está

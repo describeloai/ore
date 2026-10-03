@@ -111,8 +111,7 @@ Y **`owner` se pregunta, no se deriva**: es quién responde. Sin él se escribe 
 valida** — un handle inventado dejaría el paquete sin nadie que responda aparentando lo contrario.
 `discover --owner <handle>` es lo mismo dicho por quien llama: la decisión `dueno` contestada de
 antemano, guardada con las demás respuestas (`discover.answers.json`). Es lo que hace `ore-serve`
-con quien crea la base: `user:<handle>` de esa persona, que le da `ore-iam` (0027, «el dueño es
-quien lo crea»).
+con quien crea la base: `user:<handle>` de esa persona, que le da `ore-iam` (0052 · Ownership).
 
 No escribe YAML: llama a `inductor::documento_paquete`, el mismo emisor que usa la inducción. Un
 manifiesto escrito a mano y uno inducido tienen que ser **el mismo texto**.

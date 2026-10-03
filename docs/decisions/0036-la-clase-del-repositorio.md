@@ -6,7 +6,7 @@
 cada cosa**, para que la partición por instancia sea limpia **desde el primer momento**. Sigue a
 [`0035`](0035-el-proyecto.md) ⑥ (el repositorio es la unidad de trabajo),
 [`0031`](0031-el-puesto.md) (dónde corre el código, y la capa) y
-[`0027`](0027-el-modelo-en-el-arbol.md) (los perfiles de máquina).
+[`0027`](0027-model-serving.md) (los perfiles de máquina).
 
 ## El problema
 

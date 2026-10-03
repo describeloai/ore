@@ -79,7 +79,7 @@ La `Function` de OOS. `input` y `output` **son** la firma; lo que v1alpha18 aña
 | `models: [modelo/<ref>]` | los modelos que el código **puede** llamar | `model` sigue siendo `runtime: model`; una función de código **usa** modelos, y lo usado se declara |
 | `output` como valor | `{type: T}` si la vuelta no es una `@dataclass` | una función puede devolver un escalar o una lista |
 | `limits.timeout`, `over`, `reads`, `models` | argumentos **literales** de `@function(...)` | se leen sin ejecutar |
-| `owner` (v1alpha21) | quién responde de la función: **quien la crea**, `user:<handle>` | no sale del código, así que `OOS2013` no lo compara; al regenerar el documento se conserva (0027, «el dueño es quien lo crea») |
+| `owner` (v1alpha21) | quién responde de la función: **quien la crea**, `user:<handle>` | no sale del código, así que `OOS2013` no lo compara; al regenerar el documento se conserva (0052 · Ownership) |
 
 El documento derivado declara **la versión más baja que lo describe**: v1alpha18; v1alpha20 si la
 firma usa sus tipos; **v1alpha21 si lleva `owner`**, que es lo que pasa cuando nace desde la

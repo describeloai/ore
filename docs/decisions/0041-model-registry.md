@@ -2,7 +2,7 @@
 
 **Estado:** **decidido y hecho** (2026-09-25) · **Decide:** que el registro de modelos de ORE **es
 el catálogo**: un `Model` vive en `base.schema.nombre` como cualquier otro activo, y de ahí le vienen
-su identidad, sus versiones, su linaje y su dueño. Sigue a [`0027`](0027-el-modelo-vive-en-el-arbol.md)
+su identidad, sus versiones, su linaje y su dueño. Sigue a [`0027`](0027-model-serving.md)
 (el modelo es un documento del árbol), [`0034`](0034-el-catalogo-de-assets.md) (el catálogo es el
 índice del árbol) y [`0038`](0038-los-tres-niveles.md) (`base.schema.nombre`). Gramática:
 [OOS v1alpha15](../../vendor/oos/spec/v1alpha15/00-scope.md) y, para el dueño,
@@ -25,7 +25,7 @@ contiene. No hay una segunda base de datos de modelos que pueda discrepar del á
 | **identidad** | `metadata.namespace` (la base) y `metadata.schema`: **un nombre único por ruta**, como todo el catálogo. Una `Function` lo nombra por partes: `modelo/<n>` en su mismo schema, `modelo/<base>.<n>` en `default`, `modelo/<base>.<schema>.<n>` completo |
 | **versiones** | la historia de la forja, por fichero: cada alta o cambio es un commit con autor y fecha. El índice de assets da la última (`version: {commit, cuando, sujeto}`), `GET /arbol/historia/{ruta}` la lista entera y `GET /arbol/version/{hash}/{ruta}` el documento tal como era |
 | **linaje** | las relaciones tipadas del índice, en las dos direcciones: una `Function` que lo nombra da `usa` / `usado_por`, así que el registro dice **quién lo usa**; un `TrainedModel` da `sale_de` / `produce` por su `trainedFrom`, es decir, **de qué datos salió** |
-| **dueño** | `owner: user:<handle>` de quien lo da de alta (v1alpha21; [0027](0027-el-modelo-vive-en-el-arbol.md), «el dueño es quien lo crea»). Uno de v1alpha15 sin `owner` sigue valiendo |
+| **dueño** | `owner: user:<handle>` de quien lo da de alta (v1alpha21; [0052](0052-ownership.md)). Uno de v1alpha15 sin `owner` sigue valiendo |
 | **integridad** | **no se retira lo que se usa**: retirar un `Model` que una `Function` nombra es 409, con quién lo nombra |
 
 Lo que se versiona es **el documento**: a qué id servido apunta el modelo, con qué perfil, quién lo

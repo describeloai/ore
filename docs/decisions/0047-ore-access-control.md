@@ -32,7 +32,7 @@ Junto a [0048](0048-ore-idp.md), las tres piezas de la identidad de ORE:
 |---|---|
 | **PEP**, lo que intercepta y pregunta | el crate **`ore-acceso`**: `puede` y `hizo`, y `quien` (el handle de quien crea) |
 | **PDP**, lo que decide | `ore-iam`, en `/access/v1` (AuthZEN 1.0) |
-| **PIP**, de donde salen los datos | el censo de `ore-iam` (`iam.pertenencia`, roles, concesiones, el handle de cada persona); los dueños, en el árbol (`owner`, 0027) |
+| **PIP**, de donde salen los datos | el censo de `ore-iam` (`iam.pertenencia`, roles, concesiones, el handle de cada persona); los dueños, en el árbol (`owner`, 0052) |
 | **PAP**, donde se escribe la política | las migraciones de `iam` (roles y potestades); `.arbol/` para lo que es del árbol (0044 B.1) |
 | **el registro** | `iam.huella`: sólo inserción (la `039` lo impone a todos, al superusuario también), con `organizacion` y `celda` |
 
@@ -110,7 +110,7 @@ POST /access/v1/quien
 200 { "subject": { "id": "<sub>" }, "handle": "ana-garcia", "owner": "user:ana-garcia" }
 ```
 
-Lo que una celda escribe en el `owner` de lo que alguien crea (0027, «el dueño es quien lo crea»).
+Lo que una celda escribe en el `owner` de lo que alguien crea (0052 · Ownership).
 Cada persona tiene **un handle**, en `iam.persona.handle` (la 048): único entre todas las
 personas, con la forma de `OOS2009`, y **asignado una vez** —la primera vez que `ore-iam` ve su
 token— a partir del nombre de usuario que eligió al registrarse (`preferred_username`, 0048; si no

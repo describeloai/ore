@@ -816,7 +816,7 @@ assert "apiVersion: oos.dev/v1alpha14" in t and "dialect: duckdb" in t, t
 assert "  sql: |\n    SELECT id, nombre\n    FROM hr.demo_uc.clientes\n" in t, t
 assert 'id: { type: "Integer" }' in t and 'nombre: { type: "String", description: "el nombre de pila" }' in t, t
 assert 'description: "los clientes, por nombre"' in t, t
-# 0027 · el dueño es quien la crea (ana abrió el puesto), no el de su base.
+# 0052 · Ownership (ana abrió el puesto), no el de su base.
 assert ("owner: user:ana" in t or 'owner: "user:ana"' in t) and "team:hr" not in t, t
 EOF
   "$ORE" validate "$A" >/dev/null 2>&1 || falla "10e · el árbol con la vista no compila: $("$ORE" validate "$A" 2>&1 | tail -5)"

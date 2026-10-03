@@ -14,7 +14,7 @@
 //! una protección, entregar un secreto—: se registra ANTES de actuar, y si no se
 //! puede registrar, no se actúa.
 //!
-//! Y [`Acceso::quien`] (0027 · el dueño es quien lo crea; la 048 de `ore-iam`): el handle de quien
+//! Y [`Acceso::quien`] (0052 · Ownership; la 048 de `ore-iam`): el handle de quien
 //! crea, para escribir `owner: user:<handle>` en lo que nace. Un handle no cambia,
 //! así que se guarda sin plazo.
 //!

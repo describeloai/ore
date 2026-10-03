@@ -220,7 +220,7 @@ Cuatro decisiones salen de aquí, y son las de I2:
    uno por kind. Que no diverja del inductor se acepta midiendo, no prometiendo: una vista
    escrita por PUT y la misma por `view add` dan el **mismo `plan sha256`** en `ore view .`.
    Sin `owner`, el verbo pone el de quien la crea —o conserva el que ya tenía, si la reescribe—
-   (0027, «el dueño es quien lo crea»); antes era un 422.
+   (0052 · Ownership); antes era un 422.
 4. **Reescribir desde JSON pierde los comentarios** del YAML (`acme-retail` está lleno). El PUT
    admite las dos entradas: el documento en JSON (un formulario) o `yaml` tal cual (el texto);
    las dos pasan por la misma puerta. Quien edita el texto no pierde lo que escribió.

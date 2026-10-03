@@ -3152,7 +3152,7 @@ fn celda_de_sentencia(
         // (para decir si reemplazarla lo rompe). El contrato nuevo lo describe
         // DuckDB en el puesto, que es quien sabe ejecutarla. ⭐ Y el dueño NO va:
         // lo pone `PUT /documentos` —quien la crea, o el que ya tenía si se
-        // reemplaza— (0027 · el dueño es quien lo crea).
+        // reemplaza— (0052 · Ownership).
         S::CrearVista {
             destino,
             consulta,
@@ -3215,7 +3215,7 @@ fn celda_de_sentencia(
             )
         }
         // ADR 0049 B4·4: la colección escrita, por el mismo verbo que Python. El
-        // dueño no va: lo pone el servidor (0027 · el dueño es quien lo crea).
+        // dueño no va: lo pone el servidor (0052 · Ownership).
         S::CrearColeccion {
             destino,
             media,

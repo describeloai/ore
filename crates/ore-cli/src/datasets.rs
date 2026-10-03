@@ -2615,7 +2615,7 @@ spec: { owner: team:ventas }
         let e = asegurar_dataset(&d, partes("ventas.francia.x").unwrap(), &cols, None, None)
             .unwrap_err();
         assert!(e.1.contains("no hay ningún schema `francia`"), "{e:?}");
-        // ⭐ 0027 · el dueño es quien lo crea: con `--owner`, el de quien lo crea, no el del
+        // ⭐ 0052 · Ownership: con `--owner`, el de quien lo crea, no el del
         //   paquete; y regenerarlo con otro no le cambia el que ya tiene.
         assert!(!doc.contains("user:"), "sin --owner, el del paquete: {doc}");
         let t = partes("ventas.espana.lineas").unwrap();

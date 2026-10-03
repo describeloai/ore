@@ -151,7 +151,7 @@ POST /media/{b}/{s}/{c}/transactions/{t}/abort  → 204
   él; un nombre una cosa; una mantenida no se crea encima). Llenarla es del código.
 - Python (0049 B4b·3, `puesto/python/ore/medios.py`): `ore.crear_coleccion(nombre, media, formatos)`
   escribe el documento (v1alpha19, sin `from`) sin `owner`: la colección es de quien la crea —la
-  persona que abrió el puesto—, y lo pone el servidor (0027, «el dueño es quien lo crea»); `dueno=`
+  persona que abrió el puesto—, y lo pone el servidor (0052 · Ownership); `dueno=`
   sólo para dársela a otro; `with coleccion.transaccion() as t: t.put(path, datos)`
   confirma al salir y aborta con una excepción. `datos` son bytes (con su `Repr-Digest`), una ruta (en
   flujo) o un fichero (si no se rebobina, se copia antes). Una subida cortada se reintenta; un commit

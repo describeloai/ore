@@ -325,7 +325,7 @@ compara traducido: un `OOS2010` sobre `ventas.viejo.X` que ya estaba es el mismo
 rechazaría todo renombrado).
 
 **ore-serve**: `POST /paquetes/{p}/schemas` `{name, description?, owner?}` → 201 (sin
-`owner`, el de quien lo crea —0027, «el dueño es quien lo crea»—, no el de su base) y
+`owner`, el de quien lo crea —0052 · Ownership—, no el de su base) y
 `POST /paquetes/{p}/schemas/{s}/renombrar` `{to, since?}` → 200, por el camino de `model` y
 `copy` (un clon, `ore`, un commit del sujeto; 65/66/73 → 422/404/409). `los-schemas.sh`: el
 índice trae el schema recién creado aunque esté vacío; renombrar es UN commit y el árbol queda

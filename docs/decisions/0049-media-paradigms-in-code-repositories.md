@@ -285,7 +285,7 @@ puesto no sale a internet, y así debe seguir).
 
 - **Crear** una colección escrita (B4·4): `create media collection [if not exists] b.s.c media
   document formats (pdf) [comment '…']`, como `create volume` de Databricks con lo que una colección
-  necesita además. Es el verbo de Python (`crear_coleccion`), de quien la crea (0027); llenarla es
+  necesita además. Es el verbo de Python (`crear_coleccion`), de quien la crea (0052); llenarla es
   del código, y su `derivedFrom` lo escribe el servidor al confirmar cada transacción.
 - La colección es una tabla: su listado, con `item: MediaRef` y sus metadatos.
 - Escalares `stat(item)`, `url(item, ttl)`; funciones de tabla con `LATERAL` para lo que da N filas.
@@ -471,7 +471,7 @@ su linaje*—, cumplido en puestos de victor abiertos por una persona, en la ram
 | B4·4 | el linaje lo escribe el servidor al confirmar (lo leído por el transform o la sesión; sin lecturas, fuera) | `828e9cd` |
 | B4b·4 | `create media collection` en el guion SQL, el editor no lo marca, y una celda con ella es del árbol y no de DuckDB | `a2b58e6`, `d089986`, `2e36f1b` |
 
-**Lo que se encontró por el camino:** el dueño de lo creado tenía que ser la persona (0027, `user:<handle>`
+**Lo que se encontró por el camino:** el dueño de lo creado tenía que ser la persona (0052, `user:<handle>`
 de ore-iam, migración 048); un puesto de Functions podía escribir (cerrado con la identidad declarada
 del puesto, R1, y el cierre de su credencial); y los puestos huérfanos de la cola, que agotaban la
 cuota (cerrado de raíz: cierre por inactividad y barrido, `eafdfd0`).

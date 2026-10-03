@@ -200,7 +200,7 @@ COMMIT1=$(campo commit)
 [ -n "$COMMIT1" ] || falla "1 · sin commit"
 git clone -q "$FORJA" "$TMP/mira1"
 [ -f "$TMP/mira1/packages/ventas/datasets/salida.yaml" ] || falla "1 · el Dataset escrito no está en la forja"
-# 0027 · el dueño es quien lo crea: ana, que lo escribió, no el dueño del paquete (team:data).
+# 0052 · Ownership: ana, que lo escribió, no el dueño del paquete (team:data).
 grep -q "kind: Dataset" "$TMP/mira1/packages/ventas/datasets/salida.yaml" && grep -qE "owner: \"?user:ana\"?" "$TMP/mira1/packages/ventas/datasets/salida.yaml" \
   && ! grep -q "team:data" "$TMP/mira1/packages/ventas/datasets/salida.yaml" || falla "1 · el documento no es un Dataset de quien lo escribió (user:ana): $(cat "$TMP/mira1/packages/ventas/datasets/salida.yaml")"
 grep -q "datasource" "$TMP/mira1/packages/ventas/datasets/salida.yaml" && falla "1 · el Dataset lleva datasource, y un dataset es nuestro"

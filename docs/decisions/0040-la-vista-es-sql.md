@@ -221,7 +221,7 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
    - Reemplazar: añadir columnas se dice; **quitar una o cambiarle el tipo rompe a quien la lee
      y se niega salvo `with schema evolution`** (Postgres sólo deja añadir al final).
    - El dueño es **quien la crea** (`user:<handle>`), y reemplazarla le conserva el que tenía:
-     no lo escribe la celda, lo pone `PUT /documentos` (0027, «el dueño es quien lo crea»).
+     no lo escribe la celda, lo pone `PUT /documentos` (0052 · Ownership).
      `comment` → `description`, de la vista y de cada columna.
    - `drop view`: si otra cosa la lee el árbol empeora y no se quita.
    - **5c · el editor** (`lsp_sql.lo_que_duckdb_entiende`): el servidor de lenguaje del puesto

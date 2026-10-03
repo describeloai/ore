@@ -406,7 +406,7 @@ propio está escrito en el motor, en la ayuda de la regla que obliga a `Ruleset`
 
 **Un documento existe aparte cuando responde otra persona.** Cuando se midió, `Entity` **no tenía
 `owner`, ni lo admitía**, y `View` lo exigía: por el criterio de la casa, la entidad no merecía
-documento propio. Desde v1alpha21 lo tiene —quien la crea responde de ella (0027)—, y el criterio
+documento propio. Desde v1alpha21 lo tiene —quien la crea responde de ella (0052)—, y el criterio
 apunta al otro lado: la entidad y su vista pueden responder ante personas distintas, y eso ya es
 razón para que sean dos documentos.
 

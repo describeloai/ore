@@ -340,7 +340,7 @@ PLAN_PUT=$(cd "$TMP/put" && "$ORE" view . 2>/dev/null | sed -n "/^hr.solo_ids$/,
 grep -q "^apiVersion" "$TMP/put/packages/hr/views/solo_ids.yaml" || falla "12 · la vista no esta en views/"
 rm -rf "$TMP/put"
 [ -n "$PLAN_PUT" ] || falla "12 · ore view no dio plan para la vista del PUT"
-# sin owner: es de quien la crea (0027); y reescribirla sin owner le conserva el suyo
+# sin owner: es de quien la crea (0052); y reescribirla sin owner le conserva el suyo
 SIN=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); del d['spec']['owner']; print(json.dumps(d))" "$VISTA")
 [ "$(pide PUT /documentos/View/hr/otra "$SIN")" = "201" ] || falla "12 · una vista sin owner no entro · $(cat "$TMP/r.json")"
 git --git-dir="$FORJA" show main:packages/hr/views/otra.yaml | grep -qE "owner: \"?user:ana\"?" \

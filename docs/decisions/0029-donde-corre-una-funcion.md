@@ -21,7 +21,7 @@ es **dónde corre el código y cómo llega a los datos**. Hoy no corre en ningú
 [`functions.md` §2](../functions.md#2-qué-hay-y-qué-falta-medido) lo mide —la `Propuesta`, el
 cotejo y la regla de integridad existen; **quien invoca (F4) y quien aplica (F5) no**—, y lo único
 que ha ejecutado una función de verdad fue un `Job` lanzado a mano en E0 de
-[`0027`](0027-el-modelo-vive-en-el-arbol.md).
+[`0027`](0027-model-serving.md).
 
 La pregunta tiene dos respuestas posibles y hay que elegir una antes de escribir el delegado:
 **centralizado** (un servicio de funciones de la plataforma, como hace Foundry) o **dedicado por
@@ -34,7 +34,7 @@ celda** (el código corre donde corre el catálogo y la copia de ese inquilino).
 que toca datos es un `Job` que Flux crea desde la cola y Kueue aterriza en el pool privado
 `jobs-p`: nodos sin Cloud NAT, `NetworkPolicy` que abre DNS, metadatos, las APIs de Google por
 443, el 5432 del origen y el gateway de modelos (`MODELOS/32:8000`,
-[`0027` E0–E2](0027-el-modelo-vive-en-el-arbol.md)). Imagen `ore-drivers`; identidad, el agente
+[`0027` E0–E2](0027-model-serving.md)). Imagen `ore-drivers`; identidad, el agente
 de la celda. Así corren el catálogo (`malla/44`) y la copia (`malla/48`), con tres mitades:
 traer el testigo, hacer lo que toca el origen, publicar al árbol. `ore-serve` no ejecuta nada
 de eso: lleva `ore` sin TLS y `git`, y es el plano de control
@@ -62,7 +62,7 @@ tres centralizan la ejecución en su plataforma. ORE ya decidió lo contrario pa
 
 **Lo que falta debajo.** Una función lee y escribe **la copia**, y la copia en la celda no existe
 todavía: nadie declara `materialized`, ningún inquilino tiene bucket, y el `Job` de copia no se
-ha lanzado nunca en la malla ([`0027` P1](0027-el-modelo-vive-en-el-arbol.md), I1–I4). GCS por
+ha lanzado nunca en la malla (`0027` P1, hoy en la historia de [0027](0027-model-serving.md), I1–I4). GCS por
 S3/HMAC lo prohíbe la política de la organización (412) y R2 sacaría la copia de la VPC: hace falta
 `ore-store-gcs` con Workload Identity.
 
@@ -138,7 +138,7 @@ orden no es de conveniencia: **cada una es prerrequisito de la siguiente**.
 
 | | etapa | qué | listo cuando |
 |---|---|---|---|
-| **P1** | **la copia en la celda** ([`0027` P1](0027-el-modelo-vive-en-el-arbol.md)) | `ore-store-gcs` con Workload Identity; bucket por inquilino en el aprovisionamiento; el convergedor lanza `materializar` (`malla/48`); `discover` induce `changes.key` cuando el catálogo la conoce; `standard` ⇒ `materialized` en todas las vistas del paquete | `GET /paquetes/olist` de `demo` dice N filas por entidad y el digest de la copia; releer no lee el origen (`refresco.sh`) |
+| **P1** | **la copia en la celda** (`0027` P1, hoy en la historia de [0027](0027-model-serving.md)) | `ore-store-gcs` con Workload Identity; bucket por inquilino en el aprovisionamiento; el convergedor lanza `materializar` (`malla/48`); `discover` induce `changes.key` cuando el catálogo la conoce; `standard` ⇒ `materialized` en todas las vistas del paquete | `GET /paquetes/olist` de `demo` dice N filas por entidad y el digest de la copia; releer no lee el origen (`refresco.sh`) |
 | **L0** | **la línea base de la celda** | el retículo de eje `integrity`, el conducto `materialization.payload` autorizado y el esquema Cedar regenerado **en el aprovisionamiento** (`gen-inquilino.py` / `ore init`), no como escrituras de Forge. Sale de la medida: cuatro de las siete escrituras de una función no eran de la función | un inquilino nuevo compila con una función v1alpha10 escrita a mano sin tocar nada más |
 | **F4** | **`ore-invoke`, bajo demanda** | el delegado (wasm + WASI 0.2, sin sockets; `runtime: model` por el gateway); `49-la-invocacion.yaml` en la cola; `POST /funciones/{ns}/{n}/invocar` en `ore-serve` con Cedar y el sujeto; la `Propuesta` al árbol | un módulo que abre un socket falla por no tener canal; una función de lectura devuelve su `output`; una de edición deja una `Propuesta` que `ore verify` acepta |
 | **F2·F3** | **flujo y endosos sobre la propuesta** | `flow` y `governance` sobre los edits propuestos; verificar la atestación **antes** de invocar | una propuesta por debajo de la clasificación de lo leído no compila; un endoso que no verifica no llega a ejecutarse |

@@ -33,7 +33,7 @@
 //! proyecto lo creó.
 //!
 //! ⛔ El `owner` del paquete no se inventa: es quien crea el proyecto,
-//! `user:<handle>` (0027 · el dueño es quien lo crea, `dueno_de_quien_crea`). Si quien lo crea
+//! `user:<handle>` (0052 · Ownership, `dueno_de_quien_crea`). Si quien lo crea
 //! no da un handle, **el proyecto se crea igual y sin sitio**, y la respuesta lo
 //! dice (`sitio: null`): más vale un proyecto sin suelo que un `owner: cambiame`
 //! que no compila (medido en ⑦.1: OOS2009, 1 error). Si `ore-iam` no contesta,

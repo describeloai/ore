@@ -247,7 +247,7 @@ impl Servidor {
         }
     }
 
-    /// **El dueño de lo que crea quien pide** (0027 · el dueño es quien lo crea): `user:<handle>`,
+    /// **El dueño de lo que crea quien pide** (0052 · Ownership): `user:<handle>`,
     /// el de la persona —desde un puesto, la que lo abrió—. Es LA regla de todo lo
     /// que nace en el árbol con `owner`: una base, un schema, un origen, una vista,
     /// una colección, un dataset. No se hereda del contenedor (una colección que Ana

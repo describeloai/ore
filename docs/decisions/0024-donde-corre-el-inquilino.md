@@ -105,7 +105,7 @@ regulatoria de separación, o una GPU tan efímera que se levanta y se tira ente
 > fija el sustrato (vLLM certificado sobre RTX PRO 6000, máquinas `g1`/`g4`/`g8` lanzadas por B1
 > como VMs G4 en `europe-west1-b`, sin IP pública) y aplaza el manifiesto de Kubernetes a B3
 > «hasta que la imagen pase con GPU y haya cuota». Así que el primer despliegue es **misma VPC y
-> zona, otra máquina**, alcanzada desde la celda **sólo a través del gateway** ([`0027 ④`](0027-el-modelo-vive-en-el-arbol.md)).
+> zona, otra máquina**, alcanzada desde la celda **sólo a través del gateway** ([`0027 ④`](0027-model-serving.md)).
 > Lo que este ② protege —el camino caliente modelo ↔ ontología ↔ datos sin salir de la red— se
 > conserva; el pool `gpu` con su taint sigue siendo el destino cuando exista cuota bajo demanda.
 > En el tier compartido, además, el pod del modelo es **uno por modelo, de la plataforma**, no

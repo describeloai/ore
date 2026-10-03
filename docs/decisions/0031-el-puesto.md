@@ -895,7 +895,7 @@ producto y **niega, no concede**). Cinco reglas:
    dataset no es un buzón. Redeclarar un documento que otra persona firmó (la View, la Entity
    —y con ella la clasificación—) **va a la rama de quien lo hace**, nunca a `main` directo:
    un puesto que no nació con rama escribe en `<persona>/puesto` y publica por propuesta
-   (0030 W2). El `owner` de lo que nace es quien lo crea (`user:<handle>`, 0027) y no cambia
+   (0030 W2). El `owner` de lo que nace es quien lo crea (`user:<handle>`, 0052) y no cambia
    al redeclararlo; que sea él quien acepte la propuesta es lo que falta (aprobación por dueño,
    0044), y para un `team:` falta además que `ore-iam` sepa qué equipos hay.
 5. **Lo declarado en un transform lo conoce el servidor.** El SDK registra el transform al
@@ -970,7 +970,7 @@ la medida entera antes de decidir, la decisión antes del código, y la misma me
 rodea ya no lee de fuera, pero lo que lea de sus `inputs` sin decirlo no aparece); un
 `commitTransaction` de varias tablas no pasa por la puerta del `output` (lo miran las tablas en
 `--commit`); `reads` de una `Function` no baja por `flow` (es el conducto `datasource` de 0029);
-que el dueño (`user:<handle>` de quien creó, 0027) acepte la propuesta —y, para un `team:`,
+que el dueño (`user:<handle>` de quien creó, 0052) acepte la propuesta —y, para un `team:`,
 que **ore-iam** sepa qué equipos hay—; y los sobres heredados (`clave`, `ore/v1/`)
 dejan de leerse desde un puesto con la condición puesta: demo y victor tienen **0**.
 
