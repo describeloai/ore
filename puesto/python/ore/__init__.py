@@ -805,7 +805,11 @@ def get_function(name):
 
     from .contrato import llamada
 
-    codigo, doc = session.pedir("GET", "/documentos/Function/" + "/".join(quote(p, safe="") for p in partes))
+    # In the session's branch: a function committed there and not yet in `main`
+    # is read from there, document and code (without the header, `main`).
+    rama = _rama_del_puesto()
+    codigo, doc = session.pedir("GET", "/documentos/Function/" + "/".join(quote(p, safe="") for p in partes),
+                                cabeceras=rama)
     if codigo == 404:
         raise LookupError("there is no published function `%s`" % nombre)
     if codigo != 200:
@@ -819,7 +823,8 @@ def get_function(name):
                                   % (nombre, "`over`" if spec.get("over") else "`models`"))
     ruta, _, defn = str(spec.get("entrypoint", "")).rpartition(":")
     fichero = "packages/%s/%s" % (doc.get("paquete"), ruta)
-    codigo, f = session.pedir("GET", "/arbol/" + "/".join(quote(p, safe="") for p in fichero.split("/")))
+    codigo, f = session.pedir("GET", "/arbol/" + "/".join(quote(p, safe="") for p in fichero.split("/")),
+                              cabeceras=rama)
     if codigo != 200 or not isinstance(f, dict) or "texto" not in f:
         raise RuntimeError("reading the code of `%s` (%s): %s" % (nombre, fichero, codigo))
     modulo = {"__name__": "ore_funcion_" + "_".join(partes), "__file__": fichero}
