@@ -135,6 +135,12 @@ jobs:
   # Y hay un hecho que solo se puede afirmar aqui: que SIN proveedor de identidad
   # las rutas de datos no estan. Un defecto permisivo en ese punto no rompe
   # ninguna prueba unitaria — sirve de mas, en silencio.
+  #
+  # ⭐ En TRES trabajos a la vez (2026-10-03): eran 5,3 min en fila —el puesto
+  #   124 s, el lago 72 s, el resto ~2 min— y el despliegue espera al más lento.
+  #   Mismas pruebas, en paralelo: `plano-de-control` (el servidor y lo que
+  #   vive en él), `plano-el-lago` y `plano-el-puesto`. Comparten la caché de
+  #   cargo (la guarda éste, que compila también `ore-store`).
   plano-de-control:
     runs-on: ubuntu-24.04
     steps:
@@ -143,6 +149,8 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: plano
 
       # ⛔ La deuda del segundo factor, con su despertador. Hoy AVISA: el realm
       # opera a UN factor a proposito y con fecha. El 2026-09-30 este paso se
@@ -162,15 +170,10 @@ jobs:
       - name: y con el arbol en una forja
         run: bash pruebas-de-fuego/servidor-forja.sh
 
-      # El lago (0031 §10, W3.6b): el swap del puntero por ore-serve con su
-      # compare-and-set (semantico y de la forja), el `datasource: lago`, la
-      # ficha con la historia de la tabla, y el mantenimiento sobre punteros.
-      # Forja pelada, S3 de mentira y ore-store-r2 de escritor.
-      - name: el lago
-        run: |
-          cargo build --quiet -p ore-store
-          python3 -m pip install --quiet pyarrow duckdb "pyiceberg[pyarrow]"
-          bash pruebas-de-fuego/el-lago.sh
+      # (El lago y el puesto, en sus trabajos: `plano-el-lago`, `plano-el-puesto`.
+      # `ore-store` se compila aquí también, para que la caché compartida lo traiga.)
+      - name: y ore-store, para la cache de los otros dos
+        run: cargo build --quiet -p ore-store
 
       # Los tres verbos del modelo (0027 E1): el documento en el arbol y la
       # suscripcion en el gateway EN EL MISMO ACTO, o nada. El gateway es el de
@@ -202,28 +205,6 @@ jobs:
       - name: y una propuesta la revisa otra persona antes de llegar a main
         run: bash pruebas-de-fuego/la-propuesta.sh
 
-      # El puesto (0031 W3.1–W3.4): la sesion viva de una persona, con los
-      # agentes de verdad al lado (`puesto/python/agente.py`, `puesto/node/
-      # agente.mjs`, `puesto/jvm/ore/Agente.java`) y una copia ORECOPY1 en un
-      # directorio. pyarrow y pandas escriben esa copia; duckdb (en Python, en
-      # Node y por JDBC) es lo que `over()`/`sql()` usan para leerla; en el
-      # cluster van dentro de `puesto-python:1`, `puesto-node:1` y `puesto-jvm:1`.
-      # Node 24 y un JDK 21: los mismos que las imagenes.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      # Y write() (W3.6c): desde las tres, por ore-store-r2 contra el S3 de
-      # mentira, con el commit por el catalogo REST de ore-serve.
-      - name: y una sesion Python, una TS y una Java leen la copia con over() y sql(), y escriben con write()
-        run: |
-          cargo build --quiet -p ore-store
-          python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]"
-          bash pruebas-de-fuego/el-puesto.sh
-
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no
       # fijan las pruebas del crate es el CABLEADO: que el sujeto sale de la
       # cabecera `Authorization` y que un token bien firmado del MISMO realm
@@ -253,6 +234,73 @@ jobs:
       # llevaban al inquilino dentro sin que nadie lo supiera.
       - name: y la plantilla del inquilino se puede renderizar sin dejar rastro
         run: python3 malla/gen-inquilino.py --comprobar
+
+  # El lago, aparte del plano de control para que corra a la vez (ver arriba).
+  plano-el-lago:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: plano
+          save-if: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-plano-${{ runner.os }}-v1
+      - run: cargo build --quiet -p ore-cli -p ore-serve -p ore-store
+      # El lago (0031 §10, W3.6b): el swap del puntero por ore-serve con su
+      # compare-and-set (semantico y de la forja), el `datasource: lago`, la
+      # ficha con la historia de la tabla, y el mantenimiento sobre punteros.
+      # Forja pelada, S3 de mentira y ore-store-r2 de escritor.
+      - name: el lago
+        run: |
+          cargo build --quiet -p ore-store
+          python3 -m pip install --quiet pyarrow duckdb "pyiceberg[pyarrow]"
+          bash pruebas-de-fuego/el-lago.sh
+
+  # El puesto con sus tres agentes, aparte para que corra a la vez (ver arriba).
+  plano-el-puesto:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: plano
+          save-if: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-plano-${{ runner.os }}-v1
+      - run: cargo build --quiet -p ore-cli -p ore-serve -p ore-store
+      # El puesto (0031 W3.1–W3.4): la sesion viva de una persona, con los
+      # agentes de verdad al lado (`puesto/python/agente.py`, `puesto/node/
+      # agente.mjs`, `puesto/jvm/ore/Agente.java`) y una copia ORECOPY1 en un
+      # directorio. pyarrow y pandas escriben esa copia; duckdb (en Python, en
+      # Node y por JDBC) es lo que `over()`/`sql()` usan para leerla; en el
+      # cluster van dentro de `puesto-python:1`, `puesto-node:1` y `puesto-jvm:1`.
+      # Node 24 y un JDK 21: los mismos que las imagenes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Y write() (W3.6c): desde las tres, por ore-store-r2 contra el S3 de
+      # mentira, con el commit por el catalogo REST de ore-serve.
+      - name: y una sesion Python, una TS y una Java leen la copia con over() y sql(), y escriben con write()
+        run: |
+          cargo build --quiet -p ore-store
+          python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]"
+          bash pruebas-de-fuego/el-puesto.sh
+
 
   # ⭐ LOS VERBOS DEL PLANO DE IDENTIDAD. Lo mismo que fijaba el Job
   # `malla/98-los-cuatro-verbos.yaml` (retirado en 0048 con `iam-agente`), pero SIN un cluster que alguien tenga que
@@ -502,7 +550,7 @@ jobs:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
-    needs: [suite, graphql, descubrimiento, plano-de-control, los-verbos, fuentes-reales, construir]
+    needs: [suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, construir]
     # Un despliegue a la vez, y el que espera es el más nuevo: GitHub deja uno
     # corriendo y uno pendiente, y un pendiente nuevo reemplaza al anterior.
     concurrency:
