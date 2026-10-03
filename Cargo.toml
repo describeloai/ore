@@ -47,6 +47,16 @@ codegen-units = 1
 strip         = true
 panic         = "abort"
 
+# ⭐ LAS IMÁGENES QUE SE DESPLIEGAN (2026-10-03): `release` sin LTO y con 16
+#   unidades. Con LTO completo cada binario se enlaza solo y en serie —el
+#   enlace dominaba: 20 min por commit— y ninguna caché lo evita. Medido el
+#   2026-09-30: sin LTO, tocar `ore-serve` 56 s frente a 206. Lo que se
+#   PUBLICA (releases, el trabajo `determinista`) sigue siendo `release`.
+[profile.imagen]
+inherits      = "release"
+lto           = false
+codegen-units = 16
+
 [workspace.dependencies]
 anyhow = "1"
 

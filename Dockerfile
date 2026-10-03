@@ -43,61 +43,37 @@
 #   binarios: ~20 min por commit, la mitad sin tocar Rust.
 ARG BINARIOS=binarios
 
-FROM rust:1.90-alpine AS build
+FROM rust:1.90-alpine AS herramientas
 
 # `musl-dev` para el enlazador; OpenSSL estático sólo lo necesitan los que
 # hablan TLS. El resto del árbol no arrastra FFI, y eso es lo que afirma de sí
 # mismo.
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl
 
+# ⭐ sccache (2026-10-03): lo compilado de cada crate, guardado en un bucket por
+#   la huella de su código y sus opciones. Una máquina de Cloud Build nace
+#   vacía; con esto, lo que no cambió se baja en vez de compilarse. La versión
+#   va fijada y comprobada por su sha256. Esta etapa es también donde compila
+#   el paso `binarios` de cloudbuild.yaml (`docker run --network=cloudbuild`).
+RUN curl -sSfL -o /tmp/s.tgz https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz \
+ && echo "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89  /tmp/s.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/s.tgz -C /tmp && mv /tmp/sccache-v0.18.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/sccache \
+ && rm -rf /tmp/s.tgz /tmp/sccache-v0.18.0-x86_64-unknown-linux-musl
 WORKDIR /src
+
+# En local (y sin bucket): la misma compilación que en Cloud Build, aquí dentro.
+FROM herramientas AS build
 # Sólo lo que `cargo` lee: lo demás del árbol no puede cambiar un binario (y
 # es lo que `ci/huella-de-los-binarios.sh` mira).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY vendor/oos vendor/oos
-
-# `--locked`: se construye con el `Cargo.lock` del árbol y no con lo que
-# hubiera hoy en el índice.
-RUN cargo build --release --locked \
-      -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
-      -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 -p ore-firmar-s3 -p ore-sts \
-      -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke \
- && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-firmar-s3 ore-asumir-rol \
-             ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke; do \
-      strip "target/release/$b"; \
-    done
-
-# 0049 B2·4: `ore-medios`, APARTE y DESPUÉS. Enlaza `ore-store` (Arrow, Parquet,
-# Iceberg) con LTO completo: un enlace de varios GB. Metido en el `cargo build`
-# de arriba coincidía con los otros enlaces pesados (`ore`, `ore-store-*`) y la
-# máquina de Cloud Build (8 GB) dejaba de responder (2026-10-01, tres
-# construcciones muertas a los 60 min). Aquí las dependencias ya están
-# compiladas: se compila su crate y se enlaza SOLO, sin nada más en paralelo.
-RUN cargo build --release --locked -p ore-medios \
- && strip target/release/ore-medios
+COPY ci/compilar-binarios.sh ci/compilar-binarios.sh
+RUN SALIDA=/b sh ci/compilar-binarios.sh
 
 # ── 0 · Los binarios, solos: lo que se reutiliza mientras Rust no cambie ─────
 FROM scratch AS binarios
-COPY --from=build \
-     /src/target/release/ore \
-     /src/target/release/ore-serve \
-     /src/target/release/ore-iam \
-     /src/target/release/ore-cofre \
-     /src/target/release/ore-read-jsonl \
-     /src/target/release/ore-read-postgres \
-     /src/target/release/ore-read-bigquery \
-     /src/target/release/ore-read-s3 \
-     /src/target/release/ore-firmar-s3 \
-     /src/target/release/ore-asumir-rol \
-     /src/target/release/ore-fetch \
-     /src/target/release/ore-log \
-     /src/target/release/ore-sign \
-     /src/target/release/ore-store-r2 \
-     /src/target/release/ore-store-gcs \
-     /src/target/release/ore-invoke \
-     /src/target/release/ore-medios \
-     /b/
+COPY --from=build /b/ /b/
 
 FROM ${BINARIOS} AS bin
 

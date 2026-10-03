@@ -52,6 +52,8 @@ substitutions:
   # La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`); el job
   # de GitHub la pasa. Vacía (una construcción a mano), se calcula aquí.
   _BINARIOS: ''
+  # La caché de compilación (sccache): lo compilado de cada crate, por su huella.
+  _SCCACHE: project-8853a180-450d-47be-b83-ci-sccache
 
 steps:
   # ⭐⭐ LOS BINARIOS, POR SU CONTENIDO (2026-10-03). Si ya hay una imagen
@@ -76,14 +78,21 @@ steps:
           echo "binarios h-$$H: ya estaban, NO se compila"
         else
           echo "binarios h-$$H: no estaban, se compilan"
-          docker build --target binarios -t "$$B:h-$$H" .
+          # Se compila con `docker run` sobre la etapa `herramientas`, no con
+          # `docker build`: BuildKit no admite `--network=cloudbuild`, y sin esa
+          # red sccache no llega al servidor de metadatos —la identidad de la
+          # construccion, ore-ci, que lee y escribe el bucket—. El guion es el
+          # mismo que el de la etapa `build` (ci/compilar-binarios.sh).
+          docker build -q --target herramientas -t herramientas . >/dev/null
+          docker run --rm --network=cloudbuild -v /workspace:/src -w /src \
+            -e CACHE_GCS=${_SCCACHE} -e SALIDA=/src/.binarios herramientas sh ci/compilar-binarios.sh
+          printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t "$$B:h-$$H" -f - .binarios >/dev/null
           docker push -q "$$B:h-$$H"
         fi
         docker tag "$$B:h-$$H" "$$B:${_SHA}"
         docker push -q "$$B:${_SHA}"
 
-  # La etapa `build` —todo Rust— se compila aquí, una vez, y queda en la
-  # caché del demonio para los que copian un binario.
+  # La fina: sus dos binarios, de los de `binarios`.
   - id: ore
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
