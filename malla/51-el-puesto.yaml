@@ -187,8 +187,11 @@ spec:
               T0=$(cut -d. -f1 /proc/uptime)
               python3 -m pip install --disable-pip-version-check -q --no-index --no-deps --target /capa /trabajo/ruedas/*.whl
               echo "### instalada en /capa en $(( $(cut -d. -f1 /proc/uptime) - T0 )) s · $(du -sm /capa | cut -f1) MB"
+          # C1 · Reserva lo que usa (instalar ruedas locales es breve) y no más
+          #   que el contenedor: lo que reserva un pod es el MÁXIMO de sus init
+          #   y la suma de sus contenedores, y 500m/1Gi aquí anulaba la rebaja.
           resources:
-            requests: {cpu: "500m", memory: 1Gi}
+            requests: {cpu: "250m", memory: 512Mi}
             limits:   {cpu: "2", memory: 2Gi}
           securityContext:
             allowPrivilegeEscalation: false
@@ -259,8 +262,16 @@ spec:
             - { name: capa, mountPath: /capa, readOnly: true }
             - { name: token-del-pod, mountPath: /var/run/ore/pod, readOnly: true }
           workingDir: /trabajo
+          # ⭐ C1 · Reserva lo que USA, y el tope para cuando trabaja. Medido (R0,
+          #   2026-10-02): en reposo 4m de CPU y 147 MiB; trabajando, ráfagas de
+          #   1–2 vCPU y 634 MiB de pico. Con 1 vCPU/2 GiB reservados cabían ~3
+          #   puestos por nodo aunque estuvieran parados, y cuatro pedían tres
+          #   nodos y agotaban la cuota de 12 vCPU. Con esto caben ~13 por nodo
+          #   (e2-standard-4: 3920m, ~490m de los daemonsets); varios trabajando a la vez se reparten la CPU, y
+          #   bajo presión de memoria se expulsa antes al que más pasa de 768 MiB.
+          #   `limits.memory` no cambia: es el que manda `ORE_MEMORIA_MB` (⑱).
           resources:
-            requests: {cpu: "1", memory: 2Gi}
+            requests: {cpu: "250m", memory: 768Mi}
             limits:   {cpu: "2", memory: 4Gi}
           securityContext:
             allowPrivilegeEscalation: false
