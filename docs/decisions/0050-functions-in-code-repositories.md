@@ -1,266 +1,276 @@
 # 0050 · Functions in code repositories
 
-**Estado:** aceptado (las decisiones, 2026-10-01) · R1 en construcción: **P1 hecho** (el contrato,
-OOS v1alpha18, oos `fd1ed1a`) y **P2 hecho** (`ore-core` habla v1alpha18: 17/17 y `ore diff` por
-parámetro, 27/27) y **P3 hecho** (invocar: las funciones del paquete compilado, los
-parámetros contra `input`, el trabajo del puesto con el arnés y `resultados/`) y **P4 hecho**
-(`ore.modelo(ref)` acotado a `models`, y `salida-al-modelo-de-una-funcion`: la etiqueta
-`ore.dev/usa-modelo` que solo pone `ore-serve` al trabajo de una función con `models`) y **P5
-hecho** (`functions-python` v5 nace con la pareja contrato + código, sin `over`; v1alpha18: con
-`python`, `input` es superficie); **P6a hecho** (`el-puesto.sh` 18: la función con el agente de
-verdad); P6b (la consola) y P6c (`victor`) por hacer. **Medido en P5:** un paquete con guion —el de un
-proyecto, `test-project`— no puede tener contenido gobernado (`OOS2030`), así que un repositorio de
-funciones ahí nace sin su contrato. La regla de red llega a un inquilino vivo al convergerlo. **Decide:** qué es el **producto** *Functions* de los code repositories, y que
-se construye **sobre lo que ORE ya define** —la gramática de `Function` (OOS v1alpha10–14), el
-puesto y su promoción ([`0031`](0031-el-puesto.md) W3.8), la taxonomía de versiones de OOS
-(`91-versioning`), la red por política con nombre (0031 §7), el acceso
-([`0047`](0047-ore-access-control.md))— sin piezas paralelas. Lo nuevo es poco y está dicho: `runtime: python`
-en la gramática, `models` como recurso que una función de código declara, el lector de firmas de
-Python en el compilador, y la invocación con parámetros. **Ejecuta** la enmienda a
+**Estado:** aceptado y **en vivo** en `victor` desde el 2026-10-03: R1 completo, de punta a punta
+—escribir el `def`, probarlo en Dry Run sin commit, publicarlo al commitear, verlo en Assets e
+invocarlo—. Abiertos: el operador `function` de Pipelines, Media en Dry Run, las funciones `over`
+en Dry Run y lo que se lista al final.
+
+Construye sobre lo que ORE ya define —la `Function` de OOS (v1alpha10–14), el puesto
+([`0031`](0031-el-puesto.md)), la versión del paquete (`91-versioning`), la red por política con
+nombre (0031 §7) y el acceso ([`0047`](0047-ore-access-control.md))— y **ejecuta** la enmienda a
 [`0029`](0029-donde-corre-una-funcion.md) que 0031 W3.8 dejó escrita.
 
-## La pregunta
+## Qué es
 
-¿Qué tiene que ser verdad para que un repositorio de clase *functions* sea **el mejor sitio para
-construir lógica encapsulada** sobre los conjuntos de datos del catálogo y sobre los modelos, y para
-que encima se construyan **niveles de abstracción** (acciones, lógica sin código, aplicaciones,
-funciones consultables desde fuera) **sin volver a escalar la base**?
-
-La respuesta: **casi todo está**. ORE se proyectó para esto: una `Function` ya es lógica encapsulada
-con superficie tipada, el puesto ya ejecuta Python, Node y Java, la versión ya la decide `ore diff`.
-Lo que falta es **unirlo**: que el código de un repositorio se promueva a una `Function` que se
-invoca. Este documento fija ese marco y el orden.
-
-## Cómo se lee
-
-| nivel | qué fija | apoyado en |
-|---|---|---|
-| **0 · principios** | qué es una función para el producto | OOS v1alpha10 `01-function` §1 |
-| **1 · el modelo** | el documento, su identidad y su versión | OOS v1alpha10–14, `91-versioning` |
-| **2 · el contrato** | las operaciones | 0029, 0031, 0047 |
-| **3 · la plataforma** | las cinco piezas, cada una con su teoría | 0029, 0031, 0036, 0047, 0048 |
-| **4 · las superficies** | Python primero; el workspace; Node después | 0031 W3.4, 0036 |
-| **5 · lo que va encima** | los niveles de abstracción | — |
-
-## La visión
-
-Una persona tiene un repositorio *functions* en `ventas` y escribe en `funciones/riesgo.py`:
+**Una función es un `def` de Python con anotaciones de tipo y `@function`.** La persona escribe
+sólo eso. La plataforma **deriva** de la firma el documento `Function` —el contrato publicado—, lo
+escribe en el mismo commit, lo enseña en Assets y lo hace cumplir igual en todos los sitios donde
+la función corre.
 
 ```python
-from ore import tabla, modelo
+from dataclasses import dataclass
+from decimal import Decimal
+from ore import function
+from ore.tipos import DateTimeTz, Money
 
-def riesgo(cliente, umbral):
-    pedidos = tabla("ventas.pedidos").where(cliente=cliente["clienteId"])
-    total = sum(p["importe"] for p in pedidos)
-    if total <= umbral:
-        return {"nivel": "bajo", "total": total}
-    dicho = modelo("ventas.extractor").pide(f"¿Riesgo en estos pedidos? {pedidos[:20]}")
-    return {"nivel": dicho, "total": total}
+@dataclass
+class Quote:
+    total: Money["EUR", 2]
+    valid_until: DateTimeTz
+
+@function(timeout="30s")
+def quote_order(order: Order, cutoff: DateTimeTz, discount: Decimal = Decimal("0")) -> Quote:
+    """Quote an order: its total in EUR and until when the quote holds."""
+    ...
 ```
 
-y su contrato, en `functions/riesgo.yaml`:
-
-```yaml
-apiVersion: oos.dev/v1alpha18
-kind: Function
-metadata: { name: riesgo, namespace: ventas }
-spec:
-  runtime: python
-  entrypoint: funciones/riesgo.py:riesgo
-  over: ventas.clientes
-  reads: [ventas.pedidos]
-  models: [modelo/ventas.extractor]
-  input:
-    umbral: { type: Decimal, required: true }
-  output:
-    nivel: { type: String }
-    total: { type: Decimal }
-  limits: { timeout: 60s }
+```
+ editor ──texto──► POST /funciones/firma ──► la firma, en vivo ──► Dry Run (formulario por tipo)
+   │                    (ore-code)                                   │ Dry run: una celda en
+   │                                                                 ▼ la sesión, con el contrato
+   └─commit──► ore-serve deriva y escribe packages/<p>/functions/<def>.yaml en el MISMO commit
+                    │
+                    ├─► Assets → Functions: observa y configura (no ejecuta)
+                    └─► se invoca: POST …/invocar (un trabajo del puesto) · ore.funcion() desde código
 ```
 
-Y ocurre esto:
+### Los principios
 
-- El compilador comprueba que `funciones/riesgo.py` define `riesgo`, que sus parámetros son la fila
-  y `umbral`, y que `ventas.pedidos` y el modelo existen. Si no, no compila.
-- En el workspace, *Live preview* la ejecuta en su rama, sin versión, con un `umbral` escrito a mano.
-- Al hacer commit, el catálogo tiene `ventas.riesgo` con su superficie y su linaje.
-- Al publicar el paquete, `ore diff` decide el salto: quitar `umbral` es mayor y no pasa como menor.
-- Se invoca con parámetros (`POST /funciones/ventas/riesgo/invocar {"parametros": {"umbral": 100}}`)
-  desde la consola, desde otra función o por API. Corre en la celda, en un trabajo del puesto,
-  y su red solo alcanza la copia y, porque declaró un modelo, el gateway.
+1. **El código manda; el documento se deriva.** Nadie escribe la función en YAML. El `Function`
+   sale de la firma **leyendo el fichero, sin ejecutarlo** (`ore-code`), y el compilador lo coteja:
+   `OOS2013` si el documento no es el que el código da. Uno escrito a mano, sin `@function`, sigue
+   valiendo y no se toca.
+2. **La firma habla OOS.** Los tipos de los parámetros y de la vuelta son los del catálogo
+   —`Money<EUR, 2>`, `DateTimeTz`, `Struct`…—, no los de Python. Lo que no se traduce no se deriva
+   (`OOS2043`), con su ayuda.
+3. **El contrato se cumple igual en todas partes.** La misma pieza (`ore.contrato`) convierte la
+   entrada y comprueba la salida en Dry Run, en la sesión, al invocarla y al llamarla desde código:
+   lo que funciona en un sitio funciona en los demás.
+4. **Una función publicada es un nombre del paquete,** `<paquete>.<def>`, sin base ni schema que
+   elegir: vive en `packages/<paquete>/functions/<def>.yaml`, nunca junto al código.
+5. **Se ejecuta en el puesto, en la celda;** nunca en `ore-serve` (0029 ①).
+6. **Lo publicado tiene versión, y la decide `ore diff`,** la del paquete; no hay versiones por
+   función.
+7. **Sólo se alcanza lo declarado:** `over`/`reads` para los datos, `models` para los modelos; la
+   red se abre por política con nombre.
+8. **Assets observa y configura; no ejecuta.** Una función se ejecuta desde donde se usa —Pipelines,
+   el código—, y se prueba donde se escribe (Dry Run).
 
-## Nivel 0 · Los principios
-
-1. **Una función es lógica encapsulada con superficie tipada.** Es la naturaleza de OOS v1alpha10
-   §1: lo que puede leer es la unión de las vistas que declara, lo que devuelve es su `output`, lo
-   que causa es la unión de sus `effects`. Nada fuera.
-2. **El documento es el contrato; el código lo implementa.** El árbol es el sistema de registro
-   ([`0018`](0018-la-ontologia-es-el-sistema-de-registro.md)). Pasar de código a función es una
-   **promoción explícita** (0031 W3.8): se marca el `def` con `@function`, y su documento
-   (`functions/<nombre>.yaml`) se **deriva** de la firma —`ore functions generate`, y `ore-serve`
-   lo regenera en el mismo commit cuando se guarda el código—. `OOS2013` dice cuándo el documento
-   no es el que el código da. Uno escrito a mano, sin `@function`, sigue valiendo y no se toca.
-3. **Se ejecuta en el puesto, en la celda.** El puesto es el sustrato de ejecución (0031); la
-   función corre en la celda y nunca en `ore-serve` (0029 ①).
-4. **Lo publicado tiene versión, y la decide `ore diff`.** SemVer del paquete con la taxonomía de
-   `91-versioning`; no hay versiones por función aparte.
-5. **Solo se alcanza lo declarado.** `over`/`reads` para los datos, `models` para los modelos; la red
-   se abre por política con nombre (0031 §7).
-6. **La escritura se propone** ([`functions.md`](../functions.md)) y tiene su propia especificación.
-
-## Nivel 1 · El modelo
+## El contrato
 
 ### El documento
 
-La `Function` de OOS, sin campos nuevos para la firma: **`input` y `output` ya son la firma**
-(`$defs/parameters`, un mapa nombre → `{type, required, description}` con el sistema de tipos de la
-versión). Lo que v1alpha18 añade:
+La `Function` de OOS. `input` y `output` **son** la firma; lo que v1alpha18 añadió:
 
 | | qué | por qué |
 |---|---|---|
-| `runtime: python` | el código es un `def` de Python | la promoción de 0031 W3.8; `node` y `jvm` entran después por la misma regla |
-| `entrypoint: <ruta>.py:<def>` | dentro del paquete, sin salir de él | lo que `wasm` ya exigía, con la función nombrada |
-| `models: [modelo/<ref>]` | los modelos que el código **puede** llamar | `model` sigue siendo «el modelo es lo que se ejecuta» (`runtime: model`); una función de código lo **usa**, y lo usado se declara |
-| la firma del `def` | los parámetros son la fila (si hay `over`) y las claves de `input` | el compilador lo coteja sin ejecutar nada |
-| `limits.timeout` | el plazo de la invocación | ya estaba en la gramática |
+| `runtime: python` | el código es un `def` de Python | la promoción de 0031 W3.8; `node` y `jvm`, por la misma regla |
+| `entrypoint: <ruta>.py:<def>` | desde la carpeta del paquete | lo que `wasm` ya exigía, con el `def` nombrado |
+| `models: [modelo/<ref>]` | los modelos que el código **puede** llamar | `model` sigue siendo `runtime: model`; una función de código **usa** modelos, y lo usado se declara |
+| `output` como valor | `{type: T}` si la vuelta no es una `@dataclass` | una función puede devolver un escalar o una lista |
+| `limits.timeout`, `over`, `reads`, `models` | argumentos **literales** de `@function(...)` | se leen sin ejecutar |
 | `owner` (v1alpha21) | quién responde de la función: **quien la crea**, `user:<handle>` | no sale del código, así que `OOS2013` no lo compara; al regenerar el documento se conserva (0027, «el dueño es quien lo crea») |
 
 El documento derivado declara **la versión más baja que lo describe**: v1alpha18; v1alpha20 si la
-firma usa sus tipos (`Money`, `Struct`, `Media`…); **v1alpha21 si lleva `owner`**, que es lo que
-pasa cuando nace desde la plataforma —al guardar el código o al sembrar un repositorio—, porque
-el servidor sabe quién lo crea. Generado en local, sin plataforma, no lleva `owner` y sus bytes
-son los de siempre.
+firma usa sus tipos; **v1alpha21 si lleva `owner`**, que es lo que pasa cuando nace desde la
+plataforma —al guardar el código o al sembrar un repositorio—, porque el servidor sabe quién lo
+crea. Generado en local, sin plataforma, no lleva `owner` y sus bytes son los de siempre: un árbol
+que no usa nada nuevo no cambia ni un byte.
 
-### La identidad
+### Los tipos de la firma
 
-`<base>.<schema>.<nombre>`, como todo el catálogo ([`0038`](0038-los-tres-niveles.md),
-[`0041`](0041-model-registry.md)). **No hay `apiName`**: el nombre del catálogo es el de la
-API.
-
-### La versión
-
-La del paquete, con `ore diff` (`91-versioning` §5–6): un cambio que rompe al consumidor exige
-mayor, y `ore diff` falla si la versión declarada no corresponde (`OOS5021`). Quien consume fija con
-`ontology.lock` (`range: "^2.1"`). Sobre una función: quitar un parámetro es `OOS5001`, un parámetro
-obligatorio nuevo `OOS5003`, cambiarle el tipo `OOS5002`/`OOS5010`; añadir uno opcional es menor.
-**Medido:** `ore diff` hoy no ve el cambio de un parámetro (`diff.rs` lee `input.type` como si
-`input` fuera un tipo); se arregla en R1.
-
-## Nivel 2 · El contrato
-
-| operación | qué hace | apoyado en |
+| Python | OOS | desde |
 |---|---|---|
-| **describir** | superficie, recursos, última corrida | `GET /funciones` |
-| **previsualizar** | el código de la rama, sin publicar, con parámetros, en la sesión | el puesto (0031 W3.1) |
-| **invocar** | `{parametros}` → `{valor}` o `{error}`, validado contra `input` antes de encolar y contra `output` al volver; dentro de `limits.timeout`, y si no, un trabajo que se consulta | `POST …/invocar` (0029 F4a), el trabajo (0031) |
-| **consumir** | otra función o un pipeline la llama por la misma invocación | — |
-| **publicar** | publicar el paquete | `ore pack` + `ore-registry` |
-| **retirar** | `OOS5007` sin anunciarlo en el manifiesto | `91-versioning` |
+| `int` · `float` · `str` · `bool` · `date` · `datetime` · `Decimal` | `Integer` · `Float` · `String` · `Boolean` · `Date` · `DateTime` · `Decimal` | v1alpha18 |
+| `list[T]` · `T \| None` | `list<T>` · no requerido | v1alpha18 |
+| `time` · `bytes` | `Time` · `Opaque` (viaja en base64) | v1alpha20 |
+| `ore.tipos.DateTimeTz` | `DateTimeTz` (un instante sin zona es un error) | v1alpha20 |
+| `Annotated[Decimal, Precision(p, s)]` | `Decimal<p, s>` | v1alpha20 |
+| `Money["EUR", 2]` · `Quantity["km", 1]` | `Money<EUR, 2>` · `Quantity<km, 1>` | v1alpha20 |
+| una `@dataclass` del fichero · `list[D]` | `Struct<…>` · `list<Struct<…>>` (una que se contiene a sí misma, `OOS2043`) | v1alpha20 |
+| `Media["base.schema.coleccion"]` | `Media<…>`: la referencia a un ítem; la colección tiene que existir (`OOS2018`) | v1alpha20 |
 
-Quién invoca: persona o agente de celda, preguntado a `ore-acceso` (`puede`, 0047) antes de
-encolar; `authorization` (Cedar) sigue en 422 hasta que se evalúe (0029 ④). Una **aplicación**
-externa con su cliente OAuth no está modelada todavía (0048 la deja como «un cliente más» del IdP):
-es R4.
+`ore.tipos` son **anotaciones**: un `Annotated` de lo que Python ya tiene, con argumentos literales.
+Fuera por ahora: una `Entity` como parámetro, `set`/`dict`, `Vector`/`Anchor`, identidad y marcas.
 
-## Nivel 3 · La plataforma: las cinco piezas
+### La derivación: `ore-code`
 
-| # | pieza | la teoría que la sostiene | lo que falta |
-|---|---|---|---|
-| **①** | **la superficie es el documento** | OOS `Function` (`input`, `output`, `over`, `reads`); 0031 W3.8 (promoción explícita, el decorador como material) | `runtime: python`, `entrypoint` con `def`, `models` (v1alpha18); el lector de firmas de Python en `ore-core` (hoy solo SQL se analiza: `sql_del_arbol`) |
-| **②** | **el ejecutor es el puesto** | 0031: una unidad, dos vidas (sesión y trabajo); 0029: bajo demanda primero, residente cuando se mida contra una acción real | el arnés que llama al `def` con la fila y los parámetros; `funciones_de` desde el paquete compilado (M1) |
-| **③** | **la versión es la del paquete** | `91-versioning` §5–6, `ore diff`, `ontology.lock`, `ore-registry` | que `ore diff` vea cada parámetro |
-| **④** | **invocar con parámetros** | 0029 F4a (`/invocar`, la cola, `resultados/`); 0047 `puede` | validar `parametros` contra `input`; respuesta síncrona dentro de `limits.timeout`; aplicaciones (R4) |
-| **⑤** | **lo declarado abre la red** | 0031 §7 (`salida-al-…`), y la capa de dependencias (`pyproject.toml`, 0031 W3.2) | que el trabajo de una función con `models` lleve la etiqueta que `salida-al-modelo` selecciona (hoy solo `rol: driver`, M3) |
+Un crate propio, el único sitio que entiende Python:
 
-**La enmienda a 0029, tal como 0031 W3.8 la escribió:** (1) el aislamiento de una función de código
-pasa de «red cerrada **más** WASI sin sockets» a **la red cerrada**: un `def` abre sockets, y que no
-lleguen a nada lo garantiza la `NetworkPolicy`, la misma garantía con la que ya corren los puestos;
-(2) «`runtime: wasm` es la única forma de traer código» sigue valiendo **contra el contenedor del
-cliente**: una imagen nuestra que corre código del cliente no lo es. wasm queda como el modo estricto.
+- **Analiza** con `ruff_python_parser` (fijado; 655/655 ficheros de la stdlib de 3.14) y **resuelve
+  los nombres como Python** sin ejecutar: alias, sombras, comillas, `from __future__ import
+  annotations`, la evaluación de 3.12. La versión del puesto (3.12) se señala si el código usa algo
+  posterior.
+- **Nunca se para en el primer problema:** sintaxis, tipos sin traducción y argumentos no literales
+  son datos, todos a la vez, con su sitio en el fuente.
+- **Es hostil-seguro:** pila dimensionada por byte y 1 MiB de límite.
+- **Tiene un oráculo:** `tests/oraculo.py` escribe la misma regla sobre el `ast` de CPython, y un
+  corpus diferencial exige que los dos deriven lo mismo.
+- Los fallos: `OOS2042` (el `entrypoint` no nombra un `def` síncrono), `OOS2043` (la firma no se
+  deriva) y `OOS2013` (el documento no es el que el código da), en ese orden.
 
-**Lo que este marco deja fuera, y por qué:** el contenedor propio del cliente (los *compute modules*
-de Foundry). 0029 lo rechaza porque rompe el sandbox. Una función **nuestra** consultable desde
-fuera sí cabe (④ + R4); una imagen del cliente es otra decisión, explícita, si llega.
+`ore functions generate [--check] [--json]` lo hace en local; `ore-serve` lo hace al guardar.
 
-## Nivel 4 · Las superficies
+### El contrato en ejecución: `ore.contrato`
 
-- **Python (primero).** El `def` de módulo; `tabla()`/`over()` y `modelo()` del SDK, acotados a lo
-  declarado como `@transform` ya acota a sus `inputs` (0031 W3.7 ⑤); la plantilla `functions-python`
-  v5 nace con la pareja `functions/<f>.yaml` + `funciones/<f>.py`.
-- **El workspace.** El panel *Functions* con *Live preview* (la rama) y *Published* (el paquete
-  publicado), entradas a mano y salida tipada; «Promote to function» que escribe el documento desde el
-  código una vez. Es lo que da la extensión de VS Code de Foundry, sobre Monaco y el puesto.
-- **Node y Java (después).** `runtime: node|jvm` por la misma regla; los intérpretes ya están (0031
-  W3.4).
+Del SDK. `convertir` lleva cada parámetro al tipo que anota (`"2026-10-02"` es una `date`, `12.50`
+un `Decimal` exacto, un objeto una dataclass) y `comprobar_salida` comprueba lo devuelto; los
+errores nombran el tipo anotado (`Money<EUR, 2>`, no `Decimal`). `@function` envuelve el `def` con
+las dos, así que **en la sesión una función se llama con su contrato**, y el arnés de la invocación,
+`ore.funcion("p.def")` y Dry Run usan las mismas.
 
-## Nivel 5 · Lo que se construye encima
+### Las operaciones
 
-| nivel | sobre qué | qué añade |
+| operación | qué hace | dónde |
 |---|---|---|
-| acciones y edición | ① `effects` + [`functions.md`](../functions.md) | la propuesta aplicada por una acción |
-| funciones en pipelines | ④ consumir | una función como paso de un transform |
-| lógica sin código | ① | un editor que **produce** el documento; se ejecuta igual |
-| funciones consultables desde fuera | ④ + R4 | aplicaciones con su cliente, versión fijada por `ontology.lock` |
-| residente y GPU | ② + perfiles de [`0027`](0027-el-modelo-vive-en-el-arbol.md) | réplicas cuando la latencia medida lo pida |
+| **derivar** | la firma de un texto **sin guardar**: las funciones en el orden del fichero, cada una con su firma o sus fallos con línea | `POST /funciones/firma` (sólo lectura: no lee git ni ejecuta) |
+| **probar** | Dry Run: la función del editor, con parámetros, en la sesión de la persona, sin commit | una celda del puesto |
+| **publicar** | guardar el `.py` escribe su documento en el **mismo commit**; procedencia = ese commit | `PUT`/`POST /arbol…` (G2) |
+| **describir** | superficie, código, corridas | `GET /funciones`, el índice de assets |
+| **invocar** | `{parametros}` validados por su tipo antes de encolar → un trabajo del puesto con el arnés → el informe en `resultados/`, en la rama de quien la invoca | `POST /funciones/{p}/{def}/invocar` |
+| **llamar desde código** | `ore.funcion("p.def")(…)`: corre aquí, con su contrato (sin `over` ni `models`) | el SDK |
+| **versionar** | quitar un parámetro, mayor; uno obligatorio nuevo, mayor; uno opcional, menor | `ore diff` por parámetro |
+
+Quién invoca: persona o agente, preguntado a `ore-acceso` (`puede`, 0047) antes de encolar;
+`authorization` (Cedar) sigue en 422 hasta que se evalúe (0029 ④).
+
+## Las superficies
+
+### Code repositories
+
+- **La plantilla** `functions-python` (v8) siembra `pyproject.toml` y `funciones/ejemplo.py` con
+  `<carpeta>_invoice_status`: un ejemplo de verdad —`Decimal`, `date`, una `@dataclass` de vuelta—,
+  con nombres en inglés y un bloque `__main__` para Run. **No siembra el documento:** lo escribe el
+  primer commit.
+- **Dry Run**, tras el f(x) a la izquierda de *Results* en el panel de abajo, sólo en un repositorio
+  de Functions:
+  - **a la izquierda**, los `@function` del fichero abierto, **en vivo**: tras una pausa del teclado
+    el texto va a `POST /funciones/firma` y la lista se rehace (marca *LIVE*; *LAST COMMIT* si el
+    servidor no la tiene). Una función que no se deriva sale con su fallo y *Line N*;
+  - **a la derecha**, la tarjeta **Input**: un control por parámetro salido de su tipo de OOS
+    —el decimal como texto exacto, `Money` con su moneda y sus decimales, `DateTimeTz` con su zona
+    aparte, `Struct` con sus campos, `list` con *Add item*, `bytes` desde un fichero— o el JSON; lo
+    rellenado se conserva mientras la firma cambia;
+  - **Dry run** siempre se puede pulsar: con algo mal lleva al primer campo; con todo bien manda
+    una celda a la sesión que carga el borrador como módulo (sin su `__main__`), convierte la
+    entrada, llama al `def` y comprueba la salida;
+  - la tarjeta **Output**, sólo tras correr: **Success** o **Failed** con el tiempo. Un fallo dice
+    **quién** no cumplió —la entrada, el código (con su línea), la salida, el fichero que no carga o
+    la sesión—. Un éxito se pinta **por el tipo que la firma declara**: un **valor** (`36.18 EUR`,
+    el instante con su zona y en UTC), un **registro** (campo → valor → tipo), una **tabla**
+    (`list<Struct>`) o **vacío** (`None`, `[]`, como resultados válidos).
+- **Functions en el Assets Catalog Explorer** del workspace: las publicadas, cada una abre su
+  vista detallada.
+
+### Assets → Functions
+
+Una sección de primera clase, bajo Origins, sin base ni schema. La ficha (Overview, Metrics, Links,
+History) y la **vista detallada**: *Signature*, *Code*, *Metrics* (las corridas, de **todas** las
+ramas), *Configuration* (el `timeout`, de sólo lectura: está en el código), *History* y *Lineage*.
+**No hay Invoke:** la acción principal es *Open in repository*. El icono es el f(x) del operador de
+Pipelines.
+
+### Pipelines
+
+Por hacer: el operador `function` que llama a una función publicada por su nombre, con la fila.
+
+## En vivo
+
+| | |
+|---|---|
+| `victor` | `ore-serve` con G1–G5; la consola con Assets → Functions y Dry Run; `invoice_status` en Dry Run: *Success*, `0.04 ms`, el registro entero |
+| las pruebas | `el-puesto.sh` 18 (la función con el agente de verdad), `los-documentos.sh` 25, conformidad v1alpha18 y v1alpha20 (7 casos), el oráculo y las instantáneas de `ore-code`, 18 pruebas del contrato |
+| **medido** | una invocación bajo demanda tarda ~68 s en `victor` (42 esperando nodo): es un trabajo; Dry Run en una sesión viva, milisegundos; derivar una firma, microsegundos |
+
+## De dónde viene
+
+El 2026-10-01 el producto se reorientó para competir con Foundry Functions sobre lo que ORE ya
+define. El primer marco (P1–P6) pedía escribir el contrato en YAML junto al código; **la
+corrección de ese mismo día** fue la que lo ordenó todo: *nadie escribe la función en YAML*. Desde
+ahí:
+
+| | qué | commits |
+|---|---|---|
+| P1–P5 | v1alpha18; `ore-core` la habla y `ore diff` ve cada parámetro; invocar con el arnés; `ore.modelo()` y su red; la plantilla | `4081ef9`…`1882f89` |
+| G0–G1 | el documento se deriva: OOS §4; `ore-code`; el cotejo en el compilador; `ore functions generate` | `362ed2c`, `8fc664f`, `9c1cd1d`, `4a89e70` |
+| — | el paquete de un proyecto puede publicar: su id es un identificador (`ore migrate proyectos`) | `601ead3` |
+| G2 | guardar un `@function` escribe su documento en el mismo commit | `ac818af` |
+| — | una función publicada vive en `functions/` del paquete | `389ee4c` |
+| F1–F4 | el activo de función en el índice; Assets → Functions; las corridas de todas las ramas | `b4aeeca`, `bc5d865` |
+| G3 | el contrato se cumple: en la sesión, al invocarla, desde código | `6898593` |
+| G4 | la plantilla v8 | `2a718c4` |
+| G5a | la firma habla OOS (v1alpha20) | `5ec35ba` |
+| G5b | Dry Run: la firma en vivo, correr en la sesión, Output por tipo | `996f6d7` + consola |
 
 ## Las decisiones
 
-| # | decisión | estado |
+| # | decisión | |
 |---|---|---|
-| A1 | el producto es *Code Repositories · Functions*; este documento es su marco | aprobada · 2026-10-01 |
-| A2 | Python es el fundamento; Node y Java después, por la misma regla | aprobada · 2026-10-01 |
-| A3 | la escritura tiene su propia especificación | aprobada · 2026-10-01 |
-| A4 | la base es lo que ORE ya define; R1 es la primera rebanada, no un camino aparte | aprobada · 2026-10-01 |
-| D1 | el documento es el contrato; el código lo implementa; promoción explícita con `@function`, y el documento se deriva de la firma (0031 W3.8) | cerrada · 2026-10-01 |
-| D2 | sin `apiName`: el nombre del catálogo | cerrada · 2026-10-01 |
-| D3 | la enmienda a 0029, la de 0031 W3.8; el contenedor del cliente, fuera | cerrada · 2026-10-01 |
-| D4 | el plazo es `limits.timeout` | cerrada · 2026-10-01 |
-| D5 | la versión es la del paquete, por `ore diff` | cerrada · 2026-10-01 |
-| D6 | la red, por política con nombre seleccionada por lo declarado | cerrada · 2026-10-01 |
+| A1 | el producto es *Code Repositories · Functions*; este documento es su marco | 2026-10-01 |
+| A2 | Python es el fundamento; TypeScript, Node y Java después, por la misma regla | 2026-10-01 |
+| A3 | la escritura (acciones) tiene su propia especificación | 2026-10-01 |
+| A4 | la base es lo que ORE ya define; sin piezas paralelas | 2026-10-01 |
+| D1 | el código manda: `@function` y el documento **derivado** de la firma, sin ejecutar; `OOS2013` si difieren | 2026-10-01 |
+| D2 | sin `apiName`: el nombre es el del catálogo, `<paquete>.<def>` | 2026-10-01 |
+| D3 | la enmienda a 0029 de 0031 W3.8: el aislamiento de una función de código es la red cerrada; el contenedor del cliente, fuera | 2026-10-01 |
+| D4 | el plazo es `limits.timeout`, de `@function(timeout=…)` | 2026-10-01 |
+| D5 | la versión es la del paquete, por `ore diff` | 2026-10-01 |
+| D6 | la red, por política con nombre seleccionada por lo declarado | 2026-10-01 |
+| D7 | una función publicada vive en `packages/<p>/functions/<def>.yaml`; dueño implícito, el paquete del repositorio | 2026-10-01 |
+| D8 | Assets observa y configura; no ejecuta (sin Invoke) | 2026-10-02 |
+| D9 | la firma habla los tipos de OOS (v1alpha20); el documento declara la versión más baja que lo deriva | 2026-10-02 |
+| D10 | probar se llama **Dry Run**: en vivo, sin commit, en la sesión, con el contrato | 2026-10-02 |
+| D11 | Output es nuestro: dos estados y el resultado por su tipo, sin pestañas Result/Logs/Performance | 2026-10-03 |
 
-## Lo que hay hoy (medido el 2026-10-01)
+## Lo que se decidió no hacer
 
-| | estado |
+- **El contrato escrito a mano como camino principal.** Sigue valiendo sin `@function`, pero el
+  producto es el `def`.
+- **Invoke en Assets.** Ejecutar es de donde se usa; Assets es observabilidad y configuración, como
+  el Ontology Manager de Foundry.
+- **Un registro de funciones fuera del árbol, `apiName`, versiones por función** (Foundry): aquí el
+  árbol es el registro y la versión es la del paquete.
+- **El contenedor del cliente** (*compute modules*): 0029 lo rechaza.
+- **Las pestañas Result/Logs/Performance** de Foundry en Dry Run: la pregunta es «¿cumple su
+  contrato?», y se contesta con un veredicto y el valor.
+
+## Lo que sigue
+
+| | qué |
 |---|---|
-| la gramática | `Function` en v1alpha14: `runtime: wasm\|model`, `input`/`output` tipados, `over`/`reads`/`effects`, `limits`; el compilador **no aplica** el enum (`runtime: python` compila hoy, 0031 W3.8) |
-| la clase `functions-python` | ejecuta, no escribe; plantilla v4 sin `Function` |
-| invocar | solo `runtime: model`; `authorization`, 422 |
-| **M1** | una `Function` dentro de un repositorio la ve el compilador, no `GET /funciones` ni `/invocar` |
-| **M2** | un trabajo es un puesto con una celda: 68 s en `victor` (42 esperando nodo); hay copias al día para `over()` |
-| **M3** | el puesto tiene el token del agente de la celda; la red no llega al gateway |
-| `ore diff` | no ve el cambio de un parámetro |
-
-## Cómo se construye
-
-**R1 · Python bajo demanda, de lectura** — la brecha:
-
-| paso | qué | dónde |
-|---|---|---|
-| **P1 · el contrato** | OOS v1alpha18: `runtime: python`, `entrypoint` con `def`, `models`, la firma del `def`, `limits.timeout`, la versión por parámetro; casos de conformidad | `oos` |
-| **P2 · el compilador** | `ore-core` habla v1alpha18: la forma, el lector de firmas de Python, `models` resueltos, `ore diff` por parámetro | `ore-core` |
-| **P3 · invocar** | `funciones_de` desde el paquete compilado; `parametros` contra `input`; el trabajo del puesto con el arnés; el informe en `resultados/`; `limits.timeout` | `ore-serve`, `puesto/python` |
-| **P4 · el modelo desde Python** | `modelo(ref)` en el SDK, acotado a `models`; la etiqueta de red del trabajo | SDK, `malla` |
-| **P5 · la plantilla** | `functions-python` v5: la pareja documento + código | `clases.rs` |
-| **P6 · la prueba y la consola** | `pruebas-de-fuego/la-funcion-python.sh`; Live preview y Run en el workspace | ORE, consola |
-
-Después: **R2** residente (cuando se mida), **R3** Node y Java, **R4** aplicaciones externas, y la
-escritura por su especificación.
+| **Pipelines** | el operador `function`: una función publicada como paso, con la fila |
+| **Dry Run** | Media en Output (la vista previa del ítem); las funciones `over` (una tabla de filas); TypeScript (llega con R3) |
+| **G2c** | el panel de Commit marca los documentos que escribe la plataforma |
+| **la firma** | una `Entity` como parámetro; `set`/`dict`; `Vector`/`Anchor` |
+| **Configuration** | sobrescribir el `timeout` sin tocar el código, si se pide |
+| **R2** | residente, cuando la latencia medida lo pida |
+| **R3** | `node`/`jvm` y la firma de TypeScript |
+| **R4** | aplicaciones externas con su cliente (0048) |
+| **la red** | `salida-al-modelo-de-una-funcion` llega a cada inquilino al converger su malla |
 
 ## Qué se acepta a cambio
 
-- **Un lector de firmas de Python** en `ore-core`, sin ejecutar código: solo la cabecera del `def`.
-- **~70 s por invocación** mientras solo haya bajo demanda; parecido a lo que 0029 aceptó para
-  `runtime: model`.
-- **El aislamiento de una función de código es la red cerrada**, no WASI (0031 W3.8).
+- **Un lector de Python propio** (`ore-code`, con Ruff) y `stacker`/`psm` enlazados en `ore`: el
+  cierre de `ore-cli` pasó de 34 a 126 crates (0050 G1c).
+- **~70 s por invocación** mientras sólo haya bajo demanda; Dry Run es lo rápido.
+- **El aislamiento de una función de código es la red cerrada,** no WASI (0031 W3.8).
 
 ## Anexo · Foundry, lo que se tomó y lo que no
 
-De `palantir.com/docs/foundry`, leído el 2026-10-01. **Se toma:** la firma tipada como centro
-(`/functions/types-reference/`), *live preview* sin publicar, la lista de lo incompatible
-(`/functions/functions-versioning/`), los recursos importados que generan tipos y abren la red
-(`/functions/resource-imports-sidebar/`, `/functions/api-calls/`), la invocación por API con
-parámetros (`/api/v2/ontologies-v2-resources/queries/execute-query/`) y el panel de la extensión de VS
-Code (`/functions/navigating-vscode/`). **No se toma:** el registro de funciones fuera del código
-fuente de verdad (aquí es el árbol), el `apiName` aparte, las versiones por función (aquí, la del
-paquete) y el contenedor del cliente (*compute modules*, `/compute-modules/overview/`), que 0029
-rechaza.
+De `palantir.com/docs/foundry`, leído el 2026-10-01. **Se toma:** la firma tipada como centro, el
+formulario generado de la firma para probar sin publicar, la lista de lo incompatible entre
+versiones, los recursos declarados que abren la red y la observabilidad sin ejecución en el
+Ontology Manager. **No se toma:** el registro aparte, el `apiName`, las versiones por función, el
+contenedor del cliente y la salida en tres pestañas. **Va más lejos:** los tipos del catálogo en
+la firma (`Money`, `DateTimeTz`, `Struct`, `Media`), la firma en vivo mientras se escribe y el fallo
+que dice quién no cumplió.
