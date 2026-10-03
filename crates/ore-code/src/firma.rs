@@ -146,7 +146,8 @@ pub enum Salida {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Firma {
     pub nombre: String,
-    /// `<ruta desde la carpeta del paquete>:<def>`.
+    /// `<ruta desde la carpeta del paquete>:<def>` (Python) o `<ruta>.ts`
+    /// (TypeScript, v1alpha23).
     pub entrypoint: String,
     /// La primera línea no vacía de la docstring.
     pub descripcion: Option<String>,
@@ -164,6 +165,10 @@ impl Firma {
     /// v1alpha18, salvo que use algo de v1alpha20. Un árbol que no usa nada
     /// nuevo no cambia ni un byte.
     pub fn api_version(&self) -> &'static str {
+        // Una función de TypeScript nace en v1alpha23: antes no había `node`.
+        if self.runtime() == "node" {
+            return "oos.dev/v1alpha23";
+        }
         let nuevo = self.entrada.iter().any(|c| c.tipo.de_v1alpha20())
             || match &self.salida {
                 Salida::Valor(t) => t.de_v1alpha20(),
@@ -173,6 +178,18 @@ impl Firma {
             "oos.dev/v1alpha20"
         } else {
             "oos.dev/v1alpha18"
+        }
+    }
+}
+
+impl Firma {
+    /// `python` o `node`: lo dice el `entrypoint` —`<ruta>.py:<def>` o
+    /// `<ruta>.ts` (OOS v1alpha23 `01` §2)—, que es de donde se derivó.
+    pub fn runtime(&self) -> &'static str {
+        if self.entrypoint.ends_with(".ts") {
+            "node"
+        } else {
+            "python"
         }
     }
 }

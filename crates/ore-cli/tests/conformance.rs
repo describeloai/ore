@@ -1567,6 +1567,15 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
 }
 
 #[test]
+fn borrador_de_v1alpha23() {
+    marcador(
+        "v1alpha23",
+        "la función de TypeScript",
+        "BORRADOR · OOS v1alpha23 · la función de TypeScript",
+    );
+}
+
+#[test]
 fn borrador_de_v1alpha22() {
     marcador(
         "v1alpha22",

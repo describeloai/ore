@@ -45,12 +45,19 @@ pub const API_VERSION_CON_DUENO: &str = "oos.dev/v1alpha21";
 /// el que tenía. Sin él, los mismos bytes de siempre.
 pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> String {
     let mut s = String::new();
+    let que = if f.runtime() == "node" {
+        "el código"
+    } else {
+        "el def"
+    };
     let _ = writeln!(
         s,
-        "{MARCA} {} · se edita el def, no este fichero",
+        "{MARCA} {} · se edita {que}, no este fichero",
         f.entrypoint
     );
-    let version = if owner.is_some() {
+    // Con `owner`, la más baja que lo describe: v1alpha21, o la de la firma si
+    // es posterior (una de TypeScript nace en v1alpha23).
+    let version = if owner.is_some() && f.runtime() == "python" {
         API_VERSION_CON_DUENO
     } else {
         f.api_version()
@@ -77,7 +84,7 @@ pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> Str
     if let Some(o) = owner {
         let _ = writeln!(s, "  owner: {}", escalar(o));
     }
-    s.push_str("  runtime: python\n");
+    let _ = writeln!(s, "  runtime: {}", f.runtime());
     let _ = writeln!(s, "  entrypoint: {}", escalar(&f.entrypoint));
     if let Some(o) = &f.over {
         let _ = writeln!(s, "  over: {}", escalar(o));

@@ -1,6 +1,6 @@
 [package]
 name        = "ore-code"
-description = "El código como fuente: deriva el contrato (`Function`) de un `@function` en Python, leyendo y sin ejecutar."
+description = "El código como fuente: deriva el contrato (`Function`) de un `@function` en Python o de la exportación por defecto de un `.ts`, leyendo y sin ejecutar."
 version.workspace    = true
 edition.workspace    = true
 license.workspace    = true
@@ -12,6 +12,11 @@ ruff_python_parser.workspace = true
 ruff_python_ast.workspace    = true
 ruff_text_size.workspace     = true
 stacker = "0.1"
+oxc_allocator.workspace = true
+oxc_ast.workspace       = true
+oxc_ast_visit.workspace = true
+oxc_parser.workspace    = true
+oxc_span.workspace      = true
 
 [dev-dependencies]
 serde_json = "1"

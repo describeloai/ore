@@ -23,10 +23,14 @@
 //! # Las piezas
 //!
 //! - [`firma`]: lo que se deriva, **sin lenguaje**: parámetros con su tipo OOS,
-//!   lo que devuelve, lo que lee, los modelos. TypeScript llenará la misma.
+//!   lo que devuelve, lo que lee, los modelos. Python y TypeScript llenan la
+//!   misma.
 //! - [`python`]: un `.py` → su [`Derivacion`]. Dentro, `sintaxis` es lo único
 //!   que toca el parser de Ruff (versión exacta, API interna), y `derivar` es
 //!   §4 sobre esa sintaxis propia.
+//! - [`typescript`]: un `.ts` → su [`Derivacion`] (OOS v1alpha23): la
+//!   exportación por defecto de un fichero de `functions/` y su `config`. El
+//!   parser es oxc, y solo `typescript/sintaxis` lo toca.
 //! - [`emitir`]: una firma → el documento YAML, determinista e idempotente.
 //! - [`lineas`]: de un desplazamiento en bytes a línea y columna, para que un
 //!   diagnóstico apunte al `.py` como lo haría un compilador.
@@ -35,5 +39,38 @@ pub mod emitir;
 pub mod firma;
 pub mod lineas;
 pub mod python;
+pub mod typescript;
 
 pub use firma::{Campo, Def, Derivacion, Fallo, Firma, Funcion, Rango, Salida, Tipo};
+
+/// La derivación de un fichero de código, por su extensión: un `.py` con
+/// [`python`], un `.ts` con [`typescript`]. `None` si no es de ninguno.
+pub fn derivar(fuente: &str, ruta: &str) -> Option<Derivacion> {
+    if ruta.ends_with(".py") {
+        Some(python::derivar(fuente, ruta))
+    } else if ruta.ends_with(".ts") {
+        Some(typescript::derivar(fuente, ruta))
+    } else {
+        None
+    }
+}
+
+/// Si merece la pena analizar un fichero para encontrar funciones (un filtro,
+/// no una respuesta).
+pub fn puede_tener_funciones(ruta: &str, fuente: &str) -> bool {
+    if ruta.ends_with(".py") {
+        python::puede_tener_funciones(fuente)
+    } else {
+        typescript::puede_tener_funciones(ruta, fuente)
+    }
+}
+
+/// El `entrypoint` de la función `nombre` del fichero `ruta`: `<ruta>:<def>`
+/// en Python, `<ruta>` en TypeScript (el fichero es la función).
+pub fn entrypoint_de(ruta: &str, nombre: &str) -> String {
+    if ruta.ends_with(".ts") {
+        ruta.to_string()
+    } else {
+        format!("{ruta}:{nombre}")
+    }
+}

@@ -110,6 +110,22 @@ ruff_python_parser = "=0.0.15"
 ruff_python_ast    = "=0.0.15"
 ruff_text_size     = "=0.0.15"
 
+# El analizador de TypeScript de `ore-code` (0050 R3): la exportacion por
+# defecto de un `.ts` de `functions/` es la fuente, y su `Function` se deriva
+# leyendo (OOS v1alpha23). Medido en M-T1 (2026-10-03, Docker): 1238/1238
+# ficheros reales (zod, date-fns, TypeScript, typescript-eslint, vscode/base,
+# type-fest; 9 MB) en 526 ms, 5/5 rotos rechazados, 76 crates normales, sin
+# nada vetado; `swc_ecma_parser` 45 se quedo en 1228/1238 (los decoradores, sin
+# activarlos), 683 ms, 93 crates y trae `rand` y `ahash`. El arbol vive en un
+# arena: soltarlo no es recursivo (lo que con Ruff obliga a `stacker` al
+# soltar). Version EXACTA, como Ruff: oxc publica 0.x cada semana; solo
+# `ore-code/src/typescript/sintaxis.rs` la toca.
+oxc_allocator = "=0.152.0"
+oxc_ast       = "=0.152.0"
+oxc_ast_visit = "=0.152.0"
+oxc_parser    = "=0.152.0"
+oxc_span      = "=0.152.0"
+
 # SHA-256. El digest es EL artefacto normativo del proyecto, no un detalle de
 # implementacion: `sha256:<64 hex>` viaja en cada bundle, se firma y lo verifica
 # un tercero. Reimplementar a mano una primitiva criptografica para ahorrar seis

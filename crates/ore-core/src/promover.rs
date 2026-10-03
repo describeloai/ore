@@ -6,7 +6,8 @@
 //!
 //! 1. la forma del documento: `runtime: python` es de v1alpha18, lleva
 //!    `entrypoint` `<ruta>.py:<def>` dentro del paquete, y `models` es solo
-//!    suyo (`OOS1004`); cada modelo resuelve (`OOS2005`);
+//!    suyo (`OOS1004`); cada modelo resuelve (`OOS2005`). Y desde v1alpha23,
+//!    `runtime: node`: `entrypoint` `<ruta>.ts`, el fichero es la función;
 //! 2. que el fichero esté y defina ese `def` en su nivel superior, sin `async`
 //!    (`OOS2042`);
 //! 3. que el `def` se pueda derivar —Python que el puesto entiende, anotado,
@@ -17,6 +18,14 @@
 //!    atrás).
 //!
 //! La precedencia es esa: `OOS2042` antes que `OOS2043` antes que `OOS2013`.
+//!
+//! # TypeScript (v1alpha23)
+//!
+//! La misma regla con la marca del lenguaje: lo que se promueve es el
+//! `export default function` de un `.ts` con `functions` en su ruta, que se
+//! llama como el fichero, con su `export const config` al lado. El `def` de
+//! Python es aquí la exportación por defecto; el `@function`, estar en
+//! `functions/`.
 //!
 //! # Lo que no se compara
 //!
@@ -30,7 +39,7 @@ use crate::document::{ApiVersion, Kind};
 use crate::link::{Loaded, Package};
 use crate::parse::Node;
 use ore_code::lineas::Lineas;
-use ore_code::{Campo, Derivacion, Fallo, Firma, Rango, Salida, python};
+use ore_code::{Campo, Derivacion, Fallo, Firma, Rango, Salida, python, typescript};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -65,6 +74,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         let version = f.version();
         let runtime = f.section("runtime").and_then(|n| n.as_str()).unwrap_or("");
         let de_18 = version.is_some_and(|v| v >= ApiVersion::V1Alpha18);
+        let de_23 = version.is_some_and(|v| v >= ApiVersion::V1Alpha23);
 
         // ── OOS1004 · el runtime de la versión ───────────────────────────
         if runtime == "python" && !de_18 {
@@ -77,59 +87,90 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             ));
             continue;
         }
-        if de_18 && !matches!(runtime, "wasm" | "model" | "python") {
+        if runtime == "node" && !de_23 {
+            out.push(forma(
+                f,
+                f.section("runtime"),
+                "`runtime: node` es de v1alpha23".to_string(),
+                "una función de TypeScript se declara con `apiVersion: oos.dev/v1alpha23`; hasta \
+                 v1alpha22 el runtime era `wasm`, `model` o `python`",
+            ));
+            continue;
+        }
+        if de_18 && !matches!(runtime, "wasm" | "model" | "python" | "node") {
             out.push(forma(
                 f,
                 f.section("runtime"),
                 format!("`runtime: {runtime}` no es un runtime de OOS"),
-                "`wasm` (un módulo sin red), `model` (un modelo del árbol) o `python` (un `def` \
-                 del paquete)",
+                "`wasm` (un módulo sin red), `model` (un modelo del árbol), `python` (un `def` \
+                 del paquete) o `node` (la exportación por defecto de un `.ts`, desde v1alpha23)",
             ));
             continue;
         }
+        let codigo = matches!(runtime, "python" | "node");
 
         // ── OOS1004 · `models`, solo de una función de código ────────────
         if let Some(m) = f.section("models")
-            && runtime != "python"
+            && !codigo
         {
             out.push(forma(
                 f,
                 Some(m),
                 format!("`models` con `runtime: {runtime}`"),
-                "`models` dice qué modelos puede llamar el código de una función `python`. Un \
+                "`models` dice qué modelos puede llamar el código de una función `python` o \
+                 `node`. Un \
                  `wasm` no tiene red, y con `runtime: model` el modelo es lo que se ejecuta: \
                  `model`",
             ));
         }
         modelos_usados(pkg, f, out);
 
-        if runtime != "python" {
+        if !codigo {
             continue;
         }
+        let ts = runtime == "node";
 
         // ── OOS1004 · el `entrypoint` ────────────────────────────────────
+        let forma_del_entrypoint = if ts {
+            "`<ruta>.ts`, relativo a la carpeta del paquete: el fichero es la función"
+        } else {
+            "`<ruta>.py:<def>`, relativo a la carpeta del paquete"
+        };
         let Some(nodo) = f.section("entrypoint") else {
             out.push(forma(
                 f,
                 None,
                 format!(
-                    "`{}` es `runtime: python` y no dice `entrypoint`",
+                    "`{}` es `runtime: {runtime}` y no dice `entrypoint`",
                     f.qname().unwrap_or_default()
                 ),
-                "el `entrypoint` es lo que el documento promueve: `<ruta>.py:<def>`, relativo a \
-                 la carpeta del paquete",
+                &format!("el `entrypoint` es lo que el documento promueve: {forma_del_entrypoint}"),
             ));
             continue;
         };
         let texto = nodo.as_str().unwrap_or("");
-        let Some((ruta, nombre)) = entrypoint(texto) else {
+        let leido = if ts {
+            entrypoint_ts(texto).map(|r| (r, typescript::nombre_del_fichero(r)))
+        } else {
+            entrypoint(texto)
+        };
+        let Some((ruta, nombre)) = leido else {
             out.push(forma(
                 f,
                 Some(nodo),
-                format!("`entrypoint: {texto}` no es `<ruta>.py:<def>` dentro del paquete"),
-                "la ruta es relativa a la carpeta del paquete, con `/`, sin `..` ni `/` inicial, \
-                 y termina en `.py`; detrás de `:`, el nombre del `def`. Una función no nombra \
-                 código de otro paquete",
+                format!(
+                    "`entrypoint: {texto}` no es {} dentro del paquete",
+                    if ts { "`<ruta>.ts`" } else { "`<ruta>.py:<def>`" }
+                ),
+                if ts {
+                    "la ruta es relativa a la carpeta del paquete, con `/`, sin `..` ni `/` \
+                     inicial, y termina en `.ts`, sin `:<nombre>`: lo que se publica es la \
+                     exportación por defecto del fichero"
+                } else {
+                    "la ruta es relativa a la carpeta del paquete, con `/`, sin `..` ni `/` inicial, \
+                     y termina en `.py`; detrás de `:`, el nombre del `def`. Una función no nombra \
+                     código de otro paquete"
+                },
             ));
             continue;
         };
@@ -154,8 +195,29 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         };
         nombradas.insert((fichero.clone(), nombre.to_string()));
         // El último `def` con ese nombre es el que vale: Python liga el nombre
-        // a la última definición.
-        let Some(def) = l.d.defs.iter().rev().find(|d| d.nombre == nombre) else {
+        // a la última definición. En TypeScript, la exportación por defecto.
+        let def = if ts {
+            l.d.defs.first()
+        } else {
+            l.d.defs.iter().rev().find(|d| d.nombre == nombre)
+        };
+        let Some(def) = def else {
+            if ts {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2042,
+                        &f.path,
+                        format!("`{ruta}` no tiene `export default function`"),
+                    )
+                    .at(nodo.pos())
+                    .help(
+                        "con `node`, el `entrypoint` nombra la exportación por defecto del \
+                         fichero: `export default function <nombre>(…)`. Una función exportada por \
+                         su nombre, una flecha o una clase no lo son",
+                    ),
+                );
+                continue;
+            }
             out.push(
                 Diagnostic::new(
                     Code::Oos2042,
@@ -170,7 +232,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             );
             continue;
         };
-        if def.asincrona {
+        if def.asincrona && !ts {
             out.push(
                 Diagnostic::new(
                     Code::Oos2042,
@@ -192,6 +254,24 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
 
         // ── OOS2013 · un documento promueve un `def` sin `@function` ─────
+        if !def.decorada && ts {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2013,
+                    &f.path,
+                    format!(
+                        "`{ruta}` no está en un directorio `functions` (o es una prueba o un \
+                         `.d.ts`), y este documento lo promueve"
+                    ),
+                )
+                .at(nodo.pos())
+                .help(
+                    "una función de TypeScript es la exportación por defecto de un `.ts` de \
+                     `functions/`; ahí se marca, y el documento sale de ahí",
+                ),
+            );
+            continue;
+        }
         if !def.decorada {
             out.push(
                 Diagnostic::new(
@@ -209,7 +289,12 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
 
         // ── OOS2043 · se deriva; OOS2013 · y es este documento ───────────
-        let Some(func) = l.d.funciones.iter().rev().find(|x| x.nombre == nombre) else {
+        let Some(func) =
+            l.d.funciones
+                .iter()
+                .rev()
+                .find(|x| x.nombre == nombre || ts)
+        else {
             continue;
         };
         match &func.resultado {
@@ -232,7 +317,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         .collect();
     for carpeta in publicables {
         let mut pys = Vec::new();
-        ficheros_py(&carpeta, &mut pys);
+        ficheros_de_codigo(&carpeta, &mut pys);
         pys.sort();
         for py in pys {
             if carpeta_del_paquete(&py, &pkg.root) != carpeta {
@@ -243,7 +328,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             };
             let ruta = rel.to_string_lossy().replace('\\', "/");
             if !leidos.contains_key(&py)
-                && !std::fs::read_to_string(&py).is_ok_and(|t| python::puede_tener_funciones(&t))
+                && !std::fs::read_to_string(&py)
+                    .is_ok_and(|t| ore_code::puede_tener_funciones(&ruta, &t))
             {
                 continue;
             }
@@ -267,9 +353,15 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                             Code::Oos2013,
                             &py,
                             format!(
-                                "`@function` `{}` sin su documento: ningún `Function` del paquete \
-                                 tiene `entrypoint: {}`",
-                                x.nombre, firma.entrypoint
+                                "{} `{}` sin su documento: ningún `Function` del paquete tiene \
+                                 `entrypoint: {}`",
+                                if firma.runtime() == "node" {
+                                    "la función"
+                                } else {
+                                    "`@function`"
+                                },
+                                x.nombre,
+                                firma.entrypoint
                             ),
                         )
                         .at(pos(&lineas, x.rango))
@@ -329,6 +421,18 @@ pub fn entrypoint(s: &str) -> Option<(&str, &str)> {
     (ruta_ok && ident(nombre)).then_some((ruta, nombre))
 }
 
+/// `<ruta>.ts` → la ruta, o `None` si la forma no vale (v1alpha23 `01` §2):
+/// relativa con `/`, sin `..` ni `/` inicial ni `:`, y termina en `.ts`.
+pub fn entrypoint_ts(s: &str) -> Option<&str> {
+    let ok = !s.starts_with('/')
+        && !s.contains('\\')
+        && !s.contains(':')
+        && s.ends_with(".ts")
+        && s.len() > ".ts".len()
+        && s.split('/').all(|t| !t.is_empty() && t != "..");
+    ok.then_some(s)
+}
+
 /// La carpeta del paquete donde vive el documento: la más cercana, subiendo,
 /// que tiene `package.yaml`. Sin ninguna dentro del árbol, la raíz (un
 /// paquete suelto).
@@ -364,7 +468,7 @@ pub(crate) fn paquetes_publicables(pkg: &Package) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// Lee y deriva un `.py` una sola vez. `None` si no se puede leer.
+/// Lee y deriva un `.py` o un `.ts` una sola vez. `None` si no se puede leer.
 fn leer<'a>(
     leidos: &'a mut BTreeMap<PathBuf, Option<Leido>>,
     fichero: &Path,
@@ -374,15 +478,20 @@ fn leer<'a>(
         .entry(fichero.to_path_buf())
         .or_insert_with(|| {
             let fuente = std::fs::read_to_string(fichero).ok()?;
-            let d = python::derivar(&fuente, ruta);
+            let d = ore_code::derivar(&fuente, ruta)?;
             Some(Leido { fuente, d })
         })
         .as_ref()
 }
 
-/// Los `.py` de una carpeta, sin entrar en lo que no es del paquete: lo
-/// oculto, los entornos y las cachés.
-pub(crate) fn ficheros_py(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Los `.py` y los `.ts` de una carpeta —el código que puede ser una
+/// función—, sin entrar en lo que no es del paquete: lo oculto, los entornos,
+/// las dependencias y las cachés.
+pub(crate) fn ficheros_de_codigo(dir: &Path, out: &mut Vec<PathBuf>) {
+    ficheros_con(dir, &[".py", ".ts"], out)
+}
+
+fn ficheros_con(dir: &Path, extensiones: &[&str], out: &mut Vec<PathBuf>) {
     let Ok(es) = std::fs::read_dir(dir) else {
         return;
     };
@@ -398,8 +507,8 @@ pub(crate) fn ficheros_py(dir: &Path, out: &mut Vec<PathBuf>) {
             continue;
         }
         if p.is_dir() {
-            ficheros_py(&p, out);
-        } else if n.ends_with(".py") {
+            ficheros_con(&p, extensiones, out);
+        } else if extensiones.iter().any(|x| n.ends_with(x)) {
             out.push(p);
         }
     }
@@ -418,21 +527,22 @@ fn pos(l: &Lineas, r: Rango) -> Pos {
 pub(crate) fn roto(fichero: &Path, fuente: &str, d: &Derivacion) -> Option<Diagnostic> {
     let f = d.sintaxis.first().or(d.version.first())?;
     let (mayor, menor) = python::PYTHON_DEL_PUESTO;
+    let que = if fichero.extension().is_some_and(|x| x == "ts") {
+        format!(
+            "no es TypeScript que el puesto (Node {}) ejecute",
+            typescript::NODE_DEL_PUESTO
+        )
+    } else {
+        format!("no es Python que el puesto ({mayor}.{menor}) entienda")
+    };
     let otros = d.sintaxis.len() + d.version.len() - 1;
     let mas = if otros > 0 {
         format!(" (y {otros} más)")
     } else {
         String::new()
     };
-    let mut diag = Diagnostic::new(
-        Code::Oos2043,
-        fichero,
-        format!(
-            "no es Python que el puesto ({mayor}.{menor}) entienda: {}{mas}",
-            f.mensaje
-        ),
-    )
-    .at(pos(&Lineas::new(fuente), f.rango));
+    let mut diag = Diagnostic::new(Code::Oos2043, fichero, format!("{que}: {}{mas}", f.mensaje))
+        .at(pos(&Lineas::new(fuente), f.rango));
     if let Some(a) = &f.ayuda {
         diag = diag.help(a.clone());
     }

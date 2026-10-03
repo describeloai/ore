@@ -151,6 +151,12 @@ pub enum ApiVersion {
     /// una `View` y un `Dataset` no lo declaran: se deriva. Lo pidió ORE 0051
     /// «ORE Null Contract» (2026-10-02).
     V1Alpha22,
+    /// v1alpha23. **La función de TypeScript.** `runtime: node`: la
+    /// exportación por defecto de un `.ts` con `functions` en su ruta, que se
+    /// llama como el fichero, con su `export const config` al lado; su
+    /// documento se deriva leyendo, como el de un `@function` de Python. Lo
+    /// pidió ORE 0050 R3 (2026-10-03).
+    V1Alpha23,
 }
 
 impl ApiVersion {
@@ -175,6 +181,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha20,
         ApiVersion::V1Alpha21,
         ApiVersion::V1Alpha22,
+        ApiVersion::V1Alpha23,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -199,6 +206,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha20 => "oos.dev/v1alpha20",
             ApiVersion::V1Alpha21 => "oos.dev/v1alpha21",
             ApiVersion::V1Alpha22 => "oos.dev/v1alpha22",
+            ApiVersion::V1Alpha23 => "oos.dev/v1alpha23",
         }
     }
 

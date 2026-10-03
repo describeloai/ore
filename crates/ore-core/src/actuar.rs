@@ -89,8 +89,12 @@ fn escrituras(pkg: &Package, d: &Loaded, seccion: &str, out: &mut Vec<Diagnostic
 
 fn toca_algo(f: &Loaded, out: &mut Vec<Diagnostic>) {
     // v1alpha18: `models` tambien es tocar algo —el codigo llama a un modelo—,
-    // y en una funcion de codigo, `input`: sus parametros son superficie.
-    let python = f.section("runtime").and_then(|n| n.as_str()) == Some("python");
+    // y en una funcion de codigo, `input`: sus parametros son superficie. Desde
+    // v1alpha23, tambien en una de TypeScript.
+    let python = matches!(
+        f.section("runtime").and_then(|n| n.as_str()),
+        Some("python" | "node")
+    );
     let toca = ["over", "reads", "effects", "models"]
         .iter()
         .any(|s| f.section(s).is_some())

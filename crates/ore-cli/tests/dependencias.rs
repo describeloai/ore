@@ -123,7 +123,19 @@ const VETADAS: &[(&str, &str)] = &[
 /// para que un fichero hostil no tumbe el proceso. Enlazados de verdad son 50
 /// (`cargo tree -e normal`: 35 → 85, una docena de ellos macros); el resto los
 /// usa la compilación. Ninguno habla con nadie ni lee el reloj.
-const CIERRE: usize = 126;
+///
+/// **126 → 183 con el lector de TypeScript (0050 R3 T1, 2026-10-03).** Una
+/// función de TypeScript es la exportación por defecto de un `.ts` de
+/// `functions/` (OOS v1alpha23), y su `Function` se deriva leyendo, como el de
+/// un `@function`: es compilar. El parser es oxc 0.152, elegido en M-T1 frente
+/// a `swc_ecma_parser` (1238/1238 ficheros reales frente a 1228, 526 ms frente
+/// a 683, y swc trae `rand` y `ahash`). Enlazados de verdad, 85 → 143: los
+/// catorce crates de oxc, sus números (`num-bigint`, `dragonbox_ecma`) y sus
+/// tablas de Unicode, y `textwrap` con `icu_segmenter` y sus datos, que
+/// `oxc_diagnostics` trae para pintar errores y no se puede apagar (`oxc_ast` lo
+/// pide con sus *features* por defecto). Ninguno vetado; ninguno habla con
+/// nadie ni lee el reloj.
+const CIERRE: usize = 183;
 
 /// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
 /// eso no se mira contra los vetos, con **quién** lo pide como dependencia de

@@ -1,6 +1,7 @@
 //! **Generar** los documentos de las funciones de código (ORE 0050 G1d): el
-//! cliente escribe Python, y cada `@function` del paquete tiene su `Function`
-//! porque esto lo escribe, no porque nadie lo copie a mano.
+//! cliente escribe Python o TypeScript, y cada `@function` —o exportación por
+//! defecto de un `.ts` de `functions/` (R3, OOS v1alpha23)— del paquete tiene
+//! su `Function` porque esto lo escribe, no porque nadie lo copie a mano.
 //!
 //! Aquí solo se **planea**: qué documento se crea, cuál se reescribe y cuál
 //! sobra, con el contenido exacto. Aplicarlo es de quien llama —`ore functions
@@ -28,8 +29,10 @@ use crate::diag::Diagnostic;
 use crate::document::Kind;
 use crate::link::Package;
 use crate::parse::Node;
-use crate::promover::{carpeta_del_paquete, ficheros_py, no_se_deriva, paquetes_publicables, roto};
-use ore_code::{emitir, python};
+use crate::promover::{
+    carpeta_del_paquete, ficheros_de_codigo, no_se_deriva, paquetes_publicables, roto,
+};
+use ore_code::emitir;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -47,7 +50,7 @@ pub enum Accion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cambio {
     pub ruta: PathBuf,
-    /// `<ruta del .py>:<def>`, desde la carpeta del paquete.
+    /// `<ruta del .py>:<def>` o `<ruta del .ts>`, desde la carpeta del paquete.
     pub entrypoint: String,
     pub accion: Accion,
 }
@@ -72,7 +75,7 @@ pub fn plan(pkg: &Package) -> Plan {
     plan_de(pkg, None)
 }
 
-/// El plan, **solo** para el código de `solo` (rutas de `.py`, existan o no):
+/// El plan, **solo** para el código de `solo` (rutas de `.py` o `.ts`, existan o no):
 /// lo que deriva de esos ficheros y los documentos generados que los nombran.
 /// Es lo que hace el commit de un repositorio (G2): genera lo que ese commit
 /// toca, y nada de lo que la rama no tocó.
@@ -109,7 +112,10 @@ fn plan_del_paquete(
     let mut existentes: BTreeMap<String, Existente> = BTreeMap::new();
     for f in pkg.of(Kind::Function) {
         if carpeta_del_paquete(&f.path, &pkg.root) != carpeta
-            || f.section("runtime").and_then(Node::as_str) != Some("python")
+            || !matches!(
+                f.section("runtime").and_then(Node::as_str),
+                Some("python" | "node")
+            )
         {
             continue;
         }
@@ -127,7 +133,7 @@ fn plan_del_paquete(
     }
 
     let mut pys = Vec::new();
-    ficheros_py(carpeta, &mut pys);
+    ficheros_de_codigo(carpeta, &mut pys);
     pys.sort();
     // Lo que el código pide, y dónde: para no generar dos veces el mismo sitio.
     let mut vivas: BTreeSet<String> = BTreeSet::new();
@@ -140,27 +146,29 @@ fn plan_del_paquete(
         let Ok(fuente) = std::fs::read_to_string(&py) else {
             continue;
         };
-        if !python::puede_tener_funciones(&fuente) {
-            continue;
-        }
         let Ok(rel) = py.strip_prefix(carpeta) else {
             continue;
         };
         let ruta = rel.to_string_lossy().replace('\\', "/");
-        let d = python::derivar(&fuente, &ruta);
+        if !ore_code::puede_tener_funciones(&ruta, &fuente) {
+            continue;
+        }
+        let Some(d) = ore_code::derivar(&fuente, &ruta) else {
+            continue;
+        };
         if d.funciones.is_empty() {
             continue;
         }
         // Un fichero roto no dice qué funciones tiene: sus documentos se quedan.
         if let Some(diag) = roto(&py, &fuente, &d) {
             for f in &d.funciones {
-                vivas.insert(format!("{ruta}:{}", f.nombre));
+                vivas.insert(ore_code::entrypoint_de(&ruta, &f.nombre));
             }
             p.diagnosticos.push(diag);
             continue;
         }
         for f in &d.funciones {
-            let entrypoint = format!("{ruta}:{}", f.nombre);
+            let entrypoint = ore_code::entrypoint_de(&ruta, &f.nombre);
             vivas.insert(entrypoint.clone());
             let firma = match &f.resultado {
                 Ok(x) => x,
@@ -268,10 +276,13 @@ fn plan_del_paquete(
 
     // ── lo que sobra: generado, y su `def` ya no es un `@function` ──────────
     for (entrypoint, e) in &existentes {
-        let fichero = entrypoint
-            .rsplit_once(':')
-            .map(|(r, _)| carpeta.join(r))
-            .unwrap_or_default();
+        // `<ruta>.py:<def>`, o `<ruta>.ts`: el fichero es la función.
+        let fichero = carpeta.join(
+            entrypoint
+                .rsplit_once(':')
+                .map(|(r, _)| r)
+                .unwrap_or(entrypoint),
+        );
         if !vivas.contains(entrypoint) && emitir::es_generado(&e.texto) && entra(&fichero) {
             p.cambios.push(Cambio {
                 ruta: e.ruta.clone(),
