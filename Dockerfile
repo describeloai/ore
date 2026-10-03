@@ -497,8 +497,10 @@ RUN mkdir -p /tmp/t/functions /tmp/t/node_modules/@types && cd /tmp/t \
 #   disco, el `enum` es TS1294 (sólo con su `tsconfig` en disco), el vecino se
 #   resuelve, `Decimal` es el de `ore`, y lo que se edita se refleja. Con el
 #   contrato de Node (R3 T2), las pruebas de `puesto/node/pruebas`.
+# `--test-reporter=tap`: desde Node 23 el informe por defecto es `spec` también
+#   sin terminal (`ℹ pass 5`), y el `grep` de abajo busca el de TAP (`# pass 5`).
 COPY puesto/node/pruebas /opt/ore/pruebas
-RUN node --test "/opt/ore/pruebas/*.test.mjs" > /tmp/pruebas.txt 2>&1 \
+RUN node --test --test-reporter=tap "/opt/ore/pruebas/*.test.mjs" > /tmp/pruebas.txt 2>&1 \
       || { cat /tmp/pruebas.txt; exit 1; } \
  && grep -E '^# (pass|fail)' /tmp/pruebas.txt >> /entorno-1.txt \
  && ! grep -q '^# skipped [1-9]' /tmp/pruebas.txt \
