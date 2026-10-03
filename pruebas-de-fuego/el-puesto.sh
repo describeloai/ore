@@ -826,12 +826,12 @@ EOF
   celda_sql 'create view if not exists hr.demo_uc.porNombre as select 1 as x' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','already exists']]" || falla "10e · if not exists: $(cuerpo)"
   # añadir una columna se puede, y se dice; quitar una rompe el contrato
   celda_sql 'create or replace view hr.demo_uc.porNombre as select id, nombre, email from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']] and 'adds email' in d['salida']['texto']" || falla "10e · añadir una columna: $(cuerpo)"
-  celda_sql 'create or replace view hr.demo_uc.porNombre as select id from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'rompe su contrato' in d['salida']['mensaje'] and 'quita' in d['salida']['mensaje'] and 'with schema evolution' in d['salida']['mensaje']" || falla "10e · quitar una columna sin decirlo: $(cuerpo)"
+  celda_sql 'create or replace view hr.demo_uc.porNombre as select id from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'breaks its contract' in d['salida']['mensaje'] and 'removes' in d['salida']['mensaje'] and 'with schema evolution' in d['salida']['mensaje']" || falla "10e · quitar una columna sin decirlo: $(cuerpo)"
   grep -q "email" "$V10E" || falla "10e · la vista rota se escribió igual"
   celda_sql 'create or replace view hr.demo_uc.porNombre with schema evolution as select id from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']]" || falla "10e · with schema evolution: $(cuerpo)"
   grep -q "nombre:" "$V10E" && falla "10e · el contrato no cambió con evolution"
   # lo que no se puede: sin alias, un nombre que ya es un dataset
-  celda_sql 'create view hr.demo_uc.sinAlias as select id + 1 from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'no tiene nombre' in d['salida']['mensaje'] and 'as nombre' in d['salida']['mensaje']" || falla "10e · una columna sin alias: $(cuerpo)"
+  celda_sql 'create view hr.demo_uc.sinAlias as select id + 1 from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'has no name' in d['salida']['mensaje'] and 'as name' in d['salida']['mensaje']" || falla "10e · una columna sin alias: $(cuerpo)"
   celda_sql 'create view hr.demo_uc.clientes as select 1 as x' && tiene "d['salida']['tipo']=='error' and 'OOS2035' in d['salida']['mensaje']" || falla "10e · el nombre de un dataset: $(cuerpo)"
   [ ! -e "$A/packages/hr/demo_uc/views/sinAlias.yaml" ] || falla "10e · la vista sin alias se escribió"
   # DROP VIEW: si otra la lee, no se quita; si no, sí; `if exists` no es un error
