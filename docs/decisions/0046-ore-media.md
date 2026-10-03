@@ -1,4 +1,4 @@
-# 0046 · Documents, objects & files: el producto de los datos que son ficheros
+# 0046 · ORE Media: el producto de los datos que son ficheros
 
 **Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE), E3 (la superficie) y E4 (el driver) hechos; E5–E8 hechos y en vivo; **E9 (servir y referenciar) hecho y en vivo el 2026-09-30**, salvo el 302 de la consola (E9·5); **E9b (la federación sin claves) medida y decidida el 2026-09-30** ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
