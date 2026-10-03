@@ -49,15 +49,46 @@ substitutions:
   # De dónde sale la caché: lo que corre hoy.
   _CACHE_MAIN: main
   _CACHE_UNO: '1'
+  # La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`); el job
+  # de GitHub la pasa. Vacía (una construcción a mano), se calcula aquí.
+  _BINARIOS: ''
 
 steps:
+  # ⭐⭐ LOS BINARIOS, POR SU CONTENIDO (2026-10-03). Si ya hay una imagen
+  #   `ore-binarios:h-<huella>`, Rust no cambió desde que se hizo: se reutiliza
+  #   y no se compila NADA (era ~20 min en cada commit, también en uno que sólo
+  #   tocaba un ADR). Si no, se compila una vez y queda para la próxima. En los
+  #   dos casos lleva también la etiqueta del commit, que es la que las demás
+  #   etapas toman (`--build-arg BINARIOS=…:${_SHA}`).
+  - id: binarios
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: ['-']
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -eu
+        H="${_BINARIOS}"
+        [ -n "$$H" ] || H=$$(sh ci/huella-de-los-binarios.sh)
+        B="${_REGISTRO}/ore-binarios"
+        if docker pull -q "$$B:h-$$H" >/dev/null 2>&1; then
+          echo "binarios h-$$H: ya estaban, NO se compila"
+        else
+          echo "binarios h-$$H: no estaban, se compilan"
+          docker build --target binarios -t "$$B:h-$$H" .
+          docker push -q "$$B:h-$$H"
+        fi
+        docker tag "$$B:h-$$H" "$$B:${_SHA}"
+        docker push -q "$$B:${_SHA}"
+
   # La etapa `build` —todo Rust— se compila aquí, una vez, y queda en la
   # caché del demonio para los que copian un binario.
   - id: ore
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: ['-']
-    args: [build, --target, ore, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, ore, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/ore:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore:${_SHA}', .]
 
   # Sin Rust: `curl`, `jq` y un guion.
@@ -91,29 +122,29 @@ steps:
   - id: drivers
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, drivers, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, drivers, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/ore-drivers:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-drivers:${_SHA}', .]
 
   - id: serve
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, serve, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, serve, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/ore-serve:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-serve:${_SHA}', .]
 
   - id: iam
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, iam, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, iam, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/ore-iam:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-iam:${_SHA}', .]
 
   - id: cofre
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, cofre, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, cofre, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/ore-cofre:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-cofre:${_SHA}', .]
 
   # El puesto Python, entorno 1 (0031 W3): un runtime, no un binario nuestro
@@ -121,23 +152,23 @@ steps:
   - id: puesto-python
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, puesto-python, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, puesto-python, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/puesto-python:${_CACHE_UNO}', -t, '${_REGISTRO}/puesto-python:${_SHA}', .]
 
   # Y los de TS/JS y Java (0031 W3.4): mismo agente, otro runtime.
   - id: puesto-node
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, puesto-node, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, puesto-node, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/puesto-node:${_CACHE_UNO}', -t, '${_REGISTRO}/puesto-node:${_SHA}', .]
 
   - id: puesto-jvm
     name: gcr.io/cloud-builders/docker
     env: [DOCKER_BUILDKIT=1]
-    waitFor: [ore]
-    args: [build, --target, puesto-jvm, --build-arg, BUILDKIT_INLINE_CACHE=1,
+    waitFor: [binarios]
+    args: [build, --target, puesto-jvm, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/puesto-jvm:${_CACHE_UNO}', -t, '${_REGISTRO}/puesto-jvm:${_SHA}', .]
 
 images:

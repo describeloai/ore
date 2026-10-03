@@ -35,6 +35,14 @@
 # conexión— y la misma que usa la `NetworkPolicy` de la malla.
 
 # ── Compilación, una sola vez para las dos ──────────────────────────────────
+# ⭐ LOS BINARIOS, POR SU CONTENIDO (2026-10-03). Las imágenes copian sus
+#   ejecutables de `bin`, que es la etapa `binarios` de aquí abajo… o, en Cloud
+#   Build, la imagen `ore-binarios:<…>` que ya estaba si la huella de lo que
+#   compila Rust no cambió (`ci/huella-de-los-binarios.sh`). Antes, `COPY . .`
+#   hacía que CUALQUIER fichero —un ADR, un `.py`— recompilara los diecisiete
+#   binarios: ~20 min por commit, la mitad sin tocar Rust.
+ARG BINARIOS=binarios
+
 FROM rust:1.90-alpine AS build
 
 # `musl-dev` para el enlazador; OpenSSL estático sólo lo necesitan los que
@@ -43,7 +51,11 @@ FROM rust:1.90-alpine AS build
 RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
 
 WORKDIR /src
-COPY . .
+# Sólo lo que `cargo` lee: lo demás del árbol no puede cambiar un binario (y
+# es lo que `ci/huella-de-los-binarios.sh` mira).
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates crates
+COPY vendor/oos vendor/oos
 
 # `--locked`: se construye con el `Cargo.lock` del árbol y no con lo que
 # hubiera hoy en el índice.
@@ -65,11 +77,35 @@ RUN cargo build --release --locked \
 RUN cargo build --release --locked -p ore-medios \
  && strip target/release/ore-medios
 
+# ── 0 · Los binarios, solos: lo que se reutiliza mientras Rust no cambie ─────
+FROM scratch AS binarios
+COPY --from=build \
+     /src/target/release/ore \
+     /src/target/release/ore-serve \
+     /src/target/release/ore-iam \
+     /src/target/release/ore-cofre \
+     /src/target/release/ore-read-jsonl \
+     /src/target/release/ore-read-postgres \
+     /src/target/release/ore-read-bigquery \
+     /src/target/release/ore-read-s3 \
+     /src/target/release/ore-firmar-s3 \
+     /src/target/release/ore-asumir-rol \
+     /src/target/release/ore-fetch \
+     /src/target/release/ore-log \
+     /src/target/release/ore-sign \
+     /src/target/release/ore-store-r2 \
+     /src/target/release/ore-store-gcs \
+     /src/target/release/ore-invoke \
+     /src/target/release/ore-medios \
+     /b/
+
+FROM ${BINARIOS} AS bin
+
 # ── 1 · La fina, que no sabe hablar con nadie ───────────────────────────────
 FROM scratch AS ore
 
-COPY --from=build /src/target/release/ore            /bin/ore
-COPY --from=build /src/target/release/ore-read-jsonl /bin/ore-read-jsonl
+COPY --from=bin /b/ore            /bin/ore
+COPY --from=bin /b/ore-read-jsonl /bin/ore-read-jsonl
 # El `PATH` de un `scratch` está vacío, y `ore` busca sus drivers por ahí.
 ENV PATH=/bin
 USER 65532:65532
@@ -138,19 +174,19 @@ RUN apk add --no-cache git postgresql-client py3-yaml
 #   a correr. Es el fallo por el lado bueno, y conviene saber que es ese.
 RUN python3 -m pip install --no-cache-dir --break-system-packages pyyaml && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
 
-COPY --from=build /src/target/release/ore                /usr/local/bin/ore
-COPY --from=build /src/target/release/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
-COPY --from=build /src/target/release/ore-read-postgres  /usr/local/bin/ore-read-postgres
-COPY --from=build /src/target/release/ore-read-bigquery  /usr/local/bin/ore-read-bigquery
-COPY --from=build /src/target/release/ore-read-s3        /usr/local/bin/ore-read-s3
-COPY --from=build /src/target/release/ore-fetch          /usr/local/bin/ore-fetch
-COPY --from=build /src/target/release/ore-log            /usr/local/bin/ore-log
-COPY --from=build /src/target/release/ore-sign           /usr/local/bin/ore-sign
-COPY --from=build /src/target/release/ore-store-r2       /usr/local/bin/ore-store-r2
-COPY --from=build /src/target/release/ore-store-gcs      /usr/local/bin/ore-store-gcs
+COPY --from=bin /b/ore                /usr/local/bin/ore
+COPY --from=bin /b/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
+COPY --from=bin /b/ore-read-postgres  /usr/local/bin/ore-read-postgres
+COPY --from=bin /b/ore-read-bigquery  /usr/local/bin/ore-read-bigquery
+COPY --from=bin /b/ore-read-s3        /usr/local/bin/ore-read-s3
+COPY --from=bin /b/ore-fetch          /usr/local/bin/ore-fetch
+COPY --from=bin /b/ore-log            /usr/local/bin/ore-log
+COPY --from=bin /b/ore-sign           /usr/local/bin/ore-sign
+COPY --from=bin /b/ore-store-r2       /usr/local/bin/ore-store-r2
+COPY --from=bin /b/ore-store-gcs      /usr/local/bin/ore-store-gcs
 # El invocador (0029 ⑤): la unica capacidad que anade es hablar con la puerta
 # de modelos, con el token de la celda. Vive aqui por lo mismo que el almacen.
-COPY --from=build /src/target/release/ore-invoke         /usr/local/bin/ore-invoke
+COPY --from=bin /b/ore-invoke         /usr/local/bin/ore-invoke
 
 USER 65532:65532
 WORKDIR /trabajo
@@ -176,30 +212,30 @@ FROM alpine:3.22 AS serve
 
 RUN apk add --no-cache git ca-certificates
 
-COPY --from=build /src/target/release/ore       /usr/local/bin/ore
-COPY --from=build /src/target/release/ore-serve /usr/local/bin/ore-serve
+COPY --from=bin /b/ore       /usr/local/bin/ore
+COPY --from=bin /b/ore-serve /usr/local/bin/ore-serve
 # W1 ④ (0030): `POST /vistas/{ns}/{n}/ejecutar` corre `ore ask`, y quien trae
 # la copia del bucket es este programa — con la identidad del pod (`objectViewer`,
 # aprovisionador ③b) y nunca un origen. `ore` sigue sin abrir un socket.
-COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
+COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 # 0046 E9·3: servir un ítem de una colección VIRTUAL es prefirmar su URL en el
 # origen con la credencial de la fuente, que este proceso trae del cofre como el
 # agente de la celda. Lo hace `ore-firmar-s3`, que NO PUEDE abrir un socket
 # (`ore-sigv4`, vigilado en `ore-cli/tests/dependencias.rs`): con la credencial
 # en la mano, esta imagen sigue sin nada que lea un origen. `ore-read-s3`, no.
-COPY --from=build /src/target/release/ore-firmar-s3 /usr/local/bin/ore-firmar-s3
+COPY --from=bin /b/ore-firmar-s3 /usr/local/bin/ore-firmar-s3
 # 0046 E9b: si la fuente es un ROL del cliente (`role_arn`, sin clave), antes de
 # firmar se canjea la identidad de la celda por una credencial temporal en STS.
 # `ore-serve` no habla TLS; lo hace `ore-asumir-rol`, que habla con STS y con el
 # metadata server y NO enlaza el cliente de S3 ni la firma (vigilado igual):
 # canjea un token, no lee un bucket.
-COPY --from=build /src/target/release/ore-asumir-rol /usr/local/bin/ore-asumir-rol
+COPY --from=bin /b/ore-asumir-rol /usr/local/bin/ore-asumir-rol
 # 0049 B2·4: `ore-medios`, el índice de las colecciones, la firma en lote y la
 # puerta de lectura, en un proceso vivo. Viaja en esta imagen —alpine con
 # certificados, y ya con `ore-store-gcs`— y corre en SU Deployment con su
 # comando: es otro proceso, con su sitio en la red, y `ore-serve` sigue sin
 # enlazar TLS (`ore-cli/tests/dependencias.rs`). Se compila aparte (arriba).
-COPY --from=build /src/target/release/ore-medios /usr/local/bin/ore-medios
+COPY --from=bin /b/ore-medios /usr/local/bin/ore-medios
 
 USER 65532:65532
 WORKDIR /trabajo
@@ -235,7 +271,7 @@ ENTRYPOINT ["/usr/local/bin/informar"]
 #   conexión TLS a ningún sitio**. No es una promesa: no lleva el código.
 FROM scratch AS iam
 
-COPY --from=build /src/target/release/ore-iam /bin/ore-iam
+COPY --from=bin /b/ore-iam /bin/ore-iam
 
 USER 65532:65532
 WORKDIR /trabajo
@@ -275,7 +311,7 @@ ENTRYPOINT ["/bin/ore-iam"]
 #   pierden.
 FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS cofre
 
-COPY --from=build /src/target/release/ore-cofre /usr/local/bin/ore-cofre
+COPY --from=bin /b/ore-cofre /usr/local/bin/ore-cofre
 
 USER 65532:65532
 WORKDIR /trabajo
@@ -344,7 +380,7 @@ COPY puesto/python/ore       /opt/ore/ore
 #   `ore-store-gcs`, que escribe los ficheros con la credencial que el catálogo
 #   prestó —acotada a la tabla— y devuelve el commit. Es el mismo binario de la
 #   copia (`ore-drivers`); el puesto lo lleva, y no lleva `ore`.
-COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
+COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -420,7 +456,7 @@ RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.Duck
 # de abajo ARRANCA el agente (`--comprobar`: importa, crea el kernel, corre una celda).
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
 COPY puesto/node/ore        /opt/ore/ore
-COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
+COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN ln -s ../ore /opt/ore/node_modules/ore \
  && ORE_CELDAS=/tmp/comprobar node /opt/ore/agente.mjs --comprobar
 
@@ -446,7 +482,7 @@ FROM eclipse-temurin:21-jdk-noble AS puesto-jvm
 
 ARG DUCKDB_JDBC=1.5.5.1
 COPY puesto/jvm /opt/ore/src
-COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
+COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN mkdir -p /opt/ore/lib /opt/ore/clases \
  && curl -fsSL -o /opt/ore/lib/duckdb_jdbc.jar \
       "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/${DUCKDB_JDBC}/duckdb_jdbc-${DUCKDB_JDBC}.jar" \

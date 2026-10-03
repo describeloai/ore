@@ -419,6 +419,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # La clave de lo que corre en los Deployment que CI releva (2026-10-03): la
+    # huella de los binarios, y la del Dockerfile y el guion del informador. Si
+    # es la que ya tienen, no se relevan (`imagen`).
+    outputs:
+      clave: ${{ steps.huella.outputs.clave }}
     steps:
       # ⭐ Sólo la punta de `main`. Un commit que ya tiene otro detrás no se
       #   construye ni se despliega: lo hace el de detrás, con lo suyo dentro.
@@ -449,7 +454,20 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
         if: steps.punta.outputs.sigue == 'si'
 
-      # Todas en una sola construcción: comparten la etapa `build`.
+      # ⭐ La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`): con
+      #   ella Cloud Build reutiliza `ore-binarios:h-<huella>` si ya existe y no
+      #   compila nada. Un commit que no toca Rust pasa de ~20 min a ~2.
+      - name: la huella de los binarios
+        id: huella
+        if: steps.punta.outputs.sigue == 'si'
+        run: |
+          H=$(sh ci/huella-de-los-binarios.sh)
+          O=$(cat Dockerfile malla/informar.sh | sha256sum | cut -c1-8)
+          echo "binarios=$H" >> "$GITHUB_OUTPUT"
+          echo "clave=$H-$O" >> "$GITHUB_OUTPUT"
+          echo "  binarios h-$H · clave $H-$O"
+
+      # Todas en una sola construcción: comparten los binarios.
       - name: construir las once imagenes, con la etiqueta del commit y ninguna otra
         if: steps.punta.outputs.sigue == 'si'
         run: |
@@ -470,7 +488,7 @@ jobs:
           #   Cloud Build (2026-09-30, medido).
           ID=$(gcloud builds submit --async --format='value(id)' --config cloudbuild.yaml \
             --service-account=projects/project-8853a180-450d-47be-b83/serviceAccounts/ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com \
-            --substitutions _SHA=${GITHUB_SHA::12} .)
+            --substitutions _SHA=${GITHUB_SHA::12},_BINARIOS=${{ steps.huella.outputs.binarios }} .)
           echo "  construccion $ID"
           while :; do
             sleep 20
@@ -589,9 +607,25 @@ jobs:
           # el fallo que se acaba de arreglar, con otra cara.
           [ "$DESTINOS" = "identidad/ore-iam" ] && { echo "x ningun namespace con ore.dev/rol=cargas"; exit 1; }
 
-          echo "  relevo para:$(printf ' %s' $DESTINOS)"
-          # Y viaja al paso siguiente, que comprueba EXACTAMENTE esta lista.
+          # ⭐ Y sólo los que CAMBIAN (2026-10-03). Relevar un `ore-serve` cuyos
+          #   binarios son los mismos no despliega nada y cierra las sesiones de
+          #   los puestos (su estado vive en memoria). Cada Deployment lleva la
+          #   clave de lo que corre (`ore.dev/binarios`); la misma, se queda.
+          CLAVE="${{ needs.construir.outputs.clave }}"
+          [ -n "$CLAVE" ] || { echo "x construir no dio la clave de los binarios"; exit 1; }
+          TODOS="$DESTINOS"; DESTINOS=""; IGUALES=""
+          for D in $TODOS; do
+            V=$(kubectl -n "${D%%/*}" get deployment "${D##*/}" \
+              -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/binarios}')
+            if [ "$V" = "$CLAVE" ]; then IGUALES="$IGUALES $D"; else DESTINOS="$DESTINOS $D"; fi
+          done
+          echo "  sin cambios, NO se relevan:${IGUALES:- ninguno}"
+          echo "  relevo para:${DESTINOS:- nadie}"
+          # Y viaja al paso siguiente, que comprueba EXACTAMENTE estas listas.
           echo "DESTINOS=$DESTINOS" >> "$GITHUB_ENV"
+          echo "TODOS=$TODOS" >> "$GITHUB_ENV"
+          echo "CLAVE=$CLAVE" >> "$GITHUB_ENV"
+          [ -n "$DESTINOS" ] || exit 0
 
           # ⭐ En paralelo, en DOS OLEADAS (2026-09-30). Uno a uno eran ~6 min
           #   de esperar `rollout status` en fila. Pero en fila había un canario
@@ -632,8 +666,8 @@ jobs:
             #   `run: |` depende de que la indentacion sobreviva a dos capas
             #   —YAML y el shell— y este arbol ya ha pagado ese peaje varias
             #   veces. Aqui no hay columnas de las que fiarse.
-            printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  template:\n    metadata:\n      annotations:\n        ore.dev/commit: "%s"\n' \
-              "$NOMBRE" "$NS" "$GITHUB_SHA" \
+            printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  template:\n    metadata:\n      annotations:\n        ore.dev/commit: "%s"\n        ore.dev/binarios: "%s"\n' \
+              "$NOMBRE" "$NS" "$GITHUB_SHA" "$CLAVE" \
               | kubectl -n "$NS" apply --server-side --field-manager=ore-ci \
                   --force-conflicts -f -
             kubectl -n "$NS" rollout status "deployment/$NOMBRE" --timeout=300s > "/tmp/relevo-$NS-$NOMBRE.txt" 2>&1 &
@@ -645,7 +679,7 @@ jobs:
           return $MAL
           }
           echo "  primera oleada:$OLA1"
-          relevar $OLA1 || { echo "x la primera oleada no quedo en pie: el resto no se toca"; exit 1; }
+          [ -z "$OLA1" ] || relevar $OLA1 || { echo "x la primera oleada no quedo en pie: el resto no se toca"; exit 1; }
           [ -z "$OLA2" ] || { echo "  segunda oleada:$OLA2"; relevar $OLA2; }
 
       # ⛔ Y se COMPRUEBA que lo que quedó arriba es lo que se acaba de empujar.
@@ -662,4 +696,11 @@ jobs:
             [ "$VISTO" = "$GITHUB_SHA" ] \
               || { echo "✗ $NOMBRE corre «$VISTO» y esperabamos «$GITHUB_SHA»"; exit 1; }
             echo "  · $NOMBRE · $VISTO"
+          done
+          # Y TODOS, relevados o no, corren los binarios de este commit.
+          for D in $TODOS; do
+            VISTO=$(kubectl -n "${D%%/*}" get deployment "${D##*/}" \
+              -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/binarios}')
+            [ "$VISTO" = "$CLAVE" ] \
+              || { echo "✗ ${D##*/} corre los binarios «$VISTO» y esperabamos «$CLAVE»"; exit 1; }
           done
