@@ -373,8 +373,9 @@ RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.
 #   los dos, y se paga una vez por imagen, no por sesión.
 #
 # ⭐ LO QUE ESTO COMPRA, Y QUE EL NAVEGADOR NO PUEDE TENER: aquí están **el SDK**
-#   (`/opt/ore/ore`) y **la capa del repositorio** (`/capa`, el PYTHONPATH con lo
-#   que el árbol declara en su `pyproject.toml`). Monaco puede colorear; saber
+#   (`/opt/ore/ore`) y **la capa del repositorio** (`/capa`, lo que el árbol
+#   declara en su `pyproject.toml`; va al final de `sys.path`, no en el
+#   `PYTHONPATH`: la imagen manda, 0037 ③c). Monaco puede colorear; saber
 #   qué devuelve `over()` sólo se puede saber donde vive `over`.
 COPY --from=node:24-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=pyright /opt/p/node_modules/pyright /opt/ore/pyright

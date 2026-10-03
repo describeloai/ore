@@ -60,8 +60,11 @@ import javax.tools.ToolProvider;
  * <h2>Lo que ve, y lo que no</h2>
  *
  * <p>Ve <b>el fichero que el editor le manda</b> y el classpath del propio
- * agente ({@code /opt/ore/clases} y {@code /opt/ore/lib/*}), que es donde vive
- * el SDK. No ve a los ficheros vecinos del repositorio: en el puesto no está el
+ * agente: {@code /opt/ore/clases} y {@code /opt/ore/lib/*}, que es donde vive
+ * el SDK, y {@code /capa/*}, las bibliotecas que declara el {@code pom.xml} del
+ * repositorio (0037 ③c), las últimas. El comodín lo expande el lanzador de
+ * {@code java} al arrancar —{@code java.class.path} ya trae cada jar—, y así le
+ * llegan a {@code javac}, que no expandiría {@code /capa/*} (medido). No ve a los ficheros vecinos del repositorio: en el puesto no está el
  * repositorio, está la sesión (0037 ③a). Cuando lo esté, entra aquí y ya.
  */
 final class Lenguaje {
@@ -69,7 +72,7 @@ final class Lenguaje {
     /** Lo que el editor tiene abierto: uri → texto de ahora. */
     private final Map<String, String> abiertos = new ConcurrentHashMap<>();
     private final JavaCompiler compilador = ToolProvider.getSystemJavaCompiler();
-    /** El classpath del agente: ahí están el SDK y sus jars, ya resueltos. */
+    /** El classpath del agente, con cada jar ya expandido por el lanzador: el SDK y la capa. */
     private final String classpath = System.getProperty("java.class.path", "");
 
     /**
