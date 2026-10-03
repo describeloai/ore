@@ -34,7 +34,17 @@
 //
 // ⛔ No arranca solo: si nadie abre un fichero, la sesión no lo paga. El primer
 //   mensaje del editor lo enciende.
-import { spawn } from "node:child_process";
+//
+// ── `ore/comprobar` (L4): `tsc` sobre el repositorio, al guardar ──────────
+//
+// El servidor de lenguaje dice lo de los ficheros abiertos, mientras se teclea.
+// Lo que rompe un cambio en OTRO fichero —un `helpers.ts` que ya no exporta lo
+// que otro importa— sólo lo dice `tsc` sobre el proyecto entero. La consola lo
+// pide tras un commit con esta petición propia, que NO va al servidor de
+// lenguaje ni espera en su cola: se trae el repositorio tal como quedó en la
+// rama (lo guardado, no lo que hay en las pestañas), y `tsc --noEmit -p` con el
+// mismo árbol de tipos. Contesta `{ diagnosticos, errores, ficheros, ms }`.
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +96,25 @@ export function enDisco(uri, trabajo) {
   return f.startsWith(base) && !f.slice(base.length).split(sep).includes("node_modules") ? f : null;
 }
 
+/**
+ * Lo que `tsc --pretty false` dice, como diagnósticos del árbol: `ruta(l,c):
+ * error TS1234: mensaje`, y las líneas sangradas que siguen, del mismo mensaje.
+ * Las rutas, relativas al árbol (`tsc` las da desde su `cwd`, `/trabajo`).
+ */
+export function leerTsc(salida) {
+  const diagnosticos = [];
+  for (const linea of salida.split(/\r?\n/)) {
+    const m = /^(.+?)\((\d+),(\d+)\): (error|warning) (TS\d+): (.*)$/.exec(linea);
+    const g = !m && /^(error|warning) (TS\d+): (.*)$/.exec(linea);
+    if (m) diagnosticos.push({ fichero: m[1].replace(/\\/g, "/"), linea: Number(m[2]), columna: Number(m[3]), codigo: m[5], mensaje: m[6], severidad: m[4] === "error" ? "error" : "aviso" });
+    else if (g) diagnosticos.push({ codigo: g[2], mensaje: g[3], severidad: g[1] === "error" ? "error" : "aviso" });
+    else if (/^\s+\S/.test(linea) && diagnosticos.length) diagnosticos.at(-1).mensaje += "\n" + linea.trim();
+  }
+  const errores = diagnosticos.filter((d) => d.severidad === "error").length;
+  const ficheros = new Set(diagnosticos.map((d) => d.fichero).filter(Boolean)).size;
+  return { diagnosticos: diagnosticos.slice(0, 500), errores, ficheros };
+}
+
 export class Correa {
   /**
    * @param p        la sesión (`ore.session`): `id`, `servidor`, `pedir`
@@ -118,10 +147,10 @@ export class Correa {
     const cab = await this.testigo.cabeceras();
     const [c, ficha] = await this.p.pedir("GET", `/puestos/${this.p.id}`, undefined, 30_000, cab);
     const repo = c === 200 ? ficha?.repositorio : null;
-    if (!repo) { log("sin repositorio: el servidor sólo verá lo que el editor abra"); return; }
+    if (!repo) { log("sin repositorio: el servidor sólo verá lo que el editor abra"); return null; }
     const rama = ficha?.rama ? { "x-ore-rama": ficha.rama } : {};
     const [ci, indice] = await this.p.pedir("GET", "/arbol", undefined, 60_000, { ...cab, ...rama, "x-ore-raiz": repo });
-    if (ci !== 200) { log(`el índice de ${repo} contestó ${ci}: sin repositorio en disco`); return; }
+    if (ci !== 200) { log(`el índice de ${repo} contestó ${ci}: sin repositorio en disco`); return null; }
     const todos = (indice?.ficheros ?? []).filter((f) =>
       DE_CODIGO.test(f.ruta) && !f.ruta.includes("node_modules/") && !f.ruta.endsWith("package-lock.json") && (f.bytes ?? 0) <= BYTES_MAXIMOS);
     const lista = todos.slice(0, FICHEROS_MAXIMOS);
@@ -140,6 +169,39 @@ export class Correa {
       }
     }));
     log(`repositorio ${repo}${ficha?.rama ? ` (${ficha.rama})` : ""} en disco · ${n} fichero(s) en ${Date.now() - t0} ms`);
+    return repo;
+  }
+
+  // ── `ore/comprobar` (L4) ─────────────────────────────────────────────────
+  async comprobar(m) {
+    const t0 = Date.now();
+    let result;
+    try {
+      this.arbolDeTipos();
+      const repo = await this.materializar();
+      if (!repo) result = { error: "este puesto no tiene repositorio: no hay proyecto que comprobar" };
+      else if (!existsSync(join(this.trabajo, repo, "tsconfig.json")))
+        result = { repositorio: repo, error: "el repositorio no tiene tsconfig.json: la plantilla v4 lo trae (Actualizar)" };
+      else result = { repositorio: repo, ...(await this.tsc(repo)) };
+    } catch (e) {
+      result = { error: String(e?.message ?? e) };
+    }
+    result.ms = Date.now() - t0;
+    log(`comprobar · ${result.error ?? `${result.errores} error(es) en ${result.ficheros} fichero(s)`} · ${result.ms} ms`);
+    this.salientes.push(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }));
+    this.entregas();
+  }
+
+  /** `tsc --noEmit -p <repositorio>`, y lo que dice, como diagnósticos del árbol. */
+  tsc(repo) {
+    const tsc = join(TIPOS_IMAGEN, "typescript", "bin", "tsc");
+    return new Promise((ok) => {
+      execFile(process.execPath, [tsc, "--noEmit", "-p", join(this.trabajo, repo), "--pretty", "false"],
+        { cwd: this.trabajo, timeout: 120_000, maxBuffer: 16 << 20 }, (e, salida) => {
+          if (e?.killed) return ok({ error: "tsc tardó más de 120 s" });
+          ok(leerTsc(String(salida ?? "")));
+        });
+    });
   }
 
   async encender() {
@@ -163,8 +225,14 @@ export class Correa {
   }
 
   // ── lo que llega del editor ──────────────────────────────────────────────
-  /** Un mensaje del editor, en orden: lo que llega mientras se prepara espera. */
+  /** Un mensaje del editor, en orden: lo que llega mientras se prepara espera.
+   *  Salvo `ore/comprobar`, que va por su cuenta: un `tsc` no detiene un hover. */
   escribir(crudo) {
+    if (crudo.includes('"ore/comprobar"')) {
+      let m = null;
+      try { m = JSON.parse(crudo); } catch { /* no era */ }
+      if (m?.method === "ore/comprobar") return this.comprobar(m);
+    }
     this.cadena = this.cadena.then(() => this.entregarAlServidor(crudo)).catch((e) => log(`un mensaje se perdió (${e.message})`));
     return this.cadena;
   }
@@ -226,6 +294,10 @@ export class Correa {
         buf = buf.subarray(fin + 4 + largo);
       }
     });
+    this.entregas();
+  }
+
+  entregas() {
     if (!this.reloj) this.reloj = setInterval(() => void this.vaciar(), 20);
   }
 

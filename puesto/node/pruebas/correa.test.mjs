@@ -22,7 +22,7 @@ symlinkSync(join(AQUI, "..", "ore"), join(imagen, "ore"), process.platform === "
 process.env.ORE_IMAGEN_NODE ??= imagen;
 process.env.ORE_CAPA_NODE ??= join(imagen, "no-hay-capa");
 process.env.ORE_TIPOS_NODE ??= join(imagen, "no-hay-tipos");
-const { Correa, enDisco } = await import("../correa.mjs");
+const { Correa, enDisco, leerTsc } = await import("../correa.mjs");
 
 const REPO = "packages/ventas/riesgo";
 const FN = `${REPO}/functions/riesgoInvoiceStatus.ts`;
@@ -51,6 +51,23 @@ test("enDisco: sólo lo de dentro, y nunca node_modules", () => {
   assert.equal(enDisco(pathToFileURL(join(t, "..", "fuera.ts")).href, t), null);
   assert.equal(enDisco(pathToFileURL(join(t, "packages", "node_modules", "x.ts")).href, t), null);
   assert.equal(enDisco("untitled:1", t), null);
+});
+
+test("leerTsc: los diagnósticos de tsc, con su fichero, su línea y su mensaje entero", () => {
+  const r = leerTsc([
+    "packages/a/r/functions/f.ts(3,1): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.",
+    "packages\\a\\r\\functions\\g.ts(4,7): error TS2322: Type 'bigint' is not assignable to type 'number'.",
+    "  Something more about it.",
+    "error TS5083: Cannot read file 'x/tsconfig.json'.",
+    "",
+  ].join("\n"));
+  assert.equal(r.errores, 3);
+  assert.equal(r.ficheros, 2);
+  assert.deepEqual(r.diagnosticos[0], { fichero: "packages/a/r/functions/f.ts", linea: 3, columna: 1, codigo: "TS1294", mensaje: "This syntax is not allowed when 'erasableSyntaxOnly' is enabled.", severidad: "error" });
+  assert.equal(r.diagnosticos[1].fichero, "packages/a/r/functions/g.ts");
+  assert.match(r.diagnosticos[1].mensaje, /\nSomething more about it\.$/);
+  assert.equal(r.diagnosticos[2].fichero, undefined);
+  assert.deepEqual(leerTsc(""), { diagnosticos: [], errores: 0, ficheros: 0 });
 });
 
 test("la correa: el repositorio en disco, su tsconfig, sus vecinos y los tipos de ore", { skip: !HAY_SERVIDOR && "sin typescript-language-server", timeout: 90_000 }, async () => {
@@ -145,6 +162,18 @@ test("la correa: el repositorio en disco, su tsconfig, sus vecinos y los tipos d
     const tras = await esperar((m) => m.method === "textDocument/publishDiagnostics" && mismo(m.params.uri) && m.params.diagnostics.length, 60_000, antes);
     assert.deepEqual(tras.params.diagnostics.map((x) => x.code).filter((c) => c === 1294 || c === 2322), [2322]);
     assert.equal(readFileSync(join(trabajo, FN), "utf8"), nuevo);
+
+    // 5 · L4 · `ore/comprobar`: tsc sobre el repositorio TAL COMO ESTÁ EN LA RAMA
+    //   (el enum vuelve: lo de la pestaña no estaba guardado), con su árbol de tipos.
+    mandar({ id: 3, method: "ore/comprobar", params: {} });
+    const c = await esperar((m) => m.id === 3, 120_000);
+    assert.equal(c.result.repositorio, REPO, JSON.stringify(c.result));
+    const suyos = c.result.diagnosticos.filter((x) => x.fichero === FN).map((x) => `${x.codigo}@${x.linea}`);
+    assert.ok(suyos.includes("TS1294@3"), JSON.stringify(c.result));
+    assert.ok(suyos.includes("TS2322@4"), JSON.stringify(c.result));
+    assert.ok(!c.result.diagnosticos.some((x) => x.codigo === "TS2307"), "ore y el vecino se resuelven");
+    assert.equal(c.result.ficheros, 1);
+    assert.ok(c.result.ms > 0);
   } finally {
     correa.parar();
     flujo?.end();
