@@ -260,7 +260,7 @@ mkdir -p "$TMP/cola-semilla" && ( cd "$TMP/cola-semilla" && git init -q -b main 
 "$PY" "$RAIZ/malla/gen-inquilino.py" demo --a "$TMP/rendido" >/dev/null 2>&1 || falla "no se pudo rendir la plantilla del puesto"
 [ -f "$TMP/rendido/plantilla-puesto.txt" ] || falla "gen-inquilino no rinde plantilla-puesto.txt"
 cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/rendido/plantilla-capa.txt" \
-   "$TMP/rendido/plantilla-capa-jvm.txt" "$TMP/cola-semilla/"
+   "$TMP/rendido/plantilla-capa-jvm.txt" "$TMP/rendido/plantilla-capa-node.txt" "$TMP/cola-semilla/"
 ( cd "$TMP/cola-semilla" && git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla" \
   && git remote add origin "$COLA" && git push -q origin HEAD:main ) || falla "no se pudo sembrar la cola"
 en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }

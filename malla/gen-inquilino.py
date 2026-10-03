@@ -264,6 +264,11 @@ PLANTILLA_CAPA = "plantilla-capa.txt"
 POR_CAPA_JVM = "55-la-capa-jvm.yaml"
 PLANTILLA_CAPA_JVM = "plantilla-capa-jvm.txt"
 
+# ⭐ Y la de Node (0050 R3 T5b): `npm --ignore-scripts` en `capa-node:1`, con
+#   los mismos tres contenedores que la de la JVM y por lo mismo.
+POR_CAPA_NODE = "57-la-capa-node.yaml"
+PLANTILLA_CAPA_NODE = "plantilla-capa-node.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -474,6 +479,11 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    capa_node = (MALLA / POR_CAPA_NODE).read_text(encoding="utf-8")
+    salida[PLANTILLA_CAPA_NODE] = (capa_node
+             .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -542,6 +552,7 @@ def comprobar_plantillas():
                           else POR_PUESTO if f == PLANTILLA_PUESTO
                           else POR_CAPA if f == PLANTILLA_CAPA
                           else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
+                          else POR_CAPA_NODE if f == PLANTILLA_CAPA_NODE
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -697,7 +708,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -769,7 +780,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -818,7 +829,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):
@@ -987,6 +998,35 @@ def comprobar():
         if not [x for x in fallos if POR_CAPA_JVM in x]:
             print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
                   "y el que sube al bucket no sale a Central")
+
+    # ── ⑯b LA CAPA DE NODE: LO MISMO, CON NPM (0050 R3 T5b) ──────────────
+    #
+    # El que sale al registro de npm no lleva el testigo de la forja, y el que
+    # sube al bucket no sale al registro. Y `--ignore-scripts`: lo instalado no
+    # ejecuta su código en un Job con red.
+    t = render(MODELO)[PLANTILLA_CAPA_NODE]
+    resolver = re.search(r"\n        - name: resolver\n(.*?)(?=\n        - name: |\n      containers:)",
+                         t, re.S)
+    publica = re.search(r"\n        - name: subir-e-informar\n(.*)", t, re.S)
+    if not resolver or not publica:
+        fallos.append("`%s`: sin `resolver` o sin `subir-e-informar`, este Job no es el que se escribió" % POR_CAPA_NODE)
+    else:
+        if "capa-node:1" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no corre `capa-node:1`" % POR_CAPA_NODE)
+        if "/puesto" in resolver.group(1):
+            fallos.append("`%s`: EL QUE SALE AL REGISTRO DE NPM LLEVA EL TESTIGO DE LA FORJA montado" % POR_CAPA_NODE)
+        if "TOPE_MB" not in resolver.group(1):
+            fallos.append("`%s`: sin `TOPE_MB`, una capa enorme se descubre al arrancar el puesto" % POR_CAPA_NODE)
+        if "/capa-node:" in publica.group(1):
+            fallos.append("`%s`: el que publica sale al registro de npm" % POR_CAPA_NODE)
+        if "gcloud storage cp" not in publica.group(1) or "capa.tgz" not in publica.group(1):
+            fallos.append("`%s`: el que publica no sube la caja al bucket" % POR_CAPA_NODE)
+    resolvedor = (MALLA.parent / "puesto" / "node" / "capa" / "resolver.sh").read_text(encoding="utf-8")
+    if "--ignore-scripts" not in resolvedor:
+        fallos.append("`puesto/node/capa/resolver.sh`: npm sin `--ignore-scripts` ejecuta el código de los paquetes en un Job con red")
+    if not [x for x in fallos if POR_CAPA_NODE in x or "resolver.sh" in x]:
+        print("  ⭐ ⑯b la capa de Node: el que sale a npm no lleva el testigo, el que sube "
+              "no sale a npm, y nada se ejecuta al instalar")
 
     # ── ⑰ LA CAPA DE LA JVM VA DETRÁS EN EL CLASSPATH (0037 ③c) ───────────
     #

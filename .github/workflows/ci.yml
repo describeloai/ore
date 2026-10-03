@@ -613,7 +613,7 @@ jobs:
           R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
           PIDS=""
           for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main \
-                    ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 capa-jvm:1 idp:main; do
+                    ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 capa-jvm:1 capa-node:1 idp:main; do
             gcloud container images add-tag "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" --quiet & PIDS="$PIDS $!"
           done
           MAL=0

@@ -434,11 +434,12 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
 const LENGUAJES: [&str; 5] = ["python", "sql", "typescript", "javascript", "java"];
 
 /// ¿Este entorno declara sus dependencias en el árbol? `python` desde W3.2
-/// (`pyproject.toml`) y `jvm` desde 0037 ③c (`pom.xml`). `node` no: su sesión
-/// nace con lo que trae su imagen, y sembrar un `package.json` que nadie
-/// resuelve sería sembrar una promesa.
+/// (`pyproject.toml`), `jvm` desde 0037 ③c (`pom.xml`) y `node` desde 0050 R3
+/// T5b (`package.json`): los tres.
 pub(crate) fn declara_capa(entorno: &str) -> bool {
-    entorno == crate::entorno::PYTHON || entorno == crate::entorno::JVM
+    entorno == crate::entorno::PYTHON
+        || entorno == crate::entorno::JVM
+        || entorno == crate::entorno::NODE
 }
 
 /// En qué entorno corre un lenguaje (`sql`: en el que haya → `python` si hay que
@@ -1402,6 +1403,18 @@ impl Servidor {
                     entorno,
                 ) {
                     Ok((job, d)) => format!("{d} · Job {job}"),
+                    // ⭐ 0050 R3 T5b: la capa de Node llega con ore-serve, y su
+                    //   plantilla (`plantilla-capa-node.txt`) con el inquilino
+                    //   convergido, que es a mano. Entre medias, una sesión de
+                    //   Node con un `package.json` en su alcance NO se niega: nace
+                    //   sin capa, como hasta hoy, y se dice en el registro.
+                    Err(r) if entorno == crate::entorno::NODE && r.codigo == 503 => {
+                        eprintln!(
+                            "puestos · la capa de Node {} no se encola (la cola no trae su plantilla: hay que converger el inquilino): el puesto nace sin ella",
+                            campo("digest")
+                        );
+                        return Ok(String::new());
+                    }
                     Err(r) => return Err(r),
                 };
                 Err(Respuesta {

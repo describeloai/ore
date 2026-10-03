@@ -1,0 +1,6 @@
+# Lo que la imagen del puesto de Node trae (`Dockerfile`, etapa `puesto-node`).
+# UNA LISTA, DOS LECTORES: el Dockerfile instala esto, y la capa de Node
+# (`puesto/node/capa/capa.mjs`) no lo copia —manda el contenedor— y avisa si un
+# repositorio pide otra versión. Cambiarlo es cambiar la imagen, no un Job.
+@duckdb/node-api@1.5.5-r.5
+ore@1.0.0

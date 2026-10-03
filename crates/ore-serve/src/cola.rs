@@ -584,11 +584,14 @@ pub const PLANTILLA_CAPA: &str = "plantilla-capa.txt";
 /// no `pip`—, así que otra plantilla. Lo que comparten es todo lo demás: el
 /// digest, el alcance, el informe y el bucket.
 pub const PLANTILLA_CAPA_JVM: &str = "plantilla-capa-jvm.txt";
+/// Y la de Node (0050 R3 T5b): `npm`, en `capa-node:1`.
+pub const PLANTILLA_CAPA_NODE: &str = "plantilla-capa-node.txt";
 
 /// La plantilla que resuelve la capa de un entorno.
 pub fn plantilla_capa_de(entorno: &str) -> &'static str {
     match entorno {
         "jvm" => PLANTILLA_CAPA_JVM,
+        "node" => PLANTILLA_CAPA_NODE,
         _ => PLANTILLA_CAPA,
     }
 }
@@ -614,6 +617,7 @@ pub fn rendir_capa(
     // con el mismo nombre serían el mismo Job.
     let (nombre, mote, numero) = match entorno {
         "jvm" => (PLANTILLA_CAPA_JVM, "la-capa-jvm", "55"),
+        "node" => (PLANTILLA_CAPA_NODE, "la-capa-node", "57"),
         _ => (PLANTILLA_CAPA, "la-capa", "52"),
     };
     if !plantilla.contains(&format!("{mote}-{RESUMEN_MODELO}")) {

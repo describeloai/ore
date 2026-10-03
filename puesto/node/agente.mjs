@@ -31,7 +31,7 @@ import { stripTypeScriptTypes } from "node:module";
 import repl from "node:repl";
 import { PassThrough } from "node:stream";
 import { inspect } from "node:util";
-import { mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,27 @@ const FILAS_MAXIMAS = 200;
 const AQUI = dirname(fileURLToPath(import.meta.url));
 
 const log = (...a) => process.stdout.write("agente · " + a.join(" ") + "\n");
+const ENLACE = process.platform === "win32" ? "junction" : "dir";
+
+/** Enlaza en `a` cada paquete de `desde` que `a` no tenga ya (los `@ámbito/…`,
+ *  uno a uno dentro de su ámbito). Devuelve cuántos enlazó. */
+function enlazar(desde, a) {
+  let n = 0;
+  for (const e of readdirSync(desde)) {
+    if (e.startsWith(".")) continue;
+    const de = join(desde, e), destino = join(a, e);
+    if (e.startsWith("@")) {
+      if (!existsSync(destino)) mkdirSync(destino);
+      for (const x of readdirSync(de)) {
+        if (!existsSync(join(destino, x))) { symlinkSync(join(de, x), join(destino, x), ENLACE); n++; }
+      }
+    } else if (!existsSync(destino)) {
+      symlinkSync(de, destino, ENLACE);
+      n++;
+    }
+  }
+  return n;
+}
 const ms = (t0) => Math.round(performance.now() - t0);
 
 // ── Quién soy: el token ────────────────────────────────────────────────────
@@ -111,7 +132,21 @@ class Kernel {
       const base = process.env.ORE_CELDAS ?? "/trabajo";
       mkdirSync(join(base, "celdas"), { recursive: true });
       // (`junction` en Windows: un enlace de directorio sin privilegios; en el pod, un symlink.)
-      if (!existsSync(join(base, "node_modules"))) symlinkSync(join(AQUI, "node_modules"), join(base, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+      // ⭐ 0050 R3 T5b: con capa —lo que el repositorio declara en `package.json`,
+      //   en `/capa/node_modules`—, `node_modules` es un directorio de enlaces: lo
+      //   de la imagen PRIMERO (manda el contenedor, como en la JVM: el SDK está
+      //   hecho contra él) y lo de la capa detrás, sin pisar nada. Sin capa, un
+      //   enlace a lo de la imagen, como siempre.
+      const nm = join(base, "node_modules");
+      const capa = process.env.ORE_CAPA_NODE ?? "/capa/node_modules";
+      if (!existsSync(nm)) {
+        if (!existsSync(capa)) symlinkSync(join(AQUI, "node_modules"), nm, ENLACE);
+        else {
+          mkdirSync(nm);
+          enlazar(join(AQUI, "node_modules"), nm);
+          log(`capa · ${enlazar(capa, nm)} paquete(s) de /capa, detrás de los de la imagen`);
+        }
+      }
       this.celdas = join(base, "celdas");
     } catch (e) { log(`sin sitio para celdas-módulo (${e.message}): una celda con import/export no correrá`); }
     this.n = 0;

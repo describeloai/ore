@@ -120,6 +120,15 @@ steps:
     args: [build, --target, capa-jvm, --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/capa-jvm:${_CACHE_UNO}', -t, '${_REGISTRO}/capa-jvm:${_SHA}', .]
 
+  # ⭐ Y la de Node (0050 R3 T5b): el mismo Node que el puesto y npm, sin
+  #   testigo ni credencial. Comparte `provisto.txt` con `puesto-node`.
+  - id: capa-node
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: ['-']
+    args: [build, --target, capa-node, --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/capa-node:${_CACHE_UNO}', -t, '${_REGISTRO}/capa-node:${_SHA}', .]
+
   # 0048 I2: el IdP, cocido y con el tema del correo. La que CORRE la fija
   # `malla/60-idp.yaml` (cambiarla reinicia el login): aquí sólo se construye.
   - id: idp
@@ -186,6 +195,7 @@ images:
   - '${_REGISTRO}/ore:${_SHA}'
   - '${_REGISTRO}/ore-informador:${_SHA}'
   - '${_REGISTRO}/capa-jvm:${_SHA}'
+  - '${_REGISTRO}/capa-node:${_SHA}'
   - '${_REGISTRO}/idp:${_SHA}'
   - '${_REGISTRO}/ore-drivers:${_SHA}'
   - '${_REGISTRO}/ore-serve:${_SHA}'

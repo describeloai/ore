@@ -420,7 +420,13 @@ FROM node:24-slim AS puesto-node
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/ore
+# ⚠️ La versión de `@duckdb/node-api` es la de `puesto/node/provisto.txt` (0050
+#   R3 T5b): la capa de Node no la copia y avisa si un repositorio pide otra.
+#   UNA LISTA, DOS LECTORES; si no coinciden, la construcción falla aquí.
+COPY puesto/node/provisto.txt /opt/ore/provisto.txt
 RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
+ && v=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@duckdb/node-api/package.json','utf8')).version") \
+ && { grep -qx "@duckdb/node-api@$v" /opt/ore/provisto.txt || { echo "✗ provisto.txt no dice @duckdb/node-api@$v, la de la imagen"; exit 1; }; } \
  && npm ls --depth=0 > /entorno-1.txt \
  && node -e "const d=require('@duckdb/node-api'); console.log('entorno 1 · node', process.version, '· duckdb', d.version())"
 # ⭐ Las extensiones de DuckDB del lago, preinstaladas (ver la etapa de Python).
@@ -582,6 +588,51 @@ RUN set -e; mkdir -p /tmp/q/arbol; \
     ! ls /tmp/q/t/jars | grep -q 'jackson-databind'; \
     grep -q 'jackson-databind 2.19.0 lo arrastra algo que declaraste' /tmp/q/t/informe.json; \
     cat /tmp/q/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/q
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/opt/ore/resolver.sh"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Etapa 9b · capa-node:1 — QUIEN RESUELVE LA CAPA DE NODE (0050 R3 T5b)
+#
+# El gemelo de `capa-jvm:1` para npm, por lo mismo: aparte, porque alcanza el
+# registro de npm y no tiene ni el testigo de la forja ni credencial de la
+# nube. La misma base que `puesto-node:1`, para que lo que se resuelve y lo que
+# lo corre sean el mismo Node.
+#
+# ⛔ `npm install --ignore-scripts` (la decisión de T5b): ningún paquete
+#   ejecuta su código al instalarse. Lo que compila nativo no funcionará, y el
+#   informe lo dice.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM node:24-slim AS capa-node
+
+COPY puesto/node/provisto.txt /opt/ore/provisto.txt
+COPY puesto/node/capa/capa.mjs /opt/ore/capa.mjs
+COPY puesto/node/capa/resolver.sh /opt/ore/resolver.sh
+RUN chmod 0755 /opt/ore/resolver.sh \
+ && echo "node $(node -v) · npm $(npm -v) · $(grep -vc '^#' /opt/ore/provisto.txt) paquete(s) provistos por el puesto" > /capa-node.txt
+
+# ── ⭐ Y SE PRUEBA AQUÍ, donde hay alguien mirando ─────────────────────────
+#
+# Un repositorio que declara `dayjs` (se instala) y OTRA `@duckdb/node-api`
+# (no se copia: manda el contenedor, y el aviso sale en el informe), más lo
+# que no se honra (`devDependencies`, lo local). Medido así en local el
+# 2026-10-03 (Node 22, npm): la misma resolución da la misma caja, byte a byte.
+RUN set -e; mkdir -p /tmp/p/arbol; \
+    printf '%s' '{"dependencies":{"dayjs":"1.11.13","@duckdb/node-api":"1.4.0","util":"file:../u"},"devDependencies":{"typescript":"5.8.3"}}' \
+      > /tmp/p/arbol/package.json; \
+    TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol ""; \
+    tar -tzf /tmp/p/t/capa.tgz | grep -qx 'node_modules/dayjs/package.json'; \
+    ! tar -tzf /tmp/p/t/capa.tgz | grep -q -e '@duckdb' -e 'typescript'; \
+    grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
+    grep -q '"dayjs@1.11.13"' /tmp/p/t/informe.json; \
+    grep -q 'pediste @duckdb/node-api 1.4.0, y esta sesión trae la 1.5.5-r.5' /tmp/p/t/informe.json; \
+    grep -q '"suma"' /tmp/p/t/informe.json; \
+    S1=$(sha256sum /tmp/p/t/capa.tgz | cut -c1-64); rm -rf /tmp/p/t; \
+    TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol "" >/dev/null; \
+    [ "$S1" = "$(sha256sum /tmp/p/t/capa.tgz | cut -c1-64)" ]; \
+    cat /tmp/p/t/informe.json >> /capa-node.txt; rm -rf /tmp/p /root/.npm
 
 USER 65532:65532
 WORKDIR /trabajo

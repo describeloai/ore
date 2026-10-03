@@ -26,6 +26,7 @@
 //! |---|---|---|
 //! | `python` | `pyproject.toml` | `[project].dependencies` |
 //! | `jvm` | `pom.xml` | `<dependencies>` de `<project>` |
+//! | `node` | `package.json` | `dependencies` (ORE 0050 R3 T5b) |
 //!
 //! Lo demás **no cambia**: el mismo alcance (la raíz, el paquete y el
 //! repositorio), la misma unión ordenada y sin repetidos, el mismo
@@ -90,7 +91,22 @@
 //! - `POST /entorno`: encolar la capa (202 con el Job), o 200 si ya está lista.
 //!
 //! Y desde ③c hay una forma con lenguaje —`GET /entorno/jvm`,
-//! `POST /entorno/jvm`—: sin él, `python`, como siempre.
+//! `POST /entorno/jvm`—: sin él, `python`, como siempre. Desde 0050 R3 T5b,
+//! también `node`: lo que una función de TypeScript importa de npm.
+//!
+//! # Y en Node (0050 R3 T5b)
+//!
+//! `package.json` → `dependencies`, como `nombre@rango` (`dayjs@^1.11`): los
+//! rangos valen, como en npm, y la resolución exacta va al informe (el
+//! `package-lock.json` que deja `npm`). La resuelve `57-la-capa-node.yaml`
+//! con `capa-node:1` —`npm install --omit=dev --ignore-scripts`: ningún
+//! paquete ejecuta su código al instalarse—, y lo que la sesión ya trae
+//! (`ore`, `@duckdb/node-api`) no se copia: si se pide otra versión, el
+//! informe lo dice. La capa es una caja, `capa.tgz` con su `sha256` en el
+//! informe, que el puesto baja por su nombre y desempaqueta en `/capa`.
+//! ⛔ Lo que no se honra, no se finge: `devDependencies`, `peerDependencies`,
+//! `optionalDependencies`, `overrides`, `scripts` y lo local (`file:`,
+//! `link:`, `workspace:`) no se leen.
 //!
 //! `POST /puestos` la usa: con la capa lista, el puesto nace con ella; con la
 //! capa pendiente, la encola y contesta 409 para que la consola espere.
@@ -113,11 +129,10 @@ pub(crate) fn informe_ruta(digest: &str) -> String {
     format!("entorno/{digest}.json")
 }
 
-/// Los entornos que declaran capa. `node` no está: su sesión nace con lo que
-/// trae su imagen, y sembrar un `package.json` que nadie resuelve sería
-/// sembrar una promesa.
+/// Los entornos que declaran capa: los tres (`node` desde 0050 R3 T5b).
 pub(crate) const PYTHON: &str = "python";
 pub(crate) const JVM: &str = "jvm";
+pub(crate) const NODE: &str = "node";
 
 /// Dónde declara cada entorno. Uno por entorno y ninguno más: un segundo
 /// formato para el mismo —`build.gradle`— sería un formato antes de haber
@@ -125,6 +140,7 @@ pub(crate) const JVM: &str = "jvm";
 pub(crate) fn fichero_de(entorno: &str) -> &'static str {
     match entorno {
         JVM => "pom.xml",
+        NODE => "package.json",
         _ => "pyproject.toml",
     }
 }
@@ -134,6 +150,7 @@ pub(crate) fn fichero_de(entorno: &str) -> &'static str {
 pub(crate) fn donde_de(entorno: &str) -> &'static str {
     match entorno {
         JVM => "`<dependencies>` de un `pom.xml`",
+        NODE => "`dependencies` de un `package.json`",
         _ => "`[project].dependencies` de un `pyproject.toml`",
     }
 }
@@ -142,20 +159,51 @@ pub(crate) fn donde_de(entorno: &str) -> &'static str {
 pub(crate) fn declaradas_en(entorno: &str, texto: &str) -> Vec<String> {
     match entorno {
         JVM => dependencias_de_pom(texto),
+        NODE => dependencias_de_package(texto),
         _ => dependencias_de(texto),
     }
 }
 
-/// El entorno de `/entorno/<lenguaje>`: `python` o `jvm`, y nada más.
+/// El entorno de `/entorno/<lenguaje>`: `python`, `jvm` o `node`, y nada más.
 pub(crate) fn entorno_valido(e: &str) -> Result<&'static str, Respuesta> {
     match e {
         PYTHON => Ok(PYTHON),
         JVM => Ok(JVM),
+        NODE => Ok(NODE),
         otro => Err(Respuesta::error(
             404,
-            format!("`{otro}` no declara entorno: `python` (`pyproject.toml`) o `jvm` (`pom.xml`)"),
+            format!(
+                "`{otro}` no declara entorno: `python` (`pyproject.toml`), `jvm` (`pom.xml`) o `node` (`package.json`)"
+            ),
         )),
     }
+}
+
+/// `dependencies` de un `package.json`, como `nombre@rango`, y nada más: ni
+/// `devDependencies` (la capa es lo que la sesión necesita para **correr**),
+/// ni `peer`/`optional`, ni `overrides`, ni `scripts`. Lo local —`file:`,
+/// `link:`, `workspace:`— no se resuelve en un Job que no tiene el árbol del
+/// cliente como paquete, y se deja fuera. Un fichero que no es JSON, o un
+/// `dependencies` que no es un objeto de cadenas, no declara nada.
+pub(crate) fn dependencias_de_package(texto: &str) -> Vec<String> {
+    let Ok(n) = ore_core::parse::parse(texto) else {
+        return Vec::new();
+    };
+    let Some((_, deps)) = n.get("dependencies") else {
+        return Vec::new();
+    };
+    deps.entries()
+        .iter()
+        .filter_map(|(k, v)| {
+            let nombre = k.as_str()?.trim();
+            let rango = v.as_str()?.trim();
+            let local = ["file:", "link:", "workspace:"]
+                .iter()
+                .any(|p| rango.starts_with(p));
+            (!nombre.is_empty() && !local && !nombre.contains(char::is_whitespace))
+                .then(|| format!("{nombre}@{}", if rango.is_empty() { "*" } else { rango }))
+        })
+        .collect()
 }
 
 /// La declaración de un alcance: la unión de los `dependencies` de los
@@ -900,13 +948,39 @@ dependencies = ["no-esta"]
     }
 
     #[test]
-    fn solo_python_y_la_jvm_declaran_entorno() {
+    fn python_la_jvm_y_node_declaran_entorno() {
         assert_eq!(entorno_valido("python").ok(), Some(PYTHON));
         assert_eq!(entorno_valido("jvm").ok(), Some(JVM));
+        assert_eq!(entorno_valido("node").ok(), Some(NODE));
         assert_eq!(fichero_de(JVM), "pom.xml");
         assert_eq!(fichero_de(PYTHON), "pyproject.toml");
-        let r = entorno_valido("node").unwrap_err();
+        assert_eq!(fichero_de(NODE), "package.json");
+        let r = entorno_valido("ruby").unwrap_err();
         assert_eq!(r.codigo, 404);
+    }
+
+    /// 0050 R3 T5b: `dependencies` de un `package.json`, y nada más.
+    #[test]
+    fn de_un_package_json_se_leen_sus_dependencies() {
+        let t = r#"{
+          "name": "facturacion",
+          "type": "module",
+          "dependencies": { "dayjs": "^1.11.13", "decimal.js": "10.4.3", "util": "file:../util", "x": "workspace:*", "y": "" },
+          "devDependencies": { "typescript": "^5.8" },
+          "peerDependencies": { "react": "*" },
+          "scripts": { "postinstall": "curl evil" }
+        }"#;
+        assert_eq!(
+            dependencias_de_package(t),
+            ["dayjs@^1.11.13", "decimal.js@10.4.3", "y@*"]
+        );
+        assert!(dependencias_de_package("no es json {").is_empty());
+        assert!(dependencias_de_package(r#"{"dependencies": ["dayjs"]}"#).is_empty());
+        // El entorno entra en el digest: lo mismo declarado en Node y en
+        // Python no son la misma capa.
+        let d = ["dayjs@^1.11.13".to_string()];
+        assert_ne!(digest_de(&d, NODE), digest_de(&d, PYTHON));
+        assert!(digest_de(&d, NODE).starts_with("capa-"));
     }
 
     /// 0036 ③: la capa es del repositorio, no de la celda.

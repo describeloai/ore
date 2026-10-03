@@ -165,6 +165,39 @@ spec:
                 echo "### $(du -sm /capa | cut -f1) MB en /capa · van DETRÁS de los de la imagen en el classpath"
                 exit 0
               fi
+              # ── la capa de Node (0050 R3 T5b): una caja, con SU SUMA ──
+              if [ "$ENTORNO" = "node" ]; then
+                python3 - <<'PY'
+              # ⭐ Como la de la JVM: la caja se comprueba contra el `sha256` que
+              #   escribió quien la resolvió (`57-la-capa-node.yaml`) antes de
+              #   abrirla, y se abre con el filtro `data` de `tarfile`: ni rutas
+              #   fuera de `/capa`, ni enlaces que salgan, ni dispositivos.
+              import hashlib, json, os, tarfile, time
+              from google.cloud import storage
+              t = time.time(); cli = storage.Client(); b = cli.bucket(os.environ["BUCKET"])
+              pre = "ore/puesto/" + os.environ["CAPA"] + "/"
+              try:
+                  informe = json.loads(b.blob(pre + "informe.json").download_as_text())
+              except Exception as e:
+                  raise SystemExit("✗ la caja de la capa no está en el bucket (%s): ¿la resolvió 57-la-capa-node?" % str(e)[:120])
+              if informe.get("estado") != "lista":
+                  raise SystemExit("✗ la capa %s no está lista: %s" % (os.environ["CAPA"], informe.get("estado")))
+              if not informe.get("caja"):
+                  print("### capa %s: nada que instalar (lo declarado lo trae la sesión)" % os.environ["CAPA"], flush=True)
+                  raise SystemExit(0)
+              if informe["caja"] != "capa.tgz":
+                  raise SystemExit("✗ `%s` no es la caja de una capa de Node" % str(informe["caja"])[:80])
+              b.blob(pre + "capa.tgz").download_to_filename("/trabajo/capa.tgz")
+              with open("/trabajo/capa.tgz", "rb") as fh:
+                  if hashlib.sha256(fh.read()).hexdigest() != informe.get("suma"):
+                      raise SystemExit("✗ capa.tgz no es la que se resolvió (sha256 distinto del informe)")
+              with tarfile.open("/trabajo/capa.tgz") as tf:
+                  tf.extractall("/capa", filter="data")
+              print("### capa %s: %d paquete(s) con su suma en %d ms" % (os.environ["CAPA"], len(informe.get("lock", [])), (time.time() - t) * 1000), flush=True)
+              PY
+                echo "### $(du -sm /capa | cut -f1) MB en /capa/node_modules · van DETRÁS de los de la imagen"
+                exit 0
+              fi
               mkdir -p /trabajo/ruedas
               python3 - <<'PY'
               # ⭐ Por su nombre, sin listar (0031 W3.7 gobierno ②b): la cuenta del
