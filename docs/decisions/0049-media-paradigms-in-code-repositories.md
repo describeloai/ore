@@ -4,7 +4,7 @@
 —B2 y B3 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
-B4b, B5 y B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+B4b y **B5 hechos** —B5 en vivo el 2026-10-03—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -478,6 +478,34 @@ cuota (cerrado de raíz: cierre por inactividad y barrido, `eafdfd0`).
 
 **Pendiente, y de B5:** el `sha256` de un ítem virtual sólo se conoce al leerlo (vive en memoria de
 `ore-medios`); la identidad por contenido de una virtual sin leer es su `path@version`.
+
+### B5 · hecho: la derivación incremental por ítem (2026-10-03, victor)
+
+**El criterio** —*una función sobre una colección se calcula una vez por ítem y por clave; lo que no
+cambió no se recalcula ni se reescribe, y el resultado es una tabla anclada*—, cumplido en un puesto
+de victor (`pytransformsv1`, rama `test4`) con `pruebas-de-fuego/b53-la-derivacion-en-vivo.py`, ya
+con el SDK en inglés: `ore.collection(…).apply(paginas, version="1")` dentro de un `@transform` cuya
+entrada es la colección escrita de B4 (4 PDF) y cuya salida es
+`s3_standard.nueva_carpeta.paginas_b5`.
+
+- **Primera:** 4 nuevos, 4 filas, escrita; la tabla trae las seis columnas de sistema de v1alpha17
+  `03` (`_item`, `_anchor`, `_anchor_id`, `_anchor_parent`, `_derivation`, `_status`) y la carga.
+- **Otra vez:** 4 saltados, **no se escribe** (ni un commit).
+- **Una copia de un contrato con otra ruta:** el mismo ítem (la identidad es el `digest`): 4
+  saltados, 0 recalculados, y **no se escribe**; la fila conserva su ruta. La primera pasada en vivo
+  sí escribía —el ítem tomaba la primera ruta del listado y la copia salía antes—: arreglado en
+  `60f1e44` (una ruta que la fila ya dice manda mientras siga; si se va, la copia la hereda) y
+  vuelto a correr en vivo.
+
+| paso | qué | commit |
+|---|---|---|
+| B5·0 | medida: la tabla anclada desde una celda (100 k filas: escribir 14,2 s, leer 2,7 s; ~6 s fijos por escritura) | `40daf49` |
+| B5·1 + B5·2 | `write(…, anchored_to=)` declara el Dataset anclado (v1alpha19 `anchoredTo`, sólo la carga); `apply()`: la tabla de salida es el registro, por clave; un error es su fila; nada cambia, nada se escribe; guardado por tiempo | `6504902` |
+| B5·3 | en vivo; una copia no mueve el ítem (caso 13 del banco) | `60f1e44` |
+
+**Queda fuera, y anotado:** `apply()` en Node y en la JVM (D5 lo pide; van al final, con su
+superficie); que `apply()` emita **ficheros** a una colección escrita, y no sólo filas; y su forma en
+SQL —materializar una tabla anclada desde una colección—, que es el siguiente paso de este ADR.
 
 ## Lo que no se hace aquí
 
