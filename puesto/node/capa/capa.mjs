@@ -5,6 +5,7 @@
 //   declarar <árbol> <alcance> <trabajo>   los package.json del alcance → deps.txt · digest.txt
 //   package  <trabajo> <provisto>          lo que npm resuelve: lo declarado sin lo que la sesión trae
 //   informe  <trabajo> <estado>            lo resuelto → informe.json (lock, suma de la caja, avisos)
+//                                          y, si está lista, lock-del-repositorio.json (L2)
 //
 // ⚠️ LA DECLARACIÓN Y EL DIGEST SON LOS DE `ore-serve` (`entorno.rs`,
 //   `dependencias_de_package` y `digest_de`), byte a byte: si difieren, el Job
@@ -165,6 +166,18 @@ function informe(trabajo, estadoDado) {
   else if (mb > tope) {
     estado = "error";
     error = `la capa pesa ${mb} MB y el tope es ${tope} MB: un puesto que tarda dos minutos en arrancar no es un puesto`;
+  }
+  // ⭐ L2: el lock, para el repositorio —`package-lock.json` junto a su
+  //   `package.json`, lo que se versiona—. El de npm tal cual (`resolved`,
+  //   `integrity`), sin el nombre de la caja de trabajo (`capa`). Sólo de una
+  //   capa lista: una que falló no fija nada. Lo que la sesión trae no está
+  //   en él: no lo instala la capa.
+  const delRepositorio = join(trabajo, "lock-del-repositorio.json");
+  if (estado === "lista" && existsSync(lockf)) {
+    const l = JSON.parse(readFileSync(lockf, "utf8"));
+    delete l.name;
+    if (l.packages?.[""]) delete l.packages[""].name;
+    writeFileSync(delRepositorio, JSON.stringify(l, null, 2) + "\n");
   }
   const j = {
     estado,

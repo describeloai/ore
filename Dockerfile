@@ -637,6 +637,7 @@ RUN chmod 0755 /opt/ore/resolver.sh \
 # (no se copia: manda el contenedor, y el aviso sale en el informe), más lo
 # que no se honra (`devDependencies`, lo local). Medido así en local el
 # 2026-10-03 (Node 22, npm): la misma resolución da la misma caja, byte a byte.
+# Y (L2) el lock para el repositorio: el de npm, sin el nombre de la caja.
 RUN set -e; mkdir -p /tmp/p/arbol; \
     printf '%s' '{"dependencies":{"dayjs":"1.11.13","@duckdb/node-api":"1.4.0","util":"file:../u"},"devDependencies":{"typescript":"5.8.3"}}' \
       > /tmp/p/arbol/package.json; \
@@ -647,6 +648,8 @@ RUN set -e; mkdir -p /tmp/p/arbol; \
     grep -q '"dayjs@1.11.13"' /tmp/p/t/informe.json; \
     grep -q 'pediste @duckdb/node-api 1.4.0, y esta sesión trae la 1.5.5-r.5' /tmp/p/t/informe.json; \
     grep -q '"suma"' /tmp/p/t/informe.json; \
+    grep -q '"node_modules/dayjs"' /tmp/p/t/lock-del-repositorio.json; \
+    ! grep -q -e '"capa"' -e '@duckdb' /tmp/p/t/lock-del-repositorio.json; \
     S1=$(sha256sum /tmp/p/t/capa.tgz | cut -c1-64); rm -rf /tmp/p/t; \
     TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol "" >/dev/null; \
     [ "$S1" = "$(sha256sum /tmp/p/t/capa.tgz | cut -c1-64)" ]; \

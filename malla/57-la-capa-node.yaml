@@ -7,6 +7,8 @@
 #   bucket del inquilino como `ore/puesto/<capa>/capa.tgz` y anotado en el árbol
 #   como `entorno/<digest>.json`. El puesto, sin red, lo baja al arrancar, lo
 #   comprueba contra la suma del informe y lo desempaqueta en `/capa`.
+#   ⭐ L2: y el `package-lock.json` de lo instalado, en el repositorio, junto a
+#   su `package.json`: lo que se resolvió se versiona donde se declaró.
 #
 # ── ⛔ LO QUE NO CORRE: EL CÓDIGO DE LOS PAQUETES AL INSTALARSE ────────────
 #   `npm install --ignore-scripts`: ningún `preinstall`/`postinstall` de un
@@ -147,6 +149,7 @@ spec:
             - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
             - { name: GIT_CONFIG_VALUE_1, value: "*" }
             - { name: RAMA, value: "rama-modelo" }
+            - { name: ALCANCE, value: "alcance-modelo" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
@@ -173,10 +176,24 @@ spec:
               gcloud storage cp -q /trabajo/informe.json "gs://$BUCKET/ore/puesto/$DIGEST/informe.json"
               cp /trabajo/informe.json "entorno/$DIGEST.json"
               git add -A entorno
+              # ── 3 · ⭐ L2: el lock al repositorio, junto a su package.json ──
+              #   Lo que se instaló, versionado donde se declara: sólo de una
+              #   capa lista (el resolver no lo deja si no) y sólo en la carpeta
+              #   de un repositorio que tiene su package.json. La celda (sin
+              #   alcance) no tiene dónde.
+              LOCK=""
+              case "$ALCANCE" in
+                packages/*) case "$ALCANCE" in *..*) ;; *)
+                  if [ -f /trabajo/lock-del-repositorio.json ] && [ -f "$ALCANCE/package.json" ]; then
+                    cp /trabajo/lock-del-repositorio.json "$ALCANCE/package-lock.json"
+                    git add "$ALCANCE/package-lock.json"
+                    LOCK=" · $ALCANCE/package-lock.json"
+                  fi ;; esac ;;
+              esac
               if git diff --cached --quiet; then echo "· el informe no cambió"; exit 0; fi
               ESTADO=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["estado"])' "entorno/$DIGEST.json")
               git -c user.name=la-capa-node -c user.email=la-capa-node@invalido \
-                commit -q -m "La capa $DIGEST (Node): $ESTADO"
+                commit -q -m "La capa $DIGEST (Node): $ESTADO$LOCK"
               git push -q origin HEAD:${RAMA:-main}
               echo "✓ informe empujado · $(git rev-parse --short HEAD)"
           resources:

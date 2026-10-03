@@ -98,7 +98,8 @@
 //!
 //! `package.json` → `dependencies`, como `nombre@rango` (`dayjs@^1.11`): los
 //! rangos valen, como en npm, y la resolución exacta va al informe (el
-//! `package-lock.json` que deja `npm`). La resuelve `57-la-capa-node.yaml`
+//! `package-lock.json` que deja `npm`) y, desde L2, al repositorio: el Job
+//! escribe ese lock junto a su `package.json`, en el mismo commit. La resuelve `57-la-capa-node.yaml`
 //! con `capa-node:1` —`npm install --omit=dev --ignore-scripts`: ningún
 //! paquete ejecuta su código al instalarse—, y lo que la sesión ya trae
 //! (`ore`, `@duckdb/node-api`) no se copia: si se pide otra versión, el

@@ -553,6 +553,7 @@ functions/
   {{funcionTs}}.ts         a function: its file, its name
   {{funcionTs}}.test.ts    its tests (never published)
 package.json               the npm packages your functions use
+package-lock.json          the exact versions installed (written by the platform)
 tsconfig.json              the rules the editor and `tsc` check against
 ```
 
@@ -651,7 +652,10 @@ npm:
 ```
 
 The platform resolves them into a layer when the session opens (the first time,
-it takes a minute) and records the exact versions it installed. Good to know:
+it takes a minute) and commits the exact versions it installed as
+`package-lock.json`, next to `package.json`: a standard npm lock, so `npm ci`
+reproduces it anywhere. It is rewritten on every resolution; don't edit it.
+Good to know:
 
 - `ore` (this SDK) and `@duckdb/node-api` come with the platform; don't declare them.
 - Install scripts of packages never run, so a package that compiles native code
