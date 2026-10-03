@@ -494,9 +494,9 @@ assert len(d) == 1 and "nombre" in d[0]["message"] and d[0]["range"]["start"] ==
 # 0038: `hr.espanoles` tiene dos partes: el aviso ORE-SQL-2P, en su sitio, que no es un error
 dos = [x for x in todo if x.get("code") == "ORE-SQL-2P"]
 assert len(dos) == 1 and dos[0]["severity"] == 2 and dos[0]["range"]["start"] == {"line": 1, "character": 5} and "hr.default.espanoles" in dos[0]["message"], ("el aviso de dos partes", todo)
-assert "¿" in d[0]["message"], ("sin sugerencia", d)
+assert "did you mean" in d[0]["message"], ("sin sugerencia", d)
 a = diag.get("ajena.sql") or []
-assert any("Table de otra fuente" in x["message"] for x in a), ("la Table de otra fuente", a)
+assert any("Table from another source" in x["message"] for x in a), ("la Table de otra fuente", a)
 assert diag.get("a_medias.sql") == [], ("a medio escribir no es un error", diag.get("a_medias.sql"))
 # ADR 0040 paso 5: las frases del guion no son errores de DuckDB; de la vista se
 # comprueba su consulta, y la columna mal escrita se dice en su sitio (L5:C8)

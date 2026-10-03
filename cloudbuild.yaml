@@ -52,8 +52,10 @@ substitutions:
   # La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`); el job
   # de GitHub la pasa. Vacía (una construcción a mano), se calcula aquí.
   _BINARIOS: ''
-  # La caché de compilación (sccache): lo compilado de cada crate, por su huella.
-  _SCCACHE: project-8853a180-450d-47be-b83-ci-sccache
+  # La caché de compilación (sccache) vive en el bucket
+  # project-8853a180-450d-47be-b83-ci-sccache; está apagada (CACHE_GCS vacío)
+  # mientras se aclara el segfault de los binarios sin LTO. Cloud Build rechaza
+  # una sustitución que el guion no usa: vuelve como _SCCACHE al encenderla.
 
 steps:
   # ⭐⭐ LOS BINARIOS, POR SU CONTENIDO (2026-10-03). Si ya hay una imagen

@@ -310,9 +310,17 @@ def rota(x: Money[MONEDA, 2]) -> int:
         assert!(obj(&f["output"]).contains_key("campos"));
 
         // Fuera de `functions/` no es una función; un módulo de ayuda tampoco.
-        let r = derivada("export default function f(): string { return \"\"; }", "lib/f.ts", "v");
+        let r = derivada(
+            "export default function f(): string { return \"\"; }",
+            "lib/f.ts",
+            "v",
+        );
         assert!(arr(&obj(&r)["funciones"]).is_empty());
-        let r = derivada("export function f(): string { return \"\"; }", "functions/f.ts", "v");
+        let r = derivada(
+            "export function f(): string { return \"\"; }",
+            "functions/f.ts",
+            "v",
+        );
         assert!(arr(&obj(&r)["funciones"]).is_empty());
         // Ni `.py` ni `.ts`: nada.
         let r = derivada("x", "notas.md", "v");
