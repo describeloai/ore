@@ -19,6 +19,7 @@ CLI (`una_tabla_anclada_declara_su_coleccion_y_su_carga`) y en vivo (B5·3).
   12  lo que `fn` da mal: una columna `_…` o un ancla sin `kind` son el error de ese ítem
   13  una copia con otra ruta, listada antes: su fila no cambia de ruta y no se escribe
   14  la colección como relación de `sql()` (B7·1): una fila por ítem, sin leer bytes
+  15  funciones del árbol en SQL (B7·2): de tabla en un lateral, escalar, con su contrato
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-derivacion-en-python.py
 """
@@ -279,7 +280,60 @@ def e14():
          "content_type, modified—, con `item` del mismo tipo que `_item`, y sin leer un byte")
 
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14], 1):
+def e15():
+    """B7·2: funciones del árbol llamadas desde SQL, con su contrato: una de
+    tabla (filas por ítem, en un lateral) y una escalar, sobre la colección."""
+    import duckdb
+    from dataclasses import dataclass
+    from ore import sql_functions
+    from ore.tipos import Media
+
+    @dataclass
+    class Pagina:
+        page: int
+        texto: str
+
+    @ore.function
+    def paginas_sql(item: Media["legal.archivo.contratos"]) -> list[Pagina]:
+        n = 2 if item.path.endswith("a.pdf") else 1
+        return [Pagina(p, "%s p%d" % (item.path, p)) for p in range(1, n + 1)]
+
+    @ore.function
+    def idioma(item: Media["legal.archivo.contratos"], defecto: str = "en") -> str:
+        return "es" if item.path.endswith("a.pdf") else defecto
+
+    specs = {
+        "legal.paginas": (paginas_sql, {"input": {"item": {"type": "Media<legal.archivo.contratos>"}},
+                                        "output": {"type": "list<Struct<page: Integer, texto: String>>"}}),
+        "legal.idioma": (idioma, {"input": {"item": {"type": "Media<legal.archivo.contratos>"},
+                                            "defecto": {"type": "String"}},
+                                  "output": {"type": "String"}}),
+    }
+    LISTADO[:] = [ref("copia/a.pdf", "aa"), ref("copia/b.pdf", "bb")]
+    con = duckdb.connect()
+    con.register("c", medios._relacion(ore.collection(COL)))
+    sql_functions.register(con, [{"name": "legal.paginas", "internal": "__ore_fn_1", "arity": 1, "table": True},
+                                 {"name": "legal.idioma", "internal": "__ore_fn_2", "arity": 1, "table": False}],
+                           lambda n: specs[n])
+    r = con.execute("select c.path, p.page, p.texto, __ore_fn_2(c.item) as lang from c "
+                    "cross join lateral (select unnest(__ore_fn_1(c.item), max_depth := 2)) as p "
+                    "order by 1, 2").fetchall()
+    assert r == [("copia/a.pdf", 1, "copia/a.pdf p1", "es"), ("copia/a.pdf", 2, "copia/a.pdf p2", "es"),
+                 ("copia/b.pdf", 1, "copia/b.pdf p1", "en")], r
+    # lo que el contrato no admite es un error de la consulta, con su porqué
+    sql_functions.register(con, [{"name": "legal.idioma", "internal": "__ore_fn_3", "arity": 2, "table": False}],
+                           lambda n: specs[n])
+    try:
+        con.execute("select __ore_fn_3(c.item, 7) from c").fetchall()
+        raise AssertionError("un 7 no es un str")
+    except duckdb.Error as e:
+        # los tipos del contrato son los de la función en DuckDB: un 7 no es un String
+        assert "__ore_fn_3" in str(e) and "VARCHAR" in str(e), e
+    bien("15 · funciones del árbol en SQL (B7·2): una de tabla da sus filas por ítem en un lateral "
+         "(dataclass → struct), una escalar con un argumento opcional; el contrato manda también aquí")
+
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()

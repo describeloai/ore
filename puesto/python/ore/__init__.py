@@ -778,6 +778,9 @@ def function(f=None, *, over=None, reads=None, models=None, timeout=None):
 
 
 _FUNCIONES = {}
+#: The `spec` of each function `get_function()` read: SQL types its calls by it
+#: (0049 B7·2).
+_FUNCIONES_SPEC = {}
 
 
 @_kw({"nombre": "name"})
@@ -826,6 +829,7 @@ def get_function(name):
     g = modulo[defn]
     g = g if getattr(g, "__ore_contrato__", False) else llamada(g)
     _FUNCIONES[nombre] = g
+    _FUNCIONES_SPEC[nombre] = spec
     return g
 
 
@@ -1019,6 +1023,13 @@ def sql(query, format="pandas"):
         _lee(nombre)
         fuente, _ = _fuente_de_respuesta(nombre, rd)
         _registra(con, nombre, fuente)
+    # 0049 B7·2: the tree functions it calls, registered under the names
+    # ore-serve rewrote them to, with their contract.
+    if (r or {}).get("functions"):
+        from .sql_functions import register
+
+        register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
+        texto = r["query"]
     r = con.execute(texto)
     if r.description is None:
         return None

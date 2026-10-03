@@ -2582,8 +2582,33 @@ impl Servidor {
             return Respuesta::error(422, "sql() quiere una consulta");
         }
         // Each name with whether it is a `MediaCollection` (0049 B7·1).
+        // And the tree `Function`s it calls, with the text rewritten for
+        // DuckDB (0049 B7·2): the SDK registers each one under its internal name.
+        let mut llamadas: Option<Json> = None;
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            let (query, calls) = ore_core::sql_del_arbol::sql_calls(&texto, &pkg);
+            if !calls.is_empty() {
+                llamadas = Some(Json::obj([
+                    ("query", Json::s(query)),
+                    (
+                        "functions",
+                        Json::Arr(
+                            calls
+                                .into_iter()
+                                .map(|c| {
+                                    Json::obj([
+                                        ("name", Json::s(c.name)),
+                                        ("internal", Json::s(c.internal)),
+                                        ("arity", Json::Int(c.arity as i64)),
+                                        ("table", Json::Bool(c.table)),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ]));
+            }
             Respuesta::ok(Json::Arr(
                 ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg)
                     .into_iter()
@@ -2628,7 +2653,11 @@ impl Servidor {
             }
             fuentes.insert(n, d.cuerpo);
         }
-        Respuesta::ok(Json::obj([("fuentes", Json::Obj(fuentes))]))
+        let mut cuerpo = Json::obj([("fuentes", Json::Obj(fuentes))]);
+        if let (Json::Obj(m), Some(Json::Obj(l))) = (&mut cuerpo, llamadas) {
+            m.extend(l);
+        }
+        Respuesta::ok(cuerpo)
     }
 
     /// Lo que se lee por un nombre: un dataset por su puntero (`datos_de`), o

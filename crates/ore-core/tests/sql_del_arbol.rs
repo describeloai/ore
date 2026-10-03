@@ -676,3 +676,83 @@ fn a_collection_is_read_in_from_and_not_yet_written_from() {
         ["ventas.contratos"]
     );
 }
+
+/// 0049 B7·2: a tree `Function` is called from SQL by its name —as a value or
+/// as rows—; the text is rewritten for DuckDB with the tokenizer (a name in a
+/// comment is not a call), and what cannot be called says why.
+#[test]
+fn a_tree_function_is_called_from_sql() {
+    let t = arbol("funciones");
+    escribe(
+        &t.0,
+        "packages/ventas/collections/contratos.yaml",
+        "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: { name: contratos, namespace: ventas }\nspec:\n  owner: team:ventas\n  media: document\n  formats: [pdf]\n",
+    );
+    escribe(
+        &t.0,
+        "packages/ventas/functions/paginas.yaml",
+        "apiVersion: oos.dev/v1alpha20\nkind: Function\nmetadata: { name: paginas, namespace: ventas }\nspec:\n  runtime: python\n  entrypoint: functions/paginas.py:paginas\n  input:\n    item: { type: 'Media<ventas.default.contratos>', required: true }\n  output: { type: 'list<Struct<page: Integer, texto: String>>' }\n",
+    );
+    escribe(
+        &t.0,
+        "packages/ventas/functions/paginas.py",
+        "import ore\nfrom dataclasses import dataclass\nfrom ore.tipos import Media\n\n\n@dataclass\nclass Pagina:\n    page: int\n    texto: str\n\n\n@ore.function\ndef paginas(item: Media[\"ventas.default.contratos\"]) -> list[Pagina]:\n    return []\n",
+    );
+    escribe(
+        &t.0,
+        "packages/ventas/functions/clasificar.yaml",
+        "apiVersion: oos.dev/v1alpha10\nkind: Function\nmetadata: { name: clasificar, namespace: ventas }\nspec:\n  runtime: model\n  model: modelo/v2-lite\n  over: ventas.pedidosEs\n  prompt: clasifica\n  output:\n    clase: { type: String }\n",
+    );
+    let r = &t.0;
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let u = |q: &str| cotejar(&pkg, &analizar(q).unwrap());
+
+    // as rows, in a lateral join over the collection
+    let q = "select c.path, p.page from ventas.contratos c cross join lateral ventas.paginas(c.item) as p";
+    assert!(u(q).is_empty(), "{:?}", u(q));
+    let (sql, calls) = ore_core::sql_del_arbol::sql_calls(q, &pkg);
+    assert_eq!(
+        sql,
+        "select c.path, p.page from ventas.contratos c cross join lateral \
+         (select unnest(__ore_fn_1(c.item), max_depth := 2)) as p"
+    );
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].table && calls[0].arity == 1 && calls[0].name == "ventas.paginas",
+        "{calls:?}"
+    );
+    // and the collection is still a name to resolve; the call is not
+    assert_eq!(
+        ore_core::sql_del_arbol::nombres_a_resolver(q, &pkg),
+        ["ventas.contratos"]
+    );
+
+    // as a value, three parts, nested parentheses; a comment does not count
+    let q = "-- ventas.paginas(x)\nselect ventas.default.paginas(c.item), lower(c.path) from ventas.contratos c";
+    let (sql, calls) = ore_core::sql_del_arbol::sql_calls(q, &pkg);
+    assert_eq!(
+        sql,
+        "-- ventas.paginas(x)\nselect __ore_fn_1(c.item), lower(c.path) from ventas.contratos c"
+    );
+    assert!(!calls[0].table && calls[0].arity == 1, "{calls:?}");
+    // no calls: the text as it was
+    let q = "select  path  from ventas.contratos";
+    assert_eq!(ore_core::sql_del_arbol::sql_calls(q, &pkg).0, q);
+
+    // what cannot be called
+    let f = u("select ventas.nadie(c.item) from ventas.contratos c");
+    assert!(
+        f.len() == 1
+            && f[0]
+                .mensaje
+                .contains("no published function `ventas.nadie`"),
+        "{f:?}"
+    );
+    let f = u("select ventas.clasificar(c.item) from ventas.contratos c");
+    assert!(
+        f.len() == 1 && f[0].mensaje.contains("runtime: model"),
+        "{f:?}"
+    );
+    // a DuckDB function without dots is still DuckDB's
+    assert!(u("select upper(path) from ventas.contratos").is_empty());
+}

@@ -156,6 +156,10 @@ class Catalogo:
     def __init__(self, indice):
         self.legibles, self.ajenas = {}, {}
         self.schemas = {}
+        # 0049 B7·2: the tree functions SQL calls, by their own name (what
+        # DuckDB says it does not know).
+        self.funciones = {str(i.get("name")).lower() for i in (indice.get("items") or {}).values()
+                          if i.get("kind") == "Function"}
         for i in (indice.get("items") or {}).values():
             s_ = i.get("schema") or DEFAULT
             n = corto(i.get("paquete"), s_, i.get("name"))
@@ -480,6 +484,11 @@ def diagnosticar(texto, cat):
                 continue
             except Exception as e:
                 m = str(e)
+        # A tree function is not DuckDB's: `sql()` registers it when it runs
+        # (0049 B7·2). The editor does not know its types; it does not mark it.
+        f = re.search(r"(?:Scalar|Table) Function with name (\w+) does not exist", m)
+        if f and f.group(1).lower() in cat.funciones:
+            continue
         p = _posicion(s, m) or (0, 0)
         if "at end of input" in m and _al_final(s, *p):
             continue  # se esta escribiendo

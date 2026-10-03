@@ -165,6 +165,18 @@ pub struct Unidad {
     /// Lo que no para la frase pero se dice: hoy, los nombres de dos partes
     /// ([`DOS_PARTES`]), uno por nombre.
     pub avisos: Vec<Fallo>,
+    /// The tree `Function`s the query calls (0049 B7·2), once each.
+    pub calls: Vec<Call>,
+}
+
+/// **A tree `Function` called from SQL** (0049 B7·2): by its name of two or
+/// three parts, as a value (`f(x)`) or as rows (`from f(x)`, `join lateral
+/// f(x)`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Call {
+    pub function: Nombre,
+    /// In `FROM`: its rows are read.
+    pub table: bool,
 }
 
 /// Por qué la frase no es una unidad —o, en [`Unidad::avisos`], lo que se
@@ -332,11 +344,21 @@ fn unidad_de(s: &Statement, texto: &str) -> Result<Unidad, Vec<Fallo>> {
                 pos_de_sentencia(s),
             )]);
         };
+        let mut calls: Vec<Call> = Vec::new();
+        for c in lectura.calls {
+            if !calls
+                .iter()
+                .any(|x| x.function.referencia() == c.function.referencia() && x.table == c.table)
+            {
+                calls.push(c);
+            }
+        }
         Ok(Unidad {
             lee,
             escribe,
             consulta,
             avisos,
+            calls,
         })
     } else {
         Err(fallos)
@@ -498,6 +520,7 @@ struct Lectura {
     ctes: Vec<BTreeSet<String>>,
     nombres: Vec<Nombre>,
     fallos: Vec<Fallo>,
+    calls: Vec<Call>,
 }
 
 impl Lectura {
@@ -508,6 +531,20 @@ impl Lectura {
 
 impl Visitor for Lectura {
     type Break = ();
+
+    // 0049 B7·2: `a.b(…)` or `a.b.c(…)` as a value is a tree `Function`.
+    fn pre_visit_expr(&mut self, e: &sqlparser::ast::Expr) -> ControlFlow<()> {
+        if let sqlparser::ast::Expr::Function(f) = e
+            && (2..=3).contains(&f.name.0.len())
+            && let Some(n) = nombre_del_arbol(&f.name, &mut self.fallos)
+        {
+            self.calls.push(Call {
+                function: n,
+                table: false,
+            });
+        }
+        ControlFlow::Continue(())
+    }
 
     fn pre_visit_query(&mut self, q: &Query) -> ControlFlow<()> {
         let nombres = q
@@ -540,6 +577,22 @@ impl Visitor for Lectura {
                 }
                 if let Some(n) = nombre_del_arbol(name, &mut self.fallos) {
                     self.nombres.push(n);
+                }
+            }
+            // 0049 B7·2: a tree `Function` read as rows names what it reads.
+            TableFactor::Table {
+                name,
+                args: Some(_),
+                ..
+            }
+            | TableFactor::Function { name, .. }
+                if (2..=3).contains(&name.0.len()) =>
+            {
+                if let Some(n) = nombre_del_arbol(name, &mut self.fallos) {
+                    self.calls.push(Call {
+                        function: n,
+                        table: true,
+                    });
                 }
             }
             TableFactor::Table {
@@ -843,6 +896,48 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             )),
         }
     }
+    // 0049 B7·2: what SQL calls is a published code function it can run here.
+    for c in &u.calls {
+        let n = &c.function;
+        let r = n.referencia();
+        let f = pkg
+            .docs
+            .iter()
+            .find(|d| d.kind == Kind::Function && d.qname().as_deref() == Some(r.as_str()));
+        let Some(f) = f else {
+            fallos.push(
+                Fallo::new(format!("there is no published function `{r}`"), n.pos).ayuda(
+                    "a tree function is called by its name, `database.schema.function(…)`; \
+                     a DuckDB function by its own, without dots",
+                ),
+            );
+            continue;
+        };
+        let runtime = f.section("runtime").and_then(|v| v.as_str()).unwrap_or("");
+        if runtime != "python" {
+            fallos.push(Fallo::new(
+                format!(
+                    "`{r}` is `runtime: {runtime}`: SQL calls code functions (`runtime: python`)"
+                ),
+                n.pos,
+            ));
+        } else if f.section("over").is_some() || f.section("models").is_some() {
+            fallos.push(
+                Fallo::new(
+                    format!(
+                        "`{r}` declares `{}`: a pipeline invokes it, SQL does not call it",
+                        if f.section("over").is_some() {
+                            "over"
+                        } else {
+                            "models"
+                        }
+                    ),
+                    n.pos,
+                )
+                .ayuda("call from SQL a function without `over` or `models`"),
+            );
+        }
+    }
     if let Some(e) = &u.escribe {
         let n = &e.destino;
         let r = n.referencia();
@@ -902,6 +997,177 @@ const TRAS_LAS_QUE_SE_LEE: [&str; 6] =
 /// Lo demás —un esquema de la sesión (`tmp.t`), un alias, un campo de un
 /// struct— es del motor. Hoy la regex mandaba `tmp.t` a ore-serve: 404, y la
 /// celda moría.
+/// **A tree `Function` call in the text of a cell, as DuckDB will run it**
+/// (0049 B7·2): `name` its short name, `internal` the name it is registered
+/// under (`__ore_fn_<n>`, one per call site), `arity` the arguments written,
+/// and `table` whether its rows are read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlCall {
+    pub name: String,
+    pub internal: String,
+    pub arity: usize,
+    pub table: bool,
+}
+
+/// **The text of a cell with its tree `Function` calls rewritten for DuckDB**
+/// (0049 B7·2), and the calls. With the tokenizer, like
+/// [`nombres_a_resolver`]: a name in a comment or a string is not a call.
+/// `a.b.f(x)` becomes `__ore_fn_1(x)`; read as rows (after `from`, `join` or
+/// `lateral`) it becomes `(select unnest(__ore_fn_1(x), max_depth := 2))`
+/// —the function gives a list of rows, and their own lists stay whole—.
+/// Without calls, the text as it was.
+pub fn sql_calls(texto: &str, pkg: &Package) -> (String, Vec<SqlCall>) {
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let Ok(con_sitio) = Tokenizer::new(&DuckDbDialect {}, texto).tokenize_with_location() else {
+        return (texto.to_string(), Vec::new());
+    };
+    // Each token is copied from the text by its place, never reprinted: what
+    // is not a call runs exactly as written.
+    let lineas: Vec<usize> = std::iter::once(0)
+        .chain(texto.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    let byte = |l: u64, c: u64| -> usize {
+        let ini = lineas
+            .get((l as usize).saturating_sub(1))
+            .copied()
+            .unwrap_or(texto.len());
+        texto[ini..]
+            .char_indices()
+            .nth((c as usize).saturating_sub(1))
+            .map(|(i, _)| ini + i)
+            .unwrap_or(texto.len())
+    };
+    let inicios: Vec<usize> = con_sitio
+        .iter()
+        .map(|t| byte(t.span.start.line, t.span.start.column))
+        .chain(std::iter::once(texto.len()))
+        .collect();
+    let trozo = |k: usize| &texto[inicios[k]..inicios[k + 1]];
+    let toks: Vec<Token> = con_sitio.into_iter().map(|t| t.token).collect();
+    let funcion = |qn: &str| {
+        pkg.docs
+            .iter()
+            .any(|d| d.kind == Kind::Function && d.qname().as_deref() == Some(qn))
+    };
+    // The next and previous meaningful tokens.
+    let sig = |j: usize| (j..toks.len()).find(|&k| !matches!(toks[k], Token::Whitespace(_)));
+    let ant = |j: usize| {
+        (0..j)
+            .rev()
+            .find(|&k| !matches!(toks[k], Token::Whitespace(_)))
+    };
+    let palabra = |k: Option<usize>| match k.map(|k| &toks[k]) {
+        Some(Token::Word(w)) => Some(w.value.clone()),
+        _ => None,
+    };
+    let es = |k: Option<usize>, t: Token| k.is_some_and(|k| toks[k] == t);
+    let mut out = String::new();
+    let mut calls: Vec<SqlCall> = Vec::new();
+    // Where each open call ends: (depth, is it read as rows).
+    let mut abiertas: Vec<(usize, bool)> = Vec::new();
+    let mut prof = 0usize;
+    let mut i = 0;
+    while i < toks.len() {
+        // `a . b [. c] (`, not preceded by a dot
+        let a = palabra(Some(i));
+        if a.is_some() && !es(ant(i), Token::Period) {
+            let p1 = sig(i + 1);
+            let b = if es(p1, Token::Period) {
+                palabra(p1.and_then(|k| sig(k + 1)))
+            } else {
+                None
+            };
+            if let (Some(a), Some(b)) = (&a, &b) {
+                let kb = sig(p1.unwrap() + 1).unwrap();
+                let p2 = sig(kb + 1);
+                let (qn, fin) = if es(p2, Token::Period) {
+                    match palabra(p2.and_then(|k| sig(k + 1))) {
+                        Some(c) => {
+                            let kc = sig(p2.unwrap() + 1).unwrap();
+                            (
+                                crate::normalize::a_corto(&format!("{a}.{b}.{c}")).into_owned(),
+                                kc,
+                            )
+                        }
+                        None => (String::new(), kb),
+                    }
+                } else {
+                    (format!("{a}.{b}"), kb)
+                };
+                let paren = sig(fin + 1);
+                if !qn.is_empty() && es(paren, Token::LParen) && funcion(&qn) {
+                    let tabla = palabra(ant(i)).is_some_and(|w| {
+                        ["from", "join", "lateral"]
+                            .iter()
+                            .any(|k| w.eq_ignore_ascii_case(k))
+                    });
+                    // the arguments: commas at the call's own depth
+                    let pa = paren.unwrap();
+                    let (mut d, mut comas, mut algo, mut k) = (0usize, 0usize, false, pa + 1);
+                    while k < toks.len() {
+                        match &toks[k] {
+                            Token::LParen | Token::LBracket | Token::LBrace => d += 1,
+                            Token::RParen if d == 0 => break,
+                            Token::RParen | Token::RBracket | Token::RBrace => {
+                                d = d.saturating_sub(1)
+                            }
+                            Token::Comma if d == 0 => comas += 1,
+                            Token::Whitespace(_) => {}
+                            _ => algo = true,
+                        }
+                        if !matches!(toks[k], Token::Whitespace(_))
+                            && !matches!(toks[k], Token::Comma)
+                        {
+                            algo = true;
+                        }
+                        k += 1;
+                    }
+                    let internal = format!("__ore_fn_{}", calls.len() + 1);
+                    calls.push(SqlCall {
+                        name: qn,
+                        internal: internal.clone(),
+                        arity: if algo { comas + 1 } else { 0 },
+                        table: tabla,
+                    });
+                    if tabla {
+                        out.push_str("(select unnest(");
+                    }
+                    out.push_str(&internal);
+                    out.push('(');
+                    prof += 1;
+                    abiertas.push((prof, tabla));
+                    i = pa + 1;
+                    continue;
+                }
+            }
+        }
+        match &toks[i] {
+            Token::LParen => {
+                prof += 1;
+                out.push_str(trozo(i));
+            }
+            Token::RParen => {
+                out.push_str(trozo(i));
+                if let Some(&(d, tabla)) = abiertas.last()
+                    && d == prof
+                {
+                    abiertas.pop();
+                    if tabla {
+                        out.push_str(", max_depth := 2))");
+                    }
+                }
+                prof = prof.saturating_sub(1);
+            }
+            _ => out.push_str(trozo(i)),
+        }
+        i += 1;
+    }
+    if calls.is_empty() {
+        return (texto.to_string(), calls);
+    }
+    (out, calls)
+}
+
 pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for n in nombres_de_celda(texto, pkg) {
@@ -1008,7 +1274,10 @@ fn nombres_de_celda(texto: &str, pkg: &Package) -> Vec<NombreDeCelda> {
                     None => format!("{a}.{b}"),
                 };
                 let es_paquete = paquete(&a);
-                let se_resuelve = del_arbol(&qn) || (tras(i, &TRAS_LAS_QUE_SE_LEE) && es_paquete);
+                // `a.b(…)` is a call (0049 B7·2: a tree `Function`), not a name to read.
+                let llamada = matches!(toks.get(i + largo), Some((Token::LParen, _)));
+                let se_resuelve =
+                    !llamada && (del_arbol(&qn) || (tras(i, &TRAS_LAS_QUE_SE_LEE) && es_paquete));
                 let se_escribe = tras(i, &["table", "dataset", "into"]) && es_paquete;
                 out.push(NombreDeCelda {
                     qn,
