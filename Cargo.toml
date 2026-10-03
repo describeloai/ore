@@ -53,11 +53,16 @@ panic         = "abort"
 #   2026-09-30: sin LTO, tocar `ore-serve` 56 s frente a 206. Lo que se
 #   PUBLICA (releases, el trabajo `determinista`) sigue siendo `release`.
 #
-# ⛔ 2026-10-03 · VUELTA A LTO hasta saber por qué: sin LTO, `ore-cofre` y
-#   `ore-medios` (musl, estáticos) murieron al arrancar con SIGSEGV (exit 139)
-#   en t-demo; `ore-serve` no. Investigándolo aparte; mientras, como `release`.
+# ⛔ El SIGSEGV de `ore-cofre` y `ore-medios` al arrancar (t-demo, 2026-10-03)
+#   era de **sccache**, no de quitar el LTO. Medido en local con la etapa
+#   `herramientas` (rustc 1.99, `ore-medios`): sin LTO + sccache en frío →
+#   139; en caliente → 139; sin LTO SIN sccache → vivo; con LTO sin sccache →
+#   vivo. Por eso sccache está apagado (`CACHE_GCS` vacío en cloudbuild.yaml):
+#   no se enciende sin repetir esa prueba.
 [profile.imagen]
 inherits      = "release"
+lto           = false
+codegen-units = 16
 
 [workspace.dependencies]
 anyhow = "1"
