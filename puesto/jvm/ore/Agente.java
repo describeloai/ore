@@ -325,8 +325,8 @@ public final class Agente {
         return w.toString();
     }
 
-    /** La salida {@code tabla} del contrato: la hace el SDK ({@link Ore#tabla}); aquí sólo se le pone el límite de la consola. */
-    static Map<String, Object> comoTabla(Object valor) { return Ore.tabla(valor, FILAS_MAXIMAS); }
+    /** La salida {@code tabla} del contrato: la hace el SDK ({@link Ore#table}); aquí sólo se le pone el límite de la consola. */
+    static Map<String, Object> comoTabla(Object valor) { return Ore.table(valor, FILAS_MAXIMAS); }
 
     // ── El servidor de lenguaje, y su correa (0037 ③b) ──────────────────────
 
@@ -414,10 +414,10 @@ public final class Agente {
             if (!"42".equals(String.valueOf(r.get("texto")))) throw new IllegalStateException("el kernel no contesta 42: " + Json.escribir(r));
             // Y el contrato de tipos por Arrow (0032 T3): si faltan los jars o el
             // --add-opens, se ve aquí y no en la primera celda de una persona.
-            Ore.Filas f = Ore.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
+            Ore.Rows f = Ore.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
             Map<String, Object> t = comoTabla(f);
             List<Object> fila = ((List<List<Object>>) t.get("filas")).get(0);
-            if (!Long.valueOf(42).equals(f.get(0).get("n")) || !"decimal128(4, 2)".equals(f.tipos.get("d")) || !Long.valueOf(42).equals(fila.get(0)) || !"1.50".equals(fila.get(1)) || !String.valueOf(fila.get(2)).endsWith("Z"))
+            if (!Long.valueOf(42).equals(f.get(0).get("n")) || !"decimal128(4, 2)".equals(f.types.get("d")) || f.tipos != f.types || !Long.valueOf(42).equals(fila.get(0)) || !"1.50".equals(fila.get(1)) || !String.valueOf(fila.get(2)).endsWith("Z"))
                 throw new IllegalStateException("el sdk no cumple el contrato de tipos: " + Json.escribir(t));
             LOG.println("agente y sdk listos · " + Runtime.version() + " · duckdb " + (tieneDuckdb() ? "sí" : "no") + " · arrow y tipos ok");
             return;

@@ -104,7 +104,7 @@ class Kernel {
     this.pendiente = null;
     this.repl._domain.removeAllListeners("error");
     this.repl._domain.on("error", (e) => { const p = this.pendiente; this.pendiente = null; if (p) p({ e }); });
-    Object.assign(this.repl.context, { ore, over: ore.over, sql: ore.sql, write: ore.write, declare: ore.declare, transform: ore.transform, persona: ore.persona });
+    Object.assign(this.repl.context, { ore, over: ore.over, sql: ore.sql, write: ore.write, declare: ore.declare, transform: ore.transform, person: ore.person, persona: ore.persona });
     // Las celdas-módulo viven en /trabajo/celdas y resuelven `ore` por este enlace.
     this.celdas = null;
     try {
@@ -175,16 +175,16 @@ class Kernel {
   }
 }
 
-/** La salida `tabla` del contrato: la hace el SDK (`ore.tabla`), que es lo que
+/** La salida `tabla` del contrato: la hace el SDK (`ore.table`), que es lo que
  *  una celda también puede pedir; aquí sólo se le pone el límite de la consola. */
-function comoTabla(valor) { return ore.tabla(valor, FILAS_MAXIMAS); }
+function comoTabla(valor) { return ore.table(valor, FILAS_MAXIMAS); }
 
 /** Un valor suelto (el resultado de una celda que no es tabla) → JSON. */
-function llano(v) { return ore.jsonDe(v); }
+function llano(v) { return ore.toJson(v); }
 
 // ── El bucle ───────────────────────────────────────────────────────────────
 async function main() {
-  const p = ore.puesto;
+  const p = ore.session;
   if (!p.id) { log("sin PUESTO en el entorno"); return 2; }
   const ttl = Number(process.env.TTL ?? "1800");
   // Un trabajo (W3.7 ④): `TRABAJO=<ruta>@<commit>` → una sola celda (el fichero)
@@ -239,7 +239,7 @@ if (process.argv.includes("--comprobar")) {
   // Y el contrato de tipos por DuckDB (0032 T3): un bigint es 42n, un decimal es exacto, y el JSON de la tabla es el del contrato.
   const f = await m.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
   const t = comoTabla(f);
-  if (f[0].n !== 42n || f.tipos.d !== "decimal128(4, 2)" || t.filas[0][0] !== 42 || t.filas[0][1] !== "1.50" || !/Z$/.test(t.filas[0][2])) { log(`el sdk no cumple el contrato de tipos: ${JSON.stringify(t)}`); process.exit(1); }
+  if (f[0].n !== 42n || f.types.d !== "decimal128(4, 2)" || f.tipos !== f.types || t.filas[0][0] !== 42 || t.filas[0][1] !== "1.50" || !/Z$/.test(t.filas[0][2])) { log(`el sdk no cumple el contrato de tipos: ${JSON.stringify(t)}`); process.exit(1); }
   log(`agente y sdk listos · ${process.version} · ${Object.keys(m).join(" ")} · tipos ok`);
   k.repl.close();
   process.exit(0);

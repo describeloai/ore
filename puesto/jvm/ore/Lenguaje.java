@@ -77,15 +77,20 @@ final class Lenguaje {
      *   mejor que nosotros — y sólo si alguien le pone un {@code -sources.jar}
      *   al lado (medido). Aquí se dice y ya: son nueve funciones y son nuestras.
      */
-    private static final Map<String, String> PROSA = Map.of(
-        "over", "La copia de `<paquete>.<vista>` como filas. Sólo lo que el transform declaró en `inputs`.",
-        "sql", "Una consulta sobre las copias de esta celda, con DuckDB. Lee; no escribe.",
-        "write", "Escribe una tabla como `<paquete>.<nombre>` y devuelve el informe del commit. Sólo el `output` declarado.",
-        "transform", "Declara qué lee y qué escribe, y lo ejecuta: mientras corre, la sesión sólo resuelve esos `inputs` y sólo deja escribir ese `output`.",
-        "declare", "Declara un documento del árbol (una Entity, un TrainedModel…) como lo haría `ore apply`.",
-        "persona", "Quién abrió este puesto (`persona:…`): la identidad con la que corre lo que escribes aquí.",
-        "arrow", "La misma copia, como flujo de Arrow: los tipos sobreviven la vuelta.",
-        "arrowSql", "Una consulta, como flujo de Arrow.");
+    private static final String PERSON = "Who opened this session (`persona:…`): the identity whatever you write here runs as.";
+    private static final String TABLE = "The console's table JSON (0032 §1) of rows or a list of maps.";
+    private static final Map<String, String> PROSA = Map.ofEntries(
+        Map.entry("over", "The copy of `<base>.<view>` as rows. Only what the transform declared in `inputs`."),
+        Map.entry("sql", "A query over this cell's copies, with DuckDB. It reads; it does not write."),
+        Map.entry("write", "Writes a table as `<base>.<name>` and returns the commit report. Only the declared `output`."),
+        Map.entry("transform", "Declares what it reads and writes, and runs it: while it runs, the session only resolves those `inputs` and only lets that `output` be written."),
+        Map.entry("declare", "Declares a tree document (an Entity, a TrainedModel…) as `ore apply` would."),
+        Map.entry("person", PERSON),
+        Map.entry("persona", "Deprecated: use `person()`. " + PERSON),
+        Map.entry("table", TABLE),
+        Map.entry("tabla", "Deprecated: use `table()`. " + TABLE),
+        Map.entry("arrow", "The same copy, as an Arrow stream: the types survive the round trip."),
+        Map.entry("arrowSql", "A query, as an Arrow stream."));
 
     // ── el protocolo ────────────────────────────────────────────────────────
 
