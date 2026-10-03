@@ -64,17 +64,17 @@ class LoQueLlegaAlDef(unittest.TestCase):
         self.assertEqual(eco_tipos(3, "2026-12-31").importe, Decimal(3))
 
     def test_no_se_adivina(self):
-        with self.assertRaisesRegex(ErrorDeContrato, "`fecha` es `date`.*AAAA-MM-DD"):
+        with self.assertRaisesRegex(ErrorDeContrato, "`fecha` is `date`.*YYYY-MM-DD"):
             eco_tipos(1, "02/10/2026")
-        with self.assertRaisesRegex(ErrorDeContrato, "`x` es `int`"):
+        with self.assertRaisesRegex(ErrorDeContrato, "`x` is `int`"):
             valor_mal("3")
-        with self.assertRaisesRegex(ErrorDeContrato, "`x` es `int`"):
+        with self.assertRaisesRegex(ErrorDeContrato, "`x` is `int`"):
             valor_mal(True)
-        with self.assertRaisesRegex(ErrorDeContrato, r"`etiquetas\[1\]` es `str`"):
+        with self.assertRaisesRegex(ErrorDeContrato, r"`etiquetas\[1\]` is `str`"):
             eco_tipos(1, "2026-12-31", ["a", 2])
 
     def test_lo_que_devuelve_es_del_tipo_que_anota(self):
-        with self.assertRaisesRegex(ErrorDeContrato, "`valor_mal` devolvió 8 y anota `-> str`"):
+        with self.assertRaisesRegex(ErrorDeContrato, "`valor_mal` returned 8 and annotates `-> str`"):
             valor_mal(4)
 
     def test_una_dataclass_se_comprueba_campo_a_campo(self):
@@ -82,13 +82,13 @@ class LoQueLlegaAlDef(unittest.TestCase):
         def mala() -> Eco:
             return Eco("x", "y", "no es decimal", 1)
 
-        with self.assertRaisesRegex(ErrorDeContrato, "`mala` devolvió un `Eco` con `importe` es `Decimal`"):
+        with self.assertRaisesRegex(ErrorDeContrato, "`mala` returned a `Eco` with `importe` is `Decimal`"):
             mala()
 
     def test_los_opcionales_admiten_none(self):
         self.assertIsNone(eco_tipos(1, "2026-12-31").nota)
         self.assertIsNone(convertir("n", None, int | None))
-        with self.assertRaisesRegex(ErrorDeContrato, "llegó None"):
+        with self.assertRaisesRegex(ErrorDeContrato, "and got None"):
             convertir("n", None, int)
 
     def test_lo_que_falla_dentro_sale_como_es(self):
@@ -107,7 +107,7 @@ class LoQueLlegaAlDef(unittest.TestCase):
     def test_fechas_y_horas(self):
         self.assertEqual(convertir("t", "2026-10-02T08:00:00Z", datetime.datetime).tzinfo, datetime.timezone.utc)
         self.assertEqual(convertir("t", "08:30", datetime.time), datetime.time(8, 30))
-        with self.assertRaisesRegex(ErrorDeContrato, "`d` es `date`"):
+        with self.assertRaisesRegex(ErrorDeContrato, "`d` is `date`"):
             convertir("d", datetime.datetime(2026, 1, 1), datetime.date)
 
 
@@ -157,9 +157,9 @@ class LlamarUnaPublicada(unittest.TestCase):
     def test_las_que_no_se_llaman_asi(self):
         with self.assertRaisesRegex(NotImplementedError, "pipeline"):
             self.ore.funcion("ventas.fila")
-        with self.assertRaisesRegex(LookupError, "ninguna función `ventas.nadie`"):
+        with self.assertRaisesRegex(LookupError, "no published function `ventas.nadie`"):
             self.ore.funcion("ventas.nadie")
-        with self.assertRaisesRegex(ValueError, "<paquete>.<def>"):
+        with self.assertRaisesRegex(ValueError, "<database>.<def>"):
             self.ore.funcion("sinpunto")
 
 
@@ -208,14 +208,14 @@ class LosTiposDeV1alpha20(unittest.TestCase):
             with self.assertRaisesRegex(ErrorDeContrato, regex):
                 self.todo(**dict(self.bien, **cambios))
 
-        mal(r"`precio` es `Money<EUR, 2>` .* más de 2 decimales", precio="1.234")
-        mal(r"`corte` es `DateTimeTz` .* sin zona", corte="2026-10-02T08:00:00")
-        mal(r"`abre` es `time`", abre="8h")
-        mal(r"`firma` es `bytes` .* base64", firma="no es base64!")
-        mal(r"`tasa` es `Decimal<5, 4>` .* no cabe", tasa="12.5")
-        mal(r"`contrato` es `Media<legal.archivo.contratos>` .* `otra.col`",
+        mal(r"`precio` is `Money<EUR, 2>` .* more than 2 decimals", precio="1.234")
+        mal(r"`corte` is `DateTimeTz` .* without a zone", corte="2026-10-02T08:00:00")
+        mal(r"`abre` is `time`", abre="8h")
+        mal(r"`firma` is `bytes` .* base64", firma="no es base64!")
+        mal(r"`tasa` is `Decimal<5, 4>` .* does not fit", tasa="12.5")
+        mal(r"`contrato` is `Media<legal.archivo.contratos>` .* `otra.col`",
             contrato=dict(self.bien["contrato"], collection="otra.col"))
-        mal(r"`lineas\[1\].precio` es `Money<EUR, 2>`", lineas=[{"producto": "a", "precio": 1}, {"producto": "b", "precio": "x"}])
+        mal(r"`lineas\[1\].precio` is `Money<EUR, 2>`", lineas=[{"producto": "a", "precio": 1}, {"producto": "b", "precio": "x"}])
 
     def test_la_referencia_es_un_mediaref(self):
         ref = self.todo.__wrapped__  # el def
