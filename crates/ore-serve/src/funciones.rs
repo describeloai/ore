@@ -329,16 +329,17 @@ impl Servidor {
             };
         }
 
-        // ── ②′ una función de código (0050 P3): se decide aquí y corre como
-        //    un trabajo del puesto, que se lanza fuera de esta lectura ─────
-        if f.texto("runtime").as_deref() == Some("python") {
+        // ── ②′ una función de código (0050 P3; TypeScript, R3 T5): se decide
+        //    aquí y corre como un trabajo del puesto, que se lanza fuera de
+        //    esta lectura ─────────────────────────────────────────────────
+        if matches!(f.texto("runtime").as_deref(), Some("python" | "node")) {
             return match self.plan_python(raiz, f, &qn, cuerpo, sujeto) {
                 Ok(p) => {
                     let r = Respuesta {
                         codigo: 202,
                         cuerpo: Json::obj([
                             ("function", Json::s(&qn)),
-                            ("runtime", Json::s("python")),
+                            ("runtime", Json::s(p.runtime())),
                             ("corrida", Json::s(&p.invocada.corrida)),
                         ]),
                     };
@@ -574,14 +575,30 @@ fn copia_de(raiz: &Path, over: &str) -> Result<String, Respuesta> {
     })
 }
 
-/// Lo decidido al leer el árbol, para lanzar fuera de la lectura.
+/// Lo decidido al leer el árbol, para lanzar fuera de la lectura. De una
+/// función de Python o, desde R3 T5, de TypeScript (`entorno: node`).
 pub(crate) struct PlanPython {
     pub invocada: crate::puestos::Invocada,
-    /// `packages/<p>/…/<f>.py`: el fichero del árbol que corre.
+    /// `packages/<p>/…/<f>.py` (o `.ts`): el fichero del árbol que corre.
     pub codigo: String,
     pub commit: String,
     pub arnes: String,
     pub lee: Vec<String>,
+    /// `python` o `node`: la imagen del puesto que corre el trabajo.
+    pub entorno: &'static str,
+    /// El lenguaje de la celda: `python` o `typescript`.
+    pub lenguaje: &'static str,
+}
+
+impl PlanPython {
+    /// El `runtime` del documento.
+    pub(crate) fn runtime(&self) -> &'static str {
+        if self.entorno == "node" {
+            "node"
+        } else {
+            "python"
+        }
+    }
 }
 
 impl Servidor {
@@ -620,6 +637,15 @@ impl Servidor {
         // Los parámetros, contra `input`: nada que no declare, todo lo
         // obligatorio, y cada valor de su tipo.
         let parametros = parametros_de(f, cuerpo)?;
+        let node = f.texto("runtime").as_deref() == Some("node");
+        if node && f.spec.get("models").is_some() {
+            return Err(Respuesta::error(
+                422,
+                format!(
+                    "`{qn}` declara `models`, y el SDK de Node no llama a un modelo todavía: no se finge"
+                ),
+            ));
+        }
 
         // Los modelos que el código puede llamar (`models`, 0050 P4): cada uno
         // resuelto aquí a su puerta y su id servido, como el de `runtime:
@@ -675,10 +701,22 @@ impl Servidor {
 
         // El código, tal como está en este commit.
         let entrypoint = f.texto("entrypoint").unwrap_or_default();
-        let Some((ruta, def)) = ore_core::promover::entrypoint(&entrypoint) else {
+        let leido = if node {
+            ore_core::promover::entrypoint_ts(&entrypoint).map(|r| (r, ""))
+        } else {
+            ore_core::promover::entrypoint(&entrypoint)
+        };
+        let Some((ruta, def)) = leido else {
             return Err(Respuesta::error(
                 422,
-                format!("`entrypoint: {entrypoint}` no es `<ruta>.py:<def>`"),
+                format!(
+                    "`entrypoint: {entrypoint}` no es {}",
+                    if node {
+                        "`<ruta>.ts`"
+                    } else {
+                        "`<ruta>.py:<def>`"
+                    }
+                ),
             ));
         };
         let mut carpeta = f.ruta.parent().map(Path::to_path_buf);
@@ -719,7 +757,7 @@ impl Servidor {
             .and_then(|(_, t)| t.as_str())
             .and_then(segundos)
             .unwrap_or(0);
-        let arnes = arnes(&Arnes {
+        let a = Arnes {
             funcion: qn,
             fichero: &codigo,
             fuente: &fuente,
@@ -728,7 +766,29 @@ impl Servidor {
             modelos: &modelos,
             over: over.as_deref(),
             plazo,
-        });
+        };
+        let arnes = if node {
+            // Node borra los tipos antes de ejecutar: el contrato lee la firma
+            // DERIVADA de este mismo fichero (la del documento, más la `forma`
+            // que el documento no dice: si un entero llega como `bigint`).
+            let firma = match ore_code::typescript::derivar(&fuente, ruta)
+                .funciones
+                .into_iter()
+                .next()
+                .map(|x| x.resultado)
+            {
+                Some(Ok(firma)) => firma,
+                _ => {
+                    return Err(Respuesta::error(
+                        422,
+                        format!("`{ruta}` no da la firma de una función (OOS2042/OOS2043)"),
+                    ));
+                }
+            };
+            arnes_node(&a, &firma_del_contrato(&firma))
+        } else {
+            arnes(&a)
+        };
         Ok(PlanPython {
             invocada: crate::puestos::Invocada {
                 qn: qn.to_string(),
@@ -740,6 +800,8 @@ impl Servidor {
             commit,
             arnes,
             lee,
+            entorno: if node { "node" } else { "python" },
+            lenguaje: if node { "typescript" } else { "python" },
         })
     }
 
@@ -754,11 +816,12 @@ impl Servidor {
         let corrida = plan.invocada.corrida.clone();
         // 0049 B4·2: lo que lee y es una colección, fijado al lanzar.
         let fijadas = self.fijar_colecciones(rama.as_deref(), &plan.lee);
+        let runtime = plan.runtime();
         let mut r = self.lanzar_trabajo(
             sujeto,
             rama,
-            "python",
-            "python",
+            plan.entorno,
+            plan.lenguaje,
             plan.codigo,
             plan.commit,
             plan.arnes,
@@ -775,7 +838,7 @@ impl Servidor {
         );
         if let Json::Obj(m) = &mut r.cuerpo {
             m.insert("function".into(), Json::s(&qn));
-            m.insert("runtime".into(), Json::s("python"));
+            m.insert("runtime".into(), Json::s(runtime));
             m.insert("corrida".into(), Json::s(&corrida));
         }
         r
@@ -1124,9 +1187,168 @@ _pa.Table.from_pylist(_res)
     )
 }
 
+/// La firma que lee el contrato de Node (`ore/contract.mjs`): la derivada, con
+/// cada tipo en su `forma` (`BigInt` para un entero que el código declaró
+/// `bigint`).
+fn firma_del_contrato(f: &ore_code::Firma) -> Json {
+    let campos = |cs: &[ore_code::Campo]| {
+        Json::Arr(
+            cs.iter()
+                .map(|c| {
+                    Json::obj([
+                        ("name", Json::s(&c.nombre)),
+                        ("type", Json::s(c.tipo.forma())),
+                        ("required", Json::Bool(c.requerido)),
+                    ])
+                })
+                .collect(),
+        )
+    };
+    Json::obj([
+        ("input", campos(&f.entrada)),
+        (
+            "output",
+            match &f.salida {
+                ore_code::Salida::Valor(t) => Json::obj([("type", Json::s(t.forma()))]),
+                ore_code::Salida::Campos(cs) => Json::obj([("fields", campos(cs))]),
+            },
+        ),
+        ("over", Json::Bool(f.over.is_some())),
+    ])
+}
+
+/// La celda que corre una función de TypeScript (R3 T5): una celda-módulo (el
+/// agente de Node importa lo que empieza por `import`, con `await` arriba).
+/// Borra los tipos del fichero (`stripTypeScriptTypes`, que deja cada cosa en
+/// su línea), lo importa, llama a su `export default` con `contract.call` y la
+/// firma derivada, una vez o una por fila de `over`, y exporta por defecto las
+/// filas: el agente las devuelve como la tabla del resultado, como el
+/// `pa.Table` del arnés de Python. Un literal JSON es un literal de JavaScript:
+/// lo de fuera entra como cadena, nada se interpola como código.
+fn arnes_node(a: &Arnes<'_>, firma: &Json) -> String {
+    let cad = |s: &str| Json::s(s).jcs();
+    format!(
+        r#"// El arnés de una función de TypeScript (ORE 0050 R3 T5): {funcion}
+import {{ contract, over }} from "ore";
+import {{ stripTypeScriptTypes }} from "node:module";
+import {{ writeFileSync, rmSync }} from "node:fs";
+import {{ dirname, join }} from "node:path";
+import {{ fileURLToPath, pathToFileURL }} from "node:url";
+
+const FICHERO = {fichero};
+const FIRMA = JSON.parse({firma});
+const PLAZO = {plazo};
+const OVER = {over};
+// Los números, exactos: uno que un `number` no guarda tal cual llega como el
+// texto que se escribió (un entero de 64 bits, un decimal largo), y el
+// contrato lo convierte a lo que la firma declara.
+const PARAMETROS = JSON.parse({parametros}, (k, v, c) => {{
+  if (typeof v !== "number" || !c || typeof c.source !== "string" || /[eE]/.test(c.source)) return v;
+  const escrito = c.source.includes(".") ? c.source.replace(/0+$/, "").replace(/\.$/, "") : c.source;
+  return String(v) === escrito ? v : c.source;
+}});
+
+const f = join(dirname(fileURLToPath(import.meta.url)), "funcion-" + Date.now() + ".mjs");
+const url = pathToFileURL(f).href;
+writeFileSync(f, stripTypeScriptTypes({fuente}, {{ mode: "strip" }}));
+let m;
+try {{
+  m = await import(url);
+}} finally {{
+  rmSync(f, {{ force: true }});
+}}
+if (typeof m.default !== "function") throw new TypeError(FICHERO + " no exporta una función por defecto");
+
+/** Dónde se rompió, en el `.ts` de la función. */
+const donde = (e) => {{
+  const r = String(e?.stack ?? "").match(new RegExp(url.replace(/[.*+?^${{}}()|[\]\\]/g, "\\$&") + ":(\\d+)"));
+  return r ? ` (${{FICHERO}}, línea ${{r[1]}})` : "";
+}};
+const conPlazo = (p) => {{
+  if (!PLAZO) return p;
+  let t;
+  const corte = new Promise((_, no) => {{ t = setTimeout(() => no(new Error(`la invocación pasó de limits.timeout (${{PLAZO}}s)`)), PLAZO * 1000); }});
+  return Promise.race([p, corte]).finally(() => clearTimeout(t));
+}};
+const fila = (v) => (FIRMA.output.fields ? v : {{ valor: v }});
+const llamar = (row) => contract.call(m.default, FIRMA, PARAMETROS, {{ row, name: {nombre} }}).then((v) => contract.toWire(v));
+
+let filas;
+if (OVER) {{
+  // Una llamada por fila: la que falla se dice en `_error`, y las demás siguen.
+  filas = await conPlazo((async () => {{
+    const out = [];
+    for (const r of await over(OVER)) {{
+      try {{
+        out.push({{ ...fila(await llamar(r)), _error: null }});
+      }} catch (e) {{
+        out.push({{ _error: `${{e?.name ?? "Error"}}: ${{e?.message ?? e}}${{donde(e)}}` }});
+      }}
+    }}
+    return out;
+  }})());
+}} else {{
+  // Una llamada: si falla, falla la invocación, con su porqué y su línea.
+  try {{
+    filas = [fila(await conPlazo(llamar(undefined)))];
+  }} catch (e) {{
+    throw new Error(`${{e?.name ?? "Error"}}: ${{e?.message ?? e}}${{donde(e)}}`);
+  }}
+}}
+export default filas;
+"#,
+        funcion = a.funcion,
+        fichero = cad(a.fichero),
+        firma = cad(&firma.jcs()),
+        plazo = a.plazo,
+        over = a.over.map(cad).unwrap_or_else(|| "null".into()),
+        parametros = cad(&a.parametros.jcs()),
+        fuente = cad(a.fuente),
+        nombre = cad(a.funcion),
+    )
+}
+
 #[cfg(test)]
 mod tests_python {
     use super::*;
+
+    /// R3 T5: el arnés de una función de TypeScript lleva la firma DERIVADA
+    /// (con `BigInt` donde el código dijo `bigint`), el fuente y los
+    /// parámetros como cadenas, y exporta las filas por defecto.
+    #[test]
+    fn el_arnes_de_node_lleva_la_firma_derivada() {
+        let fuente = "import type { Integer } from \"ore\";\n\
+                      export default function repeat(id: bigint, n: Integer = 1): string { return \"x\"; }\n";
+        let d = ore_code::typescript::derivar(fuente, "t/functions/repeat.ts");
+        let firma = d.funciones[0].resultado.as_ref().unwrap();
+        let f = firma_del_contrato(firma);
+        assert_eq!(
+            f.jcs(),
+            r#"{"input":[{"name":"id","required":true,"type":"BigInt"},{"name":"n","required":false,"type":"Integer"}],"output":{"type":"String"},"over":false}"#
+        );
+        let parametros = Json::obj([("id", Json::s("1"))]);
+        let modelos = Json::Obj(Default::default());
+        let a = Arnes {
+            funcion: "ventas.repeat",
+            fichero: "packages/ventas/t/functions/repeat.ts",
+            fuente,
+            def: "",
+            parametros: &parametros,
+            modelos: &modelos,
+            over: None,
+            plazo: 30,
+        };
+        let celda = arnes_node(&a, &f);
+        assert!(celda.starts_with("// El arnés de una función de TypeScript"));
+        assert!(celda.contains("\nimport { contract, over } from \"ore\";\n"));
+        assert!(celda.contains("const PLAZO = 30;"));
+        assert!(celda.contains("const OVER = null;"));
+        assert!(celda.contains(r#"JSON.parse("{\"input\":[{\"name\":\"id\""#));
+        assert!(celda.contains("stripTypeScriptTypes(\"import type { Integer } from \\\"ore\\\";"));
+        assert!(celda.trim_end().ends_with("export default filas;"));
+        // Sin `{` ni `}` sueltos de `format!`: cada `${…}` del JavaScript, entero.
+        assert!(celda.contains("`la invocación pasó de limits.timeout (${PLAZO}s)`"));
+    }
 
     #[test]
     fn los_plazos_se_leen_en_segundos() {
