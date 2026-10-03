@@ -645,16 +645,34 @@ fn a_collection_is_read_in_from_and_not_yet_written_from() {
     );
     let r = &t.0;
     assert!(
-        fallos(r, "select path, size from ventas.default.contratos where content_type = 'application/pdf'")
-            .is_empty()
+        fallos(
+            r,
+            "select path, size from ventas.default.contratos where content_type = 'application/pdf'"
+        )
+        .is_empty()
     );
-    assert!(fallos(r, "select c.item, p.id from ventas.contratos c join ventas.pedidos p on true").is_empty());
-    let f = fallos(r, "create or replace dataset ventas.paginas as select path from ventas.contratos");
+    assert!(
+        fallos(
+            r,
+            "select c.item, p.id from ventas.contratos c join ventas.pedidos p on true"
+        )
+        .is_empty()
+    );
+    let f = fallos(
+        r,
+        "create or replace dataset ventas.paginas as select path from ventas.contratos",
+    );
     assert_eq!(f.len(), 1, "{f:?}");
-    assert!(f[0].mensaje.contains("is a `MediaCollection`") && f[0].mensaje.contains("anchored"), "{f:?}");
+    assert!(
+        f[0].mensaje.contains("is a `MediaCollection`") && f[0].mensaje.contains("anchored"),
+        "{f:?}"
+    );
     let (pkg, _) = ore_core::validate::cargar_paquete(r);
     assert_eq!(
-        ore_core::sql_del_arbol::nombres_a_resolver("select path from ventas.default.contratos", &pkg),
+        ore_core::sql_del_arbol::nombres_a_resolver(
+            "select path from ventas.default.contratos",
+            &pkg
+        ),
         ["ventas.contratos"]
     );
 }
