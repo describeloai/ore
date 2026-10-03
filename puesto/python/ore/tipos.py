@@ -1,4 +1,16 @@
-"""Los tipos de OOS que Python no escribe solo (ORE 0050 G5a, OOS v1alpha20 `01`).
+"""The OOS types Python cannot write on its own (ORE 0050 G5a, OOS v1alpha20 `01`).
+
+    from ore.tipos import DateTimeTz, Money, Quantity, Media, Precision
+
+`DateTimeTz` is a `datetime` with a zone; `Money["EUR", 2]` and
+`Quantity["km", 1]` a `Decimal` with its unit and precision;
+`Annotated[Decimal, Precision(p, s)]` is `Decimal<p, s>`;
+`Media["db.schema.collection"]` a reference to an item (`MediaRef`). They are
+annotations for `@function` signatures, enforced by `ore.contrato`.
+
+---
+
+Los tipos de OOS que Python no escribe solo (ORE 0050 G5a, OOS v1alpha20 `01`).
 
     from ore.tipos import DateTimeTz, Money, Quantity, Media, Precision
 
@@ -35,17 +47,31 @@ DateTimeTz = typing.Annotated[datetime.datetime, _ConZona()]
 
 
 class Precision:
-    """`Annotated[Decimal, Precision(p, s)]` es `Decimal<p, s>`: como mucho `p`
-    cifras, `s` detrás de la coma."""
+    """`Annotated[Decimal, Precision(p, s)]` is `Decimal<p, s>`: at most `p`
+    digits, `s` of them after the decimal point."""
 
-    def __init__(self, precision, escala):
-        if not (isinstance(precision, int) and isinstance(escala, int) and 1 <= precision <= 38
-                and 0 <= escala <= precision):
-            raise ValueError("Precision(%r, %r): 1 ≤ p ≤ 38 y 0 ≤ s ≤ p" % (precision, escala))
-        self.precision, self.escala = precision, escala
+    def __init__(self, precision, scale=None, **kw):
+        if "escala" in kw:  # el nombre de antes
+            if scale is not None:
+                raise TypeError("Precision() got both `scale` and its old name `escala`")
+            from . import _avisar
+
+            _avisar("Precision(escala=…)", "Precision(scale=…)")
+            scale = kw.pop("escala")
+        if kw:
+            raise TypeError("Precision() got an unexpected keyword argument %r" % next(iter(kw)))
+        if not (isinstance(precision, int) and isinstance(scale, int) and 1 <= precision <= 38
+                and 0 <= scale <= precision):
+            raise ValueError("Precision(%r, %r): 1 ≤ p ≤ 38 and 0 ≤ s ≤ p" % (precision, scale))
+        self.precision, self.scale = precision, scale
+
+    @property
+    def escala(self):
+        """El nombre de antes de `scale`."""
+        return self.scale
 
     def __repr__(self):
-        return "Precision(%d, %d)" % (self.precision, self.escala)
+        return "Precision(%d, %d)" % (self.precision, self.scale)
 
 
 class _Unidad:
@@ -62,19 +88,19 @@ class _ConUnidad:
     def __class_getitem__(cls, args):
         if not (isinstance(args, tuple) and len(args) == 2 and isinstance(args[0], str) and args[0]
                 and isinstance(args[1], int) and args[1] >= 0):
-            raise TypeError('`%s[...]` lleva la unidad y la precisión: `%s`'
+            raise TypeError('`%s[...]` takes the unit and the precision: `%s`'
                             % (cls._ctor, 'Money["EUR", 2]' if cls._ctor == "Money" else 'Quantity["km", 1]'))
         return typing.Annotated[decimal.Decimal, _Unidad(cls._ctor, args[0], args[1])]
 
 
 class Money(_ConUnidad):
-    """`Money["EUR", 2]` es `Money<EUR, 2>`: un `Decimal` con su moneda en el tipo."""
+    """`Money["EUR", 2]` is `Money<EUR, 2>`: a `Decimal` with its currency in the type."""
 
     _ctor = "Money"
 
 
 class Quantity(_ConUnidad):
-    """`Quantity["km", 1]` es `Quantity<km, 1>`: un `Decimal` con su unidad en el tipo."""
+    """`Quantity["km", 1]` is `Quantity<km, 1>`: a `Decimal` with its unit in the type."""
 
     _ctor = "Quantity"
 
@@ -88,13 +114,13 @@ class _DeColeccion:
 
 
 class Media:
-    """`Media["base.schema.coleccion"]` es `Media<base.schema.coleccion>`: la
-    referencia a un ítem de esa colección (`ore.medios.MediaRef`), no sus bytes.
-    Para leerlos, `ore.coleccion(ref.collection)`."""
+    """`Media["db.schema.collection"]` is `Media<db.schema.collection>`: a
+    reference to an item of that collection (`ore.medios.MediaRef`), not its
+    bytes. To read them, `ore.collection(ref.collection)`."""
 
     def __class_getitem__(cls, coleccion):
         if not (isinstance(coleccion, str) and coleccion):
-            raise TypeError('`Media[...]` nombra una colección: `Media["base.schema.coleccion"]`')
+            raise TypeError('`Media[...]` names a collection: `Media["db.schema.collection"]`')
         from .medios import MediaRef
 
         return typing.Annotated[MediaRef, _DeColeccion(coleccion)]

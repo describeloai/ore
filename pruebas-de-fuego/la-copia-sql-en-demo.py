@@ -250,11 +250,11 @@ d = os.environ["DIRECCION"].rstrip("/")
 cli = open("/puesto/agente-cliente").read().strip(); sec = open("/puesto/agente-secreto").read().strip()
 datos = urllib.parse.urlencode({"grant_type": "client_credentials", "client_id": cli, "client_secret": sec}).encode()
 with urllib.request.urlopen(d + "/realms/rubix/protocol/openid-connect/token", data=datos, timeout=20) as r:
-    ore.puesto._cabeceras = {"authorization": "Bearer " + json.load(r)["access_token"]}
-ore.puesto.id = ""
+    ore.session._cabeceras = {"authorization": "Bearer " + json.load(r)["access_token"]}
+ore.session.id = ""
 t = pa.table({"letra": pa.array(list("abacab"), pa.string()), "n": pa.array(range(1, 7), pa.int64())})
 e = ore.write(os.environ["ENTRADA"], t)
-print("### " + json.dumps({"filas": e["filas"], "metadata_location": e["metadata_location"]}), flush=True)
+print("### " + json.dumps({"filas": e["rows"], "metadata_location": e["metadata_location"]}), flush=True)
 """
 
 

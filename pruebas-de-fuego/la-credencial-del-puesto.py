@@ -67,7 +67,7 @@ def mal(m):
     print("  ✗", m)
 
 
-p = ore.Puesto()
+p = ore.Session()
 emitidos = iter(range(1, 1000))
 p._proveedor = lambda: {"authorization": "Bearer t%d" % next(emitidos)}
 

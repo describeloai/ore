@@ -81,15 +81,15 @@ PYTHON = TESTIGO_PY + r'''
 import sys, decimal, datetime as dt
 sys.path.insert(0, "/opt/ore")
 import ore, pyarrow as pa
-ore.puesto._cabeceras = testigo(); ore.puesto.id = ""
-_pedir = ore.puesto.pedir
+ore.session._cabeceras = testigo(); ore.session.id = ""
+_pedir = ore.session.pedir
 def pedir(metodo, ruta, *a, **kw):
     if ruta.startswith("/puestos//datos/"):
         return _pedir("GET", "/datasets/" + ruta.rsplit("/", 1)[1].replace(".", "/"))
     return _pedir(metodo, ruta, *a, **kw)
-ore.puesto.pedir = pedir
+ore.session.pedir = pedir
 def di(que, **kw): print("### " + json.dumps(dict(que=que, **kw)), flush=True)
-c, r = ore.puesto.pedir("GET", "/v1/namespaces")
+c, r = ore.session.pedir("GET", "/v1/namespaces")
 ns = sorted(n[0] for n in r["namespaces"])[0]
 open("/trabajo/ns", "w").write(ns)
 di("paquete", ns=ns, todos=len(r["namespaces"]))
@@ -102,22 +102,22 @@ t = pa.table({
 })
 t0 = time.time()
 e = ore.write(ns + ".medida_escrito_py", t)
-di("write_py", ms=int((time.time() - t0) * 1000), filas=e["filas"], repetida=e["repetida"], metadata_location=e["metadata_location"])
+di("write_py", ms=int((time.time() - t0) * 1000), filas=e["rows"], repetida=e["repeated"], metadata_location=e["metadata_location"])
 t0 = time.time()
 e2 = ore.write(ns + ".medida_escrito_py", t)
-di("write_py_repetida", ms=int((time.time() - t0) * 1000), repetida=e2["repetida"])
+di("write_py_repetida", ms=int((time.time() - t0) * 1000), repetida=e2["repeated"])
 t0 = time.time()
-j = ore.tabla(ore.over(ns + ".medida_escrito_py"))
+j = ore.table(ore.over(ns + ".medida_escrito_py"))
 di("over_py", ms=int((time.time() - t0) * 1000), columnas=[(c["name"], c["type"]) for c in j["columnas"]], filas=j["filas"], total=j["total"])
 # lo de los otros, cuando esté
 for otro in ("node", "jvm"):
     for _ in range(90):
         try:
-            j = ore.tabla(ore.over(ns + ".medida_escrito_" + otro)); break
+            j = ore.table(ore.over(ns + ".medida_escrito_" + otro)); break
         except Exception as ex:
             time.sleep(4); j = None
     di("over_" + otro + "_desde_py", filas=j["filas"] if j else None, total=j["total"] if j else None)
-c, r = ore.puesto.pedir("GET", "/datasets/%s/medida_escrito_py" % ns)
+c, r = ore.session.pedir("GET", "/datasets/%s/medida_escrito_py" % ns)
 di("ficha_py", codigo=c, snapshots=len(r.get("snapshots", [])), escrito_por=r.get("escrito_por"), retencion=r.get("retencion"))
 '''
 
@@ -222,12 +222,12 @@ LIMPIAR = TESTIGO_PY + r'''
 import sys
 sys.path.insert(0, "/opt/ore")
 import ore
-ore.puesto._cabeceras = testigo(); ore.puesto.id = ""
-c, r = ore.puesto.pedir("GET", "/v1/namespaces")
+ore.session._cabeceras = testigo(); ore.session.id = ""
+c, r = ore.session.pedir("GET", "/v1/namespaces")
 ns = sorted(n[0] for n in r["namespaces"])[0]
 for l in ("py", "node", "jvm"):
     for ruta in ("packages/%s/tables/medida_escrito_%s.yaml" % (ns, l), "datasets/%s_medida_escrito_%s.json" % (ns, l)):
-        c, r = ore.puesto.pedir("DELETE", "/arbol/" + ruta)
+        c, r = ore.session.pedir("DELETE", "/arbol/" + ruta)
         print("### " + json.dumps({"que": "retirado", "ruta": ruta, "codigo": c, "commit": (r or {}).get("commit", "")}), flush=True)
 print("### " + json.dumps({"que": "paquete", "ns": ns}), flush=True)
 '''

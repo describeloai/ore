@@ -174,7 +174,7 @@ class Latido:
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
-        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "transform": ore.transform, "persona": ore.persona, "ore": ore}
+        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "transform": ore.transform, "person": ore.person, "persona": ore.person, "ore": ore}
 
     def correr(self, texto, lenguaje="python"):
         t0 = time.time()
@@ -222,14 +222,14 @@ def ms(t0):
 
 
 def como_tabla(valor):
-    """La salida `tabla` del contrato: la hace el SDK (`ore.tabla`), que es lo que
+    """La salida `tabla` del contrato: la hace el SDK (`ore.table`), que es lo que
     una celda también puede pedir; aquí sólo se le pone el límite de la consola."""
-    return ore.tabla(valor, FILAS_MAXIMAS)
+    return ore.table(valor, FILAS_MAXIMAS)
 
 
 def llano(v):
     """Un valor suelto (el resultado de una celda que no es tabla) → JSON."""
-    return ore.json_de(v)
+    return ore.to_json(v)
 
 
 # ── El bucle ───────────────────────────────────────────────────────────────
@@ -431,7 +431,7 @@ class Correa:
 
 
 def main():
-    p = ore.puesto
+    p = ore.session
     if not p.id:
         raise SystemExit("agente · sin PUESTO en el entorno")
     ttl = int(os.environ.get("TTL", "1800"))
@@ -485,11 +485,11 @@ def main():
             log("pendiente contestó %s: %s · reintento en 5 s" % (codigo, r))
             time.sleep(5)
             continue
-        if not p.persona:
+        if not p.person:
             c2, ficha = p.pedir("GET", "/puestos/%s" % p.id)
             if c2 == 200 and (ficha or {}).get("persona"):
-                p.persona = ficha["persona"]
-                log("el puesto es de %s" % p.persona)
+                p.person = ficha["persona"]
+                log("el puesto es de %s" % p.person)
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
         with Latido(p):

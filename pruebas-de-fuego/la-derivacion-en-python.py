@@ -1,7 +1,7 @@
-"""0049 B5·2 · La derivación incremental en Python: `coleccion.aplicar(fn, …)`.
+"""0049 B5·2 · La derivación incremental en Python: `collection.apply(fn, …)`.
 
 El listado y el lago son de mentira (en memoria): lo que se prueba es la lógica
-de `aplicar()` —qué se calcula, qué se queda, qué se va— y la tabla anclada que
+de `apply()` —qué se calcula, qué se queda, qué se va— y la tabla anclada que
 escribe (v1alpha17 `03`). Que el lago y el documento la acepten se prueba en el
 CLI (`una_tabla_anclada_declara_su_coleccion_y_su_carga`) y en vivo (B5·3).
 
@@ -32,14 +32,14 @@ celda, medios_ = banco.arrancar()
 import ore  # noqa: E402
 from ore import medios  # noqa: E402
 
-ore.puesto._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
+ore.session._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
 print("la derivación en python")
 
 COL = "legal.archivo.contratos"
 SAL = "legal.archivo.textos"
 LISTADO = []                       # las MediaRef que el listado da
 LAGO = {}                          # nombre → pyarrow.Table
-ESCRITURAS = []                    # (nombre, filas, modo, anclada_a)
+ESCRITURAS = []                    # (nombre, filas, mode, anchored_to)
 LLAMADAS = []                      # los paths que fn calculó
 
 
@@ -49,25 +49,25 @@ def ref(path, contenido, coleccion=COL, virtual=False):
                            content_type="application/pdf", checksum="etag:" + contenido)
 
 
-def items(self, prefijo=None, estado=None, limite=1000):
+def items(self, prefix=None, state=None, limit=1000):
     for r in LISTADO:
         yield medios.Item(self, r)
 
 
-def over(nombre, como="pandas"):
+def over(nombre, format="pandas"):
     ore._lee(nombre)
     if nombre not in LAGO:
         raise LookupError("no hay ninguna `View` ni `Dataset` `%s` en el árbol" % nombre)
     return LAGO[nombre]
 
 
-def write(nombre, t, modo="sobrescribir", clave=None, anclada_a=None):
+def write(nombre, t, mode="overwrite", key=None, anchored_to=None):
     LAGO[nombre] = t
-    ESCRITURAS.append((nombre, t.num_rows, modo, anclada_a))
-    return {"filas": t.num_rows}
+    ESCRITURAS.append((nombre, t.num_rows, mode, anchored_to))
+    return {"rows": t.num_rows}
 
 
-medios.Coleccion.items = items
+medios.Collection.items = items
 ore.over, ore.write = over, write
 
 
@@ -77,12 +77,12 @@ def paginas(item):
     if item.ref.path == "fallar.pdf" and not os.environ.get("ARREGLADO"):
         raise ValueError("pdf roto")
     for p in (1, 2):
-        yield {"ancla": {"kind": "page", "page": p}, "texto": "%s p%d" % (item.ref.path, p)}
+        yield {"anchor": {"kind": "page", "page": p}, "texto": "%s p%d" % (item.ref.path, p)}
 
 
 def aplicar(**kw):
     del LLAMADAS[:]
-    return ore.coleccion(COL).aplicar(paginas, salida=SAL, **{"version": "1", **kw})
+    return ore.collection(COL).apply(paginas, output=SAL, **{"version": "1", **kw})
 
 
 def filas():
@@ -92,9 +92,9 @@ def filas():
 def e1():
     LISTADO[:] = [ref("a.pdf", "aa"), ref("b.pdf", "bb"), ref("c.pdf", "cc")]
     r = aplicar()
-    assert r == {"items": 3, "nuevos": 3, "recalculados": 0, "saltados": 0, "errores": 0, "borrados": 0,
-                 "filas": 6, "escrito": True}, r
-    assert ESCRITURAS[-1] == (SAL, 6, "sobrescribir", COL), ESCRITURAS
+    assert r == {"items": 3, "new": 3, "recomputed": 0, "skipped": 0, "errors": 0, "removed": 0,
+                 "rows": 6, "written": True}, r
+    assert ESCRITURAS[-1] == (SAL, 6, "overwrite", COL), ESCRITURAS
     t = LAGO[SAL]
     assert t.column_names[:6] == ["_item", "_anchor", "_anchor_id", "_anchor_parent", "_derivation", "_status"], t.column_names
     assert str(t.schema.field("_derivation").type.field("created").type) == "timestamp[us, tz=UTC]"
@@ -109,7 +109,7 @@ def e1():
 def e2():
     n = len(ESCRITURAS)
     r = aplicar()
-    assert r["saltados"] == 3 and r["nuevos"] == 0 and not r["escrito"] and r["filas"] == 6, r
+    assert r["skipped"] == 3 and r["new"] == 0 and not r["written"] and r["rows"] == 6, r
     assert len(ESCRITURAS) == n and LLAMADAS == [], (ESCRITURAS, LLAMADAS)
     bien("2 · otra vez sin cambios: 0 calculados, y no se escribe (un commit menos)")
 
@@ -117,14 +117,14 @@ def e2():
 def e3():
     LISTADO.append(ref("d.pdf", "dd"))
     r = aplicar()
-    assert r["nuevos"] == 1 and r["saltados"] == 3 and r["filas"] == 8 and LLAMADAS == ["d.pdf"], (r, LLAMADAS)
+    assert r["new"] == 1 and r["skipped"] == 3 and r["rows"] == 8 and LLAMADAS == ["d.pdf"], (r, LLAMADAS)
     bien("3 · un ítem nuevo: sólo ése (d.pdf), y la tabla tiene sus 8 filas")
 
 
 def e4():
     antes = {(x["_item"]["path"], x["_anchor"]["page"]): x["_anchor_id"] for x in filas()}
     r = aplicar(version="2")
-    assert r["recalculados"] == 4 and r["saltados"] == 0 and sorted(LLAMADAS) == ["a.pdf", "b.pdf", "c.pdf", "d.pdf"], (r, LLAMADAS)
+    assert r["recomputed"] == 4 and r["skipped"] == 0 and sorted(LLAMADAS) == ["a.pdf", "b.pdf", "c.pdf", "d.pdf"], (r, LLAMADAS)
     despues = {(x["_item"]["path"], x["_anchor"]["page"]): x["_anchor_id"] for x in filas()}
     assert antes == despues and {x["_derivation"]["fn_version"] for x in filas()} == {"2"}
     bien("4 · otra `version`: los 4 recalculados; los `_anchor_id` son los mismos (no dependen de la versión)")
@@ -133,7 +133,7 @@ def e4():
 def e5():
     LISTADO.append(ref("fallar.pdf", "ff"))
     r = aplicar(version="2")
-    assert r["errores"] == 1 and r["saltados"] == 4 and r["escrito"], r
+    assert r["errors"] == 1 and r["skipped"] == 4 and r["written"], r
     e = [x for x in filas() if x["_item"]["path"] == "fallar.pdf"]
     assert len(e) == 1 and e[0]["_status"]["state"] == "error" and e[0]["_status"]["error_type"] == "ValueError", e
     assert e[0]["_status"]["error_message"] == "pdf roto" and e[0]["_anchor"]["kind"] == "item", e
@@ -142,22 +142,22 @@ def e5():
 
 def e6():
     r = aplicar(version="2")
-    assert r["saltados"] == 5 and not r["escrito"] and LLAMADAS == [], (r, LLAMADAS)
+    assert r["skipped"] == 5 and not r["written"] and LLAMADAS == [], (r, LLAMADAS)
     os.environ["ARREGLADO"] = "1"
     try:
-        r = aplicar(version="2", reintentar_errores=True)
+        r = aplicar(version="2", retry_errors=True)
     finally:
         del os.environ["ARREGLADO"]
-    assert LLAMADAS == ["fallar.pdf"] and r["recalculados"] == 1 and r["errores"] == 0, (r, LLAMADAS)
+    assert LLAMADAS == ["fallar.pdf"] and r["recomputed"] == 1 and r["errors"] == 0, (r, LLAMADAS)
     e = [x for x in filas() if x["_item"]["path"] == "fallar.pdf"]
     assert len(e) == 2 and {x["_status"]["state"] for x in e} == {"ok"} and e[0]["_status"]["attempts"] == 2, e
-    bien("6 · el error no se reintenta solo; con `reintentar_errores=True` sólo ése, sale bien, intento 2")
+    bien("6 · el error no se reintenta solo; con `retry_errors=True` sólo ése, sale bien, intento 2")
 
 
 def e7():
     LISTADO[0] = ref("archivo/a-renombrado.pdf", "aa")
     r = aplicar(version="2")
-    assert LLAMADAS == [] and r["saltados"] == 5 and r["escrito"], (r, LLAMADAS)
+    assert LLAMADAS == [] and r["skipped"] == 5 and r["written"], (r, LLAMADAS)
     rutas = {x["_item"]["path"] for x in filas()}
     assert "archivo/a-renombrado.pdf" in rutas and "a.pdf" not in rutas, rutas
     bien("7 · mover a.pdf sin cambiar su contenido: 0 calculados; sus filas dicen la ruta nueva")
@@ -166,7 +166,7 @@ def e7():
 def e8():
     del LISTADO[1]   # b.pdf
     r = aplicar(version="2")
-    assert r["borrados"] == 1 and LLAMADAS == [] and r["filas"] == 8, r
+    assert r["removed"] == 1 and LLAMADAS == [] and r["rows"] == 8, r
     assert "b.pdf" not in {x["_item"]["path"] for x in filas()}
     bien("8 · b.pdf ya no está: sus 2 filas se van, sin calcular nada")
 
@@ -180,10 +180,10 @@ def e9():
         LAGO.pop(SAL, None)
         aplicar()
         r = aplicar()
-        assert r["saltados"] == 1 and not r["escrito"], r
+        assert r["skipped"] == 1 and not r["written"], r
         LISTADO[:] = [ref("movido/v.pdf", "vv", COL, virtual=True)]
         r = aplicar()
-        assert LLAMADAS == ["movido/v.pdf"] and r["borrados"] == 1, (r, LLAMADAS)
+        assert LLAMADAS == ["movido/v.pdf"] and r["removed"] == 1, (r, LLAMADAS)
     finally:
         COL = viejo
         LAGO.pop(SAL, None)
@@ -194,20 +194,20 @@ def e10():
     LISTADO[:] = [ref("a.pdf", "aa")]
     aplicar(params={"idioma": "es"})
     r = aplicar(params={"idioma": "es"})
-    assert r["saltados"] == 1, r
+    assert r["skipped"] == 1, r
     r = aplicar(params={"idioma": "en"})
-    assert r["recalculados"] == 1, r
+    assert r["recomputed"] == 1, r
     k = filas()[0]["_derivation"]
     assert k["params_hash"] and len(k["params_hash"]) == 64, k
 
     def sin_version(item):
         return [{"texto": "x"}]
     LAGO.pop(SAL, None)
-    r = ore.coleccion(COL).aplicar(sin_version, salida=SAL)
+    r = ore.collection(COL).apply(sin_version, output=SAL)
     v = filas()[0]["_derivation"]["fn_version"]
     assert v.startswith("codigo:") and filas()[0]["_anchor"]["kind"] == "item", filas()
-    r = ore.coleccion(COL).aplicar(sin_version, salida=SAL)
-    assert r["saltados"] == 1, r
+    r = ore.collection(COL).apply(sin_version, output=SAL)
+    assert r["skipped"] == 1, r
     bien("10 · `params` entran en la clave (es→en recalcula); sin `version`, la del código (%s), y es estable" % v)
 
 
@@ -216,13 +216,13 @@ def e11():
     del TRANSFORMS[:]
     del ore._leidas[:]   # lo que los casos de antes leyeron fuera de un transform
 
-    @ore.transform(inputs=[ore.coleccion(COL)], output=SAL)
+    @ore.transform(inputs=[ore.collection(COL)], output=SAL)
     def textos(contratos):
-        a = contratos.aplicar(paginas, version="1")
-        b = contratos.aplicar(paginas, version="1")
+        a = contratos.apply(paginas, version="1")
+        b = contratos.apply(paginas, version="1")
         return a, b
-    a, b = textos(ore.coleccion(COL))
-    assert a["nuevos"] == 1 and b["saltados"] == 1, (a, b)
+    a, b = textos(ore.collection(COL))
+    assert a["new"] == 1 and b["skipped"] == 1, (a, b)
     assert ESCRITURAS[-1][0] == SAL and ESCRITURAS[-1][3] == COL, ESCRITURAS[-1]
     assert SAL not in ore._leidas, ore._leidas
     bien("11 · dentro de un transform: escribe su `output`, lo lee para saltar lo hecho, y leerlo no es una entrada")
@@ -232,12 +232,12 @@ def e12():
     LAGO.pop(SAL, None)
 
     def mala(item):
-        return [{"_status": "x"}] if item.ref.path == "a.pdf" else [{"texto": "y", "ancla": {"page": 1}}]
+        return [{"_status": "x"}] if item.ref.path == "a.pdf" else [{"texto": "y", "anchor": {"page": 1}}]
     LISTADO[:] = [ref("a.pdf", "aa"), ref("b.pdf", "bb")]
-    r = ore.coleccion(COL).aplicar(mala, salida=SAL, version="1")
-    assert r["errores"] == 2, r
+    r = ore.collection(COL).apply(mala, output=SAL, version="1")
+    assert r["errors"] == 2, r
     m = {x["_item"]["path"]: x["_status"]["error_message"] for x in filas()}
-    assert "columnas de sistema" in m["a.pdf"] and "sin `kind`" in m["b.pdf"], m
+    assert "system columns" in m["a.pdf"] and "without `kind`" in m["b.pdf"], m
     bien("12 · `fn` que da una columna `_…` o un ancla sin `kind`: el error de ese ítem, con su porqué")
 
 

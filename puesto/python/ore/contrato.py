@@ -1,4 +1,15 @@
-"""El contrato de una función (ORE 0050 G3): sus anotaciones, cumplidas.
+"""A function's contract (ORE 0050 G3): its annotations, enforced.
+
+`llamada(f)` wraps `f` so each parameter is converted to the type it annotates
+and the return value is checked against its annotation; a value that does not
+fit raises `ContractError` (a `TypeError`). Conversion only goes from what
+travels in JSON to what the `def` annotates: `"2026-10-02"` is a `date` and
+`12.50` a `Decimal`, but `"3"` is not an `int`. `ErrorDeContrato` is the old
+name of `ContractError` (the same class).
+
+---
+
+El contrato de una función (ORE 0050 G3): sus anotaciones, cumplidas.
 
 La firma de un `@function` es su contrato —lo que recibe y lo que devuelve— y
 el documento `Function` se deriva de ella (OOS v1alpha18 01 §4). Aquí se hace
@@ -33,11 +44,21 @@ import inspect
 import types
 import typing
 
-__all__ = ["ErrorDeContrato", "llamada", "convertir", "comprobar_salida"]
+__all__ = ["ContractError", "llamada", "convertir", "comprobar_salida"]
 
 
-class ErrorDeContrato(TypeError):
-    """Un valor que no es del tipo que la firma anota."""
+class ContractError(TypeError):
+    """A value that is not of the type the signature annotates."""
+
+
+def __getattr__(nombre):
+    # El nombre de antes: la MISMA clase.
+    if nombre == "ErrorDeContrato":
+        from . import _avisar
+
+        _avisar("ore.contrato.ErrorDeContrato", "ore.contrato.ContractError")
+        return ContractError
+    raise AttributeError("module 'ore.contrato' has no attribute %r" % (nombre,))
 
 
 _NADA = inspect.Parameter.empty
@@ -52,7 +73,7 @@ def _nombre(t):
             if type(m).__name__ == "_ConZona":
                 return "DateTimeTz"
             if type(m).__name__ == "Precision":
-                return "Decimal<%d, %d>" % (m.precision, m.escala)
+                return "Decimal<%d, %d>" % (m.precision, m.scale)
         return _nombre(base)
     if t is type(None):
         return "None"
@@ -79,7 +100,8 @@ def _opcional(t):
 
 
 def convertir(que, v, t):
-    """`v` como el tipo `t` que anota `que` (un parámetro, o un campo)."""
+    """`v` as the type `t` that `que` (a parameter, or a field) annotates;
+    `ContractError` if it does not fit."""
     if t is _NADA or t is typing.Any or t is object:
         return v
     if typing.get_origin(t) is typing.Annotated:
@@ -87,7 +109,7 @@ def convertir(que, v, t):
     if v is None:
         if _opcional(t) is not None or t is type(None):
             return None
-        raise ErrorDeContrato("`%s` es `%s` y llegó None" % (que, _nombre(t)))
+        raise ContractError("`%s` is `%s` and got None" % (que, _nombre(t)))
     base = _opcional(t)
     if base is not None:
         return convertir(que, v, base)
@@ -96,19 +118,19 @@ def convertir(que, v, t):
         for a in typing.get_args(t):
             try:
                 return convertir(que, v, a)
-            except ErrorDeContrato:
+            except ContractError:
                 pass
-        raise ErrorDeContrato("`%s` es `%s` y llegó %s" % (que, _nombre(t), _corto(v)))
+        raise ContractError("`%s` is `%s` and got %s" % (que, _nombre(t), _corto(v)))
     if origen in (list, tuple) or t in (list, tuple):
         if not isinstance(v, (list, tuple)):
-            raise ErrorDeContrato("`%s` es `%s` y llegó %s, que no es una lista" % (que, _nombre(t), _corto(v)))
+            raise ContractError("`%s` is `%s` and got %s, which is not a list" % (que, _nombre(t), _corto(v)))
         args = typing.get_args(t)
         dentro = args[0] if args else _NADA
         return [convertir("%s[%d]" % (que, i), x, dentro) for i, x in enumerate(v)]
     if origen is not None:  # dict[...] y demás: tal cual
         return v
-    mal = lambda porque="": ErrorDeContrato(  # noqa: E731
-        "`%s` es `%s` y llegó %s%s" % (que, _nombre(t), _corto(v), porque))
+    mal = lambda porque="": ContractError(  # noqa: E731
+        "`%s` is `%s` and got %s%s" % (que, _nombre(t), _corto(v), porque))
     if t is bool:
         if isinstance(v, bool):
             return v
@@ -120,7 +142,7 @@ def convertir(que, v, t):
             return v
         if v == int(v):  # 3.0 o Decimal("3") de un JSON
             return int(v)
-        raise mal(", que no es entero")
+        raise mal(", which is not an integer")
     if t is float:
         if isinstance(v, bool) or not isinstance(v, (int, float, decimal.Decimal)):
             raise mal()
@@ -138,7 +160,7 @@ def convertir(que, v, t):
             try:
                 return decimal.Decimal(v.strip())
             except decimal.InvalidOperation:
-                raise mal(", que no es un número") from None
+                raise mal(", which is not a number") from None
         raise mal()
     if t is str:
         if isinstance(v, str):
@@ -151,7 +173,7 @@ def convertir(que, v, t):
             try:
                 return base64.b64decode(v, validate=True)
             except (binascii.Error, ValueError):
-                raise mal(", que no es base64") from None
+                raise mal(", which is not base64") from None
         raise mal()
     if t is datetime.datetime:
         if isinstance(v, datetime.datetime):
@@ -160,7 +182,7 @@ def convertir(que, v, t):
             try:
                 return datetime.datetime.fromisoformat(v.replace("Z", "+00:00"))
             except ValueError:
-                raise mal(", que no es una fecha y hora ISO 8601") from None
+                raise mal(", which is not an ISO 8601 date-time") from None
         raise mal()
     if t is datetime.date:
         if isinstance(v, datetime.date) and not isinstance(v, datetime.datetime):
@@ -169,7 +191,7 @@ def convertir(que, v, t):
             try:
                 return datetime.date.fromisoformat(v)
             except ValueError:
-                raise mal(", que no es una fecha AAAA-MM-DD") from None
+                raise mal(", which is not a YYYY-MM-DD date") from None
         raise mal()
     if t is datetime.time:
         if isinstance(v, datetime.time):
@@ -178,7 +200,7 @@ def convertir(que, v, t):
             try:
                 return datetime.time.fromisoformat(v)
             except ValueError:
-                raise mal(", que no es una hora ISO 8601") from None
+                raise mal(", which is not an ISO 8601 time") from None
         raise mal()
     if dataclasses.is_dataclass(t) and isinstance(t, type):
         if isinstance(v, t):
@@ -188,7 +210,7 @@ def convertir(que, v, t):
             campos = {c.name for c in dataclasses.fields(t)}
             sobran = sorted(set(v) - campos)
             if sobran:
-                raise mal(": `%s` no declara %s" % (t.__name__, sobran))
+                raise mal(": `%s` does not declare %s" % (t.__name__, sobran))
             return t(**{k: convertir("%s.%s" % (que, k), x, tipos.get(k, _NADA)) for k, x in v.items()})
         raise mal()
     if isinstance(t, type) and isinstance(v, t):
@@ -216,31 +238,31 @@ def _anotado(que, v, t):
 
         if isinstance(v, dict):
             try:
-                v = MediaRef.de_json(v)
+                v = MediaRef.from_json(v)
             except TypeError as e:
-                raise ErrorDeContrato("`%s` es `%r` y llegó %s: %s" % (que, col, _corto(v), e)) from None
+                raise ContractError("`%s` is `%r` and got %s: %s" % (que, col, _corto(v), e)) from None
         if not isinstance(v, MediaRef):
-            raise ErrorDeContrato("`%s` es `%r` y llegó %s, que no es la referencia a un ítem" % (que, col, _corto(v)))
+            raise ContractError("`%s` is `%r` and got %s, which is not a reference to an item" % (que, col, _corto(v)))
         if v.collection and v.collection != col.coleccion:
-            raise ErrorDeContrato("`%s` es `%r` y llegó un ítem de `%s`" % (que, col, v.collection))
+            raise ContractError("`%s` is `%r` and got an item of `%s`" % (que, col, v.collection))
         return v
     try:
         v = convertir(que, v, base)
-    except ErrorDeContrato as e:
+    except ContractError as e:
         # Con el nombre del tipo que se anotó, no el de su base de Python.
-        raise ErrorDeContrato(str(e).replace("`%s`" % _nombre(base), "`%s`" % _nombre(t), 1)) from None
+        raise ContractError(str(e).replace("`%s`" % _nombre(base), "`%s`" % _nombre(t), 1)) from None
     if "_ConZona" in marcas and (v.tzinfo is None or v.utcoffset() is None):
-        raise ErrorDeContrato("`%s` es `DateTimeTz` y llegó %s, sin zona: un instante lleva `Z` o `+02:00`"
-                              % (que, _corto(v.isoformat())))
+        raise ContractError("`%s` is `DateTimeTz` and got %s, without a zone: an instant carries `Z` or `+02:00`"
+                            % (que, _corto(v.isoformat())))
     p = marcas.get("Precision")
     if p is not None:
         enteras, decimales = _cifras(v)
-        if decimales > p.escala or enteras > p.precision - p.escala:
-            raise ErrorDeContrato("`%s` es `Decimal<%d, %d>` y llegó %s, que no cabe"
-                                  % (que, p.precision, p.escala, v))
+        if decimales > p.scale or enteras > p.precision - p.scale:
+            raise ContractError("`%s` is `Decimal<%d, %d>` and got %s, which does not fit"
+                                % (que, p.precision, p.scale, v))
     u = marcas.get("_Unidad")
     if u is not None and _cifras(v)[1] > u.precision:
-        raise ErrorDeContrato("`%s` es `%r` y llegó %s: tiene más de %d decimales" % (que, u, v, u.precision))
+        raise ContractError("`%s` is `%r` and got %s: it has more than %d decimals" % (que, u, v, u.precision))
     return v
 
 
@@ -253,39 +275,39 @@ def _tipos_de(f):
 
 
 def comprobar_salida(que, v, t):
-    """Lo que `que` devolvió, contra lo que anota. Una dataclass se comprueba
-    campo a campo; lo demás, con la misma regla que un parámetro (`3` vale
-    para `float` y para `Decimal`, `"3"` no vale para `int`)."""
+    """What `que` returned, checked against its annotation `t`. A dataclass is
+    checked field by field; anything else with the same rule as a parameter
+    (`3` is fine for `float` and `Decimal`, `"3"` is not an `int`)."""
     if dataclasses.is_dataclass(t) and isinstance(t, type) and isinstance(v, t):
         tipos = _tipos_de(t)
         for c in dataclasses.fields(t):
             try:
                 convertir(c.name, getattr(v, c.name), tipos.get(c.name, _NADA))
-            except ErrorDeContrato as e:
-                raise ErrorDeContrato("`%s` devolvió un `%s` con %s" % (que, t.__name__, e)) from None
+            except ContractError as e:
+                raise ContractError("`%s` returned a `%s` with %s" % (que, t.__name__, e)) from None
         return v
     try:
         return convertir(que, v, t)
-    except ErrorDeContrato:
-        raise ErrorDeContrato("`%s` devolvió %s y anota `-> %s`" % (que, _corto(v), _nombre(t))) from None
+    except ContractError:
+        raise ContractError("`%s` returned %s and annotates `-> %s`" % (que, _corto(v), _nombre(t))) from None
 
 
 def llamada(f):
-    """`f` con su contrato: convierte cada parámetro a lo que anota y
-    comprueba lo que devuelve. Un parámetro sin anotar (la fila de una función
-    con `over`) pasa tal cual."""
+    """`f` with its contract: converts each parameter to what it annotates and
+    checks what it returns. An unannotated parameter (the row of a function
+    with `over`) passes as is."""
     crudo = inspect.unwrap(f)
     firma = inspect.signature(crudo)
     tipos = _tipos_de(crudo)
     vuelve = tipos.get("return", _NADA)
-    nombre = getattr(crudo, "__name__", "la función")
+    nombre = getattr(crudo, "__name__", "the function")
 
     @functools.wraps(crudo)
     def con_contrato(*args, **kwargs):
         try:
             atado = firma.bind(*args, **kwargs)
         except TypeError as e:
-            raise ErrorDeContrato("`%s`: %s" % (nombre, e)) from None
+            raise ContractError("`%s`: %s" % (nombre, e)) from None
         for k, v in list(atado.arguments.items()):
             atado.arguments[k] = convertir(k, v, tipos.get(k, _NADA))
         r = crudo(*atado.args, **atado.kwargs)

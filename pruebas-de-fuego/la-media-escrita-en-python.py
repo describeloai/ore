@@ -12,7 +12,7 @@
   10  un commit que pierde la carrera de la forja (409 sin type) se vuelve a confirmar
   11  una excepción dentro del `with`: abort, nada escrito, y la excepción sigue
   12  dentro de un transform, sólo su `output`: otra colección es PermissionError sin preguntar
-  13  una colección mantenida no se escribe (MediaNoEscribible); los tipos nuevos de error
+  13  una colección mantenida no se escribe (MediaNotWritable); los tipos nuevos de error
   14  put_varios(): cien a la vez, todos en el lago, con un tope de lo que hay en vuelo
   15  put_varios(): el error de uno es un valor y los demás entran
 
@@ -33,24 +33,24 @@ celda, medios_ = banco.arrancar()
 
 import ore  # noqa: E402
 
-ore.puesto._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
+ore.session._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
 print("la media escrita en python")
 
 
 def e1():
-    r = ore.crear_coleccion("legal.archivo.paginas", media="image", formatos=["PNG", ".webp"],
-                            etiquetas={"gdpr.sensitivity": "high"})
-    assert r == {"coleccion": "legal.archivo.paginas", "creada": True}, r
+    r = ore.create_collection("legal.archivo.paginas", media="image", formats=["PNG", ".webp"],
+                            labels={"gdpr.sensitivity": "high"})
+    assert r == {"collection": "legal.archivo.paginas", "created": True}, r
     y = DOCUMENTOS[("MediaCollection", "legal", "archivo", "paginas")]
     assert "apiVersion: oos.dev/v1alpha19" in y and "from:" not in y, y
     assert "formats: [png, webp]" in y and "gdpr.sensitivity: high" in y, y
     # ⭐ 0052 · Ownership: el SDK no lo inventa; lo pone el servidor, y es quien crea.
     assert y.count("owner:") == 1 and "owner: %s" % QUIEN_CREA in y, y
-    r = ore.crear_coleccion("s3_standard.nueva_carpeta.copia", media="document", formatos=["pdf"])
+    r = ore.create_collection("s3_standard.nueva_carpeta.copia", media="document", formats=["pdf"])
     y = DOCUMENTOS[("MediaCollection", "s3_standard", "nueva_carpeta", "copia")]
-    assert r["creada"] and "owner: %s" % QUIEN_CREA in y and "team:" not in y, y
+    assert r["created"] and "owner: %s" % QUIEN_CREA in y and "team:" not in y, y
     # Y para dársela a otro, se dice.
-    ore.crear_coleccion("legal.archivo.de_bea", media="image", formatos=["png"], dueno="user:bea")
+    ore.create_collection("legal.archivo.de_bea", media="image", formats=["png"], owner="user:bea")
     y = DOCUMENTOS[("MediaCollection", "legal", "archivo", "de_bea")]
     assert "owner: user:bea" in y and QUIEN_CREA not in y, y
     bien("1 · crear_coleccion(): v1alpha19 sin `from`, formatos en minúscula, etiquetas; sin `dueno` el SDK "
@@ -59,21 +59,21 @@ def e1():
 
 def e2():
     try:
-        ore.crear_coleccion("legal.archivo.paginas", media="image", formatos=["png"])
+        ore.create_collection("legal.archivo.paginas", media="image", formats=["png"])
     except RuntimeError as e:
-        assert "ya hay una colección" in str(e), e
+        assert "already exists" in str(e), e
     else:
         raise AssertionError("debía ser RuntimeError")
     SERVE.clear()
-    r = ore.crear_coleccion("legal.archivo.paginas", media="image", formatos=["png"], si_no_existe=True)
-    assert r["creada"] is False, r
+    r = ore.create_collection("legal.archivo.paginas", media="image", formats=["png"], if_not_exists=True)
+    assert r["created"] is False, r
     assert not [m for m, _, _ in SERVE if m == "PUT"], SERVE
     bien("2 · ya existe: error; con si_no_existe, `creada: False` y no se escribe nada")
 
 
 def e3():
     try:
-        ore.crear_coleccion("legal.rota", media="document", formatos=["pdf"])
+        ore.create_collection("legal.rota", media="document", formats=["pdf"])
     except ValueError as e:
         assert "OOS1004" in str(e), e
         bien("3 · un código OOS del servidor vuelve como ValueError (%s)" % str(e)[:60])
@@ -85,7 +85,7 @@ def e4():
     SERVE.clear()
     for media, formatos in (("binary", ["bin"]), ("image", []), ("image", ["png", "png"]), ("image", ["p ng"])):
         try:
-            ore.crear_coleccion("legal.fotos", media=media, formatos=formatos)
+            ore.create_collection("legal.fotos", media=media, formats=formatos)
         except ValueError:
             continue
         raise AssertionError("%s %s debía ser ValueError" % (media, formatos))
@@ -99,11 +99,11 @@ PAG = "legal.archivo.paginas"
 
 def e5():
     BYTES.clear()
-    with ore.coleccion(PAG).transaccion() as t:
+    with ore.collection(PAG).transaction() as t:
         ref = t.put("c1/p0.png", PNG, tipo="text/html")
     sha = hashlib.sha256(PNG).hexdigest()
     assert ref.digest == "sha256:" + sha and ref.content_type == "image/png", ref
-    assert t.cerrada and t.resultado["transaccion"] == 1 and PUNTEROS[PAG] == 1, t.resultado
+    assert t.closed and t.result["transaction"] == 1 and PUNTEROS[PAG] == 1, t.result
     h = cabeceras(BYTES[-1][2])
     assert h["repr-digest"].startswith("sha-256=:") and h["content-type"] == "text/html", h
     assert "c1/p0.png" in BYTES[-1][1], BYTES[-1][1]
@@ -117,7 +117,7 @@ def e6():
     with open(ruta, "wb") as f:
         f.write(datos)
     BYTES.clear()
-    with ore.coleccion(PAG).transaccion() as t:
+    with ore.collection(PAG).transaction() as t:
         ref = t.put("c1/grande.bin", ruta)
     assert LAGO[hashlib.sha256(datos).hexdigest()] == datos
     assert cabeceras(BYTES[-1][2])["content-length"] == "300000", BYTES[-1][2]
@@ -144,7 +144,7 @@ class _SinRebobinar(io.RawIOBase):
 
 def e7():
     datos = b"%PDF-" + os.urandom(50_000)
-    with ore.coleccion(PAG).transaccion() as t:
+    with ore.collection(PAG).transaction() as t:
         ref = t.put("c1/flujo.pdf", io.BufferedReader(_SinRebobinar(datos)))
     assert ref.digest == "sha256:" + hashlib.sha256(datos).hexdigest() and ref.content_type == "application/pdf"
     bien("7 · put de un fichero que no se rebobina: se copia antes y sube igual (application/pdf)")
@@ -155,7 +155,7 @@ def e8():
     SERVE.clear()
     BYTES.clear()
     try:
-        with ore.coleccion(PAG).transaccion() as t:
+        with ore.collection(PAG).transaction() as t:
             t.put("c1/p1.png", PNG)
     finally:
         RAMA["r"] = None
@@ -171,7 +171,7 @@ def e8():
 def e9():
     MODOS["cortar_subidas"] = 2
     BYTES.clear()
-    with ore.coleccion(PAG).transaccion() as t:
+    with ore.collection(PAG).transaction() as t:
         ref = t.put("c1/p2.png", PNG + b"-2")
     intentos = [r for m, r, _ in BYTES if m == "PUT"]
     assert len(intentos) == 3 and ref.path == "c1/p2.png", intentos
@@ -182,7 +182,7 @@ def e10():
     MODOS["conflictos"] = 2
     SERVE.clear()
     antes = PUNTEROS[PAG]
-    with ore.coleccion(PAG).transaccion() as t:
+    with ore.collection(PAG).transaction() as t:
         t.put("c1/p3.png", PNG + b"-3")
     commits = [r for m, r, _ in SERVE if r.endswith("/commit")]
     assert len(commits) == 3 and PUNTEROS[PAG] == antes + 1, commits
@@ -193,7 +193,7 @@ def e11():
     SERVE.clear()
     antes = PUNTEROS[PAG]
     try:
-        with ore.coleccion(PAG).transaccion() as t:
+        with ore.collection(PAG).transaction() as t:
             t.put("c1/p4.png", PNG + b"-4")
             raise KeyError("algo se rompió")
     except KeyError:
@@ -201,49 +201,49 @@ def e11():
     else:
         raise AssertionError("la excepción tenía que seguir")
     assert [r for m, r, _ in SERVE if r.endswith("/abort")] and PUNTEROS[PAG] == antes
-    assert t.cerrada and t.resultado is None
+    assert t.closed and t.result is None
     try:
         t.put("c1/p5.png", PNG)
-    except ore.MediaTransaccion:
+    except ore.MediaTransactionError:
         pass
     else:
-        raise AssertionError("cerrada, put debía ser MediaTransaccion")
+        raise AssertionError("cerrada, put debía ser MediaTransactionError")
     bien("11 · una excepción dentro: abort, el puntero no se mueve, la excepción sigue; cerrada no admite put")
 
 
 def e12():
     SERVE.clear()
 
-    @ore.transform(inputs=[ore.coleccion("legal.archivo.contratos")], output=ore.coleccion(PAG))
+    @ore.transform(inputs=[ore.collection("legal.archivo.contratos")], output=ore.collection(PAG))
     def paginar():
         try:
-            ore.coleccion("legal.archivo.otra").transaccion()
+            ore.collection("legal.archivo.otra").transaction()
         except PermissionError as e:
             assert "legal.archivo.otra" in str(e), e
         else:
             raise AssertionError("debía ser PermissionError")
-        with ore.coleccion(PAG).transaccion() as t:
+        with ore.collection(PAG).transaction() as t:
             t.put("c2/p0.png", PNG + b"-c2")
-        return t.resultado
+        return t.result
 
     r = paginar()
-    assert r["transaccion"] >= 1, r
+    assert r["transaction"] >= 1, r
     assert not [x for _, x, _ in SERVE if x.startswith("/media/legal/archivo/otra")], SERVE
     bien("12 · dentro de un transform: su output se escribe; otra colección, PermissionError sin preguntar")
 
 
 def e13():
     try:
-        ore.coleccion("legal.archivo.contratos").transaccion()
-    except ore.MediaNoEscribible as e:
+        ore.collection("legal.archivo.contratos").transaction()
+    except ore.MediaNotWritable as e:
         assert isinstance(e, PermissionError) and e.status == 409, e
     else:
-        raise AssertionError("una mantenida debía ser MediaNoEscribible")
+        raise AssertionError("una mantenida debía ser MediaNotWritable")
     from ore import medios
-    assert isinstance(medios._error(422, {"type": "media/digest-no-casa"}, "x"), ore.MediaCorrupto)
-    assert isinstance(medios._error(404, {"type": "media/transaccion"}, "x"), ore.MediaTransaccion)
-    assert isinstance(medios._error(401, {"type": "media/permiso"}, "x"), ore.MediaSinPermiso)
-    bien("13 · una mantenida no se escribe (MediaNoEscribible, 409); digest-no-casa, transaccion y permiso, por su tipo")
+    assert isinstance(medios._error(422, {"type": "media/digest-no-casa"}, "x"), ore.MediaCorrupt)
+    assert isinstance(medios._error(404, {"type": "media/transaccion"}, "x"), ore.MediaTransactionError)
+    assert isinstance(medios._error(401, {"type": "media/permiso"}, "x"), ore.MediaForbidden)
+    bien("13 · una mantenida no se escribe (MediaNotWritable, 409); digest-no-casa, transaccion y permiso, por su tipo")
 
 
 def e14():
@@ -254,26 +254,26 @@ def e14():
             leidos["n"] += 1
             yield "c3/p%03d.png" % i, PNG + b"-%d" % i
 
-    with ore.coleccion(PAG).transaccion() as t:
+    with ore.collection(PAG).transaction() as t:
         primeros = []
-        for path, ref, error in t.put_varios(pares(), hilos=8):
+        for path, ref, error in t.put_many(pares(), threads=8):
             if not primeros:
                 primeros.append(leidos["n"])
             assert error is None and ref.path == path, (path, error)
     assert len(t.subidos) == 100, len(t.subidos)
     assert all((PNG + b"-%d" % i) in LAGO.values() for i in range(100))
     assert primeros[0] <= 2 * 8 + 1, primeros
-    assert t.resultado["items"]["actuales"] == 100, t.resultado
+    assert t.result["items"]["actuales"] == 100, t.result
     bien("14 · put_varios(): 100 a la vez, en el lago y confirmados; al acabar el primero se habían leído %d"
          % primeros[0])
 
 
 def e15():
-    with ore.coleccion(PAG).transaccion() as t:
-        r = {p: (ref, e) for p, ref, e in t.put_varios([("c4/a.png", PNG + b"a"), ("c4/malo.png", 42),
-                                                       ("c4/b.png", PNG + b"b", "image/png")], hilos=2)}
+    with ore.collection(PAG).transaction() as t:
+        r = {p: (ref, e) for p, ref, e in t.put_many([("c4/a.png", PNG + b"a"), ("c4/malo.png", 42),
+                                                       ("c4/b.png", PNG + b"b", "image/png")], threads=2)}
     assert isinstance(r["c4/malo.png"][1], TypeError), r
-    assert r["c4/a.png"][0] and r["c4/b.png"][0] and t.resultado["items"]["actuales"] == 2, r
+    assert r["c4/a.png"][0] and r["c4/b.png"][0] and t.result["items"]["actuales"] == 2, r
     bien("15 · put_varios(): el error de uno (TypeError) es un valor; los otros dos entran y se confirman")
 
 

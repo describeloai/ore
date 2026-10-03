@@ -336,7 +336,7 @@ def completar(texto, cursor, cat):
         for c, t in cat.cols(n):
             if c not in vistos:
                 vistos.add(c)
-                out.append((c, 5, "%s · %s" % (t or "sin tipo", n)))
+                out.append((c, 5, "%s · %s" % (t or "untyped", n)))
     return out + [(a, 6, al[a]) for a in sorted(al) if a not in al.values()]
 
 
@@ -435,14 +435,14 @@ def diagnosticar(texto, cat):
             ind = next((r["ref"].replace("view:", "") for r in (a.get("relaciones") or [])
                         if r.get("tipo") == "produce" and r.get("ref", "").startswith("view:")), "")
             out.append({"range": rango, "severity": 1, "source": "ore",
-                        "message": "`%s` es una Table de otra fuente: sql() no la lee%s" % (
-                            a["completo"], (", lee su View `%s`" % ind) if ind else "")})
+                        "message": "`%s` is a Table from another source: sql() does not read it%s" % (
+                            a["completo"], (", read its View `%s`" % ind) if ind else "")})
         # 0038: dos partes se leen en `default`, y se dice (una vez por nombre)
         if dos and (n in cat.legibles or n in cat.ajenas) and n not in avisados:
             avisados.add(n)
             i_ = cat.legibles.get(n) or cat.ajenas[n]
             out.append({"range": rango, "severity": 2, "source": "ore", "code": DOS_PARTES,
-                        "message": "`%s.%s` tiene dos partes: se lee como `%s` · escribe las tres, `base.schema.nombre`" % (
+                        "message": "`%s.%s` has two parts: it is read as `%s` · write all three, `database.schema.name`" % (
                             i_["paquete"], i_["name"], i_["completo"])})
     if not texto.strip():
         return out
@@ -452,7 +452,7 @@ def diagnosticar(texto, cat):
             continue
         if len(s) > TOPE_BINDER:
             out.append({"range": _rango(texto, ini, ini), "severity": 3, "source": "ore",
-                        "message": "sentencia de %d KB: no se comprueba mientras se escribe" % (len(s) // 1024)})
+                        "message": "statement of %d KB: not checked while typing" % (len(s) // 1024)})
             continue
         parte = lo_que_duckdb_entiende(s)
         if parte is None:
@@ -475,7 +475,7 @@ def diagnosticar(texto, cat):
         msg = m.split("\n")[0]
         sug = re.search(r"Candidate bindings: (.*)", m)
         if sug:
-            msg += " · ¿%s?" % sug.group(1).split(",")[0].strip()
+            msg += " · did you mean %s?" % sug.group(1).split(",")[0].strip()
         falta = re.search(r"Table with name (\S+) does not exist", m)
         if falta:
             # con las tablas bajo demanda DuckDB no sabe sugerir: el indice si
@@ -483,7 +483,7 @@ def diagnosticar(texto, cat):
             completos = {cat.legibles[n]["name"].lower(): cat.legibles[n]["completo"] for n in sorted(cat.legibles)}
             cerca = difflib.get_close_matches(falta.group(1).lower(), list(completos), n=1)
             if cerca:
-                msg = msg.split("!")[0] + "! · ¿%s?" % completos[cerca[0]]
+                msg = msg.split("!")[0] + "! · did you mean %s?" % completos[cerca[0]]
         a = ini + desplazamiento(s, *p)
         largo = re.match(r"[\w.]*", texto[a:]).end() or 1
         out.append({"range": _rango(texto, a, a + largo), "severity": 1, "source": "duckdb", "message": msg})
@@ -506,14 +506,14 @@ def explicar(texto, linea, col, cat):
         p = i.get("puntero") or {}
         conductos = ", ".join("%s %s" % kv for kv in ((i.get("acceso") or {}).get("conductos") or {}).items())
         clas = ", ".join("%s:%s" % kv for kv in ((i.get("acceso") or {}).get("clasificacion") or {}).items())
-        partes = ["**%s** · %s · dueño %s" % (i["completo"], i["kind"], i.get("owner") or "?"),
-                  "%d columnas · %s filas · %s" % (len(i.get("expone", [])), p.get("filas", "?"), p.get("estado", "sin puntero"))]
+        partes = ["**%s** · %s · owner %s" % (i["completo"], i["kind"], i.get("owner") or "?"),
+                  "%d columns · %s rows · %s" % (len(i.get("expone", [])), p.get("filas", "?"), p.get("estado", "no pointer"))]
         if i.get("description"):
             partes.insert(1, i["description"])
         if clas:
-            partes.append("clasificación: " + clas)
+            partes.append("classification: " + clas)
         if conductos:
-            partes.append("conductos: " + conductos)
+            partes.append("conduits: " + conductos)
         return "\n\n".join(partes)
     ini, fin = la_del_cursor(texto, desplazamiento(texto, linea, col))
     al = alias_de(tokens(texto[ini:fin]), cat)
@@ -525,7 +525,7 @@ def explicar(texto, linea, col, cat):
     for n in candidatos:
         for c, t in cat.cols(n):
             if (c or "").lower() == palabra:
-                return "`%s` · %s · de %s" % (c, t or "sin tipo", n)
+                return "`%s` · %s · from %s" % (c, t or "untyped", n)
     return None
 
 
@@ -559,7 +559,7 @@ class Servidor:
             try:
                 self._atender_ya(m)
             except Exception as e:  # noqa: BLE001 — el hilo no muere por un mensaje
-                self.log("servidor de SQL: %s" % e)
+                self.log("SQL server: %s" % e)
 
     def mandar(self, m):
         self._mandar(json.dumps(m))
@@ -572,7 +572,7 @@ class Servidor:
             try:
                 nuevo = Catalogo(self.cargar())
             except Exception as e:
-                self.log("servidor de SQL: no pude leer el indice (%s)" % e)
+                self.log("SQL server: could not read the index (%s)" % e)
                 nuevo = Catalogo({}) if self.cat is None else None
             if nuevo is not None:
                 viejo, self.cat, self.cuando = self.cat, nuevo, time.time()
@@ -617,7 +617,7 @@ class Servidor:
         try:
             ds = diagnosticar(texto, self.catalogo())
         except Exception as e:
-            ds = [{"range": _rango("", 0, 0), "severity": 2, "source": "ore", "message": "el servidor de SQL fallo: %s" % e}]
+            ds = [{"range": _rango("", 0, 0), "severity": 2, "source": "ore", "message": "the SQL server failed: %s" % e}]
         if self.docs.get(uri, ("", -1))[1] == version:
             self.mandar({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
                          "params": {"uri": uri, "version": version, "diagnostics": ds}})
@@ -631,7 +631,7 @@ class Servidor:
         uri = (p.get("textDocument") or {}).get("uri")
         if metodo in ("textDocument/completion", "textDocument/hover") and uri not in self.docs:
             # un agente que se reinicio: no se sabe su texto. Que lo reabran.
-            self.mandar({"jsonrpc": "2.0", "id": i, "error": {"code": DESCONOCIDO, "message": "documento no abierto: %s" % uri,
+            self.mandar({"jsonrpc": "2.0", "id": i, "error": {"code": DESCONOCIDO, "message": "document not open: %s" % uri,
                                                                "data": {"ore": "documento-desconocido"}}})
             return
         try:

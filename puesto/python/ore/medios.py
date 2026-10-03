@@ -1,14 +1,30 @@
 """
-La media en código, desde Python (ADR 0049 B3·5; el contrato, `docs/media.md`).
+Media in code, from Python (ADR 0049 B3·5; the contract, `docs/media.md`).
 
-    c = ore.coleccion("legal.archivo.contratos")
-    for item in c.items(prefijo="Nueva carpeta/"):    # el listado, por cursor
-        with item.open() as f:                         # fijado a su versión
-            cabecera = f.read(5)                       # b"%PDF-"
-            f.seek(-1024, 2)                           # el pie, con un rango
-    datos = c.stat(path="docs/a.pdf").read_bytes()     # entero, verificado
-    for item, datos, error in ore.leer_varios(c.items(), hilos=16):
+    c = ore.collection("legal.archive.contracts")
+    for item in c.items(prefix="New folder/"):        # the listing, by cursor
+        with item.open() as f:                         # pinned to its version
+            head = f.read(5)                           # b"%PDF-"
+            f.seek(-1024, 2)                           # the tail, with a range
+    data = c.stat(path="docs/a.pdf").read_bytes()      # whole, verified
+    for item, data, error in ore.read_many(c.items(), threads=16):
         ...
+
+    with ore.collection("legal.archive.pages").transaction() as t:
+        t.put("c1/p0.png", png)                        # bytes, or a path, or a file
+    # on exit: commit; on an exception: abort
+
+    ore.collection("legal.archive.contracts").apply(fn, output="legal.archive.texts")
+
+The code never talks to the store or the origin: it asks the cell where the
+bytes are, and reads that URL without ORE's token. Errors are `MediaError`
+subclasses (`MediaNotFound`, `MediaForbidden`, `MediaChanged`, `MediaCorrupt`,
+`MediaRangeError`, `MediaNotWritable`, `MediaTransactionError`); the old Spanish
+names are aliases of the same classes.
+
+---
+
+La media en código, desde Python (ADR 0049 B3·5; el contrato, `docs/media.md`).
 
 **El código nunca habla con el almacén ni con el origen** (D1): pide a la celda
 `content` y la celda dice dónde están los bytes —la URL firmada del blob en el
@@ -54,9 +70,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-__all__ = ["coleccion", "Coleccion", "Item", "MediaRef", "leer_varios", "Transaccion", "MediaError",
-           "MediaNoExiste", "MediaSinPermiso", "MediaCambiado", "MediaCorrupto", "MediaRango",
-           "MediaNoEscribible", "MediaTransaccion"]
+from . import _Alias, _Result, _avisar, _en, _kw  # noqa: E402 — los alias (S1)
+
+__all__ = ["collection", "Collection", "Item", "MediaRef", "read_many", "Transaction", "MediaError",
+           "MediaNotFound", "MediaForbidden", "MediaChanged", "MediaCorrupt", "MediaRangeError",
+           "MediaNotWritable", "MediaTransactionError"]
 
 #: Lo que se pide de una vez cuando se baja un ítem grande por rangos.
 TROZO = 8 << 20
@@ -75,53 +93,78 @@ EN_MEMORIA = 8 << 20
 # ── los errores del contrato (`docs/media.md` §3) ─────────────────────────────
 
 class MediaError(Exception):
-    """Un error del contrato: `tipo` (`media/…`), `status` y `detalle`."""
+    """A media contract error: `type` (`media/…`, the wire code), `status` and
+    `detail`."""
 
-    def __init__(self, tipo, status, detalle):
-        super().__init__("%s (%s): %s" % (tipo, status, detalle))
-        self.tipo, self.status, self.detalle = tipo, status, detalle
+    #: Alias de antes.
+    tipo = _Alias("type")
+    detalle = _Alias("detail")
 
-
-class MediaNoExiste(MediaError, LookupError):
-    pass
-
-
-class MediaSinPermiso(MediaError, PermissionError):
-    pass
+    def __init__(self, type, status, detail):
+        super().__init__("%s (%s): %s" % (type, status, detail))
+        self.type, self.status, self.detail = type, status, detail
 
 
-class MediaCambiado(MediaError):
-    """La versión fijada ya no se puede leer entera: nunca se dan bytes de otra."""
+class MediaNotFound(MediaError, LookupError):
+    """The collection or the item does not exist (`media/no-existe`)."""
 
 
-class MediaCorrupto(MediaError, IOError):
-    """Los bytes no casan con `size` o `digest`, o el flujo se cortó a mitad."""
+class MediaForbidden(MediaError, PermissionError):
+    """Not allowed to read it, or the collection is not declared (`media/sin-permiso`)."""
 
 
-class MediaRango(MediaError, ValueError):
-    pass
+class MediaChanged(MediaError):
+    """The pinned version can no longer be read whole: bytes of another
+    version are never returned (`media/cambiado`)."""
 
 
-class MediaNoEscribible(MediaError, PermissionError):
-    """La colección no es escrita: la llena su origen (`from`), no el código."""
+class MediaCorrupt(MediaError, IOError):
+    """The bytes do not match `size` or `digest`, or the stream was cut
+    (`media/corrupto`)."""
 
 
-class MediaTransaccion(MediaError, RuntimeError):
-    """La transacción no está abierta: caducó, se cerró, o es de otra colección."""
+class MediaRangeError(MediaError, ValueError):
+    """A range that cannot be served (`media/rango`)."""
+
+
+class MediaNotWritable(MediaError, PermissionError):
+    """The collection is not a written one: its origin (`from`) fills it, not
+    code (`media/no-escribible`)."""
+
+
+class MediaTransactionError(MediaError, RuntimeError):
+    """The transaction is not open: it expired, was closed, or belongs to
+    another collection (`media/transaccion`)."""
+
+
+#: Los nombres de antes: las MISMAS clases (`except ore.MediaNoExiste` caza un
+#: `MediaNotFound`).
+_ALIAS = {"MediaNoExiste": "MediaNotFound", "MediaSinPermiso": "MediaForbidden", "MediaCambiado": "MediaChanged",
+          "MediaCorrupto": "MediaCorrupt", "MediaRango": "MediaRangeError", "MediaNoEscribible": "MediaNotWritable",
+          "MediaTransaccion": "MediaTransactionError", "coleccion": "collection", "Coleccion": "Collection",
+          "leer_varios": "read_many", "Transaccion": "Transaction"}
+
+
+def __getattr__(nombre):
+    nuevo = _ALIAS.get(nombre)
+    if nuevo is None:
+        raise AttributeError("module 'ore.medios' has no attribute %r" % (nombre,))
+    _avisar("ore.medios.%s" % nombre, "ore.medios.%s" % nuevo)
+    return globals()[nuevo]
 
 
 _POR_TIPO = {
-    "media/no-existe": MediaNoExiste,
-    "media/sin-permiso": MediaSinPermiso,
-    "media/no-declarada": MediaSinPermiso,
-    "media/cambiado": MediaCambiado,
-    "media/corrupto": MediaCorrupto,
-    "media/rango": MediaRango,
-    "media/sin-rangos": MediaRango,
-    "media/permiso": MediaSinPermiso,
-    "media/no-escribible": MediaNoEscribible,
-    "media/transaccion": MediaTransaccion,
-    "media/digest-no-casa": MediaCorrupto,
+    "media/no-existe": MediaNotFound,
+    "media/sin-permiso": MediaForbidden,
+    "media/no-declarada": MediaForbidden,
+    "media/cambiado": MediaChanged,
+    "media/corrupto": MediaCorrupt,
+    "media/rango": MediaRangeError,
+    "media/sin-rangos": MediaRangeError,
+    "media/permiso": MediaForbidden,
+    "media/no-escribible": MediaNotWritable,
+    "media/transaccion": MediaTransactionError,
+    "media/digest-no-casa": MediaCorrupt,
 }
 
 
@@ -129,7 +172,7 @@ def _error(status, cuerpo, que):
     cuerpo = cuerpo if isinstance(cuerpo, dict) else {}
     tipo = cuerpo.get("type") or {404: "media/no-existe", 403: "media/sin-permiso",
                                   412: "media/cambiado", 416: "media/rango"}.get(status, "media/origen")
-    detalle = cuerpo.get("detail") or cuerpo.get("error") or "%s contestó %s" % (que, status)
+    detalle = cuerpo.get("detail") or cuerpo.get("error") or "%s answered %s" % (que, status)
     return _POR_TIPO.get(tipo, MediaError)(tipo, status, detalle)
 
 
@@ -137,8 +180,9 @@ def _error(status, cuerpo, que):
 
 @dataclasses.dataclass(frozen=True)
 class MediaRef:
-    """El valor de un `Media<c>` (OOS v1alpha17 `01` §3): dónde está un ítem y qué
-    se sabe de él, sin sus bytes. Inmutable; un campo desconocido se ignora."""
+    """The value of a `Media<c>` (OOS v1alpha17 `01` §3): where an item is and
+    what is known about it, without its bytes. Immutable; unknown fields are
+    ignored."""
     uri: str
     collection: str
     path: str
@@ -152,8 +196,12 @@ class MediaRef:
     modified: str = None
     state: str = None
 
+    #: Alias de antes.
+    de_json = _Alias("from_json")
+
     @classmethod
-    def de_json(cls, d):
+    def from_json(cls, d):
+        """A `MediaRef` from its JSON (a dict); unknown fields are ignored."""
         campos = {f.name for f in dataclasses.fields(cls)}
         d = {k: v for k, v in (d or {}).items() if k in campos}
         if d.get("size") is not None:
@@ -163,65 +211,77 @@ class MediaRef:
 
 # ── la colección ──────────────────────────────────────────────────────────────
 
-def coleccion(nombre):
-    """`ore.coleccion("base.schema.nombre")` (o `base.nombre`)."""
-    return Coleccion(nombre)
+@_kw({"nombre": "name"})
+def collection(name):
+    """`ore.collection("db.schema.name")` (or `db.name`): a media collection."""
+    return Collection(name)
 
 
-class Coleccion:
-    def __init__(self, nombre):
+class Collection:
+    """A media collection: `items()`, `stat()`, `apply()` and, if it is a
+    written one, `transaction()`."""
+
+    #: Alias de antes.
+    nombre_corto = _Alias("short_name")
+    aplicar = _Alias("apply")
+    transaccion = _Alias("transaction")
+
+    def __init__(self, name):
         from . import _corto, _partes
         #: El nombre en su forma corta (`base.nombre` en `default`): el que un
         #: transform declara, y el que se anota como leído.
-        self.nombre_corto = _corto(nombre, "coleccion(): el nombre")
-        self.base, self.schema, self.nombre = _partes(self.nombre_corto)
+        self.short_name = _corto(name, "collection(): the name")
+        self.base, self.schema, self.nombre = _partes(self.short_name)
         self.ruta = "/media/%s/%s/%s" % (self.base, self.schema, self.nombre)
         #: La transacción que el listado leyó (B4·3): dentro de un transform,
         #: la que el servidor fijó al declararlo, aunque la colección cambie.
         self.as_of = None
 
     def __repr__(self):
-        return "Coleccion(%s.%s.%s)" % (self.base, self.schema, self.nombre)
+        return "Collection(%s.%s.%s)" % (self.base, self.schema, self.nombre)
 
     def _pedir(self, op, consulta, que):
-        from . import puesto, _rama_del_puesto, _lee
+        from . import session, _rama_del_puesto, _lee
         # B4·3: leer una colección es leer, como `over()` y `sql()`: dentro de un
         # transform sólo sus `inputs` (PermissionError aquí, antes del 403 del
         # servidor), y fuera queda anotada en lo que la sesión leyó.
-        _lee(self.nombre_corto)
+        _lee(self.short_name)
         q = urllib.parse.urlencode({k: v for k, v in consulta.items() if v is not None})
         # B3·6: con la rama del puesto, como el resto del SDK (`over`, `sql`):
         # una colección declarada en la rama se ve desde su puesto. Se pregunta
         # una vez por colección (cuesta una petición a la ficha del puesto).
         if not hasattr(self, "_rama"):
             self._rama = _rama_del_puesto()
-        codigo, r = puesto.pedir("GET", "%s/%s%s" % (self.ruta, op, "?" + q if q else ""),
+        codigo, r = session.pedir("GET", "%s/%s%s" % (self.ruta, op, "?" + q if q else ""),
                                  seguir=False, plazo=90, cabeceras=self._rama)
         return codigo, r
 
-    def items(self, prefijo=None, estado=None, limite=1000):
-        """El listado de una transacción, perezoso, por cursor: `Item`s sin bytes."""
+    @_kw({"prefijo": "prefix", "estado": "state", "limite": "limit"})
+    def items(self, prefix=None, state=None, limit=1000):
+        """The listing of a transaction, lazy, by cursor: `Item`s without bytes.
+        `prefix` filters by path, `state` by item state, `limit` is the page size."""
         cursor = None
         while True:
-            codigo, r = self._pedir("items", {"prefix": prefijo, "estado": estado,
-                                              "limit": limite, "cursor": cursor}, "items")
+            codigo, r = self._pedir("items", {"prefix": prefix, "estado": state,
+                                              "limit": limit, "cursor": cursor}, "items")
             if codigo != 200:
                 raise _error(codigo, r, "items(%s)" % self)
             if r.get("as_of"):
                 self.as_of = r["as_of"]
             for d in r.get("items") or []:
-                yield Item(self, MediaRef.de_json(d))
+                yield Item(self, MediaRef.from_json(d))
             cursor = r.get("cursor")
             if not cursor:
                 return
 
     def stat(self, path=None, digest=None, version=None):
-        """Un ítem, fresco: su `MediaRef` y si es la versión actual (`Item.actual`)."""
+        """One item, fresh, by `path`, `digest` or `version`: its `MediaRef` and
+        whether it is the current version (`Item.current`)."""
         codigo, r = self._pedir("item", {"path": path, "digest": digest, "version": version}, "stat")
         if codigo != 200:
             raise _error(codigo, r, "stat(%s)" % (path or digest))
-        it = Item(self, MediaRef.de_json(r))
-        it.actual = r.get("current")
+        it = Item(self, MediaRef.from_json(r))
+        it.current = r.get("current")
         return it
 
     def _cabeceras(self):
@@ -231,39 +291,42 @@ class Coleccion:
             self._rama = _rama_del_puesto()
         return self._rama
 
-    def aplicar(self, fn, version=None, params=None, salida=None, reintentar_errores=False,
-                hilos=4, guardar_cada_s=300):
-        """**La derivación incremental** (0049 B5, D5): `fn(item)` sobre cada ítem
-        que lo necesita, y el resultado como **tabla anclada** (v1alpha17 `03`) en
-        `salida` —dentro de un transform, su `output`—.
+    @_kw({"salida": "output", "reintentar_errores": "retry_errors", "hilos": "threads",
+          "guardar_cada_s": "save_every_s"})
+    def apply(self, fn, version=None, params=None, output=None, retry_errors=False,
+              threads=4, save_every_s=300):
+        """**Incremental derivation** (0049 B5, D5): `fn(item)` on each item that
+        needs it, and the result as an **anchored table** (v1alpha17 `03`) in
+        `output` —inside a transform, its `output`—.
 
-        `fn(item)` devuelve (o va dando) filas: dicts con las columnas de la carga
-        y, si la fila es una parte del ítem, `ancla` (`{"kind": "page", "page": 3}`,
-        v1alpha17 `02`). Sin filas, el ítem queda hecho con una fila de `kind:
-        item`. Una excepción es un resultado: una fila con `_status.state: error`,
-        y los demás siguen.
+        `fn(item)` returns (or yields) rows: dicts with the payload columns and,
+        if the row is a part of the item, `anchor` (`{"kind": "page", "page": 3}`,
+        v1alpha17 `02`; `anchor_parent` for its parent). With no rows, the item
+        is done with one row of `kind: item`. An exception is a result: a row
+        with `_status.state: error`, and the others go on.
 
-        Lo que ya está no se recalcula: la clave de cada ítem (`_derivation.key`)
-        es su identidad —el `digest`, o `(colección, ruta, versión)` de una
-        virtual sin leer—, `fn`, `version` (sin ella, la del código de `fn`) y
-        `params`. Si no cambia, sus filas se quedan (con la ruta de hoy: moverlo
-        no recalcula); si cambia, se rehacen; las de un ítem que ya no está, se
-        van. Los errores se reintentan con `reintentar_errores=True`.
+        What is there is not recomputed: each item's key (`_derivation.key`) is
+        its identity —the `digest`, or `(collection, path, version)` of an
+        unread virtual one—, `fn`, `version` (without it, the hash of `fn`'s
+        code) and `params`. If it does not change its rows stay (with today's
+        path: moving it does not recompute); if it changes they are redone;
+        those of an item that is gone are removed. Errors are retried with
+        `retry_errors=True`. `threads` items are computed at once.
 
-        Se guarda cada `guardar_cada_s` y al final; sin nada que hacer, no se
-        escribe. Devuelve el resumen: `{items, nuevos, recalculados, saltados,
-        errores, borrados, filas, escrito}`."""
-        return _aplicar(self, fn, version, params, salida, reintentar_errores, hilos, guardar_cada_s)
+        It saves every `save_every_s` seconds and at the end; with nothing to
+        do, nothing is written. Returns the summary: `{items, new, recomputed,
+        skipped, errors, removed, rows, written}`."""
+        return _aplicar(self, fn, version, params, output, retry_errors, threads, save_every_s)
 
-    def transaccion(self, ttl_s=3600):
-        """**Una transacción para escribir en esta colección** (B4b·3). Como `with`:
-        commit al salir, abort con una excepción. A mano: `t.put(…)`, `t.commit()`.
-        Dentro de un transform, sólo sobre su `output`."""
+    def transaction(self, ttl_s=3600):
+        """**A transaction to write into this collection** (B4b·3). As a `with`:
+        commit on exit, abort on an exception. By hand: `t.put(…)`, `t.commit()`.
+        Inside a transform, only on its `output`."""
         from . import _transform
-        if _transform is not None and self.nombre_corto != _transform.output:
-            raise PermissionError("`%s` no es el output de `%s` (`%s`): un transform sólo escribe lo que declara"
-                                  % (self.nombre_corto, _transform.nombre, _transform.output))
-        return Transaccion(self, ttl_s)
+        if _transform is not None and self.short_name != _transform.output:
+            raise PermissionError("`%s` is not the output of `%s` (`%s`): a transform only writes what it declares"
+                                  % (self.short_name, _transform.nombre, _transform.output))
+        return Transaction(self, ttl_s)
 
     def _donde(self, ref):
         """`content`: a dónde ir por los bytes de `ref`, fijado a su versión."""
@@ -277,24 +340,33 @@ class Coleccion:
 # ── el ítem ───────────────────────────────────────────────────────────────────
 
 class Item:
-    """Un ítem de una colección: su `ref` y cómo leer sus bytes."""
+    """An item of a collection: its `ref` (a `MediaRef`) and how to read its
+    bytes (`open`, `read_bytes`, `read_range`)."""
+
+    #: Alias de antes.
+    sha256_visto = _Alias("sha256_seen")
+    coleccion = _Alias("collection")
+    actual = _Alias("current")
 
     def __init__(self, col, ref):
-        self.coleccion, self.ref = col, ref
-        self.actual = None
+        self.collection, self.ref = col, ref
+        self.current = None
         #: El sha256 que una lectura entera calculó, si el ítem no lo traía.
-        self.sha256_visto = None
+        self.sha256_seen = None
 
     def __repr__(self):
         return "Item(%s@%s)" % (self.ref.path, self.ref.version)
 
     def open(self):
-        """Un fichero binario de sólo lectura, fijado a la versión del ítem: `read`,
-        `seek`, `tell`. Con `with`: cerrar a medias no baja el resto."""
+        """A read-only binary file pinned to the item's version: `read`, `seek`,
+        `tell`. Use it with `with`: closing halfway does not download the rest."""
         return io.BufferedReader(_Lector(self), buffer_size=1 << 20)
 
-    def read_bytes(self, hilos=8):
-        """Los bytes enteros, verificados. Un ítem grande, por rangos en paralelo."""
+    @_kw({"hilos": "threads"})
+    def read_bytes(self, threads=8):
+        """All the bytes, verified. A large item is read by ranges, `threads` at
+        once."""
+        hilos = threads
         size = self.ref.size
         if not size or size < EN_PARALELO_DESDE or hilos <= 1:
             with self.open() as f:
@@ -308,19 +380,19 @@ class Item:
         return datos
 
     def read_range(self, offset, length):
-        """`length` bytes desde `offset` (`read_range` del contrato)."""
+        """`length` bytes from `offset` (the contract's `read_range`)."""
         return _Acceso(self).rango(offset, offset + length - 1)
 
 
 def _verificar(item, leidos, visto):
     ref = item.ref
     if ref.size is not None and leidos != ref.size:
-        raise MediaCorrupto("media/corrupto", 502, "%s: %d bytes de %d" % (ref.path, leidos, ref.size))
+        raise MediaCorrupt("media/corrupto", 502, "%s: %d bytes of %d" % (ref.path, leidos, ref.size))
     if ref.digest and ref.digest.startswith("sha256:") and ref.digest[7:].lower() != visto:
-        raise MediaCorrupto("media/corrupto", 502, "%s: sha256 %s, y el ítem dice %s"
+        raise MediaCorrupt("media/corrupto", 502, "%s: sha256 %s, and the item says %s"
                             % (ref.path, visto, ref.digest[7:]))
     if not ref.digest:
-        item.sha256_visto = visto
+        item.sha256_seen = visto
 
 
 # ── el acceso: dónde leer, y otra vez cuando caduca ───────────────────────────
@@ -388,10 +460,10 @@ def _version_de(fn):
 def _ancla_de(a):
     a = dict(a or {"kind": "item"})
     if not a.get("kind"):
-        raise ValueError("aplicar(): un `ancla` sin `kind` (v1alpha17 `02`): %r" % (a,))
+        raise ValueError("apply(): an `anchor` without `kind` (v1alpha17 `02`): %r" % (a,))
     otros = set(a) - set(_CAMPOS_ANCLA)
     if otros:
-        raise ValueError("aplicar(): `ancla` con campos que no son de `Anchor`: %s" % ", ".join(sorted(otros)))
+        raise ValueError("apply(): `anchor` with fields that are not `Anchor`'s: %s" % ", ".join(sorted(otros)))
     return {k: a.get(k) for k in _CAMPOS_ANCLA}
 
 
@@ -405,9 +477,9 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
 
     if salida is None:
         if _transform is None:
-            raise ValueError("aplicar(): fuera de un transform, di la `salida` (`b.s.t`)")
+            raise ValueError("apply(): outside a transform, give the `output` (`db.schema.t`)")
         salida = _transform.output
-    salida = _corto(_nombre_de(salida), "aplicar(): la `salida`")
+    salida = _corto(_nombre_de(salida), "apply(): the `output`")
     nombre_fn = getattr(fn, "__name__", None) or type(fn).__name__
     fn_version = str(version) if version is not None else _version_de(fn)
     params_hash = None if params is None else hashlib.sha256(_canonico(params).encode("utf-8")).hexdigest()
@@ -424,7 +496,7 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
     # Lo que ya está: las filas de la salida, por su clave.
     previas = {}
     try:
-        filas_previas = ore.over(salida, como="arrow").to_pylist()
+        filas_previas = ore.over(salida, "arrow").to_pylist()
     except LookupError:
         filas_previas = []
     for f in filas_previas:
@@ -437,8 +509,9 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
 
     pendientes = [k for k in hoy if k not in previas
                   or (reintentar_errores and estado(previas[k]) == "error")]
-    resumen = {"items": len(hoy), "nuevos": 0, "recalculados": 0, "saltados": len(hoy) - len(pendientes),
-               "errores": 0, "borrados": len([k for k in previas if k not in hoy]), "filas": 0, "escrito": False}
+    resumen = _Result({"items": len(hoy), "new": 0, "recomputed": 0, "skipped": len(hoy) - len(pendientes),
+                       "errors": 0, "removed": len([k for k in previas if k not in hoy]), "rows": 0,
+                       "written": False})
     hechas = {}   # clave → filas nuevas
 
     def item_json(it):
@@ -459,13 +532,13 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
             out = []
             for f in filas:
                 if not isinstance(f, dict):
-                    raise TypeError("aplicar(): `%s` dio %s y no un dict por fila" % (nombre_fn, type(f).__name__))
+                    raise TypeError("apply(): `%s` gave %s and not a dict per row" % (nombre_fn, type(f).__name__))
                 f = dict(f)
-                ancla = _ancla_de(f.pop("ancla", None))
-                padre = f.pop("ancla_padre", None)
+                ancla = _ancla_de(_una_de(f, "anchor", "ancla"))
+                padre = _una_de(f, "anchor_parent", "ancla_padre")
                 malas = [c for c in f if c.startswith("_")]
                 if malas:
-                    raise ValueError("aplicar(): `%s` son columnas de sistema (v1alpha17 `03` §1)" % ", ".join(malas))
+                    raise ValueError("apply(): `%s` are system columns (v1alpha17 `03` §1)" % ", ".join(malas))
                 out.append(dict(f, _item=item_json(it), _anchor=ancla,
                                 _anchor_id=_sha(ident, _canonico(ancla), nombre_fn),
                                 _anchor_parent=padre, _derivation=deriv,
@@ -502,7 +575,7 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
             try:
                 tipos.append((c, pa.array([f.get(c) for f in filas]).type))
             except (pa.ArrowInvalid, pa.ArrowTypeError) as e:
-                raise TypeError("aplicar(): la columna `%s` no tiene un tipo: %s" % (c, e)) from None
+                raise TypeError("apply(): column `%s` has no type: %s" % (c, e)) from None
         esquema = pa.schema(sistema + [(c, (pa.string() if pa.types.is_null(t) else t)) for c, t in tipos])
         return pa.Table.from_pylist(filas, schema=esquema)
 
@@ -510,15 +583,15 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
         t = montar()
         if t is None:
             return
-        ore.write(salida, t, modo="sobrescribir", anclada_a=col.nombre_corto)
-        resumen["escrito"] = True
-        resumen["filas"] = t.num_rows
+        ore.write(salida, t, "overwrite", None, col.short_name)
+        resumen["written"] = True
+        resumen["rows"] = t.num_rows
 
     movido = any(k in previas and {((f.get("_item") or {}).get("collection"), (f.get("_item") or {}).get("path"))
                                    for f in previas[k]} != {(hoy[k].ref.collection, hoy[k].ref.path)}
                  for k in hoy)
-    if not pendientes and not resumen["borrados"] and not movido:
-        resumen["filas"] = len(filas_previas)
+    if not pendientes and not resumen["removed"] and not movido:
+        resumen["rows"] = len(filas_previas)
         return resumen
 
     ultimo = time.time()
@@ -526,16 +599,26 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
         for k, filas in (f.result() for f in _cf.as_completed([ex.submit(calcular, k) for k in pendientes])):
             hechas[k] = filas
             if estado(filas) == "error":
-                resumen["errores"] += 1
+                resumen["errors"] += 1
             elif (hoy[k].ref.collection, hoy[k].ref.path) in rutas_previas:
-                resumen["recalculados"] += 1
+                resumen["recomputed"] += 1
             else:
-                resumen["nuevos"] += 1
+                resumen["new"] += 1
             if guardar_cada_s and time.time() - ultimo > guardar_cada_s:
                 guardar()
                 ultimo = time.time()
     guardar()
     return resumen
+
+
+def _una_de(fila, en, es):
+    """`fila[en]` o, si no, `fila[es]` (la clave de antes), sacada de la fila."""
+    if en in fila and es in fila:
+        raise ValueError("apply(): a row has both `%s` and its old name `%s`" % (en, es))
+    if es in fila:
+        _avisar("apply(): row key %r" % es, repr(en))
+        return fila.pop(es)
+    return fila.pop(en, None)
 
 
 class _Acceso:
@@ -547,7 +630,7 @@ class _Acceso:
 
     def vigente(self, otra=False):
         if self.url is None or otra:
-            r = self.item.coleccion._donde(self.item.ref)
+            r = self.item.collection._donde(self.item.ref)
             self.url = r["url"]
             # La versión fijada: si el ítem no la decía, la de ahora, y ya no cambia.
             if r.get("version") and not self.item.ref.version:
@@ -581,7 +664,7 @@ class _Acceso:
                 if e.code == 416 and hasta is None:
                     return None  # desde el final: no queda nada
                 raise _error(e.code, cuerpo, "leer %s" % self.item.ref.path)
-        raise MediaError("media/permiso", 401, "no se pudo renovar el acceso a %s" % self.item.ref.path)
+        raise MediaError("media/permiso", 401, "could not renew access to %s" % self.item.ref.path)
 
     def _aprender(self, r):
         """El tamaño, de la respuesta, si el ítem no lo decía (B3·6): el total de
@@ -613,7 +696,7 @@ class _Acceso:
             try:
                 datos = r.read()
             except http.client.IncompleteRead as e:
-                raise MediaCorrupto("media/corrupto", 502, "%s: el flujo se cortó (%d bytes)"
+                raise MediaCorrupt("media/corrupto", 502, "%s: the stream was cut (%d bytes)"
                                     % (self.item.ref.path, len(e.partial)))
         return datos
 
@@ -654,12 +737,12 @@ class _Lector(io.RawIOBase):
         elif whence == io.SEEK_END:
             # Sin tamaño conocido se pregunta (un byte): el final no se adivina.
             if self.acceso.tamano() is None:
-                raise MediaRango("media/rango", 416, "el origen no dice el tamaño: no se cuenta desde el final")
+                raise MediaRangeError("media/rango", 416, "the origin does not give the size: cannot seek from the end")
             nueva = self._size() + offset
         else:
             raise ValueError("whence")
         if nueva < 0:
-            raise ValueError("seek antes del principio")
+            raise ValueError("seek before the start")
         if nueva != self.pos:
             self.entero = False
         self.pos = nueva
@@ -676,7 +759,7 @@ class _Lector(io.RawIOBase):
 
     def readinto(self, b):
         if self.closed:
-            raise ValueError("el fichero está cerrado")
+            raise ValueError("the file is closed")
         if self._size() is not None and self.pos >= self._size():
             self._al_final()
             return 0
@@ -692,13 +775,13 @@ class _Lector(io.RawIOBase):
             # Menos bytes de los que la respuesta prometió: el flujo se cortó
             # (la celda corta así lo que no casa, B3·1).
             self._cerrar_flujo()
-            raise MediaCorrupto("media/corrupto", 502, "%s: el flujo se cortó en %d"
-                                % (self.item.ref.path, self.pos))
+            raise MediaCorrupt("media/corrupto", 502, "%s: the stream was cut at %d"
+                               % (self.item.ref.path, self.pos))
         if not n:
             self._cerrar_flujo()
             if self._size() is not None and self.pos < self._size():
-                raise MediaCorrupto("media/corrupto", 502, "%s: el flujo se cortó en %d de %d"
-                                    % (self.item.ref.path, self.pos, self._size()))
+                raise MediaCorrupt("media/corrupto", 502, "%s: the stream was cut at %d of %d"
+                                   % (self.item.ref.path, self.pos, self._size()))
             self._al_final()
             return 0
         if self.entero:
@@ -719,11 +802,14 @@ class _Lector(io.RawIOBase):
 
 # ── muchos a la vez ───────────────────────────────────────────────────────────
 
-def leer_varios(items, hilos=16):
-    """Los bytes de muchos ítems, `hilos` a la vez (cada petición al origen de una
-    virtual cuesta ~125 ms: de uno en uno, 8 por segundo; con 16, unos 120).
-    Da `(item, datos, None)` o `(item, None, error)` según terminan: el error de
-    uno no para los demás. `items` puede ser perezoso (`c.items()`)."""
+@_kw({"hilos": "threads"})
+def read_many(items, threads=16):
+    """The bytes of many items, `threads` at once (each request to a virtual
+    collection's origin costs ~125 ms: one by one, 8 per second; with 16,
+    about 120). Yields `(item, data, None)` or `(item, None, error)` as they
+    finish: one's error does not stop the others. `items` may be lazy
+    (`c.items()`)."""
+    hilos = threads
     items = iter(items)
     with _cf.ThreadPoolExecutor(hilos) as ex:
         vivos = {}
@@ -772,7 +858,7 @@ def _fuente(datos):
             copia.write(trozo)
         copia.seek(0)
         return (copia,) + _medir(copia) + (True,)
-    raise TypeError("put(): `datos` son bytes, una ruta o un fichero, no %s" % type(datos).__name__)
+    raise TypeError("put(): `data` is bytes, a path or a file, not %s" % type(datos).__name__)
 
 
 def _medir(f):
@@ -789,32 +875,40 @@ def _medir(f):
     return n, h.digest()
 
 
-class Transaccion:
-    """**Una transacción abierta** sobre una colección escrita (B4b·3): `put` sube
-    ítems, `commit` los deja escritos —y el puntero, con su procedencia—, `abort`
-    no deja nada. `upload` es un portador: no se enseña."""
+class Transaction:
+    """**An open transaction** on a written collection (B4b·3): `put` uploads
+    items, `commit` leaves them written —and the pointer, with its
+    provenance—, `abort` leaves nothing. Get one with
+    `collection.transaction()`."""
+
+    #: Alias de antes.
+    coleccion = _Alias("collection")
+    subidos = _Alias("uploaded")
+    resultado = _Alias("result")
+    cerrada = _Alias("closed")
+    put_varios = _Alias("put_many")
 
     def __init__(self, col, ttl_s=3600):
-        from . import puesto
-        self.coleccion = col
-        self.subidos = []
-        self.resultado = None
-        self.cerrada = False
-        codigo, r = puesto.pedir("POST", col.ruta + "/transactions", {"ttl_s": ttl_s},
-                                 plazo=60, cabeceras=col._cabeceras())
+        from . import session
+        self.collection = col
+        self.uploaded = []
+        self.result = None
+        self.closed = False
+        codigo, r = session.pedir("POST", col.ruta + "/transactions", {"ttl_s": ttl_s},
+                                  plazo=60, cabeceras=col._cabeceras())
         if codigo != 201:
-            raise _error(codigo, r, "transaccion(%s)" % col)
+            raise _error(codigo, r, "transaction(%s)" % col)
         self.id = r["transaction"]
         self._upload = r["upload"]
 
     def __repr__(self):
-        return "Transaccion(%s, %s%s)" % (self.coleccion, self.id, ", cerrada" if self.cerrada else "")
+        return "Transaction(%s, %s%s)" % (self.collection, self.id, ", closed" if self.closed else "")
 
     def __enter__(self):
         return self
 
     def __exit__(self, tipo, valor, traza):
-        if self.cerrada:
+        if self.closed:
             return False
         if tipo is None:
             self.commit()
@@ -826,13 +920,16 @@ class Transaccion:
         return False
 
     def _abierta(self, que):
-        if self.cerrada:
-            raise MediaTransaccion("media/transaccion", 409, "%s: la transacción %s ya se cerró" % (que, self.id))
+        if self.closed:
+            raise MediaTransactionError("media/transaccion", 409, "%s: transaction %s is already closed" % (que, self.id))
 
-    def put(self, path, datos, tipo=None):
-        """Sube un ítem a `path` (relativo a la colección). `datos`: bytes, una ruta o
-        un fichero. `tipo`, el declarado: vale si los bytes no dicen nada. Devuelve su
-        `MediaRef` (el digest y el tipo que la celda vio)."""
+    @_kw({"datos": "data", "tipo": "content_type"})
+    def put(self, path, data, content_type=None):
+        """Upload an item to `path` (relative to the collection). `data`: bytes,
+        a path or a file. `content_type`, the declared one: it counts only if
+        the bytes say nothing. Returns its `MediaRef` (the digest and the type
+        the cell saw)."""
+        datos, tipo = data, content_type
         self._abierta("put(%s)" % path)
         f, largo, sha, cerrar = _fuente(datos)
         desde = f.tell()
@@ -873,18 +970,21 @@ class Transaccion:
                 cuerpo = {}
             if r.status != 201:
                 raise _error(r.status, cuerpo, "put(%s)" % path)
-            ref = MediaRef.de_json(cuerpo)
-            self.subidos.append(ref)
+            ref = MediaRef.from_json(cuerpo)
+            self.uploaded.append(ref)
             return ref
-        raise MediaError("media/origen", 503, "put(%s): la subida se cortó %d veces: %s"
+        raise MediaError("media/origen", 503, "put(%s): the upload was cut %d times: %s"
                          % (path, REINTENTOS + 1, ultimo))
 
-    def put_varios(self, pares, hilos=8):
-        """Muchos `put` a la vez: `pares` da `(path, datos)` o `(path, datos, tipo)`, y
-        esto da `(path, ref, error)` según acaban —el error de uno es un valor y no
-        para a los demás, como en `leer_varios`—. Hay `2 × hilos` en vuelo como mucho:
-        lo que `pares` produce no se lee entero de antemano."""
-        self._abierta("put_varios")
+    @_kw({"pares": "pairs", "hilos": "threads"})
+    def put_many(self, pairs, threads=8):
+        """Many `put`s at once: `pairs` yields `(path, data)` or
+        `(path, data, content_type)`, and this yields `(path, ref, error)` as
+        they finish —one's error is a value and does not stop the others, as in
+        `read_many`—. At most `2 × threads` are in flight: `pairs` is not read
+        whole up front."""
+        pares, hilos = pairs, threads
+        self._abierta("put_many")
         pares = iter(pares)
         with _cf.ThreadPoolExecutor(max_workers=hilos) as ex:
             vuelo = {}
@@ -908,17 +1008,17 @@ class Transaccion:
                 lanzar()
 
     def commit(self):
-        """Deja escrito lo subido —el puntero, con su procedencia— y la cierra. Si otro
-        confirmó a la vez (la forja: 409 sin `type`), vuelve a confirmar sobre lo nuevo.
-        Devuelve `{transaccion, items, cambios, commit, metadata_location, …}`."""
+        """Leave what was uploaded written —the pointer, with its provenance— and
+        close it. If someone else committed at the same time, it commits again
+        on top. Returns `{transaction, items, commit, metadata_location, …}`."""
         import time
         self._abierta("commit")
         espera = 0.5
         for intento in range(REINTENTOS + 1):
             codigo, r = self._cerrar("commit")
             if codigo == 200:
-                self.cerrada, self.resultado = True, r or {}
-                return self.resultado
+                self.closed, self.result = True, _en(r or {})
+                return self.result
             carrera = codigo == 409 and not (r or {}).get("type")
             if not carrera or intento == REINTENTOS:
                 raise _error(codigo, r, "commit(%s)" % self.id)
@@ -926,18 +1026,18 @@ class Transaccion:
             espera *= 2
 
     def abort(self):
-        """No deja nada de lo subido, y la cierra."""
-        if self.cerrada:
+        """Leave nothing of what was uploaded, and close it."""
+        if self.closed:
             return
         codigo, r = self._cerrar("abort")
-        self.cerrada = True
+        self.closed = True
         if codigo not in (204, 404):
             raise _error(codigo, r, "abort(%s)" % self.id)
 
     def _cerrar(self, op):
-        from . import puesto
-        return puesto.pedir("POST", "%s/transactions/%s/%s" % (self.coleccion.ruta, self.id, op), {},
-                            plazo=300, cabeceras=self.coleccion._cabeceras())
+        from . import session
+        return session.pedir("POST", "%s/transactions/%s/%s" % (self.collection.ruta, self.id, op), {},
+                             plazo=300, cabeceras=self.collection._cabeceras())
 
 
 class _Trozo:

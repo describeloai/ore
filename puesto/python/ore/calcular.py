@@ -43,7 +43,8 @@ def _conexion():
 
 
 def calcular(aqui):
-    """Una copia: `aqui` es `DIR/<copia>/`, con `peticion.json` y `entradas/`."""
+    """Compute one copy: `aqui` is `DIR/<copy>/`, with `peticion.json` and `entradas/`.
+    Writes `salida.arrow` and returns the number of rows."""
     import pyarrow.ipc as ipc
 
     with open(os.path.join(aqui, "peticion.json"), encoding="utf-8") as f:
@@ -75,7 +76,7 @@ def calcular(aqui):
 
 def main(argv):
     if len(argv) != 2:
-        print("uso: python -m ore.calcular DIR", file=sys.stderr)
+        print("usage: python -m ore.calcular DIR", file=sys.stderr)
         return 2
     raiz = argv[1]
     # Lo que se cuenta va en UTF-8 aunque la consola no lo sea (Windows, cp1252):
@@ -87,10 +88,10 @@ def main(argv):
             d for d in os.listdir(raiz) if os.path.isfile(os.path.join(raiz, d, "peticion.json"))
         )
     except OSError as e:
-        print("✗ no se puede leer `%s`: %s" % (raiz, e), file=sys.stderr)
+        print("✗ cannot read `%s`: %s" % (raiz, e), file=sys.stderr)
         return 1
     if not copias:
-        print("· ninguna copia por consulta que calcular")
+        print("· no query copy to compute")
     for c in copias:
         aqui = os.path.join(raiz, c)
         for viejo in ("salida.arrow", "error.txt"):
@@ -100,7 +101,7 @@ def main(argv):
                 pass
         try:
             n = calcular(aqui)
-            print("✓ %s · %d filas" % (c, n), flush=True)
+            print("✓ %s · %d rows" % (c, n), flush=True)
         except Exception as e:  # la de esta copia, no la pasada
             motivo = "%s: %s" % (type(e).__name__, str(e).strip().splitlines()[0] if str(e).strip() else "")
             with open(os.path.join(aqui, "error.txt"), "w", encoding="utf-8") as f:

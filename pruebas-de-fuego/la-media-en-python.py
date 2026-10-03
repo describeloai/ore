@@ -10,8 +10,8 @@ caducan, 412, flujos cortados). Se comprueba el SDK:
    4  una lectura entera se verifica y da el sha256 visto
    5  el token de ORE va a la celda y NUNCA a la URL de los bytes
    6  un permiso caducado (401) se renueva con la misma versión y se sigue
-   7  la versión ya no está (412) → MediaCambiado
-   8  el digest no casa, o el flujo se corta → MediaCorrupto
+   7  la versión ya no está (412) → MediaChanged
+   8  el digest no casa, o el flujo se corta → MediaCorrupt
    9  read_bytes() de uno grande, por rangos en paralelo
   10  leer_varios(): muchos a la vez, el error de uno es un valor
   11  cerrar a medias no baja el resto
@@ -36,11 +36,11 @@ celda, bytes_ = banco.arrancar()
 import ore  # noqa: E402
 from ore import medios  # noqa: E402
 
-ore.puesto._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
+ore.session._proveedor = lambda: {"authorization": "Bearer secreto-de-ore"}
 
 
 print("la media en python")
-c = ore.coleccion("legal.archivo.contratos")
+c = ore.collection("legal.archivo.contratos")
 
 
 def c1():
@@ -52,7 +52,7 @@ def c1():
 
 def c2():
     it = c.stat(path="a.pdf")
-    assert it.actual is True and it.ref.size == len(A)
+    assert it.current is True and it.ref.size == len(A)
     bien("2 · stat(): fresco y actual")
 
 
@@ -74,7 +74,7 @@ def c4():
     it = c.stat(path="a.pdf")
     with it.open() as f:
         assert f.read() == A
-    assert it.sha256_visto == SHA["a.pdf"], it.sha256_visto
+    assert it.sha256_seen == SHA["a.pdf"], it.sha256_seen
     bien("4 · una lectura entera se verifica y da el sha256 visto")
 
 
@@ -96,11 +96,11 @@ def c6():
 def c7():
     try:
         c.stat(path="cambia.pdf").read_bytes()
-    except ore.MediaCambiado as e:
+    except ore.MediaChanged as e:
         assert e.status == 412
-        bien("7 · la versión ya no está: MediaCambiado (412)")
+        bien("7 · la versión ya no está: MediaChanged (412)")
         return
-    raise AssertionError("debía ser MediaCambiado")
+    raise AssertionError("debía ser MediaChanged")
 
 
 def c8():
@@ -110,17 +110,17 @@ def c8():
             it.ref = medios.dataclasses.replace(it.ref, digest="sha256:" + "0" * 64)
         try:
             it.read_bytes()
-        except ore.MediaCorrupto:
+        except ore.MediaCorrupt:
             continue
-        raise AssertionError("%s debía ser MediaCorrupto" % path)
-    bien("8 · el digest no casa, o el flujo se corta: MediaCorrupto")
+        raise AssertionError("%s debía ser MediaCorrupt" % path)
+    bien("8 · el digest no casa, o el flujo se corta: MediaCorrupt")
 
 
 def c9():
     medios.EN_PARALELO_DESDE, medios.TROZO = 50_000, 32_768
     BYTES.clear()
     it = c.stat(path="a.pdf")
-    assert it.read_bytes(hilos=4) == A
+    assert it.read_bytes(threads=4) == A
     rangos = [h.get("Range") for _, _, h in BYTES if h.get("Range")]
     assert len(rangos) >= len(A) // 32_768, rangos
     medios.EN_PARALELO_DESDE, medios.TROZO = 32 << 20, 8 << 20
@@ -128,9 +128,9 @@ def c9():
 
 
 def c10():
-    r = {it.ref.path: (d, e) for it, d, e in ore.leer_varios(c.items(), hilos=4)}
+    r = {it.ref.path: (d, e) for it, d, e in ore.read_many(c.items(), threads=4)}
     assert r["a.pdf"][0] == A and r["b.pdf"][0] == OBJETOS["b.pdf"]
-    assert isinstance(r["cambia.pdf"][1], ore.MediaCambiado)
+    assert isinstance(r["cambia.pdf"][1], ore.MediaChanged)
     bien("10 · leer_varios(): 3 a la vez, el 412 de uno es un valor")
 
 
@@ -166,7 +166,7 @@ def c13():
     RAMA["r"] = "r1/trabajo"
     SERVE.clear()
     try:
-        c2_ = ore.coleccion("legal.archivo.contratos")
+        c2_ = ore.collection("legal.archivo.contratos")
         c2_.stat(path="a.pdf")
         c2_.stat(path="b.pdf")
     finally:
@@ -181,9 +181,9 @@ def c13():
 def c14():
     banco.TRANSFORMS.clear()
 
-    @ore.transform(inputs=[ore.coleccion("legal.archivo.contratos")], output="legal.archivo.paginas")
+    @ore.transform(inputs=[ore.collection("legal.archivo.contratos")], output="legal.archivo.paginas")
     def paginar():
-        return [i.ref.path for i in ore.coleccion("legal.archivo.contratos").items()]
+        return [i.ref.path for i in ore.collection("legal.archivo.contratos").items()]
 
     leidos = paginar()
     declarado = banco.TRANSFORMS[0][1]
@@ -191,15 +191,15 @@ def c14():
     assert declarado["output"] == "legal.archivo.paginas", declarado
     assert leidos == ["a.pdf", "b.pdf", "cambia.pdf"], leidos
     assert banco.TRANSFORMS[-1] == ("DELETE", None), banco.TRANSFORMS
-    bien("14 · inputs=[ore.coleccion(…)]: se declara por su nombre, se lee dentro, y se retira al salir")
+    bien("14 · inputs=[ore.collection(…)]: se declara por su nombre, se lee dentro, y se retira al salir")
 
 
 def c15():
     SERVE.clear()
 
-    @ore.transform(inputs=[ore.coleccion("legal.archivo.contratos")], output="legal.archivo.paginas")
+    @ore.transform(inputs=[ore.collection("legal.archivo.contratos")], output="legal.archivo.paginas")
     def fuera():
-        return list(ore.coleccion("legal.otra.fotos").items())
+        return list(ore.collection("legal.otra.fotos").items())
 
     try:
         fuera()
@@ -213,14 +213,14 @@ def c15():
 
 def c16():
     del ore._leidas[:]
-    ore.coleccion("legal.archivo.contratos").stat(path="b.pdf")
+    ore.collection("legal.archivo.contratos").stat(path="b.pdf")
     assert "legal.archivo.contratos" in ore._leidas, ore._leidas
     assert ore._procedencia()["leidas"] == ["legal.archivo.contratos"], ore._procedencia()
     bien("16 · fuera de un transform, leer una colección queda en lo leído (la procedencia de lo que se escriba)")
 
 
 def c17():
-    col = ore.coleccion("legal.archivo.contratos")
+    col = ore.collection("legal.archivo.contratos")
     assert col.as_of is None
     next(iter(col.items()))
     assert col.as_of == "7", col.as_of

@@ -24,20 +24,20 @@ srv = ThreadingHTTPServer(("127.0.0.1", 0), S); threading.Thread(target=srv.serv
 os.environ["ORE_SERVE"] = "http://127.0.0.1:%d" % srv.server_address[1]; os.environ["PUESTO"] = "p1"
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "puesto", "python"))
 import ore
-assert ore.media_de("legal.registro") == {"documento": "legal.archivo.contratos"}
-assert ore.media("legal.archivo.contratos", "crc64nvme:ab/c=")["tipo"] == "application/pdf"
+assert ore.media_columns("legal.registro") == {"documento": "legal.archivo.contratos"}
+assert ore.media_url("legal.archivo.contratos", "crc64nvme:ab/c=")["content_type"] == "application/pdf"
 try:
-    ore.media("legal.archivo.contratos", "otra"); raise SystemExit("debía ser LookupError")
+    ore.media_url("legal.archivo.contratos", "otra"); raise SystemExit("debía ser LookupError")
 except LookupError as e:
     assert "ningún ítem" in str(e)
-m = ore.medias("legal.archivo.contratos", ["h%d" % i for i in range(250)] + ["h0", "nada"], ttl=60)
-assert len(m) == 250 and m["h7"]["segundos"] == 60
+m = ore.media_urls("legal.archivo.contratos", ["h%d" % i for i in range(250)] + ["h0", "nada"], ttl=60)
+assert len(m) == 250 and m["h7"]["seconds"] == 60
 assert [v for v in VISTO if v[0] == "POST"] == [("POST", "/colecciones/legal/archivo/contratos/items/resolver", 100),
                                                ("POST", "/colecciones/legal/archivo/contratos/items/resolver", 100),
                                                ("POST", "/colecciones/legal/archivo/contratos/items/resolver", 51)], VISTO
-assert ore.media("legal.archivo.contratos", "h1", ttl=45)["url"] == "https://h1"
+assert ore.media_url("legal.archivo.contratos", "h1", ttl=45)["url"] == "https://h1"
 try:
-    ore.media("contratos", "x"); raise SystemExit("debía ser ValueError")
+    ore.media_url("contratos", "x"); raise SystemExit("debía ser ValueError")
 except ValueError:
     pass
 assert all(v[2] == "p1" for v in VISTO if v[0] == "GET"), "sin x-ore-puesto"
