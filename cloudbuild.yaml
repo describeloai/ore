@@ -85,7 +85,7 @@ steps:
           # mismo que el de la etapa `build` (ci/compilar-binarios.sh).
           docker build -q --target herramientas -t herramientas . >/dev/null
           docker run --rm --network=cloudbuild -v /workspace:/src -w /src \
-            -e CACHE_GCS=${_SCCACHE} -e SALIDA=/src/.binarios herramientas sh ci/compilar-binarios.sh
+            -e CACHE_GCS= -e SALIDA=/src/.binarios herramientas sh ci/compilar-binarios.sh
           printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t "$$B:h-$$H" -f - .binarios >/dev/null
           docker push -q "$$B:h-$$H"
         fi
