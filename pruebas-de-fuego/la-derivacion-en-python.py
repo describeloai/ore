@@ -17,6 +17,7 @@ CLI (`una_tabla_anclada_declara_su_coleccion_y_su_carga`) y en vivo (B5·3).
   10  `params` y la versión del código entran en la clave
   11  dentro de un transform: la salida es su `output`, y leerla no es una entrada
   12  lo que `fn` da mal: una columna `_…` o un ancla sin `kind` son el error de ese ítem
+  13  una copia con otra ruta, listada antes: su fila no cambia de ruta y no se escribe
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-derivacion-en-python.py
 """
@@ -241,7 +242,27 @@ def e12():
     bien("12 · `fn` que da una columna `_…` o un ancla sin `kind`: el error de ese ítem, con su porqué")
 
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12], 1):
+def e13():
+    """B5·3 en vivo: una copia con otra ruta que el listado da ANTES que la de
+    siempre. Mismo ítem; la fila conserva su ruta y no se escribe nada."""
+    LAGO.pop(SAL, None)
+    LISTADO[:] = [ref("copia/a.pdf", "aa"), ref("copia/b.pdf", "bb")]
+    aplicar()
+    n = len(ESCRITURAS)
+    LISTADO.insert(0, ref("copia-b5/a.pdf", "aa"))
+    r = aplicar()
+    assert r["skipped"] == 2 and r["items"] == 2 and not r["written"] and LLAMADAS == [], r
+    assert len(ESCRITURAS) == n and {x["_item"]["path"] for x in filas()} == {"copia/a.pdf", "copia/b.pdf"}, filas()
+    # y si la de siempre se va, la copia la hereda: se escribe con la ruta nueva, sin calcular
+    del LISTADO[1]
+    r = aplicar()
+    assert r["skipped"] == 2 and r["written"] and LLAMADAS == [], r
+    assert {x["_item"]["path"] for x in filas()} == {"copia-b5/a.pdf", "copia/b.pdf"}, filas()
+    bien("13 · una copia con otra ruta, listada antes: el mismo ítem, su fila no cambia de ruta y no se escribe; "
+         "si la de siempre se va, la copia la hereda")
+
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()

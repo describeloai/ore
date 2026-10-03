@@ -487,11 +487,11 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
     sistema = _esquema_de_sistema()
 
     # Lo de hoy: un ítem por identidad (dos rutas con el mismo contenido son el
-    # mismo ítem: se calcula una vez, con la primera).
-    hoy = {}
+    # mismo ítem: se calcula una vez). Cuál de sus rutas, se decide abajo.
+    rutas_de = {}
     for it in col.items():
         k = _sha(_identidad(it.ref), nombre_fn, fn_version, None, params_hash)
-        hoy.setdefault(k, it)
+        rutas_de.setdefault(k, []).append(it)
 
     # Lo que ya está: las filas de la salida, por su clave.
     previas = {}
@@ -503,6 +503,15 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
         previas.setdefault(((f.get("_derivation") or {}).get("key")), []).append(f)
     rutas_previas = {((f.get("_item") or {}).get("collection"), (f.get("_item") or {}).get("path"))
                      for f in filas_previas}
+
+    # La ruta de un ítem con varias: la que su fila ya dice, si sigue ahí (una
+    # copia no lo mueve, y no se reescribe la tabla por el orden del listado,
+    # B5·3); si no, la primera del listado.
+    def ruta_de(k, its):
+        dichas = {((f.get("_item") or {}).get("collection"), (f.get("_item") or {}).get("path"))
+                  for f in previas.get(k, [])}
+        return next((it for it in its if (it.ref.collection, it.ref.path) in dichas), its[0])
+    hoy = {k: ruta_de(k, its) for k, its in rutas_de.items()}
 
     def estado(filas):
         return "error" if any((f.get("_status") or {}).get("state") == "error" for f in filas) else "ok"
