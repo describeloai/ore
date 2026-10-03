@@ -492,11 +492,9 @@ pedirlo es 409.
 versión— con la consulta escrita en SQL y ejecutada por `sql()`, declarando `inputs` y `output`
 como cualquier transform.
 
-⛔ Y con una limitación dicha en la propia semilla: **la consulta vive en una cadena, no en un
-`.sql` aparte**. Un trabajo del árbol se ejecuta como **una celda**, así que no hay fichero de
-al lado que leer; y una celda SQL a secas **lee pero no escribe**. Un `.sql` suelto que dijera
-ser un transform sería un cartel. Darle al árbol un ejecutor de `.sql` que sepa escribir es un
-peldaño aparte, y así queda anotado.
+La consulta es **un `.sql` de verdad** desde [`0038`](0038-los-tres-niveles.md) P7 (semilla
+`transforms/ejemplo.sql`), y cómo se lee y corre un `.sql` —análisis, transform o guion— es
+[`0039`](0039-sql-paradigms-in-code-repositories.md).
 
 **Las familias, también del producto.** `FAMILIAS` (id, título y **una frase que no nombra
 lenguaje**) viaja en el índice junto a las clases. Es lo que hace que la tarjeta que agrupa

@@ -4,8 +4,8 @@
 consulta**: una `View` es SQL, y todo lo que se gobierna de ella —lo que lee, el linaje de cada
 columna, sus etiquetas, lo que revela por sus predicados— se deriva de esa consulta. Gramática:
 [OOS v1alpha14 `01-la-vista-es-sql`](../../vendor/oos/spec/v1alpha14/01-la-vista-es-sql.md). Se
-apoya en [`0038`](0038-los-tres-niveles.md) (`base.schema.nombre`), [`0039`](0039-el-guion-sql.md)
-(el guion SQL del puesto) y [`0033`](0033-el-dataset.md) (lo que tiene bytes es un dataset).
+apoya en [`0038`](0038-los-tres-niveles.md) (`base.schema.nombre`), [`0039`](0039-sql-paradigms-in-code-repositories.md)
+(SQL en los code repositories) y [`0033`](0033-el-dataset.md) (lo que tiene bytes es un dataset).
 
 ## Qué es
 

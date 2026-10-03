@@ -1,6 +1,6 @@
 # 0038 · Los tres niveles: `base.schema.nombre`, como en Unity Catalog
 
-**Estado:** decidido (P0–P4 hechos; P5–P7 pendientes) · **Fecha:** 2026-09-24 ·
+**Estado:** decidido y hecho (P0–P7) · **Fecha:** 2026-09-24 ·
 **Decide:** cómo se nombra lo que un inquilino tiene en el catálogo —en los documentos, en SQL,
 por `/v1` y en la consola—, ahora que el **schema** es parte del nombre. Sigue a
 [`0033`](0033-el-dataset.md) (el dataset), [`0034`](0034-el-catalogo-de-assets.md) ④ (el
