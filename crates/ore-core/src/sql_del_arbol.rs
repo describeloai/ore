@@ -802,9 +802,8 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
                 )
                 .ayuda(format!("un `Dataset` con `from: {{ table: {r} }}`")),
             ),
-            // v1alpha16: el listado de un origen se pregunta en el origen, y una
-            // colección tiene ítems, no filas. Ninguno está en el lago que un
-            // `.sql` lee, y el mensaje dice por dónde se lee cada uno.
+            // v1alpha16: el listado de un origen se pregunta en el origen: no
+            // está en el lago que un `.sql` lee, y el mensaje dice por dónde.
             Some(d) if d.kind == Kind::ObjectTable => fallos.push(
                 Fallo::new(
                     format!("`{r}` es un `ObjectTable`, el listado de un origen: no está en el lago"),
@@ -815,15 +814,19 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
                      sus ficheros se tienen en una `MediaCollection`",
                 ),
             ),
+            // 0049 B7·1: a collection is a relation in `FROM`, one row per item
+            // (`item`, `path`, `digest`, `size`, `content_type`, `modified`).
+            // Writing a dataset from it makes the dataset anchored: B7·3.
+            Some(d) if d.kind == Kind::MediaCollection && u.escribe.is_none() => {}
             Some(d) if d.kind == Kind::MediaCollection => fallos.push(
                 Fallo::new(
-                    format!("`{r}` es una `MediaCollection`: tiene ítems, no filas"),
+                    format!(
+                        "`{r}` is a `MediaCollection`: a dataset written from it is anchored \
+                         to it, and SQL does not write anchored datasets yet"
+                    ),
                     n.pos,
                 )
-                .ayuda(
-                    "lo que hay dentro de sus ficheros lo saca una función que la lee y lo escribe \
-                     en un `Dataset`; ese dataset es el que se lee aquí",
-                ),
+                .ayuda("for now, `ore.collection(…).apply(fn)` in a Python transform writes it"),
             ),
             Some(d) => fallos.push(Fallo::new(
                 format!("`{r}` es una `{:?}`: en SQL se lee un `Dataset` o una `View`", d.kind),
@@ -833,6 +836,7 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             None if !hay_schema(n) => fallos.push(sin_schema(n)),
             // lo creó una sentencia de antes del guion
             None if creado.datasets.contains(&r) || creado.vistas.contains(&r) => {}
+            None if u.escribe.is_none() && creado.colecciones.contains(&r) => {}
             None => fallos.push(Fallo::new(
                 format!("no hay ningún `Dataset` ni `View` `{r}` en el árbol"),
                 n.pos,
@@ -959,8 +963,10 @@ fn nombres_de_celda(texto: &str, pkg: &Package) -> Vec<NombreDeCelda> {
         .collect();
     let del_arbol = |qn: &str| {
         pkg.docs.iter().any(|d| {
-            matches!(d.kind, Kind::Dataset | Kind::View | Kind::Table)
-                && d.qname().as_deref() == Some(qn)
+            matches!(
+                d.kind,
+                Kind::Dataset | Kind::View | Kind::Table | Kind::MediaCollection
+            ) && d.qname().as_deref() == Some(qn)
         })
     };
     let paquete = |p: &str| {

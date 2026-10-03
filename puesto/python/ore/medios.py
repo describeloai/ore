@@ -433,6 +433,27 @@ def _esquema_de_sistema():
             ("_derivation", deriv), ("_status", estado)]
 
 
+#: A collection read in SQL `FROM` (0049 B7·1): one row per item.
+COLUMNAS_DE_LA_RELACION = ("item", "path", "digest", "size", "content_type", "modified")
+
+
+def _relacion(col):
+    """The collection as a relation for `sql()`: one row per item of its
+    listing (no bytes are read). `item` is the `MediaRef` as a struct —the same
+    type as `_item` in an anchored table—, for a function to take."""
+    import pyarrow as pa
+    tipo_item = dict(_esquema_de_sistema())["_item"]
+    filas = []
+    for it in col.items():
+        r = it.ref
+        filas.append({"item": {c: getattr(r, c, None) for c in _CAMPOS_ITEM}, "path": r.path,
+                      "digest": r.digest, "size": r.size, "content_type": r.content_type,
+                      "modified": getattr(r, "modified", None)})
+    esquema = pa.schema([("item", tipo_item), ("path", pa.string()), ("digest", pa.string()),
+                         ("size", pa.int64()), ("content_type", pa.string()), ("modified", pa.string())])
+    return pa.Table.from_pylist(filas, schema=esquema)
+
+
 def _canonico(x):
     return json.dumps(x, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 

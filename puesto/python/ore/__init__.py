@@ -1008,6 +1008,14 @@ def sql(query, format="pandas"):
     if codigo != 200:
         _o_el_error(codigo, r, (r or {}).get("nombre") or "?")
     for nombre, rd in sorted(((r or {}).get("fuentes") or {}).items()):
+        # 0049 B7·1: a collection is read by its listing, through ore-medios
+        # (what a transform did not declare is a 403 there, as in Python).
+        if (rd or {}).get("collection"):
+            from .medios import _relacion
+            tabla = "__ore_coleccion_%d" % abs(hash(nombre))
+            con.register(tabla, _relacion(collection(nombre)))
+            _registra(con, nombre, _q(tabla))
+            continue
         _lee(nombre)
         fuente, _ = _fuente_de_respuesta(nombre, rd)
         _registra(con, nombre, fuente)

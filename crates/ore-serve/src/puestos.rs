@@ -2581,27 +2581,44 @@ impl Servidor {
         if texto.trim().is_empty() {
             return Respuesta::error(422, "sql() quiere una consulta");
         }
+        // Each name with whether it is a `MediaCollection` (0049 B7·1).
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             Respuesta::ok(Json::Arr(
                 ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg)
                     .into_iter()
-                    .map(Json::s)
+                    .map(|n| {
+                        let col = pkg.docs.iter().any(|d| {
+                            d.kind == ore_core::document::Kind::MediaCollection
+                                && d.qname().as_deref() == Some(n.as_str())
+                        });
+                        Json::Arr(vec![Json::s(n), Json::Bool(col)])
+                    })
                     .collect(),
             ))
         });
-        let nombres: Vec<String> = match &r.cuerpo {
+        let nombres: Vec<(String, bool)> = match &r.cuerpo {
             Json::Arr(xs) if r.codigo == 200 => xs
                 .iter()
                 .filter_map(|x| match x {
-                    Json::Str(s) => Some(s.clone()),
+                    Json::Arr(p) => match (p.first(), p.get(1)) {
+                        (Some(Json::Str(s)), Some(Json::Bool(c))) => Some((s.clone(), *c)),
+                        _ => None,
+                    },
                     _ => None,
                 })
                 .collect(),
             _ => return r,
         };
         let mut fuentes = std::collections::BTreeMap::new();
-        for n in nombres {
+        for (n, coleccion) in nombres {
+            // 0049 B7·1: a collection is read by its items, and the SDK lists
+            // them through ore-medios, where what is declared is enforced (B4·2):
+            // here it only says so.
+            if coleccion {
+                fuentes.insert(n.clone(), Json::obj([("collection", Json::s(&n))]));
+                continue;
+            }
             let mut d = self.datos_del_puesto(sujeto, id, &n);
             if d.codigo != 200 {
                 if let Json::Obj(m) = &mut d.cuerpo {

@@ -88,6 +88,10 @@ def tipo_duckdb(t):
     t = t or ""
     if t.startswith("list<"):
         return tipo_duckdb(t[5:-1]) + "[]"
+    # `Media<c>`: the `MediaRef` as the struct `sql()` registers (0049 B7·1).
+    if t.startswith("Media<"):
+        return ("STRUCT(uri VARCHAR, collection VARCHAR, path VARCHAR, version VARCHAR, digest VARCHAR, "
+                "size BIGINT, content_type VARCHAR, content_type_detected VARCHAR, checksum VARCHAR)")
     m = re.match(r"^(Money|Quantity)<[^,]+,\s*(\d+)>$", t)
     if m:
         return "DECIMAL(38, %s)" % min(int(m.group(2)), 18)
@@ -157,6 +161,13 @@ class Catalogo:
             n = corto(i.get("paquete"), s_, i.get("name"))
             i = dict(i, schema=s_, completo="%s.%s.%s" % (i.get("paquete"), s_, i.get("name")))
             if i.get("kind") in ("Dataset", "View"):
+                self.legibles[n] = i
+            elif i.get("kind") == "MediaCollection":
+                # 0049 B7·1: read in `FROM` as one row per item, with the
+                # columns `sql()` gives it (`medios._relacion`).
+                i["expone"] = [{"name": "item", "type": "Media<%s>" % n}, {"name": "path", "type": "String"},
+                               {"name": "digest", "type": "String"}, {"name": "size", "type": "Integer"},
+                               {"name": "content_type", "type": "String"}, {"name": "modified", "type": "String"}]
                 self.legibles[n] = i
             elif i.get("kind") == "Table":
                 self.ajenas[n] = i

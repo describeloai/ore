@@ -507,6 +507,44 @@ entrada es la colección escrita de B4 (4 PDF) y cuya salida es
 superficie); que `apply()` emita **ficheros** a una colección escrita, y no sólo filas; y su forma en
 SQL —materializar una tabla anclada desde una colección—, que es el siguiente paso de este ADR.
 
+### B7 · plan: la tabla anclada desde SQL (2026-10-03)
+
+La forma SQL de `apply()`. **No es una vista**: el resultado de aplicar funciones a ficheros no se
+recalcula con un plan, es un `Dataset` escrito por un transform y anclado a su colección. Por eso la
+frase es la que ORE ya tiene para escribir un dataset, y lo único nuevo es qué cabe en el `FROM`:
+
+```sql
+-- transforms/paginas.sql
+create or replace dataset legal.archivo.paginas as
+select p.page, p.texto, p.anchor
+from legal.archivo.contratos as c
+cross join lateral legal.funciones.paginas(c.item) as p
+where c.content_type = 'application/pdf';
+```
+
+- **Una colección es una relación en `FROM`**, sin decir su tipo, como una vista o un dataset:
+  `item` (`Media<colección>`), `path`, `digest`, `size`, `content_type`, `modified`.
+- **Las `Functions` (0050) se llaman desde SQL**: escalares, `f(c.item)`, y de tabla,
+  `cross join lateral f(c.item)`; tipadas por su contrato.
+- **Si el `FROM` lee una colección, el dataset sale anclado a ella** (`anchoredTo`) y se calcula
+  por `apply()`: la consulta, ítem a ítem, con el mismo registro por clave. `or replace` dice la
+  verdad: el resultado es el de recalcularlo todo; lo incremental sólo lo abarata. La versión es la
+  consulta normalizada más la de cada función; el ancla, la columna `anchor` si la hay.
+- **Límites de la primera versión**, cada uno con su error: una sola colección y ningún `join` con
+  otra relación; sin agregados, ventanas, `order by` ni `limit`; funciones de Python sin `over` ni
+  `models`; `insert into` desde una colección, no.
+
+| paso | qué |
+|---|---|
+| B7·1 | la colección en `FROM`: ore-core la acepta en un `select`, ore-serve la resuelve, el SDK la registra en DuckDB, el editor la conoce |
+| B7·2 | las `Functions` en SQL: resueltas contra el árbol, reescritas a nombres internos, registradas con los tipos de su contrato |
+| B7·3 | `create or replace dataset … as select` que lee una colección: anclado, por `apply()`, con sus límites |
+| B7·4 | en vivo, un `.sql` en `pytransformsv1` |
+| B7·5 | docs, y esta sección pasa a «hecho» |
+
+Fuera: ficheros que dan ficheros (`insert into media collection … select …`, hito 3), `join` con
+otras relaciones (con la versión del dataset en la clave), Functions de TypeScript desde SQL.
+
 ## Lo que no se hace aquí
 
 - Las funciones concretas de IA (qué OCR, qué modelo de transcripción): se eligen sobre la base,

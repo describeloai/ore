@@ -18,6 +18,7 @@ CLI (`una_tabla_anclada_declara_su_coleccion_y_su_carga`) y en vivo (B5·3).
   11  dentro de un transform: la salida es su `output`, y leerla no es una entrada
   12  lo que `fn` da mal: una columna `_…` o un ancla sin `kind` son el error de ese ítem
   13  una copia con otra ruta, listada antes: su fila no cambia de ruta y no se escribe
+  14  la colección como relación de `sql()` (B7·1): una fila por ítem, sin leer bytes
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-derivacion-en-python.py
 """
@@ -262,7 +263,23 @@ def e13():
          "si la de siempre se va, la copia la hereda")
 
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13], 1):
+def e14():
+    """B7·1: la colección como relación de `sql()`: una fila por ítem, sin bytes."""
+    import duckdb
+    LISTADO[:] = [ref("copia/a.pdf", "aa"), ref("copia/b.pdf", "bb")]
+    t = medios._relacion(ore.collection(COL))
+    assert t.column_names == list(medios.COLUMNAS_DE_LA_RELACION), t.column_names
+    assert t.schema.field("item").type == dict(medios._esquema_de_sistema())["_item"]
+    con = duckdb.connect()
+    con.register("c", t)
+    r = con.execute("select path, item.digest, size from c where path like '%b.pdf'").fetchall()
+    assert r == [("copia/b.pdf", "sha256:bb", 10)], r
+    assert LLAMADAS == [], LLAMADAS
+    bien("14 · la colección en `FROM` (B7·1): una fila por ítem —item, path, digest, size, "
+         "content_type, modified—, con `item` del mismo tipo que `_item`, y sin leer un byte")
+
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()
