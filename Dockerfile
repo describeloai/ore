@@ -460,6 +460,35 @@ COPY puesto/node/ore        /opt/ore/ore
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN ln -s ../ore /opt/ore/node_modules/ore \
  && ORE_CELDAS=/tmp/comprobar node /opt/ore/agente.mjs --comprobar
+# ⭐ L3·2 · LO QUE SÓLO TIPA, APARTE: el `tsc`, el servidor de lenguaje y los
+#   tipos del Node que corre, en `/opt/ore/tipos` —nunca en el `node_modules`
+#   de lo que corre—. Las versiones, las de `provisto.txt` (las líneas con
+#   ` tipos`): si no coinciden, la construcción falla aquí. 29 MB (medido el
+#   2026-10-03), sin scripts de instalación.
+RUN mkdir -p /opt/ore/tipos && cd /opt/ore/tipos && echo '{"private":true}' > package.json \
+ && npm install --no-audit --no-fund --ignore-scripts $(grep ' tipos$' /opt/ore/provisto.txt | cut -d' ' -f1) \
+ && for l in $(grep ' tipos$' /opt/ore/provisto.txt | cut -d' ' -f1); do n="${l%@*}"; v="${l##*@}"; \
+      [ "$(node -p "require('/opt/ore/tipos/node_modules/$n/package.json').version")" = "$v" ] \
+        || { echo "✗ provisto.txt dice $n@$v y la imagen trae otra"; exit 1; }; done \
+ && echo "tipos · $(node node_modules/typescript/bin/tsc -v) · typescript-language-server $(node node_modules/typescript-language-server/lib/cli.mjs --version) · $(du -sm node_modules | cut -f1) MB" >> /entorno-1.txt \
+ && rm -rf /root/.npm
+# Y SE PRUEBA AQUÍ: una función con los tipos de `ore`, su prueba con
+# `node:test`, y el `tsconfig` de la plantilla (L1): `tsc` limpio; y un `enum`
+# es TS1294 —lo que Node no puede correr, `tsc` lo dice—.
+RUN mkdir -p /tmp/t/functions /tmp/t/node_modules/@types && cd /tmp/t \
+ && ln -s /opt/ore/ore node_modules/ore \
+ && ln -s /opt/ore/tipos/node_modules/@types/node node_modules/@types/node \
+ && ln -s /opt/ore/tipos/node_modules/undici-types node_modules/undici-types \
+ && printf '%s\n' '{"private":true,"type":"module"}' > package.json \
+ && printf '%s\n' '{"compilerOptions":{"target":"esnext","module":"nodenext","strict":true,"noEmit":true,"erasableSyntaxOnly":true,"verbatimModuleSyntax":true,"allowImportingTsExtensions":true,"skipLibCheck":true},"include":["**/*.ts"],"exclude":["node_modules"]}' > tsconfig.json \
+ && printf '%s\n' 'import type { Decimal } from "ore";' 'export default function f(a: Decimal<12, 2>): string { return a; }' > functions/f.ts \
+ && printf '%s\n' 'import { test } from "node:test";' 'import assert from "node:assert/strict";' 'import f from "./f.ts";' 'test("f", () => assert.equal(f("1.00"), "1.00"));' > functions/f.test.ts \
+ && node /opt/ore/tipos/node_modules/typescript/bin/tsc -p . \
+ && node --test > /dev/null \
+ && printf '%s\n' 'enum A { x }' 'export {};' > functions/malo.ts \
+ && ! node /opt/ore/tipos/node_modules/typescript/bin/tsc -p . > salida.txt \
+ && grep -q TS1294 salida.txt \
+ && cd / && rm -rf /tmp/t
 
 USER 65532:65532
 WORKDIR /trabajo
@@ -639,20 +668,26 @@ RUN chmod 0755 /opt/ore/resolver.sh \
 # 2026-10-03 (Node 22, npm): la misma resolución da la misma caja, byte a byte.
 # Y (L2) el lock para el repositorio: el de npm, sin el nombre de la caja.
 RUN set -e; mkdir -p /tmp/p/arbol; \
-    printf '%s' '{"dependencies":{"dayjs":"1.11.13","@duckdb/node-api":"1.4.0","util":"file:../u"},"devDependencies":{"typescript":"5.8.3"}}' \
+    printf '%s' '{"dependencies":{"dayjs":"1.11.13","@duckdb/node-api":"1.4.0","util":"file:../u"},"devDependencies":{"typescript":"5.8.3","@types/lodash":"4.17.20"}}' \
       > /tmp/p/arbol/package.json; \
     TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol ""; \
     tar -tzf /tmp/p/t/capa.tgz | grep -qx 'node_modules/dayjs/package.json'; \
-    ! tar -tzf /tmp/p/t/capa.tgz | grep -q -e '@duckdb' -e 'typescript'; \
+    ! tar -tzf /tmp/p/t/capa.tgz | grep -q -e '@duckdb' -e 'typescript' -e '@types' || exit 1; \
+    tar -tzf /tmp/p/t/tipos.tgz | grep -qx 'node_modules/@types/lodash/package.json'; \
+    ! tar -tzf /tmp/p/t/tipos.tgz | grep -q -e 'dayjs' -e 'typescript/' || exit 1; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
     grep -q '"dayjs@1.11.13"' /tmp/p/t/informe.json; \
+    grep -q '"dev:@types/lodash@4.17.20"' /tmp/p/t/informe.json; \
     grep -q 'pediste @duckdb/node-api 1.4.0, y esta sesión trae la 1.5.5-r.5' /tmp/p/t/informe.json; \
+    grep -q 'pediste typescript 5.8.3, y esta sesión trae la 5.9.3' /tmp/p/t/informe.json; \
     grep -q '"suma"' /tmp/p/t/informe.json; \
+    grep -q '"sumaTipos"' /tmp/p/t/informe.json; \
     grep -q '"node_modules/dayjs"' /tmp/p/t/lock-del-repositorio.json; \
-    ! grep -q -e '"capa"' -e '@duckdb' /tmp/p/t/lock-del-repositorio.json; \
-    S1=$(sha256sum /tmp/p/t/capa.tgz | cut -c1-64); rm -rf /tmp/p/t; \
+    grep -A4 '"node_modules/@types/lodash"' /tmp/p/t/lock-del-repositorio.json | grep -q '"dev": true'; \
+    ! grep -q -e '"capa"' -e '@duckdb' /tmp/p/t/lock-del-repositorio.json || exit 1; \
+    S1=$(sha256sum /tmp/p/t/capa.tgz /tmp/p/t/tipos.tgz | cut -c1-64); rm -rf /tmp/p/t; \
     TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol "" >/dev/null; \
-    [ "$S1" = "$(sha256sum /tmp/p/t/capa.tgz | cut -c1-64)" ]; \
+    [ "$S1" = "$(sha256sum /tmp/p/t/capa.tgz /tmp/p/t/tipos.tgz | cut -c1-64)" ]; \
     cat /tmp/p/t/informe.json >> /capa-node.txt; rm -rf /tmp/p /root/.npm
 
 USER 65532:65532

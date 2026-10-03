@@ -4,3 +4,9 @@
 # repositorio pide otra versión. Cambiarlo es cambiar la imagen, no un Job.
 @duckdb/node-api@1.5.5-r.5
 ore@1.0.0
+# ⭐ L3·2 · LO QUE SÓLO TIPA (` tipos` detrás): en `/opt/ore/tipos`, nunca en
+#   el `node_modules` de lo que corre. El `tsc` y el servidor de lenguaje del
+#   puesto, y los tipos del Node que corre (24). Medido el 2026-10-03: 29 MB.
+typescript@5.9.3 tipos
+typescript-language-server@5.3.0 tipos
+@types/node@24.19.1 tipos

@@ -657,12 +657,16 @@ it takes a minute) and commits the exact versions it installed as
 reproduces it anywhere. It is rewritten on every resolution; don't edit it.
 Good to know:
 
-- `ore` (this SDK) and `@duckdb/node-api` come with the platform; don't declare them.
+- `ore` (this SDK) and `@duckdb/node-api` come with the platform, and so do
+  `typescript` (5.9), its language server and `@types/node` (the Node that
+  runs, 24); don't declare them.
+- `dependencies` is what your functions run with. `devDependencies` (types such
+  as `@types/lodash`) are resolved together with them, in the same lock, but
+  apart: they type your code and never reach the runtime.
 - Install scripts of packages never run, so a package that compiles native code
   when it installs is not supported. Pure JavaScript packages and those that
   ship prebuilt binaries work.
-- Only `dependencies` is read. `devDependencies`, `peerDependencies`,
-  `overrides` and local paths (`file:`, `link:`) are not.
+- `peerDependencies`, `overrides` and local paths (`file:`, `link:`) are not read.
 
 ## TypeScript, as Node runs it
 

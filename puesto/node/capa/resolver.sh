@@ -41,16 +41,37 @@ cp "$TRABAJO/package.json" "$TRABAJO/capa/package.json"
 #   instalarse —ni `preinstall` ni `postinstall`—. Un Job con red no corre
 #   código del registro; un paquete que compila nativo no funcionará, y el
 #   informe lo dice.
-# `--omit=dev`   lo que la sesión necesita para correr, y nada más.
+# ⭐ L3·1: UNA RESOLUCIÓN, DOS CAJAS. `npm install` resuelve TODO —con lo de
+#   desarrollo— y deja un lock coherente (lo de desarrollo, `"dev": true`);
+#   de ESE lock, sin red, `npm ci --omit=dev` saca lo que corre. Lo que la
+#   primera tiene y la segunda no es lo de desarrollo: su caja, aparte.
+#   - `capa.tgz`  lo que la sesión necesita para correr, y nada más;
+#   - `tipos.tgz` lo que sólo tipa (`@types/…`, lo de `devDependencies`).
 # La caché de npm vive EN EL JOB y muere con él, como el repositorio de Maven.
 ESTADO=lista
-if ( cd "$TRABAJO/capa" && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
-       --no-update-notifier --cache "$TRABAJO/npm-cache" > "$TRABAJO/npm.log" 2>&1 ); then
+NPM="--ignore-scripts --no-audit --no-fund --no-update-notifier --cache $TRABAJO/npm-cache"
+if ( cd "$TRABAJO/capa" && npm install $NPM > "$TRABAJO/npm.log" 2>&1 ); then
   if [ -d "$TRABAJO/capa/node_modules" ] && [ -n "$(ls -A "$TRABAJO/capa/node_modules")" ]; then
-    # La caja: `node_modules` y el lock, y nada más. Fechas y dueños fijos para
-    # que la misma resolución dé la misma caja.
-    tar --sort=name --mtime='2026-01-01 00:00Z' --owner=0 --group=0 --numeric-owner \
-        -czf "$TRABAJO/capa.tgz" -C "$TRABAJO/capa" node_modules package-lock.json
+    mkdir -p "$TRABAJO/run"
+    cp "$TRABAJO/capa/package.json" "$TRABAJO/capa/package-lock.json" "$TRABAJO/run/"
+    if ( cd "$TRABAJO/run" && npm ci --omit=dev --offline $NPM >> "$TRABAJO/npm.log" 2>&1 ); then
+      # La caja de lo que corre: `node_modules` y el lock (el entero), y nada
+      # más. Fechas y dueños fijos para que la misma resolución dé la misma caja.
+      if [ -d "$TRABAJO/run/node_modules" ] && [ -n "$(ls -A "$TRABAJO/run/node_modules")" ]; then
+        tar --sort=name --mtime='2026-01-01 00:00Z' --owner=0 --group=0 --numeric-owner \
+            -czf "$TRABAJO/capa.tgz" -C "$TRABAJO/run" node_modules package-lock.json
+      else
+        echo "### nada que correr: lo declarado para correr lo pone ya la sesión"
+      fi
+      node /opt/ore/capa.mjs tipos "$TRABAJO"
+      if [ -s "$TRABAJO/tipos.txt" ]; then
+        tar --sort=name --mtime='2026-01-01 00:00Z' --owner=0 --group=0 --numeric-owner \
+            -czf "$TRABAJO/tipos.tgz" -C "$TRABAJO/capa" -T "$TRABAJO/tipos.txt"
+      fi
+    else
+      ESTADO=error
+      echo "✗ npm no pudo sacar lo que corre del lock: $(tail -c 600 "$TRABAJO/npm.log")"
+    fi
   else
     echo "### nada que instalar: todo lo declarado lo pone ya la sesión"
   fi

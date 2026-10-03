@@ -4,6 +4,7 @@
 //
 //   declarar <árbol> <alcance> <trabajo>   los package.json del alcance → deps.txt · digest.txt
 //   package  <trabajo> <provisto>          lo que npm resuelve: lo declarado sin lo que la sesión trae
+//   tipos    <trabajo>                     lo de desarrollo: lo que la resolución entera tiene y la de ejecución no (L3·1)
 //   informe  <trabajo> <estado>            lo resuelto → informe.json (lock, suma de la caja, avisos)
 //                                          y, si está lista, lock-del-repositorio.json (L2)
 //
@@ -19,7 +20,13 @@ import { join } from "node:path";
 
 const [orden, ...args] = process.argv.slice(2);
 
-/** `dependencies` de un package.json, como `nombre@rango` (ver `entorno.rs`). */
+/** Lo de desarrollo lleva esta marca delante (L3·1): `dev:@types/lodash@^4`. */
+const DEV = "dev:";
+
+/**
+ * `dependencies` de un package.json, como `nombre@rango`, y —L3·1—
+ * `devDependencies`, como `dev:nombre@rango` (ver `entorno.rs`).
+ */
 function declaradas(texto) {
   let j;
   try {
@@ -27,15 +34,17 @@ function declaradas(texto) {
   } catch {
     return [];
   }
-  const d = j?.dependencies;
-  if (!d || typeof d !== "object" || Array.isArray(d)) return [];
   const fuera = [];
-  for (const [k, v] of Object.entries(d)) {
-    if (typeof v !== "string") continue;
-    const nombre = k.trim();
-    const rango = v.trim();
-    if (!nombre || /\s/.test(nombre) || ["file:", "link:", "workspace:"].some((p) => rango.startsWith(p))) continue;
-    fuera.push(`${nombre}@${rango || "*"}`);
+  for (const [seccion, prefijo] of [["dependencies", ""], ["devDependencies", DEV]]) {
+    const d = j?.[seccion];
+    if (!d || typeof d !== "object" || Array.isArray(d)) continue;
+    for (const [k, v] of Object.entries(d)) {
+      if (typeof v !== "string") continue;
+      const nombre = k.trim();
+      const rango = v.trim();
+      if (!nombre || /\s/.test(nombre) || ["file:", "link:", "workspace:"].some((p) => rango.startsWith(p))) continue;
+      fuera.push(`${prefijo}${nombre}@${rango || "*"}`);
+    }
   }
   return fuera;
 }
@@ -79,14 +88,18 @@ function declarar(arbol, alcance, trabajo) {
   console.log(`### declarado: ${deps.length ? deps.join(", ") : "(nada)"} → ${digest || "(sin capa)"}`);
 }
 
-/** Lo que la sesión ya trae (`provisto.txt`: `nombre@versión` por línea). */
+/**
+ * Lo que la sesión ya trae (`provisto.txt`: `nombre@versión` por línea; con
+ * ` tipos` detrás, lo que sólo tipa —L3·2—: el compilador, el servidor de
+ * lenguaje, `@types/node`). Para la capa todo es lo mismo: no se copia.
+ */
 function provisto(f) {
   return new Map(
     readFileSync(f, "utf8")
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith("#"))
-      .map(partir),
+      .map((l) => partir(l.split(/\s+/)[0])),
   );
 }
 
@@ -94,20 +107,51 @@ function paquete(trabajo, ficheroProvisto) {
   const deps = readFileSync(join(trabajo, "deps.txt"), "utf8").split("\n").filter(Boolean);
   const trae = provisto(ficheroProvisto);
   const dependencies = {};
+  const devDependencies = {};
   const avisos = [];
   for (const d of deps) {
-    const [n, r] = partir(d);
+    const dev = d.startsWith(DEV);
+    const [n, r] = partir(dev ? d.slice(DEV.length) : d);
     if (trae.has(n)) {
       // ⭐ MANDA EL CONTENEDOR, como en la JVM: el SDK está hecho contra lo que
       //   la imagen pone, y dos copias del mismo paquete son dos módulos.
+      //   También en lo de desarrollo: el `tsc` y los tipos de Node son los de
+      //   la imagen, y un `@types/node` de otra versión diría otro Node.
       if (r !== "*" && r !== trae.get(n)) avisos.push(`pediste ${n} ${r}, y esta sesión trae la ${trae.get(n)}: se usa la de la sesión`);
       continue;
     }
-    dependencies[n] = r;
+    (dev ? devDependencies : dependencies)[n] = r;
   }
-  writeFileSync(join(trabajo, "package.json"), JSON.stringify({ name: "capa", private: true, type: "module", dependencies }, null, 2) + "\n");
+  writeFileSync(join(trabajo, "package.json"), JSON.stringify({ name: "capa", private: true, type: "module", dependencies, devDependencies }, null, 2) + "\n");
   writeFileSync(join(trabajo, "avisos.txt"), avisos.join("\n") + (avisos.length ? "\n" : ""));
-  console.log(`### a npm: ${Object.keys(dependencies).length} paquete(s)${avisos.length ? ` · ${avisos.length} aviso(s)` : ""}`);
+  const nd = Object.keys(devDependencies).length;
+  console.log(`### a npm: ${Object.keys(dependencies).length} paquete(s)${nd ? ` + ${nd} de desarrollo` : ""}${avisos.length ? ` · ${avisos.length} aviso(s)` : ""}`);
+}
+
+/** Los paquetes de primer nivel de un `node_modules` (`dayjs`, `@types/lodash`). */
+function primerNivel(dir) {
+  if (!existsSync(dir)) return [];
+  const fuera = [];
+  for (const e of readdirSync(dir)) {
+    if (e.startsWith(".")) continue;
+    if (e.startsWith("@")) for (const s of readdirSync(join(dir, e))) fuera.push(`${e}/${s}`);
+    else fuera.push(e);
+  }
+  return fuera.sort(porBytes);
+}
+
+/**
+ * ⭐ L3·1: LA CAJA DE TIPOS es lo que la resolución entera (`capa/`, con lo de
+ * desarrollo) tiene y la de ejecución (`run/`, `npm ci --omit=dev` desde el
+ * MISMO lock) no. Una resolución, dos cajas: lo de desarrollo nunca llega a
+ * ejecución, y lo que tipa es exactamente lo que corre. Deja `tipos.txt`, las
+ * rutas para `tar -T`.
+ */
+function tipos(trabajo) {
+  const run = new Set(primerNivel(join(trabajo, "run", "node_modules")));
+  const dev = primerNivel(join(trabajo, "capa", "node_modules")).filter((p) => !run.has(p));
+  writeFileSync(join(trabajo, "tipos.txt"), dev.map((p) => `node_modules/${p}\n`).join(""));
+  console.log(`### tipos: ${dev.length} paquete(s) de desarrollo${dev.length ? ` (${dev.join(", ")})` : ""}`);
 }
 
 /** Los paquetes de node_modules que compilan código nativo al instalarse. */
@@ -138,34 +182,38 @@ function informe(trabajo, estadoDado) {
   const deps = readFileSync(join(trabajo, "deps.txt"), "utf8").split("\n").filter(Boolean);
   const digest = existsSync(join(trabajo, "digest.txt")) ? readFileSync(join(trabajo, "digest.txt"), "utf8").trim() : "";
   const avisos = existsSync(join(trabajo, "avisos.txt")) ? readFileSync(join(trabajo, "avisos.txt"), "utf8").split("\n").filter(Boolean) : [];
-  // El lock: el conjunto exacto que npm resolvió (`package-lock.json`).
+  // El lock: el conjunto exacto que npm resolvió (`package-lock.json`), el de
+  // la resolución ENTERA; lo de desarrollo, con `dev:` delante (L3·1).
   const lock = [];
   const lockf = join(trabajo, "capa", "package-lock.json");
   if (existsSync(lockf)) {
     const l = JSON.parse(readFileSync(lockf, "utf8"));
     for (const [ruta, p] of Object.entries(l.packages ?? {})) {
       if (!ruta) continue;
-      lock.push(`${ruta.replace(/^.*node_modules\//, "")}@${p.version}`);
+      lock.push(`${p.dev ? DEV : ""}${ruta.replace(/^.*node_modules\//, "")}@${p.version}`);
     }
     lock.sort(porBytes);
   }
-  for (const n of nativos(join(trabajo, "capa", "node_modules"))) {
+  // Lo nativo sólo importa en lo que corre: un paquete de tipos no se ejecuta.
+  for (const n of nativos(join(trabajo, "run", "node_modules"))) {
     avisos.push(`${n} compila código nativo al instalarse, y la capa no ejecuta scripts de instalación (--ignore-scripts): no funcionará`);
   }
-  const caja = join(trabajo, "capa.tgz");
-  let suma = "";
-  let mb = 0;
-  if (existsSync(caja)) {
-    const b = readFileSync(caja);
-    suma = createHash("sha256").update(b).digest("hex");
-    mb = Math.ceil(b.length / 1048576);
-  }
+  const sumaDe = (f) => {
+    if (!existsSync(f)) return ["", 0];
+    const b = readFileSync(f);
+    return [createHash("sha256").update(b).digest("hex"), Math.ceil(b.length / 1048576)];
+  };
+  const [suma, mb] = sumaDe(join(trabajo, "capa.tgz"));
+  const [sumaTipos, mbTipos] = sumaDe(join(trabajo, "tipos.tgz"));
   const tope = Number(process.env.TOPE_MB ?? "512");
   let error = "";
   if (estado === "error") error = ultimas(join(trabajo, "npm.log"), 800);
   else if (mb > tope) {
     estado = "error";
     error = `la capa pesa ${mb} MB y el tope es ${tope} MB: un puesto que tarda dos minutos en arrancar no es un puesto`;
+  } else if (mbTipos > tope) {
+    estado = "error";
+    error = `lo de desarrollo pesa ${mbTipos} MB y el tope es ${tope} MB`;
   }
   // ⭐ L2: el lock, para el repositorio —`package-lock.json` junto a su
   //   `package.json`, lo que se versiona—. El de npm tal cual (`resolved`,
@@ -184,6 +232,8 @@ function informe(trabajo, estadoDado) {
     digest,
     declarado: deps,
     ...(suma ? { caja: "capa.tgz", suma } : {}),
+    // L3·1: lo de desarrollo, en su caja: lo lee lo que tipa, nunca lo que corre.
+    ...(sumaTipos ? { cajaTipos: "tipos.tgz", sumaTipos, mbTipos: String(mbTipos) } : {}),
     lock,
     mb: String(mb),
     avisos,
@@ -192,15 +242,16 @@ function informe(trabajo, estadoDado) {
     ...(error ? { error } : {}),
   };
   writeFileSync(join(trabajo, "informe.json"), JSON.stringify(j, null, 1) + "\n");
-  console.log(`### informe ${estado} · ${lock.length} paquete(s) · ${mb} MB${avisos.length ? ` · ${avisos.length} aviso(s)` : ""}`);
+  console.log(`### informe ${estado} · ${lock.length} paquete(s) · ${mb} MB${sumaTipos ? ` + ${mbTipos} MB de tipos` : ""}${avisos.length ? ` · ${avisos.length} aviso(s)` : ""}`);
   for (const a of avisos) console.log(`    ⚠️ ${a}`);
 }
 
 switch (orden) {
   case "declarar": declarar(args[0], args[1], args[2]); break;
   case "package": paquete(args[0], args[1]); break;
+  case "tipos": tipos(args[0]); break;
   case "informe": informe(args[0], args[1]); break;
   default:
-    console.error("capa.mjs declarar|package|informe …");
+    console.error("capa.mjs declarar|package|tipos|informe …");
     process.exit(2);
 }

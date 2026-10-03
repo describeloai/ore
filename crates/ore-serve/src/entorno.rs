@@ -105,7 +105,10 @@
 //! (`ore`, `@duckdb/node-api`) no se copia: si se pide otra versión, el
 //! informe lo dice. La capa es una caja, `capa.tgz` con su `sha256` en el
 //! informe, que el puesto baja por su nombre y desempaqueta en `/capa`.
-//! ⛔ Lo que no se honra, no se finge: `devDependencies`, `peerDependencies`,
+//! ⭐ L3·1: `devDependencies` también, como `dev:nombre@rango`: una sola
+//! resolución con su lock, y DOS cajas —`capa.tgz`, lo que corre, y
+//! `tipos.tgz`, lo que sólo tipa—. Lo de desarrollo nunca llega a ejecución.
+//! ⛔ Lo que no se honra, no se finge: `peerDependencies`,
 //! `optionalDependencies`, `overrides`, `scripts` y lo local (`file:`,
 //! `link:`, `workspace:`) no se leen.
 //!
@@ -180,9 +183,14 @@ pub(crate) fn entorno_valido(e: &str) -> Result<&'static str, Respuesta> {
     }
 }
 
-/// `dependencies` de un `package.json`, como `nombre@rango`, y nada más: ni
-/// `devDependencies` (la capa es lo que la sesión necesita para **correr**),
-/// ni `peer`/`optional`, ni `overrides`, ni `scripts`. Lo local —`file:`,
+/// Lo de desarrollo de un `package.json` lleva esta marca delante (L3·1):
+/// `dev:@types/lodash@^4`. La misma que `capa.mjs`.
+pub(crate) const DEV: &str = "dev:";
+
+/// `dependencies` de un `package.json`, como `nombre@rango`, y —L3·1—
+/// `devDependencies`, como `dev:nombre@rango`: una resolución, dos cajas (lo
+/// que corre y lo que sólo tipa). Ni `peer`/`optional`, ni `overrides`, ni
+/// `scripts`. Lo local —`file:`,
 /// `link:`, `workspace:`— no se resuelve en un Job que no tiene el árbol del
 /// cliente como paquete, y se deja fuera. Un fichero que no es JSON, o un
 /// `dependencies` que no es un objeto de cadenas, no declara nada.
@@ -190,21 +198,26 @@ pub(crate) fn dependencias_de_package(texto: &str) -> Vec<String> {
     let Ok(n) = ore_core::parse::parse(texto) else {
         return Vec::new();
     };
-    let Some((_, deps)) = n.get("dependencies") else {
-        return Vec::new();
-    };
-    deps.entries()
-        .iter()
-        .filter_map(|(k, v)| {
+    let mut fuera = Vec::new();
+    for (seccion, prefijo) in [("dependencies", ""), ("devDependencies", DEV)] {
+        let Some((_, deps)) = n.get(seccion) else {
+            continue;
+        };
+        fuera.extend(deps.entries().iter().filter_map(|(k, v)| {
             let nombre = k.as_str()?.trim();
             let rango = v.as_str()?.trim();
             let local = ["file:", "link:", "workspace:"]
                 .iter()
                 .any(|p| rango.starts_with(p));
-            (!nombre.is_empty() && !local && !nombre.contains(char::is_whitespace))
-                .then(|| format!("{nombre}@{}", if rango.is_empty() { "*" } else { rango }))
-        })
-        .collect()
+            (!nombre.is_empty() && !local && !nombre.contains(char::is_whitespace)).then(|| {
+                format!(
+                    "{prefijo}{nombre}@{}",
+                    if rango.is_empty() { "*" } else { rango }
+                )
+            })
+        }));
+    }
+    fuera
 }
 
 /// La declaración de un alcance: la unión de los `dependencies` de los
@@ -960,20 +973,51 @@ dependencies = ["no-esta"]
         assert_eq!(r.codigo, 404);
     }
 
-    /// 0050 R3 T5b: `dependencies` de un `package.json`, y nada más.
+    /// 0050 R3 T5b: `dependencies` de un `package.json`; y desde L3·1, sus
+    /// `devDependencies` con su marca.
     #[test]
     fn de_un_package_json_se_leen_sus_dependencies() {
         let t = r#"{
           "name": "facturacion",
           "type": "module",
           "dependencies": { "dayjs": "^1.11.13", "decimal.js": "10.4.3", "util": "file:../util", "x": "workspace:*", "y": "" },
-          "devDependencies": { "typescript": "^5.8" },
+          "devDependencies": { "@types/lodash": "^4.17.0", "typescript": "^5.8", "u": "link:../u" },
           "peerDependencies": { "react": "*" },
           "scripts": { "postinstall": "curl evil" }
         }"#;
         assert_eq!(
             dependencias_de_package(t),
-            ["dayjs@^1.11.13", "decimal.js@10.4.3", "y@*"]
+            [
+                "dayjs@^1.11.13",
+                "decimal.js@10.4.3",
+                "y@*",
+                "dev:@types/lodash@^4.17.0",
+                "dev:typescript@^5.8"
+            ]
+        );
+        // ⭐ El digest es el de `capa.mjs`, byte a byte (medido con npm el
+        //   2026-10-03): lo declarado, ordenado por bytes, con su marca.
+        let mut d: Vec<String> = [
+            "dayjs@^1.11.13",
+            "lodash@^4.17.21",
+            "dev:@types/lodash@^4.17.0",
+            "dev:typescript@^5.8",
+            "dev:@types/node@24.19.1",
+        ]
+        .map(String::from)
+        .to_vec();
+        d.sort();
+        assert_eq!(digest_de(&d, NODE), "capa-17a1e771777a");
+        // Y sin lo de desarrollo, el mismo de antes de L3·1.
+        assert_eq!(
+            digest_de(
+                &[
+                    "@duckdb/node-api@1.4.0".to_string(),
+                    "dayjs@^1.11.13".to_string()
+                ],
+                NODE
+            ),
+            "capa-4c490fc9b69e"
         );
         assert!(dependencias_de_package("no es json {").is_empty());
         assert!(dependencias_de_package(r#"{"dependencies": ["dayjs"]}"#).is_empty());

@@ -9,6 +9,8 @@
 #   comprueba contra la suma del informe y lo desempaqueta en `/capa`.
 #   ⭐ L2: y el `package-lock.json` de lo instalado, en el repositorio, junto a
 #   su `package.json`: lo que se resolvió se versiona donde se declaró.
+#   ⭐ L3·1: con `devDependencies`, una resolución y DOS cajas: `capa.tgz` (lo
+#   que corre) y `tipos.tgz` (lo que sólo tipa), las dos con su suma.
 #
 # ── ⛔ LO QUE NO CORRE: EL CÓDIGO DE LOS PAQUETES AL INSTALARSE ────────────
 #   `npm install --ignore-scripts`: ningún `preinstall`/`postinstall` de un
@@ -167,6 +169,11 @@ spec:
                 echo "### capa.tgz ($(du -k /trabajo/capa.tgz | cut -f1) KB) en gs://$BUCKET/ore/puesto/$DIGEST/"
               else
                 echo "### nada que subir: lo declarado lo pone ya el contenedor, o no se resolvió"
+              fi
+              # L3·1: y la de lo que sólo tipa, a su lado.
+              if [ -f /trabajo/tipos.tgz ]; then
+                gcloud storage cp -q /trabajo/tipos.tgz "gs://$BUCKET/ore/puesto/$DIGEST/tipos.tgz"
+                echo "### tipos.tgz ($(du -k /trabajo/tipos.tgz | cut -f1) KB) en gs://$BUCKET/ore/puesto/$DIGEST/"
               fi
               # ── 2 · el informe al árbol, uno POR DIGEST (0036 ③) ──
               cd /trabajo/arbol
