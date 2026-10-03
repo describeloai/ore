@@ -676,8 +676,38 @@ def over(vista, como="pandas"):
         # El sobre, ya en local: pyarrow lo lee más deprisa que nadie (13 M filas/s).
         import pyarrow.parquet as pq
 
-        return _como(pq.read_table(r["_parquet"]), como)
-    return _como(_arrow(_duckdb().sql("select * from %s" % fuente)), como)
+        return _como(_nunca_nulas(pq.read_table(r["_parquet"]), r, vista), como)
+    return _como(_nunca_nulas(_arrow(_duckdb().sql("select * from %s" % fuente)), r, vista), como)
+
+
+def _nunca_nulas(tabla, r, vista):
+    """ORE 0051 P7 (OOS v1alpha22 `01` §7): las columnas que el árbol dice que
+    nunca son nulas —lo que el origen garantiza o la consulta deriva; ore-serve
+    lo manda en `nunca_nulas`— salen **no nulables** en el esquema de Arrow.
+    DuckDB no mira la marca de Iceberg, así que sin esto todo saldría nulable.
+
+    Antes de marcar se mira: una columna que trae un nulo NO se marca —un
+    esquema que dice «nunca nula» sobre un nulo es justo la mentira que esto
+    evita— y se avisa, porque entonces el árbol y los datos discrepan."""
+    nunca = set((r or {}).get("nunca_nulas") or [])
+    if not nunca:
+        return tabla
+    import warnings
+
+    import pyarrow as pa
+
+    campos, cambia = [], False
+    for f, col in zip(tabla.schema, tabla.columns):
+        if f.name in nunca and f.nullable:
+            if col.null_count:
+                warnings.warn("`%s.%s` nunca es nula según el árbol y trae %d nulos: se deja nulable"
+                              % (vista, f.name, col.null_count), stacklevel=3)
+            else:
+                f, cambia = f.with_nullable(False), True
+        campos.append(f)
+    if not cambia:
+        return tabla
+    return pa.Table.from_arrays(tabla.columns, schema=pa.schema(campos, metadata=tabla.schema.metadata))
 
 
 def _arrow(relacion):

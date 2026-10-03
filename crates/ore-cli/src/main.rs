@@ -1656,6 +1656,30 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
 
     if diags.is_empty() {
         println!("ok · sin errores");
+        // ORE 0051 P7 · v1alpha22 `01` §8: lo que la entidad exige y su columna
+        // no garantiza. Un aviso, no un error: el documento es válido, y quien
+        // lo comprueba es un `Ruleset`. No cambia el código de salida.
+        if path.is_dir() {
+            let pkg = ore_core::validate::cargar_paquete(path).0;
+            let avisos = ore_core::vistas::exigidas_sin_garantia(&pkg);
+            if !avisos.is_empty() {
+                println!();
+            }
+            for a in &avisos {
+                let ruta = a.ruta.strip_prefix(path).unwrap_or(&a.ruta);
+                println!(
+                    "aviso: `{}.{}` es `required` y la columna `{}` de `{}` puede ser nula\n  \
+                     → {}\n  la entidad pide lo que el origen no garantiza: lo comprueba una \
+                     aserción de un `Ruleset`, o el origen lo declara (`required: true` en su \
+                     `Table`)",
+                    a.entidad,
+                    a.propiedad,
+                    a.propiedad,
+                    a.respaldo,
+                    ruta.display().to_string().replace('\\', "/")
+                );
+            }
+        }
         // El acuse de recibo. Escribir Cedar es hoy un acto a ciegas: se declara
         // una politica y nada dice si alcanza lo que uno creia. Que una politica
         // no alcance nada NO es un error —`Property in [Label, EntityType]`

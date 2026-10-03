@@ -609,6 +609,57 @@ pub fn nulabilidad_de_vista(
     de(pkg, d, 0)
 }
 
+/// Una propiedad que la entidad exige y su columna no garantiza
+/// ([`exigidas_sin_garantia`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinGarantia {
+    /// La entidad, cualificada.
+    pub entidad: String,
+    pub propiedad: String,
+    /// Lo que la respalda (`backedBy`), cualificado: la columna se llama como
+    /// la propiedad.
+    pub respaldo: String,
+    pub ruta: std::path::PathBuf,
+}
+
+/// ORE 0051 P7 · v1alpha22 `01` §8 · **Lo que la semántica pide y la física no
+/// garantiza**: cada propiedad `required: true` de una entidad cuya columna, en
+/// lo que la respalda, puede ser nula. No es un error —el documento es válido,
+/// y quien lo comprueba es un `Ruleset`—: es un aviso. Lo que no se sabe no se
+/// avisa: una entidad sin respaldo, una columna que no está (eso es
+/// `OOS2018`), o una consulta que no se analiza.
+pub fn exigidas_sin_garantia(pkg: &Package) -> Vec<SinGarantia> {
+    let mut out = Vec::new();
+    for e in pkg.entities() {
+        let (Some(qn), Some(r)) = (e.qname(), respaldo(pkg, e)) else {
+            continue;
+        };
+        let Some(props) = e.section("properties") else {
+            continue;
+        };
+        let n = nulabilidad_de_vista(pkg, r);
+        for (k, v) in props.entries() {
+            let Some(p) = k.as_str() else { continue };
+            let exige = v
+                .get("required")
+                .and_then(|(_, x)| x.as_str())
+                .is_some_and(|x| x == "true");
+            let columna = n.iter().find(|(c, _)| c.eq_ignore_ascii_case(p));
+            if let (true, Some((_, nul))) = (exige, columna)
+                && !nul.nunca_nula()
+            {
+                out.push(SinGarantia {
+                    entidad: qn.clone(),
+                    propiedad: p.to_string(),
+                    respaldo: r.qname().unwrap_or_default(),
+                    ruta: e.path.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// **El tipo de cada columna de una tabla**, el que el conector tradujo:
 /// `columns.<c>.type` (0032 §3; `01-table.md` §5.0). Una columna sin `type` no
 /// está en el mapa —el conector no supo traducirla, y es texto para quien la

@@ -2474,11 +2474,27 @@ impl Servidor {
     fn datos_o_vista(&self, raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
         let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
         let solo_vista = pkg.view(vista).is_some() && pkg.dataset(vista).is_none();
-        if solo_vista {
+        let mut r = if solo_vista {
             self.datos_de_vista(raiz, &pkg, vista)
         } else {
             self.con_credencial(raiz, datos_de(raiz, ns, nombre, vista))
+        };
+        // ORE 0051 P7 · v1alpha22 `01` §7: qué columnas nunca son nulas, del
+        // árbol —lo que el origen garantiza o la consulta deriva—, porque el
+        // SDK lee con DuckDB y DuckDB no mira la marca de Iceberg. Sólo si hay
+        // alguna: la respuesta de lo que no garantiza nada es la de antes.
+        let doc = pkg.dataset(vista).or_else(|| pkg.view(vista));
+        if let (200, Some(d), Json::Obj(m)) = (r.codigo, doc, &mut r.cuerpo) {
+            let nunca: Vec<Json> = ore_core::vistas::nulabilidad_de_vista(&pkg, d)
+                .into_iter()
+                .filter(|(_, n)| n.nunca_nula())
+                .map(|(c, _)| Json::s(c))
+                .collect();
+            if !nunca.is_empty() {
+                m.insert("nunca_nulas".into(), Json::Arr(nunca));
+            }
         }
+        r
     }
 
     /// **Una View leída desde un puesto: su SQL sobre sus datasets.**

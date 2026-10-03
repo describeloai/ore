@@ -123,13 +123,25 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
                 ));
             }
         }
+        // ORE 0051 P7 · v1alpha22 `01` §7: el `!` de un campo que no es clave
+        // sale de la columna que lo respalda —la del mismo nombre en
+        // `backedBy`— cuando nunca es nula (garantizada por el origen o
+        // derivada), y de nada más. El `required` de la propiedad dice lo que
+        // el concepto exige, no lo que el dato garantiza: no lo pone.
+        let nunca = nunca_nulas(pkg, e);
         let campos = props
             .iter()
             .map(|(p, t)| {
                 let obligatorio = claves.first().is_some_and(|pk| pk.contains(p));
                 (
                     p.clone(),
-                    if obligatorio { "ID!".into() } else { t.clone() },
+                    if obligatorio {
+                        "ID!".into()
+                    } else if nunca.contains(p) {
+                        format!("{t}!")
+                    } else {
+                        t.clone()
+                    },
                 )
             })
             .collect();
@@ -196,6 +208,20 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
     let mutaciones = mutaciones(pkg, &tipos);
 
     Ok(escribir(&tipos, &mutaciones, &conjuntos))
+}
+
+/// Las columnas de lo que respalda a `e` que nunca son nulas
+/// ([`crate::vistas::nulabilidad_de_vista`]). Sin respaldo, ninguna.
+fn nunca_nulas(pkg: &Package, e: &Loaded) -> BTreeSet<String> {
+    crate::vistas::respaldo(pkg, e)
+        .map(|r| {
+            crate::vistas::nulabilidad_de_vista(pkg, r)
+                .into_iter()
+                .filter(|(_, n)| n.nunca_nula())
+                .map(|(c, _)| c)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ── Las mutaciones ──────────────────────────────────────────────────────────
