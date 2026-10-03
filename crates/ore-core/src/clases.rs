@@ -370,34 +370,95 @@ pub fn se_siembra(rel: &str, paquete: &str) -> bool {
     !rel.ends_with(".yaml") || crate::pertenencia::puede_ser_namespace(paquete)
 }
 
-/// El ejemplo de `functions-typescript`: el mismo `def` que el de Python, como
-/// función exportada de un módulo. **Corre en la sesión** (`puesto-node`, 0031
-/// W3.4: un `.ts` con `export` se importa y sus exports quedan en el contexto)
-/// y no se invoca todavía como `Function`: `runtime: node` entra por la misma
-/// regla que `python` cuando haya quien lo ejecute (0050 R3), y la gramática no
-/// promete lo que nadie cumple. Por eso no siembra contrato. Y no siembra
-/// `package.json`: la sesión de Node nace con lo que trae su imagen.
-const FUNCTIONS_TS: &str = "\
-// A TypeScript function: what it declares goes in, an object comes out. Today
-// it runs in your session (Run); publishing it as a `Function` invocable with
-// parameters (`runtime: node`, like the Python ones) comes with ORE 0050 R3.
+/// La función de `functions-typescript` (0050 R3 T6): la MISMA que la de
+/// Python —`InvoiceStatus`, con decimales exactos, fechas de calendario y un
+/// opcional—, con la marca de TypeScript (OOS v1alpha23): la exportación por
+/// defecto de un `.ts` de `functions/`, que se llama como el fichero —por eso
+/// el nombre va también en la RUTA de la semilla, `{{funcionTs}}`—, su
+/// `config` al lado y los tipos de `ore`. Los decimales, como céntimos
+/// (`bigint`) y sin biblioteca: lo que el contrato entrega es la cadena con
+/// sus cifras. Medido con Node: da lo mismo que el ejemplo de Python
+/// (`overdue · 120.50 · -17 · 1.02`).
+const FUNCTIONS_TS: &str = r#"// A published FUNCTION: `{{paquete}}.{{funcionTs}}` (ORE 0050).
 //
-// In the session you read datasets by their three-part name (ADR 0038),
-// `over(\"my_db.my_schema.my_dataset\")`, and `sql(...)`: the SDK puts both in
-// the context.
+// You write TypeScript; the platform does the rest. The default export of a
+// `.ts` under `functions/` is the function, and it is named like its file. Its
+// parameter and return types are its contract, and the JSDoc above it is its
+// description. On commit it is published under Assets → Functions; ore writes
+// its document, so don't edit that.
+//
+//   · Dry Run (f(x), next to Results): try it with a form, without committing.
+//   · From Pipelines: the Function operator, with its parameters.
+//
+// Types are enforced at the boundary: a decimal arrives as a string with its
+// digits ("120.50", never a float), a calendar date as "2026-09-15", and an
+// `Integer` has to be exact. npm packages go in `dependencies` of package.json.
+import type { Decimal, Integer, LocalDate } from "ore";
 
-export function example(text: string, times: number = 1): { result: string; length: number } {
-  const result = Array(times).fill(text).join(\" \");
-  return { result, length: result.length };
+export const config = { timeout: "30s" };
+
+interface InvoiceStatus {
+  status: string; // "paid", "current" or "overdue"
+  outstanding: Decimal<12, 2>;
+  days: Integer; // until due; negative once overdue
+  surcharge?: Decimal<12, 2>; // only when overdue
 }
 
-console.log(example(\"hello\", 2));
-";
+/** The status of an invoice: what is outstanding, the days until it is due and the surcharge if it is overdue. */
+export default function {{funcionTs}}(
+  amount: Decimal<12, 2>,
+  due: LocalDate,
+  paid: Decimal<12, 2> = "0",
+  today?: LocalDate,
+): InvoiceStatus {
+  const day = today ?? new Date().toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(due) - Date.parse(day)) / 86_400_000);
+  const left = cents(amount) - cents(paid);
+  const outstanding = left > 0n ? left : 0n;
+  if (outstanding === 0n) return { status: "paid", outstanding: decimal(outstanding), days };
+  if (days >= 0) return { status: "current", outstanding: decimal(outstanding), days };
+  // 0.05% per day, rounded to the cent (half to even, like Python's Decimal).
+  const tenThousandths = outstanding * 5n * BigInt(-days);
+  let surcharge = tenThousandths / 10_000n;
+  const rest = tenThousandths % 10_000n;
+  if (rest > 5_000n || (rest === 5_000n && surcharge % 2n === 1n)) surcharge += 1n;
+  return { status: "overdue", outstanding: decimal(outstanding), days, surcharge: decimal(surcharge) };
+}
+
+// Exact money without a library: decimals as whole cents (`bigint`).
+function cents(d: string): bigint {
+  const negative = d.startsWith("-");
+  const [whole, fraction = ""] = d.replace(/^[-+]/, "").split(".");
+  const c = BigInt(whole || "0") * 100n + BigInt((fraction + "00").slice(0, 2));
+  return negative ? -c : c;
+}
+
+function decimal(c: bigint): string {
+  const a = c < 0n ? -c : c;
+  return `${c < 0n ? "-" : ""}${a / 100n}.${String(a % 100n).padStart(2, "0")}`;
+}
+
+// Over a dataset (one call per row), what it reads and the models it calls are
+// declared in `config`:
+//     over: "my_db.my_schema.invoices"     the row arrives as the first parameter
+//     reads: ["my_db.my_schema.clients"]   read it with `over` from "ore"
+"#;
+
+/// Dónde declara un repositorio de TypeScript sus paquetes de npm (0050 R3
+/// T5b): `dependencies`, y nada más se honra. Vacío: sin capa, y se ve dónde.
+const PACKAGE_JSON_TS: &str = r#"{
+  "private": true,
+  "type": "module",
+  "dependencies": {}
+}
+"#;
 
 /// Rellena los huecos de una semilla: `{{paquete}}` (el `namespace` de lo que
-/// declare), `{{carpeta}}` (dónde vive el repositorio, para su `entrypoint`) y
+/// declare), `{{carpeta}}` (dónde vive el repositorio, para su `entrypoint`),
 /// `{{funcion}}` (un nombre de función **único en el paquete**, sacado de la
-/// carpeta: dos repositorios en el mismo paquete no siembran el mismo). Una
+/// carpeta: dos repositorios en el mismo paquete no siembran el mismo) y
+/// `{{funcionTs}}`, el mismo en `camelCase` para TypeScript (R3 T6), donde el
+/// nombre es el del fichero: se rellena también en la RUTA de la semilla. Una
 /// semilla sin huecos sale igual.
 pub fn sembrar(contenido: &str, paquete: &str, carpeta: &str) -> String {
     let ultimo = carpeta.rsplit('/').next().unwrap_or(carpeta);
@@ -408,9 +469,24 @@ pub fn sembrar(contenido: &str, paquete: &str, carpeta: &str) -> String {
     if !f.starts_with(|c: char| c.is_ascii_alphabetic()) {
         f.insert_str(0, "f_");
     }
+    // `funciones-de-riesgo` → `funcionesDeRiesgoInvoiceStatus`.
+    let mut ts = String::new();
+    for (i, parte) in f.split('_').filter(|p| !p.is_empty()).enumerate() {
+        let p = parte.to_ascii_lowercase();
+        if i == 0 {
+            ts.push_str(&p);
+        } else {
+            let mut c = p.chars();
+            if let Some(x) = c.next() {
+                ts.push(x.to_ascii_uppercase());
+                ts.push_str(c.as_str());
+            }
+        }
+    }
     contenido
         .replace("{{paquete}}", paquete)
         .replace("{{carpeta}}", carpeta)
+        .replace("{{funcionTs}}", &format!("{ts}InvoiceStatus"))
         .replace("{{funcion}}", &format!("{f}_invoice_status"))
 }
 
@@ -550,11 +626,18 @@ pub const CLASES: &[Clase] = &[
         ejecuta: true,
         perfil: None,
         titulo: "Functions",
-        descripcion: "Write reusable functions in TypeScript. They run in your session; publishing them as invocable Functions comes next.",
+        descripcion: "Write typed TypeScript functions over your datasets, invocable with parameters.",
         // 2: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
-        // Actualizar deja lo de antes (`funciones/ejemplo.ts`): es de quien lo tenga.
-        version: 2,
-        semilla: &[("functions/example.ts", FUNCTIONS_TS)],
+        // 3: una función de verdad (0050 R3 T6): la exportación por defecto de
+        //    un `.ts` de `functions/`, con `config` y los tipos de `ore`, y el
+        //    `package.json` donde se declaran los paquetes de npm. El commit que
+        //    lo crea escribe su documento. Actualizar deja lo de antes
+        //    (`functions/example.ts`, un módulo de ayuda): es de quien lo tenga.
+        version: 3,
+        semilla: &[
+            ("package.json", PACKAGE_JSON_TS),
+            ("functions/{{funcionTs}}.ts", FUNCTIONS_TS),
+        ],
     },
     // `semantics` no siembra código: lo suyo son documentos del árbol, y
     // sembrar una `Entity` a medias sería sembrar algo que no compila.
@@ -715,6 +798,105 @@ spec:
         );
     }
 
+    /// R3 T6: la semilla de TypeScript es una función de verdad —se deriva, y
+    /// donde nace, el commit que la crea escribe su documento—, con un nombre
+    /// único en el paquete en su fichero.
+    #[test]
+    fn la_semilla_de_typescript_es_una_funcion() {
+        let c = de("functions-typescript").unwrap();
+        let (paquete, carpeta) = ("ventas", "funciones-de-riesgo");
+        assert_eq!(
+            sembrar("functions/{{funcionTs}}.ts", paquete, carpeta),
+            "functions/funcionesDeRiesgoInvoiceStatus.ts"
+        );
+        assert_eq!(
+            sembrar("{{funcionTs}}", paquete, "a/2024"),
+            "f2024InvoiceStatus"
+        );
+        let ts = sembrar(FUNCTIONS_TS, paquete, carpeta);
+        let ruta = format!(
+            "{carpeta}/{}",
+            sembrar("functions/{{funcionTs}}.ts", paquete, carpeta)
+        );
+        let d = ore_code::typescript::derivar(&ts, &ruta);
+        assert!(d.sintaxis.is_empty() && d.version.is_empty(), "{d:?}");
+        let [f] = d.funciones.as_slice() else {
+            panic!("una función: {:?}", d.funciones)
+        };
+        let firma = f.resultado.as_ref().expect("la plantilla se deriva");
+        assert_eq!(firma.nombre, "funcionesDeRiesgoInvoiceStatus");
+        assert_eq!(firma.timeout.as_deref(), Some("30s"));
+        let entrada: Vec<String> = firma
+            .entrada
+            .iter()
+            .map(|c| {
+                format!(
+                    "{}: {}{}",
+                    c.nombre,
+                    c.tipo,
+                    if c.requerido { "" } else { "?" }
+                )
+            })
+            .collect();
+        assert_eq!(
+            entrada,
+            [
+                "amount: Decimal<12, 2>",
+                "due: Date",
+                "paid: Decimal<12, 2>?",
+                "today: Date?"
+            ]
+        );
+        let doc = ore_code::emitir::documento(firma, paquete);
+        assert!(doc.contains("runtime: node\n"), "{doc}");
+        assert!(
+            doc.contains("    surcharge: { type: 'Decimal<12, 2>' }\n"),
+            "{doc}"
+        );
+
+        // Donde nace, con dos repositorios en el paquete: cada uno su función
+        // y su documento, que el commit que los crea escribe.
+        let raiz = std::env::temp_dir().join(format!("ore-semilla-ts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let pkg = raiz.join("packages").join(paquete);
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            raiz.join("ontology.config.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("package.yaml"),
+            format!(
+                "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: {{ name: {paquete}, version: 0.1.0, status: draft, domain: {paquete} }}\nspec: {{ owner: \"team:x\" }}\n"
+            ),
+        )
+        .unwrap();
+        for carpeta in ["funciones-de-riesgo", "otra"] {
+            for (rel, contenido) in c.semilla {
+                let f = pkg.join(carpeta).join(sembrar(rel, paquete, carpeta));
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(f, sembrar(contenido, paquete, carpeta)).unwrap();
+            }
+        }
+        let (p, _) = crate::validate::cargar_paquete(&raiz);
+        crate::generar::aplicar(&crate::generar::plan(&p)).unwrap();
+        assert!(
+            pkg.join("functions/funcionesDeRiesgoInvoiceStatus.yaml")
+                .exists()
+        );
+        assert!(pkg.join("functions/otraInvoiceStatus.yaml").exists());
+        let d = crate::validate::validate_package(&raiz);
+        assert!(
+            d.is_empty(),
+            "{:?}",
+            d.iter()
+                .map(|x| format!("{} {}", x.code.as_str(), x.message))
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
+
     #[test]
     fn la_semilla_de_functions_compila_donde_nace() {
         let c = de("functions-python").unwrap();
@@ -738,7 +920,7 @@ spec:
             .unwrap();
             for carpeta in ["funciones-de-riesgo", "otra"] {
                 for (rel, contenido) in c.semilla.iter().filter(|(r, _)| se_siembra(r, paquete)) {
-                    let f = pkg.join(carpeta).join(rel);
+                    let f = pkg.join(carpeta).join(sembrar(rel, paquete, carpeta));
                     std::fs::create_dir_all(f.parent().unwrap()).unwrap();
                     std::fs::write(f, sembrar(contenido, paquete, carpeta)).unwrap();
                 }
@@ -938,7 +1120,9 @@ spec:
             let codigo: usize = c
                 .semilla
                 .iter()
-                .filter(|(r, _)| !r.ends_with(".toml") && !r.ends_with(".xml"))
+                .filter(|(r, _)| {
+                    !r.ends_with(".toml") && !r.ends_with(".xml") && !r.ends_with(".json")
+                })
                 .flat_map(|(_, t)| t.lines())
                 .filter(|l| {
                     let l = l.trim();
@@ -956,6 +1140,7 @@ spec:
             if let Some(donde) = match c.lenguaje {
                 "python" => Some("pyproject.toml"),
                 "java" => Some("pom.xml"),
+                "typescript" => Some("package.json"),
                 _ => None,
             } {
                 assert!(
@@ -978,6 +1163,7 @@ spec:
                 // nombrar está en el código del que sale (0050 G1).
                 if ruta.ends_with(".toml")
                     || ruta.ends_with(".xml")
+                    || ruta.ends_with(".json")
                     || ore_code::emitir::es_generado(texto)
                 {
                     continue;

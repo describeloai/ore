@@ -255,6 +255,9 @@ impl Servidor {
             if !ore_core::clases::se_siembra(rel, &paquete) {
                 continue;
             }
+            // R3 T6: la ruta también lleva huecos (en TypeScript el nombre de la
+            // función es el del fichero).
+            let rel = &ore_core::clases::sembrar(rel, &paquete, &carpeta);
             let f = dir.join(rel);
             if let Some(padre) = f.parent()
                 && let Err(e) = std::fs::create_dir_all(padre)
@@ -433,17 +436,19 @@ impl Servidor {
             |r| {
                 let dir = r.join(ruta_r.replace('/', std::path::MAIN_SEPARATOR_STR));
                 for (rel, contenido) in semilla {
+                    // Los mismos huecos que al crear: `packages/<paquete>/<carpeta>`,
+                    // también en la ruta (R3 T6).
+                    let (paquete, carpeta) = ruta_r
+                        .strip_prefix("packages/")
+                        .and_then(|x| x.split_once('/'))
+                        .unwrap_or(("", ""));
+                    let rel = &ore_core::clases::sembrar(rel, paquete, carpeta);
                     let f = dir.join(rel);
                     if let Some(padre) = f.parent()
                         && let Err(e) = std::fs::create_dir_all(padre)
                     {
                         return Respuesta::error(500, format!("no se pudo escribir `{rel}`: {e}"));
                     }
-                    // Los mismos huecos que al crear: `packages/<paquete>/<carpeta>`.
-                    let (paquete, carpeta) = ruta_r
-                        .strip_prefix("packages/")
-                        .and_then(|x| x.split_once('/'))
-                        .unwrap_or(("", ""));
                     if !ore_core::clases::se_siembra(rel, paquete) {
                         continue;
                     }
