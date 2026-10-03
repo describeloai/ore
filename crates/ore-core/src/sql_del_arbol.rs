@@ -977,9 +977,14 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             .find(|d| d.kind == Kind::Function && d.qname().as_deref() == Some(r.as_str()));
         let Some(f) = f else {
             fallos.push(
-                Fallo::new(format!("there is no published function `{r}`"), n.pos).ayuda(
-                    "a tree function is called by its name, `database.schema.function(…)`; \
-                     a DuckDB function by its own, without dots",
+                Fallo::new(
+                    format!("there is no published function `{r}` in this branch"),
+                    n.pos,
+                )
+                .ayuda(
+                    "a function committed in another branch is not here until it is merged; \
+                     a tree function is called by its name, `database.schema.function(…)`, \
+                     and a DuckDB function by its own, without dots",
                 ),
             );
             continue;

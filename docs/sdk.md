@@ -291,6 +291,51 @@ The anchored table has these system columns next to yours:
 | `_derivation` | `key`, `fn`, `fn_version`, `model`, `model_rev`, `params_hash`, `run`, `created` |
 | `_status` | `state` (`ok`/`error`), `error_type`, `error_message`, `attempts` |
 
+### Collections and functions in SQL (ORE 0049 B7)
+
+**A collection is a relation in `FROM`**, one row per item, read by its listing (no bytes):
+`item` (the `MediaRef`, as a struct of the `_item` fields), `path`, `digest`, `size`,
+`content_type`, `modified`.
+
+```sql
+select path, size, content_type from legal.archive.contracts
+```
+
+**A tree function (`@function`, published in Functions) is called from SQL by its name**, with
+its contract: as a value, `f(x)`, or as rows, `cross join lateral f(x)` (`from f(x)`, `join f(x)`).
+Its parameters are positional, in the order of its `def`; one with a default can be left out.
+Its types are its document's: a `@dataclass` is a struct, `list[D]` gives one row per element,
+`Media[c]` takes an `item`. Only code functions (`runtime: python`) without `over` or `models`.
+In a session, the function is read from **the session's branch**.
+
+```sql
+select c.path, legal.functions.language(c.item) as lang from legal.archive.contracts as c
+```
+
+**A dataset written from a collection is an anchored table**, computed item by item exactly like
+`apply()` (same registry, same keys, same system columns): there is nothing new to write.
+
+```sql
+-- transforms/contract_pages.sql
+create or replace dataset legal.archive.contract_pages as
+select p.page, p.text, p.anchor
+from legal.archive.contracts as c
+cross join lateral legal.functions.pdf_pages(c.item) as p
+```
+
+- A column named `anchor` (an `Anchor` struct) is each row's anchor; without it, the item's.
+- The version is the query and the documents of the functions it calls: changing either
+  recomputes every item; running it again with nothing changed computes and writes nothing.
+- The cell's result is one row: `items`, `new`, `recomputed`, `skipped`, `errors`, `removed`,
+  `rows`.
+- Limits, each one an error that says what to do instead: the dataset is written whole
+  (`create or replace`, not `insert into`); it reads its collection and nothing else (join it
+  afterwards, in a view); nothing that needs more than one item (`group by`, aggregates, windows,
+  `order by`, `limit`, `distinct`, `union`: in a view that reads it); and it is a dataset of its
+  own (not an existing one that is not anchored, or anchored to another collection).
+- An item the `where` leaves out keeps one row of `kind: item` with no values, as in `apply()`:
+  so it is not computed again.
+
 ### Serving media to a browser
 
 A `Media<c>` property of an Entity holds the fingerprint of an item of collection `c`.

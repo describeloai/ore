@@ -4,7 +4,7 @@
 —B2 y B3 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
-B4b y **B5 hechos** —B5 en vivo el 2026-10-03—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -507,7 +507,7 @@ entrada es la colección escrita de B4 (4 PDF) y cuya salida es
 superficie); que `apply()` emita **ficheros** a una colección escrita, y no sólo filas; y su forma en
 SQL —materializar una tabla anclada desde una colección—, que es el siguiente paso de este ADR.
 
-### B7 · plan: la tabla anclada desde SQL (2026-10-03)
+### B7 · hecho: la tabla anclada desde SQL (2026-10-03, victor)
 
 La forma SQL de `apply()`. **No es una vista**: el resultado de aplicar funciones a ficheros no se
 recalcula con un plan, es un `Dataset` escrito por un transform y anclado a su colección. Por eso la
@@ -544,6 +544,31 @@ where c.content_type = 'application/pdf';
 
 Fuera: ficheros que dan ficheros (`insert into media collection … select …`, hito 3), `join` con
 otras relaciones (con la versión del dataset en la clave), Functions de TypeScript desde SQL.
+
+**Lo comprobado en vivo** (puestos de victor, `pytransformsv1`, ramas `test4` y `test6`):
+
+- **B7·1:** `select path, size, content_type from s3_standard.nueva_carpeta.contratos_sql` → las 5
+  rutas, sin leer un byte.
+- **B7·3, sólo SQL:** `create or replace dataset …contratos_meta as select c.path, c.size,
+  c.content_type from …contratos_sql as c` → 4 ítems nuevos (la copia es el mismo ítem), 4 filas;
+  otra vez, 4 saltados y nada escrito.
+- **B7·2 + B7·3:** `test_project.pdf_pages` —un `@function` con `Media[…]` de entrada y
+  `list[Page]` de salida, con una `@dataclass` `Anchor` dentro— en `cross join lateral` →
+  `…paginas_sql`: 4 nuevos, 4 filas con su ancla `page`; otra vez, 4 saltados y nada escrito.
+
+| paso | qué | commit |
+|---|---|---|
+| B7·1 | la colección en `FROM` (ore-core, ore-serve, SDK, editor) | `7d13de0`, `0c0ee32` |
+| B7·2 | las Functions en SQL: reescritas con el tokenizador, registradas con su contrato | `d01d1c5` |
+| B7·3 | el dataset escrito desde una colección, anclado, por `apply()`; `removed` cuenta ítems | `45210d5` |
+| B7·4 | `get_function` lee en la rama de la sesión (el código de una función aún no en `main` daba 404) | `01857df` |
+| B7·5 | docs (`docs/sdk.md`), «in this branch» en el error | este |
+
+**Lo que se encontró por el camino:** el nombre con que se llama una Function lleva la base de su
+proyecto (`test_project.pdf_pages`), y el producto dice que las Functions viven fuera de base y
+schema; la decisión (un espacio `functions.<def>`, y el proyecto frente a la base) es aparte. Y
+la imagen `puesto-node` no se construía en Node 24 (el informe de `node --test` cambió a `spec`
+sin terminal): `74d83e7`.
 
 ## Lo que no se hace aquí
 
