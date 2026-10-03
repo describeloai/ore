@@ -108,7 +108,7 @@ su schema. Un nombre que no está es `LookupError`; lo que no es del árbol se q
 ## El editor
 
 El servidor de lenguaje de SQL corre **dentro del agente del puesto** (`lsp_sql.py`), y
-`ore-serve` sólo reparte sus mensajes. Ve los nombres del árbol:
+`ore-serve` sólo reparte sus mensajes ([`0037`](0037-language-servers-in-code-repositories.md)). Ve los nombres del árbol:
 
 - **Completa** `base.schema.nombre` después de `FROM`, los schemas después de `base.`, y las
   columnas de un alias.
