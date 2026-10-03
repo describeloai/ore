@@ -319,13 +319,17 @@ def transform(inputs, output):
 def _lee(vista):
     """Anota una lectura, y dentro de un transform la acota a sus `inputs`."""
     vista = _corto(vista)
+    # 0049 B5·2: su `output` también —un incremental lee lo que ya escribió—, y
+    # leerse no es una entrada: no se anota.
+    if _transform is not None and vista == _transform.output:
+        return
     if _transform is not None and vista not in _transform.inputs:
         raise PermissionError("`%s` no está en los inputs de `%s` (%s): un transform sólo lee lo que declara" % (vista, _transform.nombre, ", ".join(_transform.inputs)))
     if vista not in _leidas:
         _leidas.append(vista)
 
 
-def _procedencia(nombre=None):
+def _procedencia(nombre=None, anclada_a=None):
     """Lo que `write()` deja dicho de sí: de qué salió, qué código, desde qué puesto.
     Fuera de un transform es lo que la sesión leyó, **sin lo que se está escribiendo**
     (W3.7 gobierno ③: un dataset no sale de sí mismo)."""
@@ -337,6 +341,8 @@ def _procedencia(nombre=None):
         p["leidas"] = sorted(l for l in _leidas if l != nombre)
     if os.environ.get("ORE_CODIGO"):
         p["codigo"] = os.environ["ORE_CODIGO"]
+    if anclada_a:
+        p["anclada_a"] = anclada_a
     return p
 
 
@@ -1390,12 +1396,21 @@ def _resultado_de_crear(objeto, creado):
     return pa.table({"object": [objeto], "status": [estado]})
 
 
-def write(nombre, datos, modo="sobrescribir", clave=None):
+def write(nombre, datos, modo="sobrescribir", clave=None, anclada_a=None):
     """Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
-    Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`."""
+    Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`.
+
+    `anclada_a="b.s.c"` (0049 B5·1): es una **tabla anclada** a esa colección
+    (v1alpha17 `03`): trae `_item`, `_anchor`, `_anchor_id`, `_anchor_parent`,
+    `_derivation` y `_status`, y su documento declara `anchoredTo` y sólo la
+    carga. Se funde por `_anchor_id`: sin `upsert`. La escribe `aplicar()`."""
     import hashlib
 
     nombre = _corto(nombre, "write(): el nombre")
+    if anclada_a is not None:
+        anclada_a = _corto(_nombre_de(anclada_a), "write(): `anclada_a`")
+        if modo == "upsert":
+            raise ValueError("write(): una tabla anclada se funde por `_anchor_id`, no por upsert")
     if modo not in ("sobrescribir", "anexar", "upsert"):
         raise ValueError("modo=%r: vale `sobrescribir`, `anexar` o `upsert`" % (modo,))
     if clave is not None and (isinstance(clave, str) or not all(isinstance(c, str) for c in clave)):
@@ -1445,7 +1460,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
         if config.get("s3.access-key-id"):
             _s3 = config
         binario, env = _ore_store(config, ubicacion)
-        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla, "procedencia": _procedencia(nombre)}
+        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla, "procedencia": _procedencia(nombre, anclada_a)}
         if clave_upsert:
             peticion["clave"] = clave_upsert
         if base:

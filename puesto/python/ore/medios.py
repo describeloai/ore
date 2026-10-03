@@ -231,6 +231,30 @@ class Coleccion:
             self._rama = _rama_del_puesto()
         return self._rama
 
+    def aplicar(self, fn, version=None, params=None, salida=None, reintentar_errores=False,
+                hilos=4, guardar_cada_s=300):
+        """**La derivación incremental** (0049 B5, D5): `fn(item)` sobre cada ítem
+        que lo necesita, y el resultado como **tabla anclada** (v1alpha17 `03`) en
+        `salida` —dentro de un transform, su `output`—.
+
+        `fn(item)` devuelve (o va dando) filas: dicts con las columnas de la carga
+        y, si la fila es una parte del ítem, `ancla` (`{"kind": "page", "page": 3}`,
+        v1alpha17 `02`). Sin filas, el ítem queda hecho con una fila de `kind:
+        item`. Una excepción es un resultado: una fila con `_status.state: error`,
+        y los demás siguen.
+
+        Lo que ya está no se recalcula: la clave de cada ítem (`_derivation.key`)
+        es su identidad —el `digest`, o `(colección, ruta, versión)` de una
+        virtual sin leer—, `fn`, `version` (sin ella, la del código de `fn`) y
+        `params`. Si no cambia, sus filas se quedan (con la ruta de hoy: moverlo
+        no recalcula); si cambia, se rehacen; las de un ítem que ya no está, se
+        van. Los errores se reintentan con `reintentar_errores=True`.
+
+        Se guarda cada `guardar_cada_s` y al final; sin nada que hacer, no se
+        escribe. Devuelve el resumen: `{items, nuevos, recalculados, saltados,
+        errores, borrados, filas, escrito}`."""
+        return _aplicar(self, fn, version, params, salida, reintentar_errores, hilos, guardar_cada_s)
+
     def transaccion(self, ttl_s=3600):
         """**Una transacción para escribir en esta colección** (B4b·3). Como `with`:
         commit al salir, abort con una excepción. A mano: `t.put(…)`, `t.commit()`.
@@ -303,6 +327,215 @@ def _verificar(item, leidos, visto):
 
 # Los bytes tampoco siguen solos una redirección (el de `ore/__init__.py`).
 from . import _SIN_SEGUIR as _ABRIDOR  # noqa: E402
+
+
+# ── 0049 B5 · la derivación incremental ─────────────────────────────────────
+#
+# La tabla anclada ES el registro: `_derivation.key` dice con qué se calculó
+# cada fila y `_status`, si salió. No hay otra tabla que mantener a la par.
+
+#: Los campos de `MediaRef` que van en `_item` (sin `annotations`: un struct
+#: abierto, que el lago no puede tipar si viene vacío).
+_CAMPOS_ITEM = ("uri", "collection", "path", "version", "digest", "size",
+                "content_type", "content_type_detected", "checksum")
+#: Los campos de `Anchor` (v1alpha17 `02` §2): los que no son de su clase, nulos.
+_CAMPOS_ANCLA = ("kind", "page", "bbox", "polygon", "space", "t_start", "t_end", "frame",
+                 "char_start", "char_end", "text_of", "offset", "length")
+_SISTEMA = ("_item", "_anchor", "_anchor_id", "_anchor_parent", "_derivation", "_status")
+
+
+def _esquema_de_sistema():
+    import pyarrow as pa
+    S, F, I = pa.string(), pa.float64(), pa.int64()
+    item = pa.struct([(k, I if k == "size" else S) for k in _CAMPOS_ITEM])
+    punto = pa.struct([("x", F), ("y", F)])
+    ancla = pa.struct([("kind", S), ("page", I), ("bbox", pa.struct([("x", F), ("y", F), ("w", F), ("h", F)])),
+                       ("polygon", pa.list_(punto)),
+                       ("space", pa.struct([("unit", S), ("width", F), ("height", F)])),
+                       ("t_start", F), ("t_end", F), ("frame", I), ("char_start", I), ("char_end", I),
+                       ("text_of", S), ("offset", I), ("length", I)])
+    deriv = pa.struct([("key", S), ("fn", S), ("fn_version", S), ("model", S), ("model_rev", S),
+                       ("params_hash", S), ("run", S), ("created", pa.timestamp("us", tz="UTC"))])
+    estado = pa.struct([("state", S), ("error_type", S), ("error_message", S), ("attempts", I)])
+    return [("_item", item), ("_anchor", ancla), ("_anchor_id", S), ("_anchor_parent", S),
+            ("_derivation", deriv), ("_status", estado)]
+
+
+def _canonico(x):
+    return json.dumps(x, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def _sha(*partes):
+    return hashlib.sha256("\x1f".join("" if p is None else str(p) for p in partes).encode("utf-8")).hexdigest()
+
+
+def _identidad(ref):
+    """v1alpha17 `01` §3.1: el `digest`; sin él, el localizador fijado."""
+    return ref.digest or "%s|%s|%s" % (ref.collection, ref.path, ref.version)
+
+
+def _version_de(fn):
+    """La versión de una función que no la dice: la de su código."""
+    import inspect
+    try:
+        fuente = inspect.getsource(fn)
+    except (OSError, TypeError):
+        codigo = getattr(fn, "__code__", None)
+        fuente = codigo.co_code.hex() if codigo is not None else repr(fn)
+    return "codigo:" + hashlib.sha256(fuente.encode("utf-8")).hexdigest()[:12]
+
+
+def _ancla_de(a):
+    a = dict(a or {"kind": "item"})
+    if not a.get("kind"):
+        raise ValueError("aplicar(): un `ancla` sin `kind` (v1alpha17 `02`): %r" % (a,))
+    otros = set(a) - set(_CAMPOS_ANCLA)
+    if otros:
+        raise ValueError("aplicar(): `ancla` con campos que no son de `Anchor`: %s" % ", ".join(sorted(otros)))
+    return {k: a.get(k) for k in _CAMPOS_ANCLA}
+
+
+def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guardar_cada_s):
+    import datetime
+    import time
+    import uuid
+    import pyarrow as pa
+    from . import _transform, _corto, _nombre_de
+    import ore
+
+    if salida is None:
+        if _transform is None:
+            raise ValueError("aplicar(): fuera de un transform, di la `salida` (`b.s.t`)")
+        salida = _transform.output
+    salida = _corto(_nombre_de(salida), "aplicar(): la `salida`")
+    nombre_fn = getattr(fn, "__name__", None) or type(fn).__name__
+    fn_version = str(version) if version is not None else _version_de(fn)
+    params_hash = None if params is None else hashlib.sha256(_canonico(params).encode("utf-8")).hexdigest()
+    run = uuid.uuid4().hex
+    sistema = _esquema_de_sistema()
+
+    # Lo de hoy: un ítem por identidad (dos rutas con el mismo contenido son el
+    # mismo ítem: se calcula una vez, con la primera).
+    hoy = {}
+    for it in col.items():
+        k = _sha(_identidad(it.ref), nombre_fn, fn_version, None, params_hash)
+        hoy.setdefault(k, it)
+
+    # Lo que ya está: las filas de la salida, por su clave.
+    previas = {}
+    try:
+        filas_previas = ore.over(salida, como="arrow").to_pylist()
+    except LookupError:
+        filas_previas = []
+    for f in filas_previas:
+        previas.setdefault(((f.get("_derivation") or {}).get("key")), []).append(f)
+    rutas_previas = {((f.get("_item") or {}).get("collection"), (f.get("_item") or {}).get("path"))
+                     for f in filas_previas}
+
+    def estado(filas):
+        return "error" if any((f.get("_status") or {}).get("state") == "error" for f in filas) else "ok"
+
+    pendientes = [k for k in hoy if k not in previas
+                  or (reintentar_errores and estado(previas[k]) == "error")]
+    resumen = {"items": len(hoy), "nuevos": 0, "recalculados": 0, "saltados": len(hoy) - len(pendientes),
+               "errores": 0, "borrados": len([k for k in previas if k not in hoy]), "filas": 0, "escrito": False}
+    hechas = {}   # clave → filas nuevas
+
+    def item_json(it):
+        return {c: getattr(it.ref, c, None) for c in _CAMPOS_ITEM}
+
+    def calcular(k):
+        it = hoy[k]
+        ident = _identidad(it.ref)
+        intentos = 1 + max([(f.get("_status") or {}).get("attempts") or 0 for f in previas.get(k, [])] or [0])
+        deriv = {"key": k, "fn": nombre_fn, "fn_version": fn_version, "model": None, "model_rev": None,
+                 "params_hash": params_hash, "run": run,
+                 "created": datetime.datetime.now(datetime.timezone.utc)}
+        try:
+            salida_fn = fn(it)
+            filas = list(salida_fn) if salida_fn is not None else []
+            if isinstance(salida_fn, dict):
+                filas = [salida_fn]
+            out = []
+            for f in filas:
+                if not isinstance(f, dict):
+                    raise TypeError("aplicar(): `%s` dio %s y no un dict por fila" % (nombre_fn, type(f).__name__))
+                f = dict(f)
+                ancla = _ancla_de(f.pop("ancla", None))
+                padre = f.pop("ancla_padre", None)
+                malas = [c for c in f if c.startswith("_")]
+                if malas:
+                    raise ValueError("aplicar(): `%s` son columnas de sistema (v1alpha17 `03` §1)" % ", ".join(malas))
+                out.append(dict(f, _item=item_json(it), _anchor=ancla,
+                                _anchor_id=_sha(ident, _canonico(ancla), nombre_fn),
+                                _anchor_parent=padre, _derivation=deriv,
+                                _status={"state": "ok", "error_type": None, "error_message": None, "attempts": intentos}))
+            if not out:
+                ancla = _ancla_de(None)
+                out.append({"_item": item_json(it), "_anchor": ancla, "_anchor_id": _sha(ident, _canonico(ancla), nombre_fn),
+                            "_anchor_parent": None, "_derivation": deriv,
+                            "_status": {"state": "ok", "error_type": None, "error_message": None, "attempts": intentos}})
+            return k, out
+        except Exception as e:  # noqa: BLE001 — un fallo de un ítem es su resultado
+            ancla = _ancla_de(None)
+            return k, [{"_item": item_json(it), "_anchor": ancla, "_anchor_id": _sha(ident, _canonico(ancla), nombre_fn),
+                        "_anchor_parent": None, "_derivation": deriv,
+                        "_status": {"state": "error", "error_type": type(e).__name__,
+                                    "error_message": str(e)[:2000], "attempts": intentos}}]
+
+    def montar():
+        """La tabla entera: lo hecho ahora, lo que se queda (con su ruta de hoy) y,
+        de lo pendiente aún sin hacer, lo que había (se rehará la próxima vez)."""
+        filas = []
+        for k, it in hoy.items():
+            if k in hechas:
+                filas.extend(hechas[k])
+            elif k in previas:
+                ref = item_json(it)
+                filas.extend(dict(f, _item=ref) for f in previas[k])
+        if not filas:
+            return None
+        cols = [c for c in dict.fromkeys(c for f in filas for c in f) if c not in _SISTEMA]
+        # El tipo de cada columna de la carga, de lo que trae: pyarrow lo infiere.
+        tipos = []
+        for c in cols:
+            try:
+                tipos.append((c, pa.array([f.get(c) for f in filas]).type))
+            except (pa.ArrowInvalid, pa.ArrowTypeError) as e:
+                raise TypeError("aplicar(): la columna `%s` no tiene un tipo: %s" % (c, e)) from None
+        esquema = pa.schema(sistema + [(c, (pa.string() if pa.types.is_null(t) else t)) for c, t in tipos])
+        return pa.Table.from_pylist(filas, schema=esquema)
+
+    def guardar():
+        t = montar()
+        if t is None:
+            return
+        ore.write(salida, t, modo="sobrescribir", anclada_a=col.nombre_corto)
+        resumen["escrito"] = True
+        resumen["filas"] = t.num_rows
+
+    movido = any(k in previas and {((f.get("_item") or {}).get("collection"), (f.get("_item") or {}).get("path"))
+                                   for f in previas[k]} != {(hoy[k].ref.collection, hoy[k].ref.path)}
+                 for k in hoy)
+    if not pendientes and not resumen["borrados"] and not movido:
+        resumen["filas"] = len(filas_previas)
+        return resumen
+
+    ultimo = time.time()
+    with _cf.ThreadPoolExecutor(max(1, hilos)) as ex:
+        for k, filas in (f.result() for f in _cf.as_completed([ex.submit(calcular, k) for k in pendientes])):
+            hechas[k] = filas
+            if estado(filas) == "error":
+                resumen["errores"] += 1
+            elif (hoy[k].ref.collection, hoy[k].ref.path) in rutas_previas:
+                resumen["recalculados"] += 1
+            else:
+                resumen["nuevos"] += 1
+            if guardar_cada_s and time.time() - ultimo > guardar_cada_s:
+                guardar()
+                ultimo = time.time()
+    guardar()
+    return resumen
 
 
 class _Acceso:

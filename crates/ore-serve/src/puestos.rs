@@ -2343,7 +2343,10 @@ impl Servidor {
         }
         // Lo declarado manda (⑤): mientras un transform corre, este puesto sólo
         // resuelve sus `inputs`. El mismo 403 que el SDK da, en el servidor.
+        // Y su `output` (0049 B5·2): un incremental lee lo que ya escribió para
+        // saber qué está hecho; leerse no es una entrada (no entra en el linaje).
         if let Some(t) = self.transform_de(id)
+            && ore_core::normalize::a_corto(&t.output) != vista
             && !t
                 .inputs
                 .iter()

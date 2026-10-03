@@ -773,8 +773,19 @@ fn asegurar_dataset(
     clave: Option<&[String]>,
     leyo: Option<&Leyo>,
 ) -> Result<(bool, bool), Fallo> {
-    asegurar_dataset_de(path, t, columnas, clave, leyo, None)
+    asegurar_dataset_de(path, t, columnas, clave, leyo, None, None)
 }
+
+/// Las columnas que `anchoredTo` añade (v1alpha17 `03` §1): son de la
+/// gramática, y el documento no las declara.
+const COLUMNAS_ANCLADAS: [&str; 6] = [
+    "_item",
+    "_anchor",
+    "_anchor_id",
+    "_anchor_parent",
+    "_derivation",
+    "_status",
+];
 
 /// [`asegurar_dataset`] con el dueño que se dice para uno que nace (`--owner`).
 fn asegurar_dataset_de(
@@ -784,8 +795,45 @@ fn asegurar_dataset_de(
     clave: Option<&[String]>,
     leyo: Option<&Leyo>,
     dueno: Option<&str>,
+    anclada: Option<&str>,
 ) -> Result<(bool, bool), Fallo> {
     let nombre = t.corto();
+    // ⭐ 0049 B5·1 · Una TABLA ANCLADA (v1alpha17 `03`): la escritura dice de
+    //   qué colección (`anclada_a` en la procedencia). La tabla del lago trae
+    //   las seis columnas de sistema; el documento declara `anchoredTo` y sólo
+    //   las de la carga, y no `changes` (se funde por `_anchor_id`).
+    let propias: BTreeMap<String, String>;
+    let columnas = match anclada {
+        None => columnas,
+        Some(c) => {
+            if let Some(falta) = COLUMNAS_ANCLADAS
+                .iter()
+                .find(|k| !columnas.contains_key(**k))
+            {
+                return Err((
+                    64,
+                    format!(
+                        "`{nombre}` es una tabla anclada a `{c}` y le falta `{falta}`: lleva {}",
+                        COLUMNAS_ANCLADAS.join(", ")
+                    ),
+                ));
+            }
+            if clave.is_some_and(|k| !k.is_empty()) {
+                return Err((
+                    64,
+                    format!(
+                        "`{nombre}` es una tabla anclada: se funde por `_anchor_id`, no por una clave de upsert"
+                    ),
+                ));
+            }
+            propias = columnas
+                .iter()
+                .filter(|(k, _)| !COLUMNAS_ANCLADAS.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            &propias
+        }
+    };
     if columnas.is_empty() {
         return Err((64, format!("el dataset `{nombre}` no tiene columnas")));
     }
@@ -844,6 +892,11 @@ fn asegurar_dataset_de(
             .nombres
             .iter()
             .filter(|n| *n != &nombre && existe(n))
+            .filter(|n| {
+                anclada.is_none_or(|c| {
+                    ore_core::normalize::a_corto(n) != ore_core::normalize::a_corto(c)
+                })
+            })
             .cloned()
             .collect();
         if !l.reemplaza
@@ -859,6 +912,7 @@ fn asegurar_dataset_de(
             false,
             t.contains(MARCA)
                 && (columnas_del_documento(t) != *columnas
+                    || anclada.is_some_and(|c| !t.contains(&format!("anchoredTo: {c}")))
                     || cambios.as_ref().is_some_and(|c| !t.contains(c.trim()))
                     || derivado
                         .as_ref()
@@ -871,8 +925,11 @@ fn asegurar_dataset_de(
     // Con documento: se edita, para no perder lo que alguien le añadió a mano
     // (medido: `labels` y `description` se perdían al evolucionar el esquema).
     // Sin documento, o si el de antes no se deja editar: desde cero.
+    // Un documento que no era anclado no se edita: se escribe de nuevo (con su
+    // dueño), en una versión que conoce `anchoredTo`.
     let mut s = match texto_previo
         .as_deref()
+        .filter(|t| anclada.is_none() || t.contains("anchoredTo:"))
         .and_then(|t| seguir_esquema(t, columnas))
     {
         Some(s) => s,
@@ -894,11 +951,17 @@ fn asegurar_dataset_de(
                     ),
                 ));
             };
-            documento_nuevo(&o, t, columnas)
+            match anclada {
+                Some(c) => documento_anclado(&o, t, columnas, c),
+                None => documento_nuevo(&o, t, columnas),
+            }
         }
     };
     if let Some(c) = &cambios {
         s = con_cambios(&s, c);
+    }
+    if anclada.is_some() {
+        s = con_clave(&s, "  changes:", None);
     }
     if let Some(d) = &derivado {
         s = con_clave(
@@ -967,6 +1030,25 @@ fn documento_nuevo(owner: &str, t: Tabla, columnas: &BTreeMap<String, String>) -
         s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
     }
     s.push_str("  changes: { mode: append }\n");
+    s
+}
+
+/// La tabla anclada escrita desde cero (0049 B5·1): v1alpha19, `anchoredTo`
+/// y las columnas de la carga; las de sistema son de la gramática.
+fn documento_anclado(
+    owner: &str,
+    t: Tabla,
+    columnas: &BTreeMap<String, String>,
+    coleccion: &str,
+) -> String {
+    let (ns, schema, tabla) = (t.ns, t.schema, t.tabla);
+    let mut s = format!(
+        "apiVersion: oos.dev/v1alpha19\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns}, schema: {schema} }}\n{MARCA}: lo escribió `write()` desde un puesto: una tabla anclada\n# (v1alpha17 `03`), una fila por ancla de un ítem de `{coleccion}`. Sus columnas `_…`\n# las pone la gramática; las de aquí, la carga. Se funde por `_anchor_id`.\nspec:\n  owner: {owner}\n  anchoredTo: {coleccion}\n  columns:\n"
+    );
+    for (c, t) in columnas {
+        let t = crate::inductor::escalar_yaml(t);
+        s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
+    }
     s
 }
 
@@ -1424,6 +1506,18 @@ impl Cambio<'_> {
         })
     }
     /// La clave del upsert (`ore.clave` en el resumen del snapshot que lo hizo).
+    /// La colección a la que la escritura ancla la tabla (0049 B5·1): la
+    /// procedencia dice `anclada_a`.
+    fn anclada(&self) -> Option<String> {
+        match self.procedencia()? {
+            Json::Obj(m) => match m.get("anclada_a") {
+                Some(Json::Str(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn clave(&self) -> Option<Vec<String>> {
         self.nodo
             .get("updates")
@@ -1715,6 +1809,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         };
         let clave = p.cambio.clave();
         let leyo = p.cambio.leyo();
+        let anclada = p.cambio.anclada();
         let (tabla_nueva, regenerada) = asegurar_dataset_de(
             path,
             Tabla {
@@ -1726,6 +1821,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             clave.as_deref(),
             leyo.as_ref(),
             op.owner,
+            anclada.as_deref(),
         )?;
         let mut campos = vec![
             ("estado", Json::s("copiada")),
@@ -1840,7 +1936,8 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let a = aplicado_de(&n);
-    let (tabla_nueva, _) = asegurar_dataset_de(path, t, &a.columnas_oos, None, None, op.owner)?;
+    let (tabla_nueva, _) =
+        asegurar_dataset_de(path, t, &a.columnas_oos, None, None, op.owner, None)?;
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
@@ -2201,7 +2298,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             ));
         }
         (None, true) => false,
-        (Some(cols), _) => asegurar_dataset_de(path, t, cols, None, None, op.owner)?.0,
+        (Some(cols), _) => asegurar_dataset_de(path, t, cols, None, None, op.owner, None)?.0,
     };
 
     // ── el puntero ──────────────────────────────────────────────────────────
@@ -2523,7 +2620,7 @@ spec: { owner: team:ventas }
         assert!(!doc.contains("user:"), "sin --owner, el del paquete: {doc}");
         let t = partes("ventas.espana.lineas").unwrap();
         assert!(
-            asegurar_dataset_de(&d, t, &cols, None, None, Some("user:ana"))
+            asegurar_dataset_de(&d, t, &cols, None, None, Some("user:ana"), None)
                 .unwrap()
                 .0
         );
@@ -2537,7 +2634,7 @@ spec: { owner: team:ventas }
             .into_iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
-        asegurar_dataset_de(&d, t, &mas, None, None, Some("user:bea")).unwrap();
+        asegurar_dataset_de(&d, t, &mas, None, None, Some("user:bea"), None).unwrap();
         let doc = std::fs::read_to_string(&ruta).unwrap();
         assert!(
             doc.contains("owner: user:ana") && !doc.contains("user:bea"),
@@ -2546,6 +2643,107 @@ spec: { owner: team:ventas }
         assert!(ore_core::validate::validate_package(&d).is_empty());
         assert_eq!(partes("ventas.default.x").unwrap().corto(), "ventas.x");
         assert!(partes("a.b.c.d").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0049 B5·1 · Una tabla anclada: el documento dice `anchoredTo`, declara
+    /// sólo la carga, no lleva `changes` ni su colección en `derivedFrom`, y el
+    /// árbol compila; sin una columna de sistema, o con clave de upsert, no.
+    #[test]
+    fn una_tabla_anclada_declara_su_coleccion_y_su_carga() {
+        let d = std::env::temp_dir().join(format!("ore-anclada-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("packages/legal/archivo/collections")).unwrap();
+        let w = |r: &str, t: &str| std::fs::write(d.join(r), t).unwrap();
+        w(
+            "ontology.config.yaml",
+            "apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: x, version: 0.1.0 }
+",
+        );
+        w(
+            "packages/legal/package.yaml",
+            "apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: legal, version: 0.1.0, status: active, domain: legal }
+spec: { owner: team:legal }
+",
+        );
+        w(
+            "packages/legal/archivo/schema.yaml",
+            "apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: archivo, namespace: legal }
+spec: { owner: team:legal }
+",
+        );
+        w(
+            "packages/legal/archivo/collections/contratos.yaml",
+            "apiVersion: oos.dev/v1alpha19
+kind: MediaCollection
+metadata: { name: contratos, namespace: legal, schema: archivo }
+spec:
+  owner: team:legal
+  media: document
+  formats: [pdf]
+",
+        );
+        let mut cols: BTreeMap<String, String> = COLUMNAS_ANCLADAS
+            .iter()
+            .map(|c| (c.to_string(), "String".to_string()))
+            .collect();
+        cols.insert("texto".into(), "String".into());
+        let t = partes("legal.archivo.textos").unwrap();
+        let leyo = Leyo {
+            nombres: vec!["legal.archivo.contratos".into()],
+            reemplaza: true,
+        };
+        let c = Some("legal.archivo.contratos");
+        assert!(
+            asegurar_dataset_de(&d, t, &cols, None, Some(&leyo), Some("user:ana"), c)
+                .unwrap()
+                .0
+        );
+        let doc =
+            std::fs::read_to_string(d.join("packages/legal/archivo/datasets/textos.yaml")).unwrap();
+        assert!(
+            doc.contains("apiVersion: oos.dev/v1alpha19")
+                && doc.contains("  anchoredTo: legal.archivo.contratos"),
+            "{doc}"
+        );
+        assert!(
+            doc.contains("    texto: { type: String }")
+                && !doc.contains("_item")
+                && !doc.contains("changes")
+                && !doc.contains("derivedFrom"),
+            "{doc}"
+        );
+        assert!(
+            ore_core::validate::validate_package(&d).is_empty(),
+            "{:?}",
+            ore_core::validate::validate_package(&d)
+        );
+        // otra escritura con una columna más de carga: sigue anclada
+        cols.insert("pagina".into(), "Integer".into());
+        asegurar_dataset_de(&d, t, &cols, None, Some(&leyo), None, c).unwrap();
+        let doc =
+            std::fs::read_to_string(d.join("packages/legal/archivo/datasets/textos.yaml")).unwrap();
+        assert!(
+            doc.contains("anchoredTo: legal.archivo.contratos")
+                && doc.contains("pagina:")
+                && !doc.contains("changes"),
+            "{doc}"
+        );
+        assert!(ore_core::validate::validate_package(&d).is_empty());
+        // sin `_status`, o con clave de upsert: no
+        let mut sin = cols.clone();
+        sin.remove("_status");
+        let e = asegurar_dataset_de(&d, t, &sin, None, None, None, c).unwrap_err();
+        assert!(e.1.contains("le falta `_status`"), "{e:?}");
+        let e = asegurar_dataset_de(&d, t, &cols, Some(&["texto".to_string()]), None, None, c)
+            .unwrap_err();
+        assert!(e.1.contains("se funde por `_anchor_id`"), "{e:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
