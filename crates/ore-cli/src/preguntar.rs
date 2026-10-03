@@ -410,8 +410,8 @@ pub(crate) const ESQUEMA_DE_DATASETS: &str = "__ore_dataset";
 /// motor casa las columnas con el esquema **por posición**: la consulta se
 /// envuelve en un `select` con las columnas en el orden del `esquema`, que
 /// sale también, con los tipos de Iceberg de su físico (0032 §1).
-/// Una representación por dialecto que se sepa escribir, DuckDB y Spark
-/// (`representaciones`), y el motor elige la suya.
+/// Una representación (`representaciones`): la del dialecto en que la vista
+/// está escrita, `duckdb` (0040 SQL Views).
 fn sql_de_la_vista(
     pkg: &ore_core::link::Package,
     v: &Loaded,

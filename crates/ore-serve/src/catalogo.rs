@@ -851,7 +851,7 @@ impl Servidor {
     }
 
     /// **El `LoadViewResult` de una View** (spec REST de Iceberg, `loadView`):
-    /// su SQL —en DuckDB y en Spark— sobre sus datasets por su nombre del
+    /// su SQL —en su dialecto, DuckDB (0040 SQL Views)— sobre sus datasets por su nombre del
     /// catálogo y su esquema, de
     /// `ore ask --sql --catalogo`. No hay `metadata.json` de la vista en el
     /// bucket: la View vive en el árbol, y lo que se sirve es su versión de
@@ -913,8 +913,8 @@ impl Servidor {
         // schema con él); el lugar, por la forma corta.
         let v = nombre.rsplit('.').next().unwrap_or(nombre);
         let ns = ns.to_string();
-        // Una representación por dialecto (DuckDB y Spark): el motor elige la
-        // suya (medido: Spark toma `spark` aunque vaya detrás).
+        // Las representaciones de `ore ask --catalogo`: hoy una, `duckdb` (0040
+        // SQL Views). Un motor de otro dialecto no encuentra la suya y lo dice.
         let representaciones = j
             .get("representaciones")
             .map(|(_, r)| Json::de_node(r))

@@ -9,7 +9,7 @@ fuente».)
 vive la `Table` que apunta al origen, y por tanto qué hay dentro de una database. Revisa la
 ubicación que fijaron P1 I4b (`f7580aa`) y [`0033`](0033-el-dataset.md); **no** revisa lo que
 0033 decidió sobre el `Dataset` (§ «Lo que no se hace»). Toca el `_t` de
-[`0040`](0040-la-vista-es-sql.md) paso 6b.
+[`0040`](0040-sql-views.md) paso 6b.
 
 ## Lo visto
 
