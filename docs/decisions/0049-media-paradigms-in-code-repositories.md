@@ -324,8 +324,8 @@ conformidad** que cualquier superficie tiene que pasar. No se parchea el camino 
 | **B1 · los tipos** ✅ | `Struct`, `List<Struct>`, `Vector`, `MediaRef`, `Ancla` en la gramática (v1alpha17, conformance 30/30), el lago (ids por hijo, upsert, cambio de forma; 0032 T6) y SQL (DuckDB los lee nativos) | D4 |
 | **B2 · servir** ✅ | el índice de ítems y la firma en proceso; la credencial que se renueva | D2, D3 |
 | **B3 · la puerta de lectura** ✅ | leer mantenidas y virtuales por la celda: flujo, rangos, fijado, `sha256` al paso | D1 |
-| **B4 · la entrada** | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
-| **B4b · la colección escrita** | crear colecciones nuevas **desde la instancia**, en SQL (`create media collection …`) y en Python (`ore.crear_coleccion(…)`), de quien las crea (0027), y llenarlas: `put` con transacciones (`docs/media.md` §2), el `sha256` al paso, el tipo por los bytes, el linaje en el puntero | D4, D6 |
+| **B4 · la entrada** ✅ | la colección en `inputs`, `items()`, el handle, el linaje | D6 |
+| **B4b · la colección escrita** ✅ | crear colecciones nuevas **desde la instancia**, en SQL (`create media collection …`) y en Python (`ore.crear_coleccion(…)`), de quien las crea (0027), y llenarlas: `put` con transacciones (`docs/media.md` §2), el `sha256` al paso, el tipo por los bytes, el linaje en el puntero | D4, D6 |
 | **B5 · la derivación** | el registro por clave, `aplicar()`, `reintentar_errores`, la tabla anclada | D5 |
 | **B6 · el relevo** | la suite pasa en vivo; la base entra como pieza y `media`/`medias` pasan a ser azúcar sobre ella | — |
 
@@ -440,6 +440,44 @@ lo acepta para fijar (medido). Sin checksums guardados en el origen.
 el bucket del cliente, y la credencial de prueba es de sólo lectura; el `412` está probado contra
 un S3 de mentira y en vivo con un ETag alterado. El `sha256` visto al paso vive en memoria de
 `ore-medios` (se olvida al reiniciar): escribirlo en el manifiesto es de B5.
+
+### B4 y B4b · hechos: la colección entra y se escribe desde código (2026-10-02/03, victor)
+
+**El criterio** —*una colección se declara como entrada de un transform y se lee fijada; una
+colección escrita se crea desde la instancia, en Python y en SQL, y se llena por transacciones con
+su linaje*—, cumplido en puestos de victor abiertos por una persona, en la rama `test4`:
+
+- **Python (P5, `ceb4a0e` del árbol):** `ore.crear_coleccion(…)` sin dueño da `owner: user:victor`;
+  un transform con `inputs=[ore.coleccion("s3_foreign_contract.nueva_carpeta.contratos")]` copia
+  sus cuatro PDF con `transaccion().put`; el puntero lleva la procedencia y `fijadas`
+  `{contratos: "1"}`; los cuatro `sha256` leídos de vuelta coinciden. Negativas, 3/3: una colección
+  no declarada (celda), un `409` del SDK y uno del servidor.
+- **SQL + linaje (B4·4, `1f8beaa` del árbol):** `create media collection if not exists
+  s3_standard.nueva_carpeta.contratos_sql media document formats (pdf) comment '…'` la crea
+  (`created`); el transform `copiar` la llena (4 ítems, 6 969 B, transacción 1) y, al confirmar, el
+  servidor escribe en el documento `derivedFrom: [s3_foreign_contract.nueva_carpeta.contratos]` y lo
+  sube a `v1alpha19`, en el mismo commit.
+
+**Lo construido:**
+
+| paso | qué | commit |
+|---|---|---|
+| B4·1 | ore-core habla v1alpha19: la colección escrita deriva (`spec.derivedFrom`), y un dataset puede derivar de una colección | `722850e` |
+| B4·2 | lo declarado manda: declarar fija la transacción de cada colección de `inputs`; una no declarada es `403 media/no-declarada`; fuera de un transform, libre y anotada | `0d48825` |
+| B4b·1 | `put` en ore-medios: transacciones, subida en flujo (5 GiB), el tipo por los bytes; sólo la celda escribe en el lago | `b7cba14` |
+| B4b·2 | `POST /media/…/transactions`: ore-serve decide y ore-medios sella; los bytes no pasan por ore-serve; el puntero va a la rama del puesto con su procedencia | `9c38c95` |
+| B4b·2′ | ore-medios con cuenta propia (`ore-medios-<celda>@`: lee, crea y toca blobs, nada más) | `d9b5413`, `514fc64` |
+| B4·3/B4b·3 | el SDK: la colección como input, `crear_coleccion`, `transaccion()`/`put`/`put_varios`; el banco de la media | `5edf81f`…`08f2016`, `57c9f23` |
+| B4·4 | el linaje lo escribe el servidor al confirmar (lo leído por el transform o la sesión; sin lecturas, fuera) | `828e9cd` |
+| B4b·4 | `create media collection` en el guion SQL, el editor no lo marca, y una celda con ella es del árbol y no de DuckDB | `a2b58e6`, `d089986`, `2e36f1b` |
+
+**Lo que se encontró por el camino:** el dueño de lo creado tenía que ser la persona (0027, `user:<handle>`
+de ore-iam, migración 048); un puesto de Functions podía escribir (cerrado con la identidad declarada
+del puesto, R1, y el cierre de su credencial); y los puestos huérfanos de la cola, que agotaban la
+cuota (cerrado de raíz: cierre por inactividad y barrido, `eafdfd0`).
+
+**Pendiente, y de B5:** el `sha256` de un ítem virtual sólo se conoce al leerlo (vive en memoria de
+`ore-medios`); la identidad por contenido de una virtual sin leer es su `path@version`.
 
 ## Lo que no se hace aquí
 
