@@ -72,6 +72,11 @@ pub struct Clase {
     /// El perfil de máquina que pide la clase (0027). `None`: el de hoy.
     /// Todavía no lo usa nadie — lo dice la ADR, no el código.
     pub perfil: Option<&'static str>,
+    /// La prosa con que nace su manifiesto (`README.md`), con los huecos de la
+    /// semilla: la guía de quien lo abre. `None`: la frase de siempre. No es
+    /// semilla porque el manifiesto no lo es —lo escribe quien crea, y su
+    /// prosa es de quien la edite: actualizar no la pisa—.
+    pub guia: Option<&'static str>,
 }
 
 /// El ejemplo de `transforms-python`: **código, no un comentario**. Corre tal
@@ -379,7 +384,7 @@ pub fn se_siembra(rel: &str, paquete: &str) -> bool {
 /// (`bigint`) y sin biblioteca: lo que el contrato entrega es la cadena con
 /// sus cifras. Medido con Node: da lo mismo que el ejemplo de Python
 /// (`overdue · 120.50 · -17 · 1.02`).
-const FUNCTIONS_TS: &str = r#"// A published FUNCTION: `{{paquete}}.{{funcionTs}}` (ORE 0050).
+const FUNCTIONS_TS: &str = r##"// A published FUNCTION: `{{paquete}}.{{funcionTs}}` (ORE 0050).
 //
 // You write TypeScript; the platform does the rest. The default export of a
 // `.ts` under `functions/` is the function, and it is named like its file. Its
@@ -388,7 +393,8 @@ const FUNCTIONS_TS: &str = r#"// A published FUNCTION: `{{paquete}}.{{funcionTs}
 // its document, so don't edit that.
 //
 //   · Dry Run (f(x), next to Results): try it with a form, without committing.
-//   · From Pipelines: the Function operator, with its parameters.
+//   · Its tests sit next to it, in `{{funcionTs}}.test.ts`.
+//   · Once committed, it is invoked with its parameters (see README.md).
 //
 // Types are enforced at the boundary: a decimal arrives as a string with its
 // digits ("120.50", never a float), a calendar date as "2026-09-15", and an
@@ -442,16 +448,224 @@ function decimal(c: bigint): string {
 // declared in `config`:
 //     over: "my_db.my_schema.invoices"     the row arrives as the first parameter
 //     reads: ["my_db.my_schema.clients"]   read it with `over` from "ore"
-"#;
+"##;
 
 /// Dónde declara un repositorio de TypeScript sus paquetes de npm (0050 R3
 /// T5b): `dependencies`, y nada más se honra. Vacío: sin capa, y se ve dónde.
-const PACKAGE_JSON_TS: &str = r#"{
+const PACKAGE_JSON_TS: &str = r##"{
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {}
 }
-"#;
+"##;
+
+/// Sus pruebas (L1): el corredor de Node (`node:test`), sin nada que instalar.
+/// Un `.test.ts` nunca es una función (v1alpha23 `01` §3). Medido con Node:
+/// 4/4, y `tsc` limpio en `strict`.
+const TEST_TS: &str = r##"// Tests for `{{funcionTs}}`, with Node's own runner (`node:test`): no
+// library to install. `node --test` runs every `*.test.ts` of the repository,
+// and a test file is never published as a function.
+//
+// Call the function the way the platform does: decimals and dates arrive as
+// strings with their digits, so that is what a test passes.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {{funcionTs}} from "./{{funcionTs}}.ts";
+
+test("an overdue invoice carries a surcharge of 0.05% per day", () => {
+  assert.deepEqual({{funcionTs}}("120.50", "2026-09-15", "0", "2026-10-02"), {
+    status: "overdue",
+    outstanding: "120.50",
+    days: -17,
+    surcharge: "1.02",
+  });
+});
+
+test("a paid invoice has nothing outstanding", () => {
+  assert.deepEqual({{funcionTs}}("120.50", "2026-10-15", "120.50", "2026-10-02"), {
+    status: "paid",
+    outstanding: "0.00",
+    days: 13,
+  });
+});
+
+test("a partial payment leaves the rest outstanding", () => {
+  const r = {{funcionTs}}("120.50", "2026-10-15", "20.25", "2026-10-02");
+  assert.equal(r.status, "current");
+  assert.equal(r.outstanding, "100.25");
+});
+
+test("the surcharge rounds half to even, to the cent", () => {
+  // 10.00 one day late is 0.005 → 0.00; 30.00 is 0.015 → 0.02.
+  assert.equal({{funcionTs}}("10.00", "2026-10-01", "0", "2026-10-02").surcharge, "0.00");
+  assert.equal({{funcionTs}}("30.00", "2026-10-01", "0", "2026-10-02").surcharge, "0.02");
+});
+"##;
+
+/// Lo que la plataforma corre —Node 24, que borra los tipos— dicho para el
+/// editor y `tsc` (L1): `strict`, sin emitir, solo sintaxis borrable, y los
+/// `import` con su `.ts`. Medido con `tsc` 5.9: un `enum` es TS1294.
+const TSCONFIG_TS: &str = r##"{
+  // What the platform runs: Node 24, which executes `.ts` as is by erasing its
+  // types. These options keep the editor and `tsc` to that same rule.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "strict": true,
+    // Nothing is compiled: `tsc` only checks.
+    "noEmit": true,
+    // Only TypeScript that erases to JavaScript: no `enum`, `namespace` or
+    // parameter properties (use a union of strings for an enum).
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    // Imports name the file as it is, `./helpers.ts`, as Node needs them.
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}
+"##;
+
+const GITIGNORE_TS: &str = r##"# Packages are resolved by the platform from package.json; never committed.
+node_modules/
+# Local tooling output.
+*.tsbuildinfo
+.DS_Store
+"##;
+
+/// La guía del repositorio (L1): la prosa de su manifiesto. Sus ejemplos,
+/// medidos: `tsc` limpio en `strict` y corren con Node.
+const GUIA_TS: &str = r##"# TypeScript functions
+
+Typed functions over your data, written in plain TypeScript and published by the
+platform. You write a function and its types; the platform derives its contract,
+checks every call against it, and runs it on Node 24. There is no build step:
+the `.ts` you commit is what runs.
+
+## What is here
+
+```
+functions/
+  {{funcionTs}}.ts         a function: its file, its name
+  {{funcionTs}}.test.ts    its tests (never published)
+package.json               the npm packages your functions use
+tsconfig.json              the rules the editor and `tsc` check against
+```
+
+The document of each function (`functions/<name>.yaml` in the package) is
+written by the platform on commit. Edit the code, not the document.
+
+## A function
+
+A function is the **default export** of a `.ts` file under `functions/`, and it
+is named like its file. Its parameter types are its input, its return type is
+its output, and the JSDoc right above it is its description.
+
+```ts
+// functions/letterName.ts
+
+/** A person's name as it is printed on a letter. */
+export default function letterName(first: string, last: string, title?: string): string {
+  return [title, first, last.toUpperCase()].filter(Boolean).join(" ");
+}
+```
+
+- **One file, one function.** Other exports of the file are helpers, not functions.
+- **Optional parameters** have a default value, a `?`, or `| null`.
+- **Return an object** to return several fields: an `interface` or a `type` of
+  the same file becomes the output, field by field, as `InvoiceStatus` does.
+- **`async` works:** declare `Promise<T>`, and `T` is the output.
+- **Keep a function self-contained for now:** the types of its signature have to
+  be declared in its own file.
+
+## Types
+
+The signature is the contract, and it is enforced at the boundary: a call with a
+wrong value fails before your code runs, and so does a wrong result.
+
+| In TypeScript | What arrives | Example |
+|---|---|---|
+| `string`, `boolean` | as is | `"ES"`, `true` |
+| `number` | a float | `0.75` |
+| `Integer` (from `ore`) or `bigint` | an exact integer | `42` |
+| `Decimal<p, s>` | a string with its digits, never a float | `"120.50"` |
+| `Money<"EUR", 2>`, `Quantity<"km", 1>` | a decimal string; the unit is in the type | `"9.99"` |
+| `LocalDate`, `LocalTime`, `LocalDateTime` | an ISO string | `"2026-09-15"` |
+| `Date` | an instant: a `Date` (an ISO string in a call needs its zone) | `"2026-09-15T10:00:00Z"` |
+| `Uint8Array` | bytes | |
+| `Media<"db.schema.collection">` | a reference to a media item | |
+| `T[]`, `T \| null` | a list, a nullable value | |
+
+Decimals are strings so that no digit is lost: do exact arithmetic on them (the
+example converts to cents with `bigint`) or use a decimal package from npm.
+
+## Configuration
+
+An optional `config`, next to the function, in literal values only (it is read
+without running the file):
+
+```ts
+export const config = {
+  over: "my_db.my_schema.invoices",     // one call per row: the row is the first parameter
+  reads: ["my_db.my_schema.clients"],   // what else it reads, with `over` from "ore"
+  timeout: "30s",
+};
+```
+
+```ts
+import { over } from "ore";
+
+/** Whether an invoice belongs to a client at risk. */
+export default async function atRisk(invoice: Record<string, unknown>, limit: number = 1000): Promise<boolean> {
+  const clients = await over("my_db.my_schema.clients");
+  const client = clients.find((c) => c.id === invoice.client_id);
+  return Number(invoice.amount) > limit && client?.segment === "new";
+}
+```
+
+Calling registered models from TypeScript (`models`) is not available yet; it is
+in Python functions.
+
+## Try, test, publish
+
+- **Dry Run** (f(x), next to Results): run the function you are editing with a
+  form, before committing. It shows the result, or the error with its line.
+- **Tests**: `*.test.ts` files use Node's own runner (`node:test`); `node --test`
+  runs them all. Call the function the way the platform does, with decimals and
+  dates as strings.
+- **Commit**: the function is published under Assets → Functions with its
+  contract, and invoked with its parameters
+  (`POST /funciones/{{paquete}}/<name>/invocar`); the result is stored on your branch.
+
+## npm packages
+
+Declare them in `dependencies` of `package.json`, with versions or ranges as in
+npm:
+
+```json
+{ "dependencies": { "date-fns": "^4.1.0" } }
+```
+
+The platform resolves them into a layer when the session opens (the first time,
+it takes a minute) and records the exact versions it installed. Good to know:
+
+- `ore` (this SDK) and `@duckdb/node-api` come with the platform; don't declare them.
+- Install scripts of packages never run, so a package that compiles native code
+  when it installs is not supported. Pure JavaScript packages and those that
+  ship prebuilt binaries work.
+- Only `dependencies` is read. `devDependencies`, `peerDependencies`,
+  `overrides` and local paths (`file:`, `link:`) are not.
+
+## TypeScript, as Node runs it
+
+Node runs TypeScript by erasing its types, so only syntax that erases is valid:
+no `enum` (use a union of strings, `"paid" | "overdue"`), no `namespace`, no
+parameter properties in constructors. `tsconfig.json` enforces the same rule in
+the editor. Imports name the file as it is: `import x from "./helpers.ts"`."##;
 
 /// Rellena los huecos de una semilla: `{{paquete}}` (el `namespace` de lo que
 /// declare), `{{carpeta}}` (dónde vive el repositorio, para su `entrypoint`),
@@ -500,6 +714,7 @@ pub const CLASES: &[Clase] = &[
         escribe: true,
         ejecuta: true,
         perfil: None,
+        guia: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets using Python.",
         // 2 porque la plantilla CAMBIÓ (⑧a): lo escrito con la de antes —un
@@ -521,6 +736,7 @@ pub const CLASES: &[Clase] = &[
         escribe: true,
         ejecuta: true,
         perfil: None,
+        guia: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets using Java on the JVM.",
         // 3 porque la plantilla CAMBIÓ (0037 ③c): lo escrito con la de antes
@@ -542,6 +758,7 @@ pub const CLASES: &[Clase] = &[
         escribe: true,
         ejecuta: true,
         perfil: None,
+        guia: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets writing SQL.",
         // 4: un `.sql` de verdad, en tres partes y SIN `pyproject.toml` (0038 P7):
@@ -563,6 +780,7 @@ pub const CLASES: &[Clase] = &[
         escribe: false,
         ejecuta: true,
         perfil: None,
+        guia: None,
         titulo: "Analytics",
         descripcion: "Analyze your datasets using your preferred data science environment.",
         // 4: la semilla nombra en tres partes (0038 P7).
@@ -581,6 +799,7 @@ pub const CLASES: &[Clase] = &[
         escribe: true,
         ejecuta: true,
         perfil: None,
+        guia: None,
         titulo: "Models",
         descripcion: "Create, test and train models for machine learning, forecasting and more.",
         // 4: la semilla nombra en tres partes (0038 P7).
@@ -599,6 +818,7 @@ pub const CLASES: &[Clase] = &[
         escribe: false,
         ejecuta: true,
         perfil: None,
+        guia: None,
         titulo: "Functions",
         descripcion: "Write typed Python functions over your datasets and models, invocable with parameters.",
         // 4: la semilla nombra en tres partes (0038 P7).
@@ -625,6 +845,7 @@ pub const CLASES: &[Clase] = &[
         escribe: false,
         ejecuta: true,
         perfil: None,
+        guia: Some(GUIA_TS),
         titulo: "Functions",
         descripcion: "Write typed TypeScript functions over your datasets, invocable with parameters.",
         // 2: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
@@ -633,10 +854,16 @@ pub const CLASES: &[Clase] = &[
         //    `package.json` donde se declaran los paquetes de npm. El commit que
         //    lo crea escribe su documento. Actualizar deja lo de antes
         //    (`functions/example.ts`, un módulo de ayuda): es de quien lo tenga.
-        version: 3,
+        // 4: el repositorio entero (L1): sus pruebas (`node --test`), el
+        //    `tsconfig.json` de lo que Node corre, `.gitignore`, y la guía en
+        //    la prosa del manifiesto.
+        version: 4,
         semilla: &[
             ("package.json", PACKAGE_JSON_TS),
+            ("tsconfig.json", TSCONFIG_TS),
+            (".gitignore", GITIGNORE_TS),
             ("functions/{{funcionTs}}.ts", FUNCTIONS_TS),
+            ("functions/{{funcionTs}}.test.ts", TEST_TS),
         ],
     },
     // `semantics` no siembra código: lo suyo son documentos del árbol, y
@@ -649,6 +876,7 @@ pub const CLASES: &[Clase] = &[
         escribe: false,
         ejecuta: false,
         perfil: None,
+        guia: None,
         titulo: "Semantics",
         version: 1,
         semilla: &[],
@@ -886,6 +1114,26 @@ spec:
                 .exists()
         );
         assert!(pkg.join("functions/otraInvoiceStatus.yaml").exists());
+        // L1: la prueba no es una función, y no tiene documento.
+        let prueba =
+            pkg.join("funciones-de-riesgo/functions/funcionesDeRiesgoInvoiceStatus.test.ts");
+        assert!(prueba.exists());
+        let texto = std::fs::read_to_string(&prueba).unwrap();
+        assert!(
+            texto.contains("import funcionesDeRiesgoInvoiceStatus from \"./funcionesDeRiesgoInvoiceStatus.ts\";"),
+            "{texto}"
+        );
+        assert!(!ore_code::puede_tener_funciones(
+            "funciones-de-riesgo/functions/funcionesDeRiesgoInvoiceStatus.test.ts",
+            &texto
+        ));
+        assert!(
+            std::fs::read_dir(pkg.join("functions")).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".test"))
+        );
         let d = crate::validate::validate_package(&raiz);
         assert!(
             d.is_empty(),
@@ -895,6 +1143,26 @@ spec:
                 .collect::<Vec<_>>()
         );
         let _ = std::fs::remove_dir_all(&raiz);
+    }
+
+    /// L1: la guía nace con sus huecos rellenos y nombra lo que la semilla
+    /// trae; sólo `functions-typescript` la tiene por ahora.
+    #[test]
+    fn la_guia_de_typescript_nombra_lo_que_siembra() {
+        let c = de("functions-typescript").unwrap();
+        let guia = sembrar(c.guia.unwrap(), "ventas", "riesgo");
+        assert!(!guia.contains("{{"), "{guia}");
+        assert!(guia.contains("riesgoInvoiceStatus.test.ts"), "{guia}");
+        assert!(guia.contains("/funciones/ventas/<name>/invocar"), "{guia}");
+        for (ruta, _) in c.semilla {
+            let f = ruta.rsplit('/').next().unwrap();
+            let f = sembrar(f, "ventas", "riesgo");
+            if f != ".gitignore" {
+                assert!(guia.contains(&f), "la guía no nombra `{f}`");
+            }
+        }
+        assert!(crate::sdk::nombres_de_antes_en(&guia).is_empty());
+        assert!(CLASES.iter().filter(|c| c.guia.is_some()).count() == 1);
     }
 
     #[test]
@@ -1161,9 +1429,12 @@ spec:
             for (ruta, texto) in c.semilla {
                 // Un documento generado no lleva comentarios: lo que enseña a
                 // nombrar está en el código del que sale (0050 G1).
+                // Ni lo que no nombra datos: `.gitignore`, una prueba.
                 if ruta.ends_with(".toml")
                     || ruta.ends_with(".xml")
                     || ruta.ends_with(".json")
+                    || ruta.ends_with(".gitignore")
+                    || ruta.ends_with(".test.ts")
                     || ore_code::emitir::es_generado(texto)
                 {
                     continue;

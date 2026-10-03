@@ -120,8 +120,27 @@ fn manifiesto(nombre: &str, plantilla: &str, version: i64, prosa: Option<&str>) 
         escalar(nombre),
         plantilla,
         version,
-        prosa.unwrap_or("Lo que este repositorio hace, en prosa.")
+        prosa.unwrap_or(PROSA)
     )
+}
+
+/// La prosa de un manifiesto que nadie ha escrito.
+const PROSA: &str = "Lo que este repositorio hace, en prosa.";
+
+/// La prosa con que se reescribe un manifiesto: la de quien la escribió, o la
+/// guía de la plantilla (L1) si no hay más que la frase de siempre.
+fn prosa_o_guia(
+    antes: Option<&str>,
+    clase: &ore_core::clases::Clase,
+    paquete: &str,
+    carpeta: &str,
+) -> Option<String> {
+    match antes {
+        Some(p) if p != PROSA => Some(p.to_string()),
+        _ => clase
+            .guia
+            .map(|g| ore_core::clases::sembrar(g, paquete, carpeta)),
+    }
 }
 
 fn ficha(r: &ore_core::repositorios::Repositorio, semilla: &[String], nueva: bool) -> Json {
@@ -246,7 +265,14 @@ impl Servidor {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return Respuesta::error(500, format!("no se pudo crear `{ruta}`: {e}"));
         }
-        let texto = manifiesto(&c.nombre, c.plantilla.id, c.plantilla.version, None);
+        // L1: con la guía de la plantilla, si la tiene, en la prosa.
+        let guia = prosa_o_guia(None, c.plantilla, &paquete, &carpeta);
+        let texto = manifiesto(
+            &c.nombre,
+            c.plantilla.id,
+            c.plantilla.version,
+            guia.as_deref(),
+        );
         if let Err(e) = std::fs::write(dir.join("README.md"), texto) {
             return Respuesta::error(500, format!("no se pudo escribir `{ruta}/README.md`: {e}"));
         }
@@ -458,7 +484,14 @@ impl Servidor {
                     }
                     escrito.push(format!("{ruta_r}/{rel}"));
                 }
-                let texto = manifiesto(&nombre_del_commit, id, version, prosa_de_antes.as_deref());
+                // La prosa de quien la escribió; si no hay más que la frase de
+                // siempre, la guía de la plantilla (L1).
+                let (paquete, carpeta) = ruta_r
+                    .strip_prefix("packages/")
+                    .and_then(|x| x.split_once('/'))
+                    .unwrap_or(("", ""));
+                let prosa = prosa_o_guia(prosa_de_antes.as_deref(), clase, paquete, carpeta);
+                let texto = manifiesto(&nombre_del_commit, id, version, prosa.as_deref());
                 if let Err(e) = std::fs::write(dir.join("README.md"), texto) {
                     return Respuesta::error(
                         500,
@@ -549,6 +582,30 @@ impl Servidor {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// L1: un repositorio de TypeScript nace con la guía en su manifiesto; al
+    /// actualizar, la guía entra donde no había más que la frase de siempre, y
+    /// la prosa que alguien escribió no se pisa.
+    #[test]
+    fn la_guia_nace_en_el_manifiesto_y_no_pisa_la_prosa() {
+        let ts = ore_core::clases::de("functions-typescript").unwrap();
+        let guia = prosa_o_guia(None, ts, "ventas", "riesgo").unwrap();
+        assert!(guia.starts_with("# TypeScript functions"), "{guia}");
+        assert!(guia.contains("riesgoInvoiceStatus.ts") && !guia.contains("{{"));
+        let m = manifiesto("Riesgo", ts.id, ts.version, Some(&guia));
+        assert_eq!(prosa_de(&m).as_deref(), Some(guia.as_str()));
+        assert_eq!(
+            prosa_o_guia(Some(PROSA), ts, "ventas", "riesgo"),
+            Some(guia)
+        );
+        assert_eq!(
+            prosa_o_guia(Some("Lo mío."), ts, "ventas", "riesgo").as_deref(),
+            Some("Lo mío.")
+        );
+        // Una plantilla sin guía: la frase de siempre.
+        let py = ore_core::clases::de("functions-python").unwrap();
+        assert_eq!(prosa_o_guia(None, py, "ventas", "riesgo"), None);
+    }
 
     #[test]
     fn el_manifiesto_no_lo_puede_cerrar_un_nombre() {
