@@ -632,11 +632,11 @@ fn una_vista_se_coteja_con_el_arbol() {
     );
 }
 
-/// 0049 B7·1: a `MediaCollection` is a relation in `FROM` —one row per item—,
-/// a name the cell resolves; a dataset written from it is anchored (B7·3), and
-/// SQL does not write those yet: it says so, and where to do it today.
+/// 0049 B7·1 and B7·3: a `MediaCollection` is a relation in `FROM` —one row per item—,
+/// a name the cell resolves; a dataset written from it is anchored to it and
+/// computed item by item, with its limits (B7·3), each one said.
 #[test]
-fn a_collection_is_read_in_from_and_not_yet_written_from() {
+fn a_collection_is_read_in_from_and_a_dataset_written_from_it_is_anchored() {
     let t = arbol("coleccion");
     escribe(
         &t.0,
@@ -658,16 +658,44 @@ fn a_collection_is_read_in_from_and_not_yet_written_from() {
         )
         .is_empty()
     );
-    let f = fallos(
-        r,
-        "create or replace dataset ventas.paginas as select path from ventas.contratos",
-    );
-    assert_eq!(f.len(), 1, "{f:?}");
-    assert!(
-        f[0].mensaje.contains("is a `MediaCollection`") && f[0].mensaje.contains("anchored"),
-        "{f:?}"
-    );
+    // B7·3: written from it, the dataset is anchored to it
+    let q = "create or replace dataset ventas.paginas as select path from ventas.contratos";
+    assert!(fallos(r, q).is_empty(), "{:?}", fallos(r, q));
     let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    assert_eq!(
+        ore_core::sql_del_arbol::anchored_to(&pkg, &analizar(q).unwrap()).as_deref(),
+        Some("ventas.contratos")
+    );
+    let otra = "create or replace dataset ventas.otra as select 1 as a from ventas.pedidos";
+    assert_eq!(
+        ore_core::sql_del_arbol::anchored_to(&pkg, &analizar(otra).unwrap()),
+        None
+    );
+    // and its limits, one error each, saying what to do instead
+    let uno = |q: &str, que: &str| {
+        let f = fallos(r, q);
+        assert!(f.len() == 1 && f[0].mensaje.contains(que), "{q}: {f:?}");
+    };
+    uno(
+        "insert into ventas.resumen select path as pais, 1 as n from ventas.contratos",
+        "written whole",
+    );
+    uno(
+        "create or replace dataset ventas.p2 as select c.path, p.id from ventas.contratos c join ventas.pedidos p on true",
+        "and nothing else",
+    );
+    uno(
+        "create or replace dataset ventas.p3 as select content_type, count(*) as n from ventas.contratos group by 1",
+        "group by",
+    );
+    uno(
+        "create or replace dataset ventas.p4 as select path from ventas.contratos order by path limit 3",
+        "order by",
+    );
+    uno(
+        "create or replace dataset ventas.resumen as select path as pais from ventas.contratos",
+        "is not anchored",
+    );
     assert_eq!(
         ore_core::sql_del_arbol::nombres_a_resolver(
             "select path from ventas.default.contratos",

@@ -3082,7 +3082,8 @@ fn celda_de_sql(
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             let f = cotejar(&pkg, &u);
             if f.is_empty() {
-                return Ok(celda_de_unidad(codigo, &u));
+                let anclada = ore_core::sql_del_arbol::anchored_to(&pkg, &u);
+                return Ok(celda_de_unidad(codigo, &u, anclada.as_deref()));
             }
             f
         }
@@ -3143,7 +3144,10 @@ fn celda_de_sentencia(
         ore_core::sdk::guarda_python()
     );
     let cuerpo = match &t.sentencia {
-        S::Unidad(u) => return celda_de_unidad(codigo, u),
+        S::Unidad(u) => {
+            let anclada = ore_core::sql_del_arbol::anchored_to(pkg, u);
+            return celda_de_unidad(codigo, u, anclada.as_deref());
+        }
         S::CrearBase {
             nombre,
             clase,
@@ -3330,7 +3334,11 @@ fn rechazo(codigo: &str, fallos: &[ore_core::sql_del_arbol::Fallo]) -> Respuesta
 
 /// La celda que corre una unidad ya cotejada. El nombre del transform es el
 /// del fichero (`resumen.sql` → `resumen`), que es lo que la procedencia dice.
-fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String, &'static str) {
+fn celda_de_unidad(
+    codigo: &str,
+    u: &ore_core::sql_del_arbol::Unidad,
+    anclada: Option<&str>,
+) -> (String, &'static str) {
     let Some(e) = &u.escribe else {
         return (u.consulta.clone(), "sql");
     };
@@ -3352,6 +3360,35 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
     let cadena = |s: &str| Json::s(s).jcs();
     let inputs = Json::Arr(u.lee.iter().map(|n| Json::s(n.referencia())).collect()).jcs();
     let salida = cadena(&e.destino.referencia());
+    // 0049 B7·3: written from a collection, the dataset is anchored to it and
+    // computed item by item by `apply()`: the query, per item, with the same
+    // registry by key. What did not change is neither computed nor written.
+    if let Some(c) = anclada {
+        let col = cadena(c);
+        let celda = format!(
+            "# `{codigo}`: the statement reads the collection {col}, so its dataset is\n\
+             # anchored to it and computed item by item (written by ore-serve, not the client).\n\
+             {guarda}\
+             from ore import transform, collection, _sql_per_item, _resultado_de_aplicar\n\
+             \n\
+             \n\
+             @transform(inputs=[collection({col})], output={salida})\n\
+             def {nombre}():\n    \
+                 return _sql_per_item({salida}, {col}, {consulta}, {fn_name})\n\
+             \n\
+             \n\
+             _hecho = {nombre}()\n\
+             print(\"%s · anchored to %s · %d items: %d new, %d recomputed, %d skipped, %d errors, \
+             %d removed · %d rows%s\" % ({salida}, {col}, _hecho[\"items\"], _hecho[\"new\"], \
+             _hecho[\"recomputed\"], _hecho[\"skipped\"], _hecho[\"errors\"], _hecho[\"removed\"], \
+             _hecho[\"rows\"], \"\" if _hecho[\"written\"] else \" · nothing new\"))\n\
+             _resultado_de_aplicar(_hecho)\n",
+            consulta = cadena(&u.consulta),
+            fn_name = cadena(&nombre),
+            guarda = ore_core::sdk::guarda_python(),
+        );
+        return (celda, "python");
+    }
     // Un `insert` con columnas sin alias (`select letra, 0.5 from …`): ésas
     // toman el nombre de la columna de la tabla en su posición, como en SQL.
     let (mut importa, mut datos) = if e.por_posicion.is_empty() {
@@ -4101,7 +4138,16 @@ mod prueba {
             (l == "python").then(|| (format!("{i:02}-sentencia"), c))
         })
         .collect();
-        assert!(corpus.len() >= 12, "{}", corpus.len());
+        // 0049 B7·3: the dataset written from a collection, anchored.
+        let u = ore_core::sql_del_arbol::analizar(
+            "create or replace dataset ventas.paginas as select c.path from ventas.docs as c",
+        )
+        .unwrap();
+        corpus.push((
+            "90-anclada".into(),
+            celda_de_unidad("x.sql", &u, Some("ventas.docs")).0,
+        ));
+        assert!(corpus.len() >= 13, "{}", corpus.len());
         let sdk = include_str!("../../../puesto/python/ore/__init__.py");
         // Lo que el SDK exporta: su `__all__` (lo público) y sus `def` del
         // primer nivel (los `_resultado_de_*` que sólo usa el código generado).

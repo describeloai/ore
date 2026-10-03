@@ -167,7 +167,39 @@ pub struct Unidad {
     pub avisos: Vec<Fallo>,
     /// The tree `Function`s the query calls (0049 B7·2), once each.
     pub calls: Vec<Call>,
+    /// What the query does that is not computed item by item —`group by`,
+    /// an aggregate, a window, `order by`, `limit`, `distinct`, a `union`—, in
+    /// the order found (0049 B7·3: an anchored dataset is computed per item).
+    pub not_per_item: Vec<String>,
 }
+
+/// The aggregates DuckDB has that a query computed per item cannot use.
+const AGGREGATES: [&str; 24] = [
+    "count",
+    "sum",
+    "avg",
+    "mean",
+    "min",
+    "max",
+    "list",
+    "array_agg",
+    "string_agg",
+    "group_concat",
+    "any_value",
+    "first",
+    "last",
+    "median",
+    "mode",
+    "stddev",
+    "variance",
+    "bool_and",
+    "bool_or",
+    "approx_count_distinct",
+    "quantile",
+    "arg_min",
+    "arg_max",
+    "histogram",
+];
 
 /// **A tree `Function` called from SQL** (0049 B7·2): by its name of two or
 /// three parts, as a value (`f(x)`) or as rows (`from f(x)`, `join lateral
@@ -353,12 +385,19 @@ fn unidad_de(s: &Statement, texto: &str) -> Result<Unidad, Vec<Fallo>> {
                 calls.push(c);
             }
         }
+        let mut not_per_item: Vec<String> = Vec::new();
+        for c in lectura.not_per_item {
+            if !not_per_item.contains(&c) {
+                not_per_item.push(c);
+            }
+        }
         Ok(Unidad {
             lee,
             escribe,
             consulta,
             avisos,
             calls,
+            not_per_item,
         })
     } else {
         Err(fallos)
@@ -521,6 +560,7 @@ struct Lectura {
     nombres: Vec<Nombre>,
     fallos: Vec<Fallo>,
     calls: Vec<Call>,
+    not_per_item: Vec<String>,
 }
 
 impl Lectura {
@@ -532,8 +572,38 @@ impl Lectura {
 impl Visitor for Lectura {
     type Break = ();
 
+    // 0049 B7·3: what a query computed per item cannot do.
+    fn pre_visit_select(&mut self, s: &sqlparser::ast::Select) -> ControlFlow<()> {
+        use sqlparser::ast::GroupByExpr;
+        let agrupa = match &s.group_by {
+            GroupByExpr::All(_) => true,
+            GroupByExpr::Expressions(v, _) => !v.is_empty(),
+        };
+        for (si, que) in [
+            (agrupa, "group by"),
+            (s.having.is_some(), "having"),
+            (s.distinct.is_some(), "distinct"),
+            (s.qualify.is_some(), "qualify"),
+        ] {
+            if si {
+                self.not_per_item.push(que.to_string());
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
     // 0049 B7·2: `a.b(…)` or `a.b.c(…)` as a value is a tree `Function`.
     fn pre_visit_expr(&mut self, e: &sqlparser::ast::Expr) -> ControlFlow<()> {
+        if let sqlparser::ast::Expr::Function(f) = e {
+            if f.over.is_some() {
+                self.not_per_item.push("a window function".to_string());
+            } else if f.name.0.len() == 1 {
+                let n = f.name.to_string().to_lowercase();
+                if AGGREGATES.contains(&n.as_str()) {
+                    self.not_per_item.push(format!("`{n}`, an aggregate"));
+                }
+            }
+        }
         if let sqlparser::ast::Expr::Function(f) = e
             && (2..=3).contains(&f.name.0.len())
             && let Some(n) = nombre_del_arbol(&f.name, &mut self.fallos)
@@ -558,6 +628,16 @@ impl Visitor for Lectura {
             })
             .unwrap_or_default();
         self.ctes.push(nombres);
+        if q.order_by.is_some() {
+            self.not_per_item.push("order by".to_string());
+        }
+        if q.limit_clause.is_some() || q.fetch.is_some() {
+            self.not_per_item.push("limit".to_string());
+        }
+        if matches!(*q.body, SetExpr::SetOperation { .. }) {
+            self.not_per_item
+                .push("a set operation (`union`…)".to_string());
+        }
         ControlFlow::Continue(())
     }
 
@@ -869,18 +949,9 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             ),
             // 0049 B7·1: a collection is a relation in `FROM`, one row per item
             // (`item`, `path`, `digest`, `size`, `content_type`, `modified`).
-            // Writing a dataset from it makes the dataset anchored: B7·3.
-            Some(d) if d.kind == Kind::MediaCollection && u.escribe.is_none() => {}
-            Some(d) if d.kind == Kind::MediaCollection => fallos.push(
-                Fallo::new(
-                    format!(
-                        "`{r}` is a `MediaCollection`: a dataset written from it is anchored \
-                         to it, and SQL does not write anchored datasets yet"
-                    ),
-                    n.pos,
-                )
-                .ayuda("for now, `ore.collection(…).apply(fn)` in a Python transform writes it"),
-            ),
+            // Writing a dataset from it makes the dataset anchored (B7·3): the
+            // limits are checked below, with the whole statement in view.
+            Some(d) if d.kind == Kind::MediaCollection => {}
             Some(d) => fallos.push(Fallo::new(
                 format!("`{r}` es una `{:?}`: en SQL se lee un `Dataset` o una `View`", d.kind),
                 n.pos,
@@ -889,7 +960,7 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             None if !hay_schema(n) => fallos.push(sin_schema(n)),
             // lo creó una sentencia de antes del guion
             None if creado.datasets.contains(&r) || creado.vistas.contains(&r) => {}
-            None if u.escribe.is_none() && creado.colecciones.contains(&r) => {}
+            None if creado.colecciones.contains(&r) => {}
             None => fallos.push(Fallo::new(
                 format!("no hay ningún `Dataset` ni `View` `{r}` en el árbol"),
                 n.pos,
@@ -936,6 +1007,77 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
                 )
                 .ayuda("call from SQL a function without `over` or `models`"),
             );
+        }
+    }
+    // 0049 B7·3: a dataset written from a collection is anchored to it, and
+    // computed item by item: its collection and nothing else, written whole,
+    // nothing that needs more than one item.
+    let coleccion = coleccion_leida(pkg, u, creado);
+    if let (Some(e), Some(c)) = (&u.escribe, &coleccion) {
+        let pos = e.destino.pos;
+        if e.modo != Modo::Sobrescribir {
+            fallos.push(
+                Fallo::new(
+                    format!("an anchored dataset is written whole, from `{c}`: not appended to"),
+                    pos,
+                )
+                .ayuda("`create or replace dataset … as select … from` the collection"),
+            );
+        }
+        let otras: Vec<String> = u
+            .lee
+            .iter()
+            .map(Nombre::referencia)
+            .filter(|r| r != c)
+            .collect();
+        if !otras.is_empty() {
+            fallos.push(
+                Fallo::new(
+                    format!(
+                        "an anchored dataset reads its collection `{c}` and nothing else; this reads `{}` too",
+                        otras.join("`, `")
+                    ),
+                    pos,
+                )
+                .ayuda("join it afterwards: a view that reads the anchored dataset and the rest"),
+            );
+        }
+        if let Some(que) = u.not_per_item.first() {
+            fallos.push(
+                Fallo::new(
+                    format!(
+                        "{que} is not computed item by item, and an anchored dataset is: each item of `{c}`, on its own"
+                    ),
+                    pos,
+                )
+                .ayuda("do it in a view that reads the anchored dataset"),
+            );
+        }
+        if e.modo == Modo::Sobrescribir
+            && let Some(d) = doc(&e.destino)
+            && d.kind == Kind::Dataset
+            && d.section("from").is_none()
+        {
+            let suya = d
+                .section("anchoredTo")
+                .and_then(|v| v.as_str())
+                .map(|a| crate::normalize::a_corto(a).into_owned());
+            if suya.as_deref() != Some(c.as_str()) {
+                fallos.push(
+                    Fallo::new(
+                        format!(
+                            "`{}` already exists {}: an anchored dataset from `{c}` is a dataset of its own",
+                            e.destino.referencia(),
+                            match &suya {
+                                Some(a) => format!("anchored to `{a}`"),
+                                None => "and is not anchored".to_string(),
+                            }
+                        ),
+                        pos,
+                    )
+                    .ayuda("write it under another name"),
+                );
+            }
         }
     }
     if let Some(e) = &u.escribe {
@@ -997,6 +1139,24 @@ const TRAS_LAS_QUE_SE_LEE: [&str; 6] =
 /// Lo demás —un esquema de la sesión (`tmp.t`), un alias, un campo de un
 /// struct— es del motor. Hoy la regex mandaba `tmp.t` a ore-serve: 404, y la
 /// celda moría.
+/// The collection a statement reads, in its short form, if it reads one.
+fn coleccion_leida(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Option<String> {
+    u.lee.iter().map(Nombre::referencia).find(|r| {
+        creado.colecciones.contains(r)
+            || pkg.docs.iter().any(|d| {
+                d.kind == Kind::MediaCollection && d.qname().as_deref() == Some(r.as_str())
+            })
+    })
+}
+
+/// **The collection a statement's dataset is anchored to** (0049 B7·3): a
+/// statement that writes a dataset and reads a `MediaCollection` writes an
+/// anchored dataset, computed item by item. Its short name, or `None`.
+pub fn anchored_to(pkg: &Package, u: &Unidad) -> Option<String> {
+    u.escribe.as_ref()?;
+    coleccion_leida(pkg, u, &guion::Creado::default())
+}
+
 /// **A tree `Function` call in the text of a cell, as DuckDB will run it**
 /// (0049 B7·2): `name` its short name, `internal` the name it is registered
 /// under (`__ore_fn_<n>`, one per call site), `arity` the arguments written,

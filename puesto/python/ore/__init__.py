@@ -1609,6 +1609,68 @@ def _resultado_de_escritura(escrito):
                      "num_inserted_rows": pa.array([llegan], pa.int64())})
 
 
+def _sql_per_item(output, coll, query, name):
+    """**A query over a collection, computed item by item** (0049 B7·3): what
+    `create or replace dataset … as select … from <collection>` runs. It is
+    `collection(coll).apply()`: for each item still to compute, `query` runs
+    with the collection holding that item alone, and its rows —with their
+    `anchor`, if they have one— are that item's. Same registry by key as in
+    Python: what did not change is neither computed nor written. The version
+    is the query and the document of each function it calls."""
+    import hashlib
+    import threading
+
+    import duckdb
+
+    from .medios import _canonico, _relacion_de_refs
+    from .sql_functions import register
+
+    codigo, r = session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": query})
+    if codigo != 200:
+        _o_el_error(codigo, r, (r or {}).get("nombre") or "?")
+    r = r or {}
+    calls = r.get("functions") or []
+    texto = r.get("query") or query
+    colecciones = [n for n, rd in (r.get("fuentes") or {}).items() if (rd or {}).get("collection")]
+    funciones = {c["name"]: get_function(c["name"]) for c in calls}
+    huella = hashlib.sha256(_canonico({
+        "query": " ".join(query.split()),
+        "functions": {n: _FUNCIONES_SPEC.get(n) for n in sorted(funciones)},
+    }).encode("utf-8")).hexdigest()[:16]
+    hilo = threading.local()
+
+    def conexion():
+        # One per thread: `apply()` computes items in parallel, and each item is
+        # the collection of ITS connection.
+        if not hasattr(hilo, "con"):
+            con = duckdb.connect()
+            con.execute("set TimeZone = 'UTC'")
+            con.execute("set autoinstall_known_extensions = false")
+            con.execute("set memory_limit='%dMB'" % max(256, _tropo_mb() // 4))
+            register(con, calls, lambda n: (funciones[n], _FUNCIONES_SPEC[n]))
+            hilo.con = con
+        return hilo.con
+
+    def per_item(item):
+        con = conexion()
+        con.register("__ore_item", _relacion_de_refs([item.ref]))
+        for n in colecciones:
+            _registra(con, n, _q("__ore_item"))
+        return _arrow(con.execute(texto)).to_pylist()
+
+    per_item.__name__ = name
+    return collection(coll).apply(per_item, version="sql:" + huella, output=output)
+
+
+def _resultado_de_aplicar(hecho):
+    """The result of a statement that writes an anchored dataset (0049 B7·3):
+    one row with what `apply()` did."""
+    import pyarrow as pa
+
+    claves = ("items", "new", "recomputed", "skipped", "errors", "removed", "rows")
+    return pa.table({k: pa.array([int(hecho.get(k) or 0)], pa.int64()) for k in claves})
+
+
 def _resultado_de_crear(objeto, creado):
     """El resultado de una sentencia que crea (el guion SQL, 0039): qué, y si se
     creó o ya estaba (`if not exists`). `creado` es un booleano, o el estado ya

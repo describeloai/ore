@@ -20,6 +20,7 @@ CLI (`una_tabla_anclada_declara_su_coleccion_y_su_carga`) y en vivo (B5·3).
   13  una copia con otra ruta, listada antes: su fila no cambia de ruta y no se escribe
   14  la colección como relación de `sql()` (B7·1): una fila por ítem, sin leer bytes
   15  funciones del árbol en SQL (B7·2): de tabla en un lateral, escalar, con su contrato
+  16  un dataset desde una colección en SQL (B7·3): ítem a ítem por apply(), anclado
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-derivacion-en-python.py
 """
@@ -333,7 +334,82 @@ def e15():
          "(dataclass → struct), una escalar con un argumento opcional; el contrato manda también aquí")
 
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15], 1):
+def e16():
+    """B7·3: `create or replace dataset … as select … from <colección>`, lo que
+    corre: la consulta ítem a ítem por `apply()`, anclada, con su registro."""
+    from dataclasses import dataclass
+    from ore.tipos import Media
+
+    @dataclass
+    class Ancla:
+        kind: str
+        page: int
+
+    @dataclass
+    class Pag:
+        page: int
+        texto: str
+        anchor: Ancla
+
+    @ore.function
+    def pags(item: Media["legal.archivo.contratos"]) -> list[Pag]:
+        n = 2 if item.path.endswith("a.pdf") else 1
+        return [Pag(p, "%s p%d" % (item.path, p), Ancla("page", p)) for p in range(1, n + 1)]
+
+    spec = {"input": {"item": {"type": "Media<legal.archivo.contratos>"}},
+            "output": {"type": "list<Struct<page: Integer, texto: String, anchor: Struct<kind: String, page: Integer>>>"}}
+    ore._FUNCIONES["legal.pags"], ore._FUNCIONES_SPEC["legal.pags"] = pags, spec
+    pedidas = []
+
+    def query(q):
+        return ("select p.page, p.texto, p.anchor from legal.archivo.contratos as c cross join lateral "
+                "(select unnest(__ore_fn_1(c.item), max_depth := 2)) as p" + q)
+
+    def pedir(metodo, ruta, cuerpo=None):
+        assert ruta.endswith("/sql"), ruta
+        pedidas.append(cuerpo["texto"])
+        extra = " where c.size > 0" if "size" in cuerpo["texto"] else ""
+        return 200, {"fuentes": {COL: {"collection": COL}}, "query": query(extra),
+                     "functions": [{"name": "legal.pags", "internal": "__ore_fn_1", "arity": 1, "table": True}]}
+
+    antes_pedir, antes_id = ore.session.pedir, ore.session.id
+    ore.session.pedir, ore.session.id = pedir, "puesto-prueba"
+    try:
+        LAGO.pop(SAL, None)
+        LISTADO[:] = [ref("copia/a.pdf", "aa"), ref("copia/b.pdf", "bb")]
+        q = "select p.page, p.texto, p.anchor from legal.archivo.contratos as c cross join lateral legal.pags(c.item) as p"
+        r = ore._sql_per_item(SAL, COL, q, "paginas")
+        assert r["new"] == 2 and r["rows"] == 3 and r["written"], r
+        assert ESCRITURAS[-1][3] == COL, ESCRITURAS[-1]
+        f = sorted(filas(), key=lambda x: (x["_item"]["path"], x["page"]))
+        assert [(x["_item"]["path"], x["_anchor"]["kind"], x["_anchor"]["page"], x["texto"]) for x in f] == [
+            ("copia/a.pdf", "page", 1, "copia/a.pdf p1"), ("copia/a.pdf", "page", 2, "copia/a.pdf p2"),
+            ("copia/b.pdf", "page", 1, "copia/b.pdf p1")], f
+        assert {x["_derivation"]["fn"] for x in f} == {"paginas"} and "anchor" not in t_cols(), t_cols()
+        assert f[0]["_derivation"]["fn_version"].startswith("sql:"), f[0]["_derivation"]
+        r = ore._sql_per_item(SAL, COL, q, "paginas")
+        assert r["skipped"] == 2 and not r["written"], r
+        # otra consulta: otra versión, todo otra vez
+        r = ore._sql_per_item(SAL, COL, q + " where c.size > 0", "paginas")
+        assert r["recomputed"] == 2 and r["written"], r
+        res = pd_res(ore._resultado_de_aplicar(r))
+        assert res == {"items": 2, "new": 0, "recomputed": 2, "skipped": 0, "errors": 0, "removed": 0,
+                       "rows": 3}, res
+    finally:
+        ore.session.pedir, ore.session.id = antes_pedir, antes_id
+    bien("16 · un dataset desde una colección en SQL (B7·3): la consulta ítem a ítem por apply(), "
+         "anclada (las anclas de la función), 3 filas; otra vez nada; otra consulta, todo de nuevo")
+
+
+def t_cols():
+    return LAGO[SAL].column_names
+
+
+def pd_res(t):
+    return {k: v[0] for k, v in t.to_pydict().items()}
+
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()

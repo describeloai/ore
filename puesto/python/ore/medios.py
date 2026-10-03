@@ -441,11 +441,15 @@ def _relacion(col):
     """The collection as a relation for `sql()`: one row per item of its
     listing (no bytes are read). `item` is the `MediaRef` as a struct —the same
     type as `_item` in an anchored table—, for a function to take."""
+    return _relacion_de_refs(it.ref for it in col.items())
+
+
+def _relacion_de_refs(refs):
+    """`_relacion` of these `MediaRef`s: one row each (B7·3, one item alone)."""
     import pyarrow as pa
     tipo_item = dict(_esquema_de_sistema())["_item"]
     filas = []
-    for it in col.items():
-        r = it.ref
+    for r in refs:
         filas.append({"item": {c: getattr(r, c, None) for c in _CAMPOS_ITEM}, "path": r.path,
                       "digest": r.digest, "size": r.size, "content_type": r.content_type,
                       "modified": getattr(r, "modified", None)})
@@ -486,6 +490,17 @@ def _ancla_de(a):
     if otros:
         raise ValueError("apply(): `anchor` with fields that are not `Anchor`'s: %s" % ", ".join(sorted(otros)))
     return {k: a.get(k) for k in _CAMPOS_ANCLA}
+
+
+def _identidades_de_filas(filas):
+    """The identities of the items an anchored table has rows of (`_item`):
+    `removed` counts items that are gone, not keys —a new `version` changes
+    every key and removes no item—."""
+    out = set()
+    for f in filas:
+        i = f.get("_item") or {}
+        out.add(i.get("digest") or "%s|%s|%s" % (i.get("collection"), i.get("path"), i.get("version")))
+    return out
 
 
 def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guardar_cada_s):
@@ -540,7 +555,7 @@ def _aplicar(col, fn, version, params, salida, reintentar_errores, hilos, guarda
     pendientes = [k for k in hoy if k not in previas
                   or (reintentar_errores and estado(previas[k]) == "error")]
     resumen = _Result({"items": len(hoy), "new": 0, "recomputed": 0, "skipped": len(hoy) - len(pendientes),
-                       "errors": 0, "removed": len([k for k in previas if k not in hoy]), "rows": 0,
+                       "errors": 0, "removed": len(_identidades_de_filas(filas_previas) - {_identidad(it.ref) for it in hoy.values()}), "rows": 0,
                        "written": False})
     hechas = {}   # clave → filas nuevas
 
