@@ -455,6 +455,25 @@ fn main() -> ExitCode {
         }),
         _ => None,
     };
+    let puestos = std::sync::Arc::new(puestos::Puestos::default());
+    // ⭐ La cola sólo guarda lo vivo: al arrancar (lo que un reinicio olvidó)
+    //   y cada `BARRIDO` (lo que se perdió sin decirlo). Ver `puestos.rs`.
+    if let Some(c) = &cola {
+        let forja = git::Forja {
+            url: c.url.clone(),
+            testigo: c.testigo.clone(),
+        };
+        let p = std::sync::Arc::clone(&puestos);
+        std::thread::spawn(move || {
+            loop {
+                let dicho = puestos::barrer_la_cola(&forja, &p);
+                if !dicho.is_empty() {
+                    eprintln!("cola · {dicho}");
+                }
+                std::thread::sleep(puestos::BARRIDO);
+            }
+        });
+    }
 
     // ⭐ LA API DE LA FORJA (0030 W2): ramas y propuestas. Sale de la misma URL
     //   y el mismo testigo que el árbol; `--forja-api host:puerto` la dice
@@ -515,7 +534,7 @@ fn main() -> ExitCode {
         }),
         perfiles: o.perfiles,
         forja_api,
-        puestos: std::sync::Arc::new(puestos::Puestos::default()),
+        puestos,
         assets_cache: assets::Cache::default(),
         cambios_cache: assets::Cache::default(),
         pertenencias: acceso::Pertenencias::default(),

@@ -48,6 +48,17 @@
 //! El TTL de inactividad lo lleva el agente (sin celdas N segundos, se va); el
 //! tope, el Job (`activeDeadlineSeconds`). Aquí, un puesto sin latido en
 //! [`SIN_LATIDO`] pasa a `perdido` y una celda que se le mande contesta 409.
+//!
+//! # La cola y la memoria
+//!
+//! El puesto vive en dos sitios: su fichero en la cola (duradero: Flux recrea
+//! el Job mientras esté) y su estado aquí (en memoria). Medido el 2026-10-02:
+//! cuando se separaban —un reinicio de este servidor, el TTL del agente— el
+//! fichero se quedaba, Flux recreaba el Job, el agente recibía 410 y se iba,
+//! y así cada diez minutos, reservando nodos de pago hasta agotar la cuota.
+//! La regla: **en la cola sólo está lo que esta memoria tiene vivo.** El
+//! agente que cierra por inactividad lo notifica (`POST /puestos/{id}/cierre`), y
+//! [`barrer_la_cola`] quita, al arrancar y cada [`BARRIDO`], lo demás.
 
 use crate::cola;
 use crate::rutas::Servidor;
@@ -280,6 +291,92 @@ pub(crate) enum MediaDelPuesto {
 pub(crate) struct Puestos {
     lista: Mutex<BTreeMap<String, Puesto>>,
     campana: Condvar,
+    /// Encolar (hasta que el puesto está en `lista`) y barrer no se cruzan:
+    /// si no, el barrido vería en la cola el fichero de un puesto que aún no
+    /// está en la memoria, y se lo llevaría.
+    cola: Mutex<()>,
+}
+
+/// Cada cuánto se barre la cola ([`barrer_la_cola`]).
+pub(crate) const BARRIDO: Duration = Duration::from_secs(300);
+
+/// Los ficheros de puestos y trabajos de la cola que no son de `vivos`.
+fn sobrantes<'a>(
+    en_la_cola: impl IntoIterator<Item = &'a str>,
+    vivos: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut v: Vec<String> = en_la_cola
+        .into_iter()
+        .filter(|f| {
+            (f.starts_with("51-el-puesto-") || f.starts_with("54-el-trabajo-"))
+                && f.ends_with(".yaml")
+        })
+        .filter(|f| !vivos.contains(*f))
+        .map(str::to_string)
+        .collect();
+    v.sort();
+    v
+}
+
+/// ⭐ **La cola, con lo que esta memoria tiene vivo** (ver «La cola y la
+/// memoria»). Un fichero de puesto o de trabajo cuyo puesto no está aquí —un
+/// reinicio lo olvidó— o está perdido —el agente se fue sin decirlo, o el Job
+/// llegó a su tope— sale de la cola, y el perdido pasa a cerrado (si su agente
+/// vuelve, 410). Lo que dice va al registro.
+pub(crate) fn barrer_la_cola(forja: &crate::git::Forja, puestos: &Puestos) -> String {
+    let _cola = puestos.cola.lock().unwrap_or_else(|e| e.into_inner());
+    let prestado = match forja.clonar() {
+        Ok(p) => p,
+        Err(e) => return format!("NO barrida: {e}"),
+    };
+    let dir = prestado.ruta();
+    let vivos: BTreeSet<String> = {
+        let mut lista = puestos.lista.lock().unwrap();
+        for p in lista.values_mut() {
+            if perdido(p) {
+                p.estado = Estado::Cerrado;
+                p.pendientes.clear();
+            }
+        }
+        lista
+            .values()
+            .filter(|p| p.estado != Estado::Cerrado)
+            .map(|p| p.fichero.clone())
+            .collect()
+    };
+    puestos.campana.notify_all();
+    let nombres: Vec<String> = match std::fs::read_dir(dir) {
+        Ok(d) => d
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect(),
+        Err(e) => return format!("NO barrida: {e}"),
+    };
+    let fuera = sobrantes(nombres.iter().map(String::as_str), &vivos);
+    if fuera.is_empty() {
+        return String::new();
+    }
+    for f in &fuera {
+        if let Err(e) = std::fs::remove_file(dir.join(f)) {
+            return format!("NO barrida: `{f}`: {e}");
+        }
+    }
+    let quien = Identidad {
+        persona: "ore-serve".into(),
+        agente: None,
+        correo: None,
+        nombre: None,
+        tipo: None,
+        usuario: None,
+    };
+    let que = format!(
+        "Barrer la cola: {} sin puesto vivo ({})",
+        fuera.len(),
+        fuera.join(", ")
+    );
+    match forja.publicar(dir, &quien, &que) {
+        Ok(c) => format!("{que} · commit {c}"),
+        Err(e) => format!("NO barrida: {e}"),
+    }
 }
 
 impl std::fmt::Debug for Puestos {
@@ -908,7 +1005,8 @@ impl Servidor {
                 };
             }
         };
-        // A la cola: Flux rinde el Job.
+        // A la cola: Flux rinde el Job. Hasta que esté en la lista, sin barrido.
+        let _cola = self.puestos.cola.lock().unwrap_or_else(|e| e.into_inner());
         let (fichero, job, dicho, apertura) =
             match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "", false) {
                 Ok(v) => v,
@@ -1153,6 +1251,7 @@ impl Servidor {
             "trabajo-{quien}-{}",
             &h["sha256:".len().."sha256:".len() + 8]
         );
+        let _cola = self.puestos.cola.lock().unwrap_or_else(|e| e.into_inner());
         let (fichero, job, dicho, apertura) = match self.encolar_puesto(
             &id,
             sujeto,
@@ -2042,6 +2141,37 @@ impl Servidor {
             Ok(_) => Respuesta::sin_contenido(),
             Err(r) => r,
         }
+    }
+
+    /// `POST /puestos/{id}/cierre`: **el agente notifica su cierre por inactividad** (TTL):
+    /// cerrado y fuera de la cola. Sin esto el fichero se quedaba, Flux recreaba
+    /// el Job y el agente volvía a arrancar, a recibir 410 y a salir cada diez minutos.
+    pub(crate) fn cierre_por_inactividad(&self, sujeto: &Identidad, id: &str) -> Respuesta {
+        let (fichero, quien) = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            let p = match Self::reclamar(&mut lista, sujeto, id) {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            p.estado = Estado::Cerrado;
+            p.pendientes.clear();
+            let quien = Identidad {
+                persona: p.persona.clone(),
+                agente: Some(sujeto.persona.clone()),
+                correo: None,
+                nombre: None,
+                tipo: None,
+                usuario: None,
+            };
+            (p.fichero.clone(), quien)
+        };
+        self.puestos.campana.notify_all();
+        let dicho = self.desencolar_puesto(&fichero, &quien);
+        Respuesta::ok(Json::obj([
+            ("id", Json::s(id)),
+            ("estado", Json::s("cerrado")),
+            ("cola", Json::s(dicho)),
+        ]))
     }
 
     /// `GET /puestos/{id}/pendiente`: la siguiente celda, esperando hasta
@@ -3975,6 +4105,26 @@ mod prueba {
     /// escribe aunque el de transforms, del mismo agente de celda, sí; la
     /// cabecera no cuenta; otra apertura no es el puesto; y no hay «reclamar
     /// primero» que valga para otro.
+    /// La cola sólo guarda lo vivo: puestos y trabajos que la memoria no tiene
+    /// vivos salen; lo demás de la cola (plantillas, copias) no se toca.
+    #[test]
+    fn de_la_cola_sobra_lo_que_no_esta_vivo() {
+        let vivos: BTreeSet<String> = ["51-el-puesto-ana-python.yaml".to_string()].into();
+        let cola = [
+            "51-el-puesto-ana-python.yaml",
+            "51-el-puesto-ana-node.yaml",
+            "54-el-trabajo-ana.yaml",
+            "plantilla-puesto.txt",
+            "50-la-copia-x.yaml",
+            "51-el-puesto-ana-jvm.yml",
+        ];
+        assert_eq!(
+            sobrantes(cola, &vivos),
+            ["51-el-puesto-ana-node.yaml", "54-el-trabajo-ana.yaml"]
+        );
+        assert!(sobrantes(["plantilla-puesto.txt"], &BTreeSet::new()).is_empty());
+    }
+
     #[test]
     fn cada_puesto_es_el_que_declara_su_credencial() {
         let de_f = agente("agente:puesto/puesto-ana-python-funcs/100");

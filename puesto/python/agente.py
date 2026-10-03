@@ -458,6 +458,13 @@ def main():
     while True:
         if time.time() - ultimo > ttl:
             log("sin celdas durante %ds: cierro" % ttl)
+            # Fuera de la cola: si no, Flux recrea el Job (el servidor barre
+            # igualmente lo perdido; esto lo adelanta).
+            try:
+                p._cabeceras = testigo.cabeceras()
+                p.pedir("POST", "/puestos/%s/cierre" % p.id)
+            except Exception as e:  # noqa: BLE001
+                log("no se pudo notificar el cierre: %s" % e)
             return 0
         p._cabeceras = testigo.cabeceras()
         try:

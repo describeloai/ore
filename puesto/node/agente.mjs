@@ -197,7 +197,12 @@ async function main() {
   let ultimo = Date.now();
   const espera = (s) => new Promise((ok) => setTimeout(ok, s * 1000));
   while (true) {
-    if (Date.now() - ultimo > ttl * 1000) { log(`sin celdas durante ${ttl}s: cierro`); return 0; }
+    if (Date.now() - ultimo > ttl * 1000) {
+      log(`sin celdas durante ${ttl}s: cierro`);
+      // Fuera de la cola: si no, Flux recrea el Job.
+      try { p._cabeceras = await testigo.cabeceras(); await p.pedir("POST", `/puestos/${p.id}/cierre`); } catch (e) { log(`no se pudo notificar el cierre: ${e}`); }
+      return 0;
+    }
     let codigo, r;
     try {
       p._cabeceras = await testigo.cabeceras();

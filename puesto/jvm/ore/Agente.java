@@ -441,7 +441,13 @@ public final class Agente {
         log("puesto " + p.id + " · ore-serve " + p.servidor + " · TTL " + ttl + "s · almacén " + p.almacen + " · java " + Runtime.version());
         long ultimo = System.currentTimeMillis();
         while (true) {
-            if (System.currentTimeMillis() - ultimo > ttl * 1000) { log("sin celdas durante " + ttl + "s: cierro"); return; }
+            if (System.currentTimeMillis() - ultimo > ttl * 1000) {
+                log("sin celdas durante " + ttl + "s: cierro");
+                // Fuera de la cola: si no, Flux recrea el Job.
+                try { p.cabeceras = testigo.cabeceras(); p.pedir("POST", "/puestos/" + p.id + "/cierre", null, Duration.ofSeconds(30)); }
+                catch (Exception e) { log("no se pudo notificar el cierre: " + e); }
+                return;
+            }
             Ore.Respuesta r;
             try {
                 p.cabeceras = testigo.cabeceras();

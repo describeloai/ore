@@ -708,6 +708,8 @@ impl Servidor {
             ("GET", ["puestos", id, "pendiente"]) => self.pendiente_del_puesto(sujeto, id),
             // 0049 B2·3: el agente, vivo mientras corre una celda.
             ("POST", ["puestos", id, "latido"]) => self.latido_del_puesto(sujeto, id),
+            // El agente cierra por inactividad (TTL): fuera de la cola.
+            ("POST", ["puestos", id, "cierre"]) => self.cierre_por_inactividad(sujeto, id),
             // ⭐ El servidor de lenguaje (0037 ③a): el editor manda por aquí y
             //   el agente entrega por aquí; los dos flujos van en `atender_flujo`.
             ("POST", ["puestos", id, "lsp"]) => self.lsp_de_la_consola(sujeto, id, &p.cuerpo),
