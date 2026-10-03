@@ -175,6 +175,15 @@ jobs:
       - name: y ore-store, para la cache de los otros dos
         run: cargo build --quiet -p ore-store
 
+      # S3 · El código que ORE genera casa con el SDK: `cargo test` vuelca cada
+      # forma (y comprueba sus imports y que no lleva nombres de antes), y aquí
+      # cada llamada se coteja con la firma real de la función del SDK.
+      - name: y el codigo que ORE genera casa con la firma del SDK
+        run: |
+          ORE_CELDAS_GENERADAS="$PWD/target/celdas-generadas" cargo test --quiet -p ore-serve --bin ore-serve -- \
+            el_codigo_generado_casa_con_el_sdk el_arnes_no_interpola_codigo
+          PYTHONUTF8=1 python3 pruebas-de-fuego/el-codigo-generado-casa-con-el-sdk.py target/celdas-generadas
+
       # Los tres verbos del modelo (0027 E1): el documento en el arbol y la
       # suscripcion en el gateway EN EL MISMO ACTO, o nada. El gateway es el de
       # banco (el contrato del plano de control de Bastion B3).

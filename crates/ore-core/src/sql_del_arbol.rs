@@ -81,7 +81,18 @@ pub enum Modo {
 }
 
 impl Modo {
-    /// El nombre del modo tal como lo recibe `write()` en los tres SDK.
+    /// El nombre del modo en el SDK (`write(mode=…)`, S1): lo que escribe el
+    /// código que ORE genera.
+    pub const fn como_en_el_sdk(self) -> &'static str {
+        match self {
+            Self::Sobrescribir => "overwrite",
+            Self::Anexar => "append",
+            Self::Upsert => "upsert",
+        }
+    }
+
+    /// El nombre del modo en lo que viaja (la petición a `ore-store` y lo que
+    /// dice el CLI): el de antes, que el SDK sigue mandando tal cual.
     pub const fn como_en_write(self) -> &'static str {
         match self {
             Self::Sobrescribir => "sobrescribir",

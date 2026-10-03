@@ -614,6 +614,9 @@ public final class Ore {
     private static String rutaSql(Path f) { return f.toString().replace("\\", "/").replace("'", "''"); }
 
     /** How many rows {@code over()} and {@code sql()} materialize unless told otherwise. */
+    /** The version of this SDK's interface (S3): 2 is the English names. Code that ORE generates checks it. */
+    public static final int API = 2;
+
     public static final int LIMIT = 1_000_000;
     /** @deprecated use {@link #LIMIT}. */
     @Deprecated

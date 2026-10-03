@@ -1051,9 +1051,8 @@ if _PLAZO and hasattr(_signal, "SIGALRM"):
     _signal.signal(_signal.SIGALRM, _plazo)
     _signal.alarm(_PLAZO)
 
-# Lo único que `ore.modelo()` deja llamar: lo declarado en `models` (0050 P4).
-import ore as _ore
-from ore.contrato import llamada as _llamada
+# Lo único que `ore.model()` deja llamar: lo declarado en `models` (0050 P4).
+{guarda}from ore.contrato import llamada as _llamada
 
 _ore._modelos_de_la_funcion(_MODELOS)
 
@@ -1093,7 +1092,7 @@ _over = {over}
 if _over:
     # Una llamada por fila: la que falla se dice en `_error`, y las demás siguen.
     _res = []
-    for _f_ in over(_over, como="arrow").to_pylist():
+    for _f_ in over(_over, format="arrow").to_pylist():
         try:
             _res.append(dict(_fila(_f(_f_, **_PARAMETROS)), _error=None))
         except TimeoutError:
@@ -1114,6 +1113,7 @@ if hasattr(_signal, "SIGALRM"):
 _pa.Table.from_pylist(_res)
 "#,
         funcion = a.funcion,
+        guarda = ore_core::sdk::guarda_python(),
         parametros = cad(&a.parametros.jcs()),
         modelos = cad(&a.modelos.jcs()),
         plazo = a.plazo,
@@ -1260,5 +1260,13 @@ mod tests_python {
         assert!(t.contains("_over = \"ventas.clientes\""));
         assert!(t.contains("_PLAZO = 60"));
         assert!(t.contains(r#"_f = _modulo["riesgo"]"#));
+        // S3: con la guarda de la versión del SDK y sin un nombre de antes.
+        assert!(t.contains(&ore_core::sdk::guarda_python()), "{t}");
+        let antes = ore_core::sdk::nombres_de_antes_en(&t);
+        assert!(antes.is_empty(), "{antes:?}");
+        if let Ok(dir) = std::env::var("ORE_CELDAS_GENERADAS") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join("90-arnes.py"), &t).unwrap();
+        }
     }
 }

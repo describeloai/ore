@@ -99,12 +99,12 @@ SALIDA = \"mi_base.mi_schema.mi_resumen\"
 
 @transform(inputs=[ENTRADA], output=SALIDA)
 def resumir():
-    tabla = over(ENTRADA, como=\"arrow\")
+    tabla = over(ENTRADA, format=\"arrow\")
     return write(SALIDA, tabla)
 
 
 escrito = resumir()
-print(\"filas\", escrito[\"filas\"])
+print(\"rows\", escrito[\"rows\"])
 ";
 
 /// El `pyproject.toml` de una instancia de Python: **el sitio donde declarar**.
@@ -214,7 +214,7 @@ public class Ejemplo {
     public static void main(String[] args) throws Exception {
         Map<String, Object> escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA,
                 () -> write(SALIDA, over(ENTRADA)));
-        System.out.println(\"filas \" + escrito.get(\"filas\"));
+        System.out.println(\"rows \" + escrito.get(\"rows\"));
     }
 }
 ";
@@ -300,7 +300,7 @@ print(declare({
 /// cómo se usa: Run en la sesión corre su bloque `if __name__ == "__main__"`
 /// (la sesión ejecuta el fichero como `__main__`; el arnés, como
 /// `ore_funcion`, así que al invocarla no corre), desde código con
-/// `ore.funcion(...)` y desde Pipelines. Nombres en inglés, como la consola.
+/// `ore.get_function(...)` y desde Pipelines. Nombres en inglés, como la consola.
 ///
 /// `@function` y las anotaciones del `def` son el contrato, y el documento
 /// `Function` se deriva de ellos (OOS v1alpha18 01 §4): no se siembra, lo
@@ -319,7 +319,7 @@ const FUNCTIONS_PY: &str = "\
 # documento lo escribe ore, no se edita.
 #
 #   · Run, en tu sesión: corre el bloque `if __name__ == \"__main__\"` de abajo.
-#   · Desde otro código: `ore.funcion` con \"{{paquete}}.{{funcion}}\", y se llama.
+#   · Desde otro código: `ore.get_function(\"{{paquete}}.{{funcion}}\")`, y se llama.
 #   · Desde Pipelines:   el operador Function, con sus parámetros.
 #
 # Los tipos se cumplen: \"2026-09-15\" llega como `date` y 120.50 como `Decimal`
@@ -358,7 +358,7 @@ def {{funcion}}(amount: Decimal, due: date, paid: Decimal = Decimal(\"0\"),
 # se declaran en el decorador:
 #     over=\"mi_base.mi_schema.invoices\"     la fila llega como primer parámetro
 #     reads=[\"mi_base.mi_schema.clients\"]   y se lee con `ore.over`
-#     models=[\"extractor\"]                  y se llama con `ore.modelo`
+#     models=[\"extractor\"]                  y se llama con `ore.model`
 
 if __name__ == \"__main__\":
     print({{funcion}}(Decimal(\"120.50\"), \"2026-09-15\", today=\"2026-10-02\"))
@@ -435,7 +435,7 @@ pub const CLASES: &[Clase] = &[
         // comentario y sin `pyproject.toml`— sale `actualizable: true`, que es
         // lo que la columna «UPGRADE» existe para decir.
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 4,
+        version: 5,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("transforms/ejemplo.py", TRANSFORMS_PY),
@@ -454,7 +454,7 @@ pub const CLASES: &[Clase] = &[
         // —sin `pom.xml`— sale `actualizable: true`, que es lo que la columna
         // «UPGRADE» existe para decir.
         // 4: la semilla nombra en tres partes (0038 P7).
-        version: 4,
+        version: 5,
         semilla: &[
             ("pom.xml", POM_JVM),
             ("transforms/Ejemplo.java", TRANSFORMS_JAVA),
@@ -525,7 +525,7 @@ pub const CLASES: &[Clase] = &[
         // 6: el código es la fuente, `@function` con anotaciones (0050 G1).
         // 7: sin documento: lo escribe el commit, en el paquete (0050 G2).
         // 8: un ejemplo de verdad: Decimal, date, opcionales y Run (0050 G4).
-        version: 8,
+        version: 9,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
@@ -837,6 +837,18 @@ spec:
     /// Y el atajo de enseñarle al editor lo que la sesión inyecta NO existe:
     /// un `builtins.pyi` en el `stubPath` de pyright no añade a typeshed, lo
     /// reemplaza (medido: acto seguido `print` deja de existir).
+    /// S3 · Lo que una semilla llama del SDK, por sus nombres de hoy: ninguno de
+    /// antes (S5 los retira) en el código de ninguna plantilla, en ningún lenguaje.
+    #[test]
+    fn la_semilla_habla_el_sdk_en_ingles() {
+        for c in CLASES {
+            for (ruta, texto) in c.semilla {
+                let antes = crate::sdk::nombres_de_antes_en(texto);
+                assert!(antes.is_empty(), "{} · {ruta}: {antes:?}", c.id);
+            }
+        }
+    }
+
     #[test]
     fn la_semilla_importa_lo_que_usa() {
         // Lo que la sesión pone, y que por tanto podría no importarse.

@@ -522,6 +522,9 @@ async function cargar(con, extension) {
 
 
 /** How many rows `over()`/`sql()` materialize unless told otherwise. */
+/** The version of this SDK's interface (S3): 2 is the English names. Code that ORE generates checks it. */
+export const API = 2;
+
 export const LIMIT = 100_000;
 /** @deprecated use {@link LIMIT}. */
 export const LIMITE = LIMIT;
@@ -1000,6 +1003,7 @@ export function toJson(v) {
 export const jsonDe = alias("jsonDe", "toJson", toJson);
 
 export default {
+  API,
   over, sql, write, declare, transform, person, session, arrowName, LIMIT, EXTENSIONS, table, toJson, mediaUrl, mediaUrls, mediaColumns,
   // los nombres de antes (alias, el mismo objeto)
   persona, puesto, nombreArrow, LIMITE, EXTENSIONES, tabla, jsonDe, media, medias, mediaDe,

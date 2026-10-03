@@ -3066,8 +3066,10 @@ fn celda_de_sesion(
 
 /// **Una sentencia del guion, como la celda que la corre** (0039). La que lee
 /// o escribe datos es [`celda_de_unidad`]; la que crea algo del catálogo llama
-/// al verbo del SDK —`crear_base`, `crear_schema`, `crear_dataset`— con lo que
-/// la frase dice. La escribe este proceso a partir del análisis, no el cliente.
+/// al verbo del SDK —`create_database`, `create_schema`, `create_dataset`…— con
+/// lo que la frase dice. La escribe este proceso a partir del análisis, no el
+/// cliente, y por los nombres de `ore_core::sdk` (S3): en inglés y con la guarda
+/// de la versión del SDK delante.
 fn celda_de_sentencia(
     codigo: &str,
     t: &ore_core::sql_del_arbol::guion::Trozo,
@@ -3077,8 +3079,9 @@ fn celda_de_sentencia(
     let c = |s: &str| Json::s(s).jcs();
     let si = |b: bool| if b { "True" } else { "False" };
     let cabeza = format!(
-        "# `{codigo}`: `{}`, con lo que la frase dice (lo escribe ore-serve, no el cliente).\n",
-        t.sentencia.que()
+        "# `{codigo}`: `{}`, as the statement says (written by ore-serve, not the client).\n{}",
+        t.sentencia.que(),
+        ore_core::sdk::guarda_python()
     );
     let cuerpo = match &t.sentencia {
         S::Unidad(u) => return celda_de_unidad(codigo, u),
@@ -3097,10 +3100,10 @@ fn celda_de_sentencia(
                 None => ("None".to_string(), "None".to_string()),
             };
             format!(
-                "from ore import crear_base, _resultado_de_crear\n\n\
-                 _hecho = crear_base({}, clase={}, origen={o}, incluye={inc}, si_no_existe={})\n\
-                 print(\"%s · %s database · %s\" % (_hecho[\"base\"], _hecho[\"clase\"], \"creada\" if _hecho[\"creada\"] else \"ya estaba\"))\n\
-                 _resultado_de_crear(\"%s database %s\" % (_hecho[\"clase\"], _hecho[\"base\"]), _hecho[\"creada\"])\n",
+                "from ore import create_database, _resultado_de_crear\n\n\
+                 _hecho = create_database({}, kind={}, origin={o}, include={inc}, if_not_exists={})\n\
+                 print(\"%s · %s database · %s\" % (_hecho[\"database\"], _hecho[\"kind\"], \"created\" if _hecho[\"created\"] else \"already exists\"))\n\
+                 _resultado_de_crear(\"%s database %s\" % (_hecho[\"kind\"], _hecho[\"database\"]), _hecho[\"created\"])\n",
                 c(nombre),
                 c(clase.como_en_el_alta()),
                 si(*si_no_existe)
@@ -3112,10 +3115,10 @@ fn celda_de_sentencia(
             si_no_existe,
             ..
         } => format!(
-            "from ore import crear_schema, _resultado_de_crear\n\n\
-             _hecho = crear_schema({}, {}, si_no_existe={})\n\
-             print(\"%s · schema · %s\" % (_hecho[\"schema\"], \"creado\" if _hecho[\"creado\"] else \"ya estaba\"))\n\
-             _resultado_de_crear(\"schema \" + _hecho[\"schema\"], _hecho[\"creado\"])\n",
+            "from ore import create_schema, _resultado_de_crear\n\n\
+             _hecho = create_schema({}, {}, if_not_exists={})\n\
+             print(\"%s · schema · %s\" % (_hecho[\"schema\"], \"created\" if _hecho[\"created\"] else \"already exists\"))\n\
+             _resultado_de_crear(\"schema \" + _hecho[\"schema\"], _hecho[\"created\"])\n",
             c(base),
             c(schema),
             si(*si_no_existe)
@@ -3139,10 +3142,10 @@ fn celda_de_sentencia(
             )
             .jcs();
             format!(
-                "from ore import crear_dataset, _resultado_de_crear\n\n\
-                 _hecho = crear_dataset({}, {cols}, clave={clave}, si_no_existe={})\n\
-                 print(\"%s · dataset vacío · %s\" % (_hecho[\"dataset\"], \"creado\" if _hecho[\"creado\"] else \"ya estaba\"))\n\
-                 _resultado_de_crear(\"dataset \" + _hecho[\"dataset\"], _hecho[\"creado\"])\n",
+                "from ore import create_dataset, _resultado_de_crear\n\n\
+                 _hecho = create_dataset({}, {cols}, key={clave}, if_not_exists={})\n\
+                 print(\"%s · empty dataset · %s\" % (_hecho[\"dataset\"], \"created\" if _hecho[\"created\"] else \"already exists\"))\n\
+                 _resultado_de_crear(\"dataset \" + _hecho[\"dataset\"], _hecho[\"created\"])\n",
                 c(&destino.referencia()),
                 si(*si_no_existe)
             )
@@ -3199,11 +3202,11 @@ fn celda_de_sentencia(
                 )
             };
             format!(
-                "from ore import crear_vista, _resultado_de_crear\n\n\
-                 _hecho = crear_vista({}, {}, columnas={cols}, comentario={}, dueno=None, o_reemplaza={}, \
-                 si_no_existe={}, evolucion={}, existe={}, anterior={anterior}, materializada={})\n\
-                 print(\"%s · vista · %s\" % (_hecho[\"vista\"], _hecho[\"estado\"]))\n\
-                 _resultado_de_crear(\"view \" + _hecho[\"vista\"], _hecho[\"estado\"])\n",
+                "from ore import create_view, _resultado_de_crear\n\n\
+                 _hecho = create_view({}, {}, columns={cols}, comment={}, owner=None, or_replace={}, \
+                 if_not_exists={}, schema_evolution={}, exists={}, previous_columns={anterior}, materialized={})\n\
+                 print(\"%s · view · %s\" % (_hecho[\"view\"], _hecho[\"status\"]))\n\
+                 _resultado_de_crear(\"view \" + _hecho[\"view\"], _hecho[\"status\"])\n",
                 c(&r),
                 c(consulta),
                 comentario.as_deref().map_or("None".to_string(), c),
@@ -3223,10 +3226,10 @@ fn celda_de_sentencia(
             comentario,
             si_no_existe,
         } => format!(
-            "from ore import crear_coleccion, _resultado_de_crear\n\n\
-             _hecho = crear_coleccion({}, {}, {}, comentario={}, si_no_existe={})\n\
-             print(\"%s · media collection · %s\" % (_hecho[\"coleccion\"], \"creada\" if _hecho[\"creada\"] else \"ya estaba\"))\n\
-             _resultado_de_crear(\"media collection \" + _hecho[\"coleccion\"], _hecho[\"creada\"])\n",
+            "from ore import create_collection, _resultado_de_crear\n\n\
+             _hecho = create_collection({}, {}, {}, comment={}, if_not_exists={})\n\
+             print(\"%s · media collection · %s\" % (_hecho[\"collection\"], \"created\" if _hecho[\"created\"] else \"already exists\"))\n\
+             _resultado_de_crear(\"media collection \" + _hecho[\"collection\"], _hecho[\"created\"])\n",
             c(&destino.referencia()),
             c(media),
             Json::Arr(formatos.iter().map(Json::s).collect()).jcs(),
@@ -3234,10 +3237,10 @@ fn celda_de_sentencia(
             si(*si_no_existe)
         ),
         S::BorrarVista { destino, si_existe } => format!(
-            "from ore import borrar_vista, _resultado_de_crear\n\n\
-             _hecho = borrar_vista({}, si_existe={})\n\
-             print(\"%s · vista · %s\" % (_hecho[\"vista\"], _hecho[\"estado\"]))\n\
-             _resultado_de_crear(\"view \" + _hecho[\"vista\"], _hecho[\"estado\"])\n",
+            "from ore import drop_view, _resultado_de_crear\n\n\
+             _hecho = drop_view({}, if_exists={})\n\
+             print(\"%s · view · %s\" % (_hecho[\"view\"], _hecho[\"status\"]))\n\
+             _resultado_de_crear(\"view \" + _hecho[\"view\"], _hecho[\"status\"])\n",
             c(&destino.referencia()),
             si(*si_existe)
         ),
@@ -3295,7 +3298,7 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
     let (mut importa, mut datos) = if e.por_posicion.is_empty() {
         (
             String::new(),
-            format!("sql({}, como=\"arrow\")", cadena(&u.consulta)),
+            format!("sql({}, format=\"arrow\")", cadena(&u.consulta)),
         )
     } else {
         let posiciones = Json::Arr(
@@ -3308,7 +3311,7 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
         (
             ", _por_posicion".to_string(),
             format!(
-                "_por_posicion(sql({}, como=\"arrow\"), {salida}, {posiciones})",
+                "_por_posicion(sql({}, format=\"arrow\"), {salida}, {posiciones})",
                 cadena(&u.consulta)
             ),
         )
@@ -3321,20 +3324,22 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
         datos = format!("_como_la_tabla({datos}, {salida})");
     }
     let celda = format!(
-        "# `{codigo}`: la frase declara lo que lee y lo que escribe, y corre con el\n\
-         # mismo `@transform` que un `.py` (lo escribe ore-serve, no el cliente).\n\
+        "# `{codigo}`: the statement declares what it reads and what it writes, and runs\n\
+         # with the same `@transform` as a `.py` (written by ore-serve, not the client).\n\
+         {guarda}\
          from ore import transform, sql, write, _resultado_de_escritura{importa}\n\
          \n\
          \n\
          @transform(inputs={inputs}, output={salida})\n\
          def {nombre}():\n    \
-             return write({salida}, {datos}, modo={modo})\n\
+             return write({salida}, {datos}, mode={modo})\n\
          \n\
          \n\
          _escrito = {nombre}()\n\
-         print(\"%s · %s · %d filas%s\" % ({salida}, {modo}, _escrito[\"filas\"], \" · la misma escritura: nada nuevo\" if _escrito[\"repetida\"] else \"\"))\n\
+         print(\"%s · %s · %d rows%s\" % ({salida}, {modo}, _escrito[\"rows\"], \" · the same write: nothing new\" if _escrito[\"repeated\"] else \"\"))\n\
          _resultado_de_escritura(_escrito)\n",
-        modo = cadena(e.modo.como_en_write()),
+        modo = cadena(e.modo.como_en_el_sdk()),
+        guarda = ore_core::sdk::guarda_python(),
     );
     (celda, "python")
 }
@@ -3898,9 +3903,9 @@ mod prueba {
         for trozo in [
             "@transform(inputs=[\"v.pedidos\"], output=\"v.resumen\")",
             "def resumen():",
-            "return write(\"v.resumen\", _como_la_tabla(sql(\"select id from v.pedidos where id > 1\", como=\"arrow\"), \"v.resumen\"), modo=\"upsert\")",
+            "return write(\"v.resumen\", _como_la_tabla(sql(\"select id from v.pedidos where id > 1\", format=\"arrow\"), \"v.resumen\"), mode=\"upsert\")",
             "_escrito = resumen()",
-            "print(\"%s · %s · %d filas%s\" % (\"v.resumen\", \"upsert\", _escrito[\"filas\"]",
+            "print(\"%s · %s · %d rows%s\" % (\"v.resumen\", \"upsert\", _escrito[\"rows\"]",
         ] {
             assert!(celda.contains(trozo), "falta {trozo:?} en:\n{celda}");
         }
@@ -3949,22 +3954,22 @@ mod prueba {
         let (c, l) = celda("create schema if not exists ventas.demo");
         assert_eq!(l, "python");
         assert!(
-            c.contains("crear_schema(\"ventas\", \"demo\", si_no_existe=True)"),
+            c.contains("create_schema(\"ventas\", \"demo\", if_not_exists=True)"),
             "{c}"
         );
         let (c, _) = celda("create dataset ventas.demo.clientes (id bigint, n varchar)");
         assert!(
-            c.contains("crear_dataset(\"ventas.demo.clientes\", [[\"id\",\"long\"],[\"n\",\"string\"]], clave=None, si_no_existe=False)"),
+            c.contains("create_dataset(\"ventas.demo.clientes\", [[\"id\",\"long\"],[\"n\",\"string\"]], key=None, if_not_exists=False)"),
             "{c}"
         );
         let (c, _) = celda("create foreign database espejo from origin erp include (s.*, t.x)");
         assert!(
-            c.contains("crear_base(\"espejo\", clase=\"foreign\", origen=\"erp\", incluye=[\"s.*\",\"t.x\"], si_no_existe=False)"),
+            c.contains("create_database(\"espejo\", kind=\"foreign\", origin=\"erp\", include=[\"s.*\",\"t.x\"], if_not_exists=False)"),
             "{c}"
         );
         let (c, _) = celda("create database mi_base");
         assert!(
-            c.contains("clase=\"standard\", origen=None, incluye=None"),
+            c.contains("kind=\"standard\", origin=None, include=None"),
             "{c}"
         );
         let (c, l) = celda("select 1");
@@ -3980,17 +3985,99 @@ mod prueba {
         );
         assert_eq!(l, "python");
         assert!(
-            c.contains("crear_vista(\"ventas.v\", \"select 1 as a, 2 as b\", columnas=[[\"a\",\"la a\"],[\"b\",None]], comentario=\"x\", dueno=None, o_reemplaza=True, si_no_existe=False, evolucion=False, existe=False, anterior=None, materializada=False)"),
+            c.contains("create_view(\"ventas.v\", \"select 1 as a, 2 as b\", columns=[[\"a\",\"la a\"],[\"b\",None]], comment=\"x\", owner=None, or_replace=True, if_not_exists=False, schema_evolution=False, exists=False, previous_columns=None, materialized=False)"),
             "{c}"
         );
         // ADR 0040 paso 7: la materializada, la misma llamada y su copia
         let (c, _) = celda("create materialized view ventas.m as select 1 as a");
-        assert!(c.contains("materializada=True)"), "{c}");
+        assert!(c.contains("materialized=True)"), "{c}");
         let (c, _) = celda("drop view if exists ventas.v");
+        assert!(c.contains("drop_view(\"ventas.v\", if_exists=True)"), "{c}");
+        let (c, _) = celda(
+            "create media collection if not exists ventas.demo.docs media document formats (pdf) comment 'x'",
+        );
         assert!(
-            c.contains("borrar_vista(\"ventas.v\", si_existe=True)"),
+            c.contains("create_collection(\"ventas.demo.docs\", \"document\", [\"pdf\"], comment=\"x\", if_not_exists=True)"),
             "{c}"
         );
+    }
+
+    /// ⭐ S3 · EL CÓDIGO QUE ORE GENERA CASA CON EL SDK. Cada forma que se
+    /// genera —una celda por sentencia del guion, la de un `.sql` del árbol—:
+    ///
+    /// - empieza por la guarda de la versión (`ore_core::sdk`);
+    /// - no lleva ningún nombre de antes (S5 los retira y nada se rompe);
+    /// - y lo que importa de `ore` existe en el SDK de verdad: se lee su fuente
+    ///   (`puesto/python/ore/__init__.py`), sin ejecutar Python.
+    ///
+    /// Con `ORE_CELDAS_GENERADAS=<dir>` además se vuelcan, y
+    /// `pruebas-de-fuego/el-codigo-generado-casa-con-el-sdk.py` coteja cada
+    /// llamada con la firma real de la función (los argumentos).
+    #[test]
+    fn el_codigo_generado_casa_con_el_sdk() {
+        use ore_core::sql_del_arbol::guion::guion;
+        let vacio = std::env::temp_dir().join(format!("ore-celdas-sdk-{}", std::process::id()));
+        std::fs::create_dir_all(&vacio).unwrap();
+        let (pkg, _) = ore_core::validate::cargar_paquete(&vacio);
+        let mut corpus: Vec<(String, String)> = [
+            "create schema if not exists ventas.demo",
+            "create dataset ventas.demo.clientes (id bigint, n varchar) ",
+            "create database mi_base",
+            "create foreign database espejo from origin erp include (s.*, t.x)",
+            "create or replace view ventas.v (a comment 'la a', b) comment 'x' as select 1 as a, 2 as b",
+            "create view if not exists ventas.v2 with schema evolution as select 1 as a",
+            "create materialized view ventas.m as select 1 as a",
+            "drop view if exists ventas.v",
+            "create media collection if not exists ventas.demo.docs media document formats (pdf) comment 'x'",
+            "insert into ventas.x (a) values (1)",
+            "insert into ventas.x select 1, 2",
+            "insert or replace into ventas.x select 1 as a",
+            "create or replace dataset ventas.r as select 1 as a",
+        ]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, q)| {
+            let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
+            let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg);
+            (l == "python").then(|| (format!("{i:02}-sentencia"), c))
+        })
+        .collect();
+        assert!(corpus.len() >= 12, "{}", corpus.len());
+        let sdk = include_str!("../../../puesto/python/ore/__init__.py");
+        // Lo que el SDK exporta: su `__all__` (lo público) y sus `def` del
+        // primer nivel (los `_resultado_de_*` que sólo usa el código generado).
+        let todos = sdk
+            .find("__all__ = [")
+            .map(|i| &sdk[i..i + sdk[i..].find(']').unwrap()])
+            .expect("el SDK no tiene `__all__`");
+        let exporta =
+            |n: &str| todos.contains(&format!("\"{n}\"")) || sdk.contains(&format!("\ndef {n}("));
+        let guarda = ore_core::sdk::guarda_python();
+        for (n, c) in &corpus {
+            assert!(
+                c.contains(&guarda),
+                "{n}: sin la guarda de la versión del SDK:\n{c}"
+            );
+            let antes = ore_core::sdk::nombres_de_antes_en(c);
+            assert!(
+                antes.is_empty(),
+                "{n}: lleva nombres de antes {antes:?}:\n{c}"
+            );
+            for l in c.lines().filter(|l| l.starts_with("from ore import ")) {
+                for i in l.trim_start_matches("from ore import ").split(", ") {
+                    assert!(
+                        exporta(i.trim()),
+                        "{n}: importa `{i}`, que el SDK no tiene:\n{c}"
+                    );
+                }
+            }
+        }
+        if let Ok(dir) = std::env::var("ORE_CELDAS_GENERADAS") {
+            std::fs::create_dir_all(&dir).unwrap();
+            for (n, c) in corpus.drain(..) {
+                std::fs::write(std::path::Path::new(&dir).join(format!("{n}.py")), c).unwrap();
+            }
+        }
     }
 
     #[test]

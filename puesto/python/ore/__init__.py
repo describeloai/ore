@@ -100,7 +100,12 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
+#: The version of this SDK's interface (S3, 2026-10-03): 2 is the English
+#: names of S1. Code that ORE generates checks it before running
+#: (`ore_core::sdk::API`), so a session on an older SDK says so.
+API = 2
+
+__all__ = ["API", "over", "sql", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
            "collection", "Collection", "Item", "MediaRef", "read_many", "Transaction", "MediaError",
@@ -1575,9 +1580,9 @@ def _resultado_de_escritura(escrito):
     otra vez no deja nada nuevo: ceros."""
     import pyarrow as pa
 
-    llegan = 0 if escrito.get("repetida") else int(escrito.get("anadidas") or 0)
-    if escrito.get("modo") == "upsert":
-        actualizadas = 0 if escrito.get("repetida") else max(0, int(escrito.get("antes") or 0) + llegan - int(escrito.get("filas") or 0))
+    llegan = 0 if escrito.get("repeated") else int(escrito.get("added") or 0)
+    if escrito.get("mode") == "upsert":
+        actualizadas = 0 if escrito.get("repeated") else max(0, int(escrito.get("before") or 0) + llegan - int(escrito.get("rows") or 0))
         return pa.table({"num_affected_rows": pa.array([llegan], pa.int64()),
                          "num_updated_rows": pa.array([actualizadas], pa.int64()),
                          "num_inserted_rows": pa.array([llegan - actualizadas], pa.int64())})
