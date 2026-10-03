@@ -167,6 +167,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/puestos/{}/lsp/salida", Es::Datos),
     // 0049 B2·3: el latido del agente no cambia nada del árbol ni de los datos.
     ("POST", "/puestos/{}/latido", Es::Datos),
+    // El agente cierra su puesto por inactividad: el mismo acto que DELETE.
+    ("POST", "/puestos/{}/cierre", Es::Acto("puesto:cerrar")),
     ("POST", "/puestos/{}/celdas/{}/salida", Es::Datos),
     ("POST", "/vistas/**/ejecutar", Es::Datos),
     // 0046 E9·2: resolver huellas a URLs firmadas lo cuenta la ruta, con sus
