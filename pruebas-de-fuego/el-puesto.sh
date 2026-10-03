@@ -514,7 +514,7 @@ dice "3d · el servidor de SQL en el agente, por el mismo canal: initialize lo c
 celda 'df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "4 · over(hr.espanoles): $(cuerpo)"
 celda 'len(df)' && tiene "d['salida']['texto']=='3'" || falla "4 · len(df): $(cuerpo)"
 celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='LookupError'" || falla "4 · hr.nada: $(cuerpo)"
-celda 'over(\"hr.empleados\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError' and 'no est' in d['salida']['mensaje']" || falla "4 · hr.empleados sin copia: $(cuerpo)"
+celda 'over(\"hr.empleados\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError' and 'is not made' in d['salida']['mensaje']" || falla "4 · hr.empleados sin copia: $(cuerpo)"
 [ "$(pide GET /puestos/puesto-ana-python/datos/hr.espanoles "$AG")" = "200" ] && tiene "d['clave']=='$CLAVE' and d['estado']=='copiada'" || falla "4 · datos: $(cuerpo)"
 if [ "$LAGO_OK" = "si" ]; then
   [ "$(pide GET /puestos/puesto-ana-python/datos/hr.lago "$AG")" = "200" ] && tiene "d['metadata_location'].endswith('.metadata.json') and d['clave']=='' and d['estado']=='copiada'" || falla "4 · datos de un dataset Iceberg: $(cuerpo)"
@@ -709,25 +709,25 @@ fi
 # sigue siendo de DuckDB (el caso 7).
 if [ "$ESCRITO_OK" = si ]; then
   Q10C='create or replace dataset hr.porsql as select letra, sum(importe) as total from hr.lago group by letra order by letra'
-  celda_sql "$Q10C" && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['num_affected_rows','num_inserted_rows'] and d['salida']['filas']==[[3,3]] and d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas'" || falla "10c · create or replace dataset en una celda sql: $(cuerpo)"
+  celda_sql "$Q10C" && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['num_affected_rows','num_inserted_rows'] and d['salida']['filas']==[[3,3]] and d['salida']['texto'].strip()=='hr.porsql · overwrite · 3 rows'" || falla "10c · create or replace dataset en una celda sql: $(cuerpo)"
   # 0038: dos partes corren (en `default`) y se dicen, en su sitio, sin parar la celda
   tiene "[(a['codigo'], a['severidad'], a['linea'], a['columna']) for a in d['avisos']]==[('ORE-SQL-2P','aviso',1,27),('ORE-SQL-2P','aviso',1,81)] and 'hr.default.porsql' in d['avisos'][0]['mensaje']" || falla "10c · los avisos de dos partes: $(cuerpo)"
   [ -f "$A/datasets/hr/default/porsql.json" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/porsql.yaml" || falla "10c · lo escrito no está en el árbol (puntero y Dataset)"
   "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"consulta"}, pr' "$A/datasets/hr/default/porsql.json" || falla "10c · la procedencia: $(cat "$A/datasets/hr/default/porsql.json")"
   celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "10c · la celda siguiente lo lee: $(cuerpo)"
-  celda_sql "$Q10C" && tiene "d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas · la misma escritura: nada nuevo' and d['salida']['filas']==[[0,0]]" || falla "10c · la misma frase otra vez: $(cuerpo)"
+  celda_sql "$Q10C" && tiene "d['salida']['texto'].strip()=='hr.porsql · overwrite · 3 rows · the same write: nothing new' and d['salida']['filas']==[[0,0]]" || falla "10c · la misma frase otra vez: $(cuerpo)"
   # anexar `0.5` (decimal(2, 1)) a una columna decimal(38, 2): lo de antes se queda
   # lo que se escribe va por NOMBRE; una expresión SIN alias (`0.5`) toma el de la
   # columna de la tabla en su posición, como en SQL (`total`)
-  celda_sql 'insert into hr.porsql select letra, 0.5 from hr.lago' && tiene "d['salida']['texto'].strip()=='hr.porsql · anexar · 6 filas' and d['salida']['filas']==[[3,3]]" || falla "10c · insert into sin alias: $(cuerpo)"
+  celda_sql 'insert into hr.porsql select letra, 0.5 from hr.lago' && tiene "d['salida']['texto'].strip()=='hr.porsql · append · 6 rows' and d['salida']['filas']==[[3,3]]" || falla "10c · insert into sin alias: $(cuerpo)"
   celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[6,'5.25']]" || falla "10c · anexar con otro decimal perdió lo de antes: $(cuerpo)"
   # sin tabla no hay posición de la que tomar el nombre: se dice
-  celda_sql 'insert into hr.aunno select 1 from hr.lago' && tiene "d['salida']['tipo']=='error' and 'no existe todavía' in d['salida']['mensaje'] and 'as nombre' in d['salida']['mensaje']" || falla "10c · insert sin alias en una tabla que no existe: $(cuerpo)"
+  celda_sql 'insert into hr.aunno select 1 from hr.lago' && tiene "d['salida']['tipo']=='error' and 'does not exist yet' in d['salida']['mensaje'] and 'as name' in d['salida']['mensaje']" || falla "10c · insert sin alias en una tabla que no existe: $(cuerpo)"
   # el `.sql` del editor da nombre al transform
   [ "$(pide POST /puestos/$P/ejecutar "$ANA" '{"texto":"create or replace dataset hr.porfichero as select n from hr.lago","lenguaje":"sql","fichero":"packages/hr/transforms/porfichero.sql"}')" = "202" ] || falla "10c · con fichero: $(cuerpo)"
   N10C=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
   for _ in $(seq 1 5); do pide GET "/puestos/$P/celdas/$N10C" "$ANA" >/dev/null; tiene "d['estado']=='hecha'" && break; done
-  tiene "d['salida']['texto'].strip()=='hr.porfichero · sobrescribir · 3 filas'" || falla "10c · con fichero: $(cuerpo)"
+  tiene "d['salida']['texto'].strip()=='hr.porfichero · overwrite · 3 rows'" || falla "10c · con fichero: $(cuerpo)"
   "$PY" -c 'import json,sys; assert json.load(open(sys.argv[1]))["procedencia"]["transform"]=="porfichero"' "$A/datasets/hr/default/porfichero.json" || falla "10c · el transform no se llama como el fichero: $(cat "$A/datasets/hr/default/porfichero.json")"
   # lo que no se puede correr se dice YA, como la salida de la celda, con su sitio
   celda_sql 'insert into hr.porsql by name select 1.0 as total' && tiene "d['salida']['tipo']=='error' and 'no analiza' in d['salida']['mensaje']" || falla "10c · lo que no analiza: $(cuerpo)"
@@ -825,7 +825,7 @@ EOF
   fichas "f[0]['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']]" || falla "10e · otra vez, replaced: $(cat "$TMP/fichas.json")"
   celda_sql 'create view if not exists hr.demo_uc.porNombre as select 1 as x' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','already exists']]" || falla "10e · if not exists: $(cuerpo)"
   # añadir una columna se puede, y se dice; quitar una rompe el contrato
-  celda_sql 'create or replace view hr.demo_uc.porNombre as select id, nombre, email from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']] and 'añade email' in d['salida']['texto']" || falla "10e · añadir una columna: $(cuerpo)"
+  celda_sql 'create or replace view hr.demo_uc.porNombre as select id, nombre, email from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']] and 'adds email' in d['salida']['texto']" || falla "10e · añadir una columna: $(cuerpo)"
   celda_sql 'create or replace view hr.demo_uc.porNombre as select id from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'rompe su contrato' in d['salida']['mensaje'] and 'quita' in d['salida']['mensaje'] and 'with schema evolution' in d['salida']['mensaje']" || falla "10e · quitar una columna sin decirlo: $(cuerpo)"
   grep -q "email" "$V10E" || falla "10e · la vista rota se escribió igual"
   celda_sql 'create or replace view hr.demo_uc.porNombre with schema evolution as select id from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']]" || falla "10e · with schema evolution: $(cuerpo)"
@@ -902,7 +902,7 @@ PY
   ORE_SERVE="$BASE" PUESTO="$T3" TRABAJO="packages/hr/transforms/contar.sql@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/trabajo3.txt" 2>&1; CODIGO=$?
   [ "$CODIGO" = 0 ] || falla "11b · el agente del .sql salió con $CODIGO: $(tail -5 "$TMP/trabajo3.txt")"
-  [ "$(pide GET /trabajos/$T3 "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and d['informe']['salida']['texto'].strip()=='hr.trabajo_sql · sobrescribir · 1 filas'" || falla "11b · el informe del .sql: $(cuerpo)"
+  [ "$(pide GET /trabajos/$T3 "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and d['informe']['salida']['texto'].strip()=='hr.trabajo_sql · overwrite · 1 rows'" || falla "11b · el informe del .sql: $(cuerpo)"
   "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/contar.sql@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"contar"}, pr' "$A/datasets/hr/default/trabajo_sql.json" "$T3" || falla "11b · la procedencia de lo que escribió el .sql: $(cat "$A/datasets/hr/default/trabajo_sql.json")"
   dice "11b · un .sql como trabajo: lo que nombra lo que no hay es 422 con la línea; create or replace dataset hr.trabajo_sql as select … corre con @transform(inputs=[hr.lago], output=hr.trabajo_sql) y lo escrito lleva la procedencia de un .py"
   dice "11 · POST /trabajos: 202 trabajo-ana-<hex> con el fichero 54-el-trabajo-… en la cola (TRABAJO=<ruta>@<commit>, la imagen de python); un agente 403, sin fichero 404, un .yaml 422, fuera del árbol 422; el agente con TRABAJO corre la celda y sale 0 → la ficha dice hecho, el informe está en trabajos/<id>.json firmado por ana, el dataset lleva procedencia {codigo, inputs, transform}, y el trabajo sale de la cola; uno roto sale 1 y el informe dice error"

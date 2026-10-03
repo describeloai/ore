@@ -1,5 +1,5 @@
 #!/bin/sh
-# COMPILAR LOS BINARIOS DE LAS IMÁGENES (perfil `imagen`: sin LTO) y dejarlos en
+# COMPILAR LOS BINARIOS DE LAS IMÁGENES (perfil `imagen`; hoy con LTO, ver Cargo.toml) y dejarlos en
 # `$SALIDA`. Una sola definición para los dos que compilan: la etapa `build` del
 # Dockerfile (en local) y el paso `binarios` de cloudbuild.yaml, que lo corre con
 # `docker run --network=cloudbuild` sobre la etapa `herramientas` —BuildKit no
@@ -22,7 +22,10 @@ if [ -n "${CACHE_GCS:-}" ]; then
   fi
 fi
 # `--locked`: el `Cargo.lock` del árbol, no lo que hubiera hoy en el índice.
-cargo build --profile imagen --locked \
+# `-j`: con LTO completo cada enlace de un binario pide GB; la máquina de Cloud
+# Build (E2_HIGHCPU_8) tiene 8 GB, y con 8 a la vez el kernel mató `rustc`
+# (SIGKILL en ore-store-r2, 2026-10-03, al llegar oxc). `COMPILAR_JOBS` lo cambia.
+cargo build --profile imagen --locked -j "${COMPILAR_JOBS:-4}" \
   -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
   -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 -p ore-firmar-s3 -p ore-sts \
   -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios
