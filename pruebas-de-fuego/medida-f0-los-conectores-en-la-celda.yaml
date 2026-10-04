@@ -1,0 +1,158 @@
+# MEDIDA F0 · M2 (ADR 0053): los conectores de hoy, desde donde corren de verdad.
+#
+# Un Job de UNA pasada, con la identidad y la red de una copia (cuenta `driver`,
+# rol `driver`, la cola del inquilino, el pool `jobs`): pide al custodio la
+# credencial de una fuente de Postgres (Neon) y una de BigQuery —como la copia,
+# por el agente del inquilino— y mide `ore-read-<tipo> leer`:
+#
+#   ① peticiones seguidas (la primera despierta a Neon si dormia)
+#   ② la tabla entera frente a un filtro `eq` empujado
+#   ③ buscar una fila por su clave
+#   ④ BigQuery: una tabla pequena, entera y filtrada
+#
+# SOLO LEE. Ninguna credencial sale al registro: las variables no se imprimen y
+# los errores se recortan sin `://…`. Se borra a la hora (ttl).
+#
+# Uso:  kubectl -n t-victor apply -f pruebas-de-fuego/medida-f0-los-conectores-en-la-celda.yaml
+#       kubectl -n t-victor logs job/medida-f0-m2 -c medir
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: medida-f0-m2
+  namespace: t-victor
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/rol: driver
+    ore.dev/tenant: victor
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: victor
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      nodeSelector: { ore.dev/pool: jobs }
+      tolerations:
+        - { key: ore.dev/jobs, operator: Equal, value: "true", effect: NoSchedule }
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+      initContainers:
+        - name: traer-el-agente
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              for p in cliente secreto; do
+                gcloud secrets versions access latest --secret=t-victor-agente-$p --out-file=/puesto/agente-$p
+                chmod 0400 /puesto/agente-$p
+              done
+              echo "agente puesto"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      containers:
+        - name: medir
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          workingDir: /opt/ore
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: ORGANIZACION, value: victor }
+            - { name: EMISOR, value: "https://login.paladio.io" }
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: rubix }
+            - { name: FUENTE_PG, value: postgresql_20260918_1920 }
+            - { name: FUENTE_BQ, value: bigquery_20260927_1428 }
+          volumeMounts: [{ name: puesto, mountPath: /puesto, readOnly: true }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "### arranque del contenedor: $(date -u +%H:%M:%S.%N | cut -c1-12)"
+              DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])')
+              [ "$DICE" = "$EMISOR/realms/$REALM" ] || { echo "✗ el IdP no es el esperado"; exit 1; }
+              TOK=$(curl -sSf -X POST "$DIRECCION/realms/$REALM/protocol/openid-connect/token" \
+                -d grant_type=client_credentials -d "client_id=$(cat /puesto/agente-cliente)" \
+                -d "client_secret=$(cat /puesto/agente-secreto)" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+              cred() {
+                curl -sSf -H "authorization: Bearer $TOK" \
+                  "http://ore-cofre.t-victor.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$1" \
+                  | python3 -c 'import json,sys;print(json.load(sys.stdin)["valor"])'
+              }
+              T0=$(date +%s.%N); PG_URL=$(cred "$FUENTE_PG"); T1=$(date +%s.%N)
+              BQ_URL=$(cred "$FUENTE_BQ")
+              echo "### credenciales del custodio: $(python3 -c "print(round(($T1-$T0)*1000))") ms la primera (no se imprimen)"
+              export PG_URL BQ_URL
+              PYTHONUNBUFFERED=1 python3 - <<'PY'
+              import json, os, re, subprocess, time
+              def limpio(t):
+                  return re.sub(r"[a-z]+://\S+", "<url>", t)[:200]
+              def leer(tipo, url, objeto, proy, filtros=()):
+                  pet = json.dumps({"url": url, "objeto": objeto, "proyeccion": {c: c for c in proy},
+                                    "filtros": [{"columna": c, "operador": "eq", "valor": v} for c, v in filtros]})
+                  t = time.perf_counter()
+                  p = subprocess.run(["ore-read-%s" % tipo, "leer"], input=pet.encode(), capture_output=True)
+                  s = time.perf_counter() - t
+                  filas = [l for l in p.stdout.splitlines() if l.strip()]
+                  return s, len(p.stdout), filas, (limpio(p.stderr.decode(errors="replace")) if p.returncode else "")
+              def ms(s): return "%d ms" % round(s * 1000)
+              cifras = {}
+              PG, BQ = os.environ["PG_URL"], os.environ["BQ_URL"]
+              C = ["customer_id", "customer_unique_id", "customer_zip_code_prefix", "customer_city", "customer_state"]
+
+              print("\n── ① Postgres (Neon) · cinco peticiones seguidas, customer_state = 'AC'")
+              ts = []
+              for i in range(5):
+                  s, b, f, e = leer("postgres", PG, "olist.customers", C, [("customer_state", "AC")])
+                  print("   %d: %s · %d filas%s" % (i + 1, ms(s), len(f), (" · ✗ " + e) if e else ""))
+                  ts.append(s); fila_ac = f[0] if f else None
+              cifras["pg_seguidas_ms"] = [round(x * 1000) for x in ts]
+
+              print("\n── ② Postgres · la tabla entera frente a un filtro empujado")
+              s, b, f, e = leer("postgres", PG, "olist.customers", C)
+              print("   entera: %s · %d filas · %.1f MB%s" % (ms(s), len(f), b / 1e6, (" · ✗ " + e) if e else ""))
+              cifras["pg_entera"] = {"ms": round(s * 1000), "filas": len(f), "MB": round(b / 1e6, 1)}
+              s, b, f, e = leer("postgres", PG, "olist.customers", C, [("customer_state", "SP")])
+              print("   customer_state = 'SP': %s · %d filas · %.1f MB" % (ms(s), len(f), b / 1e6))
+              cifras["pg_filtro_sp"] = {"ms": round(s * 1000), "filas": len(f), "MB": round(b / 1e6, 1)}
+
+              print("\n── ③ Postgres · una fila por su clave, cinco veces")
+              if fila_ac:
+                  cid = json.loads(fila_ac).get("customer_id")
+                  ts = [leer("postgres", PG, "olist.customers", C, [("customer_id", cid)])[0] for _ in range(5)]
+                  print("   " + ", ".join(ms(x) for x in ts))
+                  cifras["pg_clave_ms"] = [round(x * 1000) for x in ts]
+
+              print("\n── ④ BigQuery · ventas.ore_e2e_sintetica, entera y filtrada, tres veces cada una")
+              B = ["id", "n", "total", "ts", "nombre"]
+              for et, fl in (("entera", ()), ("id = 'x'", (("id", "x"),))):
+                  ts = []
+                  for i in range(3):
+                      s, b, f, e = leer("bigquery", BQ, "ventas.ore_e2e_sintetica", B, fl)
+                      ts.append(s)
+                      if e: print("   ✗ " + e)
+                  print("   %s: %s · %d filas" % (et, ", ".join(ms(x) for x in ts), len(f)))
+                  cifras["bq_" + ("entera" if not fl else "filtro") + "_ms"] = [round(x * 1000) for x in ts]
+              print("\n### CIFRAS " + json.dumps(cifras))
+              PY

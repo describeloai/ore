@@ -61,6 +61,42 @@ origen ni la salida a internet. Es la razón de Athena para poner cada conector 
 Y **un conector sólo corre hoy como un trabajo por petición** (catálogo, comprobación, copia): la
 última copia, 46 s de punta a punta. Una consulta interactiva no puede pagar eso.
 
+**M2 · los conectores desde donde corren** (`pruebas-de-fuego/medida-f0-los-conectores-en-la-celda.yaml`,
+un trabajo con la cuenta `driver` en `t-victor`, sólo lectura):
+
+| | cifra |
+|---|---|
+| del trabajo creado a la primera medida | **29 s** (16 s hasta arrancar el pod, 12 s el agente y sus secretos) |
+| Neon · una petición (proceso + TLS + consulta), por la clave | **~890 ms**, estable; la primera 2,1 s (Neon despierta) |
+| Neon · `olist.customers` entera (99 441 filas, 19 MB) / filtrada `= 'SP'` (41 746) | 2,6 s / 2,0 s |
+| BigQuery · filtrada (0 filas) | **0,6–0,8 s** |
+| BigQuery · `ventas.ore_e2e_sintetica` entera (**2 000 000 de filas**, declarada `fullScan: expensive`) | **~117 s**, tres veces: nada lo impidió |
+
+**M3 · el conector de Postgres, en local** (`pruebas-de-fuego/medida-f0-el-conector-de-postgres.sh`,
+un Postgres de pruebas con 10⁶ filas; la consulta en el propio origen: `limit 10` en 2,7 ms):
+
+| | cifra |
+|---|---|
+| coste fijo de una petición (proceso + conexión + consulta) | **~270 ms** (el origen tarda ~3) |
+| la tabla entera, 5 columnas | **41,5 s · 128 MB de texto · el conector llega a 551 MB de memoria**: lo carga todo antes de contestar |
+| un `eq` empujado (5 % de las filas) | 2,1 s |
+| diez filas sin `limit` | **la tabla entera: 41,5 s** (con `limit`, una petición: ~0,27 s) |
+| una columna frente a cinco | 9,4 s / 16 MB frente a 41,5 s / 128 MB |
+| texto frente a Arrow | 128 → 93 MB; **9 s sólo en parsear el texto**, y todo llega como cadena |
+| 50 / 120 peticiones a la vez (`max_connections` 40) | **7 / 68 fallan** con «too many clients»: ni cola ni conexiones compartidas |
+
+**Lo que las cifras deciden:**
+
+1. **El camino en vivo no puede ser un trabajo** (29 s antes de empezar): hace falta la pasarela.
+2. **Conexiones calientes y reutilizadas**: casi todo el coste de una petición pequeña es abrir
+   proceso y conexión (270 ms en local, ~890 ms contra Neon desde la celda), no la consulta.
+3. **`limit` es lo primero** del contrato v2: es la mayor diferencia medida (41,5 s → 0,27 s).
+4. **Flujo Arrow y no un texto entero en memoria**: 551 MB de memoria por 10⁶ filas, 9 s de
+   parseo y los tipos perdidos.
+5. **Proteger el origen no es opcional**: sin cola por origen, 50 peticiones a la vez tumban
+   conexiones; y una tabla que se declara `fullScan: expensive` se leyó entera tres veces.
+6. **Empujar columnas también cuenta** (×4,4 en tiempo, ×8 en bytes).
+
 ## La decisión
 
 ### 1 · Un producto, una vía
