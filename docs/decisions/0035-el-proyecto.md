@@ -418,7 +418,7 @@ bajan un escalón.
 
 **La clase de un repositorio** —qué varía entre un `transforms`, un `models` y un
 `functions`: entorno, capacidades e interfaz— se resuelve aparte, en
-[`0036`](0036-la-clase-del-repositorio.md).
+[`0036`](0036-code-repositories.md).
 
 **6 · Lo que se acepta a cambio.** Que un repositorio **no proteja** (como el proyecto: quien
 alcanza la celda alcanza lo suyo según la etiqueta), que dos repositorios del mismo paquete

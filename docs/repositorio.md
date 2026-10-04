@@ -1,7 +1,7 @@
 # El repositorio — el brief desechable de 0035 ⑥ y 0036
 
 > Se borra cuando el paso ⑦ cierre; lo que quede se dice en
-> [`0035`](decisions/0035-el-proyecto.md) y [`0036`](decisions/0036-la-clase-del-repositorio.md)
+> [`0035`](decisions/0035-el-proyecto.md) y [`0036`](decisions/0036-code-repositories.md)
 > («Lo construido»). Aquí sólo lo necesario para construirlo en orden: qué toca cada paso,
 > dónde, con qué prueba, y **qué número de la medida cambia**.
 

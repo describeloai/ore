@@ -4,7 +4,7 @@
 repository **de qué hablas** mientras escribes —qué no compila, qué se puede completar, qué es lo
 que tienes debajo del cursor— en cada lenguaje del producto, y cómo llega eso del puesto al
 navegador. Se apoya en [`0031`](0031-el-puesto.md) (el puesto: un pod por persona y por
-repositorio) y en [`0036`](0036-la-clase-del-repositorio.md) (las clases de repositorio y sus
+repositorio) y en [`0036`](0036-code-repositories.md) (las clases de repositorio y sus
 semillas). El de SQL lo detalla [`0039`](0039-sql-paradigms-in-code-repositories.md).
 
 ## Qué es

@@ -149,7 +149,7 @@ real son **la iteración siguiente**, y este paso no los toca.
 ## ④ El repositorio: la instancia, y la sesión acotada a ella → [`docs/repositorio.md`](repositorio.md)
 
 > Reescrito tras **0035 ⑥** (la sesión no es «por proyecto» sino **por repositorio**) y
-> **[0036](decisions/0036-la-clase-del-repositorio.md)** (cada clase es un producto distinto:
+> **[0036](decisions/0036-code-repositories.md)** (cada clase es un producto distinto:
 > entorno, capacidades e interfaz). Creció lo bastante como para tener brief propio: los siete
 > pasos están en **[`docs/repositorio.md`](repositorio.md)**.
 >

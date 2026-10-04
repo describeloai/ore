@@ -6,7 +6,7 @@ apéndice C (2026-09-29), sus pasos por hacer; apéndice A
 apéndice B (*la rama protegida*) hecho, P2 pendiente · **Decide:**
 qué es una rama para quien usa ORE, qué se puede hacer en ella, y qué significa «en qué se
 diferencia de `main`». Amplía [`0030`](0030-el-arbol-en-el-editor.md) W2 (ramas y propuestas en el
-editor) al catálogo, y [`0036`](0036-la-clase-del-repositorio.md) ④ (la rama de un repositorio).
+editor) al catálogo, y [`0036`](0036-code-repositories.md) ④ (la rama de un repositorio).
 
 ## El problema, como lo vio el cliente
 

@@ -1,7 +1,7 @@
 //! **El repositorio** (0035 ⑥, [`0036`]): la unidad de **trabajo**. Una carpeta
 //! del árbol con **nombre** y **clase**.
 //!
-//! [`0036`]: https://github.com/describeloai/ore/blob/main/docs/decisions/0036-la-clase-del-repositorio.md
+//! [`0036`]: https://github.com/describeloai/ore/blob/main/docs/decisions/0036-code-repositories.md
 //!
 //! ```text
 //! packages/ventas/churn/README.md
