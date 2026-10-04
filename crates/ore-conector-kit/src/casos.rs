@@ -803,7 +803,6 @@ impl Kit<'_> {
                 mal.push(format!("otra credencial deja {} sesiones, no 2", d - a));
             }
         }
-        drop(pedir);
         let _ = hijo.kill();
         let _ = hijo.wait();
         self.b.limpiar();
