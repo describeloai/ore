@@ -614,14 +614,16 @@ impl Servidor {
                             si_commit.as_deref(),
                             dueno.as_deref(),
                         );
-                        if resp.codigo == 200 {
+                        // 201: hubo cambios y se commitea (200 es «nada que commitear»).
+                        if resp.codigo == 201 {
                             capas = crate::entorno::capas_tocadas(r, &rutas);
                         }
                         resp
                     });
-                    if r.codigo == 200
+                    if r.codigo == 201
                         && !capas.is_empty()
                         && let Json::Obj(m) = &mut r.cuerpo
+                        && m.contains_key("commit")
                     {
                         m.insert(
                             "capas".into(),
