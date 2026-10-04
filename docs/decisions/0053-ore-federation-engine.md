@@ -1,6 +1,6 @@
 # 0053 · ORE Federation Engine
 
-**Estado:** **aceptado** (2026-10-04) · F0 medido · F1·1–F1·4 hechos (spec
+**Estado:** **aceptado** (2026-10-04) · F0 medido · **F1 cerrado** (contratos en [`docs/federation.md`](../federation.md); spec
 [v1alpha24 `01-leer-el-origen`](../../vendor/oos/spec/v1alpha24/01-leer-el-origen.md)) · **Decide:** **leer el origen es un producto**, y
 uno solo: el ORE Federation Engine es la única vía por la que una celda lee un origen —consultarlo
 en vivo desde SQL, describirlo, catalogarlo, comprobarlo y copiarlo—, con sus conectores, sus
