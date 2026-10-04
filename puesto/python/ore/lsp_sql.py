@@ -406,8 +406,9 @@ def lo_que_duckdb_entiende(s):
         return 0, s
     if w[0] == "drop" and w[1:2] == ["view"]:
         return None
-    if w[0] == "alter" and w[1:3] == ["media", "collection"]:
-        # 0049 B8: `alter media collection c set managed|virtual` es del árbol
+    if w[0] in ("alter", "describe") and w[1:3] == ["media", "collection"]:
+        # 0049 B8: `alter media collection c set managed|virtual` y (B8·3)
+        # `describe media collection c` son del árbol
         return None
     if w[0] != "create":
         return 0, s

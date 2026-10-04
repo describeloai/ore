@@ -1531,7 +1531,9 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
     for i in 0..toks.len() {
         // 0049 B8: `alter media collection b.s.c set managed|virtual`. DuckDB
         // does not know it either: it is the tree's, and the script says why.
-        if es(i, "alter") && es(i + 1, "media") && es(i + 2, "collection") {
+        // 0049 B8·3: and `describe media collection b.s.c`, which reads its
+        // pointer in the tree (DuckDB's `describe` would not find it).
+        if (es(i, "alter") || es(i, "describe")) && es(i + 1, "media") && es(i + 2, "collection") {
             let n = nombre(i + 3).unwrap_or_default();
             return Some(EscribeEnElArbol::Crea(format!("media collection {n}")));
         }

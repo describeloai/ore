@@ -142,6 +142,10 @@ fn resumen(d: &Loaded, puntero: Option<&Node>) -> Json {
                     "blobs",
                     "no_copiados",
                     "retencion",
+                    // 0049 B8·3: si lo sellado es de una virtual, y lo que a
+                    // una mantenida le falta en el lago
+                    "virtual",
+                    "por_copiar",
                 ] {
                     if let Some(v) = todo.get(k) {
                         q.insert(k.to_string(), v.clone());
@@ -268,6 +272,13 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         Json::Obj(m) => m,
         _ => Default::default(),
     };
+    // 0049 B8·3: una mantenida copia por el conducto `materialization.payload`;
+    // sin él autorizado su copia no se encola (OOS4011), y se dice.
+    if forma(&d) == "mantenida" {
+        let conducto = std::fs::read_to_string(path.join("conduits.yaml"))
+            .is_ok_and(|t| t.contains("materialization.payload"));
+        m.insert("conducto".into(), Json::Bool(conducto));
+    }
     // La historia de sus transacciones: los snapshots de su manifiesto.
     if let Some((ds, ml)) = lago {
         let h = almacen(

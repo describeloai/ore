@@ -165,6 +165,10 @@ pub enum Sentencia {
     /// with an origin passes from served in place to copied into the lake, or
     /// back (`ALTER TABLE … SET MANAGED`, in Databricks).
     AlterCollection { target: Nombre, managed: bool },
+    /// 0049 B8·3 · `describe media collection c`: where it is and what it
+    /// holds —managed and copied, copying, virtual, written— read from its
+    /// pointer (`DESCRIBE DETAIL`, in Databricks). It writes nothing.
+    DescribeCollection { target: Nombre },
 }
 
 impl Sentencia {
@@ -196,6 +200,7 @@ impl Sentencia {
             Self::BorrarVista { .. } => "drop view",
             Self::CrearColeccion { .. } => "create media collection",
             Self::AlterCollection { .. } => "alter media collection",
+            Self::DescribeCollection { .. } => "describe media collection",
         }
     }
 }
@@ -415,6 +420,9 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let mut texto = std::borrow::Cow::Borrowed(texto);
     if es(&ts, 0, "alter") && es(&ts, 1, "media") && es(&ts, 2, "collection") {
         return alter_collection(&ts, 3);
+    }
+    if es(&ts, 0, "describe") && es(&ts, 1, "media") && es(&ts, 2, "collection") {
+        return describe_collection(&ts, 3);
     }
     if es(&ts, 0, "create") {
         let (clase, i) = if es(&ts, 1, "standard") {
@@ -709,6 +717,7 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
 const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…> formats (pdf, …) [from object table b.s.t [virtual]] [comment '…']`";
 const ALTER_COLLECTION: &str =
     "`alter media collection base.schema.name set managed` (or `set virtual`)";
+const DESCRIBE_COLLECTION: &str = "`describe media collection base.schema.name`";
 
 /// `create media collection …` desde `i` (tras `collection`). Como `create
 /// volume` de Databricks, con lo que una colección necesita además: de qué
@@ -923,6 +932,32 @@ fn alter_collection(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec
         Vec::new()
     };
     Ok((Sentencia::AlterCollection { target, managed }, avisos))
+}
+
+/// `describe media collection …` from `i` (after `collection`): the name, and
+/// nothing else.
+fn describe_collection(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+    let Some((partes, pos, i)) = nombre_en(ts, i) else {
+        return Err(vec![
+            Fallo::new("the name of the collection is missing", pos_en(ts, i))
+                .ayuda(DESCRIBE_COLLECTION),
+        ]);
+    };
+    let mut fallos = Vec::new();
+    let target = nombre_de(&partes, pos, &mut fallos);
+    if i < ts.len() {
+        fallos.push(sobra(ts, i, DESCRIBE_COLLECTION));
+    }
+    if !fallos.is_empty() {
+        return Err(fallos);
+    }
+    let target = target.expect("without failures there is a name");
+    let avisos = if target.dos_partes {
+        vec![Fallo::dos_partes(&target)]
+    } else {
+        Vec::new()
+    };
+    Ok((Sentencia::DescribeCollection { target }, avisos))
 }
 
 const LA_VISTA: &str = "`create [or replace] [materialized] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
@@ -1744,6 +1779,21 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                     )),
                 }
             }
+            // 0049 B8·3: any collection of the tree —written ones too—.
+            Sentencia::DescribeCollection { target } => {
+                let r = target.referencia();
+                match doc_de(pkg, &r) {
+                    Some(d) if d.kind == Kind::MediaCollection => {}
+                    Some(d) => fallos.push(Fallo::new(
+                        format!("`{r}` is a `{:?}`, not a collection", d.kind),
+                        target.pos,
+                    )),
+                    None => fallos.push(Fallo::new(
+                        format!("there is no collection `{r}` in this branch"),
+                        target.pos,
+                    )),
+                }
+            }
         }
     }
     fallos
@@ -1804,6 +1854,20 @@ SELECT * FROM ventas.demo_uc.clientes;
             &t[2].sentencia,
             Sentencia::AlterCollection { managed: false, .. }
         ));
+        // 0049 B8·3: `describe media collection c`, and nothing after it
+        let d = trozos("describe media collection legal.archivo.c");
+        assert_eq!(d[0].sentencia.que(), "describe media collection");
+        assert!(matches!(
+            &d[0].sentencia,
+            Sentencia::DescribeCollection { target } if target.referencia() == "legal.archivo.c"
+        ));
+        for (q, dice) in [
+            ("describe media collection", "name of the collection"),
+            ("describe media collection legal.archivo.c detail", "sobra"),
+        ] {
+            let f = guion(q).expect_err(q);
+            assert!(f.iter().any(|x| x.mensaje.contains(dice)), "{q}: {f:?}");
+        }
         for (q, dice) in [
             (
                 "alter media collection legal.archivo.c set external",

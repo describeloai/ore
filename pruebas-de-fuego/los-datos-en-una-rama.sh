@@ -587,5 +587,14 @@ v="virtual $(del_puntero virtual) · por_copiar $(del_puntero por_copiar) · ít
 [ "$v" = "virtual False · por_copiar 0 · ítems 2 · blobs 2" ] && grep -q "2 que ya estaban, con sus bytes al lago" "$T/job20.txt" \
   || falla "20 · tras la pasada (virtual · por_copiar · ítems en la rama · blobs en el lago): $v · $(grep -i 'transacc' "$T/job20.txt" | tail -2)"
 ok "20 · de virtual a mantenida en la rama: se encola al escribirla y la pasada lleva al lago lo que ya tenía (por_copiar 0)"
+# Y lo que `describe media collection` lee: la ficha de la rama, por el SDK.
+c=$(curl -s -o "$T/ficha20.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/colecciones/docsv/default/raiz")
+d=$(PYTHONPATH="$RAIZ/puesto/python" "$PY" -c 'import json,sys
+from ore import _descripcion
+r=_descripcion("docsv.default.raiz", json.load(open(sys.argv[1])))
+print(r["kind"], r["status"], r["items"], r["pending"])' "$T/ficha20.json" 2>&1 | tail -1)
+[ "$c · $d" = "200 · managed copied 2 0" ] \
+  || falla "20 · describe media collection en la rama (código · kind status items pending): $c · $d · $(head -c 300 "$T/ficha20.json")"
+ok "20 · describe media collection, de la ficha de la rama: managed · copied · 2 ítems · 0 pendientes"
 
 if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9320\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

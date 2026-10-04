@@ -3316,6 +3316,14 @@ fn celda_de_sentencia(
             c(&target.referencia()),
             si(*managed)
         ),
+        // 0049 B8·3: where the collection is and what it holds, one row.
+        S::DescribeCollection { target } => format!(
+            "from ore import describe_collection, _resultado_de_describir\n\n\
+             _hecho = describe_collection({})\n\
+             print(\"%s · media collection · %s · %s\" % (_hecho[\"collection\"], _hecho[\"kind\"], _hecho[\"status\"]))\n\
+             _resultado_de_describir(_hecho)\n",
+            c(&target.referencia())
+        ),
         S::BorrarVista { destino, si_existe } => format!(
             "from ore import drop_view, _resultado_de_crear\n\n\
              _hecho = drop_view({}, if_exists={})\n\
@@ -4126,6 +4134,13 @@ mod prueba {
             c.contains("alter_collection(\"ventas.demo.v\", managed=True)"),
             "{c}"
         );
+        // 0049 B8·3: where it is and what it holds
+        let (c, _) = celda("describe media collection ventas.demo.v");
+        assert!(
+            c.contains("describe_collection(\"ventas.demo.v\")")
+                && c.contains("_resultado_de_describir(_hecho)"),
+            "{c}"
+        );
     }
 
     /// ⭐ S3 · EL CÓDIGO QUE ORE GENERA CASA CON EL SDK. Cada forma que se
@@ -4157,6 +4172,7 @@ mod prueba {
             "create media collection if not exists ventas.demo.docs media document formats (pdf) comment 'x'",
             "create media collection ventas.demo.vdocs media document formats (pdf) from object table s3.docs.t virtual",
             "alter media collection ventas.demo.vdocs set managed",
+            "describe media collection ventas.demo.vdocs",
             "insert into ventas.x (a) values (1)",
             "insert into ventas.x select 1, 2",
             "insert or replace into ventas.x select 1 as a",

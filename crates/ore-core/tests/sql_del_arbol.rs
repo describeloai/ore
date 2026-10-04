@@ -249,6 +249,11 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         e("alter media collection ventas.s.c set managed"),
         Some(E::Crea("media collection ventas.s.c".into()))
     );
+    // 0049 B8·3: and `describe media collection`, which reads the tree
+    assert_eq!(
+        e("describe media collection ventas.s.c"),
+        Some(E::Crea("media collection ventas.s.c".into()))
+    );
     // lo que se escribe es un dataset; `table` también llega aquí, y el
     // análisis dice que una Table no se crea desde SQL
     assert_eq!(

@@ -433,7 +433,7 @@ def e17():
     ore.session.pedir = pedir
     try:
         r = ore.alter_collection("legal.archivo.c", managed=True)
-        assert r == {"collection": "legal.archivo.c", "status": "managed · copy queued"}, r
+        assert r == {"collection": "legal.archivo.c", "status": "managed · copy queued (follow it: describe media collection legal.archivo.c)"}, r
         assert "virtual" not in puestos[-1] and "objectTable: s3.docs.t" in puestos[-1], puestos[-1]
         assert ore.alter_collection("legal.archivo.c")["status"] == "already managed" and len(puestos) == 1
         r = ore.alter_collection("legal.archivo.c", managed=False)
@@ -463,7 +463,61 @@ def e17():
          "`set virtual` lo pone tras su `from`; `create … from object table` escribe su origen y dice si su "
          "copia quedó encolada; sin origen, no")
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17], 1):
+def e18():
+    """B8·3: `describe media collection` dice dónde está y qué tiene, del
+    puntero de la rama y no del documento."""
+    fichas = {
+        "copiada": {"forma": "mantenida", "objectTable": "s3.docs.t", "conducto": True,
+                    "puntero": {"virtual": False, "por_copiar": 0, "items": {"actuales": 4}}},
+        "copiando": {"forma": "mantenida", "objectTable": "s3.docs.t", "conducto": True,
+                     "puntero": {"virtual": False, "por_copiar": 1, "items": {"actuales": 4}}},
+        "sin_copiar": {"forma": "mantenida", "objectTable": "s3.docs.t", "conducto": True,
+                       "puntero": {"virtual": True, "items": {"actuales": 4}}},
+        "sin_conducto": {"forma": "mantenida", "objectTable": "s3.docs.t", "conducto": False, "puntero": None},
+        "virtual": {"forma": "virtual", "objectTable": "s3.docs.t",
+                    "puntero": {"virtual": True, "items": {"actuales": 4}}},
+        "escrita": {"forma": "escrita", "puntero": {"items": {"actuales": 2}}},
+    }
+    pedidas = []
+
+    def pedir(metodo, ruta, cuerpo=None, cabeceras=None, **_):
+        pedidas.append((metodo, ruta))
+        if ruta.startswith("/puestos/"):
+            return 404, {}
+        n = ruta.rsplit("/", 1)[-1]
+        return (200, fichas[n]) if n in fichas else (404, {"error": "no"})
+
+    antes = ore.session.pedir
+    ore.session.pedir = pedir
+    try:
+        d = lambda n: ore.describe_collection("legal.archivo.%s" % n)
+        r = d("copiada")
+        assert r == {"collection": "legal.archivo.copiada", "kind": "managed", "origin": "s3.docs.t",
+                     "status": "copied", "items": 4, "pending": 0}, r
+        assert ("GET", "/colecciones/legal/archivo/copiada") in pedidas, pedidas
+        r = d("copiando")
+        assert (r["status"], r["pending"]) == ("copying (1 of 4 pending)", 1), r
+        r = d("sin_copiar")
+        assert (r["status"], r["pending"]) == ("not copied yet", 4), r
+        assert d("sin_conducto")["status"] == "copy waits for the owner's conduit (OOS4011)"
+        r = d("virtual")
+        assert (r["kind"], r["status"], r["pending"]) == ("virtual", "served in place", None), r
+        r = d("escrita")
+        assert (r["kind"], r["status"], r["origin"], r["items"]) == ("written", "written", None, 2), r
+        t = ore._resultado_de_describir(d("copiando"))
+        assert t.column_names == ["collection", "kind", "origin", "status", "items", "pending"], t.column_names
+        try:
+            d("nada")
+            raise AssertionError("no existe")
+        except LookupError as e:
+            assert "in this branch" in str(e), e
+    finally:
+        ore.session.pedir = antes
+    bien("18 · B8·3: `describe media collection` lee el puntero: copied / copying (n of N pending) / "
+         "not copied yet / espera al conducto; virtual: served in place; escrita: written; una fila")
+
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()
