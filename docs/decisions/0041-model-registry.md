@@ -4,7 +4,7 @@
 el catálogo**: un `Model` vive en `base.schema.nombre` como cualquier otro activo, y de ahí le vienen
 su identidad, sus versiones, su linaje y su dueño. Sigue a [`0027`](0027-model-serving.md)
 (el modelo es un documento del árbol), [`0034`](0034-el-catalogo-de-assets.md) (el catálogo es el
-índice del árbol) y [`0038`](0038-los-tres-niveles.md) (`base.schema.nombre`). Gramática:
+índice del árbol) y [`0038`](0038-assets-catalog-namespaces.md) (`base.schema.nombre`). Gramática:
 [OOS v1alpha15](../../vendor/oos/spec/v1alpha15/00-scope.md) y, para el dueño,
 [v1alpha21](../../vendor/oos/spec/v1alpha21/00-scope.md).
 

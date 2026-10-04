@@ -3,8 +3,8 @@
 **Estado:** **aceptado · en vivo** (2026-09-27) · **Decide:** qué es SQL en un code repository de
 ORE: **un `.sql` es código del árbol**, que se lee sin ejecutarlo —qué lee, qué escribe y cómo— y
 corre por los mismos caminos que el código de Python. Una sentencia que lee es un análisis; una
-que escribe, un transform; varias, un guion. Se apoya en [`0036`](0036-la-clase-del-repositorio.md)
-(las clases de repositorio), [`0038`](0038-los-tres-niveles.md) (`base.schema.nombre`),
+que escribe, un transform; varias, un guion. Se apoya en [`0036`](0036-code-repositories.md)
+(las clases de repositorio), [`0038`](0038-assets-catalog-namespaces.md) (`base.schema.nombre`),
 [`0033`](0033-el-dataset.md) (lo que se escribe es un dataset) y [`0031`](0031-el-puesto.md) (el
 puesto). La vista SQL es su propio producto: [`0040`](0040-sql-views.md) (SQL Views).
 

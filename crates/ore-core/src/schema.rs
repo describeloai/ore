@@ -20,7 +20,7 @@
 //! Y no mira lo importado de un `.oob`: su ruta es sintética (`<el
 //! .oob>/<identidad>`), no hay carpeta con la que discrepar.
 //!
-//! Registro: `docs/decisions/0038-los-tres-niveles.md` · spec:
+//! Registro: `docs/decisions/0038-assets-catalog-namespaces.md` · spec:
 //! `vendor/oos/spec/v1alpha13/01-el-schema.md`.
 
 use crate::code::Code;
