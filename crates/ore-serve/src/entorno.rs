@@ -138,6 +138,83 @@ pub(crate) const PYTHON: &str = "python";
 pub(crate) const JVM: &str = "jvm";
 pub(crate) const NODE: &str = "node";
 
+// ── ⭐ ORE 0050 L6·1b · LO QUE LA IMAGEN DE CADA PUESTO TRAE ──────────────
+//   Las MISMAS listas que el Dockerfile instala y que la capa no copia (manda
+//   el contenedor): aquí se compilan dentro, para que `GET /entorno/<e>` diga
+//   qué trae la sesión aunque el repositorio no declare nada. Cambiar la
+//   imagen es cambiar la lista, y con ella este binario (la huella de los
+//   binarios las mira: `ci/huella-de-los-binarios.sh`).
+const PROVISTO_NODE: &str = include_str!("../../../puesto/node/provisto.txt");
+const PROVISTO_PYTHON: &str = include_str!("../../../puesto/python/provisto.txt");
+const JARS_JVM: &str = include_str!("../../../puesto/jvm/jars.txt");
+/// El `duckdb_jdbc` del puesto JVM: no está en `jars.txt` sino en el
+/// `ARG DUCKDB_JDBC` del Dockerfile (un test los compara).
+const DUCKDB_JDBC: &str = "1.5.5.1";
+
+/// Un paquete que la sesión trae sin que nadie lo declare.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Provista {
+    /// Como se declara en su mundo: `n` en Node y Python, `g:a` en la JVM.
+    pub nombre: String,
+    pub version: String,
+    /// Sólo tipa (Node, ` tipos` en `provisto.txt`): el compilador, los tipos de Node.
+    pub tipos: bool,
+}
+
+fn lineas_de(t: &str) -> impl Iterator<Item = &str> {
+    t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
+}
+
+/// Lo que trae la imagen del puesto de ese entorno, en el orden de su lista.
+pub(crate) fn provistas_de(entorno: &str) -> Vec<Provista> {
+    match entorno {
+        NODE => lineas_de(PROVISTO_NODE)
+            .filter_map(|l| {
+                let mut p = l.split_whitespace();
+                let nv = p.next()?;
+                let tipos = p.next() == Some("tipos");
+                // `@ámbito/n@v`: el último `@` que no es el primero.
+                let i = nv.rfind('@').filter(|i| *i > 0)?;
+                Some(Provista { nombre: nv[..i].into(), version: nv[i + 1..].into(), tipos })
+            })
+            .collect(),
+        JVM => lineas_de(JARS_JVM)
+            .filter_map(|l| {
+                // `grupo/con/barras/artefacto versión`, como lo lee `Capa provisto`.
+                let (ruta, v) = l.split_once(char::is_whitespace)?;
+                let (g, a) = ruta.rsplit_once('/')?;
+                Some(Provista { nombre: format!("{}:{a}", g.replace('/', ".")), version: v.trim().into(), tipos: false })
+            })
+            .chain(std::iter::once(Provista {
+                nombre: "org.duckdb:duckdb_jdbc".into(),
+                version: DUCKDB_JDBC.into(),
+                tipos: false,
+            }))
+            .collect(),
+        _ => lineas_de(PROVISTO_PYTHON)
+            .filter_map(|l| {
+                let (n, v) = l.split_once("==")?;
+                Some(Provista { nombre: n.trim().into(), version: v.trim().into(), tipos: false })
+            })
+            .collect(),
+    }
+}
+
+fn provistas_json(entorno: &str) -> Json {
+    Json::Arr(
+        provistas_de(entorno)
+            .into_iter()
+            .map(|p| {
+                let mut campos = vec![("nombre", Json::s(&p.nombre)), ("version", Json::s(&p.version))];
+                if p.tipos {
+                    campos.push(("tipos", Json::Bool(true)));
+                }
+                Json::obj(campos)
+            })
+            .collect(),
+    )
+}
+
 /// Dónde declara cada entorno. Uno por entorno y ninguno más: un segundo
 /// formato para el mismo —`build.gradle`— sería un formato antes de haber
 /// probado el primero.
@@ -613,6 +690,8 @@ impl Servidor {
             let mut r = Respuesta::ok(ficha(&entorno_de_en(raiz, alcance.as_deref(), entorno)));
             if let Json::Obj(m) = &mut r.cuerpo {
                 m.insert("entorno".into(), Json::s(entorno));
+                // L6·1b: lo que la sesión trae, lo declare el repositorio o no.
+                m.insert("provistas".into(), provistas_json(entorno));
                 if let Some(a) = &alcance {
                     m.insert("alcance".into(), Json::s(a));
                 }
@@ -741,6 +820,32 @@ impl Servidor {
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    #[test]
+    fn las_provistas_de_cada_imagen_salen_de_sus_listas() {
+        let node = provistas_de(NODE);
+        assert!(node.contains(&Provista { nombre: "ore".into(), version: "1.0.0".into(), tipos: false }), "{node:?}");
+        assert!(node.contains(&Provista { nombre: "@duckdb/node-api".into(), version: "1.5.5-r.5".into(), tipos: false }));
+        assert!(node.contains(&Provista { nombre: "typescript".into(), version: "5.9.3".into(), tipos: true }));
+        assert!(node.contains(&Provista { nombre: "@types/node".into(), version: "24.19.1".into(), tipos: true }));
+        let py = provistas_de(PYTHON);
+        for n in ["pandas", "pyarrow", "duckdb", "google-cloud-storage", "numpy"] {
+            assert!(py.iter().any(|p| p.nombre == n && !p.version.is_empty()), "{n}: {py:?}");
+        }
+        let jvm = provistas_de(JVM);
+        assert!(jvm.iter().any(|p| p.nombre == "org.apache.arrow:arrow-vector" && p.version == "19.0.0"), "{jvm:?}");
+        assert!(jvm.iter().any(|p| p.nombre == "com.fasterxml.jackson.core:jackson-databind"));
+        assert_eq!(jvm.last().map(|p| p.nombre.as_str()), Some("org.duckdb:duckdb_jdbc"));
+    }
+
+    #[test]
+    fn el_duckdb_jdbc_es_el_del_dockerfile() {
+        // Las dos etapas que lo nombran (`puesto-jvm` y la capa JVM).
+        let d = include_str!("../../../Dockerfile");
+        let args: Vec<&str> = d.lines().filter_map(|l| l.strip_prefix("ARG DUCKDB_JDBC=")).collect();
+        assert!(!args.is_empty());
+        assert!(args.iter().all(|v| v.trim() == DUCKDB_JDBC), "{args:?} ≠ {DUCKDB_JDBC}");
+    }
 
     #[test]
     fn solo_dependencies_de_project_en_una_o_varias_lineas() {

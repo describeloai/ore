@@ -86,6 +86,11 @@ FROM deps AS build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY vendor/oos vendor/oos
+# L6·1b: las listas de lo que traen las imágenes de los puestos, que
+# `ore-serve` compila dentro (`entorno.rs`, `include_str!`).
+COPY puesto/node/provisto.txt puesto/node/provisto.txt
+COPY puesto/python/provisto.txt puesto/python/provisto.txt
+COPY puesto/jvm/jars.txt puesto/jvm/jars.txt
 COPY ci/compilar-binarios.sh ci/compilar-binarios.sh
 RUN SALIDA=/b sh ci/compilar-binarios.sh
 
@@ -342,7 +347,12 @@ RUN npm install --no-audit --no-fund --omit=dev --prefix /opt/p pyright@${PYRIGH
 
 FROM python:3.12-slim AS puesto-python
 
-RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
+# ⭐ ORE 0050 L6·1b · FIJADA: `puesto/python/provisto.txt` dice versión a versión
+#   lo que se instala (antes, `pandas pyarrow duckdb google-cloud-storage` sin
+#   versión: cada construcción podía traer otra cosa). La misma lista la lee
+#   ore-serve para enseñar lo que la sesión trae.
+COPY puesto/python/provisto.txt /opt/ore/provisto-fijado.txt
+RUN pip install --no-cache-dir -r /opt/ore/provisto-fijado.txt \
  && pip freeze > /entorno-1.txt \
  && python -c "import pandas, pyarrow, duckdb, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
 # ⭐⭐ LO QUE ESTA IMAGEN PONE, ESCRITO PARA QUE OTRO LO LEA (0031 W3.2 · el
@@ -352,9 +362,12 @@ RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
 #   Sin esto, declarar `pandas` en un repositorio metía otro `numpy` en la
 #   capa, y un ABI mal casado no da excepción: mata al intérprete.
 #
-# ⛔ Y se genera AQUÍ, de la instalación de verdad, no a mano: una lista
-#   escrita aparte se queda vieja el día que alguien añada un paquete arriba.
+# ⛔ Y se genera AQUÍ, de la instalación de verdad; y si no es exactamente la
+#   lista fijada (L6·1b), la construcción falla: lo que ore-serve enseña y lo
+#   que la sesión trae no pueden ser dos cosas.
 RUN mkdir -p /opt/ore && pip freeze | sort > /opt/ore/provisto.txt \
+ && { grep -v '^#' /opt/ore/provisto-fijado.txt | grep . | sort | diff - /opt/ore/provisto.txt \
+      || { echo "✗ pip freeze no es puesto/python/provisto.txt: regenera la lista"; exit 1; }; } \
  && test "$(wc -l < /opt/ore/provisto.txt)" -ge 4 \
  && echo "provisto por la imagen: $(wc -l < /opt/ore/provisto.txt) paquetes" >> /entorno-1.txt
 # ⭐ Las extensiones de DuckDB que leen el LAGO (0031 §10, medido en
