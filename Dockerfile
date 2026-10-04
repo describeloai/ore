@@ -627,7 +627,7 @@ RUN set -e; mkdir -p /tmp/p/arbol; \
     TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol ""; \
     ls /tmp/p/t/jars; \
     test -f /tmp/p/t/jars/commons-lang3-3.17.0.jar; \
-    ! ls /tmp/p/t/jars | grep -q jackson; \
+    ! ls /tmp/p/t/jars | grep -q jackson || exit 1; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
     grep -q 'pediste com.fasterxml.jackson.core:jackson-databind 2.19.0, y esta sesión trae la 2.18.2' /tmp/p/t/informe.json; \
     grep -q '"sumas"' /tmp/p/t/informe.json; \
@@ -650,7 +650,7 @@ RUN set -e; mkdir -p /tmp/q/arbol; \
     ls /tmp/q/t/jars; \
     test -f /tmp/q/t/jars/jackson-dataformat-yaml-2.19.0.jar; \
     test -f /tmp/q/t/jars/snakeyaml-2.4.jar; \
-    ! ls /tmp/q/t/jars | grep -q 'jackson-databind'; \
+    ! ls /tmp/q/t/jars | grep -q 'jackson-databind' || exit 1; \
     grep -q 'jackson-databind 2.19.0 lo arrastra algo que declaraste' /tmp/q/t/informe.json; \
     cat /tmp/q/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/q
 
