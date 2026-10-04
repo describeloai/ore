@@ -587,14 +587,21 @@ v="virtual $(del_puntero virtual) · por_copiar $(del_puntero por_copiar) · ít
 [ "$v" = "virtual False · por_copiar 0 · ítems 2 · blobs 2" ] && grep -q "2 que ya estaban, con sus bytes al lago" "$T/job20.txt" \
   || falla "20 · tras la pasada (virtual · por_copiar · ítems en la rama · blobs en el lago): $v · $(grep -i 'transacc' "$T/job20.txt" | tail -2)"
 ok "20 · de virtual a mantenida en la rama: se encola al escribirla y la pasada lleva al lago lo que ya tenía (por_copiar 0)"
-# Y lo que `describe media collection` lee: la ficha de la rama, por el SDK.
-c=$(curl -s -o "$T/ficha20.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/colecciones/docsv/default/raiz")
+# Y lo que `describe media collection` dice, de la rama, por el SDK; y
+# `describe dataset` de uno de main (sus columnas y su detalle).
+c=$(curl -s -o "$T/desc20.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$BASE/describe/media-collection/docsv/default/raiz")
 d=$(PYTHONPATH="$RAIZ/puesto/python" "$PY" -c 'import json,sys
-from ore import _descripcion
-r=_descripcion("docsv.default.raiz", json.load(open(sys.argv[1])))
-print(r["kind"], r["status"], r["items"], r["pending"])' "$T/ficha20.json" 2>&1 | tail -1)
-[ "$c · $d" = "200 · managed copied 2 0" ] \
-  || falla "20 · describe media collection en la rama (código · kind status items pending): $c · $d · $(head -c 300 "$T/ficha20.json")"
-ok "20 · describe media collection, de la ficha de la rama: managed · copied · 2 ítems · 0 pendientes"
+from ore import _detalle
+f=[{"col_name":a,"data_type":b,"comment":x} for a,b,x in json.load(open(sys.argv[1]))["rows"]]
+r=_detalle(f)
+print(f[0]["col_name"], r.get("type"), r.get("status"), r.get("items"), r.get("pending"))' "$T/desc20.json" 2>&1 | tail -1)
+[ "$c · $d" = "200 · item managed copied 2 0" ]   || falla "20 · describe media collection en la rama (código · 1ª columna type status items pending): $c · $d · $(head -c 300 "$T/desc20.json")"
+c=$(curl -s -o "$T/desc20b.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' "$BASE/describe/dataset/ventas/default/base")
+d=$("$PY" -c 'import json,sys
+f=json.load(open(sys.argv[1]))["rows"]
+print(" ".join(x[0] for x in f if x[0] in ("id","pais","# Detail")), dict((x[0],x[1]) for x in f).get("kind"))' "$T/desc20b.json" 2>&1 | tail -1)
+c2=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' "$BASE/describe/view/ventas/default/base")
+[ "$c · $d · $c2" = "200 · id pais # Detail dataset · 422" ]   || falla "20 · describe dataset (código · columnas y detalle · como vista): $c · $d · $c2 · $(head -c 300 "$T/desc20b.json")"
+ok "20 · describe: la colección de la rama, managed · copied · 2 · 0; ventas.base, sus columnas y su detalle; como vista, 422"
 
 if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9320\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

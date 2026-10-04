@@ -801,6 +801,8 @@ impl Servidor {
                 self.ficha_de_la_coleccion(rama, b, ore_core::normalize::SCHEMA_POR_DEFECTO, n)
             }
             ("GET", ["colecciones", b, s, n]) => self.ficha_de_la_coleccion(rama, b, s, n),
+            // 0049 B8·3: `describe <kind> b.s.n`, as `DESCRIBE TABLE EXTENDED`.
+            ("GET", ["describe", k, b, s, n]) => self.describir(rama, k, b, s, n),
             ("GET", ["colecciones", b, s, n, "items"]) => {
                 self.items_de_la_coleccion(rama, b, s, n, &p.consulta)
             }

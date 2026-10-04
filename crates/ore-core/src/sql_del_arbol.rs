@@ -1531,11 +1531,36 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
     for i in 0..toks.len() {
         // 0049 B8: `alter media collection b.s.c set managed|virtual`. DuckDB
         // does not know it either: it is the tree's, and the script says why.
-        // 0049 B8·3: and `describe media collection b.s.c`, which reads its
-        // pointer in the tree (DuckDB's `describe` would not find it).
-        if (es(i, "alter") || es(i, "describe")) && es(i + 1, "media") && es(i + 2, "collection") {
+        if es(i, "alter") && es(i + 1, "media") && es(i + 2, "collection") {
             let n = nombre(i + 3).unwrap_or_default();
             return Some(EscribeEnElArbol::Crea(format!("media collection {n}")));
+        }
+        // 0049 B8·3: `describe <kind> b.s.n` of an asset of the tree reads the
+        // tree (DuckDB's `describe` would not find it); `describe tmp` and
+        // `describe select …` stay DuckDB's. A collection is always the tree's.
+        if es(i, "describe") {
+            let (j, que) = if es(i + 1, "object") && es(i + 2, "table") {
+                (i + 3, "object table")
+            } else if es(i + 1, "media") && es(i + 2, "collection") {
+                (i + 3, "media collection")
+            } else if es(i + 1, "materialized") && es(i + 2, "view") {
+                (i + 3, "view")
+            } else if es(i + 1, "table") {
+                (i + 2, "table")
+            } else if es(i + 1, "dataset") {
+                (i + 2, "dataset")
+            } else if es(i + 1, "view") {
+                (i + 2, "view")
+            } else {
+                continue;
+            };
+            match nombre(j) {
+                Some(n) => return Some(EscribeEnElArbol::Crea(format!("{que} {n}"))),
+                None if que == "media collection" => {
+                    return Some(EscribeEnElArbol::Crea(format!("{que} ")));
+                }
+                None => continue,
+            }
         }
         if es(i, "create") {
             // 0039: lo que crea en el catálogo

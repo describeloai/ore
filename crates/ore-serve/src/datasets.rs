@@ -274,6 +274,74 @@ impl Servidor {
         })
     }
 
+    /// `GET /describe/{kind}/{b}/{s}/{n}` (0049 B8·3): `describe table|object
+    /// table|dataset|view|media collection b.s.n` —`kind` with `-` for the
+    /// space—, as `DESCRIBE TABLE EXTENDED`: `{rows: [[col_name, data_type,
+    /// comment], …]}`, its columns and then `# Detail`. From the tree and the
+    /// pointer of the branch, never from the origin.
+    pub(crate) fn describir(
+        &self,
+        rama: Option<&str>,
+        kind: &str,
+        b: &str,
+        schema: &str,
+        n: &str,
+    ) -> Respuesta {
+        use ore_core::document::Kind;
+        if let Err(m) = token(b).and(token(schema)).and(token(n)) {
+            return Respuesta::error(422, m);
+        }
+        let quiere = match kind {
+            "table" => Kind::Table,
+            "object-table" => Kind::ObjectTable,
+            "dataset" => Kind::Dataset,
+            "view" => Kind::View,
+            "media-collection" => Kind::MediaCollection,
+            _ => {
+                return Respuesta::error(
+                    422,
+                    "`kind` is `table`, `object-table`, `dataset`, `view` or `media-collection`",
+                );
+            }
+        };
+        let corto = ore_core::normalize::corto(b, schema, n);
+        let que = kind.replace('-', " ");
+        self.leyendo_en(rama, move |raiz| {
+            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            let qn = format!("{b}.{schema}.{n}");
+            let Some(d) = pkg.docs.iter().find(|d| {
+                d.kind != Kind::Package
+                    && (d.qname().as_deref() == Some(qn.as_str())
+                        || d.qname().as_deref() == Some(corto.as_str()))
+            }) else {
+                return Respuesta::error(
+                    404,
+                    format!("there is no {que} `{corto}` in this branch"),
+                );
+            };
+            if d.kind != quiere {
+                return Respuesta::error(
+                    422,
+                    format!("`{corto}` is a `{:?}`, not a {que}", d.kind),
+                );
+            }
+            let puntero =
+                ore_core::punteros::leer_en(&raiz.join("datasets"), &corto).map(|(_, p)| p);
+            let conducto = std::fs::read_to_string(raiz.join("conduits.yaml"))
+                .is_ok_and(|t| t.contains("materialization.payload"));
+            let filas = ore_core::assets::describir(&pkg, d, puntero.as_ref(), conducto);
+            Respuesta::ok(Json::obj([(
+                "rows",
+                Json::Arr(
+                    filas
+                        .into_iter()
+                        .map(|f| Json::Arr(f.iter().map(Json::s).collect()))
+                        .collect(),
+                ),
+            )]))
+        })
+    }
+
     /// `GET /colecciones/{b}/{s}/{n}/items?estado=&desde=&limite=`: sus ítems,
     /// por estado (`actual` por defecto) y en páginas de hasta mil.
     pub(crate) fn items_de_la_coleccion(

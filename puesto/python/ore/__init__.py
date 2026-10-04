@@ -107,7 +107,7 @@ API = 2
 
 __all__ = ["API", "over", "sql", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
-           "alter_collection", "describe_collection",
+           "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
            "collection", "Collection", "Item", "MediaRef", "read_many", "Transaction", "MediaError",
            "MediaNotFound", "MediaForbidden", "MediaChanged", "MediaCorrupt", "MediaRangeError",
@@ -1382,53 +1382,47 @@ def alter_collection(name, managed=True):
     return _Result({"collection": nombre, "status": estado + (" · " + copia if copia else "")})
 
 
-def describe_collection(name):
-    """`describe media collection db.schema.c` (0049 B8·3): where the
-    collection is and what it holds, read from its pointer in this branch
-    —not from the document—. Like Databricks' `DESCRIBE DETAIL`. Returns
-    `{collection, kind, origin, status, items, pending}`:
+DESCRIBIBLES = ("table", "object table", "dataset", "view", "media collection")
 
-    - `kind`: `managed` (copied into the lake), `virtual` (served in place)
-      or `written` (written from code; no origin);
-    - `status`: of a managed one, `copied` (every current item in the lake),
-      `copying (n of N pending)` (the pending ones are served from the
-      origin meanwhile), `not copied yet` (its copy is queued or about to
-      run), or `copy waits for the owner's conduit (OOS4011)`; of a virtual
-      one, `served in place`; of a written one, `written`;
-    - `items`: current items; `pending`: those not in the lake yet (managed)."""
-    nombre = _corto(_nombre_de(name), "describe media collection: the name")
-    que = "describe media collection %s" % nombre
+
+def describe(name, kind):
+    """`describe <kind> db.schema.n` (0049 B8·3), as Databricks' `DESCRIBE
+    TABLE EXTENDED`: a list of `{col_name, data_type, comment}`, its columns
+    first and then a `# Detail` section of `{col_name: property, data_type:
+    value}`. `kind`: `table`, `object table`, `dataset`, `view` or `media
+    collection`. Read from the tree and the pointer of this branch, never
+    from the origin. Of a managed collection, `status` is `copied`, `copying
+    (n of N pending)`, `not copied yet` or `copy waits for the owner's conduit
+    (OOS4011)`."""
+    if kind not in DESCRIBIBLES:
+        raise ValueError("describe: `kind` is one of %s, not %r" % (", ".join(DESCRIBIBLES), kind))
+    nombre = _corto(_nombre_de(name), "describe %s: the name" % kind)
+    que = "describe %s %s" % (kind, nombre)
     b, s_, n = _partes(nombre)
-    c, f = session.pedir("GET", "/colecciones/%s/%s/%s" % (b, s_, n), cabeceras=_rama_del_puesto(), plazo=60)
+    c, r = session.pedir("GET", "/describe/%s/%s/%s/%s" % (kind.replace(" ", "-"), b, s_, n),
+                         cabeceras=_rama_del_puesto(), plazo=60)
     if c == 404:
-        raise LookupError("%s: there is no collection with that name in this branch" % que)
+        raise LookupError("%s: there is no %s with that name in this branch" % (que, kind))
     if c != 200:
-        raise RuntimeError("%s: %s (%s)" % (que, (f or {}).get("error", "?"), c))
-    return _Result(_descripcion(nombre, f or {}))
+        raise RuntimeError("%s: %s (%s)" % (que, (r or {}).get("error", "?"), c))
+    return [{"col_name": f[0], "data_type": f[1], "comment": f[2]} for f in (r or {}).get("rows", [])]
 
 
-def _descripcion(nombre, f):
-    """The row of `describe media collection` from its card (`GET
-    /colecciones/…`, `ore collections --ficha`)."""
-    kind = {"mantenida": "managed", "virtual": "virtual", "escrita": "written"}.get(f.get("forma"), f.get("forma"))
-    p = f.get("puntero") or {}
-    items = int((p.get("items") or {}).get("actuales") or 0)
-    pending = None
-    if kind == "managed":
-        if not p or p.get("virtual") is not False:
-            # no transaction as managed yet: nothing of it is in the lake
-            pending = items
-            status = ("copy waits for the owner's conduit (OOS4011)" if f.get("conducto") is False
-                      else "not copied yet")
-        else:
-            pending = int(p.get("por_copiar") or 0)
-            status = "copied" if pending == 0 else "copying (%d of %d pending)" % (pending, items)
-    elif kind == "virtual":
-        status = "served in place"
-    else:
-        status = "written"
-    return {"collection": nombre, "kind": kind, "origin": f.get("objectTable"), "status": status,
-            "items": items, "pending": pending}
+def describe_collection(name):
+    """`describe media collection db.schema.c`: `describe(name, "media
+    collection")`."""
+    return describe(name, "media collection")
+
+
+def _detalle(filas):
+    """The `# Detail` of what `describe` returns, as a dict."""
+    out, dentro = {}, False
+    for f in filas:
+        if f["col_name"] == "# Detail":
+            dentro = True
+        elif dentro and f["col_name"]:
+            out[f["col_name"]] = f["data_type"]
+    return out
 
 
 # ── La vista (ADR 0040 paso 5) ─────────────────────────────────────────────
@@ -1796,18 +1790,12 @@ def _resultado_de_aplicar(hecho):
     return pa.table({k: pa.array([int(hecho.get(k) or 0)], pa.int64()) for k in claves})
 
 
-def _resultado_de_describir(hecho):
-    """The result of `describe media collection` (0049 B8·3): one row."""
+def _resultado_de_describir(filas):
+    """The result of `describe <kind>` (0049 B8·3): `col_name`, `data_type`,
+    `comment`, a row each."""
     import pyarrow as pa
 
-    return pa.table({
-        "collection": pa.array([hecho["collection"]], pa.string()),
-        "kind": pa.array([hecho["kind"]], pa.string()),
-        "origin": pa.array([hecho.get("origin")], pa.string()),
-        "status": pa.array([hecho["status"]], pa.string()),
-        "items": pa.array([hecho.get("items")], pa.int64()),
-        "pending": pa.array([hecho.get("pending")], pa.int64()),
-    })
+    return pa.table({k: pa.array([f[k] for f in filas], pa.string()) for k in ("col_name", "data_type", "comment")})
 
 
 def _resultado_de_crear(objeto, creado):

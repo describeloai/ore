@@ -165,10 +165,12 @@ pub enum Sentencia {
     /// with an origin passes from served in place to copied into the lake, or
     /// back (`ALTER TABLE … SET MANAGED`, in Databricks).
     AlterCollection { target: Nombre, managed: bool },
-    /// 0049 B8·3 · `describe media collection c`: where it is and what it
-    /// holds —managed and copied, copying, virtual, written— read from its
-    /// pointer (`DESCRIBE DETAIL`, in Databricks). It writes nothing.
-    DescribeCollection { target: Nombre },
+    /// 0049 B8·3 · `describe table|object table|dataset|view|media collection
+    /// b.s.n`: its columns and its detail —for a collection, managed and
+    /// copied, copying, virtual, written—, from the tree and the pointer of the
+    /// branch (`DESCRIBE TABLE EXTENDED`, in Databricks). It writes nothing.
+    /// `kind` is one of [`DESCRIBIBLES`].
+    Describe { kind: &'static str, target: Nombre },
 }
 
 impl Sentencia {
@@ -200,7 +202,7 @@ impl Sentencia {
             Self::BorrarVista { .. } => "drop view",
             Self::CrearColeccion { .. } => "create media collection",
             Self::AlterCollection { .. } => "alter media collection",
-            Self::DescribeCollection { .. } => "describe media collection",
+            Self::Describe { .. } => "describe",
         }
     }
 }
@@ -421,8 +423,10 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     if es(&ts, 0, "alter") && es(&ts, 1, "media") && es(&ts, 2, "collection") {
         return alter_collection(&ts, 3);
     }
-    if es(&ts, 0, "describe") && es(&ts, 1, "media") && es(&ts, 2, "collection") {
-        return describe_collection(&ts, 3);
+    if es(&ts, 0, "describe")
+        && let Some((kind, i)) = describible(&ts, 1)
+    {
+        return describe(&ts, kind, i);
     }
     if es(&ts, 0, "create") {
         let (clase, i) = if es(&ts, 1, "standard") {
@@ -717,7 +721,37 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
 const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…> formats (pdf, …) [from object table b.s.t [virtual]] [comment '…']`";
 const ALTER_COLLECTION: &str =
     "`alter media collection base.schema.name set managed` (or `set virtual`)";
-const DESCRIBE_COLLECTION: &str = "`describe media collection base.schema.name`";
+const DESCRIBE: &str =
+    "`describe table|object table|dataset|view|media collection base.schema.name`";
+
+/// 0049 B8·3: what `describe` takes, in the words that say it.
+pub const DESCRIBIBLES: &[&str] = &[
+    "table",
+    "object table",
+    "dataset",
+    "view",
+    "media collection",
+];
+
+/// The kind `describe` names from `i` —`materialized view` is a view—, and
+/// where the name starts.
+fn describible(ts: &[Tok], i: usize) -> Option<(&'static str, usize)> {
+    if es(ts, i, "object") && es(ts, i + 1, "table") {
+        Some(("object table", i + 2))
+    } else if es(ts, i, "media") && es(ts, i + 1, "collection") {
+        Some(("media collection", i + 2))
+    } else if es(ts, i, "materialized") && es(ts, i + 1, "view") {
+        Some(("view", i + 2))
+    } else if es(ts, i, "table") {
+        Some(("table", i + 1))
+    } else if es(ts, i, "dataset") {
+        Some(("dataset", i + 1))
+    } else if es(ts, i, "view") {
+        Some(("view", i + 1))
+    } else {
+        None
+    }
+}
 
 /// `create media collection …` desde `i` (tras `collection`). Como `create
 /// volume` de Databricks, con lo que una colección necesita además: de qué
@@ -934,19 +968,21 @@ fn alter_collection(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec
     Ok((Sentencia::AlterCollection { target, managed }, avisos))
 }
 
-/// `describe media collection …` from `i` (after `collection`): the name, and
-/// nothing else.
-fn describe_collection(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+/// `describe <kind> …` from `i` (after the kind): the name, and nothing else.
+fn describe(
+    ts: &[Tok],
+    kind: &'static str,
+    i: usize,
+) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let Some((partes, pos, i)) = nombre_en(ts, i) else {
         return Err(vec![
-            Fallo::new("the name of the collection is missing", pos_en(ts, i))
-                .ayuda(DESCRIBE_COLLECTION),
+            Fallo::new(format!("the name of the {kind} is missing"), pos_en(ts, i)).ayuda(DESCRIBE),
         ]);
     };
     let mut fallos = Vec::new();
     let target = nombre_de(&partes, pos, &mut fallos);
     if i < ts.len() {
-        fallos.push(sobra(ts, i, DESCRIBE_COLLECTION));
+        fallos.push(sobra(ts, i, DESCRIBE));
     }
     if !fallos.is_empty() {
         return Err(fallos);
@@ -957,7 +993,7 @@ fn describe_collection(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), 
     } else {
         Vec::new()
     };
-    Ok((Sentencia::DescribeCollection { target }, avisos))
+    Ok((Sentencia::Describe { kind, target }, avisos))
 }
 
 const LA_VISTA: &str = "`create [or replace] [materialized] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
@@ -1779,17 +1815,24 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                     )),
                 }
             }
-            // 0049 B8·3: any collection of the tree —written ones too—.
-            Sentencia::DescribeCollection { target } => {
+            // 0049 B8·3: an asset of the tree, of the kind it says.
+            Sentencia::Describe { kind, target } => {
                 let r = target.referencia();
+                let quiere = match *kind {
+                    "table" => Kind::Table,
+                    "object table" => Kind::ObjectTable,
+                    "dataset" => Kind::Dataset,
+                    "view" => Kind::View,
+                    _ => Kind::MediaCollection,
+                };
                 match doc_de(pkg, &r) {
-                    Some(d) if d.kind == Kind::MediaCollection => {}
+                    Some(d) if d.kind == quiere => {}
                     Some(d) => fallos.push(Fallo::new(
-                        format!("`{r}` is a `{:?}`, not a collection", d.kind),
+                        format!("`{r}` is a `{:?}`, not a {kind}", d.kind),
                         target.pos,
                     )),
                     None => fallos.push(Fallo::new(
-                        format!("there is no collection `{r}` in this branch"),
+                        format!("there is no {kind} `{r}` in this branch"),
                         target.pos,
                     )),
                 }
@@ -1854,16 +1897,32 @@ SELECT * FROM ventas.demo_uc.clientes;
             &t[2].sentencia,
             Sentencia::AlterCollection { managed: false, .. }
         ));
-        // 0049 B8·3: `describe media collection c`, and nothing after it
-        let d = trozos("describe media collection legal.archivo.c");
-        assert_eq!(d[0].sentencia.que(), "describe media collection");
-        assert!(matches!(
-            &d[0].sentencia,
-            Sentencia::DescribeCollection { target } if target.referencia() == "legal.archivo.c"
-        ));
+        // 0049 B8·3: `describe <kind> c`, and nothing after it
+        for (q, k) in [
+            (
+                "describe media collection legal.archivo.c",
+                "media collection",
+            ),
+            ("describe table legal.archivo.c", "table"),
+            ("describe object table legal.archivo.c", "object table"),
+            ("describe dataset legal.archivo.c", "dataset"),
+            ("describe view legal.archivo.c", "view"),
+            ("describe materialized view legal.archivo.c", "view"),
+        ] {
+            let d = trozos(q);
+            assert_eq!(d[0].sentencia.que(), "describe");
+            assert!(
+                matches!(
+                    &d[0].sentencia,
+                    Sentencia::Describe { kind, target } if *kind == k && target.referencia() == "legal.archivo.c"
+                ),
+                "{q}: {:?}",
+                d[0].sentencia
+            );
+        }
         for (q, dice) in [
-            ("describe media collection", "name of the collection"),
-            ("describe media collection legal.archivo.c detail", "sobra"),
+            ("describe media collection", "name of the media collection"),
+            ("describe view legal.archivo.c detail", "sobra"),
         ] {
             let f = guion(q).expect_err(q);
             assert!(f.iter().any(|x| x.mensaje.contains(dice)), "{q}: {f:?}");

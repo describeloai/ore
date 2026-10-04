@@ -913,6 +913,230 @@ fn clasificacion_de(
 /// `punteros`: los de `datasets/` ya leídos, por la forma corta del nombre
 /// (`crate::punteros::del_arbol`, 0038 P2). Los lee quien llama (ore-serve, el
 /// CLI).
+/// 0049 B8·3 · **`describe <kind> b.s.n`**, as Databricks' `DESCRIBE TABLE
+/// EXTENDED`: rows of `(col_name, data_type, comment)`, its columns first and
+/// then a `# Detail` section of `(property, value, "")`. Read from the tree
+/// and from the pointer of the branch (`puntero`), never from the origin.
+/// `conducto`: whether `materialization.payload` is authorized (what a managed
+/// collection copies through, OOS4011).
+pub fn describir(
+    pkg: &Package,
+    d: &Loaded,
+    puntero: Option<&Node>,
+    conducto: bool,
+) -> Vec<[String; 3]> {
+    let s = |x: &str| x.to_string();
+    let texto = |n: Option<&Node>| n.and_then(|x| x.as_str()).map(str::to_string);
+    let del_puntero = |k: &str| texto(puntero.and_then(|p| p.get(k)).map(|(_, v)| v));
+    let comentario = |c: &str| {
+        texto(
+            d.section("columns")
+                .and_then(|cs| cs.get(c))
+                .and_then(|(_, v)| v.get("description"))
+                .map(|(_, v)| v),
+        )
+        .unwrap_or_default()
+    };
+    let mut filas: Vec<[String; 3]> = Vec::new();
+    // ── its columns ──
+    if d.kind == Kind::MediaCollection {
+        // what `FROM` gives of a collection (B7·1; `COLUMNAS_DE_LA_RELACION`
+        // in the SDK's `medios.py`)
+        for (c, t) in [
+            ("item", "Media"),
+            ("path", "String"),
+            ("digest", "String"),
+            ("size", "Integer"),
+            ("content_type", "String"),
+            ("modified", "DateTimeTz"),
+        ] {
+            filas.push([s(c), s(t), String::new()]);
+        }
+    } else if let Json::Arr(cs) = expone_de(pkg, d) {
+        for c in cs {
+            if let Json::Obj(m) = c
+                && let Some(Json::Str(n)) = m.get("name")
+            {
+                let t = match m.get("type") {
+                    Some(Json::Str(t)) => t.clone(),
+                    _ => String::new(),
+                };
+                filas.push([n.clone(), t, comentario(n)]);
+            }
+        }
+    }
+    // ── # Detail ──
+    filas.push([String::new(), String::new(), String::new()]);
+    filas.push([s("# Detail"), String::new(), String::new()]);
+    let mut prop = |k: &str, v: Option<String>| {
+        if let Some(v) = v.filter(|v| !v.is_empty()) {
+            filas.push([s(k), v, String::new()]);
+        }
+    };
+    let qn = d.qname().unwrap_or_default();
+    // who reads this one directly (a copy of a table, the dataset of a
+    // materialized view, a view over it)
+    let leido_por = |kinds: &[Kind]| -> Option<String> {
+        let v: Vec<String> = pkg
+            .docs
+            .iter()
+            .filter(|x| kinds.contains(&x.kind))
+            .filter(|x| {
+                vistas::lee_directo(pkg, x)
+                    .iter()
+                    .any(|y| y.qname().as_deref() == Some(qn.as_str()))
+            })
+            .filter_map(|x| x.qname())
+            .collect();
+        (!v.is_empty()).then(|| v.join(", "))
+    };
+    let lista = |k: &str| {
+        d.section(k).map(|n| {
+            n.items()
+                .iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+    };
+    let kind = match d.kind {
+        Kind::Table => "table",
+        Kind::ObjectTable => "object table",
+        Kind::Dataset => "dataset",
+        Kind::View => "view",
+        Kind::MediaCollection => "media collection",
+        _ => "",
+    };
+    prop("kind", Some(s(kind)));
+    prop("name", Some(qn.clone()));
+    prop("owner", spec_str(d, "owner"));
+    prop("comment", spec_str(d, "description"));
+    match d.kind {
+        Kind::Table => {
+            prop("datasource", spec_str(d, "datasource"));
+            prop("object", spec_str(d, "object"));
+            prop("copied by", leido_por(&[Kind::Dataset]));
+        }
+        Kind::ObjectTable => {
+            prop("datasource", spec_str(d, "datasource"));
+            prop("prefix", spec_str(d, "prefix"));
+            prop("match", spec_str(d, "match"));
+            prop("partitions", lista("partitions"));
+            let de_ella: Vec<String> = pkg
+                .docs
+                .iter()
+                .filter(|x| x.kind == Kind::MediaCollection)
+                .filter(|x| {
+                    texto(
+                        x.section("from")
+                            .and_then(|f| f.get("objectTable"))
+                            .map(|(_, v)| v),
+                    )
+                    .is_some_and(|o| {
+                        crate::normalize::a_corto(&crate::link::cualificar(&o, x))
+                            == crate::normalize::a_corto(&qn)
+                    })
+                })
+                .filter_map(|x| x.qname())
+                .collect();
+            prop(
+                "collections",
+                (!de_ella.is_empty()).then(|| de_ella.join(", ")),
+            );
+        }
+        Kind::Dataset => {
+            let lee: Vec<String> = vistas::lee_directo(pkg, d)
+                .iter()
+                .filter_map(|x| x.qname())
+                .collect();
+            prop("from", (!lee.is_empty()).then(|| lee.join(", ")));
+            prop("key", lista("key"));
+            prop("anchored to", vistas::anclada_a(d));
+            prop("rows", del_puntero("filas"));
+            prop("transaction", del_puntero("transaccion"));
+            prop("state", del_puntero("estado"));
+        }
+        Kind::View => {
+            let copia = leido_por(&[Kind::Dataset]);
+            prop(
+                "type",
+                Some(s(if copia.is_some() {
+                    "materialized"
+                } else {
+                    "virtual"
+                })),
+            );
+            prop("materialized as", copia);
+            let lee: Vec<String> = vistas::lee_directo(pkg, d)
+                .iter()
+                .filter_map(|x| x.qname())
+                .collect();
+            prop("reads", (!lee.is_empty()).then(|| lee.join(", ")));
+            prop(
+                "sql",
+                spec_str(d, "sql").map(|q| q.split_whitespace().collect::<Vec<_>>().join(" ")),
+            );
+        }
+        Kind::MediaCollection => {
+            let origen = texto(
+                d.section("from")
+                    .and_then(|f| f.get("objectTable"))
+                    .map(|(_, v)| v),
+            );
+            let virtual_ = spec_str(d, "virtual").as_deref() == Some("true");
+            let forma = match (&origen, virtual_) {
+                (Some(_), false) => "managed",
+                (Some(_), true) => "virtual",
+                (None, _) => "written",
+            };
+            let items: i64 = puntero
+                .and_then(|p| p.get("items"))
+                .and_then(|(_, i)| texto(i.get("actuales").map(|(_, v)| v)))
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+            let (status, pending) = match forma {
+                "managed"
+                    if puntero.is_none() || del_puntero("virtual").as_deref() != Some("false") =>
+                {
+                    (
+                        if conducto {
+                            s("not copied yet")
+                        } else {
+                            s("copy waits for the owner's conduit (OOS4011)")
+                        },
+                        Some(items),
+                    )
+                }
+                "managed" => {
+                    let p: i64 = del_puntero("por_copiar")
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
+                    (
+                        if p == 0 {
+                            s("copied")
+                        } else {
+                            format!("copying ({p} of {items} pending)")
+                        },
+                        Some(p),
+                    )
+                }
+                "virtual" => (s("served in place"), None),
+                _ => (s("written"), None),
+            };
+            prop("type", Some(s(forma)));
+            prop("origin", origen);
+            prop("media", spec_str(d, "media"));
+            prop("formats", lista("formats"));
+            prop("retention", spec_str(d, "retention"));
+            prop("status", Some(status));
+            prop("items", Some(items.to_string()));
+            prop("pending", pending.map(|p| p.to_string()));
+        }
+        _ => {}
+    }
+    filas
+}
+
 pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza) -> Json {
     let proyectos = crate::proyectos::leer(&pkg.root);
     let repositorios = crate::repositorios::leer(&pkg.root);

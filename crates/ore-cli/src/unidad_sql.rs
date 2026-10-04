@@ -326,8 +326,8 @@ fn dice(s: &Sentencia) -> String {
                 "virtual (servida en el origen)"
             }
         ),
-        Sentencia::DescribeCollection { target } => format!(
-            "dónde está la colección `{}` y qué tiene (su puntero)",
+        Sentencia::Describe { kind, target } => format!(
+            "las columnas y el detalle de {kind} `{}`",
             target.referencia()
         ),
     }

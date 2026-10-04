@@ -249,11 +249,23 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         e("alter media collection ventas.s.c set managed"),
         Some(E::Crea("media collection ventas.s.c".into()))
     );
-    // 0049 B8·3: and `describe media collection`, which reads the tree
+    // 0049 B8·3: and `describe <kind>` of an asset of the tree; of what is
+    // not the tree's (`describe tmp`, a DuckDB table), DuckDB's
     assert_eq!(
         e("describe media collection ventas.s.c"),
         Some(E::Crea("media collection ventas.s.c".into()))
     );
+    assert_eq!(
+        e("describe view ventas.s.v"),
+        Some(E::Crea("view ventas.s.v".into()))
+    );
+    assert_eq!(
+        e("describe object table ventas.s.o"),
+        Some(E::Crea("object table ventas.s.o".into()))
+    );
+    assert_eq!(e("describe table tmp"), None);
+    assert_eq!(e("describe tmp"), None);
+    assert_eq!(e("describe table nada.s.t"), None);
     // lo que se escribe es un dataset; `table` también llega aquí, y el
     // análisis dice que una Table no se crea desde SQL
     assert_eq!(
@@ -864,5 +876,131 @@ fn a_collection_with_an_origin_from_sql() {
     uno(
         "alter media collection ventas.nada set virtual",
         "no collection `ventas.nada` in this branch",
+    );
+}
+
+/// 0049 B8·3 · `describe <kind>`: its columns, then `# Detail`, from the tree
+/// and the pointer of the branch.
+#[test]
+fn describe_gives_columns_then_detail_of_each_kind() {
+    let t = arbol("describe");
+    escribe(
+        &t.0,
+        "packages/ventas/objecttables/docs_t.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: docs_t, namespace: ventas }\nspec:\n  datasource: pg\n  prefix: \"docs/\"\n  match: \"*.pdf\"\n  media: document\n  changes: { mode: retract, witness: listing }\n",
+    );
+    escribe(
+        &t.0,
+        "packages/ventas/collections/docs.yaml",
+        "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: { name: docs, namespace: ventas }\nspec:\n  owner: team:ventas\n  media: document\n  formats: [pdf]\n  from: { objectTable: ventas.default.docs_t }\n",
+    );
+    let (pkg, diags) = ore_core::validate::cargar_paquete(&t.0);
+    assert!(diags.is_empty(), "{diags:?}");
+    let doc = |n: &str| {
+        pkg.docs
+            .iter()
+            .find(|d| d.qname().as_deref() == Some(n))
+            .unwrap_or_else(|| panic!("no `{n}`"))
+    };
+    let describe = |n: &str, p: Option<&str>, conducto: bool| {
+        let p = p.map(|t| ore_core::parse::parse(t).unwrap());
+        ore_core::assets::describir(&pkg, doc(n), p.as_ref(), conducto)
+    };
+    let detalle = |f: &[[String; 3]]| -> std::collections::BTreeMap<String, String> {
+        let i = f.iter().position(|x| x[0] == "# Detail").expect("# Detail");
+        f[i + 1..]
+            .iter()
+            .map(|x| (x[0].clone(), x[1].clone()))
+            .collect()
+    };
+    let columnas = |f: &[[String; 3]]| -> Vec<String> {
+        f.iter()
+            .take_while(|x| !x[0].is_empty())
+            .map(|x| format!("{} {}", x[0], x[1]))
+            .collect()
+    };
+    // a table: its columns with their types, where it comes from and who copies it
+    let f = describe("ventas.pedidos_t", None, true);
+    assert_eq!(columnas(&f), ["id Integer", "pais String"], "{f:?}");
+    let d = detalle(&f);
+    assert_eq!(d["kind"], "table");
+    assert_eq!(
+        (d["datasource"].as_str(), d["object"].as_str()),
+        ("pg", "public.pedidos")
+    );
+    assert_eq!(d["copied by"], "ventas.pedidos");
+    // a dataset: what it reads and its pointer
+    let f = describe(
+        "ventas.pedidos",
+        Some("{\"filas\": 7, \"transaccion\": 3, \"estado\": \"al-dia\"}"),
+        true,
+    );
+    let d = detalle(&f);
+    assert_eq!(
+        (
+            d["kind"].as_str(),
+            d["from"].as_str(),
+            d["rows"].as_str(),
+            d["transaction"].as_str()
+        ),
+        ("dataset", "ventas.pedidos_t", "7", "3")
+    );
+    // a view: virtual, and what it reads
+    let d = detalle(&describe("ventas.pedidosEs", None, true));
+    assert_eq!(
+        (d["kind"].as_str(), d["type"].as_str(), d["reads"].as_str()),
+        ("view", "virtual", "ventas.pedidos")
+    );
+    // an object table: its listing columns, its prefix, and the collections from it
+    let f = describe("ventas.docs_t", None, true);
+    assert!(columnas(&f).iter().any(|c| c.starts_with("key ")), "{f:?}");
+    let d = detalle(&f);
+    assert_eq!(
+        (
+            d["kind"].as_str(),
+            d["prefix"].as_str(),
+            d["collections"].as_str()
+        ),
+        ("object table", "docs/", "ventas.docs")
+    );
+    // a managed collection: its status from the pointer
+    let estado = |p: Option<&str>, conducto: bool| {
+        let d = detalle(&describe("ventas.docs", p, conducto));
+        (
+            d["type"].clone(),
+            d["status"].clone(),
+            d.get("pending").cloned(),
+        )
+    };
+    let n = |s: &str| s.to_string();
+    assert_eq!(
+        estado(
+            Some("{\"virtual\": false, \"por_copiar\": 0, \"items\": {\"actuales\": 4}}"),
+            true
+        ),
+        (n("managed"), n("copied"), Some(n("0")))
+    );
+    assert_eq!(
+        estado(
+            Some("{\"virtual\": false, \"por_copiar\": 1, \"items\": {\"actuales\": 4}}"),
+            true
+        )
+        .1,
+        "copying (1 of 4 pending)"
+    );
+    assert_eq!(
+        estado(
+            Some("{\"virtual\": true, \"items\": {\"actuales\": 4}}"),
+            true
+        ),
+        (n("managed"), n("not copied yet"), Some(n("4")))
+    );
+    assert_eq!(
+        estado(None, false).1,
+        "copy waits for the owner's conduit (OOS4011)"
+    );
+    assert_eq!(
+        columnas(&describe("ventas.docs", None, true))[0],
+        "item Media"
     );
 }

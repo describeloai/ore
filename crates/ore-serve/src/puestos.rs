@@ -3316,13 +3316,13 @@ fn celda_de_sentencia(
             c(&target.referencia()),
             si(*managed)
         ),
-        // 0049 B8·3: where the collection is and what it holds, one row.
-        S::DescribeCollection { target } => format!(
-            "from ore import describe_collection, _resultado_de_describir\n\n\
-             _hecho = describe_collection({})\n\
-             print(\"%s · media collection · %s · %s\" % (_hecho[\"collection\"], _hecho[\"kind\"], _hecho[\"status\"]))\n\
-             _resultado_de_describir(_hecho)\n",
-            c(&target.referencia())
+        // 0049 B8·3: its columns and its detail (`DESCRIBE TABLE EXTENDED`).
+        S::Describe { kind, target } => format!(
+            "from ore import describe, _resultado_de_describir\n\n\
+             _filas = describe({}, kind={})\n\
+             _resultado_de_describir(_filas)\n",
+            c(&target.referencia()),
+            c(kind)
         ),
         S::BorrarVista { destino, si_existe } => format!(
             "from ore import drop_view, _resultado_de_crear\n\n\
@@ -4137,8 +4137,8 @@ mod prueba {
         // 0049 B8·3: where it is and what it holds
         let (c, _) = celda("describe media collection ventas.demo.v");
         assert!(
-            c.contains("describe_collection(\"ventas.demo.v\")")
-                && c.contains("_resultado_de_describir(_hecho)"),
+            c.contains("describe(\"ventas.demo.v\", kind=\"media collection\")")
+                && c.contains("_resultado_de_describir(_filas)"),
             "{c}"
         );
     }
@@ -4173,6 +4173,7 @@ mod prueba {
             "create media collection ventas.demo.vdocs media document formats (pdf) from object table s3.docs.t virtual",
             "alter media collection ventas.demo.vdocs set managed",
             "describe media collection ventas.demo.vdocs",
+            "describe view ventas.v",
             "insert into ventas.x (a) values (1)",
             "insert into ventas.x select 1, 2",
             "insert or replace into ventas.x select 1 as a",
