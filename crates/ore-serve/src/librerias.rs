@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! GET /librerias/<node|python|jvm>/<nombre>      la ficha (`@ambito/n` y `g:a` valen)
-//! GET /librerias/<node|python|jvm>               la búsqueda: el texto en `X-Ore-Buscar`
+//! GET /librerias/<node|python|jvm>               la búsqueda: el texto en `X-Ore-Buscar`;
+//!                                                 sin él, las SUGERIDAS (L6·2·3)
 //! ```
 //!
 //! ⛔ Este proceso no habla TLS (`ore-cli/tests/dependencias.rs`): pregunta
@@ -33,6 +34,64 @@ type Guardadas = Mutex<HashMap<String, (Instant, u16, String)>>;
 fn guardadas() -> &'static Guardadas {
     static G: OnceLock<Guardadas> = OnceLock::new();
     G.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// ⭐ L6·2·3 · Las sugeridas de cada ecosistema: lo que el panel ofrece añadir
+/// con un clic (`puesto/node/sugeridas.txt`: medidas antes de entrar). Python y
+/// la JVM no tienen todavía: lista vacía.
+const SUGERIDAS_NODE: &str = include_str!("../../../puesto/node/sugeridas.txt");
+
+/// Una sugerida: nombre, área, descripción y, si hace falta, su paquete de tipos
+/// (que va a `devDependencies`).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Sugerida {
+    pub nombre: String,
+    pub area: String,
+    pub descripcion: String,
+    pub tipos: Option<String>,
+}
+
+pub(crate) fn sugeridas_de(entorno: &str) -> Vec<Sugerida> {
+    let texto = match entorno {
+        crate::entorno::NODE => SUGERIDAS_NODE,
+        _ => "",
+    };
+    texto
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let mut c = l.split('\t').map(str::trim);
+            let (nombre, area, descripcion) = (c.next()?, c.next()?, c.next()?);
+            Some(Sugerida {
+                nombre: nombre.into(),
+                area: area.into(),
+                descripcion: descripcion.into(),
+                tipos: c.next().filter(|t| !t.is_empty()).map(String::from),
+            })
+        })
+        .collect()
+}
+
+fn sugeridas_json(entorno: &str) -> Json {
+    Json::obj([(
+        "sugeridas",
+        Json::Arr(
+            sugeridas_de(entorno)
+                .into_iter()
+                .map(|s| {
+                    let mut campos = vec![
+                        ("nombre", Json::s(&s.nombre)),
+                        ("area", Json::s(&s.area)),
+                        ("descripcion", Json::s(&s.descripcion)),
+                    ];
+                    if let Some(t) = &s.tipos {
+                        campos.push(("tipos", Json::s(t)));
+                    }
+                    Json::obj(campos)
+                })
+                .collect(),
+        ),
+    )])
 }
 
 /// La petición de `ore-packages`, en JSON (con el texto escapado).
@@ -65,12 +124,8 @@ impl Servidor {
         ) {
             (Some(n), _) => ("nombre", n),
             (None, Some(q)) => ("q", q),
-            (None, None) => {
-                return Respuesta::error(
-                    422,
-                    "o un nombre en el camino (`/librerias/<e>/<nombre>`) o el texto en `X-Ore-Buscar`",
-                );
-            }
+            // Sin nombre ni texto: las sugeridas (no salen a ningún registro).
+            (None, None) => return Respuesta::ok(sugeridas_json(entorno)),
         };
         let llave = format!("{entorno}\u{0}{clave}\u{0}{valor}");
         if let Ok(g) = guardadas().lock()
@@ -165,6 +220,47 @@ mod prueba {
         );
         assert_eq!(decodificar("%40types%2Fnode"), "@types/node");
         assert_eq!(decodificar("100%"), "100%");
+    }
+
+    #[test]
+    fn las_sugeridas_de_node_son_treinta_y_bien_formadas() {
+        let s = sugeridas_de(crate::entorno::NODE);
+        assert_eq!(s.len(), 30, "{s:?}");
+        assert!(
+            s.iter()
+                .all(|x| !x.nombre.is_empty() && !x.area.is_empty() && !x.descripcion.is_empty())
+        );
+        // Sin repetidas, y los tipos son paquetes `@types/…`.
+        let mut n: Vec<&str> = s.iter().map(|x| x.nombre.as_str()).collect();
+        n.sort();
+        n.dedup();
+        assert_eq!(n.len(), 30);
+        assert!(
+            s.iter()
+                .filter_map(|x| x.tipos.as_deref())
+                .all(|t| t.starts_with("@types/"))
+        );
+        assert_eq!(
+            s.iter()
+                .find(|x| x.nombre == "lodash")
+                .and_then(|x| x.tipos.as_deref()),
+            Some("@types/lodash")
+        );
+        // Lo descartado por la medida no está.
+        for fuera in [
+            "@huggingface/transformers",
+            "natural",
+            "danfojs",
+            "zod-to-json-schema",
+        ] {
+            assert!(!n.contains(&fuera), "{fuera}");
+        }
+        assert!(sugeridas_de(crate::entorno::PYTHON).is_empty());
+        let j = sugeridas_json(crate::entorno::NODE).jcs();
+        assert!(
+            j.starts_with(r#"{"sugeridas":[{"area":"Dates","descripcion":"#),
+            "{j}"
+        );
     }
 
     #[test]

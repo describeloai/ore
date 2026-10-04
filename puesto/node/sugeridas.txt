@@ -1,0 +1,47 @@
+# Las librerías SUGERIDAS para un repositorio de TypeScript (ORE 0050 L6·2·3):
+# lo que el panel Libraries ofrece añadir con un clic. Es un atajo, no un límite:
+# cualquier paquete de npm se declara a mano en `package.json`.
+#
+# Una línea por librería, separada por tabuladores:
+#   nombre  área  descripción  [paquete de tipos, que va a devDependencies]
+#
+# ⛔ Medidas el 2026-10-04 antes de entrar: se instalan con `npm install
+#   --ignore-scripts` (sin scripts de instalación, como la capa) y funcionan
+#   SIN RED (`--network none`, como el puesto), cada una con una llamada real.
+#   Fuera, con su porqué: @huggingface/transformers (onnxruntime-node baja sus
+#   binarios en un script y los modelos de internet), onnxruntime-web (141 MB),
+#   danfojs (TensorFlow.js), natural (lee `.env` al importarse) y
+#   zod-to-json-schema (Zod 4 ya lo trae). Una nueva entra con la misma medida.
+#
+# Lo lee ore-serve (`librerias.rs`, `include_str!`): `GET /librerias/node` sin
+# texto de búsqueda.
+date-fns	Dates	Add, format and compare dates
+dayjs	Dates	Lightweight dates and times
+luxon	Dates	Dates and times with time zones	@types/luxon
+@date-fns/tz	Dates	Time zones for date-fns
+zod	Validation	Typed schemas and validation, with JSON Schema built in
+valibot	Validation	Modular schemas, smaller than zod
+ajv	Validation	Validate data against a JSON Schema
+lodash	Utilities	Group, sort and transform collections	@types/lodash
+es-toolkit	Utilities	Modern, typed utility functions
+uuid	Identifiers	UUIDs, including sortable v7
+nanoid	Identifiers	Short, URL-safe unique ids
+papaparse	Formats	Read and write CSV	@types/papaparse
+csv-parse	Formats	Streaming CSV parser for large files
+fast-xml-parser	Formats	XML to objects and back
+yaml	Formats	Read and write YAML
+fflate	Formats	Gzip and zip compression
+decimal.js	Numbers	Exact decimal arithmetic
+dinero.js	Numbers	Money amounts and currencies
+simple-statistics	Statistics	Means, quantiles, regression and correlation
+mathjs	Statistics	Expressions, matrices and units
+d3-array	Statistics	Quantiles, bins and aggregates	@types/d3-array
+ml-matrix	Machine learning	Linear algebra
+ml-regression	Machine learning	Linear, polynomial and other regressions
+arquero	Tables	Transform tables, dataframe style
+apache-arrow	Tables	Columnar data in Apache Arrow
+js-tiktoken	Models	Count tokens before calling a model
+fuse.js	Text	Fuzzy search
+fastest-levenshtein	Text	Edit distance between strings
+jsonpath-plus	Queries	Query JSON with JSONPath
+json-logic-js	Rules	Business rules as data	@types/json-logic-js
