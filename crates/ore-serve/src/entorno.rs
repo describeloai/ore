@@ -769,7 +769,146 @@ pub(crate) fn alcance_valido(a: Option<&str>) -> Result<Option<String>, Respuest
     Ok(Some(limpio.to_string()))
 }
 
+// ── ⭐ ORE 0050 L6·2·3·2 · INSTALAR AL HACER COMMIT ──────────────────────
+//
+// Hasta aquí la capa se resolvía al ABRIR la sesión: declarar `lodash` y
+// commitear no hacía nada hasta entonces, y la primera sesión esperaba el
+// minuto de la capa. Desde aquí, un commit que toca el fichero de declaración
+// de un repositorio la ENCOLA en ese momento —sea el botón Add, una edición a
+// mano o cualquier otro cliente—, y el commit lo dice (`capas`).
+//
+// ⛔ Una sesión ya abierta NO la recoge: el puesto baja su capa al arrancar
+//   (`traer-la-capa`, 51-el-puesto.yaml). Quien tenga una, la reinicia.
+
+/// Lo que un commit tocó de una declaración: el repositorio, su entorno y cómo
+/// quedó (`entorno_de_en` sobre el árbol YA escrito).
+#[derive(Debug)]
+pub(crate) struct CapaTocada {
+    pub alcance: String,
+    pub entorno: &'static str,
+    pub digest: String,
+    pub estado: &'static str,
+    /// Se retiró el `package-lock.json` en el mismo commit: ya no hay nada
+    /// que instalar, y un lock de una declaración que ya no existe miente.
+    pub lock_retirado: bool,
+}
+
+/// El entorno del fichero de declaración que nombra `ruta`, y su repositorio:
+/// `packages/<p>/<carpeta>/package.json` → `(packages/<p>/<carpeta>, node)`.
+/// La raíz y el paquete no: lo suyo es de todos, y se resuelve al abrir.
+pub(crate) fn declaracion_de(ruta: &str) -> Option<(String, &'static str)> {
+    let (dir, fichero) = ruta.trim_matches('/').rsplit_once('/')?;
+    let entorno = match fichero {
+        "package.json" => NODE,
+        "pyproject.toml" => PYTHON,
+        "pom.xml" => JVM,
+        _ => return None,
+    };
+    match alcance_valido(Some(dir)) {
+        Ok(Some(a)) => Some((a, entorno)),
+        _ => None,
+    }
+}
+
+/// Dentro del commit, con el árbol ya escrito: cómo quedó cada declaración
+/// tocada, y —si ya no hay nada que instalar— el lock fuera (el `add -A` del
+/// commit lo recoge: va en el mismo).
+pub(crate) fn capas_tocadas(raiz: &Path, rutas: &[String]) -> Vec<CapaTocada> {
+    let mut vistas: Vec<(String, &'static str)> =
+        rutas.iter().filter_map(|r| declaracion_de(r)).collect();
+    vistas.sort();
+    vistas.dedup();
+    vistas
+        .into_iter()
+        .filter(|(a, _)| raiz.join(a).is_dir())
+        .map(|(alcance, entorno)| {
+            let e = entorno_de_en(raiz, Some(&alcance), entorno);
+            let lock = raiz.join(&alcance).join("package-lock.json");
+            let lock_retirado = entorno == NODE
+                && e.digest.is_empty()
+                && lock.is_file()
+                && std::fs::remove_file(&lock).is_ok();
+            CapaTocada {
+                alcance,
+                entorno,
+                digest: e.digest,
+                estado: e.estado,
+                lock_retirado,
+            }
+        })
+        .collect()
+}
+
 impl Servidor {
+    /// Tras el commit (ya empujado, para que el Job lo vea en la rama): encolar
+    /// la capa de cada declaración que la necesita. Lo que dice cada una va en
+    /// `capas` de la respuesta: `estado` (`lista`, `sin-dependencias`,
+    /// `instalando`) y, si se encoló, `job`. Un fallo al encolar no deshace el
+    /// commit: se dice, y la capa se resolverá al abrir la sesión, como antes.
+    pub(crate) fn encolar_capas_del_commit(
+        &self,
+        sujeto: &Identidad,
+        rama: Option<&str>,
+        capas: &[CapaTocada],
+    ) -> Json {
+        Json::Arr(
+            capas
+                .iter()
+                .map(|c| {
+                    let mut m = vec![
+                        ("alcance", Json::s(&c.alcance)),
+                        ("entorno", Json::s(c.entorno)),
+                        ("fichero", Json::s(fichero_de(c.entorno))),
+                    ];
+                    if c.lock_retirado {
+                        m.push(("lockRetirado", Json::Bool(true)));
+                    }
+                    match c.estado {
+                        "pendiente" | "error" => {
+                            let intento = if c.estado == "error" {
+                                format!(
+                                    "r{}",
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0)
+                                )
+                            } else {
+                                "1".to_string()
+                            };
+                            match self.encolar_capa(
+                                &c.digest,
+                                rama.unwrap_or(""),
+                                &c.alcance,
+                                sujeto,
+                                &intento,
+                                c.entorno,
+                            ) {
+                                Ok((job, _)) => {
+                                    m.push(("estado", Json::s("instalando")));
+                                    m.push(("job", Json::s(job)));
+                                }
+                                Err(r) => {
+                                    m.push(("estado", Json::s("pendiente")));
+                                    let motivo = match &r.cuerpo {
+                                        Json::Obj(o) => match o.get("error") {
+                                            Some(Json::Str(e)) => e.clone(),
+                                            _ => String::new(),
+                                        },
+                                        _ => String::new(),
+                                    };
+                                    m.push(("error", Json::s(motivo)));
+                                }
+                            }
+                        }
+                        otro => m.push(("estado", Json::s(otro))),
+                    }
+                    Json::obj(m)
+                })
+                .collect(),
+        )
+    }
+
     /// `GET /entorno`, en la rama de `X-Ore-Rama` y en el alcance de
     /// `X-Ore-Raiz` (0036 ③): sin alcance, el de la celda.
     pub(crate) fn entorno(
@@ -975,6 +1114,67 @@ mod prueba {
             jvm.last().map(|p| p.nombre.as_str()),
             Some("org.duckdb:duckdb_jdbc")
         );
+    }
+
+    #[test]
+    fn un_commit_que_toca_la_declaracion_de_un_repositorio_la_dice() {
+        assert_eq!(
+            declaracion_de("packages/p/f/package.json"),
+            Some(("packages/p/f".into(), NODE))
+        );
+        assert_eq!(
+            declaracion_de("packages/p/f/sub/pyproject.toml"),
+            Some(("packages/p/f/sub".into(), PYTHON))
+        );
+        assert_eq!(
+            declaracion_de("packages/p/f/pom.xml"),
+            Some(("packages/p/f".into(), JVM))
+        );
+        // La raíz y el paquete no son un repositorio; otro fichero no declara.
+        for no in [
+            "package.json",
+            "packages/p/package.json",
+            "packages/p/f/functions/x.ts",
+            "packages/p/f/package-lock.json",
+        ] {
+            assert_eq!(declaracion_de(no), None, "{no}");
+        }
+
+        let r = std::env::temp_dir().join(format!("ore-tocadas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        std::fs::create_dir_all(r.join("packages/p/f")).unwrap();
+        // Con algo que instalar: pendiente, con su digest; el lock se queda.
+        std::fs::write(
+            r.join("packages/p/f/package.json"),
+            r#"{"dependencies":{"ore":"1.0.0","lodash":"^4"}}"#,
+        )
+        .unwrap();
+        std::fs::write(r.join("packages/p/f/package-lock.json"), "{}").unwrap();
+        let rutas = vec![
+            "packages/p/f/package.json".to_string(),
+            "packages/p/f/functions/x.ts".into(),
+        ];
+        let c = capas_tocadas(&r, &rutas);
+        assert_eq!(c.len(), 1);
+        assert_eq!(
+            (c[0].entorno, c[0].estado, c[0].lock_retirado),
+            (NODE, "pendiente", false)
+        );
+        assert!(c[0].digest.starts_with("capa-"));
+        assert!(r.join("packages/p/f/package-lock.json").is_file());
+        // Se quita lodash: sólo lo de la sesión → sin capa, y el lock viejo fuera.
+        std::fs::write(
+            r.join("packages/p/f/package.json"),
+            r#"{"dependencies":{"ore":"1.0.0"}}"#,
+        )
+        .unwrap();
+        let c = capas_tocadas(&r, &rutas);
+        assert_eq!(
+            (c[0].estado, c[0].digest.as_str(), c[0].lock_retirado),
+            ("lista", "", true)
+        );
+        assert!(!r.join("packages/p/f/package-lock.json").exists());
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[test]

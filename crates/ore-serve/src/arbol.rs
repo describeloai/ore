@@ -795,6 +795,35 @@ impl Servidor {
 
 /// Lo que un `POST /arbol/commit` quiere, antes de clonar: si es en seco y con
 /// qué mensaje. `escribiendo` necesita el mensaje ANTES de correr el cuerpo.
+/// Las rutas que un commit escribe o retira (`ficheros[].ruta` y `retirar`),
+/// para saber después qué declaraciones tocó (0050 L6·2·3·2).
+pub(crate) fn rutas_del_commit(cuerpo: &str) -> Vec<String> {
+    let Ok(n) = ore_core::parse::parse(cuerpo) else {
+        return Vec::new();
+    };
+    let mut o: Vec<String> = n
+        .get("ficheros")
+        .map(|(_, fs)| {
+            fs.items()
+                .iter()
+                .filter_map(|f| {
+                    f.get("ruta")
+                        .and_then(|(_, v)| v.as_str())
+                        .map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some((_, rs)) = n.get("retirar") {
+        o.extend(
+            rs.items()
+                .iter()
+                .filter_map(|r| r.as_str().map(String::from)),
+        );
+    }
+    o
+}
+
 pub(crate) fn intencion_del_commit(cuerpo: &str) -> (bool, String) {
     let Ok(n) = ore_core::parse::parse(cuerpo) else {
         return (true, String::new());

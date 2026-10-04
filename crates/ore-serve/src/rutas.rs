@@ -603,9 +603,32 @@ impl Servidor {
                         self.commit_del_arbol(r, &cuerpo, si_commit.as_deref(), dueno.as_deref())
                     })
                 } else {
-                    self.escribiendo_en(rama, sujeto, &mensaje, |r| {
-                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref(), dueno.as_deref())
-                    })
+                    // ⭐ 0050 L6·2·3·2: si el commit toca la declaración de un
+                    //   repositorio, su capa se encola al terminar (`capas`).
+                    let rutas = arbol::rutas_del_commit(&cuerpo);
+                    let mut capas = Vec::new();
+                    let mut r = self.escribiendo_en(rama, sujeto, &mensaje, |r| {
+                        let resp = self.commit_del_arbol(
+                            r,
+                            &cuerpo,
+                            si_commit.as_deref(),
+                            dueno.as_deref(),
+                        );
+                        if resp.codigo == 200 {
+                            capas = crate::entorno::capas_tocadas(r, &rutas);
+                        }
+                        resp
+                    });
+                    if r.codigo == 200
+                        && !capas.is_empty()
+                        && let Json::Obj(m) = &mut r.cuerpo
+                    {
+                        m.insert(
+                            "capas".into(),
+                            self.encolar_capas_del_commit(sujeto, rama, &capas),
+                        );
+                    }
+                    r
                 }
             }
             ("PUT", ["arbol", ruta @ ..]) => {
