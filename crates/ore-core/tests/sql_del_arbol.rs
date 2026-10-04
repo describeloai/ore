@@ -784,3 +784,75 @@ fn a_tree_function_is_called_from_sql() {
     // a DuckDB function without dots is still DuckDB's
     assert!(u("select upper(path) from ventas.contratos").is_empty());
 }
+
+/// 0049 B8: a collection from an `ObjectTable` —managed or `virtual`— is
+/// created from SQL, and `alter … set managed|virtual` is for one with an
+/// origin; each failure says why.
+#[test]
+fn a_collection_with_an_origin_from_sql() {
+    let t = arbol("origen");
+    escribe(
+        &t.0,
+        "packages/ventas/objecttables/docs_t.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: docs_t, namespace: ventas }\nspec:\n  datasource: pg\n  prefix: \"docs/\"\n  match: \"*.pdf\"\n  media: document\n  changes: { mode: retract, witness: listing }\n",
+    );
+    escribe(
+        &t.0,
+        "packages/ventas/collections/vdocs.yaml",
+        "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: { name: vdocs, namespace: ventas }\nspec:\n  owner: team:ventas\n  media: document\n  formats: [pdf]\n  from: { objectTable: ventas.default.docs_t }\n  virtual: true\n",
+    );
+    escribe(
+        &t.0,
+        "packages/ventas/collections/escrita.yaml",
+        "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: { name: escrita, namespace: ventas }\nspec:\n  owner: team:ventas\n  media: document\n  formats: [pdf]\n",
+    );
+    let (pkg, _) = ore_core::validate::cargar_paquete(&t.0);
+    let coteja = |q: &str| cotejar_guion(&pkg, &guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
+    // created from an object table, managed or virtual
+    assert_eq!(
+        coteja(
+            "create media collection ventas.mdocs media document formats (pdf) from object table ventas.docs_t"
+        ),
+        Vec::<Fallo>::new()
+    );
+    assert_eq!(
+        coteja(
+            "create media collection if not exists ventas.vdocs media document formats (pdf) from object table ventas.docs_t virtual"
+        ),
+        Vec::<Fallo>::new()
+    );
+    // and converted
+    assert_eq!(
+        coteja("alter media collection ventas.vdocs set managed"),
+        Vec::<Fallo>::new()
+    );
+    // what fails, and why
+    let uno = |q: &str, que: &str| {
+        let f = coteja(q);
+        assert!(f.len() == 1 && f[0].mensaje.contains(que), "{q}: {f:?}");
+    };
+    uno(
+        "create media collection ventas.x media document formats (pdf) from object table ventas.nada",
+        "no `ObjectTable` `ventas.nada`",
+    );
+    uno(
+        "create media collection ventas.x media document formats (pdf) from object table ventas.pedidos",
+        "a collection comes from an `ObjectTable`",
+    );
+    uno(
+        "create media collection ventas.escrita media document formats (pdf) from object table ventas.docs_t",
+        "is a written collection",
+    );
+    uno(
+        "alter media collection ventas.escrita set managed",
+        "has no origin",
+    );
+    uno(
+        "alter media collection ventas.pedidos set managed",
+        "not a collection",
+    );
+    uno(
+        "alter media collection ventas.nada set virtual",
+        "no collection `ventas.nada` in this branch",
+    );
+}

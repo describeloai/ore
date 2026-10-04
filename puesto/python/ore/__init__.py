@@ -107,6 +107,7 @@ API = 2
 
 __all__ = ["API", "over", "sql", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
+           "alter_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
            "collection", "Collection", "Item", "MediaRef", "read_many", "Transaction", "MediaError",
            "MediaNotFound", "MediaForbidden", "MediaChanged", "MediaCorrupt", "MediaRangeError",
@@ -1267,7 +1268,8 @@ def create_dataset(name, columns, key=None, if_not_exists=False):
 MEDIOS = ("document", "image", "audio", "video", "spreadsheet", "email")
 
 
-def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion):
+def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion, origen=None,
+                       en_sitio=False):
     base, ns, n = _partes(nombre)
     q = json.dumps  # un escalar de YAML entre comillas: el de JSON vale
     lineas = ["apiVersion: oos.dev/v1alpha19", "kind: MediaCollection", "metadata:",
@@ -1280,6 +1282,11 @@ def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, re
         lineas.append("  labels: { %s }" % ", ".join("%s: %s" % (k, v) for k, v in etiquetas.items()))
     lineas += ["spec:"] + _owner(dueno) + ["  media: %s" % media,
                                          "  formats: [%s]" % ", ".join(formatos)]
+    if origen:
+        # 0049 B8: managed (copied into the lake) or, `virtual`, served in place.
+        lineas.append("  from: { objectTable: %s }" % ".".join(_partes(origen)))
+        if en_sitio:
+            lineas.append("  virtual: true")
     if retencion:
         lineas.append("  retention: %s" % retencion)
     return "\n".join(lineas) + "\n"
@@ -1288,10 +1295,13 @@ def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, re
 @_kw({"nombre": "name", "formatos": "formats", "dueno": "owner", "comentario": "comment",
       "etiquetas": "labels", "retencion": "retention", "si_no_existe": "if_not_exists"})
 def create_collection(name, media, formats, owner=None, comment=None, labels=None,
-                      retention=None, if_not_exists=False):
+                      retention=None, if_not_exists=False, source=None, virtual=False):
     """`create media collection db.schema.c (media, formats)`: an empty
     **written** collection, which code fills with
-    `ore.collection(name).transaction()`.
+    `ore.collection(name).transaction()`. With `source` (an `ObjectTable`,
+    `db.schema.t`), its items come from there instead: **managed** (copied into
+    the lake when the branch is merged) or, with `virtual=True`, served in
+    place (0049 B8).
 
     `media` is one of `MEDIOS` (`document`, `image`, `audio`, `video`,
     `spreadsheet`, `email`); `formats`, the extensions it accepts (the first is
@@ -1320,8 +1330,45 @@ def create_collection(name, media, formats, owner=None, comment=None, labels=Non
         if si_no_existe:
             return _Result({"collection": nombre, "created": False})
         raise RuntimeError("%s: a collection with that name already exists (`if not exists` leaves it as it is)" % que)
-    _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion))
+    if virtual and not source:
+        raise ValueError("%s: `virtual` is for a collection with a `source`: a written one has no origin" % que)
+    _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion,
+                                         source, virtual))
     return _Result({"collection": nombre, "created": True})
+
+
+def alter_collection(name, managed=True):
+    """`alter media collection db.schema.c set managed` (`managed=False`: `set
+    virtual`), 0049 B8: a collection with an origin passes from served in
+    place to **copied into the lake** —the copy runs when the branch is
+    merged, as for any managed collection—, or back. Like Databricks' `ALTER
+    TABLE … SET MANAGED`. A written collection has no origin: `ValueError`.
+    Returns `{collection, status}`: `managed`, `virtual`, or `already …`."""
+    nombre = _corto(_nombre_de(name), "alter media collection: the name")
+    que = "alter media collection %s" % nombre
+    ruta = _ruta_de_vista(nombre, "MediaCollection")
+    c, doc = session.pedir("GET", ruta, plazo=60)
+    if c == 404:
+        raise LookupError("%s: there is no collection with that name in this branch" % que)
+    if c != 200:
+        raise RuntimeError("%s: %s (%s)" % (que, (doc or {}).get("error", "?"), c))
+    lineas = (doc or {}).get("yaml", "").split("\n")
+    desde = next((i for i, l in enumerate(lineas) if re.match(r"^  from:", l)), None)
+    if desde is None:
+        raise ValueError("%s: a written collection has no origin to serve in place or copy" % que)
+    en_sitio = [i for i, l in enumerate(lineas) if re.match(r"^  virtual:\s*true\s*$", l)]
+    estado = "managed" if managed else "virtual"
+    if bool(en_sitio) != managed:
+        return _Result({"collection": nombre, "status": "already " + estado})
+    if managed:
+        lineas = [l for i, l in enumerate(lineas) if i not in en_sitio]
+    else:
+        j = desde + 1
+        while j < len(lineas) and lineas[j].startswith("    "):
+            j += 1
+        lineas.insert(j, "  virtual: true")
+    _poner(que, ruta, "\n".join(lineas))
+    return _Result({"collection": nombre, "status": estado})
 
 
 # ── La vista (ADR 0040 paso 5) ─────────────────────────────────────────────

@@ -299,15 +299,31 @@ fn dice(s: &Sentencia) -> String {
             media,
             formatos,
             si_no_existe,
+            source,
+            is_virtual,
             ..
         } => format!(
-            "crea la colección escrita `{}` · {media} · {}{}",
+            "crea la colección {} `{}` · {media} · {}{}",
+            match (source, is_virtual) {
+                (None, _) => "escrita".to_string(),
+                (Some(t), true) => format!("virtual de `{}`", t.referencia()),
+                (Some(t), false) => format!("mantenida de `{}`", t.referencia()),
+            },
             destino.referencia(),
             formatos.join(", "),
             if *si_no_existe {
                 " · si no existe"
             } else {
                 ""
+            }
+        ),
+        Sentencia::AlterCollection { target, managed } => format!(
+            "la colección `{}` pasa a {}",
+            target.referencia(),
+            if *managed {
+                "mantenida (copiada al lago)"
+            } else {
+                "virtual (servida en el origen)"
             }
         ),
     }

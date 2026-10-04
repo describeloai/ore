@@ -155,7 +155,16 @@ pub enum Sentencia {
         formatos: Vec<String>,
         comentario: Option<String>,
         si_no_existe: bool,
+        /// 0049 B8: `from object table t`: a collection whose items come from
+        /// that `ObjectTable` —managed (copied into the lake) or, with
+        /// `virtual`, served in place—. Without it, a written collection.
+        source: Option<Nombre>,
+        is_virtual: bool,
     },
+    /// 0049 B8 · `alter media collection c set managed|virtual`: a collection
+    /// with an origin passes from served in place to copied into the lake, or
+    /// back (`ALTER TABLE … SET MANAGED`, in Databricks).
+    AlterCollection { target: Nombre, managed: bool },
 }
 
 impl Sentencia {
@@ -186,6 +195,7 @@ impl Sentencia {
             Self::CrearVista { .. } => "create view",
             Self::BorrarVista { .. } => "drop view",
             Self::CrearColeccion { .. } => "create media collection",
+            Self::AlterCollection { .. } => "alter media collection",
         }
     }
 }
@@ -403,6 +413,9 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     }
     let mut es_dataset = false;
     let mut texto = std::borrow::Cow::Borrowed(texto);
+    if es(&ts, 0, "alter") && es(&ts, 1, "media") && es(&ts, 2, "collection") {
+        return alter_collection(&ts, 3);
+    }
     if es(&ts, 0, "create") {
         let (clase, i) = if es(&ts, 1, "standard") {
             (Some(Clase::Standard), 2)
@@ -693,7 +706,9 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
     })
 }
 
-const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…> formats (pdf, …) [comment '…']`";
+const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…> formats (pdf, …) [from object table b.s.t [virtual]] [comment '…']`";
+const ALTER_COLLECTION: &str =
+    "`alter media collection base.schema.name set managed` (or `set virtual`)";
 
 /// `create media collection …` desde `i` (tras `collection`). Como `create
 /// volume` de Databricks, con lo que una colección necesita además: de qué
@@ -803,6 +818,32 @@ fn crear_coleccion(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<
             .ayuda(LA_COLECCION),
         );
     }
+    // 0049 B8 · from object table b.s.t [virtual]
+    let mut source = None;
+    let mut is_virtual = false;
+    if es(ts, i, "from") {
+        if !(es(ts, i + 1, "object") && es(ts, i + 2, "table")) {
+            return Err(vec![
+                Fallo::new(
+                    "a collection comes `from object table b.s.t`",
+                    pos_en(ts, i + 1),
+                )
+                .ayuda(LA_COLECCION),
+            ]);
+        }
+        let Some((partes, pos, j)) = nombre_en(ts, i + 3) else {
+            return Err(vec![
+                Fallo::new("the name of the object table is missing", pos_en(ts, i + 3))
+                    .ayuda(LA_COLECCION),
+            ]);
+        };
+        source = nombre_de(&partes, pos, &mut fallos);
+        i = j;
+        if es(ts, i, "virtual") {
+            is_virtual = true;
+            i += 1;
+        }
+    }
     // comment '…'
     let mut comentario = None;
     if es(ts, i, "comment") {
@@ -842,9 +883,46 @@ fn crear_coleccion(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<
             formatos,
             comentario,
             si_no_existe,
+            source,
+            is_virtual,
         },
         avisos,
     ))
+}
+
+/// `alter media collection …` from `i` (after `collection`): `set managed` or
+/// `set virtual`, and nothing else.
+fn alter_collection(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+    let Some((partes, pos, i)) = nombre_en(ts, i) else {
+        return Err(vec![
+            Fallo::new("the name of the collection is missing", pos_en(ts, i))
+                .ayuda(ALTER_COLLECTION),
+        ]);
+    };
+    let mut fallos = Vec::new();
+    let target = nombre_de(&partes, pos, &mut fallos);
+    let managed = if es(ts, i, "set") && es(ts, i + 1, "managed") {
+        true
+    } else if es(ts, i, "set") && es(ts, i + 1, "virtual") {
+        false
+    } else {
+        return Err(vec![
+            Fallo::new("`set managed` or `set virtual`", pos_en(ts, i)).ayuda(ALTER_COLLECTION),
+        ]);
+    };
+    if i + 2 < ts.len() {
+        fallos.push(sobra(ts, i + 2, ALTER_COLLECTION));
+    }
+    if !fallos.is_empty() {
+        return Err(fallos);
+    }
+    let target = target.expect("without failures there is a name");
+    let avisos = if target.dos_partes {
+        vec![Fallo::dos_partes(&target)]
+    } else {
+        Vec::new()
+    };
+    Ok((Sentencia::AlterCollection { target, managed }, avisos))
 }
 
 const LA_VISTA: &str = "`create [or replace] [materialized] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
@@ -1559,9 +1637,28 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
             Sentencia::CrearColeccion {
                 destino,
                 si_no_existe,
+                source,
                 ..
             } => {
                 let r = destino.referencia();
+                // 0049 B8: what it comes from is an `ObjectTable` of the tree.
+                if let Some(t) = source {
+                    let rt = t.referencia();
+                    match doc_de(pkg, &rt) {
+                        Some(d) if d.kind == Kind::ObjectTable => {}
+                        Some(d) => fallos.push(Fallo::new(
+                            format!(
+                                "`{rt}` is a `{:?}`: a collection comes from an `ObjectTable`",
+                                d.kind
+                            ),
+                            t.pos,
+                        )),
+                        None => fallos.push(
+                            Fallo::new(format!("there is no `ObjectTable` `{rt}`"), t.pos)
+                                .ayuda("the listing of an origin: a foreign database brings it"),
+                        ),
+                    }
+                }
                 let ya = || {
                     Fallo::new(format!("ya hay una colección `{r}`"), destino.pos).ayuda(format!(
                         "`create media collection if not exists {}`, si da igual que ya esté",
@@ -1590,13 +1687,22 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                     );
                 } else {
                     match doc_de(pkg, &r) {
-                        Some(d) if d.kind == Kind::MediaCollection && d.section("from").is_none() => {
+                        Some(d)
+                            if d.kind == Kind::MediaCollection
+                                && d.section("from").is_none() == source.is_none() =>
+                        {
                             if !si_no_existe {
                                 fallos.push(ya());
                             }
                         }
+                        Some(d) if d.kind == Kind::MediaCollection && source.is_none() => {
+                            fallos.push(Fallo::new(
+                                format!("`{r}` es una colección mantenida: la llena su `from`"),
+                                destino.pos,
+                            ))
+                        }
                         Some(d) if d.kind == Kind::MediaCollection => fallos.push(Fallo::new(
-                            format!("`{r}` es una colección mantenida: la llena su `from`"),
+                            format!("`{r}` is a written collection: it has no origin to come from"),
                             destino.pos,
                         )),
                         // v1alpha14: en un schema un nombre es una cosa.
@@ -1615,6 +1721,28 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                     }
                 }
                 creado.colecciones.insert(r);
+            }
+            // 0049 B8: a collection with an origin, in the tree.
+            Sentencia::AlterCollection { target, .. } => {
+                let r = target.referencia();
+                match doc_de(pkg, &r) {
+                    Some(d) if d.kind == Kind::MediaCollection && d.section("from").is_some() => {}
+                    Some(d) if d.kind == Kind::MediaCollection => fallos.push(
+                        Fallo::new(
+                            format!("`{r}` is a written collection: it has no origin to serve in place or copy"),
+                            target.pos,
+                        )
+                        .ayuda("`set managed` and `set virtual` are for a collection `from object table …`"),
+                    ),
+                    Some(d) => fallos.push(Fallo::new(
+                        format!("`{r}` is a `{:?}`, not a collection", d.kind),
+                        target.pos,
+                    )),
+                    None => fallos.push(Fallo::new(
+                        format!("there is no collection `{r}` in this branch"),
+                        target.pos,
+                    )),
+                }
             }
         }
     }
@@ -1643,6 +1771,58 @@ SELECT * FROM ventas.demo_uc.clientes;
 ";
 
     /// B4·4 · `create media collection`: la frase, sus partes y sus fallos.
+    /// 0049 B8: a collection from an object table —managed, or `virtual`—, and
+    /// `alter … set managed|virtual`.
+    #[test]
+    fn a_collection_from_an_object_table_and_alter_set_managed() {
+        let t = trozos(
+            "create media collection legal.archivo.c media document formats (pdf) from object table s3.docs.t virtual comment 'x';
+             alter media collection legal.archivo.c set managed;
+             alter media collection legal.archivo.c set virtual",
+        );
+        match &t[0].sentencia {
+            Sentencia::CrearColeccion {
+                source,
+                is_virtual,
+                comentario,
+                ..
+            } => {
+                assert_eq!(
+                    source.as_ref().map(|n| n.referencia()).as_deref(),
+                    Some("s3.docs.t")
+                );
+                assert!(*is_virtual && comentario.as_deref() == Some("x"));
+            }
+            s => panic!("{s:?}"),
+        }
+        assert_eq!(t[1].sentencia.que(), "alter media collection");
+        assert!(matches!(
+            &t[1].sentencia,
+            Sentencia::AlterCollection { managed: true, .. }
+        ));
+        assert!(matches!(
+            &t[2].sentencia,
+            Sentencia::AlterCollection { managed: false, .. }
+        ));
+        for (q, dice) in [
+            (
+                "alter media collection legal.archivo.c set external",
+                "`set managed` or `set virtual`",
+            ),
+            (
+                "alter media collection legal.archivo.c set managed now",
+                "sobra",
+            ),
+            (
+                "create media collection legal.archivo.c media document formats (pdf) from s3.docs.t",
+                "from object table",
+            ),
+        ] {
+            let f = guion(q).expect_err(q);
+            assert!(f.iter().any(|x| x.mensaje.contains(dice)), "{q}: {f:?}");
+        }
+    }
+
     #[test]
     fn la_coleccion_se_crea_con_su_medio_y_sus_formatos() {
         let t = trozos(
@@ -1656,7 +1836,10 @@ SELECT * FROM ventas.demo_uc.clientes;
                 formatos,
                 comentario,
                 si_no_existe,
+                source,
+                is_virtual,
             } => {
+                assert!(source.is_none() && !is_virtual);
                 assert_eq!(destino.referencia(), "legal.archivo.paginas");
                 assert_eq!(media, "image");
                 assert_eq!(formatos, &["png", "jpg", "tar.gz"]);

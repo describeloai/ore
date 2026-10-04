@@ -3288,16 +3288,33 @@ fn celda_de_sentencia(
             formatos,
             comentario,
             si_no_existe,
+            source,
+            is_virtual,
         } => format!(
             "from ore import create_collection, _resultado_de_crear\n\n\
-             _hecho = create_collection({}, {}, {}, comment={}, if_not_exists={})\n\
+             _hecho = create_collection({}, {}, {}, comment={}, if_not_exists={}{})\n\
              print(\"%s · media collection · %s\" % (_hecho[\"collection\"], \"created\" if _hecho[\"created\"] else \"already exists\"))\n\
              _resultado_de_crear(\"media collection \" + _hecho[\"collection\"], _hecho[\"created\"])\n",
             c(&destino.referencia()),
             c(media),
             Json::Arr(formatos.iter().map(Json::s).collect()).jcs(),
             comentario.as_deref().map_or("None".to_string(), c),
-            si(*si_no_existe)
+            si(*si_no_existe),
+            // 0049 B8: from an object table, managed or virtual.
+            source.as_ref().map_or(String::new(), |t| format!(
+                ", source={}, virtual={}",
+                c(&t.referencia()),
+                si(*is_virtual)
+            ))
+        ),
+        // 0049 B8: served in place ↔ copied into the lake.
+        S::AlterCollection { target, managed } => format!(
+            "from ore import alter_collection, _resultado_de_crear\n\n\
+             _hecho = alter_collection({}, managed={})\n\
+             print(\"%s · media collection · %s\" % (_hecho[\"collection\"], _hecho[\"status\"]))\n\
+             _resultado_de_crear(\"media collection \" + _hecho[\"collection\"], _hecho[\"status\"])\n",
+            c(&target.referencia()),
+            si(*managed)
         ),
         S::BorrarVista { destino, si_existe } => format!(
             "from ore import drop_view, _resultado_de_crear\n\n\
@@ -4096,6 +4113,19 @@ mod prueba {
             c.contains("create_collection(\"ventas.demo.docs\", \"document\", [\"pdf\"], comment=\"x\", if_not_exists=True)"),
             "{c}"
         );
+        // 0049 B8: from an object table, and served in place ↔ managed
+        let (c, _) = celda(
+            "create media collection ventas.demo.v media document formats (pdf) from object table s3.docs.t virtual",
+        );
+        assert!(
+            c.contains("if_not_exists=False, source=\"s3.docs.t\", virtual=True)"),
+            "{c}"
+        );
+        let (c, _) = celda("alter media collection ventas.demo.v set managed");
+        assert!(
+            c.contains("alter_collection(\"ventas.demo.v\", managed=True)"),
+            "{c}"
+        );
     }
 
     /// ⭐ S3 · EL CÓDIGO QUE ORE GENERA CASA CON EL SDK. Cada forma que se
@@ -4125,6 +4155,8 @@ mod prueba {
             "create materialized view ventas.m as select 1 as a",
             "drop view if exists ventas.v",
             "create media collection if not exists ventas.demo.docs media document formats (pdf) comment 'x'",
+            "create media collection ventas.demo.vdocs media document formats (pdf) from object table s3.docs.t virtual",
+            "alter media collection ventas.demo.vdocs set managed",
             "insert into ventas.x (a) values (1)",
             "insert into ventas.x select 1, 2",
             "insert or replace into ventas.x select 1 as a",
@@ -4147,7 +4179,7 @@ mod prueba {
             "90-anclada".into(),
             celda_de_unidad("x.sql", &u, Some("ventas.docs")).0,
         ));
-        assert!(corpus.len() >= 13, "{}", corpus.len());
+        assert!(corpus.len() >= 15, "{}", corpus.len());
         let sdk = include_str!("../../../puesto/python/ore/__init__.py");
         // Lo que el SDK exporta: su `__all__` (lo público) y sus `def` del
         // primer nivel (los `_resultado_de_*` que sólo usa el código generado).

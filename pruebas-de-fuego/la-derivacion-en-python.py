@@ -21,6 +21,7 @@ CLI (`una_tabla_anclada_declara_su_coleccion_y_su_carga`) y en vivo (B5·3).
   14  la colección como relación de `sql()` (B7·1): una fila por ítem, sin leer bytes
   15  funciones del árbol en SQL (B7·2): de tabla en un lateral, escalar, con su contrato
   16  un dataset desde una colección en SQL (B7·3): ítem a ítem por apply(), anclado
+  17  B8: set managed|virtual, y una colección con origen desde el SDK
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-derivacion-en-python.py
 """
@@ -409,7 +410,51 @@ def pd_res(t):
     return {k: v[0] for k, v in t.to_pydict().items()}
 
 
-for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16], 1):
+def e17():
+    """B8: `alter media collection … set managed|virtual` y `create … from
+    object table`: el documento que el SDK escribe, y lo que dice."""
+    doc = {"yaml": "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata:\n  name: c\n"
+                   "  namespace: legal\n  schema: archivo\nspec:\n  owner: team:legal\n  media: document\n"
+                   "  formats: [pdf]\n  from:\n    objectTable: s3.docs.t\n  virtual: true\n  retention: 30d\n"}
+    puestos = []
+
+    def pedir(metodo, ruta, cuerpo=None, **_):
+        if metodo == "GET":
+            return (200, doc) if ruta.endswith("/c") else (404, {"error": "no"})
+        puestos.append(cuerpo["yaml"])
+        doc["yaml"] = cuerpo["yaml"]
+        return 200, {}
+
+    antes = ore.session.pedir
+    ore.session.pedir = pedir
+    try:
+        r = ore.alter_collection("legal.archivo.c", managed=True)
+        assert r == {"collection": "legal.archivo.c", "status": "managed"}, r
+        assert "virtual" not in puestos[-1] and "objectTable: s3.docs.t" in puestos[-1], puestos[-1]
+        assert ore.alter_collection("legal.archivo.c")["status"] == "already managed" and len(puestos) == 1
+        r = ore.alter_collection("legal.archivo.c", managed=False)
+        lineas = puestos[-1].split("\n")
+        i = lineas.index("  virtual: true")
+        assert r["status"] == "virtual" and lineas[i - 1] == "    objectTable: s3.docs.t", lineas
+        assert lineas[i + 1] == "  retention: 30d", lineas
+        try:
+            ore.alter_collection("legal.archivo.nada")
+            raise AssertionError("no existe")
+        except LookupError as e:
+            assert "in this branch" in str(e), e
+        r = ore.create_collection("legal.archivo.nueva", "document", ["pdf"], source="s3.docs.t", virtual=True)
+        assert r["created"] and "  from: { objectTable: s3.docs.t }\n  virtual: true" in puestos[-1], puestos[-1]
+        try:
+            ore.create_collection("legal.archivo.otra", "document", ["pdf"], virtual=True)
+            raise AssertionError("virtual sin origen")
+        except ValueError as e:
+            assert "no origin" in str(e), e
+    finally:
+        ore.session.pedir = antes
+    bien("17 · B8: `set managed` quita `virtual` (otra vez: already managed, sin escribir), `set virtual` lo "
+         "pone tras su `from`; `create … from object table … virtual` escribe su origen; sin origen, no")
+
+for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17], 1):
     caso(n, f)
 celda.shutdown()
 medios_.shutdown()
