@@ -1,7 +1,7 @@
 # 0053 · ORE Federation Engine
 
-**Estado:** **aceptado** (2026-10-04) · F0 medido · F1 en curso (spec
-[v1alpha23 `01-leer-el-origen`](../../vendor/oos/spec/v1alpha23/01-leer-el-origen.md)) · **Decide:** **leer el origen es un producto**, y
+**Estado:** **aceptado** (2026-10-04) · F0 medido · F1·1–F1·4 hechos (spec
+[v1alpha24 `01-leer-el-origen`](../../vendor/oos/spec/v1alpha24/01-leer-el-origen.md)) · **Decide:** **leer el origen es un producto**, y
 uno solo: el ORE Federation Engine es la única vía por la que una celda lee un origen —consultarlo
 en vivo desde SQL, describirlo, catalogarlo, comprobarlo y copiarlo—, con sus conectores, sus
 conexiones, su contrato de petición, su reparto del plan entre el origen y el motor, su protección
@@ -142,13 +142,13 @@ lo que dura (copiar, catalogar), pero **leen por el motor**, no lanzando un cone
 
 | | decisión | por qué |
 |---|---|---|
-| el conducto | **`federation.read`**, una clase propia (OOS v1alpha23 §2) | copiar y leer en vivo dejan cosas distintas: una copia queda, una lectura se usa y no queda; son dos autorizaciones |
+| el conducto | **`federation.read`**, una clase propia (OOS v1alpha24 §2) | copiar y leer en vivo dejan cosas distintas: una copia queda, una lectura se usa y no queda; son dos autorizaciones |
 | la credencial | **la trae `ore-serve`** del custodio y se la pasa a la pasarela en cada petición | la pasarela no guarda estado ni habla con el custodio; la autorización se decide en un sitio |
 | tope por lectura en vivo | **100 000 filas o 64 MB**, lo primero que llegue | más es una copia; M3: 10⁶ filas en texto = 128 MB y 551 MB de memoria |
 | tiempo máximo por petición | **30 s** | M2: una tabla de 2·10⁶ filas tardó ~117 s y nada la paró |
 | concurrencia por origen | **4, con cola**, configurable por fuente | M3: 50 a la vez y 7 fallan con «too many clients»; es la base de un cliente |
 | las vistas de una base foránea | **legibles en vivo por defecto**, con `federation.read` autorizado | son la cara de una base foránea; hoy nadie puede leerlas |
-| el coste declarado | `forbidden` → `OOS2044`, falta un `requiredFilter` → `OOS2045`, `expensive` sin filtro ni límite → `OOS2046`, al planificar | v1alpha23 §4: lo empujado es lo que protege al origen |
+| el coste declarado | `forbidden` sin filtro empujado → `OOS2044`, falta un `requiredFilter` empujado → `OOS2045`, al planificar; **`expensive` se lee con un presupuesto** (filas o bytes y tiempo) que la corta si lo supera, estimado antes cuando el origen lo permite | v1alpha24 §4. Lo que el dueño exige es error (el `require_partition_filter` de BigQuery, el `always_filter` de Looker); lo caro es presupuesto (`maximum_bytes_billed`, el *workgroup* de Athena, `max-scan-physical-bytes` de Trino). Un `LIMIT` no protege al origen: en BigQuery ni reduce lo cobrado |
 
 **No es del Federation Engine:** escribir el lago (la copia y `ore-store`), servir la ontología
 (se sirve de copias), ni ser el motor SQL (DuckDB).

@@ -157,6 +157,12 @@ pub enum ApiVersion {
     /// documento se deriva leyendo, como el de un `@function` de Python. Lo
     /// pidió ORE 0050 R3 (2026-10-03).
     V1Alpha23,
+    /// v1alpha24. **Leer el origen.** El conducto `federation.read`: una
+    /// lectura en vivo de una `Table` —y una vista de esta versión que la lee—
+    /// lo atraviesa; `fullScan: forbidden` y `requiredFilters` se aplican al
+    /// planificar (`OOS2044`, `OOS2045`) y `expensive` se lee con presupuesto.
+    /// Sin claves nuevas. Lo pidió ORE 0053 «ORE Federation Engine» (2026-10-04).
+    V1Alpha24,
 }
 
 impl ApiVersion {
@@ -182,6 +188,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha21,
         ApiVersion::V1Alpha22,
         ApiVersion::V1Alpha23,
+        ApiVersion::V1Alpha24,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -207,6 +214,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha21 => "oos.dev/v1alpha21",
             ApiVersion::V1Alpha22 => "oos.dev/v1alpha22",
             ApiVersion::V1Alpha23 => "oos.dev/v1alpha23",
+            ApiVersion::V1Alpha24 => "oos.dev/v1alpha24",
         }
     }
 

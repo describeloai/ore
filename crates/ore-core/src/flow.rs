@@ -16,7 +16,7 @@
 
 use crate::code::Code;
 use crate::diag::Diagnostic;
-use crate::document::Kind;
+use crate::document::{ApiVersion, Kind};
 use crate::link::{Loaded, Package};
 use crate::parse::Node;
 use std::collections::{BTreeMap, BTreeSet};
@@ -254,6 +254,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let conductos = clearances(pkg, &lat);
     colecciones(pkg, &lat, &efectivas, &conductos, &mut out);
     vistas_materializadas(pkg, &lat, &efectivas, &conductos, &mut out);
+    vistas_en_vivo(pkg, &lat, &efectivas, &conductos, &mut out);
     canal_lateral(pkg, &lat, &efectivas, &mut out);
     indices_de_topologia(pkg, &lat, &efectivas, &conductos, &mut out);
 
@@ -637,6 +638,96 @@ fn vistas_materializadas(
                      sus campos aunque quien los clasificó sea una entidad tres vistas \
                      más arriba. Quita el campo de la vista, eleva la autorización del \
                      conducto donde se decide eso, o no materialices",
+                ),
+            );
+        }
+    }
+}
+
+// ── v1alpha24 · leer el origen ──────────────────────────────────────────────
+
+/// El conducto de la lectura en vivo de un origen (v1alpha24 `01` §2).
+pub const CONDUCTO_DEL_ORIGEN: &str = "federation.read";
+
+/// ¿Lee esta vista una `Table` —un origen— sin una copia por medio? Sigue la
+/// cadena de lo que lee directamente: una vista sigue, un dataset es el lago y
+/// corta, una tabla es el origen.
+fn lee_el_origen(pkg: &Package, v: &Loaded) -> bool {
+    let mut vistos = std::collections::BTreeSet::new();
+    let mut pendientes = vec![v];
+    while let Some(x) = pendientes.pop() {
+        if !vistos.insert(x.qname().unwrap_or_default()) {
+            continue;
+        }
+        for y in crate::vistas::lee_directo(pkg, x) {
+            match y.kind {
+                Kind::Table => return true,
+                Kind::View => pendientes.push(y),
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// **Una vista de v1alpha24 sobre una `Table`** (v1alpha24 `01` §5): cualquiera
+/// puede leerla en vivo, y compilar no sabe quién, así que `federation.read`
+/// tiene que estar autorizado (`OOS4011`) y admitir lo que la vista expone
+/// (`OOS4002`, `OOS4001`). Las de versiones anteriores siguen compilando: el
+/// conducto se pide al leerlas.
+fn vistas_en_vivo(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    conductos: &BTreeMap<String, Labels>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let conducto = CONDUCTO_DEL_ORIGEN;
+    for v in pkg.of(Kind::View) {
+        if v.version().is_none_or(|x| x < ApiVersion::V1Alpha24) || !lee_el_origen(pkg, v) {
+            continue;
+        }
+        let donde = v
+            .section("sql")
+            .or_else(|| v.section("from"))
+            .map(|n| n.pos())
+            .unwrap_or(crate::diag::Pos { line: 1, col: 1 });
+        let vqn = v.qname().unwrap_or_default();
+        let Some(autorizacion) = conductos.get(conducto) else {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos4011,
+                    &v.path,
+                    format!(
+                        "`{vqn}` lee un origen en vivo y el conducto `{conducto}` no tiene autorización declarada"
+                    ),
+                )
+                .at(donde)
+                .help(format!(
+                    "una vista sobre una `Table` se lee donde está, y eso atraviesa `{conducto}`: sin autorización es ⊥. Declara `{conducto}` en la política de conductos, o lee una copia de la tabla"
+                )),
+            );
+            continue;
+        };
+        let por_campo = carga_de(pkg, lat, efectivas, v);
+        for f in fugas(lat, Some(autorizacion), &por_campo) {
+            let (code, como) = match f.origen {
+                Origin::Computed => (Code::Oos4001, "computada por join"),
+                Origin::Declared => (Code::Oos4002, "declarada"),
+                Origin::Inherited => (Code::Oos4002, "heredada"),
+            };
+            out.push(
+                Diagnostic::new(
+                    code,
+                    &v.path,
+                    format!(
+                        "`{vqn}.{}` lleva `{}:{}` ({como}) y `{conducto}` solo admite `{}:{}`",
+                        f.campo, f.reticulo, f.nivel, f.reticulo, f.permitido
+                    ),
+                )
+                .at(donde)
+                .help(
+                    "leer el origen en vivo trae lo que la vista expone: quita el campo de la vista, eleva la autorización del conducto donde se decide eso, o lee una copia",
                 ),
             );
         }
