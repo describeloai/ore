@@ -451,14 +451,29 @@ function decimal(c: bigint): string {
 "##;
 
 /// Dónde declara un repositorio de TypeScript sus paquetes de npm (0050 R3
-/// T5b): `dependencies`, y nada más se honra. Vacío: sin capa, y se ve dónde.
+/// T5b): `dependencies` y —L3·1— `devDependencies`, y nada más se honra.
+///
+/// ⭐ L6·1b (v5): nace declarando su SDK y sus herramientas, con la versión
+///   exacta que trae la sesión —como un repositorio de Foundry declara su
+///   `functions-api`—: el repositorio dice con qué trabaja. No cuesta nada:
+///   todo eso lo trae la imagen (`puesto/node/provisto.txt`, un test lo
+///   compara), y lo declarado que la imagen trae no pide capa
+///   (`entorno::solo_provistas` en ore-serve). Lo que el SDK usa por dentro
+///   (`@duckdb/node-api`) y el servidor de lenguaje no se declaran: no son del
+///   cliente.
 const PACKAGE_JSON_TS: &str = r##"{
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test"
   },
-  "dependencies": {}
+  "dependencies": {
+    "ore": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3"
+  }
 }
 "##;
 
@@ -657,9 +672,11 @@ it takes a minute) and commits the exact versions it installed as
 reproduces it anywhere. It is rewritten on every resolution; don't edit it.
 Good to know:
 
-- `ore` (this SDK) and `@duckdb/node-api` come with the platform, and so do
-  `typescript` (5.9), its language server and `@types/node` (the Node that
-  runs, 24); don't declare them.
+- `package.json` already declares what the session brings: `ore` (this SDK),
+  `typescript` and `@types/node` (the Node that runs, 24), at the exact versions
+  the session has. They install nothing: a repository that declares only these
+  opens its session without a layer. The session's version is always the one
+  used; a different one only warns, and the Libraries panel shows both.
 - `dependencies` is what your functions run with. `devDependencies` (types such
   as `@types/lodash`) are resolved together with them, in the same lock, but
   apart: they type your code and never reach the runtime.
@@ -865,7 +882,11 @@ pub const CLASES: &[Clase] = &[
         // 4: el repositorio entero (L1): sus pruebas (`node --test`), el
         //    `tsconfig.json` de lo que Node corre, `.gitignore`, y la guía en
         //    la prosa del manifiesto.
-        version: 4,
+        // 5: el `package.json` declara el SDK y las herramientas (`ore`,
+        //    `typescript`, `@types/node`) con las versiones de la sesión (L6·1b).
+        //    Actualizar lo PROPONE con su diff: quien ya declaró paquetes ve
+        //    qué cambiaría antes de fusionar.
+        version: 5,
         semilla: &[
             ("package.json", PACKAGE_JSON_TS),
             ("tsconfig.json", TSCONFIG_TS),
@@ -1037,6 +1058,34 @@ spec:
     /// R3 T6: la semilla de TypeScript es una función de verdad —se deriva, y
     /// donde nace, el commit que la crea escribe su documento—, con un nombre
     /// único en el paquete en su fichero.
+    /// L6·1b: lo que la semilla v5 declara es exactamente lo que trae la
+    /// imagen de Node, a la misma versión. Si la imagen cambia y la semilla
+    /// no, aquí falla: un repositorio nuevo nacería avisando.
+    #[test]
+    fn la_semilla_de_typescript_declara_lo_que_trae_la_sesion() {
+        let trae: Vec<(&str, &str)> = include_str!("../../../puesto/node/provisto.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| {
+                let nv = l.split_whitespace().next()?;
+                let i = nv.rfind('@').filter(|i| *i > 0)?;
+                Some((&nv[..i], &nv[i + 1..]))
+            })
+            .collect();
+        let n = crate::parse::parse(PACKAGE_JSON_TS).unwrap();
+        let mut vistas = 0;
+        for campo in ["dependencies", "devDependencies"] {
+            let (_, deps) = n.get(campo).unwrap_or_else(|| panic!("{campo}"));
+            for (k, v) in deps.entries() {
+                let (nombre, v) = (k.as_str().unwrap(), v.as_str().unwrap());
+                assert!(trae.contains(&(nombre, v)), "{nombre}@{v} no es lo que trae la sesión: {trae:?}");
+                vistas += 1;
+            }
+        }
+        assert_eq!(vistas, 3);
+    }
+
     #[test]
     fn la_semilla_de_typescript_es_una_funcion() {
         let c = de("functions-typescript").unwrap();
