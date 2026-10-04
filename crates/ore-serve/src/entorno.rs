@@ -595,9 +595,81 @@ pub(crate) struct Entorno {
     pub estado: &'static str,
 }
 
+/// ⭐ ORE 0050 L6·1b · ¿Todo lo declarado lo trae ya la imagen? Entonces no
+/// hay nada que resolver, y `Some(avisos)`: los de versión, con la misma frase
+/// que la capa diría (gana la de la sesión). Una semilla que declara su SDK y
+/// sus herramientas —como hace Foundry— no puede costar un Job de un minuto
+/// para no instalar nada, ni una capa vacía que bajar.
+///
+/// El nombre decide; la versión sólo avisa (manda el contenedor, como en la
+/// capa). Lo que no se sabe comparar —un rango de PEP 508 que no es `==`— no
+/// avisa: la capa tampoco lo diría sin resolver.
+pub(crate) fn solo_provistas(declarado: &[String], entorno: &str) -> Option<Vec<String>> {
+    let trae = provistas_de(entorno);
+    let normal = |n: &str| -> String {
+        if entorno == PYTHON {
+            let mut o = String::new();
+            for c in n.trim().to_lowercase().chars() {
+                let c = if matches!(c, '_' | '.') { '-' } else { c };
+                if !(c == '-' && o.ends_with('-')) {
+                    o.push(c);
+                }
+            }
+            o
+        } else {
+            n.trim().to_string()
+        }
+    };
+    let mut avisos = Vec::new();
+    for d in declarado {
+        // (nombre, lo pedido si es una versión exacta comparable)
+        let (n, pedido): (String, Option<String>) = match entorno {
+            NODE => {
+                let d = d.strip_prefix(DEV).unwrap_or(d);
+                match d.rfind('@').filter(|i| *i > 0) {
+                    Some(i) => (d[..i].to_string(), Some(d[i + 1..].to_string()).filter(|r| r != "*")),
+                    None => (d.to_string(), None),
+                }
+            }
+            JVM => {
+                let p: Vec<&str> = d.split(':').collect();
+                (p.iter().take(2).copied().collect::<Vec<_>>().join(":"), p.get(2).map(|v| v.to_string()))
+            }
+            _ => {
+                let corte = d.find(|c: char| "<>=!~;[ ".contains(c)).unwrap_or(d.len());
+                let resto = d[corte..].trim();
+                (d[..corte].to_string(), resto.strip_prefix("==").map(|v| v.trim().to_string()))
+            }
+        };
+        let p = trae.iter().find(|p| normal(&p.nombre) == normal(&n))?;
+        if let Some(v) = pedido
+            && v != p.version
+        {
+            avisos.push(format!("pediste {n} {v}, y esta sesión trae la {}: se usa la de la sesión", p.version));
+        }
+    }
+    Some(avisos)
+}
+
 /// El entorno de un alcance (0036 ③): su declaración, su digest y su informe.
 pub(crate) fn entorno_de_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -> Entorno {
     let declarado = declaracion_en(raiz, alcance, entorno);
+    // L6·1b: lo declarado es todo de la imagen → `lista`, SIN digest (sin capa:
+    //   el puesto nace como si no se declarara nada) y un informe que sólo
+    //   lleva los avisos de versión.
+    if !declarado.is_empty()
+        && let Some(avisos) = solo_provistas(&declarado, entorno)
+    {
+        return Entorno {
+            declarado,
+            digest: String::new(),
+            informe: Some(Json::obj([
+                ("estado", Json::s("lista")),
+                ("avisos", Json::Arr(avisos.iter().map(Json::s).collect())),
+            ])),
+            estado: "lista",
+        };
+    }
     let digest = digest_de(&declarado, entorno);
     let informe = informe_de(raiz, &digest);
     let campo = |k: &str| match &informe {
@@ -836,6 +908,41 @@ mod prueba {
         assert!(jvm.iter().any(|p| p.nombre == "org.apache.arrow:arrow-vector" && p.version == "19.0.0"), "{jvm:?}");
         assert!(jvm.iter().any(|p| p.nombre == "com.fasterxml.jackson.core:jackson-databind"));
         assert_eq!(jvm.last().map(|p| p.nombre.as_str()), Some("org.duckdb:duckdb_jdbc"));
+    }
+
+    #[test]
+    fn lo_declarado_que_trae_la_imagen_no_pide_capa() {
+        // Node: el SDK y las herramientas de la semilla v5; una versión que no
+        // es la de la sesión, sólo avisa.
+        let d = vec!["ore@1.0.0".to_string(), "dev:@types/node@24.19.1".into(), "dev:typescript@5.4.5".into()];
+        let a = solo_provistas(&d, NODE).expect("todo de la imagen");
+        assert_eq!(a, vec!["pediste typescript 5.4.5, y esta sesión trae la 5.9.3: se usa la de la sesión".to_string()]);
+        // Con una sola que no trae, hay capa.
+        assert_eq!(solo_provistas(&[d[0].clone(), "lodash@^4".into()], NODE), None);
+        // Python: PEP 503 en el nombre; un rango no avisa, un `==` distinto sí.
+        assert_eq!(solo_provistas(&["Pandas>=2".into(), "google_cloud_storage".into()], PYTHON), Some(vec![]));
+        assert_eq!(solo_provistas(&["pandas==1.0".into()], PYTHON).map(|a| a.len()), Some(1));
+        assert_eq!(solo_provistas(&["polars".into()], PYTHON), None);
+        // JVM: `g:a` decide.
+        assert_eq!(solo_provistas(&["org.apache.arrow:arrow-vector:19.0.0".into()], JVM), Some(vec![]));
+        assert_eq!(solo_provistas(&["com.google.guava:guava:33.0.0-jre".into()], JVM), None);
+
+        // Y el entorno: `lista`, sin digest (sin capa), con los avisos.
+        let r = std::env::temp_dir().join(format!("ore-provistas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        std::fs::create_dir_all(r.join("packages/p/f")).unwrap();
+        std::fs::write(
+            r.join("packages/p/f/package.json"),
+            r#"{"dependencies":{"ore":"1.0.0"},"devDependencies":{"typescript":"5.9.3","@types/node":"24.19.1"}}"#,
+        )
+        .unwrap();
+        let e = entorno_de_en(&r, Some("packages/p/f"), NODE);
+        assert_eq!((e.estado, e.digest.as_str(), e.declarado.len()), ("lista", "", 3));
+        std::fs::write(r.join("packages/p/f/package.json"), r#"{"dependencies":{"ore":"1.0.0","lodash":"^4"}}"#).unwrap();
+        let e = entorno_de_en(&r, Some("packages/p/f"), NODE);
+        assert_eq!(e.estado, "pendiente");
+        assert!(e.digest.starts_with("capa-"), "{}", e.digest);
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[test]
