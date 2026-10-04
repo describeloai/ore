@@ -189,7 +189,7 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 |---|---|---|
 | **F0** · medir | M1 red (✓ hecho, arriba) · M2 en el clúster: un trabajo de medida con rol `driver` —arranque en frío y en caliente, primera fila, filtrado frente a entero, contra Neon y BigQuery— · M3 en local: el conector de Postgres contra el Postgres de pruebas —lo que cuesta cada petición, lo que ahorra empujar filtros y `limit`, texto frente a Arrow, concurrencia | las cifras que fijan cotas y diseño |
 | **F1** · el contrato | este ADR aceptado; en OOS: el conducto de lectura en vivo, lo que un conector declara (capacidades), los códigos nuevos; el contrato de petición v2 escrito | spec + ADR |
-| **F2** · los conectores v2 | Postgres (Arrow, operadores, `limit`, `statement_timeout`, sólo lectura) y BigQuery (operadores, `limit`, Storage Read con `row_restriction`); el **kit de conformidad** | dos conectores que lo pasan |
+| **F2** · los conectores v2 | Postgres (Arrow, operadores, `limit`, `statement_timeout`, sólo lectura), BigQuery (operadores, `limit`, Storage Read con `row_restriction`) y **S3 con tablas de ficheros** (descarte por partición y por estadísticas, operadores sobre las filas, `limit`); el **kit de conformidad** | tres conectores que lo pasan |
 | **F3** · la pasarela | `ore-federation` por celda: rol `driver`, NetworkPolicy, conectores calientes, flujo Arrow, salud; cotas por origen | servicio en la malla (binario antes que malla) |
 | **F4** · el coordinador | en `ore-serve`: la lectura federada —conducto, acceso (A8), credencial, anotación, tope—, en la rama | ruta + prueba de fuego |
 | **F5** · el reparto | en `ore-core`: columnas, predicados y `limit` por relación; `explain` | biblioteca + tests |
@@ -198,12 +198,31 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 | **F8** · una vía | catálogo, comprobación y explorar por la pasarela; ningún camino lanza un conector por su cuenta | una sola vía |
 | **F9** · más allá | `ObjectTable` en el `FROM`; agregados y juntas empujados donde se declaren; Flight SQL para motores de fuera (Spark, BI) | |
 
+### F2 en hitos
+
+| hito | qué | sale |
+|---|---|---|
+| **F2·0** · la base común | la petición v2 en `ore-driver` (filtros con valor, lista o ninguno; `limit`, `orderBy`, `timeoutMs`, `id`); los diez operadores, `ORDER BY … NULLS LAST` y `LIMIT` en `ore-sql`; los errores tipados y `tapar`; `capacidades` y su comprobación; el bucle de `servir` con su marco en trozos y las conexiones por `url` | ✓ sin cambiar lo que sirve ningún conector: una petición v1 se lee igual |
+| **F2·1** · el kit | `ore-conector-kit`: los 14 casos contra `kit.tipos` y `kit.grande` (10⁶ filas); Postgres y MinIO como servicios del CI, BigQuery con respuestas grabadas | la línea de base de los v1, en rojo |
+| **F2·2** · Postgres v2 | Arrow en flujo, operadores, `limit`, `orderBy`, `statement_timeout`, cancelar, `servir`, `estimar` (`EXPLAIN`) | 14/14 y M3 repetida |
+| **F2·3** · BigQuery v2 | operadores a `row_restriction`, `limit` en la Storage Read, `orderBy` por consulta, REST también en Arrow, `jobs.cancel`, `estimar` (*dry run*), `maximumBytesBilled` | 14/14 y M2 repetida; una pasada real |
+| **F2·4** · S3 v2 | descarte por partición y por estadísticas de Parquet, operadores sobre filas, `limit`, `estimar` por el listado; `orderBy: false` | 14/14 o justificado en `capacidades` |
+| **F2·5** · cierre | el kit en el CI; las copias en vivo de test6 dan las mismas filas y huella con los v2 | F2 cerrado |
+
+**Lo que F2·0 destapó.** `ore-sql` y el lector de JSONL traducían todo operador que no fuera `gt`
+como una igualdad: con dos operadores no se notaba, con diez un `in` habría contestado otra cosa
+sin fallar. Ahora cada operador tiene su forma y ninguno va por defecto, y un conector rechaza con
+`operador` lo que no declaró (`Capacidades::admite`). Y la `row_restriction` de BigQuery salía de
+recortar el `SELECT` del texto entero: un `ORDER BY` o un `LIMIT` detrás se habrían colado en ella.
+
 ## Lo que este ADR no decide
 
 - **Una caché de resultados**: no por defecto (Lakehouse Federation tampoco); se decidirá con
   medidas de F0.
-- **Los orígenes después de Postgres y BigQuery**: S3 con tablas de ficheros, y los demás, entran
-  por el kit de conformidad.
+- **Los orígenes después de Postgres, BigQuery y S3**: entran por el kit de conformidad. S3 entró
+  en F2 (y no después) por lo que prueba: es el único de los tres sin motor —empujar un filtro es
+  pedir menos bytes y el conector hace de motor—, y un contrato comprobado sólo contra dos bases
+  SQL se habría quedado con supuestos de SQL. Sus `ObjectTable` siguen en F9.
 - **Federar fuera de la celda** (un motor de otra organización): fuera de alcance.
 
 ## Deuda y pistas

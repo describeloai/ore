@@ -69,6 +69,14 @@ pub fn leer(
     proyecto: &str,
     salida: &mut dyn std::io::Write,
 ) -> Result<Lectura, String> {
+    // **La Storage Read no ordena ni para a las n filas**: lee streams en
+    // paralelo hasta el final. Con `orderBy` o `limit` se declina y va por
+    // REST, donde son SQL. F2·3 lo lleva a la Storage Read.
+    if p.limit.is_some() || !p.orden.is_empty() {
+        return Ok(Lectura::Declina(
+            "`limit` y `orderBy` van por consulta: la Storage Read no ordena ni para".into(),
+        ));
+    }
     let (dataset, tabla) = consultas::partes(&p.objeto)?;
     let info = rest::tabla(t, proyecto, dataset, tabla)?;
     let tipo = info["type"].as_str().unwrap_or("");
@@ -442,7 +450,14 @@ pub fn restriccion(
 ) -> Result<String, String> {
     use ore_sql::dialectos::BIGQUERY;
     let objeto = consultas::cualificado(proyecto, &p.objeto);
-    let entera = ore_sql::consulta(p, &BIGQUERY, &objeto, tipos)?;
+    // Sólo el `WHERE`: el orden y el límite van detrás y no son una
+    // restricción de filas.
+    let sin_cola = ore_driver::Peticion {
+        limit: None,
+        orden: Vec::new(),
+        ..p.clone()
+    };
+    let entera = ore_sql::consulta(&sin_cola, &BIGQUERY, &objeto, tipos)?;
     let base = ore_sql::consulta(
         &ore_driver::Peticion {
             proyeccion: p.proyeccion.clone(),
@@ -541,7 +556,7 @@ mod tests {
             proyeccion: vec![("clave".into(), "id".into()), ("n".into(), "n".into())],
             filtros: filtros
                 .iter()
-                .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+                .map(|(a, b, c)| ore_driver::Filtro::uno(a, b, c))
                 .collect(),
             ..Default::default()
         }
@@ -567,6 +582,31 @@ mod tests {
         assert!(!r.contains('@'), "{r}");
     }
 
+    /// **Los operadores del protocolo 2 llegan a la restricción**, y el orden
+    /// y el límite no: van detrás del `WHERE` y no son una condición.
+    #[test]
+    fn la_restriccion_lleva_los_operadores_v2_y_no_la_cola() {
+        use ore_driver::{Filtro, Orden, Valor};
+        let mut p = peticion(&[("n", "ge", "3")]);
+        p.filtros.push(Filtro {
+            columna: "id".into(),
+            operador: "in".into(),
+            valor: Valor::Lista(vec!["a".into(), "b".into()]),
+        });
+        p.filtros.push(Filtro {
+            columna: "total".into(),
+            operador: "isNull".into(),
+            valor: Valor::Ninguno,
+        });
+        p.orden = vec![Orden {
+            columna: "n".into(),
+            descendente: true,
+        }];
+        p.limit = Some(5);
+        let r = restriccion(&p, "p", &tipos()).unwrap();
+        assert_eq!(r, "`n` >= 3 AND `id` IN ('a', 'b') AND `total` IS NULL");
+    }
+
     /// Una comilla se escapa, y un entero que no es un entero no se escribe.
     #[test]
     fn lo_que_no_es_seguro_no_se_escribe() {
@@ -583,8 +623,8 @@ mod tests {
     /// `@p1` no se come el principio de `@p10`.
     #[test]
     fn once_parametros_no_se_pisan() {
-        let fs: Vec<(String, String, String)> = (0..11)
-            .map(|i| ("n".to_string(), "eq".to_string(), i.to_string()))
+        let fs: Vec<ore_driver::Filtro> = (0..11)
+            .map(|i| ore_driver::Filtro::uno("n", "eq", &i.to_string()))
             .collect();
         let mut p = peticion(&[]);
         p.filtros = fs;

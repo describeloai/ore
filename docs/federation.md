@@ -57,12 +57,17 @@ industria tiene nombre se usa el suyo.
 
 - **Operadores** (`filtros[].operador`): `eq`, `neq`, `in`, `lt`, `le`, `gt`, `ge`, `like`,
   `isNull`, `isNotNull`. Son el vocabulario de `reads.predicatePushdown` desplegado: `range` de la
-  tabla es `lt/le/gt/ge` aquí. `in` lleva una lista; `isNull` e `isNotNull`, ningún valor.
+  tabla es `lt/le/gt/ge` aquí. `in` lleva una lista; `isNull` e `isNotNull`, ningún valor. Un
+  valor con la forma de otro operador (un `in` con un valor suelto, un `eq` con una lista) rechaza
+  la petición; un `in` con la lista vacía no deja pasar ninguna fila.
 - **El vocabulario sigue cerrado y la regla sigue siendo la de 0008**: un operador que el conector no
   sabe expresar **no se ignora: se rechaza la petición entera**. Quien pide sólo manda lo que el
   conector declaró (§1.4); un rechazo es un defecto de quien pidió.
 - **`limit`** sólo llega si el coordinador puede empujarlo (v1alpha24 §3: nada que quede en el
-  motor quita filas antes de él). **`orderBy`**, igual.
+  motor quita filas antes de él). **`orderBy`**, igual, y **con los nulos al final en los dos
+  sentidos**: es lo que hace DuckDB, que recibe las filas, y un `ORDER BY … LIMIT n` empujado tiene
+  que dar las mismas n que daría el motor. Los orígenes no coinciden por su cuenta (PostgreSQL pone
+  los nulos primero en `DESC`; BigQuery, en `ASC`), así que el conector escribe `NULLS LAST` siempre.
 - **`timeoutMs`**: el conector lo aplica en el origen (`statement_timeout` en Postgres,
   `timeoutMs` del job en BigQuery) y no sólo en su proceso.
 - `start`, `end`, `cursor`, `claves`, `fichero`: como hoy.
@@ -76,8 +81,20 @@ industria tiene nombre se usa el suyo.
   cuando trae precisión), con la tabla de [ADR 0032](decisions/0032-el-contrato-de-tipos.md) y `Decimal<p, s>`; un valor que no
   cabe en su tipo es un error que nombra columna y fila, no un nulo.
 - **Una tabla vacía devuelve su esquema** sin filas (ADR 0045 A5).
-- En `servir`, cada respuesta va enmarcada: una línea JSON de cabecera
-  `{"id": …, "estado": "ok"|"error"}` y, si es `ok`, el flujo Arrow hasta su marca de fin.
+- En `servir`, cada respuesta va enmarcada (`ore_driver::servir`):
+
+  ```text
+  {"estado":"ok","id":…}\n                         la cabecera
+  <u32 big-endian n><n bytes> …  <u32 0>            el flujo Arrow, en trozos de hasta 64 KiB
+  {"bytes":B,"filas":N,"fin":"ok"}\n                el cierre
+    ó {"codigo":…,"fin":"error","mensaje":…,"reintentable":…}\n
+  ```
+
+  o, si falla antes de dar un solo byte, una sola línea
+  `{"codigo":…,"estado":"error","id":…,"mensaje":…,"reintentable":…}`. **En trozos y no el flujo
+  Arrow tal cual** (F2·0): en `leer`, un error a mitad deja el flujo sin su marca de fin y el
+  proceso termina; en `servir` el proceso sigue y lo siguiente que escribe es otra respuesta, que
+  sin longitudes se leería como el resto del flujo roto.
 - **Los errores son tipados**, una línea JSON por stderr (en `leer`) o en la cabecera (en
   `servir`): `{"codigo": "…", "mensaje": "…", "reintentable": bool}` con estos códigos:
 

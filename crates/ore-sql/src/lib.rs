@@ -359,16 +359,48 @@ pub fn consulta(
         });
     }
 
-    for (col, op, valor) in &p.filtros {
-        let simbolo = match op.as_str() {
-            "gt" => ">",
-            _ => "=",
-        };
-        condiciones.push(format!(
-            "{} {simbolo} {}",
-            d.cita.ident(col)?,
-            m.marcar(col, valor)?
-        ));
+    // **Cada operador con su forma, y ninguno por defecto.** Esto traducía
+    // `gt` y todo lo demás como `=`: con dos operadores daba igual, con diez
+    // un `in` habría salido como una igualdad y la consulta, contestado otra
+    // cosa sin fallar.
+    for f in &p.filtros {
+        use ore_driver::Valor;
+        let col = d.cita.ident(&f.columna)?;
+        condiciones.push(match (f.operador.as_str(), &f.valor) {
+            ("isNull", Valor::Ninguno) => format!("{col} IS NULL"),
+            ("isNotNull", Valor::Ninguno) => format!("{col} IS NOT NULL"),
+            // `IN ()` no es SQL en ninguno de los dos, y una lista vacía no
+            // deja pasar ninguna fila.
+            ("in", Valor::Lista(vs)) if vs.is_empty() => "FALSE".to_string(),
+            ("in", Valor::Lista(vs)) => format!(
+                "{col} IN ({})",
+                vs.iter()
+                    .map(|v| m.marcar(&f.columna, v))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ")
+            ),
+            (op, Valor::Uno(v)) => {
+                let simbolo = match op {
+                    "eq" => "=",
+                    "neq" => "<>",
+                    "lt" => "<",
+                    "le" => "<=",
+                    "gt" => ">",
+                    "ge" => ">=",
+                    "like" => "LIKE",
+                    otro => {
+                        return Err(format!(
+                            "`{otro}` sobre `{}` no tiene traducción con un valor",
+                            f.columna
+                        ));
+                    }
+                };
+                format!("{col} {simbolo} {}", m.marcar(&f.columna, v)?)
+            }
+            (op, _) => {
+                return Err(format!("`{op}` sobre `{}` no lleva ese valor", f.columna));
+            }
+        });
     }
 
     // **El rango, cuando va sobre una columna.** `start` exclusivo y `end`
@@ -396,6 +428,31 @@ pub fn consulta(
     if !condiciones.is_empty() {
         texto.push_str(" WHERE ");
         texto.push_str(&condiciones.join(" AND "));
+    }
+
+    // **El orden, con los nulos al final en los dos sentidos.** Es lo que hace
+    // DuckDB, que recibe las filas: un `ORDER BY … LIMIT n` empujado tiene que
+    // dar las mismas n que el motor. Y no es lo que hacen los orígenes por su
+    // cuenta —PostgreSQL pone los nulos primero en `DESC`, BigQuery primero
+    // en `ASC`—, así que se escribe siempre.
+    if !p.orden.is_empty() {
+        let criterios = p
+            .orden
+            .iter()
+            .map(|o| {
+                Ok(format!(
+                    "{} {} NULLS LAST",
+                    d.cita.ident(&o.columna)?,
+                    if o.descendente { "DESC" } else { "ASC" }
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        texto.push_str(" ORDER BY ");
+        texto.push_str(&criterios.join(", "));
+    }
+    // Un entero sin signo, ya validado al leer la petición: va como literal.
+    if let Some(n) = p.limit {
+        texto.push_str(&format!(" LIMIT {n}"));
     }
     Ok(Consulta {
         texto,
@@ -476,7 +533,7 @@ mod tests {
             ],
             clave_columnas: vec!["employee_id".into()],
             claves: vec![vec!["7".into()], vec!["9".into()]],
-            filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
+            filtros: vec![ore_driver::Filtro::uno("cost_center", "eq", "finanzas")],
             ..Default::default()
         }
     }
@@ -654,20 +711,107 @@ mod tests {
     /// divergieran, la que sobra sería la peligrosa: un operador que la
     /// petición admite y la forma no traduce se caería del `WHERE` y la
     /// consulta devolvería más filas de las pedidas.
+    ///
+    /// Desde el protocolo 2 son diez, y cada uno se coteja con **su** forma:
+    /// antes todo lo que no era `gt` salía como `=`.
     #[test]
     fn la_forma_traduce_los_mismos_operadores_que_la_peticion_admite() {
+        use ore_driver::{Filtro, Valor};
+        let esperado = |op: &str| match op {
+            "eq" => "\"cost_center\" = $1",
+            "neq" => "\"cost_center\" <> $1",
+            "lt" => "\"cost_center\" < $1",
+            "le" => "\"cost_center\" <= $1",
+            "gt" => "\"cost_center\" > $1",
+            "ge" => "\"cost_center\" >= $1",
+            "like" => "\"cost_center\" LIKE $1",
+            "in" => "\"cost_center\" IN ($1, $2)",
+            "isNull" => "\"cost_center\" IS NULL",
+            "isNotNull" => "\"cost_center\" IS NOT NULL",
+            otro => panic!("`{otro}` está en la petición y esta prueba no lo conoce"),
+        };
         let mut p = peticion();
         p.claves.clear();
         for op in ore_driver::OPERADORES {
-            p.filtros = vec![("cost_center".into(), (*op).into(), "x".into())];
+            let valor = match *op {
+                "in" => Valor::Lista(vec!["a".into(), "b".into()]),
+                "isNull" | "isNotNull" => Valor::Ninguno,
+                _ => Valor::Uno("x".into()),
+            };
+            p.filtros = vec![Filtro {
+                columna: "cost_center".into(),
+                operador: (*op).into(),
+                valor,
+            }];
             let c = consulta(&p, &POSTGRES, "t", &tipos()).expect("traduce");
-            let simbolo = if *op == "gt" { " > " } else { " = " };
             assert!(
-                c.texto.contains(&format!("\"cost_center\"{simbolo}$1")),
+                c.texto.ends_with(&format!(" WHERE {}", esperado(op))),
                 "`{op}` no se traduce: {}",
                 c.texto
             );
+            // Y en BigQuery, cada valor con su tipo.
+            let b = consulta(&p, &BIGQUERY, "t", &tipos()).expect("traduce");
+            assert!(
+                b.parametros
+                    .iter()
+                    .all(|x| x.starts_with("p") && x.contains(":STRING:")),
+                "`{op}`: {:?}",
+                b.parametros
+            );
         }
+    }
+
+    /// **Un `in` vacío no deja pasar ninguna fila**, y no es `IN ()`, que no
+    /// es SQL en ninguno de los dos dialectos.
+    #[test]
+    fn un_in_vacio_es_falso() {
+        use ore_driver::{Filtro, Valor};
+        let mut p = peticion();
+        p.claves.clear();
+        p.filtros = vec![Filtro {
+            columna: "cost_center".into(),
+            operador: "in".into(),
+            valor: Valor::Lista(vec![]),
+        }];
+        let c = consulta(&p, &POSTGRES, "t", &tipos()).expect("traduce");
+        assert!(c.texto.ends_with(" WHERE FALSE"), "{}", c.texto);
+        assert!(c.parametros.is_empty());
+    }
+
+    /// **`ORDER BY` con los nulos al final y `LIMIT` al final de todo**, en
+    /// los dos dialectos: el orden de DuckDB, que es quien recibe las filas.
+    #[test]
+    fn el_orden_lleva_los_nulos_al_final_y_el_limite_cierra() {
+        use ore_driver::Orden;
+        let mut p = peticion();
+        p.claves.clear();
+        p.orden = vec![
+            Orden {
+                columna: "base_pay".into(),
+                descendente: true,
+            },
+            Orden {
+                columna: "employee_id".into(),
+                descendente: false,
+            },
+        ];
+        p.limit = Some(10);
+        let c = consulta(&p, &POSTGRES, "public.employees", &tipos()).expect("traduce");
+        assert!(
+            c.texto.ends_with(
+                " WHERE \"cost_center\" = $1 ORDER BY \"base_pay\" DESC NULLS LAST, \"employee_id\" ASC NULLS LAST LIMIT 10"
+            ),
+            "{}",
+            c.texto
+        );
+        let b = consulta(&p, &BIGQUERY, "p.d.t", &tipos()).expect("traduce");
+        assert!(
+            b.texto.ends_with(
+                " ORDER BY `base_pay` DESC NULLS LAST, `employee_id` ASC NULLS LAST LIMIT 10"
+            ),
+            "{}",
+            b.texto
+        );
     }
 
     /// Y quién necesita los tipos se **pregunta**, no se sabe de memoria.

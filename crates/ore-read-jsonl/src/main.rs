@@ -165,6 +165,17 @@ fn testigo(peticion: &str) -> Result<String, String> {
     }
 }
 
+/// Lo que este lector sabe poner: un ámbito (`eq`) y una marca de agua (`gt`).
+const CAPACIDADES: ore_driver::capacidades::Capacidades = ore_driver::capacidades::Capacidades {
+    conector: "ore-read-jsonl",
+    version: env!("CARGO_PKG_VERSION"),
+    operadores: &["eq", "gt"],
+    limit: false,
+    order_by: false,
+    estimar: false,
+    servir: false,
+};
+
 fn filas(peticion: &str) -> Result<String, String> {
     let p = ore_driver::leer_peticion(peticion)?;
 
@@ -175,6 +186,10 @@ fn filas(peticion: &str) -> Result<String, String> {
     if let Some(porque) = ore_driver::rango_servible(&p, true, false) {
         return Err(porque);
     }
+    // **Lo que sabe poner, y nada más** (ADR 0053 F2·0): la petición ya lleva
+    // diez operadores, `limit` y `orderBy`, y esto sólo compara texto por
+    // igualdad y por orden. Lo demás se niega en vez de servir de más.
+    CAPACIDADES.admite(&p).map_err(|f| f.mensaje)?;
 
     let ruta = catalogo::fichero(&p.url, &p.objeto)?;
     let texto = std::fs::read_to_string(&ruta)
@@ -214,9 +229,12 @@ fn filas(peticion: &str) -> Result<String, String> {
         // El mismo vocabulario que en SQL, sobre texto: un fichero no tiene
         // tipos, así que `gt` compara cadenas — que es exactamente lo que hace
         // falta para una marca de agua ISO-8601, y nada más.
-        if !p.filtros.iter().all(|(c, op, v)| match op.as_str() {
-            "gt" => campo(c) > v.as_str(),
-            _ => campo(c) == v,
+        if !p.filtros.iter().all(|f| {
+            let v = f.valor().unwrap_or("");
+            match f.operador.as_str() {
+                "gt" => campo(&f.columna) > v,
+                _ => campo(&f.columna) == v,
+            }
         }) {
             continue;
         }

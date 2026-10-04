@@ -48,6 +48,18 @@ use std::sync::Arc;
 pub const UMBRAL: u64 = 16 * 1024 * 1024;
 /// Dos trozos de un Parquet a menos de esto se piden juntos.
 const HUECO: u64 = 1024 * 1024;
+/// Lo que este lector sabe poner sobre las filas de un bucket.
+pub const CAPACIDADES: ore_driver::capacidades::Capacidades =
+    ore_driver::capacidades::Capacidades {
+        conector: "ore-read-s3",
+        version: env!("CARGO_PKG_VERSION"),
+        operadores: &["eq"],
+        limit: false,
+        order_by: false,
+        estimar: false,
+        servir: false,
+    };
+
 /// Filas por lote de Arrow: las de `arrow-csv` y las del lector de Parquet.
 const LOTE: usize = 8192;
 const RESCATADA: &str = ore_core::document::COLUMNA_RESCATADA;
@@ -265,13 +277,12 @@ impl Plan {
             let i = anadir(&mut plan, col);
             campos.push(Field::new(prop, tipo_arrow(&plan.cols[i].fisico), true));
         }
-        for (col, op, valor) in &p.filtros {
-            if op != "eq" {
-                return Err(format!(
-                    "`{op}` sobre `{col}`: un listado no ordena, y aquí sólo se filtra por \
-                     igualdad"
-                ));
-            }
+        // Lo que sabe poner hoy: la igualdad. La petición ya lleva diez
+        // operadores, `limit` y `orderBy` (ADR 0053 F2·0), y lo demás se niega
+        // en vez de servir de más; F2·4 lo amplía.
+        CAPACIDADES.admite(p).map_err(|f| f.mensaje)?;
+        for f in &p.filtros {
+            let (col, valor) = (&f.columna, f.valor().unwrap_or(""));
             let i = anadir(&mut plan, col);
             let fisico = plan.cols[i].fisico;
             let v = fisico.analizar(valor).ok_or_else(|| {
@@ -1319,11 +1330,11 @@ mod tests {
     fn el_filtro_recorta_por_igualdad_en_su_tipo() {
         let o = EnMemoria::con(&[("t/a.csv", b"id,n\na,1\nb,2\nc,1\n".to_vec())]);
         let mut p = peticion("csv", "t/a.csv", &["id"], TIPOS);
-        p.filtros = vec![("n".into(), "eq".into(), "1".into())];
+        p.filtros = vec![ore_driver::Filtro::uno("n", "eq", "1")];
         let (b, l) = filas(&o, &p, UMBRAL).expect("lee");
         assert_eq!(texto(&b, "id"), [Some("a".into()), Some("c".into())]);
         assert_eq!(l.filas, 2);
-        p.filtros = vec![("n".into(), "eq".into(), "uno".into())];
+        p.filtros = vec![ore_driver::Filtro::uno("n", "eq", "uno")];
         let e = filas(&o, &p, UMBRAL).expect_err("un literal que no es del tipo");
         assert!(e.contains("no es un Integer"), "{e}");
     }

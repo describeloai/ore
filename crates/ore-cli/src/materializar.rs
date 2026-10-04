@@ -2091,7 +2091,7 @@ mod tests {
             "{p}"
         );
         let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
-        assert_eq!(leida.filtros, [("id".into(), "eq".into(), "7".into())]);
+        assert_eq!(leida.filtros, [ore_driver::Filtro::uno("id", "eq", "7")]);
     }
 
     /// **El rango sobre una columna**: lleva `cursor`, y `start` es exclusivo.

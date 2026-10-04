@@ -44,9 +44,64 @@ pub mod catalogo;
 /// tramas de `bajar` y `blobs`.
 pub mod tramas;
 
+pub mod capacidades;
+/// **El conector v2** (ADR 0053 F2·0, `docs/federation.md` §1): los errores
+/// tipados, lo que un conector declara y el bucle de `servir`.
+pub mod fallo;
+pub mod servir;
+
+pub use fallo::{Codigo, Fallo, tapar};
+
+/// Un filtro de la petición: `columna operador valor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filtro {
+    pub columna: String,
+    pub operador: String,
+    pub valor: Valor,
+}
+
+/// Lo que lleva un filtro a la derecha: un valor (`eq`, `lt`, `like`…), una
+/// lista (`in`) o nada (`isNull`, `isNotNull`). Cada operador lleva **la
+/// suya** y ninguna otra: [`leer_peticion`] rechaza el resto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Valor {
+    Uno(String),
+    Lista(Vec<String>),
+    Ninguno,
+}
+
+impl Filtro {
+    /// `columna operador valor`, con un valor.
+    pub fn uno(columna: &str, operador: &str, valor: &str) -> Filtro {
+        Filtro {
+            columna: columna.into(),
+            operador: operador.into(),
+            valor: Valor::Uno(valor.into()),
+        }
+    }
+
+    /// El valor, si es uno.
+    pub fn valor(&self) -> Option<&str> {
+        match &self.valor {
+            Valor::Uno(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+/// Un criterio de orden de la petición (`orderBy`). Los nulos van **al
+/// final** en los dos sentidos, que es lo que hace DuckDB, el motor que recibe
+/// las filas: un `ORDER BY … LIMIT n` empujado tiene que dar las mismas n que
+/// daría el motor (`docs/federation.md` §1.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Orden {
+    pub columna: String,
+    pub descendente: bool,
+}
+
 /// Lo que el motor pide. Nombres físicos ya resueltos: el driver no conoce el
 /// modelo, solo el objeto y sus columnas.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Peticion {
     pub url: String,
     pub objeto: String,
@@ -65,7 +120,23 @@ pub struct Peticion {
     /// La **marca de agua** no tiene principal. Es el progreso del propio motor
     /// al refrescar, no depende de quién pregunta y no puede filtrar por nadie.
     /// Por eso `gt` es admisible aquí y no allí.
-    pub filtros: Vec<(String, String, String)>,
+    ///
+    /// **Desde el protocolo 2** (ADR 0053) son los diez de [`OPERADORES`]: la
+    /// lectura en vivo empuja lo que el plan de quien consulta filtra, y eso ya
+    /// no es sólo un ámbito ni una marca de agua. La asimetría de arriba sigue
+    /// siendo del ámbito, que sigue produciendo sólo `eq`.
+    pub filtros: Vec<Filtro>,
+
+    // ── Lo que el protocolo 2 añade · ADR 0053 ──────────────────────────────
+    /// Quién es esta petición dentro de un `servir`: su respuesta lo repite.
+    pub id: Option<String>,
+    /// Como mucho tantas filas. Sólo llega si nada de lo que queda en el motor
+    /// quita filas antes (v1alpha24 §3).
+    pub limit: Option<u64>,
+    /// `orderBy`: en este orden, con los nulos al final.
+    pub orden: Vec<Orden>,
+    /// El tiempo que tiene la lectura, aplicado **en el origen**.
+    pub timeout_ms: Option<u64>,
 
     /// **En qué forma quiere las filas quien pide** (ADR 0043): `arrow` pide un
     /// flujo Arrow IPC por stdout, con los campos de la proyección como
@@ -230,7 +301,89 @@ pub fn comprobacion(ok: bool, porque: Option<&str>) -> String {
 /// Declarar de más en el catálogo no es optimismo: el planificador cuenta con
 /// que el origen recorta, calcula menos residuo, y lo que llega es más de lo
 /// pedido.
-pub const OPERADORES: &[&str] = &["eq", "gt"];
+///
+/// **Diez desde el protocolo 2** (ADR 0053 F2·0): el vocabulario de
+/// `reads.predicatePushdown` desplegado —`range` es `lt/le/gt/ge`, `null` es
+/// `isNull/isNotNull`—. Que la petición los sepa llevar no dice que un
+/// conector los sepa poner: eso lo declara cada uno en sus
+/// [`capacidades`], y uno que recibe lo que no declaró se niega
+/// (`docs/federation.md` §1.2).
+pub const OPERADORES: &[&str] = &[
+    "eq",
+    "neq",
+    "in",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "like",
+    "isNull",
+    "isNotNull",
+];
+
+/// Un filtro de la petición, o por qué no lo es.
+fn filtro_de(f: &ore_core::parse::Node) -> Result<Filtro, String> {
+    use ore_core::parse::Node;
+    let op = f
+        .get("operador")
+        .and_then(|(_, o)| o.as_str())
+        .unwrap_or("eq");
+    if !OPERADORES.contains(&op) {
+        return Err(format!(
+            "`{op}` no es un operador que esta petición sepa expresar. Los que hay son {}. \
+             Servir la petición sin ese filtro devolvería más filas de las pedidas y no \
+             fallaría, así que no se sirve",
+            OPERADORES.join(", ")
+        ));
+    }
+    let Some(columna) = f.get("columna").and_then(|(_, c)| c.as_str()) else {
+        return Err("un filtro sin `columna` no dice qué recortar".into());
+    };
+    let valor = match (op, f.get("valor").map(|(_, v)| v)) {
+        ("isNull" | "isNotNull", None) => Valor::Ninguno,
+        ("isNull" | "isNotNull", Some(_)) => {
+            return Err(format!("`{op}` sobre `{columna}` no lleva valor"));
+        }
+        ("in", Some(Node::Sequence { items, .. })) => Valor::Lista(
+            items
+                .iter()
+                .map(|i| {
+                    i.as_str().map(String::from).ok_or_else(|| {
+                        format!("la lista de `in` sobre `{columna}` lleva algo que no es un valor")
+                    })
+                })
+                .collect::<Result<_, _>>()?,
+        ),
+        ("in", _) => return Err(format!("`in` sobre `{columna}` lleva una lista")),
+        (_, Some(v)) => Valor::Uno(
+            v.as_str()
+                .ok_or_else(|| format!("`{op}` sobre `{columna}` lleva un valor, no una lista"))?
+                .to_string(),
+        ),
+        (_, None) => {
+            return Err(format!(
+                "un filtro `{op}` sobre `{columna}` sin `valor` no dice qué recortar"
+            ));
+        }
+    };
+    Ok(Filtro {
+        columna: columna.to_string(),
+        operador: op.to_string(),
+        valor,
+    })
+}
+
+/// Un entero sin signo de la petición, o por qué no lo es.
+fn natural(n: &ore_core::parse::Node, k: &str) -> Result<Option<u64>, String> {
+    match n.get(k).map(|(_, v)| v) {
+        None => Ok(None),
+        Some(v) => v
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Some)
+            .ok_or_else(|| format!("`{k}` es un entero sin signo")),
+    }
+}
 
 pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
     let n = ore_core::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
@@ -285,27 +438,29 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
     // evitar: la consulta devuelve más filas de las que se pidieron y nadie ve
     // un error. Lo destapó juntar la traducción de los dos drivers y preguntar
     // quién manda sobre lo que se puede empujar.
-    let mut filtros: Vec<(String, String, String)> = Vec::new();
-    for f in n.get("filtros").map(|(_, v)| v.items()).unwrap_or(&[]) {
-        let op = f
-            .get("operador")
-            .and_then(|(_, o)| o.as_str())
-            .unwrap_or("eq");
-        if !OPERADORES.contains(&op) {
-            return Err(format!(
-                "`{op}` no es un operador que esta petición sepa expresar. Los que hay son {}. \
-                 Servir la petición sin ese filtro devolvería más filas de las pedidas y no \
-                 fallaría, así que no se sirve",
-                OPERADORES.join(", ")
-            ));
-        }
-        let (Some(col), Some(val)) = (
-            f.get("columna").and_then(|(_, c)| c.as_str()),
-            f.get("valor").and_then(|(_, v)| v.as_str()),
-        ) else {
-            return Err("un filtro sin `columna` o sin `valor` no dice qué recortar".into());
+    let filtros: Vec<Filtro> = n
+        .get("filtros")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .map(filtro_de)
+        .collect::<Result<_, _>>()?;
+
+    let mut orden: Vec<Orden> = Vec::new();
+    for o in n.get("orderBy").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let columna = o
+            .get("columna")
+            .and_then(|(_, c)| c.as_str())
+            .ok_or("un `orderBy` sin `columna` no dice por qué ordenar")?;
+        let descendente = match o.get("direccion").and_then(|(_, d)| d.as_str()) {
+            None | Some("asc") => false,
+            Some("desc") => true,
+            Some(d) => return Err(format!("`direccion: {d}` no es `asc` ni `desc`")),
         };
-        filtros.push((col.to_string(), op.to_string(), val.to_string()));
+        orden.push(Orden {
+            columna: columna.to_string(),
+            descendente,
+        });
     }
 
     let opcional = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
@@ -324,6 +479,10 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
             None => None,
             Some((_, f)) => Some(fichero_de(f)?),
         },
+        id: opcional("id"),
+        limit: natural(&n, "limit")?,
+        orden,
+        timeout_ms: natural(&n, "timeoutMs")?,
     };
     if p.objeto.is_empty() {
         return Err("la petición no nombra ningún objeto".into());
@@ -466,7 +625,7 @@ mod tests {
             ],
             clave_columnas: vec!["employee_id".into()],
             claves: vec![vec!["emp-7".into()], vec!["emp-9".into()]],
-            filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
+            filtros: vec![Filtro::uno("cost_center", "eq", "finanzas")],
             ..Default::default()
         }
     }
@@ -480,10 +639,10 @@ mod tests {
     #[test]
     fn un_operador_desconocido_descarta_la_peticion_y_no_solo_su_filtro() {
         let texto = r#"{"objeto":"t","url":"x://y","proyeccion":{"a":"c"},
-            "filtros":[{"columna":"pais","operador":"in","valor":"ES"},
+            "filtros":[{"columna":"pais","operador":"between","valor":"ES"},
                        {"columna":"cc","operador":"eq","valor":"finanzas"}]}"#;
         let e = leer_peticion(texto).expect_err("se niega");
-        assert!(e.contains("`in`"), "{e}");
+        assert!(e.contains("`between`"), "{e}");
         assert!(e.contains("mas filas") || e.contains("más filas"), "{e}");
     }
 
@@ -495,6 +654,103 @@ mod tests {
                        {"columna":"cc","operador":"eq","valor":"f"}]}"#;
         let p = leer_peticion(texto).expect("analiza");
         assert_eq!(p.filtros.len(), 2, "{:?}", p.filtros);
+    }
+
+    /// **El protocolo 2** (ADR 0053): cada operador con la forma de su valor,
+    /// `limit`, `orderBy`, `timeoutMs` y el `id` de `servir`.
+    #[test]
+    fn la_peticion_v2_lleva_listas_nulos_limite_orden_y_tiempo() {
+        let p = leer_peticion(
+            r#"{"id":"r-1","objeto":"olist.customers","url":"x://y",
+                "proyeccion":{"id":"customer_id"},
+                "filtros":[{"columna":"estado","operador":"in","valor":["SP","RJ"]},
+                           {"columna":"baja","operador":"isNull"},
+                           {"columna":"alta","operador":"ge","valor":"2026-01-01"},
+                           {"columna":"nombre","operador":"like","valor":"Jo_%"},
+                           {"columna":"zona","operador":"in","valor":[]}],
+                "limit":1000,
+                "orderBy":[{"columna":"customer_id","direccion":"desc"},{"columna":"alta"}],
+                "timeoutMs":30000}"#,
+        )
+        .expect("analiza");
+        assert_eq!(p.id.as_deref(), Some("r-1"));
+        assert_eq!(
+            p.filtros[0].valor,
+            Valor::Lista(vec!["SP".into(), "RJ".into()])
+        );
+        assert_eq!(p.filtros[1].valor, Valor::Ninguno);
+        assert_eq!(p.filtros[2], Filtro::uno("alta", "ge", "2026-01-01"));
+        assert_eq!(p.filtros[3].valor(), Some("Jo_%"));
+        assert_eq!(
+            p.filtros[4].valor,
+            Valor::Lista(vec![]),
+            "un `in` vacío es una lista"
+        );
+        assert_eq!(p.limit, Some(1000));
+        assert_eq!(
+            p.orden,
+            [
+                Orden {
+                    columna: "customer_id".into(),
+                    descendente: true
+                },
+                Orden {
+                    columna: "alta".into(),
+                    descendente: false
+                },
+            ]
+        );
+        assert_eq!(p.timeout_ms, Some(30000));
+    }
+
+    /// **Cada operador lleva lo suyo y nada más**: un `in` con un valor suelto,
+    /// un `isNull` con valor o un `eq` con una lista no se interpretan, se
+    /// rechazan. Interpretarlos sería adivinar qué filas se querían.
+    #[test]
+    fn un_valor_que_no_es_el_de_su_operador_se_rechaza() {
+        let con = |f: &str| {
+            leer_peticion(&format!(
+                r#"{{"objeto":"t","url":"x","proyeccion":{{"a":"a"}},"filtros":[{f}]}}"#
+            ))
+        };
+        for (f, dice) in [
+            (r#"{"columna":"a","operador":"in","valor":"ES"}"#, "lista"),
+            (
+                r#"{"columna":"a","operador":"isNull","valor":"x"}"#,
+                "no lleva valor",
+            ),
+            (
+                r#"{"columna":"a","operador":"eq","valor":["x"]}"#,
+                "no una lista",
+            ),
+            (r#"{"columna":"a","operador":"lt"}"#, "sin `valor`"),
+            (r#"{"operador":"eq","valor":"x"}"#, "sin `columna`"),
+        ] {
+            let e = con(f).expect_err(f);
+            assert!(e.contains(dice), "{f}: {e}");
+        }
+        let mal = |k: &str| {
+            leer_peticion(&format!(
+                r#"{{"objeto":"t","url":"x","proyeccion":{{"a":"a"}},{k}}}"#
+            ))
+        };
+        assert!(mal(r#""limit":-1"#).is_err());
+        assert!(mal(r#""timeoutMs":"pronto""#).is_err());
+        assert!(mal(r#""orderBy":[{"columna":"a","direccion":"arriba"}]"#).is_err());
+    }
+
+    /// **Una petición v1 se lee igual que antes**: sin los campos nuevos, todo
+    /// lo nuevo queda vacío y nadie que pida como antes nota nada.
+    #[test]
+    fn una_peticion_v1_queda_como_era() {
+        let p = leer_peticion(
+            r#"{"objeto":"t","url":"x","proyeccion":{"a":"a"},
+                "filtros":[{"columna":"m","operador":"gt","valor":"7"}]}"#,
+        )
+        .expect("analiza");
+        assert_eq!(p.filtros, [Filtro::uno("m", "gt", "7")]);
+        assert_eq!((p.id, p.limit, p.timeout_ms), (None, None, None));
+        assert!(p.orden.is_empty());
     }
 
     /// La petición es JSON, y la lee el mismo analizador que los documentos.
@@ -513,11 +769,7 @@ mod tests {
         assert_eq!(p.claves, vec![vec!["emp-7".to_string()]]);
         assert_eq!(
             p.filtros,
-            vec![(
-                "cost_center".to_string(),
-                "eq".to_string(),
-                "finanzas".to_string()
-            )]
+            vec![Filtro::uno("cost_center", "eq", "finanzas")]
         );
     }
 
