@@ -62,6 +62,8 @@ use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::process::ExitCode;
 
+mod lectura;
+mod senal;
 mod texto;
 
 /// Un documento, una consulta.
@@ -161,7 +163,112 @@ WHERE i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
   AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_'
 ORDER BY n.nspname, c.relname, i.indexrelid";
 
+/// Un fallo del conector v2: una línea JSON por stderr, tapada.
+fn fallar(f: ore_driver::Fallo, url: &str) -> ExitCode {
+    eprintln!("ore-read-postgres: {}", f.tapado(url).linea());
+    ExitCode::FAILURE
+}
+
+/// **Los verbos del conector v2** (ADR 0053 F2·2): `capacidades`, `leer` en
+/// Arrow, `estimar` y `servir`. `None` si el verbo no es suyo. `leer` sin
+/// `formato: arrow` sigue siendo el de siempre, en texto.
+fn v2(verbo: &str) -> Option<ExitCode> {
+    use std::io::Write as _;
+    match verbo {
+        "capacidades" => {
+            println!("{}", lectura::CAPACIDADES.json());
+            Some(ExitCode::SUCCESS)
+        }
+        "leer" | "estimar" => {
+            let mut entrada = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut entrada) {
+                return Some(fallar(
+                    ore_driver::Fallo::operador(format!("no se pudo leer stdin: {e}")),
+                    "",
+                ));
+            }
+            let p = match ore_driver::leer_peticion(&entrada) {
+                Ok(p) => p,
+                Err(e) => return Some(fallar(ore_driver::Fallo::operador(e), "")),
+            };
+            if verbo == "leer" && p.formato.as_deref() != Some("arrow") {
+                return Some(match filas(&entrada) {
+                    Ok(t) => {
+                        println!("{t}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(m) => {
+                        eprintln!("ore-read-postgres: {m}");
+                        ExitCode::FAILURE
+                    }
+                });
+            }
+            let token = lectura::Token::default();
+            senal::al_terminar(token.clone());
+            let hecho = lectura::conectar(&p.url).and_then(|mut c| {
+                if verbo == "estimar" {
+                    println!("{}", lectura::estimar(&mut c, &p)?);
+                    return Ok(());
+                }
+                let stdout = std::io::stdout();
+                let mut s = std::io::BufWriter::new(stdout.lock());
+                lectura::leer(&mut c, &token, &p, &mut s)?;
+                s.flush().map_err(|e| {
+                    ore_driver::Fallo::new(ore_driver::Codigo::Conexion, e.to_string())
+                })
+            });
+            Some(match hecho {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(f) => fallar(f, &p.url),
+            })
+        }
+        "servir" => Some(servir()),
+        _ => None,
+    }
+}
+
+/// **`servir`**: peticiones una tras otra, con una sesión por credencial que
+/// se reutiliza y se cierra a los 60 s sin uso.
+fn servir() -> ExitCode {
+    let token = lectura::Token::default();
+    senal::al_terminar(token.clone());
+    let mut sesiones: ore_driver::servir::Conexiones<postgres::Client> =
+        ore_driver::servir::Conexiones::new(std::time::Duration::from_secs(60));
+    let para_cancelar = token.clone();
+    let stdout = std::io::stdout();
+    let mut salida = std::io::BufWriter::new(stdout.lock());
+    let hecho = ore_driver::servir::servir(
+        std::io::BufReader::new(std::io::stdin()),
+        &mut salida,
+        std::sync::Arc::new(move || lectura::cancelar(&para_cancelar)),
+        |p, r| {
+            let c = sesiones.tomar(&p.url, lectura::conectar)?;
+            let leido = lectura::leer(c, &token, p, r);
+            // Una sesión que perdió la conexión no se vuelve a usar.
+            if leido
+                .as_ref()
+                .is_err_and(|f| f.codigo == ore_driver::Codigo::Conexion)
+            {
+                sesiones.quitar(&p.url);
+            }
+            leido
+        },
+    );
+    match hecho {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ore-read-postgres: servir: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    if let Some(verbo) = std::env::args().nth(1)
+        && let Some(codigo) = v2(&verbo)
+    {
+        return codigo;
+    }
     match intentar() {
         Ok(catalogo) => {
             println!("{catalogo}");

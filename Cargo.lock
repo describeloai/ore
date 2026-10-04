@@ -2682,6 +2682,10 @@ dependencies = [
 name = "ore-read-postgres"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "libc",
  "native-tls",
  "ore-core",
  "ore-driver",

@@ -435,11 +435,10 @@ jobs:
   # `docs/federation.md` §2 contra cada conector, sobre una semilla que el kit
   # carga en un Postgres de verdad y en el S3 de mentira.
   #
-  # Hoy es LÍNEA DE BASE: dice cómo está cada conector (en el resumen del
-  # trabajo) y no falla por un caso que falle. Por eso no está en las `needs`
-  # de `imagen`. Cuando un conector pase a v2 (F2·2–F2·4), su paso lleva
-  # `--exige todos` y el trabajo entra en las `needs`: desde entonces, un
-  # conector que deja de cumplir el contrato no se despliega.
+  # Un conector v2 lleva `--exige todos`: si deja de cumplir el contrato, el
+  # trabajo falla y, como está en las `needs` de `imagen`, no se despliega.
+  # Uno que aún no es v2 corre en línea de base: dice cómo está (en el
+  # resumen del trabajo) y no falla.
   #
   # BigQuery no está: su banco son respuestas grabadas (F2·3).
   conectores:
@@ -470,7 +469,7 @@ jobs:
         run: |
           echo "### ore-read-postgres" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-postgres --banco postgres \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+            --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: el conector de S3
         run: |
@@ -628,7 +627,7 @@ jobs:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
-    needs: [suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, construir]
+    needs: [suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, conectores, construir]
     # Un despliegue a la vez, y el que espera es el más nuevo: GitHub deja uno
     # corriendo y uno pendiente, y un pendiente nuevo reemplaza al anterior.
     concurrency:

@@ -129,6 +129,21 @@ impl<W: Write> Write for Respuesta<'_, W> {
     }
 }
 
+/// Lo que se cancela: la lectura en curso, en el origen. Lo da el conector
+/// (en Postgres, su `CancelToken`), y lo llama el hilo que lee la entrada.
+pub type Cancelar = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// Una línea de control: `{"cancelar": "<id>"}`. No es una petición.
+fn cancelacion(linea: &str) -> Option<String> {
+    if !linea.contains("\"cancelar\"") {
+        return None;
+    }
+    let n = ore_core::parse::parse(linea).ok()?;
+    n.get("cancelar")
+        .and_then(|(_, v)| v.as_str())
+        .map(String::from)
+}
+
 /// **El bucle**: una petición por línea hasta que se cierra la entrada.
 /// Devuelve cuántas atendió.
 ///
@@ -136,14 +151,59 @@ impl<W: Write> Write for Respuesta<'_, W> {
 /// el fallo. Una línea que no es una petición se contesta con `operador` y el
 /// bucle sigue: un error de quien pide no tumba las conexiones de los demás.
 /// Los mensajes de los fallos se tapan con la `url` de su petición.
-pub fn servir<R, W, F>(entrada: R, salida: &mut W, mut atender: F) -> std::io::Result<u64>
+///
+/// **Cancelar** (`docs/federation.md` §1.5): la entrada se lee en su propio
+/// hilo, así que se oye mientras una lectura corre. `{"cancelar": "<id>"}` con
+/// el `id` de la que corre, o cerrar la entrada con una en curso, llama a
+/// `cancelar`: el conector corta en el origen, la lectura vuelve con su fallo y
+/// el bucle sigue (o termina, si la entrada se cerró).
+pub fn servir<R, W, F>(
+    entrada: R,
+    salida: &mut W,
+    cancelar: Cancelar,
+    mut atender: F,
+) -> std::io::Result<u64>
 where
-    R: BufRead,
+    R: BufRead + Send + 'static,
     W: Write,
     F: FnMut(&Peticion, &mut Respuesta<'_, W>) -> Result<u64, Fallo>,
 {
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+    let en_curso: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // Las que se cancelan antes de empezar: se contestan sin correr.
+    let canceladas: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<String>>();
+    {
+        let (en_curso, canceladas) = (en_curso.clone(), canceladas.clone());
+        std::thread::spawn(move || {
+            for linea in entrada.lines() {
+                if let Ok(l) = &linea
+                    && let Some(id) = cancelacion(l)
+                {
+                    let corre = en_curso
+                        .lock()
+                        .map(|c| c.as_deref() == Some(id.as_str()))
+                        .unwrap_or(false);
+                    if corre {
+                        cancelar();
+                    } else if let Ok(mut c) = canceladas.lock() {
+                        c.insert(id);
+                    }
+                    continue;
+                }
+                if tx.send(linea).is_err() {
+                    return;
+                }
+            }
+            // La entrada se cerró: lo que corra, se corta.
+            if en_curso.lock().map(|c| c.is_some()).unwrap_or(false) {
+                cancelar();
+            }
+        });
+    }
     let mut n = 0;
-    for linea in entrada.lines() {
+    for linea in rx {
         let linea = linea?;
         if linea.trim().is_empty() {
             continue;
@@ -152,8 +212,22 @@ where
         match crate::leer_peticion(&linea) {
             Ok(p) => {
                 let id = p.id.clone().unwrap_or_default();
+                let antes = canceladas
+                    .lock()
+                    .map(|mut c| c.remove(&id))
+                    .unwrap_or(false);
+                if let Ok(mut c) = en_curso.lock() {
+                    *c = Some(id.clone());
+                }
                 let mut r = Respuesta::new(salida, &id);
-                let hecho = atender(&p, &mut r).map_err(|f| f.tapado(&p.url));
+                let hecho = if antes {
+                    Err(Fallo::origen("cancelada antes de empezar"))
+                } else {
+                    atender(&p, &mut r).map_err(|f| f.tapado(&p.url))
+                };
+                if let Ok(mut c) = en_curso.lock() {
+                    *c = None;
+                }
                 r.cerrar(hecho)?;
             }
             Err(e) => {
@@ -335,21 +409,26 @@ mod tests {
         ]
         .join("\n");
         let mut salida: Vec<u8> = Vec::new();
-        let n = servir(Cursor::new(entrada), &mut salida, |p, r| {
-            match p.id.as_deref() {
-                // Un flujo de más de un trozo, y luego el fallo.
-                Some("1") => {
-                    r.write_all(&vec![7u8; TROZO + 10]).unwrap();
-                    Err(Fallo::new(Codigo::Conexion, "se cortó x://u:clave@h"))
+        let n = servir(
+            Cursor::new(entrada),
+            &mut salida,
+            std::sync::Arc::new(|| {}),
+            |p, r| {
+                match p.id.as_deref() {
+                    // Un flujo de más de un trozo, y luego el fallo.
+                    Some("1") => {
+                        r.write_all(&vec![7u8; TROZO + 10]).unwrap();
+                        Err(Fallo::new(Codigo::Conexion, "se cortó x://u:clave@h"))
+                    }
+                    Some("2") => {
+                        r.write_all(b"ARROW").unwrap();
+                        Ok(1)
+                    }
+                    // Falla sin escribir: una sola línea.
+                    _ => Err(Fallo::new(Codigo::Objeto, "no existe `t`")),
                 }
-                Some("2") => {
-                    r.write_all(b"ARROW").unwrap();
-                    Ok(1)
-                }
-                // Falla sin escribir: una sola línea.
-                _ => Err(Fallo::new(Codigo::Objeto, "no existe `t`")),
-            }
-        })
+            },
+        )
         .expect("sirve");
         assert_eq!(n, 4);
 
@@ -404,6 +483,39 @@ mod tests {
             otro => panic!("{otro:?}"),
         }
         assert_eq!(leer_respuesta(&mut c, &mut Vec::new()).unwrap(), None);
+    }
+
+    /// **Cancelar llega mientras la lectura corre** (o antes de que empiece):
+    /// en los dos casos la respuesta es un error, y no se espera a que acabe.
+    #[test]
+    fn cancelar_corta_la_lectura_en_curso() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cortada = Arc::new(AtomicBool::new(false));
+        let senal = cortada.clone();
+        let entrada = format!("{}\n{{\"cancelar\":\"1\"}}\n", peticion("1", "x://h"));
+        let mut salida: Vec<u8> = Vec::new();
+        let t = Instant::now();
+        servir(
+            Cursor::new(entrada),
+            &mut salida,
+            Arc::new(move || senal.store(true, Ordering::SeqCst)),
+            |_, _| {
+                while !cortada.load(Ordering::SeqCst) {
+                    if t.elapsed() > Duration::from_secs(5) {
+                        return Ok(0);
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(Fallo::origen("cortada en el origen"))
+            },
+        )
+        .expect("sirve");
+        assert!(t.elapsed() < Duration::from_secs(4), "esperó a que acabara");
+        match leer_respuesta(&mut Cursor::new(salida), &mut Vec::new()).unwrap() {
+            Some(Fin::Error { id, .. }) => assert_eq!(id, "1"),
+            otro => panic!("{otro:?}"),
+        }
     }
 
     /// **Una conexión por credencial**, reutilizada, y cerrada tras su ocio.

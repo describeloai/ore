@@ -35,3 +35,14 @@ postgres = "0.19"
 # más y `aws-lc-sys`, que exige cmake y nasm para compilar.
 native-tls          = "0.2"
 postgres-native-tls = "0.5"
+
+# 0053 F2.2 · el conector v2: las filas en Arrow y en flujo, lote a lote. Las
+# tres ya estaban en el arbol (las traen `ore-store` y los demas lectores).
+arrow-array  = "58"
+arrow-schema = "58"
+arrow-ipc    = "58"
+
+# 0053 F2.2 · SIGTERM cancela en el origen: el manejador de la senal. Ya estaba
+# en el arbol (lo trae medio ecosistema).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

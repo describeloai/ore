@@ -204,7 +204,7 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 |---|---|---|
 | **F2·0** · la base común | la petición v2 en `ore-driver` (filtros con valor, lista o ninguno; `limit`, `orderBy`, `timeoutMs`, `id`); los diez operadores, `ORDER BY … NULLS LAST` y `LIMIT` en `ore-sql`; los errores tipados y `tapar`; `capacidades` y su comprobación; el bucle de `servir` con su marco en trozos y las conexiones por `url` | ✓ sin cambiar lo que sirve ningún conector: una petición v1 se lee igual |
 | **F2·1** · el kit | `ore-conector-kit`: los 14 casos contra `kit.tipos` y `kit.grande` (10⁶ filas); Postgres como servicio del CI y el S3 de mentira del repositorio (no MinIO: no hace falta una imagen de fuera), BigQuery con respuestas grabadas en F2·3 | ✓ la línea de base, abajo |
-| **F2·2** · Postgres v2 | Arrow en flujo, operadores, `limit`, `orderBy`, `statement_timeout`, cancelar, `servir`, `estimar` (`EXPLAIN`) | 14/14 y M3 repetida |
+| **F2·2** · Postgres v2 | Arrow en flujo, operadores, `limit`, `orderBy`, `statement_timeout`, cancelar, `servir`, `estimar` (`EXPLAIN`) | ✓ **14/14**; 10⁶ filas en 15,3 s con **pico de 14 MiB y primer byte a los 323 ms** (v1: 33 s, 388 MiB, 32,9 s); `SIGTERM` deja el origen en 2 ms; 100 peticiones en `servir` por una sesión en 742 ms |
 | **F2·3** · BigQuery v2 | operadores a `row_restriction`, `limit` en la Storage Read, `orderBy` por consulta, REST también en Arrow, `jobs.cancel`, `estimar` (*dry run*), `maximumBytesBilled` | 14/14 y M2 repetida; una pasada real |
 | **F2·4** · S3 v2 | descarte por partición y por estadísticas de Parquet, operadores sobre filas, `limit`, `estimar` por el listado; `orderBy: false` | 14/14 o justificado en `capacidades` |
 | **F2·5** · cierre | el kit en el CI; las copias en vivo de test6 dan las mismas filas y huella con los v2 | F2 cerrado |
@@ -232,6 +232,15 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 El kit midió dos cosas que no eran del conector: el tipo de un instante (el lago lo llama `+00:00`,
 BigQuery `UTC`; el kit acepta los dos) y la memoria de S3 contra el S3 de mentira (en Python: sus
 80 s de `grande` son del servidor, no del conector).
+
+**Lo que F2·2 decidió.** Leer por un portal de 8192 filas dentro de una transacción de sólo
+lectura (la memoria es la de un lote); tipar cada columna por el catálogo con la traducción de
+`catalogo` —la que escribió la `Table`—, y sólo lo exacto: un `numeric` sin precisión, lo opaco o
+una lista salen como texto y el almacén los estrecha como antes; cada valor, del cable a su texto
+canónico (`texto.rs`) y de ahí a su tipo con `ore_core::tipos`, el analizador del almacén. Una
+copia de humo —Postgres v2 → `ore-store-r2 sellar-flujo` → el S3 de mentira, y de vuelta— da las
+10 filas de `kit.tipos` exactas, sin nada sin estrechar: las copias en vivo pasan a Arrow por el
+mismo camino que BigQuery. `leer` sin `formato: arrow` sigue en texto.
 
 **Lo que F2·0 destapó.** `ore-sql` y el lector de JSONL traducían todo operador que no fuera `gt`
 como una igualdad: con dos operadores no se notaba, con diez un `in` habría contestado otra cosa

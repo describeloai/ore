@@ -129,8 +129,11 @@ y `juntas` quedan para F9.
   READ ONLY` en Postgres; en BigQuery, la cuenta del driver sin permisos de escritura).
 - **Una conexión no se comparte entre credenciales**: en `servir`, el conector guarda conexiones
   por `url` y las cierra a los 60 s sin uso.
-- **Cancelar** es cerrar su stdin o `SIGTERM`: el conector cancela en el origen (`pg_cancel_backend`,
-  `jobs.cancel`) antes de salir.
+- **Cancelar** es `SIGTERM` (en `leer`) o, en `servir`, una línea `{"cancelar": "<id>"}` con el `id`
+  de la lectura en curso, o cerrar su stdin: el conector cancela **en el origen** (la petición de
+  cancelación de Postgres, `jobs.cancel`) antes de salir o de seguir. En `servir` la entrada se lee
+  en su propio hilo, así que se oye mientras una lectura corre; un `cancelar` que llega antes de que
+  su lectura empiece la contesta como cancelada sin correrla.
 
 ## 2. El kit de conformidad de los conectores
 
