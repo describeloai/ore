@@ -1,0 +1,46 @@
+{
+  "pide": "GET projects/project-8853a180-450d-47be-b83/datasets/ore_kit/tables/grande?",
+  "respuesta": {
+    "creationTime": "1791147158083",
+    "etag": "sWOVjOGoxz3Ihkm3IVaY8Q==",
+    "id": "project-8853a180-450d-47be-b83:ore_kit.grande",
+    "kind": "bigquery#table",
+    "lastModifiedTime": "1791147158084",
+    "location": "EU",
+    "numActiveLogicalBytes": "44888896",
+    "numBytes": "44888896",
+    "numLongTermBytes": "0",
+    "numLongTermLogicalBytes": "0",
+    "numRows": "1000000",
+    "numTotalLogicalBytes": "44888896",
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "grupo",
+          "type": "INTEGER"
+        },
+        {
+          "name": "importe",
+          "precision": "12",
+          "scale": "2",
+          "type": "NUMERIC"
+        },
+        {
+          "name": "nota",
+          "type": "STRING"
+        }
+      ]
+    },
+    "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/project-8853a180-450d-47be-b83/datasets/ore_kit/tables/grande",
+    "tableReference": {
+      "datasetId": "ore_kit",
+      "projectId": "project-8853a180-450d-47be-b83",
+      "tableId": "grande"
+    },
+    "type": "TABLE"
+  }
+}

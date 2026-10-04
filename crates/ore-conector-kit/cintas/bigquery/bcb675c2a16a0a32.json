@@ -1,0 +1,59 @@
+{
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"formatOptions\":{\"useInt64Timestamp\":true},\"parameterMode\":\"NAMED\",\"query\":\"SELECT `id` FROM `project-8853a180-450d-47be-b83.ore_kit.tipos` WHERE `logico` = @p0\",\"queryParameters\":[{\"name\":\"p0\",\"parameterType\":{\"type\":\"BOOL\"},\"parameterValue\":{\"value\":\"false\"}}],\"timeoutMs\":10000,\"useLegacySql\":false}",
+  "respuesta": {
+    "cacheHit": false,
+    "creationTime": "1791147164355",
+    "endTime": "1791147164579",
+    "jobComplete": true,
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "jobReference": {
+      "jobId": "job_x8A3NOEm_aP053k2kNOSvQM7e-Y7",
+      "location": "EU",
+      "projectId": "project-8853a180-450d-47be-b83"
+    },
+    "kind": "bigquery#queryResponse",
+    "location": "EU",
+    "pageRowCount": "3",
+    "queryId": "job_x8A3NOEm_aP053k2kNOSvQM7e-Y7",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "8"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "2"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "4"
+          }
+        ]
+      }
+    ],
+    "schema": {
+      "fields": [
+        {
+          "mode": "NULLABLE",
+          "name": "id",
+          "type": "INTEGER"
+        }
+      ]
+    },
+    "startTime": "1791147164418",
+    "statementType": "SELECT",
+    "totalBytesBilled": "10485760",
+    "totalBytesProcessed": "88",
+    "totalRows": "3",
+    "totalSlotMs": "8"
+  }
+}

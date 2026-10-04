@@ -1,0 +1,27 @@
+{
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"dryRun\":true,\"formatOptions\":{\"useInt64Timestamp\":true},\"query\":\"SELECT `id` FROM `project-8853a180-450d-47be-b83.ore_kit.grande`\",\"timeoutMs\":10000,\"useLegacySql\":false}",
+  "respuesta": {
+    "cacheHit": false,
+    "creationTime": "1791147242376",
+    "endTime": "1791147242501",
+    "jobComplete": true,
+    "jobReference": {
+      "location": "EU",
+      "projectId": "project-8853a180-450d-47be-b83"
+    },
+    "kind": "bigquery#queryResponse",
+    "location": "EU",
+    "schema": {
+      "fields": [
+        {
+          "mode": "NULLABLE",
+          "name": "id",
+          "type": "INTEGER"
+        }
+      ]
+    },
+    "statementType": "SELECT",
+    "totalBytesBilled": "0",
+    "totalBytesProcessed": "8000000"
+  }
+}

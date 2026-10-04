@@ -1,0 +1,75 @@
+{
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"formatOptions\":{\"useInt64Timestamp\":true},\"query\":\"SELECT `entero`, `fecha`, `id`, `importe`, `instante`, `local`, `logico`, `real`, `texto` FROM `project-8853a180-450d-47be-b83.ore_kit.vacia`\",\"timeoutMs\":10000,\"useLegacySql\":false}",
+  "respuesta": {
+    "cacheHit": false,
+    "creationTime": "1791147187431",
+    "endTime": "1791147187618",
+    "jobComplete": true,
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "jobReference": {
+      "jobId": "job_b-eZ_cYwmSAeSpbmpMVrKedFpmIO",
+      "location": "EU",
+      "projectId": "project-8853a180-450d-47be-b83"
+    },
+    "kind": "bigquery#queryResponse",
+    "location": "EU",
+    "queryId": "job_b-eZ_cYwmSAeSpbmpMVrKedFpmIO",
+    "schema": {
+      "fields": [
+        {
+          "mode": "NULLABLE",
+          "name": "entero",
+          "type": "INTEGER"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "fecha",
+          "type": "DATE"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "importe",
+          "type": "NUMERIC"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "instante",
+          "type": "TIMESTAMP"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "local",
+          "type": "DATETIME"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "logico",
+          "type": "BOOLEAN"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "real",
+          "type": "FLOAT"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "texto",
+          "type": "STRING"
+        }
+      ]
+    },
+    "startTime": "1791147187469",
+    "statementType": "SELECT",
+    "totalBytesBilled": "0",
+    "totalBytesProcessed": "0",
+    "totalRows": "0",
+    "totalSlotMs": "1"
+  }
+}

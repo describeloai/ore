@@ -1,0 +1,66 @@
+{
+  "pide": "GET projects/project-8853a180-450d-47be-b83/datasets/ore_kit/tables/vacia?",
+  "respuesta": {
+    "creationTime": "1791147155198",
+    "etag": "OZrJBo5tl2rUDS+SuZ6I0A==",
+    "id": "project-8853a180-450d-47be-b83:ore_kit.vacia",
+    "kind": "bigquery#table",
+    "lastModifiedTime": "1791147155199",
+    "location": "EU",
+    "numActiveLogicalBytes": "0",
+    "numBytes": "0",
+    "numLongTermBytes": "0",
+    "numLongTermLogicalBytes": "0",
+    "numRows": "0",
+    "numTotalLogicalBytes": "0",
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "entero",
+          "type": "INTEGER"
+        },
+        {
+          "name": "importe",
+          "precision": "12",
+          "scale": "2",
+          "type": "NUMERIC"
+        },
+        {
+          "name": "real",
+          "type": "FLOAT"
+        },
+        {
+          "name": "texto",
+          "type": "STRING"
+        },
+        {
+          "name": "fecha",
+          "type": "DATE"
+        },
+        {
+          "name": "local",
+          "type": "DATETIME"
+        },
+        {
+          "name": "instante",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "logico",
+          "type": "BOOLEAN"
+        }
+      ]
+    },
+    "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/project-8853a180-450d-47be-b83/datasets/ore_kit/tables/vacia",
+    "tableReference": {
+      "datasetId": "ore_kit",
+      "projectId": "project-8853a180-450d-47be-b83",
+      "tableId": "vacia"
+    },
+    "type": "TABLE"
+  }
+}

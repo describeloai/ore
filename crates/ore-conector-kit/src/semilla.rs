@@ -398,6 +398,22 @@ pub fn primeros(columna: &str, descendente: bool, n: usize) -> Vec<i64> {
         .collect()
 }
 
+/// **Los valores de `columna` de estas filas**, en su orden: lo que un
+/// `ORDER BY columna` fija. Dos órdenes con las mismas claves son igual de
+/// correctos aunque sus empates salgan cambiados.
+pub fn claves(columna: &str, ids: &[i64]) -> Vec<Option<Valor>> {
+    let i = indice(columna);
+    let filas = valores();
+    ids.iter()
+        .map(|id| {
+            filas
+                .iter()
+                .find(|f| f[0] == Some(Valor::Entero(*id)))
+                .and_then(|f| f[i].clone())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +466,9 @@ mod tests {
         assert_eq!(primeros("entero", true, 3), [3, 10, 9]);
         assert_eq!(primeros("entero", false, 2), [4, 2]);
         assert_eq!(primeros("importe", true, 11).last(), Some(&9));
+        // Los dos nulos de `importe` empatan: 7, 9 y 9, 7 son el mismo orden.
+        assert_eq!(claves("importe", &[7, 9]), claves("importe", &[9, 7]));
+        assert_ne!(claves("importe", &[1, 6]), claves("importe", &[6, 1]));
         assert!(como("ñandú", "%n%") && !como("Ana", "a%"));
     }
 }

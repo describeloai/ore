@@ -1,0 +1,388 @@
+{
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"formatOptions\":{\"useInt64Timestamp\":true},\"query\":\"SELECT `entero`, `fecha`, `id`, `importe`, `instante`, `local`, `logico`, `real`, `texto` FROM `project-8853a180-450d-47be-b83.ore_kit.tipos`\",\"timeoutMs\":10000,\"useLegacySql\":false}",
+  "respuesta": {
+    "cacheHit": false,
+    "creationTime": "1791147186726",
+    "endTime": "1791147186896",
+    "jobComplete": true,
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "jobReference": {
+      "jobId": "job_effNGwxCez5ZyYhNbCzryHagdjcn",
+      "location": "EU",
+      "projectId": "project-8853a180-450d-47be-b83"
+    },
+    "kind": "bigquery#queryResponse",
+    "location": "EU",
+    "pageRowCount": "10",
+    "queryId": "job_effNGwxCez5ZyYhNbCzryHagdjcn",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "9223372036854775807"
+          },
+          {
+            "v": "2099-12-31"
+          },
+          {
+            "v": "3"
+          },
+          {
+            "v": "9999999999.99"
+          },
+          {
+            "v": "4102444799999999"
+          },
+          {
+            "v": "2099-12-31T23:59:59.999999"
+          },
+          {
+            "v": "true"
+          },
+          {
+            "v": "1.25"
+          },
+          {
+            "v": ""
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "7"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "10"
+          },
+          {
+            "v": "2026-01-01"
+          },
+          {
+            "v": "10"
+          },
+          {
+            "v": "7"
+          },
+          {
+            "v": "1767225600000000"
+          },
+          {
+            "v": "2026-01-01T00:00:00"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "-0.25"
+          },
+          {
+            "v": "Jo"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "3"
+          },
+          {
+            "v": "2000-02-29"
+          },
+          {
+            "v": "8"
+          },
+          {
+            "v": "1.1"
+          },
+          {
+            "v": "951827400500000"
+          },
+          {
+            "v": "2000-02-29T12:30:00"
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": "4.75"
+          },
+          {
+            "v": "ñandú"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "4"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "9"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "true"
+          },
+          {
+            "v": "5.5"
+          },
+          {
+            "v": "línea\nnueva"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "-7"
+          },
+          {
+            "v": "1970-01-01"
+          },
+          {
+            "v": "2"
+          },
+          {
+            "v": "-2.5"
+          },
+          {
+            "v": "0"
+          },
+          {
+            "v": "1970-01-01T00:00:00"
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": "-1.0E10"
+          },
+          {
+            "v": "Ana"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "1"
+          },
+          {
+            "v": "2026-10-03"
+          },
+          {
+            "v": "5"
+          },
+          {
+            "v": "0.01"
+          },
+          {
+            "v": "1791107999999999"
+          },
+          {
+            "v": "2026-10-03T23:59:59"
+          },
+          {
+            "v": "true"
+          },
+          {
+            "v": "2.5"
+          },
+          {
+            "v": "a%b"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "0"
+          },
+          {
+            "v": "2026-10-04"
+          },
+          {
+            "v": "1"
+          },
+          {
+            "v": "0"
+          },
+          {
+            "v": "1791108000000000"
+          },
+          {
+            "v": "2026-10-04T10:00:00"
+          },
+          {
+            "v": "true"
+          },
+          {
+            "v": "0.5"
+          },
+          {
+            "v": "ana"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "-9223372036854775808"
+          },
+          {
+            "v": "1900-01-01"
+          },
+          {
+            "v": "4"
+          },
+          {
+            "v": "-9999999999.99"
+          },
+          {
+            "v": "-2208988800000000"
+          },
+          {
+            "v": "1900-01-01T00:00:00"
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": "3.0"
+          },
+          {
+            "v": "a_b"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "2"
+          },
+          {
+            "v": "2026-10-05"
+          },
+          {
+            "v": "6"
+          },
+          {
+            "v": "100"
+          },
+          {
+            "v": "1791158400000001"
+          },
+          {
+            "v": "2026-10-05T00:00:00.000001"
+          },
+          {
+            "v": "true"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "o'neil"
+          }
+        ]
+      }
+    ],
+    "schema": {
+      "fields": [
+        {
+          "mode": "NULLABLE",
+          "name": "entero",
+          "type": "INTEGER"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "fecha",
+          "type": "DATE"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "importe",
+          "type": "NUMERIC"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "instante",
+          "type": "TIMESTAMP"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "local",
+          "type": "DATETIME"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "logico",
+          "type": "BOOLEAN"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "real",
+          "type": "FLOAT"
+        },
+        {
+          "mode": "NULLABLE",
+          "name": "texto",
+          "type": "STRING"
+        }
+      ]
+    },
+    "startTime": "1791147186768",
+    "statementType": "SELECT",
+    "totalBytesBilled": "10485760",
+    "totalBytesProcessed": "601",
+    "totalRows": "10",
+    "totalSlotMs": "10"
+  }
+}

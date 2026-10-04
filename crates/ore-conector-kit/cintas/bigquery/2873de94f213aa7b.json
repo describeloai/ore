@@ -1,0 +1,94 @@
+{
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"formatOptions\":{\"useInt64Timestamp\":true},\"parameterMode\":\"NAMED\",\"query\":\"SELECT `id` FROM `project-8853a180-450d-47be-b83.ore_kit.tipos` WHERE `entero` <> @p0\",\"queryParameters\":[{\"name\":\"p0\",\"parameterType\":{\"type\":\"INT64\"},\"parameterValue\":{\"value\":\"0\"}}],\"timeoutMs\":10000,\"useLegacySql\":false}",
+  "respuesta": {
+    "cacheHit": false,
+    "creationTime": "1791147166008",
+    "endTime": "1791147166360",
+    "jobComplete": true,
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "jobReference": {
+      "jobId": "job_eZ6BCKwvMb5qMdniaF_0biTPYaJV",
+      "location": "EU",
+      "projectId": "project-8853a180-450d-47be-b83"
+    },
+    "kind": "bigquery#queryResponse",
+    "location": "EU",
+    "pageRowCount": "8",
+    "queryId": "job_eZ6BCKwvMb5qMdniaF_0biTPYaJV",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "3"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "10"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "8"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "9"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "2"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "5"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "4"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "6"
+          }
+        ]
+      }
+    ],
+    "schema": {
+      "fields": [
+        {
+          "mode": "NULLABLE",
+          "name": "id",
+          "type": "INTEGER"
+        }
+      ]
+    },
+    "startTime": "1791147166207",
+    "statementType": "SELECT",
+    "totalBytesBilled": "10485760",
+    "totalBytesProcessed": "152",
+    "totalRows": "8",
+    "totalSlotMs": "6"
+  }
+}

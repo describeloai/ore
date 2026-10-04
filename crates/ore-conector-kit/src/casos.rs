@@ -406,7 +406,12 @@ impl Kit<'_> {
                     falla = true;
                     partes.push(format!("no declara `orderBy` y sirve {que}"));
                 }
-                (_, Ok(ids)) if ids == debido => partes.push(format!("{que} en su orden")),
+                // Por las claves y no por los `id`: dos filas empatadas (dos
+                // nulos) pueden salir en cualquier orden, y las dos son
+                // correctas.
+                (_, Ok(ids)) if semilla::claves(col, &ids) == semilla::claves(col, &debido) => {
+                    partes.push(format!("{que} en su orden"))
+                }
                 (_, Ok(ids)) => {
                     falla = true;
                     partes.push(format!("{que} → {ids:?} (debía {debido:?})"));

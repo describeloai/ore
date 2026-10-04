@@ -1,0 +1,66 @@
+{
+  "pide": "GET projects/project-8853a180-450d-47be-b83/datasets/ore_kit/tables/tipos?",
+  "respuesta": {
+    "creationTime": "1791147154590",
+    "etag": "nVYcH9W/8BABMS7dYj3haw==",
+    "id": "project-8853a180-450d-47be-b83:ore_kit.tipos",
+    "kind": "bigquery#table",
+    "lastModifiedTime": "1791147154591",
+    "location": "EU",
+    "numActiveLogicalBytes": "601",
+    "numBytes": "601",
+    "numLongTermBytes": "0",
+    "numLongTermLogicalBytes": "0",
+    "numRows": "10",
+    "numTotalLogicalBytes": "601",
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "entero",
+          "type": "INTEGER"
+        },
+        {
+          "name": "importe",
+          "precision": "12",
+          "scale": "2",
+          "type": "NUMERIC"
+        },
+        {
+          "name": "real",
+          "type": "FLOAT"
+        },
+        {
+          "name": "texto",
+          "type": "STRING"
+        },
+        {
+          "name": "fecha",
+          "type": "DATE"
+        },
+        {
+          "name": "local",
+          "type": "DATETIME"
+        },
+        {
+          "name": "instante",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "logico",
+          "type": "BOOLEAN"
+        }
+      ]
+    },
+    "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/project-8853a180-450d-47be-b83/datasets/ore_kit/tables/tipos",
+    "tableReference": {
+      "datasetId": "ore_kit",
+      "projectId": "project-8853a180-450d-47be-b83",
+      "tableId": "tipos"
+    },
+    "type": "TABLE"
+  }
+}

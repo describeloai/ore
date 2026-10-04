@@ -1,0 +1,4 @@
+{
+  "error": "BigQuery contestó 499: Job execution was cancelled: Job timed out in the queue after 0 sec",
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"formatOptions\":{\"useInt64Timestamp\":true},\"jobTimeoutMs\":\"1\",\"query\":\"SELECT `id`, `nota` FROM `project-8853a180-450d-47be-b83.ore_kit.grande`\",\"timeoutMs\":10000,\"useLegacySql\":false}"
+}

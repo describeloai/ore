@@ -440,7 +440,7 @@ jobs:
   # Uno que aún no es v2 corre en línea de base: dice cómo está (en el
   # resumen del trabajo) y no falla.
   #
-  # BigQuery no está: su banco son respuestas grabadas (F2·3).
+  # BigQuery, de la cinta que grabó la pasada de verdad (F2·3).
   conectores:
     runs-on: ubuntu-24.04
     services:
@@ -480,6 +480,21 @@ jobs:
           echo "### ore-read-s3" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-s3 --banco s3 \
             --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):
+      # lo que el BigQuery de verdad contestó, sin red ni token ni coste. Por
+      # consulta: la Storage Read y el caso 7 (10⁶ filas) se prueban en la
+      # pasada de verdad, que es la que graba la cinta (ADR 0053 F2·3).
+      - name: el conector de BigQuery
+        env:
+          BQ_KIT_PROYECTO: project-8853a180-450d-47be-b83
+          ORE_BQ_CINTA: crates/ore-conector-kit/cintas/bigquery
+          ORE_BQ_CINTA_MODO: reproducir
+        run: |
+          cargo build --quiet -p ore-read-bigquery
+          echo "### ore-read-bigquery (cinta)" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-bigquery --banco bigquery \
+            --casos 1,2,3,4,5,6,8,9,10,11,12,13,14 --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ══════════════════════════════════════════════════════════════════════════
   # LA IMAGEN — construir y desplegar deja de ser una costumbre

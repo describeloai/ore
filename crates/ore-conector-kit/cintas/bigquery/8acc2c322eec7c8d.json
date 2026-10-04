@@ -1,0 +1,44 @@
+{
+  "pide": "POST projects/project-8853a180-450d-47be-b83/queries {\"formatOptions\":{\"useInt64Timestamp\":true},\"parameterMode\":\"NAMED\",\"query\":\"SELECT `id` FROM `project-8853a180-450d-47be-b83.ore_kit.tipos` WHERE `texto` = @p0\",\"queryParameters\":[{\"name\":\"p0\",\"parameterType\":{\"type\":\"STRING\"},\"parameterValue\":{\"value\":\"ana\"}}],\"timeoutMs\":10000,\"useLegacySql\":false}",
+  "respuesta": {
+    "cacheHit": true,
+    "creationTime": "1791147241716",
+    "endTime": "1791147241834",
+    "jobComplete": true,
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "jobReference": {
+      "jobId": "job_3QnO3pOM2yRr-YKL26E6wb5eLKJA",
+      "location": "EU",
+      "projectId": "project-8853a180-450d-47be-b83"
+    },
+    "kind": "bigquery#queryResponse",
+    "location": "EU",
+    "pageRowCount": "1",
+    "queryId": "job_3QnO3pOM2yRr-YKL26E6wb5eLKJA",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "1"
+          }
+        ]
+      }
+    ],
+    "schema": {
+      "fields": [
+        {
+          "mode": "NULLABLE",
+          "name": "id",
+          "type": "INTEGER"
+        }
+      ]
+    },
+    "startTime": "1791147241782",
+    "statementType": "SELECT",
+    "totalBytesBilled": "0",
+    "totalBytesProcessed": "0",
+    "totalRows": "1"
+  }
+}
