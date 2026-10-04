@@ -1079,7 +1079,10 @@ spec:
             let (_, deps) = n.get(campo).unwrap_or_else(|| panic!("{campo}"));
             for (k, v) in deps.entries() {
                 let (nombre, v) = (k.as_str().unwrap(), v.as_str().unwrap());
-                assert!(trae.contains(&(nombre, v)), "{nombre}@{v} no es lo que trae la sesión: {trae:?}");
+                assert!(
+                    trae.contains(&(nombre, v)),
+                    "{nombre}@{v} no es lo que trae la sesión: {trae:?}"
+                );
                 vistas += 1;
             }
         }

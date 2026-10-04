@@ -162,7 +162,9 @@ pub(crate) struct Provista {
 }
 
 fn lineas_de(t: &str) -> impl Iterator<Item = &str> {
-    t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
+    t.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
 }
 
 /// Lo que trae la imagen del puesto de ese entorno, en el orden de su lista.
@@ -175,7 +177,11 @@ pub(crate) fn provistas_de(entorno: &str) -> Vec<Provista> {
                 let tipos = p.next() == Some("tipos");
                 // `@ámbito/n@v`: el último `@` que no es el primero.
                 let i = nv.rfind('@').filter(|i| *i > 0)?;
-                Some(Provista { nombre: nv[..i].into(), version: nv[i + 1..].into(), tipos })
+                Some(Provista {
+                    nombre: nv[..i].into(),
+                    version: nv[i + 1..].into(),
+                    tipos,
+                })
             })
             .collect(),
         JVM => lineas_de(JARS_JVM)
@@ -183,7 +189,11 @@ pub(crate) fn provistas_de(entorno: &str) -> Vec<Provista> {
                 // `grupo/con/barras/artefacto versión`, como lo lee `Capa provisto`.
                 let (ruta, v) = l.split_once(char::is_whitespace)?;
                 let (g, a) = ruta.rsplit_once('/')?;
-                Some(Provista { nombre: format!("{}:{a}", g.replace('/', ".")), version: v.trim().into(), tipos: false })
+                Some(Provista {
+                    nombre: format!("{}:{a}", g.replace('/', ".")),
+                    version: v.trim().into(),
+                    tipos: false,
+                })
             })
             .chain(std::iter::once(Provista {
                 nombre: "org.duckdb:duckdb_jdbc".into(),
@@ -194,7 +204,11 @@ pub(crate) fn provistas_de(entorno: &str) -> Vec<Provista> {
         _ => lineas_de(PROVISTO_PYTHON)
             .filter_map(|l| {
                 let (n, v) = l.split_once("==")?;
-                Some(Provista { nombre: n.trim().into(), version: v.trim().into(), tipos: false })
+                Some(Provista {
+                    nombre: n.trim().into(),
+                    version: v.trim().into(),
+                    tipos: false,
+                })
             })
             .collect(),
     }
@@ -205,7 +219,10 @@ fn provistas_json(entorno: &str) -> Json {
         provistas_de(entorno)
             .into_iter()
             .map(|p| {
-                let mut campos = vec![("nombre", Json::s(&p.nombre)), ("version", Json::s(&p.version))];
+                let mut campos = vec![
+                    ("nombre", Json::s(&p.nombre)),
+                    ("version", Json::s(&p.version)),
+                ];
                 if p.tipos {
                     campos.push(("tipos", Json::Bool(true)));
                 }
@@ -627,25 +644,37 @@ pub(crate) fn solo_provistas(declarado: &[String], entorno: &str) -> Option<Vec<
             NODE => {
                 let d = d.strip_prefix(DEV).unwrap_or(d);
                 match d.rfind('@').filter(|i| *i > 0) {
-                    Some(i) => (d[..i].to_string(), Some(d[i + 1..].to_string()).filter(|r| r != "*")),
+                    Some(i) => (
+                        d[..i].to_string(),
+                        Some(d[i + 1..].to_string()).filter(|r| r != "*"),
+                    ),
                     None => (d.to_string(), None),
                 }
             }
             JVM => {
                 let p: Vec<&str> = d.split(':').collect();
-                (p.iter().take(2).copied().collect::<Vec<_>>().join(":"), p.get(2).map(|v| v.to_string()))
+                (
+                    p.iter().take(2).copied().collect::<Vec<_>>().join(":"),
+                    p.get(2).map(|v| v.to_string()),
+                )
             }
             _ => {
                 let corte = d.find(|c: char| "<>=!~;[ ".contains(c)).unwrap_or(d.len());
                 let resto = d[corte..].trim();
-                (d[..corte].to_string(), resto.strip_prefix("==").map(|v| v.trim().to_string()))
+                (
+                    d[..corte].to_string(),
+                    resto.strip_prefix("==").map(|v| v.trim().to_string()),
+                )
             }
         };
         let p = trae.iter().find(|p| normal(&p.nombre) == normal(&n))?;
         if let Some(v) = pedido
             && v != p.version
         {
-            avisos.push(format!("pediste {n} {v}, y esta sesión trae la {}: se usa la de la sesión", p.version));
+            avisos.push(format!(
+                "pediste {n} {v}, y esta sesión trae la {}: se usa la de la sesión",
+                p.version
+            ));
         }
     }
     Some(avisos)
@@ -896,36 +925,99 @@ mod prueba {
     #[test]
     fn las_provistas_de_cada_imagen_salen_de_sus_listas() {
         let node = provistas_de(NODE);
-        assert!(node.contains(&Provista { nombre: "ore".into(), version: "1.0.0".into(), tipos: false }), "{node:?}");
-        assert!(node.contains(&Provista { nombre: "@duckdb/node-api".into(), version: "1.5.5-r.5".into(), tipos: false }));
-        assert!(node.contains(&Provista { nombre: "typescript".into(), version: "5.9.3".into(), tipos: true }));
-        assert!(node.contains(&Provista { nombre: "@types/node".into(), version: "24.19.1".into(), tipos: true }));
+        assert!(
+            node.contains(&Provista {
+                nombre: "ore".into(),
+                version: "1.0.0".into(),
+                tipos: false
+            }),
+            "{node:?}"
+        );
+        assert!(node.contains(&Provista {
+            nombre: "@duckdb/node-api".into(),
+            version: "1.5.5-r.5".into(),
+            tipos: false
+        }));
+        assert!(node.contains(&Provista {
+            nombre: "typescript".into(),
+            version: "5.9.3".into(),
+            tipos: true
+        }));
+        assert!(node.contains(&Provista {
+            nombre: "@types/node".into(),
+            version: "24.19.1".into(),
+            tipos: true
+        }));
         let py = provistas_de(PYTHON);
-        for n in ["pandas", "pyarrow", "duckdb", "google-cloud-storage", "numpy"] {
-            assert!(py.iter().any(|p| p.nombre == n && !p.version.is_empty()), "{n}: {py:?}");
+        for n in [
+            "pandas",
+            "pyarrow",
+            "duckdb",
+            "google-cloud-storage",
+            "numpy",
+        ] {
+            assert!(
+                py.iter().any(|p| p.nombre == n && !p.version.is_empty()),
+                "{n}: {py:?}"
+            );
         }
         let jvm = provistas_de(JVM);
-        assert!(jvm.iter().any(|p| p.nombre == "org.apache.arrow:arrow-vector" && p.version == "19.0.0"), "{jvm:?}");
-        assert!(jvm.iter().any(|p| p.nombre == "com.fasterxml.jackson.core:jackson-databind"));
-        assert_eq!(jvm.last().map(|p| p.nombre.as_str()), Some("org.duckdb:duckdb_jdbc"));
+        assert!(
+            jvm.iter()
+                .any(|p| p.nombre == "org.apache.arrow:arrow-vector" && p.version == "19.0.0"),
+            "{jvm:?}"
+        );
+        assert!(
+            jvm.iter()
+                .any(|p| p.nombre == "com.fasterxml.jackson.core:jackson-databind")
+        );
+        assert_eq!(
+            jvm.last().map(|p| p.nombre.as_str()),
+            Some("org.duckdb:duckdb_jdbc")
+        );
     }
 
     #[test]
     fn lo_declarado_que_trae_la_imagen_no_pide_capa() {
         // Node: el SDK y las herramientas de la semilla v5; una versión que no
         // es la de la sesión, sólo avisa.
-        let d = vec!["ore@1.0.0".to_string(), "dev:@types/node@24.19.1".into(), "dev:typescript@5.4.5".into()];
+        let d = vec![
+            "ore@1.0.0".to_string(),
+            "dev:@types/node@24.19.1".into(),
+            "dev:typescript@5.4.5".into(),
+        ];
         let a = solo_provistas(&d, NODE).expect("todo de la imagen");
-        assert_eq!(a, vec!["pediste typescript 5.4.5, y esta sesión trae la 5.9.3: se usa la de la sesión".to_string()]);
+        assert_eq!(
+            a,
+            vec![
+                "pediste typescript 5.4.5, y esta sesión trae la 5.9.3: se usa la de la sesión"
+                    .to_string()
+            ]
+        );
         // Con una sola que no trae, hay capa.
-        assert_eq!(solo_provistas(&[d[0].clone(), "lodash@^4".into()], NODE), None);
+        assert_eq!(
+            solo_provistas(&[d[0].clone(), "lodash@^4".into()], NODE),
+            None
+        );
         // Python: PEP 503 en el nombre; un rango no avisa, un `==` distinto sí.
-        assert_eq!(solo_provistas(&["Pandas>=2".into(), "google_cloud_storage".into()], PYTHON), Some(vec![]));
-        assert_eq!(solo_provistas(&["pandas==1.0".into()], PYTHON).map(|a| a.len()), Some(1));
+        assert_eq!(
+            solo_provistas(&["Pandas>=2".into(), "google_cloud_storage".into()], PYTHON),
+            Some(vec![])
+        );
+        assert_eq!(
+            solo_provistas(&["pandas==1.0".into()], PYTHON).map(|a| a.len()),
+            Some(1)
+        );
         assert_eq!(solo_provistas(&["polars".into()], PYTHON), None);
         // JVM: `g:a` decide.
-        assert_eq!(solo_provistas(&["org.apache.arrow:arrow-vector:19.0.0".into()], JVM), Some(vec![]));
-        assert_eq!(solo_provistas(&["com.google.guava:guava:33.0.0-jre".into()], JVM), None);
+        assert_eq!(
+            solo_provistas(&["org.apache.arrow:arrow-vector:19.0.0".into()], JVM),
+            Some(vec![])
+        );
+        assert_eq!(
+            solo_provistas(&["com.google.guava:guava:33.0.0-jre".into()], JVM),
+            None
+        );
 
         // Y el entorno: `lista`, sin digest (sin capa), con los avisos.
         let r = std::env::temp_dir().join(format!("ore-provistas-{}", std::process::id()));
@@ -937,8 +1029,15 @@ mod prueba {
         )
         .unwrap();
         let e = entorno_de_en(&r, Some("packages/p/f"), NODE);
-        assert_eq!((e.estado, e.digest.as_str(), e.declarado.len()), ("lista", "", 3));
-        std::fs::write(r.join("packages/p/f/package.json"), r#"{"dependencies":{"ore":"1.0.0","lodash":"^4"}}"#).unwrap();
+        assert_eq!(
+            (e.estado, e.digest.as_str(), e.declarado.len()),
+            ("lista", "", 3)
+        );
+        std::fs::write(
+            r.join("packages/p/f/package.json"),
+            r#"{"dependencies":{"ore":"1.0.0","lodash":"^4"}}"#,
+        )
+        .unwrap();
         let e = entorno_de_en(&r, Some("packages/p/f"), NODE);
         assert_eq!(e.estado, "pendiente");
         assert!(e.digest.starts_with("capa-"), "{}", e.digest);
@@ -949,9 +1048,15 @@ mod prueba {
     fn el_duckdb_jdbc_es_el_del_dockerfile() {
         // Las dos etapas que lo nombran (`puesto-jvm` y la capa JVM).
         let d = include_str!("../../../Dockerfile");
-        let args: Vec<&str> = d.lines().filter_map(|l| l.strip_prefix("ARG DUCKDB_JDBC=")).collect();
+        let args: Vec<&str> = d
+            .lines()
+            .filter_map(|l| l.strip_prefix("ARG DUCKDB_JDBC="))
+            .collect();
         assert!(!args.is_empty());
-        assert!(args.iter().all(|v| v.trim() == DUCKDB_JDBC), "{args:?} ≠ {DUCKDB_JDBC}");
+        assert!(
+            args.iter().all(|v| v.trim() == DUCKDB_JDBC),
+            "{args:?} ≠ {DUCKDB_JDBC}"
+        );
     }
 
     #[test]
