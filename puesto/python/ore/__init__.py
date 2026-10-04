@@ -1332,18 +1332,26 @@ def create_collection(name, media, formats, owner=None, comment=None, labels=Non
         raise RuntimeError("%s: a collection with that name already exists (`if not exists` leaves it as it is)" % que)
     if virtual and not source:
         raise ValueError("%s: `virtual` is for a collection with a `source`: a written one has no origin" % que)
-    _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion,
-                                         source, virtual))
-    return _Result({"collection": nombre, "created": True})
+    r = _poner(que, ruta, _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion,
+                                             source, virtual))
+    out = {"collection": nombre, "created": True}
+    copia = _estado_de_la_copia(r)
+    if copia:
+        # 0049 B8·3: born managed from an object table, its copy is queued
+        out["copy"] = copia
+    return _Result(out)
 
 
 def alter_collection(name, managed=True):
     """`alter media collection db.schema.c set managed` (`managed=False`: `set
     virtual`), 0049 B8: a collection with an origin passes from served in
-    place to **copied into the lake** —the copy runs when the branch is
-    merged, as for any managed collection—, or back. Like Databricks' `ALTER
-    TABLE … SET MANAGED`. A written collection has no origin: `ValueError`.
-    Returns `{collection, status}`: `managed`, `virtual`, or `already …`."""
+    place to **copied into the lake** —`set managed` queues the copy in the
+    branch it is written in (0049 B8·3); until it lands, the items are still
+    served from the origin, and merging brings what was copied to `main`—,
+    or back. Like Databricks' `ALTER TABLE … SET MANAGED`. A written
+    collection has no origin: `ValueError`. Returns `{collection, status}`:
+    `managed · copy queued`, `managed · copy NOT queued: <why>`, `virtual`,
+    or `already …`."""
     nombre = _corto(_nombre_de(name), "alter media collection: the name")
     que = "alter media collection %s" % nombre
     ruta = _ruta_de_vista(nombre, "MediaCollection")
@@ -1367,8 +1375,9 @@ def alter_collection(name, managed=True):
         while j < len(lineas) and lineas[j].startswith("    "):
             j += 1
         lineas.insert(j, "  virtual: true")
-    _poner(que, ruta, "\n".join(lineas))
-    return _Result({"collection": nombre, "status": estado})
+    r = _poner(que, ruta, "\n".join(lineas))
+    copia = _estado_de_la_copia(r) if managed else None
+    return _Result({"collection": nombre, "status": estado + (" · " + copia if copia else "")})
 
 
 # ── La vista (ADR 0040 paso 5) ─────────────────────────────────────────────
@@ -1558,6 +1567,19 @@ def _poner(que, ruta, texto):
         if r.get("diagnosticos"):
             raise ValueError("%s: %s" % (que, "; ".join("%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
         raise RuntimeError("%s: %s (%s)" % (que, r.get("error", "?"), c))
+    return r or {}
+
+
+def _estado_de_la_copia(r):
+    """0049 B8·3: what the server says of the copy that a collection becoming
+    managed queues. Managed is the bytes in the lake, not the document: until
+    the copy lands, its items are served from the origin."""
+    copia = (r or {}).get("copy")
+    if not isinstance(copia, dict):
+        return None
+    if copia.get("queued"):
+        return "copy queued"
+    return "copy NOT queued: %s" % (copia.get("reason") or copia.get("detail") or "?")
 
 
 def _yaml_de_copia(copia, vista, dueno):

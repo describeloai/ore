@@ -78,6 +78,12 @@
 #  19  `/ramas/{r}/cambios` da la colección con `datos`; se propone como
 #      promoción y, fusionada, `main` tiene su puntero tal cual y la sirve
 #
+# Y 0049 B8·3 · de virtual a mantenida:
+#  20  quitar `virtual: true` a la colección de la rama por `/documentos` (lo que
+#      hace `alter media collection … set managed`) encola su copia con la rama;
+#      la pasada lleva al lago los ítems que ya tenía aunque el listado no
+#      cambió, y su puntero dice `virtual: false` y `por_copiar: 0`
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2`, `ore-read-s3` (en `$ORE_TARGET` o
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -544,4 +550,42 @@ blob() { git --git-dir="$FORJA" rev-parse "$1:$PC" 2>/dev/null; }
   || falla "19 · fusionar: $c · main $(blob main) · rama $(blob "$RAMA") · ítems en main $(items - docs) · $(head -c 300 "$T/r.json")"
 ok "19 · la colección se propone con sus datos (promoción) y, fusionada, main tiene su puntero tal cual y sirve sus 2 ítems"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9319\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# 0049 B8·3 · la virtual de la rama (docsv.raiz) pasa a mantenida por la API,
+# como `alter media collection … set managed`: la escritura encola su copia CON
+# la rama, y la pasada copia al lago los ítems que ya tenía (el listado no
+# cambió: antes no hacía nada), deja `por_copiar: 0` y la sirve igual.
+DOC="$BASE/documentos/MediaCollection/docsv/raiz"
+c=$(curl -s -o "$T/col.json" -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" "$DOC")
+"$PY" -c 'import json,sys
+y=json.load(open(sys.argv[1]))["yaml"]
+l=[x for x in y.split("\n") if x.strip()!="virtual: true"]
+assert len(l)==len(y.split("\n"))-1, y
+json.dump({"yaml":"\n".join(l)},open(sys.argv[2],"w"))' "$T/col.json" "$T/col-m.json" 2> "$T/col.err" \
+  || falla "20 · la colección virtual en la rama: $c · $(tail -2 "$T/col.err")"
+ANTES=$(git --git-dir="$COLA" rev-list --count main)
+c=$(curl -s -o "$T/put.json" -w '%{http_code}' -X PUT -H 'x-ore-sujeto: persona:ana' -H "x-ore-rama: $RAMA" \
+  -H 'content-type: application/json' "$DOC" --data-binary @"$T/col-m.json")
+q=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("copy",{}).get("queued"))' "$T/put.json" 2>/dev/null)
+DESPUES=$(git --git-dir="$COLA" rev-list --count main)
+encolada=""
+if [ "$DESPUES" -gt "$ANTES" ]; then
+  for f in $(git --git-dir="$COLA" diff --name-only "main~$((DESPUES - ANTES))" main); do
+    git --git-dir="$COLA" show "main:$f" | grep -q "name: RAMA, value: \"$RAMA\"" \
+      && git --git-dir="$COLA" show "main:$f" | grep -q 'name: VISTAS, value: "docsv\.raiz"' && encolada=si
+  done
+fi
+[ "$c/$q/$encolada" = "200/True/si" ] \
+  || falla "20 · pasar a mantenida encola su copia en la rama (código/queued/encolada): $c/$q/$encolada · $(head -c 400 "$T/put.json")"
+git clone -q -b "$RAMA" "$FORJA" "$T/job20"; git -C "$T/job20" config core.autocrlf false
+( cd "$T/job20" && "$ORE" overlay . --main origin/main && reclaman "$RAMA" "$T/ramas-job20" \
+  && "$ORE" materialize . --vista docsv.raiz --reclaman "$T/ramas-job20" --informe datasets \
+  && "$ORE" overlay . --undo && git add -A datasets \
+  && git -c user.name=copiador -c user.email=copiador@invalido commit -qm "Copia en la rama" && git push -q origin HEAD:"$RAMA" ) > "$T/job20.txt" 2>&1 \
+  || falla "20 · la pasada del Job en la rama: $(tail -5 "$T/job20.txt")"
+del_puntero() { git --git-dir="$FORJA" show "$RAMA:$PV" 2>/dev/null | "$PY" -c 'import json,sys;print(json.load(sys.stdin).get(sys.argv[1]))' "$1" 2>/dev/null; }
+v="virtual $(del_puntero virtual) · por_copiar $(del_puntero por_copiar) · ítems $(items "$RAMA" docsv) · blobs $(objetos blobs/sha256/)"
+[ "$v" = "virtual False · por_copiar 0 · ítems 2 · blobs 2" ] && grep -q "2 que ya estaban, con sus bytes al lago" "$T/job20.txt" \
+  || falla "20 · tras la pasada (virtual · por_copiar · ítems en la rama · blobs en el lago): $v · $(grep -i 'transacc' "$T/job20.txt" | tail -2)"
+ok "20 · de virtual a mantenida en la rama: se encola al escribirla y la pasada lleva al lago lo que ya tenía (por_copiar 0)"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 los datos en una rama: 1\xe2\x80\x9320\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

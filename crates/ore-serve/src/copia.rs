@@ -40,6 +40,22 @@ use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::path::{Path, PathBuf};
 
+/// 0049 B8·3: ¿es este YAML una `MediaCollection` mantenida —con origen
+/// (`from`) y sin `virtual: true`—? Una escrita (sin `from`) no se copia de
+/// ningún sitio.
+pub(crate) fn es_coleccion_mantenida(texto: &str) -> bool {
+    let Ok(n) = parse::parse(texto) else {
+        return false;
+    };
+    if campo(&n, "kind").as_deref() != Some("MediaCollection") {
+        return false;
+    }
+    let Some((_, spec)) = n.get("spec") else {
+        return false;
+    };
+    spec.get("from").is_some() && campo(spec, "virtual").as_deref() != Some("true")
+}
+
 fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
 }
@@ -365,6 +381,40 @@ impl Servidor {
                 Respuesta::creado(Json::obj(campos))
             }
         }
+    }
+
+    /// **Una colección que pasa a mantenida** (0049 B8·3): `alter media
+    /// collection … set managed`, o una que nace mantenida (`create … from
+    /// object table` sin `virtual`). Mantenida quiere decir sus bytes en el
+    /// lago, así que su copia se encola al escribirla —en la rama donde se
+    /// escribe (`EnRama`), y al fusionar `main` adopta lo copiado—. Con las
+    /// reglas de siempre: sin conducto no se encola y se dice (OOS4011). Lo que
+    /// devuelve va en la respuesta (`copy`); nunca tumba lo escrito.
+    pub(crate) fn tras_mantener(
+        &self,
+        raiz: &Path,
+        paquete: &str,
+        coleccion: &str,
+        sujeto: &Identidad,
+    ) -> Json {
+        let dir = raiz.join("packages").join(paquete);
+        if let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
+            return Json::obj([
+                ("queued", Json::Bool(false)),
+                (
+                    "reason",
+                    Json::s(
+                        "the conduit `materialization.payload` waits for the package owner (OOS4011): the copy is queued when it is answered",
+                    ),
+                ),
+                ("conduit", r.cuerpo),
+            ]);
+        }
+        let encolado = self.encolar_copia(&[format!("{paquete}.{coleccion}")], sujeto);
+        Json::obj([
+            ("queued", Json::Bool(!encolado.starts_with("NO"))),
+            ("detail", Json::s(encolado)),
+        ])
     }
 
     /// **Después de cada inducción que este servidor dispara** (alta, ascender,

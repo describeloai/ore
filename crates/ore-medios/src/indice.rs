@@ -227,10 +227,12 @@ impl Indice {
             .iter()
             .map(|&i| &self.items[i])
             .filter(|x| matches!(x.estado.as_str(), "actual" | "retirado"))
-            .filter(|x| self.virtual_ || x.blob.is_some())
+            // B8·3: de una mantenida, antes lo que ya está en el lago; lo que
+            // todavía no, también (se sirve de su origen mientras se copia).
             .min_by(|a, b| {
-                rango(&a.estado)
-                    .cmp(&rango(&b.estado))
+                (!self.virtual_ && a.blob.is_none())
+                    .cmp(&(!self.virtual_ && b.blob.is_none()))
+                    .then_with(|| rango(&a.estado).cmp(&rango(&b.estado)))
                     .then_with(|| a.camino.cmp(&b.camino))
             })
     }

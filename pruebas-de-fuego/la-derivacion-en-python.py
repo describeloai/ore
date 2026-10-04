@@ -417,19 +417,23 @@ def e17():
                    "  namespace: legal\n  schema: archivo\nspec:\n  owner: team:legal\n  media: document\n"
                    "  formats: [pdf]\n  from:\n    objectTable: s3.docs.t\n  virtual: true\n  retention: 30d\n"}
     puestos = []
+    copia = [{"queued": True, "detail": "encolado"}]
 
     def pedir(metodo, ruta, cuerpo=None, **_):
         if metodo == "GET":
             return (200, doc) if ruta.endswith("/c") else (404, {"error": "no"})
         puestos.append(cuerpo["yaml"])
         doc["yaml"] = cuerpo["yaml"]
+        # B8·3: el servidor encola la copia de lo que pasa a mantenida
+        if "objectTable" in cuerpo["yaml"] and "virtual: true" not in cuerpo["yaml"]:
+            return 200, {"copy": copia[0]}
         return 200, {}
 
     antes = ore.session.pedir
     ore.session.pedir = pedir
     try:
         r = ore.alter_collection("legal.archivo.c", managed=True)
-        assert r == {"collection": "legal.archivo.c", "status": "managed"}, r
+        assert r == {"collection": "legal.archivo.c", "status": "managed · copy queued"}, r
         assert "virtual" not in puestos[-1] and "objectTable: s3.docs.t" in puestos[-1], puestos[-1]
         assert ore.alter_collection("legal.archivo.c")["status"] == "already managed" and len(puestos) == 1
         r = ore.alter_collection("legal.archivo.c", managed=False)
@@ -444,6 +448,10 @@ def e17():
             assert "in this branch" in str(e), e
         r = ore.create_collection("legal.archivo.nueva", "document", ["pdf"], source="s3.docs.t", virtual=True)
         assert r["created"] and "  from: { objectTable: s3.docs.t }\n  virtual: true" in puestos[-1], puestos[-1]
+        assert "copy" not in r, r
+        copia[0] = {"queued": False, "reason": "the conduit waits for the package owner (OOS4011)"}
+        r = ore.create_collection("legal.archivo.mantenida", "document", ["pdf"], source="s3.docs.t")
+        assert r["copy"] == "copy NOT queued: the conduit waits for the package owner (OOS4011)", r
         try:
             ore.create_collection("legal.archivo.otra", "document", ["pdf"], virtual=True)
             raise AssertionError("virtual sin origen")
@@ -451,8 +459,9 @@ def e17():
             assert "no origin" in str(e), e
     finally:
         ore.session.pedir = antes
-    bien("17 · B8: `set managed` quita `virtual` (otra vez: already managed, sin escribir), `set virtual` lo "
-         "pone tras su `from`; `create … from object table … virtual` escribe su origen; sin origen, no")
+    bien("17 · B8: `set managed` quita `virtual` y dice su copia (otra vez: already managed, sin escribir), "
+         "`set virtual` lo pone tras su `from`; `create … from object table` escribe su origen y dice si su "
+         "copia quedó encolada; sin origen, no")
 
 for n, f in enumerate([e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17], 1):
     caso(n, f)

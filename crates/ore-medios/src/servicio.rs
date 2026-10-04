@@ -392,26 +392,32 @@ impl Servicio {
                 };
             }
         };
-        let origen = if ix.virtual_ {
-            let Some(fuente) = texto(n, "fuente") else {
+        // ⭐ 0049 B8·3: de una mantenida, lo que ya tiene su blob, del lago; lo
+        //   que todavía no (una virtual que acaba de pasar a mantenida, y su
+        //   copia está en camino), de su origen como una virtual, si `ore-serve`
+        //   trajo la credencial. Mantenida no deja un ítem sin servir.
+        let del_origen = |fuente: &str| Origen::S3 {
+            fuente: fuente.to_string(),
+            clave: it.clave.clone().unwrap_or_else(|| it.camino.clone()),
+            version: it.version.clone(),
+            etag: it.etag.as_deref().map(entre_comillas).unwrap_or_default(),
+        };
+        let origen = match (&it.blob, texto(n, "fuente")) {
+            (Some(b), _) if !ix.virtual_ => Origen::Lago { sha256: b.clone() },
+            (_, Some(fuente)) => del_origen(fuente),
+            (_, None) if ix.virtual_ => {
                 return problema(
                     400,
                     "media/peticion",
                     "una virtual se lee con la credencial de su fuente: falta `fuente`",
                 );
-            };
-            Origen::S3 {
-                fuente: fuente.to_string(),
-                clave: it.clave.clone().unwrap_or_else(|| it.camino.clone()),
-                version: it.version.clone(),
-                etag: it.etag.as_deref().map(entre_comillas).unwrap_or_default(),
             }
-        } else {
-            match &it.blob {
-                Some(b) => Origen::Lago { sha256: b.clone() },
-                None => {
-                    return problema(404, "media/no-existe", "el ítem no tiene blob en el lago");
-                }
+            (_, None) => {
+                return problema(
+                    404,
+                    "media/no-existe",
+                    "el ítem no tiene blob en el lago todavía (su copia está en camino) y no llegó la credencial de su origen",
+                );
             }
         };
         let sha256 = it
@@ -524,7 +530,7 @@ impl Servicio {
                             problema_json(
                                 404,
                                 "media/no-existe",
-                                "el ítem no tiene blob en el lago",
+                                "el ítem no tiene blob en el lago todavía (su copia está en camino): se abre por `content`, que lo lee de su origen",
                             ),
                         )]));
                         continue;
@@ -856,6 +862,31 @@ mod pruebas {
         );
         assert_eq!(c, 200, "{b}");
         assert!(!b.contains("secret"), "la credencial no vuelve: {b}");
+    }
+
+    /// 0049 B8·3: el ítem de una mantenida que todavía no tiene su blob (una
+    /// virtual que acaba de pasar a mantenida) se abre de su origen, si
+    /// llega la credencial; sin ella, 404 que dice por qué.
+    #[test]
+    fn lo_que_aun_no_esta_en_el_lago_se_abre_de_su_origen() {
+        let (s, _) = servicio();
+        let (c, b) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!("{{{BASE},\"path\":\"docs/sin.pdf\"}}"),
+        );
+        assert_eq!(c, 404, "{b}");
+        assert!(b.contains("todavía"), "{b}");
+        let (c, b) = pedir(
+            &s,
+            "/indice/abrir",
+            &format!(
+                "{{{BASE},\"path\":\"docs/sin.pdf\",\"fuente\":\"s3://cubo?region=x&access_key_id=a&secret_access_key=b\"}}"
+            ),
+        );
+        assert_eq!(c, 200, "{b}");
+        assert!(!b.contains("secret"), "la credencial no vuelve: {b}");
+        assert!(!b.contains("\"desde\":\"lago\""), "{b}");
     }
 
     #[test]

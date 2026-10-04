@@ -406,6 +406,21 @@ impl Servidor {
                         }
                     }
                     let mut caduca = None;
+                    // ⭐ 0049 B8·3: una mantenida cuya copia no está completa
+                    //   —la última transacción fue virtual, o dejó ítems sin
+                    //   blob (`por_copiar`)— sirve esos ítems de su origen:
+                    //   lleva la credencial, si la hay. Si no, lo que ya está
+                    //   en el lago se sirve igual y lo demás lo dice `ore-medios`.
+                    let copia_incompleta = !virtual_
+                        && (de_puntero("virtual") != "false"
+                            || !matches!(de_puntero("por_copiar").as_str(), "" | "0"));
+                    if copia_incompleta
+                        && let Ok((fuente, env)) = fuente_de_la_coleccion(raiz, b, s, c)
+                        && let Ok((valor, c_ms)) = self.credencial_de_la_fuente(&fuente, &env)
+                    {
+                        pedido.insert("fuente".into(), Json::s(valor));
+                        caduca = c_ms;
+                    }
                     if virtual_ {
                         let (fuente, env) = match fuente_de_la_coleccion(raiz, b, s, c) {
                             Ok(f) => f,

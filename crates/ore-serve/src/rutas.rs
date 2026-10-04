@@ -1039,6 +1039,9 @@ impl Servidor {
                     }
                     "PUT" => {
                         let cuerpo = p.cuerpo.clone();
+                        // 0049 B8·3: la copia que encole una colección que pasa
+                        // a mantenida, la de la rama donde se escribe.
+                        let _en = self.rama_de_datos(rama).map(crate::copia::EnRama::poner);
                         self.escribiendo_en(
                             rama,
                             sujeto,

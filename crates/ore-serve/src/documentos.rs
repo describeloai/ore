@@ -995,7 +995,31 @@ impl Servidor {
                 format!("{} no se escribe por `/documentos`: {verbo}", k.articulo),
             );
         }
-        self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit, Some(sujeto))
+        // ⭐ 0049 B8·3: una colección que pasa a mantenida (o nace mantenida)
+        //   encola su copia: mantenida es tener los bytes en el lago, no el
+        //   documento dicho.
+        let texto_de =
+            |raiz: &Path| buscar(&documentos_de(raiz).0, k, ns, schema, n).map(|d| d.texto.clone());
+        let era_mantenida = k.nombre == "MediaCollection"
+            && texto_de(raiz).is_some_and(|t| crate::copia::es_coleccion_mantenida(&t));
+        let mut r =
+            self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit, Some(sujeto));
+        if k.nombre == "MediaCollection"
+            && matches!(r.codigo, 200 | 201)
+            && !era_mantenida
+            && texto_de(raiz).is_some_and(|t| crate::copia::es_coleccion_mantenida(&t))
+        {
+            let coleccion = if schema == ore_core::normalize::SCHEMA_POR_DEFECTO {
+                n.to_string()
+            } else {
+                format!("{schema}.{n}")
+            };
+            let copia = self.tras_mantener(raiz, ns, &coleccion, sujeto);
+            if let Json::Obj(m) = &mut r.cuerpo {
+                m.insert("copy".into(), copia);
+            }
+        }
+        r
     }
 
     /// La escritura del motor, para un kind ya resuelto: en `packages/<ns>[/<schema>]/<carpeta>/`,

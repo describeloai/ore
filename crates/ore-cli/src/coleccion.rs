@@ -772,12 +772,20 @@ pub fn una(
     let testigo = campo_de(&r, "testigo").unwrap_or_default();
     let huellas = campo_de(&r, "huellas").unwrap_or_else(|| "0".into());
 
-    // ④ El listado no cambió: nada que leer ni escribir.
+    // ⭐ 0049 B8·3: una virtual que pasa a mantenida tiene ítems actuales sin
+    //   blob —los de cuando era virtual—. Mantenida quiere decir sus bytes en
+    //   el lago: mientras quede alguno, la pasada los copia aunque el listado
+    //   no haya cambiado.
+    let sin_copiar = |i: &Item| i.estado == "actual" && i.blob.is_empty();
+    let por_copiar = !virtual_ && !seco && antes.iter().any(sin_copiar);
+
+    // ④ El listado no cambió (y no queda nada por copiar): nada que leer ni escribir.
     let testigo_antes = puntero
         .as_ref()
         .and_then(|p| p.get("testigo"))
         .and_then(|(_, t)| campo_de(t, "valor"));
-    if !rehacer && ml.is_some() && testigo_antes.as_deref() == Some(testigo.as_str()) {
+    if !rehacer && !por_copiar && ml.is_some() && testigo_antes.as_deref() == Some(testigo.as_str())
+    {
         let mut m = match puntero.as_ref().map(Json::de_node) {
             Some(Json::Obj(m)) => m,
             _ => Default::default(),
@@ -828,7 +836,18 @@ pub fn una(
     };
     let mut c = transaccion(&antes, &vigentes, &existen, &formatos, tx);
     let mut copia = Copia::default();
+    // B8·3: lo que ya estaba sin sus bytes (ver `por_copiar`). No entra: se
+    // reescribe su fila con su blob (el sello funde por la clave).
+    let mut de_paso: BTreeSet<(String, String)> = BTreeSet::new();
     if !virtual_ && !seco {
+        let ya: BTreeSet<(String, String)> = c.filas.iter().map(Item::id).collect();
+        for i in antes
+            .iter()
+            .filter(|i| sin_copiar(i) && !ya.contains(&i.id()))
+        {
+            de_paso.insert(i.id());
+            c.filas.push(i.clone());
+        }
         copia = copiar_bytes(&antes, &c.filas, &tipo, &url)?;
         let mut fuera = 0;
         c.filas.retain_mut(|f| {
@@ -842,13 +861,18 @@ pub fn una(
                     true
                 }
                 None => {
-                    fuera += 1;
+                    // Lo de paso que no se pudo copiar se queda como estaba
+                    // (se sirve de su origen) y la pasada siguiente lo reintenta.
+                    if !de_paso.contains(&f.id()) {
+                        fuera += 1;
+                    }
                     false
                 }
             }
         });
         c.entran -= fuera;
     }
+    let copiados_de_paso = c.filas.iter().filter(|f| de_paso.contains(&f.id())).count();
     fechar(&mut c.filas, ahora_ms());
     let cuenta = |estado: &str| -> i64 {
         let mut vivos: BTreeMap<(String, String), &str> =
@@ -859,6 +883,19 @@ pub fn una(
         vivos.values().filter(|e| **e == estado).count() as i64
     };
     let (actuales, retirados, perdidos) = (cuenta("actual"), cuenta("retirado"), cuenta("perdido"));
+    // B8·3: los actuales que siguen sin sus bytes en el lago tras esta
+    // transacción. Va en el puntero: mientras no sea 0, `ore-serve` sirve
+    // esos ítems de su origen.
+    let quedan_por_copiar = if virtual_ {
+        0
+    } else {
+        let mut vivos: BTreeMap<(String, String), bool> =
+            antes.iter().map(|i| (i.id(), sin_copiar(i))).collect();
+        for f in &c.filas {
+            vivos.insert(f.id(), sin_copiar(f));
+        }
+        vivos.values().filter(|s| **s).count() as i64
+    };
     let mut linea = format!(
         "transacción {tx} · {} entran, {} se retiran, {} se pierden · {actuales} actuales, \
          {retirados} retirados, {perdidos} perdidos · {huellas} huellas pedidas{}",
@@ -879,6 +916,16 @@ pub fn una(
             copia.ya_en_el_lago,
             copia.del_manifiesto
         ));
+        if copiados_de_paso > 0 {
+            linea.push_str(&format!(
+                " · {copiados_de_paso} que ya estaban, con sus bytes al lago (pasa a mantenida)"
+            ));
+        }
+        if quedan_por_copiar > 0 {
+            linea.push_str(&format!(
+                " · {quedan_por_copiar} siguen sin sus bytes en el lago: se sirven de su origen"
+            ));
+        }
         if let Some((cl, v, m)) = copia.fallos.first() {
             linea.push_str(&format!(
                 " · {} sin copiar, no entran (el primero, `{cl}` versión {v}: {m})",
@@ -980,6 +1027,8 @@ pub fn una(
     }
     m.insert("estado".into(), Json::s("transaccion"));
     m.insert("transaccion".into(), Json::Int(tx));
+    // B8·3: lo que a esta transacción (de una mantenida) le falta en el lago.
+    m.insert("por_copiar".into(), Json::Int(quedan_por_copiar));
     m.insert("bundle".into(), Json::s(bundle));
     m.insert(
         "testigo".into(),
