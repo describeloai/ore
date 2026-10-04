@@ -235,6 +235,12 @@ COPY --from=bin /b/ore-asumir-rol /usr/local/bin/ore-asumir-rol
 # comando: es otro proceso, con su sitio en la red, y `ore-serve` sigue sin
 # enlazar TLS (`ore-cli/tests/dependencias.rs`). Se compila aparte (arriba).
 COPY --from=bin /b/ore-medios /usr/local/bin/ore-medios
+# 0050 L6·2·1: la ficha y la búsqueda de una librería (npm, PyPI, Maven Central)
+# para el panel Libraries. `ore-serve` no habla TLS: lo lanza, y `ore-packages`
+# habla con esos registros y con nadie más (`HOSTS`). No lee buckets ni orígenes
+# (vigilado en `ore-cli/tests/dependencias.rs`). La salida a 443 ya la da
+# `salida-del-control`.
+COPY --from=bin /b/ore-packages /usr/local/bin/ore-packages
 
 USER 65532:65532
 WORKDIR /trabajo

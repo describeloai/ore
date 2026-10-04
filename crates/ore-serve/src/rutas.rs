@@ -692,6 +692,15 @@ impl Servidor {
                 ),
                 Err(r) => r,
             },
+            // ── 0050 L6·2·1 · las librerías de los registros (`librerias.rs`) ──
+            // La ficha de un paquete (`@ambito/n` llega en dos segmentos) y la
+            // búsqueda, con el texto en una cabecera: ningún dato por la URL.
+            ("GET", ["librerias", e]) => {
+                self.librerias(e, None, p.cabeceras.get("x-ore-buscar").map(String::as_str))
+            }
+            ("GET", ["librerias", e, resto @ ..]) if !resto.is_empty() => {
+                self.librerias(e, Some(&resto.join("/")), None)
+            }
             ("GET", ["puestos"]) => self.puestos_de(sujeto),
             ("POST", ["puestos"]) => self.abrir_puesto(sujeto, &p.cuerpo),
             // ── el trabajo (0031 §9, W3.7 ④): un fichero del árbol como Job ──
@@ -3162,6 +3171,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("DELETE", "/ramas/{nombre}", con_identidad),
         ("GET", "/entorno", con_identidad),
         ("POST", "/entorno", con_identidad),
+        ("GET", "/librerias/{entorno}", con_identidad),
+        ("GET", "/librerias/{entorno}/{nombre}", con_identidad),
         ("GET", "/puestos", con_identidad),
         ("POST", "/puestos", con_identidad),
         ("GET", "/puestos/{id}", con_identidad),

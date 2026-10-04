@@ -197,6 +197,36 @@ fn el_canjeador_del_rol_no_sabe_leer_un_bucket() {
     );
 }
 
+/// **El que consulta los registros de paquetes tampoco** (0050 L6·2·1).
+/// `ore-packages` va en la imagen de `ore-serve` y habla por la red —con npm,
+/// PyPI y Maven Central, y sólo con ellos (`HOSTS`)—, así que lo que se veta es
+/// lo que leería un origen o el lago: pregunta por un paquete; no lee datos.
+#[test]
+fn el_de_los_registros_no_sabe_leer_un_bucket() {
+    let cierre = cierre_de("ore-packages");
+    let culpables: Vec<String> = cierre
+        .iter()
+        .map(|n| nombre_de(n))
+        .filter(|n| {
+            [
+                "ore-s3",
+                "ore-sigv4",
+                "ore-driver",
+                "ore-store",
+                "ore-gcp",
+                "ore-core",
+            ]
+            .contains(n)
+        })
+        .map(String::from)
+        .collect();
+    assert!(
+        culpables.is_empty(),
+        "`ore-packages` enlaza lo que lee un origen, y va en la imagen de `ore-serve`: {}",
+        culpables.join(", ")
+    );
+}
+
 /// **El firmante de `ore-serve` tampoco** (0046 E9·3). `ore-firmar-s3` prefirma
 /// con la credencial de una fuente dentro de la imagen del plano de control, que
 /// promete no poder leer un origen: lo mismo que se veta en `ore`, y además un

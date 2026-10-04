@@ -56,6 +56,7 @@ mod firma_viva;
 mod forja;
 mod funciones;
 mod git;
+mod librerias;
 mod mando;
 mod medios;
 mod modelos;

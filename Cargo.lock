@@ -2624,6 +2624,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-packages"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "ore-read-bigquery"
 version = "0.1.0"
 dependencies = [

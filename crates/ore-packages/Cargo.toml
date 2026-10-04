@@ -1,0 +1,27 @@
+# LOS REGISTROS DE PAQUETES (0050 L6·2·1): la ficha de una libreria —su
+# descripcion, sus versiones, su licencia— y la busqueda, en npm, PyPI y Maven
+# Central. Lo lanza `ore-serve`, que no habla TLS, para el panel Libraries.
+#
+# ⛔ Habla con CUATRO sitios, escritos aqui (`HOSTS`), y con nadie mas: ni una
+#   URL que llegue de fuera. Sin `ore-s3`, `ore-sigv4`, `ore-driver` ni
+#   `ore-store`: no sabe leer un bucket ni un origen, y por eso puede ir en la
+#   imagen de `ore-serve` (`ore-cli/tests/dependencias.rs`).
+[package]
+name        = "ore-packages"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Package registry lookups (npm, PyPI, Maven Central) for the Libraries panel"
+
+[[bin]]
+name = "ore-packages"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+# HTTP con el TLS de la plataforma, bloqueante: las mismas crates que `ore-gcp`
+# (la CA de la empresa, donde el sistema operativo la busca).
+ureq       = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
