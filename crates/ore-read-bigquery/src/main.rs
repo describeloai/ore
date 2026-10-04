@@ -49,15 +49,63 @@ mod catalogo;
 mod consultas;
 mod flecha;
 mod rest;
+mod senal;
+mod v2;
 mod valores;
 
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::process::ExitCode;
 
+/// Un fallo del conector v2: una línea JSON por stderr, tapada.
+fn fallar(f: ore_driver::Fallo, url: &str) -> ExitCode {
+    eprintln!("ore-read-bigquery: {}", f.tapado(url).linea());
+    ExitCode::FAILURE
+}
+
+/// **`servir`** (ADR 0053 F2·3): peticiones una tras otra, con el mismo
+/// cliente HTTP —y su token, que `ore-gcp` renueva— entre ellas.
+fn servir() -> ExitCode {
+    let http = match rest::transporte() {
+        Ok(h) => h,
+        Err(e) => return fallar(v2::fallo(e), ""),
+    };
+    let stdout = std::io::stdout();
+    let mut salida = std::io::BufWriter::new(stdout.lock());
+    let hecho = ore_driver::servir::servir(
+        std::io::BufReader::new(std::io::stdin()),
+        &mut salida,
+        std::sync::Arc::new(|| {
+            if let Ok(h) = rest::Http::del_entorno() {
+                rest::cancelar(&h);
+            }
+        }),
+        |p, r| v2::leer(&*http, p, r),
+    );
+    match hecho {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ore-read-bigquery: servir: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let verbo = args.first().map(String::as_str).unwrap_or("leer");
+    // Los verbos del conector v2 que no leen stdin antes de empezar.
+    match verbo {
+        "capacidades" => {
+            println!("{}", v2::CAPACIDADES.json());
+            return ExitCode::SUCCESS;
+        }
+        "servir" => {
+            senal::al_terminar();
+            return servir();
+        }
+        _ => {}
+    }
 
     let mut entrada = String::new();
     if std::io::stdin().read_to_string(&mut entrada).is_err() {
@@ -70,6 +118,32 @@ fn main() -> ExitCode {
              `testigo` una coordenada, y las dos van por ahí y no por la línea de órdenes"
         );
         return ExitCode::FAILURE;
+    }
+    // `leer` en Arrow y `estimar`: el conector v2, con su error tipado.
+    if verbo == "estimar" || verbo == "leer" {
+        let p = match ore_driver::leer_peticion(&entrada) {
+            Ok(p) => p,
+            Err(e) => return fallar(ore_driver::Fallo::operador(e), ""),
+        };
+        if verbo == "estimar" || p.formato.as_deref() == Some("arrow") {
+            senal::al_terminar();
+            let hecho = rest::transporte().map_err(v2::fallo).and_then(|http| {
+                if verbo == "estimar" {
+                    println!("{}", v2::estimar(&*http, &p)?);
+                    return Ok(());
+                }
+                let stdout = std::io::stdout();
+                let mut s = std::io::BufWriter::new(stdout.lock());
+                v2::leer(&*http, &p, &mut s)?;
+                s.flush().map_err(|e| {
+                    ore_driver::Fallo::new(ore_driver::Codigo::Conexion, e.to_string())
+                })
+            });
+            return match hecho {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(f) => fallar(f, &p.url),
+            };
+        }
     }
     let fuente = args.get(1).map(String::as_str).unwrap_or("bigquery");
     let resultado =
@@ -95,29 +169,11 @@ fn verbo_(
     entrada: &str,
 ) -> Result<String, String> {
     match verbo {
+        // Sin `formato: arrow` (la petición de v1): en texto, como siempre.
+        // Con él lo sirve `v2`, arriba.
         "leer" => {
             let salida = std::io::stdout();
             let mut salida = std::io::BufWriter::new(salida.lock());
-            // En Arrow si se pide y se puede (ADR 0043); si no, en texto. Lo
-            // que decide se dice por stderr: una lectura que va por el camino
-            // lento sin avisar es la que nadie encuentra.
-            let p = ore_driver::leer_peticion(entrada)?;
-            if p.formato.as_deref() == Some("arrow")
-                && ore_driver::rango_servible(&p, true, false).is_none()
-            {
-                match flecha::leer(t, &p, &proyecto(&p.url)?, &mut salida)? {
-                    flecha::Lectura::Servida(n) => {
-                        eprintln!("ore-read-bigquery: {n} filas en Arrow (Storage Read)");
-                        salida
-                            .flush()
-                            .map_err(|e| format!("no se pudo escribir la salida: {e}"))?;
-                        return Ok(String::new());
-                    }
-                    flecha::Lectura::Declina(porque) => {
-                        eprintln!("ore-read-bigquery: aviso · se lee en texto por REST: {porque}");
-                    }
-                }
-            }
             filas(t, entrada, &mut salida)?;
             salida
                 .flush()

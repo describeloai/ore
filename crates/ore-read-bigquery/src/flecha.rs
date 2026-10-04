@@ -26,13 +26,12 @@
 //! mitad de un stream— es un error del driver, y el flujo queda sin su marca de
 //! fin: el almacén no sella una copia corta.
 use crate::consultas;
-use crate::rest::{self, Transporte};
+use crate::rest::Transporte;
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::SchemaRef;
 use bq_storage::google::cloud::bigquery::storage::v1 as api;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 pub enum Lectura {
     /// Se sirvió en Arrow: estas filas.
@@ -63,22 +62,37 @@ const TIPOS: &[&str] = &[
 /// clúster).
 const STREAMS: i32 = 8;
 
+/// **El freno de una lectura v2** (ADR 0053 F2·3): `limit` y el reloj.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Freno {
+    pub limite: Option<u64>,
+    pub hasta: Option<std::time::Instant>,
+    pub ms: Option<u64>,
+}
+
+/// **Leer por la Storage Read**, o declinar. `info` es la tabla de
+/// `tables.get` (quien llama ya la pidió), y `destino` el esquema que sale: el
+/// de la tabla, con la precisión de sus `NUMERIC` (la Storage Read los da como
+/// `decimal128(38, 9)` y aquí se llevan al suyo, sin perder: caben).
+#[allow(clippy::too_many_arguments)]
 pub fn leer(
     t: &dyn Transporte,
     p: &ore_driver::Peticion,
     proyecto: &str,
+    info: &Value,
+    destino: &SchemaRef,
+    freno: Freno,
     salida: &mut dyn std::io::Write,
 ) -> Result<Lectura, String> {
-    // **La Storage Read no ordena ni para a las n filas**: lee streams en
-    // paralelo hasta el final. Con `orderBy` o `limit` se declina y va por
-    // REST, donde son SQL. F2·3 lo lleva a la Storage Read.
-    if p.limit.is_some() || !p.orden.is_empty() {
+    // **La Storage Read no ordena**: lee streams en paralelo. Con `orderBy`
+    // se declina y va por consulta, donde es SQL. `limit` sí: se deja de leer
+    // al llegar a n.
+    if !p.orden.is_empty() {
         return Ok(Lectura::Declina(
-            "`limit` y `orderBy` van por consulta: la Storage Read no ordena ni para".into(),
+            "`orderBy` va por consulta: la Storage Read no ordena".into(),
         ));
     }
     let (dataset, tabla) = consultas::partes(&p.objeto)?;
-    let info = rest::tabla(t, proyecto, dataset, tabla)?;
     let tipo = info["type"].as_str().unwrap_or("");
     if tipo != "TABLE" {
         return Ok(Lectura::Declina(format!(
@@ -148,6 +162,8 @@ pub fn leer(
         columnas,
         restriccion,
         p,
+        destino.clone(),
+        freno,
         salida,
     ))
 }
@@ -206,6 +222,7 @@ enum Mensaje {
     Fallo(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn leer_async(
     token: String,
     proyecto: String,
@@ -213,6 +230,8 @@ async fn leer_async(
     columnas: Vec<String>,
     restriccion: String,
     p: &ore_driver::Peticion,
+    esquema: SchemaRef,
+    freno: Freno,
     salida: &mut dyn std::io::Write,
 ) -> Result<Lectura, String> {
     let mut c = cliente(&token, &tabla).await?;
@@ -262,10 +281,9 @@ async fn leer_async(
         Some(api::read_session::Schema::ArrowSchema(a)) => a.serialized_schema,
         _ => return Err("la sesión de lectura no trae su esquema Arrow".into()),
     };
-    let origen = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(&esquema_bq), None)
-        .map_err(|e| format!("el esquema de la sesión no se lee: {e}"))?
-        .schema();
-    let esquema = salida_de(&origen, p)?;
+    // Que el esquema de la sesión se lee; el que sale es el de la tabla.
+    arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(&esquema_bq), None)
+        .map_err(|e| format!("el esquema de la sesión no se lee: {e}"))?;
 
     let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &esquema)
         .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
@@ -283,8 +301,9 @@ async fn leer_async(
     }
     drop(tx);
 
-    let (mut anunciadas, mut filas) = (0i64, 0u64);
-    while let Some(m) = rx.recv().await {
+    let (mut anunciadas, mut filas, mut escritas) = (0i64, 0u64, 0u64);
+    let mut corto = false;
+    'recibir: while let Some(m) = rx.recv().await {
         let (bytes, n) = match m {
             Mensaje::Lote(b, n) => (b, n),
             Mensaje::Fallo(e) => return Err(e),
@@ -297,12 +316,34 @@ async fn leer_async(
         for lote in lector {
             let lote = lote.map_err(|e| format!("un lote de la Storage Read no se lee: {e}"))?;
             filas += lote.num_rows() as u64;
+            if let Some(h) = freno.hasta
+                && std::time::Instant::now() > h
+            {
+                return Err(format!(
+                    "{}: {} ms, con {escritas} filas leídas",
+                    crate::rest::AGOTADO,
+                    freno.ms.unwrap_or(0)
+                ));
+            }
+            let mut l = proyectar(&lote, &esquema, p)?;
+            if let Some(lim) = freno.limite {
+                let faltan = lim.saturating_sub(escritas) as usize;
+                if l.num_rows() > faltan {
+                    l = l.slice(0, faltan);
+                }
+            }
+            escritas += l.num_rows() as u64;
             escritor
-                .write(&proyectar(&lote, &esquema, p)?)
+                .write(&l)
                 .map_err(|e| format!("no se pudo escribir el flujo: {e}"))?;
+            if freno.limite.is_some_and(|lim| escritas >= lim) {
+                // Basta: los streams se sueltan al soltar el canal.
+                corto = true;
+                break 'recibir;
+            }
         }
     }
-    if anunciadas as u64 != filas {
+    if !corto && anunciadas as u64 != filas {
         return Err(format!(
             "la Storage Read anunció {anunciadas} filas y se leyeron {filas}: no se entrega \
              una copia que no cuadra"
@@ -312,7 +353,7 @@ async fn leer_async(
     escritor
         .finish()
         .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
-    Ok(Lectura::Servida(filas))
+    Ok(Lectura::Servida(escritas))
 }
 
 /// **Una sesión de lectura que se abre y se suelta**: la prueba del permiso
@@ -403,22 +444,6 @@ fn reintentable(s: &tonic::Status) -> bool {
     )
 }
 
-/// El esquema que sale: una columna por propiedad, con el nombre de la
-/// propiedad (el de la columna es del origen y no sale del driver).
-fn salida_de(origen: &Schema, p: &ore_driver::Peticion) -> Result<SchemaRef, String> {
-    let campos = p
-        .proyeccion
-        .iter()
-        .map(|(campo, col)| {
-            let f = origen
-                .field_with_name(col)
-                .map_err(|_| format!("la sesión no trae la columna `{col}`"))?;
-            Ok(Field::new(campo, f.data_type().clone(), true))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(Arc::new(Schema::new(campos)))
-}
-
 fn proyectar(
     lote: &RecordBatch,
     esquema: &SchemaRef,
@@ -431,6 +456,27 @@ fn proyectar(
             lote.column_by_name(col)
                 .cloned()
                 .ok_or_else(|| format!("un lote no trae la columna `{col}`"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // Al tipo de la tabla: el decimal a su precisión, el instante a la zona
+    // del lago. Sin `safe`: un valor que no cupiera sería un error, nunca un
+    // nulo.
+    let columnas = columnas
+        .iter()
+        .zip(esquema.fields())
+        .map(|(c, f)| {
+            if c.data_type() == f.data_type() {
+                return Ok(c.clone());
+            }
+            arrow_cast::cast_with_options(
+                c,
+                f.data_type(),
+                &arrow_cast::CastOptions {
+                    safe: false,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| format!("`{}` no cabe en {}: {e}", f.name(), f.data_type()))
         })
         .collect::<Result<Vec<_>, String>>()?;
     RecordBatch::try_new(esquema.clone(), columnas).map_err(|e| format!("el lote no casa: {e}"))

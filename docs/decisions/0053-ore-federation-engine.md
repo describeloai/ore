@@ -205,7 +205,7 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 | **F2·0** · la base común | la petición v2 en `ore-driver` (filtros con valor, lista o ninguno; `limit`, `orderBy`, `timeoutMs`, `id`); los diez operadores, `ORDER BY … NULLS LAST` y `LIMIT` en `ore-sql`; los errores tipados y `tapar`; `capacidades` y su comprobación; el bucle de `servir` con su marco en trozos y las conexiones por `url` | ✓ sin cambiar lo que sirve ningún conector: una petición v1 se lee igual |
 | **F2·1** · el kit | `ore-conector-kit`: los 14 casos contra `kit.tipos` y `kit.grande` (10⁶ filas); Postgres como servicio del CI y el S3 de mentira del repositorio (no MinIO: no hace falta una imagen de fuera), BigQuery con respuestas grabadas en F2·3 | ✓ la línea de base, abajo |
 | **F2·2** · Postgres v2 | Arrow en flujo, operadores, `limit`, `orderBy`, `statement_timeout`, cancelar, `servir`, `estimar` (`EXPLAIN`) | ✓ **14/14**; 10⁶ filas en 15,3 s con **pico de 14 MiB y primer byte a los 323 ms** (v1: 33 s, 388 MiB, 32,9 s); `SIGTERM` deja el origen en 2 ms; 100 peticiones en `servir` por una sesión en 742 ms |
-| **F2·3** · BigQuery v2 | operadores a `row_restriction`, `limit` en la Storage Read, `orderBy` por consulta, REST también en Arrow, `jobs.cancel`, `estimar` (*dry run*), `maximumBytesBilled` | 14/14 y M2 repetida; una pasada real |
+| **F2·3** · BigQuery v2 | operadores a `row_restriction`, `limit` en la Storage Read, `orderBy` por consulta, REST también en Arrow, `jobs.cancel`, `estimar` (*dry run*), `maximumBytesBilled` | ✓ el código y 49 pruebas; **humo contra el BigQuery real** (`ventas.pedidos`, `ventas.clientes`): Storage Read con `limit` y con `in`/`like`/`isNotNull` en la restricción, por consulta con `ORDER BY … LIMIT`, *dry run* de 208 bytes, `objeto`, `tiempo` con el job cancelado, y al lago por `sellar-flujo` sin nada sin estrechar. **Pendiente**: grabar la cinta del kit (la pasada que crea `ore_kit`) |
 | **F2·4** · S3 v2 | descarte por partición y por estadísticas de Parquet, operadores sobre filas, `limit`, `estimar` por el listado; `orderBy: false` | ✓ **12 pasan, 2 no aplican** (sólo lectura y cancelar: un bucket no tiene SQL ni consultas vivas); 10⁶ filas con pico de 27 MiB; un fichero de una partición que no cumple y un grupo de filas cuyo mínimo y máximo no pueden cumplir no se bajan |
 | **F2·5** · cierre | el kit en el CI; las copias en vivo de test6 dan las mismas filas y huella con los v2 | F2 cerrado |
 
@@ -241,6 +241,15 @@ canónico (`texto.rs`) y de ahí a su tipo con `ore_core::tipos`, el analizador 
 copia de humo —Postgres v2 → `ore-store-r2 sellar-flujo` → el S3 de mentira, y de vuelta— da las
 10 filas de `kit.tipos` exactas, sin nada sin estrechar: las copias en vivo pasan a Arrow por el
 mismo camino que BigQuery. `leer` sin `formato: arrow` sigue en texto.
+
+**Lo que F2·3 decidió.** El tipo de cada columna de `tables.get`, con la precisión de sus
+`NUMERIC(p, s)` (la Storage Read los da `decimal128(38, 9)` y se llevan al suyo, sin `safe`: un
+valor que no cupiera sería un error); la Storage Read cuando se puede, con `limit` cortando los
+streams, y si no la consulta por REST, ahora también en Arrow; `jobTimeoutMs` en el job y el reloj
+de quien pide, agotado `jobs.cancel`; `estimar` es un *dry run*. Para el kit sin red ni coste, una
+**cinta** en el conector (`ORE_BQ_CINTA`, grabar o reproducir, por consulta: la Storage Read es
+gRPC y se prueba en la pasada de verdad) y un banco de BigQuery que carga la semilla por DDL
+(`GENERATE_ARRAY`: cargar `grande` no procesa bytes).
 
 **Lo que F2·0 destapó.** `ore-sql` y el lector de JSONL traducían todo operador que no fuera `gt`
 como una igualdad: con dos operadores no se notaba, con diez un `in` habría contestado otra cosa

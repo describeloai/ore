@@ -1,7 +1,7 @@
 //! `ore-kit`: los 14 casos contra un conector.
 //!
 //! ```text
-//! ore-kit --conector <binario> --banco postgres|s3 [--casos 1,2,5]
+//! ore-kit --conector <binario> --banco postgres|s3|bigquery [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
 //! ```
 //!
@@ -12,10 +12,13 @@
 //! El banco se configura por el entorno: `PG_URL` (un administrador del
 //! Postgres de pruebas) o `S3_KIT_ENDPOINT`, `S3_KIT_CLAVE`, `S3_KIT_SECRETO`
 //! (y `S3_KIT_DE_MENTIRA=1` si es el S3 de `pruebas-de-fuego/de-mentira.py`,
-//! que no comprueba firmas).
+//! que no comprueba firmas), o `BQ_KIT_PROYECTO` (y `BQ_KIT_DATASET`,
+//! `BQ_KIT_UBICACION`) con la credencial de `ore-gcp`; con
+//! `ORE_BQ_CINTA=<dir> ORE_BQ_CINTA_MODO=reproducir`, el conector y el banco
+//! reproducen una cinta grabada y no hablan con BigQuery.
 //! Ninguna URL sale en el informe.
 
-use ore_conector_kit::bancos::{Banco, postgres::Postgres, s3::S3};
+use ore_conector_kit::bancos::{Banco, bigquery::BigQuery, postgres::Postgres, s3::S3};
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
 use ore_core::json::Json;
@@ -71,7 +74,13 @@ fn intentar() -> Result<bool, String> {
             &entorno("S3_KIT_SECRETO")?,
             std::env::var("S3_KIT_DE_MENTIRA").is_err(),
         )),
-        otro => return Err(format!("`{otro}` no es un banco: postgres o s3")),
+        "bigquery" => Box::new(BigQuery::new(
+            &entorno("BQ_KIT_PROYECTO")?,
+            &std::env::var("BQ_KIT_DATASET").unwrap_or_else(|_| "ore_kit".into()),
+            &std::env::var("BQ_KIT_UBICACION").unwrap_or_else(|_| "EU".into()),
+            std::env::var("ORE_BQ_CINTA_MODO").map_or(true, |m| m != "reproducir"),
+        )),
+        otro => return Err(format!("`{otro}` no es un banco: postgres, s3 o bigquery")),
     };
     eprintln!("ore-kit: cargando la semilla en {familia}…");
     banco.cargar()?;

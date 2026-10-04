@@ -153,7 +153,7 @@ fn tipo_oos(bq: &str) -> Option<&'static str> {
 /// `ARRAY<X>` es `list<X>` si `X` se sabe traducir. `ARRAY<STRUCT<…>>` no.
 /// Un decimal lleva su precisión ([`decimal`]); dentro de una lista no, porque
 /// `list<T>` es de escalares (02-entity §3.3).
-fn traducir(bq: &str) -> Option<String> {
+pub(crate) fn traducir(bq: &str) -> Option<String> {
     let t = bq.trim();
     if let Some(dentro) = t.strip_prefix("ARRAY<").and_then(|r| r.strip_suffix('>')) {
         return tipo_oos(dentro).map(|e| format!("list<{e}>"));

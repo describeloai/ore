@@ -2538,9 +2538,11 @@ dependencies = [
  "arrow-schema",
  "ore-core",
  "ore-driver",
+ "ore-gcp",
  "ore-sigv4",
  "parquet",
  "postgres",
+ "serde_json",
  "ureq",
 ]
 
@@ -2652,11 +2654,13 @@ name = "ore-read-bigquery"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
  "arrow-ipc",
  "arrow-schema",
  "googleapis-tonic-google-cloud-bigquery-storage-v1",
  "hyper-tls",
  "hyper-util",
+ "libc",
  "native-tls",
  "ore-core",
  "ore-driver",

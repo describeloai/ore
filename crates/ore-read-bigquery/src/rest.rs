@@ -106,6 +106,125 @@ impl Transporte for Http {
     }
 }
 
+/// **Una cinta** (ADR 0053 F2·3): lo que se habló con BigQuery, grabado una
+/// vez contra el de verdad y reproducido después sin red ni coste. Es como el
+/// kit de conformidad prueba este conector en el CI.
+///
+/// `ORE_BQ_CINTA=<dir>` la activa; `ORE_BQ_CINTA_MODO=grabar` habla con
+/// BigQuery y apunta cada intercambio en `<dir>/<clave>.json`, y cualquier
+/// otro valor la reproduce. La clave es una huella del método, la ruta, la
+/// consulta y el cuerpo: lo mismo pedido, lo mismo contestado. Lo que la cinta
+/// no tiene es un error que lo dice, no una respuesta inventada.
+///
+/// **Por consulta y nada más**: una cinta no lleva token, así que la Storage
+/// Read (gRPC) declina, al grabar y al reproducir. La Storage Read se prueba en
+/// la pasada de verdad.
+pub struct Cinta {
+    dir: std::path::PathBuf,
+    grabar: Option<Http>,
+}
+
+impl Cinta {
+    /// La del entorno, si `ORE_BQ_CINTA` lo pide.
+    pub fn del_entorno() -> Option<Result<Cinta, String>> {
+        let dir = std::env::var("ORE_BQ_CINTA")
+            .ok()
+            .filter(|d| !d.is_empty())?;
+        let grabar = std::env::var("ORE_BQ_CINTA_MODO").is_ok_and(|m| m == "grabar");
+        Some((|| {
+            Ok(Cinta {
+                dir: dir.into(),
+                grabar: if grabar {
+                    Some(Http::del_entorno()?)
+                } else {
+                    None
+                },
+            })
+        })())
+    }
+
+    /// FNV-1a de 64 bits: una clave de fichero, no un secreto.
+    fn clave(pide: &str) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in pide.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{h:016x}")
+    }
+
+    /// Lo que no se graba: quién pidió (`user_email` y parecidos).
+    fn limpia(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.retain(|k, _| !matches!(k.as_str(), "user_email" | "principal_subject"));
+                m.values_mut().for_each(Cinta::limpia);
+            }
+            Value::Array(a) => a.iter_mut().for_each(Cinta::limpia),
+            _ => {}
+        }
+    }
+
+    fn pasar(
+        &self,
+        pide: String,
+        hablar: impl FnOnce(&Http) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let ruta = self.dir.join(format!("{}.json", Cinta::clave(&pide)));
+        match &self.grabar {
+            Some(http) => {
+                let r = hablar(http);
+                let mut apunte = match &r {
+                    Ok(v) => json!({"pide": pide, "respuesta": v}),
+                    Err(e) => json!({"pide": pide, "error": e}),
+                };
+                Cinta::limpia(&mut apunte);
+                std::fs::create_dir_all(&self.dir)
+                    .and_then(|_| {
+                        std::fs::write(
+                            &ruta,
+                            serde_json::to_string_pretty(&apunte).unwrap_or_default() + "\n",
+                        )
+                    })
+                    .map_err(|e| format!("la cinta no se escribe: {e}"))?;
+                r
+            }
+            None => {
+                let texto = std::fs::read_to_string(&ruta)
+                    .map_err(|_| format!("la cinta no tiene: {pide}"))?;
+                let v: Value = serde_json::from_str(&texto)
+                    .map_err(|e| format!("la cinta `{}` no es JSON: {e}", ruta.display()))?;
+                match v.get("error").and_then(Value::as_str) {
+                    Some(e) => Err(e.to_string()),
+                    None => Ok(v["respuesta"].clone()),
+                }
+            }
+        }
+    }
+}
+
+impl Transporte for Cinta {
+    fn post(&self, ruta: &str, cuerpo: &Value) -> Result<Value, String> {
+        self.pasar(format!("POST {ruta} {cuerpo}"), |h| h.post(ruta, cuerpo))
+    }
+    fn get(&self, ruta: &str, consulta: &[(&str, String)]) -> Result<Value, String> {
+        let q: Vec<String> = consulta.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        self.pasar(format!("GET {ruta}?{}", q.join("&")), |h| {
+            h.get(ruta, consulta)
+        })
+    }
+    // Sin `token`: la Storage Read declina (ver arriba).
+}
+
+/// **El transporte de este proceso**: la cinta si `ORE_BQ_CINTA` la pide; si
+/// no, BigQuery.
+pub fn transporte() -> Result<Box<dyn Transporte>, String> {
+    match Cinta::del_entorno() {
+        Some(c) => Ok(Box::new(c?)),
+        None => Ok(Box::new(Http::del_entorno()?)),
+    }
+}
+
 /// Una consulta: el texto y sus parámetros en la forma de `ore-sql`
 /// (`nombre:TIPO:valor`).
 pub struct Consulta<'a> {
@@ -162,6 +281,55 @@ pub fn cuerpo(c: &Consulta) -> Result<Value, String> {
     Ok(cuerpo)
 }
 
+/// **Lo que el conector v2 añade a una consulta** (ADR 0053 F2·3).
+#[derive(Debug, Default, Clone)]
+pub struct Opciones {
+    /// `jobTimeoutMs`: BigQuery corta el job a este tiempo, en el origen.
+    pub tiempo_ms: Option<u64>,
+    /// Y el reloj de quien pide: pasado esto se cancela el job y se para,
+    /// aunque BigQuery aún no lo haya cortado.
+    pub hasta: Option<std::time::Instant>,
+}
+
+/// El principio del mensaje de una consulta que agotó su tiempo: lo lleva al
+/// código `tiempo`.
+pub const AGOTADO: &str = "se agotó el tiempo";
+
+/// **El job en curso** —proyecto, id, ubicación—, para quien lo cancela
+/// (`SIGTERM`, `{"cancelar": id}` de `servir`). Un proceso lee de uno en uno.
+pub static EN_CURSO: std::sync::Mutex<Option<(String, String, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// **Cancela en BigQuery** el job en curso, si lo hay (`jobs.cancel`). Lo que
+/// BigQuery ya facturó, facturado está; lo que no ha leído, ya no lo lee.
+pub fn cancelar(t: &dyn Transporte) {
+    let job = EN_CURSO.lock().ok().and_then(|mut j| j.take());
+    if let Some((proyecto, id, ubicacion)) = job {
+        let donde = ubicacion
+            .map(|l| format!("?location={l}"))
+            .unwrap_or_default();
+        let _ = t.post(
+            &format!("projects/{proyecto}/jobs/{id}/cancel{donde}"),
+            &json!({}),
+        );
+    }
+}
+
+/// **Estimar sin leer**: un *dry run*, que BigQuery no factura. Devuelve los
+/// bytes que la consulta procesaría.
+pub fn estimar(t: &dyn Transporte, proyecto: &str, c: &Consulta) -> Result<u64, String> {
+    let mut b = cuerpo(c)?;
+    b["dryRun"] = json!(true);
+    let r = t.post(&format!("projects/{proyecto}/queries"), &b)?;
+    errores_del_job(&r)?;
+    match &r["totalBytesProcessed"] {
+        Value::String(s) => s
+            .parse()
+            .map_err(|_| format!("`totalBytesProcessed` no es un número: {s}")),
+        otro => Err(format!("el dry run no dice `totalBytesProcessed`: {otro}")),
+    }
+}
+
 /// Ejecuta una consulta y entrega sus filas **página a página**, con el esquema
 /// del resultado. Devuelve cuántas llegaron, que es exactamente `totalRows` o
 /// un error.
@@ -169,10 +337,63 @@ pub fn consultar(
     t: &dyn Transporte,
     proyecto: &str,
     c: &Consulta,
+    por_pagina: impl FnMut(&[Value], &[Value]) -> Result<(), String>,
+) -> Result<u64, String> {
+    consultar_con(t, proyecto, c, &Opciones::default(), por_pagina)
+}
+
+/// [`consultar`] con el tiempo del conector v2: `jobTimeoutMs` en el job, el
+/// reloj de quien pide entre sondeo y sondeo y entre página y página, y el job
+/// apuntado en [`EN_CURSO`] mientras dura.
+pub fn consultar_con(
+    t: &dyn Transporte,
+    proyecto: &str,
+    c: &Consulta,
+    o: &Opciones,
     mut por_pagina: impl FnMut(&[Value], &[Value]) -> Result<(), String>,
 ) -> Result<u64, String> {
-    let mut r = t.post(&format!("projects/{proyecto}/queries"), &cuerpo(c)?)?;
+    let mut b = cuerpo(c)?;
+    if let Some(ms) = o.tiempo_ms {
+        b["jobTimeoutMs"] = json!(ms.to_string());
+    }
+    let mut r = t.post(&format!("projects/{proyecto}/queries"), &b)?;
     let referencia = r.get("jobReference").cloned();
+    if let Some(j) = &referencia
+        && let Some(id) = j["jobId"].as_str()
+        && let Ok(mut e) = EN_CURSO.lock()
+    {
+        *e = Some((
+            proyecto.to_string(),
+            id.to_string(),
+            j["location"].as_str().map(String::from),
+        ));
+    }
+    let hecho = paginar(t, proyecto, &mut r, referencia, o, &mut por_pagina);
+    if let Ok(mut e) = EN_CURSO.lock() {
+        *e = None;
+    }
+    hecho
+}
+
+fn paginar(
+    t: &dyn Transporte,
+    proyecto: &str,
+    r: &mut Value,
+    referencia: Option<Value>,
+    o: &Opciones,
+    por_pagina: &mut impl FnMut(&[Value], &[Value]) -> Result<(), String>,
+) -> Result<u64, String> {
+    let reloj = || match o.hasta {
+        Some(h) if std::time::Instant::now() > h => {
+            cancelar(t);
+            Err(format!(
+                "{AGOTADO}: {} ms, y el job se canceló en BigQuery",
+                o.tiempo_ms.unwrap_or(0)
+            ))
+        }
+        _ => Ok(()),
+    };
+    reloj()?;
     let pedir = |extra: Vec<(&'static str, String)>| -> Result<Value, String> {
         let job = referencia.as_ref().ok_or(
             "BigQuery no terminó la consulta en el plazo y no creó un job al que volver a \
@@ -192,10 +413,11 @@ pub fn consultar(
 
     // El sondeo: `jobComplete: false` no es un error, es «todavía no».
     while r["jobComplete"] != Value::Bool(true) {
-        errores_del_job(&r)?;
-        r = pedir(Vec::new())?;
+        errores_del_job(r)?;
+        reloj()?;
+        *r = pedir(Vec::new())?;
     }
-    errores_del_job(&r)?;
+    errores_del_job(r)?;
 
     let campos = r["schema"]["fields"]
         .as_array()
@@ -213,8 +435,9 @@ pub fn consultar(
         let filas = r["rows"].as_array().map(Vec::as_slice).unwrap_or(&[]);
         llegaron += filas.len() as u64;
         por_pagina(&campos, filas)?;
+        reloj()?;
         match r["pageToken"].as_str() {
-            Some(tok) => r = pedir(vec![("pageToken", tok.to_string())])?,
+            Some(tok) => *r = pedir(vec![("pageToken", tok.to_string())])?,
             None => break,
         }
     }
@@ -454,5 +677,42 @@ pub mod pruebas {
     fn los_datasets_se_leen_de_la_respuesta_grabada() {
         let g = Guion::new(vec![Ok(grabada("datasets-list"))]);
         assert!(datasets(&g, "p").unwrap().contains(&"ventas".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod cinta {
+    use super::*;
+
+    /// **Lo grabado se reproduce, y lo que la cinta no tiene se dice**: nunca
+    /// una respuesta inventada.
+    #[test]
+    fn la_cinta_reproduce_lo_grabado_y_dice_lo_que_falta() {
+        let dir = std::env::temp_dir().join(format!("ore-cinta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pide = "GET projects/p/datasets/d/tables/t?";
+        let mut apunte = json!({"pide": pide, "respuesta": {"type": "TABLE", "user_email": "x@y"}});
+        Cinta::limpia(&mut apunte);
+        assert!(
+            apunte["respuesta"].get("user_email").is_none(),
+            "quién pidió no se graba"
+        );
+        std::fs::write(
+            dir.join(format!("{}.json", Cinta::clave(pide))),
+            apunte.to_string(),
+        )
+        .unwrap();
+        let c = Cinta {
+            dir: dir.clone(),
+            grabar: None,
+        };
+        assert_eq!(
+            c.get("projects/p/datasets/d/tables/t", &[]).unwrap()["type"],
+            "TABLE"
+        );
+        let e = c.get("projects/p/datasets/d/tables/otra", &[]).unwrap_err();
+        assert!(e.starts_with("la cinta no tiene"), "{e}");
+        assert!(c.token().is_err(), "una cinta no lleva token");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

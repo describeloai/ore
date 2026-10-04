@@ -57,3 +57,11 @@ tokio       = { version = "1", default-features = false, features = ["rt-multi-t
 arrow-array  = "58"
 arrow-schema = "58"
 arrow-ipc    = { version = "58", default-features = false, features = ["lz4"] }
+
+# 0053 F2.3 · el decimal de la Storage Read (38, 9) a la precision de su tabla.
+# Ya estaba en el arbol (lo traen `ore-store` y `ore-read-s3`).
+arrow-cast = "58"
+
+# 0053 F2.3 · SIGTERM cancela el job en BigQuery: el manejador de la senal.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
