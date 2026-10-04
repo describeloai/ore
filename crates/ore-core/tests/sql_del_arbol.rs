@@ -244,6 +244,11 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         e("create media collection nada.s.c media image formats (png)"),
         Some(E::Crea("media collection ".into()))
     );
+    // 0049 B8: and `alter media collection`, which DuckDB does not know either
+    assert_eq!(
+        e("alter media collection ventas.s.c set managed"),
+        Some(E::Crea("media collection ventas.s.c".into()))
+    );
     // lo que se escribe es un dataset; `table` también llega aquí, y el
     // análisis dice que una Table no se crea desde SQL
     assert_eq!(

@@ -1529,6 +1529,12 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
         Some(crate::normalize::a_corto(&format!("{a}.{b}.{c}")).into_owned())
     };
     for i in 0..toks.len() {
+        // 0049 B8: `alter media collection b.s.c set managed|virtual`. DuckDB
+        // does not know it either: it is the tree's, and the script says why.
+        if es(i, "alter") && es(i + 1, "media") && es(i + 2, "collection") {
+            let n = nombre(i + 3).unwrap_or_default();
+            return Some(EscribeEnElArbol::Crea(format!("media collection {n}")));
+        }
         if es(i, "create") {
             // 0039: lo que crea en el catálogo
             let k = if es(i + 1, "standard") || es(i + 1, "foreign") {
