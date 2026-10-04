@@ -157,6 +157,31 @@ tablas fijas y corre contra el binario:
 | 13 | `capacidades` | lo que declara es lo que los casos 2–4 comprueban |
 | 14 | `estimar` (si lo declara) | estima sin leer: en BigQuery, sin bytes facturados |
 
+**Hecho código** (F2·1): `crates/ore-conector-kit`, binario `ore-kit`.
+
+```text
+ore-kit --conector <binario> --banco postgres|s3 [--casos 1,2,5] [--informe i.json] [--exige todos]
+```
+
+- **La semilla** (`semilla.rs`): `tipos` (una columna por tipo escalar de OOS —`Integer`,
+  `Decimal<12, 2>`, `Float`, `String`, `Date`, `DateTime`, `DateTimeTz`, `Boolean`— con los bordes de
+  un `int64`, la cadena vacía frente al nulo, `_` y `%` en un texto, microsegundos, el 29 de febrero
+  y una fila entera nula), `grande` (10⁶ filas) y `vacia`. Lo que cada petición tiene que devolver
+  **lo calcula el kit** con la semántica de SQL y los tipos de `ore_core::tipos` (0032): ningún
+  conector es la referencia de otro.
+- **El banco** (`bancos/`): lo que aporta cada origen —cargar la semilla y contestar lo que sólo él
+  sabe (consultas vivas, sesiones, escrituras)—. Postgres: el esquema `kit`, un rol de lectura que
+  *puede* insertar en `kit.marcas` (así el caso 9 prueba la sesión de sólo lectura y no un
+  permiso), una vista que tarda 20 s en dar su fila (casos 8 y 10). S3: Parquet en un bucket del S3
+  de mentira (`pruebas-de-fuego/de-mentira.py`) o de un MinIO. Lo que un origen no puede contestar
+  sale «no aplica», con su motivo.
+- **Sin `capacidades`** (los conectores v1), se prueba igual —lo que el conector hace, se mide— y
+  los casos que dependen de lo declarado fallan por no declararlo.
+- **El tipo de un instante** se compara con UTC dicho de cualquier forma: el lago lo escribe
+  `+00:00` (Iceberg) y BigQuery `UTC`.
+- En el CI, el trabajo `conectores`: línea de base en el resumen; un conector v2 lo pasa con
+  `--exige todos`.
+
 ## 3. La pasarela `ore-federation`
 
 Un servicio **por celda** con el rol `driver` —la red a los orígenes y la cuenta del driver—, sin

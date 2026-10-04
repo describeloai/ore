@@ -203,11 +203,35 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 | hito | qué | sale |
 |---|---|---|
 | **F2·0** · la base común | la petición v2 en `ore-driver` (filtros con valor, lista o ninguno; `limit`, `orderBy`, `timeoutMs`, `id`); los diez operadores, `ORDER BY … NULLS LAST` y `LIMIT` en `ore-sql`; los errores tipados y `tapar`; `capacidades` y su comprobación; el bucle de `servir` con su marco en trozos y las conexiones por `url` | ✓ sin cambiar lo que sirve ningún conector: una petición v1 se lee igual |
-| **F2·1** · el kit | `ore-conector-kit`: los 14 casos contra `kit.tipos` y `kit.grande` (10⁶ filas); Postgres y MinIO como servicios del CI, BigQuery con respuestas grabadas | la línea de base de los v1, en rojo |
+| **F2·1** · el kit | `ore-conector-kit`: los 14 casos contra `kit.tipos` y `kit.grande` (10⁶ filas); Postgres como servicio del CI y el S3 de mentira del repositorio (no MinIO: no hace falta una imagen de fuera), BigQuery con respuestas grabadas en F2·3 | ✓ la línea de base, abajo |
 | **F2·2** · Postgres v2 | Arrow en flujo, operadores, `limit`, `orderBy`, `statement_timeout`, cancelar, `servir`, `estimar` (`EXPLAIN`) | 14/14 y M3 repetida |
 | **F2·3** · BigQuery v2 | operadores a `row_restriction`, `limit` en la Storage Read, `orderBy` por consulta, REST también en Arrow, `jobs.cancel`, `estimar` (*dry run*), `maximumBytesBilled` | 14/14 y M2 repetida; una pasada real |
 | **F2·4** · S3 v2 | descarte por partición y por estadísticas de Parquet, operadores sobre filas, `limit`, `estimar` por el listado; `orderBy: false` | 14/14 o justificado en `capacidades` |
 | **F2·5** · cierre | el kit en el CI; las copias en vivo de test6 dan las mismas filas y huella con los v2 | F2 cerrado |
+
+**La línea de base de F2·1** (2026-10-04, en local; el CI la repite en cada empuje):
+
+| caso | Postgres v1 | S3 v1 |
+|---|---|---|
+| 1 proyección | pasa (texto) | pasa |
+| 2 operadores | 30/30 filas bien, sin declararlos | 7/30: sólo `eq`, rechaza los demás |
+| 3 no declarado | falla: sin `capacidades` | falla: sin `capacidades` |
+| 4 `limit`, `orderBy` | los sirve bien (por `ore-sql`), sin declararlos | los rechaza |
+| 5 tipos | falla: texto, no Arrow | pasa: los 9 tipos y sus valores exactos |
+| 6 vacía | falla: en texto no hay esquema | pasa |
+| 7 flujo, 10⁶ filas | falla: 33 s, **pico 388 MiB, primer byte a los 32,9 s** —lo junta todo— | pasa: 130 lotes, pico 26 MiB, primer byte a los 7,2 s |
+| 8 `timeoutMs` | falla: lo ignora | falla: lo ignora |
+| 9 sólo lectura | pasa: la sesión de sólo lectura para la escritura | no aplica |
+| 10 cancelar | falla: la consulta sigue viva en el origen | no aplica |
+| 11 `servir` | falla | falla |
+| 12 secretos | pasa (la credencial mala sale sin tipar) | pasa |
+| 13 `capacidades` | falla | falla |
+| 14 `estimar` | no aplica | no aplica |
+| | **3 pasan, 10 fallan** | **4 pasan, 7 fallan, 3 no aplican** |
+
+El kit midió dos cosas que no eran del conector: el tipo de un instante (el lago lo llama `+00:00`,
+BigQuery `UTC`; el kit acepta los dos) y la memoria de S3 contra el S3 de mentira (en Python: sus
+80 s de `grande` son del servidor, no del conector).
 
 **Lo que F2·0 destapó.** `ore-sql` y el lector de JSONL traducían todo operador que no fuera `gt`
 como una igualdad: con dos operadores no se notaba, con diez un `in` habría contestado otra cosa

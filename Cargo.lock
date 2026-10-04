@@ -2530,6 +2530,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-conector-kit"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "ore-core",
+ "ore-driver",
+ "ore-sigv4",
+ "parquet",
+ "postgres",
+ "ureq",
+]
+
+[[package]]
 name = "ore-core"
 version = "0.1.0"
 dependencies = [

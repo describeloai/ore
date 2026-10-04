@@ -1,0 +1,33 @@
+# El kit de conformidad de los conectores (ADR 0053 F2.1, docs/federation.md §2).
+#
+# Una herramienta de prueba, no un componente: lanza un `ore-read-<tipo>` como
+# lo lanzaria la pasarela, le pasa los 14 casos contra unos datos de partida
+# que el mismo carga en el origen (un Postgres, un MinIO), y dice cual pasa.
+# Por eso arrastra un cliente de Postgres y un escritor de Parquet: son para
+# CARGAR la semilla, nunca para leerla —lo que se lee, lo lee el conector—.
+[package]
+name        = "ore-conector-kit"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El kit de conformidad de los conectores v2 de ORE"
+
+[[bin]]
+name = "ore-kit"
+path = "src/main.rs"
+
+[dependencies]
+ore-core   = { path = "../ore-core" }
+ore-driver = { path = "../ore-driver" }
+ore-sigv4  = { path = "../ore-sigv4" }
+# Cargar la semilla en el Postgres de pruebas, y preguntarle por sus sesiones.
+postgres   = "0.19"
+# Subir la semilla a un S3 compatible (MinIO), firmado con `ore-sigv4`.
+ureq       = { version = "2", default-features = false }
+# Leer lo que el conector contesta, y escribir los Parquet de la semilla.
+arrow-array  = "58"
+arrow-schema = "58"
+arrow-ipc    = "58"
+parquet      = { version = "58", default-features = false, features = ["arrow", "snap"] }

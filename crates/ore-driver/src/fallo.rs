@@ -188,7 +188,7 @@ fn descodificar(s: &str) -> String {
 /// su `usuario:contraseña@` y el valor de cada parámetro secreto, en su forma
 /// escrita y en la descodificada. Los cortos no cuentan: tapar `a` taparía
 /// media frase sin proteger nada.
-fn secretos(url: &str) -> Vec<String> {
+pub fn secretos(url: &str) -> Vec<String> {
     let mut s: Vec<String> = Vec::new();
     if url.is_empty() {
         return s;

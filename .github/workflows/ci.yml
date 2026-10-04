@@ -431,6 +431,57 @@ jobs:
           cargo build --quiet -p ore-serve
           bash pruebas-de-fuego/la-pregunta-se-contesta.sh
 
+  # ⭐ EL KIT DE CONFORMIDAD DE LOS CONECTORES (ADR 0053 F2·1): los 14 casos de
+  # `docs/federation.md` §2 contra cada conector, sobre una semilla que el kit
+  # carga en un Postgres de verdad y en el S3 de mentira.
+  #
+  # Hoy es LÍNEA DE BASE: dice cómo está cada conector (en el resumen del
+  # trabajo) y no falla por un caso que falle. Por eso no está en las `needs`
+  # de `imagen`. Cuando un conector pase a v2 (F2·2–F2·4), su paso lleva
+  # `--exige todos` y el trabajo entra en las `needs`: desde entonces, un
+  # conector que deja de cumplir el contrato no se despliega.
+  #
+  # BigQuery no está: su banco son respuestas grabadas (F2·3).
+  conectores:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: x
+          POSTGRES_DB: kit
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3
+
+      - name: el conector de Postgres
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432/kit
+        run: |
+          echo "### ore-read-postgres" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-postgres --banco postgres \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: el conector de S3
+        run: |
+          python3 pruebas-de-fuego/de-mentira.py s3 0 > s3.log 2>&1 &
+          for i in $(seq 1 50); do grep -q listo s3.log 2>/dev/null && break; sleep 0.2; done
+          export S3_KIT_ENDPOINT="http://127.0.0.1:$(awk '{print $2}' s3.log)" \
+                 S3_KIT_CLAVE=de S3_KIT_SECRETO=mentira S3_KIT_DE_MENTIRA=1
+          echo "### ore-read-s3" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-s3 --banco s3 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   # ══════════════════════════════════════════════════════════════════════════
   # LA IMAGEN — construir y desplegar deja de ser una costumbre
   #
