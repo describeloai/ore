@@ -41,6 +41,8 @@ use ore_s3::Objeto;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Read as _, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Hasta aquí, un Parquet se baja de una vez: con ficheros pequeños lo que
 /// cuesta es el número de peticiones, no los bytes (DuckDB lo midió: pedir
@@ -48,17 +50,28 @@ use std::sync::Arc;
 pub const UMBRAL: u64 = 16 * 1024 * 1024;
 /// Dos trozos de un Parquet a menos de esto se piden juntos.
 const HUECO: u64 = 1024 * 1024;
-/// Lo que este lector sabe poner sobre las filas de un bucket.
+/// **Lo que este lector sabe poner** sobre las filas de un bucket (ADR 0053
+/// F2·4). Los diez operadores, sobre las filas y —los que pueden— antes: una
+/// partición que no cumple no se baja, y un grupo de filas de un Parquet cuyas
+/// estadísticas no pueden cumplir, tampoco. `limit` deja de listar y de leer.
+/// `orderBy` no: un listado no ordena, y ordenar aquí sería juntar la tabla
+/// entera en memoria; con `orderBy`, el motor ordena y el `limit` no se empuja.
 pub const CAPACIDADES: ore_driver::capacidades::Capacidades =
     ore_driver::capacidades::Capacidades {
         conector: "ore-read-s3",
         version: env!("CARGO_PKG_VERSION"),
-        operadores: &["eq"],
-        limit: false,
+        operadores: ore_driver::OPERADORES,
+        limit: true,
         order_by: false,
-        estimar: false,
-        servir: false,
+        estimar: true,
+        servir: true,
     };
+
+/// El principio del mensaje de una lectura que agotó su `timeoutMs`: `main`
+/// lo lleva al código `tiempo`.
+pub const AGOTADO: &str = "se agotó el tiempo";
+/// Y el de una que se canceló.
+pub const CANCELADA: &str = "cancelada";
 
 /// Filas por lote de Arrow: las de `arrow-csv` y las del lector de Parquet.
 const LOTE: usize = 8192;
@@ -66,13 +79,182 @@ const RESCATADA: &str = ore_core::document::COLUMNA_RESCATADA;
 /// La zona de un instante como la escribe el almacén (`ore-store`, `UTC`).
 const UTC: &str = "+00:00";
 
-/// Lo que se leyó, para el aviso de `stderr`.
+/// Lo que se leyó, para el aviso de `stderr`, y el freno de la lectura.
 #[derive(Debug, Default)]
 pub struct Leido {
     pub filas: u64,
     pub ficheros: usize,
     /// Columna → cuántos valores se rescataron.
     pub rescatados: BTreeMap<String, u64>,
+    /// Ficheros que una partición descartó sin bajarlos.
+    pub descartados: usize,
+    /// Grupos de filas de Parquet que sus estadísticas descartaron.
+    pub grupos_descartados: usize,
+    /// `limit`: cuántas filas como mucho.
+    limite: Option<u64>,
+    /// `timeoutMs`: hasta cuándo, y cuántos ms eran.
+    hasta: Option<(Instant, u64)>,
+    /// La cancelación de `servir`.
+    cancelada: Option<Arc<AtomicBool>>,
+}
+
+impl Leido {
+    /// Si ya salieron las filas que `limit` pedía.
+    fn basta(&self) -> bool {
+        self.limite.is_some_and(|l| self.filas >= l)
+    }
+
+    /// Si hay que parar: el tiempo se agotó o alguien canceló.
+    fn freno(&self) -> Result<(), String> {
+        if self
+            .cancelada
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::SeqCst))
+        {
+            return Err(format!("{CANCELADA} con {} filas leídas", self.filas));
+        }
+        match self.hasta {
+            Some((h, ms)) if Instant::now() > h => Err(format!(
+                "{AGOTADO}: {ms} ms, con {} filas leídas",
+                self.filas
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Una condición de la petición, ya en los tipos de su columna.
+struct Condicion {
+    col: usize,
+    op: String,
+    /// En su tipo: uno; varios en `in`; ninguno en `isNull`, `isNotNull` y
+    /// `like`.
+    valores: Vec<Valor>,
+    /// Los mismos, como escalares de Arrow.
+    escalares: Vec<ArrayRef>,
+    /// El patrón de `like`.
+    patron: Option<String>,
+}
+
+/// Dos valores del mismo físico, comparados (`None`: no comparables).
+fn comparar(a: &Valor, b: &Valor) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Valor::Texto(x), Valor::Texto(y)) => Some(x.cmp(y)),
+        (Valor::Entero(x), Valor::Entero(y)) => Some(x.cmp(y)),
+        (Valor::Real(x), Valor::Real(y)) => x.partial_cmp(y),
+        (Valor::Logico(x), Valor::Logico(y)) => Some(x.cmp(y)),
+        (Valor::Decimal(x), Valor::Decimal(y)) => Some(x.cmp(y)),
+        (Valor::Fecha(x), Valor::Fecha(y)) => Some(x.cmp(y)),
+        (Valor::Hora(x), Valor::Hora(y)) => Some(x.cmp(y)),
+        (Valor::FechaHora(x), Valor::FechaHora(y)) => Some(x.cmp(y)),
+        (Valor::Instante(x), Valor::Instante(y)) => Some(x.cmp(y)),
+        _ => None,
+    }
+}
+
+/// `LIKE` de SQL, sin carácter de escape: `%` cualquier secuencia, `_` un
+/// carácter, lo demás literal.
+pub fn como(texto: &str, patron: &str) -> bool {
+    fn ir(t: &[char], p: &[char]) -> bool {
+        match p.split_first() {
+            None => t.is_empty(),
+            Some(('%', resto)) => (0..=t.len()).any(|i| ir(&t[i..], resto)),
+            Some(('_', resto)) => !t.is_empty() && ir(&t[1..], resto),
+            Some((c, resto)) => t.first() == Some(c) && ir(&t[1..], resto),
+        }
+    }
+    let t: Vec<char> = texto.chars().collect();
+    let p: Vec<char> = patron.chars().collect();
+    ir(&t, &p)
+}
+
+impl Condicion {
+    /// **Si un valor la cumple**, con la semántica de SQL: un nulo no cumple
+    /// nada salvo `isNull`. Es lo que descarta una partición.
+    fn cumple(&self, v: Option<&Valor>) -> bool {
+        use std::cmp::Ordering as O;
+        match (self.op.as_str(), v) {
+            ("isNull", v) => v.is_none(),
+            ("isNotNull", v) => v.is_some(),
+            (_, None) => false,
+            ("like", Some(Valor::Texto(t))) => self.patron.as_deref().is_some_and(|p| como(t, p)),
+            ("in", Some(v)) => self
+                .valores
+                .iter()
+                .any(|x| comparar(v, x) == Some(O::Equal)),
+            (op, Some(v)) => {
+                let Some(o) = self.valores.first().and_then(|x| comparar(v, x)) else {
+                    return false;
+                };
+                match op {
+                    "eq" => o == O::Equal,
+                    "neq" => o != O::Equal,
+                    "lt" => o == O::Less,
+                    "le" => o != O::Greater,
+                    "gt" => o == O::Greater,
+                    "ge" => o != O::Less,
+                    _ => true,
+                }
+            }
+        }
+    }
+
+    /// **Si algún valor entre `min` y `max` podría cumplirla**: lo que
+    /// descarta un grupo de filas por sus estadísticas. Ante la duda, sí.
+    fn puede(&self, min: &Valor, max: &Valor) -> bool {
+        use std::cmp::Ordering as O;
+        let dentro = |v: &Valor| {
+            comparar(min, v).is_none_or(|o| o != O::Greater)
+                && comparar(max, v).is_none_or(|o| o != O::Less)
+        };
+        let Some(v) = self.valores.first() else {
+            return true;
+        };
+        match self.op.as_str() {
+            "eq" => dentro(v),
+            "in" => self.valores.iter().any(dentro),
+            "lt" => comparar(min, v).is_none_or(|o| o == O::Less),
+            "le" => comparar(min, v).is_none_or(|o| o != O::Greater),
+            "gt" => comparar(max, v).is_none_or(|o| o == O::Greater),
+            "ge" => comparar(max, v).is_none_or(|o| o != O::Less),
+            _ => true,
+        }
+    }
+
+    /// La máscara de la condición sobre una columna: nulo donde SQL dice
+    /// «desconocido», que el filtro trata como falso.
+    fn mascara(&self, a: &ArrayRef) -> Result<BooleanArray, String> {
+        use arrow_ord::cmp;
+        let e = |e: arrow_schema::ArrowError| format!("el filtro no se pudo aplicar: {e}");
+        let uno = || Scalar::new(self.escalares[0].clone());
+        Ok(match self.op.as_str() {
+            "eq" => cmp::eq(a, &uno()).map_err(e)?,
+            "neq" => cmp::neq(a, &uno()).map_err(e)?,
+            "lt" => cmp::lt(a, &uno()).map_err(e)?,
+            "le" => cmp::lt_eq(a, &uno()).map_err(e)?,
+            "gt" => cmp::gt(a, &uno()).map_err(e)?,
+            "ge" => cmp::gt_eq(a, &uno()).map_err(e)?,
+            "isNull" => arrow_arith::boolean::is_null(a).map_err(e)?,
+            "isNotNull" => arrow_arith::boolean::is_not_null(a).map_err(e)?,
+            "in" => {
+                let mut m = BooleanArray::from(vec![false; a.len()]);
+                for x in &self.escalares {
+                    let igual = cmp::eq(a, &Scalar::new(x.clone())).map_err(e)?;
+                    m = arrow_arith::boolean::or(&m, &igual).map_err(e)?;
+                }
+                m
+            }
+            "like" => {
+                use arrow_array::cast::AsArray;
+                let p = self.patron.as_deref().unwrap_or("");
+                a.as_string::<i32>()
+                    .iter()
+                    .map(|v| v.map(|t| como(t, p)))
+                    .collect()
+            }
+            otro => return Err(format!("`{otro}` no es un operador de este lector")),
+        })
+    }
 }
 
 /// **Leer**: las filas de la tabla, en un flujo Arrow IPC por `salida`, con su
@@ -84,6 +266,18 @@ pub fn leer(
     salida: &mut dyn Write,
     umbral: u64,
 ) -> Result<Leido, String> {
+    leer_con(o, p, salida, umbral, None)
+}
+
+/// [`leer`] con la cancelación de `servir`.
+pub fn leer_con(
+    o: &dyn Origen,
+    p: &Peticion,
+    salida: &mut dyn Write,
+    umbral: u64,
+    cancelada: Option<Arc<AtomicBool>>,
+) -> Result<Leido, String> {
+    let inicio = Instant::now();
     if p.formato.as_deref() != Some("arrow") {
         return Err("este lector contesta en Arrow, y la petición no lo pide".into());
     }
@@ -97,11 +291,24 @@ pub fn leer(
         .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
     let mut leido = Leido {
         ficheros: ficheros.len(),
+        limite: p.limit,
+        hasta: p
+            .timeout_ms
+            .map(|ms| (inicio + Duration::from_millis(ms), ms)),
+        cancelada,
         ..Default::default()
     };
     for obj in &ficheros {
+        leido.freno()?;
+        if leido.basta() {
+            break;
+        }
         let rel = relativa(&p.objeto, &obj.clave);
         let particiones = particiones(rel);
+        if !plan.particion_cumple(&particiones) {
+            leido.descartados += 1;
+            continue;
+        }
         match f.tipo.as_str() {
             "csv" => csv(o, obj, f, &plan, &particiones, &mut escritor, &mut leido)?,
             "jsonl" => jsonl(o, obj, &plan, &particiones, &mut escritor, &mut leido)?,
@@ -127,6 +334,33 @@ pub fn leer(
 
 /// Los ficheros de la tabla, **en orden de clave**: la misma lectura da las
 /// mismas filas en el mismo orden.
+/// **Estimar** (ADR 0053 F2·4): lo que leer costaría, sin leer nada más que
+/// el listado: los ficheros que quedan tras descartar particiones y sus bytes.
+/// Las filas no: saberlas pediría el pie de cada Parquet.
+pub fn estimar(o: &dyn Origen, p: &Peticion) -> Result<String, String> {
+    let f = p
+        .fichero
+        .as_ref()
+        .ok_or("la petición no dice cómo se leen los ficheros")?;
+    let plan = Plan::de(p, f)?;
+    let ficheros = listado(o, &p.objeto, f.patron.as_deref())?;
+    let quedan: Vec<&Objeto> = ficheros
+        .iter()
+        .filter(|x| plan.particion_cumple(&particiones(relativa(&p.objeto, &x.clave))))
+        .collect();
+    let bytes: u64 = quedan.iter().map(|x| x.tamano).sum();
+    Ok(Json::obj([
+        ("bytes", Json::Int(bytes as i64)),
+        (
+            "descartados",
+            Json::Int((ficheros.len() - quedan.len()) as i64),
+        ),
+        ("ficheros", Json::Int(quedan.len() as i64)),
+        ("fuente", Json::s("listado")),
+    ])
+    .jcs())
+}
+
 fn listado(o: &dyn Origen, objeto: &str, patron: Option<&str>) -> Result<Vec<Objeto>, String> {
     let mut v: Vec<Objeto> = o
         .listar(objeto)?
@@ -207,8 +441,77 @@ struct Plan {
     rescata: bool,
     salida: SchemaRef,
     proyeccion: Vec<(String, String)>,
-    /// `(columna, valor)` de cada igualdad, con el valor ya en su tipo.
-    filtros: Vec<(usize, ArrayRef)>,
+    /// Las condiciones de la petición, cada una en el tipo de su columna.
+    filtros: Vec<Condicion>,
+}
+
+impl Plan {
+    /// **Si un fichero puede tener filas que cumplan**, por los valores de
+    /// sus particiones (`fecha=2026-09-01/…`): uno que no, no se baja. La
+    /// partición nula de Hive es `__HIVE_DEFAULT_PARTITION__`.
+    fn particion_cumple(&self, particiones: &BTreeMap<String, String>) -> bool {
+        self.filtros.iter().all(|c| {
+            let col = &self.cols[c.col];
+            if !col.particion {
+                return true;
+            }
+            let v = particiones
+                .get(&col.nombre)
+                .filter(|v| v.as_str() != "__HIVE_DEFAULT_PARTITION__")
+                .and_then(|t| col.fisico.analizar(t));
+            c.cumple(v.as_ref())
+        })
+    }
+
+    /// **Si un grupo de filas de un Parquet puede tener filas que cumplan**,
+    /// por el mínimo y el máximo que guarda de cada columna. Sólo donde el
+    /// valor de la estadística es el de la columna sin conversión (enteros,
+    /// reales, fechas, texto); lo demás, por si acaso, se lee.
+    fn grupo_puede(&self, g: &parquet::file::metadata::RowGroupMetaData) -> bool {
+        use parquet::file::statistics::Statistics as E;
+        self.filtros.iter().all(|c| {
+            let col = &self.cols[c.col];
+            if col.particion {
+                return true;
+            }
+            let Some(st) = g
+                .columns()
+                .iter()
+                .find(|m| m.column_path().parts() == [col.nombre.clone()])
+                .and_then(|m| m.statistics())
+            else {
+                return true;
+            };
+            let par = match (st, &col.fisico) {
+                (E::Int64(s), Fisico::Entero) => s
+                    .min_opt()
+                    .zip(s.max_opt())
+                    .map(|(a, b)| (Valor::Entero(*a), Valor::Entero(*b))),
+                (E::Int32(s), Fisico::Entero) => s
+                    .min_opt()
+                    .zip(s.max_opt())
+                    .map(|(a, b)| (Valor::Entero((*a).into()), Valor::Entero((*b).into()))),
+                (E::Int32(s), Fisico::Fecha) => s
+                    .min_opt()
+                    .zip(s.max_opt())
+                    .map(|(a, b)| (Valor::Fecha(*a), Valor::Fecha(*b))),
+                (E::Double(s), Fisico::Real) => s
+                    .min_opt()
+                    .zip(s.max_opt())
+                    .map(|(a, b)| (Valor::Real(*a), Valor::Real(*b))),
+                (E::ByteArray(s), Fisico::Texto) => {
+                    s.min_opt().zip(s.max_opt()).and_then(|(a, b)| {
+                        Some((
+                            Valor::Texto(a.as_utf8().ok()?.to_string()),
+                            Valor::Texto(b.as_utf8().ok()?.to_string()),
+                        ))
+                    })
+                }
+                _ => None,
+            };
+            par.is_none_or(|(min, max)| c.puede(&min, &max))
+        })
+    }
 }
 
 fn fisico_de(tipo: Option<&str>) -> Fisico {
@@ -277,23 +580,51 @@ impl Plan {
             let i = anadir(&mut plan, col);
             campos.push(Field::new(prop, tipo_arrow(&plan.cols[i].fisico), true));
         }
-        // Lo que sabe poner hoy: la igualdad. La petición ya lleva diez
-        // operadores, `limit` y `orderBy` (ADR 0053 F2·0), y lo demás se niega
-        // en vez de servir de más; F2·4 lo amplía.
+        // Lo que no declara (`orderBy`) se niega en vez de servir de más.
         CAPACIDADES.admite(p).map_err(|f| f.mensaje)?;
         for f in &p.filtros {
-            let (col, valor) = (&f.columna, f.valor().unwrap_or(""));
+            use ore_driver::Valor as Derecha;
+            let col = &f.columna;
             let i = anadir(&mut plan, col);
             let fisico = plan.cols[i].fisico;
-            let v = fisico.analizar(valor).ok_or_else(|| {
-                format!(
-                    "el filtro `{col} = {valor}` no es un {} y la columna lo es",
-                    fisico.nombre()
-                )
-            })?;
-            let mut c = Col::nuevo(&fisico);
-            c.valor(v);
-            plan.filtros.push((i, c.fin()));
+            let analizar = |t: &str| {
+                fisico.analizar(t).ok_or_else(|| {
+                    format!(
+                        "el filtro `{col} {} {t}` no es un {} y la columna lo es",
+                        f.operador,
+                        fisico.nombre()
+                    )
+                })
+            };
+            let (valores, patron) = match (&f.valor, f.operador.as_str()) {
+                (Derecha::Uno(t), "like") => {
+                    if fisico != Fisico::Texto {
+                        return Err(format!("`like` sobre `{col}`, que no es texto"));
+                    }
+                    (Vec::new(), Some(t.clone()))
+                }
+                (Derecha::Uno(t), _) => (vec![analizar(t)?], None),
+                (Derecha::Lista(l), _) => (
+                    l.iter().map(|t| analizar(t)).collect::<Result<_, _>>()?,
+                    None,
+                ),
+                (Derecha::Ninguno, _) => (Vec::new(), None),
+            };
+            let escalares = valores
+                .iter()
+                .map(|v| {
+                    let mut c = Col::nuevo(&fisico);
+                    c.valor(v.clone());
+                    c.fin()
+                })
+                .collect();
+            plan.filtros.push(Condicion {
+                col: i,
+                op: f.operador.clone(),
+                valores,
+                escalares,
+                patron,
+            });
         }
         plan.salida = Arc::new(Schema::new(campos));
         Ok(plan)
@@ -470,6 +801,10 @@ fn emitir(
     escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
+    leido.freno()?;
+    if leido.basta() {
+        return Ok(());
+    }
     let n = internas.first().map(|c| c.len()).unwrap_or(0);
     let columnas: Vec<ArrayRef> = plan
         .proyeccion
@@ -492,12 +827,11 @@ fn emitir(
     .map_err(|e| format!("el lote no casa con su esquema: {e}"))?;
     if !plan.filtros.is_empty() {
         let mut quedan: Option<BooleanArray> = None;
-        for (i, v) in &plan.filtros {
-            let igual = arrow_ord::cmp::eq(&internas[*i], &Scalar::new(v.clone()))
-                .map_err(|e| format!("el filtro no se pudo aplicar: {e}"))?;
+        for c in &plan.filtros {
+            let m = c.mascara(&internas[c.col])?;
             quedan = Some(match quedan {
-                None => igual,
-                Some(q) => arrow_arith::boolean::and(&q, &igual)
+                None => m,
+                Some(q) => arrow_arith::boolean::and(&q, &m)
                     .map_err(|e| format!("el filtro no se pudo aplicar: {e}"))?,
             });
         }
@@ -505,6 +839,16 @@ fn emitir(
             lote = arrow_select::filter::filter_record_batch(&lote, &q)
                 .map_err(|e| format!("el filtro no se pudo aplicar: {e}"))?;
         }
+    }
+    // `limit`: lo que falta, y nada más.
+    if let Some(l) = leido.limite {
+        let faltan = l.saturating_sub(leido.filas) as usize;
+        if lote.num_rows() > faltan {
+            lote = lote.slice(0, faltan);
+        }
+    }
+    if lote.num_rows() == 0 {
+        return Ok(());
     }
     leido.filas += lote.num_rows() as u64;
     escritor
@@ -735,6 +1079,9 @@ fn csv(
         lote.fila(celdas, extras, clave, numero, leido)?;
         if lote.n >= LOTE {
             lote.vaciar(escritor, leido)?;
+            if leido.basta() {
+                return Ok(());
+            }
         }
     }
     lote.vaciar(escritor, leido)
@@ -796,6 +1143,9 @@ fn jsonl(
         lote.fila(celdas, extras, clave, numero, leido)?;
         if lote.n >= LOTE {
             lote.vaciar(escritor, leido)?;
+            if leido.basta() {
+                return Ok(());
+            }
         }
     }
     lote.vaciar(escritor, leido)
@@ -965,6 +1315,9 @@ fn parquet(
                 leido,
                 escritor,
             )?;
+            if leido.basta() {
+                return Ok(());
+            }
         }
         return Ok(());
     }
@@ -982,6 +1335,11 @@ fn parquet(
     let (m, hojas) = mascara(meta.metadata().file_metadata().schema_descr());
     for g in 0..meta.metadata().num_row_groups() {
         let grupo = meta.metadata().row_group(g);
+        // Lo que sus estadísticas dicen que no puede cumplir, no se baja.
+        if !plan.grupo_puede(grupo) {
+            leido.grupos_descartados += 1;
+            continue;
+        }
         let rangos = juntar(
             hojas
                 .iter()
@@ -1009,6 +1367,9 @@ fn parquet(
                 leido,
                 escritor,
             )?;
+            if leido.basta() {
+                return Ok(());
+            }
         }
     }
     Ok(())
@@ -1337,6 +1698,151 @@ mod tests {
         p.filtros = vec![ore_driver::Filtro::uno("n", "eq", "uno")];
         let e = filas(&o, &p, UMBRAL).expect_err("un literal que no es del tipo");
         assert!(e.contains("no es un Integer"), "{e}");
+    }
+
+    /// **Los diez operadores sobre las filas** (0053 F2·4), con la semántica
+    /// de SQL: un nulo no cumple nada salvo `isNull`.
+    #[test]
+    fn los_operadores_v2_sobre_las_filas() {
+        use ore_driver::{Filtro, Valor as D};
+        let o = EnMemoria::con(&[("t/a.csv", b"id,n\na,1\nb,2\nc,\nd,5\n_x,3\n".to_vec())]);
+        let base = peticion("csv", "t/a.csv", &["id"], TIPOS);
+        let ids = |f: Filtro| -> Vec<String> {
+            let mut p = base.clone();
+            p.filtros = vec![f];
+            let (b, _) = filas(&o, &p, UMBRAL).expect("lee");
+            texto(&b, "id").into_iter().flatten().collect()
+        };
+        let lista = |op: &str, v: &[&str]| Filtro {
+            columna: "n".into(),
+            operador: op.into(),
+            valor: D::Lista(v.iter().map(|x| x.to_string()).collect()),
+        };
+        assert_eq!(ids(Filtro::uno("n", "neq", "2")), ["a", "d", "_x"]);
+        assert_eq!(ids(Filtro::uno("n", "ge", "3")), ["d", "_x"]);
+        assert_eq!(ids(Filtro::uno("n", "lt", "2")), ["a"]);
+        assert_eq!(ids(Filtro::uno("n", "le", "2")), ["a", "b"]);
+        assert_eq!(ids(Filtro::uno("n", "gt", "4")), ["d"]);
+        assert_eq!(ids(lista("in", &["1", "5"])), ["a", "d"]);
+        assert!(ids(lista("in", &[])).is_empty());
+        assert_eq!(
+            ids(Filtro {
+                columna: "n".into(),
+                operador: "isNull".into(),
+                valor: D::Ninguno
+            }),
+            ["c"]
+        );
+        assert_eq!(
+            ids(Filtro {
+                columna: "n".into(),
+                operador: "isNotNull".into(),
+                valor: D::Ninguno
+            })
+            .len(),
+            4
+        );
+        assert_eq!(ids(Filtro::uno("id", "like", "_")), ["a", "b", "c", "d"]);
+        let mut p = base.clone();
+        p.filtros = vec![Filtro::uno("n", "like", "1")];
+        let e = filas(&o, &p, UMBRAL).expect_err("like sobre un entero");
+        assert!(e.contains("no es texto"), "{e}");
+        p.filtros.clear();
+        p.orden = vec![ore_driver::Orden {
+            columna: "n".into(),
+            descendente: false,
+        }];
+        assert!(filas(&o, &p, UMBRAL).is_err(), "`orderBy` no se declara");
+    }
+
+    /// **Una partición que no cumple no se baja**, y `estimar` lo dice sin
+    /// leer nada más que el listado.
+    #[test]
+    fn una_particion_que_no_cumple_no_se_baja() {
+        let o = EnMemoria::con(&[
+            (
+                "v/p/fecha=2026-09-01/a.parquet",
+                un_parquet(10, &["a", "b"], &[1, 2]),
+            ),
+            (
+                "v/p/fecha=2026-09-02/b.parquet",
+                un_parquet(10, &["c"], &[3]),
+            ),
+            (
+                "v/p/fecha=2026-09-03/c.parquet",
+                un_parquet(10, &["d"], &[4]),
+            ),
+        ]);
+        let mut p = peticion(
+            "parquet",
+            "v/p/",
+            &["id"],
+            &[("id", "String"), ("unidades", "Integer"), ("fecha", "Date")],
+        );
+        let f = p.fichero.as_mut().unwrap();
+        f.patron = Some("**/*.parquet".into());
+        f.particiones = vec!["fecha".into()];
+        p.filtros = vec![ore_driver::Filtro::uno("fecha", "ge", "2026-09-02")];
+        let (b, l) = filas(&o, &p, UMBRAL).expect("lee");
+        assert_eq!(texto(&b, "id"), [Some("c".into()), Some("d".into())]);
+        assert_eq!(l.descartados, 1);
+        assert_eq!(o.lecturas.get(), 2, "la partición que no cumple no se baja");
+        let e = estimar(&o, &p).expect("estima");
+        assert!(
+            e.contains("\"ficheros\":2") && e.contains("\"descartados\":1"),
+            "{e}"
+        );
+        assert_eq!(o.lecturas.get(), 2, "estimar no lee");
+    }
+
+    /// **Un grupo de filas que no puede cumplir no se baja**: sus
+    /// estadísticas (mínimo y máximo) lo dicen desde el pie.
+    #[test]
+    fn un_grupo_de_filas_que_no_puede_cumplir_no_se_baja() {
+        let ids: Vec<String> = (0..300).map(|i| format!("id{i}")).collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let unidades: Vec<i32> = (0..300).collect();
+        let o = EnMemoria::con(&[("g/a.parquet", un_parquet(100, &ids, &unidades))]);
+        let mut p = peticion(
+            "parquet",
+            "g/a.parquet",
+            &["id"],
+            &[
+                ("id", "String"),
+                ("unidades", "Integer"),
+                ("nota", "String"),
+            ],
+        );
+        p.filtros = vec![ore_driver::Filtro::uno("unidades", "ge", "250")];
+        let (_, l) = filas(&o, &p, 1024).expect("por rangos");
+        assert_eq!(l.filas, 50);
+        assert_eq!(l.grupos_descartados, 2);
+        assert_eq!(o.lecturas.get(), 2 + 1, "el pie (2) y sólo el tercer grupo");
+    }
+
+    /// **`limit` deja de leer**: el tercer fichero no se baja.
+    #[test]
+    fn limit_deja_de_listar_y_de_leer() {
+        let o = EnMemoria::con(&[
+            ("q/a.parquet", un_parquet(10, &["a", "b"], &[1, 2])),
+            ("q/b.parquet", un_parquet(10, &["c", "d"], &[3, 4])),
+            ("q/c.parquet", un_parquet(10, &["e", "f"], &[5, 6])),
+        ]);
+        let mut p = peticion(
+            "parquet",
+            "q/",
+            &["id"],
+            &[("id", "String"), ("unidades", "Integer")],
+        );
+        p.limit = Some(3);
+        let (b, l) = filas(&o, &p, UMBRAL).expect("lee");
+        assert_eq!(b.num_rows(), 3);
+        assert_eq!(l.filas, 3);
+        assert_eq!(o.lecturas.get(), 2, "el tercero no se baja");
+        p.limit = None;
+        p.timeout_ms = Some(0);
+        let e = filas(&o, &p, UMBRAL).expect_err("sin tiempo");
+        assert!(e.starts_with(AGOTADO), "{e}");
     }
 
     #[test]

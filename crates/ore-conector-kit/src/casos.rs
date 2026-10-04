@@ -808,9 +808,13 @@ impl Kit<'_> {
         let _ = hijo.wait();
         self.b.limpiar();
         if mal.is_empty() {
+            let sesiones = match (antes, tras) {
+                (Some(_), Some(_)) => "por una sesión; otra credencial, otra",
+                _ => "(el origen no dice sus sesiones)",
+            };
             (
                 Estado::Pasa,
-                format!("100 peticiones en {ms} ms por una conexión; otra credencial, otra"),
+                format!("100 peticiones en {ms} ms {sesiones}"),
             )
         } else {
             (Estado::Falla, mal.join("; "))
