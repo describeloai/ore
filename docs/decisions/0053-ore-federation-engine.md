@@ -232,7 +232,25 @@ Detalle en `docs/federation.md` §4.
 |---|---|---|
 | **F4·1** · el plan | `ore federate` (el plan desde el árbol, hermético), `ore source federation <n> on|off`, `ore source add --federation`, `flow::lectura_del_origen` (`federation.read` sin autorización es ⊥ aunque no haya etiquetas; la carga de la fuente y de cada columna; desde un puesto, también su conducto) | ✓ `el-plan-federado.sh` 14/14: apagada → 403; encendida **sólo en la rama** → sigue 403 (manda main); en main sin conducto → `OOS4011`; filtro no empujable → `422 empuje`; `forbidden` → `OOS2044`; `requiredFilters` → `OOS2045`; apagar en main la apaga en la rama |
 | **F4·2** · la ruta | `POST /federation/read` (paso 0 y 1–8), `PUT /fuentes/{n}`, `federation` en `GET /fuentes` y en el alta, la puerta del puesto, el evento `federation:read` sin valores; la consola con su interruptor | ✓ `el-coordinador.sh` 14/14 con `ore-serve`, la pasarela y Postgres de verdad: 3 filas, filtro empujado, `limit`, `OOS2044`, `empuje`, 404, apagar → 403, 8 lecturas anotadas sin valores de filtro, y la clave del origen en ningún registro ni respuesta |
-| **F4·3** · en vivo | encender las fuentes de victor en `main` y leer desde un puesto contra Neon, BigQuery y S3 | pendiente |
+| **F4·3** · en vivo | encender las fuentes de victor en `main` (consola: «Enable federation») y leer desde un puesto contra Neon, BigQuery y S3; la huella desde el puesto (`iam 050`, `puesto:abrir`) | ✓ (6a143dc, 44ac508) desde test6, `pruebas-de-fuego/celda-federada-test6.py`: **Neon** 4 filas (la tabla entera) en 2,1 s; **BigQuery** 5 filas en 1,5 s; **S3** 5 filas en 0,3 s; **BigQuery `expensive`** cortada en 10⁶ filas justas (`cortado filas`, 64 MB) en 2,7 s. Las cuatro en `iam.huella` a nombre de quien abrió el puesto, con su decisión |
+
+**F4 CERRADO** (2026-10-05).
+
+**Lo que F4·3 destapó.** **Lo que pasaba en un puesto no llegaba a la huella.** La celda habla con el
+token de su pod (`x-ore-pod`), no con el de la persona, y `ore-iam` sólo anota con `Ore-Sujeto` o con
+una decisión viva —una celda no puede atribuirle a nadie lo que `ore-iam` no autorizó—: las cuatro
+primeras lecturas dieron `400` y fueron a `muertos/`. No era de la federación: le pasaba a todo evento
+que saliera de un puesto (la actividad, `coleccion:servir`). Arreglo, sin tocar esa regla: al abrir el
+puesto, con el token de la persona delante, `ore-serve` pregunta `puesto:abrir` (por defecto a quien
+pertenece, `iam 050`) y guarda la decisión con el puesto; cada evento que sale de él la nombra, y quien
+lo abre otra vez la renueva (vive 24 h). Si `ore-iam` niega o no contesta, el puesto se abre igual y
+se dice en el registro.
+
+**Y lo que viene después, decidido con el usuario.** Cerrada la federación, el paso inmediato es
+rehacer las **bases foráneas** como la cara SQL de un origen federado, con su propia spec: hoy son
+vistas sobre un origen anteriores a este ADR, que no se consultan bien en SQL; con la federación, una
+foránea son las tablas de un origen federado leídas en vivo por la pasarela, y no existe sin el
+interruptor encendido.
 
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
