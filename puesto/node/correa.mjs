@@ -171,9 +171,14 @@ export class Correa {
   /**
    * @param p        la sesión (`ore.session`): `id`, `servidor`, `pedir`
    * @param testigo  quien da las cabeceras de identidad (`cabeceras()`)
+   * @param alActividad  (0050 sesión automática) a cada mensaje del editor: el
+   *   agente lo cuenta como actividad para su TTL. Con la sesión abierta sola
+   *   al abrir un `.ts`, escribir —hover, diagnósticos, `tsc`, las pruebas— es
+   *   trabajar, aunque no se corra ninguna celda.
    */
-  constructor(p, testigo, { trabajo = process.env.TRABAJO_DIR ?? "/trabajo", orden } = {}) {
+  constructor(p, testigo, { trabajo = process.env.TRABAJO_DIR ?? "/trabajo", orden, alActividad } = {}) {
     this.p = p;
+    this.alActividad = alActividad ?? (() => {});
     this.testigo = testigo;
     this.trabajo = trabajo;
     this.orden = orden ?? (process.env.ORE_LSP
@@ -365,6 +370,7 @@ export class Correa {
   /** Un mensaje del editor, en orden: lo que llega mientras se prepara espera.
    *  Salvo `ore/comprobar`, que va por su cuenta: un `tsc` no detiene un hover. */
   escribir(crudo) {
+    this.alActividad();
     if (crudo.includes('"ore/comprobar"') || crudo.includes('"ore/probar"')) {
       let m = null;
       try { m = JSON.parse(crudo); } catch { /* no era */ }

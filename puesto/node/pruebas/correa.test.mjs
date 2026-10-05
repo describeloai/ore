@@ -63,6 +63,22 @@ const ARBOL = {
   ].join("\n"),
 };
 
+test("cada mensaje del editor cuenta como actividad (el TTL del puesto)", async () => {
+  let n = 0;
+  const c = new Correa({ id: "x", pedir: async () => [200, {}] }, { cabeceras: async () => ({}) }, { alActividad: () => { n++; } });
+  c.entregarAlServidor = async () => {};
+  c.probar = async () => {};
+  c.comprobar = async () => {};
+  await c.escribir('{"jsonrpc":"2.0","method":"textDocument/didChange","params":{}}');
+  await c.escribir('{"jsonrpc":"2.0","id":1,"method":"ore/probar","params":{}}');
+  await c.escribir('{"jsonrpc":"2.0","id":2,"method":"ore/comprobar","params":{}}');
+  assert.equal(n, 3);
+  // Sin retrollamada, como antes: nada que contar, nada que romper.
+  const s = new Correa({ id: "x", pedir: async () => [200, {}] }, { cabeceras: async () => ({}) });
+  s.entregarAlServidor = async () => {};
+  await s.escribir('{"jsonrpc":"2.0","method":"initialized","params":{}}');
+});
+
 test("enDisco: sólo lo de dentro, y nunca node_modules", () => {
   const t = join(tmpdir(), "t");
   assert.equal(enDisco(pathToFileURL(join(t, "packages", "a.ts")).href, t), join(t, "packages", "a.ts"));

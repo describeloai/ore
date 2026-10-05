@@ -233,16 +233,19 @@ async function main() {
   if (trabajo) process.env.ORE_CODIGO = trabajo;
   const testigo = new Testigo();
   const kernel = new Kernel();
+  // La última actividad: una celda, o (0050 sesión automática) un mensaje del
+  // editor por la correa —escribir con tipos, `tsc`, las pruebas—. Sin ninguna
+  // de las dos durante el TTL, el puesto se va.
+  let ultimo = Date.now();
   if (!trabajo) {
-    correa = new Correa(p, testigo);
+    correa = new Correa(p, testigo, { alActividad: () => { ultimo = Date.now(); } });
     void correa.escuchar();
   }
   log(`puesto ${p.id} · ore-serve ${p.servidor} · TTL ${ttl}s · almacén ${p.almacen} · node ${process.version}`);
-  let ultimo = Date.now();
   const espera = (s) => new Promise((ok) => setTimeout(ok, s * 1000));
   while (true) {
     if (Date.now() - ultimo > ttl * 1000) {
-      log(`sin celdas durante ${ttl}s: cierro`);
+      log(`sin actividad (celdas ni editor) durante ${ttl}s: cierro`);
       // Fuera de la cola: si no, Flux recrea el Job.
       try { p._cabeceras = await testigo.cabeceras(); await p.pedir("POST", `/puestos/${p.id}/cierre`); } catch (e) { log(`no se pudo notificar el cierre: ${e}`); }
       return 0;
