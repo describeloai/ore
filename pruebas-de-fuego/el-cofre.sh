@@ -307,7 +307,7 @@ ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
 # Hasta la A7a los custodios entraban con un login compartido, y con el cada
 # uno leia lo de todos. Desde la 041 un login de `ore_cofre` ve las filas de SU
 # organizacion y ninguna mas, y la organizacion la dice el login: el papel de la
-# celda, que da `iam.dar_papel_de_celda` (solo el aprovisionador). Un login sin
+# celda, que crea `iam.crear_papel_de_celda` (solo el aprovisionador, 049). Un login sin
 # celda —`cofre_app_c`, el de arriba— ya no veria nada, y el custodio de esta
 # prueba no podria ni emitir: por eso corre con el de `acme`.
 #
@@ -319,7 +319,7 @@ psql "$URL" -v ON_ERROR_STOP=1 -qtAc "insert into iam.celda
   values ('cel_otra', '$ORG_OTRA', 'otra', 'compartido', 'gcp', 'europe-west1-b',
           'ore-prueba', 'ore-prueba.ore.paladio.io', 'otra/arbol', 'otra.ore.paladio.io')" \
   >/dev/null 2>&1 || falla "no se pudo dar celda a \`otra\`"
-dar_papel() { psql "$URL" -qtAc "set role ore_aprovisionador; select iam.dar_papel_de_celda('$1')" 2>/dev/null | tr -d ' \n'; }
+dar_papel() { psql "$URL" -qtAc "set role ore_aprovisionador; select iam.crear_papel_de_celda('$1')" 2>/dev/null | tr -d ' \n'; }
 PAPEL_ACME=$(dar_papel acme)
 PAPEL_OTRA=$(dar_papel otra)
 [ "${PAPEL_ACME%%:*}" = "cofre_acme" ] && [ "${PAPEL_OTRA%%:*}" = "cofre_otra" ] \

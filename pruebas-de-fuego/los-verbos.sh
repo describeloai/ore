@@ -710,14 +710,19 @@ grep -q '"estado_medido":{' "$TMP/r.json" && grep -q '"recibido_en":"' "$TMP/r.j
   || falla "13 · GET /celdas no devuelve el estado medido entero: $(cat "$TMP/r.json")"
 dice "13 · el estado: solo el agente de la organizacion; el contrato se exige; una fila que se sobreescribe; huella al empezar; GET /celdas lo dice"
 
-# ── 14 · el papel de cada celda (040, 0047 A7a.1) ──────────────────────────
+# ── 14 · el papel de cada celda (040, 0047 A7a.1; 049, 0054 I2 e I3) ───────
 # El custodio de una celda entra con un login suyo, y la base sabe de que
-# organizacion es. Lo da UNA funcion, solo al aprovisionador, y deja huella.
+# organizacion es. Lo CREA una funcion, solo el aprovisionador, y deja huella.
+# ⭐ 0054: crear no rota (I2), y rotar no deja a nadie fuera (I3): dos papeles
+#   alternos, `preparar` no toca el vigente y `confirmar` exige que el nuevo
+#   ya tenga una sesion abierta.
 # ⚠️ Los papeles son del servidor: `cofre_acme` sobrevive al `drop database`
-#   de la vuelta anterior, y la segunda vuelta lo rota en vez de crearlo.
-dar_papel() { psql "$URL" -qtAc "set role ore_aprovisionador; select iam.dar_papel_de_celda('$1')" 2>/dev/null | tr -d ' \n'; }
-P1=$(dar_papel acme)
-[ "${P1%%:*}" = "cofre_acme" ] || falla "14 · el aprovisionador no obtuvo el papel de \`acme\`"
+#   de la vuelta anterior, y `crear` le pone clave nueva (la celda, en ESTA
+#   base, no tiene papel todavia).
+crear() { psql "$URL" -qtAc "set role ore_aprovisionador; select iam.crear_papel_de_celda('$1')" 2>"$TMP/papel.err" | tr -d ' \n'; }
+entra() { psql "$1" -qtAc "select 1" >/dev/null 2>&1; }
+P1=$(crear acme)
+[ "${P1%%:*}" = "cofre_acme" ] || falla "14 · el aprovisionador no creo el papel de \`acme\`: $(cat "$TMP/papel.err")"
 C1="${P1#*:}"
 [ "${#C1}" = "64" ] || falla "14 · la clave no tiene 64 caracteres"
 URL_COFRE="postgres://cofre_acme:$C1@$SERVIDOR/iam_prueba"
@@ -727,24 +732,58 @@ psql "$URL_COFRE" -qtAc "select count(*) from iam.potestades_de_persona" >/dev/n
   || falla "14 · el papel de la celda no tiene lo de \`ore_cofre\`"
 [ -z "$(psql "$URL_APP" -qtAc "select iam.mi_organizacion()" | tr -d ' ')" ] \
   || falla "14 · ⛔ UN LOGIN SIN CELDA TIENE ORGANIZACION"
-if psql "$URL_APP" -qtAc "select iam.dar_papel_de_celda('acme')" >/dev/null 2>&1; then
-  falla "14 · ⛔ \`ore-iam\` DIO EL PAPEL DE UNA CELDA: eso es solo del aprovisionador"
+if psql "$URL_APP" -qtAc "select iam.crear_papel_de_celda('acme')" >/dev/null 2>&1; then
+  falla "14 · ⛔ \`ore-iam\` CREO EL PAPEL DE UNA CELDA: eso es solo del aprovisionador"
 fi
-[ -z "$(dar_papel no-existe)" ] || falla "14 · ⛔ SE DIO EL PAPEL DE UNA CELDA QUE NO EXISTE"
-# Otra vez: rota. La clave vieja deja de entrar y la nueva entra.
-P2=$(dar_papel acme)
-[ "${P2%%:*}" = "cofre_acme" ] && [ "${P2#*:}" != "$C1" ] || falla "14 · la segunda vez no roto la clave"
-if psql "$URL_COFRE" -qtAc "select 1" >/dev/null 2>&1; then
-  falla "14 · ⛔ LA CLAVE VIEJA SIGUE ENTRANDO DESPUES DE ROTAR"
+[ -z "$(crear no-existe)" ] || falla "14 · ⛔ SE CREO EL PAPEL DE UNA CELDA QUE NO EXISTE"
+# I2 · otra vez: se NIEGA, y la clave de antes sigue entrando.
+[ -z "$(crear acme)" ] && grep -q "ya tiene papel" "$TMP/papel.err" \
+  || falla "14 · ⛔ CREAR OTRA VEZ NO SE NEGO: $(cat "$TMP/papel.err")"
+entra "$URL_COFRE" || falla "14 · ⛔ CREAR OTRA VEZ ROMPIO LA CLAVE VIGENTE"
+# El aprovisionador no rota: ni preparar, ni confirmar; y la que rotaba ya no esta.
+for F in "preparar_papel_de_celda('acme')" "confirmar_papel_de_celda('acme', 'cofre_acme_b')" "dar_papel_de_celda('acme')"; do
+  if psql "$URL" -qtAc "set role ore_aprovisionador; select iam.$F" >/dev/null 2>&1; then
+    falla "14 · ⛔ EL APROVISIONADOR PUEDE \`$F\`"
+  fi
+done
+# I3 · preparar: el OTRO papel, y el vigente sigue entrando.
+P2=$(psql "$URL" -qtAc "select iam.preparar_papel_de_celda('acme')" | tr -d ' \n')
+[ "${P2%%:*}" = "cofre_acme_b" ] || falla "14 · preparar no dio el papel alterno"
+entra "$URL_COFRE" || falla "14 · ⛔ PREPARAR ROMPIO LA CLAVE VIGENTE"
+URL_B="postgres://cofre_acme_b:${P2#*:}@$SERVIDOR/iam_prueba"
+[ "$(psql "$URL_B" -qtAc "select iam.mi_organizacion()" | tr -d ' ')" = "$ORG" ] \
+  || falla "14 · el papel alterno no sabe que es de su organizacion"
+# confirmar sin nadie dentro con el nuevo: se niega, y no cambia nada.
+if psql "$URL" -qtAc "select iam.confirmar_papel_de_celda('acme', 'cofre_acme_b')" >/dev/null 2>"$TMP/papel.err"; then
+  falla "14 · ⛔ SE CONFIRMO UN PAPEL CON EL QUE NADIE HABIA ENTRADO"
 fi
-psql "postgres://cofre_acme:${P2#*:}@$SERVIDOR/iam_prueba" -qtAc "select 1" >/dev/null 2>&1 \
-  || falla "14 · la clave nueva no entra"
-[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:papel-de-base'")" = "2" ] \
-  || falla "14 · dar el papel no dejo una huella por vez"
-if psql "$URL" -qtAc "select detalle::text from iam.huella where operacion = 'celda:papel-de-base'" | grep -q "${P2#*:}"; then
-  falla "14 · ⛔ LA CLAVE ESTA EN LA HUELLA"
+grep -q "nadie ha entrado" "$TMP/papel.err" || falla "14 · confirmar se nego por otra cosa: $(cat "$TMP/papel.err")"
+entra "$URL_COFRE" || falla "14 · ⛔ UN CONFIRMAR NEGADO ROMPIO LA CLAVE VIGENTE"
+# Con una sesion abierta del nuevo —el custodio ya entra con el—: confirma, y
+# el viejo se queda sin login.
+psql "$URL_B" -qtAc "select pg_sleep(5)" >/dev/null 2>&1 &
+SESION=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(psql "$URL" -qtAc "select count(*) from pg_stat_activity where usename = 'cofre_acme_b'" | tr -d ' ')" != "0" ] && break
+  sleep 0.3
+done
+[ "$(psql "$URL" -qtAc "select iam.confirmar_papel_de_celda('acme', 'cofre_acme_b')" 2>"$TMP/papel.err" | tr -d ' ')" = "cofre_acme_b" ] \
+  || falla "14 · confirmar con el custodio dentro no confirmo: $(cat "$TMP/papel.err")"
+wait "$SESION"
+entra "$URL_B" || falla "14 · el papel confirmado no entra"
+if entra "$URL_COFRE"; then falla "14 · ⛔ EL PAPEL RETIRADO SIGUE ENTRANDO"; fi
+[ "$(psql "$URL" -qtAc "select papel from iam.papel_de_celda where vigente and celda = (select id from iam.celda where nombre = 'acme')" | tr -d ' ')" = "cofre_acme_b" ] \
+  || falla "14 · el vigente no es el confirmado"
+# Y la siguiente rotacion vuelve al primero.
+P3=$(psql "$URL" -qtAc "select iam.preparar_papel_de_celda('acme')" | tr -d ' \n')
+[ "${P3%%:*}" = "cofre_acme" ] || falla "14 · la segunda rotacion no volvio a \`cofre_acme\`"
+entra "$URL_B" || falla "14 · ⛔ LA SEGUNDA ROTACION ROMPIO EL VIGENTE"
+[ "$(psql "$URL" -qtAc "select string_agg(operacion, ',' order by cuando) from iam.huella where operacion like 'celda:papel-%'")" = "celda:papel-creado,celda:papel-preparado,celda:papel-confirmado,celda:papel-preparado" ] \
+  || falla "14 · las huellas de crear, preparar y confirmar no son una por acto"
+if psql "$URL" -qtAc "select detalle::text from iam.huella where operacion like 'celda:papel-%'" | grep -qE "$C1|${P2#*:}|${P3#*:}"; then
+  falla "14 · ⛔ UNA CLAVE ESTA EN LA HUELLA"
 fi
-dice "14 · cada celda, su login: solo el aprovisionador lo da, sabe su organizacion, rota, y la huella no lleva la clave"
+dice "14 · cada celda, su login: solo el aprovisionador lo crea y no puede rotarlo (I2); rotar prepara el otro sin tocar el vigente y confirma solo con el custodio dentro (I3); la huella no lleva la clave"
 
 # ── 15 · ⭐⭐ EL PUENTE (0047 A2): la celda pregunta, `ore-iam` contesta ──────
 #

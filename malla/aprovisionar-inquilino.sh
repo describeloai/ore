@@ -96,6 +96,43 @@ hecho() { echo "  ✓ $*"; }
 ya()    { echo "  · $* — ya estaba"; }
 haria() { echo "  ~ $*"; }
 
+# ── ⭐⭐ PREGUNTAR TIENE TRES RESPUESTAS, NO DOS (0054 I1) ───────────────────
+#
+# El 2026-10-04 a las 21:35 una pasada de este guion pregunto si el secreto de
+# la base del cofre tenia version, con `2>/dev/null`. gcloud fallo, la respuesta
+# vacia se leyo como «no hay», y el guion ROTO la clave de dos custodios que no
+# llego a guardar. A la mañana siguiente t-demo y t-victor no tenian base.
+#
+# ⇒ Toda pregunta a la nube contesta una de tres cosas:
+#
+#   0  contesto           su salida, en `$RESPUESTA` (vacia es una respuesta)
+#   1  NO EXISTE          y lo dijo el proveedor: `NOT_FOUND`, `HTTPError 404`
+#                         o `not found: 404` — medidos uno a uno, por recurso
+#   2  NO SE SABE         cualquier otra cosa: permisos, red, credencial…
+#
+# ⛔ «No se sabe» no toca nada, se dice con su motivo y la pasada sale en ROJO
+#   (`duda`). Y una escritura que falla, igual (`correr`). Una prueba del CI
+#   (`pruebas-de-fuego/converger-sin-romper.sh`) prohibe volver a escribir
+#   `"$GCLOUD" … 2>/dev/null`.
+DUDAS=""
+preguntar() { # <orden…> → 0 contesto · 1 no existe · 2 no se sabe
+  RESPUESTA=""; NO_SE=""
+  if RESPUESTA=$("$@" 2>"$TMP/pregunta.err"); then
+    RESPUESTA=$(printf '%s' "$RESPUESTA" | tr -d '\r')
+    return 0
+  fi
+  RESPUESTA=""
+  grep -qE 'NOT_FOUND|HTTPError 404|not found: 404' "$TMP/pregunta.err" && return 1
+  NO_SE=$(tr '\r\n' '  ' < "$TMP/pregunta.err" | cut -c1-240)
+  return 2
+}
+duda() { # <que> — no se toca, se dice, y la pasada sale en rojo
+  echo "  ? $* — NO SE SABE, y no se toca${NO_SE:+ ($NO_SE)}" >&2
+  DUDAS="$DUDAS
+     · $*"
+  NO_SE=""
+}
+
 # ⛔ En seco NO se toca nada, y se dice lo que se haría. Un aprovisionador que
 #   sólo se puede probar aprovisionando es un aprovisionador que nadie prueba.
 #
@@ -110,9 +147,35 @@ haria() { echo "  ~ $*"; }
 #   de la prueba en seco: tres pasos desaparecían de la salida sin que nada
 #   fallara. La salida estándar de la orden se calla; **su salida de error no**,
 #   porque es la que dice por qué.
+#
+# ⛔ Y si FALLA, la pasada sale en rojo (0054 I1). Antes su error se veia en el
+#   registro y nada mas: `iam roles create` fallo en cada pasada durante dias.
 correr() {
   if [ -n "$SECO" ]; then haria "$(echo "$*" | sed 's|^[^ ]*[/\\]||')"; return 1; fi
-  "$@" >/dev/null
+  "$@" >/dev/null && return 0
+  DUDAS="$DUDAS
+     · fallo: $(echo "$*" | sed 's|^[^ ]*[/\\]||' | cut -c1-160)"
+  return 1
+}
+# Quitar lo que puede no estar ya: «no estaba» es un «ya»; cualquier otro fallo, rojo.
+quitar() { # <que> <orden…>
+  local que="$1"; shift
+  if [ -n "$SECO" ]; then haria "quitar $que"; return 0; fi
+  if "$@" >/dev/null 2>"$TMP/quitar.err"; then hecho "$que, fuera"; return 0; fi
+  if grep -qE 'NOT_FOUND|HTTPError 404|not found: 404|not found!' "$TMP/quitar.err"; then ya "$que, fuera"; return 0; fi
+  NO_SE=$(tr '\r\n' '  ' < "$TMP/quitar.err" | cut -c1-240)
+  duda "quitar $que"
+}
+# Que un secreto exista: se pregunta, y sólo si NO EXISTE se crea (antes era
+# `create … || true`, que tambien se tragaba un fallo de verdad).
+asegurar_secreto() { # <nombre> [opciones de create…] → 0 esta o se creo · ≠0 no
+  local n="$1"; shift
+  preguntar "$GCLOUD" secrets describe "$n" --format="value(name)"
+  case $? in
+    0) return 0 ;;
+    1) correr "$GCLOUD" secrets create "$n" --replication-policy=user-managed --locations="$LUGAR" "$@" ;;
+    *) duda "el secreto $n"; return 1 ;;
+  esac
 }
 
 ruta() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else echo "$1"; fi; }
@@ -409,42 +472,65 @@ if [ "$ESTADO" = "retirada" ]; then
   # la puerta
   ENTRADA_RET=$(celda entrada)
   ZONA=""
-  while IFS=, read -r z dn; do
-    case "$ENTRADA_RET." in *".$dn") ZONA="$z" ;; esac
-  done < <("$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)" 2>/dev/null | tr -d '\r')
-  if [ -n "$ZONA" ] && "$GCLOUD" dns record-sets describe "$ENTRADA_RET." --zone="$ZONA" --type=CNAME --format="value(name)" >/dev/null 2>&1; then
-    correr "$GCLOUD" dns record-sets delete "$ENTRADA_RET." --zone="$ZONA" --type=CNAME && hecho "registro $ENTRADA_RET fuera de la zona"
+  if preguntar "$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)"; then
+    while IFS=, read -r z dn; do
+      case "$ENTRADA_RET." in *".$dn") ZONA="$z" ;; esac
+    done <<< "$RESPUESTA"
+    if [ -z "$ZONA" ]; then
+      ya "el registro de $ENTRADA_RET (ninguna zona nuestra lo contiene)"
+    else
+      preguntar "$GCLOUD" dns record-sets describe "$ENTRADA_RET." --zone="$ZONA" --type=CNAME --format="value(name)"
+      case $? in
+        0) correr "$GCLOUD" dns record-sets delete "$ENTRADA_RET." --zone="$ZONA" --type=CNAME && hecho "registro $ENTRADA_RET fuera de la zona" ;;
+        1) ya "el registro de $ENTRADA_RET" ;;
+        *) duda "el registro de $ENTRADA_RET" ;;
+      esac
+    fi
   else
-    ya "el registro de $ENTRADA_RET"
+    duda "las zonas de DNS (el registro de $ENTRADA_RET)"
   fi
   # el almacen: todo lo que lleva la celda delante
-  for S in $("$GCLOUD" secrets list --filter="name~^projects/[0-9]+/secrets/$NS-" --format="value(name)" 2>/dev/null | tr -d '\r'); do
-    correr "$GCLOUD" secrets delete "$S" --quiet && hecho "secreto $S borrado"
-  done
+  if preguntar "$GCLOUD" secrets list --filter="name~^projects/[0-9]+/secrets/$NS-" --format="value(name)"; then
+    for S in $RESPUESTA; do
+      correr "$GCLOUD" secrets delete "$S" --quiet && hecho "secreto $S borrado"
+    done
+  else
+    duda "los secretos de $NS"
+  fi
   # la condicion del cofre sobre el proyecto, y los permisos sobre la llave
-  correr "$GCLOUD" projects remove-iam-policy-binding "$PROYECTO" \
+  quitar "la condicion del cofre (\`ore-cofre-$NOMBRE\` administraba su prefijo del almacen)" \
+    "$GCLOUD" projects remove-iam-policy-binding "$PROYECTO" \
     --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
     --role=roles/secretmanager.admin --condition="expression=resource.name.startsWith(\"projects/$NUMERO/secrets/$NS-cofre-\"),title=cofre-$NOMBRE,description=el cofre de $NOMBRE solo bajo su prefijo" \
-    --format=none && hecho "\`ore-cofre-$NOMBRE\` ya no administra nada en el almacen" || ya "la condicion del cofre"
-  correr "$GCLOUD" kms keys remove-iam-policy-binding "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
+    --format=none
+  quitar "el permiso de \`ore-cofre-$NOMBRE\` sobre $KEK" \
+    "$GCLOUD" kms keys remove-iam-policy-binding "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
     --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
-    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-    && hecho "\`ore-cofre-$NOMBRE\` ya no puede usar $KEK" || ya "el permiso del cofre sobre la llave"
+    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com"
   # la copia (0027 P1): el bucket del inquilino, con lo que tenga dentro. Es SU
   # sistema de registro (0018): retirar la celda es retirarlo, y se dice cuanto habia.
-  if "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)" >/dev/null 2>&1; then
-    N=$("$GCLOUD" storage ls "gs://$COPIA/**" 2>/dev/null | grep -c . || true)
-    correr "$GCLOUD" storage rm -r "gs://$COPIA" && hecho "la copia gs://$COPIA borrada ($N objetos)"
-  else
-    ya "la copia gs://$COPIA"
-  fi
+  preguntar "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)"
+  case $? in
+    0)
+      # Cuantos habia se dice, no decide: un bucket vacio contesta «no hay
+      # objetos» con un error, y entonces se dice «?».
+      if preguntar "$GCLOUD" storage ls "gs://$COPIA/**"; then
+        N=$(printf '%s\n' "$RESPUESTA" | grep -c . || true)
+      else
+        N="?"; NO_SE=""
+      fi
+      correr "$GCLOUD" storage rm -r "gs://$COPIA" && hecho "la copia gs://$COPIA borrada ($N objetos)" ;;
+    1) ya "la copia gs://$COPIA" ;;
+    *) duda "la copia gs://$COPIA" ;;
+  esac
   # las cuentas
   for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE" "ore-medios-$NOMBRE"; do
-    if "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)" >/dev/null 2>&1; then
-      correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada"
-    else
-      ya "la cuenta $c"
-    fi
+    preguntar "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)"
+    case $? in
+      0) correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada" ;;
+      1) ya "la cuenta $c" ;;
+      *) duda "la cuenta $c" ;;
+    esac
   done
   # el compartimento en la forja central: el repositorio y la organizacion t-<n>
   if [ -n "$SECO" ]; then
@@ -463,6 +549,7 @@ if [ "$ESTADO" = "retirada" ]; then
   # el cliente del agente en el IdP se queda: un cliente sin secreto en el
   # almacen y sin Jobs que lo pidan no hace nada, y borrarlo exige el admin
   # del IdP en cada retirada. Queda dicho.
+  [ -z "$DUDAS" ] || falla "\`$NOMBRE\` NO quedo retirada del todo: no se sabe, o fallo, lo que sigue (0054 I1):$DUDAS"
   echo
   echo "✓ \`$NOMBRE\` retirada${SECO:+ (en seco)}. El namespace t-$NOMBRE lo poda Flux al ver el enganche fuera."
   exit 0
@@ -471,9 +558,12 @@ fi
 # ══════════════════════════════════════════════════════════════════════════
 paso "② LA LLAVE — el segundo cerrojo, antes de que haya nada que proteger"
 # ══════════════════════════════════════════════════════════════════════════
-if "$GCLOUD" kms keys describe "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
-     --format="value(name)" >/dev/null 2>&1; then
+preguntar "$GCLOUD" kms keys describe "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" --format="value(name)"
+SABIDO=$?
+if [ "$SABIDO" = 0 ]; then
   ya "la clave $KEK"
+elif [ "$SABIDO" = 2 ]; then
+  duda "la clave $KEK (no se crea a ciegas)"
 else
   # ⭐ Con rotación desde el primer día: una clave sin rotación programada es
   #   una clave que nadie va a rotar.
@@ -494,11 +584,12 @@ paso "③ LAS CUENTAS DE GOOGLE — una por papel y por inquilino, no una compar
 # ⇒ Aquí no se comparte ninguna que tenga alcance sobre algo del inquilino.
 cuenta() { # <nombre corto>
   local c="$1" correo="$1@$PROYECTO.iam.gserviceaccount.com"
-  if "$GCLOUD" iam service-accounts describe "$correo" --format="value(email)" >/dev/null 2>&1; then
-    ya "la cuenta $c"
-  else
-    correr "$GCLOUD" iam service-accounts create "$c" && hecho "cuenta $c"
-  fi
+  preguntar "$GCLOUD" iam service-accounts describe "$correo" --format="value(email)"
+  case $? in
+    0) ya "la cuenta $c" ;;
+    1) correr "$GCLOUD" iam service-accounts create "$c" && hecho "cuenta $c" ;;
+    *) duda "la cuenta $c" ;;
+  esac
 }
 enlace() { # <cuenta corta> <ksa>
   correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
@@ -569,8 +660,11 @@ correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
 #   no admite external ID: lo que aísla es que cada celda corre con las suyas—.
 #   El asistente de alta enseña esa confianza ya rellena: `ore-serve` los lee del
 #   ConfigMap `ids-de-la-celda` (opcional en `40-ore-serve.yaml`). No son secretos.
-ID_DRIVER=$("$GCLOUD" iam service-accounts describe "ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)" 2>/dev/null)
-ID_SERVE=$("$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)" 2>/dev/null)
+ID_DRIVER=""; ID_SERVE=""
+preguntar "$GCLOUD" iam service-accounts describe "ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)"
+case $? in 0) ID_DRIVER="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-driver-$NOMBRE" ;; esac
+preguntar "$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)"
+case $? in 0) ID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-serve-$NOMBRE" ;; esac
 if [ -z "$ID_DRIVER" ] || [ -z "$ID_SERVE" ]; then
   haria "los IDs de ore-driver-$NOMBRE y ore-serve-$NOMBRE, cuando existan las cuentas"
 elif ! kubectl get namespace "$NS" >/dev/null 2>&1; then
@@ -608,8 +702,12 @@ fi
 #   GCS cuentan). Los Jobs hablan con `ore-store-gcs` y el token del metadata
 #   server, como ya hacen con Secret Manager.
 AGENTE_GCS="service-$NUMERO@gs-project-accounts.iam.gserviceaccount.com"
-if "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)" >/dev/null 2>&1; then
+preguntar "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)"
+SABIDO=$?
+if [ "$SABIDO" = 0 ]; then
   ya "la copia gs://$COPIA"
+elif [ "$SABIDO" != 1 ]; then
+  duda "la copia gs://$COPIA (no se crea a ciegas)"
 else
   correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
     --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
@@ -637,9 +735,10 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
 #   `objectViewer` sin condición, se le quita; la condición va por el nombre
 #   del objeto (`ore/puesto/`) y no da `objects.list`: la capa se baja por su
 #   nombre (`51-el-puesto.yaml`).
-"$GCLOUD" storage buckets remove-iam-policy-binding "gs://$COPIA" \
+quitar "el \`objectViewer\` sin condicion de \`ore-puesto-$NOMBRE\` sobre la copia" \
+  "$GCLOUD" storage buckets remove-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectViewer --quiet >/dev/null 2>&1 || true
+  --role=roles/storage.objectViewer --condition=None --quiet
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/storage.objectViewer \
@@ -654,8 +753,18 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
 #   lo lleve antes de que el commit lo nombre (0046 E8·3b); `objectCreator` no lo
 #   da, y `objectUser` daría además borrar.
 #   El rol es del proyecto, de plataforma: se crea una vez.
-if "$GCLOUD" iam roles describe oreTocarBlobs --project="$PROYECTO" --format="value(name)" >/dev/null 2>&1; then
+#
+# ⛔ 0054 I1 · y SOLO DESDE FUERA. El papel del aprovisionador no tiene
+#   `iam.roles.get` ni `iam.roles.create` (medido el 2026-10-05): dentro, el
+#   `describe` fallaba en cada pasada, se leia como «no existe», y el `create`
+#   fallaba tambien — en silencio. Dentro se dice y no se intenta; el enlace de
+#   abajo sale en rojo si el rol faltara.
+if [ -n "${DENTRO:-}" ]; then
+  echo "  · el rol oreTocarBlobs — de plataforma: lo crea una persona desde fuera"
+elif preguntar "$GCLOUD" iam roles describe oreTocarBlobs --project="$PROYECTO" --format="value(name)"; then
   ya "el rol oreTocarBlobs"
+elif [ -n "$NO_SE" ]; then
+  duda "el rol oreTocarBlobs"
 else
   correr "$GCLOUD" iam roles create oreTocarBlobs --project="$PROYECTO" \
     --title="ORE tocar blobs" \
@@ -685,7 +794,11 @@ cat > "$TMP/cors.json" <<'CORS'
 [{"origin": ["https://app.paladio.io", "http://localhost:3000"], "method": ["GET", "HEAD"], "responseHeader": ["Range", "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition", "ETag"], "maxAgeSeconds": 3600}]
 CORS
 cors_de() { "$PY" -c 'import json,sys; d=json.load(sys.stdin); d=d.get("cors_config", d) if isinstance(d, dict) else d; print(json.dumps(d or [], sort_keys=True))'; }
-if [ "$("$GCLOUD" storage buckets describe "gs://$COPIA" --format=json 2>/dev/null | cors_de)" = "$(cors_de < "$TMP/cors.json")" ]; then
+preguntar "$GCLOUD" storage buckets describe "gs://$COPIA" --format=json
+SABIDO=$?
+if [ "$SABIDO" = 2 ]; then
+  duda "el CORS de la copia gs://$COPIA"
+elif [ "$SABIDO" = 0 ] && [ "$(printf '%s' "$RESPUESTA" | cors_de)" = "$(cors_de < "$TMP/cors.json")" ]; then
   ya "CORS de la copia (la consola, a rangos)"
 else
   correr "$GCLOUD" storage buckets update "gs://$COPIA" --cors-file="$(ruta "$TMP/cors.json")" \
@@ -700,7 +813,14 @@ fi
 # ella. Es una cuenta de Google, una por proyecto; si no existe todavía se crea
 # (`services identity create`), y es de plataforma, no del inquilino.
 AGENTE_ALMACEN="service-$NUMERO@gcp-sa-secretmanager.iam.gserviceaccount.com"
-"$GCLOUD" beta services identity create --service=secretmanager.googleapis.com --project="$PROYECTO" >/dev/null 2>&1 || true
+# ⛔ 0054 I1 · solo desde fuera: el papel del aprovisionador no tiene
+#   `serviceusage` (medido el 2026-10-05) y esto fallaba en cada pasada con
+#   `|| true`. La cuenta ya existe; dentro se dice y no se intenta.
+if [ -n "${DENTRO:-}" ]; then
+  echo "  · la identidad del almacen — de plataforma: la crea una persona desde fuera"
+else
+  correr "$GCLOUD" beta services identity create --service=secretmanager.googleapis.com --project="$PROYECTO"
+fi
 correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
   --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
   --member="serviceAccount:$AGENTE_ALMACEN" \
@@ -750,7 +870,13 @@ paso "④ LA FORJA — el repositorio, su usuario, y un testigo que alcanza UNO"
 # Su admin vive en el almacen desde que ella misma se funda (46). Sin el, los
 # pasos del inquilino se saltan y se dice; con el, todo lo del inquilino va a
 # su forja. `INQ` es la bandera.
-FORJA_ADMIN_INQ="$("$GCLOUD" secrets versions access latest --secret="$NS-forja-admin" 2>/dev/null | tr -d '\r\n')" || true
+FORJA_ADMIN_INQ=""
+preguntar "$GCLOUD" secrets versions access latest --secret="$NS-forja-admin"
+case $? in
+  0) FORJA_ADMIN_INQ=$(printf '%s' "$RESPUESTA" | tr -d '\r\n'); RESPUESTA="" ;;
+  1) ;;  # sin version todavia: la forja no se ha fundado
+  *) duda "el admin de la forja del inquilino ($NS-forja-admin)" ;;
+esac
 INQ=""
 if [ -n "$FORJA_ADMIN_INQ" ]; then
   if [ -n "${DENTRO:-}" ]; then
@@ -843,17 +969,19 @@ paso "⑤ EL ALMACÉN — el valor va aquí, y NO a un \`Secret\`"
 if [ -n "$SECO" ]; then
   haria "crear el secreto $NS-forja-token con el testigo del paso ④"
 elif [ -z "$TESTIGO" ]; then
-  if "$GCLOUD" secrets describe "$NS-forja-token" --format="value(name)" >/dev/null 2>&1; then
-    ya "el secreto $NS-forja-token"
-  else
-    echo "  ⚠ no hay testigo que guardar y el secreto $NS-forja-token no existe: la pasada siguiente"
-  fi
+  preguntar "$GCLOUD" secrets describe "$NS-forja-token" --format="value(name)"
+  case $? in
+    0) ya "el secreto $NS-forja-token" ;;
+    1) echo "  ⚠ no hay testigo que guardar y el secreto $NS-forja-token no existe: la pasada siguiente" ;;
+    *) duda "el secreto $NS-forja-token" ;;
+  esac
 else
-  "$GCLOUD" secrets create "$NS-forja-token" --replication-policy=user-managed     --locations="$LUGAR" >/dev/null 2>&1 || true
+  asegurar_secreto "$NS-forja-token"
   # ⛔ Por FICHERO y no por `--data-file=-`: el valor no pasa por `argv`, que lo
   #   lee cualquier proceso de la maquina. Y el fichero se borra a continuacion.
   printf %s "$TESTIGO" > "$TMP/t"
-  "$GCLOUD" secrets versions add "$NS-forja-token" --data-file="$(ruta "$TMP/t")" >/dev/null     && hecho "testigo guardado en el almacen, y NO en un \`Secret\`"
+  correr "$GCLOUD" secrets versions add "$NS-forja-token" --data-file="$(ruta "$TMP/t")" \
+    && hecho "testigo guardado en el almacen, y NO en un \`Secret\`"
   rm -f "$TMP/t"
 fi
 # ⚠️ DOS cuentas y no una, y las dos son de ESTE inquilino. El servidor lo lee
@@ -873,7 +1001,7 @@ done
 #   sobre `cofre-url`, UN login (`cofre_app`) para todos los custodios, y
 #   FALLAR si ese secreto no existia. Con el cada custodio leia el censo y los
 #   secretos de todos (0047 M4). Desde la A7a cada custodio entra con el papel
-#   de SU celda (`iam.dar_papel_de_celda`, 040) y la base sabe de que
+#   de SU celda (hoy `iam.crear_papel_de_celda`, 049; antes `dar_papel_de_celda`, 040) y la base sabe de que
 #   organizacion es y no le deja ver otra (041). `cofre_app` y `cofre-url` se
 #   retiraron (A7a.6), y este es el unico paso de la base del cofre.
 #
@@ -884,55 +1012,82 @@ done
 #   `base` — y con `resolver`, la credencial de la base en la mano de quien lo
 #   emitio. Fuera de ese prefijo, y con un permiso de LEER, sin administrar.
 #
-# ⚠️ Se da el papel SOLO si el secreto no tiene todavia una version viva:
-#   darlo otra vez ROTA la clave, y el custodio que use la vieja se queda
-#   fuera. Si una pasada se corta entre dar el papel y guardar la URL, la
-#   siguiente lo da otra vez —rota una clave que nadie usaba— y la guarda.
+# ⛔⛔ 0054 · ESTE PASO SOLO CREA, Y NUNCA ROTA.
+#
+#   El 2026-10-04 a las 21:35 la pregunta de abajo fallo, su respuesta vacia se
+#   leyo como «no hay version», y este paso ROTO la clave de demo y de victor
+#   sin llegar a guardarla: a la mañana siguiente sus custodios no entraban.
+#
+#   ⇒ Tres cosas, y cada una basta para que no vuelva a pasar:
+#     · la pregunta tiene tres respuestas (I1): si no se sabe, no se toca;
+#     · `iam.crear_papel_de_celda` (049) se niega si la celda ya tiene papel
+#       (I2): un descuido de este guion es un error de la base, no una rotacion;
+#     · rotar es otro acto, de una persona, que no deja a nadie fuera (I3):
+#       `bash malla/rotar-base-del-cofre.sh <celda>`.
 BASE_COFRE="$NS-base-del-cofre"
-if [ -n "$SECO" ]; then
-  haria "dar el papel de la celda \`$NOMBRE\` y guardar su URL en $BASE_COFRE"
-elif [ -n "$("$GCLOUD" secrets versions list "$BASE_COFRE" --filter=state:enabled --limit=1 --format='value(name)' 2>/dev/null)" ]; then
+preguntar "$GCLOUD" secrets versions list "$BASE_COFRE" --filter=state:enabled --limit=1 --format='value(name)'
+SABIDO=$?
+if [ "$SABIDO" = 2 ]; then
+  duda "si $BASE_COFRE tiene version viva (la base del cofre)"
+elif [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ]; then
   ya "la base de este cofre, con su login ($BASE_COFRE)"
+elif [ -n "$SECO" ]; then
+  haria "crear el papel de la celda \`$NOMBRE\` y guardar su URL en $BASE_COFRE"
 else
-  DAR="select iam.dar_papel_de_celda('$NOMBRE')"
+  # Confirmado por Google: el secreto no existe (1), o existe sin version viva
+  # (0 y vacio). Lo unico que se intenta es CREAR; si la celda ya tiene papel,
+  # la base se niega y se dice.
+  CREAR="select iam.crear_papel_de_celda('$NOMBRE')"
   if [ -n "${DENTRO:-}" ]; then
-    PAPEL=$(psql "$(cat /puesto/iam-url)" -tAc "$DAR" 2>/dev/null | tr -d ' \r\n')
+    PAPEL=$(psql "$(cat /puesto/iam-url)" -tAc "$CREAR" 2>"$TMP/papel.err" | tr -d ' \r\n')
   else
-    PAPEL=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc "$DAR" 2>/dev/null | tr -d ' \r\n')
+    PAPEL=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc "$CREAR" 2>"$TMP/papel.err" | tr -d ' \r\n')
   fi
-  # ⚠️ Sin la 040 aplicada la funcion no existe: se avisa y la pasada siguiente
-  #   lo intenta, sin tumbar el resto de la convergencia de este inquilino.
   if [ "${PAPEL%%:*}" != "cofre_$(printf %s "$NOMBRE" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '_')" ]; then
-    echo "  ⚠ no se pudo dar el papel de la celda \`$NOMBRE\` (¿esta aplicada la 040?): la pasada siguiente"
+    NO_SE=$(tr '\r\n' '  ' < "$TMP/papel.err" | cut -c1-240)
+    if grep -q "ya tiene papel" "$TMP/papel.err"; then
+      NO_SE=""
+      duda "la celda \`$NOMBRE\` tiene papel y $BASE_COFRE no tiene version viva: NO se rota sola (0054 I2); una persona: bash malla/rotar-base-del-cofre.sh $NOMBRE"
+    else
+      duda "crear el papel de la celda \`$NOMBRE\`"
+    fi
   else
-    "$GCLOUD" secrets create "$BASE_COFRE" --replication-policy=user-managed --locations="$LUGAR" >/dev/null 2>&1 || true
+    [ "$SABIDO" = 1 ] && correr "$GCLOUD" secrets create "$BASE_COFRE" --replication-policy=user-managed --locations="$LUGAR"
     # ⛔ Por FICHERO, como el testigo de la forja: ni `argv` ni la salida.
     printf 'postgres://%s@idp-db.identidad.svc.cluster.local:5432/iam' "$PAPEL" > "$TMP/b"
-    "$GCLOUD" secrets versions add "$BASE_COFRE" --data-file="$(ruta "$TMP/b")" >/dev/null \
-      && hecho "el login de la celda, guardado en $BASE_COFRE (y la clave, en ningun otro sitio)"
+    correr "$GCLOUD" secrets versions add "$BASE_COFRE" --data-file="$(ruta "$TMP/b")" \
+      && hecho "el login de la celda, guardado en $BASE_COFRE (y la clave, en ningun otro sitio)" \
+      || duda "⛔ el papel de \`$NOMBRE\` se creo y su URL NO quedo en $BASE_COFRE; una persona: bash malla/rotar-base-del-cofre.sh $NOMBRE"
     rm -f "$TMP/b"
   fi
-  unset PAPEL DAR
+  unset PAPEL CREAR
 fi
-if [ -z "$SECO" ] && "$GCLOUD" secrets describe "$BASE_COFRE" --format="value(name)" >/dev/null 2>&1; then
-  correr "$GCLOUD" secrets add-iam-policy-binding "$BASE_COFRE" \
-    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-    --role=roles/secretmanager.secretAccessor \
-    && hecho "\`ore-cofre-$NOMBRE\` puede leer su base, y nadie de fuera del inquilino"
-fi
+preguntar "$GCLOUD" secrets describe "$BASE_COFRE" --format="value(name)"
+case $? in
+  0) correr "$GCLOUD" secrets add-iam-policy-binding "$BASE_COFRE" \
+       --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+       --role=roles/secretmanager.secretAccessor \
+       && hecho "\`ore-cofre-$NOMBRE\` puede leer su base, y nadie de fuera del inquilino" ;;
+  1) ;;  # en seco, o ya dicho arriba
+  *) duda "el secreto $BASE_COFRE (quien lo lee)" ;;
+esac
 
 # ── ⭐⭐ EL ADMIN DE SU FORJA, que ella misma acuña ──────────────────────────
 #
 # El secreto se crea VACIO aqui; la version la añade la forja del inquilino al
 # fundarse (46, contenedor `guardar`) con su cuenta, que solo puede añadir a
 # ESTE. Lo leen: este guion (para poblarla), y las copias (para copiarla).
-if "$GCLOUD" secrets describe "$NS-forja-admin" --format="value(name)" >/dev/null 2>&1; then
+preguntar "$GCLOUD" secrets describe "$NS-forja-admin" --format="value(name)"
+SABIDO=$?
+if [ "$SABIDO" = 0 ]; then
   ya "el secreto $NS-forja-admin"
+elif [ "$SABIDO" = 2 ]; then
+  duda "el secreto $NS-forja-admin"
 elif [ -n "$SECO" ]; then
   haria "crear el secreto $NS-forja-admin, vacio, para que la forja del inquilino deje ahi su admin"
 else
-  "$GCLOUD" secrets create "$NS-forja-admin" --replication-policy=user-managed --locations="$LUGAR" \
-    --labels=proyecto=ore,inquilino="$NOMBRE" >/dev/null 2>&1 && hecho "secreto $NS-forja-admin, vacio: lo llena la forja al fundarse"
+  correr "$GCLOUD" secrets create "$NS-forja-admin" --replication-policy=user-managed --locations="$LUGAR" \
+    --labels=proyecto=ore,inquilino="$NOMBRE" && hecho "secreto $NS-forja-admin, vacio: lo llena la forja al fundarse"
 fi
 correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
   --member="serviceAccount:ore-forja-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
@@ -1516,10 +1671,7 @@ JSON
     printf '%s' "$AGENTE" > "$TMP/agente-cliente"
     for parte in cliente secreto; do
       S="$NS-agente-$parte"
-      if ! "$GCLOUD" secrets describe "$S" --format="value(name)" >/dev/null 2>&1; then
-        "$GCLOUD" secrets create "$S" --replication-policy=user-managed --locations="$LUGAR" \
-          --labels=proyecto=ore,inquilino="$NOMBRE" >/dev/null 2>&1 || true
-      fi
+      asegurar_secreto "$S" --labels=proyecto=ore,inquilino="$NOMBRE" || continue
       # ⛔⛔ SIN LEER EL VALOR. Esto comparaba leyendo la version `latest`, y
       #   desde dentro eso NO PUEDE funcionar: el papel del aprovisionador no
       #   tiene `versions.access` a proposito («crea y concede, no usa»). La
@@ -1531,11 +1683,13 @@ JSON
       #   secreto (metadato, que si puede leer), y solo se añade version cuando
       #   la huella cambia. El valor sigue sin salir del almacen hacia aqui.
       HUELLA=$("$PY" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TMP/agente-$parte")
-      if [ "$("$GCLOUD" secrets describe "$S" --format='value(annotations.sha256)' 2>/dev/null | tr -d '\r')" = "$HUELLA" ]; then
+      if ! preguntar "$GCLOUD" secrets describe "$S" --format='value(annotations.sha256)'; then
+        duda "la huella del $parte del agente ($S)"
+      elif [ "$RESPUESTA" = "$HUELLA" ]; then
         ya "el almacen tiene el $parte del agente"
       else
-        "$GCLOUD" secrets versions add "$S" --data-file="$(ruta "$TMP/agente-$parte")" >/dev/null \
-          && "$GCLOUD" secrets update "$S" --update-annotations="sha256=$HUELLA" >/dev/null 2>&1 \
+        correr "$GCLOUD" secrets versions add "$S" --data-file="$(ruta "$TMP/agente-$parte")" \
+          && correr "$GCLOUD" secrets update "$S" --update-annotations="sha256=$HUELLA" \
           && hecho "$parte del agente guardado en el almacen, y NO en un \`Secret\`"
       fi
       # 3 · quien lo lee: el driver de ESTE inquilino.
@@ -1554,7 +1708,9 @@ JSON
       # ⛔ R1 (2026-10-02) · Y el PUESTO ya no: corre el código de una persona, y
       #   con el secreto del agente era el agente. Habla con el token de su pod.
       #   Se quita si venía de antes (idempotente: sin el enlace, no hay nada).
-      if "$GCLOUD" secrets get-iam-policy "$S" --format=json 2>/dev/null | grep -q "serviceAccount:ore-puesto-$NOMBRE@"; then
+      if ! preguntar "$GCLOUD" secrets get-iam-policy "$S" --format=json; then
+        duda "quien lee el $parte del agente ($S)"
+      elif printf '%s' "$RESPUESTA" | grep -q "serviceAccount:ore-puesto-$NOMBRE@"; then
         correr "$GCLOUD" secrets remove-iam-policy-binding "$S" \
           --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
           --role=roles/secretmanager.secretAccessor \
@@ -1638,12 +1794,20 @@ else
     #   esta celda. Es lo que la E6 de la 0025 promete: «su puerta en el DNS,
     #   escrita por el aprovisionador».
     ZONA=""
-    while IFS=, read -r z dn; do
-      case "$ENTRADA." in *".$dn") ZONA="$z" ;; esac
-    done < <("$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)" 2>/dev/null | tr -d '\r')
+    if preguntar "$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)"; then
+      while IFS=, read -r z dn; do
+        case "$ENTRADA." in *".$dn") ZONA="$z" ;; esac
+      done <<< "$RESPUESTA"
+    else
+      duda "las zonas de DNS (la entrada $ENTRADA)"
+    fi
     if [ -n "$ZONA" ]; then
-      if "$GCLOUD" dns record-sets describe "$ENTRADA." --zone="$ZONA" --type=CNAME --format="value(rrdatas)" 2>/dev/null | grep -q .; then
+      preguntar "$GCLOUD" dns record-sets describe "$ENTRADA." --zone="$ZONA" --type=CNAME --format="value(rrdatas)"
+      SABIDO=$?
+      if [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ]; then
         ya "el registro \`$ENTRADA CNAME $PUERTA\` en la zona \`$ZONA\`"
+      elif [ "$SABIDO" = 2 ]; then
+        duda "el registro de $ENTRADA en la zona \`$ZONA\`"
       else
         correr "$GCLOUD" dns record-sets create "$ENTRADA." --zone="$ZONA" --type=CNAME --ttl=300 --rrdatas="$PUERTA." \
           && hecho "escrito en la zona \`$ZONA\`: $ENTRADA CNAME $PUERTA"
@@ -1682,8 +1846,9 @@ elif iam_token; then
   #   `(emisor, sub)`. El `sub` es el `uniqueId` de la cuenta (medido en A2: los
   #   tres coinciden). Lo dice quien crea la cuenta, y no se deduce del nombre.
   #   Sin él la celda se da por aprovisionada igual; sólo no pregunta aún.
-  UID_SERVE=$("$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-    --format='value(uniqueId)' 2>/dev/null | tr -d '\r')
+  UID_SERVE=""
+  preguntar "$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format='value(uniqueId)'
+  case $? in 0) UID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-serve-$NOMBRE (el puente)" ;; esac
   case "$UID_SERVE" in
     *[!0-9]*|"") echo "  ⚠ no se leyó el uniqueId de \`ore-serve-$NOMBRE\`: la celda no queda registrada ante el puente"
        CUERPO_APROV="" ;;
@@ -1731,5 +1896,7 @@ cat <<FIN
          un nodo mas grande para la plataforma. Con \`e2-standard-4\` el conjunto
          queda al 54% y sobran ~1770m: once inquilinos mas, no uno.
 FIN
+# ⛔ 0054 I1 · lo que no se supo, o fallo, no pasa en silencio.
+[ -z "$DUDAS" ] || falla "\`$NOMBRE\` NO quedo al dia: no se sabe, o fallo, lo que sigue (0054 I1):$DUDAS"
 echo
 echo "✓ \`$NOMBRE\`${SECO:+ (en seco)}"
