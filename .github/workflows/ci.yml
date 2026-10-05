@@ -309,6 +309,9 @@ jobs:
           cargo build --quiet -p ore-store
           python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]" pytest==9.1.1
           bash pruebas-de-fuego/el-puesto.sh
+      # 0053 F6·2: sql() lee el origen en vivo, contra un ore-serve de mentira.
+      - name: y sql() lee en vivo lo que el reparto decide
+        run: PYTHONUTF8=1 python3 pruebas-de-fuego/la-lectura-en-vivo-en-python.py
 
 
   # ⭐ LOS VERBOS DEL PLANO DE IDENTIDAD. Lo mismo que fijaba el Job

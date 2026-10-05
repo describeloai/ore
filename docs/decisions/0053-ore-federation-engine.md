@@ -302,7 +302,7 @@ primero, Node y JVM en un hito aparte.
 | hito | qué | sale |
 |---|---|---|
 | **F6·1** · servidor | `sql_del_puesto`: si un nombre llega a un origen, el reparto de la sentencia entera (`ore explain --json --from-workspace`, en la rama y con la política de main) y en `fuentes` cada lectura ya decidida (`federada`) y el SQL de cada vista viva (`vistaFederada`); un no del reparto es la respuesta (`422 OOS2044`…). El reparto lee también las vistas de antes (`from`/`fields`, como `foreign_test`). `POST /puestos/{id}/explain` (plan y texto). `GET /federation/read/{id}` (el final, sólo a quien leyó, 15 min) | ✓ `el-coordinador.sh` +6 con Postgres de verdad |
-| **F6·2** · SDK Python | `ore.sql()` registra las lecturas federadas en DuckDB y ejecuta la sentencia tal cual; aviso o error si se cortan; `ore.explain()` | pendiente |
+| **F6·2** · SDK Python | `ore.sql()` pide cada lectura repartida a `/federation/read` (una por tabla), la registra en DuckDB bajo su nombre y el de quien la nombra, pone encima las vistas vivas y ejecuta la sentencia tal cual; `TruncatedReadWarning` si se corta (`strict=True`: error); `OriginReadError` con su código para un no del reparto; `ore.explain()` | ✓ `la-lectura-en-vivo-en-python.py` 6/6 (en el CI, con `el-puesto.sh`) |
 | **F6·3** · en vivo | test6: Neon, BigQuery y S3 por su nombre, `bq_foreign` y `foreign_test`, juntas entre orígenes y con una copia, un corte, `explain`, la huella | pendiente |
 | **F6·4** · Node y JVM | el mismo contrato | pendiente |
 

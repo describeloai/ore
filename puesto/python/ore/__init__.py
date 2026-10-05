@@ -102,7 +102,9 @@ import io
 import json
 import os
 import re
+import urllib.error
 import urllib.request
+import warnings
 
 MAGIA = b"ORECOPY1"
 
@@ -111,7 +113,7 @@ MAGIA = b"ORECOPY1"
 #: (`ore_core::sdk::API`), so a session on an older SDK says so.
 API = 2
 
-__all__ = ["API", "over", "sql", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
+__all__ = ["API", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
            "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
@@ -1007,14 +1009,88 @@ def _registra(con, corto, fuente):
         con.execute("create or replace view %s.main.%s as select * from %s.%s.%s" % (_q(b), _q(n), _q(b), _q(s_), _q(n)))
 
 
-@_kw({"texto": "query", "como": "format"})
-def sql(query, format="pandas"):
+class OriginReadError(RuntimeError):
+    """Reading an origin live was refused before touching it (ADR 0053): the
+    table's declared cost (`OOS2044`, `OOS2045`), its governance (`OOS4011`,
+    `OOS4002`) or the source's federation switch. `code` says which."""
+
+    def __init__(self, code, message, table=None):
+        super().__init__("[%s] %s" % (code, message) if code else message)
+        self.code, self.table = code, table
+
+
+class TruncatedReadWarning(UserWarning):
+    """A live read hit its cap (rows, bytes or time) and returned less than the
+    whole answer (ADR 0053 F6). Filter more, or read from a copy."""
+
+
+def _lectura_en_vivo(con, l, estricta):
+    """0053 F6·2 · **Una lectura en vivo**, ya repartida por ore-serve: se pide a
+    `/federation/read` —con su gobierno, su tope y su huella— y el Arrow queda en
+    DuckDB como una tabla registrada. Devuelve el nombre registrado."""
+    import pyarrow as pa
+
+    cuerpo = {"tabla": l["tabla"], "columnas": l.get("columnas") or [], "filtros": l.get("empujados") or []}
+    if l.get("limit") is not None:
+        cuerpo["limit"] = l["limit"]
+    if l.get("orderBy"):
+        cuerpo["orderBy"] = [{"columna": o["columna"], "direccion": "desc" if o.get("desc") else "asc"} for o in l["orderBy"]]
+    req = urllib.request.Request(session.servidor + "/federation/read", data=json.dumps(cuerpo).encode("utf-8"), method="POST")
+    req.add_header("content-type", "application/json")
+    req.add_header("accept", "application/vnd.apache.arrow.stream")
+    for k, v in (session._proveedor() if session._proveedor else session._cabeceras).items():
+        req.add_header(k, v)
+    if session.id:
+        req.add_header("x-ore-puesto", session.id)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            id_ = resp.headers.get("ore-lectura")
+            tabla = pa.ipc.open_stream(resp.read()).read_all()
+    except urllib.error.HTTPError as e:
+        texto = e.read().decode("utf-8", "replace")
+        try:
+            r = json.loads(texto)
+        except ValueError:
+            r = {"mensaje": texto.strip()}
+        raise OriginReadError(r.get("codigo"), r.get("mensaje") or r.get("error") or texto, l["tabla"]) from None
+    # Cómo acabó: lo de los trailers, que urllib no lee (F6·1).
+    if id_:
+        c, f = session.pedir("GET", "/federation/read/%s" % id_)
+        if c == 200 and (f or {}).get("estado") not in (None, "completo"):
+            m = "live read of `%s` was cut (%s) at %s rows: the answer is incomplete; filter more or read from a copy" % (
+                l["tabla"], f.get("motivo") or f.get("estado"), f.get("filas"))
+            if estricta:
+                raise OriginReadError("cortado", m, l["tabla"])
+            warnings.warn(m, TruncatedReadWarning, stacklevel=3)
+    nombre = "__ore_vivo_%d" % abs(hash(l["tabla"]))
+    con.register(nombre, tabla)
+    return nombre
+
+
+@_kw({"texto": "query"})
+def explain(query):
+    """What each origin is asked for and what DuckDB does (ADR 0053 F5): per
+    live table, the columns, the filters and the `limit` pushed to it, what
+    stays in the engine, its cost and the warnings. Prints it and returns the
+    plan (a dict). Opens nothing."""
+    texto = query
+    if not isinstance(texto, str) or not texto.strip():
+        raise ValueError("explain() needs a query")
+    c, r = session.pedir("POST", "/puestos/%s/explain" % session.id, {"texto": texto})
+    if c != 200:
+        raise RuntimeError("ore-serve answered %s to explain(): %s" % (c, _mensaje(r)))
+    print((r or {}).get("texto", "").rstrip())
+    return (r or {}).get("plan")
+
+
+@_kw({"texto": "query", "como": "format", "estricta": "strict"})
+def sql(query, format="pandas", strict=False):
     """DuckDB SQL over the tree's datasets and views. ore-serve says which tree
     names the query reads (a name in a comment or a string does not count) and
     resolves them like `over()`; each one is a DuckDB view under its own name.
     Returns what `over()` returns for `format` (pandas, arrow or polars), or
     `None` for a statement without a result."""
-    texto, como = query, format
+    texto, como, estricta = query, format, strict
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() needs a query")
     con = _duckdb()
@@ -1022,8 +1098,31 @@ def sql(query, format="pandas"):
     codigo, r = (session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": texto})
                  if session.id and "." in texto else (200, {}))
     if codigo != 200:
+        # 0053 F6: lo que el reparto niega (coste, gobierno, interruptor).
+        if (r or {}).get("codigo"):
+            raise OriginReadError(r["codigo"], r.get("error", ""), r.get("nombre"))
         _o_el_error(codigo, r, (r or {}).get("nombre") or "?")
-    for nombre, rd in sorted(((r or {}).get("fuentes") or {}).items()):
+    fuentes = dict(((r or {}).get("fuentes") or {}))
+    for a in (fuentes.pop("__avisos", None) or {}).get("avisos", []):
+        warnings.warn(a, stacklevel=2)
+    # 0053 F6·2: lo que se lee en vivo, primero (las vistas vivas lo nombran):
+    # una lectura por tabla, y cada nombre que la dice, a ella.
+    vivas = {}
+    for nombre, rd in sorted(fuentes.items()):
+        l = (rd or {}).get("federada")
+        if l is None:
+            continue
+        if l["tabla"] not in vivas:
+            _lee(l["tabla"])
+            vivas[l["tabla"]] = _lectura_en_vivo(con, l, estricta)
+        _registra(con, nombre, _q(vivas[l["tabla"]]))
+    for nombre, rd in sorted(fuentes.items()):
+        if (rd or {}).get("vistaFederada") is not None:
+            _lee(nombre)
+            _registra(con, nombre, "(%s)" % rd["vistaFederada"])
+    for nombre, rd in sorted(fuentes.items()):
+        if (rd or {}).get("federada") is not None or (rd or {}).get("vistaFederada") is not None:
+            continue
         # 0049 B7·1: a collection is read by its listing, through ore-medios
         # (what a transform did not declare is a 403 there, as in Python).
         if (rd or {}).get("collection"):
