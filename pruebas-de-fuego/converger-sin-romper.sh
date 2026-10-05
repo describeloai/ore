@@ -44,6 +44,15 @@ for f in $SOLOS; do
   fi
 done
 
+# Y una cuenta de servicio se pregunta listando: por una que no existe, Google
+# le dice al aprovisionador PERMISSION_DENIED, y `describe` no sabria nunca.
+for f in $SOLOS; do
+  if grep -nE '^[^#]*service-accounts describe' "$RAIZ/$f" >/dev/null 2>&1; then
+    falla "$f pregunta por una cuenta con \`describe\`: es \`preguntar_cuenta\` (lista)"
+  fi
+done
+dice "las cuentas de servicio se preguntan listando"
+
 # Y la funcion que rotaba sin querer no vuelve a llamarse desde ningun sitio.
 if grep -rn "dar_papel_de_celda(" "$RAIZ/malla" "$RAIZ/crates" --include=*.sh --include=*.rs --include=*.py 2>/dev/null \
     | awk -F: '$3 !~ /^[ \t]*(#|--|\/\/)/' | grep -q .; then
@@ -66,6 +75,9 @@ no_existe_dns() { echo "ERROR: (gcloud.dns.record-sets.describe) HTTPError 404: 
 sin_permiso()   { echo "ERROR: (gcloud.iam.roles.describe) PERMISSION_DENIED: Permission 'iam.roles.get' denied on resource" >&2; return 1; }
 sin_red()       { echo "ERROR: (gcloud.secrets.versions.list) There was a problem refreshing your current auth tokens: connection reset" >&2; return 1; }
 sin_credencial(){ echo "ERROR: Your default credentials were not found." >&2; return 1; }
+lista_con()     { echo "x@y"; }
+lista_sin()     { :; }
+lista_rota()    { echo "ERROR: (gcloud.iam.service-accounts.list) PERMISSION_DENIED: denied" >&2; return 1; }
 
 caso() { # <esperado> <orden>
   preguntar "$2"; local r=$?
@@ -91,6 +103,11 @@ done
 G=malla/aprovisionar-inquilino.sh
 unset -f preguntar duda
 eval "$(sed -n '/^preguntar() {/,/^}/p; /^duda() {/,/^}/p' "$RAIZ/$G")"
+eval "$(sed -n '/^preguntar_cuenta() {/,/^}/p' "$RAIZ/$G")"
+# Lo que dice la lista: una linea si existe, nada si no, y un error si no se sabe.
+GCLOUD=lista_con;  preguntar_cuenta x@y; r=$?; [ "$r" = 0 ] && [ "$RESPUESTA" = "x@y" ] && dice "cuenta listada → 0" || falla "cuenta listada → $r"
+GCLOUD=lista_sin;  preguntar_cuenta x@y; r=$?; [ "$r" = 1 ] && dice "lista vacia → 1 (no existe)" || falla "lista vacia → $r"
+GCLOUD=lista_rota; preguntar_cuenta x@y; r=$?; [ "$r" = 2 ] && dice "lista que falla → 2" || falla "lista que falla → $r"
 DUDAS=""
 preguntar sin_red; duda "lo de prueba" 2>/dev/null
 [ -n "$DUDAS" ] && dice "duda deja la pasada en rojo" || falla "duda no anoto nada"

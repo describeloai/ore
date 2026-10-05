@@ -126,6 +126,16 @@ preguntar() { # <orden…> → 0 contesto · 1 no existe · 2 no se sabe
   NO_SE=$(tr '\r\n' '  ' < "$TMP/pregunta.err" | cut -c1-240)
   return 2
 }
+# ⛔ Una CUENTA DE SERVICIO se pregunta LISTANDO, no con `describe`. Medido el
+#   2026-10-05 en la primera pasada con lo de arriba: por una cuenta que ya no
+#   existe, Google le contesta al aprovisionador `PERMISSION_DENIED … (or it may
+#   not exist)` — a proposito, para no decir si existe. Con `describe` eso es
+#   «no se sabe» para siempre; una lista contesta, y vacia es «no existe».
+preguntar_cuenta() { # <correo> [campo, email por defecto] → 0 existe (campo en $RESPUESTA) · 1 no · 2 no se sabe
+  preguntar "$GCLOUD" iam service-accounts list --filter="email=$1" --format="value(${2:-email})" || return $?
+  [ -n "$RESPUESTA" ] && return 0
+  return 1
+}
 duda() { # <que> — no se toca, se dice, y la pasada sale en rojo
   echo "  ? $* — NO SE SABE, y no se toca${NO_SE:+ ($NO_SE)}" >&2
   DUDAS="$DUDAS
@@ -525,7 +535,7 @@ if [ "$ESTADO" = "retirada" ]; then
   esac
   # las cuentas
   for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE" "ore-medios-$NOMBRE"; do
-    preguntar "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)"
+    preguntar_cuenta "$c@$PROYECTO.iam.gserviceaccount.com"
     case $? in
       0) correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada" ;;
       1) ya "la cuenta $c" ;;
@@ -584,7 +594,7 @@ paso "③ LAS CUENTAS DE GOOGLE — una por papel y por inquilino, no una compar
 # ⇒ Aquí no se comparte ninguna que tenga alcance sobre algo del inquilino.
 cuenta() { # <nombre corto>
   local c="$1" correo="$1@$PROYECTO.iam.gserviceaccount.com"
-  preguntar "$GCLOUD" iam service-accounts describe "$correo" --format="value(email)"
+  preguntar_cuenta "$correo"
   case $? in
     0) ya "la cuenta $c" ;;
     1) correr "$GCLOUD" iam service-accounts create "$c" && hecho "cuenta $c" ;;
@@ -661,9 +671,9 @@ correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
 #   El asistente de alta enseña esa confianza ya rellena: `ore-serve` los lee del
 #   ConfigMap `ids-de-la-celda` (opcional en `40-ore-serve.yaml`). No son secretos.
 ID_DRIVER=""; ID_SERVE=""
-preguntar "$GCLOUD" iam service-accounts describe "ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)"
+preguntar_cuenta "ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" uniqueId
 case $? in 0) ID_DRIVER="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-driver-$NOMBRE" ;; esac
-preguntar "$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format="value(uniqueId)"
+preguntar_cuenta "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" uniqueId
 case $? in 0) ID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-serve-$NOMBRE" ;; esac
 if [ -z "$ID_DRIVER" ] || [ -z "$ID_SERVE" ]; then
   haria "los IDs de ore-driver-$NOMBRE y ore-serve-$NOMBRE, cuando existan las cuentas"
@@ -1847,7 +1857,7 @@ elif iam_token; then
   #   tres coinciden). Lo dice quien crea la cuenta, y no se deduce del nombre.
   #   Sin él la celda se da por aprovisionada igual; sólo no pregunta aún.
   UID_SERVE=""
-  preguntar "$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --format='value(uniqueId)'
+  preguntar_cuenta "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" uniqueId
   case $? in 0) UID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-serve-$NOMBRE (el puente)" ;; esac
   case "$UID_SERVE" in
     *[!0-9]*|"") echo "  ⚠ no se leyó el uniqueId de \`ore-serve-$NOMBRE\`: la celda no queda registrada ante el puente"

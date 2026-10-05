@@ -126,10 +126,18 @@ hecho "guardada: $VERSION"
 
 # ══════════════════════════════════════════════════════════════════════════
 paso "④ EL CUSTODIO — arranca con la version nueva"
-$KUBECTL -n "$NS" rollout restart deployment/ore-cofre >/dev/null 2>"$TMP/k.err" \
+# ⛔ Borrar el POD, no `rollout restart`: esa orden anota la plantilla del
+#   Deployment, Flux quita la anotacion en su siguiente pase y el custodio se
+#   reinicia OTRA vez (medido el 2026-10-05 en victor). El pod nuevo trae la
+#   version `latest` del secreto en su init, igual.
+$KUBECTL -n "$NS" delete pod -l ore.dev/rol=cofre --wait=true >/dev/null 2>"$TMP/k.err" \
   || falla "no se pudo reiniciar el custodio ($(head -c 300 "$TMP/k.err")). Las dos claves entran: nada roto; reiniciarlo y confirmar."
-$KUBECTL -n "$NS" rollout status deployment/ore-cofre --timeout=300s >/dev/null 2>"$TMP/k.err" \
-  || falla "el custodio no quedo listo en 5 min ($(head -c 300 "$TMP/k.err")). Las dos claves entran: mirarlo antes de confirmar."
+LISTO=""
+for _ in $(seq 1 60); do
+  [ "$($KUBECTL -n "$NS" get deployment ore-cofre -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "1" ] && { LISTO=1; break; }
+  sleep 5
+done
+[ -n "$LISTO" ] || falla "el custodio no quedo listo en 5 min. Las dos claves entran: mirarlo antes de confirmar."
 hecho "ore-cofre de $NS, listo"
 
 # ══════════════════════════════════════════════════════════════════════════

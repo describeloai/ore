@@ -76,6 +76,8 @@ bueno es el que levanta t-demo y t-victor.
   `|| true`). Son de plataforma: dentro se dicen y no se intentan; desde fuera, con tres respuestas.
 - **La prueba encontró dos que la búsqueda a ojo no vio** (la llave y el `uniqueId` del puente),
   partidas en varias líneas. Por eso mira líneas lógicas, no líneas.
+- **Una cuenta de servicio que no existe no da `NOT_FOUND` al aprovisionador**: Google le contesta `PERMISSION_DENIED … (or it may not exist)`, a propósito. La primera pasada con R1 lo destapó en las celdas retiradas (`prueba`, `prueba-dos`): con `describe` serían «no se sabe» para siempre. Se pregunta **listando** (`preguntar_cuenta`): una lista vacía es «no existe», y el CI prohíbe `service-accounts describe`.
+- **`rollout restart` pelea con Flux**: anota la plantilla, Flux la quita y el custodio se reinicia dos veces. La rotación borra el pod.
 - **El incidente, reproducido**: con un gcloud que falla sólo en `secrets versions list`, el guion
   en seco dice «NO SE SABE, y no se toca» y sale 1. El de antes habría rotado.
 - Quedan fuera, dichos: los guiones de una vez que corre una persona (`68-…`, `71-…`, `72-…`) y los
