@@ -37,9 +37,11 @@ fn guardadas() -> &'static Guardadas {
 }
 
 /// ⭐ L6·2·3 · Las sugeridas de cada ecosistema: lo que el panel ofrece añadir
-/// con un clic (`puesto/node/sugeridas.txt`: medidas antes de entrar). Python y
-/// la JVM no tienen todavía: lista vacía.
+/// con un clic (`puesto/<entorno>/sugeridas.txt`: medidas antes de entrar). La
+/// JVM no tiene todavía: lista vacía.
 const SUGERIDAS_NODE: &str = include_str!("../../../puesto/node/sugeridas.txt");
+/// ⭐ 0050 P5·3 · Las de Python: medidas con el resolutor de la capa.
+const SUGERIDAS_PYTHON: &str = include_str!("../../../puesto/python/sugeridas.txt");
 
 /// Una sugerida: nombre, área, descripción y, si hace falta, su paquete de tipos
 /// (que va a `devDependencies`).
@@ -49,11 +51,14 @@ pub(crate) struct Sugerida {
     pub area: String,
     pub descripcion: String,
     pub tipos: Option<String>,
+    /// Python (P5·3): va al grupo `dev` (`dev` en la cuarta columna).
+    pub dev: bool,
 }
 
 pub(crate) fn sugeridas_de(entorno: &str) -> Vec<Sugerida> {
     let texto = match entorno {
         crate::entorno::NODE => SUGERIDAS_NODE,
+        crate::entorno::PYTHON => SUGERIDAS_PYTHON,
         _ => "",
     };
     texto
@@ -62,11 +67,14 @@ pub(crate) fn sugeridas_de(entorno: &str) -> Vec<Sugerida> {
         .filter_map(|l| {
             let mut c = l.split('\t').map(str::trim);
             let (nombre, area, descripcion) = (c.next()?, c.next()?, c.next()?);
+            let cuarta = c.next().filter(|t| !t.is_empty());
+            let dev = cuarta == Some("dev");
             Some(Sugerida {
                 nombre: nombre.into(),
                 area: area.into(),
                 descripcion: descripcion.into(),
-                tipos: c.next().filter(|t| !t.is_empty()).map(String::from),
+                tipos: cuarta.filter(|_| !dev).map(String::from),
+                dev,
             })
         })
         .collect()
@@ -86,6 +94,9 @@ fn sugeridas_json(entorno: &str) -> Json {
                     ];
                     if let Some(t) = &s.tipos {
                         campos.push(("tipos", Json::s(t)));
+                    }
+                    if s.dev {
+                        campos.push(("dev", Json::Bool(true)));
                     }
                     Json::obj(campos)
                 })
@@ -222,6 +233,45 @@ mod prueba {
         assert_eq!(decodificar("100%"), "100%");
     }
 
+    /// P5·3: las de Python, treinta, cuatro al grupo `dev`, sin lo descartado.
+    #[test]
+    fn las_sugeridas_de_python_son_treinta_y_las_de_probar_van_a_dev() {
+        let s = sugeridas_de(crate::entorno::PYTHON);
+        assert_eq!(s.len(), 30, "{s:?}");
+        let mut n: Vec<&str> = s.iter().map(|x| x.nombre.as_str()).collect();
+        n.sort();
+        n.dedup();
+        assert_eq!(n.len(), 30);
+        let dev: Vec<&str> = s
+            .iter()
+            .filter(|x| x.dev)
+            .map(|x| x.nombre.as_str())
+            .collect();
+        assert_eq!(
+            dev,
+            ["hypothesis", "pytest-mock", "time-machine", "pandas-stubs"]
+        );
+        assert!(
+            s.iter()
+                .all(|x| x.tipos.is_none() && !x.descripcion.is_empty())
+        );
+        for fuera in ["xgboost", "email-validator", "numexpr", "pyproj"] {
+            assert!(!n.contains(&fuera), "{fuera}");
+        }
+        // Ninguna es algo que la sesión ya trae.
+        let trae = crate::entorno::provistas_de(crate::entorno::PYTHON);
+        assert!(s.iter().all(|x| {
+            !trae
+                .iter()
+                .any(|p| p.nombre.eq_ignore_ascii_case(&x.nombre))
+        }));
+        assert!(
+            sugeridas_json(crate::entorno::PYTHON)
+                .jcs()
+                .contains(r#""dev":true"#)
+        );
+    }
+
     #[test]
     fn las_sugeridas_de_node_son_treinta_y_bien_formadas() {
         let s = sugeridas_de(crate::entorno::NODE);
@@ -255,7 +305,7 @@ mod prueba {
         ] {
             assert!(!n.contains(&fuera), "{fuera}");
         }
-        assert!(sugeridas_de(crate::entorno::PYTHON).is_empty());
+        assert!(sugeridas_de(crate::entorno::JVM).is_empty());
         let j = sugeridas_json(crate::entorno::NODE).jcs();
         assert!(
             j.starts_with(r#"{"sugeridas":[{"area":"Dates","descripcion":"#),

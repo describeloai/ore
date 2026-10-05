@@ -90,6 +90,7 @@ COPY vendor/oos vendor/oos
 # `ore-serve` compila dentro (`entorno.rs`, `include_str!`).
 COPY puesto/node/provisto.txt puesto/node/provisto.txt
 COPY puesto/node/sugeridas.txt puesto/node/sugeridas.txt
+COPY puesto/python/sugeridas.txt puesto/python/sugeridas.txt
 COPY puesto/python/provisto.txt puesto/python/provisto.txt
 COPY puesto/jvm/jars.txt puesto/jvm/jars.txt
 COPY ci/compilar-binarios.sh ci/compilar-binarios.sh

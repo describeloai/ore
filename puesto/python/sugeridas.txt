@@ -1,0 +1,49 @@
+# Las librerías SUGERIDAS para un repositorio de Python (ORE 0050 P5·3): lo que
+# el panel Libraries ofrece añadir con un clic. Es un atajo, no un límite:
+# cualquier paquete de PyPI se declara a mano en `pyproject.toml`.
+#
+# Una línea por librería, separada por tabuladores:
+#   nombre  área  descripción  [dev: va al grupo `dev` de `[dependency-groups]`]
+#
+# ⛔ Medidas el 2026-10-05 antes de entrar, con el resolutor de la capa
+#   (`puesto/python/capa/resolver.sh`: uv, Python 3.14, sólo ruedas, con lo que
+#   la sesión trae como restricción): las 30 resuelven, y la más pesada son
+#   49 MB (polars). Fuera, con su porqué: xgboost (380 MB: arrastra NCCL de
+#   CUDA, inútil sin GPU; lightgbm cubre gradient boosting con 38),
+#   email-validator (valida el dominio por DNS, y el puesto no tiene red),
+#   numexpr, jmespath y regex (de nicho: polars, `re` y `dict` lo cubren),
+#   pyproj (proyecciones: demasiado especializado) y python-calamine
+#   (openpyxl ya lee Excel). Una nueva entra con la misma medida.
+#
+# Lo lee ore-serve (`librerias.rs`, `include_str!`): `GET /librerias/python`
+# sin texto de búsqueda.
+polars	DataFrames	Fast DataFrames with a lazy query engine
+scipy	Math	Scientific computing: optimization, statistics, signal processing
+statsmodels	Statistics	Statistical models, tests and time-series forecasting
+scikit-learn	Machine learning	Classic machine learning: models, pipelines and metrics
+lightgbm	Machine learning	Fast gradient boosting for tabular data
+pydantic	Validation	Data validation and settings with type hints
+pandera	Validation	Schemas and checks for DataFrames
+jsonschema	Validation	Validate JSON documents against a JSON Schema
+python-stdnum	Business data	Validate and format IBAN, VAT, tax IDs and other standard numbers
+phonenumbers	Business data	Parse, format and validate phone numbers
+pycountry	Business data	ISO countries, currencies, languages and subdivisions
+holidays	Dates	Public holidays by country and region
+pendulum	Dates	Dates and times with time zones, durations and periods
+rapidfuzz	Text	Fast fuzzy string matching and similarity
+Unidecode	Text	Transliterate Unicode text to plain ASCII
+openpyxl	Files	Read and write Excel files
+lxml	Files	Fast XML and HTML parsing with XPath
+beautifulsoup4	Files	Parse and extract data from HTML
+pypdf	Files	Read, split and merge PDF files
+pillow	Files	Open, transform and convert images
+orjson	Formats	Fast JSON serialization
+PyYAML	Formats	Read and write YAML
+sqlglot	Formats	Parse, transpile and format SQL across dialects
+shapely	Geo	Geometric shapes and spatial operations
+h3	Geo	Uber's H3 hexagonal grid index
+networkx	Graphs	Graphs and network analysis
+hypothesis	Testing	Property-based testing: generate test cases from strategies	dev
+pytest-mock	Testing	The mocker fixture for pytest	dev
+time-machine	Testing	Freeze and travel time in tests	dev
+pandas-stubs	Types	Type stubs for pandas, for the editor and pyright	dev
