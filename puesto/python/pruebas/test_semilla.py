@@ -17,7 +17,8 @@ RAIZ = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 
 
 def _semilla():
-    t = io.open(os.path.join(RAIZ, "crates", "ore-core", "src", "clases.rs"), encoding="utf-8").read()
+    with io.open(os.path.join(RAIZ, "crates", "ore-core", "src", "clases.rs"), encoding="utf-8") as f:
+        t = f.read()
     m = re.search(r'const FUNCTIONS_PY: &str = "\\\n(.*?)";\n', t, re.S)
     crudo = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
     return crudo.replace("{{paquete}}", "ventas").replace("{{funcion}}", "billing_invoice_status")
@@ -25,7 +26,8 @@ def _semilla():
 
 def _cruda(nombre):
     """Una constante `r##"…"##` de `clases.rs`, con sus huecos rellenos."""
-    t = io.open(os.path.join(RAIZ, "crates", "ore-core", "src", "clases.rs"), encoding="utf-8").read()
+    with io.open(os.path.join(RAIZ, "crates", "ore-core", "src", "clases.rs"), encoding="utf-8") as f:
+        t = f.read()
     m = re.search(r'const %s: &str = r##"(.*?)"##;' % nombre, t, re.S)
     return (m.group(1).replace("{{paquete}}", "ventas").replace("{{carpeta}}", "billing")
             .replace("{{funcion}}", "billing_invoice_status"))

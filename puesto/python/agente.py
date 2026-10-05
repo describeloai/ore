@@ -263,6 +263,11 @@ class Correa:
     def __init__(self, puesto, testigo):
         self.p = puesto
         self.testigo = testigo
+        # ⭐ 0050 P4: el repositorio en disco, sus pruebas y sus tipos.
+        from repositorio import Repositorio
+        self.repo = Repositorio(puesto, testigo)
+        # La última vez que el editor habló: también es trabajar (el TTL).
+        self.actividad = 0.0
         self.proceso = None
         self.sql = None
         self.entregando = False
@@ -280,6 +285,13 @@ class Correa:
         #   y se moria al instante, y el editor se quedaba sin ayuda sin decir
         #   por que.
         orden = shlex.split(LSP)
+        # P4: con el repositorio en disco, pyright resuelve lo que un fichero
+        # importa de otro del repositorio (`from example import …`).
+        try:
+            with self.repo.candado:
+                self.repo.materializar()
+        except Exception as e:  # noqa: BLE001 — sin él, pyright sigue con lo abierto
+            log("sin repositorio en disco (%s)" % e)
         if not shutil.which(orden[0]):
             log("no hay servidor de lenguaje (`%s`): el editor se queda sin ayuda" % orden[0])
             self.proceso = False
@@ -335,10 +347,18 @@ class Correa:
         """Un mensaje del editor, hacia su servidor de lenguaje."""
         if os.environ.get("ORE_TRAZA_LSP"):
             log("TRAZA recibe %.3f %s" % (time.time(), mensaje[:80]))
+        self.actividad = time.time()
         try:
             m = json.loads(mensaje)
         except ValueError:
             m = None
+        # ⭐ 0050 P4: las peticiones propias, en su hilo: unas pruebas no
+        #   detienen un hover, ni esperan en la cola de pyright.
+        if isinstance(m, dict) and m.get("method") in ("ore/probar", "ore/comprobar"):
+            threading.Thread(target=self._propia, args=(m,), daemon=True).start()
+            return
+        if isinstance(m, dict):
+            self.repo.espejo(m)
         if isinstance(m, dict):
             from ore import lsp_sql
             if lsp_sql.es_sql(m):
@@ -356,6 +376,14 @@ class Correa:
         except OSError as e:
             log("el servidor de lenguaje se fue (%s)" % e)
             self.proceso = None
+
+    def _propia(self, m):
+        if m["method"] == "ore/probar":
+            result = self.repo.probar(m.get("params") or {})
+        else:
+            result = self.repo.comprobar()
+        self._encolar(json.dumps({"jsonrpc": "2.0", "id": m.get("id"), "result": result}, ensure_ascii=False))
+        self._arrancar_entregas()
 
     def _leer_del_servidor(self):
         """Lo que el servidor contesta, a la cola de salida."""
@@ -462,8 +490,9 @@ def main():
     log("%s %s · ore-serve %s · TTL %ds · almacén %s" % ("trabajo" if trabajo else "puesto", p.id, p.servidor, ttl, p.almacen))
     ultimo = time.time()
     while True:
-        if time.time() - ultimo > ttl:
-            log("sin celdas durante %ds: cierro" % ttl)
+        # P4: lo que el editor pide (escribir, probar, comprobar) también cuenta.
+        if time.time() - max(ultimo, correa.actividad if correa else 0) > ttl:
+            log("sin actividad (celdas ni editor) durante %ds: cierro" % ttl)
             # Fuera de la cola: si no, Flux recrea el Job (el servidor barre
             # igualmente lo perdido; esto lo adelanta).
             try:

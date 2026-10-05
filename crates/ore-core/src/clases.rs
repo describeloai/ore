@@ -361,7 +361,7 @@ def {{funcion}}(amount: Decimal, due: date, paid: Decimal = Decimal(\"0\"),
 #     models=[\"extractor\"]                call it with `ore.model`
 
 if __name__ == \"__main__\":
-    print({{funcion}}(Decimal(\"120.50\"), \"2026-09-15\", today=\"2026-10-02\"))
+    print({{funcion}}(Decimal(\"120.50\"), date(2026, 9, 15), today=date(2026, 10, 2)))
     # InvoiceStatus(status='overdue', outstanding=Decimal('120.50'), days=-17, surcharge=Decimal('1.02'))
 ";
 
@@ -1073,7 +1073,10 @@ pub const CLASES: &[Clase] = &[
         //    `.gitignore` y la guía en la prosa del manifiesto. Actualizar
         //    FUSIONA la declaración (`declaracion::fusionar`): añade lo que
         //    falta y no toca lo que ya hay.
-        version: 11,
+        // 12: el bloque de Run llama con los tipos del contrato (`date`, no
+        //    `"2026-09-15"`): pyright —el editor y `ore/comprobar`, 0050 P4—
+        //    marcaba dos errores en un repositorio recién nacido.
+        version: 12,
         semilla: &[
             ("pyproject.toml", PYPROJECT_FUNCTIONS_PY),
             (".gitignore", GITIGNORE_PY),

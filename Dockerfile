@@ -397,12 +397,17 @@ RUN python -c "import duckdb; c = duckdb.connect(); c.execute(\"set extension_di
 # se importa desde la celda; el agente lo pone en el `sys.path` por estar al lado.
 COPY puesto/python/agente.py /opt/ore/agente.py
 COPY puesto/python/ore       /opt/ore/ore
+# ⭐ 0050 P4: el repositorio en disco, pytest y pyright para Test y tras un
+#   commit; y el informe de pytest que lee la consola (en su carpeta: el
+#   proceso de las pruebas sólo la pone a ELLA en su PYTHONPATH).
+COPY puesto/python/repositorio.py /opt/ore/repositorio.py
+COPY puesto/python/ore_pytest     /opt/ore/ore_pytest
 # ⭐ El escritor del lago (W3.6c, 0031 §11 ②): `write()` manda la tabla por IPC a
 #   `ore-store-gcs`, que escribe los ficheros con la credencial que el catálogo
 #   prestó —acotada a la tabla— y devuelve el commit. Es el mismo binario de la
 #   copia (`ore-drivers`); el puesto lo lleva, y no lleva `ore`.
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
-RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
+RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast, repositorio; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ⭐ EL SERVIDOR DE LENGUAJE, DENTRO (0037 ③a)
