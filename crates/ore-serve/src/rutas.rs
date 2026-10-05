@@ -323,6 +323,9 @@ impl Servidor {
                     Json::s(self.encolar_catalogo_corrida(&n, sujeto, true, None)),
                 )]))
             }
+            ("GET", ["fuentes", "comprobaciones", job]) => {
+                crate::por_la_pasarela::comprobacion(job)
+            }
             ("POST", ["fuentes", "comprobaciones"]) => {
                 let cuerpo = p.cuerpo.clone();
                 self.comprobar_fuente(&cuerpo, sujeto)
@@ -1748,6 +1751,13 @@ impl Servidor {
                     ("dice", Json::s("su catalogo esta en el arbol")),
                 ]));
             }
+            // 0053 F8·2: catalogándose ahora, por la pasarela (sin Job).
+            if crate::por_la_pasarela::catalogando(fuente) {
+                return Respuesta::ok(Json::obj([
+                    ("estado", Json::s("encolada")),
+                    ("dice", Json::s("se esta leyendo el origen")),
+                ]));
+            }
             // ⛔ `fuente` viene de la URL: solo nombres, nunca un camino.
             let fallo = fuente
                 .chars()
@@ -1791,6 +1801,9 @@ impl Servidor {
             match (fallo, en_cola) {
                 // El Job que falló es el que sigue en la cola: nadie reintentó.
                 (Some(f), Some(t)) if cola::job_de(&t) == Some(f.job.as_str()) => fallida(f),
+                // 0053 F8·2: el fallo de un catálogo por la pasarela es el último
+                // que hubo, aunque quede en la cola un Job de antes.
+                (Some(f), Some(_)) if f.job.starts_with("pasarela-") => fallida(f),
                 (Some(f), None) => fallida(f),
                 (_, Some(_)) => Respuesta::ok(Json::obj([
                     ("estado", Json::s("encolada")),
@@ -1823,6 +1836,10 @@ impl Servidor {
             Ok(t) => t,
             Err(e) => return Respuesta::error(422, e),
         };
+        // ⭐ 0053 F8·2: la pasarela contesta ya, con la identidad de los drivers.
+        if self.por_la_pasarela() {
+            return self.comprobar_por_la_pasarela(tipo, url);
+        }
         let Some(forja) = &self.cola else {
             return Respuesta::error(
                 503,
@@ -1902,6 +1919,12 @@ impl Servidor {
         otra_vez: bool,
         dueno: Option<&str>,
     ) -> String {
+        // ⭐ 0053 F8·2: sin Job, por la pasarela, si hay de dónde sacar la
+        //   credencial. `otra_vez` no cambia nada: no hay Job que repetir.
+        if self.por_la_pasarela() {
+            let _ = otra_vez;
+            return self.catalogar_por_la_pasarela(fuente, sujeto, dueno);
+        }
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); \
             lo rendira la convergencia"

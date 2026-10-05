@@ -193,6 +193,17 @@ pub fn url(raiz: &Path, env: &str, fuente: &str) -> Result<String, Fallo> {
 /// la URL lleva la credencial dentro.
 fn externo(tipo: &str, fuente: &str, url: &str) -> Result<String, Fallo> {
     let programa = format!("ore-read-{tipo}");
+    if pasarela().is_some() {
+        let salida = preguntar(tipo, fuente, "catalog", url, vec![])?;
+        parse::parse(&salida).map_err(|e| {
+            fallo(
+                65,
+                format!("lo que devolvió la pasarela no analiza: {e:?}"),
+                &[],
+            )
+        })?;
+        return Ok(salida);
+    }
     if resolver(&programa).is_none() {
         return Err(fallo(
             69,
@@ -262,6 +273,102 @@ pub fn resolver(programa: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+// ── 0053 F8 · una vía ───────────────────────────────────────────────────────
+
+/// Dónde está la pasarela (`ORE_PASARELA`, `host:puerto`). Con ella, lo que
+/// mira un origen —catalogar, comprobar, explorar, el testigo— **no lanza un
+/// conector**: lo pide a `ore-federation`, que lo hace en la cola del origen.
+/// Sin ella (una máquina, el CLI en un portátil), el conector, como siempre.
+pub fn pasarela() -> Option<String> {
+    std::env::var("ORE_PASARELA")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// **Pregunta a un origen**: `ruta` es `catalog`, `check`, `explore` o
+/// `witness` (con `extra`: `objeto` y quizá `cursor`). Por la pasarela si la
+/// hay; si no, el verbo del conector con su entrada de siempre.
+pub fn preguntar(
+    tipo: &str,
+    fuente: &str,
+    ruta: &str,
+    url: &str,
+    extra: Vec<(&'static str, Json)>,
+) -> Result<String, Fallo> {
+    if let Some(p) = pasarela() {
+        let mut campos = vec![
+            ("origen", Json::s(fuente)),
+            ("tipo", Json::s(tipo)),
+            ("url", Json::s(url)),
+        ];
+        campos.extend(extra);
+        return por_la_pasarela(&p, ruta, &Json::obj(campos).jcs())
+            .map_err(|m| fallo(69, ore_driver::tapar(&m, url), &[]));
+    }
+    let programa = format!("ore-read-{tipo}");
+    let coordenada = || Json::obj([("url", Json::s(url))]).jcs();
+    let (args, entrada) = match ruta {
+        "catalog" => (
+            vec!["catalogo".to_string(), fuente.to_string()],
+            url.to_string(),
+        ),
+        "check" => (vec!["check".to_string()], coordenada()),
+        "explore" => (vec!["explorar".to_string()], coordenada()),
+        _ => {
+            let mut c = vec![("url", Json::s(url))];
+            c.extend(extra);
+            (vec!["testigo".to_string()], Json::obj(c).jcs())
+        }
+    };
+    ejecutar(&programa, &args, Some(&entrada))
+}
+
+/// `POST /v1/{ruta}` a la pasarela, por HTTP plano dentro del clúster. Un
+/// código distinto de 200 es un fallo con su mensaje.
+fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, String> {
+    use std::io::{Read as _, Write as _};
+    use std::net::ToSocketAddrs as _;
+    let dir = destino
+        .to_socket_addrs()
+        .map_err(|e| format!("la pasarela `{destino}`: {e}"))?
+        .next()
+        .ok_or_else(|| format!("la pasarela `{destino}` no tiene dirección"))?;
+    let mut s = std::net::TcpStream::connect_timeout(&dir, std::time::Duration::from_secs(5))
+        .map_err(|e| format!("la pasarela `{destino}` no contesta: {e}"))?;
+    // El plazo de un verbo en la pasarela es 10 min; uno más para la cola.
+    s.set_read_timeout(Some(std::time::Duration::from_secs(660)))
+        .ok();
+    let req = format!(
+        "POST /v1/{ruta} HTTP/1.1\r\nhost: pasarela\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{cuerpo}",
+        cuerpo.len()
+    );
+    s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut todo = Vec::new();
+    s.read_to_end(&mut todo).map_err(|e| e.to_string())?;
+    let texto = String::from_utf8_lossy(&todo);
+    let (cabeza, cuerpo) = texto
+        .split_once("\r\n\r\n")
+        .ok_or("la pasarela contestó algo que no es HTTP")?;
+    let codigo: u16 = cabeza
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .ok_or("la pasarela contestó algo que no es HTTP")?;
+    if codigo == 200 {
+        return Ok(cuerpo.to_string());
+    }
+    let mensaje = parse::parse(cuerpo.trim())
+        .ok()
+        .and_then(|n| {
+            n.get("mensaje")
+                .and_then(|(_, v)| v.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| cuerpo.trim().chars().take(300).collect());
+    Err(format!("la pasarela contestó {codigo}: {mensaje}"))
 }
 
 pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Result<String, Fallo> {
@@ -458,12 +565,7 @@ pub fn explorar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
         Ok(u) => u,
         Err(f) => return imprimir(f),
     };
-    let coordenada = Json::obj([("url", Json::s(&url))]).jcs();
-    let salida = match ejecutar(
-        &format!("ore-read-{tipo}"),
-        &["explorar".to_string()],
-        Some(&coordenada),
-    ) {
+    let salida = match preguntar(&tipo, fuente, "explore", &url, vec![]) {
         Ok(s) => s,
         Err(f) => return imprimir(f),
     };
@@ -517,8 +619,7 @@ pub fn comprobar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
     // es lo unico que necesita, y `check` usa la forma de `leer_coordenada`
     // —`{"url": ...}`— que es la que el protocolo fija para preguntar por un
     // origen. Dos formas para dos preguntas, cada una con su validacion.
-    let coordenada = Json::obj([("url", Json::s(&url))]).jcs();
-    let salida = match ejecutar(&programa, &["check".to_string()], Some(&coordenada)) {
+    let salida = match preguntar(&tipo, fuente, "check", &url, vec![]) {
         Ok(s) => s,
         // Que el lector no esté o no arranque **también** es una respuesta a la
         // pregunta, y la más común: se dice como tal y no como un fallo de otra

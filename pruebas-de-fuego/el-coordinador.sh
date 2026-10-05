@@ -262,5 +262,19 @@ N=$(grep -c "^federation:read" "$TMP/serve.log")
 grep "^federation:read" "$TMP/serve.log" | grep -q "ES" && falla "6 · ⛔ un VALOR de filtro en la anotación" || dice "6 · la anotación no lleva valores de filtro"
 if grep -q -- "$CLAVE" "$TMP/serve.log" "$TMP/fed.log" "$TMP/out.json"; then falla "6 · ⛔ LA CLAVE DEL ORIGEN SALE"; else dice "6 · la clave del origen no sale (ni registros ni respuestas)"; fi
 
+# ── 7 · F8 · una vía: catalogar y comprobar por la pasarela ─────────────────
+#   `ore` con `ORE_PASARELA` no lanza el conector: lo pide a la pasarela, que lo
+#   hace en la cola del origen (lo que `ore-serve` hace ya sin Job, F8·2).
+git clone -q "$FORJA" "$TMP/f8"
+SALE=$(ORE_PASARELA="127.0.0.1:$PF" "$ORE" source check pg --path "$TMP/f8" 2>&1)
+case "$SALE" in *"pg · sí"*) dice "F8 · ore source check por la pasarela: sí";; *) falla "F8 · check: $SALE";; esac
+ORE_PASARELA="127.0.0.1:$PF" "$ORE" source catalog pg --out "$TMP/f8-cat.json" --path "$TMP/f8" >"$TMP/f8.log" 2>&1
+grep -q 'clientes' "$TMP/f8-cat.json" 2>/dev/null && dice "F8 · ore source catalog por la pasarela: el catálogo"   || falla "F8 · catalog: $(tail -5 "$TMP/f8.log")"
+curl -s "http://127.0.0.1:$PF/v1/origins" -o "$TMP/out.json"
+mira "(o:=[x for x in d['origenes'] if x['origen']=='pg'][0])['verbos'].get('check',0)>=1 and o['verbos'].get('catalog',0)>=1"   && dice "F8 · /v1/origins cuenta el check y el catálogo de pg" || falla "F8 · origins: $(cat "$TMP/out.json")"
+SALE=$(ORE_PASARELA="127.0.0.1:1" "$ORE" source check pg --path "$TMP/f8" 2>&1)
+case "$SALE" in *"no contesta"*) dice "F8 · sin pasarela no se lanza el conector a escondidas: no contesta";; *) falla "F8 · pasarela caída: $SALE";; esac
+if grep -q -- "$CLAVE" "$TMP/f8.log" "$TMP/f8-cat.json" "$TMP/fed.log"; then falla "F8 · ⛔ LA CLAVE SALE"; else dice "F8 · la clave no sale"; fi
+
 echo
-[ "$MAL" = 0 ] && echo "✓ el coordinador (0053 F4·2 y F6·1)" || { echo "✗ el coordinador"; tail -20 "$TMP/serve.log"; exit 1; }
+[ "$MAL" = 0 ] && echo "✓ el coordinador (0053 F4·2, F6·1 y F8)" || { echo "✗ el coordinador"; tail -20 "$TMP/serve.log"; exit 1; }

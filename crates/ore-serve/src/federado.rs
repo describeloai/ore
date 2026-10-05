@@ -30,7 +30,7 @@ use crate::rutas::Servidor;
 
 /// Donde está la pasarela de la celda: el Service de la plantilla
 /// (`malla/58-la-pasarela.yaml`), o `ORE_PASARELA`.
-fn pasarela() -> String {
+pub(crate) fn pasarela() -> String {
     std::env::var("ORE_PASARELA").unwrap_or_else(|_| "ore-federation:8099".into())
 }
 

@@ -1511,21 +1511,12 @@ fn testigo(
     // La coordenada lleva el *cursor* cuando el testigo es por columna: el driver
     // necesita saber CUAL ordena, porque un fichero o una tabla saben fecharse de
     // mas de una forma y la que vale es la que la tabla declara.
-    let mut coord = vec![
-        ("objeto", ore_core::json::Json::s(&r.objeto)),
-        ("url", ore_core::json::Json::s(&url)),
-    ];
+    // 0053 F8: por la pasarela si la hay (`lector::preguntar`).
+    let mut extra = vec![("objeto", ore_core::json::Json::s(&r.objeto))];
     if let ore_view::Marca::Campo(c) = crate::registro::marca_de(pkg, v) {
-        coord.push(("cursor", ore_core::json::Json::s(&c)));
+        extra.push(("cursor", ore_core::json::Json::s(&c)));
     }
-    let peticion = ore_core::json::Json::obj(coord).jcs();
-
-    let salida = lector::ejecutar(
-        &format!("ore-read-{tipo}"),
-        &["testigo".to_string()],
-        Some(&peticion),
-    )
-    .map_err(|f| {
+    let salida = lector::preguntar(&tipo, &r.datasource, "witness", &url, extra).map_err(|f| {
         let mut s = f.mensaje;
         for l in f.ayuda {
             s.push('\n');
