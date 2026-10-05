@@ -5,7 +5,7 @@
 #   Lo que una sesión Python necesita se DECLARA en el árbol —`[project]
 #   .dependencies` de `pyproject.toml`, en la raíz o en `packages/<p>/`— y lo
 #   resuelve ESTE Job, con la red del driver (que sí alcanza PyPI): baja las
-#   ruedas para el intérprete del entorno 1 (cp312, manylinux x86_64), las
+#   ruedas para el intérprete de `puesto-python:1` (manylinux x86_64), las
 #   sube al bucket del inquilino como `ore/puesto/<capa>/`, y deja en el árbol
 #   el informe `entorno/<digest>.json` (uno por capa desde 0036 ③, que las hay
 #   por repositorio). El puesto, al arrancar, baja esa caja del
@@ -23,6 +23,12 @@
 #   puesto con la capa pendiente. `CAPA` es el digest de la declaración; el Job
 #   la recalcula del árbol y, si el árbol cambió entre medias, el informe lleva
 #   el digest de lo que resolvió de verdad.
+#
+# ── El intérprete, de la imagen (0050 P1) ──────────────────────────────────
+#   PY y ABI no se escriben aquí: los dice `puesto-python:1` en el contenedor
+#   que ya la corre (`lo-que-la-imagen-pone`). Y entran en el digest
+#   (`entorno::semilla_python`, la misma regla): cambiar la imagen de Python
+#   es cambiar de capa, sin una plantilla que se quede atrás.
 #
 # ── Lo que este Job NO decide ──────────────────────────────────────────────
 #   Qué versión gana: la resuelve `pip` con lo declarado, y queda escrita en el
@@ -90,7 +96,9 @@ spec:
             - |
               set -e
               cp /opt/ore/provisto.txt /trabajo/provisto.txt
-              echo "### la imagen pone $(wc -l < /trabajo/provisto.txt) paquetes"
+              python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' > /trabajo/py.txt
+              python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])' > /trabajo/abi.txt
+              echo "### la imagen pone $(wc -l < /trabajo/provisto.txt) paquetes · python $(cat /trabajo/py.txt) ($(cat /trabajo/abi.txt))"
           resources:
             requests: {cpu: "50m", memory: 128Mi}
             limits:   {cpu: "500m", memory: 256Mi}
@@ -119,10 +127,6 @@ spec:
             - { name: ALCANCE, value: "alcance-modelo" }
             - { name: INTENTO, value: "intento-modelo" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
-            # El intérprete del entorno 1 (`puesto-python:1`): las ruedas se
-            # resuelven PARA ÉL, no para el python de esta imagen.
-            - { name: PY, value: "3.12" }
-            - { name: ABI, value: "cp312" }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
@@ -131,6 +135,9 @@ spec:
             - |
               set -e
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              # El intérprete de `puesto-python:1`: las ruedas se resuelven PARA ÉL,
+              # no para el python de esta imagen (lo escribió `lo-que-la-imagen-pone`).
+              PY=$(cat /trabajo/py.txt); ABI=$(cat /trabajo/abi.txt)
               cd /trabajo
               git clone --quiet ${RAMA:+--branch "$RAMA"} \
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
@@ -158,7 +165,10 @@ spec:
                   except (OSError, tomllib.TOMLDecodeError):
                       pass
               deps = sorted(d for d in deps if d)
-              digest = "capa-" + hashlib.sha256("\n".join(deps).encode()).hexdigest()[:12] if deps else ""
+              # La regla de `entorno::semilla_python`: el intérprete nombra la capa.
+              abi = open("/trabajo/abi.txt").read().strip()
+              semilla = "\n".join(deps) if abi == "cp312" else abi + "\n" + "\n".join(deps)
+              digest = "capa-" + hashlib.sha256(semilla.encode()).hexdigest()[:12] if deps else ""
               open("/trabajo/deps.txt", "w").write("\n".join(deps) + "\n")
               open("/trabajo/digest.txt", "w").write(digest)
               print("### alcance:", alcance or "(la celda)")

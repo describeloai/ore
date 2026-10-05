@@ -31,9 +31,9 @@
 //! Lo demás **no cambia**: el mismo alcance (la raíz, el paquete y el
 //! repositorio), la misma unión ordenada y sin repetidos, el mismo
 //! `capa-<12 hex>` y el mismo informe por digest. **El entorno entra en el
-//! digest** —salvo en Python, para que las capas ya resueltas sigan
-//! llamándose igual—, de modo que dos lenguajes nunca comparten capa ni
-//! informe aunque declararan lo mismo.
+//! digest** —en Python, su INTÉRPRETE (`cp314`, 0050 P1)—, de modo que dos
+//! lenguajes nunca comparten capa ni informe aunque declararan lo mismo, y
+//! una caja de ruedas de otro Python nunca llega a esta sesión.
 //!
 //! ⛔ Y lo que no se honra, no se finge: de un `pom.xml` se lee
 //!   `<dependencies>` **y nada más** —ni `<dependencyManagement>`, ni
@@ -146,6 +146,16 @@ pub(crate) const NODE: &str = "node";
 //   binarios las mira: `ci/huella-de-los-binarios.sh`).
 const PROVISTO_NODE: &str = include_str!("../../../puesto/node/provisto.txt");
 const PROVISTO_PYTHON: &str = include_str!("../../../puesto/python/provisto.txt");
+
+/// El intérprete de `puesto-python:1` (`Dockerfile`, `FROM python:3.14-slim`),
+/// como lo nombran las ruedas: `cp314`. Lo fija una prueba contra el Dockerfile.
+///
+/// ⭐ 0050 P1 · ENTRA EN EL DIGEST de una capa de Python (`semilla_python`).
+///   Las ruedas binarias son de UN intérprete: una caja resuelta para 3.12 en
+///   una sesión de 3.14 no da una excepción clara, deja módulos que no cargan.
+///   Con el intérprete en el nombre, cambiar de Python es cambiar de capa: cada
+///   repositorio resuelve la suya otra vez, una vez, al abrirse.
+pub(crate) const ABI_PYTHON: &str = "cp314";
 const JARS_JVM: &str = include_str!("../../../puesto/jvm/jars.txt");
 /// El `duckdb_jdbc` del puesto JVM: no está en `jars.txt` sino en el
 /// `ARG DUCKDB_JDBC` del Dockerfile (un test los compara).
@@ -568,19 +578,33 @@ fn sin_comentarios_xml(t: &str) -> String {
 
 /// `capa-<12 hex>` de la declaración; vacío si no hay dependencias.
 ///
-/// ⭐ El entorno entra en el digest —salvo en Python, para que las capas ya
-///   resueltas sigan llamándose igual—: dos lenguajes no comparten capa ni
-///   informe aunque llegaran a declarar la misma lista.
+/// ⭐ El entorno entra en el digest —en Python, su intérprete—: dos lenguajes
+///   no comparten capa ni informe aunque llegaran a declarar la misma lista.
 pub(crate) fn digest_de(deps: &[String], entorno: &str) -> String {
     if deps.is_empty() {
         return String::new();
     }
     let sembrado = match entorno {
-        PYTHON | "" => deps.join("\n"),
+        PYTHON | "" => semilla_python(ABI_PYTHON, deps),
         e => format!("{e}\n{}", deps.join("\n")),
     };
     let d = ore_core::digest::de_bytes(sembrado.as_bytes());
     format!("capa-{}", &d["sha256:".len().."sha256:".len() + 12])
+}
+
+/// Lo que nombra una capa de Python: el intérprete y lo declarado.
+///
+/// ⛔ `cp312` sin él, y no es un descuido: es como se llamaban las capas
+///   antes de 0050 P1, y el Job de la capa (`malla/52-la-capa.yaml`) aplica
+///   esta MISMA regla con el intérprete que lee de la imagen del puesto. Así,
+///   mientras la imagen sea 3.12, plantilla nueva y binario viejo nombran lo
+///   mismo, y el cambio de Python no necesita dos pushes.
+pub(crate) fn semilla_python(abi: &str, deps: &[String]) -> String {
+    if abi == "cp312" {
+        deps.join("\n")
+    } else {
+        format!("{abi}\n{}", deps.join("\n"))
+    }
 }
 
 /// El informe de una capa: el suyo (`entorno/<digest>.json`) o, si no está, el
@@ -1242,6 +1266,39 @@ mod prueba {
         assert_eq!(e.estado, "pendiente");
         assert!(e.digest.starts_with("capa-"), "{}", e.digest);
         let _ = std::fs::remove_dir_all(&r);
+    }
+
+    /// 0050 P1: el intérprete del digest es el de la imagen, y la plantilla
+    /// del Job lo lee de ella y aplica la misma regla.
+    #[test]
+    fn el_python_del_digest_es_el_de_la_imagen() {
+        let d = include_str!("../../../Dockerfile");
+        let desde: Vec<&str> = d
+            .lines()
+            .filter_map(|l| l.strip_prefix("FROM python:"))
+            .collect();
+        assert_eq!(desde.len(), 1, "{desde:?}");
+        let v = desde[0].split('-').next().unwrap();
+        assert_eq!(format!("cp{}", v.replace('.', "")), ABI_PYTHON, "{desde:?}");
+        // El mismo valor que da `hashlib` en el Job (calculado con Python).
+        let p = ["polars>=1.30".to_string()];
+        let h = |s: String| {
+            let d = ore_core::digest::de_bytes(s.as_bytes());
+            d["sha256:".len().."sha256:".len() + 12].to_string()
+        };
+        assert_eq!(h(semilla_python("cp314", &p)), "355f4d80cae9");
+        assert_eq!(h(semilla_python("cp312", &p)), "1b4a9192f395");
+        assert_eq!(digest_de(&p, PYTHON), "capa-355f4d80cae9");
+        // Y la plantilla del Job: el intérprete, de la imagen; la regla, la misma.
+        let y = include_str!("../../../malla/52-la-capa.yaml");
+        assert!(
+            !y.contains("name: PY,") && !y.contains("name: ABI,"),
+            "PY/ABI fijos en la plantilla"
+        );
+        assert!(y.contains("sys.version_info[:2]") && y.contains("/trabajo/abi.txt"));
+        assert!(y.contains(
+            r#"semilla = "\n".join(deps) if abi == "cp312" else abi + "\n" + "\n".join(deps)"#
+        ));
     }
 
     #[test]

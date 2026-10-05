@@ -355,7 +355,11 @@ ARG PYRIGHT=1.1.414
 RUN npm install --no-audit --no-fund --omit=dev --prefix /opt/p pyright@${PYRIGHT} \
  && node /opt/p/node_modules/pyright/index.js --version
 
-FROM python:3.12-slim AS puesto-python
+# ⭐ ORE 0050 P1 · Python 3.14 (antes 3.12, que sólo recibe parches de seguridad).
+#   Medido (P0): las 27 versiones fijadas instalan iguales, las pruebas del SDK
+#   21/21, las extensiones del lago y pyright sin errores. El intérprete nombra
+#   la capa (`entorno::ABI_PYTHON`, fijado contra esta línea por una prueba).
+FROM python:3.14-slim AS puesto-python
 
 # ⭐ ORE 0050 L6·1b · FIJADA: `puesto/python/provisto.txt` dice versión a versión
 #   lo que se instala (antes, `pandas pyarrow duckdb google-cloud-storage` sin
@@ -410,7 +414,7 @@ RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.
 # 3,7 s y sólo ve errores de sintaxis. El pod pide 1 CPU / 2 GiB: cabe.
 #
 # ⛔ Y EL PRECIO ESTÁ DICHO: el binario `node` son ~127 MB, porque esta imagen
-#   sale de `python:3.12-slim` y ahí no hay Node. Es lo que cuesta el mejor de
+#   sale de `python:3.14-slim` y ahí no hay Node. Es lo que cuesta el mejor de
 #   los dos, y se paga una vez por imagen, no por sesión.
 #
 # ⭐ LO QUE ESTO COMPRA, Y QUE EL NAVEGADOR NO PUEDE TENER: aquí están **el SDK**

@@ -5,7 +5,7 @@
 #   Job de Kueue en el pool privado, con la identidad del pod y el testigo
 #   traído por un `initContainer`— y cambia la VIDA: este Job **no termina**.
 #   Dentro corre el agente de un ENTORNO (W3.4): `puesto-python:1` (python
-#   3.12, pandas, pyarrow, duckdb, GCS · `puesto/python/agente.py`),
+#   3.14, pytest, pandas, pyarrow, duckdb, GCS · `puesto/python/agente.py`),
 #   `puesto-node:1` (node 24, TS sin transpilador, duckdb · `puesto/node/
 #   agente.mjs`) o `puesto-jvm:1` (JDK 21, JShell en proceso, duckdb JDBC ·
 #   `puesto/jvm/ore/Agente.java`): pide celdas a `ore-serve` por polling largo,
