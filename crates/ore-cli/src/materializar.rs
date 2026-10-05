@@ -1784,7 +1784,6 @@ fn leer_del_origen(
         let url = lector::url(raiz_pkg, &l.env, &l.fuente)
             .map_err(|f| format!("la fuente `{}` · {}", l.fuente, f.mensaje))?;
         let mut peticion = vec![
-            ("url", Json::s(&url)),
             ("objeto", Json::s(&l.objeto)),
             (
                 "proyeccion",
@@ -1823,9 +1822,46 @@ fn leer_del_origen(
         if let Some(f) = pkg.table(t).and_then(fichero_de_la_tabla) {
             peticion.push(("fichero", f));
         }
-        let peticion = Json::obj(peticion).jcs();
         let rel = format!("entradas/{t}.arrow");
         let destino = aqui.join(&rel);
+        // ⭐ 0053 F8·3: con la pasarela, la copia lee por ella (`perfil:
+        //   "copia"`): en la cola del origen, sin su tope, y sin un conector
+        //   lanzado aquí.
+        if let Some(p) = lector::pasarela() {
+            let cuerpo = Json::obj([
+                (
+                    "id",
+                    Json::s(format!(
+                        "copia-{}-{}",
+                        std::process::id(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0)
+                    )),
+                ),
+                ("origen", Json::s(&l.fuente)),
+                ("tipo", Json::s(&l.tipo)),
+                ("url", Json::s(&url)),
+                ("perfil", Json::s("copia")),
+                ("peticion", Json::obj(peticion)),
+            ])
+            .jcs();
+            let mut f = std::fs::File::create(&destino)
+                .map_err(|e| format!("no se pudo crear `{}`: {e}", destino.display()))?;
+            let filas = lector::leer_por_la_pasarela(&p, &cuerpo, &mut f)
+                .map_err(|m| format!("`{t}` por la pasarela: {}", ore_driver::tapar(&m, &url)))?;
+            println!(
+                "  leída del origen por la pasarela · `{t}` ({} · {} columnas, {} filtros empujados, {filas} filas)",
+                l.fuente,
+                l.columnas.len(),
+                l.empujados.len()
+            );
+            out.push((t.clone(), rel));
+            continue;
+        }
+        peticion.push(("url", Json::s(&url)));
+        let peticion = Json::obj(peticion).jcs();
         let mut driver = lector::lanzar(
             &format!("ore-read-{}", l.tipo),
             &["leer".to_string()],

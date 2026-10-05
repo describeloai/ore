@@ -143,5 +143,26 @@ ESPERA=$(psql "$PG_URL/copia" -tAc "select count(*)||'|'||sum(p.total) from pedi
 SALE=$("$PY" -c 'import pyarrow.ipc as i,sys;t=i.open_stream(sys.argv[1]).read_all().to_pylist();print("%s|%s"%(t[0]["pedidos"],t[0]["total"]) if t else "nada")' "$C/salida.arrow" 2>&1)
 [ "$SALE" = "$ESPERA" ] && dice "3 · la copia calculada casa con el origen: $SALE (pedidos|total)" || falla "3 · sale $SALE, el origen dice $ESPERA"
 
+# ── 4 · 0053 F8·3 · lo mismo, por la pasarela ────────────────────────────────
+#   Con `ORE_PASARELA`, `--preparar` no lanza el conector: pide cada tabla a
+#   `ore-federation` con `perfil: "copia"` (en la cola del origen, sin tope).
+FED="${FED:-$(dirname "$ORE")/ore-federation}"
+if [ -x "$FED" ]; then
+  libre() { "$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+  PF=$(libre)
+  "$FED" --escucha "127.0.0.1:$PF" --conectores "$(dirname "$ORE")" --tipos postgres >"$TMP/fed.log" 2>&1 &
+  FPID=$!; trap 'kill $FPID 2>/dev/null; rm -rf "$TMP"' EXIT
+  for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PF/v1/health" && break; sleep 0.25; done
+  D2="$TMP/calc2"; mkdir -p "$D2"
+  # Sin conectores en el PATH: si `ore` lanzara uno, fallaría.
+  ( cd "$A" && PATH=/usr/bin:/bin ORE_PASARELA="127.0.0.1:$PF" "$ORE" materialize . --preparar "$D2" --vista informes.ventas_es_copia ) >"$TMP/prep2.txt" 2>&1     || falla "4 · preparar por la pasarela: $(tail -8 "$TMP/prep2.txt")"
+  grep -q "por la pasarela" "$TMP/prep2.txt" && dice "4 · preparar leyó por la pasarela (sin conector en el PATH)" || falla "4 · no dice pasarela: $(tail -5 "$TMP/prep2.txt")"
+  F2=$("$PY" -c 'import pyarrow.ipc as i,sys;print(i.open_stream(sys.argv[1]).read_all().num_rows)' "$D2/informes.ventas_es_copia/entradas/pg.public.pedidos.arrow" 2>&1)
+  [ "$F2" = "$FILAS" ] && dice "4 · las mismas $F2 filas que el conector directo" || falla "4 · $F2 filas por la pasarela, $FILAS directas"
+  curl -s "http://127.0.0.1:$PF/v1/origins" | grep -q '"copias":2' && dice "4 · la pasarela las cuenta como copias (2)" || falla "4 · origins: $(curl -s "http://127.0.0.1:$PF/v1/origins")"
+else
+  echo "  · sin \`ore-federation\` junto a \`ore\`: la parte de la pasarela no corre"
+fi
+
 echo
-[ "$MAL" = 0 ] && echo "✓ la copia desde el origen (0053 F7·2)" || { echo "✗ la copia desde el origen"; exit 1; }
+[ "$MAL" = 0 ] && echo "✓ la copia desde el origen (0053 F7·2 y F8·3)" || { echo "✗ la copia desde el origen"; exit 1; }

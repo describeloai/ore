@@ -326,6 +326,127 @@ pub fn preguntar(
     ejecutar(&programa, &args, Some(&entrada))
 }
 
+/// **Una lectura de copia por la pasarela** (0053 F8·3): `POST /v1/read` con
+/// `cuerpo` (ya con `perfil: "copia"`), el flujo Arrow a `destino` y sus
+/// *trailers*: si no acaba `completo`, es un fallo (una copia cortada no es
+/// una copia). Devuelve las filas.
+pub fn leer_por_la_pasarela(
+    destino_pasarela: &str,
+    cuerpo: &str,
+    destino: &mut impl std::io::Write,
+) -> Result<u64, String> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::net::ToSocketAddrs as _;
+    let dir = destino_pasarela
+        .to_socket_addrs()
+        .map_err(|e| format!("la pasarela `{destino_pasarela}`: {e}"))?
+        .next()
+        .ok_or_else(|| format!("la pasarela `{destino_pasarela}` no tiene dirección"))?;
+    let mut s = std::net::TcpStream::connect_timeout(&dir, std::time::Duration::from_secs(5))
+        .map_err(|e| format!("la pasarela `{destino_pasarela}` no contesta: {e}"))?;
+    // La espera en la cola (5 min) y entre dos lotes: holgado.
+    s.set_read_timeout(Some(std::time::Duration::from_secs(600)))
+        .ok();
+    let req = format!(
+        "POST /v1/read HTTP/1.1
+host: pasarela
+content-type: application/json
+content-length: {}
+te: trailers
+connection: close
+
+{cuerpo}",
+        cuerpo.len()
+    );
+    s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut c = std::io::BufReader::new(s);
+    let mut linea = String::new();
+    c.read_line(&mut linea).map_err(|e| e.to_string())?;
+    let codigo: u16 = linea
+        .split_whitespace()
+        .nth(1)
+        .and_then(|x| x.parse().ok())
+        .ok_or("la pasarela contestó algo que no es HTTP")?;
+    let mut troceado = false;
+    let mut largo: Option<usize> = None;
+    loop {
+        let mut l = String::new();
+        c.read_line(&mut l).map_err(|e| e.to_string())?;
+        let l = l.trim_end();
+        if l.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            let (k, v) = (k.trim().to_ascii_lowercase(), v.trim());
+            if k == "transfer-encoding" && v.eq_ignore_ascii_case("chunked") {
+                troceado = true;
+            }
+            if k == "content-length" {
+                largo = v.parse().ok();
+            }
+        }
+    }
+    if codigo != 200 {
+        let mut b = String::new();
+        match largo {
+            Some(n) => {
+                let mut v = vec![0; n];
+                c.read_exact(&mut v).map_err(|e| e.to_string())?;
+                b = String::from_utf8_lossy(&v).into_owned();
+            }
+            None => {
+                let _ = c.read_to_string(&mut b);
+            }
+        }
+        let m = parse::parse(b.trim())
+            .ok()
+            .and_then(|n| n.get("mensaje").and_then(|(_, v)| v.as_str()).map(String::from))
+            .unwrap_or_else(|| b.trim().chars().take(300).collect());
+        return Err(format!("la pasarela contestó {codigo}: {m}"));
+    }
+    if !troceado {
+        return Err("la pasarela no mandó un flujo (sin trailers no se sabe cómo acabó)".into());
+    }
+    // Los trozos, al fichero; después, los trailers.
+    loop {
+        let mut l = String::new();
+        c.read_line(&mut l).map_err(|e| e.to_string())?;
+        let n = usize::from_str_radix(l.trim().split(';').next().unwrap_or(""), 16)
+            .map_err(|_| format!("un trozo con un tamaño raro: {:?}", l.trim()))?;
+        if n == 0 {
+            break;
+        }
+        let mut v = vec![0; n];
+        c.read_exact(&mut v).map_err(|e| e.to_string())?;
+        destino.write_all(&v).map_err(|e| e.to_string())?;
+        let mut crlf = [0u8; 2];
+        c.read_exact(&mut crlf).map_err(|e| e.to_string())?;
+    }
+    let mut finales = std::collections::BTreeMap::new();
+    loop {
+        let mut l = String::new();
+        if c.read_line(&mut l).map_err(|e| e.to_string())? == 0 {
+            break;
+        }
+        let l = l.trim_end();
+        if l.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            finales.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        }
+    }
+    let fin = |k: &str| finales.get(k).cloned().unwrap_or_default();
+    if fin("ore-estado") != "completo" {
+        return Err(format!(
+            "la lectura no acabó completa: {} {}",
+            fin("ore-estado"),
+            fin("ore-motivo")
+        ));
+    }
+    Ok(fin("ore-filas").parse().unwrap_or(0))
+}
+
 /// `POST /v1/{ruta}` a la pasarela, por HTTP plano dentro del clúster. Un
 /// código distinto de 200 es un fallo con su mensaje.
 fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, String> {
