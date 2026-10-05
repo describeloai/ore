@@ -1095,9 +1095,11 @@ P=puesto-ana-python; LEN=python
 CRUDO='import json, ore, urllib.request, urllib.error\ndef a_pelo(m, ruta, texto=None, con=True):\n    q = urllib.request.Request(ore.puesto.servidor + ruta, data=(texto or \"\").encode() if texto is not None else None, method=m)\n    [q.add_header(k, v) for k, v in ore.puesto._cabeceras.items()]\n    con and q.add_header(\"x-ore-puesto\", ore.puesto.id)\n    try:\n        return urllib.request.urlopen(q, timeout=30).status\n    except urllib.error.HTTPError as e:\n        return e.code\n'
 celda "$CRUDO"'[a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\"), a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\", con=False), a_pelo(\"DELETE\", \"/arbol/packages/hr/tables/empleados_t.yaml\"), a_pelo(\"POST\", \"/ramas\", \"{}\"), a_pelo(\"POST\", \"/propuestas\", \"{}\"), a_pelo(\"POST\", \"/paquetes\", \"{}\"), a_pelo(\"DELETE\", \"/paquetes/hr\"), a_pelo(\"GET\", \"/arbol/conduits.yaml\")]' && tiene "d['salida']['texto']=='[403, 403, 403, 403, 403, 422, 403, 200]'" || falla "12 · la puerta del puesto: $(cuerpo)"
 grep -q "^x: 1" "$A/conduits.yaml" 2>/dev/null && falla "12 · el conducto se reescribió desde la celda"
-# 0053 F2·5: rehacer la copia entra desde el puesto (en su rama; aquí no hay
-# cola, así que no es 403 sino lo que diga el servidor) y sin `x-ore-puesto` no.
-celda "$CRUDO"'[a_pelo(\"POST\", \"/paquetes/hr/copia/rehacer\") != 403, a_pelo(\"POST\", \"/paquetes/hr/copia/rehacer\", con=False)]' && tiene "d['salida']['texto']=='[True, 403]'" || falla "12 · rehacer la copia desde el puesto: $(cuerpo)"
+# 0053 F2·5: rehacer la copia pasa la puerta desde el puesto. Este puesto no
+# tiene rama, así que la ruta lo para ella misma (`main` no se toca desde una
+# celda): 403 con SU mensaje, no el de la puerta. Sin `x-ore-puesto`, tampoco.
+REHACER='def motivo(con):\n    q = urllib.request.Request(ore.puesto.servidor + \"/paquetes/hr/copia/rehacer\", data=b\"\", method=\"POST\")\n    [q.add_header(k, v) for k, v in ore.puesto._cabeceras.items()]\n    con and q.add_header(\"x-ore-puesto\", ore.puesto.id)\n    try:\n        return urllib.request.urlopen(q, timeout=30).status\n    except urllib.error.HTTPError as e:\n        t = e.read().decode()\n        return [e.code, \"verbos\" in t, \"no tiene\" in t, \"desde su puesto\" in t]\n'
+celda "$CRUDO$REHACER"'[motivo(True), motivo(False)]' && tiene "d['salida']['texto']=='[[403, False, True, False], [403, False, False, True]]'" || falla "12 · rehacer la copia desde el puesto: $(cuerpo)"
 [ -f "$A/packages/hr/tables/empleados_t.yaml" ] || falla "12 · la tabla se retiró desde la celda"
 [ "$(pide PUT /arbol/notas/persona.md "$ANA" 'una persona si')" = "201" ] || falla "12 · una persona no escribe en /arbol: $(cuerpo)"
 [ "$(pide DELETE /arbol/notas/persona.md "$ANA")" = "200" ] || falla "12 · una persona no retira en /arbol: $(cuerpo)"
