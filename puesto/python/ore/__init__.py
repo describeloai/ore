@@ -405,6 +405,10 @@ def _desenvolver(crudo):
 
 # Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
 _leidas = []
+# 0053 F7·1: las `Table` que esta sesión leyó EN VIVO (`sql()` sobre un origen).
+_en_vivo = set()
+# La marca que `sql()` deja en lo que devuelve si leyó en vivo: `write()` la mira.
+MARCA_EN_VIVO = "ore.en_vivo"
 _transform = None
 
 
@@ -1083,6 +1087,31 @@ def explain(query):
     return (r or {}).get("plan")
 
 
+def _marca_en_vivo(tabla, tablas):
+    """0053 F7·1 · Lo que salió de leer un origen en vivo lo dice: en los
+    metadatos del esquema de Arrow (que pandas guarda en `attrs`)."""
+    if not tablas:
+        return tabla
+    meta = dict(tabla.schema.metadata or {})
+    meta[MARCA_EN_VIVO.encode()] = ",".join(sorted(tablas)).encode()
+    return tabla.replace_schema_metadata(meta)
+
+
+def _leido_en_vivo(datos):
+    """Las tablas de un origen de las que salieron `datos`, si `sql()` las marcó."""
+    try:
+        meta = getattr(getattr(datos, "schema", None), "metadata", None) or {}
+        v = meta.get(MARCA_EN_VIVO.encode())
+        if v:
+            return v.decode().split(",")
+    except Exception:  # noqa: BLE001 — sólo se mira
+        pass
+    attrs = getattr(datos, "attrs", None)
+    if isinstance(attrs, dict) and attrs.get(MARCA_EN_VIVO):
+        return list(attrs[MARCA_EN_VIVO])
+    return []
+
+
 @_kw({"texto": "query", "como": "format", "estricta": "strict"})
 def sql(query, format="pandas", strict=False):
     """DuckDB SQL over the tree's datasets and views. ore-serve says which tree
@@ -1114,6 +1143,7 @@ def sql(query, format="pandas", strict=False):
             continue
         if l["tabla"] not in vivas:
             _lee(l["tabla"])
+            _en_vivo.add(l["tabla"])
             vivas[l["tabla"]] = _lectura_en_vivo(con, l, estricta)
         _registra(con, nombre, _q(vivas[l["tabla"]]))
     for nombre, rd in sorted(fuentes.items()):
@@ -1144,7 +1174,10 @@ def sql(query, format="pandas", strict=False):
     r = con.execute(texto)
     if r.description is None:
         return None
-    return _como(_arrow(r), como)
+    salida = _como(_marca_en_vivo(_arrow(r), set(vivas)), como)
+    if vivas and como == "pandas":
+        salida.attrs[MARCA_EN_VIVO] = sorted(vivas)
+    return salida
 
 
 # ── Escribir (0031 §11) ────────────────────────────────────────────────────
@@ -1954,6 +1987,16 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
     clave_upsert = list(clave) if clave else None
     if _transform is not None and nombre != _transform.output:
         raise PermissionError("`%s` is not the output of `%s` (%s): a transform only writes what it declares" % (nombre, _transform.nombre, _transform.output))
+    # 0053 F7·1: guardar en el lago lo que se leyó de un origen EN VIVO es una
+    # copia, y una copia no se hace aquí: tiene su conducto
+    # (`materialization.payload`), no tiene el tope de una lectura en vivo y la
+    # hace un Job. Se dice cómo hacerla.
+    vivas = _leido_en_vivo(datos) or (sorted(set(_transform.inputs) & _en_vivo) if _transform is not None else [])
+    if vivas:
+        raise PermissionError(
+            "write(%r): this data was read live from an origin (%s). Saving it in the lake is a copy, and a copy "
+            "is made by a job, not by a session: `create or replace dataset %s as select … from …` in SQL "
+            "(no live-read cap, governed as a copy)" % (nombre, ", ".join(vivas), nombre))
     base, ns, t = _partes(nombre)  # el namespace de /v1 es el schema (0038 P4)
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:

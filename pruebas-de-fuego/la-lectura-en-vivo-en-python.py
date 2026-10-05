@@ -11,6 +11,7 @@ en Arrow por `/federation/read` y su final por `GET /federation/read/{id}`.
   3  un no del reparto (`OOS2044`) es `OriginReadError` con su código
   4  una lectura cortada: `TruncatedReadWarning`; con `strict=True`, error
   5  `ore.explain()`: imprime el texto y devuelve el plan
+  6  (F7·1) `write()` de lo que se leyó en vivo se niega: es una copia
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-lectura-en-vivo-en-python.py
 """
@@ -159,7 +160,17 @@ sys.stdout = sys_stdout
 (bien if "al origen" in buf.getvalue() and plan["lecturas"][0]["tabla"] == "pg.public.clientes" else mal)(
     "5 · ore.explain(): imprime el texto y devuelve el plan")
 
+# 6 · F7·1: guardar en el lago lo leído en vivo es una copia, y no se hace aquí
+for como in ("pandas", "arrow"):
+    d = ore.sql("SELECT id FROM pg.public.clientes", format=como)
+    try:
+        ore.write("hr.copia_a_mano", d)
+        mal("6 · write() de lo leído en vivo (%s) no se negó" % como)
+    except PermissionError as e:
+        (bien if "create or replace dataset" in str(e) and "pg.public.clientes" in str(e) else mal)(
+            "6 · write() de lo leído en vivo (%s) → PermissionError que dice cómo copiar" % como)
+
 srv.shutdown()
 print()
-print("✓ la lectura en vivo en Python (0053 F6·2)" if not MAL else "✗ la lectura en vivo en Python")
+print("✓ la lectura en vivo en Python (0053 F6·2 y F7·1)" if not MAL else "✗ la lectura en vivo en Python")
 sys.exit(1 if MAL else 0)

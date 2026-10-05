@@ -306,6 +306,24 @@ primero, Node y JVM en un hito aparte.
 | **F6·3** · en vivo | test6: Neon, BigQuery y S3 por su nombre, `bq_foreign` y `foreign_test`, juntas entre orígenes y con una copia, un corte, `explain`, la huella | pendiente |
 | **F6·4** · Node y JVM | el mismo contrato | pendiente |
 
+### F7 en hitos
+
+**Decidido** (2026-10-05, con el usuario): `create view` sobre el origen es una **vista**: se guarda la
+consulta y se lee en vivo (F6), con `federation.read`. Lo que **guarda** datos del origen —`create or
+replace dataset … as select`, `insert into … select`, `create materialized view`— es una **copia**: la
+hace un **Job** (sin el tope de una lectura en vivo, y el coste en vivo no le aplica: spec §4), con
+`materialization.payload`. Dos formas: **copiar una tabla** (lo que baja entero: un dataset mantenido
+con su `where` ampliado, spec v1alpha25) y **copiar un cálculo** (juntas, agregados, varios orígenes: el
+Job lee lo repartido de cada tabla, calcula en DuckDB y publica). «Los trabajos de copia leen por la
+pasarela» pasa a **F8** (toca la malla; F7 no lo necesita: el conector v2 ya pone los diez operadores).
+
+| hito | qué | sale |
+|---|---|---|
+| **F7·1** · la vista y el agujero | `create view` sobre una `Table` ya compila con `federation.read` (si no, `OOS4011`: v1alpha24 `invalid/a-view-over-a-table-without-federation-read`) y se lee en vivo (F6). **`write()` de lo leído en vivo se niega** (`sql()` marca su resultado; en un transform, sus `inputs` leídos en vivo): guardar eso es una copia | ✓ `la-lectura-en-vivo-en-python.py` 8/8 |
+| **F7·2** · copiar una tabla | spec v1alpha25 (`where` con los operadores del reparto), `create or replace dataset … as select` de una tabla que baja entera → dataset mantenido; el Job empuja los filtros | pendiente |
+| **F7·3** · copiar un cálculo | `create materialized view`, `… as select` con juntas o agregados, `insert into … select` sobre el origen | pendiente |
+| **F7·4** · en vivo | test6 | pendiente |
+
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
 ONLY`, `SET LOCAL`, el portal, el `FETCH`, el `COMMIT`) contra un origen lejano. Guardar el plan por
