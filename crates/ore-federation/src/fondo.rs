@@ -115,6 +115,10 @@ pub struct Medidas {
     pub errores: u64,
     pub saturadas: u64,
     pub procesos_lanzados: u64,
+    /// 0053 F8 · de las lecturas, cuántas fueron copias.
+    pub copias: u64,
+    /// 0053 F8 · los demás verbos (`catalog`, `check`, `explore`, `witness`).
+    pub verbos: BTreeMap<String, u64>,
     /// Las últimas 200 duraciones, para p50 y p95.
     pub ms: VecDeque<u64>,
 }
@@ -134,6 +138,8 @@ impl Medidas {
 #[derive(Default)]
 struct EstadoOrigen {
     activas: usize,
+    /// De las activas, las copias: nunca todas (una queda para lo vivo).
+    copias: usize,
     en_cola: usize,
     libres: Vec<Proceso>,
     medidas: Medidas,
@@ -158,6 +164,7 @@ pub struct Plaza {
     pub proceso: Option<Proceso>,
     /// Si el proceso ya estaba caliente (su conexión puede haber muerto).
     pub caliente: bool,
+    copia: bool,
     tipo: String,
     url: String,
     fondo: Arc<Fondo>,
@@ -193,8 +200,22 @@ impl Drop for Plaza {
             if let Some(p) = self.proceso.take() {
                 p.matar();
             }
-            self.fondo.liberar(&self.origen, None);
+            self.fondo.liberar(&self.origen, None, self.copia);
         }
+    }
+}
+
+/// 0053 F8 · **Un turno** en un origen, sin proceso caliente: el de un verbo
+/// que no es leer (catalogar, comprobar, explorar, el testigo). Cuenta en la
+/// misma cola que las lecturas; al soltarlo (`Drop`), deja sitio.
+pub struct Turno {
+    origen: String,
+    fondo: Arc<Fondo>,
+}
+
+impl Drop for Turno {
+    fn drop(&mut self) {
+        self.fondo.liberar(&self.origen, None, false);
     }
 }
 
@@ -231,6 +252,58 @@ impl Fondo {
             .clone()
     }
 
+    /// Espera sitio en `o` y lo ocupa. Una **copia** no ocupa el origen entero:
+    /// con 4 a la vez, como mucho 3 son copias y una queda para lo vivo.
+    fn esperar<'a>(
+        &self,
+        o: &'a Origen,
+        copia: bool,
+    ) -> Result<std::sync::MutexGuard<'a, EstadoOrigen>, Saturado> {
+        let conc = self.cotas.concurrencia;
+        let lleno =
+            |e: &EstadoOrigen| e.activas >= conc || (copia && conc > 1 && e.copias >= conc - 1);
+        let mut e = o.estado.lock().expect("origen");
+        if lleno(&e) {
+            if e.en_cola >= self.cotas.cola {
+                e.medidas.saturadas += 1;
+                return Err(Saturado::ColaLlena);
+            }
+            e.en_cola += 1;
+            let espera = if copia {
+                self.cotas.espera_copia
+            } else {
+                self.cotas.espera
+            };
+            let hasta = Instant::now() + espera;
+            while lleno(&e) {
+                let queda = hasta.saturating_duration_since(Instant::now());
+                if queda.is_zero() {
+                    e.en_cola -= 1;
+                    e.medidas.saturadas += 1;
+                    return Err(Saturado::EsperaAgotada);
+                }
+                e = o.hay_sitio.wait_timeout(e, queda).expect("origen").0;
+            }
+            e.en_cola -= 1;
+        }
+        e.activas += 1;
+        if copia {
+            e.copias += 1;
+        }
+        Ok(e)
+    }
+
+    /// 0053 F8 · **Un turno** para el verbo `verbo`, en la misma cola.
+    pub fn turno(self: &Arc<Self>, origen: &str, verbo: &str) -> Result<Turno, Saturado> {
+        let o = self.origen(origen);
+        let mut e = self.esperar(&o, false)?;
+        *e.medidas.verbos.entry(verbo.to_string()).or_default() += 1;
+        Ok(Turno {
+            origen: origen.to_string(),
+            fondo: Arc::clone(self),
+        })
+    }
+
     /// **Una plaza** en `origen` y un proceso de `tipo` con esa credencial:
     /// uno libre y caliente si lo hay, uno nuevo si no.
     pub fn tomar(
@@ -238,31 +311,19 @@ impl Fondo {
         origen: &str,
         tipo: &str,
         url: &str,
+        copia: bool,
     ) -> Result<Result<Plaza, Saturado>, String> {
         let o = self.origen(origen);
         let h = huella(tipo, url);
         let caliente = {
-            let mut e = o.estado.lock().expect("origen");
-            if e.activas >= self.cotas.concurrencia {
-                if e.en_cola >= self.cotas.cola {
-                    e.medidas.saturadas += 1;
-                    return Ok(Err(Saturado::ColaLlena));
-                }
-                e.en_cola += 1;
-                let hasta = Instant::now() + self.cotas.espera;
-                while e.activas >= self.cotas.concurrencia {
-                    let queda = hasta.saturating_duration_since(Instant::now());
-                    if queda.is_zero() {
-                        e.en_cola -= 1;
-                        e.medidas.saturadas += 1;
-                        return Ok(Err(Saturado::EsperaAgotada));
-                    }
-                    e = o.hay_sitio.wait_timeout(e, queda).expect("origen").0;
-                }
-                e.en_cola -= 1;
-            }
-            e.activas += 1;
+            let mut e = match self.esperar(&o, copia) {
+                Ok(e) => e,
+                Err(s) => return Ok(Err(s)),
+            };
             e.medidas.lecturas += 1;
+            if copia {
+                e.medidas.copias += 1;
+            }
             let i = e.libres.iter().position(|p| p.huella == h);
             i.map(|i| e.libres.swap_remove(i))
         };
@@ -275,7 +336,7 @@ impl Fondo {
                     p
                 }
                 Err(e) => {
-                    self.liberar(origen, None);
+                    self.liberar(origen, None, copia);
                     return Err(format!("no arranca el conector de `{tipo}`: {e}"));
                 }
             },
@@ -284,6 +345,7 @@ impl Fondo {
             origen: origen.to_string(),
             proceso: Some(proceso),
             caliente: es_caliente,
+            copia,
             tipo: tipo.to_string(),
             url: url.to_string(),
             fondo: Arc::clone(self),
@@ -304,13 +366,16 @@ impl Fondo {
             }
             None => None,
         };
-        self.liberar(&plaza.origen, p);
+        self.liberar(&plaza.origen, p, plaza.copia);
     }
 
-    fn liberar(&self, origen: &str, proceso: Option<Proceso>) {
+    fn liberar(&self, origen: &str, proceso: Option<Proceso>, copia: bool) {
         let o = self.origen(origen);
         let mut e = o.estado.lock().expect("origen");
         e.activas = e.activas.saturating_sub(1);
+        if copia {
+            e.copias = e.copias.saturating_sub(1);
+        }
         if let Some(mut p) = proceso {
             p.usado = Instant::now();
             e.libres.push(p);
@@ -322,7 +387,9 @@ impl Fondo {
                 e.libres.swap_remove(viejo).matar();
             }
         }
-        o.hay_sitio.notify_one();
+        // A todos: una copia que despierta y no cabe no debe tragarse el aviso
+        // que esperaba una lectura en vivo.
+        o.hay_sitio.notify_all();
     }
 
     /// Anota cómo terminó una lectura de `origen`.
@@ -399,5 +466,38 @@ impl Fondo {
                 (k, e.activas, e.en_cola, e.libres.len(), e.medidas.clone())
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 0053 F8 · una copia nunca ocupa el origen entero: queda sitio para lo
+    /// vivo (y para los verbos), y la segunda copia espera.
+    #[test]
+    fn la_copia_deja_un_hueco_a_lo_vivo() {
+        let cotas = Cotas {
+            concurrencia: 2,
+            espera: Duration::from_millis(50),
+            espera_copia: Duration::from_millis(50),
+            ..Cotas::default()
+        };
+        let f = Fondo::new(cotas, PathBuf::from("."));
+        let o = f.origen("neon");
+        let e = f.esperar(&o, true).expect("la primera copia entra");
+        drop(e);
+        assert_eq!(
+            f.esperar(&o, true).err(),
+            Some(Saturado::EsperaAgotada),
+            "la segunda copia no: el hueco es de lo vivo"
+        );
+        let t = f.turno("neon", "check").expect("lo vivo entra");
+        assert!(f.turno("neon", "check").is_err(), "y ya está lleno");
+        drop(t);
+        f.liberar("neon", None, true);
+        assert!(f.esperar(&o, true).is_ok(), "soltada la copia, entra otra");
+        let m = &f.estado()[0].4;
+        assert_eq!(m.verbos.get("check"), Some(&1));
     }
 }

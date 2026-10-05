@@ -34,7 +34,7 @@ use crate::casos::{Estado, Resultado};
 use crate::conector::Conector;
 use crate::semilla::Tabla;
 
-pub const CASOS: [(u8, &str); 8] = [
+pub const CASOS: [(u8, &str); 9] = [
     (1, "el mismo flujo que el conector"),
     (2, "caliente"),
     (3, "el presupuesto"),
@@ -43,6 +43,7 @@ pub const CASOS: [(u8, &str); 8] = [
     (6, "la credencial no sale"),
     (7, "el ocioso se cierra"),
     (8, "errores antes del primer byte"),
+    (9, "una vía: los otros verbos y la copia"),
 ];
 
 const CONCURRENCIA: u64 = 4;
@@ -352,6 +353,99 @@ impl Kit<'_> {
     fn estado_de(&self, id: &str) -> Option<(String, String)> {
         let r = self.p.pedir("GET", &format!("/v1/read/{id}"), None).ok()?;
         Some((r.campo("estado")?, r.campo("motivo").unwrap_or_default()))
+    }
+
+    // ── 9 ──────────────────────────────────────────────────────────────────
+    /// 0053 F8 · comprobar y catalogar por la pasarela (de un tiro, en la cola
+    /// del origen, sin la credencial en la respuesta) y una lectura de copia.
+    fn una_via(&mut self) -> (Estado, String) {
+        let url = self.b.url();
+        let clave = clave_de(&url);
+        let cuerpo = Json::obj([
+            ("origen", Json::s("kit")),
+            ("tipo", Json::s(self.b.familia())),
+            ("url", Json::s(url.as_str())),
+        ])
+        .jcs();
+        let mut dicho = Vec::new();
+        for ruta in ["check", "catalog"] {
+            let r = match self.p.pedir("POST", &format!("/v1/{ruta}"), Some(&cuerpo)) {
+                Ok(r) => r,
+                Err(e) => return (Estado::Falla, format!("{ruta}: {e}")),
+            };
+            let t = r.texto();
+            if r.codigo != 200 || ore_core::parse::parse(t.trim()).is_err() {
+                return (Estado::Falla, format!("{ruta}: {} · {}", r.codigo, t));
+            }
+            if clave.as_deref().is_some_and(|c| t.contains(c)) {
+                return (
+                    Estado::Falla,
+                    format!("{ruta}: la respuesta lleva la credencial"),
+                );
+            }
+            dicho.push(format!("{ruta} 200 en {} ms", r.ms));
+        }
+        // Un verbo que no existe y un perfil que no existe: 404/405 y 400.
+        match self.p.pedir("POST", "/v1/borrar", Some(&cuerpo)) {
+            Ok(r) if r.codigo == 404 => {}
+            Ok(r) => return (Estado::Falla, format!("/v1/borrar: {}", r.codigo)),
+            Err(e) => return (Estado::Falla, e),
+        }
+        // La copia: sin presupuesto, entera; y se cuenta como copia.
+        let pet = self.pet(Tabla::Tipos, &[("id", "id")]);
+        let id = nuevo_id();
+        let mut c = match ore_core::parse::parse(&self.cuerpo(&id, &url, &pet, None)) {
+            Ok(n) => match Json::de_node(&n) {
+                Json::Obj(m) => m,
+                _ => return (Estado::Falla, "cuerpo".into()),
+            },
+            Err(e) => return (Estado::Falla, format!("{e:?}")),
+        };
+        c.insert("perfil".into(), Json::s("copia"));
+        let r = match self
+            .p
+            .pedir("POST", "/v1/read", Some(&Json::Obj(c.clone()).jcs()))
+        {
+            Ok(r) => r,
+            Err(e) => return (Estado::Falla, e),
+        };
+        if r.codigo != 200 || r.fin("ore-estado") != "completo" {
+            return (
+                Estado::Falla,
+                format!(
+                    "copia: {} · {} · {}",
+                    r.codigo,
+                    r.fin("ore-estado"),
+                    r.texto()
+                ),
+            );
+        }
+        dicho.push(format!("copia completa, {} filas", r.fin("ore-filas")));
+        c.insert("id".into(), Json::s(nuevo_id()));
+        c.insert("perfil".into(), Json::s("todo"));
+        match self.p.pedir("POST", "/v1/read", Some(&Json::Obj(c).jcs())) {
+            Ok(r) if r.codigo == 400 => {}
+            Ok(r) => return (Estado::Falla, format!("perfil inventado: {}", r.codigo)),
+            Err(e) => return (Estado::Falla, e),
+        }
+        // Y `/v1/origins` lo cuenta todo.
+        let o = match self.p.pedir("GET", "/v1/origins", None) {
+            Ok(r) => r.texto(),
+            Err(e) => return (Estado::Falla, e),
+        };
+        for k in [r#""check":1"#, r#""catalog":1"#] {
+            if !o.contains(k) {
+                return (Estado::Falla, format!("/v1/origins no cuenta {k}: {o}"));
+            }
+        }
+        if o.contains(r#""copias":0"#) {
+            return (
+                Estado::Falla,
+                format!("/v1/origins no cuenta la copia: {o}"),
+            );
+        }
+        dicho.push("/v1/origins lo cuenta".into());
+        (Estado::Pasa, dicho.join(" · "))
     }
 
     // ── 1 ──────────────────────────────────────────────────────────────────
@@ -1083,6 +1177,7 @@ pub fn correr(
             6 => kit.credencial(),
             7 => kit.ocioso(),
             8 => kit.errores(),
+            9 => kit.una_via(),
             _ => unreachable!(),
         };
         eprintln!("  P{n} · {nombre}: {}", estado.as_str());

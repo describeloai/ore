@@ -291,6 +291,9 @@ fn intentar() -> Result<String, String> {
         Some("leer") => ("leer", args.get(1).cloned().unwrap_or_default()),
         Some("catalogo") => ("catalogo", args.get(1).cloned().unwrap_or_default()),
         Some("testigo") => ("testigo", args.get(1).cloned().unwrap_or_default()),
+        // 0053 F8: `check` y `explorar` tenían su rama más abajo, pero aquí
+        // caían en `catalogo` (con «check» de fuente) y nunca llegaban a ella.
+        Some(v @ ("check" | "explorar")) => (v, String::new()),
         // La forma anterior —`ore-read-postgres <fuente>`— sigue significando
         // `catalogo`: quien la usara no tiene por qué enterarse de que ahora
         // hay dos verbos.

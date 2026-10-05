@@ -2,7 +2,8 @@
 //!
 //! | | ruta | qué |
 //! |---|---|---|
-//! | leer | `POST /v1/read` | una lectura; responde un flujo Arrow con *trailers* |
+//! | leer | `POST /v1/read` | una lectura; responde un flujo Arrow con *trailers*; `perfil: "copia"` para la de un Job |
+//! | preguntar | `POST /v1/{catalog,check,explore,witness}` | los otros verbos del conector, en la misma cola (0053 F8) |
 //! | cancelar | `DELETE /v1/read/{id}` | corta una lectura en curso, también en el origen |
 //! | estado | `GET /v1/read/{id}` | cómo va o cómo terminó (las últimas 1000) |
 //! | conectores | `GET /v1/connectors` | lo que declara cada familia |
@@ -78,11 +79,20 @@ impl Pasarela {
             ("GET", ["v1", "connectors"]) => json(200, self.conectores_json(), vec![]),
             ("GET", ["v1", "origins"]) => json(200, self.origenes(), vec![]),
             ("POST", ["v1", "read"]) => self.leer(&p.cuerpo),
+            ("POST", ["v1", v @ ("catalog" | "check" | "explore" | "witness")]) => {
+                self.preguntar(v, &p.cuerpo)
+            }
             ("GET", ["v1", "read", id]) => self.estado(id),
             ("DELETE", ["v1", "read", id]) => self.cancelar(id),
-            (_, ["v1", "read", ..]) | (_, ["v1", "health" | "connectors" | "origins"]) => {
-                error(405, "operador", "método no admitido", false)
-            }
+            (_, ["v1", "read", ..])
+            | (
+                _,
+                [
+                    "v1",
+                    "health" | "connectors" | "origins" | "catalog" | "check" | "explore"
+                    | "witness",
+                ],
+            ) => error(405, "operador", "método no admitido", false),
             _ => error(404, "objeto", "no hay tal ruta", false),
         }
     }
@@ -138,6 +148,16 @@ impl Pasarela {
                 o.insert("cortadas".to_string(), Json::Int(m.cortadas as i64));
                 o.insert("errores".to_string(), Json::Int(m.errores as i64));
                 o.insert("saturadas".to_string(), Json::Int(m.saturadas as i64));
+                o.insert("copias".to_string(), Json::Int(m.copias as i64));
+                o.insert(
+                    "verbos".to_string(),
+                    Json::Obj(
+                        m.verbos
+                            .iter()
+                            .map(|(k, v)| (k.clone(), Json::Int(*v as i64)))
+                            .collect(),
+                    ),
+                );
                 o.insert(
                     "procesosLanzados".to_string(),
                     Json::Int(m.procesos_lanzados as i64),
@@ -236,7 +256,26 @@ impl Pasarela {
         let Some((_, pet)) = n.get("peticion") else {
             return error(400, "operador", "falta `peticion`", false);
         };
-        let presupuesto = match presupuesto(&n, self.fondo.cotas.presupuesto) {
+        // 0053 F8 · la copia de un Job: su presupuesto es otro (sin tope de
+        // filas), espera más en la cola y nunca ocupa el origen entero.
+        let copia = match cadena("perfil").as_deref() {
+            None | Some("vivo") => false,
+            Some("copia") => true,
+            Some(o) => {
+                return error(
+                    400,
+                    "operador",
+                    &format!("`perfil: {o}` no existe (`vivo` o `copia`)"),
+                    false,
+                );
+            }
+        };
+        let defecto = if copia {
+            self.fondo.cotas.copia
+        } else {
+            self.fondo.cotas.presupuesto
+        };
+        let presupuesto = match presupuesto(&n, defecto) {
             Ok(p) => p,
             Err(m) => return error(400, "operador", &m, false),
         };
@@ -256,7 +295,9 @@ impl Pasarela {
         m.insert("formato".into(), Json::s("arrow"));
         // `filas + 1`: así se distingue «había más» (se corta) de «eran justas».
         let tope = presupuesto.filas.saturating_add(1);
-        if caps.limit {
+        // Una copia no lleva al origen un `limit` que no pidió: su tope no es
+        // para cortarla, es una red.
+        if caps.limit && !(copia && natural("limit").is_none()) {
             let limit = natural("limit").map_or(tope, |l| l.min(tope));
             m.insert("limit".into(), Json::Int(limit as i64));
         }
@@ -288,7 +329,7 @@ impl Pasarela {
             c.insert(id.clone(), control.clone());
         }
 
-        let plaza = match self.fondo.tomar(&origen, &tipo, &url) {
+        let plaza = match self.fondo.tomar(&origen, &tipo, &url, copia) {
             Ok(Ok(p)) => p,
             Ok(Err(s)) => {
                 let motivo = match s {
@@ -385,6 +426,119 @@ impl Pasarela {
         }
     }
 
+    /// **`POST /v1/{catalog,check,explore,witness}`** (0053 F8): el verbo del
+    /// conector, de un tiro, en la cola del origen. Cuerpo: `{origen, tipo,
+    /// url}` y, para `witness`, `objeto` y quizá `cursor`. Responde lo que el
+    /// conector escribe (JSON), tal cual.
+    fn preguntar(self: &Arc<Self>, ruta: &str, cuerpo: &str) -> Salida {
+        let n = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => n,
+            Err(_) => return error(400, "operador", "el cuerpo no es JSON", false),
+        };
+        let cadena = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        let Some(origen) = cadena("origen").filter(|v| nombre_valido(v, false)) else {
+            return error(400, "operador", "falta `origen`, o no es un nombre", false);
+        };
+        let Some(tipo) = cadena("tipo").filter(|t| self.conectores.contains_key(t)) else {
+            return error(
+                400,
+                "operador",
+                "falta `tipo`, o no hay conector de ese tipo",
+                false,
+            );
+        };
+        let Some(url) = cadena("url").filter(|u| !u.is_empty()) else {
+            return error(400, "operador", "falta `url`", false);
+        };
+        let coordenada = || Json::obj([("url", Json::s(url.as_str()))]).jcs();
+        // El verbo del conector y su entrada: `catalogo` recibe la URL a
+        // secas; los demás, una coordenada (`docs/decisions/0008`).
+        let (verbo, args, entrada) = match ruta {
+            "catalog" => (
+                "catalogo",
+                vec!["catalogo".to_string(), origen.clone()],
+                url.clone(),
+            ),
+            "check" => ("check", vec!["check".to_string()], coordenada()),
+            "explore" => ("explorar", vec!["explorar".to_string()], coordenada()),
+            _ => {
+                let Some(objeto) = cadena("objeto") else {
+                    return error(400, "operador", "`witness` necesita `objeto`", false);
+                };
+                let mut c = vec![
+                    ("objeto", Json::s(objeto.as_str())),
+                    ("url", Json::s(url.as_str())),
+                ];
+                if let Some(k) = cadena("cursor") {
+                    c.push(("cursor", Json::s(k.as_str())));
+                }
+                ("testigo", vec!["testigo".to_string()], Json::obj(c).jcs())
+            }
+        };
+        let turno = match self.fondo.turno(&origen, ruta) {
+            Ok(t) => t,
+            Err(s) => {
+                return json(
+                    503,
+                    Json::obj([
+                        ("codigo", Json::s("saturado")),
+                        (
+                            "mensaje",
+                            Json::s(match s {
+                                Saturado::ColaLlena => "la cola del origen está llena",
+                                Saturado::EsperaAgotada => {
+                                    "se agotó la espera en la cola del origen"
+                                }
+                            }),
+                        ),
+                        ("reintentable", Json::Bool(true)),
+                    ]),
+                    vec![("retry-after".into(), "1".into())],
+                );
+            }
+        };
+        let empezo = std::time::Instant::now();
+        let r = de_un_tiro(
+            &self.fondo.programa(&tipo),
+            &args,
+            &entrada,
+            self.fondo.cotas.verbo,
+        );
+        drop(turno);
+        let ms = empezo.elapsed().as_millis() as u64;
+        let tapar = |s: &str| ore_driver::tapar(s, &url);
+        match r {
+            Ok(salida) if ore_core::parse::parse(&salida).is_ok() => {
+                self.fondo.anotar(&origen, "completo", ms);
+                eprintln!("{ruta} · {origen} · {tipo} · completo · {ms} ms");
+                json(200, Json::Crudo(salida.trim().to_string()), vec![])
+            }
+            Ok(_) => {
+                self.fondo.anotar(&origen, "error", ms);
+                error(
+                    502,
+                    "conexion",
+                    &format!("`{verbo}` no contestó JSON"),
+                    false,
+                )
+            }
+            Err(Tiro::Plazo) => {
+                self.fondo.anotar(&origen, "error", ms);
+                error(
+                    504,
+                    "plazo",
+                    &format!("`{verbo}` no terminó a tiempo"),
+                    true,
+                )
+            }
+            Err(Tiro::Fallo(m)) => {
+                self.fondo.anotar(&origen, "error", ms);
+                eprintln!("{ruta} · {origen} · {tipo} · error · {}", tapar(&m));
+                error(502, "conexion", &tapar(&m), false)
+            }
+        }
+    }
+
     fn terminar(&self, id: &str, f: &Final) {
         self.en_curso.lock().expect("en curso").remove(id);
         let mut t = self.terminadas.lock().expect("terminadas");
@@ -392,6 +546,74 @@ impl Pasarela {
         while t.len() > RECUERDO {
             t.pop_front();
         }
+    }
+}
+
+/// Cómo acabó un verbo de un tiro que no salió bien.
+#[derive(Debug)]
+enum Tiro {
+    Plazo,
+    Fallo(String),
+}
+
+/// Lanza `programa args`, le escribe `entrada` y espera su salida, como mucho
+/// `plazo` (después lo mata). Un código distinto de 0 es un fallo con lo último
+/// que dijo por stderr.
+fn de_un_tiro(
+    programa: &std::path::Path,
+    args: &[String],
+    entrada: &str,
+    plazo: std::time::Duration,
+) -> Result<String, Tiro> {
+    use std::io::{Read as _, Write as _};
+    use std::process::{Command, Stdio};
+    let mut hijo = Command::new(programa)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Tiro::Fallo(format!("no arranca el conector: {e}")))?;
+    if let Some(mut i) = hijo.stdin.take() {
+        let _ = i.write_all(entrada.as_bytes());
+    }
+    let mut out = hijo.stdout.take().expect("stdout");
+    let mut err = hijo.stderr.take().expect("stderr");
+    let o = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = out.read_to_string(&mut s);
+        s
+    });
+    let e = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = err.read_to_string(&mut s);
+        s
+    });
+    let hasta = std::time::Instant::now() + plazo;
+    let estado = loop {
+        match hijo.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if std::time::Instant::now() >= hasta => {
+                let _ = hijo.kill();
+                let _ = hijo.wait();
+                return Err(Tiro::Plazo);
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(e) => return Err(Tiro::Fallo(e.to_string())),
+        }
+    };
+    let salida = o.join().unwrap_or_default();
+    let errores = e.join().unwrap_or_default();
+    if estado.success() {
+        Ok(salida)
+    } else {
+        let ultima = errores
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("terminó con error")
+            .to_string();
+        Err(Tiro::Fallo(ultima))
     }
 }
 
@@ -496,5 +718,34 @@ mod tests {
         assert!(presupuesto(&n, d).is_err());
         let n = ore_core::parse::parse(r#"{}"#).unwrap();
         assert_eq!(presupuesto(&n, d).unwrap(), d);
+    }
+
+    /// 0053 F8 · un verbo de un tiro: su salida, su fallo y su plazo.
+    #[cfg(unix)]
+    #[test]
+    fn un_verbo_de_un_tiro() {
+        use std::time::Duration;
+        let dir = std::env::temp_dir().join(format!("f8-tiro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("ore-read-mentira");
+        std::fs::write(
+            &p,
+            "#!/bin/sh\ncase \"$1\" in\n check) cat >/dev/null; echo '{\"ok\":true}';;\n \
+             lento) sleep 5;;\n *) cat >/dev/null; echo 'no conecta: postgres://u:secreto@h' >&2; exit 3;;\nesac\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let s = de_un_tiro(&p, &["check".into()], "{}", Duration::from_secs(5)).unwrap();
+        assert_eq!(s.trim(), r#"{"ok":true}"#);
+        match de_un_tiro(&p, &["catalogo".into()], "x", Duration::from_secs(5)) {
+            Err(Tiro::Fallo(m)) => assert!(m.contains("no conecta"), "{m}"),
+            o => panic!("{o:?}"),
+        }
+        assert!(matches!(
+            de_un_tiro(&p, &["lento".into()], "", Duration::from_millis(200)),
+            Err(Tiro::Plazo)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

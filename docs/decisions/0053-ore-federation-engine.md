@@ -326,6 +326,21 @@ pasarela» pasa a **F8** (toca la malla; F7 no lo necesita).
 | **F7·3** · `create … as select` desde el origen | `create or replace dataset d as select … from <origen>` es una copia: la vista `d_consulta` con la consulta y `d`, su copia (`create_view(…, materialized=True, copy=d)`), que hace el Job de F7·2. **`insert into … select` desde un origen se niega**, con el camino (`create or replace dataset … as select`): añadir es otra copia —un Job de una vez— y queda como deuda | ✓ tests del guion y de la celda generada (casa con el SDK: 19 formas) |
 | **F7·4** · en vivo | test6 | pendiente |
 
+### F8 en hitos
+
+**Decidido** (2026-10-05, con el usuario): (1) catalogar, comprobar y explorar los pide `ore-serve` a
+la pasarela **sin Job**; (2) la copia comparte la cola del origen pero **nunca la ocupa entera**: con 4 a
+la vez, como mucho 3 son copias y una queda para lo vivo; (3) **la credencial la pone quien llama**, como
+hoy: la pasarela no gana acceso al custodio.
+
+| hito | qué | sale |
+|---|---|---|
+| **F8·1** · la pasarela aprende el resto | `POST /v1/{catalog,check,explore,witness}`: el verbo del conector de un tiro, **en la cola del origen** (un turno sin proceso caliente), con plazo (`ORE_FED_VERBO_MS`, 10 min) y la credencial tapada en el error. `POST /v1/read` con `perfil: "copia"`: su presupuesto (sin tope de filas que valga, 30 min, `ORE_FED_COPIA_MS`), espera 5 min en la cola, no lleva al origen un `limit` que no pidió y deja un hueco a lo vivo. `/v1/origins` cuenta copias y verbos. Destapó que `ore-read-postgres check`/`explorar` caían en `catalogo` | ✓ kit P9 con Postgres (9/9); `la_copia_deja_un_hueco_a_lo_vivo` |
+| **F8·2** · el control sin Jobs para mirar | `ore-serve` cataloga, comprueba y explora por la pasarela; fuera los Jobs de `44` y `54` | pendiente |
+| **F8·3** · la copia por la pasarela | `ore materialize --preparar --pasarela`; malla: `entrada-a-la-pasarela` admite `ore.dev/rol: copia` (go aparte); el testigo, igual | pendiente |
+| **F8·4** · sin puerta de atrás | la imagen de los Jobs sin `ore-read-*`; una prueba lo cierra | pendiente |
+| **F8·5** · en vivo | test6: copia, catálogo y comprobación por `/v1/origins`; una copia y 10 vivas contra Neon no pasan de 4 | pendiente |
+
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
 ONLY`, `SET LOCAL`, el portal, el `FETCH`, el `COMMIT`) contra un origen lejano. Guardar el plan por
