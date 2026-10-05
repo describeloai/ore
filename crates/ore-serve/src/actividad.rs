@@ -49,6 +49,11 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ),
     ("POST", "/fuentes", Es::Acto("fuente:crear")),
     ("DELETE", "/fuentes/{}", Es::Acto("fuente:retirar")),
+    // 0053 F4: encender o apagar la lectura en vivo de una fuente.
+    ("PUT", "/fuentes/{}", Es::Acto("fuente:federacion")),
+    // 0053 F4: leer el origen en vivo es leer datos; la ruta lo anota con su
+    // propio evento (`federation:read`), con los predicados sin sus valores.
+    ("POST", "/federation/read", Es::Datos),
     ("POST", "/modelos", Es::Acto("modelo:crear")),
     ("DELETE", "/modelos/{}", Es::Acto("modelo:retirar")),
     (

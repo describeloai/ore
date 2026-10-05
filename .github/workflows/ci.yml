@@ -488,6 +488,19 @@ jobs:
           target/debug/ore-kit --conector target/debug/ore-read-postgres --banco postgres \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # ⭐ 0053 F4: el coordinador. El plan sale del árbol (`ore federate`, sin
+      #   red) y la lectura de punta a punta: `ore-serve` decide, la pasarela
+      #   lee, Postgres detrás; el interruptor de la fuente en main, el coste,
+      #   el empuje, la anotación sin valores y la clave que no sale.
+      - name: el coordinador, de punta a punta
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432
+        run: |
+          cargo build --quiet -p ore-cli -p ore-serve
+          ORE=target/debug/ore bash pruebas-de-fuego/el-plan-federado.sh
+          SERVE=target/debug/ore-serve ORE=target/debug/ore FED=target/debug/ore-federation \
+            bash pruebas-de-fuego/el-coordinador.sh
+
       - name: el conector de S3
         run: |
           python3 pruebas-de-fuego/de-mentira.py s3 0 > s3.log 2>&1 &

@@ -52,6 +52,7 @@ mod datasets;
 mod documentos;
 mod entorno;
 mod escritas;
+mod federado;
 mod federar;
 mod firma_viva;
 mod forja;

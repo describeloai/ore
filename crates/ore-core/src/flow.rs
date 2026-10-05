@@ -1529,6 +1529,123 @@ pub fn lectura_desde_puesto(pkg: &Package, qn: &str) -> Result<(), LecturaNegada
     }
 }
 
+/// **¿Puede leerse en vivo `tabla`, estas columnas?** (0053 F4, v1alpha24 `01`
+/// §2). Leer un origen en vivo atraviesa [`CONDUCTO_DEL_ORIGEN`], y **sin
+/// autorización declarada es ⊥ aunque no haya etiquetas** (`OOS4011`): abrir
+/// el origen de un cliente a lecturas en vivo es una decisión, no un defecto.
+/// Lo que llevan las columnas —las `labels` de la fuente, que heredan todas, y
+/// las de cada columna— se coteja con lo que el conducto admite (`OOS4002`).
+/// Desde un puesto, además, el conducto del puesto: lo leído acaba en su código.
+///
+/// ⚠️ La clasificación que una Entity pone sobre una vista de esta tabla no se
+///   mira aquí: se lee la tabla, no la vista. Es la misma frontera que la
+///   copia: la etiqueta de la fuente es lo que viaja con el origen.
+pub fn lectura_del_origen(
+    pkg: &Package,
+    tabla: &str,
+    columnas: &[String],
+    desde_puesto: bool,
+) -> Result<(), LecturaNegada> {
+    let lat = lattices(pkg);
+    let conductos = clearances(pkg, &lat);
+    let Some(autorizacion) = conductos.get(CONDUCTO_DEL_ORIGEN) else {
+        return Err(LecturaNegada {
+            codigo: "OOS4011",
+            mensaje: format!(
+                "`{tabla}` se leería en vivo y el conducto `{CONDUCTO_DEL_ORIGEN}` no tiene autorización declarada: un conducto sin autorización es ⊥. Se enciende con la federación de la fuente, o declarándolo en `conduits.yaml`"
+            ),
+        });
+    };
+    let carga = carga_de_la_tabla(pkg, tabla, columnas);
+    let cotejar = |conducto: &str, aut: Option<&Labels>| -> Result<(), LecturaNegada> {
+        if aut.is_none() && carga.values().any(|l| !l.is_empty()) {
+            return Err(LecturaNegada {
+                codigo: "OOS4011",
+                mensaje: format!(
+                    "`{tabla}` lleva etiquetas y `{conducto}` no tiene autorización declarada"
+                ),
+            });
+        }
+        match fugas(&lat, aut, &carga).first() {
+            None => Ok(()),
+            Some(f) => Err(LecturaNegada {
+                codigo: "OOS4002",
+                mensaje: format!(
+                    "`{tabla}.{}` lleva `{}:{}` y `{conducto}` solo admite `{}:{}`: no se lee en vivo",
+                    f.campo, f.reticulo, f.nivel, f.reticulo, f.permitido
+                ),
+            }),
+        }
+    };
+    cotejar(CONDUCTO_DEL_ORIGEN, Some(autorizacion))?;
+    if desde_puesto {
+        match conductos.get(CONDUCTO_DEL_PUESTO) {
+            Some(a) => cotejar(CONDUCTO_DEL_PUESTO, Some(a))?,
+            None => cotejar(
+                "materialization.payload",
+                conductos.get("materialization.payload"),
+            )?,
+        }
+    }
+    Ok(())
+}
+
+/// Lo que lleva cada columna pedida de una `Table`: las `labels` de su fuente
+/// (heredadas) y las de la columna (declaradas), el más restrictivo de cada
+/// retículo.
+fn carga_de_la_tabla(pkg: &Package, tabla: &str, columnas: &[String]) -> BTreeMap<String, Labels> {
+    let mut out: BTreeMap<String, Labels> = BTreeMap::new();
+    let Some(t) = pkg.table(tabla) else {
+        return out;
+    };
+    let lat = lattices(pkg);
+    let fuente = t
+        .section("datasource")
+        .and_then(|n| n.as_str())
+        .map(String::from);
+    let de_la_fuente: Vec<(String, String)> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == Kind::OntologyConfig)
+        .flat_map(|c| {
+            c.section("datasources")
+                .map(|n| n.items().to_vec())
+                .unwrap_or_default()
+        })
+        .filter(|ds| ds.get("name").and_then(|(_, x)| x.as_str()) == fuente.as_deref())
+        .flat_map(|ds| {
+            read_labels(&ds)
+                .into_iter()
+                .map(|(r, n, _)| (r, n))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let cols = t.section("columns");
+    for c in columnas {
+        let mut ls: Labels = BTreeMap::new();
+        let mut subir = |ret: &str, nivel: &str, origen: Origin| {
+            let sube = match (ls.get(ret), lat.get(ret)) {
+                (Some((actual, _)), Some(l)) => l.index(nivel) > l.index(actual),
+                (None, _) => true,
+                _ => false,
+            };
+            if sube {
+                ls.insert(ret.to_string(), (nivel.to_string(), origen));
+            }
+        };
+        for (r, n) in &de_la_fuente {
+            subir(r, n, Origin::Inherited);
+        }
+        if let Some(col) = cols.and_then(|cs| cs.get(c)).map(|(_, v)| v) {
+            for (r, n, _) in read_labels(col) {
+                subir(&r, &n, Origin::Declared);
+            }
+        }
+        out.insert(c.clone(), ls);
+    }
+    out
+}
+
 // ── OOS4001 · OOS4002 · OOS4011 · el índice de topología ────────────────────
 
 /// Una relación con `via` **se atraviesa**, y atravesar es una búsqueda por

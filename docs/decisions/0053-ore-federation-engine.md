@@ -220,6 +220,20 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 | **F3·3** · la malla | `malla/58-la-pasarela.yaml`, plantilla del inquilino: Deployment (sin root, raíz de sólo lectura, `RollingUpdate` con `maxUnavailable: 0`), Service :8099, entrada sólo desde `ore-serve` y la salida de `ore-serve` hacia ella; la KSA y el rol del driver (sin IAM nuevo) | ✓ (ba8ba0a) el aprovisionador la pintó **solo** en t-demo y t-victor en su pasada siguiente —ninguna migración a mano; una celda nueva la recibe en su alta—; las dos `1/1` con sus tres conectores |
 | **F3·4** · en vivo | `ore-serve federar-probar` dentro de `ore-serve` de t-victor, con la credencial del custodio como el agente (el camino de F4) | ✓ (5e20358) **Neon**: fría 2045 ms, caliente p50 669 ms; 50 a la vez → 20 completas y 30 `503` (cola llena), 0 errores. **BigQuery**: fría 1397 ms, caliente p50 626 ms; 20 a la vez, 20 completas; **2·10⁶ filas cortadas en 100 000 justas en 531 ms** (F0: ~117 s sin freno). **S3**: fría 415 ms, caliente p50 222 ms; corte a 100 en 107 ms; 20 a la vez, 20 completas. Ni la pasarela ni `ore-serve` dejan una credencial en su registro |
 
+### F4 en hitos
+
+**Decidido** (2026-10-05, con el usuario): leer en vivo es **una propiedad de la fuente**, no de una
+rama —la credencial ya es de la celda, y las cotas que protegen el origen también—. Un interruptor
+`federation` en la fuente (alta, `PUT /fuentes/{n}`, consola), leído siempre de `main`; la política
+de conductos que manda, la de `main`; encender autoriza `federation.read` (`DRAFT`) si no estaba.
+Detalle en `docs/federation.md` §4.
+
+| hito | qué | sale |
+|---|---|---|
+| **F4·1** · el plan | `ore federate` (el plan desde el árbol, hermético), `ore source federation <n> on|off`, `ore source add --federation`, `flow::lectura_del_origen` (`federation.read` sin autorización es ⊥ aunque no haya etiquetas; la carga de la fuente y de cada columna; desde un puesto, también su conducto) | ✓ `el-plan-federado.sh` 14/14: apagada → 403; encendida **sólo en la rama** → sigue 403 (manda main); en main sin conducto → `OOS4011`; filtro no empujable → `422 empuje`; `forbidden` → `OOS2044`; `requiredFilters` → `OOS2045`; apagar en main la apaga en la rama |
+| **F4·2** · la ruta | `POST /federation/read` (paso 0 y 1–8), `PUT /fuentes/{n}`, `federation` en `GET /fuentes` y en el alta, la puerta del puesto, el evento `federation:read` sin valores; la consola con su interruptor | ✓ `el-coordinador.sh` 14/14 con `ore-serve`, la pasarela y Postgres de verdad: 3 filas, filtro empujado, `limit`, `OOS2044`, `empuje`, 404, apagar → 403, 8 lecturas anotadas sin valores de filtro, y la clave del origen en ningún registro ni respuesta |
+| **F4·3** · en vivo | encender las fuentes de victor en `main` y leer desde un puesto contra Neon, BigQuery y S3 | pendiente |
+
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
 ONLY`, `SET LOCAL`, el portal, el `FETCH`, el `COMMIT`) contra un origen lejano. Guardar el plan por

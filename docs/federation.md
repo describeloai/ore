@@ -271,6 +271,31 @@ las columnas pedidas, **los predicados sin sus valores** (columna y operador: un
 puede ser un dato personal), `limit`, `filas`, `bytes`, `ms`, `estado` (`completo`, `cortado`,
 `negado`, `error`) y el `motivo`.
 
+**Decidido al construirlo (F4, 2026-10-05).**
+
+- **El interruptor es de la fuente, y vale para todas las ramas.** `federation: true|false` en su
+  entrada de `ontology.config.yaml`; se enciende al darla de alta (`POST /fuentes` con
+  `"federation": true`), o después (`PUT /fuentes/{n}` `{"federation": true|false}`, sólo en la rama
+  por defecto, como el alta y la retirada; potestad `fuente:crear`), y en la consola con un
+  interruptor en el alta y en la ficha del origen. Encender autoriza `federation.read:
+  { oos.maturity: DRAFT }` en `conduits.yaml` si no estaba —como la copia con el suyo—; apagar no lo
+  quita: el conducto es política, el interruptor es la fuente.
+- **La política que manda es la de `main`**: el interruptor y `conduits.yaml` se leen siempre de
+  `main` (paso 0); la tabla, sus columnas, su `reads` y su coste, de la rama. Una rama que quiere
+  otra política la propone, y vale al fundirse. Apagar una fuente la apaga en todas las ramas.
+- **El plan lo hace el árbol**: `ore federate --table b.s.n [--columns] [--filters] --policy <main>
+  [--from-workspace]` (hermético, en la lista de `mando.rs`) contesta una línea JSON con lo que
+  pedir o por qué no; `ore-serve` sólo decide lo que es suyo (presupuesto, credencial, leer,
+  anotar).
+- **Un filtro que no se empuja se niega (`422 empuje`)** hasta que el motor lo evalúe (F5): la
+  regla de §3 de v1alpha24 dice que no se descarta, y no hay todavía quién lo evalúe.
+- **El acceso por tabla (A8) es un enganche**: `ore-iam` sólo decide sobre la organización todavía;
+  ser de ella se exige, y la pregunta `dato:leer` irá en `acceso_a_la_tabla` cuando A8 exista.
+- **La respuesta**: el flujo Arrow de la pasarela pasa sin juntarse, con sus *trailers*
+  (`ore-estado`, `ore-motivo`, `ore-filas`, `ore-bytes`, `ore-ms`) y `ore-lectura`; los errores,
+  `{"codigo", "mensaje"}` con su estado. Desde un puesto entra por la puerta del agente, en la rama
+  del puesto y en nombre de quien lo abrió.
+
 ## 5. Los valores por defecto
 
 Configurables por celda y, los del origen, por fuente (configuración de la celda, no del árbol: un

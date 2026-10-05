@@ -62,6 +62,8 @@ pub struct Alta<'a> {
     pub env: Option<&'a str>,
     pub etiquetas: &'a [String],
     pub descripcion: Option<&'a str>,
+    /// 0053 F4: la lectura en vivo, encendida desde el alta.
+    pub federacion: bool,
 }
 
 /// La entrada que acabará en `datasources`, ya derivada y comprobada.
@@ -71,6 +73,7 @@ struct Fuente {
     env: String,
     etiquetas: Vec<(String, String)>,
     descripcion: Option<String>,
+    federacion: bool,
 }
 
 pub fn add(a: &Alta) -> ExitCode {
@@ -242,6 +245,138 @@ fn intentar_baja(a: &Baja) -> Result<String, Fallo> {
     //   suele creer que se lleva todo por delante, y aquí quedan dos cosas vivas.
     s.push_str("  ⛔ El secreto del custodio y el paquete NO se han tocado.\n");
     s.push_str("     Son actos aparte, y cada uno con su propia huella.\n");
+    Ok(s)
+}
+
+/// **Encender o apagar la lectura en vivo de una fuente** (0053 F4):
+/// `federation: true|false` en su entrada de `ontology.config.yaml`. Es de la
+/// fuente, no de una rama: `ore-serve` lo lee siempre de `main`.
+///
+/// ⭐ Al encender, si `conduits.yaml` existe y no autoriza `federation.read`,
+///   se añade con lo mismo que la copia: `{ oos.maturity: DRAFT }`. Quien
+///   gobierne la clasificación lo ajusta después; sin él, nada se leería
+///   (`OOS4011`). Apagar no lo quita: el conducto es política, el interruptor
+///   es la fuente.
+pub fn federacion(raiz: &Path, nombre: &str, si: bool) -> ExitCode {
+    match intentar_federacion(raiz, nombre, si) {
+        Ok(linea) => {
+            println!("{linea}");
+            ExitCode::SUCCESS
+        }
+        Err(fallo) => {
+            eprintln!("error: {}", fallo.mensaje);
+            ExitCode::from(fallo.codigo)
+        }
+    }
+}
+
+fn intentar_federacion(raiz: &Path, nombre: &str, si: bool) -> Result<String, Fallo> {
+    let ruta = raiz.join(CONFIG);
+    let texto = std::fs::read_to_string(&ruta)
+        .map_err(|e| Fallo::nueva(66, format!("no se pudo leer `{CONFIG}`: {e}")))?;
+    let nuevo = poner_federacion(&texto, nombre, si).map_err(|m| Fallo::nueva(65, m))?;
+    if nuevo != texto {
+        std::fs::write(&ruta, &nuevo)
+            .map_err(|e| Fallo::nueva(73, format!("no se pudo escribir `{CONFIG}`: {e}")))?;
+    }
+    let conducto = if si {
+        autorizar_federacion(raiz)?
+    } else {
+        "sin tocar"
+    };
+    Ok(ore_core::json::Json::obj([
+        ("name", ore_core::json::Json::s(nombre)),
+        ("federation", ore_core::json::Json::Bool(si)),
+        ("conducto", ore_core::json::Json::s(conducto)),
+    ])
+    .jcs())
+}
+
+/// `federation.read` en `conduits.yaml`, si no está. Devuelve qué hizo.
+fn autorizar_federacion(raiz: &Path) -> Result<&'static str, Fallo> {
+    let ruta = raiz.join("conduits.yaml");
+    let Ok(t) = std::fs::read_to_string(&ruta) else {
+        // Sin política no se inventa una: su dueño no se sabe desde aquí.
+        return Ok("sin conduits.yaml: lo declara su dueño");
+    };
+    if t.contains("federation.read") {
+        return Ok("ya estaba");
+    }
+    let lineas: Vec<&str> = t.lines().collect();
+    let Some(i) = lineas.iter().position(|l| l.trim_end() == "  conduits:") else {
+        return Ok("conduits.yaml sin `conduits:` en bloque: lo declara su dueño");
+    };
+    let mut s = String::new();
+    for (j, l) in lineas.iter().enumerate() {
+        s.push_str(l);
+        s.push('\n');
+        if j == i {
+            s.push_str("    # 0053 F4: la lectura en vivo de las fuentes que la encienden.\n");
+            s.push_str("    federation.read: { oos.maturity: DRAFT }\n");
+        }
+    }
+    std::fs::write(&ruta, s)
+        .map_err(|e| Fallo::nueva(73, format!("no se pudo escribir `conduits.yaml`: {e}")))?;
+    Ok("añadido")
+}
+
+/// La línea `federation:` de la entrada de `nombre`, puesta a `si`. Sólo la
+/// forma de bloque: una entrada en flujo se niega antes que reescribirla mal.
+fn poner_federacion(texto: &str, nombre: &str, si: bool) -> Result<String, String> {
+    let lineas: Vec<&str> = texto.lines().collect();
+    let i = lineas
+        .iter()
+        .position(|l| {
+            l.starts_with("datasources:") && l["datasources:".len()..].trim_start().is_empty()
+        })
+        .ok_or_else(|| "no hay una sección `datasources:` en forma de bloque".to_string())?;
+    let mut fin = lineas.len();
+    for (j, l) in lineas.iter().enumerate().skip(i + 1) {
+        if !l.is_empty() && !l.starts_with([' ', '\t']) {
+            fin = j;
+            break;
+        }
+    }
+    let entradas: Vec<usize> = (i + 1..fin)
+        .filter(|&j| lineas[j].trim_start().starts_with("- "))
+        .collect();
+    let k = entradas
+        .iter()
+        .position(|&j| campo_de_entrada(lineas[j], "name").as_deref() == Some(nombre))
+        .ok_or_else(|| format!("`{nombre}` no está declarada en `datasources`"))?;
+    let desde = entradas[k];
+    let hasta = entradas.get(k + 1).copied().unwrap_or(fin);
+    if lineas[desde].contains('{') {
+        return Err(format!(
+            "`{nombre}` está escrita en forma de flujo (`- {{ … }}`): pásala a bloque para encender la federación"
+        ));
+    }
+    // Lo que se escribe: la línea de la entrada, con la sangría de sus campos.
+    let sangria = lineas[desde + 1..hasta]
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| &l[..l.len() - l.trim_start().len()])
+        .unwrap_or("    ");
+    let linea = format!("{sangria}federation: {si}");
+    // El final de la entrada sin las líneas en blanco que la separan de la siguiente.
+    let mut ultima = hasta;
+    while ultima > desde + 1 && lineas[ultima - 1].trim().is_empty() {
+        ultima -= 1;
+    }
+    let ya = (desde..ultima).find(|&j| lineas[j].trim_start().starts_with("federation:"));
+    let mut s = String::new();
+    for (j, l) in lineas.iter().enumerate() {
+        if Some(j) == ya {
+            s.push_str(&linea);
+        } else {
+            s.push_str(l);
+        }
+        s.push('\n');
+        if ya.is_none() && j + 1 == ultima {
+            s.push_str(&linea);
+            s.push('\n');
+        }
+    }
     Ok(s)
 }
 
@@ -482,6 +617,7 @@ fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
         env,
         etiquetas,
         descripcion: a.descripcion.map(str::to_string),
+        federacion: a.federacion,
     })
 }
 
@@ -598,6 +734,9 @@ fn bloque(f: &Fuente) -> String {
     }
     if let Some(d) = &f.descripcion {
         s.push_str(&format!("    description: {}\n", entrecomillar(d)));
+    }
+    if f.federacion {
+        s.push_str("    federation: true\n");
     }
     s
 }
@@ -918,6 +1057,30 @@ mod tests {
         assert!(valor_env("uno\ndos").is_err());
     }
 
+    /// 0053 F4: la línea se pone en su entrada y en ninguna otra, se cambia si
+    /// ya estaba, y una entrada en flujo se niega.
+    #[test]
+    fn la_federacion_se_enciende_y_se_apaga_en_su_entrada() {
+        let m = "kind: OntologyConfig\ndatasources:\n  - name: bq\n    type: bigquery\n    connectionEnv: BQ_URL\n\n  - name: pg\n    type: postgres\n    connectionEnv: PG_URL\n    description: \"la de verdad\"\ndependencies: []\n";
+        let t = poner_federacion(m, "bq", true).unwrap();
+        assert!(
+            t.contains("    connectionEnv: BQ_URL\n    federation: true\n\n  - name: pg"),
+            "{t}"
+        );
+        assert!(!t.contains("la de verdad\"\n    federation"), "{t}");
+        let t = poner_federacion(&t, "pg", true).unwrap();
+        assert!(
+            t.contains("\"la de verdad\"\n    federation: true\ndependencies"),
+            "{t}"
+        );
+        let t = poner_federacion(&t, "bq", false).unwrap();
+        assert!(t.contains("BQ_URL\n    federation: false\n"), "{t}");
+        assert_eq!(t.matches("federation:").count(), 2, "{t}");
+        assert!(poner_federacion(&t, "otra", true).is_err());
+        let flujo = "datasources:\n  - { name: bq, type: bigquery, connectionEnv: BQ_URL }\n";
+        assert!(poner_federacion(flujo, "bq", true).is_err());
+    }
+
     #[test]
     fn el_bloque_es_el_mismo_texto_siempre() {
         let f = Fuente {
@@ -929,6 +1092,7 @@ mod tests {
                 ("acme.residency".into(), "eu_only".into()),
             ],
             descripcion: Some("CRM de producción".into()),
+            federacion: false,
         };
         let mut ordenadas = f.etiquetas.clone();
         ordenadas.sort();

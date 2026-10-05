@@ -173,6 +173,9 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             //   puesto y en nombre de quien lo abrió (`sujeto_del_puesto`);
             //   nunca en `main`. No toca el gobierno: encola un Job.
             | ["paquetes", _, "copia", "rehacer"]
+            // 0053 F4: leer el origen en vivo es LEER, en la rama del puesto y
+            //   en nombre de quien lo abrió; el coordinador decide lo demás.
+            | ["federation", "read"]
             | ["datasets", _, _, "confirmar"]
             | ["datasets", _, _, _, "confirmar"]
             // 0046 E9·2: resolver huellas a URLs es LEER —lo mismo que
@@ -211,6 +214,7 @@ impl Servidor {
             ("GET", ["puestos", _, "flujo"])
                 | ("GET", ["puestos", _, "lsp", "agente"])
                 | ("GET", ["puestos", _, "lsp", "consola"])
+                | ("POST", ["federation", "read"])
         );
         if es_flujo {
             let sujeto = match self.quien(p) {
@@ -236,6 +240,8 @@ impl Servidor {
                 ["puestos", id, "lsp", "consola"] => {
                     self.flujo_lsp_de_la_consola(&sujeto, id, desde)
                 }
+                // 0053 F4: la lectura en vivo de un origen, en flujo Arrow.
+                ["federation", "read"] => self.leer_federado(p, &sujeto),
                 _ => Salida::Una(Respuesta::error(404, "esa ruta no existe")),
             };
         }
@@ -373,6 +379,36 @@ impl Servidor {
             // se estaba leyendo el origen en ese momento. Son dos situaciones
             // con arreglos distintos —una espera, la otra no va a pasar sola— y
             // pintarlas igual manda a mirar el sitio equivocado.
+            // 0053 F4: encender o apagar la lectura en vivo de una fuente. Es
+            //   de la celda, no de una rama: sólo en la de por defecto, y vale
+            //   para todas.
+            ("PUT", ["fuentes", n]) => {
+                if let Some(r) = self
+                    .solo_en_la_de_por_defecto(rama, "Encender la lectura en vivo de una fuente")
+                {
+                    return r;
+                }
+                let decision = match self.exigir(sujeto, "fuente:crear", "PUT /fuentes") {
+                    Ok(d) => d,
+                    Err(r) => return r,
+                };
+                let (n, cuerpo) = (n.to_string(), p.cuerpo.clone());
+                let r = self.escribiendo(
+                    sujeto,
+                    &format!("lectura en vivo de la fuente `{n}`"),
+                    |r| self.federacion_de_fuente(r, &n, &cuerpo),
+                );
+                if r.codigo == 200 {
+                    self.contar(crate::acceso::evento(
+                        "fuente:federacion",
+                        &format!("fuente/{n}"),
+                        "hecho",
+                        decision,
+                        crate::acceso::commit_de(&r),
+                    ));
+                }
+                r
+            }
             ("GET", ["fuentes", n, "estado"]) => {
                 let n = n.to_string();
                 self.estado(&n)
@@ -1553,6 +1589,10 @@ impl Servidor {
             args.push("--description".into());
             args.push(d);
         }
+        // 0053 F4: la lectura en vivo, encendida desde el alta.
+        if campo("federation").as_deref() == Some("true") {
+            args.push("--federation".into());
+        }
 
         match mando::correr(&self.binario, raiz, &args) {
             Err(e) => Respuesta::error(500, e.to_string()),
@@ -2668,6 +2708,8 @@ fn fuentes(raiz: &Path) -> Respuesta {
                     ("type", Json::s(campo("type"))),
                     ("connectionEnv", Json::s(campo("connectionEnv"))),
                     ("description", Json::s(campo("description"))),
+                    // 0053 F4: la lectura en vivo, encendida o no.
+                    ("federation", Json::Bool(campo("federation") == "true")),
                 ])
             })
             .collect(),

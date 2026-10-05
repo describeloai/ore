@@ -17,6 +17,7 @@ mod colecciones;
 mod datasets;
 mod deriva;
 mod empaquetar;
+mod federar;
 mod fuente;
 mod fuente_inducida;
 mod funciones;
@@ -133,6 +134,23 @@ enum AccionFuente {
         /// Para qué es esta fuente.
         #[arg(long, value_name = "TEXTO")]
         description: Option<String>,
+        /// Enciende la lectura en vivo de la fuente (ADR 0053 F4).
+        #[arg(long)]
+        federation: bool,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// **Enciende o apaga la lectura en vivo de una fuente** (ADR 0053 F4):
+    /// `federation` en su entrada del manifiesto. Al encender, autoriza
+    /// `federation.read` en `conduits.yaml` si no lo estaba. Vale para todas
+    /// las ramas: `ore-serve` lo lee siempre de `main`.
+    Federation {
+        /// La fuente, tal como la declara el manifiesto.
+        name: String,
+        /// `on` u `off`.
+        #[arg(value_parser = ["on", "off"])]
+        estado: String,
         /// Raíz del repositorio ontológico.
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -466,6 +484,28 @@ enum Command {
     /// Registra una fuente física, separando la credencial de la conexión.
     #[command(name = "source", subcommand)]
     Source(AccionFuente),
+    /// **El plan de una lectura en vivo** (ADR 0053 F4): qué pedir al origen
+    /// de una `Table`, o por qué no. Una línea JSON; no abre nada.
+    Federate {
+        /// La tabla, `base.schema.nombre`.
+        #[arg(long)]
+        table: String,
+        /// Las columnas, separadas por comas (todas si no se dice).
+        #[arg(long, value_delimiter = ',')]
+        columns: Vec<String>,
+        /// Los filtros, una lista JSON de `{columna, operador, valor}`.
+        #[arg(long)]
+        filters: Option<String>,
+        /// Un directorio con el `ontology.config.yaml` y el `conduits.yaml`
+        /// de `main`: la política que manda.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// La lectura acaba en el código de un puesto (`contextSurface.workspace`).
+        #[arg(long)]
+        from_workspace: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Crea y organiza paquetes: el manifiesto, y lo que contiene.
     #[command(name = "package", subcommand)]
     Package(AccionPaquete),
@@ -1545,6 +1585,7 @@ fn main() -> std::process::ExitCode {
             env,
             label,
             description,
+            federation,
             path,
         }) => {
             return fuente::add(&fuente::Alta {
@@ -1555,6 +1596,27 @@ fn main() -> std::process::ExitCode {
                 env: env.as_deref(),
                 etiquetas: label,
                 descripcion: description.as_deref(),
+                federacion: *federation,
+            });
+        }
+        Command::Source(AccionFuente::Federation { name, estado, path }) => {
+            return fuente::federacion(path, name, estado == "on");
+        }
+        Command::Federate {
+            table,
+            columns,
+            filters,
+            policy,
+            from_workspace,
+            path,
+        } => {
+            return federar::planear(&federar::Pedido {
+                raiz: path,
+                tabla: table,
+                columnas: columns.clone(),
+                filtros: filters.as_deref(),
+                politica: policy.as_deref(),
+                desde_puesto: *from_workspace,
             });
         }
         Command::Source(AccionFuente::Remove {
@@ -1598,6 +1660,7 @@ fn main() -> std::process::ExitCode {
         | Command::Lock { .. }
         | Command::Pack { .. }
         | Command::Source(_)
+        | Command::Federate { .. }
         | Command::Package(_)
         | Command::DriftDetect { .. }
         | Command::Cache(_) => unreachable!(),

@@ -51,6 +51,16 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         "quita la fuente del manifiesto; NO toca el custodio ni abre nada",
     ),
     (
+        &["source", "federation"],
+        "enciende o apaga la lectura en vivo de una fuente en el manifiesto (0053 F4); no abre nada",
+    ),
+    (
+        &["federate"],
+        "el plan de una lectura en vivo de una `Table` (0053 F4): lee el árbol y la política de \
+        main y contesta; NO abre el origen —eso lo hace la pasarela, después, con la credencial \
+        que trae `ore-serve`—",
+    ),
+    (
         &["source", "induce"],
         "escribe los punteros de la fuente desde su catálogo YA LEÍDO (0045 P3′); no abre nada",
     ),

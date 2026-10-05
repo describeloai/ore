@@ -661,6 +661,7 @@ struct Carta {
 ///
 /// ⛔ El token de la persona **no toca el disco**: guardarlo para reintentar
 ///   sería guardar una credencial.
+#[derive(Clone)]
 pub struct Buzon {
     cola: SyncSender<Carta>,
     acceso: Arc<Acceso>,
