@@ -1,6 +1,6 @@
 # 0054 · Converger sin romper
 
-**Estado:** **aceptado** (2026-10-05) · R0 escrito · R1, R2 y R3 en curso. **Decide:** qué puede y
+**Estado:** **aceptado · en vivo** (2026-10-05) · R0, R1 y R2 hechos y en vivo; R3 pendiente. **Decide:** qué puede y
 qué no puede hacer un reconciliador que corre solo, y cómo se rota una credencial de la que vive un
 servicio, para que **un fallo transitorio no pueda dejar a un inquilino sin su base**. Nace de un
 incidente medido (abajo). Toca [`0047`](0047-ore-access-control.md) A7a (el papel de cada celda) y
@@ -86,6 +86,6 @@ bueno es el que levanta t-demo y t-victor.
 | hito | qué | estado |
 |---|---|---|
 | R0 | este ADR | **hecho** |
-| R1 | I1 (tres respuestas en las 27 llamadas, prueba del CI) e I2 (`crear`, migración 049) | en curso |
-| R2 | I3 (`preparar`/`confirmar`, `rotar-base-del-cofre.sh`); su primera corrida recupera t-demo y t-victor | en curso |
+| R1 | I1 (tres respuestas en las 27 llamadas, prueba del CI) e I2 (`crear`, migración 049) | **hecho** (644d91e; 049 aplicada en vivo) |
+| R2 | I3 (`preparar`/`confirmar`, `rotar-base-del-cofre.sh`); su primera corrida recupera t-demo y t-victor | **hecho**: victor → `cofre_victor_b` (secreto v2), demo → `cofre_demo_b` (v3); los viejos sin login y sus versiones deshabilitadas; los dos custodios en pie con una sesión cada uno |
 | R3 | I4 (login periódico del custodio, aviso) e I5 (`RollingUpdate`) | pendiente |
