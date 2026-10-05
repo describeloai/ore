@@ -40,6 +40,7 @@ pub fn explicar(p: &Pedido) -> ExitCode {
         desde_puesto: p.desde_puesto,
         exigir_interruptor: !p.conformidad,
         conectores: None,
+        copia: false,
     };
     match reparto::repartir(&p.sql, &pkg, &o) {
         Ok(r) if p.json => {

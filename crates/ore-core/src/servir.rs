@@ -53,13 +53,44 @@ pub enum Para<'a> {
 pub struct Servida {
     pub consulta: String,
     pub datasets: Vec<String>,
+    /// 0053 F7·2: las `Table` de un origen que lee, servidas como un dataset más
+    /// (`"__ore_dataset"."<tabla>"`). Sólo con [`servir_para_copia`]; si no,
+    /// leer una tabla es un error.
+    pub tablas: Vec<String>,
 }
 
 /// La consulta de una vista, servida. `Err` dice por qué no se sirve.
 pub fn servir(pkg: &Package, v: &Loaded, para: Para) -> Result<Servida, String> {
     let mut datasets = Vec::new();
-    let consulta = servir_con(pkg, v, para, &mut datasets, &mut Vec::new())?;
-    Ok(Servida { consulta, datasets })
+    let consulta = servir_con(pkg, v, para, &mut datasets, &mut Vec::new(), None)?;
+    Ok(Servida {
+        consulta,
+        datasets,
+        tablas: Vec::new(),
+    })
+}
+
+/// **La consulta de una vista, servida para su copia** (0053 F7·2): como en un
+/// puesto, y además una `Table` de un origen se sirve como un dataset más —el
+/// Job de la copia la lee antes, con lo que el reparto empuja, y la deja junto a
+/// los datasets—. Es la única forma de servir una tabla: un puesto la lee en
+/// vivo (F6), no por aquí.
+pub fn servir_para_copia(pkg: &Package, v: &Loaded) -> Result<Servida, String> {
+    let mut datasets = Vec::new();
+    let mut tablas = Vec::new();
+    let consulta = servir_con(
+        pkg,
+        v,
+        Para::Puesto,
+        &mut datasets,
+        &mut Vec::new(),
+        Some(&mut tablas),
+    )?;
+    Ok(Servida {
+        consulta,
+        datasets,
+        tablas,
+    })
 }
 
 fn servir_con(
@@ -68,6 +99,7 @@ fn servir_con(
     para: Para,
     datasets: &mut Vec<String>,
     pila: &mut Vec<String>,
+    tablas: Option<&mut Vec<String>>,
 ) -> Result<String, String> {
     let qn = v.qname().unwrap_or_default();
     if pila.contains(&qn) {
@@ -92,6 +124,7 @@ fn servir_con(
         ctes,
         datasets,
         pila,
+        tablas,
         fallo: None,
     };
     let _ = VisitMut::visit(q.as_mut(), &mut r);
@@ -134,6 +167,7 @@ struct Resolver<'a, 'b> {
     ctes: BTreeSet<String>,
     datasets: &'b mut Vec<String>,
     pila: &'b mut Vec<String>,
+    tablas: Option<&'b mut Vec<String>>,
     fallo: Option<String>,
 }
 
@@ -204,7 +238,14 @@ impl VisitorMut for Resolver<'_, '_> {
                 ControlFlow::Continue(())
             }
             Kind::View => {
-                let servida = match servir_con(self.pkg, d, self.para, self.datasets, self.pila) {
+                let servida = match servir_con(
+                    self.pkg,
+                    d,
+                    self.para,
+                    self.datasets,
+                    self.pila,
+                    self.tablas.as_deref_mut(),
+                ) {
                     Ok(s) => s,
                     Err(e) => {
                         self.fallo = Some(e);
@@ -231,6 +272,15 @@ impl VisitorMut for Resolver<'_, '_> {
                     alias: Some(alias),
                     sample: None,
                 };
+                ControlFlow::Continue(())
+            }
+            Kind::Table if self.tablas.is_some() => {
+                if let Some(t) = self.tablas.as_deref_mut()
+                    && !t.contains(&qn)
+                {
+                    t.push(qn.clone());
+                }
+                *name = ObjectName(vec![citado(ESQUEMA_DE_DATASETS), citado(&qn)]);
                 ControlFlow::Continue(())
             }
             _ => {

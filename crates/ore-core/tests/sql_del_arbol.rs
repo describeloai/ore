@@ -538,7 +538,7 @@ fn una_vista_se_crea_y_se_quita_desde_sql() {
 /// que lee el lago: una vista materializada no lee una tabla de un origen, ni
 /// directamente ni por otra vista; y el nombre de su copia tiene que estar libre.
 #[test]
-fn una_vista_materializada_lee_el_lago_y_su_copia_tiene_sitio() {
+fn una_vista_materializada_lee_el_lago_o_el_origen_y_su_copia_tiene_sitio() {
     use ore_core::sql_del_arbol::guion::Sentencia;
     let t = guion(
         "create or replace materialized view ventas.grandes as select id from ventas.pedidos",
@@ -589,16 +589,13 @@ spec:
     assert!(
         f("create materialized view ventas.grande as select id from ventas.pedidosEs").is_empty()
     );
-    // sobre una tabla de un origen, o una vista que acaba en una: no
-    let x = f("create materialized view ventas.grande as select id from ventas.pedidos_t");
+    // 0053 F7·2: sobre una tabla de un origen, o una vista que acaba en una,
+    // también: la copia la calcula el Job, que lee esas tablas con el reparto
     assert!(
-        x.iter().any(|x| x.mensaje.contains("tabla de un origen")),
-        "{x:?}"
+        f("create materialized view ventas.grande as select id from ventas.pedidos_t").is_empty()
     );
-    let x = f("create materialized view ventas.grande as select id from ventas.deLaTabla");
     assert!(
-        x.iter().any(|x| x.mensaje.contains("tabla de un origen")),
-        "{x:?}"
+        f("create materialized view ventas.grande as select id from ventas.deLaTabla").is_empty()
     );
     // su copia se llamaría `ventas.nueva_copia`, que ya es otra cosa
     let x = f("create materialized view ventas.nueva as select id from ventas.pedidos");

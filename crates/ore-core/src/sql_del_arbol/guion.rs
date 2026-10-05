@@ -1216,10 +1216,8 @@ fn crear_vista(
 }
 
 /// **La copia de una vista materializada**: se llama `<vista>_copia`, y ese
-/// nombre tiene que estar libre —o ser ya su copia, si se reemplaza—. Y como la
-/// copia de una consulta se calcula en un puesto, que lee el lago (0040 paso
-/// 4c), lo que la vista lee tiene que acabar en datasets: una `Table` de un
-/// origen se copia antes con un dataset (`from: { table }`).
+/// nombre tiene que estar libre —o ser ya su copia, si se reemplaza—. Lo que la
+/// vista lea de un origen lo lee el Job de la copia (0053 F7·2).
 fn cotejar_la_copia(
     pkg: &Package,
     creado: &Creado,
@@ -1252,43 +1250,10 @@ fn cotejar_la_copia(
             .ayuda("dale otro nombre a la vista"),
         ),
     }
-    for n in lee {
-        let x = n.referencia();
-        let tabla = doc_de(pkg, &x).and_then(|d| tabla_debajo(pkg, d, &mut Vec::new()));
-        if let Some(t) = tabla {
-            fallos.push(
-                Fallo::new(
-                    format!(
-                        "`{r}` es materializada y lee `{t}`, una tabla de un origen: su copia se calcula en un puesto, que lee el lago"
-                    ),
-                    n.pos,
-                )
-                .ayuda(format!(
-                    "copia antes la tabla con un dataset (`from: {{ table: {t} }}`) y lee ese dataset; o créala sin `materialized`"
-                )),
-            );
-        }
-    }
+    // 0053 F7·2: lo que la vista lea de un origen ya no se rechaza: la copia la
+    // calcula el Job, que lee esas tablas con lo que el reparto empuja.
+    let _ = lee;
     fallos
-}
-
-/// La primera `Table` de un origen a la que llega `d` leyendo por vistas; un
-/// dataset es del lago y ahí se para (el mantenido la copia él).
-fn tabla_debajo(pkg: &Package, d: &crate::link::Loaded, pila: &mut Vec<String>) -> Option<String> {
-    match d.kind {
-        Kind::Table => d.qname(),
-        Kind::View => {
-            let qn = d.qname()?;
-            if pila.contains(&qn) {
-                return None;
-            }
-            pila.push(qn);
-            crate::vistas::lee_directo(pkg, d)
-                .into_iter()
-                .find_map(|x| tabla_debajo(pkg, x, pila))
-        }
-        _ => None,
-    }
 }
 
 /// `drop view [if exists] b.s.v` desde `i` (tras `view`).

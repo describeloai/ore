@@ -107,6 +107,7 @@ fn opciones() -> Opciones<'static> {
         desde_puesto: false,
         exigir_interruptor: true,
         conectores: None,
+        copia: false,
     }
 }
 

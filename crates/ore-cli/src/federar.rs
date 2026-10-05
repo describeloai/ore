@@ -225,6 +225,7 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
         desde_puesto: p.desde_puesto,
         exigir_interruptor: true,
         conectores: None,
+        copia: false,
     };
     let r = reparto::repartir(&sql, &pkg, &o).map_err(|n| no(n.http, &n.codigo, n.mensaje))?;
     let l = r

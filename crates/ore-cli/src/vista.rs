@@ -648,6 +648,22 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
     if tablas.is_empty() && objetos.is_empty() {
         println!("  raíz      lago · lo que lee son datasets, y la consulta la ejecuta DuckDB");
     }
+    // 0053 F7·2: una consulta que lee de VARIOS orígenes dice primero todas sus
+    // fuentes en una línea `raíz` (`a,b`): el Job de la copia toma la primera
+    // línea `raíz` y pide al custodio la credencial de cada fuente de la lista.
+    let mut fuentes: Vec<&str> = tablas
+        .iter()
+        .filter_map(|t| t.section("datasource").and_then(|d| d.as_str()))
+        .collect();
+    fuentes.sort();
+    fuentes.dedup();
+    if fuentes.len() > 1 {
+        println!(
+            "  raíz      {} · {} orígenes, cada uno con su línea",
+            fuentes.join(","),
+            fuentes.len()
+        );
+    }
     for o in &objetos {
         let de = |k: &str| o.section(k).and_then(|d| d.as_str()).unwrap_or("?");
         let cambio = |k: &str| {

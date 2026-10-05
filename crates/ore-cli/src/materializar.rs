@@ -805,7 +805,8 @@ fn por_su_consulta(
 ) -> Result<Option<(String, ore_core::json::Json)>, String> {
     use ore_core::json::Json;
     let v = vistas::consulta_copiada(pkg, d)?;
-    let servida = ore_core::servir::servir(pkg, v, ore_core::servir::Para::Puesto)?;
+    // 0053 F7·2: lo que lea de un origen, servido como un dataset más.
+    let servida = ore_core::servir::servir_para_copia(pkg, v)?;
     let esq = vistas::tipos_del_contrato(v)?;
     // Lo que lee, por su puntero: de ahí sale el testigo y lo que se vuelca.
     let mut entradas: Vec<(String, OrigenDelLago)> = Vec::new();
@@ -819,6 +820,29 @@ fn por_su_consulta(
         .iter()
         .map(|(ds, o)| format!("{ds}@{}", o.testigo.1.as_deref().unwrap_or("0")))
         .collect();
+    // 0053 F7·2: una tabla de un origen no tiene snapshot: su marca es la pasada
+    // que la leyó —así una copia que lee del origen se recalcula cada vez— y
+    // `--calculado` la toma de la petición, para que la huella case con la de
+    // `--preparar`.
+    let pasada = match op.calculado {
+        Some(dir) => std::fs::read_to_string(dir.join(qn).join("peticion.json"))
+            .ok()
+            .and_then(|t| ore_core::parse::parse(&t).ok())
+            .and_then(|n| campo_de(&n, "pasada")),
+        None => None,
+    }
+    .unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default()
+    });
+    marcas.extend(
+        servida
+            .tablas
+            .iter()
+            .map(|t| format!("{t}@origen-{pasada}")),
+    );
     marcas.sort();
     let testigo = ("snapshot".to_string(), Some(marcas.join(",")));
     let plan = ore_core::digest::de_bytes(servida.consulta.as_bytes());
@@ -876,6 +900,13 @@ fn por_su_consulta(
                 .unwrap_or(0);
             archivos.insert(ds.clone(), Json::s(format!("entradas/{ds}.arrow")));
         }
+        // 0053 F7·2: las tablas de un origen, leídas con lo que el reparto
+        // empuja (en modo copia: sin tope en vivo ni coste en vivo).
+        if !servida.tablas.is_empty() {
+            for (t, archivo) in leer_del_origen(pkg, raiz_pkg, v, &servida.tablas, &aqui)? {
+                archivos.insert(t, Json::s(archivo));
+            }
+        }
         let peticion = Json::obj([
             ("copia", Json::s(qn)),
             ("vista", Json::s(v.qname().unwrap_or_default())),
@@ -895,6 +926,7 @@ fn por_su_consulta(
             ),
             ("huella", Json::s(&huella)),
             ("leidas", Json::Int(leidas)),
+            ("pasada", Json::s(&pasada)),
         ]);
         std::fs::write(aqui.join("peticion.json"), peticion.pretty() + "\n")
             .map_err(|e| format!("no se pudo escribir la petición: {e}"))?;
@@ -1727,6 +1759,140 @@ fn leer(
     String::from_utf8(bytes)
         .map(Leido::Texto)
         .map_err(|_| format!("`ore-read-{tipo}` no devolvió UTF-8"))
+}
+
+/// **Las tablas de un origen que lee la consulta de una copia** (0053 F7·2):
+/// el reparto de la vista entera en modo copia dice qué pedir a cada una, y
+/// su conector v2 lo deja en Arrow en `entradas/<tabla>.arrow`. Devuelve
+/// `(tabla, ruta relativa)`.
+fn leer_del_origen(
+    pkg: &Package,
+    raiz_pkg: &Path,
+    v: &Loaded,
+    tablas: &[String],
+    aqui: &Path,
+) -> Result<Vec<(String, String)>, String> {
+    use ore_core::json::Json;
+    use std::io::Read as _;
+    let vqn = v.qname().unwrap_or_default();
+    let o = ore_core::reparto::Opciones {
+        desde_puesto: false,
+        exigir_interruptor: false,
+        conectores: None,
+        copia: true,
+    };
+    let r = ore_core::reparto::repartir(&format!("SELECT * FROM {vqn}"), pkg, &o)
+        .map_err(|n| format!("el reparto de `{vqn}`: {} {}", n.codigo, n.mensaje))?;
+    let mut out = Vec::new();
+    for t in tablas {
+        let l = r
+            .lecturas
+            .iter()
+            .find(|l| &l.tabla == t)
+            .ok_or_else(|| format!("el reparto de `{vqn}` no lee `{t}`"))?;
+        let url = lector::url(raiz_pkg, &l.env, &l.fuente)
+            .map_err(|f| format!("la fuente `{}` · {}", l.fuente, f.mensaje))?;
+        let mut peticion = vec![
+            ("url", Json::s(&url)),
+            ("objeto", Json::s(&l.objeto)),
+            (
+                "proyeccion",
+                Json::Obj(
+                    l.columnas
+                        .iter()
+                        .map(|c| (c.clone(), Json::s(c.as_str())))
+                        .collect(),
+                ),
+            ),
+            (
+                "filtros",
+                Json::Arr(l.empujados.iter().map(|f| f.json()).collect()),
+            ),
+            ("formato", Json::s("arrow")),
+        ];
+        if let Some(n) = l.limit {
+            peticion.push(("limit", Json::Int(n as i64)));
+        }
+        if !l.orden.is_empty() {
+            peticion.push((
+                "orderBy",
+                Json::Arr(
+                    l.orden
+                        .iter()
+                        .map(|(c, d)| {
+                            Json::obj([
+                                ("columna", Json::s(c.as_str())),
+                                ("direccion", Json::s(if *d { "desc" } else { "asc" })),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+        if let Some(f) = pkg.table(t).and_then(fichero_de_la_tabla) {
+            peticion.push(("fichero", f));
+        }
+        let peticion = Json::obj(peticion).jcs();
+        let rel = format!("entradas/{t}.arrow");
+        let destino = aqui.join(&rel);
+        let mut driver = lector::lanzar(
+            &format!("ore-read-{}", l.tipo),
+            &["leer".to_string()],
+            &peticion,
+            false,
+        )
+        .map_err(texto_del_fallo)?;
+        drop(peticion);
+        let mut salida = driver.stdout.take().ok_or("el driver no tiene salida")?;
+        let mut f = std::fs::File::create(&destino)
+            .map_err(|e| format!("no se pudo crear `{}`: {e}", destino.display()))?;
+        let mut inicio = [0u8; 4];
+        let n = salida.read(&mut inicio).unwrap_or(0);
+        if n > 0 && inicio[0] != 0xFF {
+            driver.matar();
+            return Err(format!(
+                "`ore-read-{}` no contestó en Arrow para `{t}`: un conector v2 lo sabe",
+                l.tipo
+            ));
+        }
+        use std::io::Write as _;
+        f.write_all(&inicio[..n])
+            .and_then(|_| std::io::copy(&mut salida, &mut f).map(|_| ()))
+            .map_err(|e| format!("no se pudo dejar `{t}` en `{}`: {e}", destino.display()))?;
+        drop(salida);
+        driver.esperar().map_err(texto_del_fallo)?;
+        println!(
+            "  leída del origen · `{t}` ({} · {} columnas, {} filtros empujados)",
+            l.fuente,
+            l.columnas.len(),
+            l.empujados.len()
+        );
+        out.push((t.clone(), rel));
+    }
+    Ok(out)
+}
+
+/// `fichero` de una tabla de ficheros (0046 E6): su `format` y el tipo de cada
+/// columna, como lo lleva la petición.
+fn fichero_de_la_tabla(t: &Loaded) -> Option<ore_core::json::Json> {
+    use ore_core::json::Json;
+    let formato = t.section("format")?;
+    let tipos = t
+        .section("columns")
+        .map(|c| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let tipo = v.get("type").and_then(|(_, t)| t.as_str())?;
+                    Some(Json::Arr(vec![Json::s(k.as_str()?), Json::s(tipo)]))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Json::obj([
+        ("format", Json::de_node(formato)),
+        ("tipos", Json::Arr(tipos)),
+    ]))
 }
 
 /// Lo que el driver contestó: filas de texto, o un flujo Arrow sin leer.

@@ -76,6 +76,11 @@ pub struct Opciones<'a> {
     /// Los conectores por tipo de fuente. `None`: no se sabe, y manda la tabla
     /// (la pasarela vuelve a comprobarlo con `admite`).
     pub conectores: Option<&'a BTreeMap<String, Conector>>,
+    /// 0053 F7·2: **el reparto de una copia**. Una copia no es una lectura en
+    /// vivo (spec `01` §4): sin interruptor, sin el coste en vivo (`forbidden`,
+    /// `requiredFilters`, el presupuesto) y sin `federation.read` — su conducto
+    /// es `materialization.payload`, y lo comprueba el compilador.
+    pub copia: bool,
 }
 
 /// Lo que va a la derecha de un filtro, como en la petición v2.
@@ -1327,7 +1332,7 @@ fn lectura(
             format!("la fuente `{fuente}` no está declarada"),
         )
     })?;
-    if o.exigir_interruptor && !encendida {
+    if o.exigir_interruptor && !o.copia && !encendida {
         return Err(negado(
             403,
             "federacion",
@@ -1379,6 +1384,24 @@ fn lectura(
                 ),
             ));
         }
+    }
+    if o.copia {
+        return Ok(Lectura {
+            tabla: qn.to_string(),
+            fuente,
+            tipo,
+            env: env.unwrap_or_default(),
+            objeto,
+            columnas,
+            empujados,
+            en_el_motor,
+            limit,
+            orden,
+            full_scan,
+            presupuesto: false,
+            apariciones: aps.len(),
+            avisos,
+        });
     }
     // `requiredFilters` antes que `forbidden`: es lo más concreto (los casos `plan/`
     // de la spec lo fijan: sin nada empujado y con los dos, `OOS2045`).
