@@ -253,6 +253,23 @@ vistas sobre un origen anteriores a este ADR, que no se consultan bien en SQL; c
 foránea son las tablas de un origen federado leídas en vivo por la pasarela, y no existe sin el
 interruptor encendido.
 
+### F5 en hitos
+
+**Decidido** (2026-10-05, con el usuario): el reparto vive en `ore-core` (`reparto.rs`) y decide,
+por cada `Table` que una sentencia lee, columnas, filtros conjuntivos y `limit` — y aplica ahí el
+coste y el gobierno, antes de conectar. Tres reglas de fondo: **(A)** una lectura por tabla y
+sentencia (el puesto registra cada nombre como una vista y no reescribe la sentencia): con dos
+apariciones, la unión de columnas y sólo los filtros comunes; **(B)** lo que sqlparser no analiza
+se lee sin empujar, con las mismas reglas de coste y el tope de siempre; **(C)** lo empujado se
+vuelve a evaluar siempre en el motor — por eso un filtro del `WHERE` que rechaza el nulo baja
+también al lado de un `LEFT JOIN` que puede quedar a nulo.
+
+| hito | qué | sale |
+|---|---|---|
+| **F5·1** · el reparto | `ore_core::reparto::repartir`: columnas usadas (`*` todas), conjunciones `col op literal` (`=`, `<>`, rangos, `IN`, `IS [NOT] NULL`, `LIKE`, `BETWEEN`) que admiten la tabla **y** el conector, los `ON` (el lado de dentro de un `LEFT JOIN` sí; el conservado y un `FULL JOIN` no), `limit` + `OFFSET` + `ORDER BY` sólo sin nada en el motor, vistas/`WITH`/subconsultas que son proyección limpia, subconsultas correlacionadas, A, B y C; coste (`OOS2045` antes que `OOS2044`, como fija la spec) y gobierno por tabla | ✓ 26 tests, entre ellos **los 9 casos `plan/` de v1alpha24, corridos por primera vez** |
+| **F5·2** · `explain` | `ore explain` (texto y JSON), `ore federate` sobre el reparto, el verbo en la lista de `ore-serve`, `plan/` en la suite de conformidad | pendiente |
+| **F5·3** · medido | el reparto sobre un corpus: las sentencias de DuckDB y consultas reales de victor | pendiente |
+
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
 ONLY`, `SET LOCAL`, el portal, el `FETCH`, el `COMMIT`) contra un origen lejano. Guardar el plan por
