@@ -2608,8 +2608,24 @@ impl Servidor {
         // And the tree `Function`s it calls, with the text rewritten for
         // DuckDB (0049 B7·2): the SDK registers each one under its internal name.
         let mut llamadas: Option<Json> = None;
+        // 0053 F6·1: los nombres que llegan a un origen —una `Table`, o una vista
+        // sin copia cuya raíz es una— se leen en vivo: `(nombre, tabla)` y
+        // `(vista, su SQL)`.
+        let mut tablas: Vec<(String, String)> = Vec::new();
+        let mut vistas_vivas: Vec<(String, String)> = Vec::new();
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            for n in ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg) {
+                if let Some(t) = pkg.table(&n) {
+                    tablas.push((n, t.qname().unwrap_or_default()));
+                } else if let Some(v) = pkg.view(&n)
+                    && !ore_core::vistas::se_lee_de_datasets(&pkg, v)
+                    && !ore_core::reparto::tablas_de_la_vista(&pkg, v).is_empty()
+                    && let Some(sql) = ore_core::reparto::sql_de_vista(v)
+                {
+                    vistas_vivas.push((n, sql));
+                }
+            }
             let (query, calls) = ore_core::sql_del_arbol::sql_calls(&texto, &pkg);
             if !calls.is_empty() {
                 llamadas = Some(Json::obj([
@@ -2659,7 +2675,81 @@ impl Servidor {
             _ => return r,
         };
         let mut fuentes = std::collections::BTreeMap::new();
+        // 0053 F6·1: lo que llega a un origen, repartido UNA vez para toda la
+        // sentencia (F5: una lectura por tabla); el SDK pide cada lectura a
+        // `/federation/read` y ejecuta la sentencia tal cual.
+        if !tablas.is_empty() || !vistas_vivas.is_empty() {
+            let linea = match self.explicar(rama.as_deref(), &texto, true) {
+                Ok(l) => l,
+                Err(r) => return r,
+            };
+            let plan = match ore_core::parse::parse(&linea) {
+                Ok(n) => Json::de_node(&n),
+                Err(_) => return Respuesta::error(502, "`ore explain` no devolvió JSON"),
+            };
+            let Json::Obj(plan) = plan else {
+                return Respuesta::error(502, "`ore explain` no devolvió un objeto");
+            };
+            if !matches!(plan.get("ok"), Some(Json::Bool(true))) {
+                let campo = |k: &str| match plan.get(k) {
+                    Some(Json::Str(v)) => v.clone(),
+                    _ => String::new(),
+                };
+                let http = match plan.get("http") {
+                    Some(Json::Int(h)) => *h as u16,
+                    _ => 422,
+                };
+                let mut cuerpo = vec![
+                    ("error", Json::s(campo("mensaje"))),
+                    ("codigo", Json::s(campo("codigo"))),
+                ];
+                if !campo("tabla").is_empty() {
+                    cuerpo.push(("nombre", Json::s(campo("tabla"))));
+                }
+                return Respuesta {
+                    codigo: http,
+                    cuerpo: Json::obj(cuerpo),
+                };
+            }
+            let lecturas = match plan.get("lecturas") {
+                Some(Json::Arr(ls)) => ls.clone(),
+                _ => Vec::new(),
+            };
+            let tabla_de = |l: &Json| match l {
+                Json::Obj(m) => match m.get("tabla") {
+                    Some(Json::Str(t)) => t.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            for l in &lecturas {
+                fuentes.insert(tabla_de(l), Json::obj([("federada", l.clone())]));
+            }
+            // Un nombre escrito de otra forma (`a.default.t`) que la tabla.
+            for (n, qn) in &tablas {
+                if let Some(l) = lecturas.iter().find(|l| &tabla_de(l) == qn) {
+                    fuentes.insert(n.clone(), Json::obj([("federada", l.clone())]));
+                }
+            }
+            for (n, sql) in &vistas_vivas {
+                fuentes.insert(
+                    n.clone(),
+                    Json::obj([("vistaFederada", Json::s(sql.as_str()))]),
+                );
+            }
+            if let Some(Json::Arr(av)) = plan.get("avisos")
+                && !av.is_empty()
+            {
+                fuentes.insert(
+                    "__avisos".into(),
+                    Json::obj([("avisos", Json::Arr(av.clone()))]),
+                );
+            }
+        }
         for (n, coleccion) in nombres {
+            if fuentes.contains_key(&n) {
+                continue;
+            }
             // 0049 B7·1: a collection is read by its items, and the SDK lists
             // them through ore-medios, where what is declared is enforced (B4·2):
             // here it only says so.
@@ -2910,6 +3000,48 @@ impl Servidor {
             }
             None => Ok((sujeto.clone(), rama.map(String::from))),
         }
+    }
+
+    /// **`POST /puestos/{id}/explain {texto}`** (0053 F6·1): el reparto de una
+    /// sentencia, en la rama del puesto —qué va a cada origen y qué hace
+    /// DuckDB—, en JSON (`plan`) y para leer (`texto`). Un no del reparto no es
+    /// un error de la ruta: va en el plan.
+    pub(crate) fn explain_del_puesto(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let rama = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            match Self::reclamar(&mut lista, sujeto, id) {
+                Ok(p) => p.rama.clone(),
+                Err(r) => return r,
+            }
+        };
+        let texto = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => n
+                .get("texto")
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
+        };
+        if texto.trim().is_empty() {
+            return Respuesta::error(422, "explain() quiere una consulta");
+        }
+        let plan = match self.explicar(rama.as_deref(), &texto, true) {
+            Ok(l) => match ore_core::parse::parse(&l) {
+                Ok(n) => Json::de_node(&n),
+                Err(_) => return Respuesta::error(502, "`ore explain` no devolvió JSON"),
+            },
+            Err(r) => return r,
+        };
+        let leido = match self.explicar(rama.as_deref(), &texto, false) {
+            Ok(t) => t,
+            Err(r) => return r,
+        };
+        Respuesta::ok(Json::obj([("plan", plan), ("texto", Json::s(leido))]))
     }
 
     /// R1 · El puesto que habla: [`puesto_que_llama_en`], bajo el candado.

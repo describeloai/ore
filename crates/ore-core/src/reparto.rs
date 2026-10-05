@@ -221,8 +221,8 @@ fn tablas_por_tokens(
         } else if let Some(v) = pkg.view(&n) {
             let qn = v.qname().unwrap_or_default();
             if vistas.insert(qn) {
-                let texto = v.section("sql").and_then(Node::as_str).unwrap_or_default();
-                for t in tablas_por_tokens(texto, pkg, vistas, nivel + 1) {
+                let texto = sql_de_vista(v).unwrap_or_default();
+                for t in tablas_por_tokens(&texto, pkg, vistas, nivel + 1) {
                     if !out.contains(&t) {
                         out.push(t);
                     }
@@ -231,6 +231,50 @@ fn tablas_por_tokens(
         }
     }
     out
+}
+
+/// **El SQL de una vista**: el suyo (`spec.sql`, v1alpha14+), o el de una
+/// vista de antes escrita con `from` y `fields` —`SELECT "c" AS "n", … FROM
+/// t`—, como las que dejó la inducción de una base foránea antes de v1alpha14.
+/// `None` si no es ninguna de las dos (otra forma que el reparto no lee).
+pub fn sql_de_vista(v: &Loaded) -> Option<String> {
+    if let Some(s) = v.section("sql").and_then(Node::as_str) {
+        return Some(s.to_string());
+    }
+    let desde = v.section("from")?;
+    let origen = desde
+        .get("table")
+        .or_else(|| desde.get("view"))
+        .and_then(|(_, n)| n.as_str())?;
+    let campos: Vec<String> = v
+        .section("fields")?
+        .entries()
+        .iter()
+        .filter_map(|(k, c)| {
+            let n = k.as_str()?;
+            let c = c.as_str()?;
+            Some(format!(
+                "\"{}\" AS \"{}\"",
+                c.replace('"', "\"\""),
+                n.replace('"', "\"\"")
+            ))
+        })
+        .collect();
+    if campos.is_empty() {
+        return None;
+    }
+    let destino = crate::link::cualificar(origen, v);
+    Some(format!("SELECT {} FROM {destino}", campos.join(", ")))
+}
+
+/// Las `Table` a las que llega una vista (por su SQL, con el tokenizador, y
+/// por las vistas que nombra). Vacío: no lee ningún origen.
+pub fn tablas_de_la_vista(pkg: &Package, v: &Loaded) -> Vec<String> {
+    let mut vistas = BTreeSet::new();
+    vistas.insert(v.qname().unwrap_or_default());
+    sql_de_vista(v)
+        .map(|t| tablas_por_tokens(&t, pkg, &mut vistas, 0))
+        .unwrap_or_default()
 }
 
 // ── el análisis ──────────────────────────────────────────────────────────────
@@ -743,8 +787,8 @@ impl<'p, 'o> Analisis<'p, 'o> {
             return Ok(Fuente::Tabla(i));
         }
         if let Some(v) = self.pkg.view(&qn) {
-            let texto = v.section("sql").and_then(Node::as_str).unwrap_or_default();
-            let vq = match Parser::parse_sql(&DuckDbDialect {}, texto) {
+            let texto = sql_de_vista(v).ok_or(NoEntiendo)?;
+            let vq = match Parser::parse_sql(&DuckDbDialect {}, &texto) {
                 Ok(mut sts) if sts.len() == 1 => match sts.pop() {
                     Some(Statement::Query(q)) => q,
                     _ => return Err(NoEntiendo),

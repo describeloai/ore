@@ -821,6 +821,9 @@ impl Servidor {
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
             // `sql()` sin regex: el texto entero, y cada nombre del árbol resuelto.
             ("POST", ["puestos", id, "sql"]) => self.sql_del_puesto(sujeto, id, &p.cuerpo),
+            ("POST", ["puestos", id, "explain"]) => self.explain_del_puesto(sujeto, id, &p.cuerpo),
+            // 0053 F6·1: cómo acabó una lectura en vivo (sus trailers, para un SDK).
+            ("GET", ["federation", "read", id]) => self.final_de_lectura(p, sujeto, id),
             // Lo que el transform declara, dicho al servidor (W3.7 gobierno ⑤).
             ("POST", ["puestos", id, "transform"]) => {
                 self.declarar_transform(sujeto, id, &p.cuerpo)

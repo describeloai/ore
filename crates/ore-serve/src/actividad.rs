@@ -168,6 +168,7 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/puestos/{}/transform", Es::Datos),
     ("POST", "/puestos/{}/ejecutar", Es::Datos),
     ("POST", "/puestos/{}/sql", Es::Datos),
+    ("POST", "/puestos/{}/explain", Es::Datos),
     ("POST", "/puestos/{}/lsp", Es::Datos),
     ("POST", "/puestos/{}/lsp/salida", Es::Datos),
     // 0049 B2·3: el latido del agente no cambia nada del árbol ni de los datos.

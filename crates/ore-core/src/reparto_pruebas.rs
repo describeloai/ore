@@ -464,6 +464,36 @@ fn from_a_secas_columns_y_tablesample() {
     assert_eq!(de(&x, C).limit, None);
 }
 
+/// F6·1: una vista de antes, con `from` y `fields` (como `foreign_test` en
+/// victor), se lee como su SELECT.
+#[test]
+fn una_vista_from_fields_se_lee_como_su_select() {
+    let vieja = r#"apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: v_vieja, namespace: pg }
+spec:
+  owner: team:prueba
+  from: { table: pg.public.clientes }
+  fields:
+    ident: id
+    p: pais
+"#;
+    let pkg = arbol(
+        "from-fields",
+        true,
+        true,
+        &[("packages/pg/views/v_vieja.yaml", vieja)],
+    );
+    let x = r(&pkg, "SELECT ident FROM pg.v_vieja WHERE p = 'ES' LIMIT 2");
+    assert!(x.entendida);
+    let l = de(&x, C);
+    assert_eq!(l.empujados, vec![uno("pais", "eq", "ES")]);
+    assert_eq!(l.columnas, vec!["id", "pais"]);
+    assert_eq!(l.limit, Some(2));
+    let v = pkg.view("pg.v_vieja").unwrap();
+    assert_eq!(tablas_de_la_vista(&pkg, v), vec![C.to_string()]);
+}
+
 // ── A · una lectura por tabla ──
 
 #[test]

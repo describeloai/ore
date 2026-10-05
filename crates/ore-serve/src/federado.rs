@@ -332,6 +332,7 @@ impl Servidor {
             al_soltar: Some(Box::new({
                 let buzon = self.buzon.clone();
                 let finales = finales.clone();
+                let id = id.clone();
                 move || {
                     let f = finales.lock().map(|f| f.clone()).unwrap_or_default();
                     let campo = |k: &str| f.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
@@ -340,6 +341,18 @@ impl Servidor {
                         None => ("cortado".into(), "desconexion".into()),
                     };
                     let num = |k: &str| campo(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                    guardar_final(
+                        &id,
+                        &nota.persona,
+                        Json::obj([
+                            ("id", Json::s(id.as_str())),
+                            ("tabla", Json::s(nota.tabla.as_str())),
+                            ("estado", Json::s(estado.as_str())),
+                            ("motivo", Json::s(motivo.as_str())),
+                            ("filas", Json::Int(num("ore-filas") as i64)),
+                            ("bytes", Json::Int(num("ore-bytes") as i64)),
+                        ]),
+                    );
                     let resultado = if estado == "error" {
                         "fallido"
                     } else {
@@ -385,38 +398,7 @@ impl Servidor {
         rama: Option<&str>,
         desde_puesto: bool,
     ) -> Result<ore_core::parse::Node, Respuesta> {
-        // La política que manda: `ontology.config.yaml` y `conduits.yaml` de main.
-        let mut politica: Option<(String, Option<String>)> = None;
-        let r =
-            self.leyendo(
-                |raiz| match std::fs::read_to_string(raiz.join("ontology.config.yaml")) {
-                    Ok(m) => {
-                        politica =
-                            Some((m, std::fs::read_to_string(raiz.join("conduits.yaml")).ok()));
-                        Respuesta::ok(Json::obj([]))
-                    }
-                    Err(e) => {
-                        Respuesta::error(500, format!("main no tiene `ontology.config.yaml`: {e}"))
-                    }
-                },
-            );
-        let Some((manifiesto, conductos)) = politica else {
-            return Err(r);
-        };
-        let dir = std::env::temp_dir().join(format!("ore-politica-{}", ore_acceso::nuevo_id()));
-        let escrito = std::fs::create_dir_all(&dir)
-            .and_then(|_| std::fs::write(dir.join("ontology.config.yaml"), &manifiesto))
-            .and_then(|_| match &conductos {
-                Some(c) => std::fs::write(dir.join("conduits.yaml"), c),
-                None => Ok(()),
-            });
-        if let Err(e) = escrito {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(Respuesta::error(
-                500,
-                format!("no se pudo dejar la política de main: {e}"),
-            ));
-        }
+        let dir = self.politica_federada()?;
         let mut args = vec![
             "federate".to_string(),
             "--table".into(),
@@ -462,6 +444,129 @@ impl Servidor {
         };
         ore_core::parse::parse(&linea)
             .map_err(|_| Respuesta::error(502, "`ore federate` no devolvió JSON"))
+    }
+
+    /// La política que manda —`ontology.config.yaml` y `conduits.yaml` de
+    /// main— en un directorio aparte, para `--policy`. Quien llama lo borra.
+    fn politica_federada(&self) -> Result<std::path::PathBuf, Respuesta> {
+        let mut politica: Option<(String, Option<String>)> = None;
+        let r =
+            self.leyendo(
+                |raiz| match std::fs::read_to_string(raiz.join("ontology.config.yaml")) {
+                    Ok(m) => {
+                        politica =
+                            Some((m, std::fs::read_to_string(raiz.join("conduits.yaml")).ok()));
+                        Respuesta::ok(Json::obj([]))
+                    }
+                    Err(e) => {
+                        Respuesta::error(500, format!("main no tiene `ontology.config.yaml`: {e}"))
+                    }
+                },
+            );
+        let Some((manifiesto, conductos)) = politica else {
+            return Err(r);
+        };
+        let dir = std::env::temp_dir().join(format!("ore-politica-{}", ore_acceso::nuevo_id()));
+        let escrito = std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(dir.join("ontology.config.yaml"), &manifiesto))
+            .and_then(|_| match &conductos {
+                Some(c) => std::fs::write(dir.join("conduits.yaml"), c),
+                None => Ok(()),
+            });
+        if let Err(e) = escrito {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Respuesta::error(
+                500,
+                format!("no se pudo dejar la política de main: {e}"),
+            ));
+        }
+        Ok(dir)
+    }
+
+    /// **El reparto de una sentencia del puesto** (0053 F6·1): `ore explain`
+    /// en la rama, con la política de main y como lectura que acaba en un
+    /// puesto. `json`: la línea del plan (`{"ok": …}`); si no, el texto —o el
+    /// `error[CÓDIGO]` que dio—.
+    pub(crate) fn explicar(
+        &self,
+        rama: Option<&str>,
+        texto: &str,
+        json: bool,
+    ) -> Result<String, Respuesta> {
+        let dir = self.politica_federada()?;
+        let fichero = dir.join("consulta.sql");
+        if let Err(e) = std::fs::write(&fichero, texto) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Respuesta::error(
+                500,
+                format!("no se pudo dejar la consulta: {e}"),
+            ));
+        }
+        let mut args = vec![
+            "explain".to_string(),
+            "--policy".into(),
+            dir.to_string_lossy().into_owned(),
+            "--from-workspace".into(),
+            "--file".into(),
+            fichero.to_string_lossy().into_owned(),
+        ];
+        if json {
+            args.push("--json".into());
+        }
+        let mut salida: Option<String> = None;
+        let r = self.leyendo_en(rama, |raiz| {
+            args.push("--path".into());
+            args.push(raiz.to_string_lossy().into_owned());
+            match crate::mando::correr(&self.binario, raiz, &args) {
+                Ok(s) if json && s.bien() => {
+                    salida = s
+                        .stdout
+                        .lines()
+                        .rev()
+                        .find(|l| l.trim_start().starts_with('{'))
+                        .map(String::from);
+                    Respuesta::ok(Json::obj([]))
+                }
+                Ok(s) if !json => {
+                    salida = Some(if s.bien() {
+                        s.stdout
+                    } else {
+                        s.stderr.trim().to_string()
+                    });
+                    Respuesta::ok(Json::obj([]))
+                }
+                Ok(s) => Respuesta::error(
+                    502,
+                    format!("`ore explain` devolvió {}: {}", s.codigo, s.stderr.trim()),
+                ),
+                Err(e) => Respuesta::error(500, e.to_string()),
+            }
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        salida.ok_or(r)
+    }
+
+    /// `GET /federation/read/{id}` (0053 F6·1): **cómo acabó una lectura** —su
+    /// estado, por qué y cuántas filas—: lo que va en los *trailers* y ningún
+    /// SDK sabe leer (ni `urllib`, ni `fetch`, ni el cliente de Java). Sólo a
+    /// quien la hizo; vive unos minutos.
+    pub(crate) fn final_de_lectura(&self, p: &Peticion, sujeto: &Identidad, id: &str) -> Respuesta {
+        let quien = match self.sujeto_del_puesto(p, sujeto, None) {
+            Ok((q, _)) => q.persona,
+            Err(r) => return r,
+        };
+        let mut g = RECIENTES.lock().unwrap_or_else(|e| e.into_inner());
+        g.retain(|(_, _, t, _)| t.elapsed() < VIDA_DE_UN_FINAL);
+        match g
+            .iter()
+            .find(|(i, persona, _, _)| i == id && *persona == quien)
+        {
+            Some((_, _, _, j)) => Respuesta::ok(j.clone()),
+            None => Respuesta::error(
+                404,
+                format!("no hay una lectura `{id}` tuya terminada en los últimos minutos"),
+            ),
+        }
     }
 
     fn anotar(&self, nota: &Anotacion, resultado: &str, motivo: &str, filas: u64, bytes: u64) {
@@ -626,6 +731,22 @@ fn error(codigo: u16, cod: &str, mensaje: &str) -> Respuesta {
             ("error", Json::s(mensaje)),
         ]),
     }
+}
+
+/// Los finales de las lecturas recientes: `(id, persona, cuándo, final)`.
+type Final = (String, String, Instant, Json);
+static RECIENTES: Mutex<std::collections::VecDeque<Final>> =
+    Mutex::new(std::collections::VecDeque::new());
+const VIDA_DE_UN_FINAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const RECIENTES_COMO_MUCHO: usize = 4096;
+
+fn guardar_final(id: &str, persona: &str, f: Json) {
+    let mut g = RECIENTES.lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|(_, _, t, _)| t.elapsed() < VIDA_DE_UN_FINAL);
+    while g.len() >= RECIENTES_COMO_MUCHO {
+        g.pop_front();
+    }
+    g.push_back((id.to_string(), persona.to_string(), Instant::now(), f));
 }
 
 /// El estado, las cabeceras y el cuerpo de una lectura abierta en la pasarela.

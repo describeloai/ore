@@ -288,6 +288,24 @@ en Postgres, BigQuery y S3; `like` lo añade el dueño (un `%x%` sin índice es 
 para lo que se catalogue desde ahora: una tabla ya declarada no se toca sola (la línea puede ser de
 alguien); se recataloga o se edita.
 
+### F6 en hitos
+
+**Decidido** (2026-10-05, con el usuario): F6 es el **mecanismo**, sin decidir nombres —la `Table`
+por su nombre (`<origen>.<schema>.<tabla>`) y cualquier vista sin copia cuya raíz es una `Table`—, así
+que las bases foráneas de hoy se leen en vivo sin cambiar su modelo; qué *es* una base foránea lo
+decide su spec, después de F9. El listado de una `ObjectTable` en el `FROM` sigue en F9. Y tres
+reglas: **(1)** el SDK pide cada lectura a `POST /federation/read` (la ruta de F4, con su gobierno, su
+tope y su huella); **(2)** un resultado cortado se devuelve con un aviso, y con `strict=True` es un
+error —el final lo da `GET /federation/read/{id}`, porque ningún SDK lee *trailers*—; **(3)** Python
+primero, Node y JVM en un hito aparte.
+
+| hito | qué | sale |
+|---|---|---|
+| **F6·1** · servidor | `sql_del_puesto`: si un nombre llega a un origen, el reparto de la sentencia entera (`ore explain --json --from-workspace`, en la rama y con la política de main) y en `fuentes` cada lectura ya decidida (`federada`) y el SQL de cada vista viva (`vistaFederada`); un no del reparto es la respuesta (`422 OOS2044`…). El reparto lee también las vistas de antes (`from`/`fields`, como `foreign_test`). `POST /puestos/{id}/explain` (plan y texto). `GET /federation/read/{id}` (el final, sólo a quien leyó, 15 min) | ✓ `el-coordinador.sh` +6 con Postgres de verdad |
+| **F6·2** · SDK Python | `ore.sql()` registra las lecturas federadas en DuckDB y ejecuta la sentencia tal cual; aviso o error si se cortan; `ore.explain()` | pendiente |
+| **F6·3** · en vivo | test6: Neon, BigQuery y S3 por su nombre, `bq_foreign` y `foreign_test`, juntas entre orígenes y con una copia, un corte, `explain`, la huella | pendiente |
+| **F6·4** · Node y JVM | el mismo contrato | pendiente |
+
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
 ONLY`, `SET LOCAL`, el portal, el `FETCH`, el `COMMIT`) contra un origen lejano. Guardar el plan por
