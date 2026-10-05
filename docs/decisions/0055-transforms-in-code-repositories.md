@@ -1,9 +1,8 @@
 # 0055 · Transforms in code repositories — el paradigma Build
 
 **Estado:** propuesto (2026-10-05). Decididos el kind, su salida, la programación aparte, la
-versión de OOS y la frontera entre **Build** y **Preview** (§ Decisiones). Abierto: el
-[brainstorm](#brainstorm-los-conceptos-que-queremos-asentar) de los conceptos y su prioridad, del
-que saldrá el plan.
+versión de OOS y la frontera entre **Build** y **Preview** (§ Decisiones). Primero se asienta el
+`Transform` —el kind y su descubrimiento al commitear—; Build va después, sobre él.
 
 Construye sobre lo que ORE ya define —el `Dataset` escrito de OOS (v1alpha12), la `View`
 (v1alpha8), el `Ruleset` (v1alpha3), el flujo (`04-flow`), el puesto ([`0031`](0031-el-puesto.md)),
@@ -149,35 +148,8 @@ un dataset con `from` los mantiene el sistema. Un `.sql` con varias sentencias q
 repositorio (el transform del fichero abierto, en su rama), *Build* en la página del dataset, la
 programación, y el build de lo de abajo que necesita lo de arriba.
 
-## Brainstorm: los conceptos que queremos asentar
-
-Cada uno con lo que es, por qué pesa en el producto y lo que deja abierto. La prioridad es la
-propuesta inicial; la fijamos al cerrar el brainstorm.
-
-| | concepto | qué es | peso | abierto |
-|---|---|---|---|---|
-| **A** | `Transform` (kind) | el productor derivado al commitear (§ arriba) | **núcleo**: sin él, Build no sabe qué construir | Python: decorador con argumentos literales; Java: anotaciones o llamada con literales |
-| **B** | Build | el verbo: Job del commit, capa del repositorio, alcance del documento, transacción con procedencia, historial | **núcleo** | atomicidad (un build que falla no deja snapshot), reintentos, cancelar |
-| **C** | Preview | ensayo sin escritura en la barra inferior | **núcleo**: cierra el hueco de procedencia de hoy | tope o muestra; qué enseña de una salida de media |
-| **D** | Desfasado | un dataset cuyo último snapshot no viene del `Transform` en la cabeza de la rama, o cuyas entradas cambiaron después | alto: es la pregunta «¿está al día?» | cómo se calcula barato |
-| **E** | El grafo | linaje declarado (los `Transform`) + observado (`derivedFrom`), en el repositorio y en la página Lineage | alto: es lo que el usuario ve del pipeline | qué cruza repositorios |
-| **F** | Construir lo de arriba | el plan de un build: lo desfasado aguas arriba, en orden | alto | límites, paralelismo, qué pasa si falla a mitad |
-| **G** | Datasets por rama | build en tu rama escribe la ref de tu rama; lectura con caída a `main`; qué pasa al fusionar (reconstruir en `main` o promover el snapshot), con `main` protegida | alto: toca 0044 | cadena de caída más allá de `main` |
-| **H** | Expectativas de datos | aserciones sobre la salida que hacen fallar o avisar en el build; **ya existe el `Ruleset`** (v1alpha3) y el `Dataset` dice que no lleva calidad: un `Ruleset` lo nombra | medio-alto | dónde se declaran en el repositorio; qué corre en Preview |
-| **I** | Pruebas unitarias | pytest (y luego JUnit) en la plantilla, Tests en la consola para transforms | medio: lo tenemos en functions | fixtures de datasets pequeños |
-| **J** | Programación | el objeto aparte de D3: cron, cuando cambia una entrada, tras lo de arriba | medio | ¿kind de OOS o estado del servidor? ¿por rama? |
-| **K** | Incremental | leer sólo lo añadido desde el último build y añadir o fundir; la entrada recuerda qué snapshot se leyó | medio: coste, no corrección | qué hace con borrados; recomputar entero |
-| **L** | Contexto del transform | lo que el código sabe de su build: rama, commit, build id, si es Preview | bajo, habilita K | |
-| **M** | Perfil de cómputo | cuánta máquina pide un Build (Kueue) | bajo hasta que haya datos grandes | Spark u otro motor, mucho después |
-| **N** | Entorno por lenguaje | plantilla v7 con pruebas y `.gitignore` (Python casi copia de P); Java a la par (el pivote de 0050) | medio | |
-| **O** | Quién construye | el permiso de construir una salida (0047): ¿el de escribir el dataset, o uno propio? | medio | |
-| **P** | Varias salidas | `outputs` | bajo (D2) | |
-
-**Orden propuesto**, de dentro afuera: **A · B · C** (el núcleo: el objeto, el verbo que escribe y
-el ensayo que no) → **D · E · F** (el pipeline: ¿está al día?, verlo, construirlo en orden) →
-**G** (las ramas) → **H · I** (la calidad) → **J · K** (el tiempo) → **L · M · N · O · P**.
-
 ## Lo que sigue
 
-Cerrar el brainstorm —qué entra, qué sale, en qué orden— y escribir el plan por fases con sus
-medidas, empezando por el spec de `Transform` en OOS v1alpha25.
+1. **El `Transform`**: el kind en OOS v1alpha25 y su descubrimiento al commitear, en los tres
+   lenguajes. Se cierra antes de tocar Build.
+2. **Build**, sobre el `Transform` asentado.
