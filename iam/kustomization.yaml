@@ -91,6 +91,7 @@ configMapGenerator:
       - migraciones/047-prueba-retirada.sql
       - migraciones/048-el-handle-de-la-persona.sql
       - migraciones/049-crear-no-es-rotar.sql
+      - migraciones/050-el-puesto-lo-abre-alguien.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,
