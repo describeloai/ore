@@ -28,7 +28,7 @@ writeFileSync(join(devDep, "package.json"), '{ "name": "fake-dev", "version": "1
 writeFileSync(join(devDep, "index.js"), "export const doble = (n) => n * 2n;\n");
 writeFileSync(join(devDep, "index.d.ts"), "export declare const doble: (n: bigint) => bigint;\n");
 process.env.ORE_TIPOS_NODE ??= join(imagen, "tipos", "node_modules");
-const { Correa, enDisco, leerTsc } = await import("../correa.mjs");
+const { Correa, enDisco, leerTsc, registroDe, TOPE_REGISTRO } = await import("../correa.mjs");
 
 const REPO = "packages/ventas/riesgo";
 const FN = `${REPO}/functions/riesgoInvoiceStatus.ts`;
@@ -77,6 +77,38 @@ test("cada mensaje del editor cuenta como actividad (el TTL del puesto)", async 
   const s = new Correa({ id: "x", pedir: async () => [200, {}] }, { cabeceras: async () => ({}) });
   s.entregarAlServidor = async () => {};
   await s.escribir('{"jsonrpc":"2.0","method":"initialized","params":{}}');
+});
+
+test("node(): además de la lista, el registro de spec, como en una terminal", { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ore-registro-"));
+  try {
+    mkdirSync(join(dir, "r"), { recursive: true });
+    writeFileSync(join(dir, "r", "a.test.mjs"), [
+      'import { test } from "node:test";',
+      'import assert from "node:assert/strict";',
+      'test("suma", () => { console.log("hola desde la prueba"); assert.equal(1 + 1, 2); });',
+      'test("falla", () => { assert.equal(2 + 2, 5); });',
+    ].join("\n"));
+    const c = new Correa({ id: "x", pedir: async () => [200, {}] }, { cabeceras: async () => ({}) }, { trabajo: dir });
+    const r = await c.node(["r/a.test.mjs"], []);
+    assert.deepEqual(r.pruebas.map((p) => `${p.nombre}:${p.estado}`).sort(), ["falla:fallo", "suma:ok"]);
+    assert.match(r.registro, /^\$ node --test r\/a\.test\.mjs/);
+    assert.match(r.registro, /hola desde la prueba/);
+    assert.match(r.registro, /✔ suma/);
+    assert.match(r.registro, /✖ falla/);
+    assert.match(r.registro, /ℹ tests 2/);
+    assert.match(r.registro, /exit code 1\n$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registroDe: el comando, stderr si el reporter no lo dijo, y recortado por delante", () => {
+  const r = registroDe({ ficheros: ["r/a.test.ts"], nombres: ["suma"], spec: "✔ suma (1ms)\n", errores: "SyntaxError: algo", codigo: 1 });
+  assert.equal(r, '$ node --test --test-name-pattern="^suma$" r/a.test.ts\n\n✔ suma (1ms)\n\nSyntaxError: algo\n\nexit code 1\n');
+  assert.match(registroDe({ ficheros: [], vencido: true, tope: 3000 }), /stopped after 3 s/);
+  const largo = registroDe({ ficheros: ["x"], spec: "y".repeat(TOPE_REGISTRO + 5000) });
+  assert.ok(largo.length <= TOPE_REGISTRO + 80 && largo.startsWith("… ("), largo.slice(0, 60));
 });
 
 test("enDisco: sólo lo de dentro, y nunca node_modules", () => {

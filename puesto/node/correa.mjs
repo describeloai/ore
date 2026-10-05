@@ -53,7 +53,8 @@
 // `{ todos, ficheros, pruebas, resumen, ms }`: cada prueba con su estado, su
 // `describe`, su línea y, si falla, el mensaje, lo esperado y lo obtenido.
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -134,6 +135,26 @@ function ficherosQue(re, dir, base = "") {
     else if (re.test(e.name)) fuera.push(rel);
   }
   return fuera.sort();
+}
+
+/** Lo más que se devuelve del registro: lo último, que es donde están los fallos y el resumen. */
+export const TOPE_REGISTRO = 256 * 1024;
+
+/**
+ * El registro de una ejecución de pruebas, como en una terminal: el comando
+ * (con los ficheros relativos al árbol), la salida del reporter `spec`, lo que
+ * el proceso dijo por stderr si no lo recogió el reporter (un fichero que no
+ * carga), y cómo terminó. Recortado por delante si pasa de TOPE_REGISTRO.
+ */
+export function registroDe({ ficheros, nombres = [], spec = "", errores = "", codigo = 0, vencido = false, tope = 120_000 }) {
+  const filtro = nombres.map((n) => ` --test-name-pattern="^${n}$"`).join("");
+  const partes = [`$ node --test${filtro} ${ficheros.join(" ")}`, "", spec.trimEnd()];
+  const resto = errores.trim();
+  if (resto && !spec.includes(resto.slice(0, 200))) partes.push("", resto);
+  partes.push("", vencido ? `✖ stopped after ${Math.round(tope / 1000)} s (time limit of a test run)` : `exit code ${codigo ?? "?"}`);
+  let texto = partes.join("\n") + "\n";
+  if (texto.length > TOPE_REGISTRO) texto = `… (${Math.round((texto.length - TOPE_REGISTRO) / 1024)} KB before this are not shown)\n` + texto.slice(-TOPE_REGISTRO);
+  return texto;
 }
 
 /** Los ficheros de prueba de un repositorio, relativos a él: `*.test.*` y `*.spec.*`. */
@@ -302,12 +323,24 @@ export class Correa {
     this.entregas();
   }
 
-  /** `node --test` con el informe de `informe-de-pruebas.mjs`, en su proceso. */
+  /**
+   * `node --test` con el informe de `informe-de-pruebas.mjs`, en su proceso.
+   *
+   * ⭐ Y EL REGISTRO (0050 · los logs de Tests): con DOS reporters a la vez —el
+   *   nuestro por stdout, para la lista estructurada, y el `spec` de Node a un
+   *   fichero— se devuelve también `registro`: la salida que vería quien corre
+   *   `node --test` en una terminal (✔/✖ con sus tiempos, lo que las pruebas
+   *   imprimen, el resumen), encabezada por el comando. Medido en Node 24.
+   */
   node(ficheros, nombres) {
+    const fichero = join(tmpdir(), `ore-registro-${process.pid}-${Date.now()}.txt`);
     const argumentos = [
       ...(Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : []),
       "--test",
       `--test-reporter=${pathToFileURL(join(AQUI, "informe-de-pruebas.mjs")).href}`,
+      "--test-reporter-destination=stdout",
+      "--test-reporter=spec",
+      `--test-reporter-destination=${fichero}`,
       "--test-timeout=30000",
       ...nombres.map((n) => `--test-name-pattern=^${String(n).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$`),
       ...ficheros,
@@ -324,11 +357,15 @@ export class Correa {
         vencido = true;
         try { process.platform !== "win32" ? process.kill(-hijo.pid, "SIGKILL") : hijo.kill("SIGKILL"); } catch { /* ya no estaba */ }
       }, tope);
-      hijo.on("close", () => {
+      hijo.on("close", (codigo) => {
         clearTimeout(reloj);
         const r = leerPruebas(salida, ficheros);
         if (vencido) r.error = `las pruebas tardaron más de ${Math.round(tope / 1000)} s: se pararon`;
         else if (!r.pruebas.length && errores.trim()) r.error = errores.trim().slice(-2000);
+        let spec = "";
+        try { spec = readFileSync(fichero, "utf8"); } catch { /* no llegó a escribirse */ }
+        try { rmSync(fichero, { force: true }); } catch { /* da igual */ }
+        r.registro = registroDe({ ficheros, nombres, spec, errores, codigo, vencido, tope });
         ok(r);
       });
     });
