@@ -1,6 +1,6 @@
 # 0053 · ORE Federation Engine
 
-**Estado:** **aceptado** (2026-10-04) · F0 medido · **F1 cerrado** (contratos en [`docs/federation.md`](../federation.md); spec
+**Estado:** **aceptado** (2026-10-04) · F0 medido · **F1 cerrado** · **F2 cerrado** (2026-10-05: conectores v2 de Postgres, BigQuery y S3, en vivo) (contratos en [`docs/federation.md`](../federation.md); spec
 [v1alpha24 `01-leer-el-origen`](../../vendor/oos/spec/v1alpha24/01-leer-el-origen.md)) · **Decide:** **leer el origen es un producto**, y
 uno solo: el ORE Federation Engine es la única vía por la que una celda lee un origen —consultarlo
 en vivo desde SQL, describirlo, catalogarlo, comprobarlo y copiarlo—, con sus conectores, sus
@@ -207,7 +207,9 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 | **F2·2** · Postgres v2 | Arrow en flujo, operadores, `limit`, `orderBy`, `statement_timeout`, cancelar, `servir`, `estimar` (`EXPLAIN`) | ✓ **14/14**; 10⁶ filas en 15,3 s con **pico de 14 MiB y primer byte a los 323 ms** (v1: 33 s, 388 MiB, 32,9 s); `SIGTERM` deja el origen en 2 ms; 100 peticiones en `servir` por una sesión en 742 ms |
 | **F2·3** · BigQuery v2 | operadores a `row_restriction`, `limit` en la Storage Read, `orderBy` por consulta, REST también en Arrow, `jobs.cancel`, `estimar` (*dry run*), `maximumBytesBilled` | ✓ **en vivo contra `ore_kit` (EU): 12 pasan, 2 no aplican**; 10⁶ filas por la Storage Read en 5,2 s con pico de 21 MiB (M2: ~117 s); grabada la cinta (41 intercambios, 177 KB, por consulta, sin el caso 7) y reproducida sin red: 11 pasan, 2 no aplican; el CI la reproduce con `--exige todos` |
 | **F2·4** · S3 v2 | descarte por partición y por estadísticas de Parquet, operadores sobre filas, `limit`, `estimar` por el listado; `orderBy: false` | ✓ **12 pasan, 2 no aplican** (sólo lectura y cancelar: un bucket no tiene SQL ni consultas vivas); 10⁶ filas con pico de 27 MiB; un fichero de una partición que no cumple y un grupo de filas cuyo mínimo y máximo no pueden cumplir no se bajan |
-| **F2·5** · cierre | el kit en el CI; las copias en vivo de test6 dan las mismas filas y huella con los v2 | F2 cerrado |
+| **F2·5** · cierre | el kit en el CI; las copias en vivo de test6 dan las mismas filas y huella con los v2 | ✓ **F2 cerrado** (2026-10-05): las copias de `bq`, `s3_pedidos` y `standard_test` rehechas desde un puesto de test6 con los v2 (commits `446345d`, `9748d94`, `2f9dcd4` del copiador) dan **las mismas filas, la misma cabecera y el mismo contenido** (sha256 de las filas ordenadas) que antes en los 10 datasets medidos —de 4 a 1500 filas—; `ore_e2e_sintetica` (2·10⁶ filas) copiada; la copia pide Arrow y los errores llegan tipados |
+
+**Lo que F2·5 dejó dicho.** (1) Para rehacer la copia desde un puesto hizo falta abrir ese verbo en la puerta del agente (`POST /paquetes/{n}/copia/rehacer`, en la rama del puesto y en nombre de quien lo abrió; nunca en `main`). (2) `standard_test.public.brain_embeddings` sigue en `error`, igual que antes de F2: su columna es `vector` (pgvector), un tipo de extensión que el conector de Postgres no sabe leer por texto ni tiene en Arrow. Es un hueco del conector, no una regresión; queda para cuando haga falta (lista de tipos de extensión, o `vector` → lista de `float4`). (3) Entre F2·4 y F2·5 el incidente de los custodios ([`0054`](0054-converger-sin-romper.md)) dejó t-demo y t-victor sin base: el cierre esperó a recuperarlos.
 
 **La línea de base de F2·1** (2026-10-04, en local; el CI la repite en cada empuje):
 
