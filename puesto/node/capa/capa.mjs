@@ -117,7 +117,7 @@ function paquete(trabajo, ficheroProvisto) {
       //   la imagen pone, y dos copias del mismo paquete son dos módulos.
       //   También en lo de desarrollo: el `tsc` y los tipos de Node son los de
       //   la imagen, y un `@types/node` de otra versión diría otro Node.
-      if (r !== "*" && r !== trae.get(n)) avisos.push(`pediste ${n} ${r}, y esta sesión trae la ${trae.get(n)}: se usa la de la sesión`);
+      if (r !== "*" && r !== trae.get(n)) avisos.push(`you asked for ${n} ${r}, and this session brings ${trae.get(n)}: the session's version is used`);
       continue;
     }
     (dev ? devDependencies : dependencies)[n] = r;
@@ -196,7 +196,7 @@ function informe(trabajo, estadoDado) {
   }
   // Lo nativo sólo importa en lo que corre: un paquete de tipos no se ejecuta.
   for (const n of nativos(join(trabajo, "run", "node_modules"))) {
-    avisos.push(`${n} compila código nativo al instalarse, y la capa no ejecuta scripts de instalación (--ignore-scripts): no funcionará`);
+    avisos.push(`${n} compiles native code when it installs, and install scripts don't run here (--ignore-scripts): it won't work`);
   }
   const sumaDe = (f) => {
     if (!existsSync(f)) return ["", 0];
@@ -210,10 +210,10 @@ function informe(trabajo, estadoDado) {
   if (estado === "error") error = ultimas(join(trabajo, "npm.log"), 800);
   else if (mb > tope) {
     estado = "error";
-    error = `la capa pesa ${mb} MB y el tope es ${tope} MB: un puesto que tarda dos minutos en arrancar no es un puesto`;
+    error = `the libraries take ${mb} MB and the limit is ${tope} MB: a session that takes minutes to start is not a session`;
   } else if (mbTipos > tope) {
     estado = "error";
-    error = `lo de desarrollo pesa ${mbTipos} MB y el tope es ${tope} MB`;
+    error = `the dev packages take ${mbTipos} MB and the limit is ${tope} MB`;
   }
   // ⭐ L2: el lock, para el repositorio —`package-lock.json` junto a su
   //   `package.json`, lo que se versiona—. El de npm tal cual (`resolved`,

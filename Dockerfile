@@ -662,7 +662,7 @@ RUN set -e; mkdir -p /tmp/p/arbol; \
     test -f /tmp/p/t/jars/commons-lang3-3.17.0.jar; \
     ! ls /tmp/p/t/jars | grep -q jackson || exit 1; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
-    grep -q 'pediste com.fasterxml.jackson.core:jackson-databind 2.19.0, y esta sesión trae la 2.18.2' /tmp/p/t/informe.json; \
+    grep -q 'you asked for com.fasterxml.jackson.core:jackson-databind 2.19.0, and this session brings 2.18.2' /tmp/p/t/informe.json; \
     grep -q '"sumas"' /tmp/p/t/informe.json; \
     cat /tmp/p/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/p
 
@@ -729,8 +729,8 @@ RUN set -e; mkdir -p /tmp/p/arbol; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
     grep -q '"dayjs@1.11.13"' /tmp/p/t/informe.json; \
     grep -q '"dev:@types/lodash@4.17.20"' /tmp/p/t/informe.json; \
-    grep -q 'pediste @duckdb/node-api 1.4.0, y esta sesión trae la 1.5.5-r.5' /tmp/p/t/informe.json; \
-    grep -q 'pediste typescript 5.8.3, y esta sesión trae la 5.9.3' /tmp/p/t/informe.json; \
+    grep -q 'you asked for @duckdb/node-api 1.4.0, and this session brings 1.5.5-r.5' /tmp/p/t/informe.json; \
+    grep -q 'you asked for typescript 5.8.3, and this session brings 5.9.3' /tmp/p/t/informe.json; \
     grep -q '"suma"' /tmp/p/t/informe.json; \
     grep -q '"sumaTipos"' /tmp/p/t/informe.json; \
     grep -q '"node_modules/dayjs"' /tmp/p/t/lock-del-repositorio.json; \
@@ -800,7 +800,7 @@ RUN set -e; mkdir -p /tmp/p/arbol /tmp/p/choca; \
     printf '%s\n' '[project]' 'dependencies = ["pandas==2.2.3"]' > /tmp/p/choca/pyproject.toml; \
     TRABAJO=/tmp/p/c /opt/ore/resolver.sh /tmp/p/choca ""; \
     grep -q '"estado": "error"' /tmp/p/c/informe.json; \
-    grep -q 'pediste pandas 2.2.3, y esta sesión trae la 3.0.6' /tmp/p/c/informe.json; \
+    grep -q 'you asked for pandas 2.2.3, and this session brings 3.0.6' /tmp/p/c/informe.json; \
     [ ! -e /tmp/p/c/capa.tgz ] && [ ! -e /tmp/p/c/lock-del-repositorio.toml ]; \
     rm -rf /tmp/p /root/.cache
 

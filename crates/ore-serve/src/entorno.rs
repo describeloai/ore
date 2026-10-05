@@ -341,7 +341,23 @@ pub(crate) fn dependencias_de_package(texto: &str) -> Vec<String> {
 /// —`packages/<p>/<carpeta>`—, la raíz, **su** paquete y **su** repositorio:
 /// lo común sigue siendo común, y lo de al lado deja de pesar.
 pub(crate) fn declaracion_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -> Vec<String> {
-    let fichero = fichero_de(entorno);
+    let mut deps: Vec<String> = ficheros_del_alcance(raiz, alcance, fichero_de(entorno))
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .flat_map(|t| declaradas_en(entorno, &t))
+        .collect();
+    deps.sort();
+    deps.dedup();
+    deps
+}
+
+/// Los ficheros de declaración que tocan a un alcance: la raíz, el paquete y
+/// cada nivel hasta el repositorio (sin alcance, la raíz y todos los paquetes).
+fn ficheros_del_alcance(
+    raiz: &Path,
+    alcance: Option<&str>,
+    fichero: &str,
+) -> Vec<std::path::PathBuf> {
     let mut ficheros = vec![raiz.join(fichero)];
     match alcance.map(str::trim).filter(|s| !s.is_empty()) {
         None => {
@@ -365,14 +381,7 @@ pub(crate) fn declaracion_en(raiz: &Path, alcance: Option<&str>, entorno: &str) 
             }
         }
     }
-    let mut deps: Vec<String> = ficheros
-        .iter()
-        .filter_map(|f| std::fs::read_to_string(f).ok())
-        .flat_map(|t| declaradas_en(entorno, &t))
-        .collect();
-    deps.sort();
-    deps.dedup();
-    deps
+    ficheros
 }
 
 /// `[project].dependencies` de un `pyproject.toml` y —0050 P2— el grupo
@@ -664,6 +673,8 @@ pub(crate) fn informe_de(raiz: &Path, digest: &str) -> Option<Json> {
 }
 
 pub(crate) struct Entorno {
+    /// ⭐ 0050 P5·5 · Lo que el fichero declara donde no se lee (`avisos_de_pyproject`).
+    pub avisos: Vec<String>,
     pub declarado: Vec<String>,
     pub digest: String,
     pub informe: Option<Json>,
@@ -732,7 +743,7 @@ pub(crate) fn solo_provistas(declarado: &[String], entorno: &str) -> Option<Vec<
             && v != p.version
         {
             avisos.push(format!(
-                "pediste {n} {v}, y esta sesión trae la {}: se usa la de la sesión",
+                "you asked for {n} {v}, and this session brings {}: the session's version is used",
                 p.version
             ));
         }
@@ -743,6 +754,7 @@ pub(crate) fn solo_provistas(declarado: &[String], entorno: &str) -> Option<Vec<
 /// El entorno de un alcance (0036 ③): su declaración, su digest y su informe.
 pub(crate) fn entorno_de_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -> Entorno {
     let declarado = declaracion_en(raiz, alcance, entorno);
+    let de_la_declaracion = avisos_en(raiz, alcance, entorno);
     // L6·1b: lo declarado es todo de la imagen → `lista`, SIN digest (sin capa:
     //   el puesto nace como si no se declarara nada) y un informe que sólo
     //   lleva los avisos de versión.
@@ -750,6 +762,7 @@ pub(crate) fn entorno_de_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -
         && let Some(avisos) = solo_provistas(&declarado, entorno)
     {
         return Entorno {
+            avisos: de_la_declaracion,
             declarado,
             digest: String::new(),
             informe: Some(Json::obj([
@@ -780,6 +793,7 @@ pub(crate) fn entorno_de_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -
         "pendiente"
     };
     Entorno {
+        avisos: de_la_declaracion,
         declarado,
         digest,
         informe,
@@ -787,7 +801,92 @@ pub(crate) fn entorno_de_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -
     }
 }
 
+/// ⭐ 0050 P5·5 · LO QUE SE DECLARA DONDE NO SE LEE, dicho.
+///
+/// Un `pyproject.toml` con `dependencies` FUERA de `[project]` (medido en
+/// victor el 2026-10-05: se pegó la lista sin su tabla) no declara nada, y sin
+/// esto lo único que se veía era una sesión sin la librería. Se dice lo que se
+/// encuentra y no se lee: `dependencies` suelta, Poetry, otros grupos que no son
+/// `dev` y `optional-dependencies`. En inglés: es lo que la consola enseña.
+pub(crate) fn avisos_de_pyproject(texto: &str) -> Vec<String> {
+    let mut tabla = String::new();
+    let mut v: Vec<String> = Vec::new();
+    let mut decir = |s: String| {
+        if !v.contains(&s) {
+            v.push(s);
+        }
+    };
+    for linea in texto.lines() {
+        let l = sin_comentario(linea).trim();
+        if l.starts_with('[') {
+            tabla = l.to_string();
+            if tabla == "[tool.poetry.dependencies]" || tabla.starts_with("[tool.poetry.group.") {
+                decir("Poetry's dependencies are not read: declare packages in `[project].dependencies` (and the `dev` group of `[dependency-groups]`)".into());
+            }
+            if tabla == "[project.optional-dependencies]" {
+                decir("`optional-dependencies` are not read: declare them in `[project].dependencies` or the `dev` group".into());
+            }
+            continue;
+        }
+        // Sólo una clave al principio de su línea: lo de dentro de una lista no.
+        let Some((clave, _)) = l.split_once('=') else {
+            continue;
+        };
+        let clave = clave.trim();
+        if clave.is_empty()
+            || !clave
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            continue;
+        }
+        match (tabla.as_str(), clave) {
+            ("", "dependencies") => decir(
+                "`dependencies` is outside `[project]`, so it is not read: put it under the `[project]` table"
+                    .into(),
+            ),
+            ("[project]", "optional-dependencies") => decir(
+                "`optional-dependencies` are not read: declare them in `[project].dependencies` or the `dev` group"
+                    .into(),
+            ),
+            ("[dependency-groups]", g) if g != "dev" => decir(format!(
+                "the `{g}` group is not read: only `dev` is (tests and the editor, never a call)"
+            )),
+            _ => {}
+        }
+    }
+    v
+}
+
+/// Los avisos de la declaración de un alcance, fichero a fichero (sólo Python).
+pub(crate) fn avisos_en(raiz: &Path, alcance: Option<&str>, entorno: &str) -> Vec<String> {
+    if entorno != PYTHON {
+        return Vec::new();
+    }
+    let mut v: Vec<String> = Vec::new();
+    for f in ficheros_del_alcance(raiz, alcance, fichero_de(entorno)) {
+        if let Ok(t) = std::fs::read_to_string(&f) {
+            for a in avisos_de_pyproject(&t) {
+                if !v.contains(&a) {
+                    v.push(a);
+                }
+            }
+        }
+    }
+    v
+}
+
 fn ficha(e: &Entorno) -> Json {
+    let mut informe = e.informe.clone().unwrap_or_else(|| Json::obj([]));
+    if !e.avisos.is_empty()
+        && let Json::Obj(m) = &mut informe
+    {
+        let mut todos: Vec<Json> = e.avisos.iter().map(Json::s).collect();
+        if let Some(Json::Arr(de_la_capa)) = m.get("avisos") {
+            todos.extend(de_la_capa.iter().cloned());
+        }
+        m.insert("avisos".into(), Json::Arr(todos));
+    }
     Json::obj([
         (
             "declarado",
@@ -795,10 +894,7 @@ fn ficha(e: &Entorno) -> Json {
         ),
         ("digest", Json::s(&e.digest)),
         ("estado", Json::s(e.estado)),
-        (
-            "informe",
-            e.informe.clone().unwrap_or_else(|| Json::obj([])),
-        ),
+        ("informe", informe),
     ])
 }
 
@@ -848,6 +944,8 @@ pub(crate) struct CapaTocada {
     pub entorno: &'static str,
     pub digest: String,
     pub estado: &'static str,
+    /// P5·5: lo que declara donde no se lee (`avisos_de_pyproject`).
+    pub avisos: Vec<String>,
     /// Se retiró el lock (`lock_de`) en el mismo commit: ya no hay nada que
     /// instalar, y un lock de una declaración que ya no existe miente.
     pub lock_retirado: bool,
@@ -903,6 +1001,7 @@ pub(crate) fn capas_tocadas(raiz: &Path, rutas: &[String]) -> Vec<CapaTocada> {
                 entorno,
                 digest: e.digest,
                 estado: e.estado,
+                avisos: e.avisos,
                 lock_retirado,
             }
         })
@@ -932,6 +1031,9 @@ impl Servidor {
                     ];
                     if c.lock_retirado {
                         m.push(("lockRetirado", Json::Bool(true)));
+                    }
+                    if !c.avisos.is_empty() {
+                        m.push(("avisos", Json::Arr(c.avisos.iter().map(Json::s).collect())));
                     }
                     match c.estado {
                         "pendiente" | "error" => {
@@ -1293,7 +1395,7 @@ mod prueba {
         assert_eq!(
             a,
             vec![
-                "pediste typescript 5.4.5, y esta sesión trae la 5.9.3: se usa la de la sesión"
+                "you asked for typescript 5.4.5, and this session brings 5.9.3: the session's version is used"
                     .to_string()
             ]
         );
@@ -1408,6 +1510,43 @@ mod prueba {
         assert!(c.contains(
             r#"semilla = "\n".join(deps) if abi_ == "cp312" else abi_ + "\n" + "\n".join(deps)"#
         ));
+    }
+
+    /// P5·5: lo que se declara donde no se lee, dicho (y lo que sí, callado).
+    #[test]
+    fn lo_que_se_declara_donde_no_se_lee_se_dice() {
+        // El de victor: la lista pegada sin su tabla.
+        let fuera =
+            "dependencies = [\"polars>=1.30\"]\n\n[dependency-groups]\ndev = [\"hypothesis\"]\n";
+        let a = avisos_de_pyproject(fuera);
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert!(a[0].starts_with("`dependencies` is outside `[project]`"));
+        // Lo bien declarado no avisa, tampoco una lista de varias líneas con `>=`.
+        let bien = "[project]\nname = \"r\"\ndependencies = [\n  \"polars>=1.30\",\n]\n[dependency-groups]\ndev = [\n  \"pytest>=8\",\n]\n";
+        assert!(
+            avisos_de_pyproject(bien).is_empty(),
+            "{:?}",
+            avisos_de_pyproject(bien)
+        );
+        let otros = "[project]\noptional-dependencies = { plot = [\"x\"] }\n[dependency-groups]\nlint = [\"ruff\"]\n[tool.poetry.dependencies]\npython = \"^3.12\"\n";
+        let a = avisos_de_pyproject(otros);
+        assert_eq!(a.len(), 3, "{a:?}");
+        assert!(a.iter().any(|x| x.contains("the `lint` group")));
+        // Y el entorno lo enseña en el informe, también sin nada declarado.
+        let r = std::env::temp_dir().join(format!("ore-avisos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        std::fs::create_dir_all(r.join("packages/p/f")).unwrap();
+        std::fs::write(r.join("packages/p/f/pyproject.toml"), fuera).unwrap();
+        let e = entorno_de_en(&r, Some("packages/p/f"), PYTHON);
+        let j = ficha(&e).jcs();
+        assert!(j.contains("is outside `[project]`"), "{j}");
+        assert_eq!(e.declarado, vec!["dev:hypothesis".to_string()]);
+        assert!(
+            entorno_de_en(&r, Some("packages/p/f"), NODE)
+                .avisos
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     /// P3: la versión del SDK de Python es la que el SDK dice de sí mismo, y

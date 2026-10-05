@@ -388,8 +388,8 @@ public final class Capa {
                     bytes += Files.size(j);
                     int c = clase(j);
                     if (c > 65) {
-                        avisos.add(j.getFileName() + " está compilado para Java " + (c - 44)
-                                + " y el puesto lleva 21: no cargará");
+                        avisos.add(j.getFileName() + " is compiled for Java " + (c - 44)
+                                + " and the session runs Java 21: it won't load");
                     }
                 }
             }
@@ -409,8 +409,8 @@ public final class Capa {
             error = ultimas(trabajo.resolve("mvn.log"), 800);
         } else if (mb > tope) {
             estado = "error";
-            error = "la capa pesa " + mb + " MB y el tope es " + tope
-                    + " MB: un puesto que tarda dos minutos en arrancar no es un puesto";
+            error = "the libraries take " + mb + " MB and the limit is " + tope
+                    + " MB: a session that takes minutes to start is not a session";
         }
         Map<String, String> j = new LinkedHashMap<>();
         j.put("estado", texto(estado));
@@ -502,11 +502,11 @@ public final class Capa {
                 continue;
             }
             if (suyas.contains(ga)) {
-                tuyas.add("pediste " + ga + " " + suya + ", y esta sesión trae la " + nuestra
-                        + ": gana la de la sesión");
+                tuyas.add("you asked for " + ga + " " + suya + ", and this session brings " + nuestra
+                        + ": the session's version is used");
             } else {
-                arrastradas.add(ga + " " + suya + " lo arrastra algo que declaraste, y esta sesión"
-                        + " trae la " + nuestra + ": gana la de la sesión");
+                arrastradas.add(ga + " " + suya + " comes with something you declared, and this session"
+                        + " brings " + nuestra + ": the session's version is used");
             }
         }
         tuyas.addAll(arrastradas);

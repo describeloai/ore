@@ -145,15 +145,15 @@ def proyecto(trabajo, fichero_provisto):
             # Otra versión no existe: se dice, y se usa la de la sesión.
             m = re.fullmatch(r"\s*==\s*([^\s;,]+)\s*", req[len(nombre_de(req)):].split(";")[0])
             if m and m.group(1) != SDK[1]:
-                avisos.append("pediste ore %s, y esta sesión trae el SDK %s: se usa el de la sesión" % (m.group(1), SDK[1]))
+                avisos.append("you asked for ore %s, and this session brings the SDK %s: the session's is used" % (m.group(1), SDK[1]))
             continue
         # Una versión exacta distinta de la de la sesión no puede resolverse:
         # se dice en su idioma antes de que uv lo diga en el suyo.
         m = re.fullmatch(r"\s*==\s*([^\s;,]+)\s*", req[len(nombre_de(req)):].split(";")[0])
         if n in trae and m and m.group(1) != trae[n][1]:
             avisos.append(
-                "pediste %s %s, y esta sesión trae la %s: en Python no conviven dos versiones del mismo "
-                "paquete; quita la versión o pide una compatible" % (trae[n][0], m.group(1), trae[n][1]))
+                "you asked for %s %s, and this session brings %s: two versions of a package can't live in "
+                "one Python; remove the version or ask for a compatible one" % (trae[n][0], m.group(1), trae[n][1]))
         (dev if es_dev else run).append(req)
     os.makedirs(os.path.join(trabajo, "proyecto"), exist_ok=True)
     restricciones = ["%s==%s" % v for v in trae.values()]
@@ -226,9 +226,9 @@ def informe(trabajo, estado):
     if estado == "error":
         error = ultimas(os.path.join(trabajo, "uv.log"), 800)
     elif mb > tope:
-        estado, error = "error", "la capa pesa %d MB y el tope es %d MB: un puesto que tarda dos minutos en arrancar no es un puesto" % (mb, tope)
+        estado, error = "error", "the libraries take %d MB and the limit is %d MB: a session that takes minutes to start is not a session" % (mb, tope)
     elif mb_dev > tope:
-        estado, error = "error", "lo de desarrollo pesa %d MB y el tope es %d MB" % (mb_dev, tope)
+        estado, error = "error", "the dev packages take %d MB and the limit is %d MB" % (mb_dev, tope)
     # El lock para el repositorio: el `pylock.toml` ENTERO —lo de la sesión
     # incluido, fijado a su versión: es la restricción con la que se resolvió—,
     # con nuestra cabecera en vez del comando de uv. Sólo de una capa lista.
