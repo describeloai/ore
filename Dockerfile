@@ -739,6 +739,69 @@ USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/opt/ore/resolver.sh"]
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Etapa 9c · capa-python:1 — QUIEN RESUELVE LA CAPA DE PYTHON (0050 P2)
+#
+# El gemelo de `capa-node`: el MISMO Python que el puesto (de él salen el
+# intérprete y la plataforma para los que se resuelve, sin adivinarlos) y uv,
+# sin testigo ni credencial de nube —lo único que necesita es PyPI—. Comparte
+# `provisto.txt` con `puesto-python`: lo que la sesión trae es la restricción
+# con la que se resuelve, y lo que ninguna caja lleva.
+#
+# ⛔ uv FIJADO, como pyright: un resolvedor que se actualiza solo cambia qué
+#   versión gana sin que nadie lo decida.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM python:3.14-slim AS capa-python
+ARG UV=0.12.23
+COPY puesto/python/provisto.txt /opt/ore/provisto.txt
+COPY puesto/python/capa/capa.py /opt/ore/capa.py
+COPY puesto/python/capa/resolver.sh /opt/ore/resolver.sh
+RUN pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check uv==${UV} \
+ && chmod 0755 /opt/ore/resolver.sh \
+ && echo "$(python3 -V) · $(uv --version) · $(grep -c '==' /opt/ore/provisto.txt) paquete(s) provistos por el puesto" > /capa-python.txt
+
+# ── ⭐ Y SE PRUEBA AQUÍ, donde hay alguien mirando ─────────────────────────
+#
+# Un repositorio que declara `tomli-w` (corre), `pandas` (lo trae la sesión:
+# ninguna caja lo lleva), y en `dev` `sortedcontainers` (su caja) y `pytest`
+# (lo trae la sesión), más lo que no se honra (otro grupo, `include-group`).
+# La misma resolución da las mismas cajas, byte a byte; el digest es el de
+# `entorno::semilla_python`; y una versión que choca con la de la sesión es un
+# error que lo dice, no un aviso.
+RUN set -e; mkdir -p /tmp/p/arbol /tmp/p/choca; \
+    printf '%s\n' '[project]' 'name = "r"' 'dependencies = ["tomli-w==1.2.0", "pandas"]' \
+      '[dependency-groups]' 'lint = ["ruff"]' 'dev = ["sortedcontainers==2.4.0", "pytest==9.1.1", { include-group = "lint" }]' \
+      > /tmp/p/arbol/pyproject.toml; \
+    TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol ""; \
+    E=$(printf 'cp314\ndev:pytest==9.1.1\ndev:sortedcontainers==2.4.0\npandas\ntomli-w==1.2.0' | sha256sum | cut -c1-12); \
+    [ "$(cat /tmp/p/t/digest.txt)" = "capa-$E" ]; \
+    tar -tzf /tmp/p/t/capa.tgz | grep -q '^\./tomli_w/__init__\.py$'; \
+    ! tar -tzf /tmp/p/t/capa.tgz | grep -q -e '^\./pandas/' -e '^\./numpy/' -e 'sortedcontainers' -e 'ruff' || exit 1; \
+    tar -tzf /tmp/p/t/dev.tgz | grep -q '^\./sortedcontainers/__init__\.py$'; \
+    ! tar -tzf /tmp/p/t/dev.tgz | grep -q -e '^\./_pytest/' -e '^\./tomli_w/' -e 'ruff' || exit 1; \
+    grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
+    python3 -c "import json; l = json.load(open('/tmp/p/t/informe.json'))['lock']; assert l == ['dev:sortedcontainers==2.4.0', 'tomli-w==1.2.0'], l"; \
+    ! tar -tzf /tmp/p/t/capa.tgz | grep -qx '\./\.lock' || exit 1; \
+    grep -q '"suma"' /tmp/p/t/informe.json; grep -q '"sumaDev"' /tmp/p/t/informe.json; \
+    grep -q '^lock-version = "1.0"' /tmp/p/t/lock-del-repositorio.toml; \
+    grep -q '^name = "pandas"' /tmp/p/t/lock-del-repositorio.toml; \
+    grep -A1 '^name = "pandas"' /tmp/p/t/lock-del-repositorio.toml | grep -q '^version = "3.0.6"'; \
+    ! grep -q -e 'uv export' -e '"capa"' /tmp/p/t/lock-del-repositorio.toml || exit 1; \
+    S1=$(sha256sum /tmp/p/t/capa.tgz /tmp/p/t/dev.tgz | cut -c1-64); rm -rf /tmp/p/t; \
+    TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol "" >/dev/null; \
+    [ "$S1" = "$(sha256sum /tmp/p/t/capa.tgz /tmp/p/t/dev.tgz | cut -c1-64)" ]; \
+    cat /tmp/p/t/informe.json >> /capa-python.txt; \
+    printf '%s\n' '[project]' 'dependencies = ["pandas==2.2.3"]' > /tmp/p/choca/pyproject.toml; \
+    TRABAJO=/tmp/p/c /opt/ore/resolver.sh /tmp/p/choca ""; \
+    grep -q '"estado": "error"' /tmp/p/c/informe.json; \
+    grep -q 'pediste pandas 2.2.3, y esta sesión trae la 3.0.6' /tmp/p/c/informe.json; \
+    [ ! -e /tmp/p/c/capa.tgz ] && [ ! -e /tmp/p/c/lock-del-repositorio.toml ]; \
+    rm -rf /tmp/p /root/.cache
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/opt/ore/resolver.sh"]
+
 # ── 5 · El IdP (0048 I2) ─────────────────────────────────────────────────────
 #
 # Keycloak 26.0.7, COCIDO. Vino de la plataforma (`C:\Rubix\idp\Dockerfile`) tal cual,

@@ -1356,7 +1356,15 @@ mod prueba {
             .lines()
             .filter_map(|l| l.strip_prefix("FROM python:"))
             .collect();
-        assert_eq!(desde.len(), 1, "{desde:?}");
+        // `puesto-python` y `capa-python` (P2): el mismo Python, o la capa se
+        // resolvería para otro intérprete del que la corre.
+        assert_eq!(desde.len(), 2, "{desde:?}");
+        assert!(
+            desde
+                .iter()
+                .all(|d| d.split(' ').next() == desde[0].split(' ').next()),
+            "{desde:?}"
+        );
         let v = desde[0].split('-').next().unwrap();
         assert_eq!(format!("cp{}", v.replace('.', "")), ABI_PYTHON, "{desde:?}");
         // El mismo valor que da `hashlib` en el Job (calculado con Python).
