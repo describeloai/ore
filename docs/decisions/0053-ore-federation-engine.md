@@ -1,6 +1,6 @@
 # 0053 · ORE Federation Engine
 
-**Estado:** **aceptado** (2026-10-04) · F0 medido · **F1 cerrado** · **F2 cerrado** (2026-10-05: conectores v2 de Postgres, BigQuery y S3, en vivo) (contratos en [`docs/federation.md`](../federation.md); spec
+**Estado:** **aceptado** (2026-10-04) · F0 medido · **F1 cerrado** · **F2 cerrado** (2026-10-05: conectores v2 de Postgres, BigQuery y S3, en vivo) · **F3 cerrado** (2026-10-05: la pasarela `ore-federation` en cada celda, medida en vivo) (contratos en [`docs/federation.md`](../federation.md); spec
 [v1alpha24 `01-leer-el-origen`](../../vendor/oos/spec/v1alpha24/01-leer-el-origen.md)) · **Decide:** **leer el origen es un producto**, y
 uno solo: el ORE Federation Engine es la única vía por la que una celda lee un origen —consultarlo
 en vivo desde SQL, describirlo, catalogarlo, comprobarlo y copiarlo—, con sus conectores, sus
@@ -217,8 +217,17 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 |---|---|---|
 | **F3·1** · el binario | `ore-federation`: conectores `servir` calientes por familia y credencial, cola por origen (4, 16, 10 s), presupuesto (filas, bytes, tiempo) cortado en la pasarela y cancelado en el origen, `DELETE`/desconexión, *trailers* (nuevos en `ore-entrada`) y `GET /v1/read/{id}`, `/v1/connectors`, `/v1/origins`, `/v1/health`; en la imagen `ore-drivers` | ✓ |
 | **F3·2** · el kit de la pasarela | `ore-kit --pasarela`: 8 casos con la pasarela de verdad delante del conector; el CI los exige | ✓ **Postgres 8/8, S3 7 + 1 no aplica** (su `url` no lleva clave). Postgres: el mismo flujo lote a lote; 6 lecturas, ningún proceso nuevo (7–8 ms en caliente); 1000 filas justas con el origen limpio en ~5 ms; tiempo a los 1510 ms con tope 1500; **40 a la vez y nunca más de 4 sesiones en el origen**, el resto 503 con `Retry-After`, la que no cabe ni en la cola en 1–3 ms; `DELETE` y desconexión (~150–210 ms) dejan el origen limpio; la clave ni en el registro, ni en las respuestas, ni en `argv`/entorno de la pasarela y sus conectores; el ocioso se cierra con su sesión |
-| **F3·3** · la malla | plantilla por celda (Deployment, Service :8099, NetworkPolicy de entrada desde `ore-serve` y de salida de `ore-serve` hacia ella), `RollingUpdate` con `maxUnavailable: 0`; t-demo primero | pendiente (go de malla) |
-| **F3·4** · en vivo | `ore-serve federar-probar <b.s.t>` dentro de `ore-serve`: Neon, BigQuery y S3 de verdad; frío/caliente, primer byte, corte, concurrencia | pendiente |
+| **F3·3** · la malla | `malla/58-la-pasarela.yaml`, plantilla del inquilino: Deployment (sin root, raíz de sólo lectura, `RollingUpdate` con `maxUnavailable: 0`), Service :8099, entrada sólo desde `ore-serve` y la salida de `ore-serve` hacia ella; la KSA y el rol del driver (sin IAM nuevo) | ✓ (ba8ba0a) el aprovisionador la pintó **solo** en t-demo y t-victor en su pasada siguiente —ninguna migración a mano; una celda nueva la recibe en su alta—; las dos `1/1` con sus tres conectores |
+| **F3·4** · en vivo | `ore-serve federar-probar` dentro de `ore-serve` de t-victor, con la credencial del custodio como el agente (el camino de F4) | ✓ (5e20358) **Neon**: fría 2045 ms, caliente p50 669 ms; 50 a la vez → 20 completas y 30 `503` (cola llena), 0 errores. **BigQuery**: fría 1397 ms, caliente p50 626 ms; 20 a la vez, 20 completas; **2·10⁶ filas cortadas en 100 000 justas en 531 ms** (F0: ~117 s sin freno). **S3**: fría 415 ms, caliente p50 222 ms; corte a 100 en 107 ms; 20 a la vez, 20 completas. Ni la pasarela ni `ore-serve` dejan una credencial en su registro |
+
+**Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
+abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
+ONLY`, `SET LOCAL`, el portal, el `FETCH`, el `COMMIT`) contra un origen lejano. Guardar el plan por
+`(url, objeto)` y juntar las sentencias lo bajaría a una o dos idas: es del conector, para cuando F6
+consulte en vivo. (2) **Con 50 a la vez contra Neon, 30 se quedan fuera** (`503`, cola de 16): es la
+protección que se decidió —ni una pasó de 4 sesiones—, y la cola es configurable por celda
+(`ORE_FED_COLA`). (3) **Ninguna celda hubo que migrarla**: una plantilla del inquilino llega a todas
+por la convergencia (0054 la hace segura).
 
 **Lo que F3·2 destapó.** (1) El conector de Postgres no paraba al cancelar a mitad de un flujo: cancelaba
 la consulta en curso, y entre dos `FETCH` del portal no hay ninguna; el bucle seguía hasta el final
