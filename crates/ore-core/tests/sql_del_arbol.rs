@@ -597,6 +597,31 @@ spec:
     assert!(
         f("create materialized view ventas.grande as select id from ventas.deLaTabla").is_empty()
     );
+    // 0053 F7·3: `create or replace dataset … as select` desde el origen es
+    // una copia (la vista `<d>_consulta` y `d`); `insert` desde el origen, no
+    assert!(
+        f("create or replace dataset ventas.desde_el_origen as select id from ventas.pedidos_t")
+            .is_empty()
+    );
+    let u = guion(
+        "create or replace dataset ventas.desde_el_origen as select id from ventas.deLaTabla",
+    )
+    .unwrap();
+    let t = &u[0];
+    if let ore_core::sql_del_arbol::guion::Sentencia::Unidad(un) = &t.sentencia {
+        assert_eq!(
+            ore_core::sql_del_arbol::copia_desde_el_origen(&pkg, un).as_deref(),
+            Some("ventas.desde_el_origen_consulta")
+        );
+    } else {
+        panic!("no es una unidad");
+    }
+    let x = f("insert into ventas.pedidos select id from ventas.pedidos_t");
+    assert!(
+        x.iter()
+            .any(|x| x.mensaje.contains("insert` desde un origen todavía no")),
+        "{x:?}"
+    );
     // su copia se llamaría `ventas.nueva_copia`, que ya es otra cosa
     let x = f("create materialized view ventas.nueva as select id from ventas.pedidos");
     assert!(

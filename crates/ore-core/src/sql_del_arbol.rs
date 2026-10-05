@@ -884,8 +884,37 @@ fn hay_schema_declarado(pkg: &Package, base: &str, schema: &str) -> bool {
 
 /// [`cotejar`] con lo que las sentencias de antes del guion ya crearon: una
 /// base, un schema o un dataset de la sentencia 1 existen para la 2.
+/// 0053 F7·3 · **¿Lee de un origen?** Una `Table`, o una vista virtual que
+/// acaba en una. Una sentencia así que **escribe** es una copia desde el origen.
+pub fn lee_del_origen(pkg: &Package, u: &Unidad) -> bool {
+    u.lee.iter().any(|n| {
+        doc_de(pkg, &n.referencia()).is_some_and(|d| {
+            d.kind == Kind::Table
+                || (d.kind == Kind::View
+                    && !vistas::se_lee_de_datasets(pkg, d)
+                    && !crate::reparto::tablas_de_la_vista(pkg, d).is_empty())
+        })
+    })
+}
+
+/// 0053 F7·3 · `create or replace dataset d as select … from <origen>`: una
+/// **copia**, que la hace el Job (F7·2) como la de una vista SQL: la vista
+/// `d_consulta` con la consulta, y `d`, su copia. Es lo único que puede escribir
+/// desde un origen: `insert into … select` todavía no.
+pub fn copia_desde_el_origen(pkg: &Package, u: &Unidad) -> Option<String> {
+    let e = u.escribe.as_ref()?;
+    (e.modo == Modo::Sobrescribir && lee_del_origen(pkg, u))
+        .then(|| format!("{}{SUFIJO_DE_LA_CONSULTA}", e.destino.referencia()))
+}
+
+/// El sufijo de la vista que guarda la consulta de una copia desde el origen.
+pub const SUFIJO_DE_LA_CONSULTA: &str = "_consulta";
+
 fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> {
     let doc = |n: &Nombre| doc_de(pkg, &n.referencia());
+    // 0053 F7·3: escribir desde un origen es una copia; sólo `create or replace
+    // dataset … as select`, y lo que lee del origen se lee así (no es un fallo).
+    let copia = copia_desde_el_origen(pkg, u).is_some();
     let hay_paquete = |p: &str| hay_base(pkg, p) || creado.bases.contains(p);
     let sin_paquete = |n: &Nombre| {
         Fallo::new(
@@ -917,6 +946,7 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
         let r = n.referencia();
         match doc(n) {
             Some(d) if d.kind == Kind::Dataset => {}
+            Some(d) if d.kind == Kind::View && copia => {}
             Some(d) if d.kind == Kind::View => {
                 if !vistas::se_lee_de_datasets(pkg, d) {
                     fallos.push(
@@ -928,6 +958,14 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
                     );
                 }
             }
+            Some(d) if d.kind == Kind::Table && copia => {}
+            Some(d) if d.kind == Kind::Table && u.escribe.is_some() => fallos.push(
+                Fallo::new(
+                    format!("`{r}` es una `Table` de un origen: escribir desde ella es una copia, y una copia es `create or replace dataset … as select` (la rehace el Job); `insert` desde un origen todavía no"),
+                    n.pos,
+                )
+                .ayuda("`create or replace dataset b.s.d as select … from …`"),
+            ),
             Some(d) if d.kind == Kind::Table => fallos.push(
                 Fallo::new(
                     format!("`{r}` es una `Table` de una fuente, no un dataset: se lee por un `Dataset` que la copie, nunca del origen"),

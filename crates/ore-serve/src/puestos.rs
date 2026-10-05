@@ -3352,6 +3352,26 @@ fn celda_de_sentencia(
     );
     let cuerpo = match &t.sentencia {
         S::Unidad(u) => {
+            // 0053 F7·3: escribir desde un origen es una copia —la vista con su
+            // consulta y el dataset que la copia—, y la hace el Job (F7·2).
+            if let (Some(vista), Some(e)) = (
+                ore_core::sql_del_arbol::copia_desde_el_origen(pkg, u),
+                u.escribe.as_ref(),
+            ) {
+                let destino = e.destino.referencia();
+                return (
+                    format!(
+                        "{cabeza}from ore import create_view\n\n\
+                         _hecho = create_view({}, {}, or_replace=True, materialized=True, copy={})\n\
+                         print(\"%s · a copy from the origin: the view %s holds the query, and the job \
+                         recomputes the copy on each pass\" % (_hecho[\"copy\"], _hecho[\"view\"]))\n",
+                        c(&vista),
+                        c(&u.consulta),
+                        c(&destino)
+                    ),
+                    "python",
+                );
+            }
             let anclada = ore_core::sql_del_arbol::anchored_to(pkg, u);
             return celda_de_unidad(codigo, u, anclada.as_deref());
         }
@@ -4403,6 +4423,36 @@ mod prueba {
             "90-anclada".into(),
             celda_de_unidad("x.sql", &u, Some("ventas.docs")).0,
         ));
+        // 0053 F7·3: escribir desde un origen es una copia (`create_view(…,
+        // materialized=True, copy=…)`): hace falta un árbol con una `Table`.
+        let con_tabla = vacio.join("con-tabla");
+        for (f, t) in [
+            (
+                "ontology.config.yaml",
+                "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: x, version: 0.1.0 }\n\
+                 datasources:\n  - { name: pg, type: postgres, connectionEnv: PG }\n",
+            ),
+            (
+                "packages/pg/package.yaml",
+                "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: pg, version: 0.1.0, status: draft, domain: pg }\n\
+                 spec: { owner: team:x }\n",
+            ),
+            (
+                "packages/pg/tables/t.yaml",
+                "apiVersion: oos.dev/v1alpha22\nkind: Table\nmetadata: { name: t, namespace: pg }\n\
+                 spec:\n  datasource: pg\n  object: public.t\n  columns:\n    id: { type: Integer }\n  reads: { fullScan: cheap }\n  changes:\n    key: [id]\n",
+            ),
+        ] {
+            let p = con_tabla.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        }
+        let (pkg_t, _) = ore_core::validate::cargar_paquete(&con_tabla);
+        let t = guion("create or replace dataset ventas.desde_t as select id from pg.t").unwrap();
+        let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t);
+        assert_eq!(l, "python");
+        assert!(c.contains("copy=\"ventas.desde_t\""), "{c}");
+        corpus.push(("91-desde-el-origen".into(), c));
         assert!(corpus.len() >= 15, "{}", corpus.len());
         let sdk = include_str!("../../../puesto/python/ore/__init__.py");
         // Lo que el SDK exporta: su `__all__` (lo público) y sus `def` del

@@ -1677,7 +1677,7 @@ def _ruta_de_vista(nombre, kind="View"):
       "existe": "exists", "anterior": "previous_columns", "materializada": "materialized"})
 def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=False,
                 if_not_exists=False, schema_evolution=False, exists=None, previous_columns=None,
-                materialized=False):
+                materialized=False, copy=None):
     """`create [or replace] view [if not exists] db.schema.v [(col [comment '…'], …)]
     [comment '…'] [with schema evolution] as <sql>` (ADR 0040 step 5).
 
@@ -1691,7 +1691,9 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
 
     `materialized` (`create materialized view`, ADR 0040 step 7): after the
     view, its copy —the dataset `<view>_copia`, `from: { view }`—; whoever
-    reads the view reads its copy. Then it also returns `copy`."""
+    reads the view reads its copy. Then it also returns `copy`. `copy` names it
+    (0053 F7·3: `create or replace dataset d as select … from <origin>` is the
+    view `d_consulta` and its copy `d`)."""
     nombre, columnas, comentario, dueno = name, columns, comment, owner
     o_reemplaza, si_no_existe, evolucion = or_replace, if_not_exists, schema_evolution
     existe, anterior, materializada = exists, previous_columns, materialized
@@ -1736,7 +1738,7 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
     _poner(que, _ruta_de_vista(nombre), texto)
     hecho = _Result({"view": nombre, "status": estado, "columns": contrato})
     if materializada:
-        copia = nombre + "_copia"
+        copia = _corto(copy, "create view: the copy") if copy else nombre + "_copia"
         _poner(que, _ruta_de_vista(copia, "Dataset"), _yaml_de_copia(copia, nombre, dueno))
         hecho["copy"] = copia
     return hecho
