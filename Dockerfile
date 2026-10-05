@@ -179,6 +179,9 @@ COPY --from=bin /b/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
 COPY --from=bin /b/ore-read-postgres  /usr/local/bin/ore-read-postgres
 COPY --from=bin /b/ore-read-bigquery  /usr/local/bin/ore-read-bigquery
 COPY --from=bin /b/ore-read-s3        /usr/local/bin/ore-read-s3
+# La pasarela del Federation Engine (0053 F3): junto a los conectores, que
+# lanza como procesos `servir` calientes; los busca en su mismo directorio.
+COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation
 COPY --from=bin /b/ore-fetch          /usr/local/bin/ore-fetch
 COPY --from=bin /b/ore-log            /usr/local/bin/ore-log
 COPY --from=bin /b/ore-sign           /usr/local/bin/ore-sign

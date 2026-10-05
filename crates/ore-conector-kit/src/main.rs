@@ -3,7 +3,11 @@
 //! ```text
 //! ore-kit --conector <binario> --banco postgres|s3|bigquery [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
+//!         [--pasarela <ore-federation>]
 //! ```
+//!
+//! Con `--pasarela`, en vez de los 14 casos del conector corren los 8 de la
+//! pasarela (ADR 0053 F3·2): la pasarela de verdad, con ese conector detrás.
 //!
 //! Sin `--exige` es la **línea de base**: dice cómo está y sale con 0. Con él,
 //! sale con 1 si alguno de esos casos falla —es lo que el CI pide a un conector
@@ -25,17 +29,17 @@ use ore_core::json::Json;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-fn lista(s: &str) -> Result<Vec<u8>, String> {
+fn lista(s: &str, hasta: u8) -> Result<Vec<u8>, String> {
     if s == "todos" {
-        return Ok((1..=14).collect());
+        return Ok((1..=hasta).collect());
     }
     s.split(',')
         .map(|n| {
             n.trim()
                 .parse::<u8>()
                 .ok()
-                .filter(|n| (1..=14).contains(n))
-                .ok_or_else(|| format!("`{n}` no es un caso (1–14)"))
+                .filter(|n| (1..=hasta).contains(n))
+                .ok_or_else(|| format!("`{n}` no es un caso (1–{hasta})"))
         })
         .collect()
 }
@@ -57,12 +61,14 @@ fn intentar() -> Result<bool, String> {
     };
     let conector = valor("--conector").ok_or("falta `--conector <binario>`")?;
     let familia = valor("--banco").ok_or("falta `--banco postgres|s3`")?;
+    let pasarela = valor("--pasarela");
+    let hasta = if pasarela.is_some() { 8 } else { 14 };
     let solo = valor("--casos")
-        .map(|s| lista(&s))
+        .map(|s| lista(&s, hasta))
         .transpose()?
         .unwrap_or_default();
     let exige = valor("--exige")
-        .map(|s| lista(&s))
+        .map(|s| lista(&s, hasta))
         .transpose()?
         .unwrap_or_default();
 
@@ -86,7 +92,19 @@ fn intentar() -> Result<bool, String> {
     banco.cargar()?;
     let c = Conector::new(PathBuf::from(&conector));
     eprintln!("ore-kit: {conector}");
-    let resultados = casos::correr(&c, banco.as_mut(), &solo);
+    let resultados = match &pasarela {
+        Some(p) => {
+            eprintln!("ore-kit: la pasarela {p}");
+            ore_conector_kit::pasarela::correr(
+                &PathBuf::from(p),
+                &c,
+                &PathBuf::from(&conector),
+                banco.as_mut(),
+                &solo,
+            )?
+        }
+        None => casos::correr(&c, banco.as_mut(), &solo),
+    };
 
     println!("| caso | | estado | detalle |\n|---|---|---|---|");
     for r in &resultados {

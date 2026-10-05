@@ -57,7 +57,17 @@ pub const CAPACIDADES: Capacidades = Capacidades {
 };
 
 /// La cancelación de la sesión en curso, a mano de quien cancela.
-pub type Token = Arc<Mutex<Option<postgres::CancelToken>>>;
+pub type Token = Arc<Mutex<Sesion>>;
+
+/// Lo que se cancela: la consulta que corre en el origen (`token`) y, entre
+/// un `FETCH` y el siguiente —cuando en el origen no corre nada—, la marca
+/// que el bucle mira (0053 F3·2: sin ella, cancelar a mitad de un flujo no
+/// paraba el bucle, que pedía lotes hasta el final).
+#[derive(Default)]
+pub struct Sesion {
+    pub token: Option<postgres::CancelToken>,
+    pub cancelada: bool,
+}
 
 fn tls() -> Result<postgres_native_tls::MakeTlsConnector, Fallo> {
     native_tls::TlsConnector::new()
@@ -67,7 +77,10 @@ fn tls() -> Result<postgres_native_tls::MakeTlsConnector, Fallo> {
 
 /// Cancela en el origen lo que corre en la sesión de `token`, si algo corre.
 pub fn cancelar(token: &Token) {
-    let t = token.lock().ok().and_then(|t| t.clone());
+    let t = token.lock().ok().and_then(|mut s| {
+        s.cancelada = true;
+        s.token.clone()
+    });
     if let (Some(t), Ok(tls)) = (t, tls()) {
         let _ = t.cancel_query(tls);
     }
@@ -364,8 +377,9 @@ pub fn leer(
 ) -> Result<u64, Fallo> {
     let inicio = Instant::now();
     let plan = planear(c, p)?;
-    if let Ok(mut t) = token.lock() {
-        *t = Some(c.cancel_token());
+    if let Ok(mut s) = token.lock() {
+        s.token = Some(c.cancel_token());
+        s.cancelada = false;
     }
     let ps = parametros(&plan.consulta);
     let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = ps
@@ -395,6 +409,9 @@ pub fn leer(
                 Codigo::Tiempo,
                 format!("se agotaron los {ms} ms con {n} filas leídas"),
             ));
+        }
+        if token.lock().map(|s| s.cancelada).unwrap_or(false) {
+            return Err(Fallo::origen(format!("cancelada con {n} filas leídas")));
         }
         let filas = tx
             .query_portal(&portal, LOTE as i32)
@@ -444,8 +461,8 @@ pub fn leer(
         .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
     drop(portal);
     tx.commit().map_err(|e| fallo_de(&e))?;
-    if let Ok(mut t) = token.lock() {
-        *t = None;
+    if let Ok(mut s) = token.lock() {
+        s.token = None;
     }
     Ok(n)
 }

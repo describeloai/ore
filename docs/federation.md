@@ -226,6 +226,29 @@ estado y sin hablar con el custodio. Sólo `ore-serve` puede llamarla (NetworkPo
   correspondiente (`400` operador, `404` objeto, `502` origen o credencial, `503` saturado, `504`
   tiempo).
 
+**Hecho código** (F3·1 y F3·2): `crates/ore-federation`, en la imagen `ore-drivers` junto a los
+conectores. Lo que el contrato de arriba no decía y la construcción decidió:
+
+- **Un proceso `servir` es una lectura a la vez** (su bucle es secuencial): la concurrencia de un
+  origen es su número de procesos, y los libres se guardan calientes, uno por credencial (la clave
+  es una huella de `tipo` + `url`, nunca la `url`).
+- **El presupuesto se empuja y se cumple.** Al conector van `limit = filas + 1` y
+  `timeoutMs = ms`, así que corta en el origen; la pasarela lee el Arrow lote a lote, corta en la
+  fila exacta, y por bytes recorta el lote por su peso medio por fila (con el tamaño en memoria,
+  que es unas 3 veces el del cable: nunca se pasa). Que salte el `timeoutMs` del conector es el
+  mismo corte por tiempo que el reloj de la pasarela.
+- **Lo cortado es un flujo Arrow válido**, con su fin: las filas hasta el corte, y los *trailers*
+  (`ore-estado: cortado`, `ore-motivo`) dicen por qué. Una desconexión no lleva fin.
+- **Un conector caliente cuya conexión murió** (el origen se reinició, alguien la terminó) contesta
+  `conexion` antes del primer byte: se relanza **una** vez. Leer es repetible y no salió nada.
+- **Cancelar entre dos `FETCH`**: el conector de Postgres sólo cancelaba la consulta que corría en
+  el origen, y entre un lote y el siguiente no corre nada: el bucle seguía hasta el final (una
+  desconexión tardaba 6,1 s en parar el origen). Ahora mira una marca antes de cada `FETCH`: ~150 ms.
+- La salida de error de un conector se **tapa** con la `url` antes de salir (segunda puerta).
+
+El kit lo prueba con la pasarela de verdad: `ore-kit --pasarela <ore-federation>` (8 casos; el CI
+los exige contra Postgres y S3).
+
 ## 4. El coordinador `ore-serve`
 
 Es quien **decide**. Una lectura en vivo entra por `POST /federation/read` (desde un puesto, con

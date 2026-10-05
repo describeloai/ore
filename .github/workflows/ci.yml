@@ -466,7 +466,7 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -475,6 +475,18 @@ jobs:
           echo "### ore-read-postgres" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-postgres --banco postgres \
             --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ⭐ 0053 F3·2: la pasarela de verdad delante del conector —el mismo
+      #   flujo, caliente, el presupuesto, la cola, cancelar, la credencial, el
+      #   ocioso y los errores—. Contra Postgres, que tiene algo lento que
+      #   cortar y sesiones que contar.
+      - name: la pasarela, con Postgres detrás
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432/kit
+        run: |
+          echo "### ore-federation · postgres" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-postgres --banco postgres \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: el conector de S3
         run: |
@@ -485,6 +497,9 @@ jobs:
           echo "### ore-read-s3" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-s3 --banco s3 \
             --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### ore-federation · s3" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-s3 --banco s3 \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):
       # lo que el BigQuery de verdad contestó, sin red ni token ni coste. Por

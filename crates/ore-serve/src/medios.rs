@@ -272,6 +272,7 @@ pub(crate) fn redireccion(r: &Respuesta) -> Option<ore_entrada::http::Salida> {
         cabeceras,
         largo: Some(cuerpo.len() as u64),
         lector: Box::new(std::io::Cursor::new(cuerpo)),
+        finales: None,
     }))
 }
 

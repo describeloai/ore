@@ -211,6 +211,7 @@ pub fn abrir(
         cabeceras,
         largo,
         lector,
+        finales: None,
     })
 }
 

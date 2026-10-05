@@ -1,0 +1,34 @@
+[package]
+name    = "ore-federation"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "La pasarela del Federation Engine: conectores calientes, una cola por origen y un presupuesto por lectura (ADR 0053 F3)"
+
+[[bin]]
+name = "ore-federation"
+path = "src/main.rs"
+
+[dependencies]
+# La forma canónica y el analizador.
+ore-core = { path = "../ore-core" }
+
+# El servidor HTTP de ORE, el mismo que `ore-serve` y `ore-medios`: un hilo
+# por conexión, flujos troceados y, desde F3, sus *trailers*.
+ore-entrada = { path = "../ore-entrada" }
+
+# La petición v2, los fallos tipados, `tapar` y el marco de `servir`.
+ore-driver = { path = "../ore-driver" }
+
+# **El presupuesto se cuenta en filas**, y las filas viven dentro del flujo
+# Arrow: la pasarela lo lee lote a lote y lo vuelve a escribir, y así corta en
+# la fila exacta. Las mismas versiones que los conectores.
+arrow-array  = "58"
+arrow-schema = "58"
+arrow-ipc    = "58"
+
+[target.'cfg(unix)'.dependencies]
+# Matar un conector que no suelta tras cancelar (SIGKILL por su pid).
+libc = "0.2"

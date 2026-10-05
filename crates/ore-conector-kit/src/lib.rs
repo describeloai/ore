@@ -22,6 +22,7 @@
 pub mod bancos;
 pub mod casos;
 pub mod conector;
+pub mod pasarela;
 pub mod respuesta;
 pub mod semilla;
 

@@ -211,6 +211,22 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 
 **Lo que F2·5 dejó dicho.** (1) Para rehacer la copia desde un puesto hizo falta abrir ese verbo en la puerta del agente (`POST /paquetes/{n}/copia/rehacer`, en la rama del puesto y en nombre de quien lo abrió; nunca en `main`). (2) `standard_test.public.brain_embeddings` sigue en `error`, igual que antes de F2: su columna es `vector` (pgvector), un tipo de extensión que el conector de Postgres no sabe leer por texto ni tiene en Arrow. Es un hueco del conector, no una regresión; queda para cuando haga falta (lista de tipos de extensión, o `vector` → lista de `float4`). (3) Entre F2·4 y F2·5 el incidente de los custodios ([`0054`](0054-converger-sin-romper.md)) dejó t-demo y t-victor sin base: el cierre esperó a recuperarlos.
 
+### F3 en hitos
+
+| hito | qué | sale |
+|---|---|---|
+| **F3·1** · el binario | `ore-federation`: conectores `servir` calientes por familia y credencial, cola por origen (4, 16, 10 s), presupuesto (filas, bytes, tiempo) cortado en la pasarela y cancelado en el origen, `DELETE`/desconexión, *trailers* (nuevos en `ore-entrada`) y `GET /v1/read/{id}`, `/v1/connectors`, `/v1/origins`, `/v1/health`; en la imagen `ore-drivers` | ✓ |
+| **F3·2** · el kit de la pasarela | `ore-kit --pasarela`: 8 casos con la pasarela de verdad delante del conector; el CI los exige | ✓ **Postgres 8/8, S3 7 + 1 no aplica** (su `url` no lleva clave). Postgres: el mismo flujo lote a lote; 6 lecturas, ningún proceso nuevo (7–8 ms en caliente); 1000 filas justas con el origen limpio en ~5 ms; tiempo a los 1510 ms con tope 1500; **40 a la vez y nunca más de 4 sesiones en el origen**, el resto 503 con `Retry-After`, la que no cabe ni en la cola en 1–3 ms; `DELETE` y desconexión (~150–210 ms) dejan el origen limpio; la clave ni en el registro, ni en las respuestas, ni en `argv`/entorno de la pasarela y sus conectores; el ocioso se cierra con su sesión |
+| **F3·3** · la malla | plantilla por celda (Deployment, Service :8099, NetworkPolicy de entrada desde `ore-serve` y de salida de `ore-serve` hacia ella), `RollingUpdate` con `maxUnavailable: 0`; t-demo primero | pendiente (go de malla) |
+| **F3·4** · en vivo | `ore-serve federar-probar <b.s.t>` dentro de `ore-serve`: Neon, BigQuery y S3 de verdad; frío/caliente, primer byte, corte, concurrencia | pendiente |
+
+**Lo que F3·2 destapó.** (1) El conector de Postgres no paraba al cancelar a mitad de un flujo: cancelaba
+la consulta en curso, y entre dos `FETCH` del portal no hay ninguna; el bucle seguía hasta el final
+(6,1 s para soltar el origen tras una desconexión). Mira una marca antes de cada `FETCH` (~150 ms);
+el kit del conector sigue 14/14. (2) Un conector caliente con la conexión muerta fallaba la lectura
+siguiente (`57P01`): se relanza una vez. (3) Dos relojes —el `timeoutMs` empujado y el de la
+pasarela— son el mismo corte por tiempo.
+
 **La línea de base de F2·1** (2026-10-04, en local; el CI la repite en cada empuje):
 
 | caso | Postgres v1 | S3 v1 |

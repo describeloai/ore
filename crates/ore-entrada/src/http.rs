@@ -253,6 +253,18 @@ pub struct Bytes {
     pub cabeceras: Vec<(String, String)>,
     pub largo: Option<u64>,
     pub lector: Box<dyn Read + Send>,
+    /// Lo que se dice **al final** (0053 F3): los *trailers* de una respuesta
+    /// troceada, que sólo se saben cuando el cuerpo terminó —cómo acabó una
+    /// lectura del origen, cuántas filas—. Sin `largo`; con él no se escriben.
+    pub finales: Option<Finales>,
+}
+
+/// Los *trailers* de un cuerpo troceado (RFC 9110 §6.5): sus nombres van en la
+/// cabecera `trailer`, y sus valores se piden al terminar el cuerpo entero. Si
+/// el cuerpo se corta a mitad, no se piden: quien lee ve un cuerpo sin final.
+pub struct Finales {
+    pub nombres: Vec<String>,
+    pub valores: Box<dyn FnOnce() -> Vec<(String, String)> + Send>,
 }
 
 impl From<Respuesta> for Salida {
@@ -355,6 +367,7 @@ fn texto(codigo: u16) -> &'static str {
         501 => "Not Implemented",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Unknown",
     }
 }
@@ -566,6 +579,22 @@ fn emitir_bytes(flujo: &mut TcpStream, mut b: Bytes) {
         Some(n) => cabeza.push_str(&format!("content-length: {n}\r\n")),
         None => cabeza.push_str("transfer-encoding: chunked\r\n"),
     }
+    let finales = if b.largo.is_none() {
+        b.finales.take()
+    } else {
+        None
+    };
+    if let Some(f) = &finales {
+        let nombres: Vec<&str> = f
+            .nombres
+            .iter()
+            .map(String::as_str)
+            .filter(|n| !n.contains(['\r', '\n', ':', ',']))
+            .collect();
+        if !nombres.is_empty() {
+            cabeza.push_str(&format!("trailer: {}\r\n", nombres.join(", ")));
+        }
+    }
     cabeza.push_str(
         "connection: close\r\n\
          cache-control: no-store\r\n\
@@ -600,7 +629,18 @@ fn emitir_bytes(flujo: &mut TcpStream, mut b: Bytes) {
         }
     }
     if b.largo.is_none() {
-        let _ = flujo.write_all(b"0\r\n\r\n");
+        let mut fin = String::from("0\r\n");
+        if let Some(f) = finales {
+            for (k, v) in (f.valores)() {
+                // Como una cabecera: un salto de línea partiría la respuesta.
+                if k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']) {
+                    continue;
+                }
+                fin.push_str(&format!("{k}: {v}\r\n"));
+            }
+        }
+        fin.push_str("\r\n");
+        let _ = flujo.write_all(fin.as_bytes());
     }
     let _ = flujo.flush();
 }
@@ -1163,6 +1203,7 @@ mod pruebas_del_flujo {
                     ],
                     largo: sabido.then_some(4),
                     lector: Box::new(std::io::Cursor::new(b"%PDF".to_vec())),
+                    finales: None,
                 })
             });
         });
@@ -1175,6 +1216,44 @@ mod pruebas_del_flujo {
         let t = pedir_crudo(puerto, "/troceado");
         assert!(t.contains("transfer-encoding: chunked"), "{t}");
         assert_eq!(destrocear(t.split_once("\r\n\r\n").unwrap().1), "%PDF");
+    }
+
+    /// 0053 F3: los *trailers* se anuncian en la cabecera y salen tras el
+    /// último trozo, con lo que sólo se sabe al terminar; uno con un salto de
+    /// línea no sale. Con `largo` no se escriben.
+    #[test]
+    fn los_finales_salen_tras_el_ultimo_trozo() {
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _ = servir_con_flujos(escucha, |p| {
+                let largo = (p.ruta == "/sabido").then_some(4);
+                Salida::Bytes(Bytes {
+                    codigo: 200,
+                    cabeceras: vec![],
+                    largo,
+                    lector: Box::new(std::io::Cursor::new(b"ARRW".to_vec())),
+                    finales: Some(Finales {
+                        nombres: vec!["ore-estado".into(), "ore-filas".into()],
+                        valores: Box::new(|| {
+                            vec![
+                                ("ore-estado".into(), "completo".into()),
+                                ("ore-filas".into(), "4".into()),
+                                ("ore-colado".into(), "a\r\nx: y".into()),
+                            ]
+                        }),
+                    }),
+                })
+            });
+        });
+        let t = pedir_crudo(puerto, "/troceado");
+        assert!(t.contains("trailer: ore-estado, ore-filas\r\n"), "{t}");
+        assert!(
+            t.ends_with("4\r\nARRW\r\n0\r\nore-estado: completo\r\nore-filas: 4\r\n\r\n"),
+            "{t:?}"
+        );
+        let t = pedir_crudo(puerto, "/sabido");
+        assert!(!t.contains("trailer") && !t.contains("ore-estado"), "{t}");
     }
 
     /// 0049 B4b·1: una subida llega en flujo —binaria, más grande que

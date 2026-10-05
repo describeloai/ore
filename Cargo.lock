@@ -2575,6 +2575,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-federation"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "libc",
+ "ore-core",
+ "ore-driver",
+ "ore-entrada",
+]
+
+[[package]]
 name = "ore-fetch"
 version = "0.1.0"
 dependencies = [
