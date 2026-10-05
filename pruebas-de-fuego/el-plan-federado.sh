@@ -105,9 +105,22 @@ espera "forbidden sin filtro → 422 OOS2044" 'codigo="OOS2044"' -- --table pg.p
 espera "forbidden con filtro empujado → ok" 'ok=true' -- --table pg.public.prohibida --filters '[{"columna":"id","operador":"eq","valor":"1"}]'
 espera "requiredFilters sin pais → 422 OOS2045" 'codigo="OOS2045"' -- --table pg.public.exigente --filters '[{"columna":"id","operador":"gt","valor":"1"}]'
 espera "requiredFilters con pais in → ok, expensive" 'ok=true' 'fullScan="expensive"' -- --table pg.public.exigente --filters '[{"columna":"pais","operador":"in","valor":["ES","FR"]}]'
+# ── `ore explain` (F5·2): el reparto de una sentencia, en texto y en JSON ──
+ex() { "$ORE" explain --path "$A" --policy "$M" "$@" 2>&1; }
+r=$(ex "SELECT id FROM pg.public.barata WHERE pais = 'ES' AND upper(pais) = 'ES'")
+case "$r" in *"al origen"*"filtros   pais = 'ES'"*"en DuckDB    upper(pais) = 'ES'"*) dice "explain en texto: lo empujado y lo que queda en DuckDB" ;; *) falla "explain en texto: $r" ;; esac
+r=$(ex --json "SELECT id FROM pg.public.barata WHERE pais IN ('ES','FR') LIMIT 5")
+case "$r" in *'"limit":5'*'"ok":true'*) dice "explain --json: el limit baja con todo empujado" ;; *) falla "explain --json: $r" ;; esac
+r=$(ex "SELECT * FROM pg.public.prohibida WHERE upper(pais) = 'ES'"); c=$?
+case "$r" in *"error[OOS2044]"*) dice "explain de forbidden sin filtro empujado → error[OOS2044]" ;; *) falla "explain forbidden: $r" ;; esac
+r=$(ex --json "SELECT b.id FROM pg.public.barata b JOIN pg.public.exigente e ON b.id = e.id WHERE e.pais = 'ES'")
+case "$r" in *'"tabla":"pg.public.barata"'*'"presupuesto":true'*'"tabla":"pg.public.exigente"'*) dice "explain de una junta: una lectura por tabla" ;; *) falla "explain junta: $r" ;; esac
+r=$(ex --json "PIVOT pg.public.barata ON pais USING count(*)")
+case "$r" in *'"entendida":false'*) dice "explain de lo que no se analiza: se lee sin empujar (B)" ;; *) falla "explain B: $r" ;; esac
+
 # Apagar en main la apaga en todas las ramas.
 "$ORE" source federation pg off --path "$M" >/dev/null
 espera "apagada en main → 403 en la rama" 'codigo="federacion"' -- --table pg.public.barata
 
 echo
-[ "$MAL" = 0 ] && echo "✓ el plan federado (0053 F4·1)" || { echo "✗ el plan federado"; exit 1; }
+[ "$MAL" = 0 ] && echo "✓ el plan federado (0053 F4·1 y F5·2)" || { echo "✗ el plan federado"; exit 1; }

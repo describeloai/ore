@@ -366,6 +366,11 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
         return ejecutar_emit(caso);
     }
 
+    // `plan/` (v1alpha24): planificar una lectura en vivo, con `ore explain`.
+    if caso.grupo == "plan" {
+        return ejecutar_plan(caso, primer_codigo);
+    }
+
     // Cada grupo por su operación: `validate` para `valid/` e `invalid/`,
     // `diff` para `diff/`, `compile` para `canonical/` y `digest/`, `export`
     // para `emit/` y `pack` para `pack/`.
@@ -430,6 +435,41 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
                 Err("operación no implementada en el runner".into())
             }
         }
+    }
+}
+
+/// Un caso de `plan/` (v1alpha24 `01` §3–§5): `ore explain` sobre su consulta
+/// y su árbol, sin el interruptor de la fuente (es de ORE, no de la spec).
+fn ejecutar_plan(caso: &Case, primer_codigo: fn(&str) -> Option<String>) -> Result<(), String> {
+    let texto = std::fs::read_to_string(caso.dir.join("case.yaml")).unwrap_or_default();
+    let consulta = campo(&texto, "query").unwrap_or_else(|| "query.sql".into());
+    let salida = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .arg("explain")
+        .arg("--conformance")
+        .arg("--file")
+        .arg(caso.dir.join(consulta))
+        .arg("--path")
+        .arg(caso.dir.join("input"))
+        .output()
+        .map_err(|e| format!("no se pudo invocar `ore`: {e}"))?;
+    let todo = format!(
+        "{}{}",
+        String::from_utf8_lossy(&salida.stdout),
+        String::from_utf8_lossy(&salida.stderr)
+    );
+    match (&caso.expects, salida.status.success()) {
+        (Expects::Accept, true) => Ok(()),
+        (Expects::Accept, false) => Err(format!(
+            "rechazado con {}",
+            primer_codigo(&todo).unwrap_or_default()
+        )),
+        (Expects::Error(e), true) => Err(format!("aceptado, pero debía fallar con {e}")),
+        (Expects::Error(e), false) => match primer_codigo(&todo) {
+            Some(c) if &c == e => Ok(()),
+            Some(c) => Err(format!("falló con {c}, se esperaba {e}")),
+            None => Err("falló sin emitir código".into()),
+        },
+        _ => Err("operación no implementada en el runner".into()),
     }
 }
 

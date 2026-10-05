@@ -61,6 +61,10 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         que trae `ore-serve`—",
     ),
     (
+        &["explain"],
+        "el reparto de una sentencia (0053 F5): qué va al origen y qué queda en el motor, del         árbol y la política de main; NO abre el origen",
+    ),
+    (
         &["source", "induce"],
         "escribe los punteros de la fuente desde su catálogo YA LEÍDO (0045 P3′); no abre nada",
     ),

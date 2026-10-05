@@ -267,7 +267,7 @@ también al lado de un `LEFT JOIN` que puede quedar a nulo.
 | hito | qué | sale |
 |---|---|---|
 | **F5·1** · el reparto | `ore_core::reparto::repartir`: columnas usadas (`*` todas), conjunciones `col op literal` (`=`, `<>`, rangos, `IN`, `IS [NOT] NULL`, `LIKE`, `BETWEEN`) que admiten la tabla **y** el conector, los `ON` (el lado de dentro de un `LEFT JOIN` sí; el conservado y un `FULL JOIN` no), `limit` + `OFFSET` + `ORDER BY` sólo sin nada en el motor, vistas/`WITH`/subconsultas que son proyección limpia, subconsultas correlacionadas, A, B y C; coste (`OOS2045` antes que `OOS2044`, como fija la spec) y gobierno por tabla | ✓ 26 tests, entre ellos **los 9 casos `plan/` de v1alpha24, corridos por primera vez** |
-| **F5·2** · `explain` | `ore explain` (texto y JSON), `ore federate` sobre el reparto, el verbo en la lista de `ore-serve`, `plan/` en la suite de conformidad | pendiente |
+| **F5·2** · `explain` | `ore explain "<sentencia>" [--file] [--policy] [--json]`: por tabla, lo que va al origen (columnas, filtros, `limit` y orden), lo que queda en DuckDB, el coste y los avisos; un no, `error[CÓDIGO]`. `ore federate` escribe su petición como la sentencia que es y decide con el reparto (lo que quedaría en el motor sigue siendo `422 empuje`: esa ruta no tiene motor). `explain` en la lista de verbos de `ore-serve` | ✓ `el-plan-federado.sh` 13 + 5 de `explain`; **la suite de conformidad corre `plan/` con `ore explain`: v1alpha24 13/13** |
 | **F5·3** · medido | el reparto sobre un corpus: las sentencias de DuckDB y consultas reales de victor | pendiente |
 
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se

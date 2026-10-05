@@ -17,6 +17,7 @@ mod colecciones;
 mod datasets;
 mod deriva;
 mod empaquetar;
+mod explicar;
 mod federar;
 mod fuente;
 mod fuente_inducida;
@@ -484,6 +485,31 @@ enum Command {
     /// Registra una fuente física, separando la credencial de la conexión.
     #[command(name = "source", subcommand)]
     Source(AccionFuente),
+    /// **Qué va al origen y qué queda en el motor** (ADR 0053 F5): el reparto
+    /// de una sentencia SQL, por cada `Table` que lee. No abre nada.
+    Explain {
+        /// La sentencia (o `--file`).
+        #[arg(conflicts_with = "file", required_unless_present = "file")]
+        sql: Option<String>,
+        /// Un fichero con la sentencia.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Un directorio con el `ontology.config.yaml` y el `conduits.yaml`
+        /// de `main`: la política que manda.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// La lectura acaba en el código de un puesto (`contextSurface.workspace`).
+        #[arg(long)]
+        from_workspace: bool,
+        /// Una línea JSON en vez de texto.
+        #[arg(long)]
+        json: bool,
+        /// La suite de conformidad: sin el interruptor de la fuente, que es de ORE.
+        #[arg(long, hide = true)]
+        conformance: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// **El plan de una lectura en vivo** (ADR 0053 F4): qué pedir al origen
     /// de una `Table`, o por qué no. Una línea JSON; no abre nada.
     Federate {
@@ -1602,6 +1628,35 @@ fn main() -> std::process::ExitCode {
         Command::Source(AccionFuente::Federation { name, estado, path }) => {
             return fuente::federacion(path, name, estado == "on");
         }
+        Command::Explain {
+            sql,
+            file,
+            policy,
+            from_workspace,
+            json,
+            conformance,
+            path,
+        } => {
+            let sql = match (sql, file) {
+                (Some(s), _) => s.clone(),
+                (None, Some(f)) => match std::fs::read_to_string(f) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("error: no se pudo leer `{}`: {e}", f.display());
+                        return std::process::ExitCode::FAILURE;
+                    }
+                },
+                (None, None) => unreachable!("clap exige una de las dos"),
+            };
+            return explicar::explicar(&explicar::Pedido {
+                raiz: path,
+                sql,
+                politica: policy.as_deref(),
+                desde_puesto: *from_workspace,
+                json: *json,
+                conformidad: *conformance,
+            });
+        }
         Command::Federate {
             table,
             columns,
@@ -1661,6 +1716,7 @@ fn main() -> std::process::ExitCode {
         | Command::Pack { .. }
         | Command::Source(_)
         | Command::Federate { .. }
+        | Command::Explain { .. }
         | Command::Package(_)
         | Command::DriftDetect { .. }
         | Command::Cache(_) => unreachable!(),

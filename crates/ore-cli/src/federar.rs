@@ -18,6 +18,12 @@
 //!   dos ficheros tal como están en `main`; la tabla, sus columnas y su `reads`,
 //!   de la rama. Así una fuente encendida vale en todas las ramas, y apagarla
 //!   la apaga en todas.
+//!
+//! ⭐ **Desde F5·2 decide el reparto** (`ore_core::reparto`): la petición se
+//!   escribe como la sentencia que es —`SELECT columnas FROM tabla WHERE
+//!   filtros`— y el coste, el interruptor y el gobierno son los mismos que
+//!   para una consulta del puesto. Lo que el reparto dejaría para el motor,
+//!   aquí se niega (`422 empuje`): quien pide por esta ruta no tiene motor.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -26,6 +32,7 @@ use ore_core::document::Kind;
 use ore_core::json::Json;
 use ore_core::link::Package;
 use ore_core::parse::Node;
+use ore_core::reparto::{self, Opciones};
 
 pub struct Pedido<'a> {
     pub raiz: &'a Path,
@@ -65,28 +72,78 @@ pub fn planear(p: &Pedido) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// La familia de `reads.predicatePushdown` a la que pertenece un operador de
-/// la petición (v1alpha24 `01` §3: `range` es `lt/le/gt/ge`, `isNull` las dos
-/// formas del nulo).
-fn familia(op: &str) -> Option<&'static str> {
-    Some(match op {
-        "eq" => "eq",
-        "neq" => "neq",
-        "in" => "in",
-        "lt" | "le" | "gt" | "ge" => "range",
-        "like" => "like",
-        "isNull" | "isNotNull" => "isNull",
-        _ => return None,
+/// Un identificador entre comillas dobles, como lo escribe DuckDB.
+fn ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+fn cadena(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Un filtro de la petición como condición SQL, para el reparto.
+fn condicion(col: &str, op: &str, valor: Option<&Node>) -> Result<String, No> {
+    let uno = || {
+        valor.and_then(Node::as_str).map(cadena).ok_or_else(|| {
+            no(
+                400,
+                "operador",
+                format!("`{op}` sobre `{col}` necesita un `valor`"),
+            )
+        })
+    };
+    let c = ident(col);
+    Ok(match op {
+        "eq" => format!("{c} = {}", uno()?),
+        "neq" => format!("{c} <> {}", uno()?),
+        "lt" => format!("{c} < {}", uno()?),
+        "le" => format!("{c} <= {}", uno()?),
+        "gt" => format!("{c} > {}", uno()?),
+        "ge" => format!("{c} >= {}", uno()?),
+        "like" => format!("{c} LIKE {}", uno()?),
+        "isNull" => format!("{c} IS NULL"),
+        "isNotNull" => format!("{c} IS NOT NULL"),
+        "in" => {
+            let vs: Vec<String> = valor
+                .map(|v| {
+                    v.items()
+                        .iter()
+                        .filter_map(Node::as_str)
+                        .map(cadena)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if vs.is_empty() {
+                return Err(no(
+                    400,
+                    "operador",
+                    format!("`in` sobre `{col}` necesita una lista"),
+                ));
+            }
+            format!("{c} IN ({})", vs.join(", "))
+        }
+        _ => {
+            return Err(no(
+                400,
+                "operador",
+                format!("`{op}` no es un operador de la petición"),
+            ));
+        }
     })
 }
 
 fn intentar(p: &Pedido) -> Result<Json, No> {
     let (mut pkg, _) = ore_core::validate::cargar_paquete(p.raiz);
     if let Some(dir) = p.politica {
-        politica_de_main(&mut pkg, dir)?;
+        politica_de_main(&mut pkg, dir).map_err(|(http, codigo, mensaje)| No {
+            http,
+            codigo,
+            mensaje,
+        })?;
     }
 
-    // ① La tabla, en la rama.
+    // ① La tabla y sus columnas, en la rama: lo que el reparto daría por
+    //   «del lago» aquí es un 404, porque se pidió una tabla.
     let t = pkg.table(p.tabla).ok_or_else(|| {
         no(
             404,
@@ -95,68 +152,6 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
         )
     })?;
     let qn = t.qname().unwrap_or_default();
-    if t.section("reads").and_then(Node::as_str) == Some("none") {
-        return Err(no(
-            422,
-            "OOS2020",
-            format!("`{qn}` declara `reads: none`: no se lee"),
-        ));
-    }
-    let fuente = t
-        .section("datasource")
-        .and_then(Node::as_str)
-        .map(String::from)
-        .ok_or_else(|| no(422, "OOS2020", format!("`{qn}` no declara `datasource`")))?;
-
-    // ⓪ El interruptor de la fuente, de la política (main).
-    let ds = pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == Kind::OntologyConfig)
-        .flat_map(|c| {
-            c.section("datasources")
-                .map(|n| n.items().to_vec())
-                .unwrap_or_default()
-        })
-        .find(|d| d.get("name").and_then(|(_, v)| v.as_str()) == Some(fuente.as_str()))
-        .ok_or_else(|| {
-            no(
-                404,
-                "objeto",
-                format!("la fuente `{fuente}` no está declarada en `main`"),
-            )
-        })?;
-    let campo = |k: &str| ds.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
-    if campo("federation").as_deref() != Some("true") {
-        return Err(no(
-            403,
-            "federacion",
-            format!(
-                "la fuente `{fuente}` no tiene la lectura en vivo encendida: se enciende en la fuente (`ore source federation {fuente} on`, o en la consola) y vale para todas las ramas"
-            ),
-        ));
-    }
-    let tipo = campo("type").ok_or_else(|| {
-        no(
-            422,
-            "OOS2020",
-            format!("la fuente `{fuente}` no declara `type`"),
-        )
-    })?;
-    let env = campo("connectionEnv").ok_or_else(|| {
-        no(
-            422,
-            "OOS2020",
-            format!("la fuente `{fuente}` no declara `connectionEnv`"),
-        )
-    })?;
-    let objeto = t
-        .section("object")
-        .and_then(Node::as_str)
-        .map(String::from)
-        .ok_or_else(|| no(422, "OOS2020", format!("`{qn}` no declara `object`")))?;
-
-    // Las columnas: las pedidas, o todas.
     let cols_tabla: Vec<String> = t
         .section("columns")
         .map(|c| {
@@ -181,19 +176,9 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
         }
     }
 
-    // Los filtros: sólo lo que la tabla deja empujar. Lo demás lo evaluará el
-    // motor (F5); hasta entonces se dice, no se descarta en silencio.
-    let reads = t.section("reads");
-    let admitidas: Vec<String> = reads
-        .and_then(|r| r.get("predicatePushdown"))
-        .map(|(_, v)| {
-            v.items()
-                .iter()
-                .filter_map(|o| o.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut filtros: Vec<(String, String)> = Vec::new();
+    // La petición, escrita como sentencia.
+    let mut condiciones = Vec::new();
+    let mut pedidos = 0usize;
     if let Some(f) = p.filtros {
         let n =
             ore_core::parse::parse(f).map_err(|_| no(400, "operador", "`--filters` no es JSON"))?;
@@ -215,79 +200,64 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
                     format!("un filtro sobre `{col}`, que `{qn}` no tiene"),
                 ));
             }
-            let Some(fam) = familia(&op) else {
-                return Err(no(
-                    400,
-                    "operador",
-                    format!("`{op}` no es un operador de la petición"),
-                ));
-            };
-            if !admitidas.iter().any(|a| a == fam) {
-                return Err(no(
-                    422,
-                    "empuje",
-                    format!(
-                        "`{op}` sobre `{col}`: `{qn}` no deja empujarlo (`reads.predicatePushdown`: {}); evaluarlo en el motor llega con F5",
-                        if admitidas.is_empty() {
-                            "ninguno".to_string()
-                        } else {
-                            admitidas.join(", ")
-                        }
-                    ),
-                ));
-            }
-            filtros.push((col, op));
+            condiciones.push(condicion(&col, &op, f.get("valor").map(|(_, v)| v))?);
+            pedidos += 1;
         }
     }
+    let tabla_sql: Vec<String> = qn.split('.').map(ident).collect();
+    let sql = format!(
+        "SELECT {} FROM {}{}",
+        columnas
+            .iter()
+            .map(|c| ident(c))
+            .collect::<Vec<_>>()
+            .join(", "),
+        tabla_sql.join("."),
+        if condiciones.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", condiciones.join(" AND "))
+        }
+    );
 
-    // ④ El coste que la tabla declara (v1alpha24 `01` §4).
-    let full_scan = reads
-        .and_then(|r| r.get("fullScan"))
-        .and_then(|(_, v)| v.as_str())
-        .unwrap_or("cheap")
-        .to_string();
-    if full_scan == "forbidden" && filtros.is_empty() {
+    // ⓪②④ El reparto: interruptor (de main), coste y conducto.
+    let o = Opciones {
+        desde_puesto: p.desde_puesto,
+        exigir_interruptor: true,
+        conectores: None,
+    };
+    let r = reparto::repartir(&sql, &pkg, &o).map_err(|n| no(n.http, &n.codigo, n.mensaje))?;
+    let l = r
+        .lecturas
+        .into_iter()
+        .find(|l| l.tabla == qn)
+        .ok_or_else(|| no(500, "objeto", format!("el reparto no lee `{qn}`")))?;
+
+    // Lo que quedaría en el motor: esta ruta no tiene motor.
+    if l.empujados.len() < pedidos || !l.en_el_motor.is_empty() {
+        let admitidas: Vec<String> = t
+            .section("reads")
+            .and_then(|r| r.get("predicatePushdown"))
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|o| o.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         return Err(no(
             422,
-            "OOS2044",
+            "empuje",
             format!(
-                "`{qn}` declara `fullScan: forbidden` y ningún filtro empujado acota la lectura"
+                "{}: `{qn}` no deja empujarlo (`reads.predicatePushdown`: {}); en el SQL del puesto lo evalúa el motor",
+                l.en_el_motor.join(", "),
+                if admitidas.is_empty() {
+                    "ninguno".to_string()
+                } else {
+                    admitidas.join(", ")
+                }
             ),
         ));
-    }
-    let requeridos: Vec<String> = reads
-        .and_then(|r| r.get("requiredFilters"))
-        .map(|(_, v)| {
-            v.items()
-                .iter()
-                .filter_map(|o| o.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    for c in &requeridos {
-        if !filtros
-            .iter()
-            .any(|(col, op)| col == c && (op == "eq" || op == "in"))
-        {
-            return Err(no(
-                422,
-                "OOS2045",
-                format!(
-                    "`{qn}` exige un filtro `eq` o `in` empujado sobre `{c}` (`requiredFilters`)"
-                ),
-            ));
-        }
-    }
-
-    // ② El conducto, con la política de main: lo pedido y lo filtrado.
-    let mut tocadas = columnas.clone();
-    for (c, _) in &filtros {
-        if !tocadas.contains(c) {
-            tocadas.push(c.clone());
-        }
-    }
-    if let Err(n) = ore_core::flow::lectura_del_origen(&pkg, &qn, &tocadas, p.desde_puesto) {
-        return Err(no(403, n.codigo, n.mensaje));
     }
 
     // La petición para el conector: proyección, y el `fichero` de una tabla de
@@ -295,10 +265,10 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
     let mut o = vec![
         ("ok", Json::Bool(true)),
         ("tabla", Json::s(qn.as_str())),
-        ("fuente", Json::s(fuente.as_str())),
-        ("tipo", Json::s(tipo)),
-        ("env", Json::s(env)),
-        ("objeto", Json::s(objeto)),
+        ("fuente", Json::s(l.fuente.as_str())),
+        ("tipo", Json::s(l.tipo.as_str())),
+        ("env", Json::s(l.env.as_str())),
+        ("objeto", Json::s(l.objeto.as_str())),
         (
             "proyeccion",
             Json::Obj(
@@ -308,16 +278,16 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
                     .collect(),
             ),
         ),
-        ("fullScan", Json::s(full_scan)),
+        ("fullScan", Json::s(l.full_scan.as_str())),
         (
             "empujados",
             Json::Arr(
-                filtros
+                l.empujados
                     .iter()
-                    .map(|(c, op)| {
+                    .map(|f| {
                         Json::obj([
-                            ("columna", Json::s(c.as_str())),
-                            ("operador", Json::s(op.as_str())),
+                            ("columna", Json::s(f.columna.as_str())),
+                            ("operador", Json::s(f.operador.as_str())),
                         ])
                     })
                     .collect(),
@@ -350,7 +320,8 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
 
 /// **La política de `main`** sobre el paquete de la rama: su manifiesto (las
 /// fuentes y su interruptor) y sus conductos sustituyen a los de la rama.
-fn politica_de_main(pkg: &mut Package, dir: &Path) -> Result<(), No> {
+/// `Err((http, código, mensaje))`.
+pub(crate) fn politica_de_main(pkg: &mut Package, dir: &Path) -> Result<(), (u16, String, String)> {
     let (main, _) = ore_core::validate::cargar_paquete(dir);
     let de_main: Vec<_> = main
         .docs
@@ -358,10 +329,10 @@ fn politica_de_main(pkg: &mut Package, dir: &Path) -> Result<(), No> {
         .filter(|d| matches!(d.kind, Kind::OntologyConfig | Kind::ConduitPolicy))
         .collect();
     if !de_main.iter().any(|d| d.kind == Kind::OntologyConfig) {
-        return Err(no(
+        return Err((
             500,
-            "politica",
-            "la política de main no trae `ontology.config.yaml`",
+            "politica".into(),
+            "la política de main no trae `ontology.config.yaml`".into(),
         ));
     }
     pkg.docs
