@@ -400,7 +400,11 @@ connection: close
         }
         let m = parse::parse(b.trim())
             .ok()
-            .and_then(|n| n.get("mensaje").and_then(|(_, v)| v.as_str()).map(String::from))
+            .and_then(|n| {
+                n.get("mensaje")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            })
             .unwrap_or_else(|| b.trim().chars().take(300).collect());
         return Err(format!("la pasarela contestó {codigo}: {m}"));
     }

@@ -110,6 +110,15 @@ spec:
     pedidos: { type: Integer }
     total: { type: Integer }
 YAML
+# Y una copia de siempre: un Dataset de una Table (la lee `ore materialize`).
+cat > "$A/packages/informes/datasets/clientes_copia.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha13
+kind: Dataset
+metadata: { name: clientes_copia, namespace: informes }
+spec:
+  owner: team:copia
+  from: { table: pg.public.clientes }
+YAML
 cat > "$A/packages/informes/datasets/ventas_es_copia.yaml" <<'YAML'
 apiVersion: oos.dev/v1alpha13
 kind: Dataset
@@ -160,6 +169,21 @@ if [ -x "$FED" ]; then
   F2=$("$PY" -c 'import pyarrow.ipc as i,sys;print(i.open_stream(sys.argv[1]).read_all().num_rows)' "$D2/informes.ventas_es_copia/entradas/pg.public.pedidos.arrow" 2>&1)
   [ "$F2" = "$FILAS" ] && dice "4 · las mismas $F2 filas que el conector directo" || falla "4 · $F2 filas por la pasarela, $FILAS directas"
   curl -s "http://127.0.0.1:$PF/v1/origins" | grep -q '"copias":2' && dice "4 · la pasarela las cuenta como copias (2)" || falla "4 · origins: $(curl -s "http://127.0.0.1:$PF/v1/origins")"
+  # ── 5 · y la copia de siempre (un Dataset de una Table), por la pasarela ──
+  #   La lee `ore materialize` y la sella el almacén (aquí, el S3 de mentira).
+  STORE="$(dirname "$ORE")/ore-store-r2"
+  if [ -x "$STORE" ]; then
+    "$PY" "$RAIZ/pruebas-de-fuego/de-mentira.py" s3 0 > "$TMP/s3.log" 2>&1 & S3_PID=$!
+    trap 'kill $FPID $S3_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+    for _ in $(seq 1 40); do [ -s "$TMP/s3.log" ] && break; sleep 0.25; done
+    S3_PUERTO=$(awk '{print $2}' "$TMP/s3.log")
+    mkdir -p "$TMP/solo-almacen"; ln -s "$STORE" "$TMP/solo-almacen/ore-store-r2"
+    ( cd "$A" && PATH="$TMP/solo-almacen:/usr/bin:/bin" ORE_PASARELA="127.0.0.1:$PF" ORE_STORE=r2         ORE_R2_S3_ENDPOINT="http://127.0.0.1:$S3_PUERTO" ORE_R2_BUCKET=copia ORE_R2_ACCESS_KEY_ID=de ORE_R2_SECRET_ACCESS_KEY=mentira         "$ORE" materialize . --vista informes.clientes_copia --informe "$TMP/informe.json" ) >"$TMP/mat.txt" 2>&1       || falla "5 · materialize por la pasarela: $(tail -8 "$TMP/mat.txt")"
+    grep -q "7 filas · 7 leidas" "$TMP/mat.txt" && dice "5 · la copia de siempre, por la pasarela: 7 filas selladas (sin conector en el PATH)"       || falla "5 · materialize: $(tail -5 "$TMP/mat.txt")"
+    curl -s "http://127.0.0.1:$PF/v1/origins" | grep -q '"copias":3' && dice "5 · y la pasarela la cuenta (3 copias)" || falla "5 · origins: $(curl -s "http://127.0.0.1:$PF/v1/origins")"
+  else
+    echo "  · sin \`ore-store-r2\` junto a \`ore\`: la copia de siempre no corre"
+  fi
 else
   echo "  · sin \`ore-federation\` junto a \`ore\`: la parte de la pasarela no corre"
 fi

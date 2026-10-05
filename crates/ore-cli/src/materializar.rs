@@ -719,7 +719,26 @@ fn una(
             )
         }
         Leido::Flujo(driver, salida) => {
-            let s = encauzar(&peticion_de(fundir, ""), driver, salida)?;
+            let s = encauzar(&peticion_de(fundir, ""), Some(driver), salida)?;
+            let leidas = campo_de(&s, "leidas")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            (s, leidas)
+        }
+        Leido::Fichero(ruta) => {
+            use std::io::Read as _;
+            let mut f = std::fs::File::open(&ruta)
+                .map_err(|e| format!("no se pudo abrir `{}`: {e}", ruta.display()))?;
+            // `encauzar` pone él la marca de flujo: se salta la del fichero.
+            let mut marca = [0u8; 4];
+            let hay = f.read(&mut marca).unwrap_or(0);
+            let s = if hay == 4 && marca == [0xFF; 4] {
+                encauzar(&peticion_de(fundir, ""), None, f)
+            } else {
+                Err("la pasarela no devolvió un flujo Arrow".to_string())
+            };
+            let _ = std::fs::remove_file(&ruta);
+            let s = s?;
             let leidas = campo_de(&s, "leidas")
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(0);
@@ -1717,6 +1736,40 @@ fn leer(
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
     let peticion = peticion(&url, r, cursor, desde, hasta, ordena, fichero)?;
 
+    // ⭐ 0053 F8·3: con la pasarela, la copia lee por ella (`perfil: "copia"`,
+    //   en la cola del origen): el flujo a un fichero y de ahí al almacén.
+    if let Some(p) = lector::pasarela() {
+        use ore_core::json::Json;
+        let id = format!(
+            "copia-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let cuerpo = Json::obj([
+            ("id", Json::s(id.as_str())),
+            ("origen", Json::s(&r.datasource)),
+            ("tipo", Json::s(&tipo)),
+            ("url", Json::s(&url)),
+            ("perfil", Json::s("copia")),
+            ("peticion", Json::Crudo(peticion.trim().to_string())),
+        ])
+        .jcs();
+        let ruta = std::env::temp_dir().join(format!("{id}.arrow"));
+        let mut f = std::fs::File::create(&ruta)
+            .map_err(|e| format!("no se pudo crear `{}`: {e}", ruta.display()))?;
+        lector::leer_por_la_pasarela(&p, &cuerpo, &mut f).map_err(|m| {
+            format!(
+                "`{}` por la pasarela: {}",
+                r.objeto,
+                ore_driver::tapar(&m, &url)
+            )
+        })?;
+        return Ok(Leido::Fichero(ruta));
+    }
+
     // Se pide en Arrow y se mira qué llega (ADR 0043): un flujo IPC empieza por
     // `0xFFFFFFFF`, y una fila de texto por `{`. Un driver que no sabe Arrow
     // contesta en texto y sigue valiendo.
@@ -1926,6 +1979,8 @@ fn fichero_de_la_tabla(t: &Loaded) -> Option<ore_core::json::Json> {
 enum Leido {
     Texto(String),
     Flujo(lector::Lanzado, std::process::ChildStdout),
+    /// 0053 F8·3: lo leído por la pasarela, en un fichero temporal.
+    Fichero(std::path::PathBuf),
 }
 
 fn texto_del_fallo(f: lector::Fallo) -> String {
@@ -1946,8 +2001,8 @@ fn texto_del_fallo(f: lector::Fallo) -> String {
 /// contrato—, el driver se corta, porque nadie va a leer lo que le queda.
 fn encauzar(
     peticion: &str,
-    driver: lector::Lanzado,
-    mut salida: std::process::ChildStdout,
+    driver: Option<lector::Lanzado>,
+    mut salida: impl std::io::Read,
 ) -> Result<ore_core::parse::Node, String> {
     use std::io::Write as _;
     let programa = programa_del_almacen()?;
@@ -1964,14 +2019,16 @@ fn encauzar(
         .and_then(|_| std::io::copy(&mut salida, &mut entrada));
     drop(salida);
     if copia.is_err() {
-        driver.matar();
+        if let Some(d) = driver {
+            d.matar();
+        }
         drop(entrada);
         return Err(match almacen.esperar() {
             Err(f) => texto_del_fallo(f),
             Ok(_) => "el almacén dejó de leer el flujo sin decir por qué".into(),
         });
     }
-    if let Err(f) = driver.esperar() {
+    if let Some(Err(f)) = driver.map(|d| d.esperar()) {
         drop(entrada);
         almacen.matar();
         return Err(texto_del_fallo(f));
