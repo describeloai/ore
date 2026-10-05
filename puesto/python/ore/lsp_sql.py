@@ -452,14 +452,13 @@ def diagnosticar(texto, cat):
     avisados = set()
     for i, j, n, dos in nombres([t[1] for t in ts]):
         rango = _rango(texto, ts[i][0], ts[j][0] + len(ts[j][1]))
-        # una Table de otra fuente: sql() no la lee; se dice cual es su View
+        # 0053 F6: una Table de un origen se lee EN VIVO (federación): no es un
+        # error, se dice —una nota— para que se sepa que va al origen.
         if n in cat.ajenas and n not in cat.legibles:
             a = cat.ajenas[n]
-            ind = next((r["ref"].replace("view:", "") for r in (a.get("relaciones") or [])
-                        if r.get("tipo") == "produce" and r.get("ref", "").startswith("view:")), "")
-            out.append({"range": rango, "severity": 1, "source": "ore",
-                        "message": "`%s` is a Table from another source: sql() does not read it%s" % (
-                            a["completo"], (", read its View `%s`" % ind) if ind else "")})
+            out.append({"range": rango, "severity": 3, "source": "ore",
+                        "message": "`%s` is read live from its origin (federation): its filters go to the origin, "
+                                   "and a large read is cut at the cap · `explain` says what is pushed" % a["completo"]})
         # 0038: dos partes se leen en `default`, y se dice (una vez por nombre)
         if dos and (n in cat.legibles or n in cat.ajenas) and n not in avisados:
             avisados.add(n)
