@@ -1376,15 +1376,18 @@ mod prueba {
         assert_eq!(h(semilla_python("cp314", &p)), "355f4d80cae9");
         assert_eq!(h(semilla_python("cp312", &p)), "1b4a9192f395");
         assert_eq!(digest_de(&p, PYTHON), "capa-355f4d80cae9");
-        // Y la plantilla del Job: el intérprete, de la imagen; la regla, la misma.
+        // Y quien resuelve (P2): `capa-python`, con el Python de la imagen y la
+        // misma regla (`puesto/python/capa/capa.py`); la plantilla no fija nada.
         let y = include_str!("../../../malla/52-la-capa.yaml");
+        assert!(y.contains("ore/capa-python:1"));
         assert!(
             !y.contains("name: PY,") && !y.contains("name: ABI,"),
             "PY/ABI fijos en la plantilla"
         );
-        assert!(y.contains("sys.version_info[:2]") && y.contains("/trabajo/abi.txt"));
-        assert!(y.contains(
-            r#"semilla = "\n".join(deps) if abi == "cp312" else abi + "\n" + "\n".join(deps)"#
+        let c = include_str!("../../../puesto/python/capa/capa.py");
+        assert!(c.contains("sys.version_info[:2]"));
+        assert!(c.contains(
+            r#"semilla = "\n".join(deps) if abi_ == "cp312" else abi_ + "\n" + "\n".join(deps)"#
         ));
     }
 

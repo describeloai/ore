@@ -119,6 +119,9 @@ spec:
             # El entorno del puesto: qué clase de capa hay que bajar (ruedas o
             # jars). Lo pone `ore-serve` con la imagen.
             - { name: ENTORNO, value: "entorno-modelo" }
+            # ⭐ 0050 P2: un trabajo (una invocación) no recibe lo de desarrollo
+            #   de Python —`dev.tgz`, pytest y compañía—: sólo lo que corre.
+            - { name: TRABAJO, value: "trabajo-modelo" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             - { name: HOME, value: /tmp }
             - { name: PIP_CACHE_DIR, value: /tmp/pip }
@@ -210,6 +213,52 @@ spec:
               print("### capa %s: %d paquete(s) con su suma en %d ms" % (os.environ["CAPA"], len(informe.get("lock", [])), (time.time() - t) * 1000), flush=True)
               PY
                 echo "### $(du -sm /capa | cut -f1) MB en /capa/node_modules · van DETRÁS de los de la imagen"
+                exit 0
+              fi
+              # ── la capa de Python (0050 P2): dos cajas, con SUS SUMAS ──
+              python3 - <<'PY'
+              # ⭐ El gemelo de la de Node: `capa.tgz` (lo que corre) en `/capa`, y
+              #   `dev.tgz` (el grupo `dev`: pytest, hypothesis, stubs) en
+              #   `/capa/.dev` —un nombre que no se puede importar— y SÓLO en una
+              #   sesión: una invocación (`TRABAJO`) nunca lo recibe. Cada caja se
+              #   comprueba contra el `sha256` del informe antes de abrirla, y se
+              #   abre con el filtro `data` de `tarfile`.
+              # ⚠️ Una capa resuelta antes de P2 no deja `informe.json` en el
+              #   bucket: entonces son ruedas sueltas, y se instalan como siempre.
+              import hashlib, json, os, tarfile, time
+              from google.cloud import storage
+              t = time.time(); cli = storage.Client(); b = cli.bucket(os.environ["BUCKET"])
+              pre = "ore/puesto/" + os.environ["CAPA"] + "/"
+              try:
+                  informe = json.loads(b.blob(pre + "informe.json").download_as_text())
+              except Exception:
+                  open("/trabajo/capa-de-antes", "w").close()
+                  raise SystemExit(0)
+              if informe.get("estado") != "lista":
+                  raise SystemExit("✗ la capa %s no está lista: %s" % (os.environ["CAPA"], informe.get("estado")))
+              def abrir(caja, suma, destino):
+                  b.blob(pre + caja).download_to_filename("/trabajo/" + caja)
+                  with open("/trabajo/" + caja, "rb") as fh:
+                      if hashlib.sha256(fh.read()).hexdigest() != suma:
+                          raise SystemExit("✗ %s no es la que se resolvió (sha256 distinto del informe)" % caja)
+                  os.makedirs(destino, exist_ok=True)
+                  with tarfile.open("/trabajo/" + caja) as tf:
+                      tf.extractall(destino, filter="data")
+              if informe.get("caja"):
+                  if informe["caja"] != "capa.tgz":
+                      raise SystemExit("✗ `%s` no es la caja de una capa de Python" % str(informe["caja"])[:80])
+                  abrir("capa.tgz", informe.get("suma"), "/capa")
+              if informe.get("cajaDev"):
+                  if informe["cajaDev"] != "dev.tgz":
+                      raise SystemExit("✗ `%s` no es la caja de desarrollo de una capa de Python" % str(informe["cajaDev"])[:80])
+                  if os.environ.get("TRABAJO", "").strip():
+                      print("### lo de desarrollo no viaja a una invocación", flush=True)
+                  else:
+                      abrir("dev.tgz", informe.get("sumaDev"), "/capa/.dev")
+              print("### capa %s: %d paquete(s) con su suma en %d ms" % (os.environ["CAPA"], len(informe.get("lock", [])), (time.time() - t) * 1000), flush=True)
+              PY
+              if [ ! -f /trabajo/capa-de-antes ]; then
+                echo "### $(du -sm /capa | cut -f1) MB en /capa · van DETRÁS de los de la imagen"
                 exit 0
               fi
               mkdir -p /trabajo/ruedas
