@@ -8,6 +8,9 @@ import contextlib
 import io
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 
 RAIZ = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -20,7 +23,30 @@ def _semilla():
     return crudo.replace("{{paquete}}", "ventas").replace("{{funcion}}", "billing_invoice_status")
 
 
+def _cruda(nombre):
+    """Una constante `r##"…"##` de `clases.rs`, con sus huecos rellenos."""
+    t = io.open(os.path.join(RAIZ, "crates", "ore-core", "src", "clases.rs"), encoding="utf-8").read()
+    m = re.search(r'const %s: &str = r##"(.*?)"##;' % nombre, t, re.S)
+    return (m.group(1).replace("{{paquete}}", "ventas").replace("{{carpeta}}", "billing")
+            .replace("{{funcion}}", "billing_invoice_status"))
+
+
 class LaSemilla(unittest.TestCase):
+    def test_nace_en_verde(self):
+        """0050 P3: el repositorio sembrado pasa sus pruebas con pytest, como
+        las corre la sesión: el ejemplo, su prueba y su pyproject."""
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "functions"))
+            for rel, texto in [("functions/example.py", _semilla()),
+                               ("functions/test_example.py", _cruda("TEST_PY")),
+                               ("pyproject.toml", _cruda("PYPROJECT_FUNCTIONS_PY"))]:
+                io.open(os.path.join(d, rel), "w", encoding="utf-8").write(texto)
+            entorno = dict(os.environ, PYTHONPATH=os.path.join(RAIZ, "puesto", "python"), PYTHONDONTWRITEBYTECODE="1")
+            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", d],
+                               cwd=d, env=entorno, capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("5 passed", r.stdout)
+
     def test_run_imprime_el_estado_de_la_factura(self):
         salida = io.StringIO()
         with contextlib.redirect_stdout(salida):

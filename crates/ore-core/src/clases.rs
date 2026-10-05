@@ -365,6 +365,219 @@ if __name__ == \"__main__\":
     # InvoiceStatus(status='overdue', outstanding=Decimal('120.50'), days=-17, surcharge=Decimal('1.02'))
 ";
 
+/// El `pyproject.toml` de `functions-python` (0050 P3, v11): **lo que sus
+/// funciones usan, declarado como en TypeScript** —el SDK y las herramientas,
+/// a la versión exacta que trae la sesión—. No cuesta nada: `ore` es el SDK de
+/// la sesión (`entorno::SDK_PYTHON` en ore-serve) y `pytest` está en
+/// `puesto/python/provisto.txt` (un test lo compara), y lo declarado que la
+/// sesión trae no pide capa. Dice también lo que NO se honra, en el propio
+/// fichero. El de las otras clases de Python (`PYPROJECT_PY`) no cambia.
+const PYPROJECT_FUNCTIONS_PY: &str = r##"# What the functions of this repository use (ORE 0050). It is this repository's
+# own: it resolves into its own layer, which its neighbours don't load.
+#
+#   [project].dependencies    what your functions run with, as PEP 508
+#                             ("polars>=1.30", "requests"); `ore` is the SDK
+#   [dependency-groups].dev   what you only need to test and type-check
+#                             (pytest, hypothesis, stubs): never reaches a call
+#
+# Both already declare what the session brings, at its exact versions: they
+# install nothing. Add a package and commit: the platform resolves it (about a
+# minute), with the session's packages as constraints, and writes pylock.toml
+# next to this file (don't edit that one).
+#
+# Only these two lists are read: optional-dependencies, other groups, [tool.uv]
+# and local paths or git URLs are not. Packages install from wheels only.
+
+[project]
+name = "{{carpeta}}"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+  "ore==1.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+]
+"##;
+
+/// Sus pruebas (P3): pytest, que trae la sesión. Un `test_*.py` nunca es una
+/// función (no lleva `@function`). Se importa el ejemplo por su módulo: pytest
+/// pone en el `sys.path` la carpeta de la prueba (`functions/`, sin
+/// `__init__.py`). Medido con pytest 9 sobre la semilla sembrada
+/// (`puesto/python/pruebas/test_semilla.py`, «nace en verde»).
+const TEST_PY: &str = r##"# Tests for `{{funcion}}`, with pytest (the session brings it). Every
+# `test_*.py` of the repository is a test file, and it is never published as a
+# function.
+#
+# Call the function with the types of its contract, as the platform delivers
+# them: Decimal for money, date for dates.
+from datetime import date
+from decimal import Decimal
+
+import pytest
+
+from example import {{funcion}}
+
+TODAY = date(2026, 10, 2)
+
+
+def test_an_overdue_invoice_carries_a_surcharge_of_005_percent_per_day():
+    r = {{funcion}}(Decimal("120.50"), date(2026, 9, 15), today=TODAY)
+    assert (r.status, r.outstanding, r.days, r.surcharge) == ("overdue", Decimal("120.50"), -17, Decimal("1.02"))
+
+
+def test_a_paid_invoice_has_nothing_outstanding():
+    r = {{funcion}}(Decimal("120.50"), date(2026, 10, 15), paid=Decimal("120.50"), today=TODAY)
+    assert (r.status, r.outstanding, r.days, r.surcharge) == ("paid", Decimal("0"), 13, None)
+
+
+def test_a_partial_payment_leaves_the_rest_outstanding():
+    r = {{funcion}}(Decimal("120.50"), date(2026, 10, 15), paid=Decimal("20.25"), today=TODAY)
+    assert (r.status, r.outstanding) == ("current", Decimal("100.25"))
+
+
+@pytest.mark.parametrize("amount, surcharge", [("10.00", "0.00"), ("30.00", "0.02")])
+def test_the_surcharge_rounds_half_to_even_to_the_cent(amount, surcharge):
+    # One day late: 0.005 rounds to 0.00, and 0.015 to 0.02.
+    r = {{funcion}}(Decimal(amount), date(2026, 10, 1), today=TODAY)
+    assert r.surcharge == Decimal(surcharge)
+"##;
+
+const GITIGNORE_PY: &str = r##"# Packages are resolved by the platform from pyproject.toml; never committed.
+.venv/
+# Python and tooling caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+"##;
+
+/// La guía del repositorio de Python (P3): la prosa de su manifiesto, como
+/// `GUIA_TS`. Lo que dice del contrato es lo que `ore.contrato` y
+/// `ore.tipos` hacen cumplir.
+const GUIA_PY: &str = r##"# Python functions
+
+Typed functions over your data, written in plain Python and published by the
+platform. You write a function and its annotations; the platform derives its
+contract, checks every call against it, and runs it on Python 3.14.
+
+## What is here
+
+```
+functions/
+  example.py         a function: `{{funcion}}`
+  test_example.py    its tests, with pytest (never published)
+pyproject.toml       the packages your functions use
+pylock.toml          the exact versions installed (written by the platform)
+```
+
+The document of each function (`functions/<name>.yaml` in the package) is
+written by the platform on commit. Edit the code, not the document.
+
+## A function
+
+A function is a `def` decorated with `@function` from `ore`. Its annotations
+are its input and output, its docstring is its description, and it is named
+like the `def`.
+
+```python
+from ore import function
+
+
+@function
+def letter_name(first: str, last: str, title: str | None = None) -> str:
+    """A person's name as it is printed on a letter."""
+    return " ".join(p for p in (title, first, last.upper()) if p)
+```
+
+- **Optional parameters** have a default value; `X | None` accepts nulls.
+- **Return a `@dataclass`** to return several fields, as `InvoiceStatus` does;
+  a field with a default may be missing.
+- **Helpers** are plain functions and modules: only `@function` publishes.
+
+## Types
+
+The annotations are the contract, and it is enforced at the boundary: a call
+with a wrong value fails before your code runs, and so does a wrong result.
+
+| In Python | What arrives | Example |
+|---|---|---|
+| `str`, `bool`, `int`, `float` | as is | `"ES"`, `True`, `42`, `0.75` |
+| `Decimal` | an exact decimal, never a float | `Decimal("120.50")` |
+| `Annotated[Decimal, Precision(p, s)]` | a `Decimal<p, s>` | |
+| `Money["EUR", 2]`, `Quantity["km", 1]` | a `Decimal`; the unit is in the type | `Decimal("9.99")` |
+| `date` | a calendar date | `date(2026, 9, 15)` |
+| `DateTimeTz` | an instant with its zone | |
+| `Media["db.schema.collection"]` | a reference to a media item | |
+| `list[T]`, `T \| None` | a list, a nullable value | |
+
+`Precision`, `Money`, `Quantity`, `DateTimeTz` and `Media` come from `ore.tipos`.
+
+## Configuration
+
+In the decorator, in literal values only (it is read without running the file):
+
+```python
+@function(
+    timeout="30s",
+    over="my_db.my_schema.invoices",     # one call per row: the row is the first parameter
+    reads=["my_db.my_schema.clients"],   # what else it reads, with `ore.over`
+    models=["extractor"],                # the registered models it calls, with `ore.model`
+)
+```
+
+## Try, test, publish
+
+- **Run**, in your session: runs the file as `__main__`, so its
+  `if __name__ == "__main__":` block is where you try the function. When the
+  function is called by the platform, that block does not run.
+- **Dry Run** (f(x), next to Results): run the function you are editing with a
+  form, before committing.
+- **Tests**: `test_*.py` files use pytest, which the session brings. Import the
+  function from its module (`from example import {{funcion}}`) and call it
+  with the types of its contract.
+- **Commit**: the function is published under Assets → Functions with its
+  contract. From other code: `ore.get_function("{{paquete}}.{{funcion}}")`;
+  from Pipelines, the Function operator.
+
+## Python packages
+
+Declare them in `pyproject.toml`, as PEP 508 requirements:
+
+```toml
+[project]
+dependencies = ["ore==1.0.0", "polars>=1.30"]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "hypothesis"]
+```
+
+The platform resolves them into a layer when you commit (the first time, it
+takes a minute) and commits the exact versions it installed as `pylock.toml`,
+next to `pyproject.toml`: a standard lock (PEP 751). It is rewritten on every
+resolution; don't edit it. Good to know:
+
+- `pyproject.toml` already declares what the session brings: `ore` (this SDK)
+  and `pytest`, at the exact versions the session has. They install nothing.
+- `dependencies` is what your functions run with. The `dev` group (pytest
+  plugins, hypothesis, type stubs) is resolved together with them, in the same
+  lock, but apart: your session and your tests have it, a call never does.
+- The packages the session brings (pandas, pyarrow, duckdb, numpy and what
+  they need; the Libraries panel lists them) are **constraints**: what you
+  declare is resolved to work with their versions, and a version that conflicts
+  with them is an error that says so. Two versions of the same package can't
+  live in one Python.
+- Packages install from wheels only: nothing runs code when it installs, so a
+  package that only publishes sources is not supported.
+- `optional-dependencies`, other dependency groups, `[tool.uv]` and local paths
+  or git URLs are not read.
+- An open session keeps the libraries it started with: restart it to use new
+  ones."##;
+
 /// Si un fichero de la semilla se siembra en `paquete`. Un documento gobernado
 /// (`functions/*.yaml`) solo vive en un paquete cuyo nombre puede ser
 /// `namespace` (`OOS2030`): uno con guion —el de un proyecto de antes del
@@ -843,7 +1056,7 @@ pub const CLASES: &[Clase] = &[
         escribe: false,
         ejecuta: true,
         perfil: None,
-        guia: None,
+        guia: Some(GUIA_PY),
         titulo: "Functions",
         descripcion: "Write typed Python functions over your datasets and models, invocable with parameters.",
         // 4: la semilla nombra en tres partes (0038 P7).
@@ -854,10 +1067,18 @@ pub const CLASES: &[Clase] = &[
         // 9: el SDK en inglés (S3).
         // 10: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
         // Actualizar deja lo de antes (`funciones/ejemplo.py`): es de quien lo tenga.
-        version: 10,
+        // 11: el repositorio entero, como TypeScript (0050 P3): el
+        //    `pyproject.toml` declara el SDK (`ore==1.0.0`) y pytest en el grupo
+        //    `dev`, con las versiones de la sesión; sus pruebas (pytest),
+        //    `.gitignore` y la guía en la prosa del manifiesto. Actualizar
+        //    FUSIONA la declaración (`declaracion::fusionar`): añade lo que
+        //    falta y no toca lo que ya hay.
+        version: 11,
         semilla: &[
-            ("pyproject.toml", PYPROJECT_PY),
+            ("pyproject.toml", PYPROJECT_FUNCTIONS_PY),
+            (".gitignore", GITIGNORE_PY),
             ("functions/example.py", FUNCTIONS_PY),
+            ("functions/test_example.py", TEST_PY),
         ],
     },
     // 0050: la familia `functions` en dos lenguajes, como `transforms` en
@@ -1208,6 +1429,43 @@ spec:
     /// L1: la guía nace con sus huecos rellenos y nombra lo que la semilla
     /// trae; sólo `functions-typescript` la tiene por ahora.
     #[test]
+    fn la_guia_de_python_nombra_lo_que_siembra() {
+        let c = de("functions-python").unwrap();
+        let guia = sembrar(c.guia.unwrap(), "ventas", "riesgo");
+        assert!(!guia.contains("{{"), "{guia}");
+        assert!(guia.contains("ventas.riesgo_invoice_status"), "{guia}");
+        for (ruta, _) in c.semilla {
+            let f = ruta.rsplit('/').next().unwrap();
+            if f != ".gitignore" {
+                assert!(guia.contains(f), "la guía no nombra `{f}`");
+            }
+        }
+        assert!(guia.contains("pylock.toml") && guia.contains("ore==1.0.0"));
+        assert!(crate::sdk::nombres_de_antes_en(&guia).is_empty());
+    }
+
+    /// P3: lo que la semilla v11 declara es exactamente lo que trae la sesión
+    /// de Python: el SDK con su versión y pytest a la de la imagen.
+    #[test]
+    fn la_semilla_de_python_declara_lo_que_trae_la_sesion() {
+        let sdk = include_str!("../../../puesto/python/ore/__init__.py");
+        assert!(sdk.contains("__version__ = \"1.0.0\""));
+        assert!(PYPROJECT_FUNCTIONS_PY.contains("\"ore==1.0.0\""));
+        let trae = include_str!("../../../puesto/python/provisto.txt");
+        let pytest = trae
+            .lines()
+            .find(|l| l.starts_with("pytest=="))
+            .expect("la sesión trae pytest");
+        assert!(
+            PYPROJECT_FUNCTIONS_PY.contains(&format!("\"{pytest}\"")),
+            "{pytest}"
+        );
+        // Y nace sin huecos ni nombres de antes.
+        let t = sembrar(PYPROJECT_FUNCTIONS_PY, "ventas", "riesgo");
+        assert!(!t.contains("{{") && t.contains("name = \"riesgo\""));
+    }
+
+    #[test]
     fn la_guia_de_typescript_nombra_lo_que_siembra() {
         let c = de("functions-typescript").unwrap();
         let guia = sembrar(c.guia.unwrap(), "ventas", "riesgo");
@@ -1222,7 +1480,7 @@ spec:
             }
         }
         assert!(crate::sdk::nombres_de_antes_en(&guia).is_empty());
-        assert!(CLASES.iter().filter(|c| c.guia.is_some()).count() == 1);
+        assert!(CLASES.iter().filter(|c| c.guia.is_some()).count() == 2);
     }
 
     #[test]
@@ -1495,6 +1753,10 @@ spec:
                     || ruta.ends_with(".json")
                     || ruta.ends_with(".gitignore")
                     || ruta.ends_with(".test.ts")
+                    || ruta
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|f| f.starts_with("test_"))
                     || ore_code::emitir::es_generado(texto)
                 {
                     continue;
