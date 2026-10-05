@@ -615,6 +615,22 @@ impl Servidor {
                  (`--agente-fichero`, `--idp`) o el custodio (`--cofre`, `--organizacion`)",
             ));
         };
+        credencial_del_cofre(agente, cofre, org, fuente, &self.binario)
+    }
+}
+
+/// **La credencial de una fuente, del custodio, como el agente de la celda**:
+/// lo que hace [`Servidor::credencial_de_la_fuente`] una vez comprobado que la
+/// celda sabe traerla. Libre para que la use también `ore-serve
+/// federar-probar` (0053 F3·4) y, en F4, el coordinador.
+pub(crate) fn credencial_del_cofre(
+    agente: &crate::agente::Agente,
+    cofre: &str,
+    org: &str,
+    fuente: &str,
+    binario: &Path,
+) -> Result<(String, Option<u64>), Respuesta> {
+    {
         if let Some((url, caduca)) = agente.temporal(fuente, ahora_ms()) {
             return Ok((url, Some(caduca)));
         }
@@ -651,7 +667,7 @@ impl Servidor {
         if !valor.contains("role_arn=") {
             return Ok((valor, None));
         }
-        let canjeador = self.binario.with_file_name("ore-asumir-rol");
+        let canjeador = binario.with_file_name("ore-asumir-rol");
         let s = mando::con_entrada(&canjeador, &["--sesion", "ore-serve"], &valor)
             .map_err(|e| Respuesta::error(500, e))?;
         if s.codigo != 0 {
@@ -679,7 +695,9 @@ impl Servidor {
         agente.guardar_temporal(fuente, url.clone(), caduca);
         Ok((url, Some(caduca)))
     }
+}
 
+impl Servidor {
     /// Corre `ore` y devuelve la última línea JSON de su salida tal cual; lo
     /// que no es 0 es 502 con lo que dijo.
     fn ore_json(&self, raiz: &Path, args: &[String]) -> Respuesta {

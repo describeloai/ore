@@ -52,6 +52,7 @@ mod datasets;
 mod documentos;
 mod entorno;
 mod escritas;
+mod federar;
 mod firma_viva;
 mod forja;
 mod funciones;
@@ -262,6 +263,12 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
 }
 
 fn main() -> ExitCode {
+    // 0053 F3·4: medir la pasarela de la celda desde aquí, con la credencial
+    // del custodio. Un subcomando, no una ruta: sólo lo alcanza quien entra al pod.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("federar-probar") {
+        return federar::probar(&args[2..]);
+    }
     let o = match leer_opciones() {
         Ok(None) => {
             print!("{USO}");
