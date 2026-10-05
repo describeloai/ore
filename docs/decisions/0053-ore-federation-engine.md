@@ -246,7 +246,8 @@ pertenece, `iam 050`) y guarda la decisión con el puesto; cada evento que sale 
 lo abre otra vez la renueva (vive 24 h). Si `ore-iam` niega o no contesta, el puesto se abre igual y
 se dice en el registro.
 
-**Y lo que viene después, decidido con el usuario.** Cerrada la federación, el paso inmediato es
+**Siguiente: F5** (el reparto), y después F6–F9. **Y al terminar el producto, decidido con el
+usuario:** cerrada la federación entera —no F4—, el paso inmediato es
 rehacer las **bases foráneas** como la cara SQL de un origen federado, con su propia spec: hoy son
 vistas sobre un origen anteriores a este ADR, que no se consultan bien en SQL; con la federación, una
 foránea son las tablas de un origen federado leídas en vivo por la pasarela, y no existe sin el
