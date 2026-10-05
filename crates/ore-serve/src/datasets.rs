@@ -570,7 +570,7 @@ impl Servidor {
             "coleccion:servir",
             &format!("colecciones/{}", coleccion.replace('.', "/")),
             "hecho",
-            None,
+            self.decision_de_quien_llama(p),
             None,
         );
         e.detalle = Some(Json::obj(detalle));

@@ -54,6 +54,8 @@ struct Anotacion {
     predicados: Vec<(String, String)>,
     limit: Option<u64>,
     token: Option<String>,
+    /// La de la apertura del puesto, si la lectura sale de uno (0053 F4·3).
+    decision: Option<String>,
     empezo: Instant,
 }
 
@@ -142,6 +144,7 @@ impl Servidor {
             predicados,
             limit,
             token,
+            decision: self.decision_de_quien_llama(p),
             empezo: Instant::now(),
         };
 
@@ -556,7 +559,7 @@ fn emitir(
         "federation:read",
         &format!("tablas/{}", nota.tabla.replace('.', "/")),
         resultado,
-        None,
+        nota.decision.clone(),
         None,
     );
     let mut d = vec![

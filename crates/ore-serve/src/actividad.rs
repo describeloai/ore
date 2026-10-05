@@ -266,7 +266,9 @@ impl Servidor {
             operacion,
             p.ruta.trim_start_matches('/'),
             resultado,
-            None,
+            // 0053 F4·3 · Desde un puesto no hay token de persona: la decisión
+            // con que se abrió dice de quién es.
+            self.decision_de_quien_llama(p),
             crate::acceso::commit_de(r),
         );
         e.detalle = Some(detalle(p, r));

@@ -199,6 +199,11 @@ pub(crate) struct Invocada {
 #[derive(Debug)]
 pub(crate) struct Puesto {
     pub persona: String,
+    /// **La decisión de `ore-iam` que lo dejó abrir** (`puesto:abrir`, 0053 F4·3):
+    /// se pregunta con el token de la persona, que sólo está al abrirlo, y la
+    /// nombra cada evento que sale del puesto — la celda habla con el token de su
+    /// pod, y sin ella `ore-iam` no sabría a quién anotarlo. `None` sin puente.
+    pub decision: Option<String>,
     /// `python`, `node` o `jvm`: la imagen (`cola::ENTORNOS`).
     pub entorno: String,
     pub rama: Option<String>,
@@ -910,18 +915,24 @@ impl Servidor {
             Err(r) => return r,
         };
         let id = id_de(&sujeto.persona, entorno, repositorio.as_deref());
+        // ⭐ 0053 F4·3 · La decisión que lo deja abrir, ahora que está el token de
+        //   la persona: la renueva también el que ya lo tenía.
+        let decision = self.decision_de_apertura(sujeto);
         {
-            let lista = self.puestos.lista.lock().unwrap();
+            let mut lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
             // Uno PERDIDO (vivo sin latido: TTL, tope o relevo; o encolado
             // que nunca arrancó) se sustituye. Y uno abierto en OTRA rama
             // también: la sesión lee y escribe la rama en que se trabaja, y
             // devolver el de otra era cotejar contra un árbol que no es el tuyo.
-            if let Some(p) = lista.get(&id)
+            if let Some(p) = lista.get_mut(&id)
                 && p.estado != Estado::Cerrado
                 && !perdido(p)
                 && p.rama == rama
             {
+                if decision.is_some() {
+                    p.decision = decision;
+                }
                 return Respuesta::ok(ficha(&id, p));
             }
         }
@@ -1036,6 +1047,7 @@ impl Servidor {
             clase,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            decision: decision.clone(),
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -1265,6 +1277,8 @@ impl Servidor {
             Ok(v) => v,
             Err(r) => return r,
         };
+        // Un trabajo lo lanza una persona (o una función, en su nombre): su huella, igual.
+        let decision = self.decision_de_apertura(sujeto);
         let mut p = Puesto {
             persona: sujeto.persona.clone(),
             entorno: entorno.to_string(),
@@ -1294,6 +1308,7 @@ impl Servidor {
             clase: None,
             transform,
             colecciones_leidas: BTreeSet::new(),
+            decision: decision.clone(),
         };
         p.celdas.insert(
             1,
@@ -2902,6 +2917,58 @@ impl Servidor {
         )
     }
 
+    /// 0053 F4·3 · `puesto:abrir`, con el token de quien lo abre. Sin puente o sin
+    /// token, nada; si `ore-iam` niega o no contesta, el puesto se abre igual —
+    /// abrir no lo exigía— y lo que haga dentro no tendrá huella: se dice aquí.
+    pub(crate) fn decision_de_apertura(&self, sujeto: &Identidad) -> Option<String> {
+        let acceso = self.acceso.as_ref()?;
+        let Some(t) = crate::acceso::testigo_de_la_peticion() else {
+            eprintln!(
+                "puestos · {} abre sin token: lo que haga no tendrá huella",
+                sujeto.persona
+            );
+            return None;
+        };
+        match acceso.puede(
+            &t,
+            &sujeto.persona,
+            "puesto:abrir",
+            ore_acceso::Recurso::ORGANIZACION,
+            "POST /puestos",
+        ) {
+            ore_acceso::Decision::Permite { id } => Some(id),
+            d => {
+                eprintln!(
+                    "puestos · ✗ `puesto:abrir` para {}: {} · lo que haga no tendrá huella",
+                    sujeto.persona,
+                    d.codigo()
+                );
+                None
+            }
+        }
+    }
+
+    /// 0053 F4·3 · **La decisión con que se anota lo que pide un puesto**: la de
+    /// su apertura, si quien llama es el agente que lo reclamó. Lo demás, `None`
+    /// (una persona en la consola trae su token, que es mejor prueba).
+    pub(crate) fn decision_de_quien_llama(
+        &self,
+        p: &ore_entrada::http::Peticion,
+    ) -> Option<String> {
+        let proveedor = self.identidad.as_ref()?;
+        let sujeto = proveedor(&p.cabeceras).ok()?;
+        if !es_agente(&sujeto) {
+            return None;
+        }
+        let id = self.puesto_que_llama(p, &sujeto)?;
+        let lista = self.puestos.lista.lock().unwrap();
+        let puesto = lista.get(&id)?;
+        if puesto.agente.as_deref() != Some(sujeto.persona.as_str()) {
+            return None;
+        }
+        puesto.decision.clone()
+    }
+
     pub(crate) fn persona_del_puesto(
         &self,
         sujeto: &Identidad,
@@ -4331,6 +4398,7 @@ mod prueba {
             lsp_siguiente: 0,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            decision: None,
         }
     }
 

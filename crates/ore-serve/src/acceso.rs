@@ -119,6 +119,11 @@ fn testigo() -> Option<String> {
     TESTIGO.with(|c| c.borrow().clone())
 }
 
+/// El token de quien pide, para quien lo necesita fuera de este módulo (0053 F4·3).
+pub(crate) fn testigo_de_la_peticion() -> Option<String> {
+    testigo()
+}
+
 /// Lo que dice el puente sobre saltarse una revisión.
 pub enum Salto {
     /// No hay puente, o no tiene la potestad: la regla de siempre.
