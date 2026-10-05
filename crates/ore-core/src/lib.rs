@@ -76,6 +76,7 @@ pub mod significado;
 pub mod sql_del_arbol;
 pub mod sync;
 pub mod tipos;
+pub mod transformar;
 pub mod transparencia;
 pub mod types;
 pub mod validate;

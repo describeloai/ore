@@ -243,6 +243,10 @@ codes! {
     // codigo cumple el documento: el `def` esta, y su cabecera es la firma.
     Oos2042 = "OOS2042", Reference, "el entrypoint de una funcion de codigo no esta";
     Oos2043 = "OOS2043", Reference, "la cabecera del def no es la firma del documento";
+    // v1alpha25 · EL TRANSFORM. Su identidad es su salida: lo que escribe es
+    // algo que el codigo escribe, y tiene un solo productor.
+    Oos2046 = "OOS2046", Reference, "la salida de un Transform no es un Dataset ni una MediaCollection escritos";
+    Oos2047 = "OOS2047", Reference, "dos Transform con la misma salida";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -534,6 +538,9 @@ mod tests {
             Code::Oos2042,
             Code::Oos2043,
             Code::Oos4016,
+            // v1alpha25: el transform.
+            Code::Oos2046,
+            Code::Oos2047,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

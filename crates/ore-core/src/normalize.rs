@@ -118,6 +118,10 @@ const CONJUNTOS: &[&str] = &[
     // v1alpha18: `models` es un conjunto por lo mismo que `reads`: los modelos
     // que el codigo puede llamar no van uno antes que otro.
     "models",
+    // v1alpha25: `inputs` de un `Transform`, por lo mismo que `reads`: lo que
+    // el código lee no va una cosa antes que otra, y la coherencia con el
+    // código lo compara como conjunto.
+    "inputs",
     // v1alpha1, y esto es lo que había que ver: **la lista nunca estuvo
     // completa, ni siquiera para la versión con la que se escribió**. Tres de
     // estos se midieron dando dos digests para el mismo contenido —`reserved`,

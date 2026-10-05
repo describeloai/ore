@@ -163,6 +163,15 @@ pub enum ApiVersion {
     /// planificar (`OOS2044`, `OOS2045`) y `expensive` se lee con presupuesto.
     /// Sin claves nuevas. Lo pidió ORE 0053 «ORE Federation Engine» (2026-10-04).
     V1Alpha24,
+    /// v1alpha25. **El transform.** `kind: Transform`, el productor declarado
+    /// de un dataset escrito: se deriva de un `@transform` de Python o de una
+    /// sentencia SQL que escribe, y se coteja con el código (`OOS2013`,
+    /// `OOS2042`, `OOS2043`). Su identidad es su salida —un productor por
+    /// salida (`OOS2047`), que es un `Dataset` o una `MediaCollection` escritos
+    /// (`OOS2046`) o un nombre por nacer— y la etiqueta baja por él antes de la
+    /// primera ejecución. Lo pidió ORE 0055 «transforms in code repositories»
+    /// (2026-10-05).
+    V1Alpha25,
 }
 
 impl ApiVersion {
@@ -189,6 +198,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha22,
         ApiVersion::V1Alpha23,
         ApiVersion::V1Alpha24,
+        ApiVersion::V1Alpha25,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -215,6 +225,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha22 => "oos.dev/v1alpha22",
             ApiVersion::V1Alpha23 => "oos.dev/v1alpha23",
             ApiVersion::V1Alpha24 => "oos.dev/v1alpha24",
+            ApiVersion::V1Alpha25 => "oos.dev/v1alpha25",
         }
     }
 
@@ -345,6 +356,10 @@ pub enum Kind {
     /// origen: una foto de un DNI es un dato personal aunque el bucket no lo
     /// sea.
     MediaCollection,
+    /// v1alpha25. **El productor declarado de un dataset escrito**: código en
+    /// un commit que lee unas entradas y escribe una salida. Se deriva del
+    /// código —nadie lo escribe— y se nombra por lo que escribe.
+    Transform,
 }
 
 /// v1alpha16. Las columnas de un `ObjectTable`, las mismas en todos: un objeto
@@ -435,6 +450,7 @@ impl Kind {
         Kind::Schema,
         Kind::ObjectTable,
         Kind::MediaCollection,
+        Kind::Transform,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -460,6 +476,7 @@ impl Kind {
             Kind::Schema => "Schema",
             Kind::ObjectTable => "ObjectTable",
             Kind::MediaCollection => "MediaCollection",
+            Kind::Transform => "Transform",
         }
     }
 
@@ -480,6 +497,7 @@ impl Kind {
             Kind::Dataset => ApiVersion::V1Alpha12,
             Kind::Schema => ApiVersion::V1Alpha13,
             Kind::ObjectTable | Kind::MediaCollection => ApiVersion::V1Alpha16,
+            Kind::Transform => ApiVersion::V1Alpha25,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -632,6 +650,11 @@ impl Kind {
             // clasifique, y alguien tiene que poder decir que una foto es un
             // dato personal. Suman a lo heredado; rebajarlo es `OOS4012`.
             Kind::MediaCollection => &["name", "namespace", "labels", "description"],
+            // v1alpha25. Sin `labels`: la etiqueta baja por el transform desde
+            // sus entradas (`01` §7), no se declara. Y sin `schema` (no está en
+            // `CON_SCHEMA`): un transform no vive en un schema, vive con su
+            // código.
+            Kind::Transform => &["name", "namespace", "description"],
         }
     }
 
@@ -943,6 +966,9 @@ impl Kind {
             // v1alpha16. Sin `columns`, `fields` ni `sql`: una coleccion no
             // es una tabla.
             Kind::MediaCollection => &["owner", "media", "formats", "from", "virtual", "retention"],
+            // v1alpha25 `01` §4. Ni `changes` (el modo es del `Dataset`), ni
+            // `schedule` (cuándo no es del código), ni `columns`.
+            Kind::Transform => &["owner", "runtime", "entrypoint", "inputs", "output"],
         }
     }
 
@@ -1403,6 +1429,115 @@ fn forma_de_tabla_de_ficheros(n: &Node) -> Option<ShapeFailure> {
 /// v1alpha16 · `03` §1.1. **La columna rescatada**: donde una tabla de CSV o
 /// JSONL que la declara recibe lo que no encaja con sus tipos congelados.
 pub const COLUMNA_RESCATADA: &str = "_rescued_data";
+
+/// v1alpha25 · la forma de un `Transform` (`01` §8): lo que falta, un runtime
+/// que no es de aquí, un `entrypoint` sin la forma del suyo, `inputs` que no
+/// es una lista de nombres o los repite, y una `output` que no es un nombre.
+fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
+    let falta = |clave: &str, ayuda: &str| {
+        Some((
+            format!("un `Transform` sin `{clave}`"),
+            Some(ayuda.to_string()),
+        ))
+    };
+    let meta = raiz.get("metadata").map(|(_, m)| m);
+    for (clave, ayuda) in [
+        (
+            "name",
+            "la salida con `__` por separador: `ventas__resumen`",
+        ),
+        ("namespace", "el paquete donde está el código"),
+    ] {
+        if meta.and_then(|m| m.get(clave)).is_none() {
+            return falta(&format!("metadata.{clave}"), ayuda);
+        }
+    }
+    let Some((_, spec)) = raiz.get("spec") else {
+        return falta(
+            "spec",
+            "se deriva del código: `ore` lo escribe desde el `@transform` o la sentencia SQL",
+        );
+    };
+    for (clave, ayuda) in [
+        ("runtime", "`python` o `sql`"),
+        (
+            "entrypoint",
+            "`<ruta>.py:<def>` o `<ruta>.sql:<n>`, desde la carpeta del paquete",
+        ),
+        ("inputs", "lo que el código lee; puede ser `[]`"),
+        ("output", "lo que el código escribe"),
+    ] {
+        if spec.get(clave).is_none() {
+            return falta(&format!("spec.{clave}"), ayuda);
+        }
+    }
+    let runtime = spec
+        .get("runtime")
+        .and_then(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let entrypoint = spec
+        .get("entrypoint")
+        .and_then(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let bien = match runtime {
+        "python" => crate::promover::entrypoint(entrypoint).is_some(),
+        "sql" => crate::transformar::entrypoint_sql(entrypoint).is_some(),
+        otro => {
+            return Some((
+                format!("`runtime: {otro}` no es el de un transform"),
+                Some(
+                    "`python` (un `@transform`) o `sql` (una sentencia que escribe). Java y \
+                     TypeScript entran cuando su declaración se pueda leer sin ejecutar"
+                        .to_string(),
+                ),
+            ));
+        }
+    };
+    if !bien {
+        return Some((
+            format!("`entrypoint: {entrypoint}` no tiene la forma de `runtime: {runtime}`"),
+            Some(
+                if runtime == "python" {
+                    "`<ruta>.py:<def>`: relativa a la carpeta del paquete, con `/`, sin `..`"
+                } else {
+                    "`<ruta>.sql:<n>`: relativa a la carpeta del paquete, con `/`, sin `..`; `n`, \
+                     la sentencia, desde 1"
+                }
+                .to_string(),
+            ),
+        ));
+    }
+    let inputs = spec.get("inputs").map(|(_, v)| v);
+    if !inputs.is_some_and(|n| matches!(n, Node::Sequence { .. })) {
+        return Some((
+            "`inputs` no es una lista".to_string(),
+            Some("lo que el código lee, en su orden: `[ventas.pedidos]`, o `[]`".to_string()),
+        ));
+    }
+    let mut vistos = std::collections::BTreeSet::new();
+    for i in inputs.map(Node::items).unwrap_or(&[]) {
+        let Some(n) = i.as_str() else {
+            return Some(("un elemento de `inputs` no es un nombre".to_string(), None));
+        };
+        if !vistos.insert(n) {
+            return Some((
+                format!("`inputs` repite `{n}`"),
+                Some("lo que el código lee, una vez cada cosa".to_string()),
+            ));
+        }
+    }
+    if spec.get("output").and_then(|(_, v)| v.as_str()).is_none() {
+        return Some((
+            "`output` no es un nombre".to_string(),
+            Some(
+                "un transform, una salida: `ventas.resumen`. Varias salidas no son de esta \
+                 versión"
+                    .to_string(),
+            ),
+        ));
+    }
+    None
+}
 
 /// v1alpha16 · la forma de una `MediaCollection` (`02` §7).
 fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
@@ -2036,6 +2171,16 @@ pub fn shape_rules() -> Vec<ShapeRule> {
             kind: Kind::ObjectTable,
             path: &["spec", "changes"],
             check: |n| palabras_de_changes(n, MODOS_DE_OBJETOS, TESTIGOS_DE_OBJETOS),
+        },
+        // ── v1alpha25 · el transform ────────────────────────────────────────
+        //
+        // Lo que lo hace un transform (`01` §8): nombre, paquete, runtime,
+        // `entrypoint` con la forma de su runtime, y lo que lee y escribe.
+        // Que sea el que el código da lo coteja el enlazado (`transformar`).
+        ShapeRule {
+            kind: Kind::Transform,
+            path: &[],
+            check: forma_de_transform,
         },
         // La coleccion: quien responde, que guarda y en que formatos. Y
         // `virtual` solo con origen: solo se sirve en sitio lo que tiene sitio.

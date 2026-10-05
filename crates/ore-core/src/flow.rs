@@ -751,6 +751,25 @@ pub fn etiquetas_de_coleccion(
     etiquetas_de_coleccion_con(pkg, lat, &BTreeMap::new(), c, out)
 }
 
+/// Lo que leyó lo escrito —un `Dataset` sin `from` o una `MediaCollection`
+/// escrita—, cada nombre con el documento desde el que se resuelve: su
+/// `derivedFrom` (lo que leyó la última escritura, v1alpha12 §5 y v1alpha19
+/// `01` §3) y las `inputs` del `Transform` que lo produce (lo que el código
+/// declara, v1alpha25 `01` §7).
+fn lo_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Vec<(String, &'a Loaded)> {
+    let mut leidas: Vec<(String, &Loaded)> = d
+        .section("derivedFrom")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|i| Some((i.as_str()?.to_string(), d)))
+        .collect();
+    if let Some(qn) = d.qname() {
+        leidas.extend(crate::transformar::entradas_de(pkg, &qn));
+    }
+    leidas
+}
+
 thread_local! {
     /// Las colecciones cuyo `derivedFrom` se está siguiendo ahora: una que
     /// deriva de una vista sobre su propio listado volvería sobre sí. La
@@ -794,26 +813,36 @@ pub fn etiquetas_de_coleccion_con(
     // v1alpha19 · **lo que deriva** (`01` §3): una escrita lleva el join de lo
     // que nombra su `derivedFrom` —de una vista o un dataset, lo de TODOS sus
     // campos; de una colección, lo suyo—, como un dataset escrito (vía 3).
-    let entra = c.section("from").is_none()
-        && c.section("derivedFrom").is_some()
-        && DERIVANDO.with(|d| d.borrow_mut().insert(cqn.clone()));
+    // v1alpha25 `01` §7: y lo que lee el transform que la escribe.
+    let leidas = if c.section("from").is_none() {
+        lo_que_lee(pkg, c)
+    } else {
+        Vec::new()
+    };
+    let entra = !leidas.is_empty() && DERIVANDO.with(|d| d.borrow_mut().insert(cqn.clone()));
     if entra {
-        for i in c.section("derivedFrom").map(|n| n.items()).unwrap_or(&[]) {
-            let Some(nombre) = i.as_str() else { continue };
+        for (nombre, desde) in &leidas {
+            let (nombre, desde) = (nombre.as_str(), *desde);
             if let Some(leido) = pkg
-                .resolve_view(nombre, c)
-                .or_else(|| pkg.resolve_dataset(nombre, c))
+                .resolve_view(nombre, desde)
+                .or_else(|| pkg.resolve_dataset(nombre, desde))
             {
                 for labels in carga_de(pkg, lat, efectivas, leido).values() {
                     for (ret, (nivel, _)) in labels {
                         subir_en(lat, &mut ls, ret, nivel, Origin::Inherited);
                     }
                 }
-            } else if let Some(otra) = pkg.resolve_collection(nombre, c) {
+            } else if let Some(otra) = pkg.resolve_collection(nombre, desde) {
                 for (ret, (nivel, _)) in
                     etiquetas_de_coleccion_con(pkg, lat, efectivas, otra, &mut Vec::new())
                 {
                     subir_en(lat, &mut ls, &ret, &nivel, Origin::Inherited);
+                }
+            } else if let Some(t) = pkg.resolve_table(nombre, desde) {
+                for labels in carga_entera_de_la_tabla(pkg, t).values() {
+                    for (ret, (nivel, _)) in labels {
+                        subir_en(lat, &mut ls, ret, nivel, Origin::Inherited);
+                    }
                 }
             }
         }
@@ -1043,30 +1072,44 @@ pub fn carga_de(
         // cuál, y quedarse corto no produce ningún síntoma (P4). Medido antes:
         // sin esto la etiqueta moría en `write()`. Recursivo (lo leído puede
         // ser otro escrito), con guarda de ciclo.
+        //
+        // v1alpha25 `01` §7: y lo que declara leer **el transform que lo
+        // produce**, que se sabe antes de la primera escritura —`derivedFrom`
+        // es lo que leyó la última—. Las dos listas suman.
         if let Some(suelo) = crate::vistas::suelo(pkg, v)
             && crate::vistas::es_escrito(suelo)
-            && let Some(df) = suelo.section("derivedFrom")
+            && let leidas = lo_que_lee(pkg, suelo)
+            && !leidas.is_empty()
         {
             let sqn = suelo.qname().unwrap_or_default();
             let mut vistos: BTreeSet<String> = BTreeSet::new();
             vistos.insert(vqn.clone());
             vistos.insert(sqn);
             let mut herencia: Labels = BTreeMap::new();
-            for i in df.items() {
-                let Some(nombre) = i.as_str() else { continue };
+            for (nombre, desde) in &leidas {
+                let (nombre, desde) = (nombre.as_str(), *desde);
                 let Some(leido) = pkg
-                    .resolve_view(nombre, suelo)
-                    .or_else(|| pkg.resolve_dataset(nombre, suelo))
+                    .resolve_view(nombre, desde)
+                    .or_else(|| pkg.resolve_dataset(nombre, desde))
                 else {
                     // v1alpha19 `01` §4: lo leído puede ser una colección, y
                     // cada campo lleva lo que ella lleva.
-                    if let Some(c) = pkg.resolve_collection(nombre, suelo)
+                    if let Some(c) = pkg.resolve_collection(nombre, desde)
                         && vistos.insert(c.qname().unwrap_or_default())
                     {
                         for (ret, (nivel, _)) in
                             etiquetas_de_coleccion_con(pkg, lat, efectivas, c, &mut Vec::new())
                         {
                             subir(&mut herencia, &ret, &nivel, Origin::Inherited);
+                        }
+                    }
+                    // v1alpha25 `01` §6: un transform lee también una `Table`,
+                    // y cada campo lleva lo que llevan todas sus columnas.
+                    if let Some(t) = pkg.resolve_table(nombre, desde) {
+                        for labels in carga_entera_de_la_tabla(pkg, t).values() {
+                            for (ret, (nivel, _)) in labels {
+                                subir(&mut herencia, ret, nivel, Origin::Inherited);
+                            }
                         }
                     }
                     continue;
@@ -1588,6 +1631,19 @@ pub fn lectura_del_origen(
         }
     }
     Ok(())
+}
+
+/// [`carga_de_la_tabla`] de todas sus columnas: lo que lleva una `Table` que
+/// un transform lee entera (v1alpha25 `01` §7).
+fn carga_entera_de_la_tabla(pkg: &Package, t: &Loaded) -> BTreeMap<String, Labels> {
+    let columnas: Vec<String> = t
+        .section("columns")
+        .map(Node::entries)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|(k, _)| k.as_str().map(str::to_string))
+        .collect();
+    carga_de_la_tabla(pkg, &t.qname().unwrap_or_default(), &columnas)
 }
 
 /// Lo que lleva cada columna pedida de una `Table`: las `labels` de su fuente
