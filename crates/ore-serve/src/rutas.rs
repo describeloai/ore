@@ -169,6 +169,10 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             | ["conceptos", ..]
             // 0039: `create … database` en un guion
             | ["paquetes"]
+            // 0053 F2·5: rehacer la copia de un paquete, en la rama del
+            //   puesto y en nombre de quien lo abrió (`sujeto_del_puesto`);
+            //   nunca en `main`. No toca el gobierno: encola un Job.
+            | ["paquetes", _, "copia", "rehacer"]
             | ["datasets", _, _, "confirmar"]
             | ["datasets", _, _, _, "confirmar"]
             // 0046 E9·2: resolver huellas a URLs es LEER —lo mismo que
@@ -531,7 +535,31 @@ impl Servidor {
             // 0030 W1 · rehacer la copia: escribe la cola, no el árbol.
             ("POST", ["paquetes", n, "copia", "rehacer"]) => {
                 let n = n.to_string();
-                match self.rama_de_datos(rama) {
+                // Desde un puesto (0053 F2·5): la persona que lo abrió y la
+                // rama del puesto, diga lo que diga `x-ore-rama`; sin rama,
+                // no: una celda no rehace las copias de `main`.
+                let desde_puesto = self.puesto_que_llama(p, sujeto).is_some();
+                // Un agente sin su puesto no es nadie: sin la persona ni la
+                // rama, rehacería como el agente donde dijera la cabecera.
+                if crate::puestos::es_agente(sujeto) && !desde_puesto {
+                    return Respuesta::error(
+                        403,
+                        "un agente rehace la copia desde su puesto (`x-ore-puesto`), en su rama",
+                    );
+                }
+                let (sujeto, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
+                    Ok(x) => x,
+                    Err(r) => return r,
+                };
+                if desde_puesto && rama.is_none() {
+                    return Respuesta::error(
+                        403,
+                        "desde un puesto se rehace la copia de su rama, y este puesto no tiene: \
+                         `main` no se toca desde una celda",
+                    );
+                }
+                let sujeto = &sujeto;
+                match self.rama_de_datos(rama.as_deref()) {
                     None => self.leyendo(move |r| self.rehacer_copia(r, &n, sujeto)),
                     Some(ra) => {
                         let _en = crate::copia::EnRama::poner(ra);
