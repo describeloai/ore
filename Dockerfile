@@ -775,13 +775,13 @@ RUN set -e; mkdir -p /tmp/p/arbol /tmp/p/choca; \
     TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol ""; \
     E=$(printf 'cp314\ndev:pytest==9.1.1\ndev:sortedcontainers==2.4.0\npandas\ntomli-w==1.2.0' | sha256sum | cut -c1-12); \
     [ "$(cat /tmp/p/t/digest.txt)" = "capa-$E" ]; \
-    tar -tzf /tmp/p/t/capa.tgz | grep -q '^\./tomli_w/__init__\.py$'; \
-    ! tar -tzf /tmp/p/t/capa.tgz | grep -q -e '^\./pandas/' -e '^\./numpy/' -e 'sortedcontainers' -e 'ruff' || exit 1; \
-    tar -tzf /tmp/p/t/dev.tgz | grep -q '^\./sortedcontainers/__init__\.py$'; \
-    ! tar -tzf /tmp/p/t/dev.tgz | grep -q -e '^\./_pytest/' -e '^\./tomli_w/' -e 'ruff' || exit 1; \
+    tar -tzf /tmp/p/t/capa.tgz | grep -q '^tomli_w/__init__\.py$'; \
+    ! tar -tzf /tmp/p/t/capa.tgz | grep -q -e '^pandas/' -e '^numpy/' -e '^\./' -e 'sortedcontainers' -e 'ruff' || exit 1; \
+    tar -tzf /tmp/p/t/dev.tgz | grep -q '^sortedcontainers/__init__\.py$'; \
+    ! tar -tzf /tmp/p/t/dev.tgz | grep -q -e '^_pytest/' -e '^tomli_w/' -e 'ruff' || exit 1; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
     python3 -c "import json; l = json.load(open('/tmp/p/t/informe.json'))['lock']; assert l == ['dev:sortedcontainers==2.4.0', 'tomli-w==1.2.0'], l"; \
-    ! tar -tzf /tmp/p/t/capa.tgz | grep -qx '\./\.lock' || exit 1; \
+    ! tar -tzf /tmp/p/t/capa.tgz | grep -qx '\.lock' || exit 1; \
     grep -q '"suma"' /tmp/p/t/informe.json; grep -q '"sumaDev"' /tmp/p/t/informe.json; \
     grep -q '^lock-version = "1.0"' /tmp/p/t/lock-del-repositorio.toml; \
     grep -q '^name = "pandas"' /tmp/p/t/lock-del-repositorio.toml; \

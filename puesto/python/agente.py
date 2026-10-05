@@ -71,6 +71,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 CAPA = os.environ.get("ORE_CAPA_DIR", "/capa")
 if os.path.isdir(CAPA) and CAPA not in sys.path:
     sys.path.append(CAPA)
+# ⭐ 0050 P2: y lo de desarrollo (el grupo `dev`: pytest, hypothesis, stubs),
+#   DETRÁS de lo que corre. Sólo existe en una sesión: `traer-la-capa` no lo
+#   baja para una invocación.
+CAPA_DEV = os.path.join(CAPA, ".dev")
+if os.path.isdir(CAPA_DEV) and CAPA_DEV not in sys.path:
+    sys.path.append(CAPA_DEV)
 
 import ore  # noqa: E402 — el SDK, al lado de este fichero
 

@@ -75,7 +75,9 @@ if ( cd "$P" && uv lock > "$TRABAJO/uv.log" 2>&1 \
         rm -f "$TRABAJO/$CAJA/.lock"   # el cerrojo de uv, no un paquete
         NOMBRE=$([ "$CAJA" = run ] && echo capa.tgz || echo dev.tgz)
         # Fechas y dueños fijos: la misma resolución da la misma caja, byte a byte.
-        tar $TAR -czf "$TRABAJO/$NOMBRE" -C "$TRABAJO/$CAJA" .
+        # Sus entradas, sin `./`: abrirla en `/capa` no toca el directorio montado.
+        # shellcheck disable=SC2046
+        tar $TAR -czf "$TRABAJO/$NOMBRE" -C "$TRABAJO/$CAJA" $(ls -A "$TRABAJO/$CAJA")
       else
         ESTADO=error
       fi
