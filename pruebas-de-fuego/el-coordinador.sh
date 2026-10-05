@@ -12,6 +12,9 @@ set -u
 SERVE="${SERVE:-target/debug/ore-serve}"
 ORE="${ORE:-target/debug/ore}"
 FED="${FED:-target/debug/ore-federation}"
+# Absolutas: `ore-serve` corre `ore` desde el clon de la forja, no desde aquí.
+abs() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+SERVE=$(abs "$SERVE"); ORE=$(abs "$ORE"); FED=$(abs "$FED")
 PG_URL="${PG_URL:-postgres://postgres:x@localhost:5432}"
 PY=$(command -v python3 || command -v python)
 TMP="$(mktemp -d)"

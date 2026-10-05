@@ -629,10 +629,7 @@ fn error(codigo: u16, cod: &str, mensaje: &str) -> Respuesta {
 type Abierta = (u16, Vec<(String, String)>, BufReader<TcpStream>);
 
 /// Abre la lectura en la pasarela: su estado, sus cabeceras y el cuerpo.
-fn abrir(
-    destino: &str,
-    cuerpo: &str,
-) -> Result<Abierta, String> {
+fn abrir(destino: &str, cuerpo: &str) -> Result<Abierta, String> {
     use std::net::ToSocketAddrs;
     let dir = destino
         .to_socket_addrs()
