@@ -312,16 +312,18 @@ primero, Node y JVM en un hito aparte.
 consulta y se lee en vivo (F6), con `federation.read`. Lo que **guarda** datos del origen —`create or
 replace dataset … as select`, `insert into … select`, `create materialized view`— es una **copia**: la
 hace un **Job** (sin el tope de una lectura en vivo, y el coste en vivo no le aplica: spec §4), con
-`materialization.payload`. Dos formas: **copiar una tabla** (lo que baja entero: un dataset mantenido
-con su `where` ampliado, spec v1alpha25) y **copiar un cálculo** (juntas, agregados, varios orígenes: el
-Job lee lo repartido de cada tabla, calcula en DuckDB y publica). «Los trabajos de copia leen por la
-pasarela» pasa a **F8** (toca la malla; F7 no lo necesita: el conector v2 ya pone los diez operadores).
+`materialization.payload`. **Sin spec nueva**: el `where` de un dataset no admite rangos a propósito
+(v1alpha8 §4: un rango sobre una columna clasificada ordena, y ahí empieza la fuga), y una vista SQL
+ya los gobierna (v1alpha14 §6). Así que **toda copia desde el origen es la copia de una vista SQL**: el
+Job reparte la vista (en modo copia), lee cada tabla con lo empujado —los diez operadores—, la calcula
+en DuckDB y la publica. Copiar una tabla filtrada es el caso trivial. «Los trabajos de copia leen por la
+pasarela» pasa a **F8** (toca la malla; F7 no lo necesita).
 
 | hito | qué | sale |
 |---|---|---|
 | **F7·1** · la vista y el agujero | `create view` sobre una `Table` ya compila con `federation.read` (si no, `OOS4011`: v1alpha24 `invalid/a-view-over-a-table-without-federation-read`) y se lee en vivo (F6). **`write()` de lo leído en vivo se niega** (`sql()` marca su resultado; en un transform, sus `inputs` leídos en vivo): guardar eso es una copia | ✓ `la-lectura-en-vivo-en-python.py` 8/8 |
-| **F7·2** · copiar una tabla | spec v1alpha25 (`where` con los operadores del reparto), `create or replace dataset … as select` de una tabla que baja entera → dataset mantenido; el Job empuja los filtros | pendiente |
-| **F7·3** · copiar un cálculo | `create materialized view`, `… as select` con juntas o agregados, `insert into … select` sobre el origen | pendiente |
+| **F7·2** · el Job calcula desde el origen | `servir_para_copia` sirve una `Table` como un dataset más; el reparto tiene **modo copia** (sin interruptor, sin coste en vivo, sin `federation.read`); `ore materialize --preparar` lee cada tabla con su conector v2 (`leer`, Arrow) y lo empujado, y `ore.calcular` la calcula sin cambios; su marca es la pasada (se recalcula cada vez). `create materialized view` sobre el origen deja de rechazarse; `ore view` da todas las fuentes en la primera línea `raíz` (el Job pide la credencial de cada una, sin tocar la malla) | ✓ (ba09e12) `la-copia-desde-el-origen.sh` 7/7 con Postgres: dos tablas `forbidden` juntadas, un rango empujado (llegan 2 434 de 5 000 filas), y la copia casa con el origen |
+| **F7·3** · las otras dos sentencias | `create or replace dataset … as select` sobre el origen → dataset sobre la vista de su consulta; `insert into … select` → Job de una vez en `append` | pendiente |
 | **F7·4** · en vivo | test6 | pendiente |
 
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se

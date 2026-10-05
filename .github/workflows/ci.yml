@@ -504,6 +504,16 @@ jobs:
           SERVE=target/debug/ore-serve ORE=target/debug/ore FED=target/debug/ore-federation \
             bash pruebas-de-fuego/el-coordinador.sh
 
+      # ⭐ 0053 F7·2: la copia de una vista que lee del origen. El Job lee cada
+      #   tabla con lo que el reparto empuja (un rango, sin tope en vivo) y
+      #   DuckDB la calcula; casa con lo que dice Postgres.
+      - name: la copia desde el origen
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432
+        run: |
+          python3 -m pip install --quiet duckdb pyarrow
+          ORE=target/debug/ore bash pruebas-de-fuego/la-copia-desde-el-origen.sh
+
       - name: el conector de S3
         run: |
           python3 pruebas-de-fuego/de-mentira.py s3 0 > s3.log 2>&1 &
