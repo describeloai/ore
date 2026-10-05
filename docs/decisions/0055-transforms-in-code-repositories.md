@@ -97,20 +97,24 @@ un stub), ni cadena de ramas para los datasets.
 | D4 | **Se publica en OOS v1alpha25** (spec en `C:\oos`, y luego el submódulo) | 2026-10-05 |
 | D5 | **Build registra la salida, corre el transform del commit y escribe una transacción** con procedencia `Transform@commit` y el id del build. Es el único que escribe | 2026-10-05 |
 | D6 | **Preview sustituye a Run en los repositorios de transforms**, en la barra inferior: el código del editor, un transform concreto, el resultado en memoria; no registra, no escribe, no versiona. En functions sigue Dry Run | 2026-10-05 |
+| D7 | **Sin `changes` en el `Transform`**: lo que una salida admite lo declara su `Dataset` escrito; el modo va en cada escritura | 2026-10-05 |
+| D8 | **Salida por nacer**: un `output` que aún no resuelve es válido y lo registra el primer Build; si resuelve, es un `Dataset` escrito o una `MediaCollection` | 2026-10-05 |
+| D9 | **Python declara con literales**, constantes del módulo asignadas una vez o `ore.collection("…")`; lo calculado no se deriva y el commit se rechaza con su línea. La plantilla v7 no se llama a sí misma | 2026-10-05 |
+| D10 | **La identidad es la salida**: no es un activo de Assets. Vive en el repositorio, `<repo>/pipeline/<salida>.yaml`, derivado y marcado; se llama por lo que produce (`ore.build("db.schema.t")`, `POST /builds`), y la ficha del dataset dice *Produced by*. Carpeta visible: el compilador ignora las ocultas | 2026-10-05 |
+| D11 | **Java al final**: falta un lector de Java en Rust y, seguramente, una forma de declarar que se lea sin ejecutar. Primero Python y SQL | 2026-10-05 |
 
 ## El kind `Transform` (borrador v1alpha25)
 
 ```yaml
 apiVersion: oos.dev/v1alpha25
 kind: Transform
-metadata: { name: resumen, namespace: ventas }
+metadata: { name: resumen, namespace: ventas }  # en etl/pipeline/ventas.curado.resumen.yaml
 spec:
   runtime: python                              # python | sql | java
   source: transforms/resumen.py
   entrypoint: resumen                          # la función; en SQL, la sentencia
   inputs: [ventas.pedidos, ventas.clientes]    # tablas, vistas, datasets, colecciones
   output: ventas.resumen                       # un Dataset escrito (o una MediaCollection)
-  changes: { mode: upsert, key: [pais] }
 ```
 
 **No lleva**: el commit (lo da el árbol en que vive), los builds ni su estado (son del servidor),
@@ -120,11 +124,10 @@ la programación (D3), ni efectos, endosos o `input`/`output` de valores (eso es
 
 | regla | por qué |
 |---|---|
-| `output` resuelve a un `Dataset` **escrito** o a una `MediaCollection` | uno mantenido lo produce el sistema: dos dueños de los bytes |
+| `output`, si resuelve, es un `Dataset` **escrito** o una `MediaCollection`; si no, está por nacer (D8) | uno mantenido lo produce el sistema: dos dueños de los bytes |
 | un solo `Transform` por `output` | hoy dos códigos se pisan en silencio |
 | cada `inputs` resuelve; la salida no es su propia entrada salvo en incremental | |
 | el grafo —`Transform` + `from` de los mantenidos— es acíclico | |
-| `changes` coincide con el del `Dataset` de la salida | |
 | la salida lleva el join de lo que llevan sus entradas, y su conducto lo admite (`04-flow`) | la etiqueta baja **antes** de la primera ejecución; hoy sólo baja por lo observado (`derivedFrom`) |
 
 **Lo que queda fuera**: `CREATE VIEW` produce una `View` (no hay bytes); una vista materializada o
@@ -150,6 +153,15 @@ programación, y el build de lo de abajo que necesita lo de arriba.
 
 ## Lo que sigue
 
-1. **El `Transform`**: el kind en OOS v1alpha25 y su descubrimiento al commitear, en los tres
-   lenguajes. Se cierra antes de tocar Build.
-2. **Build**, sobre el `Transform` asentado.
+**T1 · el `Transform` y su descubrimiento** (Build después, sobre él):
+
+| paso | qué |
+|---|---|
+| T1·0 | medir: v1alpha25 libre, cómo resuelven entradas y salidas, coste de derivar en el commit |
+| T1·1 | spec v1alpha25 (`C:\oos`): kind, reglas y códigos, esquema, conformidad; luego el submódulo |
+| T1·2 | `ore-core`: leer y validar (por nacer, productor único, entradas, sin ciclos, etiqueta, sólo derivado) |
+| T1·3 | `ore-code`: derivar de Python (decorador) y SQL (sentencias que escriben); emitir determinista |
+| T1·4 | el commit escribe `pipeline/` en el mismo commit; la puerta rechaza lo que no casa; índice salida→`Transform` |
+| T1·5 | plantillas v7 de transforms-python y transforms-sql |
+| T1·6 | consola: aviso del commit, `pipeline/` en el repositorio, *Produced by* en la ficha |
+| T1·7 | Java |
