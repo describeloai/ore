@@ -32,6 +32,7 @@ PEDIDAS = []
 CORTAR = {"si": False}
 
 LECTURA = {"tabla": "pg.public.clientes", "fuente": "pg", "tipo": "postgres", "columnas": ["id", "pais"],
+           "columnasDeLaTabla": ["id", "pais", "nota"],
            "empujados": [{"columna": "pais", "operador": "eq", "valor": "ES"}], "enElMotor": [],
            "orderBy": [{"columna": "id", "desc": True}], "limit": 10}
 
@@ -72,7 +73,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._json(422, {"error": "`pg.public.prohibida` declara `fullScan: forbidden`", "codigo": "OOS2044", "nombre": "pg.public.prohibida"})
             f = {"pg.public.clientes": {"federada": LECTURA}}
             if "pg.v_es" in q:
-                f["pg.v_es"] = {"vistaFederada": "SELECT id AS ident, pais FROM pg.public.clientes"}
+                # Nombra `nota`, que la sentencia no usa y no se pidió (lo que
+                # rompió `bq_foreign` en vivo, F6·3).
+                f["pg.v_es"] = {"vistaFederada": "SELECT id AS ident, pais, nota FROM pg.public.clientes"}
             return self._json(200, {"fuentes": f})
         if self.path == "/puestos/p1/explain":
             return self._json(200, {"plan": {"ok": True, "lecturas": [LECTURA]}, "texto": "pg.public.clientes\n  al origen    columnas  id, pais\n"})

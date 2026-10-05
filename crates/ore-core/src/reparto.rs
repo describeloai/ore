@@ -110,6 +110,9 @@ pub struct Lectura {
     pub env: String,
     pub objeto: String,
     pub columnas: Vec<String>,
+    /// Todas las de la tabla: una vista registrada tal cual (F6) puede nombrar
+    /// columnas que la sentencia no usa, y que por eso no se piden al origen.
+    pub declaradas: Vec<String>,
     pub empujados: Vec<Filtro>,
     /// Las condiciones sobre esta tabla que evalúa el motor, como se escribieron.
     pub en_el_motor: Vec<String>,
@@ -1393,6 +1396,7 @@ fn lectura(
             env: env.unwrap_or_default(),
             objeto,
             columnas,
+            declaradas,
             empujados,
             en_el_motor,
             limit,
@@ -1450,6 +1454,7 @@ fn lectura(
         env: env.unwrap_or_default(),
         objeto,
         columnas,
+        declaradas,
         empujados,
         en_el_motor,
         limit,
@@ -1928,6 +1933,15 @@ impl Lectura {
             (
                 "columnas",
                 Json::Arr(self.columnas.iter().map(|c| Json::s(c.as_str())).collect()),
+            ),
+            (
+                "columnasDeLaTabla",
+                Json::Arr(
+                    self.declaradas
+                        .iter()
+                        .map(|c| Json::s(c.as_str()))
+                        .collect(),
+                ),
             ),
             (
                 "empujados",

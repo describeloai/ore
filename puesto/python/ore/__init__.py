@@ -1066,6 +1066,12 @@ def _lectura_en_vivo(con, l, estricta):
             if estricta:
                 raise OriginReadError("cortado", m, l["tabla"])
             warnings.warn(m, TruncatedReadWarning, stacklevel=3)
+    # Una vista viva se registra tal cual (F6·1) y puede nombrar columnas que la
+    # sentencia no usa —por eso no se pidieron al origen—: van como nulos, para
+    # que la vista se resuelva sin traerlas.
+    for c in l.get("columnasDeLaTabla") or []:
+        if c not in tabla.column_names:
+            tabla = tabla.append_column(c, pa.nulls(tabla.num_rows))
     nombre = "__ore_vivo_%d" % abs(hash(l["tabla"]))
     con.register(nombre, tabla)
     return nombre
