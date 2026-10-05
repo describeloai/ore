@@ -219,6 +219,10 @@ fn clase(table_type: &str) -> &'static str {
 ///
 /// # Lo que se EMPUJA, no lo que el motor sabe
 ///
+/// ✏️ 0053 F5·3: el conector v2 pone los diez operadores; se declara
+/// [`ore_driver::EMPUJE_INDUCIDO`] (todos menos `like`). Lo de abajo explica
+/// por qué antes era sólo `eq`, con el driver v1.
+///
 /// BigQuery contesta los seis operadores de GoogleSQL, pero entre el
 /// planificador y el dataset está este driver, y una petición solo sabe
 /// expresar los de `ore_driver::OPERADORES`. Un filtro que el driver no sabe
@@ -237,7 +241,7 @@ fn clase(table_type: &str) -> &'static str {
 /// | `require_partition_filter = true` | `fullScan: forbidden` y `requiredFilters` | BigQuery **rechaza** la consulta sin filtro de partición |
 /// | cualquier otro objeto legible | `fullScan: expensive` | se factura por bytes leídos |
 fn reads(particion: Option<&str>, exige_filtro: bool) -> Json {
-    let operadores = ["eq"];
+    let operadores = ore_driver::EMPUJE_INDUCIDO;
     let mut o: BTreeMap<String, Json> = BTreeMap::new();
     o.insert(
         "predicatePushdown".to_string(),

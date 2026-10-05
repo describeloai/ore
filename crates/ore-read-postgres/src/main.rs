@@ -664,24 +664,20 @@ fn armar(
 
 // ── Las dos caras ───────────────────────────────────────────────────────────
 
-/// La cara `I`: **lo que este driver sabe empujar**, no lo que PostgreSQL sabe.
-///
-/// La distinción no es escrúpulo: `reads` es el contrato con el que el
-/// planificador decide qué baja al origen, y lo que baja se construye en
-/// `ore-sql`. Declarar `neq`, `range` o `isNull` sería prometer una traducción
-/// que no existe, y el precio lo paga quien menos lo ve — un filtro que el
-/// driver no sabe poner **se cae de la petición**, y una consulta devuelve más
-/// filas de las que pidió sin que nadie vea un error.
-///
-/// Así que aquí se declara lo que hay: `eq`, y el recorrido completo. Ensanchar
-/// esto es un cambio en `ore-sql` primero y en esta lista después, en ese orden.
-///
-/// `gt` existe en el protocolo y **no** aparece: es de la marca de agua, y el
-/// `range` de OOS son las cuatro comparaciones. Declararlo por la mitad sería
-/// prometer las otras tres.
+/// La cara `I`: lo que la inducción declara que se puede empujar
+/// ([`ore_driver::EMPUJE_INDUCIDO`]: lo que el conector v2 pone, menos `like`),
+/// y el recorrido completo.
 fn reads() -> Json {
     Json::obj([
-        ("predicatePushdown", Json::Arr(vec![Json::s("eq")])),
+        (
+            "predicatePushdown",
+            Json::Arr(
+                ore_driver::EMPUJE_INDUCIDO
+                    .iter()
+                    .map(|o| Json::s(*o))
+                    .collect(),
+            ),
+        ),
         ("fullScan", Json::s("cheap")),
     ])
 }
@@ -1062,16 +1058,14 @@ mod tests {
         }
     }
 
-    /// La cara `I` declara **lo que `sql.rs` sabe traducir**, no lo que
-    /// PostgreSQL sabe hacer. Declarar de más se paga donde menos se ve: un
-    /// filtro que el driver no sabe poner se cae de la petición, y la consulta
-    /// devuelve más filas de las que pidió sin que nadie vea un error.
+    /// La cara `I` declara lo que el conector v2 pone, menos `like` (0053 F5·3).
     #[test]
-    fn la_cara_de_lectura_no_promete_lo_que_no_traduce() {
+    fn la_cara_de_lectura_declara_lo_que_el_conector_pone_menos_like() {
         let j = reads().jcs();
-        assert_eq!(j, r#"{"fullScan":"cheap","predicatePushdown":["eq"]}"#);
-        for inventado in ["neq", "range", "isNull", "like", "fullText", "gt"] {
-            assert!(!j.contains(inventado), "{j} promete `{inventado}`");
-        }
+        assert_eq!(
+            j,
+            r#"{"fullScan":"cheap","predicatePushdown":["eq","neq","in","range","isNull"]}"#
+        );
+        assert!(!j.contains("like"));
     }
 }

@@ -308,6 +308,13 @@ pub fn comprobacion(ok: bool, porque: Option<&str>) -> String {
 /// conector los sepa poner: eso lo declara cada uno en sus
 /// [`capacidades`], y uno que recibe lo que no declaró se niega
 /// (`docs/federation.md` §1.2).
+/// **Lo que la inducción declara en `reads.predicatePushdown`** de una tabla
+/// de un conector v2 (decisión de 0053 F5·3, con el usuario): las familias
+/// que el conector sabe poner —los diez [`OPERADORES`]— **menos `like`**, que
+/// suele ser caro en el origen (un `%x%` sin índice); el dueño lo añade si lo
+/// quiere. Es la política por defecto, no un techo: la tabla se edita.
+pub const EMPUJE_INDUCIDO: &[&str] = &["eq", "neq", "in", "range", "isNull"];
+
 pub const OPERADORES: &[&str] = &[
     "eq",
     "neq",

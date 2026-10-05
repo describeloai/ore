@@ -282,8 +282,11 @@ empujan `limit` (con su `ORDER BY` en Neon). **Pero 4 dejan en el motor un filtr
 hacer** —un rango de fechas, un `IN`, un `total > 500`, el `=` de S3— porque **la inducción declara
 `predicatePushdown: [eq]` en Postgres y BigQuery, y nada en S3**, cuando sus conectores ponen los diez
 operadores (F2). Esas cuatro leen la tabla entera (cortada en el tope o el presupuesto). Es la política
-del dueño de la tabla y no del reparto: que la inducción declare lo que el conector sabe es una decisión
-aparte, para antes de F6.
+del dueño de la tabla y no del reparto. **Decidido** (2026-10-05, con el usuario): la inducción declara lo
+que el conector v2 pone **menos `like`** —`[eq, neq, in, range, isNull]`, `ore_driver::EMPUJE_INDUCIDO`—
+en Postgres, BigQuery y S3; `like` lo añade el dueño (un `%x%` sin índice es caro en el origen). Vale
+para lo que se catalogue desde ahora: una tabla ya declarada no se toca sola (la línea puede ser de
+alguien); se recataloga o se edita.
 
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ

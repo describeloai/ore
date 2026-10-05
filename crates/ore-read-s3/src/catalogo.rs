@@ -164,14 +164,27 @@ fn cara_d() -> Json {
 fn cara_i(bytes: u64) -> Json {
     // Leer un conjunto entero cuesta lo que pesa: por encima de 256 MB el
     // planificador lo evita salvo necesidad.
-    Json::obj([(
-        "fullScan",
-        Json::s(if bytes > 256 * 1024 * 1024 {
-            "expensive"
-        } else {
-            "cheap"
-        }),
-    )])
+    // Y lo que se empuja (0053 F5·3): el conector v2 filtra al leer el
+    // fichero, con los diez operadores; se declara lo de siempre, sin `like`.
+    Json::obj([
+        (
+            "fullScan",
+            Json::s(if bytes > 256 * 1024 * 1024 {
+                "expensive"
+            } else {
+                "cheap"
+            }),
+        ),
+        (
+            "predicatePushdown",
+            Json::Arr(
+                ore_driver::EMPUJE_INDUCIDO
+                    .iter()
+                    .map(|o| Json::s(*o))
+                    .collect(),
+            ),
+        ),
+    ])
 }
 
 fn esquema_de(o: &dyn Origen, f: Formato, obj: &Objeto, ext: &str) -> Result<Esquema, String> {
