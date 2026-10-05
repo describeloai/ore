@@ -684,7 +684,7 @@ RUN set -e; mkdir -p /tmp/q/arbol; \
     test -f /tmp/q/t/jars/jackson-dataformat-yaml-2.19.0.jar; \
     test -f /tmp/q/t/jars/snakeyaml-2.4.jar; \
     ! ls /tmp/q/t/jars | grep -q 'jackson-databind' || exit 1; \
-    grep -q 'jackson-databind 2.19.0 lo arrastra algo que declaraste' /tmp/q/t/informe.json; \
+    grep -q 'jackson-databind 2.19.0 comes with something you declared' /tmp/q/t/informe.json; \
     cat /tmp/q/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/q
 
 USER 65532:65532
