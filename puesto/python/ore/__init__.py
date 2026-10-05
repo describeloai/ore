@@ -790,10 +790,36 @@ def function(f=None, *, over=None, reads=None, models=None, timeout=None):
     return marca(f) if callable(f) else marca
 
 
+#: `name` → (the digest of its code, the function): reused only while the
+#: code it was built from is the same (ORE 0056 V1).
 _FUNCIONES = {}
 #: The `spec` of each function `get_function()` read: SQL types its calls by it
 #: (0049 B7·2).
 _FUNCIONES_SPEC = {}
+#: The digest of the code each function runs (ORE 0056 V1): the bytes of its
+#: `entrypoint` file, which is exactly what is executed.
+_FUNCIONES_CODIGO = {}
+
+
+def _huella_sql(query, funciones):
+    """The version of an anchored SQL statement (0049 B7·3): the query, the
+    document of each function it calls and **the code that runs** —a new body
+    with the same signature recomputes (ORE 0056 V1)—."""
+    import hashlib
+
+    from .medios import _canonico
+
+    return hashlib.sha256(_canonico({
+        "query": " ".join(query.split()),
+        "functions": {n: _FUNCIONES_SPEC.get(n) for n in sorted(funciones)},
+        "code": {n: _FUNCIONES_CODIGO.get(n) for n in sorted(funciones)},
+    }).encode("utf-8")).hexdigest()[:16]
+
+
+def _digest_del_codigo(texto):
+    import hashlib
+
+    return "codigo:" + hashlib.sha256(texto.encode("utf-8")).hexdigest()[:16]
 
 
 @_kw({"nombre": "name"})
@@ -812,8 +838,6 @@ def get_function(name):
     partes = nombre.split(".")
     if len(partes) not in (2, 3) or not all(partes):
         raise ValueError("`get_function(%r)`: the name is `<database>.<def>` or `<database>.<schema>.<def>`" % nombre)
-    if nombre in _FUNCIONES:
-        return _FUNCIONES[nombre]
     from urllib.parse import quote
 
     from .contrato import llamada
@@ -840,14 +864,25 @@ def get_function(name):
                               cabeceras=rama)
     if codigo != 200 or not isinstance(f, dict) or "texto" not in f:
         raise RuntimeError("reading the code of `%s` (%s): %s" % (nombre, fichero, codigo))
+    # The code is read every time, and the function rebuilt only if it changed:
+    # cached by name alone, a session kept running the code of before the
+    # commit (ORE 0056 V1).
+    digest = _digest_del_codigo(f["texto"])
+    _FUNCIONES_SPEC[nombre] = spec
+    _FUNCIONES_CODIGO[nombre] = digest
+    previa = _FUNCIONES.get(nombre)
+    if previa is not None and previa[0] == digest:
+        return previa[1]
     modulo = {"__name__": "ore_funcion_" + "_".join(partes), "__file__": fichero}
     exec(compile(f["texto"], fichero, "exec"), modulo)
     if defn not in modulo or not callable(modulo[defn]):
         raise LookupError("`%s` does not define `%s`" % (fichero, defn))
     g = modulo[defn]
     g = g if getattr(g, "__ore_contrato__", False) else llamada(g)
-    _FUNCIONES[nombre] = g
-    _FUNCIONES_SPEC[nombre] = spec
+    # `apply(fn)` without `version` takes this, not the bytecode of the `def`
+    # alone: a change in what it calls is a change in what runs.
+    g.__ore_codigo__ = digest
+    _FUNCIONES[nombre] = (digest, g)
     return g
 
 
@@ -1881,8 +1916,7 @@ def _sql_per_item(output, coll, query, name):
     with the collection holding that item alone, and its rows —with their
     `anchor`, if they have one— are that item's. Same registry by key as in
     Python: what did not change is neither computed nor written. The version
-    is the query and the document of each function it calls."""
-    import hashlib
+    is the query, the document of each function it calls and its code."""
     import threading
 
     import duckdb
@@ -1898,10 +1932,7 @@ def _sql_per_item(output, coll, query, name):
     texto = r.get("query") or query
     colecciones = [n for n, rd in (r.get("fuentes") or {}).items() if (rd or {}).get("collection")]
     funciones = {c["name"]: get_function(c["name"]) for c in calls}
-    huella = hashlib.sha256(_canonico({
-        "query": " ".join(query.split()),
-        "functions": {n: _FUNCIONES_SPEC.get(n) for n in sorted(funciones)},
-    }).encode("utf-8")).hexdigest()[:16]
+    huella = _huella_sql(query, funciones)
     hilo = threading.local()
 
     def conexion():

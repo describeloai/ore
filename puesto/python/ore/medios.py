@@ -472,7 +472,11 @@ def _identidad(ref):
 
 
 def _version_de(fn):
-    """La versión de una función que no la dice: la de su código."""
+    """La versión de una función que no la dice: la de su código. Una de
+    `get_function` trae la de su fichero entero (ORE 0056 V1)."""
+    marcada = getattr(fn, "__ore_codigo__", None)
+    if marcada:
+        return marcada
     import inspect
     try:
         fuente = inspect.getsource(fn)
