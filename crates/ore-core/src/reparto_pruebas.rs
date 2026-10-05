@@ -437,6 +437,33 @@ fn un_asterisco_con_exclude_pide_todas_por_si_acaso() {
     assert_eq!(de(&x, C).columnas, vec!["id", "pais", "alta"]);
 }
 
+/// Medido en F5·3 (`medida-el-reparto.py`): `FROM t` a secas y `COLUMNS(…)`
+/// pedían una columna; `TABLESAMPLE` se analizaba.
+#[test]
+fn from_a_secas_columns_y_tablesample() {
+    let pkg = arbol("f53", true, true, &[]);
+    let todas = vec!["id", "pais", "alta"];
+    assert_eq!(de(&r(&pkg, "FROM pg.public.clientes"), C).columnas, todas);
+    assert_eq!(
+        de(&r(&pkg, "SELECT COLUMNS('^a') FROM pg.public.clientes"), C).columnas,
+        todas
+    );
+    assert_eq!(
+        de(
+            &r(&pkg, "SELECT min(COLUMNS(*)) FROM pg.public.clientes"),
+            C
+        )
+        .columnas,
+        todas
+    );
+    let x = r(
+        &pkg,
+        "SELECT * FROM pg.public.clientes TABLESAMPLE 10 PERCENT LIMIT 5",
+    );
+    assert!(!x.entendida);
+    assert_eq!(de(&x, C).limit, None);
+}
+
 // ── A · una lectura por tabla ──
 
 #[test]

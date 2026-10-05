@@ -511,7 +511,13 @@ impl<'p, 'o> Analisis<'p, 'o> {
         // ③ ¿Proyección limpia? Entonces lo de la proyección lo pide quien la lee.
         let limpia = self.limpia(s, q, &amb);
 
-        // ④ Las columnas que se usan.
+        // ④ Las columnas que se usan. `FROM t` sin SELECT (DuckDB) es `SELECT *`,
+        //   y `COLUMNS(…)` elige columnas por patrón: las dos, todas.
+        if s.projection.is_empty() || s.projection.iter().any(elige_columnas) {
+            for r in amb.rels.clone() {
+                self.pedir_todo(&r.fuente);
+            }
+        }
         let mut exprs: Vec<&Expr> = Vec::new();
         if limpia.is_none() {
             for it in &s.projection {
@@ -663,8 +669,17 @@ impl<'p, 'o> Analisis<'p, 'o> {
     fn factor(&mut self, tf: &TableFactor, fuera: &[Ambito]) -> Res<Rel> {
         match tf {
             TableFactor::Table {
-                name, alias, args, ..
+                name,
+                alias,
+                args,
+                sample,
+                ..
             } => {
+                // `TABLESAMPLE`: un `LIMIT` empujado antes de la muestra cambiaría
+                // las filas. Sin analizar (B).
+                if sample.is_some() {
+                    return Err(NoEntiendo);
+                }
                 if args.is_some() {
                     // Una función de tabla (`read_parquet(…)`, `range(…)`): no es del árbol.
                     return Ok(rel_de(alias.as_ref(), &partes(name), Fuente::Opaca(None)));
@@ -976,6 +991,9 @@ impl<'p, 'o> Analisis<'p, 'o> {
         if let Some(q) = q
             && (q.limit_clause.is_some() || q.fetch.is_some())
         {
+            return None;
+        }
+        if s.projection.is_empty() || s.projection.iter().any(elige_columnas) {
             return None;
         }
         let rel = &amb.rels[0];
@@ -1715,6 +1733,26 @@ const AGREGADOS: &[&str] = &[
     "every",
     "some",
 ];
+
+/// `COLUMNS(…)` (DuckDB): elige columnas por patrón o expresión.
+fn elige_columnas(it: &SelectItem) -> bool {
+    struct V(bool);
+    impl Visitor for V {
+        type Break = ();
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<()> {
+            if let Expr::Function(f) = e
+                && f.name.to_string().eq_ignore_ascii_case("columns")
+            {
+                self.0 = true;
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut v = V(false);
+    let _ = it.visit(&mut v);
+    v.0
+}
 
 fn agrega(it: &SelectItem) -> bool {
     struct V(bool);

@@ -268,7 +268,22 @@ también al lado de un `LEFT JOIN` que puede quedar a nulo.
 |---|---|---|
 | **F5·1** · el reparto | `ore_core::reparto::repartir`: columnas usadas (`*` todas), conjunciones `col op literal` (`=`, `<>`, rangos, `IN`, `IS [NOT] NULL`, `LIKE`, `BETWEEN`) que admiten la tabla **y** el conector, los `ON` (el lado de dentro de un `LEFT JOIN` sí; el conservado y un `FULL JOIN` no), `limit` + `OFFSET` + `ORDER BY` sólo sin nada en el motor, vistas/`WITH`/subconsultas que son proyección limpia, subconsultas correlacionadas, A, B y C; coste (`OOS2045` antes que `OOS2044`, como fija la spec) y gobierno por tabla | ✓ 26 tests, entre ellos **los 9 casos `plan/` de v1alpha24, corridos por primera vez** |
 | **F5·2** · `explain` | `ore explain "<sentencia>" [--file] [--policy] [--json]`: por tabla, lo que va al origen (columnas, filtros, `limit` y orden), lo que queda en DuckDB, el coste y los avisos; un no, `error[CÓDIGO]`. `ore federate` escribe su petición como la sentencia que es y decide con el reparto (lo que quedaría en el motor sigue siendo `422 empuje`: esa ruta no tiene motor). `explain` en la lista de verbos de `ore-serve` | ✓ `el-plan-federado.sh` 13 + 5 de `explain`; **la suite de conformidad corre `plan/` con `ore explain`: v1alpha24 13/13** |
-| **F5·3** · medido | el reparto sobre un corpus: las sentencias de DuckDB y consultas reales de victor | pendiente |
+| **F5·3** · medido | `pruebas-de-fuego/medida-el-reparto.py`: las 52 frases de la sintaxis de DuckDB (`medida-el-terreno-de-la-regex.py`) y 15 consultas de analista sobre el árbol de `main` de victor | ✓ (abajo) |
+
+**F5 CERRADO** (2026-10-05).
+
+**Lo que F5·3 midió.** (1) **Las 52 frases**: 32 se analizan, 11 se leen sin empujar (B: `PIVOT`,
+`UNPIVOT`, `SUMMARIZE`, `DESCRIBE`, `ASOF`, `USING SAMPLE`, `TABLESAMPLE`, `LATERAL`, `CREATE … AS`,
+`INSERT … BY NAME` y dos sentencias en una), 9 no leen ningún origen, **0 se niegan**. (2) **Tres
+errores, arreglados con su test**: `FROM t` a secas (DuckDB) y `COLUMNS(…)` pedían una columna en vez
+de todas, y `TABLESAMPLE` se analizaba (un `LIMIT` empujado antes de la muestra cambia las filas: ahora
+B). (3) **Las 15 consultas de victor**: 14 piden menos columnas que la tabla; 5 empujan filtro; 3
+empujan `limit` (con su `ORDER BY` en Neon). **Pero 4 dejan en el motor un filtro que el conector sabe
+hacer** —un rango de fechas, un `IN`, un `total > 500`, el `=` de S3— porque **la inducción declara
+`predicatePushdown: [eq]` en Postgres y BigQuery, y nada en S3**, cuando sus conectores ponen los diez
+operadores (F2). Esas cuatro leen la tabla entera (cortada en el tope o el presupuesto). Es la política
+del dueño de la tabla y no del reparto: que la inducción declare lo que el conector sabe es una decisión
+aparte, para antes de F6.
 
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
