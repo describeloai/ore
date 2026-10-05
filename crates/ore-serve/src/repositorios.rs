@@ -455,6 +455,8 @@ impl Servidor {
         let prosa_de_antes = prosa.clone();
         let ruta_r = ruta.clone();
         let mut escrito: Vec<String> = Vec::new();
+        // 0050 P3: lo que se fusionó en una declaración, y lo que no se tocó.
+        let mut notas: Vec<String> = Vec::new();
         let resp = self.escribiendo_en(
             Some(&rama),
             sujeto,
@@ -478,7 +480,30 @@ impl Servidor {
                     if !ore_core::clases::se_siembra(rel, paquete) {
                         continue;
                     }
-                    let contenido = ore_core::clases::sembrar(contenido, paquete, carpeta);
+                    let mut contenido = ore_core::clases::sembrar(contenido, paquete, carpeta);
+                    // ⭐ 0050 P3: la declaración del repositorio es SUYA. No se
+                    //   sustituye: se le AÑADE lo que la semilla declara y no
+                    //   tiene, y lo demás se queda —sus librerías, sus versiones,
+                    //   sus comentarios—. Lo que no se entiende no se toca.
+                    if ore_core::declaracion::es_declaracion(rel)
+                        && let Ok(actual) = std::fs::read_to_string(&f)
+                    {
+                        use ore_core::declaracion::Fusion;
+                        match ore_core::declaracion::fusionar(rel, &actual, &contenido) {
+                            Fusion::Igual => continue,
+                            Fusion::Nueva { texto, anadido } => {
+                                notas.push(format!(
+                                    "`{rel}`: se añade {}; lo tuyo se queda",
+                                    anadido.join(", ")
+                                ));
+                                contenido = texto;
+                            }
+                            Fusion::NoSeEntiende(m) => {
+                                notas.push(format!("`{rel}` no se ha tocado: {m}"));
+                                continue;
+                            }
+                        }
+                    }
                     if let Err(e) = std::fs::write(&f, contenido) {
                         return Respuesta::error(500, format!("no se pudo escribir `{rel}`: {e}"));
                     }
@@ -514,11 +539,17 @@ impl Servidor {
         }
         // Y la propuesta, que es lo que se revisa.
         let titulo = format!("Actualizar `{ruta}` a la v{version} de `{id}`");
-        let cuerpo = format!(
+        let mut cuerpo = format!(
             "sub: {}\n\nLa plantilla `{id}` del producto va por la v{version} y este repositorio estaba en la v{}.\nEsto trae sus ficheros tal como los trae hoy: lo que hayas cambiado sale en el diff, y fusionar es aceptarlo.",
             sujeto.persona,
             tenia.unwrap_or(0)
         );
+        if !notas.is_empty() {
+            cuerpo.push_str("\n\nLas declaraciones se fusionan, no se sustituyen:\n");
+            for n in &notas {
+                cuerpo.push_str(&format!("- {n}\n"));
+            }
+        }
         match api.abrir_pull(&rama, &base, &titulo, &cuerpo) {
             Ok(pr) => {
                 let mut ficha = crate::propuestas::propuesta_de(&pr);
@@ -602,9 +633,16 @@ mod pruebas {
             prosa_o_guia(Some("Lo mío."), ts, "ventas", "riesgo").as_deref(),
             Some("Lo mío.")
         );
-        // Una plantilla sin guía: la frase de siempre.
+        // 0050 P3: la de Python también nace con su guía.
         let py = ore_core::clases::de("functions-python").unwrap();
-        assert_eq!(prosa_o_guia(None, py, "ventas", "riesgo"), None);
+        let g = prosa_o_guia(None, py, "ventas", "riesgo").unwrap();
+        assert!(
+            g.starts_with("# Python functions") && !g.contains("{{"),
+            "{g}"
+        );
+        // Una plantilla sin guía: la frase de siempre.
+        let tr = ore_core::clases::de("transforms-python").unwrap();
+        assert_eq!(prosa_o_guia(None, tr, "ventas", "riesgo"), None);
     }
 
     #[test]

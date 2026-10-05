@@ -35,6 +35,7 @@ pub mod cedar;
 pub mod cedar_schema;
 pub mod clases;
 pub mod code;
+pub mod declaracion;
 pub mod derivacion;
 pub mod diag;
 pub mod diff;
