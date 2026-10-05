@@ -24,9 +24,9 @@
 //!
 //! | entorno | fichero | qué se lee |
 //! |---|---|---|
-//! | `python` | `pyproject.toml` | `[project].dependencies` |
+//! | `python` | `pyproject.toml` | `[project].dependencies` y `[dependency-groups].dev` (0050 P2) |
 //! | `jvm` | `pom.xml` | `<dependencies>` de `<project>` |
-//! | `node` | `package.json` | `dependencies` (ORE 0050 R3 T5b) |
+//! | `node` | `package.json` | `dependencies` y `devDependencies` (ORE 0050 R3 T5b, L3·1) |
 //!
 //! Lo demás **no cambia**: el mismo alcance (la raíz, el paquete y el
 //! repositorio), la misma unión ordenada y sin repetidos, el mismo
@@ -365,81 +365,106 @@ pub(crate) fn declaracion_en(raiz: &Path, alcance: Option<&str>, entorno: &str) 
     deps
 }
 
-/// `[project].dependencies` de un `pyproject.toml`, y nada más. Un analizador
-/// mínimo: la tabla `[project]`, la clave `dependencies`, y las cadenas de su
-/// lista (una o varias líneas, con comentarios). Lo que no encaje, se ignora.
+/// `[project].dependencies` de un `pyproject.toml` y —0050 P2— el grupo
+/// `dev` de `[dependency-groups]` (PEP 735), como `dev:requisito`: lo que el
+/// repositorio necesita para probar y tipar, que nunca llega a la ejecución de
+/// una función. El gemelo exacto de `devDependencies` en Node.
+///
+/// ⛔ Y nada más: ni `[project.optional-dependencies]`, ni otros grupos
+///   (`test`, `lint`), ni `{ include-group = … }`, ni `[tool.uv]`. Un
+///   analizador mínimo —la tabla, la clave y las cadenas de su lista, en una o
+///   varias líneas, con comentarios—; lo que no encaje, se ignora.
 pub(crate) fn dependencias_de(texto: &str) -> Vec<String> {
-    let mut en_project = false;
-    let mut en_lista = false;
-    let mut acumulado = String::new();
-    for linea in texto.lines() {
+    let mut fuera = lista_toml(texto, "[project]", "dependencies");
+    fuera.extend(
+        lista_toml(texto, "[dependency-groups]", "dev")
+            .into_iter()
+            .map(|d| format!("{DEV}{d}")),
+    );
+    fuera
+}
+
+/// Las cadenas de la lista `clave = [ … ]` de la tabla `tabla`.
+fn lista_toml(texto: &str, tabla: &str, clave: &str) -> Vec<String> {
+    let mut en_tabla = false;
+    let mut lineas = texto.lines();
+    while let Some(linea) = lineas.next() {
         let l = sin_comentario(linea).trim();
         if l.starts_with('[') {
-            en_project = l == "[project]";
-            en_lista = false;
+            en_tabla = l == tabla;
             continue;
         }
-        if !en_project {
+        if !en_tabla {
             continue;
         }
-        if !en_lista {
-            let Some(resto) = l.strip_prefix("dependencies") else {
-                continue;
-            };
-            let Some(resto) = resto.trim_start().strip_prefix('=') else {
-                continue;
-            };
-            let resto = resto.trim_start();
-            let Some(resto) = resto.strip_prefix('[') else {
-                continue;
-            };
-            en_lista = true;
-            acumulado.push_str(resto);
-        } else {
-            acumulado.push_str(l);
+        let Some(resto) = l.strip_prefix(clave) else {
+            continue;
+        };
+        let Some(resto) = resto.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let Some(resto) = resto.trim_start().strip_prefix('[') else {
+            continue;
+        };
+        let mut cuerpo = resto.to_string();
+        let (mut cadenas, mut cerrada) = cadenas_de(&cuerpo);
+        while !cerrada {
+            let Some(l) = lineas.next() else { break };
+            cuerpo.push(' ');
+            cuerpo.push_str(sin_comentario(l).trim());
+            (cadenas, cerrada) = cadenas_de(&cuerpo);
         }
-        if en_lista && acumulado.contains(']') {
-            break;
-        }
-        acumulado.push(' ');
+        return cadenas;
     }
-    let cuerpo = acumulado.split(']').next().unwrap_or("");
-    cadenas_de(cuerpo)
+    Vec::new()
 }
 
 fn sin_comentario(l: &str) -> &str {
     // `#` fuera de comillas empieza un comentario.
-    let mut dentro = false;
+    let mut dentro: Option<char> = None;
     for (i, c) in l.char_indices() {
-        match c {
-            '"' | '\'' => dentro = !dentro,
-            '#' if !dentro => return &l[..i],
+        match (dentro, c) {
+            (None, '"' | '\'') => dentro = Some(c),
+            (Some(q), _) if c == q => dentro = None,
+            (None, '#') => return &l[..i],
             _ => {}
         }
     }
     l
 }
 
-fn cadenas_de(cuerpo: &str) -> Vec<String> {
+/// Las cadenas de PRIMER nivel del cuerpo de una lista (lo que sigue a su
+/// `[`), y si se cerró. Un `]` entre comillas —los extras,
+/// `"polars[pyarrow]>=1"`— no la cierra, y lo que va dentro de `{ … }` o de
+/// otra lista no es una dependencia.
+fn cadenas_de(cuerpo: &str) -> (Vec<String>, bool) {
     let mut out = Vec::new();
     let mut actual = String::new();
     let mut comilla: Option<char> = None;
+    let (mut llaves, mut corchetes) = (0usize, 0usize);
     for c in cuerpo.chars() {
         match comilla {
-            None if c == '"' || c == '\'' => comilla = Some(c),
-            None => {}
             Some(q) if c == q => {
-                let s = actual.trim().to_string();
-                if !s.is_empty() {
-                    out.push(s);
+                let s = actual.trim();
+                if llaves == 0 && corchetes == 0 && !s.is_empty() {
+                    out.push(s.to_string());
                 }
                 actual.clear();
                 comilla = None;
             }
             Some(_) => actual.push(c),
+            None => match c {
+                '"' | '\'' => comilla = Some(c),
+                '{' => llaves += 1,
+                '}' => llaves = llaves.saturating_sub(1),
+                '[' => corchetes += 1,
+                ']' if corchetes == 0 => return (out, true),
+                ']' => corchetes -= 1,
+                _ => {}
+            },
         }
     }
-    out
+    (out, false)
 }
 
 /// `<dependencies>` de un `pom.xml`, como `groupId:artifactId:version`: la
@@ -683,6 +708,7 @@ pub(crate) fn solo_provistas(declarado: &[String], entorno: &str) -> Option<Vec<
                 )
             }
             _ => {
+                let d = d.strip_prefix(DEV).unwrap_or(d);
                 let corte = d.find(|c: char| "<>=!~;[ ".contains(c)).unwrap_or(d.len());
                 let resto = d[corte..].trim();
                 (
@@ -812,9 +838,20 @@ pub(crate) struct CapaTocada {
     pub entorno: &'static str,
     pub digest: String,
     pub estado: &'static str,
-    /// Se retiró el `package-lock.json` en el mismo commit: ya no hay nada
-    /// que instalar, y un lock de una declaración que ya no existe miente.
+    /// Se retiró el lock (`lock_de`) en el mismo commit: ya no hay nada que
+    /// instalar, y un lock de una declaración que ya no existe miente.
     pub lock_retirado: bool,
+}
+
+/// El lock que el Job de la capa escribe junto a la declaración: lo resuelto,
+/// versionado donde se declaró — `package-lock.json` (L2) y, desde 0050 P2,
+/// `pylock.toml` (PEP 751, el formato estándar de Python).
+pub(crate) fn lock_de(entorno: &str) -> Option<&'static str> {
+    match entorno {
+        NODE => Some("package-lock.json"),
+        PYTHON => Some("pylock.toml"),
+        _ => None,
+    }
 }
 
 /// El entorno del fichero de declaración que nombra `ruta`, y su repositorio:
@@ -847,11 +884,10 @@ pub(crate) fn capas_tocadas(raiz: &Path, rutas: &[String]) -> Vec<CapaTocada> {
         .filter(|(a, _)| raiz.join(a).is_dir())
         .map(|(alcance, entorno)| {
             let e = entorno_de_en(raiz, Some(&alcance), entorno);
-            let lock = raiz.join(&alcance).join("package-lock.json");
-            let lock_retirado = entorno == NODE
-                && e.digest.is_empty()
-                && lock.is_file()
-                && std::fs::remove_file(&lock).is_ok();
+            let lock_retirado = lock_de(entorno).is_some_and(|f| {
+                let lock = raiz.join(&alcance).join(f);
+                e.digest.is_empty() && lock.is_file() && std::fs::remove_file(&lock).is_ok()
+            });
             CapaTocada {
                 alcance,
                 entorno,
@@ -1160,6 +1196,7 @@ mod prueba {
             "packages/p/package.json",
             "packages/p/f/functions/x.ts",
             "packages/p/f/package-lock.json",
+            "packages/p/f/pylock.toml",
         ] {
             assert_eq!(declaracion_de(no), None, "{no}");
         }
@@ -1198,6 +1235,38 @@ mod prueba {
             ("lista", "", true)
         );
         assert!(!r.join("packages/p/f/package-lock.json").exists());
+
+        // 0050 P2 · Python, igual: con polars, capa y el lock se queda; sólo lo
+        // de la sesión (pytest en dev incluido), sin capa y `pylock.toml` fuera.
+        std::fs::create_dir_all(r.join("packages/p/g")).unwrap();
+        let py = vec!["packages/p/g/pyproject.toml".to_string()];
+        std::fs::write(
+            r.join("packages/p/g/pyproject.toml"),
+            "[project]\ndependencies = [\"polars>=1.30\"]\n[dependency-groups]\ndev = [\"pytest==9.1.1\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            r.join("packages/p/g/pylock.toml"),
+            "lock-version = \"1.0\"\n",
+        )
+        .unwrap();
+        let c = capas_tocadas(&r, &py);
+        assert_eq!(
+            (c[0].entorno, c[0].estado, c[0].lock_retirado),
+            (PYTHON, "pendiente", false)
+        );
+        assert!(r.join("packages/p/g/pylock.toml").is_file());
+        std::fs::write(
+            r.join("packages/p/g/pyproject.toml"),
+            "[project]\ndependencies = [\"pandas\"]\n[dependency-groups]\ndev = [\"pytest==9.1.1\"]\n",
+        )
+        .unwrap();
+        let c = capas_tocadas(&r, &py);
+        assert_eq!(
+            (c[0].estado, c[0].digest.as_str(), c[0].lock_retirado),
+            ("lista", "", true)
+        );
+        assert!(!r.join("packages/p/g/pylock.toml").exists());
         let _ = std::fs::remove_dir_all(&r);
     }
 
@@ -1233,6 +1302,16 @@ mod prueba {
             Some(1)
         );
         assert_eq!(solo_provistas(&["polars".into()], PYTHON), None);
+        // 0050 P2: lo de desarrollo cuenta igual (pytest lo trae la sesión).
+        assert_eq!(
+            solo_provistas(&["pandas".into(), "dev:pytest==9.1.1".into()], PYTHON),
+            Some(vec![])
+        );
+        assert_eq!(
+            solo_provistas(&["dev:pytest==8.0".into()], PYTHON).map(|a| a.len()),
+            Some(1)
+        );
+        assert_eq!(solo_provistas(&["dev:hypothesis".into()], PYTHON), None);
         // JVM: `g:a` decide.
         assert_eq!(
             solo_provistas(&["org.apache.arrow:arrow-vector:19.0.0".into()], JVM),
@@ -1340,6 +1419,61 @@ dependencies = ["no-esta"]
         );
         assert!(dependencias_de("[project]\nname = 'x'\n").is_empty());
         assert!(dependencias_de("dependencies = ['fuera-de-project']").is_empty());
+    }
+
+    /// 0050 P2: el grupo `dev` (PEP 735) como `dev:`, los extras no cortan la
+    /// lista, y lo que no se honra no se cuela.
+    #[test]
+    fn el_grupo_dev_y_los_extras_de_un_pyproject() {
+        let t = r#"
+[project]
+name = "repository"
+dependencies = [
+  "polars[pyarrow]>=1.30",   # con extras: el ] no cierra la lista
+  "requests; python_version >= '3.12'",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib"]
+
+[dependency-groups]
+test = ["no-se-honra"]
+dev = [
+  "pytest>=8",
+  { include-group = "test" },
+  "hypothesis",  # propiedades
+]
+lint = ["ruff"]
+"#;
+        assert_eq!(
+            dependencias_de(t),
+            vec![
+                "polars[pyarrow]>=1.30",
+                "requests; python_version >= '3.12'",
+                "dev:pytest>=8",
+                "dev:hypothesis",
+            ]
+        );
+        assert_eq!(
+            dependencias_de("[dependency-groups]\ndev = ['a']\n"),
+            vec!["dev:a"]
+        );
+        assert_eq!(
+            dependencias_de("[project]\ndependencies = [\"x # no es comentario\"]\n"),
+            vec!["x # no es comentario"]
+        );
+        // Una lista que no se cierra no inventa nada más allá del fichero.
+        assert_eq!(
+            dependencias_de("[project]\ndependencies = [\"a\",\n"),
+            vec!["a"]
+        );
+        assert!(dependencias_de("[tool.x]\ndev = ['a']\n").is_empty());
+        // Y el digest cuenta lo de desarrollo: añadirlo es otra capa.
+        let sin = dependencias_de("[project]\ndependencies = ['polars']\n");
+        let con = dependencias_de(
+            "[project]\ndependencies = ['polars']\n[dependency-groups]\ndev = ['hypothesis']\n",
+        );
+        assert_ne!(digest_de(&sin, PYTHON), digest_de(&con, PYTHON));
     }
 
     #[test]
