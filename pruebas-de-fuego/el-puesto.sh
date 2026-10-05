@@ -572,7 +572,9 @@ celda_sql 'select * from hr.nada' && tiene "d['salida']['tipo']=='error' and d['
 if [ "$LAGO_OK" = "si" ]; then
   celda_sql 'select count(*) as n, sum(importe) as s from hr.lago' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3,'3.75']]" || falla "7 · sql sobre el dataset Iceberg: $(cuerpo)"
 fi
-celda_sql 'select * from hr.empleados' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError'" || falla "7 · una vista sin copia: $(cuerpo)"
+# 0053 F6: una vista sin copia sobre una Table se lee EN VIVO con sql() (no 409):
+# aquí la fuente `erp` no tiene la federación encendida, y lo dice el reparto.
+celda_sql 'select * from hr.empleados' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='OriginReadError' and '[federacion]' in d['salida']['mensaje']" || falla "7 · una vista sin copia, en vivo con la fuente apagada: $(cuerpo)"
 celda_sql 'selec nada' && tiene "d['salida']['tipo']=='error'" || falla "7 · sql roto: $(cuerpo)"
 # sin regex (POST /puestos/{id}/sql): lo que la regex fallaba. Un nombre del
 # arbol en un comentario no se resuelve (antes: LookupError y la celda moria);
