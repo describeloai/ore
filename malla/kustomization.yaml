@@ -181,6 +181,7 @@ configMapGenerator:
       - 55-la-capa-jvm.yaml
       - 57-la-capa-node.yaml
       - 56-las-llaves-de-los-pods.yaml
+      - 58-la-pasarela.yaml
 
 generatorOptions:
   disableNameSuffixHash: true

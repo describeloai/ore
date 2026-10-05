@@ -99,6 +99,10 @@ PLANTILLAS = [
     # ⭐ El mantenimiento del lago (0031 §10, W3.6b): un CronJob por inquilino
     #   que expira lo superado y retira lo que nadie nombra, sobre punteros.
     "53-el-mantenimiento.yaml",
+    # ⭐ La pasarela del Federation Engine (0053 F3): lee el origen en vivo con
+    #   conectores calientes, cola por origen y presupuesto; sólo `ore-serve` le
+    #   habla. Con la cuenta y la red del driver: no pide IAM nuevo.
+    "58-la-pasarela.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es

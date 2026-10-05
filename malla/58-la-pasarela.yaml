@@ -1,0 +1,155 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE-FEDERATION · la pasarela del Federation Engine, una por celda (ADR 0053 F3)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Lee el origen en vivo con conectores ya calientes y devuelve un flujo Arrow
+# con su presupuesto cumplido (`docs/federation.md` §3). Medido en F0: casi
+# todo el coste de una lectura pequeña era abrir proceso y conexión (270–890
+# ms), 50 a la vez tumbaban conexiones del origen, y nada paraba una lectura de
+# 2·10⁶ filas. Aquí: un `servir` caliente por credencial, 4 a la vez por origen
+# con cola, y filas, bytes y tiempo cortados también en el origen.
+#
+# ⭐ `ore-serve` DECIDE y esto LEE. Quién puede leer qué, el conducto, la
+#   credencial del custodio y la anotación son del coordinador (F4); la pasarela
+#   no habla con el custodio ni guarda nada: la credencial le llega en cada
+#   petición y vive en memoria.
+#
+# ⭐ CON EL ROL Y LA CUENTA DEL DRIVER, y ninguna nueva. La KSA `driver` (su
+#   Workload Identity es `ore-driver-<celda>@`, la que ya leen los trabajos de
+#   copia y catálogo) y la etiqueta `ore.dev/rol: driver`, que le da la misma
+#   salida (`salida-del-driver`, 20-driver.yaml): DNS, metadatos y los
+#   orígenes de fuera, nada de la red privada. Por eso F3 no pide IAM: lee con
+#   lo que la celda ya lee.
+#
+# ⛔ SÓLO `ore-serve` LE HABLA (`entrada-a-la-pasarela`): ni un puesto, ni un
+#   trabajo, ni otra celda. La etiqueta `ore.dev/pieza: pasarela` la separa de
+#   los Jobs del driver, que no aceptan entrada de nadie.
+#
+# ⭐ `RollingUpdate` con `maxUnavailable: 0` (0054 I5): un despliegue no quita
+#   la pasarela que sirve antes de que la nueva esté sana.
+#
+# La imagen es `ore-drivers`: trae los conectores (`ore-read-*`) y la pasarela
+# los busca en su mismo directorio.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-federation
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+    ore.dev/pieza: pasarela
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      ore.dev/pieza: pasarela
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: driver
+        ore.dev/pieza: pasarela
+    spec:
+      serviceAccountName: driver
+      nodeSelector:
+        ore.dev/pool: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+      containers:
+        - name: ore-federation
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/ore-federation", "--escucha", "0.0.0.0:8099"]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          ports:
+            - { name: http, containerPort: 8099 }
+          # Lista cuando sus conectores contestan `capacidades`.
+          readinessProbe:
+            httpGet: { path: /v1/health, port: 8099 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /v1/health, port: 8099 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-federation
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: pasarela
+spec:
+  selector:
+    ore.dev/pieza: pasarela
+  ports:
+    - { name: http, port: 8099, targetPort: 8099 }
+---
+# Sólo `ore-serve` (rol `control`) entra, y sólo a 8099.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-la-pasarela
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: pasarela
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/pieza: pasarela
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8099
+---
+# Y `ore-serve` puede salir hacia ella (las NetworkPolicy se suman: ésta se
+# añade a `salida-del-control` sin tocarla).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-a-la-pasarela
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: pasarela
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/pieza: pasarela
+      ports:
+        - protocol: TCP
+          port: 8099
