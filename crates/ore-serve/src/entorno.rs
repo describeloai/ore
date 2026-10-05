@@ -157,6 +157,12 @@ const PROVISTO_PYTHON: &str = include_str!("../../../puesto/python/provisto.txt"
 ///   repositorio resuelve la suya otra vez, una vez, al abrirse.
 pub(crate) const ABI_PYTHON: &str = "cp314";
 const JARS_JVM: &str = include_str!("../../../puesto/jvm/jars.txt");
+
+/// ⭐ 0050 P3 · El SDK de Python (`puesto/python/ore`, su `__version__`), que la
+/// sesión trae y `pip freeze` no ve: no es un paquete instalado, es el
+/// directorio del agente en el `sys.path`. Va el PRIMERO entre las provistas de
+/// Python, como `ore` en las de Node, y declararlo (`ore==1.0.0`) no pide capa.
+pub(crate) const SDK_PYTHON: &str = "1.0.0";
 /// El `duckdb_jdbc` del puesto JVM: no está en `jars.txt` sino en el
 /// `ARG DUCKDB_JDBC` del Dockerfile (un test los compara).
 const DUCKDB_JDBC: &str = "1.5.5.1";
@@ -211,16 +217,20 @@ pub(crate) fn provistas_de(entorno: &str) -> Vec<Provista> {
                 tipos: false,
             }))
             .collect(),
-        _ => lineas_de(PROVISTO_PYTHON)
-            .filter_map(|l| {
-                let (n, v) = l.split_once("==")?;
-                Some(Provista {
-                    nombre: n.trim().into(),
-                    version: v.trim().into(),
-                    tipos: false,
-                })
+        _ => std::iter::once(Provista {
+            nombre: "ore".into(),
+            version: SDK_PYTHON.into(),
+            tipos: false,
+        })
+        .chain(lineas_de(PROVISTO_PYTHON).filter_map(|l| {
+            let (n, v) = l.split_once("==")?;
+            Some(Provista {
+                nombre: n.trim().into(),
+                version: v.trim().into(),
+                tipos: false,
             })
-            .collect(),
+        }))
+        .collect(),
     }
 }
 
@@ -1312,6 +1322,15 @@ mod prueba {
             Some(1)
         );
         assert_eq!(solo_provistas(&["dev:hypothesis".into()], PYTHON), None);
+        // P3: el SDK lo trae la sesión; otra versión sólo avisa.
+        assert_eq!(
+            solo_provistas(&["ore==1.0.0".into(), "dev:pytest==9.1.1".into()], PYTHON),
+            Some(vec![])
+        );
+        assert_eq!(
+            solo_provistas(&["ore==0.9".into()], PYTHON).map(|a| a.len()),
+            Some(1)
+        );
         // JVM: `g:a` decide.
         assert_eq!(
             solo_provistas(&["org.apache.arrow:arrow-vector:19.0.0".into()], JVM),
@@ -1389,6 +1408,24 @@ mod prueba {
         assert!(c.contains(
             r#"semilla = "\n".join(deps) if abi_ == "cp312" else abi_ + "\n" + "\n".join(deps)"#
         ));
+    }
+
+    /// P3: la versión del SDK de Python es la que el SDK dice de sí mismo, y
+    /// quien resuelve la capa la conoce (no la busca en PyPI).
+    #[test]
+    fn el_sdk_de_python_dice_su_version() {
+        let sdk = include_str!("../../../puesto/python/ore/__init__.py");
+        assert!(
+            sdk.contains(&format!("__version__ = \"{SDK_PYTHON}\"")),
+            "el SDK no dice la v{SDK_PYTHON}"
+        );
+        let capa = include_str!("../../../puesto/python/capa/capa.py");
+        assert!(capa.contains(&format!("SDK = (\"ore\", \"{SDK_PYTHON}\")")));
+        let py = provistas_de(PYTHON);
+        assert_eq!(
+            (py[0].nombre.as_str(), py[0].version.as_str()),
+            ("ore", SDK_PYTHON)
+        );
     }
 
     #[test]

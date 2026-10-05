@@ -34,8 +34,10 @@ import tomllib
 
 DEV = "dev:"
 # El SDK no es un paquete del registro: lo pone la sesión (`/opt/ore/ore`).
-# Declararlo no puede bajar a PyPI otro `ore` que no es el nuestro.
-RESERVADAS = {"ore"}
+# Declararlo no puede bajar a PyPI otro `ore` que no es el nuestro. Su versión
+# es `entorno::SDK_PYTHON` (una prueba de ore-serve las compara).
+SDK = ("ore", "1.0.0")
+RESERVADAS = {SDK[0]}
 
 
 def normal(n):
@@ -139,7 +141,11 @@ def proyecto(trabajo, fichero_provisto):
         req = d[len(DEV):] if es_dev else d
         n = normal(nombre_de(req))
         if n in RESERVADAS:
-            avisos.append("%s es el SDK, y lo pone la sesión: no se instala del registro" % nombre_de(req))
+            # 0050 P3: `ore==1.0.0` es lo que la semilla declara: en silencio.
+            # Otra versión no existe: se dice, y se usa la de la sesión.
+            m = re.fullmatch(r"\s*==\s*([^\s;,]+)\s*", req[len(nombre_de(req)):].split(";")[0])
+            if m and m.group(1) != SDK[1]:
+                avisos.append("pediste ore %s, y esta sesión trae el SDK %s: se usa el de la sesión" % (m.group(1), SDK[1]))
             continue
         # Una versión exacta distinta de la de la sesión no puede resolverse:
         # se dice en su idioma antes de que uv lo diga en el suyo.

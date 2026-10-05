@@ -22,6 +22,12 @@ What a cell imports:
 The old Spanish names (`crear_coleccion`, `coleccion`, `MediaNoExiste`, …) and
 keyword arguments (`como=`, `modo=`, …) keep working as aliases.
 """
+
+# ⭐ ORE 0050 P3 · La versión del SDK, como la del de Node (`ore@1.0.0`). No es
+#   un paquete de PyPI —allí hay otro `ore` que no es éste—: lo pone la sesión,
+#   y declararlo (`ore==1.0.0`) no pide capa. ore-serve la enseña entre lo que
+#   la sesión trae (`entorno::SDK_PYTHON`, una prueba las compara).
+__version__ = "1.0.0"
 # `ore` · el SDK del puesto (0031 W3.1).
 #
 # Lo que una celda importa. `over("<paquete>.<vista>")` devuelve la copia de esa
