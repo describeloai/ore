@@ -40,7 +40,8 @@ class LaSemilla(unittest.TestCase):
             for rel, texto in [("functions/example.py", _semilla()),
                                ("functions/test_example.py", _cruda("TEST_PY")),
                                ("pyproject.toml", _cruda("PYPROJECT_FUNCTIONS_PY"))]:
-                io.open(os.path.join(d, rel), "w", encoding="utf-8").write(texto)
+                with io.open(os.path.join(d, rel), "w", encoding="utf-8") as f:
+                    f.write(texto)
             entorno = dict(os.environ, PYTHONPATH=os.path.join(RAIZ, "puesto", "python"), PYTHONDONTWRITEBYTECODE="1")
             r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", d],
                                cwd=d, env=entorno, capture_output=True, text=True, timeout=120)

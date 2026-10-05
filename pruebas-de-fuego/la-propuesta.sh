@@ -472,7 +472,7 @@ VER=$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([c["versi
   && tiene "[r for r in d['repositorios'] if r['ruta']=='packages/hr/pipelines'][0]['actualizable'] is True" \
   || falla "8d · el indice no lo da por actualizable: $(cuerpo)"
 [ "$(pide POST /repositorios/packages/hr/pipelines/actualizar "$ANA")" = "201" ] \
-  && tiene "d['numero']==4 and d['plantillaVersion']==$VER and d['rama'].startswith('ana/plantilla-') and 'packages/hr/pipelines/README.md' in d['ficheros'] and 'packages/hr/pipelines/pyproject.toml' in d['ficheros']" \
+  && tiene "d['numero']==4 and d['plantillaVersion']==$VER and d['rama'].startswith('ana/plantilla-') and 'packages/hr/pipelines/README.md' in d['ficheros'] and 'packages/hr/pipelines/transforms/example.py' in d['ficheros'] and 'packages/hr/pipelines/pyproject.toml' not in d['ficheros']" \
   || falla "8d · el upgrade no abrio propuesta: $(cuerpo)"
 # main SIGUE en la v1: proponer no es aplicar
 [ "$(pide GET /assets "$ANA")" = "200" ] \

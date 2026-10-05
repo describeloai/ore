@@ -307,7 +307,7 @@ jobs:
       - name: y una sesion Python, una TS y una Java leen la copia con over() y sql(), y escriben con write()
         run: |
           cargo build --quiet -p ore-store
-          python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]"
+          python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]" pytest==9.1.1
           bash pruebas-de-fuego/el-puesto.sh
 
 
