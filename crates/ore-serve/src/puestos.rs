@@ -223,6 +223,11 @@ pub(crate) struct Puesto {
     /// **Dónde vive** (0036 ④): la carpeta del repositorio, si se dijo. De ella
     /// salen su capa, su rama y su clase.
     pub repositorio: Option<String>,
+    /// ⭐ 0050 P5·1 · **La capa con la que arrancó** (`capa-<12 hex>`, o vacía
+    /// sin capa): el puesto la baja al nacer y no la cambia. La consola la
+    /// compara con la de ahora del repositorio (`GET /entorno`) para decir
+    /// «Libraries changed» —y reiniciar— aunque el cambio venga de otro sitio.
+    pub capa: String,
     /// **La clase de su repositorio** (0036 ⑤), resuelta al abrir contra la
     /// tabla del producto. Es un **techo**: lo que la clase no deja, no se
     /// hace —aunque el código lo declare—, y lo que deja lo sigue decidiendo
@@ -658,6 +663,7 @@ fn ficha(id: &str, p: &Puesto) -> Json {
         if let Some(r) = &p.repositorio {
             m.insert("repositorio".into(), Json::s(r));
         }
+        m.insert("capa".into(), Json::s(&p.capa));
         if let Some(c) = p.clase {
             m.insert("plantilla".into(), Json::s(c.id));
             m.insert("escribe".into(), Json::Bool(c.escribe));
@@ -1044,6 +1050,7 @@ impl Servidor {
             lsp_siguiente: 0,
             trabajo: None,
             repositorio: repositorio.clone(),
+            capa: capa.clone(),
             clase,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
@@ -1305,6 +1312,7 @@ impl Servidor {
             }),
             // Un trabajo no vive en un repositorio: corre y termina (0036 ④).
             repositorio: None,
+            capa: capa.clone(),
             clase: None,
             transform,
             colecciones_leidas: BTreeSet::new(),
@@ -4391,6 +4399,7 @@ mod prueba {
             celdas: BTreeMap::new(),
             trabajo: None,
             repositorio: None,
+            capa: String::new(),
             clase: None,
             lsp_al_servidor: VecDeque::new(),
             lsp_generacion: 0,
