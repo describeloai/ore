@@ -148,7 +148,10 @@ def correr_pytest(trabajo, repo, ficheros, nombres=(), rutas=(), tope=None):
                       "--continue-on-collection-errors"] + rel
         entorno = {
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "HOME": tmp, "LANG": "C.UTF-8", "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
+            # HOME no es identidad (eso es `PUESTO`, `ORE_*` y /puesto, que no
+            # pasan): donde pip deja lo instalado con `--user` (medido en CI).
+            "HOME": os.environ.get("HOME", tmp), "LANG": "C.UTF-8", "PYTHONUTF8": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": os.environ.get("ORE_PLUGIN_PYTEST", os.path.join(AQUI, "ore_pytest")),
             "ORE_INFORME": informe,
             "ORE_RUTAS": os.pathsep.join(rutas),
