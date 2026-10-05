@@ -3,6 +3,7 @@
 
 use super::sintaxis::{Clase, Def, Expr, Modulo, local};
 use crate::firma::{self, Campo, Derivacion, Fallo, Firma, Funcion, Rango, Salida, Tipo};
+use crate::transform::{Produccion, Transform, corto};
 
 /// Los nombres del lenguaje que pueden aparecer en una anotación.
 const BUILTINS: &[&str] = &[
@@ -65,12 +66,25 @@ pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
             .decoradores
             .iter()
             .find(|x| r.es_function(x, def.indice));
+        // v1alpha25: `@transform`, resuelto como `@function` (`01` §5.1).
+        let transform = def
+            .decoradores
+            .iter()
+            .find(|x| r.es_de(x, def.indice, "ore.transform"));
         d.defs.push(firma::Def {
             nombre: def.nombre.clone(),
             rango: def.rango,
             asincrona: def.asincrona,
             decorada: deco.is_some(),
+            transformada: transform.is_some(),
         });
+        if let Some(t) = transform {
+            d.transforms.push(Transform {
+                nombre: def.nombre.clone(),
+                rango: def.rango,
+                resultado: r.transform(def, t, ruta),
+            });
+        }
         let Some(deco) = deco else { continue };
         let resultado = if def.asincrona {
             Err(vec![
@@ -89,6 +103,24 @@ pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
         });
     }
     for a in &m.anidadas {
+        if a.decoradores
+            .iter()
+            .any(|x| r.es_de(x, a.indice, "ore.transform"))
+        {
+            d.avisos.push(
+                Fallo::new(
+                    a.rango,
+                    format!(
+                        "`{}` lleva `@transform` y no está en el nivel superior del módulo",
+                        a.nombre
+                    ),
+                )
+                .ayuda(
+                    "un transform es un `def` del módulo, no un método ni un `def` dentro de \
+                     otro: así no tiene documento ni se construye",
+                ),
+            );
+        }
         if a.decoradores.iter().any(|x| r.es_function(x, a.indice)) {
             d.avisos.push(
                 Fallo::new(
@@ -151,11 +183,170 @@ impl Resolutor<'_> {
     }
 
     fn es_function(&self, d: &Expr, hasta: usize) -> bool {
+        self.es_de(d, hasta, "ore.function")
+    }
+
+    /// Si el decorador `d` —llamado o no— es `q` donde está el `def`.
+    fn es_de(&self, d: &Expr, hasta: usize, q: &str) -> bool {
         let f = match d {
             Expr::Llamada { funcion, .. } => funcion.as_ref(),
             x => x,
         };
-        self.cualificar(f, Some(hasta)).as_deref() == Some("ore.function")
+        self.cualificar(f, Some(hasta)).as_deref() == Some(q)
+    }
+
+    /// OOS v1alpha25 `01` §5.1: lo que un `@transform` declara leer y
+    /// escribir, leído sin ejecutar.
+    fn transform(&self, def: &Def, deco: &Expr, ruta: &str) -> Result<Produccion, Vec<Fallo>> {
+        let mut fallos = Vec::new();
+        let (mut inputs, mut output) = (None, None);
+        let Expr::Llamada {
+            posicionales,
+            nombrados,
+            rango,
+            ..
+        } = deco
+        else {
+            return Err(vec![
+                Fallo::new(deco.rango(), "`@transform` sin `inputs=` ni `output=`").ayuda(
+                    "un transform dice lo que lee y lo que escribe: \
+                     `@transform(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\")`",
+                ),
+            ]);
+        };
+        if *posicionales > 0 {
+            fallos.push(
+                Fallo::new(*rango, "`@transform` con argumentos posicionales")
+                    .ayuda("se dicen por nombre: `inputs=` y `output=`"),
+            );
+        }
+        let (mut hay_inputs, mut hay_output) = (false, false);
+        for (k, v) in nombrados {
+            match k.as_deref() {
+                Some("inputs") => {
+                    hay_inputs = true;
+                    let Expr::Lista(xs, _) = v else {
+                        fallos.push(
+                            Fallo::new(v.rango(), "`inputs` no es una lista literal")
+                                .ayuda(DE_TRANSFORM),
+                        );
+                        continue;
+                    };
+                    let mut leidos: Vec<String> = Vec::new();
+                    for x in xs {
+                        match self
+                            .nombre_declarado(x, def.indice, false)
+                            .map(|n| corto(&n))
+                        {
+                            // Sin repetir (§4): la primera vez cuenta.
+                            Ok(n) if !leidos.contains(&n) => leidos.push(n),
+                            Ok(_) => {}
+                            Err(f) => fallos.push(f),
+                        }
+                    }
+                    inputs = Some(leidos);
+                }
+                Some("output") => {
+                    hay_output = true;
+                    match self
+                        .nombre_declarado(v, def.indice, false)
+                        .map(|n| corto(&n))
+                    {
+                        Ok(n) => output = Some(n),
+                        Err(f) => fallos.push(f),
+                    }
+                }
+                Some(otro) => fallos.push(
+                    Fallo::new(
+                        v.rango(),
+                        format!("`@transform` no tiene el argumento `{otro}`"),
+                    )
+                    .ayuda("los suyos son `inputs` y `output`"),
+                ),
+                None => fallos.push(
+                    Fallo::new(v.rango(), "`@transform(**…)`")
+                        .ayuda("los argumentos se leen sin ejecutar: escríbelos uno a uno"),
+                ),
+            }
+        }
+        for (hay, k) in [(hay_inputs, "inputs"), (hay_output, "output")] {
+            if !hay {
+                fallos.push(Fallo::new(*rango, format!("`@transform` sin `{k}`")).ayuda(
+                    "un transform dice lo que lee (`inputs=[…]`) y lo que escribe \
+                         (`output=…`)",
+                ));
+            }
+        }
+        fallos.sort_by_key(|f| f.rango);
+        match (inputs, output) {
+            (Some(inputs), Some(output)) if fallos.is_empty() => Ok(Produccion {
+                runtime: "python",
+                entrypoint: format!("{ruta}:{}", def.nombre),
+                descripcion: primera_linea(def.docstring.as_deref()),
+                inputs,
+                output,
+            }),
+            _ => Err(fallos),
+        }
+    }
+
+    /// Un valor de `inputs` o de `output` (§5.1): una cadena literal, un
+    /// nombre del módulo ligado una sola vez —arriba y antes del `def`— a una,
+    /// o `ore.collection(<una de las dos>)`.
+    fn nombre_declarado(
+        &self,
+        v: &Expr,
+        hasta: usize,
+        en_coleccion: bool,
+    ) -> Result<String, Fallo> {
+        match v {
+            Expr::Cadena(s, _) => Ok(s.clone()),
+            Expr::Nombre(n, r) => {
+                let ligas: Vec<_> = self.m.ligas.iter().filter(|l| &l.nombre == n).collect();
+                match ligas.as_slice() {
+                    [l] if l.indice < hasta && l.valor.is_some() => {
+                        Ok(l.valor.clone().unwrap_or_default())
+                    }
+                    [] => Err(
+                        Fallo::new(*r, format!("`{n}` no está definido en el módulo"))
+                            .ayuda(DE_TRANSFORM),
+                    ),
+                    [l] if l.indice >= hasta => {
+                        Err(Fallo::new(*r, format!("`{n}` se liga después del `def`"))
+                            .ayuda("el decorador se evalúa al definir la función: muévelo arriba"))
+                    }
+                    [_] => Err(Fallo::new(
+                        *r,
+                        format!("`{n}` no está ligado a una cadena literal"),
+                    )
+                    .ayuda(DE_TRANSFORM)),
+                    varias => Err(Fallo::new(
+                        *r,
+                        format!("`{n}` se liga {} veces en el módulo", varias.len()),
+                    )
+                    .ayuda(
+                        "lo que nombra depende de cuál se ejecutó: liga la constante una sola vez",
+                    )),
+                }
+            }
+            Expr::Llamada {
+                funcion,
+                argumentos,
+                nombrados,
+                ..
+            } if !en_coleccion
+                && nombrados.is_empty()
+                && argumentos.len() == 1
+                && self.cualificar(funcion, Some(hasta)).as_deref() == Some("ore.collection") =>
+            {
+                self.nombre_declarado(&argumentos[0], hasta, true)
+            }
+            x => Err(Fallo::new(
+                x.rango(),
+                "no es una cadena literal, una constante del módulo ni `ore.collection(…)`",
+            )
+            .ayuda(DE_TRANSFORM)),
+        }
     }
 
     /// Una anotación y hasta dónde se resuelve: entre comillas, o con `from
@@ -744,11 +935,7 @@ impl Resolutor<'_> {
             Some(salida) if fallos.is_empty() => Ok(Firma {
                 nombre: def.nombre.clone(),
                 entrypoint: format!("{ruta}:{}", def.nombre),
-                descripcion: def
-                    .docstring
-                    .as_deref()
-                    .and_then(|d| d.lines().map(str::trim).find(|l| !l.is_empty()))
-                    .map(str::to_string),
+                descripcion: primera_linea(def.docstring.as_deref()),
                 over,
                 reads,
                 models,
@@ -762,6 +949,18 @@ impl Resolutor<'_> {
 }
 
 const LITERAL: &str = "se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas";
+
+/// Lo que un argumento de `@transform` puede ser (v1alpha25 `01` §5.1).
+const DE_TRANSFORM: &str = "se lee sin ejecutar el fichero: una cadena entre comillas, una \
+                            constante del módulo ligada una vez antes del `def` \
+                            (`PEDIDOS = \"ventas.pedidos\"`), u `ore.collection(…)` de una de \
+                            las dos";
+
+/// La primera línea no vacía de una docstring: la `description`.
+fn primera_linea(d: Option<&str>) -> Option<String> {
+    d.and_then(|d| d.lines().map(str::trim).find(|l| !l.is_empty()))
+        .map(str::to_string)
+}
 
 /// Una unidad de `Money` o `Quantity`: lo que cabe entre `<` y `,` en el tipo.
 fn es_unidad(u: &str) -> bool {

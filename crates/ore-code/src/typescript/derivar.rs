@@ -71,6 +71,7 @@ pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
             rango: f.rango,
             asincrona: f.asincrona,
             decorada: es,
+            transformada: false,
         });
     }
     let Some(defecto) = &m.defecto else {

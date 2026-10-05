@@ -32,6 +32,9 @@
 //!   exportación por defecto de un fichero de `functions/` y su `config`. El
 //!   parser es oxc, y solo `typescript/sintaxis` lo toca.
 //! - [`emitir`]: una firma → el documento YAML, determinista e idempotente.
+//! - [`transform`]: lo que un `@transform` (OOS v1alpha25) declara leer y
+//!   escribir —lo de Python lo llena [`python`]; lo de SQL, `ore-core`— y su
+//!   documento `Transform`.
 //! - [`lineas`]: de un desplazamiento en bytes a línea y columna, para que un
 //!   diagnóstico apunte al `.py` como lo haría un compilador.
 
@@ -39,6 +42,7 @@ pub mod emitir;
 pub mod firma;
 pub mod lineas;
 pub mod python;
+pub mod transform;
 pub mod typescript;
 
 pub use firma::{Campo, Def, Derivacion, Fallo, Firma, Funcion, Rango, Salida, Tipo};
@@ -53,6 +57,12 @@ pub fn derivar(fuente: &str, ruta: &str) -> Option<Derivacion> {
     } else {
         None
     }
+}
+
+/// Si merece la pena analizar un `.py` para encontrar transforms: sin el texto
+/// `transform` no puede haber ningún `@transform` (un filtro, no una respuesta).
+pub fn puede_tener_transforms(fuente: &str) -> bool {
+    fuente.contains("transform")
 }
 
 /// Si merece la pena analizar un fichero para encontrar funciones (un filtro,
