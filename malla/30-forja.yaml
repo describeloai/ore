@@ -221,7 +221,7 @@ spec:
             - name: datos
               mountPath: /data
           resources:
-            requests: {cpu: "100m", memory: 512Mi}
+            requests: {cpu: "25m", memory: 288Mi}
             limits:   {cpu: "500m", memory: 1Gi}
           readinessProbe:
             httpGet: {path: /api/healthz, port: 3000}

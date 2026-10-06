@@ -38,10 +38,15 @@ echo "== antes =="
 kubectl describe node -l cloud.google.com/gke-nodepool=default-pool \
   | sed -n '/Allocated resources/,/hugepages/p' | grep cpu
 
+# ⭐ 2026-10-06 (O1): a lo medido en 7 dias de Cloud Monitoring —kueue pico 95m /
+#   93Mi, el operador 67m / 267Mi—, y ahora tambien la memoria (512Mi y 450Mi
+#   apartados para usar 93 y 267).
 kubectl -n kueue-system patch deployment kueue-controller-manager --type=json \
-  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"150m"}]'
+  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"25m"},
+       {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"128Mi"}]'
 kubectl -n identidad patch deployment keycloak-operator --type=json \
-  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"100m"}]'
+  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"15m"},
+       {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"320Mi"}]'
 
 # Y el empujón que rompe el atasco. `--wait=false`: el ReplicaSet los recrea
 # con la request nueva en cuanto hay hueco.

@@ -3422,8 +3422,8 @@ spec:
             cpu: 1000m
             memory: 1Gi
           requests:
-            cpu: 100m
-            memory: 64Mi
+            cpu: 50m
+            memory: 192Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -3518,8 +3518,8 @@ spec:
             cpu: 1000m
             memory: 1Gi
           requests:
-            cpu: 50m
-            memory: 64Mi
+            cpu: 20m
+            memory: 96Mi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

@@ -287,7 +287,7 @@ spec:
           #   que el contenedor: lo que reserva un pod es el MÁXIMO de sus init
           #   y la suma de sus contenedores, y 500m/1Gi aquí anulaba la rebaja.
           resources:
-            requests: {cpu: "250m", memory: 512Mi}
+            requests: {cpu: "100m", memory: 512Mi}
             limits:   {cpu: "2", memory: 2Gi}
           securityContext:
             allowPrivilegeEscalation: false
@@ -367,7 +367,7 @@ spec:
           #   bajo presión de memoria se expulsa antes al que más pasa de 768 MiB.
           #   `limits.memory` no cambia: es el que manda `ORE_MEMORIA_MB` (⑱).
           resources:
-            requests: {cpu: "250m", memory: 768Mi}
+            requests: {cpu: "100m", memory: 768Mi}
             limits:   {cpu: "2", memory: 4Gi}
           securityContext:
             allowPrivilegeEscalation: false

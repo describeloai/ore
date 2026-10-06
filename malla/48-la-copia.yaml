@@ -260,7 +260,7 @@ spec:
                   || echo "⚠️ alguna copia por consulta no se preparó: su informe lo dirá"
               fi
           resources:
-            requests: {cpu: "200m", memory: 512Mi}
+            requests: {cpu: "100m", memory: 512Mi}
             limits:   {cpu: "2000m", memory: 2Gi}
           securityContext:
             allowPrivilegeEscalation: false
@@ -281,7 +281,7 @@ spec:
           workingDir: /opt/ore
           command: ["python3", "-m", "ore.calcular", "/trabajo/calculo"]
           resources:
-            requests: {cpu: "500m", memory: 1Gi}
+            requests: {cpu: "200m", memory: 1Gi}
             limits:   {cpu: "2000m", memory: 2Gi}
           securityContext:
             allowPrivilegeEscalation: false
@@ -481,7 +481,7 @@ spec:
               git push -q origin HEAD:${RAMA:-main}
               echo "✓ copia empujada · $(git rev-parse --short HEAD)"
           resources:
-            requests: {cpu: "200m", memory: 512Mi}
+            requests: {cpu: "100m", memory: 256Mi}
             limits:   {cpu: "2000m", memory: 2Gi}
           securityContext:
             allowPrivilegeEscalation: false

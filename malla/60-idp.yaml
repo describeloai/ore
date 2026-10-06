@@ -142,7 +142,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
-            requests: {cpu: "100m", memory: 256Mi}
+            requests: {cpu: "15m", memory: 96Mi}
             limits:   {cpu: "500m", memory: 512Mi}
       volumes:
         - name: datos
@@ -220,7 +220,7 @@ spec:
       value: "true"
 
   resources:
-    requests: { cpu: "200m", memory: "768Mi" }
+    requests: { cpu: "50m", memory: "640Mi" }
     limits:   { cpu: "800m", memory: "1536Mi" }
 ---
 # ── Quién puede hablar con el IdP ───────────────────────────────────────────

@@ -147,7 +147,7 @@ spec:
               # ⛔ Se dice el TAMANO, no el valor.
               echo "base puesta · $(wc -c < /testigo/cofre-url) bytes"
           resources:
-            requests: {cpu: "50m", memory: 128Mi}
+            requests: {cpu: "10m", memory: 96Mi}
             limits:   {cpu: "500m", memory: 256Mi}
           securityContext:
             allowPrivilegeEscalation: false
@@ -245,7 +245,7 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 10
           resources:
-            requests: {cpu: "50m", memory: 128Mi}
+            requests: {cpu: "10m", memory: 64Mi}
             limits:   {cpu: "500m", memory: 512Mi}
           securityContext:
             allowPrivilegeEscalation: false

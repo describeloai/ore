@@ -181,7 +181,7 @@ spec:
                 echo "testigo acuñado · $(wc -c < /puesto/forja-admin) bytes"
               fi
           resources:
-            requests: {cpu: "100m", memory: 256Mi}
+            requests: {cpu: "50m", memory: 256Mi}
             limits:   {cpu: "500m", memory: 1Gi}
         - name: guardar
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
@@ -225,7 +225,7 @@ spec:
             - name: datos
               mountPath: /data
           resources:
-            requests: {cpu: "100m", memory: 512Mi}
+            requests: {cpu: "50m", memory: 320Mi}
             limits:   {cpu: "500m", memory: 1Gi}
           readinessProbe:
             httpGet: {path: /api/healthz, port: 3000}
