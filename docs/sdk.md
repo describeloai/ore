@@ -301,7 +301,8 @@ The anchored table has these system columns next to yours:
 select path, size, content_type from legal.archive.contracts
 ```
 
-**A tree function (`@function`, published in Functions) is called from SQL by its name**, with
+**A tree function (`@function`, published in Functions) is called from SQL by its name**,
+`functions.<def>(…)` (ORE 0056: functions have their own space, outside any database), with
 its contract: as a value, `f(x)`, or as rows, `cross join lateral f(x)` (`from f(x)`, `join f(x)`).
 Its parameters are positional, in the order of its `def`; one with a default can be left out.
 Its types are its document's: a `@dataclass` is a struct, `list[D]` gives one row per element,
@@ -309,7 +310,7 @@ Its types are its document's: a `@dataclass` is a struct, `list[D]` gives one ro
 In a session, the function is read from **the session's branch**.
 
 ```sql
-select c.path, legal.functions.language(c.item) as lang from legal.archive.contracts as c
+select c.path, functions.language(c.item) as lang from legal.archive.contracts as c
 ```
 
 **A dataset written from a collection is an anchored table**, computed item by item exactly like
@@ -320,7 +321,7 @@ select c.path, legal.functions.language(c.item) as lang from legal.archive.contr
 create or replace dataset legal.archive.contract_pages as
 select p.page, p.text, p.anchor
 from legal.archive.contracts as c
-cross join lateral legal.functions.pdf_pages(c.item) as p
+cross join lateral functions.pdf_pages(c.item) as p
 ```
 
 - A column named `anchor` (an `Anchor` struct) is each row's anchor; without it, the item's.
@@ -360,7 +361,7 @@ from datetime import date
 def net_amount(amount: Decimal, day: date) -> Decimal:
     ...
 
-echo = ore.get_function("test_project.echo_types")
+echo = ore.get_function("echo_types")
 echo(amount=Decimal("12.50"), day=date(2026, 10, 2))
 ```
 
@@ -372,7 +373,8 @@ echo(amount=Decimal("12.50"), day=date(2026, 10, 2))
   return value is checked. A value that does not fit raises `ore.contrato.ContractError` (a
   `TypeError`). OOS types Python lacks are in `ore.tipos`: `DateTimeTz`, `Money["EUR", 2]`,
   `Quantity["km", 1]`, `Annotated[Decimal, Precision(p, s)]`, `Media["db.schema.collection"]`.
-- `ore.get_function(name)` (`<database>.<def>` or `<database>.<schema>.<def>`) loads a published
+- `ore.get_function(name)` (`<def>`: a function has its own space, outside any database —in SQL,
+  `functions.<def>`—; the name of before, `<database>.<def>`, still finds it) loads a published
   code function and returns it as a callable with its contract; it runs in your process. A
   function with `over` or `models` is not called this way: a pipeline invokes it.
 - `ore.model(ref)` → a `Model`, only inside a function that declares `ref` in `models` (by the

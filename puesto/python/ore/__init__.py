@@ -824,11 +824,15 @@ def _digest_del_codigo(texto):
 
 @_kw({"nombre": "name"})
 def get_function(name):
-    """The published function `name` (`<database>.<def>` or
-    `<database>.<schema>.<def>`), to call from code like any `def` (ORE 0050 G3):
+    """The published function `name`, to call from code like any `def` (ORE 0050 G3):
 
-        echo = get_function("test_project.echo_types")
+        echo = get_function("echo_types")
         echo(amount=Decimal("12.50"), day=date(2026, 10, 2))
+
+    A function has its own space, outside any database (ORE 0056, OOS
+    v1alpha26): its name is `<def>` —`functions.<def>` in SQL—. The name of
+    before, `<database>.<def>`, still finds the function that came from that
+    database; `<database>.<schema>.<def>` is a function not yet migrated.
 
     It runs **here**, in this process, with its contract: the code is its
     `entrypoint` in the tree this session sees. One with `over` (a call per
@@ -836,8 +840,10 @@ def get_function(name):
     invokes it."""
     nombre = name
     partes = nombre.split(".")
-    if len(partes) not in (2, 3) or not all(partes):
-        raise ValueError("`get_function(%r)`: the name is `<database>.<def>` or `<database>.<schema>.<def>`" % nombre)
+    if len(partes) not in (1, 2, 3) or not all(partes):
+        raise ValueError("`get_function(%r)`: the name is `<def>` (or `functions.<def>`)" % nombre)
+    if len(partes) == 1:
+        partes = ["functions"] + partes
     from urllib.parse import quote
 
     from .contrato import llamada
@@ -845,10 +851,21 @@ def get_function(name):
     # In the session's branch: a function committed there and not yet in `main`
     # is read from there, document and code (without the header, `main`).
     rama = _rama_del_puesto()
-    codigo, doc = session.pedir("GET", "/documentos/Function/" + "/".join(quote(p, safe="") for p in partes),
-                                cabeceras=rama)
+
+    def ficha(ps):
+        return session.pedir("GET", "/documentos/Function/" + "/".join(quote(p, safe="") for p in ps),
+                             cabeceras=rama)
+
+    codigo, doc = ficha(partes)
+    # The name of before (`<database>.<def>`): the function of its own that
+    # came from that database (ORE 0056 V2·4), so what was written still runs.
+    if codigo == 404 and len(partes) == 2 and partes[0] != "functions":
+        c2, d2 = ficha(["functions", partes[1]])
+        entrada = str(((d2 or {}).get("spec") or {}).get("entrypoint", ""))
+        if c2 == 200 and entrada.startswith("packages/%s/" % partes[0]):
+            codigo, doc = c2, d2
     if codigo == 404:
-        raise LookupError("there is no published function `%s`" % nombre)
+        raise LookupError("there is no published function `%s` in this branch" % nombre)
     if codigo != 200:
         raise RuntimeError("reading the function `%s`: %s %s" % (nombre, codigo, (doc or {}).get("error", "")))
     spec = doc.get("spec") or {}
@@ -859,7 +876,8 @@ def get_function(name):
         raise NotImplementedError("`%s` declares %s: it is invoked from a pipeline, which gives it its rows and its model"
                                   % (nombre, "`over`" if spec.get("over") else "`models`"))
     ruta, _, defn = str(spec.get("entrypoint", "")).rpartition(":")
-    fichero = "packages/%s/%s" % (doc.get("paquete"), ruta)
+    # A function of its own has no database: its `entrypoint` is from the root.
+    fichero = "packages/%s/%s" % (doc["paquete"], ruta) if doc.get("paquete") else ruta
     codigo, f = session.pedir("GET", "/arbol/" + "/".join(quote(p, safe="") for p in fichero.split("/")),
                               cabeceras=rama)
     if codigo != 200 or not isinstance(f, dict) or "texto" not in f:

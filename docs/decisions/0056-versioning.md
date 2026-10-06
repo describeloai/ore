@@ -175,3 +175,19 @@ del mismo código, pasa—; ore-core, ore-cli (conformidad y `functions generate
 
 **Queda para V2·4:** `get_function("<def>")` en el SDK, y que lea el código desde la raíz —la ficha de
 una propia no trae `paquete`, y hoy el SDK lo usa para componer la ruta—.
+
+### V2·4 · el SDK (hecho)
+
+- `ore.get_function("<def>")` —o `functions.<def>`— lee la ficha de la propia y su código **desde la
+  raíz** (sin `paquete`). El nombre de antes, `<base>.<def>`, sigue encontrando la propia que salió
+  de esa base (su `entrypoint` está en `packages/<base>/`); otra base no la alcanza.
+- La huella del SQL anclado ya llevaba el `spec` de cada función, y con él su `codeDigest` (el
+  entorno), además del código que corre (V1).
+- La plantilla `functions-python` pasa a la **v13**: la guía y el comentario dicen
+  `ore.get_function("<def>")`. `docs/sdk.md`, con `functions.<def>` en SQL (el ejemplo
+  `legal.functions.language` estaba mal: `functions/` es carpeta de kind, no un schema).
+
+Medido: `test_version_del_codigo.py` 8/8 (tres nuevos: nombre corto, `functions.`, el de antes y
+otra base); ore-core, ore-serve y ore-cli en verde salvo los dos de entorno del worktree
+(`ningun_fichero_gobernado_por_eol_lf_lleva_cr` y el de git, que leen el `.git` del worktree desde
+el contenedor); ninguno de los ficheros tocados lleva CR.

@@ -319,7 +319,7 @@ const FUNCTIONS_PY: &str = "\
 # Functions; ore writes its document, so don't edit that.
 #
 #   · Run, in your session: runs the `if __name__ == \"__main__\"` block below.
-#   · From other code:   `ore.get_function(\"{{paquete}}.{{funcion}}\")`, then call it.
+#   · From other code:   `ore.get_function(\"{{funcion}}\")`, then call it.
 #   · From Pipelines:    the Function operator, with its parameters.
 #
 # Types are enforced: \"2026-09-15\" arrives as a `date` and 120.50 as an exact
@@ -541,7 +541,7 @@ In the decorator, in literal values only (it is read without running the file):
   function from its module (`from example import {{funcion}}`) and call it
   with the types of its contract.
 - **Commit**: the function is published under Assets → Functions with its
-  contract. From other code: `ore.get_function("{{paquete}}.{{funcion}}")`;
+  contract. From other code: `ore.get_function("{{funcion}}")`;
   from Pipelines, the Function operator.
 
 ## Python packages
@@ -1076,7 +1076,10 @@ pub const CLASES: &[Clase] = &[
         // 12: el bloque de Run llama con los tipos del contrato (`date`, no
         //    `"2026-09-15"`): pyright —el editor y `ore/comprobar`, 0050 P4—
         //    marcaba dos errores en un repositorio recién nacido.
-        version: 12,
+        // 13: la función se llama por su nombre, `ore.get_function("<def>")`
+        //    —`functions.<def>` en SQL—: tiene su espacio propio (0056, OOS
+        //    v1alpha26).
+        version: 13,
         semilla: &[
             ("pyproject.toml", PYPROJECT_FUNCTIONS_PY),
             (".gitignore", GITIGNORE_PY),

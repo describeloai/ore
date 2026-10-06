@@ -84,3 +84,40 @@ class ElCodigoEsLaVersion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PROPIA = {"spec": {"runtime": "python", "entrypoint": "packages/ventas/repo/f.py:doble",
+                   "codeDigest": "sha256:" + "0" * 64,
+                   "input": {"x": {"type": "Integer"}}, "output": {"type": "Integer"}}}
+
+
+class _ArbolPropio:
+    """ORE 0056 V2·4: la función propia —sin paquete, `entrypoint` desde la raíz—."""
+
+    def pedir(self, metodo, ruta, cuerpo=None, plazo=30, cabeceras=None, seguir=True):
+        if ruta == "/documentos/Function/functions/doble":
+            return 200, PROPIA
+        if ruta == "/arbol/packages/ventas/repo/f.py":
+            return 200, {"texto": V1}
+        return 404, {}
+
+
+class LaFuncionPropia(unittest.TestCase):
+    def setUp(self):
+        self.antes = ore.session.pedir
+        ore.session.pedir = _ArbolPropio().pedir
+        ore._FUNCIONES.clear()
+
+    def tearDown(self):
+        ore.session.pedir = self.antes
+
+    def test_por_su_nombre_corto_y_por_functions(self):
+        self.assertEqual(ore.get_function("doble")(x=4), 8)
+        self.assertEqual(ore.get_function("functions.doble")(x=4), 8)
+
+    def test_el_nombre_de_antes_la_sigue_encontrando(self):
+        self.assertEqual(ore.get_function("ventas.doble")(x=4), 8)
+
+    def test_otra_base_no_la_alcanza(self):
+        with self.assertRaises(LookupError):
+            ore.get_function("compras.doble")
