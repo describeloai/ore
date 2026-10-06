@@ -65,6 +65,7 @@ mod modelos;
 mod politica;
 mod por_la_pasarela;
 mod preguntar;
+mod preview;
 mod propuestas;
 mod proyectos;
 mod puestos;

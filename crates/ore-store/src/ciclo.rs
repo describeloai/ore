@@ -149,6 +149,25 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
     if verbo == "sellar-flujo" {
         return sellar_flujo(&Lago::nuevo(cuenta), primera, &n, lector);
     }
+    // La muestra de una `Table` leída en vivo: el flujo Arrow de la
+    // pasarela detrás de la petición, binario, como `escribir`.
+    if verbo == "arrow-a-filas" {
+        let numero = |k: &str| {
+            n.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .and_then(|v| v.parse::<u64>().ok())
+        };
+        let desde = numero("desde").unwrap_or(0);
+        let limite = numero("limite").unwrap_or(100) as usize;
+        let (columnas, filas, vistas) = crate::muestra::de_un_flujo(lector, desde, limite)?;
+        return Ok(pagina_json(
+            &columnas,
+            &filas,
+            desde,
+            limite,
+            &[("leidas", Json::Int(vistas as i64))],
+        ));
+    }
     // Los bytes de una colección (0046 E8·2): tramas de un lector, binario.
     if verbo == "blobs" {
         return crate::blobs::poner(cuenta, &n, lector);
@@ -273,6 +292,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         "recoger-huerfanas" => recoger_huerfanas(&lago, &n),
         "leer" => leer(&lago, &n),
         "pagina" => pagina(&lago, &n),
+        "muestra" => muestra(&lago, &n),
         "volcar" => volcar(&lago, &n),
         "sellar-arrow" => {
             let cab = leer_cabecera(primera)?;
@@ -296,7 +316,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas`, `leer`, `pagina`, `historia`, `volcar`, `sellar-arrow`, \
+             `recoger-huerfanas`, `leer`, `pagina`, `muestra`, `arrow-a-filas`, `historia`, `volcar`, `sellar-arrow`, \
              `blobs`, `blobs-hay`, `blobs-cotejar`, `blobs-tocar`, \
              `blobs-recoger`, `blob-leer` y `blob-firmar`"
         )),
@@ -1795,6 +1815,91 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
         out.push_str(&Json::Obj(f.iter().map(|(k, v)| (k.clone(), Json::s(v))).collect()).jcs());
     }
     Ok(out)
+}
+
+/// **`muestra`: una página de un dataset sin bajarlo** (el preview de un
+/// activo): `{dataset, metadata_location, desde?, limite?, snapshot?}` →
+/// una línea `{columnas: [{nombre, tipo}], filas: [{…}], total, desde,
+/// limite, snapshot, bytes}`. Un nulo es la columna que falta en la fila,
+/// como en `leer`. Ver [`crate::muestra`].
+fn muestra(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+    let campo = |k: &str| {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+    };
+    let numero = |k: &str| -> Result<Option<u64>, String> {
+        campo(k)
+            .map(|v| {
+                v.parse::<u64>()
+                    .map_err(|_| format!("`{k}` tiene que ser un entero positivo"))
+            })
+            .transpose()
+    };
+    let ml = campo("metadata_location")
+        .ok_or("a `muestra` le falta `metadata_location`: el puntero del dataset")?;
+    let dataset = campo("dataset").unwrap_or_else(|| "dataset".into());
+    let desde = numero("desde")?.unwrap_or(0);
+    let limite = numero("limite")?.unwrap_or(100) as usize;
+    let snapshot = campo("snapshot")
+        .map(|v| {
+            v.parse::<i64>()
+                .map_err(|_| "`snapshot` es el id de un snapshot".to_string())
+        })
+        .transpose()?;
+    let t = lago.abrir(&ml, &dataset)?;
+    let m = crate::muestra::muestra(lago, &t, desde, limite, snapshot)?;
+    Ok(pagina_json(
+        &m.columnas,
+        &m.filas,
+        desde,
+        limite.min(crate::muestra::LIMITE_MAXIMO),
+        &[
+            ("total", Json::Int(m.total as i64)),
+            (
+                "snapshot",
+                m.snapshot
+                    .map_or(Json::Crudo("null".into()), |s| Json::s(s.to_string())),
+            ),
+            ("bytes", Json::Int(m.bytes_leidos as i64)),
+        ],
+    ))
+}
+
+/// La línea de una página: columnas en orden, filas como objetos de texto.
+fn pagina_json(
+    columnas: &[(String, String)],
+    filas: &[carga::Fila],
+    desde: u64,
+    limite: usize,
+    mas: &[(&str, Json)],
+) -> String {
+    let mut m: BTreeMap<String, Json> = mas
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+    m.insert(
+        "columnas".into(),
+        Json::Arr(
+            columnas
+                .iter()
+                .map(|(c, t)| Json::obj([("nombre", Json::s(c)), ("tipo", Json::s(t))]))
+                .collect(),
+        ),
+    );
+    m.insert(
+        "filas".into(),
+        Json::Arr(
+            filas
+                .iter()
+                .map(|f| Json::Obj(f.iter().map(|(k, v)| (k.clone(), Json::s(v))).collect()))
+                .collect(),
+        ),
+    );
+    m.insert("desde".into(), Json::Int(desde as i64));
+    m.insert("limite".into(), Json::Int(limite as i64));
+    Json::Obj(m).jcs()
 }
 
 /// **`pagina`: una página de un dataset** (0046 E8·1d), para quien enseña y
@@ -4539,5 +4644,165 @@ mod tests {
             requerida(&lago, &campo(&r, "metadata_location"), ds, "id"),
             (false, 1)
         );
+    }
+
+    /// **La muestra lee la página, no la tabla** (el preview de un activo).
+    /// Una tabla de 300 000 filas en un fichero: la primera página, una del
+    /// medio y la que cae fuera; cada una igual que la misma rebanada de
+    /// `Lago::filas`, y lo pedido al almacén, una fracción del fichero (el
+    /// índice de páginas: sin él se bajaba entero). Y la página pedida sobre
+    /// un snapshot no se mueve aunque se escriba después.
+    #[test]
+    fn la_muestra_lee_la_pagina_y_no_la_tabla() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let n = 300_000usize;
+        let lineas: Vec<String> = (0..n)
+            .map(|i| format!("{{\"id\":\"{i}\",\"nombre\":\"n{i}\",\"total\":\"{i}.25\"}}"))
+            .collect();
+        let s1 = sellar(
+            &lago,
+            &cabecera("1"),
+            "copias/p_v",
+            None,
+            false,
+            lineas.iter().map(String::as_str),
+        )
+        .expect("sella");
+        let ml = campo(&s1, "metadata_location");
+        let t = lago.abrir(&ml, "copias/p_v").unwrap();
+        let todas = lago.filas(&t).unwrap();
+        let fichero: u64 = cuenta
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| k.contains("/data/"))
+            .map(|(_, b)| b.len() as u64)
+            .sum();
+
+        let m = crate::muestra::muestra(&lago, &t, 0, 100, None).unwrap();
+        assert_eq!(m.total, n as u64);
+        assert_eq!(m.filas, todas[..100].to_vec());
+        assert_eq!(
+            m.columnas,
+            vec![
+                ("id".to_string(), "Integer".to_string()),
+                ("nombre".to_string(), "String".to_string()),
+                ("total".to_string(), "Decimal".to_string()),
+            ],
+            "en el orden del esquema, con su escalar"
+        );
+        assert!(
+            m.bytes_leidos * 4 < fichero,
+            "la primera página pidió {} de {fichero} bytes",
+            m.bytes_leidos
+        );
+
+        let medio = crate::muestra::muestra(&lago, &t, 250_000, 100, m.snapshot).unwrap();
+        assert_eq!(medio.filas, todas[250_000..250_100].to_vec());
+        assert!(
+            medio.bytes_leidos * 4 < fichero,
+            "una página del medio pidió {} de {fichero} bytes",
+            medio.bytes_leidos
+        );
+
+        let cola = crate::muestra::muestra(&lago, &t, n as u64 - 10, 100, None).unwrap();
+        assert_eq!(cola.filas, todas[n - 10..].to_vec(), "la última, corta");
+        let fuera = crate::muestra::muestra(&lago, &t, n as u64 + 5, 100, None).unwrap();
+        assert!(fuera.filas.is_empty());
+        let tope = crate::muestra::muestra(&lago, &t, 0, 50_000, None).unwrap();
+        assert_eq!(tope.filas.len(), crate::muestra::LIMITE_MAXIMO);
+
+        // Se escribe encima: la página sobre el snapshot de antes no se mueve.
+        let s2 = sellar(
+            &lago,
+            &cabecera("2"),
+            "copias/p_v",
+            Some(&ml),
+            false,
+            ["{\"id\":\"7\",\"nombre\":\"otra\"}"].into_iter(),
+        )
+        .expect("rehace");
+        let t2 = lago
+            .abrir(&campo(&s2, "metadata_location"), "copias/p_v")
+            .unwrap();
+        let ahora = crate::muestra::muestra(&lago, &t2, 0, 100, None).unwrap();
+        assert_eq!(ahora.total, 1);
+        let antes = crate::muestra::muestra(&lago, &t2, 100, 100, m.snapshot).unwrap();
+        assert_eq!(antes.filas, todas[100..200].to_vec());
+
+        // El verbo: una línea con lo mismo.
+        let pet = ore_core::parse::parse(&format!(
+            "{{\"dataset\":\"copias/p_v\",\"metadata_location\":\"{ml}\",\"desde\":\"2\",\"limite\":\"3\"}}"
+        ))
+        .unwrap();
+        let linea = muestra(&lago, &pet).unwrap();
+        let j = ore_core::parse::parse(&linea).unwrap();
+        assert_eq!(j.get("total").unwrap().1.as_str(), Some("300000"));
+        assert_eq!(j.get("filas").unwrap().1.items().len(), 3);
+        assert_eq!(
+            j.get("filas").unwrap().1.items()[0]
+                .get("id")
+                .unwrap()
+                .1
+                .as_str(),
+            Some(todas[2]["id"].as_str())
+        );
+    }
+
+    /// **Un flujo Arrow de la pasarela, a filas**: `desde` salta lotes enteros
+    /// y corta dentro del que toca; los tipos que la carga no escribe
+    /// (`Int32`, `Float32`) salen igual, como los escribe Arrow.
+    #[test]
+    fn un_flujo_arrow_da_la_pagina() {
+        use arrow_array::{Float32Array, Int32Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("n", DataType::Int32, false),
+            Field::new("x", DataType::Float32, true),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        let mut ipc = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut ipc, &esquema).unwrap();
+            for l in 0..3 {
+                let base = l * 10;
+                let lote = arrow_array::RecordBatch::try_new(
+                    esquema.clone(),
+                    vec![
+                        Arc::new(Int32Array::from_iter_values(base..base + 10)),
+                        Arc::new(Float32Array::from_iter(
+                            (base..base + 10).map(|i| (i % 2 == 0).then_some(i as f32 / 2.0)),
+                        )),
+                        Arc::new(StringArray::from_iter_values(
+                            (base..base + 10).map(|i| format!("s{i}")),
+                        )),
+                    ],
+                )
+                .unwrap();
+                w.write(&lote).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        let (columnas, filas, vistas) =
+            crate::muestra::de_un_flujo(std::io::Cursor::new(ipc), 15, 10).unwrap();
+        assert_eq!(vistas, 30);
+        assert_eq!(
+            columnas,
+            vec![
+                ("n".to_string(), "Integer".to_string()),
+                ("x".to_string(), "Float".to_string()),
+                ("s".to_string(), "String".to_string()),
+            ]
+        );
+        assert_eq!(filas.len(), 10);
+        assert_eq!(filas[0]["n"], "15");
+        assert!(
+            !filas[0].contains_key("x"),
+            "un nulo es la columna que falta"
+        );
+        assert_eq!(filas[1]["x"], "8.0", "un Float32, como lo escribe Arrow");
+        assert_eq!(filas[9]["s"], "s24");
     }
 }

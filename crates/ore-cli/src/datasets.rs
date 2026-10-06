@@ -69,6 +69,11 @@ pub const ADELANTADO: u8 = 75;
 pub struct Opciones<'a> {
     pub json: bool,
     pub ficha: Option<&'a str>,
+    /// `--muestra p.x`: una página de la tabla, sin bajarla (`ore-store muestra`).
+    pub muestra: Option<&'a str>,
+    /// Con `--muestra`: desde qué fila y cuántas.
+    pub desde: Option<u64>,
+    pub limite: Option<u64>,
     pub recoger: bool,
     /// Cuánta historia conserva `--recoger`: `7d`, `12h`, `30m`, `0`.
     pub edad: Option<&'a str>,
@@ -129,6 +134,8 @@ pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
         cargar(path, n, op)
     } else if let Some(n) = op.retencion {
         retencion(path, n, op)
+    } else if let Some(n) = op.muestra {
+        muestra(path, n, op)
     } else if let Some(n) = op.ficha {
         ficha(path, n, op)
     } else if op.recoger {
@@ -464,6 +471,85 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     } else {
         println!("{}", j.pretty());
     }
+    Ok(())
+}
+
+/// **`--muestra`: una página, sin bajar la tabla** (el preview de un activo
+/// del catálogo): lo que `select * from x limit N offset D` daría en el
+/// editor. Un dataset se lee de su puntero; una vista SQL, de su copia —sus
+/// filas son las de la vista, la consulta ya está en sus bytes—. Una vista
+/// SQL sin copia es **70**: se lee en un puesto, que es quien tiene motor. Una
+/// estructurada (anterior a v1alpha14 y sin traducir) también es 70 aquí:
+/// la contesta `ore ask`, con su compensación.
+fn muestra(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let ps = punteros(path, &dir_copias(path, op));
+    let de_puntero = |n: &str| ps.iter().find(|p| p.nombre == n && !p.es_coleccion());
+    let (p, vista) = match de_puntero(nombre) {
+        Some(p) => (p, None),
+        None => {
+            let (pkg, _) = ore_core::validate::cargar_paquete(path);
+            let Some(v) = pkg.view(nombre) else {
+                return Err((
+                    65,
+                    format!("no hay ningún dataset ni vista `{nombre}` en el árbol"),
+                ));
+            };
+            if !ore_core::vistas::por_consulta(&pkg, v) {
+                return Err((
+                    70,
+                    format!(
+                        "`{nombre}` es una vista estructurada: la contesta `ore ask --vista {nombre}`"
+                    ),
+                ));
+            }
+            let Some(copia) = ore_core::vistas::dataset_de_lectura(&pkg, v) else {
+                return Err((
+                    70,
+                    format!(
+                        "`{nombre}` es una consulta y no tiene copia: se lee en un puesto,                          `select * from {nombre}`"
+                    ),
+                ));
+            };
+            let de = copia.qname().unwrap_or_default();
+            let de = ore_core::normalize::a_corto(&de).into_owned();
+            let p = de_puntero(&de).ok_or_else(|| {
+                (
+                    70,
+                    format!("`{nombre}` se copia en `{de}`, y `{de}` no está hecho todavía: copia y vuelve"),
+                )
+            })?;
+            (p, Some(de))
+        }
+    };
+    let Some(ml) = p.campo("metadata_location") else {
+        return Err((
+            70,
+            format!(
+                "`{}` es un sobre heredado (sin `metadata_location`): se lee entero con `ore ask`",
+                p.nombre
+            ),
+        ));
+    };
+    let mut pet = vec![
+        ("dataset", Json::s(p.dataset())),
+        ("metadata_location", Json::s(&ml)),
+        ("desde", Json::s(op.desde.unwrap_or(0).to_string())),
+        ("limite", Json::s(op.limite.unwrap_or(100).to_string())),
+    ];
+    if let Some(s) = op.snapshot {
+        pet.push(("snapshot", Json::s(s)));
+    }
+    let linea = almacen_crudo("muestra", &Json::obj(pet).jcs())?;
+    let linea = linea.trim();
+    // La línea de `ore-store`, con lo que el árbol sabe: de qué se leyó.
+    let mut out = String::with_capacity(linea.len() + 64);
+    out.push_str(&linea[..linea.len().saturating_sub(1)]);
+    out.push_str(&format!(",\"de\":{}", Json::s(&p.nombre).jcs()));
+    if let Some(v) = &vista {
+        out.push_str(&format!(",\"copia\":{}", Json::s(v).jcs()));
+    }
+    out.push('}');
+    println!("{out}");
     Ok(())
 }
 

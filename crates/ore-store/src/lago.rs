@@ -119,7 +119,7 @@ pub const PROP_CLAVE: &str = "ore.clave";
 pub const PROP_RETENCION_EDAD: &str = "history.expire.max-snapshot-age-ms";
 pub const PROP_RETENCION_MINIMO: &str = "history.expire.min-snapshots-to-keep";
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()

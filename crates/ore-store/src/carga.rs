@@ -571,11 +571,6 @@ fn construir(
 /// origen son el mismo texto, y fundirlos y volver a sellar da los mismos
 /// bytes.
 pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
-    use arrow_array::cast::AsArray;
-    use arrow_array::types::{
-        Date32Type, Decimal128Type, Float64Type, Int64Type, Time64MicrosecondType,
-        TimestampMicrosecondType,
-    };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let b = bytes::Bytes::copy_from_slice(parquet);
@@ -611,34 +606,7 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
                 if col.is_null(i) {
                     continue;
                 }
-                let fisico = &fisicos[c];
-                let v = match fisico {
-                    Fisico::Texto => col.as_string_opt::<i32>().map(|a| a.value(i).to_string()),
-                    Fisico::Entero => col
-                        .as_primitive_opt::<Int64Type>()
-                        .map(|a| Valor::Entero(a.value(i)).texto(fisico)),
-                    Fisico::Real => col
-                        .as_primitive_opt::<Float64Type>()
-                        .map(|a| Valor::Real(a.value(i)).texto(fisico)),
-                    Fisico::Logico => col
-                        .as_boolean_opt()
-                        .map(|a| Valor::Logico(a.value(i)).texto(fisico)),
-                    Fisico::Decimal { .. } => col
-                        .as_primitive_opt::<Decimal128Type>()
-                        .map(|a| Valor::Decimal(a.value(i)).texto(fisico)),
-                    Fisico::Fecha => col
-                        .as_primitive_opt::<Date32Type>()
-                        .map(|a| Valor::Fecha(a.value(i)).texto(fisico)),
-                    Fisico::Hora => col
-                        .as_primitive_opt::<Time64MicrosecondType>()
-                        .map(|a| Valor::Hora(a.value(i)).texto(fisico)),
-                    Fisico::FechaHora => col
-                        .as_primitive_opt::<TimestampMicrosecondType>()
-                        .map(|a| Valor::FechaHora(a.value(i)).texto(fisico)),
-                    Fisico::Instante => col
-                        .as_primitive_opt::<TimestampMicrosecondType>()
-                        .map(|a| Valor::Instante(a.value(i)).texto(fisico)),
-                };
+                let v = texto_en(col, &fisicos[c], i);
                 if let Some(v) = v {
                     f.insert(campo.name().clone(), v);
                 }
@@ -647,6 +615,119 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
         }
     }
     Ok(out)
+}
+
+/// El texto canónico de la celda `i` de una columna de físico `fisico`
+/// ([`Valor::texto`]): lo que se analizó al sellar. `None` si la columna no es
+/// del tipo Arrow que su físico dice.
+fn texto_en(col: &ArrayRef, fisico: &Fisico, i: usize) -> Option<String> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{
+        Date32Type, Decimal128Type, Float64Type, Int64Type, Time64MicrosecondType,
+        TimestampMicrosecondType,
+    };
+    match fisico {
+        Fisico::Texto => col.as_string_opt::<i32>().map(|a| a.value(i).to_string()),
+        Fisico::Entero => col
+            .as_primitive_opt::<Int64Type>()
+            .map(|a| Valor::Entero(a.value(i)).texto(fisico)),
+        Fisico::Real => col
+            .as_primitive_opt::<Float64Type>()
+            .map(|a| Valor::Real(a.value(i)).texto(fisico)),
+        Fisico::Logico => col
+            .as_boolean_opt()
+            .map(|a| Valor::Logico(a.value(i)).texto(fisico)),
+        Fisico::Decimal { .. } => col
+            .as_primitive_opt::<Decimal128Type>()
+            .map(|a| Valor::Decimal(a.value(i)).texto(fisico)),
+        Fisico::Fecha => col
+            .as_primitive_opt::<Date32Type>()
+            .map(|a| Valor::Fecha(a.value(i)).texto(fisico)),
+        Fisico::Hora => col
+            .as_primitive_opt::<Time64MicrosecondType>()
+            .map(|a| Valor::Hora(a.value(i)).texto(fisico)),
+        Fisico::FechaHora => col
+            .as_primitive_opt::<TimestampMicrosecondType>()
+            .map(|a| Valor::FechaHora(a.value(i)).texto(fisico)),
+        Fisico::Instante => col
+            .as_primitive_opt::<TimestampMicrosecondType>()
+            .map(|a| Valor::Instante(a.value(i)).texto(fisico)),
+    }
+}
+
+/// **Las filas de un lote para enseñarlas** (la muestra de un activo): como
+/// [`leer`] —el texto canónico de cada escalar que ORE escribe, y un nulo es
+/// la columna que falta—, pero **sin negarse** a un tipo que la carga no
+/// escribe: lo anidado de v1alpha17 (`Struct`, `List`) y lo que trae un
+/// origen por la pasarela (`Int32`, `Float32`, `Timestamp` en otra unidad…)
+/// salen como los escribe Arrow. Enseñar no es fundir: aquí no hay vuelta.
+pub fn filas_para_ver(lote: &RecordBatch) -> Vec<Fila> {
+    use arrow_cast::display::{ArrayFormatter, FormatOptions};
+    let esquema = lote.schema();
+    let opciones = FormatOptions::default();
+    let columnas: Vec<(Option<Fisico>, Option<ArrayFormatter<'_>>)> = esquema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(c, campo)| {
+            let fisico = fisico_del_arrow(campo.data_type());
+            let formato = match fisico {
+                Some(_) => None,
+                None => ArrayFormatter::try_new(lote.column(c).as_ref(), &opciones).ok(),
+            };
+            (fisico, formato)
+        })
+        .collect();
+    (0..lote.num_rows())
+        .map(|i| {
+            let mut f = Fila::new();
+            for (c, campo) in esquema.fields().iter().enumerate() {
+                let col = lote.column(c);
+                if col.is_null(i) {
+                    continue;
+                }
+                let v = match &columnas[c] {
+                    (Some(fisico), _) => texto_en(col, fisico, i),
+                    (None, Some(formato)) => Some(formato.value(i).to_string()),
+                    (None, None) => None,
+                };
+                if let Some(v) = v {
+                    f.insert(campo.name().clone(), v);
+                }
+            }
+            f
+        })
+        .collect()
+}
+
+/// **Del tipo de Arrow al escalar de OOS** (la muestra de una `Table` leída
+/// por la pasarela): la misma vuelta que `lago::oos_de_iceberg`, y lo que el
+/// contrato no tiene, `String`.
+pub fn oos_de_arrow(d: &DataType) -> String {
+    match d {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => "Integer".into(),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => "Float".into(),
+        DataType::Boolean => "Boolean".into(),
+        DataType::Decimal128(p, s) | DataType::Decimal256(p, s) if *s >= 0 => {
+            if (*p, *s as u8) == ore_core::tipos::DECIMAL_POR_DEFECTO {
+                "Decimal".into()
+            } else {
+                format!("Decimal<{p}, {s}>")
+            }
+        }
+        DataType::Date32 | DataType::Date64 => "Date".into(),
+        DataType::Time32(_) | DataType::Time64(_) => "Time".into(),
+        DataType::Timestamp(_, None) => "DateTime".into(),
+        DataType::Timestamp(_, Some(_)) => "DateTimeTz".into(),
+        _ => "String".into(),
+    }
 }
 
 /// **Los lotes de un Parquet, tal como están** (los tipos del fichero): lo que

@@ -19,6 +19,8 @@
 #   6  lo que se niega: sin ninguna copia que conteste; copia declarada y no hecha
 #   7  SERVIDO (W1 ④): `POST /vistas/{ns}/{n}/ejecutar` en ore-serve devuelve la
 #      cabecera con `datos`; `{"limite": N}`; 404 / 409 / 422 como `ore ask`
+#  7b  EL PREVIEW: `GET /preview/dataset/{b}/{s}/{n}?desde=&limite=&snapshot=`
+#      pagina el dataset sin bajarlo (`ore-store muestra`, por rangos)
 #   8  REHACER: el puntero manda —el origen cambia sin mover el testigo y la
 #      copia no se entera—; `--rehacer --vista` lee entero, sobrescribe el
 #      dataset (snapshot nuevo, la historia se queda) y `ask` contesta lo nuevo
@@ -414,6 +416,44 @@ servido "len(d['datos'])==2 and d['filas']==2 and d['leidas']==5 and d['limite']
 [ "$(sirve ventas/pedidos '{"limite": 0}')" = "422" ] || falla "7 · limite 0 no dio 422"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/vistas/ventas/pedidos/ejecutar")" = "401" ] || falla "7 · sin identidad no dio 401"
 ok "7 · servido: POST /vistas/{ns}/{n}/ejecutar → 200 con datos · limite · 404 · 409 · 422 · 401"
+
+# ── 7b · el preview: la página del dataset, sin bajarlo ───────────────────────
+# `GET /preview/dataset/{b}/{s}/{n}` es el `select * … limit N offset D` del
+# editor, sin puesto: `ore datasets --muestra` → `ore-store muestra`, que lee
+# por rangos (el S3 de mentira sabe `Range`). Las páginas se piden sobre el
+# snapshot de la primera, y juntas son la tabla, sin repetir ninguna fila.
+mira() { curl -s -o "$TMP/out.json" -w '%{http_code}' -H "$SUJ" "$BASE/preview/$1"; }
+[ "$(mira 'dataset/ventas/default/pedidos?limite=2')" = "200" ] || falla "7b · GET /preview/dataset · $(cat "$TMP/out.json")"
+servido "d['total']==5 and len(d['filas'])==2 and d['desde']==0 and d['limite']==2 and d['origen']=='lago' and d['de']=='ventas.pedidos' and d['sql']=='select * from ventas.default.pedidos limit 2'" "7b · la primera página: 2 de 5, del lago, con su consulta"
+SNAP=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["snapshot"])' "$TMP/out.json")
+cp "$TMP/out.json" "$TMP/pagina0.json"
+[ "$(mira "dataset/ventas/default/pedidos?desde=2&limite=2&snapshot=$SNAP")" = "200" ] || falla "7b · la segunda página · $(cat "$TMP/out.json")"
+cp "$TMP/out.json" "$TMP/pagina1.json"
+[ "$(mira "dataset/ventas/default/pedidos?desde=4&limite=2&snapshot=$SNAP")" = "200" ] || falla "7b · la tercera página · $(cat "$TMP/out.json")"
+cp "$TMP/out.json" "$TMP/pagina2.json"
+"$PY" - "$TMP" "$SNAP" <<'P' || falla "7b · las tres páginas no son la tabla"
+import json, sys
+t, snap = sys.argv[1], sys.argv[2]
+ps = [json.load(open(f"{t}/pagina{i}.json")) for i in range(3)]
+assert [len(p["filas"]) for p in ps] == [2, 2, 1], [len(p["filas"]) for p in ps]
+assert all(p["snapshot"] == snap for p in ps), "una página cambió de snapshot"
+assert ps[2]["sql"] == "select * from ventas.default.pedidos limit 2 offset 4", ps[2]["sql"]
+clave = next(c["nombre"] for c in ps[0]["columnas"] if c["nombre"] in ("id", "order_id"))
+ids = [f[clave] for p in ps for f in p["filas"]]
+assert sorted(ids) == ["p1", "p2", "p3", "p4", "p5"], ids
+tipos = {c["nombre"]: c["tipo"] for c in ps[0]["columnas"]}
+assert tipos["total"].startswith("Decimal"), tipos
+sin = [f for p in ps for f in p["filas"] if f[clave] == "p5"][0]
+assert "unidades" not in sin, f"un nulo es la columna que falta: {sin}"
+P
+[ "$(mira 'dataset/ventas/default/pedidos?desde=99')" = "200" ] && servido "d['filas']==[] and d['total']==5" "7b · más allá del final, una página vacía"
+[ "$(mira 'dataset/ventas/default/noExiste')" = "404" ] || falla "7b · un dataset que no existe no dio 404: $(cat "$TMP/out.json")"
+[ "$(mira 'dataset/ventas/default/pedidos?limite=0')" = "422" ] || falla "7b · limite 0 no dio 422"
+[ "$(mira 'dataset/ventas/default/pedidos?limite=1001')" = "422" ] || falla "7b · limite 1001 no dio 422"
+[ "$(mira 'dataset/ventas/default/pedidos?snapshot=1234')" = "502" ] || falla "7b · un snapshot que no está no dio 502: $(cat "$TMP/out.json")"
+[ "$(mira 'mediacollection/ventas/default/pedidos')" = "404" ] || falla "7b · un kind sin preview de filas no dio 404"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/preview/dataset/ventas/default/pedidos")" = "401" ] || falla "7b · sin identidad no dio 401"
+ok "7b · el preview: GET /preview/dataset → páginas sobre un snapshot que juntas son la tabla · su consulta · 404 · 422 · 401"
 
 # ── 9 · lo huérfano: la vista se va, su dataset también ──────────────────────
 # Retirar una base deja su dataset en el bucket y su puntero en `copias/`, y

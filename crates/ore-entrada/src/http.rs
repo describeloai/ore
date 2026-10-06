@@ -112,6 +112,9 @@ pub struct Peticion {
 /// que **son** el portador, como una URL firmada —un ítem, una versión, cinco
 /// minutos—. Viaja en la URL porque el que la sigue puede ser cualquier lector
 /// HTTP (un `Range` tras un `seek`), y no lleva nada que no sea él mismo.
+///
+/// Y el preview de un activo (`GET /preview/…?desde=&limite=&snapshot=`): el
+/// snapshot sobre el que se pagina es un número.
 pub const CONSULTA_ADMITIDA: &[&str] = &[
     "warehouse",
     "estado",
@@ -120,6 +123,7 @@ pub const CONSULTA_ADMITIDA: &[&str] = &[
     "clase",
     "celda",
     "permiso",
+    "snapshot",
 ];
 
 /// Y lo de la media (0049 B2·2, `docs/media.md`): `prefix` y `path` son rutas

@@ -29,5 +29,6 @@ pub mod carga;
 pub mod ciclo;
 pub mod gcs;
 pub mod lago;
+pub mod muestra;
 pub mod r2;
 pub mod sobre;

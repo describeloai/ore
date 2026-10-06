@@ -1034,6 +1034,17 @@ enum Command {
         /// El puntero y la historia de la tabla de `<paquete>.<nombre>`.
         #[arg(long, value_name = "NS.NOMBRE")]
         ficha: Option<String>,
+        /// Una pagina de un dataset, o de la copia de una vista SQL, sin bajar
+        /// la tabla (el preview de un activo): con `--desde`, `--limite` y
+        /// `--snapshot`.
+        #[arg(long, value_name = "NS.NOMBRE")]
+        muestra: Option<String>,
+        /// Con `--muestra`: desde que fila (0 es la primera).
+        #[arg(long)]
+        desde: Option<u64>,
+        /// Con `--muestra`: cuantas filas (hasta 1000).
+        #[arg(long)]
+        limite: Option<u64>,
         /// El mantenimiento: expirar, retirar, mover los punteros.
         #[arg(long)]
         recoger: bool,
@@ -1057,7 +1068,8 @@ enum Command {
         /// (vacio si el dataset nace). Si el puntero ya no es ese: codigo 75.
         #[arg(long, value_name = "URI")]
         esperado: Option<String>,
-        /// Con `--confirmar`: el id del snapshot vigente.
+        /// Con `--confirmar`: el id del snapshot vigente. Con `--muestra`: el
+        /// snapshot que se lee (el de la primera pagina, para que no se mueva).
         #[arg(long)]
         snapshot: Option<String>,
         /// Con `--confirmar`: cuantas filas tiene.
@@ -1319,6 +1331,9 @@ fn main() -> std::process::ExitCode {
             path,
             json,
             ficha,
+            muestra,
+            desde,
+            limite,
             recoger,
             edad,
             seco,
@@ -1350,6 +1365,9 @@ fn main() -> std::process::ExitCode {
                 &datasets::Opciones {
                     json: *json,
                     ficha: ficha.as_deref(),
+                    muestra: muestra.as_deref(),
+                    desde: *desde,
+                    limite: *limite,
                     recoger: *recoger,
                     edad: edad.as_deref(),
                     seco: *seco,

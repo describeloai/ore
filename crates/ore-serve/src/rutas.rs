@@ -932,6 +932,9 @@ impl Servidor {
                     .and_then(|t| t.parse().ok());
                 self.servir_items(rama, p, b, s, n, &huellas, ttl, false)
             }
+            // El preview de un activo (`preview.rs`): su `select * … limit
+            // N offset D`, sin puesto, paginado.
+            ("GET", ["preview", kind, b, s, n]) => self.preview(rama, p, sujeto, kind, b, s, n),
             // 0049 B2·2: la media, por `ore-medios` (`docs/media.md`).
             ("GET", ["media", b, s, c, op @ ("items" | "item")]) => {
                 self.media(rama, p, sujeto, b, s, c, op)
@@ -1082,10 +1085,11 @@ impl Servidor {
             }
             // ── 0030 W1 ④ · la pregunta, servida (`preguntar.rs`) ──────────
             // Síncrono y de lectura: clona, `ore ask`, y devuelve las filas.
+            // En la rama de `x-ore-rama`, como el resto de lo que se lee.
             ("POST", ["vistas", ns, n, "ejecutar"]) => {
                 let (ns, n) = (ns.to_string(), n.to_string());
                 let cuerpo = p.cuerpo.clone();
-                self.leyendo(move |r| {
+                self.leyendo_en(rama, move |r| {
                     self.ejecutar(r, &ns, ore_core::normalize::SCHEMA_POR_DEFECTO, &n, &cuerpo)
                 })
             }
@@ -1093,7 +1097,7 @@ impl Servidor {
             ("POST", ["vistas", b, s, n, "ejecutar"]) => {
                 let (b, s, n) = (b.to_string(), s.to_string(), n.to_string());
                 let cuerpo = p.cuerpo.clone();
-                self.leyendo(move |r| self.ejecutar(r, &b, &s, &n, &cuerpo))
+                self.leyendo_en(rama, move |r| self.ejecutar(r, &b, &s, &n, &cuerpo))
             }
             // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
             // El kind se resuelve contra `documentos::KINDS`: un kind que no
@@ -3380,6 +3384,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
             con_identidad,
         ),
         ("POST", "/vistas/{ns}/{nombre}/ejecutar", con_identidad),
+        (
+            "GET",
+            "/preview/{kind}/{base}/{schema}/{nombre}",
+            con_identidad,
+        ),
         ("POST", "/paquetes/{nombre}/copia/rehacer", con_identidad),
         (
             "POST",
