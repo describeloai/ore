@@ -512,6 +512,8 @@ jobs:
           PG_URL: postgres://postgres:x@localhost:5432
         run: |
           python3 -m pip install --quiet duckdb pyarrow
+          # 0053 F9·1: el listado de un ObjectTable, en vivo por la pasarela.
+          FED=target/debug/ore-federation ORE=target/debug/ore bash pruebas-de-fuego/el-listado-en-vivo.sh
           # 0053 F8·3: la pasarela (ya construida) y el almacén, para leer por ella.
           cargo build --quiet -p ore-store
           ORE=target/debug/ore bash pruebas-de-fuego/la-copia-desde-el-origen.sh

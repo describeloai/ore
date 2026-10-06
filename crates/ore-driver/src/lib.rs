@@ -183,6 +183,11 @@ pub struct Peticion {
     /// formato que se deduce al leer deja de ser el escrito. `None` para
     /// cualquier otro objeto; los drivers que no leen ficheros no lo miran.
     pub fichero: Option<Fichero>,
+    /// **0053 F9·1 · El listado de un `ObjectTable`**: el objeto es su
+    /// prefijo y las filas son sus objetos (`key`, `size`, `modified`… y una
+    /// por partición), nunca sus bytes. `Some(match)`, con su patrón si lo
+    /// declara (`""` sin él).
+    pub listado: Option<String>,
 }
 
 /// El `format` de una `Table` de ficheros, y los tipos congelados de sus
@@ -486,6 +491,12 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
             None => None,
             Some((_, f)) => Some(fichero_de(f)?),
         },
+        listado: n.get("listado").map(|(_, l)| {
+            l.get("match")
+                .and_then(|(_, m)| m.as_str())
+                .unwrap_or_default()
+                .to_string()
+        }),
         id: opcional("id"),
         limit: natural(&n, "limit")?,
         orden,

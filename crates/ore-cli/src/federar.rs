@@ -144,23 +144,32 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
 
     // ① La tabla y sus columnas, en la rama: lo que el reparto daría por
     //   «del lago» aquí es un 404, porque se pidió una tabla.
-    let t = pkg.table(p.tabla).ok_or_else(|| {
+    let t = ore_core::reparto::de_un_origen(&pkg, p.tabla).ok_or_else(|| {
         no(
             404,
             "objeto",
-            format!("no hay una `Table` `{}` en esta rama", p.tabla),
+            format!(
+                "no hay una `Table` ni un `ObjectTable` `{}` en esta rama",
+                p.tabla
+            ),
         )
     })?;
     let qn = t.qname().unwrap_or_default();
-    let cols_tabla: Vec<String> = t
-        .section("columns")
-        .map(|c| {
-            c.entries()
-                .iter()
-                .filter_map(|(k, _)| k.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    // 0053 F9·1: un `ObjectTable` se lee por su listado, con sus columnas fijas.
+    let cols_tabla: Vec<String> = if t.kind == ore_core::document::Kind::ObjectTable {
+        ore_core::vistas::columnas_de_objetos(t)
+            .into_keys()
+            .collect()
+    } else {
+        t.section("columns")
+            .map(|c| {
+                c.entries()
+                    .iter()
+                    .filter_map(|(k, _)| k.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let columnas = if p.columnas.is_empty() {
         cols_tabla.clone()
     } else {
@@ -315,6 +324,10 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
                 ("tipos", Json::Arr(tipos)),
             ]),
         ));
+    }
+    // 0053 F9·1: el listado de un `ObjectTable` (su prefijo es el objeto).
+    if let Some(m) = &l.listado {
+        o.push(("listado", Json::obj([("match", Json::s(m.as_str()))])));
     }
     Ok(Json::obj(o))
 }

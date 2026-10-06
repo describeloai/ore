@@ -2616,7 +2616,8 @@ impl Servidor {
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             for n in ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg) {
-                if let Some(t) = pkg.table(&n) {
+                // 0053 F9·1: también el listado de un `ObjectTable`.
+                if let Some(t) = ore_core::reparto::de_un_origen(&pkg, &n) {
                     tablas.push((n, t.qname().unwrap_or_default()));
                 } else if let Some(v) = pkg.view(&n)
                     && !ore_core::vistas::se_lee_de_datasets(&pkg, v)

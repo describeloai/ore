@@ -257,6 +257,10 @@ impl Servidor {
         if let Some((_, f)) = plan.get("fichero") {
             peticion.push(("fichero", Json::de_node(f)));
         }
+        // 0053 F9·1: el listado de un `ObjectTable`.
+        if let Some((_, l)) = plan.get("listado") {
+            peticion.push(("listado", Json::de_node(l)));
+        }
         let id = format!("fed-{}", ore_acceso::nuevo_id().trim_start_matches("ev-"));
         let cuerpo = Json::obj([
             ("id", Json::s(id.as_str())),

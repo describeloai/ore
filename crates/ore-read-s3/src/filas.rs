@@ -281,6 +281,10 @@ pub fn leer_con(
     if p.formato.as_deref() != Some("arrow") {
         return Err("este lector contesta en Arrow, y la petición no lo pide".into());
     }
+    // 0053 F9·1: el listado de un `ObjectTable`, como filas.
+    if let Some(patron) = &p.listado {
+        return leer_listado(o, p, patron, salida, inicio, cancelada);
+    }
     let f = p.fichero.as_ref().ok_or(
         "la petición no dice cómo se leen los ficheros: `leer` es de una `Table` con `format` \
          (un `ObjectTable` no son filas)",
@@ -371,6 +375,91 @@ fn listado(o: &dyn Origen, objeto: &str, patron: Option<&str>) -> Result<Vec<Obj
         .collect();
     v.sort_by(|a, b| a.clave.cmp(&b.clave));
     Ok(v)
+}
+
+/// **El listado de un `ObjectTable`** (0053 F9·1): una fila por objeto bajo
+/// el prefijo que casa con su `match`, con las columnas fijas que se pidan
+/// (`01-object-table` §1) y una por partición. Son metadatos: ningún objeto se
+/// abre. Lo que el listado no da (`contentType`, `checksum`, `version`) sale
+/// nulo. Los filtros no se empujan (el listado no los declara): `limit` sí.
+fn leer_listado(
+    o: &dyn Origen,
+    p: &Peticion,
+    patron: &str,
+    salida: &mut dyn Write,
+    inicio: Instant,
+    cancelada: Option<Arc<AtomicBool>>,
+) -> Result<Leido, String> {
+    if !p.filtros.is_empty() {
+        return Err("el listado de un `ObjectTable` no filtra en el origen: los filtros los evalúa el motor".into());
+    }
+    let prefijo = if p.objeto.ends_with('/') || p.objeto.is_empty() {
+        p.objeto.clone()
+    } else {
+        format!("{}/", p.objeto)
+    };
+    let patron = (!patron.is_empty()).then_some(patron);
+    let objetos = listado(o, &prefijo, patron)?;
+    let fisico = |c: &str| match c {
+        "size" => Fisico::Entero,
+        "modified" => Fisico::Instante,
+        _ => Fisico::Texto,
+    };
+    let campos: Vec<(String, String)> = p.proyeccion.clone();
+    let esquema: SchemaRef = Arc::new(Schema::new(
+        campos
+            .iter()
+            .map(|(prop, col)| Field::new(prop, tipo_arrow(&fisico(col)), true))
+            .collect::<Vec<_>>(),
+    ));
+    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &esquema)
+        .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
+    let mut leido = Leido {
+        ficheros: objetos.len(),
+        limite: p.limit,
+        hasta: p
+            .timeout_ms
+            .map(|ms| (inicio + Duration::from_millis(ms), ms)),
+        cancelada,
+        ..Default::default()
+    };
+    for trozo in objetos.chunks(8192) {
+        leido.freno()?;
+        if leido.basta() {
+            break;
+        }
+        let queda = leido.limite.map_or(trozo.len(), |l| {
+            (l - leido.filas).min(trozo.len() as u64) as usize
+        });
+        let trozo = &trozo[..queda];
+        let mut cols: Vec<Col> = campos.iter().map(|(_, c)| Col::nuevo(&fisico(c))).collect();
+        for obj in trozo {
+            let parts = particiones(relativa(&prefijo, &obj.clave));
+            for ((_, c), col) in campos.iter().zip(cols.iter_mut()) {
+                let texto: Option<String> = match c.as_str() {
+                    "key" => Some(obj.clave.clone()),
+                    "size" => Some(obj.tamano.to_string()),
+                    "modified" => Some(obj.modificado.clone()),
+                    "contentType" | "checksum" | "version" => None,
+                    otra => parts.get(otra).cloned(),
+                };
+                match texto.and_then(|t| fisico(c).analizar(&t)) {
+                    Some(v) => col.valor(v),
+                    None => col.nulo(),
+                }
+            }
+        }
+        let lote = RecordBatch::try_new(esquema.clone(), cols.iter_mut().map(Col::fin).collect())
+            .map_err(|e| format!("no se pudo hacer el lote del listado: {e}"))?;
+        escritor
+            .write(&lote)
+            .map_err(|e| format!("no se pudo escribir el lote: {e}"))?;
+        leido.filas += trozo.len() as u64;
+    }
+    escritor
+        .finish()
+        .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
+    Ok(leido)
 }
 
 /// La clave relativa a la tabla: bajo el prefijo, o el nombre del fichero.
@@ -1426,6 +1515,58 @@ mod tests {
             .iter()
             .map(|v| v.map(String::from))
             .collect()
+    }
+
+    /// 0053 F9·1 · **El listado de un `ObjectTable`, como filas**: lo que
+    /// casa con su `match` bajo el prefijo, con las columnas pedidas (las que
+    /// el listado no da, nulas), una partición y el `limit`.
+    #[test]
+    fn el_listado_de_un_object_table_son_filas() {
+        let o = EnMemoria::con(&[
+            ("docs/anio=2026/a.pdf", b"aaaa".to_vec()),
+            ("docs/anio=2025/b.pdf", b"bb".to_vec()),
+            ("docs/anio=2026/c.txt", b"c".to_vec()),
+            ("otros/d.pdf", b"d".to_vec()),
+        ]);
+        let mut p = Peticion {
+            url: "s3://b".into(),
+            objeto: "docs/".into(),
+            proyeccion: ["key", "size", "modified", "contentType", "anio"]
+                .iter()
+                .map(|c| (c.to_string(), c.to_string()))
+                .collect(),
+            formato: Some("arrow".into()),
+            listado: Some("**/*.pdf".into()),
+            ..Default::default()
+        };
+        let (b, l) = filas(&o, &p, UMBRAL).unwrap();
+        assert_eq!(l.filas, 2);
+        assert_eq!(
+            texto(&b, "key"),
+            [
+                Some("docs/anio=2025/b.pdf".into()),
+                Some("docs/anio=2026/a.pdf".into())
+            ]
+        );
+        assert_eq!(
+            texto(&b, "anio"),
+            [Some("2025".into()), Some("2026".into())]
+        );
+        assert_eq!(texto(&b, "contentType"), [None, None]);
+        let tam = b
+            .column_by_name("size")
+            .unwrap()
+            .as_primitive::<arrow_array::types::Int64Type>();
+        assert_eq!(tam.values().to_vec(), [2, 4]);
+        assert!(!b.column_by_name("modified").unwrap().is_null(0));
+        p.limit = Some(1);
+        assert_eq!(filas(&o, &p, UMBRAL).unwrap().1.filas, 1);
+        p.limit = None;
+        p.filtros = vec![ore_driver::Filtro::uno("key", "eq", "x")];
+        assert!(
+            filas(&o, &p, UMBRAL).is_err(),
+            "los filtros no se empujan al listado"
+        );
     }
 
     const TIPOS: &[(&str, &str)] = &[

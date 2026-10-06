@@ -196,7 +196,7 @@ Por el fundamento y no por la superficie: primero el contrato y la pasarela, que
 | **F6** · consultar | en el puesto: las tablas del origen y las vistas foráneas en el `FROM`, juntas con el lago | consulta en vivo |
 | **F7** · crear | `create view` sobre el origen, `create dataset … as select`, `insert into … select`, `create materialized view`; los trabajos de copia leen por la pasarela | crear desde el origen |
 | **F8** · una vía | catálogo, comprobación y explorar por la pasarela; ningún camino lanza un conector por su cuenta | una sola vía |
-| **F9** · más allá | `ObjectTable` en el `FROM`; agregados y juntas empujados donde se declaren; Flight SQL para motores de fuera (Spark, BI) | |
+| **F9** · objetos y medios por la misma vía | `ObjectTable` en el `FROM` (en vivo, su listado); las colecciones de medios por la pasarela; los conectores fuera del `PATH` de los Jobs. Agregados y juntas empujados, y Flight SQL, **salen de la federación** (decisión del usuario, 2026-10-06): trabajo futuro, sin bloquear nada | ver «F9 en hitos» |
 
 ### F2 en hitos
 
@@ -343,6 +343,21 @@ hoy: la pasarela no gana acceso al custodio.
 
 **F8 CERRADO** (2026-10-06), y con él **la federación**, por decisión del usuario: se pivota a las bases
 foráneas. Lo que queda, como deuda nombrada:
+
+### F9 en hitos
+
+**Decidido** (2026-10-06, con el usuario): (1) sin spec nueva: un `ObjectTable` se lee en vivo con lo
+mismo que una `Table` —el interruptor de la fuente, `federation.read`, el tope— y su listado es `cheap`
+(metadatos); (2) `bajar` va por la pasarela como una copia (en la cola, con el hueco a lo vivo); (3) los
+`ore-read-*` salen del `PATH` de la imagen (sólo la pasarela los encuentra), sin partir la imagen.
+
+| hito | qué | sale |
+|---|---|---|
+| **F9·1** · `ObjectTable` en el `FROM` | el reparto la lee como una tabla de metadatos (`reparto::de_un_origen`): su prefijo es el objeto, sus columnas las fijas (`key`, `size`, `contentType`, `checksum`, `modified`, `version`) y sus particiones; la lectura lleva `listado: {match}`. Los filtros quedan en el motor (el listado no los declara); `limit` baja. `ore federate`, `/federation/read` y el SQL del puesto (F6) la nombran igual que una `Table`. El protocolo: `Peticion.listado`; `ore-read-s3 leer` (y `servir`) lo sirve en Arrow sin abrir un objeto (`contentType`, `checksum`, `version`: nulos, el listado no los da) | ✓ `un_object_table_se_lee_por_su_listado`, `el_listado_de_un_object_table_son_filas`, `el-listado-en-vivo.sh` 3/3 (la pasarela de verdad, S3 de mentira) |
+| **F9·2** · el SDK y el editor | la nota del editor (`ObjectTable`: se lee en vivo); un caso en `la-lectura-en-vivo-en-python.py` | pendiente |
+| **F9·3** · las colecciones por la pasarela | `/v1/versions`, `/v1/fetch` (bajar, perfil de copia); `coleccion.rs` por ellas; la guarda «una vía» con `bajar` y `versiones` | pendiente |
+| **F9·4** · la puerta cerrada | los `ore-read-*` fuera del `PATH` de la imagen; la pasarela con `--conectores` | pendiente |
+| **F9·5** · en vivo y cierre | test6: el `ObjectTable` de `s3_demo` por SQL, F7·4, una colección mantenida por la pasarela; ADR y memoria | pendiente |
 
 1. **F7·4 en vivo: la copia desde el origen al rehacer en una rama no prepara.** El Job de `rehacer`
    de test6 (`copiar-rehacer-48234cd2`) sigue diciendo «`VICTOR_S3_DEMO_URL` no está definida»

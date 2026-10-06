@@ -124,6 +124,14 @@ pub struct Lectura {
     pub presupuesto: bool,
     pub apariciones: usize,
     pub avisos: Vec<String>,
+    /// 0053 F9·1: si es el listado de un `ObjectTable`, su `match` (`""` sin él).
+    pub listado: Option<String>,
+}
+
+/// **Lo que se lee de un origen por su nombre** (0053 F9·1): una `Table`, o un
+/// `ObjectTable`, que se lee como una tabla de metadatos —su listado—.
+pub fn de_un_origen<'p>(pkg: &'p Package, qn: &str) -> Option<&'p Loaded> {
+    pkg.table(qn).or_else(|| pkg.object_table(qn))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -221,7 +229,7 @@ fn tablas_por_tokens(
         return out;
     }
     for n in crate::sql_del_arbol::nombres_a_resolver(sql, pkg) {
-        if let Some(t) = pkg.table(&n) {
+        if let Some(t) = de_un_origen(pkg, &n) {
             let qn = t.qname().unwrap_or_default();
             if !out.contains(&qn) {
                 out.push(qn);
@@ -403,15 +411,19 @@ impl<'p, 'o> Analisis<'p, 'o> {
 
     /// Una aparición nueva de la tabla `t`.
     fn aparicion(&mut self, t: &Loaded) -> usize {
-        let declaradas: Vec<String> = t
-            .section("columns")
-            .map(|c| {
-                c.entries()
-                    .iter()
-                    .filter_map(|(k, _)| k.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let declaradas: Vec<String> = if t.kind == Kind::ObjectTable {
+            // Sus columnas son fijas (`01-object-table` §1), más sus particiones.
+            crate::vistas::columnas_de_objetos(t).into_keys().collect()
+        } else {
+            t.section("columns")
+                .map(|c| {
+                    c.entries()
+                        .iter()
+                        .filter_map(|(k, _)| k.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         let de_la_tabla: BTreeSet<String> = t
             .section("reads")
             .and_then(|r| r.get("predicatePushdown"))
@@ -438,7 +450,7 @@ impl<'p, 'o> Analisis<'p, 'o> {
 
     /// B: la tabla entera, sin empujar.
     fn aparicion_entera(&mut self, qn: &str) {
-        if let Some(t) = self.pkg.table(qn) {
+        if let Some(t) = de_un_origen(self.pkg, qn) {
             let i = self.aparicion(t);
             self.aps[i].todas = true;
         }
@@ -790,7 +802,7 @@ impl<'p, 'o> Analisis<'p, 'o> {
             }
         }
         let qn = p.join(".");
-        if let Some(t) = self.pkg.table(&qn) {
+        if let Some(t) = de_un_origen(self.pkg, &qn) {
             let i = self.aparicion(t);
             return Ok(Fuente::Tabla(i));
         }
@@ -1238,9 +1250,21 @@ fn lectura(
     aps: Vec<Aparicion>,
     entendida: bool,
 ) -> Result<Lectura, Negado> {
-    let t = pkg
-        .table(qn)
-        .ok_or_else(|| negado(404, "objeto", qn, format!("no hay una `Table` `{qn}`")))?;
+    let t = de_un_origen(pkg, qn).ok_or_else(|| {
+        negado(
+            404,
+            "objeto",
+            qn,
+            format!("no hay una `Table` ni un `ObjectTable` `{qn}`"),
+        )
+    })?;
+    // 0053 F9·1: el listado de un `ObjectTable` — su prefijo es el objeto.
+    let listado = (t.kind == Kind::ObjectTable).then(|| {
+        t.section("match")
+            .and_then(Node::as_str)
+            .unwrap_or_default()
+            .to_string()
+    });
     let declaradas = aps
         .first()
         .map(|a| a.declaradas.clone())
@@ -1347,7 +1371,11 @@ fn lectura(
         ));
     }
     let objeto = t
-        .section("object")
+        .section(if listado.is_some() {
+            "prefix"
+        } else {
+            "object"
+        })
         .and_then(Node::as_str)
         .unwrap_or_default()
         .to_string();
@@ -1405,6 +1433,7 @@ fn lectura(
             presupuesto: false,
             apariciones: aps.len(),
             avisos,
+            listado,
         });
     }
     // `requiredFilters` antes que `forbidden`: es lo más concreto (los casos `plan/`
@@ -1463,6 +1492,7 @@ fn lectura(
         presupuesto,
         apariciones: aps.len(),
         avisos,
+        listado,
     })
 }
 
@@ -1890,7 +1920,7 @@ fn lee_del_arbol(tf: &TableFactor, pkg: &Package) -> bool {
         type Break = ();
         fn pre_visit_relation(&mut self, n: &ObjectName) -> ControlFlow<()> {
             let qn = partes(n).join(".");
-            if self.0.table(&qn).is_some() || self.0.view(&qn).is_some() {
+            if de_un_origen(self.0, &qn).is_some() || self.0.view(&qn).is_some() {
                 self.1 = true;
                 return ControlFlow::Break(());
             }
@@ -1966,6 +1996,9 @@ impl Lectura {
         ];
         if let Some(l) = self.limit {
             m.push(("limit", Json::Int(l as i64)));
+        }
+        if let Some(pt) = &self.listado {
+            m.push(("listado", Json::obj([("match", Json::s(pt.as_str()))])));
         }
         if !self.orden.is_empty() {
             m.push((

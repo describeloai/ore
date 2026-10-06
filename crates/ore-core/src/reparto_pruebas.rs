@@ -613,3 +613,60 @@ fn los_casos_plan_de_la_spec() {
     }
     assert!(mal.is_empty(), "{}", mal.join("\n"));
 }
+
+/// 0053 F9·1 · **Un `ObjectTable` en el `FROM`**: se lee por su listado —el
+/// objeto es su prefijo, con su `match`—, con sus columnas fijas; los filtros
+/// quedan en el motor (el listado no los declara) y el `limit` baja.
+#[test]
+fn un_object_table_se_lee_por_su_listado() {
+    let pkg = arbol(
+        "objetos",
+        true,
+        true,
+        &[
+            (
+                "packages/pg/docs/schema.yaml",
+                "apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: docs, namespace: pg }
+spec: { owner: team:prueba }
+",
+            ),
+            (
+                "packages/pg/docs/objects/contratos.yaml",
+                concat!(
+                    "apiVersion: oos.dev/v1alpha16
+kind: ObjectTable
+",
+                    "metadata: { name: contratos, namespace: pg, schema: docs }
+",
+                    "spec:
+  datasource: pg
+  prefix: \"Nueva carpeta/contratos/\"
+  match: \"*.pdf\"
+",
+                    "  media: document
+  reads: { fullScan: cheap }
+  changes: { mode: retract, witness: listing }
+",
+                ),
+            ),
+        ],
+    );
+    let rep = r(&pkg, "SELECT key, size FROM pg.docs.contratos LIMIT 5");
+    let l = de(&rep, "pg.docs.contratos");
+    assert_eq!(l.objeto, "Nueva carpeta/contratos/");
+    assert_eq!(l.listado.as_deref(), Some("*.pdf"));
+    assert_eq!(l.columnas, ["key", "size"]);
+    assert!(l.declaradas.contains(&"modified".to_string()));
+    assert_eq!(l.limit, Some(5));
+    let rep = r(&pkg, "SELECT key FROM pg.docs.contratos WHERE size > 10");
+    let l = de(&rep, "pg.docs.contratos");
+    assert!(l.empujados.is_empty() && l.en_el_motor.len() == 1, "{l:?}");
+    assert!(
+        rep.lecturas[0]
+            .json()
+            .jcs()
+            .contains(r#""listado":{"match":"*.pdf"}"#)
+    );
+}
