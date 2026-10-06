@@ -496,7 +496,37 @@ fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, St
     Err(format!("la pasarela contestó {codigo}: {mensaje}"))
 }
 
+/// Los verbos de un conector que **miran un origen** y que, con la pasarela,
+/// sólo hace ella (0053 F8·4). `bajar` y `versiones` (las colecciones de
+/// medios) aún no: son de F9.
+const VERBOS_DE_LA_PASARELA: [&str; 5] = ["leer", "catalogo", "check", "explorar", "testigo"];
+
+/// **Una vía** (0053 F8·4): con `ORE_PASARELA`, lanzar `ore-read-<tipo>` para
+/// uno de esos verbos es un fallo, no una lectura por la puerta de atrás. Un
+/// camino que se olvide de `preguntar` o de `leer_por_la_pasarela` se ve aquí,
+/// y no en el origen de un cliente.
+fn una_via(programa: &str, args: &[String]) -> Result<(), Fallo> {
+    una_via_con(programa, args, pasarela().is_some())
+}
+
+fn una_via_con(programa: &str, args: &[String], hay_pasarela: bool) -> Result<(), Fallo> {
+    let verbo = args.first().map(String::as_str).unwrap_or("catalogo");
+    if hay_pasarela && programa.starts_with("ore-read-") && VERBOS_DE_LA_PASARELA.contains(&verbo) {
+        return Err(fallo(
+            70, // EX_SOFTWARE
+            format!(
+                "`{programa} {verbo}` con la pasarela puesta: lo que mira un origen va por ella (una vía)"
+            ),
+            &[
+                "  Es un fallo de ORE, no del origen: este camino tendría que pedírselo a la pasarela.",
+            ],
+        ));
+    }
+    Ok(())
+}
+
 pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Result<String, Fallo> {
+    una_via(programa, args)?;
     let ruta = resolver(programa).ok_or_else(|| {
         fallo(
             69,
@@ -596,6 +626,7 @@ pub fn lanzar(
     entrada: &str,
     abierta: bool,
 ) -> Result<Lanzado, Fallo> {
+    una_via(programa, args)?;
     use std::io::{Read as _, Write as _};
     let ruta = resolver(programa).ok_or_else(|| {
         fallo(
@@ -914,4 +945,29 @@ fn ausentes_de(texto: &str) -> Vec<&'static str> {
         .map(|(k, _, _)| *k)
         .filter(|k| !texto.contains(&format!("\"{k}\"")))
         .collect()
+}
+
+#[cfg(test)]
+mod pruebas_una_via {
+    use super::*;
+
+    #[test]
+    fn con_la_pasarela_ningun_conector_mira_un_origen() {
+        let a = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        for v in ["leer", "catalogo", "check", "explorar", "testigo"] {
+            assert!(
+                una_via_con("ore-read-postgres", &a(&[v]), true).is_err(),
+                "{v}"
+            );
+            assert!(
+                una_via_con("ore-read-postgres", &a(&[v]), false).is_ok(),
+                "{v}"
+            );
+        }
+        // La forma vieja (`ore-read-postgres <fuente>`) es `catalogo`.
+        assert!(una_via_con("ore-read-postgres", &[], true).is_err());
+        // Las colecciones (F9) y lo que no es un conector, sí.
+        assert!(una_via_con("ore-read-s3", &a(&["bajar"]), true).is_ok());
+        assert!(una_via_con("ore-store-gcs", &a(&["leer"]), true).is_ok());
+    }
 }

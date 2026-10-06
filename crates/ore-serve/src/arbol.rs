@@ -844,10 +844,15 @@ pub(crate) fn intencion_del_commit(cuerpo: &str) -> (bool, String) {
 
 /// Un documento que el commit escribió por su cuenta, y lo que había antes:
 /// si la puerta rechaza el commit, se deja como estaba.
+#[derive(Debug)]
 pub(crate) struct Generado {
     ruta: PathBuf,
     accion: &'static str,
     entrypoint: String,
+    /// `Function` o `Transform` (ORE 0055 T1·4).
+    kind: &'static str,
+    /// La salida, si es un `Transform`.
+    output: Option<String>,
     antes: Option<Vec<u8>>,
 }
 
@@ -873,7 +878,7 @@ pub(crate) fn generar_funciones(
 ) -> Vec<Generado> {
     let solo: std::collections::BTreeSet<PathBuf> = tocadas
         .iter()
-        .filter(|r| r.ends_with(".py") || r.ends_with(".ts"))
+        .filter(|r| r.ends_with(".py") || r.ends_with(".ts") || r.ends_with(".sql"))
         .map(|r| raiz.join(r.trim_matches('/')))
         .collect();
     generar_de(raiz, solo, dueno)
@@ -955,12 +960,21 @@ fn generar_de(
     // (OOS v1alpha26 `01` §5), no contra la de la rama: si no, cada commit de
     // la rama la volvería a subir.
     let anteriores = anteriores_de_main(raiz);
-    let plan =
-        ore_core::generar::plan_con_anteriores(&pkg, Some(&solo), dueno, anteriores.as_ref());
-    let generados: Vec<Generado> = plan
-        .cambios
-        .iter()
-        .map(|c| Generado {
+    // Los dos planes sobre el mismo árbol: el de las funciones y, desde 0055
+    // T1·4, el de los transforms (`<repositorio>/pipeline/<salida>.yaml`).
+    let planes = [
+        (
+            "Function",
+            ore_core::generar::plan_con_anteriores(&pkg, Some(&solo), dueno, anteriores.as_ref()),
+        ),
+        (
+            "Transform",
+            ore_core::generar::plan_de_transforms(&pkg, Some(&solo), dueno),
+        ),
+    ];
+    let mut generados: Vec<Generado> = Vec::new();
+    for &(kind, ref plan) in &planes {
+        generados.extend(plan.cambios.iter().map(|c| Generado {
             ruta: c.ruta.clone(),
             accion: match c.accion {
                 ore_core::generar::Accion::Crear(_) => "crear",
@@ -968,10 +982,15 @@ fn generar_de(
                 ore_core::generar::Accion::Borrar => "borrar",
             },
             entrypoint: c.entrypoint.clone(),
+            kind,
+            output: c.output.clone(),
             antes: std::fs::read(&c.ruta).ok(),
-        })
-        .collect();
-    if ore_core::generar::aplicar(&plan).is_err() {
+        }));
+    }
+    if planes
+        .iter()
+        .any(|(_, plan)| ore_core::generar::aplicar(plan).is_err())
+    {
         deshacer(&generados);
         return Vec::new();
     }
@@ -1000,27 +1019,37 @@ pub(crate) fn ruta_de(raiz: &Path, g: &Generado) -> String {
     relativo(raiz, &g.ruta)
 }
 
-/// Lo generado, para la respuesta: `{ruta, accion, entrypoint}`.
+/// Lo generado, para la respuesta: `{ruta, accion, entrypoint, kind}`, y
+/// `output` en el de un `Transform`.
 pub(crate) fn generados_json(raiz: &Path, generados: &[Generado]) -> Json {
     Json::Arr(
         generados
             .iter()
             .map(|g| {
-                Json::obj([
+                let mut m = vec![
                     ("ruta", Json::s(relativo(raiz, &g.ruta))),
                     ("accion", Json::s(g.accion)),
                     ("entrypoint", Json::s(&g.entrypoint)),
-                ])
+                    ("kind", Json::s(g.kind)),
+                ];
+                if let Some(o) = &g.output {
+                    m.push(("output", Json::s(o)));
+                }
+                Json::obj(m)
             })
             .collect(),
     )
 }
 
-/// Los `.py` que había dentro de una carpeta que se retira.
+/// El código que había dentro de una carpeta que se retira: los `.py`, los
+/// `.ts` y, desde 0055 T1·4, los `.sql` (sus transforms se van con ella).
 fn pys_de(raiz: &Path, dentro: &[(PathBuf, Vec<u8>)]) -> std::collections::BTreeSet<PathBuf> {
     dentro
         .iter()
-        .filter(|(f, _)| f.extension().is_some_and(|x| x == "py"))
+        .filter(|(f, _)| {
+            f.extension()
+                .is_some_and(|x| x == "py" || x == "ts" || x == "sql")
+        })
         .map(|(f, _)| {
             if f.is_absolute() {
                 f.clone()
@@ -1162,5 +1191,302 @@ spec: {}
         assert_eq!(a["total"].version_del_paquete, None);
         assert_eq!(a["vieja"].version_del_paquete.as_deref(), Some("3.1.0"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// 0055 T1·4 · el commit escribe el `Transform` de lo que toca, y la puerta
+/// —«el árbol no empeora»— lo juzga con él dentro. La puerta de verdad corre
+/// `ore validate` (`diagnosticos_de`); aquí, el mismo validador en proceso y
+/// la misma identidad de un diagnóstico, `(código, mensaje)`.
+#[cfg(test)]
+mod transforms {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    struct Arbol(PathBuf);
+    impl Drop for Arbol {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn copiar(de: &Path, a: &Path) {
+        std::fs::create_dir_all(a).unwrap();
+        for e in std::fs::read_dir(de).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                copiar(&p, &a.join(e.file_name()));
+            } else {
+                std::fs::copy(&p, a.join(e.file_name())).unwrap();
+            }
+        }
+    }
+
+    /// El árbol del caso `a-python-transform` sin su código ni su documento:
+    /// el paquete `ventas` con `pedidos` y `clientes`.
+    fn arbol() -> Arbol {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ore-serve-transforms-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let caso = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos/conformance/v1alpha25/valid/a-python-transform/input");
+        copiar(&caso, &dir);
+        std::fs::remove_dir_all(dir.join("packages/ventas/etl")).unwrap();
+        Arbol(dir)
+    }
+
+    fn diags(raiz: &Path) -> BTreeSet<(String, String)> {
+        ore_core::validate::validate_package(raiz)
+            .iter()
+            .map(|d| (d.code.as_str().to_string(), d.message.clone()))
+            .collect()
+    }
+
+    /// Lo que hace `commit_del_arbol`: escribir, generar, y si el árbol
+    /// empeora, los diagnósticos nuevos y todo como estaba.
+    fn commit(
+        raiz: &Path,
+        ficheros: &[(&str, Option<&str>)],
+        dueno: Option<&str>,
+    ) -> Result<Vec<Generado>, Vec<ore_core::diag::Diagnostic>> {
+        let antes = diags(raiz);
+        let previos: Vec<Option<Vec<u8>>> = ficheros
+            .iter()
+            .map(|(r, _)| std::fs::read(raiz.join(r)).ok())
+            .collect();
+        for (r, t) in ficheros {
+            let p = raiz.join(r);
+            match t {
+                Some(t) => {
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(&p, t).unwrap();
+                }
+                None => {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+        let tocadas: Vec<&str> = ficheros.iter().map(|(r, _)| *r).collect();
+        let generados = generar_funciones(raiz, &tocadas, dueno);
+        let nuevos: Vec<_> = ore_core::validate::validate_package(raiz)
+            .into_iter()
+            .filter(|d| !antes.contains(&(d.code.as_str().to_string(), d.message.clone())))
+            .collect();
+        if nuevos.is_empty() {
+            return Ok(generados);
+        }
+        deshacer(&generados);
+        for ((r, _), b) in ficheros.iter().zip(previos) {
+            match b {
+                Some(b) => std::fs::write(raiz.join(r), b).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(raiz.join(r));
+                }
+            }
+        }
+        Err(nuevos)
+    }
+
+    const PY: &str = "packages/ventas/etl/transforms/resumen.py";
+    const DOC: &str = "packages/ventas/etl/pipeline/ventas.resumen.yaml";
+
+    fn resumen(inputs: &str) -> String {
+        format!(
+            "from ore import transform, over, write\n\nPEDIDOS = \"ventas.pedidos\"\n\n\n\
+             @transform(inputs={inputs}, output=\"ventas.resumen\")\n\
+             def resumen():\n    \"\"\"El total por país.\"\"\"\n    \
+             return write(\"ventas.resumen\", over(PEDIDOS))\n"
+        )
+    }
+
+    #[test]
+    fn el_commit_escribe_el_transform_en_el_mismo_commit() {
+        let t = arbol();
+        let r = &t.0;
+        let g = commit(
+            r,
+            &[(PY, Some(&resumen("[PEDIDOS, \"ventas.clientes\"]")))],
+            Some("user:ana"),
+        )
+        .expect("compila");
+        let json = generados_json(r, &g);
+        assert_eq!(
+            json.jcs(),
+            format!(
+                "[{{\"accion\":\"crear\",\"entrypoint\":\"etl/transforms/resumen.py:resumen\",\
+                 \"kind\":\"Transform\",\"output\":\"ventas.resumen\",\"ruta\":\"{DOC}\"}}]"
+            )
+        );
+        let texto = std::fs::read_to_string(r.join(DOC)).unwrap();
+        assert!(texto.starts_with("# derivado por ore desde etl/transforms/resumen.py:resumen"));
+        assert!(
+            texto.ends_with("  output: ventas.resumen\n  owner: user:ana\n"),
+            "{texto}"
+        );
+        assert!(ore_core::validate::validate_package(r).is_empty());
+        // Idempotente: guardar lo mismo no genera nada.
+        let g = commit(
+            r,
+            &[(PY, Some(&resumen("[PEDIDOS, \"ventas.clientes\"]")))],
+            Some("user:bea"),
+        )
+        .unwrap();
+        assert!(g.is_empty());
+        // Otro lo cambia: se reescribe, y sigue siendo de quien lo creó.
+        let g = commit(r, &[(PY, Some(&resumen("[PEDIDOS]")))], Some("user:bea")).unwrap();
+        assert_eq!(g[0].accion, "reescribir");
+        let texto = std::fs::read_to_string(r.join(DOC)).unwrap();
+        assert!(texto.contains("inputs: [ventas.pedidos]\n") && texto.contains("user:ana"));
+        // Sin el decorador, el derivado se va con él.
+        let sin = resumen("[PEDIDOS]").replace(
+            "@transform(inputs=[PEDIDOS], output=\"ventas.resumen\")\n",
+            "",
+        );
+        let g = commit(r, &[(PY, Some(&sin))], None).unwrap();
+        assert_eq!((g[0].accion, g[0].kind), ("borrar", "Transform"));
+        assert!(!r.join(DOC).exists());
+    }
+
+    #[test]
+    fn la_puerta_dice_lo_que_el_transform_nuevo_rompe() {
+        let t = arbol();
+        let r = &t.0;
+        // Una entrada calculada: OOS2043, en el `.py` y con su línea.
+        let e = commit(r, &[(PY, Some(&resumen("[PEDIDOS + \"x\"]")))], None).unwrap_err();
+        assert_eq!(e[0].code.as_str(), "OOS2043", "{e:?}");
+        assert!(e[0].file.ends_with("resumen.py"));
+        assert_eq!(e[0].pos.map(|p| p.line), Some(6));
+        assert!(
+            !r.join(PY).exists() && !r.join(DOC).exists(),
+            "todo como estaba"
+        );
+        // Una entrada que no es nada: OOS2018.
+        let e = commit(r, &[(PY, Some(&resumen("[\"ventas.proveedores\"]")))], None).unwrap_err();
+        assert_eq!(e[0].code.as_str(), "OOS2018", "{e:?}");
+        assert!(!r.join(DOC).exists());
+        // Una salida que ya produce otro repositorio: OOS2047.
+        commit(r, &[(PY, Some(&resumen("[PEDIDOS]")))], None).unwrap();
+        let sql = "packages/ventas/otro/resumen.sql";
+        let e = commit(
+            r,
+            &[(
+                sql,
+                Some("insert into ventas.resumen select * from ventas.pedidos"),
+            )],
+            None,
+        )
+        .unwrap_err();
+        assert!(e.iter().all(|d| d.code.as_str() == "OOS2047"), "{e:?}");
+        assert!(
+            !r.join("packages/ventas/otro/pipeline/ventas.resumen.yaml")
+                .exists()
+        );
+        assert!(r.join(DOC).exists(), "lo de antes, intacto");
+    }
+
+    #[test]
+    fn un_transform_sin_documento_de_antes_no_para_un_commit_ajeno() {
+        let t = arbol();
+        let r = &t.0;
+        // Llegó sin documento (de antes de 0055): OOS2013 ya estaba.
+        std::fs::create_dir_all(r.join(PY).parent().unwrap()).unwrap();
+        std::fs::write(r.join(PY), resumen("[PEDIDOS]")).unwrap();
+        assert!(diags(r).iter().any(|(c, _)| c == "OOS2013"));
+        let sql = "packages/ventas/otro/totales.sql";
+        let g = commit(
+            r,
+            &[(
+                sql,
+                Some("-- el total\nselect 1;\ncreate or replace dataset ventas.totales as select * from ventas.clientes"),
+            )],
+            None,
+        )
+        .expect("lo de antes no cuenta");
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].entrypoint, "otro/totales.sql:2");
+        assert!(
+            r.join("packages/ventas/otro/pipeline/ventas.totales.yaml")
+                .exists()
+        );
+        assert!(
+            !r.join(DOC).exists(),
+            "no se genera lo que el commit no toca"
+        );
+        // La salida cambia de nombre: el documento se mueve.
+        let g = commit(
+            r,
+            &[(
+                sql,
+                Some("create or replace dataset ventas.sumas as select * from ventas.clientes"),
+            )],
+            None,
+        )
+        .unwrap();
+        let mut hecho: Vec<_> = g.iter().map(|g| (g.accion, ruta_de(r, g))).collect();
+        hecho.sort();
+        assert_eq!(
+            hecho,
+            [
+                (
+                    "borrar",
+                    "packages/ventas/otro/pipeline/ventas.totales.yaml".to_string()
+                ),
+                (
+                    "crear",
+                    "packages/ventas/otro/pipeline/ventas.sumas.yaml".to_string()
+                ),
+            ]
+        );
+        // Y el fichero se va: su documento, también.
+        let g = commit(r, &[(sql, None)], None).unwrap();
+        assert_eq!(g[0].accion, "borrar");
+        assert!(
+            !r.join("packages/ventas/otro/pipeline/ventas.sumas.yaml")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn uno_escrito_a_mano_no_se_toca() {
+        let t = arbol();
+        let r = &t.0;
+        commit(r, &[(PY, Some(&resumen("[PEDIDOS]")))], None).unwrap();
+        let a_mano = std::fs::read_to_string(r.join(DOC))
+            .unwrap()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(r.join(DOC), &a_mano).unwrap();
+        // El código cambia: el documento a mano no se reescribe, y la puerta
+        // dice que ya no es el del código.
+        let e = commit(
+            r,
+            &[(PY, Some(&resumen("[PEDIDOS, \"ventas.clientes\"]")))],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e[0].code.as_str(), "OOS2013", "{e:?}");
+        assert_eq!(std::fs::read_to_string(r.join(DOC)).unwrap(), a_mano);
+        // Y el código se va: tampoco se borra.
+        let sin = "from ore import over\n";
+        let _ = commit(r, &[(PY, Some(sin))], None);
+        assert!(r.join(DOC).exists());
+    }
+
+    #[test]
+    fn retirar_una_carpeta_lleva_sus_sql() {
+        let dentro = vec![
+            (PathBuf::from("/x/a.sql"), vec![]),
+            (PathBuf::from("/x/b.py"), vec![]),
+            (PathBuf::from("/x/c.ts"), vec![]),
+            (PathBuf::from("/x/d.yaml"), vec![]),
+        ];
+        assert_eq!(pys_de(Path::new("/"), &dentro).len(), 3);
     }
 }

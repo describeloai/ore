@@ -53,6 +53,9 @@ pub struct Cambio {
     /// `<ruta del .py>:<def>` o `<ruta del .ts>`, desde la carpeta del paquete.
     pub entrypoint: String,
     pub accion: Accion,
+    /// v1alpha25: la salida de un `Transform` (la que escribe, o la que
+    /// escribía el que se borra). `None` en el de una función.
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -289,6 +292,7 @@ pub fn plan_con_anteriores(
                             ruta: e.ruta.clone(),
                             entrypoint: entrypoint.clone(),
                             accion: Accion::Borrar,
+                            output: None,
                         });
                     }
                 };
@@ -329,6 +333,7 @@ pub fn plan_con_anteriores(
                     ruta: destino,
                     entrypoint,
                     accion,
+                    output: None,
                 });
             }
         }
@@ -351,6 +356,7 @@ pub fn plan_con_anteriores(
                 ruta: e.ruta.clone(),
                 entrypoint: entrypoint.clone(),
                 accion: Accion::Borrar,
+                output: None,
             });
         }
     }
@@ -431,4 +437,352 @@ pub fn aplicar(plan: &Plan) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+// ── v1alpha25 · el documento de cada transform (ORE 0055 T1·4) ──────────────
+
+/// **El plan de los `Transform`** de lo que toca `solo` (rutas de `.py` o
+/// `.sql`, existan o no), como [`plan_con_dueno`] el de las funciones:
+///
+/// - **dónde**: `<repositorio>/pipeline/<salida>.yaml` del paquete
+///   (v1alpha25 `01` §9, no normativo); un derivado del mismo `entrypoint` en
+///   otro sitio —la salida cambió de nombre— se mueve;
+/// - **el contenido**: el de `ore_code::transform`, los mismos bytes siempre;
+///   el `owner` lo conserva el que ya estaba y lo pone `dueno` en el que nace;
+/// - **lo que sobra**: un documento con la marca de procedencia cuyo transform
+///   ya no está —el decorador o la sentencia se fueron, o el fichero— se
+///   borra. Uno escrito a mano **nunca** se toca: si no es el del código, lo
+///   dice `OOS2013`;
+/// - **lo que no se deriva** no se escribe ni se borra: lo dice `OOS2043`.
+pub fn plan_de_transforms(
+    pkg: &Package,
+    solo: Option<&BTreeSet<PathBuf>>,
+    dueno: Option<&str>,
+) -> Plan {
+    let mut p = Plan::default();
+    for (carpeta, paquete) in paquetes_publicables(pkg) {
+        transforms_del_paquete(pkg, &carpeta, &paquete, solo, dueno, &mut p);
+    }
+    p.cambios.sort_by(|a, b| a.ruta.cmp(&b.ruta));
+    p
+}
+
+fn transforms_del_paquete(
+    pkg: &Package,
+    carpeta: &Path,
+    paquete: &str,
+    solo: Option<&BTreeSet<PathBuf>>,
+    dueno: Option<&str>,
+    p: &mut Plan,
+) {
+    use ore_code::transform::{self as t, Produccion};
+    let entra = |f: &Path| solo.is_none_or(|s| s.contains(f));
+    // Los `Transform` del paquete, por su `entrypoint`.
+    let mut existentes: BTreeMap<String, Existente> = BTreeMap::new();
+    for d in pkg.of(Kind::Transform) {
+        if carpeta_del_paquete(&d.path, &pkg.root) != carpeta {
+            continue;
+        }
+        let Some(e) = d.section("entrypoint").and_then(Node::as_str) else {
+            continue;
+        };
+        existentes.insert(
+            e.to_string(),
+            Existente {
+                ruta: d.path.clone(),
+                texto: std::fs::read_to_string(&d.path).unwrap_or_default(),
+                version_del_paquete: None,
+            },
+        );
+    }
+
+    let mut ficheros = Vec::new();
+    crate::promover::ficheros_con(carpeta, &[".py", ".sql"], &mut ficheros);
+    ficheros.sort();
+    let mut vivos: BTreeSet<String> = BTreeSet::new();
+    // Un fichero que no se analiza no dice qué transforms tiene: lo suyo se queda.
+    let mut rotos: BTreeSet<String> = BTreeSet::new();
+    let mut producciones: Vec<(PathBuf, Produccion)> = Vec::new();
+    for f in ficheros {
+        if carpeta_del_paquete(&f, &pkg.root) != carpeta || !entra(&f) {
+            continue;
+        }
+        let (Ok(fuente), Ok(rel)) = (std::fs::read_to_string(&f), f.strip_prefix(carpeta)) else {
+            continue;
+        };
+        let ruta = rel.to_string_lossy().replace('\\', "/");
+        if ruta.ends_with(".sql") {
+            match crate::transformar::derivar_sql(&fuente, &ruta) {
+                Ok(g) => {
+                    for (_, x) in g.transforms {
+                        vivos.insert(x.entrypoint.clone());
+                        producciones.push((f.clone(), x));
+                    }
+                }
+                Err(motivo) => {
+                    rotos.insert(ruta);
+                    // Sólo si podría escribir: un `.sql` sin nada que escribir
+                    // no tiene transforms que perder.
+                    let l = fuente.to_ascii_lowercase();
+                    if l.contains("insert") || l.contains("dataset") {
+                        p.diagnosticos.push(Diagnostic::new(
+                            Code::Oos2043,
+                            &f,
+                            format!("no se analiza, y sus transforms no se derivan: {motivo}"),
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
+        if !ore_code::puede_tener_transforms(&fuente) {
+            continue;
+        }
+        let d = ore_code::python::derivar(&fuente, &ruta);
+        if d.transforms.is_empty() {
+            continue;
+        }
+        if let Some(diag) = roto(&f, &fuente, &d) {
+            rotos.insert(ruta);
+            p.diagnosticos.push(diag);
+            continue;
+        }
+        for x in &d.transforms {
+            vivos.insert(format!("{ruta}:{}", x.nombre));
+            match &x.resultado {
+                Ok(pr) => producciones.push((f.clone(), pr.clone())),
+                Err(fallos) => no_se_deriva(&f, &fuente, &x.nombre, fallos, &mut p.diagnosticos),
+            }
+        }
+    }
+
+    let mut destinos: BTreeMap<PathBuf, String> = BTreeMap::new();
+    for (f, pr) in producciones {
+        let destino = carpeta.join(t::ruta_del_documento(&pr));
+        if let Some(otro) = destinos.insert(destino.clone(), pr.entrypoint.clone()) {
+            p.diagnosticos.push(
+                Diagnostic::new(
+                    Code::Oos2047,
+                    &f,
+                    format!(
+                        "`{otro}` y `{}` escriben `{}`: una salida, un productor",
+                        pr.entrypoint, pr.output
+                    ),
+                )
+                .help("que escriba uno solo, o que cada uno escriba lo suyo"),
+            );
+            continue;
+        }
+        let previo = existentes.get(&pr.entrypoint);
+        // Uno escrito a mano no se toca nunca: si no es el del código, lo dice
+        // la coherencia (`OOS2013`).
+        if previo.is_some_and(|e| !t::es_derivado(&e.texto)) {
+            continue;
+        }
+        let movido = previo.filter(|e| e.ruta != destino);
+        let actual = match previo {
+            Some(e) if movido.is_none() => Some(e.texto.clone()),
+            _ => std::fs::read_to_string(&destino).ok(),
+        };
+        if actual.as_deref().is_some_and(|x| !t::es_derivado(x)) {
+            p.diagnosticos.push(
+                Diagnostic::new(
+                    Code::Oos2013,
+                    &destino,
+                    format!(
+                        "el documento de `{}` iría aquí, y aquí hay otro escrito a mano",
+                        pr.entrypoint
+                    ),
+                )
+                .help("muévelo o renómbralo; los derivados se reescriben, los escritos a mano no"),
+            );
+            continue;
+        }
+        let owner = match (previo, &actual) {
+            (Some(e), _) => owner_de(&e.texto),
+            (None, Some(x)) => owner_de(x),
+            (None, None) => dueno.map(str::to_string),
+        };
+        let contenido = t::documento_con_dueno(&pr, paquete, owner.as_deref());
+        if let Some(e) = movido {
+            p.cambios.push(Cambio {
+                ruta: e.ruta.clone(),
+                entrypoint: pr.entrypoint.clone(),
+                accion: Accion::Borrar,
+                output: Some(pr.output.clone()),
+            });
+        }
+        let accion = match actual {
+            Some(x) if x.replace("\r\n", "\n") == contenido => {
+                p.al_dia += 1;
+                continue;
+            }
+            Some(_) => Accion::Reescribir {
+                contenido,
+                a_mano: false,
+            },
+            None => Accion::Crear(contenido),
+        };
+        p.cambios.push(Cambio {
+            ruta: destino,
+            entrypoint: pr.entrypoint.clone(),
+            accion,
+            output: Some(pr.output.clone()),
+        });
+    }
+
+    // ── lo que sobra: derivado, y su transform ya no está ───────────────────
+    for (entrypoint, e) in &existentes {
+        let ruta = entrypoint
+            .rsplit_once(':')
+            .map(|(r, _)| r)
+            .unwrap_or(entrypoint);
+        if !vivos.contains(entrypoint)
+            && !rotos.contains(ruta)
+            && t::es_derivado(&e.texto)
+            && entra(&carpeta.join(ruta))
+        {
+            let output = crate::parse::parse(&e.texto).ok().and_then(|n| {
+                n.get("spec")
+                    .and_then(|(_, s)| s.get("output"))
+                    .and_then(|(_, v)| v.as_str())
+                    .map(str::to_string)
+            });
+            p.cambios.push(Cambio {
+                ruta: e.ruta.clone(),
+                entrypoint: entrypoint.clone(),
+                accion: Accion::Borrar,
+                output,
+            });
+        }
+    }
+}
+
+/// v1alpha25 · **Quién produce un dataset**, leído del árbol en `raiz` sin
+/// cargar el paquete entero: sólo los YAML que dicen `kind: Transform`. Es lo
+/// que la ficha de un dataset enseña (`producedBy`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Productor {
+    /// El documento, desde la raíz, con `/`.
+    pub documento: String,
+    pub entrypoint: String,
+    pub runtime: String,
+    pub inputs: Vec<String>,
+    /// La carpeta del repositorio, desde la raíz: la del paquete y la primera
+    /// del `entrypoint`. `None` si el código está en la raíz del paquete.
+    pub repositorio: Option<String>,
+}
+
+pub fn productor_de(raiz: &Path, salida: &str) -> Option<Productor> {
+    let salida = crate::normalize::a_corto(salida).into_owned();
+    let mut ficheros = Vec::new();
+    yamls(raiz, &mut ficheros);
+    ficheros.sort();
+    for f in ficheros {
+        let Ok(texto) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        if !texto.contains("kind: Transform") {
+            continue;
+        }
+        let Ok(raiz_doc) = crate::parse::parse(&texto) else {
+            continue;
+        };
+        let d = crate::link::Loaded {
+            path: f.clone(),
+            kind: Kind::Transform,
+            root: raiz_doc,
+        };
+        if d.root.get("kind").and_then(|(_, k)| k.as_str()) != Some("Transform") {
+            continue;
+        }
+        let Some(o) = d.section("output").and_then(Node::as_str) else {
+            continue;
+        };
+        if crate::link::cualificar(o, &d) != salida {
+            continue;
+        }
+        let rel = |p: &Path| {
+            p.strip_prefix(raiz)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        let entrypoint = d
+            .section("entrypoint")
+            .and_then(Node::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let repositorio = entrypoint.split_once('/').map(|(r, _)| {
+            let paquete = carpeta_del_paquete(&f, raiz);
+            let base = rel(&paquete);
+            if base.is_empty() {
+                r.to_string()
+            } else {
+                format!("{base}/{r}")
+            }
+        });
+        return Some(Productor {
+            documento: rel(&f),
+            runtime: d
+                .section("runtime")
+                .and_then(Node::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            inputs: d
+                .section("inputs")
+                .map(Node::items)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Node::as_str)
+                .map(str::to_string)
+                .collect(),
+            entrypoint,
+            repositorio,
+        });
+    }
+    None
+}
+
+/// Los YAML del árbol, sin lo oculto ni lo que no es de nadie.
+fn yamls(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(es) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in es.flatten() {
+        let p = e.path();
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.starts_with('.') || matches!(n.as_str(), "node_modules" | "target" | "__pycache__") {
+            continue;
+        }
+        if p.is_dir() {
+            yamls(&p, out);
+        } else if n.ends_with(".yaml") || n.ends_with(".yml") {
+            out.push(p);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La ficha de un dataset dice quién lo produce (0055 T1·4).
+    #[test]
+    fn el_productor_de_una_salida_se_lee_del_arbol() {
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos/conformance/v1alpha25/valid/an-sql-file-with-two-writes/input");
+        let p = productor_de(&raiz, "ventas.default.historico").expect("lo produce");
+        assert_eq!(
+            p,
+            Productor {
+                documento: "packages/ventas/etl/pipeline/ventas.historico.yaml".into(),
+                entrypoint: "etl/transforms/cargas.sql:3".into(),
+                runtime: "sql".into(),
+                inputs: vec!["ventas.clientes".into(), "ventas.pedidos".into()],
+                repositorio: Some("packages/ventas/etl".into()),
+            }
+        );
+        assert_eq!(productor_de(&raiz, "ventas.pedidos"), None);
+    }
 }

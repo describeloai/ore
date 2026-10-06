@@ -1,11 +1,11 @@
 # 0050 · Functions in code repositories
 
-**Estado:** aceptado. **Python, en vivo** en `victor` desde el 2026-10-03, de punta a punta
-—escribir el `def`, probarlo en Dry Run sin commit, publicarlo al commitear, verlo en Assets e
-invocarlo—. **TypeScript (R3), construido y en `main`** el mismo día —la marca, la derivación, el
-contrato en Node, Dry Run, la invocación, la capa de npm y la plantilla—; llega a `victor` con la
-próxima imagen y al converger los inquilinos. Abiertos: el operador `function` de Pipelines, las
-funciones `over` en Dry Run y lo que se lista al final.
+**Estado:** aceptado. **Python y TypeScript, en vivo** en `victor`, de punta a punta —escribir la
+función, probarla en Dry Run sin commit, publicarla al commitear, verla en Assets e invocarla—. Y
+**el repositorio entero como entorno** (L para TypeScript, 2026-10-03/05; P para Python,
+2026-10-05): lo que nace con él, sus dependencias con su lock, sus pruebas, sus tipos, su sesión y
+el panel Libraries; ver [El entorno de un repositorio](#el-entorno-de-un-repositorio). Abiertos:
+el operador `function` de Pipelines, las funciones `over` en Dry Run y lo que se lista al final.
 
 Construye sobre lo que ORE ya define —la `Function` de OOS (v1alpha10–14), el puesto
 ([`0031`](0031-el-puesto.md)), la versión del paquete (`91-versioning`), la red por política con
@@ -175,25 +175,18 @@ declara `models` es 422: el SDK de Node no llama a un modelo todavía, y no se f
 ### Las dependencias
 
 Cada repositorio declara lo que su código importa donde su mundo lo declara —`pyproject.toml`,
-`pom.xml` y, desde R3, **`package.json`** (`dependencies`, como `nombre@rango`)— y un Job con red lo
-resuelve en una **capa** del bucket que el puesto, sin red, baja al arrancar. La de Node
-(`57-la-capa-node.yaml`, `capa-node:1`): `npm install --omit=dev --ignore-scripts` —ningún paquete
-ejecuta su código al instalarse—, la resolución exacta en el lock del informe, lo que la sesión ya
-trae (`ore`, `@duckdb/node-api`) sin copiar —manda el contenedor, y si se pide otra versión el
-informe lo dice—, y la caja (`capa.tgz`) con su `sha256`, que el puesto comprueba antes de abrirla.
+`package.json`, `pom.xml`— y un Job con red lo resuelve en una **capa** del bucket que el puesto,
+sin red, baja al arrancar. Cómo, con su lock, su grupo de desarrollo y lo que la sesión ya trae:
+[El entorno de un repositorio · Las dependencias](#las-dependencias-1).
 
 ## Las superficies
 
 ### Code repositories
 
-- **Las plantillas** siembran una función de verdad, la misma en los dos lenguajes
-  (`InvoiceStatus`: lo pendiente, los días y el recargo si vence; `Decimal`, una fecha, un
-  opcional), con un nombre único en el paquete sacado de la carpeta:
-  - `functions-python` (v10): `pyproject.toml` y `functions/example.py`, con un bloque `__main__`
-    para Run;
-  - `functions-typescript` (v3): `package.json` y `functions/<carpeta>InvoiceStatus.ts`, con
-    `config`, los tipos de `ore` y los céntimos como `bigint`.
-
+- **Las plantillas** siembran un repositorio entero alrededor de una función de verdad, la misma
+  en los dos lenguajes (`InvoiceStatus`: lo pendiente, los días y el recargo si vence; `Decimal`,
+  una fecha, un opcional), con un nombre único en el paquete sacado de la carpeta —
+  `functions-python` v12 y `functions-typescript` v5, ver [Lo que nace](#lo-que-nace)—.
   **No siembran el documento:** lo escribe el primer commit, y la función nace en Dry Run y en
   Assets.
 - **Dry Run**, tras el f(x) a la izquierda de *Results* en el panel de abajo, sólo en un repositorio
@@ -230,13 +223,137 @@ Pipelines.
 
 Por hacer: el operador `function` que llama a una función publicada por su nombre, con la fila.
 
+## El entorno de un repositorio
+
+Una función no vive sola: vive en un **repositorio**, y el repositorio es su entorno —lo que
+declara, cómo se prueba, qué tipos ve el editor, con qué sesión corre—. Competir con Foundry
+Functions no es sólo la firma: es que el repositorio funcione como uno de verdad, sin terminal y sin
+instalar nada en el portátil. Esta es la imagen del de **Python**; el de TypeScript es el mismo con
+sus herramientas, y la tabla del final los pone lado a lado.
+
+```
+ pyproject.toml ──commit──► ore-serve ── capas_tocadas ──► 52-la-capa (Job, con red)
+   [project].dependencies      │  avisos de lo que no se lee      traer el árbol ─► capa-python:1 (uv, SIN testigo)
+   [dependency-groups].dev     │                                    ─► capa.tgz · dev.tgz · informe · pylock.toml
+                               │                                  subir-e-informar ─► bucket ore/puesto/<capa>/
+                               │                                                  └─► commit: entorno/<capa>.json + pylock.toml
+                               ▼
+ GET /entorno/python ─► el panel Libraries: declarado · instalado · transitivas · lo de la sesión · avisos
+                               │
+ la sesión (puesto-python:1, Python 3.14) ── al arrancar: traer-la-capa ─► /capa (lo que corre)
+   automática con un .py          └─ y sólo en sesión: /capa/.dev (el grupo dev) — una invocación nunca
+   capa ≠ la del repositorio ─► se reinicia sola (functions, transforms) o pregunta (analytics, models)
+   ore/probar ─► pytest en un proceso sin identidad ─► la lista, Expected/Actual y el Run log
+   ore/comprobar ─► pyright sobre el repositorio tras un commit ─► lo roto en otros ficheros
+```
+
+### Lo que nace
+
+`functions-python` **v12** siembra el repositorio entero; `functions-typescript` **v5**, su gemelo.
+
+| fichero | Python | TypeScript |
+|---|---|---|
+| la declaración | `pyproject.toml`: `ore==1.0.0` en `dependencies`, `pytest==9.1.1` en el grupo `dev` | `package.json`: `ore` 1.0.0; `typescript` y `@types/node` en `devDependencies` |
+| la función | `functions/example.py`, con su bloque de Run | `functions/<carpeta>InvoiceStatus.ts` |
+| sus pruebas | `functions/test_example.py` (pytest, 5 casos) | `functions/<…>.test.ts` (`node:test`, 4) |
+| `.gitignore` | `__pycache__/`, `.pytest_cache/`, `.venv/`… | `node_modules/`… |
+| la guía | la prosa del manifiesto (README): estructura, tipos, configuración, probar, paquetes | ídem |
+| lo demás | — | `tsconfig.json` (lo que Node corre: `erasableSyntaxOnly`) |
+
+Lo declarado **es exactamente lo que trae la sesión**, a su versión —pruebas lo comparan con las
+listas de la imagen—, así que no cuesta capa: el repositorio dice con qué trabaja, como un
+repositorio de Foundry declara su `functions-api`. **Nace en verde:** una prueba siembra la plantilla
+y le pasa pytest (5 passed), y pyright no marca nada en ella (la v12 corrigió dos errores de tipos de
+la v11 en el bloque de Run).
+
+### Las dependencias
+
+| | |
+|---|---|
+| **dónde** | `[project].dependencies` (PEP 508) y el grupo `dev` de `[dependency-groups]` (PEP 735), como `devDependencies`. Nada más: `optional-dependencies`, otros grupos, Poetry, `[tool.uv]` y lo local no se leen, **y se dice** —en el panel y al commitear— |
+| **cuándo** | un commit que toca el fichero **encola su capa** (`capas` en la respuesta); y al abrir una sesión con la capa pendiente |
+| **quién resuelve** | `52-la-capa`, el gemelo de la de Node: el árbol con el testigo; **`capa-python:1` sin testigo ni credencial de nube** —uv 0.12.23 contra PyPI—; y quien sube y commitea, sin salir a PyPI |
+| **con qué** | **lo que la sesión trae es una restricción** (`constraint-dependencies` con `puesto/python/provisto.txt`): lo compatible se resuelve, lo que choca es un error que lo dice |
+| **cómo** | **sólo ruedas** (`no-build`): ningún paquete ejecuta código al instalarse. Una resolución, **dos cajas**: `capa.tgz` (lo que corre) y `dev.tgz` (el grupo `dev`), ninguna con lo de la sesión, cada una con su `sha256` |
+| **el lock** | **`pylock.toml`** (PEP 751), commiteado junto al `pyproject.toml`: el estándar de Python, con lo de la sesión fijado a su versión —es la restricción con la que se resolvió—. Un commit que deja sólo lo de la sesión lo retira |
+| **el nombre** | `capa-` + 12 hex del sha256 del **intérprete** (`cp314`) y lo declarado: cambiar de Python es cambiar de capa, y una caja de otro intérprete no llega a una sesión |
+| **el SDK** | `ore` 1.0.0 (su `__version__`) es de la sesión: se declara, no pide capa y nunca se busca en PyPI —donde hay otro `ore`— |
+| **por rama, por contenido** | la declaración y su lock son ficheros del repositorio: cada rama tiene los suyos y se fusionan con el código. La caja se nombra por su contenido: dos ramas —o dos repositorios— que declaran lo mismo comparten la capa |
+
+### La sesión
+
+- **`puesto-python:1`, Python 3.14** con pytest; el Job de la capa lee el intérprete de la imagen.
+- **Automática:** un `.py` de functions o transforms conecta su sesión sin pulsar Run —con la pestaña
+  visible, no si la desconectaste tú, un intento por minuto tras un fallo—, y la actividad del editor
+  cuenta para su TTL. En analytics y models no: una exploración se abre a mano.
+- **Baja su capa al arrancar** (`/capa`, y `/capa/.dev` sólo en una sesión: **lo de desarrollo nunca
+  llega a una invocación**), detrás de la imagen en `sys.path`: manda el contenedor.
+- **«Libraries changed».** La ficha del puesto dice con qué capa arrancó; si la del repositorio es
+  otra y está lista —por Add, un commit a mano, otra pestaña—, en functions y transforms **se
+  reinicia sola** en cuanto está ociosa; en analytics y models se pregunta.
+
+### Las pruebas y los tipos
+
+- **El repositorio en disco**, en la sesión: el de su rama, con el espejo de lo que el editor abre.
+  Con él, pyright resuelve lo que un fichero importa de otro.
+- **`ore/probar`:** pytest con un informe propio (una línea JSON por prueba, la forma del de Node) y
+  la salida de la terminal como **Run log**: estado, línea, mensaje, **Expected/Actual** de un
+  `assert a == b`, lo impreso. Todo el repositorio, un fichero o una prueba (con su caso
+  parametrizado), con los borradores sin guardar encima. Un fichero que no carga no para el resto.
+  **En un proceso sin la identidad de la sesión**: una prueba unitaria no lee datos. Topes: 30 s por
+  prueba, 120 s en total.
+- **`ore/comprobar`:** tras un commit, pyright sobre **el repositorio entero** tal como quedó: lo
+  que un cambio rompe en un fichero que nadie tiene abierto.
+
+### Libraries
+
+El panel del sidebar, bajo Pull requests:
+
+- **lo declarado** (Dependencies, Dev dependencies), con lo instalado de verdad (del lock) y sus
+  transitivas; **lo que trae la sesión** en tarjetas (`session`), y en ámbar lo pedido a otra
+  versión;
+- **«+» → las sugeridas:** 30 por ecosistema, **medidas antes de entrar** —en Python, con el
+  resolutor de la capa: las 30 resuelven contra la sesión en 3.14, la mayor 49 MB—, con la etiqueta
+  `dev` las de probar. Un atajo, no un límite: cualquier paquete se declara a mano;
+- **la ficha** de una librería, como una pestaña (el registro, sus versiones, su uso en el
+  repositorio), y **Add**: la línea en el fichero —una **edición de texto** que no pisa comentarios
+  ni orden— y un **commit directo**; *Installing…* hasta que la capa está lista; y la sesión, con
+  ella.
+
+### Upgrade fusiona
+
+Actualizar un repositorio a la plantilla de hoy propone sus ficheros en una rama, como siempre; pero
+**la declaración no se sustituye: se fusiona** (`ore-core/declaracion.rs`). Se añade lo que la
+semilla declara y falta —por nombre, PEP 503 en Python— y no se toca lo que ya hay, con su versión;
+el diff es exactamente lo añadido, y la propuesta lo dice. Lo mismo con `package.json` y
+`.gitignore`.
+
+### Python y TypeScript, lado a lado
+
+| | Python | TypeScript |
+|---|---|---|
+| runtime | Python 3.14 (`puesto-python:1`) | Node 24 (`puesto-node:1`) |
+| declarar | `pyproject.toml` · grupo `dev` | `package.json` · `devDependencies` |
+| resolver | uv, sólo ruedas | npm, `--ignore-scripts` |
+| lo de la sesión | **restricción**: lo que choca es un error | gana la de la sesión, con aviso |
+| lock | `pylock.toml` (PEP 751) | `package-lock.json` |
+| cajas | `capa.tgz` + `dev.tgz` | `capa.tgz` + `tipos.tgz` |
+| pruebas | pytest, `test_*.py` | `node --test`, `*.test.ts` |
+| tipos tras commit | pyright | `tsc` |
+| editor | pyright con el repositorio en disco | typescript-language-server, ídem |
+
+**Por qué Python resuelve con restricciones y Node avisa:** dos `numpy` no conviven en un intérprete
+—un ABI que no casa no da una excepción, mata el proceso—, mientras que dos copias de un paquete de
+npm son, como mucho, dos módulos.
+
 ## En vivo
 
 | | |
 |---|---|
 | `victor` | `ore-serve` con G1–G5; la consola con Assets → Functions y Dry Run; `invoice_status` en Dry Run: *Success*, `0.04 ms`, el registro entero |
-| TypeScript | en `main`, sin probar en `victor`: necesita la imagen de `ore-serve` y `capa-node:1`, y converger los inquilinos (la plantilla del Job de la capa) |
-| las pruebas | `el-puesto.sh` 18; `los-documentos.sh` 25; conformidad v1alpha18, v1alpha20 y **v1alpha23 (32 casos)**; el oráculo y las instantáneas de `ore-code` y 17 pruebas del lector de TypeScript con los hostiles; 18 del contrato de Python y 7 del de Node; la imagen `capa-node` se prueba al construirse |
+| TypeScript | en `victor`: un repositorio nuevo con su sesión automática, sus 4 pruebas en Test con el Run log, sus librerías con Add |
+| el entorno de Python | en `victor` (P1–P5): Python 3.14, la capa con uv —`polars` en `/capa`, `hypothesis` en `/capa/.dev`, la misma caja compartida por dos repositorios que declaran lo mismo—, `pylock.toml` en el repositorio, pytest y pyright en la sesión |
+| las pruebas | `el-puesto.sh` 18; `los-documentos.sh` 25; conformidad v1alpha18, v1alpha20 y **v1alpha23 (32 casos)**; el oráculo y las instantáneas de `ore-code` y 17 pruebas del lector de TypeScript con los hostiles; 18 del contrato de Python y 7 del de Node; **29 del repositorio de Python** (pytest, pyright de verdad, `materializar` contra un `ore-serve` de mentira) y «nace en verde»; la fusión (8) y Add (6) con los mismos casos; las imágenes `capa-node`, `capa-python` y `capa-jvm` se prueban al construirse |
 | **medido** | una invocación bajo demanda tarda ~68 s en `victor` (42 esperando nodo): es un trabajo; Dry Run en una sesión viva, milisegundos; derivar una firma, microsegundos. TypeScript, en local con Node: la celda de Dry Run y el arnés (ok, entrada, código con su línea, carga), un entero de 2⁵³+1 y un decimal largo exactos; la capa de npm, la misma caja dos veces |
 
 ## De dónde viene
@@ -266,6 +383,16 @@ ahí:
 | T5 | invocar `runtime: node`: el arnés de Node, como trabajo del puesto | `0d90fd4` |
 | T5b | la capa de Node: `package.json`, `capa-node:1`, `57-la-capa-node.yaml` | `34e8221` |
 | T6 | la plantilla `functions-typescript` v3: una función de verdad | `1ea43e8` |
+| **L1–L2** | TypeScript, el repositorio entero: la plantilla v4 (pruebas, `tsconfig`, `.gitignore`, la guía); el lock al repositorio | `9ada13b`, `b5ab90b` |
+| L3 | una resolución, dos cajas (`devDependencies`); la correa de Node: el servidor de TypeScript con el repositorio en disco | `fe75669`, `2f44392` |
+| L4–L5 | `ore/comprobar` (`tsc`) y `ore/probar` (`node --test`) en la sesión | `5a0994d`, `ba12221` |
+| L6 | Libraries: lo que trae cada sesión, lo de la imagen no pide capa, la plantilla v5; `ore-packages` (la ficha y la búsqueda en npm, PyPI y Maven); las sugeridas; el commit que toca la declaración encola la capa | `089d6e5`…`8aa2097`, `a7a352f`, `42fe14b`, `8a00ec6`, `de95074` |
+| — | la sesión automática de TypeScript; el Run log de Test | `b82ee0e`, `91f4293` |
+| **P0–P1** | medido: Python 3.14 sin coste; `puesto-python` en 3.14 con pytest, el intérprete en el nombre de la capa | `daea844` |
+| P2 | Python declara como Node: el grupo `dev` y `pylock.toml`; `capa-python:1` con uv; `52-la-capa` en tres contenedores con dos cajas | `5f38282`, `1222307`, `8df8039`, `25d4a1f` |
+| P3 | el SDK con versión; `functions-python` v11, el repositorio entero; Upgrade fusiona | `e99fb5b`, `251f8b4`, `ed4cebd`, `0b141b7` |
+| P4 | Test y comprobar en Python: el repositorio en disco, pytest y pyright; la plantilla v12 | `f3f3e37`, `092019e` |
+| P5 | «Libraries changed» y el reinicio solo; la sesión automática de Python; las 30 sugeridas; Add a `pyproject.toml`; lo que no se lee, dicho; los avisos en inglés | `73164a0`, `2ae4bb8`, `7df281c`, `9f31d7a` + consola |
 
 ## Las decisiones
 
@@ -291,6 +418,20 @@ ahí:
 | D14 | el parser de TypeScript es oxc, fijado; sin el compilador de TypeScript: la firma es lo escrito | 2026-10-03 |
 | D15 | el contrato de Node lee la firma **derivada** (con su `forma`), porque Node borra los tipos | 2026-10-03 |
 | D16 | la capa de npm: `--ignore-scripts`, rangos con la resolución exacta en el lock, manda el contenedor; el código y la imagen antes que la malla en un inquilino | 2026-10-03 |
+| D17 | **el repositorio es el entorno**: nace entero (declaración, función, pruebas, `.gitignore`, guía) y declara su SDK y sus herramientas a la versión de la sesión, sin costar capa | 2026-10-03 |
+| D18 | el lock se commitea **junto a su declaración**, en el formato estándar de cada mundo (`package-lock.json`, `pylock.toml`), y lo escribe la plataforma | 2026-10-03 |
+| D19 | lo de desarrollo en **su propia caja**: llega a la sesión (pruebas, editor) y nunca a una invocación | 2026-10-03 |
+| D20 | pruebas y tipos **en la sesión**, sobre el repositorio en disco; las pruebas, en un proceso sin la identidad de la sesión | 2026-10-03 |
+| D21 | sin terminal: Libraries (sugeridas medidas, ficha, Add con commit directo) y el commit que toca la declaración, que la instala | 2026-10-04 |
+| D22 | la sesión de un repositorio se conecta sola con un fichero suyo (functions, transforms) | 2026-10-05 |
+| D23 | Python 3.14; el intérprete entra en el nombre de la capa | 2026-10-05 |
+| D24 | Python: el grupo `dev` de PEP 735 y `pylock.toml` de PEP 751; uv 0.12.23 fijado; sólo ruedas | 2026-10-05 |
+| D25 | en Python **lo de la sesión es una restricción**, no un aviso | 2026-10-05 |
+| D26 | quien resuelve una capa (`capa-python`, `capa-node`, `capa-jvm`) no lleva el testigo ni credencial de nube | 2026-10-05 |
+| D27 | el SDK de Python tiene versión (`ore` 1.0.0) y es de la sesión: se declara y nunca se busca en un registro | 2026-10-05 |
+| D28 | Upgrade **fusiona** la declaración: añade lo que falta y no toca lo que hay | 2026-10-05 |
+| D29 | una sesión con una capa vieja se reinicia sola donde no guarda nada de valor (functions, transforms) y pregunta donde sí (analytics, models) | 2026-10-05 |
+| D30 | lo que se declara donde no se lee, se dice; y lo que la consola enseña, en inglés | 2026-10-05 |
 
 ## Lo que se decidió no hacer
 
@@ -307,6 +448,18 @@ ahí:
   el estándar de la industria ya es una marca explícita que se lee sin ejecutar.
 - **Inferir la firma con el compilador de TypeScript:** sería otra respuesta en cada versión del
   compilador y una dependencia enorme; la firma explícita es lo que un consumidor ve.
+- **Una terminal en la sesión** (la tiene el Code Repositories de Foundry): por ahora, lo que una
+  terminal haría aquí —instalar, probar, comprobar tipos— tiene su camino propio, declarado y con su
+  commit. Sigue propuesta.
+- **Instalar en caliente** en una sesión viva: sólo valdría para lo que aún no se importó, y fallaría
+  en silencio al cambiar la versión de algo ya cargado. Se reinicia: unos segundos.
+- **En Python, ganar la sesión con un aviso** (como en Node): un aviso que nadie lee acaba en un
+  intérprete que muere.
+- **`uv.lock` en el repositorio:** es de uv; `pylock.toml` es el estándar que cualquier herramienta lee.
+- **Un entorno por repositorio y no por rama:** cambiar una librería en una rama cambiaría `main` sin
+  propuesta, y el lock dejaría de corresponder al código.
+- **Sugerir lo que no funciona en el puesto:** xgboost (380 MB de CUDA sin GPU), email-validator
+  (DNS, sin red), y en Node lo que baja binarios o modelos al instalarse.
 
 ## Lo que sigue
 
@@ -322,6 +475,10 @@ ahí:
 | **R2** | residente —o *isolates* para lo puro—, cuando la latencia medida lo pida |
 | **R4** | aplicaciones externas con su cliente (0048) |
 | **la red** | `salida-al-modelo-de-una-funcion` llega a cada inquilino al converger su malla |
+| **Libraries** | *Change version* y *Remove* desde la ficha (hoy, a mano en el fichero) |
+| **la capa** | una rama nueva sin el informe de la capa de `main` repite el Job aunque la caja ya esté (el informe se busca en el árbol, no en el bucket) |
+| **el relevo** | un `503` del proxy de la malla durante el relevo `Recreate` de `ore-serve`: la consola debería reintentar |
+| **Java** | el entorno de un repositorio de Java por la misma regla: su SDK no es un paquete de Maven (un nombre reservado, como `ore` en Python), sus sugeridas, sus pruebas y la sesión automática |
 
 ## Qué se acepta a cambio
 
@@ -333,7 +490,14 @@ ahí:
 - **El aislamiento de una función de código es la red cerrada,** no WASI (0031 W3.8).
 - **En TypeScript, la firma se escribe entera** —la vuelta incluida— y sólo con lo del mismo fichero.
 - **Un paquete de npm que compila código nativo al instalarse no funciona** en la capa
-  (`--ignore-scripts`); el informe lo dice.
+  (`--ignore-scripts`); el informe lo dice. **En Python, uno que sólo publica fuentes, tampoco**
+  (`no-build`).
+- **Las capas de Python se resolvieron otra vez** al pasar a 3.14 (el intérprete está en su nombre):
+  una vez por repositorio, al abrirse.
+- **La sesión trae la última palabra:** pedir otra versión de pandas, numpy o pyarrow es un error en
+  Python; para cambiarlas hay que cambiar la imagen, para todos los repositorios a la vez.
+- **Un reinicio de la sesión** cuando cambian sus librerías: en functions y transforms, solo y en
+  unos segundos; en analytics, se pierde lo que había en sus variables si se acepta.
 
 ## Anexo · Foundry, lo que se tomó y lo que no
 
@@ -348,3 +512,13 @@ decoradores de clase de v1. **Va más lejos:** los tipos del catálogo en la fir
 que no pierde cifras—, la firma en vivo mientras se escribe, el fallo que dice quién no cumplió, y
 las ramas: Foundry TypeScript v2 sólo compila contra main, y aquí una función se escribe, se prueba
 y se invoca en la rama de quien la toca.
+
+**El repositorio** (2026-10-05). Foundry siembra el suyo con su SDK y sus herramientas declarados,
+un lock de miles de líneas —jest, Babel, su generador de código, en `devDependencies`— y una
+terminal. **Se toma:** declarar el SDK y las herramientas, el lock en el repositorio, las pruebas
+junto al código, un panel de librerías. **No se toma:** la terminal (por ahora) y la cadena de
+herramientas en cada lock: aquí el runner, el comprobador de tipos y el SDK viven en la imagen de la
+sesión —Node 24 trae `node:test` y borra los tipos; Python 3.14 trae pytest y pyright—, y el lock
+de un repositorio es sólo lo suyo. **Va más lejos:** las sugeridas medidas contra la sesión, lo de
+la sesión como restricción en Python, Upgrade que fusiona y la sesión que se reinicia sola con sus
+librerías nuevas.

@@ -372,6 +372,9 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     // v1alpha18: la funcion de codigo. El documento promueve un `def` del
     // paquete, y el `def` cumple el documento (ORE 0050).
     crate::promover::comprobar(pkg, &mut d);
+    // v1alpha25: el transform. Como la funcion, se deriva del codigo y se
+    // coteja con el; y su salida y sus entradas resuelven (ORE 0055).
+    crate::transformar::comprobar(pkg, &mut d);
     // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
     // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
     // una operacion —componer renombres— que `flow` y el ejecutor tambien

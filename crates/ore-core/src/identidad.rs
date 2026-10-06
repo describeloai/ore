@@ -42,6 +42,12 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     // identidad → los documentos que la declaran, en el orden de carga
     let mut por_identidad: BTreeMap<String, Vec<&crate::link::Loaded>> = BTreeMap::new();
     for d in &pkg.docs {
+        // v1alpha25: dos `Transform` con el mismo nombre son dos productores de
+        // la misma salida —el nombre ES la salida—, y eso lo dice su código,
+        // `OOS2047`, en los dos (`transformar`).
+        if d.kind == crate::document::Kind::Transform {
+            continue;
+        }
         let Some(qn) = d.qname() else { continue };
         por_identidad
             .entry(format!("{:?}:{qn}", d.kind))

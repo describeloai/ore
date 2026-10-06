@@ -239,6 +239,9 @@ pub struct Def {
     pub rango: Rango,
     pub asincrona: bool,
     pub decorada: bool,
+    /// Lleva `@transform` (OOS v1alpha25 `01` §5.1): lo que el `entrypoint`
+    /// de un `Transform` nombra.
+    pub transformada: bool,
 }
 
 /// Todo lo que un fichero de código dice de sí mismo.
@@ -252,6 +255,10 @@ pub struct Derivacion {
     pub version: Vec<Fallo>,
     pub defs: Vec<Def>,
     pub funciones: Vec<Funcion>,
-    /// Un `@function` que no es función: dentro de una clase o de otro `def`.
+    /// Cada `@transform` del nivel superior (OOS v1alpha25), en orden. Solo
+    /// Python: una función de TypeScript no es un transform.
+    pub transforms: Vec<crate::transform::Transform>,
+    /// Un `@function` o un `@transform` que no está en el nivel superior:
+    /// dentro de una clase o de otro `def`.
     pub avisos: Vec<Fallo>,
 }

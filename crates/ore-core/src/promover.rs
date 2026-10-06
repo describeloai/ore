@@ -534,7 +534,7 @@ pub(crate) fn ficheros_de_codigo(dir: &Path, out: &mut Vec<PathBuf>) {
     ficheros_con(dir, &[".py", ".ts"], out)
 }
 
-fn ficheros_con(dir: &Path, extensiones: &[&str], out: &mut Vec<PathBuf>) {
+pub(crate) fn ficheros_con(dir: &Path, extensiones: &[&str], out: &mut Vec<PathBuf>) {
     let Ok(es) = std::fs::read_dir(dir) else {
         return;
     };
@@ -557,7 +557,7 @@ fn ficheros_con(dir: &Path, extensiones: &[&str], out: &mut Vec<PathBuf>) {
     }
 }
 
-fn pos(l: &Lineas, r: Rango) -> Pos {
+pub(crate) fn pos(l: &Lineas, r: Rango) -> Pos {
     let (line, col) = l.de(r);
     Pos {
         line: line as usize,

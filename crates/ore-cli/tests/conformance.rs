@@ -1620,6 +1620,15 @@ fn borrador_de_v1alpha26() {
 }
 
 #[test]
+fn borrador_de_v1alpha25() {
+    marcador(
+        "v1alpha25",
+        "el transform",
+        "BORRADOR · OOS v1alpha25 · el transform",
+    );
+}
+
+#[test]
 fn borrador_de_v1alpha24() {
     marcador(
         "v1alpha24",

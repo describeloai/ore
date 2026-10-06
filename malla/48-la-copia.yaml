@@ -186,6 +186,17 @@ spec:
             - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # ⭐ 0053 F8·3: lo que lee de un origen (las tablas de una copia desde
+            #   el origen, el testigo) lo pide a la pasarela, en la cola del
+            #   origen; ningún conector se lanza aquí para eso.
+            - { name: ORE_PASARELA, value: "ore-federation:8099" }
+            # ⭐ 0053 F7·2/F8·3: `preparar` LEE EL ORIGEN (las tablas de una copia
+            #   desde el origen), así que pide sus credenciales al custodio, como
+            #   `copiar`: el agente, el emisor y la organización.
+            - { name: ORGANIZACION, value: "demo" }
+            - { name: EMISOR, value: "https://login.paladio.io" }
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: "rubix" }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
@@ -205,6 +216,34 @@ spec:
               #   ello (`VISTAS`, que `ore-serve` calculó). Lo demás lo sirve `main`.
               if [ -n "$RAMA" ]; then
                 ore overlay . --main origin/main
+              fi
+              # ── ⭐ 0053 F7·2 · LAS CREDENCIALES DE LO QUE SE LEE DEL ORIGEN ──
+              #   Medido en victor el 2026-10-06: «`VICTOR_S3_DEMO_URL` no está
+              #   definida», 2 de 2 sin preparar. Sólo `copiar` las pedía. Las
+              #   fuentes: las de las líneas `raíz` de `ore view` (una copia desde
+              #   el origen dice todas, `raíz a,b`); `lago` no pide nada. Sin
+              #   credencial no se para: esa copia falla y su informe lo dice.
+              ore view . > /trabajo/vista-p.txt 2>&1 || true
+              FUENTES=$(awk '/^  ra/{s=$0;sub(/^  [^ ]+ +/,"",s);sub(/ .*/,"",s);print s}' /trabajo/vista-p.txt | tr ',' ' ' | xargs -n1 | grep -v '^lago$' | sort -u | paste -sd, -)
+              if [ -n "$FUENTES" ]; then
+                echo "### fuentes que lee el origen: $FUENTES"
+                DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])')
+                [ "$DICE" = "$EMISOR/realms/$REALM" ] || { echo "✗ en $DIRECCION contesta \`$DICE\` y esperabamos \`$EMISOR/realms/$REALM\`. No se toca nada."; exit 1; }
+                CLIENTE=$(cat /puesto/agente-cliente); SECRETO=$(cat /puesto/agente-secreto)
+                TOK=$(curl -sSf -X POST "$DIRECCION/realms/$REALM/protocol/openid-connect/token"                   -d grant_type=client_credentials -d "client_id=$CLIENTE"                   -d "client_secret=$SECRETO" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+                for F in $(echo "$FUENTES" | tr ',' ' '); do
+                  VAR=$(awk -v n="$F" '/^datasources:/{d=1;next} d&&/^[^ ]/{exit} d{if(match($0,/name: *[A-Za-z0-9_]+/)){s=substr($0,RSTART,RLENGTH);sub(/name: */,"",s);c=s} if(match($0,/connectionEnv: *[A-Za-z0-9_]+/)&&c==n){v=substr($0,RSTART,RLENGTH);sub(/connectionEnv: */,"",v);print v;exit}}' ontology.config.yaml)
+                  [ -n "$VAR" ] || { echo "  ⚠️ el manifiesto no dice el \`connectionEnv\` de \`$F\`"; continue; }
+                  C=$(curl -s -o /trabajo/s.json -w '%{http_code}'                     -H "authorization: Bearer $TOK"                     "http://ore-cofre.t-demo.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$F")
+                  if [ "$C" != "200" ]; then
+                    echo "  ⚠️ el custodio contesto $C para \`fuente-$F\`"
+                    rm -f /trabajo/s.json
+                    continue
+                  fi
+                  export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
+                  rm -f /trabajo/s.json
+                  echo "  ✓ credencial de \`$F\` puesta en \`$VAR\` — y no toca el disco"
+                done
               fi
               if [ -n "$REHACER" ]; then
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
@@ -278,6 +317,9 @@ spec:
             - { name: ORE_STORE, value: "gcs" }
             # Cuánta historia conserva `--recoger` (segundos): siete días.
             - { name: ORE_RECOGER_EDAD, value: "604800" }
+            # ⭐ 0053 F8·3: la copia de siempre (un Dataset de una Table) y el
+            #   testigo leen por la pasarela, en la cola del origen.
+            - { name: ORE_PASARELA, value: "ore-federation:8099" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # El lago del inquilino como fuente (donde viven los datasets, 0033):
             # la raíz de su bucket. No es un secreto.
@@ -335,8 +377,12 @@ spec:
               for QV in $(echo "$VISTAS" | tr ',' ' '); do
                 F=$(awk -v n="$QV" '$0==n{m=1;next} m&&/^  ra/{s=$0;sub(/^  [^ ]+ +/,"",s);sub(/ .*/,"",s);print s;exit}' /trabajo/vista.txt)
                 [ -n "$F" ] || { echo "✗ \`$QV\` no dice su raíz en \`ore view\`"; exit 1; }
-                [ "$F" = lago ] && continue
-                case ",$FUENTES," in *",$F,"*) ;; *) FUENTES="${FUENTES:+$FUENTES,}$F" ;; esac
+                # `raíz a,b` (0053 F7·2: una copia desde el origen lee varias):
+                #   cada fuente, una vez.
+                for G in $(echo "$F" | tr ',' ' '); do
+                  [ "$G" = lago ] && continue
+                  case ",$FUENTES," in *",$G,"*) ;; *) FUENTES="${FUENTES:+$FUENTES,}$G" ;; esac
+                done
               done
               echo "### fuentes que hay que abrir: $FUENTES"
               DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])')

@@ -50,6 +50,25 @@ class LaSemilla(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("5 passed", r.stdout)
 
+    def test_la_de_transforms_nace_en_verde(self):
+        """0055 T1·5: el repositorio de transforms sembrado pasa sus pruebas sin
+        escribir nada: importar el ejemplo decora, no corre el transform."""
+        def sembrada(nombre):
+            return (_cruda(nombre).replace("{{base}}", "sandbox")
+                    .replace("{{ejemplo}}", "ventas_billing_example"))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "transforms"))
+            for rel, texto in [("transforms/example.py", sembrada("TRANSFORMS_PY")),
+                               ("transforms/test_example.py", sembrada("TEST_TRANSFORMS_PY")),
+                               ("pyproject.toml", sembrada("PYPROJECT_TRANSFORMS_PY"))]:
+                with io.open(os.path.join(d, rel), "w", encoding="utf-8") as f:
+                    f.write(texto)
+            entorno = dict(os.environ, PYTHONPATH=os.path.join(RAIZ, "puesto", "python"), PYTHONDONTWRITEBYTECODE="1")
+            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", d],
+                               cwd=d, env=entorno, capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("2 passed", r.stdout)
+
     def test_run_imprime_el_estado_de_la_factura(self):
         salida = io.StringIO()
         with contextlib.redirect_stdout(salida):

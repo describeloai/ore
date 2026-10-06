@@ -79,37 +79,131 @@ pub struct Clase {
     pub guia: Option<&'static str>,
 }
 
-/// El ejemplo de `transforms-python`: **código, no un comentario**. Corre tal
-/// cual en cuanto las dos referencias apuntan a algo (como el
-/// `SOURCE_DATASET_PATH` de Foundry), y es el mismo transform que la prueba de
-/// fuego ejercita contra agentes de verdad (`el-puesto.sh` 10 y 11).
-const TRANSFORMS_PY: &str = "\
-# A transform DECLARES what it reads and what it writes, and the server
-# enforces it (ADR 0031 · W3.7): while it runs, the session only resolves its
-# `inputs` and only writes its `output`. Anything else is a PermissionError.
+/// El ejemplo de `transforms-python` (0055 T1·5, v7): **un transform que nace
+/// en verde**. Sin entradas —no lee nada que el árbol no tenga— y escribe un
+/// dataset de la base de ejemplos ([`BASE_DE_EJEMPLOS`]) con un nombre único
+/// en el inquilino (`{{ejemplo}}`, de su paquete y su carpeta): dos
+/// repositorios no producen la misma salida (`OOS2047`). Su documento
+/// `Transform` lo escribe el commit que lo crea, en `pipeline/` (T1·4). Sin
+/// llamada en el nivel del módulo: la prueba importa `make_rows` sin escribir,
+/// y Build/Preview llaman a la función.
+const TRANSFORMS_PY: &str = r##"# A TRANSFORM: code that writes one dataset, `{{base}}.default.{{ejemplo}}` (ORE 0055).
 #
-# The session already provides `transform`, `over` and `write`; the import
-# changes nothing at run time, it lets your editor know them (ADR 0037 ③a).
+# `@transform` declares what it reads (`inputs`) and what it writes (`output`),
+# and the platform enforces it: while it runs, it only reads its inputs and only
+# writes its output. On commit, ore writes its document in `pipeline/`; edit the
+# code, not that document.
 #
-# Names have three parts, `database.schema.name` (ADR 0038): in the `default`
-# schema, `database.name` is enough. Replace both references with yours and
-# click Run.
+#   · Build or Preview: call the function and write (or show) its output.
+#   · Add an input: name it in `inputs`, `inputs=["my_db.my_schema.my_dataset"]`,
+#     import `over` from `ore` and read it with the same name.
+#   · Test the logic without writing: keep it in plain functions, like
+#     `make_rows`, and test them with pytest (`test_example.py`).
+#
+# Names have three parts, `database.schema.name` (ADR 0038).
+import pyarrow as pa
 
+from ore import transform, write
+
+
+def make_rows() -> pa.Table:
+    """The rows this transform writes: a small table, built in plain Python."""
+    return pa.table({"country": ["ES", "FR", "PT"], "n": [3, 2, 1]})
+
+
+@transform(inputs=[], output="{{base}}.default.{{ejemplo}}")
+def example():
+    """An example dataset: a few countries and a count."""
+    return write("{{base}}.default.{{ejemplo}}", make_rows())
+"##;
+
+/// El `pyproject.toml` de `transforms-python` (v7), como el de
+/// `functions-python`: el SDK y pytest a la versión exacta que trae la sesión,
+/// que no piden capa.
+const PYPROJECT_TRANSFORMS_PY: &str = r##"# What the transforms of this repository use (ORE 0055). It is this repository's
+# own: it resolves into its own layer, which its neighbours don't load.
+#
+#   [project].dependencies    what your transforms run with, as PEP 508
+#                             ("polars>=1.30", "requests"); `ore` is the SDK
+#   [dependency-groups].dev   what you only need to test (pytest, hypothesis)
+#
+# Both already declare what the session brings, at its exact versions: they
+# install nothing. Add a package and commit: the platform resolves it and
+# writes pylock.toml next to this file (don't edit that one).
+
+[project]
+name = "{{carpeta}}"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+  "ore==1.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+]
+"##;
+
+/// Sus pruebas (v7): pytest sobre `make_rows`, sin escribir nada. Importar el
+/// ejemplo no corre el transform —decorar no escribe—, y pytest pone
+/// `transforms/` en el `sys.path`. Nace en verde
+/// (`puesto/python/pruebas/test_semilla.py`).
+const TEST_TRANSFORMS_PY: &str = r##"# Tests for the transform's logic, with pytest (the session brings it). They
+# call plain functions and never write: `example()` is what Build runs.
+from example import make_rows
+
+
+def test_the_example_has_one_row_per_country():
+    rows = make_rows()
+    assert rows.column_names == ["country", "n"]
+    assert rows.column("country").to_pylist() == ["ES", "FR", "PT"]
+
+
+def test_the_counts_add_up():
+    assert sum(make_rows().column("n").to_pylist()) == 6
+"##;
+
+/// La guía de `transforms-python` (v7): la prosa de su manifiesto, como
+/// `GUIA_PY`, y corta.
+const GUIA_TRANSFORMS_PY: &str = r##"# Python transforms
+
+A transform is code that writes one dataset. You write a function decorated
+with `@transform`; the platform reads what it declares, writes its document
+on commit, and runs it on Build.
+
+## What is here
+
+```
+transforms/
+  example.py         a transform: writes `{{base}}.default.{{ejemplo}}`
+  test_example.py    its tests, with pytest (they never write)
+pipeline/            the document of each transform (written by the platform)
+pyproject.toml       the packages your transforms use
+```
+
+## A transform
+
+```python
 from ore import transform, over, write
 
-INPUT = \"my_db.my_schema.my_dataset\"
-OUTPUT = \"my_db.my_schema.my_summary\"
 
+@transform(inputs=["my_db.my_schema.orders"], output="my_db.my_schema.totals")
+def totals():
+    """Order totals per country."""
+    orders = over("my_db.my_schema.orders", format="arrow")
+    return write("my_db.my_schema.totals", orders)
+```
 
-@transform(inputs=[INPUT], output=OUTPUT)
-def summarize():
-    table = over(INPUT, format=\"arrow\")
-    return write(OUTPUT, table)
+- `inputs` and `output` are read without running the file: write them as
+  strings, as module constants bound once, or as `ore.collection("…")`.
+- It may only read its `inputs` and only write its `output`.
+- One dataset, one producer: two transforms cannot write the same output.
+- Keep the logic in plain functions and test them with pytest; the transform
+  only reads, calls them and writes.
 
-
-written = summarize()
-print(\"rows\", written[\"rows\"])
-";
+The example writes to `{{base}}`, a standard database for examples. Point
+`output` at your own database when you are ready."##;
 
 /// El `pyproject.toml` de una instancia de Python: **el sitio donde declarar**.
 ///
@@ -225,28 +319,25 @@ public class Example {
 /// El transform escrito en SQL: **un `.sql` de verdad** (0038 P7), una sentencia
 /// que escribe.
 ///
-/// ⭐ Antes era un `.py` con la consulta en una cadena, y con motivo: una celda
-///   SQL a secas leía pero no escribía (0036). Desde el SQL del árbol (0037 y
-///   6d451da) un `.sql` es la unidad —en la sesión y como trabajo—, y el que
-///   escribe es UNA sentencia `create or replace dataset … as select …`: lo que
-///   lee y lo que escribe lo dice la propia sentencia (`ore sql`), sin
-///   `@transform` que lo repita. Medido en `medida-la-semilla-sql.sh`.
-const TRANSFORMS_SQL: &str = "\
--- A transform written in SQL: ONE statement that writes. The statement itself
--- says what it reads and what it writes, and the server enforces it.
+/// La semilla de `transforms-sql` (0055 T1·5, v7): una sentencia que escribe,
+/// SIN entradas —un `VALUES`— para que el repositorio nazca en verde, sobre la
+/// base de ejemplos y con el mismo nombre único que el de Python. Su
+/// `Transform` (`<ruta>.sql:1`) lo escribe el commit que lo crea.
+const TRANSFORMS_SQL: &str = r##"-- A transform written in SQL: each statement that writes is one (ORE 0055).
+-- The statement says what it reads and what it writes, and the platform
+-- enforces it. On commit, ore writes its document in `pipeline/`.
 --
--- What gets written is a dataset: `CREATE OR REPLACE DATASET … AS SELECT`
--- overwrites; `INSERT INTO … SELECT` appends; `INSERT OR REPLACE INTO … SELECT`
--- upserts. A plain `SELECT` reads and writes nothing.
---
--- Names have three parts, `database.schema.name` (ADR 0038): in the `default`
--- schema, `database.name` is enough. Replace both with yours and click Run.
+-- `CREATE OR REPLACE DATASET … AS SELECT` overwrites; `INSERT INTO … SELECT`
+-- appends; `INSERT OR REPLACE INTO … SELECT` upserts. A plain `SELECT` reads
+-- and writes nothing. Read your data by naming it in the query, in three
+-- parts: `FROM my_db.my_schema.my_dataset`.
 
-CREATE OR REPLACE DATASET my_db.my_schema.my_summary AS
-SELECT country, count(*) AS n
-FROM my_db.my_schema.my_dataset
-GROUP BY country
-";
+CREATE OR REPLACE DATASET {{base}}.default.{{ejemplo}} AS
+SELECT *
+FROM (VALUES ('ES', 3),
+             ('FR', 2),
+             ('PT', 1)) AS t(country, n)
+"##;
 
 const ANALYTICS_PY: &str = "\
 # An analysis READS and declares nothing. Its class enforces that: an
@@ -905,7 +996,16 @@ no `enum` (use a union of strings, `"paid" | "overdue"`), no `namespace`, no
 parameter properties in constructors. `tsconfig.json` enforces the same rule in
 the editor. Imports name the file as it is: `import x from "./helpers.ts"`."##;
 
-/// Rellena los huecos de una semilla: `{{paquete}}` (el `namespace` de lo que
+/// **La base de ejemplos** (0055 T1·5): una standard database del inquilino,
+/// de nombre fijo, donde escriben los transforms que siembran las plantillas.
+/// No es el paquete del proyecto —un repositorio de código no escribe datos en
+/// el sitio de su código—, y no la había: ore-serve la crea vacía al crear un
+/// repositorio que la nombra, si no existe (`repositorios::asegurar_base`).
+pub const BASE_DE_EJEMPLOS: &str = "sandbox";
+
+/// Rellena los huecos de una semilla: `{{base}}` ([`BASE_DE_EJEMPLOS`]),
+/// `{{ejemplo}}` (un nombre de dataset único en el inquilino, de paquete y
+/// carpeta), `{{paquete}}` (el `namespace` de lo que
 /// declare), `{{carpeta}}` (dónde vive el repositorio, para su `entrypoint`),
 /// `{{funcion}}` (un nombre de función **único en el paquete**, sacado de la
 /// carpeta: dos repositorios en el mismo paquete no siembran el mismo) y
@@ -935,7 +1035,16 @@ pub fn sembrar(contenido: &str, paquete: &str, carpeta: &str) -> String {
             }
         }
     }
+    // 0055 T1·5: el dataset de ejemplo de un transform, único en el
+    // inquilino —su paquete y su carpeta— porque la base de ejemplos es una.
+    let ejemplo: String = format!("{paquete}_{f}_example")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .to_ascii_lowercase();
     contenido
+        .replace("{{base}}", BASE_DE_EJEMPLOS)
+        .replace("{{ejemplo}}", &ejemplo)
         .replace("{{paquete}}", paquete)
         .replace("{{carpeta}}", carpeta)
         .replace("{{funcionTs}}", &format!("{ts}InvoiceStatus"))
@@ -952,7 +1061,7 @@ pub const CLASES: &[Clase] = &[
         escribe: true,
         ejecuta: true,
         perfil: None,
-        guia: None,
+        guia: Some(GUIA_TRANSFORMS_PY),
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets using Python.",
         // 2 porque la plantilla CAMBIÓ (⑧a): lo escrito con la de antes —un
@@ -961,10 +1070,17 @@ pub const CLASES: &[Clase] = &[
         // 4: la semilla nombra en tres partes (0038 P7).
         // 6: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
         // Actualizar deja lo de antes (`transforms/ejemplo.py`): es de quien lo tenga.
-        version: 6,
+        // 7: nace en verde (0055 T1·5): un transform sin entradas que escribe en
+        //    la base de ejemplos, con su `Transform` escrito por el commit; sus
+        //    pruebas (pytest, sin escribir), `.gitignore`, el `pyproject.toml`
+        //    con el SDK y pytest de la sesión, y la guía en la prosa del
+        //    manifiesto. Sin llamada en el nivel del módulo.
+        version: 7,
         semilla: &[
-            ("pyproject.toml", PYPROJECT_PY),
+            ("pyproject.toml", PYPROJECT_TRANSFORMS_PY),
+            (".gitignore", GITIGNORE_PY),
             ("transforms/example.py", TRANSFORMS_PY),
+            ("transforms/test_example.py", TEST_TRANSFORMS_PY),
         ],
     },
     Clase {
@@ -1008,7 +1124,9 @@ pub const CLASES: &[Clase] = &[
         // Table es un puntero a un objeto de un origen y no se crea desde SQL.
         // 6: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
         // Actualizar deja lo de antes (`transforms/ejemplo.sql`): es de quien lo tenga.
-        version: 6,
+        // 7: nace en verde (0055 T1·5): sin entradas (`VALUES`), en la base de
+        //    ejemplos, con su `Transform` escrito por el commit que lo crea.
+        version: 7,
         semilla: &[("transforms/example.sql", TRANSFORMS_SQL)],
     },
     Clase {
@@ -1488,7 +1606,27 @@ spec:
             }
         }
         assert!(crate::sdk::nombres_de_antes_en(&guia).is_empty());
-        assert!(CLASES.iter().filter(|c| c.guia.is_some()).count() == 2);
+        // functions-python, functions-typescript y, desde 0055 T1·5,
+        // transforms-python.
+        assert!(CLASES.iter().filter(|c| c.guia.is_some()).count() == 3);
+    }
+
+    #[test]
+    fn la_guia_de_transforms_nombra_lo_que_siembra() {
+        let c = de("transforms-python").unwrap();
+        let guia = sembrar(c.guia.unwrap(), "ventas", "etl");
+        assert!(!guia.contains("{{"), "{guia}");
+        assert!(
+            guia.contains("sandbox.default.ventas_etl_example"),
+            "{guia}"
+        );
+        for (ruta, _) in c.semilla {
+            let f = ruta.rsplit('/').next().unwrap();
+            if f != ".gitignore" {
+                assert!(guia.contains(f), "la guía no nombra `{f}`");
+            }
+        }
+        assert!(crate::sdk::nombres_de_antes_en(&guia).is_empty());
     }
 
     #[test]
@@ -1565,6 +1703,99 @@ spec:
         }
         // Una carpeta que empieza por número sigue dando un nombre válido.
         assert!(sembrar("{{funcion}}", "p", "a/2024").starts_with("f_2024"));
+    }
+
+    /// 0055 T1·5: un repositorio de transforms nace en verde. Su semilla da un
+    /// transform sin entradas que escribe en la base de ejemplos, con un nombre
+    /// único por paquete y carpeta; el commit que lo crea escribe su
+    /// `Transform`, y el árbol valida sin un diagnóstico.
+    #[test]
+    fn la_semilla_de_transforms_nace_en_verde() {
+        for (id, entrypoint) in [
+            ("transforms-python", "etl/transforms/example.py:example"),
+            ("transforms-sql", "etl/transforms/example.sql:1"),
+        ] {
+            let c = de(id).unwrap();
+            let raiz =
+                std::env::temp_dir().join(format!("ore-semilla-{id}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&raiz);
+            let pkg = raiz.join("packages").join("ventas");
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(
+                raiz.join("ontology.config.yaml"),
+                "apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: t, version: 0.1.0 }
+",
+            )
+            .unwrap();
+            std::fs::write(
+                pkg.join("package.yaml"),
+                "apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: ventas, version: 0.1.0, status: draft, domain: ventas }
+spec: { owner: \"team:x\" }
+",
+            )
+            .unwrap();
+            for carpeta in ["etl", "otra"] {
+                for (rel, contenido) in c.semilla {
+                    let f = pkg.join(carpeta).join(sembrar(rel, "ventas", carpeta));
+                    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                    std::fs::write(f, sembrar(contenido, "ventas", carpeta)).unwrap();
+                }
+            }
+            let (p, _) = crate::validate::cargar_paquete(&raiz);
+            let plan = crate::generar::plan_de_transforms(&p, None, Some("user:ana"));
+            assert!(
+                plan.diagnosticos.is_empty(),
+                "{id}: {:?}",
+                plan.diagnosticos
+            );
+            assert_eq!(plan.cambios.len(), 2, "{id}: uno por repositorio");
+            crate::generar::aplicar(&plan).unwrap();
+            let doc =
+                std::fs::read_to_string(pkg.join("etl/pipeline/sandbox.ventas_etl_example.yaml"))
+                    .unwrap();
+            assert!(
+                doc.contains(&format!(
+                    "  entrypoint: {entrypoint}
+"
+                )),
+                "{doc}"
+            );
+            assert!(
+                doc.contains(
+                    "  inputs: []
+"
+                ),
+                "{id}: {doc}"
+            );
+            assert!(
+                doc.contains(
+                    "  output: sandbox.ventas_etl_example
+"
+                ),
+                "{doc}"
+            );
+            assert!(
+                pkg.join("otra/pipeline/sandbox.ventas_otra_example.yaml")
+                    .exists()
+            );
+            let d = crate::validate::validate_package(&raiz);
+            assert!(
+                d.is_empty(),
+                "{id}: {:?}",
+                d.iter()
+                    .map(|x| format!("{} {}", x.code.as_str(), x.message))
+                    .collect::<Vec<_>>()
+            );
+            let _ = std::fs::remove_dir_all(&raiz);
+        }
+        assert_eq!(
+            sembrar("{{base}}.default.{{ejemplo}}", "test-project", "a/2024"),
+            "sandbox.default.test_project_f_2024_example"
+        );
     }
 
     #[test]
