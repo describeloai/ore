@@ -653,7 +653,9 @@ ANTES=$(cabeza)
 #   Python), y una prueba que persiga el numero se pone roja por decir la
 #   verdad. Lo que importa es que el repositorio nace con LA DE HOY.
 cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==$VER and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja «transforms» resuelve a «transforms-python»), su version y el proyecto"
-cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/transforms/example.py']" "22 · la semilla es un ARBOL de ficheros: su entorno y su ejemplo (0036 viii.a)"
+# 0055 T1·5: v7 nace con su prueba, su .gitignore, el `Transform` del ejemplo
+#   (en `pipeline/`) y la base de ejemplos `sandbox`, en el mismo commit.
+cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/.gitignore','packages/hr/raw/transforms/example.py','packages/hr/raw/transforms/test_example.py','packages/hr/raw/pipeline/sandbox.hr_raw_example.yaml','packages/sandbox/package.yaml']" "22 · la semilla es un ARBOL de ficheros: su entorno, su ejemplo y su Transform (0036 viii.a, 0055 T1·5)"
 [ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "22 · nacer entero costo mas de un commit"
 [ "$(asunto)" = 'crear un repositorio' ] || falla "22 · el asunto: $(asunto)"
 # el manifiesto, la semilla y el proyecto, en ESE commit

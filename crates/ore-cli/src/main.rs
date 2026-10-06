@@ -914,6 +914,11 @@ enum Command {
     /// `@function` se deriva de su `def`, y aquí se escribe.
     #[command(name = "functions", subcommand)]
     Functions(AccionFunciones),
+    /// Los transforms del árbol (ORE 0055): el `Transform` de cada
+    /// `@transform` y de cada sentencia SQL que escribe se deriva del código, y
+    /// aquí se escribe en `<repositorio>/pipeline/`, como lo haría un commit.
+    #[command(name = "transforms", subcommand)]
+    Transforms(AccionFunciones),
     /// Un arbol de antes pasa a despues (0033 §4): `ore migrate v1alpha12 .`
     /// convierte cada `View` con `materialized` en un `Dataset` con su plan,
     /// cada `Table` con `datasource: lago` en un `Dataset` escrito, reapunta
@@ -1168,7 +1173,15 @@ fn main() -> std::process::ExitCode {
             json,
             solo,
         }) => {
-            return funciones::generar(path, *check, *json, solo);
+            return funciones::generar(path, *check, *json, solo, false);
+        }
+        Command::Transforms(AccionFunciones::Generate {
+            path,
+            check,
+            json,
+            solo,
+        }) => {
+            return funciones::generar(path, *check, *json, solo, true);
         }
         Command::Report { path } => return informar(path),
         Command::View { path } => return vista::ver(path),
@@ -1706,6 +1719,7 @@ fn main() -> std::process::ExitCode {
         | Command::Collections { .. }
         | Command::Migrate { .. }
         | Command::Functions(_)
+        | Command::Transforms(_)
         | Command::Assets { .. }
         | Command::Sql { .. }
         | Command::Ask { .. }

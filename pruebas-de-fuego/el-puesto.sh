@@ -1020,6 +1020,9 @@ PY
     head -1 "$A/packages/hr/functions/$f.yaml" 2>/dev/null | grep -q "^# generado por ore desde riesgo/funciones/" || falla "18 · el documento de $f no lo generó ore: $(ls "$A/packages/hr/functions" 2>&1)"
   done
   ( cd "$A" && "$ORE" functions generate --check . >/dev/null 2>&1 ) || falla "18 · generar dos veces cambió algo"
+  # 0055 T1·4: el `.sql` que escribe de 11b (escrito a mano en el árbol, no
+  # por un commit) tiene su `Transform` como lo tendría al commitearse.
+  ( cd "$A" && "$ORE" transforms generate . >/dev/null 2>&1 ) || falla "18 · ore transforms generate: $(cd "$A" && "$ORE" transforms generate . 2>&1 | tail -5)"
   ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "18 · el árbol con las funciones no compila: $(cd "$A" && "$ORE" validate . 2>&1 | head -5)"
 
   # se ve donde vive (M1), con su runtime

@@ -1,5 +1,7 @@
 //! `ore functions generate` (ORE 0050 G1d): el `Function` de cada `@function`
-//! del árbol, escrito desde el código.
+//! del árbol, escrito desde el código. Y `ore transforms generate` (ORE 0055
+//! T1·4), el `Transform` de cada `@transform` y de cada sentencia SQL que
+//! escribe, en `<repositorio>/pipeline/`: el mismo plan que hace un commit.
 //!
 //! El plan es de `ore_core::generar`, que no escribe; esto lo enseña y, sin
 //! `--check`, lo aplica. Hermético como `validate`: lee ficheros y escribe
@@ -15,7 +17,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-pub fn generar(raiz: &Path, comprobar: bool, json: bool, solo: &[PathBuf]) -> ExitCode {
+pub fn generar(
+    raiz: &Path,
+    comprobar: bool,
+    json: bool,
+    solo: &[PathBuf],
+    transforms: bool,
+) -> ExitCode {
     if !raiz.is_dir() {
         eprintln!("error: `{}` no es un árbol", raiz.display());
         return ExitCode::from(66); // EX_NOINPUT
@@ -33,7 +41,12 @@ pub fn generar(raiz: &Path, comprobar: bool, json: bool, solo: &[PathBuf]) -> Ex
             }
         })
         .collect();
-    let plan = ore_core::generar::plan_de(&pkg, (!solo.is_empty()).then_some(&solo));
+    let solo = (!solo.is_empty()).then_some(&solo);
+    let plan = if transforms {
+        ore_core::generar::plan_de_transforms(&pkg, solo, None)
+    } else {
+        ore_core::generar::plan_de(&pkg, solo)
+    };
     if !comprobar && let Err(e) = ore_core::generar::aplicar(&plan) {
         eprintln!("error: no se pudo escribir: {e}");
         return ExitCode::from(73); // EX_CANTCREAT
@@ -89,10 +102,10 @@ fn contar(plan: &Plan, raiz: &Path, comprobar: bool) {
     }
     let n = plan.cambios.len();
     let resumen = match (comprobar, n) {
-        (_, 0) => format!("al día · {} funciones", plan.al_dia),
-        (true, _) => format!(
-            "{n} documentos no son los que el código da · `ore functions generate` los pone al día"
-        ),
+        (_, 0) => format!("al día · {} documentos", plan.al_dia),
+        (true, _) => {
+            format!("{n} documentos no son los que el código da · `generate` los pone al día")
+        }
         (false, _) => format!(
             "{n} documentos escritos · {} ya estaban al día",
             plan.al_dia
