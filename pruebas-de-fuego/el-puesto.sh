@@ -1017,7 +1017,8 @@ def curiosa(que: str) -> Vio:
 PY
   ( cd "$A" && "$ORE" functions generate . >/dev/null 2>&1 ) || falla "18 · ore functions generate: $(cd "$A" && "$ORE" functions generate . 2>&1 | tail -5)"
   for f in marcar lenta curiosa eco; do
-    head -1 "$A/packages/hr/functions/$f.yaml" 2>/dev/null | grep -q "^# generado por ore desde riesgo/funciones/" || falla "18 · el documento de $f no lo generó ore: $(ls "$A/packages/hr/functions" 2>&1)"
+    # 0056: la función es propia, `functions/<f>.yaml` de la raíz.
+    head -1 "$A/functions/$f.yaml" 2>/dev/null | grep -q "^# generado por ore desde packages/hr/riesgo/funciones/" || falla "18 · el documento de $f no lo generó ore: $(ls "$A/functions" 2>&1)"
   done
   ( cd "$A" && "$ORE" functions generate --check . >/dev/null 2>&1 ) || falla "18 · generar dos veces cambió algo"
   # 0055 T1·4: el `.sql` que escribe de 11b (escrito a mano en el árbol, no
@@ -1029,14 +1030,14 @@ PY
   [ "$(pide GET /funciones "$ANA")" = "200" ] && tiene "sorted(f['name'] for f in d['functions'] if f['runtime']=='python')==['curiosa','eco','lenta','marcar']" || falla "18 · GET /funciones no ve las del repositorio: $(cuerpo)"
 
   # los parámetros, contra `input`, antes de encolar
-  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{}')" = "422" ] && tiene "'umbral' in d['error']" || falla "18 · sin el obligatorio: $(cuerpo)"
-  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{"parametros":{"umbral":1,"otro":2}}')" = "422" ] && tiene "'otro' in d['error']" || falla "18 · uno que input no declara: $(cuerpo)"
-  [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{"parametros":{"umbral":"uno"}}')" = "422" ] && tiene "'Integer' in d['error']" || falla "18 · uno de otro tipo: $(cuerpo)"
-  [ "$(pide POST /funciones/hr/marcar/invocar "$AG" '{"parametros":{"umbral":1}}')" = "403" ] || falla "18 · un agente lanzó la función: $(cuerpo)"
+  [ "$(pide POST /funciones/marcar/invocar "$ANA" '{}')" = "422" ] && tiene "'umbral' in d['error']" || falla "18 · sin el obligatorio: $(cuerpo)"
+  [ "$(pide POST /funciones/marcar/invocar "$ANA" '{"parametros":{"umbral":1,"otro":2}}')" = "422" ] && tiene "'otro' in d['error']" || falla "18 · uno que input no declara: $(cuerpo)"
+  [ "$(pide POST /funciones/marcar/invocar "$ANA" '{"parametros":{"umbral":"uno"}}')" = "422" ] && tiene "'Integer' in d['error']" || falla "18 · uno de otro tipo: $(cuerpo)"
+  [ "$(pide POST /funciones/marcar/invocar "$AG" '{"parametros":{"umbral":1}}')" = "403" ] || falla "18 · un agente lanzó la función: $(cuerpo)"
 
   # invocar: un trabajo con el arnés, lo declarado como techo y sin salida al modelo
   [ "$(pide POST /funciones/hr/marcar/invocar "$ANA" '{"parametros":{"umbral":1}}')" = "202" ] || falla "18 · invocar: $(cuerpo)"
-  tiene "d['function']=='hr.marcar' and d['runtime']=='python' and d['id'].startswith('trabajo-ana-') and d['codigo']=='packages/hr/riesgo/funciones/marcar.py'" || falla "18 · la ficha de la invocación: $(cuerpo)"
+  tiene "d['function']=='functions.marcar' and d['runtime']=='python' and d['id'].startswith('trabajo-ana-') and d['codigo']=='packages/hr/riesgo/funciones/marcar.py'" || falla "18 · la ficha de la invocación: $(cuerpo)"
   T18=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
   F18=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fichero"])' "$TMP/r.json")
   C18=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["corrida"])' "$TMP/r.json")
@@ -1047,16 +1048,16 @@ PY
   [ "$CODIGO" = 0 ] || falla "18 · el agente de la función salió con $CODIGO: $(cuerpo)"
   # una fila por llamada; la que falla se dice en `_error` y las demás siguen
   tiene "d['informe']['estado']=='hecho' and [c['name'] for c in d['informe']['salida']['columnas']]==['n','grande','_error'] and d['informe']['salida']['filas'][:2]==[[1,False,None],[2,True,None]] and d['informe']['salida']['filas'][2][:2]==[None,None] and d['informe']['salida']['filas'][2][2].startswith('ValueError: la tres (packages/hr/riesgo/funciones/marcar.py, línea ')" || falla "18 · lo que devolvió: $(cuerpo)"
-  R18J="$A/resultados/hr_marcar_$C18.json"
-  "$PY" -c 'import json,sys; i=json.load(open(sys.argv[1])); assert i["function"]=="hr.marcar" and i["runtime"]=="python" and i["parametros"]=={"umbral":1} and i["estado"]=="hecho" and i["persona"]=="persona:ana", i' "$R18J" || falla "18 · el resultado en resultados/: $(cat "$R18J" 2>/dev/null || ls "$A/resultados")"
-  [ "$(pide GET /funciones/hr/marcar/resultados "$ANA")" = "200" ] && tiene "len(d['resultados'])==1 and d['resultados'][0]['corrida']=='$C18'" || falla "18 · GET …/resultados: $(cuerpo)"
+  R18J="$A/resultados/functions_marcar_$C18.json"
+  "$PY" -c 'import json,sys; i=json.load(open(sys.argv[1])); assert i["function"]=="functions.marcar" and i["runtime"]=="python" and i["parametros"]=={"umbral":1} and i["estado"]=="hecho" and i["persona"]=="persona:ana", i' "$R18J" || falla "18 · el resultado en resultados/: $(cat "$R18J" 2>/dev/null || ls "$A/resultados")"
+  [ "$(pide GET /funciones/marcar/resultados "$ANA")" = "200" ] && tiene "len(d['resultados'])==1 and d['resultados'][0]['corrida']=='$C18'" || falla "18 · GET …/resultados: $(cuerpo)"
 
   # limits.timeout corta (SIGALRM: en Linux, que es donde corre el puesto; en
   # Windows no hay señal, y se dice): el trabajo sale con error y lo dice
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) dice "18 · (en Windows no hay SIGALRM: limits.timeout se prueba en Linux)" ;;
     *)
-      [ "$(pide POST /funciones/hr/lenta/invocar "$ANA" '{"parametros":{"s":5}}')" = "202" ] || falla "18 · invocar la lenta: $(cuerpo)"
+      [ "$(pide POST /funciones/lenta/invocar "$ANA" '{"parametros":{"s":5}}')" = "202" ] || falla "18 · invocar la lenta: $(cuerpo)"
       T18L=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
       ORE_SERVE="$BASE" PUESTO="$T18L" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
         "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/lenta.txt" 2>&1
@@ -1066,25 +1067,25 @@ PY
 
   # lo declarado manda: leer lo que `reads` no dice, o llamar a un modelo sin `models`
   for que in hr.espanoles modelo; do
-    [ "$(pide POST /funciones/hr/curiosa/invocar "$ANA" "{\"parametros\":{\"que\":\"$que\"}}")" = "202" ] || falla "18 · invocar curiosa($que): $(cuerpo)"
+    [ "$(pide POST /funciones/curiosa/invocar "$ANA" "{\"parametros\":{\"que\":\"$que\"}}")" = "202" ] || falla "18 · invocar curiosa($que): $(cuerpo)"
     TC=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
     ORE_SERVE="$BASE" PUESTO="$TC" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
       "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/curiosa.txt" 2>&1
     [ "$(pide GET /trabajos/$TC "$ANA")" = "200" ] && tiene "d['informe']['estado']=='error' and d['informe']['salida']['mensaje'].startswith('PermissionError')" || falla "18 · curiosa($que) no falló con PermissionError: $(cuerpo)"
   done
   # y lo declarado se lee
-  [ "$(pide POST /funciones/hr/curiosa/invocar "$ANA" '{"parametros":{"que":"hr.numeros_v"}}')" = "202" ] || falla "18 · invocar curiosa(hr.numeros_v): $(cuerpo)"
+  [ "$(pide POST /funciones/curiosa/invocar "$ANA" '{"parametros":{"que":"hr.numeros_v"}}')" = "202" ] || falla "18 · invocar curiosa(hr.numeros_v): $(cuerpo)"
   TC=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
   ORE_SERVE="$BASE" PUESTO="$TC" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/curiosa.txt" 2>&1
   [ "$(pide GET /trabajos/$TC "$ANA")" = "200" ] && tiene "d['informe']['salida']['filas']==[['3']]" || falla "18 · curiosa(hr.numeros_v): $(cuerpo)"
   # G3 · los parámetros llegan del tipo que el def anota: un Decimal exacto y una date
-  [ "$(pide POST /funciones/hr/eco/invocar "$ANA" '{"parametros":{"importe":12.50,"fecha":"2026-10-02"}}')" = "202" ] || falla "18 · invocar eco: $(cuerpo)"
+  [ "$(pide POST /funciones/eco/invocar "$ANA" '{"parametros":{"importe":12.50,"fecha":"2026-10-02"}}')" = "202" ] || falla "18 · invocar eco: $(cuerpo)"
   TE=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
   ORE_SERVE="$BASE" PUESTO="$TE" TRABAJO="packages/hr/riesgo/funciones/otras.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/eco.txt" 2>&1
   [ "$(pide GET /trabajos/$TE "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and d['informe']['salida']['filas']==[['Decimal date 12.50 90']]" || falla "18 · eco: no llegaron Decimal y date: $(cuerpo)"
-  dice "18 · la función de código (0050 R1): las tres del repositorio se ven en GET /funciones; los parámetros contra input (falta, sobra, tipo) son 422 y un agente 403; invocar es un trabajo con el arnés y sin salida al modelo; una fila por llamada, la que falla en _error; el informe en trabajos/ y en resultados/hr_marcar_<corrida>.json; limits.timeout corta; leer fuera de reads y modelo() sin models son PermissionError (y sin over, fallan la invocación), y lo declarado se lee; los parámetros llegan del tipo que anotan (Decimal exacto, date) (G3)"
+  dice "18 · la función de código (0050 R1): las tres del repositorio se ven en GET /funciones; los parámetros contra input (falta, sobra, tipo) son 422 y un agente 403; invocar es un trabajo con el arnés y sin salida al modelo; una fila por llamada, la que falla en _error; el informe en trabajos/ y en resultados/functions_marcar_<corrida>.json; el nombre de antes (/funciones/hr/marcar) la sigue encontrando; limits.timeout corta; leer fuera de reads y modelo() sin models son PermissionError (y sin over, fallan la invocación), y lo declarado se lee; los parámetros llegan del tipo que anotan (Decimal exacto, date) (G3)"
 else
   dice "18 · (sin el lago: la función de código no se prueba aquí)"
 fi

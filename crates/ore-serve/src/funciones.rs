@@ -114,6 +114,32 @@ fn funciones_de(raiz: &Path) -> Vec<Funcion> {
     out
 }
 
+/// **La función que una ruta pide** (0056 V2·3): la de ese nombre; y el de
+/// antes de v1alpha26 —`/funciones/<base>/<n>`— sigue llevando a la función
+/// propia que salió de esa base (su `entrypoint` está en `packages/<base>/`),
+/// como en SQL y en `get_function`.
+fn buscar<'a>(
+    funciones: &'a [Funcion],
+    ns: &str,
+    schema: &str,
+    nombre: &str,
+) -> Option<&'a Funcion> {
+    let pedida = ore_core::normalize::corto(ns, schema, nombre);
+    funciones.iter().find(|f| f.qn() == pedida).or_else(|| {
+        let desde = format!("packages/{ns}/");
+        (schema == ore_core::normalize::SCHEMA_POR_DEFECTO
+            && ns != ore_core::funcion_propia::ESPACIO)
+            .then(|| {
+                funciones.iter().find(|f| {
+                    f.ns == ore_core::funcion_propia::ESPACIO
+                        && f.nombre == nombre
+                        && f.texto("entrypoint").is_some_and(|e| e.starts_with(&desde))
+                })
+            })
+            .flatten()
+    })
+}
+
 /// `AAAAMMDDTHHMMSSZ`: lo que va detrás del nombre en el informe de una corrida.
 fn es_corrida(s: &str) -> bool {
     let b = s.as_bytes();
@@ -245,10 +271,10 @@ impl Servidor {
         schema: &str,
         nombre: &str,
     ) -> Respuesta {
-        let qn = ore_core::normalize::corto(ns, schema, nombre);
-        if funciones_de(raiz).iter().all(|f| f.qn() != qn) {
-            return Respuesta::error(404, format!("no hay ninguna función `{qn}`"));
-        }
+        let pedida = ore_core::normalize::corto(ns, schema, nombre);
+        let Some(qn) = buscar(&funciones_de(raiz), ns, schema, nombre).map(Funcion::qn) else {
+            return Respuesta::error(404, format!("no hay ninguna función `{pedida}`"));
+        };
         // 0050 F4: los de `main` y los de cada rama. Una invocación confirma su
         // informe en la rama del puesto de quien la lanzó, no en `main`.
         let lista = match &self.arbol {
@@ -297,7 +323,7 @@ impl Servidor {
         }
         let pedida = ore_core::normalize::corto(ns, schema, nombre);
         let funciones = funciones_de(raiz);
-        let Some(f) = funciones.iter().find(|f| f.qn() == pedida) else {
+        let Some(f) = buscar(&funciones, ns, schema, nombre) else {
             return Respuesta::error(404, format!("no hay ninguna función `{pedida}`"));
         };
         let qn = f.qn();

@@ -159,8 +159,11 @@ class LlamarUnaPublicada(unittest.TestCase):
             self.ore.funcion("ventas.fila")
         with self.assertRaisesRegex(LookupError, "no published function `ventas.nadie`"):
             self.ore.funcion("ventas.nadie")
-        with self.assertRaisesRegex(ValueError, "<database>.<def>"):
+        # 0056: una parte es la función propia, `functions.<def>`; no está.
+        with self.assertRaisesRegex(LookupError, "no published function `sinpunto`"):
             self.ore.funcion("sinpunto")
+        with self.assertRaisesRegex(ValueError, "<def>"):
+            self.ore.funcion("a.b.c.d")
 
 
 class LosTiposDeV1alpha20(unittest.TestCase):

@@ -783,17 +783,20 @@ def riesgo(importe: float, pais: str = "ES") -> str:
     return "alto" if importe > 100 else "bajo"
 PY
 [ "$(pon packages/hr/riesgo/funciones/riesgo.py "$TMP/riesgo.py")" = "201" ] || falla "25 · guardar un @function no dio 201 · $(cat "$TMP/r.json")"
-cumple "d['generados']==[{'ruta':'packages/hr/functions/riesgo.yaml','accion':'crear','entrypoint':'riesgo/funciones/riesgo.py:riesgo'}]" "25 · su documento, generado"
+cumple "d['generados']==[{'ruta':'functions/riesgo.yaml','accion':'crear','entrypoint':'packages/hr/riesgo/funciones/riesgo.py:riesgo'}]" "25 · su documento, generado"
 cumple "not any(x.get('codigo') in ('OOS2013','OOS2043') for x in d['diagnosticos'])" "25 · y el árbol no se queja de él"
-[ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "packages/hr/functions/riesgo.yaml packages/hr/riesgo/funciones/riesgo.py " ] \
+[ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "functions/riesgo.yaml packages/hr/riesgo/funciones/riesgo.py " ] \
   || falla "25 · el código y su documento, en el MISMO commit: $(git --git-dir="$FORJA" show --name-only --format='' main | tr '\n' ' ')"
-git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml | head -1 | grep -q '^# generado por ore desde riesgo/funciones/riesgo.py:riesgo' \
-  || falla "25 · el documento no lleva su procedencia: $(git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml | head -3)"
+git --git-dir="$FORJA" show main:functions/riesgo.yaml | head -1 | grep -q '^# generado por ore desde packages/hr/riesgo/funciones/riesgo.py:riesgo' \
+  || falla "25 · el documento no lleva su procedencia: $(git --git-dir="$FORJA" show main:functions/riesgo.yaml | head -3)"
+git --git-dir="$FORJA" show main:functions/riesgo.yaml | grep -q '^  version: 0.1.0$' || falla "25 · no nace en 0.1.0 (0056)"
 # cambia la firma: el documento se rehace
 sed -i 's/pais: str = "ES"/minimo: int, pais: str = "ES"/' "$TMP/riesgo.py"
 [ "$(pon packages/hr/riesgo/funciones/riesgo.py "$TMP/riesgo.py")" = "200" ] || falla "25 · cambiar la firma · $(cat "$TMP/r.json")"
 cumple "[g['accion'] for g in d['generados']]==['reescribir']" "25 · reescrito"
-git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml | grep -q 'minimo: { type: Integer, required: true }' || falla "25 · el parámetro nuevo no está en el documento"
+git --git-dir="$FORJA" show main:functions/riesgo.yaml | grep -q 'minimo: { type: Integer, required: true }' || falla "25 · el parámetro nuevo no está en el documento"
+# 0056: un obligatorio nuevo rompe a quien llama: mayor, calculado contra main
+git --git-dir="$FORJA" show main:functions/riesgo.yaml | grep -q '^  version: 1.0.0$' || falla "25 · la versión no subió a 1.0.0: $(git --git-dir="$FORJA" show main:functions/riesgo.yaml | grep version)"
 # uno que no se deriva: 422 con el sitio en el .py, y nada escrito
 ANTES=$(cabeza)
 sed -i 's/importe: float/importe/' "$TMP/riesgo.py"
@@ -803,12 +806,12 @@ grep -q 'OOS2043' "$TMP/r.json" && grep -q 'riesgo.py' "$TMP/r.json" || falla "2
 # en seco, el panel de Commit enseña lo que ore generaría
 [ "$(pide POST /arbol/commit '{"seco":true,"ficheros":[{"ruta":"packages/hr/riesgo/funciones/otra.py","texto":"from ore import function\n\n\n@function\ndef otra(x: int) -> int:\n    return x\n"}]}')" = "200" ] \
   || falla "25 · el commit en seco · $(cat "$TMP/r.json")"
-cumple "any(c['ruta']=='packages/hr/functions/otra.yaml' and c['generado'] for c in d['cambios']) and any(c['ruta']=='packages/hr/riesgo/funciones/otra.py' and not c['generado'] for c in d['cambios'])" "25 · en seco: lo generado, marcado como generado"
+cumple "any(c['ruta']=='functions/otra.yaml' and c['generado'] for c in d['cambios']) and any(c['ruta']=='packages/hr/riesgo/funciones/otra.py' and not c['generado'] for c in d['cambios'])" "25 · en seco: lo generado, marcado como generado"
 [ "$(cabeza)" = "$ANTES" ] || falla "25 · el seco hizo commit"
 # retirar el código se lleva su documento
 [ "$(pide DELETE /arbol/packages/hr/riesgo/funciones/riesgo.py)" = "200" ] || falla "25 · retirar el .py · $(cat "$TMP/r.json")"
 cumple "[g['accion'] for g in d['generados']]==['borrar']" "25 · su documento, fuera"
-git --git-dir="$FORJA" show main:packages/hr/functions/riesgo.yaml >/dev/null 2>&1 && falla "25 · el documento de un @function retirado sigue en main"
+git --git-dir="$FORJA" show main:functions/riesgo.yaml >/dev/null 2>&1 && falla "25 · el documento de un @function retirado sigue en main"
 dice "25 · el código es la fuente (0050 G2): guardar un @function escribe su documento en el MISMO commit, con su procedencia · cambiar la firma lo rehace · lo que no se deriva es 422 con OOS2043 en el .py y nada escrito · en seco, lo generado marcado · retirar el código se lleva su documento"
 
 echo
