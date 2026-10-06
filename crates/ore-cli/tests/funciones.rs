@@ -125,11 +125,7 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
 
     // Otra vez: nada que hacer, y `--check` lo confirma.
     let o = ore(&raiz, &["functions", "generate", "."]);
-    assert!(
-        salida(&o).contains("al día · 2"),
-        "{}",
-        salida(&o)
-    );
+    assert!(salida(&o).contains("al día · 2"), "{}", salida(&o));
     assert!(
         ore(&raiz, &["functions", "generate", "--check", "."])
             .status
