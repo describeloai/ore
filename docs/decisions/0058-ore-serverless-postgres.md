@@ -1,7 +1,7 @@
 # 0058 · ORE Serverless Postgres
 
-**Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c·C1–C2 (Neon compilado por
-nosotros, GCS nativo) medidos; siguiente D0c·C3. **Decide:** qué es ORE Serverless Postgres para quien
+**Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c·C1–C3 (Neon compilado por
+nosotros, GCS nativo, compatible con el cómputo publicado) medidos; siguiente D0c·C4. **Decide:** qué es ORE Serverless Postgres para quien
 lo usa, sobre qué se construye, qué es nuestro y qué no, y cómo pasan sus datos al catálogo. Toca
 [`0044`](0044-ramas-globales.md) (las ramas globales: no se mezclan con éstas),
 [`0047`](0047-ore-access-control.md) (quién puede), [`0048`](0048-ore-idp.md) (quién es) y
@@ -195,14 +195,29 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
   `safekeeper/` 15 segmentos de WAL / 240 MB. Las **borradas** esperan al `storage_controller` (no
   desplegado) ⇒ en producción va desplegado. El cómputo publicado (agosto de 2025) arranca y escribe
   contra el pageserver de `main`.
+- **C3** · el cómputo publicado (`vm-compute-node-v17`, agosto de 2025) contra pageserver y safekeepers
+  de `main` (fa504217), por la overlay:
+  - pgbench sin un fallo: TPC-B 1 cliente 8,3 ms / 120 tps; 4 clientes 286 tps; lectura 4 clientes
+    3 580 tps.
+  - **Rama** en el LSN de `main` en **367 ms**; una VM sobre ella ve todo lo anterior al LSN y nada de
+    lo posterior; lo que escribe la rama (una fila, 1 000 borradas) no llega a `main` (2 000 000 intacto).
+    La rama vive en GCS como su propio timeline.
+  - ⚠️ Trampa de la prueba, no de Neon: `psql -c "a; b; select pg_current_wal_flush_lsn()"` es UNA
+    transacción ⇒ el LSN sale de antes del commit y la rama no ve lo recién escrito. El LSN se pide en
+    un comando aparte.
+  - ⚠️ **Coste de leer en una rama, por confirmar:** el primer `count(*)` de 2 M filas en la rama
+    escribió **138 MB de WAL** (288 MB de deltas en GCS, todo de la rama); el segundo, 56 bytes. Encaja
+    con marcar los hint bits con `wal_log_hints=on` (imagen de página completa la primera vez), pero
+    una tabla nueva no lo reprodujo. Importa al precio: una rama que lee mucho por primera vez escribe.
+  - ⇒ **No hace falta compilar el cómputo** por ahora: el de agosto de 2025 vale contra `main`.
 
 ### B.9 · Los pasos
 
 | paso | qué | estado |
 |---|---|---|
-| D0c·C3 | compatibilidad: pgbench de escritura/lectura y una rama con el cómputo publicado | **siguiente** |
-| D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | pendiente |
-| D0c·C5 | cerrar: cómo mantener el fork (commit fijado, cada cuánto, caché en el CI) | pendiente |
+| D0c·C3 | compatibilidad: pgbench de escritura/lectura y una rama con el cómputo publicado | **hecho** (2026-10-06) |
+| D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | **siguiente** |
+| D0c·C5 | cerrar: cómo mantener el fork (commit fijado, cada cuánto, caché en el CI); confirmar el coste de leer en una rama | pendiente |
 | D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | pendiente |
 | P1… | construir: el plano de control (API, ciclo de vida, proxy en la overlay, pool precalentado, `storage_controller`), publicar al catálogo por CDC, nodos grandes | por planificar |
 
