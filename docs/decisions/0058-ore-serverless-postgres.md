@@ -1,4 +1,4 @@
-# 0057 · ORE Serverless Postgres
+# 0058 · ORE Serverless Postgres
 
 **Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c·C1–C2 (Neon compilado por
 nosotros, GCS nativo) medidos; siguiente D0c·C3. **Decide:** qué es ORE Serverless Postgres para quien
