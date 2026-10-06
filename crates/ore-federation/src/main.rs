@@ -25,7 +25,14 @@ fn main() -> ExitCode {
             .cloned()
     };
     let escucha = valor("--escucha").unwrap_or_else(|| "0.0.0.0:8099".into());
+    // 0053 F9·4: en la imagen, los conectores viven fuera del `PATH`, en
+    // `/opt/ore/conectores` (sólo la pasarela los lanza); si no está, junto al
+    // binario, como en el CI y en una máquina.
     let conectores = valor("--conectores").map(PathBuf::from).unwrap_or_else(|| {
+        let imagen = PathBuf::from("/opt/ore/conectores");
+        if imagen.is_dir() {
+            return imagen;
+        }
         std::env::current_exe()
             .ok()
             .and_then(|e| e.parent().map(PathBuf::from))

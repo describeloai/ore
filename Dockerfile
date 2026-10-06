@@ -176,12 +176,18 @@ RUN apk add --no-cache git postgresql-client py3-yaml
 RUN python3 -m pip install --no-cache-dir --break-system-packages pyyaml && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
 
 COPY --from=bin /b/ore                /usr/local/bin/ore
-COPY --from=bin /b/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
-COPY --from=bin /b/ore-read-postgres  /usr/local/bin/ore-read-postgres
-COPY --from=bin /b/ore-read-bigquery  /usr/local/bin/ore-read-bigquery
-COPY --from=bin /b/ore-read-s3        /usr/local/bin/ore-read-s3
-# La pasarela del Federation Engine (0053 F3): junto a los conectores, que
-# lanza como procesos `servir` calientes; los busca en su mismo directorio.
+# ⭐ 0053 F9·4 · UNA VÍA: los conectores FUERA DEL `PATH`. Sólo la pasarela
+#   los encuentra (`/opt/ore/conectores`, su `--conectores` por defecto); un Job
+#   que intente lanzar `ore-read-*` por su cuenta no lo encuentra, aunque se
+#   salte la guarda de `ore` (`lector::una_via`). Lo que mira un origen va por
+#   la pasarela, en la cola del origen, o no va.
+COPY --from=bin /b/ore-read-jsonl     /opt/ore/conectores/ore-read-jsonl
+COPY --from=bin /b/ore-read-postgres  /opt/ore/conectores/ore-read-postgres
+COPY --from=bin /b/ore-read-bigquery  /opt/ore/conectores/ore-read-bigquery
+COPY --from=bin /b/ore-read-s3        /opt/ore/conectores/ore-read-s3
+RUN ! command -v ore-read-postgres && ! command -v ore-read-s3  && test -x /opt/ore/conectores/ore-read-postgres  && echo "una vía: los conectores, fuera del PATH (/opt/ore/conectores)"
+# La pasarela del Federation Engine (0053 F3): lanza los conectores como
+# procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation
 COPY --from=bin /b/ore-fetch          /usr/local/bin/ore-fetch
 COPY --from=bin /b/ore-log            /usr/local/bin/ore-log
