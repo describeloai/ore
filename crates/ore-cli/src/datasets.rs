@@ -444,6 +444,20 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             }
         }
     }
+    // 0055 T1·4: quién lo produce, si un `Transform` del árbol lo escribe
+    // (v1alpha25). Se lee sólo lo que dice `kind: Transform`, no el paquete.
+    if let Some(t) = ore_core::generar::productor_de(path, nombre) {
+        let mut pb = vec![
+            ("transform", Json::s(&t.documento)),
+            ("entrypoint", Json::s(&t.entrypoint)),
+            ("runtime", Json::s(&t.runtime)),
+            ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
+        ];
+        if let Some(r) = &t.repositorio {
+            pb.push(("repositorio", Json::s(r)));
+        }
+        m.insert("producedBy".into(), Json::obj(pb));
+    }
     let j = Json::Obj(m);
     if op.json {
         println!("{}", j.jcs());
