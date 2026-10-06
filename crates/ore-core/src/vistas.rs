@@ -195,11 +195,13 @@ impl Package {
         self.view(&crate::link::cualificar(referencia, desde))
     }
 
-    /// La tabla con este nombre cualificado.
+    /// La tabla con este nombre cualificado. v1alpha27: o la de la fuente
+    /// que una base foránea expone con ese nombre —el mismo documento—.
     pub fn table(&self, qname: &str) -> Option<&Loaded> {
         let qname = crate::normalize::a_corto(qname);
         self.of(Kind::Table)
             .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
+            .or_else(|| crate::foranea::expuesto(self, &qname).filter(|d| d.kind == Kind::Table))
     }
 
     /// Todas las tablas del paquete.
@@ -230,11 +232,15 @@ impl Package {
         self.dataset(&crate::link::cualificar(referencia, desde))
     }
 
-    /// v1alpha16. El `ObjectTable` con este nombre cualificado.
+    /// v1alpha16. El `ObjectTable` con este nombre cualificado (v1alpha27: o
+    /// el que una base foránea expone con él).
     pub fn object_table(&self, qname: &str) -> Option<&Loaded> {
         let qname = crate::normalize::a_corto(qname);
         self.of(Kind::ObjectTable)
             .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
+            .or_else(|| {
+                crate::foranea::expuesto(self, &qname).filter(|d| d.kind == Kind::ObjectTable)
+            })
     }
 
     /// v1alpha16. Resuelve una referencia a un `ObjectTable` (N1, v1alpha13 §5).
@@ -1735,7 +1741,7 @@ pub fn proyectar(
 
 // ── Enlazado ────────────────────────────────────────────────────────────────
 
-fn datasources_declarados(pkg: &Package) -> BTreeSet<String> {
+pub(crate) fn datasources_declarados(pkg: &Package) -> BTreeSet<String> {
     pkg.of(Kind::OntologyConfig)
         .filter_map(|c| c.section("datasources"))
         .flat_map(|n| n.items())
@@ -1747,7 +1753,12 @@ fn datasources_declarados(pkg: &Package) -> BTreeSet<String> {
         .collect()
 }
 
-fn no_declarado(v: &Loaded, nodo: &Node, campo: &str, declarados: &BTreeSet<String>) -> Diagnostic {
+pub(crate) fn no_declarado(
+    v: &Loaded,
+    nodo: &Node,
+    campo: &str,
+    declarados: &BTreeSet<String>,
+) -> Diagnostic {
     let r = nodo.as_str().unwrap_or("");
     Diagnostic::new(
         Code::Oos2004,

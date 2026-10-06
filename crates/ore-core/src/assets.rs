@@ -1343,6 +1343,41 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         aristas.extend(aristas_de(pkg, d, punteros));
     }
 
+    // v1alpha27: lo que una base foránea EXPONE es un ítem suyo con su nombre
+    // —`table:<base>.<schema>.<n>`— y **es** el de la fuente: el mismo
+    // detalle, la misma clasificación; `es` dice cuál. No es un documento
+    // nuevo, así que no tiene ruta propia ni relaciones propias.
+    let mut expuestos_por_base: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for f in crate::foranea::foraneas(pkg) {
+        for (nombre, t) in crate::foranea::expuestos(pkg, &f) {
+            let Some(mut it) = items.get(&ref_doc(t)).cloned() else {
+                continue;
+            };
+            let schema = t
+                .meta("schema")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default();
+            let r = format!("{}:{nombre}", kind_en_ref(t.kind));
+            it.insert("es".into(), Json::s(ref_doc(t)));
+            it.insert("ref".into(), Json::s(&r));
+            it.insert("namespace".into(), Json::s(f.nombre));
+            it.insert("paquete".into(), Json::s(f.nombre));
+            it.insert("carpeta".into(), Json::s(schema));
+            it.insert("schema".into(), Json::s(schema));
+            it.insert("proyectos".into(), Json::Arr(Vec::new()));
+            it.insert("repositorio".into(), Json::Crudo("null".into()));
+            it.insert("relaciones".into(), Json::Arr(Vec::new()));
+            let e = por_paquete.entry(f.nombre.to_string()).or_default();
+            e.0.insert(schema.to_string());
+            e.1 += 1;
+            expuestos_por_base
+                .entry(f.nombre.to_string())
+                .or_default()
+                .insert(schema.to_string());
+            items.insert(r, it);
+        }
+    }
+
     // Las relaciones, en las dos direcciones.
     let mut rel: BTreeMap<String, Vec<Json>> = BTreeMap::new();
     for a in &mut aristas {
@@ -1384,7 +1419,8 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
     // porque un `kind: Schema` lo declara, no por ser una carpeta. `carpetas`
     // sigue diciendo las carpetas —las de Projects y Repositorios (0035/0036)
     // lo son sin ser schemas—; el catálogo pinta `schemas`.
-    let mut declarados: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // v1alpha27: un schema expuesto existe sin documento: lo crea la exposición.
+    let mut declarados: BTreeMap<String, BTreeSet<String>> = expuestos_por_base;
     for s in pkg.docs.iter().filter(|d| d.kind == Kind::Schema) {
         if let (Some(p), Some(n)) = (
             paquete_y_carpeta(pkg, s).0,
@@ -1400,7 +1436,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         let (nombre, _) = paquete_y_carpeta(pkg, p);
         let Some(nombre) = nombre else { continue };
         let dir = pkg.root.join("packages").join(&nombre);
-        let (fuente, elegido, clase) = scope_de(&dir);
+        let (fuente, elegido, clase) = scope_de(&dir, p);
         let (mut carpetas, n) = por_paquete.get(&nombre).cloned().unwrap_or_default();
         // ⭐ Y las que están en el árbol sin tener ítems todavía (0035 ⑦).
         carpetas.extend(carpetas_del_paquete(&dir));
@@ -1628,7 +1664,18 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
 
 /// `discover.scope.json` (elegido) o `discover.catalog.json` (la fuente entera):
 /// de dónde sale el paquete y de qué clase es. Lo mismo que `GET /paquetes`.
-fn scope_de(dir: &Path) -> (Option<String>, bool, &'static str) {
+///
+/// v1alpha27: una base con `spec.foreign` lo dice ella —su fuente es
+/// `foreign.datasource`—. Y el paquete **de la fuente** —su catálogo, sin
+/// alcance— es `source`: no es una base, ni estándar ni foránea.
+fn scope_de(dir: &Path, p: &Loaded) -> (Option<String>, bool, &'static str) {
+    if let Some(f) = p.section("foreign") {
+        let ds = f
+            .get("datasource")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::to_string);
+        return (ds, true, "foreign");
+    }
     let lee = |f: &str| {
         std::fs::read_to_string(dir.join(f))
             .ok()
@@ -1654,7 +1701,7 @@ fn scope_de(dir: &Path) -> (Option<String>, bool, &'static str) {
         .get("source")
         .and_then(|(_, v)| v.as_str())
         .map(str::to_string);
-    (fuente, false, "foreign")
+    (fuente, false, "source")
 }
 
 #[cfg(test)]

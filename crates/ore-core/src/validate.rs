@@ -571,6 +571,13 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !propias.is_empty() {
         return propias;
     }
+    // v1alpha27: la base foránea —su forma, su fuente, lo que contiene y que
+    // cada nombre expuesto sea una cosa— antes del enlazado: lo que una vista
+    // lee por un nombre expuesto se resuelve con lo que aquí se comprueba.
+    let foraneas = crate::foranea::check(&pkg);
+    if !foraneas.is_empty() {
+        return foraneas;
+    }
     // **La pertenencia, antes que el enlazado.** Si un documento esta en el
     // espacio de nombres equivocado, todo lo que lo nombra falla —`OOS2018`,
     // `OOS2005`— y esos diagnosticos son la CONSECUENCIA: mandarian a mirar el

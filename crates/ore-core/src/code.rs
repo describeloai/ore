@@ -251,6 +251,12 @@ codes! {
     // funciones: si un paquete se llamara asi, `functions.x` seria a la vez
     // una funcion y un dato de una base.
     Oos2048 = "OOS2048", Reference, "un paquete llamado functions";
+    // v1alpha27 · LA BASE FORANEA. Expone lo de una fuente con su nombre: no
+    // tiene nada suyo, cada nombre es una cosa, y sin el interruptor de la
+    // fuente esta congelada.
+    Oos2049 = "OOS2049", Reference, "una base foranea con algo que no es un Schema o una vista sin copia";
+    Oos2050 = "OOS2050", Reference, "un nombre expuesto por una base foranea que no es unico";
+    Oos2051 = "OOS2051", Reference, "lectura en vivo de una fuente sin federation";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -543,6 +549,10 @@ mod tests {
             Code::Oos2043,
             Code::Oos2048,
             Code::Oos4016,
+            // v1alpha27: la base foranea.
+            Code::Oos2049,
+            Code::Oos2050,
+            Code::Oos2051,
             // v1alpha25: el transform.
             Code::Oos2046,
             Code::Oos2047,

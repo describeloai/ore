@@ -1359,6 +1359,20 @@ fn lectura(
             format!("la fuente `{fuente}` no está declarada"),
         )
     })?;
+    // v1alpha27 `01` §6: con un manifiesto que declara el interruptor, una
+    //   fuente sin `federation: true` no se lee en vivo —y una base foránea
+    //   sobre ella está congelada—. Antes que cualquier otro código de la
+    //   lectura, y con o sin `exigir_interruptor`: es de la gramática.
+    if !o.copia && !encendida && declara_el_interruptor(pkg, &fuente) {
+        return Err(negado(
+            403,
+            "OOS2051",
+            qn,
+            format!(
+                "la fuente `{fuente}` no se deja leer en vivo (`federation` no es `true`): lo que la lee —y una base foránea sobre ella— está congelado hasta que se encienda"
+            ),
+        ));
+    }
     if o.exigir_interruptor && !o.copia && !encendida {
         return Err(negado(
             403,
@@ -2032,6 +2046,22 @@ impl Reparto {
             ),
         ])
     }
+}
+
+/// Si el manifiesto que declara la fuente `nombre` es de v1alpha27 o
+/// posterior: el que **declara** el interruptor (`datasources[].federation`).
+/// Uno anterior no lo dice, y su ausencia no niega nada (v1alpha27 `01` §6).
+fn declara_el_interruptor(pkg: &Package, nombre: &str) -> bool {
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == Kind::OntologyConfig)
+        .filter(|c| {
+            c.version()
+                .is_some_and(|v| v >= crate::document::ApiVersion::V1Alpha27)
+        })
+        .filter_map(|c| c.section("datasources"))
+        .flat_map(|n| n.items().iter())
+        .any(|d| d.get("name").and_then(|(_, v)| v.as_str()) == Some(nombre))
 }
 
 #[cfg(test)]

@@ -864,6 +864,8 @@ fn doc_de<'a>(pkg: &'a Package, r: &str) -> Option<&'a crate::link::Loaded> {
     pkg.docs
         .iter()
         .find(|d| d.kind != Kind::Package && d.qname().as_deref() == Some(r))
+        // v1alpha27: lo que una base foránea expone es el documento de la fuente.
+        .or_else(|| crate::foranea::expuesto(pkg, r))
 }
 
 fn hay_base(pkg: &Package, p: &str) -> bool {
@@ -1463,7 +1465,7 @@ fn nombres_de_celda(texto: &str, pkg: &Package) -> Vec<NombreDeCelda> {
                 d.kind,
                 Kind::Dataset | Kind::View | Kind::Table | Kind::MediaCollection
             ) && d.qname().as_deref() == Some(qn)
-        })
+        }) || crate::foranea::expuesto(pkg, qn).is_some()
     };
     let paquete = |p: &str| {
         pkg.docs

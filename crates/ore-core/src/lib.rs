@@ -46,6 +46,7 @@ pub mod enlace_compuesto;
 pub mod exporta;
 pub mod firma;
 pub mod flow;
+pub mod foranea;
 pub mod frescura;
 pub mod funcion_propia;
 pub mod generar;

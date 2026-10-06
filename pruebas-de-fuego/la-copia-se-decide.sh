@@ -6,7 +6,7 @@
 # Lo que fija:
 #
 #   0  una base a mano (sin alcance) es foranea y no declara copia:
-#      GET /paquetes → type foreign, copias 0/0 · GET /copias → []
+#      GET /paquetes → type source (0057), copias 0/0 · GET /copias → []
 #   0b el paquete de la FUENTE es solo `package.yaml` + `discover.catalog.json` (lo que el Job
 #      de catalogo deja desde el 18 de septiembre): GET /esquema lo lee del catalogo
 #   1  POST /paquetes {type: raro}      422 · nada escrito · y un nombre con guion (no puede ser
@@ -222,10 +222,12 @@ dataset() { cat "$REPO"/packages/$1/olist/datasets/*__$2.yaml 2>/dev/null; }
 tabla()  { cat "$REPO"/packages/pg/olist/tables/$2.yaml; }
 
 # ── 0 ───────────────────────────────────────────────────────────────────────
-paquete olist | grep -q '"type": "foreign"' || falla "0 · la base a mano no sale foreign: $(paquete olist)"
+# ⭐ 0057: un catalogo sin alcance es el de una FUENTE, no una base: `source` (antes salia
+#   `foreign`, y una fuente se confundia con una base foranea).
+paquete olist | grep -q '"type": "source"' || falla "0 · el catalogo a mano no sale source: $(paquete olist)"
 paquete olist | grep -q '"copias": {"copiadas": 0, "declaradas": 0}' || falla "0 · la base a mano declara copias: $(paquete olist)"
 copias olist | grep -q '"copias":\[\]' || falla "0 · GET /copias de la base a mano no esta vacio: $(copias olist)"
-dice "0 · una base a mano es foranea: GET /paquetes foreign, 0/0 · GET /copias []"
+dice "0 · un catalogo a mano es una fuente: GET /paquetes source, 0/0 · GET /copias []"
 # ── 0b · el paquete de la fuente es SOLO el catalogo, y su esquema sale de el ─
 # (0051 P3: `customer_id` es NOT NULL en el origen y el puntero lo declara: `required`.)
 # (0027, 18 de septiembre: el Job de catalogo ya no induce nada gobernado)

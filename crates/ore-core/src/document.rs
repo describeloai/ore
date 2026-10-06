@@ -178,6 +178,12 @@ pub enum ApiVersion {
     /// la huella de lo que corre (`spec.codeDigest`). Lo pidió ORE 0056
     /// «Versioning» (2026-10-05). v1alpha25 (`Transform`) es de otra entrega.
     V1Alpha26,
+    /// v1alpha27. **La base foránea.** Un `Package` con `spec.foreign`
+    /// expone, con su nombre, las `Table` y los `ObjectTable` de una fuente
+    /// —el mismo documento, dos nombres—; sólo tiene `Schema` y vistas sin
+    /// copia (`OOS2049`). Y `datasources[].federation` del `OntologyConfig`:
+    /// sin él, leer en vivo es `OOS2051`. Lo pidió ORE 0057 (2026-10-06).
+    V1Alpha27,
 }
 
 impl ApiVersion {
@@ -206,6 +212,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha24,
         ApiVersion::V1Alpha25,
         ApiVersion::V1Alpha26,
+        ApiVersion::V1Alpha27,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -234,6 +241,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha24 => "oos.dev/v1alpha24",
             ApiVersion::V1Alpha25 => "oos.dev/v1alpha25",
             ApiVersion::V1Alpha26 => "oos.dev/v1alpha26",
+            ApiVersion::V1Alpha27 => "oos.dev/v1alpha27",
         }
     }
 
@@ -999,6 +1007,20 @@ impl Kind {
     /// campo que nadie lee es peor que uno que no existe, porque promete algo.
     pub fn spec_keys_en(self, version: ApiVersion) -> &'static [&'static str] {
         match self {
+            // v1alpha27 (`01-la-base-foranea`): lo que la base expone.
+            Kind::Package if version >= ApiVersion::V1Alpha27 => &[
+                "owner",
+                "team",
+                "roles",
+                "support",
+                "sla",
+                "authoritativeDefinitions",
+                "dependencies",
+                "exports",
+                "moved",
+                "reserved",
+                "foreign",
+            ],
             // v1alpha26 (`01-la-funcion-propia`): la huella de lo que corre.
             Kind::Function if version >= ApiVersion::V1Alpha26 => &[
                 "owner",

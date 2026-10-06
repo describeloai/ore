@@ -977,3 +977,86 @@ fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
         relaciones(f)
     );
 }
+
+/// 0057 (v1alpha27): una base foránea **expone** lo de su fuente como ítems
+/// suyos —`table:<base>.<schema>.<n>`, con `es` apuntando al de la fuente—,
+/// su schema existe sin documento, su clase sale de `spec.foreign`, y el
+/// paquete de la fuente (catálogo sin alcance) es `source`, no una base.
+#[test]
+fn una_base_foranea_expone_los_items_de_su_fuente() {
+    let t = Arbol(std::env::temp_dir().join(format!("ore-assets-{}-foranea", std::process::id())));
+    let _ = fs::remove_dir_all(&t.0);
+    let r = t.path();
+    escribe(
+        r,
+        "ontology.config.yaml",
+        "apiVersion: oos.dev/v1alpha27\nkind: OntologyConfig\nmetadata: { name: fuego, version: 0.1.0 }\ndatasources:\n  - { name: pg, type: postgres, connectionEnv: PG_URL, federation: true }\n",
+    );
+    escribe(
+        r,
+        "packages/pg/package.yaml",
+        "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: pg, version: 0.1.0, status: active, domain: pg }\nspec: { owner: team:datos, exports: [pg.ventas.clientes, pg.ventas.pedidos] }\n",
+    );
+    escribe(
+        r,
+        "packages/pg/discover.catalog.json",
+        "{\"source\":\"pg\"}\n",
+    );
+    escribe(
+        r,
+        "packages/pg/ventas/schema.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: ventas, namespace: pg }\n",
+    );
+    for n in ["clientes", "pedidos"] {
+        escribe(
+            r,
+            &format!("packages/pg/ventas/tables/{n}.yaml"),
+            &format!(
+                "apiVersion: oos.dev/v1alpha22\nkind: Table\nmetadata: {{ name: {n}, namespace: pg, schema: ventas }}\nspec:\n  datasource: pg\n  object: \"ventas.{n}\"\n  columns:\n    id: {{ type: String, physicalType: text }}\n  reads: {{ fullScan: cheap, predicatePushdown: [eq] }}\n  changes: {{ mode: retract, witness: log }}\n"
+            ),
+        );
+    }
+    escribe(
+        r,
+        "packages/vivo/package.yaml",
+        "apiVersion: oos.dev/v1alpha27\nkind: Package\nmetadata: { name: vivo, version: 0.1.0, status: active, domain: ventas }\nspec:\n  owner: team:ventas\n  foreign: { datasource: pg, include: [ventas.clientes] }\n",
+    );
+    assert!(
+        ore_core::validate::validate_package(r).is_empty(),
+        "{:?}",
+        ore_core::validate::validate_package(r)
+    );
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let j = indice(&pkg, &punteros(r), &Cabeza::default());
+
+    let it = item(&j, "table:vivo.ventas.clientes");
+    assert_eq!(it["es"], Json::s("table:pg.ventas.clientes"));
+    assert_eq!(it["paquete"], Json::s("vivo"));
+    assert_eq!(it["schema"], Json::s("ventas"));
+    let Json::Obj(m) = &j else { panic!() };
+    let Json::Obj(items) = &m["items"] else {
+        panic!()
+    };
+    assert!(
+        !items.contains_key("table:vivo.ventas.pedidos"),
+        "lo que la base no expone no es suyo"
+    );
+
+    let Json::Arr(ps) = &m["paquetes"] else {
+        panic!()
+    };
+    let p = |n: &str| -> BTreeMap<String, Json> {
+        ps.iter()
+            .find_map(|p| match p {
+                Json::Obj(o) if o["name"] == Json::s(n) => Some(o.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no está el paquete `{n}`"))
+    };
+    let vivo = p("vivo");
+    assert_eq!(vivo["type"], Json::s("foreign"));
+    assert_eq!(vivo["source"], Json::s("pg"));
+    assert_eq!(vivo["scoped"], Json::Bool(true));
+    assert_eq!(vivo["items"], Json::Int(1));
+    assert_eq!(p("pg")["type"], Json::s("source"));
+}

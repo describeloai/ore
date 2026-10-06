@@ -670,3 +670,59 @@ kind: ObjectTable
             .contains(r#""listado":{"match":"*.pdf"}"#)
     );
 }
+
+/// v1alpha27: un nombre que una base foránea expone **es** la tabla de la
+/// fuente: se reparte como ella, con su nombre real, y lo que la base no
+/// expone no resuelve. Con un manifiesto de v1alpha27 sin el interruptor,
+/// está congelada (`OOS2051`).
+#[test]
+fn un_nombre_expuesto_se_lee_como_su_tabla() {
+    let extra = |config: &'static str| -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "packages/pg/package.yaml",
+                "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: pg, version: 0.1.0, status: draft, domain: pg }\n\
+                 spec: { owner: \"team:prueba\", exports: [pg.public.clientes, pg.public.pedidos] }\n",
+            ),
+            (
+                "packages/vivo/package.yaml",
+                "apiVersion: oos.dev/v1alpha27\nkind: Package\nmetadata: { name: vivo, version: 0.1.0, status: draft, domain: vivo }\n\
+                 spec:\n  owner: \"team:prueba\"\n  foreign: { datasource: pg, include: [public.clientes] }\n",
+            ),
+            ("ontology.config.yaml", config),
+        ]
+    };
+    let encendida = "apiVersion: oos.dev/v1alpha27\nkind: OntologyConfig\nmetadata: { name: prueba, version: 0.1.0 }\n\
+                     datasources:\n  - { name: pg, type: postgres, connectionEnv: PG_URL, federation: true }\n";
+    let pkg = arbol("expuesto", true, true, &extra(encendida));
+    let rep = r(
+        &pkg,
+        "SELECT id FROM vivo.public.clientes WHERE pais = 'ES'",
+    );
+    let l = de(&rep, "pg.public.clientes");
+    assert!(l.columnas.contains(&"id".to_string()), "{:?}", l.columnas);
+    assert!(
+        pkg.table("vivo.public.pedidos").is_none(),
+        "lo que la base no expone no resuelve"
+    );
+    assert_eq!(
+        pkg.table("vivo.public.clientes")
+            .and_then(|t| t.qname())
+            .as_deref(),
+        Some("pg.public.clientes"),
+        "el mismo documento, con dos nombres"
+    );
+
+    let apagada = "apiVersion: oos.dev/v1alpha27\nkind: OntologyConfig\nmetadata: { name: prueba, version: 0.1.0 }\n\
+                   datasources:\n  - { name: pg, type: postgres, connectionEnv: PG_URL }\n";
+    let pkg = arbol("congelada", true, false, &extra(apagada));
+    let o = Opciones {
+        exigir_interruptor: false,
+        ..opciones()
+    };
+    let e = match repartir("SELECT id FROM vivo.public.clientes", &pkg, &o) {
+        Err(e) => e,
+        Ok(r) => panic!("una base congelada se leyó: {:?}", r.lecturas),
+    };
+    assert_eq!(e.codigo, "OOS2051", "{}", e.mensaje);
+}

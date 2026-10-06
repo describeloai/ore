@@ -1066,8 +1066,20 @@ fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
 ///   `discover.catalog.json`: `create standard database b` en un guion, `ore
 ///   package new`— es **standard**: lo que tenga sólo puede vivir en el lago.
 pub(crate) fn clase_de(dir: &Path) -> &'static str {
+    // ⭐ 0057 (v1alpha27): una base con `spec.foreign` lo declara ella.
+    if std::fs::read_to_string(dir.join("package.yaml"))
+        .ok()
+        .and_then(|t| parse::parse(&t).ok())
+        .is_some_and(|n| n.get("spec").and_then(|(_, s)| s.get("foreign")).is_some())
+    {
+        return "foreign";
+    }
     if !dir.join("discover.scope.json").is_file() && !dir.join("discover.catalog.json").is_file() {
         return "standard";
+    }
+    // ⭐ 0057: el catálogo de una fuente, sin alcance, no es una base: `source`.
+    if !dir.join("discover.scope.json").is_file() {
+        return "source";
     }
     let declarada = std::fs::read_to_string(dir.join("discover.scope.json"))
         .ok()

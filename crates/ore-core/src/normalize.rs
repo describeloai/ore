@@ -40,6 +40,9 @@ const CONJUNTOS: &[&str] = &[
     // v1alpha25 (`Transform`, otra entrega): lo que un transform lee; el orden
     // no dice nada. Entra con el submódulo, que ya trae su esquema.
     "inputs",
+    // v1alpha27: lo que una base foránea expone (`spec.foreign.include`); el
+    // orden no dice nada —un schema o un objeto se exponen o no—.
+    "include",
     "predicatePushdown",
     "aggregatePushdown",
     "requiredFilters",
