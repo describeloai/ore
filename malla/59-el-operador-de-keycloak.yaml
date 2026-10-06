@@ -560,8 +560,8 @@
                 "memory": "450Mi"
               },
               "requests": {
-                "cpu": "100m",
-                "memory": "450Mi"
+                "cpu": "15m",
+                "memory": "320Mi"
               }
             },
             "startupProbe": {

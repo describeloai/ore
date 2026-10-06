@@ -35,7 +35,7 @@
 set -eu
 
 echo "== antes =="
-kubectl describe node -l cloud.google.com/gke-nodepool=default-pool \
+kubectl describe node -l ore.dev/pool=system \
   | sed -n '/Allocated resources/,/hugepages/p' | grep cpu
 
 # ⭐ 2026-10-06 (O1): a lo medido en 7 dias de Cloud Monitoring —kueue pico 95m /
@@ -44,6 +44,10 @@ kubectl describe node -l cloud.google.com/gke-nodepool=default-pool \
 kubectl -n kueue-system patch deployment kueue-controller-manager --type=json \
   -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"25m"},
        {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"128Mi"}]'
+# ⚠️ El operador, a diferencia de Kueue, lo aplica Flux desde `59-…`, que
+#   DECLARA sus reservas: Flux deshace este parche en su siguiente pasada (medido
+#   el 2026-10-06, volvio a 100m/450Mi en un minuto). El valor de verdad vive
+#   en `59-…`; esto solo lo adelanta.
 kubectl -n identidad patch deployment keycloak-operator --type=json \
   -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"15m"},
        {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"320Mi"}]'
@@ -57,5 +61,5 @@ kubectl -n kueue-system rollout status deploy/kueue-controller-manager --timeout
 kubectl -n identidad rollout status deploy/keycloak-operator --timeout=300s
 
 echo "== despues =="
-kubectl describe node -l cloud.google.com/gke-nodepool=default-pool \
+kubectl describe node -l ore.dev/pool=system \
   | sed -n '/Allocated resources/,/hugepages/p' | grep cpu
