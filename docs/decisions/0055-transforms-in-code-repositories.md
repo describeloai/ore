@@ -102,6 +102,11 @@ un stub), ni cadena de ramas para los datasets.
 | D9 | **Python declara con literales**, constantes del módulo asignadas una vez o `ore.collection("…")`; lo calculado no se deriva y el commit se rechaza con su línea. La plantilla v7 no se llama a sí misma | 2026-10-05 |
 | D10 | **La identidad es la salida**: no es un activo de Assets. Vive en el repositorio, `<repo>/pipeline/<salida>.yaml`, derivado y marcado; se llama por lo que produce (`ore.build("db.schema.t")`, `POST /builds`), y la ficha del dataset dice *Produced by*. Carpeta visible: el compilador ignora las ocultas | 2026-10-05 |
 | D11 | **Java al final**: falta un lector de Java en Rust y, seguramente, una forma de declarar que se lea sin ejecutar. Primero Python y SQL | 2026-10-05 |
+| D12 | **Build sustituye a Run** en los repositorios `transforms-*`: Build primero, Preview cuando Build cierre | 2026-10-06 |
+| D13 | **Con cambios sin commitear, Build está desactivado** («Commit first» en el tooltip): construye el commit, no el editor | 2026-10-06 |
+| D14 | **Build construye todos los transforms del fichero**, con un resultado por transform en el panel, como el SQL de varias sentencias | 2026-10-06 |
+| D15 | **Un `@transform` llamado al cargar el módulo hace fallar el build**, con su línea en el panel: el build lo llama él, y dos llamadas serían dos escrituras | 2026-10-06 |
+| D16 | **`main` es una rama más**: se construye en la rama en la que se está, salvo que esté protegida (`.arbol/ramas.yaml`) | 2026-10-06 |
 
 ## El kind `Transform` (borrador v1alpha25)
 
@@ -165,3 +170,23 @@ programación, y el build de lo de abajo que necesita lo de arriba.
 | T1·5 | plantillas v7 de transforms-python y transforms-sql |
 | T1·6 | consola: aviso del commit, `pipeline/` en el repositorio, *Produced by* en la ficha |
 | T1·7 | Java |
+
+**B · Build**, sobre el `Transform` asentado (T1 en vivo desde `c4e5725`, 2026-10-06):
+
+| paso | qué |
+|---|---|
+| B0 | medido (abajo) |
+| B1 | `POST /builds {output, rama?}`: el `Transform` de esa salida en la cabeza de la rama (índice de T1·4); el arnés —Python carga el módulo y llama al `def`; SQL corre la sentencia `n`—; `lanzar_trabajo` con el repositorio, **su** capa y el documento como techo; procedencia `{transform, entrypoint, commit, build}`. Y la puerta del commit exige la base y el schema de la salida (`OOS2037`) |
+| B2 | `GET /builds?output=…`, `GET /builds/{id}`: estado, duración, filas, snapshot, log y el error con su línea |
+| B3 | consola: Build en lugar de Run en `transforms-*` (D12–D16); pestaña **Builds** en el panel de resultados |
+| B4 | la ficha del dataset: el último build y su botón Build |
+| B5 | `ore.build("<salida>")` en el SDK de Python |
+| B6 | pruebas de fuego, en vivo con los tres transforms de `bq`, y el ADR |
+
+**B0 · medido (2026-10-06).** En `victor`, con el nodo de sistema caliente, un Job del puesto pasa de
+creado a listo en **8 s** (en cola 0 s, la capa 0 s, la imagen ya en el nodo); las copias y las capas,
+de creadas a arrancadas en 1 s. Los ~68 s de 0050 eran de nodo frío. Del código: `lanzar_trabajo` ya
+recibe el techo (`transform`) y el arnés (lo usa la invocación de functions, 0050 P3);
+`capa_para(entorno, rama, alcance)` da la capa de un repositorio con su `alcance`; la rama es la de
+la persona; y la protección es sólo la de `main` (`.arbol/ramas.yaml`). Un trabajo lanzado a mano en
+`victor` no se midió: exige el token de una persona.
