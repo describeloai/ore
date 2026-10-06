@@ -143,6 +143,7 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("DELETE", "/propuestas/{}", Es::Acto("propuesta:cerrar")),
     // la cola: trabajos, entornos, funciones
     ("POST", "/trabajos", Es::Acto("trabajo:abrir")),
+    ("POST", "/builds", Es::Acto("build:abrir")),
     ("POST", "/entorno", Es::Acto("entorno:resolver")),
     ("POST", "/entorno/{}", Es::Acto("entorno:resolver")),
     // 0056 V2·3: la función propia, `functions.<n>`.

@@ -471,6 +471,8 @@ def transform(inputs, output):
         @functools.wraps(f)
         def corre(*a, **kw):
             global _transform
+            if _cargando is not None:
+                raise TransformCalledWhileLoading(_llamada_al_cargar(getattr(f, "__name__", "transform")))
             if _transform is not None:
                 raise RuntimeError("transform(): `%s` is already running; a transform does not call another" % _transform.nombre)
             _transform = _Transform(getattr(f, "__name__", "transform"), inputs, output)
@@ -486,6 +488,38 @@ def transform(inputs, output):
         corre.inputs, corre.output = list(inputs), output
         return corre
     return decora
+
+
+# 0055 B1 · D15: **un build carga el módulo y llama él al `def`**. Mientras el
+# arnés del build ejecuta el fichero (`_modulo_en_carga(<ruta>)`), un
+# `@transform` llamado en el nivel superior no corre: serían dos escrituras, la
+# suya y la del build. Falla, con la línea del fichero que lo llama.
+_cargando = None
+
+
+class TransformCalledWhileLoading(RuntimeError):
+    """A `@transform` was called while a Build loads its module (0055 D15)."""
+
+
+def _modulo_en_carga(fichero):
+    """El arnés del build: `fichero` mientras ejecuta el módulo; `None` después."""
+    global _cargando
+    _cargando = fichero
+
+
+def _llamada_al_cargar(nombre):
+    """El mensaje de D15, con la línea del fichero que llama (la más cercana)."""
+    import sys
+
+    linea = None
+    fr = sys._getframe(1)
+    while fr is not None:
+        if fr.f_code.co_filename == _cargando:
+            linea = fr.f_lineno
+            break
+        fr = fr.f_back
+    donde = "line %d calls" % linea if linea else "the module calls"
+    return "%s `%s()` while the module loads; a Build calls it itself — remove the call" % (donde, nombre)
 
 
 def _lee(vista):
@@ -513,6 +547,13 @@ def _procedencia(nombre=None, anclada_a=None):
         p["leidas"] = sorted(l for l in _leidas if l != nombre)
     if os.environ.get("ORE_CODIGO"):
         p["codigo"] = os.environ["ORE_CODIGO"]
+    # 0055 B1: de qué build —`{id, transform, entrypoint, commit, output}`—,
+    # que su arnés pone. `transform` arriba sigue siendo el nombre del `def`.
+    if os.environ.get("ORE_BUILD"):
+        try:
+            p["build"] = json.loads(os.environ["ORE_BUILD"])
+        except ValueError:
+            pass
     if anclada_a:
         p["anclada_a"] = anclada_a
     return p

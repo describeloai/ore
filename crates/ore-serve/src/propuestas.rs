@@ -2156,7 +2156,7 @@ impl Servidor {
 
     /// ¿Es `r` la rama por defecto del árbol? La de la forja, y si no se puede
     /// preguntar, `main` —equivocarse hacia la protección, no hacia fuera—.
-    fn es_la_rama_por_defecto(&self, r: &str) -> bool {
+    pub(crate) fn es_la_rama_por_defecto(&self, r: &str) -> bool {
         let por_defecto = self
             .api()
             .ok()

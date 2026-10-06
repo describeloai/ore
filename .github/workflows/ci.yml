@@ -181,7 +181,7 @@ jobs:
       - name: y el codigo que ORE genera casa con la firma del SDK
         run: |
           ORE_CELDAS_GENERADAS="$PWD/target/celdas-generadas" cargo test --quiet -p ore-serve --bin ore-serve -- \
-            el_codigo_generado_casa_con_el_sdk el_arnes_no_interpola_codigo
+            el_codigo_generado_casa_con_el_sdk el_arnes_no_interpola_codigo el_arnes_del_build_no_interpola_codigo
           PYTHONUTF8=1 python3 pruebas-de-fuego/el-codigo-generado-casa-con-el-sdk.py target/celdas-generadas
 
       # Los tres verbos del modelo (0027 E1): el documento en el arbol y la

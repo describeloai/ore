@@ -866,8 +866,11 @@ impl Servidor {
                 // catálogo compara la tabla escrita con esto, y nada es igual.
                 output: String::new(),
                 fijadas,
+                // Lo puso el servidor: un `@transform` dentro no lo ensancha.
+                techo: true,
             }),
             Some(plan.invocada),
+            crate::puestos::Donde::default(),
         );
         if let Json::Obj(m) = &mut r.cuerpo {
             m.insert("function".into(), Json::s(&qn));

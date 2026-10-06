@@ -182,6 +182,30 @@ pub(crate) struct Trabajo {
     /// Si el trabajo es la invocación de una función de código (0050 P3): su
     /// informe va también a `resultados/`, donde lo busca quien la consume.
     pub funcion: Option<Invocada>,
+    /// Si el trabajo es el build de un `Transform` (0055 B1): de qué documento,
+    /// qué `entrypoint` y qué salida. Va a la ficha y a la procedencia.
+    pub build: Option<Construccion>,
+}
+
+/// Dónde corre un trabajo, más allá de su rama: sin nada, como siempre (sin
+/// repositorio, sin clase); un build, con el repositorio de su código.
+#[derive(Debug, Default)]
+pub(crate) struct Donde {
+    /// La carpeta del repositorio (`packages/<p>/<carpeta>`): de ella, la capa.
+    pub repositorio: Option<String>,
+    /// La clase del repositorio, leída de `main`: el techo de lo que escribe.
+    pub clase: Option<&'static ore_core::clases::Clase>,
+    pub build: Option<Construccion>,
+}
+
+/// Lo que un build construye (0055 B1): el `Transform` del árbol del que salió.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Construccion {
+    /// El documento, desde la raíz (`packages/<p>/<repo>/pipeline/<salida>.yaml`).
+    pub documento: String,
+    pub entrypoint: String,
+    /// La salida, en forma corta.
+    pub output: String,
 }
 
 /// La invocación de una `Function` de `runtime: python` que corre como trabajo.
@@ -273,6 +297,11 @@ pub(crate) struct Transform {
     /// aunque la colección cambie mientras corre: una lectura que se repite
     /// da lo mismo, y la procedencia dice *qué* transacción se leyó.
     pub fijadas: BTreeMap<String, Fijada>,
+    /// **Un techo, no una declaración** (0055 B1): lo puso el servidor al
+    /// lanzar —el documento de un build, la función invocada— y el código no
+    /// lo ensancha. Lo que el `@transform` declare dentro ha de caber en él
+    /// (`declarar_transform`), y retirarlo no lo quita.
+    pub techo: bool,
 }
 
 /// La transacción de una colección que un transform fijó al declararla.
@@ -619,12 +648,21 @@ pub(crate) fn escritura_en(
                 ),
             ));
         }
-        Some(t) => Json::obj([
-            ("puesto", Json::s(*id)),
-            ("transform", Json::s(&t.nombre)),
-            ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
-            ("fijadas", fijadas_json(&t.fijadas)),
-        ]),
+        Some(t) => {
+            let mut j = Json::obj([
+                ("puesto", Json::s(*id)),
+                ("transform", Json::s(&t.nombre)),
+                ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
+                ("fijadas", fijadas_json(&t.fijadas)),
+            ]);
+            // 0055 B1: y de qué build, si lo es.
+            if let (Json::Obj(m), Some(b)) =
+                (&mut j, p.trabajo.as_ref().and_then(|x| build_json(id, x)))
+            {
+                m.insert("build".into(), b);
+            }
+            j
+        }
         None => Json::obj([
             ("puesto", Json::s(*id)),
             (
@@ -639,6 +677,60 @@ pub(crate) fn escritura_en(
         rama: p.rama.clone(),
         procedencia,
     }))
+}
+
+/// 0055 B1 · **Lo que el código declara cabe en el techo**: la misma salida
+/// y entradas que el documento lleva (o menos). Ambos en forma corta.
+pub(crate) fn cabe_en_el_techo(
+    techo: &Transform,
+    output: &str,
+    inputs: &[String],
+) -> Result<(), String> {
+    if output != techo.output {
+        return Err(format!(
+            "`@transform` declares output `{output}`, and this job may only write {}: the code does not widen what the server set (rebuild the `Transform` document from the code and commit)",
+            if techo.output.is_empty() {
+                "nothing".to_string()
+            } else {
+                format!("`{}` (`{}`)", techo.output, techo.nombre)
+            }
+        ));
+    }
+    let fuera: Vec<&str> = inputs
+        .iter()
+        .filter(|i| !techo.inputs.contains(i))
+        .map(String::as_str)
+        .collect();
+    if !fuera.is_empty() {
+        return Err(format!(
+            "`@transform` declares {} that `{}` does not ({}): the code does not widen the inputs of its `Transform` document (rebuild it from the code and commit)",
+            fuera
+                .iter()
+                .map(|i| format!("`{i}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            techo.nombre,
+            if techo.inputs.is_empty() {
+                "none".to_string()
+            } else {
+                techo.inputs.join(", ")
+            }
+        ));
+    }
+    Ok(())
+}
+
+/// La procedencia de un build (0055 B1): `{id, transform, entrypoint, commit,
+/// output}`, si el puesto es el trabajo de uno.
+pub(crate) fn build_json(id: &str, t: &Trabajo) -> Option<Json> {
+    let b = t.build.as_ref()?;
+    Some(Json::obj([
+        ("id", Json::s(id)),
+        ("transform", Json::s(&b.documento)),
+        ("entrypoint", Json::s(&b.entrypoint)),
+        ("commit", Json::s(&t.commit)),
+        ("output", Json::s(&b.output)),
+    ]))
 }
 
 /// `{<colección>: <transacción>}`: lo que un transform fijó, como se enseña.
@@ -705,6 +797,9 @@ fn ficha(id: &str, p: &Puesto) -> Json {
         );
         if let Some(i) = &t.informe {
             m.insert("informe".into(), i.clone());
+        }
+        if let Some(b) = build_json(id, t) {
+            m.insert("build".into(), b);
         }
     }
     f
@@ -1219,7 +1314,17 @@ impl Servidor {
             },
         };
         self.lanzar_trabajo(
-            sujeto, rama, entorno, lenguaje, codigo, commit, texto, avisos, None, None,
+            sujeto,
+            rama,
+            entorno,
+            lenguaje,
+            codigo,
+            commit,
+            texto,
+            avisos,
+            None,
+            None,
+            Donde::default(),
         )
     }
 
@@ -1250,10 +1355,17 @@ impl Servidor {
         avisos: Vec<Json>,
         transform: Option<Transform>,
         funcion: Option<Invocada>,
+        donde: Donde,
     ) -> Respuesta {
+        let Donde {
+            repositorio,
+            clase,
+            build,
+        } = donde;
         // La capa, como al abrir un puesto (W3.2): la del árbol si está lista;
-        // si no, se encola y 409 para que se vuelva a pedir.
-        let capa = match self.capa_para(entorno, rama.as_deref(), None, sujeto) {
+        // si no, se encola y 409 para que se vuelva a pedir. La de SU
+        // repositorio si lo tiene (un build, 0055 B1): la raíz, su paquete y él.
+        let capa = match self.capa_para(entorno, rama.as_deref(), repositorio.as_deref(), sujeto) {
             Ok(c) => c,
             Err(r) => return r,
         };
@@ -1309,11 +1421,13 @@ impl Servidor {
                 commit: commit.clone(),
                 informe: None,
                 funcion,
+                build,
             }),
             // Un trabajo no vive en un repositorio: corre y termina (0036 ④).
-            repositorio: None,
+            // Un build sí corre con el suyo: su capa y su clase (0055 B1).
+            repositorio,
             capa: capa.clone(),
-            clase: None,
+            clase,
             transform,
             colecciones_leidas: BTreeSet::new(),
             decision: decision.clone(),
@@ -2319,7 +2433,7 @@ impl Servidor {
     /// Entity de ana y desclasificarla) caía en `main`. La rama la crea el
     /// servidor por git si no está; con rama dicha, la dicha; y sobre un
     /// directorio (el banco, las pruebas) no hay ramas y se sigue en él.
-    fn rama_del_puesto(
+    pub(crate) fn rama_del_puesto(
         &self,
         sujeto: &Identidad,
         rama: Option<String>,
@@ -2489,6 +2603,21 @@ impl Servidor {
             Ok(p) => p,
             Err(r) => return r,
         };
+        if let Some(t) = &p.transform
+            && t.techo
+        {
+            // 0055 B1 · Lo puso el servidor: el código no lo ensancha.
+            return match cabe_en_el_techo(t, &output, &inputs) {
+                Ok(()) => Respuesta::ok(Json::obj([
+                    ("transform", Json::s(&t.nombre)),
+                    ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
+                    ("output", Json::s(&t.output)),
+                    ("fijadas", fijadas_json(&t.fijadas)),
+                    ("techo", Json::Bool(true)),
+                ])),
+                Err(m) => Respuesta::error(403, m),
+            };
+        }
         if let Some(t) = &p.transform {
             return Respuesta::error(
                 409,
@@ -2504,6 +2633,7 @@ impl Servidor {
             inputs: inputs.clone(),
             output: output.clone(),
             fijadas,
+            techo: false,
         });
         Respuesta::ok(Json::obj([
             ("transform", Json::s(nombre)),
@@ -2519,6 +2649,13 @@ impl Servidor {
             Ok(p) => p,
             Err(r) => return r,
         };
+        // Un techo (0055 B1) no se retira: el `@transform` que sale deja el
+        // puesto como estaba, con lo que el servidor puso al lanzarlo.
+        if let Some(t) = &p.transform
+            && t.techo
+        {
+            return Respuesta::ok(Json::obj([("transform", Json::s(&t.nombre))]));
+        }
         let habia = p.transform.take();
         Respuesta::ok(Json::obj([(
             "transform",
@@ -3349,7 +3486,7 @@ fn celda_de_sesion(
 /// lo que la frase dice. La escribe este proceso a partir del análisis, no el
 /// cliente, y por los nombres de `ore_core::sdk` (S3): en inglés y con la guarda
 /// de la versión del SDK delante.
-fn celda_de_sentencia(
+pub(crate) fn celda_de_sentencia(
     codigo: &str,
     t: &ore_core::sql_del_arbol::guion::Trozo,
     pkg: &ore_core::link::Package,
@@ -4731,6 +4868,7 @@ mod prueba {
             inputs: vec!["legal.archivo.contratos".into(), "legal.registro".into()],
             output: "legal.archivo.paginas".into(),
             fijadas: BTreeMap::from([("legal.archivo.contratos".to_string(), fijada.clone())]),
+            techo: false,
         });
         assert_eq!(
             media_en(&mut lista, &ana, "legal.archivo.contratos"),
@@ -4820,6 +4958,7 @@ mod prueba {
                     transaccion: "3".into(),
                 },
             )]),
+            techo: false,
         });
         let e = escritura_en(&lista, &ana, "legal.archivo.paginas")
             .unwrap()
@@ -4860,6 +4999,78 @@ mod prueba {
         assert_eq!(
             escritura_en(&lista, &agente("agente:nadie"), "legal.archivo.paginas"),
             Ok(None)
+        );
+    }
+
+    /// 0055 B1 · Lo que el `@transform` declara dentro de un build cabe en el
+    /// documento: misma salida, entradas de las suyas (o menos). Una función
+    /// invocada no escribe nada, así que ningún `@transform` cabe en ella.
+    #[test]
+    fn el_codigo_no_ensancha_el_techo() {
+        let techo = Transform {
+            nombre: "ventas__limpios".into(),
+            inputs: vec!["ventas.clientes".into(), "ventas.pedidos".into()],
+            output: "ventas.limpios".into(),
+            fijadas: BTreeMap::new(),
+            techo: true,
+        };
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(cabe_en_el_techo(&techo, "ventas.limpios", &v(&["ventas.clientes"])).is_ok());
+        assert!(
+            cabe_en_el_techo(
+                &techo,
+                "ventas.limpios",
+                &v(&["ventas.clientes", "ventas.pedidos"])
+            )
+            .is_ok()
+        );
+        let e = cabe_en_el_techo(&techo, "ventas.otra", &v(&["ventas.clientes"])).unwrap_err();
+        assert!(
+            e.contains("`ventas.otra`") && e.contains("`ventas.limpios`"),
+            "{e}"
+        );
+        let e = cabe_en_el_techo(&techo, "ventas.limpios", &v(&["rrhh.nominas"])).unwrap_err();
+        assert!(e.contains("`rrhh.nominas`"), "{e}");
+        let funcion = Transform {
+            output: String::new(),
+            ..techo.clone()
+        };
+        let e = cabe_en_el_techo(&funcion, "ventas.limpios", &[]).unwrap_err();
+        assert!(e.contains("nothing"), "{e}");
+    }
+
+    /// 0055 B1 · Lo que un build escribe en una colección dice de qué build es.
+    #[test]
+    fn la_escritura_de_un_build_lleva_su_procedencia() {
+        let ana = agente("agente:ana");
+        let mut p = un_puesto("agente:ana");
+        p.trabajo = Some(Trabajo {
+            codigo: "packages/legal/etl/paginar.py".into(),
+            commit: "abc1234".into(),
+            informe: None,
+            funcion: None,
+            build: Some(Construccion {
+                documento: "packages/legal/etl/pipeline/legal.archivo.paginas.yaml".into(),
+                entrypoint: "etl/paginar.py:paginar".into(),
+                output: "legal.archivo.paginas".into(),
+            }),
+        });
+        p.transform = Some(Transform {
+            nombre: "legal__archivo__paginas".into(),
+            inputs: vec!["legal.archivo.contratos".into()],
+            output: "legal.archivo.paginas".into(),
+            fijadas: BTreeMap::new(),
+            techo: true,
+        });
+        let mut lista = BTreeMap::new();
+        lista.insert("trabajo-ana-1".to_string(), p);
+        let e = escritura_en(&lista, &ana, "legal.archivo.paginas")
+            .unwrap()
+            .unwrap();
+        let j = e.procedencia.jcs();
+        assert!(
+            j.contains(r#""build":{"commit":"abc1234","entrypoint":"etl/paginar.py:paginar","id":"trabajo-ana-1","output":"legal.archivo.paginas","transform":"packages/legal/etl/pipeline/legal.archivo.paginas.yaml"}"#),
+            "{j}"
         );
     }
 
