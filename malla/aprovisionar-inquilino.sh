@@ -1366,7 +1366,7 @@ fi
 #   compartimento cree el namespace, y Flux no aplica nada si una pieza no pasa
 #   el ensayo. Dos pasadas, como la forja y la cola de trabajo.
 "$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --organizacion "$ORG" --arbol "$ARBOL" \
-  ${FUENTES:+--fuentes "$FUENTES"} ${COPIAS:+--copias "$COPIAS"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
+  ${COPIAS:+--copias "$COPIAS"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
   ${INQ:+} $([ -n "$INQ" ] || printf -- --sin-cola) \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
@@ -1460,8 +1460,14 @@ else
       #   y los `52-la-capa-*`, `55-la-capa-jvm-*` y `57-la-capa-node-*` (la capa que un puesto espera). Lo que si se
       #   retira es un catalogo cuya fuente YA tiene paquete: ese Job termino,
       #   y Flux no debe volver a crearlo.
+      # ⭐ 0053 F8·4: y los `44-*` YA NO. El catálogo de una fuente lo hace
+      #   `ore-serve` sin Job, por la pasarela (F8·2); un `44-*` que quede en la
+      #   cola es de antes y se retira con esta pasada (Flux poda su Job). Por
+      #   eso tampoco se rinde ya uno por fuente pendiente (`--fuentes`): era
+      #   un segundo catálogo, por la puerta de atrás, compitiendo con el de
+      #   `ore-serve`.
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|55-la-capa-jvm-.*|57-la-capa-node-.*)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|55-la-capa-jvm-.*|57-la-capa-node-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
