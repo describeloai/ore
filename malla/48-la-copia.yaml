@@ -372,7 +372,12 @@ spec:
               # no un awk sobre los documentos), y cada fuente pide su
               # credencial al cofre. Una raíz en `lago` (un dataset sobre lo
               # que `write()` dejó) no pide nada: el bucket es del inquilino.
-              ore view . > /trabajo/vista.txt 2>&1 || { echo "✗ el árbol no compila:"; tail -5 /trabajo/vista.txt; exit 1; }
+              # ⭐ 0053: `ore view` sale con 65 si alguna vista está rota (en un
+              #   paquete que no compila), y aun así da las raíces de las sanas:
+              #   eso no para la pasada (cada copia rota lo dice su puntero). Lo
+              #   que sí la para es la raíz del árbol rota: ninguna vista sale.
+              ore view . > /trabajo/vista.txt 2>&1 || echo "  ⚠️ \`ore view\` dice que algo no compila; se sigue con lo que sí"
+              grep -qE "^[a-z_][a-z0-9_]*\.|^sin vistas" /trabajo/vista.txt || { echo "✗ el árbol no compila:"; tail -5 /trabajo/vista.txt; exit 1; }
               FUENTES=""
               for QV in $(echo "$VISTAS" | tr ',' ' '); do
                 F=$(awk -v n="$QV" '$0==n{m=1;next} m&&/^  ra/{s=$0;sub(/^  [^ ]+ +/,"",s);sub(/ .*/,"",s);print s;exit}' /trabajo/vista.txt)
