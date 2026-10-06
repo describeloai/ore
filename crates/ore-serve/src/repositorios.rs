@@ -263,9 +263,9 @@ impl Servidor {
     /// **La base de ejemplos** (0055 T1·5, `clases::BASE_DE_EJEMPLOS`): la
     /// standard database vacía donde escribe el transform de una plantilla, que
     /// se crea en el mismo commit que el repositorio si no existe —como `create
-    /// standard database` (`base_vacia`), de quien la crea—. El árbol valida
-    /// sin ella (la salida está por nacer); escribir, no: `write()` pide su
-    /// paquete. `Ok(Some(ruta))` si la creó.
+    /// standard database` (`base_vacia`), de quien la crea—. Desde 0055 B1 el
+    /// árbol tampoco valida sin ella: la salida puede estar por nacer, su base
+    /// no (`OOS2018`). `Ok(Some(ruta))` si la creó.
     pub(crate) fn asegurar_base(
         &self,
         raiz: &Path,

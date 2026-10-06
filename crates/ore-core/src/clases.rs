@@ -1738,6 +1738,21 @@ spec: { owner: \"team:x\" }
 ",
             )
             .unwrap();
+            // La base de ejemplos, como la crea ore-serve con el repositorio
+            // (`asegurar_base`): sin ella, la salida no tiene base (0055 B1).
+            let sandbox = raiz.join("packages").join(BASE_DE_EJEMPLOS);
+            std::fs::create_dir_all(&sandbox).unwrap();
+            std::fs::write(
+                sandbox.join("package.yaml"),
+                format!(
+                    "apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: {{ name: {BASE_DE_EJEMPLOS}, version: 0.1.0, status: draft, domain: sandbox }}
+spec: {{ owner: \"team:x\" }}
+"
+                ),
+            )
+            .unwrap();
             for carpeta in ["etl", "otra"] {
                 for (rel, contenido) in c.semilla {
                     let f = pkg.join(carpeta).join(sembrar(rel, "ventas", carpeta));

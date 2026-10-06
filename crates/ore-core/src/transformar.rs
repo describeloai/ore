@@ -519,6 +519,70 @@ fn entradas(t: &Loaded) -> Vec<(String, &Node)> {
         .collect()
 }
 
+/// 0055 B1 · **Una salida, aunque esté por nacer, nombra una base y un schema
+/// que existen**: la primera escritura registra el dataset, pero no inventa su
+/// base ni su schema —un build que escribe `ventsa.resumen` no puede crear la
+/// base `ventsa`—. La base es un `Package` del árbol (`OOS2018`, la referencia
+/// a lo que no hay); el schema, `default` o uno que esa base declara con un
+/// `kind: Schema` (`OOS2037`). En una base foránea los schemas los expone su
+/// fuente, no un documento: ahí sólo se mira la base. `true` si dijo algo.
+fn base_y_schema_de_la_salida(
+    pkg: &Package,
+    t: &Loaded,
+    s: &str,
+    out: &mut Vec<Diagnostic>,
+) -> bool {
+    let partes: Vec<&str> = s.split('.').collect();
+    let (base, schema) = match partes.as_slice() {
+        [b, _] => (*b, crate::normalize::SCHEMA_POR_DEFECTO),
+        [b, sc, _] => (*b, *sc),
+        _ => return false, // la forma la dice el despacho
+    };
+    let qn = t.qname().unwrap_or_default();
+    let nodo = t.section("output").map(Node::pos).unwrap_or(t.root.pos());
+    let Some(p) = pkg
+        .of(Kind::Package)
+        .find(|p| p.meta("name").and_then(Node::as_str) == Some(base))
+    else {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2018,
+                &t.path,
+                format!("`{qn}` escribe `{s}`, y no hay ninguna base `{base}` en el árbol"),
+            )
+            .at(nodo)
+            .help(
+                "la salida de un transform puede no existir todavía, pero su base sí: créala \
+                 (`create database`) o corrige el nombre en el código y regenera el documento",
+            ),
+        );
+        return true;
+    };
+    if schema == crate::normalize::SCHEMA_POR_DEFECTO || crate::foranea::es_foranea(p) {
+        return false;
+    }
+    let declarado = pkg.of(Kind::Schema).any(|x| {
+        x.meta("name").and_then(Node::as_str) == Some(schema)
+            && x.meta("namespace").and_then(Node::as_str) == Some(base)
+    });
+    if declarado {
+        return false;
+    }
+    out.push(
+        Diagnostic::new(
+            Code::Oos2037,
+            &t.path,
+            format!("`{qn}` escribe `{s}`, y la base `{base}` no declara el schema `{schema}`"),
+        )
+        .at(nodo)
+        .help(
+            "la salida de un transform puede no existir todavía, pero su schema sí: decláralo \
+             (`create schema`, un `kind: Schema` en su carpeta) o escribe en `default`",
+        ),
+    );
+    true
+}
+
 fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
     // Lo que producen los transforms del árbol, aunque esté por nacer: una
     // entrada puede ser la salida de otro (§6), y así se encadena un pipeline
@@ -550,8 +614,12 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
                 );
             }
         }
-        // ── OOS2046 · la salida es algo que el código escribe ────────────
+        // ── OOS2018 · OOS2037 · la salida vive en una base y un schema ───
         let Some(s) = salida(t) else { continue };
+        if base_y_schema_de_la_salida(pkg, t, &s, out) {
+            continue;
+        }
+        // ── OOS2046 · la salida es algo que el código escribe ────────────
         let que = if let Some(d) = pkg.dataset(&s) {
             crate::vistas::es_mantenido(d).then_some(
                 "un `Dataset` mantenido: lo llena el sistema cumpliendo su `from`, no código",
@@ -861,6 +929,58 @@ mod tests {
                 .map(String::as_str),
             Some("confidential")
         );
+    }
+
+    /// 0055 B1: la salida por nacer nombra una base que hay (`OOS2018`) y un
+    /// schema que esa base declara (`OOS2037`); `default` existe sin más.
+    #[test]
+    fn la_salida_por_nacer_exige_su_base_y_su_schema() {
+        let pkg = Package {
+            root: PathBuf::from("."),
+            docs: vec![
+                doc(
+                    "packages/ventas/package.yaml",
+                    Kind::Package,
+                    "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
+                     metadata: { name: ventas, version: 1.0.0, status: active, domain: v }\n\
+                     spec: { owner: team:v }\n",
+                ),
+                doc(
+                    "packages/ventas/curado/schema.yaml",
+                    Kind::Schema,
+                    "apiVersion: oos.dev/v1alpha13\nkind: Schema\n\
+                     metadata: { name: curado, namespace: ventas }\n",
+                ),
+            ],
+            cedar: Vec::new(),
+            generated: Vec::new(),
+            sobres: Vec::new(),
+        };
+        let t = |output: &str| {
+            doc(
+                "packages/ventas/etl/pipeline/x.yaml",
+                Kind::Transform,
+                &format!(
+                    "apiVersion: oos.dev/v1alpha25\nkind: Transform\n\
+                     metadata: {{ name: x, namespace: ventas }}\n\
+                     spec:\n  runtime: python\n  entrypoint: etl/t.py:x\n  \
+                     inputs: []\n  output: {output}\n"
+                ),
+            )
+        };
+        let codigos = |output: &str| {
+            let d = t(output);
+            let s = salida(&d).unwrap();
+            let mut out = Vec::new();
+            base_y_schema_de_la_salida(&pkg, &d, &s, &mut out);
+            out.into_iter().map(|d| d.code).collect::<Vec<_>>()
+        };
+        assert!(codigos("ventas.resumen").is_empty());
+        assert!(codigos("ventas.default.resumen").is_empty());
+        assert!(codigos("ventas.curado.resumen").is_empty());
+        assert_eq!(codigos("ventas.crudo.resumen"), vec![Code::Oos2037]);
+        assert_eq!(codigos("ventsa.resumen"), vec![Code::Oos2018]);
+        assert_eq!(codigos("ventsa.curado.resumen"), vec![Code::Oos2018]);
     }
 
     #[test]
