@@ -339,7 +339,24 @@ hoy: la pasarela no gana acceso al custodio.
 | **F8·2** · el control sin Jobs para mirar | `ore` con `ORE_PASARELA` no lanza conectores para mirar: `source catalog`, `check`, `explore` y el testigo de la copia los pide a la pasarela (`lector::preguntar`). `ore-serve`, con custodio y agente, **cataloga sin Job** (un hilo con los pasos del Job de `44`: el paquete, `ore source catalog --out`, al árbol; el fallo a `.fallos/`, `/fuentes/{n}/catalogo` dice `encolada` mientras tanto) y **comprueba en el acto** (`POST /fuentes/comprobaciones` trae `resultado`; `GET /fuentes/comprobaciones/{job}` lo repite 15 min; la consola lo lee así). Sin custodio, el Job de siempre. Las plantillas `44`/`54` y su rendido en la convergencia se retiran en F8·4 (malla) | ✓ `el-coordinador.sh` +5 (check y catálogo por la pasarela, `/v1/origins` los cuenta, sin pasarela no hay conector a escondidas, la clave no sale) |
 | **F8·3** · la copia por la pasarela | binario: con `ORE_PASARELA`, `ore materialize --preparar` pide cada tabla a la pasarela (`POST /v1/read`, `perfil: "copia"`; el flujo al fichero; una lectura que no acaba `completo` es un fallo) el testigo va por `/v1/witness` (F8·2), y **la copia de siempre** (un `Dataset` de una `Table`) también: el flujo de la pasarela a un fichero y de ahí al almacén. Malla: el Job de la copia lleva `ORE_PASARELA` y la NetworkPolicy le deja llegar (go aparte) | binario ✓ `la-copia-desde-el-origen.sh` 12/12 (las mismas 2 434 filas, sin conector en el PATH; la copia de siempre sellada en un S3 de mentira, 7 filas; 3 copias contadas); malla pendiente. Quedan fuera las colecciones de medios (`coleccion.rs`: `leer` de blobs y `versiones`), para F9 |
 | **F8·4** · sin puerta de atrás | **Guarda**: con `ORE_PASARELA`, `ore` se niega a lanzar `ore-read-*` para `leer`/`catalogo`/`check`/`explorar`/`testigo` (`lector::una_via`): un camino olvidado falla en ORE, no en el origen. **Malla**: la convergencia deja de rendir un Job de catálogo (`44`) por fuente pendiente —competía con el de `ore-serve`— y deja de conservar los `44-*` de la cola (Flux los poda). **CI**: releva también `ore-federation` (se quedaba con el binario de la víspera). La imagen de los Jobs sin `ore-read-*` espera a F9: las colecciones de medios (`bajar`, `versiones`) aún los lanzan | ✓ `con_la_pasarela_ningun_conector_mira_un_origen` |
-| **F8·5** · en vivo | test6: copia, catálogo y comprobación por `/v1/origins`; una copia y 10 vivas contra Neon no pasan de 4 | pendiente |
+| **F8·5** · en vivo | carga contra Neon por la pasarela de victor: 1 copia (112 650 filas, completa) + 10 vivas (cortadas en su presupuesto) a la vez → **pico 4 en el origen**, 7 en cola, 4 conectores para 11 lecturas, 0 errores, 0 saturadas, 7 s | ✓ carga (2026-10-06) |
+
+**F8 CERRADO** (2026-10-06), y con él **la federación**, por decisión del usuario: se pivota a las bases
+foráneas. Lo que queda, como deuda nombrada:
+
+1. **F7·4 en vivo: la copia desde el origen al rehacer en una rama no prepara.** El Job de `rehacer`
+   de test6 (`copiar-rehacer-48234cd2`) sigue diciendo «`VICTOR_S3_DEMO_URL` no está definida»
+   tras 136a1ac: su `preparar` no imprime «fuentes que lee el origen», o sea `ore view` no le dio
+   ninguna línea `raíz` en ese árbol (rama con `overlay`). Lo primero: mirar `ore view .` en esa
+   rama. El camino está probado en el CI (`la-copia-desde-el-origen.sh` 12/12) con la credencial
+   del entorno.
+2. **F6·4** (SDK Node y JVM), **`insert … select` desde un origen** (F7·3), las **colecciones de
+   medios por la pasarela** (`bajar`, `versiones`) y con ellas **la imagen de los Jobs sin
+   `ore-read-*`** (F8·4).
+3. **F9** (ObjectTable en el `FROM` y su listado desde F6, agregados y juntas empujados, Flight
+   SQL) no se empieza: lo que toque a las bases foráneas entra en su spec.
+4. La consola (rubix-platform) lleva sin commit el check «Enable federation» y «comprobar acceso»
+   en el acto.
 
 **Lo que F3·4 dejó dicho.** (1) **Neon en caliente sigue en ~670 ms** aunque ni proceso ni conexión se
 abren: son las idas y vueltas por lectura del conector de Postgres (el catálogo de la tabla, `BEGIN READ
