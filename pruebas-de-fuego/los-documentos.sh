@@ -695,7 +695,7 @@ grep -q "transforms-python, transforms-java, transforms-sql, analytics-python, m
 [ "$(pide PUT /repositorios/packages/hr/raw '{"nombre":"Renombrado","plantilla":"analytics","plantillaVersion":1}')" = "200" ] \
   || falla "22 · PUT /repositorios · $(cat "$TMP/r.json")"
 cumple "d['nombre']=='Renombrado' and d['plantilla']=='analytics-python' and d['nueva'] is False and d['commit']" "22 · el manifiesto reescrito"
-[ "$(pide GET /arbol/packages/hr/raw/README.md)" = "200" ] && cumple "'Lo que este repositorio hace' in d['texto']" "22 · la prosa se conserva"
+[ "$(pide GET /arbol/packages/hr/raw/README.md)" = "200" ] && cumple "'# Python transforms' in d['texto'] and '@transform' in d['texto']" "22 · la prosa se conserva (desde v7, la guía de transforms-python, 0055 T1·5)"
 [ "$(pide PUT /repositorios/packages/hr/noexiste '{"nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · PUT de uno que no esta no dio 404"
 # desde un puesto, no: un repositorio lo crea una persona
 CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agente:puesto-ana-python' \
