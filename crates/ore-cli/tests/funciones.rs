@@ -79,7 +79,8 @@ fn escribir(raiz: &Path, codigo: &str) {
 fn el_codigo_escribe_sus_documentos_y_validan() {
     let raiz = arbol("ciclo");
     escribir(&raiz, CODIGO);
-    let docs = raiz.join("packages/ventas/functions");
+    // v1alpha26: las funciones son propias, de la raíz (ORE 0056).
+    let docs = raiz.join("functions");
 
     // Sin documentos, `validate` dice qué falta y cómo se arregla.
     let o = ore(&raiz, &["validate", "."]);
@@ -91,13 +92,15 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
         salida(&o)
     );
 
-    // Generar los escribe en `functions/` del PAQUETE, fuera del repositorio:
-    // una función publicada es un nombre del paquete (Assets → Functions).
+    // Generar los escribe en `functions/` de la RAÍZ, fuera de todo paquete:
+    // una función publicada es `functions.<nombre>` (v1alpha26, ORE 0056).
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(o.status.success(), "{}", salida(&o));
     let nivel = std::fs::read_to_string(docs.join("nivel.yaml")).unwrap();
     assert!(
-        nivel.starts_with("# generado por ore desde riesgo/funciones/riesgo.py:nivel"),
+        nivel.starts_with(
+            "# generado por ore desde packages/ventas/riesgo/funciones/riesgo.py:nivel"
+        ),
         "{nivel}"
     );
     assert!(
@@ -150,7 +153,7 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
     assert!(!ore(&raiz, &["validate", "."]).status.success());
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(
-        salida(&o).contains("~ packages/ventas/functions/saludo.yaml"),
+        salida(&o).contains("~ functions/saludo.yaml"),
         "{}",
         salida(&o)
     );
@@ -166,7 +169,7 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
     escribir(&raiz, sin_saludo);
     let o = ore(&raiz, &["functions", "generate", "."]);
     assert!(
-        salida(&o).contains("- packages/ventas/functions/saludo.yaml"),
+        salida(&o).contains("- functions/saludo.yaml"),
         "{}",
         salida(&o)
     );
@@ -183,7 +186,8 @@ fn el_codigo_escribe_sus_documentos_y_validan() {
 fn lo_escrito_a_mano_se_dice_y_lo_que_no_se_deriva_no_se_escribe() {
     let raiz = arbol("a-mano");
     escribir(&raiz, CODIGO);
-    let docs = raiz.join("packages/ventas/functions");
+    // v1alpha26: las funciones son propias, de la raíz (ORE 0056).
+    let docs = raiz.join("functions");
     std::fs::create_dir_all(raiz.join("packages/ventas/riesgo/functions")).unwrap();
     // Un documento escrito a mano para `nivel`, en otro sitio —junto al
     // repositorio, como en la v6 de la plantilla— y con un tipo mal.

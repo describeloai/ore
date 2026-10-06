@@ -220,6 +220,11 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
         if d.version().is_none_or(|v| v < ApiVersion::V1Alpha8) {
             continue;
         }
+        // v1alpha26: la función propia no es de ningún paquete; su sitio lo
+        // mira `funcion_propia` (`OOS2036`).
+        if crate::funcion_propia::es_propia(d) {
+            continue;
+        }
         // Un `Model` anterior a v1alpha15 no tenia `namespace` que declarar.
         if d.kind == Kind::Model && d.version().is_none_or(|v| v < ApiVersion::V1Alpha15) {
             continue;

@@ -564,6 +564,13 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !dobles.is_empty() {
         return dobles;
     }
+    // v1alpha26: la función propia —su forma, su sitio, su nombre sin
+    // mayúsculas y el espacio `functions`— antes que la pertenencia, que no
+    // la mira: no es de ningún paquete.
+    let propias = crate::funcion_propia::check(&pkg);
+    if !propias.is_empty() {
+        return propias;
+    }
     // **La pertenencia, antes que el enlazado.** Si un documento esta en el
     // espacio de nombres equivocado, todo lo que lo nombra falla —`OOS2018`,
     // `OOS2005`— y esos diagnosticos son la CONSECUENCIA: mandarian a mirar el

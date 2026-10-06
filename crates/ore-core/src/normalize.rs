@@ -37,6 +37,9 @@ use unicode_normalization::UnicodeNormalization;
 /// un conjunto solo hace que dos escrituras equivalentes no converjan. De los
 /// dos errores posibles, este módulo comete el reversible.
 const CONJUNTOS: &[&str] = &[
+    // v1alpha25 (`Transform`, otra entrega): lo que un transform lee; el orden
+    // no dice nada. Entra con el submódulo, que ya trae su esquema.
+    "inputs",
     "predicatePushdown",
     "aggregatePushdown",
     "requiredFilters",

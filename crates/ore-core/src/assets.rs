@@ -238,13 +238,24 @@ fn paquete_y_carpeta(pkg: &Package, d: &Loaded) -> (Option<String>, String) {
 /// raíz y la carpeta donde está dentro de su paquete (`riesgo/funciones`).
 /// Su documento vive en `functions/` del paquete y no dice de qué repositorio
 /// ni de qué proyecto es: lo dice dónde está su código.
-fn codigo_de(pkg: &Package, d: &Loaded) -> Option<(String, String)> {
+/// La función propia (v1alpha26) no es de ningún paquete: su `entrypoint` es
+/// desde la raíz, y el paquete que se devuelve es **el de su código**, que es
+/// de donde sale su proyecto y su repositorio.
+fn codigo_de(pkg: &Package, d: &Loaded) -> Option<(String, String, String)> {
     if d.kind != Kind::Function {
         return None;
     }
     let e = spec_str(d, "entrypoint")?;
-    let (ruta, _) = crate::promover::entrypoint(&e)?;
-    let py = crate::promover::carpeta_del_paquete(&d.path, &pkg.root).join(ruta);
+    let ruta = match crate::promover::entrypoint(&e) {
+        Some((r, _)) => r,
+        None => crate::promover::entrypoint_ts(&e)?,
+    };
+    let base = if crate::funcion_propia::es_propia(d) {
+        pkg.root.clone()
+    } else {
+        crate::promover::carpeta_del_paquete(&d.path, &pkg.root)
+    };
+    let py = base.join(ruta);
     let rel = py.strip_prefix(&pkg.root).ok()?;
     let partes: Vec<String> = rel
         .components()
@@ -253,7 +264,11 @@ fn codigo_de(pkg: &Package, d: &Loaded) -> Option<(String, String)> {
     if partes.len() < 3 || partes[0] != "packages" {
         return None;
     }
-    Some((partes.join("/"), partes[2..partes.len() - 1].join("/")))
+    Some((
+        partes.join("/"),
+        partes[2..partes.len() - 1].join("/"),
+        partes[1].clone(),
+    ))
 }
 
 /// Lo que una `Function` es, para quien la mira o la invoca: su contrato
@@ -283,7 +298,7 @@ fn funcion_de(pkg: &Package, d: &Loaded) -> Json {
     m.push((
         "codigo",
         codigo_de(pkg, d)
-            .map(|(r, _)| Json::s(r))
+            .map(|(r, _, _)| Json::s(r))
             .unwrap_or(Json::Crudo("null".into())),
     ));
     Json::obj(m)
@@ -1235,11 +1250,17 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         let codigo = codigo_de(pkg, d);
         let alcance = codigo
             .as_ref()
-            .map_or(carpeta.as_str(), |(_, c)| c.as_str());
+            .map_or(carpeta.as_str(), |(_, c, _)| c.as_str());
+        // El paquete de lo que se atribuye: el del código, en una función.
+        let paquete_del_alcance = codigo
+            .as_ref()
+            .map(|(_, _, p)| p.clone())
+            .or_else(|| paquete.clone());
         let suyos: Vec<Json> = proyectos
             .iter()
             .filter(|p| {
-                p.roto.is_none() && p.alcanza(paquete.as_deref().unwrap_or_default(), alcance)
+                p.roto.is_none()
+                    && p.alcanza(paquete_del_alcance.as_deref().unwrap_or_default(), alcance)
             })
             .map(|p| {
                 *de_proyecto.entry(p.nombre.clone()).or_default() += 1;
@@ -1250,7 +1271,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         // El repositorio donde vive el ítem: el más hondo que lo contiene.
         let suyo = crate::repositorios::de_item(
             &repositorios,
-            paquete.as_deref().unwrap_or_default(),
+            paquete_del_alcance.as_deref().unwrap_or_default(),
             alcance,
         );
         it.insert(

@@ -442,7 +442,9 @@ const PRECISION: &[(&str, usize)] = &[
     ("listing", 2),
 ];
 
-fn shape(pkg: &Package) -> Shape {
+/// `propias`: si entran las funciones propias (v1alpha26), que el paquete no
+/// versiona y que [`salto_de_funcion`] compara de una en una.
+fn shape(pkg: &Package, propias: bool) -> Shape {
     let lat = flow::lattices(pkg);
     let mut s = Shape {
         exigencias: lat
@@ -462,6 +464,9 @@ fn shape(pkg: &Package) -> Shape {
 
     for d in &pkg.docs {
         match d.kind {
+            // v1alpha26: la función propia tiene su propia versión; el
+            // paquete no la versiona (`funciones_propias`).
+            crate::document::Kind::Function if !propias && crate::funcion_propia::es_propia(d) => {}
             crate::document::Kind::Function => {
                 if let Some(qn) = d.qname() {
                     let ids = |sec: &str, campos: &[&str]| -> BTreeSet<String> {
@@ -841,8 +846,8 @@ fn anunciados(d: &Loaded) -> BTreeSet<String> {
 // ── La comparación ──────────────────────────────────────────────────────────
 
 pub fn diff(antes: &Package, despues: &Package) -> Report {
-    let a = shape(antes);
-    let b = shape(despues);
+    let a = shape(antes, false);
+    let b = shape(despues, false);
     let mut changes = Vec::new();
 
     entidades(&a, &b, &mut changes);
@@ -872,12 +877,180 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
         required_bump
     };
 
-    version(&a, &b, required_bump, &mut changes);
+    // La versión del paquete, si hay paquete: un espacio de trabajo con solo
+    // funciones propias no tiene una que comprobar.
+    let hay_paquete = |p: &Package| {
+        p.docs
+            .iter()
+            .any(|d| d.kind == crate::document::Kind::Package)
+    };
+    if hay_paquete(antes) || hay_paquete(despues) {
+        version(&a, &b, required_bump, &mut changes);
+    }
+    let required_bump = funciones_propias(antes, despues, &mut changes)
+        .into_iter()
+        .fold(required_bump, mayor);
 
     Report {
         changes,
         required_bump,
     }
+}
+
+fn rango(b: Bump) -> u8 {
+    match b {
+        Bump::Patch => 0,
+        Bump::Minor => 1,
+        Bump::Major => 2,
+    }
+}
+
+fn mayor(x: Bump, y: Bump) -> Bump {
+    if rango(y) > rango(x) { y } else { x }
+}
+
+// ── v1alpha26 · la versión de una función propia ────────────────────────────
+
+/// Un paquete con un solo documento, para compararlo con las reglas de siempre.
+fn solo(d: &Loaded) -> Package {
+    Package {
+        root: std::path::PathBuf::new(),
+        docs: vec![Loaded {
+            path: d.path.clone(),
+            kind: d.kind,
+            root: d.root.clone(),
+        }],
+        cedar: Vec::new(),
+        generated: Vec::new(),
+        sobres: Vec::new(),
+    }
+}
+
+fn texto(n: Option<&Node>) -> String {
+    match n {
+        None => String::new(),
+        Some(n) => match n.as_str() {
+            Some(s) => s.to_string(),
+            None => n
+                .items()
+                .iter()
+                .filter_map(|i| i.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        },
+    }
+}
+
+/// **El salto que exige pasar de `antes` a `despues`** (OOS v1alpha26 `01`
+/// §5), con los cambios que lo explican: mayor si algún cambio rompe (las
+/// reglas de v1alpha18 `01` §7); menor si se añade un parámetro o un campo, o
+/// cambian `reads` o `models`; parche si solo cambian `codeDigest`,
+/// `entrypoint`, `runtime`, `over`, `limits` o la descripción; `None` si nada.
+///
+/// `antes` puede ser la forma de antes —una función del paquete— y `despues`
+/// la propia: se comparan como la misma función.
+pub fn salto_de_funcion(antes: &Loaded, despues: &Loaded) -> (Option<Bump>, Vec<Change>) {
+    let mut a = shape(&solo(antes), true);
+    let b = shape(&solo(despues), true);
+    // La misma función, aunque cambie de nombre al migrar (`ventas.f` →
+    // `functions.f`): se compara bajo el nombre de después.
+    if let (Some(fa), Some(qb)) = (
+        a.funciones
+            .keys()
+            .next()
+            .cloned()
+            .and_then(|k| a.funciones.remove(&k)),
+        b.funciones.keys().next().cloned(),
+    ) {
+        a.funciones.insert(qb, fa);
+    }
+    let mut changes = Vec::new();
+    efectos_y_reglas(&a, &b, &mut changes);
+    if changes.iter().any(|c| c.axis.fuerza_mayor()) {
+        return (Some(Bump::Major), changes);
+    }
+    let claves = |s: &Shape, que: fn(&Funcion) -> &BTreeMap<String, Prop>| -> BTreeSet<String> {
+        s.funciones
+            .values()
+            .flat_map(|f| que(f).keys().cloned())
+            .collect()
+    };
+    let superficie = claves(&a, |f| &f.input) != claves(&b, |f| &f.input)
+        || claves(&a, |f| &f.output) != claves(&b, |f| &f.output)
+        || ["reads", "models"]
+            .iter()
+            .any(|k| texto(antes.section(k)) != texto(despues.section(k)));
+    if superficie || !changes.is_empty() {
+        return (Some(Bump::Minor), changes);
+    }
+    let timeout = |d: &Loaded| {
+        texto(
+            d.section("limits")
+                .and_then(|l| l.get("timeout"))
+                .map(|(_, v)| v),
+        )
+    };
+    let otro = ["codeDigest", "entrypoint", "runtime", "over"]
+        .iter()
+        .any(|k| texto(antes.section(k)) != texto(despues.section(k)))
+        || timeout(antes) != timeout(despues)
+        || texto(antes.meta("description")) != texto(despues.meta("description"));
+    (otro.then_some(Bump::Patch), changes)
+}
+
+/// Las funciones propias de los dos lados: sus cambios, `OOS5007` si una se
+/// va, y `OOS5021` con la función como sujeto si su versión no llega al salto.
+/// Devuelve el salto de cada una que cambió.
+fn funciones_propias(antes: &Package, despues: &Package, out: &mut Vec<Change>) -> Vec<Bump> {
+    fn propias(p: &Package) -> BTreeMap<String, &Loaded> {
+        p.docs
+            .iter()
+            .filter(|d| crate::funcion_propia::es_propia(d))
+            .filter_map(|d| Some((d.qname()?, d)))
+            .collect()
+    }
+    let (pa, pb) = (propias(antes), propias(despues));
+    let mut saltos = Vec::new();
+    for (qn, a) in &pa {
+        let Some(b) = pb.get(qn) else {
+            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            saltos.push(Bump::Major);
+            continue;
+        };
+        let (salto, cambios) = salto_de_funcion(a, b);
+        out.extend(cambios);
+        let Some(salto) = salto else {
+            continue;
+        };
+        saltos.push(salto);
+        let v = |d: &Loaded| {
+            d.meta("version")
+                .and_then(Node::as_str)
+                .and_then(Version::parse)
+        };
+        if let (Some(va), Some(vb)) = (v(a), v(b)) {
+            let minimo = va.tras(salto);
+            if vb < minimo {
+                out.push(
+                    Change::new(Code::Oos5021, Axis::Package)
+                        .sujeto(qn)
+                        .with("declared", Json::s(vb.texto()))
+                        .with("required", Json::s(minimo.texto())),
+                );
+            }
+        }
+    }
+    saltos
+}
+
+/// La versión que le toca a una función propia tras su salto: la de antes
+/// subida lo que el salto exige, o la misma si nada cambió.
+pub fn version_tras(anterior: &str, salto: Option<Bump>) -> Option<String> {
+    let v = Version::parse(anterior)?;
+    Some(match salto {
+        Some(s) => v.tras(s).texto(),
+        None => v.texto(),
+    })
 }
 
 /// ¿Ha cambiado la superficie declarada, sin romper nada?

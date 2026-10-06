@@ -86,6 +86,48 @@ pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> Str
     }
     let _ = writeln!(s, "  runtime: {}", f.runtime());
     let _ = writeln!(s, "  entrypoint: {}", escalar(&f.entrypoint));
+    cuerpo(&mut s, f);
+    s
+}
+
+/// La de una función propia (OOS v1alpha26 `01`).
+pub const API_VERSION_PROPIA: &str = "oos.dev/v1alpha26";
+
+/// **El documento de una función propia** (v1alpha26 `01` §2): fuera de los
+/// paquetes, sin `namespace`, con su versión y la huella de lo que corre. La
+/// firma trae el `entrypoint` desde la raíz; `version` y `code_digest` los da
+/// quien genera —se calculan, no salen de la firma—, y `owner` es obligatorio.
+pub fn documento_propio(f: &Firma, owner: &str, version: &str, code_digest: &str) -> String {
+    let mut s = String::new();
+    let que = if f.runtime() == "node" {
+        "el código"
+    } else {
+        "el def"
+    };
+    let _ = writeln!(
+        s,
+        "{MARCA} {} · se edita {que}, no este fichero",
+        f.entrypoint
+    );
+    let _ = writeln!(s, "apiVersion: {API_VERSION_PROPIA}");
+    s.push_str("kind: Function\nmetadata:\n");
+    let _ = writeln!(s, "  name: {}", escalar(&f.nombre));
+    // Sin comillas: `x.y.z` no es un número en YAML, y así lo escriben los casos.
+    let _ = writeln!(s, "  version: {version}");
+    if let Some(d) = &f.descripcion {
+        let _ = writeln!(s, "  description: {}", escalar(d));
+    }
+    s.push_str("spec:\n");
+    let _ = writeln!(s, "  owner: {}", escalar(owner));
+    let _ = writeln!(s, "  runtime: {}", f.runtime());
+    let _ = writeln!(s, "  entrypoint: {}", escalar(&f.entrypoint));
+    let _ = writeln!(s, "  codeDigest: {}", escalar(code_digest));
+    cuerpo(&mut s, f);
+    s
+}
+
+/// Lo que va tras `entrypoint`, igual en las dos formas.
+fn cuerpo(s: &mut String, f: &Firma) {
     if let Some(o) = &f.over {
         let _ = writeln!(s, "  over: {}", escalar(o));
     }
@@ -97,7 +139,7 @@ pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> Str
     }
     if !f.entrada.is_empty() {
         s.push_str("  input:\n");
-        campos(&mut s, &f.entrada);
+        campos(s, &f.entrada);
     }
     match &f.salida {
         Salida::Valor(t) => {
@@ -106,13 +148,12 @@ pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> Str
         Salida::Campos(cs) if cs.is_empty() => s.push_str("  output: {}\n"),
         Salida::Campos(cs) => {
             s.push_str("  output:\n");
-            campos(&mut s, cs);
+            campos(s, cs);
         }
     }
     if let Some(t) = &f.timeout {
         let _ = writeln!(s, "  limits: {{ timeout: {} }}", escalar(t));
     }
-    s
 }
 
 fn campos(s: &mut String, cs: &[Campo]) {

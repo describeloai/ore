@@ -176,7 +176,13 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         };
 
         // ── OOS2042 · el fichero y el `def` están ────────────────────────
-        let carpeta = carpeta_del_paquete(&f.path, &pkg.root);
+        // v1alpha26: el `entrypoint` de una función propia es desde la raíz.
+        let propia = crate::funcion_propia::es_propia(f);
+        let carpeta = if propia {
+            pkg.root.clone()
+        } else {
+            carpeta_del_paquete(&f.path, &pkg.root)
+        };
         let fichero = carpeta.join(ruta);
         let Some(l) = leer(&mut leidos, &fichero, ruta) else {
             out.push(
@@ -299,7 +305,12 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         };
         match &func.resultado {
             Err(fallos) => no_se_deriva(&fichero, &l.fuente, nombre, fallos, out),
-            Ok(firma) => coherencia(f, firma, out),
+            Ok(firma) => {
+                coherencia(f, firma, out);
+                if propia {
+                    huella_coherente(pkg, f, ruta, runtime, out);
+                }
+            }
         }
     }
 
@@ -370,6 +381,38 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 }
             }
         }
+    }
+}
+
+/// v1alpha26 `01` §6 · `codeDigest` es la huella del código: la que no lo es
+/// es `OOS2013`, como una firma que no es la del `def`. Es lo que deja a una
+/// tabla anclada saber que el código es otro (ORE 0056).
+fn huella_coherente(
+    pkg: &Package,
+    f: &Loaded,
+    ruta: &str,
+    runtime: &str,
+    out: &mut Vec<Diagnostic>,
+) {
+    let dicha = f.section("codeDigest").and_then(Node::as_str).unwrap_or("");
+    let Some(es) = crate::funcion_propia::huella(&pkg.root, ruta, runtime) else {
+        return;
+    };
+    if dicha != es {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2013,
+                &f.path,
+                format!(
+                    "`{}`: `codeDigest` no es la huella de lo que corre ({es})",
+                    f.qname().unwrap_or_default()
+                ),
+            )
+            .at(f.section("codeDigest").map(Node::pos).unwrap_or_else(|| f.root.pos()))
+            .help(
+                "el código —el fichero, su `pyproject.toml`/`package.json` o su bloqueo— cambió                  y el documento no: regenéralo con `ore functions generate`, o haz commit desde                  la plataforma, que lo regenera",
+            ),
+        );
     }
 }
 

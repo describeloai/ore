@@ -243,6 +243,10 @@ codes! {
     // codigo cumple el documento: el `def` esta, y su cabecera es la firma.
     Oos2042 = "OOS2042", Reference, "el entrypoint de una funcion de codigo no esta";
     Oos2043 = "OOS2043", Reference, "la cabecera del def no es la firma del documento";
+    // v1alpha26 · LA FUNCION PROPIA. `functions` es el espacio de las
+    // funciones: si un paquete se llamara asi, `functions.x` seria a la vez
+    // una funcion y un dato de una base.
+    Oos2048 = "OOS2048", Reference, "un paquete llamado functions";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -533,6 +537,7 @@ mod tests {
             // v1alpha18: promover.
             Code::Oos2042,
             Code::Oos2043,
+            Code::Oos2048,
             Code::Oos4016,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,

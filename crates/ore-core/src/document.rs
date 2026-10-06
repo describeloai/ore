@@ -163,6 +163,12 @@ pub enum ApiVersion {
     /// planificar (`OOS2044`, `OOS2045`) y `expensive` se lee con presupuesto.
     /// Sin claves nuevas. Lo pidió ORE 0053 «ORE Federation Engine» (2026-10-04).
     V1Alpha24,
+    /// v1alpha26. **La función propia.** Una `Function` vive fuera de los
+    /// paquetes —`functions/<nombre>.yaml` en la raíz—, se llama
+    /// `functions.<nombre>`, lleva su versión (`metadata.version`, calculada) y
+    /// la huella de lo que corre (`spec.codeDigest`). Lo pidió ORE 0056
+    /// «Versioning» (2026-10-05). v1alpha25 (`Transform`) es de otra entrega.
+    V1Alpha26,
 }
 
 impl ApiVersion {
@@ -189,6 +195,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha22,
         ApiVersion::V1Alpha23,
         ApiVersion::V1Alpha24,
+        ApiVersion::V1Alpha26,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -215,6 +222,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha22 => "oos.dev/v1alpha22",
             ApiVersion::V1Alpha23 => "oos.dev/v1alpha23",
             ApiVersion::V1Alpha24 => "oos.dev/v1alpha24",
+            ApiVersion::V1Alpha26 => "oos.dev/v1alpha26",
         }
     }
 
@@ -663,6 +671,11 @@ impl Kind {
     /// Las claves de `metadata` **en una version**: las de siempre, mas
     /// `schema` en el contenido del catalogo desde v1alpha13.
     pub fn metadata_keys_en(self, version: ApiVersion) -> Vec<&'static str> {
+        // v1alpha26: la función propia no es de ningún paquete —sin
+        // `namespace` ni `schema`— y lleva su versión.
+        if self == Kind::Function && version >= ApiVersion::V1Alpha26 {
+            return vec!["name", "version", "description"];
+        }
         let mut k = self.metadata_keys().to_vec();
         // v1alpha15: el modelo gana paquete y schema a la vez; antes, ninguno.
         if self == Kind::Model {
@@ -960,6 +973,27 @@ impl Kind {
     /// campo que nadie lee es peor que uno que no existe, porque promete algo.
     pub fn spec_keys_en(self, version: ApiVersion) -> &'static [&'static str] {
         match self {
+            // v1alpha26 (`01-la-funcion-propia`): la huella de lo que corre.
+            Kind::Function if version >= ApiVersion::V1Alpha26 => &[
+                "owner",
+                "runtime",
+                "entrypoint",
+                "codeDigest",
+                "source",
+                "limits",
+                "over",
+                "reads",
+                "input",
+                "output",
+                "preconditions",
+                "effects",
+                "endorsements",
+                "authorization",
+                "idempotency",
+                "model",
+                "prompt",
+                "models",
+            ],
             // v1alpha21 (`01-el-dueno`): quien responde. Antes, `owner` en estos
             // cuatro es `OOS1005`. Lo demás, lo de su última versión.
             Kind::Function if version >= ApiVersion::V1Alpha21 => &[

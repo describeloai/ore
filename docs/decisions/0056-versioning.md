@@ -114,3 +114,41 @@ filas se hicieron con un código que nadie había fijado.
 
 **Para que llegue a un inquilino:** la imagen del puesto lleva el SDK; entra con la siguiente imagen
 del CI.
+
+## V2 · la función propia (en curso, rama `0056-versioning`)
+
+### V2·1 · OOS v1alpha26 (hecho, `C:\oos` `81c66fd` + `56be6ae`, sin empujar)
+
+La v1alpha25 ya era de otra entrega (`Transform`, con `OOS2046` y `OOS2047`), así que esta es la
+**v1alpha26** y su código, **`OOS2048`** (un paquete llamado `functions`). Lo que decide: la
+`Function` vive en `functions/<nombre>.yaml` de la raíz, se llama `functions.<nombre>` (único sin
+mirar mayúsculas), su `entrypoint` es desde la raíz, `metadata.version` se calcula con las reglas de
+v1alpha18 §7 contra la rama principal, y `spec.codeDigest` es la huella del fichero, su manifiesto
+de entorno y su bloqueo, con los finales de línea en `\n`. 8 casos (2 aceptan, 6 rechazan) y 2 de
+diff. Al implementarlo cambiaron dos cosas de la spec: `namespace` en una función propia es
+`OOS1005` (la clave no existe), y los casos de diff no llevan paquete (uno sin cambios exigía su
+propia versión).
+
+### V2·2 · ore-core (hecho)
+
+- `ApiVersion::V1Alpha26` —sin v1alpha25, como faltan v1alpha5 y 6—; las claves de la función
+  propia; `qname()` = `functions.<nombre>`.
+- `funcion_propia.rs`: `OOS1004` (versión, dueño y huella), `OOS2036` (fuera de `functions/`),
+  `OOS2035` sin mayúsculas, `OOS2048`; y `huella()`.
+- `promover`: el `entrypoint` de una propia es desde la raíz, y `codeDigest` se coteja (`OOS2013`).
+- `generar`: **toda** función de código se genera ya como propia, con su `codeDigest` y su versión
+  —`plan_con_anteriores` recibe los documentos de la rama principal; sin ellos, contra los del
+  árbol—. Un documento de la forma de antes se mueve a `functions/` y **nace con la versión de su
+  paquete**, sin salto por ganar la huella.
+- `diff`: las funciones propias se comparan de una en una (`salto_de_funcion`), con `OOS5021` por
+  función; la versión del paquete no las cuenta, y sólo se comprueba si hay paquete.
+- `assets`: la función propia no tiene `paquete` (no está en ninguna base: se acaba el «+1» en
+  `test_project.default`); su repositorio y su proyecto son los de su código.
+
+Medido: ore-core y ore-code en verde; conformidad 88/88 y v1alpha26 8/8; el workspace entero en
+verde salvo los 5 de siempre que necesitan `git` (la imagen de herramientas no lo trae).
+
+**Lo que esto rompe hasta V2·3–V2·5, y por eso no entra en `main` todavía:** en cuanto un commit
+regenera, la función pasa a `functions.<nombre>`, y los que la llaman por `<paquete>.<nombre>`
+—`get_function`, el SQL de B7·2, las rutas de `ore-serve` y la consola— dejan de encontrarla.
+Además `ore-serve` tiene que pasar a `generar` las versiones de `main` (`plan_con_anteriores`).

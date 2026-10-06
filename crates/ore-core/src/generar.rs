@@ -65,10 +65,13 @@ pub struct Plan {
     pub al_dia: usize,
 }
 
-/// Un documento `runtime: python` del paquete: dónde está y qué dice.
+/// Un documento de código del árbol: dónde está, qué dice y, si es de la forma
+/// de antes (del paquete), la versión de su paquete —con la que nace al
+/// migrar (v1alpha26 `01` §7)—.
 struct Existente {
     ruta: PathBuf,
     texto: String,
+    version_del_paquete: Option<String>,
 }
 
 pub fn plan(pkg: &Package) -> Plan {
@@ -85,205 +88,253 @@ pub fn plan_de(pkg: &Package, solo: Option<&BTreeSet<PathBuf>>) -> Plan {
 
 /// [`plan_de`] sabiendo quién crea (v1alpha21 `01` §4): un documento que NACE
 /// lleva su `owner`; uno que ya estaba conserva el suyo —regenerar no es
-/// transferir—, y uno sin él sigue sin él.
+/// transferir—. Sin quien crea, el dueño del paquete del código: una función
+/// propia no nace sin dueño (v1alpha26 `01` §2).
 pub fn plan_con_dueno(
     pkg: &Package,
     solo: Option<&BTreeSet<PathBuf>>,
     dueno: Option<&str>,
 ) -> Plan {
-    let mut p = Plan::default();
-    for (carpeta, paquete) in paquetes_publicables(pkg) {
-        plan_del_paquete(pkg, &carpeta, &paquete, solo, dueno, &mut p);
-    }
-    p.cambios.sort_by(|a, b| a.ruta.cmp(&b.ruta));
-    p
+    plan_con_anteriores(pkg, solo, dueno, None)
 }
 
-fn plan_del_paquete(
+/// **El plan de las funciones propias** (ORE 0056 V2, OOS v1alpha26): cada
+/// función del código va a `functions/<nombre>.yaml` de la raíz, con
+/// `codeDigest` y con su versión **calculada** contra `anteriores` —nombre →
+/// texto de su documento en la rama principal— por las reglas de
+/// [`crate::diff::salto_de_funcion`]. Sin `anteriores`, contra el documento
+/// que el árbol tiene. Un documento de la forma de antes (del paquete) se
+/// mueve aquí y nace con la versión de su paquete.
+pub fn plan_con_anteriores(
     pkg: &Package,
-    carpeta: &Path,
-    paquete: &str,
     solo: Option<&BTreeSet<PathBuf>>,
     dueno: Option<&str>,
-    p: &mut Plan,
-) {
-    let entra = |py: &Path| solo.is_none_or(|s| s.contains(py));
-    // Los documentos de código del paquete, por su `entrypoint`.
+    anteriores: Option<&BTreeMap<String, String>>,
+) -> Plan {
+    let mut p = Plan::default();
+    let raiz = pkg.root.as_path();
+    // Los documentos de código del árbol, por su `entrypoint` desde la raíz.
     let mut existentes: BTreeMap<String, Existente> = BTreeMap::new();
     for f in pkg.of(Kind::Function) {
-        if carpeta_del_paquete(&f.path, &pkg.root) != carpeta
-            || !matches!(
-                f.section("runtime").and_then(Node::as_str),
-                Some("python" | "node")
-            )
-        {
+        if !matches!(
+            f.section("runtime").and_then(Node::as_str),
+            Some("python" | "node")
+        ) {
             continue;
         }
         let Some(e) = f.section("entrypoint").and_then(Node::as_str) else {
             continue;
         };
-        let texto = std::fs::read_to_string(&f.path).unwrap_or_default();
+        let (desde_raiz, version_del_paquete) = if crate::funcion_propia::es_propia(f) {
+            (e.to_string(), None)
+        } else {
+            let carpeta = carpeta_del_paquete(&f.path, raiz);
+            let rel = crate::funcion_propia::relativa(raiz, &carpeta);
+            let version = pkg
+                .of(Kind::Package)
+                .find(|d| d.path.parent() == Some(carpeta.as_path()))
+                .and_then(|d| d.meta("version").and_then(Node::as_str))
+                .map(str::to_string);
+            let e = if rel.is_empty() {
+                e.to_string()
+            } else {
+                format!("{rel}/{e}")
+            };
+            (e, version)
+        };
         existentes.insert(
-            e.to_string(),
+            desde_raiz,
             Existente {
                 ruta: f.path.clone(),
-                texto,
+                texto: std::fs::read_to_string(&f.path).unwrap_or_default(),
+                version_del_paquete,
             },
         );
     }
 
-    let mut pys = Vec::new();
-    ficheros_de_codigo(carpeta, &mut pys);
-    pys.sort();
-    // Lo que el código pide, y dónde: para no generar dos veces el mismo sitio.
+    let entra = |py: &Path| solo.is_none_or(|s| s.contains(py));
     let mut vivas: BTreeSet<String> = BTreeSet::new();
-    let mut destinos: BTreeMap<PathBuf, String> = BTreeMap::new();
+    // nombre en minúsculas → entrypoint: un nombre, una función (`OOS2035`).
     let mut nombres: BTreeMap<String, String> = BTreeMap::new();
-    for py in pys {
-        if carpeta_del_paquete(&py, &pkg.root) != carpeta || !entra(&py) {
-            continue; // de un paquete de dentro, que lo planea él; o no se pidió
-        }
-        let Ok(fuente) = std::fs::read_to_string(&py) else {
-            continue;
-        };
-        let Ok(rel) = py.strip_prefix(carpeta) else {
-            continue;
-        };
-        let ruta = rel.to_string_lossy().replace('\\', "/");
-        if !ore_code::puede_tener_funciones(&ruta, &fuente) {
-            continue;
-        }
-        let Some(d) = ore_code::derivar(&fuente, &ruta) else {
-            continue;
-        };
-        if d.funciones.is_empty() {
-            continue;
-        }
-        // Un fichero roto no dice qué funciones tiene: sus documentos se quedan.
-        if let Some(diag) = roto(&py, &fuente, &d) {
+    for (carpeta, _paquete) in paquetes_publicables(pkg) {
+        let owner_del_paquete = pkg
+            .of(Kind::Package)
+            .find(|d| d.path.parent() == Some(carpeta.as_path()))
+            .and_then(|d| d.section("owner").and_then(Node::as_str))
+            .map(str::to_string);
+        let mut pys = Vec::new();
+        ficheros_de_codigo(&carpeta, &mut pys);
+        pys.sort();
+        for py in pys {
+            if carpeta_del_paquete(&py, raiz) != carpeta || !entra(&py) {
+                continue; // de un paquete de dentro, que lo planea él; o no se pidió
+            }
+            let Ok(fuente) = std::fs::read_to_string(&py) else {
+                continue;
+            };
+            let ruta = crate::funcion_propia::relativa(raiz, &py);
+            if !ore_code::puede_tener_funciones(&ruta, &fuente) {
+                continue;
+            }
+            let Some(d) = ore_code::derivar(&fuente, &ruta) else {
+                continue;
+            };
+            if d.funciones.is_empty() {
+                continue;
+            }
+            // Un fichero roto no dice qué funciones tiene: sus documentos se quedan.
+            if let Some(diag) = roto(&py, &fuente, &d) {
+                for f in &d.funciones {
+                    vivas.insert(ore_code::entrypoint_de(&ruta, &f.nombre));
+                }
+                p.diagnosticos.push(diag);
+                continue;
+            }
             for f in &d.funciones {
-                vivas.insert(ore_code::entrypoint_de(&ruta, &f.nombre));
-            }
-            p.diagnosticos.push(diag);
-            continue;
-        }
-        for f in &d.funciones {
-            let entrypoint = ore_code::entrypoint_de(&ruta, &f.nombre);
-            vivas.insert(entrypoint.clone());
-            let firma = match &f.resultado {
-                Ok(x) => x,
-                Err(fallos) => {
-                    no_se_deriva(&py, &fuente, &f.nombre, fallos, &mut p.diagnosticos);
-                    continue;
-                }
-            };
-            if let Some(otro) = nombres.insert(f.nombre.clone(), entrypoint.clone()) {
-                p.diagnosticos.push(
-                    Diagnostic::new(
-                        Code::Oos2013,
-                        &py,
-                        format!(
-                            "dos `@function` se llamarían `{paquete}.{}`: `{otro}` y `{entrypoint}`",
-                            f.nombre
-                        ),
-                    )
-                    .help("una función es un nombre del paquete: renombra uno de los dos `def`"),
-                );
-                continue;
-            }
-            let destino = carpeta.join(emitir::ruta_del_documento(firma));
-            let previo = existentes.get(&entrypoint);
-            // El dueño: el que ya tenía su documento (aunque se mueva); si nace,
-            // el de quien lo crea.
-            let owner = match previo {
-                Some(e) => owner_de(&e.texto),
-                None => match std::fs::read_to_string(&destino) {
-                    Ok(t) if emitir::es_generado(&t) => owner_de(&t),
-                    Ok(_) => None,
-                    Err(_) => dueno.map(str::to_string),
-                },
-            };
-            let contenido = emitir::documento_con_dueno(firma, paquete, owner.as_deref());
-            // El suyo, en otro sitio: se mueve aquí.
-            let movido = previo.filter(|e| e.ruta != destino);
-            let movido_a_mano = movido.is_some_and(|e| !emitir::es_generado(&e.texto));
-            if let Some(otro) = destinos.insert(destino.clone(), entrypoint.clone()) {
-                p.diagnosticos.push(
-                    Diagnostic::new(
-                        Code::Oos2013,
-                        &destino,
-                        format!("`{otro}` y `{entrypoint}` irían al mismo documento"),
-                    )
-                    .help("mueve uno de los dos documentos: se le encuentra por su `entrypoint`"),
-                );
-                continue;
-            }
-            // Lo que hay en el destino, y si es el suyo.
-            let (actual, es_suyo) = match previo {
-                Some(e) if movido.is_none() => (Some(e.texto.clone()), true),
-                _ => (std::fs::read_to_string(&destino).ok(), false),
-            };
-            let borrar_el_de_antes = |p: &mut Plan| {
-                if let Some(e) = movido {
-                    p.cambios.push(Cambio {
-                        ruta: e.ruta.clone(),
-                        entrypoint: entrypoint.clone(),
-                        accion: Accion::Borrar,
-                    });
-                }
-            };
-            let accion = match actual {
-                None if movido_a_mano => Accion::Reescribir {
-                    contenido,
-                    a_mano: true,
-                },
-                None => Accion::Crear(contenido),
-                Some(t) if t.replace("\r\n", "\n") == contenido => {
-                    if movido.is_some() {
-                        borrar_el_de_antes(p);
-                    } else {
-                        p.al_dia += 1;
+                let entrypoint = ore_code::entrypoint_de(&ruta, &f.nombre);
+                vivas.insert(entrypoint.clone());
+                let firma = match &f.resultado {
+                    Ok(x) => x,
+                    Err(fallos) => {
+                        no_se_deriva(&py, &fuente, &f.nombre, fallos, &mut p.diagnosticos);
+                        continue;
                     }
-                    continue;
-                }
-                Some(t) if !es_suyo && !emitir::es_generado(&t) => {
-                    // El sitio lo ocupa un documento que no es de esta función.
+                };
+                if let Some(otro) = nombres.insert(f.nombre.to_lowercase(), entrypoint.clone()) {
                     p.diagnosticos.push(
                         Diagnostic::new(
-                            Code::Oos2013,
-                            &destino,
+                            Code::Oos2035,
+                            &py,
                             format!(
-                                "el documento de `{entrypoint}` iría aquí, y aquí hay otro escrito a mano"
+                                "dos funciones se llamarían `{}.{}`: `{otro}` y `{entrypoint}`",
+                                crate::funcion_propia::ESPACIO,
+                                f.nombre
                             ),
                         )
-                        .help("muévelo o renómbralo; los generados se reescriben, los escritos a mano no"),
+                        .help(
+                            "el nombre de una función es único en el espacio de trabajo, sin \
+                             mirar mayúsculas: renombra uno de los dos",
+                        ),
                     );
                     continue;
                 }
-                Some(t) => Accion::Reescribir {
-                    contenido,
-                    a_mano: !emitir::es_generado(&t) || movido_a_mano,
-                },
-            };
-            borrar_el_de_antes(p);
-            p.cambios.push(Cambio {
-                ruta: destino,
-                entrypoint,
-                accion,
-            });
+                let destino = raiz.join(crate::funcion_propia::ruta_del_documento(&f.nombre));
+                let previo = existentes.get(&entrypoint);
+                let en_destino = std::fs::read_to_string(&destino).ok();
+                // El dueño: el que ya tenía; si nace, el de quien lo crea; si
+                // nadie lo dice, el del paquete del código.
+                let owner = previo
+                    .and_then(|e| owner_de(&e.texto))
+                    .or_else(|| {
+                        en_destino
+                            .as_deref()
+                            .filter(|t| emitir::es_generado(t))
+                            .and_then(owner_de)
+                    })
+                    .or_else(|| dueno.map(str::to_string))
+                    .or_else(|| owner_del_paquete.clone());
+                let Some(owner) = owner else {
+                    p.diagnosticos.push(
+                        Diagnostic::new(
+                            Code::Oos1004,
+                            &py,
+                            format!("`{entrypoint}` no tiene de quién ser: nadie da `owner`"),
+                        )
+                        .help(
+                            "una función propia nace con dueño, y el paquete del código no lo dice",
+                        ),
+                    );
+                    continue;
+                };
+                let Some(huella) = crate::funcion_propia::huella(raiz, &ruta, firma.runtime())
+                else {
+                    continue;
+                };
+                // La versión: contra la de la rama principal si se da; si no,
+                // contra lo que el árbol tiene.
+                let (anterior, base) = match anteriores.and_then(|a| a.get(&f.nombre)) {
+                    Some(t) => (Some(t.clone()), None),
+                    None => match previo {
+                        Some(e) => (Some(e.texto.clone()), e.version_del_paquete.clone()),
+                        None => (en_destino.clone().filter(|t| emitir::es_generado(t)), None),
+                    },
+                };
+                let version = version_de(
+                    firma,
+                    &owner,
+                    &huella,
+                    &destino,
+                    anterior.as_deref(),
+                    base.as_deref(),
+                );
+                let contenido = emitir::documento_propio(firma, &owner, &version, &huella);
+                let movido = previo.filter(|e| e.ruta != destino);
+                let movido_a_mano = movido.is_some_and(|e| !emitir::es_generado(&e.texto));
+                let es_suyo = previo.is_some_and(|e| e.ruta == destino);
+                let borrar_el_de_antes = |p: &mut Plan| {
+                    if let Some(e) = movido {
+                        p.cambios.push(Cambio {
+                            ruta: e.ruta.clone(),
+                            entrypoint: entrypoint.clone(),
+                            accion: Accion::Borrar,
+                        });
+                    }
+                };
+                let accion = match en_destino {
+                    None if movido_a_mano => Accion::Reescribir {
+                        contenido,
+                        a_mano: true,
+                    },
+                    None => Accion::Crear(contenido),
+                    Some(t) if t.replace("\r\n", "\n") == contenido => {
+                        if movido.is_some() {
+                            borrar_el_de_antes(&mut p);
+                        } else {
+                            p.al_dia += 1;
+                        }
+                        continue;
+                    }
+                    Some(t) if !es_suyo && !emitir::es_generado(&t) => {
+                        p.diagnosticos.push(
+                            Diagnostic::new(
+                                Code::Oos2013,
+                                &destino,
+                                format!(
+                                    "el documento de `{entrypoint}` iría aquí, y aquí hay otro escrito a mano"
+                                ),
+                            )
+                            .help("muévelo o renómbralo; los generados se reescriben, los escritos a mano no"),
+                        );
+                        continue;
+                    }
+                    Some(t) => Accion::Reescribir {
+                        contenido,
+                        a_mano: !emitir::es_generado(&t) || movido_a_mano,
+                    },
+                };
+                borrar_el_de_antes(&mut p);
+                p.cambios.push(Cambio {
+                    ruta: destino,
+                    entrypoint,
+                    accion,
+                });
+            }
         }
     }
 
-    // ── lo que sobra: generado, y su `def` ya no es un `@function` ──────────
+    // ── lo que sobra: generado, y su `def` ya no es una función ─────────────
     for (entrypoint, e) in &existentes {
-        // `<ruta>.py:<def>`, o `<ruta>.ts`: el fichero es la función.
-        let fichero = carpeta.join(
+        let fichero = raiz.join(
             entrypoint
                 .rsplit_once(':')
                 .map(|(r, _)| r)
                 .unwrap_or(entrypoint),
         );
-        if !vivas.contains(entrypoint) && emitir::es_generado(&e.texto) && entra(&fichero) {
+        if !vivas.contains(entrypoint)
+            && emitir::es_generado(&e.texto)
+            && entra(&fichero)
+            && !p.cambios.iter().any(|c| c.ruta == e.ruta)
+        {
             p.cambios.push(Cambio {
                 ruta: e.ruta.clone(),
                 entrypoint: entrypoint.clone(),
@@ -291,6 +342,56 @@ fn plan_del_paquete(
             });
         }
     }
+    p.cambios.sort_by(|a, b| a.ruta.cmp(&b.ruta));
+    p
+}
+
+/// La versión de una función que se genera (v1alpha26 `01` §5): nace en
+/// `0.1.0`; si tenía documento, la de antes —o la de su paquete, si era de la
+/// forma de antes— subida lo que el cambio exige.
+fn version_de(
+    firma: &ore_code::Firma,
+    owner: &str,
+    huella: &str,
+    destino: &Path,
+    anterior: Option<&str>,
+    base: Option<&str>,
+) -> String {
+    let inicial = crate::funcion_propia::VERSION_INICIAL.to_string();
+    let Some(texto) = anterior else {
+        return inicial;
+    };
+    let cargar = |t: &str| {
+        crate::parse::parse(t).ok().map(|root| crate::link::Loaded {
+            path: destino.to_path_buf(),
+            kind: Kind::Function,
+            root,
+        })
+    };
+    let Some(antes) = cargar(texto) else {
+        return inicial;
+    };
+    let de_antes = base
+        .map(str::to_string)
+        .or_else(|| {
+            antes
+                .meta("version")
+                .and_then(Node::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| inicial.clone());
+    // El documento nuevo con la versión de antes: lo que cambia es el resto.
+    let Some(despues) = cargar(&emitir::documento_propio(firma, owner, &de_antes, huella)) else {
+        return de_antes;
+    };
+    let (salto, _) = crate::diff::salto_de_funcion(&antes, &despues);
+    // La forma de antes no tenía huella: ganarla al migrar no es un cambio.
+    let salto = if base.is_some() && salto == Some(crate::diff::Bump::Patch) {
+        None
+    } else {
+        salto
+    };
+    crate::diff::version_tras(&de_antes, salto).unwrap_or(de_antes)
 }
 
 /// Escribe el plan en disco.

@@ -81,6 +81,10 @@ impl Loaded {
     /// espacio de nombres. La completa, con `normalize::completo`.
     pub fn qname(&self) -> Option<String> {
         let name = self.meta("name")?.as_str()?;
+        // v1alpha26: la función propia se llama `functions.<nombre>`.
+        if crate::funcion_propia::es_propia(self) {
+            return Some(format!("{}.{name}", crate::funcion_propia::ESPACIO));
+        }
         Some(match self.meta("namespace").and_then(|n| n.as_str()) {
             Some(ns) => crate::normalize::corto(
                 ns,

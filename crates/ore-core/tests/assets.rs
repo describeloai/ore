@@ -862,10 +862,12 @@ fn la_funcion_generada_es_de_quien_la_crea_y_regenerarla_no_la_transfiere() {
     let plan = ore_core::generar::plan_con_dueno(&pkg, None, Some("user:ana"));
     assert!(plan.diagnosticos.is_empty(), "{:?}", plan.diagnosticos);
     ore_core::generar::aplicar(&plan).unwrap();
-    let doc = r.join("packages/ventas/functions/nivel.yaml");
+    // v1alpha26: la función es propia, de la raíz (ORE 0056).
+    let doc = r.join("functions/nivel.yaml");
     let texto = fs::read_to_string(&doc).unwrap();
     assert!(
-        texto.contains("apiVersion: oos.dev/v1alpha21\n")
+        texto.contains("apiVersion: oos.dev/v1alpha26\n")
+            && texto.contains("  version: 0.1.0\n")
             && texto.contains("spec:\n  owner: user:ana\n"),
         "{texto}"
     );
@@ -886,7 +888,9 @@ fn la_funcion_generada_es_de_quien_la_crea_y_regenerarla_no_la_transfiere() {
     assert!(
         texto.contains("owner: user:ana")
             && !texto.contains("user:bea")
-            && texto.contains("mejor dicho"),
+            && texto.contains("mejor dicho")
+            // la descripción es un parche (v1alpha26 `01` §5)
+            && texto.contains("  version: 0.1.1\n"),
         "{texto}"
     );
     // Y sin saber quién crea (`ore functions generate` en local), está al día.
@@ -926,8 +930,11 @@ fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
 
     let (pkg, _) = ore_core::validate::cargar_paquete(r);
     let j = indice(&pkg, &punteros(r), &Cabeza::default());
-    let f = item(&j, "function:ventas.nivel");
-    assert_eq!(f["ruta"], Json::s("packages/ventas/functions/nivel.yaml"));
+    let f = item(&j, "function:functions.nivel");
+    assert_eq!(f["ruta"], Json::s("functions/nivel.yaml"));
+    // Fuera de toda base: su paquete es null, y su repositorio y su proyecto,
+    // los de su código.
+    assert_eq!(f["paquete"], Json::Crudo("null".into()));
     assert_eq!(f["repositorio"], Json::s("packages/ventas/riesgo"));
     assert_eq!(f["proyectos"], Json::Arr(vec![Json::s("riesgo")]));
     assert_eq!(
@@ -940,7 +947,7 @@ fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
     assert_eq!(fun["runtime"], Json::s("python"));
     assert_eq!(
         fun["entrypoint"],
-        Json::s("riesgo/funciones/nivel.py:nivel")
+        Json::s("packages/ventas/riesgo/funciones/nivel.py:nivel")
     );
     assert_eq!(
         fun["codigo"],

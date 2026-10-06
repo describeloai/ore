@@ -1457,9 +1457,13 @@ fn el_submodulo_trae_la_suite_completa() {
     // Y uno mas cuando el documento paso a derivarse del codigo (oos 3a7e729,
     // ORE 0050 G1): estrechar lo que devuelve una funcion que devuelve un
     // valor (`output: {type: T}`, OOS5002 con sujeto `<funcion>.output`).
-    assert_eq!(casos.len(), 86, "número de casos inesperado");
+    //
+    // Y dos de diff con la funcion propia (oos v1alpha26, ORE 0056 V2): un
+    // cuerpo nuevo es un parche, y una funcion que publica un mayor como
+    // parche es OOS5021 con la funcion como sujeto.
+    assert_eq!(casos.len(), 88, "número de casos inesperado");
     assert_eq!(por_grupo.get("invalid"), Some(&34));
-    assert_eq!(por_grupo.get("diff"), Some(&28));
+    assert_eq!(por_grupo.get("diff"), Some(&30));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));
     assert_eq!(por_grupo.get("emit"), Some(&4));
@@ -1603,6 +1607,15 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
         "{} caso(s) citan mal:\n  {}",
         fallos.len(),
         fallos.join("\n  ")
+    );
+}
+
+#[test]
+fn borrador_de_v1alpha26() {
+    marcador(
+        "v1alpha26",
+        "la función propia",
+        "BORRADOR · OOS v1alpha26 · la función propia",
     );
 }
 

@@ -47,6 +47,7 @@ pub mod exporta;
 pub mod firma;
 pub mod flow;
 pub mod frescura;
+pub mod funcion_propia;
 pub mod generar;
 pub mod governance;
 pub mod graphql;

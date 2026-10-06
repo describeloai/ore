@@ -1394,10 +1394,10 @@ spec:
         let (p, _) = crate::validate::cargar_paquete(&raiz);
         crate::generar::aplicar(&crate::generar::plan(&p)).unwrap();
         assert!(
-            pkg.join("functions/funcionesDeRiesgoInvoiceStatus.yaml")
+            raiz.join("functions/funcionesDeRiesgoInvoiceStatus.yaml")
                 .exists()
         );
-        assert!(pkg.join("functions/otraInvoiceStatus.yaml").exists());
+        assert!(raiz.join("functions/otraInvoiceStatus.yaml").exists());
         // L1: la prueba no es una función, y no tiene documento.
         let prueba =
             pkg.join("funciones-de-riesgo/functions/funcionesDeRiesgoInvoiceStatus.test.ts");
@@ -1412,11 +1412,9 @@ spec:
             &texto
         ));
         assert!(
-            std::fs::read_dir(pkg.join("functions")).unwrap().all(|e| !e
+            std::fs::read_dir(raiz.join("functions"))
                 .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".test"))
+                .all(|e| !e.unwrap().file_name().to_string_lossy().contains(".test"))
         );
         let d = crate::validate::validate_package(&raiz);
         assert!(
@@ -1517,9 +1515,10 @@ spec:
             // Lo que hace el commit que lo crea (G2): generar lo sembrado.
             let (p, _) = crate::validate::cargar_paquete(&raiz);
             crate::generar::aplicar(&crate::generar::plan(&p)).unwrap();
-            let contrato = pkg.join("functions/funciones_de_riesgo_invoice_status.yaml");
+            // v1alpha26: el documento es de la raíz, no del paquete (ORE 0056).
+            let contrato = raiz.join("functions/funciones_de_riesgo_invoice_status.yaml");
             if paquete == "ventas" {
-                assert!(pkg.join("functions/otra_invoice_status.yaml").exists());
+                assert!(raiz.join("functions/otra_invoice_status.yaml").exists());
                 // El código vive en `<carpeta>/functions/`; su documento, no.
                 assert!(
                     !pkg.join(
@@ -1534,7 +1533,7 @@ spec:
                 );
                 assert!(
                     yaml.contains(
-                        "entrypoint: funciones-de-riesgo/functions/example.py:funciones_de_riesgo_invoice_status"
+                        "entrypoint: packages/ventas/funciones-de-riesgo/functions/example.py:funciones_de_riesgo_invoice_status"
                     ),
                     "{yaml}"
                 );
