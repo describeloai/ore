@@ -783,7 +783,7 @@ def riesgo(importe: float, pais: str = "ES") -> str:
     return "alto" if importe > 100 else "bajo"
 PY
 [ "$(pon packages/hr/riesgo/funciones/riesgo.py "$TMP/riesgo.py")" = "201" ] || falla "25 · guardar un @function no dio 201 · $(cat "$TMP/r.json")"
-cumple "d['generados']==[{'ruta':'functions/riesgo.yaml','accion':'crear','entrypoint':'packages/hr/riesgo/funciones/riesgo.py:riesgo'}]" "25 · su documento, generado"
+cumple "d['generados']==[{'ruta':'functions/riesgo.yaml','accion':'crear','entrypoint':'packages/hr/riesgo/funciones/riesgo.py:riesgo','kind':'Function'}]" "25 · su documento, generado (con su kind desde 0055 T1·4: también se generan Transform)"
 cumple "not any(x.get('codigo') in ('OOS2013','OOS2043') for x in d['diagnosticos'])" "25 · y el árbol no se queja de él"
 [ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "functions/riesgo.yaml packages/hr/riesgo/funciones/riesgo.py " ] \
   || falla "25 · el código y su documento, en el MISMO commit: $(git --git-dir="$FORJA" show --name-only --format='' main | tr '\n' ' ')"
