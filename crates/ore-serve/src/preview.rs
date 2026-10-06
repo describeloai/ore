@@ -10,7 +10,7 @@
 //! | kind | de dónde | qué se lee |
 //! |---|---|---|
 //! | `dataset` | el lago | `ore datasets --muestra` → `ore-store muestra`: los ficheros anteriores a `desde` ni se abren, y del que toca sólo sus páginas (índice de páginas, por rangos) |
-//! | `view` | el lago | lo mismo sobre la copia de la vista SQL; sin copia, **409**: se lee en un puesto (sin motor aquí) |
+//! | `view` | el lago, o el motor | lo mismo sobre la copia de la vista SQL; **sin copia, `ore-motor`** (0057 B4·3·2): su `select` con las fuentes resueltas aquí —datasets con su credencial, lo leído en vivo de la pasarela— y DuckDB allí. Sin motor en la celda, 409 |
 //! | `table`, `objecttable` | el origen, en vivo | `POST /federation/read` con `limit = desde + limite` —la pasarela no sabe `offset`—, el flujo Arrow a filas por `ore-store arrow-a-filas` |
 //!
 //! La página de un dataset dice qué `snapshot` leyó; la consola pide las
@@ -109,9 +109,19 @@ impl Servidor {
         let r = match kind {
             "dataset" | "view" => {
                 let nombre = ore_core::normalize::corto(b, s, n);
-                self.leyendo_en(rama, |raiz| {
+                let r = self.leyendo_en(rama, |raiz| {
                     self.del_lago(raiz, &nombre, desde, limite, snapshot.as_deref())
-                })
+                });
+                // ⭐ 0057 B4·3·2: una vista sin copia —foreign view, o sobre
+                //   datasets— se calcula en `ore-motor`.
+                if kind == "view" && r.codigo == 409 && sin_copia(&r) {
+                    match motor() {
+                        Some(m) => self.por_el_motor(&m, rama, p, sujeto, &consulta, limite),
+                        None => r,
+                    }
+                } else {
+                    r
+                }
             }
             _ => self.en_vivo(p, sujeto, b, s, n, desde, limite),
         };
@@ -254,6 +264,265 @@ impl Servidor {
             Err(_) => Respuesta::error(502, "`ore-store arrow-a-filas` no devolvió JSON"),
         }
     }
+}
+
+/// Dónde está `ore-motor` en esta celda (`ORE_MOTOR`, `host:puerto`).
+fn motor() -> Option<String> {
+    std::env::var("ORE_MOTOR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Si el 409 es el de una vista sin copia (`preview/se-lee-en-un-puesto`).
+fn sin_copia(r: &Respuesta) -> bool {
+    matches!(&r.cuerpo, Json::Obj(m) if matches!(m.get("codigo"), Some(Json::Str(c)) if c == "preview/se-lee-en-un-puesto"))
+}
+
+impl Servidor {
+    /// ⭐ 0057 B4·3·2 · **Una consulta, calculada en `ore-motor`**. Aquí se
+    /// decide todo, con la identidad y la rama de quien pregunta: los nombres
+    /// y lo que cada uno es (`fuentes_de_sql`, lo mismo que un puesto), y lo
+    /// que se lee en vivo, que se trae de la pasarela por `leer_federado` (su
+    /// gobierno, su presupuesto, su huella). El motor sólo calcula: no habla
+    /// con nadie más.
+    pub(crate) fn por_el_motor(
+        &self,
+        motor: &str,
+        rama: Option<&str>,
+        p: &Peticion,
+        sujeto: &Identidad,
+        consulta: &str,
+        limite: u64,
+    ) -> Respuesta {
+        let rama_s = rama.map(String::from);
+        let r = self.fuentes_de_sql(rama_s.clone(), consulta, &|n| {
+            self.datos_en(rama_s.clone(), n)
+        });
+        if r.codigo != 200 {
+            return r;
+        }
+        let fuentes = match &r.cuerpo {
+            Json::Obj(m) => match m.get("fuentes") {
+                Some(Json::Obj(f)) => f.clone(),
+                _ => Default::default(),
+            },
+            _ => Default::default(),
+        };
+        // Lo que se lee en vivo, una vez por tabla.
+        let mut vivas: std::collections::BTreeMap<String, Json> = Default::default();
+        for v in fuentes.values() {
+            let Json::Obj(m) = v else { continue };
+            let Some(Json::Obj(l)) = m.get("federada") else {
+                continue;
+            };
+            let Some(Json::Str(tabla)) = l.get("tabla") else {
+                continue;
+            };
+            if vivas.contains_key(tabla) {
+                continue;
+            }
+            match self.arrow_en_vivo(p, sujeto, l) {
+                Ok(bytes) => {
+                    vivas.insert(tabla.clone(), Json::s(base64(&bytes)));
+                }
+                Err(r) => return r,
+            }
+        }
+        let cuerpo = Json::obj([
+            ("texto", Json::s(consulta)),
+            ("fuentes", Json::Obj(fuentes)),
+            ("vivas", Json::Obj(vivas)),
+            ("limite", Json::Int(limite as i64)),
+        ])
+        .jcs();
+        let arrow = match al_motor(motor, &cuerpo) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let peticion = Json::obj([
+            ("desde", Json::s("0")),
+            ("limite", Json::s(limite.to_string())),
+        ])
+        .jcs();
+        let salida = match a_filas(&self.binario, &peticion, &arrow) {
+            Ok(s) => s,
+            Err(e) => return Respuesta::error(502, e),
+        };
+        match ore_core::parse::parse(salida.trim()) {
+            Ok(nodo) => {
+                let mut j = Json::de_node(&nodo);
+                if let Json::Obj(m) = &mut j {
+                    m.insert("origen".into(), Json::s("motor"));
+                }
+                Respuesta::ok(j)
+            }
+            Err(_) => Respuesta::error(502, "`ore-store arrow-a-filas` no devolvió JSON"),
+        }
+    }
+
+    /// Una lectura en vivo ya repartida (`federada`), en Arrow, por
+    /// `leer_federado` en nombre de quien pregunta.
+    fn arrow_en_vivo(
+        &self,
+        p: &Peticion,
+        sujeto: &Identidad,
+        l: &std::collections::BTreeMap<String, Json>,
+    ) -> Result<Vec<u8>, Respuesta> {
+        let mut cuerpo: Vec<(&str, Json)> = vec![(
+            "tabla",
+            l.get("tabla")
+                .cloned()
+                .unwrap_or(Json::Crudo("null".into())),
+        )];
+        if let Some(c) = l.get("columnas") {
+            cuerpo.push(("columnas", c.clone()));
+        }
+        if let Some(f) = l.get("empujados") {
+            cuerpo.push(("filtros", f.clone()));
+        }
+        if let Some(x) = l.get("limit")
+            && !matches!(x, Json::Crudo(c) if c == "null")
+        {
+            cuerpo.push(("limit", x.clone()));
+        }
+        if let Some(Json::Arr(os)) = l.get("orderBy")
+            && !os.is_empty()
+        {
+            let orden = os
+                .iter()
+                .filter_map(|o| match o {
+                    Json::Obj(m) => Some(Json::obj([
+                        (
+                            "columna",
+                            m.get("columna")
+                                .cloned()
+                                .unwrap_or(Json::Crudo("null".into())),
+                        ),
+                        (
+                            "direccion",
+                            Json::s(if matches!(m.get("desc"), Some(Json::Bool(true))) {
+                                "desc"
+                            } else {
+                                "asc"
+                            }),
+                        ),
+                    ])),
+                    _ => None,
+                })
+                .collect();
+            cuerpo.push(("orderBy", Json::Arr(orden)));
+        }
+        let lectura = Peticion {
+            metodo: "POST".into(),
+            ruta: "/federation/read".into(),
+            cabeceras: p.cabeceras.clone(),
+            cuerpo: Json::obj(cuerpo).jcs(),
+            consulta: Default::default(),
+        };
+        let mut bytes = match self.leer_federado(&lectura, sujeto) {
+            Salida::Bytes(b) => b,
+            Salida::Una(r) => return Err(r),
+            Salida::Flujo(_) => {
+                return Err(Respuesta::error(502, "la lectura en vivo no dio bytes"));
+            }
+        };
+        let mut arrow = Vec::new();
+        if let Err(e) = (&mut bytes.lector)
+            .take(BYTES_MAXIMOS + 1)
+            .read_to_end(&mut arrow)
+        {
+            return Err(Respuesta::error(
+                502,
+                format!("la lectura en vivo se cortó: {e}"),
+            ));
+        }
+        drop(bytes);
+        if arrow.len() as u64 > BYTES_MAXIMOS {
+            return Err(Respuesta::error(
+                413,
+                format!(
+                    "lo leído en vivo pasa de {} MB: la vista pide demasiado del origen",
+                    BYTES_MAXIMOS >> 20
+                ),
+            ));
+        }
+        Ok(arrow)
+    }
+}
+
+/// `POST /v1/calcular` a `ore-motor`, por HTTP plano dentro de la celda: el
+/// Arrow del resultado, o su 422 tal cual.
+fn al_motor(motor: &str, cuerpo: &str) -> Result<Vec<u8>, Respuesta> {
+    use std::net::ToSocketAddrs as _;
+    let dir = motor
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut d| d.next())
+        .ok_or_else(|| {
+            Respuesta::error(502, format!("`ore-motor` (`{motor}`) no tiene dirección"))
+        })?;
+    let mut s = std::net::TcpStream::connect_timeout(&dir, std::time::Duration::from_secs(5))
+        .map_err(|e| Respuesta::error(502, format!("`ore-motor` no contesta: {e}")))?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(120)))
+        .ok();
+    let req = format!(
+        "POST /v1/calcular HTTP/1.1\r\nhost: motor\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{cuerpo}",
+        cuerpo.len()
+    );
+    s.write_all(req.as_bytes())
+        .map_err(|e| Respuesta::error(502, format!("`ore-motor`: {e}")))?;
+    let mut todo = Vec::new();
+    s.read_to_end(&mut todo)
+        .map_err(|e| Respuesta::error(502, format!("`ore-motor`: {e}")))?;
+    let fin = todo
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| Respuesta::error(502, "`ore-motor` contestó algo que no es HTTP"))?;
+    let cabeza = String::from_utf8_lossy(&todo[..fin]).to_string();
+    let cuerpo = todo[fin + 4..].to_vec();
+    let codigo: u16 = cabeza
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(502);
+    if codigo == 200 {
+        return Ok(cuerpo);
+    }
+    let j = ore_core::parse::parse(String::from_utf8_lossy(&cuerpo).trim())
+        .map(|n| Json::de_node(&n))
+        .unwrap_or_else(|_| {
+            Json::obj([("error", Json::s(String::from_utf8_lossy(&cuerpo).trim()))])
+        });
+    Err(Respuesta {
+        codigo: if codigo == 422 { 422 } else { 502 },
+        cuerpo: j,
+    })
+}
+
+/// Base64 (el alfabeto estándar, con relleno): el Arrow en vivo, en el JSON
+/// que va al motor.
+fn base64(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for t in b.chunks(3) {
+        let n = (u32::from(t[0]) << 16)
+            | (u32::from(*t.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*t.get(2).unwrap_or(&0));
+        out.push(A[(n >> 18) as usize & 63] as char);
+        out.push(A[(n >> 12) as usize & 63] as char);
+        out.push(if t.len() > 1 {
+            A[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if t.len() > 2 {
+            A[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// `sql` en una respuesta buena: la consulta que el preview es.

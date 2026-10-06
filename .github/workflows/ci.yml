@@ -523,7 +523,7 @@ jobs:
           ORE=target/debug/ore bash pruebas-de-fuego/la-copia-desde-el-origen.sh
           # 0057 B4·1: una foreign database se lee desde Python —celdas y `.sql`—
           #   con el rango entero (T/M/G), y lo que no se puede se niega bien.
-          python3 -m pip install --quiet pyyaml pandas
+          python3 -m pip install --quiet pyyaml pandas "pyiceberg[pyarrow]"
           ORE_BIN=target/debug bash pruebas-de-fuego/la-foranea-se-lee.sh
 
       - name: el conector de S3

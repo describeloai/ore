@@ -1257,10 +1257,6 @@ def sql(query, format="pandas", strict=False):
             vivas[l["tabla"]] = _lectura_en_vivo(con, l, estricta)
         _registra(con, nombre, _q(vivas[l["tabla"]]))
     for nombre, rd in sorted(fuentes.items()):
-        if (rd or {}).get("vistaFederada") is not None:
-            _lee(nombre)
-            _registra(con, nombre, "(%s)" % rd["vistaFederada"])
-    for nombre, rd in sorted(fuentes.items()):
         if (rd or {}).get("federada") is not None or (rd or {}).get("vistaFederada") is not None:
             continue
         # 0049 B7·1: a collection is read by its listing, through ore-medios
@@ -1274,6 +1270,12 @@ def sql(query, format="pandas", strict=False):
         _lee(nombre)
         fuente, _ = _fuente_de_respuesta(nombre, rd)
         _registra(con, nombre, fuente)
+    # Las vistas vivas, al final: DuckDB enlaza una vista al crearla, y una que
+    # junta un origen con un dataset (0057 B4·3·2) necesita los dos ya puestos.
+    for nombre, rd in sorted(fuentes.items()):
+        if (rd or {}).get("vistaFederada") is not None:
+            _lee(nombre)
+            _registra(con, nombre, "(%s)" % rd["vistaFederada"])
     # 0049 B7·2: the tree functions it calls, registered under the names
     # ore-serve rewrote them to, with their contract.
     if (r or {}).get("functions"):

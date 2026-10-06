@@ -47,9 +47,19 @@ def con_over(v):
     return f
 
 
-def http(ruta, quien=None):
+def rama_del_puesto():
+    with urllib.request.urlopen(urllib.request.Request(BASE + "/puestos/" + PUESTO, headers=SUJ), timeout=30) as r:
+        return json.loads(r.read() or b"{}").get("rama") or ""
+
+
+def http(ruta, quien=None, en_la_rama=False):
+    """`en_la_rama`: lo que el puesto creó vive en su rama (la consola la manda
+    en `x-ore-rama`, como aquí)."""
     def f():
-        req = urllib.request.Request(BASE + ruta, headers=quien or SUJ)
+        cab = dict(quien or SUJ)
+        if en_la_rama and rama_del_puesto():
+            cab["x-ore-rama"] = rama_del_puesto()
+        req = urllib.request.Request(BASE + ruta, headers=cab)
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 d = json.loads(r.read() or b"{}")
@@ -94,6 +104,14 @@ def editor(texto, fichero="consulta.sql"):
             filas = (sal.get("tabla") or {}).get("filas") or sal.get("filas")
             out.append(f"{len(filas)} fila(s)" if isinstance(filas, list) else (sal.get("texto") or sal.get("tipo") or "").strip()[:60])
         return "✓ " + " · ".join(out)
+    return f
+
+
+def escribe(nombre):
+    def f():
+        import pyarrow as pa
+        ore.write(nombre, pa.table({"pais": ["ES", "PT", "FR"], "objetivo": pa.array([100, 50, 20], pa.int64())}))
+        return "✓ escrito"
     return f
 
 
@@ -147,21 +165,28 @@ FILAS = [
     ("G4 create dataset en la foranea", editor("create or replace dataset vivo.datos.nuevo as select 1 as a")),
     ("G5 insert en el origen", editor("insert into vivo.datos.clientes select 9, 'IT', date '2026-02-01'")),
     ("G6 guion de dos sentencias", editor("create view vivo.informes.fr as select id from vivo.datos.clientes where pais = 'FR';\nselect count(*) n from vivo.informes.fr")),
+    # ── el lago y la foreign database juntos (T4), y la preview por el motor ──
+    ("W1 write() de un standard dataset", escribe("std.copias.objetivos")),
+    ("W2 vista sobre el dataset (sin copia)", editor("create view std.copias.v_objetivos as select pais, objetivo from std.copias.objetivos")),
+    ("W3 vista mixta: dataset x foreign table", editor("create view std.copias.v_mixta as select c.pais, count(*) n, max(o.objetivo) objetivo from vivo.datos.clientes c join std.copias.objetivos o on o.pais = c.pais group by c.pais")),
+    ("T4 sql(): la vista mixta", con_sql("select * from std.copias.v_mixta")),
+    ("T4 sql(): junta con el lago", con_sql(f"select c.pais, o.objetivo from {T} c join std.copias.objetivos o on o.pais = c.pais")),
+    ("preview · vista sobre un dataset (motor)", http("/preview/view/std/copias/v_objetivos?limite=5", en_la_rama=True)),
+    ("preview · vista mixta (motor)", http("/preview/view/std/copias/v_mixta?limite=5", en_la_rama=True)),
+    ("preview · paginada (desde=1, motor)", http("/preview/view/vivo/informes/ventas_por_pais?desde=1&limite=1")),
     ("datos del puesto · vista", http(f"/puestos/{PUESTO}/datos/{V1}", {"x-ore-sujeto": "agente:local", "x-ore-puesto": PUESTO})),
 ]
 
-# Lo esperado: `✓`, o `✗` con lo que tiene que decir. Lo que aún no está
-# (B4·3: la preview y los datos de una vista sin motor) se espera como es hoy,
-# y se dice: cuando llegue, esta tabla cambia con él.
+# Lo esperado: `✓`, o `✗` con lo que tiene que decir.
 NO = {
     "CONGELADA · tabla": "OOS2051",
     "CONGELADA · coleccion": "OOS2051",
     "preview · congelada": "OOS2051",
     "G4 create dataset en la foranea": "OOS2049",
     "G5 insert en el origen": "OOS2049",
-    "preview · vista que se empuja": "409",  # B4·3
-    "preview · vista con junta": "409",  # B4·3
-    "datos del puesto · vista": "409",  # B4·3
+    # `datos` es la ruta del SDK: una vista sin copia se le pide como pregunta
+    # (sql); el 409 es lo que le dice que la calcule él.
+    "datos del puesto · vista": "409",
 }
 
 print()

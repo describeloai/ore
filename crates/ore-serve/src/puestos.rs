@@ -2475,6 +2475,35 @@ impl Servidor {
                 Err(r) => return r,
             }
         };
+        // Lo declarado manda (⑤): mientras un transform corre, este puesto sólo
+        // resuelve sus `inputs`. El mismo 403 que el SDK da, en el servidor.
+        // Y su `output` (0049 B5·2): un incremental lee lo que ya escribió para
+        // saber qué está hecho; leerse no es una entrada (no entra en el linaje).
+        let corta = ore_core::normalize::a_corto(vista).into_owned();
+        if let Some(t) = self.transform_de(id)
+            && ore_core::normalize::a_corto(&t.output) != corta
+            && !t
+                .inputs
+                .iter()
+                .any(|i| ore_core::normalize::a_corto(i) == corta)
+        {
+            return Respuesta::error(
+                403,
+                format!(
+                    "`{corta}` no está en los inputs de `{}` ({}): un transform sólo lee lo que declara",
+                    t.nombre,
+                    t.inputs.join(", ")
+                ),
+            );
+        }
+        self.datos_en(rama, vista)
+    }
+
+    /// ⭐ 0057 B4·3·2 · **Qué es `<base>.<schema>.<nombre>` en una rama**: un
+    /// dataset por su puntero y su credencial, o una View como su pregunta;
+    /// con el fallback a `main`. Lo de `GET datos` sin puesto: lo usa también
+    /// lo que ore-serve le da a `ore-motor`.
+    pub(crate) fn datos_en(&self, rama: Option<String>, vista: &str) -> Respuesta {
         // `base.nombre` o `base.schema.nombre` (0038), en su forma corta: la
         // clave del árbol, la de los punteros y la que el transform declara.
         let vista = ore_core::normalize::a_corto(vista).into_owned();
@@ -2490,26 +2519,6 @@ impl Servidor {
             .and(crate::rutas::token(nombre))
         {
             return Respuesta::error(422, m);
-        }
-        // Lo declarado manda (⑤): mientras un transform corre, este puesto sólo
-        // resuelve sus `inputs`. El mismo 403 que el SDK da, en el servidor.
-        // Y su `output` (0049 B5·2): un incremental lee lo que ya escribió para
-        // saber qué está hecho; leerse no es una entrada (no entra en el linaje).
-        if let Some(t) = self.transform_de(id)
-            && ore_core::normalize::a_corto(&t.output) != vista
-            && !t
-                .inputs
-                .iter()
-                .any(|i| ore_core::normalize::a_corto(i) == vista)
-        {
-            return Respuesta::error(
-                403,
-                format!(
-                    "`{vista}` no está en los inputs de `{}` ({}): un transform sólo lee lo que declara",
-                    t.nombre,
-                    t.inputs.join(", ")
-                ),
-            );
         }
         let (ns, nombre, vista) = (ns.to_string(), nombre.to_string(), vista.to_string());
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
@@ -2741,6 +2750,21 @@ impl Servidor {
         if texto.trim().is_empty() {
             return Respuesta::error(422, "sql() quiere una consulta");
         }
+        self.fuentes_de_sql(rama, &texto, &|n| self.datos_del_puesto(sujeto, id, n))
+    }
+
+    /// ⭐ 0057 B4·3·2 · **El núcleo de `sql()`, sin puesto**: qué nombres lee
+    /// `texto` en la rama, lo que llega a un origen repartido una vez, y cada
+    /// nombre resuelto con `datos` (el puesto: lo declarado y su persona; el
+    /// motor: la rama). Lo comparten `POST /puestos/{id}/sql` y lo que
+    /// ore-serve le pide a `ore-motor`.
+    pub(crate) fn fuentes_de_sql(
+        &self,
+        rama: Option<String>,
+        texto: &str,
+        datos: &dyn Fn(&str) -> Respuesta,
+    ) -> Respuesta {
+        let texto = texto.to_string();
         // Each name with whether it is a `MediaCollection` (0049 B7·1).
         // And the tree `Function`s it calls, with the text rewritten for
         // DuckDB (0049 B7·2): the SDK registers each one under its internal name.
@@ -2750,6 +2774,10 @@ impl Servidor {
         // `(vista, su SQL)`.
         let mut tablas: Vec<(String, String)> = Vec::new();
         let mut vistas_vivas: Vec<(String, String)> = Vec::new();
+        // ⭐ 0057 B4·3·2: lo que una vista viva lee del LAGO (un dataset junto a
+        //   una foreign table) también se resuelve: la vista corre en DuckDB y
+        //   necesita las dos cosas registradas.
+        let mut del_lago_de_las_vivas: Vec<String> = Vec::new();
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             for n in ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg) {
@@ -2766,10 +2794,12 @@ impl Servidor {
                     //   fuente— se registra con ESE nombre: la vista corre en
                     //   DuckDB tal cual está escrita.
                     for m in ore_core::sql_del_arbol::nombres_a_resolver(&sql, &pkg) {
-                        if let Some(t) = ore_core::reparto::de_un_origen(&pkg, &m)
-                            && !tablas.iter().any(|(x, _)| x == &m)
-                        {
-                            tablas.push((m, t.qname().unwrap_or_default()));
+                        if let Some(t) = ore_core::reparto::de_un_origen(&pkg, &m) {
+                            if !tablas.iter().any(|(x, _)| x == &m) {
+                                tablas.push((m, t.qname().unwrap_or_default()));
+                            }
+                        } else if !del_lago_de_las_vivas.contains(&m) {
+                            del_lago_de_las_vivas.push(m);
                         }
                     }
                     vistas_vivas.push((n, sql));
@@ -2797,8 +2827,14 @@ impl Servidor {
                     ),
                 ]));
             }
+            let mut todos = ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg);
+            for m in &del_lago_de_las_vivas {
+                if !todos.contains(m) {
+                    todos.push(m.clone());
+                }
+            }
             Respuesta::ok(Json::Arr(
-                ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg)
+                todos
                     .into_iter()
                     .map(|n| {
                         let col = pkg.docs.iter().any(|d| {
@@ -2906,7 +2942,7 @@ impl Servidor {
                 fuentes.insert(n.clone(), Json::obj([("collection", Json::s(&n))]));
                 continue;
             }
-            let mut d = self.datos_del_puesto(sujeto, id, &n);
+            let mut d = datos(&n);
             if d.codigo != 200 {
                 if let Json::Obj(m) = &mut d.cuerpo {
                     m.insert("nombre".into(), Json::s(&n));

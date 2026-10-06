@@ -79,9 +79,6 @@ def calcular(texto, fuentes, vivas, limite):
             en_vivo[t] = interno
         ore._registra(con, nombre, ore._q(en_vivo[t]))
     for nombre, rd in sorted(fuentes.items()):
-        if (rd or {}).get("vistaFederada") is not None:
-            ore._registra(con, nombre, "(%s)" % rd["vistaFederada"])
-    for nombre, rd in sorted(fuentes.items()):
         rd = rd or {}
         if rd.get("federada") is not None or rd.get("vistaFederada") is not None:
             continue
@@ -91,6 +88,11 @@ def calcular(texto, fuentes, vivas, limite):
             raise NoSeCalcula("motor/copia-antigua", "`%s` no es un dataset de Iceberg: se lee en un puesto" % nombre)
         fuente, _ = ore._fuente_de_respuesta(nombre, rd)
         ore._registra(con, nombre, fuente)
+    # Las vistas vivas, al final: DuckDB enlaza una vista al crearla, y una que
+    # junta un origen con un dataset necesita los dos ya puestos.
+    for nombre, rd in sorted(fuentes.items()):
+        if (rd or {}).get("vistaFederada") is not None:
+            ore._registra(con, nombre, "(%s)" % rd["vistaFederada"])
     # Lo del usuario no toca este contenedor: sin sistema de ficheros local y
     # con la configuración cerrada (no la puede volver a abrir un `set`). Lo
     # registrado arriba —Arrow en memoria, el lago por su credencial— sigue.
@@ -102,7 +104,7 @@ def calcular(texto, fuentes, vivas, limite):
         raise NoSeCalcula("motor/sql", str(e).splitlines()[0]) from None
     if r.description is None:
         raise NoSeCalcula("motor/sin-resultado", "la sentencia no devuelve filas: el motor sólo lee")
-    lector = r.fetch_record_batch(8192)
+    lector = r.to_arrow_reader(8192) if hasattr(r, "to_arrow_reader") else r.fetch_record_batch(8192)
     lotes, n = [], 0
     for lote in lector:
         if n + lote.num_rows > limite:

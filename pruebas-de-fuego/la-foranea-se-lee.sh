@@ -212,11 +212,14 @@ cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/rendido/plantilla-capa.txt" \
   && git remote add origin "$COLA" && git push -q origin HEAD:main ) || { echo "no se sembró la cola"; exit 1; }
 PF=$(libre)
 "$BIN/ore-federation" --escucha "127.0.0.1:$PF" --conectores "$BIN" --tipos s3 >"$TMP/fed.log" 2>&1 & PIDS="$PIDS $!"
+# 0057 B4·3·2: ore-motor, el motor SQL de la celda (la preview de una vista sin copia).
+PM=$(libre)
+ORE_MOTOR_ESCUCHA="127.0.0.1:$PM" PYTHONUTF8=1 "$PY" "$RAIZ/puesto/python/ore_motor.py" >"$TMP/motor.log" 2>&1 & PIDS="$PIDS $!"
 PS=$(libre); BASE="http://127.0.0.1:$PS"
 # El lago (`ore-store`, que pasa el Arrow de la preview a filas), el mismo S3.
 export ORE_STORE=r2 ORE_R2_S3_ENDPOINT="$S3" ORE_R2_BUCKET=lago ORE_R2_ACCESS_KEY_ID=de ORE_R2_SECRET_ACCESS_KEY=mentira
 export PATH="$BIN:$PATH"
-ORE_PASARELA="127.0.0.1:$PF" FORJA_TOKEN=no-hace-falta "$BIN/ore-serve" --forja "file://$FORJA" --ore "$BIN/ore" --cola "file://$COLA" \
+ORE_MOTOR="127.0.0.1:$PM" ORE_PASARELA="127.0.0.1:$PF" FORJA_TOKEN=no-hace-falta "$BIN/ore-serve" --forja "file://$FORJA" --ore "$BIN/ore" --cola "file://$COLA" \
   --bind "127.0.0.1:$PS" --identidad cabecera --no-es-produccion --organizacion fed >"$TMP/serve.log" 2>&1 & PIDS="$PIDS $!"
 for _ in $(seq 1 80); do curl -s -o /dev/null "$BASE/salud" && curl -s -o /dev/null "http://127.0.0.1:$PF/v1/health" && break; sleep 0.25; done
 curl -s -o /dev/null -X POST -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' "$BASE/puestos" -d '{}'
@@ -230,5 +233,5 @@ ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-fora
 SALIDA=$?
 echo
 echo "  (registro del servidor: $(grep -c . "$TMP/serve.log") lineas; de la pasarela: $(grep -c . "$TMP/fed.log"))"
-[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; }
+[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; tail -30 "$TMP/motor.log"; }
 exit "$SALIDA"
