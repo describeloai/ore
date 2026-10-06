@@ -675,7 +675,7 @@ cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['sitio']=='pac
 [ "$(pide DELETE /arbol/packages/personas/mio)" = "200" ] || falla "22 · no se pudo retirar el repositorio de dentro"
 # viii.a · el ejemplo CORRE (no es un comentario) y el entorno se declara EN la instancia
 [ "$(pide GET /arbol/packages/hr/raw/transforms/example.py)" = "200" ]   && cumple "len([l for l in d['texto'].splitlines() if l.strip() and not l.strip().startswith('#')]) >= 5 and '@transform(' in d['texto']" "22 · el ejemplo es codigo, no un comentario"
-[ "$(pide GET /entorno "" "x-ore-raiz: packages/hr/raw")" = "200" ]   && cumple "d['alcance']=='packages/hr/raw' and d['declarado']==[]" "22 · nace sin dependencias: declarar lo que nadie usa seria una capa para nada"
+[ "$(pide GET /entorno "" "x-ore-raiz: packages/hr/raw")" = "200" ]   && cumple "d['alcance']=='packages/hr/raw' and d['declarado']==['dev:pytest==9.1.1','ore==1.0.0'] and d['digest']==''" "22 · nace declarando sólo lo que la sesión trae (ore, y pytest para sus pruebas, 0055 T1·5): sin capa"
 printf '[project]
 name = "x"
 version = "0.1.0"

@@ -54,7 +54,7 @@ pub fn generar(
     if json {
         println!("{}", a_json(&plan, raiz, comprobar).jcs());
     } else {
-        contar(&plan, raiz, comprobar);
+        contar(&plan, raiz, comprobar, transforms);
     }
     let pendiente = comprobar && !plan.cambios.is_empty();
     if plan.diagnosticos.is_empty() && !pendiente {
@@ -80,7 +80,7 @@ fn que(a: &Accion) -> &'static str {
     }
 }
 
-fn contar(plan: &Plan, raiz: &Path, comprobar: bool) {
+fn contar(plan: &Plan, raiz: &Path, comprobar: bool, transforms: bool) {
     for c in &plan.cambios {
         let (signo, nota) = match &c.accion {
             Accion::Crear(_) => ("+", String::new()),
@@ -102,7 +102,15 @@ fn contar(plan: &Plan, raiz: &Path, comprobar: bool) {
     }
     let n = plan.cambios.len();
     let resumen = match (comprobar, n) {
-        (_, 0) => format!("al día · {} documentos", plan.al_dia),
+        (_, 0) => format!(
+            "al día · {} {}",
+            plan.al_dia,
+            if transforms {
+                "transforms"
+            } else {
+                "funciones"
+            }
+        ),
         (true, _) => {
             format!("{n} documentos no son los que el código da · `generate` los pone al día")
         }
