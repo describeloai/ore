@@ -197,7 +197,113 @@ fn prosa_de(texto: &str) -> Option<String> {
     (!p.is_empty()).then_some(p)
 }
 
+/// La semilla de `plantilla` en `packages/<paquete>/<carpeta>`, con sus huecos
+/// rellenos, y lo que derive de su código (0050 G2, 0055 T1·4: el `Function`
+/// de cada `@function` y el `Transform` de cada transform), como si se hubiera
+/// guardado. Devuelve las rutas escritas, desde la raíz.
+pub(crate) fn sembrar_en(
+    raiz: &Path,
+    plantilla: &ore_core::clases::Clase,
+    paquete: &str,
+    carpeta: &str,
+    dueno: Option<&str>,
+) -> Result<Vec<String>, Respuesta> {
+    let ruta = format!("packages/{paquete}/{carpeta}");
+    let dir = raiz.join("packages").join(paquete).join(carpeta);
+    let mut semilla = Vec::new();
+    for (rel, contenido) in plantilla.semilla {
+        if !ore_core::clases::se_siembra(rel, paquete) {
+            continue;
+        }
+        // R3 T6: la ruta también lleva huecos (en TypeScript el nombre de la
+        // función es el del fichero).
+        let rel = &ore_core::clases::sembrar(rel, paquete, carpeta);
+        let f = dir.join(rel);
+        if let Some(padre) = f.parent()
+            && let Err(e) = std::fs::create_dir_all(padre)
+        {
+            return Err(Respuesta::error(
+                500,
+                format!("no se pudo sembrar `{ruta}/{rel}`: {e}"),
+            ));
+        }
+        // 0050 P5: los huecos de la semilla (el paquete, la carpeta, un nombre
+        // de función único en el paquete; 0055 T1·5, la base de ejemplos y un
+        // dataset único en el inquilino).
+        let contenido = ore_core::clases::sembrar(contenido, paquete, carpeta);
+        if let Err(e) = std::fs::write(&f, contenido) {
+            return Err(Respuesta::error(
+                500,
+                format!("no se pudo sembrar `{ruta}/{rel}`: {e}"),
+            ));
+        }
+        semilla.push(format!("{ruta}/{rel}"));
+    }
+    // 0050 G2: el documento de cada `@function` de la semilla, en ESTE commit,
+    // como si se hubiera guardado el código; y desde 0055 T1·4, el `Transform`.
+    let sembrados: Vec<&str> = semilla.iter().map(String::as_str).collect();
+    for g in crate::arbol::generar_funciones(raiz, &sembrados, dueno) {
+        let r = crate::arbol::ruta_de(raiz, &g);
+        if !semilla.contains(&r) {
+            semilla.push(r);
+        }
+    }
+    Ok(semilla)
+}
+
+/// Si la semilla de `plantilla` escribe en la base de ejemplos (`{{base}}`).
+pub(crate) fn nombra_la_base(plantilla: &ore_core::clases::Clase) -> bool {
+    plantilla
+        .semilla
+        .iter()
+        .any(|(_, t)| t.contains("{{base}}"))
+}
+
 impl Servidor {
+    /// **La base de ejemplos** (0055 T1·5, `clases::BASE_DE_EJEMPLOS`): la
+    /// standard database vacía donde escribe el transform de una plantilla, que
+    /// se crea en el mismo commit que el repositorio si no existe —como `create
+    /// standard database` (`base_vacia`), de quien la crea—. El árbol valida
+    /// sin ella (la salida está por nacer); escribir, no: `write()` pide su
+    /// paquete. `Ok(Some(ruta))` si la creó.
+    pub(crate) fn asegurar_base(
+        &self,
+        raiz: &Path,
+        plantilla: &ore_core::clases::Clase,
+        dueno: Option<&str>,
+    ) -> Result<Option<String>, Respuesta> {
+        let base = ore_core::clases::BASE_DE_EJEMPLOS;
+        let manifiesto = format!("packages/{base}/package.yaml");
+        if !nombra_la_base(plantilla) || raiz.join(&manifiesto).is_file() {
+            return Ok(None);
+        }
+        // Sin quien la crea no hay dueño que darle: el repositorio nace igual,
+        // y la base la crea quien la necesite (`create standard database`).
+        let Some(dueno) = dueno else {
+            return Ok(None);
+        };
+        let args: Vec<String> = vec![
+            "package".into(),
+            "new".into(),
+            base.into(),
+            "--path".into(),
+            raiz.to_string_lossy().into_owned(),
+            "--owner".into(),
+            dueno.into(),
+        ];
+        match crate::mando::correr(&self.binario, raiz, &args) {
+            Err(e) => Err(Respuesta::error(500, e.to_string())),
+            Ok(s) if !s.bien() => Err(Respuesta::error(
+                500,
+                format!(
+                    "la base de ejemplos `{base}` no se pudo crear: {}",
+                    crate::rutas::primera_linea(&s.stdout, &s.stderr)
+                ),
+            )),
+            Ok(_) => Ok(Some(manifiesto)),
+        }
+    }
+
     /// `POST /repositorios {paquete, carpeta, nombre, plantilla, proyecto?}`:
     /// 201 con la ruta; 409 si esa carpeta ya es uno; 404 si no hay paquete.
     pub(crate) fn crear_repositorio(
@@ -276,36 +382,15 @@ impl Servidor {
         if let Err(e) = std::fs::write(dir.join("README.md"), texto) {
             return Respuesta::error(500, format!("no se pudo escribir `{ruta}/README.md`: {e}"));
         }
-        let mut semilla = Vec::new();
-        for (rel, contenido) in c.plantilla.semilla {
-            if !ore_core::clases::se_siembra(rel, &paquete) {
-                continue;
-            }
-            // R3 T6: la ruta también lleva huecos (en TypeScript el nombre de la
-            // función es el del fichero).
-            let rel = &ore_core::clases::sembrar(rel, &paquete, &carpeta);
-            let f = dir.join(rel);
-            if let Some(padre) = f.parent()
-                && let Err(e) = std::fs::create_dir_all(padre)
-            {
-                return Respuesta::error(500, format!("no se pudo sembrar `{ruta}/{rel}`: {e}"));
-            }
-            // 0050 P5: los huecos de la semilla (el paquete, la carpeta, un
-            // nombre de función único en el paquete).
-            let contenido = ore_core::clases::sembrar(contenido, &paquete, &carpeta);
-            if let Err(e) = std::fs::write(&f, contenido) {
-                return Respuesta::error(500, format!("no se pudo sembrar `{ruta}/{rel}`: {e}"));
-            }
-            semilla.push(format!("{ruta}/{rel}"));
-        }
-        // 0050 G2: el documento de cada `@function` de la semilla, en ESTE
-        // commit, como si se hubiera guardado el código.
-        let sembrados: Vec<&str> = semilla.iter().map(String::as_str).collect();
-        for g in crate::arbol::generar_funciones(raiz, &sembrados, dueno) {
-            let r = crate::arbol::ruta_de(raiz, &g);
-            if !semilla.contains(&r) {
-                semilla.push(r);
-            }
+        let mut semilla = match sembrar_en(raiz, c.plantilla, &paquete, &carpeta, dueno) {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        // 0055 T1·5: la base de ejemplos donde escribe su transform, si no está.
+        match self.asegurar_base(raiz, c.plantilla, dueno) {
+            Ok(Some(b)) => semilla.push(b),
+            Ok(None) => {}
+            Err(r) => return r,
         }
         // Y si se dijo el proyecto, que lo nombre — en ESTE commit.
         let mut en_proyecto = Json::Crudo("null".into());
@@ -531,6 +616,12 @@ impl Servidor {
                 for g in crate::arbol::generar_funciones(r, &traidos, dueno.as_deref()) {
                     escrito.push(crate::arbol::ruta_de(r, &g));
                 }
+                // 0055 T1·5: la base de ejemplos que la semilla de hoy nombra.
+                match self.asegurar_base(r, clase, dueno.as_deref()) {
+                    Ok(Some(b)) => escrito.push(b),
+                    Ok(None) => {}
+                    Err(e) => return e,
+                }
                 Respuesta::ok(Json::obj([("ruta", Json::s(&ruta_r))]))
             },
         );
@@ -640,9 +731,16 @@ mod pruebas {
             g.starts_with("# Python functions") && !g.contains("{{"),
             "{g}"
         );
-        // Una plantilla sin guía: la frase de siempre.
+        // 0055 T1·5: y la de transforms de Python.
         let tr = ore_core::clases::de("transforms-python").unwrap();
-        assert_eq!(prosa_o_guia(None, tr, "ventas", "riesgo"), None);
+        let g = prosa_o_guia(None, tr, "ventas", "riesgo").unwrap();
+        assert!(
+            g.starts_with("# Python transforms") && !g.contains("{{"),
+            "{g}"
+        );
+        // Una plantilla sin guía: la frase de siempre.
+        let sql = ore_core::clases::de("transforms-sql").unwrap();
+        assert_eq!(prosa_o_guia(None, sql, "ventas", "riesgo"), None);
     }
 
     #[test]
@@ -680,5 +778,60 @@ mod pruebas {
             del_cuerpo(r#"{"plantilla":"transforms"}"#).is_err(),
             "sin nombre"
         );
+    }
+}
+
+/// 0055 T1·5: crear un repositorio de transforms lo deja en verde, con su
+/// `Transform` en `pipeline/` del mismo commit.
+#[cfg(test)]
+mod semilla_de_transforms {
+    use super::*;
+
+    #[test]
+    fn crear_cada_repositorio_de_transforms_nace_en_verde() {
+        for id in ["transforms-python", "transforms-sql"] {
+            let c = ore_core::clases::de(id).unwrap();
+            assert!(nombra_la_base(c), "{id}");
+            let raiz =
+                std::env::temp_dir().join(format!("ore-serve-semilla-{id}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&raiz);
+            std::fs::create_dir_all(&raiz).unwrap();
+            std::fs::write(
+                raiz.join("ontology.config.yaml"),
+                "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\n",
+            )
+            .unwrap();
+            // El proyecto y la base de ejemplos (la que `asegurar_base` crea
+            // con `ore package new`), como `package.yaml`.
+            for p in ["ventas", ore_core::clases::BASE_DE_EJEMPLOS] {
+                std::fs::create_dir_all(raiz.join("packages").join(p)).unwrap();
+                std::fs::write(
+                    raiz.join("packages").join(p).join("package.yaml"),
+                    format!(
+                        "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: {{ name: {p}, version: 0.1.0, status: draft, domain: {p} }}\nspec: {{ owner: \"user:ana\" }}\n"
+                    ),
+                )
+                .unwrap();
+            }
+            let Ok(semilla) = sembrar_en(&raiz, c, "ventas", "etl", Some("user:ana")) else {
+                panic!("{id}: no se siembra")
+            };
+            let doc = "packages/ventas/etl/pipeline/sandbox.ventas_etl_example.yaml";
+            assert!(semilla.iter().any(|r| r == doc), "{id}: {semilla:?}");
+            let texto = std::fs::read_to_string(raiz.join(doc)).unwrap();
+            assert!(texto.contains("  inputs: []\n") && texto.contains("owner: user:ana"));
+            let d = ore_core::validate::validate_package(&raiz);
+            assert!(
+                d.is_empty(),
+                "{id}: {:?}",
+                d.iter()
+                    .map(|x| format!("{} {}", x.code.as_str(), x.message))
+                    .collect::<Vec<_>>()
+            );
+            let _ = std::fs::remove_dir_all(&raiz);
+        }
+        assert!(!nombra_la_base(
+            ore_core::clases::de("functions-python").unwrap()
+        ));
     }
 }
