@@ -117,7 +117,10 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     //   hacía fallar `ore view` entero, `preparar` no pidió ninguna credencial
     //   y las copias desde el origen de `f7_copias` no se prepararon, mientras
     //   `materialize` sí toleraba ese paquete. Las vistas de un paquete roto
-    //   salen con su error y sin plan; las demás, enteras.
+    //   salen con su diagnóstico entero y sin plan; las demás, enteras. Y si
+    //   alguna de las que se enseñan está rota, se sale con error (65), como
+    //   siempre: quien mira sus vistas tiene que verlo, y el Job de la copia
+    //   no para por eso (sólo por lo roto en la raíz del árbol).
     let (pkg, rotos) = match crate::materializar::cargar_para_copiar(path) {
         Ok(p) => p,
         Err(c) => return c,
@@ -125,16 +128,26 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     let roto = |v: &Loaded| {
         crate::materializar::paquete_del_fichero(path, &v.path).and_then(|p| rotos.get(&p))
     };
+    // Lo roto se dice, todo, aunque no tenga vistas que enseñar (un documento
+    // que no se carga no es una vista que listar, pero es un error).
+    for d in rotos.values() {
+        eprintln!("{d}");
+    }
     // 0046 E8·1: las colecciones mantenidas, con su raíz. Es lo que el Job de
     // la copia lee para saber qué fuente abrir por cada una.
     let colecciones = ver_colecciones(&pkg);
     let vistas: Vec<&Loaded> = pkg.of_view();
     if vistas.is_empty() {
+        let fin = if rotos.is_empty() {
+            std::process::ExitCode::SUCCESS
+        } else {
+            std::process::ExitCode::from(65) // EX_DATAERR: lo roto, arriba
+        };
         if colecciones > 0 {
-            return std::process::ExitCode::SUCCESS;
+            return fin;
         }
         println!("sin vistas · el paquete no declara ningún `kind: View`");
-        return std::process::ExitCode::SUCCESS;
+        return fin;
     }
 
     let lat = ore_core::flow::lattices(&pkg);
@@ -165,9 +178,8 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     for v in &vistas {
         let Some(qn) = v.qname() else { continue };
         println!("{qn}");
-        if let Some(d) = roto(v) {
-            let primera = d.lines().next().unwrap_or("");
-            println!("  error     su paquete no compila · {primera}");
+        if roto(v).is_some() {
+            println!("  error     su paquete no compila");
             continue;
         }
 
@@ -475,6 +487,18 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
         );
     }
 
+    if !rotos.is_empty() {
+        eprintln!(
+            "error: {} {} no compila · lo demás, arriba, entero",
+            rotos.len(),
+            if rotos.len() == 1 {
+                "paquete"
+            } else {
+                "paquetes"
+            }
+        );
+        return std::process::ExitCode::from(65); // EX_DATAERR
+    }
     if fugas > 0 {
         eprintln!(
             "error: {fugas} {} · el motor de vistas se niega a compilar lo de arriba",

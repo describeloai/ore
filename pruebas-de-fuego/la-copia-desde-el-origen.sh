@@ -175,7 +175,7 @@ spec:
 YAML
 "$ORE" validate "$A" >/dev/null 2>&1 && falla "1b · el paquete roto compila (la prueba no prueba nada)"
 "$ORE" view "$A" >"$TMP/vista-rota.txt" 2>&1; RC=$?
-[ "$RC" = 0 ] && grep -q "raíz      pg" "$TMP/vista-rota.txt" && grep -q "su paquete no compila" "$TMP/vista-rota.txt"   && dice "1b · con un paquete roto al lado, \`ore view\` sigue dando la raíz pg (y dice cuál no compila)"   || falla "1b · ore view con un paquete roto: rc=$RC $(grep -n "raíz\|error" "$TMP/vista-rota.txt" | head -5)"
+[ "$RC" = 65 ] && grep -q "raíz      pg" "$TMP/vista-rota.txt" && grep -q "su paquete no compila" "$TMP/vista-rota.txt"   && dice "1b · con un paquete roto al lado, \`ore view\` sigue dando la raíz pg, y la rota sale como error (65)"   || falla "1b · ore view con un paquete roto: rc=$RC $(grep -n "raíz\|error" "$TMP/vista-rota.txt" | head -5)"
 rm -rf "$A/packages/roto"
 
 # ── 4 · 0053 F8·3 · lo mismo, por la pasarela ────────────────────────────────
