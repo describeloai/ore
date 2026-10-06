@@ -1,8 +1,8 @@
 # 0058 · ORE Serverless Postgres
 
-**Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c·C1–C4 (Neon compilado por
-nosotros, GCS nativo, compatible con el cómputo publicado, recuperable desde GCS) medidos; siguiente
-D0c·C5. **Decide:** qué es ORE Serverless Postgres para quien
+**Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c (Neon compilado por nosotros,
+GCS nativo, compatible con el cómputo publicado, recuperable desde GCS) medidos y cerrados; siguiente
+D0b·6 (recoger) y planificar la construcción. **Decide:** qué es ORE Serverless Postgres para quien
 lo usa, sobre qué se construye, qué es nuestro y qué no, y cómo pasan sus datos al catálogo. Toca
 [`0044`](0044-ramas-globales.md) (las ramas globales: no se mezclan con éstas),
 [`0047`](0047-ore-access-control.md) (quién puede), [`0048`](0048-ore-idp.md) (quién es) y
@@ -206,11 +206,10 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
   - ⚠️ Trampa de la prueba, no de Neon: `psql -c "a; b; select pg_current_wal_flush_lsn()"` es UNA
     transacción ⇒ el LSN sale de antes del commit y la rama no ve lo recién escrito. El LSN se pide en
     un comando aparte.
-  - ⚠️ **Coste de leer en una rama, por confirmar:** el primer `count(*)` de 2 M filas en la rama
-    escribió **138 MB de WAL** (288 MB de deltas en GCS, todo de la rama); el segundo, 56 bytes. Encaja
-    con marcar los hint bits con `wal_log_hints=on` (imagen de página completa la primera vez), pero
-    una tabla nueva no lo reprodujo. Importa al precio: una rama que lee mucho por primera vez escribe.
-  - ⇒ **No hace falta compilar el cómputo** por ahora: el de agosto de 2025 vale contra `main`.
+  - ⚠️ **Coste de leer en una rama** (confirmado en C5): el primer `count(*)` de 2 M filas en la rama
+    escribió **138 MB de WAL** (288 MB de deltas en GCS); el segundo, 56 bytes.
+  - ⇒ **Para ser compatible no hace falta compilar el cómputo**: el de agosto de 2025 vale contra
+    `main`. Para estar parcheado, sí (C5).
 - **C4** · «sin fondo» (`c4.sh`): se borra el pageserver **con su disco**; uno vacío recupera desde GCS.
   - **RPO 0**: están la marca subida a GCS **y la que sólo vivía en los safekeepers** (escrita justo
     antes, sin checkpoint); `main`, las dos ramas y lo que escribió la rama, intactos.
@@ -230,6 +229,30 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
   - ⇒ La recuperación es de **decenas de segundos**, no de minutos: un pageserver por grupo de tenants y
     reengancharlo (storage_controller) basta para empezar; los secundarios en caliente, cuando el RTO
     prometido baje de eso. El disco local es caché: perderlo no pierde nada.
+- **C5** · cierre de D0c.
+  - **El coste de leer en una rama, confirmado** (`c5-hints.sh`): una tabla de 2 062 páginas
+    actualizada entera en `main` (filas nuevas sin hint bits) y ramificada. Primer recorrido **en la
+    rama: 16 MB de WAL = una página entera por página** (2 062 × 8 KB); el segundo, 0. **En `main`, el
+    mismo primer recorrido: 250 kB.** Causa: la rama nace con su punto de recuperación en el LSN de la
+    rama (`redo_lsn` = el de la rama), y con `wal_log_hints=on` la primera modificación de cada página
+    tras un checkpoint —también marcar hint bits— escribe la página entera. `main` ya lo había pagado;
+    la rama lo paga de nuevo. ⇒ Una rama cuesta, al leer, ~8 KB por página con hint bits sin marcar
+    que toque; un `VACUUM` en `main` antes de ramificar lo evita. Entra en el precio de las ramas.
+  - **Postgres va por detrás**: `vendor/revisions.json` en fa504217 trae **17.5 y 16.9** (mayo de 2025);
+    la última es **17.10 / 18.4 (2026-05-14), con 11 CVE** solo en esa. Neon no tiene Postgres 18. El
+    cómputo publicado también es 17.5. ⇒ **Antes de producción hay que traer 17.5 → 17.10+** al fork de
+    Postgres de Neon (sus parches del gestor de almacenamiento) y compilar también el cómputo.
+  - **Cómo mantener el fork** (propuesta):
+    1. un fork propio de `neondatabase/neon` y de su `postgres`, con el commit fijado y nuestros
+       parches en ramas cortas;
+    2. **cada versión menor de Postgres** (trimestral: feb, may, ago, nov) y ante un CVE: rebasar el
+       fork de Postgres sobre la etiqueta nueva, compilar almacenamiento **y** cómputo (imagen de VM con
+       `vm-builder`) y pasar `pruebas-de-fuego/ore-postgres/` como aceptación;
+    3. dependencias de Rust: `cargo audit`/`cargo deny` semanal en el CI;
+    4. **sólo Postgres 17** al principio (fuera 14–16 de la compilación: menos tiempo); 18 cuando
+       exista en Neon o lo portemos;
+    5. el CI en Cloud Build por etiqueta; con caché de capas en el registro (BuildKit) y compilando sólo
+       lo que cambia —sin medir aún: se mide al montarlo—. Hoy, en frío: **19 min 24 s / ~1,2 USD**.
 
 ### B.9 · Los pasos
 
@@ -237,8 +260,8 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 |---|---|---|
 | D0c·C3 | compatibilidad: pgbench de escritura/lectura y una rama con el cómputo publicado | **hecho** (2026-10-06) |
 | D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | **hecho** (2026-10-06): RPO 0, ~21 s |
-| D0c·C5 | cerrar: cómo mantener el fork (commit fijado, cada cuánto, caché en el CI); confirmar el coste de leer en una rama | **siguiente** |
-| D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | pendiente |
+| D0c·C5 | cerrar: cómo mantener el fork; el coste de leer en una rama | **hecho** (2026-10-06): hint bits confirmados; Postgres 17.5 → hay que traer 17.10+ |
+| D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | **siguiente** |
 | P1… | construir: el plano de control (API, ciclo de vida, proxy en la overlay, pool precalentado, `storage_controller`), publicar al catálogo por CDC, nodos grandes | por planificar |
 
 ### B.10 · Lo que hay vivo en GKE para la prueba (se recoge en D0b·6)
