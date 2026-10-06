@@ -165,7 +165,8 @@ fn respuestas(dir: &Path, paquete: &str) -> String {
 
 /// Las dos bases leen el mismo puntero, que es de la fuente: la cara del
 /// origen tal cual (`mode: none`, que es lo que sondeó el driver) y su clave.
-/// La estándar es sus datasets y la foránea sus vistas, y ninguna tiene tablas.
+/// La estándar es sus datasets y la foránea los expone (0057), y ninguna tiene
+/// tablas.
 #[test]
 fn el_puntero_esta_una_vez_y_en_la_fuente() {
     let dir = arbol("misma", false);
@@ -205,12 +206,26 @@ fn el_puntero_esta_una_vez_y_en_la_fuente() {
         ))),
         "{copias:?}"
     );
-    let vistas = ficheros(&dir, "fdb", |t| t.contains("kind: View"));
+    // ⭐⭐ 0057 (OOS v1alpha27): la foránea EXPONE los punteros de la fuente
+    //   —el mismo documento, con su nombre—: ni vistas por tabla ni nada más
+    //   que su `package.yaml`, con `spec.foreign`.
     assert!(
-        vistas.iter().any(|t| t.contains(&format!(
-            "FROM \"{FUENTE}\".\"rubix_demo_ventas\".\"clientes\""
-        ))),
-        "{vistas:?}"
+        ficheros(&dir, "fdb", |t| t.contains("kind: View")).is_empty(),
+        "una vista por tabla en la foránea"
+    );
+    let fdb = std::fs::read_to_string(dir.join("packages/fdb/package.yaml")).unwrap();
+    assert!(
+        fdb.contains("apiVersion: oos.dev/v1alpha27")
+            && fdb.contains(&format!("datasource: {FUENTE}"))
+            && fdb.contains("rubix_demo_ventas.clientes"),
+        "{fdb}"
+    );
+    // (La estándar no compila aquí —este árbol no autoriza su copia—; de la
+    //   foránea no tiene que salir nada.)
+    let (_, dicho) = ore(&dir, &["validate", "."]);
+    assert!(
+        !dicho.contains("packages/fdb"),
+        "la foránea no compila: {dicho}"
     );
     // ⭐ 0046 E5′: la fuente exporta TODO lo catalogado —doce objetos—, lo
     //   elija una base o no: el puntero es un hecho del origen.

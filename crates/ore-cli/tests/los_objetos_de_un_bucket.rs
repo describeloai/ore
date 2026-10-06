@@ -158,12 +158,16 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
     };
     assert_eq!((cuantos("tables"), cuantos("objects")), (12, 5));
 
-    // La foránea sirve en sitio; la estándar copia. Las dos, del mismo puntero.
-    let f = leer(&dir, "fdb/nueva_carpeta/collections/fotos.yaml");
+    // ⭐⭐ 0057 (OOS v1alpha27): la foránea EXPONE el `ObjectTable` de la
+    //   fuente —su colección virtual es él, en vivo—, sin documento propio;
+    //   la estándar copia. Las dos, del mismo puntero.
     assert!(
-        f.contains("virtual: true")
-            && f.contains("formats: [jpg, png]")
-            && f.contains("from: { objectTable: s3_ventas.nueva_carpeta.fotos }"),
+        !dir.join("packages/fdb/nueva_carpeta/collections").exists(),
+        "una colección en la foránea"
+    );
+    let f = leer(&dir, "fdb/package.yaml");
+    assert!(
+        f.contains("datasource: s3_ventas") && f.contains("nueva_carpeta.fotos"),
         "{f}"
     );
     let s = leer(&dir, "sdb/nueva_carpeta/collections/fotos.yaml");

@@ -1401,21 +1401,27 @@ def _por_posicion(tabla_arrow, nombre, posiciones):
 # lo que ya está no es un error (`if not exists`).
 
 @_kw({"nombre": "name", "clase": "kind", "origen": "origin", "incluye": "include", "si_no_existe": "if_not_exists"})
-def create_database(name, kind="standard", origin=None, include=None, if_not_exists=False):
+def create_database(name, kind=None, origin=None, include=None, if_not_exists=False):
     """`create [standard|foreign] database name [from origin [include (…)]]`.
-    Without `origin`, an empty standard database. With `if_not_exists`, one
-    that already exists is not an error. Returns `{database, kind, created}`."""
+    Without `origin`, an empty standard database. With `origin` and no `kind`,
+    a foreign one (ORE 0057: one default in every channel, the server's). A
+    foreign database exposes the origin's tables and needs its live reading on.
+    With `if_not_exists`, one that already exists is not an error. Returns
+    `{database, kind, created}`."""
     nombre, clase, origen, incluye, si_no_existe = name, kind, origin, include, if_not_exists
-    cuerpo = {"name": nombre, "type": clase}
+    cuerpo = {"name": nombre}
+    if clase:
+        cuerpo["type"] = clase
     if origen:
         cuerpo["source"] = origen
         cuerpo["only"] = list(incluye or [])
     c, r = session.pedir("POST", "/paquetes", cuerpo, plazo=600)
     if c == 409 and si_no_existe:
-        return _Result({"database": nombre, "kind": clase, "created": False})
+        return _Result({"database": nombre, "kind": clase or ("foreign" if origen else "standard"), "created": False})
     if c not in (200, 201):
         raise RuntimeError("create database %s: %s" % (nombre, _mensaje(r)))
-    return _Result({"database": nombre, "kind": (r or {}).get("type", clase), "created": True})
+    return _Result({"database": nombre, "kind": (r or {}).get("type", clase or ("foreign" if origen else "standard")),
+                    "created": True})
 
 
 @_kw({"base": "database", "si_no_existe": "if_not_exists"})

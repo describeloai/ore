@@ -38,12 +38,11 @@
 #                                       paquete fuera, la cola reencolada con las copias que quedan ·
 #                                       los punteros que otra base lee se quedan en la fuente (P3′) ·
 #                                       404 despues · el arbol compila
-#   6  una base foranea (sin type)      200 · nada con copia · COPIAR UNA TABLA (POST
-#                                       /tablas/{o}/copiar): 201, la base sigue foranea y solo
-#                                       esa vista copia (`copies` en el alcance, `copied` en el
-#                                       esquema, el Job la lleva) · otra vez 409 · y al ascender
-#                                       la base: 201, la regla, las dos con copia, el Job con las
-#                                       cuatro · copiar una tabla de una estandar: 409
+#   6  una base foranea (sin type)      0057: 422 sin federacion en la fuente · con ella, su
+#                                       package.yaml con spec.foreign y nada mas · copiar una
+#                                       tabla: 409 · `s.*` es un espejo · y al ascender la base:
+#                                       201, la regla, sin spec.foreign, las dos con copia, el
+#                                       Job con las cuatro · copiar una tabla de una estandar: 409
 #   8  invocar una funcion de lectura (0029 F4a I3): 404/409/422 antes de encolar; 202 con el Job en
 #      la cola (funcion, puerta, id, corrida); dos peticiones son dos Jobs; GET /funciones y …/resultados
 #
@@ -86,7 +85,9 @@ apiVersion: oos.dev/v1alpha1
 kind: OntologyConfig
 metadata: { name: demo, version: 0.1.0 }
 datasources:
-  - { name: pg, type: postgres, connectionEnv: PG_URL }
+  - name: pg
+    type: postgres
+    connectionEnv: PG_URL
 Y
 # 0039: la clase la dice el origen. Una base foranea hecha a mano dice de donde sale,
 # como la dejaria `discover` (sin ese fichero seria standard: solo el lago).
@@ -378,34 +379,42 @@ paquete tienda | grep -q '"copias": {"copiadas": 1, "declaradas": 2}' || falla "
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "5 · el arbol no compila con datasets/ dentro"
 dice "5 · el informe del Job: copiada · 99441 filas · copiado_por copiador · cuando · customers pendiente · GET /paquetes 2/1"
 
-# ── 6 · una foranea, y ascenderla ───────────────────────────────────────────
+# ── 6 · una foranea (0057, OOS v1alpha27), y ascenderla ─────────────────────
+# Una foranea EXPONE las tablas de la fuente: su package.yaml con spec.foreign y
+# nada mas. No nace sobre una fuente con la lectura en vivo apagada, y no copia.
+COD=$(alta '{"name":"espejo","source":"pg","only":["olist.customers","olist.orders"]}')
+[ "$COD" = "422" ] || falla "6 · una foranea sobre una fuente sin federacion devolvio $COD: $(cuerpo)"
+cuerpo | grep -q 'lectura en vivo' || falla "6 · el 422 no dice por que: $(cuerpo)"
+[ -e "$REPO/packages/espejo" ] && falla "6 · el 422 dejo la base escrita"
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$SUJ" -H 'content-type: application/json' "$BASE/fuentes/pg" -d '{"federation": true}')
+[ "$COD" = "200" ] || falla "6 · encender la federacion de pg devolvio $COD: $(cuerpo)"
 COD=$(alta '{"name":"espejo","source":"pg","only":["olist.customers","olist.orders"]}')
 [ "$COD" = "200" ] || falla "6 · la base foranea devolvio $COD: $(cuerpo)"
 cuerpo | grep -q '"type":"foreign"' || falla "6 · sin type no es foreign: $(cuerpo)"
-grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · una foranea escribe type en el alcance (no hace falta: es lo que significa no decir nada)"
-[ -n "$(dataset espejo orders)$(dataset espejo customers)" ] && falla "6 · una foranea nacio con copia"
-[ -z "$(ls -A "$REPO/packages/espejo/olist/entities" 2>/dev/null)" ] || falla "6 · una foranea del catalogo modelo algo"
+M="$REPO/packages/espejo/package.yaml"
+grep -q 'apiVersion: oos.dev/v1alpha27' "$M" && grep -q 'datasource: pg' "$M" && grep -q 'include: \[olist.customers, olist.orders\]' "$M" \
+  || falla "6 · la foranea no expone lo elegido: $(cat "$M")"
+[ -z "$(find "$REPO/packages/espejo" -name '*.yaml' ! -name package.yaml)" ] || falla "6 · la foranea escribio documentos: $(find "$REPO/packages/espejo" -name '*.yaml')"
 paquete espejo | grep -q '"type": "foreign"' || falla "6 · GET /paquetes no dice foreign: $(paquete espejo)"
-# una tabla, una a una: la base sigue foranea
+paquete espejo | grep -q '"copias": {"copiadas": 0, "declaradas": 0}' || falla "6 · la foranea declara copias: $(paquete espejo)"
+( cd "$REPO" && "$ORE" validate . 2>&1 ) | grep -q 'packages/espejo' && falla "6 · la foranea no compila: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A2 espejo)"
+# copiar una tabla de una foranea: 409 —copiar es de una estandar—
 copiar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/paquetes/$1/tablas/$2/copiar"; }
 COD=$(copiar espejo olist.orders)
-[ "$COD" = "201" ] || falla "6 · copiar una tabla devolvio $COD: $(cuerpo)"
-cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":1}' || falla "6 · copiar una tabla no cuenta 1 declarada: $(cuerpo)"
-cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "6 · copiar una tabla no encolo el Job: $(cuerpo)"
-grep -q '"copies": \[' "$REPO/packages/espejo/discover.scope.json" && grep -q '"olist.orders"' "$REPO/packages/espejo/discover.scope.json" || falla "6 · el alcance no lleva copies: $(cat "$REPO/packages/espejo/discover.scope.json")"
-grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · copiar una tabla cambio la clase"
-dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · la tabla copiada no lleva la copia: $(dataset espejo orders)"
-[ -n "$(dataset espejo customers)" ] && falla "6 · copiar orders copio tambien customers"
-paquete espejo | grep -q '"type": "foreign"' && paquete espejo | grep -q '"copias": {"copiadas": 0, "declaradas": 1}' || falla "6 · GET /paquetes: sigue foreign con 1 copia: $(paquete espejo)"
-esquema espejo | grep -q '"copied":true,.*"name":"orders"' && esquema espejo | grep -q '"copied":false,.*"name":"customers"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
-en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.olist.orders,tienda.olist.customers,tienda.olist.orders"' || falla "6 · el Job no lleva espejo.orders: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
-COD=$(copiar espejo olist.orders)
-[ "$COD" = "409" ] || falla "6 · copiar dos veces devolvio $COD: $(cuerpo)"
-COD=$(copiar espejo olist.nadie)
-[ "$COD" = "404" ] || falla "6 · copiar fuera del alcance devolvio $COD: $(cuerpo)"
+[ "$COD" = "409" ] || falla "6 · copiar una tabla de una foranea devolvio $COD: $(cuerpo)"
+cuerpo | grep -q 'no copia' || falla "6 · el 409 no dice por que: $(cuerpo)"
+# `s.*` es un schema en espejo: `include: [olist]`
+COD=$(alta '{"name":"espejo_entero","source":"pg","only":["olist.*"]}')
+[ "$COD" = "200" ] || falla "6 · la foranea en espejo devolvio $COD: $(cuerpo)"
+grep -q 'include: \[olist\]' "$REPO/packages/espejo_entero/package.yaml" || falla "6 · olist.* no es un espejo: $(cat "$REPO/packages/espejo_entero/package.yaml")"
+borrar0() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/paquetes/$1"; }
+COD=$(borrar0 espejo_entero)
+[ "$COD" = "200" ] || falla "6 · borrar la foranea en espejo devolvio $COD: $(cuerpo)"
+# ascender: la foranea pasa a estandar —sin spec.foreign, con sus datasets—
 COD=$(asc espejo)
 [ "$COD" = "201" ] || falla "6 · ascender espejo devolvio $COD: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/espejo/discover.scope.json" || falla "6 · ascender no escribio la regla"
+grep -q 'foreign' "$M" && falla "6 · ascender dejo spec.foreign: $(cat "$M")"
 dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · ascender no trajo la copia de orders: $(dataset espejo orders)"
 dataset espejo customers | grep -q 'kind: Dataset' || falla "6 · ascender no copio customers (sin modelar, no espera a nada)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "6 · la respuesta no cuenta 2/0: $(cuerpo)"
@@ -413,7 +422,7 @@ en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.olist.customers
 paquete espejo | grep -q '"type": "standard"' || falla "6 · GET /paquetes no dice standard tras ascender: $(paquete espejo)"
 COD=$(copiar espejo olist.customers)
 [ "$COD" = "409" ] || falla "6 · copiar una tabla de una estandar devolvio $COD: $(cuerpo)"
-dice "6 · una foranea nace sin copia · copiar UNA tabla: 201, sigue foranea, solo esa copia, el Job la lleva, 409 otra vez · al ascender: 201, la regla, las dos con copia, el Job con las cuatro · copiar en una estandar: 409"
+dice "6 · una foranea: 422 sin federacion · con ella, spec.foreign y nada mas, compila, 0 copias · copiar una tabla: 409 · s.* es un espejo · al ascender: 201, sin spec.foreign, las dos con copia, el Job con las cuatro · copiar en una estandar: 409"
 
 # ── 7 · retirar una base ────────────────────────────────────────────────────
 borrar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/paquetes/$1"; }

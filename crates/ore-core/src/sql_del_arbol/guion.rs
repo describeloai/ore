@@ -626,16 +626,10 @@ fn crear_base(ts: &[Tok], i: usize, clase: Option<Clase>) -> Result<Sentencia, V
     let clase = match (clase, &origen) {
         (Some(c), _) => c,
         (None, None) => Clase::Standard,
-        (None, Some(o)) => {
-            fallos.push(
-                Fallo::new(
-                    format!("una base sobre el origen `{}` es `standard` (se copia al lago) o `foreign` (se lee en el origen): dilo", o.nombre),
-                    pos,
-                )
-                .ayuda(format!("`create standard database {nombre} from origin …` o `create foreign database {nombre} from origin …`")),
-            );
-            Clase::Standard
-        }
+        // ⭐ 0057: una clase por defecto en todos los canales —la del alta—:
+        //   sobre un origen, foránea (se lee donde está, no copia nada); sin
+        //   él, estándar.
+        (None, Some(_)) => Clase::Foreign,
     };
     if clase == Clase::Foreign && origen.is_none() {
         fallos.push(
@@ -2211,6 +2205,15 @@ SELECT * FROM ventas.demo_uc.clientes;
             }
             x => panic!("{x:?}"),
         }
+        // 0057: sobre un origen y sin clase, foránea.
+        assert!(matches!(
+            s("create database b from origin erp include (s.t)"),
+            Sentencia::CrearBase {
+                clase: Clase::Foreign,
+                origen: Some(_),
+                ..
+            }
+        ));
         assert!(matches!(
             s("create standard database copia from origin erp include (ventas.*)"),
             Sentencia::CrearBase {
@@ -2221,10 +2224,6 @@ SELECT * FROM ventas.demo_uc.clientes;
         ));
         for (q, dice) in [
             ("create foreign database espejo", "se lee en su origen"),
-            (
-                "create database b from origin erp include (s.t)",
-                "`standard`",
-            ),
             ("create standard database b from origin erp", "include"),
             ("create database ventas.espana", "una parte"),
             ("create database mi-base", "sobra"),

@@ -186,6 +186,20 @@ pub fn copiar(raiz: &Path, objeto: &str) -> ExitCode {
                 &["  Se copia lo que entró por `discover --only`."],
             ));
         };
+        // ⛔ 0057: una base foránea de v1alpha27 no copia nada (OOS2049):
+        //   copiar es crear un `Dataset` en una base estándar.
+        if include_declarado(raiz).is_some() {
+            return Err(fallo(
+                65,
+                format!(
+                    "`{}` es una base foránea: expone su fuente y no copia",
+                    nombre_del_paquete(raiz)
+                ),
+                &[
+                    "  Copiar es de una base estándar: ascender la base, o crear una estándar con la tabla.",
+                ],
+            ));
+        }
         a.copiar(objeto).map_err(|m| fallo(65, m, &[]))?;
         std::fs::write(&r, a.escribir()).map_err(|e| {
             fallo(
@@ -210,6 +224,24 @@ pub fn copiar(raiz: &Path, objeto: &str) -> ExitCode {
             ExitCode::from(f.codigo)
         }
     }
+}
+
+/// 0057 · El `include` de `spec.foreign` del `package.yaml`, si la base es
+/// una foránea de v1alpha27.
+pub fn include_declarado(raiz: &Path) -> Option<Vec<String>> {
+    let t = std::fs::read_to_string(raiz.join("package.yaml")).ok()?;
+    let n = ore_core::parse::parse(&t).ok()?;
+    let (_, f) = n.get("spec")?.1.get("foreign")?;
+    Some(
+        f.get("include")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
 }
 
 fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<String, Fallo> {
@@ -247,6 +279,12 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
             if dir_de_la_fuente(raiz, &catalogo.fuente).is_some() {
                 regla.fuente_aparte = crate::raiz_del_repositorio(raiz)
                     .and_then(|r| crate::fuente_inducida::referencias(&r, &catalogo.fuente));
+            }
+            // ⭐⭐ 0057: una base que ya es foránea de v1alpha27 sigue
+            //   exponiendo lo que su `package.yaml` dice; una de antes —con
+            //   sus vistas por tabla— sigue como estaba hasta que se migre.
+            if !regla.estandar {
+                regla.expone = include_declarado(raiz);
             }
             a.comprueba_la_fuente(&catalogo)
                 .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;

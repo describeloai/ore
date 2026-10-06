@@ -334,6 +334,17 @@ impl Servidor {
         if let Err(m) = token(paquete) {
             return Respuesta::error(422, format!("nombre de paquete: {m}"));
         }
+        // ⛔ 0057 (OOS v1alpha27): una base foránea expone su fuente y no
+        //   copia nada (OOS2049). Copiar es de una base estándar.
+        if es_foranea_v27(&raiz.join("packages").join(paquete)) {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{paquete}` es una base foránea: expone su fuente y no copia. Copiar es de \
+                     una base estándar"
+                ),
+            );
+        }
         if objeto.is_empty()
             || objeto.len() > 128
             || !objeto
@@ -1065,13 +1076,17 @@ fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
 /// ⭐ 0039: una base que no salió de ningún origen —ni `discover.scope.json` ni
 ///   `discover.catalog.json`: `create standard database b` en un guion, `ore
 ///   package new`— es **standard**: lo que tenga sólo puede vivir en el lago.
-pub(crate) fn clase_de(dir: &Path) -> &'static str {
-    // ⭐ 0057 (v1alpha27): una base con `spec.foreign` lo declara ella.
-    if std::fs::read_to_string(dir.join("package.yaml"))
+/// ⭐ 0057: si el paquete es una base foránea de v1alpha27 (`spec.foreign`).
+pub(crate) fn es_foranea_v27(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("package.yaml"))
         .ok()
         .and_then(|t| parse::parse(&t).ok())
         .is_some_and(|n| n.get("spec").and_then(|(_, s)| s.get("foreign")).is_some())
-    {
+}
+
+pub(crate) fn clase_de(dir: &Path) -> &'static str {
+    // ⭐ 0057 (v1alpha27): una base con `spec.foreign` lo declara ella.
+    if es_foranea_v27(dir) {
         return "foreign";
     }
     if !dir.join("discover.scope.json").is_file() && !dir.join("discover.catalog.json").is_file() {

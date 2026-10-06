@@ -13,6 +13,25 @@
 
 /// El `package.yaml` de un paquete: `name`, `version`, `status`, `domain` y
 /// `owner`, en la forma canónica y en una línea por clave.
+/// **El manifiesto de una base foránea** (ORE 0057, OOS v1alpha27 `01` §2):
+/// el de siempre, en v1alpha27, con lo que expone de su fuente.
+pub fn documento_foraneo(
+    nombre: &str,
+    owner: &str,
+    estado: &str,
+    dominio: &str,
+    fuente: &str,
+    include: &[String],
+) -> String {
+    format!(
+        "apiVersion: oos.dev/v1alpha27\n\
+         kind: Package\n\
+         metadata: {{ name: {nombre}, version: 0.1.0, status: {estado}, domain: {dominio} }}\n\
+         spec:\n  owner: \"{owner}\"\n  foreign:\n    datasource: {fuente}\n    include: [{}]\n",
+        include.join(", ")
+    )
+}
+
 pub fn documento(nombre: &str, owner: &str, estado: &str, dominio: &str) -> String {
     format!(
         "apiVersion: oos.dev/v1alpha1\n\

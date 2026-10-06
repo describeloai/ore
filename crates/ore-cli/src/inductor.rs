@@ -498,6 +498,12 @@ pub struct Regla {
     /// [`punteros_de_la_fuente`]). `None`: todo en la base, como siempre —el
     /// CLI suelto, una prueba sin repositorio—.
     pub fuente_aparte: Option<BTreeMap<String, String>>,
+    /// ⭐⭐ 0057 (OOS v1alpha27) · **La base foránea expone**: con esto, la
+    /// base no tiene ningún documento más que su `package.yaml`, con
+    /// `spec.foreign` y este `include` —schemas en espejo u objetos—. Lo
+    /// expuesto es la `Table` de la fuente con otro nombre. Sólo con la
+    /// fuente aparte, y sin copias: una base que copia es estándar.
+    pub expone: Option<Vec<String>>,
 }
 
 impl Regla {
@@ -563,6 +569,13 @@ pub fn inducir_con_regla(
     voc: &Vocabulario,
     regla: &Regla,
 ) -> Induccion {
+    if let Some(include) = &regla.expone
+        && !regla.estandar
+        && regla.copiadas.is_empty()
+        && regla.fuente_aparte.is_some()
+    {
+        return inducir_foranea(cat, paquete, dec, include);
+    }
     let estandar = regla.estandar;
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
@@ -1818,6 +1831,87 @@ pub fn documento_paquete(nombre: &str, owner: &str, estado: &str, dominio: &str)
     // escribe también `ore-serve`, al darle sitio a un proyecto, y dos copias
     // de la misma forma divergen en el caso que ninguna prueba ejerce.
     ore_core::paquetes::documento(nombre, owner, estado, dominio)
+}
+
+/// ⭐⭐ 0057 · **La base foránea de v1alpha27**: su manifiesto y nada más.
+/// Ni vistas por tabla —lo expuesto ES la tabla de la fuente—, ni
+/// colecciones —el `ObjectTable` expuesto es la colección virtual—, ni
+/// entidades (OOS2049). La única decisión es el dueño.
+fn inducir_foranea(
+    cat: &Catalogo,
+    paquete: &str,
+    dec: &Decisiones,
+    include: &[String],
+) -> Induccion {
+    let (_, pendientes) = paquete_yaml(paquete, dec);
+    let owner = dec
+        .de(&id(Clase::Dueno, paquete))
+        .and_then(Respuesta::palabra)
+        .filter(|h| handle(h))
+        .unwrap_or("cambiame");
+    let mut ficheros = BTreeMap::new();
+    ficheros.insert(
+        "package.yaml".to_string(),
+        ore_core::paquetes::documento_foraneo(
+            paquete,
+            owner,
+            "active",
+            paquete,
+            &cat.fuente,
+            include,
+        ),
+    );
+    Induccion {
+        ficheros,
+        pendientes,
+        huerfanas: Vec::new(),
+        sin_copia: Vec::new(),
+        sin_coleccion: Vec::new(),
+    }
+}
+
+/// ⭐ 0057 · **Lo que una base foránea expone**, en la forma de `include`:
+/// cada objeto del alcance por el nombre de su puntero en la fuente
+/// (`<schema>.<nombre>`), y los schemas en espejo (`espejo`, del origen) por
+/// el schema de esos punteros. Sin duplicados, en orden.
+pub fn include_de(
+    cat: &Catalogo,
+    refs: &BTreeMap<String, String>,
+    espejo: &[String],
+) -> Vec<String> {
+    let sin_fuente = |r: &str| {
+        r.strip_prefix(&format!("{}.", cat.fuente))
+            .unwrap_or(r)
+            .to_string()
+    };
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    let schema_en_la_fuente = |s: &str| -> String {
+        refs.iter()
+            .find(|(o, _)| o.split_once('.').is_some_and(|(os, _)| os == s))
+            .and_then(|(_, r)| sin_fuente(r).split_once('.').map(|(rs, _)| rs.to_string()))
+            .unwrap_or_else(|| s.to_string())
+    };
+    for s in espejo {
+        out.insert(schema_en_la_fuente(s));
+    }
+    let en_espejo = |o: &str| {
+        o.split_once('.')
+            .is_some_and(|(s, _)| espejo.iter().any(|e| e == s))
+    };
+    for o in cat
+        .tablas
+        .iter()
+        .map(|t| t.nombre.as_str())
+        .chain(cat.objetos.iter().map(|o| o.nombre.as_str()))
+    {
+        if en_espejo(o) {
+            continue;
+        }
+        if let Some(r) = refs.get(o) {
+            out.insert(sin_fuente(r));
+        }
+    }
+    out.into_iter().collect()
 }
 
 fn paquete_yaml(paquete: &str, dec: &Decisiones) -> (String, Vec<Pendiente>) {
@@ -3215,6 +3309,7 @@ mod tests {
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
             fuente_aparte: None,
+            expone: None,
         };
         let sin = inducir_con_regla(
             &cat,
@@ -3299,6 +3394,7 @@ mod tests {
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
             fuente_aparte: None,
+            expone: None,
         };
         let i = inducir_con_regla(
             &cat,
@@ -3374,6 +3470,7 @@ mod tests {
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
             fuente_aparte: None,
+            expone: None,
         };
         // y en una foránea, una tabla copiada una a una: sólo ésa
         let suelta = Regla {
@@ -3382,6 +3479,7 @@ mod tests {
             copiadas: ["rubix_demo_ventas.facturas".to_string()].into(),
             schemas: BTreeMap::new(),
             fuente_aparte: None,
+            expone: None,
         };
         let f = inducir_con_regla(
             &cat,

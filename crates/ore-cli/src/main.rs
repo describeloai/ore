@@ -576,6 +576,12 @@ enum Command {
         /// se elige.
         #[arg(long = "type", value_name = "standard|foreign")]
         tipo: Option<String>,
+        /// ⭐ 0057 · **Un schema en espejo** de una base foránea (repetible):
+        /// la base expone lo que la fuente tenga en él —también lo que se
+        /// catalogue después—, no sólo los objetos de hoy. Sus objetos van
+        /// también en `--only`.
+        #[arg(long = "mirror", value_name = "SCHEMA")]
+        espejo: Vec<String>,
         /// **El catálogo no modela** (ORE 0027 P1 C1): con esto, ninguna tabla
         /// del alcance lleva `Entity` ni cola de modelado — sólo `Table` y
         /// `View`. Se modela después, una a una, con `ore model`.
@@ -1448,6 +1454,7 @@ fn main() -> std::process::ExitCode {
             solo,
             solo_de,
             tipo,
+            espejo,
             sin_modelar,
             modelar,
             owner,
@@ -1469,6 +1476,7 @@ fn main() -> std::process::ExitCode {
                         Some(modelar.clone())
                     },
                     owner: owner.as_deref(),
+                    espejo,
                 },
             );
         }
@@ -1896,6 +1904,8 @@ struct Reglas<'a> {
     modeladas: Option<Vec<String>>,
     /// La decisión `dueno`, contestada de antemano por quien llama.
     owner: Option<&'a str>,
+    /// 0057: los schemas en espejo de una base foránea.
+    espejo: &'a [String],
 }
 
 fn descubrir(
@@ -1911,6 +1921,7 @@ fn descubrir(
         tipo,
         modeladas,
         owner,
+        espejo,
     } = reglas;
     if let Some(t) = tipo
         && t != "standard"
@@ -2047,7 +2058,7 @@ fn descubrir(
         Some(r) => vocabulario::Vocabulario::leer(&r),
         None => vocabulario::Vocabulario::default(),
     };
-    let regla = inductor::Regla {
+    let mut regla = inductor::Regla {
         estandar: el_alcance.as_ref().is_some_and(|(a, _)| a.estandar()),
         modeladas: el_alcance
             .as_ref()
@@ -2064,7 +2075,17 @@ fn descubrir(
             .and_then(|_| raiz_del_repositorio(destino))
             .filter(|_| revision::dir_de_la_fuente(destino, &catalogo.fuente).is_some())
             .and_then(|r| fuente_inducida::referencias(&r, &catalogo.fuente)),
+        expone: None,
     };
+    // ⭐⭐ 0057 (OOS v1alpha27): una base foránea nueva, de una fuente con
+    //   paquete, EXPONE las tablas de la fuente —su `package.yaml` con
+    //   `spec.foreign`, nada más—. Sin paquete de la fuente (el CLI suelto),
+    //   lo de antes: sus propias tablas y una vista por tabla.
+    if let Some(refs) = &regla.fuente_aparte
+        && el_alcance.as_ref().is_some_and(|(a, _)| !a.estandar())
+    {
+        regla.expone = Some(inductor::include_de(&catalogo, refs, espejo));
+    }
     // ⭐ El dueño no se deriva: lo contesta quien llama, como cualquier otra
     //   decision — y por eso entra por `Decisiones` y se guarda con las demas
     //   (`discover.answers.json`), para que `review` lo conserve en vez de

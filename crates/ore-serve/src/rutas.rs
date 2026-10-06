@@ -2093,6 +2093,25 @@ impl Servidor {
         if raiz.join("packages").join(&nombre).exists() {
             return Respuesta::error(409, format!("ya hay un paquete `{nombre}`"));
         }
+        // ⛔⭐ 0057 (OOS v1alpha27): una base foránea es la cara SQL de un
+        //   origen que se lee en vivo; no nace sobre una fuente con la lectura
+        //   en vivo apagada —sería una base congelada desde el primer día—.
+        if tipo == "foreign" && !federacion_encendida(raiz, &fuente) {
+            return Respuesta::error(
+                422,
+                format!(
+                    "`{fuente}` no tiene la lectura en vivo encendida: una base foránea se lee en \
+                     el origen. Enciéndela en la fuente (`PUT /fuentes/{fuente}` \
+                     `{{\"federation\": true}}`, o en la consola) o crea una base estándar"
+                ),
+            );
+        }
+        // ⭐ 0057: `s.*` en una foránea es un schema en ESPEJO —lo que la
+        //   fuente tenga en él, también lo que se catalogue después—.
+        let espejo: Vec<String> = objetos
+            .iter()
+            .filter_map(|o| o.strip_suffix(".*").map(String::from))
+            .collect();
         // `s.*` es el schema entero del origen (0039, `include (s.*)`).
         let objetos = match expandir(&catalogo, objetos) {
             Ok(o) => o,
@@ -2125,6 +2144,12 @@ impl Servidor {
             //   tablas y vistas, sin entidades. Modelar es otro acto.
             "--no-model".into(),
         ];
+        if tipo == "foreign" {
+            for s in &espejo {
+                args.push("--mirror".into());
+                args.push(s.clone());
+            }
+        }
         // ⭐⭐ EL DUEÑO ES QUIEN LA CREA (0052 · Ownership): `user:<handle>`,
         //   el que `ore-iam` le dio a la persona. Antes era `team:<organización>`,
         //   que no distinguía nada —todo era de todos— y no decía a quién
@@ -3447,6 +3472,23 @@ pub fn ruta_de(p: &Path) -> String {
 /// **`include (s.*)`** (0039): un objeto `s.*` es el schema `s` entero del
 /// catálogo del origen (sus `tables[].name` que empiezan por `s.`). Lo demás,
 /// tal cual: si no está, lo dice `discover`.
+/// ⭐ 0057: si la fuente tiene la lectura en vivo encendida
+/// (`datasources[].federation: true` del manifiesto).
+fn federacion_encendida(raiz: &Path, fuente: &str) -> bool {
+    std::fs::read_to_string(raiz.join("ontology.config.yaml"))
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .and_then(|n| {
+            n.get("datasources").map(|(_, d)| {
+                d.items().iter().any(|ds| {
+                    ds.get("name").and_then(|(_, v)| v.as_str()) == Some(fuente)
+                        && ds.get("federation").and_then(|(_, v)| v.as_str()) == Some("true")
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn expandir(catalogo: &Path, objetos: Vec<String>) -> Result<Vec<String>, Respuesta> {
     if !objetos.iter().any(|o| o.ends_with(".*")) {
         return Ok(objetos);
