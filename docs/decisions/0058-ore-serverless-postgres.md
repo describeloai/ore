@@ -1,7 +1,8 @@
 # 0058 · ORE Serverless Postgres
 
-**Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c·C1–C3 (Neon compilado por
-nosotros, GCS nativo, compatible con el cómputo publicado) medidos; siguiente D0c·C4. **Decide:** qué es ORE Serverless Postgres para quien
+**Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c·C1–C4 (Neon compilado por
+nosotros, GCS nativo, compatible con el cómputo publicado, recuperable desde GCS) medidos; siguiente
+D0c·C5. **Decide:** qué es ORE Serverless Postgres para quien
 lo usa, sobre qué se construye, qué es nuestro y qué no, y cómo pasan sus datos al catálogo. Toca
 [`0044`](0044-ramas-globales.md) (las ramas globales: no se mezclan con éstas),
 [`0047`](0047-ore-access-control.md) (quién puede), [`0048`](0048-ore-idp.md) (quién es) y
@@ -210,14 +211,33 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
     con marcar los hint bits con `wal_log_hints=on` (imagen de página completa la primera vez), pero
     una tabla nueva no lo reprodujo. Importa al precio: una rama que lee mucho por primera vez escribe.
   - ⇒ **No hace falta compilar el cómputo** por ahora: el de agosto de 2025 vale contra `main`.
+- **C4** · «sin fondo» (`c4.sh`): se borra el pageserver **con su disco**; uno vacío recupera desde GCS.
+  - **RPO 0**: están la marca subida a GCS **y la que sólo vivía en los safekeepers** (escrita justo
+    antes, sin checkpoint); `main`, las dos ramas y lo que escribió la rama, intactos.
+  - Tiempos: pod nuevo con disco nuevo (`pd-standard`) listo en **14,7 s**; el pageserver vacío no
+    conoce ningún tenant ⇒ alguien lo **reengancha** con la generación siguiente (`location_config`,
+    generación 2: lo que hará el `storage_controller`); tenant `Active` en **6,6 s** más (índices desde
+    GCS, sin bajar datos). Total del desastre a tenant servido: **~21 s**.
+  - **Lo cacheado no se entera**: una sonda contra `main` cada segundo respondió durante todo el
+    desastre (la tabla estaba en la caché del cómputo). Sólo espera quien pide páginas que no tiene.
+  - Lectura en frío: una VM nueva sobre la rama (caché vacía) recorre 2 M filas en ~1,3 s contando
+    ~0,8 s de `kubectl exec` + conexión; el pageserver bajó ~200 MB de capas a demanda. Una repetición
+    tardó 16 s (anómala, sin explicar) y la siguiente 1,2 s: medir dentro de la base, no desde fuera.
+  - ⚠️ **La overlay y la IP reutilizada**: al recrear la VM, whereabouts le dio la **misma IP overlay
+    con otra MAC**; durante ~1 min un cliente con la MAC antigua en su caché ARP no llegó (por la IP del
+    pod sí). Se arregló solo. Importa para despertar: el proxy reintenta, o la VM anuncia su MAC
+    (ARP gratuito) al nacer, o no se reutiliza la IP al momento.
+  - ⇒ La recuperación es de **decenas de segundos**, no de minutos: un pageserver por grupo de tenants y
+    reengancharlo (storage_controller) basta para empezar; los secundarios en caliente, cuando el RTO
+    prometido baje de eso. El disco local es caché: perderlo no pierde nada.
 
 ### B.9 · Los pasos
 
 | paso | qué | estado |
 |---|---|---|
 | D0c·C3 | compatibilidad: pgbench de escritura/lectura y una rama con el cómputo publicado | **hecho** (2026-10-06) |
-| D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | **siguiente** |
-| D0c·C5 | cerrar: cómo mantener el fork (commit fijado, cada cuánto, caché en el CI); confirmar el coste de leer en una rama | pendiente |
+| D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | **hecho** (2026-10-06): RPO 0, ~21 s |
+| D0c·C5 | cerrar: cómo mantener el fork (commit fijado, cada cuánto, caché en el CI); confirmar el coste de leer en una rama | **siguiente** |
 | D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | pendiente |
 | P1… | construir: el plano de control (API, ciclo de vida, proxy en la overlay, pool precalentado, `storage_controller`), publicar al catálogo por CDC, nodos grandes | por planificar |
 
