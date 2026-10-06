@@ -1421,8 +1421,9 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
 /// retículos, config). Un paquete que no compila se lleva **sus** vistas —salen
 /// como `error`, con el primer diagnóstico— y no las de los demás: una base a
 /// medio decidir no bloquea las copias del inquilino. Lo roto en paquetes sin
-/// copia se dice y no para.
-fn cargar_para_copiar(
+/// copia se dice y no para. Devuelve **todos** los paquetes rotos (paquete →
+/// su primer diagnóstico): `ore view` (0053) sigue la misma regla.
+pub(crate) fn cargar_para_copiar(
     path: &Path,
 ) -> Result<(Package, BTreeMap<String, String>), std::process::ExitCode> {
     if !path.is_dir() {
@@ -1464,9 +1465,8 @@ fn cargar_para_copiar(
     let por_paquete: BTreeMap<String, String> = rotos
         .into_iter()
         .filter_map(|(p, d)| Some((p?, d.render(path))))
-        .filter(|(p, _)| con_copia.contains(p))
         .collect();
-    for (p, d) in &por_paquete {
+    for (p, d) in por_paquete.iter().filter(|(p, _)| con_copia.contains(*p)) {
         eprintln!("aviso · el paquete `{p}` no compila: sus copias salen como error\n{d}");
     }
     Ok((pkg, por_paquete))

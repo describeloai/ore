@@ -109,9 +109,21 @@ fn ver_colecciones(pkg: &ore_core::link::Package) -> usize {
 }
 
 pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
-    let pkg = match crate::cargar_valido(path, true) {
+    // ⭐ 0053 · Con la regla de la copia (`cargar_para_copiar`), no la de
+    //   `validate`: lo que esto dice lo lee el Job de la copia (las líneas
+    //   `raíz`, para saber qué credenciales pedir), y un paquete roto que no
+    //   copia nada no puede dejar sin raíces a los demás. Medido en victor el
+    //   2026-10-06: un `.sql` con `create table` en `test_project` (OOS2043)
+    //   hacía fallar `ore view` entero, `preparar` no pidió ninguna credencial
+    //   y las copias desde el origen de `f7_copias` no se prepararon, mientras
+    //   `materialize` sí toleraba ese paquete. Las vistas de un paquete roto
+    //   salen con su error y sin plan; las demás, enteras.
+    let (pkg, rotos) = match crate::materializar::cargar_para_copiar(path) {
         Ok(p) => p,
         Err(c) => return c,
+    };
+    let roto = |v: &Loaded| {
+        crate::materializar::paquete_del_fichero(path, &v.path).and_then(|p| rotos.get(&p))
     };
     // 0046 E8·1: las colecciones mantenidas, con su raíz. Es lo que el Job de
     // la copia lee para saber qué fuente abrir por cada una.
@@ -153,6 +165,11 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     for v in &vistas {
         let Some(qn) = v.qname() else { continue };
         println!("{qn}");
+        if let Some(d) = roto(v) {
+            let primera = d.lines().next().unwrap_or("");
+            println!("  error     su paquete no compila · {primera}");
+            continue;
+        }
 
         // El estado del documento, lo primero, porque decide si lo demás
         // significa algo: un plan impecable sobre una pregunta que nadie ha

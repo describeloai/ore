@@ -152,6 +152,32 @@ ESPERA=$(psql "$PG_URL/copia" -tAc "select count(*)||'|'||sum(p.total) from pedi
 SALE=$("$PY" -c 'import pyarrow.ipc as i,sys;t=i.open_stream(sys.argv[1]).read_all().to_pylist();print("%s|%s"%(t[0]["pedidos"],t[0]["total"]) if t else "nada")' "$C/salida.arrow" 2>&1)
 [ "$SALE" = "$ESPERA" ] && dice "3 · la copia calculada casa con el origen: $SALE (pedidos|total)" || falla "3 · sale $SALE, el origen dice $ESPERA"
 
+# ── 1b · un paquete roto que no copia nada no deja sin raíces a los demás ──
+#   (victor, 2026-10-06: un `.sql` roto en otro paquete hacía fallar `ore view`
+#   entero y el Job de la copia no pedía ninguna credencial.)
+mkdir -p "$A/packages/roto/views"
+cat > "$A/packages/roto/package.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: roto, version: 0.1.0, status: draft, domain: roto }
+spec: { owner: "team:copia" }
+YAML
+cat > "$A/packages/roto/views/mala.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha24
+kind: View
+metadata: { name: mala, namespace: roto }
+spec:
+  owner: team:copia
+  dialect: duckdb
+  sql: SELECT x FROM roto.no_existe
+  columns:
+    x: { type: String }
+YAML
+"$ORE" validate "$A" >/dev/null 2>&1 && falla "1b · el paquete roto compila (la prueba no prueba nada)"
+"$ORE" view "$A" >"$TMP/vista-rota.txt" 2>&1; RC=$?
+[ "$RC" = 0 ] && grep -q "raíz      pg" "$TMP/vista-rota.txt" && grep -q "su paquete no compila" "$TMP/vista-rota.txt"   && dice "1b · con un paquete roto al lado, \`ore view\` sigue dando la raíz pg (y dice cuál no compila)"   || falla "1b · ore view con un paquete roto: rc=$RC $(grep -n "raíz\|error" "$TMP/vista-rota.txt" | head -5)"
+rm -rf "$A/packages/roto"
+
 # ── 4 · 0053 F8·3 · lo mismo, por la pasarela ────────────────────────────────
 #   Con `ORE_PASARELA`, `--preparar` no lanza el conector: pide cada tabla a
 #   `ore-federation` con `perfil: "copia"` (en la cola del origen, sin tope).
