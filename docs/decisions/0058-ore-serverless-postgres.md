@@ -89,6 +89,35 @@ historia guarda. Paga cómputo mientras vive y almacenamiento por lo que ocupa; 
 - **Una capa de almacenamiento por celda**: multiplica el coste fijo; el aislamiento es por tenant.
 - **Dual-Branching ahora** (rama = LSN de Postgres + snapshot de Iceberg): se aparca, no se cierra.
 
+### La hoja de ruta
+
+Primero **un Postgres serverless sano** y sólo entonces el catálogo. Cada hito se cierra con un «hecho cuando» medible; el detalle y los sub-pasos están en B.11.
+
+**Fase I · Un Postgres serverless sano**
+
+| hito | qué |
+|---|---|
+| P1 | el motor es nuestro: forks, compilar almacenamiento y cómputo, Postgres al día |
+| P2 | almacenamiento de producción con `storage_controller` |
+| P3 | cómputo de producción y **aislamiento entre organizaciones** |
+| P4 | plano de control: `ore-postgres` y `/v1/postgres/…` en `ore-serve` |
+| P5 | el proxy: conexión desde internet con TLS y SNI |
+| P6 | dormir y despertar desde un pool precalentado |
+| P7 | una aplicación real encima durante días |
+| P8 | operarlo: PITR, alertas, actualizaciones en rodaje, game day |
+| P9 | el producto alrededor: medición, cuotas y consola |
+| ⛔ | **puerta de producción**: cuota, nodos grandes, multizona, revisión de seguridad |
+
+**Fase II · Sus datos, activos del catálogo**
+
+| hito | qué |
+|---|---|
+| Q1 | la base como foreign database, sin copiar |
+| Q2 | publicar tablas por CDC a Iceberg con marca de agua |
+| Q3 | gobierno y linaje |
+| Q4 | del lago a Postgres |
+| Q5 | ramas unidas |
+
 ---
 
 ## Zona borrador · lo medido, los arreglos y los pasos
