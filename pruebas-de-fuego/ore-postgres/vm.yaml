@@ -1,0 +1,63 @@
+apiVersion: vm.neon.tech/v1
+kind: VirtualMachine
+metadata:
+  name: pg-d0
+  namespace: d0-neon
+  labels:
+    autoscaling.neon.tech/enabled: 'true'
+  annotations:
+    autoscaling.neon.tech/bounds: '{ "min": { "cpu": 0.25, "mem": "1Gi" }, "max":
+      { "cpu": 1, "mem": "3Gi" } }'
+spec:
+  schedulerName: autoscale-scheduler
+  nodeSelector:
+    ore.dev/pool: neon
+  tolerations:
+  - key: ore.dev/neon
+    operator: Equal
+    value: 'true'
+    effect: NoSchedule
+  restartPolicy: Never
+  guest:
+    cpus:
+      min: 0.25
+      use: 0.5
+      max: 1
+    memorySlotSize: 1Gi
+    memorySlots:
+      min: 1
+      use: 1
+      max: 3
+    rootDisk:
+      image: ghcr.io/neondatabase/vm-compute-node-v17:latest
+      size: 8Gi
+    command:
+    - /usr/local/bin/compute_ctl
+    args:
+    - --pgdata
+    - /var/db/postgres/compute
+    - -C
+    - postgresql://cloud_admin@127.0.0.1:55433/postgres
+    - -b
+    - /usr/local/bin/postgres
+    - --compute-id
+    - pg-d0
+    - --config
+    - /var/db/postgres/configs/config.json
+    - --filecache-connstr
+    - host=127.0.0.1 port=55433 dbname=postgres user=cloud_admin sslmode=disable application_name=vm-monitor
+    ports:
+    - port: 55433
+    - port: 3080
+    - port: 10301
+    - port: 9100
+    env:
+    - name: AUTOSCALING
+      value: 'true'
+  disks:
+  - name: cfg
+    mountPath: /var/db/postgres/configs
+    configMap:
+      name: pg-d0-config
+  extraNetwork:
+    enable: true

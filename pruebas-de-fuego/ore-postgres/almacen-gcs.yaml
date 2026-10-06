@@ -1,0 +1,126 @@
+# D0b · la capa de almacenamiento de Neon contra GCS nativo (Workload Identity, sin claves).
+# Prueba: se borra entera al acabar. Pool `neon-d0`, namespace `d0-neon`.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: pageserver, namespace: d0-neon }
+data:
+  pageserver.toml: |
+    broker_endpoint = 'http://storage-broker:50051'
+    pg_distrib_dir = '/usr/local/'
+    listen_pg_addr = '0.0.0.0:6400'
+    listen_http_addr = '0.0.0.0:9898'
+    remote_storage = { bucket_name = 'BUCKET', prefix_in_bucket = 'pageserver/' }
+    control_plane_api = 'http://0.0.0.0:6666'
+    control_plane_emergency_mode = true
+  identity.toml: |
+    id = 1
+---
+apiVersion: v1
+kind: Service
+metadata: { name: storage-broker, namespace: d0-neon }
+spec:
+  selector: { app: storage-broker }
+  ports: [{ name: grpc, port: 50051 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: storage-broker, namespace: d0-neon }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: storage-broker } }
+  template:
+    metadata: { labels: { app: storage-broker } }
+    spec:
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      containers:
+        - name: broker
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:fa504217c61bbcaf5c512d75830564541f917f8f
+          command: ["storage_broker", "--listen-addr=0.0.0.0:50051"]
+          resources: { requests: { cpu: 10m, memory: 32Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: safekeeper, namespace: d0-neon }
+spec:
+  clusterIP: None
+  selector: { app: safekeeper }
+  ports: [{ name: pg, port: 5454 }, { name: http, port: 7676 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: safekeeper, namespace: d0-neon }
+spec:
+  serviceName: safekeeper
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector: { matchLabels: { app: safekeeper } }
+  template:
+    metadata: { labels: { app: safekeeper } }
+    spec:
+      serviceAccountName: neon
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm: { topologyKey: kubernetes.io/hostname, labelSelector: { matchLabels: { app: safekeeper } } }
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: safekeeper
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:fa504217c61bbcaf5c512d75830564541f917f8f
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ID=$(( ${HOSTNAME##*-} + 1 ))
+              exec safekeeper --listen-pg=${HOSTNAME}.safekeeper.d0-neon.svc.cluster.local:5454 \
+                --listen-http=0.0.0.0:7676 --id=$ID \
+                --broker-endpoint=http://storage-broker:50051 -D /data \
+                --remote-storage="{bucket_name='BUCKET', prefix_in_bucket='safekeeper/'}"
+          resources: { requests: { cpu: 50m, memory: 128Mi } }
+          volumeMounts: [{ name: datos, mountPath: /data }]
+  volumeClaimTemplates:
+    - metadata: { name: datos }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: standard
+        resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: pageserver, namespace: d0-neon }
+spec:
+  selector: { app: pageserver }
+  ports: [{ name: pg, port: 6400 }, { name: http, port: 9898 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: pageserver, namespace: d0-neon }
+spec:
+  serviceName: pageserver
+  replicas: 1
+  selector: { matchLabels: { app: pageserver } }
+  template:
+    metadata: { labels: { app: pageserver } }
+    spec:
+      serviceAccountName: neon
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: pageserver
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:fa504217c61bbcaf5c512d75830564541f917f8f
+          command: ["/bin/sh", "-c"]
+          args: ["cp /cfg/*.toml /data/.neon/ && exec /usr/local/bin/pageserver -D /data/.neon"]
+          resources: { requests: { cpu: 100m, memory: 256Mi } }
+          volumeMounts:
+            - { name: cfg, mountPath: /cfg }
+            - { name: datos, mountPath: /data/.neon }
+      volumes: [{ name: cfg, configMap: { name: pageserver } }]
+  volumeClaimTemplates:
+    - metadata: { name: datos }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: standard
+        resources: { requests: { storage: 20Gi } }
