@@ -1,8 +1,9 @@
 # 0058 · ORE Serverless Postgres
 
 **Estado:** **propuesto** (2026-10-06) · D0 (local), D0b·1–5 (GKE) y D0c (Neon compilado por nosotros,
-GCS nativo, compatible con el cómputo publicado, recuperable desde GCS) medidos y cerrados; siguiente
-D0b·6 (recoger) y planificar la construcción. **Decide:** qué es ORE Serverless Postgres para quien
+GCS nativo, compatible con el cómputo publicado, recuperable desde GCS) medidos y cerrados; la prueba
+recogida (D0b·6). **Plan de construcción escrito (B.11)**: fase I, un Postgres serverless sano (P1–P9);
+fase II, el catálogo (Q1–Q5). Siguiente: P1, esperando el go. **Decide:** qué es ORE Serverless Postgres para quien
 lo usa, sobre qué se construye, qué es nuestro y qué no, y cómo pasan sus datos al catálogo. Toca
 [`0044`](0044-ramas-globales.md) (las ramas globales: no se mezclan con éstas),
 [`0047`](0047-ore-access-control.md) (quién puede), [`0048`](0048-ore-idp.md) (quién es) y
@@ -261,12 +262,200 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | D0c·C3 | compatibilidad: pgbench de escritura/lectura y una rama con el cómputo publicado | **hecho** (2026-10-06) |
 | D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | **hecho** (2026-10-06): RPO 0, ~21 s |
 | D0c·C5 | cerrar: cómo mantener el fork; el coste de leer en una rama | **hecho** (2026-10-06): hint bits confirmados; Postgres 17.5 → hay que traer 17.10+ |
-| D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | **siguiente** |
-| P1… | construir: el plano de control (API, ciclo de vida, proxy en la overlay, pool precalentado, `storage_controller`), publicar al catálogo por CDC, nodos grandes | por planificar |
+| D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | **hecho** (2026-10-06): 5/12 |
+| P1–P9, Q1–Q5 | construir (B.11) | **plan escrito**; P1 esperando el go |
 
-### B.10 · Lo que hay vivo en GKE para la prueba (se recoge en D0b·6)
+### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
 Pool `neon-d0`; namespaces `d0-neon`, `neonvm-system`, `cert-manager`; en `kube-system` Multus,
 whereabouts, `autoscale-scheduler` y `autoscaler-agent` (todos con `nodeSelector ore.dev/pool=neon`);
 CRDs de NeonVM, cert-manager y Multus; bucket `ore-neon-d0-1006`; cuenta `neon-d0` (Workload Identity →
 `d0-neon/neon`); imagen `ore/neon:fa504217…` (se queda).
+
+**Recogido** en este orden: las VMs y `d0-neon` (sus 4 discos `pd-standard` se borraron con los PV);
+los webhooks de NeonVM y cert-manager; en `kube-system` los DaemonSets, el planificador, sus cuentas,
+ConfigMaps y roles; `neonvm-system` y `cert-manager`; las 12 CRDs; los `ClusterRole(Binding)` por nombre
+exacto (ojo: `cluster-autoscaler`, `kube-dns-autoscaler` y `horizontal-pod-autoscaler` son de GKE y se
+quedan); el pool; el bucket (2,3 GB); la cuenta. Cuota: **5/12**. Queda la imagen en el registro.
+
+### B.11 · El plan de construcción (2026-10-06)
+
+**El orden lo manda una pregunta: ¿puede una aplicación de verdad vivir encima?**
+
+- **Primero**, un Postgres serverless sano: que reciba y emita transacciones, que se conecte desde fuera, que escale, que duerma y despierte, todo por nuestro plano de control.
+- **Sólo entonces**, el catálogo.
+
+Cada hito se cierra con un **hecho cuando** medible. Sus sub-pasos (Pn·1, Pn·2…) se escriben al empezarlo, no antes.
+
+**Dónde vive cada cosa** (propuesta; se cierra en P4):
+
+| pieza | alcance | por qué |
+|---|---|---|
+| almacenamiento (pageserver, safekeepers, broker, `storage_controller`) | uno por región, compartido | En reposo cuesta ~17 milinúcleos (B.7). El aislamiento es por tenant. |
+| `ore-postgres`, el plano de control de Postgres | uno por región | Es el dueño del estado (proyectos, ramas, endpoints). Habla con el almacenamiento, con NeonVM y con el proxy. |
+| la API que ve el cliente | el `ore-serve` de cada organización (`/v1/postgres/…`) | Ya es «el plano de control de ORE: atiende a un cliente y delega lo que toca el mundo». 0047 y 0048 entran ahí. |
+| las VMs de cómputo | en el namespace del inquilino, `t-<org>` | Su ResourceQuota es el límite de la organización, y su aislamiento, el de la organización. |
+| el proxy | uno por región, en la overlay | Es la única puerta pública y sobrevive a las migraciones (B.6). |
+
+**El desarrollo de la fase I cabe en los ~7 vCPU libres** (D0b usó 3 × n2-standard-2). Los nodos grandes y la cuota son la **puerta de producción**: van al final de la fase I, no antes.
+
+#### Fase I · Un Postgres serverless sano
+
+Cada hito, en orden, con lo que entra y cuándo está hecho.
+
+**P1 · El motor es nuestro**
+- Qué:
+  - fork de `neon` y de su `postgres`;
+  - el CI compila **el almacenamiento y el cómputo** (la imagen de VM, con `vm-builder`) desde nuestro commit, sólo con Postgres 17 y con caché de capas;
+  - **rebase de Postgres 17.5 → 17.10+**, incluidos los parches de Neon al gestor de almacenamiento;
+  - la aceptación es el suite de regresión de Neon.
+- Hecho cuando:
+  - las dos imágenes salen de nuestro CI por etiqueta y pasan la aceptación;
+  - Postgres está en la última versión menor;
+  - el tiempo y el coste están medidos, en frío y con caché.
+
+**P2 · El almacenamiento, de producción** (declarado en la malla, con Flux)
+- Qué:
+  - el `storage_controller` con su base de estado: un Postgres normal, no él mismo;
+  - el pageserver;
+  - 3 safekeepers con antiafinidad;
+  - el broker;
+  - un bucket regional con Workload Identity;
+  - la retención, el GC y el `storage_scrubber`.
+- Hecho cuando:
+  - los tenants y timelines se crean por la API del `storage_controller`;
+  - **C4 se repite sin mano**: el controller reengancha solo;
+  - borrar un tenant borra sus bytes en GCS.
+
+**P3 · El cómputo, de producción** (declarado en la malla)
+- Qué:
+  - NeonVM, el autoscaling, Multus para GKE (B.3) y whereabouts;
+  - un pool con virtualización anidada y las piezas dimensionadas;
+  - **nuestra** imagen de cómputo;
+  - las VMs en `t-<org>`, con su ResourceQuota.
+- ⚠️ **El aislamiento en la overlay**: la overlay es una sola red L2 para todos, y Cilium no filtra la interfaz secundaria. Se mide y se cierra en este hito.
+- Hecho cuando:
+  - D0b·2–4 se reproduce desde git con nuestra imagen;
+  - una VM de la organización A **no alcanza** a una de la B (probado).
+
+**P4 · El plano de control: el núcleo**
+- Qué:
+  - `ore-postgres`, con su estado y su reconciliador:
+    - proyecto → tenant;
+    - rama → timeline, en un LSN **o en un instante**;
+    - endpoint → VM, especificación y JWKS;
+    - los roles y las bases van dentro de la especificación;
+  - **un solo cómputo de escritura por rama**, con cerco;
+  - operaciones asíncronas e idempotentes, cada una con su id;
+  - `ore-serve` expone `/v1/postgres/…` con 0047 y 0048;
+  - las contraseñas de los roles, en el cofre.
+- Hecho cuando:
+  - por la API de ORE se crean proyecto, rama, endpoint y rol, y se conecta desde dentro de la malla;
+  - un segundo cómputo de escritura en la misma rama es **imposible** (probado);
+  - borrarlo todo no deja huella.
+
+**P5 · La entrada: el proxy**
+- Qué:
+  - el proxy de Neon contra **nuestra** API del plano de control, con el contrato que espera en el commit fijado: el secreto del rol (SCRAM) y despertar;
+  - el enrutado por SNI, `<endpoint>.<región>.ore…`, con TLS comodín;
+  - un balanceador L4 público;
+  - el proxy, en la overlay;
+  - un endpoint con pool (`-pooler`, el pgbouncer del cómputo) para las aplicaciones serverless;
+  - más adelante, SQL por HTTP y WebSocket.
+- Hecho cuando:
+  - desde internet, `psql "postgres://…?sslmode=verify-full"` y pgbench funcionan sin fallos;
+  - una migración en vivo **no corta** una sesión que entra por el proxy.
+
+**P6 · Serverless de verdad**
+- Qué:
+  - **dormir** por inactividad: `last_active` más las conexiones que ve el proxy;
+  - **despertar** al conectar, desde un pool de VMs ya arrancadas (`compute_ctl` sin especificación, esperando `/configure`);
+  - la IP de la overlay reutilizada (C4): ARP gratuito o reintento;
+  - los límites de cada endpoint, desde la API: CU mínimas y máximas, y el tiempo hasta dormir.
+- Hecho cuando:
+  - el despertar está medido en p50 y p95, con un objetivo fijado tras la primera medida (hoy, sin pool, ~16 s: B.4);
+  - el cliente no ve más error que la espera;
+  - dormido, el cómputo cuesta 0.
+
+**P7 · Una aplicación real encima**
+- Qué:
+  - un backend de verdad, uno nuestro: drivers (node-postgres, psycopg, JDBC, Prisma), migraciones y pool;
+  - un **soak de días**: transacciones 24/7, dormir de noche, despertar, escalar y una actualización de nodos con migración en vivo.
+- Hecho cuando:
+  - pasan N días sin un error atribuible;
+  - los SLOs están medidos: commit, disponibilidad y despertar.
+
+**P8 · Operarlo sin miedo**
+- Qué:
+  - PITR (una rama en un instante) y la retención;
+  - métricas y alertas: el retraso de safekeeper a pageserver, las subidas a GCS, la salud del cómputo;
+  - actualizaciones en rodaje: el almacenamiento por generaciones, el cómputo por migración;
+  - las pruebas de fuego (C4 y las demás), periódicas en el CI;
+  - runbooks.
+- Hecho cuando:
+  - un **game day** sobre el soak de P7 (matar el pageserver, un safekeeper y un nodo) da RPO 0 y un RTO medido;
+  - una actualización del almacenamiento pasa sin que el cliente lo note.
+
+**P9 · El producto alrededor**
+- Qué:
+  - la medición: cómputo·s por CU, bytes, historia y salida;
+  - las cuotas por organización y por proyecto;
+  - la consola: proyectos, ramas, endpoints, la cadena de conexión, el editor SQL y las métricas;
+  - la documentación.
+- Hecho cuando: una organización se da de alta, crea su base y conecta su aplicación **sin nosotros**.
+
+**⛔ La puerta de producción**
+- Qué hace falta:
+  - cuota de CPU (≫ 12) y nodos de 16–32 vCPU (B.3);
+  - cuota de SSD, que hoy está llena;
+  - **los safekeepers en zonas distintas**: el clúster es zonal, pero los nodos pueden ser multizona;
+  - una revisión de seguridad: aislamiento, TLS y secretos;
+  - Postgres al día.
+- Hecho cuando: llega el primer cliente externo.
+
+#### Fase II · Sus datos, activos del catálogo
+
+**Q1 · La base en el catálogo, sin copiar**
+- Un proyecto o una rama aparece como **foreign database** (0057) y se lee federado (0053).
+- Se lee desde un **cómputo de sólo lectura**: el análisis nunca toca el cómputo de escritura.
+- Da valor inmediato, sin pipeline.
+
+**Q2 · Publicar tablas**
+- CDC lógico → Iceberg, con **marca de agua** (el LSN).
+- Entran el snapshot inicial, los updates y deletes, los cambios de esquema y la medida del retraso.
+- ⚠️ Dos cosas abiertas:
+  - el CDC necesita un cómputo despierto que decodifique: ¿el de la aplicación al despertar, o uno propio?
+  - mientras duerme, la ranura retiene WAL.
+
+**Q3 · Gobierno y linaje**
+- Las tablas publicadas tienen linaje y acceso como cualquier activo (0047).
+
+**Q4 · De vuelta**
+- Tablas del lago servidas en Postgres, como las *synced tables* de Lakebase.
+
+**Q5 · Ramas unidas**
+- Dual-Branching: una rama es un LSN más un snapshot.
+- Está aparcado; la marca de agua de Q2 es lo que lo hará posible.
+
+#### P1, por dentro (lo siguiente)
+
+1. **P1·1 · Los forks**
+   - `neondatabase/neon` y `neondatabase/postgres` (rama `REL_17_STABLE_neon`), en la organización de GitHub que se decida;
+   - la base es `fa504217`;
+   - el CI apunta a ellos.
+2. **P1·2 · La imagen de cómputo**
+   - `compute/compute-node.Dockerfile`, sólo v17;
+   - después `vm-builder` (del repositorio `autoscaling`), que da `…/ore/vm-compute-node-v17:<commit>`;
+   - se mide.
+3. **P1·3 · Sólo 17 y con caché**
+   - el almacenamiento sin 14–16, y caché de capas en el registro;
+   - se mide en frío y en caliente, con un cambio de una línea en Rust.
+4. **P1·4 · El rebase a 17.10+**
+   - se trae la etiqueta de upstream a `REL_17_STABLE_neon` y se resuelven los conflictos con los parches de Neon;
+   - se compila;
+   - pasa `make check` y el suite de regresión de Neon (`test_runner`, en Cloud Build).
+5. **P1·5 · Cerrar**
+   - la cadencia (B.8, C5) queda escrita como procedimiento;
+   - las pruebas de `pruebas-de-fuego/ore-postgres/` dejan de depender de `C:\tmp`: parametrizadas, son la aceptación de P2 y P3.
+
+P1 no gasta cuota: todo va en Cloud Build. Pero P1·1 crea repositorios en GitHub, así que **necesita el go y el dónde**.
