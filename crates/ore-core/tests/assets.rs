@@ -935,6 +935,7 @@ fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
     // Fuera de toda base: su paquete es null, y su repositorio y su proyecto,
     // los de su código.
     assert_eq!(f["paquete"], Json::Crudo("null".into()));
+    assert_eq!(f["namespace"], Json::s("functions"));
     assert_eq!(f["repositorio"], Json::s("packages/ventas/riesgo"));
     assert_eq!(f["proyectos"], Json::Arr(vec![Json::s("riesgo")]));
     assert_eq!(
@@ -954,6 +955,8 @@ fn la_funcion_de_codigo_es_de_donde_esta_su_codigo() {
         Json::s("packages/ventas/riesgo/funciones/nivel.py")
     );
     assert_eq!(fun["generado"], Json::Bool(true));
+    assert_eq!(fun["version"], Json::s("0.1.0"));
+    assert!(matches!(&fun["codeDigest"], Json::Str(h) if h.starts_with("sha256:")));
     let Json::Obj(input) = &fun["input"] else {
         panic!("{:?}", fun.get("input"))
     };

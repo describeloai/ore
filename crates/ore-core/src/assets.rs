@@ -286,10 +286,15 @@ fn funcion_de(pkg: &Package, d: &Loaded) -> Json {
         "model",
         "prompt",
         "effects",
+        "codeDigest",
     ]
     .iter()
     .filter_map(|k| d.section(k).map(|n| (*k, Json::de_node(n))))
     .collect();
+    // 0056: la versión de la función propia (`metadata.version`, calculada).
+    if let Some(v) = meta_str(d, "version") {
+        m.push(("version", Json::s(&v)));
+    }
     let texto = std::fs::read_to_string(&d.path).unwrap_or_default();
     m.push((
         "generado",
@@ -1182,7 +1187,13 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
     let mut por_paquete: BTreeMap<String, (BTreeSet<String>, i64)> = BTreeMap::new();
 
     for d in &docs {
-        let ns = meta_str(d, "namespace");
+        // 0056: el espacio de la función propia es `functions` —su nombre es
+        // `functions.<n>`—; su `paquete` sigue siendo null: no está en ninguna base.
+        let ns = if crate::funcion_propia::es_propia(d) {
+            Some(crate::funcion_propia::ESPACIO.to_string())
+        } else {
+            meta_str(d, "namespace")
+        };
         let name = meta_str(d, "name").unwrap_or_default();
         let r = ref_doc(d);
         let (paquete, carpeta) = paquete_y_carpeta(pkg, d);

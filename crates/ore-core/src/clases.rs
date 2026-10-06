@@ -1437,7 +1437,11 @@ spec:
         let c = de("functions-python").unwrap();
         let guia = sembrar(c.guia.unwrap(), "ventas", "riesgo");
         assert!(!guia.contains("{{"), "{guia}");
-        assert!(guia.contains("ventas.riesgo_invoice_status"), "{guia}");
+        // 0056: la función se llama por su nombre, sin la base.
+        assert!(
+            guia.contains("ore.get_function(\"riesgo_invoice_status\")"),
+            "{guia}"
+        );
         for (ruta, _) in c.semilla {
             let f = ruta.rsplit('/').next().unwrap();
             if f != ".gitignore" {
