@@ -107,7 +107,8 @@ spec:
   ports:
     - { name: http, port: 8099, targetPort: 8099 }
 ---
-# Sólo `ore-serve` (rol `control`) entra, y sólo a 8099.
+# Sólo `ore-serve` (rol `control`) y los Jobs de la copia (rol `driver`, 0053
+# F8·3: leen el origen por aquí, en su cola) entran, y sólo a 8099.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -126,6 +127,32 @@ spec:
         - podSelector:
             matchLabels:
               ore.dev/rol: control
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: driver
+      ports:
+        - protocol: TCP
+          port: 8099
+---
+# 0053 F8·3 · Y los Jobs de la copia pueden salir hacia ella.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-la-copia-a-la-pasarela
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: pasarela
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: driver
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/pieza: pasarela
       ports:
         - protocol: TCP
           port: 8099

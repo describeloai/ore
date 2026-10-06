@@ -186,6 +186,10 @@ spec:
             - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # ⭐ 0053 F8·3: lo que lee de un origen (las tablas de una copia desde
+            #   el origen, el testigo) lo pide a la pasarela, en la cola del
+            #   origen; ningún conector se lanza aquí para eso.
+            - { name: ORE_PASARELA, value: "ore-federation:8099" }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
@@ -278,6 +282,9 @@ spec:
             - { name: ORE_STORE, value: "gcs" }
             # Cuánta historia conserva `--recoger` (segundos): siete días.
             - { name: ORE_RECOGER_EDAD, value: "604800" }
+            # ⭐ 0053 F8·3: la copia de siempre (un Dataset de una Table) y el
+            #   testigo leen por la pasarela, en la cola del origen.
+            - { name: ORE_PASARELA, value: "ore-federation:8099" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # El lago del inquilino como fuente (donde viven los datasets, 0033):
             # la raíz de su bucket. No es un secreto.
