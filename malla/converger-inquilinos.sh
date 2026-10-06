@@ -92,14 +92,26 @@ paso "② EL CENSO — quien hay que converger"
 #   primero.
 # ⭐ Con nombres sueltos se convergen SOLO esos, y sirve para mirar uno cuando
 #   algo va mal. Sin ellos —la corrida normal del `CronJob`— se convergen todos.
+# ⭐ (2026-10-06) Con su `estado`, para decidir abajo si cada una necesita la
+#   pasada entera. Si la columna no se puede leer, el censo sale como antes —sin
+#   estado— y TODAS van enteras: el fallo cae del lado de hacer de mas.
+censo() {
+  if [ -n "${DENTRO:-}" ]; then
+    psql "$(cat /puesto/iam-url)" -tAc "$1" 2>/dev/null | tr -d '\r'
+  else
+    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc "$1" 2>/dev/null | tr -d '\r'
+  fi
+}
+ESTADOS=""
 if [ -n "$PEDIDOS" ]; then
   NOMBRES="$PEDIDOS"
-elif [ -n "${DENTRO:-}" ]; then
-  NOMBRES=$(psql "$(cat /puesto/iam-url)" -tAc \
-    "select celda from iam.celda_de order by celda" 2>/dev/null | tr -d '\r')
 else
-  NOMBRES=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
-    "select celda from iam.celda_de order by celda" 2>/dev/null | tr -d '\r')
+  ESTADOS=$(censo "select celda || '|' || coalesce(estado, '') from iam.celda_de order by celda")
+  if [ -n "$ESTADOS" ]; then
+    NOMBRES=$(printf '%s\n' "$ESTADOS" | cut -d'|' -f1)
+  else
+    NOMBRES=$(censo "select celda from iam.celda_de order by celda")
+  fi
 fi
 
 # ⛔ Un censo vacio NO es «nada que hacer»: es que la consulta no funciono. Sin
@@ -132,8 +144,44 @@ paso "③ CONVERGER — uno a uno, y uno malo no decide por los demas"
 # ⇒ Se anota, se sigue, y al final se sale en rojo diciendo CUALES. Es la
 #   diferencia entre «la convergencia fallo» y «la convergencia fallo para
 #   `acme`, y los demas estan al dia».
+#
+# ── ⭐⭐ CUÁNDO UNA PASADA ENTERA (2026-10-06, O1) ─────────────────────────
+#
+# Medido en 7 dias de Cloud Monitoring: cada pasada entera tarda ~6 min (dos
+# minutos por celda activa, casi todo llamadas a `gcloud` que contestan «ya
+# estaba»), y con `*/5` + `Forbid` esto corria SIN PARAR: 0,4 nucleos de
+# mediana y 0,85 de pico, el mayor consumo real del cluster, para concluir
+# «las 5 celdas estan al dia».
+#
+# ⇒ La pasada entera se queda para quien la necesita:
+#   · una celda que se esta fundando (ni `activa` ni `retirada`): CADA pasada,
+#     porque nacer pide dos y la E6 promete diez minutos;
+#   · todas, en la pasada de la hora en punto: la deriva no vive mas de una hora
+#     y una plantilla nueva llega a todas en una hora como mucho;
+#   · todas, si el Job no es del `CronJob` (`kubectl create job --from=…`) o si
+#     se nombran celdas: quien lo lanza a mano quiere que pase YA.
+# ⛔ Sin estado y sin un permiso nuevo: lo deciden el censo, el reloj y el
+#   nombre del propio pod. Si el censo no trae el estado, todas van enteras.
+ENTERA=""
+[ -n "$PEDIDOS" ] && ENTERA="se nombraron celdas"
+[ -z "$ESTADOS" ] && [ -z "$ENTERA" ] && ENTERA="el censo no trae el estado"
+case "${HOSTNAME:-}" in
+  aprovisionador-[0-9]*) ;;
+  *) [ -z "$ENTERA" ] && ENTERA="no es una corrida del CronJob" ;;
+esac
+MIN=$(date -u +%M); MIN=${MIN#0}
+[ -z "$ENTERA" ] && [ "$MIN" -lt 5 ] && ENTERA="la hora en punto"
+if [ -n "$ENTERA" ]; then hecho "pasada entera: $ENTERA"; else hecho "pasada ligera: solo las celdas que se estan fundando"; fi
+
 MALOS=""
+SALTADAS=""
 for N in $NOMBRES; do
+  if [ -z "$ENTERA" ]; then
+    E=$(printf '%s\n' "$ESTADOS" | awk -F'|' -v n="$N" '$1==n {print $2}')
+    case "$E" in
+      activa|retirada) SALTADAS="$SALTADAS $N"; continue ;;
+    esac
+  fi
   printf '\n--------------------------------------------------------------\n'
   printf '   %s\n' "$N"
   printf -- '--------------------------------------------------------------\n'
@@ -157,4 +205,8 @@ printf '\n==============================================================\n'
 if [ -n "$MALOS" ]; then
   falla "no convergieron:$MALOS"
 fi
-hecho "las $CUANTOS celdas estan al dia con las plantillas de este commit"
+if [ -n "$SALTADAS" ]; then
+  hecho "al dia las que se fundan; el resto, en la hora en punto:$SALTADAS"
+else
+  hecho "las $CUANTOS celdas estan al dia con las plantillas de este commit"
+fi
