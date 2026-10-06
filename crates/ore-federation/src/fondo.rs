@@ -211,11 +211,12 @@ impl Drop for Plaza {
 pub struct Turno {
     origen: String,
     fondo: Arc<Fondo>,
+    copia: bool,
 }
 
 impl Drop for Turno {
     fn drop(&mut self) {
-        self.fondo.liberar(&self.origen, None, false);
+        self.fondo.liberar(&self.origen, None, self.copia);
     }
 }
 
@@ -295,12 +296,27 @@ impl Fondo {
 
     /// 0053 F8 · **Un turno** para el verbo `verbo`, en la misma cola.
     pub fn turno(self: &Arc<Self>, origen: &str, verbo: &str) -> Result<Turno, Saturado> {
+        self.turno_de(origen, verbo, false)
+    }
+
+    /// 0053 F9·3 · **Un turno de copia** (`bajar`): como una lectura de
+    /// copia, espera más y nunca ocupa el origen entero.
+    pub fn turno_de(
+        self: &Arc<Self>,
+        origen: &str,
+        verbo: &str,
+        copia: bool,
+    ) -> Result<Turno, Saturado> {
         let o = self.origen(origen);
-        let mut e = self.esperar(&o, false)?;
+        let mut e = self.esperar(&o, copia)?;
         *e.medidas.verbos.entry(verbo.to_string()).or_default() += 1;
+        if copia {
+            e.medidas.copias += 1;
+        }
         Ok(Turno {
             origen: origen.to_string(),
             fondo: Arc::clone(self),
+            copia,
         })
     }
 

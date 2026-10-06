@@ -34,7 +34,7 @@ use crate::casos::{Estado, Resultado};
 use crate::conector::Conector;
 use crate::semilla::Tabla;
 
-pub const CASOS: [(u8, &str); 9] = [
+pub const CASOS: [(u8, &str); 10] = [
     (1, "el mismo flujo que el conector"),
     (2, "caliente"),
     (3, "el presupuesto"),
@@ -44,6 +44,7 @@ pub const CASOS: [(u8, &str); 9] = [
     (7, "el ocioso se cierra"),
     (8, "errores antes del primer byte"),
     (9, "una vía: los otros verbos y la copia"),
+    (10, "las colecciones por la pasarela"),
 ];
 
 const CONCURRENCIA: u64 = 4;
@@ -353,6 +354,109 @@ impl Kit<'_> {
     fn estado_de(&self, id: &str) -> Option<(String, String)> {
         let r = self.p.pedir("GET", &format!("/v1/read/{id}"), None).ok()?;
         Some((r.campo("estado")?, r.campo("motivo").unwrap_or_default()))
+    }
+
+    // ── 10 ─────────────────────────────────────────────────────────────────
+    /// 0053 F9·3 · `versiones` y `bajar` (las colecciones de medios) por la
+    /// pasarela: lo vigente bajo un prefijo, y los bytes de un ítem en flujo,
+    /// con su final en los *trailers*. Sólo para S3: es la familia que los tiene.
+    fn colecciones(&mut self) -> (Estado, String) {
+        if self.b.familia() != "s3" {
+            return (Estado::NoAplica, "sólo S3 tiene colecciones".into());
+        }
+        let url = self.b.url();
+        let prefijo = self.b.objeto(Tabla::Tipos);
+        let cuerpo = Json::obj([
+            ("origen", Json::s("kit")),
+            ("tipo", Json::s("s3")),
+            ("url", Json::s(url.as_str())),
+            (
+                "peticion",
+                Json::obj([
+                    ("objeto", Json::s(prefijo.as_str())),
+                    ("patrones", Json::Arr(vec![])),
+                    ("conocidos", Json::Arr(vec![])),
+                ]),
+            ),
+        ])
+        .jcs();
+        let r = match self.p.pedir("POST", "/v1/versions", Some(&cuerpo)) {
+            Ok(r) => r,
+            Err(e) => return (Estado::Falla, format!("versions: {e}")),
+        };
+        let texto = r.texto();
+        let Ok(n) = ore_core::parse::parse(texto.trim()) else {
+            return (Estado::Falla, format!("versions: {} · {texto}", r.codigo));
+        };
+        let items = n
+            .get("items")
+            .map(|(_, v)| v.items().to_vec())
+            .unwrap_or_default();
+        let Some(i) = items.first() else {
+            return (
+                Estado::Falla,
+                format!("versions: sin ítems bajo `{prefijo}` · {texto}"),
+            );
+        };
+        let campo = |k: &str| {
+            i.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let tamano: u64 = campo("tamano").parse().unwrap_or(0);
+        let pedido = Json::obj([
+            ("origen", Json::s("kit")),
+            ("tipo", Json::s("s3")),
+            ("url", Json::s(url.as_str())),
+            (
+                "peticion",
+                Json::obj([(
+                    "items",
+                    Json::Arr(vec![Json::obj([
+                        ("clave", Json::s(campo("clave"))),
+                        ("version", Json::s(campo("version"))),
+                        ("huella", Json::s(campo("huella"))),
+                        ("tamano", Json::Int(tamano as i64)),
+                        ("tipo", Json::s("text/csv")),
+                    ])]),
+                )]),
+            ),
+        ])
+        .jcs();
+        let r = match self.p.pedir("POST", "/v1/fetch", Some(&pedido)) {
+            Ok(r) => r,
+            Err(e) => return (Estado::Falla, format!("fetch: {e}")),
+        };
+        if r.codigo != 200 || r.fin("ore-estado") != "completo" || (r.cuerpo.len() as u64) < tamano
+        {
+            return (
+                Estado::Falla,
+                format!(
+                    "fetch: {} · {} {} · {} B (el ítem pesa {tamano})",
+                    r.codigo,
+                    r.fin("ore-estado"),
+                    r.fin("ore-motivo"),
+                    r.cuerpo.len()
+                ),
+            );
+        }
+        let o = match self.p.pedir("GET", "/v1/origins", None) {
+            Ok(r) => r.texto(),
+            Err(e) => return (Estado::Falla, e),
+        };
+        if !o.contains(r#""fetch":1"#) || !o.contains(r#""versions":1"#) {
+            return (Estado::Falla, format!("/v1/origins no los cuenta: {o}"));
+        }
+        (
+            Estado::Pasa,
+            format!(
+                "versions: {} ítems · fetch: `{}` en {} B de flujo, completo · contados",
+                items.len(),
+                campo("clave"),
+                r.cuerpo.len()
+            ),
+        )
     }
 
     // ── 9 ──────────────────────────────────────────────────────────────────
@@ -1178,6 +1282,7 @@ pub fn correr(
             7 => kit.ocioso(),
             8 => kit.errores(),
             9 => kit.una_via(),
+            10 => kit.colecciones(),
             _ => unreachable!(),
         };
         eprintln!("  P{n} · {nombre}: {}", estado.as_str());

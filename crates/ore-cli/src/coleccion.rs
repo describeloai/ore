@@ -473,7 +473,50 @@ fn con_ayuda(f: lector::Fallo) -> String {
 /// **El cauce**: `ore-read-<tipo> bajar` → `ore-store blobs`. Devuelve lo que
 /// el almacén contestó (una línea por ítem y el resumen) y, si el lector
 /// falló, por qué: lo que no llegó no entra.
-fn bajar_y_guardar(tipo: &str, peticion: &str) -> Result<(String, Option<String>), String> {
+fn bajar_y_guardar(
+    tipo: &str,
+    fuente: &str,
+    url: &str,
+    peticion: &str,
+) -> Result<(String, Option<String>), String> {
+    // ⭐ 0053 F9·3: con la pasarela, `bajar` va por ella (un turno de copia en
+    //   la cola del origen): su flujo, al almacén, igual que el del conector.
+    if let Some(p) = lector::pasarela() {
+        let cuerpo = format!(
+            "{{\"origen\":{},\"tipo\":{},\"url\":{},\"peticion\":{peticion}}}",
+            Json::s(fuente).jcs(),
+            Json::s(tipo).jcs(),
+            Json::s(url).jcs()
+        );
+        let mut flujo = lector::bajar_por_la_pasarela(&p, &cuerpo)
+            .map_err(|m| format!("`bajar` por la pasarela: {}", ore_driver::tapar(&m, url)))?;
+        let mut a = lector::lanzar(&programa_del_almacen()?, &["blobs".into()], "{}\n", true)
+            .map_err(con_ayuda)?;
+        let Some(mut entrada) = a.stdin.take() else {
+            a.matar();
+            return Err("no se pudo encauzar la pasarela al almacén".into());
+        };
+        let cauce = std::thread::spawn(move || {
+            let r = std::io::copy(&mut flujo, &mut entrada);
+            drop(entrada);
+            (r, flujo)
+        });
+        let contestado = a.esperar().map_err(con_ayuda);
+        let (copiado, flujo) = cauce
+            .join()
+            .map_err(|_| "el cauce de la pasarela se cayó".to_string())?;
+        let del_lector = match copiado {
+            Err(e) => Some(format!("`bajar` por la pasarela: {e}")),
+            Ok(_) => flujo
+                .fin()
+                .err()
+                .map(|m| format!("`bajar` por la pasarela: {}", ore_driver::tapar(&m, url))),
+        };
+        return Ok((
+            String::from_utf8_lossy(&contestado?).into_owned(),
+            del_lector,
+        ));
+    }
     let mut de = lector::lanzar(
         &format!("ore-read-{tipo}"),
         &["bajar".into()],
@@ -500,7 +543,13 @@ fn bajar_y_guardar(tipo: &str, peticion: &str) -> Result<(String, Option<String>
 
 /// **Los bytes de lo que entra** en una mantenida: del manifiesto, del
 /// índice del lago o del origen, por este orden (ver la cabecera).
-fn copiar_bytes(antes: &[Item], filas: &[Item], tipo: &str, url: &str) -> Result<Copia, String> {
+fn copiar_bytes(
+    antes: &[Item],
+    filas: &[Item],
+    tipo: &str,
+    fuente: &str,
+    url: &str,
+) -> Result<Copia, String> {
     let mut k = Copia::default();
     // Por huella, lo que el manifiesto ya tiene; lo de una fila actual antes
     // que lo de una retirada (esa no la puede recoger nadie).
@@ -618,7 +667,7 @@ fn copiar_bytes(antes: &[Item], filas: &[Item], tipo: &str, url: &str) -> Result
         })
         .collect();
     let peticion = Json::obj([("url", Json::s(url)), ("items", Json::Arr(pedidos))]).jcs();
-    let (contestado, del_lector) = bajar_y_guardar(tipo, &peticion)?;
+    let (contestado, del_lector) = bajar_y_guardar(tipo, fuente, url, &peticion)?;
     let mut por_item: BTreeMap<(String, String), Result<(String, String), String>> =
         BTreeMap::new();
     for l in contestado.lines() {
@@ -737,8 +786,8 @@ pub fn una(
         .map_err(|f| format!("la fuente `{datasource}` · {}", f.mensaje))?;
     let url = lector::url(raiz, &env, &datasource)
         .map_err(|f| format!("la fuente `{datasource}` · {}", f.mensaje))?;
+    // 0053 F9·3: por la pasarela si la hay (`lector::preguntar`, `versions`).
     let peticion = Json::obj([
-        ("url", Json::s(&url)),
         ("objeto", Json::s(&prefijo)),
         (
             "patrones",
@@ -759,12 +808,13 @@ pub fn una(
                     .collect(),
             ),
         ),
-    ])
-    .jcs();
-    let salida = lector::ejecutar(
-        &format!("ore-read-{tipo}"),
-        &["versiones".into()],
-        Some(&peticion),
+    ]);
+    let salida = lector::preguntar(
+        &tipo,
+        &datasource,
+        "versions",
+        &url,
+        vec![("peticion", peticion)],
     )
     .map_err(|f| format!("`ore-read-{tipo} versiones`: {}", f.mensaje))?;
     let r = ore_core::parse::parse(salida.trim())
@@ -848,7 +898,7 @@ pub fn una(
             de_paso.insert(i.id());
             c.filas.push(i.clone());
         }
-        copia = copiar_bytes(&antes, &c.filas, &tipo, &url)?;
+        copia = copiar_bytes(&antes, &c.filas, &tipo, &datasource, &url)?;
         let mut fuera = 0;
         c.filas.retain_mut(|f| {
             if f.estado != "actual" || !f.blob.is_empty() {

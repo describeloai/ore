@@ -317,6 +317,15 @@ pub fn preguntar(
         ),
         "check" => (vec!["check".to_string()], coordenada()),
         "explore" => (vec!["explorar".to_string()], coordenada()),
+        // 0053 F9·3: `versiones` lee su petición entera (`extra`: `peticion`).
+        "versions" => {
+            let mut m = match extra.into_iter().find(|(k, _)| *k == "peticion") {
+                Some((_, Json::Obj(m))) => m,
+                _ => Default::default(),
+            };
+            m.insert("url".into(), Json::s(url));
+            (vec!["versiones".to_string()], Json::Obj(m).jcs())
+        }
         _ => {
             let mut c = vec![("url", Json::s(url))];
             c.extend(extra);
@@ -451,6 +460,141 @@ connection: close
     Ok(fin("ore-filas").parse().unwrap_or(0))
 }
 
+/// **El flujo de `bajar` por la pasarela** (0053 F9·3): `POST /v1/fetch`. Se
+/// lee como el `stdout` del conector; al acabar, [`Troceado::fin`] dice si
+/// acabó bien (sus *trailers*).
+pub fn bajar_por_la_pasarela(destino_pasarela: &str, cuerpo: &str) -> Result<Troceado, String> {
+    use std::io::{BufRead as _, Write as _};
+    use std::net::ToSocketAddrs as _;
+    let dir = destino_pasarela
+        .to_socket_addrs()
+        .map_err(|e| format!("la pasarela `{destino_pasarela}`: {e}"))?
+        .next()
+        .ok_or_else(|| format!("la pasarela `{destino_pasarela}` no tiene dirección"))?;
+    let mut s = std::net::TcpStream::connect_timeout(&dir, std::time::Duration::from_secs(5))
+        .map_err(|e| format!("la pasarela `{destino_pasarela}` no contesta: {e}"))?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(600)))
+        .ok();
+    let req = format!(
+        "POST /v1/fetch HTTP/1.1\r\nhost: pasarela\r\ncontent-type: application/json\r\ncontent-length: {}\r\nte: trailers\r\nconnection: close\r\n\r\n{cuerpo}",
+        cuerpo.len()
+    );
+    s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut c = std::io::BufReader::new(s);
+    let mut linea = String::new();
+    c.read_line(&mut linea).map_err(|e| e.to_string())?;
+    let codigo: u16 = linea
+        .split_whitespace()
+        .nth(1)
+        .and_then(|x| x.parse().ok())
+        .ok_or("la pasarela contestó algo que no es HTTP")?;
+    let mut troceado = false;
+    loop {
+        let mut l = String::new();
+        c.read_line(&mut l).map_err(|e| e.to_string())?;
+        let l = l.trim_end();
+        if l.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = l.split_once(':')
+            && k.trim().eq_ignore_ascii_case("transfer-encoding")
+            && v.trim().eq_ignore_ascii_case("chunked")
+        {
+            troceado = true;
+        }
+    }
+    if codigo != 200 || !troceado {
+        let mut b = String::new();
+        let _ = std::io::Read::read_to_string(&mut c, &mut b);
+        let m = parse::parse(b.trim())
+            .ok()
+            .and_then(|n| {
+                n.get("mensaje")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| b.trim().chars().take(300).collect());
+        return Err(format!("la pasarela contestó {codigo}: {m}"));
+    }
+    Ok(Troceado {
+        c,
+        queda: 0,
+        acabado: false,
+        finales: Default::default(),
+    })
+}
+
+/// Un cuerpo HTTP troceado (`chunked`), leído como un flujo; al final, sus
+/// *trailers*.
+pub struct Troceado {
+    c: std::io::BufReader<std::net::TcpStream>,
+    queda: usize,
+    acabado: bool,
+    finales: std::collections::BTreeMap<String, String>,
+}
+
+impl std::io::Read for Troceado {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::BufRead as _;
+        if self.acabado || b.is_empty() {
+            return Ok(0);
+        }
+        if self.queda == 0 {
+            let mut l = String::new();
+            self.c.read_line(&mut l)?;
+            let n = usize::from_str_radix(l.trim().split(';').next().unwrap_or(""), 16)
+                .map_err(|_| std::io::Error::other(format!("un trozo raro: {:?}", l.trim())))?;
+            if n == 0 {
+                self.acabado = true;
+                loop {
+                    let mut l = String::new();
+                    if self.c.read_line(&mut l)? == 0 {
+                        break;
+                    }
+                    let l = l.trim_end();
+                    if l.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = l.split_once(':') {
+                        self.finales
+                            .insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                    }
+                }
+                return Ok(0);
+            }
+            self.queda = n;
+        }
+        let k = self.queda.min(b.len());
+        let n = std::io::Read::read(&mut self.c, &mut b[..k])?;
+        if n == 0 {
+            return Err(std::io::Error::other("la pasarela cortó el flujo a medias"));
+        }
+        self.queda -= n;
+        if self.queda == 0 {
+            let mut crlf = [0u8; 2];
+            std::io::Read::read_exact(&mut self.c, &mut crlf)?;
+        }
+        Ok(n)
+    }
+}
+
+impl Troceado {
+    /// Cómo acabó: `Ok` si los *trailers* dicen `completo`.
+    pub fn fin(self) -> Result<(), String> {
+        if !self.acabado {
+            return Err("el flujo no llegó a su fin".into());
+        }
+        match self.finales.get("ore-estado").map(String::as_str) {
+            Some("completo") => Ok(()),
+            otro => Err(format!(
+                "{} {}",
+                otro.unwrap_or("sin estado"),
+                self.finales.get("ore-motivo").cloned().unwrap_or_default()
+            )),
+        }
+    }
+}
+
 /// `POST /v1/{ruta}` a la pasarela, por HTTP plano dentro del clúster. Un
 /// código distinto de 200 es un fallo con su mensaje.
 fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, String> {
@@ -499,7 +643,16 @@ fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, St
 /// Los verbos de un conector que **miran un origen** y que, con la pasarela,
 /// sólo hace ella (0053 F8·4). `bajar` y `versiones` (las colecciones de
 /// medios) aún no: son de F9.
-const VERBOS_DE_LA_PASARELA: [&str; 5] = ["leer", "catalogo", "check", "explorar", "testigo"];
+const VERBOS_DE_LA_PASARELA: [&str; 7] = [
+    "leer",
+    "catalogo",
+    "check",
+    "explorar",
+    "testigo",
+    // 0053 F9·3: las colecciones de medios.
+    "bajar",
+    "versiones",
+];
 
 /// **Una vía** (0053 F8·4): con `ORE_PASARELA`, lanzar `ore-read-<tipo>` para
 /// uno de esos verbos es un fallo, no una lectura por la puerta de atrás. Un
@@ -951,6 +1104,39 @@ fn ausentes_de(texto: &str) -> Vec<&'static str> {
 mod pruebas_una_via {
     use super::*;
 
+    /// 0053 F9·3 · El flujo troceado de `/v1/fetch`: los bytes, y su final por
+    /// los *trailers* (completo, o el error que dice).
+    #[test]
+    fn el_flujo_de_bajar_y_su_final() {
+        use std::io::{Read as _, Write as _};
+        let servir = |trailer: &'static str| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let dir = l.local_addr().unwrap().to_string();
+            std::thread::spawn(move || {
+                let (mut s, _) = l.accept().unwrap();
+                let mut b = [0u8; 4096];
+                let _ = s.read(&mut b);
+                let r = format!(
+                    "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: ore-estado\r\n\r\n\
+                     5\r\nhola \r\n5\r\nmundo\r\n0\r\n{trailer}\r\n\r\n"
+                );
+                s.write_all(r.as_bytes()).unwrap();
+            });
+            dir
+        };
+        let d = servir("ore-estado: completo");
+        let mut f = bajar_por_la_pasarela(&d, "{}").unwrap();
+        let mut todo = String::new();
+        f.read_to_string(&mut todo).unwrap();
+        assert_eq!(todo, "hola mundo");
+        assert!(f.fin().is_ok());
+        let d = servir("ore-estado: error\r\nore-motivo: 403 de S3");
+        let mut f = bajar_por_la_pasarela(&d, "{}").unwrap();
+        let mut todo = Vec::new();
+        f.read_to_end(&mut todo).unwrap();
+        assert!(f.fin().unwrap_err().contains("403 de S3"));
+    }
+
     #[test]
     fn con_la_pasarela_ningun_conector_mira_un_origen() {
         let a = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
@@ -966,8 +1152,9 @@ mod pruebas_una_via {
         }
         // La forma vieja (`ore-read-postgres <fuente>`) es `catalogo`.
         assert!(una_via_con("ore-read-postgres", &[], true).is_err());
-        // Las colecciones (F9) y lo que no es un conector, sí.
-        assert!(una_via_con("ore-read-s3", &a(&["bajar"]), true).is_ok());
+        // F9·3: las colecciones también; lo que no es un conector, sí.
+        assert!(una_via_con("ore-read-s3", &a(&["bajar"]), true).is_err());
+        assert!(una_via_con("ore-read-s3", &a(&["versiones"]), true).is_err());
         assert!(una_via_con("ore-store-gcs", &a(&["leer"]), true).is_ok());
     }
 }

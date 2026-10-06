@@ -3,7 +3,8 @@
 //! | | ruta | qué |
 //! |---|---|---|
 //! | leer | `POST /v1/read` | una lectura; responde un flujo Arrow con *trailers*; `perfil: "copia"` para la de un Job |
-//! | preguntar | `POST /v1/{catalog,check,explore,witness}` | los otros verbos del conector, en la misma cola (0053 F8) |
+//! | preguntar | `POST /v1/{catalog,check,explore,witness,versions}` | los otros verbos del conector, en la misma cola (0053 F8, F9·3) |
+//! | bajar | `POST /v1/fetch` | los bytes de unos objetos, en flujo, como una copia; cómo acabó, en los *trailers* (0053 F9·3) |
 //! | cancelar | `DELETE /v1/read/{id}` | corta una lectura en curso, también en el origen |
 //! | estado | `GET /v1/read/{id}` | cómo va o cómo terminó (las últimas 1000) |
 //! | conectores | `GET /v1/connectors` | lo que declara cada familia |
@@ -79,9 +80,14 @@ impl Pasarela {
             ("GET", ["v1", "connectors"]) => json(200, self.conectores_json(), vec![]),
             ("GET", ["v1", "origins"]) => json(200, self.origenes(), vec![]),
             ("POST", ["v1", "read"]) => self.leer(&p.cuerpo),
-            ("POST", ["v1", v @ ("catalog" | "check" | "explore" | "witness")]) => {
-                self.preguntar(v, &p.cuerpo)
-            }
+            (
+                "POST",
+                [
+                    "v1",
+                    v @ ("catalog" | "check" | "explore" | "witness" | "versions"),
+                ],
+            ) => self.preguntar(v, &p.cuerpo),
+            ("POST", ["v1", "fetch"]) => self.bajar(&p.cuerpo),
             ("GET", ["v1", "read", id]) => self.estado(id),
             ("DELETE", ["v1", "read", id]) => self.cancelar(id),
             (_, ["v1", "read", ..])
@@ -90,7 +96,7 @@ impl Pasarela {
                 [
                     "v1",
                     "health" | "connectors" | "origins" | "catalog" | "check" | "explore"
-                    | "witness",
+                    | "witness" | "versions" | "fetch",
                 ],
             ) => error(405, "operador", "método no admitido", false),
             _ => error(404, "objeto", "no hay tal ruta", false),
@@ -461,6 +467,12 @@ impl Pasarela {
             ),
             "check" => ("check", vec!["check".to_string()], coordenada()),
             "explore" => ("explorar", vec!["explorar".to_string()], coordenada()),
+            // 0053 F9·3: lo vigente de un `ObjectTable` (una colección); su
+            // petición entera, con la `url`.
+            "versions" => match con_url(&n, &url) {
+                Ok(e) => ("versiones", vec!["versiones".to_string()], e),
+                Err(m) => return error(400, "operador", &m, false),
+            },
             _ => {
                 let Some(objeto) = cadena("objeto") else {
                     return error(400, "operador", "`witness` necesita `objeto`", false);
@@ -539,12 +551,188 @@ impl Pasarela {
         }
     }
 
+    /// **`POST /v1/fetch`** (0053 F9·3): `bajar` del conector —los bytes de
+    /// unos objetos, en el flujo de `bajar`— con un **turno de copia** en la
+    /// cola del origen. Cuerpo: `{origen, tipo, url, peticion}`. El flujo sale
+    /// tal cual; cómo acabó, en los *trailers* (`ore-estado`, `ore-motivo`).
+    fn bajar(self: &Arc<Self>, cuerpo: &str) -> Salida {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let n = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => n,
+            Err(_) => return error(400, "operador", "el cuerpo no es JSON", false),
+        };
+        let cadena = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        let Some(origen) = cadena("origen").filter(|v| nombre_valido(v, false)) else {
+            return error(400, "operador", "falta `origen`, o no es un nombre", false);
+        };
+        let Some(tipo) = cadena("tipo").filter(|t| self.conectores.contains_key(t)) else {
+            return error(
+                400,
+                "operador",
+                "falta `tipo`, o no hay conector de ese tipo",
+                false,
+            );
+        };
+        let Some(url) = cadena("url").filter(|u| !u.is_empty()) else {
+            return error(400, "operador", "falta `url`", false);
+        };
+        let entrada = match con_url(&n, &url) {
+            Ok(e) => e,
+            Err(m) => return error(400, "operador", &m, false),
+        };
+        let turno = match self.fondo.turno_de(&origen, "fetch", true) {
+            Ok(t) => t,
+            Err(_) => {
+                return json(
+                    503,
+                    Json::obj([
+                        ("codigo", Json::s("saturado")),
+                        ("mensaje", Json::s("la cola del origen está llena")),
+                        ("reintentable", Json::Bool(true)),
+                    ]),
+                    vec![("retry-after".into(), "5".into())],
+                );
+            }
+        };
+        let mut hijo = match Command::new(self.fondo.programa(&tipo))
+            .arg("bajar")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(h) => h,
+            Err(e) => {
+                return error(
+                    502,
+                    "conexion",
+                    &format!("no arranca el conector: {e}"),
+                    false,
+                );
+            }
+        };
+        if let Some(mut i) = hijo.stdin.take() {
+            let _ = i.write_all(entrada.as_bytes());
+        }
+        let salida = hijo.stdout.take().expect("stdout");
+        let err = hijo.stderr.take().expect("stderr");
+        let errores = std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut s = String::new();
+            let mut e = err;
+            let _ = e.read_to_string(&mut s);
+            s
+        });
+        // El hijo, compartido: el final lo espera; si el flujo se suelta antes
+        // (quien leía se fue), `Drop` lo mata y suelta el turno.
+        let hijo = Arc::new(std::sync::Mutex::new(Some(hijo)));
+        let lector = Bajado {
+            salida,
+            hijo: Arc::clone(&hijo),
+            fin: false,
+        };
+        let yo = Arc::clone(self);
+        let empezo = std::time::Instant::now();
+        Salida::Bytes(Bytes {
+            codigo: 200,
+            cabeceras: vec![("content-type".into(), "application/octet-stream".into())],
+            largo: None,
+            lector: Box::new(lector),
+            finales: Some(Finales {
+                nombres: vec!["ore-estado".into(), "ore-motivo".into()],
+                valores: Box::new(move || {
+                    let fin = hijo.lock().expect("hijo").take().map(|mut h| h.wait());
+                    drop(turno);
+                    let dicho = errores.join().unwrap_or_default();
+                    let ms = empezo.elapsed().as_millis() as u64;
+                    let ok = matches!(fin, Some(Ok(s)) if s.success());
+                    yo.fondo
+                        .anotar(&origen, if ok { "completo" } else { "error" }, ms);
+                    let motivo = if ok {
+                        String::new()
+                    } else {
+                        tapar_url(
+                            dicho
+                                .lines()
+                                .rev()
+                                .find(|l| !l.trim().is_empty() && !l.contains("aviso"))
+                                .unwrap_or("el conector terminó con error"),
+                            &url,
+                        )
+                    };
+                    eprintln!(
+                        "fetch · {origen} · {tipo} · {} · {ms} ms",
+                        if ok { "completo" } else { "error" }
+                    );
+                    vec![
+                        (
+                            "ore-estado".into(),
+                            if ok { "completo" } else { "error" }.into(),
+                        ),
+                        ("ore-motivo".into(), motivo),
+                    ]
+                }),
+            }),
+        })
+    }
+
     fn terminar(&self, id: &str, f: &Final) {
         self.en_curso.lock().expect("en curso").remove(id);
         let mut t = self.terminadas.lock().expect("terminadas");
         t.push_back((id.to_string(), f.clone()));
         while t.len() > RECUERDO {
             t.pop_front();
+        }
+    }
+}
+
+/// La petición de `peticion` con la `url` dentro: la entrada de `versiones` y
+/// de `bajar`, que la leen entera.
+fn con_url(n: &ore_core::parse::Node, url: &str) -> Result<String, String> {
+    let Some((_, p)) = n.get("peticion") else {
+        return Err("falta `peticion`".into());
+    };
+    let Json::Obj(mut m) = Json::de_node(p) else {
+        return Err("`peticion` no es un objeto".into());
+    };
+    m.insert("url".into(), Json::s(url));
+    Ok(Json::Obj(m).jcs())
+}
+
+fn tapar_url(texto: &str, url: &str) -> String {
+    ore_driver::tapar(texto, url)
+}
+
+/// El flujo de `bajar`: la salida del conector. Si se suelta sin haber
+/// terminado (quien leía se fue), el conector se mata.
+struct Bajado {
+    salida: std::process::ChildStdout,
+    hijo: Arc<std::sync::Mutex<Option<std::process::Child>>>,
+    /// Si el flujo llegó a su fin: entonces no se mata nada.
+    fin: bool,
+}
+
+impl std::io::Read for Bajado {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.salida.read(b)?;
+        if n == 0 && !b.is_empty() {
+            self.fin = true;
+        }
+        Ok(n)
+    }
+}
+
+impl Drop for Bajado {
+    fn drop(&mut self) {
+        // Si el final aún no lo esperó y el conector sigue vivo, se mata: el
+        // final (si llega) verá un error.
+        if !self.fin
+            && let Ok(mut h) = self.hijo.lock()
+            && let Some(h) = h.as_mut()
+            && matches!(h.try_wait(), Ok(None))
+        {
+            let _ = h.kill();
         }
     }
 }
