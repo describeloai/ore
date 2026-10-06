@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# 0057 B4·0/B4·1 · LA FORANEA SE LEE — la matriz de lo que se puede preguntar a
+# una foreign database (OOS v1alpha27), camino a camino. Cada celda es
+# un camino × una clase de consulta (T1–T7 sobre tablas y vistas, M1–M4 sobre la
+# coleccion virtual, G1–G6 de un `.sql` que crea o escribe), con lo que contesta,
+# y falla si no es lo esperado (0057 B4·1: Python, celdas y `.sql`).
+#
+# El origen es el S3 de mentira: dos tablas parquet (`datos/clientes`,
+# `datos/pedidos`) y una carpeta de PDFs (`docs/contratos`). La base foranea
+# `vivo` expone `datos` y `docs` en espejo; `congelada` es la misma sobre una
+# fuente con la lectura en vivo apagada. `ore-serve` decide, `ore-federation`
+# lee y el SDK de Python pregunta desde un puesto de mentira.
+#
+#   ORE_BIN=target/debug bash pruebas-de-fuego/la-foranea-se-lee.sh
+#
+# Necesita python con pyarrow, duckdb y pyyaml (el SDK del puesto).
+set -u
+BIN="${ORE_BIN:-target/debug}"
+abs() { echo "$(cd "$1" && pwd)"; }
+BIN=$(abs "$BIN")
+PY=$(command -v python3 || command -v python)
+RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d)"
+PIDS=""
+trap 'for p in $PIDS; do kill $p 2>/dev/null; done; rm -rf "$TMP"' EXIT
+libre() { "$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
+
+# ── el origen: el S3 de mentira, con dos tablas parquet y unos PDFs ─────────
+"$PY" "$RAIZ/pruebas-de-fuego/de-mentira.py" s3 0 > "$TMP/s3.log" 2>&1 & PIDS="$PIDS $!"
+for _ in $(seq 1 40); do [ -s "$TMP/s3.log" ] && break; sleep 0.25; done
+S3="http://127.0.0.1:$(awk '{print $2}' "$TMP/s3.log")"
+curl -s -X PUT "$S3/lago" >/dev/null
+"$PY" - "$TMP" <<'PYX'
+import sys, datetime, pyarrow as pa, pyarrow.parquet as pq
+t = sys.argv[1]
+pq.write_table(pa.table({
+    "id": pa.array([1, 2, 3, 4, 5], pa.int64()),
+    "pais": ["ES", "PT", "ES", "FR", "ES"],
+    "alta": pa.array([datetime.date(2026, 1, d) for d in (3, 5, 9, 12, 20)]),
+}), f"{t}/clientes.parquet")
+pq.write_table(pa.table({
+    "id": pa.array(range(1, 9), pa.int64()),
+    "cliente": pa.array([1, 1, 2, 3, 3, 3, 4, 5], pa.int64()),
+    "importe": pa.array([10.0, 20.0, 5.0, 7.5, 2.5, 30.0, 12.0, 8.0]),
+}), f"{t}/pedidos.parquet")
+PYX
+curl -s -X PUT --data-binary @"$TMP/clientes.parquet" "$S3/lago/datos/clientes/parte-0.parquet" >/dev/null
+curl -s -X PUT --data-binary @"$TMP/pedidos.parquet" "$S3/lago/datos/pedidos/parte-0.parquet" >/dev/null
+for k in "anio=2026/a.pdf:aaaa" "anio=2026/b.pdf:bbbbbb" "anio=2025/c.pdf:cc"; do
+  curl -s -X PUT --data-binary "${k#*:}" "$S3/lago/docs/contratos/${k%%:*}" >/dev/null
+done
+export FED_S3_URL="s3://lago?region=us-east-1&endpoint=$S3&access_key_id=de&secret_access_key=mentira"
+export FED_S3_APAGADA_URL="$FED_S3_URL"
+
+# ── el arbol: la fuente (sus punteros), la foranea y la congelada ───────────
+FORJA="$TMP/forja.git"; A="$TMP/arbol"
+git init -q --bare -b main "$FORJA"; git init -q -b main "$A"
+cat > "$A/ontology.config.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha27
+kind: OntologyConfig
+metadata: { name: fed, version: 0.1.0 }
+datasources:
+  - name: s3
+    type: s3
+    connectionEnv: FED_S3_URL
+    federation: true
+  - name: s3_apagada
+    type: s3
+    connectionEnv: FED_S3_APAGADA_URL
+YAML
+cat > "$A/conduits.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: fed }
+spec:
+  owner: team:fed
+  conduits:
+    contextSurface.workspace: { oos.maturity: DRAFT }
+    federation.read: { oos.maturity: DRAFT }
+    materialization.payload: { oos.maturity: DRAFT }
+YAML
+fuente() { # nombre-del-paquete datasource
+  local P=$1 D=$2
+  mkdir -p "$A/packages/$P/datos/tables" "$A/packages/$P/docs/objects"
+  cat > "$A/packages/$P/package.yaml" <<YAML
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: $P, version: 0.1.0, status: draft, domain: $P }
+spec: { owner: "team:fed", exports: [$P.datos.clientes, $P.datos.pedidos, $P.docs.contratos] }
+YAML
+  for s in datos docs; do
+    printf 'apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: %s, namespace: %s }\nspec: { owner: team:fed }\n' "$s" "$P" > "$A/packages/$P/$s/schema.yaml"
+  done
+  cat > "$A/packages/$P/datos/tables/clientes.yaml" <<YAML
+apiVersion: oos.dev/v1alpha22
+kind: Table
+metadata: { name: clientes, namespace: $P, schema: datos }
+spec:
+  datasource: $D
+  object: "datos/clientes/"
+  format: { type: parquet, match: "*.parquet" }
+  columns:
+    id: { type: Integer, physicalType: int64, required: true }
+    pais: { type: String, physicalType: string }
+    alta: { type: Date, physicalType: date32 }
+  reads:
+    fullScan: cheap
+    predicatePushdown: [eq, neq, in, range, isNull]
+  changes: { mode: retract, witness: listing }
+YAML
+  cat > "$A/packages/$P/datos/tables/pedidos.yaml" <<YAML
+apiVersion: oos.dev/v1alpha22
+kind: Table
+metadata: { name: pedidos, namespace: $P, schema: datos }
+spec:
+  datasource: $D
+  object: "datos/pedidos/"
+  format: { type: parquet, match: "*.parquet" }
+  columns:
+    id: { type: Integer, physicalType: int64, required: true }
+    cliente: { type: Integer, physicalType: int64 }
+    importe: { type: Float, physicalType: double }
+  reads:
+    fullScan: cheap
+    predicatePushdown: [eq, neq, in, range, isNull]
+  changes: { mode: retract, witness: listing }
+YAML
+  cat > "$A/packages/$P/docs/objects/contratos.yaml" <<YAML
+apiVersion: oos.dev/v1alpha16
+kind: ObjectTable
+metadata: { name: contratos, namespace: $P, schema: docs }
+spec:
+  datasource: $D
+  prefix: "docs/contratos/"
+  match: "**/*.pdf"
+  partitions: [anio]
+  media: document
+  reads: { fullScan: cheap }
+  changes: { mode: retract, witness: listing }
+YAML
+}
+fuente s3 s3
+fuente s3_apagada s3_apagada
+foranea() { # nombre datasource
+  mkdir -p "$A/packages/$1"
+  cat > "$A/packages/$1/package.yaml" <<YAML
+apiVersion: oos.dev/v1alpha27
+kind: Package
+metadata: { name: $1, version: 0.1.0, status: draft, domain: $1 }
+spec:
+  owner: "team:fed"
+  foreign: { datasource: $2, include: [datos, docs] }
+YAML
+}
+foranea vivo s3
+# una standard database donde copiar (T8)
+mkdir -p "$A/packages/std/copias"
+cat > "$A/packages/std/package.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: std, version: 0.1.0, status: draft, domain: std }
+spec: { owner: "team:fed" }
+YAML
+printf 'apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: copias, namespace: std }
+spec: { owner: team:fed }
+' > "$A/packages/std/copias/schema.yaml"
+foranea congelada s3_apagada
+# dos vistas del usuario en la foranea: una que se empuja entera y una con junta
+mkdir -p "$A/packages/vivo/informes/views"
+printf 'apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: informes, namespace: vivo }\nspec: { owner: team:fed }\n' > "$A/packages/vivo/informes/schema.yaml"
+cat > "$A/packages/vivo/informes/views/clientes_es.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha24
+kind: View
+metadata: { name: clientes_es, namespace: vivo, schema: informes }
+spec:
+  owner: team:fed
+  dialect: duckdb
+  sql: |
+    SELECT id, alta FROM vivo.datos.clientes WHERE pais = 'ES'
+  columns:
+    id: { type: Integer }
+    alta: { type: Date }
+YAML
+cat > "$A/packages/vivo/informes/views/ventas_por_pais.yaml" <<'YAML'
+apiVersion: oos.dev/v1alpha24
+kind: View
+metadata: { name: ventas_por_pais, namespace: vivo, schema: informes }
+spec:
+  owner: team:fed
+  dialect: duckdb
+  sql: |
+    SELECT c.pais, count(*) AS pedidos, sum(p.importe) AS total
+    FROM vivo.datos.pedidos p JOIN vivo.datos.clientes c ON p.cliente = c.id
+    GROUP BY c.pais
+  columns:
+    pais: { type: String }
+    pedidos: { type: Integer }
+    total: { type: Float }
+YAML
+( cd "$A" && "$BIN/ore" validate . > "$TMP/validate.txt" 2>&1 ) && echo "  · el arbol compila" || { echo "  ✗ el arbol no compila:"; head -20 "$TMP/validate.txt"; }
+( cd "$A" && git add -A && git -c user.email=t@t -c user.name=t commit -qm semilla && git remote add origin "$FORJA" && git push -q origin HEAD:main ) \
+  || { echo "no se sembró la forja"; exit 1; }
+
+# ── la cola de los puestos, la pasarela y el servidor ───────────────────────
+COLA="$TMP/cola.git"; git init -q --bare -b main "$COLA"; mkdir -p "$TMP/cola-semilla"
+"$PY" "$RAIZ/malla/gen-inquilino.py" demo --a "$TMP/rendido" >/dev/null 2>&1 || { echo "no se rindió la plantilla del puesto"; exit 1; }
+cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/rendido/plantilla-capa.txt" \
+   "$TMP/rendido/plantilla-capa-jvm.txt" "$TMP/rendido/plantilla-capa-node.txt" "$TMP/cola-semilla/"
+( cd "$TMP/cola-semilla" && git init -q -b main && git add -A && git -c user.name=t -c user.email=t@t commit -qm plantilla \
+  && git remote add origin "$COLA" && git push -q origin HEAD:main ) || { echo "no se sembró la cola"; exit 1; }
+PF=$(libre)
+"$BIN/ore-federation" --escucha "127.0.0.1:$PF" --conectores "$BIN" --tipos s3 >"$TMP/fed.log" 2>&1 & PIDS="$PIDS $!"
+PS=$(libre); BASE="http://127.0.0.1:$PS"
+# El lago (`ore-store`, que pasa el Arrow de la preview a filas), el mismo S3.
+export ORE_STORE=r2 ORE_R2_S3_ENDPOINT="$S3" ORE_R2_BUCKET=lago ORE_R2_ACCESS_KEY_ID=de ORE_R2_SECRET_ACCESS_KEY=mentira
+export PATH="$BIN:$PATH"
+ORE_PASARELA="127.0.0.1:$PF" FORJA_TOKEN=no-hace-falta "$BIN/ore-serve" --forja "file://$FORJA" --ore "$BIN/ore" --cola "file://$COLA" \
+  --bind "127.0.0.1:$PS" --identidad cabecera --no-es-produccion --organizacion fed >"$TMP/serve.log" 2>&1 & PIDS="$PIDS $!"
+for _ in $(seq 1 80); do curl -s -o /dev/null "$BASE/salud" && curl -s -o /dev/null "http://127.0.0.1:$PF/v1/health" && break; sleep 0.25; done
+curl -s -o /dev/null -X POST -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' "$BASE/puestos" -d '{}'
+P=puesto-ana-python
+# El agente del puesto, de verdad: corre las celdas del editor (un `.sql`).
+ORE_SERVE="$BASE" PUESTO="$P" ORE_SUJETO=agente:local TTL=600 PUESTO_DIR="$TMP" TRABAJO_DIR="$TMP" PYTHONUTF8=1   "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente.log" 2>&1 & PIDS="$PIDS $!"
+for _ in $(seq 1 20); do curl -s -H 'x-ore-sujeto: persona:ana' "$BASE/puestos/$P" | grep -q '"estado":"vivo"' && break; sleep 0.2; done
+
+# ── la matriz ────────────────────────────────────────────────────────────────
+ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
+SALIDA=$?
+echo
+echo "  (registro del servidor: $(grep -c . "$TMP/serve.log") lineas; de la pasarela: $(grep -c . "$TMP/fed.log"))"
+[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; }
+exit "$SALIDA"

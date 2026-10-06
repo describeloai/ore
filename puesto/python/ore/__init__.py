@@ -927,7 +927,17 @@ def over(view, format="pandas"):
     Arrow types (`format="pandas"`, the default), a `pyarrow.Table`
     (`format="arrow"`) or a polars DataFrame (`format="polars"`)."""
     vista, como = view, format
-    fuente, r = _fuente_de(vista)
+    try:
+        fuente, r = _fuente_de(vista)
+    except (LookupError, RuntimeError) as sin_copia:
+        # ORE 0057 B4·1: what has no copy —a table a foreign database exposes,
+        # a view over the origin— is read live, the way `sql()` reads it (the
+        # Federation Engine). If that cannot read it either, the first answer
+        # stands: it is the one that says why there is no copy.
+        try:
+            return sql("select * from %s" % vista, format=como)
+        except Exception:  # noqa: BLE001
+            raise sin_copia from None
     if r.get("_parquet"):
         # El sobre, ya en local: pyarrow lo lee más deprisa que nadie (13 M filas/s).
         import pyarrow.parquet as pq

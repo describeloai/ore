@@ -230,10 +230,12 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
     );
 
     // ⓪②④ El reparto: interruptor (de main), coste y conducto.
+    // 0057 B4·1: lo que sabe cada conector, si hay pasarela.
+    let conectores = crate::lector::conectores_de_la_pasarela();
     let o = Opciones {
         desde_puesto: p.desde_puesto,
         exigir_interruptor: true,
-        conectores: None,
+        conectores: conectores.as_ref(),
         copia: false,
     };
     let r = reparto::repartir(&sql, &pkg, &o).map_err(|n| no(n.http, &n.codigo, n.mensaje))?;

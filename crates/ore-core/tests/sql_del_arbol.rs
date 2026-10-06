@@ -235,6 +235,15 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         t("ventas.x")
     );
     assert_eq!(e("create temp table ventas.x as select 1"), t("ventas.x"));
+    // 0057 B4·1: una vista materializada también es del árbol (caía a DuckDB).
+    assert_eq!(
+        e("create or replace materialized view ventas.v as select 1 as a"),
+        Some(E::Vista("ventas.v".to_string()))
+    );
+    assert_eq!(
+        e("create materialized view ventas.v as select 1 as a"),
+        Some(E::Vista("ventas.v".to_string()))
+    );
     // ADR 0049 B4·4: una colección es del árbol (DuckDB no la conoce), resuelva o no
     assert_eq!(
         e("create media collection if not exists ventas.s.c media document formats (pdf)"),

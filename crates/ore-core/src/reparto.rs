@@ -67,6 +67,42 @@ pub struct Conector {
     pub order_by: bool,
 }
 
+/// **Lo que cada conector declara**, de la respuesta de `GET /v1/connectors`
+/// de la pasarela (`{"conectores": {tipo: {operadores, limit, orderBy, …}}}`).
+/// Lo que no analiza no entra: sin él, el reparto no empuja más de lo que la
+/// tabla admite y el conector, al recibirlo, rechaza (0057 B4·1: un `orderBy`
+/// empujado a S3, que no ordena, tumbaba la lectura en vez de ordenar DuckDB).
+pub fn conectores_de_json(texto: &str) -> BTreeMap<String, Conector> {
+    let Ok(n) = crate::parse::parse(texto) else {
+        return BTreeMap::new();
+    };
+    let Some((_, cs)) = n.get("conectores") else {
+        return BTreeMap::new();
+    };
+    cs.entries()
+        .iter()
+        .filter_map(|(k, c)| {
+            let si = |campo: &str| c.get(campo).and_then(|(_, v)| v.as_str()) == Some("true");
+            Some((
+                k.as_str()?.to_string(),
+                Conector {
+                    operadores: c
+                        .get("operadores")
+                        .map(|(_, v)| {
+                            v.items()
+                                .iter()
+                                .filter_map(|o| o.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    limit: si("limit"),
+                    order_by: si("orderBy"),
+                },
+            ))
+        })
+        .collect()
+}
+
 pub struct Opciones<'a> {
     /// La lectura sale de un puesto: también su conducto (F4).
     pub desde_puesto: bool,

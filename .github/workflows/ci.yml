@@ -517,6 +517,10 @@ jobs:
           # 0053 F8·3: la pasarela (ya construida) y el almacén, para leer por ella.
           cargo build --quiet -p ore-store
           ORE=target/debug/ore bash pruebas-de-fuego/la-copia-desde-el-origen.sh
+          # 0057 B4·1: una foreign database se lee desde Python —celdas y `.sql`—
+          #   con el rango entero (T/M/G), y lo que no se puede se niega bien.
+          python3 -m pip install --quiet pyyaml pandas
+          ORE_BIN=target/debug bash pruebas-de-fuego/la-foranea-se-lee.sh
 
       - name: el conector de S3
         run: |

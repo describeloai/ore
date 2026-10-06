@@ -2624,6 +2624,17 @@ impl Servidor {
                     && !ore_core::reparto::tablas_de_la_vista(&pkg, v).is_empty()
                     && let Some(sql) = ore_core::reparto::sql_de_vista(v)
                 {
+                    // ⭐ 0057 B4·1: lo que la vista nombra —un nombre expuesto por
+                    //   una base foránea (`vivo.datos.pedidos`), o el de la
+                    //   fuente— se registra con ESE nombre: la vista corre en
+                    //   DuckDB tal cual está escrita.
+                    for m in ore_core::sql_del_arbol::nombres_a_resolver(&sql, &pkg) {
+                        if let Some(t) = ore_core::reparto::de_un_origen(&pkg, &m)
+                            && !tablas.iter().any(|(x, _)| x == &m)
+                        {
+                            tablas.push((m, t.qname().unwrap_or_default()));
+                        }
+                    }
                     vistas_vivas.push((n, sql));
                 }
             }

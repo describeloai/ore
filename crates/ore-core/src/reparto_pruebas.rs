@@ -726,3 +726,40 @@ fn un_nombre_expuesto_se_lee_como_su_tabla() {
     };
     assert_eq!(e.codigo, "OOS2051", "{}", e.mensaje);
 }
+
+/// 0057 B4·1: lo que la pasarela dice de cada conector (`GET /v1/connectors`)
+/// es lo que el reparto empuja: un conector que no ordena no recibe `orderBy`
+/// —lo ordena el motor—.
+#[test]
+fn la_pasarela_dice_lo_que_sabe_cada_conector() {
+    let c = conectores_de_json(
+        r#"{"conectores":{"postgres":{"operadores":["eq","in"],"limit":true,"orderBy":false,"protocolo":2}}}"#,
+    );
+    let pg = &c["postgres"];
+    assert_eq!(
+        pg.operadores.iter().cloned().collect::<Vec<_>>(),
+        ["eq", "in"]
+    );
+    assert!(pg.limit && !pg.order_by);
+    assert!(conectores_de_json("no es json").is_empty());
+
+    let pkg = arbol("sin-orden", true, true, &[]);
+    let o = Opciones {
+        conectores: Some(&c),
+        ..opciones()
+    };
+    let r = match repartir(
+        "SELECT id FROM pg.public.clientes ORDER BY id DESC LIMIT 2",
+        &pkg,
+        &o,
+    ) {
+        Ok(r) => r,
+        Err(n) => panic!("negado {}: {}", n.codigo, n.mensaje),
+    };
+    let l = de(&r, "pg.public.clientes");
+    assert!(
+        l.orden.is_empty(),
+        "se empujó un orden que el conector no sabe: {:?}",
+        l.orden
+    );
+}

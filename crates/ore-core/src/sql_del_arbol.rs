@@ -868,6 +868,26 @@ fn doc_de<'a>(pkg: &'a Package, r: &str) -> Option<&'a crate::link::Loaded> {
         .or_else(|| crate::foranea::expuesto(pkg, r))
 }
 
+/// ⛔ 0057 (OOS v1alpha27 `01` §4): **una foreign database no se escribe**
+/// —ni datasets, ni copias, ni colecciones (OOS2049)—. Lo dice aquí, con su
+/// porqué, antes de que otro fallo (un schema que no se declaró) lo tape.
+pub(crate) fn en_una_foranea(pkg: &Package, base: &str, pos: Option<Pos>) -> Option<Fallo> {
+    crate::foranea::foranea(pkg, base)?;
+    Some(
+        Fallo::new(
+            format!(
+                "`{base}` es una foreign database: expone su fuente y no se escribe en ella \
+                 (OOS2049)"
+            ),
+            pos,
+        )
+        .ayuda(
+            "copiar lo del origen es crear un dataset en una standard database: \
+             `create or replace dataset <standard>.<schema>.<d> as select …`",
+        ),
+    )
+}
+
 fn hay_base(pkg: &Package, p: &str) -> bool {
     pkg.docs
         .iter()
@@ -913,6 +933,11 @@ pub fn copia_desde_el_origen(pkg: &Package, u: &Unidad) -> Option<String> {
 pub const SUFIJO_DE_LA_CONSULTA: &str = "_consulta";
 
 fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> {
+    if let Some(e) = &u.escribe
+        && let Some(f) = en_una_foranea(pkg, &e.destino.paquete, e.destino.pos)
+    {
+        return vec![f];
+    }
     let doc = |n: &Nombre| doc_de(pkg, &n.referencia());
     // 0053 F7·3: escribir desde un origen es una copia; sólo `create or replace
     // dataset … as select`, y lo que lee del origen se lee así (no es un fallo).
@@ -1665,6 +1690,11 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
                 j += 2;
             }
             if es(j, "temp") || es(j, "temporary") {
+                j += 1;
+            }
+            // 0057 B4·1: `create [or replace] materialized view` también es del
+            //   árbol (ADR 0040 paso 7); sin esto caía a DuckDB, que no la conoce.
+            if es(j, "materialized") {
                 j += 1;
             }
             let vista = es(j, "view");

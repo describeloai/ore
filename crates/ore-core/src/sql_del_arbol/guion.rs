@@ -1463,6 +1463,13 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                 ..
             } => {
                 let r = destino.referencia();
+                // ⛔ 0057: una copia no vive en una foreign database (OOS2049).
+                if *materializada
+                    && let Some(f) = super::en_una_foranea(pkg, &destino.paquete, destino.pos)
+                {
+                    fallos.push(f);
+                    continue;
+                }
                 if *materializada {
                     fallos.extend(cotejar_la_copia(pkg, &creado, destino, lee, *o_reemplaza));
                 }
@@ -1617,6 +1624,11 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                 ..
             } => {
                 let r = destino.referencia();
+                // ⛔ 0057: nada se escribe en una foreign database (OOS2049).
+                if let Some(f) = super::en_una_foranea(pkg, &destino.paquete, destino.pos) {
+                    fallos.push(f);
+                    continue;
+                }
                 let ya = || {
                     Fallo::new(format!("ya hay un dataset `{r}`"), destino.pos).ayuda(format!(
                         "`create dataset if not exists {}`, si da igual que ya esté",
@@ -1688,6 +1700,11 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                                 .ayuda("the listing of an origin: a foreign database brings it"),
                         ),
                     }
+                }
+                // ⛔ 0057: nada se escribe en una foreign database (OOS2049).
+                if let Some(f) = super::en_una_foranea(pkg, &destino.paquete, destino.pos) {
+                    fallos.push(f);
+                    continue;
                 }
                 let ya = || {
                     Fallo::new(format!("ya hay una colección `{r}`"), destino.pos).ayuda(format!(

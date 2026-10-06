@@ -36,10 +36,12 @@ pub fn explicar(p: &Pedido) -> ExitCode {
     {
         return no(p.json, http, &codigo, None, &mensaje);
     }
+    // 0057 B4·1: lo que sabe cada conector, si hay pasarela.
+    let conectores = crate::lector::conectores_de_la_pasarela();
     let o = Opciones {
         desde_puesto: p.desde_puesto,
         exigir_interruptor: !p.conformidad,
-        conectores: None,
+        conectores: conectores.as_ref(),
         copia: false,
     };
     match reparto::repartir(&p.sql, &pkg, &o) {

@@ -597,7 +597,23 @@ impl Troceado {
 
 /// `POST /v1/{ruta}` a la pasarela, por HTTP plano dentro del clúster. Un
 /// código distinto de 200 es un fallo con su mensaje.
+/// ⭐ 0057 B4·1 · **Lo que sabe cada conector**, según la pasarela (`GET
+/// /v1/connectors`): con ello el reparto no empuja lo que el conector no sabe
+/// poner. Sin pasarela, o si no contesta, `None`: el reparto supone lo de
+/// siempre.
+pub fn conectores_de_la_pasarela()
+-> Option<std::collections::BTreeMap<String, ore_core::reparto::Conector>> {
+    let p = pasarela()?;
+    let texto = a_la_pasarela(&p, "GET", "connectors", "").ok()?;
+    let c = ore_core::reparto::conectores_de_json(&texto);
+    (!c.is_empty()).then_some(c)
+}
+
 fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, String> {
+    a_la_pasarela(destino, "POST", ruta, cuerpo)
+}
+
+fn a_la_pasarela(destino: &str, metodo: &str, ruta: &str, cuerpo: &str) -> Result<String, String> {
     use std::io::{Read as _, Write as _};
     use std::net::ToSocketAddrs as _;
     let dir = destino
@@ -611,7 +627,7 @@ fn por_la_pasarela(destino: &str, ruta: &str, cuerpo: &str) -> Result<String, St
     s.set_read_timeout(Some(std::time::Duration::from_secs(660)))
         .ok();
     let req = format!(
-        "POST /v1/{ruta} HTTP/1.1\r\nhost: pasarela\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{cuerpo}",
+        "{metodo} /v1/{ruta} HTTP/1.1\r\nhost: pasarela\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{cuerpo}",
         cuerpo.len()
     );
     s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
