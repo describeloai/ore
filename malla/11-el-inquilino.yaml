@@ -65,10 +65,11 @@ metadata:
 # con dos, el segundo se declara y el reparto justo ya existe — no hay que
 # rediseñar la cola, hay que escribir un manifiesto.
 #
-# La cuota nominal sale de lo que el pool puede dar de VERDAD: 3 nodos
-# e2-standard-4 son 12 vCPU y 48 Gi en bruto, y GKE reserva por nodo. Se
-# declara 10 y 36Gi, que es conservador a propósito: una cuota que promete más
-# de lo que hay convierte una espera en un pod que no arranca nunca.
+# La cuota nominal sale de lo que el pool puede dar de VERDAD. Era 10 y 36Gi
+# para 3 nodos e2-standard-4; desde O3/O4 (2026-10-06) son dos sabores —el hueco
+# del nodo del sistema y un e2-standard-2 de desborde— y sus cifras van con
+# ellos. Conservador a propósito: una cuota que promete más de lo que hay
+# convierte una espera en un pod que no arranca nunca.
 #
 # ⚠️ Con varios inquilinos esta cifra deja de ser «lo que hay» y pasa a ser «lo
 # que le toca a éste». `borrowingLimit: 0` dice que no se presta; el día que se
@@ -83,6 +84,19 @@ spec:
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
+        # ⭐ PRIMERO el nodo del sistema (O3, 2026-10-06): lo que cabe, cabe ahi, y
+        #   el pool de jobs sólo arranca cuando no. Su cuota es la parte del
+        #   hueco del sistema que le toca a una celda —~2 nucleos y ~8 GiB entre
+        #   todas— y no se presta: si se prestara, dos celdas lo llenarian y los
+        #   pods quedarian `Pending` con la cuota diciendo que caben.
+        - name: system
+          resources:
+            - name: cpu
+              nominalQuota: "1"
+              borrowingLimit: "0"
+            - name: memory
+              nominalQuota: "4Gi"
+              borrowingLimit: "0"
         - name: jobs
           resources:
             # ⚠️ ENTRECOMILLADAS, y no es estilo. Son `resource.Quantity`, y el API
@@ -95,11 +109,13 @@ spec:
             # cuanto el agente reescribió el objeto con apply del lado del
             # servidor apareció. Una diferencia que sólo es de forma ensucia la
             # prueba que tiene que cazar las que no lo son.
+            # ⭐ (O4, 2026-10-06) El pool es `jobs-s`: UN e2-standard-2, de 0 a 1.
+            #   ~1,9 vCPU y ~6 GiB asignables, menos lo de GKE por nodo (~0,4).
             - name: cpu
-              nominalQuota: "10"
+              nominalQuota: "1500m"
               borrowingLimit: "0"
             - name: memory
-              nominalQuota: "36Gi"
+              nominalQuota: "5Gi"
               borrowingLimit: "0"
   preemption:
     reclaimWithinCohort: Any

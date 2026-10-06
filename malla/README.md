@@ -19,9 +19,13 @@ VPC ore-mesh (custom)
   Private Google Access · on
 
 clúster ore-mesh    ZONAL · canal REGULAR · Dataplane V2 · Workload Identity
-  pool default      e2-standard-2   1 fijo    ore.dev/pool=system   IP pública
-  pool jobs-p       e2-standard-4   0 → 3     ore.dev/pool=jobs     PRIVADO
+  pool sistema-spot e2-standard-4   1 (Spot)  ore.dev/pool=system   PRIVADO
+  pool jobs-s       e2-standard-2   0 → 1     ore.dev/pool=jobs     PRIVADO
                                               taint ore.dev/jobs=true:NoSchedule
+  (2026-10-06, O3/O4: los Jobs van PRIMERO al sistema —sabor `system` de
+   Kueue— y `jobs-s` es solo el desborde; sustituye a `jobs-p`, e2-standard-4
+   0 → 3. Medido y razonado en el commit: la cuota de 12 vCPU queda en 5 en
+   reposo para dejar sitio a ORE Postgres)
   autoescalado      perfil BALANCED (desde el 2026-09-18; era OPTIMIZE_UTILIZATION)
 ```
 

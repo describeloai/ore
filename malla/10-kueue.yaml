@@ -8,6 +8,26 @@
 # Y la tolerancia es lo que hace posible el «escala a cero»: el pool lleva un
 # taint para que ningun pod de sistema aterrice y lo mantenga encendido, asi
 # que solo entra quien lo tolera — y quien lo tolera lo inyecta Kueue aqui.
+# ── ⭐ El sabor `system` (2026-10-06, O3) ─────────────────────────────────────
+#
+# Medido en 7 dias (O0): el nodo del sistema trabajaba al 35% con el 81% de su
+# CPU RESERVADO, y un nodo `jobs-p` de 4 vCPU vivia para dos puestos que pedian
+# 250m y usaban 5m. Ajustadas las reservas (O1/O2), al sistema le sobran ~2
+# nucleos y ~8 GiB: sitio de sobra para lo que de verdad se ejecuta.
+#
+# ⇒ Las `ClusterQueue` nombran este sabor PRIMERO: Kueue prueba los sabores en
+#   orden, asi que un Job cae en el nodo del sistema mientras su cuota alcance y
+#   SOLO desborda al pool de jobs cuando no. Sin taint ni tolerancia: el nodo del
+#   sistema no la lleva. La cuenta de la cuota (12 vCPU en el proyecto) es la que
+#   manda: un nodo de jobs encendido para nada son vCPU que no tiene ORE Postgres.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: system
+spec:
+  nodeLabels:
+    ore.dev/pool: system
+---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
