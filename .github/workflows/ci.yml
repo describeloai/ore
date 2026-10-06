@@ -787,6 +787,10 @@ jobs:
             kubectl -n "$NS" get deployment informador >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/informador"
             # `ore-medios` (0049 B2·4), igual: viaja en la imagen de `ore-serve`.
             kubectl -n "$NS" get deployment ore-medios >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/ore-medios"
+            # `ore-federation` (0053 F8·4), igual: viaja en la imagen de los
+            #   drivers. Sin esto se quedaba con el binario de la víspera (medido
+            #   el 2026-10-06: `/v1/check` daba 404 con `ore-serve` ya al día).
+            kubectl -n "$NS" get deployment ore-federation >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/ore-federation"
           done
 
           # Y si la pregunta no devuelve NADA, esto NO pasa en verde. Sin esta
