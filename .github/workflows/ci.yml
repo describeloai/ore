@@ -312,6 +312,10 @@ jobs:
       # 0053 F6·2: sql() lee el origen en vivo, contra un ore-serve de mentira.
       - name: y sql() lee en vivo lo que el reparto decide
         run: PYTHONUTF8=1 python3 pruebas-de-fuego/la-lectura-en-vivo-en-python.py
+      # 0057 B4·3·1: ore-motor, el motor SQL de la celda sin puesto: calcula lo
+      # que ore-serve le da (fuentes decididas, Arrow en vivo), solo lee.
+      - name: y ore-motor calcula lo que le dan, sin identidad
+        run: PYTHONUTF8=1 python3 pruebas-de-fuego/el-motor.py
 
 
   # ⭐ LOS VERBOS DEL PLANO DE IDENTIDAD. Lo mismo que fijaba el Job
