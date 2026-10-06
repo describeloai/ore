@@ -497,6 +497,7 @@ assert len(dos) == 1 and dos[0]["severity"] == 2 and dos[0]["range"]["start"] ==
 assert "did you mean" in d[0]["message"], ("sin sugerencia", d)
 a = diag.get("ajena.sql") or []
 assert any("read live from its origin" in x["message"] and x["severity"] == 3 for x in a), ("la Table de otra fuente, en vivo (0053 F6)", a)
+assert not [x for x in a if x["severity"] == 1], ("la Table en vivo no es un error de DuckDB (0053 F9·2)", a)
 assert diag.get("a_medias.sql") == [], ("a medio escribir no es un error", diag.get("a_medias.sql"))
 # ADR 0040 paso 5: las frases del guion no son errores de DuckDB; de la vista se
 # comprueba su consulta, y la columna mal escrita se dice en su sitio (L5:C8)

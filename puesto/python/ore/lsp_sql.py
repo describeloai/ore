@@ -173,7 +173,8 @@ class Catalogo:
                                {"name": "digest", "type": "String"}, {"name": "size", "type": "Integer"},
                                {"name": "content_type", "type": "String"}, {"name": "modified", "type": "String"}]
                 self.legibles[n] = i
-            elif i.get("kind") == "Table":
+            elif i.get("kind") in ("Table", "ObjectTable"):
+                # 0053 F6/F9·1: read live from their origin (an ObjectTable, as its listing).
                 self.ajenas[n] = i
             else:
                 continue
@@ -185,7 +186,10 @@ class Catalogo:
         # Una conexion PROPIA: nada que ver con la de las celdas (`ore._duckdb()`).
         # Un catalogo por base y un schema por schema (0038), como en `sql()`.
         self.con = duckdb.connect()
-        for i in self.legibles.values():
+        # 0053: lo que se lee en vivo (una Table, el listado de un ObjectTable)
+        #   también existe para DuckDB, vacío y con sus columnas: sin esto, la
+        #   nota «se lee en vivo» llegaba con un «Catalog … does not exist» rojo.
+        for i in list(self.legibles.values()) + list(self.ajenas.values()):
             self.con.execute("attach if not exists ':memory:' as %s" % _q(i["paquete"]))
             self.con.execute("create schema if not exists %s.%s" % (_q(i["paquete"]), _q(i["schema"])))
 
@@ -195,9 +199,9 @@ class Catalogo:
     def asegurar(self, nombres):
         """Las tablas vacias de estos nombres, si faltan. Con el candado tomado."""
         for n in nombres:
-            if n in self.hechas or n not in self.legibles:
+            if n in self.hechas or (n not in self.legibles and n not in self.ajenas):
                 continue
-            i = self.legibles[n]
+            i = self.legibles.get(n) or self.ajenas[n]
             cols = ", ".join("%s %s" % (_q(c["name"]), tipo_duckdb(c.get("type"))) for c in i.get("expone", []))
             b, s_, t = _q(i["paquete"]), _q(i["schema"]), _q(i["name"])
             self.con.execute("create table %s.%s.%s (%s)" % (b, s_, t, cols or "x VARCHAR"))
@@ -456,9 +460,15 @@ def diagnosticar(texto, cat):
         # error, se dice —una nota— para que se sepa que va al origen.
         if n in cat.ajenas and n not in cat.legibles:
             a = cat.ajenas[n]
-            out.append({"range": rango, "severity": 3, "source": "ore",
-                        "message": "`%s` is read live from its origin (federation): its filters go to the origin, "
-                                   "and a large read is cut at the cap · `explain` says what is pushed" % a["completo"]})
+            if a.get("kind") == "ObjectTable":
+                out.append({"range": rango, "severity": 3, "source": "ore",
+                            "message": "`%s` is read live from its origin (federation): one row per object, its "
+                                       "metadata (key, size, modified…), never its bytes · `explain` says what is "
+                                       "pushed" % a["completo"]})
+            else:
+                out.append({"range": rango, "severity": 3, "source": "ore",
+                            "message": "`%s` is read live from its origin (federation): its filters go to the origin, "
+                                       "and a large read is cut at the cap · `explain` says what is pushed" % a["completo"]})
         # 0038: dos partes se leen en `default`, y se dice (una vez por nombre)
         if dos and (n in cat.legibles or n in cat.ajenas) and n not in avisados:
             avisados.add(n)
