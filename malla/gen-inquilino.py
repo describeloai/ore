@@ -1116,6 +1116,48 @@ def comprobar():
         print("  ⭐ ⑲ la capa de Python no va delante: sin `PYTHONPATH` en la plantilla, "
               "la monta el agente al final de `sys.path`")
 
+    # ── ⑳ QUIEN LEE EL ORIGEN TIENE SU CREDENCIAL, Y VA POR LA PASARELA ────
+    #
+    # 0053 F7·2: `preparar` pasó a leer el origen (las tablas de una copia
+    # desde el origen) y nadie le dio la credencial: sólo `copiar` la pedía al
+    # custodio. Ninguna prueba lo vio —en el CI la credencial sale del
+    # entorno— y se vio en vivo (victor, 2026-10-06: «`VICTOR_S3_DEMO_URL` no
+    # está definida», 2 de 2 sin preparar).
+    #
+    # ⇒ Todo contenedor de la copia que corre `ore materialize` (que es lo que
+    #   lee el origen: `--preparar`, la copia de siempre, el testigo) pide sus
+    #   credenciales al custodio y lleva `ORE_PASARELA` (0053 F8·3: lo que lee
+    #   un origen va por la pasarela, una vía).
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None
+    if _yaml is not None:
+        hechos = render(MODELO, copias=[VISTAS_MODELO])
+        malos = []
+        vistos_ = 0
+        for f in (POR_COPIAS, PLANTILLA_COPIA):
+            for d in _yaml.safe_load_all(hechos[f]):
+                if not isinstance(d, dict) or d.get("kind") != "Job":
+                    continue
+                sp = d["spec"]["template"]["spec"]
+                for c in sp.get("initContainers", []) + sp.get("containers", []):
+                    guion = " ".join(map(str, (c.get("command") or []) + (c.get("args") or [])))
+                    if "ore materialize" not in guion:
+                        continue
+                    vistos_ += 1
+                    env = {e.get("name") for e in c.get("env") or []}
+                    if "/secretos/fuente-" not in guion:
+                        malos.append("`%s` · `%s` corre `ore materialize` y no pide sus "
+                                     "credenciales al custodio" % (f, c["name"]))
+                    if "ORE_PASARELA" not in env:
+                        malos.append("`%s` · `%s` corre `ore materialize` sin `ORE_PASARELA`: "
+                                     "leería el origen por la puerta de atrás" % (f, c["name"]))
+        fallos.extend(malos)
+        if not malos:
+            print("  ⭐ ⑳ quien lee el origen tiene su credencial y va por la pasarela "
+                  "(%d contenedores de la copia)" % vistos_)
+
     return veredicto(fallos)
 
 
