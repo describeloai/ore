@@ -1026,3 +1026,40 @@ fn describe_gives_columns_then_detail_of_each_kind() {
         "item Media"
     );
 }
+
+/// 0056 V2·3: la función propia (v1alpha26) se llama `functions.<def>(…)`, y
+/// el nombre de antes —`<paquete>.<def>`— sigue llamándola, por el nombre de
+/// verdad: lo escrito antes de migrar no se rompe.
+#[test]
+fn a_function_of_its_own_is_called_as_functions_dot_name() {
+    let t = arbol("funcion-propia");
+    escribe(
+        &t.0,
+        "packages/ventas/collections/contratos.yaml",
+        "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: { name: contratos, namespace: ventas }\nspec:\n  owner: team:ventas\n  media: document\n  formats: [pdf]\n",
+    );
+    escribe(
+        &t.0,
+        "functions/paginas.yaml",
+        "apiVersion: oos.dev/v1alpha26\nkind: Function\nmetadata:\n  name: paginas\n  version: 0.1.0\nspec:\n  owner: team:ventas\n  runtime: python\n  entrypoint: packages/ventas/repo/funciones/paginas.py:paginas\n  codeDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n  input:\n    item: { type: 'Media<ventas.default.contratos>', required: true }\n  output: { type: 'list<Struct<page: Integer, texto: String>>' }\n",
+    );
+    let r = &t.0;
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let u = |q: &str| cotejar(&pkg, &analizar(q).unwrap());
+
+    let q = "select c.path, p.page from ventas.contratos c cross join lateral functions.paginas(c.item) as p";
+    assert!(u(q).is_empty(), "{:?}", u(q));
+    let (sql, calls) = ore_core::sql_del_arbol::sql_calls(q, &pkg);
+    assert!(sql.contains("__ore_fn_1(c.item)"), "{sql}");
+    assert_eq!(calls[0].name, "functions.paginas");
+
+    // El nombre de antes: la misma función, por su nombre de verdad.
+    let viejo = "select ventas.paginas(c.item) from ventas.contratos c";
+    assert!(u(viejo).is_empty(), "{:?}", u(viejo));
+    let (_, calls) = ore_core::sql_del_arbol::sql_calls(viejo, &pkg);
+    assert_eq!(calls[0].name, "functions.paginas");
+
+    // Otro paquete no la alcanza por el nombre de antes.
+    let otro = "select compras.paginas(c.item) from ventas.contratos c";
+    assert!(!u(otro).is_empty());
+}

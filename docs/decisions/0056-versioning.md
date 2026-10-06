@@ -152,3 +152,26 @@ verde salvo los 5 de siempre que necesitan `git` (la imagen de herramientas no l
 regenera, la función pasa a `functions.<nombre>`, y los que la llaman por `<paquete>.<nombre>`
 —`get_function`, el SQL de B7·2, las rutas de `ore-serve` y la consola— dejan de encontrarla.
 Además `ore-serve` tiene que pasar a `generar` las versiones de `main` (`plan_con_anteriores`).
+
+### V2·3 · ore-serve y SQL (hecho)
+
+- **La versión contra `main`**: el commit de una rama le pasa a `generar` las funciones de `main`
+  (`anteriores_de_main`, leídas del clon con `git show origin/main:…` —o `main` sin forja—: la propia
+  con su texto, la de antes con la versión de su paquete). Así, varios commits en una rama no
+  suben la versión varias veces.
+- **`/funciones/{n}/resultados` y `/funciones/{n}/invocar`**: la función propia por su nombre; las
+  rutas de dos y tres partes siguen (`/funciones/functions/{n}/…` es lo mismo). `ESCRITURAS` declara
+  la nueva.
+- **`/documentos/Function/functions/{n}`**: la ficha de la propia (su espacio es `functions`).
+- **SQL**: `functions.<def>(…)` llama a la propia; el nombre de antes, `<paquete>.<def>(…)`, la
+  sigue llamando si salió de ese paquete (`funcion_llamada`), y se registra por su nombre de verdad.
+- El arnés de invocar ya encontraba el código: sube desde el documento hasta el primer
+  `package.yaml` o la raíz, y desde la raíz el `entrypoint` es el de la propia.
+
+Medido: ore-serve 160/161 —el que falla, `la_rama_del_puesto_nace_de_main_y_una_vez`, sólo falla
+dentro del contenedor sobre un worktree (su `.git` es un fichero que apunta fuera); sobre una copia
+del mismo código, pasa—; ore-core, ore-cli (conformidad y `functions generate`) en verde; `fmt` y
+`clippy` limpios.
+
+**Queda para V2·4:** `get_function("<def>")` en el SDK, y que lea el código desde la raíz —la ficha de
+una propia no trae `paquete`, y hoy el SDK lo usa para componer la ruta—.

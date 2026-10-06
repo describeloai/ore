@@ -82,7 +82,14 @@ fn funciones_de(raiz: &Path) -> Vec<Funcion> {
         .filter(|d| d.kind == ore_core::document::Kind::Function)
         .filter_map(|d| {
             let meta = |k: &str| d.meta(k).and_then(|v| v.as_str()).map(str::to_string);
-            let (nombre, ns) = (meta("name")?, meta("namespace")?);
+            // 0056 V2·3: la función propia (v1alpha26) no tiene `namespace`: su
+            // espacio es `functions`, y su forma corta, `functions.<nombre>`.
+            let ns = if ore_core::funcion_propia::es_propia(d) {
+                Some(ore_core::funcion_propia::ESPACIO.to_string())
+            } else {
+                meta("namespace")
+            };
+            let (nombre, ns) = (meta("name")?, ns?);
             let schema = meta("schema")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());

@@ -1009,10 +1009,7 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
     for c in &u.calls {
         let n = &c.function;
         let r = n.referencia();
-        let f = pkg
-            .docs
-            .iter()
-            .find(|d| d.kind == Kind::Function && d.qname().as_deref() == Some(r.as_str()));
+        let f = funcion_llamada(pkg, &r);
         let Some(f) = f else {
             fallos.push(
                 Fallo::new(
@@ -1200,6 +1197,35 @@ pub fn anchored_to(pkg: &Package, u: &Unidad) -> Option<String> {
     coleccion_leida(pkg, u, &guion::Creado::default())
 }
 
+/// **La `Function` que un nombre llama desde SQL** (0049 B7·2, 0056 V2·3): la
+/// propia, `functions.<def>`, o la del paquete por su nombre de siempre. El de
+/// antes de v1alpha26 —`<paquete>.<def>`— sigue llamando a la función propia
+/// que salió de ese paquete (su `entrypoint` está en `packages/<paquete>/`),
+/// para que lo escrito no se rompa al migrar.
+pub fn funcion_llamada<'a>(pkg: &'a Package, r: &str) -> Option<&'a crate::link::Loaded> {
+    let es = |d: &&crate::link::Loaded| d.kind == Kind::Function;
+    if let Some(d) = pkg
+        .docs
+        .iter()
+        .filter(es)
+        .find(|d| d.qname().as_deref() == Some(r))
+    {
+        return Some(d);
+    }
+    let (paquete, def) = r.split_once('.')?;
+    if def.contains('.') || paquete == crate::funcion_propia::ESPACIO {
+        return None;
+    }
+    let desde = format!("packages/{paquete}/");
+    pkg.docs.iter().filter(es).find(|d| {
+        crate::funcion_propia::es_propia(d)
+            && d.meta("name").and_then(|n| n.as_str()) == Some(def)
+            && d.section("entrypoint")
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| e.starts_with(&desde))
+    })
+}
+
 /// **A tree `Function` call in the text of a cell, as DuckDB will run it**
 /// (0049 B7·2): `name` its short name, `internal` the name it is registered
 /// under (`__ore_fn_<n>`, one per call site), `arity` the arguments written,
@@ -1247,11 +1273,9 @@ pub fn sql_calls(texto: &str, pkg: &Package) -> (String, Vec<SqlCall>) {
         .collect();
     let trozo = |k: usize| &texto[inicios[k]..inicios[k + 1]];
     let toks: Vec<Token> = con_sitio.into_iter().map(|t| t.token).collect();
-    let funcion = |qn: &str| {
-        pkg.docs
-            .iter()
-            .any(|d| d.kind == Kind::Function && d.qname().as_deref() == Some(qn))
-    };
+    // Lo llamado, por su nombre de verdad (`functions.<def>`, aunque se
+    // escriba el de antes): es con el que se registra y se lee el código.
+    let funcion = |qn: &str| funcion_llamada(pkg, qn).and_then(|d| d.qname());
     // The next and previous meaningful tokens.
     let sig = |j: usize| (j..toks.len()).find(|&k| !matches!(toks[k], Token::Whitespace(_)));
     let ant = |j: usize| {
@@ -1298,7 +1322,10 @@ pub fn sql_calls(texto: &str, pkg: &Package) -> (String, Vec<SqlCall>) {
                     (format!("{a}.{b}"), kb)
                 };
                 let paren = sig(fin + 1);
-                if !qn.is_empty() && es(paren, Token::LParen) && funcion(&qn) {
+                let canonico = (!qn.is_empty() && es(paren, Token::LParen))
+                    .then(|| funcion(&qn))
+                    .flatten();
+                if let Some(qn) = canonico {
                     let tabla = palabra(ant(i)).is_some_and(|w| {
                         ["from", "join", "lateral"]
                             .iter()

@@ -145,6 +145,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/trabajos", Es::Acto("trabajo:abrir")),
     ("POST", "/entorno", Es::Acto("entorno:resolver")),
     ("POST", "/entorno/{}", Es::Acto("entorno:resolver")),
+    // 0056 V2·3: la función propia, `functions.<n>`.
+    ("POST", "/funciones/{}/invocar", Es::Acto("funcion:invocar")),
     (
         "POST",
         "/funciones/{}/{}/invocar",

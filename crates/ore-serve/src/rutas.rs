@@ -1019,6 +1019,37 @@ impl Servidor {
             // 0050 G5b · Dry Run: la firma de un texto sin guardar. No lee el
             // árbol ni escribe nada: es la derivación del commit, sobre el editor.
             ("POST", ["funciones", "firma"]) => crate::firma_viva::firma(&p.cuerpo),
+            // 0056 V2·3: `/funciones/{n}/…` es la función propia, `functions.<n>`.
+            ("GET", ["funciones", n, "resultados"]) => {
+                let n = n.to_string();
+                self.leyendo(move |r| {
+                    self.resultados(
+                        r,
+                        ore_core::funcion_propia::ESPACIO,
+                        ore_core::normalize::SCHEMA_POR_DEFECTO,
+                        &n,
+                    )
+                })
+            }
+            ("POST", ["funciones", n, "invocar"]) => {
+                let n = n.to_string();
+                let plan = std::cell::RefCell::new(None);
+                let r = self.leyendo(|r| {
+                    self.invocar(
+                        r,
+                        ore_core::funcion_propia::ESPACIO,
+                        ore_core::normalize::SCHEMA_POR_DEFECTO,
+                        &n,
+                        sujeto,
+                        &p.cuerpo,
+                        &plan,
+                    )
+                });
+                match plan.into_inner() {
+                    Some(plan) => self.lanzar_funcion(sujeto, plan),
+                    None => r,
+                }
+            }
             // 0038 P6c: `{ns}/{n}` es de `default`; `{b}/{s}/{n}`, de su schema.
             ("GET", ["funciones", ns, n, "resultados"])
             | ("GET", ["funciones", ns, _, n, "resultados"]) => {
@@ -3334,6 +3365,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ),
         ("GET", "/funciones", con_identidad),
         ("POST", "/funciones/firma", con_identidad),
+        ("GET", "/funciones/{nombre}/resultados", con_identidad),
+        ("POST", "/funciones/{nombre}/invocar", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),
         (

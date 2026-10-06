@@ -394,6 +394,14 @@ impl Documento {
         campo(&self.nodo, "metadata", "name")
     }
     fn espacio(&self) -> String {
+        // 0056 V2·3: la función propia (v1alpha26) es de `functions`.
+        if self.kind.nombre == "Function"
+            && campo(&self.nodo, "metadata", "namespace").is_empty()
+            && ore_core::document::ApiVersion::parse(&campo_raiz(&self.nodo, "apiVersion"))
+                .is_some_and(|v| v >= ore_core::document::ApiVersion::V1Alpha26)
+        {
+            return ore_core::funcion_propia::ESPACIO.to_string();
+        }
         campo(&self.nodo, "metadata", "namespace")
     }
     /// Su schema (0038): el que declara, o `default`.

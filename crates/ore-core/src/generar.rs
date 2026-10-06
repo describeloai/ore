@@ -65,6 +65,14 @@ pub struct Plan {
     pub al_dia: usize,
 }
 
+/// El documento de una función en la rama principal: su texto y, si es de la
+/// forma de antes (del paquete), la versión de su paquete allí.
+#[derive(Debug, Clone)]
+pub struct Anterior {
+    pub texto: String,
+    pub version_del_paquete: Option<String>,
+}
+
 /// Un documento de código del árbol: dónde está, qué dice y, si es de la forma
 /// de antes (del paquete), la versión de su paquete —con la que nace al
 /// migrar (v1alpha26 `01` §7)—.
@@ -101,7 +109,7 @@ pub fn plan_con_dueno(
 /// **El plan de las funciones propias** (ORE 0056 V2, OOS v1alpha26): cada
 /// función del código va a `functions/<nombre>.yaml` de la raíz, con
 /// `codeDigest` y con su versión **calculada** contra `anteriores` —nombre →
-/// texto de su documento en la rama principal— por las reglas de
+/// su documento en la rama principal— por las reglas de
 /// [`crate::diff::salto_de_funcion`]. Sin `anteriores`, contra el documento
 /// que el árbol tiene. Un documento de la forma de antes (del paquete) se
 /// mueve aquí y nace con la versión de su paquete.
@@ -109,7 +117,7 @@ pub fn plan_con_anteriores(
     pkg: &Package,
     solo: Option<&BTreeSet<PathBuf>>,
     dueno: Option<&str>,
-    anteriores: Option<&BTreeMap<String, String>>,
+    anteriores: Option<&BTreeMap<String, Anterior>>,
 ) -> Plan {
     let mut p = Plan::default();
     let raiz = pkg.root.as_path();
@@ -252,8 +260,12 @@ pub fn plan_con_anteriores(
                 };
                 // La versión: contra la de la rama principal si se da; si no,
                 // contra lo que el árbol tiene.
-                let (anterior, base) = match anteriores.and_then(|a| a.get(&f.nombre)) {
-                    Some(t) => (Some(t.clone()), None),
+                let (anterior, base) = match anteriores {
+                    // Lo que sabe la rama principal manda: lo que no tiene, nace.
+                    Some(a) => match a.get(&f.nombre) {
+                        Some(x) => (Some(x.texto.clone()), x.version_del_paquete.clone()),
+                        None => (None, None),
+                    },
                     None => match previo {
                         Some(e) => (Some(e.texto.clone()), e.version_del_paquete.clone()),
                         None => (en_destino.clone().filter(|t| emitir::es_generado(t)), None),

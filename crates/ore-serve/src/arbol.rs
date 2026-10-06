@@ -879,6 +879,69 @@ pub(crate) fn generar_funciones(
     generar_de(raiz, solo, dueno)
 }
 
+/// **Las funciones de `main`** (0056 V2·3): nombre → su documento —el de
+/// `functions/` de la raíz, o el de la forma de antes con la versión de su
+/// paquete—, leídas del clon sin tocar su árbol (`origin/main`, o `main` en un
+/// árbol sin forja). `None` si no hay `main` que leer: entonces se compara con
+/// lo que la rama tiene.
+pub(crate) fn anteriores_de_main(
+    raiz: &Path,
+) -> Option<std::collections::BTreeMap<String, ore_core::generar::Anterior>> {
+    let referencia = ["origin/main", "main"]
+        .into_iter()
+        .find(|r| git(raiz, &["rev-parse", "--verify", "--quiet", r]).is_some())?;
+    let rutas = git(raiz, &["ls-tree", "-r", "--name-only", referencia])?;
+    let mostrar = |ruta: &str| git(raiz, &["show", &format!("{referencia}:{ruta}")]);
+    let mut out = std::collections::BTreeMap::new();
+    for ruta in rutas.lines() {
+        let propia = ruta.starts_with("functions/");
+        let del_paquete = ruta.starts_with("packages/") && ruta.contains("/functions/");
+        if !(propia || del_paquete) || !(ruta.ends_with(".yaml") || ruta.ends_with(".yml")) {
+            continue;
+        }
+        let Some(texto) = mostrar(ruta) else {
+            continue;
+        };
+        let Ok(n) = ore_core::parse::parse(&texto) else {
+            continue;
+        };
+        if n.get("kind").and_then(|(_, k)| k.as_str()) != Some("Function") {
+            continue;
+        }
+        let Some(nombre) = n
+            .get("metadata")
+            .and_then(|(_, m)| m.get("name"))
+            .and_then(|(_, v)| v.as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        // La de antes nace con la versión de su paquete en `main`.
+        let version_del_paquete = (!propia)
+            .then(|| ruta.split('/').nth(1))
+            .flatten()
+            .and_then(|p| mostrar(&format!("packages/{p}/package.yaml")))
+            .and_then(|t| ore_core::parse::parse(&t).ok())
+            .and_then(|n| {
+                n.get("metadata")
+                    .and_then(|(_, m)| m.get("version"))
+                    .and_then(|(_, v)| v.as_str())
+                    .map(str::to_string)
+            });
+        // Una propia gana a una de antes con el mismo nombre: es la que hay.
+        if propia || !out.contains_key(&nombre) {
+            out.insert(
+                nombre,
+                ore_core::generar::Anterior {
+                    texto,
+                    version_del_paquete,
+                },
+            );
+        }
+    }
+    Some(out)
+}
+
 fn generar_de(
     raiz: &Path,
     solo: std::collections::BTreeSet<PathBuf>,
@@ -888,7 +951,12 @@ fn generar_de(
         return Vec::new();
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let plan = ore_core::generar::plan_con_dueno(&pkg, Some(&solo), dueno);
+    // 0056 V2·3: la versión de una función se calcula contra la de `main`
+    // (OOS v1alpha26 `01` §5), no contra la de la rama: si no, cada commit de
+    // la rama la volvería a subir.
+    let anteriores = anteriores_de_main(raiz);
+    let plan =
+        ore_core::generar::plan_con_anteriores(&pkg, Some(&solo), dueno, anteriores.as_ref());
     let generados: Vec<Generado> = plan
         .cambios
         .iter()
@@ -1023,5 +1091,76 @@ mod tests {
             Some("View")
         );
         assert_eq!(kind_de("# nada\n"), None);
+    }
+
+    /// 0056 V2·3: las funciones de `main`, leídas del clon: la propia con su
+    /// texto, la de antes con la versión de su paquete; y sin `main`, nada.
+    #[test]
+    fn las_funciones_de_main_salen_del_clon_sin_tocar_la_rama() {
+        let d = std::env::temp_dir().join(format!("ore-anteriores-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("functions")).unwrap();
+        std::fs::create_dir_all(d.join("packages/ventas/functions")).unwrap();
+        let g = |a: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(a)
+                    .current_dir(&d)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "git {a:?}"
+            )
+        };
+        assert!(anteriores_de_main(&d).is_none(), "sin historia no hay main");
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "t"]);
+        std::fs::write(
+            d.join("functions/total.yaml"),
+            "apiVersion: oos.dev/v1alpha26
+kind: Function
+metadata:
+  name: total
+  version: 1.2.0
+spec: {}
+",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/package.yaml"),
+            "apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: ventas, version: 3.1.0 }
+spec: {}
+",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/functions/vieja.yaml"),
+            "apiVersion: oos.dev/v1alpha18
+kind: Function
+metadata: { name: vieja, namespace: ventas }
+spec: {}
+",
+        )
+        .unwrap();
+        g(&["add", "-A"]);
+        g(&["commit", "-qm", "main"]);
+        // La rama cambia la propia: lo de `main` sigue siendo lo de `main`.
+        g(&["checkout", "-q", "-b", "rama"]);
+        std::fs::write(
+            d.join("functions/total.yaml"),
+            "cambiada
+",
+        )
+        .unwrap();
+        g(&["commit", "-qam", "rama"]);
+        let a = anteriores_de_main(&d).unwrap();
+        assert!(a["total"].texto.contains("version: 1.2.0"));
+        assert_eq!(a["total"].version_del_paquete, None);
+        assert_eq!(a["vieja"].version_del_paquete.as_deref(), Some("3.1.0"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
