@@ -389,7 +389,10 @@ impl Servidor {
         nombre: &str,
     ) -> Result<Vec<Json>, Respuesta> {
         let Some((b, s, c)) = ore_core::punteros::partes(nombre) else {
-            return Err(Respuesta::error(422, format!("`{nombre}` no es un nombre del árbol")));
+            return Err(Respuesta::error(
+                422,
+                format!("`{nombre}` no es un nombre del árbol"),
+            ));
         };
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
@@ -415,7 +418,10 @@ impl Servidor {
                 otro => otro.jcs(),
             };
             let Ok(n) = ore_core::parse::parse(texto.trim()) else {
-                return Err(Respuesta::error(502, "el listado de `ore-medios` no es JSON"));
+                return Err(Respuesta::error(
+                    502,
+                    "el listado de `ore-medios` no es JSON",
+                ));
             };
             if let Some((_, its)) = n.get("items") {
                 items.extend(its.items().iter().map(Json::de_node));

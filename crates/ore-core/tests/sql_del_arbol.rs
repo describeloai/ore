@@ -762,7 +762,13 @@ fn a_collection_is_read_in_from_and_a_dataset_written_from_it_is_anchored() {
     let v = "create or replace view ventas.sin_pdf as select p.id from ventas.pedidos p left join ventas.contratos c on c.path = p.id where c.path is null";
     assert!(guiona(v).is_empty(), "{:?}", guiona(v));
     let m = guiona("create materialized view ventas.listado as select path from ventas.contratos");
-    assert!(m.len() == 1 && m[0].mensaje.contains("una vista con copia no lee su listado"), "{m:?}");
+    assert!(
+        m.len() == 1
+            && m[0]
+                .mensaje
+                .contains("una vista con copia no lee su listado"),
+        "{m:?}"
+    );
 }
 
 /// 0049 B7·2: a tree `Function` is called from SQL by its name —as a value or
