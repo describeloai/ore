@@ -189,7 +189,7 @@ spec:
             - |
               ID=$(( ${HOSTNAME##*-} + 1 ))
               exec safekeeper --id=$ID -D /data \
-                --listen-pg=${HOSTNAME}.safekeeper.ore-pg.svc.cluster.local:5454 \
+                --listen-pg=0.0.0.0:5454 --advertise-pg=${HOSTNAME}.ore-pg.svc.cluster.local:5454 \
                 --listen-http=0.0.0.0:7676 \
                 --broker-endpoint=http://storage-broker.ore-pg.svc.cluster.local:50051 \
                 --pg-auth-public-key-path=/jwt/publica.pem \
@@ -247,7 +247,7 @@ spec:
             - |
               set -e
               N=$(( ${HOSTNAME##*-} + 1 ))
-              H=${HOSTNAME}.pageserver.ore-pg.svc.cluster.local
+              H=${HOSTNAME}.ore-pg.svc.cluster.local   # su Service ClusterIP: IP estable (P2·6)
               mkdir -p /data/.neon
               cat > /data/.neon/identity.toml <<EOF
               id = $N
@@ -297,6 +297,41 @@ spec:
         storageClassName: standard
         accessModes: [ReadWriteOnce]
         resources: { requests: { storage: 20Gi } }
+---
+# ── IPs estables (P2·6) ───────────────────────────────────────────────────
+# El DNS de pod de un servicio headless (pageserver-0.pageserver…) cambia de IP al recrear el
+# pod y tarda en enterarse; quien conecta a la IP vieja se queda en SYN ~127 s (medido en P2·6:
+# un C4 que el pageserver resolvió en 24 s parecía de 155 s). Un Service ClusterIP POR POD no
+# cambia nunca de IP: es lo que se registra en el controller, lo que anuncian los safekeepers
+# y lo que usa el cómputo. (El selector por pod-name vale en un Service, no en una NetworkPolicy:
+# Cilium no la usa para identidades.)
+apiVersion: v1
+kind: Service
+metadata: { name: pageserver-0, namespace: ore-pg }
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: pageserver-0 }
+  ports: [{ name: pg, port: 6400 }, { name: http, port: 9898 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: safekeeper-0, namespace: ore-pg }
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: safekeeper-0 }
+  ports: [{ name: pg, port: 5454 }, { name: http, port: 7676 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: safekeeper-1, namespace: ore-pg }
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: safekeeper-1 }
+  ports: [{ name: pg, port: 5454 }, { name: http, port: 7676 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: safekeeper-2, namespace: ore-pg }
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: safekeeper-2 }
+  ports: [{ name: pg, port: 5454 }, { name: http, port: 7676 }]
 ---
 # ── El scrubber (P2·5) ─────────────────────────────────────────────────────
 # Lo que el pageserver deja atrás en GCS: índices de generaciones viejas y capas que ya

@@ -1,0 +1,36 @@
+# Un cómputo en un pod (ORE_PG_COMPUTO=pod): la misma imagen que va dentro de la VM
+# (compute-node-v17), sin NeonVM. Sirve para probar el almacenamiento (P2·6) sin depender de P3;
+# no escala en caliente ni migra. Plantilla:
+#   source entorno.sh; plantilla computo.yaml | kubectl apply -f -
+# La especificación va en el ConfigMap ${ORE_PG_VM}-config (lo crea `vm.sh`).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${ORE_PG_VM}
+  namespace: ${ORE_PG_NS}
+  labels: { ore.dev/rol: computo-prueba }
+spec:
+  nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
+  tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+  restartPolicy: Never
+  containers:
+    - name: compute
+      image: ${ORE_PG_IMAGEN_COMPUTO}
+      command: [/usr/local/bin/compute_ctl]
+      args:
+        - --pgdata
+        - /var/db/postgres/compute
+        - -C
+        - postgresql://cloud_admin@127.0.0.1:55433/postgres
+        - -b
+        - /usr/local/bin/postgres
+        - --compute-id
+        - ${ORE_PG_VM}
+        - --config
+        - /var/db/postgres/configs/config.json
+      ports: [{ containerPort: 55433 }, { containerPort: 3080 }]
+      resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 1536Mi } }
+      volumeMounts: [{ name: cfg, mountPath: /var/db/postgres/configs }]
+  volumes:
+    - name: cfg
+      configMap: { name: ${ORE_PG_VM}-config }

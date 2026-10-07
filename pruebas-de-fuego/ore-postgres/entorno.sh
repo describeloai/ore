@@ -4,8 +4,9 @@
 # ORE_PG_* con valor por defecto; el estado de una prueba a la siguiente (ids, IPs, la clave del
 # JWT, la especificación) vive en $ORE_PG_TRABAJO, nunca en el repositorio.
 #
-#   ORE_PG_NS           namespace de la prueba                         (ore-pg-prueba)
-#   ORE_PG_VM           nombre de la VM de cómputo                     (pg-prueba)
+#   ORE_PG_NS           namespace del almacenamiento                   (ore-pg: el de la malla, P2·4)
+#   ORE_PG_VM           nombre del cómputo                             (pg-prueba)
+#   ORE_PG_COMPUTO      vm (NeonVM, P3) | pod (contenedor: sin KVM ni overlay, P2·6)   (pod)
 #   ORE_PG_POOL         etiqueta ore.dev/pool de los nodos con KVM     (neon)
 #   ORE_PG_BUCKET       bucket de GCS del almacenamiento               (obligatorio para almacen-gcs.yaml)
 #   ORE_PG_GSA          cuenta de Google del almacenamiento (Workload Identity) (obligatoria para almacen-gcs.yaml)
@@ -13,10 +14,14 @@
 #   ORE_PG_COMMIT       commit de describeloai/neon de las imágenes    (el de ci/neon/*.yaml)
 #   ORE_PG_TRABAJO      directorio de estado                           ($TMPDIR/ore-pg-<ns>)
 set -u
+# Git Bash reescribe los argumentos que parecen rutas (/tmp/… → C:/…/Temp/…) también los de
+# `kubectl exec`: aquí todas las rutas que van a Windows ya son C:/…
+export MSYS_NO_PATHCONV=1
 AQUI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-: "${ORE_PG_NS:=ore-pg-prueba}"
+: "${ORE_PG_NS:=ore-pg}"
 : "${ORE_PG_VM:=pg-prueba}"
+: "${ORE_PG_COMPUTO:=pod}"
 : "${ORE_PG_POOL:=neon}"
 : "${ORE_PG_BUCKET:=}"
 : "${ORE_PG_GSA:=}"
@@ -25,9 +30,12 @@ AQUI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 : "${ORE_PG_TRABAJO:=${TMPDIR:-/tmp}/ore-pg-$ORE_PG_NS}"
 : "${ORE_PG_IMAGEN_NEON:=$ORE_PG_REGISTRO/neon:$ORE_PG_COMMIT}"
 : "${ORE_PG_IMAGEN_VM:=$ORE_PG_REGISTRO/vm-compute-node-v17:$ORE_PG_COMMIT}"
-export ORE_PG_NS ORE_PG_VM ORE_PG_POOL ORE_PG_BUCKET ORE_PG_GSA ORE_PG_REGISTRO ORE_PG_COMMIT \
+: "${ORE_PG_IMAGEN_COMPUTO:=$ORE_PG_REGISTRO/compute-node-v17:$ORE_PG_COMMIT}"
+export ORE_PG_NS ORE_PG_VM ORE_PG_COMPUTO ORE_PG_IMAGEN_COMPUTO ORE_PG_POOL ORE_PG_BUCKET ORE_PG_GSA ORE_PG_REGISTRO ORE_PG_COMMIT \
        ORE_PG_TRABAJO ORE_PG_IMAGEN_NEON ORE_PG_IMAGEN_VM
 mkdir -p "$ORE_PG_TRABAJO"
+# en Windows (Git Bash) bash y Python no ven el mismo /tmp: una ruta C:/… la entienden los dos
+ORE_PG_TRABAJO=$(cd "$ORE_PG_TRABAJO" && { pwd -W 2>/dev/null || pwd; }); export ORE_PG_TRABAJO
 
 # ── tiempo ──────────────────────────────────────────────────────────────────────────────────────
 ms() { echo $(( $(date +%s%N) / 1000000 )); }
@@ -49,14 +57,43 @@ q()  { k exec cliente         -- $PGX psql -h "$1" -p 55433 -U cloud_admin -d po
 qo() { k exec cliente-overlay -- $PGX psql -h "$1" -p 55433 -U cloud_admin -d postgres -Atc "$2" 2>&1; }
 
 # ip_pod / ip_overlay de una VM (por defecto $ORE_PG_VM)
-ip_pod()     { k get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.podIP}' 2>/dev/null; }
-ip_overlay() { k get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.extraNetIP}' 2>/dev/null; }
+# con ORE_PG_COMPUTO=pod no hay overlay: las dos dan la IP del pod
+if [ "$ORE_PG_COMPUTO" = pod ]; then
+  ip_pod()     { k get pod "${1:-$ORE_PG_VM}" -o jsonpath='{.status.podIP}' 2>/dev/null; }
+  ip_overlay() { ip_pod "$@"; }
+  qo() { q "$@"; }
+else
+  ip_pod()     { k get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.podIP}' 2>/dev/null; }
+  ip_overlay() { k get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.extraNetIP}' 2>/dev/null; }
+fi
 
-# ── la API HTTP del pageserver, desde dentro (sin port-forward) ─────────────────────────────────
-# pageserver <MÉTODO> <ruta> [json]   (no `ps`: taparía el comando)
+# ── autenticación (P2·4): si el namespace tiene `almacen-jwt`, el almacenamiento la exige ─────────
+# Los tokens se leen de los Secrets a $ORE_PG_TRABAJO/jwt-* (fuera del repo); la privada sólo hace
+# falta para acuñar el token de tenant del cómputo (especificacion.py).
+secreto() {  # secreto <secret> <clave> → fichero en $ORE_PG_TRABAJO
+  local f="$ORE_PG_TRABAJO/jwt-$2"
+  [ -s "$f" ] || k get secret "$1" -o go-template="{{index .data \"$2\"}}" | base64 -d > "$f"
+  echo "$f"
+}
+if k get secret almacen-jwt >/dev/null 2>&1; then ORE_PG_AUTH=si; else ORE_PG_AUTH=no; fi
+export ORE_PG_AUTH
+[ "$ORE_PG_AUTH" = si ] && export ORE_PG_PRIVADA=$(secreto almacen-jwt-privada privada.pem)
+
+# api <host> <puerto> <MÉTODO> <ruta> [json] [token] — HTTP desde el pod `cliente`, sin port-forward
+api() {
+  local cuerpo=${5:-} aut=""
+  [ -n "${6:-}" ] && aut="Authorization: Bearer $6\r\n"
+  k exec cliente -- bash -c "exec 3<>/dev/tcp/$1/$2
+    printf '%s %s HTTP/1.0\r\nHost: x\r\n${aut}Content-Type: application/json\r\nContent-Length: %s\r\n\r\n%s' \
+      '$3' '$4' '${#cuerpo}' '$cuerpo' >&3; timeout 120 cat <&3" 2>/dev/null | tail -1
+}
+# controlador <MÉTODO> <ruta> [json]   (token admin)
+controlador() {
+  local t=""; [ "$ORE_PG_AUTH" = si ] && t=$(cat "$(secreto almacen-jwt-privada admin)")
+  api "storage-controller.$ORE_PG_NS.svc.cluster.local" 1234 "$1" "$2" "${3:-}" "$t"
+}
+# pageserver <MÉTODO> <ruta> [json]    (token pageserverapi)
 pageserver() {
-  local cuerpo=${3:-}
-  k exec cliente-overlay -- bash -c "exec 3<>/dev/tcp/pageserver.$ORE_PG_NS.svc.cluster.local/9898
-    printf '%s %s HTTP/1.0\r\nHost: p\r\nContent-Type: application/json\r\nContent-Length: %s\r\n\r\n%s' \
-      '$1' '$2' '${#cuerpo}' '$cuerpo' >&3; timeout 120 cat <&3" 2>/dev/null | tail -1
+  local t=""; [ "$ORE_PG_AUTH" = si ] && t=$(cat "$(secreto almacen-jwt pageserverapi)")
+  api "pageserver-0.$ORE_PG_NS.svc.cluster.local" 9898 "$1" "$2" "${3:-}" "$t"
 }

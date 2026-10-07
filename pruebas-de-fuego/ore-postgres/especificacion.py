@@ -3,6 +3,9 @@
   especificacion.py spec  <vm> <tenant> <timeline>   → la especificación de compute_ctl (config.json)
   especificacion.py token <vm>                       → un JWT para hablarle a ese compute_ctl (:3080)
 
+Con ORE_PG_AUTH=si (entorno.sh lo pone si el almacenamiento tiene `almacen-jwt`) la especificación
+lleva `storage_auth_token`: un token de scope `tenant` firmado con la privada del almacenamiento.
+
 La clave Ed25519 con que se firman los tokens se crea la primera vez en $ORE_PG_TRABAJO/jwt.pem y su
 JWKS va dentro de la especificación (`compute_ctl_config.jwks`). Medido en B.5: la clave de ejemplo de
 Neon está mal codificada, y `compute_ctl` exige `compute_id` en el token.
@@ -35,7 +38,7 @@ def ajuste(nombre, valor, tipo):
 
 def spec(vm, tenant, timeline):
     _, jwk = clave()
-    sk = ",".join(f"safekeeper-{i}.safekeeper.{NS}.svc.cluster.local:5454" for i in range(3))
+    sk = ",".join(f"safekeeper-{i}.{NS}.svc.cluster.local:5454" for i in range(3))   # Services ClusterIP: IP estable (P2·6)
     ajustes = [
         ajuste("fsync", "on", "bool"), ajuste("wal_level", "logical", "enum"),
         ajuste("wal_log_hints", "on", "bool"), ajuste("log_connections", "on", "bool"),
@@ -48,14 +51,14 @@ def spec(vm, tenant, timeline):
         ajuste("shared_preload_libraries", "neon,pg_cron,timescaledb,pg_stat_statements", "string"),
         ajuste("neon.safekeepers", sk, "string"),
         ajuste("neon.tenant_id", tenant, "string"), ajuste("neon.timeline_id", timeline, "string"),
-        ajuste("neon.pageserver_connstring", f"host=pageserver.{NS}.svc.cluster.local port=6400", "string"),
+        ajuste("neon.pageserver_connstring", f"host=pageserver-0.{NS}.svc.cluster.local port=6400", "string"),
         ajuste("max_replication_write_lag", "500MB", "string"),
         ajuste("max_replication_flush_lag", "10GB", "string"),
         ajuste("cron.database", "postgres", "string"),
         ajuste("neon.max_file_cache_size", "1GB", "string"), ajuste("neon.file_cache_size_limit", "1GB", "string"),
         ajuste("neon.file_cache_path", "/var/db/postgres/compute/file.cache", "string"),
     ]
-    return {
+    spec = {
         "spec": {
             "format_version": 1.0,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
@@ -72,6 +75,17 @@ def spec(vm, tenant, timeline):
         },
         "compute_ctl_config": {"jwks": {"keys": [jwk]}},
     }
+    # P2·4: si el almacenamiento exige autenticación, el cómputo lleva un token de scope `tenant`
+    # firmado con la privada del almacenamiento (la que acuñará el plano de control en P4)
+    if os.environ.get("ORE_PG_AUTH") == "si":
+        spec["spec"]["storage_auth_token"] = token_de_tenant(tenant)
+    return spec
+
+
+def token_de_tenant(tenant):
+    import jwt
+    return jwt.encode({"scope": "tenant", "tenant_id": tenant},
+                      pathlib.Path(os.environ["ORE_PG_PRIVADA"]).read_text(), algorithm="EdDSA")
 
 
 def token(vm):
