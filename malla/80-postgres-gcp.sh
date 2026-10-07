@@ -10,6 +10,7 @@
 #   copias   ore-copias            la cuenta de las copias del IdP, también para ore-pg/copias.
 #   secreto  storcon-db            la contraseña de la base del controller: /dev/urandom al crearlo;
 #                                  no se imprime ni se guarda fuera del Secret.
+#   jwt      almacen-jwt[-privada] el par Ed25519 del almacenamiento y sus tokens (P2·4).
 #   pool     pg                    n2-standard-2, NO spot (3 safekeepers en spot caerían
 #                                  a la vez: adiós quórum), virtualización anidada (las
 #                                  VMs de cómputo, P3), Ubuntu (KVM + módulos de la
@@ -76,4 +77,37 @@ if ! kubectl -n $KSA_NS get secret storcon-db >/dev/null 2>&1; then
   echo "   creado"
 else
   echo "   ya existe (no se toca: rotarla es otra operación)"
+fi
+
+echo "── la autenticación del almacenamiento (P2·4): un par Ed25519 y sus tokens, directos a Secrets"
+# Neon firma con EdDSA y no exige `exp` (libs/utils/src/auth.rs). Scopes:
+#   pageserverapi    controller → pageserver
+#   safekeeperdata   controller → safekeepers, pageserver → safekeepers, safekeeper ↔ safekeeper
+#   generations_api  pageserver → controller (re-attach, validate)
+#   infra            controller → plano de control (notify-attach); hasta P4 lo recibe `avisos`
+#   admin            nosotros y el plano de control (P4) → controller
+# almacen-jwt          lo que montan las piezas: la pública y sus tokens
+# almacen-jwt-privada  la privada y el token admin: sólo para quien acuña (P4 y las pruebas)
+if ! kubectl -n $KSA_NS get secret almacen-jwt >/dev/null 2>&1; then
+  T=$(mktemp -d)
+  python - "$T" <<'PY'
+import sys, pathlib, jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+d = pathlib.Path(sys.argv[1]); k = Ed25519PrivateKey.generate()
+priv = k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+pub = k.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+(d / "privada.pem").write_bytes(priv); (d / "publica.pem").write_bytes(pub)
+for scope in ["pageserverapi", "safekeeperdata", "generations_api", "infra", "admin"]:
+    (d / scope).write_text(jwt.encode({"scope": scope}, priv, algorithm="EdDSA"))
+PY
+  kubectl -n $KSA_NS create secret generic almacen-jwt --from-file=publica.pem=$T/publica.pem \
+    --from-file=pageserverapi=$T/pageserverapi --from-file=safekeeperdata=$T/safekeeperdata \
+    --from-file=generations_api=$T/generations_api --from-file=infra=$T/infra >/dev/null
+  kubectl -n $KSA_NS create secret generic almacen-jwt-privada --from-file=privada.pem=$T/privada.pem \
+    --from-file=admin=$T/admin >/dev/null
+  rm -rf "$T"
+  echo "   creados almacen-jwt y almacen-jwt-privada"
+else
+  echo "   ya existen (no se tocan: rotar el par es otra operación)"
 fi

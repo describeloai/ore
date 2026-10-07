@@ -1,0 +1,294 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE SERVERLESS POSTGRES · LA CAPA DE ALMACENAMIENTO (ADR 0058, P2·4)
+#
+#   avisos               el plano de control de juguete: recibe notify-attach /
+#                        notify-safekeepers y los apunta. Lo sustituye `ore-postgres`
+#                        en P4 (es quien reconfigura los cómputos cuando un tenant se
+#                        mueve de pageserver).
+#   storage-controller   dueño de tenants, generaciones y nodos. Modo ESTRICTO (con
+#                        autenticación) y --handle-ps-local-disk-loss: sin ella un
+#                        pageserver con el disco vacío deja el tenant colgado para
+#                        siempre (medido en P2·1).
+#   storage-broker       el bus entre safekeepers y pageservers. Sin autenticación:
+#                        sólo se le habla desde dentro de `ore-pg`.
+#   safekeeper ×3        el WAL, por quórum; descargan a gs://ore-pg-almacen-euw1/safekeeper/
+#   pageserver ×1        las páginas; capas en gs://ore-pg-almacen-euw1/pageserver/. Se
+#                        registra SOLO en el controller (metadata.json) y le pide sus
+#                        tenants al arrancar (re-attach).
+#
+# Imágenes: `neon:<commit>` de ci/neon/almacen.yaml (Postgres 17.10). Mismo commit en
+# todas: cambiarlo es un commit aquí.
+#
+# Autenticación: el par Ed25519 y los tokens (`almacen-jwt`) los crea 80-postgres-gcp.sh;
+# la privada vive aparte (`almacen-jwt-privada`) y aquí no la monta nadie.
+#
+# Fuera de P2, a propósito (es la puerta de producción): safekeepers en 3 zonas (el
+# clúster es zonal: hoy los 3 en el mismo nodo), discos SSD, varios pageservers,
+# sharding, y que el controller gestione los safekeepers (se mide en P2·6).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: avisos, namespace: ore-pg }
+data:
+  avisos.py: |
+    # Hasta P4: contesta 200 a lo que mande el controller y lo deja en el log.
+    import http.server
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_PUT(self): self._ok()
+        def do_POST(self): self._ok()
+        def do_GET(self): self._ok()
+        def _ok(self):
+            n = int(self.headers.get("Content-Length", 0)); b = self.rfile.read(n)
+            print(self.command, self.path, b.decode(), flush=True)
+            self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+        def log_message(self, *a): pass
+    http.server.ThreadingHTTPServer(("0.0.0.0", 8000), H).serve_forever()
+---
+apiVersion: v1
+kind: Service
+metadata: { name: avisos, namespace: ore-pg }
+spec:
+  selector: { ore.dev/rol: avisos }
+  ports: [{ name: http, port: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: avisos, namespace: ore-pg }
+spec:
+  replicas: 1
+  selector: { matchLabels: { ore.dev/rol: avisos } }
+  template:
+    metadata: { labels: { ore.dev/rol: avisos, ore.dev/tenant: system } }
+    spec:
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      containers:
+        - name: avisos
+          image: python:3.12-alpine
+          command: [python, -u, /app/avisos.py]
+          volumeMounts: [{ name: app, mountPath: /app }]
+          resources: { requests: { cpu: 5m, memory: 24Mi }, limits: { memory: 64Mi } }
+      volumes: [{ name: app, configMap: { name: avisos } }]
+---
+# ── El controller ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata: { name: storage-controller, namespace: ore-pg }
+spec:
+  selector: { ore.dev/rol: storage-controller }
+  ports: [{ name: http, port: 1234 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: storage-controller, namespace: ore-pg }
+spec:
+  # Uno. Neon soporta varios con elección de líder por la base; aquí, Recreate: nunca
+  # dos a la vez repartiendo generaciones.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { ore.dev/rol: storage-controller } }
+  template:
+    metadata: { labels: { ore.dev/rol: storage-controller, ore.dev/tenant: system } }
+    spec:
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      containers:
+        - name: controller
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
+          command: [storage_controller]
+          args:
+            - -l
+            - 0.0.0.0:1234
+            - --control-plane-url
+            - http://avisos.ore-pg.svc.cluster.local:8000
+            - --handle-ps-local-disk-loss
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: storcon-db, key: url } }
+            - name: PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: almacen-jwt, key: publica.pem } }
+            - name: PAGESERVER_JWT_TOKEN
+              valueFrom: { secretKeyRef: { name: almacen-jwt, key: pageserverapi } }
+            - name: SAFEKEEPER_JWT_TOKEN
+              valueFrom: { secretKeyRef: { name: almacen-jwt, key: safekeeperdata } }
+            - name: CONTROL_PLANE_JWT_TOKEN
+              valueFrom: { secretKeyRef: { name: almacen-jwt, key: infra } }
+          ports: [{ containerPort: 1234 }]
+          # tcp y no /status: en modo estricto la API pide token, y una sonda sin él reiniciaría en bucle
+          readinessProbe: { tcpSocket: { port: 1234 }, periodSeconds: 5 }
+          livenessProbe: { tcpSocket: { port: 1234 }, periodSeconds: 10, failureThreshold: 6 }
+          resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 512Mi } }
+---
+# ── El broker ─────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata: { name: storage-broker, namespace: ore-pg }
+spec:
+  selector: { ore.dev/rol: storage-broker }
+  ports: [{ name: grpc, port: 50051 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: storage-broker, namespace: ore-pg }
+spec:
+  replicas: 1
+  selector: { matchLabels: { ore.dev/rol: storage-broker } }
+  template:
+    metadata: { labels: { ore.dev/rol: storage-broker, ore.dev/tenant: system } }
+    spec:
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      containers:
+        - name: broker
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
+          command: [storage_broker, --listen-addr=0.0.0.0:50051]
+          resources: { requests: { cpu: 10m, memory: 32Mi }, limits: { memory: 256Mi } }
+---
+# ── Los safekeepers ───────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata: { name: safekeeper, namespace: ore-pg }
+spec:
+  clusterIP: None
+  selector: { ore.dev/rol: safekeeper }
+  ports: [{ name: pg, port: 5454 }, { name: http, port: 7676 }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: safekeeper, namespace: ore-pg }
+spec:
+  maxUnavailable: 1                # el quórum es 2 de 3: nunca dos fuera a la vez por voluntad
+  selector: { matchLabels: { ore.dev/rol: safekeeper } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: safekeeper, namespace: ore-pg }
+spec:
+  serviceName: safekeeper
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector: { matchLabels: { ore.dev/rol: safekeeper } }
+  template:
+    metadata: { labels: { ore.dev/rol: safekeeper, ore.dev/tenant: system } }
+    spec:
+      serviceAccountName: neon
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      affinity:
+        podAntiAffinity:
+          # preferida, no exigida: hoy hay UN nodo. Con 3 (P3) se reparten; en 3 zonas, la puerta.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm: { topologyKey: kubernetes.io/hostname, labelSelector: { matchLabels: { ore.dev/rol: safekeeper } } }
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: safekeeper
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ID=$(( ${HOSTNAME##*-} + 1 ))
+              exec safekeeper --id=$ID -D /data \
+                --listen-pg=${HOSTNAME}.safekeeper.ore-pg.svc.cluster.local:5454 \
+                --listen-http=0.0.0.0:7676 \
+                --broker-endpoint=http://storage-broker.ore-pg.svc.cluster.local:50051 \
+                --pg-auth-public-key-path=/jwt/publica.pem \
+                --http-auth-public-key-path=/jwt/publica.pem \
+                --auth-token-path=/jwt/safekeeperdata \
+                --remote-storage="{bucket_name='ore-pg-almacen-euw1', prefix_in_bucket='safekeeper/'}"
+          ports: [{ containerPort: 5454 }, { containerPort: 7676 }]
+          readinessProbe: { tcpSocket: { port: 5454 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 30m, memory: 96Mi }, limits: { memory: 1Gi } }
+          volumeMounts:
+            - { name: datos, mountPath: /data }
+            - { name: jwt, mountPath: /jwt, readOnly: true }
+      volumes:
+        - name: jwt
+          secret: { secretName: almacen-jwt, items: [{ key: publica.pem, path: publica.pem }, { key: safekeeperdata, path: safekeeperdata }] }
+  volumeClaimTemplates:
+    - metadata: { name: datos }
+      spec:
+        # el WAL aún no descargado a GCS: que sobreviva a un borrado por error
+        storageClassName: retiene-estandar
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 10Gi } }
+---
+# ── El pageserver ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata: { name: pageserver, namespace: ore-pg }
+spec:
+  clusterIP: None
+  selector: { ore.dev/rol: pageserver }
+  ports: [{ name: pg, port: 6400 }, { name: http, port: 9898 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: pageserver, namespace: ore-pg }
+spec:
+  serviceName: pageserver
+  replicas: 1
+  selector: { matchLabels: { ore.dev/rol: pageserver } }
+  template:
+    metadata: { labels: { ore.dev/rol: pageserver, ore.dev/tenant: system } }
+    spec:
+      serviceAccountName: neon
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: pageserver
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
+          command: ["/bin/sh", "-c"]
+          # La configuración se escribe al arrancar: lleva el token de upcall (de un Secret)
+          # y el metadata.json con el nombre estable del pod. La zona va fija porque el
+          # clúster es zonal y la API downward no da las etiquetas del nodo.
+          args:
+            - |
+              set -e
+              N=$(( ${HOSTNAME##*-} + 1 ))
+              H=${HOSTNAME}.pageserver.ore-pg.svc.cluster.local
+              mkdir -p /data/.neon
+              cat > /data/.neon/identity.toml <<EOF
+              id = $N
+              EOF
+              cat > /data/.neon/metadata.json <<EOF
+              {"host":"$H","port":6400,"http_host":"$H","http_port":9898,"availability_zone_id":"$ZONA"}
+              EOF
+              cat > /data/.neon/pageserver.toml <<EOF
+              broker_endpoint = 'http://storage-broker.ore-pg.svc.cluster.local:50051'
+              pg_distrib_dir = '/usr/local/'
+              listen_pg_addr = '0.0.0.0:6400'
+              listen_http_addr = '0.0.0.0:9898'
+              availability_zone = '$ZONA'
+              remote_storage = { bucket_name = 'ore-pg-almacen-euw1', prefix_in_bucket = 'pageserver/' }
+              control_plane_api = 'http://storage-controller.ore-pg.svc.cluster.local:1234/upcall/v1/'
+              control_plane_api_token = '$(cat /jwt/generations_api)'
+              http_auth_type = 'NeonJWT'
+              pg_auth_type = 'NeonJWT'
+              auth_validation_public_key_path = '/jwt/publica.pem'
+              EOF
+              export NEON_AUTH_TOKEN=$(cat /jwt/safekeeperdata)
+              exec pageserver -D /data/.neon
+          env: [{ name: ZONA, value: europe-west1-b }]
+          ports: [{ containerPort: 6400 }, { containerPort: 9898 }]
+          readinessProbe: { tcpSocket: { port: 9898 }, periodSeconds: 5 }
+          resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 2Gi } }
+          volumeMounts:
+            - { name: datos, mountPath: /data/.neon }
+            - { name: jwt, mountPath: /jwt, readOnly: true }
+      volumes:
+        - name: jwt
+          secret:
+            secretName: almacen-jwt
+            items:
+              - { key: publica.pem, path: publica.pem }
+              - { key: generations_api, path: generations_api }
+              - { key: safekeeperdata, path: safekeeperdata }
+  volumeClaimTemplates:
+    - metadata: { name: datos }
+      spec:
+        # caché: perderlo no pierde nada (C4) ⇒ clase que borra
+        storageClassName: standard
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 20Gi } }

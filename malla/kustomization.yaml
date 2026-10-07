@@ -93,6 +93,7 @@ resources:
   # Lo de Google (bucket, cuenta, pool, el Secret de la base) lo hace
   # `80-postgres-gcp.sh`; restaurar la base es `82-…sh`, nunca a mano.
   - 81-postgres-la-base-del-controlador.yaml
+  - 83-postgres-el-almacenamiento.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
