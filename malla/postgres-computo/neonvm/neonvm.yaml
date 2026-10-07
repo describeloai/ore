@@ -4259,7 +4259,7 @@ spec:
             cpu: 50m
             memory: 512Mi
           requests:
-            cpu: 50m
+            cpu: 10m
             memory: 10Mi
         securityContext:
           privileged: true
@@ -4945,7 +4945,7 @@ spec:
             cpu: 1000m
             memory: 512Mi
           requests:
-            cpu: 100m
+            cpu: 20m
             memory: 50Mi
         securityContext:
           capabilities:

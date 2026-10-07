@@ -150,7 +150,7 @@ spec:
         - --cni-conf-dir=/host/etc/cni/net.d
         resources:
           requests:
-            cpu: 100m
+            cpu: 20m    # medido: ~1m (P3·3); el límite se queda en 100m
             memory: 50Mi
           limits:
             cpu: 100m

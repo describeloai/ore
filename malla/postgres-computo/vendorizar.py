@@ -20,8 +20,8 @@ Lo que se cambia (era `preparar.py` en D0b; cada regla, medida allí):
 - Las rutas CNI de GKE: SOLO el hostPath /opt/cni/bin -> /home/kubernetes/bin; nunca las de dentro de la
   imagen ni los puntos de montaje (cambiarlos rompió vxlan y whereabouts).
 - Reservas (requests) dimensionadas para nodos de 16–32 vCPU que no caben en un n2-standard-2: controller
-  2 CPU × 3 → 200m × 1; scheduler 1 CPU → 200m; autoscaler-agent 1 CPU por nodo → 100m. Los LÍMITES no
-  se tocan. En la puerta de producción (nodos grandes) se vuelve a lo de Neon.
+  2 CPU × 3 → 200m × 1; scheduler 1 CPU → 200m; y lo que va en CADA nodo, a lo que usa (RESERVAS). Los
+  LÍMITES no se tocan. En la puerta de producción (nodos grandes) se revisa.
 - Los duplicados de la release (el runner precargado y las NADs vienen en dos ficheros), una sola vez.
 - GKE sólo admite prioridad system-node-critical en un namespace con ResourceQuota para ella (B.3).
 """
@@ -32,9 +32,15 @@ REGISTRO = "europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore"
 DEVICE_PLUGIN = "squat/generic-device-plugin@sha256:dc192e164c69b03f156765793a1be62ca437709ae477b27ca7d8f3dcf5021576"
 NUESTRAS = ["neonvm-controller", "neonvm-runner", "neonvm-vxlan-controller", "autoscaler-agent", "autoscale-scheduler"]
 TOL = {"key": "ore.dev/neon", "operator": "Equal", "value": "true", "effect": "NoSchedule"}
+# Lo que ESTÁ en cada nodo del pool pide poco: con lo de Neon, un nodo nuevo reservaba 471m para
+# DaemonSets que usan ~10m (medido en P3·3, `kubectl top`), y eso son VMs que no caben. Lo de una
+# vez por clúster (controller, scheduler) pesa menos: 200m.
 RESERVAS = {"neonvm-controller": {"cpu": "200m", "memory": "512Mi"},
-            "autoscale-scheduler": {"cpu": "200m", "memory": "2000Mi"},
-            "autoscaler-agent": {"cpu": "100m", "memory": "600Mi"}}
+            "autoscale-scheduler": {"cpu": "200m", "memory": "2000Mi"},       # usa ~90m
+            "autoscaler-agent": {"cpu": "20m", "memory": "600Mi"},            # por nodo; usa 1–3m
+            "neonvm-vxlan-controller": {"cpu": "20m", "memory": "50Mi"},      # por nodo; usa 1–5m
+            "whereabouts": {"cpu": "20m", "memory": "100Mi"},                 # por nodo; usa ~1m
+            "neonvm-device-plugin": {"cpu": "10m", "memory": "10Mi"}}         # por nodo; usa 3–4m
 
 ENTRADA = pathlib.Path(sys.argv[1])
 AQUI = pathlib.Path(__file__).parent
