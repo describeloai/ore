@@ -52,7 +52,11 @@ def calcular(texto, fuentes, vivas, limite):
     import duckdb
     import pyarrow as pa
 
-    con = duckdb.connect()
+    # El DuckDB del puesto (`ore._duckdb()`): las extensiones de la imagen sin
+    # instalar nada (no hay salida a internet), el tope de memoria del pod
+    # (`ORE_MEMORIA_MB`), el derrame a un temporal y UTC. Uno nuevo cada vez.
+    ore._con = None
+    con = ore._duckdb()
     # Sólo lee: UNA sentencia, y un `select` (o un `with … select`). Lo demás
     # —crear, escribir, `attach`, `copy … to`, `set`— no se ejecuta aquí.
     try:
@@ -61,7 +65,7 @@ def calcular(texto, fuentes, vivas, limite):
         raise NoSeCalcula("motor/sql", str(e).splitlines()[0]) from None
     if len(sentencias) != 1 or sentencias[0].type != duckdb.StatementType.SELECT:
         raise NoSeCalcula("motor/sin-resultado", "el motor sólo lee: una sentencia `select`")
-    ore._con, ore._s3 = con, None
+    ore._s3 = None
     fuentes = dict(fuentes or {})
     fuentes.pop("__avisos", None)
     en_vivo = {}
@@ -96,6 +100,14 @@ def calcular(texto, fuentes, vivas, limite):
     # Lo del usuario no toca este contenedor: sin sistema de ficheros local y
     # con la configuración cerrada (no la puede volver a abrir un `set`). Lo
     # registrado arriba —Arrow en memoria, el lago por su credencial— sigue.
+    # Lo que lee el lago, cargado ANTES de cerrar el disco: una extensión se
+    # carga de un fichero, y con el disco cerrado ya no se podría.
+    if os.path.isdir(ore.EXTENSIONES):
+        for e in ("httpfs", "iceberg"):
+            try:
+                con.execute("load %s" % e)
+            except duckdb.Error:
+                pass
     con.execute("set disabled_filesystems = 'LocalFileSystem'")
     con.execute("set lock_configuration = true")
     try:

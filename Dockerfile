@@ -404,6 +404,11 @@ RUN python -c "import duckdb; c = duckdb.connect(); c.execute(\"set extension_di
 # se importa desde la celda; el agente lo pone en el `sys.path` por estar al lado.
 COPY puesto/python/agente.py /opt/ore/agente.py
 COPY puesto/python/ore       /opt/ore/ore
+# ⭐ 0057 B4·3 · `ore-motor`, el motor SQL de la celda sin puesto: el mismo
+#   Python, el mismo DuckDB y el mismo SDK que la sesión, en otro proceso
+#   (58-el-motor.yaml). Va en esta imagen para que lo que calcula una preview y
+#   lo que calcula una celda no puedan ser dos versiones.
+COPY puesto/python/ore_motor.py /opt/ore/ore_motor.py
 # ⭐ 0050 P4: el repositorio en disco, pytest y pyright para Test y tras un
 #   commit; y el informe de pytest que lee la consola (en su carpeta: el
 #   proceso de las pruebas sólo la pone a ELLA en su PYTHONPATH).
@@ -414,7 +419,7 @@ COPY puesto/python/ore_pytest     /opt/ore/ore_pytest
 #   prestó —acotada a la tabla— y devuelve el commit. Es el mismo binario de la
 #   copia (`ore-drivers`); el puesto lo lleva, y no lleva `ore`.
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
-RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast, repositorio; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
+RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast, repositorio, ore_motor; ast.parse(open('/opt/ore/agente.py').read()); print('agente, sdk y motor listos')"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ⭐ EL SERVIDOR DE LENGUAJE, DENTRO (0037 ③a)
