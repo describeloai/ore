@@ -316,7 +316,8 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P1·5 | procedimiento de mantenimiento y pruebas de fuego parametrizadas | **hecho** (2026-10-07): [`ci/neon/README.md`](../../ci/neon/README.md), [`pruebas-de-fuego/ore-postgres/`](../../pruebas-de-fuego/ore-postgres/) |
 | P2·1 | el contrato del `storage_controller` | **hecho** (2026-10-07): leído y probado en local |
 | P2·2 | infraestructura GCP (bucket, cuenta, pool no-spot) | **hecho** (2026-10-07): [`malla/80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh); cuota 7/12 |
-| P2·3 | la base del controller (Postgres en el clúster, copias, restauración +1000) | **siguiente** |
+| P2·3 | la base del controller (Postgres en el clúster, copias, restauración +1000) | **hecho** (2026-10-07): en vivo por Flux; restaurada una copia de verdad → generación 7 + 1000 |
+| P2·4 | la malla: controller, broker, safekeepers, pageserver | **siguiente** |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -680,4 +681,22 @@ Comprobado:
 - un pod con la cuenta de Kubernetes `ore-pg/neon` escribe, lee y borra en el bucket, y **otro bucket le niega el acceso** (privilegio mínimo).
 
 El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba; los declarará la malla en P2·4.
+
+#### P2·3 · La base del controller (2026-10-07)
+
+- **[`malla/81-postgres-la-base-del-controlador.yaml`](../../malla/81-postgres-la-base-del-controlador.yaml)**, reconciliado por Flux (en la lista de plataforma de `kustomization.yaml`), declara:
+  - el namespace `ore-pg` y la cuenta `neon` (Workload Identity → `ore-pg-almacen`);
+  - Postgres `ore/postgres:16` en el pool `pg` (no spot), con 5 Gi en la clase nueva **`retiene-estandar`**: pd-standard y `Retain`, porque `retiene` es pd-balanced y la cuota SSD está llena;
+  - un CronJob de copia diaria a las 12:00 a `gs://…-copias/ore-pg/`, con la cuenta `ore-copias` de las copias del IdP.
+- **El `Secret` `storcon-db`** (usuario, clave, url) lo crea [`80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh): `/dev/urandom` directo al Secret, sin imprimirse.
+- **Restaurar es [`82-restaurar-la-base-del-controlador.sh`](../../malla/82-restaurar-la-base-del-controlador.sh)**, nunca a mano: para el controller, restaura, **suma 1000** a `tenant_shards.generation` (y a `timelines.generation` si existe) y lo arranca.
+- **Probado en vivo:**
+  1. un controller temporal (`--dev`) aplicó las **25 migraciones**: 11 tablas;
+  2. una fila de prueba con la generación 7;
+  3. la copia del CronJob, lanzada a mano: volcado de 15,6 kB, verificado con `pg_restore --list` y subido;
+  4. se simulan dos reenganches (generación 9);
+  5. se restaura con el guion: **generación 1007**;
+  6. el controller arranca sano sobre la base restaurada y ve el tenant en la 1007.
+
+  Después se recogió la prueba: el pod temporal, la fila y el volcado de prueba (para que no fuera «el último» en una restauración real).
 
