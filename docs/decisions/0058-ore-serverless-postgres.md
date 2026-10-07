@@ -70,9 +70,12 @@ historia guarda. Paga cómputo mientras vive y almacenamiento por lo que ocupa; 
 7. **Sus ramas son de Postgres**, no las ramas globales del árbol (0044). Unir las dos —una rama que sea
    a la vez un LSN de Postgres y un snapshot de Iceberg— queda para después; la marca de agua del punto
    5 es lo que lo hará posible.
-8. **Es un producto aparte dentro de la organización.** Un proyecto de Postgres existe o no existe, y
-   si existe **no está enlazado a ningún otro servicio de la organización**: ni a su celda (`t-<org>`),
-   ni a su cuota, ni a sus análisis. Es serverless de verdad:
+8. **Es un producto aparte dentro de la organización: integrado en la identidad y la propiedad, aparte en
+   el runtime.** Un proyecto de Postgres existe o no existe. Si existe, **pertenece a la organización**, y
+   la identidad y la propiedad salen del plano de control común, como en cualquier otro servicio: entra
+   por la celda (la celda es el workspace, como en Lakebase), `ore-iam` decide y el dueño es una persona.
+   Pero **lo que corre no está enlazado a nada de la organización**: ni a la cuota de su celda ni a sus
+   análisis, y si la celda o `ore-iam` caen, la base sigue sirviendo (P4). Es serverless de verdad:
    - se paga lo que se usa (cómputo por segundo despierto y bytes guardados);
    - escala sin que el cliente dimensione nada, porque la capacidad la pone la plataforma;
    - sus límites son los del plan, no los de un namespace.
