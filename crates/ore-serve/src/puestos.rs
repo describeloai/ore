@@ -3034,8 +3034,13 @@ impl Servidor {
                     tablas.push((n, t.qname().unwrap_or_default()));
                 } else if let Some(v) = pkg.view(&n)
                     && !ore_core::vistas::se_lee_de_datasets(&pkg, v)
-                    && !ore_core::reparto::tablas_de_la_vista(&pkg, v).is_empty()
                     && let Some(sql) = ore_core::reparto::sql_de_vista(v)
+                    // 0057 C1 · o lee una colección (v1alpha17 `04` §3): su
+                    //   listado no es un dataset, y la vista se calcula igual.
+                    && (!ore_core::reparto::tablas_de_la_vista(&pkg, v).is_empty()
+                        || ore_core::sql_del_arbol::nombres_a_resolver(&sql, &pkg)
+                            .iter()
+                            .any(|m| pkg.collection(m).is_some()))
                 {
                     // ⭐ 0057 B4·1: lo que la vista nombra —un nombre expuesto por
                     //   una base foránea (`vivo.datos.pedidos`), o el de la
@@ -3111,7 +3116,9 @@ impl Servidor {
         // 0053 F6·1: lo que llega a un origen, repartido UNA vez para toda la
         // sentencia (F5: una lectura por tabla); el SDK pide cada lectura a
         // `/federation/read` y ejecuta la sentencia tal cual.
-        if !tablas.is_empty() || !vistas_vivas.is_empty() {
+        // El reparto, si algo llega a un origen (una vista viva lo lleva en
+        // `tablas`; una que sólo lee una colección, no).
+        if !tablas.is_empty() {
             let linea = match self.explicar(rama.as_deref(), &texto, true) {
                 Ok(l) => l,
                 Err(r) => return r,
@@ -3164,12 +3171,6 @@ impl Servidor {
                     fuentes.insert(n.clone(), Json::obj([("federada", l.clone())]));
                 }
             }
-            for (n, sql) in &vistas_vivas {
-                fuentes.insert(
-                    n.clone(),
-                    Json::obj([("vistaFederada", Json::s(sql.as_str()))]),
-                );
-            }
             if let Some(Json::Arr(av)) = plan.get("avisos")
                 && !av.is_empty()
             {
@@ -3178,6 +3179,14 @@ impl Servidor {
                     Json::obj([("avisos", Json::Arr(av.clone()))]),
                 );
             }
+        }
+        // Las vistas que se calculan —sobre un origen, o sobre una colección
+        // (0057 C1)—: su SQL, que el SDK registra al final, sobre lo de arriba.
+        for (n, sql) in &vistas_vivas {
+            fuentes.insert(
+                n.clone(),
+                Json::obj([("vistaFederada", Json::s(sql.as_str()))]),
+            );
         }
         for (n, coleccion) in nombres {
             if fuentes.contains_key(&n) {
