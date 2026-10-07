@@ -1,0 +1,47 @@
+# La regresión de Postgres (`make check`) sobre NUESTRO fork de Postgres de Neon (ADR 0058, P1·4):
+# es la aceptación de cada rebase a una menor nueva. Corre con build-tools de Neon (el mismo
+# entorno con el que se compila) y como `nonroot` (initdb no arranca como root).
+#
+#   gcloud builds submit --no-source --async --region=global --config ci/neon/postgres-check.yaml \
+#     --substitutions=_COMMIT=<commit de describeloai/postgres> --service-account=…ore-ci…
+substitutions:
+  _REPO: https://github.com/describeloai/postgres.git
+  _COMMIT: b51bab5344f2393bd631b24acdcec93e2799f1d9   # ore/REL_17_STABLE_neon = 17.5 de Neon + REL_17_10
+steps:
+  - id: fuente
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        git init -q pg && cd pg && git remote add origin ${_REPO}
+        git fetch -q --depth 1 origin ${_COMMIT} && git checkout -q FETCH_HEAD
+        grep -m1 "PACKAGE_VERSION=" configure
+        chmod -R a+rwX /workspace
+  - id: check
+    name: neondatabase/build-tools:pinned-bookworm
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        id
+        export HOME=/tmp/ore; mkdir -p $$HOME; cp -r /workspace/pg $$HOME/pg; cd $$HOME/pg
+        ./configure --enable-debug --enable-cassert --with-openssl --with-icu >/dev/null   # las de Neon en debug (Makefile)
+        make -s -j$$(nproc) >/dev/null
+        make -s -j$$(nproc) -C contrib >/dev/null
+        # -k: todos los fallos, no sólo el primero; se comparan con la base (la 17.5 de Neon, 1e01fcea)
+        make -k check-world -j8 PROVE_FLAGS='-j8' > $$HOME/check.log 2>&1 && r=0 || r=$$?
+        echo "== suites con diferencias:"
+        find . -name regression.diffs | sort | sed 's#^./#  #'
+        echo "== errores nuevos en las diferencias (líneas +ERROR, contadas):"
+        find . -name regression.diffs -exec grep -h "^+ERROR\|^+FATAL\|^+PANIC\|^+WARNING" {} + | sed 's/[0-9A-F]\{1,8\}\/[0-9A-F]\{1,8\}/<lsn>/g' | sort | uniq -c | sort -rn | head -20
+        echo "== TAP fallidos:"; grep -E "^(not ok|Failed [0-9]+/)" $$HOME/check.log | sort -u | head -40
+        echo "== resumen:"; grep -cE "^# All [0-9]+ tests passed" $$HOME/check.log
+        exit $$r
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+timeout: 7200s

@@ -310,7 +310,9 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | **hecho** (2026-10-06): 5/12 |
 | P1–P9, Q1–Q5 | construir (B.11) | **plan escrito** |
 | P1·1 | los forks y el CI apuntando a ellos | **hecho** (2026-10-07): compilado desde el fork en 14 min 7 s |
-| P1·2 | la imagen de cómputo (`compute-node.Dockerfile` v17 + `vm-builder`) | **siguiente** |
+| P1·2 | la imagen de cómputo | **hecho** (2026-10-07): 1 h 10 min en frío; `vm-compute-node-v17` en el registro |
+| P1·3 | la caché | **hecho**: almacenamiento 14 min con un cambio de Rust (2 min 20 s sin cambios); el cómputo es donde ahorra |
+| P1·4 | Postgres 17.10 | **fusión hecha y regresión igual que la base**; faltan las compilaciones y probarla en vivo |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -531,3 +533,68 @@ P1 no gasta cuota: todo va en Cloud Build. Pero P1·1 crea repositorios en GitHu
   - Sin caché, tardó 5 min menos que en C1: es la variación de Cloud Build, no una mejora. La caché se mide en P1·3.
   - Los `fatal: not a git repository` del log son inofensivos: dentro de Docker no se copia `.git`, y el Dockerfile de Neon lo tolera.
 
+#### P1·2 · La imagen de cómputo (2026-10-07)
+
+- **La receta es [`ci/neon/computo.yaml`](../../ci/neon/computo.yaml).** Lo compila todo desde nuestros forks:
+  - `compute-node-v17` (`compute/compute-node.Dockerfile`, sólo v17);
+  - `neonvm-daemon` y `vm-builder` desde `describeloai/autoscaling`, en la etiqueta que usa el CI de Neon en ese commit (`v0.46.0`, comprobado por la receta), en vez de bajar el binario publicado;
+  - `vm-compute-node-v17`, el disco de la VM, que es lo que va en `rootDisk.image`.
+- **Primer parche al fork**, `ore/main` = fa504217 + 1 commit: `h3-pg` perdió sus etiquetas en `zachasme/` (404) y vive en `postgis/h3-pg`. El tarball tiene **el mismo sha256**, así que sólo cambia la URL.
+  - ⚠️ **Cadena de suministro**: el Dockerfile de Neon baja las fuentes de ~40 extensiones de internet al compilar, y una ya había desaparecido.
+  - Pendiente decidir entre dos salidas: guardar las fuentes en nuestro bucket, o reducir el catálogo de extensiones que ofrecemos.
+- **Memoria**:
+  - con 4 etapas de BuildKit en paralelo, el enlazado con LTO de `compute_ctl`, `fast_import` y `local_proxy` murió por **SIGKILL** (32 GB);
+  - Neon lo pone a 1 en su CI, y aquí igual.
+- **Medido** (build `153a2e5d`, sin caché, en serie):
+
+  | paso | tiempo |
+  |---|---|
+  | total | **1 h 10 min** |
+  | `compute-node` | 1 h 5 min |
+  | `vm-builder` (disco de 2 GB) | 2 min 50 s |
+  | `neonvm-daemon` | 1 min 25 s |
+
+  | imagen | tamaño comprimido |
+  |---|---|
+  | `compute-node-v17` | 0,45 GB |
+  | `vm-compute-node-v17` | 0,52 GB |
+
+#### P1·3 · La caché (2026-10-07)
+
+- **Del almacenamiento no se pueden quitar Postgres 14–16.** `libs/postgres_ffi/build.rs` genera los tipos de las cuatro versiones, porque el pageserver entiende el WAL de todas. Quitarlas sería parchear Rust en muchos sitios y pagarlo en cada rebase. Como la capa `pg-build` sólo depende de `vendor/`, la caché la hace casi gratis.
+- **La caché es de BuildKit**, guardada en nuestro registro (`…/ore/cache:neon-almacen`, `…:neon-computo-v17`). Se escribe con `buildx` (driver docker-container) y el login sale del token del metadata (`ore-ci`, sin claves).
+- **Medido en el almacenamiento** (E2_HIGHCPU_32):
+
+  | caso | total | nota |
+  |---|---|---|
+  | en frío, sin caché (P1·1) | 14 min 7 s | |
+  | R1 · en frío **escribiendo** la caché | 37 min 53 s | 15 min son exportarla (`mode=max` sube la capa de cargo) |
+  | R2 · sin cambios | **2 min 20 s** | todo `CACHED` |
+  | R4 · una línea de Rust, sólo leyendo | **14 min 14 s** | cargo 6 min, plan/chef 3,5 min, imagen y tar ~2 min; Postgres sí sale de la caché |
+
+  R3 (31 min) no vale: corrió a la vez que R2 y además escribía la caché.
+- ⇒ **En el almacenamiento la caché ahorra poco** (Postgres, ~2 min): lo que cuesta es recompilar el workspace de Rust. Bajar de ~14 min pide compilación incremental de cargo, con un `target` persistente. En ORE, sccache dio SIGSEGV. Queda anotado; no se persigue ahora.
+- ⇒ **Regla**: la caché se lee siempre y **sólo se escribe con `_CACHE=escribir`**, cuando cambian `Cargo.lock`, Postgres, una extensión o build-tools.
+- ⇒ **En el cómputo la caché vale mucho**: Postgres y las extensiones son ~65 min que casi nunca cambian. Medida pendiente: se pobló con la compilación de la 17.10.
+
+#### P1·4 · Postgres 17.5 → 17.10 (2026-10-07)
+
+- **La 17.8 de Neon no sirve tal cual.** El `neon` público está congelado: desde 2025-09 sólo recibe GCS, arreglos del proxy y documentación, y sigue en 17.5. Su fork de Postgres sigue avanzando, pero emparejado con un `neon` que no es público. Hay commits que mueven piezas entre Postgres y la extensión `neon`:
+  - `LastWrittenLsnLock`;
+  - los hooks `set_lwlsn_block_*`;
+  - `neon_storage_token`;
+  - `get_pin_limit_hook`;
+  - la interfaz de SLRU, ya en su rama 17.6.
+
+  El lado de la extensión de esos cambios no está en fa504217.
+- ⇒ **La fusión se hace sólo con upstream**: `REL_17_10` (563 commits: 17.6–17.10, 11 CVE en la 17.10) sobre nuestra 17.5 (`1e01fcea`, 102 commits de Neon). El resultado es `describeloai/postgres` `ore/REL_17_STABLE_neon` = **`b51bab53`**, con la etiqueta `ore/v17.10-b51bab53`.
+- **Sólo 2 conflictos:**
+  - `walsender.c`: la 17.10 cambia `fullyAppliedLastTime` por `prevWrite/Flush/ApplyPtr`, y en Neon el cuerpo vive en `ProcessStandbyReply` (lo comparte con el safekeeper), así que las variables estáticas pasan allí;
+  - `postgres.c`: el `SlotSyncShutdownPending` de upstream va antes del `ProcessInterruptsCallback` de Neon, que hace `goto retry`.
+- `neon` `ore/main` = **`8269bece`** apunta el submódulo a `b51bab53`, con `revisions.json` en 17.10.
+- **Regresión** ([`ci/neon/postgres-check.yaml`](../../ci/neon/postgres-check.yaml)): `make -k check-world` con `--enable-cassert`, sobre build-tools de Neon, como `nonroot`.
+  - Resultado: **la 17.10 y la 17.5 de Neon fallan exactamente igual**:
+    - los mismos 108 `resource manager with ID 134 not registered` en `pg_walinspect` y `test_decoding`; el 134 es `RM_NEON_ID`, que registra la extensión `neon`, y aquí corren sin ella;
+    - y sus errores en cascada.
+  - **Ningún fallo nuevo** por la fusión.
+  - Sin TAP: no se configuró `--enable-tap-tests`. La aceptación de verdad del Postgres de Neon es su `test_runner` con `neon_local`, o nuestras pruebas de fuego sobre la imagen.

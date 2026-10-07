@@ -10,7 +10,9 @@
 #   gcloud builds submit --no-source --async --region=global --config ci/neon/almacen.yaml #     --service-account=projects/<P>/serviceAccounts/ore-ci@<P>.iam.gserviceaccount.com
 substitutions:
   _REPO: https://github.com/describeloai/neon.git
-  _COMMIT: fa504217c61bbcaf5c512d75830564541f917f8f   # etiqueta ore/base-fa504217
+  _COMMIT: 8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b   # ore/main = fa504217 + h3-pg + Postgres 17.10 (mismo que computo.yaml)
+  _CACHE: leer                                         # leer | escribir
+  _REGISTRO_HOST: europe-west1-docker.pkg.dev
   _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
 steps:
   - id: fuente
@@ -28,21 +30,36 @@ steps:
         git submodule update -q --init --depth 1 --recursive
         # que los Postgres vienen de NUESTRO fork, no de neondatabase
         for v in vendor/postgres-v*; do u=$(git -C $v remote get-url origin); echo "$v <- $u"; case $u in *describeloai*) ;; *) echo "✗ $v no viene del fork"; exit 1;; esac; done
-        # el BuildKit de cloud-builders/docker es viejo: no entiende ${VAR/patron/...} del Dockerfile
-        sed -i '1i # syntax=docker/dockerfile:1' Dockerfile && head -2 Dockerfile
         git log -1 --format='%H %ci %s'
         du -sh . vendor/*
   - id: compilar
-    name: gcr.io/cloud-builders/docker
+    # buildx con caché de capas en NUESTRO registro (P1·3): pg-build (sólo depende de vendor/) y
+    # `cargo chef cook` (sólo de las dependencias) salen de la caché; un cambio en Neon recompila
+    # sólo sus crates. ⚠️ Los cuatro Postgres se quedan: postgres_ffi genera los tipos de v14–v17.
+    name: docker:27-cli
     dir: neon
-    env: [DOCKER_BUILDKIT=1]
-    args: [build, --build-arg, 'GIT_VERSION=${_COMMIT}', --build-arg, BUILD_TAG=ore,
-           -t, '${_REGISTRO}/neon:${_COMMIT}', .]
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -e
+        # credencial de la cuenta del build (ore-ci) para el registro, sin claves: el token del metadata
+        wget -qO- --header 'Metadata-Flavor: Google' \
+          http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token \
+          | sed 's/.*"access_token":"\([^"]*\)".*/\1/' \
+          | docker login -u oauth2accesstoken --password-stdin https://${_REGISTRO_HOST} >/dev/null
+        docker buildx create --name ore --driver docker-container --use >/dev/null
+        # escribir la caché cuesta 11–15 min (mode=max sube la capa de cargo): sólo cuando se pide
+        # (_CACHE=escribir: cambió Cargo.lock, Postgres o build-tools); si no, sólo se lee
+        cache_to=""; [ "${_CACHE}" = escribir ] && cache_to="--cache-to type=registry,ref=${_REGISTRO}/cache:neon-almacen,mode=max,image-manifest=true,oci-mediatypes=true"
+        docker buildx build --push --progress plain $cache_to \
+          --cache-from type=registry,ref=${_REGISTRO}/cache:neon-almacen \
+          --build-arg GIT_VERSION=${_COMMIT} --build-arg BUILD_TAG=ore \
+          -t ${_REGISTRO}/neon:${_COMMIT} .
   - id: comprobar
     name: '${_REGISTRO}/neon:${_COMMIT}'
     entrypoint: bash
     args: [-c, 'pageserver --version && safekeeper --version && storage_broker --version']
-images: ['${_REGISTRO}/neon:${_COMMIT}']
 options:
   machineType: E2_HIGHCPU_32
   diskSizeGb: 200

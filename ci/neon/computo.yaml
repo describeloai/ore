@@ -1,0 +1,133 @@
+# El cómputo de ORE Serverless Postgres (ADR 0058, P1·2): la imagen de VM que arranca NeonVM
+# (`vm-compute-node-v17`), toda desde NUESTROS forks y en un commit fijado:
+#
+#   compute-node-v17     compute/compute-node.Dockerfile de describeloai/neon (Postgres 17 de
+#                        describeloai/postgres, compute_ctl, extensiones, pgbouncer, local_proxy…)
+#   neonvm-daemon        de describeloai/autoscaling, en la etiqueta que usa el CI de Neon en ese commit
+#   vm-builder           ídem; mete la imagen de cómputo en un disco de VM con el init de NeonVM
+#   vm-compute-node-v17  el resultado: lo que va en `spec.guest.rootDisk.image`
+#
+# ⭐ Paralelismo de BuildKit acotado: cada etapa ya hace `make -j$(nproc)` y Neon lo pone a 1 en su CI
+#   («blows up the Runner»). Aquí igual: con 4, el enlazado LTO de compute_ctl y local_proxy murió por memoria (SIGKILL).
+#
+#   gcloud builds submit --no-source --async --region=global --config ci/neon/computo.yaml \
+#     --service-account=projects/<P>/serviceAccounts/ore-ci@<P>.iam.gserviceaccount.com
+substitutions:
+  _REPO: https://github.com/describeloai/neon.git
+  _COMMIT: 8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b   # ore/main = fa504217 + h3-pg + Postgres 17.10
+  _AUTOSCALING: https://github.com/describeloai/autoscaling.git
+  _VM_BUILDER: v0.46.0                                 # VM_BUILDER_VERSION del CI de Neon en _COMMIT
+  _PARALELO: '1'                                       # con 4: SIGKILL (32 GB) al enlazar con LTO compute_ctl+local_proxy
+  _CACHE: leer                                         # leer | escribir
+  _REGISTRO_HOST: europe-west1-docker.pkg.dev
+  _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+steps:
+  - id: fuente
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        git init -q neon && cd neon
+        git remote add origin ${_REPO}
+        git fetch -q --depth 1 origin ${_COMMIT} && git checkout -q FETCH_HEAD
+        # sólo Postgres 17
+        git submodule update -q --init --depth 1 vendor/postgres-v17
+        u=$(git -C vendor/postgres-v17 remote get-url origin); echo "vendor/postgres-v17 <- $u"
+        case $u in *describeloai*) ;; *) echo "✗ no viene del fork"; exit 1;; esac
+        grep -q "VM_BUILDER_VERSION: ${_VM_BUILDER}" .github/workflows/build_and_test.yml \
+          || { echo "✗ el CI de Neon en ${_COMMIT} no usa vm-builder ${_VM_BUILDER}"; exit 1; }
+        git log -1 --format='%H %ci %s'
+        cd .. && git clone -q --depth 1 --branch ${_VM_BUILDER} ${_AUTOSCALING} autoscaling
+        git -C autoscaling log -1 --format='autoscaling %H %ci'
+
+  - id: vm-builder
+    name: golang:1.23
+    dir: autoscaling
+    waitFor: [fuente]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        CGO_ENABLED=0 go build -o /workspace/vm-builder \
+          -ldflags "-X main.Version=${_VM_BUILDER} -X main.NeonvmDaemonImage=${_REGISTRO}/neonvm-daemon:${_VM_BUILDER}" \
+          vm-builder/main.go
+        /workspace/vm-builder -version
+
+  - id: neonvm-daemon
+    name: gcr.io/cloud-builders/docker
+    dir: autoscaling
+    waitFor: [fuente]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        docker build -q -t autoscaling-go-base:dev -f go-base.Dockerfile .
+        docker build -q -t ${_REGISTRO}/neonvm-daemon:${_VM_BUILDER} --build-arg GO_BASE_IMG=autoscaling-go-base:dev \
+          --build-arg TARGET_ARCH=amd64 -f neonvm-daemon/Dockerfile .
+
+  - id: compute-node
+    name: docker:27-cli
+    dir: neon
+    waitFor: [fuente]
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -e
+        printf '[worker.oci]\n  max-parallelism = %s\n' ${_PARALELO} > /tmp/buildkitd.toml
+        docker buildx create --name ore --driver docker-container --config /tmp/buildkitd.toml --use
+        # caché de capas en el registro (P1·3): Postgres + ~40 extensiones (~65 min en serie) casi
+        # nunca cambian; un cambio en compute_ctl sólo recompila su etapa. Escribirla cuesta: sólo
+        # con _CACHE=escribir (cambió Postgres, una extensión o build-tools).
+        wget -qO- --header 'Metadata-Flavor: Google' \
+          http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token \
+          | sed 's/.*"access_token":"\([^"]*\)".*/\1/' \
+          | docker login -u oauth2accesstoken --password-stdin https://${_REGISTRO_HOST} >/dev/null
+        cache_to=""; [ "${_CACHE}" = escribir ] && cache_to="--cache-to type=registry,ref=${_REGISTRO}/cache:neon-computo-v17,mode=max,image-manifest=true,oci-mediatypes=true"
+        docker buildx build --load --progress plain $cache_to \
+          --cache-from type=registry,ref=${_REGISTRO}/cache:neon-computo-v17 \
+          --build-arg GIT_VERSION=${_COMMIT} --build-arg PG_VERSION=v17 \
+          --build-arg BUILD_TAG=ore --build-arg DEBIAN_VERSION=bookworm \
+          -f compute/compute-node.Dockerfile \
+          -t ${_REGISTRO}/compute-node-v17:${_COMMIT} .
+
+  - id: vm-compute-node
+    name: gcr.io/cloud-builders/docker
+    dir: neon
+    waitFor: [vm-builder, neonvm-daemon, compute-node]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        /workspace/vm-builder -size=2G -spec=compute/vm-image-spec-bookworm.yaml \
+          -src=${_REGISTRO}/compute-node-v17:${_COMMIT} \
+          -dst=${_REGISTRO}/vm-compute-node-v17:${_COMMIT} \
+          -target-arch=linux/amd64
+
+  - id: comprobar
+    name: '${_REGISTRO}/compute-node-v17:${_COMMIT}'
+    waitFor: [compute-node]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        compute_ctl --help >/dev/null && echo "compute_ctl ok"
+        postgres --version
+        echo "extensiones: $(ls $(pg_config --sharedir)/extension/*.control | wc -l)"
+        test "$(ls $(pg_config --sharedir)/extension/*.control | wc -l)" -gt 50
+
+images:
+  - '${_REGISTRO}/compute-node-v17:${_COMMIT}'
+  - '${_REGISTRO}/vm-compute-node-v17:${_COMMIT}'
+  - '${_REGISTRO}/neonvm-daemon:${_VM_BUILDER}'
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 300
+  logging: CLOUD_LOGGING_ONLY
+timeout: 10800s
