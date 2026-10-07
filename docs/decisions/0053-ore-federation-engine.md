@@ -459,3 +459,30 @@ recortar el `SELECT` del texto entero: un `ORDER BY` o un `LIMIT` detrás se hab
   (`ore-view/src/capabilities.rs`): F2 y F9 los leen.
 - El servicio por celda suma un deployment y una cuenta con permisos al origen: la malla y el IAM
   necesitan el visto bueno de quien los gobierna antes de F3.
+
+### Para cerrar el producto (2026-10-07)
+
+La federación está construida y en vivo hasta F9·4. Lo que falta para cerrarla depende casi todo de
+un acceso que hoy no hay: la cuenta de AWS del bucket de prueba está bloqueada (`s3_demo` da 403
+`InvalidAccessKeyId`). Queda como deuda, en este orden:
+
+1. **F9·5 en vivo** (bloqueado por AWS): la `ObjectTable` de `s3_demo` por SQL, F7·4 y una
+   colección mantenida que llega por la pasarela. Después, el cierre de este ADR.
+2. **Recatalogar `s3_demo`** (bloqueado por AWS), para que el árbol de victor tenga `_rescued_data`
+   (0046 E6).
+3. **Retirar `s3_demo` y la clave de `s3-readonly-user`**, o pasarlos al rol: lo decide quien
+   gobierna la cuenta. El canje por rol ya está en vivo con `s3_rol` (0046 E9b).
+4. **El alta de S3 con rol en la consola** (0046 E10): ARN sin claves. Hay que coordinarse antes con
+   quien edita el catálogo de la consola.
+5. **Servir un ítem con 302 desde el BFF de la consola** (0046 E9·5) y **`media`/`mediaUrls` en el
+   SDK de Java** (0046 E9·4).
+6. **El alta que miente**: un 502 que dice «quedó declarada» (0046 E5′). Y **la re-alta de una fuente
+   retirada** (`s3_ventas`): el custodio cuenta las filas retiradas y da 422; el arreglo propuesto es
+   un índice parcial `where retirado_en is null` (terreno de 0047).
+7. **Entidades sobre bases foráneas** (0057 D4), incluida una `Entity` con `Media<>` sobre una
+   colección virtual: en espera por decisión de producto.
+8. **La migración de las bases foráneas viejas** de victor y demo a v1alpha27 (0057 B5), que pone al
+   día sus colecciones virtuales (`MediaCollection virtual: true` → la `ObjectTable` expuesta).
+
+Fuera de esta lista, porque se cierran ya en 0057: una vista que lee una colección calculada por
+`ore-motor`, y `sql()` sobre una colección del lago en Java y TypeScript.
