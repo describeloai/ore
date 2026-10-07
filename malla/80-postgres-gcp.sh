@@ -111,3 +111,14 @@ PY
 else
   echo "   ya existen (no se tocan: rotar el par es otra operación)"
 fi
+
+echo "── el token del scrubber (P2·5): scope 'scrubber', acuñado con la privada, añadido a almacen-jwt"
+if [ -z "$(kubectl -n $KSA_NS get secret almacen-jwt -o jsonpath='{.data.scrubber}')" ]; then
+  T=$(mktemp -d)
+  kubectl -n $KSA_NS get secret almacen-jwt-privada -o jsonpath='{.data.privada\.pem}' | base64 -d > $T/privada.pem
+  python -c "import jwt,sys;print(jwt.encode({'scope':'scrubber'}, open(sys.argv[1]).read(), algorithm='EdDSA'), end='')" $T/privada.pem > $T/scrubber
+  kubectl -n $KSA_NS patch secret almacen-jwt --type merge -p "{\"data\":{\"scrubber\":\"$(base64 -w0 < $T/scrubber)\"}}" >/dev/null
+  rm -rf "$T"; echo "   añadido"
+else
+  echo "   ya existe"
+fi

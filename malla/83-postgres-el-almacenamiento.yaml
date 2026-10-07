@@ -267,6 +267,11 @@ spec:
               http_auth_type = 'NeonJWT'
               pg_auth_type = 'NeonJWT'
               auth_validation_public_key_path = '/jwt/publica.pem'
+              # P2·5 · la historia que se guarda por defecto: 1 día (Neon trae 7). Es lo que el
+              # cliente puede recuperar en el tiempo (rama en un instante) y lo que se paga en
+              # GCS; por proyecto se cambia en el controller (PUT /v1/tenant/config, P9).
+              [tenant_config]
+              pitr_interval = '1 day'
               EOF
               export NEON_AUTH_TOKEN=$(cat /jwt/safekeeperdata)
               exec pageserver -D /data/.neon
@@ -292,3 +297,58 @@ spec:
         storageClassName: standard
         accessModes: [ReadWriteOnce]
         resources: { requests: { storage: 20Gi } }
+---
+# ── El scrubber (P2·5) ─────────────────────────────────────────────────────
+# Lo que el pageserver deja atrás en GCS: índices de generaciones viejas y capas que ya
+# no referencia nadie. Dos pasos, a diario:
+#   scan-metadata --post        recorre los índices y le cuenta al controller la salud de
+#                               cada tenant (/control/v1/metadata_health)
+#   pageserver-physical-gc full borra lo que ningún índice vivo referencia, con más de 24 h
+# `find-garbage` (tenants que el plano de control ya no conoce) necesita la API de
+# administración de Neon: no la tenemos; lo cubre que borrar un tenant por el controller
+# vacía su prefijo (medido en P2·5).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scrubber
+  namespace: ore-pg
+  labels: { ore.dev/tenant: system, ore.dev/rol: mantenimiento }
+spec:
+  schedule: "30 12 * * *"            # tras la copia de las 12:00, con el clúster despierto
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata: { labels: { ore.dev/rol: mantenimiento, ore.dev/tenant: system } }
+        spec:
+          restartPolicy: Never
+          serviceAccountName: neon
+          nodeSelector: { ore.dev/pool: neon }
+          tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+          containers:
+            - name: scrubber
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  cd /tmp
+                  S="storage_scrubber --exit-code --controller-api http://storage-controller.ore-pg.svc.cluster.local:1234 --controller-jwt $(cat /jwt/scrubber)"
+                  echo "── scan-metadata"; $S scan-metadata --node-kind pageserver --post
+                  echo "── pageserver-physical-gc (${MODO})"; $S pageserver-physical-gc --min-age 24h --mode ${MODO}
+              env:
+                - { name: MODO, value: full }
+                - { name: PAGESERVER_DISABLE_FILE_LOGGING, value: "1" }
+                - name: REMOTE_STORAGE_CONFIG
+                  value: |
+                    bucket_name = 'ore-pg-almacen-euw1'
+                    prefix_in_bucket = 'pageserver/'
+              volumeMounts: [{ name: jwt, mountPath: /jwt, readOnly: true }]
+              resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 1Gi } }
+          volumes:
+            - name: jwt
+              secret: { secretName: almacen-jwt, items: [{ key: scrubber, path: scrubber }] }
+
