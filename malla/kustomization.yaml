@@ -89,6 +89,10 @@ resources:
   - 67-iam-servir.yaml
   # ⭐ Las llaves de Google, para el token de cada celda ante el puente (0047 A3).
   - 68-las-llaves-de-las-celdas.yaml
+  # ── ORE Serverless Postgres (0058) ──────────────────────────────────────
+  # Lo de Google (bucket, cuenta, pool, el Secret de la base) lo hace
+  # `80-postgres-gcp.sh`; restaurar la base es `82-…sh`, nunca a mano.
+  - 81-postgres-la-base-del-controlador.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO

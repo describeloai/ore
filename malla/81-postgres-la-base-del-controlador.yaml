@@ -1,0 +1,191 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE SERVERLESS POSTGRES · LA BASE DEL `storage_controller` (ADR 0058, P2·3)
+#
+# El controller guarda aquí qué tenant vive en qué pageserver, los nodos, los
+# safekeepers y —lo que de verdad importa— las GENERACIONES. Se hace como la del
+# IdP (`60-idp.yaml`, `62-copias-del-idp.yaml`): Postgres en el clúster, disco que
+# sobrevive al claim, volcado diario fuera del clúster. Decidido en el go del
+# 2026-10-07 frente a Cloud SQL.
+#
+# ── ⛔ Restaurar NO es sólo `pg_restore` ─────────────────────────────────────
+#
+# Medido en P2·1: con una copia vieja, el controller vuelve a repartir
+# generaciones YA USADAS — la condición en la que dos pageservers creen tener
+# derecho a escribir el mismo tenant. Restaurar es SIEMPRE
+# `82-restaurar-la-base-del-controlador.sh`, que suma 1000 a todas las
+# generaciones antes de arrancar el controller.
+#
+# ── La contraseña ─────────────────────────────────────────────────────────────
+#
+# No está aquí: el `Secret` `storcon-db` (usuario, clave, url) lo crea
+# `80-postgres-gcp.sh` con /dev/urandom, directo al Secret y sin imprimirse.
+#
+# ── El disco ──────────────────────────────────────────────────────────────────
+#
+# `retiene` es pd-balanced y la cuota SSD regional está llena (B.2): la clase
+# hermana `retiene-estandar` es pd-standard con la misma política. Para una base
+# de unos MB que se escribe a ráfagas, sobra.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: retiene-estandar
+provisioner: pd.csi.storage.gke.io
+parameters: { type: pd-standard }
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ore-pg
+  labels: { ore.dev/tenant: system }
+---
+# La identidad del almacenamiento (pageserver, safekeepers): escribe SOLO en
+# gs://ore-pg-almacen-euw1 (80-postgres-gcp.sh). La usan los manifiestos de P2·4.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neon
+  namespace: ore-pg
+  annotations:
+    iam.gke.io/gcp-service-account: ore-pg-almacen@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storcon-datos
+  namespace: ore-pg
+spec:
+  storageClassName: retiene-estandar
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storcon-db
+  namespace: ore-pg
+spec:
+  selector: { ore.dev/rol: storcon-db }
+  ports: [{ name: postgres, port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: storcon-db
+  namespace: ore-pg
+spec:
+  serviceName: storcon-db
+  replicas: 1
+  selector: { matchLabels: { ore.dev/rol: storcon-db } }
+  template:
+    metadata:
+      labels: { ore.dev/rol: storcon-db, ore.dev/tenant: system }
+    spec:
+      # En el pool `pg`, NO spot: la base de las generaciones no se va con una
+      # expropiación de Spot.
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      securityContext: { fsGroup: 999 }
+      containers:
+        - name: postgres
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: storcon-db, key: usuario } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: storcon-db, key: clave } }
+            - { name: POSTGRES_DB, value: storage_controller }
+            # subdirectorio: un disco recién formateado trae lost+found (60-idp.yaml)
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts: [{ name: datos, mountPath: /var/lib/postgresql/data }]
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d storage_controller"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "15m", memory: 96Mi }
+            limits:   { cpu: "500m", memory: 512Mi }
+      volumes:
+        - name: datos
+          persistentVolumeClaim: { claimName: storcon-datos }
+---
+# ── Las copias ─────────────────────────────────────────────────────────────
+# El mismo bucket y la misma cuenta que las del IdP (`ore-copias`, objectAdmin
+# sólo en su bucket, regla de 30 días), bajo `ore-pg/`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: copias
+  namespace: ore-pg
+  annotations:
+    iam.gke.io/gcp-service-account: ore-copias@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: copia-de-la-base-del-controlador
+  namespace: ore-pg
+  labels: { ore.dev/tenant: system, ore.dev/rol: mantenimiento }
+spec:
+  # A mediodía, por la misma razón que la del IdP: una copia a la hora en que el
+  # clúster suele estar apagado es una copia que no existe.
+  schedule: "0 12 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: { ore.dev/rol: mantenimiento, ore.dev/tenant: system }
+        spec:
+          restartPolicy: Never
+          serviceAccountName: copias
+          nodeSelector: { ore.dev/pool: neon }
+          tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+          volumes: [{ name: volcado, emptyDir: {} }]
+          initContainers:
+            - name: volcar
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+              volumeMounts: [{ name: volcado, mountPath: /volcado }]
+              env:
+                - { name: PGHOST, value: storcon-db.ore-pg.svc.cluster.local }
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: storcon-db, key: usuario } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: storcon-db, key: clave } }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  pg_dump -d storage_controller -Fc -f /volcado/storage_controller.dump
+                  # leer lo que se acaba de escribir: un volcado corrupto pesa igual
+                  pg_restore --list /volcado/storage_controller.dump > /dev/null
+                  echo "volcado ok · $(wc -c < /volcado/storage_controller.dump) bytes"
+              resources:
+                requests: { cpu: "20m", memory: 64Mi }
+                limits:   { cpu: "500m", memory: 256Mi }
+          containers:
+            - name: subir
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              volumeMounts: [{ name: volcado, mountPath: /volcado }]
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: DESTINO, value: "gs://project-8853a180-450d-47be-b83-copias/ore-pg" }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  F="$(date -u +%Y%m%dT%H%M%SZ)"
+                  gcloud storage cp /volcado/storage_controller.dump "$DESTINO/storage_controller-$F.dump"
+                  echo "subido $DESTINO/storage_controller-$F.dump"
+                  gcloud storage ls "$DESTINO/" | tail -5
+              resources:
+                requests: { cpu: "50m", memory: 128Mi }
+                limits:   { cpu: "500m", memory: 512Mi }

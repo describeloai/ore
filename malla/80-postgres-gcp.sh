@@ -7,6 +7,9 @@
 #   cuenta   ore-pg-almacen        la identidad del almacenamiento: objectUser SOLO en
 #                                  ese bucket; Workload Identity para ore-pg/neon.
 #                                  ⛔ Cero claves (además la organización las prohíbe).
+#   copias   ore-copias            la cuenta de las copias del IdP, también para ore-pg/copias.
+#   secreto  storcon-db            la contraseña de la base del controller: /dev/urandom al crearlo;
+#                                  no se imprime ni se guarda fuera del Secret.
 #   pool     pg                    n2-standard-2, NO spot (3 safekeepers en spot caerían
 #                                  a la vez: adiós quórum), virtualización anidada (las
 #                                  VMs de cómputo, P3), Ubuntu (KVM + módulos de la
@@ -57,4 +60,20 @@ if ! gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA 
     --enable-autorepair --enable-autoupgrade
 else
   gcloud container clusters resize $CLUSTER --node-pool $POOL --num-nodes $NODOS --zone $ZONA --project $P --quiet
+fi
+
+echo "── las copias de la base del controller: ore-copias (la de las del IdP) también para ore-pg/copias"
+gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P \
+  --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$KSA_NS/copias]" >/dev/null
+
+echo "── el Secret storcon-db (P2·3): /dev/urandom, directo al Secret, sin imprimirse"
+kubectl get ns $KSA_NS >/dev/null 2>&1 || kubectl create ns $KSA_NS
+if ! kubectl -n $KSA_NS get secret storcon-db >/dev/null 2>&1; then
+  CLAVE=$(head -c 30 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+  kubectl -n $KSA_NS create secret generic storcon-db --from-literal=usuario=storcon --from-literal=clave="$CLAVE" \
+    --from-literal=url="postgresql://storcon:$CLAVE@storcon-db.$KSA_NS.svc.cluster.local:5432/storage_controller" >/dev/null
+  unset CLAVE
+  echo "   creado"
+else
+  echo "   ya existe (no se toca: rotarla es otra operación)"
 fi
