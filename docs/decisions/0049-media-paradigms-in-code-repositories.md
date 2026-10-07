@@ -570,6 +570,83 @@ schema; la decisión (un espacio `functions.<def>`, y el proyecto frente a la ba
 la imagen `puesto-node` no se construía en Node 24 (el informe de `node --test` cambió a `spec`
 sin terminal): `74d83e7`.
 
+### B9 · diseño (propuesto, 2026-10-07): ficheros que dan ficheros
+
+**El criterio** —*una función sobre una colección que emite **ficheros** se calcula una vez por
+ítem y por clave, como `apply()` (B5); lo que no cambió no se recalcula ni se reescribe; lo que
+cambió reemplaza sus ficheros; lo que se fue se lleva los suyos; y cada fichero dice de qué ítem y
+de qué versión sale*—. Hoy se hace a mano con `transaction().put()` (B4b, en vivo): sin registro,
+cada pasada lo rehace todo o lleva la cuenta quien programa. Lee de colecciones del lago (mantenidas
+o escritas): no pide la credencial del cliente.
+
+**La superficie.** La misma `apply()`; lo que decide el modo es la **salida**: un `Dataset` da filas
+(B5), una `MediaCollection` escrita da ficheros. La función devuelve (o va dando) `ore.File`:
+
+```python
+@transform(inputs=[ore.collection("s3_stuff.nueva_carpeta.contratos")],
+           output="sandbox.default.paginas")           # una colección escrita
+def paginas(contratos, out):
+    return contratos.apply(a_png, version="1")
+
+def a_png(item):
+    with item.open() as f:
+        for n, png in enumerate(render(f), 1):          # p. ej. pypdfium2
+            yield ore.File(f"p{n:03}.png", png, anchor={"kind": "page", "page": n})
+```
+
+- `ore.File(name, data, content_type=None, anchor=None)`: `data` como en `put` (bytes, ruta o
+  fichero abierto); `anchor`, el de v1alpha17 `02` (qué parte del ítem es).
+- **La ruta de salida es la del ítem más el nombre**: `nueva_carpeta/a.pdf/p001.png`. Determinista
+  —repetir escribe en el mismo sitio, y el blob igual ni se sube (`iguales`)—; dos ficheros de un
+  ítem con el mismo nombre son un error de la función. Una copia del ítem con otra ruta es el mismo
+  ítem (la identidad es el `digest`, como en B5): sus ficheros no se duplican ni se mueven.
+- Filas y ficheros a la vez, no: una salida, un modo.
+
+**El registro es el índice de la colección de salida**, como en B5 la tabla anclada es el suyo: no
+hay otra tabla que mantener a la par.
+
+- Cada fichero escrito así lleva dos campos nuevos en el índice y en su `MediaRef`: **`source`**
+  (el ítem de origen: `uri` con versión y `digest`) y **`derivation`** (la clave: identidad del
+  ítem, `version` —o el hash del código de la función—, `params`). Es el linaje a nivel de ítem: una
+  página dice de qué contrato y de qué versión sale, y por ahí llega hasta el dato final (la fila de
+  una tabla anclada sobre las páginas).
+- Un ítem que **no da ficheros** (un filtro: «sólo los escaneados») o que **falla** deja una
+  **marca** en el índice —una fila sin blob, `state: derived | error`, con el mensaje— que el
+  listado no enseña como ítem. Sin ella, un ítem sin salida se recalcularía en cada pasada.
+
+**Una pasada:**
+
+1. El listado de la entrada y el registro de la salida (ficheros y marcas, por `source`).
+2. Por ítem de la entrada: con la misma clave, **se salta**; nuevo, **se calcula**; con otra clave
+   (cambió el ítem, la función o los parámetros), se calcula y, en la misma transacción, **se
+   retiran sus ficheros que ya no emite** (las páginas 9–12 de un contrato que pasó a tener 8).
+3. Un ítem que ya no está en la entrada: **se retiran sus ficheros** y su marca.
+4. Un error es su marca y los demás siguen; `retry_errors=True` los reintenta. `threads` ítems a
+   la vez, como B5.
+5. Se confirma cada `save_every_s` y al final: una transacción por guardado, así que una pasada
+   cortada conserva lo confirmado y la siguiente sigue de ahí. Nada que hacer, nada escrito.
+6. El linaje de la colección (`derivedFrom`) lo escribe el servidor al confirmar, como ya hace (B4·4).
+
+Devuelve el resumen de B5 con los ficheros: `{items, new, recomputed, skipped, errors, removed,
+files_written, files_retired}`.
+
+**Lo que hace falta debajo:**
+
+| paso | qué |
+|---|---|
+| B9·0 | **medida** en un puesto de victor: los 4 contratos a PNG por página (tiempo y tamaño por página) y una transacción de ~1 000 ficheros pequeños con `put_many` (lo que tarda y si el sello aguanta) |
+| B9·1 | OOS y `docs/media.md`: `source` y `derivation` del ítem de una colección escrita, y la marca (`derived`, `error`), con casos |
+| B9·2 | ore-medios: **retirar** un camino en una transacción (hoy sólo se pone); las dos columnas y las marcas en el índice; el listado no enseña marcas; leer el registro por `source` |
+| B9·3 | ore-serve: `delete` y los campos en `/media/…/transactions`, y el registro en `/media/…` |
+| B9·4 | SDK: `ore.File`, `apply()` hacia una colección, `Transaction.delete`; casos en el banco de la media (nuevo, igual, cambia y encoge, se va, copia con otra ruta, sin salida, error y reintento, corte a mitad) |
+| B9·5 | en vivo en victor: `contratos` → páginas PNG; otra vez, nada; un contrato nuevo, uno cambiado, uno quitado |
+| B9·6 | docs y esta sección pasa a «hecho» |
+
+**Fuera, y anotado:** su forma SQL (`insert into media collection … select …`, que es M3 y verá
+`source` como columna del listado); Node y la JVM; y renderizar PDF en el puesto: la imagen no trae
+un renderizador (sólo `pillow`, como sugerida), así que `pypdfium2` va como librería del
+repositorio o, si se decide, provista en la imagen.
+
 ## Lo que no se hace aquí
 
 - Las funciones concretas de IA (qué OCR, qué modelo de transcripción): se eligen sobre la base,
