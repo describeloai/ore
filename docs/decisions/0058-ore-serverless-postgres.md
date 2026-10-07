@@ -872,9 +872,30 @@ Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ning�
 - Quién habla con quién: `ebtables` en el puente de cada nodo. Una trama pasa sólo si su origen o su destino está en el lado del proxy (`10.100.0.0/17`); las VMs van en `10.100.128.0/17`. Probado con las dos VMs en nodos distintos (VXLAN).
 
 **Deudas de P3** (cada una, con su por qué):
-1. **Una VM puede falsificar un origen del lado del proxy.** Le llegarían tramas sueltas a otra VM, pero nunca la respuesta, que va a la MAC del proxy de verdad: sin respuesta no hay TCP, y Postgres no escucha UDP. Cerrarlo del todo es filtrar en el runner por la IP de **su** VM (nuestro fork).
+1. ~~**Una VM puede falsificar un origen del lado del proxy.**~~ **Cerrada en P3·6**, y era peor de lo que decía aquí. Con un ARP que diga «la IP del proxy soy yo», que el puente dejaba pasar, una VM con root podía desviar hacia ella las **respuestas** que otra VM manda al proxy. Ahora el runner de cada VM sólo deja salir **su** IP y **su** MAC (ver P3·6).
 2. **La migración en caliente va de runner a runner por la red de pods** (:20187), así que la barrera 2 abre ese puerto entre VMs. Un huésped podría alcanzarlo por el NAT de su runner, y sólo escucha mientras hay una migración entrante.
 3. **Imágenes de terceros sin espejo:** cert-manager, Multus, whereabouts y el device plugin (éste, fijado por digest). Se espejan en la puerta de producción.
+
+#### P3·6 · La IP reutilizada y la anti-suplantación (2026-10-07)
+
+**El problema, medido** ([`p36.sh`](../../pruebas-de-fuego/ore-postgres/p36.sh)):
+- Al recrear una VM, el IPAM de NeonVM le da la IP **más baja libre**, que es la suya de antes, con **otra MAC**.
+- Responde por la IP del pod a los 32–35 s (su arranque real). Por la overlay, **~10 s después**: el lado del proxy aún tiene la MAC vieja en su caché ARP.
+
+**El arreglo: la VM se anuncia al nacer.**
+- Un comando `sysinit` en la imagen (nuestro fork de `neon`, `baad49aa`) envía un ARP gratuito con la IP que NeonVM le pone en la línea del kernel (`ip=…:eth1:off`).
+- **Medido**, haciendo eso mismo a mano en cuanto el huésped arranca: la overlay responde **1,7 s** después de la IP del pod, frente a ~10 s. Ese 1,7 s es el coste de la propia sonda (`kubectl exec` + `psql`).
+
+**Y lo que destapó: la anti-suplantación.**
+- Dejar pasar el ARP gratuito obligó a mirar quién puede decir qué en la overlay. La regla de P3·5 dejaba pasar cualquier ARP cuyo origen dijera ser del lado del proxy, y eso lo puede escribir una VM con root.
+- Se probó desde dentro de una VM, con un socket crudo en Perl ([`garp.pl`](../../pruebas-de-fuego/ore-postgres/garp.pl)). La trama falsificada **salía del runner hacia el puente**; no se vio envenenar la caché de la otra VM, pero el porqué no se entendió, y eso no es una garantía.
+- ⇒ **Filtro dentro del runner de cada VM** ([`cerrada.yaml`](../../malla/postgres-computo/neonvm/cerrada.yaml), ①): la `tap` de la VM sólo emite IPv4 y ARP con **su IP y su MAC** (las de la línea de comandos de su QEMU); lo demás se tira, IPv6 incluido. El DaemonSet entra en el netns del runner por el pid de QEMU, cada 5 s.
+- **Medido** con contadores:
+  - 3 ARP con la IP del proxy → 3 a `DROP`;
+  - 3 con la IP de la otra VM → 3 a `DROP`;
+  - 3 gratuitos con la suya → 3 aceptados;
+  - el tráfico normal sigue.
+- ⚠️ **ebtables-nft ignora `-P DROP` al crear una cadena**: quedaba en `RETURN` y lo falsificado pasaba (los contadores lo enseñaron). Va un `-j DROP` explícito.
 
 **Hallazgo para P3·6:** al borrar una VM, su runner sigue vivo unos segundos con **la misma IP de la overlay**, y contestaba el `select 1` de la VM nueva. Los «arranques de 3,5 s» eran eso. `vm.sh` ahora espera a que se vaya; el plano de control (P4) tendrá que hacer lo mismo.
 
