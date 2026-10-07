@@ -387,9 +387,10 @@ metadata:
   name: salida-al-cofre
   namespace: t-demo
 spec:
+  # ✏️ 2026-10-07 · Ni el motor (0057 B4·3): lo que lee lo trae la petición.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [puesto]}
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor]}
   policyTypes: [Egress]
   egress:
     - to:

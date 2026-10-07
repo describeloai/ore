@@ -193,7 +193,11 @@ metadata:
   name: salida-a-la-forja
   namespace: t-demo
 spec:
-  podSelector: {}
+  # ✏️ 2026-10-07 · Todos MENOS el motor (0057 B4·3, `58-el-motor.yaml`): un
+  #   motor puro sale sólo al DNS y al lago. Medido en t-demo: con `{}` llegaba.
+  podSelector:
+    matchExpressions:
+      - {key: ore.dev/rol, operator: NotIn, values: [motor]}
   policyTypes: [Egress]
   egress:
     - to:
@@ -231,9 +235,10 @@ spec:
   # ✏️ 2026-10-02 · Menos un puesto: corre el código de una persona y ya no
   #   lleva credencial que presentar al IdP —habla con `ore-serve` con el token
   #   de su pod (R1)—. Lo que no necesita, no lo alcanza (como el cofre, 41).
+  # ✏️ 2026-10-07 · Ni el motor (0057 B4·3): no tiene identidad que pedir.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [puesto]}
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor]}
   policyTypes: [Egress]
   egress:
     - to:
@@ -294,7 +299,11 @@ metadata:
   name: salida-al-control
   namespace: t-demo
 spec:
-  podSelector: {}
+  # ✏️ 2026-10-07 · Todos MENOS el motor (0057 B4·3, `58-el-motor.yaml`): un
+  #   motor puro sale sólo al DNS y al lago. Medido en t-demo: con `{}` llegaba.
+  podSelector:
+    matchExpressions:
+      - {key: ore.dev/rol, operator: NotIn, values: [motor]}
   policyTypes: [Egress]
   egress:
     - to:
