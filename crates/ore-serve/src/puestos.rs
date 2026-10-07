@@ -3286,6 +3286,29 @@ impl Servidor {
         )
     }
 
+    /// 0057 B4·6 · Si quien llama es **el agente de un build** (un trabajo con
+    /// `build`): sólo un agente, y del puesto que es suyo; una persona que
+    /// mande `x-ore-puesto` no lo es.
+    pub(crate) fn llama_un_build(
+        &self,
+        p: &ore_entrada::http::Peticion,
+        sujeto: &Identidad,
+    ) -> bool {
+        if !es_agente(sujeto) {
+            return false;
+        }
+        let Some(id) = self.puesto_que_llama(p, sujeto) else {
+            return false;
+        };
+        self.puestos
+            .lista
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|x| x.trabajo.as_ref())
+            .is_some_and(|t| t.build.is_some())
+    }
+
     /// 0053 F4·3 · `puesto:abrir`, con el token de quien lo abre. Sin puente o sin
     /// token, nada; si `ore-iam` niega o no contesta, el puesto se abre igual —
     /// abrir no lo exigía— y lo que haga dentro no tendrá huella: se dice aquí.

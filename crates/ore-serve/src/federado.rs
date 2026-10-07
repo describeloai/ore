@@ -68,6 +68,11 @@ impl Servidor {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         let desde_puesto = self.puesto_que_llama(p, sujeto).is_some();
+        // 0057 B4·6 · Un build ES el trabajo que copia (0053 F7): lee con el
+        // perfil de copia de la pasarela —sin tope de filas ni de bytes, 30
+        // min—, no con el de una lectura en vivo. Sólo el agente de un trabajo
+        // que es un build: una persona no lo pide con una cabecera.
+        let copia = self.llama_un_build(p, sujeto);
         let (quien, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
             Ok(x) => x,
             Err(r) => return Salida::Una(r),
@@ -202,7 +207,7 @@ impl Servidor {
             return Salida::Una(r);
         }
 
-        // ⑤ El presupuesto.
+        // ⑤ El presupuesto (el de una lectura en vivo; una copia lleva el suyo).
         let (filas, bytes, ms) = if texto("fullScan") == "expensive" {
             (1_000_000u64, 1u64 << 30, 30_000u64)
         } else {
@@ -262,24 +267,32 @@ impl Servidor {
             peticion.push(("listado", Json::de_node(l)));
         }
         let id = format!("fed-{}", ore_acceso::nuevo_id().trim_start_matches("ev-"));
-        let cuerpo = Json::obj([
+        let mut campos = vec![
             ("id", Json::s(id.as_str())),
             ("origen", Json::s(fuente.as_str())),
             ("tipo", Json::s(texto("tipo"))),
             ("url", Json::s(url.as_str())),
             ("peticion", Json::obj(peticion)),
-            (
+        ];
+        if copia {
+            // Sin `presupuesto`: el de copia de la pasarela (`cotas.copia`).
+            campos.push(("perfil", Json::s("copia")));
+        } else {
+            campos.push((
                 "presupuesto",
                 Json::obj([
                     ("filas", Json::Int(filas as i64)),
                     ("bytes", Json::Int(bytes as i64)),
                     ("ms", Json::Int(ms as i64)),
                 ]),
-            ),
-        ])
-        .jcs();
+            ));
+        }
+        let cuerpo = Json::obj(campos).jcs();
         drop(url);
-        let (codigo, cabeceras, lector) = match abrir(&pasarela(), &cuerpo) {
+        // Una copia espera más: la cola de copias de la pasarela (5 min) y un
+        // origen que tarda en dar el primer lote.
+        let espera = Duration::from_secs(if copia { 30 * 60 } else { 120 });
+        let (codigo, cabeceras, lector) = match abrir(&pasarela(), &cuerpo, espera) {
             Ok(x) => x,
             Err(e) => {
                 let r = error(
@@ -757,7 +770,7 @@ fn guardar_final(id: &str, persona: &str, f: Json) {
 type Abierta = (u16, Vec<(String, String)>, BufReader<TcpStream>);
 
 /// Abre la lectura en la pasarela: su estado, sus cabeceras y el cuerpo.
-fn abrir(destino: &str, cuerpo: &str) -> Result<Abierta, String> {
+fn abrir(destino: &str, cuerpo: &str, espera: Duration) -> Result<Abierta, String> {
     use std::net::ToSocketAddrs;
     let dir = destino
         .to_socket_addrs()
@@ -766,7 +779,7 @@ fn abrir(destino: &str, cuerpo: &str) -> Result<Abierta, String> {
         .ok_or("sin dirección")?;
     let mut s =
         TcpStream::connect_timeout(&dir, Duration::from_secs(5)).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(Duration::from_secs(120))).ok();
+    s.set_read_timeout(Some(espera)).ok();
     let req = format!(
         "POST /v1/read HTTP/1.1\r\nhost: pasarela\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         cuerpo.len()

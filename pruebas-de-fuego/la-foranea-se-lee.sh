@@ -254,8 +254,8 @@ def b_over():
 
 @transform(inputs=["vivo.datos.grande"], output="std.copias.b_grande")
 def b_grande():
-    """Una lectura que se corta en el tope: el build falla, no escribe a medias."""
-    return write("std.copias.b_grande", sql("select count(*) n from vivo.datos.grande"))
+    """Más filas que el tope de una lectura en vivo: un build las copia todas."""
+    return write("std.copias.b_grande", sql("select id from vivo.datos.grande"))
 
 
 @transform(inputs=["congelada.datos.clientes"], output="std.copias.b_congelada")

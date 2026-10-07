@@ -1194,7 +1194,8 @@ def _lectura_en_vivo(con, l, estricta):
     if session.id:
         req.add_header("x-ore-puesto", session.id)
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        # 0057 B4·6: en un build la lectura es una copia (sin tope, hasta 30 min).
+        with urllib.request.urlopen(req, timeout=1800 if os.environ.get("ORE_BUILD") else 120) as resp:
             id_ = resp.headers.get("ore-lectura")
             tabla = pa.ipc.open_stream(resp.read()).read_all()
     except urllib.error.HTTPError as e:

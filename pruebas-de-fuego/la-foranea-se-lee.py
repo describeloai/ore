@@ -352,13 +352,13 @@ if os.environ.get("ARBOL"):
         ("B4 build · over() de una tabla expuesta", build("std.copias.b_over", 8, ["s3.datos.pedidos"])),
         ("B5 build · .sql create dataset as select", build("std.copias.b_sql", 3, ["s3.datos.clientes"])),
         ("B6 build · input de la congelada", build("std.copias.b_congelada")),
-        ("B8 build · una lectura en vivo cortada", build("std.copias.b_grande")),
+        # Un build es una copia (0053 F7): sin el tope de la lectura en vivo.
+        ("B8 build · sin tope: 100 001 filas", build("std.copias.b_grande", 100_001, ["s3.datos.grande"])),
+        ("B8 · en una celda, el tope sigue", con_sql("select id from vivo.datos.grande")),
         ("B7 commit · salida en la foreign database", commit_con_salida_en_la_foranea()),
     ]
     NO.update({
         "B6 build · input de la congelada": "OOS2051",
-        # Un build no escribe un dataset a medias (ni un agregado de una parte).
-        "B8 build · una lectura en vivo cortada": "cortado",
         "B7 commit · salida en la foreign database": "OOS2049",
     })
 
