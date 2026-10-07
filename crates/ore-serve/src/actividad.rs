@@ -160,6 +160,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ),
     // 0050 G5b: la firma de un texto sin guardar (Dry Run) no escribe nada.
     ("POST", "/funciones/firma", Es::Datos),
+    // 0055 P1: los `@transform` de un texto sin guardar; ni lee el árbol ni escribe.
+    ("POST", "/transforms/editor", Es::Datos),
     // el puesto: abrirlo y cerrarlo son actos; lo de dentro, datos
     ("POST", "/puestos", Es::Acto("puesto:abrir")),
     ("DELETE", "/puestos/{}", Es::Acto("puesto:cerrar")),
@@ -170,6 +172,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ),
     ("POST", "/puestos/{}/transform", Es::Datos),
     ("POST", "/puestos/{}/ejecutar", Es::Datos),
+    // 0055 P1: un Preview es una celda que no escribe nada.
+    ("POST", "/puestos/{}/preview", Es::Datos),
     ("POST", "/puestos/{}/sql", Es::Datos),
     ("POST", "/puestos/{}/explain", Es::Datos),
     ("POST", "/puestos/{}/lsp", Es::Datos),

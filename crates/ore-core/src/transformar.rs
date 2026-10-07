@@ -1011,6 +1011,79 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
     }
 }
 
+// ── el editor (0055 P1) ─────────────────────────────────────────────────────
+
+/// 0055 P1 · **Un transform del texto del editor**, sin guardar: lo que el
+/// desplegable de Preview enseña y lo que su techo acota.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelEditor {
+    /// Python: el nombre del `def`. SQL: el ordinal de la sentencia.
+    pub clave: String,
+    /// La línea del decorador (o de la sentencia), desde 1.
+    pub linea: Option<usize>,
+    /// En forma corta, en su orden y sin repetir.
+    pub inputs: Vec<String>,
+    /// En forma corta.
+    pub output: String,
+    pub descripcion: Option<String>,
+}
+
+/// 0055 P1 · **Los transforms de un texto sin guardar**: la derivación del
+/// commit sobre el editor —sin leer el árbol, sin escribir, sin ejecutar—, y
+/// sus `OOS2043` con **el mismo texto y la misma línea** que la puerta del
+/// commit (`py_roto`, `no_se_deriva_t`, `sql_roto`). Un `@transform` que no
+/// se deriva no está en la lista: está en los diagnósticos. `fichero` da la
+/// extensión y el `file` de los diagnósticos.
+pub fn del_editor(fichero: &Path, fuente: &str) -> (Vec<DelEditor>, Vec<Diagnostic>) {
+    let corto = |x: &str| crate::normalize::a_corto(x).into_owned();
+    let base = fichero
+        .file_name()
+        .map(|b| b.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let mut dichos = BTreeSet::new();
+    let mut lista = Vec::new();
+    if base.ends_with(".sql") {
+        match derivar_sql(fuente, &base) {
+            Err(motivo) => sql_roto(fichero, &motivo, &mut out, &mut dichos),
+            Ok(g) => {
+                for (n, p) in &g.transforms {
+                    lista.push(DelEditor {
+                        clave: n.to_string(),
+                        linea: g.sitios.get(n).and_then(|s| s.pos).map(|p| p.line),
+                        inputs: p.inputs.iter().map(|i| corto(i)).collect(),
+                        output: corto(&p.output),
+                        descripcion: None,
+                    });
+                }
+            }
+        }
+        return (lista, out);
+    }
+    let d = ore_code::python::derivar(fuente, &base);
+    if py_roto(fichero, fuente, &d, &mut out, &mut dichos) {
+        return (lista, out);
+    }
+    let lineas = Lineas::new(fuente);
+    for x in &d.transforms {
+        match &x.resultado {
+            Err(fallos) => no_se_deriva_t(fichero, fuente, &x.nombre, fallos, &mut out),
+            Ok(p) => {
+                // Dos `def` con el mismo nombre: vale el último, como en Python.
+                lista.retain(|t: &DelEditor| t.clave != x.nombre);
+                lista.push(DelEditor {
+                    clave: x.nombre.clone(),
+                    linea: Some(crate::promover::pos(&lineas, x.sitios.decorador).line),
+                    inputs: p.inputs.iter().map(|i| corto(i)).collect(),
+                    output: corto(&p.output),
+                    descripcion: p.descripcion.clone(),
+                });
+            }
+        }
+    }
+    (lista, out)
+}
+
 // ── el flujo ────────────────────────────────────────────────────────────────
 
 /// v1alpha25 `01` §7: lo que lee el transform que escribe `qn` —cada entrada,
@@ -1456,5 +1529,84 @@ mod tests {
         // Ninguno en el YAML derivado.
         assert!(ds.iter().all(|x| !rel(&d, x).ends_with(".yaml")), "{ds:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0055 P1 · El editor da los transforms del texto sin guardar y, si no se
+    /// lee, el mismo `OOS2043` —texto y línea— que la puerta del commit.
+    #[test]
+    fn el_editor_lista_sus_transforms_y_dice_lo_mismo_que_la_puerta() {
+        let dos = format!(
+            "{BUENO}\n\n@transform(inputs=[\"ventas.default.clientes\", \"ventas.pedidos\"], \
+             output=\"ventas.default.otros\")\ndef otros():\n    \"\"\"Los otros.\"\"\"\n    return 1\n"
+        );
+        let (ts, ds) = del_editor(Path::new("packages/ventas/etl/limpios.py"), &dos);
+        assert!(ds.is_empty(), "{ds:?}");
+        let resumen: Vec<(&str, Option<usize>, Vec<&str>, &str)> = ts
+            .iter()
+            .map(|t| {
+                (
+                    t.clave.as_str(),
+                    t.linea,
+                    t.inputs.iter().map(String::as_str).collect(),
+                    t.output.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            resumen,
+            [
+                (
+                    "clientes_limpios",
+                    Some(8),
+                    vec!["ventas.clientes"],
+                    "ventas.limpios"
+                ),
+                (
+                    "otros",
+                    Some(13),
+                    vec!["ventas.clientes", "ventas.pedidos"],
+                    "ventas.otros"
+                ),
+            ]
+        );
+        assert_eq!(ts[1].descripcion.as_deref(), Some("Los otros."));
+
+        // Lo que no se lee: el diagnóstico de la puerta, igual.
+        let d = arbol("editor");
+        for (fuente, ruta) in [(SANGRADO, "etl/limpios.py"), (ANIDADO, "etl/anidado.py")] {
+            escribir(&d, ruta, fuente);
+            let fichero = d.join("packages/ventas").join(ruta);
+            let puerta: Vec<(String, Option<usize>)> = diagnosticos(&d)
+                .into_iter()
+                .filter(|x| x.code == Code::Oos2043 && x.file == fichero)
+                .map(|x| (x.message, x.pos.map(|p| p.line)))
+                .collect();
+            let (ts, ds) = del_editor(&fichero, fuente);
+            assert!(ts.is_empty(), "{ts:?}");
+            assert!(ds.iter().all(|x| x.code == Code::Oos2043), "{ds:?}");
+            let editor: Vec<(String, Option<usize>)> = ds
+                .into_iter()
+                .map(|x| (x.message, x.pos.map(|p| p.line)))
+                .collect();
+            assert!(!puerta.is_empty(), "{ruta}");
+            assert_eq!(editor, puerta, "{ruta}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+
+        // SQL: una sentencia que escribe, por su ordinal.
+        let (ts, ds) = del_editor(
+            Path::new("c.sql"),
+            "select 1;\ncreate or replace dataset ventas.resumen as select * from ventas.clientes;\n",
+        );
+        assert!(ds.is_empty(), "{ds:?}");
+        assert_eq!(ts.len(), 1);
+        assert_eq!(
+            (ts[0].clave.as_str(), ts[0].output.as_str()),
+            ("2", "ventas.resumen")
+        );
+        let (ts, ds) = del_editor(Path::new("c.sql"), "create or replace dataset (;\n");
+        assert!(ts.is_empty());
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].code, Code::Oos2043);
     }
 }

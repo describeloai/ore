@@ -322,7 +322,7 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
 }
 
 /// Un diagnóstico, como lo lee la consola.
-fn diagnostico_json(raiz: &Path, d: &ore_core::diag::Diagnostic) -> Json {
+pub(crate) fn diagnostico_json(raiz: &Path, d: &ore_core::diag::Diagnostic) -> Json {
     let mut m = vec![
         ("code", Json::s(d.code.as_str())),
         ("message", Json::s(&d.message)),
@@ -433,17 +433,107 @@ pub(crate) struct ArnesDeBuild<'a> {
 /// `@transform` llamado al cargar falla con su línea— y llama al `def`, que
 /// se declara al servidor dentro del techo que el build ya puso.
 pub(crate) fn arnes_python(a: &ArnesDeBuild<'_>) -> String {
+    arnes(a.fichero, a.fuente, a.def, Modo::Build(a))
+}
+
+/// 0055 P1 · **La celda de un Preview**: el mismo arnés que el build (D21) —el
+/// módulo se carga con D15 armado y el arnés llama al `def`—, sobre el texto
+/// del editor y en la sesión de la persona; con dos diferencias: no hay
+/// `ORE_BUILD` (ni procedencia ni informe de build), y `write()` está
+/// interceptado desde antes de cargar el módulo (`_ore._ensayo`): no escribe,
+/// y lo que habría escrito —esquema, primeras filas, recuento— va al informe
+/// de la celda como `preview`. `output` es la salida que el código declara:
+/// la única que `write()` acepta, también al cargar.
+pub(crate) fn arnes_de_preview(fichero: &str, fuente: &str, def: &str, output: &str) -> String {
+    arnes(fichero, fuente, def, Modo::Preview { output })
+}
+
+/// Lo que cambia entre el arnés de un build y el de un Preview.
+enum Modo<'a> {
+    Build(&'a ArnesDeBuild<'a>),
+    Preview { output: &'a str },
+}
+
+fn arnes(fichero: &str, fuente: &str, def: &str, modo: Modo<'_>) -> String {
     let cad = |s: &str| Json::s(s).jcs();
+    // Lo de fuera entra como literal de cadena JSON: ni en un comentario se
+    // interpola nada (una ruta con un salto de línea sería código).
+    let (cabecera, entorno, version, nombre, cuando) = match &modo {
+        Modo::Build(a) => (
+            format!("# El arnés de un build (ORE 0055 B1, B2): {}", a.documento),
+            format!(
+                "_COMMIT = (_os.environ.get(\"ORE_CODIGO\") or \"\").rpartition(\"@\")[2]\n\
+                 _os.environ[\"ORE_BUILD\"] = _json.dumps(dict(_json.loads({}), id=_ore.session.id, commit=_COMMIT))",
+                cad(&a.build.jcs())
+            ),
+            "if not hasattr(_ore, \"_para_el_informe\"):\n    \
+             raise RuntimeError(\"this job runs an older ORE SDK, which cannot build: rebuild the image\")",
+            "ore_build",
+            "at this commit",
+        ),
+        Modo::Preview { output } => (
+            "# El arnés de un Preview (ORE 0055 P1): el código del editor, sin escribir nada"
+                .to_string(),
+            format!(
+                "_SALIDA = {}\n\
+                 # Un Preview no es un build: ni su procedencia ni su informe.\n\
+                 _os.environ.pop(\"ORE_BUILD\", None)",
+                cad(output)
+            ),
+            "if not hasattr(_ore, \"_ensayo\"):\n    \
+             raise RuntimeError(\"this session runs an older ORE SDK, which cannot preview: restart the session\")",
+            "ore_preview",
+            "in the editor",
+        ),
+    };
+    let (armar, llamar) = match &modo {
+        Modo::Build(_) => (
+            "",
+            r#"# El build lo llama él: una vez, y con lo que el documento deja.
+try:
+    _hecho = _f()
+except Exception as e:  # noqa: BLE001
+    raise _falla("runtime", "%s: %s" % (type(e).__name__, e), _linea(e)) from None
+if isinstance(_hecho, dict) and "rows" in _hecho:
+    print("%s · built from %s:%s · %d rows%s" % (_f.output, _FICHERO, _DEF, _hecho["rows"], " · the same write: nothing new" if _hecho.get("repeated") else ""))
+    _ore._resultado_de_escritura(_hecho)
+else:
+    print("%s · built from %s:%s · the def did not return what `write()` returns" % (_f.output, _FICHERO, _DEF))
+"#,
+        ),
+        Modo::Preview { .. } => (
+            // Desde antes de cargar: un `write()` del nivel superior tampoco
+            // escribe (en un build escribiría, acotado por su techo).
+            "# P1: desde aquí `write()` no escribe; lo que escribiría, al informe.\n\
+             _ore._ensayo(_SALIDA, _DEF)\n",
+            r#"# El Preview lo llama él, como un build: una vez, y dentro de su techo.
+try:
+    _hecho = _f()
+except Exception as e:  # noqa: BLE001
+    raise _falla("runtime", "%s: %s" % (type(e).__name__, e), _linea(e)) from None
+finally:
+    _visto = _ore._ensayo(None)
+if _visto is None:
+    raise _falla("not-written", "`%s` returned without calling `write()`: there is nothing to preview" % _DEF, None)
+print("%s · preview of %s:%s · %d rows · nothing was written" % (_visto["output"], _FICHERO, _DEF, _visto["total"]))
+_ore._para_el_informe({"preview": _visto})
+"#,
+        ),
+    };
+    // Si algo falla antes de llamar al `def`, el Preview se desarma igual.
+    let desarmar = match &modo {
+        Modo::Build(_) => "",
+        Modo::Preview { .. } => "    _ore._ensayo(None)\n",
+    };
     format!(
-        r#"# El arnés de un build (ORE 0055 B1, B2): {documento}
+        r#"{cabecera}
 import json as _json
 import os as _os
 import traceback as _tb
 
 {guarda}_FICHERO = {fichero}
 _DEF = {def_}
-_COMMIT = (_os.environ.get("ORE_CODIGO") or "").rpartition("@")[2]
-_os.environ["ORE_BUILD"] = _json.dumps(dict(_json.loads({build}), id=_ore.session.id, commit=_COMMIT))
+{entorno}
 
 
 def _linea(e):
@@ -463,44 +553,31 @@ def _falla(tipo, mensaje, linea):
     return RuntimeError(mensaje)
 
 
-if not hasattr(_ore, "_para_el_informe"):
-    raise RuntimeError("this job runs an older ORE SDK, which cannot build: rebuild the image")
+{version}
 try:
     _codigo = compile({fuente}, _FICHERO, "exec")
 except SyntaxError as e:
     raise _falla("syntax", "SyntaxError: %s" % e.msg, e.lineno) from None
-_modulo = {{"__name__": "ore_build", "__file__": _FICHERO}}
-# D15: mientras el módulo carga, un `@transform` llamado no corre: falla.
+_modulo = {{"__name__": "{nombre}", "__file__": _FICHERO}}
+{armar}# D15: mientras el módulo carga, un `@transform` llamado no corre: falla.
 _ore._modulo_en_carga(_FICHERO)
 try:
     exec(_codigo, _modulo)
 except _ore.TransformCalledWhileLoading as e:
-    _ore._para_el_informe({{"error": {{"tipo": "called-while-loading", "fichero": _FICHERO, "linea": e.linea}}}})
+{desarmar}    _ore._para_el_informe({{"error": {{"tipo": "called-while-loading", "fichero": _FICHERO, "linea": e.linea}}}})
     raise RuntimeError("%s: %s" % (_FICHERO, e)) from None
 except Exception as e:  # noqa: BLE001
-    raise _falla("load", "%s while loading the module: %s" % (type(e).__name__, e), _linea(e)) from None
+{desarmar}    raise _falla("load", "%s while loading the module: %s" % (type(e).__name__, e), _linea(e)) from None
 finally:
     _ore._modulo_en_carga(None)
 _f = _modulo.get(_DEF)
 if not callable(_f) or getattr(_f, "output", None) is None:
-    raise _falla("not-a-transform", "`%s` is not a `@transform` def of %s at this commit" % (_DEF, _FICHERO), None)
-# El build lo llama él: una vez, y con lo que el documento deja.
-try:
-    _hecho = _f()
-except Exception as e:  # noqa: BLE001
-    raise _falla("runtime", "%s: %s" % (type(e).__name__, e), _linea(e)) from None
-if isinstance(_hecho, dict) and "rows" in _hecho:
-    print("%s · built from %s:%s · %d rows%s" % (_f.output, _FICHERO, _DEF, _hecho["rows"], " · the same write: nothing new" if _hecho.get("repeated") else ""))
-    _ore._resultado_de_escritura(_hecho)
-else:
-    print("%s · built from %s:%s · the def did not return what `write()` returns" % (_f.output, _FICHERO, _DEF))
-"#,
-        documento = a.documento,
+{desarmar}    raise _falla("not-a-transform", "`%s` is not a `@transform` def of %s {cuando}" % (_DEF, _FICHERO), None)
+{llamar}"#,
         guarda = ore_core::sdk::guarda_python(),
-        fichero = cad(a.fichero),
-        def_ = cad(a.def),
-        build = cad(&a.build.jcs()),
-        fuente = cad(a.fuente),
+        fichero = cad(fichero),
+        def_ = cad(def),
+        fuente = cad(fuente),
     )
 }
 
@@ -789,13 +866,31 @@ fn ahora_s() -> u64 {
 const LOG_MAXIMO: usize = 64 * 1024;
 
 /// El error de un build, como lo lee la consola: `tipo` es `syntax`, `load`,
-/// `called-while-loading` (D15), `not-a-transform`, `runtime` o `lost`.
+/// `called-while-loading` (D15), `not-a-transform`, `runtime` o `lost`; y en
+/// un Preview (0055 P1), `not-written`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ErrorDeBuild {
     pub tipo: String,
     pub mensaje: String,
     pub fichero: Option<String>,
     pub linea: Option<i64>,
+}
+
+impl ErrorDeBuild {
+    /// `{tipo, mensaje, fichero?, linea?}`: el de un build y el de un Preview.
+    pub(crate) fn a_json(&self) -> Json {
+        let mut x = vec![
+            ("tipo", Json::s(&self.tipo)),
+            ("mensaje", Json::s(&self.mensaje)),
+        ];
+        if let Some(f) = &self.fichero {
+            x.push(("fichero", Json::s(f)));
+        }
+        if let Some(l) = self.linea {
+            x.push(("linea", Json::Int(l)));
+        }
+        Json::obj(x)
+    }
 }
 
 /// **Un build como lo dice el historial** (B2): de lo vivo —un puesto en la
@@ -860,14 +955,7 @@ impl Visto {
             m.push(("snapshot", Json::s(s)));
         }
         if let Some(e) = &self.error {
-            let mut x = vec![("tipo", Json::s(&e.tipo)), ("mensaje", Json::s(&e.mensaje))];
-            if let Some(f) = &e.fichero {
-                x.push(("fichero", Json::s(f)));
-            }
-            if let Some(l) = e.linea {
-                x.push(("linea", Json::Int(l)));
-            }
-            m.push(("error", Json::obj(x)));
+            m.push(("error", e.a_json()));
         }
         if detalle && let Some(l) = &self.log {
             m.push(("log", Json::s(l)));
@@ -891,16 +979,16 @@ fn entero(n: &Node, k: &str) -> Option<i64> {
 /// Lo que la salida de la celda dice del build: si salió bien, sus filas y
 /// su snapshot, o su error con el fichero y la línea que el arnés puso en el
 /// informe de la celda (no se lee del texto); y lo impreso, para el `log`.
-struct DeLaSalida {
-    fallo: bool,
-    ms: Option<i64>,
-    filas: Option<i64>,
-    snapshot: Option<String>,
-    error: Option<ErrorDeBuild>,
-    log: Option<String>,
+pub(crate) struct DeLaSalida {
+    pub fallo: bool,
+    pub ms: Option<i64>,
+    pub filas: Option<i64>,
+    pub snapshot: Option<String>,
+    pub error: Option<ErrorDeBuild>,
+    pub log: Option<String>,
 }
 
-fn de_la_salida(salida: &Node, codigo: &str) -> DeLaSalida {
+pub(crate) fn de_la_salida(salida: &Node, codigo: &str) -> DeLaSalida {
     let fallo = texto(salida, "tipo").as_deref() == Some("error");
     let informe = salida.get("informe").map(|(_, v)| v);
     let error_informado = informe.and_then(|i| i.get("error")).map(|(_, v)| v);
@@ -1409,6 +1497,73 @@ mod tests {
         }
     }
 
+    /// 0055 P1 · El arnés del Preview es el del build (D21) sin `ORE_BUILD` y
+    /// con `write()` interceptado desde antes de cargar el módulo.
+    #[test]
+    fn el_arnes_del_preview_es_el_del_build_y_no_escribe() {
+        let fuente = "\"\"\"); import os #\ndef limpios():\n    pass\n";
+        let t = arnes_de_preview(
+            "packages/ventas/etl/limpios.py",
+            fuente,
+            "limpios",
+            "ventas.limpios",
+        );
+        let build = Json::obj([("output", Json::s("ventas.limpios"))]);
+        let b = arnes_python(&ArnesDeBuild {
+            documento: "packages/ventas/etl/pipeline/ventas.limpios.yaml",
+            fichero: "packages/ventas/etl/limpios.py",
+            fuente,
+            def: "limpios",
+            build: &build,
+        });
+        // Lo mismo que el build: el código compilado como literal, D15
+        // armado al cargar, y los mismos tipos de error con su línea.
+        for igual in [
+            r#"compile("\"\"\"); import os #\ndef limpios():\n    pass\n", _FICHERO, "exec")"#,
+            r#"_FICHERO = "packages/ventas/etl/limpios.py""#,
+            r#"_DEF = "limpios""#,
+            "_ore._modulo_en_carga(_FICHERO)",
+            "_ore._modulo_en_carga(None)",
+            r#""%s (%s, line %d)" % (mensaje, _FICHERO, linea)"#,
+            "\"called-while-loading\"",
+            "\"syntax\"",
+            "\"load\"",
+            "\"runtime\"",
+            "\"not-a-transform\"",
+        ] {
+            assert!(t.contains(igual), "{igual}: {t}");
+            assert!(b.contains(igual), "{igual}: {b}");
+        }
+        // Lo distinto: sin `ORE_BUILD`, y `write()` armado antes de cargar y
+        // desarmado al acabar (también si falla al cargar).
+        assert!(!t.contains("_os.environ[\"ORE_BUILD\"] ="), "{t}");
+        assert!(t.contains("_os.environ.pop(\"ORE_BUILD\", None)"), "{t}");
+        assert!(t.contains(r#"_SALIDA = "ventas.limpios""#), "{t}");
+        let armar = t.find("_ore._ensayo(_SALIDA, _DEF)").expect(&t);
+        let cargar = t.find("exec(_codigo, _modulo)").expect(&t);
+        assert!(armar < cargar, "{t}");
+        assert_eq!(t.matches("_ore._ensayo(None)").count(), 4, "{t}");
+        assert!(t.contains("\"not-written\""), "{t}");
+        assert!(
+            t.contains(r#"_ore._para_el_informe({"preview": _visto})"#),
+            "{t}"
+        );
+        assert!(!t.contains("_resultado_de_escritura"), "{t}");
+        assert!(t.contains("in the editor"), "{t}");
+        assert!(!b.contains("_ensayo"), "{b}");
+        assert!(t.contains(&ore_core::sdk::guarda_python()), "{t}");
+        let antes = ore_core::sdk::nombres_de_antes_en(&t);
+        assert!(antes.is_empty(), "{antes:?}");
+        if let Ok(dir) = std::env::var("ORE_CELDAS_GENERADAS") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                std::path::Path::new(&dir).join("92-arnes-de-preview.py"),
+                &t,
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
     fn en_main_protegida_no_se_construye_y_en_una_rama_si() {
         let d = arbol("protegida");
@@ -1593,6 +1748,7 @@ mod tests {
                 empezada: None,
                 salida: None,
                 lote: None,
+                ensayo: None,
             },
         );
         p

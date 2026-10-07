@@ -146,6 +146,8 @@ pub(crate) struct Celda {
     /// **De qué guion es** (0039): las sentencias de un `.sql` de varias
     /// corren como celdas seguidas, y si una falla las de detrás no corren.
     pub lote: Option<Lote>,
+    /// 0055 P1 · Si la celda es un Preview: su techo y lo que ensaya.
+    pub ensayo: Option<Ensayo>,
 }
 
 /// El lugar de una celda en su guion (0039).
@@ -288,6 +290,9 @@ pub(crate) struct Puesto {
     /// corta— lo que leyó. Es la procedencia de lo que esa sesión escriba
     /// (el `derivedFrom` de una colección escrita, v1alpha19 `01` §2).
     pub colecciones_leidas: BTreeSet<String>,
+    /// 0055 P1 · La celda de Preview que corre ahora, si corre una: mientras
+    /// corre, `transform` es su techo y nada de lo que el puesto pida escribe.
+    pub ensayando: Option<u64>,
 }
 
 /// Lo declarado por el transform que corre en este puesto.
@@ -306,6 +311,20 @@ pub(crate) struct Transform {
     /// lo ensancha. Lo que el `@transform` declare dentro ha de caber en él
     /// (`declarar_transform`), y retirarlo no lo quita.
     pub techo: bool,
+}
+
+/// 0055 P1 · **Un Preview**: la celda que corre un `@transform` del editor en
+/// la sesión de la persona. Su techo lo pone el servidor al empezar la celda
+/// —como el documento en un build— y lo quita cuando llega su salida; mientras
+/// tanto el puesto no escribe nada (`ensayo_que_llama`).
+#[derive(Debug, Clone)]
+pub(crate) struct Ensayo {
+    /// Lo que el código del editor declara: `techo: true`.
+    pub techo: Transform,
+    /// La ruta del fichero en el árbol, como el editor la dice.
+    pub fichero: String,
+    /// El `def` que se ensaya.
+    pub def: String,
 }
 
 /// La transacción de una colección que un transform fijó al declararla.
@@ -873,7 +892,148 @@ fn ficha_de_celda(n: u64, c: &Celda) -> Json {
             ]),
         );
     }
+    if let Some(e) = &c.ensayo {
+        m.insert("preview".to_string(), ficha_de_ensayo(e, c));
+    }
     Json::Obj(m)
+}
+
+/// [`Servidor::ensayo_que_llama`], sobre la lista ya bajo su candado.
+pub(crate) fn ensayo_en(
+    lista: &BTreeMap<String, Puesto>,
+    cabecera: Option<&String>,
+    sujeto: &Identidad,
+) -> Option<String> {
+    if !es_agente(sujeto) {
+        return None;
+    }
+    let de = |q: &Puesto| {
+        q.ensayando
+            .and_then(|n| q.celdas.get(&n))
+            .and_then(|c| c.ensayo.as_ref())
+            .map(|e| e.def.clone())
+    };
+    if declarado(sujeto).is_some() {
+        return puesto_que_llama_en(lista, None, sujeto)
+            .and_then(|id| lista.get(&id))
+            .and_then(de);
+    }
+    cabecera
+        .and_then(|id| lista.get(id.trim()))
+        .and_then(de)
+        .or_else(|| {
+            lista
+                .values()
+                .filter(|q| {
+                    q.estado != Estado::Cerrado
+                        && q.agente.as_deref() == Some(sujeto.persona.as_str())
+                })
+                .find_map(de)
+        })
+}
+
+/// 0055 P1 · **Al empezar la celda `n`**: si es un Preview, corre dentro de su
+/// techo, como un build dentro del de su documento. Lo pone el servidor (no la
+/// celda), y hasta su salida el puesto no escribe nada.
+fn al_empezar_la_celda(p: &mut Puesto, n: u64) {
+    if let Some(e) = p.celdas.get(&n).and_then(|c| c.ensayo.clone()) {
+        p.transform = Some(e.techo);
+        p.ensayando = Some(n);
+    }
+}
+
+/// 0055 P1 · **Al llegar la salida de la celda `n`**: si era el Preview que
+/// corría, su techo se va con él y el puesto vuelve a ser la sesión de siempre.
+fn al_terminar_la_celda(p: &mut Puesto, n: u64) {
+    if p.ensayando == Some(n) {
+        p.ensayando = None;
+        p.transform = None;
+    }
+}
+
+/// El puesto `id` de la persona, si admite una celda de `lenguaje`: suyo,
+/// abierto, del entorno que la corre y no perdido.
+fn admite_celda<'a>(
+    lista: &'a mut BTreeMap<String, Puesto>,
+    sujeto: &Identidad,
+    id: &str,
+    lenguaje: &str,
+) -> Result<&'a mut Puesto, Respuesta> {
+    let Some(p) = lista.get_mut(id) else {
+        return Err(Respuesta::error(
+            404,
+            format!("no hay ningún puesto `{id}`"),
+        ));
+    };
+    if p.persona != sujeto.persona {
+        return Err(Respuesta::error(403, "ese puesto es de otra persona"));
+    }
+    if p.estado == Estado::Cerrado {
+        return Err(Respuesta::error(410, "el puesto está cerrado: abre otro"));
+    }
+    if !corre_en(lenguaje, &p.entorno) {
+        return Err(Respuesta::error(
+            422,
+            format!(
+                "una celda `{lenguaje}` no corre en un puesto `{}`: abre uno `{}`",
+                p.entorno,
+                entorno_de(lenguaje).unwrap_or("?")
+            ),
+        ));
+    }
+    if perdido(p) {
+        return Err(Respuesta::error(
+            409,
+            if p.estado == Estado::Encolado {
+                format!(
+                    "el puesto lleva {} s encolado sin arrancar: se perdió (¿el Job no está?); ciérralo y abre otro",
+                    p.creado.elapsed().as_secs()
+                )
+            } else {
+                format!(
+                    "el puesto lleva {} s sin dar señales: se perdió (¿TTL, tope o relevo?); ciérralo y abre otro",
+                    p.latido.map(|l| l.elapsed().as_secs()).unwrap_or(0)
+                )
+            },
+        ));
+    }
+    Ok(p)
+}
+
+/// 0055 P1 · **Lo que la consola lee de un Preview**, junto a su celda:
+/// `{transform, output, inputs, fichero, estado}` y, si falló, `error` con la
+/// forma del de un build (`{tipo, mensaje, fichero, linea}`, `de_la_salida`).
+/// Lo que habría escrito —`columnas`, `filas`, `total`— va tal cual en
+/// `salida.informe.preview`: lleva nulos y dobles, y no se reescribe aquí.
+fn ficha_de_ensayo(e: &Ensayo, c: &Celda) -> Json {
+    let salida = c
+        .salida
+        .as_ref()
+        .and_then(|s| ore_core::parse::parse(&s.jcs()).ok());
+    let mut m = vec![
+        ("transform", Json::s(&e.def)),
+        ("output", Json::s(&e.techo.output)),
+        (
+            "inputs",
+            Json::Arr(e.techo.inputs.iter().map(Json::s).collect()),
+        ),
+        ("fichero", Json::s(&e.fichero)),
+    ];
+    let estado = match &salida {
+        Some(s) => {
+            let d = crate::builds::de_la_salida(s, &e.fichero);
+            if let Some(x) = d.error {
+                m.push(("error", x.a_json()));
+                "failed"
+            } else {
+                "succeeded"
+            }
+        }
+        None if c.empezada.is_some() => "running",
+        None => "queued",
+    };
+    m.push(("estado", Json::s(estado)));
+    Json::obj(m)
 }
 
 /// Un fallo o un aviso del SQL del árbol, en la forma de los diagnósticos del
@@ -1167,6 +1327,7 @@ impl Servidor {
             clase,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            ensayando: None,
             decision: decision.clone(),
         };
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -1448,6 +1609,7 @@ impl Servidor {
             clase,
             transform,
             colecciones_leidas: BTreeSet::new(),
+            ensayando: None,
             decision: decision.clone(),
         };
         p.celdas.insert(
@@ -1461,6 +1623,7 @@ impl Servidor {
                 empezada: None,
                 salida: None,
                 lote: None,
+                ensayo: None,
             },
         );
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -1966,41 +2129,10 @@ impl Servidor {
         };
         let (desvio, avisos) = desvio;
         let mut lista = self.puestos.lista.lock().unwrap();
-        let Some(p) = lista.get_mut(id) else {
-            return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
+        let p = match admite_celda(&mut lista, sujeto, id, &lenguaje) {
+            Ok(p) => p,
+            Err(r) => return r,
         };
-        if p.persona != sujeto.persona {
-            return Respuesta::error(403, "ese puesto es de otra persona");
-        }
-        if p.estado == Estado::Cerrado {
-            return Respuesta::error(410, "el puesto está cerrado: abre otro");
-        }
-        if !corre_en(&lenguaje, &p.entorno) {
-            return Respuesta::error(
-                422,
-                format!(
-                    "una celda `{lenguaje}` no corre en un puesto `{}`: abre uno `{}`",
-                    p.entorno,
-                    entorno_de(&lenguaje).unwrap_or("?")
-                ),
-            );
-        }
-        if perdido(p) {
-            return Respuesta::error(
-                409,
-                if p.estado == Estado::Encolado {
-                    format!(
-                        "el puesto lleva {} s encolado sin arrancar: se perdió (¿el Job no está?); ciérralo y abre otro",
-                        p.creado.elapsed().as_secs()
-                    )
-                } else {
-                    format!(
-                        "el puesto lleva {} s sin dar señales: se perdió (¿TTL, tope o relevo?); ciérralo y abre otro",
-                        p.latido.map(|l| l.elapsed().as_secs()).unwrap_or(0)
-                    )
-                },
-            );
-        }
         let num = p.siguiente;
         if let Desvio::Guion(sentencias) = desvio {
             // Una celda por sentencia, seguidas en la cola: el agente las corre
@@ -2022,6 +2154,7 @@ impl Servidor {
                         empezada: None,
                         salida: None,
                         lote: Some(Lote { primera: num, i, n }),
+                        ensayo: None,
                     },
                 );
                 p.pendientes.push_back(k);
@@ -2072,6 +2205,7 @@ impl Servidor {
                 empezada: hecha.then(Instant::now),
                 salida: error,
                 lote: None,
+                ensayo: None,
             },
         );
         if !hecha {
@@ -2380,6 +2514,7 @@ impl Servidor {
                     .corre
                     .clone()
                     .unwrap_or_else(|| (c.texto.clone(), c.lenguaje.clone()));
+                al_empezar_la_celda(p, n);
                 drop(lista);
                 self.puestos.campana.notify_all();
                 return Respuesta::ok(Json::obj([
@@ -2453,6 +2588,7 @@ impl Servidor {
                 }
             }
         }
+        al_terminar_la_celda(p, n);
         let es_trabajo = p.trabajo.is_some();
         drop(lista);
         self.puestos.campana.notify_all();
@@ -2751,6 +2887,74 @@ impl Servidor {
     /// Lo vivo, bajo el candado, para quien sólo lee (el historial de builds).
     pub(crate) fn con_los_puestos<R>(&self, f: impl FnOnce(&BTreeMap<String, Puesto>) -> R) -> R {
         f(&self.puestos.lista.lock().unwrap())
+    }
+
+    /// 0055 P1 · **Un Preview a la cola de la sesión de la persona**: la celda
+    /// del arnés (`builds::arnes_de_preview`) con su techo, que se pone al
+    /// empezar. En una sesión, no en un trabajo: un Preview no es un build.
+    /// 202 con `{celda, puesto}`, como una celda.
+    pub(crate) fn encolar_ensayo(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        celda: String,
+        ensayo: Ensayo,
+    ) -> Respuesta {
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match admite_celda(&mut lista, sujeto, id, "python") {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        if p.trabajo.is_some() {
+            return Respuesta::error(
+                409,
+                format!("`{id}` is a job, not a session: Preview runs in your session"),
+            );
+        }
+        let num = p.siguiente;
+        p.siguiente += 1;
+        p.celdas.insert(
+            num,
+            Celda {
+                texto: celda,
+                lenguaje: "python".into(),
+                corre: None,
+                avisos: Vec::new(),
+                enviada: Instant::now(),
+                empezada: None,
+                salida: None,
+                lote: None,
+                ensayo: Some(ensayo),
+            },
+        );
+        p.pendientes.push_back(num);
+        let estado = p.estado.dice();
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta {
+            codigo: 202,
+            cuerpo: Json::obj([
+                ("celda", Json::Int(num as i64)),
+                ("puesto", Json::s(estado)),
+            ]),
+        }
+    }
+
+    /// 0055 P1 · **Si quien llama corre un Preview**: el `def` que ensaya. Sólo
+    /// un agente. Con una credencial que declara su puesto (R1), ése; sin
+    /// ella, el de la cabecera **y** cualquiera que ese agente haya reclamado:
+    /// la cabecera la pone el SDK y el código de la celda la quita o la
+    /// cambia, y cambiarla no es salir del Preview.
+    pub(crate) fn ensayo_que_llama(
+        &self,
+        p: &ore_entrada::http::Peticion,
+        sujeto: &Identidad,
+    ) -> Option<String> {
+        ensayo_en(
+            &self.puestos.lista.lock().unwrap(),
+            p.cabeceras.get(PUESTO),
+            sujeto,
+        )
     }
 
     pub(crate) fn transform_de(&self, id: &str) -> Option<Transform> {
@@ -4841,6 +5045,7 @@ pub(crate) mod prueba {
             lsp_siguiente: 0,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            ensayando: None,
             decision: None,
         }
     }
@@ -5206,5 +5411,124 @@ pub(crate) mod prueba {
             usuario: None,
         };
         assert!(es_agente(&a) && es_agente(&b) && !es_agente(&c));
+    }
+
+    fn celda_de_preview() -> Celda {
+        Celda {
+            texto: "# el arnés".into(),
+            lenguaje: "python".into(),
+            corre: None,
+            avisos: Vec::new(),
+            enviada: Instant::now(),
+            empezada: None,
+            salida: None,
+            lote: None,
+            ensayo: Some(Ensayo {
+                techo: Transform {
+                    nombre: "limpios".into(),
+                    inputs: vec!["ventas.clientes".into()],
+                    output: "ventas.limpios".into(),
+                    fijadas: BTreeMap::new(),
+                    techo: true,
+                },
+                fichero: "packages/ventas/etl/limpios.py".into(),
+                def: "limpios".into(),
+            }),
+        }
+    }
+
+    /// 0055 P1 · Un Preview corre en su techo desde que empieza hasta que llega
+    /// su salida: lo que el código declara, y nada que escriba (la puerta lo
+    /// sabe por el agente, con cabecera, sin ella o con la de otro puesto).
+    #[test]
+    fn un_preview_corre_en_su_techo_hasta_su_salida() {
+        let a = agente("agente:ana");
+        let id = "puesto-ana".to_string();
+        let mut lista = BTreeMap::new();
+        let mut p = un_puesto("agente:ana");
+        // Lo que quedó de una celda anterior que no se retiró: el techo manda.
+        p.transform = Some(Transform {
+            nombre: "viejo".into(),
+            inputs: vec!["rrhh.nominas".into()],
+            output: "rrhh.x".into(),
+            fijadas: BTreeMap::new(),
+            techo: false,
+        });
+        p.celdas.insert(1, celda_de_preview());
+        p.pendientes.push_back(1);
+        lista.insert(id.clone(), p);
+        lista.insert("puesto-bea".into(), un_puesto("agente:bea"));
+        // Encolado, aún no corre.
+        assert_eq!(ensayo_en(&lista, Some(&id), &a), None);
+
+        // Lo que hace `pendiente` al darle la celda al agente.
+        let p = lista.get_mut(&id).unwrap();
+        p.pendientes.pop_front();
+        p.celdas.get_mut(&1).unwrap().empezada = Some(Instant::now());
+        al_empezar_la_celda(p, 1);
+        let t = lista[&id].transform.clone().unwrap();
+        assert!(t.techo);
+        assert_eq!(t.output, "ventas.limpios");
+        assert!(cabe_en_el_techo(&t, "ventas.limpios", &["ventas.clientes".into()]).is_ok());
+        assert!(cabe_en_el_techo(&t, "ventas.limpios", &["rrhh.nominas".into()]).is_err());
+        assert!(cabe_en_el_techo(&t, "ventas.otra", &["ventas.clientes".into()]).is_err());
+        // Lo que lee una colección: sólo lo declarado.
+        assert!(matches!(
+            media_en(&mut lista, &a, "legal.archivo.contratos"),
+            MediaDelPuesto::NoDeclarada { .. }
+        ));
+        // Escribir una colección que no es su salida: no.
+        assert!(escritura_en(&lista, &a, "legal.archivo.otra").is_err());
+
+        // La puerta: con su cabecera, sin ella, y con la de otro puesto.
+        for cabecera in [Some(&id), None, Some(&"puesto-bea".to_string())] {
+            assert_eq!(
+                ensayo_en(&lista, cabecera, &a).as_deref(),
+                Some("limpios"),
+                "{cabecera:?}"
+            );
+        }
+        // Otro agente, u otra persona: no es su Preview.
+        assert_eq!(ensayo_en(&lista, None, &agente("agente:bea")), None);
+        let mut persona = agente("persona:ana");
+        persona.tipo = None;
+        assert_eq!(ensayo_en(&lista, Some(&id), &persona), None);
+
+        // La ficha: corre.
+        let f = ficha_de_celda(1, &lista[&id].celdas[&1]).jcs();
+        assert!(f.contains(r#""estado":"running""#), "{f}");
+        assert!(f.contains(r#""output":"ventas.limpios""#), "{f}");
+
+        // La salida de otra celda no lo quita; la suya, sí.
+        al_terminar_la_celda(lista.get_mut(&id).unwrap(), 2);
+        assert!(lista[&id].transform.is_some());
+        al_terminar_la_celda(lista.get_mut(&id).unwrap(), 1);
+        assert!(lista[&id].transform.is_none());
+        assert_eq!(lista[&id].ensayando, None);
+        assert_eq!(ensayo_en(&lista, Some(&id), &a), None);
+    }
+
+    /// 0055 P1 · La ficha de un Preview dice cómo acabó: su error con el
+    /// fichero y la línea que el arnés puso en el informe, como un build.
+    #[test]
+    fn la_ficha_de_un_preview_dice_su_error_con_su_linea() {
+        let mut c = celda_de_preview();
+        c.empezada = Some(Instant::now());
+        c.salida = Some(Json::Crudo(
+            r#"{"tipo":"error","nombre":"RuntimeError","mensaje":"PermissionError: `rrhh.nominas` is not among the inputs of `limpios` (ventas.clientes): a transform only reads what it declares (packages/ventas/etl/limpios.py, line 6)","ms":12,"informe":{"error":{"tipo":"runtime","fichero":"packages/ventas/etl/limpios.py","linea":6}}}"#.into(),
+        ));
+        let f = ficha_de_celda(1, &c).jcs();
+        assert!(f.contains(r#""estado":"failed""#), "{f}");
+        assert!(f.contains(r#""tipo":"runtime""#), "{f}");
+        assert!(f.contains(r#""linea":6"#), "{f}");
+        assert!(f.contains("is not among the inputs of `limpios`"), "{f}");
+
+        c.salida = Some(Json::Crudo(
+            r#"{"tipo":"texto","texto":"ventas.limpios · preview of …","ms":40,"informe":{"preview":{"output":"ventas.limpios","columnas":[{"name":"id","type":"int64","iceberg":"long"}],"filas":[[1],[null]],"total":2,"limite":100,"mode":"overwrite"}}}"#.into(),
+        ));
+        let f = ficha_de_celda(1, &c).jcs();
+        assert!(f.contains(r#""preview":{"estado":"succeeded""#), "{f}");
+        // Lo escrito, tal cual: el nulo sigue siendo nulo.
+        assert!(f.contains(r#""filas":[[1],[null]]"#), "{f}");
     }
 }

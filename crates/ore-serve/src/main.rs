@@ -51,6 +51,7 @@ mod copia;
 mod credenciales;
 mod datasets;
 mod documentos;
+mod ensayo;
 mod entorno;
 mod escritas;
 mod federado;

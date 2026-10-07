@@ -276,6 +276,10 @@ class Session:
         self._proveedor = None
 
     def pedir(self, metodo, ruta, cuerpo=None, plazo=30, cabeceras=None, seguir=True):
+        # 0055 P1: mientras corre un Preview, nada que escriba sale de aquí.
+        if _ensayando is not None and metodo not in ("GET", "HEAD") and not _no_escribe(ruta):
+            raise PermissionError("Preview writes nothing: `%s %s` would change the lake or the tree. Build writes"
+                                  % (metodo, ruta.split("?", 1)[0]))
         datos = None if cuerpo is None else json.dumps(cuerpo).encode("utf-8")
         req = urllib.request.Request(self.servidor + ruta, data=datos, method=metodo)
         req.add_header("accept", "application/json")
@@ -528,6 +532,57 @@ def _modulo_en_carga(fichero):
     """El arnés del build: `fichero` mientras ejecuta el módulo; `None` después."""
     global _cargando
     _cargando = fichero
+
+
+# 0055 P1 · **Preview**: el arnés del build sobre el código del editor, en la
+# sesión. Mientras está armado (`_ensayo(<salida>, <def>)`, desde antes de
+# cargar el módulo), `write()` no escribe: devuelve lo que escribiría y lo
+# guarda —esquema, las primeras filas, el recuento— para el informe de la
+# celda; y nada de lo que la sesión pida al servidor escribe (`Session.pedir`).
+# El servidor lo exige también (su techo y su puerta): esto es para decirlo
+# antes y mejor, no lo que lo impide.
+_ensayando = None
+_FILAS_DEL_PREVIEW = 100
+
+
+def _ensayo(output, transform=None):
+    """El arnés del Preview: arma con la salida que el código declara y el
+    `def` que se ensaya; `_ensayo(None)` desarma y devuelve lo que `write()`
+    habría escrito (o `None` si no se llamó)."""
+    global _ensayando
+    if output is not None:
+        _ensayando = {"output": _corto(output), "transform": transform, "visto": None}
+        return None
+    e, _ensayando = _ensayando, None
+    return (e or {}).get("visto")
+
+
+def _ensayar_escritura(nombre, datos, mode):
+    """`write()` en un Preview: lo que escribiría, sin escribir. La última
+    escritura es la que se enseña."""
+    tabla_arrow = _arrow_de(datos)
+    if tabla_arrow.num_rows == 0:
+        raise ValueError("write(): the table has no rows")
+    vista = table(tabla_arrow, _FILAS_DEL_PREVIEW)
+    # El tipo con el que nacería en el lago (el de `write()`): si no tiene
+    # uno, falla aquí como fallaría en el build.
+    ids = iter(range(len(tabla_arrow.schema) + 1, 10**7))
+    for c, f in zip(vista["columnas"], tabla_arrow.schema):
+        c["iceberg"] = _tipo_iceberg(f.name, f.type, ids)
+    _ensayando["visto"] = dict(vista, output=nombre, mode=mode)
+    n = tabla_arrow.num_rows
+    return _Result({"table": nombre, "rows": n, "snapshot": "", "metadata_location": "", "operation": "",
+                    "repeated": False, "mode": mode, "added": n, "before": 0, "preview": True})
+
+
+def _no_escribe(ruta):
+    """Lo que una sesión pide sin escribir nada, fuera de `GET` (lo mismo que
+    deja pasar la puerta del Preview en `ore-serve`)."""
+    camino = ruta.split("?", 1)[0]
+    return (camino.startswith("/puestos/") or camino == "/federation/read"
+            or bool(re.match(r"^/colecciones/[^/]+/[^/]+/[^/]+/items/resolver$", camino))
+            or bool(re.match(r"^/media/[^/]+/[^/]+/[^/]+/urls$", camino))
+            or (camino.startswith("/v1/") and camino.endswith("/metrics")))
 
 
 def _llamada_al_cargar(nombre):
@@ -2157,6 +2212,12 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
     clave_upsert = list(clave) if clave else None
     if _transform is not None and nombre != _transform.output:
         raise PermissionError("`%s` is not the output of `%s` (%s): a transform only writes what it declares" % (nombre, _transform.nombre, _transform.output))
+    # 0055 P1: en un Preview no se escribe. Al cargar el módulo (sin `_transform`)
+    # el techo es el del `def` que se ensaya, como en un build lo es el documento.
+    if _ensayando is not None:
+        if nombre != _ensayando["output"]:
+            raise PermissionError("`%s` is not the output of `%s` (%s): a transform only writes what it declares" % (nombre, _ensayando["transform"], _ensayando["output"]))
+        return _ensayar_escritura(nombre, datos, mode)
     # 0053 F7·1: guardar en el lago lo que se leyó de un origen EN VIVO es una
     # copia, y una copia no se hace aquí: tiene su conducto
     # (`materialization.payload`), no tiene el tope de una lectura en vivo y la

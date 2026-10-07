@@ -201,7 +201,46 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
     ))
 }
 
+/// 0055 P1 · **Lo que un puesto pide sin escribir nada**, fuera de `GET`: lo
+/// suyo con el servidor (`/puestos/{id}/…`: el techo, `sql()`, el latido, la
+/// salida de la celda, el servidor de lenguaje), leer el origen en vivo, firmar
+/// URLs de la media y el informe de un escaneo de Iceberg. Es lo único que
+/// pasa la puerta del Preview.
+pub(crate) fn no_escribe(seg: &[&str]) -> bool {
+    matches!(
+        seg,
+        ["puestos", _, ..]
+            | ["federation", "read"]
+            | ["colecciones", _, _, _, "items", "resolver"]
+            | ["media", _, _, _, "urls"]
+    ) || matches!(seg, ["v1", .., "metrics"])
+}
+
 impl Servidor {
+    /// 0055 P1 · **La puerta del Preview**: mientras un Preview corre en el
+    /// puesto que llama, nada que escriba pasa —ni el catálogo, ni el árbol,
+    /// ni una colección, ni un `declare`—, aunque el código de la celda pida a
+    /// pelo sin el SDK. Principio 2: sólo Build escribe. 403, y el porqué.
+    fn puerta_del_preview(
+        &self,
+        p: &Peticion,
+        sujeto: &Identidad,
+        seg: &[&str],
+    ) -> Option<Respuesta> {
+        if matches!(p.metodo.as_str(), "GET" | "HEAD") || no_escribe(seg) {
+            return None;
+        }
+        let def = self.ensayo_que_llama(p, sujeto)?;
+        Some(Respuesta::error(
+            403,
+            format!(
+                "Preview writes nothing: `{} /{}` would change the lake or the tree while `{def}` is previewed. Build writes",
+                p.metodo,
+                seg.join("/")
+            ),
+        ))
+    }
+
     /// Como [`Servidor::atender`], pero dejando que una ruta conteste con un
     /// flujo abierto en vez de con una respuesta que termina (0037 ②).
     ///
@@ -297,6 +336,9 @@ impl Servidor {
 
     fn con_sujeto(&self, p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Respuesta {
         if let Some(r) = puerta_del_agente(p, sujeto, seg) {
+            return r;
+        }
+        if let Some(r) = self.puerta_del_preview(p, sujeto, seg) {
             return r;
         }
         // La rama en la que el editor lee o escribe el árbol (0030 W2); sin
@@ -806,6 +848,10 @@ impl Servidor {
             ("GET", ["puestos", id]) => self.puesto(sujeto, id),
             ("DELETE", ["puestos", id]) => self.cerrar_puesto(sujeto, id),
             ("POST", ["puestos", id, "ejecutar"]) => self.ejecutar_en_puesto(sujeto, id, &p.cuerpo),
+            // 0055 P1 · Preview: un `@transform` del editor en la sesión, sin escribir.
+            ("POST", ["puestos", id, "preview"]) => self.ensayar_en_puesto(sujeto, id, &p.cuerpo),
+            // 0055 P1 · los `@transform` de un texto sin guardar, para su desplegable.
+            ("POST", ["transforms", "editor"]) => crate::ensayo::transforms_del_editor(&p.cuerpo),
             ("GET", ["puestos", id, "celdas", n]) => match n.parse::<u64>() {
                 Ok(n) => self.celda_del_puesto(sujeto, id, n),
                 Err(_) => Respuesta::error(422, "la celda es un número"),
@@ -3369,6 +3415,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/puestos/{id}/pendiente", con_identidad),
         ("POST", "/puestos/{id}/celdas/{n}/salida", con_identidad),
         ("GET", "/puestos/{id}/datos/{vista}", con_identidad),
+        ("POST", "/puestos/{id}/preview", con_identidad),
+        ("POST", "/transforms/editor", con_identidad),
         ("GET", "/propuestas", con_identidad),
         ("POST", "/propuestas", con_identidad),
         ("GET", "/propuestas/{n}", con_identidad),

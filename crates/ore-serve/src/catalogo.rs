@@ -266,6 +266,8 @@ impl Servidor {
         // R1 · Qué puesto habla: el de su pod si lo es; si no, la cabecera.
         let del_puesto = self.puesto_que_llama(p, sujeto);
         let desde_un_agente = crate::puestos::es_agente(sujeto);
+        // 0055 P1: en un Preview, la credencial que se presta sólo lee.
+        let en_preview = self.ensayo_que_llama(p, sujeto).is_some();
         // Desde un puesto: quien escribe es la persona, no el agente.
         let (sujeto, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
             Ok(x) => x,
@@ -567,7 +569,11 @@ impl Servidor {
                         }
                         // Desde un puesto, lo de otra persona se lee: la
                         // credencial de leer, no el 403 de escribir.
-                        let r = self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto);
+                        let r = if en_preview {
+                            self.cargar_para_leer(raiz, &nombre, prestar)
+                        } else {
+                            self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto)
+                        };
                         if cabeza && r.codigo == 200 {
                             Respuesta::sin_contenido()
                         } else {
@@ -983,6 +989,17 @@ impl Servidor {
             if o_leer {
                 args.push("--o-leer");
             }
+        }
+        self.ore_crudo(raiz, &args, false)
+    }
+
+    /// 0055 P1 · El `LoadTableResult` en un Preview: con `vended-credentials`,
+    /// la credencial de leer (`--leer`), también sobre lo que la persona
+    /// escribió. Un Preview no escribe ni un fichero suelto en el lago.
+    fn cargar_para_leer(&self, raiz: &Path, nombre: &str, prestar: bool) -> Respuesta {
+        let mut args = vec!["datasets", ".", "--cargar", nombre];
+        if prestar {
+            args.extend(["--prestar", "--leer"]);
         }
         self.ore_crudo(raiz, &args, false)
     }
