@@ -337,7 +337,14 @@ spec:
                   set -e
                   cd /tmp
                   S="storage_scrubber --exit-code --controller-api http://storage-controller.ore-pg.svc.cluster.local:1234 --controller-jwt $(cat /jwt/scrubber)"
-                  echo "── scan-metadata"; $S scan-metadata --node-kind pageserver --post
+                  echo "── scan-metadata"
+                  # un bucket sin timelines (aún no hay clientes) no es un fallo: el scrubber lo da por error
+                  if ! $S scan-metadata --node-kind pageserver --post > /tmp/scan.log 2>&1; then
+                    cat /tmp/scan.log
+                    grep -q "No timelines found" /tmp/scan.log && { echo "bucket sin timelines: nada que hacer"; exit 0; }
+                    exit 1
+                  fi
+                  cat /tmp/scan.log
                   echo "── pageserver-physical-gc (${MODO})"; $S pageserver-physical-gc --min-age 24h --mode ${MODO}
               env:
                 - { name: MODO, value: full }
