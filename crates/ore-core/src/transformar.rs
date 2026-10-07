@@ -24,13 +24,11 @@
 //! [`guion`]: crate::sql_del_arbol::guion::guion
 
 use crate::code::Code;
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Pos};
 use crate::document::Kind;
 use crate::link::{Loaded, Package, cualificar};
 use crate::parse::Node;
-use crate::promover::{
-    carpeta_del_paquete, ficheros_con, no_se_deriva, paquetes_publicables, roto,
-};
+use crate::promover::{carpeta_del_paquete, ficheros_con, paquetes_publicables};
 use crate::sql_del_arbol::guion::{Sentencia, guion};
 use ore_code::Derivacion;
 use ore_code::lineas::Lineas;
@@ -39,8 +37,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Cómo se arregla un documento que no es el del código.
-const DERIVAR: &str = "el documento se deriva del código: regenéralo desde el `@transform` o la \
-                       sentencia SQL, o cambia el código";
+const DERIVAR: &str = "the document is derived from the code: regenerate it from the `@transform` \
+                       or the SQL statement (commit the code), or change the code";
 
 /// `<ruta>.sql:<n>` → `(ruta, n)`, o `None` si la forma no vale (`01` §4): la
 /// ruta, relativa con `/`, sin `..` ni `/` inicial, que termina en `.sql`; `n`,
@@ -67,15 +65,67 @@ pub fn entrypoint_sql(s: &str) -> Option<(&str, usize)> {
 pub struct Guion {
     pub sentencias: usize,
     pub transforms: Vec<(usize, Produccion)>,
+    /// Dónde está cada transform en el `.sql`, por su ordinal.
+    pub sitios: BTreeMap<usize, Sitio>,
+}
+
+/// 0055 · **Dónde dice el código lo que un transform declara**: la línea del
+/// decorador o de la sentencia, y la de cada entrada y la salida si se saben.
+/// Lo que resuelve (`OOS2018`, `OOS2037`, `OOS2046`, `OOS2047`, `OOS2019`)
+/// se dice aquí, en el código que se escribe, y no en el documento derivado.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sitio {
+    pub pos: Option<Pos>,
+    /// Cada entrada, en forma corta, con su sitio.
+    pub inputs: Vec<(String, Pos)>,
+    pub output: Option<Pos>,
+}
+
+/// Por qué un `.sql` no se analiza: el primer motivo, y dónde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoSeAnaliza {
+    pub mensaje: String,
+    pub pos: Option<Pos>,
 }
 
 /// Un `.sql` → sus transforms: uno por cada `create or replace dataset … as
 /// select`, `insert into … select` e `insert or replace into … select`. Lo que
 /// no escribe —un `select`, una vista, lo que crea algo vacío— cuenta para el
 /// ordinal y no es transform. `Err` con el primer motivo si no se analiza.
-pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, String> {
-    let trozos =
-        guion(texto).map_err(|fs| fs.into_iter().next().map(|f| f.mensaje).unwrap_or_default())?;
+pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, NoSeAnaliza> {
+    let trozos = guion(texto).map_err(|fs| {
+        fs.into_iter()
+            .next()
+            .map(|f| NoSeAnaliza {
+                mensaje: f.mensaje,
+                pos: f.pos,
+            })
+            .unwrap_or(NoSeAnaliza {
+                mensaje: String::new(),
+                pos: None,
+            })
+    })?;
+    let mut sitios = BTreeMap::new();
+    for (i, t) in trozos.iter().enumerate() {
+        let Sentencia::Unidad(u) = &t.sentencia else {
+            continue;
+        };
+        let Some(e) = u.escribe.as_ref() else {
+            continue;
+        };
+        sitios.insert(
+            i + 1,
+            Sitio {
+                pos: t.pos,
+                inputs: u
+                    .lee
+                    .iter()
+                    .filter_map(|n| Some((n.referencia(), n.pos?)))
+                    .collect(),
+                output: e.destino.pos.or(t.pos),
+            },
+        );
+    }
     let transforms = trozos
         .iter()
         .enumerate()
@@ -106,6 +156,7 @@ pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, String> {
     Ok(Guion {
         sentencias: trozos.len(),
         transforms,
+        sitios,
     })
 }
 
@@ -120,7 +171,7 @@ fn puede_escribir(fuente: &str) -> bool {
 /// documentos.
 enum Leido {
     Python { fuente: String, d: Derivacion },
-    Sql(Result<Guion, String>),
+    Sql(Result<Guion, NoSeAnaliza>),
 }
 
 fn leer<'a>(
@@ -147,35 +198,97 @@ fn leer<'a>(
 /// `OOS2043` por un `.sql` que no se analiza, una vez por fichero.
 fn sql_roto(
     fichero: &Path,
-    motivo: &str,
+    motivo: &NoSeAnaliza,
     out: &mut Vec<Diagnostic>,
     dichos: &mut BTreeSet<PathBuf>,
 ) {
     if dichos.insert(fichero.to_path_buf()) {
-        out.push(
-            Diagnostic::new(
-                Code::Oos2043,
-                fichero,
-                format!("no se analiza, y sus transforms no se derivan: {motivo}"),
-            )
-            .help(
-                "un `.sql` del paquete da un transform por cada sentencia que escribe: \
-                 `create or replace dataset … as select`, `insert into … select`, `insert or \
-                 replace into … select`",
+        let mut d = Diagnostic::new(
+            Code::Oos2043,
+            fichero,
+            format!(
+                "this file does not parse, so its transforms are not derived: {}",
+                motivo.mensaje
             ),
+        )
+        .help(
+            "a `.sql` gives one transform per statement that writes: `create or replace \
+             dataset … as select`, `insert into … select`, `insert or replace into … select`. \
+             Its documents stay as they were until it parses",
         );
+        if let Some(p) = motivo.pos {
+            d = d.at(p);
+        }
+        out.push(d);
     }
 }
 
-/// `OOS2043` por un `.py` que no es Python del puesto, una vez por fichero.
-fn py_roto(
+/// Si un `.py` **dice que tiene transforms** aunque no se lea entero: un
+/// `@transform` que se derivó, uno que no está en el nivel superior, o una
+/// línea que empieza por `@` y nombra `transform` (un decorador que el
+/// analizador perdió al recuperarse de un error de sintaxis). La línea del
+/// primero, si se sabe.
+pub fn declara_transforms(fuente: &str, d: &Derivacion) -> Option<Option<usize>> {
+    if let Some(x) = d.transforms.first() {
+        let (l, _) = Lineas::new(fuente).de(x.sitios.decorador);
+        return Some(Some(l as usize));
+    }
+    if let Some(a) = d.avisos.iter().find(|a| a.mensaje.contains("`@transform`")) {
+        let (l, _) = Lineas::new(fuente).de(a.rango);
+        return Some(Some(l as usize));
+    }
+    fuente
+        .lines()
+        .position(|l| {
+            let t = l.trim_start();
+            t.starts_with('@') && t.contains("transform")
+        })
+        .map(|i| Some(i + 1))
+}
+
+/// `OOS2043` por un `.py` con transforms que no se derivan **enteros**: no es
+/// Python del puesto (un error de sintaxis, con su línea), o un `@transform`
+/// decora un `def` que no está en el nivel superior. Una vez por fichero.
+/// `true` si lo es: entonces sus documentos se quedan como estaban.
+pub(crate) fn py_roto(
     fichero: &Path,
     fuente: &str,
     d: &Derivacion,
     out: &mut Vec<Diagnostic>,
     dichos: &mut BTreeSet<PathBuf>,
 ) -> bool {
-    let Some(diag) = roto(fichero, fuente, d) else {
+    let lineas = Lineas::new(fuente);
+    let diag = if let Some(f) = d.sintaxis.first().or(d.version.first()) {
+        let (mayor, menor) = ore_code::python::PYTHON_DEL_PUESTO;
+        let otros = d.sintaxis.len() + d.version.len() - 1;
+        let mut x = Diagnostic::new(
+            Code::Oos2043,
+            fichero,
+            format!(
+                "this file is not Python the session ({mayor}.{menor}) runs, so its transforms are \
+                 not derived: {}{}",
+                f.mensaje,
+                if otros > 0 {
+                    format!(" (and {otros} more)")
+                } else {
+                    String::new()
+                }
+            ),
+        )
+        .at(crate::promover::pos(&lineas, f.rango))
+        .help(
+            "fix the syntax error: until the file parses, its `Transform` documents stay as they \
+             were and nothing new is derived",
+        );
+        if let Some(a) = &f.ayuda {
+            x = x.help(a.clone());
+        }
+        x
+    } else if let Some(a) = d.avisos.iter().find(|a| a.mensaje.contains("`@transform`")) {
+        Diagnostic::new(Code::Oos2043, fichero, a.mensaje.clone())
+            .at(crate::promover::pos(&lineas, a.rango))
+            .help(a.ayuda.clone().unwrap_or_default())
+    } else {
         return false;
     };
     if dichos.insert(fichero.to_path_buf()) {
@@ -184,11 +297,102 @@ fn py_roto(
     true
 }
 
+/// `OOS2043`: cada razón por la que un `@transform` no se deriva, en su sitio.
+fn no_se_deriva_t(
+    fichero: &Path,
+    fuente: &str,
+    nombre: &str,
+    fallos: &[ore_code::Fallo],
+    out: &mut Vec<Diagnostic>,
+) {
+    let l = Lineas::new(fuente);
+    for x in fallos {
+        let mut d = Diagnostic::new(
+            Code::Oos2043,
+            fichero,
+            format!("the transform `{nombre}` is not derived: {}", x.mensaje),
+        )
+        .at(crate::promover::pos(&l, x.rango));
+        if let Some(a) = &x.ayuda {
+            d = d.help(a.clone());
+        }
+        out.push(d);
+    }
+}
+
+/// El sitio de un transform del código, si se lee.
+fn sitio_de(l: &Leido, clave: &str) -> Option<Sitio> {
+    match l {
+        Leido::Python { fuente, d } => {
+            let x = d.transforms.iter().rev().find(|x| x.nombre == clave)?;
+            let lineas = Lineas::new(fuente);
+            let p = |r| crate::promover::pos(&lineas, r);
+            Some(Sitio {
+                pos: Some(p(x.sitios.decorador)),
+                inputs: x
+                    .sitios
+                    .inputs
+                    .iter()
+                    .map(|(n, r)| (n.clone(), p(*r)))
+                    .collect(),
+                output: x.sitios.output.map(p),
+            })
+        }
+        Leido::Sql(Ok(g)) => g.sitios.get(&clave.parse().ok()?).cloned(),
+        Leido::Sql(Err(_)) => None,
+    }
+}
+
+/// Un diagnóstico de lo que resuelve, del documento derivado **al código**:
+/// el fichero del código y, por el nodo que señalaba, el argumento —la
+/// entrada, la salida— o el decorador (la sentencia, en SQL).
+fn al_codigo(d: &mut Diagnostic, t: &Loaded, fichero: &Path, sitio: &Sitio, raiz: &Path) {
+    let corto = |x: &str| crate::normalize::a_corto(x).into_owned();
+    let salida = t.section("output").map(Node::pos);
+    let pos = if d.pos.is_some() && d.pos == salida {
+        sitio.output.or(sitio.pos)
+    } else if let Some((e, _)) = entradas(t)
+        .into_iter()
+        .find(|(_, n)| Some(n.pos()) == d.pos)
+    {
+        sitio
+            .inputs
+            .iter()
+            .find(|(k, _)| corto(k) == corto(&e))
+            .map(|(_, p)| *p)
+            .or(sitio.pos)
+    } else {
+        sitio.pos
+    };
+    let doc = t
+        .path
+        .strip_prefix(raiz)
+        .unwrap_or(&t.path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    d.file = fichero.to_path_buf();
+    d.pos = pos;
+    d.help = Some(match d.help.take() {
+        Some(h) => format!("{h} (derived document: `{doc}`)"),
+        None => format!("derived document: `{doc}`"),
+    });
+}
+
+/// Cómo se nombra un transform en un mensaje: su `entrypoint` (lo que la
+/// persona escribió), no el nombre del documento derivado.
+fn quien(t: &Loaded) -> String {
+    t.section("entrypoint")
+        .and_then(Node::as_str)
+        .map(str::to_string)
+        .or_else(|| t.qname())
+        .unwrap_or_default()
+}
+
 pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     let mut leidos: BTreeMap<PathBuf, Option<Leido>> = BTreeMap::new();
     let mut nombrados: BTreeSet<(PathBuf, String)> = BTreeSet::new();
     let mut rotos: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut coherentes: Vec<&Loaded> = Vec::new();
+    let mut coherentes: Vec<(&Loaded, PathBuf, String)> = Vec::new();
 
     for t in pkg.of(Kind::Transform) {
         // La forma la comprobó el despacho (`OOS1004`): aquí ya es una.
@@ -212,12 +416,12 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 Diagnostic::new(
                     Code::Oos2042,
                     &t.path,
-                    format!("`entrypoint: {texto}`: `{ruta}` no está en el paquete"),
+                    format!("`entrypoint: {texto}`: `{ruta}` is not in the package"),
                 )
                 .at(nodo.pos())
                 .help(
-                    "el documento es de código que no hay. Escribe el fichero, o corrige la \
-                     ruta: es relativa a la carpeta del paquete (la de su `package.yaml`)",
+                    "the document is about code that is not there. Write the file, or fix the \
+                     path: it is relative to the package folder (the one with `package.yaml`)",
                 ),
             );
             continue;
@@ -226,26 +430,28 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
 
         let produccion = match l {
             Leido::Python { fuente, d } => {
+                // ── OOS2043 · es Python del puesto ───────────────────────
+                // Antes que el `def`: un error de sintaxis puede llevarse el
+                // `def` o su decorador, y lo que hay que decir es el error.
+                if py_roto(&fichero, fuente, d, out, &mut rotos) {
+                    continue;
+                }
                 // ── OOS2042 · el `def` está ──────────────────────────────
                 let Some(def) = d.defs.iter().rev().find(|x| x.nombre == clave) else {
                     out.push(
                         Diagnostic::new(
                             Code::Oos2042,
                             &t.path,
-                            format!("`{ruta}` no define `def {clave}(…)` en su nivel superior"),
+                            format!("`{ruta}` has no top-level `def {clave}(…)`"),
                         )
                         .at(nodo.pos())
                         .help(
-                            "el `entrypoint` nombra un `def` del módulo: no un método de una \
-                             clase, ni una función dentro de otra",
+                            "the `entrypoint` names a module-level `def`: not a method of a \
+                             class, nor a function inside another one",
                         ),
                     );
                     continue;
                 };
-                // ── OOS2043 · es Python del puesto ───────────────────────
-                if py_roto(&fichero, fuente, d, out, &mut rotos) {
-                    continue;
-                }
                 // ── OOS2013 · el `def` es un transform ───────────────────
                 if !def.transformada {
                     out.push(
@@ -253,15 +459,15 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                             Code::Oos2013,
                             &t.path,
                             format!(
-                                "`{ruta}:{clave}` no lleva `@transform`, y este documento dice \
-                                 que lo es"
+                                "`{ruta}:{clave}` has no `@transform`, and this document says it \
+                                 is a transform"
                             ),
                         )
                         .at(nodo.pos())
                         .help(
-                            "un transform se marca en el código —`from ore import transform` y \
-                             `@transform(inputs=[…], output=…)` sobre el `def`— y el documento \
-                             sale de ahí",
+                            "a transform is marked in the code —`from ore import transform` and \
+                             `@transform(inputs=[…], output=…)` on the `def`— and the document \
+                             comes from there",
                         ),
                     );
                     continue;
@@ -272,7 +478,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 };
                 match &x.resultado {
                     Err(fallos) => {
-                        no_se_deriva(&fichero, fuente, &clave, fallos, out);
+                        no_se_deriva_t(&fichero, fuente, &clave, fallos, out);
                         continue;
                     }
                     Ok(p) => p,
@@ -291,15 +497,15 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                             Code::Oos2042,
                             &t.path,
                             format!(
-                                "`entrypoint: {texto}`: `{ruta}` tiene {} sentencia{}",
+                                "`entrypoint: {texto}`: `{ruta}` has {} statement{}",
                                 g.sentencias,
                                 if g.sentencias == 1 { "" } else { "s" }
                             ),
                         )
                         .at(nodo.pos())
                         .help(
-                            "`<ruta>.sql:<n>` nombra la sentencia `n`-ésima del fichero, desde 1, \
-                             contando también las que no escriben",
+                            "`<path>.sql:<n>` names the `n`-th statement of the file, from 1, \
+                             counting those that do not write too",
                         ),
                     );
                     continue;
@@ -311,14 +517,14 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                             Code::Oos2013,
                             &t.path,
                             format!(
-                                "la sentencia {n} de `{ruta}` no escribe datos, y este documento \
-                                 dice que es un transform"
+                                "statement {n} of `{ruta}` does not write data, and this document \
+                                 says it is a transform"
                             ),
                         )
                         .at(nodo.pos())
                         .help(
-                            "un transform de SQL es una sentencia que escribe: `create or replace \
-                             dataset … as select`, `insert into … select` o `insert or replace \
+                            "a SQL transform is a statement that writes: `create or replace \
+                             dataset … as select`, `insert into … select` or `insert or replace \
                              into … select`",
                         ),
                     );
@@ -330,7 +536,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
 
         // ── OOS2013 · y es este documento ────────────────────────────────
         if coherencia(t, produccion, out) {
-            coherentes.push(t);
+            coherentes.push((t, fichero.clone(), clave.clone()));
         }
     }
 
@@ -366,25 +572,33 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             };
             match l {
                 Leido::Python { fuente, d } => {
+                    // Un fichero que dice tener transforms y no se lee entero es
+                    // OOS2043 aunque ningún documento lo nombre: si no, el
+                    // decorador que el analizador perdió no diría nada.
+                    if declara_transforms(fuente, d).is_some()
+                        && py_roto(&f, fuente, d, out, &mut rotos)
+                    {
+                        continue;
+                    }
                     let sin_documento: Vec<_> = d
                         .transforms
                         .iter()
                         .filter(|x| !nombrados.contains(&(f.clone(), x.nombre.clone())))
                         .collect();
-                    if sin_documento.is_empty() || py_roto(&f, fuente, d, out, &mut rotos) {
+                    if sin_documento.is_empty() {
                         continue;
                     }
                     let lineas = Lineas::new(fuente);
                     for x in sin_documento {
                         match &x.resultado {
-                            Err(fallos) => no_se_deriva(&f, fuente, &x.nombre, fallos, out),
+                            Err(fallos) => no_se_deriva_t(&f, fuente, &x.nombre, fallos, out),
                             Ok(p) => out.push(
                                 Diagnostic::new(
                                     Code::Oos2013,
                                     &f,
                                     format!(
-                                        "`@transform` `{}` sin su documento: ningún `Transform` \
-                                         del paquete tiene `entrypoint: {}`",
+                                        "the `@transform` `{}` has no document: no `Transform` \
+                                         of the package has `entrypoint: {}`",
                                         x.nombre, p.entrypoint
                                     ),
                                 )
@@ -400,25 +614,43 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                         if nombrados.contains(&(f.clone(), n.to_string())) {
                             continue;
                         }
-                        out.push(
-                            Diagnostic::new(
-                                Code::Oos2013,
-                                &f,
-                                format!(
-                                    "la sentencia {n} escribe `{}` y no tiene su documento: \
-                                     ningún `Transform` del paquete tiene `entrypoint: {}`",
-                                    p.output, p.entrypoint
-                                ),
-                            )
-                            .help(DERIVAR),
-                        );
+                        let mut d = Diagnostic::new(
+                            Code::Oos2013,
+                            &f,
+                            format!(
+                                "statement {n} writes `{}` and has no document: no `Transform` \
+                                 of the package has `entrypoint: {}`",
+                                p.output, p.entrypoint
+                            ),
+                        )
+                        .help(DERIVAR);
+                        if let Some(pos) = g.sitios.get(n).and_then(|x| x.pos) {
+                            d = d.at(pos);
+                        }
+                        out.push(d);
                     }
                 }
             }
         }
     }
 
-    resolver(pkg, &coherentes, out);
+    // ── lo que resuelve, dicho en el código ──────────────────────────────
+    let antes = out.len();
+    let docs: Vec<&Loaded> = coherentes.iter().map(|(t, _, _)| *t).collect();
+    resolver(pkg, &docs, out);
+    for d in &mut out[antes..] {
+        let Some((t, fichero, clave)) = coherentes.iter().find(|(t, _, _)| t.path == d.file) else {
+            continue;
+        };
+        let Some(sitio) = leidos
+            .get(fichero)
+            .and_then(Option::as_ref)
+            .and_then(|l| sitio_de(l, clave))
+        else {
+            continue;
+        };
+        al_codigo(d, t, fichero, &sitio, &pkg.root);
+    }
 }
 
 // ── OOS2013 · el documento es el que el código da ───────────────────────────
@@ -427,14 +659,14 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
 /// `true` si no hay ninguna.
 fn coherencia(t: &Loaded, p: &Produccion, out: &mut Vec<Diagnostic>) -> bool {
     let antes = out.len();
-    let qn = t.qname().unwrap_or_default();
+    let qn = quien(t);
     let raiz = t.root.pos();
     let mut dif = |nodo: Option<&Node>, que: String| {
         out.push(
             Diagnostic::new(
                 Code::Oos2013,
                 &t.path,
-                format!("`{qn}` no es el documento que su código da: {que}"),
+                format!("the document of `{qn}` is not the one its code gives: {que}"),
             )
             .at(nodo.map(Node::pos).unwrap_or(raiz))
             .help(DERIVAR),
@@ -447,7 +679,7 @@ fn coherencia(t: &Loaded, p: &Produccion, out: &mut Vec<Diagnostic>) -> bool {
         dif(
             t.meta("name"),
             format!(
-                "se llama `{nombre}` y su salida da `{}` (`.` por `__`)",
+                "it is named `{nombre}`, and its output gives `{}` (`.` as `__`)",
                 p.nombre()
             ),
         );
@@ -457,10 +689,10 @@ fn coherencia(t: &Loaded, p: &Produccion, out: &mut Vec<Diagnostic>) -> bool {
         dif(
             t.meta("description"),
             match (descripcion, p.descripcion.as_deref()) {
-                (Some(d), Some(c)) => format!("`description` dice `{d}` y el código, `{c}`"),
-                (Some(d), None) => format!("`description: {d}` no está en el código"),
+                (Some(d), Some(c)) => format!("`description` says `{d}` and the code, `{c}`"),
+                (Some(d), None) => format!("`description: {d}` is not in the code"),
                 _ => format!(
-                    "falta `description: {}`, la primera línea de la docstring",
+                    "`description: {}` is missing: the first line of the docstring",
                     p.descripcion.as_deref().unwrap_or_default()
                 ),
             },
@@ -470,14 +702,14 @@ fn coherencia(t: &Loaded, p: &Produccion, out: &mut Vec<Diagnostic>) -> bool {
     if runtime != p.runtime {
         dif(
             t.section("runtime"),
-            format!("`runtime: {runtime}` y el código es `{}`", p.runtime),
+            format!("`runtime: {runtime}`, and the code is `{}`", p.runtime),
         );
     }
     let output = t.section("output").and_then(Node::as_str).unwrap_or("");
     if corto(output) != corto(&p.output) {
         dif(
             t.section("output"),
-            format!("`output: {output}` y el código escribe `{}`", p.output),
+            format!("`output: {output}`, and the code writes `{}`", p.output),
         );
     }
     // Lo que lee, sin orden: un conjunto de lecturas, como `reads`.
@@ -491,13 +723,13 @@ fn coherencia(t: &Loaded, p: &Produccion, out: &mut Vec<Diagnostic>) -> bool {
         .collect();
     let cod: BTreeSet<String> = p.inputs.iter().map(|x| corto(x)).collect();
     for x in doc.difference(&cod) {
-        dif(nodo, format!("`inputs` lleva `{x}` y el código no lo lee"));
-    }
-    for x in cod.difference(&doc) {
         dif(
             nodo,
-            format!("a `inputs` le falta `{x}`, que el código lee"),
+            format!("`inputs` has `{x}`, and the code does not read it"),
         );
+    }
+    for x in cod.difference(&doc) {
+        dif(nodo, format!("`inputs` lacks `{x}`, which the code reads"));
     }
     out.len() == antes
 }
@@ -538,7 +770,7 @@ fn base_y_schema_de_la_salida(
         [b, sc, _] => (*b, *sc),
         _ => return false, // la forma la dice el despacho
     };
-    let qn = t.qname().unwrap_or_default();
+    let qn = quien(t);
     let nodo = t.section("output").map(Node::pos).unwrap_or(t.root.pos());
     let Some(p) = pkg
         .of(Kind::Package)
@@ -548,12 +780,12 @@ fn base_y_schema_de_la_salida(
             Diagnostic::new(
                 Code::Oos2018,
                 &t.path,
-                format!("`{qn}` escribe `{s}`, y no hay ninguna base `{base}` en el árbol"),
+                format!("`{qn}` writes `{s}`, and there is no database `{base}` in the tree"),
             )
             .at(nodo)
             .help(
-                "la salida de un transform puede no existir todavía, pero su base sí: créala \
-                 (`create database`) o corrige el nombre en el código y regenera el documento",
+                "the output of a transform may not exist yet, but its database must: create it \
+                 (`create database`) or fix the name in the code",
             ),
         );
         return true;
@@ -567,12 +799,12 @@ fn base_y_schema_de_la_salida(
                 Code::Oos2049,
                 &t.path,
                 format!(
-                    "`{qn}` escribe `{s}`, y `{base}` es una foreign database: expone su fuente y no se escribe en ella"
+                    "`{qn}` writes `{s}`, and `{base}` is a foreign database: it exposes its source and is not written to"
                 ),
             )
             .at(nodo)
             .help(
-                "escribe la salida en una standard database (`create database`), y lee la foránea como entrada",
+                "write the output to a standard database (`create database`), and read the foreign database as an input",
             ),
         );
         return true;
@@ -591,12 +823,12 @@ fn base_y_schema_de_la_salida(
         Diagnostic::new(
             Code::Oos2037,
             &t.path,
-            format!("`{qn}` escribe `{s}`, y la base `{base}` no declara el schema `{schema}`"),
+            format!("`{qn}` writes `{s}`, and the database `{base}` does not declare the schema `{schema}`"),
         )
         .at(nodo)
         .help(
-            "la salida de un transform puede no existir todavía, pero su schema sí: decláralo \
-             (`create schema`, un `kind: Schema` en su carpeta) o escribe en `default`",
+            "the output of a transform may not exist yet, but its schema must: declare it \
+             (`create schema`) or write to `default`",
         ),
     );
     true
@@ -609,7 +841,7 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
     let producido: BTreeSet<String> = pkg.of(Kind::Transform).filter_map(salida).collect();
 
     for t in ts {
-        let qn = t.qname().unwrap_or_default();
+        let qn = quien(t);
         // ── OOS2018 · cada entrada resuelve ──────────────────────────────
         for (e, nodo) in entradas(t) {
             let resuelve = pkg.table(&e).is_some()
@@ -622,13 +854,12 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
                     Diagnostic::new(
                         Code::Oos2018,
                         &t.path,
-                        format!("`{qn}` lee `{e}`, y no es nada del árbol"),
+                        format!("`{qn}` reads `{e}`, which is nothing in the tree"),
                     )
                     .at(nodo.pos())
                     .help(
-                        "una entrada es una `Table`, una `View`, un `Dataset` o una \
-                         `MediaCollection`, o la salida de otro transform. Corrige el nombre en el \
-                         código y regenera el documento",
+                        "an input is a `Table`, a `View`, a `Dataset` or a `MediaCollection`, or \
+                         the output of another transform. Fix the name in the code",
                     ),
                 );
             }
@@ -640,19 +871,18 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
         }
         // ── OOS2046 · la salida es algo que el código escribe ────────────
         let que = if let Some(d) = pkg.dataset(&s) {
-            crate::vistas::es_mantenido(d).then_some(
-                "un `Dataset` mantenido: lo llena el sistema cumpliendo su `from`, no código",
-            )
+            crate::vistas::es_mantenido(d)
+                .then_some("a maintained `Dataset`: the system fills it from its `from`, not code")
         } else if let Some(c) = pkg.collection(&s) {
             c.section("from").is_some().then_some(
-                "una `MediaCollection` con `from`: sus ficheros salen de su origen, no de código",
+                "a `MediaCollection` with `from`: its files come from its origin, not code",
             )
         } else if pkg.table(&s).is_some() {
-            Some("una `Table`: el puntero a un objeto de un origen, que no guarda bytes")
+            Some("a `Table`: a pointer to an object of an origin, with no bytes of its own")
         } else if pkg.view(&s).is_some() {
-            Some("una `View`: una pregunta, sin bytes")
+            Some("a `View`: a question, with no bytes")
         } else if pkg.object_table(&s).is_some() {
-            Some("un `ObjectTable`: el listado de un origen")
+            Some("an `ObjectTable`: the listing of an origin")
         } else {
             None // por nacer: la primera escritura la registra
         };
@@ -661,12 +891,12 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
                 Diagnostic::new(
                     Code::Oos2046,
                     &t.path,
-                    format!("`{qn}` escribe `{s}`, que es {que}"),
+                    format!("`{qn}` writes `{s}`, which is {que}"),
                 )
                 .at(t.section("output").map(Node::pos).unwrap_or(t.root.pos()))
                 .help(
-                    "la salida de un transform es un `Dataset` escrito (con `columns`, sin \
-                     `from`) o una `MediaCollection` escrita, o un nombre que todavía no existe",
+                    "the output of a transform is a written `Dataset` (with `columns`, without \
+                     `from`) or a written `MediaCollection`, or a name that does not exist yet",
                 ),
             );
         }
@@ -694,15 +924,15 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
                     Code::Oos2047,
                     &t.path,
                     format!(
-                        "`{s}` tiene {} productores: {}",
+                        "`{s}` has {} producers: {}",
                         productores.len(),
                         donde.join(" · ")
                     ),
                 )
                 .at(t.section("output").map(Node::pos).unwrap_or(t.root.pos()))
                 .help(
-                    "una salida, un productor: el transform se nombra por lo que escribe. Que \
-                     escriba uno solo, o que cada uno escriba lo suyo",
+                    "one output, one producer: a transform is named by what it writes. Let only \
+                     one write it, or each write its own",
                 ),
             );
         }
@@ -732,7 +962,7 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
         }
     }
     for t in ts {
-        let (Some(s), qn) = (salida(t), t.qname().unwrap_or_default()) else {
+        let (Some(s), qn) = (salida(t), quien(t)) else {
             continue;
         };
         let es = entradas(t);
@@ -741,12 +971,12 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
                 Diagnostic::new(
                     Code::Oos2019,
                     &t.path,
-                    format!("`{qn}` lee `{s}`, que es lo que escribe"),
+                    format!("`{qn}` reads `{s}`, which is what it writes"),
                 )
                 .at(nodo.pos())
                 .help(
-                    "la salida no es una entrada: leer lo que uno mismo escribió —un \
-                     incremental— no se declara como entrada",
+                    "the output is not an input: reading what it wrote itself —an incremental— \
+                     is not declared as an input",
                 ),
             );
             continue;
@@ -769,12 +999,12 @@ fn resolver(pkg: &Package, ts: &[&Loaded], out: &mut Vec<Diagnostic>) {
                 Diagnostic::new(
                     Code::Oos2019,
                     &t.path,
-                    format!("`{qn}` lee `{e}`, que sale de `{s}`, que es lo que escribe"),
+                    format!("`{qn}` reads `{e}`, which comes from `{s}`, which is what it writes"),
                 )
                 .at(nodo.pos())
                 .help(
-                    "el grafo de transforms —y de datasets mantenidos— vuelve sobre sí: ningún \
-                     orden de construcción lo cumple. Rompe el ciclo",
+                    "the graph of transforms —and maintained datasets— loops back on itself: no \
+                     build order satisfies it. Break the cycle",
                 ),
             );
         }
@@ -1016,5 +1246,215 @@ mod tests {
     fn un_sql_que_no_se_analiza_no_da_transforms() {
         assert!(derivar_sql("create table x.y as select 1", "a.sql").is_err());
         assert!(derivar_sql("select 'sin cerrar", "a.sql").is_err());
+    }
+
+    // ── 0055 · lo roto se dice y no se borra; lo que resuelve, en el código ──
+
+    const BUENO: &str = "from ore import transform, over, write\n\
+                         \n\
+                         \n\
+                         def ayuda():\n\
+                         \x20   return 1\n\
+                         \n\
+                         \n\
+                         @transform(inputs=[\"ventas.clientes\"], output=\"ventas.limpios\")\n\
+                         def clientes_limpios():\n\
+                         \x20   return write(\"ventas.limpios\", over(\"ventas.clientes\"))\n";
+
+    /// El caso medido en vivo: el decorador, sangrado dentro del `def` de
+    /// antes tras su `return`, y el `def` en el nivel superior (pyright:
+    /// «Expected function or class declaration after decorator»).
+    const SANGRADO: &str = "from ore import transform, over, write\n\
+                            \n\
+                            \n\
+                            def ayuda():\n\
+                            \x20   return 1\n\
+                            \x20   @transform(inputs=[\"ventas.clientes\"], output=\"ventas.limpios\")\n\
+                            def clientes_limpios():\n\
+                            \x20   return write(\"ventas.limpios\", over(\"ventas.clientes\"))\n";
+
+    /// Python válido, con el `@transform` sobre un `def` anidado.
+    const ANIDADO: &str = "from ore import transform, over, write\n\
+                           \n\
+                           \n\
+                           def ayuda():\n\
+                           \x20   @transform(inputs=[\"ventas.clientes\"], output=\"ventas.limpios\")\n\
+                           \x20   def clientes_limpios():\n\
+                           \x20       return write(\"ventas.limpios\", over(\"ventas.clientes\"))\n\
+                           \x20   return clientes_limpios\n";
+
+    fn arbol(nombre: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("transformar-{nombre}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let p = d.join("packages/ventas");
+        std::fs::create_dir_all(p.join("etl")).unwrap();
+        std::fs::create_dir_all(p.join("datasets")).unwrap();
+        std::fs::create_dir_all(p.join("curado")).unwrap();
+        std::fs::write(
+            p.join("package.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
+             metadata: { name: ventas, version: 1.0.0, status: active, domain: v }\n\
+             spec: { owner: team:v }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("datasets/clientes.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\n\
+             metadata: { name: clientes, namespace: ventas }\n\
+             spec:\n  owner: team:v\n  changes: { mode: append }\n  columns:\n    id: { type: Integer }\n",
+        )
+        .unwrap();
+        d
+    }
+
+    fn escribir(d: &Path, rel: &str, texto: &str) {
+        std::fs::write(d.join("packages/ventas").join(rel), texto).unwrap();
+    }
+
+    fn generar(d: &Path) -> crate::generar::Plan {
+        let (pkg, _) = crate::validate::cargar_paquete(d);
+        let plan = crate::generar::plan_de_transforms(&pkg, None, Some("user:ana"));
+        crate::generar::aplicar(&plan).unwrap();
+        plan
+    }
+
+    fn diagnosticos(d: &Path) -> Vec<Diagnostic> {
+        let (pkg, _) = crate::validate::cargar_paquete(d);
+        let mut out = Vec::new();
+        comprobar(&pkg, &mut out);
+        out
+    }
+
+    fn rel(d: &Path, x: &Diagnostic) -> String {
+        x.file
+            .strip_prefix(d)
+            .unwrap_or(&x.file)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    #[test]
+    fn un_fichero_que_no_se_analiza_es_oos2043_y_su_documento_se_queda() {
+        let d = arbol("sangrado");
+        escribir(&d, "etl/limpios.py", BUENO);
+        generar(&d);
+        let doc = d.join("packages/ventas/etl/pipeline/ventas.limpios.yaml");
+        assert!(doc.is_file());
+        assert!(diagnosticos(&d).is_empty(), "{:?}", diagnosticos(&d));
+
+        escribir(&d, "etl/limpios.py", SANGRADO);
+        let plan = generar(&d);
+        // (b) el documento se queda: nada que borrar.
+        assert!(
+            plan.cambios
+                .iter()
+                .all(|c| c.accion != crate::generar::Accion::Borrar),
+            "{:?}",
+            plan.cambios
+        );
+        assert!(doc.is_file());
+        // (a) y la puerta lo dice, en el fichero y su línea, en inglés.
+        let ds = diagnosticos(&d);
+        let x = ds
+            .iter()
+            .find(|x| x.code == Code::Oos2043)
+            .unwrap_or_else(|| panic!("{ds:?}"));
+        assert_eq!(rel(&d, x), "packages/ventas/etl/limpios.py");
+        assert!(x.pos.is_some_and(|p| (6..=7).contains(&p.line)), "{x:?}");
+        assert!(
+            x.message.starts_with("this file is not Python"),
+            "{}",
+            x.message
+        );
+        assert_eq!(
+            ds.iter().filter(|x| x.code == Code::Oos2043).count(),
+            1,
+            "{ds:?}"
+        );
+
+        // Sin documento que lo nombre (un fichero nuevo), también.
+        let _ = std::fs::remove_file(&doc);
+        escribir(&d, "etl/otro.py", SANGRADO);
+        let ds = diagnosticos(&d);
+        assert!(
+            ds.iter()
+                .any(|x| x.code == Code::Oos2043 && rel(&d, x) == "packages/ventas/etl/otro.py"),
+            "{ds:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn un_transform_anidado_es_oos2043_y_no_se_ignora() {
+        let d = arbol("anidado");
+        escribir(&d, "etl/limpios.py", BUENO);
+        generar(&d);
+        let doc = d.join("packages/ventas/etl/pipeline/ventas.limpios.yaml");
+        escribir(&d, "etl/limpios.py", ANIDADO);
+        let plan = generar(&d);
+        assert!(doc.is_file(), "{:?}", plan.cambios);
+        let ds = diagnosticos(&d);
+        let x = ds
+            .iter()
+            .find(|x| x.code == Code::Oos2043)
+            .unwrap_or_else(|| panic!("{ds:?}"));
+        assert_eq!(rel(&d, x), "packages/ventas/etl/limpios.py");
+        assert!(x.message.contains("not a top-level def"), "{}", x.message);
+        assert_eq!(x.pos.map(|p| p.line), Some(5), "{x:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Lo que resuelve se dice en el código: el argumento de la entrada o de
+    /// la salida del `@transform`, o el nombre en la sentencia SQL.
+    #[test]
+    fn lo_que_no_resuelve_se_dice_en_el_codigo() {
+        let d = arbol("al-codigo");
+        escribir(
+            &d,
+            "etl/limpios.py",
+            &BUENO
+                .replace(
+                    "inputs=[\"ventas.clientes\"]",
+                    "inputs=[\n    \"ventas.clientes\",\n    \"ventas.nadie\",\n]",
+                )
+                .replace(
+                    "output=\"ventas.limpios\"",
+                    "output=\"ventas.crudo.limpios\"",
+                )
+                .replace("write(\"ventas.limpios\"", "write(\"ventas.crudo.limpios\""),
+        );
+        escribir(
+            &d,
+            "etl/carga.sql",
+            "select 1;\n\ncreate or replace dataset ventas.resumen as\nselect *\nfrom ventas.ninguno;\n",
+        );
+        generar(&d);
+        let ds = diagnosticos(&d);
+        let de = |code: Code, fichero: &str| {
+            ds.iter()
+                .find(|x| x.code == code && rel(&d, x) == fichero)
+                .unwrap_or_else(|| panic!("{code:?} {fichero}: {ds:?}"))
+        };
+        let x = de(Code::Oos2018, "packages/ventas/etl/limpios.py");
+        assert_eq!(x.pos.map(|p| p.line), Some(10), "{x:?}");
+        assert_eq!(
+            x.message,
+            "`etl/limpios.py:clientes_limpios` reads `ventas.nadie`, which is nothing in the tree"
+        );
+        assert!(
+            x.help
+                .as_deref()
+                .unwrap_or("")
+                .contains("pipeline/ventas.crudo.limpios.yaml"),
+            "{x:?}"
+        );
+        let x = de(Code::Oos2037, "packages/ventas/etl/limpios.py");
+        assert_eq!(x.pos.map(|p| p.line), Some(11), "{x:?}");
+        let x = de(Code::Oos2018, "packages/ventas/etl/carga.sql");
+        assert_eq!(x.pos.map(|p| p.line), Some(5), "{x:?}");
+        assert!(x.message.contains("`ventas.ninguno`"), "{}", x.message);
+        // Ninguno en el YAML derivado.
+        assert!(ds.iter().all(|x| !rel(&d, x).ends_with(".yaml")), "{ds:?}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

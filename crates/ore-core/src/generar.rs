@@ -525,11 +525,18 @@ fn transforms_del_paquete(
                     // no tiene transforms que perder.
                     let l = fuente.to_ascii_lowercase();
                     if l.contains("insert") || l.contains("dataset") {
-                        p.diagnosticos.push(Diagnostic::new(
+                        let mut d = Diagnostic::new(
                             Code::Oos2043,
                             &f,
-                            format!("no se analiza, y sus transforms no se derivan: {motivo}"),
-                        ));
+                            format!(
+                                "this file does not parse, so its transforms are not derived: {}",
+                                motivo.mensaje
+                            ),
+                        );
+                        if let Some(pos) = motivo.pos {
+                            d = d.at(pos);
+                        }
+                        p.diagnosticos.push(d);
                     }
                 }
             }
@@ -539,12 +546,25 @@ fn transforms_del_paquete(
             continue;
         }
         let d = ore_code::python::derivar(&fuente, &ruta);
-        if d.transforms.is_empty() {
-            continue;
-        }
-        if let Some(diag) = roto(&f, &fuente, &d) {
+        // ⛔ 0055 · Un fichero que no se lee entero NO dice qué transforms
+        //   tiene: sus documentos se quedan (`rotos`) y OOS2043 dice por qué.
+        //   Antes, un error de sintaxis que se llevaba el decorador dejaba el
+        //   fichero «sin transforms» y su documento se borraba en silencio
+        //   (medido en vivo: un `@transform` sangrado dentro del `def` de
+        //   antes, tras su `return`).
+        let nombrado = existentes
+            .keys()
+            .any(|e| e.rsplit_once(':').is_some_and(|(r, _)| r == ruta));
+        if (nombrado || crate::transformar::declara_transforms(&fuente, &d).is_some())
+            && crate::transformar::py_roto(
+                &f,
+                &fuente,
+                &d,
+                &mut p.diagnosticos,
+                &mut BTreeSet::new(),
+            )
+        {
             rotos.insert(ruta);
-            p.diagnosticos.push(diag);
             continue;
         }
         for x in &d.transforms {
@@ -565,11 +585,11 @@ fn transforms_del_paquete(
                     Code::Oos2047,
                     &f,
                     format!(
-                        "`{otro}` y `{}` escriben `{}`: una salida, un productor",
+                        "`{otro}` and `{}` both write `{}`: one output, one producer",
                         pr.entrypoint, pr.output
                     ),
                 )
-                .help("que escriba uno solo, o que cada uno escriba lo suyo"),
+                .help("let only one write it, or each write its own"),
             );
             continue;
         }
@@ -590,11 +610,13 @@ fn transforms_del_paquete(
                     Code::Oos2013,
                     &destino,
                     format!(
-                        "el documento de `{}` iría aquí, y aquí hay otro escrito a mano",
+                        "the document of `{}` would go here, and there is a hand-written one here",
                         pr.entrypoint
                     ),
                 )
-                .help("muévelo o renómbralo; los derivados se reescriben, los escritos a mano no"),
+                .help(
+                    "move or rename it: derived documents are rewritten, hand-written ones are not",
+                ),
             );
             continue;
         }

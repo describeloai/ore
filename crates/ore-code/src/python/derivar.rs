@@ -79,10 +79,16 @@ pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
             transformada: transform.is_some(),
         });
         if let Some(t) = transform {
+            let mut sitios = crate::transform::Sitios {
+                decorador: t.rango(),
+                ..Default::default()
+            };
+            let resultado = r.transform(def, t, ruta, &mut sitios);
             d.transforms.push(Transform {
                 nombre: def.nombre.clone(),
                 rango: def.rango,
-                resultado: r.transform(def, t, ruta),
+                resultado,
+                sitios,
             });
         }
         let Some(deco) = deco else { continue };
@@ -103,21 +109,24 @@ pub fn derivar(m: &Modulo, ruta: &str) -> Derivacion {
         });
     }
     for a in &m.anidadas {
-        if a.decoradores
+        if let Some(x) = a
+            .decoradores
             .iter()
-            .any(|x| r.es_de(x, a.indice, "ore.transform"))
+            .find(|x| r.es_de(x, a.indice, "ore.transform"))
         {
+            // En la línea del decorador: es lo que hay que mover o quitar.
             d.avisos.push(
                 Fallo::new(
-                    a.rango,
+                    x.rango(),
                     format!(
-                        "`{}` lleva `@transform` y no está en el nivel superior del módulo",
+                        "`@transform` decorates `{}`, which is not a top-level def of the module",
                         a.nombre
                     ),
                 )
                 .ayuda(
-                    "un transform es un `def` del módulo, no un método ni un `def` dentro de \
-                     otro: así no tiene documento ni se construye",
+                    "a transform is a module-level `def`, not a method or a `def` inside another \
+                     one: like this it has no document and does not build. Move it to the top \
+                     level, or remove the decorator",
                 ),
             );
         }
@@ -197,7 +206,13 @@ impl Resolutor<'_> {
 
     /// OOS v1alpha25 `01` §5.1: lo que un `@transform` declara leer y
     /// escribir, leído sin ejecutar.
-    fn transform(&self, def: &Def, deco: &Expr, ruta: &str) -> Result<Produccion, Vec<Fallo>> {
+    fn transform(
+        &self,
+        def: &Def,
+        deco: &Expr,
+        ruta: &str,
+        sitios: &mut crate::transform::Sitios,
+    ) -> Result<Produccion, Vec<Fallo>> {
         let mut fallos = Vec::new();
         let (mut inputs, mut output) = (None, None);
         let Expr::Llamada {
@@ -208,16 +223,16 @@ impl Resolutor<'_> {
         } = deco
         else {
             return Err(vec![
-                Fallo::new(deco.rango(), "`@transform` sin `inputs=` ni `output=`").ayuda(
-                    "un transform dice lo que lee y lo que escribe: \
-                     `@transform(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\")`",
+                Fallo::new(deco.rango(), "`@transform` without `inputs=` or `output=`").ayuda(
+                    "a transform says what it reads and what it writes: \
+                     `@transform(inputs=[\"sales.orders\"], output=\"sales.summary\")`",
                 ),
             ]);
         };
         if *posicionales > 0 {
             fallos.push(
-                Fallo::new(*rango, "`@transform` con argumentos posicionales")
-                    .ayuda("se dicen por nombre: `inputs=` y `output=`"),
+                Fallo::new(*rango, "`@transform` with positional arguments")
+                    .ayuda("they go by name: `inputs=` and `output=`"),
             );
         }
         let (mut hay_inputs, mut hay_output) = (false, false);
@@ -227,7 +242,7 @@ impl Resolutor<'_> {
                     hay_inputs = true;
                     let Expr::Lista(xs, _) = v else {
                         fallos.push(
-                            Fallo::new(v.rango(), "`inputs` no es una lista literal")
+                            Fallo::new(v.rango(), "`inputs` is not a literal list")
                                 .ayuda(DE_TRANSFORM),
                         );
                         continue;
@@ -239,7 +254,10 @@ impl Resolutor<'_> {
                             .map(|n| corto(&n))
                         {
                             // Sin repetir (§4): la primera vez cuenta.
-                            Ok(n) if !leidos.contains(&n) => leidos.push(n),
+                            Ok(n) if !leidos.contains(&n) => {
+                                sitios.inputs.push((n.clone(), x.rango()));
+                                leidos.push(n)
+                            }
                             Ok(_) => {}
                             Err(f) => fallos.push(f),
                         }
@@ -248,6 +266,7 @@ impl Resolutor<'_> {
                 }
                 Some("output") => {
                     hay_output = true;
+                    sitios.output = Some(v.rango());
                     match self
                         .nombre_declarado(v, def.indice, false)
                         .map(|n| corto(&n))
@@ -257,24 +276,22 @@ impl Resolutor<'_> {
                     }
                 }
                 Some(otro) => fallos.push(
-                    Fallo::new(
-                        v.rango(),
-                        format!("`@transform` no tiene el argumento `{otro}`"),
-                    )
-                    .ayuda("los suyos son `inputs` y `output`"),
+                    Fallo::new(v.rango(), format!("`@transform` has no argument `{otro}`"))
+                        .ayuda("its arguments are `inputs` and `output`"),
                 ),
-                None => fallos.push(
-                    Fallo::new(v.rango(), "`@transform(**…)`")
-                        .ayuda("los argumentos se leen sin ejecutar: escríbelos uno a uno"),
-                ),
+                None => fallos.push(Fallo::new(v.rango(), "`@transform(**…)`").ayuda(
+                    "the arguments are read without running the file: write them one by one",
+                )),
             }
         }
         for (hay, k) in [(hay_inputs, "inputs"), (hay_output, "output")] {
             if !hay {
-                fallos.push(Fallo::new(*rango, format!("`@transform` sin `{k}`")).ayuda(
-                    "un transform dice lo que lee (`inputs=[…]`) y lo que escribe \
+                fallos.push(
+                    Fallo::new(*rango, format!("`@transform` without `{k}`")).ayuda(
+                        "a transform says what it reads (`inputs=[…]`) and what it writes \
                          (`output=…`)",
-                ));
+                    ),
+                );
             }
         }
         fallos.sort_by_key(|f| f.rango);
@@ -308,25 +325,22 @@ impl Resolutor<'_> {
                         Ok(l.valor.clone().unwrap_or_default())
                     }
                     [] => Err(
-                        Fallo::new(*r, format!("`{n}` no está definido en el módulo"))
+                        Fallo::new(*r, format!("`{n}` is not defined in the module"))
                             .ayuda(DE_TRANSFORM),
                     ),
                     [l] if l.indice >= hasta => {
-                        Err(Fallo::new(*r, format!("`{n}` se liga después del `def`"))
-                            .ayuda("el decorador se evalúa al definir la función: muévelo arriba"))
+                        Err(Fallo::new(*r, format!("`{n}` is bound after the `def`"))
+                            .ayuda("the decorator runs when the function is defined: move it up"))
                     }
-                    [_] => Err(Fallo::new(
-                        *r,
-                        format!("`{n}` no está ligado a una cadena literal"),
-                    )
-                    .ayuda(DE_TRANSFORM)),
+                    [_] => Err(
+                        Fallo::new(*r, format!("`{n}` is not bound to a string literal"))
+                            .ayuda(DE_TRANSFORM),
+                    ),
                     varias => Err(Fallo::new(
                         *r,
-                        format!("`{n}` se liga {} veces en el módulo", varias.len()),
+                        format!("`{n}` is bound {} times in the module", varias.len()),
                     )
-                    .ayuda(
-                        "lo que nombra depende de cuál se ejecutó: liga la constante una sola vez",
-                    )),
+                    .ayuda("what it names depends on which one ran: bind the constant only once")),
                 }
             }
             Expr::Llamada {
@@ -343,7 +357,7 @@ impl Resolutor<'_> {
             }
             x => Err(Fallo::new(
                 x.rango(),
-                "no es una cadena literal, una constante del módulo ni `ore.collection(…)`",
+                "is not a string literal, a module constant or `ore.collection(…)`",
             )
             .ayuda(DE_TRANSFORM)),
         }
@@ -951,10 +965,10 @@ impl Resolutor<'_> {
 const LITERAL: &str = "se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas";
 
 /// Lo que un argumento de `@transform` puede ser (v1alpha25 `01` §5.1).
-const DE_TRANSFORM: &str = "se lee sin ejecutar el fichero: una cadena entre comillas, una \
-                            constante del módulo ligada una vez antes del `def` \
-                            (`PEDIDOS = \"ventas.pedidos\"`), u `ore.collection(…)` de una de \
-                            las dos";
+const DE_TRANSFORM: &str = "it is read without running the file: a quoted string, a module \
+                            constant bound once before the `def` \
+                            (`ORDERS = \"sales.orders\"`), or `ore.collection(…)` of one of \
+                            the two";
 
 /// La primera línea no vacía de una docstring: la `description`.
 fn primera_linea(d: Option<&str>) -> Option<String> {

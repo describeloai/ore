@@ -59,44 +59,47 @@ fn lo_que_no_se_lee_sin_ejecutar_es_oos2043() {
     for (fuente, se_dice) in [
         (
             "A = \"x.a\"\nA = \"x.b\"\n@transform(inputs=[A], output=\"x.c\")\ndef f(): ...\n",
-            "se liga 2 veces",
+            "is bound 2 times",
         ),
         (
             "B = \"x\"\nA = B + \".a\"\n@transform(inputs=[A], output=\"x.c\")\ndef f(): ...\n",
-            "no está ligado a una cadena literal",
+            "is not bound to a string literal",
         ),
         (
             "@transform(inputs=[A], output=\"x.c\")\ndef f(): ...\nA = \"x.a\"\n",
-            "se liga después del `def`",
+            "is bound after the `def`",
         ),
         (
             "if True:\n    A = \"x.a\"\n@transform(inputs=[A], output=\"x.c\")\ndef f(): ...\n",
-            "no está ligado a una cadena literal",
+            "is not bound to a string literal",
         ),
         (
             "A = \"x.a\"\nA += \"b\"\n@transform(inputs=[A], output=\"x.c\")\ndef f(): ...\n",
-            "se liga 2 veces",
+            "is bound 2 times",
         ),
         (
             "@transform(inputs=[\"x.\" + \"a\"], output=\"x.c\")\ndef f(): ...\n",
-            "no es una cadena literal",
+            "is not a string literal",
         ),
         (
             "@transform(inputs=(\"x.a\",), output=\"x.c\")\ndef f(): ...\n",
-            "`inputs` no es una lista literal",
+            "`inputs` is not a literal list",
         ),
         (
             "@transform(inputs=[\"x.a\"])\ndef f(): ...\n",
-            "sin `output`",
+            "without `output`",
         ),
         (
             "@transform(inputs=[], output=\"x.c\", mode=\"append\")\ndef f(): ...\n",
-            "no tiene el argumento `mode`",
+            "has no argument `mode`",
         ),
-        ("@transform\ndef f(): ...\n", "sin `inputs=` ni `output=`"),
+        (
+            "@transform\ndef f(): ...\n",
+            "without `inputs=` or `output=`",
+        ),
         (
             "@transform(inputs=[], output=collection(\"x.c\"))\ndef f(): ...\n",
-            "no es una cadena literal",
+            "is not a string literal",
         ),
     ] {
         let fuente = format!("from ore import transform\n{fuente}");

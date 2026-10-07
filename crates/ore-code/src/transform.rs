@@ -66,6 +66,21 @@ pub struct Transform {
     /// El del `def`, para señalarlo.
     pub rango: Rango,
     pub resultado: Result<Produccion, Vec<Fallo>>,
+    /// Dónde dice el código lo que declara (0055): un diagnóstico de lo que
+    /// resuelve —una entrada que no es nada, una salida sin base— apunta aquí
+    /// y no al documento derivado, que nadie escribe.
+    pub sitios: Sitios,
+}
+
+/// Dónde está, en el fuente, cada cosa que un `@transform` declara.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sitios {
+    /// El decorador entero (`@transform(...)`).
+    pub decorador: Rango,
+    /// Cada entrada, en forma corta, con el sitio de su argumento.
+    pub inputs: Vec<(String, Rango)>,
+    /// El argumento `output=`.
+    pub output: Option<Rango>,
 }
 
 /// Dónde lo escribe la herramienta (§9, no normativo): `<repositorio>/pipeline/
