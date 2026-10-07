@@ -362,6 +362,9 @@ spec:
             # 0049 B2·4: la media se sirve por `ore-medios` (45). Sin el, `/media/…`
             #   contesta 503 y las rutas de 0046 siguen.
             - { name: ORE_MEDIOS_DIRECCION, value: "ore-medios:8097" }
+            # 0057 B4·3: la preview de una vista sin copia se calcula en
+            #   `ore-motor` (58-el-motor). Sin él, el 409 de siempre.
+            - { name: ORE_MOTOR, value: "ore-motor:8096" }
             # ── W3.6c (0031 §11) · EL CATALOGO REST DE ICEBERG ─────────────
             #
             # `/v1/…` es la cara por la que PyIceberg, DuckDB, Spark y el agente

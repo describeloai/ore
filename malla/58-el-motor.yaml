@@ -1,0 +1,188 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE-MOTOR · el motor SQL de la celda, sin puesto (ADR 0057 B4·3)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Una vista sin copia no tiene filas: hay que calcular su SQL. El editor lo
+# calcula en el puesto (DuckDB, en la sesión de cada persona); lo que pregunta
+# SIN un puesto delante —la preview de una vista en el catálogo, y después la
+# consola SQL de la ficha y `ask`— lo calcula esto. El mismo Python, el mismo
+# DuckDB y el mismo SDK que la sesión (la imagen `puesto-python`), en otro
+# proceso: lo que calcula una preview y lo que calcula una celda no pueden ser
+# dos versiones.
+#
+# ⭐ UN MOTOR PURO, SIN IDENTIDAD. `ore-serve` decide todo antes de llamarlo,
+#   con la identidad y la rama de quien pregunta: los nombres, el gobierno, la
+#   credencial de cada dataset (prestada y acotada a él) y lo que se lee en
+#   vivo, que trae ÉL de la pasarela con su presupuesto. Aquí sólo llega la
+#   consulta, esas fuentes y el Arrow. Por eso:
+#     · su cuenta (`ore-motor`) no monta token y no tiene Workload Identity;
+#     · no sale al servidor de metadatos (169.254.169.254): no hay identidad
+#       de nodo que tomar prestada;
+#     · sólo sale al DNS y a Google por la vía privada (199.36.153.8/30:443),
+#       que es el lago, con la credencial que trae cada petición;
+#     · sólo `ore-serve` (rol `control`) le habla, y sólo al 8096.
+#   Y dentro, sólo lee: una sentencia `select`, sin disco local y con la
+#   configuración cerrada antes de correr lo del usuario (`ore_motor.py`).
+#
+# ⭐ `RollingUpdate` con `maxUnavailable: 0` (0054 I5), como la pasarela.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ore-motor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: motor
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-motor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: motor
+    ore.dev/pieza: motor
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      ore.dev/pieza: motor
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: motor
+        ore.dev/pieza: motor
+    spec:
+      serviceAccountName: ore-motor
+      automountServiceAccountToken: false
+      nodeSelector:
+        ore.dev/pool: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 1Gi }
+      containers:
+        - name: ore-motor
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: Always
+          command: ["python", "/opt/ore/ore_motor.py"]
+          env:
+            - { name: ORE_MOTOR_ESCUCHA, value: "0.0.0.0:8096" }
+            - { name: HOME, value: /tmp }
+            - { name: TMPDIR, value: /tmp }
+            # El tope de DuckDB sale de aquí (la mitad): el de `limits.memory`.
+            - { name: ORE_MEMORIA_MB, value: "1024" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          ports:
+            - { name: http, containerPort: 8096 }
+          readinessProbe:
+            httpGet: { path: /salud, port: 8096 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /salud, port: 8096 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: "20m", memory: 256Mi}
+            limits:   {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-motor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: motor
+spec:
+  selector:
+    ore.dev/pieza: motor
+  ports:
+    - { name: http, port: 8096, targetPort: 8096 }
+---
+# Sólo `ore-serve` (rol `control`) entra, y sólo al 8096.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-motor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: motor
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/pieza: motor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8096
+---
+# Y sale sólo al DNS y al lago (Google por la vía privada). Ni metadatos, ni la
+# pasarela, ni `ore-serve`, ni otra celda, ni internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-motor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: motor
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/pieza: motor
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: { cidr: 199.36.153.8/30 }
+      ports: [{protocol: TCP, port: 443}]
+---
+# Y `ore-serve` puede salir hacia él (se suma a `salida-del-control`).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-motor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: motor
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/pieza: motor
+      ports:
+        - protocol: TCP
+          port: 8096

@@ -103,6 +103,10 @@ PLANTILLAS = [
     #   conectores calientes, cola por origen y presupuesto; sólo `ore-serve` le
     #   habla. Con la cuenta y la red del driver: no pide IAM nuevo.
     "58-la-pasarela.yaml",
+    # ⭐ El motor SQL de la celda (0057 B4·3): calcula sin puesto lo que ore-serve
+    #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
+    #   `ore-serve` le habla, y sólo sale al lago.
+    "58-el-motor.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
