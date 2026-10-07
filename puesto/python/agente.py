@@ -183,6 +183,18 @@ class Kernel:
         self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "transform": ore.transform, "person": ore.person, "persona": ore.person, "ore": ore}
 
     def correr(self, texto, lenguaje="python"):
+        # 0055 B2: lo que la celda dejó para el informe (un build: filas,
+        # snapshot, el error con su fichero y su línea), en su salida.
+        tomar = getattr(ore, "_tomar_informe", None)
+        if tomar:
+            tomar()
+        r = self._correr(texto, lenguaje)
+        informe = tomar() if tomar else None
+        if informe:
+            r["informe"] = informe
+        return r
+
+    def _correr(self, texto, lenguaje="python"):
         t0 = time.time()
         salida = io.StringIO()
         valor = None

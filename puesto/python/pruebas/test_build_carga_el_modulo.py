@@ -70,6 +70,7 @@ class UnBuildCargaElModulo(unittest.TestCase):
             str(e.exception),
             "line 9 calls `limpios()` while the module loads; a Build calls it itself — remove the call",
         )
+        self.assertEqual(e.exception.linea, 9)
         # Ni se declaró ni corrió: nada llegó al servidor.
         self.assertEqual(self.servidor.pedidos, [])
         # Y el SDK queda desarmado: una llamada después corre.
@@ -97,6 +98,25 @@ class UnBuildCargaElModulo(unittest.TestCase):
         self.assertEqual(ore._procedencia("ventas.limpios")["build"], b)
         os.environ.pop("ORE_BUILD")
         self.assertNotIn("build", ore._procedencia("ventas.limpios"))
+
+
+class ElInformeDeLaCelda(unittest.TestCase):
+    """B2: lo que un build deja para su informe —filas, snapshot— lo toma el
+    agente al terminar la celda, una vez."""
+
+    def tearDown(self):
+        os.environ.pop("ORE_BUILD", None)
+        ore._tomar_informe()
+
+    def test_en_un_build_la_escritura_deja_sus_filas_y_su_snapshot(self):
+        os.environ["ORE_BUILD"] = "{}"
+        ore._resultado_de_escritura({"rows": 3, "added": 3, "snapshot": "8812", "mode": "overwrite"})
+        self.assertEqual(ore._tomar_informe(), {"filas": 3, "snapshot": "8812"})
+        self.assertIsNone(ore._tomar_informe())
+
+    def test_fuera_de_un_build_no_deja_nada(self):
+        ore._resultado_de_escritura({"rows": 3, "added": 3, "snapshot": "8812", "mode": "overwrite"})
+        self.assertIsNone(ore._tomar_informe())
 
 
 if __name__ == "__main__":

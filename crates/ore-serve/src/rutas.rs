@@ -801,6 +801,8 @@ impl Servidor {
             ("GET", ["trabajos", id]) => self.trabajo(sujeto, id),
             // ── el build (0055 B1): el `Transform` de una salida, del commit ──
             ("POST", ["builds"]) => self.abrir_build(sujeto, &p.cuerpo),
+            ("GET", ["builds"]) => self.builds_de(sujeto, &p.consulta),
+            ("GET", ["builds", id]) => self.build(sujeto, id),
             ("GET", ["puestos", id]) => self.puesto(sujeto, id),
             ("DELETE", ["puestos", id]) => self.cerrar_puesto(sujeto, id),
             ("POST", ["puestos", id, "ejecutar"]) => self.ejecutar_en_puesto(sujeto, id, &p.cuerpo),

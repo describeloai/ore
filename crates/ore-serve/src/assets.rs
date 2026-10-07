@@ -150,10 +150,16 @@ fn version_de(raiz: &Path, ruta: &str) -> Option<Json> {
 }
 
 fn ahora() -> String {
-    let s = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
+    rfc3339(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default(),
+    )
+}
+
+/// Segundos desde la época → `2026-10-07T08:05:00Z` (RFC 3339, UTC).
+pub(crate) fn rfc3339(s: u64) -> String {
     // ISO 8601 sin dependencias: lo suficiente para saber cuándo.
     let (d, h) = (s / 86400, s % 86400);
     let (a, m, dia) = civil(d as i64);

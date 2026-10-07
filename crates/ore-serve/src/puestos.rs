@@ -98,7 +98,7 @@ const VIDA: Duration = Duration::from_secs(240);
 const SIN_ARRANCAR: Duration = Duration::from_secs(600);
 
 /// Un puesto que no va a contestar: vivo sin latido, o encolado sin arrancar.
-fn perdido(p: &Puesto) -> bool {
+pub(crate) fn perdido(p: &Puesto) -> bool {
     match p.estado {
         Estado::Vivo => p.latido.is_some_and(|l| l.elapsed() > SIN_LATIDO),
         Estado::Encolado => p.creado.elapsed() > SIN_ARRANCAR,
@@ -206,6 +206,10 @@ pub(crate) struct Construccion {
     pub entrypoint: String,
     /// La salida, en forma corta.
     pub output: String,
+    /// La carpeta del repositorio del código, si es uno registrado.
+    pub repositorio: Option<String>,
+    /// Cuándo se lanzó (s desde la época): `creado` del historial (B2).
+    pub creado_s: u64,
 }
 
 /// La invocación de una `Function` de `runtime: python` que corre como trabajo.
@@ -731,6 +735,20 @@ pub(crate) fn build_json(id: &str, t: &Trabajo) -> Option<Json> {
         ("commit", Json::s(&t.commit)),
         ("output", Json::s(&b.output)),
     ]))
+}
+
+/// Un campo más en un objeto, si lo hay.
+trait ConSi {
+    fn con_si(self, k: &str, v: Option<Json>) -> Json;
+}
+
+impl ConSi for Json {
+    fn con_si(mut self, k: &str, v: Option<Json>) -> Json {
+        if let (Json::Obj(m), Some(v)) = (&mut self, v) {
+            m.insert(k.into(), v);
+        }
+        self
+    }
 }
 
 /// `{<colección>: <transacción>}`: lo que un transform fijó, como se enseña.
@@ -1600,6 +1618,26 @@ impl Servidor {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
+            // 0055 B2 · Lo de un build, en su informe: el historial lo lee de
+            // aquí cuando el puesto ya no está en la memoria (un reinicio).
+            let build = t.build.as_ref().map(|b| {
+                let mut m = vec![
+                    ("id", Json::s(id)),
+                    ("output", Json::s(&b.output)),
+                    ("transform", Json::s(&b.documento)),
+                    ("entrypoint", Json::s(&b.entrypoint)),
+                    ("commit", Json::s(&t.commit)),
+                    ("rama", Json::s(p.rama.clone().unwrap_or_default())),
+                    ("creado_s", Json::Int(b.creado_s as i64)),
+                ];
+                if let Some(r) = &b.repositorio {
+                    m.push(("repositorio", Json::s(r)));
+                }
+                if let Some(e) = c.empezada {
+                    m.push(("inicio_s", Json::Int(ahora - e.elapsed().as_secs() as i64)));
+                }
+                Json::obj(m)
+            });
             (
                 p.persona.clone(),
                 p.rama.clone(),
@@ -1632,7 +1670,8 @@ impl Servidor {
                         },
                     ),
                     ("salida", salida),
-                ]),
+                ])
+                .con_si("build", build),
                 funcion,
             )
         };
@@ -2707,6 +2746,11 @@ impl Servidor {
         coleccion: &str,
     ) -> Result<Option<EscrituraDelPuesto>, (&'static str, String)> {
         escritura_en(&self.puestos.lista.lock().unwrap(), sujeto, coleccion)
+    }
+
+    /// Lo vivo, bajo el candado, para quien sólo lee (el historial de builds).
+    pub(crate) fn con_los_puestos<R>(&self, f: impl FnOnce(&BTreeMap<String, Puesto>) -> R) -> R {
+        f(&self.puestos.lista.lock().unwrap())
     }
 
     pub(crate) fn transform_de(&self, id: &str) -> Option<Transform> {
@@ -4243,7 +4287,7 @@ fn emitir_puesto(puestos: &Puestos, id: &str, desde: u64, e: &mut Emisor<'_>) {
 }
 
 #[cfg(test)]
-mod prueba {
+pub(crate) mod prueba {
     use super::*;
 
     /// **Un lector, un camino** (0031 §10, 0033): un dataset resuelve por su
@@ -4749,7 +4793,7 @@ mod prueba {
         assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
     }
 
-    fn un_puesto(agente: &str) -> Puesto {
+    pub(crate) fn un_puesto(agente: &str) -> Puesto {
         Puesto {
             persona: "persona:ana".into(),
             entorno: "python".into(),
@@ -5089,6 +5133,8 @@ mod prueba {
                 documento: "packages/legal/etl/pipeline/legal.archivo.paginas.yaml".into(),
                 entrypoint: "etl/paginar.py:paginar".into(),
                 output: "legal.archivo.paginas".into(),
+                repositorio: Some("packages/legal/etl".into()),
+                creado_s: 1,
             }),
         });
         p.transform = Some(Transform {

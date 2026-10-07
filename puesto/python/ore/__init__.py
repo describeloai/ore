@@ -472,7 +472,7 @@ def transform(inputs, output):
         def corre(*a, **kw):
             global _transform
             if _cargando is not None:
-                raise TransformCalledWhileLoading(_llamada_al_cargar(getattr(f, "__name__", "transform")))
+                raise TransformCalledWhileLoading(*_llamada_al_cargar(getattr(f, "__name__", "transform")))
             if _transform is not None:
                 raise RuntimeError("transform(): `%s` is already running; a transform does not call another" % _transform.nombre)
             _transform = _Transform(getattr(f, "__name__", "transform"), inputs, output)
@@ -498,7 +498,30 @@ _cargando = None
 
 
 class TransformCalledWhileLoading(RuntimeError):
-    """A `@transform` was called while a Build loads its module (0055 D15)."""
+    """A `@transform` was called while a Build loads its module (0055 D15).
+    `linea`: the line of the build's file that calls it, if known."""
+
+    def __init__(self, mensaje, linea=None):
+        super().__init__(mensaje)
+        self.linea = linea
+
+
+# 0055 B2 · **Lo que la celda deja para el informe**: un build dice sus filas,
+# su snapshot o su error —con el fichero y la línea— sin que nadie lo lea de un
+# texto. El agente lo toma al terminar la celda (`_tomar_informe`) y lo pone en
+# su salida como `informe`.
+_informe = None
+
+
+def _para_el_informe(d):
+    global _informe
+    _informe = dict(_informe or {}, **d)
+
+
+def _tomar_informe():
+    global _informe
+    i, _informe = _informe, None
+    return i
 
 
 def _modulo_en_carga(fichero):
@@ -508,7 +531,7 @@ def _modulo_en_carga(fichero):
 
 
 def _llamada_al_cargar(nombre):
-    """El mensaje de D15, con la línea del fichero que llama (la más cercana)."""
+    """El mensaje de D15 y la línea del fichero que llama (la más cercana)."""
     import sys
 
     linea = None
@@ -519,7 +542,7 @@ def _llamada_al_cargar(nombre):
             break
         fr = fr.f_back
     donde = "line %d calls" % linea if linea else "the module calls"
-    return "%s `%s()` while the module loads; a Build calls it itself — remove the call" % (donde, nombre)
+    return "%s `%s()` while the module loads; a Build calls it itself — remove the call" % (donde, nombre), linea
 
 
 def _lee(vista):
@@ -1976,6 +1999,9 @@ def _resultado_de_escritura(escrito):
     otra vez no deja nada nuevo: ceros."""
     import pyarrow as pa
 
+    # 0055 B2: en un build, sus filas y su snapshot van al informe.
+    if os.environ.get("ORE_BUILD"):
+        _para_el_informe({"filas": int(escrito.get("rows") or 0), "snapshot": str(escrito.get("snapshot") or "") or None})
     llegan = 0 if escrito.get("repeated") else int(escrito.get("added") or 0)
     if escrito.get("mode") == "upsert":
         actualizadas = 0 if escrito.get("repeated") else max(0, int(escrito.get("before") or 0) + llegan - int(escrito.get("rows") or 0))
@@ -2041,6 +2067,8 @@ def _resultado_de_aplicar(hecho):
     import pyarrow as pa
 
     claves = ("items", "new", "recomputed", "skipped", "errors", "removed", "rows")
+    if os.environ.get("ORE_BUILD"):
+        _para_el_informe({"filas": int(hecho.get("rows") or 0)})
     return pa.table({k: pa.array([int(hecho.get(k) or 0)], pa.int64()) for k in claves})
 
 
