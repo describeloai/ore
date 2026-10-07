@@ -278,6 +278,9 @@ impl Indice {
             ("annotations", nulo()),
             ("modified", o(&it.modificado)),
             ("state", Json::s(&it.estado)),
+            // La transacción en que entró: la columna `transaction` del
+            // listado (v1alpha17 `04` §1).
+            ("transaction", o(&it.entro)),
         ])
     }
 }

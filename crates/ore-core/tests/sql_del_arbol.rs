@@ -707,7 +707,7 @@ fn a_collection_is_read_in_from_and_a_dataset_written_from_it_is_anchored() {
     assert!(
         fallos(
             r,
-            "select c.item, p.id from ventas.contratos c join ventas.pedidos p on true"
+            "select c._item, p.id from ventas.contratos c join ventas.pedidos p on true"
         )
         .is_empty()
     );
@@ -1039,7 +1039,7 @@ fn describe_gives_columns_then_detail_of_each_kind() {
     );
     assert_eq!(
         columnas(&describe("ventas.docs", None, true))[0],
-        "item Media"
+        "_item Media"
     );
 }
 

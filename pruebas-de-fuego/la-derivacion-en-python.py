@@ -272,10 +272,10 @@ def e14():
     LISTADO[:] = [ref("copia/a.pdf", "aa"), ref("copia/b.pdf", "bb")]
     t = medios._relacion(ore.collection(COL))
     assert t.column_names == list(medios.COLUMNAS_DE_LA_RELACION), t.column_names
-    assert t.schema.field("item").type == dict(medios._esquema_de_sistema())["_item"]
+    assert t.schema.field("_item").type == dict(medios._esquema_de_sistema())["_item"]
     con = duckdb.connect()
     con.register("c", t)
-    r = con.execute("select path, item.digest, size from c where path like '%b.pdf'").fetchall()
+    r = con.execute("select path, _item.digest, size from c where path like '%b.pdf'").fetchall()
     assert r == [("copia/b.pdf", "sha256:bb", 10)], r
     assert LLAMADAS == [], LLAMADAS
     bien("14 · la colección en `FROM` (B7·1): una fila por ítem —item, path, digest, size, "
@@ -317,8 +317,8 @@ def e15():
     sql_functions.register(con, [{"name": "legal.paginas", "internal": "__ore_fn_1", "arity": 1, "table": True},
                                  {"name": "legal.idioma", "internal": "__ore_fn_2", "arity": 1, "table": False}],
                            lambda n: specs[n])
-    r = con.execute("select c.path, p.page, p.texto, __ore_fn_2(c.item) as lang from c "
-                    "cross join lateral (select unnest(__ore_fn_1(c.item), max_depth := 2)) as p "
+    r = con.execute("select c.path, p.page, p.texto, __ore_fn_2(c._item) as lang from c "
+                    "cross join lateral (select unnest(__ore_fn_1(c._item), max_depth := 2)) as p "
                     "order by 1, 2").fetchall()
     assert r == [("copia/a.pdf", 1, "copia/a.pdf p1", "es"), ("copia/a.pdf", 2, "copia/a.pdf p2", "es"),
                  ("copia/b.pdf", 1, "copia/b.pdf p1", "en")], r
@@ -326,7 +326,7 @@ def e15():
     sql_functions.register(con, [{"name": "legal.idioma", "internal": "__ore_fn_3", "arity": 2, "table": False}],
                            lambda n: specs[n])
     try:
-        con.execute("select __ore_fn_3(c.item, 7) from c").fetchall()
+        con.execute("select __ore_fn_3(c._item, 7) from c").fetchall()
         raise AssertionError("un 7 no es un str")
     except duckdb.Error as e:
         # los tipos del contrato son los de la función en DuckDB: un 7 no es un String
@@ -364,7 +364,7 @@ def e16():
 
     def query(q):
         return ("select p.page, p.texto, p.anchor from legal.archivo.contratos as c cross join lateral "
-                "(select unnest(__ore_fn_1(c.item), max_depth := 2)) as p" + q)
+                "(select unnest(__ore_fn_1(c._item), max_depth := 2)) as p" + q)
 
     def pedir(metodo, ruta, cuerpo=None):
         assert ruta.endswith("/sql"), ruta
@@ -378,7 +378,7 @@ def e16():
     try:
         LAGO.pop(SAL, None)
         LISTADO[:] = [ref("copia/a.pdf", "aa"), ref("copia/b.pdf", "bb")]
-        q = "select p.page, p.texto, p.anchor from legal.archivo.contratos as c cross join lateral legal.pags(c.item) as p"
+        q = "select p.page, p.texto, p.anchor from legal.archivo.contratos as c cross join lateral legal.pags(c._item) as p"
         r = ore._sql_per_item(SAL, COL, q, "paginas")
         assert r["new"] == 2 and r["rows"] == 3 and r["written"], r
         assert ESCRITURAS[-1][3] == COL, ESCRITURAS[-1]

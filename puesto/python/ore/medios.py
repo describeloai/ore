@@ -195,6 +195,8 @@ class MediaRef:
     annotations: dict = None
     modified: str = None
     state: str = None
+    #: La transacción de la colección en que entró (el listado, v1alpha17 `04` §1).
+    transaction: str = None
 
     #: Alias de antes.
     de_json = _Alias("from_json")
@@ -433,8 +435,10 @@ def _esquema_de_sistema():
             ("_derivation", deriv), ("_status", estado)]
 
 
-#: A collection read in SQL `FROM` (0049 B7·1): one row per item.
-COLUMNAS_DE_LA_RELACION = ("item", "path", "digest", "size", "content_type", "modified")
+#: A collection read in SQL `FROM` (0049 B7·1): one row per item, with the
+#: columns of its listing (OOS v1alpha17 `04` §1; `COLUMNAS_DE_LISTADO` in ore-core).
+COLUMNAS_DE_LA_RELACION = ("_item", "path", "version", "digest", "size", "content_type",
+                           "content_type_detected", "checksum", "modified", "transaction")
 
 
 def _relacion(col):
@@ -444,17 +448,34 @@ def _relacion(col):
     return _relacion_de_refs(it.ref for it in col.items())
 
 
+def _instante(v):
+    """`modified` como instante (`DateTimeTz`), o nulo si no se entiende."""
+    import datetime
+    if not v:
+        return None
+    try:
+        t = datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+
+
 def _relacion_de_refs(refs):
-    """`_relacion` of these `MediaRef`s: one row each (B7·3, one item alone)."""
+    """`_relacion` of these `MediaRef`s: one row each (B7·3, one item alone),
+    with the columns of the listing (v1alpha17 `04` §1)."""
     import pyarrow as pa
     tipo_item = dict(_esquema_de_sistema())["_item"]
+    S = pa.string()
     filas = []
     for r in refs:
-        filas.append({"item": {c: getattr(r, c, None) for c in _CAMPOS_ITEM}, "path": r.path,
-                      "digest": r.digest, "size": r.size, "content_type": r.content_type,
-                      "modified": getattr(r, "modified", None)})
-    esquema = pa.schema([("item", tipo_item), ("path", pa.string()), ("digest", pa.string()),
-                         ("size", pa.int64()), ("content_type", pa.string()), ("modified", pa.string())])
+        filas.append({"_item": {c: getattr(r, c, None) for c in _CAMPOS_ITEM}, "path": r.path,
+                      "version": r.version, "digest": r.digest, "size": r.size,
+                      "content_type": r.content_type, "content_type_detected": r.content_type_detected,
+                      "checksum": r.checksum, "modified": _instante(r.modified),
+                      "transaction": getattr(r, "transaction", None)})
+    esquema = pa.schema([("_item", tipo_item), ("path", S), ("version", S), ("digest", S),
+                         ("size", pa.int64()), ("content_type", S), ("content_type_detected", S),
+                         ("checksum", S), ("modified", pa.timestamp("us", tz="UTC")), ("transaction", S)])
     return pa.Table.from_pylist(filas, schema=esquema)
 
 

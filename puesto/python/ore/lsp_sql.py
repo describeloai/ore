@@ -169,9 +169,13 @@ class Catalogo:
             elif i.get("kind") == "MediaCollection":
                 # 0049 B7·1: read in `FROM` as one row per item, with the
                 # columns `sql()` gives it (`medios._relacion`).
-                i["expone"] = [{"name": "item", "type": "Media<%s>" % n}, {"name": "path", "type": "String"},
-                               {"name": "digest", "type": "String"}, {"name": "size", "type": "Integer"},
-                               {"name": "content_type", "type": "String"}, {"name": "modified", "type": "String"}]
+                # The listing of v1alpha17 `04` §1 (`COLUMNAS_DE_LISTADO` in ore-core).
+                i["expone"] = [{"name": "_item", "type": "Media<%s>" % n}, {"name": "path", "type": "String"},
+                               {"name": "version", "type": "String"}, {"name": "digest", "type": "String"},
+                               {"name": "size", "type": "Integer"}, {"name": "content_type", "type": "String"},
+                               {"name": "content_type_detected", "type": "String"},
+                               {"name": "checksum", "type": "String"}, {"name": "modified", "type": "DateTimeTz"},
+                               {"name": "transaction", "type": "String"}]
                 self.legibles[n] = i
             elif i.get("kind") in ("Table", "ObjectTable"):
                 # 0053 F6/F9·1: read live from their origin (an ObjectTable, as its listing).

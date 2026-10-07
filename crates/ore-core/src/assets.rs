@@ -960,16 +960,9 @@ pub fn describir(
     let mut filas: Vec<[String; 3]> = Vec::new();
     // ── its columns ──
     if d.kind == Kind::MediaCollection {
-        // what `FROM` gives of a collection (B7·1; `COLUMNAS_DE_LA_RELACION`
-        // in the SDK's `medios.py`)
-        for (c, t) in [
-            ("item", "Media"),
-            ("path", "String"),
-            ("digest", "String"),
-            ("size", "Integer"),
-            ("content_type", "String"),
-            ("modified", "DateTimeTz"),
-        ] {
+        // what `FROM` gives of a collection: its listing (v1alpha17 `04` §1;
+        // `COLUMNAS_DE_LA_RELACION` in the SDK's `medios.py`)
+        for (c, t) in crate::document::COLUMNAS_DE_LISTADO {
             filas.push([s(c), s(t), String::new()]);
         }
     } else if let Json::Arr(cs) = expone_de(pkg, d) {
