@@ -1611,6 +1611,15 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
 }
 
 #[test]
+fn borrador_de_v1alpha28() {
+    marcador(
+        "v1alpha28",
+        "la visibilidad",
+        "BORRADOR · OOS v1alpha28 · la visibilidad dentro de un árbol",
+    );
+}
+
+#[test]
 fn borrador_de_v1alpha27() {
     marcador(
         "v1alpha27",

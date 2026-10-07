@@ -80,8 +80,12 @@ fn schema_declarado(d: &Loaded) -> Option<&str> {
     d.meta("schema").and_then(Node::as_str)
 }
 
-/// Si el paquete de `d` lo exporta.
+/// Si el paquete de `d` lo exporta. En un árbol que es un catálogo
+/// (v1alpha28 `01` §4) no hace falta: la base expone lo que `include` alcanza.
 fn exportado(pkg: &Package, d: &Loaded) -> bool {
+    if crate::exporta::arbol_es_catalogo(pkg) {
+        return true;
+    }
     let (Some(ns), Some(q)) = (d.meta("namespace").and_then(Node::as_str), d.qname()) else {
         return false;
     };

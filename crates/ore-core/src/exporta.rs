@@ -261,8 +261,21 @@ fn exportado(pkg: &Package, miembros: &[PathBuf]) -> BTreeMap<PathBuf, BTreeSet<
     out
 }
 
+/// v1alpha28 (`01-la-visibilidad`): si el árbol es **un catálogo** —su
+/// `OntologyConfig` declara v1alpha28 o posterior—. Entonces sus bases se leen
+/// por su nombre: `OOS2028` no se aplica entre miembros, y quién lee qué lo
+/// decide el acceso al servir, como un `GRANT` de Unity. `exports` queda para
+/// la frontera del artefacto, que no se ve desde el árbol.
+pub fn arbol_es_catalogo(pkg: &Package) -> bool {
+    pkg.of(Kind::OntologyConfig).any(|c| {
+        c.version()
+            .is_some_and(|v| v >= crate::document::ApiVersion::V1Alpha28)
+    })
+}
+
 pub fn comprobar(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    let catalogo = arbol_es_catalogo(pkg);
     let miembros = crate::link::miembros(pkg);
     let exports = exportado(pkg, &miembros);
 
@@ -366,7 +379,8 @@ pub fn comprobar(pkg: &Package) -> Vec<Diagnostic> {
             if *suyo == mio {
                 continue;
             }
-            if exports.get(*suyo).is_some_and(|e| e.contains(&destino)) {
+            // v1alpha28: dentro de un catálogo, cruzar de base es nombrar.
+            if catalogo || exports.get(*suyo).is_some_and(|e| e.contains(&destino)) {
                 continue;
             }
             let dueno = suyo.file_name().unwrap_or_default().to_string_lossy();
