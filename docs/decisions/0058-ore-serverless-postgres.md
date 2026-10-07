@@ -312,7 +312,7 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P1·1 | los forks y el CI apuntando a ellos | **hecho** (2026-10-07): compilado desde el fork en 14 min 7 s |
 | P1·2 | la imagen de cómputo | **hecho** (2026-10-07): 1 h 10 min en frío; `vm-compute-node-v17` en el registro |
 | P1·3 | la caché | **hecho**: almacenamiento 14 min con un cambio de Rust (2 min 20 s sin cambios); el cómputo es donde ahorra |
-| P1·4 | Postgres 17.10 | **fusión hecha y regresión igual que la base**; faltan las compilaciones y probarla en vivo |
+| P1·4 | Postgres 17.10 | **hecho** (2026-10-07): regresión igual que la base; almacenamiento (28 min, con caché) y cómputo (1 h 9 min) compilados en `8269bece` |
 | P1·5 | procedimiento de mantenimiento y pruebas de fuego parametrizadas | **hecho** (2026-10-07): [`ci/neon/README.md`](../../ci/neon/README.md), [`pruebas-de-fuego/ore-postgres/`](../../pruebas-de-fuego/ore-postgres/) |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
@@ -610,4 +610,13 @@ P1 no gasta cuota: todo va en Cloud Build. Pero P1·1 crea repositorios en GitHu
   - Lo que se hizo a mano en D0b/D0c ahora es código: los clientes (`cliente.yaml`), el tenant, `main` y las ramas (`tenant.sh`), y el endpoint (`vm.sh` con `especificacion.py`: la especificación, la clave Ed25519, el JWKS y el JWT). El token se verifica con el JWKS de la propia especificación (probado en local).
   - Es el embrión de lo que harán el `storage_controller` (P2) y `ore-postgres` (P4).
   - ⚠️ **Sin correr aún contra un clúster**: no hay infraestructura viva. La primera pasada es la aceptación de P2/P3.
+
+**P1 cerrado** (2026-10-07). Las imágenes de `8269bece` (= fa504217 + h3-pg + **Postgres 17.10**) ya están en el registro:
+- `neon` (build `5dc9d1a0`, 28 min 15 s escribiendo la caché);
+- `compute-node-v17`, con `postgres (PostgreSQL) 17.10` y 97 extensiones;
+- `vm-compute-node-v17` (build `ffeedb74`, 1 h 9 min).
+
+⚠️ Esa compilación del cómputo arrancó antes de que la receta tuviera caché, así que **la caché del cómputo sigue vacía**. La próxima compilación del cómputo va con `_CACHE=escribir`.
+
+Siguiente: **P2**, con los sub-pasos P2·1–P2·6 propuestos y esperando el go.
 
