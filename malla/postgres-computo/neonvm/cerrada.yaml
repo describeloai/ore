@@ -1,0 +1,75 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA OVERLAY CERRADA · la barrera 3 (ADR 0058, P3·5) — escrito a mano, no lo genera vendorizar.py
+#
+# La overlay de NeonVM (10.100.0.0/16) es UN puente L2 por nodo (`neon-br0`) unido entre nodos por
+# VXLAN: tal cual viene, cualquier VM ve a cualquier otra. La regla del producto es que un cómputo no
+# habla con ningún otro, nunca; y en la overlay sólo hay dos clases de extremos:
+#
+#   10.100.0.0/17     el lado del PROXY: pods de `ore-pg` con la NAD `overlay-del-proxy` (whereabouts
+#                     reparte 10.100.1.0–10.100.127.255): el proxy (P5), el plano de control y las pruebas
+#   10.100.128.0/17   las VMs (el IPAM de NeonVM reparte desde 10.100.128.0)
+#
+# ⇒ Una trama pasa por `neon-br0` sólo si su origen O su destino es del lado del proxy (IPv4 y ARP).
+#   De VM a VM, nada: ni IPv4, ni ARP, ni IPv6, ni otro protocolo. Se filtra en el puente de CADA nodo,
+#   así que una trama entre nodos se mira al salir y al entrar.
+#
+# Quién entra en la overlay lo cierra la otra mitad: Multus con `namespaceIsolation` y las NADs en
+# `ore-pg-computo` (VMs) y `ore-pg` (proxy). Un pod de `t-*` no puede pedir una interfaz en ella.
+#
+# ⚠️ Deuda (en el ADR): una VM puede FALSIFICAR un origen del lado del proxy. Le llegarían tramas sueltas
+#   a otra VM, pero nunca la respuesta (va a la MAC del proxy de verdad): sin respuesta no hay TCP, y
+#   Postgres no escucha UDP. Cerrarlo del todo es filtrar en el runner por la IP de SU VM (nuestro fork).
+#
+# Con `ebtables` (sobre nf_tables) de NUESTRA imagen de vxlan-controller: nada nuevo de fuera.
+# Comprueba cada 15 s y sólo reescribe si falta algo. Si se quita el DaemonSet, las reglas SE QUEDAN en
+# el nodo (cerrado es el estado seguro); quitarlas es `ebtables -D FORWARD … ; ebtables -X ORE-OVERLAY`.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filtro-de-la-overlay
+  namespace: neonvm-system
+  labels: { ore.dev/rol: filtro-de-la-overlay }
+spec:
+  selector:
+    matchLabels: { ore.dev/rol: filtro-de-la-overlay }
+  template:
+    metadata:
+      labels: { ore.dev/rol: filtro-de-la-overlay }
+    spec:
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: filtro
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1
+          command: [sh, -c]
+          args:
+            - |
+              PROXY=10.100.0.0/17
+              reglas() {
+                echo "-p IPv4 --ip-src $PROXY -j ACCEPT"
+                echo "-p IPv4 --ip-dst $PROXY -j ACCEPT"
+                echo "-p ARP --arp-ip-src $PROXY -j ACCEPT"
+                echo "-p ARP --arp-ip-dst $PROXY -j ACCEPT"
+                echo "-j DROP"
+              }
+              while true; do
+                ebtables -L ORE-OVERLAY >/dev/null 2>&1 || ebtables -N ORE-OVERLAY -P RETURN
+                if [ "$(ebtables -L ORE-OVERLAY | grep -c -- '-j ')" != 5 ]; then
+                  ebtables -F ORE-OVERLAY
+                  reglas | while read -r r; do ebtables -A ORE-OVERLAY $r; done
+                  echo "$(date -u +%FT%TZ) reglas escritas:"; ebtables -L ORE-OVERLAY
+                fi
+                ebtables -L FORWARD | grep -q -- '--logical-in neon-br0 -j ORE-OVERLAY' \
+                  || { ebtables -I FORWARD 1 --logical-in neon-br0 -j ORE-OVERLAY && echo "$(date -u +%FT%TZ) enganchado a FORWARD"; }
+                sleep 15
+              done
+          securityContext:
+            capabilities: { add: [NET_ADMIN] }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 64Mi }

@@ -18,7 +18,7 @@ metadata:
   name: cliente-overlay
   namespace: ${ORE_PG_NS}
   labels: { ore.dev/pg-acceso: si }
-  annotations: { k8s.v1.cni.cncf.io/networks: neonvm-system/neonvm-overlay-for-pods }
+  annotations: { k8s.v1.cni.cncf.io/networks: ore-pg/overlay-del-proxy }
 spec:
   nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
   tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]

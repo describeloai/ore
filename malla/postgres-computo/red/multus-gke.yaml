@@ -105,7 +105,7 @@ metadata:
     tier: node
     app: multus
 data:
-  cni-conf.json: '{"cniVersion": "1.0.0", "name": "multus-cni-network", "type": "multus", "capabilities": {"io.kubernetes.cri.pod-annotations": true, "portMappings": true}, "kubeconfig": "/etc/cni/net.d/multus.d/multus.kubeconfig", "clusterNetwork": "/etc/cni/net.d/multus.d/gke-1.0.0.conflist"}'
+  cni-conf.json: '{"cniVersion": "1.0.0", "name": "multus-cni-network", "type": "multus", "capabilities": {"io.kubernetes.cri.pod-annotations": true, "portMappings": true}, "kubeconfig": "/etc/cni/net.d/multus.d/multus.kubeconfig", "clusterNetwork": "/etc/cni/net.d/multus.d/gke-1.0.0.conflist", "namespaceIsolation": true, "globalNamespaces": ""}'
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -124,6 +124,8 @@ spec:
     type: RollingUpdate
   template:
     metadata:
+      # P3·5: la configuración se lee al arrancar; cambiarla exige reiniciar el DaemonSet → subir esto
+      annotations: { ore.dev/configuracion: "2-aislamiento-por-namespace" }
       labels:
         tier: node
         app: multus

@@ -5,3 +5,5 @@ kind: Kustomization
 resources:
   - neonvm.yaml
   - autoscaling.yaml
+  # P3·5: la barrera 3, a mano (no lo genera vendorizar.py)
+  - cerrada.yaml

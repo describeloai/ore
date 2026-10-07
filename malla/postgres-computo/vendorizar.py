@@ -24,6 +24,11 @@ Lo que se cambia (era `preparar.py` en D0b; cada regla, medida allí):
   LÍMITES no se tocan. En la puerta de producción (nodos grandes) se revisa.
 - Los duplicados de la release (el runner precargado y las NADs vienen en dos ficheros), una sola vez.
 - GKE sólo admite prioridad system-node-critical en un namespace con ResourceQuota para ella (B.3).
+- P3·5, la overlay cerrada: Multus va con `namespaceIsolation` (red/multus-gke.yaml), así que un pod sólo
+  puede engancharse a una NAD de SU namespace. Las NADs salen de `neonvm-system`: la de las VMs
+  (`neonvm-overlay-for-vms`) a `ore-pg-computo`, y la del lado del proxy (`neonvm-overlay-for-pods`) a
+  `ore-pg` como `overlay-del-proxy`. Un pod de `t-*` ya no puede entrar en la overlay. La del IPAM la lee
+  sólo el controller y se queda.
 """
 import pathlib, sys, yaml
 
@@ -55,7 +60,14 @@ def imagen(i):
     return DEVICE_PLUGIN if i == "squat/generic-device-plugin" else i
 
 
+NADS = {"neonvm-overlay-for-vms": ("ore-pg-computo", "neonvm-overlay-for-vms"),
+        "neonvm-overlay-for-pods": ("ore-pg", "overlay-del-proxy")}
+
+
 def preparar(d):
+    if d.get("kind") == "NetworkAttachmentDefinition" and d["metadata"]["name"] in NADS:
+        d["metadata"]["namespace"], d["metadata"]["name"] = NADS[d["metadata"]["name"]]
+        return d
     if d.get("kind") not in ("Deployment", "DaemonSet", "StatefulSet"):
         return d
     s = d["spec"]["template"]["spec"]
@@ -70,6 +82,8 @@ def preparar(d):
         for e in c.get("env", []):
             if "value" in e:
                 e["value"] = imagen(e["value"])
+            if e["name"] == "NAD_RUNNER_NAMESPACE":
+                e["value"] = "ore-pg-computo"
     n = d["metadata"]["name"]
     if n in RESERVAS:
         s["containers"][0].setdefault("resources", {})["requests"] = RESERVAS[n]
