@@ -442,7 +442,12 @@ pub fn mover(raiz: &Path, qname: &str, destino: &str, since: Option<&str>) -> Ex
     }
 
     println!("  ✓ {qname} → {nuevo}");
-    contar(&rastro, destino, std::slice::from_ref(&nuevo));
+    contar(
+        &rastro,
+        destino,
+        std::slice::from_ref(&nuevo),
+        ore_core::exporta::arbol_es_catalogo(&pkg),
+    );
     if since.is_none() {
         aviso_de_version(&pkg, &dir_origen);
     }
@@ -615,7 +620,12 @@ pub fn dividir(
     for n in &nuevos {
         println!("     {n}");
     }
-    contar(&rastro, destino, &nuevos);
+    contar(
+        &rastro,
+        destino,
+        &nuevos,
+        ore_core::exporta::arbol_es_catalogo(&pkg),
+    );
     if !falta.is_empty() {
         println!();
         println!(
@@ -836,7 +846,12 @@ pub fn fundir(raiz: &Path, origen: &str, destino: &str, since: Option<&str>) -> 
     println!();
     println!("  ✓ `{origen}` queda como LÁPIDA: `status: retired`, sin documentos,");
     println!("    y con un `moved` por cada uno. Su nombre no se rompe.");
-    contar(&rastro, destino, &nuevos);
+    contar(
+        &rastro,
+        destino,
+        &nuevos,
+        ore_core::exporta::arbol_es_catalogo(&pkg),
+    );
     if since.is_none() {
         aviso_de_version(&pkg, dir_origen);
     }
@@ -991,7 +1006,7 @@ fn sitios(
     Ok((dir_origen.to_path_buf(), dir_destino.to_path_buf()))
 }
 
-fn contar(rastro: &Rastro, destino: &str, nuevos: &[String]) {
+fn contar(rastro: &Rastro, destino: &str, nuevos: &[String], catalogo: bool) {
     if !rastro.reapuntados.is_empty() {
         println!();
         println!(
@@ -1014,6 +1029,12 @@ fn contar(rastro: &Rastro, destino: &str, nuevos: &[String]) {
     );
     for c in &rastro.cruzan {
         println!("      {c}");
+    }
+    // OOS v1alpha28: en un árbol que es un catálogo, cruzar de base es nombrar.
+    if catalogo {
+        println!("    este árbol es un catálogo (OOS v1alpha28): sus bases se leen por su nombre,");
+        println!("    y quién lee qué lo decide el acceso. No hace falta exportar nada.");
+        return;
     }
     println!("    `exports` es «esto lo expongo a propósito», así que este mando no lo");
     println!("    toca. En el manifiesto de `{destino}`:");

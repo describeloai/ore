@@ -178,6 +178,13 @@ pub fn inducir(repo: &Path, fuente: &str) -> Result<Option<Informe>, Fallo> {
         }
     }
 
+    // OOS v1alpha28 (ORE 0057 X3): en un árbol que es un catálogo las bases se
+    // leen por su nombre, y `exports` es la frontera del artefacto: la fuente
+    // no abre lo que cataloga con una lista. Lo que ya hubiera se queda como
+    // está: dentro del árbol no estorba ni concede.
+    if es_catalogo(repo) {
+        return Ok(Some(informe));
+    }
     let nuevo = con_exports(&manifiesto, &f.exports)
         .map_err(|m| fallo(65, format!("el `package.yaml` de `{fuente}`: {m}")))?;
     if nuevo != manifiesto {
@@ -189,6 +196,20 @@ pub fn inducir(repo: &Path, fuente: &str) -> Result<Option<Informe>, Fallo> {
         })?;
     }
     Ok(Some(informe))
+}
+
+/// Si el árbol de `repo` es un catálogo: su `ontology.config.yaml` declara
+/// OOS v1alpha28 o posterior (`01-la-visibilidad`).
+fn es_catalogo(repo: &Path) -> bool {
+    std::fs::read_to_string(repo.join("ontology.config.yaml"))
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .and_then(|n| {
+            n.get("apiVersion")
+                .and_then(|(_, v)| v.as_str())
+                .and_then(ore_core::document::ApiVersion::parse)
+        })
+        .is_some_and(|v| v >= ore_core::document::ApiVersion::V1Alpha28)
 }
 
 /// Tras inducir una base: la fuente, si tiene paquete. Lo que falle se dice y
@@ -296,7 +317,31 @@ pub fn con_exports(texto: &str, exports: &[String]) -> Result<String, String> {
 
 #[cfg(test)]
 mod pruebas {
-    use super::con_exports;
+    use super::{con_exports, es_catalogo};
+
+    /// 0057 X3: en un árbol v1alpha28 la fuente no escribe `exports`.
+    #[test]
+    fn un_arbol_v1alpha28_es_un_catalogo() {
+        let d = std::env::temp_dir().join(format!("ore-catalogo-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let config = |v: &str| {
+            std::fs::write(
+                d.join("ontology.config.yaml"),
+                format!(
+                    "apiVersion: oos.dev/{v}
+kind: OntologyConfig
+metadata: {{ name: x, version: 0.1.0 }}
+"
+                ),
+            )
+            .unwrap();
+        };
+        config("v1alpha27");
+        assert!(!es_catalogo(&d));
+        config("v1alpha28");
+        assert!(es_catalogo(&d));
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn los_exports_van_en_la_forma_del_manifiesto() {
