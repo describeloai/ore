@@ -11,7 +11,8 @@ la credencial de cada dataset (prestada y acotada a él) y las lecturas en vivo
 
     POST /v1/calcular
       {"texto": "<sql>", "fuentes": {<nombre>: <lo que /puestos/{id}/sql da>},
-       "vivas": {<tabla>: "<Arrow IPC en base64>"}, "limite": 1000}
+       "vivas": {<tabla>: "<Arrow IPC en base64>"},
+       "colecciones": {<nombre>: [<ítem del listado>, …]}, "limite": 1000}
     → 200, un flujo Arrow IPC (el resultado, cortado en `limite` filas;
       `ore-truncada: 1` si había más) · 422 {codigo, error} si no se calcula
 
@@ -45,7 +46,7 @@ class NoSeCalcula(Exception):
         self.codigo, self.mensaje = codigo, mensaje
 
 
-def calcular(texto, fuentes, vivas, limite):
+def calcular(texto, fuentes, vivas, limite, colecciones=None):
     """El resultado de `texto` como `pyarrow.Table` (hasta `limite` filas) y si
     había más. Lo mismo que `ore.sql()` hace en un puesto, con las fuentes que
     ore-serve ya decidió y lo leído en vivo que ya trajo."""
@@ -87,7 +88,16 @@ def calcular(texto, fuentes, vivas, limite):
         if rd.get("federada") is not None or rd.get("vistaFederada") is not None:
             continue
         if rd.get("collection"):
-            raise NoSeCalcula("motor/coleccion", "`%s` es una colección: su listado aún no llega al motor" % nombre)
+            # 0057 C5: su listado, que trae ore-serve, como lo da `sql()` en una
+            # celda (las diez columnas de v1alpha17 `04` §1).
+            from ore.medios import MediaRef, _relacion_de_refs
+            if nombre not in (colecciones or {}):
+                raise NoSeCalcula("motor/falta-listado", "`%s` es una colección y la petición no trae su listado" % nombre)
+            interno = "__ore_listado_%d" % len(en_vivo)
+            en_vivo[interno] = interno
+            con.register(interno, _relacion_de_refs(MediaRef.from_json(d) for d in colecciones[nombre]))
+            ore._registra(con, nombre, ore._q(interno))
+            continue
         if not (rd.get("metadata_location") or rd.get("consulta")):
             raise NoSeCalcula("motor/copia-antigua", "`%s` no es un dataset de Iceberg: se lee en un puesto" % nombre)
         fuente, _ = ore._fuente_de_respuesta(nombre, rd)
@@ -160,7 +170,8 @@ class Manejador(http.server.BaseHTTPRequestHandler):
             if not 1 <= limite <= LIMITE_MAXIMO:
                 raise NoSeCalcula("motor/peticion", "`limite` va de 1 a %d" % LIMITE_MAXIMO)
             with CANDADO:
-                tabla, truncada = calcular(texto, p.get("fuentes"), p.get("vivas") or {}, limite)
+                tabla, truncada = calcular(texto, p.get("fuentes"), p.get("vivas") or {}, limite,
+                                           p.get("colecciones") or {})
         except NoSeCalcula as e:
             print("calcular · %s · %d ms" % (e.codigo, (time.time() - t0) * 1000), flush=True)
             return self._json(422, {"codigo": e.codigo, "error": e.mensaje})

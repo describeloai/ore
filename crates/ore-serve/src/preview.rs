@@ -329,10 +329,27 @@ impl Servidor {
                 Err(r) => return r,
             }
         }
+        // 0057 C5 · Una colección del lago: su listado, por la misma puerta que
+        // `/media/…/items` (lo declarado, la rama), entero y con un tope: una
+        // vista que agrega sobre un listado a medias daría otra respuesta.
+        let mut colecciones: std::collections::BTreeMap<String, Json> = Default::default();
+        for (nombre, v) in &fuentes {
+            let Json::Obj(m) = v else { continue };
+            if !m.contains_key("collection") {
+                continue;
+            }
+            match self.listado_entero(rama, p, sujeto, nombre) {
+                Ok(items) => {
+                    colecciones.insert(nombre.clone(), Json::Arr(items));
+                }
+                Err(r) => return r,
+            }
+        }
         let cuerpo = Json::obj([
             ("texto", Json::s(consulta)),
             ("fuentes", Json::Obj(fuentes)),
             ("vivas", Json::Obj(vivas)),
+            ("colecciones", Json::Obj(colecciones)),
             ("limite", Json::Int(limite as i64)),
         ])
         .jcs();
@@ -358,6 +375,72 @@ impl Servidor {
                 Respuesta::ok(j)
             }
             Err(_) => Respuesta::error(502, "`ore-store arrow-a-filas` no devolvió JSON"),
+        }
+    }
+
+    /// 0057 C5 · **El listado entero de una colección del lago**, para el
+    /// motor: las páginas de `media(…, "items")` en nombre de quien pregunta,
+    /// hasta [`ITEMS_PARA_EL_MOTOR`]. Más que eso no se calcula aquí: se dice.
+    fn listado_entero(
+        &self,
+        rama: Option<&str>,
+        p: &Peticion,
+        sujeto: &Identidad,
+        nombre: &str,
+    ) -> Result<Vec<Json>, Respuesta> {
+        let Some((b, s, c)) = ore_core::punteros::partes(nombre) else {
+            return Err(Respuesta::error(422, format!("`{nombre}` no es un nombre del árbol")));
+        };
+        let mut items = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut consulta = std::collections::BTreeMap::new();
+            consulta.insert("limit".to_string(), "1000".to_string());
+            if let Some(k) = &cursor {
+                consulta.insert("cursor".to_string(), k.clone());
+            }
+            let pagina = Peticion {
+                metodo: "GET".into(),
+                ruta: format!("/media/{b}/{s}/{c}/items"),
+                cabeceras: p.cabeceras.clone(),
+                cuerpo: String::new(),
+                consulta,
+            };
+            let r = self.media(rama, &pagina, sujeto, b, s, c, "items");
+            if r.codigo != 200 {
+                return Err(r);
+            }
+            let texto = match &r.cuerpo {
+                Json::Crudo(t) => t.clone(),
+                otro => otro.jcs(),
+            };
+            let Ok(n) = ore_core::parse::parse(texto.trim()) else {
+                return Err(Respuesta::error(502, "el listado de `ore-medios` no es JSON"));
+            };
+            if let Some((_, its)) = n.get("items") {
+                items.extend(its.items().iter().map(Json::de_node));
+            }
+            if items.len() > ITEMS_PARA_EL_MOTOR {
+                let mut r = Respuesta::error(
+                    422,
+                    format!(
+                        "`{nombre}` tiene más de {ITEMS_PARA_EL_MOTOR} ítems: la vista no se calcula sin una celda (léela con `sql()` en una sesión)"
+                    ),
+                );
+                if let Json::Obj(m) = &mut r.cuerpo {
+                    m.insert("codigo".into(), Json::s("motor/coleccion-grande"));
+                }
+                return Err(r);
+            }
+            cursor = n
+                .get("cursor")
+                .and_then(|(_, v)| v.as_str())
+                // El `null` de JSON llega aquí como el texto `null`: no es un cursor.
+                .filter(|k| !k.is_empty() && *k != "null")
+                .map(String::from);
+            if cursor.is_none() {
+                return Ok(items);
+            }
         }
     }
 
@@ -453,6 +536,10 @@ impl Servidor {
 
 /// `POST /v1/calcular` a `ore-motor`, por HTTP plano dentro de la celda: el
 /// Arrow del resultado, o su 422 tal cual.
+/// 0057 C5 · Hasta cuántos ítems de una colección se le pasan al motor: más,
+/// y la vista se calcula en una celda.
+pub(crate) const ITEMS_PARA_EL_MOTOR: usize = 50_000;
+
 fn al_motor(motor: &str, cuerpo: &str) -> Result<Vec<u8>, Respuesta> {
     use std::net::ToSocketAddrs as _;
     let dir = motor
