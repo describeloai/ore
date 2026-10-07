@@ -170,6 +170,11 @@ spec:
               #   repositorio ontologico», que manda a mirar el arbol.
               git checkout -q -B main
               ore init --name demo .
+              # ⭐ 0055 · `sandbox`, la base del sistema donde escriben los
+              #   ejemplos de las plantillas de transforms: nace con el arbol y
+              #   es de la organizacion. Si el nombre no es un owner valido no
+              #   para el arbol: ore-serve la crea al primer repositorio.
+              ore package new sandbox --owner team:demo --path . || echo "· sandbox no se creo: la creara ore-serve"
               git add -A
               git -c user.name=aprovisionador \
                   -c user.email=aprovisionador@invalido \

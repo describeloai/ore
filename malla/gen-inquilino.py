@@ -361,6 +361,8 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
         #   suelto es justo lo que la comprobacion ② prohibe. Si algun dia esta
         #   linea se cae, ② lo caza: el nombre del modelo no sobrevive.
         t = t.replace("--name %s" % MODELO, "--name %s" % organizacion)
+        # ⭐ 0055 · y el dueño de `sandbox`, que es la organización.
+        t = t.replace("--owner team:%s" % MODELO, "--owner team:%s" % organizacion)
         # ⭐ La celda del cofre (0025-④): ESTA celda.
         t = t.replace("--celda\n            - %s\n" % MODELO, "--celda\n            - %s\n" % nombre)
         # ⛔ Y la organizacion que `ore-serve` le dice al custodio — la CUENTA,
