@@ -47,9 +47,12 @@ pq.write_table(pa.table({
     "cliente": pa.array([1, 1, 2, 3, 3, 3, 4, 5], pa.int64()),
     "importe": pa.array([10.0, 20.0, 5.0, 7.5, 2.5, 30.0, 12.0, 8.0]),
 }), f"{t}/pedidos.parquet")
+# 0057 B4·6: una tabla que no cabe en el tope de una lectura en vivo (100 000).
+pq.write_table(pa.table({"id": pa.array(range(100_001), pa.int64())}), f"{t}/grande.parquet")
 PYX
 curl -s -X PUT --data-binary @"$TMP/clientes.parquet" "$S3/lago/datos/clientes/parte-0.parquet" >/dev/null
 curl -s -X PUT --data-binary @"$TMP/pedidos.parquet" "$S3/lago/datos/pedidos/parte-0.parquet" >/dev/null
+curl -s -X PUT --data-binary @"$TMP/grande.parquet" "$S3/lago/datos/grande/parte-0.parquet" >/dev/null
 for k in "anio=2026/a.pdf:aaaa" "anio=2026/b.pdf:bbbbbb" "anio=2025/c.pdf:cc"; do
   curl -s -X PUT --data-binary "${k#*:}" "$S3/lago/docs/contratos/${k%%:*}" >/dev/null
 done
@@ -90,7 +93,7 @@ fuente() { # nombre-del-paquete datasource
 apiVersion: oos.dev/v1alpha1
 kind: Package
 metadata: { name: $P, version: 0.1.0, status: draft, domain: $P }
-spec: { owner: "team:fed", exports: [$P.datos.clientes, $P.datos.pedidos, $P.docs.contratos] }
+spec: { owner: "team:fed", exports: [$P.datos.clientes, $P.datos.pedidos, $P.datos.grande, $P.docs.contratos] }
 YAML
   for s in datos docs; do
     printf 'apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: %s, namespace: %s }\nspec: { owner: team:fed }\n' "$s" "$P" > "$A/packages/$P/$s/schema.yaml"
@@ -124,6 +127,21 @@ spec:
     id: { type: Integer, physicalType: int64, required: true }
     cliente: { type: Integer, physicalType: int64 }
     importe: { type: Float, physicalType: double }
+  reads:
+    fullScan: cheap
+    predicatePushdown: [eq, neq, in, range, isNull]
+  changes: { mode: retract, witness: listing }
+YAML
+  cat > "$A/packages/$P/datos/tables/grande.yaml" <<YAML
+apiVersion: oos.dev/v1alpha22
+kind: Table
+metadata: { name: grande, namespace: $P, schema: datos }
+spec:
+  datasource: $D
+  object: "datos/grande/"
+  format: { type: parquet, match: "*.parquet" }
+  columns:
+    id: { type: Integer, physicalType: int64, required: true }
   reads:
     fullScan: cheap
     predicatePushdown: [eq, neq, in, range, isNull]
@@ -232,6 +250,12 @@ def b_ventas():
 def b_over():
     """over() de una tabla expuesta."""
     return write("std.copias.b_over", over("vivo.datos.pedidos"))
+
+
+@transform(inputs=["vivo.datos.grande"], output="std.copias.b_grande")
+def b_grande():
+    """Una lectura que se corta en el tope: el build falla, no escribe a medias."""
+    return write("std.copias.b_grande", sql("select count(*) n from vivo.datos.grande"))
 
 
 @transform(inputs=["congelada.datos.clientes"], output="std.copias.b_congelada")

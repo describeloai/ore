@@ -1273,6 +1273,9 @@ def sql(query, format="pandas", strict=False):
     Returns what `over()` returns for `format` (pandas, arrow or polars), or
     `None` for a statement without a result."""
     texto, como, estricta = query, format, strict
+    # 0057 B4·6: en un build, una lectura en vivo cortada hace fallar el build:
+    # lo que escribe no puede ser un dataset a medias (ni un agregado de una parte).
+    estricta = estricta or bool(os.environ.get("ORE_BUILD"))
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() needs a query")
     con = _duckdb()
