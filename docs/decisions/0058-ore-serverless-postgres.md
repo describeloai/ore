@@ -319,7 +319,9 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P2·3 | la base del controller (Postgres en el clúster, copias, restauración +1000) | **hecho** (2026-10-07): en vivo por Flux; restaurada una copia de verdad → generación 7 + 1000 |
 | P2·4 | la malla: controller, broker, safekeepers, pageserver | **hecho** (2026-10-07): en vivo por Flux, a la primera, con autenticación |
 | P2·5 | retención y limpieza (PITR, GC, scrubber; borrar un tenant vacía GCS) | **hecho** (2026-10-07): historia 1 día; borrar un tenant vacía su prefijo (4 → 0 objetos); scrubber diario, 0 errores |
-| P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | **siguiente** |
+| P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | **hecho** (2026-10-07): RPO 0 en todo; C4 18 s sin intervención; 2 safekeepers caídos paran sin perder; `--timelines-onto-safekeepers` off (exige 3 zonas) |
+| **P2** | **el almacenamiento de producción** | **cerrado** (2026-10-07) |
+| P3 | el cómputo de producción y el aislamiento entre organizaciones | **siguiente** |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -744,4 +746,38 @@ El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba
   - un bucket sin timelines no cuenta como fallo.
   - Lanzado a mano: **11 s, 1 tenant / 1 timeline, 0 errores, 0 capas huérfanas**, nada que borrar.
   - `find-garbage` (tenants que el plano de control ya no conoce) necesita la API de administración de Neon. No la usamos: lo cubre que borrar por el controller vacía el prefijo.
+
+#### P2·6 · La aceptación (2026-10-07)
+
+- **El cómputo de la prueba va en un pod**, no en una VM ([`computo.yaml`](../../pruebas-de-fuego/ore-postgres/computo.yaml), `ORE_PG_COMPUTO=pod`): es la misma imagen `compute-node-v17` y deja probar el almacenamiento sin NeonVM (P3).
+  - Lleva en la especificación un `storage_auth_token` de scope `tenant`, firmado con la privada.
+  - Las pruebas de fuego van ahora por el controller con el token `admin` ([`p26.sh`](../../pruebas-de-fuego/ore-postgres/p26.sh)).
+
+| prueba | resultado |
+|---|---|
+| ① escrituras con autenticación | TPC-B **258–265 tps** con 1 cliente y **511–531** con 4, **0 fallidas**. En pod, sin la VM, rinde el doble que en C3 (120 / 286) |
+| ② safekeepers (corte de red real) | 3 vivos: 4,0 commits/s. **1 caído: 3,5/s, sigue**. **2 caídos: se para sin error** (hueco de 34 s). De vuelta: 4,0/s. **657 confirmados = 657 en la base** |
+| ③ C4: pageserver **y su disco** | tenant `Active` **sin intervención en 18,1 s** (pod nuevo en 15,3 s), con generación +1 y `--handle-ps-local-disk-loss`. **RPO 0** (264 = 264). Con la caché del cómputo fría, las escrituras esperan al pageserver (hueco de 17,6 s); con caché caliente, 0,9 s. Lectura fría de 1 M filas, correcta |
+| ④ reiniciar el controller con escrituras | de vuelta en 3,6 s; **las escrituras ni lo notan** (está fuera del camino de los datos); conserva tenants y generaciones |
+| ⑤ borrar el tenant | el controller vacía `pageserver/`, pero **el WAL de los safekeepers queda huérfano**: 317 MB en GCS y 5,6 MB por disco. `DELETE /v1/tenant/{t}` en cada safekeeper lo borra todo (local y GCS) ⇒ **así borra P4** (`tenant.sh borrar`). Tras la prueba, el bucket queda vacío |
+
+**Hallazgos** (cada uno, arreglado o decidido):
+1. **El DNS de pod deja conexiones colgadas.** El nombre `pageserver-0.pageserver…` cambia de IP al recrear el pod, y tarda en enterarse: quien conecta a la IP vieja se queda en SYN **~127 s**. El primer C4 parecía de 155 s cuando el pageserver lo resolvió en 24 s.
+   - ⇒ **Un Service ClusterIP por pageserver y por safekeeper** (IP que no cambia): con eso se registra el pageserver, eso anuncian los safekeepers (`--advertise-pg`) y eso usa el cómputo.
+   - Cambiar la dirección de un nodo exige darlo de baja **y quitar su lápida** (`DELETE /debug/v1/tombstone/{id}`); si no, el re-attach da 409 para siempre.
+2. **Cilium no usa `statefulset.kubernetes.io/pod-name` para las identidades.** Una NetworkPolicy que selecciona por ella **no hace nada, en silencio**, y aplicar una política tarda 5–15 s.
+   - Revisadas las 76 de ORE: ninguna depende de esa etiqueta.
+   - ⇒ **Importa en P3**: el aislamiento entre organizaciones no puede apoyarse en etiquetas de alta cardinalidad.
+3. **`--timelines-onto-safekeepers` se queda en off.** En modo estricto exige 3 safekeepers **en 3 zonas distintas**, y el clúster es zonal.
+   - El borrado lo cubre P4 llamando a los safekeepers.
+   - Se reconsidera en la puerta de producción (safekeepers en 3 zonas): da migración de safekeepers y membresía por generaciones.
+4. **Arnés en Windows**: Git Bash reescribe las rutas de los argumentos de `kubectl exec` (`MSYS_NO_PATHCONV=1`), y bash y Python no ven el mismo `/tmp` (rutas `C:/…`).
+
+**P2 cerrado.** El almacenamiento de producción está vivo en `ore-pg`, declarado en git y reconciliado por Flux:
+- autenticación en todas las piezas;
+- recuperación sin intervención;
+- copias y restauración con salto de generaciones;
+- retención de 1 día y limpieza diaria.
+
+Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ningún tenant.
 

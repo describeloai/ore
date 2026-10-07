@@ -16,9 +16,14 @@ case "${1:-}" in
     reintentar controlador POST /v1/tenant/$T/timeline "{\"new_timeline_id\":\"$R\",\"ancestor_timeline_id\":\"$M\"$LSN,\"pg_version\":17}" >/dev/null || exit 1
     guardar "rama-$2" "$R"; echo "rama $2 = $R (de main ${3:-en su último LSN})" ;;
   borrar)
+    # P2·6: el controller borra lo del pageserver (y su prefijo en GCS), pero NO el WAL de los
+    # safekeepers mientras no los gestione (--timelines-onto-safekeepers, que exige 3 zonas):
+    # quedaba huérfano (317 MB). Se le pide a cada safekeeper: local y GCS. Es lo que hará P4.
     T=$(leer tenant) || exit 1
     for i in $(seq 1 30); do r=$(controlador DELETE /v1/tenant/$T); case $r in *NotFound*) break;; esac; sleep 2; done
-    echo "tenant $T borrado" ;;
+    SKT=""; [ "$ORE_PG_AUTH" = si ] && SKT=$(cat "$(secreto almacen-jwt safekeeperdata)")
+    for i in 0 1 2; do api "safekeeper-$i.$ORE_PG_NS.svc.cluster.local" 7676 DELETE "/v1/tenant/$T" "" "$SKT" >/dev/null; done
+    echo "tenant $T borrado (controller + 3 safekeepers)" ;;
   *)
     T=$(hex); M=$(hex)
     controlador POST /v1/tenant "{\"new_tenant_id\":\"$T\"}" >/dev/null

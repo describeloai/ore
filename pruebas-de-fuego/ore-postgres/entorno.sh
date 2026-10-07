@@ -17,7 +17,7 @@ set -u
 # Git Bash reescribe los argumentos que parecen rutas (/tmp/… → C:/…/Temp/…) también los de
 # `kubectl exec`: aquí todas las rutas que van a Windows ya son C:/…
 export MSYS_NO_PATHCONV=1
-AQUI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+AQUI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })   # C:/… en Git Bash: la entienden bash y Python
 
 : "${ORE_PG_NS:=ore-pg}"
 : "${ORE_PG_VM:=pg-prueba}"
