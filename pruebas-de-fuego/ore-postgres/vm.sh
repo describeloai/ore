@@ -19,7 +19,7 @@ kubectl -n "$NS" create configmap "$ORE_PG_VM-config" --from-file=config.json="$
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 T0=$(ms); plantilla "$AQUI/$PLANTILLA" | kubectl apply -f - >/dev/null
 until OV=$(ip_overlay); [ -n "$OV" ] && [ "$(qo "$OV" 'select 1' 2>/dev/null)" = 1 ]; do
-  sleep 1; [ $(( $(ms)-T0 )) -gt 300000 ] && { echo "✗ $ORE_PG_VM no responde en 5 min"; exit 1; }
+  sleep 1; [ $(( $(ms)-T0 )) -gt 600000 ] && { echo "✗ $ORE_PG_VM no responde en 10 min (una VM que no cabe espera a un nodo nuevo: ~3,5 min, P3·2)"; exit 1; }
 done
 guardar "ov-$ORE_PG_VM" "$OV"; guardar "pod-$ORE_PG_VM" "$(ip_pod)"
 echo "$ORE_PG_VM ($ORE_PG_COMPUTO) sobre $TL: $OV, en $(( $(ms)-T0 )) ms"

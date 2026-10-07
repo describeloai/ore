@@ -38,8 +38,11 @@ espera "internet (1.1.1.1:443)"                      no "$(abre_vm $R 1.1.1.1 44
 echo "== quién alcanza a una VM"
 IP=$(ip_pod pg-prueba)
 espera "cliente de ore-pg con pg-acceso :55433"     sí "$(abre_pod $ORE_PG_NS cliente $IP 55433)"
-k label pod cliente ore.dev/pg-acceso- >/dev/null; sleep 15   # Cilium tarda 5–15 s en aplicar (P2·6)
-espera "el mismo cliente SIN pg-acceso :55433"      no "$(abre_pod $ORE_PG_NS cliente $IP 55433)"
+# quitar la etiqueta cambia la identidad del pod en Cilium, y eso tarda: 15–30 s con la VM en otro nodo
+# (medido en P3·4; 5–15 s en el mismo, P2·6). Se espera hasta 90 s y se dice cuánto tardó.
+k label pod cliente ore.dev/pg-acceso- >/dev/null; T0=$(ms)
+until [ "$(abre_pod $ORE_PG_NS cliente $IP 55433)" = no ] || [ $(( $(ms)-T0 )) -gt 90000 ]; do sleep 2; done
+espera "el mismo cliente SIN pg-acceso :55433 (a los $(( ($(ms)-T0)/1000 )) s)" no "$(abre_pod $ORE_PG_NS cliente $IP 55433)"
 k label pod cliente ore.dev/pg-acceso=si >/dev/null
 # el peor caso de «fuera»: un namespace SIN ninguna política (un t-* tiene las suyas, que ya cierran)
 kubectl create namespace p34-fuera >/dev/null 2>&1
