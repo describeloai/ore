@@ -315,7 +315,8 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P1·4 | Postgres 17.10 | **hecho** (2026-10-07): regresión igual que la base; almacenamiento (28 min, con caché) y cómputo (1 h 9 min) compilados en `8269bece` |
 | P1·5 | procedimiento de mantenimiento y pruebas de fuego parametrizadas | **hecho** (2026-10-07): [`ci/neon/README.md`](../../ci/neon/README.md), [`pruebas-de-fuego/ore-postgres/`](../../pruebas-de-fuego/ore-postgres/) |
 | P2·1 | el contrato del `storage_controller` | **hecho** (2026-10-07): leído y probado en local |
-| P2·2 | infraestructura GCP (bucket, cuenta, pool no-spot) | **siguiente** |
+| P2·2 | infraestructura GCP (bucket, cuenta, pool no-spot) | **hecho** (2026-10-07): [`malla/80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh); cuota 7/12 |
+| P2·3 | la base del controller (Postgres en el clúster, copias, restauración +1000) | **siguiente** |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -662,3 +663,21 @@ Leído en `8269bece` y probado en local con Docker ([`controlador-local/`](../..
 - `metadata.json` del pageserver generado por pod, con la zona de su nodo;
 - reintentos al crear;
 - decidir `--timelines-onto-safekeepers`.
+
+#### P2·2 · La infraestructura en GCP (2026-10-07)
+
+Está en [`malla/80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh), un guion idempotente: lo que ya existe se deja, y para crecer el pool se cambia `NODOS` y se vuelve a pasar.
+
+| recurso | configuración |
+|---|---|
+| bucket `gs://ore-pg-almacen-euw1` | regional (europe-west1), acceso uniforme, sin acceso público, **borrado suave de 7 días** |
+| cuenta `ore-pg-almacen` | `roles/storage.objectUser` **sólo en ese bucket**; `workloadIdentityUser` para `ore-pg/neon`; **0 claves** |
+| pool `pg` | 1 × n2-standard-2, **no spot**, virtualización anidada, Ubuntu containerd, `pd-standard` 50 GB (la cuota SSD está llena), etiqueta `ore.dev/pool=neon`, taint `ore.dev/neon`, Secure Boot |
+
+Comprobado:
+- el nodo está `Ready`, con `/dev/kvm` y `vmx`;
+- cuota **7/12**;
+- un pod con la cuenta de Kubernetes `ore-pg/neon` escribe, lee y borra en el bucket, y **otro bucket le niega el acceso** (privilegio mínimo).
+
+El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba; los declarará la malla en P2·4.
+
