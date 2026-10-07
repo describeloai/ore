@@ -321,7 +321,7 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P2·5 | retención y limpieza (PITR, GC, scrubber; borrar un tenant vacía GCS) | **hecho** (2026-10-07): historia 1 día; borrar un tenant vacía su prefijo (4 → 0 objetos); scrubber diario, 0 errores |
 | P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | **hecho** (2026-10-07): RPO 0 en todo; C4 18 s sin intervención; 2 safekeepers caídos paran sin perder; `--timelines-onto-safekeepers` off (exige 3 zonas) |
 | **P2** | **el almacenamiento de producción** | **cerrado** (2026-10-07) |
-| P3 | el cómputo de producción y el aislamiento entre organizaciones | **siguiente** |
+| P3 | el cómputo de producción y el aislamiento entre organizaciones | **diseñado** (P3·1–P3·7); esperando el go |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -781,3 +781,41 @@ El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba
 
 Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ningún tenant.
 
+#### P3 · El cómputo de producción: el diseño (2026-10-07)
+
+**Qué es un endpoint en producción.** Una `VirtualMachine` de NeonVM que vive **en el namespace de su organización** (`t-<org>`) y arranca nuestra imagen (`vm-compute-node-v17`, 17.10). Tiene dos redes, y cada una lleva un tráfico distinto:
+
+| red | quién la usa | quién la controla |
+|---|---|---|
+| **la de pods** (Cilium) | el cómputo hacia el almacenamiento (`pageserver-0` y `safekeeper-N` de `ore-pg`, por IP estable, con un token de scope `tenant`) y hacia el DNS | NetworkPolicy, como el resto de ORE |
+| **la overlay** (vxlan + Multus + whereabouts) | **sólo** el proxy hacia el cómputo (P5): es la IP que sobrevive a una migración (B.6) | ⚠️ nadie: es L2 plano entre todas las VMs, y Cilium no la ve ⇒ **P3 la cierra** |
+
+**Tres barreras entre organizaciones, independientes entre sí:**
+1. **Almacenamiento**: el token de cada cómputo es de scope `tenant` y sólo abre su tenant. Ya está en vivo desde P2.
+2. **Red de pods**: el namespace `t-<org>` ya niega todo por defecto (`deny-all-ingress` y `deny-all-egress`). El rol nuevo `ore.dev/rol: postgres` abre sólo la salida a `ore-pg` (5454 y 6400) y al DNS, y la entrada desde el proxy y el plano de control. `ore-pg` acepta en los safekeepers y el pageserver sólo lo que venga de pods con ese rol.
+   - ⚠️ Lección de P2·6: las políticas seleccionan por etiquetas de **baja cardinalidad** (`ore.dev/rol`, el namespace), nunca por `pod-name`.
+3. **Overlay**: **un filtro en el puente de cada nodo**, un DaemonSet con reglas nftables `bridge` fuera de la VM, así que el cliente no puede quitarlo. Un marco de la overlay pasa sólo si su origen o su destino está en el **rango reservado para el proxy** (whereabouts lo reparte aparte). **De VM a VM, nada.**
+   - Opcional más adelante, como cuarta capa: un cortafuegos dentro de la imagen.
+
+**Las cuotas son las de la organización.** Los pods runner de las VMs cuentan en la `ResourceQuota` `cuota` de `t-<org>`, así que el límite de Postgres de una organización es su cuota. Se dimensiona en P3·4. P9 la convierte en producto.
+
+**Todo desde nuestro fork.** Las imágenes de NeonVM y autoscaling (controller, runner, vxlan-controller, daemon, autoscaler-agent, scheduler) y `vm-builder` se compilan de `describeloai/autoscaling` en **una sola etiqueta, la de la versión de D0b (v0.49.1)**.
+- Hoy el cómputo se empaquetó con el `vm-builder` v0.46 que fijaba el CI de Neon. Al alinearlo, se recompila el cómputo, y de paso **se llena su caché** (`_CACHE=escribir`).
+
+**Los sub-pasos:**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **P3·1 · Imágenes** | `ci/neon/autoscaling.yaml`: las 6 imágenes y `vm-builder` de `v0.49.1` desde el fork; recompilar `vm-compute-node-v17` con ese `vm-builder` y caché | están en el registro; el cómputo se recompila con caché y se mide el tiempo con caché caliente |
+| **P3·2 · Nodos** | el pool `pg` pasa a 3 nodos (`NODOS=3 80-postgres-gcp.sh`; cuota **11/12**) | 3 nodos con KVM; los safekeepers se reparten por la antiafinidad |
+| **P3·3 · La base en la malla** | cert-manager, Multus para GKE (B.3), whereabouts, NeonVM y autoscaling **vendorizados** (preparados con `preparar.py`: fijados al pool, rutas CNI de GKE y reservas a la medida), en `malla/84-…`–`87-…`, con Flux | D0b·1 se reproduce desde git: los nodos `Ready`, la overlay arriba y una VM de prueba arranca |
+| **P3·4 · La VM en su organización** | el rol `postgres` en la plantilla del inquilino (`11-el-inquilino` / `gen-inquilino.py`): NetworkPolicies de entrada y salida y su parte de la cuota; en `ore-pg`, la entrada sólo desde ese rol | una VM en `t-demo` llega a `ore-pg`; **no** llega al cofre, a `ore-serve` ni a nada más; una VM que excede la cuota no se crea |
+| **P3·5 · La overlay cerrada** | medir qué viaja de verdad por cada red; el rango del proxy en whereabouts; el DaemonSet con el filtro de puente | **una VM de `t-demo` no alcanza a una de `t-victor` por ninguna red** (probado en las dos direcciones); un pod en el rango del proxy sí las alcanza |
+| **P3·6 · La IP reutilizada** | C4 vio a whereabouts reutilizar la IP con otra MAC y ~1 min de ARP viejo. Se mide y se arregla: un ARP gratuito desde el runner (parche en nuestro fork de `autoscaling`) o no reutilizar la IP en caliente | recrear una VM con la misma IP y que el proxy llegue al momento |
+| **P3·7 · Aceptación** | las pruebas de fuego con `ORE_PG_COMPUTO=vm` contra el almacenamiento de P2: arranque, escalado, inactividad, migración con sesión abierta por la overlay y C4 con VM, más el aislamiento y la cuota | los números de D0b, o mejores, desde git; las tres barreras probadas |
+
+**Fuera de P3**, a propósito:
+- quién crea las VMs: lo hace el plano de control en P4; P3 deja la forma de la VM y el sitio donde vive;
+- el proxy: P5; P3 deja reservado su rango en la overlay;
+- dormir, despertar y el pool precalentado: P6;
+- nodos grandes: la puerta de producción.
