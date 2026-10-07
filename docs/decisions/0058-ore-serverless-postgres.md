@@ -338,7 +338,10 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P3·3 | la base del cómputo en la malla | **hecho** (2026-10-07): tres Kustomizations de Flux; una VM arranca y escribe desde git |
 | P3·4 | `ore-pg-computo` y la barrera 2 | **hecho** (2026-10-07): 15/15 en `p34.sh` |
 | P3·5 | la overlay cerrada (barrera 3) | **hecho** (2026-10-07): 6/6 en `p35.sh`; antes, de VM a VM sí se entraba (medido) |
-| P3 | el cómputo de producción y el aislamiento | **en curso**: quedan P3·6 (IP reutilizada) y P3·7 (aceptación) |
+| P3·6 | la IP reutilizada y la anti-suplantación | **hecho** (2026-10-07): la overlay responde 1,5–1,6 s después de la IP del pod (antes ~10 s); la MAC ya no cambia |
+| P3·7 | aceptación con VMs | **hecho** (2026-10-07): todas las pruebas de fuego con VMs y las tres barreras, desde git |
+| P3 | el cómputo de producción y el aislamiento | **hecho** (2026-10-07) |
+| P4·1 | el contrato y el esqueleto | **escrito y probado** (2026-10-07): `ore-postgres` y `POST /access/v1/celda` en `ore-iam`; el despliegue espera a que CI vuelva a verde |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -899,7 +902,12 @@ Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ning�
   - el tráfico normal sigue.
 - ⚠️ **ebtables-nft ignora `-P DROP` al crear una cadena**: quedaba en `RETURN` y lo falsificado pasaba (los contadores lo enseñaron). Va un `-j DROP` explícito.
 
-#### P3·7 · Aceptación con VMs (2026-10-07, en curso)
+**Con la imagen nueva (`baad49aa`) y el runner `v0.49.1-ore.1`, medido con `p36.sh 2`:**
+- la overlay responde **1,6 s y 1,5 s** después de la IP del pod (antes, ~10 s);
+- la MAC **ya no cambia** al recrear (`02:4f:52:45:80:00` antes y después): el runner la saca de la IP (P3·7, hallazgo 1), así que la caché ARP del proxy sigue valiendo. El ARP gratuito queda como segunda capa;
+- arranques de 70 s (la primera vez en el nodo, bajando la imagen nueva) y 33 s.
+
+#### P3·7 · Aceptación con VMs (2026-10-07, hecho)
 
 Con la imagen de cómputo `8269bece` (todavía sin el anuncio ARP) y NeonVM `v0.49.1-ore.1`, con **todas las barreras puestas**. Los guiones viejos ya llevan las VMs en `ore-pg-computo` (`kc`).
 
@@ -924,6 +932,9 @@ Con la imagen de cómputo `8269bece` (todavía sin el anuncio ARP) y NeonVM `v0.
    - `escalado.sh` pasaba los `insert` a `kubectl exec … psql` **sin `-i`**: psql no recibía nada y salía bien, así que el «0 cortes» de B.5 no medía nada. Ahora la sesión corre dentro del clúster (`nohup` en `cliente`), porque un corte de la red de quien lanza la prueba también la mataba.
    - `kubectl cp` no entiende rutas `C:/…`.
 5. **La compilación del cómputo no puede tener una sesión de buildx que escriba en el registro durante más de una hora**: la credencial del metadata caduca, y buildkit la pide al abrir la sesión y la guarda (dos compilaciones de ~1 h 30 perdidas). `computo.yaml` construye lo largo en sesiones sin exportar y deja la subida de la caché para una sesión corta.
+
+6. **Con la imagen `baad49aa`**, otra vez: `p34.sh` (la barrera 2 aguanta) y `p35.sh` (6/6, la overlay cerrada), y `p36.sh` (arriba, en P3·6).
+7. **La compilación en frío con las sesiones partidas** (`f59c0832`): 1 h 32 en total, y esta vez **sin el 401**. Extensiones 53 min 48 s, `compute-tools` 5 min 8 s, imagen final y subida de la caché 27 min 25 s, y `vm-builder` 2 min 53 s. La caché quedó escrita.
 
 **Hallazgo para P3·6:** al borrar una VM, su runner sigue vivo unos segundos con **la misma IP de la overlay**, y contestaba el `select 1` de la VM nueva. Los «arranques de 3,5 s» eran eso. `vm.sh` ahora espera a que se vaya; el plano de control (P4) tendrá que hacer lo mismo.
 
@@ -989,6 +1000,11 @@ aplicación ──────────────────────�
   3. en el almacenamiento: los términos de los safekeepers, de modo que un proponente viejo pierde la votación.
 - **Las llaves**: un par Ed25519 propio para hablar con cada `compute_ctl` (su JWKS va en la especificación) y la privada del almacenamiento para acuñar los tokens de tenant. Las dos en Secrets de `ore-pg`; nunca en el repositorio.
 
+**Cómo pregunta `ore-postgres` a `ore-iam` de quién es una celda** (decidido en P4·1). `ore-postgres` reenvía tal cual el token que la celda le presentó a `POST /access/v1/celda` de `ore-iam`. Ese token lleva la audiencia **`ore-postgres`**, no la de `ore-iam`. `ore-iam` lo verifica entero, con las mismas llaves y el mismo emisor que las celdas y una audiencia por producto (`--audiencias-productos`), y contesta la celda y su organización.
+- No hace falta una cuenta de Google para `ore-postgres` ni un segundo registro de celdas.
+- Con la audiencia del producto, el token sólo sirve para eso. Con la de `ore-iam`, `ore-postgres` podría preguntar `puede` y contar `hizo` como si fuera la celda.
+- La respuesta se guarda lo que diga `vale` (≤ 30 s) y nunca más allá del `exp` del token. Sin `ore-iam`, 503.
+
 **Fuera de P4**: la entrada pública (el proxy, P5); dormir, despertar y el pool (P6); la medida y la facturación (P9). P4 deja anotados los cambios de estado de cada endpoint, que es lo que P9 medirá.
 
 **Los sub-pasos:**
@@ -996,6 +1012,7 @@ aplicación ──────────────────────�
 | paso | qué | hecho cuando |
 |---|---|---|
 | **P4·1 · El contrato y el esqueleto** | la API (rutas, cuerpos, errores, operaciones) escrita aquí; `crates/ore-postgres` con su base `ore_postgres` y la verificación de la celda | una celda de prueba crea y lee un proyecto **vacío**; otra celda no lo ve |
+| | ↳ **escrito y probado** (2026-10-07, `09cdfc06`): `crates/ore-postgres` (proyectos y operaciones; migración `001` dentro del binario; base `ore_postgres` creada en `storcon-db` por `malla/86-…sh`, con su copia diaria), `POST /access/v1/celda`, la imagen y el CI. El contrato contra un Postgres de verdad (`tests/contrato.rs`, también en CI): otra organización no ve, no lee y no borra; el mismo id en dos organizaciones; repetir es un 409; la segunda operación en curso la para la base. **Falta en vivo**: desplegar (CI en rojo por una prueba ajena a esto, así que `:main` no se ha movido) y `p41.sh` con dos celdas de verdad (demo y victor). | |
 | **P4·2 · Proyectos y ramas** | tenant y timelines por el `storage_controller`; rama en la punta, en un LSN o en un instante; borrar | crear y borrar dejan el bucket y los safekeepers como estaban (medido) |
 | **P4·3 · Endpoints** | la especificación en Rust (sustituye a `especificacion.py`); la VM en `ore-pg-computo`; el cerco | un endpoint responde; **un segundo de escritura en la misma rama es imposible** (probado a la vez, no en serie) |
 | **P4·4 · Roles y bases** | SCRAM, la contraseña una vez, `compute_ctl /configure` | un rol creado por la API se conecta; regenerar su contraseña invalida la vieja |

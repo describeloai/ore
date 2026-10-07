@@ -10,7 +10,7 @@
 #   gcloud builds submit --no-source --async --region=global --config ci/neon/almacen.yaml #     --service-account=projects/<P>/serviceAccounts/ore-ci@<P>.iam.gserviceaccount.com
 substitutions:
   _REPO: https://github.com/describeloai/neon.git
-  _COMMIT: 8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b   # ore/main = fa504217 + h3-pg + Postgres 17.10 (mismo que computo.yaml)
+  _COMMIT: baad49aa38dbf272c5874aa0d547e2cfb841ec1a   # el de computo.yaml; baad49aa sólo cambia la imagen de VM: lo desplegado (83) sigue en 8269bece
   _CACHE: leer                                         # leer | escribir
   _REGISTRO_HOST: europe-west1-docker.pkg.dev
   _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
