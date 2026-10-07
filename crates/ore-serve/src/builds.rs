@@ -182,20 +182,18 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
         }
     }
     if candidatos.is_empty() {
-        return Err(con_motivo(
-            Respuesta::error(
-                404,
-                match que {
-                    Que::Output(o) => format!(
+        return Err(match que {
+            Que::Output(o) => con_motivo(
+                Respuesta::error(
+                    404,
+                    format!(
                         "no `Transform` in this branch writes `{o}`: commit the code that writes it (its document is derived at commit), or say which `rama` it is in"
                     ),
-                    Que::Fichero(f) => format!(
-                        "`{f}` has no `Transform` in this branch: no `@transform` def or writing statement of it has a committed document"
-                    ),
-                },
+                ),
+                "not_found",
             ),
-            "not_found",
-        ));
+            Que::Fichero(f) => por_que_no_hay(raiz, &pkg, f),
+        });
     }
 
     // Que cada uno sea el documento de su código, y que su salida pueda nacer.
@@ -209,21 +207,7 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                 .iter()
                 .any(|c| d.file == c.t.path || d.file == c.fichero)
         })
-        .map(|d| {
-            let mut m = vec![
-                ("code", Json::s(d.code.as_str())),
-                ("message", Json::s(&d.message)),
-                ("file", Json::s(rel(raiz, &d.file))),
-            ];
-            if let Some(p) = d.pos {
-                m.push(("line", Json::Int(p.line as i64)));
-                m.push(("column", Json::Int(p.col as i64)));
-            }
-            if let Some(h) = &d.help {
-                m.push(("help", Json::s(h)));
-            }
-            Json::obj(m)
-        })
+        .map(|d| diagnostico_json(raiz, d))
         .collect();
     if !suyos.is_empty() {
         return Err(Respuesta {
@@ -335,6 +319,101 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
         });
     }
     Ok(hallados)
+}
+
+/// Un diagnóstico, como lo lee la consola.
+fn diagnostico_json(raiz: &Path, d: &ore_core::diag::Diagnostic) -> Json {
+    let mut m = vec![
+        ("code", Json::s(d.code.as_str())),
+        ("message", Json::s(&d.message)),
+        ("file", Json::s(rel(raiz, &d.file))),
+    ];
+    if let Some(p) = d.pos {
+        m.push(("line", Json::Int(p.line as i64)));
+        m.push(("column", Json::Int(p.col as i64)));
+    }
+    if let Some(h) = &d.help {
+        m.push(("help", Json::s(h)));
+    }
+    Json::obj(m)
+}
+
+/// 0055 · **Por qué un fichero no tiene nada que construir**: no está en la
+/// rama; no se lee (422 con su `OOS2043`, el fichero y la línea); no tiene
+/// ningún `@transform` ni sentencia que escriba; o los tiene y sus documentos
+/// no están en esta rama (no se ha hecho commit).
+fn por_que_no_hay(raiz: &Path, pkg: &ore_core::link::Package, f: &str) -> Respuesta {
+    let ruta = raiz.join(f);
+    let Ok(fuente) = std::fs::read_to_string(&ruta) else {
+        return con_motivo(
+            Respuesta::error(404, format!("`{f}` is not in this branch")),
+            "not_found",
+        );
+    };
+    let mut diags = Vec::new();
+    ore_core::transformar::comprobar(pkg, &mut diags);
+    let rotos: Vec<Json> = diags
+        .iter()
+        .filter(|d| d.code.as_str() == "OOS2043" && d.file == ruta)
+        .map(|d| diagnostico_json(raiz, d))
+        .collect();
+    if !rotos.is_empty() {
+        let primero = diags
+            .iter()
+            .find(|d| d.code.as_str() == "OOS2043" && d.file == ruta);
+        let donde = primero
+            .and_then(|d| d.pos)
+            .map(|p| format!("line {}: ", p.line))
+            .unwrap_or_default();
+        return Respuesta {
+            codigo: 422,
+            cuerpo: Json::obj([
+                (
+                    "error",
+                    Json::s(format!(
+                        "`{f}` has nothing to build because it does not parse: {donde}{}",
+                        primero.map(|d| d.message.as_str()).unwrap_or_default()
+                    )),
+                ),
+                ("diagnostics", Json::Arr(rotos)),
+                ("motivo", Json::s("diagnostics")),
+            ]),
+        };
+    }
+    let base = f.rsplit('/').next().unwrap_or(f);
+    let tiene: Vec<String> = if f.ends_with(".sql") {
+        ore_core::transformar::derivar_sql(&fuente, base)
+            .map(|g| {
+                g.transforms
+                    .iter()
+                    .map(|(n, p)| format!("statement {n} → `{}`", p.output))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        ore_code::python::derivar(&fuente, base)
+            .transforms
+            .iter()
+            .map(|x| format!("`{}`", x.nombre))
+            .collect()
+    };
+    let mensaje = if tiene.is_empty() {
+        if f.ends_with(".sql") {
+            format!(
+                "`{f}` has nothing to build: no statement of it writes data (`create or replace dataset … as select`, `insert into … select`)"
+            )
+        } else {
+            format!(
+                "`{f}` has nothing to build: no top-level def of it has `@transform` (`from ore import transform`)"
+            )
+        }
+    } else {
+        format!(
+            "`{f}` has transforms ({}), but their documents are not committed in this branch: commit the file (its documents are derived at commit) and build again",
+            tiene.join(", ")
+        )
+    };
+    con_motivo(Respuesta::error(404, mensaje), "not_found")
 }
 
 pub(crate) struct ArnesDeBuild<'a> {
@@ -1388,6 +1467,76 @@ mod tests {
             cuerpo: Json::obj([]),
         });
         assert_eq!(motivo(&ok), "");
+    }
+
+    /// 0055 · «Nothing to build» dice por qué.
+    #[test]
+    fn nada_que_construir_dice_por_que() {
+        let d = arbol("por-que");
+        let error = |r: &Respuesta| match &r.cuerpo {
+            Json::Obj(m) => match m.get("error") {
+                Some(Json::Str(s)) => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        // Sin `@transform`.
+        std::fs::write(
+            d.join("packages/ventas/etl/nada.py"),
+            "def ayuda():\n    return 1\n",
+        )
+        .unwrap();
+        let r = mal(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/nada.py".into()),
+        ));
+        assert_eq!(r.codigo, 404);
+        assert!(
+            error(&r).contains("no top-level def of it has `@transform`"),
+            "{}",
+            error(&r)
+        );
+        // Con transforms sin commitear (sin documento).
+        std::fs::write(
+            d.join("packages/ventas/etl/nuevo.py"),
+            "from ore import transform\n\n\n@transform(inputs=[], output=\"ventas.nuevo\")\ndef nuevo():\n    pass\n",
+        )
+        .unwrap();
+        let r = mal(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/nuevo.py".into()),
+        ));
+        assert_eq!(r.codigo, 404);
+        assert!(
+            error(&r).contains("has transforms (`nuevo`), but their documents are not committed"),
+            "{}",
+            error(&r)
+        );
+        // Que no se lee: 422 con su OOS2043 y su línea.
+        std::fs::write(
+            d.join("packages/ventas/etl/roto.py"),
+            "from ore import transform\n\n\ndef ayuda():\n    return 1\n    @transform(inputs=[], output=\"ventas.roto\")\ndef roto():\n    pass\n",
+        )
+        .unwrap();
+        let r = mal(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/roto.py".into()),
+        ));
+        assert_eq!(r.codigo, 422);
+        let j = r.cuerpo.jcs();
+        assert!(
+            j.contains(r#""motivo":"diagnostics""#) && j.contains("OOS2043"),
+            "{j}"
+        );
+        assert!(error(&r).contains("does not parse: line "), "{}", error(&r));
+        // Que no está.
+        let r = mal(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/no-esta.py".into()),
+        ));
+        assert_eq!(r.codigo, 404);
+        assert!(error(&r).contains("is not in this branch"), "{}", error(&r));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
