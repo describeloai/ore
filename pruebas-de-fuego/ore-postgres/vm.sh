@@ -13,6 +13,9 @@ if [ "$ORE_PG_COMPUTO" = pod ]; then
   k delete pod "$ORE_PG_VM" --wait=true >/dev/null 2>&1; PLANTILLA=computo.yaml
 else
   kc delete neonvm "$ORE_PG_VM" --wait=true >/dev/null 2>&1; PLANTILLA=vm.yaml
+  # ⚠️ borrar la VM no espera a su runner: el viejo sigue vivo unos segundos con la MISMA IP de la overlay
+  #   y contestaba el `select 1` de la nueva (los «arranques de 3,5 s» de P3·5 eran eso). Se espera a que se vaya.
+  kc wait --for=delete pod -l vm.neon.tech/name="$ORE_PG_VM" --timeout=120s >/dev/null 2>&1
 fi
 NS=$ORE_PG_NS; [ "$ORE_PG_COMPUTO" = vm ] && NS=$ORE_PG_NS_COMPUTO   # las VMs, en el namespace del producto (P3·4)
 kubectl -n "$NS" create configmap "$ORE_PG_VM-config" --from-file=config.json="$ORE_PG_TRABAJO/$ORE_PG_VM.json" \
