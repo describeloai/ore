@@ -499,6 +499,85 @@ public final class Ore {
         return "iceberg_scan('" + raiz.replace("\\", "/").replace("'", "''") + "', version='" + version.replace("'", "''") + "', allow_moved_paths=true)";
     }
 
+    // ── 0057 C4 · una colección del lago en SQL: su listado ───────────────
+    //
+    // Lo mismo que el SDK de Python (`medios._relacion`): una fila por ítem,
+    // sin bytes, con las diez columnas del listado (OOS v1alpha17 `04` §1). Las
+    // páginas de `GET /media/{b}/{s}/{c}/items` —gobernadas: dentro de un
+    // transform, sólo lo declarado— van a un NDJSON temporal y DuckDB las carga
+    // en una tabla temporal con sus tipos; el fichero se borra.
+
+    /** Las columnas del listado, en DuckDB. */
+    private static final String COLUMNAS_DEL_LISTADO = "\"_item\" STRUCT(uri VARCHAR, collection VARCHAR, path VARCHAR, version VARCHAR, digest VARCHAR, size BIGINT, content_type VARCHAR, content_type_detected VARCHAR, checksum VARCHAR), \"path\" VARCHAR, \"version\" VARCHAR, "
+        + "\"digest\" VARCHAR, \"size\" BIGINT, \"content_type\" VARCHAR, \"content_type_detected\" VARCHAR, "
+        + "\"checksum\" VARCHAR, \"modified\" TIMESTAMPTZ, \"transaction\" VARCHAR";
+    /** Los campos de `_item` (v1alpha17 `01` §3). */
+    private static final List<String> CAMPOS_DEL_ITEM = List.of("uri", "collection", "path", "version", "digest", "size",
+        "content_type", "content_type_detected", "checksum");
+    private static int listados = 0;
+    private static Map<String, String> ramaDelPuesto = null;
+
+    /** La rama del puesto ({@code x-ore-rama}), preguntada una vez: una colección de la rama se ve desde su puesto. */
+    private static synchronized Map<String, String> ramaDelPuesto() throws IOException, InterruptedException {
+        if (ramaDelPuesto == null) {
+            Respuesta r = puesto.id.isEmpty() ? null : puesto.pedir("GET", "/puestos/" + puesto.id, null, Duration.ofSeconds(30));
+            Object rama = r != null && r.codigo() == 200 ? r.cuerpo().get("rama") : null;
+            ramaDelPuesto = rama == null || String.valueOf(rama).isEmpty() ? Map.of() : Map.of("x-ore-rama", String.valueOf(rama));
+        }
+        return ramaDelPuesto;
+    }
+
+    /** El listado de la colección {@code nombre}, como tabla temporal de DuckDB; devuelve su nombre cualificado. */
+    @SuppressWarnings("unchecked")
+    private static String listadoDeColeccion(Connection con, String nombre) throws Exception {
+        String[] p = partes(corto(nombre, "a collection"));
+        String ruta = "/media/" + p[0] + "/" + p[1] + "/" + p[2] + "/items";
+        String tabla = "__ore_listado_" + (++listados);
+        Path f = copiasPorDefecto().resolve(tabla + "-" + ProcessHandle.current().pid() + ".ndjson");
+        Files.createDirectories(f.getParent());
+        long filas = 0;
+        try {
+            try (java.io.BufferedWriter w = Files.newBufferedWriter(f, StandardCharsets.UTF_8)) {
+                String cursor = null;
+                do {
+                    String q = "?limit=1000" + (cursor == null ? "" : "&cursor=" + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+                    Respuesta r = puesto.pedir("GET", ruta + q, null, Duration.ofSeconds(90), ramaDelPuesto());
+                    if (r.codigo() == 403) throw new SecurityException("the listing of `" + nombre + "`: " + r.error());
+                    if (r.codigo() != 200) throw new IOException("the listing of `" + nombre + "`: ore-serve answered " + r.codigo() + ": " + r.error());
+                    if (r.cuerpo().get("items") instanceof List<?> its) {
+                        for (Object o : its) {
+                            Map<String, Object> d = (Map<String, Object>) o;
+                            Map<String, Object> item = new LinkedHashMap<>();
+                            for (String c : CAMPOS_DEL_ITEM) item.put(c, d.get(c));
+                            Map<String, Object> fila = new LinkedHashMap<>();
+                            fila.put("_item", item);
+                            for (String c : List.of("path", "version", "digest", "size", "content_type", "content_type_detected", "checksum", "modified", "transaction"))
+                                fila.put(c, d.get(c));
+                            w.write(Json.escribir(fila));
+                            w.write('\n');
+                            filas++;
+                        }
+                    }
+                    Object c = r.cuerpo().get("cursor");
+                    cursor = c == null || String.valueOf(c).isEmpty() ? null : String.valueOf(c);
+                } while (cursor != null);
+            }
+            cargar(con, "json");
+            try (Statement s = con.createStatement()) {
+                s.execute("create or replace temp table " + ident(tabla) + " (" + COLUMNAS_DEL_LISTADO + ")");
+                // `modified` llega como texto: un instante, o nulo si no se entiende.
+                if (filas > 0) s.execute("insert into " + ident(tabla) + " select \"_item\", \"path\", \"version\", \"digest\", \"size\", "
+                    + "\"content_type\", \"content_type_detected\", \"checksum\", try_cast(\"modified\" as TIMESTAMPTZ), \"transaction\" "
+                    + "from read_json('" + rutaSql(f) + "', format='newline_delimited', columns={'_item': 'STRUCT(uri VARCHAR, collection VARCHAR, path VARCHAR, version VARCHAR, digest VARCHAR, size BIGINT, content_type VARCHAR, content_type_detected VARCHAR, checksum VARCHAR)', "
+                    + "'path': 'VARCHAR', 'version': 'VARCHAR', 'digest': 'VARCHAR', 'size': 'BIGINT', 'content_type': 'VARCHAR', "
+                    + "'content_type_detected': 'VARCHAR', 'checksum': 'VARCHAR', 'modified': 'VARCHAR', 'transaction': 'VARCHAR'})");
+            }
+        } finally {
+            Files.deleteIfExists(f);
+        }
+        return "temp.main." + ident(tabla);
+    }
+
     /** {@code LOAD} de una extensión: en la imagen está preinstalada; fuera, si falta, se instala una vez. */
     private static void cargar(Connection con, String extension) throws SQLException {
         try (Statement s = con.createStatement()) { s.execute("load " + extension); return; } catch (SQLException e) {
@@ -769,9 +848,12 @@ public final class Ore {
         for (Map.Entry<String, Map<String, Object>> e : fuentes.entrySet()) {
             Map<String, Object> rd = e.getValue();
             if (rd.get("federada") != null || rd.get("vistaFederada") != null) continue;
-            if (rd.get("collection") != null)
-                throw new UnsupportedOperationException("`" + e.getKey() + "` is a collection: its listing is read from Python for now (sql() in Java reads datasets, views and foreign tables)");
             lee(e.getKey());
+            // 0057 C4: una colección del lago, su listado (una fila por ítem, sin bytes).
+            if (rd.get("collection") != null) {
+                registra(con, e.getKey(), listadoDeColeccion(con, e.getKey()));
+                continue;
+            }
             registra(con, e.getKey(), fuenteDeRespuesta(e.getKey(), rd));
         }
         // Las vistas vivas, al final: DuckDB enlaza una vista al crearla, y una que junta

@@ -523,6 +523,68 @@ async function duckdb() {
   return conexion;
 }
 
+// ── 0057 C4 · una colección del lago en SQL: su listado ──────────────────────
+// Lo mismo que el SDK de Python (`medios._relacion`): una fila por ítem, sin
+// bytes, con las diez columnas del listado (OOS v1alpha17 `04` §1). Las páginas
+// de `GET /media/{b}/{s}/{c}/items` —gobernadas: dentro de un transform, sólo
+// lo declarado— van a un NDJSON temporal y DuckDB las carga en una tabla
+// temporal con sus tipos; el fichero se borra.
+const ITEM_DUCK = "STRUCT(uri VARCHAR, collection VARCHAR, path VARCHAR, version VARCHAR, digest VARCHAR, size BIGINT, content_type VARCHAR, content_type_detected VARCHAR, checksum VARCHAR)";
+const COLUMNAS_DEL_LISTADO = `"_item" ${ITEM_DUCK}, "path" VARCHAR, "version" VARCHAR, "digest" VARCHAR, "size" BIGINT, `
+  + `"content_type" VARCHAR, "content_type_detected" VARCHAR, "checksum" VARCHAR, "modified" TIMESTAMPTZ, "transaction" VARCHAR`;
+const CAMPOS_DEL_ITEM = ["uri", "collection", "path", "version", "digest", "size", "content_type", "content_type_detected", "checksum"];
+let listados = 0;
+let ramaDelPuesto = null;
+
+/** La rama del puesto (`x-ore-rama`), preguntada una vez. */
+async function laRamaDelPuesto() {
+  if (ramaDelPuesto === null) {
+    const [c, f] = puesto.id ? await puesto.pedir("GET", `/puestos/${puesto.id}`) : [0, null];
+    ramaDelPuesto = c === 200 && f?.rama ? { "x-ore-rama": f.rama } : {};
+  }
+  return ramaDelPuesto;
+}
+
+/** El listado de la colección `nombre`, como tabla temporal de DuckDB; devuelve su nombre cualificado. */
+async function listadoDeColeccion(con, nombre) {
+  const [b, s, n] = partes(corto(nombre, "a collection"));
+  const ruta = `/media/${b}/${s}/${n}/items`;
+  const tabla = `__ore_listado_${++listados}`;
+  const d = copiasPorDefecto();
+  mkdirSync(d, { recursive: true });
+  const f = join(d, `${tabla}-${process.pid}.ndjson`);
+  const lineas = [];
+  try {
+    let cursor = null;
+    do {
+      const q = `?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const [c, r] = await puesto.pedir("GET", ruta + q, undefined, 90_000, await laRamaDelPuesto());
+      if (c !== 200) throw new Error(`the listing of \`${nombre}\`: ore-serve answered ${c}: ${r?.error ?? JSON.stringify(r)}`);
+      for (const it of r?.items ?? []) {
+        const item = Object.fromEntries(CAMPOS_DEL_ITEM.map((k) => [k, it[k] ?? null]));
+        const fila = { _item: item };
+        for (const k of ["path", "version", "digest", "size", "content_type", "content_type_detected", "checksum", "modified", "transaction"]) fila[k] = it[k] ?? null;
+        lineas.push(JSON.stringify(fila));
+      }
+      cursor = r?.cursor || null;
+    } while (cursor);
+    writeFileSync(f, lineas.join("\n") + (lineas.length ? "\n" : ""));
+    await cargar(con, "json");
+    await con.run(`create or replace temp table ${q(tabla)} (${COLUMNAS_DEL_LISTADO})`);
+    // `modified` llega como texto: un instante, o nulo si no se entiende.
+    if (lineas.length) {
+      const ruta_ = f.replaceAll("\\", "/").replaceAll("'", "''");
+      await con.run(`insert into ${q(tabla)} select "_item", "path", "version", "digest", "size", "content_type", "content_type_detected", `
+        + `"checksum", try_cast("modified" as TIMESTAMPTZ), "transaction" from read_json('${ruta_}', format='newline_delimited', `
+        + `columns={'_item': '${ITEM_DUCK}', 'path': 'VARCHAR', 'version': 'VARCHAR', 'digest': 'VARCHAR', 'size': 'BIGINT', `
+        + `'content_type': 'VARCHAR', 'content_type_detected': 'VARCHAR', 'checksum': 'VARCHAR', 'modified': 'VARCHAR', 'transaction': 'VARCHAR'})`);
+    }
+  } finally {
+    try { unlinkSync(f); } catch { /* ya no está */ }
+  }
+  return `temp.main.${q(tabla)}`;
+}
+
 /** `LOAD` de una extensión: en la imagen está preinstalada; fuera, si falta, se
  *  instala una vez (de `community` si es de allí, como `nanoarrow`). */
 async function cargar(con, extension, repositorio) {
@@ -675,8 +737,12 @@ export async function sql(text, options) {
   }
   for (const [v, rd] of fuentes) {
     if (rd?.federada || rd?.vistaFederada) continue;
-    if (rd?.collection) throw new Error(`\`${v}\` is a collection: its listing is read from Python for now (sql() in TS reads datasets, views and foreign tables)`);
     lee(v);
+    // 0057 C4: una colección del lago, su listado (una fila por ítem, sin bytes).
+    if (rd?.collection) {
+      await registra(con, v, await listadoDeColeccion(con, v));
+      continue;
+    }
     const [fuente] = await fuenteDeRespuesta(v, rd);
     await registra(con, v, fuente);
   }
