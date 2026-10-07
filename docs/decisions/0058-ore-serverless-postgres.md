@@ -70,6 +70,15 @@ historia guarda. Paga cómputo mientras vive y almacenamiento por lo que ocupa; 
 7. **Sus ramas son de Postgres**, no las ramas globales del árbol (0044). Unir las dos —una rama que sea
    a la vez un LSN de Postgres y un snapshot de Iceberg— queda para después; la marca de agua del punto
    5 es lo que lo hará posible.
+8. **Es un producto aparte dentro de la organización.** Un proyecto de Postgres existe o no existe, y
+   si existe **no está enlazado a ningún otro servicio de la organización**: ni a su celda (`t-<org>`),
+   ni a su cuota, ni a sus análisis. Es serverless de verdad:
+   - se paga lo que se usa (cómputo por segundo despierto y bytes guardados);
+   - escala sin que el cliente dimensione nada, porque la capacidad la pone la plataforma;
+   - sus límites son los del plan, no los de un namespace.
+
+   Lo único que comparte con ORE es quién es y qué puede (decidido 6) y, si el cliente quiere, la
+   publicación al catálogo (decidido 5).
 
 ### Por qué así, frente al cliente
 
@@ -352,7 +361,7 @@ Cada hito se cierra con un **hecho cuando** medible. Sus sub-pasos (Pn·1, Pn·2
 | almacenamiento (pageserver, safekeepers, broker, `storage_controller`) | uno por región, compartido | En reposo cuesta ~17 milinúcleos (B.7). El aislamiento es por tenant. |
 | `ore-postgres`, el plano de control de Postgres | uno por región | Es el dueño del estado (proyectos, ramas, endpoints). Habla con el almacenamiento, con NeonVM y con el proxy. |
 | la API que ve el cliente | el `ore-serve` de cada organización (`/v1/postgres/…`) | Ya es «el plano de control de ORE: atiende a un cliente y delega lo que toca el mundo». 0047 y 0048 entran ahí. |
-| las VMs de cómputo | en el namespace del inquilino, `t-<org>` | Su ResourceQuota es el límite de la organización, y su aislamiento, el de la organización. |
+| las VMs de cómputo | **`ore-pg-computo`**, un namespace del producto para todos los endpoints (revisado en P3: decidido 8) | Postgres va aparte de la organización. Un cómputo no habla con ningún otro, así que basta una regla para todos. Los límites son los del plan (P4/P9), no una cuota de namespace. |
 | el proxy | uno por región, en la overlay | Es la única puerta pública y sobrevive a las migraciones (B.6). |
 
 **El desarrollo de la fase I cabe en los ~7 vCPU libres** (D0b usó 3 × n2-standard-2). Los nodos grandes y la cuota son la **puerta de producción**: van al final de la fase I, no antes.
@@ -781,41 +790,49 @@ El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba
 
 Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ningún tenant.
 
-#### P3 · El cómputo de producción: el diseño (2026-10-07)
+#### P3 · El cómputo de producción: el diseño (2026-10-07, revisado)
 
-**Qué es un endpoint en producción.** Una `VirtualMachine` de NeonVM que vive **en el namespace de su organización** (`t-<org>`) y arranca nuestra imagen (`vm-compute-node-v17`, 17.10). Tiene dos redes, y cada una lleva un tráfico distinto:
+> **Revisado con el principio del decidido 8**: Postgres es un producto aparte, que existe o no por proyecto y no está enlazado a ningún otro servicio de la organización.
+>
+> La primera versión metía las VMs en `t-<org>` y en su `ResourceQuota`. Eso acoplaba la base de datos de una aplicación a los análisis de la misma organización: un análisis grande podía impedir que despertara la base, y al revés. **Se descarta.**
 
-| red | quién la usa | quién la controla |
+**Qué es un endpoint en producción.** Una `VirtualMachine` de NeonVM que arranca nuestra imagen (`vm-compute-node-v17`, 17.10) y vive en **`ore-pg-computo`**.
+- Es **un solo namespace para todos los endpoints de todos los proyectos**, propio del producto, igual que `ore-pg` lo es del almacenamiento.
+- No toca `t-<org>`, ni `ore-serve`, ni el cofre, ni la cuota de la organización.
+- Cada VM lleva etiquetas de proyecto y endpoint, que son para operar y medir, **no para aislar**.
+
+**El aislamiento no necesita fronteras por organización**, porque la regla es universal: **un cómputo no habla con ningún otro cómputo, nunca**. Con un único conjunto de reglas para todo el namespace:
+
+| barrera | regla | dónde |
 |---|---|---|
-| **la de pods** (Cilium) | el cómputo hacia el almacenamiento (`pageserver-0` y `safekeeper-N` de `ore-pg`, por IP estable, con un token de scope `tenant`) y hacia el DNS | NetworkPolicy, como el resto de ORE |
-| **la overlay** (vxlan + Multus + whereabouts) | **sólo** el proxy hacia el cómputo (P5): es la IP que sobrevive a una migración (B.6) | ⚠️ nadie: es L2 plano entre todas las VMs, y Cilium no la ve ⇒ **P3 la cierra** |
+| 1 · almacenamiento | el token de cada cómputo es de scope `tenant`: sólo abre su tenant | en vivo desde P2 |
+| 2 · red de pods | `ore-pg-computo` niega todo por defecto. Las VMs (`ore.dev/rol: postgres`) sólo **salen** a `ore-pg` (5454 y 6400) y al DNS, y sólo **entran** desde el proxy y el plano de control. `ore-pg` acepta en los safekeepers y el pageserver sólo lo que llegue de ese namespace. Nada llega a `t-*` ni sale de allí | NetworkPolicy por etiquetas de baja cardinalidad (rol, namespace), nunca por `pod-name` (lección de P2·6) |
+| 3 · overlay | un marco pasa sólo si su origen o su destino está en el **rango reservado para el proxy**: **de VM a VM, nada** | un filtro nftables `bridge` en cada nodo (DaemonSet), fuera de la VM |
 
-**Tres barreras entre organizaciones, independientes entre sí:**
-1. **Almacenamiento**: el token de cada cómputo es de scope `tenant` y sólo abre su tenant. Ya está en vivo desde P2.
-2. **Red de pods**: el namespace `t-<org>` ya niega todo por defecto (`deny-all-ingress` y `deny-all-egress`). El rol nuevo `ore.dev/rol: postgres` abre sólo la salida a `ore-pg` (5454 y 6400) y al DNS, y la entrada desde el proxy y el plano de control. `ore-pg` acepta en los safekeepers y el pageserver sólo lo que venga de pods con ese rol.
-   - ⚠️ Lección de P2·6: las políticas seleccionan por etiquetas de **baja cardinalidad** (`ore.dev/rol`, el namespace), nunca por `pod-name`.
-3. **Overlay**: **un filtro en el puente de cada nodo**, un DaemonSet con reglas nftables `bridge` fuera de la VM, así que el cliente no puede quitarlo. Un marco de la overlay pasa sólo si su origen o su destino está en el **rango reservado para el proxy** (whereabouts lo reparte aparte). **De VM a VM, nada.**
-   - Opcional más adelante, como cuarta capa: un cortafuegos dentro de la imagen.
+**Serverless de verdad: sin cuota fija, se paga lo que se usa.**
+- **No hay `ResourceQuota` por organización.** Lo que limita a un proyecto lo pone el plano de control (P4): los límites de escalado de cada endpoint (CU mínimas y máximas, que el autoscaler respeta) y los del plan contratado (P9).
+- **La medida es el uso real**: CU·segundo de cada VM despierta (el autoscaler y el vm-monitor ya saben cuánto usa) y los bytes del almacenamiento. Dormido, el cómputo cuesta 0 (P6).
+- **La capacidad la pone la plataforma, no el cliente.** El pool `pg` lleva el **autoescalado de nodos de GKE**: añade nodos cuando los runners no caben y los quita cuando sobran. Hoy el máximo lo marca la cuota del proyecto (12 vCPU); en la puerta de producción, nodos grandes y cuota alta. Así es como el producto «escala hasta el infinito» sin que el cliente dimensione nada.
+- Una `ResourceQuota` **de plataforma** en `ore-pg-computo` queda sólo como cinturón de seguridad contra un error del plano de control. No limita a ningún cliente.
 
-**Las cuotas son las de la organización.** Los pods runner de las VMs cuentan en la `ResourceQuota` `cuota` de `t-<org>`, así que el límite de Postgres de una organización es su cuota. Se dimensiona en P3·4. P9 la convierte en producto.
-
-**Todo desde nuestro fork.** Las imágenes de NeonVM y autoscaling (controller, runner, vxlan-controller, daemon, autoscaler-agent, scheduler) y `vm-builder` se compilan de `describeloai/autoscaling` en **una sola etiqueta, la de la versión de D0b (v0.49.1)**.
-- Hoy el cómputo se empaquetó con el `vm-builder` v0.46 que fijaba el CI de Neon. Al alinearlo, se recompila el cómputo, y de paso **se llena su caché** (`_CACHE=escribir`).
+**Todo desde nuestro fork.** Las imágenes de NeonVM y autoscaling (controller, runner, vxlan-controller, daemon, autoscaler-agent, scheduler) y `vm-builder` se compilan de `describeloai/autoscaling` en una sola etiqueta, **v0.49.1** (la de D0b). El cómputo se reempaqueta con ese `vm-builder`, y de paso se llena su caché.
 
 **Los sub-pasos:**
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **P3·1 · Imágenes** | `ci/neon/autoscaling.yaml`: las 6 imágenes y `vm-builder` de `v0.49.1` desde el fork; recompilar `vm-compute-node-v17` con ese `vm-builder` y caché | están en el registro; el cómputo se recompila con caché y se mide el tiempo con caché caliente |
-| **P3·2 · Nodos** | el pool `pg` pasa a 3 nodos (`NODOS=3 80-postgres-gcp.sh`; cuota **11/12**) | 3 nodos con KVM; los safekeepers se reparten por la antiafinidad |
-| **P3·3 · La base en la malla** | cert-manager, Multus para GKE (B.3), whereabouts, NeonVM y autoscaling **vendorizados** (preparados con `preparar.py`: fijados al pool, rutas CNI de GKE y reservas a la medida), en `malla/84-…`–`87-…`, con Flux | D0b·1 se reproduce desde git: los nodos `Ready`, la overlay arriba y una VM de prueba arranca |
-| **P3·4 · La VM en su organización** | el rol `postgres` en la plantilla del inquilino (`11-el-inquilino` / `gen-inquilino.py`): NetworkPolicies de entrada y salida y su parte de la cuota; en `ore-pg`, la entrada sólo desde ese rol | una VM en `t-demo` llega a `ore-pg`; **no** llega al cofre, a `ore-serve` ni a nada más; una VM que excede la cuota no se crea |
-| **P3·5 · La overlay cerrada** | medir qué viaja de verdad por cada red; el rango del proxy en whereabouts; el DaemonSet con el filtro de puente | **una VM de `t-demo` no alcanza a una de `t-victor` por ninguna red** (probado en las dos direcciones); un pod en el rango del proxy sí las alcanza |
-| **P3·6 · La IP reutilizada** | C4 vio a whereabouts reutilizar la IP con otra MAC y ~1 min de ARP viejo. Se mide y se arregla: un ARP gratuito desde el runner (parche en nuestro fork de `autoscaling`) o no reutilizar la IP en caliente | recrear una VM con la misma IP y que el proxy llegue al momento |
-| **P3·7 · Aceptación** | las pruebas de fuego con `ORE_PG_COMPUTO=vm` contra el almacenamiento de P2: arranque, escalado, inactividad, migración con sesión abierta por la overlay y C4 con VM, más el aislamiento y la cuota | los números de D0b, o mejores, desde git; las tres barreras probadas |
+| **P3·1 · Imágenes** | `ci/neon/autoscaling.yaml`: las 6 imágenes y `vm-builder` v0.49.1 desde el fork; recompilar `vm-compute-node-v17` con caché | están en el registro; tiempo medido con caché caliente |
+| **P3·2 · Nodos** | el pool `pg` con **autoescalado de nodos**: mínimo 1 y máximo 3 (lo que cabe en la cuota: 11/12 en el pico) | GKE añade un nodo cuando una VM no cabe y lo quita al sobrar (medido) |
+| **P3·3 · La base en la malla** | cert-manager, Multus para GKE (B.3), whereabouts, NeonVM y autoscaling, vendorizados y preparados (`preparar.py`), en `malla/84-…`–`87-…`, con Flux | D0b·1 se reproduce desde git: la overlay arriba y una VM de prueba arranca |
+| **P3·4 · El namespace del producto** | `ore-pg-computo`: deny-all, las políticas de la barrera 2, la cuota de plataforma y la forma de la VM (plantilla con etiquetas de proyecto y endpoint) que usará P4 | una VM llega a `ore-pg`; **no** llega a `t-demo`, al cofre, a `ore-serve` ni a otra VM; desde `t-*` nadie llega a ella |
+| **P3·5 · La overlay cerrada** | medir qué viaja de verdad por cada red; el rango del proxy en whereabouts; el filtro de puente | **dos VMs de proyectos distintos no se alcanzan por ninguna red**, en las dos direcciones; un pod del rango del proxy sí |
+| **P3·6 · La IP reutilizada** | el ARP viejo de C4 (~1 min): ARP gratuito desde el runner (parche en nuestro fork) o no reutilizar la IP en caliente | recrear una VM con la misma IP y llegar al momento |
+| **P3·7 · Aceptación** | las pruebas de fuego con `ORE_PG_COMPUTO=vm`: arranque, escalado, inactividad, migración con sesión por la overlay, C4 con VM, las tres barreras y el autoescalado de nodos | los números de D0b, o mejores, desde git |
 
-**Fuera de P3**, a propósito:
-- quién crea las VMs: lo hace el plano de control en P4; P3 deja la forma de la VM y el sitio donde vive;
-- el proxy: P5; P3 deja reservado su rango en la overlay;
+**Fuera de P3:**
+- quién crea las VMs y fija sus límites: el plano de control, en P4;
+- el proxy: P5, con su rango reservado en P3·5;
 - dormir, despertar y el pool precalentado: P6;
+- la medición y la facturación: P9;
 - nodos grandes: la puerta de producción.
+
