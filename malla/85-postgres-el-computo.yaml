@@ -140,6 +140,22 @@ spec:
               ore.dev/rol: postgres
       ports: [{protocol: TCP, port: 20187}]
 ---
+# ⭐ Las reservas (requests) de una VM las pone ELLA: `spec.podResources` = su MÍNIMO (lo que ocupa
+# siempre). Es lo que ve el autoescalado de nodos de GKE: sin reservas, un runner «cabe» en cualquier
+# nodo y GKE nunca subiría uno por una VM (Neon usa su propio cluster-autoscaler; en GKE no se puede).
+# Por encima del mínimo, dentro del nodo, decide el autoscale-scheduler. Medido en P3·4: sin esto,
+# esta cuota rechaza el pod («must specify requests.cpu for: init,neonvm-runner»).
+# El contenedor `init` del runner no se puede configurar: le toca la reserva por defecto.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: por-defecto
+  namespace: ore-pg-computo
+spec:
+  limits:
+    - type: Container
+      defaultRequest: { cpu: 10m, memory: 32Mi }
+---
 apiVersion: v1
 kind: ResourceQuota
 metadata:

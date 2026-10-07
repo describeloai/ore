@@ -16,9 +16,9 @@ espera() {  # espera <qué> <esperado> <obtenido>
 }
 
 echo "== dos VMs en $ORE_PG_NS_COMPUTO (la otra sobre una rama: dos primarios en un timeline se pelean)"
-ORE_PG_VM=pg-prueba "$AQUI/vm.sh" | tail -1
+ORE_PG_VM=pg-prueba "$AQUI/vm.sh" | tail -1; [ "${PIPESTATUS[0]}" = 0 ] || exit 1
 leer rama-otra >/dev/null 2>&1 || "$AQUI/tenant.sh" rama otra >/dev/null
-ORE_PG_VM=pg-otra "$AQUI/vm.sh" "$(leer rama-otra)" | tail -1
+ORE_PG_VM=pg-otra "$AQUI/vm.sh" "$(leer rama-otra)" | tail -1; [ "${PIPESTATUS[0]}" = 0 ] || exit 1
 R=$(kc get neonvm pg-prueba -o jsonpath='{.status.podName}')
 OTRA=$(ip_pod pg-otra)
 echo "   la VM escribe (DNS + safekeepers + pageserver): $(qo "$(ip_overlay pg-prueba)" "create table if not exists p34(x int); insert into p34 values (1); select 'ok'")"
