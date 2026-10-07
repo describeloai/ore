@@ -1,8 +1,11 @@
+# Una VM de cómputo de NeonVM (D0b·2): plantilla.
+#   source entorno.sh; plantilla vm.yaml [ORE_PG_VM=pg-rama] | kubectl apply -f -
+# Su especificación va en el ConfigMap ${ORE_PG_VM}-config (lo crea `vm.sh`).
 apiVersion: vm.neon.tech/v1
 kind: VirtualMachine
 metadata:
-  name: pg-d0
-  namespace: d0-neon
+  name: ${ORE_PG_VM}
+  namespace: ${ORE_PG_NS}
   labels:
     autoscaling.neon.tech/enabled: 'true'
   annotations:
@@ -11,7 +14,7 @@ metadata:
 spec:
   schedulerName: autoscale-scheduler
   nodeSelector:
-    ore.dev/pool: neon
+    ore.dev/pool: ${ORE_PG_POOL}
   tolerations:
   - key: ore.dev/neon
     operator: Equal
@@ -29,7 +32,7 @@ spec:
       use: 1
       max: 3
     rootDisk:
-      image: ghcr.io/neondatabase/vm-compute-node-v17:latest
+      image: ${ORE_PG_IMAGEN_VM}
       size: 8Gi
     command:
     - /usr/local/bin/compute_ctl
@@ -41,7 +44,7 @@ spec:
     - -b
     - /usr/local/bin/postgres
     - --compute-id
-    - pg-d0
+    - ${ORE_PG_VM}
     - --config
     - /var/db/postgres/configs/config.json
     - --filecache-connstr
@@ -58,6 +61,6 @@ spec:
   - name: cfg
     mountPath: /var/db/postgres/configs
     configMap:
-      name: pg-d0-config
+      name: ${ORE_PG_VM}-config
   extraNetwork:
     enable: true

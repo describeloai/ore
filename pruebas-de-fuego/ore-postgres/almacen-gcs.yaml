@@ -1,15 +1,29 @@
-# D0b · la capa de almacenamiento de Neon contra GCS nativo (Workload Identity, sin claves).
-# Prueba: se borra entera al acabar. Pool `neon-d0`, namespace `d0-neon`.
+# La capa de almacenamiento de Neon contra GCS nativo (Workload Identity, sin claves): broker,
+# 3 safekeepers y 1 pageserver (D0b/D0c; en producción la declara la malla, P2). Plantilla:
+#   source entorno.sh; plantilla almacen-gcs.yaml | kubectl apply -f -
+# Necesita ORE_PG_BUCKET y ORE_PG_GSA (la cuenta con roles/storage.objectUser en el bucket y
+# roles/iam.workloadIdentityUser para ${ORE_PG_NS}/neon).
+apiVersion: v1
+kind: Namespace
+metadata: { name: ${ORE_PG_NS} }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neon
+  namespace: ${ORE_PG_NS}
+  annotations: { iam.gke.io/gcp-service-account: ${ORE_PG_GSA} }
+---
 apiVersion: v1
 kind: ConfigMap
-metadata: { name: pageserver, namespace: d0-neon }
+metadata: { name: pageserver, namespace: ${ORE_PG_NS} }
 data:
   pageserver.toml: |
     broker_endpoint = 'http://storage-broker:50051'
     pg_distrib_dir = '/usr/local/'
     listen_pg_addr = '0.0.0.0:6400'
     listen_http_addr = '0.0.0.0:9898'
-    remote_storage = { bucket_name = 'BUCKET', prefix_in_bucket = 'pageserver/' }
+    remote_storage = { bucket_name = '${ORE_PG_BUCKET}', prefix_in_bucket = 'pageserver/' }
     control_plane_api = 'http://0.0.0.0:6666'
     control_plane_emergency_mode = true
   identity.toml: |
@@ -17,31 +31,31 @@ data:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: storage-broker, namespace: d0-neon }
+metadata: { name: storage-broker, namespace: ${ORE_PG_NS} }
 spec:
   selector: { app: storage-broker }
   ports: [{ name: grpc, port: 50051 }]
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: storage-broker, namespace: d0-neon }
+metadata: { name: storage-broker, namespace: ${ORE_PG_NS} }
 spec:
   replicas: 1
   selector: { matchLabels: { app: storage-broker } }
   template:
     metadata: { labels: { app: storage-broker } }
     spec:
-      nodeSelector: { ore.dev/pool: neon }
+      nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
       tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
       containers:
         - name: broker
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:fa504217c61bbcaf5c512d75830564541f917f8f
+          image: ${ORE_PG_IMAGEN_NEON}
           command: ["storage_broker", "--listen-addr=0.0.0.0:50051"]
           resources: { requests: { cpu: 10m, memory: 32Mi } }
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: safekeeper, namespace: d0-neon }
+metadata: { name: safekeeper, namespace: ${ORE_PG_NS} }
 spec:
   clusterIP: None
   selector: { app: safekeeper }
@@ -49,7 +63,7 @@ spec:
 ---
 apiVersion: apps/v1
 kind: StatefulSet
-metadata: { name: safekeeper, namespace: d0-neon }
+metadata: { name: safekeeper, namespace: ${ORE_PG_NS} }
 spec:
   serviceName: safekeeper
   replicas: 3
@@ -59,7 +73,7 @@ spec:
     metadata: { labels: { app: safekeeper } }
     spec:
       serviceAccountName: neon
-      nodeSelector: { ore.dev/pool: neon }
+      nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
       tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
       affinity:
         podAntiAffinity:
@@ -69,15 +83,15 @@ spec:
       securityContext: { fsGroup: 1000 }
       containers:
         - name: safekeeper
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:fa504217c61bbcaf5c512d75830564541f917f8f
+          image: ${ORE_PG_IMAGEN_NEON}
           command: ["/bin/sh", "-c"]
           args:
             - |
               ID=$(( ${HOSTNAME##*-} + 1 ))
-              exec safekeeper --listen-pg=${HOSTNAME}.safekeeper.d0-neon.svc.cluster.local:5454 \
+              exec safekeeper --listen-pg=${HOSTNAME}.safekeeper.${ORE_PG_NS}.svc.cluster.local:5454 \
                 --listen-http=0.0.0.0:7676 --id=$ID \
                 --broker-endpoint=http://storage-broker:50051 -D /data \
-                --remote-storage="{bucket_name='BUCKET', prefix_in_bucket='safekeeper/'}"
+                --remote-storage="{bucket_name='${ORE_PG_BUCKET}', prefix_in_bucket='safekeeper/'}"
           resources: { requests: { cpu: 50m, memory: 128Mi } }
           volumeMounts: [{ name: datos, mountPath: /data }]
   volumeClaimTemplates:
@@ -89,14 +103,14 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: pageserver, namespace: d0-neon }
+metadata: { name: pageserver, namespace: ${ORE_PG_NS} }
 spec:
   selector: { app: pageserver }
   ports: [{ name: pg, port: 6400 }, { name: http, port: 9898 }]
 ---
 apiVersion: apps/v1
 kind: StatefulSet
-metadata: { name: pageserver, namespace: d0-neon }
+metadata: { name: pageserver, namespace: ${ORE_PG_NS} }
 spec:
   serviceName: pageserver
   replicas: 1
@@ -105,12 +119,12 @@ spec:
     metadata: { labels: { app: pageserver } }
     spec:
       serviceAccountName: neon
-      nodeSelector: { ore.dev/pool: neon }
+      nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
       tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
       securityContext: { fsGroup: 1000 }
       containers:
         - name: pageserver
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:fa504217c61bbcaf5c512d75830564541f917f8f
+          image: ${ORE_PG_IMAGEN_NEON}
           command: ["/bin/sh", "-c"]
           args: ["cp /cfg/*.toml /data/.neon/ && exec /usr/local/bin/pageserver -D /data/.neon"]
           resources: { requests: { cpu: 100m, memory: 256Mi } }

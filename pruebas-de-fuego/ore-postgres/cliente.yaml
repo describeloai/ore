@@ -1,0 +1,24 @@
+# Los dos clientes de las pruebas (plantilla): `cliente` en la red de pods y `cliente-overlay`,
+# además, en la overlay de las VMs (la red que sobrevive a una migración, B.6). Imagen con psql,
+# pgbench y bash.
+#   source entorno.sh; plantilla cliente.yaml | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata: { name: cliente, namespace: ${ORE_PG_NS} }
+spec:
+  nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
+  tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+  containers:
+    - { name: c, image: postgres:17, command: [sleep, infinity], resources: { requests: { cpu: 10m, memory: 32Mi } } }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cliente-overlay
+  namespace: ${ORE_PG_NS}
+  annotations: { k8s.v1.cni.cncf.io/networks: neonvm-system/neonvm-overlay-for-pods }
+spec:
+  nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
+  tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+  containers:
+    - { name: c, image: postgres:17, command: [sleep, infinity], resources: { requests: { cpu: 10m, memory: 32Mi } } }

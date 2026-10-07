@@ -1,4 +1,4 @@
-"""D0b · prepara los manifiestos de neondatabase/autoscaling v0.49.1 para ore-mesh (GKE 1.35, Dataplane V2).
+"""preparar.py <entrada> <salida> — D0b · prepara los manifiestos de neondatabase/autoscaling v0.49.1 para ore-mesh (GKE 1.35, Dataplane V2).
 
 - Todo DaemonSet/Deployment/StatefulSet: nodeSelector ore.dev/pool=neon + tolera ore.dev/neon.
 - Las rutas CNI de GKE: SOLO el hostPath /opt/cni/bin -> /home/kubernetes/bin. Las rutas DENTRO de
@@ -8,10 +8,11 @@
 - Reservas que no caben en un n2-standard-2: el controlador (2 CPU × 3 réplicas) y el planificador
   (1 CPU) se bajan para la medida; los límites no se tocan.
 """
-import yaml, pathlib
+import yaml, pathlib, sys
 
-M = pathlib.Path("C:/tmp/d0b/m")
-OUT = pathlib.Path("C:/tmp/d0b/listo"); OUT.mkdir(exist_ok=True)
+# <entrada>: los manifiestos de la release (cert-manager, neonvm, whereabouts…) y multus-v4.yaml
+M = pathlib.Path(sys.argv[1])
+OUT = pathlib.Path(sys.argv[2]); OUT.mkdir(exist_ok=True)
 FICHEROS = ["cert-manager.yaml", "neonvm.yaml", "multus-v4.yaml", "whereabouts.yaml", "neonvm-controller.yaml",
             "neonvm-vxlan-controller.yaml", "neonvm-runner-image-loader.yaml", "autoscale-scheduler.yaml",
             "autoscaler-agent.yaml"]

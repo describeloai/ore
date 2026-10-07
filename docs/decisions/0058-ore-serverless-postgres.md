@@ -313,6 +313,7 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P1·2 | la imagen de cómputo | **hecho** (2026-10-07): 1 h 10 min en frío; `vm-compute-node-v17` en el registro |
 | P1·3 | la caché | **hecho**: almacenamiento 14 min con un cambio de Rust (2 min 20 s sin cambios); el cómputo es donde ahorra |
 | P1·4 | Postgres 17.10 | **fusión hecha y regresión igual que la base**; faltan las compilaciones y probarla en vivo |
+| P1·5 | procedimiento de mantenimiento y pruebas de fuego parametrizadas | **hecho** (2026-10-07): [`ci/neon/README.md`](../../ci/neon/README.md), [`pruebas-de-fuego/ore-postgres/`](../../pruebas-de-fuego/ore-postgres/) |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -598,3 +599,15 @@ P1 no gasta cuota: todo va en Cloud Build. Pero P1·1 crea repositorios en GitHu
     - y sus errores en cascada.
   - **Ningún fallo nuevo** por la fusión.
   - Sin TAP: no se configuró `--enable-tap-tests`. La aceptación de verdad del Postgres de Neon es su `test_runner` con `neon_local`, o nuestras pruebas de fuego sobre la imagen.
+
+#### P1·5 · Cerrar P1 (2026-10-07)
+
+- **El procedimiento de mantenimiento está en [`ci/neon/README.md`](../../ci/neon/README.md)**: qué es de quién, las tres recetas con su tiempo y su coste, cuándo se compila, el paso a paso de una versión menor nueva y los riesgos conocidos.
+  - Regla nueva de la regresión: se compara con el commit anterior; no basta con que pase. El Postgres de Neon sin su extensión falla siempre igual (los 108 del gestor 134).
+- **Las pruebas de fuego ya no dependen de `C:	mp`.**
+  - Todo lo variable es `ORE_PG_*` en `entorno.sh`, y el estado vive en `$ORE_PG_TRABAJO`.
+  - Los manifiestos son plantillas (`plantilla` se niega si falta un valor).
+  - Lo que se hizo a mano en D0b/D0c ahora es código: los clientes (`cliente.yaml`), el tenant, `main` y las ramas (`tenant.sh`), y el endpoint (`vm.sh` con `especificacion.py`: la especificación, la clave Ed25519, el JWKS y el JWT). El token se verifica con el JWKS de la propia especificación (probado en local).
+  - Es el embrión de lo que harán el `storage_controller` (P2) y `ore-postgres` (P4).
+  - ⚠️ **Sin correr aún contra un clúster**: no hay infraestructura viva. La primera pasada es la aceptación de P2/P3.
+
