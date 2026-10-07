@@ -107,6 +107,11 @@ un stub), ni cadena de ramas para los datasets.
 | D14 | **Build construye todos los transforms del fichero**, con un resultado por transform en el panel, como el SQL de varias sentencias | 2026-10-06 |
 | D15 | **Un `@transform` llamado al cargar el módulo hace fallar el build**, con su línea en el panel: el build lo llama él, y dos llamadas serían dos escrituras | 2026-10-06 |
 | D16 | **`main` es una rama más**: se construye en la rama en la que se está, salvo que esté protegida (`.arbol/ramas.yaml`) | 2026-10-06 |
+| D17 | **`ore.build()` fuera del plan B**: encadenar lo cubre construir lo de arriba en orden, y repetir, la programación; las dos son de la plataforma y no exigen que una sesión (un agente) lance trabajos en nombre de su persona. Vuelve, si hace falta, como otra forma de pedir lo mismo | 2026-10-07 |
+| D18 | **Preview a la derecha de Build**: al pasar el cursor despliega los `@transform` del fichero abierto, por su nombre, y la persona elige uno. Su vista vive en la barra inferior, con entrada propia. Corre el código del editor, sin commitear | 2026-10-07 |
+| D19 | **Preview sin tope**: entradas enteras; se enseña el esquema, las primeras filas y el recuento exacto | 2026-10-07 |
+| D20 | **Preview avisa del cambio de esquema** respecto a la salida actual (o dice *New dataset*), en la cabecera de su resultado | 2026-10-07 |
+| D21 | **Preview exige lo mismo que Build**: una entrada no declarada o una llamada al cargar fallan con su línea y el mismo mensaje | 2026-10-07 |
 
 ## El kind `Transform` (borrador v1alpha25)
 
@@ -144,10 +149,10 @@ un dataset con `from` los mantiene el sistema. Un `.sql` con varias sentencias q
 | | Preview | Build |
 |---|---|---|
 | código | el del editor, borradores incluidos | **el del commit** |
-| qué corre | un transform concreto | un transform (y, más adelante, lo de arriba) |
+| qué corre | el transform que se elige (D18) | todos los del fichero (D14; más adelante, lo de arriba) |
 | dónde | la sesión de la persona | un Job propio, con la capa **del repositorio** |
-| entradas | reales, de la rama, con tope o muestra | enteras |
-| `write()` | interceptado: esquema, primeras filas, recuento al panel | una transacción en la salida |
+| entradas | reales, de la rama, enteras (D19) | enteras |
+| `write()` | interceptado: esquema, primeras filas, recuento y cambio de esquema al panel | una transacción en la salida |
 | alcance | exigido (lo que el transform declara) | exigido (lo que dice el **documento**) |
 | rastro | ninguno | snapshot con procedencia `Transform@commit` + build #n; historial |
 | cuánto | segundos | ~68 s medidos en `victor` para un Job (42 esperando nodo) |
@@ -179,9 +184,27 @@ programación, y el build de lo de abajo que necesita lo de arriba.
 | B1 | `POST /builds {output, rama?}`: el `Transform` de esa salida en la cabeza de la rama (índice de T1·4); el arnés —Python carga el módulo y llama al `def`; SQL corre la sentencia `n`—; `lanzar_trabajo` con el repositorio, **su** capa y el documento como techo; procedencia `{transform, entrypoint, commit, build}`. Y la puerta del commit exige la base y el schema de la salida (`OOS2037`) |
 | B2 | `GET /builds?output=…`, `GET /builds/{id}`: estado, duración, filas, snapshot, log y el error con su línea |
 | B3 | consola: Build en lugar de Run en `transforms-*` (D12–D16); pestaña **Builds** en el panel de resultados |
-| B4 | la ficha del dataset: el último build y su botón Build |
-| B5 | `ore.build("<salida>")` en el SDK de Python |
-| B6 | pruebas de fuego, en vivo con los tres transforms de `bq`, y el ADR |
+| B4 | la ficha del dataset: el último build y su botón Build — **pendiente** |
+| ~~B5~~ | ~~`ore.build("<salida>")` en el SDK de Python~~ — fuera (D17) |
+| B6 | pruebas de fuego y el ADR — **pendiente** |
+
+**Build cerrado por ahora (2026-10-07).** En vivo en `victor`: tres transforms pequeños sobre
+`bq.ventas.clientes`/`pedidos` y tres pesados sobre `bq.ventas.ore_e2e_sintetica` (2 M filas: ventanas,
+`rolling` de pandas, `QUALIFY`), todos *succeeded*, **~25 s o menos** cada uno, 2 M de filas incluidas.
+Los cuatro huecos de esas pruebas, cerrados (`427e9f2`): un fichero que no se lee es OOS2043 con su
+línea y su documento se queda; los diagnósticos señalan el código, no el YAML derivado; «nada que
+construir» dice por qué; y los mensajes, en inglés. Quedan B4 y B6.
+
+**P · Preview** (D18–D21), sobre el arnés de B1:
+
+| paso | qué |
+|---|---|
+| P0 | medir: el arnés en modo preview en una sesión caliente con `sintetica_enriquecida` entera (2 M filas): tiempo y memoria de la sesión |
+| P1 | backend Python: el arnés en la sesión con el código del editor y el `@transform` elegido; `write()` devuelve esquema, primeras filas y recuento; D15 y la entrada no declarada fallan con su línea; y la lista de `@transform` del contenido del editor, para el desplegable |
+| P2 | consola: Preview a la derecha de Build con su desplegable, la entrada en la barra inferior y la vista (esquema, filas, recuento, tiempo, error con su línea) |
+| P3 | el aviso de cambio de esquema contra la salida actual, o *New dataset* |
+| P4 | SQL: el desplegable lista las sentencias por su salida; Preview corre su `SELECT` entero |
+| P5 | pruebas de fuego, en vivo, y el ADR |
 
 **B0 · medido (2026-10-06).** En `victor`, con el nodo de sistema caliente, un Job del puesto pasa de
 creado a listo en **8 s** (en cola 0 s, la capa 0 s, la imagen ya en el nodo); las copias y las capas,
