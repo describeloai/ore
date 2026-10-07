@@ -24,3 +24,6 @@ package-lock.json
 #   pase desapercibido.
 __pycache__/
 *.pyc
+
+# configuracion local de Claude Code (rutas de esta maquina)
+.claude/
