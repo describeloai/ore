@@ -6,7 +6,8 @@ export ORE_PG_COMPUTO=vm   # P3·7: las VMs viven en $ORE_PG_NS_COMPUTO (kc); cl
 source "$(dirname "$0")/entorno.sh"
 IP=$(ip_pod); OV=$(ip_overlay)
 [ -n "$IP" ] && [ -n "$OV" ] || { echo "✗ $ORE_PG_VM sin IP (¿vm.sh?)"; exit 1; }
-k cp "$AQUI/latido.sh" cliente-overlay:/tmp/latido.sh >/dev/null && k exec cliente-overlay -- chmod +x /tmp/latido.sh
+# por stdin: `kubectl cp` toma la «C:» de una ruta de Windows por el nombre de un pod
+k exec -i cliente-overlay -- sh -c 'cat > /tmp/latido.sh && chmod +x /tmp/latido.sh' < "$AQUI/latido.sh"
 qo "$OV" "drop table if exists mig; create table mig(via text, n int, t timestamptz default clock_timestamp())" >/dev/null
 for par in "overlay $OV" "pod $IP"; do
   set -- $par
