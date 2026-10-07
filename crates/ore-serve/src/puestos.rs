@@ -3815,7 +3815,7 @@ fn rechazo(codigo: &str, fallos: &[ore_core::sql_del_arbol::Fallo]) -> Respuesta
 
 /// La celda que corre una unidad ya cotejada. El nombre del transform es el
 /// del fichero (`resumen.sql` → `resumen`), que es lo que la procedencia dice.
-fn celda_de_unidad(
+pub(crate) fn celda_de_unidad(
     codigo: &str,
     u: &ore_core::sql_del_arbol::Unidad,
     anclada: Option<&str>,

@@ -524,8 +524,8 @@ fn entradas(t: &Loaded) -> Vec<(String, &Node)> {
 /// base ni su schema —un build que escribe `ventsa.resumen` no puede crear la
 /// base `ventsa`—. La base es un `Package` del árbol (`OOS2018`, la referencia
 /// a lo que no hay); el schema, `default` o uno que esa base declara con un
-/// `kind: Schema` (`OOS2037`). En una base foránea los schemas los expone su
-/// fuente, no un documento: ahí sólo se mira la base. `true` si dijo algo.
+/// `kind: Schema` (`OOS2037`). Y no es una base foránea, que no tiene datos
+/// propios (`OOS2049`, ORE 0057 B4·6). `true` si dijo algo.
 fn base_y_schema_de_la_salida(
     pkg: &Package,
     t: &Loaded,
@@ -558,7 +558,26 @@ fn base_y_schema_de_la_salida(
         );
         return true;
     };
-    if schema == crate::normalize::SCHEMA_POR_DEFECTO || crate::foranea::es_foranea(p) {
+    // 0057 B4·6 · Una base foránea no tiene datos propios (v1alpha27 `01` §4):
+    // lo que un transform escribe va a una base estándar, y se dice al
+    // commitear, no al construir.
+    if crate::foranea::es_foranea(p) {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2049,
+                &t.path,
+                format!(
+                    "`{qn}` escribe `{s}`, y `{base}` es una foreign database: expone su fuente y no se escribe en ella"
+                ),
+            )
+            .at(nodo)
+            .help(
+                "escribe la salida en una standard database (`create database`), y lee la foránea como entrada",
+            ),
+        );
+        return true;
+    }
+    if schema == crate::normalize::SCHEMA_POR_DEFECTO {
         return false;
     }
     let declarado = pkg.of(Kind::Schema).any(|x| {
@@ -951,6 +970,13 @@ mod tests {
                     "apiVersion: oos.dev/v1alpha13\nkind: Schema\n\
                      metadata: { name: curado, namespace: ventas }\n",
                 ),
+                doc(
+                    "packages/vivo/package.yaml",
+                    Kind::Package,
+                    "apiVersion: oos.dev/v1alpha27\nkind: Package\n\
+                     metadata: { name: vivo, version: 1.0.0, status: active, domain: v }\n\
+                     spec:\n  owner: team:v\n  foreign: { datasource: erp, include: [ventas] }\n",
+                ),
             ],
             cedar: Vec::new(),
             generated: Vec::new(),
@@ -981,6 +1007,9 @@ mod tests {
         assert_eq!(codigos("ventas.crudo.resumen"), vec![Code::Oos2037]);
         assert_eq!(codigos("ventsa.resumen"), vec![Code::Oos2018]);
         assert_eq!(codigos("ventsa.curado.resumen"), vec![Code::Oos2018]);
+        // 0057 B4·6: en una foreign database no se escribe, tampoco desde un build.
+        assert_eq!(codigos("vivo.ventas.resumen"), vec![Code::Oos2049]);
+        assert_eq!(codigos("vivo.resumen"), vec![Code::Oos2049]);
     }
 
     #[test]

@@ -322,6 +322,21 @@ public final class Ore {
         try { return cuerpo.call(); } finally { transformActivo = null; decirTransform(null); }
     }
 
+    /**
+     * 0057 B4·6 · Una tabla de un origen se lee por más de un nombre: el de su fuente
+     * ({@code s3.datos.clientes}) y el que le da una foreign database
+     * ({@code vivo.datos.clientes}). Dentro de un transform vale cualquiera de los que
+     * declara; y lo que lee una vista viva que declara, lo cubre ella.
+     */
+    private static void leeEnVivo(String tabla, List<String> nombres, List<String> vistas) {
+        if (transformActivo == null) { lee(tabla); return; }
+        List<String> todos = new ArrayList<>(List.of(tabla));
+        todos.addAll(nombres.stream().sorted().toList());
+        for (String n : todos) if (transformActivo.inputs().contains(corto(n, "a tree name"))) { lee(n); return; }
+        for (String v : vistas) if (transformActivo.inputs().contains(corto(v, "a tree name"))) return;
+        lee(nombres.isEmpty() ? tabla : nombres.stream().sorted().toList().get(0));
+    }
+
     private static void lee(String vistaDada) {
         String vista = corto(vistaDada, "a tree name");
         if (transformActivo != null && !transformActivo.inputs().contains(vista)) throw new IllegalStateException("`" + vista + "` is not in the inputs of `" + transformActivo.nombre() + "` (" + String.join(", ", transformActivo.inputs()) + "): a transform only reads what it declares");
@@ -735,12 +750,17 @@ public final class Ore {
         // Lo que se lee en vivo, primero (las vistas vivas lo nombran): una lectura por
         // tabla, y cada nombre que la dice, a ella.
         Map<String, String> enVivo = new LinkedHashMap<>();
+        List<String> vistasVivas = fuentes.entrySet().stream().filter(e -> e.getValue().get("vistaFederada") != null).map(Map.Entry::getKey).toList();
         for (Map.Entry<String, Map<String, Object>> e : fuentes.entrySet()) {
             if (!(e.getValue().get("federada") instanceof Map<?, ?> lm)) continue;
             Map<String, Object> l = (Map<String, Object>) lm;
             String t = String.valueOf(l.get("tabla"));
             if (!enVivo.containsKey(t)) {
-                lee(t);
+                List<String> nombres = new ArrayList<>();
+                for (Map.Entry<String, Map<String, Object>> x : fuentes.entrySet())
+                    if (!x.getKey().equals(t) && x.getValue().get("federada") instanceof Map<?, ?> xl && t.equals(String.valueOf(xl.get("tabla"))))
+                        nombres.add(x.getKey());
+                leeEnVivo(t, nombres, vistasVivas);
                 enVivo.put(t, lecturaEnVivo(con, l, estricto));
                 vivas.add(t);
             }

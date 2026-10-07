@@ -284,6 +284,18 @@ export function transform({ inputs, output }, fn) {
   return corre;
 }
 
+/** 0057 B4·6 · Una tabla de un origen se lee por más de un nombre: el de su
+ *  fuente (`s3.datos.clientes`) y el que le da una foreign database
+ *  (`vivo.datos.clientes`). Dentro de un transform vale cualquiera de los que
+ *  declara; y lo que lee una vista viva que declara, lo cubre ella. */
+function leeEnVivo(tabla, nombres, vistas) {
+  if (!transformActivo) return lee(tabla);
+  const ordenados = [...nombres].sort();
+  for (const n of [tabla, ...ordenados]) if (transformActivo.inputs.includes(corto(n))) return lee(n);
+  if (vistas.some((v) => transformActivo.inputs.includes(corto(v)))) return;
+  lee(ordenados[0] ?? tabla);
+}
+
 function lee(vista) {
   vista = corto(vista);
   if (transformActivo && !transformActivo.inputs.includes(vista)) throw new Error(`\`${vista}\` is not in the inputs of \`${transformActivo.nombre}\` (${transformActivo.inputs.join(", ")}): a transform only reads what it declares`);
@@ -651,11 +663,12 @@ export async function sql(text, options) {
   // 0053 F6·2 (0057 B4·2·2): lo que se lee en vivo, primero —las vistas vivas lo
   // nombran—: una lectura por tabla, y cada nombre que la dice, a ella.
   const vivas = new Map();
+  const vistasVivas = fuentes.filter(([, rd]) => rd?.vistaFederada).map(([v]) => v);
   for (const [v, rd] of fuentes) {
     const l = rd?.federada;
     if (!l) continue;
     if (!vivas.has(l.tabla)) {
-      lee(l.tabla);
+      leeEnVivo(l.tabla, fuentes.filter(([n, x]) => n !== l.tabla && x?.federada?.tabla === l.tabla).map(([n]) => n), vistasVivas);
       vivas.set(l.tabla, await lecturaEnVivo(con, l, estricto));
     }
     await registra(con, v, vivas.get(l.tabla));

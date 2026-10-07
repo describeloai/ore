@@ -558,6 +558,23 @@ def _lee(vista):
         _leidas.append(vista)
 
 
+def _lee_en_vivo(tabla, nombres, vistas):
+    """0057 B4·6 · Una tabla de un origen se lee por más de un nombre: el de su
+    fuente (`s3.datos.clientes`) y el que le da una foreign database
+    (`vivo.datos.clientes`). Dentro de un transform vale cualquiera de los que
+    declara; y lo que lee una vista viva que declara, lo cubre ella."""
+    if _transform is None:
+        _lee(tabla)
+        return
+    for n in [tabla] + sorted(nombres):
+        if _corto(n) in _transform.inputs:
+            _lee(n)
+            return
+    if any(_corto(v) in _transform.inputs for v in vistas):
+        return
+    _lee(sorted(nombres)[0] if nombres else tabla)
+
+
 def _procedencia(nombre=None, anclada_a=None):
     """Lo que `write()` deja dicho de sí: de qué salió, qué código, desde qué puesto.
     Fuera de un transform es lo que la sesión leyó, **sin lo que se está escribiendo**
@@ -577,6 +594,9 @@ def _procedencia(nombre=None, anclada_a=None):
             p["build"] = json.loads(os.environ["ORE_BUILD"])
         except ValueError:
             pass
+        # 0057 B4·6: lo que el build leyó de un origen en vivo.
+        if _en_vivo:
+            p["leidas_en_vivo"] = sorted(_en_vivo)
     if anclada_a:
         p["anclada_a"] = anclada_a
     return p
@@ -1270,12 +1290,14 @@ def sql(query, format="pandas", strict=False):
     # 0053 F6·2: lo que se lee en vivo, primero (las vistas vivas lo nombran):
     # una lectura por tabla, y cada nombre que la dice, a ella.
     vivas = {}
+    vistas_vivas = [n for n, rd in fuentes.items() if (rd or {}).get("vistaFederada") is not None]
     for nombre, rd in sorted(fuentes.items()):
         l = (rd or {}).get("federada")
         if l is None:
             continue
         if l["tabla"] not in vivas:
-            _lee(l["tabla"])
+            _lee_en_vivo(l["tabla"], [n for n, x in fuentes.items() if n != l["tabla"]
+                                      and ((x or {}).get("federada") or {}).get("tabla") == l["tabla"]], vistas_vivas)
             _en_vivo.add(l["tabla"])
             vivas[l["tabla"]] = _lectura_en_vivo(con, l, estricta)
         _registra(con, nombre, _q(vivas[l["tabla"]]))
@@ -2134,9 +2156,11 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
     # 0053 F7·1: guardar en el lago lo que se leyó de un origen EN VIVO es una
     # copia, y una copia no se hace aquí: tiene su conducto
     # (`materialization.payload`), no tiene el tope de una lectura en vivo y la
-    # hace un Job. Se dice cómo hacerla.
+    # hace un Job. Se dice cómo hacerla. ⭐ 0057 B4·6: un build ES ese Job —código
+    # commiteado, su `Transform`, su procedencia—: ahí se guarda, y la
+    # procedencia dice qué tablas del origen se leyeron en vivo.
     vivas = _leido_en_vivo(datos) or (sorted(set(_transform.inputs) & _en_vivo) if _transform is not None else [])
-    if vivas:
+    if vivas and not os.environ.get("ORE_BUILD"):
         raise PermissionError(
             "write(%r): this data was read live from an origin (%s). Saving it in the lake is a copy, and a copy "
             "is made by a job, not by a session: `create or replace dataset %s as select … from …` in SQL "
