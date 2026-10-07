@@ -17,7 +17,7 @@ substitutions:
   _REPO: https://github.com/describeloai/neon.git
   _COMMIT: 8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b   # ore/main = fa504217 + h3-pg + Postgres 17.10
   _AUTOSCALING: https://github.com/describeloai/autoscaling.git
-  _VM_BUILDER: v0.49.1                                 # la de NeonVM (P3·1); el CI de Neon en _COMMIT usa v0.46.0
+  _VM_BUILDER: v0.49.1-ore.1                           # la de NeonVM (ci/neon/autoscaling.yaml); el CI de Neon en _COMMIT usa v0.46.0
   _PARALELO: '1'                                       # con 4: SIGKILL (32 GB) al enlazar con LTO compute_ctl+local_proxy
   _CACHE: leer                                         # leer | escribir
   _REGISTRO_HOST: europe-west1-docker.pkg.dev
@@ -100,12 +100,21 @@ steps:
         mkdir -p ~/.docker && printf '{"credHelpers":{"%s":"metadatos"}}\n' ${_REGISTRO_HOST} > ~/.docker/config.json
         echo "${_REGISTRO_HOST}" | docker-credential-metadatos get | grep -q '"Secret":"ya29' || { echo "✗ sin token del metadata"; exit 1; }
         cache_to=""; [ "${_CACHE}" = escribir ] && cache_to="--cache-to type=registry,ref=${_REGISTRO}/cache:neon-computo-v17,mode=max,image-manifest=true,oci-mediatypes=true"
-        docker buildx build --load --progress plain $cache_to \
-          --cache-from type=registry,ref=${_REGISTRO}/cache:neon-computo-v17 \
-          --build-arg GIT_VERSION=${_COMMIT} --build-arg PG_VERSION=v17 \
-          --build-arg BUILD_TAG=ore --build-arg DEBIAN_VERSION=bookworm \
-          -f compute/compute-node.Dockerfile \
-          -t ${_REGISTRO}/compute-node-v17:${_COMMIT} .
+        args="--progress plain --cache-from type=registry,ref=${_REGISTRO}/cache:neon-computo-v17
+          --build-arg GIT_VERSION=${_COMMIT} --build-arg PG_VERSION=v17
+          --build-arg BUILD_TAG=ore --build-arg DEBIAN_VERSION=bookworm -f compute/compute-node.Dockerfile"
+        # ⛔ ...y tampoco basta el helper: buildkit pide la credencial AL ABRIR la sesión y la guarda; a la hora
+        #   caduca igual (medido: 72d19f97 falló idéntico a la 1 h 25). Regla: ninguna sesión que ESCRIBA en el
+        #   registro puede pasar de la hora. Así que lo largo se construye antes, en sesiones que no exportan
+        #   nada (se queda en la caché local del builder `ore`), y la última —montar la imagen y subir la caché—
+        #   empieza con credencial nueva y sólo tiene lo que falta.
+        for parte in neon-pg-ext-build compute-tools; do
+          echo "== parte: $parte ($(date -u +%T))"
+          docker buildx build $args --target $parte .
+        done
+        echo "== imagen final y caché ($(date -u +%T))"
+        docker buildx build $args --load $cache_to -t ${_REGISTRO}/compute-node-v17:${_COMMIT} .
+        echo "== hecho ($(date -u +%T))"
 
   - id: vm-compute-node
     name: gcr.io/cloud-builders/docker

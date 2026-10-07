@@ -15,7 +15,7 @@ Lo que se descarga en <entrada> (y nada más; las versiones se fijan aquí):
 Lo que se cambia (era `preparar.py` en D0b; cada regla, medida allí):
 - Todo Deployment/DaemonSet/StatefulSet, al pool `pg` (nodeSelector ore.dev/pool=neon + tolera ore.dev/neon):
   la base del cómputo es del producto, no del clúster (decidido 8).
-- Las imágenes de Neon, las NUESTRAS: compiladas del fork por ci/neon/autoscaling.yaml en la misma etiqueta.
+- Las imágenes de Neon, las NUESTRAS: compiladas del fork por ci/neon/autoscaling.yaml (IMAGENES).
   El device plugin, fijado por digest (la release lo trae sin etiqueta: `latest`).
 - Las rutas CNI de GKE: SOLO el hostPath /opt/cni/bin -> /home/kubernetes/bin; nunca las de dentro de la
   imagen ni los puntos de montaje (cambiarlos rompió vxlan y whereabouts).
@@ -32,7 +32,8 @@ Lo que se cambia (era `preparar.py` en D0b; cada regla, medida allí):
 """
 import pathlib, sys, yaml
 
-AUTOSCALING = "v0.49.1"
+AUTOSCALING = "v0.49.1"          # la release de la que salen los manifiestos
+IMAGENES = "v0.49.1-ore.1"        # nuestras imágenes (ci/neon/autoscaling.yaml): v0.49.1 + la MAC de la overlay sacada de la IP (P3·7)
 REGISTRO = "europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore"
 DEVICE_PLUGIN = "squat/generic-device-plugin@sha256:dc192e164c69b03f156765793a1be62ca437709ae477b27ca7d8f3dcf5021576"
 NUESTRAS = ["neonvm-controller", "neonvm-runner", "neonvm-vxlan-controller", "autoscaler-agent", "autoscale-scheduler"]
@@ -56,7 +57,7 @@ CABECERA = ("# GENERADO por malla/postgres-computo/vendorizar.py (ADR 0058, P3·
 def imagen(i):
     for n in NUESTRAS:
         if i == f"ghcr.io/neondatabase/{n}:{AUTOSCALING}":
-            return f"{REGISTRO}/{n}:{AUTOSCALING}"
+            return f"{REGISTRO}/{n}:{IMAGENES}"
     return DEVICE_PLUGIN if i == "squat/generic-device-plugin" else i
 
 

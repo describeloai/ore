@@ -11,14 +11,16 @@
 #
 # Dos filtros, en este orden:
 #
-# ① EN CADA RUNNER (P3·6): la `tap` de la VM sólo emite IPv4 y ARP con SU IP y SU MAC (las que NeonVM le
-#   pone a QEMU: `ip=` en la línea del kernel, `mac=` en su `netdev=overlay`). Lo demás se tira, IPv6
-#   incluido. Así una VM no puede decir que es otra, ni que es el proxy: sin esto, un ARP con la IP del
+# ① EN CADA RUNNER (P3·6): la `tap` de la VM sólo emite IPv4 y ARP con SU IP y SU MAC, y RARP con su MAC
+#   (el anuncio de QEMU tras una migración en caliente). Lo demás se tira, IPv6 incluido. La IP, la que
+#   NeonVM le pone en la línea del kernel (`ip=`); la MAC SE CALCULA de la IP (02:4f:52:45 + los dos últimos
+#   octetos), igual que nuestro runner (v0.49.1-ore.1): la de la línea de QEMU NO vale, porque tras migrar
+#   el huésped conserva la suya y el runner de destino recibe otra (medido en P3·7: lo tiraba todo). Así una VM no puede decir que es otra, ni que es el proxy: sin esto, un ARP con la IP del
 #   proxy (que ② deja pasar) podría desviar hacia ella las RESPUESTAS que otra VM manda al proxy.
 #   Se entra en el netns del runner por el pid de su QEMU (hostPID).
 # ② EN EL PUENTE `neon-br0` de cada nodo: una trama pasa sólo si su origen O su destino es del lado del
-#   proxy (IPv4 y ARP), o si es un ARP GRATUITO (una VM anunciando su IP y su MAC al nacer: P3·6; ①
-#   garantiza que es la suya). De VM a VM, nada más. Una trama entre nodos se mira al salir y al entrar.
+#   proxy (IPv4 y ARP), o si es un ARP GRATUITO (una VM anunciando su IP y su MAC al nacer: P3·6) o un RARP
+#   (QEMU anunciando la VM tras migrar); ① garantiza que lo que anuncian es lo suyo. De VM a VM, nada más. Una trama entre nodos se mira al salir y al entrar.
 #
 # Quién entra en la overlay lo cierra la otra mitad: Multus con `namespaceIsolation` y las NADs en
 # `ore-pg-computo` (VMs) y `ore-pg` (proxy). Un pod de `t-*` no puede pedir una interfaz en ella.
@@ -51,7 +53,7 @@ spec:
       terminationGracePeriodSeconds: 1
       containers:
         - name: filtro
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1-ore.1
           command: [sh, -c]
           args:
             - |
@@ -62,26 +64,28 @@ spec:
                 echo "-p ARP --arp-ip-src $PROXY -j ACCEPT"
                 echo "-p ARP --arp-ip-dst $PROXY -j ACCEPT"
                 echo "-p ARP --arp-gratuitous -j ACCEPT"
+                echo "-p 0x8035 -j ACCEPT"
                 echo "-j DROP"
               }
               # ① anti-suplantación dentro del runner de una VM (por el pid de su QEMU)
               vm() {
                 c=$(tr '\000' ' ' < /proc/$1/cmdline 2>/dev/null)
                 ip=$(echo "$c" | grep -o ' ip=[0-9.]*' | cut -d= -f2)
-                mac=$(echo "$c" | grep -o 'netdev=overlay,mac=[0-9a-f:]*' | cut -d= -f3)
+                mac=$(echo "$ip" | awk -F. '$1!="" {printf "02:4f:52:45:%02x:%02x", $3, $4}')
                 [ -n "$ip" ] && [ -n "$mac" ] || return 0
                 nsenter -t "$1" -n sh -c "
-                  ebtables -L ORE-VM 2>/dev/null | grep -q -- '--ip-src $ip ' && ebtables -L ORE-VM | grep -q -- '^-j DROP' && ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' && exit 0
+                  ebtables -L ORE-VM 2>/dev/null | grep -q -- '--ip-src $ip ' && ebtables -L ORE-VM | grep -qi -- '-s $mac -p 0x8035' && ebtables -L ORE-VM | grep -q -- '^-j DROP' && ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' && exit 0
                   ebtables -N ORE-VM 2>/dev/null || ebtables -F ORE-VM
                   ebtables -A ORE-VM -s $mac -p IPv4 --ip-src $ip -j ACCEPT
                   ebtables -A ORE-VM -s $mac -p ARP --arp-ip-src $ip --arp-mac-src $mac -j ACCEPT
+                  ebtables -A ORE-VM -s $mac -p 0x8035 -j ACCEPT
                   ebtables -A ORE-VM -j DROP    # ⚠️ explícito: ebtables-nft ignora -P en -N (medido: la cadena quedaba en RETURN y lo falso pasaba)
                   ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' || ebtables -A FORWARD -i tap-overlay -j ORE-VM
                   echo \"$(date -u +%FT%TZ) runner de $ip ($mac): sólo su IP y su MAC\""
               }
               while true; do
                 ebtables -L ORE-OVERLAY >/dev/null 2>&1 || ebtables -N ORE-OVERLAY -P RETURN
-                if [ "$(ebtables -L ORE-OVERLAY | grep -c -- '-j ')" != 6 ]; then
+                if [ "$(ebtables -L ORE-OVERLAY | grep -c -- '-j ')" != 7 ]; then
                   ebtables -F ORE-OVERLAY
                   reglas | while read -r r; do ebtables -A ORE-OVERLAY $r; done
                   echo "$(date -u +%FT%TZ) reglas escritas:"; ebtables -L ORE-OVERLAY

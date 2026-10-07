@@ -4758,7 +4758,7 @@ spec:
         - /manager
         env:
         - name: VM_RUNNER_IMAGE
-          value: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-runner:v0.49.1
+          value: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-runner:v0.49.1-ore.1
         - name: NAD_IPAM_NAME
           value: neonvm-overlay-ipam
         - name: NAD_IPAM_NAMESPACE
@@ -4767,7 +4767,7 @@ spec:
           value: neonvm-overlay-for-vms
         - name: NAD_RUNNER_NAMESPACE
           value: ore-pg-computo
-        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-controller:v0.49.1
+        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-controller:v0.49.1-ore.1
         livenessProbe:
           httpGet:
             path: /healthz
@@ -4842,7 +4842,7 @@ spec:
         - sh
         - -c
         - echo 'image loaded and container started' && sleep 100d
-        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-runner:v0.49.1
+        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-runner:v0.49.1-ore.1
         name: neonvm-runner-loader
         resources:
           limits:
@@ -4937,7 +4937,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1
+        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1-ore.1
         imagePullPolicy: IfNotPresent
         name: vxlan-controller
         resources:
@@ -4963,7 +4963,7 @@ spec:
         - /bin/sh
         - -c
         - cp -rf /opt/cni/bin /host/opt/cni
-        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1
+        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neonvm-vxlan-controller:v0.49.1-ore.1
         imagePullPolicy: IfNotPresent
         name: install-cni
         volumeMounts:

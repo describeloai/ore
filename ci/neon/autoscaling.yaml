@@ -16,8 +16,8 @@
 #     --service-account=projects/<P>/serviceAccounts/ore-ci@<P>.iam.gserviceaccount.com
 substitutions:
   _REPO: https://github.com/describeloai/autoscaling.git
-  _TAG: v0.49.1                                         # la de D0b
-  _COMMIT: aea4f327b09c90ff20f9e04fe92013eac10bb5c9     # lo que es _TAG hoy: si la mueven, se para
+  _TAG: v0.49.1-ore.1                                   # v0.49.1 (la de D0b) + la MAC de la overlay sacada de la IP (P3·7)
+  _COMMIT: b71b0f3c379a833322cacce057926429e5923029     # lo que es _TAG hoy: si la mueven, se para
   _ARCH: amd64
   _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
 steps:
