@@ -10,7 +10,6 @@
 //!   nombre no es de ningún documento, y con ellas todo lo que resuelve;
 //! - **lo que la gramática pide** ([`check`]), antes del enlazado:
 //!   - la forma de `spec.foreign` (`OOS1004`) y su fuente declarada (`OOS2004`);
-//!   - un objeto suelto de `include` que su paquete no exporta (`OOS2028`);
 //!   - que la base sólo contenga `Schema` y vistas sin copia (`OOS2049`);
 //!   - que cada nombre expuesto sea único (`OOS2050`).
 //!
@@ -80,26 +79,6 @@ fn schema_declarado(d: &Loaded) -> Option<&str> {
     d.meta("schema").and_then(Node::as_str)
 }
 
-/// Si el paquete de `d` lo exporta. En un árbol que es un catálogo
-/// (v1alpha28 `01` §4) no hace falta: la base expone lo que `include` alcanza.
-fn exportado(pkg: &Package, d: &Loaded) -> bool {
-    if crate::exporta::arbol_es_catalogo(pkg) {
-        return true;
-    }
-    let (Some(ns), Some(q)) = (d.meta("namespace").and_then(Node::as_str), d.qname()) else {
-        return false;
-    };
-    pkg.of(Kind::Package)
-        .filter(|p| p.meta("name").and_then(Node::as_str) == Some(ns))
-        .filter_map(|p| p.section("exports"))
-        .flat_map(|e| e.items().iter())
-        .filter_map(Node::as_str)
-        .any(|s| {
-            crate::normalize::qualify_catalogo(s, Some(ns), crate::normalize::SCHEMA_POR_DEFECTO)
-                == q
-        })
-}
-
 /// Los documentos de la fuente que esta base podría exponer por su schema y
 /// nombre: `Table` u `ObjectTable` de su `datasource`, con schema declarado.
 fn de_la_fuente<'a>(pkg: &'a Package, f: &Foranea<'_>) -> impl Iterator<Item = &'a Loaded> {
@@ -111,14 +90,14 @@ fn de_la_fuente<'a>(pkg: &'a Package, f: &Foranea<'_>) -> impl Iterator<Item = &
     })
 }
 
-/// Lo que una base expone, por su nombre expuesto (forma corta): sólo lo
-/// exportado (§3.4).
+/// Lo que una base expone, por su nombre expuesto (forma corta): lo que su
+/// `include` alcanza, sin `exports` (v1alpha28 `01` §4: el árbol es un catálogo).
 pub fn expuestos<'a>(pkg: &'a Package, f: &Foranea<'_>) -> Vec<(String, &'a Loaded)> {
     de_la_fuente(pkg, f)
         .filter_map(|d| {
             let s = schema_declarado(d)?;
             let n = d.meta("name").and_then(Node::as_str)?;
-            (f.incluye(s, n) && exportado(pkg, d))
+            f.incluye(s, n)
                 .then(|| (crate::normalize::corto(f.nombre, s, n), d))
         })
         .collect()
@@ -141,9 +120,7 @@ pub fn expuesto<'a>(pkg: &'a Package, qname: &str) -> Option<&'a Loaded> {
         return None;
     }
     let mut hay = de_la_fuente(pkg, &f).filter(|d| {
-        schema_declarado(d) == Some(s)
-            && d.meta("name").and_then(Node::as_str) == Some(n)
-            && exportado(pkg, d)
+        schema_declarado(d) == Some(s) && d.meta("name").and_then(Node::as_str) == Some(n)
     });
     let uno = hay.next()?;
     hay.next().is_none().then_some(uno)
@@ -234,38 +211,6 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     }
 
     for f in foraneas(pkg) {
-        // ── OOS2028 · un objeto suelto que su paquete no exporta ─────────────
-        for (i, t) in f.include.iter().enumerate() {
-            let Some((s, n)) = t.split_once('.') else {
-                continue;
-            };
-            for d in de_la_fuente(pkg, &f).filter(|d| {
-                schema_declarado(d) == Some(s) && d.meta("name").and_then(Node::as_str) == Some(n)
-            }) {
-                if !exportado(pkg, d) {
-                    let pos = f
-                        .paquete
-                        .section("foreign")
-                        .and_then(|x| x.get("include"))
-                        .and_then(|(_, v)| v.items().get(i).map(Node::pos))
-                        .unwrap_or_else(|| f.paquete.root.pos());
-                    out.push(
-                        Diagnostic::new(
-                            Code::Oos2028,
-                            &f.paquete.path,
-                            format!(
-                                "`{}` expone `{t}`, y `{}` no lo exporta",
-                                f.nombre,
-                                d.qname().unwrap_or_default()
-                            ),
-                        )
-                        .at(pos)
-                        .help("exponerlo es cruzar a lo que no es público: que su paquete lo diga en `exports`"),
-                    );
-                }
-            }
-        }
-
         // ── OOS2049 · sólo `Schema` y vistas sin copia ───────────────────────
         for d in pkg.docs.iter().filter(|d| {
             d.kind != Kind::Package && d.meta("namespace").and_then(Node::as_str) == Some(f.nombre)

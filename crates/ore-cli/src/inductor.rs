@@ -2740,13 +2740,13 @@ pub fn referencias_a_la_fuente(cat: &Catalogo) -> BTreeMap<String, String> {
 /// **Las `Table` de la fuente**: una por objeto que alguna base usa, con lo
 /// que el driver sondeó y lo que la fuente sabe de él —la clave y los tipos
 /// contestados, que son del objeto (P1)—; el `schema.yaml` de cada schema
-/// que no sea `default`; y lo que el paquete exporta, en la forma corta.
+/// que no sea `default`.
 ///
 /// No escribe `package.yaml`: el paquete de la fuente lo crea el Job de
-/// catálogo, y aquí solo se le cambian los `exports`.
+/// catálogo (y desde ORE 0059 no se le escriben `exports`: el árbol es un
+/// catálogo).
 pub struct Fuente {
     pub ficheros: BTreeMap<String, String>,
-    pub exports: Vec<String>,
 }
 
 pub fn inducir_la_fuente(
@@ -2758,7 +2758,6 @@ pub fn inducir_la_fuente(
     let fuente = &cat.fuente;
     let nombres = punteros_de_la_fuente(cat);
     let mut ficheros = BTreeMap::new();
-    let mut exports = Vec::new();
     let mut schemas = BTreeSet::new();
     for t in cat.tablas.iter().filter(|t| usados.contains(&t.nombre)) {
         let Some((sch, nombre)) = nombres.get(&t.nombre) else {
@@ -2782,7 +2781,6 @@ pub fn inducir_la_fuente(
                 fuente,
             ),
         );
-        exports.push(ore_core::normalize::corto(fuente, sch, nombre));
         if !en_default(sch) {
             schemas.insert(sch.clone());
         }
@@ -2798,7 +2796,6 @@ pub fn inducir_la_fuente(
             en_schema(sch, format!("objects/{nombre}.yaml")),
             con_schema(objetos_yaml(fuente, fuente, nombre, o), sch, fuente),
         );
-        exports.push(ore_core::normalize::corto(fuente, sch, nombre));
         if !en_default(sch) {
             schemas.insert(sch.clone());
         }
@@ -2809,8 +2806,7 @@ pub fn inducir_la_fuente(
             schema_yaml(&sch, fuente, owner),
         );
     }
-    exports.sort();
-    Fuente { ficheros, exports }
+    Fuente { ficheros }
 }
 
 /// **El emisor de la `View` que el inductor propone** (v1alpha14, ADR 0040

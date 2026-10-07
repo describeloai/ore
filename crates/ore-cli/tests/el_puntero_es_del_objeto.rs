@@ -227,15 +227,10 @@ fn el_puntero_esta_una_vez_y_en_la_fuente() {
         !dicho.contains("packages/fdb"),
         "la foránea no compila: {dicho}"
     );
-    // ⭐ 0046 E5′: la fuente exporta TODO lo catalogado —doce objetos—, lo
-    //   elija una base o no: el puntero es un hecho del origen.
+    // ORE 0059: el árbol es un catálogo; la fuente no escribe `exports` (su
+    //   puntero, de los doce objetos, sí: es un hecho del origen).
     let m = std::fs::read_to_string(dir.join(format!("packages/{FUENTE}/package.yaml"))).unwrap();
-    for e in ["Pedidos", "clientes", "evento_20190101", "v_pedidos_2019"] {
-        assert!(
-            m.contains(&format!("{FUENTE}.rubix_demo_ventas.{e}")),
-            "sin `{e}`: {m}"
-        );
-    }
+    assert!(!m.contains("exports"), "{m}");
     assert_eq!(
         ficheros(&dir, FUENTE, |t| t.contains("kind: Table")).len(),
         12,

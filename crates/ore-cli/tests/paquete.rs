@@ -249,8 +249,8 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
         "{v}"
     );
 
-    // Y lo que el movimiento deja: EXACTAMENTE el `OOS2028` que el mando
-    // anunció, porque `exports` no lo decide él.
+    // Y lo que el movimiento deja: nada. El árbol es un catálogo (ORE 0059):
+    // lo que ahora cruza a `eu` se lee por su nombre.
     let despues = codigos(&dir);
     // Lo que sobra respecto de antes, contando repeticiones.
     let mut nuevos = despues.clone();
@@ -259,17 +259,13 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
             nuevos.remove(i);
         }
     }
-    assert_eq!(
-        nuevos,
-        vec!["OOS2028".to_string()],
-        "{despues:?} vs {antes:?}"
-    );
+    assert!(nuevos.is_empty(), "{despues:?} vs {antes:?}");
     assert!(dicho.contains("cruzan a `eu`"), "y lo dice:\n{dicho}");
-    assert!(dicho.contains("exports"), "{dicho}");
+    assert!(dicho.contains("catálogo"), "{dicho}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Y añadiendo el `exports` que el mando dijo, el árbol queda como estaba.
+/// Y con un `exports` escrito igual: dentro del árbol no estorba ni concede.
 #[test]
 fn con_el_export_que_dice_el_arbol_queda_igual() {
     let dir = dos_paquetes("export");
@@ -370,8 +366,7 @@ fn enumera_las_componentes_y_no_toca_nada() {
 /// **El aserto que decide el verbo**: mover una componente entera deja el árbol
 /// EXACTAMENTE como estaba. Cero referencias cruzando, cero diagnósticos nuevos.
 ///
-/// Es lo que una persona no calcula bien: moviendo la tabla sola quedaría un
-/// `OOS2028`, y la componente son tres documentos que hay que ver a la vez.
+/// La componente son tres documentos que hay que ver a la vez.
 #[test]
 fn una_componente_entera_sale_a_cero() {
     let dir = dos_paquetes("componente");

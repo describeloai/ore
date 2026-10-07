@@ -1,4 +1,15 @@
-//! Lo público de un paquete — `OOS2027` y `OOS2028`.
+//! Lo público de un paquete — `OOS2027`.
+//!
+//! # Dentro de un árbol no hay frontera (v1alpha28, ORE 0059)
+//!
+//! Un árbol es **un catálogo**, como un *metastore* de Unity: sus bases se leen
+//! por su nombre, y quién lee qué lo decide el acceso al servir (0047 A8), no
+//! el compilador. `OOS2028` —una referencia que cruza a un paquete que no la
+//! exporta— ya no se aplica entre miembros de un árbol, **sea cual sea la
+//! versión** de su config: la regla solo quitaba errores, así que no hay árbol
+//! que deje de compilar. `exports` queda como la superficie de un paquete
+//! publicado hacia otro árbol (`dependencies`), que se resuelve por el lock y
+//! el registro y no se ve desde aquí. Lo de abajo cuenta por qué nació.
 //!
 //! # Por qué existe un campo, y por qué no es la lista de lo que hay dentro
 //!
@@ -45,8 +56,8 @@ use crate::diag::Diagnostic;
 use crate::document::Kind;
 use crate::link::{Loaded, Package};
 use crate::normalize::qualify;
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Una referencia salida de un documento: a qué apunta y dónde se escribió.
 pub struct Ref<'a> {
@@ -233,51 +244,9 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
     out
 }
 
-/// Lo que cada miembro exporta, ya cualificado con el namespace de su
-/// manifiesto si lo tuviera.
-fn exportado(pkg: &Package, miembros: &[PathBuf]) -> BTreeMap<PathBuf, BTreeSet<String>> {
-    let mut out: BTreeMap<PathBuf, BTreeSet<String>> = miembros
-        .iter()
-        .map(|m| (m.clone(), BTreeSet::new()))
-        .collect();
-    for p in pkg.of(Kind::Package) {
-        let Some(sitio) = p.path.parent() else {
-            continue;
-        };
-        let Some(v) = p.section("exports") else {
-            continue;
-        };
-        let e = out.entry(sitio.to_path_buf()).or_default();
-        for i in v.items() {
-            if let Some(s) = i.as_str() {
-                e.insert(crate::normalize::qualify_catalogo(
-                    s,
-                    ns(p),
-                    crate::normalize::SCHEMA_POR_DEFECTO,
-                ));
-            }
-        }
-    }
-    out
-}
-
-/// v1alpha28 (`01-la-visibilidad`): si el árbol es **un catálogo** —su
-/// `OntologyConfig` declara v1alpha28 o posterior—. Entonces sus bases se leen
-/// por su nombre: `OOS2028` no se aplica entre miembros, y quién lee qué lo
-/// decide el acceso al servir, como un `GRANT` de Unity. `exports` queda para
-/// la frontera del artefacto, que no se ve desde el árbol.
-pub fn arbol_es_catalogo(pkg: &Package) -> bool {
-    pkg.of(Kind::OntologyConfig).any(|c| {
-        c.version()
-            .is_some_and(|v| v >= crate::document::ApiVersion::V1Alpha28)
-    })
-}
-
 pub fn comprobar(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let catalogo = arbol_es_catalogo(pkg);
     let miembros = crate::link::miembros(pkg);
-    let exports = exportado(pkg, &miembros);
 
     // El índice: nombre cualificado y kind -> el miembro que lo contiene. Con
     // el kind dentro de la clave a propósito: una tabla y una vista pueden
@@ -326,76 +295,6 @@ pub fn comprobar(pkg: &Package) -> Vec<Diagnostic> {
                      quita el nombre de la lista: exportar lo que no existe no es un aviso, \
                      es una promesa que nadie puede cumplir"
                 }),
-            );
-        }
-    }
-
-    // ── OOS2028 · una referencia cruza a un paquete que no la exporta ───────
-    //
-    // **Solo de v1alpha8**, y con el argumento textual de `OOS2022`: un
-    // documento anterior declaro su version, y esa version no tenia una
-    // superficie publica que respetar. Aplicarsela cambiaria lo que significa
-    // un documento ya escrito, y el invariante que esta linea de trabajo
-    // sostiene es que NO CAMBIA UN SOLO RESULTADO de v1alpha1 a v1alpha7.
-    //
-    // Se midio sin la puerta: caian dos casos de `conformance/v1alpha4` —
-    // `valid/concept-from-another-package` y
-    // `valid/vocabulary-member-has-no-entities`—, que son exactamente los dos
-    // unicos cruces del corpus y son los dos el mismo: un paquete de
-    // vocabulario del que otros toman autoridad. Con la puerta, cero.
-    //
-    // Decide la version del documento que ESCRIBE la referencia, no la del
-    // que la recibe: quien se acoplo lo hizo bajo unas reglas, y son las
-    // suyas las que valen.
-    for d in &pkg.docs {
-        if d.version()
-            .is_none_or(|v| v < crate::document::ApiVersion::V1Alpha8)
-        {
-            continue;
-        }
-        let Some(mio) = crate::link::miembro_de(&miembros, &d.path) else {
-            continue;
-        };
-        // Lo que escribe en sus campos, y —una vista SQL, v1alpha14— lo que
-        // lee su consulta, que cruza la frontera igual (0040 paso 6).
-        let de_la_consulta = d
-            .section("sql")
-            .map(|s| s.pos())
-            .map(|pos| {
-                crate::servir::nombrados(pkg, d)
-                    .into_iter()
-                    .filter_map(|n| Some((n.doc.qname()?, n.doc.kind, "sql", pos)))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for (destino, kind, clase, pos) in referencias(d)
-            .into_iter()
-            .map(|r| (r.destino, r.kind, r.clase, r.pos))
-            .chain(de_la_consulta)
-        {
-            let Some(suyo) = donde.get(&(destino.clone(), kind.as_str())) else {
-                continue; // no resuelve: lo dice quien comprueba esa referencia
-            };
-            if *suyo == mio {
-                continue;
-            }
-            // v1alpha28: dentro de un catálogo, cruzar de base es nombrar.
-            if catalogo || exports.get(*suyo).is_some_and(|e| e.contains(&destino)) {
-                continue;
-            }
-            let dueno = suyo.file_name().unwrap_or_default().to_string_lossy();
-            out.push(
-                Diagnostic::new(
-                    Code::Oos2028,
-                    &d.path,
-                    format!("`{clase}: {destino}` cruza a `{dueno}`, que no lo exporta"),
-                )
-                .at(pos)
-                .help(format!(
-                    "existe, y por eso esto no es `OOS2018`: está en otro paquete y ese \
-                     paquete no lo hace público. Añádelo a `exports` de `{dueno}`, o deja de \
-                     nombrarlo. Un `exports` ausente no significa «todo»: significa nada"
-                )),
             );
         }
     }

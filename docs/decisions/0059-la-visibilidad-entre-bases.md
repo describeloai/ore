@@ -2,7 +2,7 @@
 
 **Estado:** **aceptado** (2026-10-07) · X0 medido · X1 (spec OOS
 [v1alpha28 `01-la-visibilidad`](../../vendor/oos/spec/v1alpha28/01-la-visibilidad.md)) · X2
-(ore-core) · X3 (creación) hechos · X5 (victor y demo a v1alpha28) pendiente · **Decide:** un árbol
+(ore-core) · X3 (creación) · X6 (sin puerta: todo árbol) hechos · **Decide:** un árbol
 de organización es **un catálogo**, como un *metastore* de Unity: **sus bases se leen por su
 nombre**, sin lista de exportación, y **quién lee qué lo decide el acceso** al servir los datos
 (0047 A8). `exports` deja de ser la frontera entre bases y queda como lo que era al nacer: **la
@@ -55,7 +55,7 @@ referencia**.
 
 ## La decisión
 
-| | antes | ahora (árbol con `OntologyConfig` v1alpha28) |
+| | antes | ahora (todo árbol) |
 |---|---|---|
 | una base lee otra del mismo árbol | sólo si la otra lo exporta (`OOS2028`) | **compila** |
 | quién puede leerla | cualquier miembro (A8 no existe) | cualquier miembro **hasta A8**; con A8, quien tenga el permiso sobre la base, el schema o el objeto |
@@ -63,9 +63,12 @@ referencia**.
 | `exports` | visibilidad entre bases | la frontera del artefacto: lo que un paquete publicado deja usar a quien lo importa |
 | una base foránea | expone lo que la fuente exporta | expone lo que su `include` alcanza |
 
-**La puerta es el `OntologyConfig`.** El árbol entero cambia de reglas a la vez, como la base
-congelada de v1alpha27 (`OOS2051`); un árbol con un config anterior compila igual que antes, y los
-`exports` que ya hay no estorban ni conceden.
+**Sin puerta de versión** (X6, OOS v1alpha28 `01` §6). Al principio la puerta era el
+`OntologyConfig` en v1alpha28, como la base congelada de v1alpha27 (`OOS2051`). Se quitó el mismo
+día: una puerta hace falta cuando una regla **añade** errores —el árbol elige cuándo cumplirla—, y
+esta sólo los quita. Con puerta, cada árbol tenía que subir su config a mano, y cada rama aparte
+(una rama no se actualiza desde `main`), para recibir algo que no rompe a nadie. Ahora vale para
+todo árbol, y los `exports` que ya hay no estorban ni conceden.
 
 **Lo que no cambia:** que una referencia exista (`OOS2018`), los conductos (`OOS4011` leer en vivo,
 `OOS4002` no rebajar etiquetas), la federación encendida (`OOS2051`), una base foránea sin datos
@@ -93,7 +96,8 @@ de la fuente).
 | X2 | ore-core: `ApiVersion::V1Alpha28`, `exporta::arbol_es_catalogo` (la puerta), `OOS2028` sólo fuera de un catálogo, la foránea expone sin `exports`. Conformidad v1alpha28 3/3, el resto igual; victor y demo en v1alpha28: 0 `OOS2028` con y sin `exports`, y la vista de `sandbox` compila | ✓ (`8d01db6`) |
 | X3 | creación: en un árbol v1alpha28 la fuente deja de escribir `exports` al catalogar (lo que había se queda), y `ore package` deja de aconsejar exportar | ✓ |
 | X4 | este ADR | ✓ |
-| X5 | victor y demo a v1alpha28: una línea en su `ontology.config.yaml`. Sin migración: ya compilan con y sin `exports` | pendiente del visto bueno |
+| X5 | victor y demo a v1alpha28 a mano | sustituido por X6 |
+| X6 | sin puerta: `arbol_es_catalogo` desaparece, `OOS2028` no se comprueba dentro de ningún árbol (ni en una base foránea), la fuente no escribe `exports` y `ore package` no los aconseja; OOS v1alpha28 `01` §6 y los cuatro casos que esperaban `OOS2028` dentro de un árbol, a `valid/` | ✓ |
 
 ## Lo que este ADR no decide
 
@@ -109,6 +113,6 @@ de la fuente).
 - **A8** es lo que devuelve la señal que esto quita. Hasta entonces, la consola no debería sugerir
   que una base es privada.
 - Los `exports` que las fuentes ya escribieron siguen en los árboles. No estorban; se pueden quitar
-  cuando un árbol pase a v1alpha28, o dejar.
+  o dejar.
 - Victor no compila hoy por 5 errores ajenos a esto (`OOS2013` ×4 y `OOS2043` en semillas viejas de
   `test_project`): un árbol que no compila esconde los errores nuevos.

@@ -1,36 +1,17 @@
-# 0059 X5 · Las vistas de C7, en `sandbox`: una base lee a otra por su nombre.
+# 0059 X6 · Las vistas de C7, en `sandbox`: una base lee a otra por su nombre.
 #
-# Con el `OntologyConfig` en OOS v1alpha28 el árbol es un catálogo (ADR 0059):
-# `sandbox` lee la colección de `s3_stuff` sin que `s3_stuff` la exporte, como
-# en Unity.
+# Un árbol es un catálogo (ADR 0059, OOS v1alpha28): `sandbox` lee la colección
+# de `s3_stuff` por su nombre, sin que `s3_stuff` la exporte, como en Unity.
+# Vale para todo árbol y toda rama: no hay nada que cambiar antes.
 #
-# ANTES, en la consola (una sesión no puede tocar el gobierno del árbol: desde
-# un puesto `PUT /arbol/…` es 403, y así tiene que ser):
-#   el editor del árbol → `ontology.config.yaml` → la primera línea pasa a
-#   `apiVersion: oos.dev/v1alpha28` → commit. En `main` (para todos) y, si tu
-#   repositorio Models ya tenía rama, también en ella: una rama nace de `main`
-#   y no se actualiza sola.
-#
-# Después, con Run en el repositorio Models: comprueba el config de tu rama,
-# crea las cuatro vistas en `sandbox` (schema `default`) y las lee.
-import re
-
+# Con Run en el repositorio Models: crea las cuatro vistas en `sandbox` (schema
+# `default`) y las lee.
 import ore
 
-CONFIG = "ontology.config.yaml"
 C = "s3_stuff.nueva_carpeta.contratos"
 DESTINO = "sandbox"
 
-# ── 1 · el árbol de tu rama, ¿es un catálogo? ───────────────────────────────
-c, r = ore.session.pedir("GET", "/arbol/" + CONFIG)
-assert c == 200, (c, r)
-version = re.search(r"^apiVersion:\s*(\S+)", r["texto"], re.M).group(1)
-if version != "oos.dev/v1alpha28":
-    raise SystemExit("✗ el `%s` de tu rama es %s: pásalo a oos.dev/v1alpha28 en la consola (arriba) y vuelve a correr esto"
-                     % (CONFIG, version))
-print("✓ el árbol de tu rama es un catálogo (", version, ")")
-
-# ── 2 · las vistas, en `sandbox` ─────────────────────────────────────────────
+# ── las vistas, en `sandbox` ─────────────────────────────────────────────
 VISTAS = {
     # Inventario: cuántos ficheros de cada tipo, cuánto ocupan y desde cuándo.
     f"{DESTINO}.contratos_inventario": f"""

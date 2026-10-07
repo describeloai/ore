@@ -1,13 +1,11 @@
-//! `exports` — las dos propiedades que ningún caso de conformidad ejerce.
+//! `exports` dentro de un árbol — desde v1alpha28 (ORE 0059) no es frontera.
 //!
-//! Los tres casos de `conformance/v1alpha8` cubren lo normativo: la lista
-//! puesta, la lista ausente y la lista con un nombre de más. Lo que no cubren
-//! —porque un caso afirma una regla y estas dos son consecuencias— es:
+//! Un árbol es un catálogo: sus bases se leen por su nombre, en cualquier
+//! versión de sus documentos y de su config, con `exports` o sin él. Lo que se
+//! afirma aquí son los dos árboles que antes eran `OOS2028`:
 //!
-//! 1. **la puerta de versión**, que es lo que hace que esta regla no cambie el
-//!    resultado de un documento anterior;
-//! 2. **que exportar la vista de arriba no arrastra el peldaño**, que es la
-//!    diferencia entre exponer y contener dicha en un árbol.
+//! 1. un documento v1alpha8 que cruza a un paquete sin `exports`;
+//! 2. el peldaño que `exports` no nombraba.
 //!
 //! Por la CLI pública, como el resto: lo que se afirma es lo que un usuario ve.
 
@@ -77,22 +75,13 @@ fn entidad(nombre: &str, vista: &str, campo: &str, version: &str) -> String {
     )
 }
 
-/// Un documento anterior a v1alpha8 cruza sin permiso, y eso es la regla.
-///
-/// El invariante que esta línea de trabajo sostiene es que **no cambia un solo
-/// resultado de v1alpha1 a v1alpha7**. Se midió sin la puerta y caían dos casos
-/// de `conformance/v1alpha4` —`concept-from-another-package` y
-/// `vocabulary-member-has-no-entities`—, que son exactamente los dos únicos
-/// cruces del corpus y son el mismo: un vocabulario del que otros toman
-/// autoridad.
-///
-/// Decide la versión del documento que **escribe** la referencia: quien se
-/// acopló lo hizo bajo unas reglas, y son las suyas las que valen.
+/// Un documento cruza a otro paquete sin que este exporte nada, sea de
+/// v1alpha1 o de v1alpha8: compila (antes, el de v1alpha8 era `OOS2028`).
 #[test]
-fn un_documento_anterior_a_v1alpha8_cruza_sin_permiso() {
-    let arbol = |version: &str| {
-        paquete(
-            &format!("exporta-puerta-{version}"),
+fn cruzar_de_paquete_compila_sin_exports() {
+    for version in ["v1alpha1", "v1alpha8"] {
+        let dir = paquete(
+            &format!("exporta-cruce-{version}"),
             &[
                 ("ontology.config.yaml", CONFIG),
                 ("packages/infra/package.yaml", &manifiesto("infra", None)),
@@ -104,32 +93,22 @@ fn un_documento_anterior_a_v1alpha8_cruza_sin_permiso() {
                     &entidad("Employee", "infra.empleados", "employeeId", version),
                 ),
             ],
-        )
-    };
-
-    let dir = arbol("v1alpha1");
-    let (ok, out) = validar(&dir);
-    assert!(
-        ok,
-        "un documento v1alpha1 no puede cambiar de resultado:\n{out}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-
-    let dir = arbol("v1alpha8");
-    let (ok, out) = validar(&dir);
-    assert!(!ok, "tenía que negarse:\n{out}");
-    assert!(out.contains("OOS2028"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
+        );
+        let (ok, out) = validar(&dir);
+        assert!(
+            ok,
+            "{version}: el árbol es un catálogo:
+{out}"
+        );
+        assert!(!out.contains("OOS2028"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
-/// Exportar la vista de arriba **no** arrastra el peldaño sobre el que se apoya.
-///
-/// Es la diferencia entre exponer y contener dicha en un árbol: `infra`
-/// contiene dos vistas y expone una. El consumidor no nombra `empleados`, así
-/// que no se acopla a ella, así que puede cambiar — y el compilador lo hace
-/// cumplir en vez de confiar en que nadie mire.
+/// Con un `exports` que nombra la vista de arriba, el peldaño sobre el que se
+/// apoya también se lee: la lista no cierra lo que no nombra.
 #[test]
-fn exportar_la_de_arriba_no_arrastra_el_peldano() {
+fn exports_no_cierra_el_peldano() {
     let dir = paquete(
         "exporta-peldano",
         &[
@@ -146,23 +125,17 @@ fn exportar_la_de_arriba_no_arrastra_el_peldano() {
                 "packages/rrhh/entities/Iberico.yaml",
                 &entidad("Iberico", "infra.iberia", "id", "v1alpha8"),
             ),
+            (
+                "packages/rrhh/entities/Otra.yaml",
+                &entidad("Otra", "infra.empleados", "employeeId", "v1alpha8"),
+            ),
         ],
     );
     let (ok, out) = validar(&dir);
-    assert!(ok, "lo exportado tiene que compilar:\n{out}");
-
-    // Y ahora una segunda entidad que se apoya en el PELDAÑO, que no se exporta.
-    std::fs::write(
-        dir.join("packages/rrhh/entities/Otra.yaml"),
-        entidad("Otra", "infra.empleados", "employeeId", "v1alpha8"),
-    )
-    .unwrap();
-    let (ok, out) = validar(&dir);
-    assert!(!ok, "tenía que negarse:\n{out}");
-    assert!(out.contains("OOS2028"), "{out}");
     assert!(
-        out.contains("infra.empleados") && !out.contains("`backedBy: infra.iberia` cruza"),
-        "solo el peldaño se rechaza, y la expuesta sigue valiendo:\n{out}"
+        ok,
+        "el peldaño se lee por su nombre:
+{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

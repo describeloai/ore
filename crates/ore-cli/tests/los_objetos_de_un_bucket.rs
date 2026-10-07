@@ -135,17 +135,11 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
         z.contains("match: \"*.zip\"") && z.contains("media: archive"),
         "{z}"
     );
+    // ORE 0059: el árbol es un catálogo; la fuente no escribe `exports`.
     let m = leer(&dir, "s3_ventas/package.yaml");
+    assert!(!m.contains("exports"), "{m}");
     // ⭐ 0046 E5′: todo lo catalogado —12 tablas y 5 conjuntos— tiene su
     //   puntero, lo elija una base o no.
-    for e in [
-        "s3_ventas.nueva_carpeta.contratos",
-        "s3_ventas.nueva_carpeta.nueva_carpeta_zip",
-        "s3_ventas.nueva_carpeta.olist_orders_dataset",
-        "s3_ventas.raiz_txt",
-    ] {
-        assert!(m.contains(e), "sin `{e}`: {m}");
-    }
     let cuantos = |kind: &str| {
         walk(&dir.join("packages/s3_ventas"))
             .iter()

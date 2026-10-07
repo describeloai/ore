@@ -184,12 +184,12 @@ pub enum ApiVersion {
     /// copia (`OOS2049`). Y `datasources[].federation` del `OntologyConfig`:
     /// sin él, leer en vivo es `OOS2051`. Lo pidió ORE 0057 (2026-10-06).
     V1Alpha27,
-    /// v1alpha28. **La visibilidad dentro de un árbol.** Con el
-    /// `OntologyConfig` en esta versión, el árbol es un catálogo: sus bases se
-    /// leen por su nombre (`OOS2028` no se aplica entre miembros) y `exports`
-    /// queda como la frontera del artefacto; la base foránea expone sin pedir
-    /// `exports` a su fuente. Quién lee qué es del acceso, al servir. Lo pidió
-    /// ORE 0057 X (2026-10-07), como Unity Catalog.
+    /// v1alpha28. **La visibilidad dentro de un árbol.** Todo árbol es un
+    /// catálogo —sea cual sea la versión de su config: la regla sólo quita
+    /// errores—: sus bases se leen por su nombre (`OOS2028` no se aplica entre
+    /// miembros) y `exports` queda como la frontera del artefacto; la base
+    /// foránea expone sin pedir `exports` a su fuente. Quién lee qué es del
+    /// acceso, al servir. Lo pidió ORE 0059 (2026-10-07), como Unity Catalog.
     V1Alpha28,
 }
 
