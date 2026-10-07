@@ -317,7 +317,9 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P2·1 | el contrato del `storage_controller` | **hecho** (2026-10-07): leído y probado en local |
 | P2·2 | infraestructura GCP (bucket, cuenta, pool no-spot) | **hecho** (2026-10-07): [`malla/80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh); cuota 7/12 |
 | P2·3 | la base del controller (Postgres en el clúster, copias, restauración +1000) | **hecho** (2026-10-07): en vivo por Flux; restaurada una copia de verdad → generación 7 + 1000 |
-| P2·4 | la malla: controller, broker, safekeepers, pageserver | **siguiente** |
+| P2·4 | la malla: controller, broker, safekeepers, pageserver | **hecho** (2026-10-07): en vivo por Flux, a la primera, con autenticación |
+| P2·5 | retención y limpieza (PITR, GC, scrubber; borrar un tenant vacía GCS) | **siguiente** |
+| P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | pendiente |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -699,4 +701,30 @@ El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba
   6. el controller arranca sano sobre la base restaurada y ve el tenant en la 1007.
 
   Después se recogió la prueba: el pod temporal, la fila y el volcado de prueba (para que no fuera «el último» en una restauración real).
+
+#### P2·4 · La capa de almacenamiento en la malla (2026-10-07)
+
+- **[`malla/83-postgres-el-almacenamiento.yaml`](../../malla/83-postgres-el-almacenamiento.yaml)**, reconciliado por Flux, todo en `ore-pg`, en el pool `pg` y con las imágenes de `8269bece` (17.10):
+
+  | pieza | configuración |
+  |---|---|
+  | `storage-controller` | **modo estricto**, `--handle-ps-local-disk-loss`, 1 réplica en `Recreate` (nunca dos repartiendo generaciones); las sondas son tcp, porque la API pide token |
+  | `avisos` | el receptor de `notify-*` hasta P4: contesta 200 y lo apunta |
+  | `storage-broker` | — |
+  | `safekeeper` ×3 | autenticación pg y http; `--auth-token-path` para hablar entre ellos; WAL a `gs://ore-pg-almacen-euw1/safekeeper/`; disco `retiene-estandar`; PDB `maxUnavailable: 1` |
+  | `pageserver` ×1 | la configuración se escribe al arrancar: token de upcall, `metadata.json` con el nombre estable del pod y la zona; NeonJWT en http y pg; `NEON_AUTH_TOKEN` para leer de los safekeepers; capas a `…/pageserver/`; disco `standard`, porque es caché |
+
+- **La autenticación**:
+  - un par Ed25519 propio del almacenamiento y 5 tokens, uno por scope: `pageserverapi`, `safekeeperdata`, `generations_api`, `infra` y `admin`;
+  - los crea [`80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh) directos a Secrets, sin imprimirse;
+  - `almacen-jwt` (la pública y 4 tokens) es lo que montan las piezas; `almacen-jwt-privada` (la privada y `admin`) no lo monta ninguna: es para P4 y las pruebas.
+- **Probado en vivo:**
+  - todo `Running` a la primera;
+  - la API sin token responde **401**;
+  - el pageserver se registró solo (`pageserver-0.pageserver.ore-pg.svc.cluster.local`, `europe-west1-b`, Active);
+  - un tenant y su timeline creados por el controller con el token `admin`, al primer intento;
+  - el `notify-attach` llegó a `avisos`;
+  - 10 objetos en el bucket;
+  - **0 errores** en los logs del controller y del pageserver.
+- ⚠️ Para P2·6: las pruebas de fuego (`tenant.sh`, `entorno.sh`) hablaban con el pageserver sin token. Ahora van **por el controller con el token `admin`**, y el cómputo necesita un token de scope `tenant`, que acuña quien tenga la privada.
 
