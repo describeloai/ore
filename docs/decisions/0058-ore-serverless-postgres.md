@@ -118,6 +118,22 @@ Primero **un Postgres serverless sano** y sólo entonces el catálogo. Cada hito
 | Q4 | del lago a Postgres |
 | Q5 | ramas unidas |
 
+### Dónde vive el código
+
+- **Los forks: un repositorio público por upstream.**
+  - Son `describeloai/neon`, `describeloai/postgres` y `describeloai/autoscaling`.
+  - Cada uno tiene su remoto `upstream`, para poder rebasar.
+  - Sólo llevan código de Neon y nuestros parches. Ni el submódulo de `neon` se toca: su URL es relativa (`../postgres.git`) y resuelve sola a nuestro `postgres`.
+  - El CI no va en los forks: cada fichero nuestro allí es un conflicto en el siguiente rebase.
+- **El producto vive dentro de ORE, con su forma modular de siempre:**
+  - `crates/ore-postgres`: el plano de control;
+  - `ore-serve`: `/v1/postgres/…`;
+  - `malla/8x-postgres-*`: el despliegue;
+  - `ci/neon/`: la receta y el **commit fijado**;
+  - `pruebas-de-fuego/ore-postgres/`: las pruebas de aceptación.
+- **La frontera entre los dos es una imagen con su commit.** ORE consume el motor como consume Keycloak.
+- **La copia local para rebasar** está en `C:/ore-neon/`. Las compilaciones van siempre en Cloud Build.
+
 ---
 
 ## Zona borrador · lo medido, los arreglos y los pasos
@@ -216,7 +232,7 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 
 ### B.8 · D0c · Neon compilado por nosotros
 
-- **C1** (`cloudbuild-neon.yaml`, cuenta `ore-ci`, E2_HIGHCPU_32, sin caché), commit `fa504217`
+- **C1** (`cloudbuild-neon.yaml`, hoy [`ci/neon/almacen.yaml`](../../ci/neon/almacen.yaml), cuenta `ore-ci`, E2_HIGHCPU_32, sin caché), commit `fa504217`
   (2026-08-31): **19 min 24 s** (fuente 53 s, compilar 17 min 35 s), **~1,2 USD**, imagen 1,9 GB en
   `…/ore/neon:<commit>`. Trampa: el BuildKit de `cloud-builders/docker` no entiende
   `${VAR/patrón/…}` ⇒ se antepone `# syntax=docker/dockerfile:1`. El 90 % es Postgres y dependencias:
@@ -292,7 +308,9 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | D0c·C4 | «sin fondo»: borrar el pageserver con su disco y recuperar el tenant y la rama desde GCS; tiempo | **hecho** (2026-10-06): RPO 0, ~21 s |
 | D0c·C5 | cerrar: cómo mantener el fork; el coste de leer en una rama | **hecho** (2026-10-06): hint bits confirmados; Postgres 17.5 → hay que traer 17.10+ |
 | D0b·6 | recoger lo de la prueba (B.10) y volver a 5/12 | **hecho** (2026-10-06): 5/12 |
-| P1–P9, Q1–Q5 | construir (B.11) | **plan escrito**; P1 esperando el go |
+| P1–P9, Q1–Q5 | construir (B.11) | **plan escrito** |
+| P1·1 | los forks y el CI apuntando a ellos | **hecho** (2026-10-07): compilado desde el fork en 14 min 7 s |
+| P1·2 | la imagen de cómputo (`compute-node.Dockerfile` v17 + `vm-builder`) | **siguiente** |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -488,3 +506,28 @@ Cada hito, en orden, con lo que entra y cuándo está hecho.
    - las pruebas de `pruebas-de-fuego/ore-postgres/` dejan de depender de `C:\tmp`: parametrizadas, son la aceptación de P2 y P3.
 
 P1 no gasta cuota: todo va en Cloud Build. Pero P1·1 crea repositorios en GitHub, así que **necesita el go y el dónde**.
+
+#### P1·1 · Los forks (2026-10-07)
+
+- **Los forks**: `describeloai/neon`, `describeloai/postgres` y `describeloai/autoscaling`.
+  - Son públicos, con todas sus ramas.
+  - La copia local está en `C:/ore-neon/{neon,postgres}`, clonada sin blobs (57 y 133 MB), con su remoto `upstream`.
+- **Ni un parche hace falta**: los submódulos de `neon` usan la URL relativa `../postgres.git` y desde el fork resuelven solos a `describeloai/postgres`. El paso `fuente` de la receta lo comprueba y falla si algún Postgres viene de otro sitio.
+- **Los commits fijados, protegidos con etiquetas** en los forks, para que no dependan de upstream: `ore/base-fa504217` en `neon` y `ore/v17-base-1e01fcea` en `postgres`.
+- **La receta** se mueve a [`ci/neon/almacen.yaml`](../../ci/neon/almacen.yaml): `_REPO` es el fork y `_COMMIT` el commit fijado.
+- **⭐ Hallazgo: el fork de Postgres de Neon sí se mantiene**, aunque `neon` no lo recoja:
+
+  | rama | versión | fecha |
+  |---|---|---|
+  | `REL_17_STABLE_neon` | **17.8** | 2026-04-09 |
+  | `REL_18_STABLE_neon` | **18.2** | 2026-04-08 |
+  | `REL_17_STABLE_neon_17_6` | 17.6 | 2025-08-20 |
+
+  `neon/main` (fa504217, 2026-08-31) sigue apuntando a 17.5. ⇒ **P1·4 se acorta**: en vez de rebasar 17.5 → 17.10 desde cero, se adopta `REL_17_STABLE_neon` (17.8) y sólo se traen 17.9 y 17.10. Queda por medir que la 17.8 encaje con el almacenamiento de fa504217: la extensión `neon` y el protocolo con el pageserver.
+- **Compilado desde el fork**: build `4ee49216`, SUCCESS.
+  - Tiempos: **14 min 7 s** en total; fuente 39 s, compilar 12 min 33 s.
+  - Los cuatro `vendor/postgres-v*` llegan de `describeloai/postgres`.
+  - Imagen `ore/neon:fa504217…`, digest `c3eff1c6…`. Sustituye a la de C1, porque cambia el `BUILD_TAG`.
+  - Sin caché, tardó 5 min menos que en C1: es la variación de Cloud Build, no una mejora. La caché se mide en P1·3.
+  - Los `fatal: not a git repository` del log son inofensivos: dentro de Docker no se copia `.git`, y el Dockerfile de Neon lo tolera.
+

@@ -1,0 +1,50 @@
+# El almacenamiento de ORE Serverless Postgres (ADR 0058): pageserver, safekeeper, storage_broker,
+# storage_controller, proxy… — la imagen `neon` de NUESTRO fork, en un commit fijado.
+#
+# ⭐ Aquí, y sólo aquí, se dice qué motor corre: `_COMMIT` (+ la etiqueta `ore/…` que lo protege en el
+#   fork). Los forks no llevan CI: cada fichero nuestro allí sería un conflicto en el rebase.
+# ⭐ Los Postgres son submódulos con URL RELATIVA (`../postgres.git`): desde describeloai/neon resuelven
+#   solos a describeloai/postgres. El paso `fuente` lo comprueba.
+# Medido en D0c·C1 (sin caché, E2_HIGHCPU_32): 19 min 24 s, ~1,2 USD.
+#
+#   gcloud builds submit --no-source --async --region=global --config ci/neon/almacen.yaml #     --service-account=projects/<P>/serviceAccounts/ore-ci@<P>.iam.gserviceaccount.com
+substitutions:
+  _REPO: https://github.com/describeloai/neon.git
+  _COMMIT: fa504217c61bbcaf5c512d75830564541f917f8f   # etiqueta ore/base-fa504217
+  _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+steps:
+  - id: fuente
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        git init -q neon && cd neon
+        git remote add origin ${_REPO}
+        git fetch -q --depth 1 origin ${_COMMIT}
+        git checkout -q FETCH_HEAD
+        # los cuatro Postgres son submódulos (../postgres.git)
+        git submodule update -q --init --depth 1 --recursive
+        # que los Postgres vienen de NUESTRO fork, no de neondatabase
+        for v in vendor/postgres-v*; do u=$(git -C $v remote get-url origin); echo "$v <- $u"; case $u in *describeloai*) ;; *) echo "✗ $v no viene del fork"; exit 1;; esac; done
+        # el BuildKit de cloud-builders/docker es viejo: no entiende ${VAR/patron/...} del Dockerfile
+        sed -i '1i # syntax=docker/dockerfile:1' Dockerfile && head -2 Dockerfile
+        git log -1 --format='%H %ci %s'
+        du -sh . vendor/*
+  - id: compilar
+    name: gcr.io/cloud-builders/docker
+    dir: neon
+    env: [DOCKER_BUILDKIT=1]
+    args: [build, --build-arg, 'GIT_VERSION=${_COMMIT}', --build-arg, BUILD_TAG=ore,
+           -t, '${_REGISTRO}/neon:${_COMMIT}', .]
+  - id: comprobar
+    name: '${_REGISTRO}/neon:${_COMMIT}'
+    entrypoint: bash
+    args: [-c, 'pageserver --version && safekeeper --version && storage_broker --version']
+images: ['${_REGISTRO}/neon:${_COMMIT}']
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 200
+  logging: CLOUD_LOGGING_ONLY
+timeout: 7200s
