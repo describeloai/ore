@@ -924,3 +924,78 @@ Con la imagen de cómputo `8269bece` (todavía sin el anuncio ARP) y NeonVM `v0.
 
 **Hallazgo para P3·6:** al borrar una VM, su runner sigue vivo unos segundos con **la misma IP de la overlay**, y contestaba el `select 1` de la VM nueva. Los «arranques de 3,5 s» eran eso. `vm.sh` ahora espera a que se vaya; el plano de control (P4) tendrá que hacer lo mismo.
 
+
+#### P4 · El plano de control: el diseño (2026-10-07)
+
+> Con lo aprendido de **Lakebase** (Databricks, Neon por dentro): el proyecto pertenece al workspace y su API cuelga del host del workspace, con su OAuth y sus permisos; lo que corre es un servicio serverless aparte. En ORE **la celda es el workspace**: lo que el cliente aprovisiona.
+
+**El decidido 8, precisado.** Postgres está **integrado en la identidad y la propiedad** y **aparte en el runtime**.
+- La identidad y la propiedad salen del plano de control común, como en cualquier otro servicio de ORE: el mismo login (0048), `ore-iam` decide (0047), el dueño es una persona (0052).
+- El cómputo, el almacenamiento, la capacidad, la medida y la facturación son del producto. Ni la cuota ni los recursos de la celda los tocan.
+- **Si la celda o `ore-iam` caen, se para la gestión, no los datos**: conectar, consultar, escalar y dormir no pasan por ellos.
+
+```
+persona ──token del IdP──► ore-serve (su celda) ──WI de la celda──► ore-postgres ──► storage_controller, safekeepers
+                           /v1/postgres/…                           org = la de la celda   NeonVM (ore-pg-computo)
+                           puede / hizo / quien (ore-iam, 0047)     estado + reconciliador  compute_ctl /configure
+aplicación ──────────────────────────────── (P5: proxy) ─────────────────────────────────► VM ──► almacenamiento
+```
+
+**Lo que se reutiliza, y nada se inventa:**
+
+| necesidad | pieza de ORE que ya existe |
+|---|---|
+| quién eres, sin segundo login | ORE IdP (0048): el token que ya trae la persona a su `ore-serve` |
+| ¿puede?, ¿qué hizo? | `ore-acceso` (el PEP de 0047): `puede` → `ore-iam`, `hizo` → `iam.huella` |
+| de quién es | `quien` → `owner: user:<handle>` (0052) |
+| la celda ante `ore-postgres` | el token de Workload Identity de su `ore-serve` (el primero de los dos tokens de 0047), verificado con las llaves de Google que ya trae `68-las-llaves-de-las-celdas`. **La organización no viaja nunca**: sale de la celda |
+| la base del estado | el Postgres de `ore-pg` (`storcon-db`), con su copia diaria: una base más, `ore_postgres` |
+| el login con identidad de ORE (después de P4) | `pg_session_jwt`, que ya va en nuestra imagen de cómputo, con el JWKS del realm de `50-jwks` |
+
+**El modelo** (como Lakebase: ids que pone el usuario, `[a-z0-9-]{1,63}`, inmutables):
+
+```
+/v1/postgres/proyectos/{p}                      → un tenant
+  /ramas/{r}                                     → un timeline (de otra rama: en su punta, en un LSN o en un INSTANTE)
+    /endpoints/{e}   (lectura-escritura | lectura) → una VM en ore-pg-computo, con su especificación
+    /roles/{rol}                                 → dentro de la especificación (el estado de los roles es de cada rama)
+    /bases/{b}
+  /operaciones/{id}                              → toda creación, cambio o borrado
+```
+
+- **Al crear un proyecto** nacen la rama `main`, su endpoint de lectura-escritura y **un rol para quien lo crea** (su handle), dueño de la base por defecto.
+- **Operaciones largas con id.** Toda escritura devuelve `{operacion, hecha: false}`; se sondea hasta `hecha: true`. **Una operación en curso por proyecto**: otra devuelve **409** («no se aceptó»). Repetir la misma petición, con el mismo id de recurso, no crea dos cosas.
+- **Contraseñas sin cofre**: se generan, se enseñan **una vez** y sólo se guarda el verificador SCRAM. Es justo lo que el proxy de P5 pedirá al plano de control. Se pueden regenerar, nunca leer.
+- **Potestades nuevas** en el catálogo de `ore-iam`: `postgres:ver`, `postgres:usar` (conectarse, roles) y `postgres:gestionar` (proyectos, ramas, endpoints), como `CAN_USE` / `CAN_MANAGE` de Lakebase.
+
+**`ore-postgres`** (`crates/ore-postgres`, en `ore-pg`; uno por región):
+- **El estado**: proyectos (con su organización), ramas, endpoints, roles (sólo el verificador), bases y operaciones. Cada fila lleva lo **deseado** y lo **observado**.
+- **El reconciliador** lleva lo observado hacia lo deseado, paso a paso y de forma idempotente. Lo que hoy hacen a mano los guiones de la prueba, pasa a hacerlo él:
+
+  | hoy, a mano | en `ore-postgres` |
+  |---|---|
+  | `tenant.sh` | tenant y timelines por el `storage_controller`; rama en un instante con el `get_lsn_by_timestamp` del pageserver |
+  | `especificacion.py` | la especificación y el token de tenant (con la privada del almacenamiento) |
+  | `vm.sh` | la `VirtualMachine` y su ConfigMap en `ore-pg-computo`, con una cuenta cuyo RBAC sólo alcanza ese namespace; **espera a que el runner viejo se vaya** (P3·5) |
+  | `tenant.sh borrar` | el tenant, más `DELETE` en cada safekeeper (P2·6) |
+  | `avisos` (el stub) | los avisos del `storage_controller`: si un tenant cambia de pageserver, se reconfigura su cómputo (`compute_ctl /configure`) |
+
+- **Un solo cómputo de escritura por rama, con cerco**, en tres capas:
+  1. en la base: una restricción única (rama, lectura-escritura);
+  2. en el reconciliador: el endpoint lleva una **generación**; la VM nueva no se crea hasta que la vieja y su runner no existen;
+  3. en el almacenamiento: los términos de los safekeepers, de modo que un proponente viejo pierde la votación.
+- **Las llaves**: un par Ed25519 propio para hablar con cada `compute_ctl` (su JWKS va en la especificación) y la privada del almacenamiento para acuñar los tokens de tenant. Las dos en Secrets de `ore-pg`; nunca en el repositorio.
+
+**Fuera de P4**: la entrada pública (el proxy, P5); dormir, despertar y el pool (P6); la medida y la facturación (P9). P4 deja anotados los cambios de estado de cada endpoint, que es lo que P9 medirá.
+
+**Los sub-pasos:**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **P4·1 · El contrato y el esqueleto** | la API (rutas, cuerpos, errores, operaciones) escrita aquí; `crates/ore-postgres` con su base `ore_postgres` y la verificación de la celda | una celda de prueba crea y lee un proyecto **vacío**; otra celda no lo ve |
+| **P4·2 · Proyectos y ramas** | tenant y timelines por el `storage_controller`; rama en la punta, en un LSN o en un instante; borrar | crear y borrar dejan el bucket y los safekeepers como estaban (medido) |
+| **P4·3 · Endpoints** | la especificación en Rust (sustituye a `especificacion.py`); la VM en `ore-pg-computo`; el cerco | un endpoint responde; **un segundo de escritura en la misma rama es imposible** (probado a la vez, no en serie) |
+| **P4·4 · Roles y bases** | SCRAM, la contraseña una vez, `compute_ctl /configure` | un rol creado por la API se conecta; regenerar su contraseña invalida la vieja |
+| **P4·5 · Los avisos del almacenamiento** | `ore-postgres` sustituye a `avisos` (`--control-plane-url`) | C4 con VM: el cómputo se reconfigura solo |
+| **P4·6 · La API de ORE** | `/v1/postgres/…` en `ore-serve` con `ore-acceso`; las potestades en las migraciones de `iam`; el dueño por `quien` | una persona crea proyecto, rama, endpoint y rol **con su token de ORE** y se conecta desde la malla; sin la potestad, 403; con `ore-iam` caído, 503 en la gestión y la base sigue sirviendo |
+| **P4·7 · Aceptación** | las pruebas de fuego por la API, ya sin guiones de tenant ni de VM | borrarlo todo no deja huella: ni filas, ni VMs, ni ConfigMaps, ni prefijos en GCS, ni WAL |
