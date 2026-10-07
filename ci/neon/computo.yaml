@@ -3,8 +3,9 @@
 #
 #   compute-node-v17     compute/compute-node.Dockerfile de describeloai/neon (Postgres 17 de
 #                        describeloai/postgres, compute_ctl, extensiones, pgbouncer, local_proxy…)
-#   neonvm-daemon        de describeloai/autoscaling, en la etiqueta que usa el CI de Neon en ese commit
-#   vm-builder           ídem; mete la imagen de cómputo en un disco de VM con el init de NeonVM
+#   vm-builder           de describeloai/autoscaling en _VM_BUILDER; mete la imagen de cómputo en un
+#                        disco de VM con el init de NeonVM y el neonvm-daemon de ci/neon/autoscaling.yaml
+#                        (que tiene que estar ya en el registro con esa misma etiqueta)
 #   vm-compute-node-v17  el resultado: lo que va en `spec.guest.rootDisk.image`
 #
 # ⭐ Paralelismo de BuildKit acotado: cada etapa ya hace `make -j$(nproc)` y Neon lo pone a 1 en su CI
@@ -16,7 +17,7 @@ substitutions:
   _REPO: https://github.com/describeloai/neon.git
   _COMMIT: 8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b   # ore/main = fa504217 + h3-pg + Postgres 17.10
   _AUTOSCALING: https://github.com/describeloai/autoscaling.git
-  _VM_BUILDER: v0.46.0                                 # VM_BUILDER_VERSION del CI de Neon en _COMMIT
+  _VM_BUILDER: v0.49.1                                 # la de NeonVM (P3·1); el CI de Neon en _COMMIT usa v0.46.0
   _PARALELO: '1'                                       # con 4: SIGKILL (32 GB) al enlazar con LTO compute_ctl+local_proxy
   _CACHE: leer                                         # leer | escribir
   _REGISTRO_HOST: europe-west1-docker.pkg.dev
@@ -36,14 +37,14 @@ steps:
         git submodule update -q --init --depth 1 vendor/postgres-v17
         u=$(git -C vendor/postgres-v17 remote get-url origin); echo "vendor/postgres-v17 <- $u"
         case $u in *describeloai*) ;; *) echo "✗ no viene del fork"; exit 1;; esac
-        grep -q "VM_BUILDER_VERSION: ${_VM_BUILDER}" .github/workflows/build_and_test.yml \
-          || { echo "✗ el CI de Neon en ${_COMMIT} no usa vm-builder ${_VM_BUILDER}"; exit 1; }
+        # P3·1: vm-builder va con NeonVM, no con el CI de Neon (que en _COMMIT usaba v0.46.0)
+        echo "CI de Neon: $(grep -o 'VM_BUILDER_VERSION: v[0-9.]*' .github/workflows/build_and_test.yml) · aquí ${_VM_BUILDER}"
         git log -1 --format='%H %ci %s'
         cd .. && git clone -q --depth 1 --branch ${_VM_BUILDER} ${_AUTOSCALING} autoscaling
         git -C autoscaling log -1 --format='autoscaling %H %ci'
 
   - id: vm-builder
-    name: golang:1.23
+    name: golang:1.24
     dir: autoscaling
     waitFor: [fuente]
     entrypoint: bash
@@ -51,23 +52,23 @@ steps:
       - -c
       - |
         set -e
+        source versions.env   # alpine y busybox fijados por sha, como el Makefile del fork ($$: no son sustituciones)
         CGO_ENABLED=0 go build -o /workspace/vm-builder \
-          -ldflags "-X main.Version=${_VM_BUILDER} -X main.NeonvmDaemonImage=${_REGISTRO}/neonvm-daemon:${_VM_BUILDER}" \
-          vm-builder/main.go
+          -ldflags "-X main.Version=${_VM_BUILDER} -X main.NeonvmDaemonImage=${_REGISTRO}/neonvm-daemon:${_VM_BUILDER}
+            -X main.AlpineImageTag=$$ALPINE_IMG_TAG -X main.AlpineImageShaAmd64=$$ALPINE_IMG_SHA_AMD64
+            -X main.BusyboxImageTag=$$BUSYBOX_IMG_TAG -X main.BusyboxImageShaAmd64=$$BUSYBOX_IMG_SHA_AMD64" \
+          vm-builder/*.go
         /workspace/vm-builder -version
 
   - id: neonvm-daemon
     name: gcr.io/cloud-builders/docker
-    dir: autoscaling
-    waitFor: [fuente]
+    waitFor: ['-']
     entrypoint: bash
     args:
       - -c
       - |
-        set -e
-        docker build -q -t autoscaling-go-base:dev -f go-base.Dockerfile .
-        docker build -q -t ${_REGISTRO}/neonvm-daemon:${_VM_BUILDER} --build-arg GO_BASE_IMG=autoscaling-go-base:dev \
-          --build-arg TARGET_ARCH=amd64 -f neonvm-daemon/Dockerfile .
+        docker pull -q ${_REGISTRO}/neonvm-daemon:${_VM_BUILDER} \
+          || { echo "✗ falta neonvm-daemon:${_VM_BUILDER}: antes, ci/neon/autoscaling.yaml"; exit 1; }
 
   - id: compute-node
     name: docker:27-cli
@@ -125,7 +126,6 @@ steps:
 images:
   - '${_REGISTRO}/compute-node-v17:${_COMMIT}'
   - '${_REGISTRO}/vm-compute-node-v17:${_COMMIT}'
-  - '${_REGISTRO}/neonvm-daemon:${_VM_BUILDER}'
 options:
   machineType: E2_HIGHCPU_32
   diskSizeGb: 300

@@ -1,0 +1,7 @@
+# La base del cómputo de ORE Serverless Postgres (ADR 0058, P3·3) · 3 de 3: NeonVM y el autoscaling.
+# Necesita cert-manager (los certificados de sus webhooks) y Multus (las NetworkAttachmentDefinition).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - neonvm.yaml
+  - autoscaling.yaml

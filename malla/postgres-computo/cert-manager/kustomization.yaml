@@ -1,0 +1,6 @@
+# La base del cómputo de ORE Serverless Postgres (ADR 0058, P3·3) · 1 de 3: cert-manager.
+# La aplica el Kustomization de Flux `ore-pg-cert-manager` (malla/84-…), no el de la malla.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cert-manager.yaml

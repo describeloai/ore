@@ -8,7 +8,7 @@ Es el procedimiento de [ADR 0058](../../docs/decisions/0058-ore-serverless-postg
 |---|---|
 | `describeloai/neon` | El fork de `neondatabase/neon`. Nuestra rama es **`ore/main`**: fa504217 más nuestros parches y el puntero a nuestro Postgres. |
 | `describeloai/postgres` | El fork de `neondatabase/postgres`. Nuestra rama es **`ore/REL_17_STABLE_neon`**: la 17.5 de Neon (`1e01fcea`) más **sólo upstream**. |
-| `describeloai/autoscaling` | El fork de `neondatabase/autoscaling`. De aquí salen `vm-builder` y `neonvm-daemon`, en la etiqueta que usa el CI de Neon. |
+| `describeloai/autoscaling` | El fork de `neondatabase/autoscaling`. De aquí sale **todo NeonVM y autoscaling** (kernel, controller, runner, vxlan, daemon, agent, scheduler) y `vm-builder`, en **una sola etiqueta** (`v0.49.1`, P3·1). |
 | `ci/neon/*.yaml` | **El único sitio que dice qué motor corre** (`_COMMIT`). Los forks no llevan CI. |
 
 Hay tres reglas:
@@ -21,7 +21,8 @@ Hay tres reglas:
 | receta | qué da | tiempo medido | coste aprox. |
 |---|---|---|---|
 | [`almacen.yaml`](almacen.yaml) | `neon:<commit>` (pageserver, safekeeper, broker, storage_controller, proxy…) | 14 min si cambia Rust · 2 min 20 s sin cambios · ~28–38 min escribiendo la caché | 0,15–2,5 USD |
-| [`computo.yaml`](computo.yaml) | `compute-node-v17`, `neonvm-daemon`, `vm-compute-node-v17:<commit>` | 1 h 10 min en frío (Postgres y ~40 extensiones, en serie) | ~4,5 USD |
+| [`autoscaling.yaml`](autoscaling.yaml) | `neonvm-kernel:<versión>-<árbol>` y las 6 imágenes de NeonVM y autoscaling en `:<etiqueta>` | *(midiendo, P3·1)* | |
+| [`computo.yaml`](computo.yaml) | `compute-node-v17`, `vm-compute-node-v17:<commit>` (con el `vm-builder` y el `neonvm-daemon` de `autoscaling.yaml`: va **después**) | 1 h 10 min en frío (Postgres y ~40 extensiones, en serie) | ~4,5 USD |
 | [`postgres-check.yaml`](postgres-check.yaml) | `make -k check-world` del fork de Postgres, con aserciones | 3,5 min | ~0,2 USD |
 
 ```bash

@@ -94,6 +94,9 @@ resources:
   # `80-postgres-gcp.sh`; restaurar la base es `82-…sh`, nunca a mano.
   - 81-postgres-la-base-del-controlador.yaml
   - 83-postgres-el-almacenamiento.yaml
+  # P3·3: la base del cómputo (cert-manager, la overlay, NeonVM). Sólo los tres
+  # Kustomizations de Flux; lo que aplican vive en `postgres-computo/`, fuera de esta lista.
+  - 84-postgres-la-base-del-computo.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO

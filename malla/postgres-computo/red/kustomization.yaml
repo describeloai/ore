@@ -1,0 +1,7 @@
+# La base del cómputo de ORE Serverless Postgres (ADR 0058, P3·3) · 2 de 3: la red de la overlay.
+# Multus (multus-gke.yaml es la FUENTE, a mano; multus.yaml lo genera vendorizar.py) y whereabouts.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - multus.yaml
+  - whereabouts.yaml

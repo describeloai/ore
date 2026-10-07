@@ -1,0 +1,119 @@
+# NeonVM y autoscaling de ORE Serverless Postgres (ADR 0058, P3·1): todo lo que hace correr un
+# cómputo como VM, desde NUESTRO fork (describeloai/autoscaling) en una etiqueta fijada:
+#
+#   neonvm-kernel            el kernel de las VMs (6.12.x de kernel.org + parches del fork); va dentro
+#                            del runner. Etiquetado por el árbol de neonvm-kernel/: si ya está, no se compila
+#   neonvm-controller        el operador de las VirtualMachine
+#   neonvm-runner            el pod que lleva QEMU y la VM dentro
+#   neonvm-vxlan-controller  la overlay entre nodos (DaemonSet)
+#   neonvm-daemon            va DENTRO de la imagen de VM (lo mete vm-builder; ci/neon/computo.yaml)
+#   autoscaler-agent         escala cada VM en caliente (DaemonSet)
+#   autoscale-scheduler      el planificador que sabe cuánto cabe en cada nodo
+#
+# `vm-builder` no es una imagen: es un binario y lo compila ci/neon/computo.yaml con la misma _TAG.
+#
+#   gcloud builds submit --no-source --async --region=global --config ci/neon/autoscaling.yaml \
+#     --service-account=projects/<P>/serviceAccounts/ore-ci@<P>.iam.gserviceaccount.com
+substitutions:
+  _REPO: https://github.com/describeloai/autoscaling.git
+  _TAG: v0.49.1                                         # la de D0b
+  _COMMIT: aea4f327b09c90ff20f9e04fe92013eac10bb5c9     # lo que es _TAG hoy: si la mueven, se para
+  _ARCH: amd64
+  _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+steps:
+  - id: fuente
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        git clone -q --branch ${_TAG} ${_REPO} autoscaling && cd autoscaling
+        test "$(git rev-parse HEAD)" = ${_COMMIT} || { echo "✗ ${_TAG} ya no es ${_COMMIT}"; exit 1; }
+        git log -1 --format='autoscaling %H %ci %s'
+        # el kernel se etiqueta por su versión y por el árbol de neonvm-kernel/ (config, parches, Dockerfile)
+        echo "$(neonvm-kernel/echo-version.sh)-$(git rev-parse HEAD:neonvm-kernel | cut -c1-12)" > /workspace/kernel-tag
+        echo "kernel: $(cat /workspace/kernel-tag)"
+
+  - id: kernel
+    name: gcr.io/cloud-builders/docker
+    dir: autoscaling
+    waitFor: [fuente]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        source versions.env   # (sus variables, con $$: si no, Cloud Build las toma por sustituciones)
+        k=${_REGISTRO}/neonvm-kernel:$(cat /workspace/kernel-tag)
+        if docker pull -q $k 2>/dev/null; then
+          echo "kernel ya compilado: $k"
+        else
+          v=$(neonvm-kernel/echo-version.sh)
+          DOCKER_BUILDKIT=1 docker build -q -t $k --target kernel_${_ARCH} \
+            --build-arg UBUNTU_IMG_TAG=$$UBUNTU_IMG_TAG --build-arg UBUNTU_IMG_SHA=$$UBUNTU_IMG_SHA_AMD64 \
+            --build-arg ALPINE_IMG_TAG=$$ALPINE_IMG_TAG \
+            --build-arg ALPINE_IMG_SHA_AMD64=$$ALPINE_IMG_SHA_AMD64 --build-arg ALPINE_IMG_SHA_ARM64=$$ALPINE_IMG_SHA_ARM64 \
+            --build-arg KERNEL_VERSION=$v --build-arg VERSION_SUFFIX=-ore-${_TAG} \
+            -f neonvm-kernel/Dockerfile neonvm-kernel
+          docker push -q $k
+        fi
+        id=$(docker create $k true); docker cp $id:/vmlinuz neonvm-kernel/vmlinuz-${_ARCH}; docker rm -f $id >/dev/null
+        ls -l neonvm-kernel/vmlinuz-${_ARCH}
+
+  - id: go-base
+    name: gcr.io/cloud-builders/docker
+    dir: autoscaling
+    waitFor: [fuente]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        source versions.env
+        docker build -q -t autoscaling-go-base:dev -f go-base.Dockerfile \
+          --build-arg GOLANG_IMG_TAG=$$GOLANG_IMG_TAG --build-arg GOLANG_IMG_SHA=$$GOLANG_IMG_SHA_AMD64 .
+
+  - id: imagenes
+    name: gcr.io/cloud-builders/docker
+    dir: autoscaling
+    waitFor: [kernel, go-base]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        source versions.env
+        b="--build-arg GO_BASE_IMG=autoscaling-go-base:dev --build-arg TARGET_ARCH=${_ARCH}
+           --build-arg ALPINE_IMG_TAG=$$ALPINE_IMG_TAG --build-arg ALPINE_IMG_SHA=$$ALPINE_IMG_SHA_AMD64
+           --build-arg DISTROLESS_IMG_TAG=$$DISTROLESS_IMG_TAG --build-arg DISTROLESS_IMG_SHA=$$DISTROLESS_IMG_SHA_AMD64
+           --build-arg FIRMWARE_ARCH=${_ARCH} --build-arg FIRMWARE_OS=linux"
+        neonvm-runner/get-qemu-bios.sh ${_ARCH} linux
+        for i in neonvm-controller neonvm-runner neonvm-vxlan-controller neonvm-daemon \
+                 autoscaler-agent autoscale-scheduler; do
+          echo "== $i"; DOCKER_BUILDKIT=1 docker build -q $b -t ${_REGISTRO}/$i:${_TAG} -f $i/Dockerfile .
+        done
+
+  - id: comprobar
+    name: '${_REGISTRO}/neonvm-runner:${_TAG}'
+    waitFor: [imagenes]
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -e
+        ls -l /vm/kernel/vmlinuz && qemu-system-x86_64 --version | head -1
+        runner --help 2>&1 | head -1 || true
+
+images:
+  - '${_REGISTRO}/neonvm-controller:${_TAG}'
+  - '${_REGISTRO}/neonvm-runner:${_TAG}'
+  - '${_REGISTRO}/neonvm-vxlan-controller:${_TAG}'
+  - '${_REGISTRO}/neonvm-daemon:${_TAG}'
+  - '${_REGISTRO}/autoscaler-agent:${_TAG}'
+  - '${_REGISTRO}/autoscale-scheduler:${_TAG}'
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+timeout: 3600s

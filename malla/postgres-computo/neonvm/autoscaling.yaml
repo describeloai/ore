@@ -1,0 +1,272 @@
+# GENERADO por malla/postgres-computo/vendorizar.py (ADR 0058, P3·3) desde neondatabase/autoscaling v0.49.1.
+# No se edita a mano: se cambia vendorizar.py y se vuelve a generar.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autoscale-scheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: autoscale-scheduler-apiserver-auth-config
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: autoscale-scheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscale-scheduler-virtualmachine-editor
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: neonvm-virtualmachine-editor-role
+subjects:
+- kind: ServiceAccount
+  name: autoscale-scheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscale-scheduler-virtualmachinemigration-editor
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: neonvm-virtualmachinemigration-editor-role
+subjects:
+- kind: ServiceAccount
+  name: autoscale-scheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscale-scheduler-as-kube-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kube-scheduler
+subjects:
+- kind: ServiceAccount
+  name: autoscale-scheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscale-scheduler-as-volume-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:volume-scheduler
+subjects:
+- kind: ServiceAccount
+  name: autoscale-scheduler
+  namespace: kube-system
+---
+apiVersion: v1
+data:
+  scheduler-config.yaml: "apiVersion: kubescheduler.config.k8s.io/v1\nkind: KubeSchedulerConfiguration\nleaderElection:\n  leaderElect: false\nprofiles:\n  - schedulerName: autoscale-scheduler\n    plugins:\n      multiPoint:\n        enabled:\n          - name: AutoscaleEnforcer\n      score:\n        # Score() for some plugins is disabled to avoid conflicts with AutoscaleEnforcer\n        disabled:\n          - name: ImageLocality\n          - name: NodeResourcesBalancedAllocation\n          - name: NodeResourcesFit\n"
+kind: ConfigMap
+metadata:
+  name: autoscale-scheduler-config
+  namespace: kube-system
+---
+apiVersion: v1
+data:
+  autoscale-enforcer-config.json: "{\n  \"watermark\": 0.9,\n  \"scoring\": {\n    \"minUsageScore\": 0.5,\n    \"maxUsageScore\": 0,\n    \"scorePeak\": 0.8,\n    \"randomize\": true\n  },\n  \"schedulerName\": \"autoscale-scheduler\",\n  \"reconcileWorkers\": 16,\n  \"logSuccessiveFailuresThreshold\": 10,\n  \"startupEventHandlingTimeoutSeconds\": 15,\n  \"patchRetryWaitSeconds\": 1,\n  \"k8sCRUDTimeoutSeconds\": 1,\n  \"nodeMetricLabels\": {},\n  \"ignoredNamespaces\": []\n}\n"
+kind: ConfigMap
+metadata:
+  name: scheduler-plugin-config
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    component: scheduler
+    tier: control-plane
+  name: autoscale-scheduler
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: scheduler
+      tier: control-plane
+  template:
+    metadata:
+      labels:
+        component: scheduler
+        name: autoscale-scheduler
+        tier: control-plane
+    spec:
+      containers:
+      - command:
+        - /usr/bin/kube-scheduler
+        - --config=/etc/kubernetes/autoscale-scheduler-config/scheduler-config.yaml
+        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/autoscale-scheduler:v0.49.1
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 15
+        name: autoscale-scheduler
+        ports:
+        - containerPort: 9100
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+        resources:
+          limits:
+            cpu: 1
+            memory: 2000Mi
+          requests:
+            cpu: 200m
+            memory: 2000Mi
+        securityContext:
+          privileged: false
+        volumeMounts:
+        - mountPath: /etc/kubernetes/autoscale-scheduler-config
+          name: scheduler-config-volume
+        - mountPath: /etc/scheduler-plugin-config
+          name: plugin-config-volume
+      hostNetwork: false
+      hostPID: false
+      priorityClassName: system-cluster-critical
+      serviceAccountName: autoscale-scheduler
+      tolerations:
+      - effect: NoExecute
+        key: node.kubernetes.io/not-ready
+        tolerationSeconds: 30
+      - effect: NoExecute
+        key: node.kubernetes.io/unreachable
+        tolerationSeconds: 30
+      - key: ore.dev/neon
+        operator: Equal
+        value: 'true'
+        effect: NoSchedule
+      volumes:
+      - configMap:
+          name: autoscale-scheduler-config
+        name: scheduler-config-volume
+      - configMap:
+          name: scheduler-plugin-config
+        name: plugin-config-volume
+      nodeSelector:
+        ore.dev/pool: neon
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autoscaler-agent
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscaler-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+- kind: ServiceAccount
+  name: autoscaler-agent
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscaler-virtualmachine-editor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: neonvm-virtualmachine-editor-role
+subjects:
+- kind: ServiceAccount
+  name: autoscaler-agent
+  namespace: kube-system
+---
+apiVersion: v1
+data:
+  config.json: "{\n  \"refereshStateIntervalSeconds\": 5,\n  \"scaling\": {\n    \"computeUnit\": { \"vCPUs\": 0.25, \"mem\": \"1Gi\" },\n    \"defaultConfig\": {\n      \"loadAverageFractionTarget\": 0.9,\n      \"memoryUsageFractionTarget\": 0.75,\n      \"memoryTotalFractionTarget\": 0.9,\n      \"enableLFCMetrics\": false,\n      \"lfcUseLargestWindow\": false,\n      \"lfcToMemoryRatio\": 0.75,\n      \"lfcWindowSizeMinutes\": 5,\n      \"lfcMinWaitBeforeDownscaleMinutes\": 5,\n      \"cpuStableZoneRatio\": 0,\n      \"cpuMixedZoneRatio\": 0\n    }\n  },\n  \"billing\": {\n    \"cpuMetricName\": \"effective_compute_seconds\",\n    \"activeTimeMetricName\": \"active_time_seconds\",\n    \"collectEverySeconds\": 4,\n    \"accumulateEverySeconds\": 24,\n    \"clients\": {}\n  },\n  \"scalingEvents\": {\n    \"cuMultiplier\": 0.25,\n    \"rereportThreshold\": 0.25,\n    \"regionName\": \"replaceme\",\n    \"clients\": {}\n  },\n  \"monitor\": {\n      \"serverPort\": 10301,\n      \"responseTimeoutSeconds\"\
+    : 5,\n      \"connectionTimeoutSeconds\": 4,\n      \"connectionRetryMinWaitSeconds\": 5,\n      \"unhealthyAfterSilenceDurationSeconds\": 20,\n      \"unhealthyStartupGracePeriodSeconds\": 20,\n      \"maxHealthCheckSequentialFailuresSeconds\": 30,\n      \"retryDeniedDownscaleSeconds\": 5,\n      \"requestedUpscaleValidSeconds\": 10,\n      \"retryFailedRequestSeconds\": 3,\n      \"maxFailedRequestRate\": {\n        \"intervalSeconds\": 120,\n        \"threshold\": 2\n      }\n  },\n  \"metrics\": {\n    \"system\": {\n      \"port\": 9100,\n      \"requestTimeoutSeconds\": 2,\n      \"secondsBetweenRequests\": 5\n    },\n    \"lfc\": {\n      \"port\": 9499,\n      \"requestTimeoutSeconds\": 5,\n      \"secondsBetweenRequests\": 15\n    }\n  },\n  \"scheduler\": {\n    \"schedulerName\": \"autoscale-scheduler\",\n    \"requestTimeoutSeconds\": 2,\n    \"requestAtLeastEverySeconds\": 15,\n    \"retryFailedRequestSeconds\": 3,\n    \"retryDeniedUpscaleSeconds\": 2,\n    \"requestPort\"\
+    : 10299,\n    \"maxFailedRequestRate\": {\n      \"intervalSeconds\": 120,\n      \"threshold\": 5\n    }\n  },\n  \"dumpState\": {\n    \"port\": 10300,\n    \"timeoutSeconds\": 5\n  },\n  \"neonvm\": {\n    \"requestTimeoutSeconds\": 10,\n    \"retryFailedRequestSeconds\": 5,\n    \"maxFailedRequestRate\": {\n      \"intervalSeconds\": 120,\n      \"threshold\": 2\n    }\n  }\n}\n"
+kind: ConfigMap
+metadata:
+  name: autoscaler-agent-config
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: autoscaler-agent
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: autoscaler-agent
+  template:
+    metadata:
+      labels:
+        name: autoscaler-agent
+    spec:
+      containers:
+      - env:
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: K8S_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: CONFIG_PATH
+          value: /etc/autoscaler-agent-config/config.json
+        image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/autoscaler-agent:v0.49.1
+        name: autoscaler-agent
+        ports:
+        - containerPort: 9100
+          name: metrics
+          protocol: TCP
+        - containerPort: 9101
+          name: vm-metrics
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 600Mi
+          requests:
+            cpu: 100m
+            memory: 600Mi
+        volumeMounts:
+        - mountPath: /etc/autoscaler-agent-config
+          name: config
+      serviceAccountName: autoscaler-agent
+      volumes:
+      - configMap:
+          name: autoscaler-agent-config
+        name: config
+      nodeSelector:
+        ore.dev/pool: neon
+      tolerations:
+      - key: ore.dev/neon
+        operator: Equal
+        value: 'true'
+        effect: NoSchedule

@@ -8,7 +8,7 @@ Estas pruebas son la aceptación del motor ([ADR 0058](../../docs/decisions/0058
 
 ## Montaje
 
-Hace falta un pool con KVM (`--enable-nested-virtualization`) etiquetado `ore.dev/pool=$ORE_PG_POOL`. Encima van NeonVM, autoscaling y Multus ([`preparar.py`](preparar.py) y [`multus-v4-gke.yaml`](multus-v4-gke.yaml), B.3). A partir de P2/P3 todo esto lo declara la malla.
+Hace falta un pool con KVM (`--enable-nested-virtualization`) etiquetado `ore.dev/pool=$ORE_PG_POOL`. Encima van NeonVM, autoscaling y Multus: desde P3·3 los declara la malla ([`malla/84-…`](../../malla/84-postgres-la-base-del-computo.yaml) y [`malla/postgres-computo/`](../../malla/postgres-computo/), B.3).
 
 ```bash
 source entorno.sh                          # por defecto: ns ore-pg-prueba; imágenes las de ci/neon/computo.yaml

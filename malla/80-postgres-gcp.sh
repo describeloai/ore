@@ -16,9 +16,12 @@
 #                                  VMs de cómputo, P3), Ubuntu (KVM + módulos de la
 #                                  overlay, B.3), pd-standard (la cuota SSD está llena),
 #                                  taint ore.dev/neon, etiqueta ore.dev/pool=neon.
+#                                  AUTOESCALADO de nodos (P3·2): la capacidad la pone la
+#                                  plataforma; GKE añade un nodo cuando una VM no cabe y lo
+#                                  quita al sobrar. El techo hoy es la cuota (12 vCPU).
 #
-# Idempotente: lo que ya existe se deja. Crecer el pool (P3: 3 nodos, luego nodos
-# grandes en la puerta de producción) es cambiar NODOS y volver a pasar.
+# Idempotente: lo que ya existe se deja. Cambiar el rango del pool (en la puerta de
+# producción: nodos grandes y cuota alta) es cambiar NODOS_MIN/NODOS_MAX y volver a pasar.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 P=project-8853a180-450d-47be-b83
@@ -30,7 +33,8 @@ GSA=ore-pg-almacen
 KSA_NS=ore-pg
 KSA=neon
 POOL=pg
-NODOS=${NODOS:-1}
+NODOS_MIN=${NODOS_MIN:-1}
+NODOS_MAX=${NODOS_MAX:-3}   # 3 × 2 vCPU + lo demás de ORE = 11/12 de la cuota en el pico
 
 echo "── bucket gs://$BUCKET"
 if ! gcloud storage buckets describe gs://$BUCKET --project $P >/dev/null 2>&1; then
@@ -49,10 +53,11 @@ gcloud iam service-accounts add-iam-policy-binding $GSA@$P.iam.gserviceaccount.c
   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$KSA_NS/$KSA]" >/dev/null
 echo "   claves de usuario: $(gcloud iam service-accounts keys list --iam-account $GSA@$P.iam.gserviceaccount.com --managed-by user --format='value(name)' | wc -l)"
 
-echo "── pool $POOL ($NODOS nodo/s)"
+echo "── pool $POOL (autoescalado $NODOS_MIN–$NODOS_MAX nodos)"
 if ! gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P >/dev/null 2>&1; then
   gcloud container node-pools create $POOL --cluster $CLUSTER --zone $ZONA --project $P \
-    --machine-type n2-standard-2 --num-nodes $NODOS \
+    --machine-type n2-standard-2 --num-nodes $NODOS_MIN \
+    --enable-autoscaling --min-nodes $NODOS_MIN --max-nodes $NODOS_MAX --location-policy ANY \
     --enable-nested-virtualization --image-type UBUNTU_CONTAINERD \
     --disk-type pd-standard --disk-size 50 \
     --node-labels ore.dev/pool=neon --node-taints ore.dev/neon=true:NoSchedule \
@@ -60,7 +65,8 @@ if ! gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA 
     --shielded-secure-boot --shielded-integrity-monitoring \
     --enable-autorepair --enable-autoupgrade
 else
-  gcloud container clusters resize $CLUSTER --node-pool $POOL --num-nodes $NODOS --zone $ZONA --project $P --quiet
+  gcloud container node-pools update $POOL --cluster $CLUSTER --zone $ZONA --project $P \
+    --enable-autoscaling --min-nodes $NODOS_MIN --max-nodes $NODOS_MAX --location-policy ANY --quiet
 fi
 
 echo "── las copias de la base del controller: ore-copias (la de las del IdP) también para ore-pg/copias"

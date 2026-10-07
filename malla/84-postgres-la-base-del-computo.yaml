@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE SERVERLESS POSTGRES · LA BASE DEL CÓMPUTO (ADR 0058, P3·3)
+#
+# Lo que hace falta para que un endpoint sea una VM: cert-manager, la overlay
+# (Multus para GKE + whereabouts), NeonVM y el autoscaling. Todo en el pool
+# `pg` y con las imágenes de NUESTRO fork (ci/neon/autoscaling.yaml). Los
+# manifiestos viven en `malla/postgres-computo/` y los genera `vendorizar.py`.
+#
+# ── ⭐ Tres Kustomizations de Flux, encadenados, y NO dentro de la malla ──────
+#
+# cert-manager y la red, a la vez; NeonVM, cuando las dos están sanas. Declara un `Certificate`
+# (necesita el webhook de cert-manager VIVO, no sólo su CRD) y
+# `NetworkAttachmentDefinition`s (la CRD de Multus). Con `dependsOn` + `wait`
+# cada capa espera a que la anterior esté sana.
+#
+# ⛔ Dentro de la lista de la malla, un fallo aquí (el webhook de cert-manager
+#   aún arrancando) haría fallar la reconciliación de TODA la plataforma. Así
+#   falla sólo lo suyo, con su propio estado (`flux get kustomizations`).
+#
+# `prune: true`: nacen con este fichero; todo lo que hay en ellos lo pusieron
+# ellos. Quitar un objeto de git lo quita del clúster.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ore-pg-cert-manager
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./malla/postgres-computo/cert-manager
+  prune: true
+  wait: true
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: malla
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ore-pg-red
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./malla/postgres-computo/red
+  prune: true
+  wait: true
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: malla
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ore-pg-neonvm
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: ore-pg-cert-manager
+    - name: ore-pg-red
+  interval: 10m
+  path: ./malla/postgres-computo/neonvm
+  prune: true
+  wait: true
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: malla
