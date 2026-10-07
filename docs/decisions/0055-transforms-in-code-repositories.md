@@ -206,6 +206,19 @@ construir» dice por qué; y los mensajes, en inglés. Quedan B4 y B6.
 | P4 | SQL: el desplegable lista las sentencias por su salida; Preview corre su `SELECT` entero |
 | P5 | pruebas de fuego, en vivo, y el ADR |
 
+**P0 · medido (2026-10-07).** En `victor`, en una sesión Python recién abierta (tope 4 GiB, 2 vCPU), el
+código de los dos transforms pesados con `write()` cambiado por esquema + 100 filas + recuento, con
+las entradas enteras (`bq.ventas.ore_e2e_sintetica`, 2 M filas):
+
+| transform | filas de salida | 1ª vez | 2ª vez | pico del proceso |
+|---|---|---|---|---|
+| `sintetica_diaria` (DuckDB + pandas `rolling`) | 24 024 | 4,2 s | 2,1 s | 314 MiB |
+| `sintetica_enriquecida` (ventanas, Arrow) | 2 000 000 (200 MB en Arrow) | 7,6 s | 5,6 s | 765 MiB |
+
+El pico de todo el contenedor, 842 MiB. Interceptar `write()` cuesta ~1 ms (320 ms la primera vez:
+importar pyarrow). **Sin tope cabe**: segundos, a un quinto de la memoria de la sesión; el build del
+mismo transform son ~25 s, casi todo arrancar el Job y escribir.
+
 **B0 · medido (2026-10-06).** En `victor`, con el nodo de sistema caliente, un Job del puesto pasa de
 creado a listo en **8 s** (en cola 0 s, la capa 0 s, la imagen ya en el nodo); las copias y las capas,
 de creadas a arrancadas en 1 s. Los ~68 s de 0050 eran de nodo frío. Del código: `lanzar_trabajo` ya
