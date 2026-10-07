@@ -9,19 +9,24 @@
 #                     reparte 10.100.1.0–10.100.127.255): el proxy (P5), el plano de control y las pruebas
 #   10.100.128.0/17   las VMs (el IPAM de NeonVM reparte desde 10.100.128.0)
 #
-# ⇒ Una trama pasa por `neon-br0` sólo si su origen O su destino es del lado del proxy (IPv4 y ARP).
-#   De VM a VM, nada: ni IPv4, ni ARP, ni IPv6, ni otro protocolo. Se filtra en el puente de CADA nodo,
-#   así que una trama entre nodos se mira al salir y al entrar.
+# Dos filtros, en este orden:
+#
+# ① EN CADA RUNNER (P3·6): la `tap` de la VM sólo emite IPv4 y ARP con SU IP y SU MAC (las que NeonVM le
+#   pone a QEMU: `ip=` en la línea del kernel, `mac=` en su `netdev=overlay`). Lo demás se tira, IPv6
+#   incluido. Así una VM no puede decir que es otra, ni que es el proxy: sin esto, un ARP con la IP del
+#   proxy (que ② deja pasar) podría desviar hacia ella las RESPUESTAS que otra VM manda al proxy.
+#   Se entra en el netns del runner por el pid de su QEMU (hostPID).
+# ② EN EL PUENTE `neon-br0` de cada nodo: una trama pasa sólo si su origen O su destino es del lado del
+#   proxy (IPv4 y ARP), o si es un ARP GRATUITO (una VM anunciando su IP y su MAC al nacer: P3·6; ①
+#   garantiza que es la suya). De VM a VM, nada más. Una trama entre nodos se mira al salir y al entrar.
 #
 # Quién entra en la overlay lo cierra la otra mitad: Multus con `namespaceIsolation` y las NADs en
 # `ore-pg-computo` (VMs) y `ore-pg` (proxy). Un pod de `t-*` no puede pedir una interfaz en ella.
 #
-# ⚠️ Deuda (en el ADR): una VM puede FALSIFICAR un origen del lado del proxy. Le llegarían tramas sueltas
-#   a otra VM, pero nunca la respuesta (va a la MAC del proxy de verdad): sin respuesta no hay TCP, y
-#   Postgres no escucha UDP. Cerrarlo del todo es filtrar en el runner por la IP de SU VM (nuestro fork).
 #
 # Con `ebtables` (sobre nf_tables) de NUESTRA imagen de vxlan-controller: nada nuevo de fuera.
-# Comprueba cada 15 s y sólo reescribe si falta algo. Si se quita el DaemonSet, las reglas SE QUEDAN en
+# Comprueba cada 5 s y sólo reescribe si falta algo (una VM nueva queda cubierta antes de que su huésped
+# termine de arrancar: ~30 s). Si se quita el DaemonSet, las reglas SE QUEDAN en
 # el nodo (cerrado es el estado seguro); quitarlas es `ebtables -D FORWARD … ; ebtables -X ORE-OVERLAY`.
 # ═══════════════════════════════════════════════════════════════════════════
 apiVersion: apps/v1
@@ -38,6 +43,7 @@ spec:
       labels: { ore.dev/rol: filtro-de-la-overlay }
     spec:
       hostNetwork: true
+      hostPID: true            # ① entra en el netns de cada runner por el pid de su QEMU
       priorityClassName: system-node-critical
       nodeSelector: { ore.dev/pool: neon }
       tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
@@ -55,21 +61,37 @@ spec:
                 echo "-p IPv4 --ip-dst $PROXY -j ACCEPT"
                 echo "-p ARP --arp-ip-src $PROXY -j ACCEPT"
                 echo "-p ARP --arp-ip-dst $PROXY -j ACCEPT"
+                echo "-p ARP --arp-gratuitous -j ACCEPT"
                 echo "-j DROP"
+              }
+              # ① anti-suplantación dentro del runner de una VM (por el pid de su QEMU)
+              vm() {
+                c=$(tr '\000' ' ' < /proc/$1/cmdline 2>/dev/null)
+                ip=$(echo "$c" | grep -o ' ip=[0-9.]*' | cut -d= -f2)
+                mac=$(echo "$c" | grep -o 'netdev=overlay,mac=[0-9a-f:]*' | cut -d= -f3)
+                [ -n "$ip" ] && [ -n "$mac" ] || return 0
+                nsenter -t "$1" -n sh -c "
+                  ebtables -L ORE-VM 2>/dev/null | grep -q -- '--ip-src $ip ' && ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' && exit 0
+                  ebtables -N ORE-VM -P DROP 2>/dev/null || ebtables -F ORE-VM
+                  ebtables -A ORE-VM -s $mac -p IPv4 --ip-src $ip -j ACCEPT
+                  ebtables -A ORE-VM -s $mac -p ARP --arp-ip-src $ip --arp-mac-src $mac -j ACCEPT
+                  ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' || ebtables -A FORWARD -i tap-overlay -j ORE-VM
+                  echo \"$(date -u +%FT%TZ) runner de $ip ($mac): sólo su IP y su MAC\""
               }
               while true; do
                 ebtables -L ORE-OVERLAY >/dev/null 2>&1 || ebtables -N ORE-OVERLAY -P RETURN
-                if [ "$(ebtables -L ORE-OVERLAY | grep -c -- '-j ')" != 5 ]; then
+                if [ "$(ebtables -L ORE-OVERLAY | grep -c -- '-j ')" != 6 ]; then
                   ebtables -F ORE-OVERLAY
                   reglas | while read -r r; do ebtables -A ORE-OVERLAY $r; done
                   echo "$(date -u +%FT%TZ) reglas escritas:"; ebtables -L ORE-OVERLAY
                 fi
                 ebtables -L FORWARD | grep -q -- '--logical-in neon-br0 -j ORE-OVERLAY' \
                   || { ebtables -I FORWARD 1 --logical-in neon-br0 -j ORE-OVERLAY && echo "$(date -u +%FT%TZ) enganchado a FORWARD"; }
-                sleep 15
+                for p in $(pgrep -f qemu-system); do vm "$p"; done
+                sleep 5
               done
           securityContext:
-            capabilities: { add: [NET_ADMIN] }
+            privileged: true   # ① nsenter en el netns de otro pod
           resources:
             requests: { cpu: 5m, memory: 16Mi }
             limits: { cpu: 50m, memory: 64Mi }
