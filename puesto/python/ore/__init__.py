@@ -1840,8 +1840,9 @@ def _rama_del_puesto():
 
 
 def _describir(sql, que):
-    """`[(columna, tipo de DuckDB)]` de la consulta, sin leer una fila: DuckDB la
-    describe sobre tablas vacías con los tipos del índice del árbol."""
+    """`([(columna, tipo de DuckDB)], lee_una_coleccion)` de la consulta, sin
+    leer una fila: DuckDB la describe sobre tablas vacías con los tipos del
+    índice del árbol."""
     from ore import lsp_sql
 
     c, indice = session.pedir("GET", "/assets", cabeceras=_rama_del_puesto(), plazo=60)
@@ -1857,17 +1858,22 @@ def _describir(sql, que):
         leidos = [n for _, _, n, _ in lsp_sql.nombres([t[1] for t in lsp_sql.tokens(sql)])]
         with cat.candado:
             cat.asegurar(leidos)
+        # 0057 C2: si lee una colección, la vista es v1alpha17 (`04` §3).
+        coleccion = any((cat.legibles.get(n) or {}).get("kind") == "MediaCollection" for n in leidos)
         try:
-            return [(r[0], r[1]) for r in cat.con.execute("describe " + sql).fetchall()]
+            return [(r[0], r[1]) for r in cat.con.execute("describe " + sql).fetchall()], coleccion
         except Exception as e:  # el binder de DuckDB: una columna o un nombre que no está
             raise ValueError("%s: the query cannot be described: %s" % (que, str(e).strip().splitlines()[0])) from None
     finally:
         cat.cerrar()
 
 
-def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
+def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno, lee_coleccion=False):
     base, ns, v = _partes(nombre)
-    lineas = ["apiVersion: oos.dev/v1alpha14", "kind: View", "metadata:", "  name: %s" % v, "  namespace: %s" % base]
+    # Una vista que lee una colección, desde v1alpha17 (`04` §3); las demás,
+    # en la de siempre: no cambian de reglas por esto.
+    version = "v1alpha17" if lee_coleccion else "v1alpha14"
+    lineas = ["apiVersion: oos.dev/%s" % version, "kind: View", "metadata:", "  name: %s" % v, "  namespace: %s" % base]
     if ns != DEFAULT:
         lineas.append("  schema: %s" % ns)
     if comentario:
@@ -1925,7 +1931,7 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
         return _Result({"view": nombre, "status": "already exists", "columns": anterior})
     if existe and not o_reemplaza:
         raise RuntimeError("%s: a view with that name already exists (`create or replace view` replaces it)" % que)
-    descritas = _describir(sql, que)
+    descritas, lee_coleccion = _describir(sql, que)
     if columnas:
         if len(columnas) != len(descritas):
             raise ValueError("%s: the list names %d columns and the query gives %d" % (que, len(columnas), len(descritas)))
@@ -1956,7 +1962,7 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
         nuevas = [c for c in contrato if c not in anterior]
         if nuevas:
             print("%s · adds %s to the contract" % (nombre, ", ".join(nuevas)))
-    texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno)
+    texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno, lee_coleccion)
     _poner(que, _ruta_de_vista(nombre), texto)
     hecho = _Result({"view": nombre, "status": estado, "columns": contrato})
     if materializada:

@@ -1535,9 +1535,22 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                     let x = n.referencia();
                     match doc_de(pkg, &x) {
                         Some(d) if matches!(d.kind, Kind::Dataset | Kind::View | Kind::Table) => {}
+                        // 0057 C2 · una vista lee una colección como su listado
+                        // (v1alpha17 `04` §3), y se calcula. Una con copia no: lo
+                        // que copia son datos, y el listado es de una transacción.
+                        Some(d) if d.kind == Kind::MediaCollection && !*materializada => {}
+                        Some(d) if d.kind == Kind::MediaCollection => fallos.push(
+                            Fallo::new(
+                                format!(
+                                    "`{x}` es una colección: una vista con copia no lee su listado"
+                                ),
+                                n.pos,
+                            )
+                            .ayuda("créala sin `materialized`: la vista se calcula sobre el listado de la colección"),
+                        ),
                         Some(d) => fallos.push(Fallo::new(
                             format!(
-                                "`{x}` es una `{:?}`: una vista lee tablas, vistas y datasets",
+                                "`{x}` es una `{:?}`: una vista lee tablas, vistas, datasets y colecciones",
                                 d.kind
                             ),
                             n.pos,
