@@ -74,6 +74,9 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.ipc.ArrowReader;
+import org.apache.arrow.vector.ipc.ArrowStreamReader;
+import org.apache.arrow.c.ArrowArrayStream;
+import org.apache.arrow.c.Data;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 
@@ -658,6 +661,10 @@ public final class Ore {
     @SuppressWarnings("deprecation")
     public static final class Rows extends Filas {
         Rows(Map<String, String> types, Long total, boolean truncated) { super(types, total, truncated); }
+        /** The origin tables this came from, read live (ADR 0053 F7·1); empty if none. */
+        public List<String> readLive = List.of();
+        /** The origin tables this came from, read live; empty if none. */
+        public List<String> readLive() { return readLive; }
     }
 
     /** Un lector de Arrow atado a su {@code ResultSet}: cerrarlo cierra los dos. */
@@ -701,27 +708,168 @@ public final class Ore {
     /**
      * Cada nombre del árbol que el texto lee, como vista de DuckDB. El texto entero va a
      * ore-serve ({@code POST /puestos/{id}/sql}), que dice qué nombres lee —tokenizador y
-     * árbol como filtro, sin regex: un nombre en un comentario o en una cadena no cuenta,
-     * {@code from a, b} cuenta los dos, un esquema de la sesión es del motor— y los
-     * resuelve como {@code over()}, en una ida y vuelta.
+     * árbol como filtro, sin regex— y los resuelve como {@code over()}, en una ida y vuelta.
+     * Lo que se lee de un origen en vivo (0053 F6, 0057 B4·2·1) va primero; las vistas
+     * vivas, al final. Devuelve las tablas del origen que se leyeron en vivo.
      */
     @SuppressWarnings("unchecked")
-    private static void registrar(Connection con, String texto) throws Exception {
+    private static Set<String> registrar(Connection con, String texto, boolean estricto) throws Exception {
+        Set<String> vivas = new java.util.TreeSet<>();
         // Sin puesto no hay árbol (--comprobar), y sin un punto no hay `a.b`: el motor solo.
-        if (puesto.id.isEmpty() || texto.indexOf('.') < 0) return;
+        if (puesto.id.isEmpty() || texto.indexOf('.') < 0) return vivas;
         Respuesta r = puesto.pedir("POST", "/puestos/" + puesto.id + "/sql", Map.of("texto", texto), Duration.ofSeconds(60));
         if (r.codigo() != 200) {
             Object n = r.cuerpo() == null ? null : r.cuerpo().get("nombre");
+            // 0053 F6: lo que el reparto niega (coste, gobierno, interruptor) trae su código.
+            Object c = r.cuerpo() == null ? null : r.cuerpo().get("codigo");
+            if (c != null) throw new OriginReadError(String.valueOf(c), r.error(), n == null ? null : String.valueOf(n));
             oElError(r, n == null ? "?" : String.valueOf(n));
         }
         Object fs = r.cuerpo() == null ? null : r.cuerpo().get("fuentes");
-        if (!(fs instanceof Map<?, ?> fuentes)) return;
-        for (Map.Entry<?, ?> e : new TreeMap<>(fuentes).entrySet()) {
-            String v = String.valueOf(e.getKey());
-            lee(v);
-            String fuente = fuenteDeRespuesta(v, (Map<String, Object>) e.getValue());
-            registra(con, v, fuente);
+        if (!(fs instanceof Map<?, ?> crudas)) return vivas;
+        Map<String, Map<String, Object>> fuentes = new TreeMap<>();
+        for (Map.Entry<?, ?> e : crudas.entrySet())
+            fuentes.put(String.valueOf(e.getKey()), e.getValue() instanceof Map<?, ?> m ? (Map<String, Object>) m : new LinkedHashMap<>());
+        Map<String, Object> avisos = fuentes.remove("__avisos");
+        if (avisos != null && avisos.get("avisos") instanceof List<?> l) for (Object a : l) avisa(String.valueOf(a));
+        // Lo que se lee en vivo, primero (las vistas vivas lo nombran): una lectura por
+        // tabla, y cada nombre que la dice, a ella.
+        Map<String, String> enVivo = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, Object>> e : fuentes.entrySet()) {
+            if (!(e.getValue().get("federada") instanceof Map<?, ?> lm)) continue;
+            Map<String, Object> l = (Map<String, Object>) lm;
+            String t = String.valueOf(l.get("tabla"));
+            if (!enVivo.containsKey(t)) {
+                lee(t);
+                enVivo.put(t, lecturaEnVivo(con, l, estricto));
+                vivas.add(t);
+            }
+            registra(con, e.getKey(), enVivo.get(t));
         }
+        for (Map.Entry<String, Map<String, Object>> e : fuentes.entrySet()) {
+            Map<String, Object> rd = e.getValue();
+            if (rd.get("federada") != null || rd.get("vistaFederada") != null) continue;
+            if (rd.get("collection") != null)
+                throw new UnsupportedOperationException("`" + e.getKey() + "` is a collection: its listing is read from Python for now (sql() in Java reads datasets, views and foreign tables)");
+            lee(e.getKey());
+            registra(con, e.getKey(), fuenteDeRespuesta(e.getKey(), rd));
+        }
+        // Las vistas vivas, al final: DuckDB enlaza una vista al crearla, y una que junta
+        // un origen con un dataset (0057 B4·3·2) necesita los dos ya puestos.
+        for (Map.Entry<String, Map<String, Object>> e : fuentes.entrySet()) {
+            Object v = e.getValue().get("vistaFederada");
+            if (v == null) continue;
+            lee(e.getKey());
+            registra(con, e.getKey(), "(" + v + ")");
+        }
+        return vivas;
+    }
+
+    /**
+     * A live read of an origin (ADR 0053 F6) that could not be done, or was cut and
+     * {@code strict} was asked: {@code code()} is what the Federation Engine said
+     * ({@code OOS2051}, a cost or governance code, {@code cortado}), {@code table()}
+     * the origin table.
+     */
+    public static final class OriginReadError extends RuntimeException {
+        private final String code, table;
+        public OriginReadError(String code, String message, String table) {
+            super((code == null ? "" : code + ": ") + message);
+            this.code = code; this.table = table;
+        }
+        public String code() { return code; }
+        public String table() { return table; }
+    }
+
+    /** Un aviso a quien corre la celda (lo que en Python es {@code warnings.warn}). */
+    private static void avisa(String m) { System.err.println("warning: " + m); }
+
+    private static int lecturas = 0;
+
+    /**
+     * 0053 F6·2 · <b>Una lectura en vivo</b>, ya repartida por ore-serve: se pide a
+     * {@code /federation/read} —con su gobierno, su tope y su huella— y el Arrow queda en
+     * DuckDB como una tabla temporal: el flujo de Arrow se lee una sola vez, y la consulta
+     * la puede nombrar las veces que quiera (una junta consigo misma, una unión). Devuelve
+     * el nombre, ya cualificado.
+     */
+    @SuppressWarnings("unchecked")
+    private static String lecturaEnVivo(Connection con, Map<String, Object> l, boolean estricto) throws Exception {
+        String tabla = String.valueOf(l.get("tabla"));
+        Map<String, Object> cuerpo = new LinkedHashMap<>();
+        cuerpo.put("tabla", tabla);
+        cuerpo.put("columnas", l.get("columnas") instanceof List<?> c ? c : List.of());
+        cuerpo.put("filtros", l.get("empujados") instanceof List<?> f ? f : List.of());
+        if (l.get("limit") != null) cuerpo.put("limit", l.get("limit"));
+        if (l.get("orderBy") instanceof List<?> ob && !ob.isEmpty()) {
+            List<Map<String, Object>> orden = new ArrayList<>();
+            for (Object o : ob) {
+                Map<String, Object> m = (Map<String, Object>) o;
+                orden.add(Map.of("columna", m.get("columna"), "direccion", Boolean.TRUE.equals(m.get("desc")) ? "desc" : "asc"));
+            }
+            cuerpo.put("orderBy", orden);
+        }
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(puesto.servidor + "/federation/read")).timeout(Duration.ofSeconds(120))
+            .header("content-type", "application/json").header("accept", "application/vnd.apache.arrow.stream")
+            .POST(HttpRequest.BodyPublishers.ofString(Json.escribir(cuerpo)));
+        for (Map.Entry<String, String> e : puesto.cabeceras.entrySet()) b.header(e.getKey(), e.getValue());
+        if (!puesto.id.isEmpty()) b.header("x-ore-puesto", puesto.id);
+        HttpResponse<byte[]> resp = HTTP.send(b.build(), HttpResponse.BodyHandlers.ofByteArray());
+        if (resp.statusCode() != 200) {
+            String t = new String(resp.body(), StandardCharsets.UTF_8);
+            Map<String, Object> err;
+            try { err = Json.objeto(t); } catch (RuntimeException e) { err = Map.of("mensaje", t.strip()); }
+            Object m = err.get("mensaje") != null ? err.get("mensaje") : err.get("error") != null ? err.get("error") : t;
+            Object c = err.get("codigo");
+            throw new OriginReadError(c == null ? null : String.valueOf(c), String.valueOf(m), tabla);
+        }
+        // Cómo acabó: lo de los trailers, que `java.net.http` no lee (F6·1).
+        String id = resp.headers().firstValue("ore-lectura").orElse(null);
+        if (id != null) {
+            Respuesta f = puesto.pedir("GET", "/federation/read/" + id, null, Duration.ofSeconds(30));
+            Object estado = f.cuerpo().get("estado");
+            if (f.codigo() == 200 && estado != null && !"completo".equals(estado)) {
+                Object motivo = f.cuerpo().get("motivo");
+                String m = "live read of `" + tabla + "` was cut (" + (motivo != null ? motivo : estado) + ") at " + f.cuerpo().get("filas")
+                    + " rows: the answer is incomplete; filter more or read from a copy";
+                if (estricto) throw new OriginReadError("cortado", m, tabla);
+                avisa(m);
+            }
+        }
+        String nombre = "__ore_vivo_" + (++lecturas);
+        try (ArrowStreamReader lector = new ArrowStreamReader(new java.io.ByteArrayInputStream(resp.body()), asignador);
+             ArrowArrayStream flujo = ArrowArrayStream.allocateNew(asignador)) {
+            // Una vista viva se registra tal cual (F6·1) y puede nombrar columnas que la
+            // sentencia no usa —por eso no se pidieron al origen—: van como nulos.
+            Set<String> hay = new LinkedHashSet<>();
+            for (Field f : lector.getVectorSchemaRoot().getSchema().getFields()) hay.add(f.getName());
+            StringBuilder nulas = new StringBuilder();
+            if (l.get("columnasDeLaTabla") instanceof List<?> todas)
+                for (Object c : todas) if (!hay.contains(String.valueOf(c))) nulas.append(", null as ").append(ident(String.valueOf(c)));
+            Data.exportArrayStream(asignador, lector, flujo);
+            String flujoNombre = nombre + "_flujo";
+            ((org.duckdb.DuckDBConnection) con).registerArrowStream(flujoNombre, flujo);
+            try (Statement s = con.createStatement()) {
+                s.execute("create or replace temp table " + ident(nombre) + " as select *" + nulas + " from " + ident(flujoNombre));
+            }
+        }
+        return "temp.main." + ident(nombre);
+    }
+
+    /**
+     * What each origin is asked for and what DuckDB does (ADR 0053 F5): per live table,
+     * the columns, the filters and the {@code limit} pushed to it, what stays in the
+     * engine, its cost and the warnings. Prints it and returns the plan. Opens nothing.
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> explain(String query) throws Exception {
+        if (query == null || query.isBlank()) throw new IllegalArgumentException("explain() needs a query");
+        Respuesta r = puesto.pedir("POST", "/puestos/" + puesto.id + "/explain", Map.of("texto", query), Duration.ofSeconds(60));
+        if (r.codigo() != 200) throw new IOException("ore-serve answered " + r.codigo() + " to explain(): " + r.error());
+        Object t = r.cuerpo().get("texto");
+        if (t != null) System.out.println(String.valueOf(t).stripTrailing());
+        Object plan = r.cuerpo().get("plan");
+        return plan instanceof Map<?, ?> m ? (Map<String, Object>) m : new LinkedHashMap<>();
     }
 
     /** The copy of {@code <base>.<view>} as rows, up to {@link #LIMIT}. */
@@ -736,7 +884,16 @@ public final class Ore {
      */
     public static Rows over(String view, int limit, boolean strict) throws Exception {
         String vista = view; int limite = limit; boolean estricto = strict;
-        String fuente = fuenteDe(vista);
+        String fuente;
+        try {
+            fuente = fuenteDe(vista);
+        } catch (IllegalStateException | IllegalArgumentException | IOException sinCopia) {
+            // ORE 0057 B4·2·1: lo que no tiene copia —una tabla que expone una foreign
+            // database, una vista sobre el origen— se lee en vivo, como lo lee `sql()`
+            // (el Federation Engine). Si tampoco así, manda la primera respuesta: es la
+            // que dice por qué no hay copia.
+            try { return sql("select * from " + vista, limite, estricto); } catch (Exception e) { throw sinCopia; }
+        }
         Connection con = duckdb();
         long total;
         try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery("select count(*) from " + fuente)) { rs.next(); total = rs.getLong(1); }
@@ -758,13 +915,20 @@ public final class Ore {
         String texto = text; int limite = limit; boolean estricto = strict;
         if (texto == null || texto.isBlank()) throw new IllegalArgumentException("sql() takes a query");
         Connection con = duckdb();
-        registrar(con, texto);
-        return filasDe(exportar(con.createStatement(), texto, 8192), limite, estricto, null, "sql()");
+        Set<String> vivas = registrar(con, texto, estricto);
+        Rows filas = filasDe(exportar(con.createStatement(), texto, 8192), limite, estricto, null, "sql()");
+        filas.readLive = List.copyOf(vivas);
+        return filas;
     }
 
     /** The whole copy, in Arrow batches: {@code while (r.loadNextBatch()) { VectorSchemaRoot root = r.getVectorSchemaRoot(); … }}. Close it when done. */
     public static ArrowReader arrow(String view) throws Exception {
-        String fuente = fuenteDe(view);
+        String fuente;
+        try {
+            fuente = fuenteDe(view);
+        } catch (IllegalStateException | IllegalArgumentException | IOException sinCopia) {
+            try { return arrowSql("select * from " + view); } catch (Exception e) { throw sinCopia; }
+        }
         return exportar(duckdb().createStatement(), "select * from " + fuente, 65_536);
     }
 
@@ -773,7 +937,7 @@ public final class Ore {
         String texto = text;
         if (texto == null || texto.isBlank()) throw new IllegalArgumentException("arrowSql() takes a query");
         Connection con = duckdb();
-        registrar(con, texto);
+        registrar(con, texto, false);
         return exportar(con.createStatement(), texto, 65_536);
     }
 

@@ -4,6 +4,8 @@
 # un camino × una clase de consulta (T1–T7 sobre tablas y vistas, M1–M4 sobre la
 # coleccion virtual, G1–G6 de un `.sql` que crea o escribe), con lo que contesta,
 # y falla si no es lo esperado (0057 B4·1: Python, celdas y `.sql`).
+# Con `javac` >= 21, la columna Java (0057 B4·2·1): celdas de un puesto JVM con
+# su agente de verdad, por el mismo contrato.
 #
 # El origen es el S3 de mentira: dos tablas parquet (`datos/clientes`,
 # `datos/pedidos`) y una carpeta de PDFs (`docs/contratos`). La base foranea
@@ -228,10 +230,32 @@ P=puesto-ana-python
 ORE_SERVE="$BASE" PUESTO="$P" ORE_SUJETO=agente:local TTL=600 PUESTO_DIR="$TMP" TRABAJO_DIR="$TMP" PYTHONUTF8=1   "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente.log" 2>&1 & PIDS="$PIDS $!"
 for _ in $(seq 1 20); do curl -s -H 'x-ore-sujeto: persona:ana' "$BASE/puestos/$P" | grep -q '"estado":"vivo"' && break; sleep 0.2; done
 
+# ── 0057 B4·2 · un puesto JVM con su agente, si hay `javac` >= 21 ─────────────
+PJ=""
+JAVAC=$(command -v javac || true); JAVA=$(command -v java || true)
+if [ -n "$JAVAC" ] && "$JAVAC" -version 2>&1 | grep -qE '^javac (2[1-9]|[3-9][0-9])'; then
+  LIB="${ORE_JARS:-${TMPDIR:-/tmp}/ore-jars}"; mkdir -p "$LIB"
+  [ -f "$LIB/duckdb_jdbc.jar" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/duckdb_jdbc.jar" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar"
+  grep -v '^#' "$RAIZ/puesto/jvm/jars.txt" | while read -r g v; do n="${g##*/}-$v.jar"; [ -f "$LIB/$n" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/$n" "https://repo1.maven.org/maven2/$g/$v/$n"; done
+  SEP=":"; LIB_CP="$LIB"; CLASES="$TMP/clases"; mkdir -p "$CLASES"; CLASES_CP="$CLASES"
+  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";"; LIB_CP="$(cd "$LIB" && pwd -W)"; CLASES_CP="$(cd "$CLASES" && pwd -W)";; esac
+  if "$JAVAC" -Xlint:-options --release 21 -cp "$LIB_CP/*" -d "$CLASES_CP" "$RAIZ"/puesto/jvm/ore/*.java 2>"$TMP/javac.txt"; then
+    curl -s -o /dev/null -X POST -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' "$BASE/puestos" -d '{"lenguaje":"java"}'
+    PJ=puesto-ana-jvm
+    ORE_SERVE="$BASE" PUESTO="$PJ" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$TMP" TTL=600 ORE_MEMORIA_MB=1024 \
+      "$JAVA" --add-opens=java.base/java.nio=ALL-UNNAMED -cp "$CLASES_CP$SEP$LIB_CP/*" ore.Agente >"$TMP/agente-jvm.log" 2>&1 & PIDS="$PIDS $!"
+    for _ in $(seq 1 120); do curl -s -H 'x-ore-sujeto: persona:ana' "$BASE/puestos/$PJ" | grep -q '"estado":"vivo"' && break; sleep 0.25; done
+  else
+    echo "  ✗ el SDK de Java no compila:"; head -20 "$TMP/javac.txt"; exit 1
+  fi
+else
+  echo "  · sin javac >= 21: la columna Java no se mide"
+fi
+
 # ── la matriz ────────────────────────────────────────────────────────────────
-ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
+PUESTO_JVM="$PJ" ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
 SALIDA=$?
 echo
 echo "  (registro del servidor: $(grep -c . "$TMP/serve.log") lineas; de la pasarela: $(grep -c . "$TMP/fed.log"))"
-[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; tail -30 "$TMP/motor.log"; }
+[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; tail -30 "$TMP/motor.log"; [ -f "$TMP/agente-jvm.log" ] && tail -30 "$TMP/agente-jvm.log"; }
 exit "$SALIDA"
