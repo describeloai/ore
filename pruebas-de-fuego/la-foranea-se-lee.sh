@@ -5,7 +5,8 @@
 # coleccion virtual, G1–G6 de un `.sql` que crea o escribe), con lo que contesta,
 # y falla si no es lo esperado (0057 B4·1: Python, celdas y `.sql`).
 # Con `javac` >= 21, la columna Java (0057 B4·2·1): celdas de un puesto JVM con
-# su agente de verdad, por el mismo contrato.
+# su agente de verdad, por el mismo contrato; con `node` >= 22.13, la columna TS
+# (B4·2·2), con un puesto Node.
 #
 # El origen es el S3 de mentira: dos tablas parquet (`datos/clientes`,
 # `datos/pedidos`) y una carpeta de PDFs (`docs/contratos`). La base foranea
@@ -252,10 +253,27 @@ else
   echo "  · sin javac >= 21: la columna Java no se mide"
 fi
 
+# ── 0057 B4·2·2 · un puesto Node con su agente, si hay `node` >= 22.13 ────────
+PN=""
+NODE=$(command -v node || true)
+if [ -n "$NODE" ] && [ "$("$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.stdout.write(a>22||(a==22&&b>=13)?"si":"no")' 2>/dev/null)" = "si" ]; then
+  # El SDK resuelve `@duckdb/node-api` desde donde esta: se copia `puesto/node` y se instala ahi.
+  mkdir -p "$TMP/node" && cp -r "$RAIZ/puesto/node/." "$TMP/node/"
+  ( cd "$TMP/node" && npm install --no-audit --no-fund --silent "$(grep -m1 '^@duckdb/node-api@' "$RAIZ/puesto/node/provisto.txt")" >"$TMP/npm.txt" 2>&1 ) \
+    || { echo "  ✗ npm install @duckdb/node-api:"; tail -5 "$TMP/npm.txt"; exit 1; }
+  curl -s -o /dev/null -X POST -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' "$BASE/puestos" -d '{"lenguaje":"typescript"}'
+  PN=puesto-ana-node
+  ORE_SERVE="$BASE" PUESTO="$PN" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$TMP" ORE_CELDAS="$TMP/node-trabajo" ORE_COPIAS="$TMP/node-copias" TTL=600 \
+    "$NODE" --no-warnings "$TMP/node/agente.mjs" >"$TMP/agente-node.log" 2>&1 & PIDS="$PIDS $!"
+  for _ in $(seq 1 60); do curl -s -H 'x-ore-sujeto: persona:ana' "$BASE/puestos/$PN" | grep -q '"estado":"vivo"' && break; sleep 0.25; done
+else
+  echo "  · sin node >= 22.13: la columna TS no se mide"
+fi
+
 # ── la matriz ────────────────────────────────────────────────────────────────
-PUESTO_JVM="$PJ" ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
+PUESTO_NODE="$PN" PUESTO_JVM="$PJ" ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
 SALIDA=$?
 echo
 echo "  (registro del servidor: $(grep -c . "$TMP/serve.log") lineas; de la pasarela: $(grep -c . "$TMP/fed.log"))"
-[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; tail -30 "$TMP/motor.log"; [ -f "$TMP/agente-jvm.log" ] && tail -30 "$TMP/agente-jvm.log"; }
+[ -n "${VERBOSO:-}" ] || [ "$SALIDA" != 0 ] && { tail -30 "$TMP/serve.log"; tail -30 "$TMP/fed.log"; tail -30 "$TMP/agente.log"; tail -30 "$TMP/motor.log"; [ -f "$TMP/agente-jvm.log" ] && tail -30 "$TMP/agente-jvm.log"; [ -f "$TMP/agente-node.log" ] && tail -30 "$TMP/agente-node.log"; }
 exit "$SALIDA"

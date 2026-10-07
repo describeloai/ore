@@ -239,8 +239,48 @@ if JVM:
         "J CONGELADA · tabla": "OOS2051",
     })
 
+# ── 0057 B4·2·2 · TypeScript: el mismo contrato, desde un puesto Node ──
+NODE = os.environ.get("PUESTO_NODE")
+
+
+def ts(codigo, esperado=None):
+    """Una celda TS (el SDK ya importado); con `esperado`, lo que tiene que
+    decir la expresión."""
+    g = editor(codigo, fichero=None, puesto=NODE, lenguaje="typescript")
+
+    def f():
+        r = g()
+        if esperado is not None and r.startswith("✓") and r[2:].strip() != esperado:
+            return f"✗ dio {r[2:].strip()[:60]!r} y se esperaba {esperado!r}"
+        return r
+    return f
+
+
+if NODE:
+    FILAS += [
+        ("TS T1 columnas+filtro+limit · tabla", ts(f'(await sql("select id, alta from {T} where pais = \'ES\' limit 2")).length', "2")),
+        ("TS T1 · vista que se empuja", ts(f'(await sql("select * from {V1}")).length', "3")),
+        ("TS T2 orden top-N", ts(f'(await sql("select id, alta from {T} order by alta desc limit 2"))[0].id', "5n")),
+        ("TS T3 agregado", ts(f'(await sql("select pais, count(*) n from {T} group by pais")).length', "3")),
+        ("TS T3 · vista con junta y agregado", ts(f'(await sql("select * from {V2}")).length', "3")),
+        ("TS T5 junta de dos tablas", ts(f'(await sql("select c.pais, sum(p.importe) t from {P} p join {T} c on p.cliente = c.id group by 1")).length', "3")),
+        ("TS T6 CTE + ventana", ts(f'(await sql("with x as (select id, pais from {T}) select pais, row_number() over (partition by pais order by id) r from x")).length', "5")),
+        ("TS T6 subconsulta + union", ts(f'(await sql("select id from {T} where id in (select cliente from {P}) union select 99")).length', "6")),
+        ("TS T7 explain", ts(f'Object.keys(await explain("select id from {T} where pais = \'ES\'")).length > 0')),
+        ("TS F7·1 lo leido en vivo lo dice", ts(f'(await sql("select id from {T}")).readLive.length', "1")),
+        ("TS CONGELADA · tabla", ts('(await sql("select id from congelada.datos.clientes limit 1")).length')),
+        ("TS por el nombre de la fuente", ts('(await sql("select count(*) n from s3.datos.clientes"))[0].n', "5n")),
+        ("TS over(tabla expuesta)", ts(f'(await over("{T}")).length', "5")),
+        ("TS over(vista de la foranea)", ts(f'(await over("{V1}")).length', "3")),
+        ("TS M1 listado de la coleccion", ts(f'(await sql("select key, size from {M}")).length', "3")),
+        ("TS M4 agregado del listado", ts(f'(await sql("select anio, count(*) n, sum(size) b from {M} group by anio")).length', "2")),
+        ("TS T4 junta con el lago", ts(f'(await sql("select c.pais, o.objetivo from {T} c join std.copias.objetivos o on o.pais = c.pais")).length', "5")),
+        ("TS T4 la vista mixta", ts('(await sql("select * from std.copias.v_mixta")).length', "3")),
+    ]
+    NO["TS CONGELADA · tabla"] = "OOS2051"
+
 print()
-print("  la foranea se lee (0057 B4·0) · Python" + (" y Java" if JVM else ""))
+print("  la foranea se lee (0057 B4·0) · Python" + (" y Java" if JVM else "") + (" y TS" if NODE else ""))
 print("  " + "─" * 100)
 MAL = []
 for nombre, f in FILAS:

@@ -492,7 +492,10 @@ RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
  && npm ls --depth=0 > /entorno-1.txt \
  && node -e "const d=require('@duckdb/node-api'); console.log('entorno 1 · node', process.version, '· duckdb', d.version())"
 # ⭐ Las extensiones de DuckDB del lago, preinstaladas (ver la etapa de Python).
-RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.DuckDBInstance.create();const c=await i.connect();await c.run(\"set extension_directory = '/opt/ore/duckdb'\");for(const e of ['iceberg','avro','httpfs','json','icu'])await c.run('install '+e);await c.run('load iceberg');await c.run('load httpfs');console.log('lago ·',d.version(),(await c.runAndReadAll('select extension_name from duckdb_extensions() where loaded')).getColumns()[0].sort().join(' '))})().catch(e=>{console.error(e);process.exit(1)})" \
+#   Y `nanoarrow` (community, 0057 B4·2·2): `@duckdb/node-api` no registra Arrow
+#   (medido en 1.5.5), y lo que el SDK lee en vivo de un origen llega en Arrow
+#   IPC; `read_arrow` lo lee de un fichero. Sin red en el puesto: va aquí.
+RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.DuckDBInstance.create();const c=await i.connect();await c.run(\"set extension_directory = '/opt/ore/duckdb'\");for(const e of ['iceberg','avro','httpfs','json','icu'])await c.run('install '+e);await c.run('install nanoarrow from community');await c.run('load iceberg');await c.run('load httpfs');await c.run('load nanoarrow');console.log('lago ·',d.version(),(await c.runAndReadAll('select extension_name from duckdb_extensions() where loaded')).getColumns()[0].sort().join(' '))})().catch(e=>{console.error(e);process.exit(1)})" \
  && du -sh /opt/ore/duckdb >> /entorno-1.txt
 # El SDK al lado del agente (`./ore/index.mjs`, como en `puesto/node/`) y como
 # paquete `ore` para las celdas-módulo (un enlace en node_modules). ⛔ Medido en

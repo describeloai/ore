@@ -85,6 +85,8 @@ export interface Rows<T = Record<string, unknown>> extends Array<T> {
   types: Record<string, string>;
   total: number | null;
   truncated: boolean;
+  /** The origin tables this came from, read live (ADR 0053 F7·1); only from `sql()`. */
+  readLive?: string[];
 }
 
 export interface Columns {
@@ -106,6 +108,14 @@ export const LIMIT: number;
 export const EXTENSIONS: string;
 export function over(view: string, options?: ReadOptions): Promise<Rows>;
 export function sql(text: string, options?: ReadOptions): Promise<Rows>;
+/** What each origin is asked for and what DuckDB does (ADR 0053 F5); prints it and returns the plan. */
+export function explain(query: string): Promise<Record<string, unknown>>;
+/** A live read of an origin that could not be done, or was cut with `strict` (ADR 0053 F6). */
+export class OriginReadError extends Error {
+  code?: string;
+  table?: string;
+  constructor(code: string | undefined, message: string, table?: string);
+}
 export function write(name: string, data: unknown, options?: Record<string, unknown>): Promise<unknown>;
 export function declare(document: string | Record<string, unknown>): Promise<unknown>;
 export function transform<R>(declared: { inputs: string[]; output: string }, fn: () => R | Promise<R>): Promise<R>;

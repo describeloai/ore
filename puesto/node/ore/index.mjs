@@ -511,12 +511,13 @@ async function duckdb() {
   return conexion;
 }
 
-/** `LOAD` de una extensión: en la imagen está preinstalada; fuera, si falta, se instala una vez. */
-async function cargar(con, extension) {
+/** `LOAD` de una extensión: en la imagen está preinstalada; fuera, si falta, se
+ *  instala una vez (de `community` si es de allí, como `nanoarrow`). */
+async function cargar(con, extension, repositorio) {
   try { await con.run(`load ${extension}`); }
   catch (e) {
     if (existsSync(EXTENSIONES)) throw new Error(`the image does not ship DuckDB's \`${extension}\` extension: it must be preinstalled in ${EXTENSIONES}`);
-    await con.run(`install ${extension}`); await con.run(`load ${extension}`);
+    await con.run(`install ${extension}${repositorio ? " from " + repositorio : ""}`); await con.run(`load ${extension}`);
   }
 }
 
@@ -602,7 +603,16 @@ function opciones(o) {
 export async function over(view, options) {
   const vista = view;
   const { limite, estricto, como } = opciones(options);
-  const [fuente] = await fuenteDe(vista);
+  let fuente;
+  try {
+    [fuente] = await fuenteDe(vista);
+  } catch (sinCopia) {
+    // ORE 0057 B4·2·2: lo que no tiene copia —una tabla que expone una foreign
+    // database, una vista sobre el origen— se lee en vivo, como lo lee `sql()`
+    // (el Federation Engine). Si tampoco así, manda la primera respuesta: es la
+    // que dice por qué no hay copia.
+    try { return await sql(`select * from ${vista}`, options); } catch { throw sinCopia; }
+  }
   const con = await duckdb();
   const total = Number((await con.runAndReadAll(`select count(*) from ${fuente}`)).getColumns()[0][0]);
   if (estricto && total > limite) throw new Error(`over(${JSON.stringify(vista)}): the copy has ${total} rows and the limit is ${limite}; raise limit, aggregate in sql() or drop strict`);
@@ -629,15 +639,130 @@ export async function sql(text, options) {
   const [codigo, resp] = puesto.id && texto.includes(".")
     ? await puesto.pedir("POST", `/puestos/${puesto.id}/sql`, { texto })
     : [200, {}];
-  if (codigo !== 200) oElError(codigo, resp, resp?.nombre ?? "?");
-  for (const [v, rd] of Object.entries(resp?.fuentes ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))) {
+  if (codigo !== 200) {
+    // 0053 F6: lo que el reparto niega (coste, gobierno, interruptor) trae su código.
+    if (resp?.codigo) throw new OriginReadError(resp.codigo, resp.error ?? "", resp.nombre);
+    oElError(codigo, resp, resp?.nombre ?? "?");
+  }
+  const fuentes = Object.entries(resp?.fuentes ?? {})
+    .filter(([v]) => v !== "__avisos")
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+  for (const a of resp?.fuentes?.__avisos?.avisos ?? []) console.warn(`warning: ${a}`);
+  // 0053 F6·2 (0057 B4·2·2): lo que se lee en vivo, primero —las vistas vivas lo
+  // nombran—: una lectura por tabla, y cada nombre que la dice, a ella.
+  const vivas = new Map();
+  for (const [v, rd] of fuentes) {
+    const l = rd?.federada;
+    if (!l) continue;
+    if (!vivas.has(l.tabla)) {
+      lee(l.tabla);
+      vivas.set(l.tabla, await lecturaEnVivo(con, l, estricto));
+    }
+    await registra(con, v, vivas.get(l.tabla));
+  }
+  for (const [v, rd] of fuentes) {
+    if (rd?.federada || rd?.vistaFederada) continue;
+    if (rd?.collection) throw new Error(`\`${v}\` is a collection: its listing is read from Python for now (sql() in TS reads datasets, views and foreign tables)`);
     lee(v);
     const [fuente] = await fuenteDeRespuesta(v, rd);
     await registra(con, v, fuente);
   }
+  // Las vistas vivas, al final: DuckDB enlaza una vista al crearla, y una que junta
+  // un origen con un dataset (0057 B4·3·2) necesita los dos ya puestos.
+  for (const [v, rd] of fuentes) {
+    if (!rd?.vistaFederada) continue;
+    lee(v);
+    await registra(con, v, `(${rd.vistaFederada})`);
+  }
   const { r, truncada } = await leerHasta(con, texto, limite);
   if (estricto && truncada) throw new Error(`sql(): the result exceeds ${limite} rows; raise limit, aggregate more or drop strict`);
-  return entregar(r, truncada, limite, truncada ? undefined : r.currentRowCount, como);
+  const salida = entregar(r, truncada, limite, truncada ? undefined : r.currentRowCount, como);
+  // 0053 F7·1: lo que salió de leer un origen en vivo lo dice.
+  Object.defineProperty(salida, "readLive", { value: [...vivas.keys()].sort(), enumerable: false });
+  return salida;
+}
+
+/**
+ * A live read of an origin (ADR 0053 F6) that could not be done, or was cut and
+ * `strict` was asked: `code` is what the Federation Engine said (`OOS2051`, a
+ * cost or governance code, `cortado`), `table` the origin table.
+ */
+export class OriginReadError extends Error {
+  constructor(code, message, table) {
+    super(`${code ? code + ": " : ""}${message}`);
+    this.name = "OriginReadError";
+    this.code = code;
+    this.table = table;
+  }
+}
+
+let lecturas = 0;
+
+/**
+ * 0053 F6·2 · **Una lectura en vivo**, ya repartida por ore-serve: se pide a
+ * `/federation/read` —con su gobierno, su tope y su huella— y el Arrow queda en
+ * DuckDB como una tabla temporal. `@duckdb/node-api` no registra Arrow (medido,
+ * 1.5.5): el flujo IPC va a un fichero y lo lee `read_arrow` (la extensión
+ * `nanoarrow`, preinstalada en la imagen); el fichero se borra al acabar.
+ * Devuelve el nombre, ya cualificado.
+ */
+async function lecturaEnVivo(con, l, estricto) {
+  const cuerpo = { tabla: l.tabla, columnas: l.columnas ?? [], filtros: l.empujados ?? [] };
+  if (l.limit != null) cuerpo.limit = l.limit;
+  if (l.orderBy?.length) cuerpo.orderBy = l.orderBy.map((o) => ({ columna: o.columna, direccion: o.desc ? "desc" : "asc" }));
+  const cab = { "content-type": "application/json", accept: "application/vnd.apache.arrow.stream", ...puesto._cabeceras };
+  if (puesto.id) cab["x-ore-puesto"] = puesto.id;
+  const resp = await fetch(puesto.servidor + "/federation/read", {
+    method: "POST", headers: cab, body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(120_000),
+  });
+  if (resp.status !== 200) {
+    const t = await resp.text();
+    let e;
+    try { e = JSON.parse(t); } catch { e = { mensaje: t.trim() }; }
+    throw new OriginReadError(e.codigo, e.mensaje ?? e.error ?? t, l.tabla);
+  }
+  const bytes = Buffer.from(await resp.arrayBuffer());
+  // Cómo acabó: lo de los trailers, que `fetch` no lee (F6·1).
+  const id = resp.headers.get("ore-lectura");
+  if (id) {
+    const [c, f] = await puesto.pedir("GET", `/federation/read/${id}`);
+    if (c === 200 && f?.estado && f.estado !== "completo") {
+      const m = `live read of \`${l.tabla}\` was cut (${f.motivo ?? f.estado}) at ${f.filas} rows: the answer is incomplete; filter more or read from a copy`;
+      if (estricto) throw new OriginReadError("cortado", m, l.tabla);
+      console.warn(`warning: ${m}`);
+    }
+  }
+  await cargar(con, "nanoarrow", "community");
+  const nombre = `__ore_vivo_${++lecturas}`;
+  const d = copiasPorDefecto();
+  mkdirSync(d, { recursive: true });
+  const f = join(d, `${nombre}-${process.pid}.arrows`);
+  writeFileSync(f, bytes);
+  try {
+    // Una vista viva se registra tal cual (F6·1) y puede nombrar columnas que la
+    // sentencia no usa —por eso no se pidieron al origen—: van como nulos.
+    const ruta = f.replaceAll("\\", "/").replaceAll("'", "''");
+    const hay = new Set((await con.runAndReadAll(`select * from read_arrow('${ruta}') limit 0`)).columnNames());
+    const nulas = (l.columnasDeLaTabla ?? []).filter((c) => !hay.has(c)).map((c) => `, null as ${q(c)}`).join("");
+    await con.run(`create or replace temp table ${q(nombre)} as select *${nulas} from read_arrow('${ruta}')`);
+  } finally {
+    try { unlinkSync(f); } catch { /* ya no está */ }
+  }
+  return `temp.main.${q(nombre)}`;
+}
+
+/**
+ * What each origin is asked for and what DuckDB does (ADR 0053 F5): per live
+ * table, the columns, the filters and the `limit` pushed to it, what stays in the
+ * engine, its cost and the warnings. Prints it and returns the plan. Opens nothing.
+ * @param {string} query
+ */
+export async function explain(query) {
+  if (typeof query !== "string" || !query.trim()) throw new Error("explain() needs a query");
+  const [c, r] = await puesto.pedir("POST", `/puestos/${puesto.id}/explain`, { texto: query }, 60_000);
+  if (c !== 200) throw new Error(`ore-serve answered ${c} to explain(): ${r?.error ?? JSON.stringify(r)}`);
+  if (r?.texto) console.log(String(r.texto).trimEnd());
+  return r?.plan ?? {};
 }
 
 // ── Escribir (0031 §11) ────────────────────────────────────────────────────
