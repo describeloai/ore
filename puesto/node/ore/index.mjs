@@ -17,15 +17,14 @@
 // `DuckDBBlobValue` (`.bytes`), `DuckDBListValue` (`.items`)… Un `count(*)` es
 // `3n`, no `3`: el tipo dice lo que es.
 //
-// Y EN NODE NO SE MATERIALIZAN 10 M DE FILAS (medido en 0032 T4: JS crea un
-// objeto por valor, 0,7 M filas/s por cualquier camino). `over()` y `sql()`
-// devuelven hasta `limit` filas (100 000 por defecto) y lo dicen:
-// `rows.total` (las que hay, si se sabe), `rows.truncated`, `rows.types`
-// (columna → tipo de Arrow). Con `{ strict: true }` una respuesta que no cabe
-// en el límite falla en vez de recortarse; lo masivo se agrega en SQL
-// (60–140 ms para 10 M de filas) o se hace en Python. `{ as: "columns" }`
-// da `{ names, types, columns }` —arrays por columna, sin objeto por fila—
-// para quien recorra muchas filas.
+// `over()` y `sql()` devuelven TODAS las filas, como Python (sin tope por
+// defecto desde 0057: lo que no quepa lo dice la memoria, no un número). Quien
+// quiera menos pasa `limit`, y entonces lo dicen: `rows.total` (las que hay, si
+// se sabe), `rows.truncated`; con `{ strict: true }` lo que no cabe en el
+// límite falla en vez de recortarse. `rows.types` es columna → tipo de Arrow.
+// Ojo, en JS cada valor es un objeto (0,7 M filas/s, 0032 T4): lo masivo se
+// agrega en SQL (60–140 ms para 10 M de filas), y `{ as: "columns" }` da
+// `{ names, types, columns }` —arrays por columna, sin objeto por fila—.
 //
 // El código nunca ve el bucket ni una credencial: pregunta a `ore-serve` QUÉ
 // copia es (con la identidad del puesto, que la resuelve en nombre de la
@@ -596,11 +595,11 @@ async function cargar(con, extension, repositorio) {
 }
 
 
-/** How many rows `over()`/`sql()` materialize unless told otherwise. */
 /** The version of this SDK's interface (S3): 2 is the English names. Code that ORE generates checks it. */
 export const API = 2;
 
-export const LIMIT = 100_000;
+/** How many rows `over()`/`sql()` materialize unless told otherwise: all of them. */
+export const LIMIT = Infinity;
 /** @deprecated use {@link LIMIT}. */
 export const LIMITE = LIMIT;
 
@@ -629,6 +628,7 @@ export const nombreArrow = alias("nombreArrow", "arrowName", arrowName);
 
 /** Corre `texto` y materializa hasta `limite` filas (+1 para saber si había más). */
 async function leerHasta(con, texto, limite) {
+  if (limite === Infinity) return { r: await con.runAndReadAll(texto), truncada: false };
   const r = await con.runAndReadUntil(texto, limite + 1);
   const truncada = r.currentRowCount > limite;
   return { r, truncada };
@@ -659,15 +659,15 @@ const FORMAS = { rows: "rows", columns: "columns", filas: "rows", columnas: "col
 
 function opciones(o) {
   const { limit = LIMIT, strict = false, as = "rows" } = opcionesEn(o);
-  if (!Number.isInteger(limit) || limit < 1) throw new Error("limit takes an integer ≥ 1");
+  if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new Error("limit takes an integer ≥ 1");
   return { limite: limit, estricto: strict, como: FORMAS[as] ?? as };
 }
 
 /**
- * The copy of `<base>.<view>`: rows (objects with typed values) up to `limit`,
- * with `.types`, `.total` and `.truncated` (non-enumerable); or, with
+ * The copy of `<base>.<view>`: all its rows (objects with typed values), or up
+ * to `limit`, with `.types`, `.total` and `.truncated` (non-enumerable); or, with
  * `{ as: "columns" }`, `{ names, types, columns, total, truncated }`.
- * Options: `limit` (default {@link LIMIT}), `strict` (throw instead of truncating),
+ * Options: `limit` (default: none), `strict` (throw instead of truncating),
  * `as` (`"rows"` | `"columns"`). The old keys `limite`, `estricto`, `como`
  * (`"filas"` | `"columnas"`) still work, and so do the old result keys
  * (`tipos`, `truncada`, `nombres`, `columnas`).

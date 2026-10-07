@@ -104,10 +104,10 @@ import org.apache.arrow.vector.types.pojo.Field;
  * <p>Values follow the type contract (0032 §1): {@code Long} for a 64-bit
  * integer, exact {@code BigDecimal}, {@code LocalDate}, {@code LocalTime},
  * {@code LocalDateTime} (wall time), {@code Instant} (an instant, in UTC),
- * {@code byte[]}, {@code List}, {@code Map}. There is a limit on materialized
- * rows ({@link #LIMIT}, 1 M): {@code over()} and {@code sql()} say so
- * ({@code truncated}), and with {@code strict} they fail instead of
- * truncating; bulk goes through {@code arrow()} or is aggregated in SQL.
+ * {@code byte[]}, {@code List}, {@code Map}. {@code over()} and {@code sql()}
+ * return every row, as Python does; given a {@code limit} they stop there and
+ * say so ({@code truncated}), and with {@code strict} they fail instead of
+ * truncating. Bulk without an object per row goes through {@code arrow()}.
  *
  * <p>The old Spanish names ({@code persona}, {@code Filas}, {@code tabla},
  * {@code jsonDe}, {@code nombreArrow}, {@code valorDe}, {@code tipoInferido},
@@ -710,11 +710,11 @@ public final class Ore {
 
     private static String rutaSql(Path f) { return f.toString().replace("\\", "/").replace("'", "''"); }
 
-    /** How many rows {@code over()} and {@code sql()} materialize unless told otherwise. */
     /** The version of this SDK's interface (S3): 2 is the English names. Code that ORE generates checks it. */
     public static final int API = 2;
 
-    public static final int LIMIT = 1_000_000;
+    /** How many rows {@code over()} and {@code sql()} materialize unless told otherwise: all of them. */
+    public static final int LIMIT = Integer.MAX_VALUE;
     /** @deprecated use {@link #LIMIT}. */
     @Deprecated
     public static final int LIMITE = LIMIT;
@@ -974,7 +974,7 @@ public final class Ore {
         return plan instanceof Map<?, ?> m ? (Map<String, Object>) m : new LinkedHashMap<>();
     }
 
-    /** The copy of {@code <base>.<view>} as rows, up to {@link #LIMIT}. */
+    /** The copy of {@code <base>.<view>} as rows, all of them. */
     public static Rows over(String view) throws Exception { return over(view, LIMIT, false); }
 
     /**
@@ -1003,7 +1003,7 @@ public final class Ore {
         return filasDe(exportar(con.createStatement(), "select * from " + fuente, 8192), limite, estricto, total, "over(" + vista + ")");
     }
 
-    /** SQL (DuckDB) over the copies: each {@code base.view} after FROM/JOIN is resolved, fetched once and registered as a view. Up to {@link #LIMIT} rows. */
+    /** SQL (DuckDB) over the copies: each {@code base.view} after FROM/JOIN is resolved, fetched once and registered as a view. All the rows. */
     public static Rows sql(String text) throws Exception { return sql(text, LIMIT, false); }
 
     /**

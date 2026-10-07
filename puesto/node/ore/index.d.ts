@@ -104,6 +104,7 @@ export interface ReadOptions {
 }
 
 export const API: number;
+/** `Infinity`: `over()`/`sql()` return every row unless given a `limit`. */
 export const LIMIT: number;
 export const EXTENSIONS: string;
 export function over(view: string, options?: ReadOptions): Promise<Rows>;

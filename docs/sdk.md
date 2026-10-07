@@ -407,12 +407,11 @@ echo(amount=Decimal("12.50"), day=date(2026, 10, 2))
 `import ore from "ore"` (a cell already has `ore`, `over`, `sql`, `write`, `declare`, `transform`
 and `person`). Everything is `async` except `person`, `table`, `toJson` and `arrowName`.
 
-- `over(view, { limit, strict, as })` and `sql(text, { limit, strict, as })` return at most
-  `limit` rows (`ore.LIMIT`, 100 000, by default) as objects with DuckDB's typed values (a 64-bit
-  integer is a `bigint`, a decimal is exact). The array has `.types`, `.total` and `.truncated`.
-  `strict: true` throws instead of truncating. `as: "columns"` returns
-  `{ names, types, columns, total, truncated }`, one array per column. Bulk work belongs in SQL or
-  in Python.
+- `over(view, { limit, strict, as })` and `sql(text, { limit, strict, as })` return every row,
+  as Python does (`ore.LIMIT` is `Infinity`), or at most `limit` if given, as objects with DuckDB's
+  typed values (a 64-bit integer is a `bigint`, a decimal is exact). The array has `.types`,
+  `.total` and `.truncated`. `strict: true` throws instead of truncating. `as: "columns"` returns
+  `{ names, types, columns, total, truncated }`, one array per column, without an object per row.
 - `write(name, data, { mode, key })`: `data` is rows, what `over`/`sql` returned, or
   `{ names, types, columns }`. Same modes and idempotency as Python. Returns
   `{ table, rows, snapshot, metadata_location, operation, repeated }`. No `anchored_to`.
@@ -447,8 +446,8 @@ named like its file, with an optional `export const config = { over, reads, mode
 A Java cell has `import static ore.Ore.*;`.
 
 - `over(view)`, `over(view, limit, strict)`, `sql(text)`, `sql(text, limit, strict)` → `Rows`, a
-  `List<Map<String, Object>>` with `types`, `total` and `truncated`, up to `LIMIT` (1 000 000)
-  rows. Values follow the type contract: `Long`, exact `BigDecimal`, `LocalDate`, `LocalTime`,
+  `List<Map<String, Object>>` with `types`, `total` and `truncated`: every row, as Python does,
+  or at most `limit` if given. Values follow the type contract: `Long`, exact `BigDecimal`, `LocalDate`, `LocalTime`,
   `LocalDateTime`, `Instant` (UTC), `byte[]`, `List`, `Map`.
 - `arrow(view)` / `arrowSql(text)` → an `ArrowReader` over batches, without an object per row;
   close it when done.
