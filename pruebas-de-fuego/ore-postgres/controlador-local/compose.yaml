@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: storcon, POSTGRES_DB: storage_controller }
+    volumes: [db:/var/lib/postgresql/data]
+  stub:
+    image: python:3.12-alpine
+    command: [python, -u, /stub.py]
+    configs: [{ source: stub, target: /stub.py }]
+  broker:
+    image: ${IMG}
+    command: [storage_broker, --listen-addr=0.0.0.0:50051]
+  storcon:
+    image: ${IMG}
+    command: [storage_controller, --dev, -l, 0.0.0.0:1234, --database-url, postgresql://postgres:storcon@db:5432/storage_controller,
+              --control-plane-url, http://stub:8000, --max-offline-interval, 10s, --heartbeat-interval, 1s, --handle-ps-local-disk-loss]
+    ports: ["1234:1234"]
+    depends_on: [db, stub]
+  pageserver:
+    image: ${IMG}
+    entrypoint: [/bin/sh, -c, "mkdir -p /data/.neon && cp /cfg/* /data/.neon/ && exec pageserver -D /data/.neon"]
+    configs:
+      - { source: pstoml, target: /cfg/pageserver.toml }
+      - { source: ident, target: /cfg/identity.toml }
+      - { source: meta, target: /cfg/metadata.json }
+    volumes: [ps:/data, remote:/remote]
+    ports: ["9898:9898"]
+    depends_on: [storcon, broker, permisos]
+  permisos:   # solo en local: los volumenes de Docker nacen de root
+    image: busybox
+    command: [sh, -c, "chown -R 1000:1000 /data /remote"]
+    volumes: [ps:/data, remote:/remote]
+volumes: { db: {}, ps: {}, remote: {} }
+configs:
+  stub: { file: ./stub.py }
+  pstoml: { file: ./pageserver.toml }
+  ident: { file: ./identity.toml }
+  meta: { file: ./metadata.json }

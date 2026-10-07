@@ -314,6 +314,8 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P1·3 | la caché | **hecho**: almacenamiento 14 min con un cambio de Rust (2 min 20 s sin cambios); el cómputo es donde ahorra |
 | P1·4 | Postgres 17.10 | **hecho** (2026-10-07): regresión igual que la base; almacenamiento (28 min, con caché) y cómputo (1 h 9 min) compilados en `8269bece` |
 | P1·5 | procedimiento de mantenimiento y pruebas de fuego parametrizadas | **hecho** (2026-10-07): [`ci/neon/README.md`](../../ci/neon/README.md), [`pruebas-de-fuego/ore-postgres/`](../../pruebas-de-fuego/ore-postgres/) |
+| P2·1 | el contrato del `storage_controller` | **hecho** (2026-10-07): leído y probado en local |
+| P2·2 | infraestructura GCP (bucket, cuenta, pool no-spot) | **siguiente** |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -618,5 +620,45 @@ P1 no gasta cuota: todo va en Cloud Build. Pero P1·1 crea repositorios en GitHu
 
 ⚠️ Esa compilación del cómputo arrancó antes de que la receta tuviera caché, así que **la caché del cómputo sigue vacía**. La próxima compilación del cómputo va con `_CACHE=escribir`.
 
-Siguiente: **P2**, con los sub-pasos P2·1–P2·6 propuestos y esperando el go.
+Siguiente: **P2**. Go del 2026-10-07: crear infraestructura en GCP, 1 nodo n2-standard-2 no-spot con virtualización anidada, y la base del controller en el clúster (como la del IdP).
 
+#### P2·1 · El contrato del `storage_controller` (2026-10-07)
+
+Leído en `8269bece` y probado en local con Docker ([`controlador-local/`](../../pruebas-de-fuego/ore-postgres/controlador-local/)).
+
+- **Su base**: Postgres, en `--database-url` o `DATABASE_URL`. **Aplica solo sus 25 migraciones al arrancar** (diesel). Lo que guarda importa: tenants, shards, **generaciones**, nodos, safekeepers.
+- **Modo estricto** (el de producción; `--dev` sólo para pruebas):
+  - exige `--control-plane-url`;
+  - exige las claves de autenticación, tomadas del entorno:
+    - `PUBLIC_KEY` valida a quien le llama;
+    - `PAGESERVER_JWT_TOKEN` y `SAFEKEEPER_JWT_TOKEN` son los tokens con que les habla;
+    - `CONTROL_PLANE_JWT_TOKEN` es el token para las notificaciones.
+
+  ⇒ **En P2 la capa de almacenamiento va con autenticación**: un par Ed25519 propio del almacenamiento y tokens firmados con él (D0b iba sin autenticación).
+- **El plano de control recibe notificaciones**: `PUT {control_plane_url}/notify-attach` (dónde vive cada tenant: `tenant_id`, `shards[{node_id, shard_number}]`, `preferred_az`) y `/notify-safekeepers`.
+  - Visto en local: al crear un tenant llega su `notify-attach`.
+  - **Es el gancho con que P4 reconfigura los cómputos** cuando un tenant cambia de pageserver.
+  - Hasta P4, un receptor mínimo que conteste 200.
+- **Los pageservers se registran solos**:
+  - con `control_plane_api = 'http://<controller>/upcall/v1/'` en su configuración;
+  - y un `metadata.json` en su directorio (`host`, `port`, `http_host`, `http_port`, `availability_zone_id`). Sin zona de disponibilidad no arranca.
+  - Al arrancar llaman a `re-attach`. Visto: `GET /control/v1/node` los lista sin que nadie los dé de alta.
+- **Los safekeepers no se registran solos**: `POST /control/v1/safekeeper/{id}` (id, region, host, puertos, zona). Sólo hace falta con `--timelines-onto-safekeepers` (por defecto off): con esa opción el controller elige los 3 safekeepers de cada timeline por zona y avisa al cómputo por `notify-safekeepers`. Se decide en P2·4.
+- **La API para crear**: `POST /v1/tenant`, `POST /v1/tenant/{t}/timeline` (`new_timeline_id`, `pg_version`; una rama añade `ancestor_timeline_id` y `ancestor_start_lsn`). `DELETE` para borrar.
+  - ⚠️ El controller responde al crear el tenant antes de que esté `Active`: en local, el primer `POST …/timeline` dio 409 «Timed out waiting 5s for tenant active state». **Quien lo llame (P4) reintenta.**
+
+**Probado en local:**
+
+| caso | resultado |
+|---|---|
+| reinicio del pageserver con su disco | reengancha solo, generación +1, ~4 s |
+| **pageserver con el disco VACÍO** | ⚠️ **no recupera el tenant**: lo deja así a propósito («Local data loss suspected»). El controller sólo lo arregla con **`--handle-ps-local-disk-loss`** (por defecto off, función de Hadron/Databricks); sin ella el tenant se queda colgado indefinidamente. **Con ella: `Active` en 13,5 s sin intervención, timeline intacto** ⇒ va activada |
+| **restaurar una copia vieja de la base del controller** | ⚠️ **reparte de nuevo generaciones ya usadas** (antes de restaurar el pageserver iba por la 8; la copia decía 6; tras restaurar volvió a dar la 8). Es la condición de que dos pageservers crean tener derecho a escribir |
+| remedio: antes de arrancar el controller, `update tenant_shards set generation = generation + 1000` | reparte 1010, timeline sano ⇒ **va en el procedimiento de restauración de P2·3**; con safekeepers gestionados, también sus generaciones (`timelines`) |
+
+⇒ **Para P2·4:**
+- controller en modo estricto con autenticación y `--handle-ps-local-disk-loss`;
+- un receptor de `notify-*` hasta P4;
+- `metadata.json` del pageserver generado por pod, con la zona de su nodo;
+- reintentos al crear;
+- decidir `--timelines-onto-safekeepers`.
