@@ -1,0 +1,410 @@
+//! **El contrato** (0058 P4·1): lo que una celda le pide a `ore-postgres`.
+//!
+//! ```text
+//!   GET    /salud
+//!   GET    /v1/postgres/proyectos                 los de la organización de la celda
+//!   POST   /v1/postgres/proyectos                 {"id": "ventas", "dueno": "user:ana"}  → 202 + operación
+//!   GET    /v1/postgres/proyectos/{p}
+//!   DELETE /v1/postgres/proyectos/{p}             → 202 + operación
+//!   GET    /v1/postgres/operaciones/{op}
+//! ```
+//!
+//! - **La celda en `Authorization`** (su token de Workload Identity, audiencia
+//!   `ore-postgres`). La organización sale de ella ([`crate::celda`]); un `id` de
+//!   otra organización es un 404, igual que uno que no existe.
+//! - **Toda escritura es una operación** con id, que se sondea hasta `hecha`. Una
+//!   en curso por proyecto: la segunda es un **409** (lo cierra la base,
+//!   `una_en_curso_por_proyecto`). En P4·1 un proyecto está vacío y no hay nada
+//!   que esperar, así que la operación nace hecha; desde P4·2 la termina el
+//!   reconciliador.
+//! - **Ids que pone quien crea**: `[a-z0-9-]`, de 1 a 63, sin guion en los
+//!   extremos, e inmutables. Crear uno que ya existe es un 409: repetir la
+//!   petición no crea dos.
+//!
+//! ⛔ Ni la persona ni sus potestades llegan aquí: eso lo resuelve `ore-serve`
+//!   con `ore-acceso` antes de llamar (P4·6). `dueno` es lo que `ore-serve`
+//!   preguntó a `quien`.
+
+use crate::base::{choca, mal};
+use crate::celda::{Celda, Celdas};
+use ore_core::json::Json;
+use ore_core::parse::{self, Node};
+use ore_entrada::http::{Peticion, Respuesta};
+use postgres::{Client, Row};
+use std::sync::Mutex;
+
+pub struct Servidor {
+    pub base: Mutex<Client>,
+    pub celdas: Box<dyn Celdas>,
+}
+
+/// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
+const PROYECTO: &str = "id, celda, dueno,
+    to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
+    deseado, observado, generacion";
+
+/// Y de una operación, para [`operacion_json`].
+const OPERACION: &str = "id, tipo, proyecto, estado, error,
+    to_char(creada at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
+    to_char(terminada at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
+
+/// Un id nuevo de operación: lo pone la base, que es quien sabe dar uno único.
+const NUEVA_OPERACION: &str = "'op_' || replace(gen_random_uuid()::text, '-', '')";
+
+impl Servidor {
+    pub fn atender(&self, p: &Peticion) -> Respuesta {
+        let seg = p.segmentos();
+        if let ("GET", ["salud"]) = (p.metodo.as_str(), seg.as_slice()) {
+            return Respuesta::ok(Json::obj([("ok", Json::Bool(true))]));
+        }
+        let ["v1", "postgres", resto @ ..] = seg.as_slice() else {
+            return Respuesta::error(404, "no hay nada en ese camino");
+        };
+        // ① LA CELDA, antes de mirar nada más.
+        let celda = match self
+            .celdas
+            .de(p.cabeceras.get("authorization").map(String::as_str))
+        {
+            Ok(c) => c,
+            Err(e) => return Respuesta::error(e.codigo(), e.motivo()),
+        };
+        // ② lo que pide.
+        let pedido = match ruta(&p.metodo, resto) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
+        let cuerpo = match &pedido {
+            Pedido::CrearProyecto => match analizar(&p.cuerpo) {
+                Ok(n) => Some(n),
+                Err(m) => return Respuesta::error(400, m),
+            },
+            _ => None,
+        };
+        let Ok(mut base) = self.base.lock() else {
+            return Respuesta::error(500, "la conexión quedó envenenada");
+        };
+        // ⚠️ Una conexión que se cayó (la base reinició) no vuelve sola: se dice,
+        //   y el pod se reinicia por su sonda. P4·2 la reabrirá.
+        if base.is_closed() {
+            return Respuesta::error(503, "la conexión con la base está cerrada");
+        }
+        match pedido {
+            Pedido::Proyectos => proyectos(&mut base, &celda),
+            Pedido::Proyecto(id) => proyecto(&mut base, &celda, id),
+            Pedido::CrearProyecto => {
+                crear_proyecto(&mut base, &celda, cuerpo.as_ref().expect("analizado"))
+            }
+            Pedido::BorrarProyecto(id) => borrar_proyecto(&mut base, &celda, id),
+            Pedido::Operacion(id) => operacion(&mut base, &celda, id),
+        }
+        .unwrap_or_else(|Fallo(codigo, m)| Respuesta::error(codigo, m))
+    }
+}
+
+/// Lo que una ruta pide.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Pedido<'a> {
+    Proyectos,
+    CrearProyecto,
+    Proyecto(&'a str),
+    BorrarProyecto(&'a str),
+    Operacion(&'a str),
+}
+
+/// De método y camino (sin `/v1/postgres`) a lo que se pide.
+pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta> {
+    let pedido = match (metodo, resto) {
+        ("GET", ["proyectos"]) => Pedido::Proyectos,
+        ("POST", ["proyectos"]) => Pedido::CrearProyecto,
+        ("GET", ["proyectos", p]) => Pedido::Proyecto(p),
+        ("DELETE", ["proyectos", p]) => Pedido::BorrarProyecto(p),
+        ("GET", ["operaciones", o]) => Pedido::Operacion(o),
+        (_, ["proyectos"] | ["proyectos", _] | ["operaciones", _]) => {
+            return Err(Respuesta::error(
+                405,
+                format!("`{metodo}` no se atiende aquí"),
+            ));
+        }
+        _ => return Err(Respuesta::error(404, "no hay nada en ese camino")),
+    };
+    match &pedido {
+        Pedido::Proyecto(p) | Pedido::BorrarProyecto(p) if !id_valido(p) => Err(Respuesta::error(
+            404,
+            format!("no hay ningún proyecto `{p}`"),
+        )),
+        Pedido::Operacion(o) if !o.starts_with("op_") || o.len() > 40 => Err(Respuesta::error(
+            404,
+            format!("no hay ninguna operación `{o}`"),
+        )),
+        _ => Ok(pedido),
+    }
+}
+
+/// Un id de recurso: `[a-z0-9-]`, de 1 a 63, sin guion en los extremos (como un
+/// nombre DNS, y como los de Lakebase).
+pub fn id_valido(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 63
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+// ── los verbos ─────────────────────────────────────────────────────────────
+
+struct Fallo(u16, String);
+
+impl From<postgres::Error> for Fallo {
+    fn from(e: postgres::Error) -> Fallo {
+        Fallo(500, mal(e))
+    }
+}
+
+fn proyectos(c: &mut Client, celda: &Celda) -> Result<Respuesta, Fallo> {
+    let filas = c.query(
+        &format!(
+            "select {PROYECTO} from plano.proyecto
+              where organizacion = $1 and deseado = 'vivo' order by id"
+        ),
+        &[&celda.organizacion],
+    )?;
+    Ok(Respuesta::ok(Json::obj([(
+        "proyectos",
+        Json::Arr(filas.iter().map(proyecto_json).collect()),
+    )])))
+}
+
+fn proyecto(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo> {
+    match c.query_opt(
+        &format!("select {PROYECTO} from plano.proyecto where organizacion = $1 and id = $2"),
+        &[&celda.organizacion, &id],
+    )? {
+        Some(f) => Ok(Respuesta::ok(proyecto_json(&f))),
+        None => Err(no_hay_proyecto(id)),
+    }
+}
+
+fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respuesta, Fallo> {
+    let texto = |k: &str| cuerpo.get(k).and_then(|(_, v)| v.as_str());
+    let Some(id) = texto("id") else {
+        return Err(Fallo(400, "falta `id`: el nombre del proyecto".into()));
+    };
+    if !id_valido(id) {
+        return Err(Fallo(
+            400,
+            format!(
+                "`{id}` no vale como id: `[a-z0-9-]`, de 1 a 63, sin guion al principio ni al final"
+            ),
+        ));
+    }
+    let dueno = texto("dueno");
+    if let Some(d) = dueno
+        && !(d.starts_with("user:") && ore_core::pertenencia::es_handle(d))
+    {
+        return Err(Fallo(
+            400,
+            format!("`dueno` es `user:<handle>` (0052), no `{d}`"),
+        ));
+    }
+    let mut tx = c.transaction()?;
+    // P4·1: un proyecto vacío no tiene nada que crear fuera de aquí, así que nace
+    // `listo` y su operación, hecha. P4·2 le dará tenant, y entonces nacerá `nuevo`.
+    match tx.query_one(
+        &format!(
+            "insert into plano.proyecto (organizacion, id, celda, dueno, observado)
+             values ($1, $2, $3, $4, 'listo') returning {PROYECTO}"
+        ),
+        &[&celda.organizacion, &id, &celda.id, &dueno],
+    ) {
+        Ok(fila) => {
+            let op = tx.query_one(
+                &format!(
+                    "insert into plano.operacion (id, organizacion, proyecto, tipo, estado, celda, terminada)
+                     values ({NUEVA_OPERACION}, $1, $2, 'crear-proyecto', 'hecha', $3, now())
+                     returning {OPERACION}"
+                ),
+                &[&celda.organizacion, &id, &celda.id],
+            )?;
+            tx.commit()?;
+            Ok(aceptada(&op, Some(proyecto_json(&fila))))
+        }
+        Err(e) if choca(&e, "proyecto_pkey") => Err(Fallo(
+            409,
+            format!("ya hay un proyecto `{id}` en esta organización"),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn borrar_proyecto(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo> {
+    let mut tx = c.transaction()?;
+    let Some(_) = tx.query_opt(
+        "select 1 from plano.proyecto where organizacion = $1 and id = $2 for update",
+        &[&celda.organizacion, &id],
+    )?
+    else {
+        return Err(no_hay_proyecto(id));
+    };
+    let op = match tx.query_one(
+        &format!(
+            "insert into plano.operacion (id, organizacion, proyecto, tipo, celda)
+             values ({NUEVA_OPERACION}, $1, $2, 'borrar-proyecto', $3) returning id"
+        ),
+        &[&celda.organizacion, &id, &celda.id],
+    ) {
+        Ok(f) => f.get::<_, String>(0),
+        Err(e) if choca(&e, "una_en_curso_por_proyecto") => {
+            return Err(Fallo(
+                409,
+                format!("el proyecto `{id}` tiene otra operación en curso: espera a que termine"),
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // P4·1: vacío, no hay nada fuera que borrar. P4·2: el tenant y su WAL.
+    tx.execute(
+        "delete from plano.proyecto where organizacion = $1 and id = $2",
+        &[&celda.organizacion, &id],
+    )?;
+    let op = tx.query_one(
+        &format!(
+            "update plano.operacion set estado = 'hecha', terminada = now()
+              where id = $1 returning {OPERACION}"
+        ),
+        &[&op],
+    )?;
+    tx.commit()?;
+    Ok(aceptada(&op, None))
+}
+
+fn operacion(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo> {
+    match c.query_opt(
+        &format!("select {OPERACION} from plano.operacion where organizacion = $1 and id = $2"),
+        &[&celda.organizacion, &id],
+    )? {
+        Some(f) => Ok(Respuesta::ok(operacion_json(&f))),
+        None => Err(Fallo(404, format!("no hay ninguna operación `{id}`"))),
+    }
+}
+
+// ── la forma de lo que sale ────────────────────────────────────────────────
+
+fn no_hay_proyecto(id: &str) -> Fallo {
+    Fallo(404, format!("no hay ningún proyecto `{id}`"))
+}
+
+/// `202`: la operación, y lo que ya se sabe del recurso.
+fn aceptada(op: &Row, recurso: Option<Json>) -> Respuesta {
+    let mut cuerpo = vec![("operacion", operacion_json(op))];
+    if let Some(r) = recurso {
+        cuerpo.push(("proyecto", r));
+    }
+    Respuesta {
+        codigo: 202,
+        cuerpo: Json::obj(cuerpo),
+    }
+}
+
+fn proyecto_json(f: &Row) -> Json {
+    let mut v = vec![
+        ("id", Json::s(f.get::<_, String>(0))),
+        ("celda", Json::s(f.get::<_, String>(1))),
+        ("creado", Json::s(f.get::<_, String>(3))),
+        (
+            "estado",
+            Json::obj([
+                ("deseado", Json::s(f.get::<_, String>(4))),
+                ("observado", Json::s(f.get::<_, String>(5))),
+                ("generacion", Json::Int(f.get::<_, i64>(6))),
+            ]),
+        ),
+    ];
+    if let Some(d) = f.get::<_, Option<String>>(2) {
+        v.push(("dueno", Json::s(d)));
+    }
+    Json::obj(v)
+}
+
+fn operacion_json(f: &Row) -> Json {
+    let estado: String = f.get(3);
+    let mut v = vec![
+        ("id", Json::s(f.get::<_, String>(0))),
+        ("tipo", Json::s(f.get::<_, String>(1))),
+        ("proyecto", Json::s(f.get::<_, String>(2))),
+        ("hecha", Json::Bool(estado != "en-curso")),
+        ("estado", Json::s(estado)),
+        ("creada", Json::s(f.get::<_, String>(5))),
+    ];
+    if let Some(e) = f.get::<_, Option<String>>(4) {
+        v.push(("error", Json::s(e)));
+    }
+    if let Some(t) = f.get::<_, Option<String>>(6) {
+        v.push(("terminada", Json::s(t)));
+    }
+    Json::obj(v)
+}
+
+fn analizar(cuerpo: &str) -> Result<Node, String> {
+    if cuerpo.trim().is_empty() {
+        return Err("el cuerpo está vacío".into());
+    }
+    parse::parse(cuerpo).map_err(|e| format!("el cuerpo no analiza: {e:?}"))
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    #[test]
+    fn los_ids() {
+        for bueno in ["a", "ventas", "ventas-2026", "0", &"x".repeat(63)] {
+            assert!(id_valido(bueno), "{bueno}");
+        }
+        for malo in [
+            "",
+            "-a",
+            "a-",
+            "Ventas",
+            "ven_tas",
+            "ventas.x",
+            &"x".repeat(64),
+        ] {
+            assert!(!id_valido(malo), "{malo}");
+        }
+    }
+
+    #[test]
+    fn las_rutas() {
+        assert_eq!(ruta("GET", &["proyectos"]).ok(), Some(Pedido::Proyectos));
+        assert_eq!(
+            ruta("POST", &["proyectos"]).ok(),
+            Some(Pedido::CrearProyecto)
+        );
+        assert_eq!(
+            ruta("DELETE", &["proyectos", "ventas"]).ok(),
+            Some(Pedido::BorrarProyecto("ventas"))
+        );
+        assert_eq!(
+            ruta("GET", &["operaciones", "op_1"]).ok(),
+            Some(Pedido::Operacion("op_1"))
+        );
+        assert_eq!(
+            ruta("PUT", &["proyectos"]).err().map(|r| r.codigo),
+            Some(405)
+        );
+        assert_eq!(ruta("GET", &["ramas"]).err().map(|r| r.codigo), Some(404));
+        // Un id que no puede existir es un 404, no un 400: no se distingue de uno que no está.
+        assert_eq!(
+            ruta("GET", &["proyectos", "Ventas"])
+                .err()
+                .map(|r| r.codigo),
+            Some(404)
+        );
+        assert_eq!(
+            ruta("GET", &["operaciones", "x"]).err().map(|r| r.codigo),
+            Some(404)
+        );
+    }
+}

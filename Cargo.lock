@@ -2663,6 +2663,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-postgres"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-entrada",
+ "postgres",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "ore-read-bigquery"
 version = "0.1.0"
 dependencies = [

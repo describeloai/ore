@@ -72,6 +72,7 @@ ore-iam — el plano de identidad y acceso
                  [--agente-sub SUB]   (o `ORE_AGENTE_SUB`) [--agente-nombre N]
   ore-iam agente --organizacion NOMBRE --emisor URL --sub SUB [--nombre N]
   ore-iam servir [--bind DIRECCION] [--identidad MODO] …
+                 [--audiencias-productos ore-postgres,…]   (0058: POST /access/v1/celda)
 
   `agente` registra un SUJETO QUE NO ES NADIE: un Job que actua dentro de UNA
   organizacion. Y es POR INQUILINO a proposito — el mismo `sub` del IdP da un
@@ -379,6 +380,43 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // ⭐ Y los PRODUCTOS (0058 P4·1): a quién más se presenta una celda con el
+    //   mismo token de Workload Identity, cada uno con su audiencia. Con el emisor
+    //   y las llaves de las celdas; sin ellas no hay a quién preguntar.
+    let productos = match (valor(args, "--audiencias-productos"), &celdas) {
+        (None, _) => Vec::new(),
+        (Some(_), None) => {
+            eprintln!(
+                "✗ `--audiencias-productos` necesita el emisor de las celdas (`--emisor-celdas`…)"
+            );
+            return ExitCode::from(64);
+        }
+        (Some(lista), Some(c)) => {
+            let jwks = valor(args, "--jwks-celdas").unwrap_or_default();
+            let mut v = Vec::new();
+            for aud in lista.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+                match ore_entrada::oidc::Emisor::del_fichero(
+                    &c.iss,
+                    aud,
+                    std::path::Path::new(&jwks),
+                ) {
+                    Ok(e) => v.push(e),
+                    Err(m) => {
+                        eprintln!("✗ el emisor del producto `{aud}`: {m}");
+                        return ExitCode::from(64);
+                    }
+                }
+            }
+            eprintln!(
+                "  productos    {}",
+                v.iter()
+                    .map(|e| e.aud.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            v
+        }
+    };
     if celdas.is_some() && !con_identidad {
         eprintln!(
             "✗ el puente necesita también el realm (`--identidad oidc`): con él se verifica `Ore-Sujeto`"
@@ -462,6 +500,7 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
         identidad: proveedor,
         celda,
         celdas,
+        productos,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

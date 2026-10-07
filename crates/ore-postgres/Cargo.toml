@@ -1,0 +1,25 @@
+[package]
+name = "ore-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "El plano de control de ORE Serverless Postgres (ADR 0058, P4)"
+
+# ⭐ La misma forma que `ore-iam`, a propósito: HTTP de `ore-entrada`, Postgres
+#   sin TLS (de pod a pod, dentro del clúster) y nada asíncrono. Lo que este
+#   proceso habla —su base, `ore-iam` y, desde P4·2, el `storage_controller` y
+#   el API de Kubernetes— está todo dentro del clúster y en claro.
+#
+# ⚠️ Como `ore-iam`: no enlaza en Windows sin MinGW (`postgres` → `tokio` →
+#   `windows-sys`), y `ore-core` ya arrastra `psm`. Se compila en Linux: CI, la
+#   imagen o Docker.
+[dependencies]
+ore-core    = { path = "../ore-core" }
+ore-entrada = { path = "../ore-entrada" }
+postgres    = { version = "0.19", default-features = false }
+
+# El resumen del token de la celda, para guardar lo que `ore-iam` contestó de él
+# sin guardar el token.
+sha2.workspace = true

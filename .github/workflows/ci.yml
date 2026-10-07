@@ -375,6 +375,19 @@ jobs:
           cargo build --quiet -p ore-iam
           bash pruebas-de-fuego/los-verbos.sh
 
+      # 0058 P4·1: el plano de control de Postgres, con su base de verdad. Una
+      #   organización no ve lo de otra; un id por organización; una operación en
+      #   curso por proyecto la cierra la base.
+      - name: y el plano de control de Postgres separa las organizaciones
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: x
+          ORE_POSTGRES_PRUEBA_URL: postgres://postgres:x@localhost:5432/ore_postgres_prueba
+        run: |
+          psql -qc "create database ore_postgres_prueba"
+          cargo test --quiet -p ore-postgres --test contrato
+
       # ⭐ EL CUSTODIO. Con un cliente de KMS de mentira, y se dice por que no
       # debilita nada: el cerrojo de la llave —que un inquilino no pueda usar la
       # de otro— esta probado contra Google en `malla/99-el-cerrojo-de-la-llave`,
@@ -760,7 +773,7 @@ jobs:
         run: |
           R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
           PIDS=""
-          for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main \
+          for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main \
                     ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 capa-jvm:1 capa-node:1 capa-python:1 idp:main; do
             gcloud container images add-tag "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" --quiet & PIDS="$PIDS $!"
           done
@@ -817,6 +830,9 @@ jobs:
           # «releve a todos los que habia», que son cero — que es exactamente
           # el fallo que se acaba de arreglar, con otra cara.
           [ "$DESTINOS" = "identidad/ore-iam" ] && { echo "x ningun namespace con ore.dev/rol=cargas"; exit 1; }
+          # El plano de control de Postgres (0058 P4·1), si ya está rendido: no es de
+          # ninguna celda, va en `ore-pg`.
+          kubectl -n ore-pg get deployment ore-postgres >/dev/null 2>&1 && DESTINOS="$DESTINOS ore-pg/ore-postgres"
 
           # ⭐ Y sólo los que CAMBIAN (2026-10-03). Relevar un `ore-serve` cuyos
           #   binarios son los mismos no despliega nada y cierra las sesiones de

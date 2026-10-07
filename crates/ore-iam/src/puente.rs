@@ -5,6 +5,7 @@
 //!   POST /access/v1/evaluations   ¿puede?, en lote   AuthZEN 1.0
 //!   POST /access/v1/eventos       lo que hizo        a la huella, con organización y celda
 //!   POST /access/v1/quien         su handle          `user:<handle>`, el dueño de lo que crea (la 048)
+//!   POST /access/v1/celda         de qué celda       lo pregunta un PRODUCTO con el token que la celda le dio (0058)
 //! ```
 //!
 //! # Dos tokens en cada llamada (0047 § «El contrato»)
@@ -82,6 +83,9 @@ impl Servidor {
         };
         if p.metodo != "POST" {
             return Some(Respuesta::error(405, "el puente sólo atiende POST"));
+        }
+        if resto == ["celda"] {
+            return Some(self.de_que_celda(p, celdas));
         }
         // ① LA CELDA, por su token.
         let autorizacion = match p.cabeceras.get("authorization") {
@@ -174,6 +178,93 @@ impl Servidor {
             ["quien"] => self.su_handle(tx, &celda, sujeto.as_ref(), &cuerpo),
             _ => Respuesta::error(404, "no hay nada en ese camino del puente"),
         })
+    }
+
+    // ── celda ──────────────────────────────────────────────────────────────
+
+    /// **¿De qué celda es este token?** (0058 P4·1): lo pregunta un PRODUCTO de la
+    /// plataforma —`ore-postgres`— al que una celda se presentó.
+    ///
+    /// `Authorization` es el token de Workload Identity que la celda le dio al
+    /// producto: mismo emisor que el de las celdas, pero con la audiencia DEL
+    /// PRODUCTO (`--audiencias-productos`), no la nuestra. El producto lo reenvía
+    /// tal cual y aquí se verifica entero; la respuesta es la celda y su
+    /// organización, que es lo único que `iam.celda` sabe y el producto no.
+    ///
+    /// ⛔ Por qué la audiencia del producto y no la nuestra: un token con
+    ///   audiencia `ore-iam` en manos de un producto le dejaría preguntar `puede`
+    ///   y contar `hizo` como si fuera la celda. Con la suya sólo sirve para esto,
+    ///   que no da nada: decir de quién es lo que ya tiene en la mano.
+    ///
+    /// `vence` es el `exp` del token: quien guarde la respuesta no la guarda más
+    /// allá. `vale` es el mismo techo que `puede`: una celda retirada deja de
+    /// valer, como mucho, en ese plazo.
+    fn de_que_celda(&self, p: &Peticion, celdas: &ore_entrada::oidc::Emisor) -> Respuesta {
+        let Some(autorizacion) = p.cabeceras.get("authorization") else {
+            return Respuesta::error(401, "falta el token de la celda que se presentó");
+        };
+        if self.productos.is_empty() {
+            return Respuesta::error(
+                404,
+                "sin audiencias de producto (`--audiencias-productos`), nadie pregunta por aquí",
+            );
+        }
+        let ahora = ahora();
+        let mut motivo = String::from("ningún producto conocido");
+        let mut hallado = None;
+        for producto in &self.productos {
+            match producto.verificar_con_vence(autorizacion, ahora) {
+                Ok((i, vence)) => {
+                    hallado = Some((producto.aud.clone(), i, vence));
+                    break;
+                }
+                Err(SinIdentidad::Ausente) => {
+                    return Respuesta::error(401, "falta el token de la celda que se presentó");
+                }
+                Err(SinIdentidad::Invalida(m)) => motivo = m,
+            }
+        }
+        let Some((audiencia, de_la_celda, vence)) = hallado else {
+            return Respuesta::error(
+                401,
+                format!("no es el token de una celda para un producto de la plataforma: {motivo}"),
+            );
+        };
+        let Ok(mut base) = self.base.lock() else {
+            return Respuesta::error(500, "la conexión quedó envenenada");
+        };
+        let mut tx = match Tx::abrir(&mut base, &de_la_celda) {
+            Ok(t) => t,
+            Err(e) => return Respuesta::error(502, e),
+        };
+        let celda = match celda_de(&mut tx, &celdas.iss, &de_la_celda.persona) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return Respuesta::error(
+                    401,
+                    "esta celda no está registrada en `ore-iam`, o está retirada",
+                );
+            }
+            Err(e) => return Respuesta::error(500, e),
+        };
+        let nombre = match tx.uno("select nombre from iam.celda where id = $1", &[&celda.id]) {
+            Ok(f) => f.map(|f| f.get::<_, String>(0)).unwrap_or_default(),
+            Err(e) => return Respuesta::error(500, e),
+        };
+        cerrar(
+            tx,
+            false,
+            Json::obj([
+                (
+                    "celda",
+                    Json::obj([("id", Json::s(&celda.id)), ("nombre", Json::s(nombre))]),
+                ),
+                ("organizacion", Json::s(&celda.organizacion)),
+                ("producto", Json::s(audiencia)),
+                ("vence", Json::Int(vence)),
+                ("vale", Json::Int(VALE)),
+            ]),
+        )
     }
 
     // ── quien ──────────────────────────────────────────────────────────────

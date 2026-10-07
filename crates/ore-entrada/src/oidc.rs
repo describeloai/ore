@@ -221,6 +221,20 @@ impl Emisor {
         })
     }
 
+    /// Como [`Emisor::verificar`], y además **cuándo caduca** (`exp`), ya
+    /// verificado: para que quien guarde algo deducido del token no lo guarde
+    /// más allá (0058 P4·1, `POST /access/v1/celda`).
+    pub fn verificar_con_vence(
+        &self,
+        cabecera: &str,
+        ahora: i64,
+    ) -> Result<(Identidad, i64), SinIdentidad> {
+        let identidad = self.verificar(cabecera, ahora)?;
+        let cuerpo = self.cuerpo_verificado(cabecera, ahora, &|a| a == self.aud)?;
+        let vence = entero(&cuerpo, "exp").unwrap_or(ahora);
+        Ok((identidad, vence))
+    }
+
     /// **El puesto que llama, declarado en su credencial** (R1).
     ///
     /// Quien crea un puesto es `ore-serve`: escribe su Job en la cola, y en él la

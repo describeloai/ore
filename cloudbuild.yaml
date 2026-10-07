@@ -187,6 +187,14 @@ steps:
     args: [build, --target, cofre, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
            --cache-from, '${_REGISTRO}/ore-cofre:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-cofre:${_SHA}', .]
 
+  # El plano de control de Postgres (0058 P4·1): como `iam`, sobre `scratch`.
+  - id: postgres-plano
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    waitFor: [binarios]
+    args: [build, --target, postgres-plano, --build-arg, 'BINARIOS=${_REGISTRO}/ore-binarios:${_SHA}', --build-arg, BUILDKIT_INLINE_CACHE=1,
+           --cache-from, '${_REGISTRO}/ore-postgres:${_CACHE_MAIN}', -t, '${_REGISTRO}/ore-postgres:${_SHA}', .]
+
   # El puesto Python, entorno 1 (0031 W3): un runtime, no un binario nuestro
   # (salvo `ore-store-gcs`, que es lo que les hace esperar a `ore`).
   - id: puesto-python
@@ -222,6 +230,7 @@ images:
   - '${_REGISTRO}/ore-serve:${_SHA}'
   - '${_REGISTRO}/ore-iam:${_SHA}'
   - '${_REGISTRO}/ore-cofre:${_SHA}'
+  - '${_REGISTRO}/ore-postgres:${_SHA}'
   - '${_REGISTRO}/puesto-python:${_SHA}'
   - '${_REGISTRO}/puesto-node:${_SHA}'
   - '${_REGISTRO}/puesto-jvm:${_SHA}'

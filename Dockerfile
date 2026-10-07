@@ -293,6 +293,19 @@ USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/bin/ore-iam"]
 
+# ── 4b · El plano de control de Postgres (0058 P4) ──────────────────────────
+#
+# Como `iam`, sobre `scratch` y sin TLS: habla con su base (`storcon-db`), con
+# `ore-iam` y, desde P4·2, con el `storage_controller` y el API de Kubernetes,
+# todo dentro del clúster.
+FROM scratch AS postgres-plano
+
+COPY --from=bin /b/ore-postgres /bin/ore-postgres
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/bin/ore-postgres"]
+
 # ── 5 · El custodio ─────────────────────────────────────────────────────────
 #
 # ⛔⛔ Y AQUÍ SE PIERDE LA GARANTÍA DE `scratch` A PROPÓSITO, otra vez. Igual que

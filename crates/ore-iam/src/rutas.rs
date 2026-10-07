@@ -44,6 +44,10 @@ pub struct Servidor {
     /// ⭐ El emisor de las CELDAS (0047 A2): el token de Workload Identity de
     ///   cada `ore-serve`. Sin él, las rutas del puente no se montan.
     pub celdas: Option<ore_entrada::oidc::Emisor>,
+    /// ⭐ Las celdas ante un PRODUCTO (0058 P4·1): el mismo emisor y las mismas
+    ///   llaves que `celdas`, una audiencia por producto (`--audiencias-productos`).
+    ///   Sólo para `POST /access/v1/celda`: «¿de qué celda es este token?».
+    pub productos: Vec<ore_entrada::oidc::Emisor>,
 }
 
 impl Servidor {
@@ -1134,6 +1138,7 @@ pub fn mapa(con: bool, puente: bool) -> Vec<(&'static str, &'static str, bool)> 
         ("POST", "/access/v1/evaluations", puente),
         ("POST", "/access/v1/eventos", puente),
         ("POST", "/access/v1/quien", puente),
+        ("POST", "/access/v1/celda", puente),
         ("GET", "/salud", true),
         ("GET", "/organizaciones", con),
         ("GET", "/organizaciones/{org}/miembros", con),
