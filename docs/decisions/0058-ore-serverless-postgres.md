@@ -318,8 +318,8 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P2·2 | infraestructura GCP (bucket, cuenta, pool no-spot) | **hecho** (2026-10-07): [`malla/80-postgres-gcp.sh`](../../malla/80-postgres-gcp.sh); cuota 7/12 |
 | P2·3 | la base del controller (Postgres en el clúster, copias, restauración +1000) | **hecho** (2026-10-07): en vivo por Flux; restaurada una copia de verdad → generación 7 + 1000 |
 | P2·4 | la malla: controller, broker, safekeepers, pageserver | **hecho** (2026-10-07): en vivo por Flux, a la primera, con autenticación |
-| P2·5 | retención y limpieza (PITR, GC, scrubber; borrar un tenant vacía GCS) | **siguiente** |
-| P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | pendiente |
+| P2·5 | retención y limpieza (PITR, GC, scrubber; borrar un tenant vacía GCS) | **hecho** (2026-10-07): historia 1 día; borrar un tenant vacía su prefijo (4 → 0 objetos); scrubber diario, 0 errores |
+| P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | **siguiente** |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -727,4 +727,21 @@ El namespace `ore-pg` y su cuenta de Kubernetes se crearon a mano para la prueba
   - 10 objetos en el bucket;
   - **0 errores** en los logs del controller y del pageserver.
 - ⚠️ Para P2·6: las pruebas de fuego (`tenant.sh`, `entorno.sh`) hablaban con el pageserver sin token. Ahora van **por el controller con el token `admin`**, y el cómputo necesita un token de scope `tenant`, que acuña quien tenga la privada.
+
+#### P2·5 · Retención y limpieza (2026-10-07)
+
+- **La historia por defecto es de 1 día**, no los 7 que trae Neon: `[tenant_config] pitr_interval = '1 day'` en el pageserver. Es lo que el cliente puede recuperar en el tiempo y lo que se paga en GCS. Por proyecto se cambia en el controller (P9).
+  - Efectivo en vivo: `pitr_interval 1day`, `gc_period 1h`, `gc_horizon 64 MB`, `lsn_lease_length 10m`.
+  - El cambio reinició el pageserver: es el **primer reenganche en vivo**, y fue limpio (`re-attach`, 0 errores).
+- **Borrar un tenant por el controller vacía su prefijo en GCS: 4 → 0 objetos**, con el 404 a los 3,2 s.
+  - En D0c esto no pasaba, porque no había controller.
+  - ⚠️ Pendiente para P2·6, cuando haya cómputo: **el WAL de los safekeepers** de un tenant borrado (`safekeeper/…`). Con el controller sin gestionar los safekeepers, nadie les dice que lo borren.
+  - Lo borrado se queda **7 días en el borrado suave** del bucket: se paga, y es lo que permite deshacer un error.
+- **El scrubber, un CronJob diario a las 12:30**, después de la copia:
+  - `scan-metadata --post` le cuenta al controller la salud de cada tenant;
+  - `pageserver-physical-gc --mode full --min-age 24h` borra índices de generaciones viejas y capas que nadie referencia;
+  - va con su propio token de scope `scrubber`, acuñado con la privada (no con `admin`), y con la identidad `neon` para GCS;
+  - un bucket sin timelines no cuenta como fallo.
+  - Lanzado a mano: **11 s, 1 tenant / 1 timeline, 0 errores, 0 capas huérfanas**, nada que borrar.
+  - `find-garbage` (tenants que el plano de control ya no conoce) necesita la API de administración de Neon. No la usamos: lo cubre que borrar por el controller vacía el prefijo.
 
