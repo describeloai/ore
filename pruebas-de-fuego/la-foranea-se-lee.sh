@@ -6,7 +6,8 @@
 # y falla si no es lo esperado (0057 B4·1: Python, celdas y `.sql`).
 # Con `javac` >= 21, la columna Java (0057 B4·2·1): celdas de un puesto JVM con
 # su agente de verdad, por el mismo contrato; con `node` >= 22.13, la columna TS
-# (B4·2·2), con un puesto Node.
+# (B4·2·2), con un puesto Node. Y Build (B4·6): transforms que leen la foreign
+# database, construidos por `POST /builds` y el agente del trabajo.
 #
 # El origen es el S3 de mentira: dos tablas parquet (`datos/clientes`,
 # `datos/pedidos`) y una carpeta de PDFs (`docs/contratos`). La base foranea
@@ -202,6 +203,47 @@ spec:
     pedidos: { type: Integer }
     total: { type: Float }
 YAML
+# ── 0057 B4·6 · un repositorio de transforms que lee la foreign database ────
+mkdir -p "$A/packages/std/etl/transforms"
+printf -- '---\nnombre: ETL\nplantilla: transforms-python\nplantillaVersion: 1\n---\nLo que se copia del origen.\n' > "$A/packages/std/etl/README.md"
+cat > "$A/packages/std/etl/transforms/copias.py" <<'PY'
+from ore import transform, sql, over, write
+
+
+@transform(inputs=["vivo.datos.clientes"], output="std.copias.b_clientes")
+def b_clientes():
+    """sql() sobre una foreign table, por su nombre en la foreign database."""
+    return write("std.copias.b_clientes", sql("select id, pais from vivo.datos.clientes"))
+
+
+@transform(inputs=["s3.datos.clientes"], output="std.copias.b_por_fuente")
+def b_por_fuente():
+    """Por el nombre de la fuente."""
+    return write("std.copias.b_por_fuente", sql("select pais, count(*) n from s3.datos.clientes group by pais"))
+
+
+@transform(inputs=["vivo.informes.ventas_por_pais"], output="std.copias.b_ventas")
+def b_ventas():
+    """Una vista viva con junta: la declarada cubre lo que lee."""
+    return write("std.copias.b_ventas", over("vivo.informes.ventas_por_pais"))
+
+
+@transform(inputs=["vivo.datos.pedidos"], output="std.copias.b_over")
+def b_over():
+    """over() de una tabla expuesta."""
+    return write("std.copias.b_over", over("vivo.datos.pedidos"))
+
+
+@transform(inputs=["congelada.datos.clientes"], output="std.copias.b_congelada")
+def b_congelada():
+    """Un input de una foreign database congelada: el build falla con OOS2051."""
+    return write("std.copias.b_congelada", sql("select id from congelada.datos.clientes"))
+PY
+cat > "$A/packages/std/etl/transforms/copias.sql" <<'SQL'
+CREATE OR REPLACE DATASET std.copias.b_sql AS
+SELECT pais, count(*) AS n FROM vivo.datos.clientes GROUP BY pais;
+SQL
+( cd "$A" && "$BIN/ore" transforms generate . > "$TMP/generate.txt" 2>&1 ) || { echo "  ✗ ore transforms generate:"; cat "$TMP/generate.txt"; }
 ( cd "$A" && "$BIN/ore" validate . > "$TMP/validate.txt" 2>&1 ) && echo "  · el arbol compila" || { echo "  ✗ el arbol no compila:"; head -20 "$TMP/validate.txt"; }
 ( cd "$A" && git add -A && git -c user.email=t@t -c user.name=t commit -qm semilla && git remote add origin "$FORJA" && git push -q origin HEAD:main ) \
   || { echo "no se sembró la forja"; exit 1; }
@@ -271,7 +313,7 @@ else
 fi
 
 # ── la matriz ────────────────────────────────────────────────────────────────
-PUESTO_NODE="$PN" PUESTO_JVM="$PJ" ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
+ARBOL="$A" ORE_BIN_DIR="$BIN" TMP_DIR="$TMP" PUESTO_NODE="$PN" PUESTO_JVM="$PJ" ORE_SERVE="$BASE" PUESTO="$P" PYTHONUTF8=1 "$PY" "$RAIZ/pruebas-de-fuego/la-foranea-se-lee.py" "$BASE" "$P"
 SALIDA=$?
 echo
 echo "  (registro del servidor: $(grep -c . "$TMP/serve.log") lineas; de la pasarela: $(grep -c . "$TMP/fed.log"))"

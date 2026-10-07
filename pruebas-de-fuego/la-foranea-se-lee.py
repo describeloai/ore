@@ -279,6 +279,86 @@ if NODE:
     ]
     NO["TS CONGELADA · tabla"] = "OOS2051"
 
+# ── 0057 B4·6 · Build: un transform que lee la foreign database, construido ──
+def build(salida, filas=None, vivas=None):
+    """`POST /builds` de la salida, el agente del trabajo lo corre (como el Job), y
+    lo que queda: el build (estado y filas) y la procedencia del dataset (las
+    tablas del origen leídas en vivo)."""
+    import subprocess
+
+    def f():
+        cuerpo = json.dumps({"output": salida}).encode()
+        req = urllib.request.Request(BASE + "/builds", data=cuerpo, method="POST",
+                                     headers={**SUJ, "content-type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                b = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return f"✗ {e.code}: {e.read().decode('utf-8', 'replace')[:90]}"
+        bid = b["build"]
+        trabajo = "%s@%s" % (b["codigo"], b.get("commit") or "local")
+        tmp = os.environ["TMP_DIR"]
+        env = dict(os.environ, ORE_SERVE=BASE, PUESTO=bid, TRABAJO=trabajo, ORE_SUJETO="agente:local", TTL="120",
+                   PUESTO_DIR=tmp, TRABAJO_DIR=tmp, PYTHONUTF8="1")
+        raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        subprocess.run([sys.executable, os.path.join(raiz, "puesto", "python", "agente.py")], env=env,
+                       capture_output=True, text=True, timeout=180)
+        with urllib.request.urlopen(urllib.request.Request(BASE + "/builds/" + bid, headers=SUJ), timeout=30) as r:
+            v = json.loads(r.read() or b"{}")
+        if v.get("estado") != "succeeded":
+            e = v.get("error") or {}
+            return f"✗ {v.get('estado')}: {str(e.get('mensaje') or e)[:110]} (línea {e.get('linea')})"
+        cab = {**SUJ, **({"x-ore-rama": v["rama"]} if v.get("rama") else {})}
+        with urllib.request.urlopen(urllib.request.Request(BASE + "/datasets/" + salida.replace(".", "/"), headers=cab), timeout=30) as r:
+            pr = (json.loads(r.read() or b"{}").get("procedencia") or {})
+        dicho = pr.get("leidas_en_vivo")
+        if filas is not None and v.get("filas") != filas:
+            return f"✗ {v.get('filas')} filas, se esperaban {filas}"
+        if vivas is not None and dicho != vivas:
+            return f"✗ la procedencia dice leidas_en_vivo={dicho}, se esperaba {vivas}"
+        if not (pr.get("build") or {}).get("id") == bid:
+            return f"✗ la procedencia no nombra el build: {pr.get('build')}"
+        return f"✓ {v.get('filas')} filas · en vivo: {', '.join(dicho or [])}"
+    return f
+
+
+def commit_con_salida_en_la_foranea():
+    """Un transform que escribe DENTRO de la foreign database: el commit
+    (`ore transforms generate` + `ore validate`) lo para con OOS2049."""
+    import shutil
+    import subprocess
+
+    def f():
+        x = os.path.join(os.environ["TMP_DIR"], "arbol-con-salida-en-la-foranea")
+        shutil.rmtree(x, ignore_errors=True)
+        shutil.copytree(os.environ["ARBOL"], x, ignore=shutil.ignore_patterns(".git"))
+        with open(os.path.join(x, "packages/std/etl/transforms/mal.py"), "w", encoding="utf-8") as fh:
+            fh.write('from ore import transform, sql, write\n\n\n'
+                     '@transform(inputs=["vivo.datos.clientes"], output="vivo.datos.b_mal")\n'
+                     'def b_mal():\n    return write("vivo.datos.b_mal", sql("select id from vivo.datos.clientes"))\n')
+        ore_bin = os.path.join(os.environ["ORE_BIN_DIR"], "ore")
+        subprocess.run([ore_bin, "transforms", "generate", "."], cwd=x, capture_output=True, text=True)
+        p = subprocess.run([ore_bin, "validate", "."], cwd=x, capture_output=True, text=True)
+        salida = (p.stdout + p.stderr).replace("\n", " ")
+        return f"✗ {salida[:150]}" if p.returncode else "✓ se commitea (y no tenía que)"
+    return f
+
+
+if os.environ.get("ARBOL"):
+    FILAS += [
+        ("B1 build · sql() de una foreign table", build("std.copias.b_clientes", 5, ["s3.datos.clientes"])),
+        ("B2 build · por el nombre de la fuente", build("std.copias.b_por_fuente", 3, ["s3.datos.clientes"])),
+        ("B3 build · over() de una vista viva con junta", build("std.copias.b_ventas", 3, ["s3.datos.clientes", "s3.datos.pedidos"])),
+        ("B4 build · over() de una tabla expuesta", build("std.copias.b_over", 8, ["s3.datos.pedidos"])),
+        ("B5 build · .sql create dataset as select", build("std.copias.b_sql", 3, ["s3.datos.clientes"])),
+        ("B6 build · input de la congelada", build("std.copias.b_congelada")),
+        ("B7 commit · salida en la foreign database", commit_con_salida_en_la_foranea()),
+    ]
+    NO.update({
+        "B6 build · input de la congelada": "OOS2051",
+        "B7 commit · salida en la foreign database": "OOS2049",
+    })
+
 print()
 print("  la foranea se lee (0057 B4·0) · Python" + (" y Java" if JVM else "") + (" y TS" if NODE else ""))
 print("  " + "─" * 100)
