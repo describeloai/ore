@@ -8,10 +8,11 @@ E="k exec cliente -- env PGPASSWORD=cloud_admin"
 LOG=$ORE_PG_TRABAJO/medida-escalado.txt; : > "$LOG"
 t() { date -u +%H:%M:%S; }
 ( while true; do echo "$(t) VM cpus=$(kc get neonvm "$ORE_PG_VM" -o jsonpath='{.status.cpus}') mem=$(kc get neonvm "$ORE_PG_VM" -o jsonpath='{.status.memorySize}')" >> "$LOG"; sleep 2; done ) & W=$!
-( $E psql -h "$IP" -p 55433 -U cloud_admin -d postgres -At -c "create table if not exists latido(n int, t timestamptz default now())" >/dev/null 2>&1
-  $E sh -c "for i in \$(seq 1 600); do echo \"insert into latido(n) values (\$i);\"; sleep 1; done" \
-    | $E psql -h "$IP" -p 55433 -U cloud_admin -d postgres -q -v ON_ERROR_STOP=1 > /dev/null 2>"$ORE_PG_TRABAJO/latido.err"
-  echo "$(t) SESIÓN TERMINÓ rc=$?" >> "$LOG" ) & S=$!
+# la sesión que escribe todo el rato corre DENTRO del clúster (nohup en `cliente`): por un `kubectl exec`
+# desde fuera, un corte de la red de quien lanza la prueba la mataba y parecía un corte de la VM (P3·7)
+$E psql -h "$IP" -p 55433 -U cloud_admin -d postgres -Atc "drop table if exists mig; create table mig(via text, n int, t timestamptz default clock_timestamp())" >/dev/null
+k exec -i cliente -- sh -c 'cat > /tmp/latido.sh && chmod +x /tmp/latido.sh' < "$AQUI/latido.sh"
+k exec cliente -- sh -c "nohup /tmp/latido.sh escalado $IP 2400 > /tmp/sesion-escalado.log 2>&1 &"   # 8 min
 echo "$(t) -- reposo 30 s" >> "$LOG"; sleep 30
 echo "$(t) -- pgbench -i -s 20" >> "$LOG"
 $E pgbench -h "$IP" -p 55433 -U cloud_admin -i -s 20 -q postgres > /dev/null 2>&1
@@ -21,6 +22,5 @@ echo "$(t) -- CARGA MEMORIA: sort grande con work_mem 1500MB" >> "$LOG"
 $E psql -h "$IP" -p 55433 -U cloud_admin -d postgres -Atc "set work_mem='1500MB'; select count(*) from (select * from pgbench_accounts order by filler desc, abalance) s; select count(*) from (select * from pgbench_accounts order by filler, aid desc) s;" >> "$LOG" 2>&1
 echo "$(t) -- SIN CARGA 240 s" >> "$LOG"; sleep 240
 kill $W
-echo "$(t) -- latido: $($E psql -h "$IP" -p 55433 -U cloud_admin -d postgres -Atc "select count(*), max(n), max(t)-min(t) from latido")" >> "$LOG"
-kill $S 2>/dev/null
+echo "$(t) -- latido: $($E psql -h "$IP" -p 55433 -U cloud_admin -d postgres -Atc "select count(*) || ' filas, última ' || max(n) || ', mayor hueco ' || round(max(d)::numeric,2) || ' s' from (select n, extract(epoch from t - lag(t) over (order by n)) d from mig where via='escalado') s") · sesión: $(k exec cliente -- cat /tmp/sesion-escalado.log | tail -1)" >> "$LOG"
 cat "$LOG"

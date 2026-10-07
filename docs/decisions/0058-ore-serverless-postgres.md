@@ -897,5 +897,31 @@ Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ning�
   - el tráfico normal sigue.
 - ⚠️ **ebtables-nft ignora `-P DROP` al crear una cadena**: quedaba en `RETURN` y lo falsificado pasaba (los contadores lo enseñaron). Va un `-j DROP` explícito.
 
+#### P3·7 · Aceptación con VMs (2026-10-07, en curso)
+
+Con la imagen de cómputo `8269bece` (todavía sin el anuncio ARP) y NeonVM `v0.49.1-ore.1`, con **todas las barreras puestas**. Los guiones viejos ya llevan las VMs en `ore-pg-computo` (`kc`).
+
+| prueba | resultado | D0b (sin barreras) |
+|---|---|---|
+| arranque ×3 (`arranque.sh`) | **32–35 s** del `apply` a la primera consulta; pod con IP en 4,1–4,4 s | 15,8–17 s |
+| escalado en caliente (`escalado.sh`) | sube a 1 CPU y 3 GiB en **8 s**; 4 311 tps de lectura (8 clientes); baja a 0,25 CPU y 1 GiB en ~2 min 50 s; **la sesión que escribe cada 0,2 s no se corta** (2 294 filas; mayor hueco 4,4 s, con la VM saturada) | 9 s / ~3 min |
+| inactividad (`inactividad.sh`) | `last_active` salta con 5 s de un rol de aplicación y se queda quieto 90 s sin consultas: la señal de P6 sirve a través de la barrera 2 | igual |
+| migración en caliente (`migrar.sh`) | `Succeeded` entre nodos; **la sesión por la overlay sobrevive** (503 filas, mayor hueco 1,49 s); la de la IP del pod se cuelga (esperado, B.6) | hueco 0,75 s |
+| C4 con VM (`p26.sh c4`) | **RPO 0** (81 = 81); tenant `Active` sin intervención a los **39,2 s** (el pageserver nuevo, con disco nuevo, a los 38 s); lectura en frío de 2 M filas correcta | ~21 s (a mano) |
+| escrituras (`p26.sh escrituras`) | TPC-B **130 tps** con 1 cliente y **231** con 4, 0 fallidas. En pod: 258/511 | C3: 120/286 |
+
+**Hallazgos de P3·7:**
+1. **La migración rompía la overlay con el filtro de P3·6.**
+   - NeonVM da una MAC **aleatoria a cada runner**; tras migrar, el huésped conserva la suya y el runner de destino recibe otra. El filtro, que leía la MAC de la línea de QEMU, lo tiraba todo («No route to host»).
+   - Además QEMU anuncia la VM migrada con **RARP**, que el filtro no dejaba pasar.
+   - ⇒ **Parche en nuestro fork** ([`describeloai/autoscaling` `v0.49.1-ore.1`](https://github.com/describeloai/autoscaling/tree/v0.49.1-ore.1)): la MAC de la overlay **sale de la IP** (`02:4f:52:45` + los dos últimos octetos). Es estable para toda la vida de la VM e igual para cualquier VM que tenga esa IP: **misma IP, misma MAC**, y la caché ARP del proxy nunca queda vieja.
+   - El filtro calcula la MAC de la IP (no la lee de fuera) y deja pasar el RARP sólo con esa MAC.
+2. **El arranque es el doble de lento que en D0b, y es disco.** El runner copia un `rootdisk.qcow2` de **1,6 GB** en cada arranque. El disco del nodo (pd-standard 50 GB) da ~125 MB/s ⇒ ~13 s sólo en la copia. El huésped arranca con 9,7 s parado tras `udevd`, y `compute_ctl` → `running` tarda 8,3 s (`sync_safekeepers` 5,8 s). D0b usó el disco por defecto de GKE (pd-balanced, SSD). Pendiente de decidir (infraestructura).
+3. **C4 con VM: las escrituras paran 68 s**, ~29 s más que el tiempo hasta `Active`. En pod el hueco coincidía con la caída. Parece el backoff de reconexión del cómputo al pageserver tras una caída larga ⇒ afinarlo en P6.
+4. **Arnés:**
+   - `escalado.sh` pasaba los `insert` a `kubectl exec … psql` **sin `-i`**: psql no recibía nada y salía bien, así que el «0 cortes» de B.5 no medía nada. Ahora la sesión corre dentro del clúster (`nohup` en `cliente`), porque un corte de la red de quien lanza la prueba también la mataba.
+   - `kubectl cp` no entiende rutas `C:/…`.
+5. **La compilación del cómputo no puede tener una sesión de buildx que escriba en el registro durante más de una hora**: la credencial del metadata caduca, y buildkit la pide al abrir la sesión y la guarda (dos compilaciones de ~1 h 30 perdidas). `computo.yaml` construye lo largo en sesiones sin exportar y deja la subida de la caché para una sesión corta.
+
 **Hallazgo para P3·6:** al borrar una VM, su runner sigue vivo unos segundos con **la misma IP de la overlay**, y contestaba el `select 1` de la VM nueva. Los «arranques de 3,5 s» eran eso. `vm.sh` ahora espera a que se vaya; el plano de control (P4) tendrá que hacer lo mismo.
 
