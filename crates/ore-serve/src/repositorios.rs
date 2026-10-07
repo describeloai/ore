@@ -277,9 +277,17 @@ impl Servidor {
         if !nombra_la_base(plantilla) || raiz.join(&manifiesto).is_file() {
             return Ok(None);
         }
-        // Sin quien la crea no hay dueño que darle: el repositorio nace igual,
-        // y la base la crea quien la necesite (`create standard database`).
-        let Some(dueno) = dueno else {
+        // ⭐ Es la base DEL SISTEMA, no de quien llega primero: su dueño es
+        //   `team:<organización>`, como el que le da el aprovisionamiento al
+        //   nacer el árbol y el de las bases de las fuentes (`44-el-catalogo`).
+        //   Sin organización (un servidor sin custodio, en local), la de quien
+        //   crea el repositorio; sin ninguna de las dos, no se crea.
+        let del_sistema = self
+            .organizacion
+            .as_deref()
+            .map(|o| format!("team:{o}"))
+            .filter(|d| dueno_valido(d));
+        let Some(dueno) = del_sistema.as_deref().or(dueno) else {
             return Ok(None);
         };
         let args: Vec<String> = vec![
@@ -701,9 +709,32 @@ impl Servidor {
     }
 }
 
+/// Un `owner` que OOS acepta (v1alpha21 `01`): `team:` o `user:` y un
+/// identificador en minúsculas con guiones.
+fn dueno_valido(d: &str) -> bool {
+    let Some((tipo, nombre)) = d.split_once(':') else {
+        return false;
+    };
+    matches!(tipo, "team" | "user")
+        && nombre.starts_with(|c: char| c.is_ascii_lowercase())
+        && nombre
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn el_dueno_de_la_base_del_sistema_es_un_owner_de_oos() {
+        assert!(dueno_valido("team:victor"));
+        assert!(dueno_valido("team:acme-retail"));
+        assert!(!dueno_valido("team:Acme"));
+        assert!(!dueno_valido("team:acme_retail"));
+        assert!(!dueno_valido("victor"));
+        assert!(!dueno_valido("grupo:victor"));
+    }
 
     /// L1: un repositorio de TypeScript nace con la guía en su manifiesto; al
     /// actualizar, la guía entra donde no había más que la frase de siempre, y
