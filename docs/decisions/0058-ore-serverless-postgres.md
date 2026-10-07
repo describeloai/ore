@@ -330,7 +330,12 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P2·5 | retención y limpieza (PITR, GC, scrubber; borrar un tenant vacía GCS) | **hecho** (2026-10-07): historia 1 día; borrar un tenant vacía su prefijo (4 → 0 objetos); scrubber diario, 0 errores |
 | P2·6 | aceptación (+ decidir `--timelines-onto-safekeepers`) | **hecho** (2026-10-07): RPO 0 en todo; C4 18 s sin intervención; 2 safekeepers caídos paran sin perder; `--timelines-onto-safekeepers` off (exige 3 zonas) |
 | **P2** | **el almacenamiento de producción** | **cerrado** (2026-10-07) |
-| P3 | el cómputo de producción y el aislamiento entre organizaciones | **diseñado** (P3·1–P3·7); esperando el go |
+| P3·1 | NeonVM y autoscaling desde el fork | **hecho** (2026-10-07): las 6 imágenes y el kernel, de `describeloai/autoscaling` v0.49.1, en 4 min 19 s |
+| P3·2 | autoescalado de nodos del pool `pg` | **hecho** (2026-10-07): 1–3 nodos; sube uno en ~3,5 min, lo quita a los ~12 min de sobrar |
+| P3·3 | la base del cómputo en la malla | **hecho** (2026-10-07): tres Kustomizations de Flux; una VM arranca y escribe desde git |
+| P3·4 | `ore-pg-computo` y la barrera 2 | **hecho** (2026-10-07): 17/17 en `p34.sh` |
+| P3·5 | la overlay cerrada (barrera 3) | **hecho** (2026-10-07): 6/6 en `p35.sh`; antes, de VM a VM sí se entraba (medido) |
+| P3 | el cómputo de producción y el aislamiento | **en curso**: quedan P3·6 (IP reutilizada) y P3·7 (aceptación) |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -835,4 +840,41 @@ Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ning�
 - dormir, despertar y el pool precalentado: P6;
 - la medición y la facturación: P9;
 - nodos grandes: la puerta de producción.
+
+#### P3·1–P3·5 · hecho (2026-10-07)
+
+**P3·1 · Imágenes.** [`ci/neon/autoscaling.yaml`](../../ci/neon/autoscaling.yaml) compila de `describeloai/autoscaling` en `v0.49.1` (fijada por commit `aea4f327`):
+- el kernel de las VMs (6.12.26 de kernel.org más los parches del fork), etiquetado por el árbol de `neonvm-kernel/`, de modo que si ya está, no se recompila;
+- controller, runner (con el kernel dentro), vxlan-controller, daemon, autoscaler-agent y autoscale-scheduler.
+
+**4 min 19 s en total**: el kernel 3 min 40 s y las seis imágenes 36 s. `computo.yaml` usa ahora `vm-builder` v0.49.1 (el CI de Neon usaba v0.46.0), con alpine y busybox fijados por sha, y el daemon de esa receta.
+
+**P3·2 · Nodos.** El pool `pg` autoescala de 1 a 3 nodos ([`80-…sh`](../../malla/80-postgres-gcp.sh), [`nodos.sh`](../../pruebas-de-fuego/ore-postgres/nodos.sh)).
+- GKE pide un nodo a los **4,3 s**, y el pod corre en él a los **202,6 s**.
+- Lo quita **~12 min** después de quedarse sin pods (perfil BALANCED).
+- **Sólo sube un nodo si el pod cabría en uno nuevo**: con 1500m no lo hizo (`no.scale.up.mig.failing.predicate`). Un n2-standard-2 da 1930m, y los DaemonSets de GKE ya reservan 483m.
+
+**P3·3 · La base en la malla.** cert-manager v1.21.2, Multus para GKE, whereabouts, NeonVM y el autoscaling se generan con [`vendorizar.py`](../../malla/postgres-computo/vendorizar.py) (sucesor de `preparar.py`) a partir de las releases, con las imágenes del fork y todo en el pool `pg`.
+- Los aplican **tres Kustomizations de Flux encadenados** ([`84-…`](../../malla/84-postgres-la-base-del-computo.yaml)): cert-manager y la red, luego NeonVM.
+- Van **fuera de la lista de la malla**: un webhook de cert-manager aún arrancando haría fallar la reconciliación de toda la plataforma.
+- **Reservas a lo medido**: lo que va en cada nodo reservaba 471m y usa ~10m; ahora reserva ~100m. El controller y el scheduler, 200m cada uno.
+- Una VM arranca desde git (74 s en un nodo nuevo, imagen incluida), escribe 100 000 filas, y el agent la baja a 0,25 CPU y 1 GiB, quitando memoria en caliente.
+
+**P3·4 · `ore-pg-computo`** ([`85-…`](../../malla/85-postgres-el-computo.yaml), [`p34.sh`](../../pruebas-de-fuego/ore-postgres/p34.sh): **17/17**).
+- Una VM llega a los safekeepers (:5454) y al pageserver (:6400), y a nada más: ni a la API del pageserver, ni al controller, ni a otra VM, ni a `ore-serve` o el cofre de `t-demo`, ni a la API de Kubernetes, ni a los metadatos de Google, ni a internet.
+- A ella llega sólo `ore-pg` con `ore.dev/pg-acceso`. Un pod de otro namespace **con esa etiqueta** no llega; tampoco llega al almacenamiento.
+- **La reserva de una VM es su mínimo** (`spec.podResources`). Sin reservas, los runners de NeonVM «caben» en cualquier nodo y **GKE nunca subiría uno por una VM**. Neon usa su propio cluster-autoscaler, que en GKE no se puede poner. Lo destapó la cuota de plataforma, que rechazaba los pods. Por encima del mínimo, dentro del nodo, decide el autoscale-scheduler.
+- **Cilium tarda 15–30 s en aplicar un cambio de etiqueta** si el destino está en otro nodo (5–15 s en el mismo, P2·6).
+
+**P3·5 · La overlay cerrada** ([`cerrada.yaml`](../../malla/postgres-computo/neonvm/cerrada.yaml), [`p35.sh`](../../pruebas-de-fuego/ore-postgres/p35.sh): **6/6**).
+- **Medido antes:** desde dentro de una VM, su Postgres abría sesión en el de otra por la overlay (`dblink` → OK).
+- Quién entra en la overlay: Multus con `namespaceIsolation`. Las NADs salen de `neonvm-system`: la de las VMs a `ore-pg-computo`, la del proxy a `ore-pg` (`overlay-del-proxy`). Un pod de fuera que pide cualquiera de las dos no arranca («namespace isolation enabled, annotation violates permission»).
+- Quién habla con quién: `ebtables` en el puente de cada nodo. Una trama pasa sólo si su origen o su destino está en el lado del proxy (`10.100.0.0/17`); las VMs van en `10.100.128.0/17`. Probado con las dos VMs en nodos distintos (VXLAN).
+
+**Deudas de P3** (cada una, con su por qué):
+1. **Una VM puede falsificar un origen del lado del proxy.** Le llegarían tramas sueltas a otra VM, pero nunca la respuesta, que va a la MAC del proxy de verdad: sin respuesta no hay TCP, y Postgres no escucha UDP. Cerrarlo del todo es filtrar en el runner por la IP de **su** VM (nuestro fork).
+2. **La migración en caliente va de runner a runner por la red de pods** (:20187), así que la barrera 2 abre ese puerto entre VMs. Un huésped podría alcanzarlo por el NAT de su runner, y sólo escucha mientras hay una migración entrante.
+3. **Imágenes de terceros sin espejo:** cert-manager, Multus, whereabouts y el device plugin (éste, fijado por digest). Se espejan en la puerta de producción.
+
+**Hallazgo para P3·6:** al borrar una VM, su runner sigue vivo unos segundos con **la misma IP de la overlay**, y contestaba el `select 1` de la VM nueva. Los «arranques de 3,5 s» eran eso. `vm.sh` ahora espera a que se vaya; el plano de control (P4) tendrá que hacer lo mismo.
 
