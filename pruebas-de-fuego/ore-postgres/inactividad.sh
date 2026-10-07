@@ -2,6 +2,7 @@
 # D0b·3 · la señal del escalado a cero: GET /status de compute_ctl (last_active), con y sin
 # consultas. B.5: cloud_admin NO cuenta y las consultas muy cortas pueden no verse (muestreo de
 # 500 ms) ⇒ la actividad se hace con un rol de aplicación y pg_sleep.
+export ORE_PG_COMPUTO=vm   # P3·7: las VMs viven en $ORE_PG_NS_COMPUTO (kc); clientes y almacenamiento en $ORE_PG_NS (k)
 source "$(dirname "$0")/entorno.sh"
 IP=$(leer "pod-$ORE_PG_VM") || exit 1
 TOK=$(python "$AQUI/especificacion.py" token "$ORE_PG_VM")

@@ -2,6 +2,7 @@
 # D0b·4 · migración en vivo con dos sesiones abiertas escribiendo: por la IP overlay (estable) y por
 # la IP del pod. B.6: VM pausada 51–66 ms; por la overlay la sesión sobrevive (mayor hueco 0,75 s),
 # por la IP del pod se cuelga sin error.
+export ORE_PG_COMPUTO=vm   # P3·7: las VMs viven en $ORE_PG_NS_COMPUTO (kc); clientes y almacenamiento en $ORE_PG_NS (k)
 source "$(dirname "$0")/entorno.sh"
 IP=$(ip_pod); OV=$(ip_overlay)
 [ -n "$IP" ] && [ -n "$OV" ] || { echo "✗ $ORE_PG_VM sin IP (¿vm.sh?)"; exit 1; }
@@ -13,17 +14,17 @@ for par in "overlay $OV" "pod $IP"; do
 done
 sleep 20
 M=mig-$ORE_PG_VM-$(date +%s)
-echo "$(ts) MIGRAR desde $(k get neonvm "$ORE_PG_VM" -o jsonpath='{.status.node}')"
+echo "$(ts) MIGRAR desde $(kc get neonvm "$ORE_PG_VM" -o jsonpath='{.status.node}')"
 cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: vm.neon.tech/v1
 kind: VirtualMachineMigration
-metadata: { name: $M, namespace: $ORE_PG_NS }
+metadata: { name: $M, namespace: $ORE_PG_NS_COMPUTO }
 spec: { vmName: $ORE_PG_VM, preventMigrationToSameHost: true, allowPostCopy: false }
 EOF
-until F=$(k get neonvmm "$M" -o jsonpath='{.status.phase}' 2>/dev/null); [ "$F" = Succeeded ] || [ "$F" = Failed ]; do sleep 1; done
+until F=$(kc get neonvmm "$M" -o jsonpath='{.status.phase}' 2>/dev/null); [ "$F" = Succeeded ] || [ "$F" = Failed ]; do sleep 1; done
 echo "$(ts) migración: $F"
-k get neonvmm "$M" -o jsonpath='{.status}' | python -c "import sys,json;d=json.load(sys.stdin);print({k:d[k] for k in d if k!='conditions'})" | cut -c1-600
-echo "VM ahora en $(k get neonvm "$ORE_PG_VM" -o jsonpath='{.status.node} pod={.status.podName} podIP={.status.podIP} overlay={.status.extraNetIP}')"
+kc get neonvmm "$M" -o jsonpath='{.status}' | python -c "import sys,json;d=json.load(sys.stdin);print({k:d[k] for k in d if k!='conditions'})" | cut -c1-600
+echo "VM ahora en $(kc get neonvm "$ORE_PG_VM" -o jsonpath='{.status.node} pod={.status.podName} podIP={.status.podIP} overlay={.status.extraNetIP}')"
 sleep 30
 k exec cliente-overlay -- sh -c 'cat /tmp/sesion-*.log'
 k exec cliente-overlay -- env PGPASSWORD=cloud_admin psql -h "$OV" -p 55433 -U cloud_admin -d postgres -c "
