@@ -442,15 +442,9 @@ Cada hito, en orden, con lo que entra y cuándo está hecho.
 - Qué:
   - **dormir** por inactividad: `last_active` más las conexiones que ve el proxy;
   - **despertar** al conectar, desde un pool de VMs ya arrancadas (`compute_ctl` sin especificación, esperando `/configure`);
-  - ~~la IP de la overlay reutilizada (C4)~~: resuelto en P3·6 y P3·7 (MAC sacada de la IP y ARP gratuito al arrancar);
-  - **el disco del arranque en frío** (decidido el 2026-10-07 dejarlo para aquí). Hoy son 32–35 s, el doble que en D0b: el runner copia 1,6 GB por arranque sobre pd-standard. Opciones, con su medida:
-    1. un pool `pg` nuevo con **SSD local NVMe** para los runners (cuota aparte; ~30 USD/mes por nodo);
-    2. un pool nuevo con **pd-balanced**, como D0b (+~3 USD/mes por nodo);
-    3. dejarlo, si el pool precalentado ya lo esconde;
-  - **el backoff de reconexión al pageserver**: tras una caída de ~40 s las escrituras tardaron 29 s más en volver (P3·7, C4 con VM);
   - los límites de cada endpoint, desde la API: CU mínimas y máximas, y el tiempo hasta dormir.
 - Hecho cuando:
-  - el despertar está medido en p50 y p95, con un objetivo fijado tras la primera medida (hoy, sin pool: 32–35 s en el pool `pg` de pd-standard, P3·7; 15,8–17 s en D0b con SSD, B.4);
+  - el despertar está medido en p50 y p95, con un objetivo fijado tras la primera medida;
   - el cliente no ve más error que la espera;
   - dormido, el cómputo cuesta 0.
 
@@ -921,8 +915,8 @@ Con la imagen de cómputo `8269bece` (todavía sin el anuncio ARP) y NeonVM `v0.
    - Además QEMU anuncia la VM migrada con **RARP**, que el filtro no dejaba pasar.
    - ⇒ **Parche en nuestro fork** ([`describeloai/autoscaling` `v0.49.1-ore.1`](https://github.com/describeloai/autoscaling/tree/v0.49.1-ore.1)): la MAC de la overlay **sale de la IP** (`02:4f:52:45` + los dos últimos octetos). Es estable para toda la vida de la VM e igual para cualquier VM que tenga esa IP: **misma IP, misma MAC**, y la caché ARP del proxy nunca queda vieja.
    - El filtro calcula la MAC de la IP (no la lee de fuera) y deja pasar el RARP sólo con esa MAC.
-2. **El arranque es el doble de lento que en D0b, y es disco.** El runner copia un `rootdisk.qcow2` de **1,6 GB** en cada arranque. El disco del nodo (pd-standard 50 GB) da ~125 MB/s ⇒ ~13 s sólo en la copia. El huésped arranca con 9,7 s parado tras `udevd`, y `compute_ctl` → `running` tarda 8,3 s (`sync_safekeepers` 5,8 s). D0b usó el disco por defecto de GKE (pd-balanced, SSD). **Decidido: se aborda en P6** (ver P6 en la hoja de ruta, con las tres opciones).
-3. **C4 con VM: las escrituras paran 68 s**, ~29 s más que el tiempo hasta `Active`. En pod el hueco coincidía con la caída. Parece el backoff de reconexión del cómputo al pageserver tras una caída larga ⇒ afinarlo en P6.
+2. **El arranque es el doble de lento que en D0b, y es disco.** El runner copia un `rootdisk.qcow2` de **1,6 GB** en cada arranque. El disco del nodo (pd-standard 50 GB) da ~125 MB/s ⇒ ~13 s sólo en la copia. El huésped arranca con 9,7 s parado tras `udevd`, y `compute_ctl` → `running` tarda 8,3 s (`sync_safekeepers` 5,8 s). D0b usó el disco por defecto de GKE (pd-balanced, SSD). Es un dato, no una deuda: el arranque en frío deja de estar en el camino del cliente cuando hay un pool de VMs ya arrancadas, que es P6.
+3. **C4 con VM: las escrituras paran 68 s**, ~29 s más que el tiempo hasta `Active`. En pod el hueco coincidía con la caída. Parece el backoff de reconexión del cómputo al pageserver tras una caída larga. Es un dato.
 4. **Arnés:**
    - `escalado.sh` pasaba los `insert` a `kubectl exec … psql` **sin `-i`**: psql no recibía nada y salía bien, así que el «0 cortes» de B.5 no medía nada. Ahora la sesión corre dentro del clúster (`nohup` en `cliente`), porque un corte de la red de quien lanza la prueba también la mataba.
    - `kubectl cp` no entiende rutas `C:/…`.
