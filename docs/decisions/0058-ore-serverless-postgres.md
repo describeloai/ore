@@ -333,7 +333,7 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P3·1 | NeonVM y autoscaling desde el fork | **hecho** (2026-10-07): las 6 imágenes y el kernel, de `describeloai/autoscaling` v0.49.1, en 4 min 19 s |
 | P3·2 | autoescalado de nodos del pool `pg` | **hecho** (2026-10-07): 1–3 nodos; sube uno en ~3,5 min, lo quita a los ~12 min de sobrar |
 | P3·3 | la base del cómputo en la malla | **hecho** (2026-10-07): tres Kustomizations de Flux; una VM arranca y escribe desde git |
-| P3·4 | `ore-pg-computo` y la barrera 2 | **hecho** (2026-10-07): 17/17 en `p34.sh` |
+| P3·4 | `ore-pg-computo` y la barrera 2 | **hecho** (2026-10-07): 15/15 en `p34.sh` |
 | P3·5 | la overlay cerrada (barrera 3) | **hecho** (2026-10-07): 6/6 en `p35.sh`; antes, de VM a VM sí se entraba (medido) |
 | P3 | el cómputo de producción y el aislamiento | **en curso**: quedan P3·6 (IP reutilizada) y P3·7 (aceptación) |
 
@@ -860,7 +860,7 @@ Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ning�
 - **Reservas a lo medido**: lo que va en cada nodo reservaba 471m y usa ~10m; ahora reserva ~100m. El controller y el scheduler, 200m cada uno.
 - Una VM arranca desde git (74 s en un nodo nuevo, imagen incluida), escribe 100 000 filas, y el agent la baja a 0,25 CPU y 1 GiB, quitando memoria en caliente.
 
-**P3·4 · `ore-pg-computo`** ([`85-…`](../../malla/85-postgres-el-computo.yaml), [`p34.sh`](../../pruebas-de-fuego/ore-postgres/p34.sh): **17/17**).
+**P3·4 · `ore-pg-computo`** ([`85-…`](../../malla/85-postgres-el-computo.yaml), [`p34.sh`](../../pruebas-de-fuego/ore-postgres/p34.sh): **15/15**).
 - Una VM llega a los safekeepers (:5454) y al pageserver (:6400), y a nada más: ni a la API del pageserver, ni al controller, ni a otra VM, ni a `ore-serve` o el cofre de `t-demo`, ni a la API de Kubernetes, ni a los metadatos de Google, ni a internet.
 - A ella llega sólo `ore-pg` con `ore.dev/pg-acceso`. Un pod de otro namespace **con esa etiqueta** no llega; tampoco llega al almacenamiento.
 - **La reserva de una VM es su mínimo** (`spec.podResources`). Sin reservas, los runners de NeonVM «caben» en cualquier nodo y **GKE nunca subiría uno por una VM**. Neon usa su propio cluster-autoscaler, que en GKE no se puede poner. Lo destapó la cuota de plataforma, que rechazaba los pods. Por encima del mínimo, dentro del nodo, decide el autoscale-scheduler.

@@ -84,10 +84,21 @@ steps:
         # caché de capas en el registro (P1·3): Postgres + ~40 extensiones (~65 min en serie) casi
         # nunca cambian; un cambio en compute_ctl sólo recompila su etapa. Escribirla cuesta: sólo
         # con _CACHE=escribir (cambió Postgres, una extensión o build-tools).
-        wget -qO- --header 'Metadata-Flavor: Google' \
+        # ⛔ NO `docker login` con el token del metadata: CADUCA A LA HORA, y en frío esto tarda más. Medido
+        #   (P3·1, build 5510e505): 1 h 31 min compilando y 401 al subir la caché. Un credential helper
+        #   pide un token nuevo en cada petición al registro.
+        cat > /usr/local/bin/docker-credential-metadatos <<'H'
+        #!/bin/sh
+        [ "$1" = get ] || exit 0
+        cat >/dev/null
+        t=$(wget -qO- --header 'Metadata-Flavor: Google' \
           http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token \
-          | sed 's/.*"access_token":"\([^"]*\)".*/\1/' \
-          | docker login -u oauth2accesstoken --password-stdin https://${_REGISTRO_HOST} >/dev/null
+          | sed 's/.*"access_token":"\([^"]*\)".*/\1/')
+        printf '{"Username":"oauth2accesstoken","Secret":"%s"}\n' "$t"
+        H
+        chmod +x /usr/local/bin/docker-credential-metadatos
+        mkdir -p ~/.docker && printf '{"credHelpers":{"%s":"metadatos"}}\n' ${_REGISTRO_HOST} > ~/.docker/config.json
+        echo "${_REGISTRO_HOST}" | docker-credential-metadatos get | grep -q '"Secret":"ya29' || { echo "✗ sin token del metadata"; exit 1; }
         cache_to=""; [ "${_CACHE}" = escribir ] && cache_to="--cache-to type=registry,ref=${_REGISTRO}/cache:neon-computo-v17,mode=max,image-manifest=true,oci-mediatypes=true"
         docker buildx build --load --progress plain $cache_to \
           --cache-from type=registry,ref=${_REGISTRO}/cache:neon-computo-v17 \

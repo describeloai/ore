@@ -66,4 +66,5 @@ git tag ore/v17.11-$(git rev-parse --short=8 HEAD) && git push origin ore/v17.11
 
 - **Fuentes de extensiones de internet.** `compute-node.Dockerfile` descarga ~40 al compilar. `h3-pg` ya desapareció de su sitio (parche `6941d9e`, mismo sha256). Si una descarga da 404: buscar el repositorio nuevo, **comprobar que el sha256 es el mismo** y parchear la URL. Pendiente decidir si guardamos las fuentes en un bucket nuestro.
 - **Memoria al compilar el cómputo.** Con más de 1 etapa de BuildKit en paralelo, el enlazado con LTO muere por SIGKILL en 32 GB. `_PARALELO` se queda en 1.
+- **El token del metadata caduca a la hora.** Con `docker login` al empezar, una compilación de más de una hora falla al subir la caché (401; P3·1 perdió 1 h 31 min así). `computo.yaml` usa un *credential helper* que pide un token nuevo en cada petición.
 - **`HOME` en Cloud Build** es `/builder/home`, y `nonroot` no puede escribir ahí. `postgres-check.yaml` usa `/tmp/ore`.
