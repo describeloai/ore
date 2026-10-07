@@ -5,9 +5,14 @@ apiVersion: vm.neon.tech/v1
 kind: VirtualMachine
 metadata:
   name: ${ORE_PG_VM}
-  namespace: ${ORE_PG_NS}
+  namespace: ${ORE_PG_NS_COMPUTO}
   labels:
     autoscaling.neon.tech/enabled: 'true'
+    # P3·4: la red de `ore-pg-computo` va por ore.dev/rol (malla/85-…); proyecto y endpoint son para
+    # operar y medir, NO para aislar (alta cardinalidad: Cilium no las usa, P2·6)
+    ore.dev/rol: postgres
+    ore.dev/proyecto: prueba
+    ore.dev/endpoint: ${ORE_PG_VM}
   annotations:
     autoscaling.neon.tech/bounds: '{ "min": { "cpu": 0.25, "mem": "1Gi" }, "max":
       { "cpu": 1, "mem": "3Gi" } }'

@@ -1,10 +1,11 @@
 # Los dos clientes de las pruebas (plantilla): `cliente` en la red de pods y `cliente-overlay`,
 # además, en la overlay de las VMs (la red que sobrevive a una migración, B.6). Imagen con psql,
-# pgbench y bash.
+# pgbench y bash. Llevan `ore.dev/pg-acceso: si`: la red de `ore-pg-computo` sólo deja hablar a las
+# VMs a quien la lleve (malla/85-…, P3·4).
 #   source entorno.sh; plantilla cliente.yaml | kubectl apply -f -
 apiVersion: v1
 kind: Pod
-metadata: { name: cliente, namespace: ${ORE_PG_NS} }
+metadata: { name: cliente, namespace: ${ORE_PG_NS}, labels: { ore.dev/pg-acceso: si } }
 spec:
   nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }
   tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
@@ -16,6 +17,7 @@ kind: Pod
 metadata:
   name: cliente-overlay
   namespace: ${ORE_PG_NS}
+  labels: { ore.dev/pg-acceso: si }
   annotations: { k8s.v1.cni.cncf.io/networks: neonvm-system/neonvm-overlay-for-pods }
 spec:
   nodeSelector: { ore.dev/pool: ${ORE_PG_POOL} }

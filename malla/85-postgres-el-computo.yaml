@@ -1,0 +1,180 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE SERVERLESS POSTGRES · EL NAMESPACE DEL CÓMPUTO (ADR 0058, P3·4)
+#
+# `ore-pg-computo`: las VMs de TODOS los endpoints de TODOS los proyectos. Es
+# del producto, como `ore-pg` lo es del almacenamiento (decidido 8): no toca
+# `t-<org>`, ni `ore-serve`, ni el cofre, ni la cuota de ninguna organización.
+#
+# ── La barrera 2: la red de pods ──────────────────────────────────────────
+#
+# Una regla para todos, porque es universal: **un cómputo no habla con ningún
+# otro cómputo, nunca.** Así que no hay fronteras por organización: no hacen
+# falta, y con Cilium tampoco servirían (P2·6: no usa etiquetas de alta
+# cardinalidad para las identidades). Todo va por etiquetas de baja cardinalidad:
+#
+#   ore.dev/rol: postgres     la VM (NeonVM copia las etiquetas de la VM a su
+#                             pod `runner`, que es lo que ve la red)
+#   ore.dev/pg-acceso: si     quien puede hablarle a un cómputo: el plano de
+#                             control (P4), el proxy (P5) y los clientes de las
+#                             pruebas. Vive en `ore-pg`, nunca en `t-*`.
+#
+# Sale una VM:   sólo al DNS y a `ore-pg` (safekeepers :5454, pageserver :6400).
+#                NO a `t-*`, ni al cofre, ni a `ore-serve`, ni a otra VM, ni al
+#                servidor de metadatos de Google.
+# Entra a una VM: desde `ore-pg` con `ore.dev/pg-acceso`, desde NeonVM (su
+#                controller, `neonvm-system`) y desde el autoscaler-agent.
+#                De `t-*`, nada.
+#
+# ⚠️ La migración en caliente va de runner a runner por la red de pods (QEMU,
+#   :20187), y eso es «una VM hablando con otra» para la red: se abre SÓLO ese
+#   puerto. Un huésped podría llegar a él a través del NAT de su runner; sólo
+#   escucha mientras hay una migración entrante. Anotado como deuda en el ADR.
+#
+# ── La cuota de plataforma: un cinturón, no un límite de cliente ───────────
+#
+# Lo que limita a un proyecto lo pone el plano de control (P4/P9). Ésta sólo
+# para un error suyo (un bucle que cree VMs) antes de que se coma el pool.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ore-pg-computo
+  labels:
+    ore.dev/tenant: system
+    ore.dev/producto: postgres
+---
+# Los runners no usan la API (NeonVM ya pone automountServiceAccountToken: false); la
+# cuenta por defecto, tampoco.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: ore-pg-computo
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nada-por-defecto
+  namespace: ore-pg-computo
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-las-vms
+  namespace: ore-pg-computo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: postgres
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-pg
+          podSelector:
+            matchLabels:
+              ore.dev/rol: safekeeper
+      ports: [{protocol: TCP, port: 5454}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-pg
+          podSelector:
+            matchLabels:
+              ore.dev/rol: pageserver
+      ports: [{protocol: TCP, port: 6400}]
+    # la migración en caliente: de runner a runner (ver la cabecera)
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: postgres
+      ports: [{protocol: TCP, port: 20187}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-de-las-vms
+  namespace: ore-pg-computo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: postgres
+  policyTypes: [Ingress]
+  ingress:
+    # el plano de control (compute_ctl :3080), el proxy y los clientes de las pruebas (Postgres :55433)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-pg
+          podSelector:
+            matchLabels:
+              ore.dev/pg-acceso: si
+      ports: [{protocol: TCP, port: 55433}, {protocol: TCP, port: 3080}]
+    # NeonVM: el controller habla con el runner (QMP, su API)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: neonvm-system
+    # el autoscaler-agent: el runner (CPU) y el vm-monitor de dentro de la VM
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              name: autoscaler-agent      # la etiqueta del DaemonSet de la release
+    # la migración en caliente (ver la cabecera)
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: postgres
+      ports: [{protocol: TCP, port: 20187}]
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cinturon
+  namespace: ore-pg-computo
+spec:
+  hard:
+    pods: "40"
+    configmaps: "100"
+    requests.cpu: "16"
+    requests.memory: 64Gi
+---
+# ── La otra mitad de la barrera, en el almacenamiento ─────────────────────
+# Los safekeepers y el pageserver aceptan de su propio namespace (controller,
+# broker, entre ellos, las copias, el scrubber, las pruebas) y, de fuera, SÓLO
+# de las VMs de `ore-pg-computo` y en su puerto de datos. Nada de `t-*`. El token
+# de tenant (barrera 1) sigue valiendo dentro.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-del-almacenamiento
+  namespace: ore-pg
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: ore.dev/rol, operator: In, values: [safekeeper, pageserver]}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-pg-computo
+          podSelector:
+            matchLabels:
+              ore.dev/rol: postgres
+      ports: [{protocol: TCP, port: 5454}, {protocol: TCP, port: 6400}]

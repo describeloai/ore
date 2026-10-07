@@ -97,6 +97,8 @@ resources:
   # P3·3: la base del cómputo (cert-manager, la overlay, NeonVM). Sólo los tres
   # Kustomizations de Flux; lo que aplican vive en `postgres-computo/`, fuera de esta lista.
   - 84-postgres-la-base-del-computo.yaml
+  # P3·4: el namespace del cómputo (ore-pg-computo), la barrera 2 en sus dos lados y la cuota de plataforma.
+  - 85-postgres-el-computo.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO

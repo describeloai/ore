@@ -5,6 +5,7 @@
 # JWT, la especificación) vive en $ORE_PG_TRABAJO, nunca en el repositorio.
 #
 #   ORE_PG_NS           namespace del almacenamiento                   (ore-pg: el de la malla, P2·4)
+#   ORE_PG_NS_COMPUTO   namespace de las VMs                           (ore-pg-computo: el del producto, P3·4)
 #   ORE_PG_VM           nombre del cómputo                             (pg-prueba)
 #   ORE_PG_COMPUTO      vm (NeonVM, P3) | pod (contenedor: sin KVM ni overlay, P2·6)   (pod)
 #   ORE_PG_POOL         etiqueta ore.dev/pool de los nodos con KVM     (neon)
@@ -20,6 +21,7 @@ export MSYS_NO_PATHCONV=1
 AQUI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })   # C:/… en Git Bash: la entienden bash y Python
 
 : "${ORE_PG_NS:=ore-pg}"
+: "${ORE_PG_NS_COMPUTO:=ore-pg-computo}"
 : "${ORE_PG_VM:=pg-prueba}"
 : "${ORE_PG_COMPUTO:=pod}"
 : "${ORE_PG_POOL:=neon}"
@@ -31,7 +33,7 @@ AQUI=$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })   
 : "${ORE_PG_IMAGEN_NEON:=$ORE_PG_REGISTRO/neon:$ORE_PG_COMMIT}"
 : "${ORE_PG_IMAGEN_VM:=$ORE_PG_REGISTRO/vm-compute-node-v17:$ORE_PG_COMMIT}"
 : "${ORE_PG_IMAGEN_COMPUTO:=$ORE_PG_REGISTRO/compute-node-v17:$ORE_PG_COMMIT}"
-export ORE_PG_NS ORE_PG_VM ORE_PG_COMPUTO ORE_PG_IMAGEN_COMPUTO ORE_PG_POOL ORE_PG_BUCKET ORE_PG_GSA ORE_PG_REGISTRO ORE_PG_COMMIT \
+export ORE_PG_NS ORE_PG_NS_COMPUTO ORE_PG_VM ORE_PG_COMPUTO ORE_PG_IMAGEN_COMPUTO ORE_PG_POOL ORE_PG_BUCKET ORE_PG_GSA ORE_PG_REGISTRO ORE_PG_COMMIT \
        ORE_PG_TRABAJO ORE_PG_IMAGEN_NEON ORE_PG_IMAGEN_VM
 mkdir -p "$ORE_PG_TRABAJO"
 # en Windows (Git Bash) bash y Python no ven el mismo /tmp: una ruta C:/… la entienden los dos
@@ -43,6 +45,7 @@ ts() { date -u +%H:%M:%S.%3N; }
 
 # ── kubectl y estado ────────────────────────────────────────────────────────────────────────────
 k() { kubectl -n "$ORE_PG_NS" "$@"; }
+kc() { kubectl -n "$ORE_PG_NS_COMPUTO" "$@"; }                     # las VMs (P3·4)
 guardar() { printf '%s\n' "$2" > "$ORE_PG_TRABAJO/$1"; }              # guardar <clave> <valor>
 leer() { cat "$ORE_PG_TRABAJO/$1" 2>/dev/null || { echo "✗ falta $1 en $ORE_PG_TRABAJO (¿se corrió el paso anterior?)" >&2; return 1; }; }
 
@@ -63,8 +66,8 @@ if [ "$ORE_PG_COMPUTO" = pod ]; then
   ip_overlay() { ip_pod "$@"; }
   qo() { q "$@"; }
 else
-  ip_pod()     { k get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.podIP}' 2>/dev/null; }
-  ip_overlay() { k get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.extraNetIP}' 2>/dev/null; }
+  ip_pod()     { kc get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.podIP}' 2>/dev/null; }
+  ip_overlay() { kc get neonvm "${1:-$ORE_PG_VM}" -o jsonpath='{.status.extraNetIP}' 2>/dev/null; }
 fi
 
 # ── autenticación (P2·4): si el namespace tiene `almacen-jwt`, el almacenamiento la exige ─────────
