@@ -71,10 +71,11 @@ spec:
                 mac=$(echo "$c" | grep -o 'netdev=overlay,mac=[0-9a-f:]*' | cut -d= -f3)
                 [ -n "$ip" ] && [ -n "$mac" ] || return 0
                 nsenter -t "$1" -n sh -c "
-                  ebtables -L ORE-VM 2>/dev/null | grep -q -- '--ip-src $ip ' && ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' && exit 0
-                  ebtables -N ORE-VM -P DROP 2>/dev/null || ebtables -F ORE-VM
+                  ebtables -L ORE-VM 2>/dev/null | grep -q -- '--ip-src $ip ' && ebtables -L ORE-VM | grep -q -- '^-j DROP' && ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' && exit 0
+                  ebtables -N ORE-VM 2>/dev/null || ebtables -F ORE-VM
                   ebtables -A ORE-VM -s $mac -p IPv4 --ip-src $ip -j ACCEPT
                   ebtables -A ORE-VM -s $mac -p ARP --arp-ip-src $ip --arp-mac-src $mac -j ACCEPT
+                  ebtables -A ORE-VM -j DROP    # ⚠️ explícito: ebtables-nft ignora -P en -N (medido: la cadena quedaba en RETURN y lo falso pasaba)
                   ebtables -L FORWARD | grep -q -- '-i tap-overlay -j ORE-VM' || ebtables -A FORWARD -i tap-overlay -j ORE-VM
                   echo \"$(date -u +%FT%TZ) runner de $ip ($mac): sólo su IP y su MAC\""
               }
