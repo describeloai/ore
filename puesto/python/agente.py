@@ -244,7 +244,10 @@ class Kernel:
         `ore.Markdown`) → `html` (S4); un `dict`, `list`, `tuple`,
         `set` o `@dataclass` → `json` (S1); nada → `texto` con lo impreso, o
         `vacia`; lo demás (un número, una cadena, un objeto), `texto` con su
-        `repr`."""
+        `repr`. SQL·1: lo que da un `explain`, `texto` con el plan (`plan`)."""
+        plan = como_plan(valor)
+        if plan is not None:
+            return {"tipo": "texto", "texto": texto + plan, "plan": True, "ms": ms(t0)}
         tabla = como_tabla(valor)
         if tabla is not None:
             tabla.update({"tipo": "tabla", "texto": texto, "ms": ms(t0)})
@@ -343,6 +346,24 @@ def figuras_abiertas(partes, valor):
 
 def ms(t0):
     return int((time.time() - t0) * 1000)
+
+
+#: Lo que DuckDB da a un `explain` (y a un `explain analyze`): dos columnas.
+COLUMNAS_DEL_PLAN = ["explain_key", "explain_value"]
+
+
+def como_plan(valor):
+    """SQL·1: el plan de un `explain` —dibujado con caracteres de recuadro—, como
+    texto (uno por fila, separados), o `None` si `valor` no es eso."""
+    columnas = getattr(valor, "columns", None)
+    if columnas is None or [str(c) for c in columnas] != COLUMNAS_DEL_PLAN:
+        columnas = getattr(valor, "column_names", None)
+        if columnas is None or list(columnas) != COLUMNAS_DEL_PLAN:
+            return None
+        planes = valor.column("explain_value").to_pylist()
+    else:
+        planes = list(valor["explain_value"])
+    return "\n\n".join(str(p).rstrip("\n") for p in planes if p is not None)
 
 
 def como_tabla(valor):

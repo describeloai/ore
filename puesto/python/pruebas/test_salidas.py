@@ -316,5 +316,39 @@ class Varias(unittest.TestCase):
         self.assertEqual(out.getvalue(), "{'a': 1}\ntexto\n")
 
 
+
+class Sql(unittest.TestCase):
+    """SQL·1: lo que una celda SQL da y no es una tabla corriente."""
+
+    def correr(self, texto):
+        k = agente.Kernel.__new__(agente.Kernel)
+        k.espacio = {}
+        return k._correr(texto, "sql")
+
+    def test_explain_es_el_plan_como_texto(self):
+        for q in ("explain select 1 as uno", "explain analyze select count(*) from range(10)"):
+            s = self.correr(q)
+            self.assertEqual((s["tipo"], s["plan"]), ("texto", True), q)
+            self.assertIn("─", s["texto"])   # el recuadro del plan
+            self.assertNotIn("explain_key", s["texto"])
+
+    def test_una_columna_json_es_un_arbol_y_lo_demas_igual(self):
+        s = self.correr("""select '{"a": 1, "b": [1, 2]}'::JSON j, to_json([1, 2]) l, '{"x"'::VARCHAR v, 1 i""")
+        self.assertEqual(s["tipo"], "tabla")
+        self.assertEqual([c["type"] for c in s["columnas"]], ["json", "json", "string", "int32"])
+        self.assertEqual(s["filas"], [[{"a": 1, "b": [1, 2]}, [1, 2], '{"x"', 1]])
+
+    def test_un_json_nulo_y_desde_python(self):
+        import ore
+        df = ore.sql("""select * from (values ('{"k": true}'::JSON), (null)) t(j)""")
+        self.assertEqual(df.attrs[ore.MARCA_JSON], ["j"])
+        s = salida(df)
+        self.assertEqual((s["columnas"][0]["type"], s["filas"]), ("json", [[{"k": True}], [None]]))
+        t = ore.sql("""select '[1]'::JSON j""", format="arrow")
+        self.assertEqual(salida(t)["filas"], [[[1]]])
+        # Los datos no cambian: la columna sigue siendo su texto.
+        self.assertEqual(df["j"].tolist()[0], '{"k": true}')
+
+
 if __name__ == "__main__":
     unittest.main()

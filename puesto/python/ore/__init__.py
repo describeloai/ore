@@ -413,6 +413,9 @@ _leidas = []
 _en_vivo = set()
 # La marca que `sql()` deja en lo que devuelve si leyó en vivo: `write()` la mira.
 MARCA_EN_VIVO = "ore.en_vivo"
+#: SQL·1: las columnas que DuckDB dice `JSON` (en Arrow son un `string` más):
+#: en `attrs` de un DataFrame y en los metadatos del campo de una tabla de Arrow.
+MARCA_JSON = "ore.json"
 _transform = None
 
 
@@ -1425,10 +1428,25 @@ def sql(query, format="pandas", strict=False):
     r = con.execute(texto)
     if r.description is None:
         return None
-    salida = _como(_marca_en_vivo(_arrow(r), set(vivas)), como)
+    json_ = [d[0] for d in r.description if str(d[1]).upper() == "JSON"]
+    salida = _como(_marca_json(_marca_en_vivo(_arrow(r), set(vivas)), json_), como)
     if vivas and como == "pandas":
         salida.attrs[MARCA_EN_VIVO] = sorted(vivas)
+    if json_ and como == "pandas":
+        salida.attrs[MARCA_JSON] = json_
     return salida
+
+
+def _marca_json(tabla, columnas):
+    """SQL·1: las columnas `JSON`, marcadas en su campo (`ore.json`), para que la
+    salida de la celda las pinte como árbol. Los datos no cambian: son su texto."""
+    if not columnas:
+        return tabla
+    import pyarrow as pa
+
+    campos = [f.with_metadata({**(f.metadata or {}), MARCA_JSON.encode(): b"1"}) if f.name in columnas else f
+              for f in tabla.schema]
+    return tabla.cast(pa.schema(campos, metadata=tabla.schema.metadata))
 
 
 # ── Escribir (0031 §11) ────────────────────────────────────────────────────
@@ -2520,6 +2538,11 @@ def table(value, limit=200):
     import pyarrow as pa
 
     t = None
+    # SQL·1: las columnas JSON que dijo `ore.sql` (los `attrs` no pasan a Arrow).
+    try:
+        json_ = set((valor.attrs or {}).get(MARCA_JSON) or [])
+    except (AttributeError, TypeError):
+        json_ = set()
     if isinstance(valor, pa.Table):
         t = valor
     elif isinstance(valor, pa.RecordBatch):
@@ -2542,10 +2565,25 @@ def table(value, limit=200):
         return None
     total = t.num_rows
     cabeza = t.slice(0, limite)
-    columnas = [{"name": f.name, "type": str(f.type)} for f in cabeza.schema]
-    por_columna = [[_a_json(v, f.type) for v in cabeza.column(i).to_pylist()] for i, f in enumerate(cabeza.schema)]  # noqa: E501
+    json_ |= {f.name for f in cabeza.schema if (f.metadata or {}).get(MARCA_JSON.encode())}
+    # SQL·1: una columna JSON va como `json`, y cada valor, ya leído (un objeto).
+    columnas = [{"name": f.name, "type": "json" if f.name in json_ else str(f.type)} for f in cabeza.schema]
+    por_columna = [[_de_json(v) if f.name in json_ else _a_json(v, f.type) for v in cabeza.column(i).to_pylist()]
+                   for i, f in enumerate(cabeza.schema)]
     filas = [list(f) for f in zip(*por_columna)] if por_columna else []
     return {"columnas": columnas, "filas": filas, "total": total, "limite": limite}
+
+
+def _de_json(v):
+    """El valor de una columna JSON, leído; si no se lee (no debería), su texto."""
+    import json
+
+    if not isinstance(v, str):
+        return _a_json(v)
+    try:
+        return json.loads(v)
+    except ValueError:
+        return v
 
 
 ENTERO_EXACTO = 2 ** 53
