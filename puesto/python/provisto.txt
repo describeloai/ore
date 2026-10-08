@@ -8,6 +8,9 @@
 # Fijada el 2026-10-04 = la que trae la imagen en vivo (comparado byte a byte).
 # 2026-10-05 (0050 P1): Python 3.14, las mismas 27, y `pytest` (las pruebas de
 # las funciones corren en la sesión) con lo que arrastra: 32.
+# 2026-10-08 (0049 B9): `pypdfium2` y `pillow`, para pasar ficheros a ficheros
+# (un PDF a una imagen por página); ninguno arrastra nada: 34. Añadidas a mano
+# con la versión de PyPI; el build de la imagen comprueba que `pip freeze` dice lo mismo.
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -26,6 +29,7 @@ numpy==2.5.3
 opentelemetry-api==1.45.0
 packaging==26.3
 pandas==3.0.6
+pillow==12.3.0
 pluggy==1.6.0
 proto-plus==1.29.0
 protobuf==7.36.2
@@ -34,6 +38,7 @@ pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
 Pygments==2.21.0
+pypdfium2==5.14.0
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 requests==2.34.2
