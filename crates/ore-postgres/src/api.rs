@@ -55,6 +55,8 @@ pub struct Servidor {
     /// Con qué volver a conectar si la base se cae (reinicio de `storcon-db`).
     /// Sin ella, una conexión cerrada es un 503 hasta que se reinicie el pod.
     pub url: Option<String>,
+    /// P4·5: los avisos del `storage_controller` (`/avisos/…`). Sin ellos, 404.
+    pub avisos: Option<crate::avisos::Avisos>,
 }
 
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
@@ -81,6 +83,21 @@ impl Servidor {
         let seg = p.segmentos();
         if let ("GET", ["salud"]) = (p.metodo.as_str(), seg.as_slice()) {
             return Respuesta::ok(Json::obj([("ok", Json::Bool(true))]));
+        }
+        // P4·5: los avisos del almacenamiento, con SU token (no el de una celda).
+        if let ["avisos", resto @ ..] = seg.as_slice() {
+            let Some(avisos) = self.avisos.as_ref() else {
+                return Respuesta::error(404, "los avisos no están montados");
+            };
+            let Ok(mut base) = self.base.lock() else {
+                return Respuesta::error(500, "la conexión quedó envenenada");
+            };
+            if base.is_closed()
+                && let Some(Ok(nueva)) = self.url.as_deref().map(crate::base::conectar)
+            {
+                *base = nueva;
+            }
+            return avisos.atender(&mut base, p, resto);
         }
         let ["v1", "postgres", resto @ ..] = seg.as_slice() else {
             return Respuesta::error(404, "no hay nada en ese camino");

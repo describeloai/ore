@@ -83,6 +83,58 @@ impl Llave {
     }
 }
 
+/// El prefijo DER de una pública Ed25519 (SubjectPublicKeyInfo, RFC 8410).
+const SPKI_ED25519: [u8; 12] = [
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+];
+
+/// Una llave pública Ed25519: para creerse los avisos del `storage_controller`
+/// (P4·5), que vienen firmados con la del almacenamiento y `scope: infra`.
+pub struct Publica(ed25519_compact::PublicKey);
+
+impl Publica {
+    pub fn de_pem(pem: &str) -> Result<Publica, String> {
+        let cuerpo: String = pem
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("-----") && !l.is_empty())
+            .collect();
+        let der = b64_decodificar(&cuerpo)?;
+        if der.len() != 44 || der[..12] != SPKI_ED25519 {
+            return Err("no es una llave pública Ed25519".into());
+        }
+        ed25519_compact::PublicKey::from_slice(&der[12..])
+            .map(Publica)
+            .map_err(|e| format!("la llave pública: {e}"))
+    }
+
+    pub fn del_fichero(ruta: &std::path::Path) -> Result<Publica, String> {
+        let pem = std::fs::read_to_string(ruta)
+            .map_err(|e| format!("la llave `{}`: {e}", ruta.display()))?;
+        Publica::de_pem(&pem)
+    }
+
+    /// Un JWT EdDSA firmado con la privada de esta pública: su cuerpo, o por qué no.
+    pub fn verificar(&self, token: &str) -> Result<ore_core::parse::Node, String> {
+        let partes: Vec<&str> = token.trim().split('.').collect();
+        let [cabeza, cuerpo, firma] = partes.as_slice() else {
+            return Err("no es un JWT".into());
+        };
+        let leer = |s: &str| b64_decodificar(&s.replace('-', "+").replace('_', "/"));
+        let cabecera = String::from_utf8(leer(cabeza)?).map_err(|_| "cabecera no UTF-8")?;
+        if !cabecera.contains("\"EdDSA\"") {
+            return Err("el algoritmo no es EdDSA".into());
+        }
+        let firma = ed25519_compact::Signature::from_slice(&leer(firma)?)
+            .map_err(|_| "la firma no tiene la forma de una Ed25519")?;
+        self.0
+            .verify(format!("{cabeza}.{cuerpo}"), &firma)
+            .map_err(|_| "la firma no es de esta llave")?;
+        let texto = String::from_utf8(leer(cuerpo)?).map_err(|_| "cuerpo no UTF-8")?;
+        ore_core::parse::parse(&texto).map_err(|e| format!("el cuerpo no analiza: {e:?}"))
+    }
+}
+
 /// El token de scope `tenant` que lleva un cómputo (firmado con la del almacenamiento).
 pub fn token_de_tenant(almacen: &Llave, tenant: &str) -> String {
     almacen.jwt(
@@ -198,6 +250,29 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
         assert_eq!(cuerpo, r#"{"compute_id":"ep-1","exp":2000000000}"#);
         let cabecera = String::from_utf8(b64url_a_bytes(partes[0])).unwrap();
         assert!(cabecera.contains(&format!(r#""kid":"{}""#, l.kid)));
+    }
+
+    #[test]
+    fn una_publica_cree_lo_que_firma_su_privada_y_nada_mas() {
+        let l = Llave::de_pem(PEM).unwrap();
+        // RFC 8410 §10.1: la pública de esa privada, en SPKI.
+        let p = Publica::de_pem(
+            "-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=
+-----END PUBLIC KEY-----",
+        )
+        .unwrap();
+        let t = l.jwt(&Json::obj([("scope", Json::s("infra"))]), false);
+        let cuerpo = p.verificar(&t).unwrap();
+        assert_eq!(
+            cuerpo.get("scope").and_then(|(_, v)| v.as_str()),
+            Some("infra")
+        );
+        // Tocando un byte del cuerpo, ya no.
+        let mut partes: Vec<String> = t.split('.').map(String::from).collect();
+        partes[1] = b64url(br#"{"scope":"admin"}"#);
+        assert!(p.verificar(&partes.join(".")).is_err());
+        assert!(p.verificar("a.b").is_err());
     }
 
     fn b64url_a_bytes(s: &str) -> Vec<u8> {

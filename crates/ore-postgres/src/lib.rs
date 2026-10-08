@@ -23,6 +23,7 @@
 
 pub mod almacen;
 pub mod api;
+pub mod avisos;
 pub mod base;
 pub mod celda;
 pub mod computos;
@@ -336,6 +337,7 @@ fn servir(args: &[String]) -> ExitCode {
     };
     eprintln!("ore-postgres · {bind}");
     eprintln!("  celdas       la organización de cada una, de ore-iam en {iam}");
+    let mut avisos = None;
     match almacen::Neon::nuevo(
         &controlador,
         safekeepers.clone(),
@@ -346,24 +348,35 @@ fn servir(args: &[String]) -> ExitCode {
                 "  almacén      controller {controlador} · safekeepers {}",
                 safekeepers.join(", ")
             );
-            let computos: Box<dyn computos::Computos> = match computos_de(
-                &imagen,
-                &ns_computo,
-                &llaves,
-                &llaves_computo,
-                neon.safekeepers_pg(),
-            ) {
-                Ok(c) => {
-                    eprintln!("  cómputo      VMs en {ns_computo} · imagen {imagen}");
-                    Box::new(c)
+            let sk_pg = neon.safekeepers_pg();
+            let neon: std::sync::Arc<dyn almacen::Almacen> = std::sync::Arc::new(neon);
+            let computos: std::sync::Arc<dyn computos::Computos> =
+                match computos_de(&imagen, &ns_computo, &llaves, &llaves_computo, sk_pg) {
+                    Ok(c) => {
+                        eprintln!("  cómputo      VMs en {ns_computo} · imagen {imagen}");
+                        std::sync::Arc::new(c)
+                    }
+                    Err(e) => {
+                        eprintln!("  ⚠ SIN CÓMPUTOS: {e}");
+                        eprintln!("    los endpoints quedan en curso hasta que esté");
+                        std::sync::Arc::new(computos::SinKube(e))
+                    }
+                };
+            reconciliador::arrancar(url.clone(), neon.clone(), computos.clone());
+            // P4·5: los avisos del controller, con la pública del almacenamiento.
+            match llaves::Publica::del_fichero(&std::path::Path::new(&llaves).join("publica.pem")) {
+                Ok(infra) => {
+                    eprintln!(
+                        "  avisos       /avisos/notify-attach (token infra del almacenamiento)"
+                    );
+                    avisos = Some(avisos::Avisos {
+                        almacen: neon,
+                        computos,
+                        infra,
+                    });
                 }
-                Err(e) => {
-                    eprintln!("  ⚠ SIN CÓMPUTOS: {e}");
-                    eprintln!("    los endpoints quedan en curso hasta que esté");
-                    Box::new(computos::SinKube(e))
-                }
-            };
-            reconciliador::arrancar(url.clone(), Box::new(neon), computos);
+                Err(e) => eprintln!("  ⚠ SIN AVISOS: {e}"),
+            }
         }
         Err(e) => {
             eprintln!("  ⚠ SIN RECONCILIADOR: {e}");
@@ -374,6 +387,7 @@ fn servir(args: &[String]) -> ExitCode {
         base: Mutex::new(base),
         celdas: Box::new(celda::PorOreIam::nuevo(&iam)),
         url: Some(url),
+        avisos,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

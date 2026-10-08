@@ -21,6 +21,7 @@ use crate::base::{conectar, mal};
 use crate::computos::{Computos, Vm};
 use crate::especificacion::Datos;
 use postgres::Client;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Cuántos intentos antes de rendirse. Con la espera creciente, unos 30 min.
@@ -34,7 +35,7 @@ const CADA: Duration = Duration::from_secs(1);
 pub const PLAZO_ESPERA: f64 = 15.0 * 60.0;
 
 /// En un hilo, para siempre. Con su propia conexión: la del API no se comparte.
-pub fn arrancar(url: String, almacen: Box<dyn Almacen>, computos: Box<dyn Computos>) {
+pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Computos>) {
     std::thread::spawn(move || {
         let mut base: Option<Client> = None;
         loop {
@@ -257,7 +258,7 @@ fn quitar_endpoint(
 }
 
 /// Los roles y las bases de una rama, para su especificación (P4·4).
-fn datos_de(c: &mut Client, org: &str, p: &str, rama: &str) -> Result<Datos, Fallo> {
+pub fn datos_de(c: &mut Client, org: &str, p: &str, rama: &str) -> Result<Datos, Fallo> {
     let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
     let mut d = Datos::default();
     for f in c

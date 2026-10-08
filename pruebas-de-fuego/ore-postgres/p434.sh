@@ -46,11 +46,12 @@ VMS=$(kc get neonvm -l "ore.dev/proyecto=$P" -o name | wc -l)
 
 echo "── capa 3: un segundo cómputo de escritura en main, POR FUERA del API"
 qo "$DIR" 'create table p434 (n int, quien text, cuando timestamptz default clock_timestamp())' >/dev/null
-# El escritor: una conexión por fila, y apunta cuáles le confirmaron (`returning`).
+# El escritor: una conexión por fila, y apunta cuáles le confirmaron (`returning`). ⚠️ Con `-q`: sin él
+# psql imprime también la etiqueta `INSERT 0 1` y todo parecía un fallo (medido, primera pasada).
 k exec -i cliente-overlay -- sh -c 'cat > /tmp/p434.sh' <<'ESC'
 rm -f /tmp/p434-ok /tmp/p434-err
 for i in $(seq 1 600); do
-  r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 55433 -U cloud_admin -d postgres -Atc \
+  r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 55433 -U cloud_admin -d postgres -qAtc \
       "insert into p434 (n, quien) values ($i, 'principal') returning n" 2>&1)
   case "$r" in "$i") echo "$i $(date +%s.%N | cut -c1-14)" >> /tmp/p434-ok;; *) echo "$i $(date +%s) $r" | head -1 >> /tmp/p434-err;; esac
   sleep 0.2
@@ -67,7 +68,9 @@ until OVI=$(ip_overlay "$INTRUSO"); [ -n "$OVI" ] && [ "$(qo "$OVI" 'select 1' 2
   sleep 1; [ $(( $(date +%s)-TI )) -gt 600 ] && { echo "  ✗ el intruso no arranca"; break; }
 done
 echo "  · el intruso responde a los $(( $(date +%s)-TI )) s (en $OVI); escribe 20 filas"
-for i in $(seq 1 20); do qo "$OVI" "insert into p434 (n, quien) values ($i, 'intruso')" >/dev/null 2>&1; sleep 0.5; done
+BIEN_I=0; for i in $(seq 1 20); do
+  [ "$(qo "$OVI" "insert into p434 (n, quien) values ($i, 'intruso') returning n" 2>/dev/null | head -1)" = "$i" ] && BIEN_I=$((BIEN_I+1)); sleep 0.5; done
+echo "  · el intruso confirmó $BIEN_I de 20"
 echo "  · se espera a que el escritor del principal acabe"
 until k exec cliente-overlay -- grep -q fin /tmp/p434-ok 2>/dev/null; do sleep 5; done
 

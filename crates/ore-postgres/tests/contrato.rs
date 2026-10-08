@@ -58,6 +58,7 @@ fn servidor() -> Option<Servidor> {
             ("b".to_string(), celda("cel_b", "org_2")),
         ]))),
         url: Some(url),
+        avisos: None,
     })
 }
 
@@ -741,6 +742,7 @@ fn otro_servidor() -> Servidor {
         base: Mutex::new(ore_postgres::base::conectar(&url).unwrap()),
         celdas: Box::new(Fijas(HashMap::from([("a2".to_string(), celda)]))),
         url: Some(url),
+        avisos: None,
     }
 }
 
@@ -1006,6 +1008,82 @@ fn roles_y_bases_la_contrasena_una_vez_y_el_verificador_entra() {
     admin
         .batch_execute("drop role if exists ana; drop role if exists app")
         .unwrap();
+}
+
+/// La llave de ejemplo de RFC 8410 (§10.3 la privada, §10.1 su pública): la «del almacenamiento».
+const PRIVADA: &str = "-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
+-----END PRIVATE KEY-----";
+const PUBLICA: &str = "-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=
+-----END PUBLIC KEY-----";
+
+#[test]
+fn un_aviso_del_controller_reconfigura_los_computos_del_tenant() {
+    use ore_postgres::llaves::{Llave, Publica};
+    use std::sync::Arc;
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut s) = servidor() else { return };
+    let almacen = Arc::new(Apunta::default());
+    s.avisos = Some(ore_postgres::avisos::Avisos {
+        almacen: almacen.clone(),
+        computos: almacen.clone(),
+        infra: Publica::de_pem(PUBLICA).unwrap(),
+    });
+    let mut c2 = otra_conexion();
+    let (_, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas"}"#,
+    );
+    let tenant = campo(&r, &["proyecto", "tenant"]);
+    ore_postgres::reconciliador::vuelta(&mut c2, almacen.as_ref(), almacen.as_ref()).unwrap();
+    almacen.pedido();
+    let privada = Llave::de_pem(PRIVADA).unwrap();
+    let token = |scope: &str| privada.jwt(&Json::obj([("scope", Json::s(scope))]), false);
+    let aviso = |token: Option<String>, ruta: &str| {
+        let mut cabeceras = BTreeMap::new();
+        if let Some(t) = token {
+            cabeceras.insert("authorization".into(), format!("Bearer {t}"));
+        }
+        s.atender(&Peticion {
+            metodo: "PUT".into(),
+            ruta: ruta.into(),
+            cabeceras,
+            cuerpo: format!(
+                r#"{{"tenant_id":"{tenant}","stripe_size":null,"shards":[{{"node_id":2,"shard_number":0}}]}}"#
+            ),
+            consulta: BTreeMap::new(),
+        })
+    };
+    // Sin token, con otro scope o con una celda: no.
+    assert_eq!(aviso(None, "/avisos/notify-attach").codigo, 401);
+    assert_eq!(
+        aviso(Some(token("admin")), "/avisos/notify-attach").codigo,
+        401
+    );
+    assert_eq!(aviso(Some("a".into()), "/avisos/notify-attach").codigo, 401);
+    assert!(almacen.pedido().is_empty());
+    // Con el del almacenamiento: su cómputo recibe la especificación con el pageserver de ahora.
+    let r = aviso(Some(token("infra")), "/avisos/notify-attach");
+    assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
+    let pedido = almacen.pedido();
+    assert_eq!(pedido.len(), 2, "{pedido:?}");
+    assert_eq!(pedido[0], format!("pageserver {tenant}"));
+    assert!(pedido[1].starts_with("configurar ep-"), "{pedido:?}");
+    // Si el cómputo no lo aplica, 503: el controller lo reintenta.
+    *almacen.falla.lock().unwrap() = Some(Fallo::Reintentar("compute_ctl no contesta".into()));
+    assert_eq!(
+        aviso(Some(token("infra")), "/avisos/notify-attach").codigo,
+        503
+    );
+    *almacen.falla.lock().unwrap() = None;
+    assert_eq!(
+        aviso(Some(token("infra")), "/avisos/notify-safekeepers").codigo,
+        200
+    );
 }
 
 #[test]
