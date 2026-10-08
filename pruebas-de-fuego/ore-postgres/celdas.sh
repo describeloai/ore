@@ -6,7 +6,7 @@
 #
 #   abrir_celdas demo victor       la NetworkPolicy de salida de la prueba (se borra al salir)
 #   en CELDA 'pide MÉTODO CAMINO [CUERPO]' …    una línea `CÓDIGO CUERPO` por paso
-#   hasta_hecha CAMINO             (dentro) sondea una operación hasta `hecha` (90 s)
+#   hasta_hecha CAMINO             (dentro) sondea una operación hasta `hecha` (5 min: una VM puede esperar a un nodo nuevo, ~3,5 min)
 #   espera CÓDIGO "qué" LÍNEA      ✓/✗ y cuenta los fallos en $fallos
 #   campo LÍNEA clave…             un campo del cuerpo JSON de una línea
 : "${PRUEBA:?pon PRUEBA antes de cargar celdas.sh}"
@@ -51,7 +51,7 @@ pide_con() { v=$1; shift; m=$1; c=$2; d=${3:-}; t=$(eval echo \$$v)
   code=$(curl -s -o /tmp/r -w "%{http_code}" -X "$m" ${h:+-H "$h"} ${d:+-H "Content-Type: application/json" --data "$d"} "$URL$c")
   echo "$code $(tr -d "\n" < /tmp/r)"; }
 pide() { pide_con T "$@"; }
-hasta_hecha() { for i in $(seq 1 90); do l=$(pide GET "$1"); case "$l" in *\"hecha\":true*) break;; esac; sleep 1; done; echo "$l"; }
+hasta_hecha() { for i in $(seq 1 300); do l=$(pide GET "$1"); case "$l" in *\"hecha\":true*) break;; esac; sleep 1; done; echo "$l"; }
 TN=""
 '
 

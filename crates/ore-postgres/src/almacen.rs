@@ -35,12 +35,15 @@ pub enum Fallo {
     Reintentar(String),
     /// No va a salir repitiendo: una petición mal formada, un token que no vale.
     Definitivo(String),
+    /// Va bien y lleva su tiempo (una VM arrancando, un runner yéndose): se
+    /// vuelve a mirar en 2 s SIN gastar intentos, hasta un plazo total.
+    Esperar(String),
 }
 
 impl Fallo {
     pub fn motivo(&self) -> &str {
         match self {
-            Fallo::Reintentar(m) | Fallo::Definitivo(m) => m,
+            Fallo::Reintentar(m) | Fallo::Definitivo(m) | Fallo::Esperar(m) => m,
         }
     }
 }

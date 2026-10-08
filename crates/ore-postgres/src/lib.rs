@@ -25,6 +25,7 @@ pub mod almacen;
 pub mod api;
 pub mod base;
 pub mod celda;
+pub mod computos;
 pub mod especificacion;
 pub mod kube;
 pub mod llaves;
@@ -147,6 +148,7 @@ fn especificacion_mando(args: &[String]) -> ExitCode {
             safekeepers: &sk,
             grupo: &grupo,
             ahora: &ahora,
+            replica: false,
         },
         &propia,
         Some(&del_almacen),
@@ -247,6 +249,36 @@ fn kube_prueba(ajenos: &[String]) -> ExitCode {
     }
 }
 
+/// Lo que el reconciliador necesita para crear VMs: el API de Kubernetes, las
+/// dos llaves y la imagen de cómputo.
+fn computos_de(
+    imagen: &str,
+    ns: &str,
+    llaves_almacen: &str,
+    llaves_computo: &str,
+    safekeepers: Vec<String>,
+) -> Result<computos::Neonvm, String> {
+    if imagen.is_empty() {
+        return Err(
+            "falta `--imagen-computo` (la vm-compute-node-v17 de ci/neon/computo.yaml)".into(),
+        );
+    }
+    let kube = kube::Kube::del_pod()?;
+    let propia =
+        llaves::Llave::del_fichero(&std::path::Path::new(llaves_computo).join("privada.pem"))?;
+    let almacen =
+        llaves::Llave::del_fichero(&std::path::Path::new(llaves_almacen).join("privada.pem"))?;
+    Ok(computos::Neonvm::nuevo(
+        ns,
+        imagen,
+        "neon",
+        safekeepers,
+        kube,
+        propia,
+        almacen,
+    ))
+}
+
 fn servir(args: &[String]) -> ExitCode {
     let url = match std::env::var("ORE_POSTGRES_URL") {
         Ok(u) if !u.is_empty() => u,
@@ -273,6 +305,10 @@ fn servir(args: &[String]) -> ExitCode {
                 .collect()
         });
     let llaves = valor(args, "--llaves-almacen").unwrap_or_else(|| "/llaves/almacen".into());
+    let llaves_computo =
+        valor(args, "--llaves-computo").unwrap_or_else(|| "/llaves/computo".into());
+    let imagen = valor(args, "--imagen-computo").unwrap_or_default();
+    let ns_computo = valor(args, "--ns-computo").unwrap_or_else(|| "ore-pg-computo".into());
 
     let mut base = match base::conectar(&url) {
         Ok(c) => c,
@@ -308,7 +344,24 @@ fn servir(args: &[String]) -> ExitCode {
                 "  almacén      controller {controlador} · safekeepers {}",
                 safekeepers.join(", ")
             );
-            reconciliador::arrancar(url.clone(), Box::new(neon));
+            let computos: Box<dyn computos::Computos> = match computos_de(
+                &imagen,
+                &ns_computo,
+                &llaves,
+                &llaves_computo,
+                neon.safekeepers_pg(),
+            ) {
+                Ok(c) => {
+                    eprintln!("  cómputo      VMs en {ns_computo} · imagen {imagen}");
+                    Box::new(c)
+                }
+                Err(e) => {
+                    eprintln!("  ⚠ SIN CÓMPUTOS: {e}");
+                    eprintln!("    los endpoints quedan en curso hasta que esté");
+                    Box::new(computos::SinKube(e))
+                }
+            };
+            reconciliador::arrancar(url.clone(), Box::new(neon), computos);
         }
         Err(e) => {
             eprintln!("  ⚠ SIN RECONCILIADOR: {e}");

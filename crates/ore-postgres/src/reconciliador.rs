@@ -18,6 +18,7 @@
 
 use crate::almacen::{Almacen, Fallo, Origen};
 use crate::base::{conectar, mal};
+use crate::computos::{Computos, Vm};
 use postgres::Client;
 use std::time::Duration;
 
@@ -27,8 +28,12 @@ pub const INTENTOS: i32 = 40;
 /// Cada cuánto mira si hay algo que hacer.
 const CADA: Duration = Duration::from_secs(1);
 
+/// Lo más que se espera a algo que «va bien y lleva su tiempo» (una VM que
+/// arranca: ~35 s medidos; un nodo nuevo del pool: ~3,5 min, P3·2).
+pub const PLAZO_ESPERA: f64 = 15.0 * 60.0;
+
 /// En un hilo, para siempre. Con su propia conexión: la del API no se comparte.
-pub fn arrancar(url: String, almacen: Box<dyn Almacen>) {
+pub fn arrancar(url: String, almacen: Box<dyn Almacen>, computos: Box<dyn Computos>) {
     std::thread::spawn(move || {
         let mut base: Option<Client> = None;
         loop {
@@ -43,7 +48,7 @@ pub fn arrancar(url: String, almacen: Box<dyn Almacen>) {
                 };
             }
             if let Some(c) = base.as_mut()
-                && let Err(e) = vuelta(c, almacen.as_ref())
+                && let Err(e) = vuelta(c, almacen.as_ref(), computos.as_ref())
             {
                 eprintln!("reconciliador · {e}");
             }
@@ -53,10 +58,12 @@ pub fn arrancar(url: String, almacen: Box<dyn Almacen>) {
 }
 
 /// Una vuelta: lo que toca ahora. Devuelve cuántas operaciones miró.
-pub fn vuelta(c: &mut Client, a: &dyn Almacen) -> Result<usize, String> {
+pub fn vuelta(c: &mut Client, a: &dyn Almacen, k: &dyn Computos) -> Result<usize, String> {
     let pendientes = c
         .query(
-            "select id, tipo, organizacion, proyecto, rama, intentos from plano.operacion
+            "select id, tipo, organizacion, proyecto, rama, intentos, endpoint,
+                    extract(epoch from now() - creada)::float8
+               from plano.operacion
               where estado = 'en-curso' and siguiente <= now()
               order by creada limit 20",
             &[],
@@ -70,8 +77,10 @@ pub fn vuelta(c: &mut Client, a: &dyn Almacen) -> Result<usize, String> {
             proyecto: f.get(3),
             rama: f.get(4),
             intentos: f.get(5),
+            endpoint: f.get(6),
+            edad: f.get(7),
         };
-        let resultado = intentar(c, a, &op);
+        let resultado = intentar(c, a, k, &op);
         cerrar(c, &op, resultado)?;
     }
     Ok(pendientes.len())
@@ -84,10 +93,164 @@ struct Op {
     proyecto: String,
     rama: Option<String>,
     intentos: i32,
+    endpoint: Option<String>,
+    /// Segundos desde que se pidió.
+    edad: f64,
+}
+
+/// Un endpoint, con lo que hace falta para su VM.
+struct Ep {
+    id: String,
+    vm: String,
+    rama: String,
+    timeline: String,
+    lectura: bool,
+    cu_min: f64,
+    cu_max: f64,
+    generacion: i64,
+}
+
+fn endpoints(
+    c: &mut Client,
+    org: &str,
+    p: &str,
+    uno: Option<&str>,
+) -> Result<Vec<Ep>, postgres::Error> {
+    Ok(c.query(
+        "select e.id, e.vm, e.rama, r.timeline, e.tipo = 'lectura', e.cu_min, e.cu_max, e.generacion
+           from plano.endpoint e
+           join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto and r.id = e.rama
+          where e.organizacion = $1 and e.proyecto = $2 and ($3::text is null or e.id = $3)
+          order by e.creado",
+        &[&org, &p, &uno],
+    )?
+    .iter()
+    .map(|f| Ep {
+        id: f.get(0),
+        vm: f.get(1),
+        rama: f.get(2),
+        timeline: f.get(3),
+        lectura: f.get(4),
+        cu_min: f.get(5),
+        cu_max: f.get(6),
+        generacion: f.get(7),
+    })
+    .collect())
+}
+
+/// Lleva un endpoint hasta `listo`: su VM existe y su `compute_ctl` dice
+/// `running`. Cada paso es idempotente; lo que lleva tiempo es `Esperar`.
+fn asegurar_endpoint(
+    c: &mut Client,
+    a: &dyn Almacen,
+    k: &dyn Computos,
+    org: &str,
+    p: &str,
+    tenant: &str,
+    ep: &Ep,
+) -> Result<(), Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    let marcar = |c: &mut Client, observado: &str| {
+        c.execute(
+            "update plano.endpoint set observado = $4
+              where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &ep.id, &observado],
+        )
+        .map_err(bd)
+    };
+    let estado = match k.estado(&ep.vm)? {
+        Some(e) => e,
+        None => {
+            // ⭐ El cerco, capa 2: no nace mientras quede un runner con su nombre.
+            if k.runner_vivo(&ep.vm)? {
+                return Err(Fallo::Esperar(
+                    "queda el runner de una VM anterior con este nombre".into(),
+                ));
+            }
+            let pageserver = a.pageserver_de(tenant)?;
+            let configuracion =
+                k.configuracion(&ep.vm, tenant, &ep.timeline, &pageserver, p, ep.lectura);
+            k.crear(
+                &Vm {
+                    nombre: &ep.vm,
+                    organizacion: org,
+                    proyecto: p,
+                    endpoint: &ep.id,
+                    cu_min: ep.cu_min,
+                    cu_max: ep.cu_max,
+                    generacion: ep.generacion,
+                },
+                &configuracion,
+            )?;
+            marcar(c, "arrancando")?;
+            // Se mira otra vez ya: casi siempre seguirá naciendo (y se espera), pero
+            // así una VM que nace lista no cuesta una vuelta más.
+            k.estado(&ep.vm)?
+                .ok_or_else(|| Fallo::Esperar("la VM está naciendo".into()))?
+        }
+    };
+    match estado {
+        e if e.fase == "Failed" || e.fase == "Succeeded" => Err(Fallo::Definitivo(format!(
+            "la VM {} (rama {}) terminó ({})",
+            ep.vm, ep.rama, e.fase
+        ))),
+        e => {
+            let (true, Some(ip)) = (e.fase == "Running", e.ip_pod.as_deref()) else {
+                return Err(Fallo::Esperar(format!("la VM está {}", e.fase)));
+            };
+            if !k.listo(&ep.vm, ip)? {
+                return Err(Fallo::Esperar("compute_ctl aún no dice running".into()));
+            }
+            c.execute(
+                "update plano.endpoint set observado = 'listo', direccion = $4, ip_pod = $5
+                  where organizacion = $1 and proyecto = $2 and id = $3",
+                &[&org, &p, &ep.id, &e.ip_overlay, &ip],
+            )
+            .map_err(bd)?;
+            Ok(())
+        }
+    }
+}
+
+/// Quita un endpoint: su VM y su ConfigMap, espera a que su runner se vaya, y
+/// entonces la fila.
+fn quitar_endpoint(
+    c: &mut Client,
+    k: &dyn Computos,
+    org: &str,
+    p: &str,
+    ep: &Ep,
+) -> Result<(), Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    k.borrar(&ep.vm)?;
+    if k.estado(&ep.vm)?.is_some() || k.runner_vivo(&ep.vm)? {
+        c.execute(
+            "update plano.endpoint set observado = 'borrando'
+              where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &ep.id],
+        )
+        .map_err(bd)?;
+        return Err(Fallo::Esperar("esperando a que su runner se vaya".into()));
+    }
+    c.execute(
+        "delete from plano.endpoint where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&org, &p, &ep.id],
+    )
+    .map_err(bd)?;
+    Ok(())
+}
+
+fn tenant_de(c: &mut Client, org: &str, p: &str) -> Result<Option<String>, Fallo> {
+    Ok(c.query_opt(
+        "select tenant from plano.proyecto where organizacion = $1 and id = $2",
+        &[&org, &p],
+    )
+    .map_err(|e| Fallo::Reintentar(format!("la base: {}", mal(e))))?
+    .and_then(|f| f.get(0)))
 }
 
 /// Un intento entero de una operación. `Ok` es que ya está.
-fn intentar(c: &mut Client, a: &dyn Almacen, op: &Op) -> Result<(), Fallo> {
+fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Result<(), Fallo> {
     let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
     match op.tipo.as_str() {
         "crear-proyecto" => {
@@ -108,6 +271,10 @@ fn intentar(c: &mut Client, a: &dyn Almacen, op: &Op) -> Result<(), Fallo> {
                 &[&op.organizacion, &op.proyecto],
             )
             .map_err(bd)?;
+            // P4·3·3: y su endpoint de escritura en main.
+            for ep in endpoints(c, &op.organizacion, &op.proyecto, None).map_err(bd)? {
+                asegurar_endpoint(c, a, k, &op.organizacion, &op.proyecto, &tenant, &ep)?;
+            }
             c.execute(
                 "update plano.proyecto set observado = 'listo' where organizacion = $1 and id = $2",
                 &[&op.organizacion, &op.proyecto],
@@ -116,14 +283,11 @@ fn intentar(c: &mut Client, a: &dyn Almacen, op: &Op) -> Result<(), Fallo> {
             Ok(())
         }
         "borrar-proyecto" => {
-            let tenant: Option<String> = c
-                .query_opt(
-                    "select tenant from plano.proyecto where organizacion = $1 and id = $2",
-                    &[&op.organizacion, &op.proyecto],
-                )
-                .map_err(bd)?
-                .and_then(|f| f.get(0));
-            if let Some(t) = tenant {
+            // Primero sus cómputos: que nadie escriba en un tenant que se borra.
+            for ep in endpoints(c, &op.organizacion, &op.proyecto, None).map_err(bd)? {
+                quitar_endpoint(c, k, &op.organizacion, &op.proyecto, &ep)?;
+            }
+            if let Some(t) = tenant_de(c, &op.organizacion, &op.proyecto)? {
                 a.borrar_tenant(&t)?;
             }
             // Las ramas se van con él (on delete cascade).
@@ -202,6 +366,22 @@ fn intentar(c: &mut Client, a: &dyn Almacen, op: &Op) -> Result<(), Fallo> {
             .map_err(bd)?;
             Ok(())
         }
+        "crear-endpoint" | "borrar-endpoint" => {
+            let id = op.endpoint.as_deref().unwrap_or_default();
+            let Some(ep) = endpoints(c, &op.organizacion, &op.proyecto, Some(id))
+                .map_err(bd)?
+                .pop()
+            else {
+                // Ya no está la fila: si era borrar, está hecho; si era crear, alguien lo borró.
+                return Ok(());
+            };
+            if op.tipo == "borrar-endpoint" {
+                return quitar_endpoint(c, k, &op.organizacion, &op.proyecto, &ep);
+            }
+            let tenant = tenant_de(c, &op.organizacion, &op.proyecto)?
+                .ok_or_else(|| Fallo::Definitivo("el proyecto ya no está".into()))?;
+            asegurar_endpoint(c, a, k, &op.organizacion, &op.proyecto, &tenant, &ep)
+        }
         otro => Err(Fallo::Definitivo(format!(
             "este reconciliador no sabe hacer `{otro}`"
         ))),
@@ -216,6 +396,16 @@ fn cerrar(c: &mut Client, op: &Op, r: Result<(), Fallo>) -> Result<(), String> {
                 "update plano.operacion set estado = 'hecha', terminada = now(), error = null
                   where id = $1",
                 &[&op.id],
+            )
+            .map_err(mal)?;
+        }
+        // Lo que va bien y tarda: en 2 s otra vez, sin gastar intentos, dentro del plazo.
+        Err(Fallo::Esperar(m)) if op.edad < PLAZO_ESPERA => {
+            c.execute(
+                "update plano.operacion
+                    set error = $2, siguiente = now() + interval '2 seconds'
+                  where id = $1",
+                &[&op.id, &m],
             )
             .map_err(mal)?;
         }
@@ -243,6 +433,14 @@ fn cerrar(c: &mut Client, op: &Op, r: Result<(), Fallo>) -> Result<(), String> {
                 c.execute(
                     "update plano.proyecto set observado = 'fallido' where organizacion = $1 and id = $2",
                     &[&op.organizacion, &op.proyecto],
+                )
+                .map_err(mal)?;
+            }
+            if op.tipo == "crear-endpoint" {
+                c.execute(
+                    "update plano.endpoint set observado = 'fallido'
+                      where organizacion = $1 and proyecto = $2 and id = $3",
+                    &[&op.organizacion, &op.proyecto, &op.endpoint],
                 )
                 .map_err(mal)?;
             }

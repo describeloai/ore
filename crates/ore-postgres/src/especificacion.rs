@@ -29,6 +29,9 @@ pub struct Computo<'a> {
     pub grupo: &'a str,
     /// RFC 3339 del momento en que se escribe.
     pub ahora: &'a str,
+    /// Un endpoint de sólo lectura: una réplica en caliente que sigue la rama
+    /// (`"mode": "Replica"` de Neon), sin votar en los safekeepers.
+    pub replica: bool,
 }
 
 fn ajuste(nombre: &str, valor: &str, tipo: &str) -> Json {
@@ -111,6 +114,9 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
     if let Some(a) = almacen {
         spec.push(("storage_auth_token", Json::s(token_de_tenant(a, c.tenant))));
     }
+    if c.replica {
+        spec.push(("mode", Json::s("Replica")));
+    }
     Json::obj([
         ("spec", Json::obj(spec)),
         (
@@ -169,6 +175,7 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
                 safekeepers: &sk,
                 grupo: "ventas",
                 ahora: "2026-10-08T10:00:00.000Z",
+                replica: false,
             },
             &l,
             Some(&l),
@@ -195,6 +202,7 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
                 safekeepers: &sk,
                 grupo: "ventas",
                 ahora: "2026-10-08T10:00:00.000Z",
+                replica: false,
             },
             &l,
             None,

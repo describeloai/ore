@@ -9,7 +9,12 @@
 //!   GET    /v1/postgres/proyectos/{p}/ramas
 //!   POST   /v1/postgres/proyectos/{p}/ramas       {"id": "dev", "padre": "main", "lsn" | "instante"}  → 202
 //!   GET    /v1/postgres/proyectos/{p}/ramas/{r}
-//!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}   → 202 (`main` y una rama con hijas, no: 409)
+//!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}   → 202 (`main`, una rama con hijas o con endpoints, no: 409)
+//!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/endpoints
+//!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/endpoints   {"id", "tipo": "lectura-escritura" | "lectura",
+//!                                                           "cu_min": "0.25", "cu_max": "1"}  → 202
+//!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}
+//!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}   → 202
 //!   GET    /v1/postgres/operaciones/{op}
 //! ```
 //!
@@ -61,6 +66,9 @@ const NUEVA_OPERACION: &str = "'op_' || replace(gen_random_uuid()::text, '-', ''
 /// Y uno de tenant o de timeline: 32 cifras hexadecimales, como los de Neon.
 const NUEVO_HEX: &str = "replace(gen_random_uuid()::text, '-', '')";
 
+/// El nombre de una VM en Kubernetes: único en todo `ore-pg-computo`.
+const NUEVA_VM: &str = "'ep-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 20)";
+
 impl Servidor {
     pub fn atender(&self, p: &Peticion) -> Respuesta {
         let seg = p.segmentos();
@@ -84,10 +92,12 @@ impl Servidor {
             Err(r) => return r,
         };
         let cuerpo = match &pedido {
-            Pedido::CrearProyecto | Pedido::CrearRama(_) => match analizar(&p.cuerpo) {
-                Ok(n) => Some(n),
-                Err(m) => return Respuesta::error(400, m),
-            },
+            Pedido::CrearProyecto | Pedido::CrearRama(_) | Pedido::CrearEndpoint(..) => {
+                match analizar(&p.cuerpo) {
+                    Ok(n) => Some(n),
+                    Err(m) => return Respuesta::error(400, m),
+                }
+            }
             _ => None,
         };
         let Ok(mut base) = self.base.lock() else {
@@ -112,6 +122,12 @@ impl Servidor {
             Pedido::Rama(p, r) => rama(c, &celda, p, r),
             Pedido::CrearRama(p) => crear_rama(c, &celda, p, cuerpo.as_ref().expect("analizado")),
             Pedido::BorrarRama(p, r) => borrar_rama(c, &celda, p, r),
+            Pedido::Endpoints(p, r) => endpoints(c, &celda, p, r),
+            Pedido::Endpoint(p, r, e) => endpoint(c, &celda, p, r, e),
+            Pedido::CrearEndpoint(p, r) => {
+                crear_endpoint(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
+            }
+            Pedido::BorrarEndpoint(p, r, e) => borrar_endpoint(c, &celda, p, r, e),
         };
         let mut r = hacer(&mut base);
         // La caída sólo se ve al usarla: si falló y la conexión resulta cerrada, se
@@ -139,6 +155,10 @@ pub enum Pedido<'a> {
     CrearRama(&'a str),
     Rama(&'a str, &'a str),
     BorrarRama(&'a str, &'a str),
+    Endpoints(&'a str, &'a str),
+    CrearEndpoint(&'a str, &'a str),
+    Endpoint(&'a str, &'a str, &'a str),
+    BorrarEndpoint(&'a str, &'a str, &'a str),
 }
 
 /// De método y camino (sin `/v1/postgres`) a lo que se pide.
@@ -153,13 +173,19 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("POST", ["proyectos", p, "ramas"]) => Pedido::CrearRama(p),
         ("GET", ["proyectos", p, "ramas", r]) => Pedido::Rama(p, r),
         ("DELETE", ["proyectos", p, "ramas", r]) => Pedido::BorrarRama(p, r),
+        ("GET", ["proyectos", p, "ramas", r, "endpoints"]) => Pedido::Endpoints(p, r),
+        ("POST", ["proyectos", p, "ramas", r, "endpoints"]) => Pedido::CrearEndpoint(p, r),
+        ("GET", ["proyectos", p, "ramas", r, "endpoints", e]) => Pedido::Endpoint(p, r, e),
+        ("DELETE", ["proyectos", p, "ramas", r, "endpoints", e]) => Pedido::BorrarEndpoint(p, r, e),
         (
             _,
             ["proyectos"]
             | ["proyectos", _]
             | ["operaciones", _]
             | ["proyectos", _, "ramas"]
-            | ["proyectos", _, "ramas", _],
+            | ["proyectos", _, "ramas", _]
+            | ["proyectos", _, "ramas", _, "endpoints"]
+            | ["proyectos", _, "ramas", _, "endpoints", _],
         ) => {
             return Err(Respuesta::error(
                 405,
@@ -177,6 +203,20 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
                 format!("no hay ningún proyecto `{p}`"),
             ))
         }
+        Pedido::Endpoints(p, r)
+        | Pedido::CrearEndpoint(p, r)
+        | Pedido::Endpoint(p, r, _)
+        | Pedido::BorrarEndpoint(p, r, _)
+            if !id_valido(p) || !id_valido(r) =>
+        {
+            Err(Respuesta::error(
+                404,
+                format!("no hay ninguna rama `{r}` en `{p}`"),
+            ))
+        }
+        Pedido::Endpoint(_, _, e) | Pedido::BorrarEndpoint(_, _, e) if !id_valido(e) => Err(
+            Respuesta::error(404, format!("no hay ningún endpoint `{e}`")),
+        ),
         Pedido::Rama(_, r) | Pedido::BorrarRama(_, r) if !id_valido(r) => {
             Err(Respuesta::error(404, format!("no hay ninguna rama `{r}`")))
         }
@@ -275,6 +315,14 @@ fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respue
                 &format!(
                     "insert into plano.rama (organizacion, proyecto, id, timeline)
                      values ($1, $2, 'main', {NUEVO_HEX})"
+                ),
+                &[&celda.organizacion, &id],
+            )?;
+            // P4·3·3: y su endpoint de escritura en main, como Lakebase.
+            tx.execute(
+                &format!(
+                    "insert into plano.endpoint (organizacion, proyecto, rama, id, vm)
+                     values ($1, $2, 'main', 'principal', {NUEVA_VM})"
                 ),
                 &[&celda.organizacion, &id],
             )?;
@@ -523,6 +571,24 @@ fn borrar_rama(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respue
         .iter()
         .map(|f| f.get(0))
         .collect();
+    let con_endpoints: Vec<String> = tx
+        .query(
+            "select id from plano.endpoint
+              where organizacion = $1 and proyecto = $2 and rama = $3 order by id",
+            &[&celda.organizacion, &p, &r],
+        )?
+        .iter()
+        .map(|f| f.get(0))
+        .collect();
+    if !con_endpoints.is_empty() {
+        return Err(Fallo(
+            409,
+            format!(
+                "`{r}` tiene endpoints ({}): bórralos antes",
+                con_endpoints.join(", ")
+            ),
+        ));
+    }
     if !hijas.is_empty() {
         return Err(Fallo(
             409,
@@ -550,12 +616,23 @@ fn nueva_operacion(
     tipo: &str,
     rama: Option<&str>,
 ) -> Result<Row, Fallo> {
+    nueva_operacion_de(tx, celda, p, tipo, rama, None)
+}
+
+fn nueva_operacion_de(
+    tx: &mut postgres::Transaction,
+    celda: &Celda,
+    p: &str,
+    tipo: &str,
+    rama: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<Row, Fallo> {
     match tx.query_one(
         &format!(
-            "insert into plano.operacion (id, organizacion, proyecto, tipo, celda, rama)
-             values ({NUEVA_OPERACION}, $1, $2, $3, $4, $5) returning {OPERACION}"
+            "insert into plano.operacion (id, organizacion, proyecto, tipo, celda, rama, endpoint)
+             values ({NUEVA_OPERACION}, $1, $2, $3, $4, $5, $6) returning {OPERACION}"
         ),
-        &[&celda.organizacion, &p, &tipo, &celda.id, &rama],
+        &[&celda.organizacion, &p, &tipo, &celda.id, &rama, &endpoint],
     ) {
         Ok(f) => Ok(f),
         Err(e) if choca(&e, "una_en_curso_por_proyecto") => Err(Fallo(
@@ -593,6 +670,196 @@ fn rama_json(f: &Row) -> Json {
         v.push(("origen", Json::obj(origen)));
     }
     Json::obj(v)
+}
+
+// ── los endpoints (P4·3·3) ─────────────────────────────────────────────────
+
+/// De un endpoint, en el orden en que lo lee [`endpoint_json`].
+const ENDPOINT: &str = "id, rama, tipo, vm, cu_min, cu_max, deseado, observado, direccion,
+    to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
+
+/// La rama, viva y de este proyecto vivo de esta organización: si no, 404.
+fn rama_viva(
+    c: &mut impl postgres::GenericClient,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+) -> Result<String, Fallo> {
+    proyecto_vivo(c, celda, p)?;
+    match c.query_opt(
+        "select observado from plano.rama
+          where organizacion = $1 and proyecto = $2 and id = $3 and deseado = 'viva'",
+        &[&celda.organizacion, &p, &r],
+    )? {
+        Some(f) => Ok(f.get(0)),
+        None => Err(no_hay_rama(r)),
+    }
+}
+
+fn endpoints(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuesta, Fallo> {
+    rama_viva(c, celda, p, r)?;
+    let filas = c.query(
+        &format!(
+            "select {ENDPOINT} from plano.endpoint
+              where organizacion = $1 and proyecto = $2 and rama = $3 and deseado = 'vivo'
+              order by id"
+        ),
+        &[&celda.organizacion, &p, &r],
+    )?;
+    Ok(Respuesta::ok(Json::obj([(
+        "endpoints",
+        Json::Arr(filas.iter().map(endpoint_json).collect()),
+    )])))
+}
+
+fn endpoint(c: &mut Client, celda: &Celda, p: &str, r: &str, e: &str) -> Result<Respuesta, Fallo> {
+    rama_viva(c, celda, p, r)?;
+    match c.query_opt(
+        &format!(
+            "select {ENDPOINT} from plano.endpoint
+              where organizacion = $1 and proyecto = $2 and rama = $3 and id = $4"
+        ),
+        &[&celda.organizacion, &p, &r, &e],
+    )? {
+        Some(f) => Ok(Respuesta::ok(endpoint_json(&f))),
+        None => Err(no_hay_endpoint(e)),
+    }
+}
+
+/// Unas CU: un número entre 0.25 y 2.
+fn cu(cuerpo: &Node, k: &str, por_defecto: f64) -> Result<f64, Fallo> {
+    match cuerpo.get(k).and_then(|(_, v)| v.as_str()) {
+        None => Ok(por_defecto),
+        Some(v) => v
+            .parse::<f64>()
+            .ok()
+            .filter(|x| (0.25..=2.0).contains(x))
+            .ok_or_else(|| {
+                Fallo(
+                    400,
+                    format!("`{k}` son unidades de cómputo, de 0.25 a 2, no `{v}`"),
+                )
+            }),
+    }
+}
+
+fn crear_endpoint(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    cuerpo: &Node,
+) -> Result<Respuesta, Fallo> {
+    let texto = |k: &str| cuerpo.get(k).and_then(|(_, v)| v.as_str());
+    let Some(id) = texto("id") else {
+        return Err(Fallo(400, "falta `id`: el nombre del endpoint".into()));
+    };
+    if !id_valido(id) {
+        return Err(Fallo(
+            400,
+            format!(
+                "`{id}` no vale como id: `[a-z0-9-]`, de 1 a 63, sin guion al principio ni al final"
+            ),
+        ));
+    }
+    let tipo = texto("tipo").unwrap_or("lectura-escritura");
+    if tipo != "lectura-escritura" && tipo != "lectura" {
+        return Err(Fallo(
+            400,
+            format!("`tipo` es `lectura-escritura` o `lectura`, no `{tipo}`"),
+        ));
+    }
+    let (cu_min, cu_max) = (cu(cuerpo, "cu_min", 0.25)?, cu(cuerpo, "cu_max", 1.0)?);
+    if cu_min > cu_max {
+        return Err(Fallo(400, "`cu_min` no puede pasar de `cu_max`".into()));
+    }
+    let mut tx = c.transaction()?;
+    if rama_viva(&mut tx, celda, p, r)? != "lista" {
+        return Err(Fallo(409, format!("la rama `{r}` aún no está lista")));
+    }
+    let fila = match tx.query_one(
+        &format!(
+            "insert into plano.endpoint (organizacion, proyecto, rama, id, tipo, vm, cu_min, cu_max)
+             values ($1, $2, $3, $4, $5, {NUEVA_VM}, $6, $7) returning {ENDPOINT}"
+        ),
+        &[&celda.organizacion, &p, &r, &id, &tipo, &cu_min, &cu_max],
+    ) {
+        Ok(f) => f,
+        // ⭐ El cerco, capa 1: lo cierra la base, también con dos peticiones a la vez.
+        Err(e) if choca(&e, "endpoint_escritura_por_rama") => {
+            return Err(Fallo(
+                409,
+                format!("la rama `{r}` ya tiene un endpoint de escritura: sólo puede haber uno"),
+            ));
+        }
+        Err(e) if choca(&e, "endpoint_pkey") => {
+            return Err(Fallo(409, format!("ya hay un endpoint `{id}` en `{p}`")));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let op = nueva_operacion_de(&mut tx, celda, p, "crear-endpoint", Some(r), Some(id))?;
+    tx.commit()?;
+    Ok(aceptada(&op, Some(("endpoint", endpoint_json(&fila)))))
+}
+
+fn borrar_endpoint(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    e: &str,
+) -> Result<Respuesta, Fallo> {
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    let Some(_) = tx.query_opt(
+        "select 1 from plano.endpoint
+          where organizacion = $1 and proyecto = $2 and rama = $3 and id = $4 and deseado = 'vivo'
+          for update",
+        &[&celda.organizacion, &p, &r, &e],
+    )?
+    else {
+        return Err(no_hay_endpoint(e));
+    };
+    let op = nueva_operacion_de(&mut tx, celda, p, "borrar-endpoint", Some(r), Some(e))?;
+    tx.execute(
+        "update plano.endpoint set deseado = 'borrado', observado = 'borrando', generacion = generacion + 1
+          where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&celda.organizacion, &p, &e],
+    )?;
+    tx.commit()?;
+    Ok(aceptada(&op, None))
+}
+
+fn endpoint_json(f: &Row) -> Json {
+    let mut v = vec![
+        ("id", Json::s(f.get::<_, String>(0))),
+        ("rama", Json::s(f.get::<_, String>(1))),
+        ("tipo", Json::s(f.get::<_, String>(2))),
+        ("vm", Json::s(f.get::<_, String>(3))),
+        (
+            "cu",
+            Json::obj([
+                ("min", Json::s(f.get::<_, f64>(4).to_string())),
+                ("max", Json::s(f.get::<_, f64>(5).to_string())),
+            ]),
+        ),
+        (
+            "estado",
+            Json::obj([
+                ("deseado", Json::s(f.get::<_, String>(6))),
+                ("observado", Json::s(f.get::<_, String>(7))),
+            ]),
+        ),
+        ("creado", Json::s(f.get::<_, String>(9))),
+    ];
+    if let Some(d) = f.get::<_, Option<String>>(8) {
+        v.push(("direccion", Json::s(d)));
+    }
+    Json::obj(v)
+}
+
+fn no_hay_endpoint(id: &str) -> Fallo {
+    Fallo(404, format!("no hay ningún endpoint `{id}`"))
 }
 
 fn no_hay_rama(id: &str) -> Fallo {

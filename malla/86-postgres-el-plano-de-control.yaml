@@ -79,7 +79,8 @@ spec:
   selector: { matchLabels: { ore.dev/rol: plano-postgres } }
   template:
     metadata:
-      labels: { ore.dev/rol: plano-postgres, ore.dev/tenant: system }
+      # pg-acceso: las VMs le dejan entrar a su compute_ctl (:3080), como al proxy (85, barrera 2).
+      labels: { ore.dev/rol: plano-postgres, ore.dev/tenant: system, ore.dev/pg-acceso: si }
     spec:
       serviceAccountName: ore-postgres
       nodeSelector: { ore.dev/pool: neon }
@@ -92,7 +93,13 @@ spec:
         - name: ore-postgres
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-postgres:main
           imagePullPolicy: Always
-          args: [servir, --bind, 0.0.0.0:8100]
+          # La imagen de las VMs: la de ci/neon/computo.yaml (`_COMMIT`), con el ARP gratuito (P3·6).
+          args:
+            - servir
+            - --bind
+            - 0.0.0.0:8100
+            - --imagen-computo
+            - europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/vm-compute-node-v17:baad49aa38dbf272c5874aa0d547e2cfb841ec1a
           env:
             - name: ORE_POSTGRES_URL
               valueFrom: { secretKeyRef: { name: ore-postgres-db, key: url } }
@@ -166,3 +173,8 @@ spec:
     - to:
         - ipBlock: { cidr: 10.10.0.2/32 }
       ports: [{ protocol: TCP, port: 443 }]
+    # P4·3·3: el compute_ctl de cada VM, para saber si está `running` (y, en P4·4, /configure).
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ore-pg-computo } }
+          podSelector: { matchLabels: { ore.dev/rol: postgres } }
+      ports: [{ protocol: TCP, port: 3080 }]

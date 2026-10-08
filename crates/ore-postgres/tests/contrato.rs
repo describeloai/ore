@@ -13,6 +13,7 @@ use ore_entrada::http::Peticion;
 use ore_postgres::almacen::{Almacen, Fallo, Origen};
 use ore_postgres::api::Servidor;
 use ore_postgres::celda::{Celda, Fijas};
+use ore_postgres::computos::{Computos, Estado, Vm};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
@@ -29,7 +30,11 @@ fn servidor() -> Option<Servidor> {
         .expect("limpiar");
     assert_eq!(
         ore_postgres::base::migrar(&mut c).expect("migrar"),
-        vec!["001-el-esqueleto", "002-el-tenant-y-las-ramas"]
+        vec![
+            "001-el-esqueleto",
+            "002-el-tenant-y-las-ramas",
+            "003-los-endpoints"
+        ]
     );
     // Dos veces es una: no aplica nada.
     assert!(
@@ -53,11 +58,53 @@ fn servidor() -> Option<Servidor> {
     })
 }
 
-/// Un almacenamiento que apunta lo que se le pide y contesta lo que se le diga.
+/// Un almacenamiento (y un cómputo) que apunta lo que se le pide y contesta lo
+/// que se le diga. Sus VMs nacen ya `Running` y listas.
 #[derive(Default)]
 struct Apunta {
     pedido: Mutex<Vec<String>>,
     falla: Mutex<Option<Fallo>>,
+    vms: Mutex<HashMap<String, String>>,
+}
+
+impl Computos for Apunta {
+    fn configuracion(
+        &self,
+        vm: &str,
+        t: &str,
+        tl: &str,
+        ps: &str,
+        _: &str,
+        replica: bool,
+    ) -> String {
+        format!("{vm} {t} {tl} {ps} replica={replica}")
+    }
+    fn estado(&self, vm: &str) -> Result<Option<Estado>, Fallo> {
+        Ok(self.vms.lock().unwrap().get(vm).map(|ip| Estado {
+            fase: "Running".into(),
+            ip_pod: Some(ip.clone()),
+            ip_overlay: Some(format!("10.100.128.{}", ip.len())),
+        }))
+    }
+    fn runner_vivo(&self, _: &str) -> Result<bool, Fallo> {
+        Ok(false)
+    }
+    fn crear(&self, vm: &Vm, cfg: &str) -> Result<(), Fallo> {
+        self.apuntar(format!("vm-crear {} {} {cfg}", vm.nombre, vm.endpoint))?;
+        self.vms
+            .lock()
+            .unwrap()
+            .insert(vm.nombre.into(), "10.1.0.1".into());
+        Ok(())
+    }
+    fn listo(&self, _: &str, _: &str) -> Result<bool, Fallo> {
+        Ok(true)
+    }
+    fn borrar(&self, vm: &str) -> Result<(), Fallo> {
+        self.apuntar(format!("vm-borrar {vm}"))?;
+        self.vms.lock().unwrap().remove(vm);
+        Ok(())
+    }
 }
 
 impl Apunta {
@@ -159,13 +206,21 @@ fn una_celda_crea_y_lee_y_otra_organizacion_no_lo_ve() {
     let almacen = Apunta::default();
     let mut c2 = otra_conexion();
     assert_eq!(
-        ore_postgres::reconciliador::vuelta(&mut c2, &almacen),
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen),
         Ok(1)
     );
     let pedido = almacen.pedido();
-    assert_eq!(pedido.len(), 2, "{pedido:?}");
+    assert_eq!(pedido.len(), 4, "{pedido:?}");
     assert_eq!(pedido[0], format!("tenant {tenant}"));
     assert!(pedido[1].starts_with(&format!("timeline {tenant} ")) && pedido[1].ends_with("None"));
+    // P4·3·3: y su endpoint de escritura en main, con la especificación de su tenant.
+    assert_eq!(pedido[2], format!("pageserver {tenant}"));
+    assert!(
+        pedido[3].starts_with("vm-crear ep-")
+            && pedido[3].contains(" principal ")
+            && pedido[3].contains(&tenant),
+        "{pedido:?}"
+    );
     let (_, r) = pide(
         &s,
         "a",
@@ -176,7 +231,7 @@ fn una_celda_crea_y_lee_y_otra_organizacion_no_lo_ve() {
     assert_eq!(campo(&r, &["hecha"]), "true", "{r}");
     // Y no repite lo hecho.
     assert_eq!(
-        ore_postgres::reconciliador::vuelta(&mut c2, &almacen),
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen),
         Ok(0)
     );
 
@@ -274,10 +329,21 @@ fn una_celda_crea_y_lee_y_otra_organizacion_no_lo_ve() {
     );
     // (y la vuelta crea antes el de `b`, que estaba en curso)
     assert_eq!(
-        ore_postgres::reconciliador::vuelta(&mut c2, &almacen),
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen),
         Ok(2)
     );
-    assert!(almacen.pedido().contains(&format!("borrar {tenant}")));
+    let pedido = almacen.pedido();
+    assert!(pedido.contains(&format!("borrar {tenant}")), "{pedido:?}");
+    // Primero sus cómputos, y después el tenant.
+    let vm = pedido
+        .iter()
+        .position(|x| x.starts_with("vm-borrar"))
+        .expect("su VM");
+    let t = pedido
+        .iter()
+        .position(|x| x == &format!("borrar {tenant}"))
+        .unwrap();
+    assert!(vm < t, "{pedido:?}");
     assert_eq!(
         pide(&s, "a", "GET", "/v1/postgres/proyectos/ventas", "").0,
         404
@@ -312,7 +378,7 @@ fn lo_pasajero_se_reintenta_y_lo_definitivo_falla() {
     let (_, r) = pide(&s, "a", "POST", "/v1/postgres/proyectos", r#"{"id":"uno"}"#);
     let op = campo(&r, &["operacion", "id"]);
     assert_eq!(
-        ore_postgres::reconciliador::vuelta(&mut c2, &almacen),
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen),
         Ok(1)
     );
     let (_, r) = pide(
@@ -325,7 +391,7 @@ fn lo_pasajero_se_reintenta_y_lo_definitivo_falla() {
     assert_eq!(campo(&r, &["estado"]), "en-curso", "{r}");
     assert_eq!(campo(&r, &["error"]), "tenant aún no activo");
     assert_eq!(
-        ore_postgres::reconciliador::vuelta(&mut c2, &almacen),
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen),
         Ok(0)
     );
     // Llega su hora y sale.
@@ -333,7 +399,7 @@ fn lo_pasajero_se_reintenta_y_lo_definitivo_falla() {
     c2.execute("update plano.operacion set siguiente = now()", &[])
         .unwrap();
     assert_eq!(
-        ore_postgres::reconciliador::vuelta(&mut c2, &almacen),
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen),
         Ok(1)
     );
     let (_, r) = pide(
@@ -349,7 +415,7 @@ fn lo_pasajero_se_reintenta_y_lo_definitivo_falla() {
     *almacen.falla.lock().unwrap() = Some(Fallo::Definitivo("400 mal".into()));
     let (_, r) = pide(&s, "a", "POST", "/v1/postgres/proyectos", r#"{"id":"dos"}"#);
     let op = campo(&r, &["operacion", "id"]);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     let (_, r) = pide(
         &s,
         "a",
@@ -403,7 +469,7 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
     let tenant = campo(&r, &["proyecto", "tenant"]);
     // Mientras el proyecto se crea, ni una rama: una operación a la vez.
     assert_eq!(post(r#"{"id":"dev"}"#).0, 409);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     almacen.pedido();
 
     // main está, y es la primera.
@@ -421,7 +487,7 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
     assert_eq!(c, 202, "{r}");
     assert_eq!(campo(&r, &["rama", "origen", "rama"]), "main");
     let dev = campo(&r, &["rama", "timeline"]);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     assert_eq!(
         almacen.pedido(),
         vec![format!(
@@ -437,7 +503,7 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
         "2026-10-07T08:00:00.000Z"
     );
     let ayer = campo(&r, &["rama", "timeline"]);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     assert_eq!(
         almacen.pedido(),
         vec![
@@ -455,7 +521,7 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
         post(r#"{"id":"fix","padre":"dev","lsn":"0/16B5A50"}"#).0,
         202
     );
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     assert!(almacen.pedido()[0].contains(r#"lsn: Some("0/16B5A50")"#));
 
     // Lo que no vale.
@@ -480,14 +546,14 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
     let (_, r) = pide(&s, "a", "GET", &format!("{ramas}/fix"), "");
     let fix = campo(&r, &["timeline"]);
     assert_eq!(pide(&s, "a", "DELETE", &format!("{ramas}/fix"), "").0, 202);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     assert_eq!(
         almacen.pedido(),
         vec![format!("borrar-timeline {tenant} {fix}")]
     );
     assert_eq!(pide(&s, "a", "GET", &format!("{ramas}/fix"), "").0, 404);
     assert_eq!(pide(&s, "a", "DELETE", &format!("{ramas}/dev"), "").0, 202);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     let (_, r) = pide(&s, "a", "GET", ramas, "");
     assert!(
         !r.contains(r#""id":"dev""#) && r.contains(r#""id":"ayer""#),
@@ -498,7 +564,7 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
     *almacen.falla.lock().unwrap() = Some(Fallo::Definitivo("no hay datos".into()));
     let (_, r) = post(r#"{"id":"antes","instante":"2000-01-01T00:00:00Z"}"#);
     let op = campo(&r, &["operacion", "id"]);
-    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     let (_, r) = pide(
         &s,
         "a",
@@ -509,6 +575,140 @@ fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
     assert_eq!(campo(&r, &["estado"]), "fallida", "{r}");
     let (_, r) = pide(&s, "a", "GET", &format!("{ramas}/antes"), "");
     assert_eq!(campo(&r, &["estado", "observado"]), "fallida", "{r}");
+}
+
+#[test]
+fn los_endpoints_y_el_cerco_de_escritura() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let mut c2 = otra_conexion();
+    let almacen = Apunta::default();
+    let vuelta = |c2: &mut postgres::Client| {
+        ore_postgres::reconciliador::vuelta(c2, &almacen, &almacen).unwrap()
+    };
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas"}"#,
+    );
+    vuelta(&mut c2);
+    let main = "/v1/postgres/proyectos/ventas/ramas/main/endpoints";
+    // main ya tiene su endpoint de escritura, listo, con su dirección.
+    let (c, r) = pide(&s, "a", "GET", main, "");
+    assert_eq!(c, 200, "{r}");
+    assert!(
+        r.contains(r#""id":"principal""#) && r.contains(r#""observado":"listo""#),
+        "{r}"
+    );
+    assert!(r.contains(r#""direccion":"10.100.128."#), "{r}");
+    // ⭐ El cerco, capa 1: otro de escritura en main, no.
+    let (c, r) = pide(&s, "a", "POST", main, r#"{"id":"otro"}"#);
+    assert_eq!(c, 409, "{r}");
+    // Uno de lectura sí, con sus límites, y su especificación es de réplica.
+    let (c, r) = pide(
+        &s,
+        "a",
+        "POST",
+        main,
+        r#"{"id":"lector","tipo":"lectura","cu_min":"0.5","cu_max":"2"}"#,
+    );
+    assert_eq!(c, 202, "{r}");
+    assert_eq!(campo(&r, &["endpoint", "cu", "max"]), "2");
+    almacen.pedido();
+    vuelta(&mut c2);
+    let pedido = almacen.pedido();
+    assert!(
+        pedido.iter().any(|x| x.starts_with("vm-crear")
+            && x.contains(" lector ")
+            && x.ends_with("replica=true")),
+        "{pedido:?}"
+    );
+    // Lo que no vale.
+    assert_eq!(
+        pide(&s, "a", "POST", main, r#"{"id":"x","tipo":"raro"}"#).0,
+        400
+    );
+    assert_eq!(
+        pide(
+            &s,
+            "a",
+            "POST",
+            main,
+            r#"{"id":"x","tipo":"lectura","cu_max":"8"}"#
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        pide(
+            &s,
+            "a",
+            "POST",
+            main,
+            r#"{"id":"x","tipo":"lectura","cu_min":"1","cu_max":"0.5"}"#
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        pide(
+            &s,
+            "a",
+            "POST",
+            "/v1/postgres/proyectos/ventas/ramas/nada/endpoints",
+            r#"{"id":"x"}"#
+        )
+        .0,
+        404
+    );
+    assert_eq!(pide(&s, "b", "GET", main, "").0, 404);
+    // Una rama con endpoints no se borra.
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/ramas",
+        r#"{"id":"dev"}"#,
+    );
+    vuelta(&mut c2);
+    let dev = "/v1/postgres/proyectos/ventas/ramas/dev/endpoints";
+    assert_eq!(pide(&s, "a", "POST", dev, r#"{"id":"e1"}"#).0, 202);
+    vuelta(&mut c2);
+    assert_eq!(
+        pide(
+            &s,
+            "a",
+            "DELETE",
+            "/v1/postgres/proyectos/ventas/ramas/dev",
+            ""
+        )
+        .0,
+        409
+    );
+    // Borrar el de escritura libera la rama: después, otro de escritura sí.
+    let (_, r) = pide(&s, "a", "GET", &format!("{dev}/e1"), "");
+    let vm = campo(&r, &["vm"]);
+    assert_eq!(pide(&s, "a", "DELETE", &format!("{dev}/e1"), "").0, 202);
+    almacen.pedido();
+    vuelta(&mut c2);
+    assert_eq!(almacen.pedido(), vec![format!("vm-borrar {vm}")]);
+    assert_eq!(pide(&s, "a", "GET", &format!("{dev}/e1"), "").0, 404);
+    assert_eq!(pide(&s, "a", "POST", dev, r#"{"id":"e2"}"#).0, 202);
+    vuelta(&mut c2);
+    // Y borrar el proyecto quita sus tres VMs antes que el tenant.
+    pide(&s, "a", "DELETE", "/v1/postgres/proyectos/ventas", "");
+    almacen.pedido();
+    vuelta(&mut c2);
+    let pedido = almacen.pedido();
+    assert_eq!(
+        pedido.iter().filter(|x| x.starts_with("vm-borrar")).count(),
+        3,
+        "{pedido:?}"
+    );
+    assert!(pedido.last().unwrap().starts_with("borrar "), "{pedido:?}");
+    assert!(almacen.vms.lock().unwrap().is_empty());
 }
 
 #[test]
