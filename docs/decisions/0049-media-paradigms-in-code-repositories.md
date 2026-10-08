@@ -723,7 +723,7 @@ serían ficheros (`name`, `content_type`, el tamaño de `data`, `anchor`), no lo
 
 | paso | qué |
 |---|---|
-| B10·0 | **comprobar en vivo** la tubería que no se ha probado nunca: una `@function` que devuelve `list[…]` con `bytes`, llamada desde `sql()` con `cross join lateral`, llega como `BLOB` con su ancla (y lo que tarda, con los contratos) |
+| B10·0 | **hecho en vivo** (2026-10-08, victor, repositorio functions-python): `functions.pdf_a_png` —`Media[…]` → `list[Pagina]` con `data: bytes` y una `@dataclass` de ancla— en `cross join lateral` sobre `s3_stuff.nueva_carpeta.contratos`: 4 contratos, 4 filas, `data` es `BLOB` (los bytes empiezan por la firma PNG) y `anchor` `STRUCT(kind VARCHAR, page BIGINT)`; ~25 s la consulta entera, en serie y en frío. De paso: `sql()` sobre una colección corre en una sesión de Functions, el ítem del listado es `_item` (no `item`, 0057 C3) y pyright ve `Media["c"]` como `MediaRef` (`c704d46`) |
 | B10·1 | el guion (ore-core): `create [or replace] media collection … media … formats (…) as select`, cotejado contra el árbol (una colección en el `FROM`, las columnas de arriba por nombre, la colección destino escrita) |
 | B10·2 | la unidad `.sql` de `transforms-sql`: el Transform que la declara (salida = la colección, entradas = lo que lee) y la colección creada al construir si no está |
 | B10·3 | el SDK: la sentencia en el Build —consulta ítem a ítem → `ore.File` → `apply()`—, con su fila de resultado (`items`, `new`, …, `files_written`, `files_retired`) |
