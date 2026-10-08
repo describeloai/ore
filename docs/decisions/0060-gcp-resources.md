@@ -1,6 +1,7 @@
 # 0060 · GCP resources — el mismo resultado por una fracción del coste
 
-**Estado:** propuesto (2026-10-08). El plan G0–G7 está decidido en su forma; cada paso que toca
+**Estado:** propuesto (2026-10-08). El plan —G0–G7, nivel 1 (~$60–90 al mes), y G8–G11, nivel 2
+(~$20–40 al mes)— está decidido en su forma; cada paso que toca
 la malla, el IAM o la infraestructura de Google pide su go antes de hacerse, y se mide antes y
 después. Lo que es de la cuenta —la facturación, las cuotas, un pago— es de la persona dueña, no de
 este ADR.
@@ -113,3 +114,134 @@ el coste fijo —el clúster de pie— sea casi todo el coste, y que construir a
 La facturación, las cuotas y los pagos (de la persona); programas de créditos (Google for
 Startups y otros), que alargan lo que dura cada euro pero no cambian lo que se gasta; y mover la
 plataforma de cuenta o de nube.
+
+## Nivel 2 · de 30 a 50 $ al mes
+
+G1–G7 quitan lo que se paga **por construir**. Para bajar de ~$60–90 a **$30–50 al mes** hay que
+cambiar lo que se paga **por estar de pie**: el cómputo que nadie usa de noche, los balanceadores
+que cobran aunque no pase nada, y la parte de Postgres (0058) que está encendida sin ningún
+cliente. El reparto que se busca (precio de lista, sin créditos; estimación hasta G0):
+
+| partida | hoy, al mes | nivel 1 (G1–G7) | **nivel 2 (G8–G11)** | con qué |
+|---|---|---|---|---|
+| construir (Cloud Build → BuildKit spot) | ~$320 | $10–20 | **$1–3** | G4 + G5: unas 30 construcciones de ~30 min al mes en un `e2-highcpu-8` spot que sólo existe mientras compila |
+| Artifact Registry | ~$135 | $5–10 | **$2–4** | G2 + G3: sin tráfico entre regiones; 3 versiones por imagen, lo desplegado y las cachés por huella |
+| cómputo de GKE (nodos) | ~$115 | $50–70 | **$10–25** | G8: spot y dormido fuera de horas; G10: Postgres dormido |
+| balanceadores e IPs | ~$32 | ~$30 | **~$0** | G9: un túnel de Cloudflare en vez de los dos balanceadores globales |
+| discos | (en cómputo) | $6–10 | **$4–6** | G11: tamaños a lo usado, huérfanos fuera |
+| Secret Manager | ~$9 | ~$9 | **$1–2** | G11: versiones viejas destruidas, lecturas al arrancar |
+| tarifa de GKE | $0 | $0 | **$0** | un clúster zonal: lo cubre el nivel gratuito |
+| DNS, KMS, Storage | <$1 | <$1 | **<$1** | |
+| **total** | **~$650** | **~$60–90** | **~$20–40** | |
+
+### Decisiones
+
+| # | decisión | fecha |
+|---|---|---|
+| D8 | **El clúster duerme cuando no se trabaja.** Fuera de horas y en fin de semana, los grupos de nodos a cero; los discos se quedan, así que no se pierde nada, y al despertar todo vuelve como estaba. Hay un horario y, además, `dormir`/`despertar` a mano. Fuera de horas la consola ve el backend caído: en desarrollo, se acepta | 2026-10-08 |
+| D9 | **Sin balanceadores de Google**: un **túnel de Cloudflare** (`cloudflared` en el clúster, que sale hacia fuera) sirve la puerta y el login, con el TLS y el dominio en Cloudflare. Ni reglas de reenvío, ni IP estática, ni certificado gestionado | 2026-10-08 |
+| D10 | **Postgres serverless (0058) duerme sin clientes**: su almacenamiento (pageserver, safekeepers, controlador) y su cómputo a cero cuando no hay una base en uso, y de pie a demanda o en horario. Sus datos ya viven en GCS (D0c: recuperación desde GCS en ~21 s, RPO 0). Lo decide quien lleva 0058 | 2026-10-08 |
+| D11 | **Nada huérfano ni de más**: cada disco a lo que usa; los que la clase `retiene` dejó sin dueño, copiados y borrados; en Secret Manager, sólo las versiones en uso, y los pods leen sus secretos al arrancar, no en cada petición | 2026-10-08 |
+
+### G8 · el clúster duerme (D8)
+
+**Qué hay.** El grupo `sistema-spot` (ore-serve por celda, ore-medios, la forja, Keycloak y su
+base, Flux, Kueue, cert-manager…), `jobs-s` (`e2-standard-2`, 0→1: los puestos y los builds) y el
+grupo de Postgres de `80-postgres-gcp.sh` (`n2-standard-2` **normal, no spot**, 50 GB
+`pd-standard` por nodo).
+
+**Qué se hace.**
+1. **Medir lo que se usa de verdad** (Cloud Monitoring por contenedor, como O0), en un día de
+   trabajo y en una noche: qué cabe en un solo nodo `e2-standard-4` spot, o en dos `e2-standard-2`.
+2. **Todo spot** donde un reinicio no rompa nada. La forja y las bases tienen su disco persistente
+   y aguantan que el nodo se vaya; lo que no aguante, a uno normal y pequeño.
+3. **El horario va fuera del clúster** (un `CronJob` que despierta no puede estar dormido): **Cloud
+   Scheduler** (tres trabajos gratis por cuenta) llama a la API de GKE para dejar cada grupo con
+   mínimo y máximo 0 a la hora de dormir, y con su tamaño a la de despertar. El orden importa: al
+   dormir, primero lo que escribe (puestos, builds, Postgres); al despertar, primero el sistema.
+4. **A mano**: `malla/dormir.sh` y `malla/despertar.sh`, los mismos pasos, para un día de guardia
+   o un fin de semana de trabajo.
+5. **Al despertar, comprobar**: la entrada contesta, un puesto abre, un build pasa (lo de
+   `54-la-comprobacion.yaml`).
+
+**Lo que hay que mirar.** Flux reconcilia al despertar sin pisar nada (el tamaño de un grupo no es
+suyo); Kueue retoma su cola; los puestos que quedaron abiertos se cierran solos (el barrido de la
+cola, `eafdfd0`); un build que se estaba haciendo a la hora de dormir no se corta: el horario
+espera a que la cola esté vacía, con un tope.
+
+**Espera:** con ~50 h de trabajo a la semana el clúster está de pie un 30 % del tiempo, y en spot:
+de ~$115 a **$10–25**.
+
+### G9 · un túnel en vez de los balanceadores (D9)
+
+**Qué hay.** Dos balanceadores HTTP(S) globales: la `Gateway` `puerta`
+(`gke-l7-global-external-managed`, `14-la-puerta.yaml`, con el mapa de certificados `ore-puerta`
+de Certificate Manager para `*.ore.paladio.io`) y el `Ingress` `idp` (`63-entrada-del-idp.yaml`,
+IP estática `ore-idp`, certificado gestionado, `login.paladio.io`). Cada uno cobra sus reglas de
+reenvío por hora, pase tráfico o no.
+
+**Qué se hace.**
+1. **El dominio a Cloudflare** (plan gratuito): los servidores DNS de `paladio.io` pasan a ser los
+   suyos. Cloud DNS deja de hacer falta.
+2. **Un `Deployment` de `cloudflared`** (dos réplicas pequeñas) con el token del túnel en un
+   secreto. El túnel sale hacia Cloudflare: el clúster no necesita ninguna IP pública de entrada.
+3. **Las rutas del túnel**: `login.paladio.io` → el servicio de Keycloak; los anfitriones de la
+   puerta → lo que hoy está detrás de la `Gateway`. Las `HTTPRoute` siguen decidiendo a qué celda va
+   cada petición, con un controlador de Gateway dentro del clúster, o llevando al túnel lo que hoy
+   hacen ellas.
+4. **El relevo**: túnel y balanceadores a la vez; se cambia el DNS; se comprueba; y se quitan la
+   `Gateway`, el `Ingress`, la IP estática y el mapa de certificados.
+
+**Lo que hay que mirar.**
+- ⚠️ **El certificado gratuito de Cloudflare cubre un nivel de comodín** (`*.paladio.io`), no dos
+  (`*.ore.paladio.io`). Dos salidas: anfitriones de un solo nivel por celda (`acme-ore.paladio.io`)
+  o el certificado avanzado de Cloudflare (de pago, del orden de $10 al mes). Se decide en G9,
+  antes de mover nada.
+- El túnel pasa por el borde de Cloudflare, como hoy por el de Google. El plan gratuito limita el
+  cuerpo de una petición (100 MB): las subidas grandes de media (0049) ya van firmadas directas al
+  almacén, no por la puerta.
+- Los WebSockets y los flujos largos (el LSP, `GET /puestos/{id}/flujo`) se prueban en el relevo.
+
+**Espera:** de ~$32 a **~$0**.
+
+### G10 · Postgres duerme (D10)
+
+**Qué hay.** Lo de 0058: el controlador de almacenamiento y su base (`81-…`), el pageserver y tres
+safekeepers (`83-…`), el plano de control y el cómputo en NeonVM (`84-…`–`86-…`), en un grupo de
+nodos normales `n2-standard-2`. Está de pie aunque no haya ninguna base en uso.
+
+**Qué se hace** (propuesta para quien lleva 0058, que decide):
+1. **El cómputo de cada base ya duerme** por diseño (NeonVM): el escalado a cero, encendido y con
+   un plazo corto en desarrollo.
+2. **El almacenamiento, a cero sin bases activas**: safekeepers y pageserver a `replicas: 0`
+   cuando ninguna base está despierta, y de pie al despertar la primera. Los datos están en
+   `gs://ore-pg-almacen-euw1`, y se reconstruye desde ahí (D0c lo midió).
+3. **Su grupo de nodos en spot** y con mínimo 0, dentro del horario de G8.
+
+**Lo que hay que mirar.** La primera conexión tras dormir tarda lo que tarda despertar el
+almacenamiento (decenas de segundos, por D0c): en desarrollo se acepta; con un cliente de verdad,
+decide 0058. Tres safekeepers son el quórum: o los tres, o ninguno.
+
+**Espera:** es la mayor partida fija que queda en cómputo; sin ella, el nivel 2 no baja de ~$50.
+
+### G11 · nada huérfano ni de más (D11)
+
+1. **Discos**: el inventario (`gcloud compute disks list`, y a qué está atado cada uno); los que no
+   tienen dueño, una instantánea y fuera; los que sobran de tamaño, al que usan (un disco de 50 GB
+   con 2 GB dentro); `pd-standard` donde no haga falta más.
+2. **Secret Manager**: se cobra cada versión activa y cada lectura. Las versiones que ya no se
+   usan, destruidas; los pods leen sus secretos al arrancar, montados, en vez de pedirlos en cada
+   petición. El cofre sigue igual de cerrado: cambia cuántas copias guarda Google, no quién las
+   abre.
+3. **Instantáneas e imágenes de disco viejas**: las que no tengan una razón escrita, fuera.
+4. **Registros**: `CLOUD_LOGGING_ONLY` ya está; se comprueba que nada manda a Logging más de lo
+   que entra gratis, y si no, una exclusión.
+
+**Espera:** discos de ~$8 a **$4–6**; Secret Manager de ~$9 a **$1–2**.
+
+### El orden
+
+Primero lo que no se nota y más ahorra: **G1–G4** (el CI y Artifact Registry), **G11** (la
+limpieza) y **G8** (dormir). Después **G5** (construir en spot), que necesita la cuota que G8 deja
+libre fuera de horas; **G10**, de la mano de 0058; y **G9** el último, porque cambia el dominio y es
+lo único que un cliente vería. Cada paso: medir, hacer, medir, y el número a este ADR.
