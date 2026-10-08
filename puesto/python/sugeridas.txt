@@ -7,7 +7,8 @@
 #
 # ⛔ Medidas el 2026-10-05 antes de entrar, con el resolutor de la capa
 #   (`puesto/python/capa/resolver.sh`: uv, Python 3.14, sólo ruedas, con lo que
-#   la sesión trae como restricción): las 30 resuelven, y la más pesada son
+#   la sesión trae como restricción): las 30 resuelven (29 desde el 2026-10-08:
+#   `pillow` la trae la imagen, 0049 B9), y la más pesada son
 #   49 MB (polars). Fuera, con su porqué: xgboost (380 MB: arrastra NCCL de
 #   CUDA, inútil sin GPU; lightgbm cubre gradient boosting con 38),
 #   email-validator (valida el dominio por DNS, y el puesto no tiene red),
@@ -36,7 +37,6 @@ openpyxl	Files	Read and write Excel files
 lxml	Files	Fast XML and HTML parsing with XPath
 beautifulsoup4	Files	Parse and extract data from HTML
 pypdf	Files	Read, split and merge PDF files
-pillow	Files	Open, transform and convert images
 orjson	Formats	Fast JSON serialization
 PyYAML	Formats	Read and write YAML
 sqlglot	Formats	Parse, transpile and format SQL across dialects
