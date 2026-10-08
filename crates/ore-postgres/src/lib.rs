@@ -30,6 +30,7 @@ pub mod especificacion;
 pub mod kube;
 pub mod llaves;
 pub mod reconciliador;
+pub mod scram;
 
 use ore_entrada::http;
 use std::net::TcpListener;
@@ -149,6 +150,7 @@ fn especificacion_mando(args: &[String]) -> ExitCode {
             grupo: &grupo,
             ahora: &ahora,
             replica: false,
+            datos: &especificacion::Datos::default(),
         },
         &propia,
         Some(&del_almacen),

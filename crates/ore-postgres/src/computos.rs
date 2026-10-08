@@ -12,7 +12,7 @@
 //!   llave propia (P4·3·1), no que el pod exista.
 
 use crate::almacen::Fallo;
-use crate::especificacion::{Computo, especificacion, iso};
+use crate::especificacion::{Computo, Datos, especificacion, iso};
 use crate::kube::{self, Kube};
 use crate::llaves::{Llave, token_de_computo};
 use ore_core::json::Json;
@@ -42,8 +42,20 @@ pub struct Estado {
 pub struct SinKube(pub String);
 
 impl Computos for SinKube {
-    fn configuracion(&self, _: &str, _: &str, _: &str, _: &str, _: &str, _: bool) -> String {
-        String::new()
+    fn configuracion(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: bool,
+        _: &Datos,
+    ) -> Json {
+        Json::obj([])
+    }
+    fn configurar(&self, _: &str, _: &str, _: &Json) -> Result<(), Fallo> {
+        Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
     }
     fn estado(&self, _: &str) -> Result<Option<Estado>, Fallo> {
         Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
@@ -65,6 +77,7 @@ impl Computos for SinKube {
 /// Lo que se le pide al cómputo. El de verdad es [`Neonvm`].
 pub trait Computos: Send + Sync {
     /// El `config.json` de un cómputo (la especificación firmada).
+    #[allow(clippy::too_many_arguments)]
     fn configuracion(
         &self,
         vm: &str,
@@ -73,7 +86,11 @@ pub trait Computos: Send + Sync {
         pageserver: &str,
         grupo: &str,
         replica: bool,
-    ) -> String;
+        datos: &Datos,
+    ) -> Json;
+    /// P4·4: aplica una especificación nueva a un cómputo en marcha
+    /// (`compute_ctl /configure`): roles, bases, lo borrado. Sin reiniciarlo.
+    fn configurar(&self, vm: &str, ip_pod: &str, configuracion: &Json) -> Result<(), Fallo>;
     /// `None` si la VM no existe.
     fn estado(&self, vm: &str) -> Result<Option<Estado>, Fallo>;
     /// ¿Queda algún pod runner con ese nombre de VM?
@@ -131,7 +148,8 @@ impl Computos for Neonvm {
         pageserver: &str,
         grupo: &str,
         replica: bool,
-    ) -> String {
+        datos: &Datos,
+    ) -> Json {
         let ahora = ahora_iso();
         especificacion(
             &Computo {
@@ -143,11 +161,43 @@ impl Computos for Neonvm {
                 grupo,
                 ahora: &ahora,
                 replica,
+                datos,
             },
             &self.propia,
             Some(&self.almacen),
         )
-        .pretty()
+    }
+
+    fn configurar(&self, vm: &str, ip_pod: &str, configuracion: &Json) -> Result<(), Fallo> {
+        let Json::Obj(todo) = configuracion else {
+            return Err(Fallo::Definitivo("la configuración no es un objeto".into()));
+        };
+        let Some(spec) = todo.get("spec") else {
+            return Err(Fallo::Definitivo("la configuración no trae `spec`".into()));
+        };
+        let token = format!(
+            "Bearer {}",
+            token_de_computo(&self.propia, vm, ahora() + 300)
+        );
+        match pedir_con(
+            "POST",
+            &format!("{ip_pod}:3080"),
+            "/configure",
+            &[("Authorization", &token)],
+            Some(&Json::obj([("spec", spec.clone())])),
+            Plazos {
+                conectar: Duration::from_secs(3),
+                // compute_ctl contesta cuando lo ha aplicado (crear roles y bases).
+                responder: Duration::from_secs(60),
+            },
+        ) {
+            Ok((200, _)) => Ok(()),
+            Ok((c, r)) => Err(Fallo::Reintentar(format!(
+                "compute_ctl de {vm} no aplicó la configuración: {c} {}",
+                r.chars().take(300).collect::<String>()
+            ))),
+            Err(e) => Err(Fallo::Reintentar(format!("compute_ctl de {vm}: {e}"))),
+        }
     }
 
     fn estado(&self, vm: &str) -> Result<Option<Estado>, Fallo> {
@@ -195,11 +245,10 @@ impl Computos for Neonvm {
     }
 
     fn listo(&self, vm: &str, ip_pod: &str) -> Result<bool, Fallo> {
-        let ahora = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let token = format!("Bearer {}", token_de_computo(&self.propia, vm, ahora + 300));
+        let token = format!(
+            "Bearer {}",
+            token_de_computo(&self.propia, vm, ahora() + 300)
+        );
         match pedir_con(
             "GET",
             &format!("{ip_pod}:3080"),
@@ -400,6 +449,13 @@ pub fn manifiesto(vm: &Vm, ns: &str, imagen: &str, pool: &str) -> Json {
             ]),
         ),
     ])
+}
+
+fn ahora() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// La hora de ahora en RFC 3339, para la especificación.

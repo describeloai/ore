@@ -15,6 +15,13 @@
 //!                                                           "cu_min": "0.25", "cu_max": "1"}  → 202
 //!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}
 //!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}   → 202
+//!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/roles
+//!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/roles            {"nombre": "app"}  → 202 + la contraseña, UNA vez
+//!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/roles/{n}/contrasena               → 202 + una nueva; la vieja deja de valer
+//!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}/roles/{n}        → 202 (con bases suyas, 409)
+//!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/bases
+//!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/bases            {"nombre": "ventas", "dueno": "app"}  → 202
+//!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}/bases/{b}        → 202
 //!   GET    /v1/postgres/operaciones/{op}
 //! ```
 //!
@@ -92,12 +99,14 @@ impl Servidor {
             Err(r) => return r,
         };
         let cuerpo = match &pedido {
-            Pedido::CrearProyecto | Pedido::CrearRama(_) | Pedido::CrearEndpoint(..) => {
-                match analizar(&p.cuerpo) {
-                    Ok(n) => Some(n),
-                    Err(m) => return Respuesta::error(400, m),
-                }
-            }
+            Pedido::CrearProyecto
+            | Pedido::CrearRama(_)
+            | Pedido::CrearEndpoint(..)
+            | Pedido::CrearRol(..)
+            | Pedido::CrearBase(..) => match analizar(&p.cuerpo) {
+                Ok(n) => Some(n),
+                Err(m) => return Respuesta::error(400, m),
+            },
             _ => None,
         };
         let Ok(mut base) = self.base.lock() else {
@@ -128,6 +137,17 @@ impl Servidor {
                 crear_endpoint(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
             }
             Pedido::BorrarEndpoint(p, r, e) => borrar_endpoint(c, &celda, p, r, e),
+            Pedido::Roles(p, r) => roles(c, &celda, p, r),
+            Pedido::CrearRol(p, r) => {
+                crear_rol(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
+            }
+            Pedido::Contrasena(p, r, n) => nueva_contrasena(c, &celda, p, r, n),
+            Pedido::BorrarRol(p, r, n) => borrar_rol(c, &celda, p, r, n),
+            Pedido::Bases(p, r) => bases(c, &celda, p, r),
+            Pedido::CrearBase(p, r) => {
+                crear_base(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
+            }
+            Pedido::BorrarBase(p, r, b) => borrar_base(c, &celda, p, r, b),
         };
         let mut r = hacer(&mut base);
         // La caída sólo se ve al usarla: si falló y la conexión resulta cerrada, se
@@ -159,6 +179,13 @@ pub enum Pedido<'a> {
     CrearEndpoint(&'a str, &'a str),
     Endpoint(&'a str, &'a str, &'a str),
     BorrarEndpoint(&'a str, &'a str, &'a str),
+    Roles(&'a str, &'a str),
+    CrearRol(&'a str, &'a str),
+    Contrasena(&'a str, &'a str, &'a str),
+    BorrarRol(&'a str, &'a str, &'a str),
+    Bases(&'a str, &'a str),
+    CrearBase(&'a str, &'a str),
+    BorrarBase(&'a str, &'a str, &'a str),
 }
 
 /// De método y camino (sin `/v1/postgres`) a lo que se pide.
@@ -177,6 +204,15 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("POST", ["proyectos", p, "ramas", r, "endpoints"]) => Pedido::CrearEndpoint(p, r),
         ("GET", ["proyectos", p, "ramas", r, "endpoints", e]) => Pedido::Endpoint(p, r, e),
         ("DELETE", ["proyectos", p, "ramas", r, "endpoints", e]) => Pedido::BorrarEndpoint(p, r, e),
+        ("GET", ["proyectos", p, "ramas", r, "roles"]) => Pedido::Roles(p, r),
+        ("POST", ["proyectos", p, "ramas", r, "roles"]) => Pedido::CrearRol(p, r),
+        ("POST", ["proyectos", p, "ramas", r, "roles", n, "contrasena"]) => {
+            Pedido::Contrasena(p, r, n)
+        }
+        ("DELETE", ["proyectos", p, "ramas", r, "roles", n]) => Pedido::BorrarRol(p, r, n),
+        ("GET", ["proyectos", p, "ramas", r, "bases"]) => Pedido::Bases(p, r),
+        ("POST", ["proyectos", p, "ramas", r, "bases"]) => Pedido::CrearBase(p, r),
+        ("DELETE", ["proyectos", p, "ramas", r, "bases", b]) => Pedido::BorrarBase(p, r, b),
         (
             _,
             ["proyectos"]
@@ -185,7 +221,10 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
             | ["proyectos", _, "ramas"]
             | ["proyectos", _, "ramas", _]
             | ["proyectos", _, "ramas", _, "endpoints"]
-            | ["proyectos", _, "ramas", _, "endpoints", _],
+            | ["proyectos", _, "ramas", _, "endpoints", _]
+            | ["proyectos", _, "ramas", _, "roles" | "bases"]
+            | ["proyectos", _, "ramas", _, "roles" | "bases", _]
+            | ["proyectos", _, "ramas", _, "roles", _, "contrasena"],
         ) => {
             return Err(Respuesta::error(
                 405,
@@ -212,6 +251,28 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
             Err(Respuesta::error(
                 404,
                 format!("no hay ninguna rama `{r}` en `{p}`"),
+            ))
+        }
+        Pedido::Roles(p, r)
+        | Pedido::CrearRol(p, r)
+        | Pedido::Contrasena(p, r, _)
+        | Pedido::BorrarRol(p, r, _)
+        | Pedido::Bases(p, r)
+        | Pedido::CrearBase(p, r)
+        | Pedido::BorrarBase(p, r, _)
+            if !id_valido(p) || !id_valido(r) =>
+        {
+            Err(Respuesta::error(
+                404,
+                format!("no hay ninguna rama `{r}` en `{p}`"),
+            ))
+        }
+        Pedido::Contrasena(_, _, n) | Pedido::BorrarRol(_, _, n) | Pedido::BorrarBase(_, _, n)
+            if !nombre_valido(n) =>
+        {
+            Err(Respuesta::error(
+                404,
+                format!("no hay nada que se llame `{n}`"),
             ))
         }
         Pedido::Endpoint(_, _, e) | Pedido::BorrarEndpoint(_, _, e) if !id_valido(e) => Err(
@@ -326,6 +387,24 @@ fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respue
                 ),
                 &[&celda.organizacion, &id],
             )?;
+            // P4·4: y el rol de quien lo crea (su handle), dueño de una base con el
+            // nombre del proyecto. Su contraseña sale en esta respuesta y en ninguna otra.
+            let mut contrasena = None;
+            if let Some(d) = dueno {
+                let rol = d.trim_start_matches("user:");
+                let (clave, verificador) = crate::scram::nueva().map_err(|e| Fallo(500, e))?;
+                tx.execute(
+                    "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador)
+                     values ($1, $2, 'main', $3, $4)",
+                    &[&celda.organizacion, &id, &rol, &verificador],
+                )?;
+                tx.execute(
+                    "insert into plano.base (organizacion, proyecto, rama, nombre, dueno)
+                     values ($1, $2, 'main', $2, $3)",
+                    &[&celda.organizacion, &id, &rol],
+                )?;
+                contrasena = Some((rol.to_string(), clave));
+            }
             let op = tx.query_one(
                 &format!(
                     "insert into plano.operacion (id, organizacion, proyecto, tipo, celda)
@@ -335,7 +414,14 @@ fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respue
                 &[&celda.organizacion, &id, &celda.id],
             )?;
             tx.commit()?;
-            Ok(aceptada(&op, Some(("proyecto", proyecto_json(&fila)))))
+            let mut r = aceptada(&op, Some(("proyecto", proyecto_json(&fila))));
+            if let (Some((rol, clave)), Json::Obj(o)) = (contrasena, &mut r.cuerpo) {
+                o.insert(
+                    "rol".into(),
+                    Json::obj([("nombre", Json::s(rol)), ("contrasena", Json::s(clave))]),
+                );
+            }
+            Ok(r)
         }
         Err(e) if choca(&e, "proyecto_pkey") => Err(Fallo(
             409,
@@ -539,6 +625,19 @@ fn crear_rama(c: &mut Client, celda: &Celda, p: &str, cuerpo: &Node) -> Result<R
         }
         Err(e) => return Err(e.into()),
     };
+    // P4·4: hereda los roles y las bases de su padre (ya están en sus datos).
+    tx.execute(
+        "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador)
+         select organizacion, proyecto, $3, nombre, verificador from plano.rol
+          where organizacion = $1 and proyecto = $2 and rama = $4 and deseado = 'vivo'",
+        &[&celda.organizacion, &p, &id, &padre],
+    )?;
+    tx.execute(
+        "insert into plano.base (organizacion, proyecto, rama, nombre, dueno)
+         select organizacion, proyecto, $3, nombre, dueno from plano.base
+          where organizacion = $1 and proyecto = $2 and rama = $4 and deseado = 'vivo'",
+        &[&celda.organizacion, &p, &id, &padre],
+    )?;
     let op = nueva_operacion(&mut tx, celda, p, "crear-rama", Some(id))?;
     tx.commit()?;
     Ok(aceptada(&op, Some(("rama", rama_json(&fila)))))
@@ -856,6 +955,259 @@ fn endpoint_json(f: &Row) -> Json {
         v.push(("direccion", Json::s(d)));
     }
     Json::obj(v)
+}
+
+// ── roles y bases (P4·4) ───────────────────────────────────────────────────
+
+/// Un nombre de rol o de base: `[a-z_][a-z0-9_-]`, hasta 63 (Postgres lo cita).
+pub fn nombre_valido(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 63
+        && n.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        && n.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        && !n.starts_with("pg_")
+}
+
+const RESERVADOS: &[&str] = &[
+    "cloud_admin",
+    "neon_superuser",
+    "public",
+    "postgres",
+    "zenith_admin",
+    "template0",
+    "template1",
+];
+
+fn nombre_de(cuerpo: &Node, k: &str) -> Result<String, Fallo> {
+    let Some(n) = cuerpo.get(k).and_then(|(_, v)| v.as_str()) else {
+        return Err(Fallo(400, format!("falta `{k}`")));
+    };
+    if !nombre_valido(n) || RESERVADOS.contains(&n) {
+        return Err(Fallo(
+            400,
+            format!("`{n}` no vale: `[a-z_][a-z0-9_-]`, hasta 63, sin `pg_` y no uno reservado"),
+        ));
+    }
+    Ok(n.to_string())
+}
+
+/// Lo que cambia los roles o las bases de una rama: una operación que lo
+/// aplica a su cómputo de escritura (si hay alguno en marcha).
+fn configurar(
+    tx: &mut postgres::Transaction,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+) -> Result<Row, Fallo> {
+    nueva_operacion_de(tx, celda, p, "configurar-rama", Some(r), None)
+}
+
+fn roles(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuesta, Fallo> {
+    rama_viva(c, celda, p, r)?;
+    let filas = c.query(
+        "select nombre, to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
+           from plano.rol
+          where organizacion = $1 and proyecto = $2 and rama = $3 and deseado = 'vivo' order by nombre",
+        &[&celda.organizacion, &p, &r],
+    )?;
+    // ⛔ Nunca el verificador: ni siquiera eso sale de aquí.
+    Ok(Respuesta::ok(Json::obj([(
+        "roles",
+        Json::Arr(
+            filas
+                .iter()
+                .map(|f| {
+                    Json::obj([
+                        ("nombre", Json::s(f.get::<_, String>(0))),
+                        ("creado", Json::s(f.get::<_, String>(1))),
+                    ])
+                })
+                .collect(),
+        ),
+    )])))
+}
+
+/// `202` con la contraseña: la única vez que se enseña.
+fn con_contrasena(op: &Row, nombre: &str, clave: String) -> Respuesta {
+    let mut r = aceptada(op, None);
+    if let Json::Obj(o) = &mut r.cuerpo {
+        o.insert(
+            "rol".into(),
+            Json::obj([("nombre", Json::s(nombre)), ("contrasena", Json::s(clave))]),
+        );
+    }
+    r
+}
+
+fn crear_rol(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    cuerpo: &Node,
+) -> Result<Respuesta, Fallo> {
+    let nombre = nombre_de(cuerpo, "nombre")?;
+    let (clave, verificador) = crate::scram::nueva().map_err(|e| Fallo(500, e))?;
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    if tx.execute(
+        "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador)
+         values ($1, $2, $3, $4, $5)
+         on conflict (organizacion, proyecto, rama, nombre) do update
+           set verificador = excluded.verificador, deseado = 'vivo', creado = now()
+           where plano.rol.deseado = 'borrado'",
+        &[&celda.organizacion, &p, &r, &nombre, &verificador],
+    )? == 0
+    {
+        return Err(Fallo(409, format!("ya hay un rol `{nombre}` en `{r}`")));
+    }
+    let op = configurar(&mut tx, celda, p, r)?;
+    tx.commit()?;
+    Ok(con_contrasena(&op, &nombre, clave))
+}
+
+fn nueva_contrasena(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    n: &str,
+) -> Result<Respuesta, Fallo> {
+    let (clave, verificador) = crate::scram::nueva().map_err(|e| Fallo(500, e))?;
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    if tx.execute(
+        "update plano.rol set verificador = $5
+          where organizacion = $1 and proyecto = $2 and rama = $3 and nombre = $4 and deseado = 'vivo'",
+        &[&celda.organizacion, &p, &r, &n, &verificador],
+    )? == 0
+    {
+        return Err(Fallo(404, format!("no hay ningún rol `{n}` en `{r}`")));
+    }
+    let op = configurar(&mut tx, celda, p, r)?;
+    tx.commit()?;
+    Ok(con_contrasena(&op, n, clave))
+}
+
+fn borrar_rol(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    n: &str,
+) -> Result<Respuesta, Fallo> {
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    let suyas: Vec<String> = tx
+        .query(
+            "select nombre from plano.base
+              where organizacion = $1 and proyecto = $2 and rama = $3 and dueno = $4 and deseado = 'vivo'
+              order by nombre",
+            &[&celda.organizacion, &p, &r, &n],
+        )?
+        .iter()
+        .map(|f| f.get(0))
+        .collect();
+    if !suyas.is_empty() {
+        return Err(Fallo(
+            409,
+            format!("`{n}` es dueño de {}: bórralas antes", suyas.join(", ")),
+        ));
+    }
+    if tx.execute(
+        "update plano.rol set deseado = 'borrado'
+          where organizacion = $1 and proyecto = $2 and rama = $3 and nombre = $4 and deseado = 'vivo'",
+        &[&celda.organizacion, &p, &r, &n],
+    )? == 0
+    {
+        return Err(Fallo(404, format!("no hay ningún rol `{n}` en `{r}`")));
+    }
+    let op = configurar(&mut tx, celda, p, r)?;
+    tx.commit()?;
+    Ok(aceptada(&op, None))
+}
+
+fn bases(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuesta, Fallo> {
+    rama_viva(c, celda, p, r)?;
+    let filas = c.query(
+        "select nombre, dueno from plano.base
+          where organizacion = $1 and proyecto = $2 and rama = $3 and deseado = 'vivo' order by nombre",
+        &[&celda.organizacion, &p, &r],
+    )?;
+    Ok(Respuesta::ok(Json::obj([(
+        "bases",
+        Json::Arr(
+            filas
+                .iter()
+                .map(|f| {
+                    Json::obj([
+                        ("nombre", Json::s(f.get::<_, String>(0))),
+                        ("dueno", Json::s(f.get::<_, String>(1))),
+                    ])
+                })
+                .collect(),
+        ),
+    )])))
+}
+
+fn crear_base(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    cuerpo: &Node,
+) -> Result<Respuesta, Fallo> {
+    let nombre = nombre_de(cuerpo, "nombre")?;
+    let dueno = nombre_de(cuerpo, "dueno")?;
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    if tx
+        .query_opt(
+            "select 1 from plano.rol
+              where organizacion = $1 and proyecto = $2 and rama = $3 and nombre = $4 and deseado = 'vivo'",
+            &[&celda.organizacion, &p, &r, &dueno],
+        )?
+        .is_none()
+    {
+        return Err(Fallo(404, format!("no hay ningún rol `{dueno}` en `{r}` que pueda ser su dueño")));
+    }
+    if tx.execute(
+        "insert into plano.base (organizacion, proyecto, rama, nombre, dueno)
+         values ($1, $2, $3, $4, $5)
+         on conflict (organizacion, proyecto, rama, nombre) do update
+           set dueno = excluded.dueno, deseado = 'vivo', creada = now()
+           where plano.base.deseado = 'borrado'",
+        &[&celda.organizacion, &p, &r, &nombre, &dueno],
+    )? == 0
+    {
+        return Err(Fallo(409, format!("ya hay una base `{nombre}` en `{r}`")));
+    }
+    let op = configurar(&mut tx, celda, p, r)?;
+    tx.commit()?;
+    Ok(aceptada(&op, None))
+}
+
+fn borrar_base(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    b: &str,
+) -> Result<Respuesta, Fallo> {
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    if tx.execute(
+        "update plano.base set deseado = 'borrado'
+          where organizacion = $1 and proyecto = $2 and rama = $3 and nombre = $4 and deseado = 'vivo'",
+        &[&celda.organizacion, &p, &r, &b],
+    )? == 0
+    {
+        return Err(Fallo(404, format!("no hay ninguna base `{b}` en `{r}`")));
+    }
+    let op = configurar(&mut tx, celda, p, r)?;
+    tx.commit()?;
+    Ok(aceptada(&op, None))
 }
 
 fn no_hay_endpoint(id: &str) -> Fallo {

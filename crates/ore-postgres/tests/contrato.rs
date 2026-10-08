@@ -8,12 +8,14 @@
 //! P4·2: el almacenamiento es un [`Apunta`], que hace lo que se le diga y apunta
 //! lo que se le pidió; contra el de verdad se prueba en vivo (`p42.sh`).
 
+use ore_core::json::Json;
 use ore_core::parse;
 use ore_entrada::http::Peticion;
 use ore_postgres::almacen::{Almacen, Fallo, Origen};
 use ore_postgres::api::Servidor;
 use ore_postgres::celda::{Celda, Fijas};
 use ore_postgres::computos::{Computos, Estado, Vm};
+use ore_postgres::especificacion::Datos;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
@@ -33,7 +35,8 @@ fn servidor() -> Option<Servidor> {
         vec![
             "001-el-esqueleto",
             "002-el-tenant-y-las-ramas",
-            "003-los-endpoints"
+            "003-los-endpoints",
+            "004-roles-y-bases"
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -76,8 +79,22 @@ impl Computos for Apunta {
         ps: &str,
         _: &str,
         replica: bool,
-    ) -> String {
-        format!("{vm} {t} {tl} {ps} replica={replica}")
+        d: &Datos,
+    ) -> Json {
+        let roles: Vec<&str> = d.roles.iter().map(|(n, _)| n.as_str()).collect();
+        let bases: Vec<&str> = d.bases.iter().map(|(n, _)| n.as_str()).collect();
+        Json::Crudo(format!(
+            "{vm} {t} {tl} {ps} roles={} bases={} -roles={} -bases={} replica={replica}",
+            roles.join(","),
+            bases.join(","),
+            d.roles_borrados.join(","),
+            d.bases_borradas.join(",")
+        ))
+    }
+    fn configurar(&self, vm: &str, _: &str, cfg: &Json) -> Result<(), Fallo> {
+        let Json::Crudo(c) = cfg else { unreachable!() };
+        let resto = c.split_once(" roles=").map(|(_, r)| r).unwrap_or_default();
+        self.apuntar(format!("configurar {vm} roles={resto}"))
     }
     fn estado(&self, vm: &str) -> Result<Option<Estado>, Fallo> {
         Ok(self.vms.lock().unwrap().get(vm).map(|ip| Estado {
@@ -805,6 +822,190 @@ fn dos_escrituras_a_la_vez_en_la_misma_rama_una_gana() {
         );
         ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
     }
+}
+
+/// El verificador que `ore-postgres` guardó para un rol de main.
+fn verificador_de(c: &mut postgres::Client, n: &str) -> String {
+    c.query_one(
+        "select verificador from plano.rol where nombre = $1 and rama = 'main'",
+        &[&n],
+    )
+    .unwrap()
+    .get(0)
+}
+
+/// Entrar en el Postgres de las pruebas como un rol, con su contraseña.
+fn entra(rol: &str, clave: &str) -> bool {
+    let url = std::env::var("ORE_POSTGRES_PRUEBA_URL").unwrap();
+    let host_y_resto = url.split_once('@').map(|(_, r)| r).unwrap();
+    postgres::Client::connect(
+        &format!("postgresql://{rol}:{clave}@{host_y_resto}"),
+        postgres::NoTls,
+    )
+    .is_ok()
+}
+
+#[test]
+fn roles_y_bases_la_contrasena_una_vez_y_el_verificador_entra() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let mut c2 = otra_conexion();
+    let almacen = Apunta::default();
+    let vuelta = |c2: &mut postgres::Client| {
+        ore_postgres::reconciliador::vuelta(c2, &almacen, &almacen).unwrap()
+    };
+    // Con dueño: nace su rol, con su contraseña EN ESTA respuesta, y una base con el nombre del proyecto.
+    let (c, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas","dueno":"user:ana"}"#,
+    );
+    assert_eq!(c, 202, "{r}");
+    assert_eq!(campo(&r, &["rol", "nombre"]), "ana");
+    let clave_ana = campo(&r, &["rol", "contrasena"]);
+    assert_eq!(clave_ana.len(), 32);
+    vuelta(&mut c2);
+    let pedido = almacen.pedido();
+    assert!(
+        pedido
+            .iter()
+            .any(|x| x.starts_with("vm-crear") && x.contains("roles=ana bases=ventas ")),
+        "{pedido:?}"
+    );
+    let roles = "/v1/postgres/proyectos/ventas/ramas/main/roles";
+    let (_, r) = pide(&s, "a", "GET", roles, "");
+    assert!(
+        r.contains(r#""nombre":"ana""#) && !r.contains("SCRAM") && !r.contains(&clave_ana),
+        "{r}"
+    );
+
+    // ⭐ El verificador ENTRA: el rol, creado en un Postgres de verdad con él, y la contraseña.
+    let mut admin = otra_conexion();
+    admin.batch_execute("drop role if exists ana").unwrap();
+    admin
+        .batch_execute(&format!(
+            "create role ana login password '{}'",
+            verificador_de(&mut c2, "ana")
+        ))
+        .unwrap();
+    assert!(
+        entra("ana", &clave_ana),
+        "la contraseña no entra con su verificador"
+    );
+    assert!(!entra("ana", "otra"), "entra cualquiera");
+
+    // Un rol más: su contraseña, una vez; y se aplica al cómputo en marcha (configure).
+    let (c, r) = pide(&s, "a", "POST", roles, r#"{"nombre":"app"}"#);
+    assert_eq!(c, 202, "{r}");
+    let clave_app = campo(&r, &["rol", "contrasena"]);
+    vuelta(&mut c2);
+    let pedido = almacen.pedido();
+    assert!(
+        pedido
+            .iter()
+            .any(|x| x.starts_with("configurar ep-") && x.contains("roles=ana,app ")),
+        "{pedido:?}"
+    );
+    assert_eq!(pide(&s, "a", "POST", roles, r#"{"nombre":"app"}"#).0, 409);
+    assert_eq!(
+        pide(&s, "a", "POST", roles, r#"{"nombre":"cloud_admin"}"#).0,
+        400
+    );
+    assert_eq!(
+        pide(&s, "a", "POST", roles, r#"{"nombre":"pg_monitor"}"#).0,
+        400
+    );
+    assert_eq!(pide(&s, "b", "GET", roles, "").0, 404);
+
+    // Regenerar: la vieja deja de entrar y la nueva entra.
+    let (c, r) = pide(&s, "a", "POST", &format!("{roles}/app/contrasena"), "");
+    assert_eq!(c, 202, "{r}");
+    let nueva = campo(&r, &["rol", "contrasena"]);
+    assert_ne!(nueva, clave_app);
+    vuelta(&mut c2);
+    admin.batch_execute("drop role if exists app").unwrap();
+    admin
+        .batch_execute(&format!(
+            "create role app login password '{}'",
+            verificador_de(&mut c2, "app")
+        ))
+        .unwrap();
+    assert!(entra("app", &nueva) && !entra("app", &clave_app));
+
+    // Bases: con un dueño que exista; un rol con bases no se borra.
+    let bases = "/v1/postgres/proyectos/ventas/ramas/main/bases";
+    assert_eq!(
+        pide(
+            &s,
+            "a",
+            "POST",
+            bases,
+            r#"{"nombre":"informes","dueno":"nadie"}"#
+        )
+        .0,
+        404
+    );
+    assert_eq!(
+        pide(
+            &s,
+            "a",
+            "POST",
+            bases,
+            r#"{"nombre":"informes","dueno":"app"}"#
+        )
+        .0,
+        202
+    );
+    vuelta(&mut c2);
+    assert_eq!(pide(&s, "a", "DELETE", &format!("{roles}/app"), "").0, 409);
+    // Una rama hereda roles y bases.
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/ramas",
+        r#"{"id":"dev"}"#,
+    );
+    vuelta(&mut c2);
+    let (_, r) = pide(
+        &s,
+        "a",
+        "GET",
+        "/v1/postgres/proyectos/ventas/ramas/dev/bases",
+        "",
+    );
+    assert!(
+        r.contains(r#""nombre":"informes""#) && r.contains(r#""nombre":"ventas""#),
+        "{r}"
+    );
+    // Borrar: la base y luego el rol; el cómputo recibe los borrados y las filas se van.
+    assert_eq!(
+        pide(&s, "a", "DELETE", &format!("{bases}/informes"), "").0,
+        202
+    );
+    almacen.pedido();
+    vuelta(&mut c2);
+    assert!(
+        almacen
+            .pedido()
+            .iter()
+            .any(|x| x.contains("-bases=informes"))
+    );
+    assert_eq!(pide(&s, "a", "DELETE", &format!("{roles}/app"), "").0, 202);
+    vuelta(&mut c2);
+    let quedan: i64 = c2
+        .query_one(
+            "select count(*) from plano.rol where rama = 'main' and nombre = 'app'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(quedan, 0, "el borrado aplicado se purga");
+    admin
+        .batch_execute("drop role if exists ana; drop role if exists app")
+        .unwrap();
 }
 
 #[test]

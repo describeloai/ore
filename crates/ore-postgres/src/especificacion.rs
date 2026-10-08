@@ -9,8 +9,10 @@
 //! - el JWKS de la llave propia de `ore-postgres`, para que `compute_ctl` acepte
 //!   sus órdenes (`/configure`, `/status`), y `compute_id` igual al nombre.
 //!
-//! `cloud_admin` con la contraseña de las pruebas es de P4·3: los roles de
-//! verdad, con SCRAM, son P4·4.
+//! P4·4: los roles y las bases de la rama van en `cluster.roles` y
+//! `cluster.databases` (el rol, con su verificador SCRAM: Postgres acepta el
+//! verificador como contraseña ya cifrada), y lo borrado y aún no aplicado, en
+//! `delta_operations`. `cloud_admin` sigue: es el de dentro (compute_ctl).
 
 use crate::llaves::{Llave, token_de_tenant};
 use ore_core::json::Json;
@@ -32,6 +34,18 @@ pub struct Computo<'a> {
     /// Un endpoint de sólo lectura: una réplica en caliente que sigue la rama
     /// (`"mode": "Replica"` de Neon), sin votar en los safekeepers.
     pub replica: bool,
+    /// Los roles y las bases de la rama (P4·4).
+    pub datos: &'a Datos,
+}
+
+/// Lo que la rama tiene dentro: roles (nombre, verificador SCRAM) y bases
+/// (nombre, dueño), y lo borrado que aún no ha aplicado ningún cómputo.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Datos {
+    pub roles: Vec<(String, String)>,
+    pub bases: Vec<(String, String)>,
+    pub roles_borrados: Vec<String>,
+    pub bases_borradas: Vec<String>,
 }
 
 fn ajuste(nombre: &str, valor: &str, tipo: &str) -> Json {
@@ -59,7 +73,7 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
         ajuste("max_replication_slots", "10", "integer"),
         ajuste("wal_sender_timeout", "5s", "string"),
         ajuste("wal_keep_size", "0", "integer"),
-        ajuste("password_encryption", "md5", "enum"),
+        ajuste("password_encryption", "scram-sha-256", "enum"),
         ajuste("restart_after_crash", "off", "bool"),
         ajuste("synchronous_standby_names", "walproposer", "string"),
         ajuste(
@@ -82,7 +96,8 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
             "string",
         ),
     ];
-    // md5 de cloud_admin = md5('cloud_admin' + 'cloud_admin'), la del compose de Neon (P4·4 la quita).
+    // md5 de cloud_admin = md5('cloud_admin' + 'cloud_admin'), la del compose de Neon: el rol de
+    // dentro, el de compute_ctl. Los de los usuarios, abajo, con SCRAM.
     let cloud_admin = Json::obj([
         ("name", Json::s("cloud_admin")),
         (
@@ -104,12 +119,46 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
                 ("cluster_id", Json::s(c.grupo)),
                 ("name", Json::s(c.nombre)),
                 ("state", Json::s("restarted")),
-                ("roles", Json::Arr(vec![cloud_admin])),
-                ("databases", Json::Arr(vec![])),
+                (
+                    "roles",
+                    Json::Arr(
+                        std::iter::once(cloud_admin)
+                            .chain(c.datos.roles.iter().map(|(n, v)| {
+                                Json::obj([
+                                    ("name", Json::s(n)),
+                                    ("encrypted_password", Json::s(v)),
+                                ])
+                            }))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "databases",
+                    Json::Arr(
+                        c.datos
+                            .bases
+                            .iter()
+                            .map(|(n, d)| Json::obj([("name", Json::s(n)), ("owner", Json::s(d))]))
+                            .collect(),
+                    ),
+                ),
                 ("settings", Json::Arr(ajustes)),
             ]),
         ),
-        ("delta_operations", Json::Arr(vec![])),
+        (
+            "delta_operations",
+            Json::Arr(
+                // Las bases antes que los roles: un rol con bases no se puede borrar.
+                c.datos
+                    .bases_borradas
+                    .iter()
+                    .map(|n| Json::obj([("action", Json::s("delete_db")), ("name", Json::s(n))]))
+                    .chain(c.datos.roles_borrados.iter().map(|n| {
+                        Json::obj([("action", Json::s("delete_role")), ("name", Json::s(n))])
+                    }))
+                    .collect(),
+            ),
+        ),
     ];
     if let Some(a) = almacen {
         spec.push(("storage_auth_token", Json::s(token_de_tenant(a, c.tenant))));
@@ -176,6 +225,12 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
                 grupo: "ventas",
                 ahora: "2026-10-08T10:00:00.000Z",
                 replica: false,
+                datos: &Datos {
+                    roles: vec![("ana".into(), "SCRAM-SHA-256$4096:x$y:z".into())],
+                    bases: vec![("ventas".into(), "ana".into())],
+                    roles_borrados: vec!["viejo".into()],
+                    bases_borradas: vec![],
+                },
             },
             &l,
             Some(&l),
@@ -189,6 +244,9 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
             r#""name":"ep-1""#,
             r#""storage_auth_token":"ey"#,
             &format!(r#""kid":"{}""#, l.kid),
+            r#"{"encrypted_password":"SCRAM-SHA-256$4096:x$y:z","name":"ana"}"#,
+            r#""databases":[{"name":"ventas","owner":"ana"}]"#,
+            r#""delta_operations":[{"action":"delete_role","name":"viejo"}]"#,
         ] {
             assert!(e.contains(esperado), "falta {esperado} en {e}");
         }
@@ -203,6 +261,7 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
                 grupo: "ventas",
                 ahora: "2026-10-08T10:00:00.000Z",
                 replica: false,
+                datos: &Datos::default(),
             },
             &l,
             None,

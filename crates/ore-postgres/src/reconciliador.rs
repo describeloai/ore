@@ -19,6 +19,7 @@
 use crate::almacen::{Almacen, Fallo, Origen};
 use crate::base::{conectar, mal};
 use crate::computos::{Computos, Vm};
+use crate::especificacion::Datos;
 use postgres::Client;
 use std::time::Duration;
 
@@ -168,8 +169,18 @@ fn asegurar_endpoint(
                 ));
             }
             let pageserver = a.pageserver_de(tenant)?;
-            let configuracion =
-                k.configuracion(&ep.vm, tenant, &ep.timeline, &pageserver, p, ep.lectura);
+            let datos = datos_de(c, org, p, &ep.rama)?;
+            let configuracion = k
+                .configuracion(
+                    &ep.vm,
+                    tenant,
+                    &ep.timeline,
+                    &pageserver,
+                    p,
+                    ep.lectura,
+                    &datos,
+                )
+                .pretty();
             k.crear(
                 &Vm {
                     nombre: &ep.vm,
@@ -207,6 +218,11 @@ fn asegurar_endpoint(
                 &[&org, &p, &ep.id, &e.ip_overlay, &ip],
             )
             .map_err(bd)?;
+            // Un cómputo de escritura arrancó con lo borrado en su especificación: aplicado.
+            if !ep.lectura {
+                let datos = datos_de(c, org, p, &ep.rama)?;
+                purgar(c, org, p, &ep.rama, &datos)?;
+            }
             Ok(())
         }
     }
@@ -235,6 +251,59 @@ fn quitar_endpoint(
     c.execute(
         "delete from plano.endpoint where organizacion = $1 and proyecto = $2 and id = $3",
         &[&org, &p, &ep.id],
+    )
+    .map_err(bd)?;
+    Ok(())
+}
+
+/// Los roles y las bases de una rama, para su especificación (P4·4).
+fn datos_de(c: &mut Client, org: &str, p: &str, rama: &str) -> Result<Datos, Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    let mut d = Datos::default();
+    for f in c
+        .query(
+            "select nombre, verificador, deseado = 'vivo' from plano.rol
+              where organizacion = $1 and proyecto = $2 and rama = $3 order by nombre",
+            &[&org, &p, &rama],
+        )
+        .map_err(bd)?
+    {
+        if f.get::<_, bool>(2) {
+            d.roles.push((f.get(0), f.get(1)));
+        } else {
+            d.roles_borrados.push(f.get(0));
+        }
+    }
+    for f in c
+        .query(
+            "select nombre, dueno, deseado = 'vivo' from plano.base
+              where organizacion = $1 and proyecto = $2 and rama = $3 order by nombre",
+            &[&org, &p, &rama],
+        )
+        .map_err(bd)?
+    {
+        if f.get::<_, bool>(2) {
+            d.bases.push((f.get(0), f.get(1)));
+        } else {
+            d.bases_borradas.push(f.get(0));
+        }
+    }
+    Ok(d)
+}
+
+/// Lo borrado que un cómputo de escritura ya aplicó: ahora sí, fuera la fila.
+fn purgar(c: &mut Client, org: &str, p: &str, rama: &str, d: &Datos) -> Result<(), Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    c.execute(
+        "delete from plano.base where organizacion = $1 and proyecto = $2 and rama = $3
+            and deseado = 'borrado' and nombre = any($4)",
+        &[&org, &p, &rama, &d.bases_borradas],
+    )
+    .map_err(bd)?;
+    c.execute(
+        "delete from plano.rol where organizacion = $1 and proyecto = $2 and rama = $3
+            and deseado = 'borrado' and nombre = any($4)",
+        &[&org, &p, &rama, &d.roles_borrados],
     )
     .map_err(bd)?;
     Ok(())
@@ -365,6 +434,43 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
             )
             .map_err(bd)?;
             Ok(())
+        }
+        // P4·4: roles o bases de una rama cambiaron. Se le aplica la especificación
+        // nueva a su cómputo de escritura, si hay uno en marcha; si no, la llevará
+        // el siguiente que arranque. Lo borrado sólo se purga cuando se aplicó.
+        "configurar-rama" => {
+            let rama = op.rama.as_deref().unwrap_or_default();
+            let tenant = tenant_de(c, &op.organizacion, &op.proyecto)?
+                .ok_or_else(|| Fallo::Definitivo("el proyecto ya no está".into()))?;
+            let escritor = c
+                .query_opt(
+                    "select e.vm, e.ip_pod, r.timeline from plano.endpoint e
+                       join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto
+                                        and r.id = e.rama
+                      where e.organizacion = $1 and e.proyecto = $2 and e.rama = $3
+                        and e.tipo = 'lectura-escritura' and e.deseado = 'vivo' and e.observado = 'listo'",
+                    &[&op.organizacion, &op.proyecto, &rama],
+                )
+                .map_err(bd)?;
+            let Some(f) = escritor else {
+                return Ok(());
+            };
+            let (vm, ip, timeline): (String, Option<String>, String) =
+                (f.get(0), f.get(1), f.get(2));
+            let ip = ip.ok_or_else(|| Fallo::Reintentar("el endpoint no tiene IP".into()))?;
+            let datos = datos_de(c, &op.organizacion, &op.proyecto, rama)?;
+            let pageserver = a.pageserver_de(&tenant)?;
+            let configuracion = k.configuracion(
+                &vm,
+                &tenant,
+                &timeline,
+                &pageserver,
+                &op.proyecto,
+                false,
+                &datos,
+            );
+            k.configurar(&vm, &ip, &configuracion)?;
+            purgar(c, &op.organizacion, &op.proyecto, rama, &datos)
         }
         "crear-endpoint" | "borrar-endpoint" => {
             let id = op.endpoint.as_deref().unwrap_or_default();
