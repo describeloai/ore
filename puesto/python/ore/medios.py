@@ -749,6 +749,31 @@ class File:
         return "File(%s)" % self.name
 
 
+def _fichero_de_fila(fila):
+    """**Una fila de la consulta de una colección derivada, como `File`** (0049
+    B10·3): `name`, `data` y, si los dice, `content_type` y `anchor`. `data`
+    son bytes (un `BLOB`), o un ítem (`Media`, el struct de `_item`) cuyos
+    bytes se copian, fijados a su versión, con su tipo si la fila no dice otro.
+    Un ancla de DuckDB trae todos los campos de su struct: los nulos no van."""
+    nombre = fila.get("name")
+    if not isinstance(nombre, str) or not nombre:
+        raise ValueError("the query gave a file with no `name` (%r)" % (nombre,))
+    datos, tipo = fila.get("data"), fila.get("content_type")
+    if isinstance(datos, dict):
+        ref = MediaRef.from_json(datos)
+        datos = Item(collection(ref.collection), ref).read_bytes()
+        tipo = tipo or ref.content_type
+    elif isinstance(datos, (bytearray, memoryview)):
+        datos = bytes(datos)
+    elif not isinstance(datos, bytes):
+        raise TypeError("`%s`: `data` is bytes (a BLOB) or an item (`Media`), not %s"
+                        % (nombre, "null" if datos is None else type(datos).__name__))
+    ancla = fila.get("anchor")
+    if isinstance(ancla, dict):
+        ancla = {k: v for k, v in ancla.items() if v is not None} or None
+    return File(nombre, datos, tipo, ancla)
+
+
 def _salida_de(output):
     """El nombre corto de la salida de `apply()`: la dada, o la del transform."""
     from . import _transform, _corto, _nombre_de

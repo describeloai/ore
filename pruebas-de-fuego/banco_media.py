@@ -189,6 +189,12 @@ class Celda(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         p = u.path.split("/")
         cuerpo = _cuerpo(self)
+        if u.path == "/puestos/p1/sql":
+            # 0049 B10·3: como ore-serve, lo que la consulta lee del árbol. Aquí
+            # sólo la entrada de `derivar`, una colección; sin funciones.
+            texto = cuerpo.get("texto", "")
+            fuentes = {DERIVAR: {"collection": True}} if DERIVAR in texto else {}
+            return _json(self, 200, {"fuentes": fuentes, "query": texto, "functions": []})
         if u.path == "/puestos/p1/transform":
             TRANSFORMS.append(("POST", cuerpo))
             return _json(self, 200, {"transform": cuerpo.get("nombre")})

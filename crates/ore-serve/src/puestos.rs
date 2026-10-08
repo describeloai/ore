@@ -4005,15 +4005,46 @@ pub(crate) fn celda_de_sentencia(
                 si(*is_virtual)
             ))
         ),
-        // 0049 B10·1: la sentencia ya se analiza y se coteja; correrla —ítem a
-        // ítem, `ore.File`, `apply()`— es B10·3.
-        S::ColeccionDerivada { destino, .. } => format!(
-            "raise NotImplementedError({})\n",
-            c(&format!(
-                "`create or replace media collection {} … as select …` is checked, and does not run yet (ORE 0049 B10·3)",
-                destino.referencia()
-            ))
-        ),
+        // 0049 B10·3: ficheros que dan ficheros. La colección, si no está, nace
+        // escrita ANTES de declarar el transform (lo que declara su salida, ya
+        // existe); después, la consulta ítem a ítem y cada fila un `ore.File`,
+        // por `apply()` hacia ella (B9). El cotejo ya dijo que lee una colección
+        // y nada más: es la primera (y única) de lo que lee.
+        S::ColeccionDerivada {
+            destino,
+            media,
+            formatos,
+            comentario,
+            consulta,
+            ..
+        } => {
+            let salida = c(&destino.referencia());
+            let col = c(&consulta
+                .lee
+                .first()
+                .map(ore_core::sql_del_arbol::Nombre::referencia)
+                .unwrap_or_default());
+            let nombre = nombre_del_transform(codigo);
+            format!(
+                "from ore import transform, collection, create_collection, _sql_a_ficheros, _resultado_de_derivar\n\n\
+                 create_collection({salida}, {}, {}, comment={}, if_not_exists=True)\n\n\n\
+                 @transform(inputs=[collection({col})], output=collection({salida}))\n\
+                 def {nombre}():\n    \
+                     return _sql_a_ficheros({salida}, {col}, {}, {})\n\
+                 \n\n\
+                 _hecho = {nombre}()\n\
+                 print(\"%s · from %s · %d items: %d new, %d recomputed, %d skipped, %d errors, %d removed \
+                 · %d files written, %d retired%s\" % ({salida}, {col}, _hecho[\"items\"], _hecho[\"new\"], \
+                 _hecho[\"recomputed\"], _hecho[\"skipped\"], _hecho[\"errors\"], _hecho[\"removed\"], \
+                 _hecho[\"files_written\"], _hecho[\"files_retired\"], \"\" if _hecho[\"written\"] else \" · nothing new\"))\n\
+                 _resultado_de_derivar(_hecho)\n",
+                c(media),
+                Json::Arr(formatos.iter().map(Json::s).collect()).jcs(),
+                comentario.as_deref().map_or("None".to_string(), c),
+                c(&consulta.consulta),
+                c(&nombre),
+            )
+        }
         // 0049 B8: served in place ↔ copied into the lake.
         S::AlterCollection { target, managed } => format!(
             "from ore import alter_collection, _resultado_de_crear\n\n\
@@ -4064,6 +4095,25 @@ fn rechazo(codigo: &str, fallos: &[ore_core::sql_del_arbol::Fallo]) -> Respuesta
     }
 }
 
+/// El nombre del transform de un `.sql`: el del fichero (`resumen.sql` →
+/// `resumen`), que es lo que la procedencia dice; `consulta` si no es un
+/// identificador de Python.
+fn nombre_del_transform(codigo: &str) -> String {
+    let base = codigo
+        .rsplit('/')
+        .next()
+        .and_then(|f| f.strip_suffix(".sql"))
+        .unwrap_or("");
+    if !base.is_empty()
+        && !base.starts_with(|c: char| c.is_ascii_digit())
+        && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        base.to_string()
+    } else {
+        "consulta".to_string()
+    }
+}
+
 /// La celda que corre una unidad ya cotejada. El nombre del transform es el
 /// del fichero (`resumen.sql` → `resumen`), que es lo que la procedencia dice.
 pub(crate) fn celda_de_unidad(
@@ -4074,19 +4124,7 @@ pub(crate) fn celda_de_unidad(
     let Some(e) = &u.escribe else {
         return (u.consulta.clone(), "sql");
     };
-    let base = codigo
-        .rsplit('/')
-        .next()
-        .and_then(|f| f.strip_suffix(".sql"))
-        .unwrap_or("");
-    let nombre = if !base.is_empty()
-        && !base.starts_with(|c: char| c.is_ascii_digit())
-        && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
-        base.to_string()
-    } else {
-        "consulta".to_string()
-    };
+    let nombre = nombre_del_transform(codigo);
     // Las cadenas van como JSON, que Python lee igual: comillas, saltos y
     // no-ASCII quedan escapados o tal cual, nunca abiertos.
     let cadena = |s: &str| Json::s(s).jcs();
@@ -4885,6 +4923,8 @@ pub(crate) mod prueba {
             "insert into ventas.x select 1, 2",
             "insert or replace into ventas.x select 1 as a",
             "create or replace dataset ventas.r as select 1 as a",
+            // 0049 B10·3: ficheros que dan ficheros
+            "create or replace media collection ventas.demo.paginas media image formats (png) comment 'x' as select p.name, p.data, p.anchor from ventas.docs as c cross join lateral functions.pdf_a_png(c._item) as p",
         ]
         .iter()
         .enumerate()

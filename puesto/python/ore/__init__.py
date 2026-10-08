@@ -2107,6 +2107,36 @@ def _sql_per_item(output, coll, query, name):
     `anchor`, if they have one— are that item's. Same registry by key as in
     Python: what did not change is neither computed nor written. The version
     is the query, the document of each function it calls and its code."""
+    filas_de, huella = _consulta_por_item(query)
+    filas_de.__name__ = name
+    return collection(coll).apply(filas_de, version="sql:" + huella, output=output)
+
+
+def _sql_a_ficheros(output, coll, query, name):
+    """**Files from files, in SQL** (0049 B10·3): what `create or replace media
+    collection <output> … as select … from <coll>` runs, once the collection is
+    there (the cell creates it before its transform is declared). It is
+    `collection(coll).apply()` into it, as in B9: the query runs item by item,
+    as `_sql_per_item` does, and each of its rows is an `ore.File` of that item
+    —`name`, `data` (bytes, or an item that is copied), `content_type`,
+    `anchor`—. Same register by source: what did not change is neither
+    computed nor written, and what is gone takes its files."""
+    from .medios import _fichero_de_fila
+
+    filas_de, huella = _consulta_por_item(query)
+
+    def ficheros(item):
+        return [_fichero_de_fila(f) for f in filas_de(item)]
+
+    ficheros.__name__ = name
+    return collection(coll).apply(ficheros, version="sql:" + huella, output=output)
+
+
+def _consulta_por_item(query):
+    """The query of a statement computed item by item (0049 B7·3, B10·3), as
+    `filas_de(item)` —its rows, as dicts, with the collection holding that item
+    alone— and its version (the query, the document of each function it calls
+    and its code)."""
     import threading
 
     import duckdb
@@ -2144,8 +2174,7 @@ def _sql_per_item(output, coll, query, name):
             _registra(con, n, _q("__ore_item"))
         return _arrow(con.execute(texto)).to_pylist()
 
-    per_item.__name__ = name
-    return collection(coll).apply(per_item, version="sql:" + huella, output=output)
+    return per_item, huella
 
 
 def _resultado_de_aplicar(hecho):
@@ -2156,6 +2185,17 @@ def _resultado_de_aplicar(hecho):
     claves = ("items", "new", "recomputed", "skipped", "errors", "removed", "rows")
     if os.environ.get("ORE_BUILD"):
         _para_el_informe({"filas": int(hecho.get("rows") or 0)})
+    return pa.table({k: pa.array([int(hecho.get(k) or 0)], pa.int64()) for k in claves})
+
+
+def _resultado_de_derivar(hecho):
+    """The result of a statement that writes a collection from its query (0049
+    B10·3): one row with what `apply()` did, files and all."""
+    import pyarrow as pa
+
+    claves = ("items", "new", "recomputed", "skipped", "errors", "removed", "files_written", "files_retired")
+    if os.environ.get("ORE_BUILD"):
+        _para_el_informe({"ficheros": int(hecho.get("files_written") or 0)})
     return pa.table({k: pa.array([int(hecho.get(k) or 0)], pa.int64()) for k in claves})
 
 
