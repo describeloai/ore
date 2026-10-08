@@ -492,6 +492,10 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
     }
 }
 
+/// **Las salidas de una celda**: lo que el agente del puesto puede contestar
+/// (0032 §1). `json` (S1): un valor compuesto como árbol, `{valor, recortado}`.
+pub(crate) const TIPOS_DE_SALIDA: [&str; 5] = ["tabla", "texto", "json", "error", "vacia"];
+
 /// Los lenguajes que una celda puede llevar.
 const LENGUAJES: [&str; 5] = ["python", "sql", "typescript", "javascript", "java"];
 
@@ -2543,7 +2547,7 @@ impl Servidor {
     }
 
     /// `POST /puestos/{id}/celdas/{n}/salida`: lo que salió, tal cual (tipada
-    /// por el agente: tabla, texto, error, vacía).
+    /// por el agente: [`TIPOS_DE_SALIDA`]).
     pub(crate) fn salida_del_puesto(
         &self,
         sujeto: &Identidad,
@@ -2559,9 +2563,12 @@ impl Servidor {
             Ok(v) => crate::rutas::de_node(&v),
             Err(_) => return Respuesta::error(400, "la salida no es JSON"),
         };
-        let tipo_ok = matches!(&leida, Json::Obj(m) if matches!(m.get("tipo"), Some(Json::Str(t)) if ["tabla", "texto", "error", "vacia"].contains(&t.as_str())));
+        let tipo_ok = matches!(&leida, Json::Obj(m) if matches!(m.get("tipo"), Some(Json::Str(t)) if TIPOS_DE_SALIDA.contains(&t.as_str())));
         if !tipo_ok {
-            return Respuesta::error(422, "la salida lleva `tipo`: tabla, texto, error o vacia");
+            return Respuesta::error(
+                422,
+                format!("la salida lleva `tipo`: {}", TIPOS_DE_SALIDA.join(", ")),
+            );
         }
         let mut lista = self.puestos.lista.lock().unwrap();
         let p = match Self::reclamar(&mut lista, sujeto, id) {

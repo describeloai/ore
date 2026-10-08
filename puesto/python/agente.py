@@ -224,10 +224,19 @@ class Kernel:
 
     @staticmethod
     def salida_de(valor, texto, t0):
+        """La salida tipada de una celda, según su último valor (las salidas de
+        una celda, S1): una tabla (DataFrame, Series, Arrow) → `tabla`; un
+        `dict`, `list`, `tuple`, `set` o `@dataclass` (un `MediaRef`, lo que
+        devuelve el SDK) → `json`; nada → `texto` con lo impreso, o `vacia`; lo
+        demás (un número, una cadena, un objeto), `texto` con su `repr`."""
         tabla = como_tabla(valor)
         if tabla is not None:
             tabla.update({"tipo": "tabla", "texto": texto, "ms": ms(t0)})
             return tabla
+        arbol = como_json(valor)
+        if arbol is not None:
+            arbol.update({"tipo": "json", "texto": texto, "ms": ms(t0)})
+            return arbol
         if valor is None:
             if texto.strip():
                 return {"tipo": "texto", "texto": texto, "ms": ms(t0)}
@@ -243,6 +252,80 @@ def como_tabla(valor):
     """La salida `tabla` del contrato: la hace el SDK (`ore.table`), que es lo que
     una celda también puede pedir; aquí sólo se le pone el límite de la consola."""
     return ore.table(valor, FILAS_MAXIMAS)
+
+
+# ── S1 · `json`: un valor compuesto, como árbol ─────────────────────────────
+# Topes de lo que viaja (la salida se guarda en el historial de la celda): por
+# nivel, por cadena, de hondo y en total. Lo que no cabe se recorta y se dice
+# (`recortado`); si ni así cabe, la celda sale como texto.
+JSON_POR_NIVEL = 500
+JSON_CADENA = 5000
+JSON_HONDO = 20
+JSON_BYTES = 2 * 1024 * 1024
+
+
+def como_json(valor):
+    """`{valor, recortado}` de un valor compuesto —`dict`, `list`, `tuple`,
+    `set`, `@dataclass`—, o `None` si no lo es. Las hojas van como el JSON del
+    contrato (`ore.to_json`: fechas, decimales, enteros grandes); los bytes, como
+    `"bytes · N B"` (aquí se enseñan, no se copian); un objeto que no es JSON,
+    por su `repr`."""
+    import dataclasses
+
+    if not (isinstance(valor, (dict, list, tuple, set, frozenset))
+            or (dataclasses.is_dataclass(valor) and not isinstance(valor, type))):
+        return None
+    recortado = [False]
+
+    def hoja(v):
+        if isinstance(v, (bytes, bytearray, memoryview)):
+            return "bytes · %d B" % len(bytes(v))
+        if isinstance(v, str):
+            if len(v) > JSON_CADENA:
+                recortado[0] = True
+                return v[:JSON_CADENA] + "… (%d more characters)" % (len(v) - JSON_CADENA)
+            return v
+        j = ore.to_json(v)
+        if isinstance(j, (dict, list)):   # p. ej. un objeto con `.item()` que da un compuesto
+            return a(j, 0)
+        return j if (j is None or isinstance(j, (bool, int, float, str))) else repr(v)
+
+    def a(v, hondo):
+        if dataclasses.is_dataclass(v) and not isinstance(v, type):
+            v = {f.name: getattr(v, f.name) for f in dataclasses.fields(v)}
+        if isinstance(v, (set, frozenset)):
+            v = sorted(v, key=repr)
+        if isinstance(v, (dict, list, tuple)):
+            if hondo >= JSON_HONDO:
+                recortado[0] = True
+                return "…"
+            pares = list(v.items()) if isinstance(v, dict) else list(enumerate(v))
+            sobran = len(pares) - JSON_POR_NIVEL
+            if sobran > 0:
+                recortado[0] = True
+                pares = pares[:JSON_POR_NIVEL]
+            if isinstance(v, dict):
+                out = {str(k): a(x, hondo + 1) for k, x in pares}
+                if sobran > 0:
+                    out["…"] = "%d more keys" % sobran
+                return out
+            out = [a(x, hondo + 1) for _, x in pares]
+            if sobran > 0:
+                out.append("… %d more items" % sobran)
+            return out
+        if v is None or isinstance(v, (bool, int, float)) and not isinstance(v, type):
+            return ore.to_json(v)
+        if isinstance(v, (str, bytes, bytearray, memoryview)):
+            return hoja(v)
+        try:
+            return hoja(v)
+        except Exception:  # noqa: BLE001 — lo que no se sabe convertir, por su repr
+            return repr(v)[:JSON_CADENA]
+
+    arbol = a(valor, 0)
+    if len(json.dumps(arbol, ensure_ascii=False, default=str)) > JSON_BYTES:
+        return None
+    return {"valor": arbol, "recortado": recortado[0]}
 
 
 def llano(v):
