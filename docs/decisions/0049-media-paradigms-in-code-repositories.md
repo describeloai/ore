@@ -4,7 +4,8 @@
 —B2 y B3 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
-B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 hecho** —ficheros que
+dan ficheros, en vivo el 2026-10-08—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -570,7 +571,7 @@ schema; la decisión (un espacio `functions.<def>`, y el proyecto frente a la ba
 la imagen `puesto-node` no se construía en Node 24 (el informe de `node --test` cambió a `spec`
 sin terminal): `74d83e7`.
 
-### B9 · diseño (propuesto, 2026-10-07): ficheros que dan ficheros
+### B9 · hecho: ficheros que dan ficheros (2026-10-08, victor)
 
 **El criterio** —*una función sobre una colección que emite **ficheros** se calcula una vez por
 ítem y por clave, como `apply()` (B5); lo que no cambió no se recalcula ni se reescribe; lo que
@@ -634,18 +635,39 @@ files_written, files_retired}`.
 
 | paso | qué |
 |---|---|
-| B9·0 | **medida** en un puesto de victor: los 4 contratos a PNG por página (tiempo y tamaño por página) y una transacción de ~1 000 ficheros pequeños con `put_many` (lo que tarda y si el sello aguanta) |
-| B9·1 ✓ | el contrato: [`docs/media.md`](../media.md) §2 «`put` derivado» —`source` y `derivation` del ítem, la entrada del registro por origen (`files`, `empty`, `error`), el linaje en el cuerpo del `commit` (una entrada reemplaza a la anterior del mismo origen; `retire_sources`, `retire`), `GET …/derivations`, `media/derivacion`— y 15 casos en [`conformidad/media/casos/derivar.json`](../../conformidad/media/casos/derivar.json). **Sin cambio de gramática**: el valor de `Media<c>` no cambia y v1alpha19 `01` §6 deja la escritura de ítems al contrato de ejecución |
-| B9·2 | ore-medios: sellar el linaje del `commit` (reemplazar por origen, retirar lo que ya no da, `retire_sources`, `retire`); las columnas y las marcas en el índice; el listado no enseña marcas; leer el registro |
-| B9·3 | ore-serve: el cuerpo del `commit` hasta ore-medios, y `GET /media/…/derivations` |
-| B9·4 | SDK: `ore.File`, `apply()` hacia una colección, `Transaction.delete`; casos en el banco de la media (nuevo, igual, cambia y encoge, se va, copia con otra ruta, sin salida, error y reintento, corte a mitad) |
-| B9·5 | en vivo en victor: `contratos` → páginas PNG; otra vez, nada; un contrato nuevo, uno cambiado, uno quitado |
-| B9·6 | docs y esta sección pasa a «hecho» |
+| B9·0 | **medida** en un puesto de victor: los contratos a PNG (146 ms/página de media, 79–108 ms en caliente, ~36 KB por página a 150 ppp; leer, 0,27–0,51 s por contrato, latencia) y `pypdfium2` 5.14 + `pillow` 12.3 provistos en la imagen; la transacción de 1 000 ficheros, pendiente de su salida | `5aa25c7`, `9a36f31` |
+| B9·1 | el contrato: [`docs/media.md`](../media.md) §2 «`put` derivado» —`source` y `derivation` del ítem, la entrada del registro por origen (`files`, `empty`, `error`), el linaje en el cuerpo del `commit` (una entrada reemplaza a la anterior del mismo origen; `retire_sources`, `retire`), `GET …/derivations`, `media/derivacion`— y 15 casos en [`conformidad/media/casos/derivar.json`](../../conformidad/media/casos/derivar.json). **Sin cambio de gramática**: el valor de `Media<c>` no cambia y v1alpha19 `01` §6 deja la escritura de ítems al contrato de ejecución | `3df3d63` |
+| B9·2 | ore-medios: siete columnas más en el manifiesto; el sello reemplaza la salida de cada origen, reescribe el linaje de los mismos bytes, cambia o quita la marca, retira orígenes y caminos; lo que no cuadra no deja nada; `/indice/derivaciones` | `1d498b2` |
+| B9·3 | ore-serve: el cuerpo del `commit` tal cual hasta ore-medios (`Json::de_node_fiel`: sin perder `null` ni decimales), y `GET /media/…/derivations` | `e4ccff9` |
+| B9·4 | SDK: `ore.File`, `apply()` hacia una colección, `Transaction.delete`, `Collection.derivations()`, `MediaRef.source`/`derivation`; el banco modela la escrita como ore-medios y `la-derivacion-a-ficheros.py` corre los 15 casos | `2161a67`, `edbdd6c` |
+| B9·5 | en vivo (abajo) | `b5f9581` |
+| B9·6 | docs (`docs/sdk.md` «Files from files») y esta sección | este |
 
-**Fuera, y anotado:** su forma SQL (`insert into media collection … select …`, que es M3 y verá
-`source` como columna del listado); Node y la JVM; y renderizar PDF en el puesto: la imagen no trae
-un renderizador (sólo `pillow`, como sugerida), así que `pypdfium2` va como librería del
-repositorio o, si se decide, provista en la imagen.
+**Lo comprobado en vivo** (victor, repositorio Models, `pruebas-de-fuego/b95-ficheros-en-vivo/b95.py`):
+tres contratos copiados a una escrita de entrada, y un `@transform` que da un PNG por página con
+`pypdfium2` hacia `sandbox.default.b95_paginas_0947`.
+
+- **Primera:** 3 nuevos, 3 ficheros, 7,2 s.
+- **Otra vez:** 3 saltados, `written False`: ni una transacción.
+- **c1 cambia, c3 se va, entra c4:** 1 nuevo (c4), 1 recalculado (c1), 1 saltado (c2), `removed 2`
+  (c3 y la identidad vieja de c1: la identidad es el `digest`), 1 fichero retirado (el de c3; el de
+  c1 se reescribe en su camino con el linaje nuevo). Quedan c1, c2 y c4; el registro, tres entradas.
+- **El linaje desde el código:** `c1.pdf/p001.png` dice `source` (el contrato, su versión, su
+  `digest` y `{kind: page, page: 1}`) y `derivation` (`a_png`, `1`, su clave).
+
+**Lo que se encontró por el camino**, cada uno arreglado y con su prueba:
+
+- dentro de un transform, `apply()` lee el registro de su propia **salida**, y ore-serve sólo dejaba
+  leer `inputs` (403 `media/no-declarada`): la salida se lee, de ahora, como en `_lee` del SDK;
+- `MediaRef` descartaba `source` y `derivation` (ignora lo que no conoce);
+- una escrita **recién creada** no tiene transacción y su registro era 404: ahora, vacío;
+- `pillow` provista dejó de poder ser sugerida (`librerias::las_sugeridas_de_python`, 29).
+
+Los tres primeros los dejaba pasar el banco; lo destapó correrlo en vivo.
+
+**Fuera, y anotado:** su forma SQL (`insert into media collection … select …`, M3, que verá
+`source` como columna del listado); Node y la JVM; las marcas `empty` y `error` y el corte a mitad
+sólo están probados en el banco y en Rust (los contratos de victor dan todos una página).
 
 ## Lo que no se hace aquí
 
