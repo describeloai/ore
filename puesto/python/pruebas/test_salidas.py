@@ -215,12 +215,14 @@ class Html(unittest.TestCase):
         self.assertNotIn('href="javascript', agente.markdown_a_html("[x](javascript:alert(1))"))
 
     def test_el_styler_de_pandas(self):
-        try:
-            import jinja2  # noqa: F401 — el Styler lo necesita (viene en la imagen)
-        except ImportError:
-            self.skipTest("sin jinja2")
         import pandas as pd
-        s = salida(pd.DataFrame({"kb": [1.0, 2.5]}).style.format({"kb": "{:.1f} KB"}))
+        # El Styler necesita jinja2 (viene en la imagen); un python sin él —o con uno
+        # que pandas no acepta, como el del plano de CI— no tiene `.style`.
+        try:
+            estilo = pd.DataFrame({"kb": [1.0, 2.5]}).style
+        except (ImportError, AttributeError):
+            self.skipTest("pandas sin un jinja2 que acepte")
+        s = salida(estilo.format({"kb": "{:.1f} KB"}))
         self.assertEqual(s["tipo"], "html")
         self.assertIn("2.5 KB", s["html"])
 
