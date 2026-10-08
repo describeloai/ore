@@ -17,9 +17,11 @@
 //!
 //! Las operaciones son las del contrato (`docs/media.md`): `list`, `stat` y
 //! `url`; y `open` —los bytes, fijados— en [`contenido`] (B3); y `put` —una
-//! colección escrita, con transacciones— en [`escritura`] (B4b·1).
+//! colección escrita, con transacciones— en [`escritura`] (B4b·1), con el linaje
+//! de lo que `apply()` deriva en [`derivacion`] (B9).
 
 pub mod contenido;
+pub mod derivacion;
 pub mod escritura;
 pub mod firma;
 pub mod indice;

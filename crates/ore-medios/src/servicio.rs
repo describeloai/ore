@@ -9,6 +9,7 @@
 //! | `POST /indice/item` | `stat` |
 //! | `POST /indice/urls` | `url` |
 //! | `POST /indice/abrir` | el permiso de leer un ítem (B3·2) |
+//! | `POST /indice/derivaciones` | el registro de lo que `apply()` derivó (B9) |
 //! | `GET /contenido?permiso=…` | `open` / `read_range`: los bytes (B3·2) |
 //! | `GET /salud` | si vive, y cuántos índices tiene |
 //!
@@ -257,7 +258,11 @@ impl Servicio {
             }
             (
                 "POST",
-                ruta @ ("/indice/items" | "/indice/item" | "/indice/urls" | "/indice/abrir"),
+                ruta @ ("/indice/items"
+                | "/indice/item"
+                | "/indice/urls"
+                | "/indice/abrir"
+                | "/indice/derivaciones"),
             ) => {
                 let n = match ore_core::parse::parse(&p.cuerpo) {
                     Ok(n) => n,
@@ -275,6 +280,7 @@ impl Servicio {
                     "/indice/items" => self.items(&ix, &n),
                     "/indice/item" => self.item(&ix, &n),
                     "/indice/abrir" => self.abrir(&ix, &n),
+                    "/indice/derivaciones" => self.derivaciones(&ix, &n),
                     _ => self.urls(&ix, &n),
                 }
             }
@@ -318,6 +324,26 @@ impl Servicio {
                     "items",
                     Json::Arr(pagina.iter().map(|it| ix.referencia(it)).collect()),
                 ),
+                (
+                    "cursor",
+                    cursor.map(Json::s).unwrap_or(Json::Crudo("null".into())),
+                ),
+            ])),
+            Err(e) => problema(400, "media/peticion", e),
+        }
+    }
+
+    /// 0049 B9 · **El registro** de una colección escrita por `apply()`: una
+    /// entrada por origen, por cursor.
+    fn derivaciones(&self, ix: &Indice, n: &Node) -> Respuesta {
+        let limite = texto(n, "limit")
+            .and_then(|l| l.parse::<usize>().ok())
+            .unwrap_or(LIMITE)
+            .clamp(1, LIMITE);
+        match ix.derivaciones(texto(n, "cursor"), limite) {
+            Ok((pagina, cursor)) => Respuesta::ok(Json::obj([
+                ("as_of", Json::s(&ix.transaccion)),
+                ("derivations", Json::Arr(pagina)),
                 (
                     "cursor",
                     cursor.map(Json::s).unwrap_or(Json::Crudo("null".into())),
@@ -815,6 +841,7 @@ mod pruebas {
             ("POST", "/indice/items"),
             ("POST", "/indice/urls"),
             ("POST", "/indice/abrir"),
+            ("POST", "/indice/derivaciones"),
             ("GET", "/salud"),
         ] {
             let salida = s.atender_contenido(&Peticion {

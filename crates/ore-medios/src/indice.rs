@@ -4,13 +4,17 @@
 //! El listado es una tabla Iceberg (`colecciones/<b>/<s>/<n>`) cuyas filas son
 //! texto: `clave, camino, version, etag, huella, formato, tamano, modificado,
 //! estado, entro, retirado, retirado_ms` y, en una mantenida, `blob` y `tipo`.
+//! En una escrita por `apply()` (0049 B9), además el linaje de cada fichero
+//! —`origen`, `origen_uri`, `origen_digest`, `ancla`, `derivacion`— y las
+//! **marcas**: filas sin blob (`marca` = `vacio` | `error`) de un origen que no
+//! dio ficheros. Una marca no es un ítem: va aparte y sólo la ve el registro.
 //! Medido (B2·0): 1 M de filas se leen en 0,63 s (451 MB en Arrow) y se indexan
 //! en 1,15 s; aquí se guarda sólo lo que se sirve.
 
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use ore_core::json::Json;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Un ítem del listado: lo que se sirve de él.
@@ -36,6 +40,34 @@ pub struct Item {
     /// clave, no.
     pub clave: Option<String>,
     pub etag: Option<String>,
+    /// 0049 B9 · el linaje de un fichero derivado.
+    pub linaje: Option<Linaje>,
+}
+
+/// 0049 B9 · De qué ítem sale un fichero, o una marca, y con qué se calculó.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Linaje {
+    /// La identidad del origen (v1alpha17 `01` §3.1): su `digest`, o su `uri`.
+    pub origen: String,
+    pub uri: String,
+    pub digest: Option<String>,
+    /// El ancla (JSON canónico), si el fichero es una parte del origen.
+    pub ancla: Option<String>,
+    /// El struct `_derivation` (JSON canónico).
+    pub derivacion: Option<String>,
+}
+
+/// 0049 B9 · **Una marca**: un origen que no dio ficheros (`vacio`) o que
+/// falló (`error`, con `{type, message}` en JSON). No es un ítem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marca {
+    pub clave: String,
+    pub version: String,
+    pub estado: String,
+    pub entro: Option<String>,
+    pub marca: String,
+    pub error: Option<String>,
+    pub linaje: Linaje,
 }
 
 /// Qué ítems se listan.
@@ -79,6 +111,8 @@ pub struct Indice {
     items: Vec<Item>,
     por_huella: HashMap<String, Vec<usize>>,
     por_blob: HashMap<String, Vec<usize>>,
+    /// 0049 B9 · las marcas, de todos los estados.
+    marcas: Vec<Marca>,
 }
 
 impl Indice {
@@ -92,6 +126,7 @@ impl Indice {
         lotes: &[RecordBatch],
     ) -> Result<Indice, String> {
         let mut items = Vec::with_capacity(lotes.iter().map(|l| l.num_rows()).sum());
+        let mut marcas = Vec::new();
         for l in lotes {
             let col = |n: &str| l.column_by_name(n).and_then(|c| c.as_string_opt::<i32>());
             let obligatoria = |n: &str| {
@@ -106,12 +141,40 @@ impl Indice {
             let (blob, tipo, formato, modificado) =
                 (col("blob"), col("tipo"), col("formato"), col("modificado"));
             let (clave, etag) = (col("clave"), col("etag"));
+            let (origen, origen_uri, origen_digest) =
+                (col("origen"), col("origen_uri"), col("origen_digest"));
+            let (ancla, derivacion, marca, error) =
+                (col("ancla"), col("derivacion"), col("marca"), col("error"));
             let texto = |c: Option<&arrow_array::StringArray>, i: usize| {
                 c.filter(|c| !arrow_array::Array::is_null(*c, i))
                     .map(|c| c.value(i).to_string())
                     .filter(|s| !s.is_empty())
             };
             for i in 0..l.num_rows() {
+                let linaje = texto(origen, i).map(|o| Linaje {
+                    origen: o,
+                    uri: texto(origen_uri, i).unwrap_or_default(),
+                    digest: texto(origen_digest, i),
+                    ancla: texto(ancla, i),
+                    derivacion: texto(derivacion, i),
+                });
+                if let Some(m) = texto(marca, i) {
+                    let Some(linaje) = linaje else {
+                        return Err(format!(
+                            "el listado de `{coleccion}` tiene una marca sin `origen`"
+                        ));
+                    };
+                    marcas.push(Marca {
+                        clave: texto(clave, i).unwrap_or_default(),
+                        version: version.value(i).to_string(),
+                        estado: estado.value(i).to_string(),
+                        entro: entero(l, "entro", i).map(|e| e.to_string()),
+                        marca: m,
+                        error: texto(error, i),
+                        linaje,
+                    });
+                    continue;
+                }
                 items.push(Item {
                     camino: camino.value(i).to_string(),
                     version: version.value(i).to_string(),
@@ -125,6 +188,7 @@ impl Indice {
                     entro: entero(l, "entro", i).map(|e| e.to_string()),
                     clave: texto(clave, i),
                     etag: texto(etag, i),
+                    linaje,
                 });
             }
         }
@@ -144,6 +208,7 @@ impl Indice {
             items,
             por_huella,
             por_blob,
+            marcas,
         })
     }
 
@@ -282,7 +347,171 @@ impl Indice {
             // listado (v1alpha17 `04` §1).
             ("transaction", o(&it.entro)),
         ])
+        .con_linaje(it.linaje.as_ref())
     }
+
+    /// 0049 B9 · Los ficheros actuales que salen de un origen.
+    pub fn derivados_de(&self, origen: &str) -> Vec<&Item> {
+        self.items
+            .iter()
+            .filter(|x| x.estado == "actual")
+            .filter(|x| x.linaje.as_ref().is_some_and(|l| l.origen == origen))
+            .collect()
+    }
+
+    /// 0049 B9 · La marca actual de un origen, si la tiene.
+    pub fn marca_de(&self, origen: &str) -> Option<&Marca> {
+        self.marcas
+            .iter()
+            .find(|m| m.estado == "actual" && m.linaje.origen == origen)
+    }
+
+    /// 0049 B9 · **El registro** (`GET …/derivations`): una entrada por origen,
+    /// con sus ficheros actuales o su marca, ordenadas por origen; una página
+    /// de `limite` desde el cursor (el origen del último dado, en hexadecimal).
+    pub fn derivaciones(
+        &self,
+        cursor: Option<&str>,
+        limite: usize,
+    ) -> Result<(Vec<Json>, Option<String>), String> {
+        let desde = match cursor {
+            Some(c) => Some(de_hex(c).ok_or("`cursor` no es uno de los que da `derivations`")?),
+            None => None,
+        };
+        let mut por_origen: BTreeMap<&str, Entrada<'_>> = BTreeMap::new();
+        for it in self.items.iter().filter(|x| x.estado == "actual") {
+            if let Some(l) = &it.linaje {
+                por_origen
+                    .entry(l.origen.as_str())
+                    .or_insert_with(|| Entrada::Ficheros(l, Vec::new()))
+                    .anadir(it);
+            }
+        }
+        for m in self.marcas.iter().filter(|m| m.estado == "actual") {
+            por_origen
+                .entry(m.linaje.origen.as_str())
+                .or_insert(Entrada::Marca(m));
+        }
+        let mut pagina = Vec::new();
+        let mut ultimo = None;
+        let mut mas = false;
+        for (origen, e) in por_origen
+            .iter()
+            .filter(|(o, _)| desde.as_deref().is_none_or(|d| **o > d))
+        {
+            if pagina.len() == limite {
+                mas = true;
+                break;
+            }
+            pagina.push(e.json());
+            ultimo = Some(*origen);
+        }
+        let siguiente = if mas { ultimo.map(hex) } else { None };
+        Ok((pagina, siguiente))
+    }
+}
+
+/// Una entrada del registro, mientras se junta.
+enum Entrada<'a> {
+    Ficheros(&'a Linaje, Vec<&'a Item>),
+    Marca(&'a Marca),
+}
+
+impl<'a> Entrada<'a> {
+    fn anadir(&mut self, it: &'a Item) {
+        if let Entrada::Ficheros(_, v) = self {
+            v.push(it);
+        }
+    }
+
+    fn json(&self) -> Json {
+        match self {
+            Entrada::Ficheros(l, fs) => Json::obj([
+                ("source", fuente(l)),
+                ("derivation", crudo(&l.derivacion)),
+                ("state", Json::s("files")),
+                (
+                    "files",
+                    Json::Arr(
+                        fs.iter()
+                            .map(|f| {
+                                Json::obj([
+                                    ("path", Json::s(&f.camino)),
+                                    (
+                                        "anchor",
+                                        crudo(&f.linaje.as_ref().and_then(|l| l.ancla.clone())),
+                                    ),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+            Entrada::Marca(m) => Json::obj([
+                ("source", fuente(&m.linaje)),
+                ("derivation", crudo(&m.linaje.derivacion)),
+                (
+                    "state",
+                    Json::s(if m.marca == "error" { "error" } else { "empty" }),
+                ),
+                ("files", Json::Arr(Vec::new())),
+                ("error", crudo(&m.error)),
+            ]),
+        }
+    }
+}
+
+/// Un JSON guardado en texto, tal cual; sin él, `null`.
+fn crudo(v: &Option<String>) -> Json {
+    Json::Crudo(v.clone().unwrap_or_else(|| "null".into()))
+}
+
+/// `{uri, digest}` de un origen.
+fn fuente(l: &Linaje) -> Json {
+    Json::obj([
+        ("uri", Json::s(&l.uri)),
+        (
+            "digest",
+            l.digest
+                .as_ref()
+                .map(Json::s)
+                .unwrap_or(Json::Crudo("null".into())),
+        ),
+    ])
+}
+
+/// Lo que una referencia gana si el ítem es un fichero derivado (0049 B9):
+/// `source` (con su `anchor`) y `derivation`.
+trait ConLinaje {
+    fn con_linaje(self, l: Option<&Linaje>) -> Json;
+}
+
+impl ConLinaje for Json {
+    fn con_linaje(self, l: Option<&Linaje>) -> Json {
+        let Some(l) = l else { return self };
+        let (Json::Obj(mut m), Json::Obj(mut f)) = (self, fuente(l)) else {
+            unreachable!("una referencia y una fuente son objetos")
+        };
+        f.insert("anchor".into(), crudo(&l.ancla));
+        m.insert("source".into(), Json::Obj(f));
+        m.insert("derivation".into(), crudo(&l.derivacion));
+        Json::Obj(m)
+    }
+}
+
+fn hex(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+fn de_hex(c: &str) -> Option<String> {
+    if !c.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = (0..c.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&c[i..i + 2], 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// **Un entero de una columna** (0049 B3·6). El manifiesto guarda `tamano` y
