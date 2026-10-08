@@ -22,8 +22,13 @@ limpiar() { for v in p424-main p424-dev; do k delete pod "$v" --ignore-not-found
   k delete configmap "$v-config" --ignore-not-found >/dev/null; done; }
 trap 'limpiar; for c in $CELDAS_ABIERTAS; do kubectl -n t-$c delete networkpolicy prueba-$PRUEBA --ignore-not-found >/dev/null; done' EXIT
 
+# ⚠️ `gcloud` en Git Bash se rompe con MSYS_NO_PATHCONV=1 (que entorno.sh pone para kubectl): se le
+#   quita. Medido: con ella, el listado salía vacío sin error y la foto no veía el bucket.
+gcs_ls() { env -u MSYS_NO_PATHCONV gcloud storage ls -r "$1"; }
 foto() {   # foto FICHERO → una línea por cosa que hay
-  { gcloud storage ls -r "$BUCKET/**" 2>/dev/null | grep '^gs://' | sed 's/^/gcs /'
+  local g; g=$(gcs_ls "$BUCKET/**") || { echo "✗ no se pudo listar el bucket" >&2; exit 1; }
+  [ -n "$g" ] || { echo "✗ el bucket sale vacío: una foto que no lo ve no mide nada" >&2; exit 1; }
+  { echo "$g" | grep '^gs://' | sed 's/^/gcs /'
     for i in 0 1 2; do k exec safekeeper-$i -- sh -c 'ls -1 /data' 2>/dev/null | grep -E '^[0-9a-f]{32}$' | sed "s/^/sk$i /"; done
     pageserver GET /v1/tenant | python -c 'import json,sys; [print("ps", t["id"]) for t in json.load(sys.stdin)]'
   } | sort > "$1"
@@ -50,7 +55,7 @@ for r in main dev; do
   echo "  · $r: $(q "$IP" "select pg_size_pretty(pg_total_relation_size('p424'))") escritos"
 done
 echo "  · se espera a que el WAL baje a GCS (hasta 3 min)"
-for i in $(seq 1 18); do [ "$(gcloud storage ls -r "$BUCKET/safekeeper/$TENANT/**" 2>/dev/null | grep -c '^gs://')" -gt 0 ] && break; sleep 10; done
+for i in $(seq 1 18); do [ "$(gcs_ls "$BUCKET/safekeeper/$TENANT/**" 2>/dev/null | grep -c '^gs://')" -gt 0 ] && break; sleep 10; done
 foto "$ORE_PG_TRABAJO/p424-durante"
 echo "  · durante: $(del_tenant "$ORE_PG_TRABAJO/p424-durante") cosas del tenant ($(grep -c "^gcs .*/safekeeper/$TENANT" "$ORE_PG_TRABAJO/p424-durante") de WAL en GCS, $(grep -c "^gcs .*/pageserver/.*$TENANT" "$ORE_PG_TRABAJO/p424-durante") del pageserver en GCS, $(grep -c "^sk. $TENANT" "$ORE_PG_TRABAJO/p424-durante") safekeepers con su directorio)"
 

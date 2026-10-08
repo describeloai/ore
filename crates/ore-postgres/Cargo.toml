@@ -23,3 +23,7 @@ postgres    = { version = "0.19", default-features = false }
 # El resumen del token de la celda, para guardar lo que `ore-iam` contestó de él
 # sin guardar el token.
 sha2.workspace = true
+
+# Las firmas Ed25519 de los tokens (el de tenant y el de `compute_ctl`, P4·3·1):
+# la misma crate con que firma el resto del árbol.
+ed25519-compact.workspace = true

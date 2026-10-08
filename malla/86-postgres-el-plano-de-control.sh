@@ -53,4 +53,22 @@ else
 fi
 # Nadie más se conecta a ella: ni `public`, ni el storage_controller.
 echo "revoke all on database ore_postgres from public;" | psql_su
+
+# ── P4·3·1 · la llave propia (Ed25519, PKCS#8) con que ore-postgres le habla a cada compute_ctl ──
+# Se genera en memoria y va por la entrada estándar de kubectl: ni disco, ni argumentos, ni pantalla.
+echo "── el Secret ore-postgres-llaves"
+if kubectl -n $NS get secret ore-postgres-llaves >/dev/null 2>&1; then
+  echo "   ya existe (no se toca: rotarla es otra operación)"
+else
+  python -c '
+import json
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+pem = Ed25519PrivateKey.generate().private_bytes(serialization.Encoding.PEM,
+      serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+print(json.dumps({"apiVersion": "v1", "kind": "Secret",
+  "metadata": {"name": "ore-postgres-llaves", "namespace": "ore-pg"},
+  "stringData": {"privada.pem": pem}}))' | kubectl apply -f - >/dev/null
+  echo "   creado"
+fi
 echo "ok"

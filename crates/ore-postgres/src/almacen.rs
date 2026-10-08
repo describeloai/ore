@@ -9,6 +9,8 @@
 //!   rama       DELETE /v1/tenant/{t}/timeline/{tl}  hasta 404, y en cada safekeeper
 //!   instante   GET    /v1/tenant/{t}/timeline/{tl}/get_lsn_by_timestamp?timestamp=…  (el controller lo
 //!              pasa al pageserver que lleva el tenant)
+//!   dónde      GET    /control/v1/tenant/{t} (`node_attached`) y /control/v1/node: el pageserver del
+//!              tenant, para la especificación de su cómputo (P4·3·1)
 //! ```
 //!
 //! ⭐ Todo es **idempotente** visto desde aquí: «asegurar» un tenant que ya
@@ -72,6 +74,9 @@ pub trait Almacen: Send + Sync {
         timeline: &str,
         instante: &str,
     ) -> Result<String, Fallo>;
+    /// `host=… port=…` del pageserver que lleva el tenant. Un tenant partido en
+    /// varios shards no se sirve todavía: es definitivo.
+    fn pageserver_de(&self, tenant: &str) -> Result<String, Fallo>;
 }
 
 /// El de verdad: Neon, en `ore-pg`.
@@ -221,9 +226,42 @@ impl Almacen for Neon {
         clasificar("el LSN del instante", c, &r)?;
         lsn_de_la_respuesta(&r)
     }
+
+    fn pageserver_de(&self, tenant: &str) -> Result<String, Fallo> {
+        let (c, r) = self.pedir(
+            &self.controlador,
+            &self.admin,
+            "GET",
+            &format!("/control/v1/tenant/{tenant}"),
+            None,
+        )?;
+        clasificar("dónde está el tenant", c, &r)?;
+        let nodo = nodo_del_tenant(&r)?;
+        let (c, r) = self.pedir(
+            &self.controlador,
+            &self.admin,
+            "GET",
+            "/control/v1/node",
+            None,
+        )?;
+        clasificar("los pageservers", c, &r)?;
+        direccion_del_nodo(&r, &nodo)
+    }
 }
 
 impl Neon {
+    /// `host:5454` de cada safekeeper (la especificación los quiere por su
+    /// puerto de Postgres, no por el HTTP con que se les borra).
+    pub fn safekeepers_pg(&self) -> Vec<String> {
+        self.safekeepers
+            .iter()
+            .map(|s| {
+                let host = s.rsplit_once(':').map(|(h, _)| h).unwrap_or(s);
+                format!("{}:5454", host.trim_end_matches('.'))
+            })
+            .collect()
+    }
+
     fn borrar_en_los_safekeepers(&self, camino: &str) -> Result<(), Fallo> {
         for sk in &self.safekeepers {
             let (c, r) = self.pedir(sk, &self.safekeeperdata, "DELETE", camino, None)?;
@@ -236,6 +274,51 @@ impl Neon {
         }
         Ok(())
     }
+}
+
+/// De `GET /control/v1/tenant/{t}`: el nodo de su único shard.
+pub fn nodo_del_tenant(cuerpo: &str) -> Result<String, Fallo> {
+    let n = ore_core::parse::parse(cuerpo)
+        .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
+    let shards: Vec<_> = n
+        .get("shards")
+        .map(|(_, s)| s.items().to_vec())
+        .unwrap_or_default();
+    match shards.as_slice() {
+        [uno] => uno
+            .get("node_attached")
+            .and_then(|(_, v)| v.as_str())
+            .filter(|v| *v != "null" && !v.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| Fallo::Reintentar("el tenant aún no está en ningún pageserver".into())),
+        [] => Err(Fallo::Reintentar(
+            "el controller no da shards del tenant".into(),
+        )),
+        varios => Err(Fallo::Definitivo(format!(
+            "el tenant tiene {} shards: un cómputo sobre varios aún no se sirve",
+            varios.len()
+        ))),
+    }
+}
+
+/// De `GET /control/v1/node`: `host=… port=…` del nodo con ese id.
+pub fn direccion_del_nodo(cuerpo: &str, nodo: &str) -> Result<String, Fallo> {
+    let n = ore_core::parse::parse(cuerpo)
+        .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
+    let texto = |x: &ore_core::parse::Node, k: &str| {
+        x.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
+    };
+    n.items()
+        .iter()
+        .find(|x| texto(x, "id").as_deref() == Some(nodo))
+        .and_then(|x| {
+            Some(format!(
+                "host={} port={}",
+                texto(x, "listen_pg_addr")?,
+                texto(x, "listen_pg_port")?
+            ))
+        })
+        .ok_or_else(|| Fallo::Reintentar(format!("el controller no conoce el nodo {nodo}")))
 }
 
 /// `{"lsn": "0/16B5A50", "kind": "present" | "future" | "past" | "nomatch"}`.
@@ -310,6 +393,30 @@ mod pruebas {
         assert!(matches!(
             clasificar("x", 401, ""),
             Err(Fallo::Definitivo(_))
+        ));
+    }
+
+    #[test]
+    fn el_pageserver_del_tenant() {
+        let t = r#"{"tenant_id":"t","shards":[{"tenant_shard_id":"t","node_attached":1,"node_secondary":[]}]}"#;
+        assert_eq!(nodo_del_tenant(t), Ok("1".into()));
+        let nodos = r#"[{"id":1,"listen_pg_addr":"pageserver-0.ore-pg.svc.cluster.local","listen_pg_port":6400},
+                        {"id":2,"listen_pg_addr":"pageserver-1","listen_pg_port":6400}]"#;
+        assert_eq!(
+            direccion_del_nodo(nodos, "1"),
+            Ok("host=pageserver-0.ore-pg.svc.cluster.local port=6400".into())
+        );
+        assert!(matches!(
+            direccion_del_nodo(nodos, "3"),
+            Err(Fallo::Reintentar(_))
+        ));
+        assert!(matches!(
+            nodo_del_tenant(r#"{"shards":[{"node_attached":1},{"node_attached":2}]}"#),
+            Err(Fallo::Definitivo(_))
+        ));
+        assert!(matches!(
+            nodo_del_tenant(r#"{"shards":[{"node_attached":null}]}"#),
+            Err(Fallo::Reintentar(_))
         ));
     }
 

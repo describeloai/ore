@@ -13,9 +13,11 @@
 # Va en el pool del producto (`neon`), como el almacenamiento: la gestión es
 # parte del producto, no de la celda (decidido 8).
 #
-# P4·2: su reconciliador crea y borra tenants y timelines. Lleva montados SÓLO
-# los dos tokens que usa —`admin` (el storage_controller) y `safekeeperdata`
-# (borrar el WAL en cada safekeeper)—, no la llave privada.
+# P4·2: su reconciliador crea y borra tenants y timelines con los tokens `admin`
+# (el storage_controller) y `safekeeperdata` (borrar el WAL en cada safekeeper).
+# P4·3: firma el token de tenant de cada cómputo con la privada del
+# almacenamiento, y le habla a cada `compute_ctl` con su llave propia
+# (`ore-postgres-llaves`, creada por 86-…sh).
 # ═══════════════════════════════════════════════════════════════════════════
 apiVersion: v1
 kind: ServiceAccount
@@ -67,6 +69,7 @@ spec:
           ports: [{ containerPort: 8100 }]
           volumeMounts:
             - { name: llaves-almacen, mountPath: /llaves/almacen, readOnly: true }
+            - { name: llaves-computo, mountPath: /llaves/computo, readOnly: true }
           readinessProbe:
             httpGet: { path: /salud, port: 8100 }
             initialDelaySeconds: 2
@@ -82,8 +85,10 @@ spec:
         - name: llaves-almacen
           projected:
             sources:
-              - secret: { name: almacen-jwt-privada, items: [{ key: admin, path: admin }] }
+              - secret: { name: almacen-jwt-privada, items: [{ key: admin, path: admin }, { key: privada.pem, path: privada.pem }] }
               - secret: { name: almacen-jwt, items: [{ key: safekeeperdata, path: safekeeperdata }] }
+        - name: llaves-computo
+          secret: { secretName: ore-postgres-llaves }
 ---
 # Quién entra: el `ore-serve` de las celdas, y nadie más.
 apiVersion: networking.k8s.io/v1

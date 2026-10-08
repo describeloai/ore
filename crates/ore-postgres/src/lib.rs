@@ -25,6 +25,8 @@ pub mod almacen;
 pub mod api;
 pub mod base;
 pub mod celda;
+pub mod especificacion;
+pub mod llaves;
 pub mod reconciliador;
 
 use ore_entrada::http;
@@ -37,6 +39,14 @@ ore-postgres — el plano de control de ORE Serverless Postgres
 
   ore-postgres servir [--bind DIRECCION] [--iam DESTINO]
                       [--controlador DESTINO] [--safekeepers D1,D2,D3] [--llaves-almacen DIR]
+  ore-postgres especificacion --computo NOMBRE --tenant T --timeline TL [--grupo G]
+  ore-postgres token-computo NOMBRE
+
+  `especificacion` y `token-computo` son para las pruebas de fuego mientras el
+  reconciliador no crea los cómputos (P4·3·1): escriben por la salida estándar el
+  `config.json` de un cómputo y un token de una hora para su `compute_ctl`.
+  Leen las llaves de `--llaves-almacen` (`admin`, `privada.pem`) y de
+  `--llaves-computo` (`privada.pem`; por defecto /llaves/computo).
 
   La base sale de `ORE_POSTGRES_URL`; sin valor por defecto. Las migraciones se
   aplican al arrancar. `--iam` es dónde preguntar de qué organización es una celda
@@ -58,6 +68,8 @@ fn valor(args: &[String], que: &str) -> Option<String> {
 pub fn arrancar(args: Vec<String>) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("servir") => servir(&args),
+        Some("especificacion") => especificacion_mando(&args),
+        Some("token-computo") => token_mando(&args),
         Some("-h" | "--help") => {
             print!("{USO}");
             ExitCode::SUCCESS
@@ -69,6 +81,93 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
         None => {
             print!("{USO}");
             ExitCode::from(64)
+        }
+    }
+}
+
+/// Lo común a los dos mandos de prueba: el almacenamiento y las llaves.
+fn para_probar(args: &[String]) -> Result<(almacen::Neon, llaves::Llave, llaves::Llave), String> {
+    let dir = valor(args, "--llaves-almacen").unwrap_or_else(|| "/llaves/almacen".into());
+    let dir_computo = valor(args, "--llaves-computo").unwrap_or_else(|| "/llaves/computo".into());
+    let controlador = valor(args, "--controlador")
+        .unwrap_or_else(|| "storage-controller.ore-pg.svc.cluster.local.:1234".into());
+    let safekeepers = (0..3)
+        .map(|i| format!("safekeeper-{i}.ore-pg.svc.cluster.local.:7676"))
+        .collect();
+    let neon = almacen::Neon::nuevo(&controlador, safekeepers, std::path::Path::new(&dir))?;
+    let propia =
+        llaves::Llave::del_fichero(&std::path::Path::new(&dir_computo).join("privada.pem"))?;
+    let del_almacen = llaves::Llave::del_fichero(&std::path::Path::new(&dir).join("privada.pem"))?;
+    Ok((neon, propia, del_almacen))
+}
+
+fn segundos() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn especificacion_mando(args: &[String]) -> ExitCode {
+    use almacen::Almacen;
+    let (Some(nombre), Some(tenant), Some(timeline)) = (
+        valor(args, "--computo"),
+        valor(args, "--tenant"),
+        valor(args, "--timeline"),
+    ) else {
+        eprintln!("✗ `especificacion` necesita `--computo`, `--tenant` y `--timeline`");
+        return ExitCode::from(64);
+    };
+    let grupo = valor(args, "--grupo").unwrap_or_else(|| "ore-pg".into());
+    let (neon, propia, del_almacen) = match para_probar(args) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("✗ {e}");
+            return ExitCode::from(66);
+        }
+    };
+    let pageserver = match neon.pageserver_de(&tenant) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ el pageserver del tenant: {}", e.motivo());
+            return ExitCode::from(69);
+        }
+    };
+    let sk = neon.safekeepers_pg();
+    let ahora = especificacion::iso(segundos());
+    let e = especificacion::especificacion(
+        &especificacion::Computo {
+            nombre: &nombre,
+            tenant: &tenant,
+            timeline: &timeline,
+            pageserver: &pageserver,
+            safekeepers: &sk,
+            grupo: &grupo,
+            ahora: &ahora,
+        },
+        &propia,
+        Some(&del_almacen),
+    );
+    println!("{}", e.pretty());
+    ExitCode::SUCCESS
+}
+
+fn token_mando(args: &[String]) -> ExitCode {
+    let Some(nombre) = args.get(1) else {
+        eprintln!("✗ `token-computo` necesita el nombre del cómputo");
+        return ExitCode::from(64);
+    };
+    match para_probar(args) {
+        Ok((_, propia, _)) => {
+            println!(
+                "{}",
+                llaves::token_de_computo(&propia, nombre, segundos() + 3600)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("✗ {e}");
+            ExitCode::from(66)
         }
     }
 }

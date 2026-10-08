@@ -86,6 +86,10 @@ impl Almacen for Apunta {
     fn borrar_timeline(&self, t: &str, tl: &str) -> Result<(), Fallo> {
         self.apuntar(format!("borrar-timeline {t} {tl}"))
     }
+    fn pageserver_de(&self, t: &str) -> Result<String, Fallo> {
+        self.apuntar(format!("pageserver {t}"))?;
+        Ok("host=ps port=6400".into())
+    }
     fn lsn_en_instante(&self, t: &str, tl: &str, i: &str) -> Result<String, Fallo> {
         self.apuntar(format!("instante {t} {tl} {i}"))?;
         Ok("0/1A2B3C".into())
