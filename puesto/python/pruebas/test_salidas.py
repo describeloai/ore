@@ -16,6 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agente  # noqa: E402
 from ore.medios import MediaRef  # noqa: E402
 
+# `pillow` y `matplotlib` vienen en la imagen del puesto (`provisto.txt`), pero no
+# en todas partes donde corre esta suite (el plano de CI): sin ellas, lo suyo se salta.
+import importlib.util  # noqa: E402
+CON_PIL = importlib.util.find_spec("PIL") is not None
+CON_MPL = importlib.util.find_spec("matplotlib") is not None
+sin_pil = unittest.skipUnless(CON_PIL, "sin pillow")
+sin_mpl = unittest.skipUnless(CON_PIL and CON_MPL, "sin matplotlib")
+
 
 @dataclasses.dataclass
 class Ancla:
@@ -138,6 +146,7 @@ class Media(unittest.TestCase):
 class Imagen(unittest.TestCase):
     """S2 · una imagen: sus bytes en base64, con su tipo y su tamaño."""
 
+    @sin_pil
     def test_bytes_de_png_jpeg_gif_webp_y_svg(self):
         import base64
         b = png()
@@ -151,6 +160,7 @@ class Imagen(unittest.TestCase):
         self.assertEqual(agente.tipo_de_imagen(b'  <svg xmlns="http://www.w3.org/2000/svg"/>'), "image/svg+xml")
         self.assertEqual(salida(b"%PDF-1.7 no es una imagen")["tipo"], "texto")
 
+    @sin_mpl
     def test_pil_matplotlib_y_ore_file(self):
         from PIL import Image
         import ore
@@ -167,6 +177,7 @@ class Imagen(unittest.TestCase):
         self.assertEqual((f["tipo"], f["nombre"]), ("imagen", "p001.png"))
         self.assertEqual(salida(ore.File("a.txt", b"hola"))["tipo"], "texto")
 
+    @sin_pil
     def test_una_grande_se_reduce_por_debajo_del_tope(self):
         import os as _os
         from PIL import Image
@@ -262,6 +273,7 @@ class Varias(unittest.TestCase):
         s = self.celda("ore.display({'n': 1})")
         self.assertEqual((s["tipo"], s["valor"]), ("json", {"n": 1}))
 
+    @sin_mpl
     def test_plt_show_y_las_figuras_que_quedan_abiertas(self):
         import matplotlib.pyplot as plt
         # en el puesto lo pone `MPLBACKEND`; aquí otro test ya eligió Agg
@@ -281,6 +293,9 @@ class Varias(unittest.TestCase):
     def test_los_topes_dejan_fuera_lo_que_no_cabe_y_lo_cuentan(self):
         s = self.celda("for i in range(%d):\n    ore.display({'i': i})" % (agente.PARTES_MAXIMAS + 5))
         self.assertEqual((len(s["partes"]), s["fuera"]), (agente.PARTES_MAXIMAS, 5))
+
+    @sin_pil
+    def test_varias_imagenes_grandes_se_reducen_para_caber(self):
         # varias imágenes grandes: se reducen para caber todas, por debajo del cuerpo de ore-serve
         s = self.celda("import os, io\nfrom PIL import Image\n"
                        "for i in range(3):\n"
