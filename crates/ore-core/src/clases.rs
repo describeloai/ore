@@ -274,7 +274,8 @@ const POM_JVM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 "#;
 
 /// El mismo transform, en Java, y **como un fichero Java de verdad** (0037 ③b):
-/// un import estático y una clase con `main`.
+/// un import estático y una clase (hasta la v6, con `main`; desde la v7, con un
+/// `@Transform` que el build llama).
 ///
 /// ⭐ No es un capricho de estilo: era un SNIPPET DE JSHELL —`var` y llamadas
 ///   sueltas en el tope— y ningún editor entiende eso. Medido con jdtls sobre
@@ -285,36 +286,38 @@ const POM_JVM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 ///   declara una clase con `static void main(`, la llama — lo dice su propio
 ///   comentario desde W3.4. Medido con un JShell 21 de verdad: esto corre e
 ///   imprime, con el `public` y el import estático dentro.
-const TRANSFORMS_JAVA: &str = "\
-// A transform DECLARES what it reads and what it writes, and the server
-// enforces it (ADR 0031 · W3.7): while it runs, the session only resolves its
-// `inputs` and only writes its `output`.
+/// La semilla de `transforms-java` (v7, ORE 0055 T1·7): como la de Python, un
+/// transform sin entradas que escribe en la base de ejemplos, declarado con
+/// `@Transform` —que se lee sin compilar— y sin `main`: el build lo llama él.
+const TRANSFORMS_JAVA: &str = r##"// A TRANSFORM: code that writes one dataset, `{{base}}.default.{{ejemplo}}` (ORE 0055).
 //
-// `transform`, `over` and `write` come from the SDK (`ore.Ore`) and the session
-// already provides them: the static import changes nothing at run time, it lets
-// your editor know them (ADR 0037 ③b).
+// `@Transform` declares what it reads (`inputs`) and what it writes (`output`),
+// and the platform enforces it: while it runs, it only reads its inputs and only
+// writes its output. On commit, ore writes its document in `pipeline/`; edit the
+// code, not that document.
+//
+//   · Build or Preview: call the method and write (or show) its output.
+//   · Add an input: name it in `inputs`, `inputs = {"my_db.my_schema.my_dataset"}`,
+//     and read it with the same name: `over("my_db.my_schema.my_dataset")`.
+//   · `inputs` and `output` are read without compiling: string literals, or
+//     `static final String` fields of this class initialized with one.
 //
 // The file name IS the name of the public class: rename one, rename the other.
-//
-// Names have three parts, `database.schema.name` (ADR 0038): in the `default`
-// schema, `database.name` is enough. Replace both references with yours and
-// click Run.
+// Names have three parts, `database.schema.name` (ADR 0038).
 import static ore.Ore.*;
 
-import java.util.List;
-import java.util.Map;
+import ore.Transform;
 
 public class Example {
-    static final String INPUT = \"my_db.my_schema.my_dataset\";
-    static final String OUTPUT = \"my_db.my_schema.my_summary\";
+    static final String OUTPUT = "{{base}}.default.{{ejemplo}}";
 
-    public static void main(String[] args) throws Exception {
-        Map<String, Object> written = transform(\"summarize\", List.of(INPUT), OUTPUT,
-                () -> write(OUTPUT, over(INPUT)));
-        System.out.println(\"rows \" + written.get(\"rows\"));
+    /** An example dataset: a few countries and a count. */
+    @Transform(inputs = {}, output = OUTPUT)
+    public static Object example() throws Exception {
+        return write(OUTPUT, sql("select * from (values ('ES', 3), ('FR', 2), ('PT', 1)) as t(country, n)"));
     }
 }
-";
+"##;
 
 /// El transform escrito en SQL: **un `.sql` de verdad** (0038 P7), una sentencia
 /// que escribe.
@@ -1099,7 +1102,11 @@ pub const CLASES: &[Clase] = &[
         // 4: la semilla nombra en tres partes (0038 P7).
         // 6: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
         // Actualizar deja lo de antes (`transforms/Ejemplo.java`): es de quien lo tenga.
-        version: 6,
+        // 7: nace en verde (0055 T1·7): `@Transform` sin entradas que escribe en
+        //    la base de ejemplos, con su `Transform` escrito por el commit, y sin
+        //    `main` (el build lo llama). Lo escrito con la v6 —`transform(…)` en
+        //    `main`— sigue corriendo, y el árbol no lo conoce.
+        version: 7,
         semilla: &[
             ("pom.xml", POM_JVM),
             ("transforms/Example.java", TRANSFORMS_JAVA),
@@ -1714,6 +1721,7 @@ spec:
         for (id, entrypoint) in [
             ("transforms-python", "etl/transforms/example.py:example"),
             ("transforms-sql", "etl/transforms/example.sql:1"),
+            ("transforms-java", "etl/transforms/Example.java:example"),
         ] {
             let c = de(id).unwrap();
             let raiz =
@@ -1909,10 +1917,19 @@ spec: {{ owner: \"team:x\" }}
                         );
                     }
                     assert!(
-                        texto.contains("public class ") && texto.contains("static void main("),
+                        texto.contains("public class "),
                         "{} no es una unidad de compilación: jdtls y javac no entienden un snippet",
                         c.id
                     );
+                    // 0055 T1·7 (v7): un transform se declara con `@Transform` y el
+                    // build lo llama; un `main` que lo llamara serían dos escrituras.
+                    if c.familia == "transforms" {
+                        assert!(
+                            texto.contains("@Transform(") && !texto.contains("static void main("),
+                            "{}: un transform es un `@Transform`, sin `main`",
+                            c.id
+                        );
+                    }
                     assert!(
                         !texto.contains("package "),
                         "{} declara `package`: JShell no lo acepta y el árbol no tiene carpetas de paquete",

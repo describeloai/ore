@@ -112,6 +112,7 @@ un stub), ni cadena de ramas para los datasets.
 | D19 | **Preview sin tope**: entradas enteras; se enseña el esquema, las primeras filas y el recuento exacto | 2026-10-07 |
 | D20 | **Preview avisa del cambio de esquema** respecto a la salida actual (o dice *New dataset*), en la cabecera de su resultado | 2026-10-07 |
 | D21 | **Preview exige lo mismo que Build**: una entrada no declarada o una llamada al cargar fallan con su línea y el mismo mensaje | 2026-10-07 |
+| D22 | **Java declara con `@Transform(inputs, output)`** sobre un método `public static` sin parámetros de la clase del fichero (OOS v1alpha25 `01` §5.5): literales o `static final String` de la clase, leídos sin compilar —lo calculado, también una concatenación, no se deriva—. La llamada `transform(…)` de antes no es un transform. Su Build y su Preview compilan con **javac**, no con JShell: javac da la línea del fichero, y es lo que entiende el editor (JT0) | 2026-10-08 |
 
 ## El kind `Transform` (borrador v1alpha25)
 
@@ -174,7 +175,7 @@ programación, y el build de lo de abajo que necesita lo de arriba.
 | T1·4 | el commit escribe `pipeline/` en el mismo commit; la puerta rechaza lo que no casa; índice salida→`Transform` |
 | T1·5 | plantillas v7 de transforms-python y transforms-sql |
 | T1·6 | consola: aviso del commit, `pipeline/` en el repositorio, *Produced by* en la ficha |
-| T1·7 | Java |
+| T1·7 | Java — **hecho** (JT0–JT5, 2026-10-08; abajo) |
 
 **B · Build**, sobre el `Transform` asentado (T1 en vivo desde `c4e5725`, 2026-10-06):
 
@@ -226,3 +227,28 @@ recibe el techo (`transform`) y el arnés (lo usa la invocación de functions, 0
 `capa_para(entorno, rama, alcance)` da la capa de un repositorio con su `alcance`; la rama es la de
 la persona; y la protección es sólo la de `main` (`.arbol/ramas.yaml`). Un trabajo lanzado a mano en
 `victor` no se midió: exige el token de una persona.
+
+**T1·7 · Java, hecho (2026-10-08).** Paridad con Python en el paradigma Build (D22): Java sólo vive
+aquí —no en functions, models ni analytics—, y Run ya no es lo que cuenta.
+
+| paso | qué | dónde |
+|---|---|---|
+| JT0 | medido (abajo) | — |
+| JT1 | spec: `runtime: java`, `entrypoint: <ruta>.java:<método>`, la regla de §5.5, el schema y ocho casos `a-java-*` | OOS `3a0bb4e` |
+| JT2 | `ore-code/java`: un lexer propio (comentarios, Javadoc, cadenas, *text blocks*) y la forma de la clase; la puerta (`OOS2042`/`2043`/`2013`, lo que resuelve dicho en el `.java`) y el commit escriben y borran `pipeline/`; la anotación `ore.Transform` en el SDK | `f9c5aec3` |
+| JT3 | Build en el puesto JVM con la capa del `pom.xml`: la celda llama a `ore.Arnes.construir` con los `.java` del paquete; javac, D15 (con la línea del inicializador), el techo, el informe (`syntax`, `load`, `called-while-loading`, `not-a-transform`, `runtime`) y `build` en la procedencia | `008d4441` |
+| JT4 | Preview en la sesión JVM: el texto del editor y los demás `.java` de la rama; `write()` devuelve esquema con su tipo Iceberg, 100 filas y el recuento, como Python | `a87bc409` |
+| JT5 | plantilla `transforms-java` v7 (nace en verde, sin `main`), `docs/sdk.md` y este cierre | (este commit) |
+
+**JT0 · medido (2026-10-08).** En `victor`, un Job con la imagen `puesto-jvm:1` en `t-victor` (2 vCPU,
+4 GiB, la cola y el contexto de seguridad de un puesto):
+
+| | nodo frío | nodo caliente |
+|---|---|---|
+| creado → arrancado | 17 s (imagen de 361 MB, 15 s de bajada) | 2 s |
+| javac de `Example.java` + cargar y llamar (DuckDB incluido), JVM fría | 1,1 s + 1,7 s | — |
+| lo mismo por JShell (kernel + primera celda + el fichero) | 1,2 + 1,1 + 1,8 s | — |
+
+JShell da la línea de su snippet (`#36:1`), javac la del fichero: el arnés va por javac. La capa entra
+por `capa_para`, como en Python. Queda la prueba de fuego en vivo —Build y Preview desde la consola—,
+que exige la sesión de una persona.

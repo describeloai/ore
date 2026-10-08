@@ -561,6 +561,51 @@ A Java cell has `import static ore.Ore.*;`.
 - `transform(name, inputs, output, body)` runs a `Callable` under the transform rules.
 - `declare(yaml)` or `declare(map)` → `{kind, name, file, commit, created}`.
 - `person()`, `session`, `table(value, limit)`, `toJson(v)`, `API`.
+- `display(values…)` shows each value now, in order with what the cell prints. The last
+  expression of a cell is shown by its kind: `Rows` or a `List<Map>` as a table; a `record`, a
+  `Map`, a `Collection` or an array as a tree; an image (its `byte[]`, a `BufferedImage`) as an
+  image; anything else as text.
+
+### Transforms in Java (ORE 0055 T1·7)
+
+```java
+// packages/sales/etl/transforms/DailyTotals.java
+import static ore.Ore.*;
+
+import ore.Transform;
+
+public class DailyTotals {
+    static final String ORDERS = "sales.orders";
+
+    /** The total per day. */
+    @Transform(inputs = {ORDERS, "sales.customers"}, output = "sales.daily_totals")
+    public static Object dailyTotals() throws Exception {
+        return write("sales.daily_totals", sql("select day, sum(amount) total from sales.orders group by day"));
+    }
+}
+```
+
+`@Transform(inputs, output)` (`ore.Transform`) on a `public static` method with no parameters of
+the file's class —the top-level one named like the `.java`— declares a transform, as
+`@transform` does in Python, with the same rules while it runs.
+
+- **Read without compiling.** `inputs` and `output` are string literals, or `static final String`
+  fields of the class initialized with one, by their name (`ORDERS`) or the class's
+  (`DailyTotals.ORDERS`). Anything computed —a concatenation too, although Java folds it— is
+  `OOS2043` at commit, with its line. The first line of the method's Javadoc is the
+  description.
+- **On commit** ore writes its document, `pipeline/<output>.yaml`; edit the code, not that file.
+  Without the annotation, the document goes.
+- **Build** compiles the `.java` files of the package with javac and calls the method once, in a
+  job on the JVM session image with the repository's layer (`pom.xml`). A compile error, an
+  exception or a read outside `inputs` fails with its file and line; calling `transform()` or
+  `write()` while the class loads (a `static {}` block, a field initializer) fails too: the
+  build calls it.
+- **Preview** runs the editor's text in your JVM session, under the same rules, and writes
+  nothing: `write()` shows the schema (with the lake type each column would get), the first rows
+  and the exact count.
+- `transform(name, inputs, output, body)` —the form before `@Transform`— still runs in a cell,
+  but the tree does not know it: it is not built.
 
 ## Migrating from the Spanish names
 
