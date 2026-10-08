@@ -120,7 +120,7 @@ Las funciones, con nombre para que ningún caso dependa del lenguaje:
 | `version_fijada` | la cabecera `ORE-Media-Version` coincide con la versión cuyos bytes llegaron |
 | `lote_parcial` | el resultado de cada ítem va en su posición y el fallo de uno no cambia los demás |
 | `idempotente` | repetir la operación da el mismo resultado y no crea nada nuevo |
-| `sin_recalculo` | entre todas las pasadas del caso, la función se llamó una sola vez por ítem |
+| `sin_recalculo` | en este paso, la función no se llamó sobre ningún ítem que una pasada anterior ya dejó confirmado (lo calculado y sin confirmar al cortarse sí se rehace) |
 
 ## Los casos
 

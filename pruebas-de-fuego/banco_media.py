@@ -11,6 +11,12 @@ Dos servidores, como en la celda de verdad:
   (`PUT /subida?permiso=&path=`), con el sha256 al paso, el tipo por los bytes
   y el `Repr-Digest` cotejado.
 
+Y, para los ficheros que dan ficheros (0049 B9), una **entrada** cuyo origen se
+cambia (`ENTRADA`, la colección `DERIVAR`) y el **índice de cada colección
+escrita** (`ESCRITAS`) con lo que `ore-medios` hace al sellar: el linaje de cada
+fichero, una entrada que reemplaza la salida anterior de su origen, las marcas
+(que no son ítems), `retire_sources` y `retire`, y lo que no cuadra.
+
 Todo lo que llega queda en `SERVE` y `BYTES` (método, ruta, cabeceras), para
 comprobar lo que el SDK manda —y lo que NO manda: el token de ORE nunca va a los
 bytes ni a la subida—. Los modos (`MODOS`) provocan lo que la red y la forja
@@ -55,6 +61,11 @@ TRANSFORMS = []                # ("POST", cuerpo) | ("DELETE", None)
 MODOS = {"cortar_subidas": 0,  # las próximas N subidas se cortan sin contestar
          "conflictos": 0}      # los próximos N commits pierden la carrera (409)
 PUERTOS = {}
+
+# 0049 B9 · la entrada de los casos de `derivar` y el índice de las escritas.
+DERIVAR = "conformidad.default.derivar"
+ENTRADA = {}                   # camino → bytes: el origen de DERIVAR, que los casos cambian
+ESCRITAS = {}                  # colección → {"tx", "items": {camino: ref}, "marcas": {origen: entrada}}
 
 
 def ref(path, digest=None):
@@ -118,6 +129,9 @@ class Celda(http.server.BaseHTTPRequestHandler):
         if u.path.startswith("/documentos/"):
             d = DOCUMENTOS.get(_doc_de(u.path))
             return _json(self, 200, {"yaml": d}) if d else _json(self, 404, {"error": "no hay ningún documento"})
+        col = ".".join(u.path.split("/")[2:5]) if u.path.startswith("/media/") else None
+        if col == DERIVAR or col in ESCRITAS:
+            return self._b9(col, u.path.rsplit("/", 1)[1], q)
         if u.path.endswith("/items"):
             todos = [ref("a.pdf"), ref("b.pdf", "sha256:" + SHA["b.pdf"]), ref("cambia.pdf")]
             if q.get("cursor") == "c2":
@@ -162,6 +176,10 @@ class Celda(http.server.BaseHTTPRequestHandler):
         nueva = clave not in DOCUMENTOS
         DOCUMENTOS[clave] = texto
         kind, b, s, n = clave
+        # Sólo las de la suite (`conformidad.…`): las demás pruebas del banco
+        # cuentan con el `commit` de siempre.
+        if kind == "MediaCollection" and b == "conformidad" and "\n  from:" not in texto:
+            ESCRITAS.setdefault("%s.%s.%s" % (b, s, n), {"tx": 0, "items": {}, "marcas": {}})
         _json(self, 201 if nueva else 200, {"kind": kind, "namespace": b, "schema": s, "name": n,
                                             "fichero": "packages/%s/%s/collections/%s.yaml" % (b, s, n),
                                             "commit": "c0ffee", "nueva": nueva})
@@ -179,7 +197,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
             if len(p) == 6:
                 return self._abrir(col, cuerpo)
             if len(p) == 8 and p[7] in ("commit", "abort"):
-                return self._cerrar(col, p[6], p[7])
+                return self._cerrar(col, p[6], p[7], cuerpo)
         _problema(self, 404, "media/no-existe", self.path)
 
     def do_DELETE(self):
@@ -199,7 +217,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
                           "upload": "http://127.0.0.1:%d/subida?permiso=%s" % (PUERTOS["medios"], permiso),
                           "expires_ms": 0})
 
-    def _cerrar(self, col, t, op):
+    def _cerrar(self, col, t, op, cuerpo=None):
         tx = TRANSACCIONES.get(t)
         if not tx or tx["cerrada"] or tx["coleccion"] != col:
             return _problema(self, 404, "media/transaccion", "no hay ninguna transacción abierta `%s`" % t)
@@ -210,6 +228,8 @@ class Celda(http.server.BaseHTTPRequestHandler):
             # La forja perdió la carrera: 409 sin `type`, y la transacción sigue.
             MODOS["conflictos"] -= 1
             return _json(self, 409, {"error": "la rama se adelantó mientras se escribía: vuelve a confirmar"})
+        if col in ESCRITAS:
+            return self._sellar(col, t, tx, cuerpo or {})
         tx["cerrada"] = True
         n = PUNTEROS.get(col, 0) + 1
         PUNTEROS[col] = n
@@ -218,8 +238,170 @@ class Celda(http.server.BaseHTTPRequestHandler):
                           "cambios": {"entran": len(tx["items"]), "cambian": 0, "iguales": 0},
                           "commit": "c0ffee%d" % n, "procedencia": {"puesto": "p1", "transaccion": t}})
 
+    # ── 0049 B9 ──────────────────────────────────────────────────────────────
+
+    def _b9(self, col, op, q):
+        if col == DERIVAR:
+            refs = {c: ref_de_entrada(c) for c in sorted(ENTRADA)}
+            if op == "items":
+                return _json(self, 200, {"as_of": "1", "items": list(refs.values()), "cursor": None})
+            if op == "item":
+                r = refs.get(q.get("path"))
+                return _json(self, 200, dict(r, current=True)) if r else _problema(self, 404, "media/no-existe")
+            if op == "content":
+                c = q.get("path")
+                if c not in ENTRADA:
+                    return _problema(self, 404, "media/no-existe")
+                OBJETOS["derivar:" + c] = ENTRADA[c]
+                ESTADO["n"] += 1
+                p = "p%d" % ESTADO["n"]
+                PERMISOS[p] = ("derivar:" + c, 10_000)
+                cuerpo = {"url": "http://127.0.0.1:%d/contenido?permiso=%s" % (PUERTOS["medios"], p),
+                          "desde": "medios", "version": refs[c]["version"], "ttl_s": 300, "item": refs[c]}
+                return _json(self, 307, cuerpo, {"location": cuerpo["url"]})
+            return _problema(self, 404, "media/no-existe", op)
+        st = ESCRITAS[col]
+        if op == "items":
+            return _json(self, 200, {"as_of": str(st["tx"]), "items": [st["items"][c] for c in sorted(st["items"])],
+                                     "cursor": None})
+        if op == "item":
+            r = st["items"].get(q.get("path"))
+            return _json(self, 200, dict(r, current=True)) if r else _problema(self, 404, "media/no-existe")
+        if op == "derivations":
+            return _json(self, 200, {"as_of": str(st["tx"]), "derivations": registro_de(st), "cursor": None})
+        return _problema(self, 404, "media/no-existe", op)
+
+    def _sellar(self, col, t, tx, cuerpo):
+        """Lo que hace `ore-medios` al confirmar una escrita (B9·2), en pequeño."""
+        st = ESCRITAS[col]
+        r = sellar(st, tx["items"], cuerpo)
+        if r[0] != 200:
+            return _problema(self, r[0], r[1], r[2])   # la transacción sigue abierta
+        tx["cerrada"] = True
+        _json(self, 200, r[1])
+
     def log_message(self, *a):
         pass
+
+
+def ref_de_entrada(camino):
+    datos = ENTRADA[camino]
+    h = hashlib.sha256(datos).hexdigest()
+    return {"uri": "ore://%s/%s?v=%s" % (DERIVAR, camino, h[:12]), "collection": DERIVAR, "path": camino,
+            "version": h[:12], "digest": "sha256:" + h, "size": len(datos),
+            "content_type": tipo_por_bytes(datos) or "application/octet-stream", "checksum": "crc32c:00000000",
+            "state": "actual"}
+
+
+def origen_de(r):
+    s = r.get("source") or {}
+    return s.get("digest") or s.get("uri")
+
+
+def registro_de(st):
+    por = {}
+    for c in sorted(st["items"]):
+        r = st["items"][c]
+        if r.get("source"):
+            e = por.setdefault(origen_de(r), {"source": {k: r["source"][k] for k in ("uri", "digest")},
+                                              "derivation": r.get("derivation"), "state": "files", "files": []})
+            e["files"].append({"path": c, "anchor": r["source"].get("anchor")})
+    for o, m in st["marcas"].items():
+        por.setdefault(o, dict(m, files=[]))
+    return [por[o] for o in sorted(por)]
+
+
+def sellar(st, subidos, cuerpo):
+    """`(200, respuesta)` o `(status, type, detalle)`."""
+    ds = cuerpo.get("derivations") or []
+    idos = cuerpo.get("retire_sources") or []
+    retirar = cuerpo.get("retire") or []
+    mal = lambda m: (422, "media/derivacion", m)  # noqa: E731
+    linaje, origenes = {}, set()
+    for d in ds:
+        src = d.get("source") or {}
+        if not src.get("uri") or not (d.get("derivation") or {}).get("key"):
+            return mal("`source.uri` y `derivation.key` son obligatorias")
+        o = src.get("digest") or src["uri"]
+        if o in origenes or o in idos:
+            return mal("el origen `%s` está dos veces" % src["uri"])
+        origenes.add(o)
+        fs = d.get("files") or []
+        estado = d.get("state")
+        if estado == "files" and not fs:
+            return mal("`state: files` sin ficheros")
+        if estado in ("empty", "error") and fs:
+            return mal("`state: %s` no lleva ficheros" % estado)
+        if estado == "error" and not d.get("error"):
+            return mal("`state: error` sin `error`")
+        if estado not in ("files", "empty", "error"):
+            return mal("`state`")
+        for f in fs:
+            c = f["path"]
+            if c not in subidos:
+                return mal("`%s` no se subió en esta transacción" % c)
+            if c in linaje:
+                return mal("`%s` sale de dos orígenes" % c)
+            if c in retirar:
+                return mal("`%s` está en `files` y en `retire`" % c)
+            linaje[c] = (o, {"uri": src["uri"], "digest": src.get("digest"), "anchor": f.get("anchor")},
+                         d["derivation"])
+    for c in retirar:
+        if c in subidos:
+            return mal("`%s` se sube y se retira" % c)
+        if c not in st["items"]:
+            return (404, "media/no-existe", "`%s` no es un ítem actual" % c)
+    items, marcas = dict(st["items"]), dict(st["marcas"])
+    entran = cambian = iguales = 0
+    for c, r in subidos.items():
+        nuevo = dict(r)
+        nuevo.pop("stored", None)
+        if c in linaje:
+            nuevo["source"], nuevo["derivation"] = linaje[c][1], linaje[c][2]
+        previo = items.get(c)
+        if previo and previo.get("source") and c in linaje and origen_de(previo) != linaje[c][0]                 and origen_de(previo) not in origenes and origen_de(previo) not in idos:
+            return mal("`%s` sale de otro origen" % c)
+        if previo is None:
+            entran += 1
+        elif previo.get("digest") == nuevo.get("digest"):
+            iguales += 1
+        else:
+            cambian += 1
+        items[c] = nuevo
+    retirados = marcas_nuevas = 0
+    for d in ds:
+        o = (d["source"].get("digest") or d["source"]["uri"])
+        quedan = {f["path"] for f in d.get("files") or []}
+        for c in [c for c, r in st["items"].items() if r.get("source") and origen_de(r) == o
+                  and c not in quedan and c not in subidos]:
+            items.pop(c, None)
+            retirados += 1
+        if d["state"] == "files":
+            marcas.pop(o, None)
+        else:
+            m = {"source": {"uri": d["source"]["uri"], "digest": d["source"].get("digest")},
+                 "derivation": d["derivation"], "state": d["state"], "error": d.get("error")}
+            if marcas.get(o) != m:
+                marcas_nuevas += 1
+            marcas[o] = m
+    for o in idos:
+        for c in [c for c, r in st["items"].items() if r.get("source") and origen_de(r) == o and c not in subidos]:
+            items.pop(c, None)
+            retirados += 1
+        marcas.pop(o, None)
+    for c in retirar:
+        items.pop(c, None)
+    if items == st["items"] and marcas == st["marcas"]:
+        return (200, {"sin_cambios": True, "transaccion": st["tx"],
+                      "metadata_location": "gs://lago/%d.json" % st["tx"]})
+    st["tx"] += 1
+    st["items"], st["marcas"] = items, marcas
+    r = {"transaccion": st["tx"], "metadata_location": "gs://lago/%d.json" % st["tx"],
+         "items": {"actuales": len(items)}, "cambios": {"entran": entran, "cambian": cambian, "iguales": iguales},
+         "commit": "c0ffee%d" % st["tx"]}
+    if ds or idos or retirar:
+        r["derivations"] = {"written": len(ds), "files_retired": retirados, "marks": marcas_nuevas}
+    return (200, r)
 
 
 class Medios(http.server.BaseHTTPRequestHandler):

@@ -254,8 +254,9 @@ La ruta de cada fichero es la del ítem más `name` (`a.pdf/p001.png`); dos con 
 ítem son un error de la función. Una pasada lee el registro, se salta los orígenes con la misma
 `key`, calcula los demás, retira los orígenes que ya no están y confirma cada `save_every_s` y al
 final, una transacción por guardado. Devuelve `{items, new, recomputed, skipped, errors, removed,
-files_written, files_retired}`. `Transaction.delete(path)` va a `retire`. Detalle en
-[`sdk.md`](sdk.md#incremental-derivation-apply).
+files_written, files_retired, written}`. `Transaction.delete(path)` va a `retire`;
+`collection.derivations()` lee el registro. Detalle en
+[`sdk.md`](sdk.md#files-from-files-apply-into-a-collection-ore-0049-b9).
 
 ### `verify` · recalcular
 

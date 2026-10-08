@@ -291,6 +291,52 @@ The anchored table has these system columns next to yours:
 | `_derivation` | `key`, `fn`, `fn_version`, `model`, `model_rev`, `params_hash`, `run`, `created` |
 | `_status` | `state` (`ok`/`error`), `error_type`, `error_message`, `attempts` |
 
+### Files from files: `apply()` into a collection (ORE 0049 B9)
+
+```python
+import pypdfium2 as pdfium
+
+@ore.transform(inputs=[ore.collection("legal.archive.contracts")],
+               output="legal.archive.pages")             # a written collection
+def pages(contracts, out):
+    return contracts.apply(to_png, version="1")
+
+def to_png(item):
+    pdf = pdfium.PdfDocument(item.read_bytes())
+    for n, page in enumerate(pdf, 1):
+        png = io.BytesIO()
+        page.render(scale=150 / 72).to_pil().save(png, "PNG")
+        yield ore.File(f"p{n:03}.png", png.getvalue(), anchor={"kind": "page", "page": n})
+# {'items': 120, 'new': 3, 'recomputed': 0, 'skipped': 117, 'errors': 0,
+#  'removed': 0, 'files_written': 41, 'files_retired': 0, 'written': True}
+```
+
+When `output` is a **written collection** (`ore.collection(…)`, or the name of one), `fn(item)`
+returns or yields `ore.File(name, data, content_type=None, anchor=None)` instead of rows:
+
+- Each file is written to `<item path>/<name>` (`contracts/a.pdf/p001.png`). `data` is bytes, a
+  path or an open file, as in `put`; `anchor` says what part of the item it is. Two files with the
+  same `name` from one item are an error of that item. `pypdfium2` and `pillow` come with the
+  session.
+- Each file carries where it comes from and how: `source` (the item's `uri` and `digest`, and its
+  `anchor`) and `derivation` (the same `key`, `fn`, `fn_version`, … as `_derivation` above), in
+  `list` and `stat`.
+- **Only what changed is computed**, with the same key as rows. An item whose key changed
+  replaces its files, and the ones it no longer gives are retired (a contract that goes from 12
+  pages to 8 retires pages 9–12); an item that is gone takes its files with it; a copy of an item
+  under another path is the same item.
+- An item that gives no files, or whose function raises, leaves a **mark** (`empty` or `error`)
+  so it is not recomputed; marks are not items. `retry_errors=True` retries the errors.
+- Nothing is uploaded until the function returns for that item. It commits every
+  `save_every_s` seconds and at the end, one transaction each; a pass that is cut keeps what it
+  committed, and the next one goes on from there.
+- Returns `{items, new, recomputed, skipped, errors, removed, files_written, files_retired,
+  written}`.
+
+`collection.derivations()` yields the register: one entry per source item, `{source,
+derivation, state, files, error}` with `state` `files`, `empty` or `error`. And
+`transaction.delete(path)` retires an item when the transaction commits.
+
 ### Collections and functions in SQL (ORE 0049 B7)
 
 **A collection is a relation in `FROM`**, one row per item, read by its listing (no bytes):

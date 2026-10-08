@@ -117,7 +117,7 @@ __all__ = ["API", "over", "sql", "explain", "OriginReadError", "TruncatedReadWar
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
            "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
-           "collection", "Collection", "Item", "MediaRef", "read_many", "Transaction", "MediaError",
+           "collection", "Collection", "Item", "MediaRef", "File", "read_many", "Transaction", "MediaError",
            "MediaNotFound", "MediaForbidden", "MediaChanged", "MediaCorrupt", "MediaRangeError",
            "MediaNotWritable", "MediaTransactionError"]
 
@@ -2505,7 +2505,7 @@ def _a_json(v, tipo=None):
 
 
 # 0049 B3·5: la media en código (al final: `medios` usa `session` y los nombres).
-from .medios import (collection, Collection, Item, MediaRef, read_many, Transaction, MediaError,  # noqa: E402
+from .medios import (collection, Collection, Item, MediaRef, File, read_many, Transaction, MediaError,  # noqa: E402
                      MediaNotFound, MediaForbidden, MediaChanged, MediaCorrupt, MediaRangeError,
                      MediaNotWritable, MediaTransactionError)
 

@@ -301,6 +301,17 @@ class Collection:
         needs it, and the result as an **anchored table** (v1alpha17 `03`) in
         `output` —inside a transform, its `output`—.
 
+        **Files from files** (0049 B9): if `output` is a written collection
+        (`ore.collection(…)` or the name of one), `fn(item)` returns (or yields)
+        `ore.File(name, data, content_type=None, anchor=None)`s instead of rows,
+        and each one is written to `<item path>/<name>` with where it comes from
+        (`source`) and how (`derivation`). Same incremental rules, item by item:
+        an item whose key did not change is skipped; one that changed replaces
+        its files (and those it no longer gives are retired); an item that is
+        gone takes its files with it; an item with no files, or that fails,
+        leaves a mark so it is not recomputed. Returns `{items, new, recomputed,
+        skipped, errors, removed, files_written, files_retired, written}`.
+
         `fn(item)` returns (or yields) rows: dicts with the payload columns and,
         if the row is a part of the item, `anchor` (`{"kind": "page", "page": 3}`,
         v1alpha17 `02`; `anchor_parent` for its parent). With no rows, the item
@@ -318,7 +329,25 @@ class Collection:
         It saves every `save_every_s` seconds and at the end; with nothing to
         do, nothing is written. Returns the summary: `{items, new, recomputed,
         skipped, errors, removed, rows, written}`."""
+        destino = _salida_de(output)
+        if _es_escrita(destino):
+            return _aplicar_ficheros(self, fn, version, params, destino, retry_errors, threads, save_every_s)
         return _aplicar(self, fn, version, params, output, retry_errors, threads, save_every_s)
+
+    def derivations(self):
+        """**The register** of a collection written by `apply()` (0049 B9): one
+        entry per source item —`{source, derivation, state, files, error}`, with
+        `state` `files`, `empty` or `error`—, lazily, by cursor."""
+        cursor = None
+        while True:
+            codigo, r = self._pedir("derivations", {"cursor": cursor}, "derivations")
+            if codigo != 200:
+                raise _error(codigo, r, "derivations(%s)" % self)
+            for d in r.get("derivations") or []:
+                yield d
+            cursor = r.get("cursor")
+            if not cursor:
+                return
 
     def transaction(self, ttl_s=3600):
         """**A transaction to write into this collection** (B4b·3). As a `with`:
@@ -691,6 +720,200 @@ def _una_de(fila, en, es):
     return fila.pop(en, None)
 
 
+# ── 0049 B9 · ficheros que dan ficheros ─────────────────────────────────────
+
+class File:
+    """**A file that `apply()` writes** into a written collection (0049 B9):
+    `name` is relative to the item it comes from (`p001.png` →
+    `<item path>/p001.png`); `data` is bytes, a path or an open file, as in
+    `put`; `content_type` the declared one (the bytes decide); `anchor`, what
+    part of the item it is (v1alpha17 `02`: `{"kind": "page", "page": 1}`)."""
+
+    def __init__(self, name, data, content_type=None, anchor=None):
+        partes = name.split("/") if isinstance(name, str) else []
+        if not partes or any(p in ("", ".", "..") for p in partes) or "\\" in name:
+            raise ValueError("File(): `name` is a relative path without `.`, `..` or empty parts, not %r" % (name,))
+        if anchor is not None:
+            if not isinstance(anchor, dict) or not anchor.get("kind"):
+                raise ValueError("File(): `anchor` is an Anchor (v1alpha17 `02`) with its `kind`: %r" % (anchor,))
+            otros = set(anchor) - set(_CAMPOS_ANCLA)
+            if otros:
+                raise ValueError("File(): `anchor` with fields that are not `Anchor`'s: %s" % ", ".join(sorted(otros)))
+        self.name, self.data, self.content_type, self.anchor = name, data, content_type, anchor
+
+    def __repr__(self):
+        return "File(%s)" % self.name
+
+
+def _salida_de(output):
+    """El nombre corto de la salida de `apply()`: la dada, o la del transform."""
+    from . import _transform, _corto, _nombre_de
+    if output is None:
+        if _transform is None:
+            raise ValueError("apply(): outside a transform, give the `output` (`db.schema.t`)")
+        output = _transform.output
+    return _corto(_nombre_de(output), "apply(): the `output`")
+
+
+def _es_escrita(corto):
+    """Si la salida es una `MediaCollection` (B9): la da `/documentos`."""
+    from . import session, _ruta_de_vista
+    codigo, _ = session.pedir("GET", _ruta_de_vista(corto, "MediaCollection"), plazo=60)
+    return codigo == 200
+
+
+def _identidad_servida(ref):
+    """La identidad de un origen como la guarda el registro (`docs/media.md` §2):
+    su `digest`; sin él, su `uri` fijada."""
+    return ref.digest or ref.uri
+
+
+def _ruta_de_uri(uri):
+    """El camino de un ítem desde su `uri` (`ore://c/<camino>?v=…`)."""
+    resto = (uri or "").split("://", 1)[-1]
+    camino = resto.split("/", 1)[1] if "/" in resto else ""
+    return urllib.parse.unquote(camino.split("?", 1)[0])
+
+
+def _aplicar_ficheros(col, fn, version, params, salida, reintentar_errores, hilos, guardar_cada_s):
+    import datetime
+    import uuid
+
+    nombre_fn = getattr(fn, "__name__", None) or type(fn).__name__
+    fn_version = str(version) if version is not None else _version_de(fn)
+    params_hash = None if params is None else hashlib.sha256(_canonico(params).encode("utf-8")).hexdigest()
+    run = uuid.uuid4().hex
+    destino = collection(salida)
+
+    # El registro: una entrada por origen, por su identidad.
+    registro = {}
+    for d in destino.derivations():
+        s = d.get("source") or {}
+        registro[s.get("digest") or s.get("uri")] = d
+
+    # Lo de hoy: un ítem por identidad (dos rutas con el mismo contenido son el
+    # mismo ítem). La ruta, la que el registro ya dice si sigue ahí (una copia
+    # no lo mueve); si no, la primera del listado.
+    rutas_de = {}
+    for it in col.items():
+        rutas_de.setdefault(_identidad_servida(it.ref), []).append(it)
+
+    def ruta_de(ident, its):
+        dicha = _ruta_de_uri(((registro.get(ident) or {}).get("source") or {}).get("uri"))
+        return next((it for it in its if it.ref.path == dicha), its[0])
+    hoy = {i: ruta_de(i, its) for i, its in rutas_de.items()}
+    clave = {i: _sha(_identidad(it.ref), nombre_fn, fn_version, None, params_hash) for i, it in hoy.items()}
+    rutas_previas = {_ruta_de_uri((d.get("source") or {}).get("uri")) for d in registro.values()}
+
+    def pendiente(i):
+        d = registro.get(i)
+        if d is None or (d.get("derivation") or {}).get("key") != clave[i]:
+            return True
+        return reintentar_errores and d.get("state") == "error"
+    pendientes = [i for i in hoy if pendiente(i)]
+    idos = [i for i in registro if i not in hoy]
+    resumen = _Result({"items": len(hoy), "new": 0, "recomputed": 0, "skipped": len(hoy) - len(pendientes),
+                       "errors": 0, "removed": len(idos), "files_written": 0, "files_retired": 0,
+                       "written": False})
+    if not pendientes and not idos:
+        return resumen
+
+    def calcular(i):
+        """`fn` sobre un ítem: sus ficheros en memoria (o como rutas) —nada se
+        sube hasta que la función termina, así que un fallo no deja ficheros
+        sueltos—, o su error."""
+        it = hoy[i]
+        deriv = {"key": clave[i], "fn": nombre_fn, "fn_version": fn_version, "model": None, "model_rev": None,
+                 "params_hash": params_hash, "run": run,
+                 "created": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        entrada = {"source": {"uri": it.ref.uri, "digest": it.ref.digest}, "derivation": deriv}
+        try:
+            dio = fn(it)
+            ficheros = [dio] if isinstance(dio, File) else list(dio or [])
+            vistos = set()
+            for f in ficheros:
+                if not isinstance(f, File):
+                    raise TypeError("apply(): `%s` gave %s and not `ore.File` (the output is a collection)"
+                                    % (nombre_fn, type(f).__name__))
+                if f.name in vistos:
+                    raise ValueError("apply(): `%s` gave two files named `%s` for `%s`" % (nombre_fn, f.name, it.ref.path))
+                vistos.add(f.name)
+            return i, entrada, ficheros, None
+        except Exception as e:  # noqa: BLE001 — un fallo de un ítem es su resultado
+            return i, entrada, [], {"type": type(e).__name__, "message": str(e)[:2000]}
+
+    tx = None
+
+    def abierta():
+        nonlocal tx
+        if tx is None:
+            tx = destino.transaction()
+        return tx
+
+    def confirmar():
+        nonlocal tx
+        if tx is None:
+            return
+        t, tx = tx, None
+        r = t.commit()
+        resumen["written"] = resumen["written"] or not r.get("sin_cambios")
+        resumen["files_retired"] += int(((r.get("derivations") or {}).get("files_retired")) or 0)
+
+    if idos:
+        abierta()._linaje["retire_sources"].extend(idos)
+    try:
+        _derivar_todo(pendientes, hilos, calcular, hoy, registro, rutas_previas, resumen, abierta,
+                      confirmar, guardar_cada_s)
+    except BaseException:
+        # Lo confirmado se queda; lo de la transacción a medias, no.
+        if tx is not None:
+            try:
+                tx.abort()
+            except Exception:  # noqa: BLE001 — la de dentro es la que importa
+                pass
+        raise
+    confirmar()
+    return resumen
+
+
+def _derivar_todo(pendientes, hilos, calcular, hoy, registro, rutas_previas, resumen, abierta, confirmar,
+                  guardar_cada_s):
+    """El bucle de `_aplicar_ficheros`: calcular por lotes (`hilos` a la vez),
+    subir lo que dio cada ítem a la transacción abierta, apuntar su entrada y
+    confirmar cada `guardar_cada_s` —entre lotes y entre ítems, nunca con una
+    función a medias—."""
+    import time
+    ultimo = time.time()
+    lote = max(1, hilos) * 2
+    with _cf.ThreadPoolExecutor(max(1, hilos)) as ex:
+        for a in range(0, len(pendientes), lote):
+            for i, entrada, ficheros, error in ex.map(calcular, pendientes[a:a + lote]):
+                it = hoy[i]
+                t = abierta()
+                if error is not None:
+                    entrada.update(state="error", error=error)
+                    resumen["errors"] += 1
+                elif not ficheros:
+                    entrada["state"] = "empty"
+                else:
+                    entrada["state"] = "files"
+                    entrada["files"] = []
+                    for f in ficheros:
+                        camino = "%s/%s" % (it.ref.path, f.name)
+                        t.put(camino, f.data, f.content_type)
+                        entrada["files"].append({"path": camino, "anchor": f.anchor})
+                        resumen["files_written"] += 1
+                if error is None:
+                    if i in registro or it.ref.path in rutas_previas:
+                        resumen["recomputed"] += 1
+                    else:
+                        resumen["new"] += 1
+                t._linaje["derivations"].append(entrada)
+                if guardar_cada_s is not None and time.time() - ultimo >= guardar_cada_s:
+                    confirmar()
+                    ultimo = time.time()
+
+
 class _Acceso:
     """La URL vigente de un ítem, fijada a su versión, y pedir otra si caduca."""
 
@@ -970,6 +1193,9 @@ class Transaction:
             raise _error(codigo, r, "transaction(%s)" % col)
         self.id = r["transaction"]
         self._upload = r["upload"]
+        #: 0049 B9: lo que el `commit` lleva además de lo subido: el linaje de
+        #: lo que `apply()` derivó y lo que se retira.
+        self._linaje = {"derivations": [], "retire_sources": [], "retire": []}
 
     def __repr__(self):
         return "Transaction(%s, %s%s)" % (self.collection, self.id, ", closed" if self.closed else "")
@@ -1095,6 +1321,12 @@ class Transaction:
             time.sleep(espera)
             espera *= 2
 
+    def delete(self, path):
+        """Retire the item at `path` when this transaction commits (0049 B9). A
+        path that is not a current item is `MediaNotFound` at commit."""
+        self._abierta("delete(%s)" % path)
+        self._linaje["retire"].append(path)
+
     def abort(self):
         """Leave nothing of what was uploaded, and close it."""
         if self.closed:
@@ -1106,7 +1338,8 @@ class Transaction:
 
     def _cerrar(self, op):
         from . import session
-        return session.pedir("POST", "%s/transactions/%s/%s" % (self.collection.ruta, self.id, op), {},
+        cuerpo = {k: v for k, v in self._linaje.items() if v} if op == "commit" else {}
+        return session.pedir("POST", "%s/transactions/%s/%s" % (self.collection.ruta, self.id, op), cuerpo,
                              plazo=300, cabeceras=self.collection._cabeceras())
 
 
