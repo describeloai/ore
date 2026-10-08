@@ -8,10 +8,16 @@
 use postgres::{Client, NoTls};
 
 /// Las migraciones, en orden. Una aplicada no se cambia nunca: se añade otra.
-const MIGRACIONES: &[(&str, &str)] = &[(
-    "001-el-esqueleto",
-    include_str!("../migraciones/001-el-esqueleto.sql"),
-)];
+const MIGRACIONES: &[(&str, &str)] = &[
+    (
+        "001-el-esqueleto",
+        include_str!("../migraciones/001-el-esqueleto.sql"),
+    ),
+    (
+        "002-el-tenant-y-las-ramas",
+        include_str!("../migraciones/002-el-tenant-y-las-ramas.sql"),
+    ),
+];
 
 /// Un número cualquiera, pero siempre el mismo: dos procesos que arrancan a la
 /// vez no migran a la vez.

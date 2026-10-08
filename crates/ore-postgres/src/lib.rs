@@ -16,13 +16,16 @@
 //!   (`ore-iam`); el cómputo y el almacenamiento son del producto. Si `ore-iam`
 //!   cae se para la gestión, no los datos.
 //!
-//! Lo que hay en P4·1: el contrato ([`api`]), la base con su primera migración
-//! ([`base`]) y la verificación de la celda ([`celda`]). Un proyecto todavía no
-//! tiene tenant.
+//! Lo que hay: el contrato ([`api`]), la base y sus migraciones ([`base`]), la
+//! verificación de la celda ([`celda`]) y, desde P4·2, el almacenamiento
+//! ([`almacen`]) y el reconciliador que lo hace existir ([`reconciliador`]): un
+//! proyecto es un tenant y su `main`, un timeline.
 
+pub mod almacen;
 pub mod api;
 pub mod base;
 pub mod celda;
+pub mod reconciliador;
 
 use ore_entrada::http;
 use std::net::TcpListener;
@@ -33,10 +36,16 @@ const USO: &str = "\
 ore-postgres — el plano de control de ORE Serverless Postgres
 
   ore-postgres servir [--bind DIRECCION] [--iam DESTINO]
+                      [--controlador DESTINO] [--safekeepers D1,D2,D3] [--llaves-almacen DIR]
 
   La base sale de `ORE_POSTGRES_URL`; sin valor por defecto. Las migraciones se
   aplican al arrancar. `--iam` es dónde preguntar de qué organización es una celda
   (por defecto `ore-iam.identidad.svc.cluster.local.:8090`).
+
+  El reconciliador (P4·2) habla con el storage_controller y los safekeepers de
+  `ore-pg` con los tokens de `--llaves-almacen` (`admin`, `safekeeperdata`; por
+  defecto /llaves/almacen). Sin ellos no arranca, se dice, y las operaciones
+  esperan en curso.
 ";
 
 fn valor(args: &[String], que: &str) -> Option<String> {
@@ -75,6 +84,21 @@ fn servir(args: &[String]) -> ExitCode {
     };
     let bind = valor(args, "--bind").unwrap_or_else(|| "127.0.0.1:8100".into());
     let iam = valor(args, "--iam").unwrap_or_else(|| celda::DESTINO.into());
+    let controlador = valor(args, "--controlador")
+        .unwrap_or_else(|| "storage-controller.ore-pg.svc.cluster.local.:1234".into());
+    let safekeepers: Vec<String> = valor(args, "--safekeepers")
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            (0..3)
+                .map(|i| format!("safekeeper-{i}.ore-pg.svc.cluster.local.:7676"))
+                .collect()
+        });
+    let llaves = valor(args, "--llaves-almacen").unwrap_or_else(|| "/llaves/almacen".into());
 
     let mut base = match base::conectar(&url) {
         Ok(c) => c,
@@ -100,6 +124,23 @@ fn servir(args: &[String]) -> ExitCode {
     };
     eprintln!("ore-postgres · {bind}");
     eprintln!("  celdas       la organización de cada una, de ore-iam en {iam}");
+    match almacen::Neon::nuevo(
+        &controlador,
+        safekeepers.clone(),
+        std::path::Path::new(&llaves),
+    ) {
+        Ok(neon) => {
+            eprintln!(
+                "  almacén      controller {controlador} · safekeepers {}",
+                safekeepers.join(", ")
+            );
+            reconciliador::arrancar(url.clone(), Box::new(neon));
+        }
+        Err(e) => {
+            eprintln!("  ⚠ SIN RECONCILIADOR: {e}");
+            eprintln!("    las operaciones quedan en curso hasta que se monten los tokens");
+        }
+    }
     let servidor = api::Servidor {
         base: Mutex::new(base),
         celdas: Box::new(celda::PorOreIam::nuevo(&iam)),

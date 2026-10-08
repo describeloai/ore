@@ -41,7 +41,7 @@ pub struct Servidor {
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
 const PROYECTO: &str = "id, celda, dueno,
     to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
-    deseado, observado, generacion";
+    deseado, observado, generacion, tenant";
 
 /// Y de una operación, para [`operacion_json`].
 const OPERACION: &str = "id, tipo, proyecto, estado, error,
@@ -50,6 +50,9 @@ const OPERACION: &str = "id, tipo, proyecto, estado, error,
 
 /// Un id nuevo de operación: lo pone la base, que es quien sabe dar uno único.
 const NUEVA_OPERACION: &str = "'op_' || replace(gen_random_uuid()::text, '-', '')";
+
+/// Y uno de tenant o de timeline: 32 cifras hexadecimales, como los de Neon.
+const NUEVO_HEX: &str = "replace(gen_random_uuid()::text, '-', '')";
 
 impl Servidor {
     pub fn atender(&self, p: &Peticion) -> Respuesta {
@@ -209,20 +212,27 @@ fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respue
         ));
     }
     let mut tx = c.transaction()?;
-    // P4·1: un proyecto vacío no tiene nada que crear fuera de aquí, así que nace
-    // `listo` y su operación, hecha. P4·2 le dará tenant, y entonces nacerá `nuevo`.
+    // P4·2: nace `nuevo`, con su tenant y su `main` ya nombrados (un reintento usa
+    // los mismos ids), y el reconciliador los crea en el almacenamiento.
     match tx.query_one(
         &format!(
-            "insert into plano.proyecto (organizacion, id, celda, dueno, observado)
-             values ($1, $2, $3, $4, 'listo') returning {PROYECTO}"
+            "insert into plano.proyecto (organizacion, id, celda, dueno, tenant)
+             values ($1, $2, $3, $4, {NUEVO_HEX}) returning {PROYECTO}"
         ),
         &[&celda.organizacion, &id, &celda.id, &dueno],
     ) {
         Ok(fila) => {
+            tx.execute(
+                &format!(
+                    "insert into plano.rama (organizacion, proyecto, id, timeline)
+                     values ($1, $2, 'main', {NUEVO_HEX})"
+                ),
+                &[&celda.organizacion, &id],
+            )?;
             let op = tx.query_one(
                 &format!(
-                    "insert into plano.operacion (id, organizacion, proyecto, tipo, estado, celda, terminada)
-                     values ({NUEVA_OPERACION}, $1, $2, 'crear-proyecto', 'hecha', $3, now())
+                    "insert into plano.operacion (id, organizacion, proyecto, tipo, celda)
+                     values ({NUEVA_OPERACION}, $1, $2, 'crear-proyecto', $3)
                      returning {OPERACION}"
                 ),
                 &[&celda.organizacion, &id, &celda.id],
@@ -263,16 +273,16 @@ fn borrar_proyecto(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta,
         }
         Err(e) => return Err(e.into()),
     };
-    // P4·1: vacío, no hay nada fuera que borrar. P4·2: el tenant y su WAL.
+    // P4·2: se marca y lo borra el reconciliador (el tenant y su WAL en cada
+    // safekeeper); la fila se va cuando ya no queda nada fuera.
     tx.execute(
-        "delete from plano.proyecto where organizacion = $1 and id = $2",
+        "update plano.proyecto
+            set deseado = 'borrado', observado = 'borrando', generacion = generacion + 1
+          where organizacion = $1 and id = $2",
         &[&celda.organizacion, &id],
     )?;
     let op = tx.query_one(
-        &format!(
-            "update plano.operacion set estado = 'hecha', terminada = now()
-              where id = $1 returning {OPERACION}"
-        ),
+        &format!("select {OPERACION} from plano.operacion where id = $1"),
         &[&op],
     )?;
     tx.commit()?;
@@ -323,6 +333,9 @@ fn proyecto_json(f: &Row) -> Json {
     ];
     if let Some(d) = f.get::<_, Option<String>>(2) {
         v.push(("dueno", Json::s(d)));
+    }
+    if let Some(t) = f.get::<_, Option<String>>(7) {
+        v.push(("tenant", Json::s(t)));
     }
     Json::obj(v)
 }
