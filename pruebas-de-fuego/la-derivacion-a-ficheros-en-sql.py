@@ -12,7 +12,11 @@ sobre la entrada de `derivar` (`docs/a.pdf`, `docs/c.pdf`, `img/b.png`):
   ③ bytes de una expresión (`encode(…)`, un BLOB) con `content_type` y ancla;
   ④ la consulta cambia: todo se recalcula y lo que ya no da se retira;
   ⑤ una fila sin `name`: el error de su ítem, y los demás siguen;
-  ⑥ `_fichero_de_fila` y `_resultado_de_derivar`, sueltos.
+  ⑥ `_fichero_de_fila` y `_resultado_de_derivar`, sueltos;
+  ⑦ Preview (B10·4, `_ensayar_ficheros`): lo que serían los ficheros de los
+     primeros ítems, sin crear la colección, escribir ni leer un byte;
+  ⑧ el editor (B10·4, `lsp_sql`): la frase es del árbol, y DuckDB comprueba
+     sólo la consulta de detrás de `as`.
 
     python pruebas-de-fuego/la-derivacion-a-ficheros-en-sql.py
 """
@@ -165,5 +169,67 @@ def sueltos():
 
 
 caso("⑥ `_fichero_de_fila` y `_resultado_de_derivar`", sueltos)
+
+# ── ⑦ Preview (B10·4): lo que serían los ficheros, sin escribir ni leer bytes ─
+NUEVA = "conformidad.default.b104_nunca"
+
+
+def preview():
+    antes_serve, antes_bytes = len(banco.SERVE), len(banco.BYTES)
+    ore._ensayo(NUEVA, "2")
+    try:
+        v = ore._ensayar_ficheros(NUEVA, ENTRADA, "select 'copia.pdf' as name, c._item as data, "
+                                  "{'kind': 'item'} as anchor from %s as c where c.path like '%%.pdf'" % ENTRADA,
+                                  items=10)
+        t = ore._ensayar_ficheros(NUEVA, ENTRADA, q_txt("r.txt"), items=2)
+    finally:
+        ore._ensayo(None)
+    assert (v["output"], v["mode"], v["items"], v["total"]) == ("conformidad.b104_nunca", "files", 3, 2), v
+    nombres = [c["nombre"] if "nombre" in c else c.get("name") for c in v["columnas"]]
+    assert nombres == ["item", "name", "path", "content_type", "size", "anchor", "error"], v["columnas"]
+    filas = [dict(zip(nombres, f)) if isinstance(f, list) else f for f in v["filas"]]
+    assert [f["path"] for f in filas] == ["%s/copia.pdf" % p for p in PDFS], filas
+    assert [f["size"] for f in filas] == [len(banco.ENTRADA[p]) for p in PDFS], filas   # la del listado
+    assert filas[0]["anchor"] == '{"kind": "item"}' and filas[0]["error"] is None, filas[0]
+    assert (t["items"], t["total"]) == (2, 2), t   # sólo los primeros `items`
+    # Nada se escribió ni se creó, y no se leyó un byte de los ítems
+    llegaron = banco.SERVE[antes_serve:]
+    assert not [x for x in llegaron if x[0] in ("PUT", "DELETE") or "/transactions" in x[1]], llegaron
+    assert NUEVA not in banco.ESCRITAS
+    assert not [x for x in llegaron if x[1].split("?")[0].endswith("/content")], llegaron
+    assert len(banco.BYTES) == antes_bytes, banco.BYTES[antes_bytes:]
+
+
+def preview_con_error():
+    ore._ensayo(NUEVA, "2")
+    try:
+        v = ore._ensayar_ficheros(NUEVA, ENTRADA, "select null::varchar as name, encode(c.path) as data from %s as c"
+                                  % ENTRADA)
+    finally:
+        ore._ensayo(None)
+    nombres = [c["nombre"] if "nombre" in c else c.get("name") for c in v["columnas"]]
+    filas = [dict(zip(nombres, f)) if isinstance(f, list) else f for f in v["filas"]]
+    assert len(filas) == 3 and all("no `name`" in f["error"] for f in filas), filas
+
+
+caso("⑦ Preview: lo que serían los ficheros, sin crear, escribir ni leer un byte", preview)
+caso("⑦ Preview: una fila que no es un fichero dice su error", preview_con_error)
+
+# ── ⑧ el editor (B10·4): DuckDB comprueba sólo la consulta de detrás de `as` ─
+
+
+def el_editor():
+    from ore import lsp_sql
+    s = ("create or replace media collection a.b.paginas media image formats (png, jpg) as\n"
+         "select p.name, p.data from a.b.c as c cross join lateral functions.f(c._item) as p")
+    d, q = lsp_sql.lo_que_duckdb_entiende(s)
+    assert q.startswith("select p.name") and s[d:] == q, (d, q)
+    assert lsp_sql.lo_que_duckdb_entiende("create or replace media collection a.b.c media image formats (png)") is None
+    assert lsp_sql.lo_que_duckdb_entiende("create media collection a.b.c media image formats (png)") is None
+    assert lsp_sql.lo_que_duckdb_entiende(
+        "create or replace media collection a.b.c media image formats (png) as") is None  # se está escribiendo
+
+
+caso("⑧ el editor: la frase es del árbol; lo de detrás de `as`, de DuckDB", el_editor)
 print("\nB10·3: " + ("todo bien" if not banco.fallos["n"] else "%d fallos" % banco.fallos["n"]))
 sys.exit(1 if banco.fallos["n"] else 0)

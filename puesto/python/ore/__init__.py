@@ -2132,6 +2132,51 @@ def _sql_a_ficheros(output, coll, query, name):
     return collection(coll).apply(ficheros, version="sql:" + huella, output=output)
 
 
+def _ensayar_ficheros(output, coll, query, items=10):
+    """**The Preview of a collection that its query gives** (0049 B10·4): the
+    query over the first `items` items of `coll`, as the build runs it (item by
+    item), and what each of its rows would be as a file of `output` —`item`,
+    `name`, `path`, `content_type`, `size`, `anchor`, `error`—, without writing
+    or creating anything and without reading the bytes of an item that would be
+    copied (its size is the listing's). The console's `tabla`, with `output`,
+    `mode: files` and how many items it looked at."""
+    import pyarrow as pa
+
+    from .medios import _fichero_de_fila
+
+    filas_de, _ = _consulta_por_item(query)
+    vistos, filas = 0, []
+    for it in collection(coll).items():
+        if vistos >= items:
+            break
+        vistos += 1
+        try:
+            dio = filas_de(it)
+        except Exception as e:  # noqa: BLE001 — el error de un ítem es su fila
+            filas.append({"item": it.ref.path, "error": "%s: %s" % (type(e).__name__, e)})
+            continue
+        for fila in dio:
+            dato = fila.get("data")
+            copia = isinstance(dato, dict)
+            try:
+                f = _fichero_de_fila(dict(fila, data=b"") if copia else fila)
+            except Exception as e:  # noqa: BLE001
+                filas.append({"item": it.ref.path, "name": fila.get("name"), "error": str(e)})
+                continue
+            filas.append({
+                "item": it.ref.path, "name": f.name, "path": "%s/%s" % (it.ref.path, f.name),
+                "content_type": f.content_type or (dato.get("content_type") if copia else None),
+                "size": (dato.get("size") if copia else len(f.data)),
+                "anchor": json.dumps(f.anchor, sort_keys=True) if f.anchor else None,
+                "error": None})
+    S = pa.string()
+    esquema = pa.schema([("item", S), ("name", S), ("path", S), ("content_type", S), ("size", pa.int64()),
+                         ("anchor", S), ("error", S)])
+    t = pa.Table.from_pylist([{k: f.get(k) for k in esquema.names} for f in filas], schema=esquema)
+    vista = table(t, _FILAS_DEL_PREVIEW)
+    return dict(vista, output=_corto(_nombre_de(output)), mode="files", items=vistos)
+
+
 def _consulta_por_item(query):
     """The query of a statement computed item by item (0049 B7·3, B10·3), as
     `filas_de(item)` —its rows, as dicts, with the collection holding that item

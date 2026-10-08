@@ -404,10 +404,12 @@ def lo_que_duckdb_entiende(s):
     El guion (0039) y la vista (ADR 0040 paso 5) tienen frases que DuckDB no
     conoce —`create dataset`, `create schema b.s`, `create standard database`,
     `create media collection` (0049 B4·4),
-    `create view … (col comment '…') with schema evolution as`, `drop view`—, y
-    `explain` las marcaba como error aunque corren. Lo suyo lo dice ore-serve al
-    correrlas; aquí se comprueba sólo lo que es de DuckDB: la consulta de detrás
-    de `as` de un `create view` o un `create dataset … as`, en su sitio."""
+    `create view … (col comment '…') with schema evolution as`, `drop view`,
+    `create or replace media collection … as` (0049 B10)—, y `explain` las
+    marcaba como error aunque corren. Lo suyo lo dice ore-serve al correrlas;
+    aquí se comprueba sólo lo que es de DuckDB: la consulta de detrás de `as` de
+    un `create view`, un `create dataset … as` o una colección que da su
+    consulta, en su sitio."""
     ts = tokens(s)
     w = [t[1].lower() for t in ts]
     if not w:
@@ -438,7 +440,10 @@ def lo_que_duckdb_entiende(s):
         j += 2
     if w[j:j + 1] in (["temp"], ["temporary"]):
         return 0, s
-    if w[j:j + 1] not in (["view"], ["dataset"]):
+    # 0049 B10·4: `create or replace media collection c media m formats (…) as select …`
+    if w[j:j + 2] == ["media", "collection"]:
+        j += 1
+    elif w[j:j + 1] not in (["view"], ["dataset"]):
         return 0, s
     hondo = 0
     for i in range(j + 1, len(ts)):
