@@ -6,6 +6,9 @@
 //!   timeline   POST   /v1/tenant/{t}/timeline            {new_timeline_id, …}     controller, token `admin`
 //!   borrar     DELETE /v1/tenant/{t}  hasta 404                                   controller, token `admin`
 //!              DELETE /v1/tenant/{t}  en CADA safekeeper (su WAL, local y GCS)    token `safekeeperdata`
+//!   rama       DELETE /v1/tenant/{t}/timeline/{tl}  hasta 404, y en cada safekeeper
+//!   instante   GET    /v1/tenant/{t}/timeline/{tl}/get_lsn_by_timestamp?timestamp=…  (el controller lo
+//!              pasa al pageserver que lleva el tenant)
 //! ```
 //!
 //! ⭐ Todo es **idempotente** visto desde aquí: «asegurar» un tenant que ya
@@ -59,6 +62,16 @@ pub trait Almacen: Send + Sync {
     /// Hasta que el controller diga que no está, y después su WAL en cada
     /// safekeeper. `Ok` sólo cuando no queda nada.
     fn borrar_tenant(&self, tenant: &str) -> Result<(), Fallo>;
+    /// Lo mismo para un timeline: el controller y su WAL en cada safekeeper.
+    fn borrar_timeline(&self, tenant: &str, timeline: &str) -> Result<(), Fallo>;
+    /// El LSN de un timeline en un instante (RFC 3339, UTC). Un instante anterior
+    /// al timeline, o sin nada que encaje, es definitivo: repetir no lo arregla.
+    fn lsn_en_instante(
+        &self,
+        tenant: &str,
+        timeline: &str,
+        instante: &str,
+    ) -> Result<String, Fallo>;
 }
 
 /// El de verdad: Neon, en `ore-pg`.
@@ -170,16 +183,75 @@ impl Almacen for Neon {
             _ => return Err(clasificar("borrar el tenant", c, &r).unwrap_err()),
         }
         // El WAL: el controller no lo toca (P2·6). En cada safekeeper, local y GCS.
+        self.borrar_en_los_safekeepers(&camino)
+    }
+
+    fn borrar_timeline(&self, tenant: &str, timeline: &str) -> Result<(), Fallo> {
+        let camino = format!("/v1/tenant/{tenant}/timeline/{timeline}");
+        let (c, r) = self.pedir(&self.controlador, &self.admin, "DELETE", &camino, None)?;
+        match c {
+            404 => {}
+            200..=299 => {
+                return Err(Fallo::Reintentar(format!(
+                    "el controller aún está borrando el timeline ({c})"
+                )));
+            }
+            _ => return Err(clasificar("borrar el timeline", c, &r).unwrap_err()),
+        }
+        self.borrar_en_los_safekeepers(&camino)
+    }
+
+    fn lsn_en_instante(
+        &self,
+        tenant: &str,
+        timeline: &str,
+        instante: &str,
+    ) -> Result<String, Fallo> {
+        let camino = format!(
+            "/v1/tenant/{tenant}/timeline/{timeline}/get_lsn_by_timestamp?timestamp={}",
+            instante.replace(':', "%3A")
+        );
+        let (c, r) = self.pedir(&self.controlador, &self.admin, "GET", &camino, None)?;
+        clasificar("el LSN del instante", c, &r)?;
+        lsn_de_la_respuesta(&r)
+    }
+}
+
+impl Neon {
+    fn borrar_en_los_safekeepers(&self, camino: &str) -> Result<(), Fallo> {
         for sk in &self.safekeepers {
-            let (c, r) = self.pedir(sk, &self.safekeeperdata, "DELETE", &camino, None)?;
+            let (c, r) = self.pedir(sk, &self.safekeeperdata, "DELETE", camino, None)?;
             if !(200..=299).contains(&c) && c != 404 {
                 return Err(Fallo::Reintentar(format!(
-                    "el safekeeper {sk} no borró el tenant ({c}): {}",
+                    "el safekeeper {sk} no borró `{camino}` ({c}): {}",
                     recorte(&r)
                 )));
             }
         }
         Ok(())
+    }
+}
+
+/// `{"lsn": "0/16B5A50", "kind": "present" | "future" | "past" | "nomatch"}`.
+///
+/// - `present`: el último registro de antes del instante.
+/// - `future`: el instante es posterior a todo lo escrito; vale su último LSN
+///   (la rama sale de la punta de entonces, que es la de ahora).
+/// - `past` y `nomatch`: no hay datos tan atrás. Definitivo.
+pub fn lsn_de_la_respuesta(cuerpo: &str) -> Result<String, Fallo> {
+    let n = ore_core::parse::parse(cuerpo)
+        .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
+    let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).unwrap_or_default();
+    match (campo("kind"), campo("lsn")) {
+        ("present" | "future", lsn) if !lsn.is_empty() => Ok(lsn.to_string()),
+        ("past" | "nomatch", _) => Err(Fallo::Definitivo(
+            "no hay datos de la rama padre en ese instante: es anterior a ella o a lo que se guarda"
+                .into(),
+        )),
+        _ => Err(Fallo::Reintentar(format!(
+            "respuesta inesperada: {}",
+            recorte(cuerpo)
+        ))),
     }
 }
 
@@ -231,6 +303,26 @@ mod pruebas {
         ));
         assert!(matches!(
             clasificar("x", 401, ""),
+            Err(Fallo::Definitivo(_))
+        ));
+    }
+
+    #[test]
+    fn el_lsn_de_un_instante() {
+        assert_eq!(
+            lsn_de_la_respuesta(r#"{"lsn":"0/16B5A50","kind":"present"}"#),
+            Ok("0/16B5A50".into())
+        );
+        assert_eq!(
+            lsn_de_la_respuesta(r#"{"lsn":"0/2000000","kind":"future"}"#),
+            Ok("0/2000000".into())
+        );
+        assert!(matches!(
+            lsn_de_la_respuesta(r#"{"lsn":"0/0","kind":"past"}"#),
+            Err(Fallo::Definitivo(_))
+        ));
+        assert!(matches!(
+            lsn_de_la_respuesta(r#"{"lsn":"0/0","kind":"nomatch"}"#),
             Err(Fallo::Definitivo(_))
         ));
     }

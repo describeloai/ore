@@ -83,6 +83,13 @@ impl Almacen for Apunta {
     fn borrar_tenant(&self, t: &str) -> Result<(), Fallo> {
         self.apuntar(format!("borrar {t}"))
     }
+    fn borrar_timeline(&self, t: &str, tl: &str) -> Result<(), Fallo> {
+        self.apuntar(format!("borrar-timeline {t} {tl}"))
+    }
+    fn lsn_en_instante(&self, t: &str, tl: &str, i: &str) -> Result<String, Fallo> {
+        self.apuntar(format!("instante {t} {tl} {i}"))?;
+        Ok("0/1A2B3C".into())
+    }
 }
 
 fn otra_conexion() -> postgres::Client {
@@ -371,6 +378,133 @@ fn si_la_base_corta_la_conexion_el_api_vuelve_solo() {
     std::thread::sleep(std::time::Duration::from_millis(200));
     let (c, r) = pide(&s, "a", "GET", "/v1/postgres/proyectos", "");
     assert_eq!(c, 200, "{r}");
+}
+
+#[test]
+fn las_ramas_salen_de_otra_en_la_punta_en_un_lsn_o_en_un_instante() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let mut c2 = otra_conexion();
+    let almacen = Apunta::default();
+    let ramas = "/v1/postgres/proyectos/ventas/ramas";
+    let post = |cuerpo: &str| pide(&s, "a", "POST", ramas, cuerpo);
+
+    let (_, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas"}"#,
+    );
+    let tenant = campo(&r, &["proyecto", "tenant"]);
+    // Mientras el proyecto se crea, ni una rama: una operación a la vez.
+    assert_eq!(post(r#"{"id":"dev"}"#).0, 409);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    almacen.pedido();
+
+    // main está, y es la primera.
+    let (c, r) = pide(&s, "a", "GET", ramas, "");
+    assert_eq!(c, 200, "{r}");
+    assert!(
+        r.contains(r#""id":"main""#) && r.contains(r#""observado":"lista""#),
+        "{r}"
+    );
+    let (_, r) = pide(&s, "a", "GET", &format!("{ramas}/main"), "");
+    let main = campo(&r, &["timeline"]);
+
+    // De la punta de main.
+    let (c, r) = post(r#"{"id":"dev"}"#);
+    assert_eq!(c, 202, "{r}");
+    assert_eq!(campo(&r, &["rama", "origen", "rama"]), "main");
+    let dev = campo(&r, &["rama", "timeline"]);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    assert_eq!(
+        almacen.pedido(),
+        vec![format!(
+            "timeline {tenant} {dev} Some(Origen {{ timeline: \"{main}\", lsn: None }})"
+        )]
+    );
+
+    // En un instante: se resuelve a un LSN, se guarda y se sale de ahí.
+    let (c, r) = post(r#"{"id":"ayer","instante":"2026-10-07T10:00:00+02:00"}"#);
+    assert_eq!(c, 202, "{r}");
+    assert_eq!(
+        campo(&r, &["rama", "origen", "instante"]),
+        "2026-10-07T08:00:00.000Z"
+    );
+    let ayer = campo(&r, &["rama", "timeline"]);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    assert_eq!(
+        almacen.pedido(),
+        vec![
+            format!("instante {tenant} {main} 2026-10-07T08:00:00.000Z"),
+            format!(
+                "timeline {tenant} {ayer} Some(Origen {{ timeline: \"{main}\", lsn: Some(\"0/1A2B3C\") }})"
+            ),
+        ]
+    );
+    let (_, r) = pide(&s, "a", "GET", &format!("{ramas}/ayer"), "");
+    assert_eq!(campo(&r, &["origen", "lsn"]), "0/1A2B3C");
+
+    // En un LSN, y de otra rama que no es main.
+    assert_eq!(
+        post(r#"{"id":"fix","padre":"dev","lsn":"0/16B5A50"}"#).0,
+        202
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    assert!(almacen.pedido()[0].contains(r#"lsn: Some("0/16B5A50")"#));
+
+    // Lo que no vale.
+    assert_eq!(post(r#"{"id":"dev"}"#).0, 409);
+    assert_eq!(post(r#"{"id":"x","padre":"nada"}"#).0, 404);
+    assert_eq!(post(r#"{"id":"x","lsn":"16B5A50"}"#).0, 400);
+    assert_eq!(post(r#"{"id":"x","instante":"ayer por la tarde"}"#).0, 400);
+    assert_eq!(
+        post(r#"{"id":"x","lsn":"0/1","instante":"2026-10-07T10:00:00Z"}"#).0,
+        400
+    );
+    assert_eq!(post(r#"{"id":"-x"}"#).0, 400);
+    // Otra organización no ve el proyecto, así que tampoco sus ramas.
+    assert_eq!(pide(&s, "b", "GET", ramas, "").0, 404);
+    assert_eq!(pide(&s, "b", "POST", ramas, r#"{"id":"x"}"#).0, 404);
+
+    // Borrar: main no; dev tiene una hija (fix), no; fix sí, y después dev.
+    assert_eq!(pide(&s, "a", "DELETE", &format!("{ramas}/main"), "").0, 409);
+    let (c, r) = pide(&s, "a", "DELETE", &format!("{ramas}/dev"), "");
+    assert_eq!(c, 409, "{r}");
+    assert!(r.contains("fix"), "{r}");
+    let (_, r) = pide(&s, "a", "GET", &format!("{ramas}/fix"), "");
+    let fix = campo(&r, &["timeline"]);
+    assert_eq!(pide(&s, "a", "DELETE", &format!("{ramas}/fix"), "").0, 202);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    assert_eq!(
+        almacen.pedido(),
+        vec![format!("borrar-timeline {tenant} {fix}")]
+    );
+    assert_eq!(pide(&s, "a", "GET", &format!("{ramas}/fix"), "").0, 404);
+    assert_eq!(pide(&s, "a", "DELETE", &format!("{ramas}/dev"), "").0, 202);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    let (_, r) = pide(&s, "a", "GET", ramas, "");
+    assert!(
+        !r.contains(r#""id":"dev""#) && r.contains(r#""id":"ayer""#),
+        "{r}"
+    );
+
+    // Un instante sin datos: la rama, fallida, a la primera.
+    *almacen.falla.lock().unwrap() = Some(Fallo::Definitivo("no hay datos".into()));
+    let (_, r) = post(r#"{"id":"antes","instante":"2000-01-01T00:00:00Z"}"#);
+    let op = campo(&r, &["operacion", "id"]);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen).unwrap();
+    let (_, r) = pide(
+        &s,
+        "a",
+        "GET",
+        &format!("/v1/postgres/operaciones/{op}"),
+        "",
+    );
+    assert_eq!(campo(&r, &["estado"]), "fallida", "{r}");
+    let (_, r) = pide(&s, "a", "GET", &format!("{ramas}/antes"), "");
+    assert_eq!(campo(&r, &["estado", "observado"]), "fallida", "{r}");
 }
 
 #[test]

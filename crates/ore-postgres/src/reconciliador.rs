@@ -16,7 +16,7 @@
 //! ⛔ Uno solo: `ore-postgres` es una réplica con `Recreate`. Dos
 //!   reconciliadores sobre el mismo estado no son más disponibilidad.
 
-use crate::almacen::{Almacen, Fallo};
+use crate::almacen::{Almacen, Fallo, Origen};
 use crate::base::{conectar, mal};
 use postgres::Client;
 use std::time::Duration;
@@ -82,7 +82,6 @@ struct Op {
     tipo: String,
     organizacion: String,
     proyecto: String,
-    #[allow(dead_code)] // P4·2·3: las operaciones de rama
     rama: Option<String>,
     intentos: i32,
 }
@@ -135,6 +134,74 @@ fn intentar(c: &mut Client, a: &dyn Almacen, op: &Op) -> Result<(), Fallo> {
             .map_err(bd)?;
             Ok(())
         }
+        "crear-rama" => {
+            let rama = op.rama.as_deref().unwrap_or_default();
+            let f = c
+                .query_one(
+                    "select p.tenant, r.timeline, pa.timeline, r.lsn_origen,
+                            to_char(r.instante_origen at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')
+                       from plano.rama r
+                       join plano.proyecto p on p.organizacion = r.organizacion and p.id = r.proyecto
+                       join plano.rama pa on pa.organizacion = r.organizacion and pa.proyecto = r.proyecto
+                                         and pa.id = r.padre
+                      where r.organizacion = $1 and r.proyecto = $2 and r.id = $3",
+                    &[&op.organizacion, &op.proyecto, &rama],
+                )
+                .map_err(bd)?;
+            let (tenant, timeline, padre): (String, String, String) =
+                (f.get(0), f.get(1), f.get(2));
+            let mut lsn: Option<String> = f.get(3);
+            // El instante se resuelve UNA vez y se guarda: un reintento sale del
+            // mismo LSN aunque entretanto se haya escrito más.
+            if lsn.is_none()
+                && let Some(instante) = f.get::<_, Option<String>>(4)
+            {
+                let l = a.lsn_en_instante(&tenant, &padre, &instante)?;
+                c.execute(
+                    "update plano.rama set lsn_origen = $4
+                      where organizacion = $1 and proyecto = $2 and id = $3",
+                    &[&op.organizacion, &op.proyecto, &rama, &l],
+                )
+                .map_err(bd)?;
+                lsn = Some(l);
+            }
+            a.asegurar_timeline(
+                &tenant,
+                &timeline,
+                Some(Origen {
+                    timeline: &padre,
+                    lsn: lsn.as_deref(),
+                }),
+            )?;
+            c.execute(
+                "update plano.rama set observado = 'lista'
+                  where organizacion = $1 and proyecto = $2 and id = $3",
+                &[&op.organizacion, &op.proyecto, &rama],
+            )
+            .map_err(bd)?;
+            Ok(())
+        }
+        "borrar-rama" => {
+            let rama = op.rama.as_deref().unwrap_or_default();
+            let f = c
+                .query_opt(
+                    "select p.tenant, r.timeline from plano.rama r
+                       join plano.proyecto p on p.organizacion = r.organizacion and p.id = r.proyecto
+                      where r.organizacion = $1 and r.proyecto = $2 and r.id = $3",
+                    &[&op.organizacion, &op.proyecto, &rama],
+                )
+                .map_err(bd)?;
+            if let Some(f) = f {
+                let (tenant, timeline): (String, String) = (f.get(0), f.get(1));
+                a.borrar_timeline(&tenant, &timeline)?;
+            }
+            c.execute(
+                "delete from plano.rama where organizacion = $1 and proyecto = $2 and id = $3",
+                &[&op.organizacion, &op.proyecto, &rama],
+            )
+            .map_err(bd)?;
+            Ok(())
+        }
         otro => Err(Fallo::Definitivo(format!(
             "este reconciliador no sabe hacer `{otro}`"
         ))),
@@ -176,6 +243,14 @@ fn cerrar(c: &mut Client, op: &Op, r: Result<(), Fallo>) -> Result<(), String> {
                 c.execute(
                     "update plano.proyecto set observado = 'fallido' where organizacion = $1 and id = $2",
                     &[&op.organizacion, &op.proyecto],
+                )
+                .map_err(mal)?;
+            }
+            if op.tipo == "crear-rama" {
+                c.execute(
+                    "update plano.rama set observado = 'fallida'
+                      where organizacion = $1 and proyecto = $2 and id = $3",
+                    &[&op.organizacion, &op.proyecto, &op.rama],
                 )
                 .map_err(mal)?;
             }

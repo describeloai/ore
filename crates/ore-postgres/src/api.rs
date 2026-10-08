@@ -6,6 +6,10 @@
 //!   POST   /v1/postgres/proyectos                 {"id": "ventas", "dueno": "user:ana"}  → 202 + operación
 //!   GET    /v1/postgres/proyectos/{p}
 //!   DELETE /v1/postgres/proyectos/{p}             → 202 + operación
+//!   GET    /v1/postgres/proyectos/{p}/ramas
+//!   POST   /v1/postgres/proyectos/{p}/ramas       {"id": "dev", "padre": "main", "lsn" | "instante"}  → 202
+//!   GET    /v1/postgres/proyectos/{p}/ramas/{r}
+//!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}   → 202 (`main` y una rama con hijas, no: 409)
 //!   GET    /v1/postgres/operaciones/{op}
 //! ```
 //!
@@ -80,7 +84,7 @@ impl Servidor {
             Err(r) => return r,
         };
         let cuerpo = match &pedido {
-            Pedido::CrearProyecto => match analizar(&p.cuerpo) {
+            Pedido::CrearProyecto | Pedido::CrearRama(_) => match analizar(&p.cuerpo) {
                 Ok(n) => Some(n),
                 Err(m) => return Respuesta::error(400, m),
             },
@@ -104,6 +108,10 @@ impl Servidor {
             Pedido::CrearProyecto => crear_proyecto(c, &celda, cuerpo.as_ref().expect("analizado")),
             Pedido::BorrarProyecto(id) => borrar_proyecto(c, &celda, id),
             Pedido::Operacion(id) => operacion(c, &celda, id),
+            Pedido::Ramas(p) => ramas(c, &celda, p),
+            Pedido::Rama(p, r) => rama(c, &celda, p, r),
+            Pedido::CrearRama(p) => crear_rama(c, &celda, p, cuerpo.as_ref().expect("analizado")),
+            Pedido::BorrarRama(p, r) => borrar_rama(c, &celda, p, r),
         };
         let mut r = hacer(&mut base);
         // La caída sólo se ve al usarla: si falló y la conexión resulta cerrada, se
@@ -127,6 +135,10 @@ pub enum Pedido<'a> {
     Proyecto(&'a str),
     BorrarProyecto(&'a str),
     Operacion(&'a str),
+    Ramas(&'a str),
+    CrearRama(&'a str),
+    Rama(&'a str, &'a str),
+    BorrarRama(&'a str, &'a str),
 }
 
 /// De método y camino (sin `/v1/postgres`) a lo que se pide.
@@ -137,7 +149,18 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("GET", ["proyectos", p]) => Pedido::Proyecto(p),
         ("DELETE", ["proyectos", p]) => Pedido::BorrarProyecto(p),
         ("GET", ["operaciones", o]) => Pedido::Operacion(o),
-        (_, ["proyectos"] | ["proyectos", _] | ["operaciones", _]) => {
+        ("GET", ["proyectos", p, "ramas"]) => Pedido::Ramas(p),
+        ("POST", ["proyectos", p, "ramas"]) => Pedido::CrearRama(p),
+        ("GET", ["proyectos", p, "ramas", r]) => Pedido::Rama(p, r),
+        ("DELETE", ["proyectos", p, "ramas", r]) => Pedido::BorrarRama(p, r),
+        (
+            _,
+            ["proyectos"]
+            | ["proyectos", _]
+            | ["operaciones", _]
+            | ["proyectos", _, "ramas"]
+            | ["proyectos", _, "ramas", _],
+        ) => {
             return Err(Respuesta::error(
                 405,
                 format!("`{metodo}` no se atiende aquí"),
@@ -146,6 +169,17 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         _ => return Err(Respuesta::error(404, "no hay nada en ese camino")),
     };
     match &pedido {
+        Pedido::Ramas(p) | Pedido::CrearRama(p) | Pedido::Rama(p, _) | Pedido::BorrarRama(p, _)
+            if !id_valido(p) =>
+        {
+            Err(Respuesta::error(
+                404,
+                format!("no hay ningún proyecto `{p}`"),
+            ))
+        }
+        Pedido::Rama(_, r) | Pedido::BorrarRama(_, r) if !id_valido(r) => {
+            Err(Respuesta::error(404, format!("no hay ninguna rama `{r}`")))
+        }
         Pedido::Proyecto(p) | Pedido::BorrarProyecto(p) if !id_valido(p) => Err(Respuesta::error(
             404,
             format!("no hay ningún proyecto `{p}`"),
@@ -253,7 +287,7 @@ fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respue
                 &[&celda.organizacion, &id, &celda.id],
             )?;
             tx.commit()?;
-            Ok(aceptada(&op, Some(proyecto_json(&fila))))
+            Ok(aceptada(&op, Some(("proyecto", proyecto_json(&fila)))))
         }
         Err(e) if choca(&e, "proyecto_pkey") => Err(Fallo(
             409,
@@ -316,15 +350,264 @@ fn operacion(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo
 
 // ── la forma de lo que sale ────────────────────────────────────────────────
 
+// ── las ramas (P4·2·3) ─────────────────────────────────────────────────────
+
+/// De una rama, en el orden en que lo lee [`rama_json`].
+const RAMA: &str = "id, timeline, padre, lsn_origen,
+    to_char(instante_origen at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+    deseado, observado,
+    to_char(creada at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
+
+/// El proyecto, vivo y de esta organización; si no, 404.
+fn proyecto_vivo(
+    c: &mut impl postgres::GenericClient,
+    celda: &Celda,
+    p: &str,
+) -> Result<(), Fallo> {
+    match c.query_opt(
+        "select 1 from plano.proyecto where organizacion = $1 and id = $2 and deseado = 'vivo'",
+        &[&celda.organizacion, &p],
+    )? {
+        Some(_) => Ok(()),
+        None => Err(no_hay_proyecto(p)),
+    }
+}
+
+fn ramas(c: &mut Client, celda: &Celda, p: &str) -> Result<Respuesta, Fallo> {
+    proyecto_vivo(c, celda, p)?;
+    let filas = c.query(
+        &format!(
+            "select {RAMA} from plano.rama
+              where organizacion = $1 and proyecto = $2 and deseado = 'viva'
+              order by padre nulls first, id"
+        ),
+        &[&celda.organizacion, &p],
+    )?;
+    Ok(Respuesta::ok(Json::obj([(
+        "ramas",
+        Json::Arr(filas.iter().map(rama_json).collect()),
+    )])))
+}
+
+fn rama(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuesta, Fallo> {
+    proyecto_vivo(c, celda, p)?;
+    match c.query_opt(
+        &format!(
+            "select {RAMA} from plano.rama where organizacion = $1 and proyecto = $2 and id = $3"
+        ),
+        &[&celda.organizacion, &p, &r],
+    )? {
+        Some(f) => Ok(Respuesta::ok(rama_json(&f))),
+        None => Err(no_hay_rama(r)),
+    }
+}
+
+/// Un LSN como los escribe Postgres: `0/16B5A50`.
+pub fn lsn_valido(l: &str) -> bool {
+    let Some((a, b)) = l.split_once('/') else {
+        return false;
+    };
+    [a, b]
+        .iter()
+        .all(|x| !x.is_empty() && x.len() <= 8 && x.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn crear_rama(c: &mut Client, celda: &Celda, p: &str, cuerpo: &Node) -> Result<Respuesta, Fallo> {
+    let texto = |k: &str| cuerpo.get(k).and_then(|(_, v)| v.as_str());
+    let Some(id) = texto("id") else {
+        return Err(Fallo(400, "falta `id`: el nombre de la rama".into()));
+    };
+    if !id_valido(id) {
+        return Err(Fallo(
+            400,
+            format!(
+                "`{id}` no vale como id: `[a-z0-9-]`, de 1 a 63, sin guion al principio ni al final"
+            ),
+        ));
+    }
+    let padre = texto("padre").unwrap_or("main");
+    let lsn = texto("lsn");
+    let instante = texto("instante");
+    if lsn.is_some() && instante.is_some() {
+        return Err(Fallo(400, "o `lsn` o `instante`, no los dos".into()));
+    }
+    if let Some(l) = lsn
+        && !lsn_valido(l)
+    {
+        return Err(Fallo(400, format!("`{l}` no es un LSN (como `0/16B5A50`)")));
+    }
+    let mut tx = c.transaction()?;
+    proyecto_vivo(&mut tx, celda, p)?;
+    let Some(f) = tx.query_opt(
+        "select observado from plano.rama
+          where organizacion = $1 and proyecto = $2 and id = $3 and deseado = 'viva'",
+        &[&celda.organizacion, &p, &padre],
+    )?
+    else {
+        return Err(Fallo(
+            404,
+            format!("no hay ninguna rama `{padre}` de la que salir"),
+        ));
+    };
+    if f.get::<_, String>(0) != "lista" {
+        return Err(Fallo(
+            409,
+            format!("la rama `{padre}` aún no está lista: no se puede salir de ella"),
+        ));
+    }
+    // El instante lo interpreta la base: lo que no sea una fecha es un 400. Se
+    // prueba en un punto de guardado, para que el error no estropee la transacción.
+    let instante: Option<String> = match instante {
+        None => None,
+        Some(i) => {
+            let mut sp = tx.transaction()?;
+            match sp.query_one(
+                "select to_char($1::text::timestamptz at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')",
+                &[&i],
+            ) {
+                Ok(f) => {
+                    sp.commit()?;
+                    Some(f.get(0))
+                }
+                Err(_) => {
+                    return Err(Fallo(
+                        400,
+                        format!("`{i}` no es un instante (como `2026-10-08T10:00:00Z`)"),
+                    ));
+                }
+            }
+        }
+    };
+    let fila = match tx.query_one(
+        &format!(
+            "insert into plano.rama (organizacion, proyecto, id, timeline, padre, lsn_origen, instante_origen)
+             values ($1, $2, $3, {NUEVO_HEX}, $4, $5, $6::text::timestamptz) returning {RAMA}"
+        ),
+        &[&celda.organizacion, &p, &id, &padre, &lsn, &instante],
+    ) {
+        Ok(f) => f,
+        Err(e) if choca(&e, "rama_pkey") => {
+            return Err(Fallo(409, format!("ya hay una rama `{id}` en `{p}`")));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let op = nueva_operacion(&mut tx, celda, p, "crear-rama", Some(id))?;
+    tx.commit()?;
+    Ok(aceptada(&op, Some(("rama", rama_json(&fila)))))
+}
+
+fn borrar_rama(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuesta, Fallo> {
+    let mut tx = c.transaction()?;
+    proyecto_vivo(&mut tx, celda, p)?;
+    let Some(f) = tx.query_opt(
+        "select padre from plano.rama
+          where organizacion = $1 and proyecto = $2 and id = $3 and deseado = 'viva' for update",
+        &[&celda.organizacion, &p, &r],
+    )?
+    else {
+        return Err(no_hay_rama(r));
+    };
+    if f.get::<_, Option<String>>(0).is_none() {
+        return Err(Fallo(
+            409,
+            format!("`{r}` es la primera rama del proyecto: se va con el proyecto, no sola"),
+        ));
+    }
+    let hijas: Vec<String> = tx
+        .query(
+            "select id from plano.rama
+              where organizacion = $1 and proyecto = $2 and padre = $3 and deseado = 'viva'
+              order by id",
+            &[&celda.organizacion, &p, &r],
+        )?
+        .iter()
+        .map(|f| f.get(0))
+        .collect();
+    if !hijas.is_empty() {
+        return Err(Fallo(
+            409,
+            format!(
+                "`{r}` tiene ramas que salen de ella ({}): bórralas antes",
+                hijas.join(", ")
+            ),
+        ));
+    }
+    let op = nueva_operacion(&mut tx, celda, p, "borrar-rama", Some(r))?;
+    tx.execute(
+        "update plano.rama set deseado = 'borrada', observado = 'borrando'
+          where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&celda.organizacion, &p, &r],
+    )?;
+    tx.commit()?;
+    Ok(aceptada(&op, None))
+}
+
+/// Una operación en curso sobre el proyecto; si ya hay otra, 409.
+fn nueva_operacion(
+    tx: &mut postgres::Transaction,
+    celda: &Celda,
+    p: &str,
+    tipo: &str,
+    rama: Option<&str>,
+) -> Result<Row, Fallo> {
+    match tx.query_one(
+        &format!(
+            "insert into plano.operacion (id, organizacion, proyecto, tipo, celda, rama)
+             values ({NUEVA_OPERACION}, $1, $2, $3, $4, $5) returning {OPERACION}"
+        ),
+        &[&celda.organizacion, &p, &tipo, &celda.id, &rama],
+    ) {
+        Ok(f) => Ok(f),
+        Err(e) if choca(&e, "una_en_curso_por_proyecto") => Err(Fallo(
+            409,
+            format!("el proyecto `{p}` tiene otra operación en curso: espera a que termine"),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn rama_json(f: &Row) -> Json {
+    let mut v = vec![
+        ("id", Json::s(f.get::<_, String>(0))),
+        ("timeline", Json::s(f.get::<_, String>(1))),
+        (
+            "estado",
+            Json::obj([
+                ("deseado", Json::s(f.get::<_, String>(5))),
+                ("observado", Json::s(f.get::<_, String>(6))),
+            ]),
+        ),
+        ("creada", Json::s(f.get::<_, String>(7))),
+    ];
+    let mut origen = Vec::new();
+    if let Some(p) = f.get::<_, Option<String>>(2) {
+        origen.push(("rama", Json::s(p)));
+    }
+    if let Some(l) = f.get::<_, Option<String>>(3) {
+        origen.push(("lsn", Json::s(l)));
+    }
+    if let Some(i) = f.get::<_, Option<String>>(4) {
+        origen.push(("instante", Json::s(i)));
+    }
+    if !origen.is_empty() {
+        v.push(("origen", Json::obj(origen)));
+    }
+    Json::obj(v)
+}
+
+fn no_hay_rama(id: &str) -> Fallo {
+    Fallo(404, format!("no hay ninguna rama `{id}`"))
+}
+
 fn no_hay_proyecto(id: &str) -> Fallo {
     Fallo(404, format!("no hay ningún proyecto `{id}`"))
 }
 
 /// `202`: la operación, y lo que ya se sabe del recurso.
-fn aceptada(op: &Row, recurso: Option<Json>) -> Respuesta {
+fn aceptada(op: &Row, recurso: Option<(&'static str, Json)>) -> Respuesta {
     let mut cuerpo = vec![("operacion", operacion_json(op))];
     if let Some(r) = recurso {
-        cuerpo.push(("proyecto", r));
+        cuerpo.push(r);
     }
     Respuesta {
         codigo: 202,
