@@ -1039,3 +1039,40 @@ Lo medido y lo aprendido:
 - **Con el plano parado, la base sigue sirviendo** (medido en vivo); la gestión da 503.
 - **La Kustomization `malla` tiene `prune: false`**: lo que se quita del repositorio no se borra solo (el stub `avisos` se borró a mano).
 - En los guiones: `gcloud` en Git Bash se rompe con `MSYS_NO_PATHCONV=1`; `psql` sin `-q` imprime la etiqueta; un escritor de N filas fijas puede acabar antes de que nazca lo que se quiere medir.
+
+#### P5 · La entrada: el diseño (2026-10-08)
+
+**El nombre**: `ep-<id>.europe-west1.pg.paladio.io` (comodín `*.europe-west1.pg.paladio.io`). La región va en el nombre, como en Neon, para abrir otra sin cambiar las cadenas de nadie. `paladio.io` vive en GoDaddy; `pg.paladio.io` está delegada a Cloud DNS (zona `pg-paladio-io`, 2026-10-08, comprobada con un TXT desde 8.8.8.8 y 1.1.1.1).
+
+**El proxy es el de Neon** (Rust, el que sirve Neon en producción), ya compilado en nuestra imagen del almacenamiento (`proxy`, `pg_sni_router`), con `--auth-backend control-plane` contra **nuestra** API. Su contrato, leído en el fork (`proxy/src/control_plane/client/cplane_proxy_v1.rs`, `baad49aa`), son dos `GET` con `Authorization: Bearer <jwt>`:
+
+| llamada | entra | sale |
+|---|---|---|
+| `…/get_endpoint_access_control` | `endpointish` (la primera etiqueta del SNI), `role` | `role_secret` (el verificador SCRAM tal cual, el de P4·4), `allowed_ips`, `block_public_connections`, límites; 404 = no hay tal rol |
+| `…/wake_compute` | `endpointish` | `address` (`ip:puerto` en la overlay), `aux` (ids para métricas) |
+
+Nuestras VMs ya se llaman `ep-<20 hex>`: el convenio de Neon.
+
+**Lo que se construye**:
+
+- Postgres nativo en el 5432 y **SQL por HTTP y WebSocket** en el 443 (el driver serverless de Neon);
+- TLS 1.3 con el comodín recargado en caliente; SCRAM-SHA-256 con *channel binding*;
+- el endpoint `-pooler` (el pgbouncer del cómputo) para miles de conexiones cortas;
+- IPs permitidas y bloqueo público por endpoint; límite de intentos por IP y por endpoint;
+- al menos 2 réplicas, PodDisruptionBudget, parada que vacía, autoescalado por conexiones;
+- un balanceador L4 de paso directo (la IP del cliente llega tal cual, sin protocolo PROXY).
+
+⚠️ El clúster es **zonal** (`europe-west1-b`): dos réplicas cubren un pod o un nodo, no la zona. Regional es P8.
+
+**Los sub-pasos:**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **P5·1 · El contrato del proxy** | `ore-postgres` sirve las dos llamadas; el token del proxy en un Secret | contra el proxy de verdad en el clúster (sin entrada pública todavía): `psql` por el proxy entra con la contraseña del rol y no con otra; un endpoint que no existe, un rol que no existe y otra organización, fuera |
+| **P5·2 · El nombre y el certificado** | IP estática regional; cuenta de servicio con `dns.admin` **sólo** sobre `pg-paladio-io`, por Workload Identity y sin claves; ClusterIssuer de Let's Encrypt por DNS-01; el comodín | `Certificate` `Ready`; `*.europe-west1.pg.paladio.io` resuelve a la IP; renovar no pide a nadie |
+| **P5·3 · El proxy en la malla** | Deployment en el pool `pg` con pata en la overlay (`overlay-del-proxy`, `10.100.0.0/17`); Service `LoadBalancer` en el 5432; NetworkPolicies; PDB | desde internet, `psql "postgres://…@ep-….europe-west1.pg.paladio.io/…?sslmode=verify-full"` entra; pgbench sin fallos; reiniciar una réplica no tira a la otra |
+| **P5·4 · SQL por HTTP y WebSocket** | el 443 del proxy | `@neondatabase/serverless` consulta desde internet |
+| **P5·5 · El pooler** | `ep-…-pooler` → pgbouncer del cómputo | pgbench con una conexión por transacción, sin fallos |
+| **P5·6 · Quién puede entrar** | IPs permitidas, bloqueo público y límites, desde la API (`postgres:gestionar` o el dueño) | una IP fuera de la lista no entra; la fuerza bruta se corta |
+| **P5·7 · Connect, con el nombre de verdad** | la consola enseña `ep-….europe-west1.pg.paladio.io` y `sslmode=verify-full` | se copia el snippet y conecta desde fuera |
+| **P5·8 · Aceptación** | todo lo anterior, junto | una migración en vivo **no corta** una sesión que entra por el proxy; pgbench desde internet sin fallos |
