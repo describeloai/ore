@@ -341,7 +341,14 @@ SSD regional (250 GB) está llena: los discos de prueba son `pd-standard`.
 | P3·6 | la IP reutilizada y la anti-suplantación | **hecho** (2026-10-07): la overlay responde 1,5–1,6 s después de la IP del pod (antes ~10 s); la MAC ya no cambia |
 | P3·7 | aceptación con VMs | **hecho** (2026-10-07): todas las pruebas de fuego con VMs y las tres barreras, desde git |
 | P3 | el cómputo de producción y el aislamiento | **hecho** (2026-10-07) |
-| P4·1 | el contrato y el esqueleto | **escrito y probado** (2026-10-07): `ore-postgres` y `POST /access/v1/celda` en `ore-iam`; el despliegue espera a que CI vuelva a verde |
+| P4·1 | el contrato y el esqueleto | **hecho** (2026-10-08): `p41.sh` con dos celdas de verdad (demo y victor): una no ve lo de la otra |
+| P4·2 | proyectos y ramas | **hecho** (2026-10-08): `p422`–`p424`; borrar deja bucket, safekeepers y pageserver como estaban (81 → 81) |
+| P4·3 | endpoints y el cerco | **hecho** (2026-10-08): VM en 35–46 s; un segundo de escritura a la vez es 409; capa 3 medida tres veces (`p434.sh`) |
+| P4·4 | roles y bases | **hecho** (2026-10-08): `p44.sh`, la vieja contraseña deja de entrar al regenerar |
+| P4·5 | los avisos del almacenamiento | **hecho** (2026-10-08): `p45.sh`; el controller avisa a `ore-postgres`, stub fuera |
+| P4·6 | la API de ORE | **hecho** (2026-10-08): `/v1/postgres` en `ore-serve` + 051 en `iam`; banco en CI; en vivo una persona crea su instancia desde la consola |
+| P4·7 | aceptación | **hecho** (2026-10-08): `p47.sh`, todo por la API y después nada: 0 filas, VMs, ConfigMaps, objetos en GCS, safekeepers y pageserver |
+| **P4** | **el plano de control** | **cerrado** (2026-10-08) |
 
 ### B.10 · Lo que hubo vivo en GKE para la prueba (recogido en D0b·6, 2026-10-06)
 
@@ -1019,3 +1026,16 @@ aplicación ──────────────────────�
 | **P4·5 · Los avisos del almacenamiento** | `ore-postgres` sustituye a `avisos` (`--control-plane-url`) | C4 con VM: el cómputo se reconfigura solo |
 | **P4·6 · La API de ORE** | `/v1/postgres/…` en `ore-serve` con `ore-acceso`; las potestades en las migraciones de `iam`; el dueño por `quien` | una persona crea proyecto, rama, endpoint y rol **con su token de ORE** y se conecta desde la malla; sin la potestad, 403; con `ore-iam` caído, 503 en la gestión y la base sigue sirviendo |
 | **P4·7 · Aceptación** | las pruebas de fuego por la API, ya sin guiones de tenant ni de VM | borrarlo todo no deja huella: ni filas, ni VMs, ni ConfigMaps, ni prefijos en GCS, ni WAL |
+
+**P4 cerrado** (2026-10-08). `ore-postgres` vive en `ore-pg` (malla/86), el `storage_controller` le avisa (malla/83) y `ore-serve` lo expone en `/v1/postgres` con las potestades `postgres:ver|crear|usar` (todo miembro, el estándar de Databricks y Neon) y `postgres:gestionar` (ORGADMIN y ACCOUNTADMIN; el dueño gestiona lo suyo). Desde un puesto, nada: un producto no sabe del otro. La consola (`rubix-platform`) ya crea instancias, ramas y conexiones de verdad.
+
+Lo medido y lo aprendido:
+
+- **El cerco, capa 3** (`p434.sh`, tres veces con un escritor sin parar y un segundo cómputo de escritura por fuera del API): nunca sirven los dos al final y **no se pierde ninguna fila confirmada**; el que queda tiene las de los dos, una sola historia. Unas veces gana el intruso, otras el principal, que se reinicia («crash of another server process») y sigue.
+- **Reiniciar el pageserver** con un escritor en marcha: hueco de 38 s, nada perdido; con un solo pageserver no hay aviso (mismo nodo).
+- **`/configure` pide `{spec, compute_ctl_config}`**, no sólo `spec`: 422 en vivo, que el doble del contrato no veía (29cc5576). Desde entonces el contrato con `compute_ctl` se prueba contra el de verdad.
+- **NeonVM exige `guest.cpus` numérico**; el `DELETE` de un timeline que ya no está da 200 `null` (se confirma con un `GET`).
+- **El aviso del controller llega firmado** (`scope: infra`) y se verifica con la pública del almacenamiento.
+- **Con el plano parado, la base sigue sirviendo** (medido en vivo); la gestión da 503.
+- **La Kustomization `malla` tiene `prune: false`**: lo que se quita del repositorio no se borra solo (el stub `avisos` se borró a mano).
+- En los guiones: `gcloud` en Git Bash se rompe con `MSYS_NO_PATHCONV=1`; `psql` sin `-q` imprime la etiqueta; un escritor de N filas fijas puede acabar antes de que nazca lo que se quiere medir.
