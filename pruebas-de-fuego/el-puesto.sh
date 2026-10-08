@@ -560,9 +560,9 @@ dice "4b · el reparto del pod: DuckDB se pone el tope que le toca de ORE_MEMORI
 # que SÓLO está en la capa se ve, y que lo que también existe fuera NO gana.
 P=puesto-ana-python; LEN=python
 celda 'import json, pyarrow, solo_en_la_capa; (hasattr(json, \"DE_LA_CAPA\"), pyarrow.__version__ == \"0.0.0-de-la-capa\", solo_en_la_capa.VERSION)' \
-  && tiene "d['salida']['tipo']=='texto'" || falla "4c · no se pudo mirar el orden de la capa: $(cuerpo)"
-tiene "'False, False' in d['salida']['texto']" || falla "4c · LA CAPA TAPA a la biblioteca estandar o a la imagen: el orden esta al reves · $(cuerpo)"
-tiene "'la capa' in d['salida']['texto']" || falla "4c · lo que SOLO esta en la capa no se ve desde la celda: $(cuerpo)"
+  && tiene "d['salida']['tipo']=='json'" || falla "4c · no se pudo mirar el orden de la capa: $(cuerpo)"
+tiene "d['salida']['valor'][:2]==[False, False]" || falla "4c · LA CAPA TAPA a la biblioteca estandar o a la imagen: el orden esta al reves · $(cuerpo)"
+tiene "d['salida']['valor'][2]=='la capa'" || falla "4c · lo que SOLO esta en la capa no se ve desde la celda: $(cuerpo)"
 dice "4c · el orden de la capa de Python: lo que solo esta en /capa se ve, y lo que tambien trae la imagen (o la biblioteca estandar) lo sigue poniendo ELLA"
 
 # ── 7 · SQL sobre el bucket (W3.3): la consulta entera, sobre las copias ──
@@ -593,7 +593,7 @@ dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vi
 
 # ── 10 · write() (W3.6c, 0031 §11): la celda escribe un dataset, y los tres lo leen ──
 if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE_DIR/ore-store-r2.exe" ]; then
-  celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); (e[\"filas\"], e[\"repetida\"], e[\"snapshot\"] != \"\")' && tiene "d['salida']['texto']=='(3, False, True)'" || falla "10 · write(hr.salida): $(cuerpo)"
+  celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); (e[\"filas\"], e[\"repetida\"], e[\"snapshot\"] != \"\")' && tiene "d['salida']['valor']==[3, False, True]" || falla "10 · write(hr.salida): $(cuerpo)"
   [ -f "$A/packages/hr/datasets/salida.yaml" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/salida.yaml" && grep -q "cuando: { type: DateTimeTz }" "$A/packages/hr/datasets/salida.yaml" || falla "10 · el Dataset escrito no nació tipado en el árbol: $(cat "$A/packages/hr/datasets/salida.yaml" 2>/dev/null)"
   [ -f "$A/datasets/hr/default/salida.json" ] || falla "10 · el puntero no está en el árbol"
   grep -q "type: lago" "$A/ontology.config.yaml" && falla "10 · write() declaró un datasource lago, y ya no hay tal cosa (0033)"
@@ -609,7 +609,7 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   celda 'import pandas as pd, datetime as dt, decimal; e = write(\"hr.salida\", pd.DataFrame({\"n\": [4, 6], \"letra\": [\"D\", \"f\"], \"cuando\": [dt.datetime(2024, 6, 3, tzinfo=dt.timezone.utc)] * 2, \"importe\": [decimal.Decimal(\"40.00\"), decimal.Decimal(\"6.00\")]}), modo=\"upsert\", clave=[\"n\"]); e[\"filas\"]' && tiene "d['salida']['texto']=='6'" || falla "10 · upsert: $(cuerpo)"
   celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida\")' && tiene "d['salida']['filas']==[[6,'54.75']]" || falla "10 · sql tras el upsert: $(cuerpo)"
   # 0038: tres partes (`hr.default.x` es `hr.x`): write, over y sql las leen; el puntero, en su sitio
-  celda 'e = write(\"hr.default.tres\", over(\"hr.default.salida\", como=\"arrow\")); [e[\"tabla\"], over(\"hr.tres\", como=\"arrow\").num_rows, sql(\"select count(*) from hr.default.tres\", como=\"arrow\").column(0)[0].as_py(), sql(\"select count(*) from hr.tres\", como=\"arrow\").column(0)[0].as_py()]' && tiene "d['salida']['texto']==\"['hr.tres', 6, 6, 6]\"" && [ -f "$A/datasets/hr/default/tres.json" ] || falla "10 · tres partes desde Python: $(cuerpo)"
+  celda 'e = write(\"hr.default.tres\", over(\"hr.default.salida\", como=\"arrow\")); [e[\"tabla\"], over(\"hr.tres\", como=\"arrow\").num_rows, sql(\"select count(*) from hr.default.tres\", como=\"arrow\").column(0)[0].as_py(), sql(\"select count(*) from hr.tres\", como=\"arrow\").column(0)[0].as_py()]' && tiene "d['salida']['valor']==['hr.tres', 6, 6, 6]" && [ -f "$A/datasets/hr/default/tres.json" ] || falla "10 · tres partes desde Python: $(cuerpo)"
   grep -q "changes: { mode: upsert, key: \[n\] }" "$A/packages/hr/datasets/salida.yaml" || falla "10 · el Dataset no declara el upsert: $(grep changes "$A/packages/hr/datasets/salida.yaml")"
   celda 'write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\"), clave=[\"n\"])' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError'" || falla "10 · clave sin upsert tenía que ser ValueError: $(cuerpo)"
   # lo que no se escribe: una View, y una columna que 0032 no tiene
@@ -618,10 +618,10 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   celda 'import pyarrow as pa; write(\"hr.mala\", pa.table({\"grande\": pa.array([1], pa.uint64())}))' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'grande' in d['salida']['mensaje']" || falla "10 · uint64: $(cuerpo)"
   [ ! -f "$A/datasets/hr/default/mala.json" ] || falla "10 · lo negado dejó puntero"
   # declarar (W3.7 ①): una View sobre lo que la celda escribió, por la puerta de Forge
-  celda 'd = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetra, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [d[\"kind\"], d[\"nombre\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['texto']==\"['View', 'hr.porLetra', 'packages/hr/views/porLetra.yaml', True]\"" || falla "10 · declare(View): $(cuerpo)"
+  celda 'd = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetra, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [d[\"kind\"], d[\"nombre\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['valor']==['View', 'hr.porLetra', 'packages/hr/views/porLetra.yaml', True]" || falla "10 · declare(View): $(cuerpo)"
   grep -q "groupBy: \[letra\]" "$A/packages/hr/views/porLetra.yaml" || falla "10 · la View declarada no está en el árbol"
   # 0038 P7: en un schema, por `/documentos/View/hr/espana/…`: su nombre entero y su carpeta
-  celda 'd = declare(\"apiVersion: oos.dev/v1alpha13\\nkind: View\\nmetadata: { name: porLetraEs, namespace: hr, schema: espana }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra }\\n\"); [d[\"nombre\"], d[\"fichero\"]]' && tiene "d['salida']['texto']==\"['hr.espana.porLetraEs', 'packages/hr/espana/views/porLetraEs.yaml']\"" || falla "10 · declare() en un schema: $(cuerpo)"
+  celda 'd = declare(\"apiVersion: oos.dev/v1alpha13\\nkind: View\\nmetadata: { name: porLetraEs, namespace: hr, schema: espana }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra }\\n\"); [d[\"nombre\"], d[\"fichero\"]]' && tiene "d['salida']['valor']==['hr.espana.porLetraEs', 'packages/hr/espana/views/porLetraEs.yaml']" || falla "10 · declare() en un schema: $(cuerpo)"
   celda 'declare({\"kind\": \"View\", \"metadata\": {\"name\": \"porLetra\", \"namespace\": \"hr\"}, \"spec\": {\"owner\": \"team:hr\", \"from\": {\"dataset\": \"hr.salida\"}, \"fields\": {\"letra\": \"letra\", \"n\": \"count()\"}, \"groupBy\": [\"letra\"]}})[\"nueva\"]' && tiene "d['salida']['texto']=='False'" || falla "10 · declare(dict) otra vez: $(cuerpo)"
   celda 'declare(\"apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: rota, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { table: hr.nadie }\\n  fields: { a: a }\\n\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'OOS' in d['salida']['mensaje']" || falla "10 · declare de una View rota tenía que ser ValueError con el diagnóstico: $(cuerpo)"
   [ ! -f "$A/packages/hr/views/rota.yaml" ] || falla "10 · lo negado quedó en el árbol"
@@ -629,7 +629,7 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   # 0041: un Model se lee por /documentos pero lo escribe POST /modelos (documento + suscripción)
   [ -z "$(find "$A/packages/hr" -path '*modelos*' -name 'x.yaml' 2>/dev/null)" ] || falla "10 · declare(Model) dejó el modelo en el árbol"
   # el modelo entrenado (v1alpha11, W3.7 ②): un asset del paquete, con su linaje por la View declarada
-  celda 'd = declare(\"apiVersion: oos.dev/v1alpha11\\nkind: TrainedModel\\nmetadata: { name: prevision, namespace: hr }\\nspec:\\n  owner: team:hr\\n  framework: sklearn\\n  task: forecast\\n  version: 1\\n  artifacts: models/hr_prevision/v1\\n  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n  trainedFrom: [hr.porLetra]\\n\"); [d[\"kind\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['texto']==\"['TrainedModel', 'packages/hr/models/prevision.yaml', True]\"" || falla "10 · declare(TrainedModel): $(cuerpo)"
+  celda 'd = declare(\"apiVersion: oos.dev/v1alpha11\\nkind: TrainedModel\\nmetadata: { name: prevision, namespace: hr }\\nspec:\\n  owner: team:hr\\n  framework: sklearn\\n  task: forecast\\n  version: 1\\n  artifacts: models/hr_prevision/v1\\n  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n  trainedFrom: [hr.porLetra]\\n\"); [d[\"kind\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['valor']==['TrainedModel', 'packages/hr/models/prevision.yaml', True]" || falla "10 · declare(TrainedModel): $(cuerpo)"
   grep -q "trainedFrom: \[hr.porLetra\]" "$A/packages/hr/models/prevision.yaml" || falla "10 · el TrainedModel no está en el árbol"
   celda 'declare(\"apiVersion: oos.dev/v1alpha11\\nkind: TrainedModel\\nmetadata: { name: rota, namespace: hr }\\nspec:\\n  owner: team:hr\\n  framework: sklearn\\n  version: 1\\n  artifacts: models/hr_rota/v1\\n  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n  trainedFrom: [hr.nadie]\\n\")' && tiene "d['salida']['tipo']=='error' and 'OOS2005' in d['salida']['mensaje']" || falla "10 · un TrainedModel con linaje roto tenía que ser OOS2005: $(cuerpo)"
   celda 'declare(\"apiVersion: oos.dev/v1alpha11\\nkind: TrainedModel\\nmetadata: { name: sin, namespace: hr }\\nspec:\\n  owner: team:hr\\n  framework: sklearn\\n  version: 1\\n  artifacts: models/hr_sin/v1\\n\")' && tiene "d['salida']['tipo']=='error' and 'OOS1004' in d['salida']['mensaje'] and 'digest' in d['salida']['mensaje']" || falla "10 · un TrainedModel sin digest tenía que ser OOS1004: $(cuerpo)"
@@ -1100,13 +1100,13 @@ fi
 # ni sin ella. Leer sigue abierto.
 P=puesto-ana-python; LEN=python
 CRUDO='import json, ore, urllib.request, urllib.error\ndef a_pelo(m, ruta, texto=None, con=True):\n    q = urllib.request.Request(ore.puesto.servidor + ruta, data=(texto or \"\").encode() if texto is not None else None, method=m)\n    [q.add_header(k, v) for k, v in ore.puesto._cabeceras.items()]\n    con and q.add_header(\"x-ore-puesto\", ore.puesto.id)\n    try:\n        return urllib.request.urlopen(q, timeout=30).status\n    except urllib.error.HTTPError as e:\n        return e.code\n'
-celda "$CRUDO"'[a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\"), a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\", con=False), a_pelo(\"DELETE\", \"/arbol/packages/hr/tables/empleados_t.yaml\"), a_pelo(\"POST\", \"/ramas\", \"{}\"), a_pelo(\"POST\", \"/propuestas\", \"{}\"), a_pelo(\"POST\", \"/paquetes\", \"{}\"), a_pelo(\"DELETE\", \"/paquetes/hr\"), a_pelo(\"GET\", \"/arbol/conduits.yaml\")]' && tiene "d['salida']['texto']=='[403, 403, 403, 403, 403, 422, 403, 200]'" || falla "12 · la puerta del puesto: $(cuerpo)"
+celda "$CRUDO"'[a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\"), a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\", con=False), a_pelo(\"DELETE\", \"/arbol/packages/hr/tables/empleados_t.yaml\"), a_pelo(\"POST\", \"/ramas\", \"{}\"), a_pelo(\"POST\", \"/propuestas\", \"{}\"), a_pelo(\"POST\", \"/paquetes\", \"{}\"), a_pelo(\"DELETE\", \"/paquetes/hr\"), a_pelo(\"GET\", \"/arbol/conduits.yaml\")]' && tiene "d['salida']['valor']==[403, 403, 403, 403, 403, 422, 403, 200]" || falla "12 · la puerta del puesto: $(cuerpo)"
 grep -q "^x: 1" "$A/conduits.yaml" 2>/dev/null && falla "12 · el conducto se reescribió desde la celda"
 # 0053 F2·5: rehacer la copia pasa la puerta desde el puesto. Este puesto no
 # tiene rama, así que la ruta lo para ella misma (`main` no se toca desde una
 # celda): 403 con SU mensaje, no el de la puerta. Sin `x-ore-puesto`, tampoco.
 REHACER='def motivo(con):\n    q = urllib.request.Request(ore.puesto.servidor + \"/paquetes/hr/copia/rehacer\", data=b\"\", method=\"POST\")\n    [q.add_header(k, v) for k, v in ore.puesto._cabeceras.items()]\n    con and q.add_header(\"x-ore-puesto\", ore.puesto.id)\n    try:\n        return urllib.request.urlopen(q, timeout=30).status\n    except urllib.error.HTTPError as e:\n        t = e.read().decode()\n        return [e.code, \"verbos\" in t, \"no tiene\" in t, \"desde su puesto\" in t]\n'
-celda "$CRUDO$REHACER"'[motivo(True), motivo(False)]' && tiene "d['salida']['texto']=='[[403, False, True, False], [403, False, False, True]]'" || falla "12 · rehacer la copia desde el puesto: $(cuerpo)"
+celda "$CRUDO$REHACER"'[motivo(True), motivo(False)]' && tiene "d['salida']['valor']==[[403, False, True, False], [403, False, False, True]]" || falla "12 · rehacer la copia desde el puesto: $(cuerpo)"
 [ -f "$A/packages/hr/tables/empleados_t.yaml" ] || falla "12 · la tabla se retiró desde la celda"
 [ "$(pide PUT /arbol/notas/persona.md "$ANA" 'una persona si')" = "201" ] || falla "12 · una persona no escribe en /arbol: $(cuerpo)"
 [ "$(pide DELETE /arbol/notas/persona.md "$ANA")" = "200" ] || falla "12 · una persona no retira en /arbol: $(cuerpo)"
@@ -1115,7 +1115,7 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   [ -f "$A/datasets/hr/default/otro.json" ] && falla "12 · hr.otro tenía puntero antes de empezar"
   celda 'write(\"hr.huerfano\", over(\"hr.lago\", como=\"arrow\"))[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "12 · write(hr.huerfano): $(cuerpo)"
   [ -f "$A/datasets/hr/default/huerfano.json" ] || falla "12 · hr.huerfano sin puntero"
-  celda 'ore.puesto.pedir(\"DELETE\", \"/documentos/Dataset/hr/huerfano\")' && tiene "d['salida']['texto'].startswith('(200,') and \"'puntero': True\" in d['salida']['texto']" || falla "12 · DELETE /documentos/Dataset desde la celda: $(cuerpo)"
+  celda 'ore.puesto.pedir(\"DELETE\", \"/documentos/Dataset/hr/huerfano\")' && tiene "d['salida']['valor'][0]==200 and d['salida']['valor'][1].get('puntero') is True" || falla "12 · DELETE /documentos/Dataset desde la celda: $(cuerpo)"
   [ ! -f "$A/packages/hr/datasets/huerfano.yaml" ] && [ ! -f "$A/datasets/hr/default/huerfano.json" ] || falla "12 · el Dataset o su puntero siguen en el árbol"
 fi
 dice "12 · desde un puesto sólo entran los verbos: PUT/DELETE /arbol, POST /ramas, /propuestas y /paquetes son 403 para el agente (con y sin x-ore-puesto), GET sigue; una persona escribe en /arbol; DELETE /documentos/Dataset retira también el puntero"
