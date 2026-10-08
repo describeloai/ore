@@ -122,7 +122,7 @@ pub(crate) fn pedido(cuerpo: &str) -> Result<(Que, Option<String>), Respuesta> {
 
 /// La carpeta del paquete de un documento: la primera hacia arriba con
 /// `package.yaml`, o la raíz.
-fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
+pub(crate) fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
     let mut d = doc.parent();
     while let Some(c) = d {
         if c.join("package.yaml").is_file() || c == raiz {
@@ -153,6 +153,61 @@ fn java_de(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(p);
         }
     }
+}
+
+/// 0055 T1·7 · **Los `.java` del paquete del fichero `codigo`** (desde la raíz),
+/// como van a la celda de un build o de un Preview: con su ruta desde la raíz,
+/// en orden, sin los de un paquete de dentro. `editor` pone el texto de uno en
+/// lugar del suyo (el Preview corre el código del editor). 422 si pasan de
+/// [`FUENTES_JAVA_MAXIMO`].
+pub(crate) fn fuentes_java(
+    raiz: &Path,
+    codigo: &str,
+    editor: Option<&str>,
+) -> Result<Vec<(String, String)>, Respuesta> {
+    let fichero = raiz.join(codigo);
+    let carpeta = carpeta_del_paquete(&fichero, raiz);
+    let mut ficheros = Vec::new();
+    java_de(&carpeta, &mut ficheros);
+    ficheros.sort();
+    let mut fuentes: Vec<(String, String)> = Vec::new();
+    let mut total = 0usize;
+    for f in ficheros {
+        if carpeta_del_paquete(&f, raiz) != carpeta {
+            continue; // de un paquete de dentro: no es de este
+        }
+        let r = rel(raiz, &f);
+        let texto = match editor.filter(|_| r == codigo) {
+            Some(t) => t.to_string(),
+            None => match std::fs::read_to_string(&f) {
+                Ok(t) => t,
+                Err(_) => continue,
+            },
+        };
+        total += texto.len();
+        fuentes.push((r, texto));
+    }
+    if let Some(t) = editor
+        && !fuentes.iter().any(|(r, _)| r == codigo)
+    {
+        // Un fichero nuevo, que sólo está en el editor.
+        total += t.len();
+        fuentes.push((codigo.to_string(), t.to_string()));
+    }
+    if total > FUENTES_JAVA_MAXIMO {
+        return Err(con_motivo(
+            Respuesta::error(
+                422,
+                format!(
+                    "the package of `{codigo}` has {} MB of Java: a build takes up to {} MB",
+                    total >> 20,
+                    FUENTES_JAVA_MAXIMO >> 20
+                ),
+            ),
+            "not_buildable",
+        ));
+    }
+    Ok(fuentes)
 }
 
 fn rel(raiz: &Path, p: &Path) -> String {
@@ -293,36 +348,14 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
         let celda = match c.runtime.as_str() {
             // 0055 T1·7 (JT3): los `.java` del paquete, y el método.
             "java" => {
-                let carpeta = carpeta_del_paquete(&c.t.path, &pkg.root);
-                let mut ficheros = Vec::new();
-                java_de(&carpeta, &mut ficheros);
-                ficheros.sort();
-                let mut fuentes: Vec<(String, String)> = Vec::new();
-                let mut total = 0usize;
-                for f in ficheros {
-                    if carpeta_del_paquete(&f, &pkg.root) != carpeta {
-                        continue; // de un paquete de dentro: no es de este
-                    }
-                    let Ok(texto) = std::fs::read_to_string(&f) else {
-                        continue;
-                    };
-                    total += texto.len();
-                    fuentes.push((rel(raiz, &f), texto));
-                }
-                if total > FUENTES_JAVA_MAXIMO {
-                    return Err(con_motivo(
-                        Respuesta::error(
-                            422,
-                            format!(
-                                "the package of `{codigo}` has {} MB of Java: a build takes up to {} MB",
-                                total >> 20,
-                                FUENTES_JAVA_MAXIMO >> 20
-                            ),
-                        ),
-                        "not_buildable",
-                    ));
-                }
-                arnes_java(&documento, &codigo, &c.clave, &fuentes, &build)
+                let fuentes = fuentes_java(raiz, &codigo, None)?;
+                arnes_java(
+                    &documento,
+                    &codigo,
+                    &c.clave,
+                    &fuentes,
+                    ModoJava::Build(&build),
+                )
             }
             "python" => arnes_python(&ArnesDeBuild {
                 documento: &documento,
@@ -669,17 +702,28 @@ if not callable(_f) or getattr(_f, "output", None) is None:
 /// Java no pasa de 64 KB, y unido en ejecución (`String.join`), que no es una
 /// constante. Una barra se escribe doble, así que ni un `\u` del código es un
 /// escape de Unicode de la celda.
+/// Lo que cambia entre la celda de un build de Java y la de un Preview (JT4):
+/// la procedencia del build, o la salida que el código del editor declara.
+pub(crate) enum ModoJava<'a> {
+    Build(&'a Json),
+    Preview { output: &'a str },
+}
+
 pub(crate) fn arnes_java(
     documento: &str,
     fichero: &str,
     metodo: &str,
     fuentes: &[(String, String)],
-    build: &Json,
+    modo: ModoJava<'_>,
 ) -> String {
+    let (clave, valor, llamada, que) = match modo {
+        ModoJava::Build(b) => ("build", b.clone(), "construir", "build"),
+        ModoJava::Preview { output } => ("output", Json::s(output), "ensayar", "Preview"),
+    };
     let espec = Json::obj([
         ("fichero", Json::s(fichero)),
         ("metodo", Json::s(metodo)),
-        ("build", build.clone()),
+        (clave, valor),
         (
             "fuentes",
             Json::Obj(
@@ -703,8 +747,8 @@ pub(crate) fn arnes_java(
     trozos.push(literal_java(&actual));
     let cabecera: String = documento.chars().filter(|c| !c.is_control()).collect();
     format!(
-        "// El arnés de un build de Java (ORE 0055 T1·7): {cabecera}\n\
-         ore.Arnes.construir(String.join(\"\",\n    {}));\n",
+        "// El arnés de un {que} de Java (ORE 0055 T1·7): {cabecera}\n\
+         ore.Arnes.{llamada}(String.join(\"\",\n    {}));\n",
         trozos.join(",\n    ")
     )
 }

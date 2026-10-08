@@ -2918,11 +2918,13 @@ impl Servidor {
         &self,
         sujeto: &Identidad,
         id: &str,
+        lenguaje: &str,
         celda: String,
         ensayo: Ensayo,
     ) -> Respuesta {
         let mut lista = self.puestos.lista.lock().unwrap();
-        let p = match admite_celda(&mut lista, sujeto, id, "python") {
+        // 0055 JT4: `python` o `java` (el Preview de un transform de Java, en su sesión JVM).
+        let p = match admite_celda(&mut lista, sujeto, id, lenguaje) {
             Ok(p) => p,
             Err(r) => return r,
         };
@@ -2938,7 +2940,7 @@ impl Servidor {
             num,
             Celda {
                 texto: celda,
-                lenguaje: "python".into(),
+                lenguaje: lenguaje.into(),
                 corre: None,
                 avisos: Vec::new(),
                 enviada: Instant::now(),

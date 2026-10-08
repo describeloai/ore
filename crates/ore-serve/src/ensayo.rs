@@ -57,11 +57,11 @@ fn pedido(cuerpo: &str) -> Result<Pedido, Respuesta> {
         || fichero.contains('\\')
         || fichero.chars().any(char::is_control)
         || fichero.split('/').any(|s| s == ".." || s.is_empty())
-        || !(fichero.ends_with(".py") || fichero.ends_with(".sql"))
+        || !(fichero.ends_with(".py") || fichero.ends_with(".sql") || fichero.ends_with(".java"))
     {
         return Err(Respuesta::error(
             422,
-            format!("`{fichero}` is not a `.py` or `.sql` path of the tree"),
+            format!("`{fichero}` is not a `.py`, `.sql` or `.java` path of the tree"),
         ));
     }
     let Some(contenido) = campo("contenido") else {
@@ -86,6 +86,8 @@ fn pedido(cuerpo: &str) -> Result<Pedido, Respuesta> {
 fn runtime(fichero: &str) -> &'static str {
     if fichero.ends_with(".sql") {
         "sql"
+    } else if fichero.ends_with(".java") {
+        "java"
     } else {
         "python"
     }
@@ -194,7 +196,12 @@ fn elegido(p: &Pedido, def: &str) -> Result<DelEditor, Respuesta> {
     Err(con_motivo(
         Respuesta::error(
             404,
-            if ts.is_empty() {
+            if ts.is_empty() && p.fichero.ends_with(".java") {
+                format!(
+                    "`{}` has nothing to preview: no method of its class has `@Transform` (`import ore.Transform;`)",
+                    p.fichero
+                )
+            } else if ts.is_empty() {
                 format!(
                     "`{}` has nothing to preview: no top-level def of it has `@transform` (`from ore import transform`)",
                     p.fichero
@@ -335,9 +342,37 @@ impl Servidor {
             None => Default::default(),
         };
         let rt = runtime(&p.fichero);
-        let celda = sql.unwrap_or_else(|| {
-            crate::builds::arnes_de_preview(&p.fichero, &p.contenido, &def, &t.output)
-        });
+        // 0055 T1·7 (JT4): Java, con el arnés del build en modo Preview: el texto
+        // del editor en lugar del suyo, y los demás `.java` del paquete como
+        // están en la rama de la sesión.
+        let celda = if rt == "java" {
+            let rama = self.con_los_puestos(|l| l.get(id).and_then(|x| x.rama.clone()));
+            let mut fuentes = Vec::new();
+            let r = self.leyendo_en(rama.as_deref(), |raiz| {
+                match crate::builds::fuentes_java(raiz, &p.fichero, Some(&p.contenido)) {
+                    Ok(f) => {
+                        fuentes = f;
+                        Respuesta::ok(Json::obj([]))
+                    }
+                    Err(r) => r,
+                }
+            });
+            if r.codigo != 200 {
+                return crate::builds::con_motivo_por_defecto(r);
+            }
+            crate::builds::arnes_java(
+                &p.fichero,
+                &p.fichero,
+                &def,
+                &fuentes,
+                crate::builds::ModoJava::Preview { output: &t.output },
+            )
+        } else {
+            sql.unwrap_or_else(|| {
+                crate::builds::arnes_de_preview(&p.fichero, &p.contenido, &def, &t.output)
+            })
+        };
+        let lenguaje = if rt == "java" { "java" } else { "python" };
         let ensayo = Ensayo {
             techo: Transform {
                 nombre: def.clone(),
@@ -349,7 +384,7 @@ impl Servidor {
             fichero: p.fichero.clone(),
             def,
         };
-        let mut r = self.encolar_ensayo(sujeto, id, celda, ensayo);
+        let mut r = self.encolar_ensayo(sujeto, id, lenguaje, celda, ensayo);
         if r.codigo == 202 {
             if let Json::Obj(m) = &mut r.cuerpo {
                 m.insert("preview".into(), transform_json(&t, rt));
@@ -406,6 +441,34 @@ mod tests {
             "{j}"
         );
         assert!(j.contains(r#""runtime":"python""#), "{j}");
+    }
+
+    /// 0055 T1·7 (JT4) · Un `.java` del editor: sus `@Transform`, con su runtime,
+    /// su línea y su descripción; y uno que no se lee, su `OOS2043` con la línea.
+    #[test]
+    fn el_editor_lista_los_transforms_de_java() {
+        let java = "import static ore.Ore.*;\nimport ore.Transform;\n\npublic class Limpios {\n    \
+                    static final String IN = \"ventas.default.clientes\";\n\n    /** Los limpios. */\n    \
+                    @Transform(inputs = {IN}, output = \"ventas.limpios\")\n    \
+                    public static Object limpios() throws Exception { return write(\"ventas.limpios\", over(IN)); }\n}\n";
+        let r = transforms_del_editor(&cuerpo("packages/ventas/etl/Limpios.java", java, None));
+        assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
+        let j = r.cuerpo.jcs();
+        assert!(j.contains(r#""transform":"limpios""#), "{j}");
+        assert!(j.contains(r#""runtime":"java""#), "{j}");
+        assert!(j.contains(r#""linea":8"#), "{j}");
+        assert!(j.contains(r#""inputs":["ventas.clientes"]"#), "{j}");
+        assert!(j.contains(r#""description":"Los limpios.""#), "{j}");
+        assert!(j.contains(r#""diagnostics":[]"#), "{j}");
+        let roto = java.replace("{IN}", "{\"ventas.\" + \"clientes\"}");
+        let j = transforms_del_editor(&cuerpo("packages/ventas/etl/Limpios.java", &roto, None))
+            .cuerpo
+            .jcs();
+        assert!(j.contains(r#""transforms":[]"#), "{j}");
+        assert!(
+            j.contains(r#""code":"OOS2043""#) && j.contains(r#""line":8"#),
+            "{j}"
+        );
     }
 
     #[test]

@@ -43,6 +43,11 @@ import javax.tools.ToolProvider;
  * Cada fallo va al informe de la celda ({@code error: {tipo, fichero, linea}}) y como
  * excepción con {@code (fichero, line N)} en el texto. Lo escrito lleva la procedencia del
  * build ({@link Ore#BUILD}) y deja sus filas y su snapshot en el informe.
+ *
+ * <p><b>Preview</b> (JT4, D18–D21) es el mismo arnés sobre el código del editor, en la
+ * sesión: sin procedencia de build, y con {@code write()} interceptado desde antes de cargar
+ * la clase —no escribe; lo que escribiría (esquema, primeras filas, recuento) va al informe
+ * como {@code preview}—. Exige lo mismo que el build (D21).
  */
 public final class Arnes {
     private Arnes() {}
@@ -57,17 +62,49 @@ public final class Arnes {
      * @param especificacion lo que la celda trae
      * @throws Exception lo que impide construirlo, con su fichero y su línea
      */
-    @SuppressWarnings("unchecked")
     public static void construir(String especificacion) throws Exception {
+        correr(especificacion, false);
+    }
+
+    /**
+     * El Preview del transform que {@code especificacion} nombra: como {@link #construir},
+     * con {@code output} —la salida que el código del editor declara— y sin escribir nada.
+     *
+     * @param especificacion lo que la celda trae
+     * @throws Exception lo que impide ensayarlo, con su fichero y su línea
+     */
+    public static void ensayar(String especificacion) throws Exception {
+        correr(especificacion, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void correr(String especificacion, boolean preview) throws Exception {
         Map<String, Object> e = Json.objeto(especificacion);
         String fichero = String.valueOf(e.get("fichero"));
         String metodo = String.valueOf(e.get("metodo"));
         Map<String, Object> fuentes = (Map<String, Object>) e.getOrDefault("fuentes", Map.of());
         Map<String, Object> build = new LinkedHashMap<>((Map<String, Object>) e.getOrDefault("build", Map.of()));
-        String codigo = Ore.CODIGO != null ? Ore.CODIGO : System.getenv("ORE_CODIGO");
-        build.put("id", Ore.puesto.id);
-        build.put("commit", codigo == null ? "" : codigo.substring(codigo.lastIndexOf('@') + 1));
-        Ore.BUILD = build;
+        if (preview) {
+            // Un Preview no es un build: ni su procedencia ni su informe de build.
+            Ore.BUILD = null;
+            build.put("output", String.valueOf(e.get("output")));
+        } else {
+            String codigo = Ore.CODIGO != null ? Ore.CODIGO : System.getenv("ORE_CODIGO");
+            build.put("id", Ore.puesto.id);
+            build.put("commit", codigo == null ? "" : codigo.substring(codigo.lastIndexOf('@') + 1));
+            Ore.BUILD = build;
+        }
+        try {
+            if (preview) Ore.ensayo(String.valueOf(e.get("output")), metodo);
+            fases(fichero, metodo, fuentes, build, preview);
+        } finally {
+            Map<String, Object> visto = preview ? Ore.finDelEnsayo() : null;
+            if (preview && visto != null) Ore.paraElInforme(Map.of("preview", visto));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void fases(String fichero, String metodo, Map<String, Object> fuentes, Map<String, Object> build, boolean preview) throws Exception {
 
         // ── 1 · compilar ─────────────────────────────────────────────────
         Path dir = Files.createTempDirectory("ore-build");
@@ -159,7 +196,11 @@ public final class Arnes {
         } catch (RuntimeException x) {
             throw falla("runtime", x.getClass().getSimpleName() + ": " + x.getMessage(), fichero, Ore.lineaEn(x, fichero));
         }
-        if (hecho instanceof Map<?, ?> r && r.get("rows") != null) {
+        if (preview) {
+            Object visto = Ore.vistoDelEnsayo();
+            if (visto == null) throw falla("not-written", "`" + metodo + "` returned without calling `write()`: there is nothing to preview", fichero, null);
+            System.out.println(salida + " · preview of " + fichero + ":" + metodo + " · " + ((Map<String, Object>) visto).get("total") + " rows · nothing was written");
+        } else if (hecho instanceof Map<?, ?> r && r.get("rows") != null) {
             System.out.println(salida + " · built from " + fichero + ":" + metodo + " · " + r.get("rows") + " rows"
                 + (Boolean.TRUE.equals(r.get("repeated")) ? " · the same write: nothing new" : ""));
         } else {

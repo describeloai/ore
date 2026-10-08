@@ -299,6 +299,83 @@ public final class Ore {
         public Integer line() { return linea; }
     }
 
+    // ── 0055 T1·7 (JT4) · Preview: write() no escribe ──────────────────────
+    /** Las filas que un Preview enseña de lo que {@code write()} escribiría. */
+    static final int FILAS_DEL_PREVIEW = 100;
+    /** El Preview armado ({@code {output, transform, visto}}), o {@code null}: mientras lo
+     *  está, {@code write()} no escribe; devuelve lo que escribiría y lo guarda en {@code visto}. */
+    private static volatile Map<String, Object> ensayando = null;
+
+    /** Arma el Preview con la salida que el código declara y el método que se ensaya. */
+    static void ensayo(String output, String transform) {
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("output", corto(output, "the output"));
+        e.put("transform", transform);
+        e.put("visto", null);
+        ensayando = e;
+    }
+
+    /** Lo que {@code write()} habría escrito hasta ahora en el Preview armado, sin desarmarlo. */
+    static Object vistoDelEnsayo() {
+        Map<String, Object> e = ensayando;
+        return e == null ? null : e.get("visto");
+    }
+
+    /** Lo desarma, y devuelve lo que {@code write()} habría escrito (o {@code null} si no se llamó). */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> finDelEnsayo() {
+        Map<String, Object> e = ensayando;
+        ensayando = null;
+        return e == null ? null : (Map<String, Object>) e.get("visto");
+    }
+
+    /** {@code write()} en un Preview: lo que escribiría —su esquema con el tipo con el que
+     *  nacería en el lago, las primeras filas y el recuento—, sin escribir. Falla donde fallaría
+     *  el build: una tabla sin filas, un tipo que el lago no tiene. La última escritura es la que se enseña. */
+    private static Result ensayarEscritura(String nombre, Object datos, String modo) throws Exception {
+        Map<String, Object> e = ensayando;
+        if (!nombre.equals(e.get("output"))) throw new IllegalStateException("`" + nombre + "` is not the output of `" + e.get("transform") + "` (" + e.get("output") + "): a transform only writes what it declares");
+        List<Map<String, Object>> campos = new ArrayList<>();
+        byte[] ipc = ipcDe(datos, campos);
+        Rows filas;
+        long total = 0;
+        try (org.apache.arrow.vector.ipc.ArrowStreamReader r = new org.apache.arrow.vector.ipc.ArrowStreamReader(new java.io.ByteArrayInputStream(ipc), asignador)) {
+            Map<String, String> tipos = new LinkedHashMap<>();
+            List<Map<String, Object>> primeras = new ArrayList<>();
+            while (r.loadNextBatch()) {
+                VectorSchemaRoot raiz = r.getVectorSchemaRoot();
+                if (tipos.isEmpty()) for (Field f : raiz.getSchema().getFields()) tipos.put(f.getName(), arrowName(f));
+                for (int i = 0; i < raiz.getRowCount() && primeras.size() < FILAS_DEL_PREVIEW; i++) {
+                    Map<String, Object> fila = new LinkedHashMap<>();
+                    for (FieldVector v : raiz.getFieldVectors()) fila.put(v.getName(), valueAt(v, i));
+                    primeras.add(fila);
+                }
+                total += raiz.getRowCount();
+            }
+            filas = new Rows(tipos, total, total > primeras.size());
+            filas.addAll(primeras);
+        }
+        Map<String, Object> vista = new LinkedHashMap<>(table(filas, FILAS_DEL_PREVIEW));
+        List<Map<String, Object>> columnas = new ArrayList<>();
+        List<?> dadas = (List<?>) vista.get("columnas");
+        for (int i = 0; i < dadas.size(); i++) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> c = new LinkedHashMap<>((Map<String, Object>) dadas.get(i));
+            if (i < campos.size()) c.put("iceberg", campos.get(i).get("type"));
+            columnas.add(c);
+        }
+        vista.put("columnas", columnas);
+        vista.put("total", total);
+        vista.put("output", nombre);
+        vista.put("mode", modo);
+        e.put("visto", vista);
+        Result out = new Result();
+        out.put("table", nombre); out.put("rows", total); out.put("snapshot", ""); out.put("metadata_location", "");
+        out.put("operation", ""); out.put("repeated", false); out.put("mode", modo); out.put("added", total);
+        out.put("before", 0L); out.put("preview", true);
+        return out;
+    }
+
     /** D15: si el arnés está cargando una clase, {@code que} no corre. */
     private static void noAlCargar(String que) {
         String f = cargando;
@@ -1389,6 +1466,8 @@ public final class Ore {
         esquema.put("type", "struct"); esquema.put("schema-id", 0); esquema.put("fields", campos);
         String dataset = "catalogo/" + bd + "/" + ns + "/" + t; // una etiqueta: la ubicación la da el catálogo
         if (transformActivo != null && !nombre.equals(transformActivo.output())) throw new IllegalStateException("`" + nombre + "` is not the output of `" + transformActivo.nombre() + "` (" + transformActivo.output() + "): a transform only writes what it declares");
+        // 0055 JT4: en un Preview, lo que escribiría; nada se escribe.
+        if (ensayando != null) return ensayarEscritura(nombre, datos, mode);
         String semilla = nombre + "|" + modo + (clave != null && !clave.isEmpty() ? "|" + String.join(",", clave) : "");
         String claveOperacion = "";
         for (int intento = 0; intento < 4; intento++) {

@@ -1222,6 +1222,27 @@ pub fn del_editor(fichero: &Path, fuente: &str) -> (Vec<DelEditor>, Vec<Diagnost
         }
         return (lista, out);
     }
+    // 0055 T1·7 (JT4): un `.java`, sus `@Transform`, con la regla de la puerta.
+    if base.ends_with(".java") {
+        let c = ore_code::java::derivar(fuente, &base);
+        if java_roto(fichero, fuente, &c, &mut out, &mut dichos) {
+            return (lista, out);
+        }
+        let lineas = Lineas::new(fuente);
+        for x in &c.transforms {
+            match &x.resultado {
+                Err(fallos) => no_se_deriva_t(fichero, fuente, &x.nombre, fallos, &mut out),
+                Ok(p) => lista.push(DelEditor {
+                    clave: x.nombre.clone(),
+                    linea: Some(crate::promover::pos(&lineas, x.sitios.decorador).line),
+                    inputs: p.inputs.iter().map(|i| corto(i)).collect(),
+                    output: corto(&p.output),
+                    descripcion: p.descripcion.clone(),
+                }),
+            }
+        }
+        return (lista, out);
+    }
     let d = ore_code::python::derivar(fuente, &base);
     if py_roto(fichero, fuente, &d, &mut out, &mut dichos) {
         return (lista, out);
