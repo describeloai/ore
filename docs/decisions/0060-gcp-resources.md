@@ -85,7 +85,7 @@ manera de construirla** (Cloud Build + Artifact Registry, €122 de €178).
 | paso | qué | espera | toca |
 |---|---|---|---|
 | **G0** | **medir** con la cuenta activa: el desglose por SKU de estos días (¿Artifact Registry es almacenamiento o tráfico?), el tamaño de cada repositorio de imágenes, los minutos de Cloud Build por corrida y la cuota usada | decide el orden | nada |
-| **G1** | D1: `concurrency` y `paths-ignore` en `ci.yml` | la mayoría de las 59 | git |
+| **G1** | D1: `concurrency` y `paths-ignore` en `ci.yml`. **Hecho en local (2026-10-08)**: lo que es solo papel (`docs/`, `*.md`, las pruebas a mano contra prod: `ore-postgres/`, `b<N>/`, `medida-*`) no corre; medido, 17 de 64 commits el 8 de octubre y 87 de 427 desde el 1. El paso «la punta» mira lo que hay detrás: si es solo papel, el commit de código sigue siendo la punta y se despliega (probado contra la historia real con `gh` simulado, 7 casos). La lista va en tres sitios y `ci/solo-papel.py` comprueba que dicen lo mismo. El `concurrency` ya estaba: en `main` no cancela a propósito (2026-09-30), y la construcción ya empieza sólo en la punta; lo que se gasta en una que queda vieja a mitad va a G4 | 17 de 64 corridas | git |
 | **G2** | D3 de inmediato: `--region=europe-west1` (el pool regional por defecto, sin pool privado) | el tráfico entre regiones, si G0 lo confirma | git |
 | **G3** | D4: la política de retención en seco, luego de verdad, y el atraso | casi todo Artifact Registry | GCP: go |
 | **G4** | D2: la huella de cada imagen y la etiqueta en vez de la construcción | la mayor parte de lo que queda de Cloud Build | git |

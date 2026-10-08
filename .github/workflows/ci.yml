@@ -3,10 +3,31 @@
 # distinto del que se atraviesa no es una puerta.
 name: ci
 
+# ⭐ G1 (ADR 0060, 2026-10-08): un commit que es SOLO PAPEL no corre nada.
+#   Documentos, notas y las pruebas que se lanzan a mano contra prod (las de
+#   0058 y las `b<N>`/`medida-*`): ninguna la cruza esta puerta, y cada corrida
+#   que construye cuesta Cloud Build y Artifact Registry. El 8 de octubre fueron
+#   17 de 64 commits (87 de 427 desde el 1).
+#
+# ⚠️ La misma lista va en `SOLO_PAPEL`, abajo, y `ci/solo-papel.py` comprueba
+#   que dicen lo mismo: con ella el commit de código que queda delante de uno
+#   de papel sigue siendo «la punta» y se despliega. Sin ella, nada lo haría.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'pruebas-de-fuego/ore-postgres/**'
+      - 'pruebas-de-fuego/b[0-9]*/**'
+      - 'pruebas-de-fuego/medida-*'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'pruebas-de-fuego/ore-postgres/**'
+      - 'pruebas-de-fuego/b[0-9]*/**'
+      - 'pruebas-de-fuego/medida-*'
 
 # En un PR, un empujón nuevo cancela el anterior: lo que importa es el
 # veredicto de la punta, no el de un commit que ya nadie va a mirar.
@@ -25,6 +46,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: never
   RUSTFLAGS: -D warnings
+  # Las globs de `paths-ignore` en las de `case`, donde `*` sí cruza `/`.
+  SOLO_PAPEL: >-
+    docs/*
+    *.md
+    pruebas-de-fuego/ore-postgres/*
+    pruebas-de-fuego/b[0-9]*/*
+    pruebas-de-fuego/medida-*
 
 jobs:
   suite:
@@ -35,6 +63,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: true
+
+      - name: lo que es solo papel, lo mismo en los tres sitios
+        run: python3 ci/solo-papel.py
 
       - name: toolchain
         run: rustup show   # `rust-toolchain.toml` manda; esto solo lo materializa
@@ -641,8 +672,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PUNTA=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
-          if [ "$PUNTA" = "$GITHUB_SHA" ]; then echo "sigue=si" >> "$GITHUB_OUTPUT"
-          else echo "sigue=no" >> "$GITHUB_OUTPUT"; echo "  main ya va por ${PUNTA::12}: lo hace ese"; fi
+          SIGUE=no
+          if [ "$PUNTA" = "$GITHUB_SHA" ]; then SIGUE=si
+          else
+            # G1 (0060): si lo que hay detras es solo papel, `paths-ignore` no
+            #   lo corre, y la punta que cuenta sigue siendo esta. Si no se
+            #   puede saber (mas de 300 ficheros, historia reescrita), no.
+            LISTA=$(gh api "repos/${{ github.repository }}/compare/$GITHUB_SHA...$PUNTA" \
+              --jq 'select(.status == "ahead" and (.files | length) < 300) | .files[].filename') || LISTA=""
+            if [ -n "$LISTA" ]; then
+              SIGUE=si
+              set -f   # las globs de SOLO_PAPEL son para `case`, no para el disco
+              while IFS= read -r F; do
+                P=no
+                for G in $SOLO_PAPEL; do case "$F" in $G) P=si; break;; esac; done
+                if [ "$P" = no ]; then SIGUE=no; break; fi
+              done <<< "$LISTA"
+              set +f
+            fi
+          fi
+          echo "sigue=$SIGUE" >> "$GITHUB_OUTPUT"
+          if [ "$SIGUE" = no ]; then echo "  main ya va por ${PUNTA::12}: lo hace ese"
+          elif [ "$PUNTA" != "$GITHUB_SHA" ]; then echo "  hasta ${PUNTA::12} solo hay papel: sigue siendo este"; fi
 
       - uses: actions/checkout@v5
         if: steps.punta.outputs.sigue == 'si'
@@ -749,8 +800,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PUNTA=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
-          if [ "$PUNTA" = "$GITHUB_SHA" ]; then echo "sigue=si" >> "$GITHUB_OUTPUT"
-          else echo "sigue=no" >> "$GITHUB_OUTPUT"; echo "  main ya va por ${PUNTA::12}: lo hace ese"; fi
+          SIGUE=no
+          if [ "$PUNTA" = "$GITHUB_SHA" ]; then SIGUE=si
+          else
+            # G1 (0060): si lo que hay detras es solo papel, `paths-ignore` no
+            #   lo corre, y la punta que cuenta sigue siendo esta. Si no se
+            #   puede saber (mas de 300 ficheros, historia reescrita), no.
+            LISTA=$(gh api "repos/${{ github.repository }}/compare/$GITHUB_SHA...$PUNTA" \
+              --jq 'select(.status == "ahead" and (.files | length) < 300) | .files[].filename') || LISTA=""
+            if [ -n "$LISTA" ]; then
+              SIGUE=si
+              set -f   # las globs de SOLO_PAPEL son para `case`, no para el disco
+              while IFS= read -r F; do
+                P=no
+                for G in $SOLO_PAPEL; do case "$F" in $G) P=si; break;; esac; done
+                if [ "$P" = no ]; then SIGUE=no; break; fi
+              done <<< "$LISTA"
+              set +f
+            fi
+          fi
+          echo "sigue=$SIGUE" >> "$GITHUB_OUTPUT"
+          if [ "$SIGUE" = no ]; then echo "  main ya va por ${PUNTA::12}: lo hace ese"
+          elif [ "$PUNTA" != "$GITHUB_SHA" ]; then echo "  hasta ${PUNTA::12} solo hay papel: sigue siendo este"; fi
 
       - uses: google-github-actions/auth@v2
         if: steps.punta.outputs.sigue == 'si'
