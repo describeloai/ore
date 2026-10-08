@@ -88,10 +88,29 @@ pub struct NoSeAnaliza {
     pub pos: Option<Pos>,
 }
 
+/// Lo que una sentencia del guion escribe, si escribe: lo que lee y su
+/// destino. Una unidad que escribe un dataset, o (0049 B10) la colección que da
+/// su consulta.
+fn escritura_de(
+    s: &Sentencia,
+) -> Option<(
+    &[crate::sql_del_arbol::Nombre],
+    &crate::sql_del_arbol::Nombre,
+)> {
+    match s {
+        Sentencia::Unidad(u) => u.escribe.as_ref().map(|e| (u.lee.as_slice(), &e.destino)),
+        Sentencia::ColeccionDerivada {
+            destino, consulta, ..
+        } => Some((consulta.lee.as_slice(), destino)),
+        _ => None,
+    }
+}
+
 /// Un `.sql` → sus transforms: uno por cada `create or replace dataset … as
-/// select`, `insert into … select` e `insert or replace into … select`. Lo que
-/// no escribe —un `select`, una vista, lo que crea algo vacío— cuenta para el
-/// ordinal y no es transform. `Err` con el primer motivo si no se analiza.
+/// select`, `insert into … select`, `insert or replace into … select` y (0049
+/// B10) `create or replace media collection … as select`. Lo que no escribe
+/// —un `select`, una vista, lo que crea algo vacío— cuenta para el ordinal y
+/// no es transform. `Err` con el primer motivo si no se analiza.
 pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, NoSeAnaliza> {
     let trozos = guion(texto).map_err(|fs| {
         fs.into_iter()
@@ -107,22 +126,18 @@ pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, NoSeAnaliza> {
     })?;
     let mut sitios = BTreeMap::new();
     for (i, t) in trozos.iter().enumerate() {
-        let Sentencia::Unidad(u) = &t.sentencia else {
-            continue;
-        };
-        let Some(e) = u.escribe.as_ref() else {
+        let Some((lee, destino)) = escritura_de(&t.sentencia) else {
             continue;
         };
         sitios.insert(
             i + 1,
             Sitio {
                 pos: t.pos,
-                inputs: u
-                    .lee
+                inputs: lee
                     .iter()
                     .filter_map(|n| Some((n.referencia(), n.pos?)))
                     .collect(),
-                output: e.destino.pos.or(t.pos),
+                output: destino.pos.or(t.pos),
             },
         );
     }
@@ -130,12 +145,9 @@ pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, NoSeAnaliza> {
         .iter()
         .enumerate()
         .filter_map(|(i, t)| {
-            let Sentencia::Unidad(u) = &t.sentencia else {
-                return None;
-            };
-            let e = u.escribe.as_ref()?;
+            let (lee, destino) = escritura_de(&t.sentencia)?;
             let mut inputs: Vec<String> = Vec::new();
-            for n in &u.lee {
+            for n in lee {
                 let r = n.referencia();
                 if !inputs.contains(&r) {
                     inputs.push(r);
@@ -148,7 +160,7 @@ pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, NoSeAnaliza> {
                     entrypoint: format!("{ruta}:{}", i + 1),
                     descripcion: None,
                     inputs,
-                    output: e.destino.referencia(),
+                    output: destino.referencia(),
                 },
             ))
         })
@@ -160,11 +172,12 @@ pub fn derivar_sql(texto: &str, ruta: &str) -> Result<Guion, NoSeAnaliza> {
     })
 }
 
-/// Si merece la pena analizar un `.sql` buscando transforms: sin `insert` ni
-/// `dataset` no hay sentencia que escriba (un filtro, no una respuesta).
-fn puede_escribir(fuente: &str) -> bool {
+/// Si merece la pena analizar un `.sql` buscando transforms: sin `insert`,
+/// `dataset` ni `collection` (0049 B10) no hay sentencia que escriba (un
+/// filtro, no una respuesta).
+pub fn puede_escribir(fuente: &str) -> bool {
     let f = fuente.to_ascii_lowercase();
-    f.contains("insert") || f.contains("dataset")
+    f.contains("insert") || f.contains("dataset") || f.contains("collection")
 }
 
 /// Un fichero de código leído una sola vez, aunque lo nombren varios
@@ -213,8 +226,9 @@ fn sql_roto(
         )
         .help(
             "a `.sql` gives one transform per statement that writes: `create or replace \
-             dataset … as select`, `insert into … select`, `insert or replace into … select`. \
-             Its documents stay as they were until it parses",
+             dataset … as select`, `insert into … select`, `insert or replace into … select`, \
+             `create or replace media collection … as select`. Its documents stay as they were \
+             until it parses",
         );
         if let Some(p) = motivo.pos {
             d = d.at(p);
@@ -1176,6 +1190,57 @@ mod tests {
         );
         assert!(g.transforms.iter().all(|(_, p)| p.runtime == "sql"));
         assert!(g.transforms.iter().all(|(_, p)| p.descripcion.is_none()));
+    }
+
+    /// 0049 B10·2: la colección que da su consulta es un transform —su salida,
+    /// la colección; sus entradas, lo que lee—; la que se crea vacía, no.
+    #[test]
+    fn la_coleccion_que_da_su_consulta_es_un_transform() {
+        let g = derivar_sql(
+            "create media collection if not exists legal.archivo.vacia media image formats (png);\n\
+             create or replace media collection legal.archivo.paginas media image formats (png) as\n\
+             select p.name, p.data, p.anchor\n\
+             from legal.archivo.contratos as c\n\
+             cross join lateral functions.pdf_a_png(c._item) as p\n\
+             where c.content_type = 'application/pdf';\n",
+            "transforms/paginas.sql",
+        )
+        .expect("se analiza");
+        assert_eq!(g.sentencias, 2);
+        let resumen: Vec<(usize, &str, Vec<&str>, &str)> = g
+            .transforms
+            .iter()
+            .map(|(n, p)| {
+                (
+                    *n,
+                    p.entrypoint.as_str(),
+                    p.inputs.iter().map(String::as_str).collect(),
+                    p.output.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            resumen,
+            vec![(
+                2,
+                "transforms/paginas.sql:2",
+                vec!["legal.archivo.contratos"],
+                "legal.archivo.paginas"
+            )]
+        );
+        // dónde lo dice el código: la sentencia, la entrada y la salida
+        let sitio = &g.sitios[&2];
+        assert_eq!(sitio.pos.map(|p| p.line), Some(2));
+        assert_eq!(sitio.output.map(|p| p.line), Some(2));
+        assert_eq!(
+            sitio
+                .inputs
+                .iter()
+                .map(|(n, p)| (n.as_str(), p.line))
+                .collect::<Vec<_>>(),
+            [("legal.archivo.contratos", 4)]
+        );
+        assert!(puede_escribir("create or replace media collection a.b.c …"));
     }
 
     fn doc(ruta: &str, kind: Kind, texto: &str) -> Loaded {

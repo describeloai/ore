@@ -523,8 +523,7 @@ fn transforms_del_paquete(
                     rotos.insert(ruta);
                     // Sólo si podría escribir: un `.sql` sin nada que escribir
                     // no tiene transforms que perder.
-                    let l = fuente.to_ascii_lowercase();
-                    if l.contains("insert") || l.contains("dataset") {
+                    if crate::transformar::puede_escribir(&fuente) {
                         let mut d = Diagnostic::new(
                             Code::Oos2043,
                             &f,
