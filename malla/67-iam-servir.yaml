@@ -99,6 +99,10 @@ spec:
             - ore-iam
             - --jwks-celdas
             - /llaves-celdas/jwks.json
+            # 0058 P4·1: los productos ante los que una celda se presenta con su token
+            # de Workload Identity; `POST /access/v1/celda` les dice de quién es.
+            - --audiencias-productos
+            - ore-postgres
           env:
             - name: IAM_URL
               valueFrom: { secretKeyRef: { name: iam-url, key: url } }
@@ -255,6 +259,13 @@ spec:
           podSelector:
             matchLabels:
               ore.dev/rol: informador
+        # 0058 P4·1: el plano de control de Postgres, a preguntar de quién es una celda.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-pg
+          podSelector:
+            matchLabels:
+              ore.dev/rol: plano-postgres
       ports:
         - protocol: TCP
           port: 8090

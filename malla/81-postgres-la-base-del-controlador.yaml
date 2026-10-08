@@ -163,10 +163,16 @@ spec:
               args:
                 - |
                   set -e
-                  pg_dump -d storage_controller -Fc -f /volcado/storage_controller.dump
-                  # leer lo que se acaba de escribir: un volcado corrupto pesa igual
-                  pg_restore --list /volcado/storage_controller.dump > /dev/null
-                  echo "volcado ok · $(wc -c < /volcado/storage_controller.dump) bytes"
+                  # Y la del plano de control (0058 P4·1), si ya existe: la misma instancia.
+                  for B in storage_controller ore_postgres; do
+                    if [ "$B" = ore_postgres ] && [ "$(psql -d postgres -Atc "select 1 from pg_database where datname = 'ore_postgres'")" != 1 ]; then
+                      continue
+                    fi
+                    pg_dump -d $B -Fc -f /volcado/$B.dump
+                    # leer lo que se acaba de escribir: un volcado corrupto pesa igual
+                    pg_restore --list /volcado/$B.dump > /dev/null
+                    echo "volcado ok · $B · $(wc -c < /volcado/$B.dump) bytes"
+                  done
               resources:
                 requests: { cpu: "20m", memory: 64Mi }
                 limits:   { cpu: "500m", memory: 256Mi }
@@ -183,8 +189,11 @@ spec:
                 - |
                   set -e
                   F="$(date -u +%Y%m%dT%H%M%SZ)"
-                  gcloud storage cp /volcado/storage_controller.dump "$DESTINO/storage_controller-$F.dump"
-                  echo "subido $DESTINO/storage_controller-$F.dump"
+                  for D in /volcado/*.dump; do
+                    B=$(basename "$D" .dump)
+                    gcloud storage cp "$D" "$DESTINO/$B-$F.dump"
+                    echo "subido $DESTINO/$B-$F.dump"
+                  done
                   gcloud storage ls "$DESTINO/" | tail -5
               resources:
                 requests: { cpu: "50m", memory: 128Mi }

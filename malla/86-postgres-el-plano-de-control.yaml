@@ -1,0 +1,128 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL PLANO DE CONTROL DE POSTGRES (ADR 0058, P4·1)
+#
+# `ore-postgres`: lo que una celda le pide al producto. Recuerda proyectos y
+# operaciones en su base (`ore_postgres`, en `storcon-db`; la crea
+# `86-postgres-el-plano-de-control.sh`) y aplica sus migraciones al arrancar.
+#
+# Quién llama: el `ore-serve` de cada celda (`ore.dev/rol: control` en un
+# namespace `ore.dev/rol: cargas`), con su token de Workload Identity y audiencia
+# `ore-postgres`. De qué organización es esa celda se lo pregunta a `ore-iam`
+# (`POST /access/v1/celda`): la organización no viaja nunca.
+#
+# Va en el pool del producto (`neon`), como el almacenamiento: la gestión es
+# parte del producto, no de la celda (decidido 8).
+#
+# P4·2: su reconciliador crea y borra tenants y timelines. Lleva montados SÓLO
+# los dos tokens que usa —`admin` (el storage_controller) y `safekeeperdata`
+# (borrar el WAL en cada safekeeper)—, no la llave privada.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ore-postgres
+  namespace: ore-pg
+# Hasta P4·3 no habla con el API de Kubernetes: sin token montado.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-postgres
+  namespace: ore-pg
+spec:
+  selector: { ore.dev/rol: plano-postgres }
+  ports: [{ name: http, port: 8100, targetPort: 8100 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-postgres
+  namespace: ore-pg
+spec:
+  replicas: 1
+  # Una sola réplica y nunca dos a la vez: desde P4·2 reconcilia, y dos
+  # reconciliadores sobre el mismo estado no son más disponibilidad.
+  strategy: { type: Recreate }
+  selector: { matchLabels: { ore.dev/rol: plano-postgres } }
+  template:
+    metadata:
+      labels: { ore.dev/rol: plano-postgres, ore.dev/tenant: system }
+    spec:
+      serviceAccountName: ore-postgres
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ore-postgres
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-postgres:main
+          imagePullPolicy: Always
+          args: [servir, --bind, 0.0.0.0:8100]
+          env:
+            - name: ORE_POSTGRES_URL
+              valueFrom: { secretKeyRef: { name: ore-postgres-db, key: url } }
+          ports: [{ containerPort: 8100 }]
+          volumeMounts:
+            - { name: llaves-almacen, mountPath: /llaves/almacen, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /salud, port: 8100 }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "10m", memory: 32Mi }
+            limits:   { cpu: "300m", memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: llaves-almacen
+          projected:
+            sources:
+              - secret: { name: almacen-jwt-privada, items: [{ key: admin, path: admin }] }
+              - secret: { name: almacen-jwt, items: [{ key: safekeeperdata, path: safekeeperdata }] }
+---
+# Quién entra: el `ore-serve` de las celdas, y nadie más.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-plano
+  namespace: ore-pg
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: plano-postgres } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { ore.dev/rol: cargas } }
+          podSelector: { matchLabels: { ore.dev/rol: control } }
+      ports: [{ protocol: TCP, port: 8100 }]
+---
+# Adónde sale: su base, `ore-iam`, el DNS y (P4·2) el storage_controller y los safekeepers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-plano
+  namespace: ore-pg
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: plano-postgres } }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to:
+        - podSelector: { matchLabels: { ore.dev/rol: storcon-db } }
+      ports: [{ protocol: TCP, port: 5432 }]
+    - to:
+        - namespaceSelector: { matchLabels: { ore.dev/rol: identidad } }
+          podSelector: { matchLabels: { ore.dev/rol: iam-servidor } }
+      ports: [{ protocol: TCP, port: 8090 }]
+    - to:
+        - podSelector: { matchLabels: { ore.dev/rol: storage-controller } }
+      ports: [{ protocol: TCP, port: 1234 }]
+    - to:
+        - podSelector: { matchLabels: { ore.dev/rol: safekeeper } }
+      ports: [{ protocol: TCP, port: 7676 }]

@@ -99,6 +99,8 @@ resources:
   - 84-postgres-la-base-del-computo.yaml
   # P3·4: el namespace del cómputo (ore-pg-computo), la barrera 2 en sus dos lados y la cuota de plataforma.
   - 85-postgres-el-computo.yaml
+  # P4·1: el plano de control (ore-postgres); su base la crea antes 86-…sh.
+  - 86-postgres-el-plano-de-control.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
