@@ -298,8 +298,8 @@ import pypdfium2 as pdfium
 
 @ore.transform(inputs=[ore.collection("legal.archive.contracts")],
                output="legal.archive.pages")             # a written collection
-def pages(contracts, out):
-    return contracts.apply(to_png, version="1")
+def pages():
+    return ore.collection("legal.archive.contracts").apply(to_png, version="1")
 
 def to_png(item):
     pdf = pdfium.PdfDocument(item.read_bytes())

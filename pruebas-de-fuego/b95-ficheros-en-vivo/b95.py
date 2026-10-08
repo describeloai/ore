@@ -38,8 +38,9 @@ def a_png(item):
 
 
 @ore.transform(inputs=[ore.collection(ENTRADA)], output=ore.collection(SALIDA))
-def paginas(entrada, salida):
-    return entrada.apply(a_png, version="1", save_every_s=60)
+def paginas():
+    # `@transform` declara lo que se lee y lo que se escribe; no pasa argumentos.
+    return ore.collection(ENTRADA).apply(a_png, version="1", save_every_s=60)
 
 
 def resumen(etiqueta, r):
