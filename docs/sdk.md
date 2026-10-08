@@ -340,8 +340,8 @@ derivation, state, files, error}` with `state` `files`, `empty` or `error`. And
 ### Collections and functions in SQL (ORE 0049 B7)
 
 **A collection is a relation in `FROM`**, one row per item, read by its listing (no bytes):
-`item` (the `MediaRef`, as a struct of the `_item` fields), `path`, `digest`, `size`,
-`content_type`, `modified`.
+`_item` (the `MediaRef`, as a struct), `path`, `version`, `digest`, `size`, `content_type`,
+`content_type_detected`, `checksum`, `modified`, `transaction` (OOS v1alpha17 `04` §1).
 
 ```sql
 select path, size, content_type from legal.archive.contracts
@@ -352,11 +352,11 @@ select path, size, content_type from legal.archive.contracts
 its contract: as a value, `f(x)`, or as rows, `cross join lateral f(x)` (`from f(x)`, `join f(x)`).
 Its parameters are positional, in the order of its `def`; one with a default can be left out.
 Its types are its document's: a `@dataclass` is a struct, `list[D]` gives one row per element,
-`Media[c]` takes an `item`. Only code functions (`runtime: python`) without `over` or `models`.
+`Media[c]` takes an `_item`. Only code functions (`runtime: python`) without `over` or `models`.
 In a session, the function is read from **the session's branch**.
 
 ```sql
-select c.path, functions.language(c.item) as lang from legal.archive.contracts as c
+select c.path, functions.language(c._item) as lang from legal.archive.contracts as c
 ```
 
 **A dataset written from a collection is an anchored table**, computed item by item exactly like
@@ -367,7 +367,7 @@ select c.path, functions.language(c.item) as lang from legal.archive.contracts a
 create or replace dataset legal.archive.contract_pages as
 select p.page, p.text, p.anchor
 from legal.archive.contracts as c
-cross join lateral functions.pdf_pages(c.item) as p
+cross join lateral functions.pdf_pages(c._item) as p
 ```
 
 - A column named `anchor` (an `Anchor` struct) is each row's anchor; without it, the item's.

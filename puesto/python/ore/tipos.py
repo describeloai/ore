@@ -113,7 +113,14 @@ class _DeColeccion:
         return "Media<%s>" % self.coleccion
 
 
-class Media:
+if typing.TYPE_CHECKING:
+    # Para el editor (pyright): `Media["…"]` es un `MediaRef`, con sus campos.
+    from .medios import MediaRef as _DeMedia
+else:
+    _DeMedia = object
+
+
+class Media(_DeMedia):
     """`Media["db.schema.collection"]` is `Media<db.schema.collection>`: a
     reference to an item of that collection (`ore.medios.MediaRef`), not its
     bytes. To read them, `ore.collection(ref.collection)`."""

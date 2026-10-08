@@ -679,7 +679,7 @@ datos, así que es un Transform y se construye con Build, con su linaje y su sal
 create or replace media collection legal.archivo.paginas media image formats (png) as
 select p.name, p.data, p.anchor
 from legal.archivo.contratos as c
-cross join lateral functions.pdf_a_png(c.item) as p
+cross join lateral functions.pdf_a_png(c._item) as p
 where c.content_type = 'application/pdf';
 ```
 
@@ -695,7 +695,7 @@ abarata. Y la colección queda **definida por su consulta**, con su medio y sus 
 | columna | tipo | |
 |---|---|---|
 | `name` | `String`, obligatoria | el camino del fichero dentro del ítem de origen (`p001.png` → `<ruta>/p001.png`), como `ore.File.name` |
-| `data` | `BLOB`, o un `Media<c>` | los bytes; un `Media` (p. ej. `c.item`) **copia** ese ítem tal cual —filtrar o copiar una colección sin escribir una función— |
+| `data` | `BLOB`, o un `Media<c>` | los bytes; un `Media` (p. ej. `c._item`) **copia** ese ítem tal cual —filtrar o copiar una colección sin escribir una función— |
 | `content_type` | `String`, opcional | el declarado; mandan los bytes |
 | `anchor` | `Anchor`, opcional | qué parte del ítem es |
 
@@ -703,7 +703,7 @@ Cualquier otra columna es un error (no hay dónde ponerla: el fichero no tiene c
 bytes los da una **Function** (0050): una `@function` de Python que devuelve
 `list[Pagina]`, con `name: str`, `data: bytes` y `anchor: Anchor` —`bytes` es `Opaque` en su
 contrato y `BLOB` en SQL (`ore-code` `derivar.rs`, `sql_functions.py`)—, llamada con
-`cross join lateral functions.<def>(c.item)` como en B7 (0056: las funciones tienen su espacio propio, fuera de toda base).
+`cross join lateral functions.<def>(c._item)` como en B7 (0056: las funciones tienen su espacio propio, fuera de toda base).
 
 **Cómo se calcula:** exactamente B9. El SDK corre la consulta **ítem a ítem** con la colección
 reducida a ese ítem (lo que ya hace B7 con `_sql_per_item`), convierte cada fila en un `ore.File` y

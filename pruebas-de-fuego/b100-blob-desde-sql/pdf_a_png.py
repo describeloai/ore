@@ -1,7 +1,7 @@
 # 0049 B10·0 · La función que da los bytes: un PNG por página de un contrato.
 #
 # En tu repositorio functions-python de victor, publicada como cualquier otra.
-# En SQL es `functions.pdf_a_png(c.item)` (0056: espacio propio, fuera de toda
+# En SQL es `functions.pdf_a_png(c._item)` (0056: espacio propio, fuera de toda
 # base). Devuelve `list[Pagina]`: con `cross join lateral`, una fila por página.
 import io
 from dataclasses import dataclass
@@ -34,6 +34,6 @@ def pdf_a_png(item: Media["s3_stuff.nueva_carpeta.contratos"]) -> list[Pagina]:
     paginas = []
     for n, pagina in enumerate(pdfium.PdfDocument(datos), 1):
         png = io.BytesIO()
-        pagina.render(scale=PPP / 72).to_pil().save(png, "PNG")
+        pagina.render(scale=PPP / 72)  # pyright: ignore[reportArgumentType] (su anotación dice int; acepta float).to_pil().save(png, "PNG")
         paginas.append(Pagina("p%03d.png" % n, png.getvalue(), Ancla("page", n)))
     return paginas

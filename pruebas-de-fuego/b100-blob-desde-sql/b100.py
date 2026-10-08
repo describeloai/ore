@@ -17,7 +17,7 @@ CONSULTA = """
 select c.path, p.name, p.data, p.anchor,
        typeof(p.data) as tipo_data, typeof(p.anchor) as tipo_anchor
 from %s as c
-cross join lateral functions.pdf_a_png(c.item) as p
+cross join lateral functions.pdf_a_png(c._item) as p
 where c.content_type = 'application/pdf'
 """ % ORIGEN
 

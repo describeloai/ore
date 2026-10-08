@@ -476,7 +476,7 @@ COLUMNAS_DE_LA_RELACION = ("_item", "path", "version", "digest", "size", "conten
 
 def _relacion(col):
     """The collection as a relation for `sql()`: one row per item of its
-    listing (no bytes are read). `item` is the `MediaRef` as a struct —the same
+    listing (no bytes are read). `_item` is the `MediaRef` as a struct —the same
     type as `_item` in an anchored table—, for a function to take."""
     return _relacion_de_refs(it.ref for it in col.items())
 
