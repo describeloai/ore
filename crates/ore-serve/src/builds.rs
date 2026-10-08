@@ -50,9 +50,17 @@ pub(crate) struct Hallado {
     pub inputs: Vec<String>,
     /// El fichero del código, desde la raíz.
     pub codigo: String,
-    /// La celda que corre: el arnés (Python) o la sentencia (SQL).
+    /// La celda que corre: el arnés (Python, Java) o la sentencia (SQL).
     pub celda: String,
+    /// 0055 T1·7: en qué puesto corre (`python` o `jvm`) y en qué lenguaje
+    /// va su celda (`python` o `java`).
+    pub entorno: &'static str,
+    pub lenguaje: &'static str,
 }
+
+/// 0055 T1·7 (JT3) · Cuánto código Java viaja en la celda de un build: los
+/// `.java` del paquete, todos (un transform usa sus clases de apoyo).
+const FUENTES_JAVA_MAXIMO: usize = 4 << 20;
 
 /// Los códigos que dicen que el documento no es el de su código, o que su
 /// salida no tiene dónde nacer: con cualquiera de ellos, no se construye.
@@ -87,11 +95,11 @@ pub(crate) fn pedido(cuerpo: &str) -> Result<(Que, Option<String>), Respuesta> {
             if f.starts_with('/')
                 || f.contains('\\')
                 || f.split('/').any(|s| s == ".." || s.is_empty())
-                || !(f.ends_with(".py") || f.ends_with(".sql"))
+                || !(f.ends_with(".py") || f.ends_with(".sql") || f.ends_with(".java"))
             {
                 return Err(Respuesta::error(
                     422,
-                    format!("`{f}` is not a `.py` or `.sql` path of the tree"),
+                    format!("`{f}` is not a `.py`, `.sql` or `.java` path of the tree"),
                 ));
             }
             Que::Fichero(f)
@@ -125,6 +133,28 @@ fn carpeta_del_paquete(doc: &Path, raiz: &Path) -> PathBuf {
     raiz.to_path_buf()
 }
 
+/// Los `.java` de `dir`, sin entrar en lo oculto (`.git`) ni en `target/` (lo
+/// que compila Maven).
+fn java_de(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let nombre = e.file_name().to_string_lossy().into_owned();
+        if nombre.starts_with('.') {
+            continue;
+        }
+        if p.is_dir() {
+            if nombre != "target" {
+                java_de(&p, out);
+            }
+        } else if nombre.ends_with(".java") {
+            out.push(p);
+        }
+    }
+}
+
 fn rel(raiz: &Path, p: &Path) -> String {
     p.strip_prefix(raiz)
         .unwrap_or(p)
@@ -134,7 +164,7 @@ fn rel(raiz: &Path, p: &Path) -> String {
 
 /// Los `Transform` de `que` en el árbol de `raiz`, cada uno con su celda. 404
 /// si no hay ninguno; 422, con los diagnósticos, si alguno no es el de su
-/// código (o su salida no tiene base o schema); 422 en `runtime: java`.
+/// código (o su salida no tiene base o schema).
 pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> {
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
     struct Candidato<'a> {
@@ -255,7 +285,45 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
             ("entrypoint", Json::s(&entrypoint)),
             ("output", Json::s(&c.output)),
         ]);
+        let (entorno, lenguaje) = if c.runtime == "java" {
+            ("jvm", "java")
+        } else {
+            ("python", "python")
+        };
         let celda = match c.runtime.as_str() {
+            // 0055 T1·7 (JT3): los `.java` del paquete, y el método.
+            "java" => {
+                let carpeta = carpeta_del_paquete(&c.t.path, &pkg.root);
+                let mut ficheros = Vec::new();
+                java_de(&carpeta, &mut ficheros);
+                ficheros.sort();
+                let mut fuentes: Vec<(String, String)> = Vec::new();
+                let mut total = 0usize;
+                for f in ficheros {
+                    if carpeta_del_paquete(&f, &pkg.root) != carpeta {
+                        continue; // de un paquete de dentro: no es de este
+                    }
+                    let Ok(texto) = std::fs::read_to_string(&f) else {
+                        continue;
+                    };
+                    total += texto.len();
+                    fuentes.push((rel(raiz, &f), texto));
+                }
+                if total > FUENTES_JAVA_MAXIMO {
+                    return Err(con_motivo(
+                        Respuesta::error(
+                            422,
+                            format!(
+                                "the package of `{codigo}` has {} MB of Java: a build takes up to {} MB",
+                                total >> 20,
+                                FUENTES_JAVA_MAXIMO >> 20
+                            ),
+                        ),
+                        "not_buildable",
+                    ));
+                }
+                arnes_java(&documento, &codigo, &c.clave, &fuentes, &build)
+            }
             "python" => arnes_python(&ArnesDeBuild {
                 documento: &documento,
                 fichero: &codigo,
@@ -296,7 +364,7 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                     Respuesta::error(
                         422,
                         format!(
-                            "`{documento}` is `runtime: {otro}`: only python and sql transforms build yet"
+                            "`{documento}` is `runtime: {otro}`: python, sql and java transforms build"
                         ),
                     ),
                     "not_buildable",
@@ -316,6 +384,8 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
             inputs,
             codigo,
             celda,
+            entorno,
+            lenguaje,
         });
     }
     Ok(hallados)
@@ -381,7 +451,13 @@ fn por_que_no_hay(raiz: &Path, pkg: &ore_core::link::Package, f: &str) -> Respue
         };
     }
     let base = f.rsplit('/').next().unwrap_or(f);
-    let tiene: Vec<String> = if f.ends_with(".sql") {
+    let tiene: Vec<String> = if f.ends_with(".java") {
+        ore_code::java::derivar(&fuente, base)
+            .transforms
+            .iter()
+            .map(|x| format!("`{}`", x.nombre))
+            .collect()
+    } else if f.ends_with(".sql") {
         ore_core::transformar::derivar_sql(&fuente, base)
             .map(|g| {
                 g.transforms
@@ -401,6 +477,10 @@ fn por_que_no_hay(raiz: &Path, pkg: &ore_core::link::Package, f: &str) -> Respue
         if f.ends_with(".sql") {
             format!(
                 "`{f}` has nothing to build: no statement of it writes data (`create or replace dataset … as select`, `insert into … select`)"
+            )
+        } else if f.ends_with(".java") {
+            format!(
+                "`{f}` has nothing to build: no method of its class has `@Transform` (`import ore.Transform;`)"
             )
         } else {
             format!(
@@ -579,6 +659,75 @@ if not callable(_f) or getattr(_f, "output", None) is None:
         def_ = cad(def),
         fuente = cad(fuente),
     )
+}
+
+/// 0055 T1·7 (JT3) · **La celda del build de un transform de Java**: una
+/// llamada al arnés del SDK (`ore.Arnes.construir`), que compila los `.java`
+/// del paquete con javac —con la línea del fichero en el error (JT0)—, carga la
+/// clase con D15 armado y llama al método dentro de su techo. Lo de fuera va
+/// como JSON en literales de cadena de Java: troceado, porque una constante de
+/// Java no pasa de 64 KB, y unido en ejecución (`String.join`), que no es una
+/// constante. Una barra se escribe doble, así que ni un `\u` del código es un
+/// escape de Unicode de la celda.
+pub(crate) fn arnes_java(
+    documento: &str,
+    fichero: &str,
+    metodo: &str,
+    fuentes: &[(String, String)],
+    build: &Json,
+) -> String {
+    let espec = Json::obj([
+        ("fichero", Json::s(fichero)),
+        ("metodo", Json::s(metodo)),
+        ("build", build.clone()),
+        (
+            "fuentes",
+            Json::Obj(
+                fuentes
+                    .iter()
+                    .map(|(r, t)| (r.clone(), Json::s(t)))
+                    .collect(),
+            ),
+        ),
+    ])
+    .jcs();
+    let mut trozos = Vec::new();
+    let mut actual = String::new();
+    for c in espec.chars() {
+        if actual.len() >= 16 * 1024 {
+            trozos.push(literal_java(&actual));
+            actual.clear();
+        }
+        actual.push(c);
+    }
+    trozos.push(literal_java(&actual));
+    let cabecera: String = documento.chars().filter(|c| !c.is_control()).collect();
+    format!(
+        "// El arnés de un build de Java (ORE 0055 T1·7): {cabecera}\n\
+         ore.Arnes.construir(String.join(\"\",\n    {}));\n",
+        trozos.join(",\n    ")
+    )
+}
+
+/// Un literal de cadena de Java con `s` dentro.
+fn literal_java(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // En octal y no `\uXXXX`: Java procesa los escapes de Unicode antes de
+            // leer el código, y un `\u000a` sería un salto de línea dentro del literal.
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\{:03o}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Lo que va delante de la sentencia de un build de SQL: la procedencia del
@@ -787,8 +936,8 @@ impl Servidor {
             let mut r = self.lanzar_trabajo(
                 sujeto,
                 rama.clone(),
-                "python",
-                "python",
+                h.entorno,
+                h.lenguaje,
                 h.codigo.clone(),
                 commit.clone(),
                 h.celda,
@@ -1403,6 +1552,81 @@ mod tests {
         let r = mal(hallar(&d, &Que::Output("ventas.nadie".into())));
         assert_eq!(r.codigo, 404);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0055 T1·7 (JT3) · Un `@Transform` de Java se halla como uno de Python, y
+    /// su celda es la del arnés del SDK, en el puesto JVM, con los `.java` del
+    /// paquete —los de `target/` y lo oculto, no— y la procedencia del build.
+    #[test]
+    fn un_transform_de_java_se_construye_en_el_puesto_jvm() {
+        let d = arbol("java");
+        let p = d.join("packages/ventas");
+        std::fs::create_dir_all(p.join("etl/target")).unwrap();
+        std::fs::write(
+            p.join("etl/Resumen.java"),
+            "import static ore.Ore.*;\nimport ore.Transform;\n\npublic class Resumen {\n    \
+             /** El \"resumen\", con \\u0041. */\n    \
+             @Transform(inputs = {\"ventas.clientes\"}, output = \"ventas.resumen_java\")\n    \
+             public static Object resumen() throws Exception {\n        \
+             return write(\"ventas.resumen_java\", over(\"ventas.clientes\"));\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(p.join("etl/Ayuda.java"), "class Ayuda {}\n").unwrap();
+        std::fs::write(p.join("etl/target/Viejo.java"), "class Viejo {}\n").unwrap();
+        let (pkg, _) = ore_core::validate::cargar_paquete(&d);
+        let plan = ore_core::generar::plan_de_transforms(&pkg, None, Some("user:ana"));
+        ore_core::generar::aplicar(&plan).unwrap();
+
+        let h = bien(hallar(&d, &Que::Output("ventas.resumen_java".into())));
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].entorno, h[0].lenguaje), ("jvm", "java"));
+        assert_eq!(h[0].entrypoint, "etl/Resumen.java:resumen");
+        assert_eq!(h[0].codigo, "packages/ventas/etl/Resumen.java");
+        let celda = &h[0].celda;
+        assert!(
+            celda.contains("ore.Arnes.construir(String.join("),
+            "{celda}"
+        );
+        assert!(
+            celda.contains("Ayuda.java") && !celda.contains("Viejo"),
+            "{celda}"
+        );
+        // El JSON entra entero y se recupera tal cual (la barra, doble: un
+        // `\u0041` del código no es un escape de la celda).
+        assert!(celda.contains("\\\\u0041"), "{celda}");
+        assert!(celda.contains(r#"\"metodo\":\"resumen\""#), "{celda}");
+        // Por el fichero, también; y el porqué si no tiene nada.
+        let h = bien(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/Resumen.java".into()),
+        ));
+        assert_eq!(h.len(), 1);
+        let r = mal(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/Ayuda.java".into()),
+        ));
+        assert_eq!(r.codigo, 404);
+        assert!(
+            r.cuerpo
+                .jcs()
+                .contains("no method of its class has `@Transform`"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        // Lo que va a la celda, por si una prueba de fuera la quiere correr.
+        if let Ok(f) = std::env::var("ORE_CELDA_JAVA") {
+            std::fs::write(f, celda).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn un_literal_de_java_lleva_lo_que_sea() {
+        assert_eq!(
+            literal_java("a\"b\\c\nd\te\u{1}ñ"),
+            r#""a\"b\\c\nd\te\001ñ""#
+        );
+        assert_eq!(literal_java(r"\u000a"), r#""\\u000a""#);
     }
 
     #[test]

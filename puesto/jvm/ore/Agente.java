@@ -163,7 +163,7 @@ public final class Agente {
          * imagen antes que lo de `/capa` (0037 ③c)—, porque cuando una clase
          * está en dos sitios gana la primera.
          */
-        private static List<String> classpath() {
+        static List<String> classpath() {
             List<String> fuera = new ArrayList<>();
             for (String p : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
                 if (p.isBlank()) {
@@ -186,7 +186,19 @@ public final class Agente {
             return fuera;
         }
 
+        /** La celda, y lo que dejó para el informe (0055 B2: un build dice sus filas o su error). */
         Map<String, Object> correr(String texto, String lenguaje) {
+            Ore.tomarInforme();
+            Map<String, Object> r = correrCelda(texto, lenguaje);
+            Map<String, Object> informe = Ore.tomarInforme();
+            if (informe != null) {
+                r = new LinkedHashMap<>(r);
+                r.put("informe", informe);
+            }
+            return r;
+        }
+
+        Map<String, Object> correrCelda(String texto, String lenguaje) {
             long t0 = System.nanoTime();
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             PrintStream captura = new PrintStream(buffer, true, StandardCharsets.UTF_8);
@@ -713,6 +725,9 @@ public final class Agente {
             if (!"json".equals(j.get("tipo")) || !"{\"n\":\"a\",\"e\":[1,2],\"m\":{\"k\":[true]}}".equals(Json.escribir(j.get("valor")))
                 || !"json".equals(jl.get("tipo")) || !Boolean.TRUE.equals(jl.get("recortado")) || ((List<?>) jl.get("valor")).size() != JSON_POR_NIVEL + 1)
                 throw new IllegalStateException("un valor compuesto no sale como json: " + Json.escribir(j));
+            // 0055 T1·7 (JT3): el arnés de un build compila con javac: la imagen lo trae (un JDK, no un JRE).
+            if (javax.tools.ToolProvider.getSystemJavaCompiler() == null)
+                throw new IllegalStateException("no Java compiler in this image: a build of a Java transform needs a JDK");
             // J2 y J3: un BufferedImage es una `imagen`, y display() da `varias`, en orden con lo impreso.
             Map<String, Object> im = k.correr("var im = new java.awt.image.BufferedImage(40, 30, java.awt.image.BufferedImage.TYPE_INT_RGB);\nim", "java");
             Map<String, Object> v = k.correr("System.out.println(\"a\");\ndisplay(Map.of(\"k\", 1), im);\n7", "java");

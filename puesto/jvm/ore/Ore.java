@@ -260,6 +260,69 @@ public final class Ore {
     /** El trabajo que corre (W3.7 ④): `<ruta>@<commit>`, para la procedencia; lo pone el agente (la JVM no cambia su entorno). */
     public static String CODIGO = null;
 
+    // ── 0055 T1·7 (JT3) · un build de Java ─────────────────────────────────
+    /** El build que corre ({@code {transform, entrypoint, output, id, commit}}): lo pone su arnés
+     *  ({@link Arnes}) y va a la procedencia de lo que escribe. {@code null} fuera de un build. */
+    static volatile Map<String, Object> BUILD = null;
+    /** D15 · El fichero cuya clase carga el arnés: mientras carga, {@code transform()} y
+     *  {@code write()} fallan (el build llama al transform él, una vez). */
+    static volatile String cargando = null;
+    /** B2 · Lo que la celda deja para el informe (filas, snapshot, el error con su línea); el
+     *  agente lo toma al terminar la celda. */
+    private static Map<String, Object> informe = null;
+
+    static synchronized void paraElInforme(Map<String, Object> d) {
+        if (informe == null) informe = new LinkedHashMap<>();
+        informe.putAll(d);
+    }
+
+    static synchronized Map<String, Object> tomarInforme() {
+        Map<String, Object> i = informe;
+        informe = null;
+        return i;
+    }
+
+    /**
+     * A transform (or a write) was called while a Build loads its class (ORE 0055 D15): the
+     * build calls the transform itself, once. {@code line()}: the line of the build's file
+     * that called it, if known.
+     */
+    public static final class TransformCalledWhileLoading extends IllegalStateException {
+        private final Integer linea;
+
+        TransformCalledWhileLoading(String mensaje, Integer linea) {
+            super(mensaje);
+            this.linea = linea;
+        }
+
+        /** @return the line of the build's file that called it, or {@code null} */
+        public Integer line() { return linea; }
+    }
+
+    /** D15: si el arnés está cargando una clase, {@code que} no corre. */
+    private static void noAlCargar(String que) {
+        String f = cargando;
+        if (f == null) return;
+        // La línea que lo llama al cargar: la del inicializador (`<clinit>`) si está en la traza.
+        Throwable aqui = new Throwable();
+        String nombre = f.substring(f.lastIndexOf('/') + 1);
+        Integer linea = java.util.Arrays.stream(aqui.getStackTrace())
+            .filter(m -> nombre.equals(m.getFileName()) && "<clinit>".equals(m.getMethodName()) && m.getLineNumber() > 0)
+            .map(StackTraceElement::getLineNumber).findFirst().orElse(lineaEn(aqui, f));
+        throw new TransformCalledWhileLoading(que + " was called while the build loads `" + f + "`: the build calls the transform itself, once; call nothing when the class loads (a `static {}` block, a field initializer)", linea);
+    }
+
+    /** La línea de {@code fichero} (una ruta) en la traza de {@code e} o de sus causas: el primer marco de ese fichero. */
+    static Integer lineaEn(Throwable e, String fichero) {
+        String nombre = fichero.substring(fichero.lastIndexOf('/') + 1);
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            for (StackTraceElement m : t.getStackTrace()) {
+                if (nombre.equals(m.getFileName()) && m.getLineNumber() > 0) return m.getLineNumber();
+            }
+        }
+        return null;
+    }
+
     static final String DEFAULT = "default";
 
     /** {@code base.nombre} o {@code base.schema.nombre} (0038) → la forma corta, la clave del
@@ -312,6 +375,7 @@ public final class Ore {
      */
     public static <T> T transform(String name, List<String> inputs, String output, java.util.concurrent.Callable<T> body) throws Exception {
         String nombre = name; List<String> inputsDados = inputs; String outputDado = output; java.util.concurrent.Callable<T> cuerpo = body;
+        noAlCargar("transform()");
         if (inputsDados == null) throw new IllegalArgumentException("transform(): `inputs` is a list of `<base>.<schema>.<name>`");
         List<String> entradas = inputsDados.stream().map(i -> corto(i, "transform(): each input")).toList();
         String salida = corto(outputDado, "transform(): `output`");
@@ -362,6 +426,8 @@ public final class Ore {
         else p.put("leidas", leidas.stream().filter(l -> !l.equals(nombre)).sorted().toList());
         String codigo = CODIGO != null ? CODIGO : System.getenv("ORE_CODIGO");
         if (codigo != null && !codigo.isEmpty()) p.put("codigo", codigo);
+        // 0055 T1·7: de qué build —`{transform, entrypoint, output, id, commit}`—, que su arnés pone.
+        if (BUILD != null) p.put("build", BUILD);
         return p;
     }
 
@@ -1014,7 +1080,8 @@ public final class Ore {
      * @param strict throw instead of truncating
      */
     public static Rows sql(String text, int limit, boolean strict) throws Exception {
-        String texto = text; int limite = limit; boolean estricto = strict;
+        // 0057 B4·6 · en un build, una lectura en vivo cortada lo hace fallar (como en Python).
+        String texto = text; int limite = limit; boolean estricto = strict || BUILD != null;
         if (texto == null || texto.isBlank()) throw new IllegalArgumentException("sql() takes a query");
         Connection con = duckdb();
         Set<String> vivas = registrar(con, texto, estricto);
@@ -1309,6 +1376,7 @@ public final class Ore {
     @SuppressWarnings("unchecked")
     public static Map<String, Object> write(String name, Object data, String mode, List<String> key) throws Exception {
         Object datos = data; List<String> clave = key;
+        noAlCargar("write()");
         final String nombre = corto(name, "write(): the name");
         final String modo = mode == null ? null : MODO_AL_CABLE.get(mode);
         if (modo == null) throw new IllegalArgumentException("mode " + mode + ": it is `overwrite`, `append` or `upsert`");
@@ -1371,7 +1439,7 @@ public final class Ore {
                 out.put("metadata_location", String.valueOf(c.cuerpo().getOrDefault("metadata-location", ""))); out.put("operation", claveOperacion);
                 // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
                 out.put("repeated", base != null && base.equals(String.valueOf(c.cuerpo().get("metadata-location"))));
-                return out;
+                return alInforme(out);
             }
             if (c.codigo() == 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
             if (c.codigo() >= 500) {
@@ -1386,7 +1454,7 @@ public final class Ore {
                             Result out = new Result();
                             out.put("table", nombre); out.put("rows", escrito.get("filas")); out.put("snapshot", String.valueOf(actual));
                             out.put("metadata_location", String.valueOf(v.cuerpo().get("metadata-location"))); out.put("operation", claveOperacion); out.put("repeated", false);
-                            return out;
+                            return alInforme(out);
                         }
                     }
                 }
@@ -1395,6 +1463,18 @@ public final class Ore {
             throw new IllegalStateException("write(" + nombre + "): " + mensajeDe(c));
         }
         throw new IllegalStateException("write(" + nombre + "): someone else wrote first four times; try again");
+    }
+
+    /** 0055 B2 · en un build, las filas y el snapshot de lo escrito van al informe. */
+    private static Result alInforme(Result out) {
+        if (BUILD != null) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("filas", out.get("rows") instanceof Number n ? n.longValue() : 0L);
+            String sn = String.valueOf(out.get("snapshot"));
+            m.put("snapshot", sn.isEmpty() || sn.equals("null") ? null : sn);
+            paraElInforme(m);
+        }
+        return out;
     }
 
     // ── J3 (las salidas de una celda, S3) · display() ───────────────────────
