@@ -181,5 +181,72 @@ class Imagen(unittest.TestCase):
         self.assertLess(len(json.dumps(s)), 1 << 20)   # cabe en el cuerpo de ore-serve
 
 
+class Varias(unittest.TestCase):
+    """S3 · `ore.display()`: varias salidas en una celda, en orden, con lo impreso entre medias."""
+
+    def celda(self, texto):
+        k = agente.Kernel.__new__(agente.Kernel)
+        k.espacio = {"ore": __import__("ore")}
+        return k._correr(texto)
+
+    def test_partes_en_orden_con_el_texto_entre_medias(self):
+        s = self.celda("import pyarrow as pa\n"
+                       "print('uno')\n"
+                       "ore.display({'a': 1})\n"
+                       "print('dos')\n"
+                       "ore.display(pa.table({'x': [1, 2]}), [3, 4])\n"
+                       "'fin'")
+        self.assertEqual(s["tipo"], "varias")
+        tipos = [(p["tipo"], p.get("texto") or p.get("valor") or p.get("total")) for p in s["partes"]]
+        self.assertEqual(tipos, [("texto", "uno\n"), ("json", {"a": 1}), ("texto", "dos\n"), ("tabla", 2),
+                                 ("json", [3, 4]), ("texto", "'fin'")])
+        self.assertEqual(s["fuera"], 0)
+        self.assertTrue(all("ms" not in p for p in s["partes"]))
+
+    def test_sin_display_todo_sigue_como_antes(self):
+        self.assertEqual(self.celda("print('hola')\n{'n': 1}")["tipo"], "json")
+        self.assertEqual(self.celda("1 + 1")["texto"], "2")
+
+    def test_una_sola_parte_sale_sola(self):
+        s = self.celda("ore.display({'n': 1})")
+        self.assertEqual((s["tipo"], s["valor"]), ("json", {"n": 1}))
+
+    def test_plt_show_y_las_figuras_que_quedan_abiertas(self):
+        import matplotlib.pyplot as plt
+        # en el puesto lo pone `MPLBACKEND`; aquí otro test ya eligió Agg
+        plt.switch_backend("module://ore._mpl")
+        s = self.celda("import matplotlib.pyplot as plt\n"
+                       "for i in range(2):\n"
+                       "    plt.plot([1, i])\n"
+                       "    print('figura', i)\n"
+                       "    plt.show()\n"
+                       "plt.figure(); _ = plt.plot([3, 3])\n")
+        self.assertEqual([p["tipo"] for p in s["partes"]], ["texto", "imagen", "texto", "imagen", "imagen"])
+        self.assertEqual(plt.get_fignums(), [])   # cerradas
+        # una figura como último valor, una vez
+        s = self.celda("import matplotlib.pyplot as plt\nf = plt.figure(); plt.plot([1, 2])\nf")
+        self.assertEqual(s["tipo"], "imagen")
+
+    def test_los_topes_dejan_fuera_lo_que_no_cabe_y_lo_cuentan(self):
+        s = self.celda("for i in range(%d):\n    ore.display({'i': i})" % (agente.PARTES_MAXIMAS + 5))
+        self.assertEqual((len(s["partes"]), s["fuera"]), (agente.PARTES_MAXIMAS, 5))
+        # varias imágenes grandes: se reducen para caber todas, por debajo del cuerpo de ore-serve
+        s = self.celda("import os, io\nfrom PIL import Image\n"
+                       "for i in range(3):\n"
+                       "    b = io.BytesIO(); Image.frombytes('RGB', (900, 900), os.urandom(900*900*3)).save(b, 'PNG')\n"
+                       "    ore.display(b.getvalue())")
+        self.assertEqual([p["tipo"] for p in s["partes"]], ["imagen"] * 3)
+        self.assertLess(len(json.dumps(s)), 1 << 20)
+
+    def test_display_fuera_de_una_celda_imprime(self):
+        import contextlib
+        import io
+        import ore
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ore.display({"a": 1}, "texto")
+        self.assertEqual(out.getvalue(), "{'a': 1}\ntexto\n")
+
+
 if __name__ == "__main__":
     unittest.main()

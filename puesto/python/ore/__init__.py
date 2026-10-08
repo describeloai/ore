@@ -113,7 +113,7 @@ MAGIA = b"ORECOPY1"
 #: (`ore_core::sdk::API`), so a session on an older SDK says so.
 API = 2
 
-__all__ = ["API", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
+__all__ = ["API", "display", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
            "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
@@ -542,6 +542,24 @@ def _modulo_en_carga(fichero):
 # El servidor lo exige también (su techo y su puerta): esto es para decirlo
 # antes y mejor, no lo que lo impide.
 _ensayando = None
+
+# Las salidas de una celda, S3: quién enseña lo que `display()` pide. Lo pone el
+# agente del puesto mientras corre una celda; fuera de una (un job, tu máquina),
+# `None`, y `display()` lo imprime.
+_mostrar = None
+
+
+def display(*values):
+    """**Show each value now**, with its own output —a table, a tree, an image,
+    a gallery of items—, in order with what the cell prints; the last
+    expression of the cell is shown too. `plt.show()` shows the open figures
+    the same way. Outside a session's cell (a job, your machine) it prints
+    them."""
+    for v in values:
+        if _mostrar is not None:
+            _mostrar(v)
+        else:
+            print(v if isinstance(v, str) else repr(v))
 _FILAS_DEL_PREVIEW = 100
 
 

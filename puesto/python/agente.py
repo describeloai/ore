@@ -78,6 +78,8 @@ CAPA_DEV = os.path.join(CAPA, ".dev")
 if os.path.isdir(CAPA_DEV) and CAPA_DEV not in sys.path:
     sys.path.append(CAPA_DEV)
 
+# S3 · matplotlib sin ventanas, y `plt.show()` enseña sus figuras en la celda.
+os.environ.setdefault("MPLBACKEND", "module://ore._mpl")
 import ore  # noqa: E402 — el SDK, al lado de este fichero
 
 FILAS_MAXIMAS = 200
@@ -207,6 +209,8 @@ class Kernel:
                 return {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "traza": traceback.format_exc(),
                         "texto": salida.getvalue(), "ms": ms(t0)}
             return self.salida_de(valor, salida.getvalue(), t0)
+        partes = Partes(salida, t0)
+        ore._mostrar = partes.mostrar
         try:
             arbol = ast.parse(texto, mode="exec")
             ultimo = None
@@ -216,11 +220,18 @@ class Kernel:
                 exec(compile(arbol, "<celda>", "exec"), self.espacio)
                 if ultimo is not None:
                     valor = eval(compile(ultimo, "<celda>", "eval"), self.espacio)
+                # S3 · las figuras que quedan abiertas, como hace Jupyter (la que
+                # es el último valor, una vez: como ese valor).
+                figuras_abiertas(partes, valor)
         except Exception as e:  # noqa: BLE001 — la celda puede fallar como quiera
             traza = traceback.format_exc()
             return {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "traza": traza,
                     "texto": salida.getvalue(), "ms": ms(t0)}
-        return self.salida_de(valor, salida.getvalue(), t0)
+        finally:
+            ore._mostrar = None
+        if not partes.lista and not partes.fuera:
+            return self.salida_de(valor, salida.getvalue(), t0)
+        return partes.cerrar(valor)
 
     @staticmethod
     def salida_de(valor, texto, t0):
@@ -250,6 +261,82 @@ class Kernel:
                 return {"tipo": "texto", "texto": texto, "ms": ms(t0)}
             return {"tipo": "vacia", "ms": ms(t0)}
         return {"tipo": "texto", "texto": texto + repr(valor), "ms": ms(t0)}
+
+
+# ── S3 · varias salidas en una celda ────────────────────────────────────────
+PARTES_MAXIMAS = 50
+#: Lo que caben todas juntas: bajo el cuerpo máximo de ore-serve (1 MB).
+PARTES_BYTES = 900 * 1024
+
+
+class Partes:
+    """Lo que una celda enseña con `display()` (y `plt.show()`), en orden y con
+    el texto impreso entre medias. Cada parte es una salida de las de siempre
+    (`tabla`, `json`, `imagen`, `media`, `texto`), sin `ms`. Lo que no cabe
+    —más de `PARTES_MAXIMAS`, o pasar de `PARTES_BYTES`— no va, y se cuenta
+    (`fuera`)."""
+
+    def __init__(self, salida, t0):
+        self.salida, self.t0 = salida, t0
+        self.desde, self.lista, self.bytes, self.fuera = 0, [], 0, 0
+
+    def _texto(self):
+        todo = self.salida.getvalue()
+        t, self.desde = todo[self.desde:], len(todo)
+        if t:
+            self._poner({"tipo": "texto", "texto": t})
+
+    def _poner(self, p):
+        n = len(json.dumps(p, ensure_ascii=False, default=str))
+        if len(self.lista) >= PARTES_MAXIMAS or self.bytes + n > PARTES_BYTES:
+            self.fuera += 1
+            return False
+        self.lista.append(p)
+        self.bytes += n
+        return True
+
+    def mostrar(self, valor):
+        if valor is None:
+            return
+        self._texto()
+        p = Kernel.salida_de(valor, "", self.t0)
+        if p.get("tipo") == "imagen":
+            # Una imagen, a lo que queda: más pequeña si hace falta para caber.
+            queda = PARTES_BYTES - self.bytes - 4096
+            if len(p.get("base64", "")) > queda:
+                p = como_imagen(valor, limite=max(16 * 1024, queda * 3 // 4)) or p
+                p["tipo"] = "imagen"
+        for k in ("ms", "texto"):
+            if k in p and (k == "ms" or not p[k]):
+                p.pop(k)
+        if p.get("tipo") != "vacia":
+            self._poner(p)
+
+    def cerrar(self, valor):
+        """La salida de la celda: `varias` con sus partes; el último valor, al
+        final. Si sólo hay una parte, ésa sola, como si fuera el último valor."""
+        if valor is not None:
+            self.mostrar(valor)
+        self._texto()
+        if len(self.lista) == 1 and not self.fuera:
+            p = dict(self.lista[0], ms=ms(self.t0))
+            p.setdefault("texto", "")
+            return p
+        return {"tipo": "varias", "partes": self.lista, "fuera": self.fuera, "ms": ms(self.t0)}
+
+
+def figuras_abiertas(partes, valor):
+    """Las figuras de matplotlib que la celda deja abiertas, enseñadas y cerradas
+    (si matplotlib se usó; si no, nada). La que es el último valor de la celda no:
+    ésa la enseña el último valor."""
+    plt = sys.modules.get("matplotlib.pyplot")
+    if plt is None:
+        return
+    for n in plt.get_fignums():
+        f = plt.figure(n)
+        if f is not valor:
+            partes.mostrar(f)
+    plt.close("all")
 
 
 def ms(t0):
@@ -417,12 +504,13 @@ def _bytes_de_imagen(valor):
     return None
 
 
-def como_imagen(valor):
+def como_imagen(valor, limite=None):
     """`{mime, base64, ancho, alto, bytes, nombre, reducida}` de una imagen, o
-    `None`. Una que pasa de `IMAGEN_BYTES` se reduce (a `IMAGEN_LADO` de lado, y
-    a JPEG si hace falta) y se dice; si ni así cabe, no es imagen."""
+    `None`. Una que pasa de `limite` (`IMAGEN_BYTES`) se reduce (a `IMAGEN_LADO`
+    de lado, y a JPEG si hace falta) y se dice; si ni así cabe, no es imagen."""
     import base64
 
+    limite = limite or IMAGEN_BYTES
     r = _bytes_de_imagen(valor)
     if r is None:
         return None
@@ -433,19 +521,19 @@ def como_imagen(valor):
         if tipo != "image/svg+xml":
             im = Image.open(io.BytesIO(b))
             ancho, alto = im.size
-            if len(b) > IMAGEN_BYTES:
+            if len(b) > limite:
                 im.thumbnail((IMAGEN_LADO, IMAGEN_LADO))
                 for formato, mime, lado in (("PNG", "image/png", IMAGEN_LADO), ("JPEG", "image/jpeg", IMAGEN_LADO),
-                                            ("JPEG", "image/jpeg", 800)):
+                                            ("JPEG", "image/jpeg", 800), ("JPEG", "image/jpeg", 400)):
                     im.thumbnail((lado, lado))
                     out = io.BytesIO()
                     (im.convert("RGB") if formato == "JPEG" else im).save(out, formato, quality=85)
-                    if out.tell() <= IMAGEN_BYTES:
+                    if out.tell() <= limite:
                         b, tipo, reducida = out.getvalue(), mime, True
                         break
     except Exception:  # noqa: BLE001 — sin PIL, o unos bytes que no abre: va tal cual
         pass
-    if len(b) > IMAGEN_BYTES:
+    if len(b) > limite:
         return None
     out = {"mime": tipo, "base64": base64.b64encode(b).decode("ascii"), "ancho": ancho, "alto": alto,
            "bytes": original, "reducida": reducida}
