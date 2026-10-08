@@ -14,11 +14,18 @@
 # 2026-10-08 (las salidas de una celda, S4): `Jinja2`, que el `Styler` de pandas
 # necesita para dibujarse como HTML, y lo que arrastra (`MarkupSafe`): 36. Las
 # versiones, las de `pip install jinja2 && pip freeze` en python:3.14-slim.
+# 2026-10-08 (las salidas de una celda, S3): `matplotlib`, para que `plt.show()`
+# dibuje en la celda (el backend `ore._mpl`), y lo que arrastra (`contourpy`,
+# `cycler`, `fonttools`, `kiwisolver`, `pyparsing`): 42, unos 75 MB. Las versiones,
+# las de `pip install matplotlib && pip freeze` sobre esta lista en python:3.14-slim.
 certifi==2026.7.22
 cffi==2.1.1
+contourpy==1.4.0
 charset-normalizer==3.5.2
 cryptography==50.0.2
+cycler==0.12.1
 duckdb==1.5.6
+fonttools==4.66.1
 google-api-core==2.40.0
 google-auth==2.59.1
 google-cloud-core==2.8.0
@@ -29,7 +36,9 @@ googleapis-common-protos==1.75.5
 idna==3.20
 iniconfig==2.3.0
 Jinja2==3.1.6
+kiwisolver==1.5.1
 MarkupSafe==3.0.4
+matplotlib==3.11.2
 numpy==2.5.3
 opentelemetry-api==1.45.0
 packaging==26.3
@@ -42,6 +51,7 @@ pyarrow==25.0.1
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
+pyparsing==3.3.3
 Pygments==2.21.0
 pypdfium2==5.14.0
 pytest==9.1.1
