@@ -1076,3 +1076,48 @@ Nuestras VMs ya se llaman `ep-<20 hex>`: el convenio de Neon.
 | **P5·6 · Quién puede entrar** | IPs permitidas, bloqueo público y límites, desde la API (`postgres:gestionar` o el dueño) | una IP fuera de la lista no entra; la fuerza bruta se corta |
 | **P5·7 · Connect, con el nombre de verdad** | la consola enseña `ep-….europe-west1.pg.paladio.io` y `sslmode=verify-full` | se copia el snippet y conecta desde fuera |
 | **P5·8 · Aceptación** | todo lo anterior, junto | una migración en vivo **no corta** una sesión que entra por el proxy; pgbench desde internet sin fallos |
+
+#### P5 · En el laboratorio local (2026-10-08)
+
+El 2026-10-08 a las 18:38 UTC la cuenta de facturación del proyecto quedó **cerrada**: el clúster, el registro de imágenes y el CI se pararon («This API method requires billing to be enabled»). P5 es **la primera P de la saga que se construye en un laboratorio local**, en Docker y sin depender de Google, para llegar a producción con todo hecho y medido y que el día que Google vuelva sólo quede desplegar y probar lo que sólo se puede probar allí.
+
+**El laboratorio** (Docker Compose en `pruebas-de-fuego/ore-postgres/lab/`):
+
+- `ore-postgres` de verdad, contra un Postgres local: proyectos, endpoints y roles nacen por su propia API;
+- un «cómputo» `postgres:17` con el mismo rol y el mismo verificador SCRAM: el proxy hace el SCRAM con el cliente y entra en el cómputo con las mismas claves, así que un Postgres sin tocar sirve (es lo primero que se mide);
+- el proxy de Neon, de **nuestra** imagen (`neon:8269bece`, ya en local), con un certificado autofirmado de `*.europe-west1.pg.paladio.io`; el cliente entra por SNI;
+- un pgbouncer delante del cómputo, para el pool.
+
+**Qué se hace en el laboratorio y qué no:**
+
+| paso | en el laboratorio | sólo en producción |
+|---|---|---|
+| P5·1 · el contrato | entra con su contraseña y no con otra; rol, endpoint u organización ajenos, fuera; arrancando, el proxy reintenta | lo mismo contra VMs en la overlay |
+| P5·2 · el nombre y el certificado | el guion de GCP escrito y revisado | la IP, la cuenta de DNS, el comodín de Let's Encrypt |
+| P5·3 · el proxy en la malla | la malla escrita y validada contra el esquema de Kubernetes | desplegarla; el balanceador; `psql` y pgbench desde internet |
+| P5·4 · HTTP y WebSocket | `@neondatabase/serverless` consulta por los dos | lo mismo desde internet |
+| P5·5 · el pooler | pgbench con una conexión por transacción | contra el pgbouncer de la VM |
+| P5·6 · quién entra | IPs permitidas, bloqueo público, límites | con la IP real del cliente tras el balanceador |
+| P5·7 · Connect | en modo banco | el snippet copiado conecta desde fuera |
+| P5·8 · aceptación | — | la migración en vivo y pgbench desde internet |
+
+#### P5 · Del laboratorio a producción: por qué llegará sano y rápido
+
+Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:
+
+1. **Los mismos binarios.** El laboratorio corre la imagen de Neon que está desplegada (`8269bece`) y el `ore-postgres` de `main`; producción no estrena código, sólo red.
+2. **El contrato, probado contra el de verdad.** Lo que el proxy pregunta y lo que se le contesta se mide contra el proxy real, no contra un doble: la lección del 422 de `/configure` (P4·4).
+3. **Todo declarado en git.** El guion de GCP (P5·2) y la malla del proxy (P5·3) quedan escritos, revisados y validados; desplegar es aplicarlos en el orden de siempre: **binario antes que malla**.
+4. **Las pruebas, escritas antes de que exista la entrada.** Cada «hecho cuando» de producción tiene ya su guion (`p51`…`p58`), así que el primer día se mide, no se improvisa.
+5. **Sin estado que migrar.** El proxy no guarda nada: réplicas, reinicios y despliegues no pierden sesiones más allá de las que vacía al parar.
+
+**Lo que sólo se puede probar en producción**, anotado desde ya (se corre en este orden el día que Google vuelva):
+
+1. **Volver**: el clúster, `ore-pg` (almacenamiento, `ore-postgres`, las VMs) y las celdas, sanos; relanzar el CI de `5321c351` (sólo falló al subir imágenes).
+2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad.
+3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve; quitar el TXT `_delegacion`.
+4. **P5·3**: desde internet, `psql "…?sslmode=verify-full"` entra y pgbench corre sin fallos; reiniciar una réplica no tira a la otra; la IP del cliente llega tal cual.
+5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM; **P5·6** con la IP real del cliente.
+6. **P5·7**: el snippet de Connect copiado en la consola conecta desde fuera.
+7. **P5·8**: una migración en vivo de la VM **no corta** una sesión abierta por el proxy; pgbench desde internet durante la migración, sin fallos.
+8. **Salud al terminar**: ningún pod reiniciándose, el certificado con su renovación programada, las métricas del proxy (`:7001`) sin errores de `wake_compute` ni de autenticación, y `p47.sh` (no queda huella) otra vez en verde.
