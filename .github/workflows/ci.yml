@@ -651,6 +651,18 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # ⭐ G2 (ADR 0060, 2026-10-08): Cloud Build en la MISMA región que el
+    #   registro. Sin `--region`, `gcloud builds submit` va al pool `global`,
+    #   que no corre en Europa: cada `--cache-from` de las quince imágenes se
+    #   bajaba de europe-west1 a otra región y cada imagen se subía de vuelta,
+    #   y eso se cobra como tráfico (sospecha de G0: Artifact Registry y
+    #   Networking). El pool regional por defecto: mismo precio, sin pool
+    #   privado, nada que crear.
+    #
+    # ⚠️ Una construcción regional sólo la ven `list`/`describe`/`log` con la
+    #   misma `--region`: por eso va en los cinco, no sólo en `submit`.
+    env:
+      REGION_CB: europe-west1
     # La clave de lo que corre en los Deployment que CI releva (2026-10-03): la
     # huella de los binarios, y la del Dockerfile y el guion del informador. Si
     # es la que ya tienen, no se relevan (`imagen`).
@@ -736,7 +748,7 @@ jobs:
         run: |
           H=${{ steps.huella.outputs.binarios }}
           for _ in $(seq 1 90); do
-            EN_CURSO=$(gcloud builds list --ongoing --format='value(id)' \
+            EN_CURSO=$(gcloud builds list --region="$REGION_CB" --ongoing --format='value(id)' \
               --filter="substitutions._BINARIOS=$H" 2>/dev/null) || break
             [ -z "$EN_CURSO" ] && break
             echo "  h-$H ya se compila en $(echo $EN_CURSO | tr '\n' ' '): se espera"
@@ -762,17 +774,17 @@ jobs:
           #   que en `main` no se cancela— la primera en pasarse caía con
           #   RATE_LIMIT_EXCEEDED mientras su construcción seguía, sana, en
           #   Cloud Build (2026-09-30, medido).
-          ID=$(gcloud builds submit --async --format='value(id)' --config cloudbuild.yaml \
+          ID=$(gcloud builds submit --region="$REGION_CB" --async --format='value(id)' --config cloudbuild.yaml \
             --service-account=projects/project-8853a180-450d-47be-b83/serviceAccounts/ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com \
             --substitutions _SHA=${GITHUB_SHA::12},_BINARIOS=${{ steps.huella.outputs.binarios }} .)
           echo "  construccion $ID"
           while :; do
             sleep 20
-            E=$(gcloud builds describe "$ID" --format='value(status)' 2>/dev/null) || continue
+            E=$(gcloud builds describe "$ID" --region="$REGION_CB" --format='value(status)' 2>/dev/null) || continue
             case "$E" in QUEUED|WORKING|PENDING|"") ;; *) break;; esac
           done
-          echo "  $E en $(gcloud builds describe "$ID" --format='value(timing.BUILD.endTime)')"
-          if [ "$E" != SUCCESS ]; then gcloud builds log "$ID" | tail -60; exit 1; fi
+          echo "  $E en $(gcloud builds describe "$ID" --region="$REGION_CB" --format='value(timing.BUILD.endTime)')"
+          if [ "$E" != SUCCESS ]; then gcloud builds log "$ID" --region="$REGION_CB" | tail -60; exit 1; fi
 
   imagen:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
