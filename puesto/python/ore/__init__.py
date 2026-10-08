@@ -113,7 +113,7 @@ MAGIA = b"ORECOPY1"
 #: (`ore_core::sdk::API`), so a session on an older SDK says so.
 API = 2
 
-__all__ = ["API", "display", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
+__all__ = ["API", "display", "HTML", "Markdown", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
            "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
@@ -547,6 +547,23 @@ _ensayando = None
 # agente del puesto mientras corre una celda; fuera de una (un job, tu máquina),
 # `None`, y `display()` lo imprime.
 _mostrar = None
+
+
+class HTML(str):
+    """**HTML that a cell shows as it is** (`ore.display(ore.HTML("<h3>…</h3>"))`,
+    or as the cell's last value). The console draws it in an isolated frame:
+    its scripts run, but they do not see the console or your session."""
+
+    def _repr_html_(self):
+        return str(self)
+
+
+class Markdown(str):
+    """**Markdown that a cell shows formatted**: headings, bold and italics,
+    code, lists, links and paragraphs (`ore.display(ore.Markdown("**4** files"))`)."""
+
+    def _repr_markdown_(self):
+        return str(self)
 
 
 def display(*values):

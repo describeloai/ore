@@ -498,8 +498,10 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
 /// consola al pintarlos: una URL firmada no se guarda aquí). `imagen` (S2): sus
 /// bytes en base64, bajo el cuerpo máximo. `varias` (S3): lo que la celda enseñó
 /// con `display()`, `{partes: [...], fuera}`, cada parte una de las de arriba.
-pub(crate) const TIPOS_DE_SALIDA: [&str; 8] = [
-    "tabla", "texto", "json", "media", "imagen", "varias", "error", "vacia",
+/// `html` (S4): lo que se dibuja como HTML (`_repr_html_`, `ore.HTML`,
+/// `ore.Markdown`); la consola lo pinta en un iframe aislado.
+pub(crate) const TIPOS_DE_SALIDA: [&str; 9] = [
+    "tabla", "texto", "json", "media", "imagen", "html", "varias", "error", "vacia",
 ];
 
 /// Los lenguajes que una celda puede llevar.

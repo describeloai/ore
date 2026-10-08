@@ -239,7 +239,9 @@ class Kernel:
         una celda): una tabla (DataFrame, Series, Arrow) → `tabla`; un ítem de
         una colección (`MediaRef`, `Item`) o una lista de ellos → `media` (S2);
         una imagen (sus bytes, un `PIL.Image`, una figura de matplotlib, un
-        `ore.File` de imagen) → `imagen` (S2); un `dict`, `list`, `tuple`,
+        `ore.File` de imagen) → `imagen` (S2); lo que se dibuja como HTML (un
+        `_repr_html_`: el `Styler` de pandas, un mapa de folium; `ore.HTML`,
+        `ore.Markdown`) → `html` (S4); un `dict`, `list`, `tuple`,
         `set` o `@dataclass` → `json` (S1); nada → `texto` con lo impreso, o
         `vacia`; lo demás (un número, una cadena, un objeto), `texto` con su
         `repr`."""
@@ -247,7 +249,7 @@ class Kernel:
         if tabla is not None:
             tabla.update({"tipo": "tabla", "texto": texto, "ms": ms(t0)})
             return tabla
-        for como, tipo in ((como_media, "media"), (como_imagen, "imagen")):
+        for como, tipo in ((como_media, "media"), (como_imagen, "imagen"), (como_html, "html")):
             s = como(valor)
             if s is not None:
                 s.update({"tipo": tipo, "texto": texto, "ms": ms(t0)})
@@ -540,6 +542,110 @@ def como_imagen(valor, limite=None):
     if nombre:
         out["nombre"] = nombre
     return out
+
+
+# ── S4 · `html`: lo que se dibuja a sí mismo ────────────────────────────────
+#: Bajo el cuerpo máximo de ore-serve; uno mayor sale como texto.
+HTML_BYTES = 800 * 1024
+
+
+def como_html(valor):
+    """`{html}` de lo que se dibuja como HTML —un `ore.Markdown` (convertido
+    aquí), o cualquier cosa con `_repr_html_()`: un `Styler` de pandas, un mapa
+    de folium, un `ore.HTML`—, o `None`. Las tablas, las imágenes y lo que es
+    JSON van antes (`salida_de`): un DataFrame también tiene `_repr_html_`."""
+    if isinstance(valor, (str, bytes, bytearray, type)):
+        if isinstance(valor, ore.Markdown):
+            html = markdown_a_html(str(valor))
+        elif isinstance(valor, ore.HTML):
+            html = str(valor)
+        else:
+            return None
+    else:
+        f = getattr(valor, "_repr_html_", None)
+        if not callable(f):
+            return None
+        try:
+            html = f()
+        except Exception:  # noqa: BLE001 — quien no sabe dibujarse, va por su repr
+            return None
+        if not isinstance(html, str) or not html.strip():
+            return None
+    if len(html.encode("utf-8")) > HTML_BYTES:
+        return None
+    return {"html": html}
+
+
+def markdown_a_html(md):
+    """Lo justo de Markdown para un resumen: `#`…`######`, `**negrita**`,
+    `*cursiva*`, `` `código` ``, bloques de código con ```` ``` ````, listas con
+    `-`/`*`/`1.`, `[enlaces](url)` y párrafos. El texto se escapa: lo que no
+    es Markdown no es HTML."""
+    import html as h
+    import re
+
+    def linea(t):
+        t = h.escape(t, quote=False)
+        t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+        t = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", t)
+        t = re.sub(r"(?<![\w*])\*([^*]+)\*(?![\w*])", r"<em>\1</em>", t)
+        t = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+                   lambda m: '<a href="%s" target="_blank" rel="noopener">%s</a>' % (h.escape(m.group(2)), m.group(1)), t)
+        return t
+
+    out, parrafo, lista, codigo = [], [], None, None
+
+    def cerrar():
+        nonlocal lista
+        if parrafo:
+            out.append("<p>%s</p>" % " ".join(parrafo))
+            parrafo.clear()
+        if lista:
+            out.append("</%s>" % lista)
+            lista = None
+
+    for cruda in md.splitlines():
+        if codigo is not None:
+            if cruda.strip().startswith("```"):
+                out.append("<pre><code>%s</code></pre>" % h.escape("\n".join(codigo), quote=False))
+                codigo = None
+            else:
+                codigo.append(cruda)
+            continue
+        s = cruda.strip()
+        if s.startswith("```"):
+            cerrar()
+            codigo = []
+            continue
+        m = re.match(r"(#{1,6})\s+(.*)", s)
+        if m:
+            cerrar()
+            out.append("<h%d>%s</h%d>" % (len(m.group(1)), linea(m.group(2)), len(m.group(1))))
+            continue
+        m = re.match(r"([-*]|\d+\.)\s+(.*)", s)
+        if m:
+            tipo = "ol" if m.group(1)[0].isdigit() else "ul"
+            if parrafo:
+                out.append("<p>%s</p>" % " ".join(parrafo))
+                parrafo.clear()
+            if lista != tipo:
+                if lista:
+                    out.append("</%s>" % lista)
+                out.append("<%s>" % tipo)
+                lista = tipo
+            out.append("<li>%s</li>" % linea(m.group(2)))
+            continue
+        if not s:
+            cerrar()
+            continue
+        if lista:
+            out.append("</%s>" % lista)
+            lista = None
+        parrafo.append(linea(s))
+    if codigo is not None:
+        out.append("<pre><code>%s</code></pre>" % h.escape("\n".join(codigo), quote=False))
+    cerrar()
+    return "\n".join(out)
 
 
 def llano(v):

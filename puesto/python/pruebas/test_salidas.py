@@ -181,6 +181,57 @@ class Imagen(unittest.TestCase):
         self.assertLess(len(json.dumps(s)), 1 << 20)   # cabe en el cuerpo de ore-serve
 
 
+class Html(unittest.TestCase):
+    """S4 · lo que se dibuja como HTML: un `_repr_html_`, `ore.HTML`, `ore.Markdown`."""
+
+    def test_ore_html_y_un_objeto_con_repr_html(self):
+        import ore
+        s = salida(ore.HTML("<h3>Hola</h3>"))
+        self.assertEqual((s["tipo"], s["html"]), ("html", "<h3>Hola</h3>"))
+
+        class Mapa:
+            def _repr_html_(self):
+                return "<div id='mapa'></div><script>1</script>"
+        self.assertEqual(salida(Mapa())["html"], "<div id='mapa'></div><script>1</script>")
+
+    def test_markdown_se_convierte_y_escapa_lo_que_no_es_markdown(self):
+        import ore
+        h = salida(ore.Markdown("### Páginas\n**4** PNG <b>x</b>\n\n- a\n- [b](https://x.y)"))["html"]
+        self.assertIn("<h3>Páginas</h3>", h)
+        self.assertIn("<strong>4</strong> PNG &lt;b&gt;x&lt;/b&gt;", h)
+        self.assertIn('<li><a href="https://x.y" target="_blank" rel="noopener">b</a></li>', h)
+        # sólo http(s) es un enlace: lo demás queda como texto
+        self.assertNotIn('href="javascript', agente.markdown_a_html("[x](javascript:alert(1))"))
+
+    def test_el_styler_de_pandas(self):
+        try:
+            import jinja2  # noqa: F401 — el Styler lo necesita (viene en la imagen)
+        except ImportError:
+            self.skipTest("sin jinja2")
+        import pandas as pd
+        s = salida(pd.DataFrame({"kb": [1.0, 2.5]}).style.format({"kb": "{:.1f} KB"}))
+        self.assertEqual(s["tipo"], "html")
+        self.assertIn("2.5 KB", s["html"])
+
+    def test_lo_de_antes_va_antes_y_lo_grande_es_texto(self):
+        import ore
+        import pandas as pd
+        self.assertEqual(salida(pd.DataFrame({"a": [1]}))["tipo"], "tabla")   # también tiene _repr_html_
+        self.assertEqual(salida("<b>una cadena</b>")["tipo"], "texto")        # una cadena no es HTML
+        self.assertEqual(salida(ore.HTML("x" * (agente.HTML_BYTES + 1)))["tipo"], "texto")
+
+        class Roto:
+            def _repr_html_(self):
+                raise ValueError("no")
+        self.assertEqual(salida(Roto())["tipo"], "texto")
+
+    def test_en_varias_partes(self):
+        k = agente.Kernel.__new__(agente.Kernel)
+        k.espacio = {"ore": __import__("ore")}
+        s = k._correr("ore.display(ore.Markdown('**a**'))\nprint('b')\nore.HTML('<i>c</i>')")
+        self.assertEqual([p["tipo"] for p in s["partes"]], ["html", "texto", "html"])
+
+
 class Varias(unittest.TestCase):
     """S3 · `ore.display()`: varias salidas en una celda, en orden, con lo impreso entre medias."""
 

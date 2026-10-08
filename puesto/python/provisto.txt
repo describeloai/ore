@@ -11,6 +11,9 @@
 # 2026-10-08 (0049 B9): `pypdfium2` y `pillow`, para pasar ficheros a ficheros
 # (un PDF a una imagen por página); ninguno arrastra nada: 34. Añadidas a mano
 # con la versión de PyPI; el build de la imagen comprueba que `pip freeze` dice lo mismo.
+# 2026-10-08 (las salidas de una celda, S4): `Jinja2`, que el `Styler` de pandas
+# necesita para dibujarse como HTML, y lo que arrastra (`MarkupSafe`): 36. Las
+# versiones, las de `pip install jinja2 && pip freeze` en python:3.14-slim.
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -25,6 +28,8 @@ google-resumable-media==2.11.0
 googleapis-common-protos==1.75.5
 idna==3.20
 iniconfig==2.3.0
+Jinja2==3.1.6
+MarkupSafe==3.0.4
 numpy==2.5.3
 opentelemetry-api==1.45.0
 packaging==26.3
