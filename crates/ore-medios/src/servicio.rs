@@ -268,6 +268,16 @@ impl Servicio {
                     Ok(n) => n,
                     Err(_) => return problema(400, "media/peticion", "el cuerpo no es JSON"),
                 };
+                // 0049 B9 · Una escrita recién creada no tiene transacción:
+                //   su registro está vacío, no «no existe» —la primera pasada
+                //   de `apply()` lo lee antes de escribir nada—.
+                if ruta == "/indice/derivaciones" && texto(&n, "metadata_location").is_none() {
+                    return Respuesta::ok(Json::obj([
+                        ("as_of", Json::Crudo("null".into())),
+                        ("derivations", Json::Arr(Vec::new())),
+                        ("cursor", Json::Crudo("null".into())),
+                    ]));
+                }
                 let ped = match pedido(&n) {
                     Ok(p) => p,
                     Err(r) => return r,

@@ -789,11 +789,16 @@ def _aplicar_ficheros(col, fn, version, params, salida, reintentar_errores, hilo
     run = uuid.uuid4().hex
     destino = collection(salida)
 
-    # El registro: una entrada por origen, por su identidad.
+    # El registro: una entrada por origen, por su identidad. Una escrita sin
+    # ninguna transacción todavía no tiene registro (un ore-serve anterior a
+    # B9 lo decía con un 404): vacío.
     registro = {}
-    for d in destino.derivations():
-        s = d.get("source") or {}
-        registro[s.get("digest") or s.get("uri")] = d
+    try:
+        for d in destino.derivations():
+            s = d.get("source") or {}
+            registro[s.get("digest") or s.get("uri")] = d
+    except MediaNotFound:
+        registro = {}
 
     # Lo de hoy: un ítem por identidad (dos rutas con el mismo contenido son el
     # mismo ítem). La ruta, la que el registro ya dice si sigue ahí (una copia

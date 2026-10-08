@@ -1335,6 +1335,19 @@ pub(crate) mod pruebas {
         let ua = "ore://l.a.contratos/a.pdf?v=1";
         let ub = "ore://l.a.contratos/b.png?v=1";
 
+        // ⓪ Recién creada, sin transacción: el registro está vacío, no 404.
+        let (c, n) = pedir(
+            &s,
+            "/indice/derivaciones",
+            format!(r#"{{"coleccion":"{PAGINAS}","metadata_location":"","transaccion":""}}"#),
+        );
+        assert_eq!(c, 200);
+        assert!(
+            crate::derivacion::a_json(&n)
+                .jcs()
+                .contains(r#""derivations":[]"#)
+        );
+
         // ① a.pdf da tres páginas; b.png, ninguna (una marca).
         let (tx, permiso) = abrir(&s);
         for (c, b) in [
