@@ -88,4 +88,6 @@ for d in ore.collection(SALIDA).derivations():
     print("  registro · %-60s %s %s" % (d["source"]["uri"][-60:], d["state"], len(d.get("files") or [])))
 uno = next(iter(ore.collection(SALIDA).items()), None)
 if uno is not None:
-    print("\n  un fichero:", uno.ref.path, "· sale de", getattr(uno.ref, "source", None) or "(el SDK no expone `source` en MediaRef)")
+    print("\n  un fichero:", uno.ref.path)
+    print("    source:    ", uno.ref.source)
+    print("    derivation:", {k: (uno.ref.derivation or {}).get(k) for k in ("fn", "fn_version", "key")})
