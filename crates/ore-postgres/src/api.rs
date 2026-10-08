@@ -36,6 +36,9 @@ use std::sync::Mutex;
 pub struct Servidor {
     pub base: Mutex<Client>,
     pub celdas: Box<dyn Celdas>,
+    /// Con qué volver a conectar si la base se cae (reinicio de `storcon-db`).
+    /// Sin ella, una conexión cerrada es un 503 hasta que se reinicie el pod.
+    pub url: Option<String>,
 }
 
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
@@ -86,21 +89,33 @@ impl Servidor {
         let Ok(mut base) = self.base.lock() else {
             return Respuesta::error(500, "la conexión quedó envenenada");
         };
-        // ⚠️ Una conexión que se cayó (la base reinició) no vuelve sola: se dice,
-        //   y el pod se reinicia por su sonda. P4·2 la reabrirá.
+        // Una conexión que se cayó (la base reinició) se reabre aquí, una vez por
+        // petición; si no se puede, 503 y la próxima lo vuelve a intentar.
         if base.is_closed() {
-            return Respuesta::error(503, "la conexión con la base está cerrada");
-        }
-        match pedido {
-            Pedido::Proyectos => proyectos(&mut base, &celda),
-            Pedido::Proyecto(id) => proyecto(&mut base, &celda, id),
-            Pedido::CrearProyecto => {
-                crear_proyecto(&mut base, &celda, cuerpo.as_ref().expect("analizado"))
+            match self.url.as_deref().map(crate::base::conectar) {
+                Some(Ok(nueva)) => *base = nueva,
+                Some(Err(e)) => return Respuesta::error(503, format!("la base no contesta: {e}")),
+                None => return Respuesta::error(503, "la conexión con la base está cerrada"),
             }
-            Pedido::BorrarProyecto(id) => borrar_proyecto(&mut base, &celda, id),
-            Pedido::Operacion(id) => operacion(&mut base, &celda, id),
         }
-        .unwrap_or_else(|Fallo(codigo, m)| Respuesta::error(codigo, m))
+        let hacer = |c: &mut Client| match &pedido {
+            Pedido::Proyectos => proyectos(c, &celda),
+            Pedido::Proyecto(id) => proyecto(c, &celda, id),
+            Pedido::CrearProyecto => crear_proyecto(c, &celda, cuerpo.as_ref().expect("analizado")),
+            Pedido::BorrarProyecto(id) => borrar_proyecto(c, &celda, id),
+            Pedido::Operacion(id) => operacion(c, &celda, id),
+        };
+        let mut r = hacer(&mut base);
+        // La caída sólo se ve al usarla: si falló y la conexión resulta cerrada, se
+        // reabre y se repite UNA vez. Es seguro: lo que no se confirmó no dejó nada.
+        if r.is_err()
+            && base.is_closed()
+            && let Some(Ok(nueva)) = self.url.as_deref().map(crate::base::conectar)
+        {
+            *base = nueva;
+            r = hacer(&mut base);
+        }
+        r.unwrap_or_else(|Fallo(codigo, m)| Respuesta::error(codigo, m))
     }
 }
 

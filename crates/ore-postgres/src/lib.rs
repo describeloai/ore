@@ -144,6 +144,7 @@ fn servir(args: &[String]) -> ExitCode {
     let servidor = api::Servidor {
         base: Mutex::new(base),
         celdas: Box::new(celda::PorOreIam::nuevo(&iam)),
+        url: Some(url),
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

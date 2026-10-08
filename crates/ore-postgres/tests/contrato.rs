@@ -49,6 +49,7 @@ fn servidor() -> Option<Servidor> {
             ("a2".to_string(), celda("cel_a2", "org_1")),
             ("b".to_string(), celda("cel_b", "org_2")),
         ]))),
+        url: Some(url),
     })
 }
 
@@ -349,6 +350,27 @@ fn lo_pasajero_se_reintenta_y_lo_definitivo_falla() {
     assert!(campo(&r, &["error"]).starts_with("400 mal"), "{r}");
     let (_, r) = pide(&s, "a", "GET", "/v1/postgres/proyectos/dos", "");
     assert_eq!(campo(&r, &["estado", "observado"]), "fallido", "{r}");
+}
+
+#[test]
+fn si_la_base_corta_la_conexion_el_api_vuelve_solo() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    assert_eq!(pide(&s, "a", "GET", "/v1/postgres/proyectos", "").0, 200);
+    // Lo que hace un reinicio de la base: matar las conexiones de los demás.
+    let mut c2 = otra_conexion();
+    let muertas: i64 = c2
+        .query_one(
+            "select count(*) from (select pg_terminate_backend(pid) from pg_stat_activity
+              where pid <> pg_backend_pid() and datname = current_database()) x",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert!(muertas >= 1);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let (c, r) = pide(&s, "a", "GET", "/v1/postgres/proyectos", "");
+    assert_eq!(c, 200, "{r}");
 }
 
 #[test]
