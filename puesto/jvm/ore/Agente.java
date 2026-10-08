@@ -193,6 +193,7 @@ public final class Agente {
             PrintStream err = System.err;
             System.setOut(captura);
             System.setErr(captura);
+            Partes partes = new Partes(buffer, t0);
             try {
                 Object valor;
                 boolean hayValor;
@@ -200,15 +201,19 @@ public final class Agente {
                     valor = Ore.sql(texto);
                     hayValor = true;
                 } else {
+                    // J3: lo que la celda enseña con display(), en orden.
+                    Ore.mostrar = partes::mostrar;
                     Resultado r = evaluar(texto);
                     if (r.error != null) return error(r.error, r.traza, buffer, t0);
                     valor = r.valor;
                     hayValor = r.hayValor;
                 }
-                return salidaDe(hayValor ? valor : null, hayValor, texto(buffer), t0);
+                if (partes.lista.isEmpty() && partes.fuera == 0) return salidaDe(hayValor ? valor : null, hayValor, texto(buffer), t0);
+                return partes.cerrar(valor, hayValor);
             } catch (Exception e) {
                 return error(e.getClass().getSimpleName() + ": " + e.getMessage(), traza(e), buffer, t0);
             } finally {
+                Ore.mostrar = null;
                 System.setOut(LOG);
                 System.setErr(err);
             }
@@ -300,6 +305,14 @@ public final class Agente {
             if (tabla != null) {
                 m.putAll(tabla);
                 m.put("tipo", "tabla");
+                m.put("texto", texto);
+                m.put("ms", ms(t0));
+                return m;
+            }
+            Map<String, Object> imagen = comoImagen(valor, IMAGEN_BYTES);
+            if (imagen != null) {
+                m.putAll(imagen);
+                m.put("tipo", "imagen");
                 m.put("texto", texto);
                 m.put("ms", ms(t0));
                 return m;
@@ -432,6 +445,182 @@ public final class Agente {
         return out;
     }
 
+    // ── J2 (las salidas de una celda, S2) · `imagen` ────────────────────────
+    // Los mismos topes que el agente de Python: una imagen que pasa de 512 KB se
+    // reduce (a 1600 px de lado, y a JPEG si hace falta) y se dice.
+    static final int IMAGEN_BYTES = 512 * 1024;
+    static final int IMAGEN_LADO = 1600;
+
+    /** El tipo de unos bytes, si son una imagen que un navegador pinta. */
+    static String tipoDeImagen(byte[] b) {
+        if (empieza(b, 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n')) return "image/png";
+        if (empieza(b, 0xff, 0xd8, 0xff)) return "image/jpeg";
+        if (empieza(b, 'G', 'I', 'F', '8', '7', 'a') || empieza(b, 'G', 'I', 'F', '8', '9', 'a')) return "image/gif";
+        if (b.length >= 12 && empieza(b, 'R', 'I', 'F', 'F') && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return "image/webp";
+        String cabeza = new String(b, 0, Math.min(b.length, 1024), StandardCharsets.ISO_8859_1).stripLeading().toLowerCase(Locale.ROOT);
+        if (cabeza.startsWith("<svg") || (cabeza.startsWith("<?xml") && cabeza.contains("<svg"))) return "image/svg+xml";
+        return null;
+    }
+
+    private static boolean empieza(byte[] b, int... firma) {
+        if (b.length < firma.length) return false;
+        for (int i = 0; i < firma.length; i++) if ((b[i] & 0xff) != firma[i]) return false;
+        return true;
+    }
+
+    /**
+     * {@code {mime, base64, ancho, alto, bytes, reducida}} de una imagen —unos
+     * {@code byte[]} que lo son, un {@code RenderedImage} (un {@code BufferedImage},
+     * lo que da JFreeChart)—, o {@code null}. Una que pasa de {@code limite} se
+     * reduce y se dice; si ni así cabe, no es imagen.
+     */
+    static Map<String, Object> comoImagen(Object valor, int limite) {
+        byte[] b;
+        String tipo;
+        try {
+            if (valor instanceof byte[] x) {
+                b = x;
+                tipo = tipoDeImagen(b);
+                if (tipo == null) return null;
+            } else if (valor instanceof java.awt.image.RenderedImage r) {
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                if (!javax.imageio.ImageIO.write(r, "png", out)) return null;
+                b = out.toByteArray();
+                tipo = "image/png";
+            } else {
+                return null;
+            }
+        } catch (IOException | RuntimeException | LinkageError e) {
+            return null;
+        }
+        int original = b.length;
+        Integer ancho = null, alto = null;
+        boolean reducida = false;
+        if (!tipo.equals("image/svg+xml")) {
+            try {
+                java.awt.image.BufferedImage im = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(b));
+                if (im != null) {
+                    ancho = im.getWidth();
+                    alto = im.getHeight();
+                    if (b.length > limite) {
+                        for (Object[] intento : new Object[][] {{"png", IMAGEN_LADO}, {"jpg", IMAGEN_LADO}, {"jpg", 800}, {"jpg", 400}}) {
+                            byte[] o = reducir(im, (String) intento[0], (Integer) intento[1]);
+                            if (o != null && o.length <= limite) {
+                                b = o;
+                                tipo = intento[0].equals("png") ? "image/png" : "image/jpeg";
+                                reducida = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (IOException | RuntimeException | LinkageError e) {
+                // unos bytes que ImageIO no abre (un WEBP): van tal cual
+            }
+        }
+        if (b.length > limite) return null;
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("mime", tipo);
+        m.put("base64", java.util.Base64.getEncoder().encodeToString(b));
+        m.put("ancho", ancho);
+        m.put("alto", alto);
+        m.put("bytes", original);
+        m.put("reducida", reducida);
+        return m;
+    }
+
+    /** La imagen con su lado mayor en {@code lado} como mucho, en {@code formato}. */
+    static byte[] reducir(java.awt.image.BufferedImage im, String formato, int lado) throws IOException {
+        double f = Math.min(1.0, (double) lado / Math.max(im.getWidth(), im.getHeight()));
+        int w = Math.max(1, (int) Math.round(im.getWidth() * f)), h = Math.max(1, (int) Math.round(im.getHeight() * f));
+        boolean jpg = formato.equals("jpg");
+        java.awt.image.BufferedImage e = new java.awt.image.BufferedImage(w, h, jpg ? java.awt.image.BufferedImage.TYPE_INT_RGB : java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = e.createGraphics();
+        try {
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            if (jpg) { g.setColor(java.awt.Color.WHITE); g.fillRect(0, 0, w, h); }
+            g.drawImage(im, 0, 0, w, h, null);
+        } finally {
+            g.dispose();
+        }
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        return javax.imageio.ImageIO.write(e, formato, out) ? out.toByteArray() : null;
+    }
+
+    // ── J3 (las salidas de una celda, S3) · varias salidas en una celda ─────
+    static final int PARTES_MAXIMAS = 50;
+    /** Lo que caben todas juntas: bajo el cuerpo máximo de ore-serve (1 MB). */
+    static final int PARTES_BYTES = 900 * 1024;
+
+    /**
+     * Lo que una celda enseña con {@code display()}, en orden y con el texto
+     * impreso entre medias (como {@code Partes} en {@code agente.py}). Cada parte
+     * es una salida de las de siempre, sin {@code ms}. Lo que no cabe —más de
+     * {@link #PARTES_MAXIMAS}, o pasar de {@link #PARTES_BYTES}— no va, y se cuenta.
+     */
+    static final class Partes {
+        final ByteArrayOutputStream salida;
+        final long t0;
+        final List<Map<String, Object>> lista = new ArrayList<>();
+        int desde, bytes, fuera;
+
+        Partes(ByteArrayOutputStream salida, long t0) { this.salida = salida; this.t0 = t0; }
+
+        private void texto() {
+            String todo = Kernel.texto(salida);
+            if (todo.length() > desde) {
+                String t = todo.substring(desde);
+                desde = todo.length();
+                Map<String, Object> p = new LinkedHashMap<>();
+                p.put("tipo", "texto");
+                p.put("texto", t);
+                poner(p);
+            }
+        }
+
+        private void poner(Map<String, Object> p) {
+            int n = Json.escribir(p).getBytes(StandardCharsets.UTF_8).length;
+            if (lista.size() >= PARTES_MAXIMAS || bytes + n > PARTES_BYTES) { fuera++; return; }
+            lista.add(p);
+            bytes += n;
+        }
+
+        void mostrar(Object valor) {
+            if (valor == null) return;
+            texto();
+            Map<String, Object> p = Kernel.salidaDe(valor, true, "", t0);
+            if ("imagen".equals(p.get("tipo"))) {
+                // Una imagen, a lo que queda: más pequeña si hace falta para caber.
+                int queda = PARTES_BYTES - bytes - 4096;
+                if (String.valueOf(p.get("base64")).length() > queda) {
+                    Map<String, Object> menor = comoImagen(valor, Math.max(16 * 1024, queda * 3 / 4));
+                    if (menor != null) { menor.put("tipo", "imagen"); p = menor; }
+                }
+            }
+            p.remove("ms");
+            if ("".equals(p.get("texto")) && !"texto".equals(p.get("tipo"))) p.remove("texto");
+            poner(p);
+        }
+
+        /** La salida de la celda: {@code varias}; si sólo hay una parte, ésa sola, como si fuera el último valor. */
+        Map<String, Object> cerrar(Object valor, boolean hayValor) {
+            if (hayValor) mostrar(valor);
+            texto();
+            if (lista.size() == 1 && fuera == 0) {
+                Map<String, Object> p = new LinkedHashMap<>(lista.get(0));
+                p.putIfAbsent("texto", "");
+                p.put("ms", ms(t0));
+                return p;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("tipo", "varias");
+            m.put("partes", lista);
+            m.put("fuera", fuera);
+            m.put("ms", ms(t0));
+            return m;
+        }
+    }
+
     // ── El servidor de lenguaje, y su correa (0037 ③b) ──────────────────────
 
     /**
@@ -512,6 +701,8 @@ public final class Agente {
 
     @SuppressWarnings("unchecked")
     static void bucle(String[] args) throws Exception {
+        // J2: las imágenes (ImageIO, BufferedImage) sin pantalla: el puesto no la tiene.
+        System.setProperty("java.awt.headless", "true");
         if (args.length > 0 && args[0].equals("--comprobar")) {
             Kernel k = new Kernel();
             Map<String, Object> r = k.correr("record P(String n, int e) {}\nvar xs = List.of(new P(\"a\", 1), new P(\"b\", 2));\nxs.size() * 21", "java");
@@ -522,6 +713,14 @@ public final class Agente {
             if (!"json".equals(j.get("tipo")) || !"{\"n\":\"a\",\"e\":[1,2],\"m\":{\"k\":[true]}}".equals(Json.escribir(j.get("valor")))
                 || !"json".equals(jl.get("tipo")) || !Boolean.TRUE.equals(jl.get("recortado")) || ((List<?>) jl.get("valor")).size() != JSON_POR_NIVEL + 1)
                 throw new IllegalStateException("un valor compuesto no sale como json: " + Json.escribir(j));
+            // J2 y J3: un BufferedImage es una `imagen`, y display() da `varias`, en orden con lo impreso.
+            Map<String, Object> im = k.correr("var im = new java.awt.image.BufferedImage(40, 30, java.awt.image.BufferedImage.TYPE_INT_RGB);\nim", "java");
+            Map<String, Object> v = k.correr("System.out.println(\"a\");\ndisplay(Map.of(\"k\", 1), im);\n7", "java");
+            List<String> tipos = new ArrayList<>();
+            for (Object x : (List<?>) v.getOrDefault("partes", List.of())) tipos.add(String.valueOf(((Map<?, ?>) x).get("tipo")));
+            if (!"imagen".equals(im.get("tipo")) || !Integer.valueOf(40).equals(im.get("ancho")) || !"varias".equals(v.get("tipo"))
+                || !List.of("texto", "json", "imagen", "texto").equals(tipos))
+                throw new IllegalStateException("una imagen o display() no salen como deben: " + Json.escribir(v).replaceAll("\"base64\":\"[^\"]*\"", "\"base64\":\"…\""));
             // Y el contrato de tipos por Arrow (0032 T3): si faltan los jars o el
             // --add-opens, se ve aquí y no en la primera celda de una persona.
             Ore.Rows f = Ore.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");

@@ -1513,6 +1513,9 @@ if [ "$JAVA_OK" = "si" ]; then
   celda 'new C(\"ES\")' && tiene "d['salida']['tipo']=='json' and d['salida']['valor']=={'pais': 'ES'}" || falla "9 · J1 · un record no sale como json: $(cuerpo)"
   celda 'cs' && tiene "d['salida']['tipo']=='json' and d['salida']['valor']==[{'pais': 'ES'}, {'pais': 'PT'}]" || falla "9 · J1 · una lista de records no sale como json: $(cuerpo)"
   celda 'new TreeMap<>(Map.of(\"n\", 1, \"l\", new long[]{2L, 3L}))' && tiene "d['salida']['tipo']=='json' and d['salida']['valor']=={'l': [2, 3], 'n': 1}" || falla "9 · J1 · un Map con un array no sale como json: $(cuerpo)"
+  # J2 y J3: un BufferedImage es una `imagen`; display() da `varias`, en orden con lo impreso.
+  celda 'var im = new java.awt.image.BufferedImage(40, 30, java.awt.image.BufferedImage.TYPE_INT_RGB);\nim' && tiene "d['salida']['tipo']=='imagen' and d['salida']['mime']=='image/png' and d['salida']['ancho']==40" || falla "9 · J2 · un BufferedImage no sale como imagen: $(cuerpo)"
+  celda 'System.out.println(\"a\");\ndisplay(Map.of(\"k\", 1), im);\n7' && tiene "d['salida']['tipo']=='varias' and [p['tipo'] for p in d['salida']['partes']]==['texto','json','imagen','texto']" || falla "9 · J3 · display() no da varias: $(cuerpo)"
   celda 'String saludo(String n) { return \"hola \" + n; }' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · un metodo: $(cuerpo)"
 
   # ── 9d · el reparto del pod, en la JVM (0031 W3) ─────────────────────────

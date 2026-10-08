@@ -1397,6 +1397,26 @@ public final class Ore {
         throw new IllegalStateException("write(" + nombre + "): someone else wrote first four times; try again");
     }
 
+    // ── J3 (las salidas de una celda, S3) · display() ───────────────────────
+    /** Adonde va lo que {@link #display} enseña mientras corre una celda de una sesión (lo pone el agente); fuera, {@code null}. */
+    static volatile java.util.function.Consumer<Object> mostrar;
+
+    /**
+     * <b>Show each value now</b>, with its own output —a table, a tree, an
+     * image—, in order with what the cell prints; the last expression of the
+     * cell is shown too. Outside a session's cell (a job, your machine) it
+     * prints them. An {@code Object[]} is spread into its values (varargs).
+     *
+     * @param values what to show
+     */
+    public static void display(Object... values) {
+        for (Object v : values) {
+            java.util.function.Consumer<Object> m = mostrar;
+            if (m != null) m.accept(v);
+            else System.out.println(v);
+        }
+    }
+
     // ── El contrato de tipos (0032 §1) ─────────────────────────────────────
 
     /** The value at row {@code i} of a vector, in the contract's Java type. */
