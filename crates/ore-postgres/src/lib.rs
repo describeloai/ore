@@ -30,6 +30,7 @@ pub mod computos;
 pub mod especificacion;
 pub mod kube;
 pub mod llaves;
+pub mod proxy;
 pub mod reconciliador;
 pub mod scram;
 
@@ -312,6 +313,7 @@ fn servir(args: &[String]) -> ExitCode {
         valor(args, "--llaves-computo").unwrap_or_else(|| "/llaves/computo".into());
     let imagen = valor(args, "--imagen-computo").unwrap_or_default();
     let ns_computo = valor(args, "--ns-computo").unwrap_or_else(|| "ore-pg-computo".into());
+    let llaves_proxy = valor(args, "--llaves-proxy").unwrap_or_else(|| "/llaves/proxy".into());
 
     let mut base = match base::conectar(&url) {
         Ok(c) => c,
@@ -383,11 +385,25 @@ fn servir(args: &[String]) -> ExitCode {
             eprintln!("    las operaciones quedan en curso hasta que se monten los tokens");
         }
     }
+    // P5·1: las preguntas del proxy, con SU token (un Secret que sólo montan él y esto).
+    let proxy = match std::fs::read_to_string(std::path::Path::new(&llaves_proxy).join("token")) {
+        Ok(t) if !t.trim().is_empty() => {
+            eprintln!("  proxy        /proxy/get_endpoint_access_control · /proxy/wake_compute");
+            Some(proxy::Proxy {
+                token: t.trim().to_string(),
+            })
+        }
+        _ => {
+            eprintln!("  ⚠ SIN PROXY: no hay token en {llaves_proxy}/token");
+            None
+        }
+    };
     let servidor = api::Servidor {
         base: Mutex::new(base),
         celdas: Box::new(celda::PorOreIam::nuevo(&iam)),
         url: Some(url),
         avisos,
+        proxy,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

@@ -124,6 +124,9 @@ pub const CONSULTA_ADMITIDA: &[&str] = &[
     "celda",
     "permiso",
     "snapshot",
+    // 0058 P5·1: el proxy de Postgres pregunta por un endpoint (`ep-…`) y un rol.
+    "endpointish",
+    "role",
 ];
 
 /// Y lo de la media (0049 B2·2, `docs/media.md`): `prefix` y `path` son rutas

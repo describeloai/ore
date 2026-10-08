@@ -59,6 +59,7 @@ fn servidor() -> Option<Servidor> {
         ]))),
         url: Some(url),
         avisos: None,
+        proxy: None,
     })
 }
 
@@ -743,6 +744,7 @@ fn otro_servidor() -> Servidor {
         celdas: Box::new(Fijas(HashMap::from([("a2".to_string(), celda)]))),
         url: Some(url),
         avisos: None,
+        proxy: None,
     }
 }
 
@@ -1017,6 +1019,112 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
 const PUBLICA: &str = "-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=
 -----END PUBLIC KEY-----";
+
+#[test]
+fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut s) = servidor() else { return };
+    s.proxy = Some(ore_postgres::proxy::Proxy {
+        token: "el-del-proxy".into(),
+    });
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas","dueno":"user:ana"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, r) = pide(
+        &s,
+        "a",
+        "GET",
+        "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal",
+        "",
+    );
+    let (vm, dir) = (campo(&r, &["vm"]), campo(&r, &["direccion"]));
+    let pregunta = |token: Option<&str>, ruta: &str, consulta: &[(&str, &str)]| {
+        let mut cabeceras = BTreeMap::new();
+        if let Some(t) = token {
+            cabeceras.insert("authorization".into(), format!("Bearer {t}"));
+        }
+        s.atender(&Peticion {
+            metodo: "GET".into(),
+            ruta: ruta.into(),
+            cabeceras,
+            cuerpo: String::new(),
+            consulta: consulta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        })
+    };
+    let acceso = "/proxy/get_endpoint_access_control";
+    // Sin su token, o con el de una celda: nada.
+    assert_eq!(
+        pregunta(None, acceso, &[("endpointish", &vm), ("role", "ana")]).codigo,
+        401
+    );
+    assert_eq!(
+        pregunta(Some("a"), acceso, &[("endpointish", &vm), ("role", "ana")]).codigo,
+        401
+    );
+    // El verificador SCRAM del rol del dueño, tal cual; por el pool, el mismo.
+    let r = pregunta(
+        Some("el-del-proxy"),
+        acceso,
+        &[("endpointish", &vm), ("role", "ana")],
+    );
+    assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
+    assert!(
+        r.cuerpo
+            .jcs()
+            .contains(r#""role_secret":"SCRAM-SHA-256$4096:"#),
+        "{}",
+        r.cuerpo.jcs()
+    );
+    let pool = format!("{vm}-pooler");
+    assert_eq!(
+        pregunta(
+            Some("el-del-proxy"),
+            acceso,
+            &[("endpointish", &pool), ("role", "ana")]
+        )
+        .codigo,
+        200
+    );
+    // Un rol o un endpoint que no hay: 404 con la razón que el proxy lee como «no vale».
+    for (e, rol) in [(vm.as_str(), "nadie"), ("ep-00000000000000000000", "ana")] {
+        let r = pregunta(
+            Some("el-del-proxy"),
+            acceso,
+            &[("endpointish", e), ("role", rol)],
+        );
+        assert_eq!(r.codigo, 404);
+        assert!(
+            r.cuerpo.jcs().contains(r#""reason":"RESOURCE_NOT_FOUND""#),
+            "{}",
+            r.cuerpo.jcs()
+        );
+    }
+    // Despertar: la dirección del cómputo en la overlay, con su puerto.
+    let r = pregunta(
+        Some("el-del-proxy"),
+        "/proxy/wake_compute",
+        &[("endpointish", &vm)],
+    );
+    assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
+    assert!(
+        r.cuerpo
+            .jcs()
+            .contains(&format!(r#""address":"{dir}:55433""#)),
+        "{}",
+        r.cuerpo.jcs()
+    );
+    assert!(r.cuerpo.jcs().contains(r#""project_id":"ventas""#));
+}
 
 #[test]
 fn un_aviso_del_controller_reconfigura_los_computos_del_tenant() {

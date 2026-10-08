@@ -57,6 +57,8 @@ pub struct Servidor {
     pub url: Option<String>,
     /// P4·5: los avisos del `storage_controller` (`/avisos/…`). Sin ellos, 404.
     pub avisos: Option<crate::avisos::Avisos>,
+    /// P5·1: las preguntas del proxy (`/proxy/…`). Sin él, 404.
+    pub proxy: Option<crate::proxy::Proxy>,
 }
 
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
@@ -98,6 +100,21 @@ impl Servidor {
                 *base = nueva;
             }
             return avisos.atender(&mut base, p, resto);
+        }
+        // P5·1: el proxy, con SU token.
+        if let ["proxy", resto @ ..] = seg.as_slice() {
+            let Some(proxy) = self.proxy.as_ref() else {
+                return Respuesta::error(404, "el proxy no está montado");
+            };
+            let Ok(mut base) = self.base.lock() else {
+                return Respuesta::error(500, "la conexión quedó envenenada");
+            };
+            if base.is_closed()
+                && let Some(Ok(nueva)) = self.url.as_deref().map(crate::base::conectar)
+            {
+                *base = nueva;
+            }
+            return proxy.atender(&mut base, p, resto);
         }
         let ["v1", "postgres", resto @ ..] = seg.as_slice() else {
             return Respuesta::error(404, "no hay nada en ese camino");
