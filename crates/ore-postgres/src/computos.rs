@@ -169,12 +169,17 @@ impl Computos for Neonvm {
     }
 
     fn configurar(&self, vm: &str, ip_pod: &str, configuracion: &Json) -> Result<(), Fallo> {
+        // Entera: `/configure` pide `{spec, compute_ctl_config}`, la misma forma que
+        // el config.json del arranque (medido en vivo: sólo con `spec`, 422
+        // «missing field `compute_ctl_config`»).
         let Json::Obj(todo) = configuracion else {
             return Err(Fallo::Definitivo("la configuración no es un objeto".into()));
         };
-        let Some(spec) = todo.get("spec") else {
-            return Err(Fallo::Definitivo("la configuración no trae `spec`".into()));
-        };
+        if todo.get("spec").is_none() || todo.get("compute_ctl_config").is_none() {
+            return Err(Fallo::Definitivo(
+                "la configuración no trae `spec` y `compute_ctl_config`".into(),
+            ));
+        }
         let token = format!(
             "Bearer {}",
             token_de_computo(&self.propia, vm, ahora() + 300)
@@ -184,7 +189,7 @@ impl Computos for Neonvm {
             &format!("{ip_pod}:3080"),
             "/configure",
             &[("Authorization", &token)],
-            Some(&Json::obj([("spec", spec.clone())])),
+            Some(configuracion),
             Plazos {
                 conectar: Duration::from_secs(3),
                 // compute_ctl contesta cuando lo ha aplicado (crear roles y bases).
