@@ -197,6 +197,10 @@ class MediaRef:
     state: str = None
     #: La transacción de la colección en que entró (el listado, v1alpha17 `04` §1).
     transaction: str = None
+    #: 0049 B9 · De qué ítem sale este fichero (`uri`, `digest`, `anchor`), si
+    #: lo escribió `apply()`; y con qué se calculó (`key`, `fn`, `fn_version`, …).
+    source: dict = None
+    derivation: dict = None
 
     #: Alias de antes.
     de_json = _Alias("from_json")

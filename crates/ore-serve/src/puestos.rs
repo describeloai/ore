@@ -577,6 +577,12 @@ pub(crate) fn media_en(
         })
         .collect();
     if let Some(t) = suyos.iter().find_map(|p| p.transform.as_ref()) {
+        // 0049 B9 · su `output` también: un incremental lee lo que ya escribió
+        //   (el registro de `apply()`), de ahora y sin anotarlo como entrada,
+        //   como `_lee` en el SDK.
+        if t.output == coleccion {
+            return MediaDelPuesto::Declarada(None);
+        }
         return if t.inputs.iter().any(|i| i == coleccion) {
             MediaDelPuesto::Declarada(t.fijadas.get(coleccion).cloned())
         } else {
@@ -5195,6 +5201,11 @@ pub(crate) mod prueba {
             media_en(&mut lista, &ana, "legal.registro"),
             MediaDelPuesto::Declarada(None),
             "declarado pero no era una colección al declararlo: sin fijar"
+        );
+        assert_eq!(
+            media_en(&mut lista, &ana, "legal.archivo.paginas"),
+            MediaDelPuesto::Declarada(None),
+            "0049 B9: su output se lee (el registro de apply), de ahora"
         );
         assert!(matches!(
             media_en(&mut lista, &ana, "legal.archivo.fotos"),
