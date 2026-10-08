@@ -711,6 +711,102 @@ fn los_endpoints_y_el_cerco_de_escritura() {
     assert!(almacen.vms.lock().unwrap().is_empty());
 }
 
+/// Otro servidor sobre la misma base, con su propia conexión: dos peticiones de
+/// verdad a la vez (un servidor solo las atiende en fila).
+fn otro_servidor() -> Servidor {
+    let url = std::env::var("ORE_POSTGRES_PRUEBA_URL").unwrap();
+    let celda = Celda {
+        id: "cel_a2".into(),
+        nombre: "a2".into(),
+        organizacion: "org_1".into(),
+    };
+    Servidor {
+        base: Mutex::new(ore_postgres::base::conectar(&url).unwrap()),
+        celdas: Box::new(Fijas(HashMap::from([("a2".to_string(), celda)]))),
+        url: Some(url),
+    }
+}
+
+#[test]
+fn dos_escrituras_a_la_vez_en_la_misma_rama_una_gana() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let mut c2 = otra_conexion();
+    let almacen = Apunta::default();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/ramas",
+        r#"{"id":"dev"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let dev = "/v1/postgres/proyectos/ventas/ramas/dev/endpoints";
+    // ⭐ El cerco, capa 1, con concurrencia de verdad: dos servidores, dos
+    //   conexiones, la misma organización, y una barrera para salir a la vez.
+    for vuelta in 0..10 {
+        let s2 = otro_servidor();
+        let barrera = std::sync::Barrier::new(2);
+        let (r1, r2) = std::thread::scope(|t| {
+            let h1 = t.spawn(|| {
+                barrera.wait();
+                pide(&s, "a", "POST", dev, &format!(r#"{{"id":"uno-{vuelta}"}}"#))
+            });
+            let h2 = t.spawn(|| {
+                barrera.wait();
+                pide(
+                    &s2,
+                    "a2",
+                    "POST",
+                    dev,
+                    &format!(r#"{{"id":"dos-{vuelta}"}}"#),
+                )
+            });
+            (h1.join().unwrap(), h2.join().unwrap())
+        });
+        let mut codigos = [r1.0, r2.0];
+        codigos.sort();
+        assert_eq!(codigos, [202, 409], "vuelta {vuelta}: {r1:?} {r2:?}");
+        let perdedor = if r1.0 == 409 { &r1.1 } else { &r2.1 };
+        // Cualquiera de las dos guardas vale (la del endpoint o la de la operación),
+        // y las dos las pone la base.
+        assert!(
+            perdedor.contains("ya tiene un endpoint de escritura")
+                || perdedor.contains("otra operación en curso"),
+            "{perdedor}"
+        );
+        let vivos: i64 = c2
+            .query_one(
+                "select count(*) from plano.endpoint
+                  where proyecto = 'ventas' and rama = 'dev' and tipo = 'lectura-escritura' and deseado = 'vivo'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(vivos, 1, "vuelta {vuelta}");
+        // Se borra el ganador para la vuelta siguiente.
+        let ganador = if r1.0 == 202 {
+            format!("uno-{vuelta}")
+        } else {
+            format!("dos-{vuelta}")
+        };
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+        assert_eq!(
+            pide(&s, "a", "DELETE", &format!("{dev}/{ganador}"), "").0,
+            202
+        );
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    }
+}
+
 #[test]
 fn una_operacion_en_curso_por_proyecto_la_cierra_la_base() {
     let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());

@@ -48,8 +48,9 @@ TI=$(curl -sf -H "Metadata-Flavor: Google" "$md?audience=ore-iam&format=full")
 TB="$(echo "$T" | cut -d. -f1-2).AAAA"
 pide_con() { v=$1; shift; m=$1; c=$2; d=${3:-}; t=$(eval echo \$$v)
   h=""; [ -n "$t" ] && h="Authorization: Bearer $t"
-  code=$(curl -s -o /tmp/r -w "%{http_code}" -X "$m" ${h:+-H "$h"} ${d:+-H "Content-Type: application/json" --data "$d"} "$URL$c")
-  echo "$code $(tr -d "\n" < /tmp/r)"; }
+  f=$(mktemp)   # uno por petición: dos a la vez en el mismo pod no se pisan (P4·3·4)
+  code=$(curl -s -o "$f" -w "%{http_code}" -X "$m" ${h:+-H "$h"} ${d:+-H "Content-Type: application/json" --data "$d"} "$URL$c")
+  echo "$code $(tr -d "\n" < "$f")"; rm -f "$f"; }
 pide() { pide_con T "$@"; }
 hasta_hecha() { for i in $(seq 1 300); do l=$(pide GET "$1"); case "$l" in *\"hecha\":true*) break;; esac; sleep 1; done; echo "$l"; }
 TN=""
