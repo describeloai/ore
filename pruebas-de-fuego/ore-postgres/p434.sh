@@ -49,8 +49,10 @@ qo "$DIR" 'create table p434 (n int, quien text, cuando timestamptz default cloc
 # El escritor: una conexión por fila, y apunta cuáles le confirmaron (`returning`). ⚠️ Con `-q`: sin él
 # psql imprime también la etiqueta `INSERT 0 1` y todo parecía un fallo (medido, primera pasada).
 k exec -i cliente-overlay -- sh -c 'cat > /tmp/p434.sh' <<'ESC'
-rm -f /tmp/p434-ok /tmp/p434-err
-for i in $(seq 1 600); do
+rm -f /tmp/p434-ok /tmp/p434-err /tmp/p434-alto; touch /tmp/p434-err
+# Hasta que lo paren (`/tmp/p434-alto`): tiene que seguir escribiendo MIENTRAS escribe el intruso, que
+# tarda ~3 min en responder (medido: con 600 filas fijas acabó antes de que el intruso naciera).
+i=0; while [ ! -f /tmp/p434-alto ] && [ $i -lt 6000 ]; do i=$((i+1))
   r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 55433 -U cloud_admin -d postgres -qAtc \
       "insert into p434 (n, quien) values ($i, 'principal') returning n" 2>&1)
   case "$r" in "$i") echo "$i $(date +%s.%N | cut -c1-14)" >> /tmp/p434-ok;; *) echo "$i $(date +%s) $r" | head -1 >> /tmp/p434-err;; esac
@@ -65,29 +67,41 @@ orep especificacion --computo "$INTRUSO" --tenant "$TENANT" --timeline "$MAIN" -
 kc create configmap "$INTRUSO-config" --from-file=config.json="$F" >/dev/null
 TI=$(date +%s); plantilla "$AQUI/vm.yaml" ORE_PG_VM="$INTRUSO" | kubectl apply -f - >/dev/null
 until OVI=$(ip_overlay "$INTRUSO"); [ -n "$OVI" ] && [ "$(qo "$OVI" 'select 1' 2>/dev/null)" = 1 ]; do
-  sleep 1; [ $(( $(date +%s)-TI )) -gt 600 ] && { echo "  ✗ el intruso no arranca"; break; }
+  sleep 1; [ $(( $(date +%s)-TI )) -gt 600 ] && { echo "  · el intruso no llega a servir en 600 s (dato)"; break; }
 done
-echo "  · el intruso responde a los $(( $(date +%s)-TI )) s (en $OVI); escribe 20 filas"
+VIVO=$(( $(date +%s)-TI )); echo "  · el intruso responde a los $VIVO s (en $OVI); escribe 20 filas"
 BIEN_I=0; for i in $(seq 1 20); do
   [ "$(qo "$OVI" "insert into p434 (n, quien) values ($i, 'intruso') returning n" 2>/dev/null | head -1)" = "$i" ] && BIEN_I=$((BIEN_I+1)); sleep 0.5; done
 echo "  · el intruso confirmó $BIEN_I de 20"
-echo "  · se espera a que el escritor del principal acabe"
+sleep 30; k exec cliente-overlay -- touch /tmp/p434-alto
+echo "  · se para al escritor del principal (30 s después del intruso)"
 until k exec cliente-overlay -- grep -q fin /tmp/p434-ok 2>/dev/null; do sleep 5; done
 
 echo "── lo medido"
-OK=$(k exec cliente-overlay -- sh -c 'grep -c -v fin /tmp/p434-ok'); ERR=$(k exec cliente-overlay -- sh -c 'wc -l < /tmp/p434-err 2>/dev/null || echo 0')
+OK=$(k exec cliente-overlay -- sh -c 'grep -c -v fin /tmp/p434-ok'); ERR=$(k exec cliente-overlay -- sh -c 'wc -l < /tmp/p434-err')
 ULT=$(k exec cliente-overlay -- sh -c 'grep -v fin /tmp/p434-ok | tail -1 | cut -d" " -f2')
 echo "  · el principal confirmó $OK filas y falló $ERR; la última confirmada, $(( ${ULT%.*} - TI )) s después de levantar al intruso"
-echo "  · su primer error tras el intruso: $(k exec cliente-overlay -- sh -c 'head -1 /tmp/p434-err' | cut -c1-200)"
+echo "  · su primer error: $(k exec cliente-overlay -- sh -c 'head -1 /tmp/p434-err' | cut -c1-200)"
+echo "  · su última confirmada respecto al intruso: $(( ${ULT%.*} - TI - VIVO )) s desde que el intruso respondió"
 for d in "$DIR" "$OVI"; do echo "  · leído en $d: $(qo "$d" "select quien, count(*) from p434 group by quien order by quien" 2>&1 | tr '\n' ' ' | cut -c1-200)"; done
 # ¿Se perdió algo confirmado? Lo confirmado al principal tiene que estar en quien ha quedado escribiendo.
 k exec cliente-overlay -- sh -c 'grep -v fin /tmp/p434-ok | cut -d" " -f1' > "$ORE_PG_TRABAJO/p434-ok"
 for d in "$OVI" "$DIR"; do
   qo "$d" "select n from p434 where quien = 'principal' order by n" > "$ORE_PG_TRABAJO/p434-en-$d" 2>/dev/null
 done
-PERDIDAS=$(comm -23 <(sort "$ORE_PG_TRABAJO/p434-ok") <(sort "$ORE_PG_TRABAJO/p434-en-$OVI") | wc -l)
-[ "$PERDIDAS" = 0 ] && echo "  ✓ ninguna fila que el principal confirmó falta en el intruso" \
-  || { echo "  ✗ faltan $PERDIDAS filas confirmadas por el principal"; fallos=$((fallos+1)); }
+# Contra el que ha quedado sirviendo: medido, a veces gana el intruso (el principal deja de aceptar
+# conexiones) y a veces el principal (el intruso nunca llega a servir y el principal se reinicia).
+VIVE_P=$(qo "$DIR" 'select 1' 2>/dev/null); VIVE_I=$(qo "$OVI" 'select 1' 2>/dev/null)
+QUEDA=$DIR; [ "$VIVE_I" = 1 ] && [ "$VIVE_P" != 1 ] && QUEDA=$OVI
+[ "$VIVE_P" = 1 ] && [ "$VIVE_I" = 1 ] && echo "  · ⚠ los DOS aceptan conexiones al final" \
+  || echo "  ✓ al final sólo sirve uno: $QUEDA"
+# Lo que el intruso confirmó también ha de estar en el que queda (una sola historia, por términos).
+qo "$QUEDA" "select count(*) from p434 where quien = 'intruso'" 2>/dev/null | grep -qx "$BIEN_I" \
+  && echo "  ✓ y en él están también las $BIEN_I del intruso: una sola historia" \
+  || { echo "  ✗ en $QUEDA no están las $BIEN_I del intruso"; fallos=$((fallos+1)); }
+PERDIDAS=$(comm -23 <(sort "$ORE_PG_TRABAJO/p434-ok") <(sort "$ORE_PG_TRABAJO/p434-en-$QUEDA") | wc -l)
+[ "$PERDIDAS" = 0 ] && echo "  ✓ ninguna fila que el principal confirmó falta en $QUEDA" \
+  || { echo "  ✗ faltan $PERDIDAS filas confirmadas por el principal en $QUEDA"; fallos=$((fallos+1)); }
 
 echo "── se quita el intruso y se borra el proyecto"
 quitar_intruso
