@@ -1,10 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # ORE SERVERLESS POSTGRES · LA CAPA DE ALMACENAMIENTO (ADR 0058, P2·4)
 #
-#   avisos               el plano de control de juguete: recibe notify-attach /
-#                        notify-safekeepers y los apunta. Lo sustituye `ore-postgres`
-#                        en P4 (es quien reconfigura los cómputos cuando un tenant se
-#                        mueve de pageserver).
+#   (avisos)             el receptor de juguete de P2 se fue en P4·5: los avisos del
+#                        controller (notify-attach) los atiende `ore-postgres` en
+#                        /avisos y reconfigura los cómputos del tenant (86).
 #   storage-controller   dueño de tenants, generaciones y nodos. Modo ESTRICTO (con
 #                        autenticación) y --handle-ps-local-disk-loss: sin ella un
 #                        pageserver con el disco vacío deja el tenant colgado para
@@ -26,50 +25,6 @@
 # clúster es zonal: hoy los 3 en el mismo nodo), discos SSD, varios pageservers,
 # sharding, y que el controller gestione los safekeepers (se mide en P2·6).
 # ═══════════════════════════════════════════════════════════════════════════
-apiVersion: v1
-kind: ConfigMap
-metadata: { name: avisos, namespace: ore-pg }
-data:
-  avisos.py: |
-    # Hasta P4: contesta 200 a lo que mande el controller y lo deja en el log.
-    import http.server
-    class H(http.server.BaseHTTPRequestHandler):
-        def do_PUT(self): self._ok()
-        def do_POST(self): self._ok()
-        def do_GET(self): self._ok()
-        def _ok(self):
-            n = int(self.headers.get("Content-Length", 0)); b = self.rfile.read(n)
-            print(self.command, self.path, b.decode(), flush=True)
-            self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
-        def log_message(self, *a): pass
-    http.server.ThreadingHTTPServer(("0.0.0.0", 8000), H).serve_forever()
----
-apiVersion: v1
-kind: Service
-metadata: { name: avisos, namespace: ore-pg }
-spec:
-  selector: { ore.dev/rol: avisos }
-  ports: [{ name: http, port: 8000 }]
----
-apiVersion: apps/v1
-kind: Deployment
-metadata: { name: avisos, namespace: ore-pg }
-spec:
-  replicas: 1
-  selector: { matchLabels: { ore.dev/rol: avisos } }
-  template:
-    metadata: { labels: { ore.dev/rol: avisos, ore.dev/tenant: system } }
-    spec:
-      nodeSelector: { ore.dev/pool: neon }
-      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
-      containers:
-        - name: avisos
-          image: python:3.12-alpine
-          command: [python, -u, /app/avisos.py]
-          volumeMounts: [{ name: app, mountPath: /app }]
-          resources: { requests: { cpu: 5m, memory: 24Mi }, limits: { memory: 64Mi } }
-      volumes: [{ name: app, configMap: { name: avisos } }]
----
 # ── El controller ─────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Service
@@ -100,7 +55,7 @@ spec:
             - -l
             - 0.0.0.0:1234
             - --control-plane-url
-            - http://avisos.ore-pg.svc.cluster.local:8000
+            - http://ore-postgres.ore-pg.svc.cluster.local:8100/avisos
             - --handle-ps-local-disk-loss
           env:
             - name: DATABASE_URL
