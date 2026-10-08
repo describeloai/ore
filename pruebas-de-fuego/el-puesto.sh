@@ -1509,6 +1509,10 @@ if [ "$JAVA_OK" = "si" ]; then
   celda '1 / 0' && tiene "d['salida']['tipo']=='error' and 'ArithmeticException' in d['salida']['nombre']" || falla "9 · 1/0: $(cuerpo)"
   celda 'int y = \"a\";' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='CompilationError'" || falla "9 · no compila: $(cuerpo)"
   celda 'record C(String pais) {}\nvar cs = List.of(new C(\"ES\"), new C(\"PT\"));\ncs.stream().filter(c -> c.pais().equals(\"ES\")).count()' && tiene "d['salida']['texto']=='1'" || falla "9 · record + stream (varios snippets): $(cuerpo)"
+  # J1 (las salidas de una celda): un record, una lista de ellos y un Map salen como `json`.
+  celda 'new C(\"ES\")' && tiene "d['salida']['tipo']=='json' and d['salida']['valor']=={'pais': 'ES'}" || falla "9 · J1 · un record no sale como json: $(cuerpo)"
+  celda 'cs' && tiene "d['salida']['tipo']=='json' and d['salida']['valor']==[{'pais': 'ES'}, {'pais': 'PT'}]" || falla "9 · J1 · una lista de records no sale como json: $(cuerpo)"
+  celda 'new TreeMap<>(Map.of(\"n\", 1, \"l\", new long[]{2L, 3L}))' && tiene "d['salida']['tipo']=='json' and d['salida']['valor']=={'l': [2, 3], 'n': 1}" || falla "9 · J1 · un Map con un array no sale como json: $(cuerpo)"
   celda 'String saludo(String n) { return \"hola \" + n; }' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · un metodo: $(cuerpo)"
 
   # ── 9d · el reparto del pod, en la JVM (0031 W3) ─────────────────────────

@@ -304,6 +304,14 @@ public final class Agente {
                 m.put("ms", ms(t0));
                 return m;
             }
+            Map<String, Object> arbol = comoJson(valor);
+            if (arbol != null) {
+                m.putAll(arbol);
+                m.put("tipo", "json");
+                m.put("texto", texto);
+                m.put("ms", ms(t0));
+                return m;
+            }
             if (!hayValor) {
                 m.put("tipo", texto.isBlank() ? "vacia" : "texto");
                 if (!texto.isBlank()) m.put("texto", texto);
@@ -311,7 +319,7 @@ public final class Agente {
                 return m;
             }
             m.put("tipo", "texto");
-            m.put("texto", texto + (valor instanceof String s ? "\"" + s + "\"" : String.valueOf(valor)));
+            m.put("texto", texto + (valor instanceof String s ? "\"" + s + "\"" : valor instanceof byte[] b ? "bytes · " + b.length + " B" : String.valueOf(valor)));
             m.put("ms", ms(t0));
             return m;
         }
@@ -327,6 +335,102 @@ public final class Agente {
 
     /** La salida {@code tabla} del contrato: la hace el SDK ({@link Ore#table}); aquí sólo se le pone el límite de la consola. */
     static Map<String, Object> comoTabla(Object valor) { return Ore.table(valor, FILAS_MAXIMAS); }
+
+    // ── J1 (las salidas de una celda, S1) · `json`: un valor compuesto, como árbol ──
+    // Los mismos topes que el agente de Python (`agente.py`): por nivel, por cadena,
+    // de hondo y en total. Lo que no cabe se recorta y se dice (`recortado`); si ni
+    // así cabe, la celda sale como texto.
+    static final int JSON_POR_NIVEL = 500;
+    static final int JSON_CADENA = 5000;
+    static final int JSON_HONDO = 20;
+    // ⛔ ore-serve admite como mucho 1 MB por cuerpo (`ore_entrada::http::CUERPO_MAXIMO`).
+    static final int JSON_BYTES = 768 * 1024;
+
+    static boolean esCompuesto(Object v) {
+        return v instanceof Map<?, ?> || v instanceof java.util.Collection<?>
+            || (v != null && v.getClass().isArray() && !(v instanceof byte[])) || (v != null && v.getClass().isRecord());
+    }
+
+    /**
+     * {@code {valor, recortado}} de un valor compuesto —un {@code Map}, una
+     * {@code Collection} (no un {@code Iterable} cualquiera: un {@code Path} lo es),
+     * un array, un {@code record}—, o {@code null} si no
+     * lo es (una lista de maps ya es una {@code tabla}). Las hojas van como el JSON
+     * del contrato ({@link Ore#toJson}); los bytes, como {@code "bytes · N B"}; un
+     * objeto que no es JSON, por su {@code toString()}.
+     */
+    static Map<String, Object> comoJson(Object valor) {
+        if (!esCompuesto(valor)) return null;
+        boolean[] recortado = {false};
+        Object arbol;
+        try {
+            arbol = arbolDe(valor, 0, recortado);
+        } catch (RuntimeException e) {
+            return null;   // una colección que falla al recorrerse: como antes, por su toString()
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("valor", arbol);
+        m.put("recortado", recortado[0]);
+        if (Json.escribir(m).getBytes(StandardCharsets.UTF_8).length > JSON_BYTES) return null;
+        return m;
+    }
+
+    static Object arbolDe(Object v, int hondo, boolean[] recortado) {
+        if (v == null) return null;
+        if (v instanceof byte[] b) return "bytes · " + b.length + " B";
+        if (v instanceof CharSequence cs) {
+            String s = cs.toString();
+            if (s.length() <= JSON_CADENA) return s;
+            recortado[0] = true;
+            return s.substring(0, JSON_CADENA) + "… (" + (s.length() - JSON_CADENA) + " more characters)";
+        }
+        if (!esCompuesto(v)) {
+            Object j = Ore.toJson(v);
+            return j == null || j instanceof Boolean || j instanceof Number || j instanceof String ? j : String.valueOf(v);
+        }
+        if (hondo >= JSON_HONDO) { recortado[0] = true; return "…"; }
+        if (v.getClass().isRecord()) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (java.lang.reflect.RecordComponent c : v.getClass().getRecordComponents()) {
+                Object x;
+                try {
+                    java.lang.reflect.Method a = c.getAccessor();
+                    a.setAccessible(true);
+                    x = a.invoke(v);
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                    return String.valueOf(v);   // un record que no se deja leer: por su toString()
+                }
+                out.put(c.getName(), arbolDe(x, hondo + 1, recortado));
+            }
+            return out;
+        }
+        if (v instanceof Map<?, ?> mapa) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            int n = 0;
+            for (Map.Entry<?, ?> e : mapa.entrySet()) {
+                if (n++ == JSON_POR_NIVEL) break;
+                out.put(String.valueOf(e.getKey()), arbolDe(e.getValue(), hondo + 1, recortado));
+            }
+            if (mapa.size() > JSON_POR_NIVEL) { recortado[0] = true; out.put("…", (mapa.size() - JSON_POR_NIVEL) + " more keys"); }
+            return out;
+        }
+        List<Object> out = new ArrayList<>();
+        int sobran = 0;
+        if (v.getClass().isArray()) {
+            int largo = java.lang.reflect.Array.getLength(v);
+            for (int i = 0; i < Math.min(largo, JSON_POR_NIVEL); i++) out.add(arbolDe(java.lang.reflect.Array.get(v, i), hondo + 1, recortado));
+            sobran = largo - out.size();
+        } else {
+            java.util.Collection<?> c = (java.util.Collection<?>) v;
+            for (Object x : c) {
+                if (out.size() == JSON_POR_NIVEL) break;
+                out.add(arbolDe(x, hondo + 1, recortado));
+            }
+            sobran = c.size() - out.size();
+        }
+        if (sobran > 0) { recortado[0] = true; out.add("… " + sobran + " more items"); }
+        return out;
+    }
 
     // ── El servidor de lenguaje, y su correa (0037 ③b) ──────────────────────
 
@@ -412,6 +516,12 @@ public final class Agente {
             Kernel k = new Kernel();
             Map<String, Object> r = k.correr("record P(String n, int e) {}\nvar xs = List.of(new P(\"a\", 1), new P(\"b\", 2));\nxs.size() * 21", "java");
             if (!"42".equals(String.valueOf(r.get("texto")))) throw new IllegalStateException("el kernel no contesta 42: " + Json.escribir(r));
+            // J1: un record, un array y un Map salen como `json` (el árbol), y lo largo, recortado.
+            Map<String, Object> j = k.correr("record Q(String n, int[] e, Map<String, Object> m) {}\nnew Q(\"a\", new int[]{1, 2}, Map.of(\"k\", List.of(true)))", "java");
+            Map<String, Object> jl = k.correr("java.util.stream.IntStream.range(0, 600).boxed().toList()", "java");
+            if (!"json".equals(j.get("tipo")) || !"{\"n\":\"a\",\"e\":[1,2],\"m\":{\"k\":[true]}}".equals(Json.escribir(j.get("valor")))
+                || !"json".equals(jl.get("tipo")) || !Boolean.TRUE.equals(jl.get("recortado")) || ((List<?>) jl.get("valor")).size() != JSON_POR_NIVEL + 1)
+                throw new IllegalStateException("un valor compuesto no sale como json: " + Json.escribir(j));
             // Y el contrato de tipos por Arrow (0032 T3): si faltan los jars o el
             // --add-opens, se ve aquí y no en la primera celda de una persona.
             Ore.Rows f = Ore.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
