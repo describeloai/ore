@@ -248,6 +248,14 @@ fn milis(cu: f64) -> String {
     format!("{}m", (cu * 1000.0).round() as i64)
 }
 
+/// Un número tal cual en el JSON. ⚠️ Medido en vivo (P4·3·3): el API server
+/// valida `guest.cpus` contra el esquema de NeonVM y un `"250m"` es un 500
+/// («expected numeric»); con `vm.yaml` funcionaba porque YAML ya lo escribía como
+/// número. `Json` no modela decimales a propósito: va crudo.
+fn numero(x: f64) -> Json {
+    Json::Crudo(x.to_string())
+}
+
 /// Ranuras de memoria de 1 GiB para unas CU (1 CU = 4 GiB), al menos una.
 fn ranuras(cu: f64) -> i64 {
     ((cu * 4.0).ceil() as i64).max(1)
@@ -320,9 +328,9 @@ pub fn manifiesto(vm: &Vm, ns: &str, imagen: &str, pool: &str) -> Json {
                         (
                             "cpus",
                             Json::obj([
-                                ("min", Json::s(milis(vm.cu_min))),
-                                ("use", Json::s(milis(vm.cu_min))),
-                                ("max", Json::s(milis(vm.cu_max))),
+                                ("min", numero(vm.cu_min)),
+                                ("use", numero(vm.cu_min)),
+                                ("max", numero(vm.cu_max)),
                             ]),
                         ),
                         ("memorySlotSize", Json::s("1Gi")),
@@ -425,7 +433,7 @@ mod pruebas {
         .jcs();
         for esperado in [
             r#""podResources":{"requests":{"cpu":"250m","memory":"1Gi"}}"#,
-            r#""cpus":{"max":"1000m","min":"250m","use":"250m"}"#,
+            r#""cpus":{"max":1,"min":0.25,"use":0.25}"#,
             r#""memorySlots":{"max":4,"min":1,"use":1}"#,
             r#""ore.dev/rol":"postgres""#,
             r#""ore.dev/generacion":"3""#,
