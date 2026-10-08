@@ -1,8 +1,9 @@
 //! v1alpha25 — **el transform**: el productor declarado de un dataset escrito
 //! (ORE 0055, OOS v1alpha25 `01`). Como la función de v1alpha18, el documento
-//! `Transform` **se deriva** del código —un `@transform` de Python, que lee
-//! `ore-code`, o una sentencia SQL que escribe, que se lee aquí con el
-//! [`guion`]— y se coteja con él. Para cada transform, en este orden:
+//! `Transform` **se deriva** del código —un `@transform` de Python o un
+//! `@Transform` de Java (0055 T1·7), que lee `ore-code`, o una sentencia SQL que
+//! escribe, que se lee aquí con el [`guion`]— y se coteja con él. Para cada
+//! transform, en este orden:
 //!
 //! 1. que el `entrypoint` esté: el fichero, el `def` de su nivel superior o la
 //!    sentencia `n` (`OOS2042`);
@@ -37,8 +38,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Cómo se arregla un documento que no es el del código.
-const DERIVAR: &str = "the document is derived from the code: regenerate it from the `@transform` \
-                       or the SQL statement (commit the code), or change the code";
+const DERIVAR: &str = "the document is derived from the code: regenerate it from the `@transform`, \
+                       the SQL statement or the Java `@Transform` (commit the code), or change the \
+                       code";
 
 /// `<ruta>.sql:<n>` → `(ruta, n)`, o `None` si la forma no vale (`01` §4): la
 /// ruta, relativa con `/`, sin `..` ni `/` inicial, que termina en `.sql`; `n`,
@@ -183,8 +185,16 @@ pub fn puede_escribir(fuente: &str) -> bool {
 /// Un fichero de código leído una sola vez, aunque lo nombren varios
 /// documentos.
 enum Leido {
-    Python { fuente: String, d: Derivacion },
+    Python {
+        fuente: String,
+        d: Derivacion,
+    },
     Sql(Result<Guion, NoSeAnaliza>),
+    /// 0055 T1·7 · un `.java`: la clase del fichero y sus `@Transform`.
+    Java {
+        fuente: String,
+        c: ore_code::java::Clase,
+    },
 }
 
 fn leer<'a>(
@@ -201,6 +211,9 @@ fn leer<'a>(
             } else if ruta.ends_with(".py") {
                 let d = ore_code::python::derivar(&fuente, ruta);
                 Some(Leido::Python { fuente, d })
+            } else if ruta.ends_with(".java") {
+                let c = ore_code::java::derivar(&fuente, ruta);
+                Some(Leido::Java { fuente, c })
             } else {
                 None
             }
@@ -311,6 +324,45 @@ pub(crate) fn py_roto(
     true
 }
 
+/// 0055 T1·7 · `OOS2043` por un `.java` que no se lee entero —un comentario o
+/// una cadena sin cerrar, llaves que no casan— o con un `@Transform` fuera de
+/// sitio (en otra clase, una anidada, un campo). Una vez por fichero. `true` si
+/// lo es: entonces sus documentos se quedan como estaban.
+pub(crate) fn java_roto(
+    fichero: &Path,
+    fuente: &str,
+    c: &ore_code::java::Clase,
+    out: &mut Vec<Diagnostic>,
+    dichos: &mut BTreeSet<PathBuf>,
+) -> bool {
+    let lineas = Lineas::new(fuente);
+    let diag = if let Some(f) = c.sintaxis.first() {
+        Diagnostic::new(
+            Code::Oos2043,
+            fichero,
+            format!(
+                "this file does not read as Java, so its transforms are not derived: {}",
+                f.mensaje
+            ),
+        )
+        .at(crate::promover::pos(&lineas, f.rango))
+        .help(
+            "fix it: until the file reads, its `Transform` documents stay as they were and \
+             nothing new is derived",
+        )
+    } else if let Some(a) = c.avisos.first() {
+        Diagnostic::new(Code::Oos2043, fichero, a.mensaje.clone())
+            .at(crate::promover::pos(&lineas, a.rango))
+            .help(a.ayuda.clone().unwrap_or_default())
+    } else {
+        return false;
+    };
+    if dichos.insert(fichero.to_path_buf()) {
+        out.push(diag);
+    }
+    true
+}
+
 /// `OOS2043`: cada razón por la que un `@transform` no se deriva, en su sitio.
 fn no_se_deriva_t(
     fichero: &Path,
@@ -354,6 +406,21 @@ fn sitio_de(l: &Leido, clave: &str) -> Option<Sitio> {
         }
         Leido::Sql(Ok(g)) => g.sitios.get(&clave.parse().ok()?).cloned(),
         Leido::Sql(Err(_)) => None,
+        Leido::Java { fuente, c } => {
+            let x = c.transforms.iter().find(|x| x.nombre == clave)?;
+            let lineas = Lineas::new(fuente);
+            let p = |r| crate::promover::pos(&lineas, r);
+            Some(Sitio {
+                pos: Some(p(x.sitios.decorador)),
+                inputs: x
+                    .sitios
+                    .inputs
+                    .iter()
+                    .map(|(n, r)| (n.clone(), p(*r)))
+                    .collect(),
+                output: x.sitios.output.map(p),
+            })
+        }
     }
 }
 
@@ -418,6 +485,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         let leido = match runtime {
             "python" => crate::promover::entrypoint(texto).map(|(r, n)| (r, n.to_string())),
             "sql" => entrypoint_sql(texto).map(|(r, n)| (r, n.to_string())),
+            "java" => ore_code::java::entrypoint(texto).map(|(r, m)| (r, m.to_string())),
             _ => None,
         };
         let Some((ruta, clave)) = leido else { continue };
@@ -498,6 +566,56 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     Ok(p) => p,
                 }
             }
+            Leido::Java { fuente, c } => {
+                // ── OOS2043 · se lee como Java ───────────────────────────
+                if java_roto(&fichero, fuente, c, out, &mut rotos) {
+                    continue;
+                }
+                // ── OOS2042 · la clase tiene ese método ──────────────────
+                if !c.tiene_metodo(&clave) {
+                    let clase = c.nombre.as_deref().map_or_else(
+                        || "no class named like the file".to_string(),
+                        |n| format!("its class `{n}` has no method `{clave}`"),
+                    );
+                    out.push(
+                        Diagnostic::new(Code::Oos2042, &t.path, format!("`{ruta}`: {clase}"))
+                            .at(nodo.pos())
+                            .help(
+                                "the `entrypoint` names a method of the file's class: the \
+                                 top-level class named like the `.java`",
+                            ),
+                    );
+                    continue;
+                }
+                // ── OOS2013 · el método es un transform ──────────────────
+                let Some(x) = c.transforms.iter().find(|x| x.nombre == clave) else {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2013,
+                            &t.path,
+                            format!(
+                                "`{ruta}:{clave}` has no `@Transform` (`ore.Transform`), and this \
+                                 document says it is a transform"
+                            ),
+                        )
+                        .at(nodo.pos())
+                        .help(
+                            "a transform is marked in the code —`import ore.Transform;` and \
+                             `@Transform(inputs = {…}, output = …)` on a `public static` method— \
+                             and the document comes from there",
+                        ),
+                    );
+                    continue;
+                };
+                // ── OOS2043 · se deriva ──────────────────────────────────
+                match &x.resultado {
+                    Err(fallos) => {
+                        no_se_deriva_t(&fichero, fuente, &clave, fallos, out);
+                        continue;
+                    }
+                    Ok(p) => p,
+                }
+            }
             Leido::Sql(Err(motivo)) => {
                 sql_roto(&fichero, motivo, out, &mut rotos);
                 continue;
@@ -560,7 +678,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // (`OOS2030`), donde el código es de la sesión, sin más.
     for (carpeta, _) in paquetes_publicables(pkg) {
         let mut ficheros = Vec::new();
-        ficheros_con(&carpeta, &[".py", ".sql"], &mut ficheros);
+        ficheros_con(&carpeta, &[".py", ".sql", ".java"], &mut ficheros);
         ficheros.sort();
         for f in ficheros {
             if carpeta_del_paquete(&f, &pkg.root) != carpeta {
@@ -574,6 +692,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 && !std::fs::read_to_string(&f).is_ok_and(|t| {
                     if ruta.ends_with(".sql") {
                         puede_escribir(&t)
+                    } else if ruta.ends_with(".java") {
+                        ore_code::java::puede_tener_transforms(&t)
                     } else {
                         ore_code::puede_tener_transforms(&t)
                     }
@@ -613,6 +733,34 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                                     format!(
                                         "the `@transform` `{}` has no document: no `Transform` \
                                          of the package has `entrypoint: {}`",
+                                        x.nombre, p.entrypoint
+                                    ),
+                                )
+                                .at(crate::promover::pos(&lineas, x.rango))
+                                .help(DERIVAR),
+                            ),
+                        }
+                    }
+                }
+                Leido::Java { fuente, c } => {
+                    if c.declara_transforms() && java_roto(&f, fuente, c, out, &mut rotos) {
+                        continue;
+                    }
+                    let lineas = Lineas::new(fuente);
+                    for x in c
+                        .transforms
+                        .iter()
+                        .filter(|x| !nombrados.contains(&(f.clone(), x.nombre.clone())))
+                    {
+                        match &x.resultado {
+                            Err(fallos) => no_se_deriva_t(&f, fuente, &x.nombre, fallos, out),
+                            Ok(p) => out.push(
+                                Diagnostic::new(
+                                    Code::Oos2013,
+                                    &f,
+                                    format!(
+                                        "the `@Transform` `{}` has no document: no `Transform` of \
+                                         the package has `entrypoint: {}`",
                                         x.nombre, p.entrypoint
                                     ),
                                 )
@@ -706,7 +854,7 @@ fn coherencia(t: &Loaded, p: &Produccion, out: &mut Vec<Diagnostic>) -> bool {
                 (Some(d), Some(c)) => format!("`description` says `{d}` and the code, `{c}`"),
                 (Some(d), None) => format!("`description: {d}` is not in the code"),
                 _ => format!(
-                    "`description: {}` is missing: the first line of the docstring",
+                    "`description: {}` is missing: the first line of the docstring (or the Javadoc)",
                     p.descripcion.as_deref().unwrap_or_default()
                 ),
             },
@@ -1519,6 +1667,115 @@ mod tests {
                 .any(|x| x.code == Code::Oos2043 && rel(&d, x) == "packages/ventas/etl/otro.py"),
             "{ds:?}"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0055 T1·7 · Un `@Transform` de Java, por el mismo camino que Python: el
+    /// commit escribe su documento, la puerta lo coteja, lo que no resuelve se
+    /// dice en el `.java`, un fichero que no se lee deja su documento, y sin la
+    /// anotación el documento se va. La llamada de la plantilla v6 no es nada.
+    #[test]
+    fn un_transform_de_java_nace_se_coteja_y_se_va() {
+        const JAVA: &str = r#"import static ore.Ore.*;
+import ore.Transform;
+
+public class Limpios {
+    static final String CLIENTES = "ventas.clientes";
+
+    /** Los clientes, limpios. */
+    @Transform(inputs = {CLIENTES}, output = "ventas.limpios_java")
+    public static Object limpios() throws Exception {
+        return write("ventas.limpios_java", over(CLIENTES));
+    }
+}
+"#;
+        let d = arbol("java");
+        escribir(&d, "etl/Limpios.java", JAVA);
+        generar(&d);
+        let doc = d.join("packages/ventas/etl/pipeline/ventas.limpios_java.yaml");
+        let texto = std::fs::read_to_string(&doc).unwrap();
+        assert!(
+            texto.contains(
+                "  runtime: java\n  entrypoint: etl/Limpios.java:limpios\n  \
+                 inputs: [ventas.clientes]\n  output: ventas.limpios_java\n"
+            ),
+            "{texto}"
+        );
+        assert!(
+            texto.contains("  description: 'Los clientes, limpios.'\n"),
+            "{texto}"
+        );
+        assert!(texto.contains("  owner: user:ana\n"), "{texto}");
+        assert!(diagnosticos(&d).is_empty(), "{:?}", diagnosticos(&d));
+
+        // Una entrada que no es nada se dice en el `.java`, en su línea.
+        escribir(
+            &d,
+            "etl/Limpios.java",
+            &JAVA.replace("\"ventas.clientes\";", "\"ventas.nadie\";"),
+        );
+        generar(&d);
+        let ds = diagnosticos(&d);
+        let x = ds
+            .iter()
+            .find(|x| x.code == Code::Oos2018)
+            .unwrap_or_else(|| panic!("{ds:?}"));
+        assert_eq!(rel(&d, x), "packages/ventas/etl/Limpios.java");
+        assert_eq!(x.pos.map(|p| p.line), Some(8), "{x:?}");
+
+        // Un fichero que no se lee deja su documento, y lo dice.
+        escribir(
+            &d,
+            "etl/Limpios.java",
+            &JAVA.replace("/** Los clientes, limpios. */", "/* Los clientes, limpios."),
+        );
+        let plan = generar(&d);
+        assert!(
+            plan.cambios
+                .iter()
+                .all(|c| c.accion != crate::generar::Accion::Borrar),
+            "{:?}",
+            plan.cambios
+        );
+        assert!(doc.is_file());
+        let ds = diagnosticos(&d);
+        assert!(
+            ds.iter().any(|x| x.code == Code::Oos2043
+                && x.message.starts_with("this file does not read as Java")),
+            "{ds:?}"
+        );
+
+        // Sin la anotación, el documento se va.
+        escribir(
+            &d,
+            "etl/Limpios.java",
+            &JAVA.replace(
+                "    @Transform(inputs = {CLIENTES}, output = \"ventas.limpios_java\")\n",
+                "",
+            ),
+        );
+        let plan = generar(&d);
+        assert!(
+            plan.cambios
+                .iter()
+                .any(|c| c.accion == crate::generar::Accion::Borrar),
+            "{:?}",
+            plan.cambios
+        );
+        assert!(!doc.is_file());
+        assert!(diagnosticos(&d).is_empty(), "{:?}", diagnosticos(&d));
+
+        // La plantilla v6 —`transform(…)` llamado en `main`— no da nada.
+        escribir(
+            &d,
+            "etl/Example.java",
+            "import static ore.Ore.*;\nimport java.util.List;\npublic class Example {\n    \
+             public static void main(String[] a) throws Exception {\n        \
+             transform(\"t\", List.of(\"ventas.clientes\"), \"ventas.x\", () -> null);\n    }\n}\n",
+        );
+        let plan = generar(&d);
+        assert!(plan.cambios.is_empty(), "{:?}", plan.cambios);
+        assert!(diagnosticos(&d).is_empty(), "{:?}", diagnosticos(&d));
         let _ = std::fs::remove_dir_all(&d);
     }
 

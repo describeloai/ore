@@ -1520,14 +1520,16 @@ fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
     let Some((_, spec)) = raiz.get("spec") else {
         return falta(
             "spec",
-            "se deriva del código: `ore` lo escribe desde el `@transform` o la sentencia SQL",
+            "se deriva del código: `ore` lo escribe desde el `@transform`, la sentencia SQL o el \
+             `@Transform` de Java",
         );
     };
     for (clave, ayuda) in [
-        ("runtime", "`python` o `sql`"),
+        ("runtime", "`python`, `sql` o `java`"),
         (
             "entrypoint",
-            "`<ruta>.py:<def>` o `<ruta>.sql:<n>`, desde la carpeta del paquete",
+            "`<ruta>.py:<def>`, `<ruta>.sql:<n>` o `<ruta>.java:<método>`, desde la carpeta del \
+             paquete",
         ),
         ("inputs", "lo que el código lee; puede ser `[]`"),
         ("output", "lo que el código escribe"),
@@ -1547,12 +1549,15 @@ fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
     let bien = match runtime {
         "python" => crate::promover::entrypoint(entrypoint).is_some(),
         "sql" => crate::transformar::entrypoint_sql(entrypoint).is_some(),
+        // v1alpha25 `01` §5.5 (ORE 0055 T1·7): un método `@Transform` de Java.
+        "java" => ore_code::java::entrypoint(entrypoint).is_some(),
         otro => {
             return Some((
                 format!("`runtime: {otro}` no es el de un transform"),
                 Some(
-                    "`python` (un `@transform`) o `sql` (una sentencia que escribe). Java y \
-                     TypeScript entran cuando su declaración se pueda leer sin ejecutar"
+                    "`python` (un `@transform`), `sql` (una sentencia que escribe) o `java` (un \
+                     `@Transform`). TypeScript entra cuando su declaración se pueda leer sin \
+                     ejecutar"
                         .to_string(),
                 ),
             ));
@@ -1564,6 +1569,9 @@ fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
             Some(
                 if runtime == "python" {
                     "`<ruta>.py:<def>`: relativa a la carpeta del paquete, con `/`, sin `..`"
+                } else if runtime == "java" {
+                    "`<ruta>.java:<método>`: relativa a la carpeta del paquete, con `/`, sin \
+                     `..`; el método, de la clase del fichero"
                 } else {
                     "`<ruta>.sql:<n>`: relativa a la carpeta del paquete, con `/`, sin `..`; `n`, \
                      la sentencia, desde 1"

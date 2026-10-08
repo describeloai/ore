@@ -35,11 +35,14 @@
 //! - [`transform`]: lo que un `@transform` (OOS v1alpha25) declara leer y
 //!   escribir —lo de Python lo llena [`python`]; lo de SQL, `ore-core`— y su
 //!   documento `Transform`.
+//! - [`java`]: un `.java` → sus `@Transform` (OOS v1alpha25 `01` §5.5), con un
+//!   lexer propio: comentarios, cadenas y llaves, sin compilar.
 //! - [`lineas`]: de un desplazamiento en bytes a línea y columna, para que un
 //!   diagnóstico apunte al `.py` como lo haría un compilador.
 
 pub mod emitir;
 pub mod firma;
+pub mod java;
 pub mod lineas;
 pub mod python;
 pub mod transform;

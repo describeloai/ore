@@ -441,8 +441,8 @@ pub fn aplicar(plan: &Plan) -> std::io::Result<()> {
 
 // ── v1alpha25 · el documento de cada transform (ORE 0055 T1·4) ──────────────
 
-/// **El plan de los `Transform`** de lo que toca `solo` (rutas de `.py` o
-/// `.sql`, existan o no), como [`plan_con_dueno`] el de las funciones:
+/// **El plan de los `Transform`** de lo que toca `solo` (rutas de `.py`, `.sql`
+/// o `.java`, existan o no), como [`plan_con_dueno`] el de las funciones:
 ///
 /// - **dónde**: `<repositorio>/pipeline/<salida>.yaml` del paquete
 ///   (v1alpha25 `01` §9, no normativo); un derivado del mismo `entrypoint` en
@@ -497,7 +497,7 @@ fn transforms_del_paquete(
     }
 
     let mut ficheros = Vec::new();
-    crate::promover::ficheros_con(carpeta, &[".py", ".sql"], &mut ficheros);
+    crate::promover::ficheros_con(carpeta, &[".py", ".sql", ".java"], &mut ficheros);
     ficheros.sort();
     let mut vivos: BTreeSet<String> = BTreeSet::new();
     // Un fichero que no se analiza no dice qué transforms tiene: lo suyo se queda.
@@ -536,6 +536,39 @@ fn transforms_del_paquete(
                             d = d.at(pos);
                         }
                         p.diagnosticos.push(d);
+                    }
+                }
+            }
+            continue;
+        }
+        // 0055 T1·7 · un `.java`: sus `@Transform`, con la misma regla que un `.py`
+        // —uno que no se lee entero deja sus documentos como estaban—.
+        if ruta.ends_with(".java") {
+            if !ore_code::java::puede_tener_transforms(&fuente) {
+                continue;
+            }
+            let c = ore_code::java::derivar(&fuente, &ruta);
+            let nombrado = existentes
+                .keys()
+                .any(|e| e.rsplit_once(':').is_some_and(|(r, _)| r == ruta));
+            if (nombrado || c.declara_transforms())
+                && crate::transformar::java_roto(
+                    &f,
+                    &fuente,
+                    &c,
+                    &mut p.diagnosticos,
+                    &mut BTreeSet::new(),
+                )
+            {
+                rotos.insert(ruta);
+                continue;
+            }
+            for x in &c.transforms {
+                vivos.insert(format!("{ruta}:{}", x.nombre));
+                match &x.resultado {
+                    Ok(pr) => producciones.push((f.clone(), pr.clone())),
+                    Err(fallos) => {
+                        no_se_deriva(&f, &fuente, &x.nombre, fallos, &mut p.diagnosticos)
                     }
                 }
             }

@@ -878,7 +878,10 @@ pub(crate) fn generar_funciones(
 ) -> Vec<Generado> {
     let solo: std::collections::BTreeSet<PathBuf> = tocadas
         .iter()
-        .filter(|r| r.ends_with(".py") || r.ends_with(".ts") || r.ends_with(".sql"))
+        // 0055 T1·7: un `.java` puede tener `@Transform`.
+        .filter(|r| {
+            r.ends_with(".py") || r.ends_with(".ts") || r.ends_with(".sql") || r.ends_with(".java")
+        })
         .map(|r| raiz.join(r.trim_matches('/')))
         .collect();
     generar_de(raiz, solo, dueno)
