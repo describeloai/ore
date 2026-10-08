@@ -383,6 +383,64 @@ cross join lateral functions.pdf_pages(c._item) as p
 - An item the `where` leaves out keeps one row of `kind: item` with no values, as in `apply()`:
   so it is not computed again.
 
+### Files from files in SQL (ORE 0049 B10)
+
+**A collection can be defined by its query**: each row it gives is a file, computed item by item
+from the collection it reads, exactly like `apply()` into a collection (above). It is a
+statement of a `.sql` file of a transforms repository: a `Transform` whose output is the
+collection and whose inputs are what the query reads.
+
+```sql
+-- transforms/pages.sql
+create or replace media collection legal.archive.pages media image formats (png)
+comment 'one PNG per page' as
+select p.name, p.data, p.anchor
+from legal.archive.contracts as c
+cross join lateral functions.pdf_to_png(c._item) as p
+where c.content_type = 'application/pdf'
+```
+
+The bytes come from a tree function that returns them: here, an `@function` published in
+Functions whose result is `list[Page]`, a `@dataclass` with `name: str`, `data: bytes` and
+`anchor: Anchor` (another `@dataclass` with `kind` and `page`). `bytes` is `Opaque` in its
+contract and `BLOB` in SQL.
+
+```sql
+-- copying, with no function: `data` is the item, and its bytes are copied as they are
+create or replace media collection legal.archive.pdf_only media document formats (pdf) as
+select 'copy.pdf' as name, c._item as data
+from legal.archive.contracts as c
+where c.content_type = 'application/pdf'
+```
+
+- **The columns are the file, by name**: `name` (its path inside the item it comes from:
+  `p001.png` is `<item path>/p001.png`) and `data` (a `BLOB`, or an item, whose bytes are copied
+  with its type), always; `content_type` and `anchor` if the query says them. Any other column
+  is an error: a file has nowhere to keep it (to keep it, write a dataset from the collection, as
+  above). So is `*`, an expression with no name, or a column twice.
+- **Build** creates the collection if it is not there —written, with that `media` and
+  `formats`— and fills it. An existing one has to be written (no `from`) and have the same
+  `media` and `formats`.
+- **The same rules as files from files in Python**: each file carries its `source` and
+  `derivation`; only what changed is computed; an item that changes replaces its files and the
+  ones it no longer gives are retired; an item that is gone takes its files; an item with no rows
+  leaves its `empty` mark, and one that fails its `error` mark. The version is the query and the
+  documents (and code) of the functions it calls: changing the query recomputes every item.
+- The cell's result is one row: `items`, `new`, `recomputed`, `skipped`, `errors`, `removed`,
+  `files_written`, `files_retired`.
+- **Preview** (the statement's number) runs the query over the first 10 items, as the build does,
+  and shows what each row would be as a file —`item`, `name`, `path`, `content_type`, `size`,
+  `anchor`, `error`— without creating the collection, writing anything, or reading a byte (the
+  size of a copy is the listing's).
+- **Limits**, those of an anchored dataset, each one an error that says what to do: `create or
+  replace` (`create … as` without it would fail the second time; `if not exists` does not go with
+  `as`); one collection in `FROM` and nothing else; nothing that needs more than one item (`group
+  by`, aggregates, windows, `order by`, `limit`); it does not read itself; and its functions are
+  code functions without `over` or `models`.
+- Worth knowing: the collection lives in **the branch of the build** until it is merged (a
+  session on another branch does not see it yet); and the `fn` of the statement's files is the
+  name of its `.sql` file, so moving the statement to another file recomputes every item.
+
 ### Serving media to a browser
 
 A `Media<c>` property of an Entity holds the fingerprint of an item of collection `c`.

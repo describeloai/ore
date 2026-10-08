@@ -4,8 +4,8 @@
 —B2 y B3 en vivo en victor el 2026-10-01—: la gramática en OOS v1alpha17, el contrato de ejecución en
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
-B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 hecho** —ficheros que
-dan ficheros, en vivo el 2026-10-08—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -665,11 +665,11 @@ tres contratos copiados a una escrita de entrada, y un `@transform` que da un PN
 
 Los tres primeros los dejaba pasar el banco; lo destapó correrlo en vivo.
 
-**Fuera, y anotado:** su forma SQL (`insert into media collection … select …`, M3, que verá
-`source` como columna del listado); Node y la JVM; las marcas `empty` y `error` y el corte a mitad
+**Fuera, y anotado:** su forma SQL —hecha después, en B10, como `create or replace media
+collection … as select …`—; Node y la JVM; las marcas `empty` y `error` y el corte a mitad
 sólo están probados en el banco y en Rust (los contratos de victor dan todos una página).
 
-### B10 · diseño (propuesto, 2026-10-08): ficheros que dan ficheros, en SQL
+### B10 · hecho: ficheros que dan ficheros, en SQL (2026-10-08, victor)
 
 La forma SQL de B9, como B7 lo es de B5. Vive en un repositorio **`transforms-sql`**: escribe
 datos, así que es un Transform y se construye con Build, con su linaje y su salida declarada.
@@ -715,8 +715,8 @@ demás siguen.
 **Los límites de la primera versión**, los de B7, cada uno con su error: una sola colección en el
 `FROM` y ningún `join` con otra relación; sin agregados, ventanas, `order by` ni `limit`;
 funciones de Python sin `over` ni `models`; dos filas de un ítem con el mismo `name`, error de ese
-ítem. La colección, si ya existe, tiene que tener el mismo `media` y `formats` (cambiarlos es un
-`alter`, aparte); si es mantenida (tiene `from`), no se escribe.
+ítem. La colección, si ya existe, tiene que tener el mismo `media` y `formats` (cambiarlos no
+entra: se escribe otra); si es mantenida (tiene `from`), no se escribe.
 
 **Preview** (0055): la consulta sobre los primeros ítems, sin escribir nada; se ven las filas que
 serían ficheros (`name`, `content_type`, el tamaño de `data`, `anchor`), no los bytes.
@@ -729,10 +729,24 @@ serían ficheros (`name`, `content_type`, el tamaño de `data`, `anchor`), no lo
 | B10·3 | **hecho**: la celda (ore-serve, `celda_de_sentencia`) crea la colección si no está —escrita, con su `media` y `formats`— **antes** de declarar el transform (que la nombra), y dentro `_sql_a_ficheros` (SDK): la consulta ítem a ítem (`_consulta_por_item`, sacada de `_sql_per_item`, que no cambia) y cada fila un `ore.File` (`_fichero_de_fila`: `data` bytes, o un ítem cuyos bytes se copian con su tipo; del ancla, sin sus nulos) por `apply()` hacia ella (B9). Su fila: `items`, `new`, `recomputed`, `skipped`, `errors`, `removed`, `files_written`, `files_retired` (`_resultado_de_derivar`). `pruebas-de-fuego/la-derivacion-a-ficheros-en-sql.py`, 6 casos con DuckDB de verdad contra el banco (que gana `POST /puestos/p1/sql`); la celda, en el corpus de `el_codigo_generado_casa_con_el_sdk` |
 | B10·4 | **hecho**: **Preview** de la sentencia (ore-serve `ensayo.rs`, el primero de SQL; lo demás sigue en 0055 P4): la consulta sobre los primeros 10 ítems, como el build, y lo que serían sus ficheros al informe (`_ensayar_ficheros`: `item`, `name`, `path`, `content_type`, `size`, `anchor`, `error`; `mode: files`), dentro del techo del Preview y sin crear la colección, escribir ni leer un byte (el tamaño de una copia es el del listado). `/transforms/editor` dice `previewable` de cada sentencia, y la consola (rubix-platform) la deja elegir y dice «files would be written». **El editor**: `lsp_sql` deja la frase al árbol y da a DuckDB sólo la consulta de detrás de `as` |
 | B10·5 | **hecho en vivo** (2026-10-08, victor, repositorio `pytransformsv3`, `pruebas-de-fuego/b105-ficheros-en-sql/`): `functions.pdf_a_png` sobre `s3_stuff.nueva_carpeta.contratos` → `sandbox.default.b105_paginas`. Preview: 4 ficheros, nada escrito, 3,5 s. Build: **la colección nace en el build**, 4 nuevos y 4 ficheros, 17 s. Otra vez: 4 saltados, nada escrito. La consulta cambiada (fuera el escaneado): 4 recalculados, 3 escritos y 1 retirado (el escaneado, `empty`), 12 s. Copiar sin función (`c._item as data`) → `b105_copias`: Preview en 362 ms sin leer bytes; Build 4 ficheros, los mismos bytes. Visto por el camino: la colección es de la rama del build hasta fusionarla (otra sesión no la ve), y el `fn` de una sentencia es el nombre de su fichero (moverla a otro recalcula) |
-| B10·6 | docs y esta sección pasa a «hecho» |
+| B10·6 | **hecho**: [`docs/sdk.md`](../sdk.md) «Files from files in SQL (ORE 0049 B10)» —la sentencia, sus columnas, copiar con `c._item as data`, Build, Preview, los límites, la rama y el `fn` del fichero— y esta sección |
+
+**Lo que se encontró por el camino**, cada uno arreglado y con su prueba:
+
+- el ítem del listado SQL es `_item` desde 0057 C3, y los ejemplos de `docs/sdk.md` decían
+  `item` (lo destapó B10·0 en vivo: `c.item` no existe);
+- pyright veía `Media["c"]` como la clase `Media`, no como el `MediaRef` que es
+  (`item.collection`, «unknown attribute»);
+- OOS v1alpha25 `01` §5.2 decía expresamente que `create media collection` no es un transform: la
+  fila nueva, y su caso;
+- el `@transform` se declara al llamarse, y su salida ya tiene que existir: la colección se crea
+  en la celda **antes** de declararlo, no dentro;
+- el servidor de lenguaje SQL pasaba la frase entera a DuckDB, que la habría marcado en rojo.
 
 **Fuera, y anotado:** `join` con otras relaciones (la versión del dataset en la clave); Functions
-de TypeScript o Java desde SQL; `annotations` del fichero desde columnas de la consulta.
+de TypeScript o Java desde SQL; `annotations` del fichero desde columnas de la consulta; un `fn`
+que no dependa del nombre del fichero (hoy moverla de fichero recalcula); el resto del Preview de
+SQL (0055 P4).
 
 
 ## Lo que no se hace aquí
