@@ -669,6 +669,72 @@ Los tres primeros los dejaba pasar el banco; lo destapó correrlo en vivo.
 `source` como columna del listado); Node y la JVM; las marcas `empty` y `error` y el corte a mitad
 sólo están probados en el banco y en Rust (los contratos de victor dan todos una página).
 
+### B10 · diseño (propuesto, 2026-10-08): ficheros que dan ficheros, en SQL
+
+La forma SQL de B9, como B7 lo es de B5. Vive en un repositorio **`transforms-sql`**: escribe
+datos, así que es un Transform y se construye con Build, con su linaje y su salida declarada.
+
+```sql
+-- transforms/paginas.sql
+create or replace media collection legal.archivo.paginas media image formats (png) as
+select p.name, p.data, p.anchor
+from legal.archivo.contratos as c
+cross join lateral legal.funciones.pdf_a_png(c._item) as p
+where c.content_type = 'application/pdf';
+```
+
+**Por qué `create or replace … as select`, y no `insert into media collection … select`** (lo
+que B7 apuntó): `insert into` promete añadir, y lo que pasa es otra cosa —cada origen
+**reemplaza** su salida, lo que ya no da se retira, lo que se fue se lleva lo suyo—. `or replace`
+dice la verdad, como en B7: el resultado es el de recalcularlo todo; lo incremental sólo lo
+abarata. Y la colección queda **definida por su consulta**, con su medio y sus formatos, como un
+`create or replace dataset … as select` define un dataset.
+
+**Lo que la consulta da**, una fila por fichero, por nombre de columna:
+
+| columna | tipo | |
+|---|---|---|
+| `name` | `String`, obligatoria | el camino del fichero dentro del ítem de origen (`p001.png` → `<ruta>/p001.png`), como `ore.File.name` |
+| `data` | `BLOB`, o un `Media<c>` | los bytes; un `Media` (p. ej. `c._item`) **copia** ese ítem tal cual —filtrar o copiar una colección sin escribir una función— |
+| `content_type` | `String`, opcional | el declarado; mandan los bytes |
+| `anchor` | `Anchor`, opcional | qué parte del ítem es |
+
+Cualquier otra columna es un error (no hay dónde ponerla: el fichero no tiene columnas). Los
+bytes los da una **Function** (0050): una `@function` de Python que devuelve
+`list[Pagina]`, con `name: str`, `data: bytes` y `anchor: Anchor` —`bytes` es `Opaque` en su
+contrato y `BLOB` en SQL (`ore-code` `derivar.rs`, `sql_functions.py`)—, llamada con
+`cross join lateral f(c._item)` como en B7.
+
+**Cómo se calcula:** exactamente B9. El SDK corre la consulta **ítem a ítem** con la colección
+reducida a ese ítem (lo que ya hace B7 con `_sql_per_item`), convierte cada fila en un `ore.File` y
+se lo da a `apply()` hacia la colección: el mismo registro por clave, las marcas, el reemplazo por
+origen, retirar lo que se fue. La versión es la consulta normalizada y el código de cada función
+que llama (la de B7). Un error de un ítem —de la función o de la consulta— es su marca, y los
+demás siguen.
+
+**Los límites de la primera versión**, los de B7, cada uno con su error: una sola colección en el
+`FROM` y ningún `join` con otra relación; sin agregados, ventanas, `order by` ni `limit`;
+funciones de Python sin `over` ni `models`; dos filas de un ítem con el mismo `name`, error de ese
+ítem. La colección, si ya existe, tiene que tener el mismo `media` y `formats` (cambiarlos es un
+`alter`, aparte); si es mantenida (tiene `from`), no se escribe.
+
+**Preview** (0055): la consulta sobre los primeros ítems, sin escribir nada; se ven las filas que
+serían ficheros (`name`, `content_type`, el tamaño de `data`, `anchor`), no los bytes.
+
+| paso | qué |
+|---|---|
+| B10·0 | **comprobar en vivo** la tubería que no se ha probado nunca: una `@function` que devuelve `list[…]` con `bytes`, llamada desde `sql()` con `cross join lateral`, llega como `BLOB` con su ancla (y lo que tarda, con los contratos) |
+| B10·1 | el guion (ore-core): `create [or replace] media collection … media … formats (…) as select`, cotejado contra el árbol (una colección en el `FROM`, las columnas de arriba por nombre, la colección destino escrita) |
+| B10·2 | la unidad `.sql` de `transforms-sql`: el Transform que la declara (salida = la colección, entradas = lo que lee) y la colección creada al construir si no está |
+| B10·3 | el SDK: la sentencia en el Build —consulta ítem a ítem → `ore.File` → `apply()`—, con su fila de resultado (`items`, `new`, …, `files_written`, `files_retired`) |
+| B10·4 | Preview de la sentencia, y el editor la reconoce (no la marca, no va a DuckDB) |
+| B10·5 | casos: el guion (ore-core) y el banco (`la-derivacion-a-ficheros` con su forma SQL); y en vivo, un `.sql` en un repositorio `transforms-sql` de victor: contratos → PNG por página, otra vez nada, la entrada cambiada |
+| B10·6 | docs y esta sección pasa a «hecho» |
+
+**Fuera, y anotado:** `join` con otras relaciones (la versión del dataset en la clave); Functions
+de TypeScript o Java desde SQL; `annotations` del fichero desde columnas de la consulta.
+
+
 ## Lo que no se hace aquí
 
 - Las funciones concretas de IA (qué OCR, qué modelo de transcripción): se eligen sobre la base,
