@@ -225,14 +225,22 @@ class Kernel:
     @staticmethod
     def salida_de(valor, texto, t0):
         """La salida tipada de una celda, según su último valor (las salidas de
-        una celda, S1): una tabla (DataFrame, Series, Arrow) → `tabla`; un
-        `dict`, `list`, `tuple`, `set` o `@dataclass` (un `MediaRef`, lo que
-        devuelve el SDK) → `json`; nada → `texto` con lo impreso, o `vacia`; lo
-        demás (un número, una cadena, un objeto), `texto` con su `repr`."""
+        una celda): una tabla (DataFrame, Series, Arrow) → `tabla`; un ítem de
+        una colección (`MediaRef`, `Item`) o una lista de ellos → `media` (S2);
+        una imagen (sus bytes, un `PIL.Image`, una figura de matplotlib, un
+        `ore.File` de imagen) → `imagen` (S2); un `dict`, `list`, `tuple`,
+        `set` o `@dataclass` → `json` (S1); nada → `texto` con lo impreso, o
+        `vacia`; lo demás (un número, una cadena, un objeto), `texto` con su
+        `repr`."""
         tabla = como_tabla(valor)
         if tabla is not None:
             tabla.update({"tipo": "tabla", "texto": texto, "ms": ms(t0)})
             return tabla
+        for como, tipo in ((como_media, "media"), (como_imagen, "imagen")):
+            s = como(valor)
+            if s is not None:
+                s.update({"tipo": tipo, "texto": texto, "ms": ms(t0)})
+                return s
         arbol = como_json(valor)
         if arbol is not None:
             arbol.update({"tipo": "json", "texto": texto, "ms": ms(t0)})
@@ -261,7 +269,9 @@ def como_tabla(valor):
 JSON_POR_NIVEL = 500
 JSON_CADENA = 5000
 JSON_HONDO = 20
-JSON_BYTES = 2 * 1024 * 1024
+# ⛔ ore-serve admite como mucho 1 MB por cuerpo (`ore_entrada::http::CUERPO_MAXIMO`):
+#   una salida mayor es un 413 y la celda se queda sin ella.
+JSON_BYTES = 768 * 1024
 
 
 def como_json(valor):
@@ -326,6 +336,122 @@ def como_json(valor):
     if len(json.dumps(arbol, ensure_ascii=False, default=str)) > JSON_BYTES:
         return None
     return {"valor": arbol, "recortado": recortado[0]}
+
+
+# ── S2 · `media` e `imagen` ─────────────────────────────────────────────────
+MEDIA_MAXIMOS = 200
+#: Lo que una imagen ocupa como mucho en la salida, en crudo (en base64, ~4/3):
+#: por debajo del cuerpo máximo de ore-serve. Una mayor se reduce.
+IMAGEN_BYTES = 512 * 1024
+IMAGEN_LADO = 1600
+_FIRMAS = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF87a", "image/gif"),
+           (b"GIF89a", "image/gif"))
+
+
+def tipo_de_imagen(b):
+    """El tipo de unos bytes, si son una imagen que un navegador pinta."""
+    for firma, tipo in _FIRMAS:
+        if b.startswith(firma):
+            return tipo
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    cabeza = b[:256].lstrip().lower()
+    if cabeza.startswith(b"<svg") or (cabeza.startswith(b"<?xml") and b"<svg" in b[:1024].lower()):
+        return "image/svg+xml"
+    return None
+
+
+def como_media(valor):
+    """`{items: [{collection, path, version, content_type, size, digest}]}` de un
+    ítem de una colección —`MediaRef`, `Item`— o de una lista de ellos, o
+    `None`. Sin URL ni bytes: la consola firma cada uno en la rama de la sesión
+    al pintarlo (una URL firmada no se guarda en el historial de la celda)."""
+    from ore.medios import Item, MediaRef
+
+    def ref(v):
+        if isinstance(v, Item):
+            return v.ref
+        return v if isinstance(v, MediaRef) else None
+
+    uno = ref(valor)
+    if uno is not None:
+        refs, sobran = [uno], 0
+    elif isinstance(valor, (list, tuple)) and valor and all(ref(v) is not None for v in valor):
+        refs, sobran = [ref(v) for v in valor[:MEDIA_MAXIMOS]], max(0, len(valor) - MEDIA_MAXIMOS)
+    else:
+        return None
+    items = [{"collection": r.collection, "path": r.path, "version": r.version, "content_type": r.content_type,
+              "size": r.size, "digest": r.digest} for r in refs]
+    return {"items": items, "total": len(items) + sobran, "recortado": sobran > 0}
+
+
+def _bytes_de_imagen(valor):
+    """`(bytes, tipo, nombre)` de lo que es una imagen, o `None`."""
+    from ore.medios import File
+
+    nombre = None
+    if isinstance(valor, File):
+        nombre, datos = valor.name, valor.data
+        if isinstance(datos, (str, os.PathLike)):
+            try:
+                with open(datos, "rb") as f:
+                    datos = f.read()
+            except OSError:
+                return None
+        elif hasattr(datos, "read"):
+            return None   # un fichero abierto: leerlo aquí lo consumiría
+        valor = datos
+    if isinstance(valor, (bytes, bytearray, memoryview)):
+        b = bytes(valor)
+        t = tipo_de_imagen(b)
+        return (b, t, nombre) if t else None
+    modulo = type(valor).__module__ or ""
+    if modulo.startswith("PIL.") and hasattr(valor, "save") and hasattr(valor, "size"):
+        out = io.BytesIO()
+        valor.save(out, "PNG")
+        return out.getvalue(), "image/png", nombre
+    if modulo.startswith("matplotlib.") and hasattr(valor, "savefig"):
+        out = io.BytesIO()
+        valor.savefig(out, format="png", dpi=100, bbox_inches="tight")
+        return out.getvalue(), "image/png", nombre
+    return None
+
+
+def como_imagen(valor):
+    """`{mime, base64, ancho, alto, bytes, nombre, reducida}` de una imagen, o
+    `None`. Una que pasa de `IMAGEN_BYTES` se reduce (a `IMAGEN_LADO` de lado, y
+    a JPEG si hace falta) y se dice; si ni así cabe, no es imagen."""
+    import base64
+
+    r = _bytes_de_imagen(valor)
+    if r is None:
+        return None
+    b, tipo, nombre = r
+    original, ancho, alto, reducida = len(b), None, None, False
+    try:
+        from PIL import Image
+        if tipo != "image/svg+xml":
+            im = Image.open(io.BytesIO(b))
+            ancho, alto = im.size
+            if len(b) > IMAGEN_BYTES:
+                im.thumbnail((IMAGEN_LADO, IMAGEN_LADO))
+                for formato, mime, lado in (("PNG", "image/png", IMAGEN_LADO), ("JPEG", "image/jpeg", IMAGEN_LADO),
+                                            ("JPEG", "image/jpeg", 800)):
+                    im.thumbnail((lado, lado))
+                    out = io.BytesIO()
+                    (im.convert("RGB") if formato == "JPEG" else im).save(out, formato, quality=85)
+                    if out.tell() <= IMAGEN_BYTES:
+                        b, tipo, reducida = out.getvalue(), mime, True
+                        break
+    except Exception:  # noqa: BLE001 — sin PIL, o unos bytes que no abre: va tal cual
+        pass
+    if len(b) > IMAGEN_BYTES:
+        return None
+    out = {"mime": tipo, "base64": base64.b64encode(b).decode("ascii"), "ancho": ancho, "alto": alto,
+           "bytes": original, "reducida": reducida}
+    if nombre:
+        out["nombre"] = nombre
+    return out
 
 
 def llano(v):

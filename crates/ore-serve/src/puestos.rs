@@ -494,7 +494,12 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
 
 /// **Las salidas de una celda**: lo que el agente del puesto puede contestar
 /// (0032 §1). `json` (S1): un valor compuesto como árbol, `{valor, recortado}`.
-pub(crate) const TIPOS_DE_SALIDA: [&str; 5] = ["tabla", "texto", "json", "error", "vacia"];
+/// `media` (S2): ítems de una colección por su referencia, sin URL (la firma la
+/// consola al pintarlos: una URL firmada no se guarda aquí). `imagen` (S2): sus
+/// bytes en base64, bajo el cuerpo máximo.
+pub(crate) const TIPOS_DE_SALIDA: [&str; 7] = [
+    "tabla", "texto", "json", "media", "imagen", "error", "vacia",
+];
 
 /// Los lenguajes que una celda puede llevar.
 const LENGUAJES: [&str; 5] = ["python", "sql", "typescript", "javascript", "java"];

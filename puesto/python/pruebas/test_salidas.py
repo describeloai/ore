@@ -39,9 +39,9 @@ class Json(unittest.TestCase):
         self.assertEqual(salida(Ancla("page", 1))["valor"], {"kind": "page", "page": 1})
         self.assertEqual(salida({"anchor": Ancla("page", 2)})["valor"], {"anchor": {"kind": "page", "page": 2}})
 
-    def test_un_mediaref_y_lo_que_devuelve_el_sdk(self):
+    def test_un_mediaref_dentro_de_un_dict_y_lo_que_devuelve_el_sdk(self):
         r = MediaRef(uri="ore://a.b.c/x.pdf?v=1", collection="a.b.c", path="x.pdf", version="1", size=717)
-        v = salida(r)["valor"]
+        v = salida({"ref": r})["valor"]["ref"]
         self.assertEqual((v["path"], v["size"], v["digest"]), ("x.pdf", 717, None))
         from ore import _Result
         self.assertEqual(salida(_Result({"items": 4, "written": False}))["valor"], {"items": 4, "written": False})
@@ -100,6 +100,85 @@ class Json(unittest.TestCase):
         k.espacio = {}
         s = k._correr("import dataclasses\nprint('hola')\n{'n': 1, 'l': [1, 2]}")
         self.assertEqual((s["tipo"], s["valor"], s["texto"]), ("json", {"n": 1, "l": [1, 2]}, "hola\n"))
+
+
+def png(ancho=4, alto=3, color=(200, 10, 10)):
+    import io
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new("RGB", (ancho, alto), color).save(b, "PNG")
+    return b.getvalue()
+
+
+class Media(unittest.TestCase):
+    """S2 · un ítem de una colección: su referencia, sin URL ni bytes."""
+
+    def ref(self, path="x.png", tipo="image/png"):
+        return MediaRef(uri="ore://a.b.c/%s?v=1" % path, collection="a.b.c", path=path, version="1",
+                        size=10, content_type=tipo, digest="sha256:aa")
+
+    def test_un_mediaref_un_item_y_una_lista(self):
+        from ore.medios import Item, collection
+        s = salida(self.ref())
+        self.assertEqual((s["tipo"], s["total"], s["recortado"]), ("media", 1, False))
+        self.assertEqual(s["items"], [{"collection": "a.b.c", "path": "x.png", "version": "1",
+                                       "content_type": "image/png", "size": 10, "digest": "sha256:aa"}])
+        self.assertNotIn("url", json.dumps(s))   # ni una URL firmada en el historial
+        self.assertEqual(salida(Item(collection("a.b.c"), self.ref("y.pdf")))["items"][0]["path"], "y.pdf")
+        self.assertEqual([i["path"] for i in salida([self.ref("a.png"), self.ref("b.png")])["items"]],
+                         ["a.png", "b.png"])
+
+    def test_una_lista_larga_se_recorta_y_una_mezcla_no_es_media(self):
+        s = salida([self.ref("p%d.png" % i) for i in range(agente.MEDIA_MAXIMOS + 3)])
+        self.assertEqual((len(s["items"]), s["total"], s["recortado"]), (agente.MEDIA_MAXIMOS, agente.MEDIA_MAXIMOS + 3, True))
+        self.assertEqual(salida([self.ref(), 1])["tipo"], "json")
+        self.assertEqual(salida([])["tipo"], "json")
+
+
+class Imagen(unittest.TestCase):
+    """S2 · una imagen: sus bytes en base64, con su tipo y su tamaño."""
+
+    def test_bytes_de_png_jpeg_gif_webp_y_svg(self):
+        import base64
+        b = png()
+        s = salida(b)
+        self.assertEqual((s["tipo"], s["mime"], s["ancho"], s["alto"], s["bytes"], s["reducida"]),
+                         ("imagen", "image/png", 4, 3, len(b), False))
+        self.assertEqual(base64.b64decode(s["base64"]), b)
+        self.assertEqual(agente.tipo_de_imagen(bytes([0xFF, 0xD8, 0xFF, 0xE0]) + b"xx"), "image/jpeg")
+        self.assertEqual(agente.tipo_de_imagen(b"GIF89a..."), "image/gif")
+        self.assertEqual(agente.tipo_de_imagen(b"RIFF\x00\x00\x00\x00WEBPVP8 "), "image/webp")
+        self.assertEqual(agente.tipo_de_imagen(b'  <svg xmlns="http://www.w3.org/2000/svg"/>'), "image/svg+xml")
+        self.assertEqual(salida(b"%PDF-1.7 no es una imagen")["tipo"], "texto")
+
+    def test_pil_matplotlib_y_ore_file(self):
+        from PIL import Image
+        import ore
+        self.assertEqual(salida(Image.new("RGB", (5, 2)))["ancho"], 5)
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(2, 1))
+        ax.plot([1, 2, 3])
+        s = salida(fig)
+        plt.close(fig)
+        self.assertEqual((s["tipo"], s["mime"]), ("imagen", "image/png"))
+        f = salida(ore.File("p001.png", png(), "image/png", {"kind": "page", "page": 1}))
+        self.assertEqual((f["tipo"], f["nombre"]), ("imagen", "p001.png"))
+        self.assertEqual(salida(ore.File("a.txt", b"hola"))["tipo"], "texto")
+
+    def test_una_grande_se_reduce_por_debajo_del_tope(self):
+        import os as _os
+        from PIL import Image
+        import io
+        ruido = Image.frombytes("RGB", (1400, 1400), _os.urandom(1400 * 1400 * 3))
+        b = io.BytesIO()
+        ruido.save(b, "PNG")
+        s = salida(b.getvalue())
+        self.assertTrue(s["reducida"], s.get("mime"))
+        self.assertLessEqual(len(s["base64"]) * 3 // 4, agente.IMAGEN_BYTES)
+        self.assertEqual((s["ancho"], s["bytes"]), (1400, len(b.getvalue())))   # lo de antes de reducirla
+        self.assertLess(len(json.dumps(s)), 1 << 20)   # cabe en el cuerpo de ore-serve
 
 
 if __name__ == "__main__":
