@@ -60,7 +60,7 @@ en() {   # en CELDA PASOS… → una línea por paso
   local pasos; pasos=$(printf '%s\n' "$@")
   kubectl -n "t-$c" run "$PRUEBA-$c-$RANDOM" --rm -i --restart=Never --quiet --image="$IMAGEN" \
     --overrides="$(python -c 'import json,sys; print(json.dumps({"spec":{
-      "serviceAccountName":"ore-serve","nodeSelector":{"ore.dev/pool":"system"},
+      "serviceAccountName":"ore-serve","nodeSelector":{"ore.dev/pool":"system"},"terminationGracePeriodSeconds":0,
       "automountServiceAccountToken":False,
       "securityContext":{"runAsNonRoot":True,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}},
       "containers":[{"name":"p","image":sys.argv[1],"command":["sh","-c",sys.argv[2]],

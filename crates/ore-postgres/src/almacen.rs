@@ -191,10 +191,16 @@ impl Almacen for Neon {
         let (c, r) = self.pedir(&self.controlador, &self.admin, "DELETE", &camino, None)?;
         match c {
             404 => {}
+            // ⚠️ Medido (P4·2·3, en vivo): a un timeline que YA NO EXISTE el
+            //   controller le contesta 200 con `null`, no 404 como a un tenant.
+            //   Quien dice si se fue es el GET.
             200..=299 => {
-                return Err(Fallo::Reintentar(format!(
-                    "el controller aún está borrando el timeline ({c})"
-                )));
+                let (g, _) = self.pedir(&self.controlador, &self.admin, "GET", &camino, None)?;
+                if g != 404 {
+                    return Err(Fallo::Reintentar(format!(
+                        "el controller aún está borrando el timeline ({c}, y el GET da {g})"
+                    )));
+                }
             }
             _ => return Err(clasificar("borrar el timeline", c, &r).unwrap_err()),
         }
