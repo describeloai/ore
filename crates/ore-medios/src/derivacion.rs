@@ -67,31 +67,9 @@ impl Linajes {
 }
 
 /// **Un nodo a JSON, sin perder lo que `Json::de_node` pierde**: un `null`
-/// sin comillas es nulo (no el texto `"null"`) y un número con decimales es
-/// un número (un `bbox` lleva `0.25`).
+/// sin comillas es nulo y un número con decimales es un número.
 pub fn a_json(n: &Node) -> Json {
-    match n {
-        Node::Mapping { entries, .. } => Json::Obj(
-            entries
-                .iter()
-                .filter_map(|(k, v)| k.as_str().map(|k| (k.to_string(), a_json(v))))
-                .collect(),
-        ),
-        Node::Sequence { items, .. } => Json::Arr(items.iter().map(a_json).collect()),
-        Node::Scalar {
-            raw,
-            style: Style::Plain,
-            ..
-        } => match raw.as_str() {
-            "null" | "~" => Json::Crudo("null".into()),
-            "true" => Json::Bool(true),
-            "false" => Json::Bool(false),
-            _ if raw.parse::<i64>().is_ok() => Json::Int(raw.parse().unwrap_or_default()),
-            _ if raw.parse::<f64>().is_ok_and(f64::is_finite) => Json::Crudo(raw.clone()),
-            _ => Json::s(raw),
-        },
-        Node::Scalar { raw, .. } => Json::s(raw),
-    }
+    Json::de_node_fiel(n)
 }
 
 fn nulo(n: Option<&Node>) -> bool {

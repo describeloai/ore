@@ -268,10 +268,19 @@ impl Servidor {
         c: &str,
         t: &str,
         confirmar: bool,
+        cuerpo: &str,
     ) -> Respuesta {
         if let Err(m) = token(b).and(token(s)).and(token(c)).and(token(t)) {
             return problema(422, "media/peticion", m);
         }
+        // 0049 B9·3 · El linaje de lo que `apply()` deriva viene en el cuerpo
+        //   del `commit` y va tal cual a `ore-medios`, que lo coteja y lo sella
+        //   (`docs/media.md` §2 «`put` derivado»). Sin cuerpo, un `commit` de
+        //   siempre.
+        let linaje = match linaje_del_commit(cuerpo) {
+            Ok(l) => l,
+            Err(m) => return problema(400, "media/peticion", m),
+        };
         let completa = format!("{b}.{s}.{c}");
         let corta = ore_core::normalize::a_corto(&completa).into_owned();
         let Some(abierta) = self.escritas.de(t, &sujeto.persona, &completa) else {
@@ -319,6 +328,9 @@ impl Servidor {
             pedido.insert("transaccion".into(), Json::s(t));
             pedido.insert("coleccion".into(), Json::s(&completa));
             pedido.insert("cerrar".into(), Json::s("false"));
+            for (k, v) in &linaje {
+                pedido.insert(k.clone(), v.clone());
+            }
             for (k, a) in [
                 ("metadata_location", "metadata_location"),
                 ("transaccion", "base"),
@@ -416,6 +428,26 @@ impl Servidor {
         }
         r
     }
+}
+
+/// Las claves del linaje (`derivations`, `retire_sources`, `retire`) del cuerpo
+/// de un `commit`, sin perder `null` ni decimales (`Json::de_node_fiel`).
+fn linaje_del_commit(cuerpo: &str) -> Result<Vec<(String, Json)>, String> {
+    if cuerpo.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let n = ore_core::parse::parse(cuerpo)
+        .map_err(|_| "el cuerpo de `commit` no es JSON".to_string())?;
+    if !matches!(n, ore_core::parse::Node::Mapping { .. }) {
+        return Err("el cuerpo de `commit` es un objeto JSON".into());
+    }
+    Ok(["derivations", "retire_sources", "retire"]
+        .into_iter()
+        .filter_map(|k| {
+            n.get(k)
+                .map(|(_, v)| (k.to_string(), Json::de_node_fiel(v)))
+        })
+        .collect())
 }
 
 /// **Lo que una transacción leyó** (B4·4): los `inputs` del transform que la
@@ -753,5 +785,24 @@ mod pruebas {
         assert_eq!(se_escribe(&d, "legal", "archivo", "contratos").codigo, 409);
         assert_eq!(se_escribe(&d, "legal", "archivo", "nada").codigo, 404);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0049 B9·3: el linaje del `commit` pasa a `ore-medios` sin perder un
+    /// `null` ni un decimal, y sin lo que no es suyo; sin cuerpo, nada.
+    #[test]
+    fn el_linaje_del_commit_pasa_tal_cual() {
+        assert!(linaje_del_commit("").unwrap().is_empty());
+        assert!(linaje_del_commit("{}").unwrap().is_empty());
+        assert!(linaje_del_commit("no es json [").is_err());
+        let l = linaje_del_commit(
+            r#"{"derivations":[{"source":{"uri":"u","digest":null},"files":[{"path":"p","anchor":{"bbox":[0.25,1]}}]}],"retire":["x"],"otra":1}"#,
+        )
+        .unwrap();
+        let claves: Vec<&str> = l.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(claves, ["derivations", "retire"]);
+        assert_eq!(
+            l[0].1.jcs(),
+            r#"[{"files":[{"anchor":{"bbox":[0.25,1]},"path":"p"}],"source":{"digest":null,"uri":"u"}}]"#
+        );
     }
 }

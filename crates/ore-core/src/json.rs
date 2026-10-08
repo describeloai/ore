@@ -38,6 +38,43 @@ impl Json {
         Json::Str(v.into())
     }
 
+    /// **De lo analizado, sin perder lo que [`Json::de_node`] pierde** (0049 B9):
+    /// un `null` sin comillas es nulo, no la cadena `"null"`, y un número con
+    /// decimales es un número (un `bbox` lleva `0.25`), los dos como
+    /// [`Json::Crudo`]. Para lo que se transporta y se guarda tal cual (el
+    /// linaje de un `commit`); lo que se firma sigue yendo por `de_node`.
+    pub fn de_node_fiel(n: &crate::parse::Node) -> Json {
+        use crate::parse::{Node, Style};
+        match n {
+            Node::Mapping { entries, .. } => Json::Obj(
+                entries
+                    .iter()
+                    .filter_map(|(k, v)| k.as_str().map(|k| (k.to_string(), Json::de_node_fiel(v))))
+                    .collect(),
+            ),
+            Node::Sequence { items, .. } => {
+                Json::Arr(items.iter().map(Json::de_node_fiel).collect())
+            }
+            Node::Scalar {
+                raw,
+                style: Style::Plain,
+                ..
+            } => match raw.as_str() {
+                "null" | "~" => Json::Crudo("null".into()),
+                "true" => Json::Bool(true),
+                "false" => Json::Bool(false),
+                _ => match raw.parse::<i64>() {
+                    Ok(i) => Json::Int(i),
+                    Err(_) if raw.parse::<f64>().is_ok_and(f64::is_finite) => {
+                        Json::Crudo(raw.clone())
+                    }
+                    Err(_) => Json::s(raw),
+                },
+            },
+            Node::Scalar { raw, .. } => Json::s(raw),
+        }
+    }
+
     /// De lo analizado a la forma canonica. El estilo del escalar decide el
     /// tipo: un `1` sin comillas vuelve como numero y un `"1"` como cadena, y
     /// `true`/`false` sin comillas como logicos. Es lo que hace que un JSON

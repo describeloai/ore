@@ -182,7 +182,7 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             // `GET …/items/{huella}`, en lote—, y el cuerpo es sólo por la lista.
             | ["colecciones", _, _, _, "items", "resolver"]
             // 0049 B2·2: la media por su puerta —listar, mirar y firmar es LEER—.
-            | ["media", _, _, _, "items" | "item" | "urls" | "content"]
+            | ["media", _, _, _, "items" | "item" | "urls" | "content" | "derivations"]
             // 0049 B4b·2: escribir una colección es escribir, y se decide en
             // la ruta (escrita, la clase, el `output` del transform).
             | ["media", _, _, _, "transactions"]
@@ -986,7 +986,8 @@ impl Servidor {
             // N offset D`, sin puesto, paginado.
             ("GET", ["preview", kind, b, s, n]) => self.preview(rama, p, sujeto, kind, b, s, n),
             // 0049 B2·2: la media, por `ore-medios` (`docs/media.md`).
-            ("GET", ["media", b, s, c, op @ ("items" | "item")]) => {
+            // 0049 B9·3: y el registro de lo que `apply()` derivó.
+            ("GET", ["media", b, s, c, op @ ("items" | "item" | "derivations")]) => {
                 self.media(rama, p, sujeto, b, s, c, op)
             }
             ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, sujeto, b, s, c, "urls"),
@@ -1009,7 +1010,7 @@ impl Servidor {
                     t,
                     op @ ("commit" | "abort"),
                 ],
-            ) => self.cerrar_transaccion(sujeto, b, s, c, t, *op == "commit"),
+            ) => self.cerrar_transaccion(sujeto, b, s, c, t, *op == "commit", &p.cuerpo),
             ("GET", ["datasets"]) => self.datasets(rama),
             // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
             ("GET", ["datasets", ns, n]) => {

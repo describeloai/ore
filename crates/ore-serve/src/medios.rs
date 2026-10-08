@@ -393,6 +393,13 @@ impl Servidor {
                         }
                     }
                 }
+                "derivations" => {
+                    for k in ["cursor", "limit"] {
+                        if let Some(v) = p.consulta.get(k) {
+                            pedido.insert(k.into(), Json::s(v));
+                        }
+                    }
+                }
                 "item" => {
                     for k in ["path", "version", "digest"] {
                         if let Some(v) = p.consulta.get(k) {
@@ -453,6 +460,7 @@ impl Servidor {
             let ruta = match operacion {
                 "items" => "/indice/items",
                 "item" => "/indice/item",
+                "derivations" => "/indice/derivaciones",
                 "content" => "/indice/abrir",
                 _ => "/indice/urls",
             };
