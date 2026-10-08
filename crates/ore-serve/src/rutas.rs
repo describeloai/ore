@@ -882,6 +882,9 @@ impl Servidor {
                 self.declarar_transform(sujeto, id, &p.cuerpo)
             }
             ("DELETE", ["puestos", id, "transform"]) => self.retirar_transform(sujeto, id),
+            // ── 0058 P4·6 · ORE Serverless Postgres (`postgres.rs`): antes que el
+            //   catálogo, que leería `postgres` como el nombre de una base ──
+            (_, ["v1", "postgres", resto @ ..]) => self.postgres(p, sujeto, resto),
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
             (_, ["v1", resto @ ..]) => self.catalogo(p, sujeto, rama, resto),
             // ── 0031 §10 · los datasets (`datasets.rs`): la lista, la ficha y el swap ──
@@ -3377,6 +3380,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
     let mut m: Vec<(&'static str, String, bool)> = [
         ("GET", "/salud", true),
         ("GET", "/version", true),
+        ("*", "/v1/postgres/{…}", con_identidad),
         ("GET", "/fuentes", con_identidad),
         ("POST", "/fuentes", con_identidad),
         ("DELETE", "/fuentes/{nombre}", con_identidad),

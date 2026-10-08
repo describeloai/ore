@@ -66,6 +66,7 @@ mod medios;
 mod modelos;
 mod politica;
 mod por_la_pasarela;
+mod postgres;
 mod preguntar;
 mod preview;
 mod propuestas;
