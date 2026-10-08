@@ -295,9 +295,11 @@ ENTRYPOINT ["/bin/ore-iam"]
 
 # ── 4b · El plano de control de Postgres (0058 P4) ──────────────────────────
 #
-# Como `iam`, sobre `scratch` y sin TLS: habla con su base (`storcon-db`), con
-# `ore-iam` y, desde P4·2, con el `storage_controller` y el API de Kubernetes,
-# todo dentro del clúster.
+# Sobre `scratch`, como `iam`. Habla en claro con su base (`storcon-db`), con
+# `ore-iam`, con el `storage_controller` y los safekeepers, todo dentro del
+# clúster; y por TLS SÓLO con el API de Kubernetes (P4·3·2), confiando
+# únicamente en la CA del clúster que monta su cuenta: no necesita las CA del
+# sistema, y por eso tampoco las lleva.
 FROM scratch AS postgres-plano
 
 COPY --from=bin /b/ore-postgres /bin/ore-postgres

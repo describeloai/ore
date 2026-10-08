@@ -24,8 +24,38 @@ kind: ServiceAccount
 metadata:
   name: ore-postgres
   namespace: ore-pg
-# Hasta P4·3 no habla con el API de Kubernetes: sin token montado.
-automountServiceAccountToken: false
+# P4·3·2: habla con el API de Kubernetes, y sólo puede en `ore-pg-computo` (el
+# Role de abajo). Con su token montado.
+automountServiceAccountToken: true
+---
+# ── Lo que puede en Kubernetes: las VMs de los cómputos y sus ConfigMaps, en el
+#    namespace del cómputo y en ningún otro (probado: 403 fuera, `kube-prueba`).
+#    Pods sólo para leer: esperar a que el runner de una VM vieja se haya ido
+#    (P3·5). Ni Secrets, ni nada de otro namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ore-postgres
+  namespace: ore-pg-computo
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [vm.neon.tech]
+    resources: [virtualmachines]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ore-postgres
+  namespace: ore-pg-computo
+subjects:
+  - { kind: ServiceAccount, name: ore-postgres, namespace: ore-pg }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: ore-postgres }
 ---
 apiVersion: v1
 kind: Service
@@ -105,7 +135,9 @@ spec:
           podSelector: { matchLabels: { ore.dev/rol: control } }
       ports: [{ protocol: TCP, port: 8100 }]
 ---
-# Adónde sale: su base, `ore-iam`, el DNS y (P4·2) el storage_controller y los safekeepers.
+# Adónde sale: su base, `ore-iam`, el DNS, (P4·2) el storage_controller y los safekeepers y
+# (P4·3) el API server, por IP como en 47-el-informador (una NetworkPolicy no sabe de nombres;
+# es la de `kubectl get endpoints kubernetes`, MAESTRO en gen-inquilino.py).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -131,3 +163,6 @@ spec:
     - to:
         - podSelector: { matchLabels: { ore.dev/rol: safekeeper } }
       ports: [{ protocol: TCP, port: 7676 }]
+    - to:
+        - ipBlock: { cidr: 10.10.0.2/32 }
+      ports: [{ protocol: TCP, port: 443 }]

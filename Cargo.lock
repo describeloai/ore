@@ -2667,10 +2667,12 @@ name = "ore-postgres"
 version = "0.1.0"
 dependencies = [
  "ed25519-compact",
+ "native-tls",
  "ore-core",
  "ore-entrada",
  "postgres",
  "sha2 0.11.0",
+ "ureq",
 ]
 
 [[package]]

@@ -26,6 +26,7 @@ pub mod api;
 pub mod base;
 pub mod celda;
 pub mod especificacion;
+pub mod kube;
 pub mod llaves;
 pub mod reconciliador;
 
@@ -41,6 +42,7 @@ ore-postgres — el plano de control de ORE Serverless Postgres
                       [--controlador DESTINO] [--safekeepers D1,D2,D3] [--llaves-almacen DIR]
   ore-postgres especificacion --computo NOMBRE --tenant T --timeline TL [--grupo G]
   ore-postgres token-computo NOMBRE
+  ore-postgres kube-prueba [NAMESPACE-AJENO…]
 
   `especificacion` y `token-computo` son para las pruebas de fuego mientras el
   reconciliador no crea los cómputos (P4·3·1): escriben por la salida estándar el
@@ -70,6 +72,7 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
         Some("servir") => servir(&args),
         Some("especificacion") => especificacion_mando(&args),
         Some("token-computo") => token_mando(&args),
+        Some("kube-prueba") => kube_prueba(&args[1..]),
         Some("-h" | "--help") => {
             print!("{USO}");
             ExitCode::SUCCESS
@@ -169,6 +172,78 @@ fn token_mando(args: &[String]) -> ExitCode {
             eprintln!("✗ {e}");
             ExitCode::from(66)
         }
+    }
+}
+
+/// P4·3·2: lo que la cuenta de `ore-postgres` puede en Kubernetes, medido desde
+/// dentro. En `ore-pg-computo` crea, lee y borra un ConfigMap; en cualquier otro
+/// namespace, 403.
+fn kube_prueba(ajenos: &[String]) -> ExitCode {
+    let k = match kube::Kube::del_pod() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("✗ {e}");
+            return ExitCode::from(69);
+        }
+    };
+    let mut fallos = 0;
+    let mut ver = |bien: bool, que: String| {
+        println!("  {} {que}", if bien { "✓" } else { "✗" });
+        fallos += u8::from(!bien);
+    };
+    let (ns, nombre) = ("ore-pg-computo", "ore-postgres-prueba");
+    let c = kube::configmap(ns, nombre);
+    let objeto = kube::configmap_con(ns, nombre, "hola", "P4·3·2");
+    ver(
+        k.aplicar(&c, &objeto).is_ok(),
+        format!("{ns}: crear un ConfigMap"),
+    );
+    ver(
+        k.aplicar(&c, &objeto).is_ok(),
+        format!("{ns}: aplicarlo otra vez (idempotente)"),
+    );
+    ver(
+        k.leer(&c)
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.contains("P4·3·2")),
+        format!("{ns}: leerlo"),
+    );
+    ver(k.borrar(&c).is_ok(), format!("{ns}: borrarlo"));
+    ver(
+        k.leer(&c).ok().flatten().is_none(),
+        format!("{ns}: ya no está"),
+    );
+    for otro in ajenos {
+        let c = kube::configmap(otro, nombre);
+        match k.aplicar(&c, &kube::configmap_con(otro, nombre, "hola", "no")) {
+            Ok(()) => {
+                let _ = k.borrar(&c);
+                ver(false, format!("{otro}: ¡PUDO crear un ConfigMap!"));
+            }
+            Err(e) => ver(
+                e.contains(": 403 "),
+                format!(
+                    "{otro}: no puede ({})",
+                    e.chars().take(60).collect::<String>()
+                ),
+            ),
+        }
+        match k.pedir(
+            "GET",
+            &format!("/api/v1/namespaces/{otro}/secrets"),
+            None,
+            None,
+        ) {
+            Ok((403, _)) => ver(true, format!("{otro}: no lee sus Secrets (403)")),
+            Ok((c, _)) => ver(false, format!("{otro}: leer sus Secrets dio {c}")),
+            Err(e) => ver(false, format!("{otro}: {e}")),
+        }
+    }
+    if fallos == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

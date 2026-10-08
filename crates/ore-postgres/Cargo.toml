@@ -27,3 +27,8 @@ sha2.workspace = true
 # Las firmas Ed25519 de los tokens (el de tenant y el de `compute_ctl`, P4·3·1):
 # la misma crate con que firma el resto del árbol.
 ed25519-compact.workspace = true
+
+# P4·3·2 · el API de Kubernetes, y sólo él, por TLS: con la CA del clúster y sin
+# las raíces del sistema (`kube.rs`). La misma pareja que `ore-gcp`.
+ureq       = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
