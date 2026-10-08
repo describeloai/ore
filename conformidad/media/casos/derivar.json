@@ -1,0 +1,214 @@
+[
+  {
+    "id": "derivar-001",
+    "norma": "docs/media.md §2 put derivado · la primera pasada: un fichero por línea, con su origen; un origen sin salida es una marca",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": {
+          "resumen": { "items": 3, "new": 3, "errors": 0, "files_written": 7 },
+          "ficheros": ["docs/a.pdf/l1.txt", "docs/a.pdf/l2.txt", "docs/a.pdf/l3.txt", "docs/a.pdf/l4.txt",
+                       "docs/c.pdf/l1.txt", "docs/c.pdf/l2.txt", "docs/c.pdf/l3.txt"],
+          "origen": { "docs/a.pdf/l1.txt": "docs/a.pdf", "docs/c.pdf/l3.txt": "docs/c.pdf" },
+          "ancla": { "docs/a.pdf/l2.txt": { "kind": "page", "page": 2 } },
+          "marcas": { "img/b.png": "empty" }
+        }
+      }
+    ]
+  },
+  {
+    "id": "derivar-002",
+    "norma": "docs/media.md §2 put derivado · repetir no calcula ni escribe",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1" } },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": { "resumen": { "new": 0, "recomputed": 0, "skipped": 3, "files_written": 0 }, "sin_escribir": true }
+      }
+    ]
+  },
+  {
+    "id": "derivar-003",
+    "norma": "docs/media.md §2 put derivado · un origen que cambia reemplaza sus ficheros, y los que ya no da se retiran",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1" } },
+      { "sobrescribir": { "path": "docs/c.pdf", "texto": "%PDF-1.4\n%%EOF\n" } },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": {
+          "resumen": { "recomputed": 1, "skipped": 2, "files_retired": 1 },
+          "ficheros": ["docs/a.pdf/l1.txt", "docs/a.pdf/l2.txt", "docs/a.pdf/l3.txt", "docs/a.pdf/l4.txt",
+                       "docs/c.pdf/l1.txt", "docs/c.pdf/l2.txt"],
+          "bytes_de": { "docs/c.pdf/l2.txt": "%%EOF" }
+        }
+      }
+    ]
+  },
+  {
+    "id": "derivar-004",
+    "norma": "docs/media.md §2 put derivado · un origen que se va se lleva sus ficheros",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1" } },
+      { "borrar": { "path": "docs/a.pdf" } },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": {
+          "resumen": { "removed": 1, "files_retired": 4 },
+          "ficheros": ["docs/c.pdf/l1.txt", "docs/c.pdf/l2.txt", "docs/c.pdf/l3.txt"],
+          "marcas": { "img/b.png": "empty" }
+        }
+      }
+    ]
+  },
+  {
+    "id": "derivar-005",
+    "norma": "docs/media.md §2 put derivado · una copia con otra ruta es el mismo ítem: ni se recalcula ni se duplica",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1" } },
+      { "copiar": { "de": "docs/a.pdf", "a": "docs/copia.pdf" } },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": { "resumen": { "new": 0, "recomputed": 0 }, "sin_escribir": true,
+                    "no_ficheros": ["docs/copia.pdf/l1.txt"] }
+      }
+    ]
+  },
+  {
+    "id": "derivar-006",
+    "norma": "docs/media.md §2 put derivado · una marca no es un ítem",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": { "despues_no_en_list": ["img/b.png"], "stat_de": { "img/b.png": { "error": "media/no-existe" } } }
+      }
+    ]
+  },
+  {
+    "id": "derivar-007",
+    "norma": "docs/media.md §2 put derivado · un error es su marca, los demás siguen, y sólo `retry_errors` lo vuelve a intentar",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1", "falla_en": ["docs/c.pdf"] },
+        "espera": { "resumen": { "errors": 1, "files_written": 4 }, "marcas": { "docs/c.pdf": "error" },
+                    "no_ficheros": ["docs/c.pdf/l1.txt"] }
+      },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": { "resumen": { "recomputed": 0, "skipped": 3 }, "sin_escribir": true }
+      },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1", "retry_errors": true },
+        "espera": { "resumen": { "recomputed": 1, "skipped": 2 }, "marcas": { "docs/c.pdf": null },
+                    "ficheros_incluye": ["docs/c.pdf/l1.txt"] }
+      }
+    ]
+  },
+  {
+    "id": "derivar-008",
+    "norma": "docs/media.md §2 put derivado · una pasada cortada conserva lo confirmado, y la siguiente sigue",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1", "save_every_s": 0, "cortar_tras_guardar": 1 } },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "1" },
+        "espera": { "resumen": { "skipped": 1, "new": 2 }, "invariante": ["sin_recalculo"] }
+      }
+    ]
+  },
+  {
+    "id": "derivar-009",
+    "norma": "docs/media.md §2 put derivado · otra versión de la función lo recalcula todo, y el fichero dice cuál",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1" } },
+      {
+        "apply": { "funcion": "lineas_pdf", "version": "2" },
+        "espera": { "resumen": { "recomputed": 3 }, "derivacion": { "docs/a.pdf/l1.txt": { "fn_version": "2" } } }
+      }
+    ]
+  },
+  {
+    "id": "derivar-010",
+    "norma": "docs/media.md §2 put derivado · dos ficheros con el mismo nombre en un ítem son un error de ese ítem",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      {
+        "apply": { "funcion": "nombre_repetido", "version": "1" },
+        "espera": { "resumen": { "errors": 2 }, "marcas": { "docs/a.pdf": "error", "docs/c.pdf": "error" } }
+      }
+    ]
+  },
+  {
+    "id": "derivar-011",
+    "norma": "docs/media.md §2 put derivado · el registro se lee por `derivations`",
+    "en": ["derivar"],
+    "op": "apply",
+    "pasos": [
+      { "apply": { "funcion": "lineas_pdf", "version": "1" } },
+      {
+        "derivations": {},
+        "espera": { "status": 200, "estados": { "docs/a.pdf": "files", "docs/c.pdf": "files", "img/b.png": "empty" },
+                    "ficheros_de": { "docs/c.pdf": 3 } }
+      }
+    ]
+  },
+  {
+    "id": "derivar-012",
+    "norma": "docs/media.md §2 put derivado · un fichero del linaje que no se subió en la transacción",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": {
+      "path": "salida/d1.txt", "texto": "uno\n",
+      "commit": { "derivations": [{ "source": { "uri": "ore://{coleccion}/x.pdf?v=1", "digest": null },
+                                    "derivation": { "key": "k", "fn": "f", "fn_version": "1" },
+                                    "state": "files", "files": [{ "path": "salida/no-subido.txt" }] }] }
+    },
+    "espera": { "error": "media/derivacion", "status": 422, "despues_no_en_list": ["salida/d1.txt"] }
+  },
+  {
+    "id": "derivar-013",
+    "norma": "docs/media.md §2 put derivado · `files` vacía con `state: files`",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": {
+      "path": "salida/d2.txt", "texto": "dos\n",
+      "commit": { "derivations": [{ "source": { "uri": "ore://{coleccion}/x.pdf?v=1", "digest": null },
+                                    "derivation": { "key": "k", "fn": "f", "fn_version": "1" },
+                                    "state": "files", "files": [] }] }
+    },
+    "espera": { "error": "media/derivacion", "status": 422 }
+  },
+  {
+    "id": "retirar-001",
+    "norma": "docs/media.md §2 put derivado · `retire` quita un camino suelto",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": { "path": "salida/r1.txt", "texto": "me voy\n", "commit": true, "despues": { "commit": { "retire": ["salida/r1.txt"] } } },
+    "espera": { "despues_no_en_list": ["salida/r1.txt"] }
+  },
+  {
+    "id": "retirar-002",
+    "norma": "docs/media.md §2 put derivado · retirar lo que no es un ítem actual",
+    "en": ["escrita"],
+    "op": "put",
+    "pide": { "commit": { "retire": ["salida/nunca-estuvo.txt"] } },
+    "espera": { "error": "media/no-existe", "status": 404 }
+  }
+]

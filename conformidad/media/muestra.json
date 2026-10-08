@@ -3,7 +3,8 @@
   "colecciones": {
     "mantenida": { "nombre": "conformidad.default.mantenida", "clase": "mantenida", "media": "document" },
     "virtual": { "nombre": "conformidad.default.virtual", "clase": "virtual", "media": "document", "origen": "versionado, controlado por el ejecutor" },
-    "escrita": { "nombre": "conformidad.default.escrita", "clase": "escrita", "media": "document", "vacia": true }
+    "escrita": { "nombre": "conformidad.default.escrita", "clase": "escrita", "media": "document", "vacia": true },
+    "derivar": { "nombre": "conformidad.default.derivar", "clase": "virtual", "media": "document", "origen": "versionado, controlado por el ejecutor", "solo": ["docs/a.pdf", "docs/c.pdf@v1", "img/b.png"], "nota": "la entrada de los casos de `put` derivado (0049 B9): pocos ítems, y docs/c.pdf empieza en v1 para poder cambiarlo" }
   },
   "items": [
     {

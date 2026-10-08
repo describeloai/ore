@@ -24,7 +24,7 @@ con la celda (0049, D1), y la celda decide, fija, firma y sirve.
 `annotations`). Un campo desconocido se ignora al leer: así entra un campo nuevo sin romper a
 nadie.
 
-## 2. Las siete operaciones
+## 2. Las operaciones
 
 ### `list` · el listado
 
@@ -182,6 +182,81 @@ POST /media/{b}/{s}/{c}/transactions/{t}/abort  → 204
   - una transacción que no está abierta, o es de otra colección, es `media/transaccion` (404 o
     409).
 
+### `put` derivado · ficheros que dan ficheros (0049 B9)
+
+Lo que hace falta para que `apply()` escriba **ficheros** en una colección escrita, y no sólo filas
+en una tabla anclada (B5), y para que lo haga **por ítem e incremental**: el registro de qué se
+calculó con qué vive en **el índice de la colección de salida**, como en B5 vive en la tabla
+anclada. Es contrato de ejecución, no gramática: el valor de `Media<c>` (v1alpha17 `01` §3) no
+cambia, y ninguna columna de una tabla lleva estos campos.
+
+**El ítem derivado.** Un fichero escrito como salida de un ítem lleva dos campos más en su
+`MediaRef` (en `list` y en `stat`; quien no los conoce los ignora, §1):
+
+| campo | forma | |
+|---|---|---|
+| `source` | `{ uri, digest, anchor }` | el ítem de origen: su `uri` con versión y su `digest` (nulo en una virtual sin leer); `anchor`, qué parte de él es este fichero (v1alpha17 `02`), o nulo |
+| `derivation` | el struct `_derivation` de v1alpha17 `03` §3 | `key`, `fn`, `fn_version`, `model`, `model_rev`, `params_hash`, `run`, `created`: con qué se calculó |
+
+La **identidad del origen** es la de v1alpha17 `01` §3.1: su `digest` si lo hay; si no, su `uri`
+fijada. `derivation.key` es la de la tabla anclada: `sha256(identidad del ítem, fn, fn_version,
+model_rev, params_hash)`.
+
+**La entrada del registro.** Una **por origen**, aunque dé muchos ficheros o ninguno:
+
+```json
+{ "source": { "uri": "ore://legal.archivo.contratos/a.pdf?v=3", "digest": "sha256:…" },
+  "derivation": { "key": "…", "fn": "a_png", "fn_version": "1", … },
+  "state": "files" | "empty" | "error",
+  "files": [ { "path": "a.pdf/p001.png", "anchor": { "kind": "page", "page": 1 } }, … ],
+  "error": { "type": "ValueError", "message": "…" } }
+```
+
+- `files`: el origen dio esos ficheros. `empty`: no dio ninguno (un filtro). `error`: falló, con el
+  tipo y el mensaje (sin traza: puede llevar datos). `empty` y `error` son **marcas**: una fila del
+  índice sin blob que **no es un ítem** —ni `list`, ni `stat`, ni `content` la ven—, y que existe
+  para que un origen sin salida no se recalcule en cada pasada.
+
+**Escribirla: al confirmar.** Los bytes se suben como cualquier `put`; el linaje va en el cuerpo
+del `commit`, entero, y se sella en la misma transacción:
+
+```
+POST /media/{b}/{s}/{c}/transactions/{t}/commit
+     { "derivations": [entrada…], "retire_sources": [identidad…], "retire": [path…] }
+→ 200 { …lo de siempre…, "derivations": { "written", "files_retired", "marks" } }
+```
+
+- **Una entrada reemplaza a la anterior del mismo origen, entera**: sus ficheros son exactamente
+  `files`, y los que el origen daba antes y ya no se retiran en la misma transacción (un contrato
+  que pasa de 12 páginas a 8 retira las 9–12). Una marca reemplaza a ficheros y al revés.
+- `retire_sources`: los orígenes que ya no están en la entrada; se retiran sus ficheros y su marca.
+- `retire`: caminos sueltos, fuera de cualquier derivación (`Transaction.delete`). Un camino que no
+  es un ítem actual es `media/no-existe`.
+- Cada camino de `files` tiene que estar subido **en esta transacción**; si no, o si dos orígenes
+  nombran el mismo camino, o un camino está a la vez en `files` y en `retire`, es
+  `media/derivacion` (422) y no se confirma nada. Lo que se sube con los mismos bytes no cambia
+  (`iguales`), así que repetir es gratis.
+- Una entrada con `state: files` y `files` vacía es `media/derivacion`: sin ficheros es `empty`.
+
+**Leer el registro:**
+
+```
+GET /media/{b}/{s}/{c}/derivations?as_of=&cursor=&limit=
+→ 200 { "as_of", "derivations": [entrada…], "cursor" }
+```
+
+Las entradas de la transacción `as_of` (la actual si no se pide), por cursor como `list`. Una
+colección sin derivaciones da la lista vacía.
+
+**Python** (0049 B9·4): `collection.apply(fn, version=, output=)` con una `MediaCollection` escrita
+como salida; `fn(item)` devuelve o va dando `ore.File(name, data, content_type=None, anchor=None)`.
+La ruta de cada fichero es la del ítem más `name` (`a.pdf/p001.png`); dos con el mismo `name` en un
+ítem son un error de la función. Una pasada lee el registro, se salta los orígenes con la misma
+`key`, calcula los demás, retira los orígenes que ya no están y confirma cada `save_every_s` y al
+final, una transacción por guardado. Devuelve `{items, new, recomputed, skipped, errors, removed,
+files_written, files_retired}`. `Transaction.delete(path)` va a `retire`. Detalle en
+[`sdk.md`](sdk.md#incremental-derivation-apply).
+
 ### `verify` · recalcular
 
 ```
@@ -208,6 +283,7 @@ en su valor de error:
 | `media/corrupto` | 502 | los bytes no casan con `size` o `digest` |
 | `media/no-escribible` | 409 | `put` en una colección que no es escrita |
 | `media/digest-no-casa` | 422 | el `Repr-Digest` que trajo un `put` no es el de sus bytes |
+| `media/derivacion` | 422 | el linaje de un `commit` no cuadra: un fichero que no se subió en la transacción, un camino de dos orígenes o a la vez retirado, `files` vacía (0049 B9) |
 | `media/transaccion` | 404 / 409 | la transacción de un `put` no está abierta (caducó, se cerró, un reinicio) o es de otra colección |
 | `media/origen` | 502 | el origen falló (con su código dentro) |
 | `media/limite` | 413 / 429 | un tope o un ritmo; con `Retry-After` |
@@ -231,8 +307,9 @@ en su valor de error:
 
 ## 5. Lo que no es de este contrato
 
-- Cómo se deriva (el registro de derivación, `Collection.apply()`, `retry_errors`): es B5, con la
-  tabla anclada de v1alpha17 `03` como forma de salida; desde el SDK, en
-  [`sdk.md`](sdk.md#incremental-derivation-apply).
+- Cómo se deriva hacia una tabla (el registro, `Collection.apply()`, `retry_errors`): es B5, con
+  la tabla anclada de v1alpha17 `03` como forma de salida; desde el SDK, en
+  [`sdk.md`](sdk.md#incremental-derivation-apply). Hacia una colección, el registro sí es de este
+  contrato (`put` derivado, §2).
 - Qué función saca qué.
 - Permisos por ítem (0047).

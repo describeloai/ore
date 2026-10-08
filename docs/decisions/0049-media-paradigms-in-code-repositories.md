@@ -611,7 +611,7 @@ hay otra tabla que mantener a la par.
   página dice de qué contrato y de qué versión sale, y por ahí llega hasta el dato final (la fila de
   una tabla anclada sobre las páginas).
 - Un ítem que **no da ficheros** (un filtro: «sólo los escaneados») o que **falla** deja una
-  **marca** en el índice —una fila sin blob, `state: derived | error`, con el mensaje— que el
+  **marca** en el índice —una fila sin blob, `state: empty | error`, con el mensaje— que el
   listado no enseña como ítem. Sin ella, un ítem sin salida se recalcularía en cada pasada.
 
 **Una pasada:**
@@ -635,9 +635,9 @@ files_written, files_retired}`.
 | paso | qué |
 |---|---|
 | B9·0 | **medida** en un puesto de victor: los 4 contratos a PNG por página (tiempo y tamaño por página) y una transacción de ~1 000 ficheros pequeños con `put_many` (lo que tarda y si el sello aguanta) |
-| B9·1 | OOS y `docs/media.md`: `source` y `derivation` del ítem de una colección escrita, y la marca (`derived`, `error`), con casos |
-| B9·2 | ore-medios: **retirar** un camino en una transacción (hoy sólo se pone); las dos columnas y las marcas en el índice; el listado no enseña marcas; leer el registro por `source` |
-| B9·3 | ore-serve: `delete` y los campos en `/media/…/transactions`, y el registro en `/media/…` |
+| B9·1 ✓ | el contrato: [`docs/media.md`](../media.md) §2 «`put` derivado» —`source` y `derivation` del ítem, la entrada del registro por origen (`files`, `empty`, `error`), el linaje en el cuerpo del `commit` (una entrada reemplaza a la anterior del mismo origen; `retire_sources`, `retire`), `GET …/derivations`, `media/derivacion`— y 15 casos en [`conformidad/media/casos/derivar.json`](../../conformidad/media/casos/derivar.json). **Sin cambio de gramática**: el valor de `Media<c>` no cambia y v1alpha19 `01` §6 deja la escritura de ítems al contrato de ejecución |
+| B9·2 | ore-medios: sellar el linaje del `commit` (reemplazar por origen, retirar lo que ya no da, `retire_sources`, `retire`); las columnas y las marcas en el índice; el listado no enseña marcas; leer el registro |
+| B9·3 | ore-serve: el cuerpo del `commit` hasta ore-medios, y `GET /media/…/derivations` |
 | B9·4 | SDK: `ore.File`, `apply()` hacia una colección, `Transaction.delete`; casos en el banco de la media (nuevo, igual, cambia y encoge, se va, copia con otra ruta, sin salida, error y reintento, corte a mitad) |
 | B9·5 | en vivo en victor: `contratos` → páginas PNG; otra vez, nada; un contrato nuevo, uno cambiado, uno quitado |
 | B9·6 | docs y esta sección pasa a «hecho» |
