@@ -317,6 +317,25 @@ fn dice(s: &Sentencia) -> String {
                 ""
             }
         ),
+        Sentencia::ColeccionDerivada {
+            destino,
+            media,
+            formatos,
+            consulta,
+            columnas,
+            ..
+        } => format!(
+            "crea o reemplaza la colección `{}` · {media} · {} · de su consulta, ítem a ítem · lee {} · da {}",
+            destino.referencia(),
+            formatos.join(", "),
+            consulta
+                .lee
+                .iter()
+                .map(Nombre::referencia)
+                .collect::<Vec<_>>()
+                .join(", "),
+            columnas.join(", ")
+        ),
         Sentencia::AlterCollection { target, managed } => format!(
             "la colección `{}` pasa a {}",
             target.referencia(),

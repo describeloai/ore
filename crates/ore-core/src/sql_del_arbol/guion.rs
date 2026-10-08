@@ -27,6 +27,7 @@
 //! | `create [or replace] materialized view b.s.v … as select …` | la misma View y su copia, el dataset `b.s.v_copia` (`from: { view }`) que la copia entera; lee el lago (ADR 0040 paso 7) |
 //! | `drop view [if exists] b.s.v` | la quita del árbol; si algo la lee, no |
 //! | `create media collection [if not exists] b.s.c media <tipo> formats (ext, …) [comment '…']` | una `MediaCollection` **escrita** vacía (ADR 0049 B4·4): el código la llena con transacciones |
+//! | `create or replace media collection b.s.c media <tipo> formats (ext, …) [comment '…'] as select …` | ficheros que dan ficheros (ADR 0049 B10): la consulta, ítem a ítem sobre la colección que lee, da una fila por fichero —`name`, `data`, y si acaso `content_type` y `anchor`— |
 //!
 //! Y `create table` se niega: una **Table** es un puntero a un objeto de un
 //! origen, nace del descubrimiento y no guarda bytes; lo que se escribe es un
@@ -161,6 +162,24 @@ pub enum Sentencia {
         source: Option<Nombre>,
         is_virtual: bool,
     },
+    /// 0049 B10 · `create or replace media collection c media m formats (…) as
+    /// select …`: **ficheros que dan ficheros, en SQL**. La consulta corre ítem
+    /// a ítem sobre la colección que lee (como B7) y da una fila por fichero
+    /// —[`COLUMNAS_DE_FICHERO`]—; eso es `apply()` hacia la colección (B9): el
+    /// mismo registro por origen, las marcas, lo que se fue se retira. `or
+    /// replace` dice la verdad: el resultado es el de recalcularlo todo.
+    ColeccionDerivada {
+        destino: Nombre,
+        /// Uno de [`crate::document::MEDIOS`].
+        media: String,
+        formatos: Vec<String>,
+        comentario: Option<String>,
+        /// El `select`: lo que lee, las funciones que llama, lo que no es por
+        /// ítem y su texto. `escribe` es `None`: lo escrito es la colección.
+        consulta: Unidad,
+        /// Las columnas que da, en su orden: `name` y `data` siempre.
+        columnas: Vec<String>,
+    },
     /// 0049 B8 · `alter media collection c set managed|virtual`: a collection
     /// with an origin passes from served in place to copied into the lake, or
     /// back (`ALTER TABLE … SET MANAGED`, in Databricks).
@@ -201,6 +220,7 @@ impl Sentencia {
             Self::CrearVista { .. } => "create view",
             Self::BorrarVista { .. } => "drop view",
             Self::CrearColeccion { .. } => "create media collection",
+            Self::ColeccionDerivada { .. } => "create or replace media collection",
             Self::AlterCollection { .. } => "alter media collection",
             Self::Describe { .. } => "describe",
         }
@@ -443,7 +463,16 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
             return crear_schema(&ts, 2).map(|s| (s, Vec::new()));
         }
         if clase.is_none() && es(&ts, 1, "media") && es(&ts, 2, "collection") {
-            return crear_coleccion(&ts, 3);
+            return crear_coleccion(&ts, 3, &texto, false);
+        }
+        // 0049 B10: `create or replace media collection … as select …`
+        if clase.is_none()
+            && es(&ts, 1, "or")
+            && es(&ts, 2, "replace")
+            && es(&ts, 3, "media")
+            && es(&ts, 4, "collection")
+        {
+            return crear_coleccion(&ts, 5, &texto, true);
         }
         let mut j = 1;
         let o_reemplaza = es(&ts, j, "or") && es(&ts, j + 1, "replace");
@@ -751,7 +780,12 @@ fn describible(ts: &[Tok], i: usize) -> Option<(&'static str, usize)> {
 /// volume` de Databricks, con lo que una colección necesita además: de qué
 /// medio es y qué extensiones admite. Se lee como frase, y no se confunde con
 /// las columnas de un dataset.
-fn crear_coleccion(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+fn crear_coleccion(
+    ts: &[Tok],
+    i: usize,
+    texto: &str,
+    o_reemplaza: bool,
+) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let (si_no_existe, i) = si_no_existe(ts, i);
     let Some((partes, pos, mut i)) = nombre_en(ts, i) else {
         return Err(vec![
@@ -901,18 +935,117 @@ fn crear_coleccion(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<
             }
         }
     }
+    // 0049 B10 · `as select …`: lo que sigue, hasta el final, es la consulta.
+    let mut como = None;
+    if es(ts, i, "as") {
+        match ts.get(i + 1) {
+            Some(t) => {
+                let lineas = inicios_de_linea(texto);
+                como = Some((byte_de(texto, &lineas, t.loc), ts[i].pos));
+            }
+            None => fallos.push(
+                Fallo::new("`as` va seguido de la consulta: `as select …`", ts[i].pos)
+                    .ayuda(LA_DERIVADA),
+            ),
+        }
+        i = ts.len();
+    }
     if i < ts.len() {
         fallos.push(sobra(ts, i, LA_COLECCION));
     }
+    let pos_como = como.map(|(_, p)| p).unwrap_or(pos);
+    if como.is_some() && si_no_existe {
+        fallos.push(
+            Fallo::new(
+                "`if not exists` no va con `as select`: la colección es lo que da su consulta, y se recalcula",
+                pos,
+            )
+            .ayuda(LA_DERIVADA),
+        );
+    } else if como.is_some() && !o_reemplaza {
+        fallos.push(
+            Fallo::new(
+                "`create media collection … as` falla la segunda vez que corre: la colección ya existe",
+                pos,
+            )
+            .ayuda("`create or replace media collection … as select …`: lo que un build repetido tiene que hacer —y sólo calcula lo que cambió—"),
+        );
+    }
+    if como.is_some() && source.is_some() {
+        fallos.push(
+            Fallo::new(
+                "una colección viene `from object table` o de su consulta, no de las dos",
+                pos_como,
+            )
+            .ayuda(LA_DERIVADA),
+        );
+    }
+    if como.is_none() && o_reemplaza {
+        fallos.push(
+            Fallo::new(
+                "`create or replace media collection` sin `as select …` vaciaría la colección: todavía no",
+                pos,
+            )
+            .ayuda("`create media collection if not exists …`, o `create or replace media collection … as select …`"),
+        );
+    }
+    // La consulta: un `select`, con lo de antes en blanco (las posiciones, las
+    // del fichero), analizado como cualquier otro.
+    let consulta = match como {
+        Some((b, _)) if fallos.is_empty() => {
+            let q = en_blanco(texto, b, texto.len());
+            match Parser::parse_sql(&DuckDbDialect {}, &q) {
+                Ok(v) if v.len() == 1 && matches!(v[0], Statement::Query(_)) => {
+                    let Statement::Query(query) = &v[0] else {
+                        unreachable!()
+                    };
+                    let columnas = columnas_de_fichero(query, pos_como, &mut fallos);
+                    match unidad_de(&v[0], &q) {
+                        Ok(u) => Some((u, columnas)),
+                        Err(f) => {
+                            fallos.extend(f);
+                            None
+                        }
+                    }
+                }
+                Ok(_) => {
+                    fallos.push(
+                        Fallo::new("lo que sigue a `as` es un `select`", pos_como)
+                            .ayuda(LA_DERIVADA),
+                    );
+                    None
+                }
+                Err(e) => {
+                    fallos.push(fallo_de_analisis(&e.to_string()));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     if !fallos.is_empty() {
         return Err(fallos);
     }
     let destino = destino.expect("sin fallos hay nombre");
-    let avisos = if destino.dos_partes {
+    let mut avisos = if destino.dos_partes {
         vec![Fallo::dos_partes(&destino)]
     } else {
         Vec::new()
     };
+    if let Some((consulta, columnas)) = consulta {
+        avisos.extend(consulta.avisos.iter().cloned());
+        return Ok((
+            Sentencia::ColeccionDerivada {
+                destino,
+                media,
+                formatos,
+                comentario,
+                consulta,
+                columnas,
+            },
+            avisos,
+        ));
+    }
     Ok((
         Sentencia::CrearColeccion {
             destino,
@@ -925,6 +1058,94 @@ fn crear_coleccion(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<
         },
         avisos,
     ))
+}
+
+/// **Las columnas de un fichero** (0049 B10): lo que la consulta de una
+/// colección derivada da, por nombre, como `ore.File` (B9). `name` es su camino
+/// dentro del ítem de origen, `data` sus bytes (un `BLOB`, o un `Media` que
+/// copia ese ítem), `content_type` el declarado y `anchor` qué parte del ítem
+/// es. Las dos primeras, siempre.
+pub const COLUMNAS_DE_FICHERO: [&str; 4] = ["name", "data", "content_type", "anchor"];
+
+const LA_DERIVADA: &str = "`create or replace media collection b.s.c media <tipo> formats (ext, …) as select p.name, p.data[, p.content_type][, p.anchor] from b.s.coleccion as c cross join lateral functions.f(c._item) as p`";
+
+/// Las columnas que da el `select` de una colección derivada, por su nombre,
+/// cotejadas con [`COLUMNAS_DE_FICHERO`]: cualquier otra no tiene dónde
+/// guardarse —un fichero no tiene columnas—, y una sin nombre, tampoco.
+fn columnas_de_fichero(q: &Query, pos: Option<Pos>, fallos: &mut Vec<Fallo>) -> Vec<String> {
+    use sqlparser::ast::{Expr, SelectItem, Spanned};
+    let mut cuerpo = q.body.as_ref();
+    let proyeccion = loop {
+        match cuerpo {
+            SetExpr::Select(s) => break &s.projection,
+            SetExpr::SetOperation { left, .. } => cuerpo = left.as_ref(),
+            SetExpr::Query(q) => cuerpo = q.body.as_ref(),
+            _ => return Vec::new(),
+        }
+    };
+    let mut columnas: Vec<String> = Vec::new();
+    let mut con_estrella = false;
+    for item in proyeccion {
+        let ipos = pos_de(item.span().start).or(pos);
+        let nombre = match item {
+            SelectItem::UnnamedExpr(Expr::Identifier(id)) => id.value.clone(),
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(v)) => {
+                v.last().map(|x| x.value.clone()).unwrap_or_default()
+            }
+            SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => {
+                con_estrella = true;
+                fallos.push(
+                    Fallo::new(
+                        "`*`: una colección derivada dice sus columnas por su nombre",
+                        ipos,
+                    )
+                    .ayuda("`select p.name, p.data, p.anchor …`"),
+                );
+                continue;
+            }
+            e => {
+                fallos.push(
+                    Fallo::new(
+                        format!("`{e}` no tiene nombre, y un fichero toma sus columnas por nombre"),
+                        ipos,
+                    )
+                    .ayuda("ponle el suyo: `… as data`, `… as name`"),
+                );
+                continue;
+            }
+        };
+        let n = nombre.to_ascii_lowercase();
+        if !COLUMNAS_DE_FICHERO.contains(&n.as_str()) {
+            fallos.push(
+                Fallo::new(
+                    format!("`{nombre}` no es una columna de un fichero: un fichero es `name`, `data` y, si acaso, `content_type` y `anchor`"),
+                    ipos,
+                )
+                .ayuda("lo demás no tiene dónde guardarse; para tenerlo en una tabla, `create or replace dataset … as select` (B7)"),
+            );
+        } else if columnas.contains(&n) {
+            fallos.push(Fallo::new(format!("`{n}` está dos veces"), ipos));
+        } else {
+            columnas.push(n);
+        }
+    }
+    if !con_estrella {
+        for falta in ["name", "data"] {
+            if !columnas.iter().any(|c| c == falta) {
+                fallos.push(
+                    Fallo::new(
+                        format!(
+                            "falta la columna `{falta}`: un fichero tiene su nombre y sus bytes"
+                        ),
+                        pos,
+                    )
+                    .ayuda(LA_DERIVADA),
+                );
+            }
+        }
+    }
+    columnas
 }
 
 /// `alter media collection …` from `i` (after `collection`): `set managed` or
@@ -1771,6 +1992,135 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                             destino.pos,
                         )),
                         None if creado.colecciones.contains(&r) && !si_no_existe => fallos.push(ya()),
+                        None if creado.datasets.contains(&r) || creado.vistas.contains(&r) => {
+                            fallos.push(Fallo::new(
+                                format!("`{r}` ya es otra cosa de este guion (OOS2035)"),
+                                destino.pos,
+                            ))
+                        }
+                        None => {}
+                    }
+                }
+                creado.colecciones.insert(r);
+            }
+            // 0049 B10: ficheros que dan ficheros. Lo que lee, como un `select`
+            // (las funciones, publicadas y de código); los límites de B7 —una
+            // colección y nada más, todo por ítem—; y la colección destino,
+            // escrita y del mismo medio y formatos, o por crear.
+            Sentencia::ColeccionDerivada {
+                destino,
+                media,
+                formatos,
+                consulta,
+                ..
+            } => {
+                let r = destino.referencia();
+                fallos.extend(super::cotejar_con(pkg, consulta, &creado));
+                match super::coleccion_leida(pkg, consulta, &creado) {
+                    None => fallos.push(
+                        Fallo::new(
+                            format!("`{r}` se calcula ítem a ítem desde una colección, y la consulta no lee ninguna"),
+                            destino.pos,
+                        )
+                        .ayuda(LA_DERIVADA),
+                    ),
+                    Some(c) if c == r => fallos.push(Fallo::new(
+                        format!("`{r}` se lee a sí misma (OOS2019)"),
+                        destino.pos,
+                    )),
+                    Some(c) => {
+                        let otras: Vec<String> = consulta
+                            .lee
+                            .iter()
+                            .map(Nombre::referencia)
+                            .filter(|x| *x != c)
+                            .collect();
+                        if !otras.is_empty() {
+                            fallos.push(
+                                Fallo::new(
+                                    format!(
+                                        "una colección derivada lee su colección `{c}` y nada más; esta lee `{}` también",
+                                        otras.join("`, `")
+                                    ),
+                                    destino.pos,
+                                )
+                                .ayuda("lo que haga falta de otra relación, en la función o antes, en otra colección"),
+                            );
+                        }
+                    }
+                }
+                if let Some(que) = consulta.not_per_item.first() {
+                    fallos.push(
+                        Fallo::new(
+                            format!("{que} no se calcula ítem a ítem, y una colección derivada sí: cada ítem, por su lado"),
+                            destino.pos,
+                        )
+                        .ayuda("lo que mira varios ítems, en una vista sobre el listado de la colección"),
+                    );
+                }
+                // ⛔ 0057: nada se escribe en una foreign database (OOS2049).
+                if let Some(f) = super::en_una_foranea(pkg, &destino.paquete, destino.pos) {
+                    fallos.push(f);
+                    continue;
+                }
+                if !hay_base_o_creada(&creado, &destino.paquete) {
+                    fallos.push(sin_base(&destino.paquete, destino.pos));
+                } else if !(hay_schema_declarado(pkg, &destino.paquete, &destino.schema)
+                    || creado
+                        .schemas
+                        .contains(&(destino.paquete.clone(), destino.schema.clone())))
+                {
+                    fallos.push(
+                        Fallo::new(
+                            format!(
+                                "no hay ningún schema `{}` en la base `{}`",
+                                destino.schema, destino.paquete
+                            ),
+                            destino.pos,
+                        )
+                        .ayuda(format!(
+                            "créalo antes en el guion: `create schema {}.{}`",
+                            destino.paquete, destino.schema
+                        )),
+                    );
+                } else {
+                    match doc_de(pkg, &r) {
+                        Some(d) if d.kind == Kind::MediaCollection && d.section("from").is_some() => {
+                            fallos.push(Fallo::new(
+                                format!("`{r}` es una colección mantenida: la llena su `from`"),
+                                destino.pos,
+                            ))
+                        }
+                        Some(d) if d.kind == Kind::MediaCollection => {
+                            let suyo = d.section("media").and_then(|v| v.as_str()).unwrap_or("");
+                            let suyos: Vec<String> = d
+                                .section("formats")
+                                .map(|v| {
+                                    v.items()
+                                        .iter()
+                                        .filter_map(|x| x.as_str())
+                                        .map(|x| x.trim_start_matches('.').to_ascii_lowercase())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if suyo != media || &suyos != formatos {
+                                fallos.push(
+                                    Fallo::new(
+                                        format!(
+                                            "`{r}` ya existe con `media {suyo} formats ({})`, y la frase dice `media {media} formats ({})`",
+                                            suyos.join(", "),
+                                            formatos.join(", ")
+                                        ),
+                                        destino.pos,
+                                    )
+                                    .ayuda("di los suyos, o escríbela con otro nombre: cambiar el medio de una colección es otra cosa"),
+                                );
+                            }
+                        }
+                        Some(d) => fallos.push(Fallo::new(
+                            format!("`{r}` ya es un `{:?}`: en un schema un nombre es una cosa (OOS2035)", d.kind),
+                            destino.pos,
+                        )),
                         None if creado.datasets.contains(&r) || creado.vistas.contains(&r) => {
                             fallos.push(Fallo::new(
                                 format!("`{r}` ya es otra cosa de este guion (OOS2035)"),

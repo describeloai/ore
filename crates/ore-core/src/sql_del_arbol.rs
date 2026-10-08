@@ -1685,6 +1685,15 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
                 let n = nombre(tras_si_no_existe(i + 3)).unwrap_or_default();
                 return Some(EscribeEnElArbol::Crea(format!("media collection {n}")));
             }
+            // 0049 B10: y la que da su consulta, `create or replace media collection … as`.
+            if es(i + 1, "or")
+                && es(i + 2, "replace")
+                && es(i + 3, "media")
+                && es(i + 4, "collection")
+            {
+                let n = nombre(i + 5).unwrap_or_default();
+                return Some(EscribeEnElArbol::Crea(format!("media collection {n}")));
+            }
             let mut j = i + 1;
             if es(j, "or") && es(j + 1, "replace") {
                 j += 2;

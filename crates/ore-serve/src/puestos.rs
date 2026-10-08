@@ -4005,6 +4005,15 @@ pub(crate) fn celda_de_sentencia(
                 si(*is_virtual)
             ))
         ),
+        // 0049 B10·1: la sentencia ya se analiza y se coteja; correrla —ítem a
+        // ítem, `ore.File`, `apply()`— es B10·3.
+        S::ColeccionDerivada { destino, .. } => format!(
+            "raise NotImplementedError({})\n",
+            c(&format!(
+                "`create or replace media collection {} … as select …` is checked, and does not run yet (ORE 0049 B10·3)",
+                destino.referencia()
+            ))
+        ),
         // 0049 B8: served in place ↔ copied into the lake.
         S::AlterCollection { target, managed } => format!(
             "from ore import alter_collection, _resultado_de_crear\n\n\

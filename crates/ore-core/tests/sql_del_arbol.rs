@@ -1085,3 +1085,202 @@ fn a_function_of_its_own_is_called_as_functions_dot_name() {
     let otro = "select compras.paginas(c.item) from ventas.contratos c";
     assert!(!u(otro).is_empty());
 }
+
+/// 0049 B10·1: **ficheros que dan ficheros, en SQL** —`create or replace media
+/// collection … as select …`—. La consulta da una fila por fichero (`name`,
+/// `data`, y si acaso `content_type` y `anchor`), lee una colección y nada más,
+/// todo por ítem; la colección destino es escrita y del mismo medio, o nueva.
+/// Cada fallo, uno, y dice qué hacer.
+#[test]
+fn a_media_collection_is_derived_from_a_query() {
+    use ore_core::sql_del_arbol::guion::Sentencia;
+    let t = arbol("derivada");
+    let col = |nombre: &str, media: &str, formato: &str, resto: &str| {
+        escribe(
+            &t.0,
+            &format!("packages/ventas/collections/{nombre}.yaml"),
+            &format!(
+                "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: {{ name: {nombre}, namespace: ventas }}\nspec:\n  owner: team:ventas\n  media: {media}\n  formats: [{formato}]\n{resto}"
+            ),
+        )
+    };
+    col("contratos", "document", "pdf", "");
+    col("paginas_png", "image", "png", "");
+    col("otra_img", "image", "jpg", "");
+    escribe(
+        &t.0,
+        "packages/ventas/objecttables/docs_t.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: docs_t, namespace: ventas }\nspec:\n  datasource: pg\n  prefix: \"docs/\"\n  match: \"*.png\"\n  media: image\n  changes: { mode: retract, witness: listing }\n",
+    );
+    col(
+        "mantenida",
+        "image",
+        "png",
+        "  from: { objectTable: ventas.default.docs_t }\n",
+    );
+    escribe(
+        &t.0,
+        "functions/pdf_a_png.yaml",
+        "apiVersion: oos.dev/v1alpha26\nkind: Function\nmetadata:\n  name: pdf_a_png\n  version: 0.1.0\nspec:\n  owner: team:ventas\n  runtime: python\n  entrypoint: packages/ventas/repo/funciones/pdf_a_png.py:pdf_a_png\n  codeDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n  input:\n    item: { type: 'Media<ventas.default.contratos>', required: true }\n  output: { type: 'list<Struct<name: String, data: Opaque, anchor: Struct<kind: String, page: Integer>>>' }\n",
+    );
+    let (pkg, diags) = ore_core::validate::cargar_paquete(&t.0);
+    assert!(diags.is_empty(), "{diags:?}");
+    let trozo = |q: &str| {
+        let mut v = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
+        assert_eq!(v.len(), 1);
+        v.remove(0)
+    };
+    let coteja = |q: &str| cotejar_guion(&pkg, &[trozo(q)]);
+
+    // una página por fichero, de una Function: lo que lee, lo que llama, lo que da
+    let q = "create or replace media collection ventas.paginas media image formats (png) as
+select p.name, p.data, p.anchor
+from ventas.contratos as c
+cross join lateral functions.pdf_a_png(c._item) as p
+where c.content_type = 'application/pdf'";
+    let t1 = trozo(q);
+    assert_eq!(t1.sentencia.que(), "create or replace media collection");
+    let Sentencia::ColeccionDerivada {
+        destino,
+        media,
+        formatos,
+        consulta,
+        columnas,
+        ..
+    } = &t1.sentencia
+    else {
+        panic!("{:?}", t1.sentencia)
+    };
+    assert_eq!(destino.referencia(), "ventas.paginas");
+    assert_eq!(
+        (media.as_str(), formatos.as_slice()),
+        ("image", &["png".to_string()][..])
+    );
+    assert_eq!(columnas, &["name", "data", "anchor"]);
+    assert_eq!(
+        consulta
+            .lee
+            .iter()
+            .map(|n| n.referencia())
+            .collect::<Vec<_>>(),
+        ["ventas.contratos"]
+    );
+    assert_eq!(consulta.calls.len(), 1);
+    assert!(
+        consulta.consulta.starts_with("select p.name"),
+        "{}",
+        consulta.consulta
+    );
+    assert!(coteja(q).is_empty(), "{:?}", coteja(q));
+    // la celda es del árbol (DuckDB no la conoce)
+    assert_eq!(
+        ore_core::sql_del_arbol::escribe_en_el_arbol(q, &pkg),
+        Some(ore_core::sql_del_arbol::EscribeEnElArbol::Crea(
+            "media collection ventas.paginas".into()
+        ))
+    );
+    // en una que ya existe, escrita y del mismo medio y formatos
+    let ya = "create or replace media collection ventas.paginas_png media image formats (png) as select p.name, p.data from ventas.contratos c cross join lateral functions.pdf_a_png(c._item) p";
+    assert!(coteja(ya).is_empty(), "{:?}", coteja(ya));
+    // copiar sin función: `data` es el ítem, y `content_type` se puede decir
+    let copia = "create or replace media collection ventas.solo_pdf media document formats (pdf) as select c.path as name, c._item as data, c.content_type from ventas.contratos as c where c.size < 1000000";
+    assert!(coteja(copia).is_empty(), "{:?}", coteja(copia));
+
+    // lo que no analiza: su fallo
+    let mal = |q: &str, que: &str| {
+        let f = guion(q).expect_err(q);
+        assert!(f.iter().any(|x| x.mensaje.contains(que)), "{q}: {f:?}");
+    };
+    let sel = "select p.name, p.data from ventas.contratos c cross join lateral functions.pdf_a_png(c._item) p";
+    let x = "create or replace media collection ventas.x media image formats (png)";
+    mal(
+        &format!("create media collection ventas.x media image formats (png) as {sel}"),
+        "la segunda vez",
+    );
+    mal(x, "vaciaría");
+    mal(
+        &format!(
+            "create media collection if not exists ventas.x media image formats (png) as {sel}"
+        ),
+        "`if not exists` no va",
+    );
+    mal(
+        &format!("{x} from object table ventas.docs_t as {sel}"),
+        "no de las dos",
+    );
+    mal(&format!("{x} as select * from ventas.contratos"), "`*`");
+    mal(
+        &format!(
+            "{x} as select p.name, p.data, p.page from ventas.contratos c cross join lateral functions.pdf_a_png(c._item) p"
+        ),
+        "`page` no es una columna de un fichero",
+    );
+    mal(
+        &format!("{x} as select lower(c.path), c._item as data from ventas.contratos c"),
+        "no tiene nombre",
+    );
+    mal(
+        &format!("{x} as select c.path as name from ventas.contratos c"),
+        "falta la columna `data`",
+    );
+    mal(
+        &format!(
+            "{x} as select c.path as name, c.path as name, c._item as data from ventas.contratos c"
+        ),
+        "dos veces",
+    );
+    mal(
+        &format!("{x} as insert into ventas.resumen select 1, 2"),
+        "es un `select`",
+    );
+
+    // lo que no coteja contra el árbol: un fallo, el suyo
+    let uno = |q: &str, que: &str| {
+        let f = coteja(q);
+        assert!(f.len() == 1 && f[0].mensaje.contains(que), "{q}: {f:?}");
+    };
+    uno(
+        &format!("{x} as select p.pais as name, p.pais as data from ventas.pedidos p"),
+        "no lee ninguna",
+    );
+    uno(
+        &format!(
+            "{x} as select c.path as name, c._item as data from ventas.contratos c join ventas.pedidos p on true"
+        ),
+        "y nada más",
+    );
+    uno(
+        &format!(
+            "{x} as select c.path as name, c._item as data from ventas.contratos c order by c.path limit 3"
+        ),
+        "no se calcula ítem a ítem",
+    );
+    uno(
+        &format!(
+            "create or replace media collection ventas.otra_img media image formats (png) as {sel}"
+        ),
+        "ya existe con `media image formats (jpg)`",
+    );
+    uno(
+        &format!(
+            "create or replace media collection ventas.mantenida media image formats (png) as {sel}"
+        ),
+        "colección mantenida",
+    );
+    uno(
+        &format!(
+            "create or replace media collection ventas.resumen media image formats (png) as {sel}"
+        ),
+        "ya es un `Dataset`",
+    );
+    uno(
+        "create or replace media collection ventas.contratos media document formats (pdf) as select c.path as name, c._item as data from ventas.contratos c",
+        "se lee a sí misma",
+    );
+    uno(
+        &format!(
+            "{x} as select p.name, p.data from ventas.contratos c cross join lateral functions.nadie(c._item) p"
+        ),
+        "no published function",
+    );
+}
