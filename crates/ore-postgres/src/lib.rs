@@ -30,6 +30,7 @@ pub mod computos;
 pub mod especificacion;
 pub mod kube;
 pub mod llaves;
+pub mod olvidar;
 pub mod proxy;
 pub mod reconciliador;
 pub mod scram;
@@ -44,6 +45,7 @@ ore-postgres — el plano de control de ORE Serverless Postgres
 
   ore-postgres servir [--bind DIRECCION] [--iam DESTINO]
                       [--controlador DESTINO] [--safekeepers D1,D2,D3] [--llaves-almacen DIR]
+                      [--llaves-proxy DIR] [--redis HOST:PUERTO]
   ore-postgres especificacion --computo NOMBRE --tenant T --timeline TL [--grupo G]
   ore-postgres token-computo NOMBRE
   ore-postgres kube-prueba [NAMESPACE-AJENO…]
@@ -62,6 +64,10 @@ ore-postgres — el plano de control de ORE Serverless Postgres
   `ore-pg` con los tokens de `--llaves-almacen` (`admin`, `safekeeperdata`; por
   defecto /llaves/almacen). Sin ellos no arranca, se dice, y las operaciones
   esperan en curso.
+
+  El proxy de Neon pregunta en /proxy/… con el token de `--llaves-proxy` (`token`;
+  por defecto /llaves/proxy). Con `--redis HOST:PUERTO`, lo que el reconciliador da
+  por hecho se le avisa por Redis para que olvide lo que guardaba (P5·1).
 ";
 
 fn valor(args: &[String], que: &str) -> Option<String> {
@@ -314,6 +320,7 @@ fn servir(args: &[String]) -> ExitCode {
     let imagen = valor(args, "--imagen-computo").unwrap_or_default();
     let ns_computo = valor(args, "--ns-computo").unwrap_or_else(|| "ore-pg-computo".into());
     let llaves_proxy = valor(args, "--llaves-proxy").unwrap_or_else(|| "/llaves/proxy".into());
+    let redis = valor(args, "--redis");
 
     let mut base = match base::conectar(&url) {
         Ok(c) => c,
@@ -398,6 +405,17 @@ fn servir(args: &[String]) -> ExitCode {
             None
         }
     };
+    // P5·1: lo que el reconciliador da por hecho, el proxy lo olvida (por Redis).
+    match redis {
+        Some(r) => {
+            eprintln!(
+                "  olvidar      lo hecho → PUBLISH {} en {r}",
+                olvidar::CANAL
+            );
+            olvidar::arrancar(url.clone(), r);
+        }
+        None => eprintln!("  ⚠ SIN REDIS: el proxy tarda hasta 4 min en ver una contraseña nueva"),
+    }
     let servidor = api::Servidor {
         base: Mutex::new(base),
         celdas: Box::new(celda::PorOreIam::nuevo(&iam)),

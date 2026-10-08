@@ -1101,6 +1101,18 @@ El 2026-10-08 a las 18:38 UTC la cuenta de facturación del proyecto quedó **ce
 | P5·7 · Connect | en modo banco | el snippet copiado conecta desde fuera |
 | P5·8 · aceptación | — | la migración en vivo y pgbench desde internet |
 
+#### P5·1 · Medido en el laboratorio (2026-10-08)
+
+`lab/p51.sh` contra el proxy de Neon de verdad (`8269bece`), con `ore-postgres` de `main`, `verify-full` sobre el certificado autofirmado y el SNI de `ep-….europe-west1.pg.paladio.io`: **todo en verde, dos veces seguidas y desde cero**.
+
+- **El SCRAM pasa de punta a punta con un Postgres sin tocar**: el proxy hace el SCRAM con el cliente usando el verificador que le da `ore-postgres` y entra en el cómputo con las mismas claves. La contraseña no la ve nadie más que el cliente.
+- **Fuera lo que debe quedar fuera**: otra contraseña, un rol que no existe, un endpoint que no existe y la contraseña de una organización en el endpoint de otra (mismo proyecto y rol, `demo` y `victor`) dan todos el mismo `password authentication failed`, que no dice qué existe. Sin SNI, el proxy no sabe a qué endpoint va y lo dice.
+- **Arrancando**: con `RUNNING_OPERATIONS` el proxy reintenta `wake_compute` 8 veces (~7 s) y entra si el cómputo está listo a tiempo. Una VM tarda ~35 s, así que esperar lo que haga falta es P6.
+- **Hallazgo: la caché del proxy.** El proxy guarda el verificador cuatro minutos (`--project-info-cache ttl=4m`). Tras un *Reset password*, la contraseña nueva tardó **231 s y 302 s** en entrar. Se resuelve como en Neon, **avisándole por Redis**: `ore-postgres --redis` publica en `neondb-proxy-ws-updates` un `/project_settings_update` del proyecto cuando el reconciliador da por `hecha` una operación suya, es decir, cuando el cambio ya está en el cómputo y no antes (`olvidar.rs`). Con eso la nueva entra **a la primera** y la vieja ya no; las métricas del proxy cuentan cada olvido (`invalidate_project`). Sin Redis no se rompe nada: la caché caduca sola.
+- **`project_id` es el tenant**: el proxy agrupa por él lo que guarda y lo que olvida, y el id del proyecto se repite entre organizaciones. `account_id` es la organización.
+
+El laboratorio hace de reconciliador (`lab.sh reconcilia`: el rol con su verificador en el cómputo, la fila `listo` con su dirección, la operación `hecha`) porque no hay NeonVM. Ese tramo ya está medido en el clúster (P4·3–P4·7).
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:
@@ -1114,7 +1126,7 @@ Lo construido en el laboratorio llega a producción en una tarde y sin reescribi
 **Lo que sólo se puede probar en producción**, anotado desde ya (se corre en este orden el día que Google vuelva):
 
 1. **Volver**: el clúster, `ore-pg` (almacenamiento, `ore-postgres`, las VMs) y las celdas, sanos; relanzar el CI de `5321c351` (sólo falló al subir imágenes).
-2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad.
+2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad, con Redis y `--redis`; un *Reset password* entra a la primera.
 3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve; quitar el TXT `_delegacion`.
 4. **P5·3**: desde internet, `psql "…?sslmode=verify-full"` entra y pgbench corre sin fallos; reiniciar una réplica no tira a la otra; la IP del cliente llega tal cual.
 5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM; **P5·6** con la IP real del cliente.

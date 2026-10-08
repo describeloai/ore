@@ -1123,7 +1123,16 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
         "{}",
         r.cuerpo.jcs()
     );
-    assert!(r.cuerpo.jcs().contains(r#""project_id":"ventas""#));
+    // El proyecto, por su tenant: único entre organizaciones.
+    let (_, pr) = pide(&s, "a", "GET", "/v1/postgres/proyectos/ventas", "");
+    let tenant = campo(&pr, &["tenant"]);
+    assert!(
+        r.cuerpo
+            .jcs()
+            .contains(&format!(r#""project_id":"{tenant}""#)),
+        "{}",
+        r.cuerpo.jcs()
+    );
 }
 
 #[test]

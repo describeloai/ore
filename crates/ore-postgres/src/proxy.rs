@@ -17,6 +17,10 @@
 //! - **`role_secret`** es el verificador SCRAM que se guardó al crear el rol
 //!   (P4·4): con él el proxy hace el SCRAM con el cliente sin conocer nunca la
 //!   contraseña.
+//! - **`project_id` es el tenant**, no el id del proyecto: el proxy agrupa por
+//!   él lo que guarda y lo que olvida ([`crate::olvidar`]), y el id del
+//!   proyecto se repite entre organizaciones (el tenant no). `account_id` es la
+//!   organización.
 //! - **Los errores, con la forma de Neon** (`status.details.error_info.reason`):
 //!   el proxy lee `*_NOT_FOUND` como «esa credencial no vale» y
 //!   `RUNNING_OPERATIONS` como «reintenta».
@@ -109,16 +113,18 @@ impl Proxy {
 
     fn acceso(&self, c: &mut Client, vm: &str, rol: &str) -> Respuesta {
         match c.query_opt(
-            "select r.verificador, e.proyecto
+            "select r.verificador, p.tenant, e.organizacion
                from plano.endpoint e
+               join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
                join plano.rol r on r.organizacion = e.organizacion and r.proyecto = e.proyecto
                                and r.rama = e.rama and r.nombre = $2 and r.deseado = 'vivo'
-              where e.vm = $1 and e.deseado = 'vivo'",
+              where e.vm = $1 and e.deseado = 'vivo' and p.tenant is not null",
             &[&vm, &rol],
         ) {
             Ok(Some(f)) => Respuesta::ok(Json::obj([
                 ("role_secret", Json::s(f.get::<_, String>(0))),
                 ("project_id", Json::s(f.get::<_, String>(1))),
+                ("account_id", Json::s(f.get::<_, String>(2))),
             ])),
             // Ni el endpoint ni el rol se distinguen: no se le dice a nadie qué existe.
             Ok(None) => fallo(404, "RESOURCE_NOT_FOUND", "no hay tal endpoint o tal rol"),
@@ -128,9 +134,10 @@ impl Proxy {
 
     fn despertar(&self, c: &mut Client, vm: &str) -> Respuesta {
         let fila = match c.query_opt(
-            "select e.observado, e.ip_pod, e.direccion, e.proyecto, e.rama
+            "select e.observado, e.ip_pod, e.direccion, p.tenant, e.rama
                from plano.endpoint e
-              where e.vm = $1 and e.deseado = 'vivo'",
+               join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
+              where e.vm = $1 and e.deseado = 'vivo' and p.tenant is not null",
             &[&vm],
         ) {
             Ok(f) => f,
