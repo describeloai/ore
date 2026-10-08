@@ -365,6 +365,9 @@ spec:
             # 0057 B4·3: la preview de una vista sin copia se calcula en
             #   `ore-motor` (58-el-motor). Sin él, el 409 de siempre.
             - { name: ORE_MOTOR, value: "ore-motor:8096" }
+            # 0058 P4·6: ORE Serverless Postgres. `ore-serve` decide (potestad o
+            #   dueño) y se lo pasa al plano de control, en `ore-pg`. Sin él, 503.
+            - { name: ORE_POSTGRES_DIRECCION, value: "ore-postgres.ore-pg.svc.cluster.local.:8100" }
             # ── W3.6c (0031 §11) · EL CATALOGO REST DE ICEBERG ─────────────
             #
             # `/v1/…` es la cara por la que PyIceberg, DuckDB, Spark y el agente
@@ -508,6 +511,17 @@ spec:
             matchLabels:
               app: keycloak
       ports: [{protocol: TCP, port: 8080}]
+    # 0058 P4·6: el plano de control de Postgres. `entrada-al-plano` (malla/86)
+    #   ya admite a los `control` de los namespaces `cargas`. `ore-pg` no lleva
+    #   `ore.dev/rol`: se elige por su nombre.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-pg
+          podSelector:
+            matchLabels:
+              ore.dev/rol: plano-postgres
+      ports: [{protocol: TCP, port: 8100}]
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]
