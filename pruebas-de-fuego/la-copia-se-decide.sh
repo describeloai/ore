@@ -14,7 +14,7 @@
 #   2  POST /paquetes {type: standard}  200 · la regla en discover.scope.json · EL CATALOGO NO
 #                                       MODELA (C1): 0 entidades, 0 tablas, 0 vistas y 2 DATASETS
 #                                       que leen los punteros de la FUENTE (0045 P3′: `pg.olist.*`,
-#                                       una vez, exportados; la base no escribe ninguno)
+#                                       una vez, sin exports (0059); la base no escribe ninguno)
 #                                       (0033) — la copia no espera a ninguna clave;
 #                                       orders (con clave en el origen) en `upsert`, customers
 #                                       como el origen la dijo · EL DUEÑO ES QUIEN LA CREA:
@@ -260,7 +260,8 @@ cuerpo | grep -q '0 entidades, 0 tablas, 0 vistas y 2 datasets' || falla "2 · e
 cuerpo | grep -q 'fuente `pg`: 3 puntero(s) escrito(s)' || falla "2 · la fuente no escribio sus punteros (dos tablas y su schema): $(cuerpo)"
 [ ! -d "$REPO/packages/tienda/olist/tables" ] || falla "2 · la base estandar tiene tables/: $(ls "$REPO/packages/tienda/olist/tables")"
 dataset tienda orders | grep -q 'from: { table: pg.olist.orders }' || falla "2 · el dataset no lee el puntero de la fuente: $(dataset tienda orders)"
-grep -q 'exports: \[pg.olist.customers, pg.olist.orders\]' "$REPO/packages/pg/package.yaml" || falla "2 · la fuente no exporta sus punteros: $(cat "$REPO/packages/pg/package.yaml")"
+# ORE 0059: el árbol es un catálogo; la fuente ya no escribe `exports`.
+! grep -q 'exports' "$REPO/packages/pg/package.yaml" || falla "2 · la fuente escribió exports: $(cat "$REPO/packages/pg/package.yaml")"
 [ ! -d "$REPO/packages/tienda/olist/entities" ] || [ -z "$(ls -A "$REPO/packages/tienda/olist/entities" 2>/dev/null)" ] || falla "2 · el catalogo escribio entidades: $(ls "$REPO/packages/tienda/olist/entities")"
 grep -q '"entities": \[\]' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no dice que ninguna esta modelada: $(cat "$REPO/packages/tienda/discover.scope.json")"
 cuerpo | grep -q '"owner":"user:ana"' || falla "2 · la respuesta no dice el dueño: $(cuerpo)"
