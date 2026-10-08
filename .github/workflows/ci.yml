@@ -215,6 +215,13 @@ jobs:
       - name: y una propuesta la revisa otra persona antes de llegar a main
         run: bash pruebas-de-fuego/la-propuesta.sh
 
+      # 0058 P4·6 · Postgres por la celda: `/v1/postgres` en ore-serve contra un
+      # ore-iam y un ore-postgres de mentira — el dueño lo pone ORE, el dueño o
+      # postgres:gestionar, los roles con postgres:usar, nada desde un puesto, y
+      # 503 sin quien decida o sin plano.
+      - name: y Postgres se pide por la celda con la potestad o siendo su dueño
+        run: bash pruebas-de-fuego/postgres-por-la-celda.sh
+
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no
       # fijan las pruebas del crate es el CABLEADO: que el sujeto sale de la
       # cabecera `Authorization` y que un token bien firmado del MISMO realm
