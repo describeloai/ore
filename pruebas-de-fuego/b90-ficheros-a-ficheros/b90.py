@@ -28,7 +28,8 @@ try:
     import pypdfium2 as pdfium
 except ImportError as e:
     raise SystemExit("✗ la imagen del puesto aún no trae %s: espera al despliegue de la imagen nueva" % e.name)
-print("pypdfium2", pdfium.V_PYPDFIUM2, "· pdfium", pdfium.V_LIBPDFIUM, "· pillow", PIL.__version__)
+from importlib.metadata import version  # noqa: E402
+print("pypdfium2", version("pypdfium2"), "· pillow", version("pillow"))
 
 
 def ms(t):
