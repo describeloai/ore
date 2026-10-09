@@ -52,6 +52,35 @@ manera de construirla** (Cloud Build + Artifact Registry, €122 de €178).
   Por ella se paró el CI en GKE el 2026-10-01, y lo que O5 liberó lo usa Postgres (0058). Cualquier
   nodo nuevo tiene que caber en ella.
 
+## 2026-10-09 · la cuenta cerrada seguía cobrando: las máquinas, apagadas
+
+**Lo visto** (sólo lecturas, `gcloud`): la cuenta de facturación del proyecto (`01AC8A-568391-9ADCC2`)
+figura **cerrada**, el proyecto sigue con `billingEnabled: true`, y el saldo pasó de 104 € a 111 € en
+una noche. El API de GKE contesta 403 (*requires billing*), pero **Compute Engine seguía corriendo y
+cobrando**: los nodos de `pg` (2 × `n2-standard-2`, normales), el de `sistema-spot`
+(`e2-standard-4` spot) y `modelos-e0` (`e2-micro`), además de 15 discos, 3 IPs estáticas, Cloud NAT
+(`ore-mesh-salida`) y las 3 reglas de reenvío de los dos balanceadores globales. Unos **$9/día** a
+precio de lista (de memoria, sin medir), de ellos ~$6 las máquinas.
+
+**Lo hecho** (con el go de la persona, 2026-10-09): las tres máquinas apagadas, nada borrado.
+
+| qué | antes | ahora | para volver |
+|---|---|---|---|
+| `gke-ore-mesh-pg-9f6e5373-grp` | 2 | 0 | `gcloud compute instance-groups managed resize gke-ore-mesh-pg-9f6e5373-grp --size=2 --zone=europe-west1-b` |
+| `gke-ore-mesh-sistema-spot-f053e8ae-grp` | 1 | 0 | `… resize gke-ore-mesh-sistema-spot-f053e8ae-grp --size=1 --zone=europe-west1-b` |
+| `modelos-e0` | RUNNING | TERMINATED | `gcloud compute instances start modelos-e0 --zone=europe-west1-b` |
+
+Los 11 discos de datos (`pvc-…`) y el de `modelos-e0` siguen, sin máquina; los de arranque de los
+nodos se fueron con ellos, como siempre en GKE (se rehacen al subir el grupo). **Postgres de 0058**
+se apagó de golpe, como un corte de luz: sus datos están en sus discos y en GCS.
+
+**Lo que sigue cobrando** (~$3/día): los balanceadores (no se tocan: los gestionan los controladores
+de GKE, y rehacer el dominio y los certificados a mano es peor), las IPs, el NAT, los discos, y el
+almacenamiento (Artifact Registry, GCS, Secret Manager, KMS). Es lo que G3, G9 y G11 bajan.
+
+**Al volver la cuenta**: subir los dos grupos y arrancar `modelos-e0` **antes** de nada que necesite
+el clúster, comprobar que los pods vuelven (y Postgres, con quien lleva 0058), y luego G0.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
