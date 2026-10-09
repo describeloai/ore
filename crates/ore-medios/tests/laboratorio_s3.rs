@@ -60,7 +60,9 @@ fn una_virtual_sobre_lo_que_habla_s3() {
         }
 
         // la URL firmada: con versiones sí; fijado sólo por ETag, no (D-O1)
-        let url = o.firmar(&v.clave, &v.version, "application/pdf", "inline", 60);
+        let url = o
+            .firmar(&v.clave, &v.version, "application/pdf", "inline", 60)
+            .unwrap_or_else(|e| panic!("{nombre}: {e}"));
         assert_eq!(url.is_some(), !por_etag, "{nombre}: {}", v.version);
         if let Some(u) = url {
             assert!(

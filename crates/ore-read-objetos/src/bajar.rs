@@ -72,9 +72,10 @@ pub struct Cuentas {
     pub bytes: u64,
 }
 
-/// Qué dice la huella del manifiesto que debe dar el CRC64NVME, si lo dice.
-fn esperado(huella: &str) -> Option<&str> {
-    huella.strip_prefix("crc64nvme:")
+/// El algoritmo de una huella (`crc64nvme`, `crc32c`…): sólo se comparan dos
+/// del mismo.
+fn algoritmo(huella: &str) -> Option<&str> {
+    huella.split_once(':').map(|(a, _)| a)
 }
 
 fn tipo_de(p: &Pedido, a: &ore_objetos::Abierto) -> String {
@@ -108,16 +109,15 @@ pub fn uno<W: Write>(o: &dyn Origen, p: &Pedido, salida: &Mutex<W>) -> Result<u6
             p.clave, p.version, p.tamano
         ));
     }
-    if let (Some(e), Some(s3)) = (
-        esperado(&p.huella),
-        a.huella
-            .as_deref()
-            .and_then(|h| h.strip_prefix("crc64nvme:")),
-    ) && e != s3
+    // Lo que el origen dice al abrirla, si es del mismo algoritmo que la del
+    // manifiesto (S3: el CRC64NVME; GCS: el `crc32c` de `x-goog-hash`).
+    if let Some(dice) = a.huella.as_deref()
+        && algoritmo(dice) == algoritmo(&p.huella)
+        && dice != p.huella
     {
         return fallar(format!(
-            "`{}` (versión {}): S3 da la huella {s3} y el manifiesto {e}",
-            p.clave, p.version
+            "`{}` (versión {}): el origen da la huella {dice} y el manifiesto {}",
+            p.clave, p.version, p.huella
         ));
     }
     let cab = tramas::Cabecera {
@@ -127,14 +127,17 @@ pub fn uno<W: Write>(o: &dyn Origen, p: &Pedido, salida: &Mutex<W>) -> Result<u6
         tipo: tipo_de(p, &a),
         tamano: p.tamano,
     };
-    let mut crc = ore_objetos::huella::Crc64Nvme::default();
-    let cotejo = |crc: &ore_objetos::huella::Crc64Nvme| -> Result<(), String> {
-        match esperado(&p.huella) {
-            Some(e) if e != crc.base64() => Err(format!(
-                "los bytes de `{}` (versión {}) dan la huella {} y el manifiesto dice {e}: no se copian",
+    // La huella de los bytes, calculada según llegan, del algoritmo de la del
+    // manifiesto (ADR 0061: el de cada origen); un `etag:` no se coteja.
+    let mut crc = ore_objetos::huella::para(&p.huella);
+    let cotejo = |crc: &Option<Box<dyn ore_objetos::huella::Calculo>>| -> Result<(), String> {
+        match crc {
+            Some(c) if c.texto() != p.huella => Err(format!(
+                "los bytes de `{}` (versión {}) dan la huella {} y el manifiesto dice {}: no se copian",
                 p.clave,
                 p.version,
-                crc.base64()
+                c.texto(),
+                p.huella
             )),
             _ => Ok(()),
         }
@@ -154,7 +157,9 @@ pub fn uno<W: Write>(o: &dyn Origen, p: &Pedido, salida: &Mutex<W>) -> Result<u6
                 p.tamano
             ));
         }
-        crc.sumar(&b);
+        if let Some(c) = crc.as_mut() {
+            c.sumar(&b);
+        }
         if let Err(m) = cotejo(&crc) {
             return fallar(m);
         }
@@ -192,7 +197,9 @@ pub fn uno<W: Write>(o: &dyn Origen, p: &Pedido, salida: &Mutex<W>) -> Result<u6
                 break;
             }
             Ok(k) => {
-                crc.sumar(&buf[..k]);
+                if let Some(c) = crc.as_mut() {
+                    c.sumar(&buf[..k]);
+                }
                 w.write_all(&buf[..k]).map_err(io)?;
                 resto -= k as u64;
             }
@@ -331,6 +338,40 @@ mod tests {
             "la vieja, por su versión"
         );
         assert_eq!(r[2].1, Ok(b"RECIBO".to_vec()));
+    }
+
+    /// ADR 0061 O2·1: la huella de otro origen (el `crc32c` de GCS) se coteja
+    /// igual, con su algoritmo; la del origen al abrir, de otro algoritmo
+    /// (aquí el CRC64NVME), no se compara con ella.
+    #[test]
+    fn la_huella_de_cada_origen_se_coteja_con_su_algoritmo() {
+        use ore_objetos::huella::{Calculo, Crc32c};
+        let mut o = EnMemoria::default();
+        o.por_version
+            .insert(("g/a.pdf".into(), "17".into()), b"FACTURA".to_vec());
+        let crc32c = |b: &[u8]| {
+            let mut c = Crc32c::default();
+            c.sumar(b);
+            c.texto()
+        };
+        let bueno = Pedido {
+            huella: crc32c(b"FACTURA"),
+            ..pedido("g/a.pdf", "17", b"FACTURA")
+        };
+        let malo = Pedido {
+            huella: crc32c(b"RECIBOS"),
+            ..pedido("g/a.pdf", "17", b"FACTURA")
+        };
+        let salida = Mutex::new(Vec::new());
+        let c = todos(&o, &[bueno, malo], &salida);
+        assert_eq!((c.entregados, c.fallidos), (1, 1));
+        let r = leer(&salida.into_inner().unwrap());
+        assert_eq!(r[0].1, Ok(b"FACTURA".to_vec()));
+        assert!(
+            matches!(&r[1].1, Err(m) if m.contains("crc32c:") && m.contains("no se copian")),
+            "{:?}",
+            r[1].1
+        );
     }
 
     /// Lo que no cuadra no entra: una huella que no es la de los bytes, una

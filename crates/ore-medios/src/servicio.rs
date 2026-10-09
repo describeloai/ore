@@ -820,15 +820,28 @@ fn firmada_en_el_origen(
         .unwrap_or_else(|| "application/octet-stream".into());
     let nombre = it.camino.rsplit('/').next().unwrap_or(&it.camino);
     let (_, disposicion) = ore_core::medios::disposicion(&tipo, nombre);
-    let Some(url) = o.firmar(&clave, &it.version, &tipo, &disposicion, segundos) else {
-        return Json::obj([(
-            "error",
-            problema_json(
-                501,
-                "media/origen",
-                "este ítem no tiene URL firmada —su origen no la da, o sólo se fija por su ETag, que una URL no lleva—: se abre por `content`",
-            ),
-        )]);
+    let url = match o.firmar(&clave, &it.version, &tipo, &disposicion, segundos) {
+        Ok(Some(u)) => u,
+        Err(e) => {
+            return Json::obj([(
+                "error",
+                problema_json(
+                    502,
+                    "media/origen",
+                    format!("el origen no firmó la URL: {e}"),
+                ),
+            )]);
+        }
+        Ok(None) => {
+            return Json::obj([(
+                "error",
+                problema_json(
+                    501,
+                    "media/origen",
+                    "este ítem no tiene URL firmada —su origen no la da, o sólo se fija por su ETag, que una URL no lleva—: se abre por `content`",
+                ),
+            )]);
+        }
     };
     Json::obj([
         ("item", ix.referencia(it)),

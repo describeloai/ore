@@ -2612,6 +2612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-gcs"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-gcp",
+ "ore-objetos",
+ "ore-sigv4",
+ "ureq",
+]
+
+[[package]]
 name = "ore-iam"
 version = "0.1.0"
 dependencies = [

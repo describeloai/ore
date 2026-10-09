@@ -101,9 +101,11 @@ pub trait Origen {
         ))
     }
 
-    /// **Una URL firmada de un ítem** (0049 H3), sin red: fijada a su versión,
-    /// con el tipo y la disposición dentro de la firma, viva `segundos`.
-    /// `None`: este origen no da URLs firmadas (se abre por `content`).
+    /// **Una URL firmada de un ítem** (0049 H3): fijada a su versión, con el
+    /// tipo y la disposición dentro de la firma, viva `segundos`. `Ok(None)`:
+    /// este origen (o este ítem) no da URLs firmadas, se abre por `content`.
+    /// S3 firma sin red; GCS pide la firma a IAM (`signBlob`), que puede fallar
+    /// (`Err`).
     fn firmar(
         &self,
         clave: &str,
@@ -111,9 +113,9 @@ pub trait Origen {
         tipo: &str,
         disposicion: &str,
         segundos: u64,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, String> {
         let _ = (clave, version, tipo, disposicion, segundos);
-        None
+        Ok(None)
     }
 }
 

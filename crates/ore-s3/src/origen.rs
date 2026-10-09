@@ -185,11 +185,11 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
         tipo: &str,
         disposicion: &str,
         segundos: u64,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, String> {
         // Una URL de navegador no lleva `If-Match`: de un objeto que sólo se
         // fija por su ETag podría dar otros bytes, así que no se firma (D-O1).
         if ore_objetos::etag_de(version).is_some() {
-            return None;
+            return Ok(None);
         }
         let b: &Bucket = self.0.borrow();
         let mut extra: Vec<(&str, &str)> = Vec::new();
@@ -207,7 +207,7 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
             &extra,
             segundos,
         );
-        Some(format!("{}{ruta}?{q}", b.endpoint))
+        Ok(Some(format!("{}{ruta}?{q}", b.endpoint)))
     }
 }
 

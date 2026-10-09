@@ -1,0 +1,22 @@
+# Un bucket de GCS de un CLIENTE como origen (ADR 0061 O2), por la API JSON:
+# listar por generaciones, la huella (crc32c), leer una generacion con rango y
+# la URL V4 firmada por `signBlob`. Distinto de `ore-store` (el lago de ORE,
+# que escribe): esto solo lee, y con la identidad que el cliente autorizo —la
+# cuenta de la celda, o una suya suplantada (D-O2)—.
+[package]
+name        = "ore-gcs"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Un bucket de GCS como origen de objetos: listar, leer fijado y firmar"
+
+[dependencies]
+ore-core    = { path = "../ore-core" }
+# El token de la cuenta que corre (metadata server, renovado) y el cliente HTTP.
+ore-gcp     = { path = "../ore-gcp" }
+ore-objetos = { path = "../ore-objetos" }
+# La codificacion de la firma, el hash y el instante: sin red (los mismos que SigV4).
+ore-sigv4   = { path = "../ore-sigv4" }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }

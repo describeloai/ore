@@ -82,12 +82,63 @@ impl Calculo for Crc64Nvme {
     }
 }
 
+/// **CRC-32C** (Castagnoli), el que GCS da de cada objeto (`crc32c`, base64
+/// del valor en big-endian), siempre, también de los compuestos (ADR 0061 O2).
+/// Polinomio reflejado `0x82F63B78`, registro inicial y salida a unos.
+pub struct Crc32c(u32);
+
+const TABLA_32C: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 {
+                0x82F6_3B78 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+            k += 1;
+        }
+        t[i] = c;
+        i += 1;
+    }
+    t
+};
+
+impl Default for Crc32c {
+    fn default() -> Self {
+        Crc32c(!0)
+    }
+}
+
+impl Crc32c {
+    pub fn valor(&self) -> u32 {
+        !self.0
+    }
+}
+
+impl Calculo for Crc32c {
+    fn sumar(&mut self, datos: &[u8]) {
+        let mut c = self.0;
+        for &b in datos {
+            c = TABLA_32C[((c ^ u32::from(b)) & 0xFF) as usize] ^ (c >> 8);
+        }
+        self.0 = c;
+    }
+    fn texto(&self) -> String {
+        format!("crc32c:{}", base64(&self.valor().to_be_bytes()))
+    }
+}
+
 /// El cálculo que casa con `huella` (por su algoritmo), si se sabe hacer. Una
 /// huella de un algoritmo que no, o un `etag:` —un validador, no una huella—,
 /// no se coteja: `None`.
 pub fn para(huella: &str) -> Option<Box<dyn Calculo>> {
     match huella.split_once(':') {
         Some(("crc64nvme", _)) => Some(Box::new(Crc64Nvme::default())),
+        Some(("crc32c", _)) => Some(Box::new(Crc32c::default())),
         _ => None,
     }
 }
@@ -125,12 +176,28 @@ mod tests {
         assert_eq!(de(b""), "crc64nvme:AAAAAAAAAAA=");
     }
 
+    /// El valor de comprobación del catálogo de CRC (CRC-32C) y el de GCS.
+    #[test]
+    fn el_crc32c_es_el_de_gcs() {
+        let mut c = Crc32c::default();
+        Calculo::sumar(&mut c, b"1234");
+        Calculo::sumar(&mut c, b"56789");
+        assert_eq!(c.valor(), 0xE306_9283);
+        assert_eq!(c.texto(), "crc32c:4waSgw==");
+        let mut z = para("crc32c:x").expect("se sabe");
+        z.sumar(&[0u8; 32]);
+        assert_eq!(
+            z.texto(),
+            format!("crc32c:{}", base64(&0x8A91_36AAu32.to_be_bytes()))
+        );
+    }
+
     #[test]
     fn el_calculo_casa_con_la_huella_y_un_etag_no_se_coteja() {
         let mut c = para("crc64nvme:loquesea").expect("se sabe");
         c.sumar(b"123456789");
         assert_eq!(c.texto(), de(b"123456789"));
         assert!(para("etag:\"abc\"").is_none());
-        assert!(para("crc32c:AAAA").is_none(), "todavía no");
+        assert!(para("md5:AAAA").is_none(), "todavía no");
     }
 }
