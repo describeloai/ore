@@ -231,6 +231,8 @@ class Celda(http.server.BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         SERVE.append(("DELETE", self.path, dict(self.headers)))
+        if _gancho(self, "DELETE", "celda"):
+            return
         if self.path == "/puestos/p1/transform":
             TRANSFORMS.append(("DELETE", None))
             return _json(self, 200, {"transform": False})

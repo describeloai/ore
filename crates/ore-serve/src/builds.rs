@@ -1664,6 +1664,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// 0049 JM2 · La celda de un Preview de Java que lee una colección: la que
+    /// `ensayo.rs` manda al puesto, con el arnés y los `.java` del paquete. Con
+    /// `ORE_CELDA_JAVA_MEDIA`, se deja ahí para el laboratorio de la JVM
+    /// (`pruebas-de-fuego/la-media-en-java.py`), que la corre con el kernel del
+    /// agente contra el banco de la media.
+    #[test]
+    fn la_celda_de_un_preview_de_java_que_lee_media() {
+        let d = arbol("java-media");
+        let p = d.join("packages/ventas");
+        std::fs::write(
+            p.join("etl/Indice.java"),
+            "import static ore.Ore.*;\n\
+             import ore.Media;\n\
+             import ore.Transform;\n\
+             import java.util.*;\n\n\
+             public class Indice {\n    \
+             static final String CONTRATOS = \"ventas.archivo.contratos\";\n\n    \
+             /** El índice de los contratos: su ruta, su versión y la cabeza de cada uno. */\n    \
+             @Transform(inputs = {CONTRATOS}, output = \"ventas.indice_media\")\n    \
+             public static Object indice() throws Exception {\n        \
+             List<Map<String, Object>> filas = new ArrayList<>();\n        \
+             for (Media.Item it : collection(CONTRATOS).items()) {\n            \
+             Map<String, Object> f = new LinkedHashMap<>();\n            \
+             f.put(\"path\", it.ref().path());\n            \
+             f.put(\"version\", it.ref().version());\n            \
+             try {\n                \
+             f.put(\"cabeza\", new String(it.readRange(0, 5)));\n            \
+             } catch (Media.MediaError e) {\n                \
+             f.put(\"cabeza\", \"error: \" + e.type);\n            \
+             }\n            \
+             filas.add(f);\n        \
+             }\n        \
+             return write(\"ventas.indice_media\", filas);\n    \
+             }\n}\n",
+        )
+        .unwrap();
+        let fuentes = bien(fuentes_java(&d, "packages/ventas/etl/Indice.java", None));
+        assert!(
+            fuentes.iter().any(|(r, _)| r.ends_with("Indice.java")),
+            "{fuentes:?}"
+        );
+        let celda = arnes_java(
+            "packages/ventas/etl/Indice.java",
+            "packages/ventas/etl/Indice.java",
+            "indice",
+            &fuentes,
+            ModoJava::Preview {
+                output: "ventas.indice_media",
+            },
+        );
+        assert!(celda.contains("ore.Arnes.ensayar(String.join("), "{celda}");
+        assert!(celda.contains(r#"\"metodo\":\"indice\""#), "{celda}");
+        if let Ok(f) = std::env::var("ORE_CELDA_JAVA_MEDIA") {
+            std::fs::write(f, &celda).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn un_literal_de_java_lleva_lo_que_sea() {
         assert_eq!(

@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0 y JM1 hechos** (leer: 28/51 y las 13 del SDK). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM2 hechos** (leer, y dentro de un `@Transform`: 30/51 y 18 del SDK). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -872,6 +872,30 @@ celda de verdad, dirán lo suyo.
 **Ruido del laboratorio, anotado:** una corrida de seis tuvo en `medida-003` una espera de ~10 s (el
 `connectTimeout`), sin error ni reintento; causa sin identificar (el reenvío de Docker Desktop es el
 sospechoso). No cambia ningún veredicto.
+
+#### JM2 · hecho: dentro de un `@Transform` (2026-10-09)
+
+**`30/51`, ninguno mal** (los 28 de JM1, y `error-003` y `error-004`), y **18/18 del SDK**: las 13 de
+B3·5, las cuatro de B4·3 en Java, y el Preview de un `@Transform` que lee media con la celda que genera
+`builds.rs`. La corrida entera, ~27 s.
+
+- **Lo del SDK ya estaba**: `Media.Collection` lee por `Media.lee`, que dentro de un transform deja
+  sólo sus `inputs` y lanza `MediaForbidden` (`media/no-declarada`) **sin preguntar**; fuera, anota
+  la colección en lo leído (la procedencia de lo que se escriba). El arnés del Build y del Preview
+  (`ore.Arnes`) llama al método dentro de `Ore.transform(…)` con lo que su anotación declara, así que
+  `@Transform(inputs = {CONTRATOS}, …)` acota la media igual que acota `over()` y `sql()`.
+- **`error-004` · el linaje**: lo escribe el servidor al confirmar (B4·4) con lo que fijó al declarar
+  (B4·2). Lo del SDK es haberlo declarado por su nombre; el banco fija como `ore-serve` (devuelve
+  `fijadas`, y el listado de una colección fijada lee esa transacción).
+- **La prueba 18**: `builds.rs` tiene una prueba nueva que genera la celda de **Preview** de
+  `Indice.java` —un `@Transform` que recorre `ventas.archivo.contratos` y lee la cabeza de cada ítem
+  con `readRange`— y, con `ORE_CELDA_JAVA_MEDIA`, la deja en `target/celdas/` (la orden la genera si
+  falta). El laboratorio la corre con **el kernel del agente** (JShell, como el puesto): el transform
+  se declara con sus `inputs`, lee dentro de su techo, el `412` de `cambia.pdf` es la fila de ese ítem,
+  y `write()` no escribe (el informe del Preview: 3 filas).
+- **Por qué Preview y no Build**: el `write()` de un Build va por Iceberg REST y el escritor de fuera,
+  que el banco no tiene. Un Build cuya salida es una **colección escrita** sí cabe en el banco: va con
+  las transacciones de JM3.
 
 #### Dos decisiones que pide la JVM
 

@@ -44,6 +44,18 @@ TTL = (30, 300, 3600)   # mínimo, por defecto, máximo: los de `ore-medios`
 
 _cerrojo = threading.RLock()
 ESTADO = {}
+#: JM2 · Lo que `ore-serve` fija al declarar un transform (0049 B4·2): la
+#: transacción de cada colección de sus `inputs`, por su nombre corto. Fuera de
+#: `ESTADO`: un caso instala la muestra DENTRO del transform que declaró.
+FIJADAS = {}
+#: Las que dio la última declaración, aunque el transform ya se retirara: lo que
+#: el servidor escribiría en el linaje de lo que ese transform confirmó.
+DECLARADAS = {}
+
+
+def _corto(nombre):
+    p = nombre.split(".")
+    return "%s.%s" % (p[0], p[2]) if len(p) == 3 and p[1] == "default" else nombre
 
 
 def _nuevo():
@@ -144,10 +156,33 @@ def _credencial_mal(h):
     return False
 
 
+def _transform(h, metodo):
+    """Declarar (y retirar) un transform, como `ore-serve`: lo anota en
+    `TRANSFORMS` (las pruebas de siempre lo miran) y fija las colecciones de la
+    muestra que estén en sus `inputs`."""
+    if metodo == "DELETE":
+        banco.TRANSFORMS.append(("DELETE", None))
+        FIJADAS.clear()
+        return _json(h, 200, {"transform": False})
+    c = banco._cuerpo(h)
+    banco.TRANSFORMS.append(("POST", c))
+    FIJADAS.clear()
+    with _cerrojo:
+        for col in COLECCIONES:
+            if _corto(col) in (c.get("inputs") or []) and col in ESTADO.get("cols", {}):
+                FIJADAS[_corto(col)] = str(ESTADO["cols"][col]["ultima"])
+    DECLARADAS.clear()
+    DECLARADAS.update(FIJADAS)
+    return _json(h, 200, {"transform": c.get("nombre"), "inputs": c.get("inputs"), "output": c.get("output"),
+                          "fijadas": dict(FIJADAS)})
+
+
 def celda(h, metodo, servidor):
     u = urllib.parse.urlparse(h.path)
     if servidor == "celda" and metodo == "POST" and u.path.startswith("/_banco/"):
         return _mando(h, u.path[len("/_banco/"):], banco._cuerpo(h))
+    if servidor == "celda" and metodo in ("POST", "DELETE") and u.path == "/puestos/p1/transform":
+        return _transform(h, metodo)
     p = u.path.split("/")
     if servidor != "celda" or len(p) < 6 or p[1] != "media":
         return False
@@ -175,7 +210,8 @@ def celda(h, metodo, servidor):
 
 
 def _items(h, col, st, q):
-    tx = st["ultima"]
+    # Dentro de un transform, la transacción fijada al declararlo (B4·2).
+    tx = int(FIJADAS.get(_corto(col), st["ultima"]))
     cursor = q.get("cursor")
     desde = 0
     if cursor:
@@ -334,6 +370,8 @@ def _mando(h, orden, c):
             if "enviados" in c:
                 banco.CONTADOS["enviados"] = c["enviados"]
             return _json(h, 200, dict(banco.CONTADOS))
+        if orden == "transforms":
+            return _json(h, 200, {"transforms": [[m, c2] for m, c2 in banco.TRANSFORMS], "fijadas": dict(DECLARADAS)})
         if orden == "objeto":
             return _json(h, 200, {"base64": base64.b64encode(banco.OBJETOS[c["path"]]).decode()})
         if orden == "rama":

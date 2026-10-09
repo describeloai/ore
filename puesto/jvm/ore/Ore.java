@@ -259,7 +259,7 @@ public final class Ore {
     }
 
     // Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
-    private static final List<String> leidas = new ArrayList<>();
+    static final List<String> leidas = new ArrayList<>();
     record Transform(String nombre, List<String> inputs, String output) {}
     private static Transform transformActivo = null;
     /** El transform que corre, o {@code null} (0049 JM1: la media acota como {@code over()} y {@code sql()}). */
@@ -501,7 +501,7 @@ public final class Ore {
         } catch (Exception e) { /* el servidor no lo sabe: el SDK sigue acotando */ }
     }
 
-    private static Map<String, Object> procedencia(String nombre) {
+    static Map<String, Object> procedencia(String nombre) {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("puesto", puesto.id);
         if (transformActivo != null) { p.put("inputs", transformActivo.inputs().stream().sorted().toList()); p.put("transform", transformActivo.nombre()); }

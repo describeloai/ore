@@ -1,6 +1,8 @@
 package conformidad;
 
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -66,6 +68,15 @@ final class Sdk {
     }
 
     static byte[] resto(Media.MediaChannel ch) throws Exception { return Lectura.leerTodo(ch); }
+
+    @SuppressWarnings("unchecked")
+    static List<Object> transforms() throws Exception { return (List<Object>) Banco.mando("transforms").get("transforms"); }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> m(Object o) { return o instanceof Map<?, ?> x ? (Map<String, Object>) x : Map.of(); }
+
+    @SuppressWarnings("unchecked")
+    static List<Object> l(Object o) { return o instanceof List<?> x ? (List<Object>) x : List.of(); }
 
     static int correr() throws Exception {
         System.out.println("la media en java · el sdk");
@@ -212,6 +223,71 @@ final class Sdk {
                         exige("r1/trabajo".equals(cabeceras(r).get("x-ore-rama")), "sin x-ore-rama: " + r.get(1));
                 exige(fichas == 0 && fichasAlEmpezar == 1, "la ficha se preguntó " + fichasAlEmpezar + " veces al empezar y " + fichas + " después");
                 return "la rama del puesto va en x-ore-rama (la ficha, preguntada una vez en el proceso)";
+            });
+            // ── JM2 · dentro de un transform: las cuatro de B4·3 ──────────────────
+            caso(14, () -> {
+                int antes = transforms().size();
+                List<String> leidos = Ore.transform("paginar", List.of("legal.archivo.contratos"), "legal.archivo.paginas", () -> {
+                    List<String> ps = new ArrayList<>();
+                    for (Media.Item i : Ore.collection("legal.archivo.contratos").items()) ps.add(i.ref().path());
+                    return ps;
+                });
+                List<Object> ts = transforms().subList(antes, transforms().size());
+                Map<String, Object> declarado = m(l(ts.get(0)).get(1));
+                exige("POST".equals(l(ts.get(0)).get(0)) && l(declarado.get("inputs")).equals(List.of("legal.archivo.contratos")), "declarado " + ts);
+                exige("legal.archivo.paginas".equals(declarado.get("output")), "output " + declarado);
+                exige(leidos.equals(List.of("a.pdf", "b.pdf", "cambia.pdf")), "leídos " + leidos);
+                exige("DELETE".equals(l(ts.get(ts.size() - 1)).get(0)), "no se retiró: " + ts);
+                return "inputs = {\"legal.archivo.contratos\"}: se declara por su nombre, se lee dentro, y se retira al salir";
+            });
+            caso(15, () -> {
+                Banco.mando("registro", "limpiar", true);
+                try {
+                    Ore.transform("fuera", List.of("legal.archivo.contratos"), "legal.archivo.paginas",
+                        () -> Ore.collection("legal.otra.fotos").items().iterator().hasNext());
+                } catch (Media.MediaForbidden e) {
+                    exige(e.getMessage().contains("legal.otra.fotos") && "media/no-declarada".equals(e.type), e.getMessage());
+                    for (List<Object> r : registro("serve"))
+                        exige(!String.valueOf(r.get(1)).startsWith("/media/legal/otra"), "llegó a la celda: " + r.get(1));
+                    return "una colección no declarada: MediaForbidden (media/no-declarada) en la celda, sin preguntar al servidor";
+                }
+                throw new AssertionError("debía ser MediaForbidden");
+            });
+            caso(16, () -> {
+                ParaElBanco.leidas(true);
+                Ore.collection("legal.archivo.contratos").stat("b.pdf");
+                List<String> leidas = ParaElBanco.leidas(false);
+                exige(leidas.contains("legal.archivo.contratos"), "leídas " + leidas);
+                Object p = ParaElBanco.procedencia("legal.archivo.otra").get("leidas");
+                exige(List.of("legal.archivo.contratos").equals(p), "procedencia " + p);
+                return "fuera de un transform, leer una colección queda en lo leído (la procedencia de lo que se escriba)";
+            });
+            caso(17, () -> {
+                Media.Collection col = Ore.collection("legal.archivo.contratos");
+                exige(col.asOf() == null, "asOf antes de listar: " + col.asOf());
+                col.items().iterator().next();
+                exige("7".equals(col.asOf()), "asOf " + col.asOf());
+                return "asOf(): la transacción que el listado leyó (7)";
+            });
+            // ── JM2 · el Preview de un @Transform que lee media, con la celda de Rust ──
+            caso(18, () -> {
+                Path f = Path.of("/src/target/celdas/indice-preview.jsh");
+                exige(Files.exists(f), "no está la celda generada (" + f + "): la deja `la-media-en-java.py`");
+                int antes = transforms().size();
+                Map<String, Object> salida = ParaElBanco.celda(Files.readString(f));
+                exige(!"error".equals(salida.get("tipo")), "la celda dio error: " + salida);
+                // El informe del Preview: las columnas y las filas, en el orden de las columnas.
+                Map<String, Object> visto = m(m(salida.get("informe")).get("preview"));
+                List<Object> filas = l(visto.get("filas"));
+                List<String> cabezas = new ArrayList<>();
+                for (Object o : filas) cabezas.add(l(o).get(0) + "=" + l(o).get(2));
+                exige("ventas.indice_media".equals(visto.get("output")), "output " + visto.get("output"));
+                exige(cabezas.equals(List.of("a.pdf=%PDF-", "b.pdf=%PDF-", "cambia.pdf=error: media/cambiado")), "filas " + cabezas + " · " + ore.Json.escribir(salida));
+                List<Object> ts = transforms().subList(antes, transforms().size());
+                Map<String, Object> declarado = m(l(ts.get(0)).get(1));
+                exige(l(declarado.get("inputs")).equals(List.of("ventas.archivo.contratos")) && "ventas.indice_media".equals(declarado.get("output")), "declarado " + declarado);
+                return "el Preview de Indice.java (la celda de builds.rs, por el kernel del agente): el @Transform lee la colección dentro de su techo; "
+                    + filas.size() + " filas, el 412 de una es su fila, nada se escribe";
             });
         } finally {
             ParaElBanco.credencial(null);

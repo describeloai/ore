@@ -75,9 +75,51 @@ final class Lectura {
     @SuppressWarnings("unchecked")
     static List<Object> l(Object o) { return o instanceof List<?> x ? (List<Object>) x : List.of(); }
 
+    // ── JM2 · `antes.ambito`: el caso corre dentro de un transform ──────────
+
+    /** Lo que sale de la salida de un caso con ámbito: nunca es una de sus entradas. */
+    static final String SALIDA = "conformidad.default.salida";
+
+    /** Con {@code antes.ambito.transform}, el caso dentro de {@code Ore.transform(…)} con sus {@code entradas}. */
+    static String enSuAmbito(Map<String, Object> caso, java.util.concurrent.Callable<String> cuerpo) throws Exception {
+        Map<String, Object> ambito = m(m(caso.get("antes")).get("ambito"));
+        if (!Boolean.TRUE.equals(ambito.get("transform"))) return cuerpo.call();
+        List<String> entradas = new ArrayList<>();
+        for (Object e : l(ambito.get("entradas"))) entradas.add(String.valueOf(e));
+        Banco.mando("registro", "limpiar", true);
+        return Ore.transform("conformidad", entradas, SALIDA, cuerpo);
+    }
+
+    /** Lo que el servidor vio de un caso con ámbito: que no se le preguntó (una no declarada) y lo que consta en el linaje. */
+    @SuppressWarnings("unchecked")
+    static void despuesDelAmbito(Map<String, Object> caso, String en) throws Exception {
+        Map<String, Object> ambito = m(m(caso.get("antes")).get("ambito"));
+        if (!Boolean.TRUE.equals(ambito.get("transform"))) return;
+        Map<String, Object> espera = m(caso.get("espera"));
+        String col = "conformidad.default." + en, corto = "conformidad." + en;
+        if ("media/no-declarada".equals(espera.get("error"))) {
+            // «Sin preguntar»: el SDK lo dice antes del 403 del servidor.
+            for (Object r : l(Banco.mando("registro").get("serve")))
+                exige(!String.valueOf(l(r).get(1)).startsWith("/media/conformidad/default/" + en),
+                    "[" + en + "] una colección no declarada llegó a la celda: " + l(r).get(1));
+        }
+        Map<String, Object> linaje = m(espera.get("linaje_incluye"));
+        if (!linaje.isEmpty()) {
+            // El linaje lo escribe el servidor (B4·4) con lo que fijó al declarar
+            // (B4·2): lo del SDK es haberlo declarado, por su nombre.
+            Map<String, Object> t = Banco.mando("transforms");
+            Map<String, Object> declarado = null;
+            for (Object x : l(t.get("transforms"))) if ("POST".equals(l(x).get(0))) declarado = m(l(x).get(1));
+            exige(declarado != null && l(declarado.get("inputs")).contains(corto), "[" + en + "] el transform no declaró `" + corto + "`: " + declarado);
+            Object asOf = m(t.get("fijadas")).get(corto);
+            String quiere = String.valueOf(linaje.get("as_of"));
+            exige(String.valueOf(linaje.get("coleccion")).replace("{coleccion}", col).equals(col), "[" + en + "] linaje de otra colección");
+            exige(asOf != null && (quiere.equals("*") || quiere.equals(asOf)), "[" + en + "] la celda no fijó `" + corto + "`: " + t.get("fijadas"));
+        }
+    }
+
     static Ctx preparar(Map<String, Object> caso, String en) throws Exception {
         Map<String, Object> antes = m(caso.get("antes"));
-        if (antes.containsKey("ambito")) throw new Ejecutor.Pendiente("JM2: dentro de un transform");
         Banco.mando("instalar");
         ParaElBanco.credencial(null);
         Ctx x = new Ctx(en);

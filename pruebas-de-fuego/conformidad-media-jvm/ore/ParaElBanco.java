@@ -1,5 +1,6 @@
 package ore;
 
+import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -16,6 +17,19 @@ public final class ParaElBanco {
 
     /** Otra referencia para un ítem (sin tamaño, otro digest), como la prueba de Python. */
     public static void ref(Media.Item it, Media.MediaRef r) { it.ref = r; }
+
+    /** Lo que la sesión leyó (fuera de un transform), y vaciarlo. */
+    public static List<String> leidas(boolean vaciar) {
+        List<String> l = List.copyOf(Ore.leidas);
+        if (vaciar) Ore.leidas.clear();
+        return l;
+    }
+
+    /** La procedencia que llevaría lo que se escribiera en {@code nombre}. */
+    public static Map<String, Object> procedencia(String nombre) { return Ore.procedencia(nombre); }
+
+    /** Una celda, como la corre el puesto: el kernel del agente (JShell), con su informe. */
+    public static Map<String, Object> celda(String texto) { return new Agente.Kernel().correr(texto, "java"); }
 
     /** Los umbrales de la lectura por rangos, para probarla con un ítem pequeño. */
     public static void rangos(long desde, long trozo) {

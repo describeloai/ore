@@ -108,7 +108,9 @@ public final class Ejecutor {
         Object en = caso.get("en");
         for (Object c : en instanceof List<?> l ? l : List.of("mantenida")) {
             try {
-                String nota = o.correr(caso, String.valueOf(c));
+                String en1 = String.valueOf(c);
+                String nota = Lectura.enSuAmbito(caso, () -> o.correr(caso, en1));
+                Lectura.despuesDelAmbito(caso, en1);
                 if (nota != null) notas.add(c + ": " + nota);
             } catch (Pendiente e) {
                 return new Resultado(id, op, Veredicto.PENDIENTE, e.getMessage());

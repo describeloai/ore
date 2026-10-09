@@ -53,6 +53,19 @@ for s in MUESTRA["colecciones"]["derivar"]["solo"]:
         datos = next(v for v in it["versiones"] if not version or v["id"] == version)["texto"].encode()
     banco.ENTRADA[ruta] = datos
 
+# 1b · la celda de un Preview de Java que lee media, la que genera `builds.rs`
+#   (JM2): se genera si falta (Rust en Docker, como siempre); la prueba 18 la
+#   corre con el kernel del agente. Tras tocar el arnés: borrarla y volver.
+CELDA = os.path.join(RAIZ, "target", "celdas", "indice-preview.jsh")
+if not os.path.exists(CELDA):
+    print("generando la celda de builds.rs (cargo test, en Docker)…", flush=True)
+    os.makedirs(os.path.dirname(CELDA), exist_ok=True)
+    subprocess.run(["docker", "run", "--rm", "-v", RAIZ.replace("\\", "/") + ":/src", "-v", "ore-cargo-registry:/usr/local/cargo/registry",
+                    "-v", "ore-pruebas-t:/tt", "-e", "CARGO_TARGET_DIR=/tt/main",
+                    "-e", "ORE_CELDA_JAVA_MEDIA=/src/target/celdas/indice-preview.jsh", "-w", "/src", "rust:1-bookworm",
+                    "cargo", "test", "-q", "-p", "ore-serve", "--bin", "ore-serve", "la_celda_de_un_preview_de_java_que_lee_media"],
+                   env=dict(os.environ, MSYS_NO_PATHCONV="1"), stdout=subprocess.DEVNULL)
+
 # 2 · la imagen, por su digest: lo que se probó es exactamente esto.
 r = subprocess.run(["docker", "image", "inspect", IMAGEN, "--format", "{{json .RepoDigests}} {{.Created}}"],
                    capture_output=True, text=True)
