@@ -91,7 +91,7 @@ public final class Agente {
             try { return Files.readString(Path.of(Ore.env("PUESTO_DIR", "/puesto"), nombre)).strip(); } catch (IOException e) { return null; }
         }
 
-        Map<String, String> cabeceras() throws IOException, InterruptedException {
+        synchronized Map<String, String> cabeceras() throws IOException, InterruptedException {
             if (sujeto != null && !sujeto.isEmpty()) return Map.of("x-ore-sujeto", sujeto);
             // ⭐ R1 · El token de ESTE pod, si lo trae: el servidor sabe qué puesto
             //   habla. Se lee cada vez: el kubelet lo renueva en el sitio. Con la
@@ -754,6 +754,18 @@ public final class Agente {
         String trabajo = Ore.env("TRABAJO", "").trim();
         if (!trabajo.isEmpty()) Ore.CODIGO = trabajo;
         Testigo testigo = new Testigo();
+        // 0049 D3 · la credencial, en cada petición del SDK y no sólo entre celdas:
+        //   `Testigo` la renueva cuando le queda menos de un minuto.
+        p.credencial = () -> {
+            try {
+                return testigo.cabeceras();
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException("the agent could not renew its credential: " + e.getMessage(), e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while renewing the agent's credential", e);
+            }
+        };
         Kernel kernel = new Kernel();
         // El servidor de lenguaje escucha desde el principio; no compila nada
         // hasta que el editor abre un fichero. Un trabajo no tiene editor.

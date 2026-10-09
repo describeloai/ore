@@ -171,6 +171,10 @@ public final class Ore {
         public volatile String persona = "";
         /** El token lo pone el agente y lo renueva; una celda no lo ve. */
         volatile Map<String, String> cabeceras = Map.of();
+        /** 0049 D3 · Quien da la credencial en cada petición, si el agente lo puso: así se
+         *  renueva también en mitad de una celda (la del agente dura 300 s), no sólo entre
+         *  celdas. Sin él, {@code cabeceras}. */
+        volatile java.util.function.Supplier<Map<String, String>> credencial = null;
 
         /** {@code [código, cuerpo]}: el cuerpo, JSON como mapa (o {@code {error}}). */
         public Respuesta pedir(String metodo, String ruta, Object cuerpo, Duration plazo) throws IOException, InterruptedException {
@@ -179,7 +183,8 @@ public final class Ore {
 
         public Respuesta pedir(String metodo, String ruta, Object cuerpo, Duration plazo, Map<String, String> extra) throws IOException, InterruptedException {
             HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(servidor + ruta)).timeout(plazo).header("accept", "application/json");
-            for (Map.Entry<String, String> e : cabeceras.entrySet()) b.header(e.getKey(), e.getValue());
+            java.util.function.Supplier<Map<String, String>> c = credencial;
+            for (Map.Entry<String, String> e : (c != null ? c.get() : cabeceras).entrySet()) b.header(e.getKey(), e.getValue());
             // Desde qué puesto: el catálogo escribe en nombre de quien lo abrió.
             if (!id.isEmpty()) b.header("x-ore-puesto", id);
             for (Map.Entry<String, String> e : extra.entrySet()) b.header(e.getKey(), e.getValue());
@@ -255,8 +260,10 @@ public final class Ore {
 
     // Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
     private static final List<String> leidas = new ArrayList<>();
-    private record Transform(String nombre, List<String> inputs, String output) {}
+    record Transform(String nombre, List<String> inputs, String output) {}
     private static Transform transformActivo = null;
+    /** El transform que corre, o {@code null} (0049 JM1: la media acota como {@code over()} y {@code sql()}). */
+    static Transform transformActivo() { return transformActivo; }
     /** El trabajo que corre (W3.7 ④): `<ruta>@<commit>`, para la procedencia; lo pone el agente (la JVM no cambia su entorno). */
     public static String CODIGO = null;
 
@@ -478,7 +485,7 @@ public final class Ore {
         lee(nombres.isEmpty() ? tabla : nombres.stream().sorted().toList().get(0));
     }
 
-    private static void lee(String vistaDada) {
+    static void lee(String vistaDada) {
         String vista = corto(vistaDada, "a tree name");
         if (transformActivo != null && !transformActivo.inputs().contains(vista)) throw new IllegalStateException("`" + vista + "` is not in the inputs of `" + transformActivo.nombre() + "` (" + String.join(", ", transformActivo.inputs()) + "): a transform only reads what it declares");
         if (!leidas.contains(vista)) leidas.add(vista);
@@ -642,6 +649,17 @@ public final class Ore {
         return "iceberg_scan('" + raiz.replace("\\", "/").replace("'", "''") + "', version='" + version.replace("'", "''") + "', allow_moved_paths=true)";
     }
 
+    // ── 0049 JM · la media en código (`Media`) ───────────────────────────
+
+    /** {@code Ore.collection("db.schema.name")} (or {@code db.name}): a media collection. */
+    public static Media.Collection collection(String name) { return new Media.Collection(name); }
+
+    /** The bytes of many items, 16 at once, as they finish: one's error is a value and does not stop the others. {@code items} may be lazy ({@code c.items()}). */
+    public static Iterable<Media.Result> readMany(Iterable<Media.Item> items) { return readMany(items, 16); }
+
+    /** The bytes of many items, {@code threads} at once, as they finish. */
+    public static Iterable<Media.Result> readMany(Iterable<Media.Item> items, int threads) { return Media.leerVarios(items, threads); }
+
     // ── 0057 C4 · una colección del lago en SQL: su listado ───────────────
     //
     // Lo mismo que el SDK de Python (`medios._relacion`): una fila por ítem,
@@ -661,7 +679,7 @@ public final class Ore {
     private static Map<String, String> ramaDelPuesto = null;
 
     /** La rama del puesto ({@code x-ore-rama}), preguntada una vez: una colección de la rama se ve desde su puesto. */
-    private static synchronized Map<String, String> ramaDelPuesto() throws IOException, InterruptedException {
+    static synchronized Map<String, String> ramaDelPuesto() throws IOException, InterruptedException {
         if (ramaDelPuesto == null) {
             Respuesta r = puesto.id.isEmpty() ? null : puesto.pedir("GET", "/puestos/" + puesto.id, null, Duration.ofSeconds(30));
             Object rama = r != null && r.codigo() == 200 ? r.cuerpo().get("rama") : null;

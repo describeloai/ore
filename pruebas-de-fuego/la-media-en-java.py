@@ -28,6 +28,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import banco_media as banco  # noqa: E402
+import banco_conformidad  # noqa: E402
 
 T0 = time.time()
 RAIZ = banco.RAIZ
@@ -37,6 +38,7 @@ filtro = sys.argv[1] if len(sys.argv) > 1 else ""
 # 1 · el banco. Escucha en el bucle local: Docker Desktop lleva
 #   `host.docker.internal` hasta él, y no se abre a la red de la máquina.
 banco.arrancar(escucha="127.0.0.1", anuncio="host.docker.internal")
+banco_conformidad.montar()   # JM1: la muestra de `conformidad/media`
 MUESTRA = json.load(open(os.path.join(RAIZ, "conformidad", "media", "muestra.json"), encoding="utf-8"))
 por_ruta = {i["path"]: i for i in MUESTRA["items"] if "path" in i}
 for s in MUESTRA["colecciones"]["derivar"]["solo"]:
@@ -72,8 +74,9 @@ done < /src/puesto/jvm/jars.txt
 [ -f /opt/ore/lib/duckdb_jdbc.jar ] || { echo "  ✗ la imagen no lleva duckdb_jdbc.jar"; mal=1; }
 [ "$mal" = 0 ] || exit 1
 t=$(date +%s%N)
-javac -nowarn -encoding UTF-8 -d /tmp/c -cp '/opt/ore/lib/*' \
-  /src/puesto/jvm/ore/*.java /src/pruebas-de-fuego/conformidad-media-jvm/*.java 2>&1 | grep -v '^Note:' || true
+javac -nowarn -Xlint:-options --release 21 -encoding UTF-8 -d /tmp/c -cp '/opt/ore/lib/*' \
+  /src/puesto/jvm/ore/*.java /src/pruebas-de-fuego/conformidad-media-jvm/*.java \
+  /src/pruebas-de-fuego/conformidad-media-jvm/ore/*.java 2>&1 | grep -v '^Note:' || true
 [ -f /tmp/c/conformidad/Ejecutor.class ] || { echo "  ✗ no compila"; exit 1; }
 echo "  javac $(( ($(date +%s%N) - t) / 1000000 )) ms"
 exec java -XX:+UseSerialGC -XX:MaxRAMPercentage=50 --add-opens=java.base/java.nio=ALL-UNNAMED \
@@ -83,6 +86,7 @@ orden = ["docker", "run", "--rm", "--entrypoint", "sh",
          "-v", RAIZ.replace("\\", "/") + ":/src:ro",
          "-e", "ORE_SERVE=" + os.environ["ORE_SERVE"], "-e", "PUESTO=p1",
          "-e", "ORE_ALMACEN=dir:/tmp", "-e", "FILTRO=" + filtro,
+         "-e", "JM_ESCALA=" + str(banco_conformidad.ESCALA),
          digest, "-c", GUION]
 p = subprocess.run(orden, env=dict(os.environ, MSYS_NO_PATHCONV="1"))
 print("en %.1f s" % (time.time() - T0))

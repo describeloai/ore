@@ -30,18 +30,32 @@ public final class Ejecutor {
     /** Lo que un caso dio. */
     enum Veredicto { BIEN, MAL, PENDIENTE }
 
-    record Resultado(String id, String op, Veredicto v, String nota) {}
+    record Resultado(String id, String op, Veredicto v, String nota, long ms) {
+        Resultado(String id, String op, Veredicto v, String nota) { this(id, op, v, nota, 0); }
+    }
 
-    /** Una `op` que el SDK sabe correr. Vacío en JM0: cada hito añade las suyas. */
-    interface Op { String correr(Map<String, Object> caso) throws Exception; }
+    /** Una `op` que el SDK sabe correr, en una colección de su `en`; lo que devuelve es su nota (las medidas). */
+    interface Op { String correr(Map<String, Object> caso, String en) throws Exception; }
+
+    /** Lo que un caso pide y el hito que lo hace todavía no ha llegado. */
+    static final class Pendiente extends RuntimeException {
+        Pendiente(String porque) { super(porque); }
+    }
 
     static final Map<String, Op> OPS = new LinkedHashMap<>();
+
+    static {
+        Lectura.registrar(OPS);   // JM1
+    }
 
     public static void main(String[] args) throws Exception {
         Path raiz = Path.of(args.length > 0 ? args[0] : "conformidad/media");
         String filtro = args.length > 1 && !args[1].isEmpty() ? args[1] : null;
+        Banco.leerMuestra(raiz);
 
-        int fallos = humo();
+        // El SDK primero: su prueba 6 cuenta con el primer permiso del banco, y la 13 con la primera ficha.
+        int fallos = filtro == null || filtro.equals("sdk") ? Sdk.correr() : 0;
+        fallos += humo();
 
         List<Resultado> rs = new ArrayList<>();
         try (Stream<Path> fs = Files.list(raiz.resolve("casos"))) {
@@ -50,16 +64,21 @@ public final class Ejecutor {
                 for (Map<String, Object> caso : casosDe(f)) {
                     String id = String.valueOf(caso.get("id"));
                     if (filtro != null && !filtro.equals(fichero) && !filtro.equals(id)) continue;
-                    rs.add(correr(caso));
+                    long t = System.nanoTime();
+                    Resultado r = correr(caso);
+                    rs.add(new Resultado(r.id(), r.op(), r.v(), r.nota(), (System.nanoTime() - t) / 1_000_000));
                 }
             }
         }
         int bien = 0, mal = 0, pendientes = 0;
         for (Resultado r : rs) {
             switch (r.v()) {
-                case BIEN -> { bien++; System.out.println("  ✓ " + r.id() + " · " + r.nota()); }
-                case MAL -> { mal++; System.out.println("  ✗ " + r.id() + " · " + r.nota()); }
-                case PENDIENTE -> pendientes++;
+                case BIEN -> { bien++; System.out.println("  ✓ " + r.id() + " · " + r.nota() + lento(r)); }
+                case MAL -> { mal++; System.out.println("  ✗ " + r.id() + " · " + r.nota() + lento(r)); }
+                case PENDIENTE -> {
+                    pendientes++;
+                    if (!r.nota().isEmpty()) System.out.println("  · " + r.id() + " · " + r.nota());
+                }
             }
         }
         Map<String, Integer> porOp = new LinkedHashMap<>();
@@ -68,6 +87,9 @@ public final class Ejecutor {
             + (porOp.isEmpty() ? "" : " " + porOp));
         System.exit(fallos + mal > 0 ? 1 : 0);
     }
+
+    /** Lo que tarda un caso, si pasa de un segundo: la corrida entera tiene que ser rápida. */
+    static String lento(Resultado r) { return r.ms() >= 1000 ? " (" + r.ms() + " ms)" : ""; }
 
     @SuppressWarnings("unchecked")
     static List<Map<String, Object>> casosDe(Path f) throws Exception {
@@ -80,14 +102,23 @@ public final class Ejecutor {
         String id = String.valueOf(caso.get("id")), op = String.valueOf(caso.get("op"));
         Op o = OPS.get(op);
         if (o == null) return new Resultado(id, op, Veredicto.PENDIENTE, "");
-        try {
-            String nota = o.correr(caso);
-            return new Resultado(id, op, Veredicto.BIEN, nota == null ? String.valueOf(caso.get("norma")) : nota);
-        } catch (AssertionError e) {
-            return new Resultado(id, op, Veredicto.MAL, e.getMessage());
-        } catch (Exception e) {
-            return new Resultado(id, op, Veredicto.MAL, e.getClass().getSimpleName() + ": " + e.getMessage());
+        // En cada colección de su `en`: que la misma expectativa valga en la
+        // mantenida y en la virtual es el punto de 0049 D1.
+        List<String> notas = new ArrayList<>();
+        Object en = caso.get("en");
+        for (Object c : en instanceof List<?> l ? l : List.of("mantenida")) {
+            try {
+                String nota = o.correr(caso, String.valueOf(c));
+                if (nota != null) notas.add(c + ": " + nota);
+            } catch (Pendiente e) {
+                return new Resultado(id, op, Veredicto.PENDIENTE, e.getMessage());
+            } catch (AssertionError e) {
+                return new Resultado(id, op, Veredicto.MAL, e.getMessage());
+            } catch (Throwable e) {
+                return new Resultado(id, op, Veredicto.MAL, "[" + c + "] " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
         }
+        return new Resultado(id, op, Veredicto.BIEN, notas.isEmpty() ? String.valueOf(caso.get("norma")) : String.join(" · ", notas));
     }
 
     /**

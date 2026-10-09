@@ -61,6 +61,9 @@ TRANSFORMS = []                # ("POST", cuerpo) | ("DELETE", None)
 MODOS = {"cortar_subidas": 0,  # las próximas N subidas se cortan sin contestar
          "conflictos": 0}      # los próximos N commits pierden la carrera (409)
 PUERTOS = {}
+#: JM1 · Quien añade colecciones al banco (`banco_conformidad.py`): cada gancho
+#: `(handler, metodo, servidor)` contesta y devuelve True, o deja pasar.
+GANCHOS = []
 #: El nombre con que el puesto llega al banco: 127.0.0.1 si corre aquí; desde un
 #: contenedor, `host.docker.internal` (JM0, `la-media-en-java.py`).
 ANUNCIO = {"host": "127.0.0.1"}
@@ -126,9 +129,20 @@ def _doc_de(ruta):
     return None
 
 
+def _gancho(h, metodo, servidor):
+    return any(g(h, metodo, servidor) for g in GANCHOS)
+
+
 class Celda(http.server.BaseHTTPRequestHandler):
+    # HTTP/1.1 con keep-alive, como un servidor de verdad (JM1): toda respuesta
+    # dice su largo. Con HTTP/1.0 el banco cerraba cada conexión sin decirlo, y
+    # el cliente de la JVM —que las guarda— reusaba una ya cerrada.
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
         SERVE.append(("GET", self.path, dict(self.headers)))
+        if _gancho(self, "GET", "celda"):
+            return
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
         if u.path == "/puestos/p1":
@@ -193,6 +207,8 @@ class Celda(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         SERVE.append(("POST", self.path, dict(self.headers)))
+        if _gancho(self, "POST", "celda"):
+            return
         u = urllib.parse.urlparse(self.path)
         p = u.path.split("/")
         cuerpo = _cuerpo(self)
@@ -418,8 +434,12 @@ def sellar(st, subidos, cuerpo):
 
 
 class Medios(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
         BYTES.append(("GET", self.path, dict(self.headers)))
+        if _gancho(self, "GET", "medios"):
+            return
         q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
         p = q.get("permiso")
         if p not in PERMISOS or PERMISOS[p][1] <= 0:
@@ -439,6 +459,7 @@ class Medios(http.server.BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(trozo)))
         if path == "cortado.pdf":
             trozo = trozo[: len(trozo) // 2]   # promete el entero y da la mitad
+            self.close_connection = True
         if codigo == 206:
             self.send_header("content-range", "bytes %d-%d/%d" % (a, z, len(datos)))
         self.end_headers()
@@ -491,6 +512,9 @@ def arrancar(escucha="127.0.0.1", anuncio="127.0.0.1"):
 
     `escucha` es donde atienden; `anuncio`, el nombre que va en las URLs que el
     banco da (los bytes, la subida) y en `ORE_SERVE`: el de quien llama."""
+    # Cola de 128 (por defecto, 5): `read_many` con 32 hilos abre 32 a la vez,
+    # y con 5 el sistema rechaza el resto antes de que el banco lo vea.
+    http.server.ThreadingHTTPServer.request_queue_size = 128
     celda = http.server.ThreadingHTTPServer((escucha, 0), Celda)
     medios = http.server.ThreadingHTTPServer((escucha, 0), Medios)
     PUERTOS["celda"], PUERTOS["medios"] = celda.server_port, medios.server_port

@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0 y JM1 hechos** (leer: 28/51 y las 13 del SDK). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -808,8 +808,70 @@ lo está, se arregla el laboratorio antes que nada.
   `POST /puestos/p1/sql` y las páginas de `items`; sin banco, el humo falla y la orden sale con 1.
 - **el ejecutor** (`conformidad-media-jvm/Ejecutor.java`): `0/51`, por `op` pendientes
   `list` 7 · `stat` 6 · `open` 13 · `url` 3 · `sesion` 1 · `put` 9 · `verify` 1 · `apply` 11.
+  (En JM1, `errores` y `medidas` resultaron ser `open`/`stat`/`list` por dentro.)
 
 **Medido: 7,6 s la corrida entera** (javac 3,8 s de ellos), tres veces. Se itera en segundos.
+
+#### JM1 · hecho: leer (2026-10-09)
+
+**`28/51`, ninguno mal**: los 28 de `list`, `stat`, `open`, `url`, `sesion`, `errores` y `medidas` que
+no son de un transform (`error-003` y `error-004` son de JM2); y **las 13 del SDK de B3·5**, las de
+`la-media-en-python.py`, en Java. La corrida entera, **~25 s** (10,7 de ellos, las esperas a escala de
+`sesion-001`/`-002`); tres seguidas, iguales.
+
+- **El SDK** (`puesto/jvm/ore/Media.java`, en la imagen como el resto de `ore/*.java`):
+  `Ore.collection(name)` → `Media.Collection` con `items()` (perezoso, por cursor), `pages()` (cada
+  página con su `asOf`), `stat(path[, version])`, `statByDigest`, `urls(items, ttlS)` (una por
+  posición, el error de una en la suya); `Media.Item` con `open()` → `MediaChannel`
+  (`SeekableByteChannel`: la versión fijada, `version()`/`etag()`/`reprDigest()`/`status()` de la
+  respuesta, `readRange` con su `Range` siempre), `inputStream()`, `readBytes([threads])` por rangos,
+  `readRange`; `Ore.readMany(items[, threads])` con `Media.Result` (el error es un valor); `MediaRef`
+  (un `record`) y los mismos ocho errores que Python, con el mismo `type`.
+- **El banco de la conformidad** (`pruebas-de-fuego/banco_conformidad.py`): la muestra en dos
+  colecciones (mantenida: versión por contenido y `digest` siempre; virtual: versión del origen y el
+  `digest` sólo tras una lectura entera), dos transacciones, los bytes con `ETag`,
+  `ORE-Media-Version`, `Repr-Digest` y rangos, `problem+json`, y su mando (`POST /_banco/…`) para lo
+  que los casos hacen a la muestra. Cualquier ejecutor lo puede usar: el de Python de B6, también.
+- **El banco habla ahora HTTP/1.1 con keep-alive.** En HTTP/1.0 cerraba cada conexión sin decirlo, y
+  el cliente de la JVM —que guarda las conexiones— reusaba una ya cerrada (`header parser received no
+  bytes`: 37 de 500 en `medida-003`); Python no lo ve porque `urllib` no guarda ninguna. Con
+  keep-alive, 0 de 500 y **~850 ítems/s** (Python, ~350). Las cuatro pruebas de Python del banco,
+  iguales.
+
+**Lo que la JVM hace distinto, y por qué:**
+
+- **D3 en la JVM**: el token del agente sólo se renovaba **entre celdas**. Ahora `Ore.Puesto` tiene
+  un proveedor de credencial que el agente pone (`Testigo.cabeceras()`, que renueva cuando le queda
+  menos de un minuto), y se pide en cada petición: `sesion-002` lo prueba con un token de 1,5 s a
+  escala.
+- **D-JM3 · un flujo cortado se reanuda** desde donde iba, con la misma versión (hasta tres veces); si
+  esa versión ya no se puede leer, `MediaChanged`. Python corta con `MediaCorrupt`. Es lo que hace
+  pasar `open-006` (el cambio a mitad) sin mezclar nunca: la reanudación pide la versión fijada y la
+  celda dice `412`.
+- **Un GET se repite** (dos veces) si no llegó a tener respuesta: la conexión guardada que el otro lado
+  cerró es de la JVM, y en prod también pasa (una conexión ociosa que GCS o `ore-medios` cierran).
+- **Un rango contestado entero es un error** (`media/sin-rangos`), no unos bytes que no son los
+  pedidos.
+
+**Huecos que JM1 encontró en el servidor** (no se tapan en el SDK; para decidir):
+
+1. **`ore-serve` no pasa `as_of`** a `/indice/items` (`crates/ore-serve/src/medios.rs`, `items`: sólo
+   `prefix`, `cursor`, `limit`, `estado`): `list-006` pasa en el banco y **en prod no podría**.
+2. **El cursor no fija la transacción**: cada página lee el puntero de ese momento. Si la colección
+   cambia a mitad de un recorrido, `una_transaccion` se rompe. El banco lleva la transacción en el
+   cursor.
+3. **`url` de una virtual**: `ore-medios` contesta `501 media/origen` («la firma la puerta de
+   lectura»); `url-003` la pide en las dos.
+
+**Lo que es del servidor** —el veredicto de verdad lo da prod, no el banco—: `list-001`
+(`sin_claves`, `sin_cadenas`), `list-005`, `open-002` (`Repr-Digest`), `open-007` (el sha256 visto al
+paso), `open-008` (el tipo por los bytes), `url-001`/`-002` (el ttl recortado), `error-001`/`-002`
+(`problem+json`, el 403 que no dice si existe). El ejecutor los comprueba igual: en prod, con la
+celda de verdad, dirán lo suyo.
+
+**Ruido del laboratorio, anotado:** una corrida de seis tuvo en `medida-003` una espera de ~10 s (el
+`connectTimeout`), sin error ni reintento; causa sin identificar (el reenvío de Docker Desktop es el
+sospechoso). No cambia ningún veredicto.
 
 #### Dos decisiones que pide la JVM
 
