@@ -35,6 +35,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Lo que se espera, en segundos, a conectar y a cada operación.
 const ESPERA: Duration = Duration::from_secs(20);
 const EDAD: u64 = 60;
+
+static PETICIONES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Cuántas operaciones SFTP (listar un directorio, mirar, abrir), para los
+/// avisos del driver; los bytes van en flujo y no se cuentan.
+pub fn contadores() -> (usize, usize) {
+    (PETICIONES.load(std::sync::atomic::Ordering::Relaxed), 0)
+}
+
+fn contar() {
+    PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 const HOSTKEY: &str = "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256";
 const KEX: &str = "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,\
     ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,\
@@ -450,6 +462,7 @@ impl Sftp {
         let mut pila = vec![dir.trim_end_matches('/').to_string()];
         while let Some(d) = pila.pop() {
             let ruta = Sftp::ruta(&d);
+            contar();
             let hijos = c
                 .sftp
                 .readdir(&ruta)
@@ -483,9 +496,45 @@ impl Sftp {
         Ok(out)
     }
 
+    /// **Un nivel**: las carpetas (acabadas en `/`) y los ficheros de `dir`
+    /// (vacío o acabado en `/`), sin bajar. Lo que miran `check` y `explorar`
+    /// sin recorrer un servidor entero.
+    pub fn nivel(&self, dir: &str) -> Result<(Vec<String>, Vec<Entrada>), Fallo> {
+        let c = self.conexion()?;
+        let d = dir.trim_end_matches('/');
+        contar();
+        let hijos = c
+            .sftp
+            .readdir(Sftp::ruta(d))
+            .map_err(|e| Fallo::de_sftp(&format!("/{d}"), &e))?;
+        let (mut carpetas, mut ficheros) = (Vec::new(), Vec::new());
+        for (p, st) in hijos {
+            let nombre = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let clave = format!("{dir}{nombre}");
+            let tipo = st.file_type();
+            if tipo.is_dir() {
+                carpetas.push(format!("{clave}/"));
+            } else if tipo.is_file() || tipo.is_symlink() {
+                ficheros.push(Entrada {
+                    clave,
+                    tamano: st.size.unwrap_or(0),
+                    mtime: st.mtime.unwrap_or(0),
+                    enlace: tipo.is_symlink(),
+                });
+            }
+        }
+        carpetas.sort();
+        ficheros.sort_by(|a, b| a.clave.cmp(&b.clave));
+        Ok((carpetas, ficheros))
+    }
+
     /// El tamaño y el `mtime` de un fichero (`lstat`: un enlace no se sigue).
     pub fn mirar(&self, clave: &str) -> Result<(u64, u64), Fallo> {
         let c = self.conexion()?;
+        contar();
         let st = c
             .sftp
             .lstat(&Sftp::ruta(clave))
@@ -515,6 +564,7 @@ impl Sftp {
             return Err(Fallo::cambio(clave));
         }
         let c = self.conexion()?;
+        contar();
         let fichero = c
             .sftp
             .open(Sftp::ruta(clave))

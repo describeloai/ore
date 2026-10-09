@@ -1,0 +1,22 @@
+# El lector de un servidor SFTP de un cliente como FUENTE (ADR 0061 O4·2).
+#
+# Lo de todos los almacenes de objetos (el catalogo, las filas, las versiones,
+# la bajada y el bucle de verbos) es `ore-read-objetos`; aqui queda lo de
+# SFTP: su URL `sftp://`, el `check` paso a paso (el host, su huella, la clave,
+# listar, leer), `explorar` y como se clasifica lo que contesta. El origen es
+# `ore-sftp`. Solo coleccion mantenida (D-O1): `fija: ninguna`.
+[package]
+name        = "ore-read-sftp"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de servidores SFTP: catalogo de objetos y de ficheros tabulares"
+
+[dependencies]
+ore-core         = { path = "../ore-core" }
+ore-driver       = { path = "../ore-driver" }
+ore-objetos      = { path = "../ore-objetos" }
+ore-read-objetos = { path = "../ore-read-objetos" }
+ore-sftp         = { path = "../ore-sftp" }

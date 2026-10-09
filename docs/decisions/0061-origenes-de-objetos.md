@@ -352,6 +352,18 @@ sin enlaces, versiones, la edad mínima, rangos, un fichero sin permiso, D-O1, y
 reescrito en sitio a mitad de lectura hace fallar la lectura** en vez de dar la mezcla. Compila en
 Alpine (musl, el OpenSSL estático de la imagen).
 
+**O4·2, hecho**: `ore-read-sftp`, el `main` común con lo de SFTP (`fija: ninguna`, sin firma ni
+huella). Su `check` va paso a paso y cada paso sólo se prueba si pasó el anterior: `conexion` (el
+puerto abierto a la IP de salida de la celda), `huella` (sin fijar, dice la vista para confirmarla;
+otra, puede ser un impostor y **no se autentica**), `identidad` (la pública de la celda en
+`authorized_keys`), `listar` y `leer` (un byte); la huella vista sale siempre en `huella`. Una ruta
+que no existe se dice como tal (con la pista del chroot). `ore-sftp` gana `nivel` (un directorio, para
+`check` y `explorar`) y sus contadores. Contra `atmoz/sftp`: los verbos del binario —`capacidades`,
+`check` (y sin huella, con otra, con una clave no autorizada, con una ruta que no está), `explorar`,
+`catalogo` (2 tablas y 2 conjuntos), `versiones` (`etag:<mtime>-<tamaño>`), `bajar`, y con un validador
+viejo no copia—. **El binario compilado en Alpine sólo enlaza la libc de musl** (OpenSSL estático) y su
+`check` contra el mismo servidor sale `ok`.
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).

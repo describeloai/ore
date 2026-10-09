@@ -2839,6 +2839,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-sftp"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-driver",
+ "ore-objetos",
+ "ore-read-objetos",
+ "ore-sftp",
+]
+
+[[package]]
 name = "ore-registry"
 version = "0.1.0"
 dependencies = [
