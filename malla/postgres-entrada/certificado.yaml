@@ -1,0 +1,46 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# P5·2 · EL CERTIFICADO DE LA ENTRADA: *.europe-west1.pg.paladio.io
+#
+# Let's Encrypt por DNS-01 (un comodín sólo se puede pedir así): cert-manager escribe el TXT
+# _acme-challenge en la zona pg-paladio-io de Cloud DNS como ore-pg-dns, por Workload Identity
+# (sin `serviceAccountSecretRef`: credenciales del entorno, las del pod) y con dns.admin sólo
+# sobre esa zona (malla/87-postgres-la-entrada-gcp.sh). Renueva solo, 30 días antes.
+#
+# El Secret `entrada-pg-tls` (ore-pg) lo monta el proxy (P5·3): el comodín cubre cada
+# ep-….europe-west1.pg.paladio.io, su -pooler y api.europe-west1.pg.paladio.io (P5·4).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-pg
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-pg-cuenta
+    solvers:
+      - selector:
+          dnsZones: [pg.paladio.io]
+        dns01:
+          cloudDNS:
+            project: project-8853a180-450d-47be-b83
+            hostedZoneName: pg-paladio-io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: entrada-pg
+  namespace: ore-pg
+spec:
+  secretName: entrada-pg-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-pg
+  dnsNames:
+    - "*.europe-west1.pg.paladio.io"
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  duration: 2160h      # 90 días, lo que da Let's Encrypt
+  renewBefore: 720h    # renueva 30 días antes

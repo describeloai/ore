@@ -4,3 +4,14 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - cert-manager.yaml
+patches:
+  # P5·2: el reto DNS-01 del comodín *.europe-west1.pg.paladio.io. El controlador habla con Cloud
+  # DNS como ore-pg-dns por Workload Identity (dns.admin sólo sobre la zona pg-paladio-io; la crea
+  # malla/87-postgres-la-entrada-gcp.sh), sin claves. Un parche y no el fichero vendorizado:
+  # vendorizar.py lo reescribe.
+  - target: { kind: ServiceAccount, name: cert-manager, namespace: cert-manager }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          iam.gke.io/gcp-service-account: ore-pg-dns@project-8853a180-450d-47be-b83.iam.gserviceaccount.com

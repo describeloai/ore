@@ -1189,6 +1189,24 @@ El modal **Connect to your database** de la consola, iterado sobre un boceto con
 
 Probado en la consola en modo banco. Que el snippet copiado conecte desde fuera es el paso 6 de las pruebas que solo se pueden hacer en producción. Los ajustes de acceso (P5·6) irán en la configuración del proyecto, como en Neon, no en Connect.
 
+#### P5·2 · El nombre y el certificado, escritos (2026-10-09)
+
+Escrito, validado y **sin aplicar** (Google sin facturación):
+
+- **`malla/87-postgres-la-entrada-gcp.sh`** (idempotente):
+  - la IP regional `ore-pg-entrada`;
+  - la cuenta `ore-pg-dns`, con `dns.admin` **solo sobre la zona `pg-paladio-io`**; el guion comprueba que tiene 0 roles en el proyecto y 0 claves;
+  - Workload Identity para `cert-manager/cert-manager`;
+  - el registro `*.europe-west1.pg.paladio.io` A → la IP, que se corrige si apunta a otra;
+  - la retirada del TXT `_delegacion`.
+- **Parche del cert-manager vendorizado** (`postgres-computo/cert-manager/kustomization.yaml`): la anotación de Workload Identity en su cuenta de servicio. Es un parche porque `vendorizar.py` reescribe el fichero vendorizado.
+- **`malla/postgres-entrada/`**, con su propio Kustomization de Flux (`ore-pg-entrada`, `dependsOn: ore-pg-cert-manager`, como la base del cómputo):
+  - el `ClusterIssuer` `letsencrypt-pg`, por DNS-01 en Cloud DNS con las credenciales del pod, sin claves;
+  - el `Certificate` `entrada-pg`: comodín ECDSA P-256 en el Secret `entrada-pg-tls` de `ore-pg`, renovado 30 días antes.
+- **Validado**: `kustomize build` de los dos directorios, `kubeconform -strict` con los esquemas de Kubernetes, cert-manager y Flux (3 de 3 válidos), y `shellcheck` del guion.
+
+⛔ **`87-postgres-la-entrada.yaml` no está en la lista de la malla**, solo comentado. Flux reconcilia desde `main`: en cuanto vuelva Google lo aplicaría, antes de que exista la cuenta del DNS-01, y Let's Encrypt limita los retos fallidos. Se descomenta en el despliegue, **después** del guion.
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:
@@ -1203,7 +1221,7 @@ Lo construido en el laboratorio llega a producción en una tarde y sin reescribi
 
 1. **Volver**: el clúster, `ore-pg` (almacenamiento, `ore-postgres`, las VMs) y las celdas, sanos; relanzar el CI de `5321c351` (sólo falló al subir imágenes).
 2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad, con Redis; la malla 86 añade a `ore-postgres` `--redis` y `--dominio europe-west1.pg.paladio.io`; un *Reset password* entra a la primera.
-3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve (también `api.`, el que usa el driver por HTTP); quitar el TXT `_delegacion`.
+3. **P5·2**: `malla/87-postgres-la-entrada-gcp.sh` (la IP, la cuenta del DNS-01 sólo sobre `pg-paladio-io`, el registro A, fuera el TXT `_delegacion`); **después** descomentar `87-postgres-la-entrada.yaml` en la lista de la malla; hecho cuando el `Certificate` `entrada-pg` está `Ready` y `*.europe-west1.pg.paladio.io` resuelve a la IP (también `api.`, el que usa el driver por HTTP).
 4. **P5·3**: desde internet, `psql "…?sslmode=verify-full"` entra y pgbench corre sin fallos; reiniciar una réplica no tira a la otra; la IP del cliente llega tal cual.
 5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM (`p55.sh` con 150 clientes, como mucho 64 conexiones en Postgres); **P5·6** con la IP real del cliente.
    - **El puerto, en este orden**: primero la malla 85, que solo **añade** 5432 y 6432 (aditiva: no rompe nada vivo); después el binario de `ore-postgres`; después se recrean los cómputos que nacieron en el 55433 (hoy solo los de prueba y `postgre`, el de la consola); y por último se quita el 55433 de la malla y de Connect.

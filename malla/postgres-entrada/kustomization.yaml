@@ -1,0 +1,6 @@
+# La entrada de ORE Serverless Postgres (ADR 0058, P5). La aplica el Kustomization de Flux
+# `ore-pg-entrada` (malla/87-…), no el de la malla: necesita el webhook de cert-manager vivo.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - certificado.yaml

@@ -101,6 +101,10 @@ resources:
   - 85-postgres-el-computo.yaml
   # P4·1: el plano de control (ore-postgres); su base la crea antes 86-…sh.
   - 86-postgres-el-plano-de-control.yaml
+  # P5·2 · la entrada (el certificado comodín; en P5·3, el proxy). ⛔ AÚN NO: se añade al
+  # desplegar, DESPUÉS de 87-postgres-la-entrada-gcp.sh (la IP y la cuenta del DNS-01). Antes,
+  # cert-manager pediría el comodín sin poder escribir el reto y Let's Encrypt limita los fallos.
+  # - 87-postgres-la-entrada.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO

@@ -1,0 +1,30 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE SERVERLESS POSTGRES · LA ENTRADA (ADR 0058, P5)
+#
+# El certificado comodín (P5·2) y, en P5·3, el proxy de Neon, su Redis y el balanceador L4.
+# Los manifiestos viven en `malla/postgres-entrada/`.
+#
+# ⭐ Un Kustomization de Flux propio, como la base del cómputo (malla/84-…): declara un
+#   `ClusterIssuer` y un `Certificate`, que necesitan el webhook de cert-manager VIVO. Con
+#   `dependsOn` espera a que `ore-pg-cert-manager` esté sano; dentro de la lista de la malla,
+#   un fallo aquí haría fallar la reconciliación de toda la plataforma.
+#
+# Antes: malla/87-postgres-la-entrada-gcp.sh (la IP, la cuenta del DNS-01 y el registro A).
+# `prune: true`: todo lo que hay aquí lo puso este Kustomization.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ore-pg-entrada
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: ore-pg-cert-manager
+  interval: 10m
+  path: ./malla/postgres-entrada
+  prune: true
+  wait: true
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: malla
