@@ -1,6 +1,7 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
-**Estado:** propuesto (2026-10-09). **O0 hecho** (2026-10-09); siguiente O1. Investigación:
+**Estado:** propuesto (2026-10-09). **O0 y O1 hechos** (2026-10-09); siguiente O2 (GCS). D-O1
+aplicada en O1. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -42,8 +43,8 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    `ninguna`), si firma URLs, qué huella da sin bajar (`crc64nvme`, `crc32c`, `md5`, ninguna) y si
    su credencial es corta. Quien sirve una colección lo lee de ahí y no promete lo que el origen no
    da.
-4. **D-O1 · leer sin versionado** (R2, ADLS con namespace jerárquico, SFTP) *(propuesta, por
-   decidir)*: una colección **virtual** sólo sobre un origen que fije al menos por ETag (`If-Match`):
+4. **D-O1 · leer sin versionado** (R2, ADLS con namespace jerárquico, SFTP) *(aceptada con O1,
+   2026-10-09)*: una colección **virtual** sólo sobre un origen que fije al menos por ETag (`If-Match`):
    si el objeto cambió, `412 media/cambiado`, nunca otros bytes. Uno que no fija nada (SFTP) sólo
    como colección **mantenida**: la versión es la copia en el lago, con su sha256.
 
@@ -106,6 +107,25 @@ el mismo código movido y los cubren sus tests.
    443, la malla (`20-driver.yaml`, `45-ore-medios.yaml`), con su go;
 6. las invariantes de `dependencias.rs` para lo nuevo, su banco de mentira, y la conformidad de
    media sobre una virtual suya.
+
+### O1 · hecho (2026-10-09): los que hablan S3, como perfiles
+
+**O1·0, medido** en Docker: **VersityGW** (con versionado, como S3) pasa el driver de entonces
+entero —`versionId`, CRC64NVME, la URL firmada bajada con `curl`—; **Garage** (sin versionado, como
+R2), todo salvo `versiones` y `bajar`: `ListObjectVersions` es `501 NotImplemented`. Garage además
+**ignora `versionId`** (uno inventado da la actual) y **respeta `If-Match`** (`412`). MinIO ya no
+publica imágenes (Docker Hub y quay): el laboratorio usa esos dos.
+
+| paso | commit | qué |
+|---|---|---|
+| O1·1 | `596ca2b4` | si el origen no versiona, cada objeto es su única versión, **`etag:<su ETag>`** (`ore_objetos::version_por_etag`): cambia con los bytes, y nunca viaja como `versionId`: cada lectura (`huella_de`, `bajar`, `content`) la convierte en `If-Match`. No se firma su URL (`firmar` → `None`; `ore-firmar-s3` tampoco). `check` dice `fija: version \| etag` y, fuera de AWS, el bucket en vez del ARN |
+| O1·2 | (en O1·1) | lo que sabe cada fuente sale de `check`, medido contra ella |
+| O1·3 | `84377db6` | `pruebas-de-fuego/o1-los-que-hablan-s3.sh`: los dos emuladores por todos los verbos, la URL firmada con `curl`, la virtual por `ore-medios` (`laboratorio_s3.rs`) y un objeto reescrito **con el mismo tamaño** entre `versiones` y `bajar` (garage no lo copia; versity copia la versión listada): 13/13. Con `etag_de` roto a propósito, garage copia los bytes nuevos y la prueba falla |
+| O1·4 | (este) | [`docs/origenes-de-objetos.md`](../origenes-de-objetos.md): la URL, y un perfil por proveedor (endpoint, región, cómo fija), probado o «de su documentación» |
+
+**Deuda temporal**: R2, Wasabi, B2, Spaces, IBM y OCI se conectan por la misma API que los probados,
+pero ninguno se ha medido contra una cuenta suya; cada uno pasa a «probado» cuando su URL pase
+`o1-los-que-hablan-s3.sh`.
 
 ## Lo que no se hace aquí
 
