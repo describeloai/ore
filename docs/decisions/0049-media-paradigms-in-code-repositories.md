@@ -853,15 +853,9 @@ no son de un transform (`error-003` y `error-004` son de JM2); y **las 13 del SD
 - **Un rango contestado entero es un error** (`media/sin-rangos`), no unos bytes que no son los
   pedidos.
 
-**Huecos que JM1 encontró en el servidor** (no se tapan en el SDK; para decidir):
-
-1. **`ore-serve` no pasa `as_of`** a `/indice/items` (`crates/ore-serve/src/medios.rs`, `items`: sólo
-   `prefix`, `cursor`, `limit`, `estado`): `list-006` pasa en el banco y **en prod no podría**.
-2. **El cursor no fija la transacción**: cada página lee el puntero de ese momento. Si la colección
-   cambia a mitad de un recorrido, `una_transaccion` se rompe. El banco lleva la transacción en el
-   cursor.
-3. **`url` de una virtual**: `ore-medios` contesta `501 media/origen` («la firma la puerta de
-   lectura»); `url-003` la pide en las dos.
+**Tres huecos del servidor** que JM1 encontró —`as_of` en `list`, el cursor que no fijaba la
+transacción, `url` de una virtual— no se taparon en el SDK: se cerraron en el servidor (H1–H3,
+abajo).
 
 **Lo que es del servidor** —el veredicto de verdad lo da prod, no el banco—: `list-001`
 (`sin_claves`, `sin_cadenas`), `list-005`, `open-002` (`Repr-Digest`), `open-007` (el sha256 visto al
@@ -924,9 +918,8 @@ corrida entera, ~31 s.
   mientras un Preview está armado —la misma lista de lo que no escribe que Python y que la puerta de
   `ore-serve`—. Antes sólo lo paraba el servidor.
 
-**Un hueco más del servidor** (el cuarto): **`verify` no existe** en `ore-serve` ni en `ore-medios`, aunque
-`docs/media.md` §2 lo define (`POST /media/…/verify`). En la JVM es del cliente: lee cada ítem y lo
-coteja con su digest (`verify-001`). Python no lo tiene.
+**El cuarto hueco del servidor**, `verify` —`docs/media.md` §2 lo definía y no existía—, se cerró en
+el servidor (H4, abajo).
 
 #### JM4 · hecho: `apply()`, ficheros que dan ficheros (2026-10-09)
 
@@ -1000,8 +993,23 @@ Python, sin tocar aquí.
   [`docs/media.md`](../media.md) con las tres superficies.
 
 **JM, cerrado en local.** La JVM es la primera superficie que pasa la suite entera. Lo que queda es
-**la lista de lo que sólo se ve en prod** (arriba), el primer día con la cuenta activa, y los **cuatro
-huecos del servidor** que JM encontró (JM1, JM3), para decidir.
+**la lista de lo que sólo se ve en prod** (abajo), el primer día con la cuenta activa.
+
+#### H1–H4 · los cuatro huecos, cerrados en el servidor (2026-10-09)
+
+Lo que JM encontró en `ore-serve` y `ore-medios`, arreglado donde estaba y no en el SDK:
+
+| | qué | cómo |
+|---|---|---|
+| **H1** | `as_of` en `list` y `derivations` | el puntero es un fichero del árbol y cada transacción un commit suyo: `ore-serve` busca en su historia (desde la cabeza, o desde `main` si la rama lo hereda, `.ore-al-dia.json`) el `metadata_location` de esa transacción —dos procesos de git, `log` y `cat-file --batch`—. La que no tuvo, `404`; una mal escrita, `422` (`as_of` entra en la consulta de la media de `ore-entrada`: antes se perdía y se leía la de hoy); **dentro de un transform, otra que la fijada es `422`** (D-H1: el linaje del Build dice la que fijó). `ore-medios` distingue lo que la retención ya recogió (`404`) de un lago caído (`502`) |
+| **H2** | el cursor fija la transacción | el cursor que da `ore-serve` es `<tx>.<el de ore-medios>`, opaco: la página siguiente se lee como un `as_of`, y un recorrido no mezcla dos aunque la colección cambie a mitad. Un cursor y un `as_of` que no casan, `422` |
+| **H3** | `url` de una virtual | se firma **en el origen**: `ore-serve` trae la credencial de la fuente y recorta `ttl_s` a lo que le queda; `ore-medios` prefirma con `ore_sigv4`, fijada al `versionId` (también `null`), con el tipo y la disposición dentro de la firma, sin red, como `ore-firmar-s3`. Lo que una mantenida aún no tiene en el lago, también. Una fuente que no es S3, `501` en su posición |
+| **H4** | `verify` | `ore-medios` lee cada ítem entero (del lago o de su origen), calcula su sha256 y lo compara con su digest: `{item, ok, digest, comparado}` por posición, el corrupto con `media/corrupto`. **Sin digest conocido, el tamaño** (D-H4), y el calculado queda visto para el siguiente `stat`. Hasta 100 por petición. Pasa la puerta del Preview (leer) en `ore-serve`, la JVM y Python |
+
+Y los SDK: la JVM llama a `verify` del servidor (en lotes de 100); Python gana `items(as_of=…)` y
+`verify()`; el banco de la conformidad, `/verify`. **Probado**: tests de Rust en los dos procesos
+(un árbol de git de verdad para `as_of`, con una rama que hereda de `main`), `la-media-por-su-puerta.sh`
+con un `ore-serve` real (13/13), la JVM 51/51 y su SDK, Python 19/19.
 
 #### Dos decisiones que pide la JVM
 
@@ -1029,6 +1037,10 @@ aquí, acotado:
 5. **La suite desde un puesto**: el ejecutor de Java como celda, contra las colecciones
    `conformidad.default.*`. Con los 51 en verde, la JVM entra como pieza de B6.
 6. **La consola**: un Build y un Preview de un `@Transform` con media, y la galería.
+7. **H1–H4 de verdad**: que el clon del árbol en la celda tenga **la historia entera** (sin ella,
+   `as_of` no encuentra la transacción; en el código no hay `--depth`); la URL prefirmada de una
+   virtual contra el bucket (la firma es la de E9, por otra puerta); y cuánto tarda `verify` de
+   ítems grandes contra el plazo de `ore-serve`.
 
 ## Lo que no se hace aquí
 

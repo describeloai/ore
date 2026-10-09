@@ -193,9 +193,12 @@ reads them, without ORE's token. Media collections, items and their errors are s
 [`media.md`](media.md).
 
 - `ore.collection(name)` → a `Collection`. Its `short_name` is the name a transform declares.
-- `Collection.items(prefix=None, state=None, limit=1000)` → a lazy iterator of `Item`s, one
-  consistent transaction of the collection (`Collection.as_of` says which). `prefix` filters by
-  path, `state` by item state, `limit` is the page size.
+- `Collection.items(prefix=None, state=None, limit=1000, as_of=None)` → a lazy iterator of
+  `Item`s, one consistent transaction of the collection (`Collection.as_of` says which). `prefix`
+  filters by path, `state` by item state, `limit` is the page size, `as_of` an earlier transaction.
+- `Collection.verify(items)` → one dict per item, in its position (`item`, `ok`, `digest`,
+  `compared`, `error`): the server reads each one whole and checks it against its digest. To audit,
+  not for the hot path.
 - `Collection.stat(path=None, digest=None, version=None)` → one `Item`, fresh; `item.current`
   says whether that version is still the current one.
 - `Item` has `ref` (a `MediaRef`) and `collection`, and reads its bytes:
@@ -654,8 +657,9 @@ for (Media.Result r : readMany(contracts.items(), 16)) {      // many at once
   `putMany(puts, threads)` uploads many with a bound on what is in flight (one's error is a value),
   `delete(path)` retires one, `commit()` commits again on top if someone else committed at the same
   time. **The commit is explicit** (a `try` cannot know it left by an exception): `close()` without
-  `commit()` is `abort()`, and nothing is written. Inside a transform, only its `output`. `verify(items)`
-  reads each item and checks it against its digest.
+  `commit()` is `abort()`, and nothing is written. Inside a transform, only its `output`. `verify(items)`:
+  the server reads each item whole and checks it against its digest (`Media.Verified`, one per
+  position).
 - **`apply()`**, incremental derivation item by item, with the same rules as Python:
 
   ```java

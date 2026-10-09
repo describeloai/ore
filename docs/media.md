@@ -2,9 +2,7 @@
 
 **Estado:** B0 de [0049](decisions/0049-media-paradigms-in-code-repositories.md), escrito antes que
 nada; hoy lo implementan **Python** (B3–B10, en vivo), **SQL** (B7, B10) y **la JVM** (JM, 2026-10-09:
-la suite entera, 51/51, en el banco y en el CI; en vivo cuando la cuenta vuelva). Huecos del
-servidor que la JVM encontró —`as_of` en `list`, el cursor que no fija la transacción, `url` de una
-virtual, `verify`—: en el ADR, sección JM1 y JM3. Lo que la gramática fija de los valores (la referencia, el ancla, la
+la suite entera, 51/51, en el banco y en el CI; en vivo cuando la cuenta vuelva). Lo que la gramática fija de los valores (la referencia, el ancla, la
 tabla anclada, el listado) está en OOS
 [`v1alpha17`](../vendor/oos/spec/v1alpha17/00-scope.md); esto fija **las operaciones**: qué hace
 cada una, cómo se pide por HTTP, cómo se llama desde cada lenguaje, y qué tiene que pasar una
@@ -39,10 +37,13 @@ GET /media/{b}/{s}/{c}/items?prefix=&as_of=&cursor=&limit=
 - **Sin bytes y sin URLs.**
 - **Una transacción entera**: la primera página fija `as_of` (la actual si no se pide), y las
   siguientes la heredan por el cursor. Nunca se mezclan dos transacciones en un recorrido.
+- **`as_of` de antes**: lo que la colección era en esa transacción. Una que no tuvo, o que su
+  retención ya recogió, `404 media/no-existe`; un cursor y un `as_of` que no casan, `422`. Dentro
+  de un transform, la que se fijó al declararlo y ninguna otra (`422`).
 - **Por cursor, no por desplazamiento**: el coste de una página no depende de cuántas van antes
   (hoy sí, 0049 «Lo que hay hoy»). `limit` hasta 1000; por defecto, 1000.
-- Python: `collection.items(prefix=None, state=None, limit=1000)` → iterador perezoso de `Item`s
-  sin bytes, por cursor; `limit` es el tamaño de página.
+- Python: `collection.items(prefix=None, state=None, limit=1000, as_of=None)` → iterador perezoso
+  de `Item`s sin bytes, por cursor; `limit` es el tamaño de página.
 
 ### `stat` · lo fresco
 
@@ -113,8 +114,10 @@ POST /media/{b}/{s}/{c}/urls   { "items": [{path|digest, version?}…], "ttl_s":
 - `ttl_s` entre 30 y 3600; por defecto, 300. Recortado a lo que dure la credencial de origen.
 - **Al portador**: nunca se escribe en una tabla, un log ni un resultado.
 - Hasta 1000 ítems por petición; el error de uno va en su posición y no tumba el lote.
-- Una virtual con `open` no pasa por aquí. Su URL, si se pide, es la del origen, y solo la alcanza
-  quien tenga salida a él (no un puesto: 0049, «Lo que hay hoy»).
+- Una virtual con `open` no pasa por aquí. Su URL, si se pide, es la del origen —prefirmada con la
+  credencial de su fuente, fijada a su `versionId`, viva lo que le quede a esa credencial—, y solo la
+  alcanza quien tenga salida a él (no un puesto: 0049, «Lo que hay hoy»). Hoy, de un bucket de S3;
+  de otro origen, `501 media/origen` en su posición.
 
 ### `put` · escribir un ítem
 
@@ -264,10 +267,15 @@ files_written, files_retired, written}`. `Transaction.delete(path)` va a `retire
 ### `verify` · recalcular
 
 ```
-POST /media/{b}/{s}/{c}/verify { "items": [...] } → 200 { "results": [{ "ok" | "error" }…] }
+POST /media/{b}/{s}/{c}/verify { "items": [{path|digest, version?}…] }
+→ 200 { "results": [{ "item", "ok", "digest", "comparado": "digest" | "size" } | { "error" }…] }
 ```
 
-Lee los bytes y compara con el digest. Para auditar, no para el camino caliente.
+Lee los bytes enteros —del lago o del origen— y compara su sha256 con el digest; el corrupto,
+`ok: false` con `media/corrupto` y el digest que tienen sus bytes. Sin digest conocido (una virtual
+que nadie leyó entera), compara el tamaño, y el calculado queda visto: el siguiente `stat` lo da.
+Para auditar, no para el camino caliente: hasta 100 ítems por petición. Es leer: pasa la puerta del
+Preview. Python: `collection.verify(items)`; la JVM, `Collection.verify(items)`.
 
 ## 3. Los errores
 
