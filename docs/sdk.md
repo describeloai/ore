@@ -196,6 +196,10 @@ reads them, without ORE's token. Media collections, items and their errors are s
 - `Collection.items(prefix=None, state=None, limit=1000, as_of=None)` → a lazy iterator of
   `Item`s, one consistent transaction of the collection (`Collection.as_of` says which). `prefix`
   filters by path, `state` by item state, `limit` is the page size, `as_of` an earlier transaction.
+- `Collection.urls(items, ttl_s=None)` → one dict per item, in its position (`item`, `url`,
+  `expires_at`, `ttl_s`, `error`): a signed, short-lived URL to read it without ORE, for whoever only
+  knows how to download (a browser, an external model). Bearer: never write it into a table, a log
+  or a result. ORE code does not need it: `item.open()` reads the bytes.
 - `Collection.verify(items)` → one dict per item, in its position (`item`, `ok`, `digest`,
   `compared`, `error`): the server reads each one whole and checks it against its digest. To audit,
   not for the hot path.

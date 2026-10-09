@@ -168,6 +168,11 @@ _POR_TIPO = {
 }
 
 
+def _como_ref(o):
+    """La `MediaRef` de un `Item` o de una `MediaRef`; `None` si es un camino."""
+    return o.ref if isinstance(o, Item) else o if isinstance(o, MediaRef) else None
+
+
 def _error(status, cuerpo, que):
     cuerpo = cuerpo if isinstance(cuerpo, dict) else {}
     tipo = cuerpo.get("type") or {404: "media/no-existe", 403: "media/sin-permiso",
@@ -293,6 +298,28 @@ class Collection:
         it.current = r.get("current")
         return it
 
+    def urls(self, items, ttl_s=None):
+        """Signed, short-lived URLs to read each item without ORE (`docs/media.md`
+        §2 `url`), for whoever only knows how to download: a browser, an external
+        model. One result per item, in its position: a dict with `item` (a
+        `MediaRef`), `url`, `expires_at` (UTC), `ttl_s` and `error` (a
+        `MediaError`, or None). `ttl_s` from 30 to 3600 (300 by default), cut to
+        what the origin's credential has left. ⚠️ Bearer: whoever has the URL reads
+        that version until it expires; never write it into a table, a log or a
+        result. ORE code does not need it: `item.open()` reads the bytes.
+        `items`: paths, `MediaRef`s or `Item`s; 1000 per request."""
+        import datetime
+        cuerpo = {} if ttl_s is None else {"ttl_s": int(ttl_s)}
+        salida = []
+        for lote, v in self._por_lotes("urls", items, 1000, cuerpo, 90):
+            ms = v.get("expires_ms")
+            salida.append({
+                "item": self._ref_de(v, lote), "url": v.get("url"),
+                "expires_at": datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc)
+                if isinstance(ms, (int, float)) else None,
+                "ttl_s": v.get("ttl_s"), "error": self._error_de(v, "urls")})
+        return salida
+
     def verify(self, items):
         """The server reads the bytes of each item and checks them against its
         digest (0049 H4), one result per item, in its position: a dict with
@@ -301,35 +328,51 @@ class Collection:
         `MediaError`, or None). One's error does not stop the others. To audit,
         not for the hot path: 100 items per request. `items`: paths,
         `MediaRef`s or `Item`s."""
+        salida = []
+        for lote, v in self._por_lotes("verify", items, 100, {}, 300):
+            error = self._error_de(v, "verify")
+            salida.append({"item": self._ref_de(v, lote), "ok": bool(v.get("ok")) and error is None,
+                           "digest": v.get("digest"), "compared": v.get("comparado"), "error": error})
+        return salida
+
+    def _por_lotes(self, op, items, tope, cuerpo, plazo):
+        """`urls` y `verify`: los ítems, en lotes de `tope` (lo que el servidor
+        admite por petición), y por cada uno el ítem pedido y su resultado, en su
+        posición (`{}` si el servidor no dio el suyo)."""
         from . import session, _lee
         _lee(self.short_name)
         items = list(items)
-        salida = []
-        for i in range(0, len(items), 100):
-            lote = items[i:i + 100]
+        for i in range(0, len(items), tope):
+            lote = items[i:i + tope]
             pedidos = []
             for o in lote:
-                ref = o.ref if isinstance(o, Item) else o if isinstance(o, MediaRef) else None
+                ref = _como_ref(o)
                 p = {"path": ref.path if ref else str(o)}
                 if ref is not None and ref.version is not None:
                     p["version"] = ref.version
                 pedidos.append(p)
-            codigo, r = session.pedir("POST", self.ruta + "/verify", {"items": pedidos},
-                                      plazo=300, cabeceras=self._cabeceras())
+            codigo, r = session.pedir("POST", "%s/%s" % (self.ruta, op), dict(cuerpo, items=pedidos),
+                                      plazo=plazo, cabeceras=self._cabeceras())
             if codigo != 200:
-                raise _error(codigo, r, "verify(%s)" % self)
-            rs = r.get("results") or []
+                raise _error(codigo, r, "%s(%s)" % (op, self))
+            rs = r.get("urls" if op == "urls" else "results") or []
             for k, o in enumerate(lote):
-                v = rs[k] if k < len(rs) and isinstance(rs[k], dict) else {}
-                ref = MediaRef.from_json(v["item"]) if isinstance(v.get("item"), dict) else (
-                    o.ref if isinstance(o, Item) else o if isinstance(o, MediaRef) else None)
-                e = v.get("error")
-                error = _error(e.get("status") or 502, e, "verify") if isinstance(e, dict) else None
-                if not v:
-                    error = MediaError("media/origen", 502, "verify: the server gave no result for this item")
-                salida.append({"item": ref, "ok": bool(v.get("ok")) and error is None,
-                               "digest": v.get("digest"), "compared": v.get("comparado"), "error": error})
-        return salida
+                yield o, (rs[k] if k < len(rs) and isinstance(rs[k], dict) else {})
+
+    @staticmethod
+    def _ref_de(v, pedido):
+        """La referencia de un resultado: la que dio el servidor, o la pedida."""
+        return MediaRef.from_json(v["item"]) if isinstance(v.get("item"), dict) else _como_ref(pedido)
+
+    @staticmethod
+    def _error_de(v, op):
+        """El error de un resultado, como valor; uno que no vino también lo es."""
+        e = v.get("error")
+        if isinstance(e, dict):
+            return _error(e.get("status") or 502, e, op)
+        if not v:
+            return MediaError("media/origen", 502, "%s: the server gave no result for this item" % op)
+        return None
 
     def _cabeceras(self):
         """La rama del puesto (B3·6), preguntada una vez por colección."""

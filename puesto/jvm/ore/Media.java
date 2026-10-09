@@ -306,19 +306,11 @@ public final class Media {
                 if (r.codigo() != 200) throw error(r.codigo(), r.cuerpo(), "verify(" + this + ")");
                 List<?> rs = r.cuerpo().get("results") instanceof List<?> l ? l : List.of();
                 for (int k = 0; k < lote.size(); k++) {
-                    Object o = lote.get(k);
                     Map<String, Object> v = k < rs.size() && rs.get(k) instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
-                    MediaRef ref = v.get("item") instanceof Map<?, ?> m ? MediaRef.fromJson((Map<String, Object>) m)
-                        : o instanceof MediaRef m ? m : o instanceof Item it ? it.ref() : null;
+                    MediaRef ref = refDe(v, lote.get(k));
                     String visto = texto(v.get("digest"));
                     if (visto != null && visto.startsWith("sha256:")) visto = visto.substring(7);
-                    MediaError e = null;
-                    if (v.get("error") instanceof Map<?, ?> pe) {
-                        int st = pe.get("status") instanceof Number n ? n.intValue() : 502;
-                        e = error(st, (Map<String, Object>) pe, "verify");
-                    } else if (v.isEmpty()) {
-                        e = new MediaError("media/origen", 502, "verify: the server gave no result for this item");
-                    }
+                    MediaError e = errorDe(v, "verify");
                     salida.add(new Verified(ref, Boolean.TRUE.equals(v.get("ok")) && e == null, visto,
                         texto(v.get("comparado")), e));
                 }
@@ -503,33 +495,51 @@ public final class Media {
         /**
          * A URL for each item, for whoever needs plain HTTP (a browser, another tool), in its
          * position; one's error goes in its own and does not stop the others. {@code items}: paths,
-         * {@code MediaRef}s or {@code Item}s. {@code ttlS}: {@code null} for the default (300 s); the
-         * cell clamps it.
+         * {@code MediaRef}s or {@code Item}s, 1000 per request. {@code ttlS}: {@code null} for the
+         * default (300 s); the cell clamps it, and cuts it to what the origin's credential has left.
+         * Bearer: whoever has the URL reads that version until it expires; never write it into a
+         * table, a log or a result. ORE code does not need it: {@code item.open()} reads the bytes.
          */
         @SuppressWarnings("unchecked")
         public List<Url> urls(List<?> items, Integer ttlS) {
-            Map<String, Object> cuerpo = new LinkedHashMap<>();
-            cuerpo.put("items", pedidos(items));
-            if (ttlS != null) cuerpo.put("ttl_s", ttlS);
-            Ore.Respuesta r = pedir("POST", "urls", Map.of(), cuerpo);
-            if (r.codigo() != 200) throw error(r.codigo(), r.cuerpo(), "urls(" + this + ")");
             List<Url> salida = new ArrayList<>();
-            if (r.cuerpo().get("urls") instanceof List<?> l) {
-                for (Object o : l) {
-                    Map<String, Object> u = o instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
-                    if (u.get("error") instanceof Map<?, ?> e) {
-                        Map<String, Object> pe = (Map<String, Object>) e;
-                        int st = pe.get("status") instanceof Number n ? n.intValue() : 502;
-                        salida.add(new Url(null, null, null, null, error(st, pe, "urls")));
-                    } else {
-                        Object ms = u.get("expires_ms");
-                        salida.add(new Url(u.get("item") instanceof Map<?, ?> i ? MediaRef.fromJson((Map<String, Object>) i) : null,
-                            texto(u.get("url")), ms instanceof Number n ? Instant.ofEpochMilli(n.longValue()) : null,
+            // De mil en mil: lo que el servidor admite por petición.
+            for (int i = 0; i < items.size(); i += URLS_LOTE) {
+                List<?> lote = items.subList(i, Math.min(items.size(), i + URLS_LOTE));
+                Map<String, Object> cuerpo = new LinkedHashMap<>();
+                cuerpo.put("items", pedidos(lote));
+                if (ttlS != null) cuerpo.put("ttl_s", ttlS);
+                Ore.Respuesta r = pedir("POST", "urls", Map.of(), cuerpo);
+                if (r.codigo() != 200) throw error(r.codigo(), r.cuerpo(), "urls(" + this + ")");
+                List<?> us = r.cuerpo().get("urls") instanceof List<?> l ? l : List.of();
+                for (int k = 0; k < lote.size(); k++) {
+                    Map<String, Object> u = k < us.size() && us.get(k) instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+                    MediaRef ref = refDe(u, lote.get(k));
+                    MediaError e = errorDe(u, "urls");
+                    Object ms = u.get("expires_ms");
+                    salida.add(e != null ? new Url(ref, null, null, null, e)
+                        : new Url(ref, texto(u.get("url")), ms instanceof Number n ? Instant.ofEpochMilli(n.longValue()) : null,
                             u.get("ttl_s") instanceof Number t ? t.intValue() : null, null));
-                    }
                 }
             }
             return salida;
+        }
+
+        /** La referencia de un resultado de {@code urls} o {@code verify}: la que dio el servidor, o la pedida. */
+        @SuppressWarnings("unchecked")
+        static MediaRef refDe(Map<String, Object> v, Object pedido) {
+            if (v.get("item") instanceof Map<?, ?> m) return MediaRef.fromJson((Map<String, Object>) m);
+            return pedido instanceof MediaRef m ? m : pedido instanceof Item it ? it.ref() : null;
+        }
+
+        /** El error de un resultado, como valor; uno que no vino también lo es. */
+        @SuppressWarnings("unchecked")
+        static MediaError errorDe(Map<String, Object> v, String op) {
+            if (v.get("error") instanceof Map<?, ?> pe) {
+                int st = pe.get("status") instanceof Number n ? n.intValue() : 502;
+                return error(st, (Map<String, Object>) pe, op);
+            }
+            return v.isEmpty() ? new MediaError("media/origen", 502, op + ": the server gave no result for this item") : null;
         }
 
         /** {@code content}: a dónde ir por los bytes de {@code ref}, fijado a su versión. */
@@ -1915,6 +1925,8 @@ public final class Media {
 
     /** Cuántos ítems verifica una petición: el servidor lee los bytes enteros (0049 H4). */
     static final int VERIFY_LOTE = 100;
+    /** Cuántas URLs firma una petición, como mucho (`docs/media.md` §2 `url`). */
+    static final int URLS_LOTE = 1000;
 
     // ── muchos a la vez ─────────────────────────────────────────────────────
 

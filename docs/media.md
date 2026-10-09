@@ -113,7 +113,9 @@ POST /media/{b}/{s}/{c}/urls   { "items": [{path|digest, version?}…], "ttl_s":
   necesita**: tiene `open`.
 - `ttl_s` entre 30 y 3600; por defecto, 300. Recortado a lo que dure la credencial de origen.
 - **Al portador**: nunca se escribe en una tabla, un log ni un resultado.
-- Hasta 1000 ítems por petición; el error de uno va en su posición y no tumba el lote.
+- Hasta 1000 ítems por petición; el error de uno va en su posición y no tumba el lote. Python
+  (`collection.urls(items, ttl_s=None)`) y la JVM (`Collection.urls(items, ttlS)`) piden de mil en
+  mil y dan uno por posición, con la referencia y la URL o el error.
 - Una virtual con `open` no pasa por aquí. Su URL, si se pide, es la del origen —prefirmada con la
   credencial de su fuente, fijada a su `versionId`, viva lo que le quede a esa credencial—, y solo la
   alcanza quien tenga salida a él (no un puesto: 0049, «Lo que hay hoy»). Hoy, de un bucket de S3;

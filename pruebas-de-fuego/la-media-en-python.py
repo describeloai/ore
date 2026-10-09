@@ -24,6 +24,8 @@ caducan, 412, flujos cortados). Se comprueba el SDK:
   18  H1/H2: items(as_of=…) lee la transacción de antes, en todas sus páginas
   19  H4: verify() lo hace el servidor: uno por posición, el error de uno en la
       suya; sin digest conocido compara el tamaño, y la vez siguiente el digest
+  20  urls(): una URL por posición, el error de uno en la suya, el ttl recortado
+      a una hora, de mil en mil; la URL no lleva el token de ORE
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-media-en-python.py
 """
@@ -266,7 +268,26 @@ def c19():
          "una virtual sin digest, por tamaño, y la vez siguiente por digest")
 
 
-for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19], 1):
+def c20():
+    import datetime
+    m = ore.collection("conformidad.mantenida")
+    it = m.stat(path="img/b.png")
+    r = m.urls(["docs/a.pdf", "docs/no-existe.pdf", it], ttl_s=99999)
+    assert [x["error"] is None for x in r] == [True, False, True], r
+    assert isinstance(r[1]["error"], medios.MediaNotFound), r[1]
+    assert r[1]["item"] is None and r[2]["item"].path == "img/b.png", r
+    assert r[0]["item"].path == "docs/a.pdf" and r[0]["url"].startswith("http"), r[0]["item"]
+    assert r[0]["ttl_s"] == 3600, r[0]["ttl_s"]
+    falta = r[0]["expires_at"] - datetime.datetime.now(datetime.timezone.utc)
+    assert 3500 < falta.total_seconds() <= 3600, falta
+    assert "secreto-de-ore" not in r[0]["url"], "la URL no lleva el token"
+    muchos = m.urls(["docs/a.pdf"] * 1001)
+    assert len(muchos) == 1001 and all(x["error"] is None for x in muchos), "de mil en mil"
+    bien("20 · urls(): una por posición (la que no existe, MediaNotFound), ttl recortado a 3600, "
+         "1001 en dos peticiones, sin el token de ORE")
+
+
+for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20], 1):
     caso(n, f)
 celda.shutdown()
 bytes_.shutdown()
