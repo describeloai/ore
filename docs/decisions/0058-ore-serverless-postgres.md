@@ -1359,3 +1359,28 @@ La API lo dice (`ultima_actividad`, `dormido_en`, `estado.observado`). `Computos
 Y en el contrato: recién listo no duerme; con actividad no; con `dormir_tras` 0 nunca, aunque lleve horas; primero `/terminate` y después borrar; dormido no se vuelve a dormir. P5 y P6·2 siguen en verde.
 
 Conectar a uno dormido todavía falla: despertar es P6·4.
+
+#### P6·4 · Despertar al conectar (2026-10-09)
+
+**`wake_compute` ya no contesta «reintenta»: espera.** Según el estado del endpoint:
+- **`listo`**: contesta su dirección;
+- **`dormido`**: crea una operación `despertar-endpoint` y espera. El índice de una operación por proyecto hace que **mil conexiones a la vez sean un solo despertar**; las demás encuentran la operación en curso y esperan con ella;
+- **arrancando o durmiéndose**: espera.
+
+El tope es de 120 s (`PLAZO_DESPERTAR`; una VM en frío tarda ~35 s); solo después contesta «reintenta». El proxy no tiene tope para esa llamada (P6·0).
+
+- **La base, sin tomar mientras espera.** La API comparte una conexión tras un `Mutex`, y antes el proxy la recibía ya tomada: un despertar habría parado la API entera. Ahora el proxy recibe el `Mutex` y lo toma solo en cada mirada, cada 200 ms.
+- **Despertar es crear el cómputo otra vez** con la especificación de ahora: las CU y las conexiones que se cambiaron con el endpoint dormido valen aquí (P6·2).
+- **Menos espera por el camino**: la operación revisa el estado del cómputo cada 200 ms en vez de cada 2 s, y el reconciliador da la vuelta siguiente en 200 ms cuando hay operaciones en curso.
+
+**Medido** (`lab/p64.sh`, tres ciclos de dormir y despertar de verdad; el contrato añade tres `wake_compute` a la vez):
+
+| contra un endpoint dormido | resultado |
+|---|---|
+| `psql` por TCP | despierta y contesta en **5,1 s**, con las 10 000 filas de antes de dormir; `max_connections` 112, las CU cambiadas dormido |
+| **20 conexiones a la vez** | **entran las 20**, todas en 6,0 s; **un solo despertar** |
+| por el pool (`-pooler`) | 2,4 s |
+| HTTP (`neon()`) | 2,6 s |
+| WebSocket (`Pool`) | 4,1 s |
+
+**El cliente no ve más error que la espera.** En el contrato: tres `wake_compute` a la vez, un despertar, y la API contesta mientras esperan. Los tiempos son de un cómputo de mentira en Docker; los de verdad, con una VM, son de producción, y es lo que viene a resolver el pool (P6·5).

@@ -1428,7 +1428,7 @@ fn una_operacion_en_curso_por_proyecto_la_cierra_la_base() {
 #[test]
 fn un_endpoint_sin_actividad_duerme_y_uno_con_actividad_no() {
     let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(s) = servidor() else { return };
+    let Some(mut s) = servidor() else { return };
     let almacen = Apunta::default();
     let mut c2 = otra_conexion();
     pide(
@@ -1518,5 +1518,54 @@ fn un_endpoint_sin_actividad_duerme_y_uno_con_actividad_no() {
     assert_eq!(
         ore_postgres::reconciliador::vigilar(&mut c2, &almacen).unwrap(),
         0
+    );
+
+    // P6·4 · Despertar: tres `wake_compute` a la vez contra el dormido esperan (sin tomar la base:
+    // la API sigue contestando), piden UN despertar, y cuando el reconciliador lo deja listo,
+    // los tres reciben su dirección.
+    s.proxy = Some(ore_postgres::proxy::Proxy {
+        token: "el-del-proxy".into(),
+    });
+    let despertar = || {
+        let mut cabeceras = BTreeMap::new();
+        cabeceras.insert("authorization".into(), "Bearer el-del-proxy".into());
+        s.atender(&Peticion {
+            metodo: "GET".into(),
+            ruta: "/proxy/wake_compute".into(),
+            cabeceras,
+            cuerpo: String::new(),
+            consulta: [("endpointish".to_string(), vm.clone())]
+                .into_iter()
+                .collect(),
+        })
+    };
+    std::thread::scope(|hilos| {
+        let esperando: Vec<_> = (0..3).map(|_| hilos.spawn(despertar)).collect();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        // Mientras esperan, la API contesta (no tienen la base tomada).
+        assert_eq!(pide(&s, "a", "GET", ep, "").0, 200);
+        let despertares: i64 = otra_conexion()
+            .query_one(
+                "select count(*) from plano.operacion where tipo = 'despertar-endpoint'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(despertares, 1, "tres conexiones, un despertar");
+        ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+        for h in esperando {
+            let r = h.join().unwrap();
+            assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
+            assert!(
+                r.cuerpo.jcs().contains(r#""address":"#),
+                "{}",
+                r.cuerpo.jcs()
+            );
+        }
+    });
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    assert!(
+        r.contains(r#""observado":"listo""#) && !r.contains("dormido_en"),
+        "{r}"
     );
 }

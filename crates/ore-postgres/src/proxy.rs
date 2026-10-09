@@ -38,6 +38,8 @@ use crate::base::mal;
 use ore_core::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use postgres::Client;
+use std::sync::Mutex;
+use std::time::Duration;
 
 /// El puerto de Postgres en el cómputo (la especificación, `especificacion.rs`):
 /// el de Neon en sus VMs, al que apunta el pgbouncer de la imagen.
@@ -101,8 +103,29 @@ pub fn vm_de(endpointish: &str) -> (&str, u16) {
     }
 }
 
+/// P6·4 · Lo más que `wake_compute` espera a que un cómputo esté listo. El proxy no tiene
+/// tope (P6·0); el cliente, el suyo. Una VM en frío tarda ~35 s (P3): de sobra.
+pub const PLAZO_DESPERTAR: Duration = Duration::from_secs(120);
+
+/// Cada cuánto mira, mientras espera.
+const MIRAR_CADA: Duration = Duration::from_millis(200);
+
+/// Lo que ve `wake_compute` en una mirada.
+enum Paso {
+    /// Contestar ya (la dirección, o que no existe).
+    Contestar(Respuesta),
+    /// Aún no: arrancando, despertando o durmiéndose.
+    Esperar,
+}
+
 impl Proxy {
-    pub fn atender(&self, c: &mut Client, p: &Peticion, resto: &[&str]) -> Respuesta {
+    pub fn atender(
+        &self,
+        base: &Mutex<Client>,
+        url: Option<&str>,
+        p: &Peticion,
+        resto: &[&str],
+    ) -> Respuesta {
         let token = p.cabeceras.get("authorization").and_then(|a| {
             a.strip_prefix("Bearer ")
                 .or_else(|| a.strip_prefix("bearer "))
@@ -122,9 +145,9 @@ impl Proxy {
                 let Some(rol) = p.consulta.get("role") else {
                     return fallo(404, "RESOURCE_NOT_FOUND", "falta `role`");
                 };
-                self.acceso(c, vm, rol)
+                con_base(base, url, |c| self.acceso(c, vm, rol)).unwrap_or_else(|r| r)
             }
-            ["wake_compute"] => self.despertar(c, vm, puerto),
+            ["wake_compute"] => self.despertar(base, url, vm, puerto),
             _ => Respuesta::error(404, "el proxy no pregunta eso"),
         }
     }
@@ -175,39 +198,94 @@ impl Proxy {
         }
     }
 
-    fn despertar(&self, c: &mut Client, vm: &str, puerto: u16) -> Respuesta {
-        let fila = match c.query_opt(
-            "select e.observado, e.ip_pod, e.direccion, p.tenant, e.rama
-               from plano.endpoint e
-               join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
-              where e.vm = $1 and e.deseado = 'vivo' and p.tenant is not null",
-            &[&vm],
-        ) {
-            Ok(f) => f,
-            Err(e) => return fallo(503, "RUNNING_OPERATIONS", &mal(e)),
-        };
-        let Some(f) = fila else {
-            return fallo(404, "ENDPOINT_NOT_FOUND", "no hay tal endpoint");
-        };
-        let (observado, direccion): (String, Option<String>) = (f.get(0), f.get(2));
-        // P5: el cómputo ya está encendido o arrancando; despertarlo de verdad es P6.
-        let Some(dir) = direccion.filter(|_| observado == "listo") else {
-            return fallo(503, "RUNNING_OPERATIONS", "el cómputo está arrancando");
-        };
-        Respuesta::ok(Json::obj([
+    /// P6·4 · **Despertar**: listo, su dirección; dormido, una operación `despertar-endpoint`
+    /// (el índice de una por proyecto hace que mil conexiones a la vez sean UN despertar) y
+    /// esperar; arrancando o durmiéndose, esperar. El cliente no ve más que la espera; pasado
+    /// [`PLAZO_DESPERTAR`], «reintenta».
+    fn despertar(
+        &self,
+        base: &Mutex<Client>,
+        url: Option<&str>,
+        vm: &str,
+        puerto: u16,
+    ) -> Respuesta {
+        let desde = std::time::Instant::now();
+        loop {
+            match con_base(base, url, |c| mirar(c, vm, puerto)) {
+                Ok(Paso::Contestar(r)) | Err(r) => return r,
+                Ok(Paso::Esperar) if desde.elapsed() >= PLAZO_DESPERTAR => {
+                    return fallo(503, "RUNNING_OPERATIONS", "el cómputo aún no está listo");
+                }
+                Ok(Paso::Esperar) => std::thread::sleep(MIRAR_CADA),
+            }
+        }
+    }
+}
+
+/// Una mirada: lo que hay, y si está dormido, pedir que despierte.
+fn mirar(c: &mut Client, vm: &str, puerto: u16) -> Paso {
+    let fila = match c.query_opt(
+        "select e.observado, e.direccion, p.tenant, e.rama, e.organizacion, e.proyecto, e.id
+           from plano.endpoint e
+           join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
+          where e.vm = $1 and e.deseado = 'vivo' and p.tenant is not null",
+        &[&vm],
+    ) {
+        Ok(f) => f,
+        Err(e) => return Paso::Contestar(fallo(503, "RUNNING_OPERATIONS", &mal(e))),
+    };
+    let Some(f) = fila else {
+        return Paso::Contestar(fallo(404, "ENDPOINT_NOT_FOUND", "no hay tal endpoint"));
+    };
+    let (observado, direccion): (String, Option<String>) = (f.get(0), f.get(1));
+    match (observado.as_str(), direccion) {
+        ("listo", Some(dir)) => Paso::Contestar(Respuesta::ok(Json::obj([
             ("address", Json::s(format!("{dir}:{puerto}"))),
             (
                 "aux",
                 Json::obj([
                     ("endpoint_id", Json::s(vm)),
-                    ("project_id", Json::s(f.get::<_, String>(3))),
-                    ("branch_id", Json::s(f.get::<_, String>(4))),
+                    ("project_id", Json::s(f.get::<_, String>(2))),
+                    ("branch_id", Json::s(f.get::<_, String>(3))),
                     ("compute_id", Json::s(vm)),
                     ("cold_start_info", Json::s("warm")),
                 ]),
             ),
-        ]))
+        ]))),
+        ("dormido", _) => {
+            let (org, p, rama, id): (String, String, String, String) =
+                (f.get(4), f.get(5), f.get(3), f.get(6));
+            match c.execute(
+                "insert into plano.operacion (id, organizacion, proyecto, tipo, celda, rama, endpoint)
+                 values ('op_' || replace(gen_random_uuid()::text, '-', ''), $1, $2,
+                         'despertar-endpoint', 'proxy', $3, $4)",
+                &[&org, &p, &rama, &id],
+            ) {
+                // Pedido, o ya hay una en curso (otro despertar, u otra cosa que acabará antes).
+                Ok(_) => Paso::Esperar,
+                Err(e) if crate::base::choca(&e, "una_en_curso_por_proyecto") => Paso::Esperar,
+                Err(e) => Paso::Contestar(fallo(503, "RUNNING_OPERATIONS", &mal(e))),
+            }
+        }
+        _ => Paso::Esperar,
     }
+}
+
+/// La base, tomada sólo para esto (y reabierta si se cayó).
+fn con_base<T>(
+    base: &Mutex<Client>,
+    url: Option<&str>,
+    f: impl FnOnce(&mut Client) -> T,
+) -> Result<T, Respuesta> {
+    let Ok(mut c) = base.lock() else {
+        return Err(Respuesta::error(500, "la conexión quedó envenenada"));
+    };
+    if c.is_closed()
+        && let Some(Ok(nueva)) = url.map(crate::base::conectar)
+    {
+        *c = nueva;
+    }
+    Ok(f(&mut c))
 }
 
 #[cfg(test)]

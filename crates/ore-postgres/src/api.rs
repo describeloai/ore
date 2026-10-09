@@ -110,20 +110,13 @@ impl Servidor {
             }
             return avisos.atender(&mut base, p, resto);
         }
-        // P5·1: el proxy, con SU token.
+        // P5·1: el proxy, con SU token. P6·4: con la base sin tomar: un despertar espera, y
+        // mientras espera la suelta (la API entera la comparte).
         if let ["proxy", resto @ ..] = seg.as_slice() {
             let Some(proxy) = self.proxy.as_ref() else {
                 return Respuesta::error(404, "el proxy no está montado");
             };
-            let Ok(mut base) = self.base.lock() else {
-                return Respuesta::error(500, "la conexión quedó envenenada");
-            };
-            if base.is_closed()
-                && let Some(Ok(nueva)) = self.url.as_deref().map(crate::base::conectar)
-            {
-                *base = nueva;
-            }
-            return proxy.atender(&mut base, p, resto);
+            return proxy.atender(&self.base, self.url.as_deref(), p, resto);
         }
         let ["v1", "postgres", resto @ ..] = seg.as_slice() else {
             return Respuesta::error(404, "no hay nada en ese camino");

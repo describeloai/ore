@@ -30,6 +30,9 @@ pub const INTENTOS: i32 = 40;
 /// Cada cuánto mira si hay algo que hacer.
 const CADA: Duration = Duration::from_secs(1);
 
+/// Y con operaciones en curso (P6·4: un despertar tiene a un cliente esperando).
+const CADA_OCUPADO: Duration = Duration::from_millis(200);
+
 /// Lo más que se espera a algo que «va bien y lleva su tiempo» (una VM que
 /// arranca: ~35 s medidos; un nodo nuevo del pool: ~3,5 min, P3·2).
 pub const PLAZO_ESPERA: f64 = 15.0 * 60.0;
@@ -50,10 +53,14 @@ pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Comput
                     }
                 };
             }
-            if let Some(c) = base.as_mut()
-                && let Err(e) = vuelta(c, almacen.as_ref(), computos.as_ref())
-            {
-                eprintln!("reconciliador · {e}");
+            // Con operaciones en curso, la vuelta siguiente enseguida (un despertar espera por
+            // ellas); sin nada, cada segundo.
+            let mut ocupado = false;
+            if let Some(c) = base.as_mut() {
+                match vuelta(c, almacen.as_ref(), computos.as_ref()) {
+                    Ok(n) => ocupado = n > 0,
+                    Err(e) => eprintln!("reconciliador · {e}"),
+                }
             }
             // P6·3: la actividad de los cómputos encendidos, y quién duerme.
             if ultima_vigilancia.elapsed() >= VIGILAR_CADA {
@@ -64,7 +71,7 @@ pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Comput
                     eprintln!("reconciliador · vigilar: {e}");
                 }
             }
-            std::thread::sleep(CADA);
+            std::thread::sleep(if ocupado { CADA_OCUPADO } else { CADA });
         }
     });
 }
@@ -555,7 +562,9 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
             k.configurar(&vm, &ip, &configuracion)?;
             purgar(c, &op.organizacion, &op.proyecto, rama, &datos)
         }
-        "crear-endpoint" | "borrar-endpoint" => {
+        // P6·4: despertar es crear su cómputo otra vez, con la especificación de ahora (las CU
+        // y las conexiones que se cambiaron dormido valen aquí, P6·2).
+        "crear-endpoint" | "borrar-endpoint" | "despertar-endpoint" => {
             let id = op.endpoint.as_deref().unwrap_or_default();
             let Some(ep) = endpoints(c, &op.organizacion, &op.proyecto, Some(id))
                 .map_err(bd)?
@@ -661,13 +670,19 @@ fn cerrar(c: &mut Client, op: &Op, r: Result<(), Fallo>) -> Result<(), String> {
             )
             .map_err(mal)?;
         }
-        // Lo que va bien y tarda: en 2 s otra vez, sin gastar intentos, dentro del plazo.
+        // Lo que va bien y tarda: en 2 s otra vez, sin gastar intentos, dentro del plazo. Un
+        // despertar, en 200 ms: hay un cliente esperando al otro lado del proxy (P6·4).
         Err(Fallo::Esperar(m)) if op.edad < PLAZO_ESPERA => {
+            let espera = if op.tipo == "despertar-endpoint" {
+                0.2
+            } else {
+                2.0
+            };
             c.execute(
                 "update plano.operacion
-                    set error = $2, siguiente = now() + interval '2 seconds'
+                    set error = $2, siguiente = now() + make_interval(secs => $3)
                   where id = $1",
-                &[&op.id, &m],
+                &[&op.id, &m, &espera],
             )
             .map_err(mal)?;
         }
