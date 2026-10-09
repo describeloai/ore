@@ -225,7 +225,8 @@ impl Proxy {
 /// Una mirada: lo que hay, y si está dormido, pedir que despierte.
 fn mirar(c: &mut Client, vm: &str, puerto: u16) -> Paso {
     let fila = match c.query_opt(
-        "select e.observado, e.direccion, p.tenant, e.rama, e.organizacion, e.proyecto, e.id
+        "select e.observado, e.direccion, p.tenant, e.rama, e.organizacion, e.proyecto, e.id,
+                coalesce(e.computo, e.vm)
            from plano.endpoint e
            join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
           where e.vm = $1 and e.deseado = 'vivo' and p.tenant is not null",
@@ -247,7 +248,7 @@ fn mirar(c: &mut Client, vm: &str, puerto: u16) -> Paso {
                     ("endpoint_id", Json::s(vm)),
                     ("project_id", Json::s(f.get::<_, String>(2))),
                     ("branch_id", Json::s(f.get::<_, String>(3))),
-                    ("compute_id", Json::s(vm)),
+                    ("compute_id", Json::s(f.get::<_, String>(7))),
                     ("cold_start_info", Json::s("warm")),
                 ]),
             ),

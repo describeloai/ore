@@ -71,7 +71,7 @@ impl Avisos {
         };
         let filas = match c.query(
             &format!(
-            "select e.vm, e.ip_pod, e.tipo = 'lectura', r.timeline, e.organizacion, e.proyecto, e.rama,
+            "select coalesce(e.computo, e.vm), e.ip_pod, e.tipo = 'lectura', r.timeline, e.organizacion, e.proyecto, e.rama,
                     {}
                from plano.endpoint e
                join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto

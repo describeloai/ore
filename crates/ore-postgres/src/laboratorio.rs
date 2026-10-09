@@ -26,7 +26,7 @@
 use crate::almacen::{Almacen, Fallo, Origen};
 use crate::computos::{
     Computos, Estado, Vm, actividad_por_http, configurar_por_http, listo_por_http,
-    terminar_por_http,
+    terminar_por_http, vacio_por_http,
 };
 use crate::especificacion::{Computo, Datos, especificacion, iso};
 use crate::llaves::Llave;
@@ -52,16 +52,73 @@ pub struct Docker {
     pub red: String,
     /// La imagen del cómputo de mentira.
     pub imagen: String,
+    /// P6·5: los segundos que el cómputo de mentira tarda en «arrancar la VM» antes de atender.
+    pub arranque: f64,
     propia: Llave,
 }
 
 impl Docker {
-    pub fn nuevo(api: &str, red: &str, imagen: &str, propia: Llave) -> Docker {
+    pub fn nuevo(api: &str, red: &str, imagen: &str, arranque: f64, propia: Llave) -> Docker {
         Docker {
             api: api.into(),
             red: red.into(),
             imagen: imagen.into(),
+            arranque,
             propia,
+        }
+    }
+
+    /// Crea y arranca un contenedor `nombre` con su CONFIG_JSON (idempotente).
+    fn lanzar(&self, nombre: &str, config: &str, etiquetas: &[(&str, &str)]) -> Result<(), Fallo> {
+        let etiquetas: BTreeMap<String, Json> = std::iter::once((ETIQUETA, "p5lab"))
+            .chain(etiquetas.iter().copied())
+            .map(|(k, v)| (k.to_string(), Json::s(v)))
+            .collect();
+        let cuerpo = Json::obj([
+            ("Image", Json::s(&self.imagen)),
+            ("Hostname", Json::s(nombre)),
+            (
+                "Env",
+                Json::Arr(vec![
+                    Json::s(format!("COMPUTE_ID={nombre}")),
+                    Json::s(format!("CONFIG_JSON={config}")),
+                    Json::s(format!("ARRANQUE_S={}", self.arranque)),
+                ]),
+            ),
+            ("Labels", Json::Obj(etiquetas)),
+            (
+                "HostConfig",
+                Json::obj([
+                    ("NetworkMode", Json::s(&self.red)),
+                    (
+                        "Mounts",
+                        Json::Arr(vec![Json::obj([
+                            ("Type", Json::s("volume")),
+                            ("Source", Json::s(VOLUMEN)),
+                            ("Target", Json::s("/almacen")),
+                        ])]),
+                    ),
+                ]),
+            ),
+        ]);
+        let (c, r) = self.pedir(
+            "POST",
+            &format!("/containers/create?name={nombre}"),
+            Some(&cuerpo),
+        )?;
+        // 409: ya existe (idempotente).
+        if c != 201 && c != 409 {
+            return Err(Fallo::Reintentar(format!(
+                "crear {nombre}: {c} {}",
+                r.chars().take(200).collect::<String>()
+            )));
+        }
+        match self.pedir("POST", &format!("/containers/{nombre}/start"), None)? {
+            (204 | 304, _) => Ok(()),
+            (c, r) => Err(Fallo::Reintentar(format!(
+                "arrancar {nombre}: {c} {}",
+                r.chars().take(200).collect::<String>()
+            ))),
         }
     }
 
@@ -159,62 +216,24 @@ impl Computos for Docker {
     }
 
     fn crear(&self, vm: &Vm, configuracion: &str) -> Result<(), Fallo> {
-        let etiquetas: BTreeMap<String, Json> = [
-            (ETIQUETA, "p5lab"),
-            ("ore.dev/organizacion", vm.organizacion),
-            ("ore.dev/proyecto", vm.proyecto),
-            ("ore.dev/endpoint", vm.endpoint),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), Json::s(v)))
-        .collect();
-        let cuerpo = Json::obj([
-            ("Image", Json::s(&self.imagen)),
-            ("Hostname", Json::s(vm.nombre)),
-            (
-                "Env",
-                Json::Arr(vec![
-                    Json::s(format!("COMPUTE_ID={}", vm.nombre)),
-                    Json::s(format!("CONFIG_JSON={configuracion}")),
-                ]),
-            ),
-            ("Labels", Json::Obj(etiquetas)),
-            (
-                "HostConfig",
-                Json::obj([
-                    ("NetworkMode", Json::s(&self.red)),
-                    (
-                        "Mounts",
-                        Json::Arr(vec![Json::obj([
-                            ("Type", Json::s("volume")),
-                            ("Source", Json::s(VOLUMEN)),
-                            ("Target", Json::s("/almacen")),
-                        ])]),
-                    ),
-                ]),
-            ),
-        ]);
-        let (c, r) = self.pedir(
-            "POST",
-            &format!("/containers/create?name={}", vm.nombre),
-            Some(&cuerpo),
-        )?;
-        // 409: ya existe (idempotente).
-        if c != 201 && c != 409 {
-            return Err(Fallo::Reintentar(format!(
-                "crear {}: {c} {}",
-                vm.nombre,
-                r.chars().take(200).collect::<String>()
-            )));
-        }
-        match self.pedir("POST", &format!("/containers/{}/start", vm.nombre), None)? {
-            (204 | 304, _) => Ok(()),
-            (c, r) => Err(Fallo::Reintentar(format!(
-                "arrancar {}: {c} {}",
-                vm.nombre,
-                r.chars().take(200).collect::<String>()
-            ))),
-        }
+        self.lanzar(
+            vm.nombre,
+            configuracion,
+            &[
+                ("ore.dev/organizacion", vm.organizacion),
+                ("ore.dev/proyecto", vm.proyecto),
+                ("ore.dev/endpoint", vm.endpoint),
+            ],
+        )
+    }
+
+    fn crear_vacio(&self, nombre: &str) -> Result<(), Fallo> {
+        let config = crate::especificacion::configuracion_vacia(&self.propia).jcs();
+        self.lanzar(nombre, &config, &[("ore.dev/pool", "si")])
+    }
+
+    fn vacio(&self, nombre: &str, ip_pod: &str) -> Result<bool, Fallo> {
+        vacio_por_http(&self.propia, nombre, ip_pod)
     }
 
     fn listo(&self, vm: &str, ip_pod: &str) -> Result<bool, Fallo> {

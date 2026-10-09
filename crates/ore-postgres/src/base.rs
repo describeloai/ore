@@ -34,6 +34,10 @@ const MIGRACIONES: &[(&str, &str)] = &[
         include_str!("../migraciones/006-los-limites.sql"),
     ),
     ("007-dormir", include_str!("../migraciones/007-dormir.sql")),
+    (
+        "008-el-pool",
+        include_str!("../migraciones/008-el-pool.sql"),
+    ),
 ];
 
 /// Un número cualquiera, pero siempre el mismo: dos procesos que arrancan a la

@@ -318,13 +318,22 @@ fn arrancar_laboratorio(args: &[String], url: &str) -> bool {
             return true;
         }
     };
+    let arranque: f64 = valor(args, "--arranque-computo")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let pool: usize = valor(args, "--pool-computos")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     eprintln!(
-        "  ⚠ LABORATORIO  cómputos en Docker ({api}, red {red}, imagen {imagen}); almacén de mentira en {raiz}"
+        "  ⚠ LABORATORIO  cómputos en Docker ({api}, red {red}, imagen {imagen}, arranque {arranque} s, pool {pool}); almacén de mentira en {raiz}"
     );
     reconciliador::arrancar(
         url.to_string(),
         std::sync::Arc::new(laboratorio::AlmacenDeMentira { raiz: raiz.into() }),
-        std::sync::Arc::new(laboratorio::Docker::nuevo(&api, &red, &imagen, propia)),
+        std::sync::Arc::new(laboratorio::Docker::nuevo(
+            &api, &red, &imagen, arranque, propia,
+        )),
+        pool,
     );
     true
 }
@@ -420,7 +429,11 @@ fn servir(args: &[String]) -> ExitCode {
                             std::sync::Arc::new(computos::SinKube(e))
                         }
                     };
-                reconciliador::arrancar(url.clone(), neon.clone(), computos.clone());
+                // P6·5: el pool precalentado (0 = sin pool: cada despertar, en frío).
+                let pool = valor(args, "--pool-computos")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                reconciliador::arrancar(url.clone(), neon.clone(), computos.clone(), pool);
                 // P4·5: los avisos del controller, con la pública del almacenamiento.
                 match llaves::Publica::del_fichero(
                     &std::path::Path::new(&llaves).join("publica.pem"),

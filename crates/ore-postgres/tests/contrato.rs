@@ -39,7 +39,8 @@ fn servidor() -> Option<Servidor> {
             "004-roles-y-bases",
             "005-quien-entra",
             "006-los-limites",
-            "007-dormir"
+            "007-dormir",
+            "008-el-pool"
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -137,6 +138,17 @@ impl Computos for Apunta {
     fn terminar(&self, vm: &str, _: &str) -> Result<Option<String>, Fallo> {
         self.apuntar(format!("vm-terminar {vm}"))?;
         Ok(Some("0/16B3748".into()))
+    }
+    fn crear_vacio(&self, nombre: &str) -> Result<(), Fallo> {
+        self.apuntar(format!("pool-crear {nombre}"))?;
+        self.vms
+            .lock()
+            .unwrap()
+            .insert(nombre.to_string(), "10.1.0.9".to_string());
+        Ok(())
+    }
+    fn vacio(&self, _: &str, _: &str) -> Result<bool, Fallo> {
+        Ok(true)
     }
 }
 
@@ -1568,4 +1580,77 @@ fn un_endpoint_sin_actividad_duerme_y_uno_con_actividad_no() {
         r.contains(r#""observado":"listo""#) && !r.contains("dormido_en"),
         "{r}"
     );
+}
+
+#[test]
+fn el_pool_precalentado_despierta_sin_arrancar_y_un_computo_usado_no_vuelve() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    use ore_postgres::reconciliador::{mantener_pool, vigilar, vuelta};
+    // Dos en el pool: nacen arrancando; cuando su compute_ctl dice `empty`, libres.
+    assert_eq!(mantener_pool(&mut c2, &almacen, 2).unwrap(), 0);
+    assert_eq!(mantener_pool(&mut c2, &almacen, 2).unwrap(), 2);
+    // Un proyecto nuevo: su endpoint sale del pool (configurar, no crear una VM).
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas","dueno":"user:ana"}"#,
+    );
+    vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let ep = "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal";
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    let (vm, computo) = (campo(&r, &["vm"]), campo(&r, &["computo"]));
+    assert!(computo.starts_with("pool-"), "{r}");
+    assert!(r.contains(r#""observado":"listo""#), "{r}");
+    let pedido = almacen.pedido();
+    assert!(
+        !pedido
+            .iter()
+            .any(|p| p.starts_with(&format!("vm-crear {vm}"))),
+        "no se arrancó en frío: {pedido:?}"
+    );
+    assert!(
+        pedido
+            .iter()
+            .any(|p| p.starts_with(&format!("configurar {computo}"))),
+        "{pedido:?}"
+    );
+    // El pool se repone: uno libre y otro arrancando; a la siguiente, dos libres.
+    assert_eq!(mantener_pool(&mut c2, &almacen, 2).unwrap(), 1);
+    assert_eq!(mantener_pool(&mut c2, &almacen, 2).unwrap(), 2);
+    // Dormir destruye el cómputo del pool: no vuelve; el endpoint se queda sin cómputo.
+    pide(
+        &s,
+        "a",
+        "POST",
+        &format!("{ep}/ajustes"),
+        r#"{"dormir_tras": "60"}"#,
+    );
+    vuelta(&mut c2, &almacen, &almacen).unwrap();
+    otra_conexion()
+        .execute(
+            "update plano.endpoint set ultima_actividad = now() - interval '1 hour'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(vigilar(&mut c2, &almacen).unwrap(), 1);
+    vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    assert!(
+        r.contains(r#""observado":"dormido""#) && !r.contains(r#""computo""#),
+        "{r}"
+    );
+    assert!(almacen.pedido().contains(&format!("vm-borrar {computo}")));
+    let en_pool: i64 = otra_conexion()
+        .query_one(
+            "select count(*) from plano.pool_computo where computo = $1",
+            &[&computo],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(en_pool, 0, "un cómputo usado no vuelve al pool");
 }

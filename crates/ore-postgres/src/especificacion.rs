@@ -220,6 +220,19 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
     ])
 }
 
+/// P6·5 · La configuración de un cómputo del pool: SIN especificación (`spec: null`), sólo el
+/// JWKS para que `compute_ctl` acepte las órdenes de `ore-postgres`. Arranca en `empty` y
+/// espera un `/configure` (P6·0).
+pub fn configuracion_vacia(propia: &Llave) -> Json {
+    Json::obj([
+        ("spec", Json::Crudo("null".into())),
+        (
+            "compute_ctl_config",
+            Json::obj([("jwks", Json::obj([("keys", Json::Arr(vec![propia.jwk()]))]))]),
+        ),
+    ])
+}
+
 /// RFC 3339 en UTC, con milisegundos a cero, de unos segundos desde 1970 (el
 /// algoritmo civil de Howard Hinnant: sin tablas y sin dependencias).
 pub fn iso(seg: i64) -> String {

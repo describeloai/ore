@@ -1384,3 +1384,31 @@ El tope es de 120 s (`PLAZO_DESPERTAR`; una VM en frío tarda ~35 s); solo despu
 | WebSocket (`Pool`) | 4,1 s |
 
 **El cliente no ve más error que la espera.** En el contrato: tres `wake_compute` a la vez, un despertar, y la API contesta mientras esperan. Los tiempos son de un cómputo de mentira en Docker; los de verdad, con una VM, son de producción, y es lo que viene a resolver el pool (P6·5).
+
+#### P6·5 · El pool precalentado (2026-10-09)
+
+**Despertar deja de ser arrancar una VM.**
+- **El pool** (migración 008, `plano.pool_computo`, `--pool-computos N`): N cómputos `pool-<hex>` arrancados **sin especificación** (`configuracion_vacia`: `spec: null` y el JWKS), con su `compute_ctl` en `empty`. Pasan de `arrancando` a `libre` cuando lo dice (`/status`), y el reconciliador repone los que faltan (`mantener_pool`).
+- **El endpoint gana `computo`**, el que le sirve ahora: `pool-…` si salió del pool, su propio `vm` si arrancó en frío, `null` si duerme. El nombre público (`ep-…`, el del SNI) no cambia. Vigilar, dormir, configurar, los avisos y borrar hablan con su `computo`. El proxy contesta ese nombre como `compute_id`.
+- **Despertar (o crear) desde el pool:**
+  1. se reclama uno libre (`for update skip locked`; se borra su fila, y desde ahí es del endpoint);
+  2. se le manda la especificación del endpoint por `/configure`, que contesta con él ya `running` (P6·0);
+  3. queda listo.
+
+  Sin libres, en frío, como hasta ahora. Si falla a medio configurar, se destruye y se decide otra vez.
+- ⛔ **Un cómputo que sirvió a un tenant nunca vuelve al pool**: al dormir se destruye, y el pool se repone con otro nuevo.
+- **El arranque de una VM, emulado** en el `compute_ctl` falso (`--arranque-computo 35`, el medido en P3): no contesta nada hasta pasado ese tiempo. Un cómputo del pool lo paga mientras espera; uno en frío, entero, en el despertar.
+
+**Medido** (`lab/p65.sh`; en el contrato, el pool se repone, un endpoint sale del pool sin arrancar una VM, y uno usado no vuelve):
+
+| despertar, con una VM de 35 s | p50 | p95 |
+|---|---|---|
+| en frío (sin pool) | 39,5 s | 40,0 s |
+| **desde el pool** (3) | **3,9 s** | **4,2 s** |
+
+- Ocho despertares, ocho cómputos del pool distintos; de los usados solo queda el que sirve ahora.
+- **La IP reutilizada** (P6·0, punto 7), medida a propósito. Tras dormir, se levanta en la IP vieja un Postgres impostor con el mismo rol y otra contraseña. El proxy, que tenía esa dirección en caché, intenta el SCRAM contra el impostor, falla (el impostor registra el rechazo), olvida la dirección, vuelve a despertar y **entra en 2,2 s en el cómputo nuevo**. Que una IP pase de un tenant a otro no abre ninguna puerta ni deja el endpoint inservible.
+
+Los 3,9 s son de un cómputo de mentira: Postgres arranca sobre un directorio local. Con una VM real, `/configure` hace además el *basebackup* desde el pageserver y `sync_safekeepers` (5,8 s medidos en P3). El objetivo de verdad se fija con la primera medida en producción.
+
+La regresión entera (P5·1, P5·4, P5·5, P5·5b, P5·6, P6·2, P6·3, P6·4) sigue en verde sobre el pool.

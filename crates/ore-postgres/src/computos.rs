@@ -79,6 +79,12 @@ impl Computos for SinKube {
     fn terminar(&self, _: &str, _: &str) -> Result<Option<String>, Fallo> {
         Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
     }
+    fn crear_vacio(&self, _: &str) -> Result<(), Fallo> {
+        Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
+    }
+    fn vacio(&self, _: &str, _: &str) -> Result<bool, Fallo> {
+        Ok(false)
+    }
 }
 
 /// Lo que se le pide al cómputo. El de verdad es [`Neonvm`].
@@ -113,6 +119,10 @@ pub trait Computos: Send + Sync {
     fn actividad(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo>;
     /// P6·3: `/terminate`: Postgres se para limpio; el LSN final, si lo dice.
     fn terminar(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo>;
+    /// P6·5: un cómputo del pool: arrancado sin especificación (`empty`).
+    fn crear_vacio(&self, nombre: &str) -> Result<(), Fallo>;
+    /// P6·5: ¿dice su `compute_ctl` que está `empty`, esperando una especificación?
+    fn vacio(&self, nombre: &str, ip_pod: &str) -> Result<bool, Fallo>;
 }
 
 pub struct Neonvm {
@@ -242,6 +252,39 @@ impl Computos for Neonvm {
         terminar_por_http(&self.propia, vm, ip_pod)
     }
 
+    // ⚠️ P6·5: escrito y sin medir (Google sin facturación). Una VM del pool nace con límites
+    //   genéricos (0,25–2 CU) y sin organización; al asignarla, sus límites de autoescalado
+    //   tendrán que ajustarse a los del endpoint. Es de las pruebas que sólo se hacen en producción.
+    fn crear_vacio(&self, nombre: &str) -> Result<(), Fallo> {
+        let nombre_cm = format!("{nombre}-config");
+        let config = crate::especificacion::configuracion_vacia(&self.propia).pretty();
+        self.kube
+            .aplicar(
+                &kube::configmap(&self.ns, &nombre_cm),
+                &kube::configmap_con(&self.ns, &nombre_cm, "config.json", &config),
+            )
+            .map_err(k8s)?;
+        let vm = Vm {
+            nombre,
+            organizacion: "pool",
+            proyecto: "pool",
+            endpoint: "pool",
+            cu_min: 0.25,
+            cu_max: 2.0,
+            generacion: 1,
+        };
+        self.kube
+            .aplicar(
+                &kube::vm(&self.ns, nombre),
+                &manifiesto(&vm, &self.ns, &self.imagen, &self.pool),
+            )
+            .map_err(k8s)
+    }
+
+    fn vacio(&self, nombre: &str, ip_pod: &str) -> Result<bool, Fallo> {
+        vacio_por_http(&self.propia, nombre, ip_pod)
+    }
+
     fn borrar(&self, vm: &str) -> Result<(), Fallo> {
         self.kube.borrar(&kube::vm(&self.ns, vm)).map_err(k8s)?;
         self.kube
@@ -307,6 +350,25 @@ pub fn listo_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<bool, Fa
     ) {
         Ok((200, cuerpo)) => Ok(cuerpo.contains("\"running\"")),
         // Arrancando: aún no escucha, o aún no contesta bien.
+        Ok(_) | Err(_) => Ok(false),
+    }
+}
+
+/// P6·5 · ¿Está `empty`? (`/status`): un cómputo del pool listo para recibir una especificación.
+pub fn vacio_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<bool, Fallo> {
+    let token = format!("Bearer {}", token_de_computo(propia, vm, ahora() + 300));
+    match pedir_con(
+        "GET",
+        &format!("{ip_pod}:3080"),
+        "/status",
+        &[("Authorization", &token)],
+        None,
+        Plazos {
+            conectar: Duration::from_secs(2),
+            responder: Duration::from_secs(5),
+        },
+    ) {
+        Ok((200, cuerpo)) => Ok(cuerpo.contains("\"empty\"")),
         Ok(_) | Err(_) => Ok(false),
     }
 }

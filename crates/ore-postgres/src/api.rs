@@ -847,7 +847,7 @@ fn rama_json(f: &Row) -> Json {
 const ENDPOINT: &str = "id, rama, tipo, vm, cu_min, cu_max, deseado, observado, direccion,
     to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), dormir_tras,
     to_char(ultima_actividad at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
-    to_char(dormido_en at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
+    to_char(dormido_en at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), computo";
 
 /// Lo que hace falta para decir sus conexiones ([`endpoint_json`]), detrás de
 /// [`ENDPOINT`], con la fila del endpoint como `e`.
@@ -1134,6 +1134,10 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
     if let Some(t) = f.get::<_, Option<String>>(12) {
         v.push(("dormido_en", Json::s(t)));
     }
+    // P6·5: el cómputo que le sirve ahora (`pool-…` si salió del pool); dormido, ninguno.
+    if let Some(t) = f.get::<_, Option<String>>(13) {
+        v.push(("computo", Json::s(t)));
+    }
     if let Some(d) = f.get::<_, Option<String>>(8) {
         v.push(("direccion", Json::s(d)));
     }
@@ -1144,8 +1148,8 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
         v.push(("host_pool", Json::s(format!("{vm}-pooler.{dom}"))));
     }
     // P5·5: cuántas conexiones admite (directas) y el pool por base (-pooler).
-    if f.len() > 14 {
-        let maximas = crate::especificacion::conexiones(f.get(13));
+    if f.len() > 15 {
+        let maximas = crate::especificacion::conexiones(f.get(14));
         v.push((
             "conexiones",
             Json::obj([
@@ -1154,7 +1158,7 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
                     "pool_por_base",
                     Json::Int(crate::especificacion::pool_por_base(
                         maximas,
-                        f.get::<_, i64>(14) as usize,
+                        f.get::<_, i64>(15) as usize,
                     )),
                 ),
             ]),

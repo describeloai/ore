@@ -38,7 +38,7 @@ const CADA_OCUPADO: Duration = Duration::from_millis(200);
 pub const PLAZO_ESPERA: f64 = 15.0 * 60.0;
 
 /// En un hilo, para siempre. Con su propia conexión: la del API no se comparte.
-pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Computos>) {
+pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Computos>, pool: usize) {
     std::thread::spawn(move || {
         let mut base: Option<Client> = None;
         let mut ultima_vigilancia = std::time::Instant::now();
@@ -70,6 +70,12 @@ pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Comput
                 {
                     eprintln!("reconciliador · vigilar: {e}");
                 }
+                // P6·5: el pool, repuesto (lo que se arranca, cuando dice `empty`, libre).
+                if let Some(c) = base.as_mut()
+                    && let Err(e) = mantener_pool(c, computos.as_ref(), pool)
+                {
+                    eprintln!("reconciliador · pool: {e}");
+                }
             }
             std::thread::sleep(if ocupado { CADA_OCUPADO } else { CADA });
         }
@@ -86,7 +92,8 @@ pub const VIGILAR_CADA: Duration = Duration::from_secs(5);
 pub fn vigilar(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
     let vivos = c
         .query(
-            "select e.organizacion, e.proyecto, e.id, e.vm, e.ip_pod from plano.endpoint e
+            "select e.organizacion, e.proyecto, e.id, coalesce(e.computo, e.vm), e.ip_pod
+               from plano.endpoint e
               where e.deseado = 'vivo' and e.observado = 'listo' and e.ip_pod is not null",
             &[],
         )
@@ -192,6 +199,8 @@ struct Ep {
     generacion: i64,
     /// De ellas salen las conexiones ([`crate::especificacion::CU_DE_LAS_CONEXIONES`]).
     cu_conexiones: f64,
+    /// P6·5: el cómputo que le sirve ahora (`pool-…` o su `vm`); `None` dormido.
+    computo: Option<String>,
 }
 
 fn endpoints(
@@ -203,7 +212,7 @@ fn endpoints(
     Ok(c.query(
         &format!(
             "select e.id, e.vm, e.rama, r.timeline, e.tipo = 'lectura', e.cu_min, e.cu_max, e.generacion,
-                    {CU_DE_LAS_CONEXIONES}
+                    {CU_DE_LAS_CONEXIONES}, e.computo
                from plano.endpoint e
                join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto and r.id = e.rama
               where e.organizacion = $1 and e.proyecto = $2 and ($3::text is null or e.id = $3)
@@ -222,6 +231,7 @@ fn endpoints(
         cu_max: f.get(6),
         generacion: f.get(7),
         cu_conexiones: f.get(8),
+        computo: f.get(9),
     })
     .collect())
 }
@@ -246,11 +256,28 @@ fn asegurar_endpoint(
         )
         .map_err(bd)
     };
-    let estado = match k.estado(&ep.vm)? {
+    // P6·5 · Sin cómputo (nuevo, o dormido): del pool si hay uno libre; si no, en frío con su
+    // propio nombre. Con uno ya elegido, se sigue con ése.
+    let nombre = match &ep.computo {
+        Some(n) => n.clone(),
+        None => {
+            if let Some(r) = del_pool(c, a, k, org, p, tenant, ep)? {
+                return r;
+            }
+            c.execute(
+                "update plano.endpoint set computo = vm
+                  where organizacion = $1 and proyecto = $2 and id = $3",
+                &[&org, &p, &ep.id],
+            )
+            .map_err(bd)?;
+            ep.vm.clone()
+        }
+    };
+    let estado = match k.estado(&nombre)? {
         Some(e) => e,
         None => {
             // ⭐ El cerco, capa 2: no nace mientras quede un runner con su nombre.
-            if k.runner_vivo(&ep.vm)? {
+            if k.runner_vivo(&nombre)? {
                 return Err(Fallo::Esperar(
                     "queda el runner de una VM anterior con este nombre".into(),
                 ));
@@ -259,7 +286,7 @@ fn asegurar_endpoint(
             let datos = datos_de(c, org, p, &ep.rama)?;
             let configuracion = k
                 .configuracion(
-                    &ep.vm,
+                    &nombre,
                     tenant,
                     &ep.timeline,
                     &pageserver,
@@ -271,7 +298,7 @@ fn asegurar_endpoint(
                 .pretty();
             k.crear(
                 &Vm {
-                    nombre: &ep.vm,
+                    nombre: &nombre,
                     organizacion: org,
                     proyecto: p,
                     endpoint: &ep.id,
@@ -284,7 +311,7 @@ fn asegurar_endpoint(
             marcar(c, "arrancando")?;
             // Se mira otra vez ya: casi siempre seguirá naciendo (y se espera), pero
             // así una VM que nace lista no cuesta una vuelta más.
-            k.estado(&ep.vm)?
+            k.estado(&nombre)?
                 .ok_or_else(|| Fallo::Esperar("la VM está naciendo".into()))?
         }
     };
@@ -297,7 +324,7 @@ fn asegurar_endpoint(
             let (true, Some(ip)) = (e.fase == "Running", e.ip_pod.as_deref()) else {
                 return Err(Fallo::Esperar(format!("la VM está {}", e.fase)));
             };
-            if !k.listo(&ep.vm, ip)? {
+            if !k.listo(&nombre, ip)? {
                 return Err(Fallo::Esperar("compute_ctl aún no dice running".into()));
             }
             c.execute(
@@ -317,6 +344,154 @@ fn asegurar_endpoint(
     }
 }
 
+/// P6·5 · Despertar (o crear) desde el pool: reclama un cómputo libre —se borra su fila; desde
+/// ahora es del endpoint—, le manda la especificación del endpoint (`/configure` contesta con
+/// él ya `running`) y lo deja listo. `None` si no hay ninguno libre: entonces, en frío.
+#[allow(clippy::too_many_arguments)]
+fn del_pool(
+    c: &mut Client,
+    a: &dyn Almacen,
+    k: &dyn Computos,
+    org: &str,
+    p: &str,
+    tenant: &str,
+    ep: &Ep,
+) -> Result<Option<Result<(), Fallo>>, Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    let Some(f) = c
+        .query_opt(
+            "delete from plano.pool_computo
+              where computo = (select computo from plano.pool_computo
+                                where estado = 'libre' and ip_pod is not null
+                                order by libre_en limit 1 for update skip locked)
+          returning computo, ip_pod",
+            &[],
+        )
+        .map_err(bd)?
+    else {
+        return Ok(None);
+    };
+    let (nombre, ip): (String, String) = (f.get(0), f.get(1));
+    c.execute(
+        "update plano.endpoint set computo = $4, observado = 'arrancando'
+          where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&org, &p, &ep.id, &nombre],
+    )
+    .map_err(bd)?;
+    let pageserver = a.pageserver_de(tenant)?;
+    let datos = datos_de(c, org, p, &ep.rama)?;
+    let configuracion = k.configuracion(
+        &nombre,
+        tenant,
+        &ep.timeline,
+        &pageserver,
+        p,
+        ep.lectura,
+        &datos,
+        ep.cu_conexiones,
+    );
+    if let Err(e) = k.configurar(&nombre, &ip, &configuracion) {
+        // ⛔ Un cómputo del pool que falló a medio configurar no vuelve al pool: fuera, y en
+        //   la vuelta siguiente se decide otra vez (otro del pool, o en frío).
+        let _ = k.borrar(&nombre);
+        c.execute(
+            "update plano.endpoint set computo = null
+              where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &ep.id],
+        )
+        .map_err(bd)?;
+        return Ok(Some(Err(Fallo::Reintentar(format!(
+            "el cómputo {nombre} del pool no aceptó la especificación: {}",
+            e.motivo()
+        )))));
+    }
+    c.execute(
+        "update plano.endpoint set observado = 'listo', direccion = $4, ip_pod = $4,
+                ultima_actividad = now(), dormido_en = null
+          where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&org, &p, &ep.id, &ip],
+    )
+    .map_err(bd)?;
+    if !ep.lectura {
+        purgar(c, org, p, &ep.rama, &datos)?;
+    }
+    Ok(Some(Ok(())))
+}
+
+/// P6·5 · **El pool, repuesto**: los que arrancan pasan a libres cuando su `compute_ctl` dice
+/// `empty`; los que desaparecieron o fallaron, fuera; y se arrancan los que falten hasta
+/// `objetivo`. Devuelve cuántos libres hay.
+pub fn mantener_pool(c: &mut Client, k: &dyn Computos, objetivo: usize) -> Result<usize, String> {
+    for f in c
+        .query(
+            "select computo from plano.pool_computo where estado = 'arrancando'",
+            &[],
+        )
+        .map_err(mal)?
+    {
+        let nombre: String = f.get(0);
+        match k.estado(&nombre) {
+            Ok(None) => {
+                c.execute(
+                    "delete from plano.pool_computo where computo = $1",
+                    &[&nombre],
+                )
+                .map_err(mal)?;
+            }
+            Ok(Some(e)) if e.fase == "Failed" || e.fase == "Succeeded" => {
+                let _ = k.borrar(&nombre);
+                c.execute(
+                    "delete from plano.pool_computo where computo = $1",
+                    &[&nombre],
+                )
+                .map_err(mal)?;
+            }
+            Ok(Some(e)) => {
+                if let (true, Some(ip)) = (e.fase == "Running", e.ip_pod.as_deref())
+                    && k.vacio(&nombre, ip).unwrap_or(false)
+                {
+                    c.execute(
+                        "update plano.pool_computo set estado = 'libre', ip_pod = $2, libre_en = now()
+                          where computo = $1",
+                        &[&nombre, &ip],
+                    )
+                    .map_err(mal)?;
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    let hay: i64 = c
+        .query_one("select count(*) from plano.pool_computo", &[])
+        .map_err(mal)?
+        .get(0);
+    for _ in (hay as usize)..objetivo {
+        let nombre: String = c
+            .query_one(
+                "insert into plano.pool_computo (computo)
+                 values ('pool-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 12))
+                 returning computo",
+                &[],
+            )
+            .map_err(mal)?
+            .get(0);
+        if let Err(e) = k.crear_vacio(&nombre) {
+            c.execute(
+                "delete from plano.pool_computo where computo = $1",
+                &[&nombre],
+            )
+            .map_err(mal)?;
+            return Err(format!("arrancar {nombre}: {}", e.motivo()));
+        }
+    }
+    Ok(c.query_one(
+        "select count(*) from plano.pool_computo where estado = 'libre'",
+        &[],
+    )
+    .map_err(mal)?
+    .get::<_, i64>(0) as usize)
+}
+
 /// Quita un endpoint: su VM y su ConfigMap, espera a que su runner se vaya, y
 /// entonces la fila.
 fn quitar_endpoint(
@@ -327,8 +502,9 @@ fn quitar_endpoint(
     ep: &Ep,
 ) -> Result<(), Fallo> {
     let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
-    k.borrar(&ep.vm)?;
-    if k.estado(&ep.vm)?.is_some() || k.runner_vivo(&ep.vm)? {
+    let nombre = ep.computo.as_deref().unwrap_or(&ep.vm);
+    k.borrar(nombre)?;
+    if k.estado(nombre)?.is_some() || k.runner_vivo(nombre)? {
         c.execute(
             "update plano.endpoint set observado = 'borrando'
               where organizacion = $1 and proyecto = $2 and id = $3",
@@ -533,7 +709,7 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
                 .ok_or_else(|| Fallo::Definitivo("el proyecto ya no está".into()))?;
             let escritor = c
                 .query_opt(
-                    "select e.vm, e.ip_pod, r.timeline, e.cu_max from plano.endpoint e
+                    "select coalesce(e.computo, e.vm), e.ip_pod, r.timeline, e.cu_max from plano.endpoint e
                        join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto
                                         and r.id = e.rama
                       where e.organizacion = $1 and e.proyecto = $2 and e.rama = $3
@@ -615,7 +791,7 @@ fn dormir(c: &mut Client, k: &dyn Computos, op: &Op) -> Result<(), Fallo> {
     };
     let Some(f) = c
         .query_opt(
-            "select vm, ip_pod, observado from plano.endpoint
+            "select coalesce(computo, vm), ip_pod, observado from plano.endpoint
               where organizacion = $1 and proyecto = $2 and id = $3 and deseado = 'vivo'",
             &[&org, &p, &id],
         )
@@ -651,7 +827,8 @@ fn dormir(c: &mut Client, k: &dyn Computos, op: &Op) -> Result<(), Fallo> {
     }
     c.execute(
         "update plano.endpoint
-            set observado = 'dormido', dormido_en = now(), direccion = null, ip_pod = null
+            set observado = 'dormido', dormido_en = now(), direccion = null, ip_pod = null,
+                computo = null
           where organizacion = $1 and proyecto = $2 and id = $3",
         &[&org, &p, &id],
     )

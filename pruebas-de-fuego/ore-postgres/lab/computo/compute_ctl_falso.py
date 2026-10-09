@@ -15,7 +15,8 @@ que a una VM de NeonVM:
 Lo que NO es: el almacenamiento de Neon. Los datos viven en /almacen/<tenant>/<timeline> (un volumen
 compartido que hace de pageserver), así que dormir y despertar los conserva.
 
-ARRANQUE_S emula lo que tarda una VM en arrancar antes de que compute_ctl atienda una especificación.
+ARRANQUE_S emula lo que tarda una VM en arrancar: el proceso no atiende (ni /status) hasta pasado ese
+tiempo. Un cómputo del pool lo paga mientras espera en el pool; uno en frío, entero, al despertar (P6·5).
 """
 import base64, json, os, subprocess, threading, time
 from datetime import datetime, timezone
@@ -122,8 +123,6 @@ def aplicar_pgbouncer(spec):
 
 def aplicar(spec, primera):
     try:
-        if primera and ARRANQUE_S:
-            time.sleep(ARRANQUE_S)
         arrancar_postgres(spec)
         aplicar_datos(spec)
         aplicar_pgbouncer(spec)
@@ -225,6 +224,8 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if ARRANQUE_S:
+        time.sleep(ARRANQUE_S)  # «la VM arranca»: nada contesta todavía
     st["start_time"] = ahora()
     config = json.loads(os.environ.get("CONFIG_JSON") or '{"spec": null}')
     threading.Thread(target=vigilar, daemon=True).start()
