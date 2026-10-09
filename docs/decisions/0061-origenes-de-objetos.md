@@ -2,7 +2,7 @@
 
 **Estado:** propuesto (2026-10-09). **O0–O4 hechos** (2026-10-09; O2–O4 en el laboratorio, la prueba
 contra GCS, Azure y un SFTP de verdad es deuda temporal); O5 (SharePoint) en marcha: O5·0 investigado,
-D-O5 aceptada, O5·1 hecho. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
+D-O5 aceptada, O5·1 y O5·2 hechos. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -515,6 +515,20 @@ la URL de descarga; los mensajes reales de error; y `delta`.
   token**. Con la comparación del `cTag` anulada a propósito, el test falla.
 - Lo que destapó: una biblioteca que no está se tragaba como un prefijo vacío (los dos son `404`);
   ahora la biblioteca se resuelve antes de recorrer.
+
+**O5·2, hecho**: `ore-read-sharepoint`, el `main` común con lo de SharePoint (`fija: version`, sin
+firma, huella `quickxor`, credencial corta). Su `check` va paso a paso y cada paso sólo si pasó el
+anterior: `identidad` (el canje), `sitio` (por su ruta: un `403` dice las dos cosas que lo arreglan
+—`Sites.Selected` con consentimiento y la concesión `read` del sitio— con el comando de PnP ya
+escrito), `biblioteca` (una que no está dice cuáles hay), `listar` (la carpeta del prefijo y hasta
+diez más buscando ficheros), `leer` (un byte de hasta cinco: pasa si uno se deja) y `versiones`. Un
+sitio, una biblioteca o una carpeta que no existe se dice como tal, no como un permiso. `explorar`
+da las carpetas y además **las bibliotecas del sitio**, cada una con su URL, y cuenta lo saltado
+(cuadernos, accesos directos). Contra el Graph de mentira: `capacidades`, `check` (bien; un sitio sin
+concesión, uno que no está, una biblioteca y una carpeta que no están, un token que Graph no
+acepta), `explorar`, `catalogo` (2 tablas y 2 conjuntos), `versiones` (`<id>@2.0` con su
+`quickxor:`), `bajar` la actual y la vieja (`@1.0`), una versión que no está (dicha por ítem) y una
+huella que no casa (no se entrega); 8 esperas por `429` y ninguna descarga con el token.
 
 ## Lo que no se hace aquí
 

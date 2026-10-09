@@ -2872,6 +2872,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-sharepoint"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-driver",
+ "ore-graph",
+ "ore-objetos",
+ "ore-read-objetos",
+]
+
+[[package]]
 name = "ore-registry"
 version = "0.1.0"
 dependencies = [
