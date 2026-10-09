@@ -14,6 +14,8 @@
 #                                  serverless entra por api.europe-west1.pg.paladio.io (P5·4).
 #   limpieza _delegacion.pg.paladio.io     el TXT con que se comprobó la delegación desde
 #                                  GoDaddy (2026-10-08): ya no hace falta.
+#   malla    flux-system/ore-pg-entrada    ConfigMap con IP_ENTRADA: Flux la sustituye en el
+#                                  Service del proxy (postBuild de malla/87-postgres-la-entrada.yaml).
 #
 # La zona pg-paladio-io (Cloud DNS) y la delegación NS en GoDaddy ya existen (P5, 2026-10-08).
 # El certificado lo pide cert-manager (malla/postgres-entrada/), no este guion.
@@ -74,6 +76,10 @@ if g dns record-sets describe "_delegacion.$DOMINIO." --type TXT --zone $ZONA_DN
 else
   echo "   ya no está"
 fi
+
+echo "── la IP, para la malla: ConfigMap flux-system/ore-pg-entrada (postBuild de 87-postgres-la-entrada.yaml)"
+kubectl -n flux-system create configmap ore-pg-entrada --from-literal=IP_ENTRADA="$IP"   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+echo "   IP_ENTRADA=$IP"
 
 echo
 echo "Comprobar desde fuera (la propagación tarda lo que el TTL):"

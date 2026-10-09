@@ -1207,6 +1207,28 @@ Escrito, validado y **sin aplicar** (Google sin facturación):
 
 ⛔ **`87-postgres-la-entrada.yaml` no está en la lista de la malla**, solo comentado. Flux reconcilia desde `main`: en cuanto vuelva Google lo aplicaría, antes de que exista la cuenta del DNS-01, y Let's Encrypt limita los retos fallidos. Se descomenta en el despliegue, **después** del guion.
 
+#### P5·3 · El proxy en la malla, escrito (2026-10-09)
+
+Escrito, validado y **sin aplicar**. Con P5·2, P5 queda **cerrado en el laboratorio**: lo que falta es desplegar y las pruebas que solo se pueden hacer en producción.
+
+- **`malla/postgres-entrada/proxy.yaml`**:
+  - el proxy de Neon, con **los mismos argumentos que en el laboratorio**, 2 réplicas repartidas por nodo en el pool `pg`, con pata en la overlay (`overlay-del-proxy`) y `pg-acceso`;
+  - puertos altos dentro (4432, 4444), porque la imagen corre como `neon` (uid 1000) sin capacidades; el Service los saca al 5432 y al 443;
+  - sondas en `/v1/status`; para vaciar al parar, `preStop` de 15 s y hasta 300 s para que terminen sus clientes;
+  - el Service `LoadBalancer` es un L4 de paso directo con backend services y `externalTrafficPolicy: Local`, para que la IP del cliente llegue tal cual (P5·6), en la IP fija de P5·2;
+  - un PDB con `minAvailable: 1`;
+  - NetworkPolicies: entrada desde internet solo al 4432 y al 4444; salida solo al DNS, a `ore-postgres`, a Redis y a las VMs.
+- **`malla/postgres-entrada/redis.yaml`**: Redis 7.4 fijado por *digest*, solo pub/sub, sin disco ni salida; solo llegan a él el proxy y `ore-postgres`.
+- **La IP, por sustitución de Flux**: el guion de P5·2 escribe el ConfigMap `flux-system/ore-pg-entrada` (`IP_ENTRADA`) y el Kustomization `ore-pg-entrada` la pone en el Service (`postBuild.substituteFrom`). Sin él no se aplica: nunca un balanceador con una IP efímera que el DNS no conoce.
+- **Malla 86**: el token del proxy (Secret `ore-postgres-proxy`, ya creado), la entrada del proxy a `ore-postgres`, la salida de `ore-postgres` a Redis y los flags `--redis` y `--dominio`. Es segura con el binario viejo, que ignora los flags que no conoce; con el nuevo y sin Redis, `olvidar` lo dice una vez y sigue.
+- **Validado**: `kubeconform -strict`, 18 de 18. El proxy del laboratorio corre ya con el mismo `securityContext` (uid 1000, sin capacidades, `no-new-privileges`), y P5·1, P5·4, P5·5 y P5·6 siguen en verde. kubeconform no veía una trampa que salió al revisar: la imagen dice `USER neon` por nombre, y con `runAsNonRoot` sin `runAsUser` numérico el kubelet no arranca el contenedor.
+
+**El orden del despliegue** el día que vuelva Google:
+1. El CI empuja `ore-postgres:main` con P5 dentro, y la malla 86 lo recoge.
+2. `malla/87-postgres-la-entrada-gcp.sh`.
+3. Descomentar `87-postgres-la-entrada.yaml` en la lista de la malla.
+4. Las pruebas que solo se pueden hacer en producción, abajo.
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:

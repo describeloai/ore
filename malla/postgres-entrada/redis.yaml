@@ -1,0 +1,71 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# P5·1 · REDIS: POR DONDE ore-postgres LE DICE AL PROXY QUÉ OLVIDAR
+#
+# El proxy guarda cuatro minutos el verificador de cada rol; sin avisarle, una contraseña nueva
+# tardaba 231–302 s en valer (medido en el laboratorio). ore-postgres publica en
+# `neondb-proxy-ws-updates` lo que el reconciliador da por hecho (olvidar.rs) y cada réplica
+# del proxy, suscrita, lo olvida al momento.
+#
+# Sólo pub/sub: nada que guardar ni que perder. Si cae, nada se rompe: la caché del proxy
+# caduca sola y, al volver, cada uno se reconecta. Sin disco, sin persistencia, sin contraseña:
+# lo cierra la NetworkPolicy (sólo el proxy y ore-postgres llegan a él).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-postgres
+  namespace: ore-pg
+  labels: { ore.dev/rol: redis-postgres }
+spec:
+  replicas: 1
+  selector: { matchLabels: { ore.dev/rol: redis-postgres } }
+  template:
+    metadata:
+      labels: { ore.dev/rol: redis-postgres, ore.dev/tenant: system }
+    spec:
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999     # redis, en la imagen
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          # redis:7.4-alpine, fijado por digest (el que se midió en el laboratorio).
+          image: docker.io/library/redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          args: [redis-server, --save, "", --appendonly, "no", --protected-mode, "no"]
+          ports: [{ name: redis, containerPort: 6379 }]
+          readinessProbe: { tcpSocket: { port: 6379 }, periodSeconds: 5 }
+          livenessProbe: { tcpSocket: { port: 6379 }, periodSeconds: 10, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-postgres
+  namespace: ore-pg
+spec:
+  selector: { ore.dev/rol: redis-postgres }
+  ports: [{ name: redis, port: 6379, targetPort: redis }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-redis
+  namespace: ore-pg
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: redis-postgres } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { ore.dev/rol: proxy-postgres } }
+        - podSelector: { matchLabels: { ore.dev/rol: plano-postgres } }
+      ports: [{ protocol: TCP, port: 6379 }]
+  # Redis no sale a ninguna parte.
+  egress: []

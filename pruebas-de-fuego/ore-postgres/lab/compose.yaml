@@ -68,6 +68,11 @@ services:
         --redis-auth-type plain --redis-plain redis://172.29.51.8:6379
     volumes: [./.secretos/proxy:/llaves/proxy:ro, ./.secretos/tls:/llaves/tls:ro]
     environment: { OTEL_SDK_DISABLED: "true" }
+    # El securityContext de la malla (postgres-entrada/proxy.yaml): uid 1000, sin capacidades.
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck: { test: [CMD-SHELL, "exec 3<>/dev/tcp/127.0.0.1/7001"], interval: 2s, retries: 30 }
     networks: { lab: { ipv4_address: 172.29.51.20 } }
     depends_on: [plano]
   cliente:

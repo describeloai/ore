@@ -100,6 +100,14 @@ spec:
             - 0.0.0.0:8100
             - --imagen-computo
             - europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/vm-compute-node-v17:baad49aa38dbf272c5874aa0d547e2cfb841ec1a
+            # P5·1: lo que el reconciliador da por hecho, al proxy por Redis (olvidar.rs). Mientras
+            # no exista redis-postgres (malla/postgres-entrada/), lo dice una vez y sigue: la caché
+            # del proxy caduca sola.
+            - --redis
+            - redis-postgres.ore-pg.svc.cluster.local.:6379
+            # P5·7: cada endpoint dice su nombre público (host, host_pool) para Connect.
+            - --dominio
+            - europe-west1.pg.paladio.io
           env:
             - name: ORE_POSTGRES_URL
               valueFrom: { secretKeyRef: { name: ore-postgres-db, key: url } }
@@ -107,6 +115,8 @@ spec:
           volumeMounts:
             - { name: llaves-almacen, mountPath: /llaves/almacen, readOnly: true }
             - { name: llaves-computo, mountPath: /llaves/computo, readOnly: true }
+            # P5·1: el token con que pregunta el proxy (`/proxy/…`).
+            - { name: llaves-proxy, mountPath: /llaves/proxy, readOnly: true }
           readinessProbe:
             httpGet: { path: /salud, port: 8100 }
             initialDelaySeconds: 2
@@ -126,6 +136,8 @@ spec:
               - secret: { name: almacen-jwt, items: [{ key: safekeeperdata, path: safekeeperdata }, { key: publica.pem, path: publica.pem }] }
         - name: llaves-computo
           secret: { secretName: ore-postgres-llaves }
+        - name: llaves-proxy
+          secret: { secretName: ore-postgres-proxy }
 ---
 # Quién entra: el `ore-serve` de las celdas y (P4·5) el storage_controller con sus avisos.
 apiVersion: networking.k8s.io/v1
@@ -141,6 +153,8 @@ spec:
         - namespaceSelector: { matchLabels: { ore.dev/rol: cargas } }
           podSelector: { matchLabels: { ore.dev/rol: control } }
         - podSelector: { matchLabels: { ore.dev/rol: storage-controller } }
+        # P5·1: el proxy, que pregunta por el secreto del rol y la dirección del cómputo.
+        - podSelector: { matchLabels: { ore.dev/rol: proxy-postgres } }
       ports: [{ protocol: TCP, port: 8100 }]
 ---
 # Adónde sale: su base, `ore-iam`, el DNS, (P4·2) el storage_controller y los safekeepers y
@@ -171,6 +185,10 @@ spec:
     - to:
         - podSelector: { matchLabels: { ore.dev/rol: safekeeper } }
       ports: [{ protocol: TCP, port: 7676 }]
+    # P5·1: Redis, donde publica lo que el proxy tiene que olvidar (malla/postgres-entrada/redis.yaml).
+    - to:
+        - podSelector: { matchLabels: { ore.dev/rol: redis-postgres } }
+      ports: [{ protocol: TCP, port: 6379 }]
     - to:
         - ipBlock: { cidr: 10.10.0.2/32 }
       ports: [{ protocol: TCP, port: 443 }]

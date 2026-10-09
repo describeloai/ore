@@ -71,4 +71,18 @@ print(json.dumps({"apiVersion": "v1", "kind": "Secret",
   "stringData": {"privada.pem": pem}}))' | kubectl apply -f - >/dev/null
   echo "   creado"
 fi
+
+# ── P5·1 · el token del proxy: lo montan el proxy (lo manda) y ore-postgres (lo compara) ──
+# Aleatorio, en memoria y por la entrada estándar de kubectl, como la llave de arriba.
+echo "── el Secret ore-postgres-proxy"
+if kubectl -n $NS get secret ore-postgres-proxy >/dev/null 2>&1; then
+  echo "   ya existe (no se toca: rotarlo es otra operación)"
+else
+  python -c '
+import json, secrets
+print(json.dumps({"apiVersion": "v1", "kind": "Secret",
+  "metadata": {"name": "ore-postgres-proxy", "namespace": "ore-pg"},
+  "stringData": {"token": secrets.token_urlsafe(48)}}))' | kubectl apply -f - >/dev/null
+  echo "   creado"
+fi
 echo "ok"

@@ -1,0 +1,173 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# P5·3 · EL PROXY DE NEON EN LA MALLA
+#
+#   internet ──► ore-pg-entrada (IP regional, L4 de paso directo) ──► proxy-postgres ×2 ──► VMs
+#                5432 (TCP, SNI)  443 (HTTP / WebSocket)              pata en la overlay   (5432 · 6432 pool)
+#
+# Lo medido en el laboratorio (ADR 0058, P5·1–P5·7) con este mismo binario (la imagen del
+# almacenamiento, 8269bece) y estos mismos argumentos:
+#   · pregunta a ore-postgres por el verificador SCRAM del rol y por la dirección del cómputo,
+#     con su token (Secret ore-postgres-proxy, malla/86-…sh);
+#   · olvida lo que guarda cuando ore-postgres lo publica en Redis (redis-postgres);
+#   · TLS con el comodín de cert-manager (Secret entrada-pg-tls, P5·2).
+#
+# ⭐ Puertos altos dentro (4432, 4444): la imagen corre como `neon`, sin root, y el Service los
+#   saca al 5432 y al 443. ⭐ externalTrafficPolicy: Local: la IP del cliente llega tal cual
+#   (las IPs permitidas de P5·6 la necesitan) y sin protocolo PROXY.
+# ⭐ Parar vacía: preStop deja que el balanceador lo saque antes de cerrar, y el proxy, al
+#   recibir SIGTERM, deja de aceptar y espera a sus clientes (hasta terminationGracePeriodSeconds).
+#
+# ⚠️ El clúster es zonal: dos réplicas cubren un pod o un nodo, no la zona (regional es P8).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-postgres
+  namespace: ore-pg
+  labels: { ore.dev/rol: proxy-postgres }
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector: { matchLabels: { ore.dev/rol: proxy-postgres } }
+  template:
+    metadata:
+      # pg-acceso: las VMs le dejan entrar (5432 y 6432; malla/85, barrera 2).
+      labels: { ore.dev/rol: proxy-postgres, ore.dev/tenant: system, ore.dev/pg-acceso: si }
+      annotations:
+        # La pata en la overlay, del lado del proxy (10.100.1.0–10.100.127.255): las VMs viven en
+        # 10.100.128.0/17 y sólo hablan con este lado (la barrera 3, postgres-computo/neonvm/cerrada.yaml).
+        k8s.v1.cni.cncf.io/networks: ore-pg/overlay-del-proxy
+    spec:
+      nodeSelector: { ore.dev/pool: neon }
+      tolerations: [{ key: ore.dev/neon, operator: Equal, value: "true", effect: NoSchedule }]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { ore.dev/rol: proxy-postgres } }
+      terminationGracePeriodSeconds: 300
+      # La imagen dice `USER neon` por nombre: con runAsNonRoot hace falta el número (1000) o el
+      # kubelet no puede comprobarlo y no arranca el contenedor.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: proxy
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
+          command: [sh, -c]
+          # El token con `=`: uno que empieza por `-` se leía como otro flag (medido en P5·4).
+          args:
+            - >-
+              exec /usr/local/bin/proxy
+              --region europe-west1
+              --proxy 0.0.0.0:4432
+              --wss 0.0.0.0:4444
+              --http 0.0.0.0:7001
+              --mgmt 127.0.0.1:7000
+              --auth-backend control-plane
+              --auth-endpoint http://ore-postgres.ore-pg.svc.cluster.local.:8100/proxy/
+              --control-plane-token="$(cat /llaves/proxy/token)"
+              --tls-cert /llaves/tls/tls.crt
+              --tls-key /llaves/tls/tls.key
+              --redis-auth-type plain
+              --redis-plain redis://redis-postgres.ore-pg.svc.cluster.local.:6379
+          env:
+            # Sin colector de trazas: el SDK de OpenTelemetry se quejaría cada 5 s.
+            - { name: OTEL_SDK_DISABLED, value: "true" }
+          ports:
+            - { name: postgres, containerPort: 4432 }
+            - { name: https, containerPort: 4444 }
+            - { name: metricas, containerPort: 7001 }
+          readinessProbe:
+            httpGet: { path: /v1/status, port: 7001 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /v1/status, port: 7001 }
+            periodSeconds: 10
+            failureThreshold: 6
+          lifecycle:
+            preStop: { sleep: { seconds: 15 } }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tls, mountPath: /llaves/tls, readOnly: true }
+            - { name: token, mountPath: /llaves/proxy, readOnly: true }
+      volumes:
+        - name: tls
+          secret: { secretName: entrada-pg-tls }
+        - name: token
+          secret: { secretName: ore-postgres-proxy }
+---
+# La entrada pública: un L4 de paso directo con backend services (RBS), en la IP fija de P5·2.
+# La IP llega por sustitución de Flux (postBuild, ConfigMap ore-pg-entrada que escribe 87-…-gcp.sh).
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-postgres
+  namespace: ore-pg
+  annotations:
+    cloud.google.com/l4-rbs: enabled
+spec:
+  type: LoadBalancer
+  loadBalancerIP: ${IP_ENTRADA}
+  externalTrafficPolicy: Local
+  selector: { ore.dev/rol: proxy-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres, protocol: TCP }
+    - { name: https, port: 443, targetPort: https, protocol: TCP }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: proxy-postgres
+  namespace: ore-pg
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { ore.dev/rol: proxy-postgres } }
+---
+# Quién entra: cualquiera de internet, sólo a los dos puertos del proxy (la autenticación, las
+# IPs permitidas y los límites los pone el proxy: P5·1, P5·6). Las métricas, sólo desde dentro.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-proxy
+  namespace: ore-pg
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: proxy-postgres } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports: [{ protocol: TCP, port: 4432 }, { protocol: TCP, port: 4444 }]
+---
+# Adónde sale (por su interfaz de pod): el DNS, ore-postgres y Redis. Las VMs están en la overlay
+# (otra interfaz, la de Multus), detrás de la barrera 3; aquí sólo por si alguna ruta cae por la del pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-proxy
+  namespace: ore-pg
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: proxy-postgres } }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to:
+        - podSelector: { matchLabels: { ore.dev/rol: plano-postgres } }
+      ports: [{ protocol: TCP, port: 8100 }]
+    - to:
+        - podSelector: { matchLabels: { ore.dev/rol: redis-postgres } }
+      ports: [{ protocol: TCP, port: 6379 }]
+    - to:
+        - ipBlock: { cidr: 10.100.128.0/17 }
+      ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 6432 }]

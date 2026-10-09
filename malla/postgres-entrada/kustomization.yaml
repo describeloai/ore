@@ -3,4 +3,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - certificado.yaml
+  - certificado.yaml   # P5·2 · el comodín
+  - redis.yaml         # P5·1 · lo que el proxy tiene que olvidar
+  - proxy.yaml         # P5·3 · el proxy, su balanceador, su PDB y sus NetworkPolicies

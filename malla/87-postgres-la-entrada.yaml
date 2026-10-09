@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # ORE SERVERLESS POSTGRES · LA ENTRADA (ADR 0058, P5)
 #
-# El certificado comodín (P5·2) y, en P5·3, el proxy de Neon, su Redis y el balanceador L4.
+# El certificado comodín (P5·2), el proxy de Neon con su balanceador L4 (P5·3) y su Redis.
 # Los manifiestos viven en `malla/postgres-entrada/`.
 #
 # ⭐ Un Kustomization de Flux propio, como la base del cómputo (malla/84-…): declara un
@@ -28,3 +28,10 @@ spec:
   sourceRef:
     kind: GitRepository
     name: malla
+  # La IP de la entrada (`${IP_ENTRADA}` en el Service del proxy): la escribe 87-…-gcp.sh en este
+  # ConfigMap al crearla. Sin él, el Kustomization no se aplica (y lo dice): nunca un balanceador
+  # con una IP efímera que el DNS no conoce.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: ore-pg-entrada
