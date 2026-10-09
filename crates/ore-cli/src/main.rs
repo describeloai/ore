@@ -2076,13 +2076,21 @@ fn descubrir(
             .filter(|_| revision::dir_de_la_fuente(destino, &catalogo.fuente).is_some())
             .and_then(|r| fuente_inducida::referencias(&r, &catalogo.fuente)),
         expone: None,
+        // ⭐ ADR 0061 O4·4: la fuente no versiona (por su tipo, sin red).
+        sin_versiones: raiz_del_repositorio(destino)
+            .and_then(|r| lector::declaracion(&r, &catalogo.fuente).ok())
+            .is_some_and(|(tipo, _)| coleccion::sin_versiones(&tipo)),
     };
     // ⭐⭐ 0057 (OOS v1alpha27): una base foránea nueva, de una fuente con
     //   paquete, EXPONE las tablas de la fuente —su `package.yaml` con
     //   `spec.foreign`, nada más—. Sin paquete de la fuente (el CLI suelto),
     //   lo de antes: sus propias tablas y una vista por tabla.
+    //   ⭐ ADR 0061 O4·4: salvo de una fuente que no versiona (un SFTP): exponer
+    //   su `ObjectTable` sería servirlo en vivo —una colección virtual—, así
+    //   que la base escribe sus colecciones, mantenidas (D-O1).
     if let Some(refs) = &regla.fuente_aparte
         && el_alcance.as_ref().is_some_and(|(a, _)| !a.estandar())
+        && !regla.sin_versiones
     {
         regla.expone = Some(inductor::include_de(&catalogo, refs, espejo));
     }

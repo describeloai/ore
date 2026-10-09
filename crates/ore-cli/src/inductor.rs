@@ -504,6 +504,11 @@ pub struct Regla {
     /// expuesto es la `Table` de la fuente con otro nombre. Sólo con la
     /// fuente aparte, y sin copias: una base que copia es estándar.
     pub expone: Option<Vec<String>>,
+    /// ⭐ ADR 0061 O4·4 · **La fuente no versiona** (un SFTP: `capacidades` →
+    /// `objetos.fija: ninguna`): sus colecciones salen mantenidas también en
+    /// una base foránea —una virtual serviría lo que cambie sin saberlo, y
+    /// `ore` la negaría al mantenerla (D-O1)—.
+    pub sin_versiones: bool,
 }
 
 impl Regla {
@@ -746,7 +751,7 @@ pub fn inducir_con_regla(
                     &owner_catalogo,
                     o,
                     &regla.objetos_de(o),
-                    !regla.copia(&o.nombre),
+                    !regla.copia(&o.nombre) && !regla.sin_versiones,
                 ),
                 &sch,
                 paquete,
@@ -3306,6 +3311,7 @@ mod tests {
             schemas: BTreeMap::new(),
             fuente_aparte: None,
             expone: None,
+            sin_versiones: false,
         };
         let sin = inducir_con_regla(
             &cat,
@@ -3391,6 +3397,7 @@ mod tests {
             schemas: BTreeMap::new(),
             fuente_aparte: None,
             expone: None,
+            sin_versiones: false,
         };
         let i = inducir_con_regla(
             &cat,
@@ -3467,6 +3474,7 @@ mod tests {
             schemas: BTreeMap::new(),
             fuente_aparte: None,
             expone: None,
+            sin_versiones: false,
         };
         // y en una foránea, una tabla copiada una a una: sólo ésa
         let suelta = Regla {
@@ -3476,6 +3484,7 @@ mod tests {
             schemas: BTreeMap::new(),
             fuente_aparte: None,
             expone: None,
+            sin_versiones: false,
         };
         let f = inducir_con_regla(
             &cat,

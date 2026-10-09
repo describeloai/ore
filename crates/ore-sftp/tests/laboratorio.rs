@@ -116,9 +116,26 @@ fn un_servidor_sftp_como_origen() {
     );
 }
 
+/// Lo que usa la prueba de fuego (`o4-sftp.sh`, paso 6): reescribe
+/// `datos/docs/a.pdf` por fuera con el MISMO tamaño (`% uno` → `% UNO`),
+/// entre `versiones` y `bajar`. Ignorado salvo que se pida.
+#[test]
+#[ignore]
+fn reescribir_a_pdf() {
+    let Ok(url) = std::env::var("ORE_LAB_SFTP") else {
+        return;
+    };
+    let s = Sftp::de_url(&url).expect("la URL");
+    escribir(&s, "/datos/docs/a.pdf", b"%PDF-1.4\n% UNO\n%%EOF\n");
+}
+
 /// Reescribe un fichero en sitio con otra conexión (el laboratorio deja
 /// escribir; un origen de ORE nunca escribe).
 fn reescribir(s: &Sftp, ruta: &str, letra: u8, tamano: usize) {
+    escribir(s, ruta, &vec![letra; tamano]);
+}
+
+fn escribir(s: &Sftp, ruta: &str, datos: &[u8]) {
     let f = &s.fuente;
     let tcp = std::net::TcpStream::connect((f.host.as_str(), f.puerto)).unwrap();
     let mut ses = ssh2::Session::new().unwrap();
@@ -140,5 +157,5 @@ fn reescribir(s: &Sftp, ruta: &str, letra: u8, tamano: usize) {
             ssh2::OpenType::File,
         )
         .unwrap();
-    w.write_all(&vec![letra; tamano]).unwrap();
+    w.write_all(datos).unwrap();
 }

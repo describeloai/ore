@@ -35,9 +35,17 @@ fn explicar(s: &Sftp, f: &Fallo) -> String {
     }
 }
 
-/// El primer fichero de verdad (no un enlace).
-fn primero(fs: &[Entrada]) -> Option<String> {
-    fs.iter().find(|e| !e.enlace).map(|e| e.clave.clone())
+/// Con cuántos ficheros se prueba a leer: uno cerrado no decide que falte el
+/// permiso (O4·4: los servidores reales tienen ficheros que no son de todos).
+const PRUEBAS: usize = 5;
+
+/// Los primeros ficheros de verdad (no enlaces).
+fn primeros(fs: &[Entrada]) -> Vec<String> {
+    fs.iter()
+        .filter(|e| !e.enlace)
+        .take(PRUEBAS)
+        .map(|e| e.clave.clone())
+        .collect()
 }
 
 pub fn comprobar(s: &Sftp) -> String {
@@ -116,25 +124,51 @@ pub fn comprobar(s: &Sftp) -> String {
             Err(e) => (listar.ok, listar.porque) = (Some(false), Some(explicar(s, &e))),
             Ok((carpetas, ficheros)) => {
                 (listar.ok, listar.porque) = (Some(true), None);
-                let mut uno = primero(&ficheros);
-                if uno.is_none()
+                let mut candidatos = primeros(&ficheros);
+                if candidatos.is_empty()
                     && let Some(c) = carpetas.first()
                 {
-                    // En este nivel solo hay carpetas: se baja a buscar uno.
-                    uno = s.nivel(c).ok().and_then(|(_, fs)| primero(&fs));
+                    // En este nivel solo hay carpetas: se baja a buscar.
+                    candidatos = s.nivel(c).map(|(_, fs)| primeros(&fs)).unwrap_or_default();
                 }
                 prefijos = carpetas;
-                match uno {
-                    None => {
-                        leer.ok = None;
-                        leer.porque =
-                            Some("no hay un fichero visible bajo la ruta con el que probar".into());
+                // Basta con que uno se deje leer; los que no, se dicen.
+                let mut cerrados: Vec<String> = Vec::new();
+                let mut uno_leido = false;
+                let mut ultimo: Option<String> = None;
+                for k in &candidatos {
+                    match s.rango(k, "0-0", None) {
+                        Ok(_) => {
+                            uno_leido = true;
+                            break;
+                        }
+                        Err(e) => {
+                            cerrados.push(k.clone());
+                            ultimo = Some(explicar(s, &e));
+                        }
                     }
-                    Some(k) => match s.rango(&k, "0-0", None) {
-                        Ok(_) => (leer.ok, leer.porque) = (Some(true), None),
-                        Err(e) => (leer.ok, leer.porque) = (Some(false), Some(explicar(s, &e))),
-                    },
                 }
+                (leer.ok, leer.porque) = match (candidatos.is_empty(), uno_leido) {
+                    (true, _) => (
+                        None,
+                        Some("no hay un fichero visible bajo la ruta con el que probar".into()),
+                    ),
+                    (false, true) if cerrados.is_empty() => (Some(true), None),
+                    (false, true) => (
+                        Some(true),
+                        Some(format!(
+                            "se lee, pero {} no se deja{}: {} (se catalogan por su nombre y no se copian)",
+                            if cerrados.len() == 1 {
+                                "uno"
+                            } else {
+                                "algunos"
+                            },
+                            if cerrados.len() == 1 { "" } else { "n" },
+                            cerrados.join(", ")
+                        )),
+                    ),
+                    (false, false) => (Some(false), ultimo),
+                };
             }
         }
     }

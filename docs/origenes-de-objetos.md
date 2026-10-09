@@ -3,9 +3,10 @@
 **Estado:** S3 en vivo (0046); los que hablan la API de S3, probados en el laboratorio (ADR
 [0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09); GCS, con su driver propio y probado
 en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad; Azure Blob y ADLS Gen2,
-igual (O3, 2026-10-09), sin probar contra Azure de verdad. SFTP y SharePoint, por construir (O4–O5).
+igual (O3, 2026-10-09), sin probar contra Azure de verdad; SFTP, en el laboratorio (O4, 2026-10-09), sin
+probar contra un servidor de un cliente. SharePoint, por construir (O5).
 
-Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3`, `type: gcs` o `type: azure`): de él salen `Table` con `format`
+Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3`, `gcs`, `azure` o `sftp`): de él salen `Table` con `format`
 sobre sus Parquet, CSV y JSONL, y `ObjectTable` sobre lo demás, de donde salen las colecciones de
 media ([`media.md`](media.md)). La credencial no se escribe en el árbol: vive en el custodio y el
 árbol sólo nombra su variable (`connectionEnv`).
@@ -128,10 +129,41 @@ Storage vale para cualquier cuenta que la app pueda leer). Otro servidor sólo c
 `ORE_AZURE_LABORATORIO=1`, que pone el laboratorio (`pruebas-de-fuego/o3-azure.sh`, contra Azurite) y
 nunca una celda. Las nubes soberanas (Azure Government, China) no están.
 
+## SFTP
+
+```
+sftp://<usuario>@<host>[:<puerto>]/<ruta>?huella=SHA256:<huella del host>[&edad=<segundos>][&legado=1]
+```
+
+Un servidor SFTP no versiona nada, así que **sus colecciones sólo pueden ser mantenidas** (D-O1): la
+versión es la copia en el lago, con su sha256. `discover` las escribe mantenidas también en una base
+foránea, y `ore` niega una virtual con su porqué.
+
+- **Identidad** (D-O4): una clave SSH Ed25519 **de la celda**, que genera ORE; el cliente sólo pega
+  su parte pública en el `authorized_keys` del usuario con el que se lee (mejor uno que sólo lea esa
+  ruta). La consola da el comando con la clave puesta (`GET /fuentes/credenciales/sftp`). De recurso,
+  una contraseña en la URL (`usuario:contraseña@`), que va al custodio.
+- **La huella del host, siempre fijada**: se compara antes de autenticar, así que a un servidor que
+  se hace pasar por el del cliente no le llega ni la clave. La prueba del alta enseña la huella vista
+  para confirmarla (en el servidor: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`); si un día
+  cambia, la celda se niega a conectar hasta que se vuelva a confirmar. No hay «aceptar cualquiera».
+- **Cada fichero se vigila** por su tamaño y su fecha de modificación (en segundos: SFTP no da más),
+  al abrirlo y otra vez al terminar de leerlo: uno reescrito mientras se lee no se copia (daría una
+  mezcla de los dos). Un fichero no se copia hasta que lleva `edad` segundos sin cambiar (60 por
+  defecto): puede estar a medio escribir.
+- **Los enlaces simbólicos no se siguen**, y un fichero sin permiso de lectura es un aviso (se
+  cataloga por su nombre y no se copia), no un fallo.
+- **Red**: la celda sale por el puerto SSH del servidor desde su **IP de salida fija**, que el
+  cliente pone en su lista de permitidos (la consola la enseña). Algoritmos modernos; un servidor
+  viejo que sólo hable `ssh-rsa` con SHA-1 necesita `legado=1`.
+
+`check` va paso a paso —conexión, huella, identidad, listar, leer— y de lo que falla dice qué hacer.
+Probado en el laboratorio con `pruebas-de-fuego/o4-sftp.sh` (OpenSSH, `atmoz/sftp`).
+
 ## Por qué no un driver por proveedor
 
 La API de S3 es la forma principal de hablar con todos estos: un driver propio repetiría las mismas
 peticiones con otra firma que mantener. Un driver nativo se hará cuando un cliente choque con algo
 que sólo da su API (los buckets B2 de antes de 2020, el versionado completo de OCI, el IAM de IBM
-sin claves HMAC). GCS, Azure, SFTP y SharePoint sí llevan driver propio: no hablan S3, o su capa S3
+sin claves HMAC). GCS, Azure, SFTP y SharePoint llevan driver propio: no hablan S3, o su capa S3
 es peor que su API (ADR 0061).

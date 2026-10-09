@@ -1,8 +1,8 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
-**Estado:** propuesto (2026-10-09). **O0, O1, O2 y O3 hechos** (2026-10-09; O2 y O3 en el
-laboratorio, la prueba contra GCS y Azure de verdad es deuda temporal); siguiente O4 (SFTP). D-O1
-aplicada en O1, D-O2 en O2, D-O3 en O3. Investigación:
+**Estado:** propuesto (2026-10-09). **O0–O4 hechos** (2026-10-09; O2–O4 en el laboratorio, la prueba
+contra GCS, Azure y un SFTP de verdad es deuda temporal); siguiente O5 (SharePoint). D-O1 aplicada en
+O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -325,7 +325,7 @@ SDK, sin validar—), ADLS Gen2 (namespace jerárquico y sus ACL), el firewall d
 los dos roles. Se salda corriendo `o3-azure.sh` contra una cuenta real y la consola dando de alta un
 contenedor.
 
-### O4 · SFTP (en curso)
+### O4 · hecho en el laboratorio (2026-10-09): SFTP
 
 **O4·0, medido** (`atmoz/sftp`, OpenSSH 8.4p1, `atmoz/sftp@sha256:09603904…`): clave de host
 Ed25519 y su huella SHA-256; la clave autorizada entra, otra no, y sin contraseña tampoco; el
@@ -388,6 +388,30 @@ viejo no copia—. **El binario compilado en Alpine sólo enlaza la libc de musl
    (`ORE_IP_SALIDA`) para que el asistente la enseñe.
 
 Sin 1, el asistente lo dice y `check` falla en `identidad` con su porqué; sin 2, en `conexion`.
+
+**O4·4, hecho**: `pruebas-de-fuego/o4-sftp.sh`, contra `atmoz/sftp` con una clave de la "celda"
+autorizada y otra no. **13/13**: `check` (los cinco pasos; sin huella, la del servidor para
+confirmarla), la huella cambiada (se niega **sin enviar la clave**), una clave no autorizada,
+`explorar` y el catálogo, versiones (con una edad mínima de una hora, nada), `bajar`, el test de
+`ore-sftp` (con un fichero reescrito a mitad de lectura), un fichero reescrito con el mismo tamaño
+entre `versiones` y `bajar` (no se copia), y **`ore` de punta a punta**: `discover` de una foránea
+sobre el SFTP escribe colecciones mantenidas, y una forzada a virtual se niega. Con la comparación
+del validador anulada a propósito, 2 fallos —y en SFTP **sí se copian los bytes nuevos**: no hay
+huella del servidor que lo pare, el validador es la única defensa—.
+
+Lo que destapó la prueba, arreglado aquí:
+- **`discover` sobre una fuente que no versiona** escribía colecciones virtuales (o, con el paquete de
+  la fuente, exponía su `ObjectTable`, que es servirlo en vivo): ahora las escribe mantenidas
+  (`Regla::sin_versiones`, del tipo de la fuente; test `de_un_sftp_la_foranea_mantiene_sus_colecciones`).
+- **Un fichero sin permiso de lectura tumbaba el catálogo entero** (se leen sus primeros bytes para
+  confirmar el tipo): ahora es un aviso, y sólo se falla si no se deja leer ninguno (en el catálogo
+  común: vale para todos los proveedores; test `un_fichero_que_no_se_deja_leer_no_tumba_el_catalogo`).
+- **`check` decidía «sin permiso» por el primer fichero**: ahora prueba hasta cinco, pasa si uno se
+  lee y dice cuáles no.
+
+El perfil, en [`origenes-de-objetos.md`](../origenes-de-objetos.md). **Deuda temporal de O4**, contra
+servidores de verdad: un OpenSSH de un cliente, uno de Windows (OpenSSH para Windows, Bitvise), uno
+viejo con `ssh-rsa` (`legado=1`), un chroot real, y la red (puerto 22 e IP de salida, con go).
 
 ## Lo que no se hace aquí
 

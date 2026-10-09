@@ -329,6 +329,12 @@ pub fn leer(
             .push(i);
     }
     let mut sin_extension = 0usize;
+    // ⭐ ADR 0061 O4·4 · Un fichero que no se deja leer (sin permiso, medido en
+    //   un SFTP) es un aviso, no el fin del catálogo: su grupo se decide con
+    //   los demás, o por su extensión. Si no se deja leer NINGUNO, sí se falla:
+    //   eso es que falta el permiso, y `check` lo dice.
+    let (mut intentos, mut primer_fallo): (usize, Option<String>) = (0, None);
+    let mut fallos = 0usize;
     for ((_, ext), idx) in &grupos {
         if ext.is_empty() {
             for &i in idx {
@@ -346,7 +352,19 @@ pub fn leer(
             if items[i].obj.tamano == 0 {
                 continue;
             }
-            let cab = o.rango(&items[i].obj.clave, "0-15")?;
+            intentos += 1;
+            let cab = match o.rango(&items[i].obj.clave, "0-15") {
+                Ok(c) => c,
+                Err(e) => {
+                    fallos += 1;
+                    avisos.push(format!(
+                        "`{}` no se deja leer, y su tipo no se confirma: {e}",
+                        items[i].obj.clave
+                    ));
+                    primer_fallo.get_or_insert(e);
+                    continue;
+                }
+            };
             let (c, aviso) = medio::confirmar(ext, &cab);
             if let Some(a) = aviso {
                 avisos.push(format!("`{}`: {a}", items[i].obj.clave));
@@ -358,6 +376,12 @@ pub fn leer(
                 items[i].clase = c;
             }
         }
+    }
+    if intentos > 0
+        && fallos == intentos
+        && let Some(e) = primer_fallo
+    {
+        return Err(e);
     }
 
     let mut nombres = Nombres::default();
@@ -799,6 +823,67 @@ mod tests {
         assert_eq!(c.tablas.len(), 1);
         assert_eq!(c.tablas[0].nombre, "ventas.ventas");
         assert_eq!(c.tablas[0].objeto.as_deref(), Some("ventas/"));
+    }
+
+    /// Un origen en el que unos ficheros no se dejan leer (sin permiso, como
+    /// en un SFTP): lo demás, como el de memoria.
+    struct ConCerrados(EnMemoria, &'static [&'static str]);
+
+    impl Origen for ConCerrados {
+        fn listar(&self, p: &str) -> Result<Vec<ore_objetos::Objeto>, String> {
+            self.0.listar(p)
+        }
+        fn rango(&self, clave: &str, r: &str) -> Result<Vec<u8>, String> {
+            if self.1.contains(&clave) {
+                return Err(format!("`{clave}`: sin permiso de lectura (SFTP 3)"));
+            }
+            self.0.rango(clave, r)
+        }
+        fn abrir(&self, c: &str, e: &str) -> Result<Box<dyn std::io::Read + '_>, String> {
+            self.0.abrir(c, e)
+        }
+        fn rango_de(&self, c: &str, r: &str, e: &str) -> Result<Vec<u8>, String> {
+            self.0.rango_de(c, r, e)
+        }
+        fn listar_versiones(&self, p: &str) -> Result<Vec<ore_objetos::Version>, String> {
+            self.0.listar_versiones(p)
+        }
+        fn huella_de(&self, c: &str, v: &str) -> Result<Option<String>, String> {
+            self.0.huella_de(c, v)
+        }
+        fn abrir_version(
+            &self,
+            c: &str,
+            v: &str,
+        ) -> Result<(Box<dyn std::io::Read + '_>, ore_objetos::Abierto), String> {
+            self.0.abrir_version(c, v)
+        }
+    }
+
+    /// ⭐ ADR 0061 O4·4 · Un fichero que no se deja leer es un aviso, no el fin
+    /// del catálogo; si no se deja leer ninguno, sí se falla (falta permiso).
+    #[test]
+    fn un_fichero_que_no_se_deja_leer_no_tumba_el_catalogo() {
+        let pares = [
+            ("docs/a.pdf", b"%PDF-1.4\n% a\n".to_vec()),
+            ("docs/cerrado.pdf", b"%PDF-1.4\n% b\n".to_vec()),
+            ("ventas/v.csv", b"id,n\n1,2\n".to_vec()),
+        ];
+        let o = ConCerrados(EnMemoria::con(&pares), &["docs/cerrado.pdf"]);
+        let mut avisos = Vec::new();
+        let c = leer(&o, "f", "", &mut avisos).expect("se cataloga igual");
+        assert_eq!((c.tablas.len(), c.objetos.len()), (1, 1), "{c:?}");
+        assert!(
+            avisos
+                .iter()
+                .any(|a| a.contains("docs/cerrado.pdf") && a.contains("SFTP 3")),
+            "{avisos:?}"
+        );
+        let todos = ConCerrados(
+            EnMemoria::con(&pares),
+            &["docs/a.pdf", "docs/cerrado.pdf", "ventas/v.csv"],
+        );
+        assert!(leer(&todos, "f", "", &mut Vec::new()).is_err());
     }
 
     #[test]

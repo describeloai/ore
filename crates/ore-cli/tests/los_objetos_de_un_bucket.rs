@@ -44,6 +44,11 @@ const ELEGIDOS: [&str; 4] = [
 /// copia como lo deja ore-serve al crear una estándar, y dos bases que eligen
 /// lo mismo: una foránea y una estándar.
 fn arbol(nombre: &str) -> (PathBuf, String) {
+    arbol_de(nombre, "s3")
+}
+
+/// El mismo árbol, con la fuente declarada de otro tipo.
+fn arbol_de(nombre: &str, tipo: &str) -> (PathBuf, String) {
     let dir = std::env::temp_dir().join(format!("ore-bucket-{}-{nombre}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -51,7 +56,7 @@ fn arbol(nombre: &str) -> (PathBuf, String) {
     let manifiesto = dir.join("ontology.config.yaml");
     let mut m = std::fs::read_to_string(&manifiesto).unwrap();
     m.push_str(&format!(
-        "\ndatasources:\n  - {{ name: {FUENTE}, type: s3, connectionEnv: S3_VENTAS_URL }}\n"
+        "\ndatasources:\n  - {{ name: {FUENTE}, type: {tipo}, connectionEnv: S3_VENTAS_URL }}\n"
     ));
     std::fs::write(&manifiesto, m).unwrap();
     std::fs::write(
@@ -192,6 +197,24 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
     let (c, v) = ore(&dir, &["validate", "."]);
     assert_eq!(c, Some(0), "{v}");
     assert!(!v.contains("error["), "{v}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ⭐ ADR 0061 O4·4 · **De una fuente que no versiona (un SFTP), la foránea
+/// mantiene sus colecciones**: exponer el `ObjectTable` sería servirlo en
+/// vivo —una colección virtual, que un SFTP no puede dar (D-O1)—, así que la
+/// base escribe las suyas, sin `virtual`, desde el puntero de la fuente.
+#[test]
+fn de_un_sftp_la_foranea_mantiene_sus_colecciones() {
+    let (dir, _) = arbol_de("sftp", "sftp");
+    let f = leer(&dir, "fdb/nueva_carpeta/collections/fotos.yaml");
+    assert!(
+        !f.contains("virtual")
+            && f.contains("from: { objectTable: s3_ventas.nueva_carpeta.fotos }"),
+        "{f}"
+    );
+    let m = leer(&dir, "fdb/package.yaml");
+    assert!(!m.contains("include"), "la foránea no expone: {m}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

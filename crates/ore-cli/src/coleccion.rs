@@ -371,6 +371,11 @@ pub fn mantenidas(pkg: &Package) -> Vec<&Loaded> {
 /// sabe del tipo y no preguntando al lector, porque esto se decide sin red.
 const SIN_VERSIONES: &[&str] = &["sftp"];
 
+/// Si un tipo de fuente no fija nada: sus colecciones, sólo mantenidas.
+pub(crate) fn sin_versiones(tipo: &str) -> bool {
+    SIN_VERSIONES.contains(&tipo)
+}
+
 pub fn es_virtual(d: &Loaded) -> bool {
     d.section("virtual").and_then(|v| v.as_str()) == Some("true")
 }
@@ -741,7 +746,7 @@ pub fn una(
         .to_string();
     if virtual_
         && let Ok((tipo, _)) = lector::declaracion(raiz, &datasource)
-        && SIN_VERSIONES.contains(&tipo.as_str())
+        && sin_versiones(&tipo)
     {
         return Err(format!(
             "`{qn}` es virtual sobre `{datasource}` ({tipo}), que no versiona: lo que cambie en el \
