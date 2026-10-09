@@ -17,6 +17,10 @@
 #      datasource → connectionEnv) y su credencial, del custodio; sin custodio,
 #      503 y nada llega a ore-medios (0049 B3·3)
 #   8  content de una mantenida → 307 con Location a donde ore-medios dijo
+#   9  list con as_of de antes (H1): el metadata_location de esa transacción,
+#      de la historia del puntero, y el de hoy en `actual`
+#  10  as_of que la colección no tuvo → 404 sin preguntar a ore-medios; el de
+#      hoy, sin `actual`; uno que no es una transacción → 422
 #
 # Lo de verdad —el índice sobre el lago y la firma— se mide en vivo (B2·4).
 set -u
@@ -52,9 +56,17 @@ EOF
 cat > "$TMP/arbol/datasets/legal/archivo/fotos.json" <<'EOF'
 {"dataset":"colecciones/legal/archivo/fotos","metadata_location":"gs://lago/ore/v2/colecciones/legal/archivo/fotos/metadata/00001-y.metadata.json","transaccion":"1"}
 EOF
+# el puntero de contratos con historia (H1): la transacción 2 y luego la 3
+G() { git -C "$TMP/arbol" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null; }
+G init --quiet
+cat > "$TMP/arbol/datasets/legal/archivo/contratos.json" <<'EOF'
+{"dataset":"colecciones/legal/archivo/contratos","metadata_location":"gs://lago/ore/v2/colecciones/legal/archivo/contratos/metadata/00002-w.metadata.json","transaccion":"2"}
+EOF
+G add -A; G commit --quiet -m "tx 2"
 cat > "$TMP/arbol/datasets/legal/archivo/contratos.json" <<'EOF'
 {"dataset":"colecciones/legal/archivo/contratos","metadata_location":"gs://lago/ore/v2/colecciones/legal/archivo/contratos/metadata/00003-x.metadata.json","transaccion":"3"}
 EOF
+G add -A; G commit --quiet -m "tx 3"
 
 # ── el ore-medios de mentira: guarda la petición y contesta lo suyo
 cat > "$TMP/falso.py" <<'EOF'
@@ -76,6 +88,8 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 EOF
 "$PY" "$TMP/falso.py" "$FALSO" "$TMP/pedidas.jsonl" &
 FAL=$!
+# que conteste antes de empezar (un POST que no es una ruta suya no lo tumba)
+for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$FALSO/" && break; sleep 0.25; done
 
 arrancar() { # [ORE_MEDIOS_DIRECCION]
   ORE_MEDIOS_DIRECCION="${1:-}" "$SERVE" --repo "$TMP/arbol" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
@@ -143,6 +157,24 @@ if [ "$c" = 307 ] && grep -qi '^location: https://lago/firmada' "$TMP/h.txt" && 
    && echo "$u" | grep -q '"path": "a.jpg"' && echo "$u" | grep -q '"ttl_s": 300' && grep -Eq '"digest": ?null' "$TMP/r.json"; then
   dice "8 · content de una mantenida: 307 a donde ore-medios dijo, con el cuerpo tal cual"
 else falla "8 · content mantenida ($c): $(cat "$TMP/h.txt" "$TMP/r.json") · $u"; fi
+
+c=$(pide GET "/media/legal/archivo/contratos/items?as_of=2&limit=5")
+u=$(ultima)
+if [ "$c" = 200 ] && echo "$u" | grep -q '"ruta": "/indice/items"' && echo "$u" | grep -q '00002-w.metadata.json' \
+   && echo "$u" | grep -q '"transaccion": "2"' && echo "$u" | grep -q '"actual": "gs://lago/.*00003-x.metadata.json"'; then
+  dice "9 · list con as_of=2: el metadata_location de la 2, de la historia del puntero, y el de hoy en actual"
+else falla "9 · as_of ($c): $(cat "$TMP/r.json") · $u"; fi
+
+antes=$(wc -l < "$TMP/pedidas.jsonl")
+c=$(pide GET "/media/legal/archivo/contratos/items?as_of=7")
+despues=$(wc -l < "$TMP/pedidas.jsonl")
+c2=$(pide GET "/media/legal/archivo/contratos/items?as_of=3")
+u=$(ultima)
+c3=$(pide GET "/media/legal/archivo/contratos/items?as_of=a%2Fb")
+if [ "$c" = 404 ] && [ "$antes" = "$despues" ] && [ "$c2" = 200 ] && echo "$u" | grep -q '00003-x' \
+   && ! echo "$u" | grep -q '"actual"' && [ "$c3" = 422 ]; then
+  dice "10 · as_of que no tuvo: 404 sin preguntar; el de hoy, sin actual; uno que no es transacción, 422"
+else falla "10 · as_of ($c, $c2, $c3): $(cat "$TMP/r.json") · $u"; fi
 
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 arrancar ""

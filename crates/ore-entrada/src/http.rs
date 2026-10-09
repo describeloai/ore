@@ -132,9 +132,13 @@ pub const CONSULTA_ADMITIDA: &[&str] = &[
 /// Y lo de la media (0049 B2·2, `docs/media.md`): `prefix` y `path` son rutas
 /// de un ítem —con barras, puntos y espacios—, `cursor` el opaco que da `list`
 /// (hexadecimal, largo), `digest` un `sha256:…` o una huella, `version` la del
-/// origen y `limit` un número. Llegan **decodificados** y se niegan con
-/// caracteres de control o más de 2048 bytes.
-pub const CONSULTA_DE_MEDIA: &[&str] = &["prefix", "path", "cursor", "digest", "version", "limit"];
+/// origen, `limit` un número y `as_of` una transacción (0049 H1: aquí y no en
+/// lo de arriba, para que una mal escrita llegue y se diga, no se pierda y se
+/// lea la de hoy). Llegan **decodificados** y se niegan con caracteres de
+/// control o más de 2048 bytes.
+pub const CONSULTA_DE_MEDIA: &[&str] = &[
+    "prefix", "path", "cursor", "digest", "version", "limit", "as_of",
+];
 
 /// `a=b&c=d` → lo admitido, con su valor decodificado y validado: letras,
 /// dígitos, `_` y `-`, hasta 64; lo de la media, con su propia regla.

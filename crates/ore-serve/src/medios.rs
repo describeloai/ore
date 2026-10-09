@@ -3,7 +3,7 @@
 //!
 //! | ruta | operación | qué hace aquí |
 //! |---|---|---|
-//! | `GET /media/{b}/{s}/{c}/items?prefix=&cursor=&limit=&estado=` | `list` | |
+//! | `GET /media/{b}/{s}/{c}/items?prefix=&as_of=&cursor=&limit=&estado=` | `list` | `as_of`, por la historia del puntero (H1) |
 //! | `GET /media/{b}/{s}/{c}/item?path=&version=` o `?digest=` | `stat` | |
 //! | `POST /media/{b}/{s}/{c}/urls` `{items, ttl_s}` | `url` | y lo anota en la actividad |
 //! | `GET /media/{b}/{s}/{c}/content?path=&version=` o `?digest=` | `open` | 307 a donde están los bytes (B3·3) |
@@ -237,6 +237,171 @@ pub(crate) fn fijar_en(raiz: &Path, inputs: &[String]) -> BTreeMap<String, Fijad
     fijadas
 }
 
+/// **Lo que una colección era en la transacción `n`** (0049 H1): el
+/// `metadata_location` que su puntero tenía en el commit que la confirmó. El
+/// puntero es un fichero del árbol y cada transacción, un commit suyo: la
+/// historia de git ya es el registro. Se busca desde la cabeza del árbol, o
+/// desde la de `main` si la rama hereda el puntero de `main` (0044 C.2 ③, lo
+/// dice [`crate::git::AL_DIA`]); en la ruta de hoy y en la de antes. Dos
+/// procesos de git, los tenga la colección como los tenga: el `log` y un
+/// `cat-file --batch` con todas las versiones.
+///
+/// `Ok(None)`: la colección no tuvo esa transacción. `Err`: el árbol no tiene
+/// historia (un directorio sin git).
+pub(crate) fn metadata_en_la_transaccion(
+    raiz: &Path,
+    coleccion: &str,
+    n: &str,
+) -> Result<Option<String>, String> {
+    let dir = raiz.join(ore_core::punteros::CARPETA);
+    let rel = |p: Option<std::path::PathBuf>| {
+        p.and_then(|p| {
+            p.strip_prefix(raiz)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+        })
+    };
+    let rutas: Vec<String> = [
+        rel(ore_core::punteros::ruta_en(&dir, coleccion)),
+        rel(ore_core::punteros::legado_en(&dir, coleccion)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let Some(primera) = rutas.first() else {
+        return Ok(None);
+    };
+    let desde = desde_donde(raiz, primera);
+    let mut args = vec!["log", "--format=%H", desde.as_str(), "--"];
+    args.extend(rutas.iter().map(String::as_str));
+    let Some(log) = crate::documentos::git(raiz, &args) else {
+        return Err("el árbol no tiene historia, y sin ella no hay transacciones de antes".into());
+    };
+    // `<commit>:./<ruta>`: relativa a la raíz del árbol, no a la del repositorio.
+    let pedidos: String = log
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .flat_map(|h| rutas.iter().map(move |r| format!("{h}:./{r}\n")))
+        .collect();
+    if pedidos.is_empty() {
+        return Ok(None);
+    }
+    for texto in versiones(raiz, &pedidos)? {
+        let Ok(p) = ore_core::parse::parse(texto.trim()) else {
+            continue;
+        };
+        if campo(&p, "transaccion").as_deref() == Some(n) {
+            return Ok(campo(&p, "metadata_location").filter(|m| !m.is_empty()));
+        }
+    }
+    Ok(None)
+}
+
+/// **Qué transacción se lee** (0049 H1): la de `(ml, tx)` —la fijada dentro de
+/// un transform, la del puntero fuera—, o la de `as_of` si es otra, por la
+/// historia del puntero; en ese caso, con la de hoy (`Some(actual)`). Dentro de
+/// un transform, `as_of` no cambia la fijada: el linaje del Build dice esa.
+fn la_que_se_lee(
+    raiz: &Path,
+    coleccion: &str,
+    as_of: Option<&str>,
+    fijada: Option<&Fijada>,
+    (ml, tx): (String, String),
+) -> Result<(String, String, Option<String>), Respuesta> {
+    let Some(n) = as_of.filter(|n| *n != tx) else {
+        return Ok((ml, tx, None));
+    };
+    if let Some(f) = fijada {
+        return Err(problema(
+            422,
+            "media/peticion",
+            format!(
+                "un transform lee `{coleccion}` en la transacción que fijó al declararla (`{}`): \
+                 `as_of={n}` no la cambia",
+                f.transaccion
+            ),
+        ));
+    }
+    match metadata_en_la_transaccion(raiz, coleccion, n) {
+        Ok(Some(m)) => Ok((m, n.to_string(), Some(ml))),
+        Ok(None) => Err(problema(
+            404,
+            "media/no-existe",
+            format!("`{coleccion}` no tuvo nunca la transacción `{n}`"),
+        )),
+        Err(e) => Err(problema(
+            404,
+            "media/no-existe",
+            format!("la transacción `{n}` de `{coleccion}` no se puede buscar: {e}"),
+        )),
+    }
+}
+
+/// Desde dónde se busca la historia de un puntero: la cabeza de `main` si la
+/// rama lo lee de `main` al día, y si no la del árbol.
+fn desde_donde(raiz: &Path, rel: &str) -> String {
+    let al_dia = std::fs::read_to_string(raiz.join(crate::git::AL_DIA))
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok());
+    if let Some(a) = al_dia
+        && a.get("rutas").and_then(|(_, r)| campo(r, rel)).as_deref() == Some("main")
+        && let Some(m) = campo(&a, "main").filter(|m| !m.is_empty())
+    {
+        return m;
+    }
+    "HEAD".into()
+}
+
+/// Los textos de `<commit>:<ruta>` de una vez (`git cat-file --batch`), en el
+/// orden pedido; los que no existen en ese commit se saltan.
+fn versiones(raiz: &Path, pedidos: &str) -> Result<Vec<String>, String> {
+    use std::io::Write;
+    let mut hijo = std::process::Command::new("git")
+        .current_dir(raiz)
+        .args(["cat-file", "--batch"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("git no arrancó: {e}"))?;
+    let mut entrada = hijo.stdin.take().ok_or("git sin entrada")?;
+    let pedidos = pedidos.to_string();
+    // Escribir en otro hilo: con muchas versiones, la salida llena su tubo
+    // antes de que acabe la entrada.
+    let escritor = std::thread::spawn(move || {
+        let _ = entrada.write_all(pedidos.as_bytes());
+    });
+    let salida = hijo
+        .wait_with_output()
+        .map_err(|e| format!("git cat-file: {e}"))?;
+    let _ = escritor.join();
+    let b = salida.stdout;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let Some(fin) = b[i..].iter().position(|&c| c == b'\n') else {
+            break;
+        };
+        let cabecera = String::from_utf8_lossy(&b[i..i + fin]).into_owned();
+        i += fin + 1;
+        if cabecera.ends_with(" missing") || cabecera.ends_with(" ambiguous") {
+            continue;
+        }
+        let Some(largo) = cabecera
+            .rsplit(' ')
+            .next()
+            .and_then(|l| l.parse::<usize>().ok())
+        else {
+            return Err(format!("git cat-file dijo `{cabecera}`"));
+        };
+        let hasta = (i + largo).min(b.len());
+        out.push(String::from_utf8_lossy(&b[i..hasta]).into_owned());
+        // el cuerpo y su salto de línea
+        i = hasta + 1;
+    }
+    Ok(out)
+}
+
 fn vida_hasta(caduca_ms: Option<u64>, ahora_ms: u64) -> u64 {
     let vida = VIDA_DE_UN_PERMISO;
     match caduca_ms {
@@ -339,6 +504,27 @@ impl Servidor {
                 );
             }
         };
+        // 0049 H1 · `as_of`: lo que la colección era en esa transacción.
+        let as_of = match operacion {
+            "items" | "derivations" => p
+                .consulta
+                .get("as_of")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            _ => None,
+        };
+        if let Some(n) = &as_of
+            && (n.len() > 64
+                || !n
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        {
+            return problema(
+                422,
+                "media/peticion",
+                "`as_of` es una transacción de la colección, como la da `list`",
+            );
+        }
         let cuerpo_pedido = match operacion {
             "urls" => match ore_core::parse::parse(&p.cuerpo) {
                 Ok(n) if !p.cuerpo.trim().is_empty() => Some(n),
@@ -377,6 +563,21 @@ impl Servidor {
             let (ml, tx) = match &fijada {
                 Some(f) => (f.metadata_location.clone(), f.transaccion.clone()),
                 None => (de_puntero("metadata_location"), de_puntero("transaccion")),
+            };
+            let (ml, tx) = match la_que_se_lee(
+                raiz,
+                &coleccion,
+                as_of.as_deref(),
+                fijada.as_ref(),
+                (ml, tx),
+            ) {
+                Ok((ml, tx, None)) => (ml, tx),
+                Ok((ml, tx, Some(actual))) => {
+                    // Para que `ore-medios` distinga lo recogido de un lago roto.
+                    pedido.insert("actual".into(), Json::s(actual));
+                    (ml, tx)
+                }
+                Err(r) => return r,
             };
             pedido.insert("metadata_location".into(), Json::s(ml));
             pedido.insert("transaccion".into(), Json::s(tx));
@@ -721,6 +922,111 @@ mod pruebas {
             "lo que no es una colección no se fija aquí"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0049 H1: la transacción de antes sale de la historia del puntero; en una
+    /// rama que lo hereda de `main`, de la de `main`.
+    #[test]
+    fn as_of_sale_de_la_historia_del_puntero() {
+        let d = std::env::temp_dir().join(format!("ore-medios-as-of-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("datasets/legal/archivo")).unwrap();
+        let git = |args: &[&str]| {
+            let s = std::process::Command::new("git")
+                .current_dir(&d)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(s.status.success(), "git {args:?}: {s:?}");
+            String::from_utf8_lossy(&s.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet"]);
+        let puntero = d.join("datasets/legal/archivo/contratos.json");
+        let transaccion = |n: u32| {
+            std::fs::write(
+                &puntero,
+                format!(
+                    "{{\"metadata_location\":\"gs://lago/m/0000{n}.json\",\"transaccion\":{n}}}"
+                ),
+            )
+            .unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "--quiet", "-m", &format!("tx {n}")]);
+            git(&["rev-parse", "HEAD"])
+        };
+        let c1 = transaccion(1);
+        std::fs::write(d.join("otro.txt"), "nada").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "--quiet", "-m", "otra cosa"]);
+        transaccion(2);
+        let c3 = transaccion(3);
+        let col = "legal.archivo.contratos";
+        let en = |n: &str| metadata_en_la_transaccion(&d, col, n);
+        assert_eq!(en("1"), Ok(Some("gs://lago/m/00001.json".into())));
+        assert_eq!(en("2"), Ok(Some("gs://lago/m/00002.json".into())));
+        assert_eq!(en("3"), Ok(Some("gs://lago/m/00003.json".into())));
+        assert_eq!(en("9"), Ok(None), "la que no tuvo");
+        assert_eq!(
+            metadata_en_la_transaccion(&d, "legal.archivo.nada", "1"),
+            Ok(None)
+        );
+
+        // Una rama que salió en la 1 y hereda el puntero de `main` (al día: la 3).
+        git(&["checkout", "--quiet", "--detach", &c1]);
+        assert_eq!(en("3"), Ok(None), "desde la cabeza de la rama no está");
+        std::fs::write(
+            d.join(crate::git::AL_DIA),
+            format!(
+                "{{\"main\":\"{c3}\",\"base\":\"{c1}\",\"rutas\":{{\"datasets/legal/archivo/contratos.json\":\"main\"}}}}"
+            ),
+        )
+        .unwrap();
+        assert_eq!(en("3"), Ok(Some("gs://lago/m/00003.json".into())));
+
+        // Qué se lee: la de antes con la de hoy al lado; dentro de un
+        // transform, la fijada y nada más (D-H1).
+        let hoy = || ("gs://lago/m/00001.json".to_string(), "1".to_string());
+        let lee = |as_of, fijada| la_que_se_lee(&d, col, as_of, fijada, hoy());
+        assert_eq!(lee(None, None).ok(), Some((hoy().0, hoy().1, None)));
+        assert_eq!(lee(Some("1"), None).ok(), Some((hoy().0, hoy().1, None)));
+        assert_eq!(
+            lee(Some("3"), None).ok(),
+            Some(("gs://lago/m/00003.json".into(), "3".into(), Some(hoy().0)))
+        );
+        assert_eq!(lee(Some("9"), None).map(|_| ()).unwrap_err().codigo, 404);
+        let f = Fijada {
+            metadata_location: hoy().0,
+            transaccion: "1".into(),
+        };
+        assert_eq!(
+            lee(Some("1"), Some(&f)).ok(),
+            Some((hoy().0, hoy().1, None))
+        );
+        let r = lee(Some("3"), Some(&f)).map(|_| ()).unwrap_err();
+        assert_eq!(r.codigo, 422);
+        assert!(
+            r.cuerpo.jcs().contains("fijó al declararla"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+
+        // Sin historia, se dice.
+        let sin = std::env::temp_dir().join(format!("ore-medios-sin-git-{}", std::process::id()));
+        std::fs::create_dir_all(sin.join("datasets/legal/archivo")).unwrap();
+        // Fuera de cualquier repositorio: `git` no encuentra uno.
+        if crate::documentos::git(&sin, &["rev-parse", "--git-dir"]).is_none() {
+            assert!(metadata_en_la_transaccion(&sin, col, "1").is_err());
+        }
+        let _ = std::fs::remove_dir_all(&sin);
     }
 
     #[test]

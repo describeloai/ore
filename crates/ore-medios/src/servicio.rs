@@ -60,6 +60,14 @@ pub trait Listados: Send + Sync {
         let _ = (cabecera, dataset, base, filas);
         Err("este lago no escribe".into())
     }
+
+    /// **Si una transacción de antes sigue en la tabla** (0049 H1): el snapshot
+    /// de `historica` entre los de `actual`. `Ok(false)`: la retención lo
+    /// recogió; `Err`: el lago no contesta. Por defecto, sigue.
+    fn sigue(&self, dataset: &str, historica: &str, actual: &str) -> Result<bool, String> {
+        let _ = (dataset, historica, actual);
+        Ok(true)
+    }
 }
 
 impl Listados for Lago {
@@ -87,6 +95,31 @@ impl Listados for Lago {
     ) -> Result<Vec<arrow_array::RecordBatch>, String> {
         let t = self.abrir(metadata_location, dataset)?;
         Lago::lotes(self, &t)
+    }
+
+    fn sigue(&self, dataset: &str, historica: &str, actual: &str) -> Result<bool, String> {
+        let hoy = self.abrir(actual, dataset)?;
+        let meta = hoy.metadata();
+        match self.abrir(historica, dataset) {
+            // Su `metadata.json` está: ¿su snapshot sigue entre los de hoy?
+            Ok(t) => Ok(t
+                .metadata()
+                .current_snapshot_id()
+                .is_none_or(|id| meta.snapshots().any(|s| s.snapshot_id() == id))),
+            // No se abre: recogido si la tabla ya no lo nombra; si lo nombra, el
+            // lago falla.
+            Err(e) => {
+                if meta
+                    .metadata_log()
+                    .iter()
+                    .any(|l| l.metadata_file == historica)
+                {
+                    Err(e)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
     }
 }
 
@@ -136,6 +169,11 @@ pub(crate) struct Pedido<'a> {
     pub virtual_: bool,
     pub metadata_location: &'a str,
     pub transaccion: &'a str,
+}
+
+/// El dataset del listado de una colección, en el lago.
+fn dataset_de(coleccion: &str) -> String {
+    format!("colecciones/{}", coleccion.replace('.', "/"))
 }
 
 fn texto<'a>(n: &'a Node, k: &str) -> Option<&'a str> {
@@ -284,7 +322,7 @@ impl Servicio {
                 };
                 let ix = match self.indice(&ped) {
                     Ok(i) => i,
-                    Err(e) => return problema(502, "media/origen", e),
+                    Err(e) => return self.no_se_carga(&n, &ped, e),
                 };
                 match ruta {
                     "/indice/items" => self.items(&ix, &n),
@@ -302,8 +340,30 @@ impl Servicio {
         }
     }
 
+    /// Un índice que no se carga: el lago que falla (`502`) o, si se pidió una
+    /// transacción de antes (`ore-serve` manda la de hoy en `actual`), la
+    /// retención que ya la recogió (`404`, 0049 H1).
+    fn no_se_carga(&self, n: &Node, p: &Pedido<'_>, e: String) -> Respuesta {
+        if let Some(actual) = texto(n, "actual")
+            && actual != p.metadata_location
+            && let Ok(false) =
+                self.listados
+                    .sigue(&dataset_de(p.coleccion), p.metadata_location, actual)
+        {
+            return problema(
+                404,
+                "media/no-existe",
+                format!(
+                    "la transacción `{}` de `{}` ya no se puede leer: la retención de la colección la recogió",
+                    p.transaccion, p.coleccion
+                ),
+            );
+        }
+        problema(502, "media/origen", e)
+    }
+
     pub(crate) fn indice(&self, p: &Pedido<'_>) -> Result<Arc<Indice>, String> {
-        let dataset = format!("colecciones/{}", p.coleccion.replace('.', "/"));
+        let dataset = dataset_de(p.coleccion);
         self.indices.obtener(p.metadata_location, || {
             let lotes = self.listados.lotes(&dataset, p.metadata_location)?;
             Indice::de_lotes(p.coleccion, p.virtual_, p.transaccion, &lotes)
@@ -667,7 +727,7 @@ mod pruebas {
     impl Listados for Contador {
         fn lotes(&self, dataset: &str, ml: &str) -> Result<Vec<arrow_array::RecordBatch>, String> {
             assert_eq!(dataset, "colecciones/legal/archivo/contratos");
-            if ml == "rota" {
+            if ml == "rota" || ml == "recogida" {
                 return Err("no se pudo leer".into());
             }
             self.0.fetch_add(1, Ordering::Relaxed);
@@ -678,6 +738,36 @@ mod pruebas {
                 ("docs/sin.pdf", "v1", "crc64nvme:S", "actual", None),
             ])])
         }
+
+        fn sigue(&self, _: &str, historica: &str, _: &str) -> Result<bool, String> {
+            Ok(historica != "recogida")
+        }
+    }
+
+    /// 0049 H1: una transacción de antes que la retención recogió es `404`; un
+    /// lago que no contesta sigue siendo `502`, con o sin `actual`.
+    #[test]
+    fn lo_recogido_por_la_retencion_es_404_y_un_lago_roto_502() {
+        let (s, _) = servicio();
+        let pide = |ml: &str, actual: &str| {
+            pedir(
+                &s,
+                "/indice/items",
+                &format!(
+                    r#"{{"coleccion":"legal.archivo.contratos","metadata_location":"{ml}","transaccion":"2"{actual}}}"#
+                ),
+            )
+        };
+        let (c, b) = pide("recogida", r#","actual":"m7""#);
+        assert_eq!(c, 404, "{b}");
+        assert!(
+            b.contains("media/no-existe") && b.contains("retención"),
+            "{b}"
+        );
+        let (c, b) = pide("rota", r#","actual":"m7""#);
+        assert_eq!(c, 502, "{b}");
+        let (c, b) = pide("recogida", "");
+        assert_eq!(c, 502, "sin `actual` no es una de antes: {b}");
     }
 
     fn servicio() -> (Servicio, Arc<AtomicUsize>) {
