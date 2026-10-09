@@ -1654,3 +1654,66 @@ fn el_pool_precalentado_despierta_sin_arrancar_y_un_computo_usado_no_vuelve() {
         .get(0);
     assert_eq!(en_pool, 0, "un cómputo usado no vuelve al pool");
 }
+
+#[test]
+fn sin_dormir_se_apunta_la_actividad_y_no_duerme_nadie() {
+    // P6·7: `--dormir` apagado (hasta que el proxy esté desplegado) = sólo
+    // `apuntar_actividades`; `mandar_a_dormir` es lo que lo enciende.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas","dueno":"user:ana"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let ep = "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal";
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    let vm = campo(&r, &["vm"]);
+    pide(
+        &s,
+        "a",
+        "POST",
+        &format!("{ep}/ajustes"),
+        r#"{"dormir_tras": "60"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    // Quieto desde hace una hora, y su compute_ctl dice lo mismo.
+    almacen
+        .actividad
+        .lock()
+        .unwrap()
+        .insert(vm.clone(), "2001-01-01T00:00:00Z".into());
+    otra_conexion()
+        .execute(
+            "update plano.endpoint set ultima_actividad = '2000-01-01T00:00:00Z'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        ore_postgres::reconciliador::apuntar_actividades(&mut c2, &almacen).unwrap(),
+        1
+    );
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    assert!(
+        r.contains(r#""observado":"listo""#) && r.contains("2001-01-01"),
+        "despierto, y con la actividad apuntada: {r}"
+    );
+    let ops: i64 = otra_conexion()
+        .query_one(
+            "select count(*) from plano.operacion where tipo = 'dormir-endpoint'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(ops, 0);
+    // Encendido: el mismo endpoint, a dormir.
+    assert_eq!(
+        ore_postgres::reconciliador::mandar_a_dormir(&mut c2).unwrap(),
+        1
+    );
+}

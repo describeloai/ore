@@ -1269,8 +1269,8 @@ El backend va detrás de una *feature* de Cargo (`laboratorio`): el binario de p
 | **P6·3 · Dormir** | pasado `dormir_tras` sin actividad (`last_active`), `/terminate` y fuera el cómputo; el endpoint, `dormido` | duerme a su hora; con una consulta en curso no; dormido no queda contenedor |
 | **P6·4 · Despertar al conectar** | `wake_compute` sobre uno dormido lo enciende y espera a que esté listo, con tope; varias conexiones a la vez, un solo despertar | `psql`, pool, HTTP y WebSocket entran a uno dormido; el cliente no ve más error que la espera |
 | **P6·5 · El pool precalentado** | N cómputos vacíos; despertar toma uno, le manda `/configure` y repone el pool; un cómputo que sirvió a un tenant se destruye, nunca vuelve al pool | despertar en p50 y p95, en frío frente a desde el pool, con el arranque de una VM emulado |
-| **P6·6 · La consola** | *Active* o *Idle*; los límites, editables (junto a la pestaña Settings de P5·6) | en modo banco |
-| **P6·7 · ADR** | lo medido y lo que solo se puede probar en producción | — |
+| **P6·6 · La consola** | *Active* o *Idle*; los límites, editables (junto a la pestaña Settings de P5·6) | **deuda hasta que vuelva Google** (2026-10-09), con Settings |
+| **P6·7 · Cierre** | el interruptor `--dormir`; lo medido; lo que solo se puede probar en producción y en qué orden | hecho (abajo) |
 
 #### P6·0 · El contrato real, leído en el fork (2026-10-09)
 
@@ -1412,3 +1412,68 @@ El tope es de 120 s (`PLAZO_DESPERTAR`; una VM en frío tarda ~35 s); solo despu
 Los 3,9 s son de un cómputo de mentira: Postgres arranca sobre un directorio local. Con una VM real, `/configure` hace además el *basebackup* desde el pageserver y `sync_safekeepers` (5,8 s medidos en P3). El objetivo de verdad se fija con la primera medida en producción.
 
 La regresión entera (P5·1, P5·4, P5·5, P5·5b, P5·6, P6·2, P6·3, P6·4) sigue en verde sobre el pool.
+
+#### P6·7 · Cierre en el laboratorio (2026-10-09)
+
+**P6 queda cerrado en el laboratorio**, como P5: dormir, despertar y el pool, hechos y medidos. La consola (P6·6) queda como deuda hasta que vuelva Google, junto con la pestaña Settings de P5·6.
+
+**El interruptor `--dormir`.** El código de P6 ya está en `main`, y llegará a producción en cuanto el CI publique la imagen. Sin el interruptor:
+- la migración 006 da `dormir_tras = 300` a todos los endpoints que ya existen, `postgre` incluido;
+- a los 5 minutos sin consultas, se dormirían;
+- a uno dormido solo lo despierta una conexión que entra por el proxy (`wake_compute`), y el proxy (P5·3) se despliega después. Por la overlay se entra directo al cómputo y no despierta nada.
+
+Por eso **dormir va apagado por defecto**:
+- sin `--dormir`, el reconciliador apunta la actividad (`apuntar_actividades`) pero no duerme a nadie;
+- con `--dormir`, además manda a dormir (`mandar_a_dormir`); `vigilar` es las dos cosas;
+- el pool ya nacía apagado (`--pool-computos 0`).
+
+Medido en `lab/p67.sh` (el compose lo trae encendido, `DORMIR=` lo apaga):
+- sin `--dormir`, con `dormir_tras` 60 y 80 s quieto: sigue despierto, sin ninguna operación `dormir-endpoint`, y con la actividad apuntada;
+- al encenderlo, el mismo endpoint duerme a los 8 s.
+
+En el contrato, lo mismo sin tiempos (13/13). P6·3 sigue en verde con el interruptor encendido.
+
+**Un hallazgo de la prueba.** Una consulta más corta que el muestreo de `compute_ctl` (500 ms, P6·0), en una sesión que se cierra enseguida, no deja rastro: `last_active` mira `pg_stat_activity`, y la sesión ya no está. El `compute_ctl` falso lo copia, y así falló la primera versión de `p67.sh` con un `select 1`. Es el caso del driver por HTTP: muchas consultas cortas, cada una con su sesión. Un endpoint con ese tráfico **podría dormirse con clientes**, y despertar en cada consulta. Se comprueba en producción con el `compute_ctl` real (paso 2).
+
+**Lo que P6 deja hecho:**
+
+| pieza | medido en el laboratorio |
+|---|---|
+| dormir | a los 67 s con `dormir_tras` 60; con una consulta en curso no; una sesión ociosa se corta; no queda cómputo |
+| despertar | TCP 5,1 s; pool 2,4 s; HTTP 2,6 s; WebSocket 4,1 s; 20 conexiones a la vez = un despertar |
+| el pool | con una VM emulada de 35 s: en frío p50 39,5 s, desde el pool **p50 3,9 s · p95 4,2 s** |
+| la IP reutilizada | con un impostor en la IP vieja, el proxy olvida y entra en el cómputo nuevo en 2,2 s |
+| los límites | `dormir_tras`, CU y conexiones por la API; valen en el despertar siguiente |
+
+**Lo desechable**, que se borra sin tocar el producto:
+- el backend de Docker (`src/laboratorio.rs`, detrás de la *feature* `laboratorio`, que el binario de producción no lleva);
+- el `compute_ctl` falso y su imagen (`lab/computo/`);
+- el almacén de mentira (un volumen en lugar del pageserver).
+
+**Lo que el laboratorio no cubre**, y no es de P6: los datos heredados de una rama, las réplicas de lectura y el PITR. El almacén de mentira guarda un directorio por timeline.
+
+**Límites conocidos, para medir en producción:**
+- el servidor HTTP de `ore-postgres` atiende **64 conexiones a la vez** (`ore-entrada`, `CONEXIONES`). Cada `wake_compute` que espera ocupa una hasta 120 s, así que muchos despertares a la vez de proyectos distintos pueden dejar sin hueco a la API. Se mide con la VM real; si aprieta, se separa el puerto del proxy del de la API;
+- una VM del pool nace con límites genéricos (0,25–2 CU) y sin organización.
+
+**Del laboratorio a producción**, en este orden, después de la lista de P5 (con el proxy ya probado desde internet):
+
+1. **El binario, con todo apagado**: el CI publica `ore-postgres`, se aplican las migraciones 006–008 y los endpoints quedan como estaban. Hecho cuando nada duerme y `ultima_actividad` se apunta en los vivos.
+2. **Encender `--dormir`** en la malla 86. Hecho cuando:
+   - `p63.sh` contra una VM: duerme a su hora, con una consulta en curso no, y la VM desaparece;
+   - **dormido cuesta 0**: el nodo del pool `pg` se libera con el autoescalado;
+   - el `last_active` real, con pgbouncer, `cloud_admin`, la replicación y el walproposer, no despierta ni mantiene despierto a nadie por error;
+   - el `/terminate` real devuelve el LSN;
+   - un tráfico de consultas cortas por HTTP, una cada pocos segundos, cuenta como actividad (el hallazgo de `p67.sh`); si no, la actividad se apunta también desde el proxy.
+3. **Despertar desde internet** (`p64.sh` por el balanceador): `psql`, el pool, HTTP y WebSocket entran a uno dormido; el **p50/p95 en frío** de una VM de verdad.
+4. **Encender `--pool-computos N`** en la malla 86. Hecho cuando:
+   - el `compute_ctl` real vacío acepta `/configure` con la especificación de un tenant;
+   - el **p50/p95 desde el pool** (`p65.sh`), y **el objetivo se fija con esa medida**;
+   - la VM del pool ajusta sus límites de CPU y memoria a los del endpoint que la recibe;
+   - cuántas VMs del pool caben en la cuota, y N se elige con eso;
+   - una VM del pool, antes de tener tenant, está aislada (barreras 2 y 3);
+   - una VM despierta que salió del pool migra en vivo sin cortar sesiones.
+5. **El tope de 64**: muchos despertares a la vez (cuántos, se decide con la cuota) sin que la API deje de contestar.
+6. **Salud al terminar**: ningún endpoint atascado en `durmiendo` o `arrancando`, ninguna VM `pool-…` huérfana, y `p47.sh` en verde.
+
+Después llega la consola (P6·6) y, con ella, P6 cerrado del todo.

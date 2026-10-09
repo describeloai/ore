@@ -48,6 +48,7 @@ ore-postgres — el plano de control de ORE Serverless Postgres
   ore-postgres servir [--bind DIRECCION] [--iam DESTINO]
                       [--controlador DESTINO] [--safekeepers D1,D2,D3] [--llaves-almacen DIR]
                       [--llaves-proxy DIR] [--redis HOST:PUERTO] [--dominio DOMINIO]
+                      [--pool-computos N] [--dormir]
   ore-postgres especificacion --computo NOMBRE --tenant T --timeline TL [--grupo G]
   ore-postgres token-computo NOMBRE
   ore-postgres kube-prueba [NAMESPACE-AJENO…]
@@ -72,6 +73,12 @@ ore-postgres — el plano de control de ORE Serverless Postgres
   por hecho se le avisa por Redis para que olvide lo que guardaba (P5·1). Con
   `--dominio europe-west1.pg.paladio.io`, cada endpoint dice su nombre público
   (`host`, `host_pool`) para que la consola no lo invente (P5·7).
+
+  Serverless (P6): `--pool-computos N` mantiene N cómputos arrancados y vacíos
+  para que despertar sea un /configure (por defecto 0: cada despertar, en frío).
+  `--dormir` duerme a los endpoints que pasan su `dormir_tras` sin actividad; sin
+  él sólo se apunta la actividad. Se enciende con el proxy ya desplegado: a un
+  endpoint dormido sólo lo despierta una conexión que entra por el proxy.
 ";
 
 fn valor(args: &[String], que: &str) -> Option<String> {
@@ -324,8 +331,9 @@ fn arrancar_laboratorio(args: &[String], url: &str) -> bool {
     let pool: usize = valor(args, "--pool-computos")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    let dormir = args.iter().any(|a| a == "--dormir");
     eprintln!(
-        "  ⚠ LABORATORIO  cómputos en Docker ({api}, red {red}, imagen {imagen}, arranque {arranque} s, pool {pool}); almacén de mentira en {raiz}"
+        "  ⚠ LABORATORIO  cómputos en Docker ({api}, red {red}, imagen {imagen}, arranque {arranque} s, pool {pool}, dormir {dormir}); almacén de mentira en {raiz}"
     );
     reconciliador::arrancar(
         url.to_string(),
@@ -334,6 +342,7 @@ fn arrancar_laboratorio(args: &[String], url: &str) -> bool {
             &api, &red, &imagen, arranque, propia,
         )),
         pool,
+        dormir,
     );
     true
 }
@@ -433,7 +442,14 @@ fn servir(args: &[String]) -> ExitCode {
                 let pool = valor(args, "--pool-computos")
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
-                reconciliador::arrancar(url.clone(), neon.clone(), computos.clone(), pool);
+                // P6·7: dormir por inactividad, sólo con `--dormir` (apagado hasta que el proxy
+                // esté desplegado: sin él, a un dormido no lo despierta nadie).
+                let dormir = args.iter().any(|a| a == "--dormir");
+                eprintln!(
+                    "  serverless   pool {pool} · dormir por inactividad {}",
+                    if dormir { "sí" } else { "no (sin `--dormir`)" }
+                );
+                reconciliador::arrancar(url.clone(), neon.clone(), computos.clone(), pool, dormir);
                 // P4·5: los avisos del controller, con la pública del almacenamiento.
                 match llaves::Publica::del_fichero(
                     &std::path::Path::new(&llaves).join("publica.pem"),

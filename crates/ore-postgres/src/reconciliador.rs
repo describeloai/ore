@@ -38,7 +38,17 @@ const CADA_OCUPADO: Duration = Duration::from_millis(200);
 pub const PLAZO_ESPERA: f64 = 15.0 * 60.0;
 
 /// En un hilo, para siempre. Con su propia conexión: la del API no se comparte.
-pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Computos>, pool: usize) {
+///
+/// `dormir` (P6·7, `--dormir`): sin él se apunta la actividad pero no se duerme a nadie. Va apagado
+/// hasta que el proxy esté desplegado: un endpoint dormido sólo lo despierta una conexión por el
+/// proxy (`wake_compute`), y por la overlay se entra directo al cómputo.
+pub fn arrancar(
+    url: String,
+    almacen: Arc<dyn Almacen>,
+    computos: Arc<dyn Computos>,
+    pool: usize,
+    dormir: bool,
+) {
     std::thread::spawn(move || {
         let mut base: Option<Client> = None;
         let mut ultima_vigilancia = std::time::Instant::now();
@@ -65,8 +75,12 @@ pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Comput
             // P6·3: la actividad de los cómputos encendidos, y quién duerme.
             if ultima_vigilancia.elapsed() >= VIGILAR_CADA {
                 ultima_vigilancia = std::time::Instant::now();
+                let vigilancia = |c: &mut Client| match dormir {
+                    true => vigilar(c, computos.as_ref()),
+                    false => apuntar_actividades(c, computos.as_ref()).map(|_| 0),
+                };
                 if let Some(c) = base.as_mut()
-                    && let Err(e) = vigilar(c, computos.as_ref())
+                    && let Err(e) = vigilancia(c)
                 {
                     eprintln!("reconciliador · vigilar: {e}");
                 }
@@ -90,6 +104,13 @@ pub const VIGILAR_CADA: Duration = Duration::from_secs(5);
 /// Es una operación a propósito: respeta el cerco de una por proyecto (no duerme a uno que se
 /// está configurando) y queda en el historial. Devuelve cuántos mandó a dormir.
 pub fn vigilar(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
+    apuntar_actividades(c, k)?;
+    mandar_a_dormir(c)
+}
+
+/// La mitad de [`vigilar`] que sólo mira: el `last_active` de cada cómputo encendido, apuntado.
+/// Devuelve a cuántos les apuntó algo.
+pub fn apuntar_actividades(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
     let vivos = c
         .query(
             "select e.organizacion, e.proyecto, e.id, coalesce(e.computo, e.vm), e.ip_pod
@@ -98,14 +119,22 @@ pub fn vigilar(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
             &[],
         )
         .map_err(mal)?;
+    let mut apuntados = 0;
     for f in &vivos {
         let (org, p, id, vm, ip): (String, String, String, String, String) =
             (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4));
         // Si no contesta, no se apunta nada: un cómputo que no contesta no se duerme por eso.
         if let Ok(Some(t)) = k.actividad(&vm, &ip) {
             apuntar_actividad(c, &org, &p, &id, &t)?;
+            apuntados += 1;
         }
     }
+    Ok(apuntados)
+}
+
+/// La mitad de [`vigilar`] que decide: a los que llevan más de su `dormir_tras` sin actividad, una
+/// operación `dormir-endpoint`. Devuelve cuántas mandó.
+pub fn mandar_a_dormir(c: &mut Client) -> Result<usize, String> {
     let mut dormidos = 0;
     for f in c
         .query(
