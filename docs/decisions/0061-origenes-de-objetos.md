@@ -48,6 +48,15 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    si el objeto cambió, `412 media/cambiado`, nunca otros bytes. Uno que no fija nada (SFTP) sólo
    como colección **mantenida**: la versión es la copia en el lago, con su sha256.
 
+5. **D-O2 · cómo se identifica ORE ante el almacén del cliente** *(aceptada, 2026-10-09; investigación
+   §5)*: con **las cuentas de la celda**, que el cliente autoriza sobre su bucket —el estándar del
+   sector (Snowflake, BigQuery) y lo que ORE ya hace con S3—; la segunda opción, **suplantar una cuenta
+   del cliente** (credencial de una hora), para separar permisos por conexión. Sin claves largas de
+   cuenta de servicio, salvo que un cliente lo exija. Nunca una identidad compartida entre celdas: en
+   GCS no hay `ExternalId`, y lo que protege es que la identidad sea por celda. Un cliente con
+   *Domain Restricted Sharing* necesita una federación en su proyecto: límite conocido, se construye
+   cuando se pida.
+
 ## El plan
 
 Cada hito se construye y se prueba **en local**, con el emulador de cada proveedor en Docker; la
@@ -126,6 +135,16 @@ publica imágenes (Docker Hub y quay): el laboratorio usa esos dos.
 **Deuda temporal**: R2, Wasabi, B2, Spaces, IBM y OCI se conectan por la misma API que los probados,
 pero ninguno se ha medido contra una cuenta suya; cada uno pasa a «probado» cuando su URL pase
 `o1-los-que-hablan-s3.sh`.
+
+### O2 · GCS (en curso)
+
+**O2·0, medido** (`fake-gcs-server` 1.52.2, `-backend memory`): bucket con versionado, `generation`,
+`crc32c`, `md5Hash`, `versions=true` (la vieja con `timeDeleted`), leer los metadatos y los bytes de
+una generación vieja, rango `206`, generación que no existe `404`, `x-goog-hash`. **No**: la paginación
+(con `maxResults` corta sin `nextPageToken`), `ifGenerationMatch` (lo ignora), `testIamPermissions`
+(404) y el token (no lo comprueba). El driver fija por `?generation=N`, que es exacto, y la paginación,
+la firma V4 (contra los vectores de Google), la identidad y `testIamPermissions` se prueban fuera del
+emulador; contra GCS de verdad, deuda temporal mientras la cuenta de Google siga suspendida.
 
 ## Lo que no se hace aquí
 

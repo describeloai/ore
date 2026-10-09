@@ -115,3 +115,43 @@ Fuentes Graph: [delta](https://learn.microsoft.com/en-us/graph/api/driveitem-del
 - **SFTP**: fechas al segundo y zonas raras; ficheros a medio escribir (exigir estabilidad entre
   dos listados o un `.done`); sin fijar la huella del host, MITM.
 - **HDFS**: el checksum depende del tamaño de bloque; Kerberos.
+
+## 5. Cómo se identifica la plataforma ante el almacén del cliente (2026-10-09)
+
+Investigado para D-O2. **El patrón dominante** (Snowflake, Databricks, las conexiones de BigQuery,
+Fivetran; Foundry por OIDC): la identidad es **de la plataforma** y se le enseña al cliente; el
+cliente le concede lo mínimo con **su** IAM; sin claves largas (quedan de recurso: Airbyte, Foundry);
+el grano es **por tenant** (Snowflake: una cuenta de servicio, un usuario IAM, una app de Entra por
+cuenta) **o por conexión** (BigQuery, Databricks, Foundry con `sub` = el origen); y cuando el
+principal se comparte entre clientes, un **ExternalId** que genera el proveedor (Databricks, Fivetran)
+contra el *confused deputy* (que el cliente A registre el rol de B). Y un paso de **validación** con
+resultado por acción (`SYSTEM$VALIDATE_STORAGE_INTEGRATION`, el «Validate Configuration» de
+Databricks).
+
+| plataforma | GCS | S3 | Azure |
+|---|---|---|---|
+| Snowflake | una cuenta de servicio por cuenta de Snowflake, que el cliente autoriza (`DESC STORAGE INTEGRATION`) | un usuario IAM por cuenta + `ExternalId` | una app multi-tenant por cuenta, consentida por el cliente |
+| Databricks | una cuenta generada por credencial | rol del cliente que confía en su rol maestro + `ExternalId` por credencial | Access Connector (managed identity) en la suscripción del cliente |
+| BigQuery (conexión) | una cuenta de sistema por conexión | — | — |
+| Fivetran | la suya, en el formulario | cuenta compartida + `ExternalId` por cuenta | — |
+| Foundry | clave JSON, o Workload Identity Federation (OIDC, `sub` = el origen) | clave, rol con `ExternalId`, u OIDC | OIDC |
+
+Fuentes: [Snowflake GCS](https://docs.snowflake.com/en/user-guide/data-load-gcs-config),
+[Snowflake S3](https://docs.snowflake.com/en/user-guide/data-load-s3-config-storage-integration),
+[Databricks GCP](https://docs.databricks.com/gcp/en/connect/unity-catalog/cloud-storage/storage-credentials),
+[BigQuery](https://docs.cloud.google.com/bigquery/docs/create-cloud-resource-connection),
+[Fivetran GCS](https://fivetran.com/docs/connectors/files/google-cloud-storage/setup-guide),
+[Foundry OIDC](https://www.palantir.com/docs/foundry/data-connection/oidc),
+[AWS: confused deputy](https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html),
+[AWS: claves de Google](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_iam-condition-keys.html).
+
+**El S3 de ORE ya sigue el estándar** (cotejado en el código): cada celda tiene sus cuentas de
+Google, y la confianza que se le da al cliente condiciona sobre su **ID único** (`sub`, no el
+email, que AWS desaconseja) y la audiencia (`oaud`). `AssumeRoleWithWebIdentity` no admite
+`ExternalId`: lo que aísla es la identidad por celda, como el usuario IAM por cuenta de Snowflake.
+
+**Trampas**: la política *Domain Restricted Sharing* (`iam.allowedPolicyMemberDomains`) de una
+organización de Google impide conceder nada a cuentas de fuera de su dominio —la salida del sector
+es una federación de identidad en el proyecto del cliente que confíe en la plataforma, como Foundry—;
+SFTP: fijar la huella del host en la primera prueba, con confirmación (Fivetran la acepta así);
+SharePoint: `Sites.Selected` con consentimiento por sitio, nunca `Sites.Read.All`.
