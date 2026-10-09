@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM4 hechos** (leer, dentro de un `@Transform`, escribir y `apply()` en ficheros: **51/51**, y 36 del SDK); `apply()` en filas, **JM4b, hecho** (50 del SDK); JM5, pendiente. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM5 hechos** en local y en el CI (leer, dentro de un `@Transform`, escribir, `apply()` en ficheros y en filas, la galería: **51/51 de la suite y 51 del SDK**); la prueba en vivo espera a la cuenta. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -982,6 +982,26 @@ suite y 50/50 del SDK** (19 + 17 + 14). La corrida, ~36 s.
 **Anotado, y no es de JM:** `la-derivacion-en-python.py` da un fallo en su prueba 16 (B7·3,
 `/puestos/puesto-prueba`), también con el banco de antes de JM (`ace23bea`): es de la superficie de
 Python, sin tocar aquí.
+
+#### JM5 · hecho: el CI, la galería y la documentación (2026-10-09)
+
+- **En el CI**: el job `plano-el-puesto` corre `la-media-en-java.py` en **modo local** (`JM_LOCAL=1`):
+  el JDK 21 del runner, los jars de `puesto/jvm/jars.txt` bajados de Maven Central (como
+  `el-puesto.sh`) y las tres celdas generadas con `cargo test`. Una regresión de la media en la JVM
+  —la suite o el SDK— deja el CI en rojo y no despliega. Probado como lo correría el CI, en un Linux
+  limpio con otro JDK 21 (`eclipse-temurin:21-jdk-noble`): **51/51 y 51/51 del SDK, en ~67 s**, salida 0.
+  El laboratorio sigue en Docker, dentro de la imagen `puesto-jvm:1` de prod: ~37 s.
+- **La galería**: el agente de la JVM da la salida `media` (la de Python, S2) a un `Media.Item`, un
+  `Media.MediaRef` o una lista de ellos —las mismas claves, en el mismo orden; hasta 200, los demás se
+  cuentan—, como último valor de la celda o por `display(…)`; sin URL ni bytes (la consola los firma
+  al pintar). La consola ya la pinta: es la misma salida. `--comprobar` lo verifica al arrancar.
+- **La documentación**: «Media in Java» en [`docs/sdk.md`](../sdk.md) (leer, escribir, `apply()` en
+  ficheros y en filas, la galería, dentro de un `@Transform`), y el estado de
+  [`docs/media.md`](../media.md) con las tres superficies.
+
+**JM, cerrado en local.** La JVM es la primera superficie que pasa la suite entera. Lo que queda es
+**la lista de lo que sólo se ve en prod** (arriba), el primer día con la cuenta activa, y los **cuatro
+huecos del servidor** que JM encontró (JM1, JM3), para decidir.
 
 #### Dos decisiones que pide la JVM
 

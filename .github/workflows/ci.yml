@@ -348,6 +348,16 @@ jobs:
           cargo build --quiet -p ore-store
           python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]" pytest==9.1.1
           bash pruebas-de-fuego/el-puesto.sh
+      # 0049 JM5: la media en la JVM, contra el banco de la media: la suite de
+      # `conformidad/media` entera (51 casos) y las pruebas del SDK (leer, dentro
+      # de un @Transform, escribir, apply() en ficheros y en filas, la galeria),
+      # con las tres celdas que genera builds.rs corridas por el kernel del agente.
+      # Con el JDK 21 de arriba y los jars de puesto/jvm/jars.txt (JM_LOCAL): en el
+      # laboratorio, lo mismo dentro de la imagen puesto-jvm:1 de prod.
+      - name: y la media en la JVM pasa la suite de conformidad entera y las del SDK
+        env:
+          JM_LOCAL: "1"
+        run: PYTHONUTF8=1 python3 pruebas-de-fuego/la-media-en-java.py
       # 0053 F6·2: sql() lee el origen en vivo, contra un ore-serve de mentira.
       - name: y sql() lee en vivo lo que el reparto decide
         run: PYTHONUTF8=1 python3 pruebas-de-fuego/la-lectura-en-vivo-en-python.py

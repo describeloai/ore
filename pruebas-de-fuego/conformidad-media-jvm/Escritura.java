@@ -408,7 +408,7 @@ final class Escritura {
             });
             // ── el build de un @Transform cuya salida es una colección escrita ──
             Sdk.caso("escrita", 17, () -> {
-                Path f = Path.of("/src/target/celdas/paginas-build.jsh");
+                Path f = Banco.celda("paginas-build.jsh");
                 exige(Files.exists(f), "no está la celda generada (" + f + ")");
                 long antesP = puntero("ventas.archivo.paginas");
                 int antesT = Sdk.transforms().size();

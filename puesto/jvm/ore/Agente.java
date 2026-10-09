@@ -321,6 +321,15 @@ public final class Agente {
                 m.put("ms", ms(t0));
                 return m;
             }
+            // 0049 JM5 · un ítem de una colección (o una lista de ellos): la galería (S2, como Python).
+            Map<String, Object> media = comoMedia(valor);
+            if (media != null) {
+                m.putAll(media);
+                m.put("tipo", "media");
+                m.put("texto", texto);
+                m.put("ms", ms(t0));
+                return m;
+            }
             Map<String, Object> imagen = comoImagen(valor, IMAGEN_BYTES);
             if (imagen != null) {
                 m.putAll(imagen);
@@ -461,6 +470,53 @@ public final class Agente {
     // Los mismos topes que el agente de Python: una imagen que pasa de 512 KB se
     // reduce (a 1600 px de lado, y a JPEG si hace falta) y se dice.
     static final int IMAGEN_BYTES = 512 * 1024;
+    /** Cuántos ítems pinta una galería, como Python ({@code MEDIA_MAXIMOS}): los demás se cuentan. */
+    static final int MEDIA_MAXIMOS = 200;
+
+    /** El {@code MediaRef} de un ítem de una colección, o {@code null}. */
+    static Media.MediaRef refDe(Object v) {
+        if (v instanceof Media.Item i) return i.ref();
+        return v instanceof Media.MediaRef r ? r : null;
+    }
+
+    /**
+     * {@code {items: [{collection, path, version, content_type, size, digest}], total, recortado}} de un ítem
+     * —{@code Media.Item}, {@code Media.MediaRef}— o de una lista de ellos, o {@code null} (el {@code como_media}
+     * de Python). Sin URL ni bytes: la consola firma cada uno en la rama de la sesión al pintarlo (una URL
+     * firmada no se guarda en el historial de la celda).
+     */
+    static Map<String, Object> comoMedia(Object valor) {
+        List<Media.MediaRef> refs = new ArrayList<>();
+        int total;
+        Media.MediaRef uno = refDe(valor);
+        if (uno != null) {
+            refs.add(uno);
+            total = 1;
+        } else if (valor instanceof Iterable<?> l && !(valor instanceof Map<?, ?>)) {
+            total = 0;
+            for (Object x : l) {
+                Media.MediaRef r = refDe(x);
+                if (r == null) return null;
+                if (refs.size() < MEDIA_MAXIMOS) refs.add(r);
+                total++;
+            }
+            if (total == 0) return null;
+        } else {
+            return null;
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Media.MediaRef r : refs) {
+            Map<String, Object> i = new LinkedHashMap<>();
+            i.put("collection", r.collection()); i.put("path", r.path()); i.put("version", r.version());
+            i.put("content_type", r.contentType()); i.put("size", r.size()); i.put("digest", r.digest());
+            items.add(i);
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("items", items);
+        m.put("total", total);
+        m.put("recortado", total > items.size());
+        return m;
+    }
     static final int IMAGEN_LADO = 1600;
 
     /** El tipo de unos bytes, si son una imagen que un navegador pinta. */
@@ -736,6 +792,11 @@ public final class Agente {
             if (!"imagen".equals(im.get("tipo")) || !Integer.valueOf(40).equals(im.get("ancho")) || !"varias".equals(v.get("tipo"))
                 || !List.of("texto", "json", "imagen", "texto").equals(tipos))
                 throw new IllegalStateException("una imagen o display() no salen como deben: " + Json.escribir(v).replaceAll("\"base64\":\"[^\"]*\"", "\"base64\":\"…\""));
+            // JM5: un ítem de una colección (y una lista de ellos) es la galería, sin bytes ni URL.
+            Map<String, Object> ga = k.correr("var r = new ore.Media.MediaRef(\"ore://a.b/x.pdf?v=1\", \"a.b\", \"x.pdf\", \"1\", null, 3L, "
+                + "\"application/pdf\", null, null, null, null, null, null, null, null);\njava.util.List.of(r, r)", "java");
+            if (!"media".equals(ga.get("tipo")) || !Integer.valueOf(2).equals(ga.get("total")) || Json.escribir(ga).contains("url"))
+                throw new IllegalStateException("una lista de ítems no sale como galería: " + Json.escribir(ga));
             // Y el contrato de tipos por Arrow (0032 T3): si faltan los jars o el
             // --add-opens, se ve aquí y no en la primera celda de una persona.
             Ore.Rows f = Ore.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");

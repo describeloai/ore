@@ -265,7 +265,7 @@ final class Filas {
             // ── el write() de verdad: el Preview de Textos.java, con la celda de builds.rs ──
             LagoEnMemoria.usar(null);
             Sdk.caso("filas", 14, () -> {
-                java.nio.file.Path f = java.nio.file.Path.of("/src/target/celdas/textos-preview.jsh");
+                java.nio.file.Path f = Banco.celda("textos-preview.jsh");
                 exige(java.nio.file.Files.exists(f), "no está la celda generada (" + f + ")");
                 Map<String, Object> salida = ParaElBanco.celda(java.nio.file.Files.readString(f));
                 exige(!"error".equals(salida.get("tipo")), "la celda dio error: " + ore.Json.escribir(salida));

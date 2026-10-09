@@ -556,15 +556,17 @@ A Java cell has `import static ore.Ore.*;`.
 - `arrow(view)` / `arrowSql(text)` → an `ArrowReader` over batches, without an object per row;
   close it when done.
 - `write(name, data)`, `write(name, data, mode)`, `write(name, data, mode, key)`: `data` is
-  `Rows`, a `List<Map>`, a `VectorSchemaRoot` or an `ArrowReader`. Returns a `Result` (a `Map`)
-  `{table, rows, snapshot, metadata_location, operation, repeated}`.
+  `Rows`, a `List<Map>`, a `VectorSchemaRoot` or an `ArrowReader` (a `VectorSchemaRoot` or an
+  `ArrowReader` may have structs and lists). Returns a `Result` (a `Map`)
+  `{table, rows, snapshot, metadata_location, operation, repeated}`. `write(name, data, mode, key,
+  anchoredTo)` writes an anchored table of a media collection (what `apply()` writes into a table).
 - `transform(name, inputs, output, body)` runs a `Callable` under the transform rules.
 - `declare(yaml)` or `declare(map)` → `{kind, name, file, commit, created}`.
 - `person()`, `session`, `table(value, limit)`, `toJson(v)`, `API`.
 - `display(values…)` shows each value now, in order with what the cell prints. The last
   expression of a cell is shown by its kind: `Rows` or a `List<Map>` as a table; a `record`, a
   `Map`, a `Collection` or an array as a tree; an image (its `byte[]`, a `BufferedImage`) as an
-  image; anything else as text.
+  image; an item of a media collection, or a list of them, as a gallery; anything else as text.
 
 ### Transforms in Java (ORE 0055 T1·7)
 
@@ -606,6 +608,76 @@ the file's class —the top-level one named like the `.java`— declares a trans
   and the exact count.
 - `transform(name, inputs, output, body)` —the form before `@Transform`— still runs in a cell,
   but the tree does not know it: it is not built.
+
+### Media in Java (ORE 0049 JM)
+
+The same contract as Python ([`docs/media.md`](media.md)), the same `MediaRef`, the same errors,
+and the same conformance suite: Java passes all of [`conformidad/media`](../conformidad/media/README.md)
+(51 cases). Everything is in `ore.Media`; `import ore.Media;` (or `import ore.Media.*;`).
+
+```java
+var contracts = collection("legal.archive.contracts");
+for (Media.Item item : contracts.items("New folder/")) {    // the listing, lazy, by cursor
+    try (Media.MediaChannel ch = item.open()) {              // pinned to its version
+        ch.read(ByteBuffer.allocate(5));                      // "%PDF-"
+        ch.position(ch.size() - 1024);                        // the tail, with a range
+    }
+}
+byte[] data = contracts.stat("docs/a.pdf").readBytes();      // whole, verified
+for (Media.Result r : readMany(contracts.items(), 16)) {      // many at once
+    if (!r.ok()) System.out.println(r.item() + ": " + r.error());   // one's error is a value
+}
+```
+
+- **Read.** `collection(name)` → `Media.Collection`: `items([prefix])` (lazy, by cursor),
+  `pages(prefix, state, limit, asOf)` (each page with the transaction it read), `stat(path
+  [, version])`, `statByDigest(digest)`, `urls(items, ttlS)` (one per position, one's error in its
+  own) and `asOf()`. `Media.Item`: `ref()`, `current()`, `open()` → a `SeekableByteChannel` pinned to
+  the item's version (`version()`, `etag()`, `reprDigest()`, `status()` of the response, and
+  `readRange(offset, length)`), `inputStream()`, `readBytes([threads])` (a large item by ranges, in
+  parallel) and `readRange(offset, length)`. A whole read is checked against `size` and `digest`.
+- **The token never goes to the bytes**: the code asks the cell where they are and reads that URL
+  without ORE's token. An expired permission is renewed with the same version; if that version can
+  no longer be read, `MediaChanged` —never bytes of another—. A stream that is cut is resumed from
+  where it was, with the same version.
+- **Write**, into a written collection (`createCollection(name, media, formats[, owner, comment,
+  labels, retention, ifNotExists])`):
+
+  ```java
+  try (Media.Transaction t = collection("legal.archive.pages").transaction()) {
+      t.put("c1/p0.png", png);                              // byte[], a Path or an InputStream
+      t.put("c1/original.pdf", Path.of("/tmp/c1.pdf"));      // in stream
+      t.commit();                                            // explicit: close() without it is abort()
+  }
+  ```
+
+  `putMany(puts, threads)` uploads many with a bound on what is in flight (one's error is a value),
+  `delete(path)` retires one, `commit()` commits again on top if someone else committed at the same
+  time. **The commit is explicit** (a `try` cannot know it left by an exception): `close()` without
+  `commit()` is `abort()`, and nothing is written. Inside a transform, only its `output`. `verify(items)`
+  reads each item and checks it against its digest.
+- **`apply()`**, incremental derivation item by item, with the same rules as Python:
+
+  ```java
+  // files from files: the output is a written collection
+  contracts.apply(item -> List.of(Media.File.of("p1.txt", textOf(item), "text/plain",
+                                               Map.of("kind", "page", "page", 1))),
+                  Media.applying().output("legal.archive.texts").version("1"));
+  // rows: the output is an anchored table, with its six system columns
+  contracts.apply(item -> List.of(Map.of("text", textOf(item), "anchor", Map.of("kind", "page", "page", 1))),
+                  Media.applying().output("legal.texts").version("1"));
+  ```
+
+  Without `version`, the function's version is the hash of the bytecode of the class where it is
+  written (the lambda or the method reference): anything in that class changes it; a helper of
+  another class it calls does not —give `version("…")` then—. `name("…")` names the function in the
+  register (without it, the transform's, or `fn`); it is part of the key. `derivations()` reads the
+  register of a written collection.
+- **The last value of a cell** that is an item (`Media.Item`, `Media.MediaRef`) or a list of them is
+  shown as a gallery, without URLs or bytes in the cell's history; `display(item)` too.
+- **Inside a `@Transform`**: a collection in `inputs` is read, pinned to the transaction the server
+  fixed when the transform started; one that is not is `MediaForbidden` (`media/no-declarada`),
+  without asking the server. Reading its own `output` (`apply()` does) is not an input.
 
 ## Migrating from the Spanish names
 

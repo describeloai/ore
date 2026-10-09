@@ -273,7 +273,7 @@ final class Sdk {
             });
             // ── JM2 · el Preview de un @Transform que lee media, con la celda de Rust ──
             caso(18, () -> {
-                Path f = Path.of("/src/target/celdas/indice-preview.jsh");
+                Path f = Banco.celda("indice-preview.jsh");
                 exige(Files.exists(f), "no está la celda generada (" + f + "): la deja `la-media-en-java.py`");
                 int antes = transforms().size();
                 Map<String, Object> salida = ParaElBanco.celda(Files.readString(f));
@@ -304,6 +304,25 @@ final class Sdk {
                 exige(ParaElBanco.version((java.util.function.Function<Media.Item, Object>) Derivacion::lineasPdf).equals(v1),
                     "una referencia escrita aquí es de esta clase");
                 return "D-JM2: sin `version`, la del bytecode de la clase donde se escribe la función (" + v1 + "); la misma clase, la misma; otra, otra";
+            });
+            // ── JM5 · la galería: un ítem (o una lista) como salida de una celda ───
+            caso(20, () -> {
+                Map<String, Object> uno = ParaElBanco.celda("ore.Ore.collection(\"legal.archivo.contratos\").stat(\"b.pdf\")");
+                exige("media".equals(uno.get("tipo")) && Integer.valueOf(1).equals(uno.get("total")), "un ítem dio " + ore.Json.escribir(uno));
+                Map<String, Object> i0 = m(l(uno.get("items")).get(0));
+                exige(new ArrayList<>(i0.keySet()).equals(List.of("collection", "path", "version", "content_type", "size", "digest"))
+                    && "b.pdf".equals(i0.get("path")), "las claves de Python, en su orden: " + i0);
+                Map<String, Object> varias = ParaElBanco.celda(String.join("\n",
+                    "var c = ore.Ore.collection(\"legal.archivo.contratos\");",
+                    "var l = new java.util.ArrayList<ore.Media.Item>();",
+                    "for (var i : c.items()) l.add(i);",
+                    "display(l);",
+                    "42"));
+                List<String> tipos = new ArrayList<>();
+                for (Object x : l(varias.get("partes"))) tipos.add(String.valueOf(m(x).get("tipo")));
+                exige(tipos.equals(List.of("media", "texto")), "display(lista) dio " + tipos + ": " + ore.Json.escribir(varias));
+                exige(!ore.Json.escribir(varias).contains("\"url\""), "una URL en la salida: no se guarda en el historial");
+                return "la galería: un Item como último valor es `media` (las claves de Python), display(lista) es su parte, sin URL ni bytes";
             });
         } finally {
             ParaElBanco.credencial(null);

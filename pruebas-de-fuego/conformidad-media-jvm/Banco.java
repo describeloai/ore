@@ -57,6 +57,11 @@ final class Banco {
         return Base64.getDecoder().decode(String.valueOf(mando("objeto", "path", path).get("base64")));
     }
 
+    /** Una celda que genera `builds.rs`, en `target/celdas/` de la raíz del árbol (`ORE_RAIZ`: `/src` en Docker). */
+    static Path celda(String nombre) {
+        return Path.of(System.getenv().getOrDefault("ORE_RAIZ", "/src"), "target", "celdas", nombre);
+    }
+
     // ── la muestra ──────────────────────────────────────────────────────────
 
     static Map<String, Object> muestra;
