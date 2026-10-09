@@ -108,6 +108,9 @@ pub struct Servidor {
     /// La cuenta de Google de los drivers (`--cuenta-driver`): la que el
     /// cliente autoriza en su origen. Se enseña, no se usa aquí.
     pub cuenta_driver: Option<String>,
+    /// La de `ore-medios` (`--cuenta-medios`): sirve los ítems de un bucket de
+    /// GCS, y el cliente la autoriza también (ADR 0061 O2·3).
+    pub cuenta_medios: Option<String>,
     /// El gateway de modelos (0027 E1): dónde se suscribe y qué puerta se contesta.
     pub modelos: Option<crate::modelos::Modelos>,
     /// La lista de certificación de un fichero (el banco); si no, de la cola.
@@ -372,9 +375,11 @@ impl Servidor {
                 let cuerpo = p.cuerpo.clone();
                 self.comprobar_fuente(&cuerpo, sujeto)
             }
-            ("GET", ["fuentes", "credenciales", tipo]) => {
-                Respuesta::ok(crate::credenciales::de(tipo, self.cuenta_driver.as_deref()))
-            }
+            ("GET", ["fuentes", "credenciales", tipo]) => Respuesta::ok(crate::credenciales::de(
+                tipo,
+                self.cuenta_driver.as_deref(),
+                self.cuenta_medios.as_deref(),
+            )),
             ("POST", ["fuentes"]) => {
                 if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Dar de alta una fuente") {
                     return r;

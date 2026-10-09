@@ -2657,6 +2657,7 @@ dependencies = [
  "arrow-schema",
  "ore-core",
  "ore-entrada",
+ "ore-gcs",
  "ore-objetos",
  "ore-s3",
  "ore-sigv4",

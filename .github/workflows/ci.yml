@@ -535,7 +535,7 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -599,6 +599,27 @@ jobs:
             --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
           echo "### ore-federation · s3" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-s3 --banco s3 \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ⭐ ADR 0061 O2·3: GCS, contra `fake-gcs-server` (en memoria: sin
+      #   `-backend memory` contesta 500). El emulador no comprueba el token
+      #   (`ORE_GCP_TOKEN` cualquiera) y no es de Google, así que el conector
+      #   sólo le habla con `ORE_GCS_LABORATORIO=1`.
+      - name: el conector de GCS
+        env:
+          ORE_GCP_TOKEN: falso
+          ORE_GCS_LABORATORIO: "1"
+        run: |
+          docker run -d --name kit-gcs -p 4443:4443 \
+            fsouza/fake-gcs-server@sha256:d47b4cf8b87006cab8fbbecfa5f06a2a3c5722e464abddc0d107729663d40ec4 \
+            -scheme http -port 4443 -public-host 127.0.0.1:4443 -backend memory
+          for i in $(seq 1 50); do curl -sf http://127.0.0.1:4443/storage/v1/b >/dev/null && break; sleep 0.2; done
+          export GCS_KIT_ENDPOINT=http://127.0.0.1:4443
+          echo "### ore-read-gcs" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-gcs --banco gcs \
+            --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### ore-federation · gcs" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-gcs --banco gcs \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):

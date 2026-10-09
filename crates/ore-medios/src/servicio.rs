@@ -1308,10 +1308,11 @@ mod pruebas {
         assert!(url(&u[0]).contains("blobs/sha256/aa"), "{}", url(&u[0]));
         assert!(url(&u[1]).starts_with("https://cubo.s3."), "{}", url(&u[1]));
 
-        // una fuente que no es S3: el error en su posición, sin repetir su URL
+        // una fuente que no se sabe servir: el error en su posición, sin
+        // repetir su URL
         let u = pide(
             "true",
-            "gs://otro/x?clave=secreto",
+            "az://otro/x?clave=secreto",
             r#"{"path":"docs/a.pdf"}"#,
         );
         let e = u[0].get("error").unwrap().1;

@@ -109,10 +109,148 @@ pub fn ids_de_la_celda() -> Option<(String, String)> {
 }
 
 /// La respuesta de `GET /fuentes/credenciales/{tipo}`. `cuenta` es la de la
-/// celda (`--cuenta-driver`); sin ella el modo se enseña igual, sin email, y
-/// se dice por qué falta.
-pub fn de(tipo: &str, cuenta: Option<&str>) -> Json {
+/// celda (`--cuenta-driver`), y `medios` la de `ore-medios` (`--cuenta-medios`,
+/// que GCS también pide); sin ellas el modo se enseña igual, sin email, y se
+/// dice por qué falta.
+pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
+    if tipo == "gcs" {
+        return gcs(cuenta, medios);
+    }
     de_con(tipo, cuenta, ids_de_la_celda())
+}
+
+/// Lo que se concede sobre un bucket de GCS: leer, y nada más. Es lo que
+/// `ore-read-gcs check` pregunta (`storage.objects.list`, `storage.objects.get`).
+const LECTOR_GCS: &str = "roles/storage.objectViewer";
+
+/// Un rol de GCS que se concede: cuál, en qué nivel, para qué y con qué.
+fn rol_gcs(rol: &str, nivel: &str, para: &str, comando: &str) -> Json {
+    Json::obj([
+        ("rol", Json::s(rol)),
+        ("nivel", Json::s(nivel)),
+        ("para", Json::s(para)),
+        ("comando", Json::s(comando)),
+    ])
+}
+
+/// ⭐ ADR 0061 O2·3 (D-O2) · **GCS: las cuentas de esta celda, sin clave.** El
+/// cliente concede lectura sobre SU bucket a las dos que leen —la del driver,
+/// que cataloga y copia, y la de `ore-medios`, que sirve los ítems y firma sus
+/// URLs—. O, si prefiere que se lea como una cuenta suya, les deja
+/// suplantarla: un token de una hora, de sólo lectura, cada vez. Nunca una
+/// cuenta compartida entre celdas: otra celda corre con otras cuentas.
+fn gcs(driver: Option<&str>, medios: Option<&str>) -> Json {
+    let con_cuentas = |mut m: Vec<(&'static str, Json)>| {
+        let mut cuentas = Vec::new();
+        let mut falta = Vec::new();
+        for (quien, para, v, flag) in [
+            ("driver", "catalogar y copiar", driver, "--cuenta-driver"),
+            (
+                "medios",
+                "servir los ítems y firmar sus URLs",
+                medios,
+                "--cuenta-medios",
+            ),
+        ] {
+            match v {
+                Some(e) => cuentas.push(Json::obj([
+                    ("quien", Json::s(quien)),
+                    ("cuenta", Json::s(e)),
+                    ("para", Json::s(para)),
+                ])),
+                None => falta.push(flag),
+            }
+        }
+        m.push(("cuentas", Json::Arr(cuentas)));
+        if !falta.is_empty() {
+            m.push((
+                "sinCuenta",
+                Json::s(format!(
+                    "este servidor no sabe todas las cuentas de la celda ({}): pregúntalas a \
+                     quien opera la celda",
+                    falta.join(", ")
+                )),
+            ));
+        }
+        Json::obj(m)
+    };
+    let celda = con_cuentas(vec![
+        ("modo", Json::s("celda")),
+        ("recomendado", Json::Bool(true)),
+        (
+            "dice",
+            Json::s(
+                "Esta celda lee con sus propias cuentas de Google: no hay clave que guardar. \
+                 Concede a las dos solo lectura sobre tu bucket.",
+            ),
+        ),
+        ("formato", Json::s("gs://<bucket>[/<prefijo>]")),
+        (
+            "roles",
+            Json::Arr(vec![rol_gcs(
+                LECTOR_GCS,
+                "bucket",
+                "listar los objetos y leerlos, con sus generaciones",
+                "gcloud storage buckets add-iam-policy-binding gs://{bucket} \
+                 --member=serviceAccount:{cuenta} --role=roles/storage.objectViewer",
+            )]),
+        ),
+    ]);
+    let suplantar = con_cuentas(vec![
+        ("modo", Json::s("suplantar")),
+        ("recomendado", Json::Bool(false)),
+        (
+            "dice",
+            Json::s(
+                "Se lee como una cuenta de servicio tuya: dale a ella lectura sobre el bucket, y a \
+                 las dos cuentas de esta celda permiso para pedir su token. Cada vez se pide uno \
+                 de una hora y de solo lectura; quitas ese permiso y deja de leer.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s(
+                "gs://<bucket>[/<prefijo>]?suplantar=<cuenta>@<proyecto>.iam.gserviceaccount.com",
+            ),
+        ),
+        (
+            "roles",
+            Json::Arr(vec![
+                rol_gcs(
+                    LECTOR_GCS,
+                    "bucket",
+                    "tu cuenta: listar y leer los objetos",
+                    "gcloud storage buckets add-iam-policy-binding gs://{bucket} \
+                     --member=serviceAccount:{suya} --role=roles/storage.objectViewer",
+                ),
+                rol_gcs(
+                    "roles/iam.serviceAccountTokenCreator",
+                    "cuenta",
+                    "cada cuenta de la celda: pedir el token de la tuya y firmar como ella",
+                    "gcloud iam service-accounts add-iam-policy-binding {suya} \
+                     --member=serviceAccount:{cuenta} --role=roles/iam.serviceAccountTokenCreator",
+                ),
+            ]),
+        ),
+    ]);
+    Json::obj([
+        ("tipo", Json::s("gcs")),
+        ("modos", Json::Arr(vec![celda, suplantar])),
+        (
+            "noAdmitidos",
+            Json::Arr(vec![Json::obj([
+                ("modo", Json::s("clave-json")),
+                (
+                    "porque",
+                    Json::s(
+                        "Google prohíbe por defecto crear claves de cuenta de servicio en las \
+                         organizaciones nuevas (iam.disableServiceAccountKeyCreation); pedirla \
+                         sería pedirte que rebajes tu seguridad",
+                    ),
+                ),
+            ])]),
+        ),
+    ])
 }
 
 /// Lo mismo, con los IDs de la celda dados (las pruebas no tocan el entorno).
@@ -308,6 +446,7 @@ mod tests {
         let j = de(
             "bigquery",
             Some("ore-driver-demo@p.iam.gserviceaccount.com"),
+            None,
         )
         .jcs();
         for r in [
@@ -325,17 +464,48 @@ mod tests {
         assert!(j.contains("{proyecto}:{dataset}"), "{j}");
     }
 
+    /// GCS (0061 O2·3): las dos cuentas de la celda con lectura sobre el bucket,
+    /// o suplantando una del cliente; la clave JSON, no; y sin una de las dos
+    /// cuentas se dice cuál falta.
+    #[test]
+    fn gcs_ensena_las_dos_cuentas_y_como_suplantar() {
+        let j = de(
+            "gcs",
+            Some("ore-driver-demo@p.iam.gserviceaccount.com"),
+            Some("ore-medios-demo@p.iam.gserviceaccount.com"),
+        )
+        .jcs();
+        for x in [
+            r#""modo":"celda""#,
+            r#""modo":"suplantar""#,
+            r#""modo":"clave-json""#,
+            "ore-driver-demo@p.iam.gserviceaccount.com",
+            "ore-medios-demo@p.iam.gserviceaccount.com",
+            "roles/storage.objectViewer",
+            "roles/iam.serviceAccountTokenCreator",
+            "?suplantar=",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert!(!j.contains("sinCuenta"), "{j}");
+        let j = de("gcs", Some("d@p.iam.gserviceaccount.com"), None).jcs();
+        assert!(
+            j.contains("--cuenta-medios") && !j.contains("--cuenta-driver"),
+            "{j}"
+        );
+    }
+
     /// Sin `--cuenta-driver` el modo se enseña igual y se dice qué falta.
     #[test]
     fn sin_cuenta_se_dice() {
-        let j = de("bigquery", None).jcs();
+        let j = de("bigquery", None, None).jcs();
         assert!(j.contains("sinCuenta") && !j.contains("\"cuenta\""), "{j}");
     }
 
     /// S3: la clave en la URL, y la política del usuario, que solo lee.
     #[test]
     fn s3_ensena_la_politica_de_solo_lectura() {
-        let j = de("s3", None).jcs();
+        let j = de("s3", None, None).jcs();
         for a in [
             "s3:ListBucket",
             "s3:ListBucketVersions",
@@ -375,6 +545,10 @@ mod tests {
     /// Las demás familias: la credencial va en la cadena.
     #[test]
     fn postgres_va_en_la_cadena() {
-        assert!(de("postgres", None).jcs().contains("\"modo\":\"cadena\""));
+        assert!(
+            de("postgres", None, None)
+                .jcs()
+                .contains("\"modo\":\"cadena\"")
+        );
     }
 }

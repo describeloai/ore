@@ -379,8 +379,30 @@ pub fn rendir_comprobacion(
 }
 
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
-/// la cuenta de la celda y no llevan credencial dentro: hoy, BigQuery.
+/// la cuenta de la celda y no llevan credencial dentro: BigQuery, GCS y S3 por
+/// rol.
 pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
+    // ⭐ ADR 0061 O2·3 · Un bucket de GCS se lee con la cuenta de la celda, o
+    //   suplantando una del cliente (`suplantar`): su URL no lleva secreto. Ni
+    //   `endpoint` —el token es al portador y no se manda a otro servidor; eso
+    //   lo vigila también `ore-gcs`— ni nada más.
+    if let Some(resto) = url.strip_prefix("gs://") {
+        let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
+        if camino.contains('@') || url.contains('#') {
+            return Err("la URL de GCS es `gs://<bucket>[/<prefijo>][?suplantar=<cuenta>]`".into());
+        }
+        if let Some(k) = consulta
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.split_once('=').map_or(p, |(k, _)| k))
+            .find(|k| *k != "suplantar")
+        {
+            return Err(format!(
+                "la URL de GCS sólo admite `suplantar`, no `{k}`: no se comprueba otra cosa"
+            ));
+        }
+        return Ok("gcs");
+    }
     // ⭐ 0046 E9b · Un bucket de S3 por ROL tampoco lleva secreto: su URL nombra el
     //   rol (`role_arn`), y la credencial la pide el driver en el Job, de una hora.
     if let Some(resto) = url.strip_prefix("s3://") {
@@ -836,6 +858,15 @@ mod prueba {
         assert!(
             url_sin_secreto("s3://u:p@cubo?role_arn=arn:aws:iam::123456789012:role/r").is_err()
         );
+        // ADR 0061 O2·3: GCS, con la cuenta de la celda o suplantando; nada más.
+        assert_eq!(url_sin_secreto("gs://cubo/docs/"), Ok("gcs"));
+        assert_eq!(
+            url_sin_secreto("gs://cubo/?suplantar=l@c.iam.gserviceaccount.com"),
+            Ok("gcs")
+        );
+        assert!(url_sin_secreto("gs://cubo/?endpoint=https://evil.io").is_err());
+        assert!(url_sin_secreto("gs://cubo/?token=x").is_err());
+        assert!(url_sin_secreto("gs://u@cubo/").is_err());
     }
 
     /// 0050 P4: la etiqueta que abre la puerta va en el POD (que es lo que la

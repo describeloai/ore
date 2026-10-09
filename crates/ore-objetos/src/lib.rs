@@ -119,54 +119,60 @@ pub trait Origen {
     }
 }
 
-/// Un origen prestado también lo es: el driver guarda el suyo en la fuente
-/// (con su cliente y su token) y lo presta a cada verbo.
-impl<T: Origen + ?Sized> Origen for &T {
-    fn listar(&self, prefijo: &str) -> Result<Vec<Objeto>, String> {
-        (**self).listar(prefijo)
-    }
-    fn rango(&self, clave: &str, rango: &str) -> Result<Vec<u8>, String> {
-        (**self).rango(clave, rango)
-    }
-    fn abrir(&self, clave: &str, etag: &str) -> Result<Box<dyn Read + '_>, String> {
-        (**self).abrir(clave, etag)
-    }
-    fn rango_de(&self, clave: &str, rango: &str, etag: &str) -> Result<Vec<u8>, String> {
-        (**self).rango_de(clave, rango, etag)
-    }
-    fn listar_versiones(&self, prefijo: &str) -> Result<Vec<Version>, String> {
-        (**self).listar_versiones(prefijo)
-    }
-    fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String> {
-        (**self).huella_de(clave, version)
-    }
-    fn abrir_version(
-        &self,
-        clave: &str,
-        version: &str,
-    ) -> Result<(Box<dyn Read + '_>, Abierto), String> {
-        (**self).abrir_version(clave, version)
-    }
-    fn leer_fijado(
-        &self,
-        clave: &str,
-        version: &str,
-        etag: &str,
-        rango: Option<&str>,
-    ) -> Result<Leido, Rechazo> {
-        (**self).leer_fijado(clave, version, etag, rango)
-    }
-    fn firmar(
-        &self,
-        clave: &str,
-        version: &str,
-        tipo: &str,
-        disposicion: &str,
-        segundos: u64,
-    ) -> Result<Option<String>, String> {
-        (**self).firmar(clave, version, tipo, disposicion, segundos)
-    }
+/// Un origen prestado o compartido también lo es: el driver guarda el suyo en
+/// la fuente (con su cliente y su token) y lo presta a cada verbo; `ore-medios`
+/// guarda los de GCS entre peticiones (`Arc`).
+macro_rules! tambien {
+    ($($tipo:ty),*) => {$(
+        impl<T: Origen + ?Sized> Origen for $tipo {
+            fn listar(&self, prefijo: &str) -> Result<Vec<Objeto>, String> {
+                (**self).listar(prefijo)
+            }
+            fn rango(&self, clave: &str, rango: &str) -> Result<Vec<u8>, String> {
+                (**self).rango(clave, rango)
+            }
+            fn abrir(&self, clave: &str, etag: &str) -> Result<Box<dyn Read + '_>, String> {
+                (**self).abrir(clave, etag)
+            }
+            fn rango_de(&self, clave: &str, rango: &str, etag: &str) -> Result<Vec<u8>, String> {
+                (**self).rango_de(clave, rango, etag)
+            }
+            fn listar_versiones(&self, prefijo: &str) -> Result<Vec<Version>, String> {
+                (**self).listar_versiones(prefijo)
+            }
+            fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String> {
+                (**self).huella_de(clave, version)
+            }
+            fn abrir_version(
+                &self,
+                clave: &str,
+                version: &str,
+            ) -> Result<(Box<dyn Read + '_>, Abierto), String> {
+                (**self).abrir_version(clave, version)
+            }
+            fn leer_fijado(
+                &self,
+                clave: &str,
+                version: &str,
+                etag: &str,
+                rango: Option<&str>,
+            ) -> Result<Leido, Rechazo> {
+                (**self).leer_fijado(clave, version, etag, rango)
+            }
+            fn firmar(
+                &self,
+                clave: &str,
+                version: &str,
+                tipo: &str,
+                disposicion: &str,
+                segundos: u64,
+            ) -> Result<Option<String>, String> {
+                (**self).firmar(clave, version, tipo, disposicion, segundos)
+            }
+        }
+    )*};
 }
+tambien!(&T, std::sync::Arc<T>);
 
 /// Una lectura fijada que salió bien: el estado (`200`/`206`), sus cabeceras
 /// (en minúscula) y el cuerpo **sin leer**.

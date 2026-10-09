@@ -168,6 +168,32 @@ el emulador, los verbos del binario: `capacidades`, `check`, `explorar`, `catalo
 conjuntos), `testigo`, `versiones` (generación y `crc32c`), `bajar` cotejado, y con la huella
 cambiada o una generación que no está, no copia.
 
+**O2·3, hecho**: GCS cableado al resto de ORE.
+
+- `ore-medios` lee `gs://` (`origenes.rs`) y guarda el cliente por URL —que no lleva secreto—
+  entre peticiones, con su token (y el suplantado, una hora): sin eso sería una ida a IAM por ítem.
+  El rasgo vale también por `Arc`. Lee con su cuenta, `ore-medios-<n>`, que ya firma como sí misma
+  desde B2: GCS no pide IAM nuevo en la celda.
+- ⭐ **El token es al portador.** Una URL con `?endpoint=` que no sea `https://…googleapis.com` se lo
+  daría a otro servidor: `ore-gcs` la rechaza salvo con `ORE_GCS_LABORATORIO=1` (el laboratorio y el
+  CI), y la comprobación antes del alta (`cola.rs`) sólo deja pasar `suplantar`.
+- `ore-serve`: `gs://` se comprueba antes del alta como BigQuery (sin secreto, tipo `gcs`); no se
+  canjea nada (`canjeador_de`: quien lee, el driver o `ore-medios`, obtiene su token él mismo); y
+  `GET /fuentes/credenciales/gcs` enseña las dos cuentas —la del driver y la de medios, nueva
+  `--cuenta-medios`— con `roles/storage.objectViewer` sobre el bucket, el modo `suplantar`
+  (`roles/iam.serviceAccountTokenCreator` sobre la cuenta del cliente) y la clave JSON como no
+  admitida.
+- La ruta vieja de los datasets (`ore collections --servir`, que firma con `ore-firmar-<tipo>` en la
+  imagen de `ore-serve`, sin red) **no** sirve GCS: firmar en GCS es una petición a IAM, y esa imagen
+  no habla por la red. Dice 66 (no hay firmante); lo de GCS se sirve por `/media` (`ore-medios`).
+- `ore-federation` carga `gcs` por defecto; `ore-read-gcs` va en la imagen de drivers
+  (`/opt/ore/conectores`) y en `ci/compilar-binarios.sh`.
+- El kit del conector gana el banco `gcs` (la misma semilla que S3, compartida) y el CI lo corre
+  contra `fake-gcs-server`. En local: **12/12 directo** (el flujo de 10⁶ filas en 1,7 s) y **9/9 por
+  la pasarela**, colecciones incluidas.
+
+Falta, con go: `--cuenta-medios` en `malla/40-ore-serve.yaml` (binario antes que malla).
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).

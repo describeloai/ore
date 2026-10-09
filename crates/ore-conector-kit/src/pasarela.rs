@@ -359,16 +359,21 @@ impl Kit<'_> {
     // ── 10 ─────────────────────────────────────────────────────────────────
     /// 0053 F9·3 · `versiones` y `bajar` (las colecciones de medios) por la
     /// pasarela: lo vigente bajo un prefijo, y los bytes de un ítem en flujo,
-    /// con su final en los *trailers*. Sólo para S3: es la familia que los tiene.
+    /// con su final en los *trailers*. Sólo para los almacenes de objetos (S3,
+    /// GCS): son las familias que los tienen.
     fn colecciones(&mut self) -> (Estado, String) {
-        if self.b.familia() != "s3" {
-            return (Estado::NoAplica, "sólo S3 tiene colecciones".into());
+        let familia = self.b.familia();
+        if !matches!(familia, "s3" | "gcs") {
+            return (
+                Estado::NoAplica,
+                "sólo los almacenes de objetos tienen colecciones".into(),
+            );
         }
         let url = self.b.url();
         let prefijo = self.b.objeto(Tabla::Tipos);
         let cuerpo = Json::obj([
             ("origen", Json::s("kit")),
-            ("tipo", Json::s("s3")),
+            ("tipo", Json::s(familia)),
             ("url", Json::s(url.as_str())),
             (
                 "peticion",
@@ -407,7 +412,7 @@ impl Kit<'_> {
         let tamano: u64 = campo("tamano").parse().unwrap_or(0);
         let pedido = Json::obj([
             ("origen", Json::s("kit")),
-            ("tipo", Json::s("s3")),
+            ("tipo", Json::s(familia)),
             ("url", Json::s(url.as_str())),
             (
                 "peticion",

@@ -22,7 +22,7 @@
 //! reproducen una cinta grabada y no hablan con BigQuery.
 //! Ninguna URL sale en el informe.
 
-use ore_conector_kit::bancos::{Banco, bigquery::BigQuery, postgres::Postgres, s3::S3};
+use ore_conector_kit::bancos::{Banco, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3};
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
 use ore_core::json::Json;
@@ -60,7 +60,7 @@ fn intentar() -> Result<bool, String> {
             .cloned()
     };
     let conector = valor("--conector").ok_or("falta `--conector <binario>`")?;
-    let familia = valor("--banco").ok_or("falta `--banco postgres|s3`")?;
+    let familia = valor("--banco").ok_or("falta `--banco postgres|s3|gcs|bigquery`")?;
     let pasarela = valor("--pasarela");
     let hasta = if pasarela.is_some() { 8 } else { 14 };
     let solo = valor("--casos")
@@ -80,13 +80,18 @@ fn intentar() -> Result<bool, String> {
             &entorno("S3_KIT_SECRETO")?,
             std::env::var("S3_KIT_DE_MENTIRA").is_err(),
         )),
+        "gcs" => Box::new(Gcs::new(&entorno("GCS_KIT_ENDPOINT")?)),
         "bigquery" => Box::new(BigQuery::new(
             &entorno("BQ_KIT_PROYECTO")?,
             &std::env::var("BQ_KIT_DATASET").unwrap_or_else(|_| "ore_kit".into()),
             &std::env::var("BQ_KIT_UBICACION").unwrap_or_else(|_| "EU".into()),
             std::env::var("ORE_BQ_CINTA_MODO").map_or(true, |m| m != "reproducir"),
         )),
-        otro => return Err(format!("`{otro}` no es un banco: postgres, s3 o bigquery")),
+        otro => {
+            return Err(format!(
+                "`{otro}` no es un banco: postgres, s3, gcs o bigquery"
+            ));
+        }
     };
     eprintln!("ore-kit: cargando la semilla en {familia}…");
     banco.cargar()?;

@@ -98,7 +98,10 @@ impl S3 {
 }
 
 /// Un lote de Arrow con estas columnas y estas filas en texto canónico.
-fn lote(columnas: &[Columna], filas: &[Vec<Option<String>>]) -> Result<RecordBatch, String> {
+pub(super) fn lote(
+    columnas: &[Columna],
+    filas: &[Vec<Option<String>>],
+) -> Result<RecordBatch, String> {
     let mut arrays: Vec<ArrayRef> = Vec::new();
     for (i, c) in columnas.iter().enumerate() {
         let f = c.fisico();
@@ -204,7 +207,7 @@ fn lote(columnas: &[Columna], filas: &[Vec<Option<String>>]) -> Result<RecordBat
 }
 
 /// Un Parquet de un lote.
-fn parquet(l: &RecordBatch) -> Result<Vec<u8>, String> {
+pub(super) fn parquet(l: &RecordBatch) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, l.schema(), None)
         .map_err(|e| e.to_string())?;
@@ -224,23 +227,7 @@ impl Banco for S3 {
             200 | 409 => {}
             s => return Err(format!("el bucket `{BUCKET}` no se crea: {s}")),
         }
-        let tipos: Vec<Vec<Option<String>>> = FILAS
-            .iter()
-            .map(|f| f.iter().map(|v| v.map(String::from)).collect())
-            .collect();
-        self.subir("tipos/parte-0.parquet", &parquet(&lote(TIPOS, &tipos)?)?)?;
-        self.subir("vacia/parte-0.parquet", &parquet(&lote(TIPOS, &[])?)?)?;
-        let por_parte = GRANDE / PARTES;
-        for k in 0..PARTES {
-            let filas: Vec<Vec<Option<String>>> = (k * por_parte + 1..=(k + 1) * por_parte)
-                .map(|id| semilla::fila_grande(id).into_iter().map(Some).collect())
-                .collect();
-            self.subir(
-                &format!("grande/parte-{k}.parquet"),
-                &parquet(&lote(GRANDE_COLUMNAS, &filas)?)?,
-            )?;
-        }
-        Ok(())
+        sembrar(|clave, cuerpo| self.subir(clave, cuerpo))
     }
 
     fn url(&self) -> String {
@@ -267,26 +254,55 @@ impl Banco for S3 {
         format!("{}/", tabla.nombre())
     }
 
-    /// El `format` de la tabla y sus tipos congelados (v1alpha16 `03` §1),
-    /// como los manda el coordinador desde el árbol.
     fn completar(&self, tabla: Tabla, peticion: &mut BTreeMap<String, Json>) {
-        let tipos = tabla
-            .columnas()
-            .iter()
-            .map(|c| Json::Arr(vec![Json::s(c.nombre), Json::s(c.tipo)]))
-            .collect();
-        peticion.insert(
-            "fichero".into(),
-            Json::obj([
-                (
-                    "format",
-                    Json::obj([
-                        ("type", Json::s("parquet")),
-                        ("match", Json::s("*.parquet")),
-                    ]),
-                ),
-                ("tipos", Json::Arr(tipos)),
-            ]),
-        );
+        completar_fichero(tabla, peticion)
     }
+}
+
+/// **La semilla de un almacén de objetos**, en Parquet: `tipos/`, `vacia/` y
+/// `grande/` en [`PARTES`] ficheros. `subir` pone un objeto; lo comparten S3 y
+/// GCS (ADR 0061 O2·3).
+pub(super) fn sembrar(
+    mut subir: impl FnMut(&str, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    let tipos: Vec<Vec<Option<String>>> = FILAS
+        .iter()
+        .map(|f| f.iter().map(|v| v.map(String::from)).collect())
+        .collect();
+    subir("tipos/parte-0.parquet", &parquet(&lote(TIPOS, &tipos)?)?)?;
+    subir("vacia/parte-0.parquet", &parquet(&lote(TIPOS, &[])?)?)?;
+    let por_parte = GRANDE / PARTES;
+    for k in 0..PARTES {
+        let filas: Vec<Vec<Option<String>>> = (k * por_parte + 1..=(k + 1) * por_parte)
+            .map(|id| semilla::fila_grande(id).into_iter().map(Some).collect())
+            .collect();
+        subir(
+            &format!("grande/parte-{k}.parquet"),
+            &parquet(&lote(GRANDE_COLUMNAS, &filas)?)?,
+        )?;
+    }
+    Ok(())
+}
+
+/// El `format` de la tabla y sus tipos congelados (v1alpha16 `03` §1), como
+/// los manda el coordinador desde el árbol.
+pub(super) fn completar_fichero(tabla: Tabla, peticion: &mut BTreeMap<String, Json>) {
+    let tipos = tabla
+        .columnas()
+        .iter()
+        .map(|c| Json::Arr(vec![Json::s(c.nombre), Json::s(c.tipo)]))
+        .collect();
+    peticion.insert(
+        "fichero".into(),
+        Json::obj([
+            (
+                "format",
+                Json::obj([
+                    ("type", Json::s("parquet")),
+                    ("match", Json::s("*.parquet")),
+                ]),
+            ),
+            ("tipos", Json::Arr(tipos)),
+        ]),
+    );
 }

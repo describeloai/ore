@@ -7,6 +7,12 @@
 //! gs://<bucket>[/<prefijo>]?endpoint=http://…            otro servidor (el laboratorio)
 //! ```
 //!
+//! ⭐ O2·3 · **El token es al portador**: quien lo recibe lee como la celda. Un
+//! `endpoint` que no es de Google se lo daría a otro, así que sólo se admite
+//! `https://<algo>.googleapis.com` (`private.`, `restricted.`, los regionales)
+//! y, fuera de eso, únicamente con `ORE_GCS_LABORATORIO=1` en el entorno —el
+//! laboratorio y el CI, nunca una celda—.
+//!
 //! La URL **no lleva secreto**: el token es el de la cuenta que corre (el
 //! metadata server, `ore-gcp`) o el que esa cuenta obtiene suplantando a la del
 //! cliente (`generateAccessToken`, que el cliente permite dándole
@@ -83,7 +89,16 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
         let (k, v) = par.split_once('=').unwrap_or((par, ""));
         let v = descodificar(v);
         match k {
-            "endpoint" => endpoint = v.trim_end_matches('/').to_string(),
+            "endpoint" => {
+                endpoint = v.trim_end_matches('/').to_string();
+                if !de_google(&endpoint)
+                    && std::env::var("ORE_GCS_LABORATORIO").as_deref() != Ok("1")
+                {
+                    return Err(format!(
+                        "`endpoint={endpoint}` no es de Google (`https://…googleapis.com`): el                          token de la celda no se le da a otro servidor"
+                    ));
+                }
+            }
             "suplantar" => {
                 if !v.ends_with(".gserviceaccount.com") || !v.contains('@') {
                     return Err(format!(
@@ -107,6 +122,15 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
         prefijo,
         endpoint,
         suplantar,
+    })
+}
+
+/// `https://<algo>.googleapis.com`, sin puerto ni ruta.
+fn de_google(endpoint: &str) -> bool {
+    endpoint.strip_prefix("https://").is_some_and(|h| {
+        h.ends_with(".googleapis.com")
+            && h.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-.".contains(&b))
     })
 }
 
@@ -644,16 +668,19 @@ mod tests {
             ),
             ("mi-cubo", "Nueva carpeta/docs/", API, None)
         );
-        let f = leer("gs://c/?suplantar=lector%40cliente.iam.gserviceaccount.com&endpoint=http://o2-gcs:4443/")
+        let f = leer("gs://c/?suplantar=lector%40cliente.iam.gserviceaccount.com&endpoint=https://storage.europe-west1.rep.googleapis.com/")
             .unwrap();
         assert_eq!(
             f.suplantar.as_deref(),
             Some("lector@cliente.iam.gserviceaccount.com")
         );
-        assert_eq!(f.endpoint, "http://o2-gcs:4443");
+        assert_eq!(
+            f.endpoint,
+            "https://storage.europe-west1.rep.googleapis.com"
+        );
         assert_eq!(
             publica(&f, "docs/"),
-            "gs://c/docs/?endpoint=http://o2-gcs:4443&suplantar=lector@cliente.iam.gserviceaccount.com"
+            "gs://c/docs/?endpoint=https://storage.europe-west1.rep.googleapis.com&suplantar=lector@cliente.iam.gserviceaccount.com"
         );
         for mala in [
             "s3://c/",
@@ -663,6 +690,33 @@ mod tests {
             "gs://c/?access_key_id=x",
         ] {
             assert!(leer(mala).is_err(), "{mala}");
+        }
+    }
+
+    /// El token es al portador: un `endpoint` que no es de Google no se admite
+    /// (salvo en el laboratorio, `ORE_GCS_LABORATORIO=1`).
+    #[test]
+    fn el_token_no_se_le_da_a_otro_servidor() {
+        for bueno in [
+            "https://storage.googleapis.com",
+            "https://private.googleapis.com",
+            "https://restricted.googleapis.com",
+        ] {
+            assert!(de_google(bueno), "{bueno}");
+        }
+        for malo in [
+            "http://storage.googleapis.com",
+            "https://googleapis.com.evil.io",
+            "https://evil.io/.googleapis.com",
+            "https://x.googleapis.com:8443",
+            "https://x.googleapis.com@evil.io",
+            "http://o2-gcs:4443",
+        ] {
+            assert!(!de_google(malo), "{malo}");
+        }
+        if std::env::var("ORE_GCS_LABORATORIO").is_err() {
+            let e = leer("gs://c/?endpoint=https://evil.io").unwrap_err();
+            assert!(e.contains("no es de Google"), "{e}");
         }
     }
 

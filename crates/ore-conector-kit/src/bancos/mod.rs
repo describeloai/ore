@@ -11,6 +11,7 @@ use ore_core::json::Json;
 use std::collections::BTreeMap;
 
 pub mod bigquery;
+pub mod gcs;
 pub mod postgres;
 pub mod s3;
 

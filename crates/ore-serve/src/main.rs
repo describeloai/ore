@@ -112,6 +112,8 @@ ore-serve — el plano de control de ORE
   --cuenta-driver EMAIL  la cuenta de Google con la que leen los drivers de
                          esta celda (`ore-driver-<n>@…`): la que el cliente
                          autoriza en su BigQuery. `GET /fuentes/credenciales`
+  --cuenta-medios EMAIL  la de `ore-medios` (`ore-medios-<n>@…`): con la del
+                         driver, la que el cliente autoriza en su bucket de GCS
   --organizacion NOMBRE  de quien es este arbol. El custodio guarda por
                          organizacion, y este proceso sirve UNA
   --modelos HOST:PUERTO  el plano de control del gateway de modelos (0027 ②):
@@ -175,6 +177,8 @@ struct Opciones {
     organizacion: Option<String>,
     /// La cuenta de Google de los drivers de la celda, que el cliente autoriza.
     cuenta_driver: Option<String>,
+    /// La de `ore-medios`, que sirve los ítems de un bucket de GCS (0061 O2·3).
+    cuenta_medios: Option<String>,
     /// El gateway de modelos, `host:puerto` del plano de control, y la puerta
     /// que se contesta a quien pregunte por `modelo/<n>`. La misma figura que
     /// el cofre: HTTP llano dentro de la VPC, y este proceso no gana internet.
@@ -213,6 +217,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         cofre: None,
         organizacion: None,
         cuenta_driver: None,
+        cuenta_medios: None,
         modelos: None,
         modelos_url: None,
         perfiles: None,
@@ -254,6 +259,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                 o.acceso_testigo = Some(PathBuf::from(valor("--acceso-testigo")?))
             }
             "--cuenta-driver" => o.cuenta_driver = Some(valor("--cuenta-driver")?),
+            "--cuenta-medios" => o.cuenta_medios = Some(valor("--cuenta-medios")?),
             "--modelos" => o.modelos = Some(valor("--modelos")?),
             "--modelos-url" => o.modelos_url = Some(valor("--modelos-url")?),
             "--perfiles" => o.perfiles = Some(PathBuf::from(valor("--perfiles")?)),
@@ -537,6 +543,7 @@ fn main() -> ExitCode {
         cofre: o.cofre,
         organizacion: o.organizacion,
         cuenta_driver: o.cuenta_driver,
+        cuenta_medios: o.cuenta_medios,
         modelos: o.modelos.map(|admin| modelos::Modelos {
             url: o.modelos_url.unwrap_or_else(|| {
                 format!(

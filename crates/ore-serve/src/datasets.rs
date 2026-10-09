@@ -622,8 +622,10 @@ impl Servidor {
 /// **Quién canjea la credencial de una fuente por una corta** (ADR 0061 O0·4),
 /// por su tipo: un bucket de S3 por rol (`role_arn`), `ore-asumir-rol` (0046
 /// E9b). `None`: la credencial guardada es la que se usa. Un proveedor con su
-/// federación (GCS, Azure) es una rama aquí, con su canjeador, que tampoco
-/// lee el origen (`dependencias.rs`).
+/// federación (Azure) es una rama aquí, con su canjeador, que tampoco lee el
+/// origen (`dependencias.rs`). GCS no canjea nada aquí (ADR 0061 O2·3): su URL
+/// no lleva secreto, y quien lee —el driver, `ore-medios`— lo hace con su
+/// cuenta o suplantando la del cliente, él mismo.
 pub(crate) fn canjeador_de(valor: &str) -> Option<&'static str> {
     let esquema = valor.split_once("://").map(|(e, _)| e)?;
     match esquema {
@@ -830,6 +832,10 @@ mod pruebas {
             "otro tipo"
         );
         assert_eq!(canjeador_de("sin esquema role_arn="), None);
+        assert_eq!(
+            canjeador_de("gs://cubo/?suplantar=l@c.iam.gserviceaccount.com"),
+            None
+        );
     }
 
     #[test]
