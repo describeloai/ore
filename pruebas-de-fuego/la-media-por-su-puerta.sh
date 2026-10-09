@@ -9,7 +9,7 @@
 #
 #   1  list   GET /media/legal/archivo/contratos/items?prefix=Nueva%20carpeta%2F → reenvía
 #   2  stat   GET …/item?path=… → reenvía path y version
-#   3  url    POST …/urls → reenvía items y ttl_s
+#   3  url    POST …/urls de una mantenida → reenvía items y ttl_s
 #   4  lo que no existe → 404 media/no-existe, sin preguntar a ore-medios
 #   5  sin ore-medios desplegado → 503 media/no-desplegado
 #   6  un puesto entra (está en su lista)
@@ -23,6 +23,8 @@
 #      hoy, sin `actual`; uno que no es una transacción → 422
 #  11  el cursor lleva la transacción (H2): la página 2, tras una transacción
 #      nueva, sigue en la de la página 1; un cursor y un as_of que no casan → 422
+#  12  url de una virtual (H3): se firma en su origen, así que necesita la
+#      credencial de su fuente; sin custodio, 503 y nada llega a ore-medios
 #
 # Lo de verdad —el índice sobre el lago y la firma— se mide en vivo (B2·4).
 set -u
@@ -128,7 +130,7 @@ if [ "$c" = 200 ] && echo "$u" | grep -q '"ruta": "/indice/item"' && echo "$u" |
   dice "2 · stat: reenvía path y version"
 else falla "2 · stat ($c): $(cat "$TMP/r.json") · $u"; fi
 
-c=$(pide POST "/media/legal/archivo/contratos/urls" '{"items":[{"path":"a.pdf"}],"ttl_s":120}')
+c=$(pide POST "/media/legal/archivo/fotos/urls" '{"items":[{"path":"a.pdf"}],"ttl_s":120}')
 u=$(ultima)
 if [ "$c" = 200 ] && echo "$u" | grep -q '"ruta": "/indice/urls"' && echo "$u" | grep -q '"ttl_s": 120' && grep -q 'https://firmada' "$TMP/r.json" && grep -Eq '"digest": ?null' "$TMP/r.json"; then
   dice "3 · url: reenvía items y ttl_s, y devuelve las URLs tal cual (null sigue siendo null)"
@@ -192,6 +194,13 @@ if [ "$c" = 200 ] && [ "$cur" = "3.c0ffee" ] && [ "$c2" = 200 ] && echo "$u" | g
    && echo "$u" | grep -q '"actual": "gs://lago/.*00004-z' && [ "$c3" = 422 ]; then
   dice "11 · el cursor lleva la transacción: la página 2, tras la 4, sigue en la 3; cursor y as_of que no casan, 422"
 else falla "11 · cursor ($c $cur, $c2, $c3): $(cat "$TMP/r.json") · $u"; fi
+
+antes=$(wc -l < "$TMP/pedidas.jsonl")
+c=$(pide POST "/media/legal/archivo/contratos/urls" '{"items":[{"path":"docs/a.pdf"}],"ttl_s":120}')
+despues=$(wc -l < "$TMP/pedidas.jsonl")
+if [ "$c" = 503 ] && grep -q 'credencial de una fuente' "$TMP/r.json" && [ "$antes" = "$despues" ]; then
+  dice "12 · url de una virtual: se firma en su origen; sin custodio, 503 sin llegar a ore-medios"
+else falla "12 · url virtual ($c): $(cat "$TMP/r.json")"; fi
 
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 arrancar ""

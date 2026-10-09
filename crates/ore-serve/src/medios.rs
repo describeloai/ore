@@ -439,6 +439,14 @@ fn vida_hasta(caduca_ms: Option<u64>, ahora_ms: u64) -> u64 {
     }
 }
 
+/// Lo que le queda a una credencial que caduca en `caduca_ms`, menos 30 s, en
+/// segundos: de 30 a una hora (0049 H3, la vida de una URL firmada con ella).
+fn vida_de_la_credencial(caduca_ms: u64, ahora_ms: u64) -> u64 {
+    (caduca_ms.saturating_sub(ahora_ms) / 1000)
+        .saturating_sub(30)
+        .clamp(30, 3600)
+}
+
 /// La vida de lo que se pide al abrir un ítem.
 pub const VIDA_DE_UN_PERMISO: u64 = 300;
 
@@ -641,6 +649,33 @@ impl Servidor {
             if let Some(c) = &cursor {
                 pedido.insert("cursor".into(), Json::s(c));
             }
+            // ⭐ 0049 B8·3 y H3: lo que se sirve del origen lleva la credencial
+            //   de su fuente, del custodio: una virtual, siempre (sin ella no se
+            //   sirve); una mantenida cuya copia no está completa —la última
+            //   transacción fue virtual, o dejó ítems sin blob (`por_copiar`)—,
+            //   si la hay: lo que ya está en el lago se sirve igual y lo demás
+            //   lo dice `ore-medios`. Devuelve cuándo caduca la credencial.
+            let la_fuente =
+                |pedido: &mut BTreeMap<String, Json>| -> Result<Option<u64>, Respuesta> {
+                    let copia_incompleta = !virtual_
+                        && (de_puntero("virtual") != "false"
+                            || !matches!(de_puntero("por_copiar").as_str(), "" | "0"));
+                    if copia_incompleta
+                        && let Ok((fuente, env)) = fuente_de_la_coleccion(raiz, b, s, c)
+                        && let Ok((valor, c_ms)) = self.credencial_de_la_fuente(&fuente, &env)
+                    {
+                        pedido.insert("fuente".into(), Json::s(valor));
+                        return Ok(c_ms);
+                    }
+                    if !virtual_ {
+                        return Ok(None);
+                    }
+                    let (fuente, env) = fuente_de_la_coleccion(raiz, b, s, c)
+                        .map_err(|e| problema(502, "media/origen", e))?;
+                    let (valor, c_ms) = self.credencial_de_la_fuente(&fuente, &env)?;
+                    pedido.insert("fuente".into(), Json::s(valor));
+                    Ok(c_ms)
+                };
             match operacion {
                 "items" => {
                     for (k, a) in [
@@ -671,34 +706,10 @@ impl Servidor {
                             pedido.insert(k.into(), Json::s(v));
                         }
                     }
-                    let mut caduca = None;
-                    // ⭐ 0049 B8·3: una mantenida cuya copia no está completa
-                    //   —la última transacción fue virtual, o dejó ítems sin
-                    //   blob (`por_copiar`)— sirve esos ítems de su origen:
-                    //   lleva la credencial, si la hay. Si no, lo que ya está
-                    //   en el lago se sirve igual y lo demás lo dice `ore-medios`.
-                    let copia_incompleta = !virtual_
-                        && (de_puntero("virtual") != "false"
-                            || !matches!(de_puntero("por_copiar").as_str(), "" | "0"));
-                    if copia_incompleta
-                        && let Ok((fuente, env)) = fuente_de_la_coleccion(raiz, b, s, c)
-                        && let Ok((valor, c_ms)) = self.credencial_de_la_fuente(&fuente, &env)
-                    {
-                        pedido.insert("fuente".into(), Json::s(valor));
-                        caduca = c_ms;
-                    }
-                    if virtual_ {
-                        let (fuente, env) = match fuente_de_la_coleccion(raiz, b, s, c) {
-                            Ok(f) => f,
-                            Err(e) => return problema(502, "media/origen", e),
-                        };
-                        let (valor, c_ms) = match self.credencial_de_la_fuente(&fuente, &env) {
-                            Ok(v) => v,
-                            Err(r) => return r,
-                        };
-                        pedido.insert("fuente".into(), Json::s(valor));
-                        caduca = c_ms;
-                    }
+                    let caduca = match la_fuente(&mut pedido) {
+                        Ok(c) => c,
+                        Err(r) => return r,
+                    };
                     let vida = vida_hasta(caduca, crate::datasets::ahora_ms());
                     pedido.insert("ttl_s".into(), Json::Int(vida as i64));
                 }
@@ -710,8 +721,27 @@ impl Servidor {
                             .map(|(_, v)| Json::de_node(v))
                             .unwrap_or(Json::Arr(vec![])),
                     );
-                    if let Some((_, t)) = n.get("ttl_s") {
-                        pedido.insert("ttl_s".into(), Json::de_node(t));
+                    // 0049 H3: lo que se firma en el origen, como mucho lo que le
+                    // queda a su credencial.
+                    let caduca = match la_fuente(&mut pedido) {
+                        Ok(c) => c,
+                        Err(r) => return r,
+                    };
+                    let pedido_ttl = n.get("ttl_s").map(|(_, t)| t);
+                    match caduca {
+                        Some(c) => {
+                            let ttl = pedido_ttl
+                                .and_then(|t| t.as_str())
+                                .and_then(|t| t.parse::<u64>().ok())
+                                .unwrap_or(VIDA_DE_UN_PERMISO);
+                            let vida = vida_de_la_credencial(c, crate::datasets::ahora_ms());
+                            pedido.insert("ttl_s".into(), Json::Int(ttl.min(vida) as i64));
+                        }
+                        None => {
+                            if let Some(t) = pedido_ttl {
+                                pedido.insert("ttl_s".into(), Json::de_node(t));
+                            }
+                        }
                     }
                 }
             }
@@ -940,6 +970,10 @@ mod pruebas {
         assert_eq!(vida_hasta(None, 0), 300);
         assert_eq!(vida_hasta(Some(200_000), 0), 170);
         assert_eq!(vida_hasta(Some(10_000), 0), 30);
+        // H3: una URL firmada en el origen, hasta lo que le queda a la credencial.
+        assert_eq!(vida_de_la_credencial(200_000, 0), 170);
+        assert_eq!(vida_de_la_credencial(10_000_000, 0), 3600);
+        assert_eq!(vida_de_la_credencial(5_000, 0), 30);
     }
 
     #[test]

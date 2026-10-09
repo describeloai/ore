@@ -601,6 +601,10 @@ impl Servicio {
             .and_then(|t| t.parse::<u64>().ok())
             .unwrap_or(TTL_POR_DEFECTO)
             .clamp(TTL_MINIMO, TTL_MAXIMO);
+        // ⭐ 0049 H3: lo que no está en el lago —una virtual, o una mantenida a
+        //   medio copiar— se firma en su origen, con la credencial que trajo
+        //   `ore-serve` (que ya recortó `ttl_s` a lo que le queda).
+        let origen = texto(n, "fuente").map(ore_sigv4::fuente::leer);
         // Cada pedido, a su ítem o a su error; los que se firman, juntos.
         let mut salida: Vec<Option<Json>> = vec![None; pedidos.len()];
         let mut firmar: Vec<(usize, Pedida)> = Vec::new();
@@ -609,26 +613,38 @@ impl Servicio {
         for (i, p) in pedidos.iter().enumerate() {
             match self.buscar(ix, p) {
                 Err(e) => salida[i] = Some(Json::obj([("error", e)])),
-                Ok(_) if ix.virtual_ => {
-                    salida[i] = Some(Json::obj([(
-                        "error",
-                        problema_json(
-                            501,
-                            "media/origen",
-                            "la URL de un ítem de una colección virtual la firma la puerta de lectura (0049 B3)",
-                        ),
-                    )]))
-                }
-                Ok(it) => {
-                    let Some(blob) = it.blob.clone() else {
-                        salida[i] = Some(Json::obj([(
+                Ok(it) if ix.virtual_ || it.blob.is_none() => {
+                    salida[i] = Some(match &origen {
+                        Some(Ok(f)) => firmada_en_el_origen(f, ix, it, segundos),
+                        // Sin repetir el porqué: la URL de la fuente lleva la credencial.
+                        Some(Err(_)) => Json::obj([(
+                            "error",
+                            problema_json(
+                                501,
+                                "media/origen",
+                                "la fuente de esta colección no es un bucket de S3: su URL no se sabe firmar; se abre por `content`",
+                            ),
+                        )]),
+                        None if ix.virtual_ => Json::obj([(
+                            "error",
+                            problema_json(
+                                502,
+                                "media/origen",
+                                "un ítem de una virtual se firma en su origen, y no llegó la credencial de su fuente",
+                            ),
+                        )]),
+                        None => Json::obj([(
                             "error",
                             problema_json(
                                 404,
                                 "media/no-existe",
-                                "el ítem no tiene blob en el lago todavía (su copia está en camino): se abre por `content`, que lo lee de su origen",
+                                "el ítem no tiene blob en el lago todavía (su copia está en camino) y no llegó la credencial de su origen",
                             ),
-                        )]));
+                        )]),
+                    });
+                }
+                Ok(it) => {
+                    let Some(blob) = it.blob.clone() else {
                         continue;
                     };
                     let tipo = it
@@ -690,6 +706,46 @@ impl Servicio {
             ),
         )]))
     }
+}
+
+/// **La URL de un ítem en su origen** (0049 H3): SigV4 prefirmada con la
+/// credencial de la fuente, fijada a su `versionId` —también `null`, la de un
+/// objeto de antes del versionado (B3·0)—, con el tipo y la disposición dentro
+/// de la firma; sin red, como `ore-firmar-s3` (0046 E9·3). Lleva la clave de
+/// acceso, no el secreto; quien la tenga lee ese objeto en esa versión hasta
+/// que caduque.
+fn firmada_en_el_origen(
+    f: &ore_sigv4::fuente::Fuente,
+    ix: &Indice,
+    it: &Item,
+    segundos: u64,
+) -> Json {
+    let b = &f.bucket;
+    let clave = it.clave.clone().unwrap_or_else(|| it.camino.clone());
+    let tipo = it
+        .tipo
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".into());
+    let nombre = it.camino.rsplit('/').next().unwrap_or(&it.camino);
+    let (_, disposicion) = ore_core::medios::disposicion(&tipo, nombre);
+    let mut extra: Vec<(&str, &str)> = Vec::new();
+    if !it.version.is_empty() {
+        extra.push(("versionId", &it.version));
+    }
+    extra.push(("response-content-type", &tipo));
+    extra.push(("response-content-disposition", &disposicion));
+    let ruta = b.ruta(Some(&clave));
+    let q =
+        ore_sigv4::firma::prefirmar(&b.credencial, &b.region, &b.host(), &ruta, &extra, segundos);
+    Json::obj([
+        ("item", ix.referencia(it)),
+        ("url", Json::s(format!("{}{ruta}?{q}", b.endpoint))),
+        (
+            "expires_ms",
+            Json::Int(ahora_ms() + (segundos as i64) * 1000),
+        ),
+        ("ttl_s", Json::Int(segundos as i64)),
+    ])
 }
 
 /// Un ETag va entre comillas (RFC 9110 §8.8.3); el manifiesto puede no
@@ -1081,6 +1137,80 @@ mod pruebas {
         assert!(u[3].get("error").is_some(), "sin blob no se firma");
     }
 
+    /// 0049 H3: la URL de una virtual —y la de lo que una mantenida no tiene
+    /// todavía en el lago— se firma en su origen: fijada a su versión, sin el
+    /// secreto, con su vida; una fuente que no es S3 lo dice en su posición.
+    #[test]
+    fn la_url_de_lo_que_no_esta_en_el_lago_se_firma_en_su_origen() {
+        const FUENTE: &str =
+            "s3://cubo/?region=eu-north-1&access_key_id=AKIAEJEMPLO&secret_access_key=secreto";
+        let pide = |virtual_: &str, fuente: &str, items: &str| {
+            // Uno por pedido: el índice se guarda por `metadata_location`, con su clase.
+            let (s, _) = servicio();
+            let (c, b) = pedir(
+                &s,
+                "/indice/urls",
+                &format!(
+                    "{{{BASE},\"virtual\":\"{virtual_}\",\"fuente\":\"{fuente}\",\"ttl_s\":\"120\",\"items\":[{items}]}}"
+                ),
+            );
+            assert_eq!(c, 200, "{b}");
+            assert!(!b.contains("secreto"), "el secreto no sale: {b}");
+            let j = ore_core::parse::parse(&b).unwrap();
+            j.get("urls").unwrap().1.items().to_vec()
+        };
+        let url = |n: &ore_core::parse::Node| n.get("url").unwrap().1.as_str().unwrap().to_string();
+
+        // una virtual: las tres, en su origen; la que no existe, su error en su sitio
+        let u = pide(
+            "true",
+            FUENTE,
+            r#"{"path":"docs/a.pdf"},{"path":"docs/no.pdf"},{"path":"docs/sin.pdf"}"#,
+        );
+        let a = url(&u[0]);
+        assert!(
+            a.starts_with("https://cubo.s3.eu-north-1.amazonaws.com/docs/a.pdf?"),
+            "{a}"
+        );
+        for p in [
+            "versionId=v1",
+            "X-Amz-Expires=120",
+            "X-Amz-Credential=AKIAEJEMPLO%2F",
+            "response-content-type=",
+            "X-Amz-Signature=",
+        ] {
+            assert!(a.contains(p), "{p} en {a}");
+        }
+        assert_eq!(u[0].get("ttl_s").unwrap().1.as_str(), Some("120"));
+        assert_eq!(
+            u[0].get("item").unwrap().1.get("path").unwrap().1.as_str(),
+            Some("docs/a.pdf")
+        );
+        assert!(u[1].get("error").is_some());
+        assert!(
+            url(&u[2]).contains("docs/sin.pdf?"),
+            "sin blob, también: es del origen"
+        );
+
+        // una mantenida: lo del lago, del lago; lo que no tiene blob, del origen
+        let u = pide(
+            "false",
+            FUENTE,
+            r#"{"path":"docs/a.pdf"},{"path":"docs/sin.pdf"}"#,
+        );
+        assert!(url(&u[0]).contains("blobs/sha256/aa"), "{}", url(&u[0]));
+        assert!(url(&u[1]).starts_with("https://cubo.s3."), "{}", url(&u[1]));
+
+        // una fuente que no es S3: el error en su posición, sin repetir su URL
+        let u = pide(
+            "true",
+            "gs://otro/x?clave=secreto",
+            r#"{"path":"docs/a.pdf"}"#,
+        );
+        let e = u[0].get("error").unwrap().1;
+        assert_eq!(e.get("status").unwrap().1.as_str(), Some("501"));
+    }
+
     /// `ore-serve` reenvía `ttl_s` y `limit` como números JSON.
     #[test]
     fn los_numeros_llegan_como_numeros() {
@@ -1099,14 +1229,14 @@ mod pruebas {
     }
 
     #[test]
-    fn una_virtual_todavia_no_firma_y_un_lago_roto_es_502() {
+    fn una_virtual_sin_su_credencial_no_firma_y_un_lago_roto_es_502() {
         let (s, _) = servicio();
         let (_, b) = pedir(
             &s,
             "/indice/urls",
             &format!("{{{BASE},\"virtual\":\"true\",\"items\":[{{\"path\":\"docs/a.pdf\"}}]}}"),
         );
-        assert!(b.contains("0049 B3"), "{b}");
+        assert!(b.contains("no llegó la credencial"), "{b}");
         let (c, b) = pedir(
             &s,
             "/indice/items",
