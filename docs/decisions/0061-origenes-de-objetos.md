@@ -58,6 +58,21 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    *Domain Restricted Sharing* necesita una federación en su proyecto: límite conocido, se construye
    cuando se pida.
 
+6. **D-O3 · cómo entra ORE en el Azure del cliente** *(propuesta, 2026-10-09; investigación §6)*:
+   **las cuentas de la celda, federadas** —lo que hacen BigQuery Omni y Storage Transfer Service, y
+   lo que ORE ya hace con AWS—. El cliente crea en su tenant una app registration (o una managed
+   identity) con dos *federated identity credentials* (issuer `https://accounts.google.com`, subject
+   = el ID único de `ore-driver-<celda>` y el de `ore-medios-<celda>`, audiencia
+   `api://AzureADTokenExchange`) y le da `Storage Blob Data Reader` sobre el contenedor, y
+   `Storage Blob Delegator` sobre la cuenta para que `ore-medios` firme. La URL nombra la app, no un
+   secreto: `az://<cuenta>/<contenedor>[/<prefijo>]?tenant=<id>&cliente=<id de la app>`. Quien lee
+   (el driver, `ore-medios`) canjea él mismo su ID token de Google por uno de Entra; `ore-serve` no
+   canjea nada. **No se admiten** la clave de la cuenta (lo abre todo, y las organizaciones la apagan),
+   una SAS que traiga el cliente (un secreto al portador que caduca) ni el secreto de una app. Cada
+   blob se fija por `versionId` **y** su ETag a la vez (`If-Match`, lo de O3·0); sin versionado —y en
+   ADLS Gen2, que no lo tiene— por ETag, con D-O1. Las URLs, SAS de delegación de usuario fijadas a
+   la versión (`sr=bv`); por ETag, ninguna (D-O1). La huella, `md5:` si el blob la tiene.
+
 ## El plan
 
 Cada hito se construye y se prueba **en local**, con el emulador de cada proveedor en Docker; la
@@ -209,6 +224,19 @@ suspendida): `testIamPermissions`, la URL firmada por `signBlob` bajada con `cur
 (`generateAccessToken`, y su 403 sin `TokenCreator`), la paginación, y la concesión entre proyectos
 (un bucket de otro proyecto con `objectViewer` a las dos cuentas de la celda). Se salda corriendo
 `o2-gcs.sh` contra un bucket real y la consola dando de alta uno.
+
+### O3 · Azure Blob / ADLS Gen2 (en curso)
+
+**O3·0, medido** (Azurite 3.37.0, `mcr.microsoft.com/azure-storage/azurite@sha256:830430c1…`): lista
+con paginación de verdad (`maxresults`/`NextMarker`) y `delimiter`; rango `206`; `If-Match` viejo →
+`412`; el `Content-MD5` lo calcula en Put Blob (y sale en el listado y en cada lectura), no en Put
+Block List; `BlobNotFound`/`ContainerNotFound`; sin firma, `403`. Por HTTPS con `--oauth basic`: un
+Bearer, la clave de delegación y una **SAS de delegación** que se baja con su `rsct`/`rscd`
+(manipulada, `403`). **No**: el versionado (no da `x-ms-version-id`, ignora `include=versions`, y
+**un `versionid` que no existe le devuelve los bytes vigentes**: por eso el driver fija por versión
+*y* `If-Match`), la firma del token (sólo mira emisor, audiencia y fechas), ADLS (`dfs`, `400`) y el
+CRC64 de transporte. Contra Azure de verdad, el versionado, `sr=bv`, ADLS Gen2 y el canje con Entra:
+deuda temporal, sin cuenta de Azure.
 
 ## Lo que no se hace aquí
 

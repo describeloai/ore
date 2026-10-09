@@ -155,3 +155,45 @@ organización de Google impide conceder nada a cuentas de fuera de su dominio �
 es una federación de identidad en el proyecto del cliente que confíe en la plataforma, como Foundry—;
 SFTP: fijar la huella del host en la primera prueba, con confirmación (Fivetran la acepta así);
 SharePoint: `Sites.Selected` con consentimiento por sitio, nunca `Sites.Read.All`.
+
+## 6. Azure: cómo entra la plataforma en el Blob Storage del cliente (2026-10-09)
+
+Investigado para D-O3.
+
+| producto | cómo | fuente |
+|---|---|---|
+| **BigQuery Omni** | app registration de un tenant del cliente con una *federated identity credential* «Other issuer»: issuer `https://accounts.google.com`, subject = la identidad de Google de la conexión, audiencia `api://AzureADTokenExchange`; `Storage Blob Data Reader`. Sin secretos | [docs](https://docs.cloud.google.com/bigquery/docs/omni-azure-create-connection) |
+| **Storage Transfer Service** | SAS, Shared Key, o `federatedIdentityConfig{clientId, tenantId}` con subject = el ID único de la cuenta de Google; recomienda un rol a medida con sólo `blobs/read` sobre el contenedor | [docs](https://docs.cloud.google.com/storage-transfer/docs/source-microsoft-azure) |
+| **Snowflake** | app multi-tenant suya; el cliente abre `AZURE_CONSENT_URL` y da `Storage Blob Data Reader` al service principal | [docs](https://docs.snowflake.com/en/user-guide/data-load-azure-config) |
+| **Databricks UC** | Access Connector (managed identity) «strongly recommended»; el service principal con secreto, «legacy» | [docs](https://learn.microsoft.com/en-us/azure/databricks/connect/unity-catalog/cloud-storage/storage-credentials) |
+| **Foundry (ABFS)** | client credentials, SAS (desaconsejado), Shared Key (no en producción), WIF/OIDC (`tenantId` + `clientId`) | [docs](https://www.palantir.com/docs/foundry/available-connectors/onelake-and-azure-blob-filesystem/) |
+| **Fivetran / Airbyte** | service principal con secreto, SAS, account key | [Fivetran](https://fivetran.com/docs/connectors/files/azure-blob-storage/setup-guide), [Airbyte](https://docs.airbyte.com/integrations/sources/azure-blob-storage) |
+
+**Los dos de Google (Omni, STS) hacen exactamente lo que ORE ya hace con AWS**: la cuenta de Google
+de la plataforma, federada en una app del cliente por su ID único. Microsoft desaconseja Shared Key
+(la política integrada *Storage accounts should prevent shared key access*); con
+`AllowSharedKeyAccess=false` mueren la SAS de cuenta y la de servicio, y sólo vale la **SAS de
+delegación de usuario** ([docs](https://learn.microsoft.com/en-us/azure/storage/common/shared-key-authorization-prevent)).
+
+- **Federación (WIF) con Google** ([tutorial](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-google-cloud),
+  [límites](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-considerations)):
+  en una app registration **o** en una managed identity asignada por el usuario; subject = el ID
+  único numérico de la cuenta (el `sub` del ID token); 20 credenciales por app; coincidencia exacta;
+  minutos de propagación (`AADSTS70021`); un subject mal escrito se crea sin error y falla después.
+  El canje es el *client credentials* con aserción federada
+  ([doc](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow#third-case-access-token-request-with-a-federated-credential)).
+  El ID token sale del metadata server de GKE (`/identity?audience=…`), como ya lo pide `ore-gcp`
+  para AWS (medido desde pods el 2026-09-30): sólo cambia la audiencia.
+- **Sin `ExternalId`**: lo que aísla es la identidad por celda, como en S3 y GCS.
+- **RBAC** ([roles](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage)):
+  `Storage Blob Data Reader` lista y lee, versiones incluidas, y trae `generateUserDelegationKey`;
+  pero la clave de delegación es **de la cuenta**: con el lector sólo sobre el contenedor, hace falta
+  además `Storage Blob Delegator` sobre la cuenta ([doc](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas)).
+- **SAS de delegación**: la clave vale hasta 7 días y firma cuantas URLs se quiera; `sr=bv` fija una
+  versión; `rsct`/`rscd` el tipo y la disposición.
+- **ADLS Gen2** (namespace jerárquico): **sin versionado de blobs**
+  ([versioning](https://learn.microsoft.com/en-us/azure/storage/blobs/versioning-overview)) — se fija
+  por ETag (D-O1) —; las ACL POSIX se suman a RBAC; el endpoint Blob funciona sobre esas cuentas.
+- **Huella**: `Content-MD5`, que Put Blob calcula siempre y Put Block List sólo guarda si el cliente
+  lo da (las subidas grandes suelen quedar sin él); ningún CRC64 de objeto entero
+  ([Put Block List](https://learn.microsoft.com/en-us/rest/api/storageservices/put-block-list)).
