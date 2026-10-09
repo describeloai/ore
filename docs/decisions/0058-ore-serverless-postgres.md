@@ -1324,3 +1324,15 @@ Leído en el commit fijado (`8269bece`), sin Google:
 En P5·5b, el pool de 50 por base llega ahora a la VM **por el camino real**: la base nueva lanza `configurar-rama`, `/configure` lleva `pgbouncer_settings` y el `compute_ctl` rehace el pool sin reiniciar.
 
 Al terminar, **ni un cómputo vivo ni un tenant en el almacén**: borrar no deja rastro.
+
+#### P6·2 · Los límites del cliente (2026-10-09)
+
+- **Migración 006**: `dormir_tras` por endpoint, en segundos. **300 por defecto**, como Neon; **0 = nunca**; si no, de 60 s a 7 días. «Inactividad» es la de `compute_ctl` (P6·0): sin consultas en curso, no sin sesiones.
+- **`POST …/endpoints/{e}/ajustes`** (`cu_min`, `cu_max`, `dormir_tras`; en `ore-serve`, `postgres:gestionar` o el dueño). Lo que no viene se queda. Las reglas son las de crear: CU de 0,25 a 2, mínimo ≤ máximo, y 400 si no hay nada que cambiar. Otra organización, 404. Crear un endpoint acepta también su `dormir_tras`.
+- **Es una operación** (`configurar-endpoint`) que el reconciliador da por hecha sin tocar el cómputo:
+  - **un cómputo vivo no se reinicia** por cambiar sus límites;
+  - las CU y `max_connections` valen en el siguiente arranque, que en adelante es el despertar (P6·4);
+  - `dormir_tras` lo lee el reconciliador al decidir si duerme (P6·3).
+- **La API lo dice**: cada endpoint trae `dormir_tras`, y `conexiones.maximas` ya es la del siguiente arranque. Con 0,25 CU son 112, mientras el cómputo vivo sigue con sus 450.
+
+**Medido** (`lab/p62.sh`, con el reconciliador real) y en el contrato: lo malo, fuera; los límites nuevos en la API; la operación, hecha; el cómputo vivo, sin reiniciar. P5 sigue en verde.

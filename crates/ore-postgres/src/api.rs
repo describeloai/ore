@@ -19,6 +19,8 @@
 //!                                                           "cu_min": "0.25", "cu_max": "1"}  → 202
 //!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}
 //!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}   → 202
+//!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/endpoints/{e}/ajustes   {"cu_min", "cu_max", "dormir_tras"}
+//!                                                           → 202 (P6·2); lo que no viene, se queda
 //!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/roles
 //!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/roles            {"nombre": "app"}  → 202 + la contraseña, UNA vez
 //!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/roles/{n}/contrasena               → 202 + una nueva; la vieja deja de valer
@@ -145,7 +147,8 @@ impl Servidor {
             | Pedido::CrearEndpoint(..)
             | Pedido::CrearRol(..)
             | Pedido::CrearBase(..)
-            | Pedido::CambiarAcceso(_) => match analizar(&p.cuerpo) {
+            | Pedido::CambiarAcceso(_)
+            | Pedido::AjustarEndpoint(..) => match analizar(&p.cuerpo) {
                 Ok(n) => Some(n),
                 Err(m) => return Respuesta::error(400, m),
             },
@@ -188,6 +191,13 @@ impl Servidor {
                 self.dominio.as_deref(),
             ),
             Pedido::BorrarEndpoint(p, r, e) => borrar_endpoint(c, &celda, p, r, e),
+            Pedido::AjustarEndpoint(p, r, e) => ajustar_endpoint(
+                c,
+                &celda,
+                (p, r, e),
+                cuerpo.as_ref().expect("analizado"),
+                self.dominio.as_deref(),
+            ),
             Pedido::Roles(p, r) => roles(c, &celda, p, r),
             Pedido::CrearRol(p, r) => {
                 crear_rol(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
@@ -232,6 +242,7 @@ pub enum Pedido<'a> {
     CrearEndpoint(&'a str, &'a str),
     Endpoint(&'a str, &'a str, &'a str),
     BorrarEndpoint(&'a str, &'a str, &'a str),
+    AjustarEndpoint(&'a str, &'a str, &'a str),
     Roles(&'a str, &'a str),
     CrearRol(&'a str, &'a str),
     Contrasena(&'a str, &'a str, &'a str),
@@ -259,6 +270,9 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("POST", ["proyectos", p, "ramas", r, "endpoints"]) => Pedido::CrearEndpoint(p, r),
         ("GET", ["proyectos", p, "ramas", r, "endpoints", e]) => Pedido::Endpoint(p, r, e),
         ("DELETE", ["proyectos", p, "ramas", r, "endpoints", e]) => Pedido::BorrarEndpoint(p, r, e),
+        ("POST", ["proyectos", p, "ramas", r, "endpoints", e, "ajustes"]) => {
+            Pedido::AjustarEndpoint(p, r, e)
+        }
         ("GET", ["proyectos", p, "ramas", r, "roles"]) => Pedido::Roles(p, r),
         ("POST", ["proyectos", p, "ramas", r, "roles"]) => Pedido::CrearRol(p, r),
         ("POST", ["proyectos", p, "ramas", r, "roles", n, "contrasena"]) => {
@@ -278,6 +292,7 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
             | ["proyectos", _, "ramas", _]
             | ["proyectos", _, "ramas", _, "endpoints"]
             | ["proyectos", _, "ramas", _, "endpoints", _]
+            | ["proyectos", _, "ramas", _, "endpoints", _, "ajustes"]
             | ["proyectos", _, "ramas", _, "roles" | "bases"]
             | ["proyectos", _, "ramas", _, "roles" | "bases", _]
             | ["proyectos", _, "ramas", _, "roles", _, "contrasena"],
@@ -307,6 +322,7 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         | Pedido::CrearEndpoint(p, r)
         | Pedido::Endpoint(p, r, _)
         | Pedido::BorrarEndpoint(p, r, _)
+        | Pedido::AjustarEndpoint(p, r, _)
             if !id_valido(p) || !id_valido(r) =>
         {
             Err(Respuesta::error(
@@ -836,7 +852,7 @@ fn rama_json(f: &Row) -> Json {
 
 /// De un endpoint, en el orden en que lo lee [`endpoint_json`].
 const ENDPOINT: &str = "id, rama, tipo, vm, cu_min, cu_max, deseado, observado, direccion,
-    to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
+    to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), dormir_tras";
 
 /// Lo que hace falta para decir sus conexiones ([`endpoint_json`]), detrás de
 /// [`ENDPOINT`], con la fila del endpoint como `e`.
@@ -928,6 +944,78 @@ fn cu(cuerpo: &Node, k: &str, por_defecto: f64) -> Result<f64, Fallo> {
     }
 }
 
+/// `dormir_tras`, si viene: segundos sin actividad hasta dormir; 0 = nunca; si no, de 60 s a 7 días.
+fn dormir_tras(cuerpo: &Node) -> Result<Option<i32>, Fallo> {
+    match cuerpo.get("dormir_tras").and_then(|(_, v)| v.as_str()) {
+        None => Ok(None),
+        Some(v) => v
+            .parse::<i32>()
+            .ok()
+            .filter(|s| *s == 0 || (60..=604_800).contains(s))
+            .map(Some)
+            .ok_or_else(|| {
+                Fallo(
+                    400,
+                    format!("`dormir_tras` son segundos: 0 (nunca) o de 60 a 604800, no `{v}`"),
+                )
+            }),
+    }
+}
+
+/// P6·2 · Los límites de un endpoint vivo: CU mínimas y máximas y el tiempo hasta dormir.
+/// Lo que no viene se queda. Las CU (y con ellas `max_connections`) valen en el siguiente
+/// arranque del cómputo; `dormir_tras`, en cuanto lo mira el reconciliador (P6·3).
+fn ajustar_endpoint(
+    c: &mut Client,
+    celda: &Celda,
+    (p, r, e): (&str, &str, &str),
+    cuerpo: &Node,
+    dominio: Option<&str>,
+) -> Result<Respuesta, Fallo> {
+    let dormir = dormir_tras(cuerpo)?;
+    let viene = |k: &str| cuerpo.get(k).is_some();
+    if !viene("cu_min") && !viene("cu_max") && dormir.is_none() {
+        return Err(Fallo(
+            400,
+            "nada que cambiar: `cu_min`, `cu_max` o `dormir_tras`".into(),
+        ));
+    }
+    let mut tx = c.transaction()?;
+    rama_viva(&mut tx, celda, p, r)?;
+    let Some(f) = tx.query_opt(
+        "select cu_min, cu_max from plano.endpoint
+          where organizacion = $1 and proyecto = $2 and rama = $3 and id = $4 and deseado = 'vivo'
+          for update",
+        &[&celda.organizacion, &p, &r, &e],
+    )?
+    else {
+        return Err(Fallo(404, format!("no hay ningún endpoint `{e}` en `{r}`")));
+    };
+    let (cu_min, cu_max) = (
+        cu(cuerpo, "cu_min", f.get(0))?,
+        cu(cuerpo, "cu_max", f.get(1))?,
+    );
+    if cu_min > cu_max {
+        return Err(Fallo(400, "`cu_min` no puede pasar de `cu_max`".into()));
+    }
+    let op = nueva_operacion_de(&mut tx, celda, p, "configurar-endpoint", Some(r), Some(e))?;
+    let fila = tx.query_one(
+        &format!(
+            "update plano.endpoint e
+                set cu_min = $5, cu_max = $6, dormir_tras = coalesce($7, dormir_tras)
+              where organizacion = $1 and proyecto = $2 and rama = $3 and id = $4
+          returning {ENDPOINT}, {}",
+            conexiones_sql()
+        ),
+        &[&celda.organizacion, &p, &r, &e, &cu_min, &cu_max, &dormir],
+    )?;
+    tx.commit()?;
+    Ok(aceptada(
+        &op,
+        Some(("endpoint", endpoint_json(&fila, dominio))),
+    ))
+}
+
 fn crear_endpoint(
     c: &mut Client,
     celda: &Celda,
@@ -959,16 +1047,17 @@ fn crear_endpoint(
     if cu_min > cu_max {
         return Err(Fallo(400, "`cu_min` no puede pasar de `cu_max`".into()));
     }
+    let dormir = dormir_tras(cuerpo)?.unwrap_or(300);
     let mut tx = c.transaction()?;
     if rama_viva(&mut tx, celda, p, r)? != "lista" {
         return Err(Fallo(409, format!("la rama `{r}` aún no está lista")));
     }
     let fila = match tx.query_one(
         &format!(
-            "insert into plano.endpoint (organizacion, proyecto, rama, id, tipo, vm, cu_min, cu_max)
-             values ($1, $2, $3, $4, $5, {NUEVA_VM}, $6, $7) returning {ENDPOINT}"
+            "insert into plano.endpoint (organizacion, proyecto, rama, id, tipo, vm, cu_min, cu_max, dormir_tras)
+             values ($1, $2, $3, $4, $5, {NUEVA_VM}, $6, $7, $8) returning {ENDPOINT}"
         ),
-        &[&celda.organizacion, &p, &r, &id, &tipo, &cu_min, &cu_max],
+        &[&celda.organizacion, &p, &r, &id, &tipo, &cu_min, &cu_max, &dormir],
     ) {
         Ok(f) => f,
         // ⭐ El cerco, capa 1: lo cierra la base, también con dos peticiones a la vez.
@@ -1040,6 +1129,8 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
             ]),
         ),
         ("creado", Json::s(f.get::<_, String>(9))),
+        // P6·2: segundos sin actividad hasta dormir; 0 = nunca.
+        ("dormir_tras", Json::Int(f.get::<_, i32>(10) as i64)),
     ];
     if let Some(d) = f.get::<_, Option<String>>(8) {
         v.push(("direccion", Json::s(d)));
@@ -1051,8 +1142,8 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
         v.push(("host_pool", Json::s(format!("{vm}-pooler.{dom}"))));
     }
     // P5·5: cuántas conexiones admite (directas) y el pool por base (-pooler).
-    if f.len() > 11 {
-        let maximas = crate::especificacion::conexiones(f.get(10));
+    if f.len() > 12 {
+        let maximas = crate::especificacion::conexiones(f.get(11));
         v.push((
             "conexiones",
             Json::obj([
@@ -1061,7 +1152,7 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
                     "pool_por_base",
                     Json::Int(crate::especificacion::pool_por_base(
                         maximas,
-                        f.get::<_, i64>(11) as usize,
+                        f.get::<_, i64>(12) as usize,
                     )),
                 ),
             ]),
@@ -1630,6 +1721,22 @@ mod pruebas {
         assert_eq!(
             ruta("POST", &["proyectos", "ventas", "acceso"]).ok(),
             Some(Pedido::CambiarAcceso("ventas"))
+        );
+        assert_eq!(
+            ruta(
+                "POST",
+                &[
+                    "proyectos",
+                    "ventas",
+                    "ramas",
+                    "main",
+                    "endpoints",
+                    "principal",
+                    "ajustes"
+                ]
+            )
+            .ok(),
+            Some(Pedido::AjustarEndpoint("ventas", "main", "principal"))
         );
         assert_eq!(
             ruta("DELETE", &["proyectos", "ventas", "acceso"])

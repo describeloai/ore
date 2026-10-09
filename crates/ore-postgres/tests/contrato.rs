@@ -37,7 +37,8 @@ fn servidor() -> Option<Servidor> {
             "002-el-tenant-y-las-ramas",
             "003-los-endpoints",
             "004-roles-y-bases",
-            "005-quien-entra"
+            "005-quien-entra",
+            "006-los-limites"
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -1269,6 +1270,61 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
     assert!(j.contains(r#""tcp":{"burst":5,"rps":2}"#), "{j}");
     assert!(j.contains(r#""ws":{"burst":1000,"rps":100}"#), "{j}");
     assert!(j.contains(r#""block_public_connections":false"#), "{j}");
+
+    // P6·2 · los límites del endpoint: por defecto duerme a los 300 s.
+    let ajustes = "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal/ajustes";
+    let (_, ep) = pide(
+        &s,
+        "a",
+        "GET",
+        "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal",
+        "",
+    );
+    assert!(ep.contains(r#""dormir_tras":300"#), "{ep}");
+    for (malo, por) in [
+        (r#"{"dormir_tras": "30"}"#, "menos de 60 s"),
+        (r#"{"dormir_tras": "999999"}"#, "más de 7 días"),
+        (
+            r#"{"cu_min": "1.5", "cu_max": "1"}"#,
+            "mínimo por encima del máximo",
+        ),
+        (r#"{"cu_max": "8"}"#, "fuera de rango"),
+        (r#"{}"#, "nada que cambiar"),
+    ] {
+        assert_eq!(pide(&s, "a", "POST", ajustes, malo).0, 400, "{por}");
+    }
+    assert_eq!(
+        pide(&s, "b", "POST", ajustes, r#"{"dormir_tras": "0"}"#).0,
+        404
+    );
+    let (codigo, r) = pide(
+        &s,
+        "a",
+        "POST",
+        ajustes,
+        r#"{"cu_max": "0.25", "dormir_tras": "0"}"#,
+    );
+    assert_eq!(codigo, 202, "{r}");
+    assert_eq!(campo(&r, &["operacion", "tipo"]), "configurar-endpoint");
+    // Lo que no vino (cu_min) se queda; 0,25 CU → 112 conexiones; 0 = nunca duerme.
+    assert!(
+        r.contains(r#""cu":{"max":"0.25","min":"0.25"}"#)
+            && r.contains(r#""dormir_tras":0"#)
+            && r.contains(r#""maximas":112"#),
+        "{r}"
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, op) = pide(
+        &s,
+        "a",
+        "GET",
+        &format!(
+            "/v1/postgres/operaciones/{}",
+            campo(&r, &["operacion", "id"])
+        ),
+        "",
+    );
+    assert_eq!(campo(&op, &["estado"]), "hecha", "{op}");
 }
 
 #[test]

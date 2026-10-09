@@ -500,6 +500,10 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
         // P5·6: quién entra lo comprueba el proxy, no el cómputo. No hay nada que
         // hacer aquí: al quedar hecha, `olvidar` le dice al proxy que lo relea.
         "configurar-acceso" => Ok(()),
+        // P6·2: los límites del endpoint. Las CU y `max_connections` valen en el siguiente
+        // arranque de su cómputo (no se reinicia uno vivo por esto); `dormir_tras` lo lee el
+        // reconciliador al decidir si duerme (P6·3).
+        "configurar-endpoint" => Ok(()),
         otro => Err(Fallo::Definitivo(format!(
             "este reconciliador no sabe hacer `{otro}`"
         ))),
