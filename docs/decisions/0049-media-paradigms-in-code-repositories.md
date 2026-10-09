@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM3 hechos** (leer, dentro de un `@Transform` y escribir: 40/51, y 35 del SDK). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM4 hechos** (leer, dentro de un `@Transform`, escribir y `apply()` en ficheros: **51/51**, y 36 del SDK); `apply()` en filas (JM4b) y JM5, pendientes. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -927,6 +927,37 @@ corrida entera, ~31 s.
 **Un hueco más del servidor** (el cuarto): **`verify` no existe** en `ore-serve` ni en `ore-medios`, aunque
 `docs/media.md` §2 lo define (`POST /media/…/verify`). En la JVM es del cliente: lee cada ítem y lo
 coteja con su digest (`verify-001`). Python no lo tiene.
+
+#### JM4 · hecho: `apply()`, ficheros que dan ficheros (2026-10-09)
+
+**`51/51`, ninguno mal**: la suite entera de `conformidad/media` en la JVM —la primera superficie que
+la corre toda—, y **36/36 del SDK** (19 + 17). La corrida, ~34 s.
+
+- **El SDK**: `Collection.apply(fn, Media.applying().output(…).version(…).params(…).retryErrors(…)
+  .threads(…).saveEverySeconds(…).name(…))`, con `fn` una `Function<Item, ?>` que da `Media.File`s
+  (uno, una lista o ninguno); `Media.File(name, data, contentType, anchor)` valida su nombre y su ancla
+  como en Python; `Collection.derivations()`, el registro, por cursor. Es `_aplicar_ficheros` de Python
+  traducido: el registro por identidad, la ruta que el registro ya dice (una copia no mueve nada), la
+  clave `(identidad, fn, fn_version, params_hash)` con el mismo `\x1f` que Python, lo que se va se
+  retira, un fallo es su marca, se confirma cada `saveEverySeconds` entre ítems y nunca con una función
+  a medias; una pasada cortada aborta lo que no se confirmó.
+- **Leer la propia salida** dentro de un transform (el registro) no es una entrada y no se anota, como
+  en Python (B5·2).
+- **El ejecutor de `derivar.json`** (`Derivacion.java`) es el de Python traducido, con su vocabulario
+  de `espera` entero. **Una mutación** —quitar `fn_version` de la clave— la caza `derivar-009`
+  (`recomputed: 0` y se esperaban 3): el ejecutor prueba, no sólo pasa.
+- **D-JM2, medido** (prueba 19): sin `version`, `codigo:<12>` del bytecode de la clase **donde se escribe**
+  la función —la lambda o la referencia a método—: dos de la misma clase, la misma; de otra, otra. Como
+  la fuente de Python (`inspect.getsource`), lo que la función llama en otra clase no entra en la
+  versión: si cambia una función auxiliar de otra clase, se da `version("…")`.
+- **`fn`, su nombre**: una lambda no tiene nombre; el registro dice `name(…)`, o el del transform, o
+  `fn`. Entra en la clave: cambiarlo recalcula.
+
+**Lo que no está, y es el paso siguiente (JM4b): `apply()` en filas** (la tabla anclada de B5). Pide
+`write(…, anchoredTo)` en la JVM, que no está, y leer de vuelta con `over()` las columnas de sistema
+(`_item`, `_anchor`, `_derivation`, `_status`, structs). El banco no tiene lago: se prueba como Python
+(`la-derivacion-en-python.py`), con el lago y el listado en memoria. Hoy `apply()` a una salida que no es
+una colección escrita dice `UnsupportedOperationException` con el porqué.
 
 #### Dos decisiones que pide la JVM
 

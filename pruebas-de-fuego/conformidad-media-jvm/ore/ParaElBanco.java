@@ -36,6 +36,12 @@ public final class ParaElBanco {
         synchronized (t.linaje) { t.linaje.get("derivations").add(d); }
     }
 
+    /** Lo que corre tras cada commit de {@code apply()} ({@code derivar-008}: cortar una pasada), o {@code null}. */
+    public static void trasConfirmar(Runnable r) { Media.trasConfirmar = r; }
+
+    /** D-JM2: la versión que {@code apply()} da a una función que no la dice. */
+    public static String version(Object fn) { return Media.versionDe(fn); }
+
     /** El error del contrato que el SDK da a una respuesta {@code (status, type)}. */
     public static Media.MediaError error(int status, String type) { return Media.error(status, Map.of("type", type), "x"); }
 

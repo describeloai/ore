@@ -47,6 +47,7 @@ public final class Ejecutor {
     static {
         Lectura.registrar(OPS);   // JM1
         Escritura.registrar(OPS); // JM3
+        Derivacion.registrar(OPS); // JM4
     }
 
     public static void main(String[] args) throws Exception {

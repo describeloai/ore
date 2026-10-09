@@ -311,6 +311,78 @@ public final class Media {
             return salida;
         }
 
+        /**
+         * <b>Incremental derivation</b> (0049 B5, D5) into a written collection (B9): {@code fn(item)}
+         * on each item that needs it, returning {@code Media.File}s (one, a list, or none), each written
+         * to {@code <item path>/<name>} with where it comes from ({@code source}) and how
+         * ({@code derivation}). An item whose key did not change is skipped; one that changed replaces
+         * its files (and those it no longer gives are retired); an item that is gone takes its files
+         * with it; an item with no files, or that fails, leaves a mark so it is not recomputed. The
+         * key: the item's identity, the function's name and version, and {@code params}. Returns
+         * {@code {items, new, recomputed, skipped, errors, removed, files_written, files_retired, written}}.
+         */
+        public Ore.Result apply(java.util.function.Function<Item, ?> fn, Apply options) {
+            Apply o = options == null ? new Apply() : options;
+            Ore.Transform t = Ore.transformActivo();
+            String salida = o.output != null ? Ore.corto(o.output, "apply(): the `output`") : t != null ? t.output() : null;
+            if (salida == null) throw new IllegalArgumentException("apply(): outside a transform, give the `output` (`db.schema.c`)");
+            if (!esEscrita(salida))
+                throw new UnsupportedOperationException("apply() into a table (an anchored table, 0049 B5) is not in the JVM yet: "
+                    + "the output `" + salida + "` is not a written collection (`Ore.createCollection`)");
+            return aplicarFicheros(this, fn, o, new Collection(salida));
+        }
+
+        /** {@code apply(fn, options)} with the defaults: inside a transform, into its output. */
+        public Ore.Result apply(java.util.function.Function<Item, ?> fn) { return apply(fn, null); }
+
+        /**
+         * <b>The register</b> of a collection written by {@code apply()} (0049 B9): one entry per
+         * source item —{@code {source, derivation, state, files, error}}, with {@code state}
+         * {@code files}, {@code empty} or {@code error}—, lazily, by cursor.
+         */
+        @SuppressWarnings("unchecked")
+        public Iterable<Map<String, Object>> derivations() {
+            Collection col = this;
+            return () -> new Iterator<>() {
+                String cursor = null;
+                boolean fin = false;
+                Iterator<Object> actual = List.of().iterator();
+
+                @Override public boolean hasNext() {
+                    while (!actual.hasNext() && !fin) {
+                        Map<String, Object> q = new LinkedHashMap<>();
+                        q.put("cursor", cursor);
+                        Ore.Respuesta r = pedir("GET", "derivations", q, null);
+                        if (r.codigo() != 200) throw error(r.codigo(), r.cuerpo(), "derivations(" + col + ")");
+                        actual = r.cuerpo().get("derivations") instanceof List<?> l ? new ArrayList<Object>(l).iterator() : List.of().iterator();
+                        cursor = texto(r.cuerpo().get("cursor"));
+                        if (cursor == null || cursor.isEmpty()) fin = true;
+                    }
+                    return actual.hasNext();
+                }
+
+                @Override public Map<String, Object> next() {
+                    if (!hasNext()) throw new NoSuchElementException();
+                    return (Map<String, Object>) actual.next();
+                }
+            };
+        }
+
+        /** Si la salida es una {@code MediaCollection} (B9): la da {@code /documentos}. */
+        static boolean esEscrita(String corto) {
+            String[] p = Ore.partes(corto);
+            String ruta = p[1].equals("default") ? "/documentos/MediaCollection/" + p[0] + "/" + p[2]
+                : "/documentos/MediaCollection/" + p[0] + "/" + p[1] + "/" + p[2];
+            try {
+                return Ore.puesto.pedir("GET", ruta, null, Duration.ofSeconds(60)).codigo() == 200;
+            } catch (IOException e) {
+                throw new MediaError("media/origen", 502, "apply(): " + e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new MediaError("media/origen", 499, "apply(): interrupted");
+            }
+        }
+
         /** The listing of the current transaction, lazy, by cursor: {@code Item}s without bytes. */
         public Iterable<Item> items() { return items(null, null, LIMIT, null); }
 
@@ -463,6 +535,9 @@ public final class Media {
     /** Lo que {@code over()} y {@code sql()} hacen al leer, con el error del contrato. */
     static void lee(String corto) {
         Ore.Transform t = Ore.transformActivo();
+        // 0049 B5·2: su `output` también —un incremental lee lo que ya escribió—, y leerse no es una
+        // entrada: no se anota (como Python).
+        if (t != null && corto.equals(t.output())) return;
         if (t != null && !t.inputs().contains(corto))
             throw new MediaForbidden("media/no-declarada", 403, "`" + corto + "` is not in the inputs of `" + t.nombre()
                 + "` (" + String.join(", ", t.inputs()) + "): a transform only reads what it declares");
@@ -861,6 +936,315 @@ public final class Media {
             cerrarFlujo();
             abierto = false;
         }
+    }
+
+    // ── 0049 B9 · ficheros que dan ficheros: apply() ────────────────────────
+
+    /** Los campos de un {@code Anchor} (v1alpha17 {@code 02} §2). */
+    static final List<String> CAMPOS_ANCLA = List.of("kind", "page", "bbox", "polygon", "space", "t_start", "t_end",
+        "frame", "char_start", "char_end", "text_of", "offset", "length");
+
+    /** Sólo para el laboratorio ({@code derivar-008}): lo que corre tras cada commit de {@code apply()}, para cortar una pasada. */
+    static volatile Runnable trasConfirmar = null;
+
+    /**
+     * <b>A file that {@code apply()} writes</b> into a written collection (0049 B9): {@code name} is
+     * relative to the item it comes from ({@code p001.png} → {@code <item path>/p001.png});
+     * {@code data} is a {@code byte[]}, a {@code Path} or an {@code InputStream}, as in {@code put};
+     * {@code contentType} the declared one (the bytes decide); {@code anchor}, what part of the
+     * item it is ({@code {kind: page, page: 1}}, v1alpha17 {@code 02}).
+     */
+    public record File(String name, Object data, String contentType, Map<String, Object> anchor) {
+        public File {
+            List<String> partes = name == null ? List.of() : List.of(name.split("/", -1));
+            if (partes.isEmpty() || partes.stream().anyMatch(p -> p.isEmpty() || p.equals(".") || p.equals("..")) || name.contains("\\"))
+                throw new IllegalArgumentException("File(): `name` is a relative path without `.`, `..` or empty parts, not " + name);
+            if (anchor != null) {
+                if (anchor.get("kind") == null) throw new IllegalArgumentException("File(): `anchor` is an Anchor (v1alpha17 `02`) with its `kind`: " + anchor);
+                List<String> otros = anchor.keySet().stream().filter(k -> !CAMPOS_ANCLA.contains(k)).sorted().toList();
+                if (!otros.isEmpty()) throw new IllegalArgumentException("File(): `anchor` with fields that are not `Anchor`'s: " + String.join(", ", otros));
+            }
+        }
+
+        public static File of(String name, Object data) { return new File(name, data, null, null); }
+
+        public static File of(String name, Object data, String contentType) { return new File(name, data, contentType, null); }
+
+        public static File of(String name, Object data, String contentType, Map<String, Object> anchor) { return new File(name, data, contentType, anchor); }
+    }
+
+    /**
+     * The options of {@link Collection#apply}: {@code output} (inside a transform, its own),
+     * {@code version} of the function (without it, D-JM2: the hash of its class's bytecode),
+     * {@code params} (they go into the key), {@code retryErrors}, {@code threads} items computed at
+     * once, {@code saveEverySeconds} between commits, and {@code name} of the function as the
+     * register says it (without it, the transform's, or {@code fn}).
+     */
+    public static final class Apply {
+        String output, version, name;
+        Object params;
+        boolean retryErrors;
+        int threads = 4;
+        Double saveEverySeconds = 300.0;
+
+        public Apply output(String o) { output = o; return this; }
+
+        public Apply version(String v) { version = v; return this; }
+
+        public Apply params(Object p) { params = p; return this; }
+
+        public Apply retryErrors(boolean r) { retryErrors = r; return this; }
+
+        public Apply threads(int t) { threads = Math.max(1, t); return this; }
+
+        /** {@code null}: only at the end. */
+        public Apply saveEverySeconds(Double s) { saveEverySeconds = s; return this; }
+
+        public Apply name(String n) { name = n; return this; }
+    }
+
+    /** {@code new Media.Apply()}, to chain: {@code Media.applying().output("db.schema.c").version("2")}. */
+    public static Apply applying() { return new Apply(); }
+
+    /** El sha256 de las partes, unidas por {@code \x1f} (el {@code _sha} de Python: la misma clave en las dos superficies). */
+    static String clave(Object... partes) {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < partes.length; i++) {
+            if (i > 0) b.append('\u001f');
+            if (partes[i] != null) b.append(partes[i]);
+        }
+        return HexFormat.of().formatHex(sha256().digest(b.toString().getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /** v1alpha17 {@code 01} §3.1: el {@code digest}; sin él, el localizador fijado. */
+    static String identidad(MediaRef r) {
+        return r.digest() != null ? r.digest() : r.collection() + "|" + r.path() + "|" + r.version();
+    }
+
+    /** JSON canónico (las claves en orden, sin espacios): lo que entra en {@code params_hash}. */
+    @SuppressWarnings("unchecked")
+    static Object canonico(Object o) {
+        if (o instanceof Map<?, ?> m) {
+            java.util.TreeMap<String, Object> t = new java.util.TreeMap<>();
+            for (Map.Entry<?, ?> e : m.entrySet()) t.put(String.valueOf(e.getKey()), canonico(e.getValue()));
+            return t;
+        }
+        if (o instanceof List<?> l) {
+            List<Object> r = new ArrayList<>();
+            for (Object x : l) r.add(canonico(x));
+            return r;
+        }
+        return o;
+    }
+
+    /**
+     * D-JM2 · La versión de una función que no la dice: la de su código. Una lambda no tiene fuente
+     * en ejecución; su clase (la que la escribe, su "nest host") sí tiene bytecode: cualquier cambio
+     * en la clase recalcula —se peca de recalcular, nunca de no hacerlo—. Si no se puede leer, el
+     * commit del código que corre ({@code ORE_CODIGO}), que cambia con cada commit.
+     */
+    static String versionDe(Object fn) {
+        Class<?> c = fn.getClass();
+        Class<?> anfitrion = c.getNestHost();
+        String recurso = anfitrion.getName().replace('.', '/') + ".class";
+        ClassLoader cl = anfitrion.getClassLoader();
+        try (InputStream in = cl == null ? null : cl.getResourceAsStream(recurso)) {
+            if (in != null) return "codigo:" + HexFormat.of().formatHex(sha256().digest(in.readAllBytes())).substring(0, 12);
+        } catch (IOException e) {
+            // se sigue: el commit
+        }
+        String codigo = Ore.CODIGO != null ? Ore.CODIGO : System.getenv("ORE_CODIGO");
+        return "codigo:" + clave(anfitrion.getName(), codigo == null ? "" : codigo).substring(0, 12);
+    }
+
+    /** La identidad de un origen como la guarda el registro: su {@code digest}; sin él, su {@code uri} fijada. */
+    static String identidadServida(MediaRef r) { return r.digest() != null ? r.digest() : r.uri(); }
+
+    /** El camino de un ítem desde su {@code uri} ({@code ore://c/<camino>?v=…}). */
+    static String rutaDeUri(String uri) {
+        String resto = uri == null ? "" : uri.contains("://") ? uri.substring(uri.indexOf("://") + 3) : uri;
+        String camino = resto.contains("/") ? resto.substring(resto.indexOf('/') + 1) : "";
+        int q = camino.indexOf('?');
+        return java.net.URLDecoder.decode(q >= 0 ? camino.substring(0, q) : camino, StandardCharsets.UTF_8);
+    }
+
+    /** Lo que {@code fn} dio para un ítem: sus ficheros, o su error. */
+    private record Calculo(String ident, Map<String, Object> entrada, List<File> ficheros, Map<String, Object> error) {}
+
+    @SuppressWarnings("unchecked")
+    static Ore.Result aplicarFicheros(Collection col, java.util.function.Function<Item, ?> fn, Apply o, Collection destino) {
+        Ore.Transform tr = Ore.transformActivo();
+        String nombreFn = o.name != null ? o.name : tr != null ? tr.nombre() : "fn";
+        String fnVersion = o.version != null ? o.version : versionDe(fn);
+        String paramsHash = o.params == null ? null : HexFormat.of().formatHex(sha256().digest(
+            Json.escribir(canonico(o.params)).getBytes(StandardCharsets.UTF_8)));
+        String run = java.util.UUID.randomUUID().toString().replace("-", "");
+
+        // El registro: una entrada por origen, por su identidad.
+        Map<String, Map<String, Object>> registro = new LinkedHashMap<>();
+        try {
+            for (Map<String, Object> d : destino.derivations()) {
+                Map<String, Object> s = d.get("source") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+                registro.put(texto(s.get("digest") != null ? s.get("digest") : s.get("uri")), d);
+            }
+        } catch (MediaNotFound e) {
+            registro.clear();
+        }
+        // Lo de hoy: un ítem por identidad (dos rutas con el mismo contenido son el mismo ítem); la
+        // ruta, la que el registro ya dice si sigue ahí (una copia no lo mueve); si no, la primera.
+        Map<String, List<Item>> rutasDe = new LinkedHashMap<>();
+        for (Item it : col.items()) rutasDe.computeIfAbsent(identidadServida(it.ref()), k -> new ArrayList<>()).add(it);
+        Map<String, Item> hoy = new LinkedHashMap<>();
+        Map<String, String> claves = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Item>> e : rutasDe.entrySet()) {
+            Map<String, Object> d = registro.get(e.getKey());
+            String dicha = d == null ? null : rutaDeUri(texto(((Map<String, Object>) d.getOrDefault("source", Map.of())).get("uri")));
+            Item it = e.getValue().stream().filter(i -> i.ref().path().equals(dicha)).findFirst().orElse(e.getValue().get(0));
+            hoy.put(e.getKey(), it);
+            claves.put(e.getKey(), clave(identidad(it.ref()), nombreFn, fnVersion, null, paramsHash));
+        }
+        java.util.Set<String> rutasPrevias = new java.util.HashSet<>();
+        for (Map<String, Object> d : registro.values())
+            rutasPrevias.add(rutaDeUri(texto(((Map<String, Object>) d.getOrDefault("source", Map.of())).get("uri"))));
+        List<String> pendientes = new ArrayList<>();
+        for (String i : hoy.keySet()) {
+            Map<String, Object> d = registro.get(i);
+            Map<String, Object> deriv = d == null ? null : (Map<String, Object>) d.get("derivation");
+            if (d == null || deriv == null || !claves.get(i).equals(deriv.get("key")) || (o.retryErrors && "error".equals(d.get("state"))))
+                pendientes.add(i);
+        }
+        List<String> idos = registro.keySet().stream().filter(i -> !hoy.containsKey(i)).toList();
+        Ore.Result resumen = new Ore.Result();
+        resumen.put("items", (long) hoy.size());
+        resumen.put("new", 0L);
+        resumen.put("recomputed", 0L);
+        resumen.put("skipped", (long) (hoy.size() - pendientes.size()));
+        resumen.put("errors", 0L);
+        resumen.put("removed", (long) idos.size());
+        resumen.put("files_written", 0L);
+        resumen.put("files_retired", 0L);
+        resumen.put("written", false);
+        if (pendientes.isEmpty() && idos.isEmpty()) return resumen;
+
+        Transaction[] tx = {null};
+        java.util.function.Supplier<Transaction> abierta = () -> {
+            if (tx[0] == null) tx[0] = destino.transaction();
+            return tx[0];
+        };
+        Runnable confirmar = () -> {
+            if (tx[0] == null) return;
+            Transaction t = tx[0];
+            tx[0] = null;
+            Map<String, Object> r = t.commit();
+            resumen.put("written", Boolean.TRUE.equals(resumen.get("written")) || !Boolean.TRUE.equals(r.get("sin_cambios")));
+            Object ds = r.get("derivations");
+            if (ds instanceof Map<?, ?> dm && dm.get("files_retired") instanceof Number n)
+                resumen.put("files_retired", (Long) resumen.get("files_retired") + n.longValue());
+            Runnable tras = trasConfirmar;
+            if (tras != null) tras.run();
+        };
+        if (!idos.isEmpty()) {
+            Transaction t = abierta.get();
+            synchronized (t.linaje) { t.linaje.get("retire_sources").addAll(idos); }
+        }
+        java.util.function.Function<String, Calculo> calcular = i -> {
+            // Sus ficheros en memoria —nada se sube hasta que la función termina, así que un fallo no
+            // deja ficheros sueltos—, o su error.
+            Item it = hoy.get(i);
+            Map<String, Object> deriv = new LinkedHashMap<>();
+            deriv.put("key", claves.get(i));
+            deriv.put("fn", nombreFn);
+            deriv.put("fn_version", fnVersion);
+            deriv.put("model", null);
+            deriv.put("model_rev", null);
+            deriv.put("params_hash", paramsHash);
+            deriv.put("run", run);
+            deriv.put("created", Instant.now().toString());
+            Map<String, Object> fuente = new LinkedHashMap<>();
+            fuente.put("uri", it.ref().uri());
+            fuente.put("digest", it.ref().digest());
+            Map<String, Object> entrada = new LinkedHashMap<>();
+            entrada.put("source", fuente);
+            entrada.put("derivation", deriv);
+            try {
+                Object dio = fn.apply(it);
+                List<File> ficheros = new ArrayList<>();
+                if (dio instanceof File f) ficheros.add(f);
+                else if (dio instanceof Iterable<?> l) {
+                    for (Object x : l) {
+                        if (!(x instanceof File f))
+                            throw new IllegalArgumentException("apply(): `" + nombreFn + "` gave " + (x == null ? "null" : x.getClass().getSimpleName())
+                                + " and not `Media.File` (the output is a collection)");
+                        ficheros.add(f);
+                    }
+                } else if (dio != null)
+                    throw new IllegalArgumentException("apply(): `" + nombreFn + "` gave " + dio.getClass().getSimpleName() + " and not `Media.File`s (the output is a collection)");
+                java.util.Set<String> vistos = new java.util.HashSet<>();
+                for (File f : ficheros)
+                    if (!vistos.add(f.name()))
+                        throw new IllegalArgumentException("apply(): `" + nombreFn + "` gave two files named `" + f.name() + "` for `" + it.ref().path() + "`");
+                return new Calculo(i, entrada, ficheros, null);
+            } catch (RuntimeException e) {
+                // Un fallo de un ítem es su resultado.
+                Map<String, Object> err = new LinkedHashMap<>();
+                err.put("type", e.getClass().getSimpleName());
+                String m = String.valueOf(e.getMessage());
+                err.put("message", m.length() > 2000 ? m.substring(0, 2000) : m);
+                return new Calculo(i, entrada, List.of(), err);
+            }
+        };
+        ExecutorService ex = Executors.newFixedThreadPool(o.threads, Media::hilo);
+        try {
+            long ultimo = System.currentTimeMillis();
+            int lote = o.threads * 2;
+            for (int a = 0; a < pendientes.size(); a += lote) {
+                List<Future<Calculo>> fs = new ArrayList<>();
+                for (String i : pendientes.subList(a, Math.min(pendientes.size(), a + lote))) fs.add(ex.submit(() -> calcular.apply(i)));
+                for (Future<Calculo> f : fs) {
+                    Calculo c = esperar(f);
+                    Item it = hoy.get(c.ident());
+                    Transaction t = abierta.get();
+                    Map<String, Object> entrada = c.entrada();
+                    if (c.error() != null) {
+                        entrada.put("state", "error");
+                        entrada.put("error", c.error());
+                        resumen.put("errors", (Long) resumen.get("errors") + 1);
+                    } else if (c.ficheros().isEmpty()) {
+                        entrada.put("state", "empty");
+                    } else {
+                        entrada.put("state", "files");
+                        List<Object> fs2 = new ArrayList<>();
+                        for (File fl : c.ficheros()) {
+                            String camino = it.ref().path() + "/" + fl.name();
+                            t.put(camino, fl.data(), fl.contentType());
+                            Map<String, Object> e = new LinkedHashMap<>();
+                            e.put("path", camino);
+                            e.put("anchor", fl.anchor());
+                            fs2.add(e);
+                            resumen.put("files_written", (Long) resumen.get("files_written") + 1);
+                        }
+                        entrada.put("files", fs2);
+                    }
+                    if (c.error() == null) {
+                        String k = registro.containsKey(c.ident()) || rutasPrevias.contains(it.ref().path()) ? "recomputed" : "new";
+                        resumen.put(k, (Long) resumen.get(k) + 1);
+                    }
+                    synchronized (t.linaje) { t.linaje.get("derivations").add(entrada); }
+                    if (o.saveEverySeconds != null && System.currentTimeMillis() - ultimo >= o.saveEverySeconds * 1000) {
+                        confirmar.run();
+                        ultimo = System.currentTimeMillis();
+                    }
+                }
+            }
+            confirmar.run();
+        } catch (RuntimeException | Error e) {
+            // Lo confirmado se queda; lo de la transacción a medias, no.
+            if (tx[0] != null) try { tx[0].abort(); } catch (RuntimeException x) { /* la de dentro es la que importa */ }
+            throw e;
+        } finally {
+            ex.shutdownNow();
+        }
+        return resumen;
     }
 
     // ── escribir: la transacción (B4b·3) ────────────────────────────────────

@@ -291,6 +291,20 @@ final class Sdk {
                 return "el Preview de Indice.java (la celda de builds.rs, por el kernel del agente): el @Transform lee la colección dentro de su techo; "
                     + filas.size() + " filas, el 412 de una es su fila, nada se escribe";
             });
+            // ── JM4 · D-JM2: la versión de una función que no la dice ─────────────
+            caso(19, () -> {
+                java.util.function.Function<Media.Item, Object> f1 = i -> List.of(), f2 = i -> null;
+                // La clase de la función es donde se ESCRIBE (la lambda o la referencia), como
+                // la fuente de Python: lo que la función llama de otra clase no entra.
+                java.util.function.Function<Media.Item, Object> fuera = Derivacion.ESCRITA_AQUI;
+                String v1 = ParaElBanco.version(f1), v2 = ParaElBanco.version(f2), v3 = ParaElBanco.version(fuera);
+                exige(v1.matches("codigo:[0-9a-f]{12}"), "versión " + v1);
+                exige(v1.equals(v2), "dos lambdas de la misma clase: " + v1 + " y " + v2);
+                exige(!v1.equals(v3), "lambdas de clases distintas, la misma versión: " + v1);
+                exige(ParaElBanco.version((java.util.function.Function<Media.Item, Object>) Derivacion::lineasPdf).equals(v1),
+                    "una referencia escrita aquí es de esta clase");
+                return "D-JM2: sin `version`, la del bytecode de la clase donde se escribe la función (" + v1 + "); la misma clase, la misma; otra, otra";
+            });
         } finally {
             ParaElBanco.credencial(null);
             Banco.mando("rama", "rama", null);

@@ -388,6 +388,38 @@ def _mando(h, orden, c):
         if orden == "documento":
             y = banco.DOCUMENTOS.get((c["kind"], c["base"], c.get("schema") or "default", c["nombre"]))
             return _json(h, 200, {"yaml": y})
+        # JM4 · la entrada de `derivar` (B9) y lo que `apply()` escribió en una salida.
+        if orden == "derivar":
+            accion = c.get("accion")
+            if accion == "instalar":
+                m = json.load(open(os.path.join(banco.RAIZ, "conformidad", "media", "muestra.json"), encoding="utf-8"))
+                por_ruta = {i["path"]: i for i in m["items"] if "path" in i}
+                banco.ENTRADA.clear()
+                for x in m["colecciones"]["derivar"]["solo"]:
+                    ruta, _, version = x.partition("@")
+                    it = por_ruta[ruta]
+                    if "texto" in it:
+                        banco.ENTRADA[ruta] = it["texto"].encode()
+                    elif "base64" in it:
+                        banco.ENTRADA[ruta] = base64.b64decode(it["base64"])
+                    else:
+                        banco.ENTRADA[ruta] = next(v for v in it["versiones"] if not version or v["id"] == version)["texto"].encode()
+            elif accion == "sobrescribir":
+                banco.ENTRADA[c["path"]] = c["texto"].encode()
+            elif accion == "borrar":
+                del banco.ENTRADA[c["path"]]
+            elif accion == "copiar":
+                banco.ENTRADA[c["a"]] = banco.ENTRADA[c["de"]]
+            return _json(h, 200, {"entrada": {k: _sha(v) for k, v in banco.ENTRADA.items()}})
+        if orden == "escrita":
+            st = banco.ESCRITAS.get(c["coleccion"])
+            if st is None:
+                return _json(h, 404, {"error": "no es una escrita"})
+            return _json(h, 200, {"tx": st["tx"], "items": st["items"], "registro": banco.registro_de(st),
+                                  "entrada": {k: _sha(v) for k, v in banco.ENTRADA.items()}})
+        if orden == "lago_bytes":
+            d = banco.LAGO.get(c["sha256"])
+            return _json(h, 200, {"base64": None if d is None else base64.b64encode(d).decode()})
         if orden == "objeto":
             return _json(h, 200, {"base64": base64.b64encode(banco.OBJETOS[c["path"]]).decode()})
         if orden == "rama":
