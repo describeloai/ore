@@ -1011,6 +1011,10 @@ Y los SDK: la JVM llama a `verify` del servidor (en lotes de 100); Python gana `
 (un árbol de git de verdad para `as_of`, con una rama que hereda de `main`), `la-media-por-su-puerta.sh`
 con un `ore-serve` real (13/13), la JVM 51/51 y su SDK, Python 19/19.
 
+**Deuda temporal: la prueba en vivo.** H1–H4 están probados en local y no en una celda: con la
+cuenta de Google suspendida (0060) no hay dónde. Se salda el primer día con la cuenta activa, con
+el punto 7 de «Lo que sólo se ve en prod»; hasta entonces, H1–H4 no se dan por cerrados en vivo.
+
 #### Dos decisiones que pide la JVM
 
 - **D-JM1 · el commit es explícito.** En Python, `with transaction()` confirma al salir si no hubo
