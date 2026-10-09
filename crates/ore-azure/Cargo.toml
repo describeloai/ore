@@ -1,0 +1,23 @@
+# Un contenedor de Azure Blob Storage (o ADLS Gen2) de un CLIENTE como origen
+# (ADR 0061 O3), por la API REST de Blob: listar (con versiones si la cuenta las
+# tiene), leer una version o un ETag con rango, la huella (`Content-MD5`) y la
+# SAS de delegacion de usuario. Solo lee, con la cuenta de Google de la celda
+# federada en una app de Entra del cliente (D-O3): sin claves ni SAS suyas.
+[package]
+name        = "ore-azure"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Un contenedor de Azure Blob como origen de objetos: listar, leer fijado y firmar"
+
+[dependencies]
+ore-core    = { path = "../ore-core" }
+# El token de identidad de Google de la cuenta que corre (lo que Entra acepta
+# para federarse), el cliente HTTP y el base64.
+ore-gcp     = { path = "../ore-gcp" }
+ore-objetos = { path = "../ore-objetos" }
+# El HMAC-SHA256 de la SAS: sin red (el mismo que SigV4).
+ore-sigv4   = { path = "../ore-sigv4" }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }

@@ -132,6 +132,23 @@ impl Calculo for Crc32c {
     }
 }
 
+/// **MD5**, el `Content-MD5` que Azure guarda de un blob subido de una vez
+/// (Put Blob lo calcula siempre; Put Block List sólo si el cliente lo dio):
+/// base64 de los 16 bytes (ADR 0061 O3). No es una defensa contra quien
+/// fabrique una colisión —eso lo hace el sha256 de la copia—, sino el cotejo
+/// de que lo que llega es lo que el origen guardó.
+#[derive(Default)]
+pub struct Md5(md5::Md5);
+
+impl Calculo for Md5 {
+    fn sumar(&mut self, datos: &[u8]) {
+        md5::Digest::update(&mut self.0, datos);
+    }
+    fn texto(&self) -> String {
+        format!("md5:{}", base64(&md5::Digest::finalize(self.0.clone())))
+    }
+}
+
 /// El cálculo que casa con `huella` (por su algoritmo), si se sabe hacer. Una
 /// huella de un algoritmo que no, o un `etag:` —un validador, no una huella—,
 /// no se coteja: `None`.
@@ -139,6 +156,7 @@ pub fn para(huella: &str) -> Option<Box<dyn Calculo>> {
     match huella.split_once(':') {
         Some(("crc64nvme", _)) => Some(Box::new(Crc64Nvme::default())),
         Some(("crc32c", _)) => Some(Box::new(Crc32c::default())),
+        Some(("md5", _)) => Some(Box::new(Md5::default())),
         _ => None,
     }
 }
@@ -192,12 +210,41 @@ mod tests {
         );
     }
 
+    /// El MD5 de RFC 1321 y el `Content-MD5` que Azurite dio (O3·0).
+    #[test]
+    fn el_md5_es_el_de_azure() {
+        let mut c = para("md5:x").expect("se sabe");
+        c.sumar(
+            b"%PDF-1.4
+% UNO",
+        );
+        c.sumar(
+            b"
+%%EOF
+",
+        );
+        assert_eq!(c.texto(), "md5:CInfjbZ21DfOIWDhgYr6dw==");
+        let mut z = Md5::default();
+        z.sumar(b"abc");
+        assert_eq!(
+            z.texto(),
+            format!(
+                "md5:{}",
+                base64(&[
+                    0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0, 0xd6, 0x96, 0x3f, 0x7d, 0x28,
+                    0xe1, 0x7f, 0x72
+                ])
+            )
+        );
+    }
+
     #[test]
     fn el_calculo_casa_con_la_huella_y_un_etag_no_se_coteja() {
         let mut c = para("crc64nvme:loquesea").expect("se sabe");
         c.sumar(b"123456789");
         assert_eq!(c.texto(), de(b"123456789"));
         assert!(para("etag:\"abc\"").is_none());
-        assert!(para("md5:AAAA").is_none(), "todavía no");
+        assert!(para("md5:AAAA").is_some(), "Azure, desde O3·1");
+        assert!(para("sha1:AAAA").is_none());
     }
 }

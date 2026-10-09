@@ -14,3 +14,5 @@ description = "Los tipos y el rasgo de un almacen de objetos como origen, de cua
 [dependencies]
 # El ETag del almacen en memoria de las pruebas.
 sha2 = { workspace = true }
+# El `Content-MD5` de Azure (ADR 0061 O3): la huella que da de un blob.
+md5 = { package = "md-5", version = "0.11" }

@@ -238,6 +238,21 @@ Bearer, la clave de delegación y una **SAS de delegación** que se baja con su 
 CRC64 de transporte. Contra Azure de verdad, el versionado, `sr=bv`, ADLS Gen2 y el canje con Entra:
 deuda temporal, sin cuenta de Azure.
 
+**O3·1, hecho**: `ore-azure` sobre la API REST de Blob. La URL
+`az://<cuenta>/<contenedor>[/<prefijo>]?tenant=…&cliente=…` no lleva secreto: el token de Google de
+la cuenta que corre (`ore-gcp`, audiencia `api://AzureADTokenExchange`) se canjea en Entra por uno de
+Storage (*client credentials* con aserción federada), guardado 45 minutos; los `AADSTS…` de la
+federación se dicen en palabras de qué falta (`70021`: la credencial federada no casa, o aún se
+propaga). Sólo se habla con `https://<cuenta>.blob.core.windows.net` —el token es al portador—, y
+otro servidor, sólo con `ORE_AZURE_LABORATORIO=1`. Listar paginado (con versiones), `HEAD`, leer con
+`versionid` **y** `If-Match` a la vez (la guarda de O3·0), la clave de delegación (guardada mientras
+vale, hasta 6 días) y la SAS de delegación (`sr=b`, o `sr=bv` con la versión firmada en el hueco de la
+instantánea, como el SDK de Azure; 24 campos de `sv=2023-11-03`). `ore-objetos` gana la huella `md5:`.
+Contra Azurite (HTTPS, `--oauth basic`): listar, la versión por ETag, el `md5` (y un blob por bloques
+sin él), entero, rango, un ETag viejo → `cambiado`, **un `versionid` ignorado con un ETag que no casa
+tampoco da bytes**, la SAS del vigente bajada con su tipo y su disposición (manipulada, `403`) y un
+contenedor que no está.
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).

@@ -2491,6 +2491,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-azure"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-gcp",
+ "ore-objetos",
+ "ore-sigv4",
+ "ureq",
+]
+
+[[package]]
 name = "ore-cli"
 version = "0.1.0"
 dependencies = [
@@ -2670,6 +2681,7 @@ dependencies = [
 name = "ore-objetos"
 version = "0.1.0"
 dependencies = [
+ "md-5",
  "sha2 0.11.0",
 ]
 
