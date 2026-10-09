@@ -36,6 +36,7 @@ arriba() {
     printf 'ORE_POSTGRES_URL=postgresql://postgres:%s@172.29.51.5/ore_postgres\n' "$b" > "$S/plano.env"
     printf 'POSTGRES_PASSWORD=%s\n' "$c" > "$S/computo.env"
   fi
+  dc build -q computo-a || return 1
   dc up -d --wait --wait-timeout 120 base iam redis computo-a computo-b cliente >/dev/null || return 1
   dc up -d plano proxy >/dev/null || return 1
   for _ in $(seq 1 60); do
@@ -66,11 +67,11 @@ reconcilia() {   # reconcilia VM COMPUTO (computo-a | computo-b)
                              else create role %I login password %L; end if; end \$\$;',
                              r.nombre, r.nombre, r.verificador, r.nombre, r.verificador)
                from plano.endpoint e join plano.rol r using (organizacion, proyecto, rama)
-              where e.vm = '$vm' and r.deseado = 'vivo'" | dc exec -T -e PGOPTIONS='-c client_min_messages=warning' "$c" psql -q -U postgres -p 55433 -v ON_ERROR_STOP=1 >/dev/null
+              where e.vm = '$vm' and r.deseado = 'vivo'" | dc exec -T -e PGOPTIONS='-c client_min_messages=warning' "$c" psql -q -U postgres -p 5432 -v ON_ERROR_STOP=1 >/dev/null
   sql_plano "select format('create database %I owner %I', b.nombre, b.dueno)
                from plano.endpoint e join plano.base b using (organizacion, proyecto, rama)
               where e.vm = '$vm' and b.deseado = 'vivo'" | while read -r s; do
-    dc exec -T "$c" psql -q -U postgres -p 55433 -c "$s" >/dev/null 2>&1; done
+    dc exec -T "$c" psql -q -U postgres -p 5432 -c "$s" >/dev/null 2>&1; done
   sql_plano "update plano.endpoint set observado = 'listo', direccion = '$ip', ip_pod = '$ip' where vm = '$vm';
              update plano.rama r set observado = 'lista' from plano.endpoint e
               where e.vm = '$vm' and (r.organizacion, r.proyecto, r.id) = (e.organizacion, e.proyecto, e.rama);
@@ -85,9 +86,9 @@ barre() {   # barre: lo que la API dio por borrado se va, como al final del reco
   # Y las VMs se destruyen: los cómputos vuelven a estar vacíos.
   local c
   for c in computo-a computo-b; do
-    dc exec -T "$c" psql -q -U postgres -p 55433 -Atc "select format('drop database %I with (force);', datname)
+    dc exec -T "$c" psql -q -U postgres -p 5432 -Atc "select format('drop database %I with (force);', datname)
       from pg_database where datname not in ('postgres', 'template0', 'template1')
-      union all select format('drop role %I;', rolname) from pg_roles where rolname !~ '^(pg_|postgres$)'"       | dc exec -T "$c" psql -q -U postgres -p 55433 >/dev/null 2>&1
+      union all select format('drop role %I;', rolname) from pg_roles where rolname !~ '^(pg_|postgres$|cloud_admin$)'"       | dc exec -T "$c" psql -q -U postgres -p 5432 >/dev/null 2>&1
   done
 }
 

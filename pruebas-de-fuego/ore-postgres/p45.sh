@@ -35,7 +35,7 @@ qo "$DIR" 'create table p45 (n int)' >/dev/null
 k exec -i cliente-overlay -- sh -c 'cat > /tmp/p45.sh' <<'ESC'
 rm -f /tmp/p45-ok /tmp/p45-err
 for i in $(seq 1 600); do
-  r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 55433 -U cloud_admin -d postgres -qAtc \
+  r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 5432 -U cloud_admin -d postgres -qAtc \
       "insert into p45 values ($i) returning n" 2>&1)
   case "$r" in "$i") echo "$i $(date +%s.%N | cut -c1-14)" >> /tmp/p45-ok;; *) echo "$i $(date +%s) $r" | head -1 >> /tmp/p45-err;; esac
   sleep 0.2

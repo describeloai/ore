@@ -58,8 +58,8 @@ plantilla() { python "$AQUI/plantilla.py" "$@"; }                     # plantill
 # q <host> <sql>: desde el pod `cliente` (red de pods); qo: desde `cliente-overlay` (la overlay de
 # las VMs: sobrevive a la migración, B.6). cloud_admin no cuenta para last_active (B.5).
 PGX="env PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=${PGCONNECT_TIMEOUT:-5}"
-q()  { k exec cliente         -- $PGX psql -h "$1" -p 55433 -U cloud_admin -d postgres -Atc "$2" 2>&1; }
-qo() { k exec cliente-overlay -- $PGX psql -h "$1" -p 55433 -U cloud_admin -d postgres -Atc "$2" 2>&1; }
+q()  { k exec cliente         -- $PGX psql -h "$1" -p 5432 -U cloud_admin -d postgres -Atc "$2" 2>&1; }
+qo() { k exec cliente-overlay -- $PGX psql -h "$1" -p 5432 -U cloud_admin -d postgres -Atc "$2" 2>&1; }
 
 # ip_pod / ip_overlay de una VM (por defecto $ORE_PG_VM)
 # con ORE_PG_COMPUTO=pod no hay overlay: las dos dan la IP del pod

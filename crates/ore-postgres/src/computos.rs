@@ -411,7 +411,7 @@ pub fn manifiesto(vm: &Vm, ns: &str, imagen: &str, pool: &str) -> Json {
                                     "--pgdata",
                                     "/var/db/postgres/compute",
                                     "-C",
-                                    "postgresql://cloud_admin@127.0.0.1:55433/postgres",
+                                    "postgresql://cloud_admin@127.0.0.1:5432/postgres",
                                     "-b",
                                     "/usr/local/bin/postgres",
                                     "--compute-id",
@@ -419,7 +419,7 @@ pub fn manifiesto(vm: &Vm, ns: &str, imagen: &str, pool: &str) -> Json {
                                     "--config",
                                     "/var/db/postgres/configs/config.json",
                                     "--filecache-connstr",
-                                    "host=127.0.0.1 port=55433 dbname=postgres user=cloud_admin sslmode=disable application_name=vm-monitor",
+                                    "host=127.0.0.1 port=5432 dbname=postgres user=cloud_admin sslmode=disable application_name=vm-monitor",
                                 ]
                                 .into_iter()
                                 .map(Json::s)
@@ -428,7 +428,13 @@ pub fn manifiesto(vm: &Vm, ns: &str, imagen: &str, pool: &str) -> Json {
                         ),
                         (
                             "ports",
-                            Json::Arr(vec![puerto(55433), puerto(3080), puerto(10301), puerto(9100)]),
+                            Json::Arr(vec![
+                                puerto(5432),
+                                puerto(6432),
+                                puerto(3080),
+                                puerto(10301),
+                                puerto(9100),
+                            ]),
                         ),
                         (
                             "env",

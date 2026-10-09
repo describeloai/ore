@@ -26,7 +26,7 @@ api46() { local f; f=$(mktemp)
 campo() { python -c 'import json,sys; d=json.loads(sys.argv[1].split(" ",1)[1]); [d:=d[k] for k in sys.argv[2:]]; print(d)' "$1" "${@:2}" 2>/dev/null; }
 hecha() { local l; for _ in $(seq 1 300); do l=$(api46 GET "/operaciones/$1"); case "$(campo "$l" estado)" in hecha|fallida) break;; esac; sleep 2; done; campo "$l" estado; }
 como() { k exec cliente-overlay -- env PGPASSWORD="$2" PGCONNECT_TIMEOUT=5 \
-  psql -h "$4" -p 55433 -U "$1" -d "$3" -Atc "$5" 2>&1 | tail -1; }
+  psql -h "$4" -p 5432 -U "$1" -d "$3" -Atc "$5" 2>&1 | tail -1; }
 bien() { echo "  ✓ $*"; }
 mal() { echo "  ✗ $*"; fallos=$((fallos+1)); }
 

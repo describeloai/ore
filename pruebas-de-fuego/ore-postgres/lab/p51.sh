@@ -37,7 +37,7 @@ echo "── por el proxy de Neon"
 r=$(entra "$ROL" "$CLAVE" "$P" "$VM")
 [ "$r" = "$ROL" ] && echo "  ✓ $ROL entra en $P por $VM.$DOMINIO (verify-full)" || { echo "  ✗ no entra: $r"; fallos=$((fallos+1)); }
 r=$(entra "$ROL" "$CLAVE" "$P" "$VM-pooler")
-[ "$r" = "$ROL" ] && echo "  ✓ por -pooler, el mismo cómputo" || echo "  · por -pooler: ${r:0:140} (el pool es P5·5)"
+[ "$r" = "$ROL" ] && echo "  ✓ por -pooler, el pgbouncer del mismo cómputo" || { echo "  ✗ por -pooler: ${r:0:140}"; fallos=$((fallos+1)); }
 r=$(entra "$ROL" mala "$P" "$VM")
 [ "$r" = "$ROL" ] && { echo "  ✗ entra con otra contraseña"; fallos=$((fallos+1)); } || echo "  ✓ con otra contraseña, no: ${r:0:110}"
 r=$(entra nadie "$CLAVE" "$P" "$VM")

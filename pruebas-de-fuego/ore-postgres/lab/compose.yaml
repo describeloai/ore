@@ -7,8 +7,8 @@
 #   iam        un ore-iam de mentira: dos celdas, dos organizaciones
 #   redis      por donde `ore-postgres` le dice al proxy qué olvidar (neondb-proxy-ws-updates)
 #   plano      `ore-postgres servir`, el binario compilado en el volumen ore-pruebas-t
-#   computo-a  un postgres:17 en 55433: hace de la VM del endpoint (el rol y el verificador
-#   computo-b    los pone lab.sh, que hace aquí de reconciliador)
+#   computo-a  hace de la VM del endpoint: Postgres 17 en 5432 y el pgbouncer de la imagen de Neon
+#   computo-b    en 6432 (computo/); el rol y el verificador los pone lab.sh, que hace de reconciliador
 #   proxy      el proxy de Neon, `--auth-backend control-plane` contra `plano`
 #   cliente    psql, con el SNI de `ep-….europe-west1.pg.paladio.io`
 #
@@ -21,10 +21,10 @@ networks:
 volumes:
   ore-pruebas-t: { external: true }
 x-computo: &computo
-  image: postgres:17
-  command: [postgres, -p, "55433"]
+  image: p5lab-computo:1
   env_file: .secretos/computo.env
   environment: { POSTGRES_HOST_AUTH_METHOD: scram-sha-256 }
+  healthcheck: { test: [CMD, pg_isready, -q, -h, 127.0.0.1, -p, "6432"], interval: 1s, retries: 60 }
 services:
   base:
     image: postgres:17
@@ -51,6 +51,7 @@ services:
     depends_on: { base: { condition: service_healthy }, iam: { condition: service_started }, redis: { condition: service_started } }
   computo-a:
     <<: *computo
+    build: ./computo
     networks: { lab: { ipv4_address: 172.29.51.11 } }
   computo-b:
     <<: *computo

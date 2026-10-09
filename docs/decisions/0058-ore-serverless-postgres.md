@@ -1123,6 +1123,21 @@ El laboratorio hace de reconciliador (`lab.sh reconcilia`: el rol con su verific
 - **Hallazgo: `api.`** Desde la 1.0 el driver no manda el HTTP al nombre del endpoint, sino a **`api.europe-west1.pg.paladio.io/sql`**, y el endpoint viaja en la cabecera `Neon-Connection-String`. El comodín del certificado y del DNS (P5·2) lo cubren; lo que no hay que hacer es un registro por endpoint ni un certificado sin comodín.
 - **El token del proxy, con `=`**: `--control-plane-token="$(…)"`. Un token que empieza por `-` (pasa con `token_urlsafe`) se leía como otro flag y el proxy no arrancaba.
 
+#### P5·5 · El pool, medido en el laboratorio (2026-10-09)
+
+**Como en Neon, el pool vive en la VM.** La imagen de cómputo que ya construimos (`vm-image-spec-bookworm.yaml`) arranca un pgbouncer 1.24.1 en el **6432**, en modo `transaction`, con `default_pool_size=64` y `max_client_conn=10000`. Autentica por SCRAM con `auth_user=cloud_admin`: lee el verificador del rol en Postgres, y el proxy entra con las mismas claves que en P5·1. No hay un pgbouncer aparte que desplegar, escalar ni vigilar.
+
+- **`ep-…-pooler`** es la misma VM por otra puerta: `wake_compute` contesta la dirección del cómputo en el **6432** en lugar del 5432 (`proxy.rs`), y el secreto es el mismo.
+- **Postgres pasa del 55433 al 5432.** El pgbouncer de la imagen apunta a `localhost:5432` y `pgbouncer_settings` no puede cambiar su sección `[databases]`. El 55433 es el puerto de `neon_local` (desarrollo); el de las VMs de Neon es el 5432. Cambian la especificación, los argumentos y puertos de la VM, el contrato del proxy y la `NetworkPolicy` de la malla 85, que abre 5432 y 6432 **sin quitar todavía** el 55433.
+
+`lab/p55.sh`: un cómputo con Postgres en el 5432 y **el `pgbouncer.ini` de la imagen de Neon sin tocar**, en su misma versión (`lab/computo/`). Por el proxy, con `verify-full`, todo en verde y repetible:
+
+- **150 clientes a la vez por `-pooler`**, 20 s de pgbench: 4689 transacciones, ~235 tps, **0 fallidas**, y **como mucho 64 conexiones** del rol en Postgres;
+- **los mismos 150 directos no caben**: `max_connections` es 100 y Postgres los rechaza (*remaining connection slots are reserved*). Es justo lo que resuelve el pool;
+- **el protocolo extendido** (`-M extended`), sin fallos; **otra contraseña** por el pool, fuera.
+
+⚠️ **Modo `transaction`**, como Neon: lo que vive en la sesión (`SET`, `LISTEN`, *advisory locks* de sesión, tablas temporales entre transacciones) no sobrevive entre transacciones por `-pooler`. Para eso está el endpoint directo. Connect (P5·7) ofrecerá los dos y dirá cuál usar.
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:
@@ -1139,7 +1154,8 @@ Lo construido en el laboratorio llega a producción en una tarde y sin reescribi
 2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad, con Redis y `--redis`; un *Reset password* entra a la primera.
 3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve (también `api.`, el que usa el driver por HTTP); quitar el TXT `_delegacion`.
 4. **P5·3**: desde internet, `psql "…?sslmode=verify-full"` entra y pgbench corre sin fallos; reiniciar una réplica no tira a la otra; la IP del cliente llega tal cual.
-5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM; **P5·6** con la IP real del cliente.
+5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM (`p55.sh` con 150 clientes, como mucho 64 conexiones en Postgres); **P5·6** con la IP real del cliente.
+   - **El puerto, en este orden**: primero la malla 85, que solo **añade** 5432 y 6432 (aditiva: no rompe nada vivo); después el binario de `ore-postgres`; después se recrean los cómputos que nacieron en el 55433 (hoy solo los de prueba y `postgre`, el de la consola); y por último se quita el 55433 de la malla y de Connect.
 6. **P5·7**: el snippet de Connect copiado en la consola conecta desde fuera.
 7. **P5·8**: una migración en vivo de la VM **no corta** una sesión abierta por el proxy; pgbench desde internet durante la migración, sin fallos.
 8. **Salud al terminar**: ningún pod reiniciándose, el certificado con su renovación programada, las métricas del proxy (`:7001`) sin errores de `wake_compute` ni de autenticación, y `p47.sh` (no queda huella) otra vez en verde.

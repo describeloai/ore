@@ -17,7 +17,7 @@ abrir_celdas "$A"
 R="/v1/postgres/proyectos/$P/ramas/main"
 # como ROL CLAVE BASE IP SQL → lo que contesta (o el error)
 como() { k exec cliente-overlay -- env PGPASSWORD="$2" PGCONNECT_TIMEOUT=5 \
-  psql -h "$4" -p 55433 -U "$1" -d "$3" -Atc "$5" 2>&1 | tail -1; }
+  psql -h "$4" -p 5432 -U "$1" -d "$3" -Atc "$5" 2>&1 | tail -1; }
 
 echo "── $A crea $P con dueño user:p44: su rol, su contraseña (una vez) y su base"
 mapfile -t L < <(en "$A" "pide POST /v1/postgres/proyectos '{\"id\":\"$P\",\"dueno\":\"user:p44\"}'")

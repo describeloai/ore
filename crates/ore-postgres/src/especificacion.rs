@@ -65,7 +65,7 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
         ajuste("wal_level", "logical", "enum"),
         ajuste("wal_log_hints", "on", "bool"),
         ajuste("log_connections", "on", "bool"),
-        ajuste("port", "55433", "integer"),
+        ajuste("port", "5432", "integer"),
         ajuste("shared_buffers", "128MB", "string"),
         ajuste("max_connections", "100", "integer"),
         ajuste("listen_addresses", "0.0.0.0", "string"),

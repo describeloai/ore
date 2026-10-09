@@ -8,12 +8,15 @@
 //!   GET /proxy/get_endpoint_access_control?endpointish=ep-…&role=…
 //!       → {"role_secret": "SCRAM-SHA-256$…", "project_id", "allowed_ips"?…}
 //!   GET /proxy/wake_compute?endpointish=ep-…
-//!       → {"address": "10.100.128.7:55433", "aux": {endpoint_id, project_id, branch_id, compute_id}}
+//!       → {"address": "10.100.128.7:5432", "aux": {endpoint_id, project_id, branch_id, compute_id}}
 //!   Authorization: Bearer <el token del proxy>
 //! ```
 //!
 //! - **`endpointish`** es la primera etiqueta del SNI: el nombre de la VM
-//!   (`ep-<20 hex>`), con `-pooler` si se entra por el pool.
+//!   (`ep-<20 hex>`), con `-pooler` si se entra por el pool (P5·5): entonces
+//!   la dirección es la del pgbouncer de la VM (6432, modo `transaction`, el
+//!   de la imagen de cómputo de Neon), no la de Postgres (5432). El secreto es
+//!   el mismo: pgbouncer hace el SCRAM con las claves que le pasa el proxy.
 //! - **`role_secret`** es el verificador SCRAM que se guardó al crear el rol
 //!   (P4·4): con él el proxy hace el SCRAM con el cliente sin conocer nunca la
 //!   contraseña.
@@ -33,8 +36,12 @@ use ore_core::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use postgres::Client;
 
-/// El puerto de Postgres en el cómputo (la especificación, `especificacion.rs`).
-const PUERTO: u16 = 55433;
+/// El puerto de Postgres en el cómputo (la especificación, `especificacion.rs`):
+/// el de Neon en sus VMs, al que apunta el pgbouncer de la imagen.
+pub const PUERTO: u16 = 5432;
+
+/// El pgbouncer de la imagen de cómputo (`compute/etc/pgbouncer.ini`).
+pub const PUERTO_POOL: u16 = 6432;
 
 pub struct Proxy {
     /// El token que trae el proxy, leído de su Secret al arrancar.
@@ -78,9 +85,12 @@ fn iguales(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
-/// `ep-…-pooler` → `ep-…`: el pool es otra puerta del mismo cómputo.
-pub fn vm_de(endpointish: &str) -> &str {
-    endpointish.strip_suffix("-pooler").unwrap_or(endpointish)
+/// `ep-…-pooler` → (`ep-…`, el puerto del pool): el pool es otra puerta del mismo cómputo.
+pub fn vm_de(endpointish: &str) -> (&str, u16) {
+    match endpointish.strip_suffix("-pooler") {
+        Some(vm) => (vm, PUERTO_POOL),
+        None => (endpointish, PUERTO),
+    }
 }
 
 impl Proxy {
@@ -98,7 +108,7 @@ impl Proxy {
         let Some(endpoint) = p.consulta.get("endpointish") else {
             return fallo(404, "ENDPOINT_NOT_FOUND", "falta `endpointish`");
         };
-        let vm = vm_de(endpoint);
+        let (vm, puerto) = vm_de(endpoint);
         match resto {
             ["get_endpoint_access_control"] => {
                 let Some(rol) = p.consulta.get("role") else {
@@ -106,7 +116,7 @@ impl Proxy {
                 };
                 self.acceso(c, vm, rol)
             }
-            ["wake_compute"] => self.despertar(c, vm),
+            ["wake_compute"] => self.despertar(c, vm, puerto),
             _ => Respuesta::error(404, "el proxy no pregunta eso"),
         }
     }
@@ -132,7 +142,7 @@ impl Proxy {
         }
     }
 
-    fn despertar(&self, c: &mut Client, vm: &str) -> Respuesta {
+    fn despertar(&self, c: &mut Client, vm: &str, puerto: u16) -> Respuesta {
         let fila = match c.query_opt(
             "select e.observado, e.ip_pod, e.direccion, p.tenant, e.rama
                from plano.endpoint e
@@ -152,7 +162,7 @@ impl Proxy {
             return fallo(503, "RUNNING_OPERATIONS", "el cómputo está arrancando");
         };
         Respuesta::ok(Json::obj([
-            ("address", Json::s(format!("{dir}:{PUERTO}"))),
+            ("address", Json::s(format!("{dir}:{puerto}"))),
             (
                 "aux",
                 Json::obj([
@@ -175,9 +185,12 @@ mod pruebas {
     fn el_pool_es_el_mismo_computo() {
         assert_eq!(
             vm_de("ep-0123456789abcdef0123-pooler"),
-            "ep-0123456789abcdef0123"
+            ("ep-0123456789abcdef0123", 6432)
         );
-        assert_eq!(vm_de("ep-0123456789abcdef0123"), "ep-0123456789abcdef0123");
+        assert_eq!(
+            vm_de("ep-0123456789abcdef0123"),
+            ("ep-0123456789abcdef0123", 5432)
+        );
     }
 
     #[test]

@@ -1119,7 +1119,20 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
     assert!(
         r.cuerpo
             .jcs()
-            .contains(&format!(r#""address":"{dir}:55433""#)),
+            .contains(&format!(r#""address":"{dir}:5432""#)),
+        "{}",
+        r.cuerpo.jcs()
+    );
+    // Por el pool, la misma VM en el puerto de su pgbouncer.
+    let r = pregunta(
+        Some("el-del-proxy"),
+        "/proxy/wake_compute",
+        &[("endpointish", &pool)],
+    );
+    assert!(
+        r.cuerpo
+            .jcs()
+            .contains(&format!(r#""address":"{dir}:6432""#)),
         "{}",
         r.cuerpo.jcs()
     );

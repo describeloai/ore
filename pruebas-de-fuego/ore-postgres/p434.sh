@@ -53,7 +53,7 @@ rm -f /tmp/p434-ok /tmp/p434-err /tmp/p434-alto; touch /tmp/p434-err
 # Hasta que lo paren (`/tmp/p434-alto`): tiene que seguir escribiendo MIENTRAS escribe el intruso, que
 # tarda ~3 min en responder (medido: con 600 filas fijas acabó antes de que el intruso naciera).
 i=0; while [ ! -f /tmp/p434-alto ] && [ $i -lt 6000 ]; do i=$((i+1))
-  r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 55433 -U cloud_admin -d postgres -qAtc \
+  r=$(PGPASSWORD=cloud_admin PGCONNECT_TIMEOUT=3 psql -h "$1" -p 5432 -U cloud_admin -d postgres -qAtc \
       "insert into p434 (n, quien) values ($i, 'principal') returning n" 2>&1)
   case "$r" in "$i") echo "$i $(date +%s.%N | cut -c1-14)" >> /tmp/p434-ok;; *) echo "$i $(date +%s) $r" | head -1 >> /tmp/p434-err;; esac
   sleep 0.2

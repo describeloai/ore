@@ -111,7 +111,9 @@ spec:
       ore.dev/rol: postgres
   policyTypes: [Ingress]
   ingress:
-    # el plano de control (compute_ctl :3080), el proxy y los clientes de las pruebas (Postgres :55433)
+    # el plano de control (compute_ctl :3080), el proxy y los clientes de las pruebas: Postgres :5432
+    # y su pgbouncer :6432 (0058 P5·5). :55433 es el puerto de antes: se quita cuando no quede un
+    # cómputo creado con él.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -119,7 +121,7 @@ spec:
           podSelector:
             matchLabels:
               ore.dev/pg-acceso: si
-      ports: [{protocol: TCP, port: 55433}, {protocol: TCP, port: 3080}]
+      ports: [{protocol: TCP, port: 5432}, {protocol: TCP, port: 6432}, {protocol: TCP, port: 55433}, {protocol: TCP, port: 3080}]
     # NeonVM: el controller habla con el runner (QMP, su API)
     - from:
         - namespaceSelector:
