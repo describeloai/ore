@@ -108,8 +108,12 @@ pub fn uno<W: Write>(o: &dyn Origen, p: &Pedido, salida: &Mutex<W>) -> Result<u6
             p.clave, p.version, p.tamano
         ));
     }
-    if let (Some(e), Some(s3)) = (esperado(&p.huella), a.crc64nvme.as_deref())
-        && e != s3
+    if let (Some(e), Some(s3)) = (
+        esperado(&p.huella),
+        a.huella
+            .as_deref()
+            .and_then(|h| h.strip_prefix("crc64nvme:")),
+    ) && e != s3
     {
         return fallar(format!(
             "`{}` (versión {}): S3 da la huella {s3} y el manifiesto {e}",
@@ -233,9 +237,9 @@ pub fn todos<W: Write>(o: &dyn Origen, pedidos: &[Pedido], salida: &Mutex<W>) ->
     c
 }
 
-/// Todos, en `hilos` a la vez, contra un bucket de verdad.
+/// Todos, en `hilos` a la vez, contra un origen de verdad.
 pub fn en_paralelo<W: Write + Send>(
-    b: &ore_s3::Bucket,
+    b: &(dyn Origen + Sync),
     pedidos: &[Pedido],
     hilos: usize,
     salida: &Mutex<W>,

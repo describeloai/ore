@@ -2654,6 +2654,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-objetos"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "ore-packages"
 version = "0.1.0"
 dependencies = [
@@ -2738,6 +2745,7 @@ dependencies = [
  "bytes",
  "ore-core",
  "ore-driver",
+ "ore-objetos",
  "ore-s3",
  "ore-sigv4",
  "ore-sts",
@@ -2758,6 +2766,7 @@ name = "ore-s3"
 version = "0.1.0"
 dependencies = [
  "native-tls",
+ "ore-objetos",
  "ore-sigv4",
  "sha2 0.11.0",
  "ureq",

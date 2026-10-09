@@ -25,6 +25,7 @@
 // firmante de `ore-serve` (0046 E9·3) la enlaza sin arrastrar un cliente HTTP.
 pub use ore_sigv4::{Bucket, firma};
 pub mod huella;
+pub mod origen;
 
 pub use firma::{Credencial, base64, hex, sha256};
 
@@ -220,16 +221,9 @@ fn respuesta(b: &Bucket, metodo: &str, resp: ureq::Response) -> Result<Respuesta
     })
 }
 
-/// Un objeto de un listado.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Objeto {
-    pub clave: String,
-    pub tamano: u64,
-    /// Entre comillas, como lo da S3. **No** es la huella del contenido.
-    pub etag: String,
-    /// ISO-8601, como lo da S3.
-    pub modificado: String,
-}
+// Un objeto de un listado, una versión y lo que dice al abrirla: los de
+// cualquier origen de objetos (ADR 0061 O0·1).
+pub use ore_objetos::{Abierto, Objeto, Version};
 
 /// Una página de `ListObjectsV2`.
 #[derive(Debug, Clone, Default)]
@@ -294,24 +288,6 @@ pub fn leer_pagina(xml: &str) -> Pagina {
         p.siguiente = etiqueta(xml, "NextContinuationToken");
     }
     p
-}
-
-/// **Una versión de un objeto, o una marca de borrado** (`ListObjectVersions`,
-/// 0046 E8·1). Lo que una colección necesita para fijar cada ítem a lo que
-/// era, y para saber si lo retirado se sigue pudiendo leer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Version {
-    pub clave: String,
-    /// `null` si el objeto se subió antes de activar el versionado (medido en
-    /// F1: los 26 del bucket), o si el bucket nunca lo tuvo.
-    pub version: String,
-    /// La versión vigente de su clave.
-    pub actual: bool,
-    /// Una marca de borrado: la clave no se lista, y sus versiones siguen.
-    pub marca: bool,
-    pub tamano: u64,
-    pub etag: String,
-    pub modificado: String,
 }
 
 /// Una página de `ListObjectVersions`: las versiones y las marcas, y por dónde
@@ -449,15 +425,6 @@ pub fn abrir(
     Ok(Box::new(resp.into_reader()))
 }
 
-/// Lo que S3 dice de una versión al abrirla: su tamaño, su tipo y su
-/// CRC64NVME (con `x-amz-checksum-mode: ENABLED`).
-#[derive(Debug, Clone, Default)]
-pub struct Abierto {
-    pub tamano: Option<u64>,
-    pub tipo: Option<String>,
-    pub crc64nvme: Option<String>,
-}
-
 /// **Una versión entera, en flujo** (0046 E8·2): lo que una colección
 /// mantenida baja, fijado a la versión que su manifiesto dice —no a lo que hay
 /// ahora—, así que un ítem retirado se sigue copiando mientras su versión
@@ -488,7 +455,11 @@ pub fn abrir_version(
     let a = Abierto {
         tamano: resp.header("content-length").and_then(|v| v.parse().ok()),
         tipo: resp.header("content-type").map(String::from),
-        crc64nvme: resp.header("x-amz-checksum-crc64nvme").map(String::from),
+        // Lo que S3 dice al abrirla (`x-amz-checksum-mode: ENABLED`), como la
+        // escribe la colección.
+        huella: resp
+            .header("x-amz-checksum-crc64nvme")
+            .map(|c| format!("crc64nvme:{c}")),
     };
     Ok((Box::new(resp.into_reader()), a))
 }

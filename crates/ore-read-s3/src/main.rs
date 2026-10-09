@@ -83,12 +83,16 @@ fn leer_o_estimar(
     filas::CAPACIDADES.admite(&p)?;
     let f = fuente::leer(&p.url).map_err(fallo)?;
     if verbo == "estimar" {
-        println!("{}", filas::estimar(&f.bucket, &p).map_err(fallo)?);
+        println!(
+            "{}",
+            filas::estimar(&ore_s3::origen::Cubo(&f.bucket), &p).map_err(fallo)?
+        );
         return Ok(());
     }
     let salida = std::io::stdout();
     let mut s = std::io::BufWriter::with_capacity(1 << 20, salida.lock());
-    let l = filas::leer(&f.bucket, &p, &mut s, filas::UMBRAL).map_err(fallo)?;
+    let l =
+        filas::leer(&ore_s3::origen::Cubo(&f.bucket), &p, &mut s, filas::UMBRAL).map_err(fallo)?;
     s.flush()
         .map_err(|e| fallo(format!("no se pudo escribir el flujo: {e}")))?;
     let (n, b) = ore_s3::contadores();
@@ -142,9 +146,15 @@ fn servir() -> ExitCode {
             let (f, _) = fuentes
                 .tomar(&p.url, |u| fuente::leer(u).map(|f| (f, Instant::now())))
                 .map_err(fallo)?;
-            filas::leer_con(&f.bucket, p, r, filas::UMBRAL, Some(cancelada.clone()))
-                .map(|l| l.filas)
-                .map_err(fallo)
+            filas::leer_con(
+                &ore_s3::origen::Cubo(&f.bucket),
+                p,
+                r,
+                filas::UMBRAL,
+                Some(cancelada.clone()),
+            )
+            .map(|l| l.filas)
+            .map_err(fallo)
         },
     );
     match hecho {
@@ -179,7 +189,7 @@ fn main() -> ExitCode {
     let resultado = match verbo {
         "catalogo" => fuente::leer(entrada.trim()).and_then(|f| {
             let c = catalogo::leer(
-                &f.bucket,
+                &ore_s3::origen::Cubo(&f.bucket),
                 args.get(1).map(String::as_str).unwrap_or("fuente"),
                 &f.prefijo,
                 &mut avisos,
@@ -206,14 +216,14 @@ fn main() -> ExitCode {
             } else {
                 objeto
             };
-            catalogo::testigo(&f.bucket, &objeto)
+            catalogo::testigo(&ore_s3::origen::Cubo(&f.bucket), &objeto)
         }),
         "versiones" => serde_json::from_str::<serde_json::Value>(&entrada)
             .map_err(|e| format!("la petición no es JSON: {e}"))
             .and_then(|n| {
                 let url = n.get("url").and_then(|u| u.as_str()).unwrap_or("");
                 let f = fuente::leer(url)?;
-                versiones::versiones(&f.bucket, &entrada)
+                versiones::versiones(&ore_s3::origen::Cubo(&f.bucket), &entrada)
             }),
         // Los verbos del conector v2: el error, tipado y tapado.
         "leer" | "estimar" => {
@@ -241,7 +251,8 @@ fn main() -> ExitCode {
                     1 << 20,
                     std::io::stdout(),
                 ));
-                let c = bajar::en_paralelo(&f.bucket, &pedidos, hilos, &salida);
+                let c =
+                    bajar::en_paralelo(&ore_s3::origen::Cubo(&f.bucket), &pedidos, hilos, &salida);
                 use std::io::Write as _;
                 salida
                     .into_inner()

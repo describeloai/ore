@@ -18,6 +18,9 @@ description = "La firma SigV4 y las lecturas de S3, compartidas por el lago y el
 [dependencies]
 # La firma, el bucket y la URL de una fuente: sin red (0046 E9.3).
 ore-sigv4 = { path = "../ore-sigv4" }
+# Los tipos de un listado y el rasgo `Origen` (ADR 0061 O0·1): un bucket es un
+# origen de objetos, como lo seran uno de GCS o de Azure.
+ore-objetos = { path = "../ore-objetos" }
 # SHA-256 para la firma y el digest del cuerpo. HMAC no se enlaza: son seis
 # lineas sobre esto, con el vector oficial de AWS en las pruebas.
 sha2 = { workspace = true }

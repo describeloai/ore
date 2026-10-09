@@ -1,0 +1,16 @@
+# Lo comun de un almacen de objetos como ORIGEN (ADR 0061 O0·1): los tipos
+# de un listado, el rasgo `Origen` que cada proveedor implementa (S3 hoy; GCS,
+# Azure, SFTP… despues), lo que cada uno sabe hacer y la huella de contenido.
+# Sin red y sin dependencias de un proveedor: lo usan su driver y `ore-medios`.
+[package]
+name        = "ore-objetos"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Los tipos y el rasgo de un almacen de objetos como origen, de cualquier proveedor"
+
+[dependencies]
+# El ETag del almacen en memoria de las pruebas.
+sha2 = { workspace = true }
