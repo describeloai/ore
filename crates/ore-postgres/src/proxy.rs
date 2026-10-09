@@ -20,6 +20,9 @@
 //! - **`role_secret`** es el verificador SCRAM que se guardó al crear el rol
 //!   (P4·4): con él el proxy hace el SCRAM con el cliente sin conocer nunca la
 //!   contraseña.
+//! - **Quién entra** (P5·6), por proyecto: `allowed_ips` (vacía = todas),
+//!   `block_public_connections` y `rate_limits.connection_attempts` por
+//!   protocolo, la cubeta que corta la fuerza bruta.
 //! - **`project_id` es el tenant**, no el id del proyecto: el proxy agrupa por
 //!   él lo que guarda y lo que olvida ([`crate::olvidar`]), y el id del
 //!   proyecto se repite entre organizaciones (el tenant no). `account_id` es la
@@ -80,6 +83,11 @@ fn fallo(codigo: u16, razon: &str, mensaje: &str) -> Respuesta {
     }
 }
 
+/// Una cubeta del limitador del proxy (`LeakyBucketSetting`).
+fn cubeta(rps: i64, rafaga: i64) -> Json {
+    Json::obj([("rps", Json::Int(rps)), ("burst", Json::Int(rafaga))])
+}
+
 /// Comparar sin dar pistas por el tiempo.
 fn iguales(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
@@ -123,7 +131,10 @@ impl Proxy {
 
     fn acceso(&self, c: &mut Client, vm: &str, rol: &str) -> Respuesta {
         match c.query_opt(
-            "select r.verificador, p.tenant, e.organizacion
+            "select r.verificador, p.tenant, e.organizacion, p.ips_permitidas, p.bloquear_publico,
+                    (p.limites->'tcp'->>'por_segundo')::bigint, (p.limites->'tcp'->>'rafaga')::bigint,
+                    (p.limites->'ws'->>'por_segundo')::bigint, (p.limites->'ws'->>'rafaga')::bigint,
+                    (p.limites->'http'->>'por_segundo')::bigint, (p.limites->'http'->>'rafaga')::bigint
                from plano.endpoint e
                join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
                join plano.rol r on r.organizacion = e.organizacion and r.proyecto = e.proyecto
@@ -135,6 +146,28 @@ impl Proxy {
                 ("role_secret", Json::s(f.get::<_, String>(0))),
                 ("project_id", Json::s(f.get::<_, String>(1))),
                 ("account_id", Json::s(f.get::<_, String>(2))),
+                // P5·6: quién entra. Vacía = todas; las entradas las validó la API.
+                (
+                    "allowed_ips",
+                    Json::Arr(
+                        f.get::<_, Vec<String>>(3)
+                            .into_iter()
+                            .map(Json::s)
+                            .collect(),
+                    ),
+                ),
+                ("block_public_connections", Json::Bool(f.get(4))),
+                (
+                    "rate_limits",
+                    Json::obj([(
+                        "connection_attempts",
+                        Json::obj([
+                            ("tcp", cubeta(f.get(5), f.get(6))),
+                            ("ws", cubeta(f.get(7), f.get(8))),
+                            ("http", cubeta(f.get(9), f.get(10))),
+                        ]),
+                    )]),
+                ),
             ])),
             // Ni el endpoint ni el rol se distinguen: no se le dice a nadie qué existe.
             Ok(None) => fallo(404, "RESOURCE_NOT_FOUND", "no hay tal endpoint o tal rol"),

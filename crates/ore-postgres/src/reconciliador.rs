@@ -489,6 +489,9 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
                 .ok_or_else(|| Fallo::Definitivo("el proyecto ya no está".into()))?;
             asegurar_endpoint(c, a, k, &op.organizacion, &op.proyecto, &tenant, &ep)
         }
+        // P5·6: quién entra lo comprueba el proxy, no el cómputo. No hay nada que
+        // hacer aquí: al quedar hecha, `olvidar` le dice al proxy que lo relea.
+        "configurar-acceso" => Ok(()),
         otro => Err(Fallo::Definitivo(format!(
             "este reconciliador no sabe hacer `{otro}`"
         ))),

@@ -12,6 +12,7 @@
 #   campo JSON a b c                  → un campo
 #   reconcilia VM COMPUTO             → hace de reconciliador: el cómputo arranca con los roles y
 #                                       bases del endpoint y la fila queda `listo` con su dirección
+#   hechas                            → las operaciones en curso, hechas (y 2 s para que el proxy olvide)
 #   barre                             → y al borrar: las filas que la API dio por borradas se van
 #   entra ROL CLAVE BASE SNI          → psql por el proxy, lo que contesta (la última línea)
 set -uo pipefail
@@ -38,6 +39,8 @@ arriba() {
   fi
   dc build -q computo-a || return 1
   dc up -d --wait --wait-timeout 120 base iam redis computo-a computo-b cliente >/dev/null || return 1
+  # La base vacía de las pruebas de contrato del crate (ORE_POSTGRES_PRUEBA_URL).
+  dc exec -T base psql -U postgres -qc 'create database ore_postgres_prueba' >/dev/null 2>&1
   dc up -d plano proxy >/dev/null || return 1
   for _ in $(seq 1 60); do
     dc exec -T cliente bash -c 'exec 3<>/dev/tcp/172.29.51.7/8100 && exec 4<>/dev/tcp/172.29.51.20/4432' 2>/dev/null && break
@@ -79,6 +82,11 @@ reconcilia() {   # reconcilia VM COMPUTO (computo-a | computo-b)
               where e.vm = '$vm' and (p.organizacion, p.id) = (e.organizacion, e.proyecto);
              update plano.operacion o set estado = 'hecha', terminada = now() from plano.endpoint e
               where e.vm = '$vm' and (o.organizacion, o.proyecto) = (e.organizacion, e.proyecto) and o.estado = 'en-curso'" >/dev/null
+}
+hechas() {   # hechas: las operaciones en curso, hechas (el reconciliador no tiene nada que hacer en
+             # ellas: configurar-acceso) y el tiempo de que olvidar las vea y el proxy relea
+  sql_plano "update plano.operacion set estado = 'hecha', terminada = now() where estado = 'en-curso'" >/dev/null
+  sleep 2
 }
 barre() {   # barre: lo que la API dio por borrado se va, como al final del reconciliador
   sql_plano "update plano.operacion set estado = 'hecha', terminada = now() where estado = 'en-curso';

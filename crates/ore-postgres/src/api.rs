@@ -6,6 +6,10 @@
 //!   POST   /v1/postgres/proyectos                 {"id": "ventas", "dueno": "user:ana"}  → 202 + operación
 //!   GET    /v1/postgres/proyectos/{p}
 //!   DELETE /v1/postgres/proyectos/{p}             → 202 + operación
+//!   GET    /v1/postgres/proyectos/{p}/acceso         quién entra: IPs, bloqueo público, límites (P5·6)
+//!   POST   /v1/postgres/proyectos/{p}/acceso         {"ips_permitidas": [...], "bloquear_publico": false,
+//!                                                     "limites": {"tcp": {"por_segundo", "rafaga"}, "ws", "http"}}
+//!                                                     → 202; lo que no viene, se queda como está
 //!   GET    /v1/postgres/proyectos/{p}/ramas
 //!   POST   /v1/postgres/proyectos/{p}/ramas       {"id": "dev", "padre": "main", "lsn" | "instante"}  → 202
 //!   GET    /v1/postgres/proyectos/{p}/ramas/{r}
@@ -137,7 +141,8 @@ impl Servidor {
             | Pedido::CrearRama(_)
             | Pedido::CrearEndpoint(..)
             | Pedido::CrearRol(..)
-            | Pedido::CrearBase(..) => match analizar(&p.cuerpo) {
+            | Pedido::CrearBase(..)
+            | Pedido::CambiarAcceso(_) => match analizar(&p.cuerpo) {
                 Ok(n) => Some(n),
                 Err(m) => return Respuesta::error(400, m),
             },
@@ -160,6 +165,10 @@ impl Servidor {
             Pedido::Proyecto(id) => proyecto(c, &celda, id),
             Pedido::CrearProyecto => crear_proyecto(c, &celda, cuerpo.as_ref().expect("analizado")),
             Pedido::BorrarProyecto(id) => borrar_proyecto(c, &celda, id),
+            Pedido::Acceso(id) => acceso(c, &celda, id),
+            Pedido::CambiarAcceso(id) => {
+                cambiar_acceso(c, &celda, id, cuerpo.as_ref().expect("analizado"))
+            }
             Pedido::Operacion(id) => operacion(c, &celda, id),
             Pedido::Ramas(p) => ramas(c, &celda, p),
             Pedido::Rama(p, r) => rama(c, &celda, p, r),
@@ -204,6 +213,8 @@ pub enum Pedido<'a> {
     CrearProyecto,
     Proyecto(&'a str),
     BorrarProyecto(&'a str),
+    Acceso(&'a str),
+    CambiarAcceso(&'a str),
     Operacion(&'a str),
     Ramas(&'a str),
     CrearRama(&'a str),
@@ -229,6 +240,8 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("POST", ["proyectos"]) => Pedido::CrearProyecto,
         ("GET", ["proyectos", p]) => Pedido::Proyecto(p),
         ("DELETE", ["proyectos", p]) => Pedido::BorrarProyecto(p),
+        ("GET", ["proyectos", p, "acceso"]) => Pedido::Acceso(p),
+        ("POST", ["proyectos", p, "acceso"]) => Pedido::CambiarAcceso(p),
         ("GET", ["operaciones", o]) => Pedido::Operacion(o),
         ("GET", ["proyectos", p, "ramas"]) => Pedido::Ramas(p),
         ("POST", ["proyectos", p, "ramas"]) => Pedido::CrearRama(p),
@@ -251,6 +264,7 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
             _,
             ["proyectos"]
             | ["proyectos", _]
+            | ["proyectos", _, "acceso"]
             | ["operaciones", _]
             | ["proyectos", _, "ramas"]
             | ["proyectos", _, "ramas", _]
@@ -268,7 +282,12 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         _ => return Err(Respuesta::error(404, "no hay nada en ese camino")),
     };
     match &pedido {
-        Pedido::Ramas(p) | Pedido::CrearRama(p) | Pedido::Rama(p, _) | Pedido::BorrarRama(p, _)
+        Pedido::Ramas(p)
+        | Pedido::CrearRama(p)
+        | Pedido::Rama(p, _)
+        | Pedido::BorrarRama(p, _)
+        | Pedido::Acceso(p)
+        | Pedido::CambiarAcceso(p)
             if !id_valido(p) =>
         {
             Err(Respuesta::error(
@@ -1252,6 +1271,185 @@ fn no_hay_rama(id: &str) -> Fallo {
     Fallo(404, format!("no hay ninguna rama `{id}`"))
 }
 
+// ── quién entra (P5·6) ─────────────────────────────────────────────────────
+
+/// Los protocolos con límite propio, como los nombra el proxy.
+pub const PROTOCOLOS: [&str; 3] = ["tcp", "ws", "http"];
+
+/// Lo que se elige de un proyecto para [`acceso_json`].
+const ACCESO: &str = "ips_permitidas, bloquear_publico,
+    (limites->'tcp'->>'por_segundo')::bigint, (limites->'tcp'->>'rafaga')::bigint,
+    (limites->'ws'->>'por_segundo')::bigint, (limites->'ws'->>'rafaga')::bigint,
+    (limites->'http'->>'por_segundo')::bigint, (limites->'http'->>'rafaga')::bigint";
+
+/// Una entrada de la lista de IPs, como la entiende el proxy de Neon
+/// (`parse_ip_pattern`): una IP, `IP/prefijo` o `IP-IP`, v4 o v6. Lo que el
+/// proxy no entiende lo convierte en «ninguna IP» y deja fuera a todos: aquí no
+/// pasa.
+pub fn patron_ip_valido(p: &str) -> bool {
+    use std::net::IpAddr;
+    if let Some((ip, prefijo)) = p.split_once('/') {
+        let Ok(ip) = ip.parse::<IpAddr>() else {
+            return false;
+        };
+        let tope = if ip.is_ipv4() { 32 } else { 128 };
+        return prefijo.parse::<u8>().is_ok_and(|n| n <= tope)
+            && !prefijo.starts_with('+')
+            && prefijo.len() <= 3;
+    }
+    if let Some((a, b)) = p.split_once('-') {
+        return match (a.parse::<IpAddr>(), b.parse::<IpAddr>()) {
+            (Ok(a), Ok(b)) => a.is_ipv4() == b.is_ipv4() && a <= b,
+            _ => false,
+        };
+    }
+    p.parse::<IpAddr>().is_ok()
+}
+
+/// Los límites de un protocolo: por segundo y ráfaga, enteros con techo.
+fn limite_de(protocolo: &str, n: &Node) -> Result<(i64, i64), Fallo> {
+    let num = |k: &str, tope: i64| -> Result<i64, Fallo> {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|v| (1..=tope).contains(v))
+            .ok_or_else(|| {
+                Fallo(
+                    400,
+                    format!("`limites.{protocolo}.{k}`: un entero de 1 a {tope}"),
+                )
+            })
+    };
+    Ok((num("por_segundo", 100_000)?, num("rafaga", 1_000_000)?))
+}
+
+fn acceso_json(f: &Row) -> Json {
+    let par = |i: usize| {
+        Json::obj([
+            ("por_segundo", Json::Int(f.get::<_, i64>(i))),
+            ("rafaga", Json::Int(f.get::<_, i64>(i + 1))),
+        ])
+    };
+    Json::obj([
+        (
+            "ips_permitidas",
+            Json::Arr(
+                f.get::<_, Vec<String>>(0)
+                    .into_iter()
+                    .map(Json::s)
+                    .collect(),
+            ),
+        ),
+        ("bloquear_publico", Json::Bool(f.get(1))),
+        (
+            "limites",
+            Json::obj([("tcp", par(2)), ("ws", par(4)), ("http", par(6))]),
+        ),
+    ])
+}
+
+fn acceso(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo> {
+    match c.query_opt(
+        &format!(
+            "select {ACCESO} from plano.proyecto
+              where organizacion = $1 and id = $2 and deseado = 'vivo'"
+        ),
+        &[&celda.organizacion, &id],
+    )? {
+        Some(f) => Ok(Respuesta::ok(acceso_json(&f))),
+        None => Err(no_hay_proyecto(id)),
+    }
+}
+
+/// Cambia lo que venga en el cuerpo; lo demás se queda. Es una operación: al
+/// quedar hecha, el proxy olvida lo que tenía guardado y lo nuevo vale ya.
+fn cambiar_acceso(
+    c: &mut Client,
+    celda: &Celda,
+    id: &str,
+    cuerpo: &Node,
+) -> Result<Respuesta, Fallo> {
+    let ips = match cuerpo.get("ips_permitidas") {
+        None => None,
+        Some((_, Node::Sequence { items, .. })) => {
+            let mut v = Vec::new();
+            for i in items {
+                let p = i.as_str().map(str::trim).unwrap_or_default();
+                if !patron_ip_valido(p) {
+                    return Err(Fallo(
+                        400,
+                        format!(
+                            "`{p}` no es una IP, una subred (`203.0.113.0/24`) ni un rango (`203.0.113.1-203.0.113.9`)"
+                        ),
+                    ));
+                }
+                v.push(p.to_string());
+            }
+            if v.len() > 100 {
+                return Err(Fallo(
+                    400,
+                    "como mucho 100 entradas en `ips_permitidas`".into(),
+                ));
+            }
+            Some(v)
+        }
+        Some(_) => return Err(Fallo(400, "`ips_permitidas` es una lista".into())),
+    };
+    let bloquear = match cuerpo.get("bloquear_publico").map(|(_, v)| v.as_str()) {
+        None => None,
+        Some(Some("true")) => Some(true),
+        Some(Some("false")) => Some(false),
+        Some(_) => return Err(Fallo(400, "`bloquear_publico` es true o false".into())),
+    };
+    let mut limites = Vec::new();
+    if let Some((_, l)) = cuerpo.get("limites") {
+        for (k, v) in l.entries() {
+            let k = k.as_str().unwrap_or_default();
+            let Some(protocolo) = PROTOCOLOS.iter().find(|p| **p == k) else {
+                return Err(Fallo(400, format!("`limites.{k}`: sólo tcp, ws y http")));
+            };
+            let (por_segundo, rafaga) = limite_de(protocolo, v)?;
+            limites.push((
+                *protocolo,
+                Json::obj([
+                    ("por_segundo", Json::Int(por_segundo)),
+                    ("rafaga", Json::Int(rafaga)),
+                ]),
+            ));
+        }
+    }
+    if ips.is_none() && bloquear.is_none() && limites.is_empty() {
+        return Err(Fallo(
+            400,
+            "nada que cambiar: `ips_permitidas`, `bloquear_publico` o `limites`".into(),
+        ));
+    }
+    let limites = Json::obj(limites).jcs();
+    let mut tx = c.transaction()?;
+    let Some(_) = tx.query_opt(
+        "select 1 from plano.proyecto
+          where organizacion = $1 and id = $2 and deseado = 'vivo' for update",
+        &[&celda.organizacion, &id],
+    )?
+    else {
+        return Err(no_hay_proyecto(id));
+    };
+    let op = nueva_operacion(&mut tx, celda, id, "configurar-acceso", None)?;
+    let f = tx.query_one(
+        &format!(
+            "update plano.proyecto
+                set ips_permitidas = coalesce($3, ips_permitidas),
+                    bloquear_publico = coalesce($4, bloquear_publico),
+                    limites = limites || $5::text::jsonb
+              where organizacion = $1 and id = $2
+          returning {ACCESO}"
+        ),
+        &[&celda.organizacion, &id, &ips, &bloquear, &limites],
+    )?;
+    tx.commit()?;
+    Ok(aceptada(&op, Some(("acceso", acceso_json(&f)))))
+}
+
 fn no_hay_proyecto(id: &str) -> Fallo {
     Fallo(404, format!("no hay ningún proyecto `{id}`"))
 }
@@ -1340,7 +1538,45 @@ mod pruebas {
     }
 
     #[test]
+    fn las_ips_como_las_entiende_el_proxy() {
+        for bueno in [
+            "203.0.113.7",
+            "203.0.113.0/24",
+            "0.0.0.0/0",
+            "203.0.113.1-203.0.113.9",
+            "2001:db8::1",
+            "2001:db8::/32",
+            "2001:db8::1-2001:db8::ff",
+        ] {
+            assert!(patron_ip_valido(bueno), "{bueno}");
+        }
+        for malo in [
+            "",
+            "203.0.113",
+            "203.0.113.0/33",
+            "2001:db8::/129",
+            "203.0.113.0/+8",
+            "203.0.113.9-203.0.113.1",
+            "203.0.113.1-2001:db8::1",
+            "ejemplo.com",
+            " 203.0.113.7",
+        ] {
+            assert!(!patron_ip_valido(malo), "{malo}");
+        }
+    }
+
+    #[test]
     fn las_rutas() {
+        assert_eq!(
+            ruta("POST", &["proyectos", "ventas", "acceso"]).ok(),
+            Some(Pedido::CambiarAcceso("ventas"))
+        );
+        assert_eq!(
+            ruta("DELETE", &["proyectos", "ventas", "acceso"])
+                .err()
+                .map(|r| r.codigo),
+            Some(405)
+        );
         assert_eq!(ruta("GET", &["proyectos"]).ok(), Some(Pedido::Proyectos));
         assert_eq!(
             ruta("POST", &["proyectos"]).ok(),

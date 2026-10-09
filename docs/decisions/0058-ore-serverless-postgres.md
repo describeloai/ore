@@ -1138,6 +1138,25 @@ El laboratorio hace de reconciliador (`lab.sh reconcilia`: el rol con su verific
 
 ⚠️ **Modo `transaction`**, como Neon: lo que vive en la sesión (`SET`, `LISTEN`, *advisory locks* de sesión, tablas temporales entre transacciones) no sobrevive entre transacciones por `-pooler`. Para eso está el endpoint directo. Connect (P5·7) ofrecerá los dos y dirá cuál usar.
 
+#### P5·6 · Quién entra, medido en el laboratorio (2026-10-09)
+
+**Lo comprueba el proxy de Neon; lo decide `ore-postgres`.** Por proyecto, como en Neon (migración 005), y se le contesta en `get_endpoint_access_control`:
+
+- **`ips_permitidas`** (`allowed_ips`): vacía significa todas. Admite una IP, una subred (`203.0.113.0/24`) o un rango (`203.0.113.1-203.0.113.9`), IPv4 o IPv6, hasta 100 entradas. ⛔ El proxy convierte una entrada que no entiende en «ninguna IP», lo que deja fuera a todos; por eso la API valida cada entrada con las mismas reglas del proxy (`patron_ip_valido`) y una mala es un 400.
+- **`bloquear_publico`** (`block_public_connections`): nadie entra por la entrada pública. Hoy es el interruptor que cierra el endpoint a internet; cuando haya una entrada privada, será la única puerta.
+- **`limites`** (`rate_limits.connection_attempts`): intentos de conexión por endpoint y protocolo, en cubeta (por segundo y ráfaga). **Siempre hay uno**: tcp y ws a 100/s con ráfaga de 1000; http a 1000/s con ráfaga de 10000, porque por HTTP cada consulta es una conexión. Es lo que corta la fuerza bruta, junto al SCRAM de 4096 iteraciones y contraseñas de 32 caracteres al azar.
+
+`GET`/`POST /v1/postgres/proyectos/{p}/acceso` (en `ore-serve`: `postgres:ver` para leer; `postgres:gestionar` o ser el dueño para cambiar). En un `POST`, lo que no viene en el cuerpo se queda como estaba. Cambiar es una operación, `configurar-acceso`: el reconciliador no tiene nada que hacer en el cómputo, y al quedar hecha el proxy olvida su caché por Redis (P5·1), así que **el cambio vale ya**, sin esperar los 4 minutos.
+
+`lab/p56.sh`, con TCP desde una IP y HTTP desde otra, todo en verde y repetible:
+
+- **IPs**: con solo la de HTTP en la lista, TCP no entra y HTTP sí; con un rango que cubre solo la de TCP, al revés; una subred que cubre las dos, ambas; otra subred, ninguna; la lista vacía, todas otra vez. Cada cambio se nota en la conexión siguiente.
+- **Bloqueo público**: nadie entra, por TCP ni por HTTP; al quitarlo, se vuelve a entrar.
+- **Fuerza bruta**: con una cubeta de 1/s y ráfaga de 3, de 12 intentos a la vez **9 se cortan** por el límite (*too many connections*); con el límite de siempre, se vuelve a entrar.
+- Una entrada mala, **400**; otra organización no lo ve ni lo cambia (**404**).
+
+Lo que solo se puede medir en producción: que el proxy vea **la IP real del cliente** tras el balanceador (P5·3).
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:

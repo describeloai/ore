@@ -25,6 +25,10 @@ const MIGRACIONES: &[(&str, &str)] = &[
         "004-roles-y-bases",
         include_str!("../migraciones/004-roles-y-bases.sql"),
     ),
+    (
+        "005-quien-entra",
+        include_str!("../migraciones/005-quien-entra.sql"),
+    ),
 ];
 
 /// Un número cualquiera, pero siempre el mismo: dos procesos que arrancan a la

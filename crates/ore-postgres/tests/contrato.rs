@@ -36,7 +36,8 @@ fn servidor() -> Option<Servidor> {
             "001-el-esqueleto",
             "002-el-tenant-y-las-ramas",
             "003-los-endpoints",
-            "004-roles-y-bases"
+            "004-roles-y-bases",
+            "005-quien-entra"
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -1146,6 +1147,93 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
         "{}",
         r.cuerpo.jcs()
     );
+    // P5·6 · quién entra. Por defecto, todas las IPs y un límite por protocolo.
+    let (codigo, a) = pide(&s, "a", "GET", "/v1/postgres/proyectos/ventas/acceso", "");
+    assert_eq!(codigo, 200, "{a}");
+    assert!(
+        a.contains(r#""ips_permitidas":[]"#) && a.contains(r#""bloquear_publico":false"#),
+        "{a}"
+    );
+    assert!(
+        a.contains(r#""tcp":{"por_segundo":100,"rafaga":1000}"#),
+        "{a}"
+    );
+    let acceso = "/proxy/get_endpoint_access_control";
+    let r = pregunta(
+        Some("el-del-proxy"),
+        acceso,
+        &[("endpointish", &vm), ("role", "ana")],
+    );
+    assert!(
+        r.cuerpo.jcs().contains(r#""allowed_ips":[]"#)
+            && r.cuerpo
+                .jcs()
+                .contains(r#""block_public_connections":false"#)
+            && r.cuerpo.jcs().contains(r#""tcp":{"burst":1000,"rps":100}"#),
+        "{}",
+        r.cuerpo.jcs()
+    );
+    // Una entrada que el proxy no entendería, no llega: 400 y nada cambia.
+    let (codigo, _) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/acceso",
+        r#"{"ips_permitidas": ["203.0.113.0/24", "203.0.113"]}"#,
+    );
+    assert_eq!(codigo, 400);
+    let (codigo, _) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/acceso",
+        r#"{"limites": {"udp": {"por_segundo": 1, "rafaga": 1}}}"#,
+    );
+    assert_eq!(codigo, 400);
+    // Otra organización no lo ve ni lo cambia.
+    let (codigo, _) = pide(
+        &s,
+        "b",
+        "POST",
+        "/v1/postgres/proyectos/ventas/acceso",
+        r#"{"bloquear_publico": true}"#,
+    );
+    assert_eq!(codigo, 404);
+    // Cambiar es una operación; lo que no viene se queda.
+    let (codigo, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/acceso",
+        r#"{"ips_permitidas": ["203.0.113.0/24", "2001:db8::1"], "limites": {"tcp": {"por_segundo": 2, "rafaga": 5}}}"#,
+    );
+    assert_eq!(codigo, 202, "{r}");
+    assert_eq!(campo(&r, &["operacion", "tipo"]), "configurar-acceso");
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, op) = pide(
+        &s,
+        "a",
+        "GET",
+        &format!(
+            "/v1/postgres/operaciones/{}",
+            campo(&r, &["operacion", "id"])
+        ),
+        "",
+    );
+    assert_eq!(campo(&op, &["estado"]), "hecha", "{op}");
+    let r = pregunta(
+        Some("el-del-proxy"),
+        acceso,
+        &[("endpointish", &vm), ("role", "ana")],
+    );
+    let j = r.cuerpo.jcs();
+    assert!(
+        j.contains(r#""allowed_ips":["203.0.113.0/24","2001:db8::1"]"#),
+        "{j}"
+    );
+    assert!(j.contains(r#""tcp":{"burst":5,"rps":2}"#), "{j}");
+    assert!(j.contains(r#""ws":{"burst":1000,"rps":100}"#), "{j}");
+    assert!(j.contains(r#""block_public_connections":false"#), "{j}");
 }
 
 #[test]
