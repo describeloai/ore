@@ -221,7 +221,7 @@ public final class Ore {
         String c = ruta.split("\\?", 2)[0];
         return c.startsWith("/puestos/") || c.equals("/federation/read")
             || c.matches("^/colecciones/[^/]+/[^/]+/[^/]+/items/resolver$")
-            || c.matches("^/media/[^/]+/[^/]+/[^/]+/urls$")
+            || c.matches("^/media/[^/]+/[^/]+/[^/]+/(urls|verify)$")
             || (c.startsWith("/v1/") && c.endsWith("/metrics"));
     }
 

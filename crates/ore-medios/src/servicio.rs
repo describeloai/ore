@@ -37,6 +37,9 @@ pub const TTL_MINIMO: u64 = 30;
 pub const TTL_MAXIMO: u64 = 3600;
 /// Cuántos ítems por página y por lote, como mucho.
 pub const LIMITE: usize = 1000;
+/// Cuántos ítems verifica una petición de `verify`, como mucho: lee los bytes
+/// enteros (0049 H4; para auditar, no para el camino caliente).
+pub const LIMITE_VERIFY: usize = 100;
 
 /// De dónde salen los lotes de un listado: el lago de verdad o, en las
 /// pruebas, uno en memoria.
@@ -153,6 +156,7 @@ fn problema_json(status: u16, tipo: &str, detalle: impl Into<String>) -> Json {
         "media/rango" => "El rango no cabe",
         "media/transaccion" => "La transacción no está abierta",
         "media/digest-no-casa" => "El digest no es el de los bytes",
+        "media/corrupto" => "Los bytes no casan con el ítem",
         _ => "Petición no válida",
     };
     Json::obj([
@@ -300,6 +304,7 @@ impl Servicio {
                 | "/indice/item"
                 | "/indice/urls"
                 | "/indice/abrir"
+                | "/indice/verificar"
                 | "/indice/derivaciones"),
             ) => {
                 let n = match ore_core::parse::parse(&p.cuerpo) {
@@ -328,6 +333,7 @@ impl Servicio {
                     "/indice/items" => self.items(&ix, &n),
                     "/indice/item" => self.item(&ix, &n),
                     "/indice/abrir" => self.abrir(&ix, &n),
+                    "/indice/verificar" => self.verificar(&ix, &n),
                     "/indice/derivaciones" => self.derivaciones(&ix, &n),
                     _ => self.urls(&ix, &n),
                 }
@@ -488,46 +494,9 @@ impl Servicio {
                 };
             }
         };
-        // ⭐ 0049 B8·3: de una mantenida, lo que ya tiene su blob, del lago; lo
-        //   que todavía no (una virtual que acaba de pasar a mantenida, y su
-        //   copia está en camino), de su origen como una virtual, si `ore-serve`
-        //   trajo la credencial. Mantenida no deja un ítem sin servir.
-        let del_origen = |fuente: &str| Origen::S3 {
-            fuente: fuente.to_string(),
-            clave: it.clave.clone().unwrap_or_else(|| it.camino.clone()),
-            version: it.version.clone(),
-            etag: it.etag.as_deref().map(entre_comillas).unwrap_or_default(),
-        };
-        let origen = match (&it.blob, texto(n, "fuente")) {
-            (Some(b), _) if !ix.virtual_ => Origen::Lago { sha256: b.clone() },
-            (_, Some(fuente)) => del_origen(fuente),
-            (_, None) if ix.virtual_ => {
-                return problema(
-                    400,
-                    "media/peticion",
-                    "una virtual se lee con la credencial de su fuente: falta `fuente`",
-                );
-            }
-            (_, None) => {
-                return problema(
-                    404,
-                    "media/no-existe",
-                    "el ítem no tiene blob en el lago todavía (su copia está en camino) y no llegó la credencial de su origen",
-                );
-            }
-        };
-        let sha256 = it
-            .blob
-            .clone()
-            .or_else(|| self.vistos.de(&ix.coleccion, &it.camino, &it.version));
-        let pieza = Pieza {
-            coleccion: ix.coleccion.clone(),
-            camino: it.camino.clone(),
-            version: it.version.clone(),
-            origen,
-            tamano: it.tamano.and_then(|t| u64::try_from(t).ok()),
-            sha256,
-            tipo: it.tipo.clone(),
+        let pieza = match self.pieza(ix, it, texto(n, "fuente")) {
+            Ok(p) => p,
+            Err(r) => return r,
         };
         let segundos = texto(n, "ttl_s")
             .and_then(|t| t.parse::<u64>().ok())
@@ -585,6 +554,139 @@ impl Servicio {
             ("version", Json::s(&it.version)),
             ("item", ix.referencia(it)),
         ]))
+    }
+
+    /// **Lo que hay que leer de un ítem** (0049 B8·3): de una mantenida, lo que
+    /// ya tiene su blob, del lago; lo que todavía no (una virtual que acaba de
+    /// pasar a mantenida, y su copia está en camino), de su origen como una
+    /// virtual, si `ore-serve` trajo la credencial. Mantenida no deja un ítem
+    /// sin servir.
+    fn pieza(&self, ix: &Indice, it: &Item, fuente: Option<&str>) -> Result<Pieza, Respuesta> {
+        let del_origen = |fuente: &str| Origen::S3 {
+            fuente: fuente.to_string(),
+            clave: it.clave.clone().unwrap_or_else(|| it.camino.clone()),
+            version: it.version.clone(),
+            etag: it.etag.as_deref().map(entre_comillas).unwrap_or_default(),
+        };
+        let origen = match (&it.blob, fuente) {
+            (Some(b), _) if !ix.virtual_ => Origen::Lago { sha256: b.clone() },
+            (_, Some(fuente)) => del_origen(fuente),
+            (_, None) if ix.virtual_ => {
+                return Err(problema(
+                    400,
+                    "media/peticion",
+                    "una virtual se lee con la credencial de su fuente: falta `fuente`",
+                ));
+            }
+            (_, None) => {
+                return Err(problema(
+                    404,
+                    "media/no-existe",
+                    "el ítem no tiene blob en el lago todavía (su copia está en camino) y no llegó la credencial de su origen",
+                ));
+            }
+        };
+        let sha256 = it
+            .blob
+            .clone()
+            .or_else(|| self.vistos.de(&ix.coleccion, &it.camino, &it.version));
+        Ok(Pieza {
+            coleccion: ix.coleccion.clone(),
+            camino: it.camino.clone(),
+            version: it.version.clone(),
+            origen,
+            tamano: it.tamano.and_then(|t| u64::try_from(t).ok()),
+            sha256,
+            tipo: it.tipo.clone(),
+        })
+    }
+
+    /// **`verify`** (0049 H4, `docs/media.md` §2): lee cada ítem entero, del lago
+    /// o de su origen, calcula su `sha256` y lo compara con su digest; uno por
+    /// posición, el error de uno en la suya. Sin digest conocido (una virtual
+    /// que nadie leyó entera), se compara el tamaño y el digest calculado queda
+    /// visto: el siguiente `stat` lo da (D-H4). Hasta [`LIMITE_VERIFY`] ítems.
+    fn verificar(&self, ix: &Indice, n: &Node) -> Respuesta {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let pedidos = n.get("items").map(|(_, v)| v.items()).unwrap_or(&[]);
+        if pedidos.is_empty() || pedidos.len() > LIMITE_VERIFY {
+            return problema(
+                413,
+                "media/limite",
+                format!(
+                    "de 1 a {LIMITE_VERIFY} ítems por petición: `verify` lee los bytes enteros"
+                ),
+            );
+        }
+        let error = |r: Respuesta| Json::obj([("error", r.cuerpo)]);
+        let mut resultados = Vec::with_capacity(pedidos.len());
+        for p in pedidos {
+            let it = match self.buscar(ix, p) {
+                Ok(it) => it,
+                Err(e) => {
+                    resultados.push(Json::obj([("error", e)]));
+                    continue;
+                }
+            };
+            let pieza = match self.pieza(ix, it, texto(n, "fuente")) {
+                Ok(p) => p,
+                Err(r) => {
+                    resultados.push(error(r));
+                    continue;
+                }
+            };
+            let comparado = if pieza.sha256.is_some() {
+                "digest"
+            } else if pieza.tamano.is_some() {
+                "size"
+            } else {
+                "nada"
+            };
+            let mut abierto = match crate::contenido::abrir(
+                self.cuenta.as_ref(),
+                &pieza,
+                None,
+                self.vistos.clone(),
+            ) {
+                Ok(b) => b,
+                Err(r) => {
+                    resultados.push(error(r));
+                    continue;
+                }
+            };
+            // El lector ya comprueba al final (`Verificado`); aquí se calcula
+            // también, para decir qué digest tienen los bytes que hay.
+            let mut hash = Sha256::new();
+            let mut buf = vec![0u8; 1 << 16];
+            let fallo = loop {
+                match abierto.lector.read(&mut buf) {
+                    Ok(0) => break None,
+                    Ok(k) => hash.update(&buf[..k]),
+                    Err(e) => break Some(e),
+                }
+            };
+            let visto = format!("sha256:{}", ore_s3::hex(&hash.finalize()));
+            resultados.push(match fallo {
+                None => Json::obj([
+                    ("item", ix.referencia(it)),
+                    ("ok", Json::Bool(true)),
+                    ("digest", Json::s(&visto)),
+                    ("comparado", Json::s(comparado)),
+                ]),
+                Some(e) if e.kind() == std::io::ErrorKind::InvalidData => Json::obj([
+                    ("item", ix.referencia(it)),
+                    ("ok", Json::Bool(false)),
+                    ("digest", Json::s(&visto)),
+                    ("error", problema_json(502, "media/corrupto", e.to_string())),
+                ]),
+                Some(e) => Json::obj([(
+                    "error",
+                    problema_json(502, "media/origen", format!("la lectura se cortó: {e}")),
+                )]),
+            });
+        }
+        Respuesta::ok(Json::obj([("results", Json::Arr(resultados))]))
     }
 
     /// `url`: una por ítem, en su posición; el error de uno va en la suya.
@@ -997,6 +1099,7 @@ mod pruebas {
             ("POST", "/indice/items"),
             ("POST", "/indice/urls"),
             ("POST", "/indice/abrir"),
+            ("POST", "/indice/verificar"),
             ("POST", "/indice/derivaciones"),
             ("GET", "/salud"),
         ] {
@@ -1209,6 +1312,89 @@ mod pruebas {
         );
         let e = u[0].get("error").unwrap().1;
         assert_eq!(e.get("status").unwrap().1.as_str(), Some("501"));
+    }
+
+    /// 0049 H4: `verify` lee cada ítem entero y lo compara con su digest; el
+    /// corrupto dice el digest que tienen sus bytes, el que no tiene blob su
+    /// error, todo en su posición; más de 100, 413.
+    #[test]
+    fn verify_lee_entero_y_compara_con_el_digest() {
+        use sha2::{Digest, Sha256};
+        let bien = vec![b'a'; 77];
+        let sha = |b: &[u8]| ore_s3::hex(&Sha256::digest(b));
+        let (h_bien, h_malo) = (sha(&bien), sha(b"otro"));
+        struct Uno(String, String);
+        impl Listados for Uno {
+            fn lotes(&self, _: &str, _: &str) -> Result<Vec<arrow_array::RecordBatch>, String> {
+                Ok(vec![listado(&[
+                    (
+                        "docs/bien.pdf",
+                        "v1",
+                        "crc64nvme:A",
+                        "actual",
+                        Some(&self.0),
+                    ),
+                    (
+                        "docs/malo.pdf",
+                        "v1",
+                        "crc64nvme:B",
+                        "actual",
+                        Some(&self.1),
+                    ),
+                    ("docs/ido.pdf", "v1", "crc64nvme:C", "actual", Some("ffff")),
+                ])])
+            }
+        }
+        let lago = crate::contenido::pruebas::Memoria::default();
+        lago.subir(&ore_store::blobs::clave_de(&h_bien), &bien)
+            .unwrap();
+        // los bytes del blob de `malo`, otros (del mismo tamaño)
+        lago.subir(&ore_store::blobs::clave_de(&h_malo), &[b'b'; 77])
+            .unwrap();
+        let s = Servicio {
+            listados: Box::new(Uno(h_bien.clone(), h_malo.clone())),
+            cuenta: Arc::new(lago),
+            indices: Indices::new_para_pruebas(),
+            vistos: Arc::default(),
+            permisos: Permisos::default(),
+            escrituras: Default::default(),
+        };
+        let (c, b) = pedir(
+            &s,
+            "/indice/verificar",
+            &format!(
+                "{{{BASE},\"items\":[{{\"path\":\"docs/bien.pdf\"}},{{\"path\":\"docs/malo.pdf\"}},{{\"path\":\"docs/ido.pdf\"}},{{\"path\":\"docs/no.pdf\"}}]}}"
+            ),
+        );
+        assert_eq!(c, 200, "{b}");
+        let j = ore_core::parse::parse(&b).unwrap();
+        let r = j.get("results").unwrap().1.items();
+        let campo = |i: usize, k: &str| {
+            r[i].get(k)
+                .map(|(_, v)| v.as_str().unwrap_or("").to_string())
+        };
+        assert_eq!(campo(0, "ok").as_deref(), Some("true"), "{b}");
+        assert_eq!(campo(0, "digest"), Some(format!("sha256:{h_bien}")));
+        assert_eq!(campo(0, "comparado").as_deref(), Some("digest"));
+        assert_eq!(campo(1, "ok").as_deref(), Some("false"), "{b}");
+        assert_eq!(
+            campo(1, "digest"),
+            Some(format!("sha256:{}", sha(&[b'b'; 77])))
+        );
+        assert!(b.contains("media/corrupto"), "{b}");
+        assert!(
+            r[2].get("error").is_some() && r[2].get("ok").is_none(),
+            "{b}"
+        );
+        assert!(r[3].get("error").is_some(), "{b}");
+
+        let muchos = vec![r#"{"path":"docs/bien.pdf"}"#; 101].join(",");
+        let (c, _) = pedir(
+            &s,
+            "/indice/verificar",
+            &format!("{{{BASE},\"items\":[{muchos}]}}"),
+        );
+        assert_eq!(c, 413);
     }
 
     /// `ore-serve` reenvía `ttl_s` y `limit` como números JSON.

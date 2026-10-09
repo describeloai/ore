@@ -619,7 +619,7 @@ def _no_escribe(ruta):
     camino = ruta.split("?", 1)[0]
     return (camino.startswith("/puestos/") or camino == "/federation/read"
             or bool(re.match(r"^/colecciones/[^/]+/[^/]+/[^/]+/items/resolver$", camino))
-            or bool(re.match(r"^/media/[^/]+/[^/]+/[^/]+/urls$", camino))
+            or bool(re.match(r"^/media/[^/]+/[^/]+/[^/]+/(urls|verify)$", camino))
             or (camino.startswith("/v1/") and camino.endswith("/metrics")))
 
 

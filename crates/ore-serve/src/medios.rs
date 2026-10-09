@@ -7,6 +7,7 @@
 //! | `GET /media/{b}/{s}/{c}/item?path=&version=` o `?digest=` | `stat` | |
 //! | `POST /media/{b}/{s}/{c}/urls` `{items, ttl_s}` | `url` | y lo anota en la actividad |
 //! | `GET /media/{b}/{s}/{c}/content?path=&version=` o `?digest=` | `open` | 307 a donde están los bytes (B3·3) |
+//! | `POST /media/{b}/{s}/{c}/verify` `{items}` | `verify` | con la credencial de la fuente, si hace falta (H4) |
 //!
 //! **`content`** (0049 B3·3): este proceso no pasa bytes, **dice dónde están**.
 //! Una mantenida, en el lago: `ore-medios` firma su blob y se redirige a esa
@@ -591,7 +592,7 @@ impl Servidor {
             );
         }
         let cuerpo_pedido = match operacion {
-            "urls" => match ore_core::parse::parse(&p.cuerpo) {
+            "urls" | "verify" => match ore_core::parse::parse(&p.cuerpo) {
                 Ok(n) if !p.cuerpo.trim().is_empty() => Some(n),
                 _ => {
                     return problema(
@@ -713,6 +714,20 @@ impl Servidor {
                     let vida = vida_hasta(caduca, crate::datasets::ahora_ms());
                     pedido.insert("ttl_s".into(), Json::Int(vida as i64));
                 }
+                // 0049 H4: `ore-medios` lee cada ítem entero —del lago, o de su
+                // origen con la credencial— y lo compara con su digest.
+                "verify" => {
+                    let n = cuerpo_pedido.as_ref().expect("analizado arriba");
+                    pedido.insert(
+                        "items".into(),
+                        n.get("items")
+                            .map(|(_, v)| Json::de_node(v))
+                            .unwrap_or(Json::Arr(vec![])),
+                    );
+                    if let Err(r) = la_fuente(&mut pedido) {
+                        return r;
+                    }
+                }
                 _ => {
                     let n = cuerpo_pedido.as_ref().expect("analizado arriba");
                     pedido.insert(
@@ -750,6 +765,7 @@ impl Servidor {
                 "item" => "/indice/item",
                 "derivations" => "/indice/derivaciones",
                 "content" => "/indice/abrir",
+                "verify" => "/indice/verificar",
                 _ => "/indice/urls",
             };
             match ore_entrada::http::pedir_con(

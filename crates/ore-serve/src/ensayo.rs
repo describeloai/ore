@@ -528,6 +528,7 @@ mod tests {
             "federation/read",
             "colecciones/legal/archivo/contratos/items/resolver",
             "media/legal/archivo/contratos/urls",
+            "media/legal/archivo/contratos/verify",
             "v1/ventas/namespaces/default/tables/limpios/metrics",
         ] {
             let seg: Vec<&str> = pasa.split('/').collect();

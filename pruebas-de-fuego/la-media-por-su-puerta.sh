@@ -25,6 +25,8 @@
 #      nueva, sigue en la de la página 1; un cursor y un as_of que no casan → 422
 #  12  url de una virtual (H3): se firma en su origen, así que necesita la
 #      credencial de su fuente; sin custodio, 503 y nada llega a ore-medios
+#  13  verify (H4): de una mantenida, reenvía los items a /indice/verificar; de
+#      una virtual sin custodio, 503 sin llegar a ore-medios
 #
 # Lo de verdad —el índice sobre el lago y la firma— se mide en vivo (B2·4).
 set -u
@@ -83,6 +85,7 @@ class H(http.server.BaseHTTPRequestHandler):
         r = {"/indice/items": {"as_of": "3", "cursor": "c0ffee", "items": []},
              "/indice/item": {"path": "x", "current": True},
              "/indice/urls": {"urls": [{"item": {"checksum": "crc64nvme:A", "digest": None, "path": "a.pdf", "version": "v1"}, "url": "https://firmada", "ttl_s": 300}]},
+             "/indice/verificar": {"results": [{"ok": True, "digest": "sha256:aa", "comparado": "digest"}]},
              "/indice/abrir": {"url": "https://lago/firmada", "desde": "lago", "ttl_s": 300, "version": "v1", "item": {"path": "a.jpg", "digest": None}}}[self.path]
         b = json.dumps(r).encode()
         self.send_response(200); self.send_header("content-type", "application/json")
@@ -201,6 +204,16 @@ despues=$(wc -l < "$TMP/pedidas.jsonl")
 if [ "$c" = 503 ] && grep -q 'credencial de una fuente' "$TMP/r.json" && [ "$antes" = "$despues" ]; then
   dice "12 · url de una virtual: se firma en su origen; sin custodio, 503 sin llegar a ore-medios"
 else falla "12 · url virtual ($c): $(cat "$TMP/r.json")"; fi
+
+c=$(pide POST "/media/legal/archivo/fotos/verify" '{"items":[{"path":"a.jpg"}]}')
+u=$(ultima)
+antes=$(wc -l < "$TMP/pedidas.jsonl")
+c2=$(pide POST "/media/legal/archivo/contratos/verify" '{"items":[{"path":"docs/a.pdf"}]}')
+despues=$(wc -l < "$TMP/pedidas.jsonl")
+if [ "$c" = 200 ] && echo "$u" | grep -q '"ruta": "/indice/verificar"' && echo "$u" | grep -q '"path": "a.jpg"' \
+   && grep -q 'credencial de una fuente' "$TMP/r.json" && [ "$c2" = 503 ] && [ "$antes" = "$despues" ]; then
+  dice "13 · verify: de una mantenida, a /indice/verificar; de una virtual sin custodio, 503 sin llegar a ore-medios"
+else falla "13 · verify ($c, $c2): $(cat "$TMP/r.json") · $u"; fi
 
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 arrancar ""

@@ -204,15 +204,15 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
 /// 0055 P1 · **Lo que un puesto pide sin escribir nada**, fuera de `GET`: lo
 /// suyo con el servidor (`/puestos/{id}/…`: el techo, `sql()`, el latido, la
 /// salida de la celda, el servidor de lenguaje), leer el origen en vivo, firmar
-/// URLs de la media y el informe de un escaneo de Iceberg. Es lo único que
-/// pasa la puerta del Preview.
+/// URLs de la media, verificarla (0049 H4: lee y compara) y el informe de un
+/// escaneo de Iceberg. Es lo único que pasa la puerta del Preview.
 pub(crate) fn no_escribe(seg: &[&str]) -> bool {
     matches!(
         seg,
         ["puestos", _, ..]
             | ["federation", "read"]
             | ["colecciones", _, _, _, "items", "resolver"]
-            | ["media", _, _, _, "urls"]
+            | ["media", _, _, _, "urls" | "verify"]
     ) || matches!(seg, ["v1", .., "metrics"])
 }
 
@@ -994,6 +994,10 @@ impl Servidor {
                 self.media(rama, p, sujeto, b, s, c, op)
             }
             ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, sujeto, b, s, c, "urls"),
+            // 0049 H4: `verify`, leer y comparar con el digest.
+            ("POST", ["media", b, s, c, "verify"]) => {
+                self.media(rama, p, sujeto, b, s, c, "verify")
+            }
             // 0049 B3·3: `open` —dónde están los bytes, y un 307 a ellos—.
             ("GET", ["media", b, s, c, "content"]) => {
                 self.media(rama, p, sujeto, b, s, c, "content")
