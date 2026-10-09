@@ -48,6 +48,17 @@ fn motivo(f: &Fuente, r: &Respuesta) -> String {
     r.motivo()
 }
 
+/// Sobre qué se pide un permiso: el ARN en AWS; fuera (un `endpoint` que no es
+/// de AWS: R2, Garage, MinIO…), el bucket, que es lo que allí significa algo.
+fn sobre(b: &ore_s3::Bucket, objetos: bool) -> String {
+    let base = if b.endpoint.contains("amazonaws.com") {
+        b.arn()
+    } else {
+        b.bucket.clone()
+    };
+    if objetos { format!("{base}/*") } else { base }
+}
+
 pub fn comprobar(f: &Fuente) -> String {
     let b = &f.bucket;
     let mut permisos = Vec::new();
@@ -80,7 +91,7 @@ pub fn comprobar(f: &Fuente) -> String {
     permisos.push(Permiso {
         nombre: "listar",
         accion: "s3:ListBucket",
-        sobre: b.arn(),
+        sobre: sobre(b, false),
         ok,
         porque,
         decide: true,
@@ -100,7 +111,7 @@ pub fn comprobar(f: &Fuente) -> String {
     permisos.push(Permiso {
         nombre: "leer",
         accion: "s3:GetObject",
-        sobre: format!("{}/*", b.arn()),
+        sobre: sobre(b, true),
         ok,
         porque,
         decide: true,
@@ -117,15 +128,29 @@ pub fn comprobar(f: &Fuente) -> String {
         ],
         Vec::new(),
     );
+    // ADR 0061 O1·1: un origen que no versiona no es un permiso que falta:
+    // cada objeto se fija por su ETag.
+    let mut fija = "version";
     let (ok, porque) = match v {
         Ok(r) if r.ok() => (Some(true), None),
+        Ok(r) if ore_s3::no_versiona(&r) => {
+            fija = "etag";
+            (
+                Some(true),
+                Some(
+                    "el origen no versiona (`ListObjectVersions` no está): cada objeto se fija \
+                     por su ETag, y lo que cambió entre listar y leer es un 412"
+                        .to_string(),
+                ),
+            )
+        }
         Ok(r) => (Some(false), Some(motivo(f, &r))),
         Err(t) => (Some(false), Some(t)),
     };
     permisos.push(Permiso {
         nombre: "versiones",
         accion: "s3:ListBucketVersions",
-        sobre: b.arn(),
+        sobre: sobre(b, false),
         ok,
         porque,
         decide: false,
@@ -160,6 +185,7 @@ pub fn comprobar(f: &Fuente) -> String {
     );
     let mut o = vec![
         ("ok", Json::Bool(ok)),
+        ("fija", Json::s(fija)),
         ("permisos", permisos),
         (
             "prefijos",

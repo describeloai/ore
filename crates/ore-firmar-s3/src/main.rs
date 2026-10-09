@@ -44,6 +44,16 @@ fn firmar(f: &Fuente, peticion: &Value) -> Result<String, String> {
         let c = |k: &str| it.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
         let clave = c("clave").ok_or("un ítem sin `clave`")?;
         let version = c("version").unwrap_or("");
+        // ADR 0061 O1·1 · Una versión que sólo es su ETag (`etag:…`, de un
+        //   origen que no versiona) no se firma: una URL no lleva `If-Match`, y
+        //   daría los bytes de ahora sean los que sean (D-O1). Se abre por
+        //   `content`. (Aquí sin `ore-objetos`: este binario sólo enlaza
+        //   `ore-sigv4` y `sha2`.)
+        if version.starts_with("etag:") {
+            return Err(format!(
+                "`{clave}` sólo se fija por su ETag: su URL no se firma (se abre por `content`)"
+            ));
+        }
         let mut extra: Vec<(&str, &str)> = Vec::new();
         // ⭐ `null` TAMBIÉN se fija (0049 B3·0, medido): es la versión de un objeto
         //   subido antes de activar el versionado, y en un bucket versionado
@@ -110,6 +120,16 @@ mod tests {
             "s3://mi-bucket/docs/?region=eu-north-1&access_key_id=AKIAEJEMPLO&secret_access_key=secreto",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn una_version_que_solo_es_su_etag_no_se_firma() {
+        let e = firmar(
+            &fuente(),
+            &json!({"items": [{"clave": "docs/a.pdf", "version": "etag:294c48"}]}),
+        )
+        .unwrap_err();
+        assert!(e.contains("sólo se fija por su ETag"), "{e}");
     }
 
     #[test]

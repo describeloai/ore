@@ -826,7 +826,7 @@ fn firmada_en_el_origen(
             problema_json(
                 501,
                 "media/origen",
-                "el origen de esta colección no da URLs firmadas: se abre por `content`",
+                "este ítem no tiene URL firmada —su origen no la da, o sólo se fija por su ETag, que una URL no lleva—: se abre por `content`",
             ),
         )]);
     };

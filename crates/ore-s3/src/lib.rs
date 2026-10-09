@@ -366,6 +366,12 @@ pub fn cabeza_de(b: &Bucket, clave: &str, version: &str) -> Result<Respuesta, St
     )
 }
 
+/// **Si el origen no versiona** (ADR 0061 O1·1): `ListObjectVersions` contesta
+/// `501 NotImplemented` (medido en Garage; R2 tampoco lo tiene).
+pub fn no_versiona(r: &Respuesta) -> bool {
+    r.estado == 501 || r.error_de_aws().is_some_and(|(c, _)| c == "NotImplemented")
+}
+
 /// Todo lo que hay bajo un prefijo, página a página.
 pub fn listar_todo(b: &Bucket, prefijo: &str) -> Result<Vec<Objeto>, Result<Respuesta, String>> {
     let mut out = Vec::new();

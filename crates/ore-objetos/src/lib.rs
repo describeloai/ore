@@ -197,6 +197,25 @@ impl Capacidades {
     }
 }
 
+/// **La versión de un objeto de un origen que no versiona** (ADR 0061 O1·1):
+/// `etag:<su ETag>`. Cambia cuando cambian los bytes —así la colección ve el
+/// cambio—, y nunca viaja como versión al origen: cada lectura la convierte en
+/// `If-Match` ([`etag_de`]), y si el objeto cambió es un `412`, nunca otros
+/// bytes (D-O1). Medido en Garage (como R2): ignora `versionId` —uno inventado
+/// también da la actual— y respeta `If-Match`.
+pub fn version_por_etag(etag: &str) -> String {
+    format!("etag:{}", etag.trim_matches('"'))
+}
+
+/// El ETag, entre comillas para `If-Match`, de una versión que sólo es su ETag
+/// ([`version_por_etag`]); `None` si es una versión del origen.
+pub fn etag_de(version: &str) -> Option<String> {
+    version
+        .strip_prefix("etag:")
+        .filter(|e| !e.is_empty())
+        .map(|e| format!("\"{e}\""))
+}
+
 /// Hexadecimal en minúsculas.
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -211,6 +230,16 @@ pub fn sha256(b: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn una_version_por_etag_va_y_vuelve_y_una_del_origen_no() {
+        let v = version_por_etag("\"294c48\"");
+        assert_eq!(v, "etag:294c48");
+        assert_eq!(etag_de(&v).as_deref(), Some("\"294c48\""));
+        for del_origen in ["null", "01M4GA28E0PY7", "3HL4kqtJlcpXroDTDmJ", "", "etag:"] {
+            assert_eq!(etag_de(del_origen), None, "{del_origen}");
+        }
+    }
 
     #[test]
     fn las_capacidades_se_dicen_en_json() {
