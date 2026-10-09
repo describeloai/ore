@@ -253,6 +253,17 @@ sin él), entero, rango, un ETag viejo → `cambiado`, **un `versionid` ignorado
 tampoco da bytes**, la SAS del vigente bajada con su tipo y su disposición (manipulada, `403`) y un
 contenedor que no está.
 
+**O3·2, hecho**: `ore-read-azure`, el `main` común con lo de Azure. Su `check` **prueba** —Azure no
+tiene `testIamPermissions` en el plano de datos— y dice qué falta y dónde: la identidad (el canje en
+Entra; si falla, la credencial federada que la app necesita), `listar` y `leer` (`Storage Blob Data
+Reader` sobre el contenedor), `versiones` (no decide: dice si se fija por `version` o por `etag`, como
+en ADLS Gen2) y `firmar` (la clave de delegación: `Storage Blob Delegator` sobre **la cuenta**; no
+decide, sin ella los ítems se abren por `content`). Un contenedor o una cuenta que no existe, y el
+firewall de red de la cuenta (`AuthorizationFailure`), se dicen como lo que son y no como un rol que
+falta. Contra Azurite, los verbos del binario: `capacidades`, `check` (y un contenedor que no está),
+`explorar`, `catalogo` (1 tabla y 4 conjuntos), `testigo`, `versiones` (`etag:` y `md5:`), `bajar`
+cotejado, y con la huella cambiada o un ETag que ya no es, no copia.
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).

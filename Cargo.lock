@@ -2708,6 +2708,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-azure"
+version = "0.1.0"
+dependencies = [
+ "ore-azure",
+ "ore-core",
+ "ore-driver",
+ "ore-objetos",
+ "ore-read-objetos",
+]
+
+[[package]]
 name = "ore-read-bigquery"
 version = "0.1.0"
 dependencies = [
