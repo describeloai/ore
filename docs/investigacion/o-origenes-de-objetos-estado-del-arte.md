@@ -197,3 +197,29 @@ delegación de usuario** ([docs](https://learn.microsoft.com/en-us/azure/storage
 - **Huella**: `Content-MD5`, que Put Blob calcula siempre y Put Block List sólo guarda si el cliente
   lo da (las subidas grandes suelen quedar sin él); ningún CRC64 de objeto entero
   ([Put Block List](https://learn.microsoft.com/en-us/rest/api/storageservices/put-block-list)).
+
+## 7. SFTP: cómo entra la plataforma en el servidor del cliente (2026-10-09)
+
+Investigado para D-O4.
+
+| producto | identidad | huella del host | fuente |
+|---|---|---|---|
+| **Fivetran** | contraseña, **un par de claves que genera Fivetran** (el cliente pega la pública en `authorized_keys`), o una privada que sube el cliente | TOFU: el usuario confirma la clave en la prueba | [docs](https://fivetran.com/docs/connectors/files/sftp/setup-guide) |
+| **Databricks** (SFTP, preview) | privada PEM (recomendada) o contraseña, en una conexión de Unity Catalog | «Enforce host key fingerprint» SHA-256; la huella sale del error de una prueba | [docs](https://docs.databricks.com/aws/en/ingestion/sftp) |
+| **Foundry** | contraseña o privada que sube el cliente | **obligatoria**; «Accept any host key» existe, apagado y llamado inseguro | [docs](https://www.palantir.com/docs/foundry/available-connectors/sftp/) |
+| **Azure Data Factory** | contraseña, clave del cliente, o ambas | `hostKeyFingerprint` obligatoria salvo que se salte | [docs](https://learn.microsoft.com/en-us/azure/data-factory/connector-sftp) |
+| **AWS Transfer Family** (conectores) | privada, contraseña o ambas, en Secrets Manager | `TrustedHostKeys`; vacío, la prueba devuelve la vista y se fija | [docs](https://docs.aws.amazon.com/transfer/latest/userguide/configure-sftp-connector.html) |
+| **Airbyte** | contraseña o privada | **no verifica** (`hostkey=None` en su código) | [código](https://raw.githubusercontent.com/airbytehq/airbyte/master/airbyte-integrations/connectors/source-sftp-bulk/source_sftp_bulk/client.py) |
+
+- **Red**: IPs de salida fijas publicadas (Fivetran por región, AWS 3 por conector, Databricks por NAT);
+  túneles SSH o agentes, aparte; puertos distintos del 22.
+- **Trampas** ([OpenSSH 8.8](https://www.openssh.com/txt/release-8.8)): servidores viejos que sólo
+  tienen `ssh-rsa` con SHA-1; el `mtime` de SFTP v3 son segundos enteros
+  ([libssh](https://api.libssh.org/master/structsftp__attributes__struct.html)), así que no basta
+  como versión; `MaxSessions` 10 por conexión en OpenSSH; los ficheros a medio escribir se evitan
+  con una **edad mínima** (NiFi «Minimum File Age»), renombrado al terminar, o un fichero marcador.
+- **Bibliotecas de Rust**: `russh` + `russh-sftp` (Rust puro, tokio, muy activa, corrigió Terrapin en
+  0.40.2; la investigación cita además una serie de avisos de seguridad recientes, sobre todo de
+  denegación de servicio, **sin verificar uno a uno**) y `ssh2` (libssh2 en C, síncrona, de ritmo
+  lento; la que empaqueta `libssh2-sys` 0.3.3 es la 1.11.1, con *strict KEX*: Terrapin corregido,
+  comprobado en su código). `openssh` llama al binario `ssh` y obliga a llevarlo en la imagen.

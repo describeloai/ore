@@ -73,6 +73,29 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    ADLS Gen2, que no lo tiene— por ETag, con D-O1. Las URLs, SAS de delegación de usuario fijadas a
    la versión (`sr=bv`); por ETag, ninguna (D-O1). La huella, `md5:` si el blob la tiene.
 
+7. **D-O4 · cómo entra ORE en el SFTP del cliente** *(propuesta, 2026-10-09; investigación §7)*:
+   - **Identidad: una clave Ed25519 que genera ORE** —por celda, la privada en el cofre— y de la que
+     el cliente sólo ve la pública, que pega en `authorized_keys` (lo que hace Fivetran; nada del
+     cliente que guardar). De recurso, y dicho como tal: una privada que traiga el cliente o una
+     contraseña, en el cofre como la clave de S3.
+   - **La huella del host, siempre fijada** (SHA-256): la da el cliente, o la prueba del alta la
+     captura y el usuario la confirma. Si cambia, se niega —nada se copia— y el error enseña la nueva;
+     volver a fijarla es un acto explícito. Ningún «aceptar cualquiera» (Airbyte no verifica: no es
+     el estándar).
+   - **Sólo colección mantenida** (D-O1): la versión es la copia en el lago con su sha256. Un fichero
+     se copia si lleva más de una **edad mínima** sin cambiar (60 s por defecto, configurable) y se
+     vuelve a mirar al terminar de leerlo: si cambió el tamaño o el `mtime`, la copia se descarta
+     (medido en O4·0: reescrito en sitio, la lectura mezcla los dos contenidos). Un reescrito del
+     mismo tamaño en el mismo segundo no se ve: lo cubre la edad mínima.
+   - **Enlaces simbólicos, no se siguen** (se listan como tales y se saltan): un enlace puede salir
+     del directorio o hacer un ciclo.
+   - **Red**: el puerto 22 (o el que diga la URL) de salida desde los drivers, y la **IP de salida
+     fija de la celda** (Cloud NAT), que el cliente pone en su lista de permitidos. Ambas, con go.
+   - **Biblioteca: `ssh2`** (libssh2 1.11.1, con *strict KEX*): síncrona como el resto de los drivers,
+     21 crates frente a 212, y el mismo resultado que `russh` en O4·0. El precio es código C; se fija
+     la versión y se sigue a libssh2. `russh` queda como alternativa si un día hace falta Rust puro.
+     Algoritmos modernos por defecto; `ssh-rsa` con SHA-1 sólo con un parámetro explícito por fuente.
+
 ## El plan
 
 Cada hito se construye y se prueba **en local**, con el emulador de cada proveedor en Docker; la
@@ -301,6 +324,20 @@ se copian otros bytes: el cotejo del `md5` los para—. El perfil, en
 SDK, sin validar—), ADLS Gen2 (namespace jerárquico y sus ACL), el firewall de red, y la concesión de
 los dos roles. Se salda corriendo `o3-azure.sh` contra una cuenta real y la consola dando de alta un
 contenedor.
+
+### O4 · SFTP (en curso)
+
+**O4·0, medido** (`atmoz/sftp`, OpenSSH 8.4p1, `atmoz/sftp@sha256:09603904…`): clave de host
+Ed25519 y su huella SHA-256; la clave autorizada entra, otra no, y sin contraseña tampoco; el
+usuario empieza en su chroot (`/`); listar recursivo (7 ficheros, 17 ms); `stat` da tamaño y `mtime`
+**en segundos enteros**; leer desde una posición (el pie de un Parquet) sí; sin permiso, `errno 13`;
+no está, `errno 2`; **sin `exec`** (`internal-sftp`: no hay huella calculada en el servidor); un
+fichero **reescrito en sitio mientras se lee da una mezcla de los dos contenidos**, y uno
+**renombrado encima** deja leer entero el de antes; **10 canales SFTP por conexión** (el undécimo,
+`Connect failed`) y 31 conexiones a la vez sin problema; 64 MiB en ~0,6 s. Los dos *spikes* de Rust
+(`russh` 0.64 + `russh-sftp` 3, y `ssh2` 0.9 con libssh2 1.11.1) hacen lo mismo contra él: la huella
+casa con la de `ssh-keygen` en el servidor, con una equivocada se niegan, listan, leen el pie y bajan
+a ~110 MiB/s. `russh` trae 212 crates y un runtime asíncrono; `ssh2`, 21 y síncrono.
 
 ## Lo que no se hace aquí
 
