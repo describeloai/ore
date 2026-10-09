@@ -535,7 +535,7 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -669,6 +669,26 @@ jobs:
           echo "### ore-federation · sftp" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-sftp --banco sftp \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ⭐ ADR 0061 O5·3: SharePoint, contra el Graph de mentira
+      #   (`pruebas-de-fuego/graph-de-mentira.py`: no hay emulador de Graph), en
+      #   páginas de 2 y con un `429` cada 13 peticiones; el conector sólo le
+      #   habla con `ORE_SHAREPOINT_LABORATORIO=1`.
+      - name: el conector de SharePoint
+        env:
+          ORE_SHAREPOINT_LABORATORIO: "1"
+          ORE_GRAPH_TOKEN: kit
+        run: |
+          PAGINA=2 CADA_429=13 GRAPH_TOKEN=kit python3 pruebas-de-fuego/graph-de-mentira.py 8790 8791 > "$RUNNER_TEMP/graph.log" 2>&1 &
+          for i in $(seq 1 50); do grep -q listo "$RUNNER_TEMP/graph.log" && break; sleep 0.2; done
+          export GRAPH_KIT_ENDPOINT=http://127.0.0.1:8790
+          echo "### ore-read-sharepoint" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-sharepoint --banco sharepoint \
+            --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### ore-federation · sharepoint" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-sharepoint --banco sharepoint \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          curl -s http://127.0.0.1:8790/_mentira/cuentas | tee -a "$GITHUB_STEP_SUMMARY" | grep -q '"con_token": 0'
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):
       # lo que el BigQuery de verdad contestó, sin red ni token ni coste. Por

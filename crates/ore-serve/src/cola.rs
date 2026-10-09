@@ -380,7 +380,7 @@ pub fn rendir_comprobacion(
 
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
 /// la cuenta de la celda y no llevan credencial dentro: BigQuery, GCS, Azure
-/// Blob, S3 por rol y SFTP con la clave de la celda.
+/// Blob, SharePoint, S3 por rol y SFTP con la clave de la celda.
 pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
     // ⭐ ADR 0061 O2·3 · Un bucket de GCS se lee con la cuenta de la celda, o
     //   suplantando una del cliente (`suplantar`): su URL no lleva secreto. Ni
@@ -428,6 +428,28 @@ pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
             return Err("la URL de Azure nombra la app de Entra: `tenant` y `cliente`".into());
         }
         return Ok("azure");
+    }
+    // ⭐ ADR 0061 O5·3 · Una biblioteca de SharePoint, igual (D-O5): la misma
+    //   federación, y la URL nombra el sitio, la biblioteca y la app.
+    if let Some(resto) = url.strip_prefix("sharepoint://") {
+        let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
+        if camino.contains('@') || url.contains('#') {
+            return Err("la URL de SharePoint es `sharepoint://<host>/[sites/<sitio>/]<biblioteca>[/<prefijo>]?tenant=…&cliente=…`".into());
+        }
+        let claves: Vec<&str> = consulta
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.split_once('=').map_or(p, |(k, _)| k))
+            .collect();
+        if let Some(k) = claves.iter().find(|k| !matches!(**k, "tenant" | "cliente")) {
+            return Err(format!(
+                "la URL de SharePoint sólo admite `tenant` y `cliente`, no `{k}`: no se comprueba otra cosa"
+            ));
+        }
+        if !(claves.contains(&"tenant") && claves.contains(&"cliente")) {
+            return Err("la URL de SharePoint nombra la app de Entra: `tenant` y `cliente`".into());
+        }
+        return Ok("sharepoint");
     }
     // ⭐ ADR 0061 O4·3 · Un SFTP se lee con la clave de la celda (D-O4): su URL
     //   no lleva secreto salvo el recurso de una contraseña, y ésa no viaja en
@@ -931,6 +953,25 @@ mod prueba {
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&sig=x").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&endpoint=https://e").is_err());
+        // ADR 0061 O5·3: SharePoint, igual.
+        assert_eq!(
+            url_sin_secreto(
+                "sharepoint://contoso.sharepoint.com/sites/x/Documentos/?tenant=t&cliente=c"
+            ),
+            Ok("sharepoint")
+        );
+        assert!(
+            url_sin_secreto("sharepoint://contoso.sharepoint.com/Documentos?cliente=c").is_err()
+        );
+        assert!(
+            url_sin_secreto(
+                "sharepoint://contoso.sharepoint.com/D?tenant=t&cliente=c&endpoint=http://e"
+            )
+            .is_err()
+        );
+        assert!(
+            url_sin_secreto("sharepoint://u@contoso.sharepoint.com/D?tenant=t&cliente=c").is_err()
+        );
         // ADR 0061 O4·3: SFTP con la clave de la celda; con contraseña, no.
         assert_eq!(
             url_sin_secreto("sftp://ore@sftp.cliente.com:2222/datos/?huella=SHA256:abc&edad=60"),

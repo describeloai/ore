@@ -2718,6 +2718,7 @@ dependencies = [
  "ore-core",
  "ore-entrada",
  "ore-gcs",
+ "ore-graph",
  "ore-objetos",
  "ore-s3",
  "ore-sigv4",

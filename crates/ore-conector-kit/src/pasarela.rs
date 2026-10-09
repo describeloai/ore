@@ -363,7 +363,7 @@ impl Kit<'_> {
     /// GCS, Azure, SFTP): son las familias que los tienen.
     fn colecciones(&mut self) -> (Estado, String) {
         let familia = self.b.familia();
-        if !matches!(familia, "s3" | "gcs" | "azure" | "sftp") {
+        if !matches!(familia, "s3" | "gcs" | "azure" | "sftp" | "sharepoint") {
             return (
                 Estado::NoAplica,
                 "sólo los almacenes de objetos tienen colecciones".into(),

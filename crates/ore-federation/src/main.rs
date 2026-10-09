@@ -1,7 +1,7 @@
 //! `ore-federation`: la pasarela del Federation Engine, un servicio por celda.
 //!
 //! ```text
-//! ore-federation [--escucha 0.0.0.0:8099] [--conectores <dir>] [--tipos postgres,bigquery,s3,gcs,azure,sftp]
+//! ore-federation [--escucha 0.0.0.0:8099] [--conectores <dir>] [--tipos postgres,bigquery,s3,gcs,azure,sftp,sharepoint]
 //! ```
 //!
 //! `--conectores` es donde están los `ore-read-<tipo>` (por defecto, junto a
@@ -39,7 +39,7 @@ fn main() -> ExitCode {
             .unwrap_or_else(|| PathBuf::from("."))
     });
     let tipos: Vec<String> = valor("--tipos")
-        .unwrap_or_else(|| "postgres,bigquery,s3,gcs,azure,sftp".into())
+        .unwrap_or_else(|| "postgres,bigquery,s3,gcs,azure,sftp,sharepoint".into())
         .split(',')
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())

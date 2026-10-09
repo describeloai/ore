@@ -2,7 +2,7 @@
 
 **Estado:** propuesto (2026-10-09). **O0–O4 hechos** (2026-10-09; O2–O4 en el laboratorio, la prueba
 contra GCS, Azure y un SFTP de verdad es deuda temporal); O5 (SharePoint) en marcha: O5·0 investigado,
-D-O5 aceptada, O5·1 y O5·2 hechos. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
+D-O5 aceptada, O5·1–O5·3 hechos. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -529,6 +529,37 @@ concesión, uno que no está, una biblioteca y una carpeta que no están, un tok
 acepta), `explorar`, `catalogo` (2 tablas y 2 conjuntos), `versiones` (`<id>@2.0` con su
 `quickxor:`), `bajar` la actual y la vieja (`@1.0`), una versión que no está (dicha por ítem) y una
 huella que no casa (no se entrega); 8 esperas por `429` y ninguna descarga con el token.
+
+**O5·3, hecho**: SharePoint cableado al resto de ORE.
+
+- `ore-medios` lee `sharepoint://` (el cliente guardado por URL, como GCS y Azure: la URL no lleva
+  secreto) y sirve sus ítems por `leer_fijado` —sin URLs firmadas (D-O5), los bytes pasan por él—.
+- `ore-serve`: una `sharepoint://` se comprueba antes del alta (sólo `tenant` y `cliente`), no se
+  canjea, y `GET /fuentes/credenciales/sharepoint` da los pasos con los IDs de las dos cuentas
+  puestos: la app (la de Azure vale), las dos *federated identity credentials*, el permiso
+  `Sites.Selected` con el consentimiento de un administrador, y la concesión `read` de cada sitio
+  (`Grant-PnPEntraIDAppSitePermission`); como no admitidos, todo el tenant (`Sites.Read.All`,
+  `Files.Read.All`), un usuario delegado y un secreto o certificado. La credencial federada sale de
+  una función común con Azure.
+- `ore-federation` carga `sharepoint`; `ore-read-sharepoint` en la imagen de drivers y en
+  `ci/compilar-binarios.sh`; el kit gana el banco `sharepoint` (siembra en el Graph de mentira; la
+  credencial mala es un sitio sin concesión, `403 accessDenied` → `credencial`) y el CI lo corre con
+  páginas de 2 y un `429` cada 13 peticiones, y comprueba al final que ninguna descarga recibió el
+  token. En local: **12/12 directo y 9/9 por la pasarela**, 78 esperas por `429` en 1023 peticiones.
+- Lo que destapó: el Graph de mentira calculaba el `quickXorHash` en cada respuesta, byte a byte en
+  Python (más de un segundo por fichero de 4 MiB: el catálogo tardaba dos minutos y `timeoutMs`
+  no se cumplía); ahora se calcula una vez por versión y juntando antes los bytes que comparten
+  desplazamiento (4 MiB en 29 ms, los mismos 70 vectores).
+
+**Falta, con go** (aprovisionador): publicar `ORE_ID_MEDIOS` en `ids-de-la-celda` (lo mismo que
+Azure). Sin él, el asistente sale con el hueco de la cuenta de medios y lo dice.
+
+**Deuda de O5, contra un tenant**: el id del permiso `Sites.Selected` en el comando del asistente
+(`883ea226-…`, de memoria), que `Sites.Selected` + `read` liste, baje y dé versiones, si la actual
+sale en `versions`, cuánto vive la URL de descarga, los errores reales, el ritmo real y su coste
+en RU —hoy cada rango de una lectura vigilada son tres o cuatro peticiones: el item por su ruta, la
+descarga y el `cTag` al terminar; un catálogo de Parquet lee varios rangos por fichero—, y `delta`.
+Las esperas por `Retry-After` no miran el `timeoutMs` de la lectura.
 
 ## Lo que no se hace aquí
 

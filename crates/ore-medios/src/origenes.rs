@@ -2,9 +2,10 @@
 //! de la fuente con su credencial (`fuente`), y su esquema dice quién la lee.
 //! `s3://` (S3 y los que hablan su API), `gs://` (GCS, ADR 0061 O2·3: la URL
 //! no lleva secreto y se lee con la cuenta de este proceso, o suplantando la
-//! del cliente) y `az://` (Azure Blob, O3·3: la cuenta de este proceso,
-//! federada en la app de Entra del cliente); un proveedor nuevo es una rama
-//! aquí, con su [`ore_objetos::Origen`].
+//! del cliente), `az://` (Azure Blob, O3·3: la cuenta de este proceso,
+//! federada en la app de Entra del cliente) y `sharepoint://` (O5·3: la misma
+//! federación, con `Sites.Selected`; sin URLs firmadas, los bytes pasan por
+//! aquí); un proveedor nuevo es una rama aquí, con su [`ore_objetos::Origen`].
 
 use crate::servicio::problema;
 use ore_entrada::http::Respuesta;
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 type Compartido = Arc<dyn Origen + Send + Sync>;
 
-/// Los clientes de GCS y de Azure, por URL, entre peticiones: cada uno guarda
+/// Los clientes de GCS, de Azure y de SharePoint, por URL, entre peticiones: cada uno guarda
 /// su token (el suplantado de GCS, una hora; el de Entra, 45 minutos) y en
 /// Azure la clave de delegación, que pedir por petición sería una ida a IAM o
 /// a Entra por cada ítem. Sus URLs no llevan secreto, así que pueden ser la
@@ -65,6 +66,11 @@ pub fn de(fuente: &str) -> Result<Box<dyn Origen + Send + Sync>, Respuesta> {
         })
         .map(|o| Box::new(o) as Box<dyn Origen + Send + Sync>)
         .map_err(no_se_lee),
+        "sharepoint" => guardado(fuente, || {
+            ore_graph::Graph::de_url(fuente).map(|g| Arc::new(g) as Compartido)
+        })
+        .map(|o| Box::new(o) as Box<dyn Origen + Send + Sync>)
+        .map_err(no_se_lee),
         // ADR 0061 O4·3 (D-O1): un SFTP no versiona; sus colecciones son
         // mantenidas y lo que se sirve sale del lago, nunca de aquí.
         "sftp" => Err(problema(
@@ -100,6 +106,17 @@ mod pruebas {
             .unwrap();
         assert_eq!(e.codigo, 502);
         assert!(!e.cuerpo.jcs().contains("secreto"), "{}", e.cuerpo.jcs());
+        assert!(
+            super::de("sharepoint://contoso.sharepoint.com/sites/x/Documentos/?tenant=t&cliente=c")
+                .is_ok()
+        );
+        let e = super::de(
+            "sharepoint://contoso.sharepoint.com/Documentos?tenant=t&cliente=c&secreto=s",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(e.codigo, 502);
+        assert!(!e.cuerpo.jcs().contains("=s"), "{}", e.cuerpo.jcs());
         let e = super::de("sftp://u:clave@h/x").err().unwrap();
         assert_eq!(e.codigo, 422);
         let t = e.cuerpo.jcs();

@@ -64,15 +64,31 @@ CERROJO = threading.Lock()
 CUENTAS = {"peticiones": 0, "429": 0, "descargas": 0, "con_token": 0}
 
 
+def xor_de(b: bytes) -> int:
+    """El XOR de todos los bytes, plegando el entero en C (no byte a byte)."""
+    if not b:
+        return 0
+    largo = 1
+    while largo < len(b):
+        largo *= 2
+    n = int.from_bytes(b, "little")
+    while largo > 1:
+        largo //= 2
+        n = (n & ((1 << (8 * largo)) - 1)) ^ (n >> (8 * largo))
+    return n
+
+
 def quickxor(datos: bytes) -> str:
+    # El byte i va desplazado 11*i bits en un registro de 160: todos los de la
+    # misma posición módulo 160 van igual, así que se juntan antes por XOR.
     r = bytearray(20)
-    bit = 0
-    for b in datos:
+    for resto in range(min(160, len(datos))):
+        b = xor_de(datos[resto::160])
+        bit = (11 * resto) % 160
         i, d = bit // 8, bit % 8
         r[i] ^= (b << d) & 0xFF
         if d:
             r[(i + 1) % 20] ^= b >> (8 - d)
-        bit = (bit + 11) % 160
     for i, b in enumerate(len(datos).to_bytes(8, "little")):
         r[12 + i] ^= b
     return base64.b64encode(bytes(r)).decode()
@@ -104,7 +120,7 @@ class Elemento:
         self.padre = padre  # el id de la carpeta, o None (la raíz)
         self.tipo = tipo  # carpeta | fichero | package | remote
         self.guid = "{" + str(uuid.uuid4()).upper() + "}"
-        self.versiones = []  # [(etiqueta, bytes, epoch)], de la vieja a la nueva
+        self.versiones = []  # [(etiqueta, bytes, epoch, quickxor)], de la vieja a la nueva
         self.meta = 1  # cuántas veces cambió (contenido o metadatos): el eTag
         self.contenido = 1  # cuántas veces cambió el contenido: el cTag
         self.modificado = time.time()
@@ -214,7 +230,7 @@ def item_json(b, e, base):
         if e.tipo == "fichero":
             j["file"] = {
                 "mimeType": "application/octet-stream",
-                "hashes": {"quickXorHash": quickxor(datos)},
+                "hashes": {"quickXorHash": e.versiones[-1][3]},
             }
         elif e.tipo == "package":
             j["package"] = {"type": "oneNote"}
@@ -226,8 +242,9 @@ def item_json(b, e, base):
 class Graph(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *a):
-        pass
+    def log_message(self, formato, *a):
+        if os.environ.get("DEPURA"):
+            sys.stderr.write(f"{time.time():.3f} {self.address_string()} {formato % a}\n")
 
     def responder(self, estado, cuerpo=b"", cabeceras=None, tipo="application/json"):
         if isinstance(cuerpo, (dict, list)):
@@ -276,7 +293,7 @@ class Graph(BaseHTTPRequestHandler):
                 else:
                     e.meta += 1
                     e.contenido += 1
-                e.versiones.append((f"{len(e.versiones) + 1}.0", datos, time.time()))
+                e.versiones.append((f"{len(e.versiones) + 1}.0", datos, time.time(), quickxor(datos)))
                 e.modificado = time.time()
                 return self.responder(201, {"id": e.id, "version": e.versiones[-1][0]})
             e = b.por_ruta(ruta)

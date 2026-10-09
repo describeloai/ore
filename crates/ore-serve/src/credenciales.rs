@@ -119,6 +119,9 @@ pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
     if tipo == "azure" {
         return azure(id_de("ORE_ID_DRIVER"), id_de("ORE_ID_MEDIOS"));
     }
+    if tipo == "sharepoint" {
+        return sharepoint(id_de("ORE_ID_DRIVER"), id_de("ORE_ID_MEDIOS"));
+    }
     if tipo == "sftp" {
         let v = |k: &str| {
             std::env::var(k)
@@ -275,6 +278,160 @@ fn id_de(variable: &str) -> Option<String> {
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// La *federated identity credential* de una cuenta de la celda en la app del
+/// cliente (D-O3, D-O5), con su ID único puesto o el hueco `{id<quien>}`.
+fn credencial_federada(quien: &str, id: &Option<String>) -> String {
+    format!(
+        "az ad app federated-credential create --id {{app}} --parameters \
+         '{{\"name\":\"ore-{quien}\",\"issuer\":\"https://accounts.google.com\",\"subject\":\"{}\",\
+         \"audiences\":[\"api://AzureADTokenExchange\"]}}'",
+        id.as_deref().unwrap_or(&format!("{{id{quien}}}"))
+    )
+}
+
+/// El id del permiso de aplicación `Sites.Selected` de Microsoft Graph (la API
+/// `00000003-0000-0000-c000-000000000000`), para `az ad app permission add`.
+/// Sin comprobar contra un tenant (deuda de O5).
+const SITES_SELECTED: &str = "883ea226-0bf2-4a8f-9f9d-92c9162a727d";
+
+/// ⭐ ADR 0061 O5·3 (D-O5) · **SharePoint: las cuentas de esta celda, federadas,
+/// y sólo los sitios que el cliente elige.** La app es como la de Azure (puede
+/// ser la misma): las dos *federated identity credentials* con los IDs puestos.
+/// Lo que cambia es el permiso: `Sites.Selected` de Graph, con el
+/// consentimiento de un administrador —que por sí solo no abre ningún sitio— y
+/// la concesión `read` en cada sitio, que da un administrador de SharePoint.
+/// Sin `Sites.Read.All` (todo el tenant), sin un usuario, sin secretos.
+fn sharepoint(driver: Option<String>, medios: Option<String>) -> Json {
+    let mut m = vec![
+        ("modo", Json::s("federada")),
+        ("recomendado", Json::Bool(true)),
+        (
+            "dice",
+            Json::s(
+                "Crea en tu tenant una app que confíe en las dos cuentas de Google de esta celda \
+                 (la de Azure vale), dale el permiso Sites.Selected de Microsoft Graph y concédele \
+                 lectura sólo en los sitios que quieras: ninguno más se ve. La URL nombra el sitio, \
+                 la biblioteca y la app, y ningún secreto.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s(
+                "sharepoint://<tenant>.sharepoint.com/sites/<sitio>/<biblioteca>[/<carpeta>]?tenant=<id del tenant>&cliente=<id de la app>",
+            ),
+        ),
+        (
+            "pasos",
+            Json::Arr(vec![
+                Json::obj([
+                    (
+                        "para",
+                        Json::s("la app que confía en la celda (o la de Azure)"),
+                    ),
+                    (
+                        "comando",
+                        Json::s("az ad app create --display-name ore-lector"),
+                    ),
+                ]),
+                Json::obj([
+                    ("para", Json::s("el driver de la celda: catalogar y copiar")),
+                    ("comando", Json::s(credencial_federada("driver", &driver))),
+                ]),
+                Json::obj([
+                    ("para", Json::s("los medios de la celda: servir los ítems")),
+                    ("comando", Json::s(credencial_federada("medios", &medios))),
+                ]),
+                Json::obj([
+                    (
+                        "para",
+                        Json::s(
+                            "el permiso Sites.Selected de Graph, con el consentimiento de un \
+                             administrador: por sí solo no abre ningún sitio",
+                        ),
+                    ),
+                    (
+                        "comando",
+                        Json::s(format!(
+                            "az ad app permission add --id {{app}} --api 00000003-0000-0000-c000-000000000000 \
+                             --api-permissions {SITES_SELECTED}=Role && az ad app permission admin-consent --id {{app}}"
+                        )),
+                    ),
+                ]),
+                Json::obj([
+                    (
+                        "para",
+                        Json::s(
+                            "leer UN sitio (un administrador de SharePoint, una vez por sitio)",
+                        ),
+                    ),
+                    (
+                        "comando",
+                        Json::s(
+                            "Grant-PnPEntraIDAppSitePermission -AppId {app} -DisplayName ORE \
+                             -Site https://{tenant}.sharepoint.com/sites/{sitio} -Permissions Read",
+                        ),
+                    ),
+                ]),
+            ]),
+        ),
+    ];
+    con_ids(&mut m, driver, medios);
+    let no = |modo: &str, porque: &str| {
+        Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
+    };
+    Json::obj([
+        ("tipo", Json::s("sharepoint")),
+        ("modos", Json::Arr(vec![Json::obj(m)])),
+        (
+            "noAdmitidos",
+            Json::Arr(vec![
+                no(
+                    "todo-el-tenant",
+                    "Sites.Read.All o Files.Read.All leen todos los sitios y todos los OneDrive \
+                     de la empresa: Sites.Selected lee sólo los que concedas",
+                ),
+                no(
+                    "usuario",
+                    "un permiso delegado lee como una persona: la ingesta pararía cuando esa \
+                     persona se vaya o cambie su contraseña",
+                ),
+                no(
+                    "secreto-app",
+                    "un secreto o un certificado de la app es justo lo que la federación evita \
+                     guardar y rotar",
+                ),
+            ]),
+        ),
+    ])
+}
+
+/// Los IDs de las dos cuentas, o el aviso de que faltan.
+fn con_ids(m: &mut Vec<(&str, Json)>, driver: Option<String>, medios: Option<String>) {
+    let falta: Vec<&str> = [("ORE_ID_DRIVER", &driver), ("ORE_ID_MEDIOS", &medios)]
+        .iter()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| *k)
+        .collect();
+    if falta.is_empty() {
+        m.push((
+            "ids",
+            Json::obj([
+                ("driver", Json::s(driver.unwrap_or_default())),
+                ("medios", Json::s(medios.unwrap_or_default())),
+            ]),
+        ));
+    } else {
+        m.push((
+            "sinIds",
+            Json::s(format!(
+                "esta celda no dice todavía los IDs de sus cuentas ({}): los comandos salen con sus \
+                 huecos, y un subject mal pegado se crea sin error y falla después",
+                falta.join(", ")
+            )),
+        ));
+    }
+}
+
 /// ⭐ ADR 0061 O3·3 (D-O3) · **Azure: las cuentas de esta celda, federadas.** El
 /// cliente crea en su tenant una app (o una managed identity) con una
 /// *federated identity credential* por cuenta de la celda —issuer
@@ -284,14 +441,7 @@ fn id_de(variable: &str) -> Option<String> {
 /// con los IDs ya puestos: uno mal pegado se crea sin error y falla después,
 /// en silencio. Sin claves de la cuenta, sin SAS del cliente, sin secretos.
 fn azure(driver: Option<String>, medios: Option<String>) -> Json {
-    let fic = |quien: &str, id: &Option<String>| {
-        format!(
-            "az ad app federated-credential create --id {{app}} --parameters \
-             '{{\"name\":\"ore-{quien}\",\"issuer\":\"https://accounts.google.com\",\"subject\":\"{}\",\
-             \"audiences\":[\"api://AzureADTokenExchange\"]}}'",
-            id.as_deref().unwrap_or(&format!("{{id{quien}}}"))
-        )
-    };
+    let fic = credencial_federada;
     let alcance = "/subscriptions/{suscripcion}/resourceGroups/{grupo}/providers/Microsoft.Storage/storageAccounts/{cuenta}";
     let mut m = vec![
         ("modo", Json::s("federada")),
@@ -360,29 +510,7 @@ fn azure(driver: Option<String>, medios: Option<String>) -> Json {
             ]),
         ),
     ];
-    let falta: Vec<&str> = [("ORE_ID_DRIVER", &driver), ("ORE_ID_MEDIOS", &medios)]
-        .iter()
-        .filter(|(_, v)| v.is_none())
-        .map(|(k, _)| *k)
-        .collect();
-    if falta.is_empty() {
-        m.push((
-            "ids",
-            Json::obj([
-                ("driver", Json::s(driver.unwrap_or_default())),
-                ("medios", Json::s(medios.unwrap_or_default())),
-            ]),
-        ));
-    } else {
-        m.push((
-            "sinIds",
-            Json::s(format!(
-                "esta celda no dice todavía los IDs de sus cuentas ({}): los comandos salen con sus \
-                 huecos, y un subject mal pegado se crea sin error y falla después",
-                falta.join(", ")
-            )),
-        ));
-    }
+    con_ids(&mut m, driver, medios);
     let no = |modo: &str, porque: &str| {
         Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
     };
@@ -811,6 +939,37 @@ mod tests {
         let j = azure(Some("111".into()), None).jcs();
         assert!(
             j.contains("ORE_ID_MEDIOS") && j.contains("{idmedios}"),
+            "{j}"
+        );
+    }
+
+    /// SharePoint (0061 O5·3): la app federada con los IDs puestos,
+    /// Sites.Selected con consentimiento, la concesión por sitio, y lo que no
+    /// se admite.
+    #[test]
+    fn sharepoint_pide_sites_selected_y_la_concesion_por_sitio() {
+        let j = sharepoint(Some("111".into()), Some("333".into())).jcs();
+        for x in [
+            r#""tipo":"sharepoint""#,
+            r#"\"subject\":\"111\""#,
+            r#"\"subject\":\"333\""#,
+            "admin-consent",
+            SITES_SELECTED,
+            "Grant-PnPEntraIDAppSitePermission",
+            "-Permissions Read",
+            r#""modo":"todo-el-tenant""#,
+            r#""modo":"usuario""#,
+            "tenant=<id del tenant>&cliente=<id de la app>",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert!(
+            !j.contains("sinIds") && !j.contains("Sites.Read.All=Role"),
+            "{j}"
+        );
+        let j = sharepoint(None, None).jcs();
+        assert!(
+            j.contains("ORE_ID_DRIVER") && j.contains("{iddriver}"),
             "{j}"
         );
     }
