@@ -1250,3 +1250,53 @@ Lo construido en el laboratorio llega a producción en una tarde y sin reescribi
 6. **P5·7**: el snippet de Connect copiado en la consola conecta desde fuera.
 7. **P5·8**: una migración en vivo de la VM **no corta** una sesión abierta por el proxy; pgbench desde internet durante la migración, sin fallos.
 8. **Salud al terminar**: ningún pod reiniciándose, el certificado con su renovación programada, las métricas del proxy (`:7001`) sin errores de `wake_compute` ni de autenticación, y `p47.sh` (no queda huella) otra vez en verde.
+
+#### P6 · Serverless de verdad, en el laboratorio: el plan (2026-10-09)
+
+El cómputo duerme por inactividad y despierta al conectar, desde un pool de cómputos ya arrancados; el cliente fija sus límites. Como P5, se construye en el laboratorio local mientras Google no tiene facturación.
+
+**Lo que es del producto y lo que es desechable.** Son del producto, en `ore-postgres`: los estados del endpoint, la API de límites, dormir, despertar, la contabilidad del pool y la invalidación al proxy. Son del laboratorio y desechables:
+- **el cómputo de mentira**: Postgres 17 y pgbouncer, como en P5·5, más un `compute_ctl` falso que cumple el contrato leído en P6·0;
+- **el backend de cómputos para Docker**: el reconciliador crea, para y borra contenedores en lugar de VMs.
+
+El backend va detrás de una *feature* de Cargo (`laboratorio`): el binario de producción no lo lleva, y borrarlo no toca la lógica.
+
+| paso | qué | hecho cuando (en el laboratorio) |
+|---|---|---|
+| **P6·0 · El contrato real** | leer en el fork `/status`, el arranque vacío, `/configure`, `/terminate` y lo que el proxy hace al despertar | anotado aquí; el `compute_ctl` falso se escribe contra esto |
+| **P6·1 · El cómputo de mentira y el backend Docker** | el reconciliador real crea contenedores, en lugar de `lab.sh reconcilia` | P5·1–P5·6 en verde con el reconciliador real |
+| **P6·2 · Los límites del cliente** | migración 006: `dormir_tras` por endpoint (0 = nunca) y cambiar `cu_min`/`cu_max` de uno existente, por la API | validación, 404 entre organizaciones, se aplica al despertar siguiente |
+| **P6·3 · Dormir** | pasado `dormir_tras` sin actividad (`last_active`), `/terminate` y fuera el cómputo; el endpoint, `dormido` | duerme a su hora; con una consulta en curso no; dormido no queda contenedor |
+| **P6·4 · Despertar al conectar** | `wake_compute` sobre uno dormido lo enciende y espera a que esté listo, con tope; varias conexiones a la vez, un solo despertar | `psql`, pool, HTTP y WebSocket entran a uno dormido; el cliente no ve más error que la espera |
+| **P6·5 · El pool precalentado** | N cómputos vacíos; despertar toma uno, le manda `/configure` y repone el pool; un cómputo que sirvió a un tenant se destruye, nunca vuelve al pool | despertar en p50 y p95, en frío frente a desde el pool, con el arranque de una VM emulado |
+| **P6·6 · La consola** | *Active* o *Idle*; los límites, editables (junto a la pestaña Settings de P5·6) | en modo banco |
+| **P6·7 · ADR** | lo medido y lo que solo se puede probar en producción | — |
+
+#### P6·0 · El contrato real, leído en el fork (2026-10-09)
+
+Leído en el commit fijado (`8269bece`), sin Google:
+
+1. **`GET /status`** (`ComputeStatusResponse`) devuelve `status` y `last_active`. Los estados que importan son `empty` (arrancó sin especificación y espera una), `configuration_pending`, `init`, `running`, `configuration` y `failed`. En JSON van en *snake_case*.
+2. **Qué es actividad** (`compute_tools/src/monitor.rs`, cada 500 ms):
+   - **cuenta**: un backend de cliente que **no** está `idle`, sin contar `cloud_admin` ni el propio monitor; un walsender lógico; una suscripción lógica activa; un autovacuum;
+   - **no cuenta**: una sesión abierta y ociosa, cuyo `last_active` es la hora en que quedó ociosa.
+
+   ⇒ **Neon duerme el cómputo aunque haya sesiones ociosas abiertas, y las corta.** Se sigue igual, y corrige el plan, que decía «nunca con conexiones abiertas». La regla es «nunca con una consulta en curso». Quien no quiera que se corten pone `dormir_tras = 0`.
+3. **Dormir es `POST /terminate`**, no borrar la VM a pelo. Para Postgres limpiamente y devuelve el LSN final (`TerminateResponse`); después se borra la VM y el almacenamiento conserva todo.
+4. **El arranque vacío, que es el pool**: un `config.json` con `"spec": null` y solo `compute_ctl_config` (el JWKS) deja a `compute_ctl` en `empty`, con su HTTP arriba, esperando. Es la misma forma que el cuerpo de `/configure`.
+5. **`POST /configure`** solo se acepta en `empty` o en `running`, y **no contesta hasta que el cómputo está `running`** (o `failed`). Despertar desde el pool es, por tanto, una sola llamada que vuelve con Postgres listo.
+   - El `compute_id` de un cómputo del pool es su propio nombre (`pool-…`), no el del endpoint, y el token de `compute_ctl` se firma para ese nombre.
+   - El nombre público del endpoint (`ep-…`) no cambia: la base guarda qué cómputo sirve hoy a cada endpoint.
+6. **El proxy, al despertar**:
+   - el cliente HTTP con que llama a `wake_compute` **no tiene tope** (`http::new_client`, sin `timeout`), así que `wake_compute` puede esperar a que el cómputo esté listo en vez de contestar «reintenta», que solo daba ~7 s;
+   - conectar al cómputo tiene 2 s por intento y 5 reintentos.
+7. **La caché de direcciones del proxy** (`--wake-compute-cache idle_ttl=4m`) se invalida, y el proxy vuelve a despertar, cuando conectar al cómputo falla y también cuando el cómputo contesta un error de Postgres, incluido un fallo de contraseña (`should_retry_wake_compute`), salvo una lista corta (`too_many_connections`, sintaxis…). Un endpoint que cambia de cómputo en cada despertar no queda inservible 4 minutos por una dirección vieja, ni aunque esa IP la tenga ya otro cómputo: el SCRAM falla, el proxy olvida y despierta. **Se mide en P6·5**, forzando que se reutilice la IP.
+8. **El tiempo del cliente**: un despertar en frío de una VM (~35 s, medido en P3) supera el tiempo de conexión por defecto de algunos drivers (Prisma, 5 s). El pool es lo que lo resuelve; el número de verdad se mide en producción.
+
+**Lo que queda fuera de P6 hasta que vuelva Google**:
+1. el arranque real de una VM de NeonVM y el **p50/p95 real** del despertar, en frío y desde el pool, con el objetivo fijado tras esa medida;
+2. el **`compute_ctl` real** vacío aceptando `/configure` con la especificación de un tenant (el contrato de verdad, no el doble), y su `/terminate`;
+3. el **`last_active` real**, con pgbouncer, `cloud_admin`, la replicación y el walproposer;
+4. **dormido cuesta 0** de verdad: la VM desaparece y el nodo del pool `pg` se libera con el autoescalado;
+5. el pool en el clúster: cuántas VMs caben en la cuota, el aislamiento de una VM del pool antes de tener tenant (barreras 2 y 3) y la migración en vivo de una VM despierta;
+6. el despertar a través del balanceador, desde internet.
