@@ -326,10 +326,9 @@ public final class Media {
             Ore.Transform t = Ore.transformActivo();
             String salida = o.output != null ? Ore.corto(o.output, "apply(): the `output`") : t != null ? t.output() : null;
             if (salida == null) throw new IllegalArgumentException("apply(): outside a transform, give the `output` (`db.schema.c`)");
-            if (!esEscrita(salida))
-                throw new UnsupportedOperationException("apply() into a table (an anchored table, 0049 B5) is not in the JVM yet: "
-                    + "the output `" + salida + "` is not a written collection (`Ore.createCollection`)");
-            return aplicarFicheros(this, fn, o, new Collection(salida));
+            // B9: a una colección escrita, ficheros; si no, B5: una tabla anclada a esta colección.
+            if (esEscrita(salida)) return aplicarFicheros(this, fn, o, new Collection(salida));
+            return aplicarFilas(this, fn, o, salida);
         }
 
         /** {@code apply(fn, options)} with the defaults: inside a transform, into its output. */
@@ -936,6 +935,351 @@ public final class Media {
             cerrarFlujo();
             abierto = false;
         }
+    }
+
+    // ── 0049 B5 · la derivación incremental en filas: la tabla anclada ─────
+    //
+    // La tabla anclada ES el registro: `_derivation.key` dice con qué se calculó cada fila y
+    // `_status`, si salió. No hay otra tabla que mantener a la par. Es `_aplicar` de Python.
+
+    /** Los campos de {@code MediaRef} que van en {@code _item} (sin {@code annotations}). */
+    static final List<String> CAMPOS_ITEM = List.of("uri", "collection", "path", "version", "digest", "size",
+        "content_type", "content_type_detected", "checksum");
+    /** Las seis columnas de sistema (v1alpha17 {@code 03} §1). */
+    static final List<String> SISTEMA = List.of("_item", "_anchor", "_anchor_id", "_anchor_parent", "_derivation", "_status");
+
+    private static org.apache.arrow.vector.types.pojo.Field campo(String n, org.apache.arrow.vector.types.pojo.ArrowType t,
+                                                                  org.apache.arrow.vector.types.pojo.Field... hijos) {
+        return new org.apache.arrow.vector.types.pojo.Field(n, org.apache.arrow.vector.types.pojo.FieldType.nullable(t),
+            hijos.length == 0 ? null : List.of(hijos));
+    }
+
+    private static org.apache.arrow.vector.types.pojo.Field texto_(String n) {
+        return campo(n, org.apache.arrow.vector.types.pojo.ArrowType.Utf8.INSTANCE);
+    }
+
+    private static org.apache.arrow.vector.types.pojo.Field entero(String n) {
+        return campo(n, new org.apache.arrow.vector.types.pojo.ArrowType.Int(64, true));
+    }
+
+    private static org.apache.arrow.vector.types.pojo.Field real(String n) {
+        return campo(n, new org.apache.arrow.vector.types.pojo.ArrowType.FloatingPoint(org.apache.arrow.vector.types.FloatingPointPrecision.DOUBLE));
+    }
+
+    private static org.apache.arrow.vector.types.pojo.Field struct(String n, org.apache.arrow.vector.types.pojo.Field... hijos) {
+        return campo(n, org.apache.arrow.vector.types.pojo.ArrowType.Struct.INSTANCE, hijos);
+    }
+
+    /** El esquema de sistema de una tabla anclada (el {@code _esquema_de_sistema} de Python, campo a campo). */
+    static List<org.apache.arrow.vector.types.pojo.Field> esquemaDeSistema() {
+        List<org.apache.arrow.vector.types.pojo.Field> item = new ArrayList<>();
+        for (String k : CAMPOS_ITEM) item.add(k.equals("size") ? entero(k) : texto_(k));
+        var punto = struct("element", real("x"), real("y"));
+        var ancla = struct("_anchor", texto_("kind"), entero("page"), struct("bbox", real("x"), real("y"), real("w"), real("h")),
+            campo("polygon", new org.apache.arrow.vector.types.pojo.ArrowType.List(), punto),
+            struct("space", texto_("unit"), real("width"), real("height")), real("t_start"), real("t_end"), entero("frame"),
+            entero("char_start"), entero("char_end"), texto_("text_of"), entero("offset"), entero("length"));
+        var deriv = struct("_derivation", texto_("key"), texto_("fn"), texto_("fn_version"), texto_("model"), texto_("model_rev"),
+            texto_("params_hash"), texto_("run"),
+            campo("created", new org.apache.arrow.vector.types.pojo.ArrowType.Timestamp(org.apache.arrow.vector.types.TimeUnit.MICROSECOND, "UTC")));
+        var estado = struct("_status", texto_("state"), texto_("error_type"), texto_("error_message"), entero("attempts"));
+        return List.of(struct("_item", item.toArray(new org.apache.arrow.vector.types.pojo.Field[0])), ancla,
+            texto_("_anchor_id"), texto_("_anchor_parent"), deriv, estado);
+    }
+
+    /** El campo de Arrow de una columna de la carga, por un valor de muestra: lo plano por el contrato (0032), un {@code Map} es un struct, una lista, una lista. */
+    static org.apache.arrow.vector.types.pojo.Field campoDe(String n, Object muestra) {
+        if (muestra instanceof Map<?, ?> m) {
+            if (m.isEmpty()) throw new IllegalArgumentException("apply(): column `" + n + "` is an empty map: a struct needs fields");
+            List<org.apache.arrow.vector.types.pojo.Field> hijos = new ArrayList<>();
+            for (Map.Entry<?, ?> e : m.entrySet()) hijos.add(campoDe(String.valueOf(e.getKey()), e.getValue()));
+            return struct(n, hijos.toArray(new org.apache.arrow.vector.types.pojo.Field[0]));
+        }
+        if (muestra instanceof Iterable<?> l) {
+            Object e = null;
+            for (Object x : l) if (x != null) { e = x; break; }
+            return campo(n, new org.apache.arrow.vector.types.pojo.ArrowType.List(), campoDe("element", e));
+        }
+        return muestra == null ? texto_(n) : Ore.campoPlano(n, Ore.inferredType(muestra));
+    }
+
+    /** Un valor de Java en su vector (lo anidado, recorriéndolo), en la fila {@code i}. */
+    @SuppressWarnings("unchecked")
+    static void llenar(org.apache.arrow.vector.FieldVector v, int i, Object x) {
+        if (v instanceof org.apache.arrow.vector.complex.StructVector sv) {
+            while (sv.getValueCapacity() <= i) sv.reAlloc();
+            if (x == null) { sv.setNull(i); return; }
+            if (!(x instanceof Map<?, ?> m)) throw new IllegalArgumentException("apply(): `" + v.getName() + "` is a struct, and the row gives " + x.getClass().getSimpleName());
+            sv.setIndexDefined(i);
+            for (org.apache.arrow.vector.FieldVector h : sv.getChildrenFromFields()) llenar(h, i, ((Map<String, Object>) m).get(h.getName()));
+            return;
+        }
+        if (v instanceof org.apache.arrow.vector.complex.ListVector lv) {
+            if (x == null) {
+                while (lv.getValueCapacity() <= i) lv.reAlloc();
+                lv.setNull(i);
+                return;
+            }
+            List<Object> l = new ArrayList<>();
+            if (x instanceof Iterable<?> it) for (Object e : it) l.add(e);
+            else if (x instanceof Object[] a) l.addAll(List.of(a));
+            else throw new IllegalArgumentException("apply(): `" + v.getName() + "` is a list, and the row gives " + x.getClass().getSimpleName());
+            int desde = lv.startNewValue(i);
+            for (int j = 0; j < l.size(); j++) llenar(lv.getDataVector(), desde + j, l.get(j));
+            lv.endValue(i, l.size());
+            return;
+        }
+        Ore.ponerPlano(v, i, x);
+    }
+
+    /** Las filas en un {@code VectorSchemaRoot} con estos campos (lo que {@code write()} lleva al lago). */
+    static org.apache.arrow.vector.VectorSchemaRoot tabla(List<org.apache.arrow.vector.types.pojo.Field> campos, List<Map<String, Object>> filas) {
+        var raiz = org.apache.arrow.vector.VectorSchemaRoot.create(new org.apache.arrow.vector.types.pojo.Schema(campos), Ore.asignador());
+        raiz.allocateNew();
+        for (int i = 0; i < filas.size(); i++)
+            for (org.apache.arrow.vector.FieldVector v : raiz.getFieldVectors()) llenar(v, i, filas.get(i).get(v.getName()));
+        raiz.setRowCount(filas.size());
+        return raiz;
+    }
+
+    /**
+     * Dónde {@code apply()} lee lo que su salida ya tiene y escribe lo nuevo: el lago, por
+     * {@code over()} y {@code write(…, anchoredTo)}. Sólo las pruebas lo cambian (el lago en memoria,
+     * como {@code la-derivacion-en-python.py}).
+     */
+    interface Lago {
+        /** Las filas de la tabla, o {@code null} si todavía no existe. */
+        List<Map<String, Object>> leer(String tabla) throws Exception;
+
+        Map<String, Object> escribir(String tabla, org.apache.arrow.vector.VectorSchemaRoot filas, String ancladaA) throws Exception;
+    }
+
+    static final Lago LAGO = new Lago() {
+        @Override public List<Map<String, Object>> leer(String tabla) throws Exception { return Ore.overSiExiste(tabla); }
+
+        @Override public Map<String, Object> escribir(String tabla, org.apache.arrow.vector.VectorSchemaRoot filas, String ancladaA) throws Exception {
+            return Ore.write(tabla, filas, "overwrite", null, ancladaA);
+        }
+    };
+
+    static volatile Lago lago = LAGO;
+
+    /** El ancla de una fila, con todos los campos de {@code Anchor} (los que no son de su clase, nulos). */
+    static Map<String, Object> anclaDe(Object a) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (a == null) m.put("kind", "item");
+        else if (a instanceof Map<?, ?> x) for (Map.Entry<?, ?> e : x.entrySet()) m.put(String.valueOf(e.getKey()), e.getValue());
+        else throw new IllegalArgumentException("apply(): an `anchor` is a map (v1alpha17 `02`), not " + a.getClass().getSimpleName());
+        if (m.get("kind") == null) throw new IllegalArgumentException("apply(): an `anchor` without `kind` (v1alpha17 `02`): " + m);
+        List<String> otros = m.keySet().stream().filter(k -> !CAMPOS_ANCLA.contains(k)).sorted().toList();
+        if (!otros.isEmpty()) throw new IllegalArgumentException("apply(): `anchor` with fields that are not `Anchor`'s: " + String.join(", ", otros));
+        Map<String, Object> todo = new LinkedHashMap<>();
+        for (String k : CAMPOS_ANCLA) todo.put(k, m.get(k));
+        return todo;
+    }
+
+    /** El {@code json.dumps(sort_keys=True, separators=(",", ":"))} de Python, para que un {@code _anchor_id} sea el mismo en las dos superficies. */
+    static String canonicoJson(Object o) { return Json.escribir(canonico(o)); }
+
+    @SuppressWarnings("unchecked")
+    static String identidadDeFila(Map<String, Object> f) {
+        Map<String, Object> i = f.get("_item") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+        return i.get("digest") != null ? String.valueOf(i.get("digest")) : i.get("collection") + "|" + i.get("path") + "|" + i.get("version");
+    }
+
+    @SuppressWarnings("unchecked")
+    static String rutaDeFila(Map<String, Object> f) {
+        Map<String, Object> i = f.get("_item") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+        return i.get("collection") + "|" + i.get("path");
+    }
+
+    @SuppressWarnings("unchecked")
+    static Ore.Result aplicarFilas(Collection col, java.util.function.Function<Item, ?> fn, Apply o, String salida) {
+        Ore.Transform tr = Ore.transformActivo();
+        String nombreFn = o.name != null ? o.name : tr != null ? tr.nombre() : "fn";
+        String fnVersion = o.version != null ? o.version : versionDe(fn);
+        String paramsHash = o.params == null ? null : HexFormat.of().formatHex(sha256().digest(
+            canonicoJson(o.params).getBytes(StandardCharsets.UTF_8)));
+        String run = java.util.UUID.randomUUID().toString().replace("-", "");
+
+        // Lo de hoy: un ítem por identidad (dos rutas con el mismo contenido son el mismo ítem).
+        Map<String, List<Item>> rutasDe = new LinkedHashMap<>();
+        for (Item it : col.items())
+            rutasDe.computeIfAbsent(clave(identidad(it.ref()), nombreFn, fnVersion, null, paramsHash), k -> new ArrayList<>()).add(it);
+        // Lo que ya está: las filas de la salida, por su clave.
+        List<Map<String, Object>> filasPrevias;
+        try {
+            List<Map<String, Object>> l = lago.leer(salida);
+            filasPrevias = l == null ? List.of() : l;
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new MediaError("media/origen", 502, "apply(): reading `" + salida + "`: " + e.getMessage());
+        }
+        Map<String, List<Map<String, Object>>> previas = new LinkedHashMap<>();
+        java.util.Set<String> rutasPrevias = new java.util.HashSet<>();
+        for (Map<String, Object> f : filasPrevias) {
+            Map<String, Object> d = f.get("_derivation") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+            previas.computeIfAbsent(texto(d.get("key")), k -> new ArrayList<>()).add(f);
+            rutasPrevias.add(rutaDeFila(f));
+        }
+        // La ruta de un ítem con varias: la que su fila ya dice, si sigue ahí (una copia no lo mueve, y
+        // no se reescribe la tabla por el orden del listado, B5·3); si no, la primera del listado.
+        Map<String, Item> hoy = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Item>> e : rutasDe.entrySet()) {
+            java.util.Set<String> dichas = new java.util.HashSet<>();
+            for (Map<String, Object> f : previas.getOrDefault(e.getKey(), List.of())) dichas.add(rutaDeFila(f));
+            hoy.put(e.getKey(), e.getValue().stream().filter(i -> dichas.contains(i.ref().collection() + "|" + i.ref().path()))
+                .findFirst().orElse(e.getValue().get(0)));
+        }
+        java.util.function.Predicate<List<Map<String, Object>>> conError = fs -> fs.stream().anyMatch(f ->
+            f.get("_status") instanceof Map<?, ?> s && "error".equals(s.get("state")));
+        List<String> pendientes = new ArrayList<>();
+        for (String k : hoy.keySet()) if (!previas.containsKey(k) || (o.retryErrors && conError.test(previas.get(k)))) pendientes.add(k);
+        java.util.Set<String> identidadesHoy = new java.util.HashSet<>();
+        for (Item it : hoy.values()) identidadesHoy.add(identidad(it.ref()));
+        java.util.Set<String> idas = new java.util.HashSet<>();
+        for (Map<String, Object> f : filasPrevias) idas.add(identidadDeFila(f));
+        idas.removeAll(identidadesHoy);
+        Ore.Result resumen = new Ore.Result();
+        resumen.put("items", (long) hoy.size());
+        resumen.put("new", 0L);
+        resumen.put("recomputed", 0L);
+        resumen.put("skipped", (long) (hoy.size() - pendientes.size()));
+        resumen.put("errors", 0L);
+        resumen.put("removed", (long) idas.size());
+        resumen.put("rows", 0L);
+        resumen.put("written", false);
+
+        java.util.function.Function<Item, Map<String, Object>> itemJson = it -> {
+            Map<String, Object> m = new LinkedHashMap<>(), r = it.ref().toJson();
+            for (String c : CAMPOS_ITEM) m.put(c, r.get(c));
+            return m;
+        };
+        boolean movido = false;
+        for (String k : hoy.keySet()) {
+            if (!previas.containsKey(k)) continue;
+            java.util.Set<String> rs = new java.util.HashSet<>();
+            for (Map<String, Object> f : previas.get(k)) rs.add(rutaDeFila(f));
+            if (!rs.equals(java.util.Set.of(hoy.get(k).ref().collection() + "|" + hoy.get(k).ref().path()))) movido = true;
+        }
+        if (pendientes.isEmpty() && idas.isEmpty() && !movido) {
+            resumen.put("rows", (long) filasPrevias.size());
+            return resumen;
+        }
+        Map<String, List<Map<String, Object>>> hechas = new java.util.concurrent.ConcurrentHashMap<>();
+        java.util.function.Function<String, List<Map<String, Object>>> calcular = k -> {
+            Item it = hoy.get(k);
+            String ident = identidad(it.ref());
+            long intentos = 1;
+            for (Map<String, Object> f : previas.getOrDefault(k, List.of()))
+                if (f.get("_status") instanceof Map<?, ?> s && s.get("attempts") instanceof Number n) intentos = Math.max(intentos, n.longValue() + 1);
+            Map<String, Object> deriv = new LinkedHashMap<>();
+            deriv.put("key", k); deriv.put("fn", nombreFn); deriv.put("fn_version", fnVersion); deriv.put("model", null);
+            deriv.put("model_rev", null); deriv.put("params_hash", paramsHash); deriv.put("run", run); deriv.put("created", Instant.now());
+            List<Map<String, Object>> out = new ArrayList<>();
+            try {
+                Object dio = fn.apply(it);
+                List<Object> filas = new ArrayList<>();
+                if (dio instanceof Map<?, ?>) filas.add(dio);
+                else if (dio instanceof Iterable<?> l) for (Object x : l) filas.add(x);
+                else if (dio != null) throw new IllegalArgumentException("apply(): `" + nombreFn + "` gave " + dio.getClass().getSimpleName() + " and not a map per row");
+                for (Object x : filas) {
+                    if (!(x instanceof Map<?, ?> fm)) throw new IllegalArgumentException("apply(): `" + nombreFn + "` gave " + (x == null ? "null" : x.getClass().getSimpleName()) + " and not a map per row");
+                    Map<String, Object> f = new LinkedHashMap<>((Map<String, Object>) fm);
+                    Map<String, Object> ancla = anclaDe(f.remove("anchor"));
+                    Object padre = f.remove("anchor_parent");
+                    List<String> malas = f.keySet().stream().filter(c -> c.startsWith("_")).toList();
+                    if (!malas.isEmpty()) throw new IllegalArgumentException("apply(): `" + String.join(", ", malas) + "` are system columns (v1alpha17 `03` §1)");
+                    f.put("_item", itemJson.apply(it)); f.put("_anchor", ancla); f.put("_anchor_id", clave(ident, canonicoJson(ancla), nombreFn));
+                    f.put("_anchor_parent", padre); f.put("_derivation", deriv); f.put("_status", estado("ok", null, null, intentos));
+                    out.add(f);
+                }
+                if (out.isEmpty()) out.add(fila(itemJson.apply(it), ident, nombreFn, deriv, estado("ok", null, null, intentos)));
+            } catch (RuntimeException e) {
+                // Un fallo de un ítem es su resultado.
+                String m = String.valueOf(e.getMessage());
+                out.clear();
+                out.add(fila(itemJson.apply(it), ident, nombreFn, deriv,
+                    estado("error", e.getClass().getSimpleName(), m.length() > 2000 ? m.substring(0, 2000) : m, intentos)));
+            }
+            return out;
+        };
+        Runnable guardar = () -> {
+            // La tabla entera: lo hecho ahora, lo que se queda (con su ruta de hoy) y, de lo pendiente
+            // aún sin hacer, lo que había (se rehará la próxima vez).
+            List<Map<String, Object>> filas = new ArrayList<>();
+            for (Map.Entry<String, Item> e : hoy.entrySet()) {
+                if (hechas.containsKey(e.getKey())) filas.addAll(hechas.get(e.getKey()));
+                else for (Map<String, Object> f : previas.getOrDefault(e.getKey(), List.of())) {
+                    Map<String, Object> g = new LinkedHashMap<>(f);
+                    g.put("_item", itemJson.apply(e.getValue()));
+                    filas.add(g);
+                }
+            }
+            if (filas.isEmpty()) return;
+            List<org.apache.arrow.vector.types.pojo.Field> campos = new ArrayList<>(esquemaDeSistema());
+            java.util.LinkedHashSet<String> carga = new java.util.LinkedHashSet<>();
+            for (Map<String, Object> f : filas) for (String c : f.keySet()) if (!SISTEMA.contains(c)) carga.add(c);
+            for (String c : carga) {
+                Object muestra = null;
+                for (Map<String, Object> f : filas) if (f.get(c) != null) { muestra = f.get(c); break; }
+                campos.add(campoDe(c, muestra));
+            }
+            try (org.apache.arrow.vector.VectorSchemaRoot t = tabla(campos, filas)) {
+                lago.escribir(salida, t, col.shortName);
+                resumen.put("written", true);
+                resumen.put("rows", (long) filas.size());
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new MediaError("media/origen", 502, "apply(): writing `" + salida + "`: " + e.getMessage());
+            }
+        };
+        ExecutorService ex = Executors.newFixedThreadPool(o.threads, Media::hilo);
+        try {
+            long ultimo = System.currentTimeMillis();
+            CompletionService<String> cs = new ExecutorCompletionService<>(ex);
+            for (String k : pendientes) cs.submit(() -> { hechas.put(k, calcular.apply(k)); return k; });
+            for (int n = 0; n < pendientes.size(); n++) {
+                String k = esperar(takeDe(cs));
+                List<Map<String, Object>> filas = hechas.get(k);
+                String cual = conError.test(filas) ? "errors" : rutasPrevias.contains(hoy.get(k).ref().collection() + "|" + hoy.get(k).ref().path()) ? "recomputed" : "new";
+                resumen.put(cual, (Long) resumen.get(cual) + 1);
+                if (o.saveEverySeconds != null && o.saveEverySeconds > 0 && System.currentTimeMillis() - ultimo > o.saveEverySeconds * 1000) {
+                    guardar.run();
+                    ultimo = System.currentTimeMillis();
+                }
+            }
+        } finally {
+            ex.shutdownNow();
+        }
+        guardar.run();
+        return resumen;
+    }
+
+    private static <T> Future<T> takeDe(CompletionService<T> cs) {
+        try {
+            return cs.take();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MediaError("media/origen", 499, "interrupted");
+        }
+    }
+
+    private static Map<String, Object> estado(String state, String tipo, String mensaje, long intentos) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("state", state); m.put("error_type", tipo); m.put("error_message", mensaje); m.put("attempts", intentos);
+        return m;
+    }
+
+    /** La fila de un ítem que no dio ninguna (o falló): su ancla es el ítem entero. */
+    private static Map<String, Object> fila(Map<String, Object> item, String ident, String nombreFn, Map<String, Object> deriv, Map<String, Object> estado) {
+        Map<String, Object> ancla = anclaDe(null);
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("_item", item); f.put("_anchor", ancla); f.put("_anchor_id", clave(ident, canonicoJson(ancla), nombreFn));
+        f.put("_anchor_parent", null); f.put("_derivation", deriv); f.put("_status", estado);
+        return f;
     }
 
     // ── 0049 B9 · ficheros que dan ficheros: apply() ────────────────────────

@@ -51,6 +51,9 @@ FIJADAS = {}
 #: Las que dio la última declaración, aunque el transform ya se retirara: lo que
 #: el servidor escribiría en el linaje de lo que ese transform confirmó.
 DECLARADAS = {}
+#: JM4b · Listados que el ejecutor pone tal cual (colección → [MediaRef]): las
+#: pruebas de `apply()` en filas cambian el listado entre pasadas, como Python.
+LISTADOS = {}
 
 
 def _corto(nombre):
@@ -190,6 +193,8 @@ def celda(h, metodo, servidor):
     if servidor != "celda" or len(p) < 6 or p[1] != "media":
         return False
     col = ".".join(p[2:5])
+    if col in LISTADOS and metodo == "GET" and p[5] == "items":
+        return _json(h, 200, {"as_of": "1", "items": LISTADOS[col], "cursor": None})
     if col not in COLECCIONES:
         return False
     # Con keep-alive el cuerpo se lee siempre, conteste lo que conteste: lo que
@@ -420,6 +425,9 @@ def _mando(h, orden, c):
         if orden == "lago_bytes":
             d = banco.LAGO.get(c["sha256"])
             return _json(h, 200, {"base64": None if d is None else base64.b64encode(d).decode()})
+        if orden == "listado":
+            LISTADOS[c["coleccion"]] = c.get("items") or []
+            return _json(h, 200, {"items": len(LISTADOS[c["coleccion"]])})
         if orden == "objeto":
             return _json(h, 200, {"base64": base64.b64encode(banco.OBJETOS[c["path"]]).decode()})
         if orden == "rama":

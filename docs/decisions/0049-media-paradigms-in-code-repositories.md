@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM4 hechos** (leer, dentro de un `@Transform`, escribir y `apply()` en ficheros: **51/51**, y 36 del SDK); `apply()` en filas (JM4b) y JM5, pendientes. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM4 hechos** (leer, dentro de un `@Transform`, escribir y `apply()` en ficheros: **51/51**, y 36 del SDK); `apply()` en filas, **JM4b, hecho** (50 del SDK); JM5, pendiente. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -953,11 +953,35 @@ la corre toda—, y **36/36 del SDK** (19 + 17). La corrida, ~34 s.
 - **`fn`, su nombre**: una lambda no tiene nombre; el registro dice `name(…)`, o el del transform, o
   `fn`. Entra en la clave: cambiarlo recalcula.
 
-**Lo que no está, y es el paso siguiente (JM4b): `apply()` en filas** (la tabla anclada de B5). Pide
-`write(…, anchoredTo)` en la JVM, que no está, y leer de vuelta con `over()` las columnas de sistema
-(`_item`, `_anchor`, `_derivation`, `_status`, structs). El banco no tiene lago: se prueba como Python
-(`la-derivacion-en-python.py`), con el lago y el listado en memoria. Hoy `apply()` a una salida que no es
-una colección escrita dice `UnsupportedOperationException` con el porqué.
+#### JM4b · hecho: `apply()` en filas, la tabla anclada (2026-10-09)
+
+`apply()` a una salida que no es una colección escrita deriva **filas** (B5): es `_aplicar` de Python
+traducido —la tabla anclada ES el registro: `_derivation.key` y `_status` por fila—. **Las trece de
+B5·2** de `la-derivacion-en-python.py`, en Java, y una más por el `write()` de verdad: **51/51 de la
+suite y 50/50 del SDK** (19 + 17 + 14). La corrida, ~36 s.
+
+- **`write()` aprende lo anidado**: de un `VectorSchemaRoot` o un `ArrowReader`, el esquema de Iceberg
+  lleva structs y listas con su forma y un id en cada hijo (`tipoIcebergDe`, el `_tipo_iceberg` de
+  Python, ids desde 1 000 000; una lista de listas se niega). Antes la JVM sólo escribía tipos planos.
+- **`write(name, data, mode, key, anchoredTo)`**: `anclada_a` en la procedencia, como Python; con
+  `upsert`, error (una anclada se funde por `_anchor_id`).
+- **La tabla**: las seis columnas de sistema con los tipos de Python campo a campo (`_anchor.polygon`,
+  una lista de structs; `_derivation.created`, `timestamp[us, UTC]`) y la carga inferida de lo que `fn`
+  da (lo plano por el contrato de 0032; un `Map` es un struct, una lista, una lista). `_anchor_id` es
+  `sha(identidad, ancla canónica, fn)`, la misma cuenta que Python.
+- **Leer su `output`** dentro de un transform (`over()` de la tabla que ya escribió) no es una entrada,
+  en `Ore.lee` también: B5·2 en la JVM. Una tabla que aún no existe es la primera pasada.
+- **Probado**: el lago en memoria del laboratorio (`LagoEnMemoria`) guarda el `VectorSchemaRoot` que
+  `apply()` construye y lo devuelve leído con `valueAt`, como `over()`, y pasa su esquema por
+  `tipoIcebergDe`; el listado lo pone el ejecutor en el banco. **Una mutación** —el intento que no suma—
+  la caza la prueba 6. Y la 14: el **Preview** de `Textos.java` (una tercera celda de `builds.rs`,
+  `ORE_CELDA_JAVA_FILAS`) hace `apply()` en filas por el `write()` real —el Arrow anidado y su esquema
+  de Iceberg, que el informe del Preview enseña—, 3 filas, el `412` de un ítem es su fila de error, nada
+  se escribe.
+
+**Anotado, y no es de JM:** `la-derivacion-en-python.py` da un fallo en su prueba 16 (B7·3,
+`/puestos/puesto-prueba`), también con el banco de antes de JM (`ace23bea`): es de la superficie de
+Python, sin tocar aquí.
 
 #### Dos decisiones que pide la JVM
 

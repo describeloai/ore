@@ -1722,6 +1722,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// 0049 JM4b · La celda de un Preview de Java cuyo `@Transform` deriva **filas**
+    /// de una colección (`apply()` a una tabla anclada): en el Preview, `write()`
+    /// arma el Arrow y el esquema de Iceberg anidado de verdad, y no escribe. Con
+    /// `ORE_CELDA_JAVA_FILAS`, se deja para el laboratorio de la JVM.
+    #[test]
+    fn la_celda_de_un_preview_de_java_que_deriva_filas() {
+        let d = arbol("java-filas");
+        let p = d.join("packages/ventas");
+        std::fs::write(
+            p.join("etl/Textos.java"),
+            "import static ore.Ore.*;\n\
+             import ore.Media;\n\
+             import ore.Transform;\n\
+             import java.util.*;\n\n\
+             public class Textos {\n    \
+             static final String CONTRATOS = \"ventas.archivo.contratos\";\n\n    \
+             /** La cabeza de cada contrato, una fila anclada al ítem. */\n    \
+             @Transform(inputs = {CONTRATOS}, output = \"ventas.textos\")\n    \
+             public static Object textos() throws Exception {\n        \
+             return collection(CONTRATOS).apply(\n            \
+             item -> List.of(Map.of(\"cabeza\", new String(item.readRange(0, 5)), \"anchor\", Map.of(\"kind\", \"page\", \"page\", 1))),\n            \
+             Media.applying().version(\"1\"));\n    \
+             }\n}\n",
+        )
+        .unwrap();
+        let fuentes = bien(fuentes_java(&d, "packages/ventas/etl/Textos.java", None));
+        let celda = arnes_java(
+            "packages/ventas/etl/Textos.java",
+            "packages/ventas/etl/Textos.java",
+            "textos",
+            &fuentes,
+            ModoJava::Preview {
+                output: "ventas.textos",
+            },
+        );
+        assert!(celda.contains("ore.Arnes.ensayar(String.join("), "{celda}");
+        if let Ok(f) = std::env::var("ORE_CELDA_JAVA_FILAS") {
+            std::fs::write(f, &celda).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// 0049 JM3 · La celda de un **build** de Java cuya salida es una colección
     /// escrita: el `@Transform` lee una y escribe la otra por una transacción.
     /// Con `ORE_CELDA_JAVA_BUILD_MEDIA`, se deja para el laboratorio de la JVM.

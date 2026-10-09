@@ -58,13 +58,15 @@ for s in MUESTRA["colecciones"]["derivar"]["solo"]:
 #   corre con el kernel del agente. Tras tocar el arnés: borrarla y volver.
 CELDA = os.path.join(RAIZ, "target", "celdas", "indice-preview.jsh")
 CELDA_BUILD = os.path.join(RAIZ, "target", "celdas", "paginas-build.jsh")   # JM3
-if not os.path.exists(CELDA) or not os.path.exists(CELDA_BUILD):
+CELDA_FILAS = os.path.join(RAIZ, "target", "celdas", "textos-preview.jsh")   # JM4b
+if not all(os.path.exists(c) for c in (CELDA, CELDA_BUILD, CELDA_FILAS)):
     print("generando la celda de builds.rs (cargo test, en Docker)…", flush=True)
     os.makedirs(os.path.dirname(CELDA), exist_ok=True)
     subprocess.run(["docker", "run", "--rm", "-v", RAIZ.replace("\\", "/") + ":/src", "-v", "ore-cargo-registry:/usr/local/cargo/registry",
                     "-v", "ore-pruebas-t:/tt", "-e", "CARGO_TARGET_DIR=/tt/main",
                     "-e", "ORE_CELDA_JAVA_MEDIA=/src/target/celdas/indice-preview.jsh",
-                    "-e", "ORE_CELDA_JAVA_BUILD_MEDIA=/src/target/celdas/paginas-build.jsh", "-w", "/src", "rust:1-bookworm",
+                    "-e", "ORE_CELDA_JAVA_BUILD_MEDIA=/src/target/celdas/paginas-build.jsh",
+                    "-e", "ORE_CELDA_JAVA_FILAS=/src/target/celdas/textos-preview.jsh", "-w", "/src", "rust:1-bookworm",
                     "cargo", "test", "-q", "-p", "ore-serve", "--bin", "ore-serve", "la_celda_de_un_"],
                    env=dict(os.environ, MSYS_NO_PATHCONV="1"), stdout=subprocess.DEVNULL)
 

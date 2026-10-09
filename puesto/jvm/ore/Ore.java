@@ -516,6 +516,9 @@ public final class Ore {
 
     static void lee(String vistaDada) {
         String vista = corto(vistaDada, "a tree name");
+        // 0049 B5·2: su `output` también —un incremental lee lo que ya escribió—, y leerse no es
+        // una entrada: no se anota (como Python).
+        if (transformActivo != null && vista.equals(transformActivo.output())) return;
         if (transformActivo != null && !transformActivo.inputs().contains(vista)) throw new IllegalStateException("`" + vista + "` is not in the inputs of `" + transformActivo.nombre() + "` (" + String.join(", ", transformActivo.inputs()) + "): a transform only reads what it declares");
         if (!leidas.contains(vista)) leidas.add(vista);
     }
@@ -530,7 +533,10 @@ public final class Ore {
         } catch (Exception e) { /* el servidor no lo sabe: el SDK sigue acotando */ }
     }
 
-    static Map<String, Object> procedencia(String nombre) {
+    static Map<String, Object> procedencia(String nombre) { return procedencia(nombre, null); }
+
+    /** Y de qué colección es la tabla anclada que se escribe (0049 B5·1: {@code anclada_a}, como Python). */
+    static Map<String, Object> procedencia(String nombre, String ancladaA) {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("puesto", puesto.id);
         if (transformActivo != null) { p.put("inputs", transformActivo.inputs().stream().sorted().toList()); p.put("transform", transformActivo.nombre()); }
@@ -541,6 +547,7 @@ public final class Ore {
         if (codigo != null && !codigo.isEmpty()) p.put("codigo", codigo);
         // 0055 T1·7: de qué build —`{transform, entrypoint, output, id, commit}`—, que su arnés pone.
         if (BUILD != null) p.put("build", BUILD);
+        if (ancladaA != null) p.put("anclada_a", ancladaA);
         return p;
     }
 
@@ -739,6 +746,22 @@ public final class Ore {
         return r;
     }
 
+    /** 0049 JM4b · lo que una tabla tiene, o {@code null} si todavía no existe (la primera pasada de {@code apply()}). */
+    static Rows overSiExiste(String nombre) throws Exception {
+        try {
+            return over(nombre);
+        } catch (IllegalArgumentException e) {
+            if (String.valueOf(e.getMessage()).startsWith("there is no `View` or `Dataset`")) return null;
+            throw e;
+        }
+    }
+
+    /** {@code poner} para quien construye un {@code VectorSchemaRoot} con los tipos del contrato (0049 JM4b). */
+    static void ponerPlano(FieldVector v, int i, Object x) { poner(v, i, x, v.getField().getType().toString()); }
+
+    /** {@code campoArrow} para lo mismo. */
+    static Field campoPlano(String nombre, String tipo) { return campoArrow(nombre, tipo); }
+
     /** The bytes of many items, 16 at once, as they finish: one's error is a value and does not stop the others. {@code items} may be lazy ({@code c.items()}). */
     public static Iterable<Media.Result> readMany(Iterable<Media.Item> items) { return readMany(items, 16); }
 
@@ -899,6 +922,16 @@ public final class Ore {
     // ── DuckDB → Arrow ─────────────────────────────────────────────────────
     private static Connection conexion;
     private static BufferAllocator asignador;
+
+    /** El asignador de Arrow de la sesión (0049 JM4b: la tabla anclada que {@code apply()} construye), tras abrir DuckDB. */
+    static BufferAllocator asignador() {
+        try {
+            duckdb();
+        } catch (SQLException e) {
+            throw new IllegalStateException(e.getMessage(), e);
+        }
+        return asignador;
+    }
 
     private static synchronized Connection duckdb() throws SQLException {
         if (conexion == null) {
@@ -1385,7 +1418,8 @@ public final class Ore {
         if (datos instanceof VectorSchemaRoot raiz) {
             if (raiz.getRowCount() == 0) throw new IllegalArgumentException("write(): the table has no rows");
             try (ArrowStreamWriter w = new ArrowStreamWriter(raiz, null, out)) { w.start(); w.writeBatch(); w.end(); }
-            for (Field f : raiz.getSchema().getFields()) esquema.add(campoIceberg(esquema.size() + 1, f.getName(), arrowName(f)));
+            java.util.concurrent.atomic.AtomicInteger ids = new java.util.concurrent.atomic.AtomicInteger(1_000_000);
+            for (Field f : raiz.getSchema().getFields()) esquema.add(campoIcebergDe(esquema.size() + 1, f, ids));
             return out.toByteArray();
         }
         if (datos instanceof ArrowReader r) {
@@ -1396,7 +1430,8 @@ public final class Ore {
                 w.end();
             }
             if (!alguna) throw new IllegalArgumentException("write(): the table has no rows");
-            for (Field f : r.getVectorSchemaRoot().getSchema().getFields()) esquema.add(campoIceberg(esquema.size() + 1, f.getName(), arrowName(f)));
+            java.util.concurrent.atomic.AtomicInteger ids = new java.util.concurrent.atomic.AtomicInteger(1_000_000);
+            for (Field f : r.getVectorSchemaRoot().getSchema().getFields()) esquema.add(campoIcebergDe(esquema.size() + 1, f, ids));
             return out.toByteArray();
         }
         if (!(datos instanceof List<?> lista)) throw new IllegalArgumentException("write() takes Rows, List<Map>, VectorSchemaRoot or ArrowReader, not " + (datos == null ? "null" : datos.getClass().getSimpleName()));
@@ -1425,6 +1460,50 @@ public final class Ore {
         }
         for (String n : nombres) esquema.add(campoIceberg(esquema.size() + 1, n, tipos.get(n)));
         return out.toByteArray();
+    }
+
+    /** Un campo de Arrow en el esquema de Iceberg, con lo anidado (0049 JM4b; el {@code _campo_iceberg} de Python). */
+    private static Map<String, Object> campoIcebergDe(int id, Field f, java.util.concurrent.atomic.AtomicInteger ids) {
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("id", id); c.put("name", f.getName()); c.put("type", tipoIcebergDe(f.getName(), f, ids, false)); c.put("required", false);
+        return c;
+    }
+
+    /**
+     * El tipo de Iceberg de un campo de Arrow (v1alpha17, 0049 B1): un struct y una lista van con su
+     * forma y un id en cada hijo, de {@code ids} (un contador del esquema entero, desde 1 000 000 como
+     * Python); lo plano, por {@link #tipoIceberg}. Una lista de listas se niega (como Python).
+     */
+    static Object tipoIcebergDe(String columna, Field f, java.util.concurrent.atomic.AtomicInteger ids, boolean enLista) {
+        ArrowType t = f.getType();
+        if (t instanceof ArrowType.Struct) {
+            if (f.getChildren().isEmpty()) throw new IllegalArgumentException("write(): column `" + columna + "` is a struct without fields");
+            List<Map<String, Object>> hijos = new ArrayList<>();
+            List<Integer> nums = new ArrayList<>();
+            for (int i = 0; i < f.getChildren().size(); i++) nums.add(ids.getAndIncrement());
+            for (int i = 0; i < f.getChildren().size(); i++) {
+                Field h = f.getChildren().get(i);
+                Map<String, Object> c = new LinkedHashMap<>();
+                c.put("id", nums.get(i)); c.put("name", h.getName());
+                c.put("type", tipoIcebergDe(columna + "." + h.getName(), h, ids, false)); c.put("required", false);
+                hijos.add(c);
+            }
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("type", "struct"); s.put("fields", hijos);
+            return s;
+        }
+        if (t instanceof ArrowType.List || t instanceof ArrowType.LargeList || t instanceof ArrowType.FixedSizeList) {
+            Field e = f.getChildren().get(0);
+            if (e.getType() instanceof ArrowType.List || e.getType() instanceof ArrowType.LargeList || e.getType() instanceof ArrowType.FixedSizeList)
+                throw new IllegalArgumentException("write(): column `" + columna + "` is a list of lists: write it as a list of structs");
+            int i = ids.getAndIncrement();
+            Map<String, Object> l = new LinkedHashMap<>();
+            l.put("type", "list"); l.put("element-id", i); l.put("element", tipoIcebergDe(columna + "[]", e, ids, true));
+            l.put("element-required", false);
+            return l;
+        }
+        if (enLista && t instanceof ArrowType.FloatingPoint fp && fp.getPrecision() != FloatingPointPrecision.DOUBLE) return "float";
+        return tipoIceberg(columna, arrowName(f));
     }
 
     private static Map<String, Object> campoIceberg(int id, String nombre, String tipo) {
@@ -1555,11 +1634,23 @@ public final class Ore {
      */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> write(String name, Object data, String mode, List<String> key) throws Exception {
+        return write(name, data, mode, key, null);
+    }
+
+    /**
+     * {@code write()} of an <b>anchored table</b> (0049 B5·1): {@code anchoredTo} is the media collection
+     * it is anchored to (v1alpha19 {@code anchoredTo}); the server declares it so. It merges by
+     * {@code _anchor_id}, not by upsert. What {@code Collection.apply()} writes into a table.
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> write(String name, Object data, String mode, List<String> key, String anchoredTo) throws Exception {
         Object datos = data; List<String> clave = key;
         noAlCargar("write()");
         final String nombre = corto(name, "write(): the name");
         final String modo = mode == null ? null : MODO_AL_CABLE.get(mode);
         if (modo == null) throw new IllegalArgumentException("mode " + mode + ": it is `overwrite`, `append` or `upsert`");
+        final String anclada = anchoredTo == null ? null : corto(anchoredTo, "write(): `anchoredTo`");
+        if (anclada != null && modo.equals("upsert")) throw new IllegalArgumentException("write(): an anchored table merges by `_anchor_id`, not by upsert");
         if (clave != null && !modo.equals("upsert")) throw new IllegalArgumentException("`key` goes with mode `upsert`");
         String[] p = partes(nombre);
         String bd = p[0], ns = p[1], t = p[2]; // el namespace de /v1 es el schema (0038 P4)
@@ -1599,7 +1690,7 @@ public final class Ore {
             if (config.get("s3.access-key-id") != null) s3 = config;
             // 2 · los ficheros, por ore-store
             Map<String, Object> peticion = new LinkedHashMap<>();
-            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla); peticion.put("procedencia", procedencia(nombre));
+            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla); peticion.put("procedencia", procedencia(nombre, anclada));
             if (clave != null && !clave.isEmpty()) peticion.put("clave", clave);
             if (base != null) peticion.put("base", base); else peticion.put("esbozo", esbozo);
             Process proc = escritor(config, ubicacion).start();
