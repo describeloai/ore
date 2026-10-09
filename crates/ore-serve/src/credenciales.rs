@@ -119,7 +119,152 @@ pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
     if tipo == "azure" {
         return azure(id_de("ORE_ID_DRIVER"), id_de("ORE_ID_MEDIOS"));
     }
+    if tipo == "sftp" {
+        let v = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        return sftp(v("ORE_SFTP_CLAVE_PUBLICA"), v("ORE_IP_SALIDA"));
+    }
     de_con(tipo, cuenta, ids_de_la_celda())
+}
+
+/// ⭐ ADR 0061 O4·3 (D-O4) · **SFTP: la clave de esta celda.** ORE genera una
+/// Ed25519 por celda y el cliente sólo ve la pública, que pega en el
+/// `authorized_keys` del usuario con el que se lee (lo que hace Fivetran: nada
+/// suyo que guardar). La huella del host se fija siempre: la prueba del alta
+/// enseña la vista y el usuario la confirma. De recurso, una contraseña en la
+/// URL, que va al custodio. Sólo colecciones mantenidas (D-O1).
+fn sftp(publica: Option<String>, ip: Option<String>) -> Json {
+    let mut celda = vec![
+        ("modo", Json::s("clave-de-la-celda")),
+        ("recomendado", Json::Bool(true)),
+        (
+            "dice",
+            Json::s(
+                "Esta celda entra con su propia clave SSH: pega su parte pública en el \
+                 authorized_keys del usuario con el que se lee (mejor uno que sólo lea esa ruta). \
+                 Al probar la conexión verás la huella de tu servidor: confírmala, y si un día \
+                 cambia, la celda se negará a conectar hasta que la vuelvas a confirmar.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s("sftp://<usuario>@<host>[:<puerto>]/<ruta>?huella=SHA256:<huella del host>"),
+        ),
+        (
+            "pasos",
+            Json::Arr(vec![
+                Json::obj([
+                    (
+                        "para",
+                        Json::s("dejar entrar a la celda, sólo con su clave"),
+                    ),
+                    (
+                        "comando",
+                        Json::s(format!(
+                            "echo '{}' >> ~<usuario>/.ssh/authorized_keys",
+                            publica
+                                .as_deref()
+                                .unwrap_or("<la clave pública de la celda>")
+                        )),
+                    ),
+                ]),
+                Json::obj([
+                    (
+                        "para",
+                        Json::s(
+                            "comprobar en el servidor la huella que la prueba enseñe, antes de \
+                             confirmarla",
+                        ),
+                    ),
+                    (
+                        "comando",
+                        Json::s("ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"),
+                    ),
+                ]),
+                Json::obj([
+                    (
+                        "para",
+                        Json::s("abrir el puerto SSH a la IP de salida de esta celda"),
+                    ),
+                    (
+                        "ip",
+                        Json::s(ip.as_deref().unwrap_or("<la IP de salida de la celda>")),
+                    ),
+                ]),
+            ]),
+        ),
+    ];
+    match &publica {
+        Some(p) => celda.push(("clavePublica", Json::s(p))),
+        None => celda.push((
+            "sinClave",
+            Json::s(
+                "esta celda no dice todavía su clave pública (`ORE_SFTP_CLAVE_PUBLICA`): \
+                 pregúntala a quien opera la celda",
+            ),
+        )),
+    }
+    if ip.is_none() {
+        celda.push((
+            "sinIp",
+            Json::s("esta celda no dice todavía su IP de salida (`ORE_IP_SALIDA`)"),
+        ));
+    }
+    Json::obj([
+        ("tipo", Json::s("sftp")),
+        (
+            "modos",
+            Json::Arr(vec![
+                Json::obj(celda),
+                Json::obj([
+                    ("modo", Json::s("contraseña")),
+                    ("recomendado", Json::Bool(false)),
+                    (
+                        "dice",
+                        Json::s(
+                            "Si tu servidor no admite claves: la contraseña va dentro de la URL, \
+                             cifrada en el custodio. La huella del host se fija igual.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "sftp://<usuario>:<contraseña>@<host>[:<puerto>]/<ruta>?huella=SHA256:<huella>",
+                        ),
+                    ),
+                ]),
+            ]),
+        ),
+        (
+            "noAdmitidos",
+            Json::Arr(vec![
+                Json::obj([
+                    ("modo", Json::s("cualquier-huella")),
+                    (
+                        "porque",
+                        Json::s(
+                            "aceptar la clave de cualquier servidor es dejar que otro se haga \
+                             pasar por el tuyo y reciba lo que la celda envía",
+                        ),
+                    ),
+                ]),
+                Json::obj([
+                    ("modo", Json::s("coleccion-virtual")),
+                    (
+                        "porque",
+                        Json::s(
+                            "un SFTP no versiona: sus colecciones son mantenidas, y lo que se \
+                             sirve sale de la copia en el lago",
+                        ),
+                    ),
+                ]),
+            ]),
+        ),
+    ])
 }
 
 /// El ID único (numérico) de una cuenta de la celda, si el despliegue lo dio.
@@ -666,6 +811,35 @@ mod tests {
         let j = azure(Some("111".into()), None).jcs();
         assert!(
             j.contains("ORE_ID_MEDIOS") && j.contains("{idmedios}"),
+            "{j}"
+        );
+    }
+
+    /// SFTP (0061 O4·3): la clave pública de la celda en el comando, confirmar
+    /// la huella, la IP de salida, la contraseña de recurso, y lo que no se
+    /// admite; sin clave ni IP, se dice.
+    #[test]
+    fn sftp_da_la_clave_publica_y_pide_confirmar_la_huella() {
+        let j = sftp(
+            Some("ssh-ed25519 AAAAC3Nza ore-demo".into()),
+            Some("34.1.2.3".into()),
+        )
+        .jcs();
+        for x in [
+            r#""modo":"clave-de-la-celda""#,
+            "echo 'ssh-ed25519 AAAAC3Nza ore-demo' >> ~<usuario>/.ssh/authorized_keys",
+            "ssh-keygen -lf",
+            "34.1.2.3",
+            r#""modo":"contraseña""#,
+            r#""modo":"cualquier-huella""#,
+            r#""modo":"coleccion-virtual""#,
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert!(!j.contains("sinClave") && !j.contains("sinIp"), "{j}");
+        let j = sftp(None, None).jcs();
+        assert!(
+            j.contains("ORE_SFTP_CLAVE_PUBLICA") && j.contains("ORE_IP_SALIDA"),
             "{j}"
         );
     }

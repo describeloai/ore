@@ -535,7 +535,7 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -647,6 +647,27 @@ jobs:
             --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
           echo "### ore-federation · azure" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-azure --banco azure \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ⭐ ADR 0061 O4·3: SFTP, contra `atmoz/sftp` (OpenSSH de verdad), con una
+      #   clave Ed25519 de esta corrida autorizada y la huella del host fijada
+      #   en la URL (D-O4). El usuario `ore` y su `ore-kit` los crea atmoz.
+      - name: el conector de SFTP
+        run: |
+          C="$RUNNER_TEMP/sftp"; mkdir -p "$C/pub"
+          ssh-keygen -q -t ed25519 -N "" -f "$C/id" && cp "$C/id.pub" "$C/pub/"
+          docker run -d --name kit-sftp -p 2222:22 -v "$C/pub:/home/ore/.ssh/keys:ro" \
+            atmoz/sftp@sha256:0960390462a4441dbb63698d7c185b76a41ffcee7b78ff4adf275f3e66f9c475 \
+            ore::1001:100:ore-kit
+          for i in $(seq 1 50); do docker exec kit-sftp test -f /etc/ssh/ssh_host_ed25519_key.pub && break; sleep 0.2; done
+          sleep 1
+          export SFTP_KIT_HUELLA=$(docker exec kit-sftp ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')
+          export SFTP_KIT_HOST=127.0.0.1 SFTP_KIT_PUERTO=2222 ORE_SFTP_CLAVE="$C/id"
+          echo "### ore-read-sftp" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-sftp --banco sftp \
+            --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### ore-federation · sftp" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-sftp --banco sftp \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):

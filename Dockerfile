@@ -24,9 +24,9 @@
 #                       `ore-store-gcs`, que lee SU lago, y `ore-firmar-s3`,
 #                       que prefirma sin poder abrir un socket — 0046 E9·3.)
 #
-#   ore-drivers         todo lo que `ore` puede ejecutar: los seis `ore-read-*`
+#   ore-drivers         todo lo que `ore` puede ejecutar: los siete `ore-read-*`
 #                       (`ore-read-s3`, un bucket como fuente, desde 0046 E4;
-#                       `ore-read-gcs` y `ore-read-azure`, desde 0061 O2 y O3),
+#                       `ore-read-gcs`, `ore-read-azure` y `ore-read-sftp`, desde 0061 O2–O4),
 #                       `ore-fetch`, `ore-log`, `ore-sign`, `ore-store-r2`, `ore-store-gcs` y `ore-invoke`,
 #                       sobre el SDK de Google Cloud, que ya no es por
 #                       `ore-read-bigquery` (habla REST desde A2, ADR 0042)
@@ -190,6 +190,9 @@ COPY --from=bin /b/ore-read-s3        /opt/ore/conectores/ore-read-s3
 COPY --from=bin /b/ore-read-gcs       /opt/ore/conectores/ore-read-gcs
 # ADR 0061 O3·3: un contenedor de Azure Blob, con la cuenta de la celda federada.
 COPY --from=bin /b/ore-read-azure     /opt/ore/conectores/ore-read-azure
+# ADR 0061 O4·3: un servidor SFTP, con la clave de la celda (D-O4). Sale por el
+# puerto 22 del cliente: la NetworkPolicy de los drivers tiene que dejarlo.
+COPY --from=bin /b/ore-read-sftp      /opt/ore/conectores/ore-read-sftp
 RUN ! command -v ore-read-postgres && ! command -v ore-read-s3  && test -x /opt/ore/conectores/ore-read-postgres  && echo "una vía: los conectores, fuera del PATH (/opt/ore/conectores)"
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.

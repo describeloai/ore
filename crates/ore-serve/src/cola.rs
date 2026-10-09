@@ -380,7 +380,7 @@ pub fn rendir_comprobacion(
 
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
 /// la cuenta de la celda y no llevan credencial dentro: BigQuery, GCS, Azure
-/// Blob y S3 por rol.
+/// Blob, S3 por rol y SFTP con la clave de la celda.
 pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
     // ⭐ ADR 0061 O2·3 · Un bucket de GCS se lee con la cuenta de la celda, o
     //   suplantando una del cliente (`suplantar`): su URL no lleva secreto. Ni
@@ -428,6 +428,36 @@ pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
             return Err("la URL de Azure nombra la app de Entra: `tenant` y `cliente`".into());
         }
         return Ok("azure");
+    }
+    // ⭐ ADR 0061 O4·3 · Un SFTP se lee con la clave de la celda (D-O4): su URL
+    //   no lleva secreto salvo el recurso de una contraseña, y ésa no viaja en
+    //   un Job (se comprueba al catalogarla, como una clave de S3).
+    if let Some(resto) = url.strip_prefix("sftp://") {
+        let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
+        let autoridad = camino.split('/').next().unwrap_or("");
+        let Some((quien, _)) = autoridad.rsplit_once('@') else {
+            return Err(
+                "la URL de un SFTP es `sftp://<usuario>@<host>[:<puerto>]/<ruta>?huella=…`".into(),
+            );
+        };
+        if quien.contains(':') || url.contains('#') {
+            return Err(
+                "una URL de SFTP con contraseña no viaja en un Job: se comprueba al catalogarla \
+                 (con la clave de la celda, sí)"
+                    .into(),
+            );
+        }
+        if let Some(k) = consulta
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.split_once('=').map_or(p, |(k, _)| k))
+            .find(|k| !matches!(*k, "huella" | "edad" | "legado"))
+        {
+            return Err(format!(
+                "la URL de un SFTP sólo admite `huella`, `edad` y `legado`, no `{k}`"
+            ));
+        }
+        return Ok("sftp");
     }
     // ⭐ 0046 E9b · Un bucket de S3 por ROL tampoco lleva secreto: su URL nombra el
     //   rol (`role_arn`), y la credencial la pide el driver en el Job, de una hora.
@@ -901,6 +931,14 @@ mod prueba {
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&sig=x").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&endpoint=https://e").is_err());
+        // ADR 0061 O4·3: SFTP con la clave de la celda; con contraseña, no.
+        assert_eq!(
+            url_sin_secreto("sftp://ore@sftp.cliente.com:2222/datos/?huella=SHA256:abc&edad=60"),
+            Ok("sftp")
+        );
+        assert!(url_sin_secreto("sftp://ore:clave@h/datos/").is_err());
+        assert!(url_sin_secreto("sftp://h/datos/").is_err());
+        assert!(url_sin_secreto("sftp://ore@h/?clave=x").is_err());
     }
 
     /// 0050 P4: la etiqueta que abre la puerta va en el POD (que es lo que la

@@ -1310,11 +1310,7 @@ mod pruebas {
 
         // una fuente que no se sabe servir: el error en su posición, sin
         // repetir su URL
-        let u = pide(
-            "true",
-            "sftp://u:secreto@otro/x",
-            r#"{"path":"docs/a.pdf"}"#,
-        );
+        let u = pide("true", "ftp://u:secreto@otro/x", r#"{"path":"docs/a.pdf"}"#);
         let e = u[0].get("error").unwrap().1;
         assert_eq!(e.get("status").unwrap().1.as_str(), Some("501"));
     }

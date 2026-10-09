@@ -65,6 +65,15 @@ pub fn de(fuente: &str) -> Result<Box<dyn Origen + Send + Sync>, Respuesta> {
         })
         .map(|o| Box::new(o) as Box<dyn Origen + Send + Sync>)
         .map_err(no_se_lee),
+        // ADR 0061 O4·3 (D-O1): un SFTP no versiona; sus colecciones son
+        // mantenidas y lo que se sirve sale del lago, nunca de aquí.
+        "sftp" => Err(problema(
+            422,
+            "media/origen",
+            "un SFTP no versiona: sus colecciones sólo son mantenidas y se sirven de la copia en \
+             el lago, nunca del origen (ADR 0061, D-O1)"
+                .to_string(),
+        )),
         otro => Err(problema(
             501,
             "media/origen",
@@ -92,9 +101,13 @@ mod pruebas {
         assert_eq!(e.codigo, 502);
         assert!(!e.cuerpo.jcs().contains("secreto"), "{}", e.cuerpo.jcs());
         let e = super::de("sftp://u:clave@h/x").err().unwrap();
+        assert_eq!(e.codigo, 422);
+        let t = e.cuerpo.jcs();
+        assert!(t.contains("D-O1") && !t.contains("clave"), "{t}");
+        let e = super::de("ftp://u:clave@h/x").err().unwrap();
         assert_eq!(e.codigo, 501);
         let t = e.cuerpo.jcs();
-        assert!(t.contains("`sftp`") && !t.contains("clave"), "{t}");
+        assert!(t.contains("`ftp`") && !t.contains("clave"), "{t}");
         let e = super::de("s3://cubo/?region=x").err().unwrap();
         assert_eq!(e.codigo, 502, "sin credencial: {}", e.cuerpo.jcs());
     }

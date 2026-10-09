@@ -2580,6 +2580,7 @@ dependencies = [
  "parquet",
  "postgres",
  "serde_json",
+ "ssh2",
  "ureq",
 ]
 

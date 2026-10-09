@@ -15,6 +15,7 @@ pub mod bigquery;
 pub mod gcs;
 pub mod postgres;
 pub mod s3;
+pub mod sftp;
 
 pub trait Banco {
     /// `postgres`, `s3`…

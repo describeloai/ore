@@ -26,6 +26,8 @@ ore-sigv4  = { path = "../ore-sigv4" }
 postgres   = "0.19"
 # Subir la semilla a un S3 compatible (MinIO), firmado con `ore-sigv4`.
 ureq       = { version = "2", default-features = false }
+# Subir la semilla a un SFTP de pruebas (atmoz/sftp), ADR 0061 O4·3.
+ssh2       = "0.9"
 # Cargar la semilla en BigQuery, con la credencial del conector.
 ore-gcp    = { path = "../ore-gcp" }
 serde_json = "1"

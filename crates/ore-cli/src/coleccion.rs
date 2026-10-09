@@ -366,6 +366,11 @@ pub fn mantenidas(pkg: &Package) -> Vec<&Loaded> {
         .collect()
 }
 
+/// Los tipos de fuente que no fijan nada (`capacidades` → `objetos.fija:
+/// ninguna`): sus colecciones sólo pueden ser mantenidas (ADR 0061, D-O1). Se
+/// sabe del tipo y no preguntando al lector, porque esto se decide sin red.
+const SIN_VERSIONES: &[&str] = &["sftp"];
+
 pub fn es_virtual(d: &Loaded) -> bool {
     d.section("virtual").and_then(|v| v.as_str()) == Some("true")
 }
@@ -734,6 +739,16 @@ pub fn una(
         .and_then(|v| v.as_str())
         .ok_or("el `ObjectTable` no dice su `datasource`")?
         .to_string();
+    if virtual_
+        && let Ok((tipo, _)) = lector::declaracion(raiz, &datasource)
+        && SIN_VERSIONES.contains(&tipo.as_str())
+    {
+        return Err(format!(
+            "`{qn}` es virtual sobre `{datasource}` ({tipo}), que no versiona: lo que cambie en el \
+             origen se serviría sin saberlo. Una colección suya sólo puede ser mantenida \
+             (`virtual: false`: la copia en el lago es la versión) — ADR 0061, D-O1"
+        ));
+    }
     let prefijo = o
         .section("prefix")
         .and_then(|v| v.as_str())

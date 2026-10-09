@@ -364,6 +364,31 @@ que no existe se dice como tal (con la pista del chroot). `ore-sftp` gana `nivel
 viejo no copia—. **El binario compilado en Alpine sólo enlaza la libc de musl** (OpenSSL estático) y su
 `check` contra el mismo servidor sale `ok`.
 
+**O4·3, hecho**: SFTP cableado al resto de ORE.
+
+- **Una colección virtual sobre SFTP se niega** al mantenerla o servirla (`coleccion::una`, por el
+  tipo de la fuente y sin red: `SIN_VERSIONES`), con su porqué (D-O1); y `ore-medios`, si le llega una
+  `sftp://`, contesta `422` con lo mismo en vez de un `501` genérico.
+- `ore-serve`: una `sftp://` con la clave de la celda se comprueba antes del alta (sólo `huella`,
+  `edad`, `legado`); con contraseña, no viaja en un Job. `GET /fuentes/credenciales/sftp` da la clave
+  pública de la celda ya en el comando de `authorized_keys`, cómo comprobar la huella en el servidor,
+  la IP de salida, la contraseña como recurso, y como no admitidos «cualquier huella» y la colección
+  virtual.
+- `ore-federation` carga `sftp`; `ore-read-sftp` en la imagen de drivers y en
+  `ci/compilar-binarios.sh`; el kit gana el banco `sftp` (sube la semilla con `ssh2`) y el CI lo corre
+  contra `atmoz/sftp`. En local: **12/12 directo** (con la credencial mala —otra huella— dicha como
+  `credencial`) y **9/9 por la pasarela**.
+
+**Falta, con go** (malla y aprovisionador; nada aplicado):
+1. La **clave SSH de cada celda**: el aprovisionador genera una Ed25519, guarda la privada en un
+   Secret que los pods de los drivers montan como fichero (`ORE_SFTP_CLAVE`) y da la pública a
+   `ore-serve` (`ORE_SFTP_CLAVE_PUBLICA`).
+2. La **salida por el puerto 22** (y los que pidan las fuentes) en la NetworkPolicy de los drivers.
+3. La **IP de salida fija** de la celda (Cloud NAT con IP reservada), dada a `ore-serve`
+   (`ORE_IP_SALIDA`) para que el asistente la enseñe.
+
+Sin 1, el asistente lo dice y `check` falla en `identidad` con su porqué; sin 2, en `conexion`.
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).
