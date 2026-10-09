@@ -754,7 +754,9 @@ SQL (0055 P4).
 Java vive en Transforms (Build, 0055 T1·7), así que la media en la JVM es **la de un `@Transform`**:
 leer una colección declarada en `inputs`, escribir la de `output`, y `apply()`. La misma `MediaRef`,
 el mismo contrato ([`docs/media.md`](../media.md)), los mismos errores, la misma suite
-([`conformidad/media`](../../conformidad/media/README.md): 51 casos, que Python ya pasa en vivo).
+([`conformidad/media`](../../conformidad/media/README.md): 51 casos). ⚠️ Corregido en JM0: de los 51,
+**sólo los 15 de `derivar` tienen ejecutor** (Python y SQL, en el banco y en vivo); los otros 36 no los
+corre todavía ningún lenguaje, y eso es B6. El ejecutor de Java es el primero de los 51.
 **Ni el servidor ni la gramática cambian**: `ore-serve` (`/media/…`) y `ore-medios` ya sirven todo lo
 que Python usa, y la JVM es un cliente nuevo del mismo servidor. Si a mitad aparece un hueco en Rust,
 se nombra aquí y se decide; no se tapa en el SDK.
@@ -784,11 +786,30 @@ lo está, se arregla el laboratorio antes que nada.
 | hito | qué | la suite que lo cierra | tamaño |
 |---|---|---|---|
 | **JM0** | el laboratorio, medido; el ejecutor con los 51 casos en `pendiente` | la orden corre, `0/51` | ½ día |
-| **JM1 · leer** | `Ore.collection("b.s.c")` → `Collection`: `items(prefix, state, limit)` perezoso por cursor, `stat(path \| digest, version)`, `url(items, ttl)`. `Item`: `ref()`, `open()` → `MediaChannel` (`SeekableByteChannel`: la versión fijada, `Range`, el permiso caducado se renueva **con la misma versión**, `412` → `MediaChanged`, el sha256 al leer entero → `MediaCorrupt`), `inputStream()`, `readBytes(threads)` por rangos en paralelo, `readRange(off, len)`. `Ore.readMany(items, threads)` con `{value, error}`. Los errores (`MediaError` y sus siete). `Item.of(fila)` desde el `_item` del listado en SQL | `list`, `stat`, `open`, `url`, `errores`, `sesion`, `medidas` (**34 casos**) + los 13 del SDK de B3·5 en Java: el token de ORE **nunca** en la URL de los bytes, la rama en `x-ore-rama` | 1 día |
+| **JM1 · leer** | `Ore.collection("b.s.c")` → `Collection`: `items(prefix, state, limit)` perezoso por cursor, `stat(path \| digest, version)`, `url(items, ttl)`. `Item`: `ref()`, `open()` → `MediaChannel` (`SeekableByteChannel`: la versión fijada, `Range`, el permiso caducado se renueva **con la misma versión**, `412` → `MediaChanged`, el sha256 al leer entero → `MediaCorrupt`), `inputStream()`, `readBytes(threads)` por rangos en paralelo, `readRange(off, len)`. `Ore.readMany(items, threads)` con `{value, error}`. Los errores (`MediaError` y sus siete). `Item.of(fila)` desde el `_item` del listado en SQL | `list`, `stat`, `open`, `url`, `sesion` (**30 casos**, los de `errores` y `medidas` incluidos; el banco aprende la muestra: la mantenida, la virtual con su origen versionado, `sobrescribir`, `caducar_credencial`) + los 13 del SDK de B3·5 en Java: el token de ORE **nunca** en la URL de los bytes, la rama en `x-ore-rama` | 1 día |
 | **JM2 · dentro de un `@Transform`** | lo declarado en `inputs` se lee; lo no declarado es `MediaForbidden` **sin preguntar**; fuera de un transform, queda en lo leído; el `as_of` del listado, en la procedencia del Build. El Preview lee y no escribe, como en Python | los 4 de B4·3 en Java + **un Build en el laboratorio con la celda que genera `builds.rs`** (como en JT3) que lee una colección | ½ día |
 | **JM3 · escribir** | `collection.transaction(ttlS)` → `Transaction` (`AutoCloseable`): `put(path, byte[] \| Path \| InputStream+largo, contentType)`, `putMany(pairs, threads)` con tope en vuelo, `delete`, `commit()`, `abort()`. La subida en flujo, con el sha256 al paso y `Repr-Digest`; la cortada se reintenta; el `409` de la carrera de la forja se vuelve a confirmar; dentro de un transform, sólo su `output`; una mantenida es `MediaNotWritable`. `Ore.createCollection(name, ifNotExists)` por `/documentos`. `verify` | `put` (**6 casos**) + los 15 de B4b·3 en Java | 1 día |
 | **JM4 · `apply()`** | `collection.apply(fn, opciones)`: **filas** (`Function<Item, Map<String,Object>>` → la tabla anclada de B5: la clave por ítem, un error es su fila, nada cambia → nada se escribe, guardado por tiempo) y **ficheros** (`Function<Item, List<Ore.File>>` → la colección escrita de B9: el linaje lo sella `ore-medios`, `derivations()`, lo retirado); `version`, `params`, `retryErrors`, `threads` | `derivar` (**15 casos**) → **51/51** | 1–1½ días |
 | **JM5 · cierre** | el ejecutor de Java **en el CI** (el job `plano-el-puesto` ya tiene Temurin 21): una regresión no despliega. `display(item)` y `display(List<Item>)` → la galería, como Python (se ve en la consola local contra el banco, puerto 3062). `docs/sdk.md` «Media in Java», `docs/media.md` (las superficies), este ADR con lo medido | el CI en verde con la suite de Java dentro | ½ día |
+
+#### JM0 · hecho: el laboratorio (2026-10-09)
+
+`python pruebas-de-fuego/la-media-en-java.py [fichero | id]`:
+
+- **la imagen de prod, por digest**: `puesto-jvm@sha256:16204ed3…` (la del registro, creada el
+  2026-10-03); antes de nada se comprueba que lleva los jars de `puesto/jvm/jars.txt`, o la corrida no
+  vale. El SDK de **este árbol** se compila dentro con su JDK (21.0.12).
+- **el banco**, el de Python (`banco_media.py`), escuchando sólo en `127.0.0.1`: Docker Desktop lleva
+  `host.docker.internal` hasta él, y no se abre a la red. Se le añadió decir ese nombre en las URLs
+  que da (`arrancar(escucha, anuncio)`); las pruebas de Python, iguales (las tres en verde; una
+  corrida de doce de `la-media-en-python.py` dio un fallo que no se repitió: inestable, sin
+  identificar).
+- **el humo**: el listado en SQL de `conformidad.default.derivar` (0057 C4) desde la JVM, por
+  `POST /puestos/p1/sql` y las páginas de `items`; sin banco, el humo falla y la orden sale con 1.
+- **el ejecutor** (`conformidad-media-jvm/Ejecutor.java`): `0/51`, por `op` pendientes
+  `list` 7 · `stat` 6 · `open` 13 · `url` 3 · `sesion` 1 · `put` 9 · `verify` 1 · `apply` 11.
+
+**Medido: 7,6 s la corrida entera** (javac 3,8 s de ellos), tres veces. Se itera en segundos.
 
 #### Dos decisiones que pide la JVM
 

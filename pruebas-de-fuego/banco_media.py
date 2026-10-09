@@ -61,11 +61,18 @@ TRANSFORMS = []                # ("POST", cuerpo) | ("DELETE", None)
 MODOS = {"cortar_subidas": 0,  # las próximas N subidas se cortan sin contestar
          "conflictos": 0}      # los próximos N commits pierden la carrera (409)
 PUERTOS = {}
+#: El nombre con que el puesto llega al banco: 127.0.0.1 si corre aquí; desde un
+#: contenedor, `host.docker.internal` (JM0, `la-media-en-java.py`).
+ANUNCIO = {"host": "127.0.0.1"}
 
 # 0049 B9 · la entrada de los casos de `derivar` y el índice de las escritas.
 DERIVAR = "conformidad.default.derivar"
 ENTRADA = {}                   # camino → bytes: el origen de DERIVAR, que los casos cambian
 ESCRITAS = {}                  # colección → {"tx", "items": {camino: ref}, "marcas": {origen: entrada}}
+
+
+def _medios():
+    return "http://%s:%d" % (ANUNCIO["host"], PUERTOS["medios"])
 
 
 def ref(path, digest=None):
@@ -146,7 +153,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
             # El primer permiso de a.pdf vale para UNA petición: obliga a renovar.
             PERMISOS[p] = (path, 1 if (path == "a.pdf" and ESTADO["n"] == 1) else 10_000)
             digest = {"corrupto.pdf": "sha256:" + "0" * 64}.get(path)
-            cuerpo = {"url": "http://127.0.0.1:%d/contenido?permiso=%s" % (PUERTOS["medios"], p),
+            cuerpo = {"url": "%s/contenido?permiso=%s" % (_medios(), p),
                       "desde": "medios", "version": q.get("version") or "v1", "ttl_s": 300,
                       "item": ref(path, digest)}
             return _json(self, 307, cuerpo, {"location": cuerpo["url"]})
@@ -220,7 +227,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
         permiso = hashlib.sha256(t.encode()).hexdigest()
         TRANSACCIONES[t] = {"coleccion": col, "permiso": permiso, "items": {}, "cerrada": False}
         _json(self, 201, {"transaction": t, "collection": col, "ttl_s": int(cuerpo.get("ttl_s") or 3600),
-                          "upload": "http://127.0.0.1:%d/subida?permiso=%s" % (PUERTOS["medios"], permiso),
+                          "upload": "%s/subida?permiso=%s" % (_medios(), permiso),
                           "expires_ms": 0})
 
     def _cerrar(self, col, t, op, cuerpo=None):
@@ -262,7 +269,7 @@ class Celda(http.server.BaseHTTPRequestHandler):
                 ESTADO["n"] += 1
                 p = "p%d" % ESTADO["n"]
                 PERMISOS[p] = ("derivar:" + c, 10_000)
-                cuerpo = {"url": "http://127.0.0.1:%d/contenido?permiso=%s" % (PUERTOS["medios"], p),
+                cuerpo = {"url": "%s/contenido?permiso=%s" % (_medios(), p),
                           "desde": "medios", "version": refs[c]["version"], "ttl_s": 300, "item": refs[c]}
                 return _json(self, 307, cuerpo, {"location": cuerpo["url"]})
             return _problema(self, 404, "media/no-existe", op)
@@ -479,14 +486,18 @@ class Medios(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def arrancar():
-    """Levanta los dos servidores y deja el entorno como el de un puesto."""
-    celda = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Celda)
-    medios = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Medios)
+def arrancar(escucha="127.0.0.1", anuncio="127.0.0.1"):
+    """Levanta los dos servidores y deja el entorno como el de un puesto.
+
+    `escucha` es donde atienden; `anuncio`, el nombre que va en las URLs que el
+    banco da (los bytes, la subida) y en `ORE_SERVE`: el de quien llama."""
+    celda = http.server.ThreadingHTTPServer((escucha, 0), Celda)
+    medios = http.server.ThreadingHTTPServer((escucha, 0), Medios)
     PUERTOS["celda"], PUERTOS["medios"] = celda.server_port, medios.server_port
+    ANUNCIO["host"] = anuncio
     for s in (celda, medios):
         threading.Thread(target=s.serve_forever, daemon=True).start()
-    os.environ["ORE_SERVE"] = "http://127.0.0.1:%d" % celda.server_port
+    os.environ["ORE_SERVE"] = "http://%s:%d" % (anuncio, celda.server_port)
     os.environ["PUESTO"] = "p1"
     return celda, medios
 
