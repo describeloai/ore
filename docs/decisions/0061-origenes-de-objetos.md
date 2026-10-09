@@ -1,8 +1,8 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
-**Estado:** propuesto (2026-10-09). **O0, O1 y O2 hechos** (2026-10-09; O2 en el laboratorio, la
-prueba contra GCS de verdad es deuda temporal); siguiente O3 (Azure). D-O1 aplicada en O1, D-O2 en
-O2. Investigación:
+**Estado:** propuesto (2026-10-09). **O0, O1, O2 y O3 hechos** (2026-10-09; O2 y O3 en el
+laboratorio, la prueba contra GCS y Azure de verdad es deuda temporal); siguiente O4 (SFTP). D-O1
+aplicada en O1, D-O2 en O2, D-O3 en O3. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -58,7 +58,7 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    *Domain Restricted Sharing* necesita una federación en su proyecto: límite conocido, se construye
    cuando se pida.
 
-6. **D-O3 · cómo entra ORE en el Azure del cliente** *(propuesta, 2026-10-09; investigación §6)*:
+6. **D-O3 · cómo entra ORE en el Azure del cliente** *(aceptada, 2026-10-09; investigación §6)*:
    **las cuentas de la celda, federadas** —lo que hacen BigQuery Omni y Storage Transfer Service, y
    lo que ORE ya hace con AWS—. El cliente crea en su tenant una app registration (o una managed
    identity) con dos *federated identity credentials* (issuer `https://accounts.google.com`, subject
@@ -225,7 +225,7 @@ suspendida): `testIamPermissions`, la URL firmada por `signBlob` bajada con `cur
 (un bucket de otro proyecto con `objectViewer` a las dos cuentas de la celda). Se salda corriendo
 `o2-gcs.sh` contra un bucket real y la consola dando de alta uno.
 
-### O3 · Azure Blob / ADLS Gen2 (en curso)
+### O3 · hecho en el laboratorio (2026-10-09): Azure Blob / ADLS Gen2
 
 **O3·0, medido** (Azurite 3.37.0, `mcr.microsoft.com/azure-storage/azurite@sha256:830430c1…`): lista
 con paginación de verdad (`maxresults`/`NextMarker`) y `delimiter`; rango `206`; `If-Match` viejo →
@@ -286,6 +286,21 @@ cotejado, y con la huella cambiada o un ETag que ya no es, no copia.
 
 Falta, con go: publicar `ORE_ID_MEDIOS` (el ID único de `ore-medios-<celda>`) junto a los otros dos
 en `ids-de-la-celda` (`malla/aprovisionar-inquilino.sh`).
+
+**O3·4, hecho**: `pruebas-de-fuego/o3-azure.sh`, contra Azurite por HTTPS (`--oauth basic`, un
+certificado de un día), por el binario y por `ore-medios` (`tests/laboratorio_azure.rs`): `check`
+(los cinco pasos, fija por ETag; un contenedor que no existe), la guarda del `endpoint` fuera del
+laboratorio, `explorar` y el catálogo, `versiones` por ETag con `md5`, `bajar` cotejado (con la huella
+cambiada no copia) y `docs/a.pdf` reescrito **con el mismo tamaño** entre `versiones` y `bajar`: no se
+copia (412). **11/11.** Con el `If-Match` quitado a propósito de `Azure::bajar`, 3 fallos —y ni así
+se copian otros bytes: el cotejo del `md5` los para—. El perfil, en
+[`origenes-de-objetos.md`](../origenes-de-objetos.md).
+
+**Deuda temporal de O3**, contra Azure de verdad (no hay cuenta): el canje con Entra (y sus
+`AADSTS…`), el versionado (`include=versions`, leer una versión vieja, `sr=bv` —construida como el
+SDK, sin validar—), ADLS Gen2 (namespace jerárquico y sus ACL), el firewall de red, y la concesión de
+los dos roles. Se salda corriendo `o3-azure.sh` contra una cuenta real y la consola dando de alta un
+contenedor.
 
 ## Lo que no se hace aquí
 

@@ -2,10 +2,10 @@
 
 **Estado:** S3 en vivo (0046); los que hablan la API de S3, probados en el laboratorio (ADR
 [0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09); GCS, con su driver propio y probado
-en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad. Azure, SFTP y
-SharePoint, por construir (O3–O5).
+en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad; Azure Blob y ADLS Gen2,
+igual (O3, 2026-10-09), sin probar contra Azure de verdad. SFTP y SharePoint, por construir (O4–O5).
 
-Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3` o `type: gcs`): de él salen `Table` con `format`
+Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3`, `type: gcs` o `type: azure`): de él salen `Table` con `format`
 sobre sus Parquet, CSV y JSONL, y `ObjectTable` sobre lo demás, de donde salen las colecciones de
 media ([`media.md`](media.md)). La credencial no se escribe en el árbol: vive en el custodio y el
 árbol sólo nombra su variable (`connectionEnv`).
@@ -90,6 +90,43 @@ red.
 token se manda en cada petición y quien lo recibe lee como la celda. Otro servidor sólo con
 `ORE_GCS_LABORATORIO=1`, que pone el laboratorio (`pruebas-de-fuego/o2-gcs.sh`, contra
 `fake-gcs-server`) y nunca una celda.
+
+## Azure Blob y ADLS Gen2
+
+```
+az://<cuenta>/<contenedor>[/<prefijo>]?tenant=<id del tenant>&cliente=<id de la app>
+```
+
+La URL **no lleva secreto** (D-O3): nombra la app de Entra del cliente. Como BigQuery Omni y Storage
+Transfer Service, el cliente crea en su tenant una app (o una managed identity) con dos *federated
+identity credentials*, una por cuenta de Google de la celda (issuer `https://accounts.google.com`,
+subject = su ID único, audiencia `api://AzureADTokenExchange`), y le da:
+
+- `Storage Blob Data Reader` sobre el contenedor: listar y leer, versiones incluidas;
+- `Storage Blob Delegator` sobre **la cuenta**: la clave de delegación con la que se firman las URLs
+  de los ítems es de la cuenta. Sin él se cataloga y se copia igual, y los ítems se abren por
+  `content`.
+
+La consola da los comandos `az` con los IDs ya puestos (`GET /fuentes/credenciales/azure`): un ID mal
+pegado se crea sin error y falla después, en silencio. Quien lee cambia su token de Google por uno de
+Entra él mismo; si la credencial federada no casa —o aún se propaga, que tarda minutos—, `check` lo
+dice. No se admiten la clave de la cuenta (lo abre todo, y Azure recomienda apagarla), una SAS del
+cliente (un secreto al portador que caduca) ni el secreto de una app.
+
+Cada blob se fija por su **`versionId`** si la cuenta tiene versionado, y **siempre además por su
+ETag** (`If-Match`): un servidor que ignore la versión —Azurite lo hace— no puede dar otros bytes. Sin
+versionado, y en **ADLS Gen2**, que no lo tiene, la versión es el ETag (D-O1): lo que cambió entre
+listar y leer es un `412`, y esos ítems no dan URL firmada. Las URLs son SAS de delegación de usuario,
+fijadas a la versión. La huella es el `Content-MD5`, que Azure guarda de un blob subido de una vez y
+no de uno subido por bloques (los grandes, casi siempre): sin él, se coteja el tamaño. Blob no
+entiende un rango por el final (`bytes=-N`): el driver lo resuelve con el tamaño del blob. `check`
+prueba cada paso —Azure no tiene a quién preguntar los permisos— y dice como lo que son un contenedor
+que no existe y el firewall de red de la cuenta.
+
+`endpoint` no se admite: sólo se habla con `https://<cuenta>.blob.core.windows.net` (el token de
+Storage vale para cualquier cuenta que la app pueda leer). Otro servidor sólo con
+`ORE_AZURE_LABORATORIO=1`, que pone el laboratorio (`pruebas-de-fuego/o3-azure.sh`, contra Azurite) y
+nunca una celda. Las nubes soberanas (Azure Government, China) no están.
 
 ## Por qué no un driver por proveedor
 
