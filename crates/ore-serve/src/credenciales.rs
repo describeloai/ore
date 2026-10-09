@@ -116,7 +116,154 @@ pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
     if tipo == "gcs" {
         return gcs(cuenta, medios);
     }
+    if tipo == "azure" {
+        return azure(id_de("ORE_ID_DRIVER"), id_de("ORE_ID_MEDIOS"));
+    }
     de_con(tipo, cuenta, ids_de_la_celda())
+}
+
+/// El ID único (numérico) de una cuenta de la celda, si el despliegue lo dio.
+fn id_de(variable: &str) -> Option<String> {
+    std::env::var(variable)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// ⭐ ADR 0061 O3·3 (D-O3) · **Azure: las cuentas de esta celda, federadas.** El
+/// cliente crea en su tenant una app (o una managed identity) con una
+/// *federated identity credential* por cuenta de la celda —issuer
+/// `https://accounts.google.com`, subject = su ID único, audiencia
+/// `api://AzureADTokenExchange`— y le da `Storage Blob Data Reader` sobre el
+/// contenedor y `Storage Blob Delegator` sobre la cuenta. Los comandos salen
+/// con los IDs ya puestos: uno mal pegado se crea sin error y falla después,
+/// en silencio. Sin claves de la cuenta, sin SAS del cliente, sin secretos.
+fn azure(driver: Option<String>, medios: Option<String>) -> Json {
+    let fic = |quien: &str, id: &Option<String>| {
+        format!(
+            "az ad app federated-credential create --id {{app}} --parameters \
+             '{{\"name\":\"ore-{quien}\",\"issuer\":\"https://accounts.google.com\",\"subject\":\"{}\",\
+             \"audiences\":[\"api://AzureADTokenExchange\"]}}'",
+            id.as_deref().unwrap_or(&format!("{{id{quien}}}"))
+        )
+    };
+    let alcance = "/subscriptions/{suscripcion}/resourceGroups/{grupo}/providers/Microsoft.Storage/storageAccounts/{cuenta}";
+    let mut m = vec![
+        ("modo", Json::s("federada")),
+        ("recomendado", Json::Bool(true)),
+        (
+            "dice",
+            Json::s(
+                "Crea en tu tenant una app (o una managed identity) que confíe en las dos cuentas \
+                 de Google de esta celda, y dale solo lectura sobre tu contenedor. La URL nombra la \
+                 app y ningún secreto: la celda pide un token de Storage cada vez que lee.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s(
+                "az://<cuenta>/<contenedor>[/<prefijo>]?tenant=<id del tenant>&cliente=<id de la app>",
+            ),
+        ),
+        (
+            "pasos",
+            Json::Arr(vec![
+                Json::obj([
+                    ("para", Json::s("la app que confía en la celda")),
+                    (
+                        "comando",
+                        Json::s("az ad app create --display-name ore-lector"),
+                    ),
+                ]),
+                Json::obj([
+                    ("para", Json::s("el driver de la celda: catalogar y copiar")),
+                    ("comando", Json::s(fic("driver", &driver))),
+                ]),
+                Json::obj([
+                    (
+                        "para",
+                        Json::s("los medios de la celda: servir los ítems y firmar sus URLs"),
+                    ),
+                    ("comando", Json::s(fic("medios", &medios))),
+                ]),
+                Json::obj([
+                    ("para", Json::s("leer el contenedor (y sus versiones)")),
+                    (
+                        "comando",
+                        Json::s(format!(
+                            "az role assignment create --assignee {{app}} --role \"Storage Blob Data Reader\" \
+                             --scope {alcance}/blobServices/default/containers/{{contenedor}}"
+                        )),
+                    ),
+                ]),
+                Json::obj([
+                    (
+                        "para",
+                        Json::s(
+                            "firmar las URLs de los ítems (la clave de delegación es de la cuenta); \
+                             sin esto se cataloga y se copia igual",
+                        ),
+                    ),
+                    (
+                        "comando",
+                        Json::s(format!(
+                            "az role assignment create --assignee {{app}} --role \"Storage Blob Delegator\" \
+                             --scope {alcance}"
+                        )),
+                    ),
+                ]),
+            ]),
+        ),
+    ];
+    let falta: Vec<&str> = [("ORE_ID_DRIVER", &driver), ("ORE_ID_MEDIOS", &medios)]
+        .iter()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| *k)
+        .collect();
+    if falta.is_empty() {
+        m.push((
+            "ids",
+            Json::obj([
+                ("driver", Json::s(driver.unwrap_or_default())),
+                ("medios", Json::s(medios.unwrap_or_default())),
+            ]),
+        ));
+    } else {
+        m.push((
+            "sinIds",
+            Json::s(format!(
+                "esta celda no dice todavía los IDs de sus cuentas ({}): los comandos salen con sus \
+                 huecos, y un subject mal pegado se crea sin error y falla después",
+                falta.join(", ")
+            )),
+        ));
+    }
+    let no = |modo: &str, porque: &str| {
+        Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
+    };
+    Json::obj([
+        ("tipo", Json::s("azure")),
+        ("modos", Json::Arr(vec![Json::obj(m)])),
+        (
+            "noAdmitidos",
+            Json::Arr(vec![
+                no(
+                    "clave-cuenta",
+                    "la clave de la cuenta lo puede todo en todos sus contenedores, y Azure \
+                     recomienda apagarla (AllowSharedKeyAccess=false)",
+                ),
+                no(
+                    "sas",
+                    "una SAS es un secreto al portador que caduca, y con la clave de la cuenta \
+                     apagada ya no vale",
+                ),
+                no(
+                    "secreto-app",
+                    "el secreto de una app es justo lo que la federación evita guardar y rotar",
+                ),
+            ]),
+        ),
+    ])
 }
 
 /// Lo que se concede sobre un bucket de GCS: leer, y nada más. Es lo que
@@ -491,6 +638,34 @@ mod tests {
         let j = de("gcs", Some("d@p.iam.gserviceaccount.com"), None).jcs();
         assert!(
             j.contains("--cuenta-medios") && !j.contains("--cuenta-driver"),
+            "{j}"
+        );
+    }
+
+    /// Azure (0061 O3·3): la app federada con los IDs de las dos cuentas ya en
+    /// los comandos, los dos roles, y lo que no se admite; sin IDs, los huecos
+    /// y el aviso.
+    #[test]
+    fn azure_da_los_comandos_con_los_ids_puestos() {
+        let j = azure(Some("111".into()), Some("333".into())).jcs();
+        for x in [
+            r#""modo":"federada""#,
+            r#"\"subject\":\"111\""#,
+            r#"\"subject\":\"333\""#,
+            "api://AzureADTokenExchange",
+            "https://accounts.google.com",
+            "Storage Blob Data Reader",
+            "Storage Blob Delegator",
+            r#""modo":"clave-cuenta""#,
+            r#""modo":"sas""#,
+            "tenant=<id del tenant>&cliente=<id de la app>",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert!(!j.contains("sinIds"), "{j}");
+        let j = azure(Some("111".into()), None).jcs();
+        assert!(
+            j.contains("ORE_ID_MEDIOS") && j.contains("{idmedios}"),
             "{j}"
         );
     }

@@ -44,7 +44,26 @@ fn partir<'a>(version: &'a str, etag: &str) -> (Option<&'a str>, Option<String>)
     }
 }
 
+/// Un rango por el final (`-8`, el pie de un Parquet) en uno que Azure
+/// entiende: Blob sólo admite `inicio-fin` o `inicio-` (Azurite contesta `500`
+/// a `bytes=-8`, medido en O3·3), así que se resuelve con el tamaño.
+fn absoluto(rango: &str, tamano: u64) -> String {
+    match rango.strip_prefix('-').and_then(|n| n.parse::<u64>().ok()) {
+        Some(n) => format!("{}-{}", tamano.saturating_sub(n), tamano.saturating_sub(1)),
+        None => rango.to_string(),
+    }
+}
+
 impl Azure {
+    /// El rango, en bytes que Azure entiende (con un `HEAD` si es por el final).
+    fn rango_absoluto(&self, clave: &str, rango: &str) -> Result<String, String> {
+        if !rango.starts_with('-') {
+            return Ok(rango.to_string());
+        }
+        let m = self.meta(clave, None).map_err(|f| motivo(clave, &f))?;
+        Ok(absoluto(rango, m.tamano))
+    }
+
     fn todo(
         &self,
         clave: &str,
@@ -78,7 +97,8 @@ impl Origen for Azure {
     }
 
     fn rango(&self, clave: &str, rango: &str) -> Result<Vec<u8>, String> {
-        self.todo(clave, None, Some(&format!("bytes={rango}")))
+        let r = self.rango_absoluto(clave, rango)?;
+        self.todo(clave, None, Some(&format!("bytes={r}")))
     }
 
     /// Fijado al ETag que el listado dijo.
@@ -89,8 +109,10 @@ impl Origen for Azure {
         Ok(l.lector)
     }
 
+    /// Con el ETag: si el blob cambió entre el `HEAD` y la lectura, `412`.
     fn rango_de(&self, clave: &str, rango: &str, etag: &str) -> Result<Vec<u8>, String> {
-        self.todo(clave, Some(etag), Some(&format!("bytes={rango}")))
+        let r = self.rango_absoluto(clave, rango)?;
+        self.todo(clave, Some(etag), Some(&format!("bytes={r}")))
     }
 
     /// Cada versión (`include=versions`) si la cuenta versiona; si no —o un
@@ -172,6 +194,27 @@ impl Origen for Azure {
         rango: Option<&str>,
     ) -> Result<Leido, Rechazo> {
         let (v, e) = partir(version, etag);
+        // Un rango por el final, como lo pida el visor (`bytes=-500`): con el
+        // tamaño de la versión fijada.
+        let por_el_final = match rango.and_then(|r| r.strip_prefix("bytes=")) {
+            Some(r) if r.starts_with('-') => match self.meta(clave, v) {
+                Ok(m) => Some(format!("bytes={}", absoluto(r, m.tamano))),
+                Err(f) if matches!(f.estado, 404 | 412) => {
+                    return Err(Rechazo::Cambiado(format!(
+                        "`{clave}` ya no es, en el origen, la versión fijada ({})",
+                        f.motivo()
+                    )));
+                }
+                Err(f) => {
+                    return Err(Rechazo::Origen(format!(
+                        "el origen contestó {}",
+                        f.motivo()
+                    )));
+                }
+            },
+            _ => None,
+        };
+        let rango = por_el_final.as_deref().or(rango);
         self.bajar(clave, v, e.as_deref(), rango)
             .map_err(|f| match f.estado {
                 404 | 412 => Rechazo::Cambiado(format!(
@@ -226,5 +269,8 @@ mod tests {
             Some("md5:CInfjbZ21DfOIWDhgYr6dw==")
         );
         assert_eq!(huella(Some("")), None);
+        assert_eq!(absoluto("-8", 100), "92-99");
+        assert_eq!(absoluto("-200", 100), "0-99");
+        assert_eq!(absoluto("0-15", 100), "0-15");
     }
 }

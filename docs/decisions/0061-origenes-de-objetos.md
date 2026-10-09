@@ -264,6 +264,29 @@ falta. Contra Azurite, los verbos del binario: `capacidades`, `check` (y un cont
 `explorar`, `catalogo` (1 tabla y 4 conjuntos), `testigo`, `versiones` (`etag:` y `md5:`), `bajar`
 cotejado, y con la huella cambiada o un ETag que ya no es, no copia.
 
+**O3·3, hecho**: Azure cableado al resto de ORE, como GCS en O2·3.
+
+- `ore-medios` lee `az://`; la caché de clientes por URL de O2·3 vale ahora para cualquier proveedor
+  cuya URL no lleve secreto (GCS y Azure: token de Entra y clave de delegación guardados entre
+  peticiones; una `s3://` no se guarda).
+- `ore-serve`: `az://` se comprueba antes del alta (sólo `tenant` y `cliente`, tipo `azure`), no se
+  canjea nada, y `GET /fuentes/credenciales/azure` da los comandos `az` con los **IDs únicos de las
+  dos cuentas ya puestos** —un subject mal pegado se crea sin error y falla en silencio—: la app, las
+  dos credenciales federadas, `Storage Blob Data Reader` sobre el contenedor y `Storage Blob Delegator`
+  sobre la cuenta; no admite la clave de la cuenta, una SAS ni el secreto de una app. El ID de la
+  cuenta de medios sale de `ORE_ID_MEDIOS`, que el aprovisionador **todavía no publica** (sin él, los
+  comandos salen con su hueco y se dice).
+- ⭐ **Medido aquí**: Blob no entiende un rango por el final (`bytes=-8`, el pie de un Parquet; Azurite
+  contesta `500`). `ore-azure` lo resuelve con el tamaño del blob (un `HEAD`; con el ETag, si cambió
+  entretanto, `412`), también en `leer_fijado` (lo que pida un visor). Lo cazó el caso 9 del kit por la
+  pasarela (el catálogo de los Parquet).
+- `ore-federation` carga `azure` por defecto; `ore-read-azure` en la imagen de drivers y en
+  `ci/compilar-binarios.sh`; el kit gana el banco `azure` (la misma semilla) y el CI lo corre contra
+  Azurite por HTTPS con un certificado de un día. En local: **12/12 directo y 9/9 por la pasarela**.
+
+Falta, con go: publicar `ORE_ID_MEDIOS` (el ID único de `ore-medios-<celda>`) junto a los otros dos
+en `ids-de-la-celda` (`malla/aprovisionar-inquilino.sh`).
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).

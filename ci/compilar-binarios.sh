@@ -11,7 +11,7 @@ set -eu
 SALIDA=${SALIDA:-binarios}
 OBJETIVO=${CARGO_TARGET_DIR:-target}
 PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
-  -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-firmar-s3 -p ore-sts
+  -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-firmar-s3 -p ore-sts
   -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios -p ore-packages -p ore-federation -p ore-postgres"
 # `-j`: con LTO completo cada enlace pedía GB y con 8 a la vez el kernel mató
 # `rustc` en E2_HIGHCPU_8 (8 GB; SIGKILL en ore-store-r2, 2026-10-03). Sin LTO
@@ -28,7 +28,7 @@ fi
 # shellcheck disable=SC2086
 cargo build --profile imagen --locked -j "$JOBS" $PAQUETES
 mkdir -p "$SALIDA"
-for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-read-gcs \
+for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure \
          ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages \
          ore-federation ore-postgres; do
   cp "$OBJETIVO/imagen/$b" "$SALIDA/$b"

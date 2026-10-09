@@ -35,6 +35,8 @@ ore-sigv4 = { path = "../ore-sigv4" }
 # (O2·3), con la cuenta de este proceso o suplantando la del cliente.
 ore-objetos = { path = "../ore-objetos" }
 ore-gcs     = { path = "../ore-gcs" }
+# Y Azure Blob (O3·3), con la cuenta de este proceso federada en Entra.
+ore-azure   = { path = "../ore-azure" }
 sha2      = { workspace = true }
 # El permiso de leer un ítem (B3·2): aleatoriedad del sistema. Ya está en el
 # cierre por `ore-store`.

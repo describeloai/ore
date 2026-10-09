@@ -22,7 +22,9 @@
 //! reproducen una cinta grabada y no hablan con BigQuery.
 //! Ninguna URL sale en el informe.
 
-use ore_conector_kit::bancos::{Banco, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3};
+use ore_conector_kit::bancos::{
+    Banco, azure::Azure, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3,
+};
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
 use ore_core::json::Json;
@@ -60,7 +62,7 @@ fn intentar() -> Result<bool, String> {
             .cloned()
     };
     let conector = valor("--conector").ok_or("falta `--conector <binario>`")?;
-    let familia = valor("--banco").ok_or("falta `--banco postgres|s3|gcs|bigquery`")?;
+    let familia = valor("--banco").ok_or("falta `--banco postgres|s3|gcs|azure|bigquery`")?;
     let pasarela = valor("--pasarela");
     let hasta = if pasarela.is_some() { 8 } else { 14 };
     let solo = valor("--casos")
@@ -81,6 +83,10 @@ fn intentar() -> Result<bool, String> {
             std::env::var("S3_KIT_DE_MENTIRA").is_err(),
         )),
         "gcs" => Box::new(Gcs::new(&entorno("GCS_KIT_ENDPOINT")?)),
+        "azure" => Box::new(Azure::new(
+            &entorno("AZURE_KIT_ENDPOINT")?,
+            &entorno("ORE_AZURE_TOKEN")?,
+        )),
         "bigquery" => Box::new(BigQuery::new(
             &entorno("BQ_KIT_PROYECTO")?,
             &std::env::var("BQ_KIT_DATASET").unwrap_or_else(|_| "ore_kit".into()),
@@ -89,7 +95,7 @@ fn intentar() -> Result<bool, String> {
         )),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs o bigquery"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure o bigquery"
             ));
         }
     };

@@ -535,7 +535,7 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -620,6 +620,33 @@ jobs:
             --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
           echo "### ore-federation · gcs" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-gcs --banco gcs \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ⭐ ADR 0061 O3·3: Azure, contra Azurite. Por HTTPS con `--oauth basic`
+      #   (un Bearer: Azurite mira emisor, audiencia y fechas, no la firma), con
+      #   un certificado de un día en el almacén del sistema; el conector sólo
+      #   le habla con `ORE_AZURE_LABORATORIO=1`.
+      - name: el conector de Azure
+        env:
+          ORE_AZURE_LABORATORIO: "1"
+        run: |
+          C="$RUNNER_TEMP/azurite"; mkdir -p "$C"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$C/k.pem" -out "$C/c.pem" -days 1 \
+            -subj /CN=localhost -addext subjectAltName=DNS:localhost 2>/dev/null
+          sudo cp "$C/c.pem" /usr/local/share/ca-certificates/azurite.crt && sudo update-ca-certificates >/dev/null
+          docker run -d --name kit-azure -p 10000:10000 -v "$C:/c" \
+            mcr.microsoft.com/azure-storage/azurite@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5 \
+            azurite-blob --blobHost 0.0.0.0 --loose --oauth basic --cert /c/c.pem --key /c/k.pem
+          for i in $(seq 1 50); do curl -s -o /dev/null https://localhost:10000/ && break; sleep 0.2; done
+          b64() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+          N=$(date +%s)
+          export ORE_AZURE_TOKEN="$(printf '{"alg":"RS256","typ":"JWT"}' | b64).$(printf '{"aud":"https://storage.azure.com","iss":"https://sts.windows.net/ab1f708d-50f6-404c-a006-d71b2ac7a606/","iat":%d,"nbf":%d,"exp":%d,"oid":"00000000-0000-0000-0000-000000000001","tid":"ab1f708d-50f6-404c-a006-d71b2ac7a606"}' $((N-60)) $((N-60)) $((N+3600)) | b64).kit"
+          export AZURE_KIT_ENDPOINT=https://localhost:10000
+          echo "### ore-read-azure" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-azure --banco azure \
+            --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### ore-federation · azure" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-azure --banco azure \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):

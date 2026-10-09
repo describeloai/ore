@@ -58,6 +58,14 @@ fn un_contenedor_de_azure_como_origen() {
     let mut b = Vec::new();
     l.lector.read_to_end(&mut b).unwrap();
     assert_eq!((l.estado, b.as_slice()), (206, &b"%PDF"[..]));
+    // por el final, que Blob no entiende (Azurite: 500): con el tamaño
+    let mut l = o
+        .leer_fijado(&v.clave, &v.version, "", Some("bytes=-6"))
+        .expect("rango por el final");
+    let mut b = Vec::new();
+    l.lector.read_to_end(&mut b).unwrap();
+    assert_eq!((l.estado, b.as_slice()), (206, &b"%%EOF\n"[..]));
+    assert_eq!(o.rango(&v.clave, "-6").unwrap(), b"%%EOF\n");
 
     // un ETag que ya no es: cambiado, nunca otros bytes
     match o.leer_fijado(&v.clave, "etag:0xdead", "", None) {

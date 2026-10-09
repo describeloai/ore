@@ -10,6 +10,7 @@ use crate::semilla::Tabla;
 use ore_core::json::Json;
 use std::collections::BTreeMap;
 
+pub mod azure;
 pub mod bigquery;
 pub mod gcs;
 pub mod postgres;

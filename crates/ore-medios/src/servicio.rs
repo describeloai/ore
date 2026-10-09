@@ -1312,7 +1312,7 @@ mod pruebas {
         // repetir su URL
         let u = pide(
             "true",
-            "az://otro/x?clave=secreto",
+            "sftp://u:secreto@otro/x",
             r#"{"path":"docs/a.pdf"}"#,
         );
         let e = u[0].get("error").unwrap().1;

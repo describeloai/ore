@@ -360,10 +360,10 @@ impl Kit<'_> {
     /// 0053 F9·3 · `versiones` y `bajar` (las colecciones de medios) por la
     /// pasarela: lo vigente bajo un prefijo, y los bytes de un ítem en flujo,
     /// con su final en los *trailers*. Sólo para los almacenes de objetos (S3,
-    /// GCS): son las familias que los tienen.
+    /// GCS, Azure): son las familias que los tienen.
     fn colecciones(&mut self) -> (Estado, String) {
         let familia = self.b.familia();
-        if !matches!(familia, "s3" | "gcs") {
+        if !matches!(familia, "s3" | "gcs" | "azure") {
             return (
                 Estado::NoAplica,
                 "sólo los almacenes de objetos tienen colecciones".into(),
