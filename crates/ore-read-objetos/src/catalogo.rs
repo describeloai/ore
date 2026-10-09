@@ -34,12 +34,12 @@
 //! distinguen con `_2`, aquí: el nombre es la clave del catálogo.
 
 use crate::medio::{self, Clase, Formato};
-use crate::origen::Origen;
 use crate::tabular::{self, Esquema};
 use ore_core::document::COLUMNA_RESCATADA as RESCATADA;
 use ore_core::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Objetos, Tabla};
-use ore_s3::Objeto;
+use ore_objetos::Objeto;
+use ore_objetos::Origen;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Cuántos objetos de un grupo se abren para confirmar su tipo.
@@ -599,7 +599,7 @@ pub fn testigo(o: &dyn Origen, objeto: &str) -> Result<String, String> {
         "listing",
         Some(&format!(
             "sha256:{}",
-            ore_s3::hex(&ore_s3::sha256(texto.as_bytes()))
+            ore_objetos::hex(&ore_objetos::sha256(texto.as_bytes()))
         )),
     ))
 }
@@ -607,7 +607,7 @@ pub fn testigo(o: &dyn Origen, objeto: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::origen::EnMemoria;
+    use ore_objetos::memoria::EnMemoria;
 
     /// Un Parquet de verdad, pequeño, escrito aquí: `id` texto, `total`
     /// decimal(12, 2).

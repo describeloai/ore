@@ -13,8 +13,8 @@
 //! - **JSONL**: los primeros 64 KB; la unión de las claves (medido: `usuario`
 //!   aparece el segundo día), y el tipo como lo dice el JSON.
 
-use crate::origen::Origen;
 use ore_driver::catalogo::Columna;
+use ore_objetos::Origen;
 
 /// Lo que se lee de un CSV o un JSONL para deducir: bastante para una muestra,
 /// poco para un fichero de 60 MB (medido en F1: 100–200 ms por fichero).
@@ -397,7 +397,7 @@ pub fn jsonl(o: &dyn Origen, clave: &str, tamano: u64) -> Result<Esquema, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::origen::EnMemoria;
+    use ore_objetos::memoria::EnMemoria;
 
     fn tipos(e: &Esquema) -> Vec<(String, Option<String>)> {
         e.columnas

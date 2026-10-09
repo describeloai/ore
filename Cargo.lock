@@ -2716,6 +2716,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-objetos"
+version = "0.1.0"
+dependencies = [
+ "arrow-arith",
+ "arrow-array",
+ "arrow-cast",
+ "arrow-ipc",
+ "arrow-ord",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "ore-core",
+ "ore-driver",
+ "ore-objetos",
+ "parquet",
+ "serde_json",
+]
+
+[[package]]
 name = "ore-read-postgres"
 version = "0.1.0"
 dependencies = [
@@ -2735,21 +2754,13 @@ dependencies = [
 name = "ore-read-s3"
 version = "0.1.0"
 dependencies = [
- "arrow-arith",
- "arrow-array",
- "arrow-cast",
- "arrow-ipc",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
- "bytes",
  "ore-core",
  "ore-driver",
  "ore-objetos",
+ "ore-read-objetos",
  "ore-s3",
  "ore-sigv4",
  "ore-sts",
- "parquet",
  "serde_json",
 ]
 

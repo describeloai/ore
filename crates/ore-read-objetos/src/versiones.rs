@@ -27,8 +27,8 @@
 //! cuántas huellas se pidieron.
 
 use crate::filas::casa;
-use crate::origen::Origen;
 use ore_core::json::Json;
+use ore_objetos::Origen;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn versiones(o: &dyn Origen, peticion: &str) -> Result<String, String> {
@@ -68,7 +68,7 @@ pub fn versiones(o: &dyn Origen, peticion: &str) -> Result<String, String> {
         .collect();
     let relativa =
         |clave: &str| -> String { clave.strip_prefix(objeto).unwrap_or(clave).to_string() };
-    let mut vigentes: Vec<&ore_s3::Version> = todas
+    let mut vigentes: Vec<&ore_objetos::Version> = todas
         .iter()
         .filter(|v| v.actual && !v.marca && !v.clave.ends_with('/'))
         .filter(|v| v.clave.starts_with(objeto))
@@ -114,7 +114,7 @@ pub fn versiones(o: &dyn Origen, peticion: &str) -> Result<String, String> {
             "testigo",
             Json::s(format!(
                 "sha256:{}",
-                ore_s3::hex(&ore_s3::sha256(firma.as_bytes()))
+                ore_objetos::hex(&ore_objetos::sha256(firma.as_bytes()))
             )),
         ),
         ("huellas", Json::Int(pedidas as i64)),
@@ -125,8 +125,8 @@ pub fn versiones(o: &dyn Origen, peticion: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::origen::EnMemoria;
-    use ore_s3::Version;
+    use ore_objetos::Version;
+    use ore_objetos::memoria::EnMemoria;
 
     fn v(clave: &str, version: &str, actual: bool, marca: bool, etag: &str) -> Version {
         Version {

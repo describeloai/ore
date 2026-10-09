@@ -27,7 +27,6 @@
 //! El tipo de cada valor lo analiza [`Fisico::analizar`], la misma forma
 //! canónica con la que `ore-store` estrecha: lo que aquí encaja, allí también.
 
-use crate::origen::Origen;
 use arrow_array::builder::{
     BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
     Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
@@ -37,7 +36,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use ore_core::json::Json;
 use ore_core::tipos::{Fisico, Valor};
 use ore_driver::{Fichero, Peticion};
-use ore_s3::Objeto;
+use ore_objetos::Objeto;
+use ore_objetos::Origen;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Read as _, Write};
 use std::sync::Arc;
@@ -1467,9 +1467,9 @@ fn parquet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::origen::EnMemoria;
     use arrow_array::Array as _;
     use arrow_array::cast::AsArray;
+    use ore_objetos::memoria::EnMemoria;
 
     fn peticion(tipo: &str, objeto: &str, proy: &[&str], tipos: &[(&str, &str)]) -> Peticion {
         Peticion {

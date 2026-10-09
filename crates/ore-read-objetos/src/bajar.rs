@@ -15,8 +15,8 @@
 //! Entra `{url, items: [{clave, version, huella, tamano, tipo}], hilos?}`; sale
 //! el flujo de tramas por stdout, y las cuentas por stderr.
 
-use crate::origen::Origen;
 use ore_driver::tramas;
+use ore_objetos::Origen;
 use std::io::{Read, Write};
 use std::sync::Mutex;
 
@@ -77,7 +77,7 @@ fn esperado(huella: &str) -> Option<&str> {
     huella.strip_prefix("crc64nvme:")
 }
 
-fn tipo_de(p: &Pedido, a: &ore_s3::Abierto) -> String {
+fn tipo_de(p: &Pedido, a: &ore_objetos::Abierto) -> String {
     if !p.tipo.is_empty() {
         return p.tipo.clone();
     }
@@ -127,8 +127,8 @@ pub fn uno<W: Write>(o: &dyn Origen, p: &Pedido, salida: &Mutex<W>) -> Result<u6
         tipo: tipo_de(p, &a),
         tamano: p.tamano,
     };
-    let mut crc = ore_s3::huella::Crc64Nvme::default();
-    let cotejo = |crc: &ore_s3::huella::Crc64Nvme| -> Result<(), String> {
+    let mut crc = ore_objetos::huella::Crc64Nvme::default();
+    let cotejo = |crc: &ore_objetos::huella::Crc64Nvme| -> Result<(), String> {
         match esperado(&p.huella) {
             Some(e) if e != crc.base64() => Err(format!(
                 "los bytes de `{}` (versión {}) dan la huella {} y el manifiesto dice {e}: no se copian",
@@ -271,14 +271,14 @@ pub fn en_paralelo<W: Write + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::origen::EnMemoria;
     use ore_driver::tramas::Trama;
+    use ore_objetos::memoria::EnMemoria;
 
     fn pedido(clave: &str, version: &str, cuerpo: &[u8]) -> Pedido {
         Pedido {
             clave: clave.into(),
             version: version.into(),
-            huella: ore_s3::huella::de(cuerpo),
+            huella: ore_objetos::huella::de(cuerpo),
             tamano: cuerpo.len() as u64,
             tipo: "application/pdf".into(),
         }
@@ -343,7 +343,7 @@ mod tests {
             ("r/c.jpg", b"FOTO".to_vec()),
         ]);
         let mut malo = pedido("r/a.pdf", "null", b"RECIBO");
-        malo.huella = ore_s3::huella::de(b"OTRA COSA");
+        malo.huella = ore_objetos::huella::de(b"OTRA COSA");
         let mut corto = pedido("r/c.jpg", "null", b"FOTO");
         corto.tamano = 3;
         let ps = vec![
@@ -378,7 +378,7 @@ mod tests {
         let o = EnMemoria::con(&[("r/v.mp4", grande.clone())]);
         let bueno = pedido("r/v.mp4", "null", &grande);
         let mut malo = bueno.clone();
-        malo.huella = ore_s3::huella::de(b"no");
+        malo.huella = ore_objetos::huella::de(b"no");
         let salida = Mutex::new(Vec::new());
         let c = todos(&o, &[bueno, malo], &salida);
         assert_eq!((c.entregados, c.fallidos), (1, 1));
