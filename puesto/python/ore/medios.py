@@ -263,13 +263,16 @@ class Collection:
         return codigo, r
 
     @_kw({"prefijo": "prefix", "estado": "state", "limite": "limit"})
-    def items(self, prefix=None, state=None, limit=1000):
+    def items(self, prefix=None, state=None, limit=1000, as_of=None):
         """The listing of a transaction, lazy, by cursor: `Item`s without bytes.
-        `prefix` filters by path, `state` by item state, `limit` is the page size."""
+        `prefix` filters by path, `state` by item state, `limit` is the page size,
+        `as_of` the transaction to read (the current one if not given): the cursor
+        keeps it, so a walk never mixes two."""
         cursor = None
         while True:
-            codigo, r = self._pedir("items", {"prefix": prefix, "estado": state,
-                                              "limit": limit, "cursor": cursor}, "items")
+            codigo, r = self._pedir("items", {"prefix": prefix, "estado": state, "limit": limit,
+                                              "as_of": None if cursor else as_of,
+                                              "cursor": cursor}, "items")
             if codigo != 200:
                 raise _error(codigo, r, "items(%s)" % self)
             if r.get("as_of"):
@@ -289,6 +292,44 @@ class Collection:
         it = Item(self, MediaRef.from_json(r))
         it.current = r.get("current")
         return it
+
+    def verify(self, items):
+        """The server reads the bytes of each item and checks them against its
+        digest (0049 H4), one result per item, in its position: a dict with
+        `item` (a `MediaRef`), `ok`, `digest` (what its bytes have), `compared`
+        (`digest`, or `size` if the digest was not known yet) and `error` (a
+        `MediaError`, or None). One's error does not stop the others. To audit,
+        not for the hot path: 100 items per request. `items`: paths,
+        `MediaRef`s or `Item`s."""
+        from . import session, _lee
+        _lee(self.short_name)
+        items = list(items)
+        salida = []
+        for i in range(0, len(items), 100):
+            lote = items[i:i + 100]
+            pedidos = []
+            for o in lote:
+                ref = o.ref if isinstance(o, Item) else o if isinstance(o, MediaRef) else None
+                p = {"path": ref.path if ref else str(o)}
+                if ref is not None and ref.version is not None:
+                    p["version"] = ref.version
+                pedidos.append(p)
+            codigo, r = session.pedir("POST", self.ruta + "/verify", {"items": pedidos},
+                                      plazo=300, cabeceras=self._cabeceras())
+            if codigo != 200:
+                raise _error(codigo, r, "verify(%s)" % self)
+            rs = r.get("results") or []
+            for k, o in enumerate(lote):
+                v = rs[k] if k < len(rs) and isinstance(rs[k], dict) else {}
+                ref = MediaRef.from_json(v["item"]) if isinstance(v.get("item"), dict) else (
+                    o.ref if isinstance(o, Item) else o if isinstance(o, MediaRef) else None)
+                e = v.get("error")
+                error = _error(e.get("status") or 502, e, "verify") if isinstance(e, dict) else None
+                if not v:
+                    error = MediaError("media/origen", 502, "verify: the server gave no result for this item")
+                salida.append({"item": ref, "ok": bool(v.get("ok")) and error is None,
+                               "digest": v.get("digest"), "compared": v.get("comparado"), "error": error})
+        return salida
 
     def _cabeceras(self):
         """La rama del puesto (B3·6), preguntada una vez por colección."""

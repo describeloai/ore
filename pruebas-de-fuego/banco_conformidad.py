@@ -214,6 +214,8 @@ def celda(h, metodo, servidor):
             return _contenido(h, col, st, q)
         if metodo == "POST" and op == "urls":
             return _urls(h, col, st, cuerpo)
+        if metodo == "POST" and op == "verify":
+            return _verify(h, col, st, cuerpo)
         if metodo == "POST" and op == "transactions":
             return _problema(h, 409, "media/no-escribible", "`%s` se mantiene desde su `from`" % col)
     return _problema(h, 404, "media/no-existe", "%s %s no es una ruta" % (metodo, u.path))
@@ -300,6 +302,28 @@ def _urls(h, col, st, cuerpo):
                        "url": "%s/contenido?permiso=%s" % (banco._medios(), k),
                        "expires_ms": int((time.time() + ttl) * 1000), "ttl_s": ttl})
     return _json(h, 200, {"urls": salida})
+
+
+def _verify(h, col, st, cuerpo):
+    """Como `ore-medios` (0049 H4): cada ítem leído entero y comparado con su
+    digest; sin digest conocido, el tamaño, y el calculado queda visto."""
+    pedidos = cuerpo.get("items") or []
+    if not pedidos or len(pedidos) > 100:
+        return _problema(h, 413, "media/limite", "de 1 a 100 ítems por petición")
+    salida = []
+    for pd in pedidos:
+        hallado = _buscar(col, st, pd)
+        if not hallado:
+            salida.append({"error": {"type": "media/no-existe", "status": 404,
+                                     "detail": "`%s` no tiene ese ítem" % col}})
+            continue
+        camino, v = hallado
+        r = _ref(col, camino, v, st["ultima"])
+        datos = st["versiones"][(camino, v)][0]
+        salida.append({"item": r, "ok": True, "digest": "sha256:" + _sha(datos),
+                       "comparado": "digest" if r["digest"] else "size"})
+        st["vistos"].add((camino, v))
+    return _json(h, 200, {"results": salida})
 
 
 def medios(h, metodo, servidor):

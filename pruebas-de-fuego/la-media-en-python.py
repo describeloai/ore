@@ -21,6 +21,9 @@ caducan, 412, flujos cortados). Se comprueba el SDK:
   15  B4·3: dentro de un transform, una colección no declarada es PermissionError, sin preguntar
   16  B4·3: fuera de un transform, leer una colección queda anotado en lo leído
   17  B4·3: `as_of` dice la transacción que el listado leyó
+  18  H1/H2: items(as_of=…) lee la transacción de antes, en todas sus páginas
+  19  H4: verify() lo hace el servidor: uno por posición, el error de uno en la
+      suya; sin digest conocido compara el tamaño, y la vez siguiente el digest
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-media-en-python.py
 """
@@ -32,6 +35,9 @@ import banco_media as banco  # noqa: E402
 from banco_media import A, BYTES, CONTADOS, OBJETOS, RAMA, SERVE, SHA, bien, caso  # noqa: E402
 
 celda, bytes_ = banco.arrancar()
+import banco_conformidad  # noqa: E402
+
+banco_conformidad.montar()  # la muestra de la conformidad, para 18 y 19
 
 import ore  # noqa: E402
 from ore import medios  # noqa: E402
@@ -227,7 +233,40 @@ def c17():
     bien("17 · as_of: la transacción que el listado leyó (7)")
 
 
-for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17], 1):
+def c18():
+    col = ore.collection("conformidad.mantenida")
+    hoy = {it.ref.path: it.ref.version for it in col.items(limit=2)}
+    antes = {it.ref.path: it.ref.version for it in col.items(limit=2, as_of="1")}
+    assert col.as_of == "1", col.as_of
+    assert set(antes) == set(hoy) and len(antes) > 2, (antes, hoy)
+    assert antes["docs/c.pdf"] != hoy["docs/c.pdf"], (antes["docs/c.pdf"], hoy["docs/c.pdf"])
+    assert all(antes[k] == hoy[k] for k in hoy if k != "docs/c.pdf"), "sólo cambió docs/c.pdf"
+    try:
+        list(col.items(as_of="99"))
+        raise AssertionError("debía ser MediaNotFound")
+    except medios.MediaNotFound:
+        pass
+    bien("18 · items(as_of='1'): docs/c.pdf en su versión de la 1, en páginas de 2; la que no tuvo, MediaNotFound")
+
+
+def c19():
+    m = ore.collection("conformidad.mantenida")
+    it = m.stat(path="img/b.png")
+    r = m.verify(["docs/a.pdf", "docs/no-existe.pdf", it])
+    assert [x["ok"] for x in r] == [True, False, True], r
+    assert r[0]["compared"] == "digest" and r[0]["digest"].startswith("sha256:"), r[0]
+    assert r[0]["item"].path == "docs/a.pdf" and r[2]["item"].path == "img/b.png", r
+    assert isinstance(r[1]["error"], medios.MediaNotFound), r[1]
+    v = ore.collection("conformidad.virtual")
+    primera = v.verify(["docs/a.pdf"])[0]
+    segunda = v.verify(["docs/a.pdf"])[0]
+    assert primera["ok"] and primera["compared"] == "size", primera
+    assert segunda["compared"] == "digest" and segunda["digest"] == primera["digest"], segunda
+    bien("19 · verify(): en el servidor, uno por posición (el que no existe, MediaNotFound); "
+         "una virtual sin digest, por tamaño, y la vez siguiente por digest")
+
+
+for n, f in enumerate([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19], 1):
     caso(n, f)
 celda.shutdown()
 bytes_.shutdown()

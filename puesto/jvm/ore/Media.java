@@ -291,24 +291,54 @@ public final class Media {
         }
 
         /**
-         * {@code verify}: reads the bytes of each item and checks them against its digest, in its
-         * position (one's error does not stop the others). To audit, not for the hot path.
-         * {@code items}: paths, {@code MediaRef}s or {@code Item}s.
+         * {@code verify}: the server reads the bytes of each item and checks them against its digest,
+         * in its position (one's error does not stop the others): {@code ok}, the sha256 its bytes have,
+         * and what it was compared with ({@code digest}, or {@code size} if the digest was not known
+         * yet). To audit, not for the hot path: 100 items per request. {@code items}: paths,
+         * {@code MediaRef}s or {@code Item}s.
          */
+        @SuppressWarnings("unchecked")
         public List<Verified> verify(List<?> items) {
             List<Verified> salida = new ArrayList<>();
-            for (Object o : items) {
-                Item it;
-                try {
-                    it = o instanceof Item i ? i : stat(o instanceof MediaRef m ? m.path() : String.valueOf(o),
-                        o instanceof MediaRef m ? m.version() : null);
-                    byte[] b = it.readBytes(1);
-                    salida.add(new Verified(it.ref(), true, sha256(b), null));
-                } catch (MediaError e) {
-                    salida.add(new Verified(o instanceof MediaRef m ? m : o instanceof Item i ? i.ref() : null, false, null, e));
+            for (int i = 0; i < items.size(); i += VERIFY_LOTE) {
+                List<?> lote = items.subList(i, Math.min(items.size(), i + VERIFY_LOTE));
+                Ore.Respuesta r = pedir("POST", "verify", Map.of(), Map.of("items", pedidos(lote)));
+                if (r.codigo() != 200) throw error(r.codigo(), r.cuerpo(), "verify(" + this + ")");
+                List<?> rs = r.cuerpo().get("results") instanceof List<?> l ? l : List.of();
+                for (int k = 0; k < lote.size(); k++) {
+                    Object o = lote.get(k);
+                    Map<String, Object> v = k < rs.size() && rs.get(k) instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+                    MediaRef ref = v.get("item") instanceof Map<?, ?> m ? MediaRef.fromJson((Map<String, Object>) m)
+                        : o instanceof MediaRef m ? m : o instanceof Item it ? it.ref() : null;
+                    String visto = texto(v.get("digest"));
+                    if (visto != null && visto.startsWith("sha256:")) visto = visto.substring(7);
+                    MediaError e = null;
+                    if (v.get("error") instanceof Map<?, ?> pe) {
+                        int st = pe.get("status") instanceof Number n ? n.intValue() : 502;
+                        e = error(st, (Map<String, Object>) pe, "verify");
+                    } else if (v.isEmpty()) {
+                        e = new MediaError("media/origen", 502, "verify: the server gave no result for this item");
+                    }
+                    salida.add(new Verified(ref, Boolean.TRUE.equals(v.get("ok")) && e == null, visto,
+                        texto(v.get("comparado")), e));
                 }
             }
             return salida;
+        }
+
+        /** Lo que {@code urls} y {@code verify} piden de cada ítem: su camino y su versión. */
+        static List<Map<String, Object>> pedidos(List<?> items) {
+            List<Map<String, Object>> pedidos = new ArrayList<>();
+            for (Object o : items) {
+                MediaRef ref = o instanceof Item it ? it.ref() : o instanceof MediaRef m ? m : null;
+                Map<String, Object> p = new LinkedHashMap<>();
+                if (ref != null) {
+                    p.put("path", ref.path());
+                    if (ref.version() != null) p.put("version", ref.version());
+                } else p.put("path", String.valueOf(o));
+                pedidos.add(p);
+            }
+            return pedidos;
         }
 
         /**
@@ -478,18 +508,8 @@ public final class Media {
          */
         @SuppressWarnings("unchecked")
         public List<Url> urls(List<?> items, Integer ttlS) {
-            List<Map<String, Object>> pedidos = new ArrayList<>();
-            for (Object o : items) {
-                MediaRef ref = o instanceof Item it ? it.ref() : o instanceof MediaRef m ? m : null;
-                Map<String, Object> p = new LinkedHashMap<>();
-                if (ref != null) {
-                    p.put("path", ref.path());
-                    if (ref.version() != null) p.put("version", ref.version());
-                } else p.put("path", String.valueOf(o));
-                pedidos.add(p);
-            }
             Map<String, Object> cuerpo = new LinkedHashMap<>();
-            cuerpo.put("items", pedidos);
+            cuerpo.put("items", pedidos(items));
             if (ttlS != null) cuerpo.put("ttl_s", ttlS);
             Ore.Respuesta r = pedir("POST", "urls", Map.of(), cuerpo);
             if (r.codigo() != 200) throw error(r.codigo(), r.cuerpo(), "urls(" + this + ")");
@@ -1887,8 +1907,14 @@ public final class Media {
         }
     }
 
-    /** {@code verify}: one result per item, in its position: {@code ok}, with the sha256 seen, or its error. */
-    public record Verified(MediaRef item, boolean ok, String sha256, MediaError error) {}
+    /**
+     * {@code verify}: one result per item, in its position: {@code ok}, the sha256 its bytes have,
+     * what it was compared with ({@code digest} or {@code size}), or its error.
+     */
+    public record Verified(MediaRef item, boolean ok, String sha256, String compared, MediaError error) {}
+
+    /** Cuántos ítems verifica una petición: el servidor lee los bytes enteros (0049 H4). */
+    static final int VERIFY_LOTE = 100;
 
     // ── muchos a la vez ─────────────────────────────────────────────────────
 
