@@ -47,7 +47,7 @@ spec:
       args:
         - exec /usr/local/bin/proxy --region europe-west1 --proxy 0.0.0.0:4432 --mgmt 127.0.0.1:7000 --http 0.0.0.0:7001
           --auth-backend control-plane --auth-endpoint http://ore-postgres.ore-pg.svc.cluster.local.:8100/proxy/
-          --control-plane-token "\$(cat /token/token)" --tls-cert /tls/tls.crt --tls-key /tls/tls.key
+          --control-plane-token="\$(cat /token/token)" --tls-cert /tls/tls.crt --tls-key /tls/tls.key
       volumeMounts:
         - { name: tls, mountPath: /tls, readOnly: true }
         - { name: token, mountPath: /token, readOnly: true }

@@ -60,8 +60,8 @@ services:
     entrypoint: [sh, -c]
     command:
       - exec /usr/local/bin/proxy --region europe-west1 --proxy 0.0.0.0:4432 --mgmt 127.0.0.1:7000
-        --http 0.0.0.0:7001 --wss 0.0.0.0:4444 --auth-backend control-plane
-        --auth-endpoint http://172.29.51.7:8100/proxy/ --control-plane-token "$$(cat /llaves/proxy/token)"
+        --http 0.0.0.0:7001 --wss 0.0.0.0:443 --auth-backend control-plane
+        --auth-endpoint http://172.29.51.7:8100/proxy/ --control-plane-token="$$(cat /llaves/proxy/token)"
         --tls-cert /llaves/tls/tls.crt --tls-key /llaves/tls/tls.key
         --redis-auth-type plain --redis-plain redis://172.29.51.8:6379
     volumes: [./.secretos/proxy:/llaves/proxy:ro, ./.secretos/tls:/llaves/tls:ro]

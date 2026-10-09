@@ -1113,6 +1113,16 @@ El 2026-10-08 a las 18:38 UTC la cuenta de facturación del proyecto quedó **ce
 
 El laboratorio hace de reconciliador (`lab.sh reconcilia`: el rol con su verificador en el cómputo, la fila `listo` con su dirección, la operación `hecha`) porque no hay NeonVM. Ese tramo ya está medido en el clúster (P4·3–P4·7).
 
+#### P5·4 · HTTP y WebSocket, medido en el laboratorio (2026-10-09)
+
+`lab/p54.sh`: `@neondatabase/serverless` 1.1.0 desde Node 22, contra el mismo proxy, que sirve las dos puertas en 443 (`--wss`) con el mismo certificado. **Todo en verde, dos veces desde cero, sin tocar `ore-postgres`**: el proxy autentica igual que en P5·1, con el verificador que le da `ore-postgres`.
+
+- **HTTP** (`neon()`, un `POST /sql` por consulta): consulta con parámetros, una transacción de tres sentencias en una sola petición; ~11 ms por consulta en el laboratorio.
+- **WebSocket** (`Pool`, el protocolo de Postgres dentro de `wss://…/v2`): sesión de verdad (el mismo `pg_backend_pid`), `begin`/`rollback` que deshace; ~2 ms por consulta con la conexión abierta.
+- **Fuera**: otra contraseña, por las dos puertas, y la contraseña de una organización en el endpoint de otra.
+- **Hallazgo: `api.`** Desde la 1.0 el driver no manda el HTTP al nombre del endpoint, sino a **`api.europe-west1.pg.paladio.io/sql`**, y el endpoint viaja en la cabecera `Neon-Connection-String`. El comodín del certificado y del DNS (P5·2) lo cubren; lo que no hay que hacer es un registro por endpoint ni un certificado sin comodín.
+- **El token del proxy, con `=`**: `--control-plane-token="$(…)"`. Un token que empieza por `-` (pasa con `token_urlsafe`) se leía como otro flag y el proxy no arrancaba.
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:
@@ -1127,7 +1137,7 @@ Lo construido en el laboratorio llega a producción en una tarde y sin reescribi
 
 1. **Volver**: el clúster, `ore-pg` (almacenamiento, `ore-postgres`, las VMs) y las celdas, sanos; relanzar el CI de `5321c351` (sólo falló al subir imágenes).
 2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad, con Redis y `--redis`; un *Reset password* entra a la primera.
-3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve; quitar el TXT `_delegacion`.
+3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve (también `api.`, el que usa el driver por HTTP); quitar el TXT `_delegacion`.
 4. **P5·3**: desde internet, `psql "…?sslmode=verify-full"` entra y pgbench corre sin fallos; reiniciar una réplica no tira a la otra; la IP del cliente llega tal cual.
 5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM; **P5·6** con la IP real del cliente.
 6. **P5·7**: el snippet de Connect copiado en la consola conecta desde fuera.
