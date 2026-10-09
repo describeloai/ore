@@ -38,6 +38,7 @@ pub const PLAZO_ESPERA: f64 = 15.0 * 60.0;
 pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Computos>) {
     std::thread::spawn(move || {
         let mut base: Option<Client> = None;
+        let mut ultima_vigilancia = std::time::Instant::now();
         loop {
             if base.as_ref().is_none_or(|c| c.is_closed()) {
                 base = match conectar(&url) {
@@ -54,9 +55,81 @@ pub fn arrancar(url: String, almacen: Arc<dyn Almacen>, computos: Arc<dyn Comput
             {
                 eprintln!("reconciliador · {e}");
             }
+            // P6·3: la actividad de los cómputos encendidos, y quién duerme.
+            if ultima_vigilancia.elapsed() >= VIGILAR_CADA {
+                ultima_vigilancia = std::time::Instant::now();
+                if let Some(c) = base.as_mut()
+                    && let Err(e) = vigilar(c, computos.as_ref())
+                {
+                    eprintln!("reconciliador · vigilar: {e}");
+                }
+            }
             std::thread::sleep(CADA);
         }
     });
+}
+
+/// P6·3 · Cada cuánto se pregunta su `last_active` a los cómputos encendidos.
+pub const VIGILAR_CADA: Duration = Duration::from_secs(5);
+
+/// P6·3 · **Vigilar**: pregunta su `last_active` a cada cómputo encendido y lo apunta; a los que
+/// llevan más de su `dormir_tras` sin actividad (0 = nunca), una operación `dormir-endpoint`.
+/// Es una operación a propósito: respeta el cerco de una por proyecto (no duerme a uno que se
+/// está configurando) y queda en el historial. Devuelve cuántos mandó a dormir.
+pub fn vigilar(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
+    let vivos = c
+        .query(
+            "select e.organizacion, e.proyecto, e.id, e.vm, e.ip_pod from plano.endpoint e
+              where e.deseado = 'vivo' and e.observado = 'listo' and e.ip_pod is not null",
+            &[],
+        )
+        .map_err(mal)?;
+    for f in &vivos {
+        let (org, p, id, vm, ip): (String, String, String, String, String) =
+            (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4));
+        // Si no contesta, no se apunta nada: un cómputo que no contesta no se duerme por eso.
+        if let Ok(Some(t)) = k.actividad(&vm, &ip) {
+            apuntar_actividad(c, &org, &p, &id, &t)?;
+        }
+    }
+    let mut dormidos = 0;
+    for f in c
+        .query(
+            "select e.organizacion, e.proyecto, e.rama, e.id from plano.endpoint e
+              where e.deseado = 'vivo' and e.observado = 'listo' and e.dormir_tras > 0
+                and e.ultima_actividad < now() - make_interval(secs => e.dormir_tras)",
+            &[],
+        )
+        .map_err(mal)?
+    {
+        let (org, p, rama, id): (String, String, String, String) =
+            (f.get(0), f.get(1), f.get(2), f.get(3));
+        match c.execute(
+            "insert into plano.operacion (id, organizacion, proyecto, tipo, celda, rama, endpoint)
+             values ('op_' || replace(gen_random_uuid()::text, '-', ''), $1, $2, 'dormir-endpoint',
+                     'reconciliador', $3, $4)",
+            &[&org, &p, &rama, &id],
+        ) {
+            Ok(_) => dormidos += 1,
+            // Otra operación en curso en el proyecto: se mira en la vigilancia siguiente.
+            Err(e) if crate::base::choca(&e, "una_en_curso_por_proyecto") => {}
+            Err(e) => return Err(mal(e)),
+        }
+    }
+    Ok(dormidos)
+}
+
+/// Apunta un `last_active`; sólo hacia delante.
+fn apuntar_actividad(c: &mut Client, org: &str, p: &str, id: &str, t: &str) -> Result<(), String> {
+    c.execute(
+        "update plano.endpoint
+            set ultima_actividad = greatest(coalesce(ultima_actividad, $4::text::timestamptz),
+                                            $4::text::timestamptz)
+          where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&org, &p, &id, &t],
+    )
+    .map(|_| ())
+    .map_err(mal)
 }
 
 /// Una vuelta: lo que toca ahora. Devuelve cuántas operaciones miró.
@@ -221,7 +294,8 @@ fn asegurar_endpoint(
                 return Err(Fallo::Esperar("compute_ctl aún no dice running".into()));
             }
             c.execute(
-                "update plano.endpoint set observado = 'listo', direccion = $4, ip_pod = $5
+                "update plano.endpoint set observado = 'listo', direccion = $4, ip_pod = $5,
+                        ultima_actividad = now(), dormido_en = null
                   where organizacion = $1 and proyecto = $2 and id = $3",
                 &[&org, &p, &ep.id, &e.ip_overlay, &ip],
             )
@@ -504,10 +578,76 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
         // arranque de su cómputo (no se reinicia uno vivo por esto); `dormir_tras` lo lee el
         // reconciliador al decidir si duerme (P6·3).
         "configurar-endpoint" => Ok(()),
+        // P6·3 · Dormir: se mira otra vez (una consulta pudo empezar desde que se decidió), se
+        // para limpio (`/terminate`, con su LSN), se borra el cómputo y, cuando no queda nada con
+        // su nombre, el endpoint queda `dormido`: sin cómputo, coste 0; los datos, en el almacén.
+        "dormir-endpoint" => dormir(c, k, op),
         otro => Err(Fallo::Definitivo(format!(
             "este reconciliador no sabe hacer `{otro}`"
         ))),
     }
+}
+
+/// P6·3 · La operación `dormir-endpoint`. Idempotente: `durmiendo` es «ya se paró, falta que su
+/// cómputo desaparezca».
+fn dormir(c: &mut Client, k: &dyn Computos, op: &Op) -> Result<(), Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    let id = op.endpoint.as_deref().unwrap_or_default();
+    let (org, p) = (op.organizacion.as_str(), op.proyecto.as_str());
+    let inactivo = |c: &mut Client| -> Result<bool, Fallo> {
+        Ok(c.query_one(
+            "select coalesce(dormir_tras > 0
+                    and ultima_actividad < now() - make_interval(secs => dormir_tras), false)
+               from plano.endpoint where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &id],
+        )
+        .map_err(bd)?
+        .get(0))
+    };
+    let Some(f) = c
+        .query_opt(
+            "select vm, ip_pod, observado from plano.endpoint
+              where organizacion = $1 and proyecto = $2 and id = $3 and deseado = 'vivo'",
+            &[&org, &p, &id],
+        )
+        .map_err(bd)?
+    else {
+        return Ok(());
+    };
+    let (vm, ip, observado): (String, Option<String>, String) = (f.get(0), f.get(1), f.get(2));
+    match observado.as_str() {
+        "listo" => {
+            let ip = ip.unwrap_or_default();
+            if let Ok(Some(t)) = k.actividad(&vm, &ip) {
+                apuntar_actividad(c, org, p, id, &t).map_err(Fallo::Reintentar)?;
+            }
+            if !inactivo(c)? {
+                return Ok(()); // hubo actividad entretanto (o cambió dormir_tras): no se duerme
+            }
+            // Que no conteste a /terminate (ya parado, o roto) no impide dormirlo.
+            let lsn = k.terminar(&vm, &ip).ok().flatten();
+            c.execute(
+                "update plano.endpoint set observado = 'durmiendo', lsn_al_dormir = $4
+                  where organizacion = $1 and proyecto = $2 and id = $3",
+                &[&org, &p, &id, &lsn],
+            )
+            .map_err(bd)?;
+        }
+        "durmiendo" => {}
+        _ => return Ok(()),
+    }
+    k.borrar(&vm)?;
+    if k.estado(&vm)?.is_some() || k.runner_vivo(&vm)? {
+        return Err(Fallo::Esperar("esperando a que su runner se vaya".into()));
+    }
+    c.execute(
+        "update plano.endpoint
+            set observado = 'dormido', dormido_en = now(), direccion = null, ip_pod = null
+          where organizacion = $1 and proyecto = $2 and id = $3",
+        &[&org, &p, &id],
+    )
+    .map_err(bd)?;
+    Ok(())
 }
 
 /// Apunta lo que salió.

@@ -852,7 +852,9 @@ fn rama_json(f: &Row) -> Json {
 
 /// De un endpoint, en el orden en que lo lee [`endpoint_json`].
 const ENDPOINT: &str = "id, rama, tipo, vm, cu_min, cu_max, deseado, observado, direccion,
-    to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), dormir_tras";
+    to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), dormir_tras,
+    to_char(ultima_actividad at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
+    to_char(dormido_en at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
 
 /// Lo que hace falta para decir sus conexiones ([`endpoint_json`]), detrás de
 /// [`ENDPOINT`], con la fila del endpoint como `e`.
@@ -1132,6 +1134,13 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
         // P6·2: segundos sin actividad hasta dormir; 0 = nunca.
         ("dormir_tras", Json::Int(f.get::<_, i32>(10) as i64)),
     ];
+    // P6·3: la última actividad que dijo su compute_ctl y, dormido, desde cuándo.
+    if let Some(t) = f.get::<_, Option<String>>(11) {
+        v.push(("ultima_actividad", Json::s(t)));
+    }
+    if let Some(t) = f.get::<_, Option<String>>(12) {
+        v.push(("dormido_en", Json::s(t)));
+    }
     if let Some(d) = f.get::<_, Option<String>>(8) {
         v.push(("direccion", Json::s(d)));
     }
@@ -1142,8 +1151,8 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
         v.push(("host_pool", Json::s(format!("{vm}-pooler.{dom}"))));
     }
     // P5·5: cuántas conexiones admite (directas) y el pool por base (-pooler).
-    if f.len() > 12 {
-        let maximas = crate::especificacion::conexiones(f.get(11));
+    if f.len() > 14 {
+        let maximas = crate::especificacion::conexiones(f.get(13));
         v.push((
             "conexiones",
             Json::obj([
@@ -1152,7 +1161,7 @@ fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
                     "pool_por_base",
                     Json::Int(crate::especificacion::pool_por_base(
                         maximas,
-                        f.get::<_, i64>(12) as usize,
+                        f.get::<_, i64>(14) as usize,
                     )),
                 ),
             ]),

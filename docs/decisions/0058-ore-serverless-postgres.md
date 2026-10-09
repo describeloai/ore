@@ -1336,3 +1336,26 @@ Al terminar, **ni un cómputo vivo ni un tenant en el almacén**: borrar no deja
 - **La API lo dice**: cada endpoint trae `dormir_tras`, y `conexiones.maximas` ya es la del siguiente arranque. Con 0,25 CU son 112, mientras el cómputo vivo sigue con sus 450.
 
 **Medido** (`lab/p62.sh`, con el reconciliador real) y en el contrato: lo malo, fuera; los límites nuevos en la API; la operación, hecha; el cómputo vivo, sin reiniciar. P5 sigue en verde.
+
+#### P6·3 · Dormir (2026-10-09)
+
+**Vigilar** (`reconciliador::vigilar`, cada 5 s): a cada cómputo encendido se le pregunta su `last_active` (`/status`) y se apunta en `ultima_actividad` (migración 007), solo hacia delante. Al quedar listo, se apunta la hora de arranque. Un cómputo que no contesta no se duerme por eso.
+
+**Decidir**: si `dormir_tras > 0` y lleva más que eso sin actividad, se crea una operación `dormir-endpoint`. Es una operación a propósito: respeta el cerco de una por proyecto (no duerme uno que se está configurando) y queda en el historial.
+
+**Dormir** (la operación, idempotente):
+1. se vuelve a preguntar la actividad, porque una consulta pudo empezar desde que se decidió; si la hubo, no se duerme;
+2. `/terminate`: Postgres se para limpio y se guarda su LSN final (`lsn_al_dormir`); el endpoint queda `durmiendo`;
+3. se borra el cómputo y se espera a que no quede nada con su nombre;
+4. `dormido`, con `dormido_en` y sin dirección.
+
+La API lo dice (`ultima_actividad`, `dormido_en`, `estado.observado`). `Computos` gana `actividad` y `terminar`, compartidos por NeonVM y el laboratorio (`actividad_por_http`, `terminar_por_http`).
+
+**Medido** (`lab/p63.sh`, tiempos reales, `dormir_tras` 60 s):
+- con una consulta de 80 s en curso, a los 72 s **sigue despierto**;
+- al acabar, **dormido a los 67 s** de la última consulta (60 + vigilar cada 5 + parar), **con una sesión ociosa abierta**, que se corta (*terminating connection due to administrator command*), como en Neon;
+- dormido: **no queda cómputo** (coste 0), los datos siguen en el almacén, y `/terminate` dejó su LSN.
+
+Y en el contrato: recién listo no duerme; con actividad no; con `dormir_tras` 0 nunca, aunque lleve horas; primero `/terminate` y después borrar; dormido no se vuelve a dormir. P5 y P6·2 siguen en verde.
+
+Conectar a uno dormido todavía falla: despertar es P6·4.

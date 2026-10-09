@@ -38,7 +38,8 @@ fn servidor() -> Option<Servidor> {
             "003-los-endpoints",
             "004-roles-y-bases",
             "005-quien-entra",
-            "006-los-limites"
+            "006-los-limites",
+            "007-dormir"
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -73,6 +74,8 @@ struct Apunta {
     pedido: Mutex<Vec<String>>,
     falla: Mutex<Option<Fallo>>,
     vms: Mutex<HashMap<String, String>>,
+    /// P6·3: el `last_active` que dice cada VM.
+    actividad: Mutex<HashMap<String, String>>,
 }
 
 impl Computos for Apunta {
@@ -127,6 +130,13 @@ impl Computos for Apunta {
         self.apuntar(format!("vm-borrar {vm}"))?;
         self.vms.lock().unwrap().remove(vm);
         Ok(())
+    }
+    fn actividad(&self, vm: &str, _: &str) -> Result<Option<String>, Fallo> {
+        Ok(self.actividad.lock().unwrap().get(vm).cloned())
+    }
+    fn terminar(&self, vm: &str, _: &str) -> Result<Option<String>, Fallo> {
+        self.apuntar(format!("vm-terminar {vm}"))?;
+        Ok(Some("0/16B3748".into()))
     }
 }
 
@@ -1412,5 +1422,101 @@ fn una_operacion_en_curso_por_proyecto_la_cierra_la_base() {
     assert!(
         ore_postgres::base::choca(&e, "una_en_curso_por_proyecto"),
         "{e:?}"
+    );
+}
+
+#[test]
+fn un_endpoint_sin_actividad_duerme_y_uno_con_actividad_no() {
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas","dueno":"user:ana"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let ep = "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal";
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    let vm = campo(&r, &["vm"]);
+    assert!(
+        r.contains(r#""ultima_actividad":"#),
+        "al quedar listo, su hora: {r}"
+    );
+    // Recién listo, con 300 s: nada que dormir.
+    assert_eq!(
+        ore_postgres::reconciliador::vigilar(&mut c2, &almacen).unwrap(),
+        0
+    );
+    // Sin actividad desde hace 10 minutos, y su compute_ctl dice lo mismo: a dormir.
+    let hace = |min: i64| {
+        let mut c = otra_conexion();
+        c.execute(
+            "update plano.endpoint set ultima_actividad = now() - make_interval(mins => $1::int)",
+            &[&(min as i32)],
+        )
+        .unwrap();
+        c.query_one("select to_char((now() - make_interval(mins => $1::int)) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')", &[&(min as i32)])
+            .unwrap()
+            .get::<_, String>(0)
+    };
+    // Con una consulta en curso, su last_active es ahora: no duerme.
+    hace(10);
+    almacen
+        .actividad
+        .lock()
+        .unwrap()
+        .insert(vm.clone(), "2999-01-01T00:00:00Z".into());
+    assert_eq!(
+        ore_postgres::reconciliador::vigilar(&mut c2, &almacen).unwrap(),
+        0
+    );
+    // dormir_tras 0: nunca, aunque lleve horas.
+    let t = hace(600);
+    almacen.actividad.lock().unwrap().insert(vm.clone(), t);
+    let ajustes = format!("{ep}/ajustes");
+    pide(&s, "a", "POST", &ajustes, r#"{"dormir_tras": "0"}"#);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    assert_eq!(
+        ore_postgres::reconciliador::vigilar(&mut c2, &almacen).unwrap(),
+        0
+    );
+    // Con 60 s y diez minutos quieto: una operación dormir-endpoint, y a la vuelta, dormido.
+    pide(&s, "a", "POST", &ajustes, r#"{"dormir_tras": "60"}"#);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let t = hace(10);
+    almacen.actividad.lock().unwrap().insert(vm.clone(), t);
+    assert_eq!(
+        ore_postgres::reconciliador::vigilar(&mut c2, &almacen).unwrap(),
+        1
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    assert!(
+        r.contains(r#""observado":"dormido""#)
+            && r.contains(r#""dormido_en":"#)
+            && !r.contains(r#""direccion""#),
+        "{r}"
+    );
+    let pedido = almacen.pedido();
+    assert!(
+        pedido
+            .iter()
+            .position(|p| p == &format!("vm-terminar {vm}"))
+            < pedido.iter().position(|p| p == &format!("vm-borrar {vm}")),
+        "primero /terminate, después borrar: {pedido:?}"
+    );
+    let lsn: Option<String> = otra_conexion()
+        .query_one("select lsn_al_dormir from plano.endpoint", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(lsn.as_deref(), Some("0/16B3748"));
+    // Dormido no se vuelve a dormir.
+    assert_eq!(
+        ore_postgres::reconciliador::vigilar(&mut c2, &almacen).unwrap(),
+        0
     );
 }

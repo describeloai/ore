@@ -73,6 +73,12 @@ impl Computos for SinKube {
     fn borrar(&self, _: &str) -> Result<(), Fallo> {
         Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
     }
+    fn actividad(&self, _: &str, _: &str) -> Result<Option<String>, Fallo> {
+        Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
+    }
+    fn terminar(&self, _: &str, _: &str) -> Result<Option<String>, Fallo> {
+        Err(Fallo::Reintentar(format!("sin Kubernetes: {}", self.0)))
+    }
 }
 
 /// Lo que se le pide al cómputo. El de verdad es [`Neonvm`].
@@ -103,6 +109,10 @@ pub trait Computos: Send + Sync {
     fn listo(&self, vm: &str, ip_pod: &str) -> Result<bool, Fallo>;
     /// La VM y su ConfigMap (idempotente: lo que no está, ya está borrado).
     fn borrar(&self, vm: &str) -> Result<(), Fallo>;
+    /// P6·3: el `last_active` de su `compute_ctl` (RFC 3339), o nada si aún no lo sabe.
+    fn actividad(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo>;
+    /// P6·3: `/terminate`: Postgres se para limpio; el LSN final, si lo dice.
+    fn terminar(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo>;
 }
 
 pub struct Neonvm {
@@ -224,6 +234,14 @@ impl Computos for Neonvm {
         listo_por_http(&self.propia, vm, ip_pod)
     }
 
+    fn actividad(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo> {
+        actividad_por_http(&self.propia, vm, ip_pod)
+    }
+
+    fn terminar(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo> {
+        terminar_por_http(&self.propia, vm, ip_pod)
+    }
+
     fn borrar(&self, vm: &str) -> Result<(), Fallo> {
         self.kube.borrar(&kube::vm(&self.ns, vm)).map_err(k8s)?;
         self.kube
@@ -290,6 +308,66 @@ pub fn listo_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<bool, Fa
         Ok((200, cuerpo)) => Ok(cuerpo.contains("\"running\"")),
         // Arrancando: aún no escucha, o aún no contesta bien.
         Ok(_) | Err(_) => Ok(false),
+    }
+}
+
+/// P6·3 · El `last_active` que dice `/status` (`compute_tools/src/monitor.rs`: una consulta en
+/// curso es ahora; una sesión ociosa, la hora en que quedó ociosa; P6·0).
+pub fn actividad_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo> {
+    let token = format!("Bearer {}", token_de_computo(propia, vm, ahora() + 300));
+    match pedir_con(
+        "GET",
+        &format!("{ip_pod}:3080"),
+        "/status",
+        &[("Authorization", &token)],
+        None,
+        Plazos {
+            conectar: Duration::from_secs(2),
+            responder: Duration::from_secs(5),
+        },
+    ) {
+        Ok((200, cuerpo)) => Ok(ore_core::parse::parse(&cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("last_active")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(str::to_string)
+            })
+            .filter(|v| !v.is_empty() && v != "null")),
+        Ok((c, _)) => Err(Fallo::Reintentar(format!("/status de {vm}: {c}"))),
+        Err(e) => Err(Fallo::Reintentar(format!("/status de {vm}: {e}"))),
+    }
+}
+
+/// P6·3 · `/terminate`: el `compute_ctl` para Postgres limpio (el WAL, a los safekeepers) y
+/// dice el LSN final (`TerminateResponse`). Sólo entonces se borra la VM.
+pub fn terminar_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo> {
+    let token = format!("Bearer {}", token_de_computo(propia, vm, ahora() + 300));
+    match pedir_con(
+        "POST",
+        &format!("{ip_pod}:3080"),
+        "/terminate",
+        &[("Authorization", &token)],
+        None,
+        Plazos {
+            conectar: Duration::from_secs(3),
+            // `mode=fast` espera hasta 30 s antes de contestar (P6·0).
+            responder: Duration::from_secs(60),
+        },
+    ) {
+        Ok((200, cuerpo)) => Ok(ore_core::parse::parse(&cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("lsn")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(str::to_string)
+            })
+            .filter(|v| !v.is_empty() && v != "null")),
+        Ok((c, r)) => Err(Fallo::Reintentar(format!(
+            "/terminate de {vm}: {c} {}",
+            r.chars().take(200).collect::<String>()
+        ))),
+        Err(e) => Err(Fallo::Reintentar(format!("/terminate de {vm}: {e}"))),
     }
 }
 

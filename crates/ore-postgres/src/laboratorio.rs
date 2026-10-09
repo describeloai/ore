@@ -24,7 +24,10 @@
 //!   nueva nace vacía), ni réplicas de lectura, ni PITR.
 
 use crate::almacen::{Almacen, Fallo, Origen};
-use crate::computos::{Computos, Estado, Vm, configurar_por_http, listo_por_http};
+use crate::computos::{
+    Computos, Estado, Vm, actividad_por_http, configurar_por_http, listo_por_http,
+    terminar_por_http,
+};
 use crate::especificacion::{Computo, Datos, especificacion, iso};
 use crate::llaves::Llave;
 use ore_core::json::Json;
@@ -216,6 +219,14 @@ impl Computos for Docker {
 
     fn listo(&self, vm: &str, ip_pod: &str) -> Result<bool, Fallo> {
         listo_por_http(&self.propia, vm, ip_pod)
+    }
+
+    fn actividad(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo> {
+        actividad_por_http(&self.propia, vm, ip_pod)
+    }
+
+    fn terminar(&self, vm: &str, ip_pod: &str) -> Result<Option<String>, Fallo> {
+        terminar_por_http(&self.propia, vm, ip_pod)
     }
 
     fn borrar(&self, vm: &str) -> Result<(), Fallo> {
