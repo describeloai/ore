@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -748,6 +748,74 @@ de TypeScript o Java desde SQL; `annotations` del fichero desde columnas de la c
 que no dependa del nombre del fichero (hoy moverla de fichero recalcula); el resto del Preview de
 SQL (0055 P4).
 
+
+### JM · la media en la JVM (plan, 2026-10-09)
+
+Java vive en Transforms (Build, 0055 T1·7), así que la media en la JVM es **la de un `@Transform`**:
+leer una colección declarada en `inputs`, escribir la de `output`, y `apply()`. La misma `MediaRef`,
+el mismo contrato ([`docs/media.md`](../media.md)), los mismos errores, la misma suite
+([`conformidad/media`](../../conformidad/media/README.md): 51 casos, que Python ya pasa en vivo).
+**Ni el servidor ni la gramática cambian**: `ore-serve` (`/media/…`) y `ore-medios` ya sirven todo lo
+que Python usa, y la JVM es un cliente nuevo del mismo servidor. Si a mitad aparece un hueco en Rust,
+se nombra aquí y se decide; no se tapa en el SDK.
+
+Hoy la JVM tiene ya el **listado en SQL** (0057 C4: `sql("select … from <colección>")`, la tabla de
+diez columnas con `_item`) y nada más: ni bytes, ni escritura, ni `apply()`.
+
+**Se itera en local, sin Google.** Google está sin facturación desde el 2026-10-08, y de todos
+modos la prueba buena es la de contrato, que no necesita la nube. Cada hito acaba con su suite en
+verde en el laboratorio y **entra entero en un commit**: otras sesiones empujan, y el día que vuelva
+la cuenta el CI despliega la punta con lo que tenga de JM. Nunca medio hito en `main`.
+
+#### El laboratorio (JM0)
+
+| pieza | qué es | de dónde |
+|---|---|---|
+| el puesto | la imagen **`puesto-jvm:1` de prod** (JDK 21.0.12, DuckDB, Arrow, el agente), con el SDK nuevo compilado encima | la que está en el registro, fijada por digest; el digest va en la salida de cada corrida |
+| la celda y `ore-medios` | `pruebas-de-fuego/banco_media.py`: la celda de mentira (`items`, `item`, el `307` de `content`, transacciones, `/documentos`) y los bytes (rangos, permisos que caducan, `412`, flujos cortados, la subida con su sha256, el sellado de B9) | el mismo banco que probó Python; se le añade escuchar en una dirección que el contenedor alcance |
+| el ejecutor | `pruebas-de-fuego/conformidad-media-jvm/`: lee los JSON de `conformidad/media/casos/` y corre cada caso con el SDK de Java | nuevo; el de Python es la referencia |
+| la orden | `python pruebas-de-fuego/la-media-en-java.py [hito]`: arranca el banco, corre el contenedor, imprime `✓/✗` por caso y el recuento `N/51` | nueva |
+
+El objetivo de JM0 es **iterar en segundos**: medido, la corrida entera por debajo de ~20 s. Si no
+lo está, se arregla el laboratorio antes que nada.
+
+#### Los hitos
+
+| hito | qué | la suite que lo cierra | tamaño |
+|---|---|---|---|
+| **JM0** | el laboratorio, medido; el ejecutor con los 51 casos en `pendiente` | la orden corre, `0/51` | ½ día |
+| **JM1 · leer** | `Ore.collection("b.s.c")` → `Collection`: `items(prefix, state, limit)` perezoso por cursor, `stat(path \| digest, version)`, `url(items, ttl)`. `Item`: `ref()`, `open()` → `MediaChannel` (`SeekableByteChannel`: la versión fijada, `Range`, el permiso caducado se renueva **con la misma versión**, `412` → `MediaChanged`, el sha256 al leer entero → `MediaCorrupt`), `inputStream()`, `readBytes(threads)` por rangos en paralelo, `readRange(off, len)`. `Ore.readMany(items, threads)` con `{value, error}`. Los errores (`MediaError` y sus siete). `Item.of(fila)` desde el `_item` del listado en SQL | `list`, `stat`, `open`, `url`, `errores`, `sesion`, `medidas` (**34 casos**) + los 13 del SDK de B3·5 en Java: el token de ORE **nunca** en la URL de los bytes, la rama en `x-ore-rama` | 1 día |
+| **JM2 · dentro de un `@Transform`** | lo declarado en `inputs` se lee; lo no declarado es `MediaForbidden` **sin preguntar**; fuera de un transform, queda en lo leído; el `as_of` del listado, en la procedencia del Build. El Preview lee y no escribe, como en Python | los 4 de B4·3 en Java + **un Build en el laboratorio con la celda que genera `builds.rs`** (como en JT3) que lee una colección | ½ día |
+| **JM3 · escribir** | `collection.transaction(ttlS)` → `Transaction` (`AutoCloseable`): `put(path, byte[] \| Path \| InputStream+largo, contentType)`, `putMany(pairs, threads)` con tope en vuelo, `delete`, `commit()`, `abort()`. La subida en flujo, con el sha256 al paso y `Repr-Digest`; la cortada se reintenta; el `409` de la carrera de la forja se vuelve a confirmar; dentro de un transform, sólo su `output`; una mantenida es `MediaNotWritable`. `Ore.createCollection(name, ifNotExists)` por `/documentos`. `verify` | `put` (**6 casos**) + los 15 de B4b·3 en Java | 1 día |
+| **JM4 · `apply()`** | `collection.apply(fn, opciones)`: **filas** (`Function<Item, Map<String,Object>>` → la tabla anclada de B5: la clave por ítem, un error es su fila, nada cambia → nada se escribe, guardado por tiempo) y **ficheros** (`Function<Item, List<Ore.File>>` → la colección escrita de B9: el linaje lo sella `ore-medios`, `derivations()`, lo retirado); `version`, `params`, `retryErrors`, `threads` | `derivar` (**15 casos**) → **51/51** | 1–1½ días |
+| **JM5 · cierre** | el ejecutor de Java **en el CI** (el job `plano-el-puesto` ya tiene Temurin 21): una regresión no despliega. `display(item)` y `display(List<Item>)` → la galería, como Python (se ve en la consola local contra el banco, puerto 3062). `docs/sdk.md` «Media in Java», `docs/media.md` (las superficies), este ADR con lo medido | el CI en verde con la suite de Java dentro | ½ día |
+
+#### Dos decisiones que pide la JVM
+
+- **D-JM1 · el commit es explícito.** En Python, `with transaction()` confirma al salir si no hubo
+  excepción. En Java, `try (var tx = …)` no sabe si salió por una excepción: `close()` sin
+  `commit()` es **`abort()`**. Lo que no se confirmó a mano no se escribe. Es lo que ya decía el
+  Nivel 4: «`close` y `abort` distintos en la JVM».
+- **D-JM2 · la versión de `fn` por defecto.** Python hace el hash del código fuente de la función;
+  una lambda de Java no tiene fuente en tiempo de ejecución. Por defecto, el sha256 del **bytecode de
+  la clase del `@Transform`** (`codigo:<12>`, como Python): cualquier cambio en la clase recalcula,
+  así que se peca de recalcular y nunca de no hacerlo. `version("…")` explícita manda.
+
+#### Lo que sólo se ve en prod
+
+El primer día con la cuenta activa, en este orden y en un puesto de victor. Si algo falla, falla
+aquí, acotado:
+
+1. **GCS de verdad**: la URL firmada de `ore-medios`, `Range` sobre GCS, la condición por generación
+   (`412`) y el `307` a `storage.googleapis.com`.
+2. **La puerta entera**: IAM y Cedar en `ore-serve`, y el token del agente, que dura 300 s: una
+   celda que lee más de cinco minutos tiene que renovarlo sin cortarse.
+3. **La red del puesto**: sólo sale a Google y a `ore-serve` (`malla/21-el-puesto.yaml`).
+4. **Los recursos**: 2 vCPU y el heap al 50 %. `readBytes` de un ítem grande y `putMany` de cien sin
+   llenar el heap.
+5. **La suite desde un puesto**: el ejecutor de Java como celda, contra las colecciones
+   `conformidad.default.*`. Con los 51 en verde, la JVM entra como pieza de B6.
+6. **La consola**: un Build y un Preview de un `@Transform` con media, y la galería.
 
 ## Lo que no se hace aquí
 
