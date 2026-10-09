@@ -619,6 +619,19 @@ impl Servidor {
     }
 }
 
+/// **Quién canjea la credencial de una fuente por una corta** (ADR 0061 O0·4),
+/// por su tipo: un bucket de S3 por rol (`role_arn`), `ore-asumir-rol` (0046
+/// E9b). `None`: la credencial guardada es la que se usa. Un proveedor con su
+/// federación (GCS, Azure) es una rama aquí, con su canjeador, que tampoco
+/// lee el origen (`dependencias.rs`).
+pub(crate) fn canjeador_de(valor: &str) -> Option<&'static str> {
+    let esquema = valor.split_once("://").map(|(e, _)| e)?;
+    match esquema {
+        "s3" if valor.contains("role_arn=") => Some("ore-asumir-rol"),
+        _ => None,
+    }
+}
+
 /// **La credencial de una fuente, del custodio, como el agente de la celda**:
 /// lo que hace [`Servidor::credencial_de_la_fuente`] una vez comprobado que la
 /// celda sabe traerla. Libre para que la use también `ore-serve
@@ -664,10 +677,10 @@ pub(crate) fn credencial_del_cofre(
                 format!("el custodio no contesta: {e}"),
             )),
         }?;
-        if !valor.contains("role_arn=") {
+        let Some(canjeador) = canjeador_de(&valor) else {
             return Ok((valor, None));
-        }
-        let canjeador = binario.with_file_name("ore-asumir-rol");
+        };
+        let canjeador = binario.with_file_name(canjeador);
         let s = mando::con_entrada(&canjeador, &["--sesion", "ore-serve"], &valor)
             .map_err(|e| Respuesta::error(500, e))?;
         if s.codigo != 0 {
@@ -798,6 +811,27 @@ fn con_ttl_hasta(args: &[String], ttl: Option<u64>, caduca_ms: u64, ahora_ms: u6
 
 #[cfg(test)]
 mod pruebas {
+    /// ADR 0061 O0·4: el canje es del tipo de la fuente; lo que no se canjea,
+    /// se usa como está.
+    #[test]
+    fn el_canje_es_del_tipo_de_la_fuente() {
+        use super::canjeador_de;
+        assert_eq!(
+            canjeador_de("s3://b/?region=x&role_arn=arn:aws:iam::1:role/r"),
+            Some("ore-asumir-rol")
+        );
+        assert_eq!(
+            canjeador_de("s3://b/?access_key_id=a&secret_access_key=s"),
+            None
+        );
+        assert_eq!(
+            canjeador_de("postgres://u:p@h/db?role_arn=x"),
+            None,
+            "otro tipo"
+        );
+        assert_eq!(canjeador_de("sin esquema role_arn="), None);
+    }
+
     #[test]
     fn la_url_no_vive_mas_que_la_credencial_temporal() {
         let a = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();

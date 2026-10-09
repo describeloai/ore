@@ -22,6 +22,14 @@ struct S3;
 
 impl Proveedor for S3 {
     const NOMBRE: &'static str = "ore-read-s3";
+    /// S3 fija por `versionId`, firma SigV4 sin red, da el CRC64NVME sin
+    /// bajar, y su credencial puede ser corta (un rol, por `ore-sts`).
+    const OBJETOS: ore_objetos::Capacidades = ore_objetos::Capacidades {
+        fija: ore_objetos::Fija::Version,
+        firma: true,
+        huella: Some("crc64nvme"),
+        credencial_corta: true,
+    };
     type Fuente = fuente::Fuente;
 
     fn leer(url: &str) -> Result<fuente::Fuente, String> {

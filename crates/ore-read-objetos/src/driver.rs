@@ -29,6 +29,8 @@ use std::process::ExitCode;
 pub trait Proveedor {
     /// El nombre del binario, para los mensajes (`ore-read-s3`).
     const NOMBRE: &'static str;
+    /// Lo que su origen sabe hacer (ADR 0061): sale en `capacidades`.
+    const OBJETOS: ore_objetos::Capacidades;
     /// La fuente resuelta: la URL leída, con su credencial (canjeada, si es
     /// corta).
     type Fuente;
@@ -165,7 +167,11 @@ pub fn main<P: Proveedor>() -> ExitCode {
     // Los que no leen stdin antes de empezar.
     match verbo {
         "capacidades" => {
-            println!("{}", filas::CAPACIDADES.json());
+            let c = ore_driver::capacidades::Capacidades {
+                conector: P::NOMBRE,
+                ..filas::CAPACIDADES
+            };
+            println!("{}", c.json_con_objetos(&P::OBJETOS.json()));
             return ExitCode::SUCCESS;
         }
         "servir" => return servir::<P>(),

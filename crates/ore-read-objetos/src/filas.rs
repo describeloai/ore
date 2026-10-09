@@ -58,7 +58,8 @@ const HUECO: u64 = 1024 * 1024;
 /// entera en memoria; con `orderBy`, el motor ordena y el `limit` no se empuja.
 pub const CAPACIDADES: ore_driver::capacidades::Capacidades =
     ore_driver::capacidades::Capacidades {
-        conector: "ore-read-s3",
+        // El de cada driver lo pone `driver::main` (el `NOMBRE` de su proveedor).
+        conector: "ore-read-objetos",
         version: env!("CARGO_PKG_VERSION"),
         operadores: ore_driver::OPERADORES,
         limit: true,

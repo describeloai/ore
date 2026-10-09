@@ -558,14 +558,17 @@ fn firmar_en_el_lago(
     Ok((urls, segundos, caduca_ms))
 }
 
-/// El firmante de las URLs de un bucket de S3: sin red (`ore-sigv4`), así que
-/// cabe donde un lector no (la imagen de `ore-serve`).
-const FIRMANTE_S3: &str = "ore-firmar-s3";
+/// **El firmante de las URLs de un origen** (ADR 0061 O0·4): `ore-firmar-<tipo>`,
+/// sin red, así que cabe donde un lector no (la imagen de `ore-serve`). Hoy,
+/// `ore-firmar-s3` (`ore-sigv4`; S3 y los que hablan su API).
+fn firmante(tipo: &str) -> String {
+    format!("ore-firmar-{tipo}")
+}
 
 /// Las URLs de una virtual: **del origen**, cada ítem fijado a su versión, con
-/// la credencial de su fuente (`connectionEnv`) y firmadas por
-/// [`FIRMANTE_S3`], que no puede abrir un socket. Sin la credencial, dice
-/// cuál necesita —quien sirve la trae del cofre (E9·3)— y sale con 69.
+/// la credencial de su fuente (`connectionEnv`) y firmadas por el
+/// [`firmante`] de su tipo, que no puede abrir un socket. Sin la credencial,
+/// dice cuál necesita —quien sirve la trae del cofre (E9·3)— y sale con 69.
 fn firmar_en_el_origen(
     path: &Path,
     d: &Loaded,
@@ -573,10 +576,14 @@ fn firmar_en_el_origen(
     ttl: Option<u64>,
 ) -> Result<(Vec<String>, i64, i64), Fallo> {
     let (fuente, tipo, env) = crate::coleccion::fuente_de(path, d).map_err(|m| (65, m))?;
-    if tipo != "s3" {
+    let firmante = firmante(&tipo);
+    if lector::resolver(&firmante).is_none() {
         return Err((
             66,
-            format!("servir del origen `{fuente}` ({tipo}) no se sabe todavía: sólo de S3"),
+            format!(
+                "servir del origen `{fuente}` ({tipo}) no se sabe todavía: no hay `{firmante}` \
+                 que firme sus URLs (0061)"
+            ),
         ));
     }
     let Ok(url) = lector::url(path, &env, &fuente) else {
@@ -615,8 +622,8 @@ fn firmar_en_el_origen(
     if let Some(t) = ttl {
         p.push(("segundos", Json::s(t.to_string())));
     }
-    let r = lector::ejecutar(FIRMANTE_S3, &[], Some(&Json::obj(p).jcs()))
-        .map_err(|f| (69, f.mensaje))?;
+    let r =
+        lector::ejecutar(&firmante, &[], Some(&Json::obj(p).jcs())).map_err(|f| (69, f.mensaje))?;
     let r = ore_core::parse::parse(r.trim())
         .map_err(|e| (69, format!("la firma del origen no analiza: {e:?}")))?;
     let segundos: i64 = campo(&r, "segundos")

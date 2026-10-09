@@ -32,26 +32,42 @@ impl Capacidades {
     /// La respuesta del verbo `capacidades`, en una línea. `agregados` y
     /// `juntas` salen siempre, y en falso: son de F9.
     pub fn json(&self) -> String {
+        self.objeto(None)
+    }
+
+    /// Lo mismo, con **lo que sabe un origen de objetos** (ADR 0061, decisión
+    /// 3) en `objetos`: cómo fija una lectura, si firma, qué huella da, si su
+    /// credencial es corta. `objetos` es su JSON canónico. Quien lee
+    /// `capacidades` ignora lo que no conoce: la pasarela y el kit siguen igual.
+    pub fn json_con_objetos(&self, objetos: &str) -> String {
+        self.objeto(Some(objetos))
+    }
+
+    fn objeto(&self, objetos: Option<&str>) -> String {
         debug_assert!(
             self.operadores.iter().all(|o| OPERADORES.contains(o)),
             "`{}` declara un operador que la petición no sabe llevar",
             self.conector
         );
-        Json::obj([
-            ("conector", Json::s(self.conector)),
-            ("version", Json::s(self.version)),
-            ("protocolo", Json::Int(PROTOCOLO as i64)),
-            (
-                "operadores",
-                Json::Arr(self.operadores.iter().map(|o| Json::s(*o)).collect()),
-            ),
-            ("limit", Json::Bool(self.limit)),
-            ("orderBy", Json::Bool(self.order_by)),
-            ("estimar", Json::Bool(self.estimar)),
-            ("servir", Json::Bool(self.servir)),
-            ("agregados", Json::Bool(false)),
-            ("juntas", Json::Bool(false)),
-        ])
+        Json::obj(
+            [
+                ("conector", Json::s(self.conector)),
+                ("version", Json::s(self.version)),
+                ("protocolo", Json::Int(PROTOCOLO as i64)),
+                (
+                    "operadores",
+                    Json::Arr(self.operadores.iter().map(|o| Json::s(*o)).collect()),
+                ),
+                ("limit", Json::Bool(self.limit)),
+                ("orderBy", Json::Bool(self.order_by)),
+                ("estimar", Json::Bool(self.estimar)),
+                ("servir", Json::Bool(self.servir)),
+                ("agregados", Json::Bool(false)),
+                ("juntas", Json::Bool(false)),
+            ]
+            .into_iter()
+            .chain(objetos.map(|o| ("objetos", Json::Crudo(o.to_string())))),
+        )
         .jcs()
     }
 
@@ -107,6 +123,15 @@ mod tests {
         assert_eq!(
             S3_V1.json(),
             r#"{"agregados":false,"conector":"ore-read-s3","estimar":false,"juntas":false,"limit":false,"operadores":["eq"],"orderBy":false,"protocolo":2,"servir":false,"version":"1"}"#
+        );
+    }
+
+    /// ADR 0061: lo de un origen de objetos va en `objetos`, en su sitio de JCS.
+    #[test]
+    fn lo_de_un_origen_de_objetos_va_en_su_sitio() {
+        assert_eq!(
+            S3_V1.json_con_objetos(r#"{"fija":"version"}"#),
+            r#"{"agregados":false,"conector":"ore-read-s3","estimar":false,"juntas":false,"limit":false,"objetos":{"fija":"version"},"operadores":["eq"],"orderBy":false,"protocolo":2,"servir":false,"version":"1"}"#
         );
     }
 
