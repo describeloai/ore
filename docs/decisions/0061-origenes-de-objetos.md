@@ -2,7 +2,7 @@
 
 **Estado:** propuesto (2026-10-09). **O0–O4 hechos** (2026-10-09; O2–O4 en el laboratorio, la prueba
 contra GCS, Azure y un SFTP de verdad es deuda temporal); O5 (SharePoint) en marcha: O5·0 investigado,
-D-O5 propuesta. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
+D-O5 aceptada, O5·1 hecho. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -96,7 +96,7 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
      la versión y se sigue a libssh2. `russh` queda como alternativa si un día hace falta Rust puro.
      Algoritmos modernos por defecto; `ssh-rsa` con SHA-1 sólo con un parámetro explícito por fuente.
 
-8. **D-O5 · cómo entra ORE en el SharePoint / OneDrive del cliente** *(propuesta, 2026-10-09;
+8. **D-O5 · cómo entra ORE en el SharePoint / OneDrive del cliente** *(aceptada, 2026-10-09;
    investigación §8)*:
    - **Identidad: la de D-O3** —las cuentas de la celda federadas en una app del tenant del cliente,
      la misma de Azure si ya la tiene—, ahora con el ámbito `https://graph.microsoft.com/.default`.
@@ -456,12 +456,12 @@ viejo con `ssh-rsa` (`legado=1`), un chroot real, y la red (puerto 22 e IP de sa
 
 ### O5 · SharePoint / OneDrive (en marcha)
 
-**O5·0, investigado** (investigación §8; D-O5 propuesta). No hay emulador de Graph ni, por ahora,
+**O5·0, investigado** (investigación §8; D-O5 aceptada). No hay emulador de Graph ni, por ahora,
 tenant: **el laboratorio es un Graph de mentira** (`pruebas-de-fuego/graph-de-mentira.py`), escrito
 de la documentación, con lo justo de lo que se usa y las trampas que la documentación nombra:
 
-- Entra: `/<tenant>/oauth2/v2.0/token` con la aserción (no verifica su firma, como Azurite; sí el
-  `client_id` y el ámbito de Graph); Graph exige ese token.
+- Graph exige un token fijo (`GRAPH_TOKEN`): el canje con Entra es el de Azure, ya probado en O3,
+  y fuera de GCP no hay token de identidad de Google que canjear.
 - Graph: el sitio por ruta, sus bibliotecas, un elemento por ruta, `children` en páginas pequeñas
   (para que haya `@odata.nextLink`), `versions` (`"3.0"`, `"2.0"`… de la nueva a la vieja),
   `/content` y `/versions/{id}/content` con `302` a un host de descarga **distinto** que exige no
@@ -482,6 +482,39 @@ la URL de descarga; los mensajes reales de error; y `delta`.
 | **O5·2** | `ore-read-sharepoint`: `capacidades` (`fija: version`, sin firma, `quickxor`), `check` (identidad → sitio → biblioteca → listar → leer, cada fallo con su arreglo: el consentimiento, la concesión del sitio), `explorar` (las bibliotecas de un sitio) |
 | **O5·3** | el cableado: `ore-medios` (`leer_fijado`), `ore-serve` (la comprobación del alta y el asistente: el consentimiento y el comando de la concesión), la federación, la imagen, el CI con el Graph de mentira y el banco del kit |
 | **O5·4** | la prueba de fuego, la comprobación de que muerde, el perfil y la deuda contra un tenant |
+
+**O5·1, hecho**:
+
+- **`ore-entra`**: el canje (la identidad de Google por un token de la app del cliente) y sus
+  mensajes (`AADSTS70021`, `700016`, `90002`, y ahora `65001`: sin consentimiento), sacados de
+  `ore-azure`, que lo usa igual; el ámbito y la variable del token fijo los pone quien lo usa.
+- **`quickxor:`** en `ore-objetos` (`huella::QuickXor`, en flujo): cotejado con los 70 vectores de
+  rclone, enteros y a trozos de 1, 7, 64, 161 y 1000 bytes; el Graph de mentira coteja el suyo con
+  los mismos al arrancar.
+- **`ore-graph`**: la URL (`sites/`, `teams/`, `personal/` o la raíz; host `*.sharepoint.com`), el
+  sitio y la biblioteca por nombre (los ids guardados; una que no está dice cuáles hay), `children`
+  carpeta a carpeta bajando sólo por las que casan con el prefijo, en páginas de 200 cuya siguiente
+  sólo se pide si sigue en Graph, `versions`, y bajar: la `302` no se sigue —se exige
+  `https://<algo>.sharepoint.com`, sin usuario— y se pide sin el token (`ore_gcp::cliente_sin_saltos`).
+  Un `429`/`503` espera su `Retry-After` (5 veces, 120 s como mucho cada una) y se cuenta; el
+  `User-Agent`, `ISV|ORE|ore-graph/<versión>`.
+- **El `Origen`**: la versión es `<id del item>@<versión>` (el id: un fichero borrado y vuelto a
+  subir es otro y empieza en `1.0`); `listar_versiones` da la actual de cada fichero con una
+  petición más por fichero —las viejas no se listan: serían miles de peticiones contra el ritmo del
+  tenant—; la actual se lee **vigilada** (`Vigilado`: el `cTag` al abrir y al terminar, y entera,
+  cotejada con su `quickXorHash`); una vieja, por su id. `leer_fijado` decide por el `cTag`
+  fijado: si es el del item, la actual; si no, la vieja. Los rangos por el final se resuelven con el
+  tamaño (no se sabe si la descarga de SharePoint los entiende).
+- **Contra el Graph de mentira** (`PAGINA=2`, `CADA_429=7`): listar (páginas, sin cuadernos ni
+  accesos directos, por prefijo), la versión actual (`@2.0`) y la vieja (`@1.0`) con y sin huella,
+  rangos, fijado (la actual por su `cTag` con `206`, la vieja entera y por el final, un rango que no
+  cabe), tocar sólo los metadatos (cambia el eTag, no el cTag: se sigue leyendo), **una versión
+  nueva a mitad de una lectura hace fallar la lectura** y la fijada antes se sigue leyendo como
+  vieja, una versión recortada (`media/cambiado`), un sitio sin concesión (`403 accessDenied`), una
+  biblioteca que no está, 15 esperas por `429` en 120 peticiones, y **ninguna descarga recibió el
+  token**. Con la comparación del `cTag` anulada a propósito, el test falla.
+- Lo que destapó: una biblioteca que no está se tragaba como un prefijo vacío (los dos son `404`);
+  ahora la biblioteca se resuelve antes de recorrer.
 
 ## Lo que no se hace aquí
 

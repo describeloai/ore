@@ -189,6 +189,18 @@ pub fn cliente() -> Result<ureq::Agent, String> {
         .build())
 }
 
+/// Uno que **no sigue redirecciones**: quien lo usa mira a dónde lleva la
+/// `Location` antes de ir (Graph contesta `302` a una URL de descarga al
+/// portador, ADR 0061 O5: el token no debe seguirla).
+pub fn cliente_sin_saltos() -> Result<ureq::Agent, String> {
+    let tls = native_tls::TlsConnector::new()
+        .map_err(|e| format!("no se pudo abrir el TLS de la plataforma: {e}"))?;
+    Ok(ureq::AgentBuilder::new()
+        .tls_connector(std::sync::Arc::new(tls))
+        .redirects(0)
+        .build())
+}
+
 /// Base64 estándar, con relleno: el que las API de Google piden en un campo de
 /// bytes (`signBlob`, `addVersion`, el `crc32c` de GCS). Aquí y no en cada
 /// cliente: `ore-store` y `ore-cofre` hablan con Google por esta misma puerta.

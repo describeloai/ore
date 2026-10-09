@@ -2521,6 +2521,7 @@ name = "ore-azure"
 version = "0.1.0"
 dependencies = [
  "ore-core",
+ "ore-entra",
  "ore-gcp",
  "ore-objetos",
  "ore-sigv4",
@@ -2604,6 +2605,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-entra"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-gcp",
+ "ureq",
+]
+
+[[package]]
 name = "ore-entrada"
 version = "0.1.0"
 dependencies = [
@@ -2657,6 +2667,17 @@ dependencies = [
  "ore-gcp",
  "ore-objetos",
  "ore-sigv4",
+ "ureq",
+]
+
+[[package]]
+name = "ore-graph"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-entra",
+ "ore-gcp",
+ "ore-objetos",
  "ureq",
 ]
 

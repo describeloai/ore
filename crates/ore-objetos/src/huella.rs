@@ -149,6 +149,43 @@ impl Calculo for Md5 {
     }
 }
 
+/// **quickXorHash**, la única huella que SharePoint y OneDrive dan siempre
+/// (`file.hashes.quickXorHash`, ADR 0061 O5): un registro circular de 160
+/// bits en el que el byte `i` se suma (XOR) desplazado `11·i` bits, y al final
+/// la longitud (64 bits, little-endian) sobre los últimos 8 bytes; base64 de
+/// los 20. Del algoritmo de Microsoft (`code-snippets/quickxorhash`),
+/// cotejado con los vectores de rclone (`quickxor-vectores.txt`).
+#[derive(Default, Clone)]
+pub struct QuickXor {
+    registro: [u8; 20],
+    /// Bytes sumados: la posición del siguiente y la longitud del final.
+    largo: u64,
+}
+
+impl Calculo for QuickXor {
+    fn sumar(&mut self, datos: &[u8]) {
+        // El desplazamiento de un byte se repite cada 160 bytes (11·160 es
+        // múltiplo de 160): se lleva en módulo para no multiplicar en u64.
+        let mut bit = ((self.largo % 160) * 11 % 160) as usize;
+        for &b in datos {
+            let (i, d) = (bit / 8, bit % 8);
+            self.registro[i] ^= b << d;
+            if d != 0 {
+                self.registro[(i + 1) % 20] ^= b >> (8 - d);
+            }
+            bit = (bit + 11) % 160;
+        }
+        self.largo += datos.len() as u64;
+    }
+    fn texto(&self) -> String {
+        let mut r = self.registro;
+        for (i, b) in self.largo.to_le_bytes().iter().enumerate() {
+            r[12 + i] ^= b;
+        }
+        format!("quickxor:{}", base64(&r))
+    }
+}
+
 /// El cálculo que casa con `huella` (por su algoritmo), si se sabe hacer. Una
 /// huella de un algoritmo que no, o un `etag:` —un validador, no una huella—,
 /// no se coteja: `None`.
@@ -157,6 +194,7 @@ pub fn para(huella: &str) -> Option<Box<dyn Calculo>> {
         Some(("crc64nvme", _)) => Some(Box::new(Crc64Nvme::default())),
         Some(("crc32c", _)) => Some(Box::new(Crc32c::default())),
         Some(("md5", _)) => Some(Box::new(Md5::default())),
+        Some(("quickxor", _)) => Some(Box::new(QuickXor::default())),
         _ => None,
     }
 }
@@ -236,6 +274,36 @@ mod tests {
                 ])
             )
         );
+    }
+
+    /// Los 70 vectores de rclone, enteros y a trozos (que el desplazamiento
+    /// siga entre llamadas, y pasado el registro de 160 bytes).
+    #[test]
+    fn el_quickxor_es_el_de_sharepoint() {
+        let vectores = include_str!("quickxor-vectores.txt");
+        let mut n = 0;
+        for l in vectores.lines().filter(|l| !l.starts_with('#')) {
+            let c: Vec<&str> = l.split(' ').collect();
+            let datos: Vec<u8> = if c[1] == "-" {
+                vec![]
+            } else {
+                (0..c[1].len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&c[1][i..i + 2], 16).unwrap())
+                    .collect()
+            };
+            assert_eq!(datos.len(), c[0].parse::<usize>().unwrap());
+            let quiere = format!("quickxor:{}", c[2]);
+            for trozo in [1, 7, 64, 161, 1000] {
+                let mut q = para("quickxor:x").expect("se sabe");
+                for t in datos.chunks(trozo) {
+                    q.sumar(t);
+                }
+                assert_eq!(q.texto(), quiere, "{} bytes a trozos de {trozo}", c[0]);
+            }
+            n += 1;
+        }
+        assert_eq!(n, 70);
     }
 
     #[test]

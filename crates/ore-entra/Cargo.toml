@@ -1,0 +1,17 @@
+# El token de Entra de una app del CLIENTE, canjeado por el de Google de la
+# cuenta que corre (ADR 0061 D-O3, D-O5): el *client credentials* con asercion
+# federada, sin secretos. Lo usan Azure Blob (Storage) y SharePoint (Graph).
+[package]
+name        = "ore-entra"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El token de Entra de una app del cliente, por federacion con la cuenta de Google"
+
+[dependencies]
+ore-core = { path = "../ore-core" }
+# El token de identidad de Google de la cuenta que corre.
+ore-gcp  = { path = "../ore-gcp" }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }

@@ -29,15 +29,10 @@ pub mod sas;
 
 use ore_objetos::Leido;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const LOGIN: &str = "https://login.microsoftonline.com";
-/// La audiencia del token de Google que Entra acepta en una credencial federada.
-const AUDIENCIA: &str = "api://AzureADTokenExchange";
 const ALCANCE: &str = "https://storage.azure.com/.default";
 const AGENTE: &str = "ore-azure/0.1";
-/// Cuánto se guarda un token de Entra (viven entre 60 y 90 minutos).
-const VIDA_DEL_TOKEN: Duration = Duration::from_secs(45 * 60);
 /// Lo que se pide de vida a una clave de delegación (el máximo es 7 días).
 const VIDA_DE_LA_CLAVE: u64 = 6 * 86_400;
 
@@ -426,16 +421,23 @@ impl Fallo {
 pub struct Azure {
     pub fuente: Fuente,
     agente: ureq::Agent,
-    token: Mutex<Option<(String, Instant)>>,
+    entra: ore_entra::Entra,
     clave: Mutex<Option<(sas::Clave, u64)>>,
 }
 
 impl Azure {
     pub fn de(fuente: Fuente) -> Result<Azure, String> {
+        let entra = ore_entra::Entra::nueva(
+            &fuente.tenant,
+            &fuente.cliente,
+            ALCANCE,
+            "ORE_AZURE_TOKEN",
+            AGENTE,
+        );
         Ok(Azure {
             fuente,
             agente: ore_gcp::cliente()?,
-            token: Mutex::new(None),
+            entra,
             clave: Mutex::new(None),
         })
     }
@@ -447,52 +449,7 @@ impl Azure {
     /// **El token de Storage**: el de Google de la cuenta que corre, cambiado
     /// por Entra por uno de la app del cliente (o `ORE_AZURE_TOKEN`).
     pub fn token(&self) -> Result<String, String> {
-        if let Ok(t) = std::env::var("ORE_AZURE_TOKEN")
-            && !t.is_empty()
-        {
-            return Ok(t);
-        }
-        let mut v = self.token.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((t, caduca)) = v.as_ref()
-            && Instant::now() < *caduca
-        {
-            return Ok(t.clone());
-        }
-        let f = &self.fuente;
-        let id = ore_gcp::identidad(AUDIENCIA)?;
-        let r = self
-            .agente
-            .post(&format!("{LOGIN}/{}/oauth2/v2.0/token", f.tenant))
-            .set("user-agent", AGENTE)
-            .send_form(&[
-                ("grant_type", "client_credentials"),
-                ("client_id", &f.cliente),
-                ("scope", ALCANCE),
-                (
-                    "client_assertion_type",
-                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                ),
-                ("client_assertion", &id),
-            ]);
-        PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let texto = match r {
-            Ok(x) => x
-                .into_string()
-                .map_err(|e| format!("el token de Entra no se pudo leer: {e}"))?,
-            Err(ureq::Error::Status(c, x)) => {
-                return Err(motivo_de_entra(f, c, &x.into_string().unwrap_or_default()));
-            }
-            Err(e) => return Err(format!("Entra no contesta: {e}")),
-        };
-        let n = ore_core::parse::parse(&texto)
-            .map_err(|e| format!("el token de Entra no analiza: {e:?}"))?;
-        let t = n
-            .get("access_token")
-            .and_then(|(_, v)| v.as_str())
-            .ok_or("Entra no devolvió `access_token`")?
-            .to_string();
-        *v = Some((t.clone(), Instant::now() + VIDA_DEL_TOKEN));
-        Ok(t)
+        self.entra.token(&self.agente)
     }
 
     fn base(&self) -> String {
@@ -733,31 +690,6 @@ impl Azure {
 
 /// Lo que Entra contesta cuando no canjea, dicho para quien da de alta: el
 /// error de la federación (`AADSTS…`) en palabras de qué falta.
-fn motivo_de_entra(f: &Fuente, estado: u16, cuerpo: &str) -> String {
-    let n = ore_core::parse::parse(cuerpo).ok();
-    let d = n
-        .as_ref()
-        .and_then(|n| n.get("error_description"))
-        .and_then(|(_, v)| v.as_str().map(String::from))
-        .unwrap_or_else(|| cuerpo.chars().take(200).collect());
-    let d = d.lines().next().unwrap_or("").to_string();
-    let que = if d.contains("AADSTS70021") {
-        format!(
-            "la app `{}` no tiene una credencial federada para la cuenta de Google de esta celda \
-             (issuer `https://accounts.google.com`, subject = su ID único, audiencia \
-             `{AUDIENCIA}`), o aún se está propagando: espera unos minutos",
-            f.cliente
-        )
-    } else if d.contains("AADSTS700016") {
-        format!("no hay una app `{}` en el tenant `{}`", f.cliente, f.tenant)
-    } else if d.contains("AADSTS90002") || d.contains("AADSTS900023") {
-        format!("no hay un tenant `{}` en Entra", f.tenant)
-    } else {
-        "Entra no canjea el token de la celda".to_string()
-    };
-    format!("{que} ({estado}: {d})")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -852,20 +784,5 @@ mod tests {
             "2026-10-09T17:20:52.000Z"
         );
         assert_eq!(modificado("raro"), "raro");
-    }
-
-    #[test]
-    fn entra_se_explica() {
-        let f = leer("az://cuenta/cubo?tenant=t&cliente=app").unwrap();
-        let m = motivo_de_entra(
-            &f,
-            400,
-            r#"{"error":"invalid_request","error_description":"AADSTS70021: No matching federated identity record found for presented assertion.\r\nTrace ID: x"}"#,
-        );
-        assert!(
-            m.contains("credencial federada") && m.contains("espera unos minutos"),
-            "{m}"
-        );
-        assert!(!m.contains("Trace ID"), "{m}");
     }
 }

@@ -17,6 +17,8 @@ ore-core    = { path = "../ore-core" }
 # El token de identidad de Google de la cuenta que corre (lo que Entra acepta
 # para federarse), el cliente HTTP y el base64.
 ore-gcp     = { path = "../ore-gcp" }
+# El canje de Entra, comun con SharePoint (ADR 0061 O5).
+ore-entra   = { path = "../ore-entra" }
 ore-objetos = { path = "../ore-objetos" }
 # El HMAC-SHA256 de la SAS: sin red (el mismo que SigV4).
 ore-sigv4   = { path = "../ore-sigv4" }

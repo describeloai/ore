@@ -1,0 +1,22 @@
+# Una biblioteca de SharePoint (o un OneDrive) de un CLIENTE como origen
+# (ADR 0061 O5), por Microsoft Graph: listar, las versiones, leer una version
+# o la actual vigilada por su cTag, la huella (quickXorHash) y el ritmo de
+# Graph (Retry-After). Solo lee, con la cuenta de Google de la celda federada
+# en una app de Entra del cliente con Sites.Selected (D-O5): sin secretos.
+[package]
+name        = "ore-graph"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Una biblioteca de SharePoint como origen de objetos, por Microsoft Graph"
+
+[dependencies]
+ore-core    = { path = "../ore-core" }
+# El cliente HTTP (sin seguir redirecciones: la de la descarga se mira antes).
+ore-gcp     = { path = "../ore-gcp" }
+# El token de Graph, por el mismo canje que Azure (D-O3).
+ore-entra   = { path = "../ore-entra" }
+ore-objetos = { path = "../ore-objetos" }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
