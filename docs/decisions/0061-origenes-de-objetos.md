@@ -146,6 +146,15 @@ una generación vieja, rango `206`, generación que no existe `404`, `x-goog-has
 la firma V4 (contra los vectores de Google), la identidad y `testIamPermissions` se prueban fuera del
 emulador; contra GCS de verdad, deuda temporal mientras la cuenta de Google siga suspendida.
 
+**O2·1, hecho** (`a06f03a3`): `ore-gcs` sobre la API JSON. La URL `gs://bucket/prefijo` no lleva
+secreto (la cuenta de la celda) o dice `?suplantar=<cuenta del cliente>` (`generateAccessToken`, una
+hora, `devstorage.read_only`). El validador de cada objeto es su **generación**; listar paginado,
+versiones, `crc32c` sin bajar, leer una generación con rango, `testIamPermissions`, y la URL V4
+firmada por `signBlob` —su petición canónica casa con los vectores de conformidad de Google—.
+`firmar` del rasgo devuelve `Result<Option<_>>` (GCS firma por red y puede fallar), y `bajar`
+coteja la huella de cualquier origen con su algoritmo (`crc32c` incluido). Contra
+`fake-gcs-server`: todo lo que el emulador sabe, y lo que no (firma, permisos), dicho como tal.
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).
