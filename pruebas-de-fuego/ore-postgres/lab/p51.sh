@@ -36,6 +36,8 @@ r=$(entra "$ROL" "$CLAVE" "$P" "$VM"); wait
 echo "── por el proxy de Neon"
 r=$(entra "$ROL" "$CLAVE" "$P" "$VM")
 [ "$r" = "$ROL" ] && echo "  ✓ $ROL entra en $P por $VM.$DOMINIO (verify-full)" || { echo "  ✗ no entra: $r"; fallos=$((fallos+1)); }
+r=$(dc exec -T -e PGPASSWORD="$CLAVE" -e PGCONNECT_TIMEOUT=10 cliente psql "host=$VM.$DOMINIO hostaddr=172.29.51.20 port=4432 user=$ROL dbname=$P sslmode=verify-full sslrootcert=/llaves/tls/tls.crt channel_binding=require" -Atc 'select current_user' 2>&1 | tail -1)
+[ "$r" = "$ROL" ] && echo "  ✓ con channel_binding=require (SCRAM-SHA-256-PLUS, atado al TLS), como el snippet de Connect"   || { echo "  ✗ con channel_binding=require: ${r:0:120}"; fallos=$((fallos+1)); }
 r=$(entra "$ROL" "$CLAVE" "$P" "$VM-pooler")
 [ "$r" = "$ROL" ] && echo "  ✓ por -pooler, el pgbouncer del mismo cómputo" || { echo "  ✗ por -pooler: ${r:0:140}"; fallos=$((fallos+1)); }
 r=$(entra "$ROL" mala "$P" "$VM")

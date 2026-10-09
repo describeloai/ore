@@ -63,6 +63,9 @@ pub struct Servidor {
     pub avisos: Option<crate::avisos::Avisos>,
     /// P5·1: las preguntas del proxy (`/proxy/…`). Sin él, 404.
     pub proxy: Option<crate::proxy::Proxy>,
+    /// P5·7: el dominio de la entrada pública (`europe-west1.pg.paladio.io`).
+    /// Con él, cada endpoint dice su `host` y su `host_pool`; sin él, no los dice.
+    pub dominio: Option<String>,
 }
 
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
@@ -174,11 +177,16 @@ impl Servidor {
             Pedido::Rama(p, r) => rama(c, &celda, p, r),
             Pedido::CrearRama(p) => crear_rama(c, &celda, p, cuerpo.as_ref().expect("analizado")),
             Pedido::BorrarRama(p, r) => borrar_rama(c, &celda, p, r),
-            Pedido::Endpoints(p, r) => endpoints(c, &celda, p, r),
-            Pedido::Endpoint(p, r, e) => endpoint(c, &celda, p, r, e),
-            Pedido::CrearEndpoint(p, r) => {
-                crear_endpoint(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
-            }
+            Pedido::Endpoints(p, r) => endpoints(c, &celda, p, r, self.dominio.as_deref()),
+            Pedido::Endpoint(p, r, e) => endpoint(c, &celda, p, r, e, self.dominio.as_deref()),
+            Pedido::CrearEndpoint(p, r) => crear_endpoint(
+                c,
+                &celda,
+                p,
+                r,
+                cuerpo.as_ref().expect("analizado"),
+                self.dominio.as_deref(),
+            ),
             Pedido::BorrarEndpoint(p, r, e) => borrar_endpoint(c, &celda, p, r, e),
             Pedido::Roles(p, r) => roles(c, &celda, p, r),
             Pedido::CrearRol(p, r) => {
@@ -858,7 +866,13 @@ fn rama_viva(
     }
 }
 
-fn endpoints(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuesta, Fallo> {
+fn endpoints(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    dominio: Option<&str>,
+) -> Result<Respuesta, Fallo> {
     rama_viva(c, celda, p, r)?;
     let filas = c.query(
         &format!(
@@ -871,11 +885,18 @@ fn endpoints(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuest
     )?;
     Ok(Respuesta::ok(Json::obj([(
         "endpoints",
-        Json::Arr(filas.iter().map(endpoint_json).collect()),
+        Json::Arr(filas.iter().map(|f| endpoint_json(f, dominio)).collect()),
     )])))
 }
 
-fn endpoint(c: &mut Client, celda: &Celda, p: &str, r: &str, e: &str) -> Result<Respuesta, Fallo> {
+fn endpoint(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    e: &str,
+    dominio: Option<&str>,
+) -> Result<Respuesta, Fallo> {
     rama_viva(c, celda, p, r)?;
     match c.query_opt(
         &format!(
@@ -885,7 +906,7 @@ fn endpoint(c: &mut Client, celda: &Celda, p: &str, r: &str, e: &str) -> Result<
         ),
         &[&celda.organizacion, &p, &r, &e],
     )? {
-        Some(f) => Ok(Respuesta::ok(endpoint_json(&f))),
+        Some(f) => Ok(Respuesta::ok(endpoint_json(&f, dominio))),
         None => Err(no_hay_endpoint(e)),
     }
 }
@@ -913,6 +934,7 @@ fn crear_endpoint(
     p: &str,
     r: &str,
     cuerpo: &Node,
+    dominio: Option<&str>,
 ) -> Result<Respuesta, Fallo> {
     let texto = |k: &str| cuerpo.get(k).and_then(|(_, v)| v.as_str());
     let Some(id) = texto("id") else {
@@ -963,7 +985,10 @@ fn crear_endpoint(
     };
     let op = nueva_operacion_de(&mut tx, celda, p, "crear-endpoint", Some(r), Some(id))?;
     tx.commit()?;
-    Ok(aceptada(&op, Some(("endpoint", endpoint_json(&fila)))))
+    Ok(aceptada(
+        &op,
+        Some(("endpoint", endpoint_json(&fila, dominio))),
+    ))
 }
 
 fn borrar_endpoint(
@@ -994,7 +1019,7 @@ fn borrar_endpoint(
     Ok(aceptada(&op, None))
 }
 
-fn endpoint_json(f: &Row) -> Json {
+fn endpoint_json(f: &Row, dominio: Option<&str>) -> Json {
     let mut v = vec![
         ("id", Json::s(f.get::<_, String>(0))),
         ("rama", Json::s(f.get::<_, String>(1))),
@@ -1018,6 +1043,12 @@ fn endpoint_json(f: &Row) -> Json {
     ];
     if let Some(d) = f.get::<_, Option<String>>(8) {
         v.push(("direccion", Json::s(d)));
+    }
+    // P5·7: el nombre público, por el proxy (TLS, puerto 5432); `-pooler`, el pool (P5·5).
+    if let Some(dom) = dominio {
+        let vm: String = f.get(3);
+        v.push(("host", Json::s(format!("{vm}.{dom}"))));
+        v.push(("host_pool", Json::s(format!("{vm}-pooler.{dom}"))));
     }
     // P5·5: cuántas conexiones admite (directas) y el pool por base (-pooler).
     if f.len() > 11 {

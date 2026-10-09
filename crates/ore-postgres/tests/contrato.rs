@@ -61,6 +61,7 @@ fn servidor() -> Option<Servidor> {
         url: Some(url),
         avisos: None,
         proxy: None,
+        dominio: Some("europe-west1.pg.paladio.io".into()),
     })
 }
 
@@ -747,6 +748,7 @@ fn otro_servidor() -> Servidor {
         url: Some(url),
         avisos: None,
         proxy: None,
+        dominio: Some("europe-west1.pg.paladio.io".into()),
     }
 }
 
@@ -1048,6 +1050,15 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
     );
     let (vm, dir) = (campo(&r, &["vm"]), campo(&r, &["direccion"]));
     // P5·5: 1 CU → 450 conexiones; el 90 % para la base del proyecto, la única.
+    // P5·7: el nombre público lo dice la API.
+    assert!(
+        r.contains(&format!(
+            r#""host":"{}.europe-west1.pg.paladio.io","host_pool":"{}-pooler.europe-west1.pg.paladio.io""#,
+            campo(&r, &["vm"]),
+            campo(&r, &["vm"])
+        )),
+        "{r}"
+    );
     assert!(
         r.contains(r#""conexiones":{"maximas":450,"pool_por_base":405}"#),
         "{r}"

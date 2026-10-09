@@ -1177,6 +1177,18 @@ Lo que medí **corrige lo que esperaba**: con el pool de la imagen, pgbouncer no
 
 Lo que solo se puede medir en producción: que el proxy vea **la IP real del cliente** tras el balanceador (P5·3).
 
+#### P5·7 · Connect (2026-10-09)
+
+El modal **Connect to your database** de la consola, iterado sobre un boceto con el usuario:
+
+- **El nombre público lo dice la API**, no la consola: con `ore-postgres --dominio europe-west1.pg.paladio.io`, cada endpoint trae `host` y `host_pool` (con `-pooler`), además de `conexiones` (P5·5b). La consola nunca escribe a mano región ni dominio.
+- **El interruptor «Connection pooling», encendido por defecto**, como Neon. Cambia `ep-…` por `ep-…-pooler` en el host y dice cuándo apagarlo (migraciones, `pg_dump`, `LISTEN/NOTIFY`). A la derecha, lo que cabe según la API: «Up to 10,000 clients · 405 to Postgres» o «Up to 450 connections».
+- **TLS con el SCRAM atado a él**: `sslmode=require&channel_binding=require`. Medido antes con nuestro proxy (SCRAM-SHA-256-PLUS, directo y por el pool) y comprobado ya en `lab/p51.sh`.
+- **Doce formatos en fichas**: Connection string, psql, Node.js, Serverless driver (`neon()` por HTTP y `Pool` por WebSocket, P5·4), Python, SQLAlchemy, **Prisma** (siempre con dos URLs: `DATABASE_URL` con pool para la app y `DIRECT_URL` directa para las migraciones, el error más común), Django, Java, .NET, Go y parámetros sueltos.
+- Se mantienen *Reset password* (la nueva solo vive en el snippet mientras el modal está abierto) y el aviso de que las contraseñas se enseñan una vez. Desaparecen la dirección interna, el 55433 y el aviso de «no se alcanza desde internet».
+
+Probado en la consola en modo banco. Que el snippet copiado conecte desde fuera es el paso 6 de las pruebas que solo se pueden hacer en producción. Los ajustes de acceso (P5·6) irán en la configuración del proyecto, como en Neon, no en Connect.
+
 #### P5 · Del laboratorio a producción: por qué llegará sano y rápido
 
 Lo construido en el laboratorio llega a producción en una tarde y sin reescribirse, por cómo está hecho:
@@ -1190,7 +1202,7 @@ Lo construido en el laboratorio llega a producción en una tarde y sin reescribi
 **Lo que sólo se puede probar en producción**, anotado desde ya (se corre en este orden el día que Google vuelva):
 
 1. **Volver**: el clúster, `ore-pg` (almacenamiento, `ore-postgres`, las VMs) y las celdas, sanos; relanzar el CI de `5321c351` (sólo falló al subir imágenes).
-2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad, con Redis y `--redis`; un *Reset password* entra a la primera.
+2. **P5·1 en el clúster** (`p51.sh`): el proxy en la overlay contra VMs de verdad, con Redis; la malla 86 añade a `ore-postgres` `--redis` y `--dominio europe-west1.pg.paladio.io`; un *Reset password* entra a la primera.
 3. **P5·2**: la IP estática, la cuenta de DNS sólo sobre `pg-paladio-io` por Workload Identity, el ClusterIssuer y el comodín `Ready`; `*.europe-west1.pg.paladio.io` resuelve (también `api.`, el que usa el driver por HTTP); quitar el TXT `_delegacion`.
 4. **P5·3**: desde internet, `psql "…?sslmode=verify-full"` entra y pgbench corre sin fallos; reiniciar una réplica no tira a la otra; la IP del cliente llega tal cual.
 5. **P5·4** desde internet con `@neondatabase/serverless`; **P5·5** contra el pgbouncer de la VM (`p55.sh` con 150 clientes, como mucho 64 conexiones en Postgres); **P5·6** con la IP real del cliente.

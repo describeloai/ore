@@ -44,7 +44,8 @@ services:
   plano:
     image: rust:1
     command: [/tt/p4pg/release/ore-postgres, servir, --bind, 0.0.0.0:8100, --iam, "172.29.51.6:8090",
-              --llaves-almacen, /no-hay, --llaves-proxy, /llaves/proxy, --redis, "172.29.51.8:6379"]
+              --llaves-almacen, /no-hay, --llaves-proxy, /llaves/proxy, --redis, "172.29.51.8:6379",
+              --dominio, europe-west1.pg.paladio.io]
     env_file: .secretos/plano.env
     volumes: [ore-pruebas-t:/tt:ro, ./.secretos/proxy:/llaves/proxy:ro]
     networks: { lab: { ipv4_address: 172.29.51.7 } }
