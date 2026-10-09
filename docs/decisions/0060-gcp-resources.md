@@ -1,6 +1,6 @@
 # 0060 · GCP resources — el mismo resultado por una fracción del coste
 
-**Estado:** propuesto (2026-10-08). El plan —G0–G7, nivel 1 (~$60–90 al mes), y G8–G11, nivel 2
+**Estado:** en stand by (2026-10-09). G1 y G2 hechos (`42a3da8f`, `1ce4e27a`), sin probar en una corrida de verdad; lo siguiente, G4 (en local, en Docker) y G0 (con la cuenta activa). Propuesto el 2026-10-08. El plan —G0–G7, nivel 1 (~$60–90 al mes), y G8–G11, nivel 2
 (~$20–40 al mes)— está decidido en su forma; cada paso que toca
 la malla, el IAM o la infraestructura de Google pide su go antes de hacerse, y se mide antes y
 después. Lo que es de la cuenta —la facturación, las cuotas, un pago— es de la persona dueña, no de
