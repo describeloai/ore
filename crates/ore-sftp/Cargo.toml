@@ -1,0 +1,20 @@
+# Un servidor SFTP de un CLIENTE como origen (ADR 0061 O4): listar
+# recursivo, `stat`, leer entero o por rangos, vigilando que lo que se lee no
+# cambie mientras tanto. Solo lee, con la clave Ed25519 de la celda que el
+# cliente autorizo y la huella del host siempre fijada (D-O4). Un SFTP no
+# versiona: solo coleccion mantenida (D-O1).
+[package]
+name        = "ore-sftp"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Un servidor SFTP como origen de objetos: listar, leer vigilado"
+
+[dependencies]
+ore-objetos = { path = "../ore-objetos" }
+# libssh2 1.11.1 (con *strict KEX*: Terrapin corregido), sincrona como el resto
+# de los drivers (D-O4: 21 crates frente a 212 de russh). Con el OpenSSL del
+# sistema, que en la imagen (alpine) se enlaza estatico como el de native-tls.
+ssh2 = "0.9"

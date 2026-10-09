@@ -73,7 +73,7 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    ADLS Gen2, que no lo tiene— por ETag, con D-O1. Las URLs, SAS de delegación de usuario fijadas a
    la versión (`sr=bv`); por ETag, ninguna (D-O1). La huella, `md5:` si el blob la tiene.
 
-7. **D-O4 · cómo entra ORE en el SFTP del cliente** *(propuesta, 2026-10-09; investigación §7)*:
+7. **D-O4 · cómo entra ORE en el SFTP del cliente** *(aceptada, 2026-10-09; investigación §7)*:
    - **Identidad: una clave Ed25519 que genera ORE** —por celda, la privada en el cofre— y de la que
      el cliente sólo ve la pública, que pega en `authorized_keys` (lo que hace Fivetran; nada del
      cliente que guardar). De recurso, y dicho como tal: una privada que traiga el cliente o una
@@ -338,6 +338,19 @@ fichero **reescrito en sitio mientras se lee da una mezcla de los dos contenidos
 (`russh` 0.64 + `russh-sftp` 3, y `ssh2` 0.9 con libssh2 1.11.1) hacen lo mismo contra él: la huella
 casa con la de `ssh-keygen` en el servidor, con una equivocada se niegan, listan, leen el pie y bajan
 a ~110 MiB/s. `russh` trae 212 crates y un runtime asíncrono; `ssh2`, 21 y síncrono.
+
+**O4·1, hecho**: `ore-sftp` sobre `ssh2`. La URL `sftp://<usuario>@<host>[:<puerto>]/<ruta>?huella=…`
+lleva la huella del host, que se compara **antes de autenticar** (a un servidor que no es no le llega
+ni la clave); sin ella, el error dice cuál es la vista para confirmarla. La clave de la celda se lee
+de `ORE_SFTP_CLAVE`; de recurso, una contraseña en la URL (que nunca sale en `publica` ni en los
+mensajes). Algoritmos modernos; `ssh-rsa` y los KEX viejos con `legado=1`. Listar recursivo por
+prefijo (los enlaces, marcados y sin seguir), `lstat`, leer entero o un rango (también por el final)
+**vigilado**: el validador `<mtime>-<tamaño>` se compara al abrir y al terminar. La versión es ese
+validador (`etag:…`), `listar_versiones` deja fuera lo que lleva menos de `edad` segundos sin cambiar,
+y `leer_fijado` se niega con D-O1. Contra `atmoz/sftp`: la huella (fijada, sin fijar, otra), listar
+sin enlaces, versiones, la edad mínima, rangos, un fichero sin permiso, D-O1, y **un fichero
+reescrito en sitio a mitad de lectura hace fallar la lectura** en vez de dar la mezcla. Compila en
+Alpine (musl, el OpenSSL estático de la imagen).
 
 ## Lo que no se hace aquí
 
