@@ -155,6 +155,19 @@ firmada por `signBlob` —su petición canónica casa con los vectores de confor
 coteja la huella de cualquier origen con su algoritmo (`crc32c` incluido). Contra
 `fake-gcs-server`: todo lo que el emulador sabe, y lo que no (firma, permisos), dicho como tal.
 
+**O2·2, hecho**: `ore-read-gcs`, el `main` común con lo de GCS. Su `check` le **pregunta** a GCS
+(`testIamPermissions`: `storage.objects.list` y `storage.objects.get`, que da
+`roles/storage.objectViewer`) y aun así lista una página y mira un objeto: manda lo que pasa de
+verdad, que IAM puede no ver entero (un perímetro que niega, una ACL de objeto que concede); sin
+`testIamPermissions` (el emulador) prueba y dice `"como":"probando"`. Con `suplantar`, el primer
+permiso es la identidad (`roles/iam.serviceAccountTokenCreator` sobre la cuenta del cliente). Un
+bucket que no existe se dice así, no como un rol que falta. `fija` siempre `version`: las
+generaciones viejas se leen con los mismos dos permisos. El rasgo `Origen` vale también prestado
+(`&T`), y `ore-gcs` gana `pagina` (una página, para `check` y `explorar`) y sus contadores. Contra
+el emulador, los verbos del binario: `capacidades`, `check`, `explorar`, `catalogo` (1 tabla y 3
+conjuntos), `testigo`, `versiones` (generación y `crc32c`), `bajar` cotejado, y con la huella
+cambiada o una generación que no está, no copia.
+
 ## Lo que no se hace aquí
 
 - Escribir en un origen: un origen se lee; lo que ORE escribe va a su lago (0049 B4b).

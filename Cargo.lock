@@ -2720,6 +2720,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-gcs"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-driver",
+ "ore-gcs",
+ "ore-objetos",
+ "ore-read-objetos",
+]
+
+[[package]]
 name = "ore-read-jsonl"
 version = "0.1.0"
 dependencies = [

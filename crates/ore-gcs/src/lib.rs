@@ -36,6 +36,20 @@ const CORREO: &str =
 /// Lo que pide una suplantación: leer, y nada más.
 const ALCANCE: &str = "https://www.googleapis.com/auth/devstorage.read_only";
 
+static PETICIONES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Cuántas peticiones a GCS y cuántos bytes de listados y metadatos, para los
+/// avisos del driver (los de los objetos van en flujo y no se cuentan).
+pub fn contadores() -> (usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (PETICIONES.load(Relaxed), BYTES.load(Relaxed))
+}
+
+fn contar(texto: &str) {
+    BYTES.fetch_add(texto.len(), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// La coordenada de una fuente de GCS.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fuente {
@@ -180,12 +194,20 @@ impl Meta {
 /// una y devuelve su JSON. Fuera de la red para probarlo, porque el emulador
 /// no pagina (O2·0). Devuelve los objetos y los prefijos (con `delimiter`).
 pub fn paginar(
+    pagina: impl FnMut(Option<&str>) -> Result<String, String>,
+) -> Result<(Vec<Meta>, Vec<String>), String> {
+    paginar_hasta(pagina, usize::MAX)
+}
+
+/// Como [`paginar`], hasta `paginas` páginas.
+fn paginar_hasta(
     mut pagina: impl FnMut(Option<&str>) -> Result<String, String>,
+    paginas: usize,
 ) -> Result<(Vec<Meta>, Vec<String>), String> {
     let mut metas = Vec::new();
     let mut prefijos = Vec::new();
     let mut token: Option<String> = None;
-    loop {
+    for _ in 0..paginas {
         let texto = pagina(token.as_deref())?;
         let n = ore_core::parse::parse(&texto)
             .map_err(|e| format!("el listado de GCS no analiza: {e:?}"))?;
@@ -204,9 +226,10 @@ pub fn paginar(
             .and_then(|(_, v)| v.as_str().map(String::from))
             .filter(|t| !t.is_empty());
         if token.is_none() {
-            return Ok((metas, prefijos));
+            break;
         }
     }
+    Ok((metas, prefijos))
 }
 
 /// El token con el que se lee: el de la cuenta que corre, o el que esa cuenta
@@ -277,6 +300,13 @@ impl Gcs {
         Gcs::de(leer(url)?)
     }
 
+    /// **¿Hay identidad con la que leer?** El token de la cuenta que corre, y
+    /// con `suplantar`, el de la del cliente: si el cliente no dio a la de la
+    /// celda `roles/iam.serviceAccountTokenCreator` sobre la suya, aquí se sabe.
+    pub fn identidad(&self) -> Result<(), String> {
+        self.token().map(|_| ())
+    }
+
     fn token(&self) -> Result<String, String> {
         match &self.token {
             Token::Propio(c) => c.token(),
@@ -321,6 +351,7 @@ impl Gcs {
             estado: 0,
             cuerpo: e,
         })?;
+        PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self
             .agente
             .request(metodo, url)
@@ -359,30 +390,58 @@ impl Gcs {
         versiones: bool,
         delimitador: Option<&str>,
     ) -> Result<(Vec<Meta>, Vec<String>), Fallo> {
+        self.listado(prefijo, versiones, delimitador, None)
+    }
+
+    /// **Una página** del listado, de hasta `max` (`maxResults`): lo que mira
+    /// `check` y lo que enseña `explorar`, sin recorrer un bucket entero.
+    pub fn pagina(
+        &self,
+        prefijo: &str,
+        delimitador: Option<&str>,
+        max: u32,
+    ) -> Result<(Vec<Meta>, Vec<String>), Fallo> {
+        self.listado(prefijo, false, delimitador, Some(max))
+    }
+
+    fn listado(
+        &self,
+        prefijo: &str,
+        versiones: bool,
+        delimitador: Option<&str>,
+        max: Option<u32>,
+    ) -> Result<(Vec<Meta>, Vec<String>), Fallo> {
         let base = format!(
-            "{}/storage/v1/b/{}/o?prefix={}{}{}",
+            "{}/storage/v1/b/{}/o?prefix={}{}{}{}",
             self.fuente.endpoint,
             self.fuente.bucket,
             codificar(prefijo),
             if versiones { "&versions=true" } else { "" },
             delimitador
                 .map(|d| format!("&delimiter={}", codificar(d)))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            max.map(|m| format!("&maxResults={m}")).unwrap_or_default()
         );
         let mut fallo = None;
-        let r = paginar(|token| {
-            let url = match token {
-                Some(t) => format!("{base}&pageToken={}", codificar(t)),
-                None => base.clone(),
-            };
-            let x = self.pide("GET", &url).and_then(Gcs::llamar).map_err(|f| {
-                let m = f.motivo();
-                fallo = Some(f);
-                m
-            })?;
-            x.into_string()
-                .map_err(|e| format!("el listado no se pudo leer: {e}"))
-        });
+        let r = paginar_hasta(
+            |token| {
+                let url = match token {
+                    Some(t) => format!("{base}&pageToken={}", codificar(t)),
+                    None => base.clone(),
+                };
+                let x = self.pide("GET", &url).and_then(Gcs::llamar).map_err(|f| {
+                    let m = f.motivo();
+                    fallo = Some(f);
+                    m
+                })?;
+                let t = x
+                    .into_string()
+                    .map_err(|e| format!("el listado no se pudo leer: {e}"))?;
+                contar(&t);
+                Ok(t)
+            },
+            if max.is_some() { 1 } else { usize::MAX },
+        );
         r.map_err(|m| {
             fallo.unwrap_or(Fallo {
                 estado: 0,
@@ -403,6 +462,7 @@ impl Gcs {
                 estado: 0,
                 cuerpo: format!("los metadatos no se pudieron leer: {e}"),
             })?;
+        contar(&texto);
         let n = ore_core::parse::parse(&texto).map_err(|e| Fallo {
             estado: 0,
             cuerpo: format!("los metadatos no analizan: {e:?}"),

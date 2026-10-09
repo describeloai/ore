@@ -1,0 +1,21 @@
+# El lector de un bucket de GCS de un cliente como FUENTE (ADR 0061 O2·2).
+#
+# Lo de todos los almacenes de objetos (el catalogo, las filas, las versiones,
+# la bajada y el bucle de verbos) es `ore-read-objetos`; aqui queda lo de GCS:
+# su URL `gs://`, el `check` por `testIamPermissions`, `explorar` y como se
+# clasifica lo que GCS contesta. El origen es `ore-gcs`.
+[package]
+name        = "ore-read-gcs"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de buckets de GCS: catalogo de objetos y de ficheros tabulares"
+
+[dependencies]
+ore-core         = { path = "../ore-core" }
+ore-driver       = { path = "../ore-driver" }
+ore-gcs          = { path = "../ore-gcs" }
+ore-objetos      = { path = "../ore-objetos" }
+ore-read-objetos = { path = "../ore-read-objetos" }
