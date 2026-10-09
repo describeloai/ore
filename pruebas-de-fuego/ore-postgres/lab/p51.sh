@@ -17,11 +17,10 @@ crea() {   # crea CELDA → «vm rol clave»
   echo "$vm $(campo "$r" rol nombre) $(campo "$r" rol contrasena)"
 }
 
-echo "── demo y victor crean $P (dueño user:p51); el laboratorio hace de reconciliador"
+echo "── demo y victor crean $P (dueño user:p51); el reconciliador de verdad levanta sus cómputos"
 read -r VM ROL CLAVE < <(crea demo)
 read -r VM_B ROL_B CLAVE_B < <(crea victor)
-reconcilia "$VM" computo-a; reconcilia "$VM_B" computo-b
-echo "  ✓ demo: $VM en computo-a · victor: $VM_B en computo-b · rol $ROL"
+[ "$(listo demo "$P")" = "$VM" ] && [ "$(listo victor "$P")" = "$VM_B" ]   && echo "  ✓ demo: $VM · victor: $VM_B, listos · rol $ROL" || { echo "  ✗ no quedan listos"; exit 1; }
 
 echo "── las preguntas del proxy, sin su token: nada"
 c=$(pide demo GET "/proxy/wake_compute?endpointish=$VM" | head -c 200)
@@ -55,7 +54,7 @@ r=$(dc exec -T -e PGPASSWORD="$CLAVE" -e PGCONNECT_TIMEOUT=10 cliente psql "host
 
 echo "── una contraseña nueva (Reset password): la nueva entra, la vieja no"
 r=$(pide demo POST "/v1/postgres/proyectos/$P/ramas/main/roles/$ROL/contrasena")
-NUEVA=$(campo "$r" rol contrasena); reconcilia "$VM" computo-a
+NUEVA=$(campo "$r" rol contrasena); [ "$(hecha demo "$r")" = hecha ] || echo "  ✗ la contraseña nueva no se aplicó"
 t0=$(date +%s)
 until [ "$(entra "$ROL" "$NUEVA" "$P" "$VM")" = "$ROL" ] || [ $(( $(date +%s) - t0 )) -ge 300 ]; do sleep 5; done
 t=$(( $(date +%s) - t0 ))
@@ -68,9 +67,9 @@ CLAVE=$NUEVA
 echo "── se borra"
 for c in demo victor; do
   r=$(pide "$c" DELETE "/v1/postgres/proyectos/$P")
-  [ -n "$(campo "$r" operacion id)" ] && echo "  ✓ $c lo borra por la API" || { echo "  ✗ $c: ${r:0:200}"; fallos=$((fallos+1)); }
+  [ "$(hecha "$c" "$r")" = hecha ] && echo "  ✓ $c lo borra por la API" || { echo "  ✗ $c: ${r:0:200}"; fallos=$((fallos+1)); }
 done
-barre
+[ -z "$(docker ps -aq --filter name="$VM" --filter name="$VM_B")" ] && echo "  ✓ y sus cómputos ya no están"   || { echo "  ✗ quedan cómputos"; fallos=$((fallos+1)); }
 r=$(entra "$ROL" "$CLAVE" "$P" "$VM")
 [ "$r" = "$ROL" ] && { echo "  ✗ borrado, y aún entra"; fallos=$((fallos+1)); } || echo "  ✓ borrado, ya no entra: ${r:0:110}"
 echo

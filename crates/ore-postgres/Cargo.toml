@@ -15,6 +15,11 @@ description = "El plano de control de ORE Serverless Postgres (ADR 0058, P4)"
 # ⚠️ Como `ore-iam`: no enlaza en Windows sin MinGW (`postgres` → `tokio` →
 #   `windows-sys`), y `ore-core` ya arrastra `psm`. Se compila en Linux: CI, la
 #   imagen o Docker.
+# P6·1 · el laboratorio local: cómputos en Docker y almacenamiento de mentira
+# (src/laboratorio.rs). ⛔ Nunca en la imagen de producción: sólo `--features laboratorio`.
+[features]
+laboratorio = []
+
 [dependencies]
 ore-core    = { path = "../ore-core" }
 ore-entrada = { path = "../ore-entrada" }

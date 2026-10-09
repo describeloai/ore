@@ -7,8 +7,11 @@
 #   iam        un ore-iam de mentira: dos celdas, dos organizaciones
 #   redis      por donde `ore-postgres` le dice al proxy qué olvidar (neondb-proxy-ws-updates)
 #   plano      `ore-postgres servir`, el binario compilado en el volumen ore-pruebas-t
-#   computo-a  hace de la VM del endpoint: Postgres 17 en 5432 y el pgbouncer de la imagen de Neon
-#   computo-b    en 6432 (computo/); el rol y el verificador los pone lab.sh, que hace de reconciliador
+#   docker-api la API de Docker (un socat sobre el socket), SÓLO dentro de esta red: con ella el
+#              reconciliador de verdad crea, para y borra los cómputos (P6·1, feature `laboratorio`)
+#   ep-…       los cómputos: contenedores que crea ore-postgres con la imagen p5lab-computo:2
+#              (computo/: Postgres 17, pgbouncer y el compute_ctl de mentira) y el volumen
+#              p5lab-almacen, que hace de pageserver
 #   proxy      el proxy de Neon, `--auth-backend control-plane` contra `plano`
 #   cliente    psql, con el SNI de `ep-….europe-west1.pg.paladio.io`
 #
@@ -17,14 +20,12 @@
 name: p5lab
 networks:
   lab:
-    ipam: { config: [{ subnet: 172.29.51.0/24 }] }
+    name: p5lab_lab
+    # Los fijos, por debajo de .128; los cómputos que crea ore-postgres, de .128 para arriba.
+    ipam: { config: [{ subnet: 172.29.51.0/24, ip_range: 172.29.51.128/25 }] }
 volumes:
   ore-pruebas-t: { external: true }
-x-computo: &computo
-  image: p5lab-computo:1
-  env_file: .secretos/computo.env
-  environment: { POSTGRES_HOST_AUTH_METHOD: scram-sha-256 }
-  healthcheck: { test: [CMD, pg_isready, -q, -h, 127.0.0.1, -p, "6432"], interval: 1s, retries: 60 }
+  almacen: { name: p5lab-almacen }
 services:
   base:
     image: postgres:17
@@ -45,18 +46,18 @@ services:
     image: rust:1
     command: [/tt/p4pg/release/ore-postgres, servir, --bind, 0.0.0.0:8100, --iam, "172.29.51.6:8090",
               --llaves-almacen, /no-hay, --llaves-proxy, /llaves/proxy, --redis, "172.29.51.8:6379",
-              --dominio, europe-west1.pg.paladio.io]
+              --dominio, europe-west1.pg.paladio.io,
+              --computos, "docker:172.29.51.9:2375", --red-computo, p5lab_lab, --imagen-computo, "p5lab-computo:2",
+              --llaves-computo, /llaves/computo, --almacen-local, /almacen]
     env_file: .secretos/plano.env
-    volumes: [ore-pruebas-t:/tt:ro, ./.secretos/proxy:/llaves/proxy:ro]
+    volumes: [ore-pruebas-t:/tt:ro, ./.secretos/proxy:/llaves/proxy:ro, ./.secretos/computo:/llaves/computo:ro, almacen:/almacen]
     networks: { lab: { ipv4_address: 172.29.51.7 } }
-    depends_on: { base: { condition: service_healthy }, iam: { condition: service_started }, redis: { condition: service_started } }
-  computo-a:
-    <<: *computo
-    build: ./computo
-    networks: { lab: { ipv4_address: 172.29.51.11 } }
-  computo-b:
-    <<: *computo
-    networks: { lab: { ipv4_address: 172.29.51.12 } }
+    depends_on: { base: { condition: service_healthy }, iam: { condition: service_started }, redis: { condition: service_started }, docker-api: { condition: service_started } }
+  docker-api:
+    image: alpine/socat:1.8.0.1
+    command: ["TCP-LISTEN:2375,fork,reuseaddr", "UNIX-CONNECT:/var/run/docker.sock"]
+    volumes: [/var/run/docker.sock:/var/run/docker.sock]
+    networks: { lab: { ipv4_address: 172.29.51.9 } }
   proxy:
     image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/neon:8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b
     entrypoint: [sh, -c]

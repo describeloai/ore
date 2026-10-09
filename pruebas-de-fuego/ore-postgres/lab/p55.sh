@@ -15,15 +15,15 @@ r=$(pide demo POST /v1/postgres/proyectos "{\"id\":\"$P\",\"dueno\":\"user:p55\"
 ROL=$(campo "$r" rol nombre); CLAVE=$(campo "$r" rol contrasena)
 VM=$(campo "$(pide demo GET "/v1/postgres/proyectos/$P/ramas/main/endpoints/principal")" vm)
 [ -n "$VM" ] || { echo "✗ no crea: ${r:0:300}"; exit 1; }
-reconcilia "$VM" computo-a
-echo "── $P en computo-a ($VM), rol $ROL"
+[ "$(listo demo "$P")" = "$VM" ] || { echo "✗ no queda listo"; exit 1; }
+echo "── $P en $VM, rol $ROL"
 
 # por SNI HOST [PGOPTS…] → pgbench/psql con libpq por el proxy (PGHOST = el nombre, PGHOSTADDR = el proxy)
 por() { local h=$1; shift
   dc exec -T -e PGPASSWORD="${CLAVE_USADA:-$CLAVE}" -e PGHOST="$h.$DOMINIO" -e PGHOSTADDR=172.29.51.20 -e PGPORT=4432 \
     -e PGUSER="$ROL" -e PGDATABASE="$P" -e PGSSLMODE=verify-full -e PGSSLROOTCERT=/llaves/tls/tls.crt \
     -e PGCONNECT_TIMEOUT=15 cliente "$@"; }
-en_postgres() { dc exec -T computo-a psql -U postgres -p 5432 -Atc "$1"; }
+en_postgres() { en_vm "$VM" "$1"; }
 
 por "$VM" pgbench -i -s 2 -q >/dev/null 2>&1 && echo "  ✓ pgbench -i por el endpoint directo" || { echo "  ✗ pgbench -i"; exit 1; }
 r=$(por "$VM-pooler" psql -Atc "select current_user || ' ' || coalesce(current_setting('application_name'), '')" 2>&1 | tail -1)
@@ -56,6 +56,6 @@ s=$(por "$VM-pooler" pgbench -n -M extended -c 20 -j 4 -T 5 2>&1)
 r=$(CLAVE_USADA=mala por "$VM-pooler" psql -Atc 'select 1' 2>&1 | tail -1)
 [ "$r" = 1 ] && { echo "  ✗ entra por el pool con otra contraseña"; fallos=$((fallos+1)); } || echo "  ✓ otra contraseña por el pool, no: ${r:0:100}"
 
-pide demo DELETE "/v1/postgres/proyectos/$P" >/dev/null; barre
+hecha demo "$(pide demo DELETE "/v1/postgres/proyectos/$P")" >/dev/null
 echo
 [ $fallos = 0 ] && echo "P5·5 (laboratorio) ✓ todo" || { echo "P5·5 (laboratorio) ✗ $fallos fallos"; exit 1; }

@@ -1300,3 +1300,27 @@ Leído en el commit fijado (`8269bece`), sin Google:
 4. **dormido cuesta 0** de verdad: la VM desaparece y el nodo del pool `pg` se libera con el autoescalado;
 5. el pool en el clúster: cuántas VMs caben en la cuota, el aislamiento de una VM del pool antes de tener tenant (barreras 2 y 3) y la migración en vivo de una VM despierta;
 6. el despertar a través del balanceador, desde internet.
+
+#### P6·1 · El cómputo de mentira y el backend Docker (2026-10-09)
+
+**El laboratorio ya no tiene un reconciliador de mentira: corre el de verdad.** `lab.sh reconcilia`, `hechas` y `barre` desaparecen; las pruebas esperan a la API (`hecha`: una operación acabada; `listo`: un endpoint listo).
+
+- **El backend Docker** (`src/laboratorio.rs`, *feature* `laboratorio`, `--computos docker:HOST:PUERTO`) implementa `Computos` sobre la API de Docker. Cada cómputo es un contenedor `ep-…` en la red del laboratorio. La API de Docker llega por un `socat` que solo existe dentro de esa red.
+- **El mismo contrato que NeonVM**: `listo` y `configurar` son ahora funciones compartidas (`listo_por_http`, `configurar_por_http`) que usan NeonVM y el laboratorio, con el mismo token y la misma especificación. Lo que se prueba en el laboratorio es el código que corre en producción.
+- **El almacenamiento de mentira** (`AlmacenDeMentira`): los datos de cada timeline viven en un volumen compartido (`/almacen/<tenant>/<timeline>`) que hace de pageserver, así que borrar el contenedor y crear otro conserva los datos. Al borrar el proyecto se borra su directorio.
+- **El `compute_ctl` falso** (`lab/computo/compute_ctl_falso.py`, el proceso principal de la imagen `p5lab-computo:2`), escrito contra lo leído en P6·0:
+  - arranca vacío (`spec: null` → `empty`) o con su especificación;
+  - `/status` con `last_active` calculado con las consultas de `monitor.rs`;
+  - `/configure` solo en `empty`/`running`, y contesta al quedar `running`; aplica roles, bases, `delta_operations`, `max_connections` y `pgbouncer_settings`, este último con el `.ini` y `SIGHUP`, como `tune_pgbouncer`;
+  - `/terminate` devuelve el LSN;
+  - el token con el `compute_id` propio;
+  - un retardo de arranque configurable (`ARRANQUE_S`) para P6·5.
+- **El binario de producción no lo lleva**: sin la *feature*, `--computos` no existe y `clippy` está limpio con y sin ella. Borrar `laboratorio.rs` no toca la lógica.
+
+**Medido**, todo en verde desde cero:
+- las 40 pruebas del crate;
+- P5·1, P5·4, P5·5, P5·5b y P5·6, con el reconciliador real creando los cómputos.
+
+En P5·5b, el pool de 50 por base llega ahora a la VM **por el camino real**: la base nueva lanza `configurar-rama`, `/configure` lleva `pgbouncer_settings` y el `compute_ctl` rehace el pool sin reiniciar.
+
+Al terminar, **ni un cómputo vivo ni un tenant en el almacén**: borrar no deja rastro.

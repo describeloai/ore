@@ -17,10 +17,10 @@ crea() {   # crea CELDA → «vm rol clave»
   [ -n "$vm" ] || { echo "  ✗ $1 no crea: ${r:0:300}" >&2; exit 1; }
   echo "$vm $(campo "$r" rol nombre) $(campo "$r" rol contrasena)"
 }
-echo "── demo y victor crean $P; el laboratorio hace de reconciliador"
+echo "── demo y victor crean $P; el reconciliador de verdad levanta sus cómputos"
 read -r VM ROL CLAVE < <(crea demo)
 read -r VM_B _ _ < <(crea victor)
-reconcilia "$VM" computo-a; reconcilia "$VM_B" computo-b
+[ "$(listo demo "$P")" = "$VM" ] && [ "$(listo victor "$P")" = "$VM_B" ] || { echo "  ✗ no quedan listos"; exit 1; }
 echo "  ✓ demo: $VM · victor: $VM_B"
 
 echo "── @neondatabase/serverless 1.1.0 desde Node 22"
@@ -33,6 +33,6 @@ docker run --rm --network p5lab_lab \
   -- "$ROL" "$CLAVE" "$P" "$VM" "$VM_B"
 r=$?
 
-for c in demo victor; do pide "$c" DELETE "/v1/postgres/proyectos/$P" >/dev/null; done; barre
+for c in demo victor; do hecha "$c" "$(pide "$c" DELETE "/v1/postgres/proyectos/$P")" >/dev/null; done
 echo
 [ $r = 0 ] && echo "P5·4 (laboratorio) ✓ todo" || { echo "P5·4 (laboratorio) ✗"; exit 1; }

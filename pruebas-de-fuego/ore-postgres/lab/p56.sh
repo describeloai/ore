@@ -17,7 +17,7 @@ r=$(pide demo POST /v1/postgres/proyectos "{\"id\":\"$P\",\"dueno\":\"user:p56\"
 ROL=$(campo "$r" rol nombre); CLAVE=$(campo "$r" rol contrasena)
 VM=$(campo "$(pide demo GET "/v1/postgres/proyectos/$P/ramas/main/endpoints/principal")" vm)
 [ -n "$VM" ] || { echo "✗ no crea: ${r:0:300}"; exit 1; }
-reconcilia "$VM" computo-a
+[ "$(listo demo "$P")" = "$VM" ] || { echo "✗ no queda listo"; exit 1; }
 echo "── $P ($VM), rol $ROL"
 
 tcp() { entra "$ROL" "${1:-$CLAVE}" "$P" "$VM"; }
@@ -28,7 +28,7 @@ http() {   # desde 172.29.51.31, el driver por HTTP como lo hace @neondatabase/s
     | sed -n 's/.*"u":"\([^"]*\)".*/\1/p; s/.*"message":"\([^"]*\)".*/\1/p' | head -1; }
 cambia() {   # cambia JSON [celda] → el código HTTP; deja la operación hecha
   local r; r=$(pide "${2:-demo}" POST "/v1/postgres/proyectos/$P/acceso" "$1")
-  hechas; [ -n "$(campo "$r" operacion id)" ] && echo 202 || echo "${r:0:160}"; }
+  [ "$(hecha "${2:-demo}" "$r")" = hecha ] && { sleep 2; echo 202; } || echo "${r:0:160}"; }   # 2 s: que olvidar lo publique
 mira() { local que=$1 quiere=$2 r=$3
   case "$quiere:$r" in si:"$ROL") echo "  ✓ $que: entra";; no:"$ROL") echo "  ✗ $que: entra"; fallos=$((fallos+1));;
     si:*) echo "  ✗ $que: no entra (${r:0:110})"; fallos=$((fallos+1));; no:*) echo "  ✓ $que, no: ${r:0:100}";; esac; }
@@ -68,6 +68,6 @@ r=$(tcp); case "$r" in *"too many"*|*"Too many"*) echo "  ✓ y mientras la cube
 cambia '{"limites":{"tcp":{"por_segundo":100,"rafaga":1000}}}' >/dev/null
 mira "con el límite de siempre" si "$(tcp)"
 
-pide demo DELETE "/v1/postgres/proyectos/$P" >/dev/null; barre
+hecha demo "$(pide demo DELETE "/v1/postgres/proyectos/$P")" >/dev/null
 echo
 [ $fallos = 0 ] && echo "P5·6 (laboratorio) ✓ todo" || { echo "P5·6 (laboratorio) ✗ $fallos fallos"; exit 1; }

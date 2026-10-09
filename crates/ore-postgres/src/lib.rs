@@ -29,6 +29,8 @@ pub mod celda;
 pub mod computos;
 pub mod especificacion;
 pub mod kube;
+#[cfg(feature = "laboratorio")]
+pub mod laboratorio;
 pub mod llaves;
 pub mod olvidar;
 pub mod proxy;
@@ -292,6 +294,46 @@ fn computos_de(
     ))
 }
 
+/// P6·1 · El laboratorio local: `--computos docker:HOST:PUERTO` arranca el
+/// reconciliador con cómputos en Docker y el almacenamiento de mentira
+/// ([`laboratorio`]). Devuelve si lo hizo. Sin la feature, nunca.
+#[cfg(feature = "laboratorio")]
+fn arrancar_laboratorio(args: &[String], url: &str) -> bool {
+    let Some(api) =
+        valor(args, "--computos").and_then(|v| v.strip_prefix("docker:").map(str::to_string))
+    else {
+        return false;
+    };
+    let red = valor(args, "--red-computo").unwrap_or_else(|| "p5lab_lab".into());
+    let imagen = valor(args, "--imagen-computo").unwrap_or_else(|| "p5lab-computo:2".into());
+    let raiz = valor(args, "--almacen-local").unwrap_or_else(|| "/almacen".into());
+    let llaves_computo =
+        valor(args, "--llaves-computo").unwrap_or_else(|| "/llaves/computo".into());
+    let propia = match llaves::Llave::del_fichero(
+        &std::path::Path::new(&llaves_computo).join("privada.pem"),
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("  ⚠ LABORATORIO SIN RECONCILIADOR: {e}");
+            return true;
+        }
+    };
+    eprintln!(
+        "  ⚠ LABORATORIO  cómputos en Docker ({api}, red {red}, imagen {imagen}); almacén de mentira en {raiz}"
+    );
+    reconciliador::arrancar(
+        url.to_string(),
+        std::sync::Arc::new(laboratorio::AlmacenDeMentira { raiz: raiz.into() }),
+        std::sync::Arc::new(laboratorio::Docker::nuevo(&api, &red, &imagen, propia)),
+    );
+    true
+}
+
+#[cfg(not(feature = "laboratorio"))]
+fn arrancar_laboratorio(_: &[String], _: &str) -> bool {
+    false
+}
+
 fn servir(args: &[String]) -> ExitCode {
     let url = match std::env::var("ORE_POSTGRES_URL") {
         Ok(u) if !u.is_empty() => u,
@@ -351,49 +393,55 @@ fn servir(args: &[String]) -> ExitCode {
     eprintln!("ore-postgres · {bind}");
     eprintln!("  celdas       la organización de cada una, de ore-iam en {iam}");
     let mut avisos = None;
-    match almacen::Neon::nuevo(
-        &controlador,
-        safekeepers.clone(),
-        std::path::Path::new(&llaves),
-    ) {
-        Ok(neon) => {
-            eprintln!(
-                "  almacén      controller {controlador} · safekeepers {}",
-                safekeepers.join(", ")
-            );
-            let sk_pg = neon.safekeepers_pg();
-            let neon: std::sync::Arc<dyn almacen::Almacen> = std::sync::Arc::new(neon);
-            let computos: std::sync::Arc<dyn computos::Computos> =
-                match computos_de(&imagen, &ns_computo, &llaves, &llaves_computo, sk_pg) {
-                    Ok(c) => {
-                        eprintln!("  cómputo      VMs en {ns_computo} · imagen {imagen}");
-                        std::sync::Arc::new(c)
+    if arrancar_laboratorio(args, &url) {
+        // P6·1: cómputos en Docker y almacenamiento de mentira (sólo con la feature `laboratorio`).
+    } else {
+        match almacen::Neon::nuevo(
+            &controlador,
+            safekeepers.clone(),
+            std::path::Path::new(&llaves),
+        ) {
+            Ok(neon) => {
+                eprintln!(
+                    "  almacén      controller {controlador} · safekeepers {}",
+                    safekeepers.join(", ")
+                );
+                let sk_pg = neon.safekeepers_pg();
+                let neon: std::sync::Arc<dyn almacen::Almacen> = std::sync::Arc::new(neon);
+                let computos: std::sync::Arc<dyn computos::Computos> =
+                    match computos_de(&imagen, &ns_computo, &llaves, &llaves_computo, sk_pg) {
+                        Ok(c) => {
+                            eprintln!("  cómputo      VMs en {ns_computo} · imagen {imagen}");
+                            std::sync::Arc::new(c)
+                        }
+                        Err(e) => {
+                            eprintln!("  ⚠ SIN CÓMPUTOS: {e}");
+                            eprintln!("    los endpoints quedan en curso hasta que esté");
+                            std::sync::Arc::new(computos::SinKube(e))
+                        }
+                    };
+                reconciliador::arrancar(url.clone(), neon.clone(), computos.clone());
+                // P4·5: los avisos del controller, con la pública del almacenamiento.
+                match llaves::Publica::del_fichero(
+                    &std::path::Path::new(&llaves).join("publica.pem"),
+                ) {
+                    Ok(infra) => {
+                        eprintln!(
+                            "  avisos       /avisos/notify-attach (token infra del almacenamiento)"
+                        );
+                        avisos = Some(avisos::Avisos {
+                            almacen: neon,
+                            computos,
+                            infra,
+                        });
                     }
-                    Err(e) => {
-                        eprintln!("  ⚠ SIN CÓMPUTOS: {e}");
-                        eprintln!("    los endpoints quedan en curso hasta que esté");
-                        std::sync::Arc::new(computos::SinKube(e))
-                    }
-                };
-            reconciliador::arrancar(url.clone(), neon.clone(), computos.clone());
-            // P4·5: los avisos del controller, con la pública del almacenamiento.
-            match llaves::Publica::del_fichero(&std::path::Path::new(&llaves).join("publica.pem")) {
-                Ok(infra) => {
-                    eprintln!(
-                        "  avisos       /avisos/notify-attach (token infra del almacenamiento)"
-                    );
-                    avisos = Some(avisos::Avisos {
-                        almacen: neon,
-                        computos,
-                        infra,
-                    });
+                    Err(e) => eprintln!("  ⚠ SIN AVISOS: {e}"),
                 }
-                Err(e) => eprintln!("  ⚠ SIN AVISOS: {e}"),
             }
-        }
-        Err(e) => {
-            eprintln!("  ⚠ SIN RECONCILIADOR: {e}");
-            eprintln!("    las operaciones quedan en curso hasta que se monten los tokens");
+            Err(e) => {
+                eprintln!("  ⚠ SIN RECONCILIADOR: {e}");
+                eprintln!("    las operaciones quedan en curso hasta que se monten los tokens");
+            }
         }
     }
     // P5·1: las preguntas del proxy, con SU token (un Secret que sólo montan él y esto).

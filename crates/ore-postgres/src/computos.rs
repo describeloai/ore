@@ -173,40 +173,7 @@ impl Computos for Neonvm {
     }
 
     fn configurar(&self, vm: &str, ip_pod: &str, configuracion: &Json) -> Result<(), Fallo> {
-        // Entera: `/configure` pide `{spec, compute_ctl_config}`, la misma forma que
-        // el config.json del arranque (medido en vivo: sólo con `spec`, 422
-        // «missing field `compute_ctl_config`»).
-        let Json::Obj(todo) = configuracion else {
-            return Err(Fallo::Definitivo("la configuración no es un objeto".into()));
-        };
-        if todo.get("spec").is_none() || todo.get("compute_ctl_config").is_none() {
-            return Err(Fallo::Definitivo(
-                "la configuración no trae `spec` y `compute_ctl_config`".into(),
-            ));
-        }
-        let token = format!(
-            "Bearer {}",
-            token_de_computo(&self.propia, vm, ahora() + 300)
-        );
-        match pedir_con(
-            "POST",
-            &format!("{ip_pod}:3080"),
-            "/configure",
-            &[("Authorization", &token)],
-            Some(configuracion),
-            Plazos {
-                conectar: Duration::from_secs(3),
-                // compute_ctl contesta cuando lo ha aplicado (crear roles y bases).
-                responder: Duration::from_secs(60),
-            },
-        ) {
-            Ok((200, _)) => Ok(()),
-            Ok((c, r)) => Err(Fallo::Reintentar(format!(
-                "compute_ctl de {vm} no aplicó la configuración: {c} {}",
-                r.chars().take(300).collect::<String>()
-            ))),
-            Err(e) => Err(Fallo::Reintentar(format!("compute_ctl de {vm}: {e}"))),
-        }
+        configurar_por_http(&self.propia, vm, ip_pod, configuracion)
     }
 
     fn estado(&self, vm: &str) -> Result<Option<Estado>, Fallo> {
@@ -254,25 +221,7 @@ impl Computos for Neonvm {
     }
 
     fn listo(&self, vm: &str, ip_pod: &str) -> Result<bool, Fallo> {
-        let token = format!(
-            "Bearer {}",
-            token_de_computo(&self.propia, vm, ahora() + 300)
-        );
-        match pedir_con(
-            "GET",
-            &format!("{ip_pod}:3080"),
-            "/status",
-            &[("Authorization", &token)],
-            None,
-            Plazos {
-                conectar: Duration::from_secs(2),
-                responder: Duration::from_secs(5),
-            },
-        ) {
-            Ok((200, cuerpo)) => Ok(cuerpo.contains("\"running\"")),
-            // Arrancando: aún no escucha, o aún no contesta bien.
-            Ok(_) | Err(_) => Ok(false),
-        }
+        listo_por_http(&self.propia, vm, ip_pod)
     }
 
     fn borrar(&self, vm: &str) -> Result<(), Fallo> {
@@ -280,6 +229,67 @@ impl Computos for Neonvm {
         self.kube
             .borrar(&kube::configmap(&self.ns, &format!("{vm}-config")))
             .map_err(k8s)
+    }
+}
+
+/// `/configure` a un `compute_ctl`, con un token firmado para ese cómputo. Lo usan
+/// NeonVM y el backend del laboratorio: el mismo contrato, el mismo código.
+pub fn configurar_por_http(
+    propia: &Llave,
+    vm: &str,
+    ip_pod: &str,
+    configuracion: &Json,
+) -> Result<(), Fallo> {
+    // Entera: `/configure` pide `{spec, compute_ctl_config}`, la misma forma que
+    // el config.json del arranque (medido en vivo: sólo con `spec`, 422
+    // «missing field `compute_ctl_config`»).
+    let Json::Obj(todo) = configuracion else {
+        return Err(Fallo::Definitivo("la configuración no es un objeto".into()));
+    };
+    if todo.get("spec").is_none() || todo.get("compute_ctl_config").is_none() {
+        return Err(Fallo::Definitivo(
+            "la configuración no trae `spec` y `compute_ctl_config`".into(),
+        ));
+    }
+    let token = format!("Bearer {}", token_de_computo(propia, vm, ahora() + 300));
+    match pedir_con(
+        "POST",
+        &format!("{ip_pod}:3080"),
+        "/configure",
+        &[("Authorization", &token)],
+        Some(configuracion),
+        Plazos {
+            conectar: Duration::from_secs(3),
+            // compute_ctl contesta cuando lo ha aplicado (crear roles y bases).
+            responder: Duration::from_secs(60),
+        },
+    ) {
+        Ok((200, _)) => Ok(()),
+        Ok((c, r)) => Err(Fallo::Reintentar(format!(
+            "compute_ctl de {vm} no aplicó la configuración: {c} {}",
+            r.chars().take(300).collect::<String>()
+        ))),
+        Err(e) => Err(Fallo::Reintentar(format!("compute_ctl de {vm}: {e}"))),
+    }
+}
+
+/// ¿Dice su `compute_ctl` que está `running`? (`/status`, con el mismo token).
+pub fn listo_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<bool, Fallo> {
+    let token = format!("Bearer {}", token_de_computo(propia, vm, ahora() + 300));
+    match pedir_con(
+        "GET",
+        &format!("{ip_pod}:3080"),
+        "/status",
+        &[("Authorization", &token)],
+        None,
+        Plazos {
+            conectar: Duration::from_secs(2),
+            responder: Duration::from_secs(5),
+        },
+    ) {
+        Ok((200, cuerpo)) => Ok(cuerpo.contains("\"running\"")),
+        // Arrancando: aún no escucha, o aún no contesta bien.
+        Ok(_) | Err(_) => Ok(false),
     }
 }
 
