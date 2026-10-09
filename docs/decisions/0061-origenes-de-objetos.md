@@ -1,6 +1,6 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
-**Estado:** propuesto (2026-10-09). O0 en curso. Investigación:
+**Estado:** propuesto (2026-10-09). **O0 hecho** (2026-10-09); siguiente O1. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -74,6 +74,38 @@ Cada paso entra en verde: los tests de Rust de los crates tocados, `los_objetos_
 `dependencias.rs` (las invariantes: `ore-serve` no lee orígenes, el firmante no tiene red), las
 pruebas de fuego de S3 contra el S3 de mentira (`s3-*.sh`), la de la puerta y la conformidad de
 media en la JVM y en Python.
+
+### O0 · hecho (2026-10-09)
+
+| paso | commit | qué quedó |
+|---|---|---|
+| O0·1 | `40256a03` | `ore-objetos` (sólo `sha2`): `Objeto`, `Version`, `Abierto` (con `huella`), el rasgo `Origen`, `Fija`, `Capacidades`, la huella (CRC64NVME y el cálculo que casa con una huella dada) y `EnMemoria`. `ore-s3` implementa el rasgo sobre `Cubo(&Bucket)` (el `Bucket` es de `ore-sigv4`) |
+| O0·2 | `3c095480` | `ore-read-objetos`: catálogo, filas, tabular, versiones, bajada, medio (movidos con su historia) y `driver::main::<P: Proveedor>()`. `ore-read-s3` es su fuente, `acceso.rs` y un `Proveedor` |
+| O0·3 | `f331ed0c` | el rasgo gana `leer_fijado` (con `Rechazo`: cambiado, rango, origen) y `firmar`; `ore-medios` usa `Origen::Objeto` y `origenes::de(fuente)` elige el proveedor por el esquema (otro, `501`) |
+| O0·4 | `14d22cd7` | `capacidades` con el nombre de cada driver y `objetos`; el firmante de `ore collections --servir` por tipo (`ore-firmar-<tipo>`); `canjeador_de` en `ore-serve` |
+
+**Probado sin cambio de comportamiento**: los tests de los crates tocados (598 en `ore-cli`,
+`ore-serve`, `ore-driver` y `ore-read-objetos`; los 42 de `ore-medios`, que leen una virtual contra
+un S3 falso por el rasgo), y **el binario de antes de O0 contra el de ahora**, con el mismo S3 de
+mentira, en `catalogo`, `testigo`, `explorar`, `check`, `versiones`, `bajar` y tres errores: byte a
+byte igual. Sólo `capacidades` cambia, a propósito (`objetos`). `leer`, `estimar` y `servir` van por
+el mismo código movido y los cubren sus tests.
+
+**Para añadir un proveedor** queda, en este orden:
+
+1. su transporte y su `impl Origen` (listar, versiones, huella, `abrir_version`, `leer_fijado`,
+   `firmar` si sabe) y sus `Capacidades`;
+2. `ore-read-<tipo>`: su fuente (leer la URL y canjear), su `check`, su `explorar`, su
+   `Proveedor` y `driver::main`;
+3. su rama en `ore-medios/src/origenes.rs`, y en `canjeador_de` (`ore-serve/src/datasets.rs`) si
+   su credencial se canjea; un `ore-firmar-<tipo>` sin red si sus URLs se firman fuera de
+   `ore-medios` (`ore collections --servir`);
+4. las ramas que ya eran por tipo: `url_sin_secreto` (`cola.rs`), el asistente
+   (`credenciales.rs`), `--tipos` de la pasarela, el banco del kit;
+5. el `Dockerfile` (`/opt/ore/conectores`), `ci/compilar-binarios.sh` y, si su puerto no es el
+   443, la malla (`20-driver.yaml`, `45-ore-medios.yaml`), con su go;
+6. las invariantes de `dependencias.rs` para lo nuevo, su banco de mentira, y la conformidad de
+   media sobre una virtual suya.
 
 ## Lo que no se hace aquí
 
