@@ -159,6 +159,7 @@ fn especificacion_mando(args: &[String]) -> ExitCode {
             ahora: &ahora,
             replica: false,
             datos: &especificacion::Datos::default(),
+            cu_conexiones: 1.0,
         },
         &propia,
         Some(&del_almacen),

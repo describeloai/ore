@@ -2,9 +2,9 @@
 # P5·5 en el laboratorio (ADR 0058): el pool. `ep-…-pooler.europe-west1.pg.paladio.io` es la misma VM
 # por su pgbouncer (6432, modo transaction, el de la imagen de Neon): muchas conexiones de cliente
 # sobre pocas de servidor. Hecho cuando, por el proxy de Neon y con verify-full:
-#   · 150 clientes a la vez por -pooler, sin fallos, con a lo sumo 64 conexiones en Postgres
-#     (default_pool_size), cuando Postgres sólo admite 100 (max_connections);
-#   · los mismos 150 directos, sin pool, NO caben: es lo que el pool resuelve;
+#   · más clientes a la vez que los que admite Postgres (max_connections + 40) por -pooler, sin fallos,
+#     con a lo sumo el pool por base en Postgres (los dos, de la API: P5·5b);
+#   · los mismos directos, sin pool, NO caben: es lo que el pool resuelve;
 #   · el protocolo extendido (-M extended) también, y otra contraseña por el pool, fuera.
 #
 #   lab.sh arriba && p55.sh
@@ -29,21 +29,23 @@ por "$VM" pgbench -i -s 2 -q >/dev/null 2>&1 && echo "  ✓ pgbench -i por el en
 r=$(por "$VM-pooler" psql -Atc "select current_user || ' ' || coalesce(current_setting('application_name'), '')" 2>&1 | tail -1)
 case "$r" in "$ROL "*) echo "  ✓ por -pooler entra ($r)";; *) echo "  ✗ por -pooler: $r"; fallos=$((fallos+1));; esac
 
-echo "── 150 clientes a la vez, 20 s"
+EP=$(pide demo GET "/v1/postgres/proyectos/$P/ramas/main/endpoints/principal")
+MAX=$(campo "$EP" conexiones maximas); POOL=$(campo "$EP" conexiones pool_por_base); N=$((MAX + 40))
+echo "── $N clientes a la vez, 20 s (Postgres admite $MAX; pool por base $POOL)"
 pico() { local m=0 n; while [ ! -f "$LAB_TMP/fin" ]; do
   n=$(en_postgres "select count(*) from pg_stat_activity where usename = '$ROL' and backend_type = 'client backend'"); [ "${n:-0}" -gt $m ] && m=$n; sleep 0.5
   done; echo $m > "$LAB_TMP/pico"; }
 LAB_TMP=$(mktemp -d); pico &
-s=$(por "$VM-pooler" pgbench -n -c 150 -j 6 -T 20 2>&1); touch "$LAB_TMP/fin"; wait
+s=$(por "$VM-pooler" pgbench -n -c $N -j 8 -T 20 2>&1); touch "$LAB_TMP/fin"; wait
 m=$(cat "$LAB_TMP/pico"); tps=$(echo "$s" | sed -n 's/^tps = \([0-9.]*\).*/\1/p'); fallidas=$(echo "$s" | sed -n 's/^number of failed transactions: \([0-9]*\).*/\1/p')
 hechas=$(echo "$s" | sed -n 's/^number of transactions actually processed: \([0-9]*\).*/\1/p')
 [ -n "$hechas" ] && [ "${fallidas:-0}" = 0 ] && echo "  ✓ por -pooler: $hechas transacciones, ${tps%.*} tps, 0 fallidas" \
   || { echo "  ✗ por -pooler: $(echo "$s" | grep -iE 'error|fatal|failed' | head -2)"; fallos=$((fallos+1)); }
-[ "$m" -gt 0 ] && [ "$m" -le 64 ] && echo "  ✓ en Postgres, como mucho $m conexiones del rol (pool de 64, max_connections 100)" \
+[ "$m" -gt 0 ] && [ "$m" -le "$POOL" ] && echo "  ✓ en Postgres, como mucho $m conexiones del rol (pool $POOL, max_connections $MAX)" \
   || { echo "  ✗ $m conexiones en Postgres: el pool no agrupa"; fallos=$((fallos+1)); }
-s=$(por "$VM" pgbench -n -c 150 -j 6 -T 5 2>&1)
+s=$(por "$VM" pgbench -n -c $N -j 8 -T 5 2>&1)
 echo "$s" | grep -qiE "too many clients|remaining connection slots|connection to server .* failed" \
-  && echo "  ✓ los mismos 150 directos no caben: $(echo "$s" | grep -oiE 'too many clients already|remaining connection slots are reserved[^\"]*' | head -1)" \
+  && echo "  ✓ los mismos $N directos no caben: $(echo "$s" | grep -oiE 'too many clients already|remaining connection slots are reserved[^\"]*' | head -1)" \
   || { echo "  ✗ directos no falla (¿max_connections?): $(echo "$s" | tail -2 | tr '\n' ' ')"; fallos=$((fallos+1)); }
 rm -rf "$LAB_TMP"
 

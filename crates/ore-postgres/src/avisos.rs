@@ -70,11 +70,15 @@ impl Avisos {
             return Respuesta::error(400, "el aviso no dice `tenant_id`");
         };
         let filas = match c.query(
-            "select e.vm, e.ip_pod, e.tipo = 'lectura', r.timeline, e.organizacion, e.proyecto, e.rama
+            &format!(
+            "select e.vm, e.ip_pod, e.tipo = 'lectura', r.timeline, e.organizacion, e.proyecto, e.rama,
+                    {}
                from plano.endpoint e
                join plano.proyecto p on p.organizacion = e.organizacion and p.id = e.proyecto
                join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto and r.id = e.rama
               where p.tenant = $1 and e.deseado = 'vivo' and e.observado = 'listo' and e.ip_pod is not null",
+                crate::especificacion::CU_DE_LAS_CONEXIONES
+            ),
             &[&tenant],
         ) {
             Ok(f) => f,
@@ -90,7 +94,7 @@ impl Avisos {
         };
         let mut fallos = Vec::new();
         for f in &filas {
-            let (vm, ip, lectura, timeline, org, proyecto, rama): (
+            let (vm, ip, lectura, timeline, org, proyecto, rama, cu): (
                 String,
                 String,
                 bool,
@@ -98,6 +102,7 @@ impl Avisos {
                 String,
                 String,
                 String,
+                f64,
             ) = (
                 f.get(0),
                 f.get(1),
@@ -106,6 +111,7 @@ impl Avisos {
                 f.get(4),
                 f.get(5),
                 f.get(6),
+                f.get(7),
             );
             let r = datos_de(c, &org, &proyecto, &rama).and_then(|datos| {
                 let cfg = self.computos.configuracion(
@@ -116,6 +122,7 @@ impl Avisos {
                     &proyecto,
                     lectura,
                     &datos,
+                    cu,
                 );
                 self.computos.configurar(&vm, &ip, &cfg)
             });

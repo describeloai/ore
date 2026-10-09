@@ -83,6 +83,7 @@ impl Computos for Apunta {
         _: &str,
         replica: bool,
         d: &Datos,
+        _: f64,
     ) -> Json {
         let roles: Vec<&str> = d.roles.iter().map(|(n, _)| n.as_str()).collect();
         let bases: Vec<&str> = d.bases.iter().map(|(n, _)| n.as_str()).collect();
@@ -1046,6 +1047,29 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
         "",
     );
     let (vm, dir) = (campo(&r, &["vm"]), campo(&r, &["direccion"]));
+    // P5·5: 1 CU → 450 conexiones; el 90 % para la base del proyecto, la única.
+    assert!(
+        r.contains(r#""conexiones":{"maximas":450,"pool_por_base":405}"#),
+        "{r}"
+    );
+    // Una réplica pequeña admite las del escritor de su rama: si no, Postgres no la deja seguirlo.
+    let (codigo, rr) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ventas/ramas/main/endpoints",
+        r#"{"id": "lectora", "tipo": "lectura", "cu_min": "0.25", "cu_max": "0.25"}"#,
+    );
+    assert_eq!(codigo, 202, "{rr}");
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, rr) = pide(
+        &s,
+        "a",
+        "GET",
+        "/v1/postgres/proyectos/ventas/ramas/main/endpoints/lectora",
+        "",
+    );
+    assert!(rr.contains(r#""maximas":450"#), "{rr}");
     let pregunta = |token: Option<&str>, ruta: &str, consulta: &[(&str, &str)]| {
         let mut cabeceras = BTreeMap::new();
         if let Some(t) = token {

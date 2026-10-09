@@ -19,7 +19,7 @@
 use crate::almacen::{Almacen, Fallo, Origen};
 use crate::base::{conectar, mal};
 use crate::computos::{Computos, Vm};
-use crate::especificacion::Datos;
+use crate::especificacion::{CU_DE_LAS_CONEXIONES, Datos};
 use postgres::Client;
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,6 +110,8 @@ struct Ep {
     cu_min: f64,
     cu_max: f64,
     generacion: i64,
+    /// De ellas salen las conexiones ([`crate::especificacion::CU_DE_LAS_CONEXIONES`]).
+    cu_conexiones: f64,
 }
 
 fn endpoints(
@@ -119,11 +121,14 @@ fn endpoints(
     uno: Option<&str>,
 ) -> Result<Vec<Ep>, postgres::Error> {
     Ok(c.query(
-        "select e.id, e.vm, e.rama, r.timeline, e.tipo = 'lectura', e.cu_min, e.cu_max, e.generacion
-           from plano.endpoint e
-           join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto and r.id = e.rama
-          where e.organizacion = $1 and e.proyecto = $2 and ($3::text is null or e.id = $3)
-          order by e.creado",
+        &format!(
+            "select e.id, e.vm, e.rama, r.timeline, e.tipo = 'lectura', e.cu_min, e.cu_max, e.generacion,
+                    {CU_DE_LAS_CONEXIONES}
+               from plano.endpoint e
+               join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto and r.id = e.rama
+              where e.organizacion = $1 and e.proyecto = $2 and ($3::text is null or e.id = $3)
+              order by e.creado"
+        ),
         &[&org, &p, &uno],
     )?
     .iter()
@@ -136,6 +141,7 @@ fn endpoints(
         cu_min: f.get(5),
         cu_max: f.get(6),
         generacion: f.get(7),
+        cu_conexiones: f.get(8),
     })
     .collect())
 }
@@ -180,6 +186,7 @@ fn asegurar_endpoint(
                     p,
                     ep.lectura,
                     &datos,
+                    ep.cu_conexiones,
                 )
                 .pretty();
             k.crear(
@@ -445,7 +452,7 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
                 .ok_or_else(|| Fallo::Definitivo("el proyecto ya no está".into()))?;
             let escritor = c
                 .query_opt(
-                    "select e.vm, e.ip_pod, r.timeline from plano.endpoint e
+                    "select e.vm, e.ip_pod, r.timeline, e.cu_max from plano.endpoint e
                        join plano.rama r on r.organizacion = e.organizacion and r.proyecto = e.proyecto
                                         and r.id = e.rama
                       where e.organizacion = $1 and e.proyecto = $2 and e.rama = $3
@@ -456,8 +463,8 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
             let Some(f) = escritor else {
                 return Ok(());
             };
-            let (vm, ip, timeline): (String, Option<String>, String) =
-                (f.get(0), f.get(1), f.get(2));
+            let (vm, ip, timeline, cu): (String, Option<String>, String, f64) =
+                (f.get(0), f.get(1), f.get(2), f.get(3));
             let ip = ip.ok_or_else(|| Fallo::Reintentar("el endpoint no tiene IP".into()))?;
             let datos = datos_de(c, &op.organizacion, &op.proyecto, rama)?;
             let pageserver = a.pageserver_de(&tenant)?;
@@ -469,6 +476,7 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
                 &op.proyecto,
                 false,
                 &datos,
+                cu,
             );
             k.configurar(&vm, &ip, &configuracion)?;
             purgar(c, &op.organizacion, &op.proyecto, rama, &datos)

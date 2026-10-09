@@ -74,7 +74,30 @@ reconcilia() {   # reconcilia VM COMPUTO (computo-a | computo-b)
   sql_plano "select format('create database %I owner %I', b.nombre, b.dueno)
                from plano.endpoint e join plano.base b using (organizacion, proyecto, rama)
               where e.vm = '$vm' and b.deseado = 'vivo'" | while read -r s; do
-    dc exec -T "$c" psql -q -U postgres -p 5432 -c "$s" >/dev/null 2>&1; done
+    dc exec -T "$c" psql -q -U postgres -p 5432 -c "$s" </dev/null >/dev/null 2>&1; done   # sin </dev/null, exec se come el bucle
+  # Las conexiones, como compute_ctl con la especificación: max_connections (reinicia, como al arrancar
+  # la VM) y el pool de pgbouncer (pgbouncer.ini + recarga). Lo que dice la API del endpoint.
+  # Con POOL_DE_NEON=1 se deja el pgbouncer.ini de la imagen tal cual (64 por pareja): el «antes».
+  local org p r id celda ep maximas pool
+  IFS='|' read -r org p r id < <(sql_plano "select organizacion, proyecto, rama, id from plano.endpoint where vm = '$vm'")
+  celda=${org#org_}
+  ep=$(pide "$celda" GET "/v1/postgres/proyectos/$p/ramas/$r/endpoints/$id")
+  maximas=$(campo "$ep" conexiones maximas); pool=$(campo "$ep" conexiones pool_por_base)
+  if [ -n "$maximas" ]; then
+    if [ "${POOL_DE_NEON:-}" = 1 ]; then
+      dc exec -T "$c" sed -i '/^max_db_connections=/d; s/^default_pool_size=.*/default_pool_size=64/' /etc/pgbouncer.ini
+    else
+      dc exec -T "$c" sh -c "sed -i '/^max_db_connections=/d; s/^default_pool_size=.*/default_pool_size=$pool/' /etc/pgbouncer.ini \
+        && echo max_db_connections=$pool >> /etc/pgbouncer.ini"
+    fi
+    if [ "$(dc exec -T "$c" psql -U postgres -p 5432 -Atc 'show max_connections')" != "$maximas" ]; then
+      dc exec -T "$c" psql -q -U postgres -p 5432 -c "alter system set max_connections = $maximas" >/dev/null
+      dc restart "$c" >/dev/null 2>&1
+      until dc exec -T "$c" pg_isready -q -h 127.0.0.1 -p 6432 2>/dev/null; do sleep 0.5; done
+    else
+      dc exec -T "$c" sh -c 'kill -HUP $(cat /tmp/pgbouncer.pid)'
+    fi
+  fi
   sql_plano "update plano.endpoint set observado = 'listo', direccion = '$ip', ip_pod = '$ip' where vm = '$vm';
              update plano.rama r set observado = 'lista' from plano.endpoint e
               where e.vm = '$vm' and (r.organizacion, r.proyecto, r.id) = (e.organizacion, e.proyecto, e.rama);

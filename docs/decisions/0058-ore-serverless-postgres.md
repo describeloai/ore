@@ -1138,6 +1138,26 @@ El laboratorio hace de reconciliador (`lab.sh reconcilia`: el rol con su verific
 
 ⚠️ **Modo `transaction`**, como Neon: lo que vive en la sesión (`SET`, `LISTEN`, *advisory locks* de sesión, tablas temporales entre transacciones) no sobrevive entre transacciones por `-pooler`. Para eso está el endpoint directo. Connect (P5·7) ofrecerá los dos y dirá cuál usar.
 
+#### P5·5b · Las conexiones, a la medida del cómputo (2026-10-09)
+
+Hasta aquí `max_connections` era 100 fijo para cualquier tamaño, y el pool de la imagen daba 64 por pareja rol + base sin mirar cuántas cabían. Ahora la especificación calcula las dos cosas:
+
+- **`max_connections` sale de las CU máximas**: unas 450 por CU, la escala de Neon (0,25 → 112, 1 → 450, 8 → 3600), con un suelo de 100 y un techo de 4000. Salen de las **máximas** porque `max_connections` solo cambia al reiniciar y el escalado no reinicia.
+- **En una réplica**, sale de las CU del escritor de su rama si son más (`CU_DE_LAS_CONEXIONES`). ⛔ Postgres no deja a una réplica seguir a un primario con más `max_connections` que ella: pausa la recuperación hasta que se reinicie.
+- **El pool**: el 90 % de `max_connections` repartido entre las bases de la rama, como `default_pool_size` y `max_db_connections` en `pgbouncer_settings`. compute_ctl lo escribe en el `pgbouncer.ini` y hace `RELOAD`, también con `/configure`, así que se reajusta sin reiniciar cuando se crea o se borra una base. pgbouncer no tiene un techo global, solo por base: repartido así, **la suma nunca pasa de lo que Postgres admite** y queda un **10 % para las conexiones directas**. `postgres` no cuenta en el reparto: casi nadie la usa por el pool, y contarla le quitaba la mitad del pool a una rama de una sola base.
+- **La API lo dice**: cada endpoint trae `conexiones: {maximas, pool_por_base}`. Connect (P5·7) lo enseñará.
+
+**Medido** (`lab/p55b.sh`, un cómputo de 0,25 CU con dos bases y 150 clientes en cada una a la vez por `-pooler`, con transacciones que retienen la conexión 50 ms):
+
+| | pool en Postgres | clientes del pool | una conexión directa a mitad de carga |
+|---|---|---|---|
+| **antes** (el `pgbouncer.ini` de la imagen: 64 por pareja) | 105–107 de las 109 ranuras para usuarios | casi siempre bien; 2 de 5 pasadas, un pgbench muere al arrancar | según el momento |
+| **ahora** (50 por base) | **≤ 100**, siempre | **0 fallidas** | **entra, siempre** |
+
+Lo que medí **corrige lo que esperaba**: con el pool de la imagen, pgbouncer no hace fallar a los clientes cuando Postgres se llena, los pone en cola. El daño es otro, y es intermitente. Al rechazar Postgres una conexión, pgbouncer marca ese pool como *server login has been failing* y durante 15 s devuelve error a todo cliente nuevo; además, las conexiones directas se quedan sin sitio. Con el reparto, nada de eso ocurre, y el rendimiento apenas cambia (26 700 frente a 29 500 transacciones en 15 s).
+
+`p55.sh` lee ahora los límites de la API. En un cómputo de 1 CU (450 conexiones, pool de 405): **490 clientes por el pool, 0 fallidas**, como mucho 405 en Postgres; los mismos 490 directos no caben.
+
 #### P5·6 · Quién entra, medido en el laboratorio (2026-10-09)
 
 **Lo comprueba el proxy de Neon; lo decide `ore-postgres`.** Por proyecto, como en Neon (migración 005), y se le contesta en `get_endpoint_access_control`:

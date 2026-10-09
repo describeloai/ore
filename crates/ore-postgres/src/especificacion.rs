@@ -36,6 +36,40 @@ pub struct Computo<'a> {
     pub replica: bool,
     /// Los roles y las bases de la rama (P4·4).
     pub datos: &'a Datos,
+    /// Las CU de las que salen las conexiones ([`conexiones`]): las máximas del
+    /// endpoint o, en una réplica, las del escritor de su rama si son más
+    /// ([`CU_DE_LAS_CONEXIONES`]).
+    pub cu_conexiones: f64,
+}
+
+/// Las CU de las que salen las conexiones de un endpoint `e` (con su alias, en
+/// SQL): las suyas, y en una réplica, las del escritor vivo de su rama si son
+/// más. ⛔ Postgres no deja a una réplica seguir a un primario con más
+/// `max_connections` que ella: pausa la recuperación hasta que se reinicie.
+pub const CU_DE_LAS_CONEXIONES: &str =
+    "case when e.tipo = 'lectura' then greatest(e.cu_max, coalesce(
+      (select max(w.cu_max) from plano.endpoint w
+        where w.organizacion = e.organizacion and w.proyecto = e.proyecto and w.rama = e.rama
+          and w.tipo = 'lectura-escritura' and w.deseado = 'vivo'), 0))
+    else e.cu_max end";
+
+/// **Cuántas conexiones admite Postgres** (`max_connections`) con unas CU: unas
+/// 450 por CU (1 CU = 4 GiB), la escala de Neon (0,25 → 112, 1 → 450, 8 →
+/// 3600), con un suelo de 100 y un techo de 4000. Sale de las CU **máximas**:
+/// `max_connections` sólo cambia al reiniciar, y el escalado no reinicia.
+pub fn conexiones(cu: f64) -> i64 {
+    ((cu * 450.0).floor() as i64).clamp(100, 4000)
+}
+
+/// **El pool de pgbouncer por base**: el 90 % de `max_connections` repartido
+/// entre las bases de la rama. pgbouncer no tiene un techo global de
+/// conexiones a Postgres, sólo por base (`max_db_connections`): repartido así,
+/// la suma nunca pasa de lo que Postgres admite —el cliente que no cabe espera
+/// en la cola de pgbouncer— y queda un 10 % para las conexiones directas.
+/// `postgres` no cuenta: casi nadie la usa por el pool, y contarla le quitaba
+/// la mitad del pool a una rama de una sola base.
+pub fn pool_por_base(maximas: i64, bases: usize) -> i64 {
+    (maximas * 9 / 10 / (bases.max(1) as i64)).max(1)
 }
 
 /// Lo que la rama tiene dentro: roles (nombre, verificador SCRAM) y bases
@@ -60,6 +94,8 @@ fn ajuste(nombre: &str, valor: &str, tipo: &str) -> Json {
 /// exige autenticación (las pruebas locales de P2·3).
 pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> Json {
     let sk = c.safekeepers.join(",");
+    let maximas = conexiones(c.cu_conexiones);
+    let pool = pool_por_base(maximas, c.datos.bases.len()).to_string();
     let ajustes = vec![
         ajuste("fsync", "on", "bool"),
         ajuste("wal_level", "logical", "enum"),
@@ -67,7 +103,7 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
         ajuste("log_connections", "on", "bool"),
         ajuste("port", "5432", "integer"),
         ajuste("shared_buffers", "128MB", "string"),
-        ajuste("max_connections", "100", "integer"),
+        ajuste("max_connections", &maximas.to_string(), "integer"),
         ajuste("listen_addresses", "0.0.0.0", "string"),
         ajuste("max_wal_senders", "10", "integer"),
         ajuste("max_replication_slots", "10", "integer"),
@@ -166,6 +202,15 @@ pub fn especificacion(c: &Computo, propia: &Llave, almacen: Option<&Llave>) -> J
     if c.replica {
         spec.push(("mode", Json::s("Replica")));
     }
+    // P5·5: el pgbouncer de la VM, a la medida (compute_ctl lo escribe en su
+    // pgbouncer.ini y hace RELOAD, también en un `/configure`: sin reiniciar).
+    spec.push((
+        "pgbouncer_settings",
+        Json::obj([
+            ("default_pool_size", Json::s(pool.clone())),
+            ("max_db_connections", Json::s(pool)),
+        ]),
+    ));
     Json::obj([
         ("spec", Json::obj(spec)),
         (
@@ -231,6 +276,7 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
                     roles_borrados: vec!["viejo".into()],
                     bases_borradas: vec![],
                 },
+                cu_conexiones: 1.0,
             },
             &l,
             Some(&l),
@@ -247,6 +293,9 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
             r#"{"encrypted_password":"SCRAM-SHA-256$4096:x$y:z","name":"ana"}"#,
             r#""databases":[{"name":"ventas","owner":"ana"}]"#,
             r#""delta_operations":[{"action":"delete_role","name":"viejo"}]"#,
+            // 1 CU: 450 conexiones; el 90 % para `ventas`, la única base.
+            r#""name":"max_connections","value":"450""#,
+            r#""pgbouncer_settings":{"default_pool_size":"405","max_db_connections":"405"}"#,
         ] {
             assert!(e.contains(esperado), "falta {esperado} en {e}");
         }
@@ -262,11 +311,37 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
                 ahora: "2026-10-08T10:00:00.000Z",
                 replica: false,
                 datos: &Datos::default(),
+                cu_conexiones: 0.25,
             },
             &l,
             None,
         )
         .jcs();
         assert!(!sin.contains("storage_auth_token"));
+        assert!(
+            sin.contains(r#""name":"max_connections","value":"112""#),
+            "{sin}"
+        );
+    }
+
+    #[test]
+    fn las_conexiones_crecen_con_las_cu_y_el_pool_no_pasa_de_ellas() {
+        assert_eq!(conexiones(0.25), 112);
+        assert_eq!(conexiones(1.0), 450);
+        assert_eq!(conexiones(8.0), 3600);
+        assert_eq!(conexiones(16.0), 4000);
+        assert_eq!(conexiones(0.1), 100);
+        for (maximas, bases) in [(112, 0), (112, 1), (112, 5), (450, 2), (4000, 30)] {
+            let pool = pool_por_base(maximas, bases);
+            assert!(pool >= 1);
+            // Todas las bases a la vez, llenas, caben en el 90 %.
+            assert!(
+                pool * (bases.max(1) as i64) <= maximas * 9 / 10,
+                "{maximas} {bases}"
+            );
+        }
+        assert_eq!(pool_por_base(112, 0), 100);
+        assert_eq!(pool_por_base(112, 1), 100);
+        assert_eq!(pool_por_base(112, 2), 50);
     }
 }

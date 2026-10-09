@@ -830,6 +830,16 @@ fn rama_json(f: &Row) -> Json {
 const ENDPOINT: &str = "id, rama, tipo, vm, cu_min, cu_max, deseado, observado, direccion,
     to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
 
+/// Lo que hace falta para decir sus conexiones ([`endpoint_json`]), detrás de
+/// [`ENDPOINT`], con la fila del endpoint como `e`.
+fn conexiones_sql() -> String {
+    format!(
+        "{}, (select count(*) from plano.base b where b.organizacion = e.organizacion
+              and b.proyecto = e.proyecto and b.rama = e.rama and b.deseado = 'vivo')",
+        crate::especificacion::CU_DE_LAS_CONEXIONES
+    )
+}
+
 /// La rama, viva y de este proyecto vivo de esta organización: si no, 404.
 fn rama_viva(
     c: &mut impl postgres::GenericClient,
@@ -852,9 +862,10 @@ fn endpoints(c: &mut Client, celda: &Celda, p: &str, r: &str) -> Result<Respuest
     rama_viva(c, celda, p, r)?;
     let filas = c.query(
         &format!(
-            "select {ENDPOINT} from plano.endpoint
+            "select {ENDPOINT}, {} from plano.endpoint e
               where organizacion = $1 and proyecto = $2 and rama = $3 and deseado = 'vivo'
-              order by id"
+              order by id",
+            conexiones_sql()
         ),
         &[&celda.organizacion, &p, &r],
     )?;
@@ -868,8 +879,9 @@ fn endpoint(c: &mut Client, celda: &Celda, p: &str, r: &str, e: &str) -> Result<
     rama_viva(c, celda, p, r)?;
     match c.query_opt(
         &format!(
-            "select {ENDPOINT} from plano.endpoint
-              where organizacion = $1 and proyecto = $2 and rama = $3 and id = $4"
+            "select {ENDPOINT}, {} from plano.endpoint e
+              where organizacion = $1 and proyecto = $2 and rama = $3 and id = $4",
+            conexiones_sql()
         ),
         &[&celda.organizacion, &p, &r, &e],
     )? {
@@ -1006,6 +1018,23 @@ fn endpoint_json(f: &Row) -> Json {
     ];
     if let Some(d) = f.get::<_, Option<String>>(8) {
         v.push(("direccion", Json::s(d)));
+    }
+    // P5·5: cuántas conexiones admite (directas) y el pool por base (-pooler).
+    if f.len() > 11 {
+        let maximas = crate::especificacion::conexiones(f.get(10));
+        v.push((
+            "conexiones",
+            Json::obj([
+                ("maximas", Json::Int(maximas)),
+                (
+                    "pool_por_base",
+                    Json::Int(crate::especificacion::pool_por_base(
+                        maximas,
+                        f.get::<_, i64>(11) as usize,
+                    )),
+                ),
+            ]),
+        ));
     }
     Json::obj(v)
 }

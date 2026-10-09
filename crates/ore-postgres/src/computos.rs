@@ -51,6 +51,7 @@ impl Computos for SinKube {
         _: &str,
         _: bool,
         _: &Datos,
+        _: f64,
     ) -> Json {
         Json::obj([])
     }
@@ -87,6 +88,7 @@ pub trait Computos: Send + Sync {
         grupo: &str,
         replica: bool,
         datos: &Datos,
+        cu_conexiones: f64,
     ) -> Json;
     /// P4·4: aplica una especificación nueva a un cómputo en marcha
     /// (`compute_ctl /configure`): roles, bases, lo borrado. Sin reiniciarlo.
@@ -149,6 +151,7 @@ impl Computos for Neonvm {
         grupo: &str,
         replica: bool,
         datos: &Datos,
+        cu_conexiones: f64,
     ) -> Json {
         let ahora = ahora_iso();
         especificacion(
@@ -162,6 +165,7 @@ impl Computos for Neonvm {
                 ahora: &ahora,
                 replica,
                 datos,
+                cu_conexiones,
             },
             &self.propia,
             Some(&self.almacen),
