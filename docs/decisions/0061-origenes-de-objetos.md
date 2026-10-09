@@ -1,7 +1,8 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
-**Estado:** propuesto (2026-10-09). **O0 y O1 hechos** (2026-10-09); siguiente O2 (GCS). D-O1
-aplicada en O1. Investigación:
+**Estado:** propuesto (2026-10-09). **O0, O1 y O2 hechos** (2026-10-09; O2 en el laboratorio, la
+prueba contra GCS de verdad es deuda temporal); siguiente O3 (Azure). D-O1 aplicada en O1, D-O2 en
+O2. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -136,7 +137,7 @@ publica imágenes (Docker Hub y quay): el laboratorio usa esos dos.
 pero ninguno se ha medido contra una cuenta suya; cada uno pasa a «probado» cuando su URL pase
 `o1-los-que-hablan-s3.sh`.
 
-### O2 · GCS (en curso)
+### O2 · hecho en el laboratorio (2026-10-09): GCS
 
 **O2·0, medido** (`fake-gcs-server` 1.52.2, `-backend memory`): bucket con versionado, `generation`,
 `crc32c`, `md5Hash`, `versions=true` (la vieja con `timeDeleted`), leer los metadatos y los bytes de
@@ -193,6 +194,21 @@ cambiada o una generación que no está, no copia.
   la pasarela**, colecciones incluidas.
 
 Falta, con go: `--cuenta-medios` en `malla/40-ore-serve.yaml` (binario antes que malla).
+
+**O2·4, hecho**: `pruebas-de-fuego/o2-gcs.sh`, contra `fake-gcs-server` con dos buckets —`cubo` con
+Object Versioning y `llano` sin él—, por el binario y por `ore-medios` (`tests/laboratorio_gcs.rs`):
+`check` (probando, y un bucket que no existe), la guarda del `endpoint` fuera del laboratorio,
+`explorar` y el catálogo, `versiones` por generación con `crc32c`, `bajar` cotejado (y con la huella
+cambiada no copia), y `docs/a.pdf` reescrito **con el mismo tamaño** entre `versiones` y `bajar`:
+`cubo` copia la generación listada y `llano` no copia. **14/14.** Con la fijación por generación
+rota a propósito (`Gcs::bajar` sin `generation`), 4 fallos —y ni así se copian otros bytes: el
+cotejo de la huella los para—. El perfil, en [`origenes-de-objetos.md`](../origenes-de-objetos.md).
+
+**Deuda temporal de O2**, contra GCS de verdad (bloqueada mientras la cuenta de Google siga
+suspendida): `testIamPermissions`, la URL firmada por `signBlob` bajada con `curl`, la suplantación
+(`generateAccessToken`, y su 403 sin `TokenCreator`), la paginación, y la concesión entre proyectos
+(un bucket de otro proyecto con `objectViewer` a las dos cuentas de la celda). Se salda corriendo
+`o2-gcs.sh` contra un bucket real y la consola dando de alta uno.
 
 ## Lo que no se hace aquí
 
