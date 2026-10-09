@@ -38,10 +38,11 @@ use std::sync::{Arc, Mutex};
 pub enum Origen {
     /// Un blob del lago, por su `sha256` (una colección mantenida).
     Lago { sha256: String },
-    /// Un objeto de un bucket S3 (una colección virtual). `fuente` es la URL
-    /// `s3://…` **con la credencial temporal** que `ore-serve` canjeó (0046
-    /// E9b): no se escribe en ningún sitio ni sale de aquí.
-    S3 {
+    /// Un objeto de su origen (una colección virtual). `fuente` es la URL de
+    /// la fuente (`s3://…`, ADR 0061) **con la credencial temporal** que
+    /// `ore-serve` canjeó (0046 E9b): no se escribe en ningún sitio ni sale de
+    /// aquí.
+    Objeto {
         fuente: String,
         clave: String,
         version: String,
@@ -166,12 +167,12 @@ pub fn abrir(
     };
     let (codigo, mut cabeceras, largo, lector) = match &pieza.origen {
         Origen::Lago { sha256 } => del_lago(cuenta, pieza, sha256, rango)?,
-        Origen::S3 {
+        Origen::Objeto {
             fuente,
             clave,
             version,
             etag,
-        } => de_s3(fuente, clave, version, etag, rango)?,
+        } => del_origen(fuente, clave, version, etag, rango)?,
     };
     cabeceras.push(("ore-media-version".into(), pieza.version.clone()));
     // Del entero también en un 206 (RFC 9530 §3).
@@ -222,25 +223,24 @@ type Abierto = (
     Box<dyn Read + Send>,
 );
 
-fn de_s3(
+/// Un ítem de su origen, fijado (ADR 0061 O0·3: de cualquier proveedor, por su
+/// [`ore_objetos::Origen`]).
+fn del_origen(
     fuente: &str,
     clave: &str,
     version: &str,
     etag: &str,
     rango: Option<Rango>,
 ) -> Result<Abierto, Respuesta> {
-    let b = ore_sigv4::fuente::leer(fuente)
-        .map_err(|e| {
-            problema(
-                502,
-                "media/origen",
-                format!("la fuente no se pudo leer: {e}"),
-            )
-        })?
-        .bucket;
+    let o = crate::origenes::de(fuente)?;
     let cabecera = rango.map(|r| r.cabecera());
-    let l = ore_s3::leer_fijado(&b, clave, version, etag, cabecera.as_deref())
-        .map_err(|r| error_de_s3(&r, clave))?;
+    let l = o
+        .leer_fijado(clave, version, etag, cabecera.as_deref())
+        .map_err(|r| match r {
+            ore_objetos::Rechazo::Cambiado(m) => problema(412, "media/cambiado", m),
+            ore_objetos::Rechazo::Rango(m) => problema(416, "media/rango", m),
+            ore_objetos::Rechazo::Origen(m) => problema(502, "media/origen", m),
+        })?;
     let mut cabeceras = Vec::new();
     for k in [
         "etag",
@@ -255,36 +255,6 @@ fn de_s3(
     }
     let largo = l.cabecera("content-length").and_then(|v| v.parse().ok());
     Ok((l.estado, cabeceras, largo, l.lector))
-}
-
-/// Lo que S3 contestó, en el idioma del contrato. Un ítem que el manifiesto
-/// lista y el origen ya no tiene en esa versión **cambió**: `media/cambiado`.
-fn error_de_s3(r: &ore_s3::Respuesta, clave: &str) -> Respuesta {
-    let codigo_aws = r.error_de_aws().map(|(c, _)| c).unwrap_or_default();
-    match (r.estado, codigo_aws.as_str()) {
-        (412, _) | (404, _) | (400, "InvalidArgument") => problema(
-            412,
-            "media/cambiado",
-            format!(
-                "`{clave}` ya no es, en el origen, la versión fijada ({})",
-                r.motivo()
-            ),
-        ),
-        (416, _) => problema(416, "media/rango", format!("el rango no cabe en `{clave}`")),
-        (0, _) => problema(
-            502,
-            "media/origen",
-            format!(
-                "el origen no contesta: {}",
-                String::from_utf8_lossy(&r.cuerpo)
-            ),
-        ),
-        _ => problema(
-            502,
-            "media/origen",
-            format!("el origen contestó {} a `{clave}`", r.motivo()),
-        ),
-    }
 }
 
 /// Un blob del lago. `leer_rango` de GCS pide sólo el rango; el cuerpo se
@@ -501,7 +471,7 @@ pub(crate) mod pruebas {
             coleccion: "legal.archivo.contratos".into(),
             camino: "a.pdf".into(),
             version: version.into(),
-            origen: Origen::S3 {
+            origen: Origen::Objeto {
                 fuente: fuente.into(),
                 clave: "docs/a.pdf".into(),
                 version: version.into(),

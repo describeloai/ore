@@ -31,6 +31,8 @@ ore-store = { path = "../ore-store" }
 # `ore-serve` canjeó por el rol (0046 E9b). Y el sha256 al paso.
 ore-s3    = { path = "../ore-s3" }
 ore-sigv4 = { path = "../ore-sigv4" }
+# El origen de una fuente, de cualquier proveedor (ADR 0061 O0·3).
+ore-objetos = { path = "../ore-objetos" }
 sha2      = { workspace = true }
 # El permiso de leer un ítem (B3·2): aleatoriedad del sistema. Ya está en el
 # cierre por `ore-store`.

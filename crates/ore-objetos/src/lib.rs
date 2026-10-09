@@ -82,6 +82,68 @@ pub trait Origen {
         clave: &str,
         version: &str,
     ) -> Result<(Box<dyn Read + '_>, Abierto), String>;
+
+    /// **Leer un ítem fijado** (0049 B3·1, ADR 0061 O0·3): lo que `ore-medios`
+    /// sirve de una virtual. La `version` (vacía si el origen no versiona), el
+    /// `etag` como precondición (`If-Match`, vacío si no) y el `rango` tal cual
+    /// llegó (`bytes=…`). Lo que el origen contesta, ya en el idioma del
+    /// contrato ([`Rechazo`]). Por defecto, este origen no sabe.
+    fn leer_fijado(
+        &self,
+        clave: &str,
+        version: &str,
+        etag: &str,
+        rango: Option<&str>,
+    ) -> Result<Leido, Rechazo> {
+        let _ = (clave, version, etag, rango);
+        Err(Rechazo::Origen(
+            "este origen no sabe servir un ítem fijado".into(),
+        ))
+    }
+
+    /// **Una URL firmada de un ítem** (0049 H3), sin red: fijada a su versión,
+    /// con el tipo y la disposición dentro de la firma, viva `segundos`.
+    /// `None`: este origen no da URLs firmadas (se abre por `content`).
+    fn firmar(
+        &self,
+        clave: &str,
+        version: &str,
+        tipo: &str,
+        disposicion: &str,
+        segundos: u64,
+    ) -> Option<String> {
+        let _ = (clave, version, tipo, disposicion, segundos);
+        None
+    }
+}
+
+/// Una lectura fijada que salió bien: el estado (`200`/`206`), sus cabeceras
+/// (en minúscula) y el cuerpo **sin leer**.
+pub struct Leido {
+    pub estado: u16,
+    pub cabeceras: Vec<(String, String)>,
+    pub lector: Box<dyn Read + Send>,
+}
+
+impl Leido {
+    pub fn cabecera(&self, k: &str) -> Option<&str> {
+        self.cabeceras
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(k))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// **Por qué no se leyó un ítem fijado**, en el idioma del contrato
+/// (`docs/media.md` §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rechazo {
+    /// La versión fijada ya no es la del origen (`media/cambiado`, 412).
+    Cambiado(String),
+    /// El rango no cabe en el ítem (`media/rango`, 416).
+    Rango(String),
+    /// El origen falló, o no contesta (`media/origen`, 502).
+    Origen(String),
 }
 
 /// **Cómo fija un origen una lectura** a lo que el listado dijo.

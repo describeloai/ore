@@ -562,7 +562,7 @@ impl Servicio {
     /// virtual, si `ore-serve` trajo la credencial. Mantenida no deja un ítem
     /// sin servir.
     fn pieza(&self, ix: &Indice, it: &Item, fuente: Option<&str>) -> Result<Pieza, Respuesta> {
-        let del_origen = |fuente: &str| Origen::S3 {
+        let del_origen = |fuente: &str| Origen::Objeto {
             fuente: fuente.to_string(),
             clave: it.clave.clone().unwrap_or_else(|| it.camino.clone()),
             version: it.version.clone(),
@@ -706,7 +706,7 @@ impl Servicio {
         // ⭐ 0049 H3: lo que no está en el lago —una virtual, o una mantenida a
         //   medio copiar— se firma en su origen, con la credencial que trajo
         //   `ore-serve` (que ya recortó `ttl_s` a lo que le queda).
-        let origen = texto(n, "fuente").map(ore_sigv4::fuente::leer);
+        let origen = texto(n, "fuente").map(crate::origenes::de);
         // Cada pedido, a su ítem o a su error; los que se firman, juntos.
         let mut salida: Vec<Option<Json>> = vec![None; pedidos.len()];
         let mut firmar: Vec<(usize, Pedida)> = Vec::new();
@@ -717,16 +717,9 @@ impl Servicio {
                 Err(e) => salida[i] = Some(Json::obj([("error", e)])),
                 Ok(it) if ix.virtual_ || it.blob.is_none() => {
                     salida[i] = Some(match &origen {
-                        Some(Ok(f)) => firmada_en_el_origen(f, ix, it, segundos),
-                        // Sin repetir el porqué: la URL de la fuente lleva la credencial.
-                        Some(Err(_)) => Json::obj([(
-                            "error",
-                            problema_json(
-                                501,
-                                "media/origen",
-                                "la fuente de esta colección no es un bucket de S3: su URL no se sabe firmar; se abre por `content`",
-                            ),
-                        )]),
+                        Some(Ok(o)) => firmada_en_el_origen(&**o, ix, it, segundos),
+                        // Sin repetir la URL: lleva la credencial.
+                        Some(Err(r)) => Json::obj([("error", r.cuerpo.clone())]),
                         None if ix.virtual_ => Json::obj([(
                             "error",
                             problema_json(
@@ -810,19 +803,16 @@ impl Servicio {
     }
 }
 
-/// **La URL de un ítem en su origen** (0049 H3): SigV4 prefirmada con la
-/// credencial de la fuente, fijada a su `versionId` —también `null`, la de un
-/// objeto de antes del versionado (B3·0)—, con el tipo y la disposición dentro
-/// de la firma; sin red, como `ore-firmar-s3` (0046 E9·3). Lleva la clave de
-/// acceso, no el secreto; quien la tenga lee ese objeto en esa versión hasta
-/// que caduque.
+/// **La URL de un ítem en su origen** (0049 H3, ADR 0061 O0·3): la que firma
+/// su proveedor, sin red, fijada a su versión, con el tipo y la disposición
+/// dentro de la firma. Quien la tenga lee ese objeto en esa versión hasta que
+/// caduque. Un origen que no firma lo dice en su posición (`501`).
 fn firmada_en_el_origen(
-    f: &ore_sigv4::fuente::Fuente,
+    o: &dyn ore_objetos::Origen,
     ix: &Indice,
     it: &Item,
     segundos: u64,
 ) -> Json {
-    let b = &f.bucket;
     let clave = it.clave.clone().unwrap_or_else(|| it.camino.clone());
     let tipo = it
         .tipo
@@ -830,18 +820,19 @@ fn firmada_en_el_origen(
         .unwrap_or_else(|| "application/octet-stream".into());
     let nombre = it.camino.rsplit('/').next().unwrap_or(&it.camino);
     let (_, disposicion) = ore_core::medios::disposicion(&tipo, nombre);
-    let mut extra: Vec<(&str, &str)> = Vec::new();
-    if !it.version.is_empty() {
-        extra.push(("versionId", &it.version));
-    }
-    extra.push(("response-content-type", &tipo));
-    extra.push(("response-content-disposition", &disposicion));
-    let ruta = b.ruta(Some(&clave));
-    let q =
-        ore_sigv4::firma::prefirmar(&b.credencial, &b.region, &b.host(), &ruta, &extra, segundos);
+    let Some(url) = o.firmar(&clave, &it.version, &tipo, &disposicion, segundos) else {
+        return Json::obj([(
+            "error",
+            problema_json(
+                501,
+                "media/origen",
+                "el origen de esta colección no da URLs firmadas: se abre por `content`",
+            ),
+        )]);
+    };
     Json::obj([
         ("item", ix.referencia(it)),
-        ("url", Json::s(format!("{}{ruta}?{q}", b.endpoint))),
+        ("url", Json::s(url)),
         (
             "expires_ms",
             Json::Int(ahora_ms() + (segundos as i64) * 1000),

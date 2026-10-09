@@ -25,5 +25,6 @@ pub mod derivacion;
 pub mod escritura;
 pub mod firma;
 pub mod indice;
+pub mod origenes;
 pub mod permisos;
 pub mod servicio;
