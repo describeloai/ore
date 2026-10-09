@@ -3,7 +3,7 @@
 //!
 //! | ruta | operación | qué hace aquí |
 //! |---|---|---|
-//! | `GET /media/{b}/{s}/{c}/items?prefix=&as_of=&cursor=&limit=&estado=` | `list` | `as_of`, por la historia del puntero (H1) |
+//! | `GET /media/{b}/{s}/{c}/items?prefix=&as_of=&cursor=&limit=&estado=` | `list` | `as_of`, por la historia del puntero (H1); el cursor lleva su transacción (H2) |
 //! | `GET /media/{b}/{s}/{c}/item?path=&version=` o `?digest=` | `stat` | |
 //! | `POST /media/{b}/{s}/{c}/urls` `{items, ttl_s}` | `url` | y lo anota en la actividad |
 //! | `GET /media/{b}/{s}/{c}/content?path=&version=` o `?digest=` | `open` | 307 a donde están los bytes (B3·3) |
@@ -337,6 +337,33 @@ fn la_que_se_lee(
     }
 }
 
+/// **El cursor de una página, con su transacción** (0049 H2): el de
+/// `ore-medios` (`"cursor":"<hex>"`) pasa a `"<tx>.<hex>"`; `null` sigue
+/// `null`. El texto va tal cual —`de_node` volvería `null` la cadena
+/// `"null"`—: la primera clave `"cursor"` seguida de `:` y una cadena es la de
+/// arriba (en JCS las claves van en orden, `as_of` antes, y es una
+/// transacción, sin comillas dentro; dentro de una cadena, unas comillas van
+/// escapadas y no casan).
+fn con_la_transaccion(texto: &str, tx: &str) -> String {
+    const CLAVE: &str = "\"cursor\"";
+    if tx.is_empty() {
+        return texto.to_string();
+    }
+    let mut desde = 0;
+    while let Some(i) = texto[desde..].find(CLAVE).map(|i| i + desde) {
+        let resto = &texto[i + CLAVE.len()..];
+        let tras = resto.trim_start();
+        if let Some(valor) = tras.strip_prefix(':').map(str::trim_start)
+            && valor.starts_with('"')
+        {
+            let j = texto.len() - valor.len() + 1;
+            return format!("{}{tx}.{}", &texto[..j], &texto[j..]);
+        }
+        desde = i + CLAVE.len();
+    }
+    texto.to_string()
+}
+
 /// Desde dónde se busca la historia de un puntero: la cabeza de `main` si la
 /// rama lo lee de `main` al día, y si no la del árbol.
 fn desde_donde(raiz: &Path, rel: &str) -> String {
@@ -505,13 +532,43 @@ impl Servidor {
             }
         };
         // 0049 H1 · `as_of`: lo que la colección era en esa transacción.
-        let as_of = match operacion {
-            "items" | "derivations" => p
-                .consulta
-                .get("as_of")
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            _ => None,
+        // H2 · El cursor que da esta puerta lleva la transacción de la primera
+        // página (`<tx>.<el de ore-medios>`): las siguientes la heredan, y un
+        // recorrido no mezcla dos aunque la colección cambie a mitad.
+        let (as_of, cursor) = match operacion {
+            "items" | "derivations" => {
+                let pedido_as_of = p
+                    .consulta
+                    .get("as_of")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
+                match p
+                    .consulta
+                    .get("cursor")
+                    .map(|c| c.trim())
+                    .filter(|c| !c.is_empty())
+                {
+                    Some(c) => match c.split_once('.') {
+                        Some((tx, resto)) => {
+                            if let Some(a) = pedido_as_of.as_deref().filter(|a| *a != tx) {
+                                return problema(
+                                    422,
+                                    "media/peticion",
+                                    format!(
+                                        "el cursor es de la transacción `{tx}` y `as_of` dice `{a}`: \
+                                         un recorrido no mezcla dos"
+                                    ),
+                                );
+                            }
+                            (Some(tx.to_string()), Some(resto.to_string()))
+                        }
+                        // Uno de antes de H2, sin transacción: como entonces.
+                        None => (pedido_as_of, Some(c.to_string())),
+                    },
+                    None => (pedido_as_of, None),
+                }
+            }
+            _ => (None, None),
         };
         if let Some(n) = &as_of
             && (n.len() > 64
@@ -580,12 +637,14 @@ impl Servidor {
                 Err(r) => return r,
             };
             pedido.insert("metadata_location".into(), Json::s(ml));
-            pedido.insert("transaccion".into(), Json::s(tx));
+            pedido.insert("transaccion".into(), Json::s(&tx));
+            if let Some(c) = &cursor {
+                pedido.insert("cursor".into(), Json::s(c));
+            }
             match operacion {
                 "items" => {
                     for (k, a) in [
                         ("prefix", "prefix"),
-                        ("cursor", "cursor"),
                         ("limit", "limit"),
                         ("estado", "estado"),
                     ] {
@@ -595,10 +654,8 @@ impl Servidor {
                     }
                 }
                 "derivations" => {
-                    for k in ["cursor", "limit"] {
-                        if let Some(v) = p.consulta.get(k) {
-                            pedido.insert(k.into(), Json::s(v));
-                        }
+                    if let Some(v) = p.consulta.get("limit") {
+                        pedido.insert("limit".into(), Json::s(v));
                     }
                 }
                 "item" => {
@@ -681,6 +738,12 @@ impl Servidor {
                 // es JSON y se pasa como vino.
                 Ok((200, texto)) if operacion == "content" => a_donde(&direccion, texto.trim()),
                 Ok((codigo, texto)) => match ore_core::parse::parse(texto.trim()) {
+                    Ok(_) if codigo == 200 && matches!(operacion, "items" | "derivations") => {
+                        Respuesta {
+                            codigo,
+                            cuerpo: Json::Crudo(con_la_transaccion(texto.trim(), &tx)),
+                        }
+                    }
                     Ok(_) => Respuesta {
                         codigo,
                         cuerpo: Json::Crudo(texto.trim().to_string()),
@@ -1027,6 +1090,35 @@ mod pruebas {
             assert!(metadata_en_la_transaccion(&sin, col, "1").is_err());
         }
         let _ = std::fs::remove_dir_all(&sin);
+    }
+
+    /// 0049 H2: el cursor sale con la transacción delante; sin cursor, nada.
+    #[test]
+    fn el_cursor_lleva_la_transaccion() {
+        assert_eq!(
+            con_la_transaccion(
+                r#"{"as_of":"3","cursor":"a1b2","items":[{"path":"x"}]}"#,
+                "3"
+            ),
+            r#"{"as_of":"3","cursor":"3.a1b2","items":[{"path":"x"}]}"#
+        );
+        let sin = r#"{"as_of":"3","cursor":null,"items":[{"digest":"null"}]}"#;
+        assert_eq!(
+            con_la_transaccion(sin, "3"),
+            sin,
+            "null sigue null, y la cadena también"
+        );
+        let d = r#"{"as_of":"4","cursor":"ff","derivations":[]}"#;
+        assert_eq!(
+            con_la_transaccion(d, "4"),
+            r#"{"as_of":"4","cursor":"4.ff","derivations":[]}"#
+        );
+        assert_eq!(con_la_transaccion(d, ""), d, "sin transacción, como vino");
+        assert_eq!(
+            con_la_transaccion(r#"{"as_of": "5", "cursor": "ab", "items": []}"#, "5"),
+            r#"{"as_of": "5", "cursor": "5.ab", "items": []}"#,
+            "con espacios también"
+        );
     }
 
     #[test]

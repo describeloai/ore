@@ -21,6 +21,8 @@
 #      de la historia del puntero, y el de hoy en `actual`
 #  10  as_of que la colección no tuvo → 404 sin preguntar a ore-medios; el de
 #      hoy, sin `actual`; uno que no es una transacción → 422
+#  11  el cursor lleva la transacción (H2): la página 2, tras una transacción
+#      nueva, sigue en la de la página 1; un cursor y un as_of que no casan → 422
 #
 # Lo de verdad —el índice sobre el lago y la firma— se mide en vivo (B2·4).
 set -u
@@ -76,7 +78,7 @@ class H(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("content-length", 0))
         cuerpo = self.rfile.read(n).decode()
         open(sys.argv[2], "a").write(json.dumps({"ruta": self.path, "cuerpo": json.loads(cuerpo)}) + "\n")
-        r = {"/indice/items": {"as_of": "3", "items": [], "cursor": None},
+        r = {"/indice/items": {"as_of": "3", "cursor": "c0ffee", "items": []},
              "/indice/item": {"path": "x", "current": True},
              "/indice/urls": {"urls": [{"item": {"checksum": "crc64nvme:A", "digest": None, "path": "a.pdf", "version": "v1"}, "url": "https://firmada", "ttl_s": 300}]},
              "/indice/abrir": {"url": "https://lago/firmada", "desde": "lago", "ttl_s": 300, "version": "v1", "item": {"path": "a.jpg", "digest": None}}}[self.path]
@@ -175,6 +177,21 @@ if [ "$c" = 404 ] && [ "$antes" = "$despues" ] && [ "$c2" = 200 ] && echo "$u" |
    && ! echo "$u" | grep -q '"actual"' && [ "$c3" = 422 ]; then
   dice "10 · as_of que no tuvo: 404 sin preguntar; el de hoy, sin actual; uno que no es transacción, 422"
 else falla "10 · as_of ($c, $c2, $c3): $(cat "$TMP/r.json") · $u"; fi
+
+c=$(pide GET "/media/legal/archivo/contratos/items?limit=1")
+cur=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["cursor"])' "$TMP/r.json")
+cat > "$TMP/arbol/datasets/legal/archivo/contratos.json" <<'EOF'
+{"dataset":"colecciones/legal/archivo/contratos","metadata_location":"gs://lago/ore/v2/colecciones/legal/archivo/contratos/metadata/00004-z.metadata.json","transaccion":"4"}
+EOF
+G add -A; G commit --quiet -m "tx 4"
+c2=$(pide GET "/media/legal/archivo/contratos/items?limit=1&cursor=$cur")
+u=$(ultima)
+c3=$(pide GET "/media/legal/archivo/contratos/items?as_of=4&cursor=$cur")
+if [ "$c" = 200 ] && [ "$cur" = "3.c0ffee" ] && [ "$c2" = 200 ] && echo "$u" | grep -q '00003-x.metadata.json' \
+   && echo "$u" | grep -q '"transaccion": "3"' && echo "$u" | grep -q '"cursor": "c0ffee"' \
+   && echo "$u" | grep -q '"actual": "gs://lago/.*00004-z' && [ "$c3" = 422 ]; then
+  dice "11 · el cursor lleva la transacción: la página 2, tras la 4, sigue en la 3; cursor y as_of que no casan, 422"
+else falla "11 · cursor ($c $cur, $c2, $c3): $(cat "$TMP/r.json") · $u"; fi
 
 kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
 arrancar ""
