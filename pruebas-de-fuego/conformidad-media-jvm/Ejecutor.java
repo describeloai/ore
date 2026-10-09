@@ -46,6 +46,7 @@ public final class Ejecutor {
 
     static {
         Lectura.registrar(OPS);   // JM1
+        Escritura.registrar(OPS); // JM3
     }
 
     public static void main(String[] args) throws Exception {
@@ -55,6 +56,7 @@ public final class Ejecutor {
 
         // El SDK primero: su prueba 6 cuenta con el primer permiso del banco, y la 13 con la primera ficha.
         int fallos = filtro == null || filtro.equals("sdk") ? Sdk.correr() : 0;
+        fallos += filtro == null || filtro.equals("escrita") ? Escritura.correr() : 0;
         fallos += humo();
 
         List<Resultado> rs = new ArrayList<>();

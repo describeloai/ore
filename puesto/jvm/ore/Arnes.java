@@ -200,6 +200,10 @@ public final class Arnes {
             Object visto = Ore.vistoDelEnsayo();
             if (visto == null) throw falla("not-written", "`" + metodo + "` returned without calling `write()`: there is nothing to preview", fichero, null);
             System.out.println(salida + " · preview of " + fichero + ":" + metodo + " · " + ((Map<String, Object>) visto).get("total") + " rows · nothing was written");
+        } else if (hecho instanceof Map<?, ?> r && r.get("transaccion") != null && r.get("items") instanceof Map<?, ?> its) {
+            // 0049 JM3: la salida es una colección escrita, y lo que devolvió es su commit.
+            System.out.println(salida + " · built from " + fichero + ":" + metodo + " · transaction " + r.get("transaccion")
+                + " · " + its.get("actuales") + " items" + (Boolean.TRUE.equals(r.get("sin_cambios")) ? " · nothing new" : ""));
         } else if (hecho instanceof Map<?, ?> r && r.get("rows") != null) {
             System.out.println(salida + " · built from " + fichero + ":" + metodo + " · " + r.get("rows") + " rows"
                 + (Boolean.TRUE.equals(r.get("repeated")) ? " · the same write: nothing new" : ""));

@@ -31,6 +31,25 @@ public final class ParaElBanco {
     /** Una celda, como la corre el puesto: el kernel del agente (JShell), con su informe. */
     public static Map<String, Object> celda(String texto) { return new Agente.Kernel().correr(texto, "java"); }
 
+    /** Una derivación cruda en el commit de {@code t} (lo que {@code apply()} hace por dentro): los casos del linaje que no cuadra. */
+    public static void derivacion(Media.Transaction t, Map<String, Object> d) {
+        synchronized (t.linaje) { t.linaje.get("derivations").add(d); }
+    }
+
+    /** El error del contrato que el SDK da a una respuesta {@code (status, type)}. */
+    public static Media.MediaError error(int status, String type) { return Media.error(status, Map.of("type", type), "x"); }
+
+    /** El {@code Repr-Digest} de la próxima subida, en vez del suyo ({@code put-004}). */
+    public static void reprDigest(String d) { Media.reprDigestForzado = d; }
+
+    /** Arma un Preview como el arnés ({@code Ore.ensayo}), y lo desarma. */
+    public static void ensayo(String output, String transform) { Ore.ensayo(output, transform); }
+
+    public static Object finDelEnsayo() { return Ore.finDelEnsayo(); }
+
+    /** El commit del que un build dice salir ({@code ORE_CODIGO}). */
+    public static void codigo(String c) { Ore.CODIGO = c; }
+
     /** Los umbrales de la lectura por rangos, para probarla con un ítem pequeño. */
     public static void rangos(long desde, long trozo) {
         Media.EN_PARALELO_DESDE = desde;

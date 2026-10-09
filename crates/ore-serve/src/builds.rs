@@ -1722,6 +1722,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// 0049 JM3 · La celda de un **build** de Java cuya salida es una colección
+    /// escrita: el `@Transform` lee una y escribe la otra por una transacción.
+    /// Con `ORE_CELDA_JAVA_BUILD_MEDIA`, se deja para el laboratorio de la JVM.
+    #[test]
+    fn la_celda_de_un_build_de_java_que_escribe_media() {
+        let d = arbol("java-build-media");
+        let p = d.join("packages/ventas");
+        std::fs::write(
+            p.join("etl/Paginas.java"),
+            "import static ore.Ore.*;\n\
+             import ore.Media;\n\
+             import ore.Transform;\n\n\
+             public class Paginas {\n    \
+             static final String CONTRATOS = \"ventas.archivo.contratos\";\n    \
+             static final String PAGINAS = \"ventas.archivo.paginas\";\n\n    \
+             /** La cabeza de cada contrato, como un fichero de texto en una colección escrita. */\n    \
+             @Transform(inputs = {CONTRATOS}, output = PAGINAS)\n    \
+             public static Object paginas() throws Exception {\n        \
+             try (Media.Transaction t = collection(PAGINAS).transaction()) {\n            \
+             for (Media.Item it : collection(CONTRATOS).items()) {\n                \
+             try {\n                    \
+             t.put(it.ref().path() + \"/cabeza.txt\", it.readRange(0, 5), \"text/plain\");\n                \
+             } catch (Media.MediaChanged e) {\n                    \
+             // la versión ya no está: ese contrato no da página\n                \
+             }\n            \
+             }\n            \
+             return t.commit();\n        \
+             }\n    \
+             }\n}\n",
+        )
+        .unwrap();
+        let fuentes = bien(fuentes_java(&d, "packages/ventas/etl/Paginas.java", None));
+        let build = Json::obj([
+            (
+                "transform",
+                Json::s("packages/ventas/transforms/paginas.yaml"),
+            ),
+            ("entrypoint", Json::s("etl/Paginas.java:paginas")),
+            ("output", Json::s("ventas.archivo.paginas")),
+        ]);
+        let celda = arnes_java(
+            "packages/ventas/transforms/paginas.yaml",
+            "packages/ventas/etl/Paginas.java",
+            "paginas",
+            &fuentes,
+            ModoJava::Build(&build),
+        );
+        assert!(
+            celda.contains("ore.Arnes.construir(String.join("),
+            "{celda}"
+        );
+        if let Ok(f) = std::env::var("ORE_CELDA_JAVA_BUILD_MEDIA") {
+            std::fs::write(f, &celda).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn un_literal_de_java_lleva_lo_que_sea() {
         assert_eq!(

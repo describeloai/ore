@@ -32,12 +32,14 @@ final class Sdk {
 
     interface Prueba { String correr() throws Exception; }
 
-    static void caso(int n, Prueba p) {
+    static void caso(int n, Prueba p) { caso("sdk", n, p); }
+
+    static void caso(String de, int n, Prueba p) {
         try {
-            System.out.println("  ✓ sdk " + n + " · " + p.correr());
+            System.out.println("  ✓ " + de + " " + n + " · " + p.correr());
         } catch (Throwable e) {
             fallos++;
-            System.out.println("  ✗ sdk " + n + " · " + (e instanceof AssertionError ? e.getMessage() : e.toString()));
+            System.out.println("  ✗ " + de + " " + n + " · " + (e instanceof AssertionError ? e.getMessage() : e.toString()));
         }
     }
 

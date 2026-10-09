@@ -266,6 +266,51 @@ public final class Media {
             }
         }
 
+        /** Escribir no es leer: sin {@code lee()}, con la rama del puesto. */
+        Ore.Respuesta escribir(String metodo, String op, Object cuerpo, String que) {
+            try {
+                return Ore.puesto.pedir(metodo, ruta + op, cuerpo, Duration.ofSeconds(300), rama());
+            } catch (IOException e) {
+                throw new MediaError("media/origen", 502, que + ": " + e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new MediaError("media/origen", 499, que + ": interrupted");
+            }
+        }
+
+        /** <b>A transaction to write into this collection</b> (B4b·3), for an hour. Inside a transform, only on its {@code output}. */
+        public Transaction transaction() { return transaction(3600); }
+
+        /** The same, for {@code ttlS} seconds. */
+        public Transaction transaction(int ttlS) {
+            Ore.Transform t = Ore.transformActivo();
+            if (t != null && !shortName.equals(t.output()))
+                throw new MediaForbidden("media/no-declarada", 403, "`" + shortName + "` is not the output of `" + t.nombre()
+                    + "` (" + t.output() + "): a transform only writes what it declares");
+            return new Transaction(this, ttlS);
+        }
+
+        /**
+         * {@code verify}: reads the bytes of each item and checks them against its digest, in its
+         * position (one's error does not stop the others). To audit, not for the hot path.
+         * {@code items}: paths, {@code MediaRef}s or {@code Item}s.
+         */
+        public List<Verified> verify(List<?> items) {
+            List<Verified> salida = new ArrayList<>();
+            for (Object o : items) {
+                Item it;
+                try {
+                    it = o instanceof Item i ? i : stat(o instanceof MediaRef m ? m.path() : String.valueOf(o),
+                        o instanceof MediaRef m ? m.version() : null);
+                    byte[] b = it.readBytes(1);
+                    salida.add(new Verified(it.ref(), true, sha256(b), null));
+                } catch (MediaError e) {
+                    salida.add(new Verified(o instanceof MediaRef m ? m : o instanceof Item i ? i.ref() : null, false, null, e));
+                }
+            }
+            return salida;
+        }
+
         /** The listing of the current transaction, lazy, by cursor: {@code Item}s without bytes. */
         public Iterable<Item> items() { return items(null, null, LIMIT, null); }
 
@@ -817,6 +862,305 @@ public final class Media {
             abierto = false;
         }
     }
+
+    // ── escribir: la transacción (B4b·3) ────────────────────────────────────
+
+    /** Cuántas veces se reintenta una subida cortada, o un commit que perdió la carrera de la forja. */
+    static final int REINTENTOS = 3;
+    /** Por debajo, lo que no se puede rebobinar se guarda en memoria; por encima, a disco. */
+    static final int EN_MEMORIA = 8 << 20;
+    /** Sólo para el laboratorio (`put-004`): el {@code Repr-Digest} de la próxima subida, en vez del suyo. */
+    static volatile String reprDigestForzado = null;
+
+    /** One {@code put} of {@link Transaction#putMany}: a path and its data ({@code byte[]}, a {@code Path} or an {@code InputStream}). */
+    public record Put(String path, Object data, String contentType) {
+        public static Put of(String path, Object data) { return new Put(path, data, null); }
+
+        public static Put of(String path, Object data, String contentType) { return new Put(path, data, contentType); }
+    }
+
+    /** One result of {@link Transaction#putMany}: the path and its {@code MediaRef}, or the error that was its value. */
+    public record PutResult(String path, MediaRef ref, RuntimeException error) {
+        public boolean ok() { return error == null; }
+    }
+
+    /** Lo que se sube: rebobinable desde el principio, con su largo y su sha256. */
+    private record Fuente(byte[] bytes, java.nio.file.Path fichero, long largo, byte[] sha, boolean temporal) {
+        HttpRequest.BodyPublisher cuerpo() throws IOException {
+            return bytes != null ? HttpRequest.BodyPublishers.ofByteArray(bytes) : HttpRequest.BodyPublishers.ofFile(fichero);
+        }
+
+        void cerrar() {
+            if (temporal && fichero != null) try { java.nio.file.Files.deleteIfExists(fichero); } catch (IOException e) { /* un temporal */ }
+        }
+    }
+
+    static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** {@code data} → lo que se sube. Un {@code InputStream} se copia antes (a memoria o a disco): la subida dice su largo y se reintenta. */
+    private static Fuente fuente(Object data) throws IOException {
+        if (data instanceof byte[] b) return new Fuente(b, null, b.length, sha256().digest(b), false);
+        if (data instanceof java.nio.file.Path p) return new Fuente(null, p, java.nio.file.Files.size(p), shaDe(p), false);
+        if (data instanceof java.io.File f) return fuente(f.toPath());
+        if (data instanceof InputStream in) {
+            MessageDigest h = sha256();
+            byte[] buf = new byte[1 << 16];
+            java.io.ByteArrayOutputStream mem = new java.io.ByteArrayOutputStream();
+            java.nio.file.Path tmp = null;
+            java.io.OutputStream disco = null;
+            long n = 0;
+            try {
+                for (int r; (r = in.read(buf)) >= 0; ) {
+                    h.update(buf, 0, r);
+                    n += r;
+                    if (disco == null && n > EN_MEMORIA) {
+                        tmp = java.nio.file.Files.createTempFile("ore-put-", ".bin");
+                        disco = java.nio.file.Files.newOutputStream(tmp);
+                        mem.writeTo(disco);
+                        mem = null;
+                    }
+                    if (disco != null) disco.write(buf, 0, r);
+                    else mem.write(buf, 0, r);
+                }
+            } finally {
+                if (disco != null) disco.close();
+            }
+            return tmp != null ? new Fuente(null, tmp, n, h.digest(), true) : new Fuente(mem.toByteArray(), null, n, h.digest(), false);
+        }
+        throw new IllegalArgumentException("put(): `data` is a byte[], a Path or an InputStream, not "
+            + (data == null ? "null" : data.getClass().getSimpleName()));
+    }
+
+    private static byte[] shaDe(java.nio.file.Path p) throws IOException {
+        MessageDigest h = sha256();
+        try (InputStream in = java.nio.file.Files.newInputStream(p)) {
+            byte[] buf = new byte[1 << 16];
+            for (int r; (r = in.read(buf)) >= 0; ) h.update(buf, 0, r);
+        }
+        return h.digest();
+    }
+
+    /**
+     * <b>An open transaction</b> on a written collection (B4b·3): {@code put} uploads items,
+     * {@code commit()} leaves them written —and the pointer, with its provenance—, {@code abort()}
+     * leaves nothing. Get one with {@link Collection#transaction()}.
+     *
+     * <p>Commit is explicit (D-JM1): {@code close()} without {@code commit()} is {@code abort()}, so
+     * {@code try (var t = c.transaction()) { t.put(…); t.commit(); }} writes nothing if it throws.
+     */
+    public static final class Transaction implements AutoCloseable {
+        public final Collection collection;
+        private final String id;
+        private final String upload;
+        private final List<MediaRef> uploaded = java.util.Collections.synchronizedList(new ArrayList<>());
+        private volatile Map<String, Object> result;
+        private volatile boolean closed;
+        /** 0049 B9: lo que el {@code commit} lleva además de lo subido. */
+        final Map<String, List<Object>> linaje = new LinkedHashMap<>(Map.of("derivations", new ArrayList<>(),
+            "retire_sources", new ArrayList<>(), "retire", new ArrayList<>()));
+
+        Transaction(Collection col, int ttlS) {
+            this.collection = col;
+            Ore.Respuesta r = col.escribir("POST", "/transactions", Map.of("ttl_s", ttlS), "transaction(" + col + ")");
+            if (r.codigo() != 201) throw error(r.codigo(), r.cuerpo(), "transaction(" + col + ")");
+            id = texto(r.cuerpo().get("transaction"));
+            upload = texto(r.cuerpo().get("upload"));
+        }
+
+        /** The transaction's id (the cell's). */
+        public String id() { return id; }
+
+        /** What was uploaded so far, as the cell saw it. */
+        public List<MediaRef> uploaded() { return List.copyOf(uploaded); }
+
+        /** What {@code commit()} returned, or {@code null}. */
+        public Map<String, Object> result() { return result; }
+
+        public boolean closed() { return closed; }
+
+        @Override public String toString() { return "Transaction(" + collection + ", " + id + (closed ? ", closed" : "") + ")"; }
+
+        private void abierta(String que) {
+            if (closed) throw new MediaTransactionError("media/transaccion", 409, que + ": transaction " + id + " is already closed");
+        }
+
+        /** Uploads {@code data} to {@code path} (relative to the collection); the type is the bytes' (the cell detects it). */
+        public MediaRef put(String path, byte[] data) { return put(path, (Object) data, null); }
+
+        /** The same, declaring a type: it counts only if the bytes say nothing. */
+        public MediaRef put(String path, byte[] data, String contentType) { return put(path, (Object) data, contentType); }
+
+        /** A file, in stream, with its length. */
+        public MediaRef put(String path, java.nio.file.Path file) { return put(path, (Object) file, null); }
+
+        public MediaRef put(String path, java.nio.file.Path file, String contentType) { return put(path, (Object) file, contentType); }
+
+        /** A stream: it is copied first (to memory, or to disk if large), because the upload says its length and is retried. */
+        public MediaRef put(String path, InputStream in) { return put(path, (Object) in, null); }
+
+        public MediaRef put(String path, InputStream in, String contentType) { return put(path, (Object) in, contentType); }
+
+        MediaRef put(String path, Object data, String contentType) {
+            abierta("put(" + path + ")");
+            Fuente f;
+            try {
+                f = fuente(data);
+            } catch (IOException e) {
+                throw new MediaError("media/origen", 502, "put(" + path + "): " + e.getMessage());
+            }
+            try {
+                return subir(path, f, contentType);
+            } finally {
+                f.cerrar();
+            }
+        }
+
+        private MediaRef subir(String path, Fuente f, String tipo) {
+            String destino = upload + (upload.contains("?") ? "&" : "?") + "path="
+                + URLEncoder.encode(path, StandardCharsets.UTF_8).replace("%2F", "/").replace("+", "%20");
+            String digest = reprDigestForzado;
+            reprDigestForzado = null;
+            if (digest == null) digest = "sha-256=:" + java.util.Base64.getEncoder().encodeToString(f.sha()) + ":";
+            Exception ultimo = null;
+            for (int intento = 0; intento <= REINTENTOS; intento++) {
+                try {
+                    // Sin el token de ORE: `upload` ya es el permiso, como la URL de `open`.
+                    HttpRequest.Builder q = HttpRequest.newBuilder(URI.create(destino)).timeout(Duration.ofMinutes(5))
+                        .header("repr-digest", digest).PUT(f.cuerpo());
+                    if (tipo != null) q.header("content-type", tipo);
+                    HttpResponse<String> r = BYTES.send(q.build(), HttpResponse.BodyHandlers.ofString());
+                    Map<String, Object> cuerpo = r.body() == null || r.body().isBlank() ? Map.of() : Json.objeto(r.body());
+                    if (r.statusCode() != 201) throw error(r.statusCode(), cuerpo, "put(" + path + ")");
+                    MediaRef ref = MediaRef.fromJson(cuerpo);
+                    uploaded.add(ref);
+                    return ref;
+                } catch (IOException e) {
+                    // Cortada: se vuelve a subir. Es idempotente —el mismo contenido al mismo
+                    // camino es la misma fila, y el blob ya está si llegó—.
+                    ultimo = e;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new MediaError("media/origen", 499, "put(" + path + "): interrupted");
+                }
+            }
+            throw new MediaError("media/origen", 503, "put(" + path + "): the upload was cut " + (REINTENTOS + 1) + " times: " + ultimo);
+        }
+
+        /**
+         * Many {@code put}s at once, {@code threads} at a time, as they finish: one's error is a value
+         * and does not stop the others. At most {@code 2 × threads} are in flight: {@code puts} is not
+         * read whole up front.
+         */
+        public Iterable<PutResult> putMany(Iterable<Put> puts, int threads) {
+            abierta("putMany");
+            Transaction t = this;
+            return () -> new Iterator<PutResult>() {
+                final Iterator<Put> ps = puts.iterator();
+                ExecutorService ex;
+                CompletionService<PutResult> cs;
+                int vivos = 0;
+
+                void lanzar() {
+                    if (ex == null) {
+                        ex = Executors.newFixedThreadPool(threads, Media::hilo);
+                        cs = new ExecutorCompletionService<>(ex);
+                    }
+                    while (vivos < threads * 2 && ps.hasNext()) {
+                        Put p = ps.next();
+                        cs.submit(() -> {
+                            try {
+                                return new PutResult(p.path(), t.put(p.path(), p.data(), p.contentType()), null);
+                            } catch (RuntimeException e) {
+                                return new PutResult(p.path(), null, e);
+                            }
+                        });
+                        vivos++;
+                    }
+                }
+
+                @Override public boolean hasNext() {
+                    lanzar();
+                    if (vivos == 0 && ex != null) ex.shutdown();
+                    return vivos > 0;
+                }
+
+                @Override public PutResult next() {
+                    if (!hasNext()) throw new NoSuchElementException();
+                    try {
+                        PutResult r = cs.take().get();
+                        vivos--;
+                        return r;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        ex.shutdownNow();
+                        throw new MediaError("media/origen", 499, "interrupted");
+                    } catch (ExecutionException e) {
+                        vivos--;
+                        throw new MediaError("media/origen", 502, String.valueOf(e.getCause()));
+                    }
+                }
+            };
+        }
+
+        /** Retires the item at {@code path} when this transaction commits (0049 B9). */
+        public void delete(String path) {
+            abierta("delete(" + path + ")");
+            synchronized (linaje) { linaje.get("retire").add(path); }
+        }
+
+        /**
+         * Leaves what was uploaded written —the pointer, with its provenance— and closes it. If
+         * someone else committed at the same time, it commits again on top. Returns
+         * {@code {transaction, items, commit, metadata_location, …}}.
+         */
+        public Map<String, Object> commit() {
+            abierta("commit");
+            long espera = 500;
+            for (int intento = 0; intento <= REINTENTOS; intento++) {
+                Map<String, Object> cuerpo = new LinkedHashMap<>();
+                synchronized (linaje) { for (var e : linaje.entrySet()) if (!e.getValue().isEmpty()) cuerpo.put(e.getKey(), List.copyOf(e.getValue())); }
+                Ore.Respuesta r = collection.escribir("POST", "/transactions/" + id + "/commit", cuerpo, "commit(" + id + ")");
+                if (r.codigo() == 200) {
+                    closed = true;
+                    result = Ore.enIngles(r.cuerpo());
+                    Ore.alInformeDeMedia(collection.shortName, result);
+                    return result;
+                }
+                boolean carrera = r.codigo() == 409 && r.cuerpo().get("type") == null;
+                if (!carrera || intento == REINTENTOS) throw error(r.codigo(), r.cuerpo(), "commit(" + id + ")");
+                try {
+                    Thread.sleep(espera);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new MediaError("media/origen", 499, "commit(" + id + "): interrupted");
+                }
+                espera *= 2;
+            }
+            throw new IllegalStateException("unreachable");
+        }
+
+        /** Leaves nothing of what was uploaded, and closes it. */
+        public void abort() {
+            if (closed) return;
+            Ore.Respuesta r = collection.escribir("POST", "/transactions/" + id + "/abort", Map.of(), "abort(" + id + ")");
+            closed = true;
+            if (r.codigo() != 204 && r.codigo() != 404) throw error(r.codigo(), r.cuerpo(), "abort(" + id + ")");
+        }
+
+        /** D-JM1: without {@code commit()}, {@code abort()}. */
+        @Override public void close() {
+            if (!closed) abort();
+        }
+    }
+
+    /** {@code verify}: one result per item, in its position: {@code ok}, with the sha256 seen, or its error. */
+    public record Verified(MediaRef item, boolean ok, String sha256, MediaError error) {}
 
     // ── muchos a la vez ─────────────────────────────────────────────────────
 

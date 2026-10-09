@@ -137,9 +137,24 @@ public final class Ore {
     }
 
     /** Las claves en español de lo que el SDK devuelve → las inglesas. */
-    static final Map<String, String> ES_EN = Map.of(
-        "tabla", "table", "filas", "rows", "operacion", "operation", "repetida", "repeated",
-        "nombre", "name", "fichero", "file", "nueva", "created", "new", "created");
+    static final Map<String, String> ES_EN = Map.ofEntries(
+        Map.entry("tabla", "table"), Map.entry("filas", "rows"), Map.entry("operacion", "operation"),
+        Map.entry("repetida", "repeated"), Map.entry("nombre", "name"), Map.entry("fichero", "file"),
+        Map.entry("nueva", "created"), Map.entry("new", "created"),
+        // 0049 JM3 · Transaction.commit(), como el `_ES_EN` de Python
+        Map.entry("transaccion", "transaction"), Map.entry("cambios", "changes"), Map.entry("procedencia", "provenance"),
+        Map.entry("coleccion", "collection"), Map.entry("creada", "created"));
+
+    /** Un mapa del servidor (claves de antes) → {@link Result} con las inglesas; si la inglesa ya venía, manda. */
+    static Result enIngles(Map<String, Object> d) {
+        Result r = new Result();
+        for (Map.Entry<String, Object> e : d.entrySet()) {
+            String en = ES_EN.getOrDefault(e.getKey(), e.getKey());
+            if (!en.equals(e.getKey()) && d.containsKey(en)) continue;
+            r.put(en, e.getValue());
+        }
+        return r;
+    }
 
     /**
      * What {@code write()} and {@code declare()} return: a map with English keys
@@ -182,6 +197,11 @@ public final class Ore {
         }
 
         public Respuesta pedir(String metodo, String ruta, Object cuerpo, Duration plazo, Map<String, String> extra) throws IOException, InterruptedException {
+            // 0055 P1 (y 0049 JM3): mientras corre un Preview, nada que escriba sale de aquí;
+            // el servidor lo exige también (su puerta), esto es para decirlo antes y mejor.
+            if (ensayando != null && !metodo.equals("GET") && !metodo.equals("HEAD") && !noEscribe(ruta))
+                throw new SecurityException("Preview writes nothing: `" + metodo + " " + ruta.split("\\?", 2)[0]
+                    + "` would change the lake or the tree. Build writes");
             HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(servidor + ruta)).timeout(plazo).header("accept", "application/json");
             java.util.function.Supplier<Map<String, String>> c = credencial;
             for (Map.Entry<String, String> e : (c != null ? c.get() : cabeceras).entrySet()) b.header(e.getKey(), e.getValue());
@@ -194,6 +214,15 @@ public final class Ore {
             String t = r.body();
             return new Respuesta(r.statusCode(), t == null || t.isBlank() ? new LinkedHashMap<>() : Json.objeto(t));
         }
+    }
+
+    /** Lo que una sesión pide sin escribir nada, fuera de {@code GET}: lo mismo que deja pasar la puerta del Preview en ore-serve. */
+    static boolean noEscribe(String ruta) {
+        String c = ruta.split("\\?", 2)[0];
+        return c.startsWith("/puestos/") || c.equals("/federation/read")
+            || c.matches("^/colecciones/[^/]+/[^/]+/[^/]+/items/resolver$")
+            || c.matches("^/media/[^/]+/[^/]+/[^/]+/urls$")
+            || (c.startsWith("/v1/") && c.endsWith("/metrics"));
     }
 
     public record Respuesta(int codigo, Map<String, Object> cuerpo) {
@@ -653,6 +682,62 @@ public final class Ore {
 
     /** {@code Ore.collection("db.schema.name")} (or {@code db.name}): a media collection. */
     public static Media.Collection collection(String name) { return new Media.Collection(name); }
+
+    /** The media kinds a collection is of (OOS v1alpha17). */
+    public static final List<String> MEDIA = List.of("document", "image", "audio", "video", "spreadsheet", "email");
+
+    /** {@code create media collection name (media, formats)}: an empty <b>written</b> collection, which code fills with {@code collection(name).transaction()}. */
+    public static Map<String, Object> createCollection(String name, String media, List<String> formats) throws Exception {
+        return createCollection(name, media, formats, null, null, null, null, false);
+    }
+
+    /**
+     * The same, with all it takes: {@code owner} only to give it to someone else (without it, it
+     * belongs to whoever creates it, set by the server); {@code labels} ({@code gdpr.sensitivity:
+     * high}) add to what is derived; {@code ifNotExists}: if it exists, {@code {created: false}}
+     * instead of an error. An OOS code comes back as {@code IllegalArgumentException}. Returns
+     * {@code {collection, created}}.
+     */
+    public static Map<String, Object> createCollection(String name, String media, List<String> formats, String owner,
+                                                       String comment, Map<String, String> labels, String retention,
+                                                       boolean ifNotExists) throws Exception {
+        String nombre = corto(name, "create media collection: the name");
+        String que = "create media collection " + nombre;
+        if (!MEDIA.contains(media)) throw new IllegalArgumentException(que + ": `media` is one of " + String.join(", ", MEDIA) + ", not " + media);
+        List<String> fs = new ArrayList<>();
+        for (String f : formats == null ? List.<String>of() : formats) fs.add(f.toLowerCase(java.util.Locale.ROOT).replaceAll("^\\.+", ""));
+        if (fs.isEmpty() || new java.util.HashSet<>(fs).size() != fs.size() || !fs.stream().allMatch(f -> f.matches("^[a-z0-9][a-z0-9.+-]*$")))
+            throw new IllegalArgumentException(que + ": `formats` is a list of distinct extensions (`png`, `pdf`), not " + formats);
+        String[] p = partes(nombre);
+        String ruta = p[1].equals(DEFAULT) ? "/documentos/MediaCollection/" + p[0] + "/" + p[2] : "/documentos/MediaCollection/" + p[0] + "/" + p[1] + "/" + p[2];
+        if (puesto.pedir("GET", ruta, null, Duration.ofSeconds(60)).codigo() == 200) {
+            if (ifNotExists) {
+                Result r = new Result();
+                r.put("collection", nombre);
+                r.put("created", false);
+                return r;
+            }
+            throw new IllegalStateException(que + ": a collection with that name already exists (`ifNotExists` leaves it as it is)");
+        }
+        StringBuilder y = new StringBuilder("apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata:\n  name: ")
+            .append(p[2]).append("\n  namespace: ").append(p[0]).append('\n');
+        if (!p[1].equals(DEFAULT)) y.append("  schema: ").append(p[1]).append('\n');
+        if (comment != null) y.append("  description: ").append(Json.escribir(comment)).append('\n');
+        if (labels != null && !labels.isEmpty()) {
+            List<String> ls = new ArrayList<>();
+            for (Map.Entry<String, String> e : labels.entrySet()) ls.add(e.getKey() + ": " + e.getValue());
+            y.append("  labels: { ").append(String.join(", ", ls)).append(" }\n");
+        }
+        y.append("spec:\n");
+        if (owner != null) y.append("  owner: ").append(owner).append('\n');
+        y.append("  media: ").append(media).append("\n  formats: [").append(String.join(", ", fs)).append("]\n");
+        if (retention != null) y.append("  retention: ").append(retention).append('\n');
+        declare(y.toString());
+        Result r = new Result();
+        r.put("collection", nombre);
+        r.put("created", true);
+        return r;
+    }
 
     /** The bytes of many items, 16 at once, as they finish: one's error is a value and does not stop the others. {@code items} may be lazy ({@code c.items()}). */
     public static Iterable<Media.Result> readMany(Iterable<Media.Item> items) { return readMany(items, 16); }
@@ -1560,6 +1645,18 @@ public final class Ore {
             throw new IllegalStateException("write(" + nombre + "): " + mensajeDe(c));
         }
         throw new IllegalStateException("write(" + nombre + "): someone else wrote first four times; try again");
+    }
+
+    /** 0049 JM3 · en un build cuya salida es una colección escrita: lo confirmado va al informe (los ítems, la transacción). */
+    @SuppressWarnings("unchecked")
+    static void alInformeDeMedia(String coleccion, Map<String, Object> confirmado) {
+        if (BUILD == null || !coleccion.equals(BUILD.get("output"))) return;
+        Map<String, Object> m = new LinkedHashMap<>();
+        Object items = confirmado.get("items") instanceof Map<?, ?> im ? ((Map<String, Object>) im).get("actuales") : null;
+        m.put("filas", items instanceof Number n ? n.longValue() : 0L);
+        m.put("snapshot", null);
+        m.put("transaccion", confirmado.get("transaccion"));
+        paraElInforme(m);
     }
 
     /** 0055 B2 · en un build, las filas y el snapshot de lo escrito van al informe. */

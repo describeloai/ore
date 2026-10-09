@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM2 hechos** (leer, y dentro de un `@Transform`: 30/51 y 18 del SDK). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM3 hechos** (leer, dentro de un `@Transform` y escribir: 40/51, y 35 del SDK). Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -896,6 +896,37 @@ B3·5, las cuatro de B4·3 en Java, y el Preview de un `@Transform` que lee medi
 - **Por qué Preview y no Build**: el `write()` de un Build va por Iceberg REST y el escritor de fuera,
   que el banco no tiene. Un Build cuya salida es una **colección escrita** sí cabe en el banco: va con
   las transacciones de JM3.
+
+#### JM3 · hecho: escribir (2026-10-09)
+
+**`40/51`, ninguno mal** —sólo quedan los 11 de `apply`, JM4—: los 30 de antes, los seis de
+`put.json` (`put-001`…`-005`, `verify-001`) y los cuatro `put` derivados de `derivar.json`
+(`derivar-012`, `-013`, `retirar-001`, `-002`). Y **las 15 de B4b·3 en Java**, más dos: la puerta del
+Preview y **un build de verdad** (la celda de `builds.rs`) cuya salida es una colección escrita. La
+corrida entera, ~31 s.
+
+- **El SDK**: `Collection.transaction([ttlS])` → `Media.Transaction` (`AutoCloseable`): `put(path,
+  byte[] | Path | InputStream[, contentType])` —la subida en flujo, sin el token de ORE, con su
+  `Repr-Digest`; un `InputStream` se copia antes (a memoria hasta 8 MB, si no a disco) porque la
+  subida dice su largo y se reintenta—, `putMany(Iterable<Put>, threads)` (con `2 × threads` en vuelo
+  como mucho, el error de uno es su valor), `delete(path)` (el `retire` de B9), `commit()` (vuelve a
+  confirmar si perdió la carrera de la forja) y `abort()`. `Ore.createCollection(name, media, formats
+  [, owner, comment, labels, retention, ifNotExists])` por `/documentos`. `Collection.verify(items)`.
+  El commit devuelve un `Result` con las claves inglesas (`transaction`, `changes`, `provenance`)
+  que contesta a las de antes, como el `_ES_EN` de Python.
+- **D-JM1, en vivo**: `close()` sin `commit()` es `abort()`; la prueba 11 lanza dentro del `try` y el
+  puntero no se mueve.
+- **Dentro de un transform**, `transaction()` sólo sobre su `output` (`MediaForbidden`, sin
+  preguntar). **El build** de `Paginas.java` lee `ventas.archivo.contratos`, sube la cabeza de cada
+  contrato y confirma: `transaction 1 · 2 items` en lo que el arnés imprime, y `filas`/`transaccion`
+  en el informe del build (`Ore.alInformeDeMedia`, sólo si la colección es la `output` del build).
+- **La puerta del Preview en la JVM** (0055 P1): `Ore.Puesto.pedir` no deja salir nada que escriba
+  mientras un Preview está armado —la misma lista de lo que no escribe que Python y que la puerta de
+  `ore-serve`—. Antes sólo lo paraba el servidor.
+
+**Un hueco más del servidor** (el cuarto): **`verify` no existe** en `ore-serve` ni en `ore-medios`, aunque
+`docs/media.md` §2 lo define (`POST /media/…/verify`). En la JVM es del cliente: lee cada ítem y lo
+coteja con su digest (`verify-001`). Python no lo tiene.
 
 #### Dos decisiones que pide la JVM
 

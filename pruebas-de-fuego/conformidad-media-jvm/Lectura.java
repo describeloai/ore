@@ -196,6 +196,8 @@ final class Lectura {
             case "media/no-existe" -> Media.MediaNotFound.class;
             case "media/sin-permiso", "media/no-declarada" -> Media.MediaForbidden.class;
             case "media/cambiado" -> Media.MediaChanged.class;
+            case "media/corrupto", "media/digest-no-casa" -> Media.MediaCorrupt.class;
+            case "media/no-escribible" -> Media.MediaNotWritable.class;
             default -> Media.MediaError.class;
         };
         exige(clase.isInstance(me), "[" + x.en + "] `" + tipo + "` llega como " + me.getClass().getSimpleName() + " y no " + clase.getSimpleName());

@@ -86,6 +86,9 @@ def instalar():
         for c in COLECCIONES:
             _ingerir(c, primera)
             _ingerir(c, segunda)
+        # JM3 · la escrita de la muestra, vacía: la sirve el índice de escritas
+        # del banco de la media (`ESCRITAS`), como una que `apply()` llena.
+        banco.ESCRITAS["conformidad.default.escrita"] = {"tx": 0, "items": {}, "marcas": {}}
 
 
 def _version(col, datos):
@@ -206,6 +209,8 @@ def celda(h, metodo, servidor):
             return _contenido(h, col, st, q)
         if metodo == "POST" and op == "urls":
             return _urls(h, col, st, cuerpo)
+        if metodo == "POST" and op == "transactions":
+            return _problema(h, 409, "media/no-escribible", "`%s` se mantiene desde su `from`" % col)
     return _problema(h, 404, "media/no-existe", "%s %s no es una ruta" % (metodo, u.path))
 
 
@@ -372,6 +377,17 @@ def _mando(h, orden, c):
             return _json(h, 200, dict(banco.CONTADOS))
         if orden == "transforms":
             return _json(h, 200, {"transforms": [[m, c2] for m, c2 in banco.TRANSFORMS], "fijadas": dict(DECLARADAS)})
+        if orden == "punteros":
+            return _json(h, 200, {"punteros": dict(banco.PUNTEROS)})
+        if orden == "lago":
+            d = banco.LAGO.get(c["sha256"])
+            return _json(h, 200, {"esta": d is not None, "size": None if d is None else len(d)})
+        if orden == "modos":
+            banco.MODOS.update({k: v for k, v in c.items() if k in banco.MODOS})
+            return _json(h, 200, dict(banco.MODOS))
+        if orden == "documento":
+            y = banco.DOCUMENTOS.get((c["kind"], c["base"], c.get("schema") or "default", c["nombre"]))
+            return _json(h, 200, {"yaml": y})
         if orden == "objeto":
             return _json(h, 200, {"base64": base64.b64encode(banco.OBJETOS[c["path"]]).decode()})
         if orden == "rama":
