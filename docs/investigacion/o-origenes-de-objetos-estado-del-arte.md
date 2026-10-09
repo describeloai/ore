@@ -223,3 +223,81 @@ Investigado para D-O4.
   denegación de servicio, **sin verificar uno a uno**) y `ssh2` (libssh2 en C, síncrona, de ritmo
   lento; la que empaqueta `libssh2-sys` 0.3.3 es la 1.11.1, con *strict KEX*: Terrapin corregido,
   comprobado en su código). `openssh` llama al binario `ssh` y obliga a llevarlo en la imagen.
+
+## 8. SharePoint / OneDrive: cómo entra la plataforma en el tenant del cliente (2026-10-09)
+
+Investigado para D-O5. Sin emulador ni tenant: todo lo de aquí es de la documentación; lo que no
+está escrito en una oficial va marcado **sin verificar** y se mide cuando haya tenant.
+
+| producto | identidad | permiso | por sitio | fuente |
+|---|---|---|---|---|
+| **Foundry** | app-only con secreto, o un usuario delegado | `Sites.Read.All` o `Sites.Selected` (`read` basta) | sí | [docs](https://palantir.com/docs/foundry/available-connectors/sharepoint-online/) |
+| **Databricks Lakeflow** | U2M, o M2M con secreto | `Sites.Selected` recomendado, `read` | sí | [docs](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sharepoint) |
+| **Fivetran** | delegado con su app, o app del cliente con secreto o certificado | `Sites.Selected` `read`, por sitio o por carpeta | sí | [docs](https://fivetran.com/docs/connectors/files/share-point/setup-guide) |
+| **Snowflake Openflow** | secreto, o certificado | `Sites.Selected` (+ `Files.SelectedOperations.Selected`) | sí | [docs](https://docs.snowflake.com/en/user-guide/data-integration/openflow/connectors/sharepoint/setup) |
+| **Google (Gemini Enterprise)** | **credencial federada, issuer `https://accounts.google.com`**, o secreto | `Sites.Selected` + `fullcontrol` (lee ACL) | sí | [docs](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/ms-sharepoint/third-party-config) |
+| **AWS (Q Business)** | app-only con certificado (recomendado) | `Sites.Selected` `fullcontrol` | sí | [docs](https://docs.aws.amazon.com/amazonq/latest/qbusiness-ug/sharepoint-cloud-prereqs.html) |
+| **Airbyte** | delegado, o secreto | `Files.Read.All` | no | [docs](https://docs.airbyte.com/integrations/sources/microsoft-sharepoint) |
+| **ADF / Fabric** | certificado (lista) o secreto por HTTP | `Sites.Read.All` | no | [docs](https://learn.microsoft.com/en-us/azure/data-factory/connector-sharepoint-online-list) |
+
+**El estándar es una app del tenant del cliente, app-only, con `Sites.Selected` concedido sitio a
+sitio**; quien sólo ingiere pide `read` (`fullcontrol` es para leer ACL). Google es el único que
+documenta la federación con sus cuentas, que es lo que ORE ya hace con Azure (§6).
+
+- **`Sites.Selected`** ([overview](https://learn.microsoft.com/en-us/graph/permissions-selected-overview)):
+  hacen falta las tres cosas —el consentimiento de la app en Entra, la concesión en el sitio
+  (`POST /sites/{id}/permissions` con `roles: ["read"]` y la app en `grantedToIdentities`) y el
+  ámbito en el token—. Concede quien tenga `Sites.FullControl.All` (en delegado, además rol de
+  SharePoint Administrator) o con PnP (`Grant-PnPEntraIDAppSitePermission -Permissions Read`). Hay
+  variantes por lista, por carpeta o por fichero (`*.SelectedOperations.Selected`, rompen la
+  herencia; su estado GA, **sin verificar**). Las páginas de `children`, `content`, `versions` y
+  `delta` sólo nombran `Files.Read.All`/`Sites.Read.All`: que funcionen con `Sites.Selected` lo
+  dicen los conectores que ingieren con él, no una página de Graph. **Que `delta` funcione con
+  `Sites.Selected`: sin verificar.**
+- **Federación**: da tokens app-only para cualquier recurso de Entra, Graph incluido
+  ([doc](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation)).
+  El `/_api` (REST/CSOM) de SharePoint app-only **sólo acepta certificado**
+  ([doc](https://learn.microsoft.com/en-us/sharepoint/dev/solution-guidance/security-apponly-azuread)):
+  con federación, sólo Graph.
+- **Direcciones**: el sitio por ruta (`/sites/{host}:/{ruta}`, id `host,guid,guid`), sus
+  bibliotecas (`/sites/{id}/drives`), un elemento por ruta (`/drives/{d}/root:/{ruta}:`),
+  `children` en páginas de 200 con `@odata.nextLink`. Un `driveItem` lleva `id`, `eTag` (cambia con
+  el contenido y los metadatos), `cTag` (sólo con el contenido; en carpetas, con el de cualquier
+  descendiente), `size`, `lastModifiedDateTime`, `file.hashes`, y lo que no es un fichero normal:
+  `folder`, `package` (cuadernos de OneNote), `remoteItem` (un acceso directo a otro drive),
+  `deleted`.
+- **Huella**: sólo `quickXorHash` está garantizado en SharePoint y OneDrive
+  ([hashes](https://learn.microsoft.com/en-us/graph/api/resources/hashes?view=graph-rest-1.0)):
+  `sha256Hash` «no se usa», `sha1Hash`/`crc32Hash` «si hay». Es un XOR desplazado sobre 160 bits
+  con la longitud al final, en base64 ([algoritmo](https://learn.microsoft.com/en-us/onedrive/developer/code-snippets/quickxorhash)).
+  **Las versiones antiguas no traen huella.**
+- **Leer**: `/content` contesta `302` a una URL pre-autenticada (la misma que
+  `@microsoft.graph.downloadUrl`; «puede caducar en minutos», el recurso dice una hora) que es un
+  secreto al portador; el `Range` va en esa URL (`206`, o `200` entero si no puede)
+  ([doc](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0)).
+  `if-none-match` con el eTag/cTag da `304`; **`If-Match`, sin documentar**: no hay forma escrita
+  de fijar una descarga a un eTag.
+- **Versiones** ([doc](https://learn.microsoft.com/en-us/graph/api/driveitem-list-versions?view=graph-rest-1.0)):
+  ids `"3.0"`, `"2.0"`…, de la más nueva a la más vieja; una antigua se baja por
+  `/versions/{id}/content` (302, con `Range`), **la actual no**: sólo por `/content`
+  ([doc](https://learn.microsoft.com/en-us/graph/api/driveitemversion-get-contents?view=graph-rest-1.0)).
+  Las bibliotecas versionan con un límite (por número o por edad, o «automático»: las viejas se
+  recortan) ([doc](https://learn.microsoft.com/en-us/sharepoint/document-library-version-history-limits)):
+  **una versión fijada puede desaparecer**, como en S3 con un ciclo de vida.
+- **`delta`** ([doc](https://learn.microsoft.com/en-us/graph/api/driveitem-delta?view=graph-rest-1.0)):
+  el listado completo garantizado y luego sólo los cambios (`deltaLink`, `token=latest`, los
+  borrados con `deleted`, `410` para empezar de cero); sin rutas (`parentReference.path` vacío) y,
+  en SharePoint, sin `cTag` en los cambios.
+- **Ritmo** ([doc](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online)):
+  `429`/`503` con `Retry-After`, que hay que respetar; un presupuesto en *resource units* por app y
+  por tenant (1.250 RU/min en un tenant de hasta 1.000 licencias; listar 2 RU, leer 1); el
+  `User-Agent` `ISV|<empresa>|<app>/<versión>`.
+- **Errores** ([doc](https://learn.microsoft.com/en-us/graph/errors)): `{"error":{"code",
+  "message"}}`, programar contra `code`; `403`, `404`, `410`, `412`, `416`, `429`, `503`.
+- **Trampas**: un fichero de Office puede cambiar de bytes sin una edición visible (SharePoint
+  escribe sus propiedades dentro: documentado en 2010, en Online **sin verificar**); los accesos
+  directos (`remoteItem`) apuntan fuera de la biblioteca; nubes soberanas (GCC High, 21Vianet) con
+  otros hosts.
+- **El cliente HTTP**: `ureq` 2.12.1 quita `Authorization` al seguir una redirección a otro host
+  (`redirect_auth_headers` por defecto `Never`, leído en su código): el token de Graph no llega al
+  host de la descarga. Aun así, el driver no sigue la redirección a ciegas (D-O5).

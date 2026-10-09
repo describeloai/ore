@@ -1,8 +1,8 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
 **Estado:** propuesto (2026-10-09). **O0–O4 hechos** (2026-10-09; O2–O4 en el laboratorio, la prueba
-contra GCS, Azure y un SFTP de verdad es deuda temporal); siguiente O5 (SharePoint). D-O1 aplicada en
-O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
+contra GCS, Azure y un SFTP de verdad es deuda temporal); O5 (SharePoint) en marcha: O5·0 investigado,
+D-O5 propuesta. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -96,6 +96,47 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
      la versión y se sigue a libssh2. `russh` queda como alternativa si un día hace falta Rust puro.
      Algoritmos modernos por defecto; `ssh-rsa` con SHA-1 sólo con un parámetro explícito por fuente.
 
+8. **D-O5 · cómo entra ORE en el SharePoint / OneDrive del cliente** *(propuesta, 2026-10-09;
+   investigación §8)*:
+   - **Identidad: la de D-O3** —las cuentas de la celda federadas en una app del tenant del cliente,
+     la misma de Azure si ya la tiene—, ahora con el ámbito `https://graph.microsoft.com/.default`.
+     Lo que el sector hace con secreto o certificado (Databricks, Fivetran, Snowflake, AWS), ORE lo
+     hace sin secreto, como Google en Gemini Enterprise. **Sólo Graph**: el `/_api` de SharePoint
+     app-only exige certificado.
+   - **Permiso: `Sites.Selected` y la concesión `read` sitio a sitio**, el estándar (Foundry,
+     Databricks, Fivetran, Snowflake, Google, AWS). **No se admiten** `Sites.Read.All` ni
+     `Files.Read.All` (leen todo el tenant), ni un usuario delegado (la ingesta no puede depender de
+     la sesión de una persona), ni un secreto o certificado. El asistente da el consentimiento y el
+     comando de PnP o de Graph para conceder el sitio, que hace un administrador del cliente.
+   - **La URL** nombra el sitio, la biblioteca y la app:
+     `sharepoint://<host>/<sitio>/<biblioteca>[/<prefijo>]?tenant=<id>&cliente=<id de la app>`, con
+     `<sitio>` = los dos segmentos de `sites/…`, `teams/…` o `personal/…` (OneDrive), o nada (el
+     sitio raíz). La biblioteca, por su nombre visible.
+   - **Fijar: por versión.** Cada fichero se fija como `<id del item>@<versión>`: una versión
+     antigua se lee por `/versions/{id}/content`; **la actual no se puede pedir por id**, así que se
+     lee por `/content` **vigilada**, como en SFTP: el `cTag` se mira al abrir y al terminar, y si
+     cambió, la lectura falla en vez de dar otros bytes. Una lectura entera de la actual se coteja
+     además con su `quickXorHash`. Una versión que la biblioteca ya recortó es `media/cambiado`,
+     como un objeto de S3 borrado. Colecciones virtuales, sí.
+   - **Huella: `quickxor:`** (la de la versión actual; las antiguas no la traen). Nueva en
+     `ore-objetos`.
+   - **Sin URLs firmadas** (`firma: false`): la de descarga es de Microsoft, al portador, de
+     caducidad que no decide ORE, y la de la versión actual no está fijada a la versión. `ore-medios`
+     sirve los bytes por `leer_fijado`, y la URL de descarga nunca sale del proceso que la pidió.
+   - **El token sólo a Graph**: no se sigue la `302` a ciegas; se toma la `Location`, se exige
+     `https://*.sharepoint.com` (o `*-my.sharepoint.com`) y se pide sin `Authorization`. Graph,
+     `https://graph.microsoft.com` salvo `ORE_SHAREPOINT_LABORATORIO=1`.
+   - **El ritmo de Graph se respeta**: un `429`/`503` espera su `Retry-After` (con un tope; más allá,
+     el error lo dice) y se cuenta; el `User-Agent` es `ISV|ORE|ore-read-sharepoint/<versión>`.
+   - **Listar por `children`**, recursivo y paginado: lo que la concesión `read` documenta. `delta`
+     (un solo recorrido y luego sólo los cambios) se adopta cuando se mida con `Sites.Selected` en un
+     tenant de verdad.
+   - **Se saltan** las carpetas, los cuadernos de OneNote (`package`) y los accesos directos
+     (`remoteItem`: apuntan fuera, como un enlace simbólico en SFTP); se listan como tales.
+   - **Fuera**: las nubes soberanas (GCC High, 21Vianet), las listas de SharePoint (son tablas, no
+     ficheros) y los permisos por carpeta o fichero (`*.SelectedOperations.Selected`), hasta que se
+     pidan.
+
 ## El plan
 
 Cada hito se construye y se prueba **en local**, con el emulador de cada proveedor en Docker; la
@@ -108,7 +149,7 @@ prueba contra el proveedor de verdad queda como deuda temporal, saldada cuando h
 | **O2 · GCS** | `ore-read-gcs`: `generation`, `crc32c`, URL V4, federación por `ore-gcp` | `fake-gcs-server` |
 | **O3 · Azure Blob / ADLS** | `ore-read-azure`: `versionid` o ETag según el namespace; SAS de delegación; Entra | Azurite |
 | **O4 · SFTP** | fijado sintético (la copia en el lago); el puerto 22 en la malla, con su go | `atmoz/sftp` |
-| **O5 · SharePoint / OneDrive** | Graph: versiones, `delta`, `quickXorHash` | un tenant de prueba |
+| **O5 · SharePoint / OneDrive** | Graph: versiones, `quickXorHash`, el ritmo; `delta` cuando se mida | un Graph de mentira; un tenant cuando lo haya |
 
 ### O0 · generalizar, sin cambiar el comportamiento
 
@@ -412,6 +453,35 @@ Lo que destapó la prueba, arreglado aquí:
 El perfil, en [`origenes-de-objetos.md`](../origenes-de-objetos.md). **Deuda temporal de O4**, contra
 servidores de verdad: un OpenSSH de un cliente, uno de Windows (OpenSSH para Windows, Bitvise), uno
 viejo con `ssh-rsa` (`legado=1`), un chroot real, y la red (puerto 22 e IP de salida, con go).
+
+### O5 · SharePoint / OneDrive (en marcha)
+
+**O5·0, investigado** (investigación §8; D-O5 propuesta). No hay emulador de Graph ni, por ahora,
+tenant: **el laboratorio es un Graph de mentira** (`pruebas-de-fuego/graph-de-mentira.py`), escrito
+de la documentación, con lo justo de lo que se usa y las trampas que la documentación nombra:
+
+- Entra: `/<tenant>/oauth2/v2.0/token` con la aserción (no verifica su firma, como Azurite; sí el
+  `client_id` y el ámbito de Graph); Graph exige ese token.
+- Graph: el sitio por ruta, sus bibliotecas, un elemento por ruta, `children` en páginas pequeñas
+  (para que haya `@odata.nextLink`), `versions` (`"3.0"`, `"2.0"`… de la nueva a la vieja),
+  `/content` y `/versions/{id}/content` con `302` a un host de descarga **distinto** que exige no
+  recibir `Authorization` y una URL que caduca, `Range` (`206`), `quickXorHash` en `file.hashes`,
+  carpetas, un cuaderno (`package`), un acceso directo (`remoteItem`).
+- Las negativas: un sitio sin concesión `403 accessDenied`, lo que no está `404 itemNotFound`, una
+  versión recortada, y un `429` con `Retry-After` cada N peticiones.
+
+El `quickXorHash` del Graph de mentira y el de `ore-objetos` los escribo los dos: se cotejan con los
+vectores de una implementación ajena (rclone) para que no se den la razón entre ellos. **Lo que el
+Graph de mentira no puede medir** queda para el tenant: que `Sites.Selected` + `read` liste, baje y
+dé versiones; si la versión actual sale en `versions`; si `/content` honra `If-Match`; cuánto vive
+la URL de descarga; los mensajes reales de error; y `delta`.
+
+| paso | qué |
+|---|---|
+| **O5·1** | `ore-graph`: el canje de Entra sale de `ore-azure` a un sitio común (mismo código, otro ámbito); la URL, el sitio y la biblioteca, `children` paginado, `versions`, leer vigilado por `cTag` y por versión, la `302` sin el token, `Retry-After`, la huella `quickxor:` en `ore-objetos`, el rasgo `Origen` |
+| **O5·2** | `ore-read-sharepoint`: `capacidades` (`fija: version`, sin firma, `quickxor`), `check` (identidad → sitio → biblioteca → listar → leer, cada fallo con su arreglo: el consentimiento, la concesión del sitio), `explorar` (las bibliotecas de un sitio) |
+| **O5·3** | el cableado: `ore-medios` (`leer_fijado`), `ore-serve` (la comprobación del alta y el asistente: el consentimiento y el comando de la concesión), la federación, la imagen, el CI con el Graph de mentira y el banco del kit |
+| **O5·4** | la prueba de fuego, la comprobación de que muerde, el perfil y la deuda contra un tenant |
 
 ## Lo que no se hace aquí
 
