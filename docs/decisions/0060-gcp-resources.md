@@ -229,6 +229,22 @@ huella, en la caché de GitHub, y sólo si alguna imagen que se construye los co
 Lo que costaba ~19 min de `E2_HIGHCPU_8` en Cloud Build por commit es, sin pagar nada, 1,5–2 min si
 no cambia Rust y ~8 si cambia. Siguiente: B1·3, el relevo en el CI de `main`.
 
+### B1·3 · el relevo, en hitos (2026-10-10)
+
+1. **`construir` de `ci.yml` al runner** — hecho en local: los pasos de B1·2 con la etiqueta del
+   commit (`<sha12>`, la que el job `imagen` mueve a `main`, `1` y `en-uso`); se quedan la punta y
+   las salidas `clave`/`clave_motor`; fuera `gcloud builds submit`, la espera a Cloud Build y
+   `REGION_CB`. `construir.yml` queda sólo a mano. Comprobado: YAML, `bash -n` de los once guiones
+   de `construir` e `imagen`, `ci/solo-papel.py`.
+2. **Desplegar con el clúster dormido**: si `sistema-spot` no tiene nodos `Ready`, `imagen` mueve
+   las etiquetas y escribe las anotaciones, sin esperar `rollout status` ni comprobar; lo
+   comprueba `despertar.sh` (C1).
+3. **El primer push a `main`**: antes, el `87-postgres-la-entrada.yaml` (rojo en
+   `gen-inquilino.py --comprobar` desde el 09-oct) y la lista de lo que sube; hecho cuando el CI
+   sale verde, las 14 tienen `<sha12>` y `gcloud builds list` no tiene nada nuevo.
+4. **Cerrar la puerta a Cloud Build** (IAM, go): `ore-ci` sin permiso de construir.
+5. **La comprobación al despertar**, con C1.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

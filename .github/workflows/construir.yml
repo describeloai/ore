@@ -18,9 +18,9 @@ name: construir
 #   commit: ningún manifiesto la nombra y la limpieza del registro (A2) la quita a los 7 días.
 #   El relevo del CI de `main` es B1·3.
 
+# B1·3 (2026-10-10): el CI de `main` (`ci.yml`, job `construir`) ya hace esto con la etiqueta
+# del commit. Esto queda para probar un cambio del camino en una rama, a mano.
 on:
-  push:
-    branches: ['b1/**']
   workflow_dispatch:
 
 concurrency:

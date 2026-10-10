@@ -757,18 +757,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # ⭐ G2 (ADR 0060, 2026-10-08): Cloud Build en la MISMA región que el
-    #   registro. Sin `--region`, `gcloud builds submit` va al pool `global`,
-    #   que no corre en Europa: cada `--cache-from` de las quince imágenes se
-    #   bajaba de europe-west1 a otra región y cada imagen se subía de vuelta,
-    #   y eso se cobra como tráfico (sospecha de G0: Artifact Registry y
-    #   Networking). El pool regional por defecto: mismo precio, sin pool
-    #   privado, nada que crear.
-    #
-    # ⚠️ Una construcción regional sólo la ven `list`/`describe`/`log` con la
-    #   misma `--region`: por eso va en los cinco, no sólo en `submit`.
+    # B1 (ADR 0060): el registro, en la MISMA región que el clúster. Aquí sólo
+    # se SUBE (gratis) y se pregunta por etiquetas (metadato).
     env:
-      REGION_CB: europe-west1
+      REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
     # La clave de lo que corre en los Deployment que CI releva (2026-10-03): la
     # huella de los binarios, y la del Dockerfile y el guion del informador. Si
     # es la que ya tienen, no se relevan (`imagen`).
@@ -829,8 +821,8 @@ jobs:
         if: steps.punta.outputs.sigue == 'si'
 
       # ⭐ La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`): con
-      #   ella Cloud Build reutiliza `ore-binarios:h-<huella>` si ya existe y no
-      #   compila nada. Un commit que no toca Rust pasa de ~20 min a ~2.
+      #   ella se reutilizan los binarios de la caché y no se compila nada, y
+      #   entra en la huella de cada imagen que los copia.
       - name: la huella de los binarios
         id: huella
         if: steps.punta.outputs.sigue == 'si'
@@ -843,54 +835,121 @@ jobs:
           echo "clave_motor=$H-$O-$M" >> "$GITHUB_OUTPUT"
           echo "  binarios h-$H · clave $H-$O · motor $H-$O-$M"
 
-      # ⭐ UNA COMPILACIÓN POR HUELLA (2026-10-03). Cada commit es la punta al
-      #   arrancar, así que con empujes cada pocos minutos seis runs compilaban
-      #   a la vez dos huellas. Si ya hay en Cloud Build una construcción en
-      #   curso con esta huella, se la espera: al terminar, `ore-binarios:h-<huella>`
-      #   existe y el paso `binarios` de la nuestra no compila nada. Si no se
-      #   puede listar, se sigue como antes: la espera ahorra, nunca bloquea.
-      - name: y si ya se compila esta huella, esperarla
+      # ⭐ B1 (ADR 0060, 2026-10-10): UNA IMAGEN POR HUELLA, EN ESTE RUNNER.
+      #   Antes, esto era `gcloud builds submit`: catorce imágenes rehechas y
+      #   subidas en `E2_HIGHCPU_8` en cada commit (~19 min; ~€85 en ocho días
+      #   de octubre). Ahora, por cada imagen (`ci/huella-de-la-imagen.py`):
+      #     · si el registro ya tiene `<imagen>:h-<huella>`, se le añade la
+      #       etiqueta del commit —mover un puntero, sin una capa—;
+      #     · si no, se construye aquí y se sube con las dos.
+      #   Los binarios, por su huella, en la caché de GitHub, y sólo si alguna
+      #   imagen que se construye los copia; las dependencias de Rust, por su
+      #   receta, también. Medido en B1·2: 82 s si nada cambia, 125 s tocando un
+      #   puesto, ~8 min si cambia Rust.
+      #
+      # ⛔ NADA SE BAJA DE ARTIFACT REGISTRY: bajar del registro a internet se
+      #   cobra, subir no. Lo que se le pregunta —si una etiqueta existe— es
+      #   metadato.
+      - name: las huellas de las imagenes, y lo que el registro ya tiene
+        id: plan
         if: steps.punta.outputs.sigue == 'si'
         run: |
           H=${{ steps.huella.outputs.binarios }}
-          for _ in $(seq 1 90); do
-            EN_CURSO=$(gcloud builds list --region="$REGION_CB" --ongoing --format='value(id)' \
-              --filter="substitutions._BINARIOS=$H" 2>/dev/null) || break
-            [ -z "$EN_CURSO" ] && break
-            echo "  h-$H ya se compila en $(echo $EN_CURSO | tr '\n' ' '): se espera"
-            sleep 20
+          python3 ci/huella-de-la-imagen.py --binarios "$H" --todas > /tmp/huellas.txt
+          : > /tmp/plan.txt
+          while read -r ETAPA IMAGEN HUELLA; do
+            if gcloud artifacts docker images describe "$REGISTRO/$IMAGEN:h-$HUELLA" --format='value(image_summary.digest)' >/dev/null 2>&1; then
+              echo "$ETAPA $IMAGEN $HUELLA reutilizar" >> /tmp/plan.txt
+            else
+              echo "$ETAPA $IMAGEN $HUELLA construir" >> /tmp/plan.txt
+            fi
+          done < /tmp/huellas.txt
+          sed 's/^/  /' /tmp/plan.txt
+          NECESITA=no
+          for E in $(awk '$4=="construir" {print $1}' /tmp/plan.txt); do
+            python3 ci/huella-de-la-imagen.py --binarios "$H" --explicar "$E" | grep -q "^  binarios h-" && NECESITA=si
           done
+          echo "binarios_hacen_falta=$NECESITA" >> "$GITHUB_OUTPUT"
+          echo "  binarios h-$H: hacen falta: $NECESITA"
 
-      # Todas en una sola construcción: comparten los binarios.
-      - name: construir las once imagenes, con la etiqueta del commit y ninguna otra
+      - name: el disco (si hay que construir binarios)
+        if: steps.plan.outputs.binarios_hacen_falta == 'si'
+        run: |
+          # Lo que el runner trae y aquí no se usa (B1·0: de 86 a 110 GB libres).
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker image prune -af >/dev/null
+
+      - name: los binarios, de la cache de GitHub
+        id: cache-bin
+        if: steps.plan.outputs.binarios_hacen_falta == 'si'
+        uses: actions/cache@v4
+        with:
+          path: .binarios
+          key: ore-binarios-${{ steps.huella.outputs.binarios }}
+
+      - name: la receta de las dependencias (si los binarios no estaban)
+        id: deps
+        if: steps.plan.outputs.binarios_hacen_falta == 'si' && steps.cache-bin.outputs.cache-hit != 'true'
+        run: |
+          docker build -q --target receta -t receta . >/dev/null
+          D=$({ docker run --rm receta cat /receta.json
+                awk '/^FROM rust:.* AS herramientas$/ {p=1} /^FROM deps AS build$/ {p=0} p' Dockerfile
+                cat ci/compilar-binarios.sh rust-toolchain.toml; } | sha256sum | cut -c1-16)
+          echo "huella=$D" >> "$GITHUB_OUTPUT"
+
+      - name: las dependencias, de la cache de GitHub
+        if: steps.deps.outputs.huella
+        uses: actions/cache@v4
+        with:
+          path: /tmp/deps.tar.zst
+          key: ore-deps-${{ steps.deps.outputs.huella }}
+
+      # El guion acaba arrancando cada servidor: uno que muere no se publica.
+      - name: los binarios (si no estaban, se compilan)
+        if: steps.plan.outputs.binarios_hacen_falta == 'si'
+        run: |
+          if [ -d .binarios ] && [ -n "$(ls -A .binarios)" ]; then
+            echo "  binarios h-${{ steps.huella.outputs.binarios }}: de la cache"
+          else
+            if [ -f /tmp/deps.tar.zst ]; then
+              zstd -dc /tmp/deps.tar.zst | docker load -q
+            else
+              docker build -q --target deps -t ore-deps:local . >/dev/null
+              docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
+            fi
+            docker run --rm -v "$PWD:/src" -w /src -e SALIDA=/src/.binarios ore-deps:local sh ci/compilar-binarios.sh
+            sudo chown -R "$(id -u):$(id -g)" .binarios
+          fi
+          printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t ore-binarios:local -f - .binarios >/dev/null
+
+      - name: las catorce imagenes, cada una por su huella, con la etiqueta del commit
         if: steps.punta.outputs.sigue == 'si'
         run: |
-          # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
-          #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla
-          #   — y esa cuenta tiene medio proyecto. Corriendo como si misma, la
-          #   construccion tiene los cinco permisos que se le dieron y ni uno mas.
-          #
-          # ⚠️ Y con cuenta propia, Cloud Build EXIGE decir donde van los logs.
-          #   `logging: CLOUD_LOGGING_ONLY` ya esta en `cloudbuild.yaml`; sin el
-          #   falla con un mensaje que no menciona la cuenta.
-          #
-          # ⚠️ Y `--async`, preguntando cada 20 s. Esperando, `gcloud` pregunta
-          #   CADA SEGUNDO, y la cuota es de 60 lecturas por minuto para la
-          #   cuenta entera: con dos construcciones a la vez —lo normal desde
-          #   que en `main` no se cancela— la primera en pasarse caía con
-          #   RATE_LIMIT_EXCEEDED mientras su construcción seguía, sana, en
-          #   Cloud Build (2026-09-30, medido).
-          ID=$(gcloud builds submit --region="$REGION_CB" --async --format='value(id)' --config cloudbuild.yaml \
-            --service-account=projects/project-8853a180-450d-47be-b83/serviceAccounts/ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com \
-            --substitutions _SHA=${GITHUB_SHA::12},_BINARIOS=${{ steps.huella.outputs.binarios }} .)
-          echo "  construccion $ID"
-          while :; do
-            sleep 20
-            E=$(gcloud builds describe "$ID" --region="$REGION_CB" --format='value(status)' 2>/dev/null) || continue
-            case "$E" in QUEUED|WORKING|PENDING|"") ;; *) break;; esac
-          done
-          echo "  $E en $(gcloud builds describe "$ID" --region="$REGION_CB" --format='value(timing.BUILD.endTime)')"
-          if [ "$E" != SUCCESS ]; then gcloud builds log "$ID" --region="$REGION_CB" | tail -60; exit 1; fi
+          ETIQUETA=${GITHUB_SHA::12}
+          gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet >/dev/null 2>&1
+          publicar() {
+            local ETAPA=$1 IMAGEN=$2 HUELLA=$3 QUE=$4 ARGS=""
+            if [ "$QUE" = reutilizar ]; then
+              # ⚠️ Por el API del REGISTRO, como el job `imagen`: `artifacts docker
+              #   tags add` borra y crea, y `ore-ci` no tiene `tags.delete`.
+              gcloud container images add-tag "$REGISTRO/$IMAGEN:h-$HUELLA" "$REGISTRO/$IMAGEN:$ETIQUETA" --quiet >/dev/null
+              echo "  $IMAGEN: reutilizada (h-$HUELLA)"
+            else
+              # Sólo si hay binarios locales se nombran: si no, ninguna de las que
+              # se construyen los copia (lo dijo el plan).
+              docker image inspect ore-binarios:local >/dev/null 2>&1 && ARGS="--build-arg BINARIOS=ore-binarios:local"
+              docker build -q --target "$ETAPA" $ARGS \
+                -t "$REGISTRO/$IMAGEN:h-$HUELLA" -t "$REGISTRO/$IMAGEN:$ETIQUETA" . >/tmp/log-$ETAPA.txt 2>&1 \
+                || { tail -30 /tmp/log-$ETAPA.txt; return 1; }
+              docker push -q "$REGISTRO/$IMAGEN:h-$HUELLA" >/dev/null
+              docker push -q "$REGISTRO/$IMAGEN:$ETIQUETA" >/dev/null
+              echo "  $IMAGEN: construida y subida (h-$HUELLA)"
+            fi
+          }
+          export -f publicar
+          export ETIQUETA
+          xargs -P 3 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
 
   imagen:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
