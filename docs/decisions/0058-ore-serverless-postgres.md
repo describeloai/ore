@@ -1695,3 +1695,24 @@ Los objetivos provisionales del informe (`OBJETIVOS` en `informe.py`) se cambian
 Los dos guiones, probados en seco (`SECO=1`: datos de mentira y las órdenes dichas, no lanzadas; el calendario con `ESCALA=1`, una «hora» por segundo). El informe, con un soak sintético de 6 ciclos, golpes, el pool a mitad, una fuga en el proxy y una noche con un nodo que no se fue: los nueve objetivos se calculan, y la fuga (+35,6 %) y la noche (5/6) salen con ✗.
 
 **Para la máquina del cliente**, cuando se cree: su cuenta de servicio (sin llaves) necesita leer el clúster para muestrear (`roles/container.viewer`) y, solo durante el soak, escribir en `ore-pg` y `ore-pg-computo` para los golpes. Las dos cosas son cambios de IAM y piden su go.
+
+#### P7 · Cerrado en el laboratorio (2026-10-10)
+
+**P7 queda cerrado en el laboratorio**, como P5 y P6. Lo que queda es lanzar la receta del soak en GCP y leer los números; no hay que escribir nada más.
+
+| paso | hecho | la prueba |
+|---|---|---|
+| P7·1 · Libro | cuatro piezas con cuatro drivers (Prisma por el pool, el driver de Neon por HTTP, psycopg y JDBC directos), tres invariantes | `lab/p71.sh` |
+| P7·2 · día y noche, y el informe | reloj común y reanudable, errores clasificados, SLOs desde el cliente; un commit borrado a mano lo ve el detector | `lab/p72.sh` |
+| P7·3 · los golpes | **un hueco del producto arreglado: reparar un cómputo que muere**; matar el cómputo, cambiar las CU, reiniciar el proxy, `ore-postgres` y Redis, con carga y nada perdido | `lab/p73.sh` y el contrato (14/14) |
+| P7·4 · preparado para días y para GCP | conciliador incremental (medio millón de transferencias, las vueltas cuestan lo mismo), informe en streaming (de 793 a 0,2 MiB), los nueve objetivos aprobados, la receta, `compose.gcp.yaml`, `muestrea.sh` y `golpes.sh` | `lab/p74.sh` |
+
+**Lo que se llevará un cliente**, aprendido con Libro: la pieza dueña del esquema arranca antes que las demás; Prisma necesita `connect_timeout` y `pool_timeout` por encima de un despertar o de una reparación; las lecturas se reintentan igual que las escrituras; el pool del cliente no guarda conexiones ociosas; y reiniciar el proxy corta las sesiones abiertas una vez. Es material para la documentación de P9.
+
+**Lo que queda para GCP**, en el orden de la receta, después de las listas de P5 y de P6:
+1. el soak de 72 h con los nueve objetivos;
+2. la primera conexión de `compose.gcp.yaml` con el certificado de verdad, y los dos guiones con `kubectl` de verdad;
+3. los permisos de la máquina del cliente (IAM, con su go);
+4. los números al ADR, y P7 cerrado del todo.
+
+**Limpieza al cerrar la etapa** (memoria *Docker y el disco C:*): fuera el laboratorio (sus contenedores, el almacén y `.secretos/`), el target `/tt/p4pg` (8,8 GB), las imágenes de Libro y del cómputo de mentira, la caché de construcción (7,8 GB) y la caché de npm de P5·4. Se guarda la imagen `neon:8269bece` (7 GB): la usa el proxy del laboratorio, y bajarla otra vez del registro cuesta tráfico. `lab.sh arriba` y el primer `docker compose build` de Libro rehacen lo demás; el binario, `cargo build --release -p ore-postgres --features laboratorio`, otra vez en `/tt/p4pg`.
