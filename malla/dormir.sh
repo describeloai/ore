@@ -38,7 +38,7 @@ esac
 T0=$(date +%s)
 paso() { printf '%4ss  %s\n' "$(( $(date +%s) - T0 ))" "$*"; }
 
-gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONA" --project "$P" >/dev/null 2>&1
+gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONA" --project "$P" >/dev/null
 
 NODOS=$(kubectl get nodes -o name 2>/dev/null || true)
 if [ -z "$NODOS" ]; then

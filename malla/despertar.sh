@@ -42,7 +42,7 @@ esperar() {  # esperar <segundos> <qué> <orden…>: hasta que la orden salga bi
   done
 }
 
-gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONA" --project "$P" >/dev/null 2>&1
+gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONA" --project "$P" >/dev/null
 
 # ── 1 · el nodo ─────────────────────────────────────────────────────────────
 nodo_listo() { kubectl get nodes -l cloud.google.com/gke-nodepool=sistema-spot --no-headers 2>/dev/null | grep -q ' Ready'; }
