@@ -180,6 +180,25 @@ europe-west1) y los dos discos y sus `PersistentVolume` borrados: **10 discos, 1
 (forjas e idp; ~$2,6 menos, copiando cada disco), y los discos de arranque de los nodos a lo que
 usan (`jobs-s` arranca con 50 GB `pd-balanced`).
 
+### B1·0 · construir en el runner de GitHub, medido (2026-10-10)
+
+El repositorio es público: los runners de GitHub no cuestan. `construir.yml` (sólo en ramas `b1/*`
+y a mano, sin autenticarse en GCP ni bajar nada del registro) compila los binarios —las
+dependencias por su receta, en la caché de GitHub— y construye las catorce imágenes en local, en
+`ubuntu-24.04` (4 núcleos, 16 GB; 145 GB de disco, 110 libres tras quitar .NET, Android y GHC).
+Corridas 38048545642 (en frío) y 38049751766 (con la caché), sobre `origin/main`:
+
+| etapa | en frío | con la caché |
+|---|---|---|
+| dependencias de Rust | 617 s (se compilan) + 23 s (a la caché: 0,96 GB) | 27 s (de la caché) |
+| nuestro código, entero | 311 s | 299 s |
+| las 14 imágenes, 3 a la vez | 105 s | 107 s |
+| **el job** | **1.074 s (~18 min)** | **461 s (~7,7 min)** |
+
+Pico de disco usado: 46 GB. La mayor imagen, `puesto-python`, 957 MB. **Cabe, y en caliente tarda
+menos que Cloud Build (~19 min).** Con B1·1 (una imagen por huella) y los binarios guardados por
+su huella, un commit que no toca Rust no compila nada ni rehace las imágenes que no cambian.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
