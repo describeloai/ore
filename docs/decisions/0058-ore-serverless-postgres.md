@@ -1477,3 +1477,36 @@ En el contrato, lo mismo sin tiempos (13/13). P6·3 sigue en verde con el interr
 6. **Salud al terminar**: ningún endpoint atascado en `durmiendo` o `arrancando`, ninguna VM `pool-…` huérfana, y `p47.sh` en verde.
 
 Después llega la consola (P6·6) y, con ella, P6 cerrado del todo.
+
+#### P7 · Una aplicación real, en el laboratorio: el plan (2026-10-10)
+
+Google vuelve el 2026-10-10, pero desplegar espera a que el CI pase a los runners de GitHub (0060, B1). Mientras tanto, P7 se adelanta en el laboratorio con la misma dinámica que P5 y P6: **se construye y se ensaya en local, y producción es desplegar, lanzar y leer los números.**
+
+**Sin Neon real en el laboratorio.** P7 trata de datos durante días (commits, dormir sin perder nada, SLOs), y el almacén de mentira no dice nada de eso. Pero montar Neon en Docker obliga a construir la imagen de cómputo desde el fork, y el soak de verdad se hará en GCP por ventanas. Así que el laboratorio sirve para **construir** la aplicación, el generador y el informe, no para medir Neon. El detector de commits perdidos se prueba aquí forzándolo a mano; solo dice algo de verdad contra el pageserver.
+
+**La aplicación: «Libro», un libro contable de una empresa pequeña.** Es una aplicación, no una batería de guiones. Cada pieza usa el driver y la manera de conectar que usaría esa pieza en una empresa real:
+
+| pieza | qué hace | pila | cómo entra |
+|---|---|---|---|
+| **`libro-api`** | el backend: cuentas, transferencias, saldo, historial. Es **la dueña del esquema** | Node, **Prisma** (`prisma migrate`) | por el pool (`-pooler`), con `DIRECT_URL` para migrar |
+| **`libro-webhooks`** | recibe los avisos de pago de un «banco» de mentira y los apunta. Es una función de borde: consultas cortas, cada una con su conexión | Node, **`@neondatabase/serverless`** por HTTP | HTTP. Es el caso del hallazgo de P6·7: ¿cuentan como actividad las consultas cortas? |
+| **`libro-conciliador`** | cada pocos minutos comprueba los invariantes, como la conciliación de un departamento financiero | Python, **psycopg** | directo, TCP |
+| **`libro-informes`** | informes largos de lectura (el cierre del día) y una exportación | Java, **JDBC** (HikariCP) | directo, TCP; consultas largas que no deben dejar dormir |
+
+**Los invariantes**, los que dicen si hubo un error atribuible:
+1. **la suma de los saldos no cambia nunca**: cada transferencia es de doble entrada, en una transacción `serializable`, y los conflictos se reintentan;
+2. **todo commit confirmado existe**: los usuarios simulados apuntan cada transferencia que la API les confirmó, y el conciliador comprueba que está;
+3. **ningún aviso del banco se apunta dos veces ni se pierde**: idempotencia por clave.
+
+**Los pasos:**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **P7·1 · Libro** | las cuatro piezas, el esquema y sus migraciones, en contenedores del compose y contra el proxy, como una aplicación de fuera | las cuatro arrancan, migran, trabajan, y los tres invariantes cuadran; Prisma y el pool sobreviven a un despertar |
+| **P7·2 · Los usuarios y el informe** | un generador de usuarios simulados con forma de día y noche (la noche, comprimida a minutos, para que duerma muchas veces). Cada operación va a un JSONL con hora, pieza, latencia y resultado, y cada error se clasifica: **atribuible** (conexión cortada por nuestro lado, despertar fallido, commit perdido, invariante roto) o **del cliente** (un conflicto `serializable` reintentado). El informe saca los SLOs: commit p50/p99, disponibilidad y despertar (la primera operación tras cada noche) | corre solo, se puede reanudar, y el informe sale de cualquier corrida |
+| **P7·3 · Los golpes del laboratorio** | con carga: matar el cómputo, cambiar las CU, reiniciar el proxy, reiniciar `ore-postgres` y tirar Redis | tras cada golpe los invariantes cuadran; se apunta qué ve cada pieza y cuánto tarda en volver |
+| **P7·4 · Ensayo y receta** | un soak de 2–4 h en el laboratorio, para validar el generador; en el ADR, los objetivos de los SLOs y **la receta del soak en producción** (el mismo generador apuntando a GCP) | el ensayo pasa limpio y la receta está escrita |
+
+**Solo en GCP**, por ventanas, con fecha de inicio y de fin: el soak de días; los golpes que el laboratorio no tiene (el pageserver, un safekeeper, una actualización de nodos con migración en vivo); y los SLOs de verdad. Al acabar cada ventana, `pg` vuelve a 0 (0060). Coste estimado, de lista y sin medir: ~$6–7 al día de soak 24/7.
+
+El código va en `pruebas-de-fuego/ore-postgres/libro/`.
