@@ -1627,3 +1627,61 @@ Medido (p71 en verde con las dos migraciones; después, a mano, con carga y `HOR
 - **La incremental también delata la antigua**, por otro camino (`descuadres: 2`). Las sumas que guarda por cuenta ya contaban sus movimientos, así que, al desaparecer, el saldo deja de casar. Un commit perdido de verdad, que se lleva sus movimientos y su cambio de saldo, sale igual: un commit viejo perdido se ve en la siguiente incremental, no una hora después.
 - En la primera corrida, las incrementales costaban 67 ms frente a 43. Era un `count(*)` de `transferencia` que estaban haciendo solo para informar, y que crece con la tabla; ahora solo lo hace la completa.
 - Al borrar el proyecto no queda nada, ni en el almacén ni en `libro-datos`.
+
+**4 · Los objetivos del soak en GCP** (aprobados el 2026-10-10). Se miden desde Libro, como cliente, durante 72 horas:
+
+| # | objetivo | cifra | por qué |
+|---|---|---|---|
+| 1 | **errores atribuibles perdidos** (invariantes rotos, commits confirmados que faltan) | **0**, innegociable | es lo que define una base de datos |
+| 2 | **disponibilidad** (operaciones bien / total; los errores tapados por un reintento no restan) | **≥ 99,9 %** en total, golpes incluidos; **≥ 99,99 %** fuera de las ventanas de golpe | el SLA público de Neon en sus planes de pago es 99,95 %; nosotros, de momento, en una zona |
+| 3 | **commit** (una transferencia en la API, sin los despertares) | **p50 ≤ 50 ms · p99 ≤ 250 ms** | ~7 viajes de Prisma por pool y proxy, más el quórum de safekeepers; en el laboratorio, p50 25 ms |
+| 4 | **despertar en frío** (la primera operación tras la noche, sin pool) | **p95 ≤ 45 s** | una VM tarda ~35 s en arrancar (P3) |
+| 5 | **despertar desde el pool** | **p95 ≤ 8 s** | `/configure` con *basebackup*, ~5,8 s (P3); el laboratorio da 3,9 s |
+| 6 | **reparar un cómputo muerto** | **≤ 60 s** en frío · **≤ 15 s** con pool | el laboratorio da 8,3 s, sin arranque de VM |
+| 7 | **golpes al almacenamiento** | pageserver: nada perdido y espera máxima ≤ 30 s · un safekeeper: **nada visible** (el quórum es 2 de 3) · migración en vivo: **ninguna sesión cortada** | lo que promete la arquitectura |
+| 8 | **dormido cuesta 0** | de noche, 0 VMs, y el nodo `pg` libre en ≤ 15 min | el autoescalado tarda ~10 min en bajar un nodo |
+| 9 | **nada crece** | la memoria de `ore-postgres` y del proxy, ≤ +20 % en 72 h | fugas lentas |
+
+Los objetivos provisionales del informe (`OBJETIVOS` en `informe.py`) se cambian por estos al preparar el soak.
+
+**5 · La receta del soak en GCP.**
+
+*Antes:*
+- el CI en GitHub publicando las imágenes (0060, B1);
+- la lista de producción de P5 hecha, con el proxy probado desde internet;
+- de la de P6, los pasos 1–3 (`--dormir` encendido y despertar probado desde internet);
+- lo preparado en el laboratorio (abajo).
+
+*Los pasos:*
+1. **Volver** (0060): primero `sistema-spot` y después el autoescalado de `pg`.
+2. **El proyecto** `libro-soak`, creado por la API, con `dormir_tras` 300 y CU 0,25–1.
+3. **El cliente, fuera del clúster**, para que entre por el balanceador como uno de verdad. Es un `e2-small` normal en `europe-west1-b`, con Docker y `libro/`; no spot, porque si Google lo reclama se pierden medidas. ⚠️ **La cuota de 12 vCPU va justa**: sistema (4) + `pg` (4) + cliente (2) = 10, así que `modelos-e0` se queda apagada durante el soak. Crear la máquina pide su go.
+4. **El arranque**:
+   - días de **3 h** y noches de **45 min**: ~19 ciclos en 72 h, ~38 despertares medidos (tres noches de verdad darían 6);
+   - `OPS=4`; el conciliador cada 10 min, con una completa por hora; el cierre, al anochecer.
+5. **Pool 0 las primeras 36 h y pool 2 las últimas 36**: los dos p95 de despertar, en frío y desde el pool, en la misma corrida.
+6. **Los golpes**, de día, cada uno apuntado con su hora en `/datos/eventos.jsonl`:
+
+   | hora | golpe |
+   |---|---|
+   | h12 | matar la VM del cómputo (reparar, de verdad) |
+   | h24 | reiniciar el pageserver |
+   | h36 | encender el pool (configuración, no golpe) |
+   | h40 | matar un safekeeper |
+   | h48 | el proxy en rodaje (`rollout restart`, dos réplicas) |
+   | h56 | migración en vivo de la VM, con carga |
+   | h64 | reiniciar `ore-postgres` |
+
+7. **Mirar** cada 6 h: el informe, la memoria de los pods y los nodos.
+8. **Parar antes de tiempo** si aparece un error atribuible perdido (se investiga con todo encendido) o si el gasto pasa del tope que fije la persona dueña de la cuenta.
+9. **Al acabar**:
+   - la conciliación completa final y el informe, al ADR;
+   - fuera el cliente y el proyecto;
+   - `pg` a 0 y sin autoescalado, como dice el 0060.
+
+*Coste estimado*, de lista y sin medir: 72 h × ~$6–7 al día, más el cliente (~$0,6 al día): **unos $22**.
+
+*Lo que falta preparar en el laboratorio:*
+1. **`libro/compose.gcp.yaml`**: el mismo Libro sin `extra_hosts` y con las raíces de confianza del sistema, porque allí el certificado es de Let's Encrypt. Cada driver lo pide a su manera: libpq con `sslrootcert=system`, pgjdbc con la fábrica de Java, Node con las CA del sistema;
+2. **un muestreador de recursos**: memoria y CPU cada 5 min en `/datos/recursos.jsonl`, que el informe lee para el objetivo 9;
+3. **`golpes.sh`**: el calendario con sus órdenes de `kubectl`, que apunta cada golpe en `eventos.jsonl`. El informe calcula con él la disponibilidad dentro y fuera de las ventanas de golpe (objetivo 2).
