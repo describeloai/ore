@@ -117,6 +117,14 @@ def comprobar_reglas(reglas, raiz, repo="ore"):
     esté `main` hoy. Lo que borró `idp@sha256:39bc…` el 2026-10-10 fue justo eso: estaba
     protegida por `main`, el CI movió `main`, y la regla se la llevó."""
     keeps = [r["condition"] for r in reglas if r["action"]["type"] == "Keep" and "condition" in r]
+    # Google rechaza un prefijo de más de 64 caracteres, y la regla entera con él (un digest
+    # entero son 71): la regla vieja seguiría puesta sin que se notara.
+    largos = [p for c in keeps for k in ("tagPrefixes", "versionNamePrefixes", "packageNamePrefixes")
+              for p in c.get(k, []) if len(p) > 64]
+    for p in largos:
+        print(f"✗ prefijo de {len(p)} caracteres (Google admite 64): {p}")
+    if largos:
+        return 1
     patron = re.compile(r"pkg\.dev/[a-z0-9-]+/" + re.escape(repo) + r"/([a-z0-9._-]+)([:@])([A-Za-z0-9._:-]+)")
     mal, vistas = [], set()
     for dirpath, _, ficheros in os.walk(raiz):

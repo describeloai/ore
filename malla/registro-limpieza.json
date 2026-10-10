@@ -34,7 +34,7 @@
     "condition": {
       "tagState": "any",
       "versionNamePrefixes": [
-        "sha256:3506155edf20ccdf32d8fdbfb012d06dbb93cfbe3f15a0f40d714dacc012f9c9"
+        "sha256:3506155edf20ccdf32d8fdbfb012d06dbb93cfbe3f15a0f40d714dacc"
       ]
     }
   },
