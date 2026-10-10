@@ -387,6 +387,25 @@ Corre como **`ore-horario`** (con el go de la persona):
   Aplicado a mano una vez (el primer despertar ya lo necesita y Flux no corre dormido); Flux se
   queda con él.
 
+### C1·3 · el primer despertar por el workflow (2026-10-10)
+
+- **La federación**: el enlace por `subject` (`repo:describeloai/ore:ref:refs/heads/main`) dio
+  `iam.serviceAccounts.getAccessToken` denegado; se cambió a `principalSet` por
+  `attribute.ref/refs/heads/main`, que el proveedor ya mapea y que, como sólo admite
+  `describeloai/ore`, es el `main` de este repositorio. Con él, `dormir` dormida: 5 s.
+- **El primer despertar** (38068890704): nodo listo a los 52 s, Kueue a los 84 s, empujón a 21…
+  y **las forjas de las celdas no arrancaban**: `comprobar` (A3) recibía `PERMISSION_DENIED`. La
+  cuenta `ore-forja-<n>` **nunca pudo leer** `t-<n>-forja-admin` (sólo añadir versiones, a
+  propósito): la pregunta fallaba SIEMPRE, el código de antes lo tomaba por «no hay» y acuñaba en
+  cada arranque — **ésa era la causa de las 62 versiones**, no la identidad del pod (A3 lo suponía);
+  con A3, sin lectura, la forja reintentaba para siempre. Arreglo (con el go de la persona): cada
+  `ore-forja-<n>` lee **su** secreto (`secretAccessor` sólo en `t-<n>-forja-admin`; no le da nada:
+  es el admin de su propia forja), y `aprovisionar-inquilino.sh` lo concede a las nuevas. Las
+  forjas arrancaron al reiniciarlas (17:02:55): «el almacén ya tiene el testigo». Quedan las
+  versiones 63–66 que acuñaron los despertares de hoy con el código viejo.
+- **Despertar otra vez** (todo en pie): 120 s, `imagen` relanzado y verde, las cuatro entradas
+  contestan.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

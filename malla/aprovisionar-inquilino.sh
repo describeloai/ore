@@ -1102,7 +1102,16 @@ fi
 correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
   --member="serviceAccount:ore-forja-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.secretVersionAdder \
-  && hecho "\`ore-forja-$NOMBRE\` puede dejar ahi su admin, y no leer nada"
+  && hecho "\`ore-forja-$NOMBRE\` puede dejar ahi su admin"
+# ⭐ (ADR 0060 A3, 2026-10-10) Y LEERLO: su `comprobar` pregunta si el testigo ya está antes
+#   de acuñar otro. Sin lectura, la pregunta fallaba SIEMPRE, el código de antes lo tomaba por
+#   «no hay» y cada arranque acuñaba un token y una versión (62 en tres semanas); desde A3 sólo
+#   `NOT_FOUND` acuña, y sin lectura la forja no arrancaba. No le da nada que no tenga: es el
+#   admin de SU forja, cuyo servidor y cuya base ya son suyos.
+correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
+  --member="serviceAccount:ore-forja-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/secretmanager.secretAccessor \
+  && hecho "\`ore-forja-$NOMBRE\` puede leer su admin (para no acuñar otro)"
 for QUIEN in ore-aprovisionador ore-copias; do
   correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
     --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
