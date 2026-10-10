@@ -147,6 +147,23 @@ con `--manifiestos malla` (64 citas, todas se quedan); y el paquete `cache` borr
 pasa la regla una vez al día: el tamaño del repositorio (262 GB al aplicar; lo recalcula con
 retraso) se mide mañana y a los 8 días, y el número va aquí.
 
+### A3 · Secret Manager: una versión por secreto (2026-10-10)
+
+**Lo visto:** 27 secretos y **225 versiones cobradas** (222 activas y 3 desactivadas; Google cobra
+las dos), ~$13 al mes. Todo lector pide `latest` y solo al arrancar (las ~25 lecturas de `malla/`
+y del aprovisionador): las anteriores no las lee nadie. De dónde salían: `t-*-forja-admin` 62 cada
+uno, y **creciendo** —el `comprobar` de `46-la-forja-del-inquilino.yaml` tomaba cualquier fallo al
+leer (la identidad del pod aún no lista en un nodo recién creado) por «no hay testigo», y acuñaba
+token y versión: a ráfagas, 17 el 16-sep—; `t-demo-agente-*` 37 cada uno (el bug del aprovisionador
+que ya compara por huella desde el 14-sep); `base-del-cofre`, las rotaciones de 0054, desactivadas.
+
+**Lo hecho:** el escape, cerrado en git (`39fb0284`: solo `NOT_FOUND` acuña; lo demás se
+reintenta), y con el go de la persona, **198 versiones destruidas**: queda la más nueva de cada
+secreto, **27 activas, ninguna desactivada**. De ~$13 a **~$1,3 al mes** (6 versiones gratis).
+Queda: los tokens viejos de Forgejo que acuñó el escape, revocarlos con el clúster despierto; los
+10 `*-cofre-fuente-*` de fuentes de prueba de septiembre, revisarlos contra el cofre; y un aviso
+de secretos con más de una versión cobrada.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
