@@ -981,3 +981,5 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# B1-2: cambio de prueba en la rama b1/medir (solo debe reconstruir puesto-python)
