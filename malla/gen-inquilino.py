@@ -144,6 +144,15 @@ FUERA = {
         "`rubix-dev` se creo a mano con `kcadm`, y su secreto vive en el `Secret` "
         "`idp-agente`. Entra cuando fichero y realms digan lo mismo."
     ),
+    # (ADR 0060 B1·3, 2026-10-10, avisada la sesión de 0058.)
+    "87-postgres-la-entrada.yaml": (
+        "La entrada de Postgres (0058 P5·2–P5·3: el certificado comodín y el proxy), "
+        "escrita y validada SIN APLICAR: va comentada en `kustomization.yaml` hasta "
+        "pasar `87-postgres-la-entrada-gcp.sh` (la IP y la cuenta del DNS-01). Antes, "
+        "cert-manager pediría el comodín sin poder escribir el reto, y Let's Encrypt "
+        "limita los fallos. Al desplegarla: fuera de aquí y descomentada allí (si "
+        "sólo se descomenta, esta comprobación lo dice)."
+    ),
 }
 
 # ⛔ LOS QUE NOMBRAN INQUILINOS A PROPOSITO, Y NO SON PLANTILLAS.
