@@ -964,7 +964,10 @@ jobs:
           PIDS=""
           for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main \
                     ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 capa-jvm:1 capa-node:1 capa-python:1 idp:main; do
-            gcloud container images add-tag "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" --quiet & PIDS="$PIDS $!"
+            # `en-uso` va con la que se mueve: la limpieza del registro la guarda por ese
+            # prefijo (malla/registro-limpieza.json, ADR 0060 A2). `:1` no sirve para eso:
+            # la regla casa por prefijo y `1` es también el principio de un commit.
+            gcloud container images add-tag "$R/${IE%%:*}:${GITHUB_SHA::12}" "$R/$IE" "$R/${IE%%:*}:en-uso" --quiet & PIDS="$PIDS $!"
           done
           MAL=0
           for P in $PIDS; do wait "$P" || MAL=1; done

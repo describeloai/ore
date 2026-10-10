@@ -108,6 +108,36 @@ spot) · C2 túnel de Cloudflare (G9) · C3 presupuesto de €20 con alertas (G7
 Estimado: ~$23–26 al mes; por debajo de €20 si el sistema cabe en un `e2-standard-2` o la IP de
 salida se suelta mientras no haya un SFTP de cliente.
 
+### A2 · la limpieza de Artifact Registry, diseñada (2026-10-10)
+
+**La regla** (`malla/registro-limpieza.json`, la misma para `ore` y `bastion`), en el orden en que
+se lee —una Keep gana a la Delete—:
+
+1. **lo desplegado**: las etiquetas `main` y `en-uso`. `en-uso` es nueva: el despliegue la mueve
+   con `:main` y `:1` (`ci.yml`), y hoy se puso a mano en las 14 imágenes desplegadas. Hace falta
+   porque la regla casa **por prefijo**, y `1` es también el principio de uno de cada 16 commits;
+2. **lo fijado en los manifiestos**: `neon:8269bece…` y `vm-compute-node-v17:baad49aa…` (0058),
+   `v0.49.1-ore.1` (NeonVM y el autoescalado), y la caché de construcción de Neon
+   (`cache:neon-almacen`, `cache:neon-computo-v17`). Quien cambie uno de esos fijados, lo cambia
+   aquí;
+3. **lo de fuera** que no se reconstruye: `forgejo:15`, `postgres:16`, `neonvm-kernel`;
+4. **las 3 versiones más nuevas** de cada paquete, para volver atrás;
+5. **todo lo demás, borrado a los 7 días**. Lo que nombra un índice multi-arquitectura no se borra
+   mientras el índice siga (lo garantiza Google).
+
+**Simulado** (`malla/simular-limpieza.py`: aplica la regla a la lista real, lee los manifiestos y
+cuenta cada capa una vez, como cobra el registro; la duda de la documentación —si «las 3 más
+nuevas» cuenta las hijas de un índice— se resuelve tomando la que guarda menos):
+
+| repositorio | hoy | el primer día | a los 8 días sin construir |
+|---|---|---|---|
+| `ore` | 250 GB, 5.486 versiones | ~125 GB (lo de esta semana aún no cumple 7 días) | **37 GB, 81 versiones** |
+| `bastion` | 17 GB, 16 versiones | — | **13 GB, 10** (`env:0.29.0-sm120.1` y `.2`) |
+
+De los 37 GB de `ore`, **26 son la caché de construcción de Neon** y 4 las imágenes de Neon; lo de
+ORE en sí (puestos, capas, servicios, binarios, deps) cabe en ~6 GB. De ~$27 al mes a ~$5, o a
+~$2 sin la caché de Neon (que solo sirve para reconstruir Neon desde el fork).
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

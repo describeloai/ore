@@ -1,0 +1,36 @@
+[
+  {
+    "name": "guarda-lo-desplegado",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "tagged", "tagPrefixes": ["main", "en-uso"]}
+  },
+  {
+    "name": "guarda-lo-fijado",
+    "action": {"type": "Keep"},
+    "condition": {
+      "tagState": "tagged",
+      "tagPrefixes": [
+        "8269bece3fd934fd0a9746794b5e7b6c3aaf1d6b",
+        "baad49aa38dbf272c5874aa0d547e2cfb841ec1a",
+        "v0.49.1-ore.1",
+        "neon-almacen",
+        "neon-computo-v17"
+      ]
+    }
+  },
+  {
+    "name": "guarda-lo-de-fuera",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "tagged", "packageNamePrefixes": ["forgejo", "postgres", "neonvm-kernel"]}
+  },
+  {
+    "name": "guarda-las-ultimas",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 3}
+  },
+  {
+    "name": "borra-lo-demas-a-los-7-dias",
+    "action": {"type": "Delete"},
+    "condition": {"tagState": "any", "olderThan": "7d"}
+  }
+]
