@@ -40,14 +40,17 @@ dormir() {
   until ! kc get neonvm "$vm" >/dev/null 2>&1 || [ $(( $(date +%s) - t0 )) -ge 120 ]; do sleep 2; done
   kc get neonvm "$vm" >/dev/null 2>&1 && mal "la VM $vm sigue" || bien "la VM $vm, fuera"
   numero p6_lsn_al_dormir "\"$(plano_sql "select lsn_al_dormir from plano.endpoint where proyecto = '$P'")\""
-  # El nodo: sólo se libera si no queda NINGUNA VM en el pool (otros endpoints, el pool precalentado).
+  # El nodo: el grupo pg lleva también el almacenamiento, el plano y el proxy, así que nunca baja a
+  # 0 con el clúster despierto (medido en la ventana 1). Lo que se libera es el nodo que sólo
+  # sostenía VMs: se mide que el número de nodos baje.
   local otras; otras=$(kc get neonvm --no-headers 2>/dev/null | grep -c .)
   if [ "$otras" = 0 ]; then
-    t0=$(date +%s)
-    until [ "$(nodos_pg)" = 0 ] || [ $(( $(date +%s) - t0 )) -ge 1800 ]; do sleep 15; done
-    [ "$(nodos_pg)" = 0 ] && numero p6_nodo_pg_libre_tras_s $(( $(date +%s) - t0 )) || mal "el nodo pg sigue a los 30 min"
+    local antes; antes=$(nodos_pg); t0=$(date +%s)
+    until [ "$(nodos_pg)" -lt "$antes" ] || [ $(( $(date +%s) - t0 )) -ge 1800 ]; do sleep 15; done
+    [ "$(nodos_pg)" -lt "$antes" ] && numero p6_nodo_pg_libre_tras_s $(( $(date +%s) - t0 ))       || echo "  · los nodos pg siguen en $antes a los 30 min: ninguno sostenía sólo VMs"
+    echo "  · nodos pg: de $antes a $(nodos_pg) (el suelo: el almacenamiento, el plano y el proxy)"
   else
-    echo "  · quedan $otras VMs en ore-pg-computo: el nodo no se libera por este endpoint (se mide en P7 de noche)"
+    echo "  · quedan $otras VMs en ore-pg-computo: ningún nodo se vacía por este endpoint"
   fi
 }
 

@@ -1716,3 +1716,42 @@ Los dos guiones, probados en seco (`SECO=1`: datos de mentira y las órdenes dic
 4. los números al ADR, y P7 cerrado del todo.
 
 **Limpieza al cerrar la etapa** (memoria *Docker y el disco C:*): fuera el laboratorio (sus contenedores, el almacén y `.secretos/`), el target `/tt/p4pg` (8,8 GB), las imágenes de Libro y del cómputo de mentira, la caché de construcción (7,8 GB) y la caché de npm de P5·4. Se guarda la imagen `neon:8269bece` (7 GB): la usa el proxy del laboratorio, y bajarla otra vez del registro cuesta tráfico. `lab.sh arriba` y el primer `docker compose build` de Libro rehacen lo demás; el binario, `cargo build --release -p ore-postgres --features laboratorio`, otra vez en `/tt/p4pg`.
+
+#### La ventana 1 en producción, primera tarde (2026-10-10)
+
+Hecho con `pruebas-de-fuego/ore-postgres/produccion/ventana.sh`, pasos 1–7, cada paso con su go:
+
+1. **Despertar.** El nodo de sistema ya estaba arriba; el autoescalado de `pg` (0–3) se encendió a mano antes de esperar a `ore-pg`. ⚠️ `malla/despertar.sh --con-postgres` espera a que `ore-pg` esté listo **antes** de encender ese autoescalado, del que dependen sus nodos: se atascaría (es de 0060). Primer nodo `pg` a los 214 s.
+2. **Sano.** `ore-postgres` corre una imagen que lleva P5–P7, con las migraciones 005–008 aplicadas, y `postgre` está vivo. **`reparar-endpoint` ya había actuado solo**: la VM de `postgre` murió con los nodos al dormir el clúster, y al despertar la vigilancia la vio y la rehízo en **69 s**, con la especificación de hoy (puerto 5432).
+3. **`87-…-gcp.sh`**: IP `34.38.14.144`, `ore-pg-dns` con `dns.admin` solo en la zona (0 roles en el proyecto, 0 claves), A comodín y ConfigMap. `managed-zones add-iam-policy-binding` solo existe en gcloud beta: corregido con `get`/`set-iam-policy`.
+4. **La 87 en la malla**: el comodín de Let's Encrypt `Ready` a los **79 s** (DNS-01 por Workload Identity), el balanceador en la IP, el proxy con dos réplicas (~4 min bajando su imagen de 7 GB).
+5. **P5 desde internet** (un PC en España, el clúster en Bélgica):
+
+   | | resultado |
+   |---|---|
+   | conectar (TCP + TLS + SCRAM, verify-full) | p50 **418 ms** |
+   | una sentencia en sesión abierta | **~43 ms**, igual directo que por el pool (es la distancia) |
+   | pgbench, 10 clientes, TPC-B | directo **~27 tps** · por el pool **~23 tps** (~17 % menos: el salto de pgbouncer) |
+   | 150 clientes por el pool, solo lectura | **2.780 tps**, 0 fallos, **12 conexiones** en Postgres |
+   | HTTP · WebSocket (`@neondatabase/serverless`) | **72 ms** · **47 ms** por consulta |
+   | quién entra | el proxy ve la IP real del cliente tras el balanceador |
+   | migración en vivo con pgbench | **62 s**, 0 fallos, 2 s sin transacciones, peor segundo 890 ms |
+
+6. **El puerto**: ninguna VM expone ya 55433 (las rehizo `reparar-endpoint`); fuera de la malla 85.
+7. **`--dormir` encendido.** Medido:
+   - se duerme a los **83 s** con `dormir_tras` 60 (en el laboratorio, 67 s: aquí `/terminate` y el borrado son de una VM real);
+   - el `/terminate` real devuelve el LSN;
+   - la VM desaparece, y el nodo que solo la sostenía lo marca el autoescalador y lo quita **~10 min** después.
+   
+   ⭐ **El grupo `pg` nunca baja a 0 con el producto en marcha**: aloja también el almacenamiento, el plano y el proxy. Dormido cuesta 0 **el cómputo**; queda un suelo de 1–2 nodos. Es el modelo de coste.
+
+**Se cortó a las 21:03 UTC.** La CronJob `dormir-si-inactiva` (0060, C1·3) durmió el clúster porque en 15 min no hubo accesos de personas en `ore-serve` ni en `ore-iam`. Ni las pruebas ni el tráfico de Postgres cuentan. Es una herramienta de desarrollo y **no choca con el producto**: el escalado a cero es por endpoint y no depende de que el clúster duerma, y al despertar `reparar-endpoint` rehace las VMs muertas. Pero **una ventana de medidas, y sobre todo el soak de P7, tienen que suspender esa CronJob mientras duran** (un `kubectl patch` reversible, con go), y reanudarla al acabar.
+
+**Mañana, desde el paso 8**:
+- despertar y suspender la CronJob;
+- `p6.sh http-corto`: la de hoy falló por el corte y no vale;
+- `p6.sh despertar 10`: despertar en frío;
+- `3-pool.patch` y `p6.sh pool 10`;
+- limpiar, apuntar los números y reanudar la CronJob.
+
+Aproximadamente 1 hora.
