@@ -21,7 +21,7 @@ if [ -n "${SECO:-}" ]; then
     case "$*" in
       "top pod -n ore-pg --no-headers") printf 'ore-postgres-7d9f-abcde 4m 31Mi\nproxy-postgres-5c6b-fghij 9m 58Mi\nproxy-postgres-5c6b-klmno 8m 55Mi\npageserver-0 40m 610Mi\nsafekeeper-0 6m 120Mi\n';;
       "get neonvm -n ore-pg-computo --no-headers -o custom-columns=N:.metadata.name") printf 'ep-123abc\npool-9f8e7d\n';;
-      "get nodes -l ore.dev/pool=pg --no-headers") printf 'gke-ore-mesh-pg-1 Ready\n';;
+      "get nodes -l cloud.google.com/gke-nodepool=pg --no-headers") printf 'gke-ore-mesh-pg-1 Ready\n';;
     esac
   }
 else
@@ -47,7 +47,7 @@ vuelta() {
   local vms; vms=$(k get neonvm -n ore-pg-computo --no-headers -o custom-columns=N:.metadata.name 2>/dev/null)
   local n_vms n_pool n_nodos
   n_vms=$(grep -c . <<<"$vms"); n_pool=$(grep -c '^pool-' <<<"$vms")
-  n_nodos=$(k get nodes -l ore.dev/pool=pg --no-headers 2>/dev/null | grep -c .)
+  n_nodos=$(k get nodes -l cloud.google.com/gke-nodepool=pg --no-headers 2>/dev/null | grep -c .)
   printf '{"t":"%s","tipo":"computo","vms":%s,"vms_pool":%s,"nodos_pg":%s}\n' \
     "$t" "$(( n_vms - n_pool ))" "$n_pool" "$n_nodos" >> "$M/recursos.jsonl"
 }

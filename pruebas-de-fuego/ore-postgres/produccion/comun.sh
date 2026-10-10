@@ -15,7 +15,9 @@ PRUEBA=${PRUEBA:-prod}
 source "$(dirname "${BASH_SOURCE[0]}")/../entorno.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../celdas.sh"
 DOMINIO=europe-west1.pg.paladio.io
-PG_IMAGEN=postgres:17
+# La alpine: trae el paquete de CA del sistema (/etc/ssl/cert.pem), que es lo que lee sslrootcert=system;
+# la de Debian no lo trae.
+PG_IMAGEN=postgres:17-alpine
 NODE_IMAGEN=node:22-slim
 NUMEROS="${NUMEROS:-$ORE_PG_TRABAJO/numeros.jsonl}"
 fallos=${fallos:-0}
@@ -46,7 +48,7 @@ acceso() {   # acceso CELDA PROYECTO CUERPO-JSON → quién entra (P5·6)
 borra() { en "$1" "pide DELETE /v1/postgres/proyectos/$2" >/dev/null; }
 
 # ── lo de dentro, leído ─────────────────────────────────────────────────────────────────────────
-plano_sql() { k exec storcon-db-0 -- psql -U postgres -d ore_postgres -Atc "$1"; }
+plano_sql() { k exec storcon-db-0 -- env Q="$1" sh -c 'psql -U "$POSTGRES_USER" -d ore_postgres -Atc "$Q"'; }
 observado() { plano_sql "select observado from plano.endpoint where proyecto = '$1' and id = 'principal'"; }
 computo_de() { plano_sql "select coalesce(computo, vm) from plano.endpoint where proyecto = '$1' and id = 'principal'"; }
 listo_ep() {   # listo_ep PROYECTO [SEGUNDOS] → espera a `listo`
@@ -59,7 +61,7 @@ dormido_ep() {   # dormido_ep PROYECTO [SEGUNDOS] → espera a `dormido`
   until [ "$(observado "$1")" = dormido ] || [ $(( $(date +%s) - t0 )) -ge "${2:-600}" ]; do sleep 2; done
   [ "$(observado "$1")" = dormido ]
 }
-nodos_pg() { kubectl get nodes -l ore.dev/pool=pg --no-headers 2>/dev/null | grep -c .; }
+nodos_pg() { kubectl get nodes -l cloud.google.com/gke-nodepool=pg --no-headers 2>/dev/null | grep -c .; }
 
 # ── los datos, desde este PC ────────────────────────────────────────────────────────────────────
 conn() { echo "host=$1 port=5432 user=$2 dbname=$3 sslmode=verify-full sslrootcert=system connect_timeout=${4:-30}"; }

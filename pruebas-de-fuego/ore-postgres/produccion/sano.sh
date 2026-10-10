@@ -11,11 +11,12 @@ source "$(dirname "$0")/comun.sh"
 
 echo "── este PC"
 docker info >/dev/null 2>&1 && bien "Docker contesta" || { mal "Docker no contesta: arráncalo antes de seguir"; exit 1; }
-n=$(docker run --rm "$PG_IMAGEN" sh -c 'ls /etc/ssl/certs 2>/dev/null | grep -ci isrg_root')
-[ "${n:-0}" -ge 1 ] && bien "$PG_IMAGEN trae la raíz de Let's Encrypt ($n)" || mal "$PG_IMAGEN sin ISRG en /etc/ssl/certs: sslrootcert=system no valdrá"
+n=$(docker run --rm "$PG_IMAGEN" sh -c 'grep -c "BEGIN CERTIFICATE" /etc/ssl/cert.pem 2>/dev/null')
+[ "${n:-0}" -ge 100 ] && bien "$PG_IMAGEN trae las CA del sistema en /etc/ssl/cert.pem ($n), lo que lee sslrootcert=system" || mal "$PG_IMAGEN sin CA del sistema: sslrootcert=system no valdrá"
 
 echo "── ore-pg"
-noListos=$(k get pods --no-headers 2>/dev/null | awk '$3 != "Completed" && ($2 !~ /^([0-9]+)\/\1$/ || $3 != "Running") {print $1" "$2" "$3}')
+# Sin los pods de trabajos ya acabados (bien o mal): un CronJob que falló no es un servicio caído.
+noListos=$(k get pods --no-headers --field-selector=status.phase!=Succeeded,status.phase!=Failed 2>/dev/null | awk '{split($2, r, "/")} $3 != "Running" || r[1] != r[2] {print $1" "$2" "$3}')
 [ -z "$noListos" ] && bien "todos los pods de ore-pg listos ($(k get pods --no-headers | grep -c Running) corriendo)" || mal "sin listo: $noListos"
 img=$(k get deploy ore-postgres -o jsonpath='{.spec.template.spec.containers[0].image}')
 digest=$(k get pods -l ore.dev/rol=plano-postgres -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
