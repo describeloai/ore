@@ -350,6 +350,26 @@ los puestos y los builds van a `jobs-s`, no aquí.
   `gs://…-copias/idp/iam-20261010T160948Z.dump` y los bundles de la forja), los nodos vaciados a
   los 176 s, **dormida a los 261 s** (0 máquinas de la malla).
 
+### C1·2 · la señal de actividad (2026-10-10, en local)
+
+En vez de un endpoint nuevo, **la línea que ya existe**: `ore-serve` deja una por petición, sin
+nombres, con la clase de quien pide (`acceso · GET /paquetes/{} · 200 · 12 ms · persona`).
+- `ore-serve` (`recuento.rs`): clase nueva **`fondo`**, una persona en una petición con
+  `x-ore-fondo: 1` (un refresco que nadie pidió con la mano); su actividad de la organización es
+  la de `persona`. Prueba `la_consulta_de_fondo_se_reconoce`.
+- `ore-iam` (`rutas.rs`): no dejaba ninguna línea; ahora una por petición de una persona, sin
+  camino ni sujeto (`acceso · GET · persona` o `· fondo`).
+- `malla/dormir.sh --si-inactiva 15`: duerme sólo si en 15 min no hubo ninguna línea `persona` o
+  `delegado` en `ore-serve` (cada celda) ni en `ore-iam`, ningún puesto abierto ni trabajo en
+  Kueue, y nunca antes de 15 min despierta. Lee con `kubectl logs` (sólo `pods/log`): sin
+  endpoint nuevo, sin Cloud Logging, y el registro ya no lleva nombres.
+- La consola: los refrescos que se repiten solos (Data › Jobs, `Refresco`; el árbol en vivo,
+  `useArbolVivo`) sólo preguntan **si alguien mira** (`lib/workspace/alguienMira.ts`: pestaña a la
+  vista y alguien tocó la consola en 15 min). Así una pestaña olvidada no pregunta y no hace falta
+  llevar la cabecera por cada server action; `x-ore-fondo` queda para quien la necesite. Los
+  sondeos de una operación que alguien lanzó (librerías, abrir un puesto, desplegar un modelo)
+  terminan solos y no cambian.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

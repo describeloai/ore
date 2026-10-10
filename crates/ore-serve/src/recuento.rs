@@ -129,6 +129,11 @@ pub fn patron(ruta: &str) -> String {
 
 /// De qué clase es quien pide. Se verifica otra vez el testigo —microsegundos— para no tocar la
 /// firma de cada ruta; un testigo que no vale es `sin`.
+///
+/// ⭐ `fondo` (ADR 0060 C1·2): una persona, pero en una consulta que nadie pidió con la mano —el
+///   refresco de una vista de la consola, `x-ore-fondo: 1`—. La línea es la señal con que la
+///   malla duerme tras 15 min sin actividad: una pestaña olvidada no debe tenerla despierta. Su
+///   actividad de la organización es la misma que la de `persona` (alguien la hizo).
 fn clase(s: &Servidor, p: &Peticion) -> &'static str {
     let Some(proveedor) = s.identidad.as_ref() else {
         return "sin";
@@ -139,9 +144,17 @@ fn clase(s: &Servidor, p: &Peticion) -> &'static str {
         Ok(i) => match i.tipo.as_deref() {
             Some("aprovisionador") => "aprovisionador",
             _ if i.agente.is_some() => "delegado",
+            _ if es_de_fondo(p) => "fondo",
             _ => "persona",
         },
     }
+}
+
+/// `x-ore-fondo: 1`: lo pide la consola sola, no la persona (C1·2).
+fn es_de_fondo(p: &Peticion) -> bool {
+    p.cabeceras
+        .get("x-ore-fondo")
+        .is_some_and(|v| v.trim() == "1")
 }
 
 /// Atiende y deja la línea. `/salud` no: es la sonda del balanceador, cada pocos segundos, y no
@@ -168,7 +181,7 @@ pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
             clase
         );
         // Con sujeto: alguien lo hizo.
-        if matches!(clase, "persona" | "delegado" | "agente") {
+        if matches!(clase, "persona" | "fondo" | "delegado" | "agente") {
             s.a_la_actividad(p, &salida, rastro.token, rastro.contado, rastro.preguntado);
         }
     }
@@ -198,6 +211,29 @@ mod pruebas {
                 format!("/{}", esperado.join("/"))
             );
         }
+    }
+
+    /// La consola marca sus refrescos con `x-ore-fondo: 1` (ADR 0060 C1·2); sólo `1` vale.
+    #[test]
+    fn la_consulta_de_fondo_se_reconoce() {
+        let con = |v: Option<&str>| {
+            let mut cabeceras = std::collections::BTreeMap::new();
+            if let Some(v) = v {
+                cabeceras.insert("x-ore-fondo".to_string(), v.to_string());
+            }
+            Peticion {
+                metodo: "GET".into(),
+                ruta: "/celdas".into(),
+                cabeceras,
+                cuerpo: String::new(),
+                consulta: Default::default(),
+            }
+        };
+        assert!(es_de_fondo(&con(Some("1"))));
+        assert!(es_de_fondo(&con(Some(" 1 "))));
+        assert!(!es_de_fondo(&con(Some("0"))));
+        assert!(!es_de_fondo(&con(Some("si"))));
+        assert!(!es_de_fondo(&con(None)));
     }
 
     #[test]

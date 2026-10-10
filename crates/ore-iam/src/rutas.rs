@@ -99,6 +99,21 @@ impl Servidor {
         //   un verbo de otra recibe 403 con el motivo — y a quien no es de
         //   ninguna, la puerta de la clase del verbo se lo dice.
         let clase = Clase::de(s);
+        // ⭐ (ADR 0060 C1·2) Una línea por petición de una PERSONA, sin camino ni sujeto: es la
+        //   señal con que la malla duerme tras 15 min sin actividad (`malla/dormir.sh` lee las de
+        //   `ore-serve` y éstas). `fondo` si la consola la pide sola (`x-ore-fondo: 1`, un
+        //   refresco): una pestaña olvidada no tiene la malla despierta.
+        if clase == Clase::Persona {
+            let fondo = p
+                .cabeceras
+                .get("x-ore-fondo")
+                .is_some_and(|v| v.trim() == "1");
+            eprintln!(
+                "acceso · {} · {}",
+                p.metodo,
+                if fondo { "fondo" } else { "persona" }
+            );
+        }
         let del_verbo = Clase::del_verbo(p.metodo.as_str(), seg);
         if clase != del_verbo {
             return Respuesta::error(
