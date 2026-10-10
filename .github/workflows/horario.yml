@@ -1,0 +1,77 @@
+name: horario
+
+# ADR 0060 C1·3 · LA MALLA DUERME CUANDO NADIE LA USA Y DESPIERTA CUANDO ALGUIEN LLEGA.
+#
+#   · cada 10 min: `malla/dormir.sh --si-inactiva 15` — duerme sólo si en 15 min no hubo
+#     ninguna petición de una persona (las líneas `acceso · … · persona` de `ore-serve` y
+#     `ore-iam`), ningún puesto abierto ni trabajo en Kueue. Si ya duerme, termina en segundos.
+#   · a mano o desde la consola (`workflow_dispatch`): `despertar` (`malla/despertar.sh`, que
+#     relanza el job `imagen` de la última corrida de `ci`), `dormir` o `dormir-ya`.
+#
+# Configuración de desarrollo, decidida con la persona (2026-10-10): cualquiera que llegue a
+# la consola puede despertarla, sin límite; 15 min sin actividad y duerme.
+#
+# ⛔ La cuenta: `ore-horario`, federada desde el OIDC de GitHub y sólo para `main`
+#   (`repo:describeloai/ore:ref:refs/heads/main`). En Google sólo cambia el tamaño de los
+#   grupos de nodos (papel `oreHorario`); en el clúster, lo de `malla/18-el-horario.yaml`.
+# ⚠️ El cron de GitHub no es puntual (puede llegar minutos tarde): para dormir da igual.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      accion:
+        description: 'despertar | dormir (si nadie la usa) | dormir-ya'
+        required: true
+        default: despertar
+        type: choice
+        options: [despertar, dormir, dormir-ya]
+      postgres:
+        description: 'al despertar, también Postgres (0058)'
+        required: false
+        default: false
+        type: boolean
+
+# Una cosa a la vez: un despertar no se pisa con un dormir; el que llega espera.
+concurrency:
+  group: horario
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # la federación con Google
+  actions: write    # despertar relanza el job `imagen` de `ci`
+
+jobs:
+  horario:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ACCION: ${{ github.event_name == 'schedule' && 'dormir' || inputs.accion }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: project-8853a180-450d-47be-b83
+          workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
+          service_account: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: la malla, según la acción
+        run: |
+          echo "  acción: $ACCION"
+          case "$ACCION" in
+            despertar)
+              if [ "${{ inputs.postgres }}" = true ]; then bash malla/despertar.sh --con-postgres
+              else bash malla/despertar.sh; fi ;;
+            dormir)    bash malla/dormir.sh --si-inactiva 15 ;;
+            dormir-ya) bash malla/dormir.sh --forzar ;;
+            *) echo "acción desconocida: $ACCION"; exit 64 ;;
+          esac

@@ -370,6 +370,23 @@ nombres, con la clase de quien pide (`acceso · GET /paquetes/{} · 200 · 12 ms
   sondeos de una operación que alguien lanzó (librerías, abrir un puesto, desplegar un modelo)
   terminan solos y no cambian.
 
+### C1·3 · quién la duerme y la despierta (2026-10-10)
+
+`.github/workflows/horario.yml` (gratis: el repositorio es público): **cada 10 min**
+`dormir.sh --si-inactiva 15`, y **a mano o desde la consola** (`workflow_dispatch`) `despertar`
+(con `postgres` opcional), `dormir` o `dormir-ya`. Una cosa a la vez (`concurrency: horario`).
+Corre como **`ore-horario`** (con el go de la persona):
+- en Google, el papel `oreHorario`: `container.clusters.get/update` y `container.operations.*`
+  —cambiar el tamaño de los grupos de nodos y nada más—; federada desde el OIDC de GitHub
+  **sólo para `repo:describeloai/ore:ref:refs/heads/main`** (no otras ramas ni otros workflows
+  de PR);
+- en el clúster, `malla/18-el-horario.yaml`: ver nodos, Kueue, registros y HTTPRoute;
+  reiniciar Deployments/StatefulSets (el empujón); vaciar nodos; y crear Jobs **sólo** en
+  `forja`, `identidad` y `ore-pg` (las copias al dormir). Comprobado con `kubectl auth can-i`:
+  `patch deployments` sí, `get secrets` no, `create jobs` en `forja` sí y en `t-demo` no.
+  Aplicado a mano una vez (el primer despertar ya lo necesita y Flux no corre dormido); Flux se
+  queda con él.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

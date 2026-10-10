@@ -115,4 +115,4 @@ for POOL in sistema-spot jobs-s pg; do
     --zone "$ZONA" --project "$P" --quiet >/dev/null 2>&1 &
 done
 wait
-paso "✓ dormida: $(gcloud compute instances list --project "$P" --filter='name~^gke-ore-mesh' --format='value(name)' | wc -l) máquinas de la malla"
+paso "✓ dormida: los grupos de nodos a 0 (GKE retira las máquinas)"

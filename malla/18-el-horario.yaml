@@ -1,0 +1,110 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EL HORARIO — lo que puede hacer en el clúster quien lo duerme y lo despierta
+# (ADR 0060 C1·3)
+#
+# `.github/workflows/horario.yml` corre `malla/despertar.sh` y `malla/dormir.sh`
+# como la cuenta de Google `ore-horario` (federada desde el OIDC de GitHub, sólo
+# desde `main`). En Google sólo puede cambiar el tamaño de los grupos de nodos
+# (papel `oreHorario`); aquí, lo justo que piden los dos guiones:
+#
+#   despertar  ver nodos y Kueue; listar y REINICIAR Deployments/StatefulSets (el
+#              empujón: `rollout restart` es un `patch` de la plantilla); leer las
+#              HTTPRoute para probar las entradas.
+#   dormir     leer los registros de `ore-serve`/`ore-iam` (la señal de actividad:
+#              líneas sin nombres), los puestos y los workloads de Kueue; vaciar los
+#              nodos (`cordon` = `patch` del nodo; `drain` = desalojos); y lanzar las
+#              copias al dormir (un Job desde su CronJob) — esto último SÓLO en los
+#              tres namespaces que tienen copia (RoleBinding, no ClusterRoleBinding).
+#
+# ⛔ No lee `Secret`, no crea pods sueltos ni toca RBAC. El Job de una copia corre
+#   con la cuenta de su CronJob; quien puede crear Jobs en esos tres namespaces
+#   podría escribir otro Job ahí, y por eso la cuenta sólo existe para `main`
+#   (quien empuja a `main` ya despliega).
+# ══════════════════════════════════════════════════════════════════════════════
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ore-horario
+  labels: { ore.dev/tenant: system }
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [""]
+    resources: [namespaces, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [patch]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes]
+    verbs: [get, list]
+  - apiGroups: [kueue.x-k8s.io]
+    resources: [workloads]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ore-horario
+  labels: { ore.dev/tenant: system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-horario }
+subjects:
+  - kind: User
+    name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+# Las copias al dormir: un Job desde la CronJob, y esperarlo.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ore-horario-copias
+  labels: { ore.dev/tenant: system }
+rules:
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ore-horario-copias
+  namespace: forja
+  labels: { ore.dev/tenant: system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-horario-copias }
+subjects:
+  - kind: User
+    name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ore-horario-copias
+  namespace: identidad
+  labels: { ore.dev/tenant: system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-horario-copias }
+subjects:
+  - kind: User
+    name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ore-horario-copias
+  namespace: ore-pg
+  labels: { ore.dev/tenant: system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-horario-copias }
+subjects:
+  - kind: User
+    name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
