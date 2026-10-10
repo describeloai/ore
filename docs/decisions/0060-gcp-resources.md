@@ -329,6 +329,38 @@ pasa TCP público: sería una regla regional, ~18 $/mes. En desarrollo, `port-fo
 - La zona `ontoforge.org` está en Free. Sus registros (el Website Builder de GoDaddy y `_dmarc`)
   están en DNS only, como estaban.
 - Los nameservers están cambiados en GoDaddy, `darwin`/`kelly.ns.cloudflare.com`, sin DNSSEC.
+  La zona pasó a `active` a las 20:26 UTC. Cloudflare for SaaS lo habilitó la persona (0 de 100
+  nombres).
+
+### C2·0 · medido (2026-10-10)
+
+Montaje: el túnel `ore-c2-prueba` (gestionado desde Cloudflare, una regla, todo a un servidor de
+prueba en el PC), con `entrada.ontoforge.org` (proxied, CNAME al túnel) como *fallback origin*. Como
+nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.ontoforge.org` y un
+*custom hostname* con DV por HTTP.
+
+| | resultado |
+|---|---|
+| ① SaaS + túnel en Free | ✔ **nombre verificado y certificado emitido en ~1,5 min** sin TXT: basta el CNAME. Al origen llegan el `Host` original, `X-Forwarded-Proto: https` y la IP real (`Cf-Connecting-IP`, `X-Forwarded-For`) |
+| ② callado 90 s | ✔ 200 |
+| ② callado 130 s | ✘ **524 a los ~125 s**. El límite de Free es el tiempo hasta el **primer byte** |
+| ② flujo SSE, un evento cada 60 s | ✔ vivo más de 240 s |
+| ② flujo SSE, un evento cada 110 s | ✔ vivo; ya con el flujo abierto, un hueco de 110 s no lo corta |
+| ③ subida de 99 MB y de 101 MB | ✔ 200 (31 s y 36 s desde casa) |
+| ③ subida de 110 MB | ✘ **413 de Cloudflare, en 1 s**. El techo es **100 MiB** (104,9 MB) por petición |
+
+**Lo que significa:**
+- **El flujo de los puestos no se toca**: ya late cada 10 s (`LATIDO`, `ore-serve/src/puestos.rs`). Una
+  respuesta normal tampoco: `ore-entrada` corta lo callado a los 30 s (`PLAZO`).
+- **Las subidas grandes sí: hoy `ore-serve` acepta hasta 5 GiB en un PUT** (`SUBIDA_MAXIMA`, 0049
+  B4b·1). Por el túnel, más de 100 MiB da 413. Hace falta subir por trozos de ≤ 100 MiB
+  (multiparte) o subir directo al almacén con una URL firmada. Es **condición de C2·3**, o se
+  acepta como deuda conocida de desarrollo.
+- ④ (lo que ocupa Envoy) se mide en C2·1, en la malla.
+
+**Lo que queda:** el *custom hostname* y el CNAME de prueba están borrados, y el servidor y el
+`cloudflared` locales parados. Siguen en Cloudflare el túnel `ore-c2-prueba` (sin conexión) y
+`entrada.ontoforge.org` como *fallback origin*; C2·2 los reapunta al túnel de la malla.
 
 ### C1 · dormir por inactividad, despertar al usar (diseñado el 2026-10-10)
 
