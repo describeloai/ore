@@ -621,19 +621,23 @@ fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
     })
 }
 
-/// `postgres://u:p@h/db` → `postgres`. `postgresql` es el mismo driver con otro
-/// nombre y se normaliza; cualquier otro esquema pasa tal cual, porque `type` es
-/// un conjunto **abierto** y el compilador no razona sobre sus valores.
+/// `postgres://u:p@h/db` → `postgres`. Los esquemas que no se llaman como su
+/// driver se normalizan: `postgresql` es `postgres`, y los almacenes de objetos
+/// de ADR 0061, `gs` es `gcs` y `az` es `azure` (no hay `ore-read-gs` ni
+/// `ore-read-az`: sin esto, `ore source add gs://…` declaraba una fuente que el
+/// catálogo no sabía leer). Cualquier otro esquema pasa tal cual, porque `type`
+/// es un conjunto **abierto** y el compilador no razona sobre sus valores.
 fn esquema(url: &str) -> Option<String> {
     let s = url.split("://").next()?;
     if s.is_empty() || s.len() == url.len() {
         return None;
     }
     let s = s.to_ascii_lowercase().replace(['-', '+'], "_");
-    Some(if s == "postgresql" {
-        "postgres".into()
-    } else {
-        s
+    Some(match s.as_str() {
+        "postgresql" => "postgres".into(),
+        "gs" => "gcs".into(),
+        "az" => "azure".into(),
+        _ => s,
     })
 }
 
@@ -983,6 +987,18 @@ mod tests {
         assert_eq!(esquema("SNOWFLAKE://acc/db").as_deref(), Some("snowflake"));
         assert_eq!(esquema("db2-luw://h/db").as_deref(), Some("db2_luw"));
         assert_eq!(esquema("host:5432/db"), None);
+        // ADR 0061: el esquema de la URL no es el nombre del driver.
+        assert_eq!(esquema("gs://cubo/docs/").as_deref(), Some("gcs"));
+        assert_eq!(
+            esquema("az://cuenta/cubo/?tenant=t&cliente=c").as_deref(),
+            Some("azure")
+        );
+        assert_eq!(esquema("s3://cubo/?region=auto").as_deref(), Some("s3"));
+        assert_eq!(esquema("sftp://u@h/x").as_deref(), Some("sftp"));
+        assert_eq!(
+            esquema("sharepoint://c.sharepoint.com/D?tenant=t&cliente=c").as_deref(),
+            Some("sharepoint")
+        );
     }
 
     #[test]
