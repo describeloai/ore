@@ -98,12 +98,13 @@ fi
 
 # ── 5 · relanzar `imagen` ──────────────────────────────────────────────────
 RUN=$(gh run list -R "$REPO" --workflow ci --branch main --event push --limit 1 --json databaseId --jq '.[0].databaseId')
+# Primero que termine: una corrida en marcha aún no tiene creado su job `imagen` (medido:
+# el script decía «nada que relanzar»), y relanzar exige que esté acabada.
+esperar 1800 "que termine la corrida $RUN" sh -c "[ \"\$(gh run view -R $REPO $RUN --json status --jq .status)\" = completed ]"
 JOB=$(gh run view -R "$REPO" "$RUN" --json jobs --jq '.jobs[] | select(.name=="imagen") | .databaseId')
 if [ -z "$JOB" ]; then
   paso "⚠ la última corrida de main ($RUN) no tiene job imagen: nada que relanzar"
 else
-  # Si esa corrida aún no terminó, se la espera: relanzar exige que esté acabada.
-  esperar 1800 "que termine la corrida $RUN" sh -c "[ \"\$(gh run view -R $REPO $RUN --json status --jq .status)\" = completed ]"
   gh run rerun -R "$REPO" "$RUN" --job "$JOB" >/dev/null
   paso "imagen relanzado (corrida $RUN)"
   sleep 10
