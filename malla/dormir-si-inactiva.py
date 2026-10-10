@@ -170,11 +170,23 @@ def main():
         gcloud("container", "node-pools", "update", "pg", "--cluster", CLUSTER, "--zone", ZONA,
                "--no-enable-autoscaling")
         paso("pg sin autoescalado")
+    # ⛔ Y se comprueba que quedó en 0, no se da por hecho. El 2026-10-10 a las 21:03 el
+    #   autoescalador de `pg` estaba creando un nodo justo cuando se apagó: el resize a 0
+    #   terminó «DONE», se llevó el viejo, y el que nacía quedó con el grupo en objetivo 1 y
+    #   ore-pg arrancado encima. Tras cada resize se mira otra vez, hasta tres veces.
     for pool in ("pg", "jobs-s"):
-        hay = k8s("GET", f"/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3D{pool}")["items"]
-        if hay and gcloud("container", "clusters", "resize", CLUSTER, "--node-pool", pool,
-                          "--num-nodes", "0", "--zone", ZONA):
-            paso(f"{pool} → 0")
+        for intento in range(3):
+            hay = k8s("GET", f"/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3D{pool}")["items"]
+            if not hay:
+                break
+            if intento:
+                paso(f"{pool}: siguen {len(hay)} nodos tras el resize — otra vez")
+                time.sleep(30)
+            if gcloud("container", "clusters", "resize", CLUSTER, "--node-pool", pool,
+                      "--num-nodes", "0", "--zone", ZONA):
+                paso(f"{pool} → 0")
+        else:
+            paso(f"⛔ {pool}: siguen nodos tras tres resize a 0 — mírese a mano")
     if gcloud("container", "clusters", "resize", CLUSTER, "--node-pool", "sistema-spot",
               "--num-nodes", "0", "--zone", ZONA, "--async"):
         paso("sistema-spot → 0 pedido")
