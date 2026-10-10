@@ -1,6 +1,6 @@
 """El informe de una corrida de Libro (ADR 0058, P7·2): los SLOs y los errores, de /datos.
 
-  python informe.py [--desde 2026-10-10T12:00:00Z] [--json]
+  python informe.py [--desde 2026-10-10T12:00:00Z] [--hasta …] [--json]
 
 Lee lo que dejaron las piezas (operaciones, conciliacion e informes .jsonl) y saca:
   · **disponibilidad**: de las operaciones de los clientes, las que salieron bien (una transferencia
@@ -27,13 +27,13 @@ DATOS = os.environ.get("DATOS", "/datos")
 OBJETIVOS = {"disponibilidad": 99.9, "commit_p99_ms": 1000, "despertar_p95_ms": 10000}
 
 
-def lineas(fichero, desde):
+def lineas(fichero, desde, hasta=None):
     try:
         with open(os.path.join(DATOS, fichero), encoding="utf-8") as f:
             for l in f:
                 if l.strip().endswith("}"):
                     d = json.loads(l)
-                    if not desde or d.get("t", "") >= desde:
+                    if (not desde or d.get("t", "") >= desde) and (not hasta or d.get("t", "") <= hasta):
                         yield d
     except FileNotFoundError:
         return
@@ -46,16 +46,17 @@ def percentil(v, q):
     return v[min(len(v) - 1, max(0, round(q * (len(v) - 1))))]
 
 
-def informe(desde=None):
-    ops = list(lineas("operaciones.jsonl", desde))
-    conc = list(lineas("conciliacion.jsonl", desde))
-    infs = list(lineas("informes.jsonl", desde))
+def informe(desde=None, hasta=None):
+    ops = list(lineas("operaciones.jsonl", desde, hasta))
+    conc = list(lineas("conciliacion.jsonl", desde, hasta))
+    infs = list(lineas("informes.jsonl", desde, hasta))
     perdidos, absorbidos = [], Counter()
-    por_pieza = defaultdict(lambda: {"total": 0, "bien": 0})
+    por_pieza = defaultdict(lambda: {"total": 0, "bien": 0, "max_ms": 0})
     commits, despertares = [], defaultdict(list)
     for o in ops:
         p = por_pieza[o["pieza"]]
         p["total"] += 1
+        p["max_ms"] = max(p["max_ms"], o["ms"])
         if o["resultado"] in ("hecha", "sin-fondos"):
             p["bien"] += 1
         elif o["resultado"] != "mala":
@@ -97,21 +98,23 @@ def informe(desde=None):
         "atribuibles_absorbidos": dict(absorbidos.most_common(10)),
         "absorbidos_total": sum(absorbidos.values()),
     }
+    # None: sin datos para decirlo (una corrida sin noches no tiene despertares).
+    cumple = lambda v, f: None if v is None else f(v)  # noqa: E731
     r["objetivos"] = {
-        "disponibilidad": [OBJETIVOS["disponibilidad"], r["disponibilidad"] is not None and r["disponibilidad"] >= OBJETIVOS["disponibilidad"]],
-        "commit_p99_ms": [OBJETIVOS["commit_p99_ms"], r["commit_ms"]["p99"] is not None and r["commit_ms"]["p99"] <= OBJETIVOS["commit_p99_ms"]],
-        "despertar_p95_ms": [OBJETIVOS["despertar_p95_ms"], r["despertar_ms"]["p95"] is not None and r["despertar_ms"]["p95"] <= OBJETIVOS["despertar_p95_ms"]],
+        "disponibilidad": [OBJETIVOS["disponibilidad"], cumple(r["disponibilidad"], lambda v: v >= OBJETIVOS["disponibilidad"])],
+        "commit_p99_ms": [OBJETIVOS["commit_p99_ms"], cumple(r["commit_ms"]["p99"], lambda v: v <= OBJETIVOS["commit_p99_ms"])],
+        "despertar_p95_ms": [OBJETIVOS["despertar_p95_ms"], cumple(r["despertar_ms"]["p95"], lambda v: v <= OBJETIVOS["despertar_p95_ms"])],
     }
     return r
 
 
 def en_texto(r):
-    s = lambda b: "✓" if b else "✗"  # noqa: E731
+    s = lambda b: "—" if b is None else ("✓" if b else "✗")  # noqa: E731
     o = r["objetivos"]
     out = [f"Libro · de {r['desde']} a {r['hasta']} · {r['dias']} días · {r['operaciones']} operaciones",
            f"  disponibilidad   {r['disponibilidad']} %   {s(o['disponibilidad'][1])} objetivo ≥ {o['disponibilidad'][0]} %"]
     for k, v in r["por_pieza"].items():
-        out.append(f"    {k:<16} {v['bien']}/{v['total']} ({v['disponibilidad']} %)")
+        out.append(f"    {k:<16} {v['bien']}/{v['total']} ({v['disponibilidad']} %), la espera más larga {v['max_ms']} ms")
     c = r["commit_ms"]
     out.append(f"  commit           p50 {c['p50']} · p95 {c['p95']} · p99 {c['p99']} · máx {c['max']} ms ({c['n']})   "
                f"{s(o['commit_p99_ms'][1])} objetivo p99 ≤ {o['commit_p99_ms'][0]} ms")
@@ -133,7 +136,8 @@ def en_texto(r):
 if __name__ == "__main__":
     a = sys.argv[1:]
     desde = a[a.index("--desde") + 1] if "--desde" in a else None
-    r = informe(desde)
+    hasta = a[a.index("--hasta") + 1] if "--hasta" in a else None
+    r = informe(desde, hasta)
     with open(os.path.join(DATOS, "informe.json"), "w", encoding="utf-8") as f:
         json.dump(r, f, ensure_ascii=False, indent=1)
     print(json.dumps(r, ensure_ascii=False) if "--json" in a else en_texto(r))

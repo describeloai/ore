@@ -1566,3 +1566,32 @@ Los tiempos son del cómputo de mentira; los de verdad salen del soak en GCP. Si
 Una trampa de la prueba: `docker compose run -T` añade una línea en blanco al final cuando el proceso sale con 1, así que la salida se lee buscando la última línea JSON y no con `tail -1`.
 
 Los tiempos son del cómputo de mentira; lo que vale para GCP es la herramienta: el mismo `compose.yaml`, el mismo reloj (con días de horas) y el mismo informe. Siguiente: P7·3, los golpes con carga.
+
+#### P7·3 · Los golpes, con Libro trabajando (2026-10-10)
+
+**Un hueco del producto, encontrado al golpear: nadie levantaba un cómputo muerto.** Si el cómputo de un endpoint `listo` moría, el endpoint seguía `listo` con la dirección del muerto. El proxy la pedía, fallaba, la pedía otra vez y la recibía igual, para siempre. En producción pasaría lo mismo: las VMs llevan `restartPolicy: Never`. **El arreglo, en `ore-postgres`:**
+- **detectar**: vigilar ya pregunta cada 5 s al `compute_ctl` de cada endpoint `listo`. Si no contesta, mira el estado del cómputo; si ya no existe o terminó (`Failed`, `Succeeded`), pide una operación `reparar-endpoint`. Uno que no contesta pero sigue `Running` no se toca: un `/status` lento no es una muerte;
+- **reparar**, en tres etapas e idempotente: `listo` (se confirma la muerte) → `reparando` (se van sus restos) → `arrancando` (otro cómputo, por el camino de despertar: del pool si hay, si no en frío). Mientras tanto, el proxy espera como con un despertar, y la operación se mira cada 200 ms.
+
+En el contrato (14/14): vivo y contestando no se repara; muerto, vigilar lo pide, y la operación borra los restos antes de crear otro y deja el endpoint `listo` con dirección.
+
+**Los golpes** (`lab/p73.sh`, con carga, sin dormir para no confundir un despertar con un golpe; tras cada golpe, 60 s de carga):
+
+| golpe | espera más larga de la API / de los webhooks | errores absorbidos | resultado |
+|---|---|---|---|
+| matar el cómputo (`docker kill`) | 6,5 s / 1,0 s | 1 (`Server has closed the connection`) | **visto a los 5,8 s y reparado a los 8,3 s**; nada perdido |
+| cambiar las CU con carga | 76 ms / 37 ms | 0 | nada que notar (valen en el próximo arranque) |
+| reiniciar el proxy | 1,1 s / 36 ms | 2 (las conexiones del pool de Prisma, cortadas) | nada perdido |
+| reiniciar `ore-postgres` | 133 ms / 40 ms | 0 | nada que notar: el proxy tiene las direcciones en caché |
+| tirar Redis 30 s | 117 ms / 32 ms | 0 | nada que notar: sin avisos, el proxy sigue con lo que tiene |
+
+En todo el recorrido: 2.796 operaciones, **100 % de disponibilidad**, 21/21 conciliaciones y 10/10 cierres bien. Los 3 errores que vio la aplicación los tapó su reintento.
+
+**Lo aprendido del lado de la aplicación** (la primera corrida perdió 3 lecturas):
+- **las lecturas se reintentan** igual que las escrituras: son idempotentes. Un cliente que no reintenta ve los ~10 s de una reparación como errores;
+- **Prisma necesita `pool_timeout`** por encima de una reparación o de un despertar: con su valor por defecto (10 s), el pool se cansa antes de que la base vuelva (`P2024`). Libro usa 30;
+- **reiniciar el proxy corta las sesiones abiertas**, y los pools del cliente lo ven una vez. En producción hay dos réplicas; lo que se mide allí es una actualización en rodaje.
+
+**Solo en producción**: matar una VM de verdad (el arranque en frío son ~35 s; desde el pool, ~4 s), el pageserver y un safekeeper, una actualización de nodos con migración en vivo, y el proxy en rodaje con sus dos réplicas.
+
+La regresión de dormir y despertar (P6·3 y P6·4) sigue en verde con la vigilancia nueva.

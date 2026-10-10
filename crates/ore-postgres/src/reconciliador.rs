@@ -110,10 +110,16 @@ pub fn vigilar(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
 
 /// La mitad de [`vigilar`] que sólo mira: el `last_active` de cada cómputo encendido, apuntado.
 /// Devuelve a cuántos les apuntó algo.
+///
+/// P7·3 · Y **quién murió**: si un cómputo no contesta y además ya no existe o terminó (un
+/// contenedor matado, una VM `Failed`: llevan `restartPolicy: Never`), se pide una operación
+/// `reparar-endpoint`. Sin esto el endpoint seguía `listo` con la dirección del muerto, y el
+/// proxy la pedía y la recibía otra vez para siempre. Uno que no contesta pero sigue `Running`
+/// no se toca: un `/status` lento no es una muerte.
 pub fn apuntar_actividades(c: &mut Client, k: &dyn Computos) -> Result<usize, String> {
     let vivos = c
         .query(
-            "select e.organizacion, e.proyecto, e.id, coalesce(e.computo, e.vm), e.ip_pod
+            "select e.organizacion, e.proyecto, e.id, coalesce(e.computo, e.vm), e.ip_pod, e.rama
                from plano.endpoint e
               where e.deseado = 'vivo' and e.observado = 'listo' and e.ip_pod is not null",
             &[],
@@ -121,15 +127,50 @@ pub fn apuntar_actividades(c: &mut Client, k: &dyn Computos) -> Result<usize, St
         .map_err(mal)?;
     let mut apuntados = 0;
     for f in &vivos {
-        let (org, p, id, vm, ip): (String, String, String, String, String) =
-            (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4));
-        // Si no contesta, no se apunta nada: un cómputo que no contesta no se duerme por eso.
-        if let Ok(Some(t)) = k.actividad(&vm, &ip) {
-            apuntar_actividad(c, &org, &p, &id, &t)?;
-            apuntados += 1;
+        let (org, p, id, vm, ip, rama): (String, String, String, String, String, String) =
+            (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4), f.get(5));
+        match k.actividad(&vm, &ip) {
+            Ok(Some(t)) => {
+                apuntar_actividad(c, &org, &p, &id, &t)?;
+                apuntados += 1;
+            }
+            Ok(None) => {}
+            // Si no contesta, no se apunta nada (no se duerme por eso); si además murió, a reparar.
+            Err(_) if muerto(k, &vm) => pedir_reparar(c, &org, &p, &rama, &id, &vm)?,
+            Err(_) => {}
         }
     }
     Ok(apuntados)
+}
+
+/// P7·3 · ¿Ya no existe, o terminó? Una duda (el API no contesta) no es una muerte.
+fn muerto(k: &dyn Computos, vm: &str) -> bool {
+    matches!(k.estado(vm), Ok(None))
+        || matches!(k.estado(vm), Ok(Some(e)) if e.fase == "Failed" || e.fase == "Succeeded")
+}
+
+fn pedir_reparar(
+    c: &mut Client,
+    org: &str,
+    p: &str,
+    rama: &str,
+    id: &str,
+    vm: &str,
+) -> Result<(), String> {
+    match c.execute(
+        "insert into plano.operacion (id, organizacion, proyecto, tipo, celda, rama, endpoint)
+         values ('op_' || replace(gen_random_uuid()::text, '-', ''), $1, $2, 'reparar-endpoint',
+                 'reconciliador', $3, $4)",
+        &[&org, &p, &rama, &id],
+    ) {
+        Ok(_) => {
+            eprintln!("reconciliador · el cómputo {vm} de {org}/{p}/{id} murió: a reparar");
+            Ok(())
+        }
+        // Otra operación en curso en el proyecto: se mira en la vigilancia siguiente.
+        Err(e) if crate::base::choca(&e, "una_en_curso_por_proyecto") => Ok(()),
+        Err(e) => Err(mal(e)),
+    }
 }
 
 /// La mitad de [`vigilar`] que decide: a los que llevan más de su `dormir_tras` sin actividad, una
@@ -796,6 +837,9 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
         // para limpio (`/terminate`, con su LSN), se borra el cómputo y, cuando no queda nada con
         // su nombre, el endpoint queda `dormido`: sin cómputo, coste 0; los datos, en el almacén.
         "dormir-endpoint" => dormir(c, k, op),
+        // P7·3 · Reparar: el cómputo de un endpoint vivo murió. Fuera sus restos, y otro nuevo por
+        // el camino de despertar (del pool si hay, si no en frío). El proxy espera mientras.
+        "reparar-endpoint" => reparar(c, a, k, op),
         otro => Err(Fallo::Definitivo(format!(
             "este reconciliador no sabe hacer `{otro}`"
         ))),
@@ -865,6 +909,64 @@ fn dormir(c: &mut Client, k: &dyn Computos, op: &Op) -> Result<(), Fallo> {
     Ok(())
 }
 
+/// P7·3 · La operación `reparar-endpoint`, en tres etapas e idempotente:
+/// `listo` (se confirma la muerte) → `reparando` (se van sus restos) → `arrancando` (otro cómputo,
+/// por [`asegurar_endpoint`], como un despertar: del pool si hay, si no en frío con su nombre).
+fn reparar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Result<(), Fallo> {
+    let bd = |e: postgres::Error| Fallo::Reintentar(format!("la base: {}", mal(e)));
+    let id = op.endpoint.as_deref().unwrap_or_default();
+    let (org, p) = (op.organizacion.as_str(), op.proyecto.as_str());
+    let Some(f) = c
+        .query_opt(
+            "select coalesce(computo, vm), observado from plano.endpoint
+              where organizacion = $1 and proyecto = $2 and id = $3 and deseado = 'vivo'",
+            &[&org, &p, &id],
+        )
+        .map_err(bd)?
+    else {
+        return Ok(());
+    };
+    let (computo, mut observado): (String, String) = (f.get(0), f.get(1));
+    if observado == "listo" {
+        // Se mira otra vez: pudo ser una duda que ya pasó.
+        if !muerto(k, &computo) {
+            return Ok(());
+        }
+        c.execute(
+            "update plano.endpoint set observado = 'reparando', direccion = null, ip_pod = null
+              where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &id],
+        )
+        .map_err(bd)?;
+        observado = "reparando".into();
+    }
+    if observado == "reparando" {
+        k.borrar(&computo)?;
+        if k.estado(&computo)?.is_some() || k.runner_vivo(&computo)? {
+            return Err(Fallo::Esperar(
+                "esperando a que se vayan los restos del cómputo".into(),
+            ));
+        }
+        c.execute(
+            "update plano.endpoint set computo = null, observado = 'arrancando'
+              where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &id],
+        )
+        .map_err(bd)?;
+        observado = "arrancando".into();
+    }
+    if observado != "arrancando" {
+        return Ok(()); // ya listo otra vez, o dormido o borrado entretanto: nada que reparar
+    }
+    let ep = endpoints(c, org, p, Some(id))
+        .map_err(bd)?
+        .pop()
+        .ok_or_else(|| Fallo::Definitivo("el endpoint ya no está".into()))?;
+    let tenant =
+        tenant_de(c, org, p)?.ok_or_else(|| Fallo::Definitivo("el proyecto ya no está".into()))?;
+    asegurar_endpoint(c, a, k, org, p, &tenant, &ep)
+}
+
 /// Apunta lo que salió.
 fn cerrar(c: &mut Client, op: &Op, r: Result<(), Fallo>) -> Result<(), String> {
     match r {
@@ -879,7 +981,7 @@ fn cerrar(c: &mut Client, op: &Op, r: Result<(), Fallo>) -> Result<(), String> {
         // Lo que va bien y tarda: en 2 s otra vez, sin gastar intentos, dentro del plazo. Un
         // despertar, en 200 ms: hay un cliente esperando al otro lado del proxy (P6·4).
         Err(Fallo::Esperar(m)) if op.edad < PLAZO_ESPERA => {
-            let espera = if op.tipo == "despertar-endpoint" {
+            let espera = if op.tipo == "despertar-endpoint" || op.tipo == "reparar-endpoint" {
                 0.2
             } else {
                 2.0

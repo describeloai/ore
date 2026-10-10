@@ -133,6 +133,10 @@ impl Computos for Apunta {
         Ok(())
     }
     fn actividad(&self, vm: &str, _: &str) -> Result<Option<String>, Fallo> {
+        // Una VM que ya no existe no contesta (P7·3).
+        if !self.vms.lock().unwrap().contains_key(vm) {
+            return Err(Fallo::Reintentar(format!("{vm} no contesta")));
+        }
         Ok(self.actividad.lock().unwrap().get(vm).cloned())
     }
     fn terminar(&self, vm: &str, _: &str) -> Result<Option<String>, Fallo> {
@@ -1716,4 +1720,65 @@ fn sin_dormir_se_apunta_la_actividad_y_no_duerme_nadie() {
         ore_postgres::reconciliador::mandar_a_dormir(&mut c2).unwrap(),
         1
     );
+}
+
+#[test]
+fn un_computo_que_muere_se_repara() {
+    // P7·3: el cómputo de un endpoint `listo` desaparece (un contenedor matado, una VM `Failed`).
+    // Vigilar lo ve, pide `reparar-endpoint`, y la operación borra sus restos y crea otro.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ventas","dueno":"user:ana"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let ep = "/v1/postgres/proyectos/ventas/ramas/main/endpoints/principal";
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    let vm = campo(&r, &["vm"]);
+    assert!(r.contains(r#""observado":"listo""#), "{r}");
+    // Vivo y contestando: nada que reparar.
+    ore_postgres::reconciliador::apuntar_actividades(&mut c2, &almacen).unwrap();
+    let reparar = |c: &mut postgres::Client| -> i64 {
+        c.query_one(
+            "select count(*) from plano.operacion where tipo = 'reparar-endpoint'",
+            &[],
+        )
+        .unwrap()
+        .get(0)
+    };
+    assert_eq!(reparar(&mut otra_conexion()), 0);
+    // Muere.
+    almacen.vms.lock().unwrap().remove(&vm);
+    almacen.pedido();
+    ore_postgres::reconciliador::apuntar_actividades(&mut c2, &almacen).unwrap();
+    assert_eq!(reparar(&mut otra_conexion()), 1, "vigilar pide repararlo");
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let pedido = almacen.pedido();
+    let borrar = pedido.iter().position(|p| p == &format!("vm-borrar {vm}"));
+    let crear = pedido
+        .iter()
+        .position(|p| p.starts_with(&format!("vm-crear {vm} ")));
+    assert!(
+        borrar.is_some() && crear.is_some() && borrar < crear,
+        "primero los restos, después otro: {pedido:?}"
+    );
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    assert!(
+        r.contains(r#""observado":"listo""#) && r.contains(r#""direccion""#),
+        "otra vez listo: {r}"
+    );
+    let estado: String = otra_conexion()
+        .query_one(
+            "select estado from plano.operacion where tipo = 'reparar-endpoint'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(estado, "hecha");
 }

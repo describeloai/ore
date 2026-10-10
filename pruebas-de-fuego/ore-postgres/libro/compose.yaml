@@ -39,7 +39,7 @@ services:
       interval: 2s
       retries: 90
     environment:
-      DATABASE_URL: "postgresql://${ROL}:${CLAVE}@${EP_POOL}:${PUERTO_PG}/${BASE}?sslmode=require&sslcert=/llaves/tls.crt&pgbouncer=true&connect_timeout=60"
+      DATABASE_URL: "postgresql://${ROL}:${CLAVE}@${EP_POOL}:${PUERTO_PG}/${BASE}?sslmode=require&sslcert=/llaves/tls.crt&pgbouncer=true&connect_timeout=60&pool_timeout=30"
       DIRECT_URL: "postgresql://${ROL}:${CLAVE}@${EP_HOST}:${PUERTO_PG}/${BASE}?sslmode=require&sslcert=/llaves/tls.crt&connect_timeout=60"
     volumes: [*tls]
   libro-webhooks:

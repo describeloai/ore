@@ -59,14 +59,17 @@ def transferencia(ids):
 
 
 def lectura(ids):
+    """Una consulta es idempotente: ante un fallo, se reintenta igual que una transferencia (P7·3)."""
     c = random.choice(ids)
     ruta = f"/cuentas/{c}" if random.random() < 0.6 else f"/cuentas/{c}/movimientos?limite=20"
-    t0 = time.time()
-    codigo, r = pide("GET", f"{API}{ruta}")
-    ms = int((time.time() - t0) * 1000)
-    if codigo == 200:
-        return "hecha", ms, 1, None, []
-    return "fallo", ms, 1, f"{codigo} {str(r)[:200]}", []
+    t0, errores = time.time(), []
+    for intento in range(1, REINTENTOS + 1):
+        codigo, r = pide("GET", f"{API}{ruta}")
+        if codigo == 200:
+            return "hecha", int((time.time() - t0) * 1000), intento, None, errores
+        errores.append(f"{codigo} {str(r)[:160]}")
+        time.sleep(min(10, 0.2 * 2 ** intento))
+    return "fallo", int((time.time() - t0) * 1000), REINTENTOS, errores[-1], errores
 
 
 def hilo(ids, r, primera):
