@@ -1,0 +1,40 @@
+# 0058 P7·4 · Libro contra producción (el soak en GCP, ADR 0058, «La receta del soak en GCP»).
+#
+#   docker compose -f compose.yaml -f compose.gcp.yaml --env-file .env up -d
+#
+# Lo mismo que en el laboratorio, con tres diferencias:
+#   · los nombres `ep-….europe-west1.pg.paladio.io` los resuelve el DNS de verdad (P5·2): fuera los
+#     extra_hosts;
+#   · el certificado es de Let's Encrypt: cada pieza confía en las raíces del sistema, no en el
+#     autofirmado del laboratorio (fuera el montaje de ../lab/.secretos). libpq y pgjdbc leen el
+#     paquete de CA del sistema (/etc/ssl/certs/ca-certificates.crt, en las imágenes Debian/Ubuntu
+#     de python y temurin); Prisma, con sslmode=require, verifica con las de OpenSSL; el driver de
+#     Neon, con las de Node;
+#   · el puerto es el 5432 (PUERTO_PG=5432 en .env; el 4432 era el del proxy del laboratorio).
+services:
+  # `!reset` va en cada servicio: dentro de un ancla YAML (`<<:`), Compose no lo aplica.
+  libro-api:
+    extra_hosts: !reset []
+    volumes: !reset []
+    environment:
+      DATABASE_URL: "postgresql://${ROL}:${CLAVE}@${EP_POOL}:${PUERTO_PG}/${BASE}?sslmode=require&pgbouncer=true&connect_timeout=60&pool_timeout=30"
+      DIRECT_URL: "postgresql://${ROL}:${CLAVE}@${EP_HOST}:${PUERTO_PG}/${BASE}?sslmode=require&connect_timeout=60"
+  libro-webhooks:
+    extra_hosts: !reset []
+    volumes: !reset []
+    environment: !override
+      DATABASE_URL: "postgresql://${ROL}:${CLAVE}@${EP_HOST}/${BASE}"
+  libro-conciliador:
+    extra_hosts: !reset []
+    volumes: !override ["datos:/datos"]
+    environment:
+      CONEXION: "host=${EP_HOST} port=${PUERTO_PG} dbname=${BASE} user=${ROL} password=${CLAVE} sslmode=verify-full sslrootcert=/etc/ssl/certs/ca-certificates.crt"
+  libro-informes:
+    extra_hosts: !reset []
+    volumes: !override ["datos:/datos"]
+    environment:
+      JDBC_URL: "jdbc:postgresql://${EP_HOST}:${PUERTO_PG}/${BASE}?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt"
+  usuarios:
+    # El informe lee también lo que dejan muestrea.sh y golpes.sh en la máquina (MEDIDAS).
+    volumes:
+      - "${MEDIDAS:-./medidas}:/medidas"
