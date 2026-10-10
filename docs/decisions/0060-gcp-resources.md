@@ -164,6 +164,22 @@ Queda: los tokens viejos de Forgejo que acuñó el escape, revocarlos con el cl�
 10 `*-cofre-fuente-*` de fuentes de prueba de septiembre, revisarlos contra el cofre; y un aviso
 de secretos con más de una versión cobrada.
 
+### A4 · los discos (2026-10-10)
+
+**Lo visto:** 12 discos, 125 GB, ~$9,5 al mes, cobrando sin máquinas. Dos eran **huérfanos**: la
+`forja-datos` de `t-prueba` y de `t-prueba-dos`, celdas borradas, que la clase `retiene` guardó a
+propósito (sin tocar desde el 02-oct y el 14-sep). El resto está en uso: las forjas de `t-demo`,
+`t-victor` y la compartida, `idp-datos` (Keycloak), los cinco de `ore-pg` (0058) y `modelos-e0`
+(el gateway de Bastion, parado).
+
+**Lo hecho** (con el go de la persona): una instantánea de cada huérfano
+(`forja-t-prueba-20261010`, `forja-t-prueba-dos-20261010`, 1,7 MB y 0,3 MB dentro, en
+europe-west1) y los dos discos y sus `PersistentVolume` borrados: **10 discos, 105 GB, ~$7,3**.
+
+**Queda para C1** (con el clúster despierto): pasar a `pd-standard` las cuatro `pd-balanced` en uso
+(forjas e idp; ~$2,6 menos, copiando cada disco), y los discos de arranque de los nodos a lo que
+usan (`jobs-s` arranca con 50 GB `pd-balanced`).
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
