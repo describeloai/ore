@@ -213,6 +213,22 @@ etapa `pyright`, sólo lo suyo; un comentario, un fichero fuera del contexto o u
 usa, nada; la huella de los binarios, las nueve que los copian. Las dos van al job `suite` de
 `ci.yml`. Lo usa B1·2.
 
+### B1·2 · publicar por huella, medido en la rama (2026-10-10)
+
+`construir.yml` (aún sólo en `b1/*`, con la etiqueta `prueba-b1-<commit>`): por cada imagen, si el
+registro ya tiene `<imagen>:h-<huella>` (metadato: no se baja nada) se le añade la etiqueta por el
+API del registro; si no, se construye en el runner y se sube con las dos. Los binarios, por su
+huella, en la caché de GitHub, y sólo si alguna imagen que se construye los copia. Tres corridas:
+
+| corrida | qué pasó | el job |
+|---|---|---|
+| 38051037533: la primera (ninguna huella en el registro) | las 14 construidas y subidas; deps de la caché, binarios compilados (223 s) | **492 s** |
+| 38051711781: el mismo commit otra vez | las 14 reutilizadas (2–6 s cada una) | **82 s** |
+| 38051989928: un commit que sólo toca `puesto/python/agente.py` | 13 reutilizadas, `puesto-python` construida y subida (64 s); binarios de la caché (0 s) | **125 s** |
+
+Lo que costaba ~19 min de `E2_HIGHCPU_8` en Cloud Build por commit es, sin pagar nada, 1,5–2 min si
+no cambia Rust y ~8 si cambia. Siguiente: B1·3, el relevo en el CI de `main`.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
