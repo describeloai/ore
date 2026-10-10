@@ -117,9 +117,9 @@ se lee —una Keep gana a la Delete—:
    con `:main` y `:1` (`ci.yml`), y hoy se puso a mano en las 14 imágenes desplegadas. Hace falta
    porque la regla casa **por prefijo**, y `1` es también el principio de uno de cada 16 commits;
 2. **lo fijado en los manifiestos**: `neon:8269bece…` y `vm-compute-node-v17:baad49aa…` (0058),
-   `v0.49.1-ore.1` (NeonVM y el autoescalado), y la caché de construcción de Neon
-   (`cache:neon-almacen`, `cache:neon-computo-v17`). Quien cambie uno de esos fijados, lo cambia
-   aquí;
+   `v0.49.1-ore.1` (NeonVM y el autoescalado). Quien cambie uno de esos fijados, lo cambia aquí;
+   `simular-limpieza.py --manifiestos malla` lo comprueba contra **todos** los ficheros de
+   `malla/`, estén o no en una kustomization (el proxy de 0058, lo comentado);
 3. **lo de fuera** que no se reconstruye: `forgejo:15`, `postgres:16`, `neonvm-kernel`;
 4. **las 3 versiones más nuevas** de cada paquete, para volver atrás;
 5. **todo lo demás, borrado a los 7 días**. Lo que nombra un índice multi-arquitectura no se borra
@@ -135,8 +135,11 @@ nuevas» cuenta las hijas de un índice— se resuelve tomando la que guarda men
 | `bastion` | 17 GB, 16 versiones | — | **13 GB, 10** (`env:0.29.0-sm120.1` y `.2`) |
 
 De los 37 GB de `ore`, **26 son la caché de construcción de Neon** y 4 las imágenes de Neon; lo de
-ORE en sí (puestos, capas, servicios, binarios, deps) cabe en ~6 GB. De ~$27 al mes a ~$5, o a
-~$2 sin la caché de Neon (que solo sirve para reconstruir Neon desde el fork).
+ORE en sí (puestos, capas, servicios, binarios, deps) cabe en ~6 GB. **La caché de Neon se borra**
+(lo acepta quien lleva 0058, 2026-10-10: solo hace larga la próxima reconstrucción); va a mano, una
+vez, al aplicar la regla, porque «las 3 más nuevas» la guardaría. Con eso, ~11 GB en `ore` y 13 en
+`bastion`: de ~$27 al mes a **~$2,5**. Un `:main` o `en-uso` que lleve meses sin moverse no se
+borra nunca (simulado a 30 días: la Keep gana a la antigüedad).
 
 ## Primeros principios
 

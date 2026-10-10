@@ -1,11 +1,13 @@
 """Simula la política de limpieza de Artifact Registry (ADR 0060 A2) sobre lo que hay.
 
     gcloud artifacts docker images list <registro>/<repo> --include-tags --format=json > lista.json
-    ORE_TOKEN=$(gcloud auth print-access-token) python malla/simular-limpieza.py malla/registro-limpieza.json lista.json         [--dentro-de 8] [--alias 1=en-uso]
+    ORE_TOKEN=$(gcloud auth print-access-token) python malla/simular-limpieza.py malla/registro-limpieza.json lista.json         [--dentro-de 8] [--alias 1=en-uso] [--manifiestos malla]
 
 `--dentro-de N`: cómo quedaría dentro de N días sin construir nada más (lo que hoy salva solo
 `olderThan`, se va). `--alias 1=en-uso`: como si la versión con la etiqueta `1` llevara también
-`en-uso` (lo que el despliegue pondrá; ADR 0060 A2).
+`en-uso` (lo que el despliegue pondrá; ADR 0060 A2). `--manifiestos DIR`: comprueba que cada
+imagen de este repositorio que nombra un fichero de DIR —todos, estén o no en una
+kustomization: el proxy de 0058 o lo comentado también— se queda; si no, sale con error.
 
 Aplica las reglas como las aplica Google (docs de cleanup policies, 2026-10-10): una versión que
 casa con una Keep se queda aunque case con la Delete; `mostRecentVersions` guarda las N más
@@ -106,7 +108,7 @@ def simular(reglas, versiones, hijos, cuenta_hijas):
 def main():
     global AHORA
     args = sys.argv[1:]
-    dias, alias = 0, {}
+    dias, alias, manifiestos = 0, {}, None
     while len(args) > 2:
         op, val = args.pop(2), args.pop(2)
         if op == "--dentro-de":
@@ -114,6 +116,8 @@ def main():
         elif op == "--alias":
             a, b = val.split("=")
             alias[a] = b
+        elif op == "--manifiestos":
+            manifiestos = val
     reglas = json.load(open(args[0], encoding="utf-8"))
     crudo = json.load(open(args[1], encoding="utf-8"))
     token = os.environ["ORE_TOKEN"]
@@ -177,6 +181,35 @@ def main():
     for k in queda:
         razones[porque[k]] += 1
     print("por qué se queda: " + ", ".join(f"{r} {n}" for r, n in sorted(razones.items())))
+    if manifiestos:
+        sys.exit(comprobar(manifiestos, versiones, queda))
+
+
+def comprobar(raiz, versiones, queda):
+    """Cada `<repo>/<paquete>:<tag>` o `@<digest>` que nombran los ficheros de `raiz`, ¿se queda?"""
+    repo = versiones[0]["paquete"].rsplit("/", 1)[0]
+    patron = re.compile(re.escape(repo) + r"/([a-z0-9._-]+)([:@][A-Za-z0-9._:-]+)")
+    citas = set()
+    for dirpath, _, ficheros in os.walk(raiz):
+        for f in ficheros:
+            try:
+                texto = open(os.path.join(dirpath, f), encoding="utf-8").read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for m in patron.finditer(texto):
+                if "$" not in m.group(2):
+                    citas.add((m.group(1), m.group(2), os.path.relpath(os.path.join(dirpath, f), raiz)))
+    mal = 0
+    for paquete, ref, donde in sorted(citas):
+        v = next((v for v in versiones if v["nombre"] == paquete and
+                  (ref[1:] in v["tags"] if ref[0] == ":" else v["version"] == ref[1:])), None)
+        if v is None:
+            print(f"?  {paquete}{ref} ({donde}): no está en el registro")
+        elif (v["paquete"], v["version"]) not in queda:
+            print(f"✗  {paquete}{ref} ({donde}): la regla la BORRARÍA")
+            mal = 1
+    print(f"manifiestos: {len(citas)} citas de imágenes en {raiz}/, " + ("alguna se borraría" if mal else "todas se quedan"))
+    return mal
 
 
 if __name__ == "__main__":
