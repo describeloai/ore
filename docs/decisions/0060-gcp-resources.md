@@ -257,6 +257,20 @@ no cambia Rust y ~8 si cambia. Siguiente: B1·3, el relevo en el CI de `main`.
 4. **Cerrar la puerta a Cloud Build** (IAM, go): `ore-ci` sin permiso de construir.
 5. **La comprobación al despertar**, con C1.
 
+### C2 · lo que de verdad cuestan los balanceadores (2026-10-10)
+
+La tarifa pública (Precios de red, Cloud Load Balancing, leída hoy): las reglas de reenvío
+**globales** —externos globales, clásicos y regionales de aplicación, juntos— cuestan **0,025 $/h
+por las cinco primeras, sean 1 o 5** («si creas 3 reglas de reenvío, se te cobrará la misma
+cantidad»), y 0,01 $/h cada una más. Y **una IP externa estática asignada a una regla de reenvío
+no se cobra**. Nuestras tres reglas (la `Gateway` y las dos del `Ingress` del idp) pagan un solo
+tramo: **~18 $ al mes en total**, y las IPs `ore-puerta` y `ore-idp`, nada.
+
+⇒ **Juntar los dos balanceadores en uno no ahorra nada** (descartado). Lo único que baja esos ~18 $
+es no tener ninguna regla global: el túnel (G9). Corrige la tabla del nivel 2 («balanceadores e
+IPs ~$32»): eran ~$18. Y la entrada TCP de Postgres (0058, el `87`) sería una regla **regional**,
+otro tramo de ~18 $.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
