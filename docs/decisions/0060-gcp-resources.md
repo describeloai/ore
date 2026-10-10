@@ -271,6 +271,57 @@ es no tener ninguna regla global: el túnel (G9). Corrige la tabla del nivel 2 (
 IPs ~$32»): eran ~$18. Y la entrada TCP de Postgres (0058, el `87`) sería una regla **regional**,
 otro tramo de ~18 $.
 
+### C1 · dormir por inactividad, despertar al usar (diseñado el 2026-10-10)
+
+Sin horario: **despierta quien lo usa y duerme cuando nadie lo usa.** Decidido con la persona,
+como configuración de desarrollo (en producción real se revisa): **cualquiera puede despertarlo,
+sin límite**, y **duerme tras 15 min sin actividad**.
+
+- **Quién despierta:** la consola (Vercel, siempre en pie) antes del login —Keycloak vive dentro y
+  dormido no carga ni la página de entrada—, `ore wake` y el CLI ante un 502, el despertador
+  programado (el `mantenimiento` diario de las celdas, y más adelante los horarios de Transforms y
+  funciones), y las pruebas contra prod. El job `imagen` del CI ya tiene su camino dormido.
+- **Qué cuenta como actividad:** peticiones de personas a `ore-serve`, `ore-iam` y Keycloak,
+  puestos abiertos, trabajo de usuarios en Kueue. No cuentan las comprobaciones de salud, el
+  informador, el aprovisionador, los refrescos de JWKS, Flux, ni las consultas de fondo de una
+  pestaña de la consola (marcadas, y en pausa con la pestaña oculta).
+- **Lo programado:** las copias diarias (forja, idp, base del controlador) pasan a hacerse **al
+  dormir** —los datos sólo cambian despierto—; los refrescos de JWKS, al despertar.
+- **Piezas:** `malla/dormir.sh` y `malla/despertar.sh` (en orden: nodo, Kueue/cert-manager/Flux,
+  celdas, JWKS, relanzar `imagen`, `54-la-comprobacion`); workflows de GitHub (despertar a mano o
+  desde la consola, el que duerme cada 15 min, el despertador programado) con una cuenta mínima
+  `ore-horario`; la consola lanza el workflow con un token de GitHub de un solo permiso.
+
+Hitos: C1·0 medir · C1·1 los guiones · C1·2 la señal de actividad · C1·3 los workflows (IAM) ·
+C1·4 la consola y `ore wake` · C1·5 el tamaño del nodo, `jobs-s` a spot y los discos.
+
+### C1·0 · un ciclo despertar → dormir, medido (2026-10-10)
+
+Despertado a mano (`sistema-spot` 0 → 1 a las 14:32:26 UTC), con un vigilante de sólo lecturas:
+
+| segundo | qué |
+|---|---|
+| 43 / 54 | la máquina existe / el nodo `Ready` |
+| 86 | Kueue listo |
+| 86–162 | **nada más arranca**: con los nodos a 0, los ReplicaSets llevaban horas de `FailedCreate` contra el webhook de Kueue (`mpod.kb.io`, `failurePolicy: Fail`) y reintentan con una espera que crece hasta ~16 min |
+| 162 | **el empujón**: `kubectl rollout restart` de los Deployments y StatefulSets de cada namespace (Kueue ya contesta) |
+| 227 / 244 | Flux / la forja compartida |
+| 249 | `demo.ore.paladio.io` contesta (401 sin token) |
+| 257–260 | `identidad` (Keycloak, su base, el operador, `ore-iam`), `t-demo` y `t-victor` enteras |
+| **351** | **`login.paladio.io` da 200**: el balanceador del idp tarda en dar el backend por sano |
+| 297–747 | el job `imagen` relanzado (`gh run rerun --job`): 13 de 14 Deployments relevados a `b968829b`; `ore-pg/ore-postgres` agotó los 300 s porque vive en `ore.dev/pool: neon`, a 0 (corregido en `ci.yml`: sin ese grupo en pie, no se releva) |
+
+**Despertar, hasta poder entrar: ~6 min** (con el empujón; sin él, hasta ~20). Las CronJobs que
+no corrieron dormidas (el `mantenimiento` de las celdas, los refrescos de JWKS) corrieron solas al
+despertar; las de `ore-pg` se quedan pendientes sin su grupo.
+
+**Lo que usa de verdad, en reposo** (`kubectl top`, ~10 min después): el nodo 314m de CPU y 4,3 GB
+de memoria (de un `e2-standard-4`: 8 % y 32 %). Lo que **piden** los pods: 1.441m de CPU y 5,1 GiB.
+Un `e2-standard-2` (~1.930m y ~5,7 GiB asignables) **cabe, justo por memoria**: C1·5 lo prueba;
+los puestos y los builds van a `jobs-s`, no aquí.
+
+**Dormir:** `cordon` + `drain` 130 s, el grupo a 0 68 s más: **~3,3 min**.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

@@ -1110,7 +1110,16 @@ jobs:
           [ "$DESTINOS" = "identidad/ore-iam" ] && { echo "x ningun namespace con ore.dev/rol=cargas"; exit 1; }
           # El plano de control de Postgres (0058 P4·1), si ya está rendido: no es de
           # ninguna celda, va en `ore-pg`.
-          kubectl -n ore-pg get deployment ore-postgres >/dev/null 2>&1 && DESTINOS="$DESTINOS ore-pg/ore-postgres"
+          # ⭐ (ADR 0060 C1·0, 2026-10-10) Y sólo si su grupo de nodos está en pie: vive en
+          #   `ore.dev/pool: neon`, que va a 0 cuando Postgres no se usa, y esperar su
+          #   relevo era agotar los 300 s (medido). Se releva cuando Postgres despierte.
+          if kubectl -n ore-pg get deployment ore-postgres >/dev/null 2>&1; then
+            if kubectl get nodes -l ore.dev/pool=neon --no-headers 2>/dev/null | grep -q " Ready"; then
+              DESTINOS="$DESTINOS ore-pg/ore-postgres"
+            else
+              echo "  ore-pg/ore-postgres: su grupo de nodos está a 0; no se releva"
+            fi
+          fi
 
           # ⭐ Y sólo los que CAMBIAN (2026-10-03). Relevar un `ore-serve` cuyos
           #   binarios son los mismos no despliega nada y cierra las sesiones de
