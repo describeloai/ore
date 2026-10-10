@@ -40,12 +40,45 @@ public final class Informes {
         c.setConnectionTimeout(90_000);
         c.setInitializationFailTimeout(-1);
         c.setPoolName("libro-informes");
+        boolean alAnochecer = "1".equals(System.getenv("AL_ANOCHECER"));
         try (HikariDataSource ds = new HikariDataSource(c)) {
             while (true) {
+                if (alAnochecer) {
+                    Thread.sleep(hastaElAnochecer());
+                }
                 apunta(cierre(ds));
-                Thread.sleep(intervalo);
+                if (!alAnochecer) {
+                    Thread.sleep(intervalo);
+                }
             }
         }
+    }
+
+    /**
+     * P7·2: con AL_ANOCHECER=1, el cierre se hace al empezar cada noche del reloj de la corrida
+     * (/datos/reloj.json, el de los usuarios), como el cierre de un día de verdad. → ms de espera.
+     */
+    private static long hastaElAnochecer() throws Exception {
+        Path ruta = DATOS.resolve("reloj.json");
+        while (!Files.exists(ruta)) {
+            Thread.sleep(1000);
+        }
+        String j = Files.readString(ruta);
+        double origen = numero(j, "origen"), dia = numero(j, "dia_s"), noche = numero(j, "noche_s");
+        double ahora = System.currentTimeMillis() / 1000.0, largo = dia + noche;
+        double anochecer = origen + Math.floor((ahora - origen) / largo) * largo + dia;
+        if (anochecer <= ahora) {
+            anochecer += largo;
+        }
+        return (long) ((anochecer - ahora) * 1000) + 2000;
+    }
+
+    private static double numero(String json, String clave) {
+        var m = java.util.regex.Pattern.compile("\"" + clave + "\"\\s*:\\s*([0-9.eE+-]+)").matcher(json);
+        if (!m.find()) {
+            throw new IllegalStateException("reloj.json sin " + clave);
+        }
+        return Double.parseDouble(m.group(1));
     }
 
     private static String cierre(HikariDataSource ds) {

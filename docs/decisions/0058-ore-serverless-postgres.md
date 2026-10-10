@@ -1535,3 +1535,34 @@ Alrededor, **los usuarios** (altas, transferencias y consultas contra la API) y 
 - **un pool del cliente no debe guardar conexiones ociosas** (Hikari con `minimumIdle` 0): al dormir la base, se cortan.
 
 Los tiempos son del cómputo de mentira; los de verdad salen del soak en GCP. Siguiente: P7·2, los usuarios con día y noche y el informe de SLOs.
+
+#### P7·2 · Día y noche, y el informe de SLOs (2026-10-10)
+
+**El reloj** (`libro/comun.py`): días de `DIA_S` segundos con forma (0,3 de la carga al amanecer y al anochecer, el máximo a mediodía) y noches de `NOCHE_S` sin clientes. El primero que arranca escribe el origen en `/datos/reloj.json` y los demás lo leen. Así, usuarios, banco e informes viven el mismo día, y quien se reinicie sigue donde estaba.
+- **los usuarios y el banco** siguen la carga del día; de noche, nada;
+- **`libro-informes`** hace el cierre **al anochecer**, como un cierre de verdad;
+- **`libro-conciliador`** es un cron que no sabe de noches: a veces despierta la base de madrugada, como en la vida real;
+- **la primera operación de cada pieza tras cada noche** va marcada (`primera`): su latencia es la del despertar. Solo cuenta en el primer cuarto del día, para que una pieza reiniciada a mediodía no cuente como despertar.
+
+**Los errores, clasificados** (`informe/informe.py`), con la regla escrita en su cabecera:
+- **atribuibles perdidos**: la operación falló aunque el cliente reintentó; un invariante roto; un cron que no pudo conectar. Quitan disponibilidad y hacen que el informe salga con 1;
+- **atribuibles absorbidos**: un error que el reintento del cliente tapó. Se cuentan y se listan, pero no quitan disponibilidad;
+- **del cliente**: sin fondos, una petición mal formada. No cuentan; los conflictos `serializable` los reintenta la API dentro y no salen de ella.
+
+**El informe** saca de `/datos` la disponibilidad (total y por pieza), el commit (p50, p95, p99 y máximo, desde el cliente), el despertar (p50, p95 y máximo, por pieza), las conciliaciones, los cierres y los errores. Lo escribe también en `/datos/informe.json`. Los objetivos son **provisionales** (disponibilidad ≥ 99,9 %, commit p99 ≤ 1 s, despertar p95 ≤ 10 s) y se fijan con el soak en GCP (P7·4).
+
+**Medido** (`lab/p72.sh`: tres días de 240 s y tres noches de 150 s, `dormir_tras` 60, los usuarios reiniciados a mediodía del segundo día):
+
+| | resultado |
+|---|---|
+| operaciones | 3.738 en 4 días (el cuarto, su primera hora), **100 % de disponibilidad**; 0 atribuibles, ni perdidos ni absorbidos |
+| commit | p50 24 ms · p95 45 ms · **p99 70 ms** · máximo 2,5 s (la transferencia que despertó la base); en la primera corrida, p99 381 ms |
+| despertar | 6 medidas, **p50 1,9 s · p95 2,5 s**. Cada mañana, la pieza que llega primera despierta la base y la otra llega con la base ya despierta o despertándose |
+| la base | **se durmió 3 veces**, una por noche |
+| invariantes y cierres | 7/7 conciliaciones cuadran; 3/3 cierres al anochecer (el último exportó 4.239 movimientos) |
+| reanudar | los usuarios reiniciados a mitad de corrida siguen el mismo reloj, sin fallos |
+| **el detector** | se borra a mano una transferencia confirmada (con sus movimientos y los saldos devueltos, para que el dinero cuadre): el conciliador ve **exactamente esa** (`faltan_transferencias: 1`) y el informe la da como atribuible perdido y sale con 1 |
+
+Una trampa de la prueba: `docker compose run -T` añade una línea en blanco al final cuando el proceso sale con 1, así que la salida se lee buscando la última línea JSON y no con `tail -1`.
+
+Los tiempos son del cómputo de mentira; lo que vale para GCP es la herramienta: el mismo `compose.yaml`, el mismo reloj (con días de horas) y el mismo informe. Siguiente: P7·3, los golpes con carga.

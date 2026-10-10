@@ -12,6 +12,9 @@
 #   usuarios           los clientes de la API (altas, transferencias, consultas)
 #   banco              manda avisos de pago a libro-webhooks, con reintentos y duplicados
 #
+# Con RELOJ=1 (P7·2), usuarios y banco siguen el día y la noche (DIA_S, NOCHE_S) de /datos/reloj.json,
+# e informes hace el cierre al anochecer. El informe de SLOs: `informe/informe.py` (desde usuarios).
+#
 # Las piezas y los clientes dejan su rastro en el volumen libro-datos (/datos, una línea JSON por
 # hecho). Las variables (EP_HOST, EP_POOL, BASE, ROL, CLAVE, PUERTO_PG) las escribe `lab/p71.sh` en
 # .env, que no entra en git.
@@ -64,16 +67,19 @@ services:
       PGUSER: "${ROL}"
       PGPASSWORD: "${CLAVE}"
       INTERVALO: "${INTERVALO_INFORMES:-300}"
+      AL_ANOCHECER: "${RELOJ:-0}"
     volumes: [*tls, "datos:/datos"]
   usuarios:
     image: python:3.12-slim
     command: [python, -u, /libro/usuarios/usuarios.py]
-    environment: { API: "http://libro-api:8080", OPS: "${OPS:-4}", HILOS: "${HILOS:-4}" }
-    volumes: ["./comun.py:/libro/comun.py:ro", "./usuarios:/libro/usuarios:ro", "datos:/datos"]
+    environment: { API: "http://libro-api:8080", OPS: "${OPS:-4}", HILOS: "${HILOS:-4}",
+                   RELOJ: "${RELOJ:-0}", DIA_S: "${DIA_S:-600}", NOCHE_S: "${NOCHE_S:-180}" }
+    volumes: ["./comun.py:/libro/comun.py:ro", "./usuarios:/libro/usuarios:ro", "./informe:/libro/informe:ro", "datos:/datos"]
     depends_on: [libro-api]
   banco:
     image: python:3.12-slim
     command: [python, -u, /libro/banco/banco.py]
-    environment: { WEBHOOKS: "http://libro-webhooks:8081", INTERVALO: "${INTERVALO_BANCO:-2}" }
+    environment: { WEBHOOKS: "http://libro-webhooks:8081", INTERVALO: "${INTERVALO_BANCO:-2}",
+                   RELOJ: "${RELOJ:-0}", DIA_S: "${DIA_S:-600}", NOCHE_S: "${NOCHE_S:-180}" }
     volumes: ["./comun.py:/libro/comun.py:ro", "./banco:/libro/banco:ro", "datos:/datos"]
     depends_on: [libro-webhooks]

@@ -61,7 +61,7 @@ n_mal=$(datos "grep -cE '\"resultado\":\"(fallo|duplicado-mal|mala)\"' /datos/op
 inf=$(datos "head -1 /datos/informes.jsonl")
 case "$inf" in *'"ok":true'*) bien "libro-informes (JDBC): el cierre y la exportación ($(echo "$inf" | grep -oE '"exportadas":[0-9]+'))";;
   *) mal "libro-informes: ${inf:0:250}";; esac
-c=$(lc run --rm --no-deps -T libro-conciliador python -u /app/conciliador.py --una 2>&1 | tail -1)
+c=$(lc run --rm --no-deps -T libro-conciliador python -u /app/conciliador.py --una 2>&1 | grep '^{' | tail -1)
 case "$c" in *'"ok":true'*) bien "libro-conciliador (psycopg): los tres invariantes cuadran $(echo "$c" | grep -oE '"(transferencias|avisos|confirmadas|entregados)":[0-9]+' | tr '\n' ' ')";;
   *) mal "la conciliación: ${c:0:300}";; esac
 
@@ -91,7 +91,7 @@ sleep 45
 n_mal=$(datos "grep -cE '\"resultado\":\"(fallo|duplicado-mal|mala)\"' /datos/operaciones.jsonl")
 [ "${n_mal:-0}" = 0 ] && bien "en todo el recorrido, ninguna operación fallida" || mal "$n_mal operaciones mal"
 lc stop usuarios banco >/dev/null 2>&1
-c=$(lc run --rm --no-deps -T libro-conciliador python -u /app/conciliador.py --una 2>&1 | tail -1)
+c=$(lc run --rm --no-deps -T libro-conciliador python -u /app/conciliador.py --una 2>&1 | grep '^{' | tail -1)
 case "$c" in *'"ok":true'*) bien "la conciliación final cuadra $(echo "$c" | grep -oE '"(transferencias|avisos|confirmadas|entregados|total)":[0-9]+' | tr '\n' ' ')";;
   *) mal "la conciliación final: ${c:0:300}";; esac
 reint=$(datos "grep -c '\"intentos\":[2-9]' /datos/operaciones.jsonl")
