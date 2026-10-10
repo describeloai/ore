@@ -67,6 +67,8 @@ model Movimiento {
   deAviso         Aviso?         @relation(fields: [aviso], references: [clave])
 
   @@index([cuenta, id])
+  @@index([transferencia])
+  @@index([aviso])
   @@map("movimiento")
 }
 

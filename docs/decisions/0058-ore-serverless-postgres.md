@@ -1595,3 +1595,16 @@ En todo el recorrido: 2.796 operaciones, **100 % de disponibilidad**, 21/21 conc
 **Solo en producción**: matar una VM de verdad (el arranque en frío son ~35 s; desde el pool, ~4 s), el pageserver y un safekeeper, una actualización de nodos con migración en vivo, y el proxy en rodaje con sus dos réplicas.
 
 La regresión de dormir y despertar (P6·3 y P6·4) sigue en verde con la vigilancia nueva.
+
+#### P7·4 · Por la vía rápida (2026-10-10)
+
+Sin el ensayo largo en el laboratorio: lo que sí es seguro que se rompería con días de datos se arregla y se prueba con una corrida acelerada; las fugas lentas quedan para las primeras horas del soak en GCP.
+
+**1 · El conciliador, preparado para días.** Antes miraba todo en cada vuelta: a ~4 transferencias por segundo, una semana son ~2,4 millones de filas, y «cada transferencia, dos movimientos» recorría `movimiento` sin índice. Ahora hace dos clases de vuelta:
+- **incremental**, la de cada `INTERVALO`. Recuerda en `/datos/conciliador.json` hasta dónde leyó los ficheros y, por cuenta, la suma de los movimientos hasta un **id de control**, y mira solo lo nuevo. El id de control solo avanza sobre movimientos de hace más de `HORIZONTE` (300 s). Una transacción de la API dura como mucho 30 s, así que ningún commit lento con un id menor puede aparecer después por debajo de él;
+- **completa**, al arrancar, con `--una` y cada `COMPLETA_S` (una hora). Lo mira todo desde cero, con los ids confirmados subidos a una tabla temporal (`COPY`) y cruzados de una vez. Hace falta porque un commit perdido de verdad se lleva también su cambio de saldo: el dinero sigue cuadrando y solo se ve buscando su id. La incremental lo ve si es reciente; la completa, si es antiguo;
+- con un invariante roto, el estado no avanza, y la vuelta siguiente lo vuelve a ver.
+
+La migración **0002** de Prisma añade `movimiento(transferencia)` y `movimiento(aviso)`. Va sin `CONCURRENTLY`, porque Prisma manda el fichero en una transacción implícita; en una tabla de millones de filas habría que hacerla aparte. Se aplicó sola al arrancar `libro-api` con la base viva.
+
+Medido (p71 en verde con las dos migraciones; después, a mano, con carga y `HORIZONTE` 5 s): cuatro vueltas incrementales seguidas, cada una con lo nuevo (25–37 transferencias, ~40 ms), el id de control avanzando y las sumas por cuenta casando con los saldos en todas. Con una transferencia reciente borrada a mano, la incremental ve exactamente esa, con el dinero cuadrando, y también la siguiente vuelta y la completa.

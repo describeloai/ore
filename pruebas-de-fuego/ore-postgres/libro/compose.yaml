@@ -57,6 +57,7 @@ services:
     environment:
       CONEXION: "host=${EP_HOST} port=${PUERTO_PG} dbname=${BASE} user=${ROL} password=${CLAVE} sslmode=verify-full sslrootcert=/llaves/tls.crt"
       INTERVALO: "${INTERVALO_CONCILIADOR:-120}"
+      COMPLETA_S: "${COMPLETA_S:-3600}"
     volumes: [*tls, "datos:/datos"]
   libro-informes:
     build: ./informes
