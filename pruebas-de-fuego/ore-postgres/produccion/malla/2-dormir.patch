@@ -1,0 +1,14 @@
+diff --git a/malla/86-postgres-el-plano-de-control.yaml b/malla/86-postgres-el-plano-de-control.yaml
+index 48ecbb64..9d20c5a6 100644
+--- a/malla/86-postgres-el-plano-de-control.yaml
++++ b/malla/86-postgres-el-plano-de-control.yaml
+@@ -108,6 +108,9 @@ spec:
+             # P5·7: cada endpoint dice su nombre público (host, host_pool) para Connect.
+             - --dominio
+             - europe-west1.pg.paladio.io
++            # P6·7: dormir por inactividad. Solo con el proxy desplegado y probado desde internet: a un
++            # endpoint dormido solo lo despierta una conexión que entra por el proxy.
++            - --dormir
+           env:
+             - name: ORE_POSTGRES_URL
+               valueFrom: { secretKeyRef: { name: ore-postgres-db, key: url } }
