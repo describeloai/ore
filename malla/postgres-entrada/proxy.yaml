@@ -106,19 +106,21 @@ spec:
         - name: token
           secret: { secretName: ore-postgres-proxy }
 ---
-# La entrada pública: un L4 de paso directo con backend services (RBS), en la IP fija de P5·2.
-# La IP llega por sustitución de Flux (postBuild, ConfigMap ore-pg-entrada que escribe 87-…-gcp.sh).
+# La entrada. Fue un L4 de paso directo con backend services (RBS) en la IP fija de P5·2, y es
+# ClusterIP desde ORE 0060 C2 (2026-10-10). ⛔ Aquel L4 era una regla de reenvío regional:
+# ~18 $/mes aunque la malla duerma, con un objetivo de ~€20 en total. En desarrollo se entra por
+# el túnel de Cloudflare (0060 C2·2): el 443 (HTTP/WS) como un nombre más, y el 5432 con
+# `cloudflared access tcp` en el cliente (el endpoint en `options=endpoint=`, porque no llega SNI).
+# El L4 vuelve, con su IP, cuando haya clientes que esperen `psql -h` directo: era
+#   type: LoadBalancer · loadBalancerIP: ${IP_ENTRADA} · externalTrafficPolicy: Local
+#   · anotación cloud.google.com/l4-rbs: enabled
 apiVersion: v1
 kind: Service
 metadata:
   name: proxy-postgres
   namespace: ore-pg
-  annotations:
-    cloud.google.com/l4-rbs: enabled
 spec:
-  type: LoadBalancer
-  loadBalancerIP: ${IP_ENTRADA}
-  externalTrafficPolicy: Local
+  type: ClusterIP
   selector: { ore.dev/rol: proxy-postgres }
   ports:
     - { name: postgres, port: 5432, targetPort: postgres, protocol: TCP }

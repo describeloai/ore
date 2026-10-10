@@ -385,6 +385,30 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
   por `port-forward` con cada `Host` (celda, `iam`, login), el flujo SSE más de 15 s, y ④ lo que
   ocupa en el nodo.
 
+### C2 · la entrada de Postgres, también al túnel (2026-10-10, decidido por la persona)
+
+0058 desplegó hoy (13:12) su entrada, `ore-pg/proxy-postgres`, como `LoadBalancer` L4 en la IP
+`ore-pg-entrada`. Era **una regla de reenvío regional: ~18 $/mes aunque la malla duerma**, y con
+ella el fijo dormida se quedaba en ~34 $ aunque C2 acabara. La persona decidió llevarla también al
+túnel en desarrollo:
+- `malla/postgres-entrada/proxy.yaml`: el Service, a **`ClusterIP`**. Lo que era queda escrito en
+  su comentario, para volver a ponerlo cuando haya clientes que esperen `psql -h` directo.
+- Aplicado en vivo, con la malla dormida (el Service lo resuelve el plano de control): la regla
+  regional se borró a las 21:22 UTC. Liberada la IP `ore-pg-entrada`: sin regla detrás cobraba
+  ~7 $/mes. Borrado `*.europe-west1.pg.paladio.io A`, para no dejar un nombre apuntando a una IP
+  que ya no es nuestra.
+- **C2·2 la recoge** con reglas propias de `cloudflared`, sin pasar por Envoy (el proxy termina su
+  propio TLS):
+  - el 443 (HTTP/WS) como un *custom hostname* más, con origen `https://proxy-postgres.ore-pg:443`;
+  - el 5432 como `tcp://` detrás de un nombre de `ontoforge.org`, con `cloudflared access tcp` en el
+    cliente. El endpoint va en `options=endpoint=`, porque por el túnel no llega SNI; hay que
+    comprobar que nuestro proxy lo lee.
+- `87-postgres-la-entrada-gcp.sh` volvería a crear la IP y el `A` si se relanza: no hace falta
+  mientras sea `ClusterIP`.
+- `gen-inquilino.py`: `87-postgres-la-entrada.yaml` sale de `FUERA` (estaba ahí mientras iba
+  comentada; su frase decía que saliera al desplegarse). Era lo que tenía rojo el CI de `main`
+  desde `5d10fb11` (paso «la plantilla del inquilino se puede renderizar»).
+
 **Lo que queda:** el *custom hostname* y el CNAME de prueba están borrados, y el servidor y el
 `cloudflared` locales parados. Siguen en Cloudflare el túnel `ore-c2-prueba` (sin conexión) y
 `entrada.ontoforge.org` como *fallback origin*; C2·2 los reapunta al túnel de la malla.
