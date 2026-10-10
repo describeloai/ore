@@ -16,6 +16,13 @@
 #              copias al dormir (un Job desde su CronJob) — esto último SÓLO en los
 #              tres namespaces que tienen copia (RoleBinding, no ClusterRoleBinding).
 #
+# ⭐ (2026-10-10) Y DORMIR SE DECIDE DENTRO: el cron de GitHub no corrió ni una vez en dos
+#   horas. La CronJob `dormir-si-inactiva` (abajo), cada 5 min, corre
+#   `malla/dormir-si-inactiva.py` con la cuenta `horario` —los mismos permisos que el
+#   workflow— y, por Workload Identity, como `ore-horario` ante Google. Dormir sólo hace
+#   falta despierta, y justo entonces las CronJobs corren puntuales. Despertar sigue fuera
+#   (`horario.yml` a mano, la consola).
+#
 # ⛔ No lee `Secret`, no crea pods sueltos ni toca RBAC. El Job de una copia corre
 #   con la cuenta de su CronJob; quien puede crear Jobs en esos tres namespaces
 #   podría escribir otro Job ahí, y por eso la cuenta sólo existe para `main`
@@ -61,6 +68,9 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-hor
 subjects:
   - kind: User
     name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  - kind: ServiceAccount
+    name: horario
+    namespace: ore-system
 ---
 # Las copias al dormir: un Job desde la CronJob, y esperarlo.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -86,6 +96,9 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-hor
 subjects:
   - kind: User
     name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  - kind: ServiceAccount
+    name: horario
+    namespace: ore-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -97,6 +110,9 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-hor
 subjects:
   - kind: User
     name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  - kind: ServiceAccount
+    name: horario
+    namespace: ore-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -108,3 +124,87 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ore-hor
 subjects:
   - kind: User
     name: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  - kind: ServiceAccount
+    name: horario
+    namespace: ore-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: horario
+  namespace: ore-system
+  labels: { ore.dev/tenant: system, ore.dev/rol: horario }
+  annotations:
+    iam.gke.io/gcp-service-account: ore-horario@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+# Sale a la API del clúster, al servidor de metadatos (Workload Identity) y a las APIs de
+# Google por 443 (GKE). Nada más: `deny-all-egress` cierra el resto del namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-horario
+  namespace: ore-system
+  labels: { ore.dev/tenant: system }
+spec:
+  podSelector:
+    matchLabels: { ore.dev/rol: horario }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    # La API del clúster: su IP privada (el `kubernetes` de `default` la traduce a ésta) y,
+    # por si la política se mira antes de traducir, la del servicio.
+    - to: [{ ipBlock: { cidr: 10.10.0.2/32 } }, { ipBlock: { cidr: 10.30.0.1/32 } }]
+      ports: [{ port: 443, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 169.254.169.254/32 } }]
+      ports: [{ port: 80, protocol: TCP }, { port: 988, protocol: TCP }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports: [{ port: 443, protocol: TCP }]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dormir-si-inactiva
+  namespace: ore-system
+  labels: { ore.dev/tenant: system, ore.dev/rol: horario }
+spec:
+  schedule: "*/5 * * * *"
+  # Una pasada a la vez; y al despertar, una pasada perdida de hace horas no corre (la de
+  # ahora dirá «despierta desde hace menos de 15 min»).
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels: { ore.dev/tenant: system, ore.dev/rol: horario }
+        spec:
+          restartPolicy: Never
+          serviceAccountName: horario
+          volumes:
+            - name: guion
+              configMap: { name: horario }
+          containers:
+            - name: dormir
+              # La de los drivers: trae `gcloud` y Python (no `kubectl`: el guion habla con
+              # la API directamente).
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: INACTIVA, value: "15" }
+              volumeMounts: [{ name: guion, mountPath: /horario }]
+              command: ["python3", "/horario/dormir-si-inactiva.py"]
+              resources:
+                requests: { cpu: "20m", memory: 128Mi }
+                limits: { cpu: "500m", memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }

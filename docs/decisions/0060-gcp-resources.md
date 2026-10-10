@@ -406,6 +406,27 @@ Corre como **`ore-horario`** (con el go de la persona):
 - **Despertar otra vez** (todo en pie): 120 s, `imagen` relanzado y verde, las cuatro entradas
   contestan.
 
+### C1·3 · dormir se decide dentro del clúster (2026-10-10)
+
+**El cron de GitHub no corrió ni una vez** en dos horas (`*/10`, workflow activo, rama por
+defecto): la malla se quedó despierta 107 min sin nadie. GitHub avisa de que sus horarios pueden
+retrasarse o no correr. ⇒ **Dormir lo decide el clúster**: la CronJob `dormir-si-inactiva`
+(`ore-system`, cada 5 min, `malla/18-el-horario.yaml`) corre `malla/dormir-si-inactiva.py`. Dormir
+sólo hace falta despierta, y justo entonces las CronJobs corren puntuales; dormida no corre y no
+hace falta.
+- El guion habla con la API de Kubernetes directamente (la imagen `ore-drivers` trae Python y
+  `gcloud`, no `kubectl`): la edad del nodo, las líneas `persona|delegado` de `ore-serve` y
+  `ore-iam`, los puestos, Kueue; las copias (un Job desde cada CronJob, esperado); y los grupos a
+  0 por `gcloud` — `pg` y `jobs-s` esperando (GKE hace una operación a la vez), `sistema-spot`, el
+  suyo, con `--async`. No vacía los nodos: corre en uno de ellos; GKE retira las máquinas.
+- La cuenta `horario` (los mismos permisos que el workflow: sujeto añadido a los enlaces) y, por
+  Workload Identity, `ore-horario` ante Google. Su NetworkPolicy sólo deja salir a la API del
+  clúster (`10.10.0.2`, `10.30.0.1`), a los metadatos y a las APIs de Google.
+- El guion viaja en un `ConfigMap` (`configMapGenerator: horario`); la comprobación ⑧ de
+  `gen-inquilino.py` mira ahora sólo el generador del aprovisionador.
+- `horario.yml` sigue: despertar a mano o desde la consola (eso sí corre al instante), y su cron
+  queda de red por si un día corre.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

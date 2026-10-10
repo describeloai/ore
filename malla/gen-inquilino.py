@@ -847,6 +847,11 @@ def comprobar():
                 break
             if dentro:
                 gen += l + "\n"
+        # ⚠️ Sólo el generador del aprovisionador: desde el 2026-10-10 hay otro (`horario`,
+        #   el guion de la CronJob que duerme la malla; ADR 0060 C1·3) y sus ficheros no son
+        #   plantillas.
+        bloques = re.split(r"^  - name:\s*", gen, flags=re.M)
+        gen = next((b for b in bloques if b.startswith("aprovisionador")), gen)
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
         debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
