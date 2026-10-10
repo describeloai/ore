@@ -1,0 +1,210 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA PUERTA DEL TÚNEL — la misma puerta, sin balanceador de Google (ORE 0060 C2·1)
+#
+# `14-la-puerta.yaml` es un balanceador global externo: una regla de reenvío que
+# cobra ~18 $ al mes aunque la malla duerma (0060, «lo que de verdad cuestan los
+# balanceadores»). Esto es la misma `Gateway` servida DENTRO del clúster por Envoy
+# (`19-envoy-gateway.yaml`), y por delante, en C2·2, el túnel de Cloudflare:
+#
+#   navegador → Cloudflare (TLS) → cloudflared → ESTO (Envoy, ClusterIP) → las rutas
+#
+# ⭐ Lo que NO cambia es lo que importa: cada inquilino cuelga su `HTTPRoute` desde
+#   su namespace, y QUIÉN puede colgarse lo dice `allowedRoutes` aquí, en la puerta
+#   (`cargas` e `identidad`, como en la `14`). Mientras dure el cambio, las rutas
+#   cuelgan de las dos puertas a la vez: la de Google sigue sirviendo, ésta se prueba.
+#
+# ── ⛔⛔ DOS VALORES POR DEFECTO QUE HABRÍAN COSTADO ─────────────────────────
+#
+#   1. El Service de Envoy es `LoadBalancer` si no se dice nada: **otra regla de
+#      reenvío**, regional, otro tramo de ~18 $. Se dice `ClusterIP` (abajo), y
+#      a esta puerta sólo le habla `cloudflared`, desde dentro.
+#   2. Envoy corta toda petición a los **15 s** si no se dice nada: el flujo de los
+#      puestos (0037, `GET /puestos/{id}/flujo`, 240 s) moriría en cada editor.
+#      Se dice 300 s, lo mismo que la `GCPBackendPolicy` de la `43` (⑮).
+#
+# ── Y por qué el listener es HTTP ─────────────────────────────────────────────
+#
+# El TLS lo termina Cloudflare con el certificado de cada nombre (Cloudflare for
+# SaaS) y el túnel lo lleva cifrado hasta `cloudflared`. De `cloudflared` a Envoy,
+# y de Envoy a los pods, es tráfico dentro del clúster: lo mismo que hacía el
+# balanceador de Google con los backends (HTTP a los NEG).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: tunel
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        # ⛔ Ver la cabecera, punto 1. Y con nombre fijo: `cloudflared` apunta aquí.
+        type: ClusterIP
+        name: puerta-del-tunel
+      envoyDeployment:
+        replicas: 1
+        container:
+          # El balanceador de Google no pedía nada al nodo; esto sí. Medido en C2·1.
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: ore-tunel
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: tunel
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: puerta-tunel
+  namespace: ore-system
+  labels:
+    ore.dev/rol: puerta
+spec:
+  gatewayClassName: ore-tunel
+  listeners:
+    # Las celdas y `iam.ore.paladio.io`: lo mismo que el listener `https` de la `14`.
+    - name: ore
+      protocol: HTTP
+      port: 80
+      hostname: "*.ore.paladio.io"
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: ore.dev/rol
+                operator: In
+                values: [cargas, identidad]
+        kinds:
+          - kind: HTTPRoute
+    # El emisor. Hasta hoy era un `Ingress` aparte (`63`) con su propio balanceador:
+    # aquí es un listener más, y sólo `identidad` puede colgarse de él.
+    - name: login
+      protocol: HTTP
+      port: 80
+      hostname: login.paladio.io
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              ore.dev/rol: identidad
+        kinds:
+          - kind: HTTPRoute
+---
+# ⛔ Ver la cabecera, punto 2: 300 s, más que los 240 con los que el flujo se
+# despide solo. Para TODA la puerta: el propio servidor ya corta lo callado a los
+# 30 s (`ore-entrada`), así que esto sólo levanta el techo del intermediario.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: plazo-de-la-puerta
+  namespace: ore-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: puerta-tunel
+  timeout:
+    http:
+      requestTimeout: 300s
+---
+# ── La red del controlador y de Envoy: cerrada, y abierta sólo a lo que usan ──
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: envoy-gateway-system
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# El controlador habla con el API server y reparte la configuración a Envoy (xDS).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: el-controlador
+  namespace: envoy-gateway-system
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: gateway-helm }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: envoy }
+      ports: [{ port: 18000, protocol: TCP }]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.10.0.2/32 } }, { ipBlock: { cidr: 10.30.0.1/32 } }]
+      ports: [{ port: 443, protocol: TCP }]
+---
+# El Job que genera los certificados del xDS: sólo el API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: los-certificados
+  namespace: envoy-gateway-system
+spec:
+  podSelector:
+    matchLabels: { app: certgen }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.10.0.2/32 } }, { ipBlock: { cidr: 10.30.0.1/32 } }]
+      ports: [{ port: 443, protocol: TCP }]
+---
+# Envoy: entra `cloudflared` (C2·2, en `ore-system`) por el 10080 —el 80 del
+# listener; Envoy no corre como root y suma 10000 a los puertos privilegiados—;
+# sale al controlador y a los backends de las rutas, y a nada más.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: envoy
+  namespace: envoy-gateway-system
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: envoy }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ore-system }
+          podSelector:
+            matchLabels: { ore.dev/rol: tunel }
+      ports: [{ port: 10080, protocol: TCP }]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: gateway-helm }
+      ports: [{ port: 18000, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { ore.dev/rol: cargas }
+          podSelector:
+            matchLabels: { ore.dev/rol: control }
+      ports: [{ port: 8080, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { ore.dev/rol: identidad }
+          podSelector:
+            matchLabels: { ore.dev/rol: iam-servidor }
+      ports: [{ port: 8090, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { ore.dev/rol: identidad }
+          podSelector:
+            matchLabels: { app: keycloak }
+      ports: [{ port: 8080, protocol: TCP }]

@@ -59,6 +59,8 @@ resources:
   - 18-el-horario.yaml
   # ── La puerta compartida ────────────────────────────────────────────────
   - 14-la-puerta.yaml
+  - 19-envoy-gateway.yaml
+  - 19-la-puerta-del-tunel.yaml
   # ── La forja ────────────────────────────────────────────────────────────
   - 30-forja.yaml
   - 31-copias-de-la-forja.yaml

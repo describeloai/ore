@@ -360,6 +360,31 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
   bloquea C2·3.
 - ④ (lo que ocupa Envoy) se mide en C2·1, en la malla.
 
+### C2·1 · la puerta nueva, escrita (2026-10-10; se aplica al despertar)
+
+- **Envoy Gateway v1.8.5**, rendido por `malla/gen-envoy-gateway.sh` en `malla/19-envoy-gateway.yaml`
+  (como Flux: no hay `helm-controller`). No es la v1.9 porque los CRDs de Gateway API los gestiona
+  GKE (v1.5.0) y la v1.8 es la que está probada contra la v1.5; la v1.9 pide la v1.6. Al chart se le
+  quitan sus CRDs de Gateway API, el webhook `topologyInjector` y el TTL del Job `certgen`.
+- **`malla/19-la-puerta-del-tunel.yaml`:**
+  - `EnvoyProxy tunel`: Service **`ClusterIP`** con nombre fijo `puerta-del-tunel`. Por defecto
+    sería `LoadBalancer`, es decir, otra regla de reenvío.
+  - `GatewayClass ore-tunel` y `Gateway puerta-tunel` (`ore-system`) con dos listeners HTTP: `ore`
+    (`*.ore.paladio.io`, a `cargas` e `identidad`, como la `14`) y `login` (`login.paladio.io`,
+    sólo a `identidad`).
+  - `BackendTrafficPolicy` de **300 s**: Envoy corta a los 15 s si no se le dice nada.
+  - NetworkPolicies: `envoy-gateway-system` cerrado. Entra `cloudflared` (`ore.dev/rol: tunel`, en
+    C2·2) al 10080; Envoy sale sólo al controlador y a los backends.
+- **Rutas:** la de cada celda (`43`, que llega a `t-demo` y `t-victor` por el convergedor) y la de
+  `iam` (`67`) cuelgan de las dos puertas. El emisor pasa a ser una `HTTPRoute` (`63`, listener
+  `login`) al lado del `Ingress`. Cada destino tiene su NetworkPolicy desde Envoy.
+- Comprobado en local: `kubectl kustomize` (193 objetos) y `gen-inquilino.py` (el render de `victor`
+  lleva la segunda puerta y su política). `--comprobar` sólo falla por `87` en `FUERA` y en la lista,
+  que ya fallaba en `main` antes de esto (0058, `5d10fb11`).
+- **Al despertar se mide:** Gateway `Programmed`, rutas `Accepted` en las dos puertas, `curl` a Envoy
+  por `port-forward` con cada `Host` (celda, `iam`, login), el flujo SSE más de 15 s, y ④ lo que
+  ocupa en el nodo.
+
 **Lo que queda:** el *custom hostname* y el CNAME de prueba están borrados, y el servidor y el
 `cloudflared` locales parados. Siguen en Cloudflare el túnel `ore-c2-prueba` (sin conexión) y
 `entrada.ontoforge.org` como *fallback origin*; C2·2 los reapunta al túnel de la malla.

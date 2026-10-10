@@ -150,3 +150,50 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+---
+# ── Y la puerta del túnel (ORE 0060 C2) ─────────────────────────────────────
+#
+# El emisor como una ruta más, colgada del listener `login` de
+# `19-la-puerta-del-tunel.yaml`, que sólo admite a `identidad`. Mismo `Service`
+# (`idp-publico`) y mismo puerto que el `Ingress` de arriba, que convive con
+# esto hasta C2·5. Su comprobación de salud (`/realms/rubix`) no tiene equivalente
+# aquí: Envoy manda sólo a los pods listos, y la readiness la pone el operador.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: login
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad
+spec:
+  parentRefs:
+    - name: puerta-tunel
+      namespace: ore-system
+      sectionName: login
+  hostnames:
+    - login.paladio.io
+  rules:
+    - backendRefs:
+        - name: idp-publico
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-de-la-puerta-del-tunel
+  namespace: identidad
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: envoy }
+      ports:
+        - protocol: TCP
+          port: 8080

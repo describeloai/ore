@@ -171,6 +171,10 @@ spec:
     - name: puerta
       namespace: ore-system
       sectionName: https
+    # Y la puerta del túnel (ORE 0060 C2), mientras dura el cambio.
+    - name: puerta-tunel
+      namespace: ore-system
+      sectionName: ore
   hostnames:
     - iam.ore.paladio.io
   rules:
@@ -210,6 +214,27 @@ spec:
     - from:
         - ipBlock: { cidr: 130.211.0.0/22 }
         - ipBlock: { cidr: 35.191.0.0/16 }
+      ports:
+        - protocol: TCP
+          port: 8090
+---
+# Y Envoy, la puerta del túnel (ORE 0060 C2), desde sus pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-de-la-puerta-del-tunel-a-iam
+  namespace: identidad
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: iam-servidor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: envoy }
       ports:
         - protocol: TCP
           port: 8090

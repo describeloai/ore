@@ -39,6 +39,12 @@ spec:
     - name: puerta
       namespace: ore-system
       sectionName: https
+    # La puerta del túnel (ORE 0060 C2, `19-la-puerta-del-tunel.yaml`): la misma
+    # ruta, servida por Envoy dentro del clúster. Cuelga de las dos mientras dura
+    # el cambio; la de Google se va en C2·5.
+    - name: puerta-tunel
+      namespace: ore-system
+      sectionName: ore
   # ⛔ UN hostname, y es el de la fila. Si esto y `iam.organizacion.entrada` se
   #   separaran, la consola mandaría a la gente a una puerta que no existe.
   hostnames:
@@ -163,6 +169,28 @@ spec:
     - from:
         - ipBlock: { cidr: 130.211.0.0/22 }
         - ipBlock: { cidr: 35.191.0.0/16 }
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Y Envoy, la puerta del túnel (ORE 0060 C2): no llega desde los rangos de Google
+# sino desde sus pods, en `envoy-gateway-system`. Sin esto, el mismo 502 mudo.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-de-la-puerta-del-tunel
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: envoy }
       ports:
         - protocol: TCP
           port: 8080
