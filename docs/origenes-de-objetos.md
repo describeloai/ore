@@ -4,9 +4,10 @@
 [0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09); GCS, con su driver propio y probado
 en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad; Azure Blob y ADLS Gen2,
 igual (O3, 2026-10-09), sin probar contra Azure de verdad; SFTP, en el laboratorio (O4, 2026-10-09), sin
-probar contra un servidor de un cliente. SharePoint, por construir (O5).
+probar contra un servidor de un cliente; SharePoint y OneDrive, en el laboratorio contra un Graph de
+mentira (O5, 2026-10-10), sin probar contra un tenant.
 
-Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3`, `gcs`, `azure` o `sftp`): de él salen `Table` con `format`
+Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3`, `gcs`, `azure`, `sftp` o `sharepoint`): de él salen `Table` con `format`
 sobre sus Parquet, CSV y JSONL, y `ObjectTable` sobre lo demás, de donde salen las colecciones de
 media ([`media.md`](media.md)). La credencial no se escribe en el árbol: vive en el custodio y el
 árbol sólo nombra su variable (`connectionEnv`).
@@ -159,6 +160,49 @@ foránea, y `ore` niega una virtual con su porqué.
 
 `check` va paso a paso —conexión, huella, identidad, listar, leer— y de lo que falla dice qué hacer.
 Probado en el laboratorio con `pruebas-de-fuego/o4-sftp.sh` (OpenSSH, `atmoz/sftp`).
+
+## SharePoint y OneDrive
+
+```
+sharepoint://<tenant>.sharepoint.com/[sites/<sitio>/]<biblioteca>[/<carpeta>]?tenant=<id del tenant>&cliente=<id de la app>
+```
+
+`<sitio>` es `sites/<nombre>`, `teams/<nombre>`, o nada para el sitio raíz; un OneDrive es
+`<tenant>-my.sharepoint.com/personal/<usuario>/Documents`. La biblioteca va por su nombre visible
+(`Documentos`, `Shared Documents`; con `%20` si lleva espacios). Se lee por **Microsoft Graph**.
+
+La URL **no lleva secreto** (D-O5): la identidad es la de Azure —una app del tenant del cliente con
+una *federated identity credential* por cuenta de Google de la celda; la de Azure vale—, y el
+permiso, el estándar del sector:
+
+- **`Sites.Selected`**, el permiso de aplicación de Graph, con el consentimiento de un administrador.
+  Por sí solo no abre ningún sitio;
+- **la concesión `read` en cada sitio** que se quiera leer, que da un administrador de SharePoint:
+  `Grant-PnPEntraIDAppSitePermission -AppId <app> -DisplayName ORE -Site https://<tenant>.sharepoint.com/sites/<sitio> -Permissions Read`.
+
+La consola da los pasos con los IDs ya puestos (`GET /fuentes/credenciales/sharepoint`). No se
+admiten `Sites.Read.All` ni `Files.Read.All` (leen todos los sitios y los OneDrive de la empresa), un
+permiso delegado (la ingesta pararía cuando esa persona se vaya) ni el secreto o el certificado de
+una app.
+
+Cada fichero se fija por **su versión** (`<id>@<versión>`, la que SharePoint numera `1.0`, `2.0`…):
+una colección **virtual** sigue sirviendo lo fijado aunque haya versiones nuevas, hasta que la
+biblioteca recorte esa versión (su límite de versiones), y entonces es `media/cambiado`. Graph no deja
+pedir la versión actual por su número: se lee **vigilada** —su `cTag`, que sólo cambia con el
+contenido, se mira al abrir y al terminar— y, entera, se coteja con su `quickXorHash`, la huella que
+SharePoint da de cada fichero. Los ítems **no dan URL firmada**: la de descarga de SharePoint es al
+portador y no está fijada a la versión, así que se abren por `content` (los bytes pasan por la celda).
+Se saltan las carpetas, los cuadernos de OneNote y los accesos directos a otros sitios.
+
+Graph limita el ritmo por app y por tenant: un `429` se espera lo que diga (`Retry-After`). El token
+de Graph sólo va a `https://graph.microsoft.com`; la descarga va a `https://<tenant>.sharepoint.com`
+**sin** él. `check` va paso a paso —identidad, sitio, biblioteca, listar, leer, versiones— y un `403`
+dice las dos cosas que lo arreglan con el comando escrito; `explorar` da además las bibliotecas del
+sitio, cada una con su URL. Otro Graph sólo con `ORE_SHAREPOINT_LABORATORIO=1`.
+
+Probado en el laboratorio con `pruebas-de-fuego/o5-sharepoint.sh`, contra un Graph de mentira escrito
+de la documentación (no hay emulador): sin probar todavía contra un tenant de verdad. Fuera: las nubes
+soberanas (GCC High, 21Vianet), las listas de SharePoint y los permisos por carpeta.
 
 ## Por qué no un driver por proveedor
 

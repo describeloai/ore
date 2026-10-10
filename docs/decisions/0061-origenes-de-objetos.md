@@ -1,8 +1,8 @@
 # 0061 · Orígenes de objetos — más allá de S3
 
-**Estado:** propuesto (2026-10-09). **O0–O4 hechos** (2026-10-09; O2–O4 en el laboratorio, la prueba
-contra GCS, Azure y un SFTP de verdad es deuda temporal); O5 (SharePoint) en marcha: O5·0 investigado,
-D-O5 aceptada, O5·1–O5·3 hechos. D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4. Investigación:
+**Estado:** propuesto (2026-10-09). **O0–O5 hechos** (2026-10-09/10; O2–O5 en el laboratorio —SharePoint
+contra un Graph de mentira—; la prueba contra GCS, Azure, un SFTP y un tenant de SharePoint de verdad
+es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O5 en O5. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -454,7 +454,7 @@ El perfil, en [`origenes-de-objetos.md`](../origenes-de-objetos.md). **Deuda tem
 servidores de verdad: un OpenSSH de un cliente, uno de Windows (OpenSSH para Windows, Bitvise), uno
 viejo con `ssh-rsa` (`legado=1`), un chroot real, y la red (puerto 22 e IP de salida, con go).
 
-### O5 · SharePoint / OneDrive (en marcha)
+### O5 · hecho en el laboratorio (2026-10-10): SharePoint / OneDrive
 
 **O5·0, investigado** (investigación §8; D-O5 aceptada). No hay emulador de Graph ni, por ahora,
 tenant: **el laboratorio es un Graph de mentira** (`pruebas-de-fuego/graph-de-mentira.py`), escrito
@@ -560,6 +560,23 @@ sale en `versions`, cuánto vive la URL de descarga, los errores reales, el ritm
 en RU —hoy cada rango de una lectura vigilada son tres o cuatro peticiones: el item por su ruta, la
 descarga y el `cTag` al terminar; un catálogo de Parquet lee varios rangos por fichero—, y `delta`.
 Las esperas por `Retry-After` no miran el `timeoutMs` de la lectura.
+
+**O5·4, hecho**: `pruebas-de-fuego/o5-sharepoint.sh`, contra el Graph de mentira en páginas de 2 y
+con un `429` cada 7 peticiones, dentro del contenedor de Rust. **18/18**: `check` (los seis pasos; un
+sitio sin concesión dice cómo darla; una biblioteca que no está dice cuáles hay), la guarda del token
+fuera del laboratorio, `explorar` (carpetas, las bibliotecas del sitio, el cuaderno saltado) y el
+catálogo, versiones (`<id>@2.0` con su `quickxor:`), `bajar` cotejado y con la huella cambiada (no se
+copia), **una versión nueva entre `versiones` y `bajar` copia la fijada, por su id, nunca la nueva**,
+la fijada recortada (no se copia), el test de `ore-graph`, la virtual por `ore-medios`
+(`tests/laboratorio_sharepoint.rs`: una versión nueva no cambia lo fijado; recortada, `cambiado`),
+**`ore` de punta a punta** (`discover` de una foránea sobre la biblioteca escribe una colección
+**virtual**, el árbol valida, y `materialize` no la niega: sin lago en este laboratorio, se para al
+ir a escribir el manifiesto), y al final, **ninguna descarga recibió el token**. Dos mutaciones a
+propósito muerden: tratar siempre la fijada como la actual, 3 fallos (y aun así los bytes nuevos no
+se copian: los para el tamaño y la huella del manifiesto); mandar el token a la descarga, 12 fallos
+(las 27 descargas lo cuentan).
+
+El perfil, en [`origenes-de-objetos.md`](../origenes-de-objetos.md).
 
 ## Lo que no se hace aquí
 
