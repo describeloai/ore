@@ -443,6 +443,28 @@ hace falta.
   `sistema-spot → 0` a las 19:12:16.
 - **19:15:30, 0 nodos.** Sin GitHub, sin nadie: el clúster se ha dormido solo.
 
+### C1·4 · la consola despierta y no deja dormir con alguien delante (2026-10-10)
+
+En la consola (rubix-platform `5a20951`):
+- **`/auth/login`** pregunta primero si Keycloak contesta (su descubrimiento OIDC, 4 s; no
+  pregunta a Google). Si no —la malla duerme y Keycloak con ella—, manda a **`/auth/despertando`**,
+  que lanza el despertar y enseña cuánto lleva («pidiendo las máquinas», «arrancando los
+  servicios»), y en cuanto Keycloak contesta sigue al login, al sitio al que ibas.
+- **`/auth/despertar`** (GET el estado, POST despertar): lanza `horario.yml` con
+  `accion=despertar` por la API de GitHub —sin lanzar un segundo si ya hay uno en cola o en
+  marcha— con `RUBIX_DESPERTADOR_TOKEN`, un token de GitHub de grano fino con sólo
+  `actions: write` sobre `describeloai/ore`, en el entorno de Vercel. Cualquiera puede llamarlo
+  (desarrollo). Desde una terminal: `curl -X POST https://app.paladio.io/auth/despertar`.
+- **El latido**: en el workspace, cada 5 min y sólo si alguien mira (`alguienMira`), una
+  pregunta mínima a `ore-iam` con la sesión (su registro lo cuenta como persona). Si contesta
+  que la malla duerme, un aviso con «Despertar» que vuelve a la misma página.
+- **`ore wake` no**: el binario `ore` no sale a la red a propósito (sin TLS ni certificados;
+  12 de 14 crates no abren una conexión) y no habla con las celdas. El `curl` de arriba hace lo
+  mismo.
+Probado en el banco: `/auth/despertar` dice dormida (Keycloak no contesta) y que falta el
+token; la pantalla lo enseña; el workspace carga con el latido. Falta, con el token puesto en
+Vercel, un despertar de punta a punta desde la consola.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
