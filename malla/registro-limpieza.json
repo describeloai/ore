@@ -1,12 +1,22 @@
 [
   {
     "name": "guarda-lo-desplegado",
-    "action": {"type": "Keep"},
-    "condition": {"tagState": "tagged", "tagPrefixes": ["main", "en-uso"]}
+    "action": {
+      "type": "Keep"
+    },
+    "condition": {
+      "tagState": "tagged",
+      "tagPrefixes": [
+        "main",
+        "en-uso"
+      ]
+    }
   },
   {
     "name": "guarda-lo-fijado",
-    "action": {"type": "Keep"},
+    "action": {
+      "type": "Keep"
+    },
     "condition": {
       "tagState": "tagged",
       "tagPrefixes": [
@@ -17,18 +27,48 @@
     }
   },
   {
+    "name": "guarda-lo-fijado-por-digest",
+    "action": {
+      "type": "Keep"
+    },
+    "condition": {
+      "tagState": "any",
+      "versionNamePrefixes": [
+        "sha256:3506155edf20ccdf32d8fdbfb012d06dbb93cfbe3f15a0f40d714dacc012f9c9"
+      ]
+    }
+  },
+  {
     "name": "guarda-lo-de-fuera",
-    "action": {"type": "Keep"},
-    "condition": {"tagState": "tagged", "packageNamePrefixes": ["forgejo", "postgres", "neonvm-kernel"]}
+    "action": {
+      "type": "Keep"
+    },
+    "condition": {
+      "tagState": "tagged",
+      "packageNamePrefixes": [
+        "forgejo",
+        "postgres",
+        "neonvm-kernel"
+      ]
+    }
   },
   {
     "name": "guarda-las-ultimas",
-    "action": {"type": "Keep"},
-    "mostRecentVersions": {"keepCount": 3}
+    "action": {
+      "type": "Keep"
+    },
+    "mostRecentVersions": {
+      "keepCount": 3
+    }
   },
   {
     "name": "borra-lo-demas-a-los-7-dias",
-    "action": {"type": "Delete"},
-    "condition": {"tagState": "any", "olderThan": "7d"}
+    "action": {
+      "type": "Delete"
+    },
+    "condition": {
+      "tagState": "any",
+      "olderThan": "7d"
+    }
   }
 ]

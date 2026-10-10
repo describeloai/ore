@@ -105,8 +105,51 @@ def simular(reglas, versiones, hijos, cuenta_hijas):
     return queda, porque
 
 
+# Las etiquetas que el despliegue mueve JUNTAS (`ci.yml`, job `imagen`): la que nombra
+# un manifiesto y la que la regla protege. `:1` no se puede proteger por prefijo —es el
+# principio de uno de cada 16 commits—, así que la protege `en-uso`, que va con ella.
+VAN_JUNTAS = {"1": "en-uso"}
+
+
+def comprobar_reglas(reglas, raiz, repo="ore"):
+    """Sin tocar el registro: cada imagen de `repo` que cita un fichero de `raiz` está
+    protegida POR LA REGLA MISMA —por su etiqueta, su paquete o su digest—, no por dónde
+    esté `main` hoy. Lo que borró `idp@sha256:39bc…` el 2026-10-10 fue justo eso: estaba
+    protegida por `main`, el CI movió `main`, y la regla se la llevó."""
+    keeps = [r["condition"] for r in reglas if r["action"]["type"] == "Keep" and "condition" in r]
+    patron = re.compile(r"pkg\.dev/[a-z0-9-]+/" + re.escape(repo) + r"/([a-z0-9._-]+)([:@])([A-Za-z0-9._:-]+)")
+    mal, vistas = [], set()
+    for dirpath, _, ficheros in os.walk(raiz):
+        for f in ficheros:
+            try:
+                texto = open(os.path.join(dirpath, f), encoding="utf-8").read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for m in patron.finditer(texto):
+                paquete, sep, ref = m.groups()
+                if "$" in ref or (paquete, sep, ref) in vistas:
+                    continue
+                vistas.add((paquete, sep, ref))
+                tag = VAN_JUNTAS.get(ref, ref)
+                ok = any(
+                    (sep == "@" and any(ref.startswith(v) for v in c.get("versionNamePrefixes", [])))
+                    or (sep == ":" and any(tag.startswith(t) for t in c.get("tagPrefixes", []))
+                        and not c.get("packageNamePrefixes"))
+                    or (sep == ":" and any(paquete.startswith(p) for p in c.get("packageNamePrefixes", []))
+                        and not c.get("tagPrefixes"))
+                    for c in keeps)
+                if not ok:
+                    mal.append(f"{paquete}{sep}{ref} ({os.path.relpath(os.path.join(dirpath, f), raiz)})")
+    for x in mal:
+        print(f"✗ la regla no protege {x}")
+    print(f"reglas: {len(vistas)} imágenes citadas en {raiz}/, " + ("ALGUNA SIN PROTEGER" if mal else "todas protegidas por la regla misma"))
+    return 1 if mal else 0
+
+
 def main():
     global AHORA
+    if sys.argv[1:2] == ["--comprobar-reglas"]:
+        sys.exit(comprobar_reglas(json.load(open(sys.argv[2], encoding="utf-8")), sys.argv[3]))
     args = sys.argv[1:]
     dias, alias, manifiestos = 0, {}, None
     while len(args) > 2:

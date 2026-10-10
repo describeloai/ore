@@ -290,6 +290,12 @@ jobs:
           python3 ci/huella-de-la-imagen.py --comprobar
           python3 ci/prueba-huella-de-la-imagen.py
 
+      # ADR 0060 A2: cada imagen que la malla cita la protege la regla de limpieza del
+      # registro POR SÍ MISMA (etiqueta, paquete o digest), no por dónde esté `main`.
+      # El 2026-10-10 eso borró `idp@sha256:39bc…` y tumbó el login.
+      - name: y la limpieza del registro protege lo que la malla cita
+        run: python3 malla/simular-limpieza.py --comprobar-reglas malla/registro-limpieza.json malla
+
   # El lago, aparte del plano de control para que corra a la vez (ver arriba).
   plano-el-lago:
     runs-on: ubuntu-24.04

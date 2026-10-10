@@ -177,7 +177,18 @@ spec:
   #   `themes/rubix/email`, el tema que `emailTheme: 'rubix'` pide y no estaba.
   #   Copia de la base antes: `copias/idp/keycloak-20261002T073535Z.dump`.
   #   Vuelta atrás: la línea de antes, `…/ore/idp:26.0.7-1`.
-  image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/idp@sha256:39bc18b839a18d31a0256cb327c5df812e9db9f9498fbead828b25595ec8f03a
+  #
+  # ✏️ 2026-10-10 (0060 A2): `idp@sha256:39bc18b8…` YA NO EXISTE. La limpieza del
+  #   registro la protegía sólo por la etiqueta `main`; el primer push de B1 movió
+  #   `idp:main` a la imagen nueva y la del 30-sep, sin etiqueta protegida y con más
+  #   de 7 días, se borró (`idp:26.0.7-1`, la vuelta atrás de arriba, también). Ésta
+  #   es `idp:main` de b968829b, construida en el runner de las MISMAS entradas: la
+  #   etapa `idp` del Dockerfile y `identidad/tema` no cambian desde 5d1721c1
+  #   (2026-09-30), y la base es la misma `keycloak:26.0.7`; sólo los jars generados
+  #   difieren (no son reproducibles, ver arriba). Desde hoy la regla protege por
+  #   digest lo que la malla fija así (`malla/registro-limpieza.json`), y el CI lo
+  #   comprueba (`simular-limpieza.py --comprobar-reglas`).
+  image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/idp@sha256:3506155edf20ccdf32d8fdbfb012d06dbb93cfbe3f15a0f40d714dacc012f9c9
 
   # ⛔ Obligatorio con una imagen cocida: sin esto el operador ASUME que no lo
   # está y vuelve a construir al arrancar — 40 s por reinicio y un sistema de
