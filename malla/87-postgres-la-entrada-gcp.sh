@@ -48,8 +48,24 @@ if ! g iam service-accounts describe $GSA@$P.iam.gserviceaccount.com --project $
   g iam service-accounts create $GSA --project $P \
     --display-name "ORE Postgres · cert-manager, reto DNS-01 en pg.paladio.io"
 fi
-g dns managed-zones add-iam-policy-binding $ZONA_DNS --project $P \
-  --member serviceAccount:$GSA@$P.iam.gserviceaccount.com --role roles/dns.admin >/dev/null
+# Sobre la ZONA (no el proyecto). `managed-zones add-iam-policy-binding` sólo existe en gcloud beta:
+# con los dos verbos estables, leer la política, añadir el binding si falta y escribirla.
+POL=$(mktemp)
+g dns managed-zones get-iam-policy $ZONA_DNS --project $P --format=json > "$POL"
+python - "$POL" "serviceAccount:$GSA@$P.iam.gserviceaccount.com" <<'PY'
+import json, sys
+f, miembro = sys.argv[1], sys.argv[2]
+p = json.load(open(f))
+b = next((b for b in p.setdefault("bindings", []) if b["role"] == "roles/dns.admin"), None)
+if b is None:
+    p["bindings"].append({"role": "roles/dns.admin", "members": [miembro]})
+elif miembro not in b["members"]:
+    b["members"].append(miembro)
+json.dump(p, open(f, "w"))
+PY
+g dns managed-zones set-iam-policy $ZONA_DNS --policy-file="$POL" --project $P >/dev/null
+rm -f "$POL"
+echo "   dns.admin sobre la zona: $(g dns managed-zones get-iam-policy $ZONA_DNS --project $P --format=json | grep -c "$GSA@") (tiene que ser 1)"
 g iam service-accounts add-iam-policy-binding $GSA@$P.iam.gserviceaccount.com --project $P \
   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$KSA_NS/$KSA]" >/dev/null
 echo "   roles en el proyecto: $(g projects get-iam-policy $P --flatten='bindings[].members' \
