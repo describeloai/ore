@@ -1052,19 +1052,24 @@ jobs:
             --zone europe-west1-b --project project-8853a180-450d-47be-b83
           # -- ¿DUERME EL CLÚSTER? (ADR 0060 B1·3, 2026-10-10) ----------------
           #
-          # Fuera de horas los nodos están a 0 (G8) y el plano de control sigue
-          # contestando: las etiquetas y las anotaciones se escriben igual, pero
-          # ningún pod puede arrancar, y `rollout status` esperaría 300 s para
-          # fallar. Dormido, se anota y no se espera: los pods arrancan con lo
-          # nuevo al despertar, y la comprobación de que corren es de
-          # `despertar.sh`. Sin el canario de la primera oleada: la puerta de
-          # `ci/compilar-binarios.sh` ya arrancó cada servidor antes de publicar.
+          # Fuera de horas los nodos están a 0 (G8). El plano de control contesta,
+          # pero NO SE PUEDE ESCRIBIR UN Deployment: el webhook de Kueue
+          # (`mdeployment.kb.io`, `failurePolicy: Fail`) no tiene pods que lo
+          # atiendan (medido en la primera corrida, 38053087597). Dormido, el
+          # relevo no se hace: las etiquetas ya se movieron (paso anterior), y
+          # `malla/despertar.sh`, con el clúster en pie, vuelve a lanzar ESTE job
+          # (`gh run rerun --job`), que entonces releva y comprueba como siempre.
           LISTOS=$(kubectl get nodes -l cloud.google.com/gke-nodepool=sistema-spot \
             -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
             | grep -c '^True$' || true)
           DORMIDO=no; [ "${LISTOS:-0}" = 0 ] && DORMIDO=si
           echo "DORMIDO=$DORMIDO" >> "$GITHUB_ENV"
           echo "  sistema-spot: ${LISTOS:-0} nodos listos · dormido: $DORMIDO"
+          if [ "$DORMIDO" = si ]; then
+            echo "⏸ el clúster duerme: las imágenes de ${GITHUB_SHA::12} ya son \`:main\`/\`:1\`; el relevo lo hace \`malla/despertar.sh\` volviendo a lanzar este job" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # -- LA LISTA SE PREGUNTA, NO SE ESCRIBE ---------------------------
           #
           # 2026-09-10 · esto decia `identidad/ore-iam t-demo/ore-serve
@@ -1174,10 +1179,6 @@ jobs:
               "$NOMBRE" "$NS" "$GITHUB_SHA" "$(clave_de "$D")" \
               | kubectl -n "$NS" apply --server-side --field-manager=ore-ci \
                   --force-conflicts -f -
-            if [ "$DORMIDO" = si ]; then
-              echo "  $NS/$NOMBRE: anotado; arranca con esto al despertar" > "/tmp/relevo-$NS-$NOMBRE.txt"
-              continue
-            fi
             kubectl -n "$NS" rollout status "deployment/$NOMBRE" --timeout=300s > "/tmp/relevo-$NS-$NOMBRE.txt" 2>&1 &
             PIDS="$PIDS $!"
           done
@@ -1195,7 +1196,8 @@ jobs:
       #   nuestros: si el `patch` no hubiera cambiado nada —porque la anotación
       #   ya estuviera— no habría relevo y esto pasaría igual.
       - name: y comprobar que corre ESTE commit
-        if: steps.punta.outputs.sigue == 'si'
+        # Dormido no se releva nada (paso anterior): lo comprueba la vuelta de este job.
+        if: steps.punta.outputs.sigue == 'si' && env.DORMIDO != 'si'
         run: |
           for D in $DESTINOS; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
@@ -1213,9 +1215,3 @@ jobs:
             [ "$VISTO" = "$(clave_de "$D")" ] \
               || { echo "✗ ${D##*/} corre los binarios «$VISTO» y esperabamos «$(clave_de "$D")»"; exit 1; }
           done
-          # Dormido, lo de arriba comprueba lo DECLARADO (las anotaciones), no lo que
-          # corre: no corre nada. Que se sepa al leer el resultado.
-          if [ "$DORMIDO" = si ]; then
-            echo "⏸ el clúster duerme: ${GITHUB_SHA::12} queda declarado; corre al despertar (\`malla/despertar.sh\` lo comprueba)" \
-              | tee -a "$GITHUB_STEP_SUMMARY"
-          fi

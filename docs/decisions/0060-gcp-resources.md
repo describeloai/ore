@@ -236,12 +236,16 @@ no cambia Rust y ~8 si cambia. Siguiente: B1·3, el relevo en el CI de `main`.
    las salidas `clave`/`clave_motor`; fuera `gcloud builds submit`, la espera a Cloud Build y
    `REGION_CB`. `construir.yml` queda sólo a mano. Comprobado: YAML, `bash -n` de los once guiones
    de `construir` e `imagen`, `ci/solo-papel.py`.
-2. **Desplegar con el clúster dormido** — hecho en local: si `sistema-spot` no tiene nodos
-   `Ready`, `imagen` mueve las etiquetas y escribe las anotaciones (el plano de control contesta
-   con los nodos a 0), no espera `rollout status`, y el resumen dice que el commit queda declarado
-   y corre al despertar; la comprobación de lo que corre es de `despertar.sh` (C1). Probado contra
-   el clúster, sólo leyendo: 0 nodos listos ⇒ dormido, y la lista de destinos sale entera (14
-   Deployments, todos en `ace23bea1d9c`).
+2. **Desplegar con el clúster dormido**: si `sistema-spot` no tiene nodos `Ready`, `imagen` mueve
+   las etiquetas y **no toca los Deployments**: con los nodos a 0 el plano de control contesta,
+   pero escribir un Deployment pasa por el webhook de Kueue (`mdeployment.kb.io`,
+   `failurePolicy: Fail`), que no tiene pods (medido en la primera corrida, 38053087597: la
+   primera versión anotaba y falló así). El relevo lo hace `malla/despertar.sh` (C1) volviendo a
+   lanzar el job `imagen` de la última corrida (`gh run rerun --job`), que con el clúster en pie
+   releva y comprueba como siempre. ⚠️ Mientras tanto `:main` ya es lo nuevo y las anotaciones
+   dicen lo viejo: un pod que arrancara antes de ese relevo (`imagePullPolicy: Always`) correría
+   lo nuevo con la anotación vieja; por eso el despertar relanza el job antes de dar nada por
+   bueno.
 3. **El primer push a `main`**: antes, el `87-postgres-la-entrada.yaml` (rojo en
    `gen-inquilino.py --comprobar` desde el 09-oct) y la lista de lo que sube; hecho cuando el CI
    sale verde, las 14 tienen `<sha12>` y `gcloud builds list` no tiene nada nuevo.
