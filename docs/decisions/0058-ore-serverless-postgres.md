@@ -1608,3 +1608,10 @@ Sin el ensayo largo en el laboratorio: lo que sí es seguro que se rompería con
 La migración **0002** de Prisma añade `movimiento(transferencia)` y `movimiento(aviso)`. Va sin `CONCURRENTLY`, porque Prisma manda el fichero en una transacción implícita; en una tabla de millones de filas habría que hacerla aparte. Se aplicó sola al arrancar `libro-api` con la base viva.
 
 Medido (p71 en verde con las dos migraciones; después, a mano, con carga y `HORIZONTE` 5 s): cuatro vueltas incrementales seguidas, cada una con lo nuevo (25–37 transferencias, ~40 ms), el id de control avanzando y las sumas por cuenta casando con los saldos en todas. Con una transferencia reciente borrada a mano, la incremental ve exactamente esa, con el dinero cuadrando, y también la siguiente vuelta y la completa.
+
+**2 · El informe, en streaming.** Antes guardaba en memoria todas las líneas y todas las latencias. Ahora lee línea a línea y cuenta en un **histograma de memoria fija**: exacto al milisegundo por debajo de 1 s, a 10 ms hasta 10 s y a 100 ms por encima, con el máximo exacto. El error de un percentil es como mucho el ancho de su casilla (1 %). De las listas de errores guarda los 100 primeros y el total siempre. Medido con un millón de operaciones sintéticas (138 MB de JSONL):
+
+| | tiempo | memoria pico | commit p50 · p95 · p99 · máx |
+|---|---|---|---|
+| antes | 40 s | 793 MiB | 27 · 73 · 115 · 14.994 ms |
+| **en streaming** | 35 s | **0,2 MiB** | **idénticos** |

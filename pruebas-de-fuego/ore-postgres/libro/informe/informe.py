@@ -28,6 +28,7 @@ OBJETIVOS = {"disponibilidad": 99.9, "commit_p99_ms": 1000, "despertar_p95_ms": 
 
 
 def lineas(fichero, desde, hasta=None):
+    """Una a una, sin cargar el fichero: lo que pesa es lo que se guarda, no lo que se lee."""
     try:
         with open(os.path.join(DATOS, fichero), encoding="utf-8") as f:
             for l in f:
@@ -39,62 +40,106 @@ def lineas(fichero, desde, hasta=None):
         return
 
 
-def percentil(v, q):
-    if not v:
-        return None
-    v = sorted(v)
-    return v[min(len(v) - 1, max(0, round(q * (len(v) - 1))))]
+class Histograma:
+    """Latencias en memoria fija (P7·4): exacto al milisegundo por debajo de 1 s, a 10 ms hasta
+    10 s y a 100 ms por encima; el máximo, exacto. Unos pocos miles de casillas sean cuantas sean
+    las muestras: el error de un percentil es, como mucho, el ancho de su casilla (1 %)."""
+
+    def __init__(self):
+        self.casillas, self.n, self.max = Counter(), 0, None
+
+    def mete(self, ms):
+        b = ms if ms < 1000 else (ms // 10 * 10 if ms < 10000 else ms // 100 * 100)
+        self.casillas[b] += 1
+        self.n += 1
+        self.max = ms if self.max is None else max(self.max, ms)
+
+    def percentil(self, q):
+        if not self.n:
+            return None
+        objetivo, visto = min(self.n - 1, max(0, round(q * (self.n - 1)))), 0
+        for b in sorted(self.casillas):
+            visto += self.casillas[b]
+            if visto > objetivo:
+                return b
+        return self.max
+
+
+TOPE = 100  # de cada lista de errores se guardan los primeros; el total, siempre
 
 
 def informe(desde=None, hasta=None):
-    ops = list(lineas("operaciones.jsonl", desde, hasta))
-    conc = list(lineas("conciliacion.jsonl", desde, hasta))
-    infs = list(lineas("informes.jsonl", desde, hasta))
-    perdidos, absorbidos = [], Counter()
+    perdidos, n_perdidos, absorbidos = [], 0, Counter()
+
+    def pierde(texto):
+        nonlocal n_perdidos
+        n_perdidos += 1
+        if len(perdidos) < TOPE:
+            perdidos.append(texto)
+
     por_pieza = defaultdict(lambda: {"total": 0, "bien": 0, "max_ms": 0})
-    commits, despertares = [], defaultdict(list)
-    for o in ops:
+    commits, despertares, ciclos = Histograma(), defaultdict(list), set()
+    primera_t = ultima_t = None
+    for o in lineas("operaciones.jsonl", desde, hasta):
+        primera_t = primera_t or o["t"]
+        ultima_t = o["t"]
+        ciclos.add(o.get("ciclo", 0))
         p = por_pieza[o["pieza"]]
         p["total"] += 1
         p["max_ms"] = max(p["max_ms"], o["ms"])
         if o["resultado"] in ("hecha", "sin-fondos"):
             p["bien"] += 1
         elif o["resultado"] != "mala":
-            perdidos.append(f"{o['t']} {o['pieza']} {o['op']}: {o['resultado']} {o.get('error') or ''}".strip())
+            pierde(f"{o['t']} {o['pieza']} {o['op']}: {o['resultado']} {o.get('error') or ''}".strip())
         for e in o.get("errores", []):
-            absorbidos[f"{o['pieza']}: {e[:90]}"] += 1
+            clave = f"{o['pieza']}: {e[:90]}"
+            if clave in absorbidos or len(absorbidos) < 1000:
+                absorbidos[clave] += 1
+            else:
+                absorbidos["(otros)"] += 1
         if o["op"] == "transferencia" and o["resultado"] == "hecha":
-            commits.append(o["ms"])
-        if o.get("primera"):
+            commits.mete(o["ms"])
+        if o.get("primera"):  # uno por pieza y por noche: pocos, se guardan
             despertares[o["pieza"]].append(o["ms"])
-    for c in conc:
-        if c.get("ok") is False:
+    conc = {"total": 0, "cuadran": 0}
+    for c in lineas("conciliacion.jsonl", desde, hasta):
+        conc["total"] += 1
+        if c.get("ok") is True:
+            conc["cuadran"] += 1
+        elif c.get("ok") is False:
             rotos = {k: c[k] for k in ("suma", "descuadres", "cojas", "faltan_transferencias", "faltan_avisos", "avisos_mal") if c.get(k)}
-            perdidos.append(f"{c['t']} libro-conciliador: invariante roto {rotos}")
-        elif c.get("ok") is None:
-            perdidos.append(f"{c['t']} libro-conciliador: no pudo mirar: {c.get('error')}")
-    for i in infs:
-        if i.get("ok") is not True:
-            perdidos.append(f"{i['t']} libro-informes: {i.get('error')}")
+            pierde(f"{c['t']} libro-conciliador: invariante roto {rotos}")
+        else:
+            pierde(f"{c['t']} libro-conciliador: no pudo mirar: {c.get('error')}")
+    cierres = {"total": 0, "bien": 0, "exportadas_ultima": None}
+    for i in lineas("informes.jsonl", desde, hasta):
+        cierres["total"] += 1
+        if i.get("ok") is True:
+            cierres["bien"] += 1
+            cierres["exportadas_ultima"] = i.get("exportadas")
+        else:
+            pierde(f"{i['t']} libro-informes: {i.get('error')}")
     total = sum(p["total"] for p in por_pieza.values())
     bien = sum(p["bien"] for p in por_pieza.values())
-    todos_desp = [ms for v in despertares.values() for ms in v]
+    desp = Histograma()
+    for v in despertares.values():
+        for ms in v:
+            desp.mete(ms)
     r = {
-        "desde": desde or (ops[0]["t"] if ops else None),
-        "hasta": ops[-1]["t"] if ops else None,
-        "dias": len({o.get("ciclo", 0) for o in ops}),
+        "desde": desde or primera_t,
+        "hasta": ultima_t,
+        "dias": len(ciclos),
         "operaciones": total,
         "disponibilidad": round(100.0 * bien / total, 3) if total else None,
         "por_pieza": {k: {**v, "disponibilidad": round(100.0 * v["bien"] / v["total"], 3)} for k, v in sorted(por_pieza.items())},
-        "commit_ms": {"n": len(commits), "p50": percentil(commits, 0.5), "p95": percentil(commits, 0.95),
-                      "p99": percentil(commits, 0.99), "max": max(commits) if commits else None},
-        "despertar_ms": {"n": len(todos_desp), "p50": percentil(todos_desp, 0.5), "p95": percentil(todos_desp, 0.95),
-                         "max": max(todos_desp) if todos_desp else None,
+        "commit_ms": {"n": commits.n, "p50": commits.percentil(0.5), "p95": commits.percentil(0.95),
+                      "p99": commits.percentil(0.99), "max": commits.max},
+        "despertar_ms": {"n": desp.n, "p50": desp.percentil(0.5), "p95": desp.percentil(0.95), "max": desp.max,
                          "por_pieza": {k: sorted(v) for k, v in sorted(despertares.items())}},
-        "conciliaciones": {"total": len(conc), "cuadran": sum(1 for c in conc if c.get("ok") is True)},
-        "cierres": {"total": len(infs), "bien": sum(1 for i in infs if i.get("ok") is True),
-                    "exportadas_ultima": next((i.get("exportadas") for i in reversed(infs) if i.get("ok")), None)},
+        "conciliaciones": conc,
+        "cierres": cierres,
         "atribuibles_perdidos": perdidos,
+        "perdidos_total": n_perdidos,
         "atribuibles_absorbidos": dict(absorbidos.most_common(10)),
         "absorbidos_total": sum(absorbidos.values()),
     }
@@ -125,7 +170,7 @@ def en_texto(r):
         out.append(f"    {k:<16} {v}")
     out.append(f"  invariantes      {r['conciliaciones']['cuadran']}/{r['conciliaciones']['total']} conciliaciones cuadran")
     out.append(f"  cierres          {r['cierres']['bien']}/{r['cierres']['total']} (el último exportó {r['cierres']['exportadas_ultima']})")
-    out.append(f"  atribuibles      {len(r['atribuibles_perdidos'])} perdidos · {r['absorbidos_total']} absorbidos por un reintento")
+    out.append(f"  atribuibles      {r['perdidos_total']} perdidos · {r['absorbidos_total']} absorbidos por un reintento")
     for e in r["atribuibles_perdidos"][:10]:
         out.append(f"    ✗ {e[:200]}")
     for e, n in r["atribuibles_absorbidos"].items():
@@ -141,4 +186,4 @@ if __name__ == "__main__":
     with open(os.path.join(DATOS, "informe.json"), "w", encoding="utf-8") as f:
         json.dump(r, f, ensure_ascii=False, indent=1)
     print(json.dumps(r, ensure_ascii=False) if "--json" in a else en_texto(r))
-    sys.exit(1 if r["atribuibles_perdidos"] else 0)
+    sys.exit(1 if r["perdidos_total"] else 0)
