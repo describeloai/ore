@@ -3,17 +3,20 @@ name: construir
 # ADR 0060 B1 · construir las imágenes en el runner de GitHub (gratis: el repositorio es
 # público) en vez de en Cloud Build.
 #
-# B1·0 (2026-10-10): MEDIR, sin tocar Google. Sólo corre en ramas `b1/*` y a mano. No se
-# autentica en GCP, no sube nada y no baja nada de Artifact Registry (bajar del registro a
-# internet se cobra; subir no). Responde a una pregunta: ¿caben la compilación de Rust y
-# las catorce imágenes en un runner de 4 núcleos, y cuánto tardan?
+# B1·0 (2026-10-10) midió que cabe: 18 min en frío, 7,7 con la caché de las dependencias.
 #
-#   · los binarios, como en cloudbuild.yaml: las dependencias por su receta (cargo-chef),
-#     aquí en la caché de GitHub y no en `ore-deps:h-…`; nuestro código, siempre entero;
-#   · las catorce imágenes, en local, con `--build-arg BINARIOS=` la imagen local;
-#   · el tiempo de cada etapa, el pico de disco y el tamaño de cada imagen, al resumen.
+# B1·2 (2026-10-10): PUBLICAR, una imagen por huella (B1·1, `ci/huella-de-la-imagen.py`).
+#   Para cada una de las catorce:
+#     · si el registro ya tiene `<imagen>:h-<huella>`, se le añade la etiqueta del commit:
+#       mover un puntero, sin bajar ni subir una capa;
+#     · si no, se construye aquí y se sube con las dos etiquetas.
+#   Los binarios, por su huella, en la caché de GitHub; sólo se compilan si hace falta alguno y
+#   no estaban. ⛔ Nada se BAJA de Artifact Registry: bajar del registro a internet se cobra,
+#   subir no. Lo que se le pregunta (si una etiqueta existe) es metadato.
 #
-# Dos corridas: la primera en frío (sin la caché de las dependencias) y la segunda con ella.
+#   Aún sólo en ramas `b1/*` y a mano, y con la etiqueta `prueba-b1-<commit>` en vez de la del
+#   commit: ningún manifiesto la nombra y la limpieza del registro (A2) la quita a los 7 días.
+#   El relevo del CI de `main` es B1·3.
 
 on:
   push:
@@ -26,115 +29,153 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+  DOCKER_BUILDKIT: '1'
 
 jobs:
-  medir:
+  construir:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    env:
-      DOCKER_BUILDKIT: '1'
+    timeout-minutes: 120
     steps:
-      - name: el disco, antes y despues de liberar
+      - name: el disco
         run: |
-          df -h / | tail -1 | awk '{print "  antes: " $4 " libres de " $2}'
-          # Lo que el runner trae y aquí no se usa: .NET, Android, GHC, CodeQL y las
-          # imágenes de Docker precargadas.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           docker image prune -af >/dev/null
-          df -h / | tail -1 | awk '{print "  despues: " $4 " libres de " $2}'
-          # El pico de disco, cada 5 s, para el resumen.
-          ( while :; do df --output=used -B1 / | tail -1 >> /tmp/disco.txt; sleep 5; done ) &
+          df -h / | tail -1 | awk '{print "  libres: " $4 " de " $2}'
           echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+          echo "ETIQUETA=prueba-b1-${GITHUB_SHA::12}" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v5
         with:
           submodules: true
 
-      - name: las huellas
-        id: huella
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: project-8853a180-450d-47be-b83
+          workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
+          service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: las huellas, y lo que el registro ya tiene
+        id: plan
         run: |
-          t=$(date +%s)
           H=$(sh ci/huella-de-los-binarios.sh)
+          echo "binarios=$H" >> "$GITHUB_OUTPUT"
+          python3 ci/huella-de-la-imagen.py --binarios "$H" --todas > /tmp/huellas.txt
+          # Que la etiqueta exista es metadato del registro: no baja nada.
+          : > /tmp/plan.txt
+          while read -r ETAPA IMAGEN HUELLA; do
+            if gcloud artifacts docker images describe "$REGISTRO/$IMAGEN:h-$HUELLA" --format='value(image_summary.digest)' >/dev/null 2>&1; then
+              echo "$ETAPA $IMAGEN $HUELLA reutilizar" >> /tmp/plan.txt
+            else
+              echo "$ETAPA $IMAGEN $HUELLA construir" >> /tmp/plan.txt
+            fi
+          done < /tmp/huellas.txt
+          cat /tmp/plan.txt | sed 's/^/  /'
+          # ¿Hace falta algún binario? Sólo si se construye una imagen que los copia.
+          NECESITA=no
+          for E in $(awk '$4=="construir" {print $1}' /tmp/plan.txt); do
+            python3 ci/huella-de-la-imagen.py --binarios "$H" --explicar "$E" | grep -q "^  binarios h-" && NECESITA=si
+          done
+          echo "binarios_hacen_falta=$NECESITA" >> "$GITHUB_OUTPUT"
+          echo "  binarios h-$H: hacen falta: $NECESITA"
+
+      - name: los binarios, de la cache de GitHub
+        id: cache-bin
+        if: steps.plan.outputs.binarios_hacen_falta == 'si'
+        uses: actions/cache@v4
+        with:
+          path: .binarios
+          key: ore-binarios-${{ steps.plan.outputs.binarios }}
+
+      - name: las dependencias (si los binarios no estaban)
+        id: deps
+        if: steps.plan.outputs.binarios_hacen_falta == 'si' && steps.cache-bin.outputs.cache-hit != 'true'
+        run: |
           docker build -q --target receta -t receta . >/dev/null
           D=$({ docker run --rm receta cat /receta.json
                 awk '/^FROM rust:.* AS herramientas$/ {p=1} /^FROM deps AS build$/ {p=0} p' Dockerfile
                 cat ci/compilar-binarios.sh rust-toolchain.toml; } | sha256sum | cut -c1-16)
-          echo "binarios=$H" >> "$GITHUB_OUTPUT"
-          echo "deps=$D" >> "$GITHUB_OUTPUT"
-          echo "huellas|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
-          echo "  binarios h-$H · deps h-$D"
+          echo "huella=$D" >> "$GITHUB_OUTPUT"
 
       - name: las dependencias, de la cache de GitHub
         id: cache-deps
+        if: steps.deps.outputs.huella
         uses: actions/cache@v4
         with:
           path: /tmp/deps.tar.zst
-          key: ore-deps-${{ steps.huella.outputs.deps }}
+          key: ore-deps-${{ steps.deps.outputs.huella }}
 
-      - name: las dependencias (si no estaban, se compilan)
+      - name: los binarios (si no estaban, se compilan)
+        if: steps.plan.outputs.binarios_hacen_falta == 'si'
         run: |
           t=$(date +%s)
-          if [ -f /tmp/deps.tar.zst ]; then
-            zstd -dc /tmp/deps.tar.zst | docker load -q
-            echo "deps (de la cache)|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
+          if [ -d .binarios ] && [ -n "$(ls -A .binarios)" ]; then
+            echo "binarios (de la cache)|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
           else
-            docker build -q --target deps -t ore-deps:local . >/dev/null
-            echo "deps (compiladas)|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
-            t=$(date +%s)
-            docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
-            echo "deps (guardar en la cache)|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
-          fi
-          ls -l /tmp/deps.tar.zst | awk '{printf "  deps en la cache: %.2f GB\n", $5/1e9}'
-          docker image inspect ore-deps:local --format '{{.Size}}' | awk '{printf "  deps, imagen: %.2f GB\n", $1/1e9}'
-
-      - name: los binarios (nuestro codigo, siempre entero)
-        run: |
-          t=$(date +%s)
-          docker run --rm -v "$PWD:/src" -w /src -e SALIDA=/src/.binarios ore-deps:local sh ci/compilar-binarios.sh
-          sudo chown -R "$(id -u):$(id -g)" .binarios
-          printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t ore-binarios:local -f - .binarios >/dev/null
-          echo "binarios|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
-          du -sh .binarios | awk '{print "  binarios: " $1}'
-
-      - name: las catorce imagenes, en local
-        run: |
-          # Las que copian binarios toman la imagen local; las demás no la nombran.
-          construir() {
-            t=$(date +%s)
-            if docker build -q --target "$1" --build-arg BINARIOS=ore-binarios:local -t "img-$1" . >/tmp/log-$1.txt 2>&1; then
-              echo "imagen $1|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
+            if [ -f /tmp/deps.tar.zst ]; then
+              zstd -dc /tmp/deps.tar.zst | docker load -q
             else
-              echo "imagen $1 FALLO|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
-              tail -30 /tmp/log-$1.txt
-              return 1
+              docker build -q --target deps -t ore-deps:local . >/dev/null
+              docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
+            fi
+            echo "dependencias|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
+            t=$(date +%s)
+            docker run --rm -v "$PWD:/src" -w /src -e SALIDA=/src/.binarios ore-deps:local sh ci/compilar-binarios.sh
+            sudo chown -R "$(id -u):$(id -g)" .binarios
+            echo "binarios (compilados)|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
+          fi
+          printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t ore-binarios:local -f - .binarios >/dev/null
+
+      - name: las imagenes, cada una por su huella
+        run: |
+          gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet >/dev/null 2>&1
+          publicar() {
+            local ETAPA=$1 IMAGEN=$2 HUELLA=$3 QUE=$4 t
+            t=$(date +%s)
+            if [ "$QUE" = reutilizar ]; then
+              # ⚠️ Por el API del REGISTRO (`container images add-tag`), como el job `imagen`
+              #   de ci.yml: `artifacts docker tags add` borra y crea, y `ore-ci` no tiene
+              #   `tags.delete`.
+              gcloud container images add-tag "$REGISTRO/$IMAGEN:h-$HUELLA" "$REGISTRO/$IMAGEN:$ETIQUETA" --quiet >/dev/null
+              echo "$IMAGEN|reutilizada|$(( $(date +%s) - t ))" >> /tmp/imagenes.txt
+            else
+              # Sólo si hay binarios locales se nombran; si no, ninguna de las que se
+              # construyen los copia (lo dice el plan).
+              local ARGS=""
+              docker image inspect ore-binarios:local >/dev/null 2>&1 && ARGS="--build-arg BINARIOS=ore-binarios:local"
+              docker build -q --target "$ETAPA" $ARGS \
+                -t "$REGISTRO/$IMAGEN:h-$HUELLA" -t "$REGISTRO/$IMAGEN:$ETIQUETA" . >/tmp/log-$ETAPA.txt 2>&1 \
+                || { tail -30 /tmp/log-$ETAPA.txt; return 1; }
+              docker push -q "$REGISTRO/$IMAGEN:h-$HUELLA" >/dev/null
+              docker push -q "$REGISTRO/$IMAGEN:$ETIQUETA" >/dev/null
+              echo "$IMAGEN|construida y subida|$(( $(date +%s) - t ))" >> /tmp/imagenes.txt
             fi
           }
-          export -f construir
+          export -f publicar
           t=$(date +%s)
-          # Tres a la vez: cuatro núcleos, y las de los puestos instalan paquetes por red.
-          printf '%s\n' ore informador capa-jvm capa-node capa-python idp drivers serve iam cofre \
-                        postgres-plano puesto-python puesto-node puesto-jvm \
-            | xargs -P 3 -I{} bash -c 'construir {}'
-          echo "las catorce (en total, 3 a la vez)|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
+          xargs -P 3 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
+          echo "las catorce|$(( $(date +%s) - t ))" >> /tmp/tiempos.txt
 
       - name: el resumen
         if: always()
         run: |
           {
-            echo "## B1·0 · construir en el runner de GitHub"
+            echo "## B1·2 · construir y publicar por huella"
             echo
-            echo "binarios \`h-${{ steps.huella.outputs.binarios }}\` · deps \`h-${{ steps.huella.outputs.deps }}\` · cache de deps: ${{ steps.cache-deps.outputs.cache-hit == 'true' && 'si' || 'no' }}"
+            echo "binarios \`h-${{ steps.plan.outputs.binarios }}\` · hacen falta: ${{ steps.plan.outputs.binarios_hacen_falta }} · etiqueta \`$ETIQUETA\`"
+            echo
+            echo "| imagen | qué | segundos |"
+            echo "|---|---|---|"
+            sort /tmp/imagenes.txt 2>/dev/null | awk -F'|' '{print "| " $1 " | " $2 " | " $3 " |"}'
             echo
             echo "| etapa | segundos |"
             echo "|---|---|"
             awk -F'|' '{print "| " $1 " | " $2 " |"}' /tmp/tiempos.txt 2>/dev/null
-            echo "| **total del job** | **$(( $(date +%s) - T0 ))** |"
-            echo
-            echo "| imagen | tamaño |"
-            echo "|---|---|"
-            docker images --format '{{.Repository}} {{.Size}}' | grep '^img-' | sed 's/^img-//' | awk '{print "| " $1 " | " $2 " |"}'
-            echo
-            sort -n /tmp/disco.txt | tail -1 | awk '{printf "pico de disco usado: %.1f GB\n", $1/1e9}'
-            df -h / | tail -1 | awk '{print "al final: " $4 " libres de " $2}'
+            echo "| **el job** | **$(( $(date +%s) - T0 ))** |"
           } | tee -a "$GITHUB_STEP_SUMMARY"
