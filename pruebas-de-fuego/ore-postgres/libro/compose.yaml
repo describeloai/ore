@@ -1,0 +1,79 @@
+# 0058 P7 · Libro, una aplicación real encima de ORE Serverless Postgres (ADR 0058, «P7 · Una
+# aplicación real, en el laboratorio: el plan»).
+#
+# Se engancha a la red del laboratorio (lab/compose.yaml, p5lab_lab) y entra por el proxy como lo
+# haría una aplicación de fuera: con el nombre `ep-….europe-west1.pg.paladio.io` (en el laboratorio
+# lo resuelve extra_hosts; en producción, el DNS comodín) y el certificado de la entrada.
+#
+#   libro-api          Node + Prisma, por el pool (-pooler); dueña del esquema (migrate deploy)
+#   libro-webhooks     Node + @neondatabase/serverless, por HTTP (api.…/sql)
+#   libro-conciliador  Python + psycopg, directo (TCP); los invariantes, cada INTERVALO_CONCILIADOR s
+#   libro-informes     Java + JDBC + HikariCP, directo (TCP); el cierre, cada INTERVALO_INFORMES s
+#   usuarios           los clientes de la API (altas, transferencias, consultas)
+#   banco              manda avisos de pago a libro-webhooks, con reintentos y duplicados
+#
+# Las piezas y los clientes dejan su rastro en el volumen libro-datos (/datos, una línea JSON por
+# hecho). Las variables (EP_HOST, EP_POOL, BASE, ROL, CLAVE, PUERTO_PG) las escribe `lab/p71.sh` en
+# .env, que no entra en git.
+name: libro
+networks:
+  default: { name: p5lab_lab, external: true }
+volumes:
+  datos: { name: libro-datos }
+x-entrada: &entrada
+  extra_hosts:
+    - "${EP_HOST}:172.29.51.20"
+    - "${EP_POOL}:172.29.51.20"
+    - "api.europe-west1.pg.paladio.io:172.29.51.20"
+x-tls: &tls ../lab/.secretos/tls/tls.crt:/llaves/tls.crt:ro
+services:
+  libro-api:
+    build: ./api
+    <<: *entrada
+    # Sana = migrada: el servidor solo escucha después de `prisma migrate deploy`. /salud no toca la base.
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/salud').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 2s
+      retries: 90
+    environment:
+      DATABASE_URL: "postgresql://${ROL}:${CLAVE}@${EP_POOL}:${PUERTO_PG}/${BASE}?sslmode=require&sslcert=/llaves/tls.crt&pgbouncer=true&connect_timeout=60"
+      DIRECT_URL: "postgresql://${ROL}:${CLAVE}@${EP_HOST}:${PUERTO_PG}/${BASE}?sslmode=require&sslcert=/llaves/tls.crt&connect_timeout=60"
+    volumes: [*tls]
+  libro-webhooks:
+    build: ./webhooks
+    <<: *entrada
+    depends_on: { libro-api: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: "postgresql://${ROL}:${CLAVE}@${EP_HOST}/${BASE}"
+      NODE_EXTRA_CA_CERTS: /llaves/tls.crt
+    volumes: [*tls]
+  libro-conciliador:
+    build: ./conciliador
+    <<: *entrada
+    depends_on: { libro-api: { condition: service_healthy } }
+    environment:
+      CONEXION: "host=${EP_HOST} port=${PUERTO_PG} dbname=${BASE} user=${ROL} password=${CLAVE} sslmode=verify-full sslrootcert=/llaves/tls.crt"
+      INTERVALO: "${INTERVALO_CONCILIADOR:-120}"
+    volumes: [*tls, "datos:/datos"]
+  libro-informes:
+    build: ./informes
+    <<: *entrada
+    depends_on: { libro-api: { condition: service_healthy } }
+    environment:
+      JDBC_URL: "jdbc:postgresql://${EP_HOST}:${PUERTO_PG}/${BASE}?sslmode=verify-full&sslrootcert=/llaves/tls.crt"
+      PGUSER: "${ROL}"
+      PGPASSWORD: "${CLAVE}"
+      INTERVALO: "${INTERVALO_INFORMES:-300}"
+    volumes: [*tls, "datos:/datos"]
+  usuarios:
+    image: python:3.12-slim
+    command: [python, -u, /libro/usuarios/usuarios.py]
+    environment: { API: "http://libro-api:8080", OPS: "${OPS:-4}", HILOS: "${HILOS:-4}" }
+    volumes: ["./comun.py:/libro/comun.py:ro", "./usuarios:/libro/usuarios:ro", "datos:/datos"]
+    depends_on: [libro-api]
+  banco:
+    image: python:3.12-slim
+    command: [python, -u, /libro/banco/banco.py]
+    environment: { WEBHOOKS: "http://libro-webhooks:8081", INTERVALO: "${INTERVALO_BANCO:-2}" }
+    volumes: ["./comun.py:/libro/comun.py:ro", "./banco:/libro/banco:ro", "datos:/datos"]
+    depends_on: [libro-webhooks]

@@ -1,0 +1,84 @@
+// Libro (ADR 0058, P7): el esquema. libro-api es su dueña: `prisma migrate deploy` al arrancar,
+// por DIRECT_URL (directo al cómputo); el día a día, por DATABASE_URL (el pool, `-pooler`).
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Cuenta {
+  id      String   @id
+  titular String
+  saldo   BigInt   @default(0)
+  creada  DateTime @default(now()) @db.Timestamptz(6)
+
+  movimientos Movimiento[]
+  salientes   Transferencia[] @relation("origen")
+  entrantes   Transferencia[] @relation("destino")
+  avisos      Aviso[]
+
+  @@map("cuenta")
+}
+
+/// Su id es la clave de idempotencia que manda el cliente: reintentar no transfiere dos veces.
+model Transferencia {
+  id      String   @id
+  origen  String
+  destino String
+  importe BigInt
+  hecha   DateTime @default(now()) @db.Timestamptz(6)
+
+  deCuenta    Cuenta       @relation("origen", fields: [origen], references: [id])
+  aCuenta     Cuenta       @relation("destino", fields: [destino], references: [id])
+  movimientos Movimiento[]
+
+  @@map("transferencia")
+}
+
+/// Un aviso de pago del banco. Lo apunta libro-webhooks; su clave es la del banco.
+model Aviso {
+  clave    String   @id
+  cuenta   String
+  importe  BigInt
+  recibido DateTime @default(now()) @db.Timestamptz(6)
+
+  aCuenta     Cuenta       @relation(fields: [cuenta], references: [id])
+  movimientos Movimiento[]
+
+  @@map("aviso")
+}
+
+/// Doble entrada: cada transferencia, dos movimientos que suman 0; cada aviso, uno.
+model Movimiento {
+  id            BigInt   @id @default(autoincrement())
+  cuenta        String
+  importe       BigInt
+  transferencia String?
+  aviso         String?
+  cuando        DateTime @default(now()) @db.Timestamptz(6)
+
+  deCuenta        Cuenta         @relation(fields: [cuenta], references: [id])
+  deTransferencia Transferencia? @relation(fields: [transferencia], references: [id])
+  deAviso         Aviso?         @relation(fields: [aviso], references: [clave])
+
+  @@index([cuenta, id])
+  @@map("movimiento")
+}
+
+/// El cierre del día, por cuenta. Lo escribe libro-informes.
+model Cierre {
+  dia        DateTime @db.Date
+  cuenta     String
+  entradas   BigInt
+  salidas    BigInt
+  saldoFinal BigInt   @map("saldo_final")
+  hecho      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([dia, cuenta])
+  @@map("cierre")
+}

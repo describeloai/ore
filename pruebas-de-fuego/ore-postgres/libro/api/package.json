@@ -1,0 +1,11 @@
+{
+  "name": "libro-api",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@prisma/client": "6.6.0"
+  },
+  "devDependencies": {
+    "prisma": "6.6.0"
+  }
+}

@@ -1510,3 +1510,28 @@ Google vuelve el 2026-10-10, pero desplegar espera a que el CI pase a los runner
 **Solo en GCP**, por ventanas, con fecha de inicio y de fin: el soak de días; los golpes que el laboratorio no tiene (el pageserver, un safekeeper, una actualización de nodos con migración en vivo); y los SLOs de verdad. Al acabar cada ventana, `pg` vuelve a 0 (0060). Coste estimado, de lista y sin medir: ~$6–7 al día de soak 24/7.
 
 El código va en `pruebas-de-fuego/ore-postgres/libro/`.
+
+#### P7·1 · Libro, hecho en el laboratorio (2026-10-10)
+
+**Las cuatro piezas** (`pruebas-de-fuego/ore-postgres/libro/`), cada una en su contenedor, en la red del laboratorio, entrando por el proxy con el nombre `ep-…` y el certificado de la entrada, como una aplicación de fuera:
+- **`libro-api`**: Node 22 y Prisma 6.6. Migra al arrancar (`prisma migrate deploy`, por `DIRECT_URL`) y solo entonces escucha, así que «sana» quiere decir «migrada». El día a día va por el pool (`-pooler`, `pgbouncer=true`). Una transferencia es una transacción interactiva `serializable`: los conflictos se reintentan dentro y la clave del cliente la hace idempotente;
+- **`libro-webhooks`**: `@neondatabase/serverless` 1.1 por HTTP. Apuntar un aviso, su movimiento y el saldo es **una sola sentencia** (una CTE), así que es atómico sin transacción interactiva;
+- **`libro-conciliador`**: psycopg 3.2, directo. Cada vuelta abre una conexión, mira los invariantes en una foto `repeatable read` de solo lectura y la cierra, como un cron;
+- **`libro-informes`**: Java 21, pgjdbc 42.7 y HikariCP 6.2, directo. Hace el cierre del día y una exportación con cursor. Con `minimumIdle` 0, el pool no guarda conexiones que la base dormida dejaría muertas.
+
+Alrededor, **los usuarios** (altas, transferencias y consultas contra la API) y **el banco** (avisos con reintentos y con un 10 % de duplicados). Todo deja su rastro en el volumen `libro-datos`, una línea JSON por hecho, que es de donde P7·2 sacará los SLOs.
+
+**Medido** (`lab/p71.sh`, `dormir_tras` 60 s):
+
+| fase | resultado |
+|---|---|
+| A · carga, las cuatro a la vez, 90 s | 243 operaciones de la API y 49 avisos, **ninguna fallida**; los tres invariantes cuadran (148 transferencias confirmadas, 148 en la base; 51 avisos entregados, 51 apuntados una vez) |
+| B · cada pieza contra la base dormida | **todas despiertan la base y su operación sale bien**, sin reintento: Prisma por el pool, 1,5 s desde el cliente; HTTP, 2,3 s; psycopg y JDBC (`conectar_ms` 5,1 s), también bien |
+| C · otra vez carga, y la conciliación final | ningún fallo en todo el recorrido; 275 transferencias y 84 avisos, todos en su sitio; **0 operaciones necesitaron reintento** |
+
+**Lo aprendido, del lado de la aplicación** (lo que un cliente nuestro se encontrará):
+- **el orden de arranque**: la primera versión de `libro-informes` arrancó antes de que Prisma migrara y su cierre falló (`relation "cierre" does not exist`). La pieza que es dueña del esquema tiene que estar sana antes que las demás;
+- **Prisma necesita `connect_timeout`** por encima de un despertar: su valor por defecto (5 s) está por debajo de una VM en frío (~35 s). Libro usa 60, como recomienda Neon;
+- **un pool del cliente no debe guardar conexiones ociosas** (Hikari con `minimumIdle` 0): al dormir la base, se cortan.
+
+Los tiempos son del cómputo de mentira; los de verdad salen del soak en GCP. Siguiente: P7·2, los usuarios con día y noche y el informe de SLOs.
