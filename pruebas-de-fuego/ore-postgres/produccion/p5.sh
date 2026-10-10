@@ -100,7 +100,7 @@ http() {
   proyecto $A; local P_A=$P ROL_A=$ROL CLAVE_A=$CLAVE VM_A=${HOST%%.*}
   proyecto $B; local VM_B=${HOST%%.*}
   docker volume create p5prod-npm >/dev/null
-  docker run --rm -v "$AQUI/../lab/p54.mjs:/w/p54.mjs:ro" -v p5prod-npm:/w/node_modules -w /w "$NODE_IMAGEN" \
+  docker run --rm -v "$AQUI/lab/p54.mjs:/w/p54.mjs:ro" -v p5prod-npm:/w/node_modules -w /w "$NODE_IMAGEN" \
     sh -c '[ -d node_modules/@neondatabase/serverless ] || npm i -s --no-save --no-package-lock @neondatabase/serverless@1.1.0 ws@8.18.3 >/dev/null 2>&1; node p54.mjs "$@"' \
     -- "$ROL_A" "$CLAVE_A" "$P_A" "$VM_A" "$VM_B" && bien "HTTP y WebSocket, como en el laboratorio" || mal "HTTP/WebSocket"
 }
@@ -123,7 +123,7 @@ migrar() {
   echo "── P5·8: migración en vivo con pgbench desde internet"
   proyecto $A
   pc_pgbench "$CLAVE" "$(conn "$HOST" "$ROL" "$P")" -i -s 5 -q >/dev/null 2>&1
-  pc_pgbench "$CLAVE" "$(conn "$HOST" "$ROL" "$P")" -c 4 -T 90 -P 1 > "$ORE_PG_TRABAJO/p5-migrar" 2>&1 &
+  pc_pgbench "$CLAVE" "$(conn "$HOST" "$ROL" "$P")" -c 4 -T 900 -P 1 > "$ORE_PG_TRABAJO/p5-migrar" 2>&1 &
   local pid=$!; sleep 20
   local vm mig fase; vm=$(computo_de "$P"); mig="p5-$(date +%s)"
   kc apply -f - >/dev/null <<EOF
@@ -132,14 +132,22 @@ kind: VirtualMachineMigration
 metadata: { name: $mig, namespace: $ORE_PG_NS_COMPUTO }
 spec: { vmName: $vm, preventMigrationToSameHost: true, allowPostCopy: false }
 EOF
-  local t=$(date +%s)
-  until fase=$(kc get neonvmm "$mig" -o jsonpath='{.status.phase}' 2>/dev/null); [ "$fase" = Succeeded ] || [ "$fase" = Failed ] || [ $(( $(date +%s) - t )) -ge 300 ]; do sleep 1; done
-  wait $pid
+  # A otro nodo: si ninguno tiene sitio, el autoescalado crea uno (~3,5 min) y la VM baja su imagen.
+  local t=$(date +%s) nodo0; nodo0=$(kc get neonvm "$vm" -o jsonpath='{.status.node}')
+  until fase=$(kc get neonvmm "$mig" -o jsonpath='{.status.phase}' 2>/dev/null); [ "$fase" = Succeeded ] || [ "$fase" = Failed ] || [ $(( $(date +%s) - t )) -ge 900 ]; do sleep 2; done
+  numero p5_migrar_total_s $(( $(date +%s) - t ))
+  echo "  · de $nodo0 a $(kc get neonvm "$vm" -o jsonpath='{.status.node}'); nodos pg: $(nodos_pg)"
+  sleep 20; docker ps -q --filter ancestor="$PG_IMAGEN" | xargs -r docker kill >/dev/null 2>&1; wait $pid
   local s; s=$(cat "$ORE_PG_TRABAJO/p5-migrar")
-  local err; err=$(grep -oE 'number of failed transactions: [0-9]+' <<<"$s" | grep -oE '[0-9]+$')
+  # pgbench se corta al acabar (no llega a su resumen): los fallos, de su progreso por segundo y de
+  # los clientes abortados (una sesión cortada aborta su cliente).
+  local err; err=$(( $(grep -oE '[0-9]+ failed' <<<"$s" | awk '{n+=$1} END{print n+0}') + $(grep -c 'aborted' <<<"$s") ))
+  local seg; seg=$(grep -c '^progress:' <<<"$s")
   local peor; peor=$(grep -oE 'lat [0-9.]+ ms' <<<"$s" | awk '{print $2}' | sort -n | tail -1)
+  local hueco; hueco=$(grep -E '^progress:' <<<"$s" | grep -c ' 0.0 tps')
   [ "$fase" = Succeeded ] && bien "migración $mig: $fase" || mal "migración: ${fase:-sin fase}"
-  [ "${err:-x}" = 0 ] && bien "pgbench sin un fallo durante la migración" || mal "pgbench durante la migración: ${s: -300}"
+  [ "$err" = 0 ] && [ "$seg" -gt 30 ] && bien "pgbench sin un fallo ni un cliente abortado en $seg s" || mal "pgbench durante la migración: $err fallos/abortos en $seg s"
+  numero p5_migrar_segundos_sin_tps "$hueco"
   numero p5_migrar_peor_segundo_lat_ms "${peor:-null}"
   kc delete neonvmm "$mig" --ignore-not-found >/dev/null
 }
