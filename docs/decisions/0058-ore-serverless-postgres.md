@@ -1615,3 +1615,15 @@ Medido (p71 en verde con las dos migraciones; después, a mano, con carga y `HOR
 |---|---|---|---|
 | antes | 40 s | 793 MiB | 27 · 73 · 115 · 14.994 ms |
 | **en streaming** | 35 s | **0,2 MiB** | **idénticos** |
+
+**3 · La prueba de escala** (`lab/p74.sh`, N = 500.000). Se mete de golpe, por SQL en el cómputo, medio millón de transferencias «de hace una hora», con sus movimientos, los saldos y su línea de confirmada, como si el soak llevara días:
+
+| | base pequeña (~50 transferencias) | con 500.000 más (1.000.420 movimientos, 158 MB; 28,5 MB de confirmadas) |
+|---|---|---|
+| vuelta completa | 60 ms | **13,2 s**: una por hora |
+| vueltas incrementales, con carga | 43 · 65 · 48 ms | **49 · 58 · 54 ms**: lo mismo |
+
+- **El detector, con días de datos**: borradas a mano una transferencia reciente y otra antigua, la incremental ve la reciente (`faltan_transferencias: 1`) y la completa las dos.
+- **La incremental también delata la antigua**, por otro camino (`descuadres: 2`). Las sumas que guarda por cuenta ya contaban sus movimientos, así que, al desaparecer, el saldo deja de casar. Un commit perdido de verdad, que se lleva sus movimientos y su cambio de saldo, sale igual: un commit viejo perdido se ve en la siguiente incremental, no una hora después.
+- En la primera corrida, las incrementales costaban 67 ms frente a 43. Era un `count(*)` de `transferencia` que estaban haciendo solo para informar, y que crece con la tabla; ahora solo lo hace la completa.
+- Al borrar el proyecto no queda nada, ni en el almacén ni en `libro-datos`.

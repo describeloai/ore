@@ -174,13 +174,12 @@ def incremental(c, e):
         sumas = dict(e["sumas"])
         for cid, s in k.fetchall():
             sumas[cid] = sumas.get(cid, 0) + int(s)
-        k.execute("select count(*) from transferencia")
-        (transferencias,) = k.fetchone()
     estado = {**e, "t_off": t_fin, "a_off": a_fin, "confirmadas": e["confirmadas"] + len(nuevas_t),
               "entregados": e["entregados"] + len(entregados), "control": control, "sumas": sumas}
     rotos = {"suma": total != ingresado, "descuadres": descuadres, "cojas": cojas,
              "faltan_transferencias": len(nuevas_t) - estan, "faltan_avisos": faltan_a, "avisos_mal": mal_a}
-    return {"modo": "incremental", "cuentas": cuentas, "transferencias": transferencias, "avisos": avisos,
+    # Sin contar `transferencia` entera: es lo único que crecería con los días (está en la completa).
+    return {"modo": "incremental", "cuentas": cuentas, "avisos": avisos,
             "total": int(total), "ingresado": int(ingresado), "confirmadas": estado["confirmadas"],
             "entregados": estado["entregados"], "nuevas": len(nuevas_t), "nuevos_avisos": len(entregados),
             **rotos}, estado
