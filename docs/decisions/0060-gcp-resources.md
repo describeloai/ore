@@ -199,6 +199,20 @@ Pico de disco usado: 46 GB. La mayor imagen, `puesto-python`, 957 MB. **Cabe, y 
 menos que Cloud Build (~19 min).** Con B1·1 (una imagen por huella) y los binarios guardados por
 su huella, un commit que no toca Rust no compila nada ni rehace las imágenes que no cambian.
 
+### B1·1 · una imagen por huella (G4), hecho en local (2026-10-10)
+
+`ci/huella-de-la-imagen.py` da 16 hex por imagen siguiendo su cadena en el Dockerfile (su `FROM` y
+cada `COPY --from`): el texto de cada etapa sin comentarios, el contenido de lo que copia del
+contexto (lo que `.dockerignore` deja pasar), el nombre de cada imagen de fuera, y en vez de la
+etapa `bin` la huella de los binarios. `--explicar <etapa>` dice de qué sale; `--comprobar`, que las
+14 del CI existen y se pueden seguir; `FORZAR=<x>` las mueve todas (una base de fuera se nombra por
+su etiqueta: un parche suyo no mueve la huella). `ci/prueba-huella-de-la-imagen.py`, sobre una
+copia, 11 casos: un fichero del puesto de Python mueve sólo `puesto-python`; la lista de Node,
+`capa-node` y `puesto-node`; el informador, el tema del login, una instrucción de `serve` y la
+etapa `pyright`, sólo lo suyo; un comentario, un fichero fuera del contexto o una etapa que nadie
+usa, nada; la huella de los binarios, las nueve que los copian. Las dos van al job `suite` de
+`ci.yml`. Lo usa B1·2.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

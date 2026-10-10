@@ -283,6 +283,13 @@ jobs:
       - name: y la plantilla del inquilino se puede renderizar sin dejar rastro
         run: python3 malla/gen-inquilino.py --comprobar
 
+      # ADR 0060 B1·1: la huella de cada imagen cuadra con el Dockerfile, y cada cambio
+      # mueve la de las imágenes que lo llevan y sólo esas.
+      - name: y la huella de cada imagen sigue al Dockerfile
+        run: |
+          python3 ci/huella-de-la-imagen.py --comprobar
+          python3 ci/prueba-huella-de-la-imagen.py
+
   # El lago, aparte del plano de control para que corra a la vez (ver arriba).
   plano-el-lago:
     runs-on: ubuntu-24.04
