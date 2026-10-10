@@ -427,6 +427,22 @@ hace falta.
 - `horario.yml` sigue: despertar a mano o desde la consola (eso sí corre al instante), y su cron
   queda de red por si un día corre.
 
+### C1·3 · el ciclo entero, sin nadie (2026-10-10)
+
+- **18:49:52 despertar** por `horario.yml` (como lo hará la consola): nodo a los 63 s, Kueue a los
+  135 s, empujón… y **todo listo a los 815 s**. Lo lento: el informador de cada celda, cuyo
+  contenedor de arranque (`traer-el-agente`) necesita a Keycloak; Keycloak, en un nodo nuevo
+  (bajar la imagen, arrancar), estuvo a los ~8 min, y el informador, que llevaba 7 fallos con la
+  espera de Kubernetes creciendo hasta 5 min, entró en su siguiente turno, a los ~13. Arreglo
+  (`0284326a`): `despertar.sh` reinicia cada 30 s lo que esté en `CrashLoopBackOff`; el horario
+  puede borrar pods. Se mide en el próximo despertar.
+- **19:05 la CronJob `dormir-si-inactiva`**, instalada por Flux: «despierta desde hace menos de
+  15 min: sigue».
+- **19:10 la CronJob decide dormir** (nadie en 15 min): las copias al dormir —los bundles de las
+  forjas desde las 19:10:17, los volcados del idp (`iam`, `keycloak`) a las 19:11:42–50—, y
+  `sistema-spot → 0` a las 19:12:16.
+- **19:15:30, 0 nodos.** Sin GitHub, sin nadie: el clúster se ha dormido solo.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
