@@ -322,6 +322,34 @@ los puestos y los builds van a `jobs-s`, no aquí.
 
 **Dormir:** `cordon` + `drain` 130 s, el grupo a 0 68 s más: **~3,3 min**.
 
+### C1·1 · los guiones, en un ciclo real (2026-10-10) — y el login roto por A2
+
+`malla/despertar.sh` y `malla/dormir.sh` (`b7450b1f`, `e1953fec`). El ciclo:
+
+- **despertar**: nodo listo a los 61 s, Kueue a los 90 s, el empujón a 22 Deployments/StatefulSets
+  a los 108 s, y todo listo… **salvo Keycloak**: `ImagePullBackOff`, `idp@sha256:39bc18b8…` *not
+  found*. **La limpieza de A2 lo había borrado**: la versión que `malla/60-idp.yaml` fija por
+  digest sólo la protegía la etiqueta `main`; el primer push de B1 movió `idp:main` a la imagen
+  nueva, y la del 30-sep —sin etiqueta protegida, más de 7 días, fuera de las 3 últimas— se fue
+  (la vuelta atrás escrita, `idp:26.0.7-1`, también). `simular-limpieza.py --manifiestos` lo había
+  dado por bueno porque miraba lo protegido *en ese momento*. De las 22 imágenes que cita la malla,
+  sólo faltaba ésa. Los datos, intactos (viven en `idp-db`).
+- **el arreglo** (con el go de la persona; `7809c3ef`, `49e70ad0`): `60-idp.yaml` a `idp:main` de
+  `b968829b` (`sha256:3506155e…`), construida de las mismas entradas (la etapa `idp` y
+  `identidad/tema` no cambian desde `5d1721c1`); la regla guarda ese digest
+  (`guarda-lo-fijado-por-digest`; Google admite prefijos de **64 caracteres**, un digest entero
+  son 71, y con uno más largo rechaza la regla entera); y **`simular-limpieza.py
+  --comprobar-reglas`, en el CI, falla si la malla cita una imagen que la regla no protege por sí
+  misma** (con el pin viejo, falla). Flux lo aplicó: Keycloak 26.0.7 arrancó en 25 s y
+  `login.paladio.io` volvió a dar 200 a las 15:58 UTC; el login estuvo caído desde que se despertó
+  (~25 min), con la plataforma dormida antes.
+- **despertar otra vez**, con todo en pie: 20 s (comprueba, entradas). Y un fallo del guion: con la
+  corrida de `main` aún en marcha, su job `imagen` no existe todavía y decía «nada que relanzar»;
+  ahora espera a que termine. La corrida 38065651096 desplegó despierta y salió verde.
+- **dormir**: las copias al dormir (idp a los 36 s, forja a los 53 s; en
+  `gs://…-copias/idp/iam-20261010T160948Z.dump` y los bundles de la forja), los nodos vaciados a
+  los 176 s, **dormida a los 261 s** (0 máquinas de la malla).
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
