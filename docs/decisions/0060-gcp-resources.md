@@ -352,10 +352,12 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
 **Lo que significa:**
 - **El flujo de los puestos no se toca**: ya late cada 10 s (`LATIDO`, `ore-serve/src/puestos.rs`). Una
   respuesta normal tampoco: `ore-entrada` corta lo callado a los 30 s (`PLAZO`).
-- **Las subidas grandes sí: hoy `ore-serve` acepta hasta 5 GiB en un PUT** (`SUBIDA_MAXIMA`, 0049
-  B4b·1). Por el túnel, más de 100 MiB da 413. Hace falta subir por trozos de ≤ 100 MiB
-  (multiparte) o subir directo al almacén con una URL firmada. Es **condición de C2·3**, o se
-  acepta como deuda conocida de desarrollo.
+- **Las subidas tampoco, hoy.** La puerta pública (`ore-serve`, `ore-iam`) ya acepta como mucho
+  **1 MiB** por petición (`CUERPO_MAXIMO`, `ore-entrada/src/http.rs`). Los 5 GiB de `SUBIDA_MAXIMA`
+  (0049 B4b·1) son de `ore-medios` en el 8098, adonde sólo llega el puesto desde dentro: no pasa por
+  la puerta, y no pasará por el túnel. **Condición de diseño a partir de ahora:** una subida de
+  más de 100 MiB desde fuera (la consola, un `ore upload`) va por trozos o con URL firmada. No
+  bloquea C2·3.
 - ④ (lo que ocupa Envoy) se mide en C2·1, en la malla.
 
 **Lo que queda:** el *custom hostname* y el CNAME de prueba están borrados, y el servidor y el
