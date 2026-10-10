@@ -409,6 +409,23 @@ túnel en desarrollo:
   comentada; su frase decía que saliera al desplegarse). Era lo que tenía rojo el CI de `main`
   desde `5d10fb11` (paso «la plantilla del inquilino se puede renderizar»).
 
+### C1 · el nodo de `pg` que no se durmió (2026-10-10, 21:03–21:43 UTC)
+
+La sesión de 0058 avisó: `pg` seguía con un nodo y ore-pg funcionando. Dos fallos de
+`dormir-si-inactiva.py`:
+1. **No comprobaba el resultado.** El autoescalado de `pg` estaba encendido (19:48, desde la
+   cuenta de la persona) y creaba un nodo justo a las 21:03, cuando la CronJob lo quitó y pidió
+   0. El resize terminó `DONE` y se llevó el nodo viejo, pero el grupo quedó en objetivo 1 con el
+   nuevo dentro. ⇒ Ahora se vuelve a mirar después de cada resize, hasta tres veces (`d749626a`).
+2. **Los PDB de ore-pg bloquean una hora.** `proxy-postgres` (minAvailable 1) y `safekeeper`
+   (maxUnavailable 1) permiten 0 desalojos cuando se apaga el grupo entero, y GKE espera hasta
+   una hora antes de forzarlo. El resize manual de las 21:27 siguió atascado hasta borrar los tres
+   pods a mano a las 21:43, que es lo que GKE habría hecho al cabo de la hora. ⇒ Ahora la CronJob
+   termina los pods de los nodos de `pg` y `jobs-s` antes del resize (`412da827`); las copias ya
+   están hechas a esas alturas.
+
+Coste: un `n2-standard-2` 40 minutos de más. Malla a 0 máquinas desde las 21:43:43.
+
 **Lo que queda:** el *custom hostname* y el CNAME de prueba están borrados, y el servidor y el
 `cloudflared` locales parados. Siguen en Cloudflare el túnel `ore-c2-prueba` (sin conexión) y
 `entrada.ontoforge.org` como *fallback origin*; C2·2 los reapunta al túnel de la malla.
