@@ -84,10 +84,30 @@ paso "empujón: $EMPUJADOS Deployments/StatefulSets"
 
 # ── 4 · todo listo ─────────────────────────────────────────────────────────
 todo_listo() { [ -z "$(no_listos)" ]; }
-if ! esperar 900 "todo listo" todo_listo; then
-  no_listos | sed 's/^/     no listo: /'
-  exit 1
-fi
+# ⭐ (C1·3, medido 2026-10-10) Y EL SEGUNDO EMPUJÓN: lo que depende de otro (el informador
+#   necesita a Keycloak para traer su testigo) falla al arrancar y Kubernetes espacia cada
+#   reintento más (hasta 5 min). Keycloak estuvo a los ~8 min en un nodo nuevo, y el
+#   informador, en su siguiente turno, a los ~13: despertar tardó 15 min en vez de 6. Cada
+#   30 s se reinicia lo que esté en `CrashLoopBackOff` (en su contenedor o en uno de arranque):
+#   reintenta en cuanto lo que necesita está listo.
+reintentar_lo_atascado() {
+  kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.status.initContainerStatuses[*].state.waiting.reason} {.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}' 2>/dev/null \
+    | awk -v fuera=" $FUERA " '/CrashLoopBackOff/ && index(fuera, " " $1 " ")==0 {print $1, $2}' \
+    | while read -r NS POD; do
+        kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null 2>&1 && echo "$NS/$POD"
+      done
+}
+FIN=$(( $(date +%s) + 900 ))
+until todo_listo; do
+  if [ "$(date +%s)" -ge "$FIN" ]; then
+    paso "⛔ todo listo: no en 900s"
+    no_listos | sed 's/^/     no listo: /'
+    exit 1
+  fi
+  R=$(reintentar_lo_atascado | tr '\n' ' ')
+  [ -n "$R" ] && paso "reintento inmediato de lo atascado: $R"
+  sleep 30
+done
 paso "todo listo"
 
 if [ "$CON_POSTGRES" = si ]; then

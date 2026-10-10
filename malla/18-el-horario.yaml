@@ -43,6 +43,11 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  # Despertar reinicia lo que quedó en `CrashLoopBackOff` esperando a otro (el segundo
+  # empujón): borrar el pod para que su controlador lo cree otra vez, sin la espera.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
   - apiGroups: [""]
     resources: [pods/eviction]
     verbs: [create]
