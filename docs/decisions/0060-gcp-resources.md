@@ -141,6 +141,12 @@ vez, al aplicar la regla, porque «las 3 más nuevas» la guardaría. Con eso, ~
 `bastion`: de ~$27 al mes a **~$2,5**. Un `:main` o `en-uso` que lleve meses sin moverse no se
 borra nunca (simulado a 30 días: la Keep gana a la antigüedad).
 
+**Aplicado** (con el go de la persona, 2026-10-10, sin la prueba en seco de Google): la regla en
+`ore` y `bastion` (`set-cleanup-policies --no-dry-run`), después de pasar otra vez el simulador
+con `--manifiestos malla` (64 citas, todas se quedan); y el paquete `cache` borrado entero. Google
+pasa la regla una vez al día: el tamaño del repositorio (262 GB al aplicar; lo recalcula con
+retraso) se mide mañana y a los 8 días, y el número va aquí.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez
