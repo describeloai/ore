@@ -81,6 +81,33 @@ almacenamiento (Artifact Registry, GCS, Secret Manager, KMS). Es lo que G3, G9 y
 **Al volver la cuenta**: subir los dos grupos y arrancar `modelos-e0` **antes** de nada que necesite
 el clúster, comprobar que los pods vuelven (y Postgres, con quien lleva 0058), y luego G0.
 
+## 2026-10-10 · Google vuelve: nada construye, y Postgres a cero (A1)
+
+**Lo visto** (lecturas): Cloud Build sin nada en curso (la última construcción, 2026-10-08 18:30)
+y ninguna corrida de GitHub en cola. Pero el grupo `pg` tenía autoescalado con **mínimo 1**: al
+volver la facturación GKE rehízo un `n2-standard-2` normal (~$2,5/día) con el resto de la malla a
+0. Lo fijo, medido: Artifact Registry **266 GB** sin limpieza (`ore` 250, `bastion` 16), **222
+versiones activas** en 27 secretos, 13 discos (~200 GB), 3 IPs externas, 3 reglas de reenvío, el
+NAT. Y el repositorio `describeloai/ore` es **público**: los runners de GitHub no cuestan, así que
+construir puede salir de Cloud Build sin esperar a G5.
+
+**Lo hecho** (con el go de la persona): `pg` a mínimo 0 y tamaño 0. **El autoescalador lo subió a
+2 en el acto**: el pool no tiene taint, y los pods de `kube-system` que esperan sitio (con
+`sistema-spot` a 0) lo empujan. Así que `pg` va **sin autoescalado y a 0**. `malla/80-postgres-gcp.sh`
+baja su mínimo por defecto a 0.
+
+| qué | antes | ahora | para volver |
+|---|---|---|---|
+| `pg` | autoescalado 1–3, 1 nodo | sin autoescalado, 0 | `gcloud container node-pools update pg --cluster ore-mesh --zone europe-west1-b --enable-autoscaling --min-nodes 0 --max-nodes 3 --location-policy ANY` (con `sistema-spot` de pie antes) |
+
+**Nivel 3 · €20 al mes sostenidos** (propuesto el 2026-10-10; cada paso con su go):
+A1 Postgres a cero (hecho) · A2 retención en Artifact Registry (G3) · A3 versiones viejas de
+secretos (G11) · A4 discos huérfanos (G11) · B1 construir en los runners de GitHub en vez de Cloud
+Build · B2 imagen por huella (G4) · C1 el clúster duerme (G8; medir si cabe en un `e2-standard-2`
+spot) · C2 túnel de Cloudflare (G9) · C3 presupuesto de €20 con alertas (G7, de la persona).
+Estimado: ~$23–26 al mes; por debajo de €20 si el sistema cabe en un `e2-standard-2` o la IP de
+salida se suelta mientras no haya un SFTP de cliente.
+
 ## Primeros principios
 
 1. **Se paga el resultado, no la actividad.** Una imagen desplegada es el resultado; diez

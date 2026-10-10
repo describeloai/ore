@@ -33,7 +33,10 @@ GSA=ore-pg-almacen
 KSA_NS=ore-pg
 KSA=neon
 POOL=pg
-NODOS_MIN=${NODOS_MIN:-1}
+# 0 (ADR 0060 A1, 2026-10-10): Postgres no está de pie sin uso. Ojo: el pool no tiene
+# taint, y con sistema-spot a 0 el autoescalador lo sube para los pods de kube-system;
+# con la malla dormida, el pool va sin autoescalado y a 0 (lo dice el ADR 0060).
+NODOS_MIN=${NODOS_MIN:-0}
 NODOS_MAX=${NODOS_MAX:-3}   # 3 × 2 vCPU + lo demás de ORE = 11/12 de la cuota en el pico
 
 echo "── bucket gs://$BUCKET"
