@@ -246,9 +246,14 @@ no cambia Rust y ~8 si cambia. Siguiente: B1·3, el relevo en el CI de `main`.
    dicen lo viejo: un pod que arrancara antes de ese relevo (`imagePullPolicy: Always`) correría
    lo nuevo con la anotación vieja; por eso el despertar relanza el job antes de dar nada por
    bueno.
-3. **El primer push a `main`**: antes, el `87-postgres-la-entrada.yaml` (rojo en
-   `gen-inquilino.py --comprobar` desde el 09-oct) y la lista de lo que sube; hecho cuando el CI
-   sale verde, las 14 tienen `<sha12>` y `gcloud builds list` no tiene nada nuevo.
+3. **El primer push a `main`** — hecho: el `87-postgres-la-entrada.yaml` a `FUERA` de
+   `gen-inquilino.py` (`f8287429`; avisada la sesión de 0058), y 39 commits a `main`. Corrida
+   38053087597: todas las pruebas verdes, `construir` en el runner en 1.307 s (se construyeron
+   las 14: venían seis orígenes nuevos de 0061), las etiquetas movidas (`ore-serve:main` =
+   `:f828742982bb`), y el despliegue dormido falló por el webhook de Kueue (hito 2, corregido).
+   Corrida 38054786204 (`b968829b`): **verde entera**, `construir` 82 s (las 14 reutilizadas, sin
+   binarios), `imagen` 55 s por el camino dormido. `gcloud builds list`: nada desde el
+   2026-10-08 18:30. **El CI de `main` ya no paga construir.**
 4. **Cerrar la puerta a Cloud Build** (IAM, go): `ore-ci` sin permiso de construir.
 5. **La comprobación al despertar**, con C1.
 
