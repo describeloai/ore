@@ -128,10 +128,17 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              if gcloud secrets versions access latest --secret=t-demo-forja-admin >/dev/null 2>&1; then
+              # ⛔ (ADR 0060 A3, 2026-10-10) Solo `NOT_FOUND` quiere decir «no hay
+              #   testigo». Cualquier otro fallo —la identidad del pod aún no lista
+              #   en un nodo recién creado, la red— se reintenta: antes contaba como
+              #   «no hay», y cada arranque así acuñaba un token y una versión más
+              #   (62 en t-demo-forja-admin en tres semanas).
+              if gcloud secrets versions access latest --secret=t-demo-forja-admin >/dev/null 2>/tmp/err; then
                 touch /puesto/ya; echo "el almacen ya tiene el testigo del admin"
-              else
+              elif grep -q NOT_FOUND /tmp/err; then
                 echo "el almacen NO tiene testigo del admin: se acuñara uno"
+              else
+                cat /tmp/err; echo "no se pudo preguntar al almacen: se reintenta"; exit 1
               fi
           resources:
             requests: {cpu: "50m", memory: 128Mi}
