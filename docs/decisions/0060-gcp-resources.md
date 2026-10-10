@@ -271,6 +271,65 @@ es no tener ninguna regla global: el túnel (G9). Corrige la tabla del nivel 2 (
 IPs ~$32»): eran ~$18. Y la entrada TCP de Postgres (0058, el `87`) sería una regla **regional**,
 otro tramo de ~18 $.
 
+### C2 · diseño: el túnel, sin cambiar un nombre (decidido con la persona el 2026-10-10)
+
+**Opción C**, elegida entre cuatro:
+
+| | cómo | zona `paladio.io` (GoDaddy) | nombres | coste |
+|---|---|---|---|---|
+| A | `paladio.io` entera a Cloudflare, nombres a un nivel (`demo.paladio.io`) | migrar todos los registros, correo incluido | cambian (`fundar.rs`, `gen-inquilino`, migraciones, filas de `iam`) | 0 |
+| B | A sin renombrar, con el certificado de dos niveles de pago | igual que A | no | 10 $/mes |
+| **C** | **Cloudflare for SaaS sobre una zona ancla** (`ontoforge.org`): los nombres de siempre como *custom hostnames* (100 gratis, a cualquier profundidad), por CNAME al túnel | **un registro** (`login`) | **no** | 0 |
+| D | sin Cloudflare: un proxy en el nodo con IP pública y el DNS reescrito al despertar | un registro | no | ~0 |
+
+D se descarta: el nodo queda expuesto a internet, su IP cambia con cada despertar y con cada
+reclamación de la máquina spot, y no tiene nada delante.
+
+**La forma:** navegador → Cloudflare (TLS, un certificado por nombre) → túnel (`cloudflared` en
+`ore-system`: sale de la malla; no se abre nada hacia dentro) → **Envoy Gateway** (ClusterIP) → las
+`HTTPRoute` de siempre.
+- La `puerta` sigue siendo una `Gateway`, de clase Envoy. Las rutas de los inquilinos y la frontera
+  de `allowedRoutes` (`cargas`, `identidad`) no cambian; el IdP pasa de `Ingress` a una
+  `HTTPRoute` en `identidad`.
+- Lo de GKE se traduce: `HealthCheckPolicy` → las readiness de los pods; `GCPBackendPolicy` de
+  300 s → `BackendTrafficPolicy`; las NetworkPolicies de `130.211/22` y `35.191/16` → desde Envoy.
+- `cloudflared`, con una regla: todo a Envoy. Su token, en Secret Manager.
+- Dormida, Cloudflare contesta 530 y nada cobra. La consola ya lo lee como dormida (falla el
+  descubrimiento OIDC).
+- `paladio.io` sigue en GoDaddy y `ore.paladio.io`/`pg.paladio.io` en Cloud DNS. Sólo cambian los
+  registros que apuntan a las IPs de los balanceadores: pasan a CNAME al ancla.
+
+**Hitos:**
+- **C2·0 medir** (piezas nuevas al lado, nada existente se toca): un nombre de prueba
+  `c2-prueba.ore.paladio.io`. ① SaaS con túnel en el plan gratuito; ② **100 s sin datos** de
+  Cloudflare contra el flujo de los puestos (0037: ¿latido antes de 100 s?); ③ **100 MB por
+  petición** contra la subida de ficheros (0049); ④ lo que ocupa Envoy en el nodo.
+- **C2·1 la puerta nueva:** Envoy Gateway y una `Gateway` de túnel junto a la actual; las rutas,
+  con dos `parentRefs` (`gen-inquilino`, la forja).
+- **C2·2 el túnel:** `cloudflared`, su secreto y sus NetworkPolicies; los *custom hostnames* de
+  `login`, `iam`, `demo`, `victor` y `ore-mesh`, probados contra Cloudflare antes de tocar el DNS.
+- **C2·3 el cambio:** TTL a 60; CNAME en Cloud DNS y `login` en GoDaddy (la persona). Se comprueban
+  el login, la consola, el CLI, el flujo, despertar y dormir. Mientras siga el balanceador, volver
+  atrás es un registro.
+- **C2·4 el aprovisionador:** fundar un inquilino da de alta su *custom hostname*. La comprobación
+  del comodín (`aprovisionar-inquilino.sh`, «IP_COMODIN») pasa a comprobar el CNAME.
+- **C2·5 retirar**, tras 24 h estable: la `Gateway` de GKE, el `Ingress`, el `ManagedCertificate`, el
+  `certmap`, `ore-comodin` y su autorización, y **liberar `ore-puerta` y `ore-idp`**: una IP reservada
+  sin regla de reenvío cobra ~7 $/mes cada una, casi lo que se ahorra.
+- **C2·6 (opcional):** un Worker gratuito que ante un 530 enseñe «la plataforma duerme» con el
+  enlace para despertarla, o que la despierte él.
+
+**Fuera de C2:** la entrada TCP de Postgres (0058, el `87`). El plan gratuito de Cloudflare no
+pasa TCP público: sería una regla regional, ~18 $/mes. En desarrollo, `port-forward` o
+`cloudflared access`; la entrada pública, cuando haya clientes. Lo HTTP/WS de 0058 sí va por el túnel.
+
+**Hecho el 2026-10-10:**
+- La cuenta de Cloudflare es de la persona. El token `ore-c2` (Tunnel, SSL and Certificates, DNS
+  y Workers, sólo sobre `ontoforge.org`) vive en su `.env.local`, y no va a Vercel.
+- La zona `ontoforge.org` está en Free. Sus registros (el Website Builder de GoDaddy y `_dmarc`)
+  están en DNS only, como estaban.
+- Los nameservers están cambiados en GoDaddy, `darwin`/`kelly.ns.cloudflare.com`, sin DNSSEC.
+
 ### C1 · dormir por inactividad, despertar al usar (diseñado el 2026-10-10)
 
 Sin horario: **despierta quien lo usa y duerme cuando nadie lo usa.** Decidido con la persona,
