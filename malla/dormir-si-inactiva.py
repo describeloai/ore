@@ -174,6 +174,27 @@ def main():
     #   autoescalador de `pg` estaba creando un nodo justo cuando se apagó: el resize a 0
     #   terminó «DONE», se llevó el viejo, y el que nacía quedó con el grupo en objetivo 1 y
     #   ore-pg arrancado encima. Tras cada resize se mira otra vez, hasta tres veces.
+    # ⛔ Los `PodDisruptionBudget` de ore-pg (`proxy-postgres` minAvailable 1, `safekeeper`
+    #   maxUnavailable 1) no dejan desalojar a nadie cuando se apaga el grupo entero: no hay
+    #   otro nodo adonde ir. GKE espera hasta UNA HORA antes de forzarlo (2026-10-10: 21:27 →
+    #   atascado hasta borrarlos a mano a las 21:43). Las copias ya están hechas; se terminan
+    #   los pods de esos nodos con su gracia, que es lo que GKE haría al cabo de la hora.
+    for pool in ("pg", "jobs-s"):
+        nodos = {n["metadata"]["name"] for n in k8s(
+            "GET", f"/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3D{pool}")["items"]}
+        for nodo in sorted(nodos):
+            sel = urllib.parse.quote(f"spec.nodeName={nodo}")
+            for p in k8s("GET", f"/api/v1/pods?fieldSelector={sel}")["items"]:
+                m = p["metadata"]
+                if m["namespace"] == "kube-system" or any(
+                        o.get("kind") == "DaemonSet" for o in m.get("ownerReferences", [])):
+                    continue
+                try:
+                    k8s("DELETE", f"/api/v1/namespaces/{m['namespace']}/pods/{m['name']}")
+                except Exception as e:  # que uno falle no impide dormir: el resize lo forzará
+                    paso(f"⚠️ no se pudo terminar {m['namespace']}/{m['name']}: {e}")
+        if nodos:
+            paso(f"{pool}: terminados los pods de {len(nodos)} nodo(s) antes del resize")
     for pool in ("pg", "jobs-s"):
         for intento in range(3):
             hay = k8s("GET", f"/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3D{pool}")["items"]
