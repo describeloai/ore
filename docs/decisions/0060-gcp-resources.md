@@ -426,6 +426,22 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
 **Retención:** la malla está retenida con `ore.dev/despierta-hasta=2026-10-11T20:00:00Z` en
 `ore-system` mientras duran C2 y las pruebas de 0058. Se quita al terminar.
 
+### C2·4 · el aprovisionador da de alta los nombres (2026-10-11)
+
+- `malla/cloudflare-saas.py asegurar|quitar <host>`: el *custom hostname* en `ontoforge.org`.
+  Valida por HTTP con el CNAME que ya escribe el paso ⑧, sin TXT bajo el nombre, así que no hay
+  trampa del comodín. Contesta como `preguntar`: 0 estaba, 3 hecho, 2 no se sabe (pasada en
+  rojo), 4 sin token (se dice y sigue).
+- Lo llaman el aprovisionador (⑧b al dar de alta, y en la retirada ⓪) y `desaprovisionar-inquilino.sh`
+  (⑤).
+- El token es `cloudflare-saas` en Secret Manager, creado por la persona: sólo «SSL and
+  Certificates: Edit» sobre `ontoforge.org`. Contra el DNS da 403, comprobado. Lo lee
+  `ore-aprovisionador` por el init container, como opcional.
+- Pasada entera en el clúster: `demo` y `victor` «active, ya estaba»; las tres retiradas
+  (`cobalt-polar-camel`, `prueba`, `prueba-dos`) «no estaba».
+- Fuera de esto: la entrada propia de una organización (su dominio) también se da de alta así,
+  pero su CNAME lo pone su dueño, y hasta entonces Cloudflare no lo valida.
+
 ### C2 · la entrada de Postgres, también al túnel (2026-10-10, decidido por la persona)
 
 0058 desplegó hoy (13:12) su entrada, `ore-pg/proxy-postgres`, como `LoadBalancer` L4 en la IP
