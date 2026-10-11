@@ -1778,4 +1778,15 @@ Lo encontrado, por orden:
 6. **La CronJob del 0060 durmió el clúster dos veces esta mañana.** La retención `ore.dev/despierta-hasta` la borraba Flux: limpia los campos de los gestores `kubectl…` al reconciliar el namespace. Con un gestor propio sobrevive (comprobado forzando la reconciliación). Para esta ventana, la CronJob suspendida, con go, y reanudada al acabar.
 7. Al despertar con Kueue aún caído, los **DaemonSets de NeonVM** (el plugin de KVM entre ellos) no crearon sus pods y el reintento se espacia: sin `neonvm/kvm` en el nodo, ninguna VM arranca. Un `rollout restart` los trae; `despertar.sh` empuja sólo Deployments y StatefulSets (de 0060).
 
-Pendiente: el pool con la imagen nueva (`p6.sh pool 3`); `p6.sh http-corto` cuando exista el custom hostname `api.europe-west1.pg.paladio.io`; P7.
+8. **Con la imagen nueva el pool arranca vacío** (las dos VMs `libre` a los ~6 min de encenderlo, y se repone en segundos), **pero el despertar desde el pool fallaba**: al reclamar una VM, el plano apuntaba como dirección la IP del **pod**, y el proxy llega a las VMs por la **overlay** («couldn't connect to compute node at <ip del pod>:5432»; en el laboratorio eran la misma). **Arreglado** (`851ddd5e`): la de la overlay, como en frío; el contrato lo comprueba. La regla de limpieza del registro protege la imagen nueva (`ff57bb2e`); la política aplicada en GCP está por actualizar (0060).
+
+| despertar desde internet (por el túnel) | p50 | p95 | n |
+|---|---|---|---|
+| en frío, VM de verdad | 35,0 s | 39,4 s | 3 |
+| **desde el pool** (`--pool-computos 2`) | **6,5 s** | 10,1 s | 3 |
+
+Laboratorio: 39,5 s y 3,9 s. Los ~2,5 s de más desde el pool son el túnel y el contenedor de `psql` de cada medida (~0,6 s) y el `/configure` de un `compute_ctl` de verdad.
+
+9. **La VM que sale del pool se queda con los límites genéricos** (0,25–2 CU, hasta 8 GiB) aunque el endpoint pida 0,25–1. Era lo que el código ya avisaba («al asignarla, sus límites de autoescalado tendrán que ajustarse»): pendiente en `del_pool`.
+
+**P6 queda cerrado en producción**, salvo `p6.sh http-corto`, que espera el custom hostname `api.europe-west1.pg.paladio.io` (0060). Abiertos de P6 en producción: los límites de la VM del pool (9) y que bajar el pool retire lo que sobra (3).
