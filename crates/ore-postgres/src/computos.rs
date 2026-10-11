@@ -136,6 +136,26 @@ pub struct Neonvm {
 }
 
 impl Neonvm {
+    /// Las `VirtualMachineMigration` de esta VM (por `spec.vmName`).
+    fn migraciones_de(&self, vm: &str) -> Result<Vec<String>, Fallo> {
+        let (c, r) = self
+            .kube
+            .pedir(
+                "GET",
+                &format!(
+                    "/apis/vm.neon.tech/v1/namespaces/{}/virtualmachinemigrations",
+                    self.ns
+                ),
+                None,
+                None,
+            )
+            .map_err(k8s)?;
+        if c != 200 {
+            return Err(Fallo::Reintentar(format!("listar las migraciones: {c}")));
+        }
+        Ok(migraciones_en(&r, vm))
+    }
+
     pub fn nuevo(
         ns: &str,
         imagen: &str,
@@ -286,6 +306,18 @@ impl Computos for Neonvm {
     }
 
     fn borrar(&self, vm: &str) -> Result<(), Fallo> {
+        // ⭐ Primero sus migraciones en curso (medido en producción, P7: dormir borró una VM a mitad
+        //   de migrar; el controlador ya no encontró la VM al cerrar la migración, sus dos runners
+        //   se quedaron, y `dormir-endpoint` esperó «a que su runner se vaya» para siempre). Con la
+        //   VM aún ahí, el controlador cierra la migración y se lleva el runner de destino.
+        for m in self.migraciones_de(vm)? {
+            self.kube
+                .borrar(&format!(
+                    "/apis/vm.neon.tech/v1/namespaces/{}/virtualmachinemigrations/{m}",
+                    self.ns
+                ))
+                .map_err(k8s)?;
+        }
         self.kube.borrar(&kube::vm(&self.ns, vm)).map_err(k8s)?;
         self.kube
             .borrar(&kube::configmap(&self.ns, &format!("{vm}-config")))
@@ -431,6 +463,32 @@ pub fn terminar_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<Optio
         ))),
         Err(e) => Err(Fallo::Reintentar(format!("/terminate de {vm}: {e}"))),
     }
+}
+
+/// De una lista de `VirtualMachineMigration`, los nombres de las de `vm`.
+pub fn migraciones_en(cuerpo: &str, vm: &str) -> Vec<String> {
+    let Ok(n) = ore_core::parse::parse(cuerpo) else {
+        return vec![];
+    };
+    n.get("items")
+        .map(|(_, i)| {
+            i.items()
+                .iter()
+                .filter(|m| {
+                    m.get("spec")
+                        .and_then(|(_, s)| s.get("vmName"))
+                        .and_then(|(_, v)| v.as_str())
+                        == Some(vm)
+                })
+                .filter_map(|m| {
+                    m.get("metadata")
+                        .and_then(|(_, d)| d.get("name"))
+                        .and_then(|(_, v)| v.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// De la VM que devuelve el API a lo que importa de ella.
@@ -634,6 +692,17 @@ pub fn ahora_iso() -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn las_migraciones_de_una_vm() {
+        let r = r#"{"items":[
+            {"metadata":{"name":"soak-1"},"spec":{"vmName":"pool-a"}},
+            {"metadata":{"name":"otra"},"spec":{"vmName":"pool-b"}},
+            {"metadata":{"name":"soak-2"},"spec":{"vmName":"pool-a"}}]}"#;
+        assert_eq!(migraciones_en(r, "pool-a"), ["soak-1", "soak-2"]);
+        assert!(migraciones_en(r, "pool-c").is_empty());
+        assert!(migraciones_en("no es json", "pool-a").is_empty());
+    }
 
     #[test]
     fn la_vm_lleva_sus_limites_y_su_reserva() {
