@@ -1,0 +1,110 @@
+name: neon-vm
+
+# ADR 0058 · La imagen de VM del cómputo (`vm-compute-node-v17`), en el runner de GitHub y no en Cloud Build.
+#
+# La imagen de VM es `vm-builder(compute-node-v17, spec)`: un cambio SOLO en el spec de la VM
+# (compute/vm-image-spec-bookworm.yaml del fork: lo que arranca el init, ficheros de /etc) no
+# recompila Postgres ni las extensiones (eso sigue siendo ci/neon/computo.yaml, 1 h 10 min). Aquí
+# se vuelve a pasar `vm-builder` sobre una `compute-node-v17` que ya está en el registro.
+#
+#   compute    la etiqueta de `compute-node-v17` de partida (el _COMMIT que la construyó)
+#   neon       el commit de describeloai/neon de donde sale el spec; da nombre al resultado:
+#              `vm-compute-node-v17:<neon>`. Entre `compute` y `neon` sólo puede haber cambios en
+#              compute/vm-image-spec-*.yaml: se comprueba.
+#   builder    la etiqueta de describeloai/autoscaling (vm-builder y neonvm-daemon), la de NeonVM
+#
+# ⚠️ Baja `compute-node-v17` (~450 MB) del registro a internet: ~0,06 USD por corrida.
+on:
+  workflow_dispatch:
+    inputs:
+      compute:
+        description: etiqueta de compute-node-v17 de partida
+        default: baad49aa38dbf272c5874aa0d547e2cfb841ec1a
+      neon:
+        description: commit de describeloai/neon con el spec de la VM
+        default: ec050c8b74494dc136283fedc300f565ac0651d9
+      builder:
+        description: etiqueta de describeloai/autoscaling
+        default: v0.49.1-ore.1
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRO_HOST: europe-west1-docker.pkg.dev
+  REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+
+jobs:
+  vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: entre compute y neon, sólo el spec de la VM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPUTE: ${{ inputs.compute }}
+          NEON: ${{ inputs.neon }}
+        run: |
+          set -euo pipefail
+          if [ "$COMPUTE" != "$NEON" ]; then
+            CAMBIOS=$(gh api "repos/describeloai/neon/compare/$COMPUTE...$NEON" \
+              --jq 'select(.status == "ahead") | .files[].filename')
+            [ -n "$CAMBIOS" ] || { echo "✗ $NEON no va por delante de $COMPUTE"; exit 1; }
+            echo "$CAMBIOS"
+            if echo "$CAMBIOS" | grep -vqE '^compute/vm-image-spec-[a-z]+\.yaml$'; then
+              echo "✗ hay cambios fuera del spec de la VM: hace falta ci/neon/computo.yaml"; exit 1
+            fi
+          fi
+          curl -fsSL "https://raw.githubusercontent.com/describeloai/neon/$NEON/compute/vm-image-spec-bookworm.yaml" -o spec.yaml
+          grep -n "name: ore-" spec.yaml
+
+      - name: vm-builder
+        env:
+          BUILDER: ${{ inputs.builder }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$BUILDER" https://github.com/describeloai/autoscaling.git autoscaling
+          git -C autoscaling log -1 --format='autoscaling %H %ci'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: compilar vm-builder
+        working-directory: autoscaling
+        env:
+          BUILDER: ${{ inputs.builder }}
+        run: |
+          set -euo pipefail
+          source versions.env   # alpine y busybox fijados por sha, como el Makefile del fork
+          CGO_ENABLED=0 go build -o "$GITHUB_WORKSPACE/vm-builder" \
+            -ldflags "-X main.Version=$BUILDER -X main.NeonvmDaemonImage=$REGISTRO/neonvm-daemon:$BUILDER
+              -X main.AlpineImageTag=$ALPINE_IMG_TAG -X main.AlpineImageShaAmd64=$ALPINE_IMG_SHA_AMD64
+              -X main.BusyboxImageTag=$BUSYBOX_IMG_TAG -X main.BusyboxImageShaAmd64=$BUSYBOX_IMG_SHA_AMD64" \
+            vm-builder/*.go
+          "$GITHUB_WORKSPACE/vm-builder" -version
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
+          service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: la imagen de VM
+        env:
+          COMPUTE: ${{ inputs.compute }}
+          NEON: ${{ inputs.neon }}
+          BUILDER: ${{ inputs.builder }}
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$REGISTRO_HOST" --quiet >/dev/null 2>&1
+          docker pull -q "$REGISTRO/neonvm-daemon:$BUILDER"
+          ./vm-builder -size=2G -spec=spec.yaml \
+            -src="$REGISTRO/compute-node-v17:$COMPUTE" \
+            -dst="$REGISTRO/vm-compute-node-v17:$NEON" \
+            -target-arch=linux/amd64
+          docker push -q "$REGISTRO/vm-compute-node-v17:$NEON"
+          echo "✓ $REGISTRO/vm-compute-node-v17:$NEON (compute-node-v17:$COMPUTE + el spec de $NEON)"
