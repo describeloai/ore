@@ -1490,8 +1490,11 @@ else
       #   eso tampoco se rinde ya uno por fuente pendiente (`--fuentes`): era
       #   un segundo catálogo, por la puerta de atrás, compitiendo con el de
       #   `ore-serve`.
+      # ⚠️ (2026-10-11) Faltaban `54-el-trabajo-*` (un build: 0055) y `54-la-comprobacion-*`:
+      #   una pasada que cambió la cola borró el Job de un build 15 s después de lanzarse
+      #   (`lost`, medido en victor con PruebasDeMedia.java).
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|55-la-capa-jvm-.*|57-la-capa-node-.*)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|54-el-trabajo-.*|54-la-comprobacion-.*|55-la-capa-jvm-.*|57-la-capa-node-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
