@@ -1,10 +1,12 @@
 # 0060 · GCP resources — el mismo resultado por una fracción del coste
 
-**Estado:** en stand by (2026-10-09). G1 y G2 hechos (`42a3da8f`, `1ce4e27a`), sin probar en una corrida de verdad; lo siguiente, G4 (en local, en Docker) y G0 (con la cuenta activa). Propuesto el 2026-10-08. El plan —G0–G7, nivel 1 (~$60–90 al mes), y G8–G11, nivel 2
-(~$20–40 al mes)— está decidido en su forma; cada paso que toca
-la malla, el IAM o la infraestructura de Google pide su go antes de hacerse, y se mide antes y
-después. Lo que es de la cuenta —la facturación, las cuotas, un pago— es de la persona dueña, no de
-este ADR.
+**Estado:** **ITERADO (2026-10-11)**, con deudas menores. Hechos A1–A4 (Postgres a cero,
+retención de Artifact Registry, secretos, discos), B1 (construir en los runners de GitHub, sin
+Cloud Build), C1 (dormir sin actividad, despertar desde la consola), C2 (el túnel de Cloudflare,
+sin balanceadores) y C3 (presupuesto de €20 con alertas). Fijo con la malla dormida, estimado:
+**~16 $/mes**, más ~0,05 $/h despierta; se confirma con la factura. Estado final y deudas, en
+«**Cierre**», al final de la historia. Propuesto el 2026-10-08. Cada paso que tocó la malla, el
+IAM o la infraestructura de Google tuvo su go; la facturación y las cuentas son de la persona.
 
 Recoge **el espectro entero de prácticas, hábitos y optimizaciones** con que seguimos desarrollando
 sobre GCP con el coste de infraestructura **al mínimo**: qué se paga, por qué, y qué se deja de
@@ -709,6 +711,36 @@ En la consola (rubix-platform `5a20951`):
 Probado en el banco: `/auth/despertar` dice dormida (Keycloak no contesta) y que falta el
 token; la pantalla lo enseña; el workspace carga con el latido. Falta, con el token puesto en
 Vercel, un despertar de punta a punta desde la consola.
+
+## Cierre (2026-10-11)
+
+**Los últimos pasos:**
+- **B1·4:** `ore-ci` pierde `roles/cloudbuild.builds.builder` y `roles/storage.objectAdmin`. Le
+  quedan `artifactregistry.writer`, `container.developer` y `logging.logWriter`, que son lo que
+  usan `construir` e `imagen`; las pruebas de GCS van contra `fake-gcs-server`. Su última llamada
+  a Cloud Build, el 2026-10-08 18:41. Borrada la rama `b1/medir`; su contenido está en `main`.
+- **Los TXT de validación de C2** fuera de `ore.paladio.io`. Los certificados se renuevan por HTTP
+  y cada nombre tiene su registro propio, así que el comodín no vuelve a morder. Los tres de
+  `login` en GoDaddy los quita la persona.
+- **C3:** presupuesto `ORE 0060 C3: 20 EUR al mes` (`372820c1`) sobre este proyecto, con avisos
+  por correo a los administradores de facturación al 50, 90 y 100 % gastado y al 100 % previsto.
+  Activada la API `billingbudgets` (gratuita).
+  - ⚠️ **Un presupuesto avisa, no corta.**
+  - ⚠️ **Octubre saltará entero:** los €178 del 1 al 8 de octubre ya están dentro. La señal útil
+    empieza en noviembre, o antes si «previsto» sale disparado.
+
+**Lo que queda, sin urgencia:**
+- Medir la factura real con la malla dormida, una semana. Esperado: ~16 $ de fijo.
+- Un ciclo dormir → despertar por el túnel. Llega solo al caducar la retención
+  (`ore.dev/despierta-hasta`, 2026-10-11 20:00Z).
+- La consola de Vercel y el CLI `ore` por el túnel.
+- C1·5: `jobs-s` a spot y discos de balanced a standard (pocos $). El nodo `e2-standard-2` es
+  dudoso: el sistema ocupa ~45 % de un `e2-standard-4`.
+- Las versiones 63–66 de `t-demo-forja-admin`.
+- Envoy Gateway v1.8 deja de tener soporte el 2026-11-08: subir cuando GKE suba sus CRDs de
+  Gateway API a v1.6.
+- La entrada TCP pública de Postgres (0058) vuelve cuando haya clientes: otra regla regional,
+  ~18 $/mes.
 
 ## Primeros principios
 
