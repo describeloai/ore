@@ -5,7 +5,7 @@
 [`docs/media.md`](../media.md), la suite en [`conformidad/media`](../../conformidad/media/README.md),
 `ore-medios` sirviendo y la puerta de lectura: una colección virtual se lee desde un puesto. B4,
 B4b, **B5 y B7 hechos** —en vivo el 2026-10-03; B7 es su forma SQL—; **B9 y B10 hechos** —ficheros
-que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM5 hechos** en local y en el CI (leer, dentro de un `@Transform`, escribir, `apply()` en ficheros y en filas, la galería: **51/51 de la suite y 51 del SDK**); la prueba en vivo espera a la cuenta. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
+que dan ficheros, en Python y en SQL, en vivo el 2026-10-08—; B6, por construir; **JM** —la media en la JVM— planeada el 2026-10-09 (JM0–JM5, en local): **JM0–JM5 hechos** en local y en el CI (leer, dentro de un `@Transform`, escribir, `apply()` en ficheros y en filas, la galería: **51/51 de la suite y 51 del SDK**); **JM en vivo el 2026-10-11** (JM·P1–P4 en victor, abajo), con tres deudas. Nace de E10 C de 0046, que se promueve aquí: no es una pantalla de la consola sino el
 uso de la media desde código, con su escritura, y toca el SDK, el puesto, ore-serve y la gramática.
 
 ## La pregunta
@@ -1045,6 +1045,39 @@ aquí, acotado:
    `as_of` no encuentra la transacción; en el código no hay `--depth`); la URL prefirmada de una
    virtual contra el bucket (la firma es la de E9, por otra puerta); y cuánto tarda `verify` de
    ítems grandes contra el plazo de `ore-serve`.
+
+#### JM en vivo (2026-10-11)
+
+En victor, desde la consola, repositorio `test_project/javatransformsv1`:
+
+| paso | qué | resultado |
+|---|---|---|
+| P1 · `IndiceContratos.java` | leer `s3_standard.nueva_carpeta.contratos` (copia en el lago): ítems y dos rangos por PDF | Preview y Build, 4 filas; 1 listado + 8 lecturas `307` por corrida |
+| P2 · `CopiaFotos.java` | `createCollection` + `putMany` de 100 a `sandbox.jm_fotos` | Build: transaction 1 · 100 items; el Preview falla (no escribe), como se diseñó |
+| P3 · `PaginasDeContratos.java` | `apply()` en filas (tabla anclada) | Build; el segundo no recalcula (un solo commit del puntero) |
+| P4 · `PruebasDeMedia.java` | `as_of`, `verify`, la URL de una virtual | 11 de 15 bien (abajo) |
+
+Lo que se vio de la lista de arriba:
+- **1 · GCS de verdad**: URL firmada, `Range` y `307` a `storage.googleapis.com`, desde el puesto.
+- **3 · La red del puesto**: sólo DNS, metadatos, `199.36.153.8/30` (Google privado) y `ore-medios`.
+- **4 · `putMany` de 100**: sin errores (el heap, sin medir aparte).
+- **6 · La consola**: Build y Preview con media; el Build enseña lo escrito (0055, `89adeb1d`).
+- **7 · H1–H4**: `as_of` = la fijada lee los 100; otra, 422 (D-H1). `verify`: 145–274 ms por
+  contrato, **100 fotos en 4,5 s**. La URL de una virtual sale de S3 con su plazo recortado
+  (≤ 120 s); desde el puesto no se llega (sólo sale a Google), como debe.
+
+Huecos que sólo se vieron aquí, cerrados el mismo día:
+- **El decimal de una `List<Map>`** salía del primer valor (`26c353e6`).
+- **`verify` era 403 desde un build** (en `no_escribe` y no en la puerta del agente; `c9d2484d`).
+- **El aprovisionador borraba los builds en curso** al reescribir la cola (`a97159be`, malla).
+- **El Build no decía el resumen de un `apply()`** ni enseñaba lo escrito (`89adeb1d`).
+- **Los errores de la media, en español** (`ore-serve`, `ore-medios` y los orígenes): en inglés (b387641f; los clasificadores de los drivers siguen a las palabras nuevas).
+
+**Deudas:**
+- **Leer una virtual**: `s3_foreign` tiene una clave de AWS que ya no existe (`InvalidAccessKeyId`);
+  el camino de ORE llega a S3 y firma. Hace falta volver a dar de alta la fuente (la persona).
+- **2 · El token de 300 s** renovado en una lectura de más de cinco minutos: sin probar.
+- **5 · La suite como celda** contra `conformidad.default.*`: con B6, que siembra esas colecciones.
 
 ## Lo que no se hace aquí
 
