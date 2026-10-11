@@ -468,6 +468,24 @@ Cada hito, en orden, con lo que entra y cuándo está hecho.
 - Hecho cuando:
   - pasan N días sin un error atribuible;
   - los SLOs están medidos: commit, disponibilidad y despertar.
+- **Hecho (2026-10-11)**: cerrado en el laboratorio y en producción, con una corrida corta de **2 h**, no días. Era Libro: cuatro piezas, cuatro drivers y 8 golpes (detalle: «P7 en producción, versión corta»).
+
+  | | medido en producción |
+  |---|---|
+  | datos | **0 perdidos**: 4.212 transferencias y 1.524 avisos, cuadrados al céntimo en la conciliación final |
+  | disponibilidad | **99,986 %** con golpes · **100 %** fuera de ellos |
+  | despertar | **0,3–4,1 s** desde el pool · **~37 s** en frío |
+  | reparar una VM muerta | **6,9 s** con pool · **34,7 s** en frío |
+  | pageserver · safekeeper | espera máxima 9,7 s · no se nota |
+  | commit | p50 1,37 s, sólo informativo: desde España, por el túnel |
+
+  - Destapó **5 fallos** que el laboratorio no veía, **todos arreglados en producción**:
+    - el endpoint huérfano `arrancando`;
+    - el pool sin `localhost`;
+    - el pool por la IP del pod;
+    - el túnel bloqueado por la NetworkPolicy;
+    - dormir a mitad de migrar, que causó ~10 min sin servicio.
+  - **Sin medir**: lo que necesita días (nada crece, noches sin nodo) y el commit desde la región.
 
 **P8 · Operarlo sin miedo**
 - Qué:
