@@ -1410,6 +1410,25 @@ public final class Ore {
         else throw new IllegalArgumentException("write(): column `" + v.getName() + "` (" + tipo + ") cannot be filled");
     }
 
+    /**
+     * El decimal de una columna de {@code BigDecimal}, de TODOS sus valores, como pyarrow: la
+     * escala mayor y los dígitos enteros mayores. Del primero solo, {@code 0.00} daba
+     * {@code decimal(2, 2)} y un {@code 12.50} después rompía el {@code write()} (medido en
+     * victor, 2026-10-11).
+     */
+    @SuppressWarnings("unchecked")
+    private static String decimalDe(List<?> lista, String n) {
+        int escala = 0, enteros = 1;
+        for (Object o : lista) {
+            if (((Map<String, Object>) o).get(n) instanceof BigDecimal d) {
+                escala = Math.max(escala, Math.max(d.scale(), 0));
+                enteros = Math.max(enteros, d.precision() - d.scale());
+            }
+        }
+        if (enteros + escala > 38) throw new IllegalArgumentException("write(): column `" + n + "` needs " + (enteros + escala) + " digits, and a decimal holds 38 (0032)");
+        return "decimal128(" + (enteros + escala) + ", " + escala + ")";
+    }
+
     /** Lo que se escribe, como flujo Arrow IPC: {@code VectorSchemaRoot}, {@code ArrowReader}, {@code Rows} o {@code List<Map>}. */
     @SuppressWarnings("unchecked")
     private static byte[] ipcDe(Object datos, List<Map<String, Object>> esquema) throws Exception {
@@ -1442,7 +1461,7 @@ public final class Ore {
         for (String n : nombres) if (!tipos.containsKey(n)) {
             Object v = null;
             for (Object o : lista) { Object x = ((Map<String, Object>) o).get(n); if (x != null) { v = x; break; } }
-            tipos.put(n, inferredType(v));
+            tipos.put(n, v instanceof BigDecimal ? decimalDe(lista, n) : inferredType(v));
         }
         List<Field> campos = new ArrayList<>();
         for (String n : nombres) campos.add(campoArrow(n, tipos.get(n)));

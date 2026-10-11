@@ -406,6 +406,31 @@ final class Escritura {
                 exige(Sdk.registro("serve").stream().noneMatch(q -> String.valueOf(q.get(1)).contains("/transactions")), "llegó a la celda");
                 return "en un Preview, transaction() no sale de la celda: Preview writes nothing (como Python)";
             });
+            // ── 0055 JT · el tipo decimal de una List<Map>: de TODOS sus valores ──
+            Sdk.caso("escrita", 18, () -> {
+                // Medido en victor (2026-10-11, ClientesResumen.java): el tipo salía del primer
+                // valor (0.00 → decimal(2, 2)) y 12.50 rompía el write() con «precision 4 > 2».
+                ParaElBanco.ensayo("ventas.resumen", "resumen");
+                Map<String, Object> visto;
+                try {
+                    List<Map<String, Object>> filas = new java.util.ArrayList<>();
+                    for (Object[] f : new Object[][] {{"a", new java.math.BigDecimal("0.00")}, {"b", new java.math.BigDecimal("12.50")},
+                                                      {"c", new java.math.BigDecimal("1234.5")}, {"d", null}}) {
+                        Map<String, Object> m = new java.util.LinkedHashMap<>();
+                        m.put("id", f[0]);
+                        m.put("gastado", f[1]);
+                        filas.add(m);
+                    }
+                    Ore.write("ventas.resumen", filas);
+                } finally {
+                    visto = Lectura.m(ParaElBanco.finDelEnsayo());
+                }
+                Map<String, Object> col = Lectura.m(Lectura.l(visto.get("columnas")).get(1));
+                exige("decimal(6, 2)".equals(String.valueOf(col.get("iceberg"))), "iceberg de gastado " + col);
+                String todo = ore.Json.escribir(visto.get("filas"));
+                exige(todo.contains("1234.50") && todo.contains("12.50") && todo.contains("0.00"), "filas " + todo);
+                return "write() de una List<Map> con 0.00, 12.50 y 1234.5: decimal(6, 2), de todos los valores y no del primero (como pyarrow)";
+            });
             // ── el build de un @Transform cuya salida es una colección escrita ──
             Sdk.caso("escrita", 17, () -> {
                 Path f = Banco.celda("paginas-build.jsh");
