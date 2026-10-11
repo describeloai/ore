@@ -186,6 +186,11 @@ spec:
             matchLabels: { ore.dev/rol: tunel }
       ports: [{ port: 10080, protocol: TCP }]
   egress:
+    # ⛔ El DNS. Envoy encuentra a su controlador por NOMBRE (`envoy-gateway.envoy-gateway-system
+    #   .svc`, un clúster `STRICT_DNS` en su arranque): sin esto se queda 1/2 con «no healthy
+    #   upstream» hacia `xds_cluster` y la puerta nunca pasa a `Programmed` (medido en C2·1).
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
     - to:
         - podSelector:
             matchLabels: { app.kubernetes.io/name: gateway-helm }
