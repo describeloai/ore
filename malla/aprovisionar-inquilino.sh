@@ -499,6 +499,21 @@ if [ "$ESTADO" = "retirada" ]; then
   else
     duda "las zonas de DNS (el registro de $ENTRADA_RET)"
   fi
+  # y su nombre en Cloudflare (0060 C2·4, el revés de ⑧b)
+  if [ -n "$ENTRADA_RET" ]; then
+    SAAS="${SAAS:-$(dirname "${GEN:-$RAIZ/malla/gen-inquilino.py}")/cloudflare-saas.py}"
+    if [ -n "$SECO" ]; then
+      haria "quitar \`$ENTRADA_RET\` de Cloudflare"
+    else
+      SALIDA=$("$PY" "$(ruta "$SAAS")" quitar "$ENTRADA_RET" 2>&1)
+      case $? in
+        0) ya "en Cloudflare: $SALIDA" ;;
+        3) hecho "en Cloudflare: $SALIDA" ;;
+        4) echo "  ⚠ $SALIDA" ;;
+        *) NO_SE="$SALIDA"; duda "\`$ENTRADA_RET\` en Cloudflare" ;;
+      esac
+    fi
+  fi
   # el almacen: todo lo que lleva la celda delante
   if preguntar "$GCLOUD" secrets list --filter="name~^projects/[0-9]+/secrets/$NS-" --format="value(name)"; then
     for S in $RESPUESTA; do
