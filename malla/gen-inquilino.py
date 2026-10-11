@@ -848,7 +848,9 @@ def comprobar():
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
         debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
-                                     "converger-inquilinos.sh"}
+                                     "converger-inquilinos.sh",
+                                     # ⑧b del aprovisionador: el nombre de la celda en Cloudflare (0060 C2·4)
+                                     "cloudflare-saas.py"}
         for n in sorted(debidos - montados):
             fallos.append(
                 "`%s` NO esta en el `configMapGenerator`: el Job no lo tendria "

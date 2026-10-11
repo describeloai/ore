@@ -189,6 +189,12 @@ spec:
                   #   guion lo marcaba ✓ — ningun inquilino avisaba a Flux.
                   gcloud secrets versions access latest \
                     --secret=receptor-url --out-file=/puesto/receptor-url
+                  # ⭐ Y el token de Cloudflare for SaaS (0060 C2·4), para dar de alta
+                  #   la entrada de cada celda en el túnel. OPCIONAL: sin él el paso ⑧b
+                  #   lo dice y sigue; que falte no puede tumbar el aprovisionador.
+                  gcloud secrets versions access latest \
+                    --secret=cloudflare-saas --out-file=/puesto/cloudflare-saas \
+                    || echo "puesto · sin cloudflare-saas: ⑧b no dará de alta nombres"
                   chmod 0400 /puesto/*
                   echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) + $(wc -c < /puesto/aprovisionador-secreto) + $(wc -c < /puesto/receptor-url) bytes"
               resources:
@@ -214,6 +220,10 @@ spec:
                 #   si mismo cuando corre de un arbol; aqui los dos vienen del mismo
                 #   `ConfigMap`, con las plantillas al lado.
                 - { name: GEN, value: /guion/gen-inquilino.py }
+                # ⭐ La zona de Cloudflare donde viven los nombres de las celdas
+                #   (`ontoforge.org`, 0060 C2) y el token, por el tmpfs.
+                - { name: CF_ZONA, value: fcd51f696b80774d5d33c02c8342be4f }
+                - { name: CF_SAAS_TOKEN_FILE, value: /puesto/cloudflare-saas }
               volumeMounts:
                 - { name: puesto, mountPath: /puesto, readOnly: true }
                 - { name: guion, mountPath: /guion, readOnly: true }

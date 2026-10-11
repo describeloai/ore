@@ -133,6 +133,22 @@ else
     && hecho "usuario serve-$NOMBRE" || ya "el usuario serve-$NOMBRE"
 fi
 
+paso "⑤ SU NOMBRE EN CLOUDFLARE (0060 C2·4)"
+# El aprovisionador (⑧b) lo dio de alta como custom hostname de `ontoforge.org`; si
+# se queda, ocupa uno de los 100 gratis y Cloudflare sigue sirviendo un nombre sin
+# celda. La entrada por defecto; una propia se pasa en ENTRADA.
+ENTRADA="${ENTRADA:-$NOMBRE.ore.paladio.io}"
+if [ -n "$SECO" ]; then
+  haria "quitar \`$ENTRADA\` de Cloudflare"
+elif [ -z "${CF_SAAS_TOKEN_FILE:-}" ] || [ -z "${CF_ZONA:-}" ]; then
+  echo "  ⚠ sin CF_SAAS_TOKEN_FILE / CF_ZONA: \`$ENTRADA\` sigue en Cloudflare. Se quita con"
+  echo "      CF_ZONA=… CF_SAAS_TOKEN_FILE=… python3 malla/cloudflare-saas.py quitar $ENTRADA"
+else
+  PY=$(command -v python3 || command -v python)
+  SALIDA=$("$PY" "$(dirname "$0")/cloudflare-saas.py" quitar "$ENTRADA" 2>&1)
+  case $? in 0|3) hecho "$SALIDA" ;; *) echo "  ? $SALIDA" >&2 ;; esac
+fi
+
 # ══════════════════════════════════════════════════════════════════════════
 echo
 echo "✓ \`$NOMBRE\` desmontado${SECO:+ (en seco)} — menos la fila, la clave y lo del cluster"

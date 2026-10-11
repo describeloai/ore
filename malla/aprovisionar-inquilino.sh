@@ -1851,6 +1851,27 @@ else
   fi
 fi
 
+# ── ⑧b Y su nombre en Cloudflare (ORE 0060 C2·4) ──────────────────────────
+#
+# La puerta es el túnel: `$PUERTA` es un CNAME a `entrada.ontoforge.org`, y
+# Cloudflare sólo sirve la entrada si es un *custom hostname* de esa zona. Sin
+# esto, la celda nueva resuelve, llega a Cloudflare… y Cloudflare contesta que
+# no conoce el nombre. Lo hace `cloudflare-saas.py` (sus tres respuestas, allí).
+if [ -n "$ENTRADA" ]; then
+  SAAS="${SAAS:-$(dirname "${GEN:-$RAIZ/malla/gen-inquilino.py}")/cloudflare-saas.py}"
+  if [ -n "$SECO" ]; then
+    haria "dar de alta \`$ENTRADA\` en Cloudflare (custom hostname de ontoforge.org)"
+  else
+    SALIDA=$("$PY" "$(ruta "$SAAS")" asegurar "$ENTRADA" 2>&1); R=$?
+    case $R in
+      0) ya "en Cloudflare: $SALIDA" ;;
+      3) hecho "en Cloudflare: $SALIDA" ;;
+      4) echo "  ⚠ $SALIDA" ;;
+      *) NO_SE="$SALIDA"; duda "\`$ENTRADA\` en Cloudflare" ;;
+    esac
+  fi
+fi
+
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑨ LA CELDA, APROVISIONADA — y lo que este script sigue sin hacer"
 # ══════════════════════════════════════════════════════════════════════════
