@@ -107,6 +107,19 @@ def en_uso():
             vivos += 1
     if vivos:
         uso.append(f"kueue:{vivos}")
+    # ⭐ Y la retención a mano: lo que este guion no ve como uso —las pruebas de Postgres
+    #   (0058), que hablan con el proxy y no con ore-serve— la mantiene despierta con
+    #     kubectl annotate ns ore-system ore.dev/despierta-hasta=2026-10-11T12:00:00Z --overwrite
+    #   Pasada la hora deja de contar sola: olvidarla no la deja encendida para siempre.
+    hasta = k8s("GET", "/api/v1/namespaces/ore-system")["metadata"].get(
+        "annotations", {}).get("ore.dev/despierta-hasta", "")
+    if hasta:
+        try:
+            resta = -edad_s(hasta)
+            if resta > 0:
+                uso.append(f"retenida:{int(resta // 60)}min")
+        except ValueError:
+            paso(f"⚠️ ore.dev/despierta-hasta no es una fecha ISO: {hasta!r} — no cuenta")
     return uso
 
 
