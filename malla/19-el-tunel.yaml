@@ -68,7 +68,8 @@ spec:
               echo "token · $(wc -c < /puesto/token) bytes"
           resources:
             requests: { cpu: 50m, memory: 128Mi }
-            limits: { memory: 256Mi }
+            # La `cuota` de ore-system exige limits.cpu (si no, el pod ni se crea).
+            limits: { cpu: 500m, memory: 256Mi }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
@@ -89,7 +90,7 @@ spec:
           volumeMounts: [{ name: puesto, mountPath: /puesto, readOnly: true }]
           resources:
             requests: { cpu: 20m, memory: 64Mi }
-            limits: { memory: 256Mi }
+            limits: { cpu: 500m, memory: 256Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
