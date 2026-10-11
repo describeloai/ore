@@ -98,7 +98,7 @@ despertar() {
   echo "── a · en frío sin nodo (un cliente por la mañana)"
   if [ "$(observado "$P")" = dormido ] && [ "$(kc get neonvm --no-headers 2>/dev/null | grep -c .)" = 0 ]; then
     # Como un cliente: si la conexión vence (el proxy no espera minutos), vuelve a conectar.
-    local antes; antes=$(nodos_pg); local t0; t0=$(ms) x n=0
+    local antes t0 x n=0; antes=$(nodos_pg); t0=$(ms)
     while :; do
       n=$((n+1)); x=$(pc_ms "$CLAVE" "$(conn "$HOST" "$ROL" "$P" 300)")
       case "$x" in fallo*) echo "  · intento $n: ${x:0:120}"; [ $(( $(ms) - t0 )) -ge 900000 ] && break;; *) break;; esac
