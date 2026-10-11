@@ -12,7 +12,7 @@ use std::io::Read;
 fn motivo(clave: &str, f: &Fallo) -> String {
     match f.estado {
         404 | 412 => memoria::cambio(clave),
-        _ => format!("no se pudo leer `{clave}`: {}", f.motivo()),
+        _ => format!("could not read `{clave}`: {}", f.motivo()),
     }
 }
 
@@ -42,7 +42,7 @@ impl Gcs {
         let mut b = Vec::new();
         l.lector
             .read_to_end(&mut b)
-            .map_err(|e| format!("`{clave}` no se pudo leer entero: {e}"))?;
+            .map_err(|e| format!("could not read `{clave}` in full: {e}"))?;
         Ok(b)
     }
 }
@@ -51,7 +51,7 @@ impl Origen for Gcs {
     fn listar(&self, prefijo: &str) -> Result<Vec<Objeto>, String> {
         let (metas, _) = self
             .listar(prefijo, false, None)
-            .map_err(|f| format!("no se pudo listar `{prefijo}`: {}", f.motivo()))?;
+            .map_err(|f| format!("could not list `{prefijo}`: {}", f.motivo()))?;
         Ok(metas
             .into_iter()
             .map(|m| Objeto {
@@ -86,12 +86,9 @@ impl Origen for Gcs {
     /// Cada generación (`versions=true`): la vigente y, con Object Versioning,
     /// las de antes (`timeDeleted`), que se siguen pudiendo leer.
     fn listar_versiones(&self, prefijo: &str) -> Result<Vec<Version>, String> {
-        let (metas, _) = self.listar(prefijo, true, None).map_err(|f| {
-            format!(
-                "no se pudieron listar las versiones de `{prefijo}`: {}",
-                f.motivo()
-            )
-        })?;
+        let (metas, _) = self
+            .listar(prefijo, true, None)
+            .map_err(|f| format!("could not list the versions of `{prefijo}`: {}", f.motivo()))?;
         Ok(metas
             .into_iter()
             .map(|m| Version {
@@ -112,7 +109,7 @@ impl Origen for Gcs {
             .meta(clave, Some(version).filter(|v| !v.is_empty()))
             .map_err(|f| {
                 format!(
-                    "no se pudo mirar `{clave}` (generación {version}): {}",
+                    "could not inspect `{clave}` (generation {version}): {}",
                     f.motivo()
                 )
             })?;
@@ -127,9 +124,11 @@ impl Origen for Gcs {
         let l = self
             .bajar(clave, Some(version), None)
             .map_err(|f| match f.estado {
-                404 => format!("no se pudo leer `{clave}` (generación {version}): 404 ya no está"),
+                404 => {
+                    format!("could not read `{clave}` (generation {version}): 404 no longer exists")
+                }
                 _ => format!(
-                    "no se pudo leer `{clave}` (generación {version}): {}",
+                    "could not read `{clave}` (generation {version}): {}",
                     f.motivo()
                 ),
             })?;
@@ -157,12 +156,12 @@ impl Origen for Gcs {
         self.bajar(clave, Some(g).filter(|g| !g.is_empty()), rango)
             .map_err(|f| match f.estado {
                 404 | 412 => Rechazo::Cambiado(format!(
-                    "`{clave}` ya no es, en el origen, la generación fijada ({})",
+                    "`{clave}` at the source is no longer the pinned generation ({})",
                     f.motivo()
                 )),
-                416 => Rechazo::Rango(format!("el rango no cabe en `{clave}`")),
-                0 => Rechazo::Origen(format!("el origen no contesta: {}", f.cuerpo)),
-                _ => Rechazo::Origen(format!("el origen contestó {} a `{clave}`", f.motivo())),
+                416 => Rechazo::Rango(format!("the range does not fit in `{clave}`")),
+                0 => Rechazo::Origen(format!("the source is not responding: {}", f.cuerpo)),
+                _ => Rechazo::Origen(format!("the source answered {} for `{clave}`", f.motivo())),
             })
     }
 

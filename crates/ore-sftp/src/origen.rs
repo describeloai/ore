@@ -79,10 +79,10 @@ impl Origen for Sftp {
         let esperado = etag_de(version);
         let l = Sftp::leer(self, clave, esperado.as_deref()).map_err(|f| match f.tipo {
             Tipo::Cambio | Tipo::NoEsta => {
-                format!("no se pudo leer `{clave}` (versión {version}): ya no está como se listó")
+                format!("could not read `{clave}` (version {version}): no longer as listed")
             }
             _ => format!(
-                "no se pudo leer `{clave}` (versión {version}): {}",
+                "could not read `{clave}` (version {version}): {}",
                 f.mensaje
             ),
         })?;
@@ -102,8 +102,7 @@ impl Origen for Sftp {
         _rango: Option<&str>,
     ) -> Result<ore_objetos::Leido, Rechazo> {
         Err(Rechazo::Origen(format!(
-            "`{clave}` está en un SFTP, que no versiona: sus colecciones sólo pueden ser \
-             mantenidas (la copia en el lago), nunca virtuales (ADR 0061, D-O1)"
+            "`{clave}` is on an SFTP server, which does not version: its collections can only be maintained (the copy in the lake), never virtual (ADR 0061, D-O1)"
         )))
     }
 }

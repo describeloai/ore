@@ -161,7 +161,7 @@ pub fn abrir(
             problema(
                 416,
                 "media/rango",
-                format!("`{r}` no es un rango de una parte (`bytes=a-b`, `bytes=a-`, `bytes=-n`)"),
+                format!("`{r}` is not a single-part range (`bytes=a-b`, `bytes=a-`, `bytes=-n`)"),
             )
         })?),
     };
@@ -271,7 +271,7 @@ fn del_lago(
         problema(
             404,
             "media/no-existe",
-            format!("`{}` no tiene su blob en el lago", pieza.camino),
+            format!("`{}` has no blob in the lake", pieza.camino),
         )
     };
     let tamano = match pieza.tamano {
@@ -287,7 +287,10 @@ fn del_lago(
             problema(
                 416,
                 "media/rango",
-                format!("el rango no cabe en `{}` ({tamano} bytes)", pieza.camino),
+                format!(
+                    "the range does not fit in `{}` ({tamano} bytes)",
+                    pieza.camino
+                ),
             )
         })?),
     };
@@ -343,12 +346,12 @@ impl Read for Verificado {
             Err(std::io::Error::new(std::io::ErrorKind::InvalidData, m))
         };
         if let Some(t) = self.tamano.filter(|t| *t != self.leidos) {
-            return corrupto(format!("{} bytes de {t}", self.leidos));
+            return corrupto(format!("{} bytes of {t}", self.leidos));
         }
         let visto = ore_s3::hex(&std::mem::take(&mut self.hash).finalize());
         match &self.sha256 {
             Some(h) if !h.eq_ignore_ascii_case(&visto) => {
-                corrupto(format!("sha256 {visto}, y el ítem dice {h}"))
+                corrupto(format!("sha256 {visto}, but the item says {h}"))
             }
             Some(_) => Ok(0),
             None => {

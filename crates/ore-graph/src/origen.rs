@@ -65,19 +65,19 @@ impl Vigilado {
 
     fn al_terminar(&mut self) -> io::Result<()> {
         let cambio =
-            |m: String| io::Error::other(format!("`{}` cambió mientras se leía: {m}", self.clave));
+            |m: String| io::Error::other(format!("`{}` changed while being read: {m}", self.clave));
         match self.graph.item(&self.id) {
             Ok(i) if i.ctag == self.ctag => {}
             Ok(i) => {
                 return Err(cambio(format!(
-                    "su cTag era {} y ahora es {}",
+                    "its cTag was {} and is now {}",
                     self.ctag, i.ctag
                 )));
             }
-            Err(f) if f.no_esta() => return Err(cambio("ya no está".into())),
+            Err(f) if f.no_esta() => return Err(cambio("it no longer exists".into())),
             Err(f) => {
                 return Err(io::Error::other(format!(
-                    "no se pudo comprobar que `{}` no cambió: {}",
+                    "could not check that `{}` did not change: {}",
                     self.clave,
                     f.motivo()
                 )));
@@ -87,7 +87,7 @@ impl Vigilado {
             && q.texto() != *quiere
         {
             return Err(io::Error::other(format!(
-                "`{}` no casa con su huella: llegó {}, SharePoint dice {quiere}",
+                "`{}` does not match its hash: got {}, SharePoint says {quiere}",
                 self.clave,
                 q.texto()
             )));
@@ -114,7 +114,7 @@ impl Read for Vigilado {
 fn leer_todo(mut r: impl Read, clave: &str) -> Result<Vec<u8>, String> {
     let mut b = Vec::new();
     r.read_to_end(&mut b)
-        .map_err(|e| format!("`{clave}` no se pudo leer entero: {e}"))?;
+        .map_err(|e| format!("could not read `{clave}` in full: {e}"))?;
     Ok(b)
 }
 
@@ -145,7 +145,7 @@ impl Graph {
             if f.no_esta() {
                 memoria::cambio(clave)
             } else {
-                format!("no se pudo mirar `{clave}`: {}", f.motivo())
+                format!("could not inspect `{clave}`: {}", f.motivo())
             }
         })
     }
@@ -154,7 +154,7 @@ impl Graph {
 impl Origen for Graph {
     fn listar(&self, prefijo: &str) -> Result<Vec<Objeto>, String> {
         Ok(Graph::listar(self, prefijo)
-            .map_err(|f| format!("no se pudo listar `{prefijo}`: {}", f.motivo()))?
+            .map_err(|f| format!("could not list `{prefijo}`: {}", f.motivo()))?
             .into_iter()
             .filter(|i| i.clase == Clase::Fichero)
             .map(|i| Objeto {
@@ -170,7 +170,7 @@ impl Origen for Graph {
         let i = self.por_ruta(clave)?;
         let (v, _) = self
             .abrir_actual(&i, clave, Some(rango))
-            .map_err(|f| format!("no se pudo leer `{clave}`: {}", f.motivo()))?;
+            .map_err(|f| format!("could not read `{clave}`: {}", f.motivo()))?;
         leer_todo(v, clave)
     }
 
@@ -182,7 +182,7 @@ impl Origen for Graph {
         }
         let (v, _) = self
             .abrir_actual(&i, clave, None)
-            .map_err(|f| format!("no se pudo leer `{clave}`: {}", f.motivo()))?;
+            .map_err(|f| format!("could not read `{clave}`: {}", f.motivo()))?;
         Ok(Box::new(v))
     }
 
@@ -193,29 +193,25 @@ impl Origen for Graph {
         }
         let (v, _) = self
             .abrir_actual(&i, clave, Some(rango))
-            .map_err(|f| format!("no se pudo leer `{clave}`: {}", f.motivo()))?;
+            .map_err(|f| format!("could not read `{clave}`: {}", f.motivo()))?;
         leer_todo(v, clave)
     }
 
     /// La actual de cada fichero, con su número de versión.
     fn listar_versiones(&self, prefijo: &str) -> Result<Vec<Version>, String> {
-        let items = Graph::listar(self, prefijo).map_err(|f| {
-            format!(
-                "no se pudieron listar las versiones de `{prefijo}`: {}",
-                f.motivo()
-            )
-        })?;
+        let items = Graph::listar(self, prefijo)
+            .map_err(|f| format!("could not list the versions of `{prefijo}`: {}", f.motivo()))?;
         let mut out = Vec::new();
         for i in items.into_iter().filter(|i| i.clase == Clase::Fichero) {
             let vs = self.versiones(&i.id).map_err(|f| {
                 format!(
-                    "no se pudieron listar las versiones de `{}`: {}",
+                    "could not list the versions of `{}`: {}",
                     i.ruta,
                     f.motivo()
                 )
             })?;
             let Some(v) = vs.first() else {
-                return Err(format!("SharePoint no da ninguna versión de `{}`", i.ruta));
+                return Err(format!("SharePoint gives no version of `{}`", i.ruta));
             };
             out.push(Version {
                 version: format!("{}@{}", i.id, v.id),
@@ -232,14 +228,13 @@ impl Origen for Graph {
 
     /// El `quickXorHash` si es la actual; de una vieja, ninguna (Graph no la da).
     fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String> {
-        let (id, v) = partir(version).ok_or_else(|| {
-            format!("`{version}` no es una versión de SharePoint (`<id>@<versión>`)")
-        })?;
+        let (id, v) = partir(version)
+            .ok_or_else(|| format!("`{version}` is not a SharePoint version (`<id>@<version>`)"))?;
         match self.si_es_la_actual(id, v) {
             Ok(i) => Ok(i.and_then(|i| i.huella())),
             Err(f) if f.no_esta() => Err(memoria::cambio(clave)),
             Err(f) => Err(format!(
-                "no se pudo mirar `{clave}` (versión {v}): {}",
+                "could not inspect `{clave}` (version {v}): {}",
                 f.motivo()
             )),
         }
@@ -250,14 +245,13 @@ impl Origen for Graph {
         clave: &str,
         version: &str,
     ) -> Result<(Box<dyn Read + '_>, Abierto), String> {
-        let (id, v) = partir(version).ok_or_else(|| {
-            format!("`{version}` no es una versión de SharePoint (`<id>@<versión>`)")
-        })?;
+        let (id, v) = partir(version)
+            .ok_or_else(|| format!("`{version}` is not a SharePoint version (`<id>@<version>`)"))?;
         let ya_no = |f: Fallo| {
             if f.no_esta() {
-                format!("no se pudo leer `{clave}` (versión {v}): ya no está")
+                format!("could not read `{clave}` (version {v}): no longer exists")
             } else {
-                format!("no se pudo leer `{clave}` (versión {v}): {}", f.motivo())
+                format!("could not read `{clave}` (version {v}): {}", f.motivo())
             }
         };
         match self.si_es_la_actual(id, v).map_err(ya_no)? {
@@ -293,17 +287,17 @@ impl Origen for Graph {
     ) -> Result<Leido, Rechazo> {
         let Some((id, v)) = partir(version) else {
             return Err(Rechazo::Origen(format!(
-                "`{version}` no es una versión de SharePoint (`<id>@<versión>`)"
+                "`{version}` is not a SharePoint version (`<id>@<version>`)"
             )));
         };
         let rechazo = |f: Fallo| match f.estado {
             404 => Rechazo::Cambiado(format!(
-                "`{clave}` ya no tiene, en el origen, la versión fijada {v} ({})",
+                "`{clave}` no longer has the pinned version {v} at the source ({})",
                 f.motivo()
             )),
-            416 => Rechazo::Rango(format!("el rango no cabe en `{clave}`")),
-            0 => Rechazo::Origen(format!("el origen no contesta: {}", f.cuerpo)),
-            _ => Rechazo::Origen(format!("el origen contestó {} a `{clave}`", f.motivo())),
+            416 => Rechazo::Rango(format!("the range does not fit in `{clave}`")),
+            0 => Rechazo::Origen(format!("the source is not responding: {}", f.cuerpo)),
+            _ => Rechazo::Origen(format!("the source answered {} for `{clave}`", f.motivo())),
         };
         let r = rango.and_then(|r| r.strip_prefix("bytes="));
         let actual = if etag.is_empty() {
@@ -329,7 +323,7 @@ impl Origen for Graph {
                             .find(|x| x.id == v)
                             .ok_or_else(|| {
                                 Rechazo::Cambiado(format!(
-                                    "`{clave}` ya no tiene, en el origen, la versión fijada {v}"
+                                    "`{clave}` no longer has the pinned version {v} at the source"
                                 ))
                             })?
                             .tamano;

@@ -81,7 +81,7 @@ fn agente() -> Result<ureq::Agent, String> {
     AGENTE_
         .get_or_init(|| {
             let tls = native_tls::TlsConnector::new()
-                .map_err(|e| format!("no se pudo abrir el TLS de la plataforma: {e}"))?;
+                .map_err(|e| format!("could not open the platform TLS: {e}"))?;
             // Sin redirecciones: un bucket de otra región contesta `301` con la
             // suya en `x-amz-bucket-region`, y seguirlo a ciegas perdería la
             // firma y el motivo.
@@ -102,7 +102,7 @@ fn agente_de_flujo() -> Result<ureq::Agent, String> {
     static A: std::sync::OnceLock<Result<ureq::Agent, String>> = std::sync::OnceLock::new();
     A.get_or_init(|| {
         let tls = native_tls::TlsConnector::new()
-            .map_err(|e| format!("no se pudo abrir el TLS de la plataforma: {e}"))?;
+            .map_err(|e| format!("could not open the platform TLS: {e}"))?;
         Ok(ureq::AgentBuilder::new()
             .tls_connector(std::sync::Arc::new(tls))
             .redirects(0)
@@ -211,7 +211,7 @@ fn respuesta(b: &Bucket, metodo: &str, resp: ureq::Response) -> Result<Respuesta
     resp.into_reader()
         .take(512 * 1024 * 1024)
         .read_to_end(&mut cuerpo)
-        .map_err(|e| format!("{metodo} {}: el cuerpo no se pudo leer: {e}", b.host()))?;
+        .map_err(|e| format!("{metodo} {}: could not read the body: {e}", b.host()))?;
     PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     BYTES.fetch_add(cuerpo.len(), std::sync::atomic::Ordering::Relaxed);
     Ok(Respuesta {

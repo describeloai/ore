@@ -83,7 +83,7 @@ fn laboratorio() -> bool {
     std::env::var("ORE_SHAREPOINT_LABORATORIO").as_deref() == Ok("1")
 }
 
-const FORMA: &str = "la URL de SharePoint es `sharepoint://<host>/[sites/<sitio>/]<biblioteca>[/<prefijo>]?tenant=<id>&cliente=<id de la app>`";
+const FORMA: &str = "a SharePoint URL is `sharepoint://<host>/[sites/<site>/]<library>[/<prefix>]?tenant=<id>&cliente=<app id>`";
 
 /// `sharepoint://host/sites/x/biblioteca/prefijo?tenant=…&cliente=…` → la
 /// coordenada.
@@ -98,7 +98,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             let nombre = segs
                 .get(1)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| format!("falta el nombre del sitio tras `{}/`: {FORMA}", segs[0]))?;
+                .ok_or_else(|| format!("missing the site name after `{}/`: {FORMA}", segs[0]))?;
             (format!("{}/{nombre}", segs[0]), &segs[2..])
         }
         _ => (String::new(), &segs[..]),
@@ -106,7 +106,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
     let biblioteca = resto
         .first()
         .filter(|b| !b.is_empty())
-        .ok_or_else(|| format!("falta la biblioteca (`Documentos`, `Shared Documents`…): {FORMA}"))?
+        .ok_or_else(|| format!("missing the library (`Documentos`, `Shared Documents`…): {FORMA}"))?
         .clone();
     let prefijo = resto[1..].join("/");
     if host.is_empty()
@@ -114,7 +114,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-.:".contains(&b))
     {
-        return Err(format!("`{host}` no es un host: {FORMA}"));
+        return Err(format!("`{host}` is not a host: {FORMA}"));
     }
     let (mut tenant, mut cliente, mut endpoint) = (None, None, None);
     let id = |v: &str| {
@@ -128,32 +128,30 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
         match k {
             "tenant" if id(&v) => tenant = Some(v),
             "cliente" if id(&v) => cliente = Some(v),
-            "tenant" | "cliente" => return Err(format!("`{k}={v}` no es un id de Entra")),
+            "tenant" | "cliente" => return Err(format!("`{k}={v}` is not an Entra id")),
             "endpoint" => {
                 if !laboratorio() {
                     return Err(format!(
-                        "`endpoint={v}`: sólo se habla con `{GRAPH}` (el token de la celda no se le \
-                         da a otro servidor)"
+                        "`endpoint={v}`: only `{GRAPH}` is contacted (the cell's token is never given to another server)"
                     ));
                 }
                 endpoint = Some(v.trim_end_matches('/').to_string());
             }
             otro => {
                 return Err(format!(
-                    "`{otro}` no es un parámetro de una URL `sharepoint://` (sin secretos: D-O5)"
+                    "`{otro}` is not a parameter of a `sharepoint://` URL (no secrets: D-O5)"
                 ));
             }
         }
     }
     if endpoint.is_none() && !host.ends_with(".sharepoint.com") {
         return Err(format!(
-            "`{host}` no es un host de SharePoint Online (`<tenant>.sharepoint.com`, o \
-             `<tenant>-my.sharepoint.com` para un OneDrive)"
+            "`{host}` is not a SharePoint Online host (`<tenant>.sharepoint.com`, or `<tenant>-my.sharepoint.com` for a OneDrive)"
         ));
     }
     let (Some(tenant), Some(cliente)) = (tenant, cliente) else {
         return Err(
-            "falta `tenant` o `cliente`: la URL nombra la app de Entra que confía en esta celda"
+            "missing `tenant` or `cliente`: the URL names the Entra app that trusts this cell"
                 .into(),
         );
     };
@@ -397,13 +395,13 @@ pub fn paginar(
     while let Some(u) = url.take() {
         if !u.starts_with(&format!("{base}/")) {
             return Err(Fallo::ore(format!(
-                "Graph mandó la página siguiente a `{}`, fuera de `{base}`: no se sigue",
+                "Graph sent the next page to `{}`, outside `{base}`: not followed",
                 u.split('?').next().unwrap_or("")
             )));
         }
         let t = pagina(&u)?;
         let n = ore_core::parse::parse(&t)
-            .map_err(|e| Fallo::ore(format!("un listado de Graph no analiza: {e:?}")))?;
+            .map_err(|e| Fallo::ore(format!("a Graph listing does not parse: {e:?}")))?;
         if let Some((_, v)) = n.get("value") {
             todo.extend(v.items().iter().cloned());
         }
@@ -475,7 +473,7 @@ impl Graph {
     fn pedir(&self, url: &str, cabeceras: &[(&str, &str)]) -> Result<ureq::Response, Fallo> {
         if !url.starts_with(&self.base()) {
             return Err(Fallo::ore(format!(
-                "`{url}` no es de Graph: el token no se le da"
+                "`{url}` is not a Graph URL: the token is not given to it"
             )));
         }
         let t = self.token().map_err(Fallo::ore)?;
@@ -499,8 +497,7 @@ impl Graph {
                         .unwrap_or(5);
                     if espera > ESPERA_MAXIMA {
                         return Err(Fallo::ore(format!(
-                            "Graph pide esperar {espera} s ({c}): más de lo que espera un driver; \
-                             el tenant está al límite de su ritmo"
+                            "Graph asks to wait {espera} s ({c}): longer than a driver waits; the tenant is at its rate limit"
                         )));
                     }
                     ESPERAS.fetch_add(1, Relaxed);
@@ -510,7 +507,7 @@ impl Graph {
                 Err(ureq::Error::Status(c, x)) => {
                     return Err(Fallo::de(c, x.into_string().unwrap_or_default()));
                 }
-                Err(e) => return Err(Fallo::ore(format!("Graph no contesta: {e}"))),
+                Err(e) => return Err(Fallo::ore(format!("Graph is not responding: {e}"))),
             }
         }
     }
@@ -519,9 +516,10 @@ impl Graph {
         let t = self
             .pedir(url, &[])?
             .into_string()
-            .map_err(|e| Fallo::ore(format!("Graph no se pudo leer: {e}")))?;
+            .map_err(|e| Fallo::ore(format!("could not read the Graph response: {e}")))?;
         BYTES.fetch_add(t.len(), Relaxed);
-        ore_core::parse::parse(&t).map_err(|e| Fallo::ore(format!("Graph no analiza: {e:?}")))
+        ore_core::parse::parse(&t)
+            .map_err(|e| Fallo::ore(format!("the Graph response does not parse: {e:?}")))
     }
 
     fn paginado(&self, url: String) -> Result<Vec<Node>, Fallo> {
@@ -530,7 +528,7 @@ impl Graph {
             let t = self
                 .pedir(u, &[])?
                 .into_string()
-                .map_err(|e| Fallo::ore(format!("Graph no se pudo leer: {e}")))?;
+                .map_err(|e| Fallo::ore(format!("could not read the Graph response: {e}")))?;
             BYTES.fetch_add(t.len(), Relaxed);
             Ok(t)
         })
@@ -550,7 +548,7 @@ impl Graph {
             )
         };
         let s = self.json(&url)?;
-        let id = texto(&s, "id").ok_or_else(|| Fallo::ore("el sitio no trae `id`"))?;
+        let id = texto(&s, "id").ok_or_else(|| Fallo::ore("the site has no `id`"))?;
         let drives = self
             .paginado(format!("{}/sites/{id}/drives", self.base()))?
             .iter()
@@ -575,7 +573,7 @@ impl Graph {
                 estado: 404,
                 codigo: "bibliotecaNoEsta".into(),
                 cuerpo: format!(
-                    "no hay una biblioteca `{b}` en el sitio; hay: {}",
+                    "there is no library `{b}` in the site; there are: {}",
                     drives
                         .iter()
                         .map(|(n, _)| format!("`{n}`"))
@@ -723,7 +721,7 @@ impl Graph {
             let a = r.header("location").unwrap_or("").to_string();
             if !descarga_valida(&a, self.fuente.endpoint.is_some() && laboratorio()) {
                 return Err(Fallo::ore(format!(
-                    "Graph mandó la descarga a `{}`, que no es de SharePoint: no se pide",
+                    "Graph redirected the download to `{}`, which is not SharePoint: not requested",
                     a.split('?').next().unwrap_or("")
                 )));
             }
@@ -734,13 +732,13 @@ impl Graph {
             PETICIONES.fetch_add(1, Relaxed);
             match p.call() {
                 Ok(x) if (300..400).contains(&x.status()) => {
-                    return Err(Fallo::ore("la descarga de SharePoint volvió a redirigir"));
+                    return Err(Fallo::ore("the SharePoint download redirected again"));
                 }
                 Ok(x) => x,
                 Err(ureq::Error::Status(c, x)) => {
                     return Err(Fallo::de(c, x.into_string().unwrap_or_default()));
                 }
-                Err(e) => return Err(Fallo::ore(format!("SharePoint no contesta: {e}"))),
+                Err(e) => return Err(Fallo::ore(format!("SharePoint is not responding: {e}"))),
             }
         } else {
             r
@@ -797,29 +795,29 @@ mod tests {
         for (mala, dice) in [
             (
                 "sharepoint://contoso.sharepoint.com/sites/Finanzas?tenant=t&cliente=a",
-                "falta la biblioteca",
+                "missing the library",
             ),
             (
                 "sharepoint://contoso.sharepoint.com/sites/?tenant=t&cliente=a",
-                "falta el nombre del sitio",
+                "missing the site name",
             ),
             (
                 "sharepoint://contoso.sharepoint.com/Documents",
-                "falta `tenant`",
+                "missing `tenant`",
             ),
             (
                 "sharepoint://evil.example.com/Documents?tenant=t&cliente=a",
-                "no es un host de SharePoint",
+                "is not a SharePoint Online host",
             ),
             (
                 "sharepoint://contoso.sharepoint.com/Documents?tenant=t&cliente=a&secreto=x",
-                "sin secretos",
+                "no secrets",
             ),
             (
                 "sharepoint://contoso.sharepoint.com/Documents?tenant=t&cliente=a&endpoint=http://x",
-                "no se le da a otro servidor",
+                "never given to another server",
             ),
-            ("az://x/y", "la URL de SharePoint"),
+            ("az://x/y", "a SharePoint URL"),
         ] {
             let e = leer(mala).expect_err(mala);
             assert!(e.contains(dice), "{mala}: {e}");
@@ -880,7 +878,11 @@ mod tests {
             Ok(r#"{"value":[],"@odata.nextLink":"https://evil.com/v1.0/x"}"#.to_string())
         })
         .expect_err("fuera de Graph");
-        assert!(fuera.motivo().contains("no se sigue"), "{}", fuera.motivo());
+        assert!(
+            fuera.motivo().contains("not followed"),
+            "{}",
+            fuera.motivo()
+        );
     }
 
     #[test]

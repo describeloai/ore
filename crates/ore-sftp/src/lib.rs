@@ -77,14 +77,15 @@ impl std::fmt::Debug for Fuente {
 
 /// `sftp://usuario@host:puerto/ruta?huella=…` → la coordenada.
 pub fn leer(url: &str) -> Result<Fuente, String> {
-    let resto = url.trim().strip_prefix("sftp://").ok_or(
-        "la URL de un SFTP es `sftp://<usuario>@<host>[:<puerto>]/<ruta>?huella=SHA256:…`",
-    )?;
+    let resto = url
+        .trim()
+        .strip_prefix("sftp://")
+        .ok_or("an SFTP URL is `sftp://<user>@<host>[:<port>]/<path>?huella=SHA256:…`")?;
     let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
     let (autoridad, ruta) = camino.split_once('/').unwrap_or((camino, ""));
     let (quien, donde) = autoridad
         .rsplit_once('@')
-        .ok_or("falta el usuario: `sftp://<usuario>@<host>`")?;
+        .ok_or("missing the user: `sftp://<user>@<host>`")?;
     let (usuario, contrasena) = match quien.split_once(':') {
         Some((u, c)) => (descodificar(u), Some(descodificar(c))),
         None => (descodificar(quien), None),
@@ -93,7 +94,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
         Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => (
             h,
             p.parse::<u16>()
-                .map_err(|_| format!("`{p}` no es un puerto"))?,
+                .map_err(|_| format!("`{p}` is not a port"))?,
         ),
         _ => (donde, 22),
     };
@@ -104,7 +105,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-.:".contains(&b))
     {
-        return Err(format!("`{usuario}@{host}` no es un usuario y un host"));
+        return Err(format!("`{usuario}@{host}` is not a user and a host"));
     }
     let (mut huella, mut edad, mut legado) = (None, EDAD, false);
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
@@ -114,7 +115,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             "huella" => {
                 if !v.starts_with("SHA256:") || v.len() < 20 {
                     return Err(format!(
-                        "`huella={v}` no es una huella SHA-256 (`SHA256:…`, la de `ssh-keygen -l`)"
+                        "`huella={v}` is not a SHA-256 fingerprint (`SHA256:…`, as printed by `ssh-keygen -l`)"
                     ));
                 }
                 huella = Some(v.trim_end_matches('=').to_string());
@@ -122,10 +123,10 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             "edad" => {
                 edad = v
                     .parse()
-                    .map_err(|_| format!("`edad={v}` no son segundos"))?
+                    .map_err(|_| format!("`edad={v}` is not a number of seconds"))?
             }
             "legado" => legado = v == "1",
-            otro => return Err(format!("`{otro}` no es un parámetro de una URL `sftp://`")),
+            otro => return Err(format!("`{otro}` is not a parameter of an `sftp://` URL")),
         }
     }
     let ruta = descodificar(ruta);
@@ -246,11 +247,11 @@ impl Fallo {
     fn de_sftp(ruta: &str, e: &ssh2::Error) -> Fallo {
         match e.code() {
             ssh2::ErrorCode::SFTP(2) => {
-                Fallo::de(Tipo::NoEsta, format!("`{ruta}` no está (SFTP 2)"))
+                Fallo::de(Tipo::NoEsta, format!("`{ruta}` does not exist (SFTP 2)"))
             }
             ssh2::ErrorCode::SFTP(3) => Fallo::de(
                 Tipo::Permiso,
-                format!("`{ruta}`: sin permiso de lectura para este usuario (SFTP 3)"),
+                format!("`{ruta}`: no read permission for this user (SFTP 3)"),
             ),
             _ => Fallo::de(Tipo::Otro, format!("`{ruta}`: {e}")),
         }
@@ -282,14 +283,19 @@ fn huella(s: &ssh2::Session) -> Option<String> {
 fn saludar(f: &Fuente) -> Result<(ssh2::Session, String), Fallo> {
     let direccion = (f.host.as_str(), f.puerto)
         .to_socket_addrs()
-        .map_err(|e| Fallo::de(Tipo::Conexion, format!("`{}` no resuelve: {e}", f.host)))?
+        .map_err(|e| {
+            Fallo::de(
+                Tipo::Conexion,
+                format!("`{}` does not resolve: {e}", f.host),
+            )
+        })?
         .next()
-        .ok_or_else(|| Fallo::de(Tipo::Conexion, format!("`{}` no resuelve", f.host)))?;
+        .ok_or_else(|| Fallo::de(Tipo::Conexion, format!("`{}` does not resolve", f.host)))?;
     let tcp = TcpStream::connect_timeout(&direccion, ESPERA).map_err(|e| {
         Fallo::de(
             Tipo::Conexion,
             format!(
-                "`{}:{}` no contesta ({e}): ¿está abierto a la IP de salida de esta celda?",
+                "`{}:{}` is not responding ({e}): is it open to this cell's egress IP?",
                 f.host, f.puerto
             ),
         )
@@ -312,17 +318,18 @@ fn saludar(f: &Fuente) -> Result<(ssh2::Session, String), Fallo> {
         Fallo::de(
             Tipo::Conexion,
             format!(
-                "el saludo SSH con `{}` falla ({e}){}",
+                "the SSH handshake with `{}` failed ({e}){}",
                 f.host,
                 if f.legado {
                     ""
                 } else {
-                    ": si el servidor es viejo (sólo `ssh-rsa`), `legado=1` en la URL"
+                    ": if the server is old (only `ssh-rsa`), add `legado=1` to the URL"
                 }
             ),
         )
     })?;
-    let vista = huella(&s).ok_or_else(|| Fallo::de(Tipo::Otro, "el servidor no da su clave"))?;
+    let vista =
+        huella(&s).ok_or_else(|| Fallo::de(Tipo::Otro, "the server does not give its host key"))?;
     Ok((s, vista))
 }
 
@@ -335,8 +342,7 @@ fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
                     vista: vista.clone(),
                 },
                 format!(
-                    "la URL no fija la huella del host: la de `{}` es `{vista}`; si es la suya, \
-                     `huella={vista}` en la URL",
+                    "the URL does not pin the host fingerprint: the one of `{}` is `{vista}`; if it is theirs, add `huella={vista}` to the URL",
                     f.host
                 ),
             ));
@@ -347,9 +353,7 @@ fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
                     vista: vista.clone(),
                 },
                 format!(
-                    "la huella del host `{}` es `{vista}` y la fijada `{h}`: puede ser otro servidor \
-                     haciéndose pasar por él, así que no se autentica ni se lee. Si el cliente la \
-                     cambió, se vuelve a fijar a propósito",
+                    "the host fingerprint of `{}` is `{vista}` and the pinned one is `{h}`: it may be another server impersonating it, so nothing is authenticated or read. If the client changed it, pin it again on purpose",
                     f.host
                 ),
             ));
@@ -362,7 +366,7 @@ fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
             let clave = std::env::var("ORE_SFTP_CLAVE").map_err(|_| {
                 Fallo::de(
                     Tipo::Autenticacion,
-                    "falta la clave de la celda (`ORE_SFTP_CLAVE`, el fichero de su privada)",
+                    "the cell's key is missing (`ORE_SFTP_CLAVE`, the file with its private key)",
                 )
             })?;
             s.userauth_pubkey_file(&f.usuario, None, Path::new(&clave), None)
@@ -372,20 +376,20 @@ fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
         Fallo::de(
             Tipo::Autenticacion,
             format!(
-                "`{}@{}` no deja entrar ({e}): {}",
+                "`{}@{}` denied access ({e}): {}",
                 f.usuario,
                 f.host,
                 if f.contrasena.is_some() {
-                    "la contraseña no vale"
+                    "the password is not valid"
                 } else {
-                    "la clave pública de la celda tiene que estar en su `~/.ssh/authorized_keys`"
+                    "the cell's public key must be in its `~/.ssh/authorized_keys`"
                 }
             ),
         )
     })?;
     let sftp = s
         .sftp()
-        .map_err(|e| Fallo::de(Tipo::Otro, format!("el subsistema SFTP no se abre: {e}")))?;
+        .map_err(|e| Fallo::de(Tipo::Otro, format!("the SFTP subsystem does not open: {e}")))?;
     Ok(Conexion { _sesion: s, sftp })
 }
 
@@ -542,7 +546,7 @@ impl Sftp {
         if st.file_type().is_symlink() {
             return Err(Fallo::de(
                 Tipo::Otro,
-                format!("`{clave}` es un enlace simbólico: no se sigue"),
+                format!("`{clave}` is a symbolic link: not followed"),
             ));
         }
         Ok((st.size.unwrap_or(0), st.mtime.unwrap_or(0)))
@@ -587,7 +591,7 @@ impl Sftp {
     ) -> Result<Vec<u8>, Fallo> {
         let mut l = self.leer(clave, esperado)?;
         let (desde, hasta) = limites(rango, l.tamano).ok_or_else(|| {
-            Fallo::de(Tipo::Otro, format!("`{rango}` no es un rango de `{clave}`"))
+            Fallo::de(Tipo::Otro, format!("`{rango}` is not a range of `{clave}`"))
         })?;
         l.fichero
             .seek(SeekFrom::Start(desde))

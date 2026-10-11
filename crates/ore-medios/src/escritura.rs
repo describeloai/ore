@@ -189,7 +189,7 @@ impl Escrituras {
             return Err(problema(
                 409,
                 "media/transaccion",
-                "la transacción se está confirmando: ya no entra nada",
+                "the transaction is being committed: nothing more can be added",
             ));
         }
         Ok((id.clone(), t.coleccion.clone()))
@@ -217,12 +217,12 @@ impl Escrituras {
             Some(t) if t.coleccion != coleccion => Err(problema(
                 409,
                 "media/transaccion",
-                format!("la transacción `{id}` es de `{}`", t.coleccion),
+                format!("transaction `{id}` belongs to `{}`", t.coleccion),
             )),
             Some(t) if t.confirmando => Err(problema(
                 409,
                 "media/transaccion",
-                format!("la transacción `{id}` ya se está confirmando"),
+                format!("transaction `{id}` is already being committed"),
             )),
             _ => Err(no_existe(id)),
         }
@@ -248,7 +248,7 @@ fn sin_permiso() -> Respuesta {
     problema(
         401,
         "media/permiso",
-        "el permiso de subida falta, caducó o su transacción ya se cerró: abre otra",
+        "the upload permit is missing, expired or its transaction is already closed: open another",
     )
 }
 
@@ -256,7 +256,9 @@ fn no_existe(id: &str) -> Respuesta {
     problema(
         404,
         "media/transaccion",
-        format!("no hay ninguna transacción abierta `{id}` (caducó, se cerró, o un reinicio)"),
+        format!(
+            "there is no open transaction `{id}` (it expired, was closed, or the service restarted)"
+        ),
     )
 }
 
@@ -266,14 +268,14 @@ fn no_existe(id: &str) -> Respuesta {
 /// descarga: lo que no cumple, no entra.
 pub fn camino_valido(c: &str) -> Result<(), String> {
     if c.is_empty() || c.len() > CAMINO_MAXIMO {
-        return Err(format!("un camino tiene entre 1 y {CAMINO_MAXIMO} bytes"));
+        return Err(format!("a path has between 1 and {CAMINO_MAXIMO} bytes"));
     }
     if c.chars().any(|x| x.is_control() || x == '\\') {
-        return Err("un camino no lleva caracteres de control ni `\\`".into());
+        return Err("a path cannot contain control characters or `\\`".into());
     }
     if c.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
         return Err(format!(
-            "`{c}` no es un camino relativo limpio: sin `/` al principio ni al final, ni `//`, `.` o `..`"
+            "`{c}` is not a clean relative path: no leading or trailing `/`, and no `//`, `.` or `..`"
         ));
     }
     Ok(())
@@ -312,8 +314,12 @@ fn recibir(cuerpo: &mut dyn Read, largo: u64, temporal: &Path) -> Result<Recibid
     let mut fichero = None;
     if !en_memoria {
         let ruta = temporal.join(format!("ore-medios-{}", uuid::Uuid::new_v4().simple()));
-        let f = std::fs::File::create(&ruta)
-            .map_err(|e| format!("el temporal `{}` no se pudo crear: {e}", ruta.display()))?;
+        let f = std::fs::File::create(&ruta).map_err(|e| {
+            format!(
+                "could not create the temporary file `{}`: {e}",
+                ruta.display()
+            )
+        })?;
         fichero = Some((ruta, std::io::BufWriter::with_capacity(1 << 20, f)));
     } else {
         memoria.reserve(largo as usize);
@@ -323,7 +329,7 @@ fn recibir(cuerpo: &mut dyn Read, largo: u64, temporal: &Path) -> Result<Recibid
         let n = match cuerpo.read(&mut buf) {
             Ok(0) => break Ok(()),
             Ok(n) => n,
-            Err(e) => break Err(format!("la subida se cortó: {e}")),
+            Err(e) => break Err(format!("the upload was cut short: {e}")),
         };
         let trozo = &buf[..n];
         sha.update(trozo);
@@ -336,7 +342,7 @@ fn recibir(cuerpo: &mut dyn Read, largo: u64, temporal: &Path) -> Result<Recibid
         match &mut fichero {
             Some((_, f)) => {
                 if let Err(e) = f.write_all(trozo) {
-                    break Err(format!("el temporal no se pudo escribir: {e}"));
+                    break Err(format!("could not write the temporary file: {e}"));
                 }
             }
             None => memoria.extend_from_slice(trozo),
@@ -346,7 +352,7 @@ fn recibir(cuerpo: &mut dyn Read, largo: u64, temporal: &Path) -> Result<Recibid
         Some((ruta, mut f)) => {
             let hecho = resultado.and_then(|_| {
                 f.flush()
-                    .map_err(|e| format!("el temporal no se pudo escribir: {e}"))
+                    .map_err(|e| format!("could not write the temporary file: {e}"))
             });
             if let Err(e) = hecho {
                 drop(f);
@@ -362,7 +368,7 @@ fn recibir(cuerpo: &mut dyn Read, largo: u64, temporal: &Path) -> Result<Recibid
     };
     if tamano != largo {
         borrar_temporal(&cuerpo);
-        return Err(format!("llegaron {tamano} bytes de los {largo} anunciados"));
+        return Err(format!("received {tamano} bytes of the {largo} announced"));
     }
     Ok(Recibido {
         sha256: sha.finalize().into(),
@@ -564,7 +570,7 @@ impl Servicio {
     /// `POST /escritura/abrir {coleccion, ttl_s?}`.
     pub(crate) fn escritura_abrir(&self, n: &Node) -> Respuesta {
         let Some(coleccion) = texto(n, "coleccion").filter(|c| c.split('.').count() == 3) else {
-            return problema(400, "media/peticion", "falta `coleccion` (`b.s.n`)");
+            return problema(400, "media/peticion", "missing `coleccion` (`b.s.n`)");
         };
         let ttl = n
             .get("ttl_s")
@@ -575,7 +581,7 @@ impl Servicio {
             return problema(
                 429,
                 "media/limite",
-                format!("hay {MAXIMAS} transacciones abiertas: confirma o aborta alguna"),
+                format!("there are {MAXIMAS} open transactions: commit or abort one"),
             );
         };
         Respuesta {
@@ -596,7 +602,7 @@ impl Servicio {
     /// `POST /escritura/abortar {transaccion}`: no deja nada.
     pub(crate) fn escritura_abortar(&self, n: &Node) -> Respuesta {
         let Some(id) = texto(n, "transaccion") else {
-            return problema(400, "media/peticion", "falta `transaccion`");
+            return problema(400, "media/peticion", "missing `transaccion`");
         };
         if self.escrituras.quitar(id) {
             Respuesta::sin_contenido()
@@ -616,7 +622,7 @@ impl Servicio {
             Err(r) => return r,
         };
         let Some(camino) = p.consulta.get("path") else {
-            return problema(422, "media/peticion", "falta `path`: dónde va el ítem");
+            return problema(422, "media/peticion", "missing `path`: where the item goes");
         };
         if let Err(m) = camino_valido(camino) {
             return problema(422, "media/peticion", m);
@@ -636,7 +642,7 @@ impl Servicio {
             return problema(
                 422,
                 "media/digest-no-casa",
-                format!("el `Repr-Digest` no es el de los bytes que llegaron (sha256:{hex})"),
+                format!("the `Repr-Digest` does not match the bytes received (sha256:{hex})"),
             );
         }
         let detectado = ore_core::medios::tipo_por_bytes(&r.cabeza).map(str::to_string);
@@ -662,7 +668,13 @@ impl Servicio {
         borrar_temporal(&blob.cuerpo);
         let subido = match subido {
             Ok(s) => s,
-            Err(e) => return problema(502, "media/origen", format!("el lago no lo guardó: {e}")),
+            Err(e) => {
+                return problema(
+                    502,
+                    "media/origen",
+                    format!("the lake did not store it: {e}"),
+                );
+            }
         };
         // Ya estaba: que la recogida no se lo lleve antes de que una fila lo
         // nombre (E8·3b).
@@ -713,18 +725,18 @@ impl Servicio {
     /// puntero.
     pub(crate) fn escritura_confirmar(&self, n: &Node) -> Respuesta {
         let (Some(id), Some(coleccion)) = (texto(n, "transaccion"), texto(n, "coleccion")) else {
-            return problema(400, "media/peticion", "faltan `transaccion` y `coleccion`");
+            return problema(
+                400,
+                "media/peticion",
+                "missing `transaccion` and `coleccion`",
+            );
         };
         let base_ml = texto(n, "metadata_location");
         let base_tx: i64 = match texto(n, "base").map(str::parse) {
             None => 0,
             Some(Ok(b)) => b,
             Some(Err(_)) => {
-                return problema(
-                    400,
-                    "media/peticion",
-                    "`base` es la transacción del puntero",
-                );
+                return problema(400, "media/peticion", "`base` is the pointer's transaction");
             }
         };
         let items = match self.escrituras.cerrar(id, coleccion) {
@@ -764,7 +776,11 @@ impl Servicio {
                 match self.indice(&pedido) {
                     Ok(ix) => Some(ix),
                     Err(e) => {
-                        return problema(502, "media/origen", format!("la base no se lee: {e}"));
+                        return problema(
+                            502,
+                            "media/origen",
+                            format!("could not read the base: {e}"),
+                        );
                     }
                 }
             }
@@ -802,7 +818,7 @@ impl Servicio {
                     422,
                     "media/derivacion",
                     format!(
-                        "`{camino}` sale de `{}`, y este commit lo da por de `{}`",
+                        "`{camino}` comes from `{}`, and this commit attributes it to `{}`",
                         viejo.uri, nuevo.uri
                     ),
                 );
@@ -903,7 +919,7 @@ impl Servicio {
                         404,
                         "media/no-existe",
                         format!(
-                            "`{camino}` no es un ítem actual de `{coleccion}`: no hay qué retirar"
+                            "`{camino}` is not a current item of `{coleccion}`: nothing to retire"
                         ),
                     );
                 }
@@ -963,11 +979,11 @@ impl Servicio {
         let cab = cabecera(coleccion, tx);
         let dicho = match self.listados.sellar(&cab, &dataset, base_ml, &filas) {
             Ok(d) => d,
-            Err(e) => return problema(502, "media/origen", format!("el sello falló: {e}")),
+            Err(e) => return problema(502, "media/origen", format!("the seal failed: {e}")),
         };
         let mut m = match ore_core::parse::parse(dicho.trim()).map(|n| Json::de_node(&n)) {
             Ok(Json::Obj(m)) => m,
-            _ => return problema(502, "media/origen", "el sello no contestó JSON"),
+            _ => return problema(502, "media/origen", "the seal did not answer JSON"),
         };
         m.insert("transaccion".into(), Json::Int(tx));
         m.insert("dataset".into(), Json::s(&dataset));

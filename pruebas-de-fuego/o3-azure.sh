@@ -83,7 +83,7 @@ if [ "${1:-}" = "--dentro" ]; then
 
   # 2 el token es al portador
   printf '%s' "{\"url\":\"$U\",\"objeto\":\"\"}" | env -u ORE_AZURE_LABORATORIO $B check > /dev/null 2> $W/e
-  grep -q 'no se le da a otro servidor' $W/e && dice "2 fuera del laboratorio, un endpoint que no es de Azure no recibe el token" || falla "2 la guarda: $(cat $W/e)"
+  grep -q 'never given to another server' $W/e && dice "2 fuera del laboratorio, un endpoint que no es de Azure no recibe el token" || falla "2 la guarda: $(cat $W/e)"
 
   # 3 explorar y catálogo
   printf '%s' "{\"url\":\"$U\",\"objeto\":\"\"}" | $B explorar > $W/x.json 2>/dev/null

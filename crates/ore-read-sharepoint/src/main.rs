@@ -71,9 +71,9 @@ impl Proveedor for SharePoint {
             &[
                 "404",
                 "itemNotFound",
-                "no hay una biblioteca",
-                "ya no está",
-                "ya no tiene",
+                "there is no library",
+                "no longer exists",
+                "no longer has",
             ],
         )
     }
@@ -97,7 +97,7 @@ mod pruebas {
     fn lo_que_graph_contesta_se_dice_en_el_codigo_del_contrato() {
         let c = |m: &str| SharePoint::fallo(m.to_string()).codigo;
         assert_eq!(
-            c("no se pudo listar `docs/`: 403 accessDenied Access denied"),
+            c("could not list `docs/`: 403 accessDenied Access denied"),
             Codigo::Credencial
         );
         assert_eq!(
@@ -107,14 +107,17 @@ mod pruebas {
             Codigo::Credencial
         );
         assert_eq!(
-            c("no se pudo leer `a.pdf` (versión 1.0): ya no está"),
+            c("could not read `a.pdf` (version 1.0): no longer exists"),
             Codigo::Objeto
         );
         assert_eq!(
-            c("no se pudo listar ``: 404 bibliotecaNoEsta no hay una biblioteca `X` en el sitio"),
+            c("could not list ``: 404 bibliotecaNoEsta there is no library `X` in the site"),
             Codigo::Objeto
         );
-        assert_eq!(c("Graph no contesta: Connection refused"), Codigo::Conexion);
+        assert_eq!(
+            c("Graph is not responding: Connection refused"),
+            Codigo::Conexion
+        );
     }
 
     #[test]

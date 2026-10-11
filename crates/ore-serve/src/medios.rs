@@ -128,7 +128,7 @@ pub(crate) fn pedir_a_medios(ruta: &str, cuerpo: &Json) -> Result<(u16, String),
         return Err(problema(
             503,
             "media/no-desplegado",
-            "esta celda no tiene `ore-medios` todavía (0049 B2)",
+            "this cell does not have `ore-medios` yet (0049 B2)",
         ));
     };
     ore_entrada::http::pedir_con(
@@ -146,7 +146,7 @@ pub(crate) fn pedir_a_medios(ruta: &str, cuerpo: &Json) -> Result<(u16, String),
         problema(
             503,
             "media/no-desplegado",
-            format!("`ore-medios` no contesta: {e}"),
+            format!("`ore-medios` is not responding: {e}"),
         )
     })
 }
@@ -175,25 +175,25 @@ pub(crate) fn fuente_de_la_coleccion(
     s: &str,
     c: &str,
 ) -> Result<(String, String), String> {
-    let (_, objeto) = coleccion_en(raiz, b, s, c).ok_or("la colección no está en el árbol")?;
-    let objeto = objeto.ok_or("la colección no dice de qué `objectTable` sale")?;
+    let (_, objeto) = coleccion_en(raiz, b, s, c).ok_or("the collection is not in the tree")?;
+    let objeto = objeto.ok_or("the collection does not say which `objectTable` it comes from")?;
     let partes: Vec<&str> = objeto.split('.').collect();
     let (ob, os, on) = match partes.as_slice() {
         [ob, os, on] => (*ob, *os, *on),
         [os, on] => (b, *os, *on),
         [on] => (b, s, *on),
-        _ => return Err(format!("`{objeto}` no es `b.s.n`")),
+        _ => return Err(format!("`{objeto}` is not `b.s.n`")),
     };
     let o = documento_en(raiz, ob, "ObjectTable", os, on)
-        .ok_or_else(|| format!("`{objeto}` no es un `ObjectTable` del árbol"))?;
+        .ok_or_else(|| format!("`{objeto}` is not an `ObjectTable` in the tree"))?;
     let ds = o
         .get("spec")
         .and_then(|(_, sp)| campo(sp, "datasource"))
-        .ok_or_else(|| format!("`{objeto}` no dice su `datasource`"))?;
+        .ok_or_else(|| format!("`{objeto}` does not declare its `datasource`"))?;
     let config = std::fs::read_to_string(raiz.join("ontology.config.yaml"))
-        .map_err(|e| format!("no se pudo leer `ontology.config.yaml`: {e}"))?;
+        .map_err(|e| format!("could not read `ontology.config.yaml`: {e}"))?;
     let config = ore_core::parse::parse(&config)
-        .map_err(|_| "`ontology.config.yaml` no analiza".to_string())?;
+        .map_err(|_| "`ontology.config.yaml` does not parse".to_string())?;
     let env = config
         .get("datasources")
         .map(|(_, v)| v.items())
@@ -201,7 +201,9 @@ pub(crate) fn fuente_de_la_coleccion(
         .iter()
         .find(|d| campo(d, "name").as_deref() == Some(ds.as_str()))
         .and_then(|d| campo(d, "connectionEnv"))
-        .ok_or_else(|| format!("la fuente `{ds}` no está declarada, o no dice `connectionEnv`"))?;
+        .ok_or_else(|| {
+            format!("datasource `{ds}` is not declared, or does not declare `connectionEnv`")
+        })?;
     Ok((ds, env))
 }
 
@@ -276,7 +278,9 @@ pub(crate) fn metadata_en_la_transaccion(
     let mut args = vec!["log", "--format=%H", desde.as_str(), "--"];
     args.extend(rutas.iter().map(String::as_str));
     let Some(log) = crate::documentos::git(raiz, &args) else {
-        return Err("el árbol no tiene historia, y sin ella no hay transacciones de antes".into());
+        return Err(
+            "the tree has no history, and without it there are no earlier transactions".into(),
+        );
     };
     // `<commit>:./<ruta>`: relativa a la raíz del árbol, no a la del repositorio.
     let pedidos: String = log
@@ -317,8 +321,7 @@ fn la_que_se_lee(
             422,
             "media/peticion",
             format!(
-                "un transform lee `{coleccion}` en la transacción que fijó al declararla (`{}`): \
-                 `as_of={n}` no la cambia",
+                "a transform reads `{coleccion}` at the transaction it pinned when declaring it (`{}`): `as_of={n}` does not change it",
                 f.transaccion
             ),
         ));
@@ -328,12 +331,12 @@ fn la_que_se_lee(
         Ok(None) => Err(problema(
             404,
             "media/no-existe",
-            format!("`{coleccion}` no tuvo nunca la transacción `{n}`"),
+            format!("`{coleccion}` never had transaction `{n}`"),
         )),
         Err(e) => Err(problema(
             404,
             "media/no-existe",
-            format!("la transacción `{n}` de `{coleccion}` no se puede buscar: {e}"),
+            format!("transaction `{n}` of `{coleccion}` cannot be looked up: {e}"),
         )),
     }
 }
@@ -391,8 +394,8 @@ fn versiones(raiz: &Path, pedidos: &str) -> Result<Vec<String>, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("git no arrancó: {e}"))?;
-    let mut entrada = hijo.stdin.take().ok_or("git sin entrada")?;
+        .map_err(|e| format!("git did not start: {e}"))?;
+    let mut entrada = hijo.stdin.take().ok_or("git has no stdin")?;
     let pedidos = pedidos.to_string();
     // Escribir en otro hilo: con muchas versiones, la salida llena su tubo
     // antes de que acabe la entrada.
@@ -420,7 +423,7 @@ fn versiones(raiz: &Path, pedidos: &str) -> Result<Vec<String>, String> {
             .next()
             .and_then(|l| l.parse::<usize>().ok())
         else {
-            return Err(format!("git cat-file dijo `{cabecera}`"));
+            return Err(format!("git cat-file said `{cabecera}`"));
         };
         let hasta = (i + largo).min(b.len());
         out.push(String::from_utf8_lossy(&b[i..hasta]).into_owned());
@@ -518,8 +521,7 @@ impl Servidor {
             return problema(
                 503,
                 "media/no-desplegado",
-                "esta celda no tiene `ore-medios` todavía (0049 B2): las colecciones se sirven por \
-                 `/colecciones/…` hasta que lo tenga",
+                "this cell does not have `ore-medios` yet (0049 B2): collections are served through `/colecciones/…` until it does",
             );
         };
         let coleccion = format!("{b}.{s}.{c}");
@@ -564,8 +566,7 @@ impl Servidor {
                                     422,
                                     "media/peticion",
                                     format!(
-                                        "el cursor es de la transacción `{tx}` y `as_of` dice `{a}`: \
-                                         un recorrido no mezcla dos"
+                                        "the cursor belongs to transaction `{tx}` and `as_of` says `{a}`: a traversal never mixes two"
                                     ),
                                 );
                             }
@@ -588,7 +589,7 @@ impl Servidor {
             return problema(
                 422,
                 "media/peticion",
-                "`as_of` es una transacción de la colección, como la da `list`",
+                "`as_of` is a transaction of the collection, as returned by `list`",
             );
         }
         let cuerpo_pedido = match operacion {
@@ -598,7 +599,7 @@ impl Servidor {
                     return problema(
                         400,
                         "media/peticion",
-                        "el cuerpo no es JSON: `{items: [...], ttl_s?}`",
+                        "the body is not JSON: `{items: [...], ttl_s?}`",
                     );
                 }
             },
@@ -609,7 +610,7 @@ impl Servidor {
                 return problema(
                     404,
                     "media/no-existe",
-                    format!("no hay ninguna colección `{coleccion}`"),
+                    format!("there is no collection `{coleccion}`"),
                 );
             };
             let puntero =
@@ -794,12 +795,12 @@ impl Servidor {
                         codigo,
                         cuerpo: Json::Crudo(texto.trim().to_string()),
                     },
-                    Err(_) => problema(502, "media/origen", "`ore-medios` no contestó JSON"),
+                    Err(_) => problema(502, "media/origen", "`ore-medios` did not answer JSON"),
                 },
                 Err(e) => problema(
                     503,
                     "media/no-desplegado",
-                    format!("`ore-medios` no contesta: {e}"),
+                    format!("`ore-medios` is not responding: {e}"),
                 ),
             }
         });
@@ -899,7 +900,7 @@ pub(crate) fn direccion_del_contenido(direccion: &str) -> String {
 
 fn a_donde(direccion: &str, texto: &str) -> Respuesta {
     let Ok(n) = ore_core::parse::parse(texto) else {
-        return problema(502, "media/origen", "`ore-medios` no contestó JSON");
+        return problema(502, "media/origen", "`ore-medios` did not answer JSON");
     };
     if campo(&n, "url").is_some() {
         return Respuesta {
@@ -908,7 +909,11 @@ fn a_donde(direccion: &str, texto: &str) -> Respuesta {
         };
     }
     let Some(permiso) = campo(&n, "permiso") else {
-        return problema(502, "media/origen", "`ore-medios` no dio ni URL ni permiso");
+        return problema(
+            502,
+            "media/origen",
+            "`ore-medios` returned neither a URL nor a permit",
+        );
     };
     let url = format!(
         "http://{}/contenido?permiso={permiso}",
@@ -1126,7 +1131,7 @@ mod pruebas {
         let r = lee(Some("3"), Some(&f)).map(|_| ()).unwrap_err();
         assert_eq!(r.codigo, 422);
         assert!(
-            r.cuerpo.jcs().contains("fijó al declararla"),
+            r.cuerpo.jcs().contains("pinned when declaring it"),
             "{}",
             r.cuerpo.jcs()
         );

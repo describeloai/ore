@@ -57,8 +57,14 @@ impl Proveedor for Ssh {
     fn fallo(m: String) -> ore_driver::Fallo {
         driver::clasificar(
             m,
-            &["no deja entrar", "ORE_SFTP_CLAVE", "huella", "SFTP 3"],
-            &["SFTP 2", "no está", "ya no está"],
+            &[
+                "denied access",
+                "ORE_SFTP_CLAVE",
+                "huella",
+                "fingerprint",
+                "SFTP 3",
+            ],
+            &["SFTP 2", "no está", "ya no está", "no longer"],
         )
     }
 
@@ -80,16 +86,16 @@ mod pruebas {
     fn lo_que_el_servidor_contesta_se_dice_en_el_codigo_del_contrato() {
         let c = |m: &str| Ssh::fallo(m.to_string()).codigo;
         assert_eq!(
-            c("`ore@h` no deja entrar ([Session(-18)] Username/PublicKey combination invalid): …"),
+            c("`ore@h` denied access ([Session(-18)] Username/PublicKey combination invalid): …"),
             Codigo::Credencial
         );
         assert_eq!(
-            c("la huella del host `h` es `SHA256:a` y la fijada `SHA256:b`: …"),
+            c("the host fingerprint of `h` is `SHA256:a` and the pinned one is `SHA256:b`: …"),
             Codigo::Credencial
         );
-        assert_eq!(c("`datos/x.csv` no está (SFTP 2)"), Codigo::Objeto);
+        assert_eq!(c("`datos/x.csv` does not exist (SFTP 2)"), Codigo::Objeto);
         assert_eq!(
-            c("`h:22` no contesta (Connection refused (os error 111)): …"),
+            c("`h:22` is not responding (Connection refused (os error 111)): …"),
             Codigo::Conexion
         );
     }

@@ -109,8 +109,8 @@ fn un_servidor_sftp_como_origen() {
     let mut resto = Vec::new();
     let e = r
         .read_to_end(&mut resto)
-        .expect_err("cambió mientras se leía");
-    assert!(e.to_string().contains("cambió"), "{e}");
+        .expect_err("changed while being read");
+    assert!(e.to_string().contains("changed"), "{e}");
     eprintln!(
         "sftp: huella (fijada, sin fijar, otra), listar sin enlaces, versiones, edad, rangos, permiso, D-O1, cambio a medias"
     );

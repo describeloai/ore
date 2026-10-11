@@ -12,8 +12,7 @@ use std::io::Read;
 /// cambió: como lo dice el driver de S3 ante un `412`.
 pub fn cambio(clave: &str) -> String {
     format!(
-        "`{clave}` cambió mientras se leía (412): no se mezclan dos versiones; la copia \
-         siguiente lo lee entero"
+        "`{clave}` changed while being read (412): two versions are never mixed; the next copy reads it whole"
     )
 }
 
@@ -45,7 +44,7 @@ impl EnMemoria {
         let v = self
             .objetos
             .get(clave)
-            .ok_or_else(|| format!("`{clave}` no está"))?;
+            .ok_or_else(|| format!("`{clave}` does not exist"))?;
         if EnMemoria::etag(v) != etag {
             return Err(cambio(clave));
         }
@@ -86,16 +85,16 @@ impl Origen for EnMemoria {
         let v = self
             .objetos
             .get(clave)
-            .ok_or_else(|| format!("`{clave}` no está"))?;
-        let (a, b) = rango.split_once('-').ok_or("rango sin guion")?;
+            .ok_or_else(|| format!("`{clave}` does not exist"))?;
+        let (a, b) = rango.split_once('-').ok_or("range without a hyphen")?;
         let trozo: &[u8] = if a.is_empty() {
-            let n: usize = b.parse().map_err(|_| "sufijo malo")?;
+            let n: usize = b.parse().map_err(|_| "bad suffix")?;
             &v[v.len().saturating_sub(n)..]
         } else {
-            let a: usize = a.parse().map_err(|_| "inicio malo")?;
+            let a: usize = a.parse().map_err(|_| "bad start")?;
             let b: usize = b
                 .parse::<usize>()
-                .map_err(|_| "fin malo")?
+                .map_err(|_| "bad end")?
                 .min(v.len().saturating_sub(1));
             if a > b || a >= v.len() {
                 &[]
@@ -150,7 +149,7 @@ impl Origen for EnMemoria {
             .por_version
             .get(&(clave.to_string(), version.to_string()))
             .or_else(|| self.objetos.get(clave).filter(|_| version == "null"))
-            .ok_or_else(|| format!("`{clave}` (versión {version}) no está"))?;
+            .ok_or_else(|| format!("`{clave}` (version {version}) does not exist"))?;
         Ok(Some(huella::de(v)))
     }
 
@@ -164,7 +163,7 @@ impl Origen for EnMemoria {
             .get(&(clave.to_string(), version.to_string()))
             .or_else(|| self.objetos.get(clave).filter(|_| version == "null"))
             .ok_or_else(|| {
-                format!("no se pudo leer `{clave}` (versión {version}): 404 NoSuchVersion")
+                format!("could not read `{clave}` (version {version}): 404 NoSuchVersion")
             })?;
         self.lecturas.set(self.lecturas.get() + 1);
         self.bytes_leidos.set(self.bytes_leidos.get() + v.len());

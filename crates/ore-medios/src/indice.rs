@@ -130,7 +130,7 @@ impl Indice {
         for l in lotes {
             let col = |n: &str| l.column_by_name(n).and_then(|c| c.as_string_opt::<i32>());
             let obligatoria = |n: &str| {
-                col(n).ok_or_else(|| format!("el listado de `{coleccion}` no tiene `{n}`"))
+                col(n).ok_or_else(|| format!("the listing of `{coleccion}` has no `{n}`"))
             };
             let (camino, version, huella, estado) = (
                 obligatoria("camino")?,
@@ -161,7 +161,7 @@ impl Indice {
                 if let Some(m) = texto(marca, i) {
                     let Some(linaje) = linaje else {
                         return Err(format!(
-                            "el listado de `{coleccion}` tiene una marca sin `origen`"
+                            "the listing of `{coleccion}` has a mark without `origen`"
                         ));
                     };
                     marcas.push(Marca {
@@ -375,7 +375,7 @@ impl Indice {
         limite: usize,
     ) -> Result<(Vec<Json>, Option<String>), String> {
         let desde = match cursor {
-            Some(c) => Some(de_hex(c).ok_or("`cursor` no es uno de los que da `derivations`")?),
+            Some(c) => Some(de_hex(c).ok_or("`cursor` is not one returned by `derivations`")?),
             None => None,
         };
         let mut por_origen: BTreeMap<&str, Entrada<'_>> = BTreeMap::new();
@@ -545,7 +545,7 @@ fn cursor_de(it: &Item) -> String {
 }
 
 fn de_cursor(c: &str) -> Result<(String, String), String> {
-    let malo = || "`cursor` no es uno de los que da `list`".to_string();
+    let malo = || "`cursor` is not one returned by `list`".to_string();
     if !c.len().is_multiple_of(2) {
         return Err(malo());
     }

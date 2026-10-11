@@ -73,7 +73,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
     let resto = url
         .trim()
         .strip_prefix("gs://")
-        .ok_or("la URL de un bucket de GCS es `gs://<bucket>[/<prefijo>]`")?;
+        .ok_or("a GCS bucket URL is `gs://<bucket>[/<prefix>]`")?;
     let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
     let (bucket, prefijo) = camino.split_once('/').unwrap_or((camino, ""));
     if bucket.is_empty()
@@ -81,7 +81,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_.".contains(&b))
     {
-        return Err(format!("`{bucket}` no es el nombre de un bucket de GCS"));
+        return Err(format!("`{bucket}` is not a valid GCS bucket name"));
     }
     let mut endpoint = API.to_string();
     let mut suplantar = None;
@@ -95,19 +95,19 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
                     && std::env::var("ORE_GCS_LABORATORIO").as_deref() != Ok("1")
                 {
                     return Err(format!(
-                        "`endpoint={endpoint}` no es de Google (`https://…googleapis.com`): el                          token de la celda no se le da a otro servidor"
+                        "`endpoint={endpoint}` is not a Google endpoint (`https://…googleapis.com`): the cell's token is never given to another server"
                     ));
                 }
             }
             "suplantar" => {
                 if !v.ends_with(".gserviceaccount.com") || !v.contains('@') {
                     return Err(format!(
-                        "`suplantar={v}` no es una cuenta de servicio (`<nombre>@<proyecto>.iam.gserviceaccount.com`)"
+                        "`suplantar={v}` is not a service account (`<name>@<project>.iam.gserviceaccount.com`)"
                     ));
                 }
                 suplantar = Some(v);
             }
-            otro => return Err(format!("`{otro}` no es un parámetro de una URL `gs://`")),
+            otro => return Err(format!("`{otro}` is not a parameter of a `gs://` URL")),
         }
     }
     let prefijo = descodificar(prefijo);
@@ -234,7 +234,7 @@ fn paginar_hasta(
     for _ in 0..paginas {
         let texto = pagina(token.as_deref())?;
         let n = ore_core::parse::parse(&texto)
-            .map_err(|e| format!("el listado de GCS no analiza: {e:?}"))?;
+            .map_err(|e| format!("the GCS listing does not parse: {e:?}"))?;
         if let Some((_, items)) = n.get("items") {
             metas.extend(items.items().iter().map(Meta::de));
         }
@@ -355,15 +355,14 @@ impl Gcs {
                     .send_string(&cuerpo)
                     .map_err(|e| match e {
                         ureq::Error::Status(403, _) => format!(
-                            "no se pudo suplantar a `{cuenta}` (403): el cliente tiene que dar a la \
-                             cuenta de esta celda `roles/iam.serviceAccountTokenCreator` sobre la suya"
+                            "could not impersonate `{cuenta}` (403): the client must grant this cell's account `roles/iam.serviceAccountTokenCreator` on theirs"
                         ),
-                        e => format!("no se pudo suplantar a `{cuenta}`: {e}"),
+                        e => format!("could not impersonate `{cuenta}`: {e}"),
                     })?
                     .into_string()
-                    .map_err(|e| format!("la suplantación no se pudo leer: {e}"))?;
+                    .map_err(|e| format!("could not read the impersonation response: {e}"))?;
                 let t = campo(&texto, "accessToken")
-                    .ok_or("la suplantación no devolvió `accessToken`")?;
+                    .ok_or("the impersonation did not return `accessToken`")?;
                 *v = Some((t.clone(), Instant::now() + Duration::from_secs(3600)));
                 Ok(t)
             }
@@ -392,7 +391,7 @@ impl Gcs {
             }),
             Err(e) => Err(Fallo {
                 estado: 0,
-                cuerpo: format!("GCS no contesta: {e}"),
+                cuerpo: format!("GCS is not responding: {e}"),
             }),
         }
     }
@@ -460,7 +459,7 @@ impl Gcs {
                 })?;
                 let t = x
                     .into_string()
-                    .map_err(|e| format!("el listado no se pudo leer: {e}"))?;
+                    .map_err(|e| format!("could not read the listing: {e}"))?;
                 contar(&t);
                 Ok(t)
             },
@@ -484,12 +483,12 @@ impl Gcs {
             .into_string()
             .map_err(|e| Fallo {
                 estado: 0,
-                cuerpo: format!("los metadatos no se pudieron leer: {e}"),
+                cuerpo: format!("could not read the metadata: {e}"),
             })?;
         contar(&texto);
         let n = ore_core::parse::parse(&texto).map_err(|e| Fallo {
             estado: 0,
-            cuerpo: format!("los metadatos no analizan: {e:?}"),
+            cuerpo: format!("the metadata does not parse: {e:?}"),
         })?;
         Ok(Meta::de(&n))
     }
@@ -543,7 +542,7 @@ impl Gcs {
                 let t = x.into_string().unwrap_or_default();
                 let n = ore_core::parse::parse(&t).map_err(|e| Fallo {
                     estado: 0,
-                    cuerpo: format!("`testIamPermissions` no analiza: {e:?}"),
+                    cuerpo: format!("`testIamPermissions` does not parse: {e:?}"),
                 })?;
                 Ok(Some(
                     n.get("permissions")
@@ -574,10 +573,12 @@ impl Gcs {
             .get(CORREO)
             .set("metadata-flavor", "Google")
             .call()
-            .map_err(|e| format!("el metadata server no dice qué cuenta corre ({e})"))?
+            .map_err(|e| {
+                format!("the metadata server does not say which account is running ({e})")
+            })?
             .into_string()
             .map(|s| s.trim().to_string())
-            .map_err(|e| format!("el correo de la cuenta no se pudo leer: {e}"))
+            .map_err(|e| format!("could not read the account email: {e}"))
     }
 
     /// **Una URL V4 de un objeto**, fijada a su generación, firmada por IAM
@@ -628,15 +629,14 @@ impl Gcs {
             .send_string(&cuerpo)
             .map_err(|e| match e {
                 ureq::Error::Status(403, _) => format!(
-                    "`signBlob` 403: `{firmante}` no puede firmar como sí misma (le falta \
-                     `roles/iam.serviceAccountTokenCreator` sobre sí)"
+                    "`signBlob` 403: `{firmante}` cannot sign as itself (it lacks `roles/iam.serviceAccountTokenCreator` on itself)"
                 ),
-                e => format!("`signBlob` falla: {e}"),
+                e => format!("`signBlob` failed: {e}"),
             })?
             .into_string()
-            .map_err(|e| format!("`signBlob` no se pudo leer: {e}"))?;
+            .map_err(|e| format!("could not read the `signBlob` response: {e}"))?;
         let firma = ore_gcp::de_base64(
-            &campo(&texto, "signedBlob").ok_or("`signBlob` no devolvió `signedBlob`")?,
+            &campo(&texto, "signedBlob").ok_or("`signBlob` did not return `signedBlob`")?,
         )?;
         Ok(format!(
             "{}{ruta}?{consulta}&X-Goog-Signature={}",
@@ -716,7 +716,7 @@ mod tests {
         }
         if std::env::var("ORE_GCS_LABORATORIO").is_err() {
             let e = leer("gs://c/?endpoint=https://evil.io").unwrap_err();
-            assert!(e.contains("no es de Google"), "{e}");
+            assert!(e.contains("is not a Google endpoint"), "{e}");
         }
     }
 

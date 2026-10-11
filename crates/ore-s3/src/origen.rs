@@ -25,20 +25,19 @@ impl Cubo<Bucket> {
 fn motivo_fijado(clave: &str, r: &crate::Respuesta) -> String {
     if r.estado == 412 {
         format!(
-            "`{clave}` cambió mientras se leía (412): no se mezclan dos versiones; la copia \
-             siguiente lo lee entero"
+            "`{clave}` changed while being read (412): two versions are never mixed; the next copy reads it whole"
         )
     } else if r.estado == 0 {
         String::from_utf8_lossy(&r.cuerpo).into_owned()
     } else {
-        format!("no se pudo leer `{clave}`: {}", r.motivo())
+        format!("could not read `{clave}`: {}", r.motivo())
     }
 }
 
 impl<B: Borrow<Bucket>> Origen for Cubo<B> {
     fn listar(&self, prefijo: &str) -> Result<Vec<Objeto>, String> {
         crate::listar_todo(self.0.borrow(), prefijo).map_err(|e| match e {
-            Ok(r) => format!("no se pudo listar `{prefijo}`: {}", r.motivo()),
+            Ok(r) => format!("could not list `{prefijo}`: {}", r.motivo()),
             Err(t) => t,
         })
     }
@@ -47,7 +46,7 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
         let r = crate::rango(self.0.borrow(), clave, rango)?;
         if !r.ok() {
             return Err(format!(
-                "no se pudo leer `{clave}` ({rango}): {}",
+                "could not read `{clave}` ({rango}): {}",
                 r.motivo()
             ));
         }
@@ -87,7 +86,7 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
                 })
                 .collect()),
             Err(Ok(r)) => Err(format!(
-                "no se pudieron listar las versiones de `{prefijo}`: {}",
+                "could not list the versions of `{prefijo}`: {}",
                 r.motivo()
             )),
             Err(Err(t)) => Err(t),
@@ -99,7 +98,7 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
         if let Some(etag) = ore_objetos::etag_de(version) {
             let r = crate::cabeza(self.0.borrow(), clave)?;
             if !r.ok() {
-                return Err(format!("no se pudo mirar `{clave}`: {}", r.motivo()));
+                return Err(format!("could not inspect `{clave}`: {}", r.motivo()));
             }
             if r.cabecera("etag") != Some(etag.as_str()) {
                 return Ok(None);
@@ -111,7 +110,7 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
         let r = crate::cabeza_de(self.0.borrow(), clave, version)?;
         if !r.ok() {
             return Err(format!(
-                "no se pudo mirar `{clave}` (versión {version}): {}",
+                "could not inspect `{clave}` (version {version}): {}",
                 r.motivo()
             ));
         }
@@ -144,7 +143,7 @@ impl<B: Borrow<Bucket>> Origen for Cubo<B> {
                     String::from_utf8_lossy(&r.cuerpo).into_owned()
                 } else {
                     format!(
-                        "no se pudo leer `{clave}` (versión {version}): {}",
+                        "could not read `{clave}` (version {version}): {}",
                         r.motivo()
                     )
                 }
@@ -217,14 +216,14 @@ fn rechazo(r: &crate::Respuesta, clave: &str) -> Rechazo {
     let codigo_aws = r.error_de_aws().map(|(c, _)| c).unwrap_or_default();
     match (r.estado, codigo_aws.as_str()) {
         (412, _) | (404, _) | (400, "InvalidArgument") => Rechazo::Cambiado(format!(
-            "`{clave}` ya no es, en el origen, la versión fijada ({})",
+            "`{clave}` at the source is no longer the pinned version ({})",
             r.motivo()
         )),
-        (416, _) => Rechazo::Rango(format!("el rango no cabe en `{clave}`")),
+        (416, _) => Rechazo::Rango(format!("the range does not fit in `{clave}`")),
         (0, _) => Rechazo::Origen(format!(
-            "el origen no contesta: {}",
+            "the source is not responding: {}",
             String::from_utf8_lossy(&r.cuerpo)
         )),
-        _ => Rechazo::Origen(format!("el origen contestó {} a `{clave}`", r.motivo())),
+        _ => Rechazo::Origen(format!("the source answered {} for `{clave}`", r.motivo())),
     }
 }

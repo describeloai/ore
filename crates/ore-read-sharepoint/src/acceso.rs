@@ -79,7 +79,7 @@ fn explicar(g: &Graph, f: &Fallo, donde: &str) -> String {
 }
 
 fn especial(m: &str) -> bool {
-    m.contains(&format!(" {NO_ESTA} ")) || m.starts_with("no hay una biblioteca")
+    m.contains(&format!(" {NO_ESTA} ")) || m.starts_with("there is no library")
 }
 
 /// Hasta [`A_PROBAR`] ficheros bajo el prefijo, mirando como mucho
@@ -367,7 +367,7 @@ mod pruebas {
             &f(
                 404,
                 "bibliotecaNoEsta",
-                "no hay una biblioteca `X` en el sitio; hay: `Documentos`",
+                "there is no library `X` in the site; there are: `Documentos`",
             ),
             "biblioteca",
         );

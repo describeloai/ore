@@ -89,12 +89,12 @@ PY
   grep -q 'Grant-PnPEntraIDAppSitePermission -AppId app' $W/c2.json && grep -q '"ok":false' $W/c2.json \
     && dice "1 check: un sitio sin la concesión dice cómo darla (Sites.Selected y PnP)" || falla "1 check RRHH: $(cat $W/c2.json)"
   co "${U/Activos%20del%20sitio/Facturas}" | $B check > $W/c3.json 2>/dev/null
-  grep -q 'no hay una biblioteca `Facturas` en el sitio; hay: `Documentos`, `Activos del sitio`' $W/c3.json \
+  grep -q 'there is no library `Facturas` in the site; there are: `Documentos`, `Activos del sitio`' $W/c3.json \
     && dice "1 check: una biblioteca que no está dice cuáles hay" || falla "1 check biblioteca: $(cat $W/c3.json)"
 
   # 2 el token es al portador
   co "$U" | env -u ORE_SHAREPOINT_LABORATORIO $B check > /dev/null 2> $W/e
-  grep -q 'no se le da a otro servidor' $W/e && dice "2 fuera del laboratorio, un endpoint que no es Graph no recibe el token" || falla "2 la guarda: $(cat $W/e)"
+  grep -q 'never given to another server' $W/e && dice "2 fuera del laboratorio, un endpoint que no es Graph no recibe el token" || falla "2 la guarda: $(cat $W/e)"
 
   # 3 explorar y catálogo
   co "$U" | $B explorar > $W/x.json 2>/dev/null
@@ -126,7 +126,7 @@ PY
   # 7 la fijada, recortada
   siembra DELETE /version docs/a.pdf - "&version=2.0"
   $B bajar < $W/pedido.json > $W/b4.bin 2>/dev/null
-  ! grep -aq '"fin":"ok"' $W/b4.bin && grep -aq 'ya no está' $W/b4.bin && ! grep -aq 'TRES' $W/b4.bin \
+  ! grep -aq '"fin":"ok"' $W/b4.bin && grep -aq 'no longer' $W/b4.bin && ! grep -aq 'TRES' $W/b4.bin \
     && dice "7 la fijada, recortada por la biblioteca: no se copia, nunca otra" || falla "7: $(head -c 300 $W/b4.bin)"
 
   # 8 y 9: los tests de laboratorio (el de ore-graph siembra en «Documentos»)

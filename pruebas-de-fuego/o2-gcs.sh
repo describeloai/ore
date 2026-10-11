@@ -78,7 +78,7 @@ if [ "${1:-}" = "--dentro" ]; then
 
   # 2 el token es al portador
   printf '%s' "{\"url\":\"$U\",\"objeto\":\"\"}" | env -u ORE_GCS_LABORATORIO $B check > /dev/null 2> $W/e
-  grep -q 'no es de Google' $W/e && dice "2 fuera del laboratorio, un endpoint que no es de Google no recibe el token" || falla "2 la guarda: $(cat $W/e)"
+  grep -q 'is not a Google endpoint' $W/e && dice "2 fuera del laboratorio, un endpoint que no es de Google no recibe el token" || falla "2 la guarda: $(cat $W/e)"
 
   # 3 explorar y catálogo
   printf '%s' "{\"url\":\"$U\",\"objeto\":\"\"}" | $B explorar > $W/x.json 2>/dev/null
@@ -109,7 +109,7 @@ if [ "${1:-}" = "--dentro" ]; then
   grep -aq '"fin":"ok"' $W/b3.bin && grep -aq '% uno' $W/b3.bin && ! grep -aq '% UNO' $W/b3.bin \
     && dice "6 cubo (con versiones): copia la generación que se listó, la de antes" || falla "6 cubo: $(head -c 300 $W/b3.bin)"
   $B bajar < $W/pedido-llano.json > $W/b4.bin 2>/dev/null
-  ! grep -aq '"fin":"ok"' $W/b4.bin && ! grep -aq '% UNO' $W/b4.bin && grep -aq 'ya no está' $W/b4.bin \
+  ! grep -aq '"fin":"ok"' $W/b4.bin && ! grep -aq '% UNO' $W/b4.bin && grep -aq 'no longer exists' $W/b4.bin \
     && dice "6 llano (sin versiones): la generación ya no está y NO se copia, nunca otros bytes" || falla "6 llano: $(head -c 300 $W/b4.bin)"
 
   # 7 y 8: los tests de laboratorio, sobre `cubo` ya con sus dos generaciones

@@ -97,7 +97,7 @@ pub trait Origen {
     ) -> Result<Leido, Rechazo> {
         let _ = (clave, version, etag, rango);
         Err(Rechazo::Origen(
-            "este origen no sabe servir un ítem fijado".into(),
+            "this source cannot serve a pinned item".into(),
         ))
     }
 

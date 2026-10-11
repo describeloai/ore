@@ -275,7 +275,10 @@ mod pruebas {
         };
         let m = explicar(&a, &f(404, "<Error><Code>ContainerNotFound</Code></Error>"));
         assert!(especial(&m) && m.contains("`cubo`"), "{m}");
-        let m = explicar(&a, &f(0, "Azure no contesta: Dns Failed: resolve dns name"));
+        let m = explicar(
+            &a,
+            &f(0, "Azure is not responding: Dns Failed: resolve dns name"),
+        );
         assert!(especial(&m) && m.contains("`cuenta`"), "{m}");
         let m = explicar(
             &a,

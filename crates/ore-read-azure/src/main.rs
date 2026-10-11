@@ -71,7 +71,12 @@ impl Proveedor for Microsoft {
                 "Entra",
                 "credencial federada",
             ],
-            &["404", "BlobNotFound", "ContainerNotFound", "ya no está"],
+            &[
+                "404",
+                "BlobNotFound",
+                "ContainerNotFound",
+                "no longer exists",
+            ],
         )
     }
 
@@ -94,7 +99,7 @@ mod pruebas {
         let c = |m: &str| Microsoft::fallo(m.to_string()).codigo;
         assert_eq!(
             c(
-                "no se pudo listar `docs/`: 403 AuthorizationPermissionMismatch This request is not authorized to perform this operation using this permission."
+                "could not list `docs/`: 403 AuthorizationPermissionMismatch This request is not authorized to perform this operation using this permission."
             ),
             Codigo::Credencial
         );
@@ -105,10 +110,13 @@ mod pruebas {
             Codigo::Credencial
         );
         assert_eq!(
-            c("no se pudo leer `a.pdf`: 404 BlobNotFound The specified blob does not exist."),
+            c("could not read `a.pdf`: 404 BlobNotFound The specified blob does not exist."),
             Codigo::Objeto
         );
-        assert_eq!(c("Azure no contesta: Connection refused"), Codigo::Conexion);
+        assert_eq!(
+            c("Azure is not responding: Connection refused"),
+            Codigo::Conexion
+        );
     }
 
     #[test]

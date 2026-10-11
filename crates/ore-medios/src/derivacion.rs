@@ -112,7 +112,7 @@ fn textos(n: &Node, k: &str) -> Result<Vec<String>, String> {
             .map(|i| {
                 i.as_str()
                     .map(str::to_string)
-                    .ok_or_else(|| format!("`{k}` es una lista de textos"))
+                    .ok_or_else(|| format!("`{k}` is a list of strings"))
             })
             .collect(),
     }
@@ -137,20 +137,20 @@ pub fn leer(n: &Node) -> Result<Linajes, String> {
     };
     for (i, d) in ds.items().iter().enumerate() {
         let donde = |m: &str| format!("`derivations[{i}]`: {m}");
-        let fuente = campo(d, "source").ok_or_else(|| donde("falta `source`"))?;
-        let uri = texto(fuente, "uri").ok_or_else(|| donde("`source` sin `uri`"))?;
+        let fuente = campo(d, "source").ok_or_else(|| donde("missing `source`"))?;
+        let uri = texto(fuente, "uri").ok_or_else(|| donde("`source` without `uri`"))?;
         let digest = texto(fuente, "digest");
         if let Some(dg) = digest
             && !(dg.starts_with("sha256:") && dg.len() == 71)
         {
-            return Err(donde("`source.digest` es `sha256:<64 hex>`"));
+            return Err(donde("`source.digest` is `sha256:<64 hex>`"));
         }
         let derivacion = json_de(d, "derivation");
         let clave_ok = campo(d, "derivation")
             .and_then(|v| texto(v, "key"))
             .is_some();
         if !clave_ok {
-            return Err(donde("`derivation.key` es obligatoria"));
+            return Err(donde("`derivation.key` is required"));
         }
         let ficheros = match campo(d, "files") {
             None => Vec::new(),
@@ -159,7 +159,7 @@ pub fn leer(n: &Node) -> Result<Linajes, String> {
                 .items()
                 .iter()
                 .map(|f| {
-                    let c = texto(f, "path").ok_or_else(|| donde("un fichero sin `path`"))?;
+                    let c = texto(f, "path").ok_or_else(|| donde("a file without `path`"))?;
                     Ok((c.to_string(), json_de(f, "anchor")))
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -167,18 +167,18 @@ pub fn leer(n: &Node) -> Result<Linajes, String> {
         let estado = match texto(d, "state") {
             Some("files") if ficheros.is_empty() => {
                 return Err(donde(
-                    "`state: files` sin ficheros: sin ficheros es `empty`",
+                    "`state: files` without files: with no files it is `empty`",
                 ));
             }
             Some("files") => Estado::Ficheros(ficheros),
             Some(e @ ("empty" | "error")) if !ficheros.is_empty() => {
-                return Err(donde(&format!("`state: {e}` no lleva ficheros")));
+                return Err(donde(&format!("`state: {e}` takes no files")));
             }
             Some("empty") => Estado::Vacio,
             Some("error") => Estado::Error(
-                json_de(d, "error").ok_or_else(|| donde("`state: error` sin `error`"))?,
+                json_de(d, "error").ok_or_else(|| donde("`state: error` without `error`"))?,
             ),
-            _ => return Err(donde("`state` es `files`, `empty` o `error`")),
+            _ => return Err(donde("`state` is `files`, `empty` or `error`")),
         };
         l.entradas.push(Entrada {
             linaje: Linaje {
@@ -203,13 +203,13 @@ pub fn cotejar<T>(l: &Linajes, subidos: &BTreeMap<String, T>) -> Result<(), Stri
     for e in &l.entradas {
         if !origenes.insert(e.linaje.origen.as_str()) {
             return Err(format!(
-                "el origen `{}` está dos veces en `derivations`",
+                "source `{}` appears twice in `derivations`",
                 e.linaje.uri
             ));
         }
         if l.retirar_origenes.contains(&e.linaje.origen) {
             return Err(format!(
-                "el origen `{}` está en `derivations` y en `retire_sources`",
+                "source `{}` is in both `derivations` and `retire_sources`",
                 e.linaje.uri
             ));
         }
@@ -219,23 +219,25 @@ pub fn cotejar<T>(l: &Linajes, subidos: &BTreeMap<String, T>) -> Result<(), Stri
         for (c, _) in fs {
             if !subidos.contains_key(c) {
                 return Err(format!(
-                    "`{c}` no se subió en esta transacción: el linaje sólo nombra lo que se sube"
+                    "`{c}` was not uploaded in this transaction: lineage only names what is uploaded"
                 ));
             }
             if let Some(otro) = de_quien.insert(c, &e.linaje.uri) {
                 return Err(format!(
-                    "`{c}` sale de dos orígenes: `{otro}` y `{}`",
+                    "`{c}` comes from two sources: `{otro}` and `{}`",
                     e.linaje.uri
                 ));
             }
             if retirar.contains(c.as_str()) {
-                return Err(format!("`{c}` está en `files` y en `retire`"));
+                return Err(format!("`{c}` is in both `files` and `retire`"));
             }
         }
     }
     for c in &l.retirar {
         if subidos.contains_key(c) {
-            return Err(format!("`{c}` se sube y se retira en la misma transacción"));
+            return Err(format!(
+                "`{c}` is uploaded and retired in the same transaction"
+            ));
         }
     }
     Ok(())
@@ -297,16 +299,20 @@ mod pruebas {
         assert_eq!(cotejar(&l, &subidos), Ok(()));
         // Un fichero que no se subió.
         let solo_uno: BTreeMap<String, ()> = [("a.pdf/p1.png".into(), ())].into();
-        assert!(cotejar(&l, &solo_uno).unwrap_err().contains("no se subió"));
+        assert!(
+            cotejar(&l, &solo_uno)
+                .unwrap_err()
+                .contains("was not uploaded")
+        );
     }
 
     #[test]
     fn lo_que_no_cuadra() {
         let e = |cuerpo: &str| leer(&n(cuerpo)).unwrap_err();
         assert!(e(r#"{"derivations":[{"source":{"uri":"u"},"derivation":{"key":"k"},"state":"files","files":[]}]}"#)
-            .contains("sin ficheros es `empty`"));
+            .contains("with no files it is `empty`"));
         assert!(e(r#"{"derivations":[{"source":{"uri":"u"},"derivation":{"key":"k"},"state":"empty","files":[{"path":"x"}]}]}"#)
-            .contains("no lleva ficheros"));
+            .contains("takes no files"));
         assert!(
             e(r#"{"derivations":[{"source":{"uri":"u"},"state":"empty"}]}"#)
                 .contains("`derivation.key`")
@@ -314,7 +320,7 @@ mod pruebas {
         assert!(e(r#"{"derivations":[{"source":{"uri":"u","digest":"md5:x"},"derivation":{"key":"k"},"state":"empty"}]}"#)
             .contains("sha256"));
         assert!(e(r#"{"derivations":[{"source":{"uri":"u"},"derivation":{"key":"k"},"state":"error"}]}"#)
-            .contains("sin `error`"));
+            .contains("without `error`"));
         assert!(e(r#"{"derivations":[{"source":{"uri":"u"},"derivation":{"key":"k"},"state":"raro"}]}"#)
             .contains("`state`"));
 
@@ -323,16 +329,16 @@ mod pruebas {
         assert!(c(r#"{"derivations":[
             {"source":{"uri":"u1"},"derivation":{"key":"k"},"state":"files","files":[{"path":"x"}]},
             {"source":{"uri":"u2"},"derivation":{"key":"k"},"state":"files","files":[{"path":"x"}]}]}"#)
-            .contains("dos orígenes"));
+            .contains("two sources"));
         assert!(
             c(r#"{"derivations":[
             {"source":{"uri":"u1"},"derivation":{"key":"k"},"state":"empty"},
             {"source":{"uri":"u1"},"derivation":{"key":"k"},"state":"empty"}]}"#)
-            .contains("dos veces")
+            .contains("appears twice")
         );
         assert!(c(r#"{"derivations":[{"source":{"uri":"u1"},"derivation":{"key":"k"},"state":"files","files":[{"path":"x"}]}],"retire":["x"]}"#)
-            .contains("`files` y en `retire`"));
-        assert!(c(r#"{"retire":["x"]}"#).contains("se sube y se retira"));
+            .contains("both `files` and `retire`"));
+        assert!(c(r#"{"retire":["x"]}"#).contains("is uploaded and retired"));
         assert!(c(r#"{"derivations":[{"source":{"uri":"u1"},"derivation":{"key":"k"},"state":"empty"}],"retire_sources":["u1"]}"#)
             .contains("`retire_sources`"));
     }

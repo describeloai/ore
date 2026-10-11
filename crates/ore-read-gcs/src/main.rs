@@ -65,11 +65,16 @@ impl Proveedor for Google {
                 "403",
                 "does not have storage.",
                 "Anonymous caller",
-                "no se pudo suplantar",
+                "could not impersonate",
                 "metadata server",
                 "signBlob",
             ],
-            &["404", "No such object", "does not exist", "ya no está"],
+            &[
+                "404",
+                "No such object",
+                "does not exist",
+                "no longer exists",
+            ],
         )
     }
 
@@ -92,19 +97,22 @@ mod pruebas {
         let c = |m: &str| Google::fallo(m.to_string()).codigo;
         assert_eq!(
             c(
-                "no se pudo listar `docs/`: 403 ore-driver@x.iam.gserviceaccount.com does not have storage.objects.list access to the Google Cloud Storage bucket."
+                "could not list `docs/`: 403 ore-driver@x.iam.gserviceaccount.com does not have storage.objects.list access to the Google Cloud Storage bucket."
             ),
             Codigo::Credencial
         );
         assert_eq!(
-            c("no se pudo suplantar a `lector@cliente.iam.gserviceaccount.com` (403): …"),
+            c("could not impersonate `lector@cliente.iam.gserviceaccount.com` (403): …"),
             Codigo::Credencial
         );
         assert_eq!(
-            c("no se pudo leer `a.pdf`: 404 No such object: cubo/a.pdf"),
+            c("could not read `a.pdf`: 404 No such object: cubo/a.pdf"),
             Codigo::Objeto
         );
-        assert_eq!(c("GCS no contesta: Connection refused"), Codigo::Conexion);
+        assert_eq!(
+            c("GCS is not responding: Connection refused"),
+            Codigo::Conexion
+        );
     }
 
     #[test]

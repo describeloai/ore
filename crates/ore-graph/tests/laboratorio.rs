@@ -193,8 +193,8 @@ fn una_biblioteca_de_sharepoint_como_origen() {
     let mut resto = Vec::new();
     let e = r
         .read_to_end(&mut resto)
-        .expect_err("cambió mientras se leía");
-    assert!(e.to_string().contains("cambió"), "{e}");
+        .expect_err("changed while being read");
+    assert!(e.to_string().contains("changed"), "{e}");
     // y la que se fijó antes sigue leyéndose, ya como vieja (por su id)
     let (mut r, _) = o.abrir_version(&gv.clave, &gv.version).unwrap();
     let mut b = Vec::new();
@@ -216,7 +216,7 @@ fn una_biblioteca_de_sharepoint_como_origen() {
     let otra = Graph::de_url(&url.replace("/Documentos", "/Facturas")).unwrap();
     let e = o_listar(&otra);
     assert!(
-        e.contains("no hay una biblioteca `Facturas`") && e.contains("`Documentos`"),
+        e.contains("there is no library `Facturas`") && e.contains("`Documentos`"),
         "{e}"
     );
 

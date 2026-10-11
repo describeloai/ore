@@ -1824,7 +1824,7 @@ mod tests {
         o.cambiadas.insert("t/a.csv".into());
         let p = peticion("csv", "t/a.csv", &["id"], TIPOS);
         let e = filas(&o, &p, UMBRAL).expect_err("para");
-        assert!(e.contains("cambió mientras se leía (412)"), "{e}");
+        assert!(e.contains("changed while being read (412)"), "{e}");
     }
 
     /// **El filtro de igualdad**, con el valor en el tipo de su columna, y

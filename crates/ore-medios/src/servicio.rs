@@ -61,7 +61,7 @@ pub trait Listados: Send + Sync {
         filas: &[String],
     ) -> Result<String, String> {
         let _ = (cabecera, dataset, base, filas);
-        Err("este lago no escribe".into())
+        Err("this lake does not write".into())
     }
 
     /// **Si una transacción de antes sigue en la tabla** (0049 H1): el snapshot
@@ -148,16 +148,16 @@ pub fn problema(status: u16, tipo: &str, detalle: impl Into<String>) -> Respuest
 
 fn problema_json(status: u16, tipo: &str, detalle: impl Into<String>) -> Json {
     let titulo = match tipo {
-        "media/no-existe" => "No existe",
-        "media/limite" => "Fuera de los límites",
-        "media/origen" => "El origen falló",
-        "media/cambiado" => "La versión fijada cambió",
-        "media/permiso" => "Sin permiso válido",
-        "media/rango" => "El rango no cabe",
-        "media/transaccion" => "La transacción no está abierta",
-        "media/digest-no-casa" => "El digest no es el de los bytes",
-        "media/corrupto" => "Los bytes no casan con el ítem",
-        _ => "Petición no válida",
+        "media/no-existe" => "Not found",
+        "media/limite" => "Out of limits",
+        "media/origen" => "Source failed",
+        "media/cambiado" => "Pinned version changed",
+        "media/permiso" => "No valid permit",
+        "media/rango" => "Range not satisfiable",
+        "media/transaccion" => "Transaction not open",
+        "media/digest-no-casa" => "Digest does not match the bytes",
+        "media/corrupto" => "Bytes do not match the item",
+        _ => "Invalid request",
     };
     Json::obj([
         ("type", Json::s(tipo)),
@@ -188,19 +188,19 @@ fn texto<'a>(n: &'a Node, k: &str) -> Option<&'a str> {
 
 fn pedido(n: &Node) -> Result<Pedido<'_>, Respuesta> {
     let coleccion = texto(n, "coleccion")
-        .ok_or_else(|| problema(400, "media/peticion", "falta `coleccion` (`b.s.n`)"))?;
+        .ok_or_else(|| problema(400, "media/peticion", "missing `coleccion` (`b.s.n`)"))?;
     if coleccion.split('.').count() != 3 {
         return Err(problema(
             400,
             "media/peticion",
-            format!("`{coleccion}` no es `b.s.n`"),
+            format!("`{coleccion}` is not `b.s.n`"),
         ));
     }
     let metadata_location = texto(n, "metadata_location").ok_or_else(|| {
         problema(
             404,
             "media/no-existe",
-            format!("`{coleccion}` no tiene todavía ninguna transacción"),
+            format!("`{coleccion}` has no transaction yet"),
         )
     })?;
     Ok(Pedido {
@@ -252,7 +252,7 @@ impl Servicio {
             404,
             "media/no-existe",
             format!(
-                "{} {} no es una ruta de este puerto: sólo GET /contenido",
+                "{} {} is not a route of this port: only GET /contenido",
                 p.metodo, p.ruta
             ),
         ))
@@ -264,7 +264,7 @@ impl Servicio {
             problema(
                 401,
                 "media/permiso",
-                "el permiso falta, caducó o no es de esta celda: pídelo otra vez a la puerta",
+                "the permit is missing, expired or not from this cell: request it again from the gateway",
             )
         };
         let id = p.consulta.get("permiso").ok_or_else(sin)?;
@@ -290,7 +290,7 @@ impl Servicio {
             ) => {
                 let n = match ore_core::parse::parse(&p.cuerpo) {
                     Ok(n) => n,
-                    Err(_) => return problema(400, "media/peticion", "el cuerpo no es JSON"),
+                    Err(_) => return problema(400, "media/peticion", "the body is not JSON"),
                 };
                 match ruta {
                     "/escritura/abrir" => self.escritura_abrir(&n),
@@ -309,7 +309,7 @@ impl Servicio {
             ) => {
                 let n = match ore_core::parse::parse(&p.cuerpo) {
                     Ok(n) => n,
-                    Err(_) => return problema(400, "media/peticion", "el cuerpo no es JSON"),
+                    Err(_) => return problema(400, "media/peticion", "the body is not JSON"),
                 };
                 // 0049 B9 · Una escrita recién creada no tiene transacción:
                 //   su registro está vacío, no «no existe» —la primera pasada
@@ -341,7 +341,7 @@ impl Servicio {
             _ => problema(
                 404,
                 "media/no-existe",
-                format!("{} {} no es una ruta", p.metodo, p.ruta),
+                format!("{} {} is not a route", p.metodo, p.ruta),
             ),
         }
     }
@@ -360,7 +360,7 @@ impl Servicio {
                 404,
                 "media/no-existe",
                 format!(
-                    "la transacción `{}` de `{}` ya no se puede leer: la retención de la colección la recogió",
+                    "transaction `{}` of `{}` can no longer be read: the collection's retention collected it",
                     p.transaccion, p.coleccion
                 ),
             );
@@ -385,7 +385,7 @@ impl Servicio {
                 return problema(
                     400,
                     "media/peticion",
-                    "`estado` es `actual`, `retirado`, `perdido` o `todos`",
+                    "`estado` is `actual`, `retirado`, `perdido` or `todos`",
                 );
             }
         };
@@ -438,7 +438,7 @@ impl Servicio {
                 return Err(problema_json(
                     400,
                     "media/peticion",
-                    "falta `path` o `digest`",
+                    "missing `path` or `digest`",
                 ));
             }
         };
@@ -446,7 +446,7 @@ impl Servicio {
             problema_json(
                 404,
                 "media/no-existe",
-                format!("`{}` no tiene ese ítem", ix.coleccion),
+                format!("`{}` has no such item", ix.coleccion),
             )
         })
     }
@@ -540,7 +540,7 @@ impl Servicio {
             return problema(
                 429,
                 "media/limite",
-                "demasiados permisos vivos en la celda: prueba en unos minutos",
+                "too many live permits in the cell: try again in a few minutes",
             );
         };
         Respuesta::ok(Json::obj([
@@ -575,14 +575,14 @@ impl Servicio {
                 return Err(problema(
                     400,
                     "media/peticion",
-                    "una virtual se lee con la credencial de su fuente: falta `fuente`",
+                    "a virtual collection is read with its source's credential: missing `fuente`",
                 ));
             }
             (_, None) => {
                 return Err(problema(
                     404,
                     "media/no-existe",
-                    "el ítem no tiene blob en el lago todavía (su copia está en camino) y no llegó la credencial de su origen",
+                    "the item has no blob in the lake yet (its copy is on its way) and its source's credential did not arrive",
                 ));
             }
         };
@@ -614,9 +614,7 @@ impl Servicio {
             return problema(
                 413,
                 "media/limite",
-                format!(
-                    "de 1 a {LIMITE_VERIFY} ítems por petición: `verify` lee los bytes enteros"
-                ),
+                format!("1 to {LIMITE_VERIFY} items per request: `verify` reads the whole bytes"),
             );
         }
         let error = |r: Respuesta| Json::obj([("error", r.cuerpo)]);
@@ -682,7 +680,7 @@ impl Servicio {
                 ]),
                 Some(e) => Json::obj([(
                     "error",
-                    problema_json(502, "media/origen", format!("la lectura se cortó: {e}")),
+                    problema_json(502, "media/origen", format!("the read was cut short: {e}")),
                 )]),
             });
         }
@@ -696,7 +694,7 @@ impl Servicio {
             return problema(
                 413,
                 "media/limite",
-                format!("de 1 a {LIMITE} ítems por petición"),
+                format!("1 to {LIMITE} items per request"),
             );
         }
         let segundos = texto(n, "ttl_s")
@@ -725,7 +723,7 @@ impl Servicio {
                             problema_json(
                                 502,
                                 "media/origen",
-                                "un ítem de una virtual se firma en su origen, y no llegó la credencial de su fuente",
+                                "an item of a virtual collection is signed at its source, and its source's credential did not arrive",
                             ),
                         )]),
                         None => Json::obj([(
@@ -733,7 +731,7 @@ impl Servicio {
                             problema_json(
                                 404,
                                 "media/no-existe",
-                                "el ítem no tiene blob en el lago todavía (su copia está en camino) y no llegó la credencial de su origen",
+                                "the item has no blob in the lake yet (its copy is on its way) and its source's credential did not arrive",
                             ),
                         )]),
                     });
@@ -828,7 +826,7 @@ fn firmada_en_el_origen(
                 problema_json(
                     502,
                     "media/origen",
-                    format!("el origen no firmó la URL: {e}"),
+                    format!("the source did not sign the URL: {e}"),
                 ),
             )]);
         }
@@ -838,7 +836,7 @@ fn firmada_en_el_origen(
                 problema_json(
                     501,
                     "media/origen",
-                    "este ítem no tiene URL firmada —su origen no la da, o sólo se fija por su ETag, que una URL no lleva—: se abre por `content`",
+                    "this item has no signed URL (its source does not provide one, or it is only pinned by its ETag, which a URL cannot carry): open it with `content`",
                 ),
             )]);
         }
@@ -923,7 +921,7 @@ mod pruebas {
         let (c, b) = pide("recogida", r#","actual":"m7""#);
         assert_eq!(c, 404, "{b}");
         assert!(
-            b.contains("media/no-existe") && b.contains("retención"),
+            b.contains("media/no-existe") && b.contains("retention"),
             "{b}"
         );
         let (c, b) = pide("rota", r#","actual":"m7""#);
@@ -1166,7 +1164,7 @@ mod pruebas {
             &format!("{{{BASE},\"path\":\"docs/sin.pdf\"}}"),
         );
         assert_eq!(c, 404, "{b}");
-        assert!(b.contains("todavía"), "{b}");
+        assert!(b.contains("yet"), "{b}");
         let (c, b) = pedir(
             &s,
             "/indice/abrir",
@@ -1423,7 +1421,7 @@ mod pruebas {
             "/indice/urls",
             &format!("{{{BASE},\"virtual\":\"true\",\"items\":[{{\"path\":\"docs/a.pdf\"}}]}}"),
         );
-        assert!(b.contains("no llegó la credencial"), "{b}");
+        assert!(b.contains("credential did not arrive"), "{b}");
         let (c, b) = pedir(
             &s,
             "/indice/items",

@@ -49,7 +49,7 @@ pub fn firmar(
         .into_inner()
         .unwrap_or_else(|e| e.into_inner())
         .into_iter()
-        .map(|u| u.unwrap_or_else(|| Err("sin firmar".into())))
+        .map(|u| u.unwrap_or_else(|| Err("not signed".into())))
         .collect()
 }
 

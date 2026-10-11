@@ -49,7 +49,7 @@ pub fn de(fuente: &str) -> Result<Box<dyn Origen + Send + Sync>, Respuesta> {
         problema(
             502,
             "media/origen",
-            format!("la fuente no se pudo leer: {e}"),
+            format!("could not read the source: {e}"),
         )
     };
     match esquema {
@@ -76,16 +76,15 @@ pub fn de(fuente: &str) -> Result<Box<dyn Origen + Send + Sync>, Respuesta> {
         "sftp" => Err(problema(
             422,
             "media/origen",
-            "un SFTP no versiona: sus colecciones sólo son mantenidas y se sirven de la copia en \
-             el lago, nunca del origen (ADR 0061, D-O1)"
+            "an SFTP server does not version: its collections are only maintained and served from the copy in the lake, never from the source (ADR 0061, D-O1)"
                 .to_string(),
         )),
         otro => Err(problema(
             501,
             "media/origen",
             format!(
-                "un origen `{}` no se sabe servir todavía (0061)",
-                if otro.is_empty() { "sin esquema" } else { otro }
+                "a `{}` source cannot be served yet (0061)",
+                if otro.is_empty() { "no scheme" } else { otro }
             ),
         )),
     }

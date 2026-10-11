@@ -68,7 +68,7 @@ fn laboratorio() -> bool {
 /// `az://cuenta/contenedor/prefijo?tenant=…&cliente=…` → la coordenada.
 pub fn leer(url: &str) -> Result<Fuente, String> {
     let resto = url.trim().strip_prefix("az://").ok_or(
-        "la URL de Azure es `az://<cuenta>/<contenedor>[/<prefijo>]?tenant=<id>&cliente=<id de la app>`",
+        "an Azure URL is `az://<account>/<container>[/<prefix>]?tenant=<id>&cliente=<app id>`",
     )?;
     let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
     let mut partes = camino.splitn(3, '/');
@@ -81,7 +81,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     {
         return Err(format!(
-            "`{cuenta}` no es el nombre de una cuenta de almacenamiento (3 a 24 minúsculas y cifras)"
+            "`{cuenta}` is not a storage account name (3 to 24 lowercase letters and digits)"
         ));
     }
     if !(3..=63).contains(&contenedor.len())
@@ -90,7 +90,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     {
         return Err(format!(
-            "`{contenedor}` no es el nombre de un contenedor (3 a 63 minúsculas, cifras y `-`)"
+            "`{contenedor}` is not a container name (3 to 63 lowercase letters, digits and `-`)"
         ));
     }
     let (mut tenant, mut cliente, mut endpoint) = (None, None, None);
@@ -105,26 +105,25 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
         match k {
             "tenant" if id(&v) => tenant = Some(v),
             "cliente" if id(&v) => cliente = Some(v),
-            "tenant" | "cliente" => return Err(format!("`{k}={v}` no es un id de Entra")),
+            "tenant" | "cliente" => return Err(format!("`{k}={v}` is not an Entra id")),
             "endpoint" => {
                 if !laboratorio() {
                     return Err(format!(
-                        "`endpoint={v}`: sólo se habla con `https://{cuenta}.blob.core.windows.net` \
-                         (el token de la celda no se le da a otro servidor)"
+                        "`endpoint={v}`: only `https://{cuenta}.blob.core.windows.net` is contacted (the cell's token is never given to another server)"
                     ));
                 }
                 endpoint = Some(v.trim_end_matches('/').to_string());
             }
             otro => {
                 return Err(format!(
-                    "`{otro}` no es un parámetro de una URL `az://` (sin claves ni SAS: D-O3)"
+                    "`{otro}` is not a parameter of an `az://` URL (no keys or SAS: D-O3)"
                 ));
             }
         }
     }
     let (Some(tenant), Some(cliente)) = (tenant, cliente) else {
         return Err(
-            "falta `tenant` o `cliente`: la URL nombra la app de Entra que confía en esta celda"
+            "missing `tenant` or `cliente`: the URL names the Entra app that trusts this cell"
                 .into(),
         );
     };
@@ -361,7 +360,7 @@ pub fn paginar(
         let xml = pagina(marca.as_deref())?;
         if !xml.contains("<EnumerationResults") {
             return Err(format!(
-                "el listado de Azure no es un `EnumerationResults`: {}",
+                "the Azure listing is not an `EnumerationResults`: {}",
                 xml.chars().take(120).collect::<String>()
             ));
         }
@@ -493,7 +492,7 @@ impl Azure {
                 codigo: x.header("x-ms-error-code").unwrap_or("").to_string(),
                 cuerpo: x.into_string().unwrap_or_default(),
             }),
-            Err(e) => Err(Fallo::de(0, format!("Azure no contesta: {e}"))),
+            Err(e) => Err(Fallo::de(0, format!("Azure is not responding: {e}"))),
         }
     }
 
@@ -539,7 +538,7 @@ impl Azure {
                     })?;
                 let t = x
                     .into_string()
-                    .map_err(|e| format!("el listado no se pudo leer: {e}"))?;
+                    .map_err(|e| format!("could not read the listing: {e}"))?;
                 BYTES.fetch_add(t.len(), std::sync::atomic::Ordering::Relaxed);
                 Ok(t)
             },
@@ -632,7 +631,7 @@ impl Azure {
             .set("content-type", "application/xml");
         let xml = Azure::llamar(r, Some(&cuerpo))?
             .into_string()
-            .map_err(|e| Fallo::de(0, format!("la clave de delegación no se pudo leer: {e}")))?;
+            .map_err(|e| Fallo::de(0, format!("could not read the user delegation key: {e}")))?;
         let c = |k: &str| etiqueta(&xml, k).unwrap_or_default();
         let k = sas::Clave {
             valor: ore_gcp::de_base64(&c("Value")).map_err(|e| Fallo::de(0, e))?,
@@ -661,12 +660,11 @@ impl Azure {
         let segundos = segundos.clamp(1, VIDA_DE_LA_CLAVE - 600);
         let k = self.clave_de_delegacion(segundos).map_err(|f| match f.estado {
             403 => format!(
-                "no se pudo pedir la clave de delegación ({}): la app del cliente necesita \
-                 `Storage Blob Delegator` (o el lector) sobre la cuenta `{}`, no sólo sobre el contenedor",
+                "could not obtain the user delegation key ({}): the client's app needs `Storage Blob Delegator` (or the reader role) on the account `{}`, not only on the container",
                 f.motivo(),
                 self.fuente.cuenta
             ),
-            _ => format!("no se pudo pedir la clave de delegación: {}", f.motivo()),
+            _ => format!("could not obtain the user delegation key: {}", f.motivo()),
         })?;
         let ahora = ahora_s();
         let (inicio, fin) = (iso(ahora - 300), iso(ahora + segundos));
@@ -727,7 +725,7 @@ mod tests {
             return;
         }
         let e = leer("az://cuenta/cubo?tenant=t&cliente=c&endpoint=https://evil.io").unwrap_err();
-        assert!(e.contains("no se le da a otro servidor"), "{e}");
+        assert!(e.contains("never given to another server"), "{e}");
     }
 
     /// El listado: los blobs con sus versiones (o sin ellas), los prefijos, y

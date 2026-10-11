@@ -16,7 +16,7 @@ use std::io::Read;
 fn motivo(clave: &str, f: &Fallo) -> String {
     match f.estado {
         404 | 412 => memoria::cambio(clave),
-        _ => format!("no se pudo leer `{clave}`: {}", f.motivo()),
+        _ => format!("could not read `{clave}`: {}", f.motivo()),
     }
 }
 
@@ -76,7 +76,7 @@ impl Azure {
         let mut b = Vec::new();
         l.lector
             .read_to_end(&mut b)
-            .map_err(|e| format!("`{clave}` no se pudo leer entero: {e}"))?;
+            .map_err(|e| format!("could not read `{clave}` in full: {e}"))?;
         Ok(b)
     }
 }
@@ -84,7 +84,7 @@ impl Azure {
 impl Origen for Azure {
     fn listar(&self, prefijo: &str) -> Result<Vec<Objeto>, String> {
         let (metas, _) = Azure::listar(self, prefijo, false, None, None)
-            .map_err(|f| format!("no se pudo listar `{prefijo}`: {}", f.motivo()))?;
+            .map_err(|f| format!("could not list `{prefijo}`: {}", f.motivo()))?;
         Ok(metas
             .into_iter()
             .map(|m| Objeto {
@@ -118,12 +118,8 @@ impl Origen for Azure {
     /// Cada versión (`include=versions`) si la cuenta versiona; si no —o un
     /// blob de antes de activarlo, que aún no tiene—, su ETag.
     fn listar_versiones(&self, prefijo: &str) -> Result<Vec<Version>, String> {
-        let (metas, _) = Azure::listar(self, prefijo, true, None, None).map_err(|f| {
-            format!(
-                "no se pudieron listar las versiones de `{prefijo}`: {}",
-                f.motivo()
-            )
-        })?;
+        let (metas, _) = Azure::listar(self, prefijo, true, None, None)
+            .map_err(|f| format!("could not list the versions of `{prefijo}`: {}", f.motivo()))?;
         Ok(metas
             .into_iter()
             .map(|m| Version {
@@ -145,7 +141,7 @@ impl Origen for Azure {
         let (v, e) = partir(version, "");
         let m = self.meta(clave, v).map_err(|f| {
             format!(
-                "no se pudo mirar `{clave}` (versión {version}): {}",
+                "could not inspect `{clave}` (version {version}): {}",
                 f.motivo()
             )
         })?;
@@ -167,11 +163,11 @@ impl Origen for Azure {
             .bajar(clave, v, e.as_deref(), None)
             .map_err(|f| match f.estado {
                 404 | 412 => format!(
-                    "no se pudo leer `{clave}` (versión {version}): {} ya no está",
+                    "could not read `{clave}` (version {version}): {} no longer exists",
                     f.estado
                 ),
                 _ => format!(
-                    "no se pudo leer `{clave}` (versión {version}): {}",
+                    "could not read `{clave}` (version {version}): {}",
                     f.motivo()
                 ),
             })?;
@@ -201,13 +197,13 @@ impl Origen for Azure {
                 Ok(m) => Some(format!("bytes={}", absoluto(r, m.tamano))),
                 Err(f) if matches!(f.estado, 404 | 412) => {
                     return Err(Rechazo::Cambiado(format!(
-                        "`{clave}` ya no es, en el origen, la versión fijada ({})",
+                        "`{clave}` at the source is no longer the pinned version ({})",
                         f.motivo()
                     )));
                 }
                 Err(f) => {
                     return Err(Rechazo::Origen(format!(
-                        "el origen contestó {}",
+                        "the source answered {}",
                         f.motivo()
                     )));
                 }
@@ -218,12 +214,12 @@ impl Origen for Azure {
         self.bajar(clave, v, e.as_deref(), rango)
             .map_err(|f| match f.estado {
                 404 | 412 => Rechazo::Cambiado(format!(
-                    "`{clave}` ya no es, en el origen, la versión fijada ({})",
+                    "`{clave}` at the source is no longer the pinned version ({})",
                     f.motivo()
                 )),
-                416 => Rechazo::Rango(format!("el rango no cabe en `{clave}`")),
-                0 => Rechazo::Origen(format!("el origen no contesta: {}", f.cuerpo)),
-                _ => Rechazo::Origen(format!("el origen contestó {} a `{clave}`", f.motivo())),
+                416 => Rechazo::Rango(format!("the range does not fit in `{clave}`")),
+                0 => Rechazo::Origen(format!("the source is not responding: {}", f.cuerpo)),
+                _ => Rechazo::Origen(format!("the source answered {} for `{clave}`", f.motivo())),
             })
     }
 
