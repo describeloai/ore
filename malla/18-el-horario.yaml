@@ -17,11 +17,14 @@
 #              tres namespaces que tienen copia (RoleBinding, no ClusterRoleBinding).
 #
 # ⭐ (2026-10-10) Y DORMIR SE DECIDE DENTRO: el cron de GitHub no corrió ni una vez en dos
-#   horas. La CronJob `dormir-si-inactiva` (abajo), cada 5 min, corre
-#   `malla/dormir-si-inactiva.py` con la cuenta `horario` —los mismos permisos que el
-#   workflow— y, por Workload Identity, como `ore-horario` ante Google. Dormir sólo hace
-#   falta despierta, y justo entonces las CronJobs corren puntuales. Despertar sigue fuera
-#   (`horario.yml` a mano, la consola).
+#   horas. La CronJob `dormir-de-noche` (abajo) corre `malla/dormir-de-noche.py` con la cuenta
+#   `horario` —los mismos permisos que el workflow— y, por Workload Identity, como
+#   `ore-horario` ante Google. Dormir sólo hace falta despierta, y justo entonces las
+#   CronJobs corren puntuales. Despertar sigue fuera (`horario.yml`: a las 08:00 y a mano).
+#
+# ⭐ (2026-10-11) HORARIO FIJO, 08:00–00:00 hora de Madrid, decidido con la persona: la de
+#   inactividad (`dormir-si-inactiva`, cada 5 min) leía la actividad del registro de los pods
+#   vivos, y reiniciar `ore-iam` la durmió dos veces con la persona dentro.
 #
 # ⛔ No lee `Secret`, no crea pods sueltos ni toca RBAC. El Job de una copia corre
 #   con la cuenta de su CronJob; quien puede crear Jobs en esos tres namespaces
@@ -172,13 +175,15 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: dormir-si-inactiva
+  name: dormir-de-noche
   namespace: ore-system
   labels: { ore.dev/tenant: system, ore.dev/rol: horario }
 spec:
-  schedule: "*/5 * * * *"
-  # Una pasada a la vez; y al despertar, una pasada perdida de hace horas no corre (la de
-  # ahora dirá «despierta desde hace menos de 30 min»).
+  # A medianoche de Madrid, y cada media hora hasta las 02:30 por si un trabajo de Kueue la
+  # tuvo despierta: dormida no corre nada, así que las pasadas de más no cuestan.
+  timeZone: Europe/Madrid
+  schedule: "0,30 0-2 * * *"
+  # Una pasada a la vez; y al despertar a las 08:00, una pasada perdida de la noche no corre.
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 120
   successfulJobsHistoryLimit: 1
@@ -204,9 +209,9 @@ spec:
               env:
                 - { name: HOME, value: /tmp }
                 - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
-                - { name: INACTIVA, value: "30" }
+                - { name: HORARIO, value: fijo }
               volumeMounts: [{ name: guion, mountPath: /horario }]
-              command: ["python3", "/horario/dormir-si-inactiva.py"]
+              command: ["python3", "/horario/dormir-de-noche.py"]
               resources:
                 requests: { cpu: "20m", memory: 128Mi }
                 limits: { cpu: "500m", memory: 256Mi }

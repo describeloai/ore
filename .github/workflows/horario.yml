@@ -1,28 +1,34 @@
 name: horario
 
-# ADR 0060 C1·3 · LA MALLA DUERME CUANDO NADIE LA USA Y DESPIERTA CUANDO ALGUIEN LLEGA.
+# ADR 0060 C1·3 · LA MALLA VIVE DE 08:00 A 00:00, HORA DE MADRID.
 #
-#   · cada 10 min: `malla/dormir.sh --si-inactiva 30` — duerme sólo si en 30 min no hubo
-#     ninguna petición de una persona (las líneas `acceso · … · persona` de `ore-serve` y
-#     `ore-iam`), ningún puesto abierto ni trabajo en Kueue. Si ya duerme, termina en segundos.
+#   · a las 08:00 de Madrid: `malla/despertar.sh`. El cron de GitHub va en UTC y sin zona: se
+#     lanza a las 06:00 y a las 07:00 UTC y sólo actúa la pasada en la que en Madrid son las 8
+#     (06 UTC en verano, 07 en invierno), así que el cambio de hora no lo rompe.
+#   · a las 00:00 de Madrid duerme, pero DENTRO: la CronJob `dormir-de-noche`
+#     (malla/18-el-horario.yaml), porque el cron de GitHub no es fiable para eso.
 #   · a mano o desde la consola (`workflow_dispatch`): `despertar` (`malla/despertar.sh`, que
-#     relanza el job `imagen` de la última corrida de `ci`), `dormir` o `dormir-ya`.
+#     relanza el job `imagen` de la última corrida de `ci`), `dormir` (si no hay trabajo en
+#     Kueue) o `dormir-ya`. Despertada a mano fuera de horario, duerme en la siguiente pasada
+#     de la noche (00:00–02:30) o, de 02:30 a 08:00, sigue hasta la medianoche siguiente.
 #
-# Configuración de desarrollo, decidida con la persona (2026-10-10): cualquiera que llegue a
-# la consola puede despertarla, sin límite; 30 min sin actividad y duerme (15 hasta el 2026-10-11).
+# Horario fijo decidido con la persona el 2026-10-11. Antes (2026-10-10 → 11) dormía tras 15 y
+# luego 30 min sin actividad, leída del registro de los pods vivos: reiniciar uno se llevaba la
+# actividad y la durmió dos veces con la persona dentro.
 #
 # ⛔ La cuenta: `ore-horario`, federada desde el OIDC de GitHub y sólo para `main`
 #   (`repo:describeloai/ore:ref:refs/heads/main`). En Google sólo cambia el tamaño de los
 #   grupos de nodos (papel `oreHorario`); en el clúster, lo de `malla/18-el-horario.yaml`.
-# ⚠️ El cron de GitHub no es puntual (puede llegar minutos tarde): para dormir da igual.
+# ⚠️ El cron de GitHub no es puntual (puede llegar minutos tarde, o no llegar): si un día no
+#   despierta a las 8, se despierta desde la consola.
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '0 6,7 * * *'
   workflow_dispatch:
     inputs:
       accion:
-        description: 'despertar | dormir (si nadie la usa) | dormir-ya'
+        description: 'despertar | dormir (si no hay trabajo en Kueue) | dormir-ya'
         required: true
         default: despertar
         type: choice
@@ -50,7 +56,7 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
-      ACCION: ${{ github.event_name == 'schedule' && 'dormir' || inputs.accion }}
+      ACCION: ${{ github.event_name == 'schedule' && 'a-las-8' || inputs.accion }}
     steps:
       - uses: actions/checkout@v5
 
@@ -67,11 +73,16 @@ jobs:
       - name: la malla, según la acción
         run: |
           echo "  acción: $ACCION"
+          if [ "$ACCION" = a-las-8 ]; then
+            H=$(TZ=Europe/Madrid date +%H)
+            if [ "$H" != 08 ]; then echo "  en Madrid son las $H, no las 08: esta pasada no toca"; exit 0; fi
+            ACCION=despertar
+          fi
           case "$ACCION" in
             despertar)
               if [ "${{ inputs.postgres }}" = true ]; then bash malla/despertar.sh --con-postgres
               else bash malla/despertar.sh; fi ;;
-            dormir)    bash malla/dormir.sh --si-inactiva 30 ;;
+            dormir)    bash malla/dormir.sh ;;
             dormir-ya) bash malla/dormir.sh --forzar ;;
             *) echo "acción desconocida: $ACCION"; exit 64 ;;
           esac
