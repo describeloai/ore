@@ -99,7 +99,7 @@ spec:
             - --bind
             - 0.0.0.0:8100
             - --imagen-computo
-            - europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/vm-compute-node-v17:baad49aa38dbf272c5874aa0d547e2cfb841ec1a
+            - europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/vm-compute-node-v17:ec050c8b74494dc136283fedc300f565ac0651d9
             # P5·1: lo que el reconciliador da por hecho, al proxy por Redis (olvidar.rs). Mientras
             # no exista redis-postgres (malla/postgres-entrada/), lo dice una vez y sigue: la caché
             # del proxy caduca sola.
