@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL TÚNEL — cloudflared, la única entrada desde internet (ORE 0060 C2·2)
+#
+#   navegador → Cloudflare (TLS, Cloudflare for SaaS) → ESTO → la puerta del túnel
+#
+# ⭐ Sale y no entra. `cloudflared` abre conexiones hacia la red de Cloudflare
+#   (7844, QUIC o HTTP/2) y por ellas le llega el tráfico: no hay IP pública, ni
+#   regla de reenvío, ni nada que cobre con la malla dormida. Dormida, Cloudflare
+#   contesta 530 y la consola lo lee como «dormida».
+#
+# ── Lo que vive FUERA de este fichero (y quién lo puso) ─────────────────────
+#
+#   el túnel `ore-malla`   en la cuenta de Cloudflare de la persona, configurado
+#                          desde allí (sus reglas: el TCP de Postgres en
+#                          `pg.ontoforge.org`, y todo lo demás a Envoy)
+#   `entrada.ontoforge.org` el *fallback origin* de Cloudflare for SaaS: CNAME al
+#                          túnel; los nombres de siempre apuntan aquí por CNAME
+#   el secreto `tunel-token` (Secret Manager), que lee SÓLO `ore-tunel` por
+#                          Workload Identity — la misma forma que el aprovisionador
+#
+# ⛔ El token no va en los argumentos (se vería en `ps` y en el `describe` del
+#   pod): un init container lo deja en un `emptyDir` en memoria y `cloudflared`
+#   lo lee con `--token-file`.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tunel
+  namespace: ore-system
+  annotations:
+    iam.gke.io/gcp-service-account: ore-tunel@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunel
+  namespace: ore-system
+  labels:
+    ore.dev/rol: tunel
+    ore.dev/tenant: system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { ore.dev/rol: tunel }
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: tunel
+        ore.dev/tenant: system
+    spec:
+      serviceAccountName: tunel
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+      initContainers:
+        - name: traer-el-token
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest --secret=tunel-token --out-file=/puesto/token
+              chmod 0444 /puesto/token
+              echo "token · $(wc -c < /puesto/token) bytes"
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: cloudflared
+          image: docker.io/cloudflare/cloudflared:2026.9.3
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --metrics=0.0.0.0:2000
+            - run
+            - --token-file=/puesto/token
+          ports: [{ name: metricas, containerPort: 2000 }]
+          readinessProbe:
+            httpGet: { path: /ready, port: metricas }
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts: [{ name: puesto, mountPath: /puesto, readOnly: true }]
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+---
+# ── Su red: `ore-system` lo niega todo (00-base); se abre sólo lo suyo ─────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-tunel
+  namespace: ore-system
+  labels: { ore.dev/tenant: system }
+spec:
+  podSelector:
+    matchLabels: { ore.dev/rol: tunel }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    # El init container: el servidor de metadatos (Workload Identity) y Secret Manager.
+    - to: [{ ipBlock: { cidr: 169.254.169.254/32 } }]
+      ports: [{ port: 80, protocol: TCP }, { port: 988, protocol: TCP }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports:
+        - { port: 443, protocol: TCP }
+        # La red de Cloudflare: QUIC (UDP) y, si no pasa, HTTP/2 (TCP).
+        - { port: 7844, protocol: UDP }
+        - { port: 7844, protocol: TCP }
+    # Adonde entrega: Envoy (la puerta del túnel) y el proxy de Postgres (0058).
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: envoy }
+      ports: [{ port: 10080, protocol: TCP }]
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ore-pg }
+          podSelector:
+            matchLabels: { ore.dev/rol: proxy-postgres }
+      ports: [{ port: 4432, protocol: TCP }, { port: 4444, protocol: TCP }]
