@@ -1,0 +1,32 @@
+# 0058 P7 en producción, versión corta (ADR 0058, «P7 en producción: el diseño corto»): Libro en un
+# PC, contra producción por el túnel de Cloudflare (0060 C2: la entrada sin IP pública).
+#
+#   docker compose -f compose.yaml -f compose.gcp.yaml -f compose.tunel.yaml --env-file .env \
+#     up -d --build libro-api libro-conciliador libro-informes usuarios
+#
+# Sobre compose.gcp.yaml, tres cambios:
+#   · todas las piezas entran por `cloudflared access tcp` en este PC (host.docker.internal:$PUERTO_TUNEL,
+#     lo abre produccion/comun.sh `tunel`);
+#   · por el túnel no llega el nombre del endpoint: va en `options=endpoint=<ep>` (psycopg, JDBC) o,
+#     donde el driver no deja pasar `options` (Prisma), en la contraseña: `endpoint=<ep>;<clave>`;
+#   · `sslmode=require`: el certificado es de *.europe-west1.pg.paladio.io, no de host.docker.internal.
+# libro-webhooks: el driver HTTP de Neon llama siempre a `api.` + el dominio, y ese nombre aún no
+# existe en el túnel. Mientras, FETCH_ENDPOINT lo manda al 443 del proxy por un `kubectl port-forward`
+# en este PC (produccion/p7.sh): el driver y el proxy de verdad, sin Cloudflare por medio.
+networks:
+  default: { name: libro-tunel, external: false }
+services:
+  libro-api:
+    environment:
+      DATABASE_URL: "postgresql://${ROL}:endpoint%3D${EP}-pooler%3B${CLAVE_URL}@host.docker.internal:${PUERTO_TUNEL}/${BASE}?sslmode=require&pgbouncer=true&connect_timeout=60&pool_timeout=30"
+      DIRECT_URL: "postgresql://${ROL}:endpoint%3D${EP}%3B${CLAVE_URL}@host.docker.internal:${PUERTO_TUNEL}/${BASE}?sslmode=require&connect_timeout=60"
+  libro-conciliador:
+    environment:
+      CONEXION: "host=host.docker.internal port=${PUERTO_TUNEL} dbname=${BASE} user=${ROL} password=${CLAVE} sslmode=require options=endpoint=${EP} connect_timeout=60"
+  libro-informes:
+    environment:
+      JDBC_URL: "jdbc:postgresql://host.docker.internal:${PUERTO_TUNEL}/${BASE}?sslmode=require&options=endpoint%3D${EP}&connectTimeout=60"
+  libro-webhooks:
+    environment:
+      FETCH_ENDPOINT: "https://host.docker.internal:${PUERTO_HTTP}/sql"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"

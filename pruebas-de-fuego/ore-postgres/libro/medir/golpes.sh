@@ -35,8 +35,9 @@ apunta() {   # apunta GOLPE INICIO OK DETALLE
 # etiquetas del proyecto). Solo lectura.
 computo() {
   [ -n "${SECO:-}" ] && { echo ep-seco; return; }
-  kubectl exec -n ore-pg storcon-db-0 -- psql -U postgres -d ore_postgres -Atc \
-    "select coalesce(computo, vm) from plano.endpoint where proyecto = '$PROYECTO' and id = 'principal' and observado = 'listo'"
+  # El usuario de la base es el de su Secret ($POSTGRES_USER), no `postgres` (medido en producción).
+  kubectl exec -n ore-pg storcon-db-0 -- env Q="select coalesce(computo, vm) from plano.endpoint where proyecto = '$PROYECTO' and id = 'principal' and observado = 'listo'" \
+    sh -c 'psql -U "$POSTGRES_USER" -d ore_postgres -Atc "$Q"'
 }
 
 espera_rollout() { k rollout status "$1" -n ore-pg --timeout=15m; }
@@ -85,13 +86,14 @@ EOF
 
 # La receta: hora → golpe. A la 36 se enciende el pool (configuración en la malla, con su go):
 # aquí solo se recuerda.
-CALENDARIO="12 matar-vm
+# Otro calendario (p. ej. el de P7 corto, en minutos con ESCALA=60): la variable CALENDARIO.
+CALENDARIO="${CALENDARIO:-12 matar-vm
 24 pageserver
 36 recordar-pool
 40 safekeeper
 48 proxy
 56 migrar
-64 ore-postgres"
+64 ore-postgres}"
 
 calendario() {
   [ -s "$M/inicio" ] || { echo "falta la hora 0: golpes.sh empieza" >&2; return 1; }

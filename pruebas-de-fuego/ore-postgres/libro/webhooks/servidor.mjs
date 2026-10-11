@@ -7,7 +7,11 @@
 // clave lo hace idempotente. Apuntar el aviso, su movimiento y el saldo es UNA sentencia (CTE),
 // así que por HTTP es atómico sin transacción interactiva.
 import http from 'node:http';
-import { neon } from '@neondatabase/serverless';
+import { neon, neonConfig } from '@neondatabase/serverless';
+
+// P7 en producción, por el túnel (sin el custom hostname `api.` aún): el /sql del proxy por otro
+// camino, si se dice. El endpoint sigue saliendo del host de DATABASE_URL (Neon-Connection-String).
+if (process.env.FETCH_ENDPOINT) neonConfig.fetchEndpoint = process.env.FETCH_ENDPOINT;
 
 const sql = neon(process.env.DATABASE_URL);
 const PUERTO = Number(process.env.PUERTO ?? 8081);
