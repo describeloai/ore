@@ -1,30 +1,23 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# EL HORARIO — lo que puede hacer en el clúster quien lo duerme y lo despierta
-# (ADR 0060 C1·3)
+# EL HORARIO — la malla vive de 08:00 a 00:00, hora de Madrid (ADR 0060 C1)
 #
-# `.github/workflows/horario.yml` corre `malla/despertar.sh` y `malla/dormir.sh`
-# como la cuenta de Google `ore-horario` (federada desde el OIDC de GitHub, sólo
-# desde `main`). En Google sólo puede cambiar el tamaño de los grupos de nodos
-# (papel `oreHorario`); aquí, lo justo que piden los dos guiones:
+#   despertar  a las 08:00, `.github/workflows/horario.yml` (`malla/despertar.sh`): dormida
+#              no hay CronJob que corra. También a mano y desde la consola.
+#   dormir     a las 00:00, la CronJob `dormir-de-noche` (abajo, `malla/dormir-de-noche.py`),
+#              DENTRO: las CronJobs del clúster corren puntuales y el cron de GitHub no. A
+#              mano, `horario.yml` (`malla/dormir.sh`).
+#
+# Todo corre como `ore-horario`: desde GitHub, la cuenta de Google federada desde su OIDC
+# (sólo `main`); dentro, la cuenta `horario` con Workload Identity. En Google sólo puede
+# cambiar el tamaño de los grupos de nodos (papel `oreHorario`); aquí, lo justo:
 #
 #   despertar  ver nodos y Kueue; listar y REINICIAR Deployments/StatefulSets (el
 #              empujón: `rollout restart` es un `patch` de la plantilla); leer las
 #              HTTPRoute para probar las entradas.
-#   dormir     leer los registros de `ore-serve`/`ore-iam` (la señal de actividad:
-#              líneas sin nombres), los puestos y los workloads de Kueue; vaciar los
-#              nodos (`cordon` = `patch` del nodo; `drain` = desalojos); y lanzar las
-#              copias al dormir (un Job desde su CronJob) — esto último SÓLO en los
-#              tres namespaces que tienen copia (RoleBinding, no ClusterRoleBinding).
-#
-# ⭐ (2026-10-10) Y DORMIR SE DECIDE DENTRO: el cron de GitHub no corrió ni una vez en dos
-#   horas. La CronJob `dormir-de-noche` (abajo) corre `malla/dormir-de-noche.py` con la cuenta
-#   `horario` —los mismos permisos que el workflow— y, por Workload Identity, como
-#   `ore-horario` ante Google. Dormir sólo hace falta despierta, y justo entonces las
-#   CronJobs corren puntuales. Despertar sigue fuera (`horario.yml`: a las 08:00 y a mano).
-#
-# ⭐ (2026-10-11) HORARIO FIJO, 08:00–00:00 hora de Madrid, decidido con la persona: la de
-#   inactividad (`dormir-si-inactiva`, cada 5 min) leía la actividad del registro de los pods
-#   vivos, y reiniciar `ore-iam` la durmió dos veces con la persona dentro.
+#   dormir     ver los workloads de Kueue; vaciar los nodos (`cordon` = `patch` del nodo;
+#              `drain` = desalojos); y lanzar las copias al dormir (un Job desde su
+#              CronJob) — esto último SÓLO en los tres namespaces que tienen copia
+#              (RoleBinding, no ClusterRoleBinding).
 #
 # ⛔ No lee `Secret`, no crea pods sueltos ni toca RBAC. El Job de una copia corre
 #   con la cuenta de su CronJob; quien puede crear Jobs en esos tres namespaces
@@ -43,9 +36,6 @@ rules:
   - apiGroups: [""]
     resources: [namespaces, endpoints, pods]
     verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
   # Despertar reinicia lo que quedó en `CrashLoopBackOff` esperando a otro (el segundo
   # empujón): borrar el pod para que su controlador lo cree otra vez, sin la espera.
   - apiGroups: [""]
@@ -209,7 +199,6 @@ spec:
               env:
                 - { name: HOME, value: /tmp }
                 - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
-                - { name: HORARIO, value: fijo }
               volumeMounts: [{ name: guion, mountPath: /horario }]
               command: ["python3", "/horario/dormir-de-noche.py"]
               resources:

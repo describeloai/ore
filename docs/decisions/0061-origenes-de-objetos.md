@@ -2,7 +2,9 @@
 
 **Estado:** propuesto (2026-10-09). **O0–O5 hechos** (2026-10-09/10; O2–O5 en el laboratorio —SharePoint
 contra un Graph de mentira—; la prueba contra GCS, Azure, un SFTP y un tenant de SharePoint de verdad
-es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O5 en O5. Investigación:
+es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O5 en O5. **D-O6**
+(un contenedor público, sin identidad) hecha para Azure (AZ0–AZ3, 2026-10-11); la prueba en
+producción contra Azure Open Datasets (AZ5), pendiente. Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -136,6 +138,28 @@ SMB → Google Drive → HDFS, más los que hablan la API de S3 (MinIO, Ceph, Wa
    - **Fuera**: las nubes soberanas (GCC High, 21Vianet), las listas de SharePoint (son tablas, no
      ficheros) y los permisos por carpeta o fichero (`*.SelectedOperations.Selected`), hasta que se
      pidan.
+
+9. **D-O6 · un contenedor público, sin identidad** *(aceptada, 2026-10-11; hecha para Azure)*: lo
+   que el dueño publicó para que lo lea cualquiera (Azure Open Datasets, el AWS Open Data Registry,
+   los `gcp-public-data-*` de Google, lo que un socio comparte) se conecta como una fuente más
+   —sync, colecciones, transforms—, como hacen Foundry, Databricks y Snowflake. Y es la manera de
+   probar un proveedor de verdad sin cuenta: todo menos la mitad de la identidad.
+   - **La URL lo dice**: `az://<cuenta>/<contenedor>[/<prefijo>]?publico=1`, que no se mezcla con
+     `tenant`/`cliente`.
+   - **Ninguna petición lleva `Authorization`**: no hace falta, y Azure contesta
+     `401 InvalidAuthenticationInfo` a un contenedor público si le llega un token que no es suyo
+     (AZ0). Dar el token de la celda a quien no lo necesita sería, además, una fuga.
+   - **Sin URLs firmadas**: sin identidad no hay clave de delegación; los ítems los sirve
+     `ore-medios` (`leer_fijado`).
+   - **Se fija igual**: por versión si el contenedor versiona, por ETag si no (D-O1).
+   - **`check` prueba el nivel de acceso** sin identidad (`x-ms-blob-public-access`: `container`
+     deja listar; `blob`, sólo leer blobs sueltos, y ORE necesita listar) y dice como lo que son un
+     contenedor privado o que no existe (Azure contesta igual a los dos sin identidad, `401`), una
+     cuenta con el acceso público apagado (`409 PublicAccessNotPermitted`) y el `403` que comparten
+     Azurite y el firewall.
+   - **Lo que no prueba**: la federación con Entra, los roles, ADLS Gen2 y el firewall. Siguen como
+     deuda de O3, que salda el primer cliente.
+   - S3 y GCS pueden seguir el mismo patrón cuando se pida.
 
 ## El plan
 
@@ -365,6 +389,42 @@ se copian otros bytes: el cotejo del `md5` los para—. El perfil, en
 SDK, sin validar—), ADLS Gen2 (namespace jerárquico y sus ACL), el firewall de red, y la concesión de
 los dos roles. Se salda corriendo `o3-azure.sh` contra una cuenta real y la consola dando de alta un
 contenedor.
+
+### AZ · Azure de verdad, por un contenedor público (D-O6, 2026-10-11)
+
+**AZ0 · medido** con `curl`, sin cuenta, contra Azure Open Datasets
+(`azureopendatastorage.blob.core.windows.net`, `x-ms-version: 2023-11-03`):
+
+| qué | Azure de verdad | lo que supone |
+|---|---|---|
+| contenedores públicos | `nyctlc`, `mnist`, `laborstatisticscontainer`, `censusdatacontainer`, `holidaydatacontainer`… | material de sobra: Parquet de un mes en `nyctlc/green/puYear=2019/puMonth=1/` (16 MB), CSV y `.gz` en `mnist` |
+| uno que no es público | `covid19datalake`, `ojsdatacontainer`: `401 NoAuthenticationInformation`, y lo mismo uno que no existe | `check` no puede distinguirlos, y lo dice |
+| propiedades del contenedor, sin identidad | `200` con `x-ms-blob-public-access: container` | el nivel se pregunta antes de listar |
+| versionado | `include=versions` no da ningún `VersionId` | se fija por ETag |
+| `versionid` inventado | `404 BlobNotFound` | el Azure real lo respeta (Azurite no, O3·0) |
+| `HEAD` | ETag, `Content-MD5`, `Accept-Ranges` | la huella `md5:` vale |
+| `Range: bytes=0-19` / `bytes=-10` | `206` / **`200` con el blob entero** | el Azure real tampoco entiende un rango por el final: se resuelve con el tamaño, como por Azurite |
+| `If-Match` bueno / malo | `206` / `412` | fijar por ETag funciona |
+| un token cualquiera | `401 InvalidAuthenticationInfo` | sin identidad, ninguna cabecera |
+| la clave de delegación | `403` | sin URLs firmadas |
+| sin `x-ms-version` | `FeatureVersionMismatch` en `nyctlc` | ORE siempre la manda |
+
+**AZ2 · el código** (`d0d32567`): `ore-azure` (`Fuente.app: Option<App>`; sin token si es pública;
+`nivel_publico`), `ore-read-azure` (`check` empieza por `publico`; `firmar` sin probar; sus mensajes,
+en inglés), `ore-serve` (`url_sin_secreto` admite `publico=1` sólo; credenciales dan el modo
+`publico`). `o3-azure.sh` caso 9 —un contenedor `abierto` de Azurite con nivel `container`: `check`,
+el privado leído como público, catálogo y `bajar`, con un token basura en el entorno—: **15/15**.
+Azurite contesta `403 AuthorizationFailure` (no `401`) al privado sin identidad, y tolera un token
+basura en el público: la guarda estricta de que no viaja es el test de `ore-azure`
+(`a_un_contenedor_publico_no_se_le_manda_token`).
+
+**AZ3 · la consola** (rubix-platform `0a0484a`): «Quién lee» gana «Nadie: un contenedor público»,
+que oculta tenant, app y los pasos de la federación y construye `?publico=1`; la comprobación lista
+nivel público, listar, leer y versiones.
+
+**AZ5 · pendiente**: el alta de `azureopendatastorage/nyctlc` (un mes) y `mnist` en producción —
+comprobar, descubrir, sync, colecciones mantenida y virtual, y leer desde un transform de Python y de
+Java—, y con ella si la malla sale a `*.blob.core.windows.net`.
 
 ### O4 · hecho en el laboratorio (2026-10-09): SFTP
 

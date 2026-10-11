@@ -2,7 +2,7 @@
 
 **Estado:** **ITERADO (2026-10-11)**, con deudas menores. Hechos A1–A4 (Postgres a cero,
 retención de Artifact Registry, secretos, discos), B1 (construir en los runners de GitHub, sin
-Cloud Build), C1 (dormir sin actividad, despertar desde la consola), C2 (el túnel de Cloudflare,
+Cloud Build), C1 (horario fijo: despierta de 08:00 a 00:00, hora de Madrid; a mano desde la consola), C2 (el túnel de Cloudflare,
 sin balanceadores) y C3 (presupuesto de €20 con alertas). Fijo con la malla dormida, estimado:
 **~16 $/mes**, más ~0,05 $/h despierta; se confirma con la factura. Estado final y deudas, en
 «**Cierre**», al final de la historia. Propuesto el 2026-10-08. Cada paso que tocó la malla, el
@@ -457,9 +457,6 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
    https`, que no miente tras el punto 2. Se queda también `ClientTrafficPolicy` con un salto de
    confianza, para que la IP del cliente sea la de la persona y no la del túnel.
 
-**Retención:** la malla está retenida con `ore.dev/despierta-hasta=2026-10-11T20:00:00Z` en
-`ore-system` mientras duran C2 y las pruebas de 0058. Se quita al terminar.
-
 ### C2·4 · el aprovisionador da de alta los nombres (2026-10-11)
 
 - `malla/cloudflare-saas.py asegurar|quitar <host>`: el *custom hostname* en `ontoforge.org`.
@@ -529,220 +526,84 @@ túnel en desarrollo:
   comentada; su frase decía que saliera al desplegarse). Era lo que tenía rojo el CI de `main`
   desde `5d10fb11` (paso «la plantilla del inquilino se puede renderizar»).
 
-### C1 · el nodo de `pg` que no se durmió (2026-10-10, 21:03–21:43 UTC)
-
-La sesión de 0058 avisó: `pg` seguía con un nodo y ore-pg funcionando. Dos fallos de
-`dormir-si-inactiva.py`:
-1. **No comprobaba el resultado.** El autoescalado de `pg` estaba encendido (19:48, desde la
-   cuenta de la persona) y creaba un nodo justo a las 21:03, cuando la CronJob lo quitó y pidió
-   0. El resize terminó `DONE` y se llevó el nodo viejo, pero el grupo quedó en objetivo 1 con el
-   nuevo dentro. ⇒ Ahora se vuelve a mirar después de cada resize, hasta tres veces (`d749626a`).
-2. **Los PDB de ore-pg bloquean una hora.** `proxy-postgres` (minAvailable 1) y `safekeeper`
-   (maxUnavailable 1) permiten 0 desalojos cuando se apaga el grupo entero, y GKE espera hasta
-   una hora antes de forzarlo. El resize manual de las 21:27 siguió atascado hasta borrar los tres
-   pods a mano a las 21:43, que es lo que GKE habría hecho al cabo de la hora. ⇒ Ahora la CronJob
-   termina los pods de los nodos de `pg` y `jobs-s` antes del resize (`412da827`); las copias ya
-   están hechas a esas alturas.
-
-Coste: un `n2-standard-2` 40 minutos de más. Malla a 0 máquinas desde las 21:43:43.
-
 **Lo que queda:** el *custom hostname* y el CNAME de prueba están borrados, y el servidor y el
 `cloudflared` locales parados. Siguen en Cloudflare el túnel `ore-c2-prueba` (sin conexión) y
 `entrada.ontoforge.org` como *fallback origin*; C2·2 los reapunta al túnel de la malla.
 
-### C1 · dormir por inactividad, despertar al usar (diseñado el 2026-10-10)
+### C1 · la malla vive de 08:00 a 00:00, hora de Madrid (2026-10-10 → 2026-10-11)
 
-Sin horario: **despierta quien lo usa y duerme cuando nadie lo usa.** Decidido con la persona,
-como configuración de desarrollo (en producción real se revisa): **cualquiera puede despertarlo,
-sin límite**, y **duerme tras 15 min sin actividad**.
+**Decidido con la persona el 2026-10-11** (`cfdb5117`; lo que quedaba de la inactividad, quitado el mismo día): un horario
+fijo, y fuera de él dormida. Cualquiera puede despertarla a mano desde la consola, sin límite
+(configuración de desarrollo; en producción real se revisa).
 
-- **Quién despierta:** la consola (Vercel, siempre en pie) antes del login —Keycloak vive dentro y
-  dormido no carga ni la página de entrada—, `ore wake` y el CLI ante un 502, el despertador
-  programado (el `mantenimiento` diario de las celdas, y más adelante los horarios de Transforms y
-  funciones), y las pruebas contra prod. El job `imagen` del CI ya tiene su camino dormido.
-- **Qué cuenta como actividad:** peticiones de personas a `ore-serve`, `ore-iam` y Keycloak,
-  puestos abiertos, trabajo de usuarios en Kueue. No cuentan las comprobaciones de salud, el
-  informador, el aprovisionador, los refrescos de JWKS, Flux, ni las consultas de fondo de una
-  pestaña de la consola (marcadas, y en pausa con la pestaña oculta).
-- **Lo programado:** las copias diarias (forja, idp, base del controlador) pasan a hacerse **al
-  dormir** —los datos sólo cambian despierto—; los refrescos de JWKS, al despertar.
-- **Piezas:** `malla/dormir.sh` y `malla/despertar.sh` (en orden: nodo, Kueue/cert-manager/Flux,
-  celdas, JWKS, relanzar `imagen`, `54-la-comprobacion`); workflows de GitHub (despertar a mano o
-  desde la consola, el que duerme cada 15 min, el despertador programado) con una cuenta mínima
-  `ore-horario`; la consola lanza el workflow con un token de GitHub de un solo permiso.
+| | quién | cuándo |
+|---|---|---|
+| **despertar** | `.github/workflows/horario.yml` → `malla/despertar.sh` | cron `0 6,7 * * *` UTC; sólo actúa la pasada en la que en Madrid son las 8 (06 UTC en verano, 07 en invierno): el cambio de hora no lo rompe. Dormida no hay CronJob que corra, por eso va fuera |
+| **dormir** | la CronJob `dormir-de-noche` (`ore-system`, `timeZone: Europe/Madrid`) → `malla/dormir-de-noche.py` | `0,30 0-2 * * *`: la primera pasada duerme; las demás, sólo si un trabajo de Kueue la tuvo despierta. Dentro del clúster porque el cron de GitHub **no corrió ni una vez en dos horas** el 2026-10-10 (GitHub avisa: sus horarios se retrasan o no corren) |
+| **a mano** | la consola (`/auth/despertando` → `/auth/despertar`), `horario.yml` (`despertar`, `dormir`, `dormir-ya`), `curl -X POST https://app.paladio.io/auth/despertar` | cuando sea. Despertada de madrugada, duerme en la siguiente pasada de 00:00–02:30, o sigue hasta la medianoche siguiente |
 
-Hitos: C1·0 medir · C1·1 los guiones · C1·2 la señal de actividad · C1·3 los workflows (IAM) ·
-C1·4 la consola y `ore wake` · C1·5 el tamaño del nodo, `jobs-s` a spot y los discos.
+**Por qué no por inactividad** (lo que hubo del 2026-10-10 al 11: dormir tras 15 y luego 30 min
+sin peticiones de una persona). La señal eran las líneas de registro de los pods **vivos** de
+`ore-serve` y `ore-iam`: reiniciar uno se llevaba la actividad. El 2026-10-11, al reiniciar
+`ore-iam` para arreglar un 502, la malla se durmió **dos veces con la persona dentro** (18:35 a
+medias, 19:35 del todo). Un horario no depende de nada que se pueda perder. Quitados de raíz: la
+CronJob `dormir-si-inactiva`, `dormir.sh --si-inactiva`, el permiso `pods/log` de `ore-horario`,
+la línea de actividad de `ore-iam`, la clase `fondo` y la cabecera `x-ore-fondo` de `ore-serve`, y
+el latido de la consola como señal (sigue, sólo para avisar de que se durmió).
 
-### C1·0 · un ciclo despertar → dormir, medido (2026-10-10)
+**Dormir** (los mismos pasos dentro y a mano): con trabajo de Kueue en curso no duerme (salvo
+`dormir-ya`); las **copias al dormir** —la forja, el idp y, si su grupo está en pie, la base del
+controlador de Postgres—, porque los datos sólo cambian despierta y las copias diarias no corren
+dormidas; y los grupos a 0 por la API de GKE: `pg` y `jobs-s` esperando (GKE hace una operación a
+la vez), comprobado hasta tres veces que quedan a 0, y `sistema-spot`, donde corre el guion, el
+último y `--async`. Antes del resize se terminan los pods de `pg` y `jobs-s`: los PDB de ore-pg
+no dejan desalojar con el grupo entero apagándose y GKE esperaría una hora (2026-10-10, 21:03–21:43:
+un `n2-standard-2` 40 min de más). **~3–4 min.**
 
-Despertado a mano (`sistema-spot` 0 → 1 a las 14:32:26 UTC), con un vigilante de sólo lecturas:
+**Despertar**, medido (2026-10-10 y 11): el nodo listo a ~55 s, Kueue a ~90 s, y entonces **el
+empujón** —`rollout restart` de cada Deployment y StatefulSet—: con los nodos a 0 los ReplicaSets
+llevan horas de `FailedCreate` contra el webhook de Kueue (`failurePolicy: Fail`) y reintentan con
+una espera de hasta ~16 min. Cada 30 s reinicia lo que esté en `CrashLoopBackOff` esperando a otro
+(el informador necesita a Keycloak). Luego relanza el job `imagen` de la última corrida de `ci` y
+prueba las entradas. **Hasta poder entrar: 6–11 min.**
 
-| segundo | qué |
-|---|---|
-| 43 / 54 | la máquina existe / el nodo `Ready` |
-| 86 | Kueue listo |
-| 86–162 | **nada más arranca**: con los nodos a 0, los ReplicaSets llevaban horas de `FailedCreate` contra el webhook de Kueue (`mpod.kb.io`, `failurePolicy: Fail`) y reintentan con una espera que crece hasta ~16 min |
-| 162 | **el empujón**: `kubectl rollout restart` de los Deployments y StatefulSets de cada namespace (Kueue ya contesta) |
-| 227 / 244 | Flux / la forja compartida |
-| 249 | `demo.ore.paladio.io` contesta (401 sin token) |
-| 257–260 | `identidad` (Keycloak, su base, el operador, `ore-iam`), `t-demo` y `t-victor` enteras |
-| **351** | **`login.paladio.io` da 200**: el balanceador del idp tarda en dar el backend por sano |
-| 297–747 | el job `imagen` relanzado (`gh run rerun --job`): 13 de 14 Deployments relevados a `b968829b`; `ore-pg/ore-postgres` agotó los 300 s porque vive en `ore.dev/pool: neon`, a 0 (corregido en `ci.yml`: sin ese grupo en pie, no se releva) |
+**La consola** (rubix-platform): `/auth/login` pregunta primero si Keycloak contesta (su
+descubrimiento OIDC; dormida, ni la página de entrada carga) y, si no, manda a
+`/auth/despertando`, que lanza el despertar —sin un segundo si ya hay uno en marcha— y cuenta desde
+que empezó; en cuanto Keycloak contesta, sigue al login. `/auth/despertar` lanza `horario.yml` con
+`RUBIX_DESPERTADOR_TOKEN` (GitHub, grano fino, sólo `actions: write` sobre `describeloai/ore`, en
+Vercel). En el workspace, si se durmió con la pestaña abierta, un aviso con «Despertar».
 
-**Despertar, hasta poder entrar: ~6 min** (con el empujón; sin él, hasta ~20). Las CronJobs que
-no corrieron dormidas (el `mantenimiento` de las celdas, los refrescos de JWKS) corrieron solas al
-despertar; las de `ore-pg` se quedan pendientes sin su grupo.
+**Quién: `ore-horario`.** Desde GitHub, la cuenta de Google federada desde su OIDC **sólo para
+`main`** (`principalSet` por `attribute.ref/refs/heads/main`: el enlace por `subject` daba
+`getAccessToken` denegado); dentro, la cuenta `horario` con Workload Identity. En Google, el papel
+`oreHorario` (cambiar el tamaño de los grupos de nodos); en el clúster (`malla/18-el-horario.yaml`)
+ver nodos, Kueue y HTTPRoute, reiniciar Deployments/StatefulSets, vaciar nodos y crear Jobs **sólo**
+en `forja`, `identidad` y `ore-pg`. Su NetworkPolicy sólo deja salir a la API del clúster, a los
+metadatos y a las APIs de Google.
 
-**Lo que usa de verdad, en reposo** (`kubectl top`, ~10 min después): el nodo 314m de CPU y 4,3 GB
-de memoria (de un `e2-standard-4`: 8 % y 32 %). Lo que **piden** los pods: 1.441m de CPU y 5,1 GiB.
-Un `e2-standard-2` (~1.930m y ~5,7 GiB asignables) **cabe, justo por memoria**: C1·5 lo prueba;
-los puestos y los builds van a `jobs-s`, no aquí.
+**Lo que destaparon los primeros ciclos** (2026-10-10):
+- El login roto por A2: la limpieza de Artifact Registry borró la imagen de Keycloak fijada por
+  digest (la protegía `main`, que se movió). Ahora `simular-limpieza.py --comprobar-reglas`, en el
+  CI, falla si la malla cita una imagen que la regla no protege por sí misma.
+- Las forjas no arrancaban: `ore-forja-<n>` nunca pudo leer su `t-<n>-forja-admin`, y el código
+  viejo lo tomaba por «no hay» y acuñaba una versión en cada arranque (las 62 versiones). Ahora
+  cada una lee la suya.
 
-**Dormir:** `cordon` + `drain` 130 s, el grupo a 0 68 s más: **~3,3 min**.
-
-### C1·1 · los guiones, en un ciclo real (2026-10-10) — y el login roto por A2
-
-`malla/despertar.sh` y `malla/dormir.sh` (`b7450b1f`, `e1953fec`). El ciclo:
-
-- **despertar**: nodo listo a los 61 s, Kueue a los 90 s, el empujón a 22 Deployments/StatefulSets
-  a los 108 s, y todo listo… **salvo Keycloak**: `ImagePullBackOff`, `idp@sha256:39bc18b8…` *not
-  found*. **La limpieza de A2 lo había borrado**: la versión que `malla/60-idp.yaml` fija por
-  digest sólo la protegía la etiqueta `main`; el primer push de B1 movió `idp:main` a la imagen
-  nueva, y la del 30-sep —sin etiqueta protegida, más de 7 días, fuera de las 3 últimas— se fue
-  (la vuelta atrás escrita, `idp:26.0.7-1`, también). `simular-limpieza.py --manifiestos` lo había
-  dado por bueno porque miraba lo protegido *en ese momento*. De las 22 imágenes que cita la malla,
-  sólo faltaba ésa. Los datos, intactos (viven en `idp-db`).
-- **el arreglo** (con el go de la persona; `7809c3ef`, `49e70ad0`): `60-idp.yaml` a `idp:main` de
-  `b968829b` (`sha256:3506155e…`), construida de las mismas entradas (la etapa `idp` y
-  `identidad/tema` no cambian desde `5d1721c1`); la regla guarda ese digest
-  (`guarda-lo-fijado-por-digest`; Google admite prefijos de **64 caracteres**, un digest entero
-  son 71, y con uno más largo rechaza la regla entera); y **`simular-limpieza.py
-  --comprobar-reglas`, en el CI, falla si la malla cita una imagen que la regla no protege por sí
-  misma** (con el pin viejo, falla). Flux lo aplicó: Keycloak 26.0.7 arrancó en 25 s y
-  `login.paladio.io` volvió a dar 200 a las 15:58 UTC; el login estuvo caído desde que se despertó
-  (~25 min), con la plataforma dormida antes.
-- **despertar otra vez**, con todo en pie: 20 s (comprueba, entradas). Y un fallo del guion: con la
-  corrida de `main` aún en marcha, su job `imagen` no existe todavía y decía «nada que relanzar»;
-  ahora espera a que termine. La corrida 38065651096 desplegó despierta y salió verde.
-- **dormir**: las copias al dormir (idp a los 36 s, forja a los 53 s; en
-  `gs://…-copias/idp/iam-20261010T160948Z.dump` y los bundles de la forja), los nodos vaciados a
-  los 176 s, **dormida a los 261 s** (0 máquinas de la malla).
-
-### C1·2 · la señal de actividad (2026-10-10, en local)
-
-En vez de un endpoint nuevo, **la línea que ya existe**: `ore-serve` deja una por petición, sin
-nombres, con la clase de quien pide (`acceso · GET /paquetes/{} · 200 · 12 ms · persona`).
-- `ore-serve` (`recuento.rs`): clase nueva **`fondo`**, una persona en una petición con
-  `x-ore-fondo: 1` (un refresco que nadie pidió con la mano); su actividad de la organización es
-  la de `persona`. Prueba `la_consulta_de_fondo_se_reconoce`.
-- `ore-iam` (`rutas.rs`): no dejaba ninguna línea; ahora una por petición de una persona, sin
-  camino ni sujeto (`acceso · GET · persona` o `· fondo`).
-- `malla/dormir.sh --si-inactiva 15`: duerme sólo si en 15 min no hubo ninguna línea `persona` o
-  `delegado` en `ore-serve` (cada celda) ni en `ore-iam`, ningún puesto abierto ni trabajo en
-  Kueue, y nunca antes de 15 min despierta. Lee con `kubectl logs` (sólo `pods/log`): sin
-  endpoint nuevo, sin Cloud Logging, y el registro ya no lleva nombres.
-- La consola: los refrescos que se repiten solos (Data › Jobs, `Refresco`; el árbol en vivo,
-  `useArbolVivo`) sólo preguntan **si alguien mira** (`lib/workspace/alguienMira.ts`: pestaña a la
-  vista y alguien tocó la consola en 15 min). Así una pestaña olvidada no pregunta y no hace falta
-  llevar la cabecera por cada server action; `x-ore-fondo` queda para quien la necesite. Los
-  sondeos de una operación que alguien lanzó (librerías, abrir un puesto, desplegar un modelo)
-  terminan solos y no cambian.
-
-### C1·3 · quién la duerme y la despierta (2026-10-10)
-
-`.github/workflows/horario.yml` (gratis: el repositorio es público): **cada 10 min**
-`dormir.sh --si-inactiva 15`, y **a mano o desde la consola** (`workflow_dispatch`) `despertar`
-(con `postgres` opcional), `dormir` o `dormir-ya`. Una cosa a la vez (`concurrency: horario`).
-Corre como **`ore-horario`** (con el go de la persona):
-- en Google, el papel `oreHorario`: `container.clusters.get/update` y `container.operations.*`
-  —cambiar el tamaño de los grupos de nodos y nada más—; federada desde el OIDC de GitHub
-  **sólo para `repo:describeloai/ore:ref:refs/heads/main`** (no otras ramas ni otros workflows
-  de PR);
-- en el clúster, `malla/18-el-horario.yaml`: ver nodos, Kueue, registros y HTTPRoute;
-  reiniciar Deployments/StatefulSets (el empujón); vaciar nodos; y crear Jobs **sólo** en
-  `forja`, `identidad` y `ore-pg` (las copias al dormir). Comprobado con `kubectl auth can-i`:
-  `patch deployments` sí, `get secrets` no, `create jobs` en `forja` sí y en `t-demo` no.
-  Aplicado a mano una vez (el primer despertar ya lo necesita y Flux no corre dormido); Flux se
-  queda con él.
-
-### C1·3 · el primer despertar por el workflow (2026-10-10)
-
-- **La federación**: el enlace por `subject` (`repo:describeloai/ore:ref:refs/heads/main`) dio
-  `iam.serviceAccounts.getAccessToken` denegado; se cambió a `principalSet` por
-  `attribute.ref/refs/heads/main`, que el proveedor ya mapea y que, como sólo admite
-  `describeloai/ore`, es el `main` de este repositorio. Con él, `dormir` dormida: 5 s.
-- **El primer despertar** (38068890704): nodo listo a los 52 s, Kueue a los 84 s, empujón a 21…
-  y **las forjas de las celdas no arrancaban**: `comprobar` (A3) recibía `PERMISSION_DENIED`. La
-  cuenta `ore-forja-<n>` **nunca pudo leer** `t-<n>-forja-admin` (sólo añadir versiones, a
-  propósito): la pregunta fallaba SIEMPRE, el código de antes lo tomaba por «no hay» y acuñaba en
-  cada arranque — **ésa era la causa de las 62 versiones**, no la identidad del pod (A3 lo suponía);
-  con A3, sin lectura, la forja reintentaba para siempre. Arreglo (con el go de la persona): cada
-  `ore-forja-<n>` lee **su** secreto (`secretAccessor` sólo en `t-<n>-forja-admin`; no le da nada:
-  es el admin de su propia forja), y `aprovisionar-inquilino.sh` lo concede a las nuevas. Las
-  forjas arrancaron al reiniciarlas (17:02:55): «el almacén ya tiene el testigo». Quedan las
-  versiones 63–66 que acuñaron los despertares de hoy con el código viejo.
-- **Despertar otra vez** (todo en pie): 120 s, `imagen` relanzado y verde, las cuatro entradas
-  contestan.
-
-### C1·3 · dormir se decide dentro del clúster (2026-10-10)
-
-**El cron de GitHub no corrió ni una vez** en dos horas (`*/10`, workflow activo, rama por
-defecto): la malla se quedó despierta 107 min sin nadie. GitHub avisa de que sus horarios pueden
-retrasarse o no correr. ⇒ **Dormir lo decide el clúster**: la CronJob `dormir-si-inactiva`
-(`ore-system`, cada 5 min, `malla/18-el-horario.yaml`) corre `malla/dormir-si-inactiva.py`. Dormir
-sólo hace falta despierta, y justo entonces las CronJobs corren puntuales; dormida no corre y no
-hace falta.
-- El guion habla con la API de Kubernetes directamente (la imagen `ore-drivers` trae Python y
-  `gcloud`, no `kubectl`): la edad del nodo, las líneas `persona|delegado` de `ore-serve` y
-  `ore-iam`, los puestos, Kueue; las copias (un Job desde cada CronJob, esperado); y los grupos a
-  0 por `gcloud` — `pg` y `jobs-s` esperando (GKE hace una operación a la vez), `sistema-spot`, el
-  suyo, con `--async`. No vacía los nodos: corre en uno de ellos; GKE retira las máquinas.
-- La cuenta `horario` (los mismos permisos que el workflow: sujeto añadido a los enlaces) y, por
-  Workload Identity, `ore-horario` ante Google. Su NetworkPolicy sólo deja salir a la API del
-  clúster (`10.10.0.2`, `10.30.0.1`), a los metadatos y a las APIs de Google.
-- El guion viaja en un `ConfigMap` (`configMapGenerator: horario`); la comprobación ⑧ de
-  `gen-inquilino.py` mira ahora sólo el generador del aprovisionador.
-- `horario.yml` sigue: despertar a mano o desde la consola (eso sí corre al instante), y su cron
-  queda de red por si un día corre.
-
-### C1·3 · el ciclo entero, sin nadie (2026-10-10)
-
-- **18:49:52 despertar** por `horario.yml` (como lo hará la consola): nodo a los 63 s, Kueue a los
-  135 s, empujón… y **todo listo a los 815 s**. Lo lento: el informador de cada celda, cuyo
-  contenedor de arranque (`traer-el-agente`) necesita a Keycloak; Keycloak, en un nodo nuevo
-  (bajar la imagen, arrancar), estuvo a los ~8 min, y el informador, que llevaba 7 fallos con la
-  espera de Kubernetes creciendo hasta 5 min, entró en su siguiente turno, a los ~13. Arreglo
-  (`0284326a`): `despertar.sh` reinicia cada 30 s lo que esté en `CrashLoopBackOff`; el horario
-  puede borrar pods. Se mide en el próximo despertar.
-- **19:05 la CronJob `dormir-si-inactiva`**, instalada por Flux: «despierta desde hace menos de
-  15 min: sigue».
-- **19:10 la CronJob decide dormir** (nadie en 15 min): las copias al dormir —los bundles de las
-  forjas desde las 19:10:17, los volcados del idp (`iam`, `keycloak`) a las 19:11:42–50—, y
-  `sistema-spot → 0` a las 19:12:16.
-- **19:15:30, 0 nodos.** Sin GitHub, sin nadie: el clúster se ha dormido solo.
-
-### C1·4 · la consola despierta y no deja dormir con alguien delante (2026-10-10)
-
-En la consola (rubix-platform `5a20951`):
-- **`/auth/login`** pregunta primero si Keycloak contesta (su descubrimiento OIDC, 4 s; no
-  pregunta a Google). Si no —la malla duerme y Keycloak con ella—, manda a **`/auth/despertando`**,
-  que lanza el despertar y enseña cuánto lleva («pidiendo las máquinas», «arrancando los
-  servicios»), y en cuanto Keycloak contesta sigue al login, al sitio al que ibas.
-- **`/auth/despertar`** (GET el estado, POST despertar): lanza `horario.yml` con
-  `accion=despertar` por la API de GitHub —sin lanzar un segundo si ya hay uno en cola o en
-  marcha— con `RUBIX_DESPERTADOR_TOKEN`, un token de GitHub de grano fino con sólo
-  `actions: write` sobre `describeloai/ore`, en el entorno de Vercel. Cualquiera puede llamarlo
-  (desarrollo). Desde una terminal: `curl -X POST https://app.paladio.io/auth/despertar`.
-- **El latido**: en el workspace, cada 5 min y sólo si alguien mira (`alguienMira`), una
-  pregunta mínima a `ore-iam` con la sesión (su registro lo cuenta como persona). Si contesta
-  que la malla duerme, un aviso con «Despertar» que vuelve a la misma página.
-- **`ore wake` no**: el binario `ore` no sale a la red a propósito (sin TLS ni certificados;
-  12 de 14 crates no abren una conexión) y no habla con las celdas. El `curl` de arriba hace lo
-  mismo.
-Probado en el banco: `/auth/despertar` dice dormida (Keycloak no contesta) y que falta el
-token; la pantalla lo enseña; el workspace carga con el latido. Falta, con el token puesto en
-Vercel, un despertar de punta a punta desde la consola.
+**Deudas** (2026-10-11):
+- **`ore-iam` no reconecta a su base.** Si arranca antes que `idp-db`, se queda con una conexión
+  muerta y da 502 en todo (`no se pudieron leer tus organizaciones`) hasta reiniciarlo, y sigue
+  `Ready`. Pasó en los dos despertares del 11.
+- **`despertar.sh` da por listo un nodo `SchedulingDisabled`** (el dormir de las 18:35 lo dejó
+  acordonado y sin borrar, con el grupo en objetivo 1): cada despertar esperaba 300 s a Kueue y
+  fallaba. Y una corrida que esperó en vano a todas las entradas terminó «✓ despierta».
+- El cron de despertar es de GitHub: si un día no llega, se despierta desde la consola.
+- **Para tenerla despierta de noche** (una ventana de pruebas): suspender la CronJob
+  (`kubectl -n ore-system patch cronjob dormir-de-noche -p '{"spec":{"suspend":true}}'`) y
+  reanudarla al acabar. La anotación `ore.dev/despierta-hasta` ya no cuenta —y Flux la borraba al
+  reconciliar el namespace (0058)—.
+- C1·5: `jobs-s` a spot y discos de balanced a standard (pocos $); el nodo `e2-standard-2` es
+  dudoso (el sistema ocupa ~45 % de un `e2-standard-4`).
 
 ## Cierre (2026-10-11)
 
@@ -766,11 +627,9 @@ Vercel, un despertar de punta a punta desde la consola.
 
 **Lo que queda, sin urgencia:**
 - Medir la factura real con la malla dormida, una semana. Esperado: ~16 $ de fijo.
-- Un ciclo dormir → despertar por el túnel. Llega solo al caducar la retención
-  (`ore.dev/despierta-hasta`, 2026-10-11 20:00Z).
 - La consola de Vercel y el CLI `ore` por el túnel.
-- C1·5: `jobs-s` a spot y discos de balanced a standard (pocos $). El nodo `e2-standard-2` es
-  dudoso: el sistema ocupa ~45 % de un `e2-standard-4`.
+- Las de C1: que `ore-iam` reconecte a su base, que `despertar.sh` no dé por listo un nodo
+  acordonado, y C1·5 (`jobs-s` a spot, discos standard).
 - Las versiones 63–66 de `t-demo-forja-admin`.
 - Envoy Gateway v1.8 deja de tener soporte el 2026-11-08: subir cuando GKE suba sus CRDs de
   Gateway API a v1.6.
@@ -880,10 +739,10 @@ grupo de Postgres de `80-postgres-gcp.sh` (`n2-standard-2` **normal, no spot**, 
    trabajo y en una noche: qué cabe en un solo nodo `e2-standard-4` spot, o en dos `e2-standard-2`.
 2. **Todo spot** donde un reinicio no rompa nada. La forja y las bases tienen su disco persistente
    y aguantan que el nodo se vaya; lo que no aguante, a uno normal y pequeño.
-3. **El horario va fuera del clúster** (un `CronJob` que despierta no puede estar dormido): **Cloud
-   Scheduler** (tres trabajos gratis por cuenta) llama a la API de GKE para dejar cada grupo con
-   mínimo y máximo 0 a la hora de dormir, y con su tamaño a la de despertar. El orden importa: al
-   dormir, primero lo que escribe (puestos, builds, Postgres); al despertar, primero el sistema.
+3. **El horario**: despertar va fuera del clúster (un `CronJob` que despierta no puede estar
+   dormido) y dormir, dentro. Hecho así en C1: `horario.yml` despierta a las 08:00 de Madrid y la
+   CronJob `dormir-de-noche` duerme a las 00:00. El orden importa: al dormir, primero lo que
+   escribe (puestos, builds, Postgres); al despertar, primero el sistema.
 4. **A mano**: `malla/dormir.sh` y `malla/despertar.sh`, los mismos pasos, para un día de guardia
    o un fin de semana de trabajo.
 5. **Al despertar, comprobar**: la entrada contesta, un puesto abre, un build pasa (lo de

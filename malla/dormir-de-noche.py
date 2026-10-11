@@ -1,30 +1,14 @@
 #!/usr/bin/env python3
-"""DORMIR LA MALLA DE NOCHE — desde DENTRO del clúster (ADR 0060 C1·3).
+"""DORMIR LA MALLA DE NOCHE — desde DENTRO del clúster (ADR 0060 C1).
 
-⭐ HORARIO FIJO (decidido con la persona el 2026-10-11): la malla vive de 08:00 a 00:00, hora de
-Madrid. La CronJob `dormir-de-noche` (malla/18-el-horario.yaml, `timeZone: Europe/Madrid`) lo
-corre a las 00:00, 00:30, 01:00… hasta las 02:30: la primera pasada duerme, y las siguientes
-sólo hacen algo si un trabajo de Kueue la tuvo despierta (o alguien la despertó a mano de
-madrugada). Despertar a las 08:00 es de `horario.yml` (GitHub: dormida no hay CronJob que
-corra). Dormir se decide dentro porque las CronJobs del clúster corren puntuales y el cron de
-GitHub no (no corrió ni una vez en dos horas, 2026-10-10).
+La malla vive de 08:00 a 00:00, hora de Madrid. La CronJob `dormir-de-noche`
+(malla/18-el-horario.yaml, `timeZone: Europe/Madrid`) lo corre a las 00:00, 00:30… hasta las
+02:30: la primera pasada duerme, y las siguientes sólo hacen algo si un trabajo de Kueue la tuvo
+despierta (o alguien la despertó a mano de madrugada). Despertar a las 08:00 es de `horario.yml`:
+dormida no hay CronJob que corra. Dormir se decide dentro porque las CronJobs del clúster corren
+puntuales y el cron de GitHub no.
 
-Por qué no por inactividad (lo de antes, `dormir-si-inactiva`, 2026-10-10 → 2026-10-11): la
-señal eran las líneas de registro de los pods VIVOS, y un pod reiniciado se llevaba la
-actividad: el 2026-10-11 reiniciar `ore-iam` la durmió dos veces con la persona dentro. La
-lógica sigue aquí con `HORARIO=inactividad`, pero ninguna CronJob la usa.
-
-Con `HORARIO=fijo` (el de la CronJob) sólo se mira el trabajo de Kueue: con uno admitido y sin
-terminar no duerme, y la pasada siguiente vuelve a mirar.
-
-Con `HORARIO=inactividad`, duerme si en `INACTIVA` minutos (30) no hubo NADA de esto:
-  · una línea `acceso · … · persona|delegado` en el registro de `ore-serve` (cada celda) o de
-    `ore-iam` — las de `fondo` (refrescos de la consola sin nadie delante), las sondas, los
-    agentes y el aprovisionador no cuentan;
-  · un puesto abierto (`ore.dev/rol=puesto`, corriendo);
-  · un workload de Kueue admitido y sin terminar;
-y nunca si algún nodo de `sistema-spot` tiene menos de `INACTIVA` minutos (acaba de despertar:
-su registro es corto).
+Con un workload de Kueue admitido y sin terminar no duerme: la pasada siguiente vuelve a mirar.
 
 Al dormir: las copias (un Job desde cada CronJob de copia, y esperarlo), y los grupos a 0 por
 la API de GKE (`gcloud … resize --async`). No vacía los nodos él: corre en uno de ellos. GKE
@@ -43,8 +27,6 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-INACTIVA = int(os.environ.get("INACTIVA", "30"))
-HORARIO = os.environ.get("HORARIO", "fijo")
 P = os.environ.get("PROYECTO", "project-8853a180-450d-47be-b83")
 ZONA = os.environ.get("ZONA", "europe-west1-b")
 CLUSTER = os.environ.get("CLUSTER", "ore-mesh")
@@ -72,30 +54,6 @@ def k8s(metodo, ruta, cuerpo=None, texto=False):
     return datos if texto else json.loads(datos)
 
 
-def edad_s(marca):
-    return time.time() - datetime.fromisoformat(marca.replace("Z", "+00:00")).timestamp()
-
-
-def lineas_de_persona(ns, despliegue):
-    """Cuántas líneas de persona dejó ese Deployment en INACTIVA minutos, en todos sus pods."""
-    try:
-        d = k8s("GET", f"/apis/apps/v1/namespaces/{ns}/deployments/{despliegue}")
-    except Exception:
-        return 0
-    sel = ",".join(f"{k}={v}" for k, v in d["spec"]["selector"].get("matchLabels", {}).items())
-    contenedor = d["spec"]["template"]["spec"]["containers"][0]["name"]
-    n = 0
-    for pod in k8s("GET", f"/api/v1/namespaces/{ns}/pods?labelSelector={urllib.parse.quote(sel)}")["items"]:
-        try:
-            log = k8s("GET", f"/api/v1/namespaces/{ns}/pods/{pod['metadata']['name']}/log"
-                             f"?container={contenedor}&sinceSeconds={INACTIVA * 60}", texto=True)
-        except Exception:
-            continue
-        n += sum(1 for l in log.splitlines()
-                 if l.startswith("acceso · ") and (l.endswith("· persona") or l.endswith("· delegado")))
-    return n
-
-
 def trabajo_en_curso():
     """Los workloads de Kueue admitidos y sin terminar: el trabajo de alguien."""
     try:
@@ -108,37 +66,6 @@ def trabajo_en_curso():
         if c.get("Admitted") == "True" and c.get("Finished") != "True":
             vivos += 1
     return vivos
-
-
-def en_uso():
-    uso = []
-    for ns in k8s("GET", "/api/v1/namespaces?labelSelector=ore.dev%2Frol%3Dcargas")["items"]:
-        nombre = ns["metadata"]["name"]
-        if (n := lineas_de_persona(nombre, "ore-serve")):
-            uso.append(f"{nombre}/ore-serve:{n}")
-    if (n := lineas_de_persona("identidad", "ore-iam")):
-        uso.append(f"identidad/ore-iam:{n}")
-    puestos = [p for p in k8s("GET", "/api/v1/pods?labelSelector=ore.dev%2Frol%3Dpuesto")["items"]
-               if p["status"].get("phase") == "Running"]
-    if puestos:
-        uso.append(f"puestos:{len(puestos)}")
-    vivos = trabajo_en_curso()
-    if vivos:
-        uso.append(f"kueue:{vivos}")
-    # ⭐ Y la retención a mano: lo que este guion no ve como uso —las pruebas de Postgres
-    #   (0058), que hablan con el proxy y no con ore-serve— la mantiene despierta con
-    #     kubectl annotate ns ore-system ore.dev/despierta-hasta=2026-10-11T12:00:00Z --overwrite
-    #   Pasada la hora deja de contar sola: olvidarla no la deja encendida para siempre.
-    hasta = k8s("GET", "/api/v1/namespaces/ore-system")["metadata"].get(
-        "annotations", {}).get("ore.dev/despierta-hasta", "")
-    if hasta:
-        try:
-            resta = -edad_s(hasta)
-            if resta > 0:
-                uso.append(f"retenida:{int(resta // 60)}min")
-        except ValueError:
-            paso(f"⚠️ ore.dev/despierta-hasta no es una fecha ISO: {hasta!r} — no cuenta")
-    return uso
 
 
 def copiar(ns, cj):
@@ -176,24 +103,14 @@ def gcloud(*args):
 
 def main():
     nodos = k8s("GET", "/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3Dsistema-spot")["items"]
-    if HORARIO == "fijo":
-        if not nodos:
-            paso("ya duerme: ningún nodo de sistema")
-            return 0
-        vivos = trabajo_en_curso()
-        if vivos:
-            paso(f"hay {vivos} trabajo(s) de Kueue en curso: no duerme (la pasada siguiente vuelve a mirar)")
-            return 0
-        paso("de noche en Madrid: a dormir")
-    else:
-        if nodos and min(edad_s(n["metadata"]["creationTimestamp"]) for n in nodos) < INACTIVA * 60:
-            paso(f"despierta desde hace menos de {INACTIVA} min: sigue")
-            return 0
-        uso = en_uso()
-        if uso:
-            paso(f"en uso en los últimos {INACTIVA} min: {' '.join(uso)} — sigue despierta")
-            return 0
-        paso(f"nadie en {INACTIVA} min: a dormir")
+    if not nodos:
+        paso("ya duerme: ningún nodo de sistema")
+        return 0
+    vivos = trabajo_en_curso()
+    if vivos:
+        paso(f"hay {vivos} trabajo(s) de Kueue en curso: no duerme (la pasada siguiente vuelve a mirar)")
+        return 0
+    paso("de noche en Madrid: a dormir")
     vecinos = k8s("GET", "/api/v1/nodes?labelSelector=ore.dev%2Fpool%3Dneon")["items"]
     copias = COPIAS + ([("ore-pg", "copia-de-la-base-del-controlador")] if vecinos else [])
     ok = all([copiar(ns, cj) for ns, cj in copias])

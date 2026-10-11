@@ -2,14 +2,10 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # DORMIR LA MALLA (ADR 0060 C1) — los grupos de nodos a 0; los discos se quedan.
 #
-#   bash malla/dormir.sh [--forzar | --si-inactiva <min>]
+#   bash malla/dormir.sh [--forzar]
 #
-#   `--si-inactiva 15` (C1·2): sólo duerme si nadie la usó en esos minutos. Lo que cuenta
-#      como uso: una línea `persona` o `delegado` en el registro de `ore-serve` (cada
-#      celda) o de `ore-iam` —no las de `fondo`, que son refrescos de la consola sin nadie
-#      delante, ni las de sondas, agentes o el aprovisionador—, un puesto abierto, o
-#      trabajo en Kueue. Y nunca antes de esos minutos despierta: el registro sería corto.
-#      Si no duerme, sale 0 y lo dice (para el workflow que la mira cada pocos minutos).
+#   A mano (`horario.yml`, acciones `dormir` y `dormir-ya`). La de cada noche la duerme la
+#   CronJob `dormir-de-noche` desde dentro (malla/dormir-de-noche.py), con los mismos pasos.
 #
 #   1. ¿Hay trabajo? Workloads de Kueue sin terminar (builds, copias, puestos) o
 #      Jobs de usuario corriendo: entonces NO duerme (sale 3), salvo `--forzar`.
@@ -29,11 +25,7 @@ P=${P:-project-8853a180-450d-47be-b83}
 ZONA=europe-west1-b
 CLUSTER=ore-mesh
 FORZAR=no
-INACTIVA=""
-case "${1:-}" in
-  --forzar) FORZAR=si ;;
-  --si-inactiva) INACTIVA=${2:?--si-inactiva <minutos>} ;;
-esac
+[ "${1:-}" = --forzar ] && FORZAR=si
 
 T0=$(date +%s)
 paso() { printf '%4ss  %s\n' "$(( $(date +%s) - T0 ))" "$*"; }
@@ -46,28 +38,6 @@ if [ -z "$NODOS" ]; then
   exit 0
 fi
 
-# ── 0 · ¿la usa alguien? (sólo con --si-inactiva) ──────────────────────────
-if [ -n "$INACTIVA" ]; then
-  # Despierta hace menos de esos minutos: no se sabe aún (el registro empieza al arrancar).
-  DESDE=$(kubectl get nodes -l cloud.google.com/gke-nodepool=sistema-spot -o jsonpath='{.items[0].metadata.creationTimestamp}' 2>/dev/null)
-  if [ -n "$DESDE" ] && [ $(( $(date +%s) - $(date -d "$DESDE" +%s) )) -lt $(( INACTIVA * 60 )) ]; then
-    paso "despierta desde hace menos de ${INACTIVA} min: sigue"
-    exit 0
-  fi
-  USO=""
-  for D in $(kubectl get ns -l ore.dev/rol=cargas -o jsonpath='{range .items[*]}{.metadata.name}/ore-serve {end}') identidad/ore-iam; do
-    N=$(kubectl -n "${D%%/*}" logs "deploy/${D##*/}" --since="${INACTIVA}m" 2>/dev/null | grep -cE '^acceso · .*· (persona|delegado)$' || true)
-    [ "${N:-0}" -gt 0 ] && USO="$USO $D:$N"
-  done
-  PUESTOS=$(kubectl get pods -A -l ore.dev/rol=puesto --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
-  [ "$PUESTOS" -gt 0 ] && USO="$USO puestos:$PUESTOS"
-  if [ -n "$USO" ]; then
-    paso "en uso en los últimos ${INACTIVA} min:$USO — sigue despierta"
-    exit 0
-  fi
-  paso "nadie en ${INACTIVA} min: a dormir"
-fi
-
 # ── 1 · ¿hay trabajo? ──────────────────────────────────────────────────────
 # Un workload de Kueue admitido y sin terminar es trabajo de alguien.
 EN_CURSO=$(kubectl get workloads.kueue.x-k8s.io -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.status.conditions[?(@.type=="Admitted")].status} {.status.conditions[?(@.type=="Finished")].status}{"\n"}{end}' 2>/dev/null \
@@ -75,7 +45,6 @@ EN_CURSO=$(kubectl get workloads.kueue.x-k8s.io -A -o jsonpath='{range .items[*]
 if [ -n "$EN_CURSO" ] && [ "$FORZAR" = no ]; then
   paso "hay trabajo en curso; no duerme (--forzar para dormir igual):"
   echo "$EN_CURSO" | sed 's/^/     /'
-  [ -n "$INACTIVA" ] && exit 0   # para quien la mira cada pocos minutos, «sigue» no es un fallo
   exit 3
 fi
 

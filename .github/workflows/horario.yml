@@ -12,10 +12,6 @@ name: horario
 #     Kueue) o `dormir-ya`. Despertada a mano fuera de horario, duerme en la siguiente pasada
 #     de la noche (00:00–02:30) o, de 02:30 a 08:00, sigue hasta la medianoche siguiente.
 #
-# Horario fijo decidido con la persona el 2026-10-11. Antes (2026-10-10 → 11) dormía tras 15 y
-# luego 30 min sin actividad, leída del registro de los pods vivos: reiniciar uno se llevaba la
-# actividad y la durmió dos veces con la persona dentro.
-#
 # ⛔ La cuenta: `ore-horario`, federada desde el OIDC de GitHub y sólo para `main`
 #   (`repo:describeloai/ore:ref:refs/heads/main`). En Google sólo cambia el tamaño de los
 #   grupos de nodos (papel `oreHorario`); en el clúster, lo de `malla/18-el-horario.yaml`.

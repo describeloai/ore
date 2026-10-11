@@ -125,6 +125,20 @@ entiende un rango por el final (`bytes=-N`): el driver lo resuelve con el tamañ
 prueba cada paso —Azure no tiene a quién preguntar los permisos— y dice como lo que son un contenedor
 que no existe y el firewall de red de la cuenta.
 
+**Un contenedor público** (D-O6) —nivel de acceso `container`, como los de Azure Open Datasets— se
+lee sin identidad:
+
+```
+az://<cuenta>/<contenedor>[/<prefijo>]?publico=1
+```
+
+Sin `tenant` ni `cliente` y sin nada que crear en un tenant: ninguna petición lleva `Authorization`
+(Azure rechaza un token ajeno en un contenedor público). Sin identidad no hay clave de delegación,
+así que sus ítems no dan URL firmada y se abren por `content`. `check` pregunta primero el nivel de
+acceso: con `blob` sólo se pueden leer blobs sueltos, y ORE necesita listar; un contenedor privado
+y uno que no existe contestan lo mismo sin identidad, y así se dice. En la consola, «Quién lee ›
+Nadie: un contenedor público».
+
 `endpoint` no se admite: sólo se habla con `https://<cuenta>.blob.core.windows.net` (el token de
 Storage vale para cualquier cuenta que la app pueda leer). Otro servidor sólo con
 `ORE_AZURE_LABORATORIO=1`, que pone el laboratorio (`pruebas-de-fuego/o3-azure.sh`, contra Azurite) y
