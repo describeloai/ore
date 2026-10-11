@@ -262,6 +262,29 @@ final class Filas {
                 exige(rutas().equals(Set.of("copia-b5/a.pdf", "copia/b.pdf")), "rutas " + rutas());
                 return "una copia con otra ruta, listada antes: el mismo ítem, su fila no cambia de ruta y no se escribe; si la de siempre se va, la copia la hereda";
             });
+            // ── 0055 · lo que el build de un apply() dice al acabar ──
+            Sdk.caso("filas", 15, () -> {
+                // Medido en victor (2026-10-11, PaginasDeContratos.java): el segundo build no
+                // recalculó nada, pero el panel sólo decía «4 rows»: el resumen se perdía.
+                aplicar();
+                Ore.Result otra = aplicar();
+                exige(n(otra.get("skipped")) == n(otra.get("items")) && !Boolean.TRUE.equals(otra.get("written")), "resumen " + otra);
+                java.io.ByteArrayOutputStream impreso = new java.io.ByteArrayOutputStream();
+                java.io.PrintStream salidaDeAntes = System.out;
+                Map<String, Object> informe;
+                System.setOut(new java.io.PrintStream(impreso, true, java.nio.charset.StandardCharsets.UTF_8));
+                try {
+                    informe = ParaElBanco.informeDelBuild(SAL, "packages/filas/etl/Textos.java", "textos", otra);
+                } finally {
+                    System.setOut(salidaDeAntes);
+                }
+                String linea = impreso.toString(java.nio.charset.StandardCharsets.UTF_8);
+                exige(linea.contains(SAL + " · built from packages/filas/etl/Textos.java:textos · ") && linea.contains(" rows · new 0 · recomputed 0 · skipped ")
+                    && linea.contains(" · nothing new"), "línea " + linea);
+                Map<String, Object> resumen = m(informe.get("apply"));
+                exige(n(resumen.get("skipped")) == n(otra.get("skipped")) && Boolean.FALSE.equals(resumen.get("written")), "informe " + informe);
+                return "el build de un apply() sin nada nuevo dice «… rows · new 0 · recomputed 0 · skipped N · nothing new» y deja su resumen en el informe";
+            });
             // ── el write() de verdad: el Preview de Textos.java, con la celda de builds.rs ──
             LagoEnMemoria.usar(null);
             Sdk.caso("filas", 14, () -> {

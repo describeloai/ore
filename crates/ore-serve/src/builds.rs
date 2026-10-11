@@ -594,7 +594,7 @@ fn arnes(fichero: &str, fuente: &str, def: &str, modo: Modo<'_>) -> String {
                  _os.environ[\"ORE_BUILD\"] = _json.dumps(dict(_json.loads({}), id=_ore.session.id, commit=_COMMIT))",
                 cad(&a.build.jcs())
             ),
-            "if not hasattr(_ore, \"_para_el_informe\"):\n    \
+            "if not hasattr(_ore, \"_informe_del_build\"):\n    \
              raise RuntimeError(\"this job runs an older ORE SDK, which cannot build: rebuild the image\")",
             "ore_build",
             "at this commit",
@@ -622,11 +622,9 @@ try:
     _hecho = _f()
 except Exception as e:  # noqa: BLE001
     raise _falla("runtime", "%s: %s" % (type(e).__name__, e), _linea(e)) from None
-if isinstance(_hecho, dict) and "rows" in _hecho:
-    print("%s · built from %s:%s · %d rows%s" % (_f.output, _FICHERO, _DEF, _hecho["rows"], " · the same write: nothing new" if _hecho.get("repeated") else ""))
-    _ore._resultado_de_escritura(_hecho)
-else:
-    print("%s · built from %s:%s · the def did not return what `write()` returns" % (_f.output, _FICHERO, _DEF))
+# La línea del log (un `write()`, un `apply()` o el commit de una colección), y en el
+# informe el resumen del `apply()` y la muestra de lo escrito, leída del lago.
+_ore._informe_del_build(_f.output, _FICHERO, _DEF, _hecho)
 "#,
         ),
         Modo::Preview { .. } => (
@@ -1124,6 +1122,11 @@ pub(crate) struct Visto {
     pub snapshot: Option<String>,
     pub error: Option<ErrorDeBuild>,
     pub log: Option<String>,
+    /// El resumen de un `apply()` (`{items, new, recomputed, skipped, …}`), como JSON.
+    pub apply: Option<String>,
+    /// Las primeras filas de lo que quedó escrito, leídas del lago (o los primeros
+    /// ítems de una colección), en la forma de `table()`, como JSON. Sólo en el detalle.
+    pub muestra: Option<String>,
 }
 
 impl Visto {
@@ -1165,8 +1168,14 @@ impl Visto {
         if let Some(e) = &self.error {
             m.push(("error", e.a_json()));
         }
+        if let Some(a) = &self.apply {
+            m.push(("apply", Json::Crudo(a.clone())));
+        }
         if detalle && let Some(l) = &self.log {
             m.push(("log", Json::s(l)));
+        }
+        if detalle && let Some(x) = &self.muestra {
+            m.push(("muestra", Json::Crudo(x.clone())));
         }
         Json::obj(m)
     }
@@ -1178,6 +1187,14 @@ fn texto(n: &Node, k: &str) -> Option<String> {
         .and_then(|(_, v)| v.as_str())
         .filter(|s| !matches!(*s, "null" | "~" | ""))
         .map(str::to_string)
+}
+
+/// Un campo del informe tal cual, como JSON (la muestra, el resumen de un `apply()`).
+fn json_de(n: &Node, k: &str) -> Option<String> {
+    n.get(k)
+        .map(|(_, v)| v)
+        .filter(|v| v.as_str().is_none())
+        .map(|v| crate::rutas::de_node(v).jcs())
 }
 
 fn entero(n: &Node, k: &str) -> Option<i64> {
@@ -1194,6 +1211,8 @@ pub(crate) struct DeLaSalida {
     pub snapshot: Option<String>,
     pub error: Option<ErrorDeBuild>,
     pub log: Option<String>,
+    pub apply: Option<String>,
+    pub muestra: Option<String>,
 }
 
 pub(crate) fn de_la_salida(salida: &Node, codigo: &str) -> DeLaSalida {
@@ -1229,6 +1248,8 @@ pub(crate) fn de_la_salida(salida: &Node, codigo: &str) -> DeLaSalida {
         snapshot: informe.and_then(|i| texto(i, "snapshot")),
         error,
         log,
+        apply: informe.and_then(|i| json_de(i, "apply")),
+        muestra: informe.and_then(|i| json_de(i, "muestra")),
     }
 }
 
@@ -1259,6 +1280,8 @@ pub(crate) fn visto_de_puesto(id: &str, p: &crate::puestos::Puesto, ahora: u64) 
         snapshot: None,
         error: None,
         log: None,
+        apply: None,
+        muestra: None,
     };
     let salida = celda
         .and_then(|c| c.salida.as_ref())
@@ -1274,6 +1297,7 @@ pub(crate) fn visto_de_puesto(id: &str, p: &crate::puestos::Puesto, ahora: u64) 
             .map(|x| x as u64)
             .or(Some(ahora));
         (v.ms, v.filas, v.snapshot, v.error, v.log) = (d.ms, d.filas, d.snapshot, d.error, d.log);
+        (v.apply, v.muestra) = (d.apply, d.muestra);
     } else if p.estado == Estado::Cerrado || crate::puestos::perdido(p) {
         v.estado = "failed";
         v.error = Some(ErrorDeBuild {
@@ -1307,6 +1331,8 @@ pub(crate) fn visto_de_informe(n: &Node) -> Option<Visto> {
         snapshot: None,
         error: None,
         log: None,
+        apply: None,
+        muestra: None,
     });
     Some(Visto {
         build,
@@ -1337,6 +1363,8 @@ pub(crate) fn visto_de_informe(n: &Node) -> Option<Visto> {
             None
         },
         log: d.log,
+        apply: d.apply,
+        muestra: d.muestra,
     })
 }
 
@@ -2066,6 +2094,13 @@ plantillaVersion: 7
             "{t}"
         );
         assert!(!t.contains("_resultado_de_escritura"), "{t}");
+        // El build deja su línea, el resumen de un `apply()` y la muestra al SDK; el
+        // Preview no (lo suyo es `preview`).
+        assert!(
+            b.contains("_ore._informe_del_build(_f.output, _FICHERO, _DEF, _hecho)"),
+            "{b}"
+        );
+        assert!(!t.contains("_informe_del_build"), "{t}");
         assert!(t.contains("in the editor"), "{t}");
         assert!(!b.contains("_ensayo"), "{b}");
         assert!(t.contains(&ore_core::sdk::guarda_python()), "{t}");
@@ -2303,6 +2338,20 @@ plantillaVersion: 7
                 .jcs()
                 .contains(r#""log":"ventas.limpios · 3 rows\n""#)
         );
+        // Un `apply()` deja su resumen, y todo build la muestra de lo escrito: el
+        // resumen en la lista, la muestra sólo en el detalle (pesa).
+        p.celdas.get_mut(&1).unwrap().salida = Some(Json::Crudo(
+            r#"{"tipo":"texto","texto":"x","ms":7,"informe":{"filas":4,"apply":{"items":4,"skipped":4,"written":false},"muestra":{"columnas":[{"name":"pagina","type":"int64"}],"filas":[[1]],"total":4,"limite":100}}}"#.into(),
+        ));
+        let x = v(&p);
+        let lista = x.a_json(false).jcs();
+        assert!(
+            lista.contains(r#""apply":{"items":4,"skipped":4,"written":false}"#),
+            "{lista}"
+        );
+        assert!(!lista.contains("muestra"), "{lista}");
+        let detalle = x.a_json(true).jcs();
+        assert!(detalle.contains(r#""muestra":{"columnas":[{"name":"pagina","type":"int64"}],"filas":[[1]],"limite":100,"total":4}"#), "{detalle}");
         // Mal: el error con el fichero y la línea que el arnés informó.
         p.celdas.get_mut(&1).unwrap().salida = Some(Json::Crudo(
             r#"{"tipo":"error","nombre":"RuntimeError","mensaje":"KeyError: 'x' (packages/ventas/etl/limpios.py, line 7)","ms":5,"informe":{"error":{"tipo":"runtime","fichero":"packages/ventas/etl/limpios.py","linea":7}}}"#.into(),

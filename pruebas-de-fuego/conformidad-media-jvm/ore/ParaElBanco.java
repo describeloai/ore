@@ -25,6 +25,13 @@ public final class ParaElBanco {
         return l;
     }
 
+    /** 0055 · Lo que el arnés de un build deja en el informe al acabar (la línea va a stdout). */
+    public static Map<String, Object> informeDelBuild(String salida, String fichero, String metodo, Object hecho) {
+        Ore.tomarInforme();
+        Arnes.informeDelBuild(salida, fichero, metodo, hecho);
+        return Ore.tomarInforme();
+    }
+
     /** La procedencia que llevaría lo que se escribiera en {@code nombre}. */
     public static Map<String, Object> procedencia(String nombre) { return Ore.procedencia(nombre); }
 

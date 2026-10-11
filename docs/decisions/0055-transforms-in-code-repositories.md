@@ -275,5 +275,14 @@ Cuatro huecos que sólo se vieron aquí, cerrados el mismo día:
 - **El 403 del techo, en español** desde `ore-serve` (`puestos.rs`, `medios.rs`): en inglés, con
   las palabras de los SDK.
 
-Queda una decisión de producto, igual para Python y Java: el panel del Build dice qué escribió
-(`… · built from … · N rows`) y no enseña filas; el Preview sí.
+**Lo que el Build enseña al acabar** (decidido con la persona el 2026-10-11, igual en Python y
+Java: `ore._informe_del_build`, `ore.Arnes.informeDelBuild`):
+- **La línea del log** según lo que devolvió el método: un `write()` (`N rows`), el commit de una
+  colección (`transaction N · M items`) o un `apply()` con su resumen incremental (`N rows · new a
+  · recomputed b · skipped c`, y `nothing new` si no escribió). Antes un `apply()` sólo decía
+  «4 rows» y el segundo build, que no recalculó nada (medido: un solo commit del puntero), no lo
+  contaba; y Python no reconocía el commit de una colección.
+- **La muestra**: las primeras 100 filas **leídas del lago** tras escribir (lo que quedó, no lo que
+  se iba a escribir), o los primeros 100 ítems si la salida es una colección, en la forma de
+  `table()`. Va al informe; `GET /builds/{id}` la da (`muestra`, sólo en el detalle) y la consola la
+  pinta con la rejilla del Preview. Una muestra que no se puede leer no tumba el build.

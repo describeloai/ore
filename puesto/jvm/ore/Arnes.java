@@ -200,15 +200,87 @@ public final class Arnes {
             Object visto = Ore.vistoDelEnsayo();
             if (visto == null) throw falla("not-written", "`" + metodo + "` returned without calling `write()`: there is nothing to preview", fichero, null);
             System.out.println(salida + " · preview of " + fichero + ":" + metodo + " · " + ((Map<String, Object>) visto).get("total") + " rows · nothing was written");
-        } else if (hecho instanceof Map<?, ?> r && r.get("transaccion") != null && r.get("items") instanceof Map<?, ?> its) {
-            // 0049 JM3: la salida es una colección escrita, y lo que devolvió es su commit.
-            System.out.println(salida + " · built from " + fichero + ":" + metodo + " · transaction " + r.get("transaccion")
-                + " · " + its.get("actuales") + " items" + (Boolean.TRUE.equals(r.get("sin_cambios")) ? " · nothing new" : ""));
-        } else if (hecho instanceof Map<?, ?> r && r.get("rows") != null) {
-            System.out.println(salida + " · built from " + fichero + ":" + metodo + " · " + r.get("rows") + " rows"
-                + (Boolean.TRUE.equals(r.get("repeated")) ? " · the same write: nothing new" : ""));
         } else {
-            System.out.println(salida + " · built from " + fichero + ":" + metodo + " · the method did not return what `write()` returns");
+            informeDelBuild(salida, fichero, metodo, hecho);
+        }
+    }
+
+    /** Las filas (o los ítems) de lo escrito que un build enseña al acabar. */
+    static final int FILAS_DE_LA_MUESTRA = 100;
+
+    /** Lo que un {@code apply()} devuelve y el informe del build lleva. */
+    private static final List<String> CLAVES_DEL_APPLY = List.of("items", "new", "recomputed", "skipped", "errors", "removed",
+        "rows", "files_written", "files_retired", "written");
+
+    private static long n(Object o) { return o instanceof Number x ? x.longValue() : 0; }
+
+    /**
+     * 0055 · Lo que un build deja dicho al acabar, lo mismo que Python ({@code _informe_del_build}):
+     * la línea del log según lo que devolvió el método —un {@code write()}, un {@code apply()} o el
+     * commit de una colección escrita— y, en el informe, el resumen de un {@code apply()} y la
+     * MUESTRA de lo que quedó escrito: las primeras filas leídas del lago (no las que se iban a
+     * escribir), o los primeros ítems de una colección, en la forma de {@code table()}, que la
+     * consola pinta como en el Preview. Leer la muestra no tumba el build.
+     */
+    @SuppressWarnings("unchecked")
+    static void informeDelBuild(String salida, String fichero, String metodo, Object hecho) {
+        String base = salida + " · built from " + fichero + ":" + metodo;
+        Map<String, Object> r = hecho instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        boolean coleccion = false;
+        Long total = null;
+        if (r != null && r.containsKey("skipped")) {
+            // 0049 JM4: un apply(), con su resumen incremental.
+            List<String> partes = new ArrayList<>();
+            if (r.get("rows") != null) { partes.add(n(r.get("rows")) + " rows"); total = n(r.get("rows")); }
+            if (r.get("files_written") != null) { partes.add(n(r.get("files_written")) + " files written"); coleccion = true; }
+            partes.add("new " + n(r.get("new")));
+            partes.add("recomputed " + n(r.get("recomputed")));
+            partes.add("skipped " + n(r.get("skipped")));
+            for (String k : List.of("errors", "removed")) if (n(r.get(k)) > 0) partes.add(k + " " + n(r.get(k)));
+            if (!Boolean.TRUE.equals(r.get("written"))) partes.add("nothing new");
+            System.out.println(base + " · " + String.join(" · ", partes));
+            Map<String, Object> resumen = new LinkedHashMap<>();
+            for (String k : CLAVES_DEL_APPLY) if (r.containsKey(k)) resumen.put(k, r.get(k));
+            Ore.paraElInforme(Map.of("apply", resumen));
+        } else if (r != null && r.get("transaccion") != null && r.get("items") instanceof Map<?, ?> its) {
+            // 0049 JM3: la salida es una colección escrita, y lo que devolvió es su commit.
+            System.out.println(base + " · transaction " + r.get("transaccion") + " · " + its.get("actuales") + " items"
+                + (Boolean.TRUE.equals(r.get("sin_cambios")) ? " · nothing new" : ""));
+            coleccion = true;
+            total = n(its.get("actuales"));
+        } else if (r != null && r.get("rows") != null) {
+            System.out.println(base + " · " + r.get("rows") + " rows"
+                + (Boolean.TRUE.equals(r.get("repeated")) ? " · the same write: nothing new" : ""));
+            total = n(r.get("rows"));
+        } else {
+            System.out.println(base + " · the method did not return what `write()` returns");
+            return;
+        }
+        try {
+            Map<String, Object> muestra;
+            if (coleccion) {
+                List<Map<String, Object>> filas = new ArrayList<>();
+                for (Media.Item it : Ore.collection(salida).items()) {
+                    Media.MediaRef ref = it.ref();
+                    Map<String, Object> f = new LinkedHashMap<>();
+                    f.put("path", ref.path());
+                    f.put("size", ref.size());
+                    f.put("content_type", ref.contentType());
+                    f.put("version", ref.version());
+                    f.put("modified", ref.modified());
+                    filas.add(f);
+                    if (filas.size() >= FILAS_DE_LA_MUESTRA) break;
+                }
+                if (filas.isEmpty()) return;
+                muestra = new LinkedHashMap<>(Ore.table(filas, FILAS_DE_LA_MUESTRA));
+            } else {
+                muestra = new LinkedHashMap<>(Ore.table(Ore.sql("select * from " + salida + " limit " + FILAS_DE_LA_MUESTRA,
+                    FILAS_DE_LA_MUESTRA, false), FILAS_DE_LA_MUESTRA));
+            }
+            if (total != null) muestra.put("total", total);
+            Ore.paraElInforme(Map.of("muestra", muestra));
+        } catch (Exception | Error e) {
+            System.out.println("(the sample of " + salida + " could not be read: " + e.getMessage() + ")");
         }
     }
 

@@ -2131,6 +2131,77 @@ _MODOS = {"overwrite": "sobrescribir", "append": "anexar", "upsert": "upsert",
 _MODOS_ES = {"sobrescribir": "overwrite", "anexar": "append"}
 
 
+#: Las filas (o los ítems) de lo escrito que un build enseña al acabar.
+_FILAS_DE_LA_MUESTRA = 100
+
+#: Lo que un `apply()` devuelve y el informe del build lleva.
+_CLAVES_DEL_APPLY = ("items", "new", "recomputed", "skipped", "errors", "removed", "rows",
+                     "files_written", "files_retired", "written")
+
+
+def _informe_del_build(salida, fichero, def_, hecho):
+    """0055 · Lo que un build deja dicho al acabar, lo mismo en Java (`ore.Arnes`): la línea del
+    log según lo que devolvió el `def` —un `write()`, un `apply()` o el commit de una colección
+    escrita— y, en el informe, el resumen de un `apply()` y la MUESTRA de lo que quedó escrito:
+    las primeras filas leídas del lago (no las que se iban a escribir), o los primeros ítems de
+    una colección, en la forma de `table()`, que la consola pinta como en el Preview. Leer la
+    muestra no tumba el build: si no se puede, el build está hecho igual."""
+    r = hecho if isinstance(hecho, dict) else None
+    base = "%s · built from %s:%s" % (salida, fichero, def_)
+    coleccion, total = False, None
+    if r is not None and "skipped" in r:
+        partes = []
+        if r.get("rows") is not None:
+            partes.append("%d rows" % r["rows"])
+            total = r["rows"]
+        if r.get("files_written") is not None:
+            partes.append("%d files written" % r["files_written"])
+            coleccion = True
+        partes += ["new %d" % (r.get("new") or 0), "recomputed %d" % (r.get("recomputed") or 0),
+                   "skipped %d" % (r.get("skipped") or 0)]
+        partes += ["%s %d" % (k, r[k]) for k in ("errors", "removed") if r.get(k)]
+        if not r.get("written"):
+            partes.append("nothing new")
+        print(base + " · " + " · ".join(partes))
+        _para_el_informe({"apply": {k: r[k] for k in _CLAVES_DEL_APPLY if k in r}})
+        if r.get("rows") is not None:
+            _resultado_de_escritura(r)
+    elif r is not None and ("transaction" in r or "transaccion" in r):
+        items = r.get("items")
+        n = (items.get("current", items.get("actuales")) if isinstance(items, dict) else items)
+        print("%s · transaction %s · %s items%s" % (base, r.get("transaction", r.get("transaccion")), n,
+                                                    " · nothing new" if r.get("sin_cambios") or r.get("unchanged") else ""))
+        coleccion, total = True, n
+    elif r is not None and "rows" in r:
+        print("%s · %d rows%s" % (base, r["rows"], " · the same write: nothing new" if r.get("repeated") else ""))
+        _resultado_de_escritura(r)
+        total = r["rows"]
+    else:
+        print("%s · the def did not return what `write()` returns" % base)
+        return
+    try:
+        if coleccion:
+            import pyarrow as pa
+
+            filas = []
+            for it in collection(salida).items():
+                ref = it.ref
+                filas.append({"path": ref.path, "size": ref.size, "content_type": ref.content_type,
+                              "version": ref.version, "modified": ref.modified})
+                if len(filas) >= _FILAS_DE_LA_MUESTRA:
+                    break
+            if not filas:
+                return
+            muestra = table(pa.Table.from_pylist(filas), _FILAS_DE_LA_MUESTRA)
+        else:
+            muestra = table(sql("select * from %s limit %d" % (salida, _FILAS_DE_LA_MUESTRA)), _FILAS_DE_LA_MUESTRA)
+        if total is not None:
+            muestra["total"] = int(total)
+        _para_el_informe({"muestra": muestra})
+    except Exception as e:  # noqa: BLE001
+        print("(the sample of %s could not be read: %s)" % (salida, e))
+
+
 def _resultado_de_escritura(escrito):
     """El resultado de una sentencia que escribe (el guion SQL, 0039), como en
     Databricks: una tabla de una fila. `num_inserted_rows` son las filas que
