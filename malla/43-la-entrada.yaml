@@ -2,26 +2,28 @@
 # LA ENTRADA DEL INQUILINO — su hostname colgado de la puerta compartida
 #
 # E6 de la `0022`, la mitad que vive en el compartimento del inquilino. La otra
-# —`14-la-puerta.yaml`— es de la plataforma y dice QUIÉN puede colgarse.
+# —`19-la-puerta-del-tunel.yaml`— es de la plataforma y dice QUIÉN puede colgarse.
 #
 # ⛔ Y esto no es el alta. La entrada es LA PUERTA: el host por el que se llega
 #   a este inquilino desde fuera. Lo guarda `iam.organizacion.entrada` con un
 #   `unique` encima (`022`), así que dos inquilinos reclamando el mismo host es
 #   una violación de clave en la base **antes** de que nadie escriba esto.
 #
-# ── ⭐ Cuatro objetos, y ninguno sobra ─────────────────────────────────────
+# ── ⭐ Dos objetos, y ninguno sobra ────────────────────────────────────────
 #
-#   la HTTPRoute           dice qué host es mío y a qué `Service` va
-#   la HealthCheckPolicy   dice por dónde se pregunta si está vivo
-#   la GCPBackendPolicy    dice CUÁNTO DEJA VIVIR una conexión (0037 ②)
-#   la NetworkPolicy       deja entrar al balanceador, que hoy NO puede
+#   la HTTPRoute       dice qué host es mío y a qué `Service` va
+#   la NetworkPolicy   deja entrar a Envoy, que hoy NO puede
 #
-# La última es la que se olvida. `entrada-al-control` (`40-ore-serve.yaml`)
+# La segunda es la que se olvida. `entrada-al-control` (`40-ore-serve.yaml`)
 # sólo admite tráfico del propio namespace del inquilino, así que sin esto la
-# ruta queda `Accepted` y programada, el balanceador marca el backend como
-# `UNHEALTHY`, y quien llame recibe un **502 sin una sola línea en ningún
-# registro**. Es el mismo precio que ya se pagó con `semilla` y la forja: una
-# `NetworkPolicy` no rechaza, tira el paquete.
+# ruta queda `Accepted` y programada y quien llame recibe un **502 sin una sola
+# línea en ningún registro**: una `NetworkPolicy` no rechaza, tira el paquete.
+#
+# ⚠️ Hasta ORE 0060 C2·5 (2026-10-11) eran cuatro: con el balanceador de Google
+#   iban una `HealthCheckPolicy` (la salud en `/salud`, que la `Gateway` de GKE no
+#   deducía) y una `GCPBackendPolicy` de 300 s (el flujo de 0037 ②). Con Envoy, la
+#   salud es la readiness del pod y el plazo es la `BackendTrafficPolicy` de la
+#   puerta, para todas las celdas a la vez (⑮ de `gen-inquilino.py` lo comprueba).
 # ═══════════════════════════════════════════════════════════════════════════
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -36,12 +38,9 @@ spec:
     #   quien autoriza colgarse es la puerta con su `allowedRoutes`, no el
     #   inquilino. Un `ReferenceGrant` haría falta para apuntar a un `Service`
     #   de otro namespace — y eso no pasa aquí, ni debe.
-    - name: puerta
-      namespace: ore-system
-      sectionName: https
-    # La puerta del túnel (ORE 0060 C2, `19-la-puerta-del-tunel.yaml`): la misma
-    # ruta, servida por Envoy dentro del clúster. Cuelga de las dos mientras dura
-    # el cambio; la de Google se va en C2·5.
+    # La puerta del túnel (ORE 0060 C2, `19-la-puerta-del-tunel.yaml`): Envoy
+    # dentro del clúster, detrás de Cloudflare. La de Google (`puerta`, un
+    # balanceador global) se retiró en C2·5.
     - name: puerta-tunel
       namespace: ore-system
       sectionName: ore
@@ -58,120 +57,6 @@ spec:
       #   decisión contraria tomada por descuido: quien abre un secreto no tiene
       #   por qué estar en internet. El día que la consola necesite pedirle algo,
       #   pasa por `ore-serve` o se decide aparte, y se escribe por qué.
----
-# ── Dejar entrar al balanceador, y sólo a él ────────────────────────────────
-#
-# ⚠️ Esos dos rangos no son «internet»: son los que Google usa para las
-# comprobaciones de salud y para el tráfico de sus balanceadores L7. Están
-# publicados y son fijos, y **nadie más puede originar tráfico desde ellos**.
-#
-#   130.211.0.0/22   comprobaciones de salud
-#   35.191.0.0/16    balanceadores y comprobaciones
-#
-# ⇒ Así que esto abre el plano de control del inquilino a internet EN LA PRACTICA
-#   —cualquiera puede llamar al balanceador— y hay que decirlo sin adornos. Lo
-#   que sostiene la puerta a partir de aquí NO es la red:
-#
-#     · sin testigo válido del emisor, `ore-serve` no monta ni una ruta de datos
-#       —es su defecto, no una regla— y contesta 401;
-#     · con testigo de otra organización, `concesion_viva` no encuentra nada y
-#       contesta 403;
-#     · y el `ore` que ejecuta no lleva cliente TLS, así que ninguna petición
-#       puede hacerle salir a un origen.
-#
-# ⛔ La frontera pasa de ser topológica a ser de identidad, y eso es exactamente
-#   lo que la E6 decide. Mientras el modo de banco (`--identidad cabecera`) esté
-#   encendido en algún inquilino, ESTO NO SE APLICA a ese inquilino: publicaría
-#   un formulario donde cualquiera escribe quién es.
-apiVersion: networking.gke.io/v1
-kind: HealthCheckPolicy
-metadata:
-  name: salud-del-control
-  namespace: t-demo
-spec:
-  # ── ⛔⛔ Y ESTO NO SOBRA, aunque el pod YA diga dónde está su salud ───────
-  #
-  # `ore-serve` lleva una `readinessProbe` a `/salud` desde el primer día. El
-  # `Ingress` clásico la DEDUCE y comprueba ahí. **La `Gateway` no**: se planta
-  # en `GET /`, que `ore-serve` no sirve, y el backend se queda `UNHEALTHY`.
-  #
-  # ⇒ Y el síntoma no dice nada de sondas ni de rutas: el balanceador contesta
-  #   **`503 no healthy upstream`**, que se lee como «tu servicio está caído» y
-  #   manda a mirar el pod — que está perfectamente vivo y contestando `200` a
-  #   quien le pregunta por dentro. Medido: eso es exactamente lo que pasó.
-  #
-  # ⚠️ Es una trampa de MIGRACIÓN, y por eso queda escrita aquí. Quien pase un
-  #   servicio de `Ingress` a `Gateway` pierde en silencio una configuración que
-  #   nunca escribió, porque la escribía el controlador por él.
-  default:
-    config:
-      type: HTTP
-      httpHealthCheck:
-        requestPath: /salud
-        # El puerto del backend, sin repetirlo. Escribir `8080` aquí sería un
-        # segundo sitio donde vive el mismo número.
-        portSpecification: USE_SERVING_PORT
-  targetRef:
-    group: ""
-    kind: Service
-    name: ore-serve
----
-# ═══════════════════════════════════════════════════════════════════════════
-# CUÁNTO DEJA VIVIR LA PUERTA A UNA CONEXIÓN (ORE 0037 ②)
-#
-# ⛔⛔ Y NO ES «CUÁNTO PUEDE TARDAR UNA RESPUESTA». En un balanceador de
-#   aplicación de Google, el plazo del backend es, para una conexión ASCENDIDA
-#   O EN STREAMING, **lo que vive la conexión**: llegado el plazo se corta,
-#   aunque esté pasando tráfico y aunque el servidor esté a mitad de un evento.
-#
-# El valor por defecto son **30 segundos**, y hasta hoy aquí no había ninguna
-# política: cualquier cosa que no terminara en medio minuto se cortaba. Con
-# `GET /puestos/{id}/flujo` —la tubería de 0037— eso significa reconectar DOS
-# VECES POR MINUTO por cada editor abierto, y cada reconexión es un saludo de
-# TCP y de TLS para seguir contando lo mismo.
-#
-# ⭐ 300 s, que es más que los 240 con los que el flujo SE DESPIDE ÉL SOLO
-#   (`VIDA` en `ore-serve/src/puestos.rs`). El orden importa y es el de siempre:
-#   **quien cierra es el que sabe por dónde iba**. El servidor termina diciendo
-#   «vuelve» con el número del último evento, y el navegador vuelve con
-#   `Last-Event-ID` sin perder ni repetir nada; si cortara la puerta, cortaría
-#   en medio. `gen-inquilino.py` ⑮ comprueba que esto siga siendo así.
-#
-# ⚠️ Y esto vale para TODA petición a `ore-serve`, no sólo para el flujo. No
-#   afloja nada: el propio servidor tiene plazo de lectura y de escritura de
-#   30 s (`ore-entrada/http.rs`), así que una petición normal no puede estar
-#   callada más de eso. Lo que se levanta es el techo del INTERMEDIARIO, que
-#   era el único que no sabía distinguir una conexión larga de una colgada.
-apiVersion: networking.gke.io/v1
-kind: GCPBackendPolicy
-metadata:
-  name: plazo-del-control
-  namespace: t-demo
-spec:
-  default:
-    timeoutSec: 300
-  targetRef:
-    group: ""
-    kind: Service
-    name: ore-serve
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: entrada-del-balanceador
-  namespace: t-demo
-spec:
-  podSelector:
-    matchLabels:
-      ore.dev/rol: control
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - ipBlock: { cidr: 130.211.0.0/22 }
-        - ipBlock: { cidr: 35.191.0.0/16 }
-      ports:
-        - protocol: TCP
-          port: 8080
 ---
 # Y Envoy, la puerta del túnel (ORE 0060 C2): no llega desde los rangos de Google
 # sino desde sus pods, en `envoy-gateway-system`. Sin esto, el mismo 502 mudo.

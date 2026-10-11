@@ -168,10 +168,7 @@ metadata:
     ore.dev/rol: iam-servidor
 spec:
   parentRefs:
-    - name: puerta
-      namespace: ore-system
-      sectionName: https
-    # Y la puerta del túnel (ORE 0060 C2), mientras dura el cambio.
+    # La puerta del túnel (ORE 0060 C2); la de Google se retiró en C2·5.
     - name: puerta-tunel
       namespace: ore-system
       sectionName: ore
@@ -180,42 +177,6 @@ spec:
   rules:
     - backendRefs:
         - name: ore-iam
-          port: 8090
----
-apiVersion: networking.gke.io/v1
-kind: HealthCheckPolicy
-metadata:
-  name: salud-de-iam
-  namespace: identidad
-spec:
-  default:
-    config:
-      type: HTTP
-      httpHealthCheck:
-        requestPath: /salud
-        portSpecification: USE_SERVING_PORT
-  targetRef:
-    group: ""
-    kind: Service
-    name: ore-iam
----
-# El balanceador entra desde los rangos de Google, como en `43-la-entrada.yaml`.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: entrada-del-balanceador-a-iam
-  namespace: identidad
-spec:
-  podSelector:
-    matchLabels:
-      ore.dev/rol: iam-servidor
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - ipBlock: { cidr: 130.211.0.0/22 }
-        - ipBlock: { cidr: 35.191.0.0/16 }
-      ports:
-        - protocol: TCP
           port: 8090
 ---
 # Y Envoy, la puerta del túnel (ORE 0060 C2), desde sus pods.

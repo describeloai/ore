@@ -968,8 +968,13 @@ def comprobar():
     # servidor, que termina diciendo «vuelve» con el numero del ultimo evento.
     # Dos numeros en dos repositorios distintos que tienen que ir juntos: eso es
     # justo lo que una comprobacion existe para vigilar.
-    t43 = (MALLA / "43-la-entrada.yaml").read_text(encoding="utf-8")
-    m = re.search(r"kind: GCPBackendPolicy.*?timeoutSec: (\d+)", t43, re.S)
+    # ⭐ Desde ORE 0060 C2·5 el plazo es de la PUERTA (Envoy, una
+    #   `BackendTrafficPolicy` para todas las celdas), no de cada celda: con el
+    #   balanceador de Google era una `GCPBackendPolicy` en la `43`.
+    #   ⚠️ Y la puerta no viaja en el `ConfigMap` del que converge: dentro se dice.
+    puerta = MALLA / "19-la-puerta-del-tunel.yaml"
+    m = (re.search(r"kind: BackendTrafficPolicy.*?requestTimeout: (\d+)s", puerta.read_text(encoding="utf-8"), re.S)
+         if puerta.is_file() else None)
     # ⛔ Y el crate puede NO estar: el que converge monta un `ConfigMap` con las
     #   plantillas, no con el repositorio. Sin el fichero se comprueba lo que
     #   se puede —que la política existe— y se dice cuál de las dos mitades se
@@ -977,11 +982,13 @@ def comprobar():
     puestos = MALLA.parent / "crates/ore-serve/src/puestos.rs"
     v = (re.search(r"const VIDA: Duration = Duration::from_secs\((\d+)\)",
                    puestos.read_text(encoding="utf-8")) if puestos.is_file() else None)
-    if not m:
-        fallos.append("`43-la-entrada.yaml`: sin `GCPBackendPolicy`, la puerta corta cualquier flujo a los 30 s")
+    if not puerta.is_file():
+        print("  · ⑮ la puerta (19-la-puerta-del-tunel.yaml) no viaja aqui: se comprueba en el repositorio")
+    elif not m:
+        fallos.append("`19-la-puerta-del-tunel.yaml`: sin `BackendTrafficPolicy`, Envoy corta cualquier flujo a los 15 s")
     elif v and int(m.group(1)) <= int(v.group(1)):
         fallos.append(
-            "`43-la-entrada.yaml`: la puerta deja %s s y el flujo dura %s s: cortaria ella, y en medio de un evento"
+            "`19-la-puerta-del-tunel.yaml`: la puerta deja %s s y el flujo dura %s s: cortaria ella, y en medio de un evento"
             % (m.group(1), v.group(1)))
     else:
         print("  ⭐ ⑮ la puerta deja vivir %s s y el flujo se despide a los %s: cierra el que sabe por donde iba"

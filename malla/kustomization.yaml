@@ -58,7 +58,6 @@ resources:
   # ADR 0060 C1·3: lo que puede en el clúster quien lo duerme y lo despierta.
   - 18-el-horario.yaml
   # ── La puerta compartida ────────────────────────────────────────────────
-  - 14-la-puerta.yaml
   - 19-envoy-gateway.yaml
   - 19-la-puerta-del-tunel.yaml
   - 19-el-tunel.yaml
