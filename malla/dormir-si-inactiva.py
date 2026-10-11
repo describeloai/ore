@@ -209,9 +209,13 @@ def main():
         if nodos:
             paso(f"{pool}: terminados los pods de {len(nodos)} nodo(s) antes del resize")
     for pool in ("pg", "jobs-s"):
+        # ⛔ El primer resize va SIEMPRE, haya nodos o no: «no hay nodos» no es «objetivo 0».
+        #   2026-10-11 08:02: el autoescalado de `pg` se había encendido un minuto antes y su nodo
+        #   aún no existía; se saltó el resize, el autoescalador lo creó igual, y quedó `pg`
+        #   encendido con la malla dormida. Un resize a 0 de un grupo ya a 0 son segundos.
         for intento in range(3):
             hay = k8s("GET", f"/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3D{pool}")["items"]
-            if not hay:
+            if intento and not hay:
                 break
             if intento:
                 paso(f"{pool}: siguen {len(hay)} nodos tras el resize — otra vez")
