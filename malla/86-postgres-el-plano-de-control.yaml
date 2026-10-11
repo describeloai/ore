@@ -44,6 +44,10 @@ rules:
   - apiGroups: [vm.neon.tech]
     resources: [virtualmachines]
     verbs: [get, list, watch, create, update, patch, delete]
+  # P7 en producción: al borrar una VM, antes sus migraciones en curso (dormir a mitad de migrar).
+  - apiGroups: [vm.neon.tech]
+    resources: [virtualmachinemigrations]
+    verbs: [get, list, delete]
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
