@@ -155,25 +155,40 @@ fn java_de(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 0055 T1·7 · **Los `.java` del paquete del fichero `codigo`** (desde la raíz),
-/// como van a la celda de un build o de un Preview: con su ruta desde la raíz,
-/// en orden, sin los de un paquete de dentro. `editor` pone el texto de uno en
-/// lugar del suyo (el Preview corre el código del editor). 422 si pasan de
-/// [`FUENTES_JAVA_MAXIMO`].
+/// 0055 T1·7 · **Los `.java` del repositorio del fichero `codigo`** (desde la
+/// raíz), como van a la celda de un build o de un Preview: con su ruta desde la
+/// raíz, en orden, sin los de un paquete de dentro. `editor` pone el texto de
+/// uno en lugar del suyo (el Preview corre el código del editor). 422 si pasan
+/// de [`FUENTES_JAVA_MAXIMO`].
+///
+/// ⛔ El repositorio, no el paquete: un paquete junta repositorios hermanos, y
+///   javac sobre todos hacía que uno rompiera el build del otro —medido en
+///   victor el 2026-10-11: una plantilla v6 (un snippet de JShell) de otro
+///   repositorio daba «unnamed classes are a preview feature»; dos `Example`
+///   sin `package` darían «duplicate class»—. Sin repositorio registrado que lo
+///   contenga, el paquete, como antes.
 pub(crate) fn fuentes_java(
     raiz: &Path,
     codigo: &str,
     editor: Option<&str>,
 ) -> Result<Vec<(String, String)>, Respuesta> {
     let fichero = raiz.join(codigo);
-    let carpeta = carpeta_del_paquete(&fichero, raiz);
+    let registrados: Vec<(String, String)> = ore_core::repositorios::leer(raiz)
+        .into_iter()
+        .map(|r| (r.ruta, String::new()))
+        .collect();
+    let paquete = carpeta_del_paquete(&fichero, raiz);
+    let carpeta = match repositorio_de(&registrados, codigo) {
+        Some((r, _)) => raiz.join(r),
+        None => paquete.clone(),
+    };
     let mut ficheros = Vec::new();
     java_de(&carpeta, &mut ficheros);
     ficheros.sort();
     let mut fuentes: Vec<(String, String)> = Vec::new();
     let mut total = 0usize;
     for f in ficheros {
-        if carpeta_del_paquete(&f, raiz) != carpeta {
+        if carpeta_del_paquete(&f, raiz) != paquete {
             continue; // de un paquete de dentro: no es de este
         }
         let r = rel(raiz, &f);
@@ -1661,6 +1676,83 @@ mod tests {
         if let Ok(f) = std::env::var("ORE_CELDA_JAVA") {
             std::fs::write(f, celda).unwrap();
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0055 T1·7 · Un build de Java compila **su repositorio**, no el paquete:
+    /// dos repositorios hermanos no se ven. Medido en victor (2026-10-11): una
+    /// plantilla v6 de otro repositorio —un snippet de JShell— rompía el build
+    /// con «unnamed classes are a preview feature».
+    #[test]
+    fn un_build_de_java_compila_su_repositorio_y_no_el_paquete() {
+        let d = arbol("java-hermanos");
+        let p = d.join("packages/ventas");
+        let repo = |carpeta: &str, fichero: &str, texto: &str| {
+            std::fs::create_dir_all(p.join(carpeta).join("transforms")).unwrap();
+            std::fs::write(
+                p.join(carpeta).join("README.md"),
+                "---
+nombre: J
+plantilla: transforms-java
+plantillaVersion: 7
+---
+",
+            )
+            .unwrap();
+            std::fs::write(p.join(carpeta).join("transforms").join(fichero), texto).unwrap();
+        };
+        repo(
+            "nuevo",
+            "Example.java",
+            "public class Example {}
+",
+        );
+        repo(
+            "viejo",
+            "Ejemplo.java",
+            "var x = over(\"ventas.clientes\");
+",
+        );
+        repo(
+            "otro",
+            "Example.java",
+            "public class Example {}
+",
+        );
+        // Un paquete sin repositorio registrado sigue siendo el paquete, como antes.
+        std::fs::write(
+            p.join("etl/Suelto.java"),
+            "public class Suelto {}
+",
+        )
+        .unwrap();
+
+        let rutas = |codigo: &str, editor: Option<&str>| -> Vec<String> {
+            bien(fuentes_java(&d, codigo, editor))
+                .into_iter()
+                .map(|(r, _)| r)
+                .collect()
+        };
+        assert_eq!(
+            rutas("packages/ventas/nuevo/transforms/Example.java", None),
+            vec!["packages/ventas/nuevo/transforms/Example.java"]
+        );
+        // El Preview de un fichero nuevo, sólo en el editor, tampoco ve a los hermanos.
+        assert_eq!(
+            rutas(
+                "packages/ventas/otro/transforms/Nuevo.java",
+                Some("public class Nuevo {}")
+            ),
+            vec![
+                "packages/ventas/otro/transforms/Example.java",
+                "packages/ventas/otro/transforms/Nuevo.java"
+            ]
+        );
+        let sueltos = rutas("packages/ventas/etl/Suelto.java", None);
+        assert!(
+            sueltos.contains(&"packages/ventas/etl/Suelto.java".to_string()),
+            "{sueltos:?}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
