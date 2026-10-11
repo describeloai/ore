@@ -2,14 +2,14 @@ name: horario
 
 # ADR 0060 C1·3 · LA MALLA DUERME CUANDO NADIE LA USA Y DESPIERTA CUANDO ALGUIEN LLEGA.
 #
-#   · cada 10 min: `malla/dormir.sh --si-inactiva 15` — duerme sólo si en 15 min no hubo
+#   · cada 10 min: `malla/dormir.sh --si-inactiva 30` — duerme sólo si en 30 min no hubo
 #     ninguna petición de una persona (las líneas `acceso · … · persona` de `ore-serve` y
 #     `ore-iam`), ningún puesto abierto ni trabajo en Kueue. Si ya duerme, termina en segundos.
 #   · a mano o desde la consola (`workflow_dispatch`): `despertar` (`malla/despertar.sh`, que
 #     relanza el job `imagen` de la última corrida de `ci`), `dormir` o `dormir-ya`.
 #
 # Configuración de desarrollo, decidida con la persona (2026-10-10): cualquiera que llegue a
-# la consola puede despertarla, sin límite; 15 min sin actividad y duerme.
+# la consola puede despertarla, sin límite; 30 min sin actividad y duerme (15 hasta el 2026-10-11).
 #
 # ⛔ La cuenta: `ore-horario`, federada desde el OIDC de GitHub y sólo para `main`
 #   (`repo:describeloai/ore:ref:refs/heads/main`). En Google sólo cambia el tamaño de los
@@ -71,7 +71,7 @@ jobs:
             despertar)
               if [ "${{ inputs.postgres }}" = true ]; then bash malla/despertar.sh --con-postgres
               else bash malla/despertar.sh; fi ;;
-            dormir)    bash malla/dormir.sh --si-inactiva 15 ;;
+            dormir)    bash malla/dormir.sh --si-inactiva 30 ;;
             dormir-ya) bash malla/dormir.sh --forzar ;;
             *) echo "acción desconocida: $ACCION"; exit 64 ;;
           esac

@@ -6,7 +6,7 @@ hace falta con la malla despierta, y justo entonces las CronJobs del clúster co
 (el cron de GitHub no corrió ni una vez en dos horas, 2026-10-10). Dormida no corre, y no hace
 falta: despertar lo lanza quien llega (la consola, `horario.yml` a mano).
 
-Duerme si en `INACTIVA` minutos (15) no hubo NADA de esto:
+Duerme si en `INACTIVA` minutos (30) no hubo NADA de esto:
   · una línea `acceso · … · persona|delegado` en el registro de `ore-serve` (cada celda) o de
     `ore-iam` — las de `fondo` (refrescos de la consola sin nadie delante), las sondas, los
     agentes y el aprovisionador no cuentan;
@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-INACTIVA = int(os.environ.get("INACTIVA", "15"))
+INACTIVA = int(os.environ.get("INACTIVA", "30"))
 P = os.environ.get("PROYECTO", "project-8853a180-450d-47be-b83")
 ZONA = os.environ.get("ZONA", "europe-west1-b")
 CLUSTER = os.environ.get("CLUSTER", "ore-mesh")

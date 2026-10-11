@@ -178,7 +178,7 @@ metadata:
 spec:
   schedule: "*/5 * * * *"
   # Una pasada a la vez; y al despertar, una pasada perdida de hace horas no corre (la de
-  # ahora dirá «despierta desde hace menos de 15 min»).
+  # ahora dirá «despierta desde hace menos de 30 min»).
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 120
   successfulJobsHistoryLimit: 1
@@ -204,7 +204,7 @@ spec:
               env:
                 - { name: HOME, value: /tmp }
                 - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
-                - { name: INACTIVA, value: "15" }
+                - { name: INACTIVA, value: "30" }
               volumeMounts: [{ name: guion, mountPath: /horario }]
               command: ["python3", "/horario/dormir-si-inactiva.py"]
               resources:
