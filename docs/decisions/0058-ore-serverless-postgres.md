@@ -1755,3 +1755,27 @@ Hecho con `pruebas-de-fuego/ore-postgres/produccion/ventana.sh`, pasos 1–7, ca
 - limpiar, apuntar los números y reanudar la CronJob.
 
 Aproximadamente 1 hora.
+
+#### La ventana 1 en producción, segunda mañana (2026-10-11)
+
+Entre las dos tardes, 0060 C2 cambió la entrada (`b33ea828`): **sin IP pública**, `proxy-postgres` en `ClusterIP`, la IP `ore-pg-entrada` liberada y el A comodín borrado (~18 $/mes de la regla regional). En desarrollo se entra por el túnel de Cloudflare `ore-malla`: TCP en `pg.ontoforge.org` (`cloudflared access tcp`) y HTTP/WS por custom hostnames de Cloudflare for SaaS, un nombre exacto cada uno. El balanceador vuelve cuando haya clientes que esperen `psql -h` directo. Las pruebas se adaptaron (`0d220d65`): por el túnel no llega el SNI, así que el endpoint va en `options=endpoint=<id>`.
+
+| | resultado |
+|---|---|
+| por el túnel: `options=endpoint=<ep>`, `-pooler` y `endpoint=<ep>;<clave>` en la contraseña | entran ✓; sin endpoint, con otra contraseña o con el endpoint de otra organización, no ✓ |
+| conectar por el túnel (TCP + TLS + SCRAM) | p50 **594 ms**, p95 684 ms (con el balanceador: p50 418 ms) |
+| dormir (`dormir_tras` 60) | a los **118 s**; la VM fuera; LSN de `/terminate` ✓; el nodo que sólo la sostenía, libre a los **288 s** (3 → 2) |
+| despertar en frío, VM de verdad, desde internet | p50 **35,0 s**, p95 39,4 s (n=3). Laboratorio: 39,5 s |
+| despertar en frío **sin nodo** | **no se da**: la VM de 0,25 CU cabe en el suelo de 2 nodos (almacenamiento, plano y proxy); el primer despertar del día, 37,6 s, igual que con nodo |
+
+Lo encontrado, por orden:
+
+1. ⭐ **Un endpoint a medio arrancar sin operación se quedaba así para siempre.** El clúster se durmió (21:03) con una VM `Pending`; `despertar-endpoint` falló a los 15 min y el endpoint quedó `arrancando`. El proxy sólo pide despertar a los `dormido`: a éste lo esperaba 120 s y contestaba 503, cliente tras cliente. **Arreglado y en producción** (`5c341aa0`): vigilar ve los huérfanos (`arrancando`/`reparando` sin operación en curso en su proyecto) y pide `reparar-endpoint`; reparar trata a uno `arrancando` con el cómputo muerto como a uno muerto. Contrato 15/15 (`un_despertar_que_vence_no_deja_el_endpoint_atascado`).
+2. ⭐ **El pool no funciona con el `compute_ctl` de verdad** (el laboratorio tenía uno de mentira; el código lo marcaba «escrito y sin medir»). Una VM del pool arranca sin especificación y `compute_ctl` precalienta: `initdb` y Postgres con `listen_addresses` por defecto, `localhost`, en el 51055 (`compute.rs`, `prewarm_postgres_vm_memory`). La imagen no tiene `localhost` en `/etc/hosts`: Postgres muere, `compute_ctl` sale en bucle y la VM nunca dice `empty`. Las VMs con endpoint escuchan en `*` y no lo notaban. **Arreglo**: una entrada `sysinit` en el spec de la VM (`describeloai/neon` `ec050c8b`, `ore/computo-ec050c8b`), y la imagen de VM, sin Cloud Build: `.github/workflows/neon-vm.yml` vuelve a pasar `vm-builder` sobre la `compute-node-v17` del registro (sólo cambia el spec). Mientras, el pool, fuera (`13674db8`).
+3. **Bajar `--pool-computos` no retira las VMs que ya hay**: quedaron dos, a mano fuera. Pendiente en `mantener_pool`.
+4. **Por el túnel, el proxy ve la IP del pod de cloudflared, no la del cliente**: las listas de IPs (P5·6) no valen hasta que vuelva el balanceador.
+5. **La NetworkPolicy del proxy no dejaba entrar al túnel** (`9dd970b0`): en Dataplane V2 un `ipBlock 0.0.0.0/0` no cubre a los pods del clúster; se añade el pod `tunel` de `ore-system`, por 4432 y 4444.
+6. **La CronJob del 0060 durmió el clúster dos veces esta mañana.** La retención `ore.dev/despierta-hasta` la borraba Flux: limpia los campos de los gestores `kubectl…` al reconciliar el namespace. Con un gestor propio sobrevive (comprobado forzando la reconciliación). Para esta ventana, la CronJob suspendida, con go, y reanudada al acabar.
+7. Al despertar con Kueue aún caído, los **DaemonSets de NeonVM** (el plugin de KVM entre ellos) no crearon sus pods y el reintento se espacia: sin `neonvm/kvm` en el nodo, ninguna VM arranca. Un `rollout restart` los trae; `despertar.sh` empuja sólo Deployments y StatefulSets (de 0060).
+
+Pendiente: el pool con la imagen nueva (`p6.sh pool 3`); `p6.sh http-corto` cuando exista el custom hostname `api.europe-west1.pg.paladio.io`; P7.
