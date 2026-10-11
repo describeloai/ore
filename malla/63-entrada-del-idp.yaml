@@ -174,7 +174,18 @@ spec:
   hostnames:
     - login.paladio.io
   rules:
-    - backendRefs:
+    # ⛔ Keycloak decide `Secure` y `SameSite=None` en sus cookies por el esquema que le
+    #   llega en `X-Forwarded-Proto`, y a Envoy le llega HTTP desde `cloudflared`: lo
+    #   reescribe a `http` y las cookies salían SIN `Secure` y con `SameSite=Lax` (medido en
+    #   C2·3; por el balanceador de Google, `Secure; SameSite=None`). Afirmar `https` no
+    #   miente: Cloudflare redirige todo `http://` a `https://` (Always Use HTTPS, en la zona)
+    #   y del borde al pod el camino es el túnel.
+    - filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - { name: X-Forwarded-Proto, value: https }
+      backendRefs:
         - name: idp-publico
           port: 8080
 ---

@@ -385,6 +385,47 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
   por `port-forward` con cada `Host` (celda, `iam`, login), el flujo SSE más de 15 s, y ④ lo que
   ocupa en el nodo.
 
+### C2·2 y C2·3 · el túnel en la malla y el cambio de DNS (2026-10-11)
+
+**C2·2:**
+- Túnel `ore-malla` en Cloudflare, configurado desde allí: `pg.ontoforge.org` → `tcp://proxy-postgres
+  .ore-pg:5432`, y todo lo demás a `http://puerta-del-tunel.envoy-gateway-system:80`.
+  `entrada.ontoforge.org` es su CNAME y el *fallback origin*. El túnel de prueba, borrado.
+- Token en Secret Manager (`tunel-token`), legible sólo por `ore-tunel` (Workload Identity desde
+  `ore-system/tunel`).
+- `malla/19-el-tunel.yaml`: `cloudflared` 2026.9.3 con `--token-file` desde un `emptyDir` en memoria
+  y red cerrada. La cuota de `ore-system` exige `limits.cpu`.
+- Los cinco *custom hostnames* (`login`, `iam`, `demo`, `victor`, `ore-mesh`) validados por TXT
+  **antes** de tocar el DNS: los de `ore.paladio.io` en Cloud DNS y los de `login` en GoDaddy (la
+  persona). Los certificados salieron en ~2 min.
+- Envoy necesitaba el DNS en su NetworkPolicy: encuentra a su controlador por nombre.
+- Las celdas cuelgan de la puerta nueva cuando las reescribe el convergedor, cada hora o con
+  `kubectl create job --from=cronjob/aprovisionador`.
+
+**C2·3, el cambio** (08:33–08:44 UTC):
+- Cloud DNS: `*.ore.paladio.io` y `ore-mesh.ore.paladio.io`, de `A 136.69.102.80` a CNAME
+  `entrada.ontoforge.org` (TTL 60), en una transacción.
+- GoDaddy (la persona): `login`, de `A 136.68.214.241` a CNAME `entrada.ontoforge.org`.
+- Comprobado: `iam`, `demo` y `victor` dan 200 por Cloudflare; la consola lista las celdas; en
+  `login` funcionan el descubrimiento, JWKS y la página de entrada, con formulario a
+  `https://login.paladio.io`.
+
+**Tres tropiezos, los tres corregidos:**
+1. **`iam` sin resolver de ~07:47 a 08:34.** Los TXT de validación bajo `iam.ore.paladio.io` lo
+   convirtieron en nodo vacío, y un comodín no cubre un nombre que existe. ⇒ CNAME explícito
+   `iam.ore.paladio.io`. **C2·4 tiene que crear el registro propio del nombre antes que sus TXT.**
+2. **`http://login.paladio.io` daba 200 en claro**; el balanceador redirigía con 301. ⇒ *Always
+   Use HTTPS* activado en la zona `ontoforge.org` (cubre los *custom hostnames*). Es una
+   configuración de Cloudflare, fuera del repositorio.
+3. **Cookies de Keycloak sin `Secure`, con `SameSite=Lax`** (por el balanceador: `Secure;
+   SameSite=None`). Envoy reescribe `X-Forwarded-Proto` a `http`, porque le llega HTTP desde
+   `cloudflared`, y `numTrustedHops` no lo evita. ⇒ La ruta `login` fija `X-Forwarded-Proto:
+   https`, que no miente tras el punto 2. Se queda también `ClientTrafficPolicy` con un salto de
+   confianza, para que la IP del cliente sea la de la persona y no la del túnel.
+
+**Retención:** la malla está retenida con `ore.dev/despierta-hasta=2026-10-11T20:00:00Z` en
+`ore-system` mientras duran C2 y las pruebas de 0058. Se quita al terminar.
+
 ### C2 · la entrada de Postgres, también al túnel (2026-10-10, decidido por la persona)
 
 0058 desplegó hoy (13:12) su entrada, `ore-pg/proxy-postgres`, como `LoadBalancer` L4 en la IP

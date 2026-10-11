@@ -213,3 +213,20 @@ spec:
           podSelector:
             matchLabels: { app: keycloak }
       ports: [{ port: 8080, protocol: TCP }]
+---
+# Un salto de confianza: `cloudflared`. Con esto Envoy toma la IP del cliente de la
+# `X-Forwarded-For` que trae el túnel (la que puso Cloudflare), y no la del pod de
+# `cloudflared`: los límites y el registro de Keycloak ven a la persona, no al túnel.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: el-salto-del-tunel
+  namespace: ore-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: puerta-tunel
+  clientIPDetection:
+    xForwardedFor:
+      numTrustedHops: 1
