@@ -111,9 +111,6 @@ spec:
             # P6·7: dormir por inactividad. Solo con el proxy desplegado y probado desde internet: a un
             # endpoint dormido solo lo despierta una conexión que entra por el proxy.
             - --dormir
-            # P6·5: el pool precalentado: N cómputos arrancados y vacíos; despertar = /configure.
-            - --pool-computos
-            - "2"
           env:
             - name: ORE_POSTGRES_URL
               valueFrom: { secretKeyRef: { name: ore-postgres-db, key: url } }
