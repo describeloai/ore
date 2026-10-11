@@ -259,6 +259,38 @@ no cambia Rust y ~8 si cambia. Siguiente: B1·3, el relevo en el CI de `main`.
 4. **Cerrar la puerta a Cloud Build** (IAM, go): `ore-ci` sin permiso de construir.
 5. **La comprobación al despertar**, con C1.
 
+### B2 · una huella por binario (2026-10-11)
+
+**Por qué.** Con B1 el CI dejó de pagar, pero un commit de Rust tardaba ~11 min en `construir`:
+33 s el plan, 133 s esperando a `rm` para liberar el disco, 304 s compilando los 24 binarios y
+143 s rehaciendo y subiendo las imágenes que los copian. Una sola huella para todos los binarios:
+tocar `ore-serve` recompilaba el lector de SFTP, rehacía nueve imágenes y relevaba todos los
+Deployments, también `ore-cofre` e `ore-iam`.
+
+| paso | qué | medida |
+|---|---|---|
+| H0 | compilar un subconjunto sin recompilar dependencias | en local (16 cpu, 6 GB): los 24, 409 s; `-p ore-serve`, 404 s y **78 dependencias de terceros otra vez** (otras features unificadas); todos los `-p` y `--bin ore-serve`, 304 s y ninguna. `compilar-binarios.sh` elige con `--bin` y los mismos `-p` con los que se cocinan las dependencias |
+| H1 | `ci/huella-de-los-binarios.py`: la de cada binario, de su paquete y de los del workspace de los que depende (`[dependencies]` con `path`, sin `tests/`, `examples/` ni `.md`) y de lo que su código de producción incluye de fuera (`include_str!`, leído del código; los de un `#[cfg(test)] mod` no). `--comprobar` cuadra los binarios del Dockerfile con los del guion | prueba de 15 casos en 22 s; `ore-core` mueve 22 de 24, `ore-serve` sólo el suyo |
+| H2 | la huella de cada imagen lleva sólo las de los binarios que copia | prueba de 14 casos: `ore-serve` rehace `serve`; `ore-store-gcs`, las cinco que lo copian |
+| H3 | `construir`: una caché de binarios con su manifiesto (`.huellas.json`), restaurada por prefijo; se compilan sólo los que faltan; el disco en segundo plano; el **ensayo** (`gh workflow run ci --ref <rama> -f ensayo=true`: sólo `construir`, sube `h-<huella>`, ni etiqueta de commit ni despliegue) | abajo |
+| H4 | `imagen`: la anotación `ore.dev/binarios` es la huella de la imagen de cada Deployment (`ore-serve:h-…`), no una clave global | el primer push a `main` releva todo una vez (cambia el formato) |
+
+**Medido en la rama** (`ci/b2-huella-por-binario`):
+
+| corrida | qué | `construir` |
+|---|---|---|
+| 38135140187 | en frío: sin binarios ni dependencias en la caché | 14,5 min (688 s cocinar y compilar los 24) |
+| 38136105667 | **un commit que sólo toca `ore-serve`** | **288 s**: compila `ore-serve` (119 s), los 23 de la caché, rehace una imagen (17 s) |
+
+- **El disco no hacía falta:** 85 GB libres al empezar y 102 al acabar, con todo compilado. El `rm`
+  sigue, en segundo plano, sin que nadie lo espere.
+- ⚠️ **Una caché de una rama no la ve `main`** (GitHub). El primer push de B2 a `main` va en frío
+  (~15 min) y releva todo una vez; los siguientes, como la segunda corrida.
+- **Lo que manda ahora** es la prueba más larga (`conectores`, ~8 min), no `construir`. Y tocar
+  `ore-core` sigue compilando 22 binarios: la cadena `ore-code → ore-core` es el camino crítico.
+- Fuera lo que B1·4 dejó muerto: `cloudbuild.yaml`, `construir.yml` (lo hace el ensayo) y
+  `ci/huella-de-los-binarios.sh`.
+
 ### C2 · lo que de verdad cuestan los balanceadores (2026-10-10)
 
 La tarifa pública (Precios de red, Cloud Load Balancing, leída hoy): las reglas de reenvío
@@ -728,6 +760,9 @@ Vercel, un despertar de punta a punta desde la consola.
   - ⚠️ **Un presupuesto avisa, no corta.**
   - ⚠️ **Octubre saltará entero:** los €178 del 1 al 8 de octubre ya están dentro. La señal útil
     empieza en noviembre, o antes si «previsto» sale disparado.
+
+- **B2 (después del cierre):** una huella por binario. Un commit que sólo toca `ore-serve` pasa
+  `construir` de ~11 min a 288 s (sección B2, tras B1·3).
 
 **Lo que queda, sin urgencia:**
 - Medir la factura real con la malla dormida, una semana. Esperado: ~16 $ de fijo.
