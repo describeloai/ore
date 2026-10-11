@@ -3,13 +3,17 @@
 # (87 descomentada, el certificado `Ready`). Los datos, desde este PC; el plano, como una celda.
 #
 #   p5.sh todo            todo en orden (unos 15 min), o un paso:
-#   p5.sh dns             los nombres resuelven a la IP de la entrada (también api., el del driver HTTP)
+#   p5.sh tunel           sin IP pública (0060 C2): por el túnel, el endpoint en options=endpoint=<id>
+#                         (directo y -pooler) y en la contraseña (endpoint=<id>;<clave>); sin endpoint,
+#                         no; con el de otra organización, no; 10 conexiones: p50/p95 por el túnel
+#   p5.sh dns             [con el balanceador] los nombres resuelven a la IP de la entrada
 #   p5.sh conectar        psql verify-full entra con su contraseña y no con otra; el endpoint de otra
 #                         organización, fuera; el pool (-pooler); 10 conexiones: p50/p95 de conectar
 #   p5.sh pgbench         directo y por el pool, 10 clientes, 60 s: tps y latencia
 #   p5.sh pool150         150 clientes por el pool: entran todos, y Postgres no pasa de su pool
 #   p5.sh http            HTTP y WebSocket con @neondatabase/serverless (el p54.mjs del laboratorio)
-#   p5.sh ip              quién entra (P5·6) con la IP real de este PC tras el balanceador
+#   p5.sh ip              [con el balanceador] quién entra (P5·6) con la IP real de este PC: por el
+#                         túnel el proxy ve la IP del pod de cloudflared, no la del cliente
 #   p5.sh migrar          P5·8: migración en vivo de la VM con pgbench corriendo
 #   p5.sh limpiar         borra los proyectos de la prueba
 #
@@ -38,6 +42,34 @@ dns() {
     local r; r=$(docker run --rm "$PG_IMAGEN" getent hosts "$n" | awk '{print $1}' | head -1)
     [ "$r" = "$ip" ] && bien "$n → $r" || mal "$n → ${r:-nada} (esperaba $ip)"
   done
+}
+
+tunel_() {
+  echo "── por el túnel de Cloudflare ($TUNEL), sin SNI: el endpoint en options o en la contraseña"
+  proyecto $A
+  local ep=${HOST%%.*} r
+  r=$(pc_psql "$CLAVE" "$(conn "$HOST" "$ROL" "$P")" -c "select current_user || ' ' || inet_server_port()")
+  case "$r" in "$ROL "*) bien "options=endpoint=$ep: entra ($r)";; *) mal "options=endpoint=$ep: $r";; esac
+  r=$(pc_psql "$CLAVE" "$(conn "$POOL" "$ROL" "$P")" -c "select 1")
+  [ "$r" = 1 ] && bien "options=endpoint=${POOL%%.*}: por el pool" || mal "por el pool: $r"
+  local sin; sin=$(conn "$HOST" "$ROL" "$P" | sed 's/ options=[^ ]*//')
+  r=$(pc_psql "endpoint=$ep;$CLAVE" "$sin" -c "select 1")
+  [ "$r" = 1 ] && bien "endpoint=$ep;<clave> en la contraseña: entra" || mal "el endpoint en la contraseña: $r"
+  r=$(pc_psql "$CLAVE" "$sin" -c "select 1")
+  [ "$r" = 1 ] && mal "sin endpoint, entra" || bien "sin endpoint, no (${r:0:100})"
+  r=$(pc_psql "mala-$CLAVE" "$(conn "$HOST" "$ROL" "$P")" -c "select 1")
+  case "$r" in *authentication*|*password*) bien "con otra contraseña, no";; *) mal "con otra contraseña: $r";; esac
+  local P_A=$P ROL_A=$ROL CLAVE_A=$CLAVE; proyecto $B
+  r=$(pc_psql "$CLAVE_A" "$(conn "$HOST" "$ROL_A" "$P_A")" -c "select 1")
+  [ "$r" = 1 ] && mal "con lo de demo entra en el endpoint de victor" || bien "con lo de demo en el endpoint de victor, no (${r:0:80})"
+  proyecto $A
+  local v=() x
+  for _ in $(seq 1 10); do x=$(pc_ms "$CLAVE" "$(conn "$HOST" "$ROL" "$P")"); case "$x" in fallo*) mal "$x";; *) v+=("$x");; esac; done
+  local base=() y; for _ in 1 2 3; do y=$(ms); docker run --rm "$PG_IMAGEN" true; base+=($(( $(ms) - y ))); done
+  local b; b=$(percentil 0.5 "${base[@]}")
+  numero p5_tunel_conectar_p50_ms $(( $(percentil 0.5 "${v[@]}") - b ))
+  numero p5_tunel_conectar_p95_ms $(( $(percentil 0.95 "${v[@]}") - b ))
+  echo "    (con el balanceador, en la ventana 1: p50 418 ms)"
 }
 
 conectar() {
@@ -157,13 +189,15 @@ limpiar() {
     [ -s "$ORE_PG_TRABAJO/p5-$c" ] && { read -r p _ < "$ORE_PG_TRABAJO/p5-$c"; borra "$c" "$p"; rm -f "$ORE_PG_TRABAJO/p5-$c"; echo "  · $p borrado"; }
   done
   docker volume rm p5prod-npm >/dev/null 2>&1 || true
+  tunel_cierra
 }
 
 case "${1:-}" in
   todo) dns; conectar; pgbench_; pool150; http; ip; migrar;;
   dns|conectar|pool150|http|ip|migrar|limpiar) "$1";;
+  tunel) tunel_;;
   pgbench) pgbench_;;
-  *) sed -n '2,20p' "$0"; exit 64;;
+  *) sed -n '2,24p' "$0"; exit 64;;
 esac
 echo
 [ $fallos = 0 ] && echo "P5 (producción) ✓ ${1}" || { echo "P5 (producción) ✗ $fallos fallos"; exit 1; }

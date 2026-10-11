@@ -6,9 +6,13 @@
 #                         el nodo `pg` se libera: cuánto tarda (dormido cuesta 0); el LSN de /terminate
 #   p6.sh http-corto      [--dormir] consultas cortas por HTTP cada 20 s, 4 min: ¿cuentan como
 #                         actividad (sigue despierto) o se duerme con clientes? (el hallazgo de P6·7)
-#   p6.sh despertar [N]   [--dormir, pool 0] N despertares en frío desde internet: p50/p95
-#   p6.sh pool [N]        [--dormir, --pool-computos 2] N despertares desde el pool: p50/p95; el pool
-#                         repuesto; la VM del pool, con los límites del endpoint que la recibe
+#   p6.sh despertar [N]   [--dormir, pool 0] en frío, como un cliente: se conecta (psql por el túnel)
+#                         y esa conexión lo despierta. Dos casos que vive un cliente de verdad:
+#                           a · sin nodo: tras `p6.sh dormir`, el nodo de las VMs ya se liberó (el de
+#                               por la mañana): nodo nuevo + imagen + VM; se reintenta como un cliente
+#                           b · con nodo: N ciclos seguidos (3 por defecto), el nodo sigue: sólo la VM
+#   p6.sh pool [N]        [--dormir, --pool-computos 2] c · N despertares desde el pool (3): p50/p95;
+#                         el pool repuesto; la VM del pool, con los límites del endpoint que la recibe
 #   p6.sh limpiar
 PRUEBA=p6
 source "$(dirname "$0")/comun.sh"
@@ -90,8 +94,25 @@ despiertos() {   # despiertos N CLAVE_NUMERO → N ciclos de dormir y despertar 
 despertar() {
   pide_flag --dormir
   case "$(args86)" in *--pool-computos*) echo "✗ el pool está encendido: el frío se mide antes" >&2; exit 1;; esac
-  echo "── despertar en frío desde internet (VM de verdad), ${1:-10} veces"
-  despiertos "${1:-10}" p6_despertar_frio
+  proyecto
+  echo "── a · en frío sin nodo (un cliente por la mañana)"
+  if [ "$(observado "$P")" = dormido ] && [ "$(kc get neonvm --no-headers 2>/dev/null | grep -c .)" = 0 ]; then
+    # Como un cliente: si la conexión vence (el proxy no espera minutos), vuelve a conectar.
+    local antes; antes=$(nodos_pg); local t0; t0=$(ms) x n=0
+    while :; do
+      n=$((n+1)); x=$(pc_ms "$CLAVE" "$(conn "$HOST" "$ROL" "$P" 300)")
+      case "$x" in fallo*) echo "  · intento $n: ${x:0:120}"; [ $(( $(ms) - t0 )) -ge 900000 ] && break;; *) break;; esac
+    done
+    case "$x" in
+      fallo*) mal "a: no despertó en 15 min";;
+      *) numero p6_despertar_sin_nodo_ms $(( $(ms) - t0 )); numero p6_despertar_sin_nodo_intentos "$n"
+         echo "  · nodos pg: de $antes a $(nodos_pg) ($( [ "$(nodos_pg)" -gt "$antes" ] && echo 'con nodo nuevo' || echo 'cupo en un nodo que ya estaba: el caso a no se dio'))";;
+    esac
+  else
+    echo "  · no toca: hace falta dormido y sin VMs en ore-pg-computo (correr antes p6.sh dormir)"
+  fi
+  echo "── b · en frío con nodo, ${1:-3} veces"
+  despiertos "${1:-3}" p6_despertar_frio
 }
 
 pool() {
@@ -100,8 +121,8 @@ pool() {
   local t0; t0=$(date +%s)
   until [ "$(plano_sql "select count(*) from plano.pool_computo where estado = 'libre'")" -ge 2 ] || [ $(( $(date +%s) - t0 )) -ge 900 ]; do sleep 5; done
   numero p6_pool_libres_tras_s $(( $(date +%s) - t0 ))
-  echo "── despertar desde el pool, ${1:-10} veces"
-  despiertos "${1:-10}" p6_despertar_pool
+  echo "── c · despertar desde el pool, ${1:-3} veces"
+  despiertos "${1:-3}" p6_despertar_pool
   # La VM que sirve ahora salió del pool: ¿tiene los límites del endpoint o los genéricos (0,25–2)?
   proyecto
   local vm; vm=$(computo_de "$P")
@@ -111,12 +132,13 @@ pool() {
 
 limpiar() {
   [ -s "$ORE_PG_TRABAJO/p6-$A" ] && { read -r p _ < "$ORE_PG_TRABAJO/p6-$A"; borra "$A" "$p"; rm -f "$ORE_PG_TRABAJO/p6-$A"; echo "  · $p borrado"; }
+  tunel_cierra
 }
 
 case "${1:-}" in
   dormir|despertar|pool|limpiar) "$@";;
   http-corto) http_corto;;
-  *) sed -n '2,15p' "$0"; exit 64;;
+  *) sed -n '2,19p' "$0"; exit 64;;
 esac
 echo
 [ $fallos = 0 ] && echo "P6 (producción) ✓ ${1}" || { echo "P6 (producción) ✗ $fallos fallos"; exit 1; }

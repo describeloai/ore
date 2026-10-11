@@ -4,9 +4,14 @@
 # El reparto es el de un cliente de verdad:
 #   · el plano (crear proyectos, leerlos, cambiar sus ajustes) se habla COMO UNA CELDA: un pod de usar
 #     y tirar con la cuenta de su ore-serve y su token de Workload Identity (../celdas.sh, el de P4);
-#   · los datos entran DESDE ESTE PC, por internet: psql, pgbench y Node en contenedores de Docker,
-#     contra `ep-….europe-west1.pg.paladio.io:5432` con el certificado de Let's Encrypt (las CA del
-#     sistema: sslrootcert=system);
+#   · los datos entran DESDE ESTE PC, por internet: psql, pgbench y Node en contenedores de Docker.
+#     Desde 0060 C2 (b33ea828) la entrada no tiene IP pública: el TCP entra por el túnel de Cloudflare
+#     (`cloudflared access tcp --hostname pg.ontoforge.org`, en 127.0.0.1:$TUNEL_PUERTO de este PC;
+#     los contenedores llegan por host.docker.internal). Por el túnel no llega el nombre del endpoint
+#     (SNI): va en `options=endpoint=<id>`, como en Neon para los clientes sin SNI, y el TLS es de
+#     extremo a extremo con el proxy (sslmode=require: el certificado es de *.europe-west1.pg.paladio.io,
+#     no de host.docker.internal). El HTTP (driver serverless) entra por api.$DOMINIO, un custom
+#     hostname de Cloudflare for SaaS que da de alta 0060;
 #   · lo que hay que mirar por dentro (el estado de un endpoint, las VMs, los nodos) se LEE de la
 #     base de ore-postgres (en storcon-db) y con kubectl. Nada de esto escribe en el plano.
 #
@@ -20,6 +25,8 @@ DOMINIO=europe-west1.pg.paladio.io
 PG_IMAGEN=postgres:17-alpine
 NODE_IMAGEN=node:22-slim
 NUMEROS="${NUMEROS:-$ORE_PG_TRABAJO/numeros.jsonl}"
+TUNEL=pg.ontoforge.org
+TUNEL_PUERTO=${TUNEL_PUERTO:-15432}
 fallos=${fallos:-0}
 bien() { echo "  ✓ $*"; }
 mal() { echo "  ✗ $*"; fallos=$((fallos+1)); }
@@ -64,9 +71,20 @@ dormido_ep() {   # dormido_ep PROYECTO [SEGUNDOS] → espera a `dormido`
 nodos_pg() { kubectl get nodes -l cloud.google.com/gke-nodepool=pg --no-headers 2>/dev/null | grep -c .; }
 
 # ── los datos, desde este PC ────────────────────────────────────────────────────────────────────
-conn() { echo "host=$1 port=5432 user=$2 dbname=$3 sslmode=verify-full sslrootcert=system connect_timeout=${4:-30}"; }
+tunel() {   # deja `cloudflared access tcp` escuchando en 127.0.0.1:$TUNEL_PUERTO (uno para todas las pruebas)
+  local pid; pid=$(cat "$ORE_PG_TRABAJO/tunel.pid" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return
+  cloudflared access tcp --hostname "$TUNEL" --url "127.0.0.1:$TUNEL_PUERTO" > "$ORE_PG_TRABAJO/tunel.log" 2>&1 &
+  echo $! > "$ORE_PG_TRABAJO/tunel.pid"; sleep 2
+  kill -0 $! 2>/dev/null || { echo "✗ cloudflared no arranca: $(tail -3 "$ORE_PG_TRABAJO/tunel.log")" >&2; return 1; }
+}
+tunel_cierra() { local pid; pid=$(cat "$ORE_PG_TRABAJO/tunel.pid" 2>/dev/null) && kill "$pid" 2>/dev/null; rm -f "$ORE_PG_TRABAJO/tunel.pid"; }
+# conn HOST ROL BASE [SEGUNDOS]: el endpoint es la primera etiqueta del host (ep-…, o ep-…-pooler para
+# el pool), y va en options; sslsni=0 para que el proxy no vea host.docker.internal como nombre.
+conn() { echo "host=host.docker.internal port=$TUNEL_PUERTO user=$2 dbname=$3 sslmode=require sslsni=0 options=endpoint=${1%%.*} connect_timeout=${4:-30}"; }
 pc_psql() {   # pc_psql CLAVE CONNINFO [args psql…] → lo que contesta psql (la última línea)
   local clave=$1 ci=$2; shift 2
+  tunel >&2 || return 1
   docker run --rm -e PGPASSWORD="$clave" "$PG_IMAGEN" psql "$ci" -v ON_ERROR_STOP=1 -Atq "$@" 2>&1 | tail -1
 }
 pc_ms() {   # pc_ms CLAVE CONNINFO → ms de conectar y contestar `select 1` (o «fallo:…»)
@@ -75,6 +93,7 @@ pc_ms() {   # pc_ms CLAVE CONNINFO → ms de conectar y contestar `select 1` (o 
 }
 pc_pgbench() {   # pc_pgbench CLAVE CONNINFO [args pgbench…]
   local clave=$1 ci=$2; shift 2
+  tunel >&2 || return 1
   docker run --rm -e PGPASSWORD="$clave" "$PG_IMAGEN" pgbench "$@" "$ci" 2>&1
 }
 percentil() { python -c 'import sys
