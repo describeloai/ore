@@ -533,8 +533,8 @@ impl Servidor {
                     403,
                     "media/no-declarada",
                     format!(
-                        "`{corta}` no está en los inputs de `{transform}` ({}): un transform sólo lee \
-                         lo que declara",
+                        "`{corta}` is not in the inputs of `{transform}` ({}): a transform only reads \
+                         what it declares",
                         inputs.join(", ")
                     ),
                 );

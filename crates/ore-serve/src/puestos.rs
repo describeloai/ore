@@ -2686,7 +2686,7 @@ impl Servidor {
             return Respuesta::error(
                 403,
                 format!(
-                    "`{corta}` no está en los inputs de `{}` ({}): un transform sólo lee lo que declara",
+                    "`{corta}` is not in the inputs of `{}` ({}): a transform only reads what it declares",
                     t.nombre,
                     t.inputs.join(", ")
                 ),

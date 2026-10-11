@@ -250,5 +250,30 @@ aquí —no en functions, models ni analytics—, y Run ya no es lo que cuenta.
 | lo mismo por JShell (kernel + primera celda + el fichero) | 1,2 + 1,1 + 1,8 s | — |
 
 JShell da la línea de su snippet (`#36:1`), javac la del fichero: el arnés va por javac. La capa entra
-por `capa_para`, como en Python. Queda la prueba de fuego en vivo —Build y Preview desde la consola—,
-que exige la sesión de una persona.
+por `capa_para`, como en Python.
+
+**JT · en vivo (2026-10-11), desde la consola, en `victor`** (repositorio `javatransformsv1`, tablas
+`bq.ventas.*`, salidas en `sandbox`):
+
+| prueba | resultado |
+|---|---|
+| `VentasPorPais` (join + agregado por `sql()`) | Preview y Build, 5 filas |
+| `ClientesResumen` (la transformación en Java, `over()` y `List<Map>`) | Preview y Build, 5 filas |
+| `SinteticaPorDia` (2 M filas de `ore_e2e_sintetica`) | Build en 13 s, 24 filas |
+| 4a · sin `;` | `syntax · CompilationError: ';' expected`, `VentasPorPais.java`, línea 19 |
+| 4b · leer `bq.ventas.clientes` sin declararlo | `runtime · SecurityException`, línea 13 |
+
+Cuatro huecos que sólo se vieron aquí, cerrados el mismo día:
+- **El build compilaba el paquete, no el repositorio** (`5eb66ebd`): una plantilla v6 hermana (un
+  snippet de JShell) rompía con «unnamed classes are a preview feature»; dos `Example` sin
+  `package` habrían dado «duplicate class». `fuentes_java` toma el repositorio registrado.
+- **El decimal de una `List<Map>` salía del primer valor** (`26c353e6`): `0.00` daba
+  `decimal(2, 2)` y un `12.50` rompía el `write()`. Ahora, de todos, como pyarrow.
+- **La sesión JVM no se veía en la consola** (consola `5091da5`): el Preview la abría sin
+  indicador, y una imagen nueva de `puesto-jvm` no le llegaba. Se conecta sola con un `.java` de
+  `transforms-java` y ofrece «Restart session», como Python.
+- **El 403 del techo, en español** desde `ore-serve` (`puestos.rs`, `medios.rs`): en inglés, con
+  las palabras de los SDK.
+
+Queda una decisión de producto, igual para Python y Java: el panel del Build dice qué escribió
+(`… · built from … · N rows`) y no enseña filas; el Preview sí.
