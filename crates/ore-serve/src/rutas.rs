@@ -186,6 +186,11 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             | ["colecciones", _, _, _, "items", "resolver"]
             // 0049 B2·2: la media por su puerta —listar, mirar y firmar es LEER—.
             | ["media", _, _, _, "items" | "item" | "urls" | "content" | "derivations"]
+            // 0049 H4: `verify` también es LEER —el servidor lee los bytes y los
+            //   compara con su digest—. Faltaba aquí (estaba en `no_escribe`): un
+            //   build que verificaba era 403 y un Preview no (medido en victor,
+            //   2026-10-11, PruebasDeMedia.java).
+            | ["media", _, _, _, "verify"]
             // 0049 B4b·2: escribir una colección es escribir, y se decide en
             // la ruta (escrita, la clase, el `output` del transform).
             | ["media", _, _, _, "transactions"]
@@ -197,7 +202,7 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
     Some(Respuesta::error(
         403,
         format!(
-            "desde un puesto sólo entran los verbos —leer, escribir, declarar— por `/puestos/{{id}}/datos`, `/v1`, `/documentos` y `/conceptos`; `{} /{}` no",
+            "from a session only the verbs get through —read, write, declare— by `/puestos/{{id}}/datos`, `/v1`, `/documentos` and `/conceptos`; `{} /{}` does not",
             p.metodo,
             seg.join("/")
         ),
@@ -4080,6 +4085,53 @@ mod el_puntero_en_la_fuente {
         assert!(
             razon < 12.0,
             "×4 objetos costó ×{razon:.1} ({poco:?} → {mucho:?}): el esquema de una fuente volvió a ser cuadrático"
+        );
+    }
+}
+
+#[cfg(test)]
+mod la_puerta_del_agente {
+    use super::*;
+
+    fn agente() -> Identidad {
+        Identidad {
+            persona: "agente:puesto/p1/a1".into(),
+            agente: None,
+            correo: None,
+            nombre: None,
+            tipo: Some("agente".into()),
+            usuario: None,
+        }
+    }
+
+    fn post(ruta: &str) -> Option<Respuesta> {
+        let p = Peticion {
+            metodo: "POST".into(),
+            ruta: ruta.into(),
+            cabeceras: Default::default(),
+            cuerpo: String::new(),
+            consulta: Default::default(),
+        };
+        let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
+        puerta_del_agente(&p, &agente(), &seg)
+    }
+
+    /// 0049 H4 · Verificar la media es leer: un build entra, como un Preview.
+    #[test]
+    fn verify_entra_y_el_gobierno_no() {
+        for bien in [
+            "/media/ventas/archivo/contratos/verify",
+            "/media/ventas/archivo/contratos/urls",
+            "/media/ventas/archivo/contratos/transactions",
+        ] {
+            assert!(post(bien).is_none(), "{bien}");
+        }
+        let r = post("/arbol/conduits.yaml").expect("el gobierno no entra desde un puesto");
+        assert_eq!(r.codigo, 403);
+        assert!(
+            r.cuerpo.jcs().contains("only the verbs get through"),
+            "{}",
+            r.cuerpo.jcs()
         );
     }
 }
