@@ -4,7 +4,7 @@
 //! Lo de todos los almacenes de objetos vive en `ore-read-objetos`; aquí queda
 //! lo de Azure: leer su URL (`az://cuenta/contenedor/prefijo?tenant=…&cliente=…`,
 //! la app de Entra del cliente que confía en la cuenta de Google de esta celda,
-//! D-O3), probar qué deja hacer de verdad (`check`, `acceso.rs`), explorar sus
+//! D-O3; o `?publico=1`, un contenedor público sin identidad, D-O6), probar qué deja hacer de verdad (`check`, `acceso.rs`), explorar sus
 //! carpetas y clasificar lo que contesta. El contenedor es su
 //! [`ore_objetos::Origen`] por `ore_azure::Azure`.
 //!
@@ -67,6 +67,8 @@ impl Proveedor for Microsoft {
                 "AuthorizationFailure",
                 "AuthenticationFailed",
                 "InvalidAuthenticationInfo",
+                "NoAuthenticationInformation",
+                "is not public",
                 "AADSTS",
                 "Entra",
                 "credencial federada",
@@ -112,6 +114,13 @@ mod pruebas {
         assert_eq!(
             c("could not read `a.pdf`: 404 BlobNotFound The specified blob does not exist."),
             Codigo::Objeto
+        );
+        // D-O6: un contenedor que no es público es de credencial, no de objeto.
+        assert_eq!(
+            c(
+                "could not list `x/`: 401 NoAuthenticationInformation Server failed to authenticate the request."
+            ),
+            Codigo::Credencial
         );
         assert_eq!(
             c("Azure is not responding: Connection refused"),

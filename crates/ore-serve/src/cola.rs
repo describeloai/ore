@@ -405,7 +405,8 @@ pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
     }
     // ⭐ ADR 0061 O3·3 · Un contenedor de Azure se lee con la cuenta de la celda
     //   federada en la app de Entra del cliente: la URL nombra la app (`tenant`,
-    //   `cliente`) y nada más —ni `endpoint`, ni una SAS, ni una clave—.
+    //   `cliente`) y nada más —ni `endpoint`, ni una SAS, ni una clave—. O es
+    //   público (D-O6): `publico=1`, sin app y sin identidad.
     if let Some(resto) = url.strip_prefix("az://") {
         let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
         if camino.contains('@') || url.contains('#') {
@@ -419,13 +420,21 @@ pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
             .filter(|p| !p.is_empty())
             .map(|p| p.split_once('=').map_or(p, |(k, _)| k))
             .collect();
-        if let Some(k) = claves.iter().find(|k| !matches!(**k, "tenant" | "cliente")) {
+        if let Some(k) = claves
+            .iter()
+            .find(|k| !matches!(**k, "tenant" | "cliente" | "publico"))
+        {
             return Err(format!(
-                "la URL de Azure sólo admite `tenant` y `cliente`, no `{k}`: no se comprueba otra cosa"
+                "an Azure URL only takes `tenant` and `cliente` (or `publico=1`), not `{k}`: nothing else is checked"
             ));
         }
-        if !(claves.contains(&"tenant") && claves.contains(&"cliente")) {
-            return Err("la URL de Azure nombra la app de Entra: `tenant` y `cliente`".into());
+        let app = claves.contains(&"tenant") && claves.contains(&"cliente");
+        let publico = consulta.split('&').any(|p| p == "publico=1");
+        if app == publico || (publico && claves.len() != 1) {
+            return Err(
+                "an Azure URL names the Entra app (`tenant` and `cliente`), or is `publico=1` for a public container"
+                    .into(),
+            );
         }
         return Ok("azure");
     }
@@ -951,6 +960,14 @@ mod prueba {
             Ok("azure")
         );
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t").is_err());
+        // D-O6: un contenedor público, sin app; no se mezcla con una
+        assert_eq!(
+            url_sin_secreto("az://azureopendatastorage/mnist/?publico=1"),
+            Ok("azure")
+        );
+        assert!(url_sin_secreto("az://cuenta/cubo?publico=1&tenant=t&cliente=c").is_err());
+        assert!(url_sin_secreto("az://cuenta/cubo?publico=1&publico=1").is_err());
+        assert!(url_sin_secreto("az://cuenta/cubo?publico=0").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&sig=x").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&endpoint=https://e").is_err());
         // ADR 0061 O5·3: SharePoint, igual.

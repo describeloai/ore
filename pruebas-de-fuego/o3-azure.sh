@@ -21,6 +21,10 @@
 #      por bloques sin él), entero, rango y por el final, 412, la guarda del
 #      `versionid` ignorado, la SAS de delegación bajada y manipulada
 #   8  la virtual por `ore-medios` (`tests/laboratorio_azure.rs`)
+#   9  un contenedor público (D-O6, `?publico=1`): check sin identidad (nivel
+#      `container`), catálogo, versiones y bajar; con un token basura en el
+#      entorno, que no debe viajar (si viajara, Azurite lo rechaza); y el
+#      contenedor privado leído como público se dice «no es público»
 #
 # Lo que Azurite no sabe —el versionado, `sr=bv`, ADLS Gen2, el canje con
 # Entra— queda para Azure de verdad (deuda temporal en el ADR).
@@ -79,7 +83,7 @@ if [ "${1:-}" = "--dentro" ]; then
   [ "$r" = "(True, 'etag', ['firmar', 'identidad', 'leer', 'listar', 'versiones'], 3)" ] \
     && dice "1 check: los cinco pasos, fija por ETag (sin versionado), 3 carpetas" || falla "1 check: $r $(cat $W/check.json)"
   printf '%s' "{\"url\":\"${U/cubo/otro}\",\"objeto\":\"\"}" | $B check > $W/c2.json 2>/dev/null
-  grep -q '"porque":"el contenedor `otro` no existe' $W/c2.json && dice "1 check: un contenedor que no existe se dice así, no como un rol que falta" || falla "1 check otro: $(cat $W/c2.json)"
+  grep -q '"porque":"the container `otro` does not exist' $W/c2.json && dice "1 check: un contenedor que no existe se dice así, no como un rol que falta" || falla "1 check otro: $(cat $W/c2.json)"
 
   # 2 el token es al portador
   printf '%s' "{\"url\":\"$U\",\"objeto\":\"\"}" | env -u ORE_AZURE_LABORATORIO $B check > /dev/null 2> $W/e
@@ -118,6 +122,23 @@ if [ "${1:-}" = "--dentro" ]; then
   r=$(ORE_LAB_AZURE="$U" cargo test --quiet -p ore-medios --test laboratorio_azure -- --nocapture 2>&1)
   echo "$r" | grep -q "test result: ok. 1 passed" && dice "8 la virtual por ore-medios: rango, por el final, entero con md5, cambiado, sin URL (D-O1)" \
     || falla "8 ore-medios: $(echo "$r" | grep -E 'panicked|FAILED|error' | head -4)"
+  # 9 D-O6: un contenedor público, sin identidad. El token del entorno es
+  #   basura: si viajara, Azurite contestaría 401 y todo fallaría.
+  az_ PUT 'abierto?restype=container' -H 'x-ms-blob-public-access: container' || falla "9 el contenedor público no se crea"
+  curl -sf -o /dev/null -X PUT -H "authorization: Bearer $ORE_AZURE_TOKEN" -H 'x-ms-version: 2023-11-03'     -H 'x-ms-blob-type: BlockBlob' --data-binary "@$M/datos/ventas/ventas.csv" "$EP/$CUENTA/abierto/datos/ventas.csv" || falla "9 no se sube"
+  P="az://$CUENTA/abierto/?publico=1&endpoint=$EP"
+  anon() { env ORE_AZURE_TOKEN=basura.basura.basura "$@"; }
+  printf '%s' "{\"url\":\"$P\",\"objeto\":\"\"}" | anon $B check > $W/p.json 2>$W/e
+  r=$(campo $W/p.json 'd["ok"], d["como"], d["fija"], sorted(k for k, p in d["permisos"].items() if p.get("ok")), d["permisos"]["firmar"].get("probado")' 2>/dev/null)
+  [ "$r" = "(True, 'publico', 'etag', ['leer', 'listar', 'publico', 'versiones'], False)" ]     && dice "9 check público: nivel container, listar, leer, versiones; firmar sin probar" || falla "9 check público: $r $(cat $W/p.json $W/e)"
+  printf '%s' "{\"url\":\"az://$CUENTA/cubo/?publico=1&endpoint=$EP\",\"objeto\":\"\"}" | anon $B check > $W/p2.json 2>/dev/null
+  grep -q '"ok":false' $W/p2.json && grep -q 'is not public' $W/p2.json     && dice "9 el privado leído como público: «is not public», no un rol que falta" || falla "9 privado: $(cat $W/p2.json)"
+  printf '%s' "$P" | anon $B catalogo f > $W/pc.json 2>/dev/null
+  n=$(campo $W/pc.json 'len(d["tables"])' 2>/dev/null); [ "$n" = 1 ] && dice "9 catálogo público: 1 tabla" || falla "9 catálogo: $(head -c 300 $W/pc.json)"
+  printf '%s' "{\"url\":\"$P\",\"objeto\":\"datos/\",\"patrones\":[\"*.csv\"],\"conocidos\":[]}" | anon $B versiones > $W/pv.json 2>$W/e
+  python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))["items"][0]; print(json.dumps({"url":sys.argv[2],"hilos":1,"items":[{k:i[k] for k in ("clave","version","huella","tamano")}]}))' $W/pv.json "$P" > $W/pp.json 2>/dev/null
+  anon $B bajar < $W/pp.json > $W/pb.bin 2>/dev/null
+  grep -aq '"fin":"ok"' $W/pb.bin && grep -aq '10.5' $W/pb.bin && dice "9 bajar del público: cotejado con su md5" || falla "9 bajar: $(head -c 300 $W/pb.bin) $(cat $W/e)"
   exit $fallos
 fi
 
@@ -139,7 +160,7 @@ N=$(date +%s)
 TOKEN="$(printf '{"alg":"RS256","typ":"JWT"}' | b64).$(printf '{"aud":"https://storage.azure.com","iss":"https://sts.windows.net/ab1f708d-50f6-404c-a006-d71b2ac7a606/","iat":%d,"nbf":%d,"exp":%d,"oid":"00000000-0000-0000-0000-000000000001","tid":"ab1f708d-50f6-404c-a006-d71b2ac7a606"}' $((N-60)) $((N-60)) $((N+3600)) | b64).laboratorio"
 echo "un contenedor de Azure Blob (laboratorio: Azurite por HTTPS, sin versionado)"
 docker run --rm --network $RED -v "$(cd "$RAIZ" && (pwd -W 2>/dev/null || pwd)):/w" -v o3-cert:/c \
-  -v ore-cargo-registry:/usr/local/cargo/registry -v ore-pruebas-t:/tt -e CARGO_TARGET_DIR=/tt/main \
+  -v ore-cargo-registry:/usr/local/cargo/registry -v ore-pruebas-t:/tt -e CARGO_TARGET_DIR=${ORE_LAB_TARGET:-/tt/main} \
   -e ORE_AZURE_TOKEN="$TOKEN" -e ORE_AZURE_LABORATORIO=1 -e EP=$EP -e CUENTA=$CUENTA \
   -w /w "$RUST_IMG" bash pruebas-de-fuego/o3-azure.sh --dentro 2>&1 | grep -v '^info:\|^warn:'
 fallos=${PIPESTATUS[0]}

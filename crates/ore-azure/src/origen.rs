@@ -225,7 +225,7 @@ impl Origen for Azure {
 
     /// Una SAS de delegación fijada a la versión (`sr=bv`). De un blob que
     /// sólo se fija por su ETag, ninguna: una URL no lleva `If-Match` (D-O1),
-    /// y se abre por `content`.
+    /// y se abre por `content`. De un contenedor público, tampoco (D-O6).
     fn firmar(
         &self,
         clave: &str,
@@ -234,7 +234,9 @@ impl Origen for Azure {
         disposicion: &str,
         segundos: u64,
     ) -> Result<Option<String>, String> {
-        if version.is_empty() || etag_de(version).is_some() {
+        // Un contenedor público (D-O6) no tiene con qué firmar: sin identidad no
+        // hay clave de delegación.
+        if self.es_publico() || version.is_empty() || etag_de(version).is_some() {
             return Ok(None);
         }
         Azure::firmar(self, clave, Some(version), tipo, disposicion, segundos).map(Some)

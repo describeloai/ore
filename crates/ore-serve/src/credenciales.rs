@@ -514,9 +514,25 @@ fn azure(driver: Option<String>, medios: Option<String>) -> Json {
     let no = |modo: &str, porque: &str| {
         Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
     };
+    // ⭐ D-O6 · Un contenedor público (Azure Open Datasets, o lo que un socio
+    //   publica): sin identidad, sin pasos, sin URLs firmadas.
+    let publico = Json::obj([
+        ("modo", Json::s("publico")),
+        ("recomendado", Json::Bool(false)),
+        (
+            "dice",
+            Json::s(
+                "A public container (public access level `container`) is read without identity:                  nothing to create in your tenant, and no token is ever sent. Its items open                  through ORE, without signed URLs.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s("az://<cuenta>/<contenedor>[/<prefijo>]?publico=1"),
+        ),
+    ]);
     Json::obj([
         ("tipo", Json::s("azure")),
-        ("modos", Json::Arr(vec![Json::obj(m)])),
+        ("modos", Json::Arr(vec![Json::obj(m), publico])),
         (
             "noAdmitidos",
             Json::Arr(vec![
@@ -932,6 +948,8 @@ mod tests {
             r#""modo":"clave-cuenta""#,
             r#""modo":"sas""#,
             "tenant=<id del tenant>&cliente=<id de la app>",
+            r#""modo":"publico""#,
+            "?publico=1",
         ] {
             assert!(j.contains(x), "{x}: {j}");
         }

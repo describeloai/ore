@@ -18,15 +18,24 @@
 //! ítems (se abren por `content`). Dos cosas no son un rol que falta y se dicen
 //! como lo que son: un contenedor (o una cuenta) que no existe, y el firewall
 //! de red de la cuenta (`AuthorizationFailure`).
+//!
+//! ⭐ D-O6 · **Un contenedor público** (`?publico=1`) no tiene identidad que
+//! probar: su primer paso es `publico`, el nivel de acceso que el contenedor
+//! dice sin identidad (`container` deja listar; `blob`, sólo leer blobs
+//! sueltos, y ORE necesita listar). Un contenedor privado y uno que no existe
+//! contestan lo mismo sin identidad (`401 NoAuthenticationInformation`), y así
+//! se dice. `firmar` no se prueba: sin identidad no hay clave de delegación.
 
 use ore_azure::{Azure, Fallo, Meta};
 use ore_core::json::Json;
 
 const LECTOR: &str = "Storage Blob Data Reader";
 const DELEGADOR: &str = "Storage Blob Delegator";
+const PUBLICO: &str = "public access level `container` (anonymous read and list)";
 /// Los motivos que no son un rol: se dicen tal cual.
-const NO_ESTA: &str = "no existe";
-const RED: &str = "la cuenta no acepta";
+const NO_ESTA: &str = "does not exist";
+const RED: &str = "the account does not accept";
+const NO_PUBLICO: &str = "is not public";
 
 struct Permiso {
     nombre: &'static str,
@@ -50,18 +59,45 @@ fn explicar(a: &Azure, f: &Fallo) -> String {
     let (cuenta, contenedor) = (&a.fuente.cuenta, &a.fuente.contenedor);
     if f.estado == 404 && f.motivo().contains("ContainerNotFound") {
         return format!(
-            "el contenedor `{contenedor}` {NO_ESTA} en la cuenta `{cuenta}` (404): ¿está bien escrito?"
+            "the container `{contenedor}` {NO_ESTA} in the account `{cuenta}` (404): is it spelled right?"
         );
     }
     if f.estado == 0 && (f.cuerpo.contains("dns") || f.cuerpo.contains("Dns")) {
         return format!(
-            "la cuenta `{cuenta}` {NO_ESTA} (su nombre no resuelve): ¿está bien escrito?"
+            "the account `{cuenta}` {NO_ESTA} (its name does not resolve): is it spelled right?"
         );
+    }
+    // D-O6: sin identidad, Azure no distingue un contenedor privado de uno que
+    // no existe (`401`); Azurite contesta `403 AuthorizationFailure`, el mismo
+    // código que el firewall, así que sin identidad se dicen las dos. Una
+    // cuenta con el acceso público apagado contesta `409`.
+    if a.es_publico() {
+        let m = f.motivo();
+        if f.estado == 409 && m.contains("PublicAccessNotPermitted") {
+            return format!(
+                "the account `{cuenta}` {NO_PUBLICO}: it does not allow public access \
+                 (AllowBlobPublicAccess=false), so its containers are read through an Entra app \
+                 (`tenant` and `cliente`)"
+            );
+        }
+        if f.estado == 401 && m.contains("NoAuthenticationInformation") {
+            return format!(
+                "the container `{contenedor}` of `{cuenta}` {NO_PUBLICO}, or does not exist \
+                 (without identity Azure answers the same to both): a private container is read \
+                 through an Entra app (`tenant` and `cliente`)"
+            );
+        }
+        if f.estado == 403 && m.contains("AuthorizationFailure") {
+            return format!(
+                "the container `{contenedor}` of `{cuenta}` {NO_PUBLICO}, or the account's network \
+                 firewall does not let this cell in ({m})"
+            );
+        }
     }
     if f.estado == 403 && f.motivo().contains("AuthorizationFailure") {
         return format!(
-            "{RED} peticiones desde aquí ({}): su firewall de red (o un private endpoint) no deja \
-             entrar a esta celda; no es un rol que falte",
+            "{RED} requests from here ({}): its network firewall (or a private endpoint) does not \
+             let this cell in; it is not a missing role",
             f.motivo()
         );
     }
@@ -69,7 +105,40 @@ fn explicar(a: &Azure, f: &Fallo) -> String {
 }
 
 fn especial(m: &str) -> bool {
-    m.contains(&format!(" {NO_ESTA} ")) || m.starts_with(RED)
+    m.contains(&format!(" {NO_ESTA} ")) || m.starts_with(RED) || m.contains(NO_PUBLICO)
+}
+
+/// D-O6 · El primer paso de un contenedor público: su nivel de acceso.
+fn publico(a: &Azure) -> Permiso {
+    let f = &a.fuente;
+    let (ok, porque) = match a.nivel_publico() {
+        Ok(Some(n)) if n == "container" => (true, None),
+        Ok(Some(n)) if n == "blob" => (
+            false,
+            Some(format!(
+                "the container `{}` {NO_PUBLICO} for listing: its level is `blob` (only individual \
+                 blobs can be read anonymously), and ORE needs to list it",
+                f.contenedor
+            )),
+        ),
+        Ok(n) => (
+            false,
+            Some(format!(
+                "the container `{}` {NO_PUBLICO} (public access: `{}`)",
+                f.contenedor,
+                n.as_deref().unwrap_or("none")
+            )),
+        ),
+        Err(e) => (false, Some(explicar(a, &e))),
+    };
+    Permiso {
+        nombre: "publico",
+        rol: PUBLICO.into(),
+        sobre: format!("{}/{}", f.cuenta, f.contenedor),
+        ok: Some(ok),
+        porque,
+        decide: true,
+    }
 }
 
 pub fn comprobar(a: &Azure) -> String {
@@ -78,20 +147,30 @@ pub fn comprobar(a: &Azure) -> String {
     let mut permisos = Vec::new();
     let mut prefijos: Vec<String> = Vec::new();
     let mut fija = "version";
+    // Un contenedor público no tiene rol que conceder: lo que se prueba es su
+    // nivel de acceso.
+    let lector = if a.es_publico() { PUBLICO } else { LECTOR };
 
-    let identidad = a.token();
-    permisos.push(Permiso {
-        nombre: "identidad",
-        rol: "federated identity credential (issuer https://accounts.google.com, subject = la \
-              cuenta de esta celda)"
-            .into(),
-        sobre: format!("app {} del tenant {}", f.cliente, f.tenant),
-        ok: Some(identidad.is_ok()),
-        porque: identidad.as_ref().err().cloned(),
-        decide: true,
-    });
+    let entrada = match &f.app {
+        None => publico(a),
+        Some(app) => {
+            let identidad = a.token();
+            Permiso {
+                nombre: "identidad",
+                rol: "federated identity credential (issuer https://accounts.google.com, subject \
+                      = this cell's account)"
+                    .into(),
+                sobre: format!("app {} of tenant {}", app.cliente, app.tenant),
+                ok: Some(identidad.is_ok()),
+                porque: identidad.err(),
+                decide: true,
+            }
+        }
+    };
+    let dentro = entrada.ok == Some(true);
+    permisos.push(entrada);
 
-    if identidad.is_ok() {
+    if dentro {
         let (lista, primera) = match a.listar(&f.prefijo, false, Some("/"), Some(50)) {
             Ok((metas, ps)) => {
                 prefijos = ps;
@@ -110,7 +189,7 @@ pub fn comprobar(a: &Azure) -> String {
         let listo = lista.is_ok();
         permisos.push(Permiso {
             nombre: "listar",
-            rol: LECTOR.into(),
+            rol: lector.into(),
             sobre: contenedor.clone(),
             ok: Some(listo),
             porque: lista.err(),
@@ -120,9 +199,12 @@ pub fn comprobar(a: &Azure) -> String {
         let (ok, porque) = match &primera {
             None if listo => (
                 None,
-                Some("no hay un blob visible bajo el prefijo con el que probar".to_string()),
+                Some("there is no visible blob under the prefix to test with".to_string()),
             ),
-            None => (None, Some("sin listar no hay con qué probar".to_string())),
+            None => (
+                None,
+                Some("without listing there is nothing to test with".to_string()),
+            ),
             Some(k) => match a.meta(k, None) {
                 Ok(_) => (Some(true), None),
                 Err(e) => (Some(false), Some(explicar(a, &e))),
@@ -130,7 +212,7 @@ pub fn comprobar(a: &Azure) -> String {
         };
         permisos.push(Permiso {
             nombre: "leer",
-            rol: LECTOR.into(),
+            rol: lector.into(),
             sobre: contenedor.clone(),
             ok,
             porque,
@@ -144,9 +226,9 @@ pub fn comprobar(a: &Azure) -> String {
                 (
                     Some(true),
                     Some(
-                        "la cuenta no versiona (o es ADLS Gen2, que no puede): cada blob se fija \
-                         por su ETag, lo que cambió entre listar y leer es un 412, y sus ítems no \
-                         dan URL firmada (se abren por `content`)"
+                        "the account does not version (or is ADLS Gen2, which cannot): each blob \
+                         is pinned by its ETag, a change between listing and reading is a 412, \
+                         and its items give no signed URL (they open through `content`)"
                             .to_string(),
                     ),
                 )
@@ -155,23 +237,35 @@ pub fn comprobar(a: &Azure) -> String {
         };
         permisos.push(Permiso {
             nombre: "versiones",
-            rol: LECTOR.into(),
+            rol: lector.into(),
             sobre: contenedor.clone(),
             ok,
             porque,
             decide: false,
         });
 
-        let (ok, porque) = match a.clave_de_delegacion(60) {
-            Ok(_) => (Some(true), None),
-            Err(e) => (
-                Some(false),
-                Some(format!(
-                    "{}: sin la clave de delegación no hay URLs firmadas de los ítems (se abren \
-                     por `content`); se cataloga y se copia igual",
-                    explicar(a, &e)
-                )),
-            ),
+        let (ok, porque) = if a.es_publico() {
+            (
+                None,
+                Some(
+                    "a public container is read without identity: there is no user delegation \
+                     key, so its items give no signed URL (they open through `content`); it is \
+                     catalogued and copied the same"
+                        .to_string(),
+                ),
+            )
+        } else {
+            match a.clave_de_delegacion(60) {
+                Ok(_) => (Some(true), None),
+                Err(e) => (
+                    Some(false),
+                    Some(format!(
+                        "{}: without the user delegation key the items give no signed URL (they \
+                         open through `content`); it is catalogued and copied the same",
+                        explicar(a, &e)
+                    )),
+                ),
+            }
         };
         permisos.push(Permiso {
             nombre: "firmar",
@@ -187,12 +281,12 @@ pub fn comprobar(a: &Azure) -> String {
     let ok = fallo.is_none();
     let porque = fallo.map(|p| match p.porque.as_deref() {
         Some(m) if especial(m) => m.to_string(),
-        Some(m) if p.nombre == "identidad" => format!("no hay identidad con la que leer: {m}"),
+        Some(m) if p.nombre == "identidad" => format!("there is no identity to read with: {m}"),
         m => format!(
-            "falta `{}` sobre `{}`: {}",
+            "missing `{}` on `{}`: {}",
             p.rol,
             p.sobre,
-            m.unwrap_or("denegado")
+            m.unwrap_or("denied")
         ),
     });
     let permisos = Json::Obj(
@@ -211,10 +305,15 @@ pub fn comprobar(a: &Azure) -> String {
             })
             .collect(),
     );
+    let como = if a.es_publico() {
+        "publico"
+    } else {
+        "probando"
+    };
     let mut o = vec![
         ("ok", Json::Bool(ok)),
         ("fija", Json::s(fija)),
-        ("como", Json::s("probando")),
+        ("como", Json::s(como)),
         ("permisos", permisos),
         (
             "prefijos",
@@ -233,7 +332,7 @@ pub fn explorar(a: &Azure) -> Result<String, String> {
     let f = &a.fuente;
     let (metas, prefijos) = a
         .listar(&f.prefijo, false, Some("/"), Some(1000))
-        .map_err(|e| format!("no se pudo listar: {}", explicar(a, &e)))?;
+        .map_err(|e| format!("could not list: {}", explicar(a, &e)))?;
     let mut contiene: Vec<Json> = prefijos
         .iter()
         .map(|pr| {
@@ -246,8 +345,8 @@ pub fn explorar(a: &Azure) -> Result<String, String> {
     let sueltos = metas.iter().filter(|m| !m.nombre.ends_with('/')).count();
     if contiene.is_empty() && sueltos == 0 {
         return Err(format!(
-            "`{}` no tiene nada visible con esta identidad. Una lista vacía tendría el mismo \
-             aspecto que un contenedor al que no se llega, así que se dice",
+            "`{}` has nothing visible with this identity. An empty list would look the same as a \
+             container that cannot be reached, so it is said",
             ore_azure::publica(f, &f.prefijo)
         ));
     }
@@ -296,5 +395,28 @@ mod pruebas {
             !especial(&m) && m.contains("AuthorizationPermissionMismatch"),
             "{m}"
         );
+        // D-O6: sin identidad, un contenedor privado y uno que no existe son
+        // lo mismo, y se dice; con identidad, un 401 es lo que es.
+        let no = f(
+            401,
+            "<Error><Code>NoAuthenticationInformation</Code></Error>",
+        );
+        let p = Azure::de_url("az://cuenta/cubo?publico=1").unwrap();
+        let m = explicar(&p, &no);
+        assert!(
+            especial(&m) && m.contains("is not public") && m.contains("`cubo`"),
+            "{m}"
+        );
+        assert!(!especial(&explicar(&a, &no)));
+        let m = explicar(
+            &p,
+            &f(403, "<Error><Code>AuthorizationFailure</Code></Error>"),
+        );
+        assert!(m.contains("is not public") && m.contains("firewall"), "{m}");
+        let m = explicar(
+            &p,
+            &f(409, "<Error><Code>PublicAccessNotPermitted</Code></Error>"),
+        );
+        assert!(especial(&m) && m.contains("AllowBlobPublicAccess"), "{m}");
     }
 }

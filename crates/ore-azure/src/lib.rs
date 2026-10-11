@@ -19,6 +19,18 @@
 //! poder dar otros bytes. Sin versionado —y en ADLS Gen2, que no lo tiene— la
 //! versión es el ETag (`etag:…`, D-O1).
 //!
+//! ⭐ ADR 0061 D-O6 · **Un contenedor público** (`x-ms-blob-public-access:
+//! container`, como los de Azure Open Datasets) se lee **sin identidad**:
+//!
+//! ```text
+//! az://<cuenta>/<contenedor>[/<prefijo>]?publico=1
+//! ```
+//!
+//! Sin `tenant` ni `cliente`, y **ninguna petición lleva `Authorization`**: no
+//! hace falta, y Azure contesta `401 InvalidAuthenticationInfo` a un contenedor
+//! público si le llega un token que no es suyo (medido en AZ0). Sin identidad
+//! no hay clave de delegación: sus ítems no dan URL firmada.
+//!
 //! ⭐ **El token es al portador**, y uno de Storage vale para cualquier cuenta
 //! que el principal pueda leer: sólo se habla con `https://<cuenta>.blob.core.windows.net`.
 //! Otro servidor (`?endpoint=`, el laboratorio con Azurite) sólo con
@@ -31,6 +43,8 @@ use ore_objetos::Leido;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Lo que no se puede sin identidad: el token, la clave de delegación.
+const SIN_IDENTIDAD: &str = "a public container is read without identity: there is no token and no user delegation key (no signed URLs)";
 const ALCANCE: &str = "https://storage.azure.com/.default";
 const AGENTE: &str = "ore-azure/0.1";
 /// Lo que se pide de vida a una clave de delegación (el máximo es 7 días).
@@ -53,12 +67,20 @@ pub struct Fuente {
     pub contenedor: String,
     /// Vacío o acabado en `/`.
     pub prefijo: String,
+    /// La app de Entra con la que se lee; `None`, un contenedor público
+    /// (D-O6): sin identidad.
+    pub app: Option<App>,
+    /// Otro servidor, sólo en el laboratorio: `<endpoint>/<cuenta>/…` (Azurite).
+    pub endpoint: Option<String>,
+}
+
+/// La app de Entra del cliente que confía en la celda (D-O3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct App {
     /// El tenant de Entra del cliente (su id, o su dominio).
     pub tenant: String,
     /// El id de la app (o de la managed identity) que confía en la celda.
     pub cliente: String,
-    /// Otro servidor, sólo en el laboratorio: `<endpoint>/<cuenta>/…` (Azurite).
-    pub endpoint: Option<String>,
 }
 
 fn laboratorio() -> bool {
@@ -68,7 +90,7 @@ fn laboratorio() -> bool {
 /// `az://cuenta/contenedor/prefijo?tenant=…&cliente=…` → la coordenada.
 pub fn leer(url: &str) -> Result<Fuente, String> {
     let resto = url.trim().strip_prefix("az://").ok_or(
-        "an Azure URL is `az://<account>/<container>[/<prefix>]?tenant=<id>&cliente=<app id>`",
+        "an Azure URL is `az://<account>/<container>[/<prefix>]?tenant=<id>&cliente=<app id>` (or `?publico=1` for a public container)",
     )?;
     let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
     let mut partes = camino.splitn(3, '/');
@@ -93,7 +115,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             "`{contenedor}` is not a container name (3 to 63 lowercase letters, digits and `-`)"
         ));
     }
-    let (mut tenant, mut cliente, mut endpoint) = (None, None, None);
+    let (mut tenant, mut cliente, mut endpoint, mut publico) = (None, None, None, false);
     let id = |v: &str| {
         !v.is_empty()
             && v.bytes()
@@ -106,6 +128,8 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             "tenant" if id(&v) => tenant = Some(v),
             "cliente" if id(&v) => cliente = Some(v),
             "tenant" | "cliente" => return Err(format!("`{k}={v}` is not an Entra id")),
+            "publico" if matches!(v.as_str(), "1" | "true") => publico = true,
+            "publico" => return Err(format!("`publico={v}`: it is `publico=1`")),
             "endpoint" => {
                 if !laboratorio() {
                     return Err(format!(
@@ -121,11 +145,21 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             }
         }
     }
-    let (Some(tenant), Some(cliente)) = (tenant, cliente) else {
-        return Err(
-            "missing `tenant` or `cliente`: the URL names the Entra app that trusts this cell"
-                .into(),
-        );
+    let app = match (tenant, cliente, publico) {
+        (Some(tenant), Some(cliente), false) => Some(App { tenant, cliente }),
+        (None, None, true) => None,
+        (_, _, true) => {
+            return Err(
+                "`publico=1` is read without identity: it does not go with `tenant` or `cliente`"
+                    .into(),
+            );
+        }
+        _ => {
+            return Err(
+                "missing `tenant` or `cliente`: the URL names the Entra app that trusts this cell (or `publico=1`, a public container)"
+                    .into(),
+            );
+        }
     };
     let prefijo = prefijo.trim_start_matches('/');
     let prefijo = if prefijo.is_empty() || prefijo.ends_with('/') {
@@ -137,18 +171,20 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
         cuenta: cuenta.to_string(),
         contenedor: contenedor.to_string(),
         prefijo,
-        tenant,
-        cliente,
+        app,
         endpoint,
     })
 }
 
 /// La URL de un prefijo, que se puede enseñar: una `az://` no lleva secreto.
 pub fn publica(f: &Fuente, prefijo: &str) -> String {
-    let mut u = format!(
-        "az://{}/{}/{prefijo}?tenant={}&cliente={}",
-        f.cuenta, f.contenedor, f.tenant, f.cliente
-    );
+    let mut u = match &f.app {
+        Some(a) => format!(
+            "az://{}/{}/{prefijo}?tenant={}&cliente={}",
+            f.cuenta, f.contenedor, a.tenant, a.cliente
+        ),
+        None => format!("az://{}/{}/{prefijo}?publico=1", f.cuenta, f.contenedor),
+    };
     if let Some(e) = &f.endpoint {
         u.push_str(&format!("&endpoint={e}"));
     }
@@ -420,19 +456,16 @@ impl Fallo {
 pub struct Azure {
     pub fuente: Fuente,
     agente: ureq::Agent,
-    entra: ore_entra::Entra,
+    /// `None`: un contenedor público, sin identidad (D-O6).
+    entra: Option<ore_entra::Entra>,
     clave: Mutex<Option<(sas::Clave, u64)>>,
 }
 
 impl Azure {
     pub fn de(fuente: Fuente) -> Result<Azure, String> {
-        let entra = ore_entra::Entra::nueva(
-            &fuente.tenant,
-            &fuente.cliente,
-            ALCANCE,
-            "ORE_AZURE_TOKEN",
-            AGENTE,
-        );
+        let entra = fuente.app.as_ref().map(|a| {
+            ore_entra::Entra::nueva(&a.tenant, &a.cliente, ALCANCE, "ORE_AZURE_TOKEN", AGENTE)
+        });
         Ok(Azure {
             fuente,
             agente: ore_gcp::cliente()?,
@@ -448,7 +481,31 @@ impl Azure {
     /// **El token de Storage**: el de Google de la cuenta que corre, cambiado
     /// por Entra por uno de la app del cliente (o `ORE_AZURE_TOKEN`).
     pub fn token(&self) -> Result<String, String> {
-        self.entra.token(&self.agente)
+        match &self.entra {
+            Some(e) => e.token(&self.agente),
+            None => Err(SIN_IDENTIDAD.into()),
+        }
+    }
+
+    /// Un contenedor público (D-O6): se lee sin identidad.
+    pub fn es_publico(&self) -> bool {
+        self.entra.is_none()
+    }
+
+    /// **El nivel de acceso público del contenedor**, preguntado sin identidad
+    /// (`x-ms-blob-public-access`: `container` deja listar y leer, `blob` sólo
+    /// leer blobs sueltos). Un contenedor privado y uno que no existe contestan
+    /// lo mismo sin identidad: `401 NoAuthenticationInformation`.
+    pub fn nivel_publico(&self) -> Result<Option<String>, Fallo> {
+        let url = format!(
+            "{}/{}?restype=container",
+            self.base(),
+            self.fuente.contenedor
+        );
+        let x = Azure::llamar(self.pide("HEAD", &url)?, None)?;
+        Ok(x.header("x-ms-blob-public-access")
+            .map(String::from)
+            .filter(|v| !v.is_empty()))
     }
 
     fn base(&self) -> String {
@@ -468,16 +525,24 @@ impl Azure {
         )
     }
 
+    /// La petición, con el token de Entra; la de un contenedor público, sin
+    /// `Authorization` (D-O6).
     fn pide(&self, metodo: &str, url: &str) -> Result<ureq::Request, Fallo> {
-        let t = self.token().map_err(|e| Fallo::de(0, e))?;
+        let t = match &self.entra {
+            Some(e) => Some(e.token(&self.agente).map_err(|e| Fallo::de(0, e))?),
+            None => None,
+        };
         PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(self
+        let r = self
             .agente
             .request(metodo, url)
             .set("user-agent", AGENTE)
             .set("x-ms-version", sas::VERSION)
-            .set("x-ms-date", &rfc1123(ahora_s()))
-            .set("authorization", &format!("Bearer {t}")))
+            .set("x-ms-date", &rfc1123(ahora_s()));
+        Ok(match t {
+            Some(t) => r.set("authorization", &format!("Bearer {t}")),
+            None => r,
+        })
     }
 
     fn llamar(r: ureq::Request, cuerpo: Option<&str>) -> Result<ureq::Response, Fallo> {
@@ -613,6 +678,9 @@ impl Azure {
     /// identidad necesita `generateUserDelegationKey` sobre ella (D-O3:
     /// `Storage Blob Delegator`).
     pub fn clave_de_delegacion(&self, segundos: u64) -> Result<sas::Clave, Fallo> {
+        if self.es_publico() {
+            return Err(Fallo::de(0, SIN_IDENTIDAD.into()));
+        }
         let ahora = ahora_s();
         let mut g = self.clave.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((k, fin)) = g.as_ref()
@@ -716,6 +784,70 @@ mod tests {
         ] {
             assert!(leer(mala).is_err(), "{mala}");
         }
+    }
+
+    /// D-O6: un contenedor público se nombra con `publico=1`, sin app; no se
+    /// mezcla con una, y su URL pública lo sigue diciendo.
+    #[test]
+    fn un_contenedor_publico_se_lee_sin_app() {
+        let f = leer("az://azureopendatastorage/mnist/processed?publico=1").unwrap();
+        assert_eq!(
+            (
+                f.cuenta.as_str(),
+                f.contenedor.as_str(),
+                f.prefijo.as_str(),
+                &f.app
+            ),
+            ("azureopendatastorage", "mnist", "processed/", &None)
+        );
+        assert_eq!(
+            publica(&f, "processed/"),
+            "az://azureopendatastorage/mnist/processed/?publico=1"
+        );
+        assert_eq!(leer(&publica(&f, "x/")).unwrap().app, None);
+        for mala in [
+            "az://cuenta/cubo?publico=1&tenant=t&cliente=c",
+            "az://cuenta/cubo?publico=1&tenant=t",
+            "az://cuenta/cubo?publico=0",
+            "az://cuenta/cubo?publico=1&sig=secreto",
+        ] {
+            assert!(leer(mala).is_err(), "{mala}");
+        }
+        assert!(
+            leer("az://cuenta/cubo?tenant=t&cliente=c")
+                .unwrap()
+                .app
+                .is_some()
+        );
+    }
+
+    /// D-O6: ninguna petición a un contenedor público lleva `Authorization`
+    /// (Azure contesta `401 InvalidAuthenticationInfo` a un token ajeno), y lo
+    /// que necesita identidad lo dice en vez de intentarlo.
+    #[test]
+    fn a_un_contenedor_publico_no_se_le_manda_token() {
+        let a = Azure::de_url("az://azureopendatastorage/mnist?publico=1").unwrap();
+        assert!(a.es_publico());
+        let r = a
+            .pide(
+                "GET",
+                "https://azureopendatastorage.blob.core.windows.net/mnist/x",
+            )
+            .unwrap();
+        assert_eq!(r.header("authorization"), None);
+        assert_eq!(r.header("x-ms-version"), Some(sas::VERSION));
+        assert!(a.token().unwrap_err().contains("without identity"));
+        assert!(
+            a.clave_de_delegacion(60)
+                .unwrap_err()
+                .cuerpo
+                .contains("without identity")
+        );
+        assert!(
+            a.firmar("x", Some("v"), "t", "inline", 60)
+                .unwrap_err()
+                .contains("without identity")
+        );
     }
 
     /// El token es al portador: fuera del laboratorio, ningún `endpoint`.
