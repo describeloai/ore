@@ -1790,3 +1790,55 @@ Laboratorio: 39,5 s y 3,9 s. Los ~2,5 s de más desde el pool son el túnel y el
 9. **La VM que sale del pool se queda con los límites genéricos** (0,25–2 CU, hasta 8 GiB) aunque el endpoint pida 0,25–1. Era lo que el código ya avisaba («al asignarla, sus límites de autoescalado tendrán que ajustarse»): pendiente en `del_pool`.
 
 **P6 queda cerrado en producción**, salvo `p6.sh http-corto`, que espera el custom hostname `api.europe-west1.pg.paladio.io` (0060). Abiertos de P6 en producción: los límites de la VM del pool (9) y que bajar el pool retire lo que sobra (3).
+
+#### P7 en producción, versión corta (2026-10-11)
+
+La receta de 72 h, comprimida a **2 h**, con la entrada de hoy (sin IP pública, 0060 C2):
+- **Libro en un PC**, con Docker, contra producción por el túnel de Cloudflare (`libro/compose.tunel.yaml`, `produccion/p7.sh`):
+  - Prisma, con el endpoint en la contraseña (`endpoint=<ep>-pooler;<clave>`);
+  - psycopg y JDBC, con `options=endpoint=<ep>`.
+- El driver HTTP de Neon (`libro-webhooks`) va por un `kubectl port-forward` al 443 del proxy (`FETCH_ENDPOINT`), porque el nombre `api.europe-west1.pg.paladio.io` aún no existe en el túnel. Es el driver y el proxy de verdad, pero sin Cloudflare por medio.
+- **Día y noche**: 6 min de día y 4 de noche, con `dormir_tras` 60 s, así que cada amanecer es un despertar de verdad. La primera hora, con el pool; la segunda, sin él.
+- **Los golpes**, cada 10 min: matar la VM, el pageserver, un safekeeper, la migración en vivo, el proxy en rodaje, el pool fuera, matar la VM sin pool y reiniciar `ore-postgres`.
+
+**Lo que no se perdió nada.** La conciliación completa final cuadra:
+- 4.212 transferencias, 1.524 avisos y 38.229.973 ingresados, repartidos al céntimo entre 50 cuentas;
+- las 4.208 transferencias confirmadas al cliente están todas en la base;
+- de 56 conciliaciones, 49 cuadran y las 7 restantes no pudieron conectar (la caída de abajo); **ninguna descuadró**.
+
+El informe cuenta «9 atribuibles perdidos», pero ninguno es un dato perdido:
+- 8 son piezas que no pudieron conectarse;
+- 1 es un aviso cuyo primer intento se confirmó aunque el cliente vio un timeout. Al reintentarlo, la idempotencia contestó «ya estaba».
+
+El informe tendrá que distinguir «no pude mirar» de «miré y falta algo».
+
+| objetivo | medido (2 h, desde España por el túnel) | |
+|---|---|---|
+| 1 · nada perdido | **0 datos perdidos** (conciliación completa final) | ✓ |
+| 2 · disponibilidad | **99,986 %** en total, golpes incluidos (≥ 99,9 %) · **100 %** fuera de las ventanas de golpe | ✓ |
+| 3 · commit | p50 1.370 ms · p99 8.440 ms | informativo: ~7 viajes de Prisma por el túnel desde España |
+| 4 · despertar en frío (segunda hora) | **33–38 s** (libro-api 36,5 · 36,9 · 37,7 s) | ✓ (≤ 45 s) |
+| 5 · despertar desde el pool (primera hora) | **0,3–4,1 s** | ✓ (≤ 8 s) |
+| 6 · reparar un cómputo muerto | con pool: **6,9 s** en el plano · en frío: **34,7 s** en el plano, 46,9 s de espera máxima para el cliente | ✓ |
+| 7 · pageserver | espera máxima **9,7 s**, nada perdido | ✓ |
+| 7 · un safekeeper | **nada visible** (998/998) | ✓ |
+| 7 · migración en vivo | **✗: destapó un fallo** (abajo); arreglado y comprobado en producción | ✗ → arreglado |
+| 8 · de noche, ni VM ni nodo | las VMs sí (`dormir` 8–10 s); el nodo no da tiempo con noches de 4 min (medido aparte: 288 s) | — |
+| 9 · nada crece | `ore-postgres` y proxy +0 % en 2 h | no es una medida de días |
+
+El informe dio los despertares todos como «en frío» porque no se apuntó `pool-encendido`. La tabla separa las dos horas a mano: es la lista de despertares de cada pieza.
+
+**Lo encontrado**:
+1. ⭐ **Dormir a mitad de una migración dejaba el endpoint atascado.** A las 12:35 empezó la migración; a las 12:39 cayó la noche y el plano mandó a dormir el endpoint, y `dormir` borró la VM con la migración en curso.
+   - El controlador de NeonVM ya no encontró la VM al cerrar la migración («Failed to get VM»), así que sus dos runners, el de origen y el de destino, se quedaron.
+   - `dormir-endpoint` esperó «a que su runner se vaya» para siempre: el endpoint quedó en `durmiendo` y Libro estuvo **~10 min sin servicio** (12:42–12:51), hasta que se desatascó a mano.
+   - **Arreglado**: `8362dc35` da el permiso y `6eaadd39` usa el binario: borrar una VM retira antes sus migraciones en curso, con la VM aún ahí para que el controlador las cierre. Comprobado en producción: dormida a mitad de migrar, `dormir-endpoint` acaba en **8,1 s**, sin migración, runners ni VMs.
+2. El informe no distingue «no pude conectar» de «falta un dato», ni lee el pool de la configuración (se apunta a mano).
+3. Flux: las peticiones de reconciliar iban a un `GitRepository` `flux-system` que no existe (es `malla`). Todo se aplicaba igual, pero con el intervalo de 5–10 min. Corregido en los guiones.
+
+**Lo que se lleva un cliente**, además de lo del laboratorio: por un túnel o un balanceador que no pase el SNI, el endpoint va en `options=endpoint=<id>` o, con Prisma, en la contraseña. Un timeout del cliente no quiere decir que no se escribiera, así que las escrituras tienen que ser idempotentes (Libro lo es, y por eso no se duplicó nada).
+
+**P7 queda cerrado en producción.** Queda abierto:
+- el soak largo (objetivos 8 y 9), si alguna vez hace falta;
+- la latencia de commit medida desde la región;
+- `libro-webhooks` y `p6.sh http-corto` por Cloudflare, cuando exista el nombre `api.`.
