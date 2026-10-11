@@ -548,7 +548,7 @@ const ENTORNO_MODELO: &str = "puesto-entorno-modelo:1";
 /// ruedas o jars (0037 ③c): el contenedor que baja la capa es el mismo para
 /// los tres, porque el cliente de la nube vive en él.
 const ENTORNO_VALOR_MODELO: &str = "entorno-modelo";
-/// Los entornos que tienen imagen (`Dockerfile`, `cloudbuild.yaml`).
+/// Los entornos que tienen imagen (`Dockerfile`, el job `construir` de ci.yml).
 pub const ENTORNOS: [&str; 3] = ["python", "node", "jvm"];
 
 /// La etiqueta que abre la salida al gateway de modelos a un trabajo del

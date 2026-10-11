@@ -2,7 +2,7 @@
 # COMPILAR LOS BINARIOS DE LAS IMÁGENES (perfil `imagen`: sin LTO, ver Cargo.toml) y dejarlos en
 # `$SALIDA`. Una sola definición para todo lo que compila: la etapa `deps` del
 # Dockerfile (con `RECETA`: sólo las dependencias, por cargo-chef), la etapa
-# `build` (en local) y el paso `binarios` de cloudbuild.yaml, que lo corre con
+# `build` (en local) y el job `construir` de ci.yml, que lo corre con
 # `docker run` sobre `ore-deps:h-<huella de la receta>`.
 #
 # ⚠️ Las dependencias se compilan con los MISMOS paquetes, perfil y opciones que
@@ -18,19 +18,36 @@ PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
 # (perfil `imagen`) el enlace es ligero: todos los núcleos. `COMPILAR_JOBS` lo baja.
 JOBS=${COMPILAR_JOBS:-$(nproc)}
 
+# ⭐ UNA HUELLA POR BINARIO (ADR 0060 B2). `TODOS` son los que el Dockerfile copia
+#   (`ci/huella-de-los-binarios.py --comprobar` mira que cuadren). El CI pasa en
+#   `BINARIOS` sólo los que su caché no tiene; sin él, todos, como en la etapa
+#   `build` del Dockerfile.
+#
+# ⛔ Con LOS MISMOS `-p` que al cocinar las dependencias, y `--bin` para elegir.
+#   Con `-p <sólo su paquete>` cargo unifica otras features y recompila lo de
+#   terceros: medido en H0 (2026-10-11, `ore-serve` solo), 78 dependencias de
+#   nuevo y 404 s; con todos los `-p` y `--bin ore-serve`, ninguna y 304 s (los 24,
+#   409 s, en la misma máquina).
+TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
+BINARIOS=${BINARIOS:-$TODOS}
+
 if [ -n "${RECETA:-}" ]; then
   # shellcheck disable=SC2086
   cargo chef cook --profile imagen --locked -j "$JOBS" $PAQUETES --recipe-path "$RECETA"
   exit 0
 fi
 
+CONSTRUIR=$PAQUETES
+if [ "$BINARIOS" != "$TODOS" ]; then
+  for b in $BINARIOS; do CONSTRUIR="$CONSTRUIR --bin $b"; done
+fi
+echo "  se compilan: $BINARIOS"
+
 # `--locked`: el `Cargo.lock` del árbol, no lo que hubiera hoy en el índice.
 # shellcheck disable=SC2086
-cargo build --profile imagen --locked -j "$JOBS" $PAQUETES
+cargo build --profile imagen --locked -j "$JOBS" $CONSTRUIR
 mkdir -p "$SALIDA"
-for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint \
-         ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages \
-         ore-federation ore-postgres; do
+for b in $BINARIOS; do
   cp "$OBJETIVO/imagen/$b" "$SALIDA/$b"
 done
 
@@ -41,6 +58,8 @@ done
 #   134…) para la construcción antes de publicar nada.
 SALIDA_ABS=$(cd "$SALIDA" && pwd)
 for b in ore-serve ore-iam ore-cofre ore-medios ore-federation ore-postgres; do
+  # Sólo los compilados en esta vuelta: los de la caché ya pasaron la suya.
+  case " $BINARIOS " in *" $b "*) ;; *) continue ;; esac
   set +e
   (cd /tmp && ORE_STORE=gcs ORE_GCS_BUCKET=x ORE_MEDIOS_PUERTO=8097 ORE_MEDIOS_PUERTO_CONTENIDO=8098 \
      timeout 3 "$SALIDA_ABS/$b" >/dev/null 2>&1)

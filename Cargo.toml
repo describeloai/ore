@@ -57,7 +57,7 @@ panic         = "abort"
 #   era de **sccache**, no de quitar el LTO. Medido en local con la etapa
 #   `herramientas` (rustc 1.99, `ore-medios`): sin LTO + sccache en frío →
 #   139; en caliente → 139; sin LTO SIN sccache → vivo; con LTO sin sccache →
-#   vivo. Por eso sccache está apagado (`CACHE_GCS` vacío en cloudbuild.yaml):
+#   vivo. Por eso sccache está apagado (`CACHE_GCS` vacío en el cloudbuild.yaml de entonces):
 #   no se enciende sin repetir esa prueba.
 [profile.imagen]
 inherits      = "release"

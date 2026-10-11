@@ -13,6 +13,13 @@ name: ci
 #   que dicen lo mismo: con ella el commit de código que queda delante de uno
 #   de papel sigue siendo «la punta» y se despliega. Sin ella, nada lo haría.
 on:
+  # El ensayo de `construir` en una rama (ADR 0060 B2): `gh workflow run ci --ref <rama>
+  # -f ensayo=true`. Sólo corre `construir`, y no etiqueta ni despliega nada.
+  workflow_dispatch:
+    inputs:
+      ensayo:
+        type: boolean
+        default: true
   push:
     branches: [main]
     paths-ignore:
@@ -56,6 +63,7 @@ env:
 
 jobs:
   suite:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     steps:
       # `vendor/oos` NO es opcional: los casos de conformidad viven ahí, y sin
@@ -103,6 +111,7 @@ jobs:
   # aspecto que una que pasa**.
 
   graphql:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -129,6 +138,7 @@ jobs:
   # prueba de fuego tiene que ser dueña de su terreno: el lector lee TODOS los
   # esquemas, asi que las tablas de otra prueba serian entidades de esta.
   descubrimiento:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -173,6 +183,7 @@ jobs:
   #   vive en él), `plano-el-lago` y `plano-el-puesto`. Comparten la caché de
   #   cargo (la guarda éste, que compila también `ore-store`).
   plano-de-control:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -290,6 +301,13 @@ jobs:
           python3 ci/huella-de-la-imagen.py --comprobar
           python3 ci/prueba-huella-de-la-imagen.py
 
+      # ADR 0060 B2: la de cada binario ve todo lo que su código lee, y cada cambio mueve
+      # la de los binarios que lo llevan y sólo esos.
+      - name: y la huella de cada binario sigue a su codigo
+        run: |
+          python3 ci/huella-de-los-binarios.py --comprobar
+          python3 ci/prueba-huella-de-los-binarios.py
+
       # ADR 0060 A2: cada imagen que la malla cita la protege la regla de limpieza del
       # registro POR SÍ MISMA (etiqueta, paquete o digest), no por dónde esté `main`.
       # El 2026-10-10 eso borró `idp@sha256:39bc…` y tumbó el login.
@@ -298,6 +316,7 @@ jobs:
 
   # El lago, aparte del plano de control para que corra a la vez (ver arriba).
   plano-el-lago:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -325,6 +344,7 @@ jobs:
 
   # El puesto con sus tres agentes, aparte para que corra a la vez (ver arriba).
   plano-el-puesto:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -389,6 +409,7 @@ jobs:
   # asi que la guarda del rodeo nunca llega a morder. Aqui hay un administrador
   # de verdad intentando otorgar por encima de si mismo.
   los-verbos:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -468,6 +489,7 @@ jobs:
           bash pruebas-de-fuego/el-cofre.sh
 
   fuentes-reales:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -529,6 +551,7 @@ jobs:
   #
   # BigQuery, de la cinta que grabó la pasada de verdad (F2·3).
   conectores:
+    if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -757,8 +780,9 @@ jobs:
   #   paso falla con un mensaje que no menciona OIDC.
   # ══════════════════════════════════════════════════════════════════════════
   construir:
-    # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no construye nada.
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no construye nada. Y el
+    #   ensayo (`workflow_dispatch`, ADR 0060 B2): construye sin etiquetar ni desplegar.
+    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || inputs.ensayo
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -767,15 +791,11 @@ jobs:
     # se SUBE (gratis) y se pregunta por etiquetas (metadato).
     env:
       REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
-    # La clave de lo que corre en los Deployment que CI releva (2026-10-03): la
-    # huella de los binarios, y la del Dockerfile y el guion del informador. Si
-    # es la que ya tienen, no se relevan (`imagen`).
+    # Lo que corre en los Deployment que CI releva: la huella de SU imagen
+    # (ADR 0060 B2; hasta entonces, una clave para todos). Si es la que ya
+    # tienen, no se relevan (`imagen`): tocar `ore-serve` no releva `ore-cofre`.
     outputs:
-      clave: ${{ steps.huella.outputs.clave }}
-      # 0057 B4·3·3: la de `ore-motor`, que corre en la imagen del puesto: la
-      # misma más lo que la sesión trae de Python (el SDK y el motor). Aparte,
-      # para que un cambio del SDK no releve `ore-serve` (cerraría los puestos).
-      clave_motor: ${{ steps.huella.outputs.clave_motor }}
+      imagenes: ${{ steps.plan.outputs.imagenes }}
     steps:
       # ⭐ Sólo la punta de `main`. Un commit que ya tiene otro detrás no se
       #   construye ni se despliega: lo hace el de detrás, con lo suyo dentro.
@@ -787,6 +807,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "${{ inputs.ensayo == true }}" = true ]; then
+            echo "sigue=si" >> "$GITHUB_OUTPUT"; echo "  ensayo de ${GITHUB_REF_NAME}: se construye, no se etiqueta ni se despliega"; exit 0
+          fi
           PUNTA=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
           SIGUE=no
           if [ "$PUNTA" = "$GITHUB_SHA" ]; then SIGUE=si
@@ -826,20 +849,17 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
         if: steps.punta.outputs.sigue == 'si'
 
-      # ⭐ La huella de lo que compila Rust (`ci/huella-de-los-binarios.sh`): con
-      #   ella se reutilizan los binarios de la caché y no se compila nada, y
-      #   entra en la huella de cada imagen que los copia.
-      - name: la huella de los binarios
+      # ⭐ UNA HUELLA POR BINARIO (ADR 0060 B2, `ci/huella-de-los-binarios.py`): la de cada
+      #   uno, de su paquete y de los del workspace de los que depende. Con ellas, la de
+      #   cada imagen (sólo las de lo que copia) y lo que hay que compilar. `--comprobar`
+      #   para aquí si el código incluye algo que la huella no ve.
+      - name: la huella de cada binario
         id: huella
         if: steps.punta.outputs.sigue == 'si'
         run: |
-          H=$(sh ci/huella-de-los-binarios.sh)
-          O=$(cat Dockerfile malla/informar.sh | sha256sum | cut -c1-8)
-          echo "binarios=$H" >> "$GITHUB_OUTPUT"
-          echo "clave=$H-$O" >> "$GITHUB_OUTPUT"
-          M=$(cat puesto/python/ore_motor.py puesto/python/ore/*.py | sha256sum | cut -c1-8)
-          echo "clave_motor=$H-$O-$M" >> "$GITHUB_OUTPUT"
-          echo "  binarios h-$H · clave $H-$O · motor $H-$O-$M"
+          python3 ci/huella-de-los-binarios.py --comprobar
+          python3 ci/huella-de-los-binarios.py --mapa > /tmp/binarios.json
+          python3 ci/huella-de-los-binarios.py --todas | sed 's/^/  /'
 
       # ⭐ B1 (ADR 0060, 2026-10-10): UNA IMAGEN POR HUELLA, EN ESTE RUNNER.
       #   Antes, esto era `gcloud builds submit`: catorce imágenes rehechas y
@@ -848,10 +868,6 @@ jobs:
       #     · si el registro ya tiene `<imagen>:h-<huella>`, se le añade la
       #       etiqueta del commit —mover un puntero, sin una capa—;
       #     · si no, se construye aquí y se sube con las dos.
-      #   Los binarios, por su huella, en la caché de GitHub, y sólo si alguna
-      #   imagen que se construye los copia; las dependencias de Rust, por su
-      #   receta, también. Medido en B1·2: 82 s si nada cambia, 125 s tocando un
-      #   puesto, ~8 min si cambia Rust.
       #
       # ⛔ NADA SE BAJA DE ARTIFACT REGISTRY: bajar del registro a internet se
       #   cobra, subir no. Lo que se le pregunta —si una etiqueta existe— es
@@ -860,8 +876,7 @@ jobs:
         id: plan
         if: steps.punta.outputs.sigue == 'si'
         run: |
-          H=${{ steps.huella.outputs.binarios }}
-          python3 ci/huella-de-la-imagen.py --binarios "$H" --todas > /tmp/huellas.txt
+          python3 ci/huella-de-la-imagen.py --binarios /tmp/binarios.json --todas > /tmp/huellas.txt
           : > /tmp/plan.txt
           while read -r ETAPA IMAGEN HUELLA; do
             if gcloud artifacts docker images describe "$REGISTRO/$IMAGEN:h-$HUELLA" --format='value(image_summary.digest)' >/dev/null 2>&1; then
@@ -871,32 +886,46 @@ jobs:
             fi
           done < /tmp/huellas.txt
           sed 's/^/  /' /tmp/plan.txt
-          NECESITA=no
-          for E in $(awk '$4=="construir" {print $1}' /tmp/plan.txt); do
-            python3 ci/huella-de-la-imagen.py --binarios "$H" --explicar "$E" | grep -q "^  binarios h-" && NECESITA=si
-          done
-          echo "binarios_hacen_falta=$NECESITA" >> "$GITHUB_OUTPUT"
-          echo "  binarios h-$H: hacen falta: $NECESITA"
+          # Los binarios que copian las que se construyen: sólo ésos hacen falta.
+          NECESARIOS=$(for E in $(awk '$4=="construir" {print $1}' /tmp/plan.txt); do
+                         python3 ci/huella-de-la-imagen.py --copia "$E"; done | tr ' ' '\n' | sort -u | xargs)
+          echo "necesarios=$NECESARIOS" >> "$GITHUB_OUTPUT"
+          echo "  binarios que hacen falta: ${NECESARIOS:-ninguno}"
+          # H4: la huella de cada imagen, para el relevo (`imagen`).
+          echo "imagenes=$(awk '{printf "%s%s=%s", (NR>1?",":""), $2, $3}' /tmp/huellas.txt)" >> "$GITHUB_OUTPUT"
 
-      - name: el disco (si hay que construir binarios)
-        if: steps.plan.outputs.binarios_hacen_falta == 'si'
+      # Lo que el runner trae y aquí no se usa (B1·0: de 86 a 110 GB libres). EN
+      # SEGUNDO PLANO (B2): eran 133 s esperando a `rm` antes de empezar nada.
+      - name: el disco, en segundo plano (si hacen falta binarios)
+        if: steps.plan.outputs.necesarios != ''
         run: |
-          # Lo que el runner trae y aquí no se usa (B1·0: de 86 a 110 GB libres).
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
-                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          docker image prune -af >/dev/null
+          df -h / | tail -1 | awk '{print "  libre al empezar: " $4}'
+          nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+                            /opt/hostedtoolcache/CodeQL /usr/local/share/boost >/dev/null 2>&1 &
 
+      # ⭐ La caché de los binarios es UNA entrada, la más reciente (`restore-keys`), con
+      #   un manifiesto (`.huellas.json`) de la huella de cada binario que trae. Se
+      #   compila sólo lo que falta o no casa; luego se guarda con lo de ahora.
       - name: los binarios, de la cache de GitHub
-        id: cache-bin
-        if: steps.plan.outputs.binarios_hacen_falta == 'si'
-        uses: actions/cache@v4
+        if: steps.plan.outputs.necesarios != ''
+        uses: actions/cache/restore@v4
         with:
           path: .binarios
-          key: ore-binarios-${{ steps.huella.outputs.binarios }}
+          key: ore-binarios-b2-${{ github.sha }}
+          restore-keys: ore-binarios-b2-
 
-      - name: la receta de las dependencias (si los binarios no estaban)
+      - name: los que faltan
+        id: faltan
+        if: steps.plan.outputs.necesarios != ''
+        run: |
+          mkdir -p .binarios
+          FALTAN=$(python3 ci/huella-de-los-binarios.py --faltan /tmp/binarios.json .binarios "${{ steps.plan.outputs.necesarios }}")
+          echo "faltan=$FALTAN" >> "$GITHUB_OUTPUT"
+          echo "  se compilan: ${FALTAN:-ninguno}"
+
+      - name: la receta de las dependencias (si hay que compilar)
         id: deps
-        if: steps.plan.outputs.binarios_hacen_falta == 'si' && steps.cache-bin.outputs.cache-hit != 'true'
+        if: steps.faltan.outputs.faltan != ''
         run: |
           docker build -q --target receta -t receta . >/dev/null
           D=$({ docker run --rm receta cat /receta.json
@@ -911,27 +940,41 @@ jobs:
           path: /tmp/deps.tar.zst
           key: ore-deps-${{ steps.deps.outputs.huella }}
 
-      # El guion acaba arrancando cada servidor: uno que muere no se publica.
-      - name: los binarios (si no estaban, se compilan)
-        if: steps.plan.outputs.binarios_hacen_falta == 'si'
+      # El guion acaba arrancando cada servidor que compila: uno que muere no se publica.
+      - name: los binarios que faltan, compilados
+        if: steps.faltan.outputs.faltan != ''
         run: |
-          if [ -d .binarios ] && [ -n "$(ls -A .binarios)" ]; then
-            echo "  binarios h-${{ steps.huella.outputs.binarios }}: de la cache"
+          if [ -f /tmp/deps.tar.zst ]; then
+            zstd -dc /tmp/deps.tar.zst | docker load -q
           else
-            if [ -f /tmp/deps.tar.zst ]; then
-              zstd -dc /tmp/deps.tar.zst | docker load -q
-            else
-              docker build -q --target deps -t ore-deps:local . >/dev/null
-              docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
-            fi
-            docker run --rm -v "$PWD:/src" -w /src -e SALIDA=/src/.binarios ore-deps:local sh ci/compilar-binarios.sh
-            sudo chown -R "$(id -u):$(id -g)" .binarios
+            docker build -q --target deps -t ore-deps:local . >/dev/null
+            docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
           fi
-          printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t ore-binarios:local -f - .binarios >/dev/null
+          rm -rf /tmp/nuevos && mkdir -p /tmp/nuevos
+          docker run --rm -v "$PWD:/src" -v /tmp/nuevos:/nuevos -w /src -e SALIDA=/nuevos \
+            -e BINARIOS="${{ steps.faltan.outputs.faltan }}" \
+            ore-deps:local sh ci/compilar-binarios.sh
+          sudo chown -R "$(id -u):$(id -g)" /tmp/nuevos
+          cp /tmp/nuevos/* .binarios/
+          python3 ci/huella-de-los-binarios.py --apuntar /tmp/binarios.json .binarios "${{ steps.faltan.outputs.faltan }}"
+          df -h / | tail -1 | awk '{print "  libre al acabar: " $4}'
 
-      - name: las catorce imagenes, cada una por su huella, con la etiqueta del commit
+      - name: los binarios, a la cache de GitHub
+        if: steps.faltan.outputs.faltan != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .binarios
+          key: ore-binarios-b2-${{ github.sha }}-${{ github.run_attempt }}
+
+      - name: los binarios, en una imagen para el Dockerfile
+        if: steps.plan.outputs.necesarios != ''
+        run: printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t ore-binarios:local -f - .binarios >/dev/null
+
+      - name: las imagenes, cada una por su huella, con la etiqueta del commit
         if: steps.punta.outputs.sigue == 'si'
         run: |
+          # En un ensayo (`workflow_dispatch`), sólo `h-<huella>`: ninguna etiqueta de commit.
+          ENSAYO=${{ inputs.ensayo == true }}
           ETIQUETA=${GITHUB_SHA::12}
           gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet >/dev/null 2>&1
           publicar() {
@@ -939,7 +982,7 @@ jobs:
             if [ "$QUE" = reutilizar ]; then
               # ⚠️ Por el API del REGISTRO, como el job `imagen`: `artifacts docker
               #   tags add` borra y crea, y `ore-ci` no tiene `tags.delete`.
-              gcloud container images add-tag "$REGISTRO/$IMAGEN:h-$HUELLA" "$REGISTRO/$IMAGEN:$ETIQUETA" --quiet >/dev/null
+              [ "$ENSAYO" = true ] || gcloud container images add-tag "$REGISTRO/$IMAGEN:h-$HUELLA" "$REGISTRO/$IMAGEN:$ETIQUETA" --quiet >/dev/null
               echo "  $IMAGEN: reutilizada (h-$HUELLA)"
             else
               # Sólo si hay binarios locales se nombran: si no, ninguna de las que
@@ -949,12 +992,12 @@ jobs:
                 -t "$REGISTRO/$IMAGEN:h-$HUELLA" -t "$REGISTRO/$IMAGEN:$ETIQUETA" . >/tmp/log-$ETAPA.txt 2>&1 \
                 || { tail -30 /tmp/log-$ETAPA.txt; return 1; }
               docker push -q "$REGISTRO/$IMAGEN:h-$HUELLA" >/dev/null
-              docker push -q "$REGISTRO/$IMAGEN:$ETIQUETA" >/dev/null
+              [ "$ENSAYO" = true ] || docker push -q "$REGISTRO/$IMAGEN:$ETIQUETA" >/dev/null
               echo "  $IMAGEN: construida y subida (h-$HUELLA)"
             fi
           }
           export -f publicar
-          export ETIQUETA
+          export ETIQUETA ENSAYO
           xargs -P 3 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
 
   imagen:
@@ -1131,13 +1174,22 @@ jobs:
           #   binarios son los mismos no despliega nada y cierra las sesiones de
           #   los puestos (su estado vive en memoria). Cada Deployment lleva la
           #   clave de lo que corre (`ore.dev/binarios`); la misma, se queda.
-          CLAVE="${{ needs.construir.outputs.clave }}"
-          [ -n "$CLAVE" ] || { echo "x construir no dio la clave de los binarios"; exit 1; }
-          CLAVE_MOTOR="${{ needs.construir.outputs.clave_motor }}"
-          # La clave de lo que corre cada uno: `ore-motor`, la suya.
-          clave_de() { case "${1##*/}" in ore-motor) echo "$CLAVE_MOTOR";; *) echo "$CLAVE";; esac; }
+          # ⭐ (ADR 0060 B2) La clave es la huella de SU imagen, `<imagen>:h-<huella>`:
+          #   tocar `ore-serve` releva `ore-serve` y `ore-medios`, no `ore-cofre`.
+          IMAGENES="${{ needs.construir.outputs.imagenes }}"
+          [ -n "$IMAGENES" ] || { echo "x construir no dio las huellas de las imagenes"; exit 1; }
+          clave_de() {
+            case "${1##*/}" in
+              ore-serve|ore-medios) I=ore-serve ;;  ore-cofre) I=ore-cofre ;;  ore-iam) I=ore-iam ;;
+              informador) I=ore-informador ;;  ore-federation) I=ore-drivers ;;
+              ore-motor) I=puesto-python ;;  ore-postgres) I=ore-postgres ;;  *) I="" ;;
+            esac
+            H=$(echo ",$IMAGENES," | grep -o ",$I=[0-9a-f]*" | cut -d= -f2)
+            echo "${I:-?}:h-${H:-?}"
+          }
           TODOS="$DESTINOS"; DESTINOS=""; IGUALES=""
           for D in $TODOS; do
+            case "$(clave_de "$D")" in *'?'*) echo "x ${D##*/}: no sé de qué imagen es ($(clave_de "$D"))"; exit 1 ;; esac
             V=$(kubectl -n "${D%%/*}" get deployment "${D##*/}" \
               -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/binarios}')
             if [ "$V" = "$(clave_de "$D")" ]; then IGUALES="$IGUALES $D"; else DESTINOS="$DESTINOS $D"; fi
@@ -1147,8 +1199,7 @@ jobs:
           # Y viaja al paso siguiente, que comprueba EXACTAMENTE estas listas.
           echo "DESTINOS=$DESTINOS" >> "$GITHUB_ENV"
           echo "TODOS=$TODOS" >> "$GITHUB_ENV"
-          echo "CLAVE=$CLAVE" >> "$GITHUB_ENV"
-          echo "CLAVE_MOTOR=$CLAVE_MOTOR" >> "$GITHUB_ENV"
+          echo "IMAGENES=$IMAGENES" >> "$GITHUB_ENV"
           [ -n "$DESTINOS" ] || exit 0
 
           # ⭐ En paralelo, en DOS OLEADAS (2026-09-30). Uno a uno eran ~6 min
@@ -1223,7 +1274,15 @@ jobs:
             echo "  · $NOMBRE · $VISTO"
           done
           # Y TODOS, relevados o no, corren los binarios de este commit.
-          clave_de() { case "${1##*/}" in ore-motor) echo "$CLAVE_MOTOR";; *) echo "$CLAVE";; esac; }
+          clave_de() {
+            case "${1##*/}" in
+              ore-serve|ore-medios) I=ore-serve ;;  ore-cofre) I=ore-cofre ;;  ore-iam) I=ore-iam ;;
+              informador) I=ore-informador ;;  ore-federation) I=ore-drivers ;;
+              ore-motor) I=puesto-python ;;  ore-postgres) I=ore-postgres ;;  *) I="" ;;
+            esac
+            H=$(echo ",$IMAGENES," | grep -o ",$I=[0-9a-f]*" | cut -d= -f2)
+            echo "${I:-?}:h-${H:-?}"
+          }
           for D in $TODOS; do
             VISTO=$(kubectl -n "${D%%/*}" get deployment "${D##*/}" \
               -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/binarios}')

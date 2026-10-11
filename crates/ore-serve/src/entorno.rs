@@ -143,7 +143,7 @@ pub(crate) const NODE: &str = "node";
 //   el contenedor): aquí se compilan dentro, para que `GET /entorno/<e>` diga
 //   qué trae la sesión aunque el repositorio no declare nada. Cambiar la
 //   imagen es cambiar la lista, y con ella este binario (la huella de los
-//   binarios las mira: `ci/huella-de-los-binarios.sh`).
+//   binarios las mira: `ci/huella-de-los-binarios.py`).
 const PROVISTO_NODE: &str = include_str!("../../../puesto/node/provisto.txt");
 const PROVISTO_PYTHON: &str = include_str!("../../../puesto/python/provisto.txt");
 

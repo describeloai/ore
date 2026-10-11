@@ -3,10 +3,14 @@
 etapa del Dockerfile produce. Si no cambia, la imagen es la misma: el CI le pone la etiqueta del
 commit a `<imagen>:h-<huella>`, que ya está en el registro, en vez de construirla y subirla.
 
-    python3 ci/huella-de-la-imagen.py --binarios <h> puesto-python      # una
-    python3 ci/huella-de-la-imagen.py --binarios <h> --todas            # las del CI, «imagen huella»
-    python3 ci/huella-de-la-imagen.py --binarios <h> --explicar serve   # de qué sale
+    python3 ci/huella-de-la-imagen.py --binarios <b> puesto-python      # una
+    python3 ci/huella-de-la-imagen.py --binarios <b> --todas            # las del CI, «imagen huella»
+    python3 ci/huella-de-la-imagen.py --binarios <b> --explicar serve   # de qué sale
+    python3 ci/huella-de-la-imagen.py --copia serve                     # los binarios que copia
     python3 ci/huella-de-la-imagen.py --comprobar                       # que cuadra con el Dockerfile
+
+`<b>` es el mapa `{binario: huella}` de `ci/huella-de-los-binarios.py --mapa`, en JSON o en un
+fichero; o una huella sola, la misma para todos (las pruebas).
 
 Lo que entra, siguiendo la cadena de la etapa (su `FROM` y cada `COPY --from`):
   · el texto de cada etapa de la cadena, sin comentarios ni líneas en blanco (un comentario
@@ -14,8 +18,9 @@ Lo que entra, siguiendo la cadena de la etapa (su `FROM` y cada `COPY --from`):
   · el contenido de lo que copia del contexto (`COPY`/`ADD` sin `--from`), fichero a fichero,
     con su ruta: lo que el contexto deja pasar (`.dockerignore`);
   · el nombre de cada imagen de fuera (`FROM python:3.14-slim`, `COPY --from=node:24-slim`);
-  · y, en vez de la etapa `bin` —`FROM ${BINARIOS}`—, la huella de los binarios
-    (`ci/huella-de-los-binarios.sh`), que el CI pasa con `--binarios`.
+  · y, por cada `COPY --from=bin /b/<binario>`, la huella de ESE binario
+    (`ci/huella-de-los-binarios.py`, ADR 0060 B2): tocar `ore-serve` rehace la imagen de
+    `ore-serve` y no la de `ore-iam`. (Hasta B2 era una huella para todos.)
 
 ⚠️ Una imagen de fuera se nombra por su etiqueta: si `python:3.14-slim` cambia por dentro, la
 huella no. Para rehacerlas (un parche de seguridad de la base), `FORZAR=<lo que sea>` entra en
@@ -23,6 +28,7 @@ todas las huellas.
 """
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import sys
@@ -32,7 +38,7 @@ RAIZ = os.environ.get("ORE_RAIZ") or os.path.normpath(os.path.join(os.path.dirna
 DOCKERFILE = os.path.join(RAIZ, "Dockerfile")
 
 # Las que construye el CI: la etapa del Dockerfile y el nombre de la imagen en el registro. La
-# misma lista que cloudbuild.yaml; `--comprobar` mira que cada etapa exista.
+# misma lista que el job `imagen` de ci.yml; `--comprobar` mira que cada etapa exista.
 IMAGENES = {
     "ore": "ore", "informador": "ore-informador", "capa-jvm": "capa-jvm", "capa-node": "capa-node",
     "capa-python": "capa-python", "idp": "idp", "drivers": "ore-drivers", "serve": "ore-serve",
@@ -144,9 +150,7 @@ class Huella:
         """Lo que decide la etapa, como lista de líneas legibles (para hashear y para explicar)."""
         visto = visto or set()
         if etapa == BIN:
-            if not self.binarios:
-                raise SystemExit("⛔ esta imagen copia binarios: falta --binarios <huella>")
-            return [f"binarios h-{self.binarios}"]
+            raise SystemExit("⛔ una etapa `FROM ${BINARIOS}` sólo puede ser `bin`, y nadie construye desde ella")
         if etapa not in self.etapas:
             return [f"imagen de fuera {etapa}"]
         if etapa in visto:
@@ -162,7 +166,9 @@ class Huella:
             out.append(f"[{etapa}] {ins}")
             if re.match(r"(?i)(COPY|ADD)\s", ins):
                 desde, fuentes = fuentes_de_copy(ins)
-                if desde:
+                if desde == BIN:
+                    out += ["  " + self.binario(f) for f in fuentes]
+                elif desde:
                     out += ["  " + x for x in self.entradas(desde, visto)]
                 else:
                     for f in fuentes:
@@ -170,6 +176,23 @@ class Huella:
                             h = hashlib.sha256(open(os.path.join(RAIZ, rel), "rb").read()).hexdigest()
                             out.append(f"  {h}  {rel}")
         return out
+
+    def binario(self, fuente):
+        """La línea de un `COPY --from=bin /b/<binario>`: su nombre y su huella."""
+        m = re.fullmatch(r"/b/([\w.-]+)", fuente)
+        if not m:
+            raise SystemExit(f"⛔ de `bin` se copia un binario por línea, `/b/<binario>`: no `{fuente}`")
+        b = m.group(1)
+        if self.binarios is None:
+            raise SystemExit("⛔ esta imagen copia binarios: falta --binarios <mapa>")
+        h = self.binarios if isinstance(self.binarios, str) else self.binarios.get(b)
+        if not h:
+            raise SystemExit(f"⛔ el mapa de --binarios no tiene `{b}`")
+        return f"binario {b} h-{h}"
+
+    def copia(self, etapa):
+        """Los binarios que la cadena de `etapa` copia de `bin`."""
+        return sorted({l.split()[1] for l in self.entradas(etapa) if l.strip().startswith("binario ")})
 
     def de(self, etapa):
         if etapa not in self.memo:
@@ -185,9 +208,14 @@ def main():
         i = args.index("--binarios")
         binarios = args[i + 1]
         del args[i:i + 2]
+        if binarios.startswith("{"):
+            binarios = json.loads(binarios)
+        elif os.path.isfile(binarios):
+            binarios = json.load(open(binarios, encoding="utf-8"))
     if args == ["--comprobar"]:
         h = Huella("0" * 16)
         mal = [e for e in IMAGENES if e not in h.etapas]
+        # Ningún COPY de la etapa `bin` entero (`/b/`): cada imagen nombra lo que copia.
         for e in IMAGENES:
             if e in h.etapas:
                 h.de(e)  # que cada COPY exista y la cadena se pueda seguir
@@ -199,6 +227,8 @@ def main():
     if args == ["--todas"]:
         for etapa, imagen in IMAGENES.items():
             print(f"{etapa} {imagen} {h.de(etapa)}")
+    elif len(args) == 2 and args[0] == "--copia":
+        print(" ".join(Huella("0" * 16).copia(args[1])))
     elif len(args) == 2 and args[0] == "--explicar":
         print("\n".join(h.globales + h.entradas(args[1])))
         print(f"\nhuella {h.de(args[1])}")

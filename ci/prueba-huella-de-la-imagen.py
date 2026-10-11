@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """La prueba de `ci/huella-de-la-imagen.py` (ADR 0060 B1·1): sobre una copia de lo que el
 Dockerfile copia, cada cambio mueve la huella de las imágenes que lo llevan, y SÓLO de esas."""
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,6 +13,10 @@ AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "ci/compilar-binarios.sh"]
 BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "puesto-python", "puesto-node", "puesto-jvm"]
+
+
+# Los binarios que el Dockerfile copia: el mapa de las pruebas por binario.
+BINARIOS = sorted(set(re.findall(r"COPY\s+--from=bin\s+/b/(\S+)", open(os.path.join(RAIZ, "Dockerfile"), encoding="utf-8").read())))
 
 
 def huellas(raiz, binarios="0" * 16, forzar=""):
@@ -56,14 +62,21 @@ def main():
             (shutil.copytree if os.path.isdir(o) else shutil.copy2)(o, d)
         antes = huellas(base)
         casos = CASOS + [
-            ("la huella de los binarios", None, set(BIN)),
+            ("la huella de todos los binarios", None, set(BIN)),
+            # ADR 0060 B2: una huella por binario; cada imagen, sólo las de lo que copia.
+            ("la huella de ore-serve", None, {"serve"}),
+            ("la huella de ore-store-gcs", None, {"serve", "drivers", "puesto-python", "puesto-node", "puesto-jvm"}),
+            ("la huella de ore-iam", None, {"iam"}),
             ("FORZAR", None, set(antes)),
         ]
         for i, (que, hacer, espera) in enumerate(casos):
             raiz = os.path.join(t, f"c{i}")
             shutil.copytree(base, raiz)
-            if que == "la huella de los binarios":
+            if que == "la huella de todos los binarios":
                 despues = huellas(raiz, binarios="1" * 16)
+            elif que.startswith("la huella de ore-"):
+                b = que.split()[-1]
+                despues = huellas(raiz, binarios=json.dumps({x: ("1" if x == b else "0") * 16 for x in BINARIOS}))
             elif que == "FORZAR":
                 despues = huellas(raiz, forzar="2026-10")
             else:

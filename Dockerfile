@@ -40,7 +40,7 @@
 # ⭐ LOS BINARIOS, POR SU CONTENIDO (2026-10-03). Las imágenes copian sus
 #   ejecutables de `bin`, que es la etapa `binarios` de aquí abajo… o, en Cloud
 #   Build, la imagen `ore-binarios:<…>` que ya estaba si la huella de lo que
-#   compila Rust no cambió (`ci/huella-de-los-binarios.sh`). Antes, `COPY . .`
+#   compila Rust no cambió (`ci/huella-de-los-binarios.py`, una por binario desde ADR 0060 B2). Antes, `COPY . .`
 #   hacía que CUALQUIER fichero —un ADR, un `.py`— recompilara los diecisiete
 #   binarios: ~20 min por commit, la mitad sin tocar Rust.
 ARG BINARIOS=binarios
@@ -66,8 +66,8 @@ ENV CARGO_TARGET_DIR=/t
 #   (~450 crates) no cambia de un commit a otro y era la mayor parte de cada
 #   compilación. `receta` saca de los manifiestos lo que hay que compilar;
 #   `deps` lo compila con el MISMO perfil, paquetes y guion que los binarios, y
-#   cloudbuild.yaml la guarda como `ore-deps:h-<huella de la receta>`. Nuestro
-#   código se compila SIEMPRE entero encima: nada nuestro sale de una caché.
+#   el CI la guarda en su caché por la huella de la receta. Nuestro código
+#   se compila encima, y desde ADR 0060 B2 sólo el binario cuya huella cambió.
 FROM herramientas AS receta
 # Sin `rust-toolchain.toml`: la receta sale de los manifiestos y no depende del
 # compilador; con él, rustup bajaría el toolchain entero sólo para leerlos.
@@ -84,7 +84,7 @@ RUN RECETA=/receta.json sh /ci/compilar-binarios.sh
 # En local: la misma compilación que en Cloud Build, aquí dentro.
 FROM deps AS build
 # Sólo lo que `cargo` lee: lo demás del árbol no puede cambiar un binario (y
-# es lo que `ci/huella-de-los-binarios.sh` mira).
+# es lo que `ci/huella-de-los-binarios.py` mira).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY vendor/oos vendor/oos
