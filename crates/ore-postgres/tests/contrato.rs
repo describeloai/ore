@@ -1782,3 +1782,59 @@ fn un_computo_que_muere_se_repara() {
         .get(0);
     assert_eq!(estado, "hecha");
 }
+
+#[test]
+fn un_despertar_que_vence_no_deja_el_endpoint_atascado() {
+    // Ventana 1 (producción): el despertar falló a los 15 min con la VM `Pending` y el endpoint
+    // quedó `arrancando` sin operación. Vigilar lo ve huérfano y lo repara.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"atascado","dueno":"user:ana"}"#,
+    );
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let ep = "/v1/postgres/proyectos/atascado/ramas/main/endpoints/principal";
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    let vm = campo(&r, &["vm"]);
+    // El despertar venció: arrancando, sin operación, y su VM ya no está.
+    otra_conexion()
+        .execute(
+            "update plano.endpoint set observado = 'arrancando', direccion = null, ip_pod = null
+              where proyecto = 'atascado'",
+            &[],
+        )
+        .unwrap();
+    almacen.vms.lock().unwrap().remove(&vm);
+    almacen.pedido();
+    ore_postgres::reconciliador::apuntar_actividades(&mut c2, &almacen).unwrap();
+    let pedidas: i64 = otra_conexion()
+        .query_one(
+            "select count(*) from plano.operacion
+              where tipo = 'reparar-endpoint' and proyecto = 'atascado'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(pedidas, 1, "vigilar ve el huérfano y pide repararlo");
+    // Con la reparación en curso no se pide otra.
+    ore_postgres::reconciliador::apuntar_actividades(&mut c2, &almacen).unwrap();
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (_, r) = pide(&s, "a", "GET", ep, "");
+    assert!(
+        r.contains(r#""observado":"listo""#) && r.contains(r#""direccion""#),
+        "otra vez listo: {r}"
+    );
+    assert!(
+        almacen
+            .pedido()
+            .iter()
+            .any(|p| p.starts_with(&format!("vm-crear {vm} "))),
+        "otro cómputo"
+    );
+}

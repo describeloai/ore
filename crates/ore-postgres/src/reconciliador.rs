@@ -140,6 +140,28 @@ pub fn apuntar_actividades(c: &mut Client, k: &dyn Computos) -> Result<usize, St
             Err(_) => {}
         }
     }
+    // ⭐ Y **los huérfanos**: un endpoint `arrancando` o `reparando` sin ninguna operación en curso
+    // en su proyecto. Sólo una operación lo pone así; si venció (medido en producción, ventana 1:
+    // el clúster se durmió con una VM `Pending` y `despertar-endpoint` falló a los 15 min), se
+    // quedaba así para siempre: el proxy sólo pide despertar a los `dormido`, y a este lo esperaba
+    // 120 s y contestaba 503, cliente tras cliente. Se repara: sus restos fuera y otro cómputo.
+    for f in c
+        .query(
+            "select e.organizacion, e.proyecto, e.id, coalesce(e.computo, e.vm), e.rama
+               from plano.endpoint e
+              where e.deseado = 'vivo' and e.observado in ('arrancando', 'reparando')
+                and not exists (select 1 from plano.operacion o
+                                 where o.organizacion = e.organizacion and o.proyecto = e.proyecto
+                                   and o.estado = 'en-curso')",
+            &[],
+        )
+        .map_err(mal)?
+    {
+        let (org, p, id, vm, rama): (String, String, String, String, String) =
+            (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4));
+        eprintln!("reconciliador · {org}/{p}/{id} quedó a medio arrancar sin operación: a reparar");
+        pedir_reparar(c, &org, &p, &rama, &id, &vm)?;
+    }
     Ok(apuntados)
 }
 
@@ -164,7 +186,7 @@ fn pedir_reparar(
         &[&org, &p, &rama, &id],
     ) {
         Ok(_) => {
-            eprintln!("reconciliador · el cómputo {vm} de {org}/{p}/{id} murió: a reparar");
+            eprintln!("reconciliador · {org}/{p}/{id} (cómputo {vm}): a reparar");
             Ok(())
         }
         // Otra operación en curso en el proyecto: se mira en la vigilancia siguiente.
@@ -932,6 +954,17 @@ fn reparar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Result
         if !muerto(k, &computo) {
             return Ok(());
         }
+        c.execute(
+            "update plano.endpoint set observado = 'reparando', direccion = null, ip_pod = null
+              where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&org, &p, &id],
+        )
+        .map_err(bd)?;
+        observado = "reparando".into();
+    }
+    // Huérfano a medio arrancar (ver `apuntar_actividades`): si su cómputo ya no está o terminó,
+    // como uno muerto; si sigue vivo, `asegurar_endpoint` lo termina de arrancar.
+    if observado == "arrancando" && muerto(k, &computo) {
         c.execute(
             "update plano.endpoint set observado = 'reparando', direccion = null, ip_pod = null
               where organizacion = $1 and proyecto = $2 and id = $3",
