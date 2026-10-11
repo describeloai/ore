@@ -497,11 +497,20 @@ fn del_pool(
             e.motivo()
         )))));
     }
+    // ⭐ La dirección es la de la overlay, como en frío: el proxy llega a las VMs por ella, no por
+    //   la del pod (medido en producción, ventana 1: «couldn't connect to compute node at
+    //   <ip del pod>:5432»; en el laboratorio las dos eran la misma). Sin ella aún, `arrancando`
+    //   con su cómputo: la vuelta siguiente lo termina por `asegurar_endpoint`.
+    let Some(overlay) = k.estado(&nombre)?.and_then(|e| e.ip_overlay) else {
+        return Ok(Some(Err(Fallo::Esperar(format!(
+            "el cómputo {nombre} del pool aún sin IP de la overlay"
+        )))));
+    };
     c.execute(
-        "update plano.endpoint set observado = 'listo', direccion = $4, ip_pod = $4,
+        "update plano.endpoint set observado = 'listo', direccion = $4, ip_pod = $5,
                 ultima_actividad = now(), dormido_en = null
           where organizacion = $1 and proyecto = $2 and id = $3",
-        &[&org, &p, &ep.id, &ip],
+        &[&org, &p, &ep.id, &overlay, &ip],
     )
     .map_err(bd)?;
     if !ep.lectura {

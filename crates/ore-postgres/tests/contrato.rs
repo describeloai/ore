@@ -1610,6 +1610,11 @@ fn el_pool_precalentado_despierta_sin_arrancar_y_un_computo_usado_no_vuelve() {
     let (vm, computo) = (campo(&r, &["vm"]), campo(&r, &["computo"]));
     assert!(computo.starts_with("pool-"), "{r}");
     assert!(r.contains(r#""observado":"listo""#), "{r}");
+    // Por la overlay, como en frío (ventana 1: con la IP del pod el proxy no llegaba).
+    assert!(
+        campo(&r, &["direccion"]).starts_with("10.100.128."),
+        "la dirección es la de la overlay: {r}"
+    );
     let pedido = almacen.pedido();
     assert!(
         !pedido
