@@ -149,6 +149,12 @@ spec:
     - from:
         - ipBlock: { cidr: 0.0.0.0/0 }
       ports: [{ protocol: TCP, port: 4432 }, { protocol: TCP, port: 4444 }]
+    # El túnel de Cloudflare (0060 C2): un pod del clúster, y en Dataplane V2 un ipBlock no cubre
+    # a los pods. Sólo él, por los dos puertos.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ore-system } }
+          podSelector: { matchLabels: { ore.dev/rol: tunel } }
+      ports: [{ protocol: TCP, port: 4432 }, { protocol: TCP, port: 4444 }]
 ---
 # Adónde sale (por su interfaz de pod): el DNS, ore-postgres y Redis. Las VMs están en la overlay
 # (otra interfaz, la de Multus), detrás de la barrera 3; aquí sólo por si alguna ruta cae por la del pod.
