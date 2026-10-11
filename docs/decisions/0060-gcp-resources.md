@@ -442,6 +442,35 @@ nombre de prueba, `c2-prueba.ore.paladio.io`: un CNAME en Cloud DNS a `entrada.o
 - Fuera de esto: la entrada propia de una organización (su dominio) también se da de alta así,
   pero su CNAME lo pone su dueño, y hasta entonces Cloudflare no lo valida.
 
+### C2·5 · fuera los balanceadores (2026-10-11, 09:30–09:50 UTC) — C2 CERRADO
+
+- **Antes de borrar:** las métricas (`loadbalancing…/https/request_count`) daban 0 peticiones en
+  la `Gateway` desde el cambio de las 08:33 y en el login https desde las 08:53. Al puerto 80 del
+  login llegaron 8 en 10 min, bots barriendo IPs.
+- **Los certificados de los cinco nombres, a validación por HTTP.** Se emitieron por TXT y la
+  renovación (~90 días) habría pedido TXT nuevos: una avería con fecha. Con el CNAME puesto, HTTP
+  se renueva solo.
+- **La malla** (`34518e26`): fuera `14-la-puerta.yaml`; la `43`, la `67` y la `63` sin `parentRef` a
+  `puerta`, sin `HealthCheckPolicy`, `GCPBackendPolicy`, `Ingress`, `ManagedCertificate`,
+  `FrontendConfig`, `BackendConfig`, NEG ni rangos de Google. La comprobación ⑮ de
+  `gen-inquilino.py` mira el plazo en la `BackendTrafficPolicy` de la puerta (300 s > 240).
+- **En vivo:** las celdas se limpiaron solas al converger (su Kustomization poda). Lo de
+  plataforma (`prune: false`) se borró a mano: la `Gateway` `puerta`, el `Ingress` `idp` y sus
+  piezas. Reglas de reenvío: 0 a las 09:46:47. Liberadas `ore-puerta` y `ore-idp`. Borrados el mapa
+  `ore-puerta`, el certificado `ore-comodin`, su autorización DNS y
+  `_acme-challenge.ore.paladio.io`.
+- **Comprobado después:** `login`, `iam`, `demo` y `victor` dan 200 por Cloudflare;
+  `http://login` → 301; cookies `Secure; SameSite=None`.
+
+**El fijo con la malla dormida, ahora:** sin balanceadores (eran ~18 $, más ~18 $ de Postgres
+desde el día 10). Quedan los discos (~7 $), NAT e IP de salida (~4–5 $), Artifact Registry
+(~2,5 $), secretos (~1,3 $) y las zonas DNS (~0,6 $): **~16 $/mes**, y lo despierto, aparte. Se
+medirá en la factura de la semana que viene.
+
+**Fuera de C2:** quitar de GoDaddy los TXT `_cf-custom-hostname.login` y `_acme-challenge.login`
+(ya no hacen falta; la persona) y los de `ore.paladio.io` en Cloud DNS (inofensivos ahora que
+cada nombre tiene su registro propio).
+
 ### C2 · la entrada de Postgres, también al túnel (2026-10-10, decidido por la persona)
 
 0058 desplegó hoy (13:12) su entrada, `ore-pg/proxy-postgres`, como `LoadBalancer` L4 en la IP
