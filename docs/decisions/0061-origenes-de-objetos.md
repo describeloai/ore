@@ -313,6 +313,28 @@ suspendida): `testIamPermissions`, la URL firmada por `signBlob` bajada con `cur
 (un bucket de otro proyecto con `objectViewer` a las dos cuentas de la celda). Se salda corriendo
 `o2-gcs.sh` contra un bucket real y la consola dando de alta uno.
 
+### GC · GCS de verdad (2026-10-12)
+
+La cuenta de Google ya no está suspendida y el proyecto es nuestro: la deuda de O2 se salda con un
+bucket propio y las cuentas de la celda, y no sólo por lo público.
+
+**GC0 · medido** (solo lectura; `curl` contra la API JSON, con el usuario dueño del proyecto y sin
+identidad; un objeto del lago de `t-victor` y buckets públicos de Google):
+
+| qué | GCS de verdad | lo que supone |
+|---|---|---|
+| identidades de `t-victor` | el driver (`ore-federation`, el Job de la copia: KSA `driver`) es `ore-driver-victor`; `ore-medios` es `ore-medios-victor`, con `TokenCreator` sobre sí misma; el puesto, `ore-puesto-victor` | el `objectViewer` de un bucket de origen va a esas dos; `ore-medios` firma V4 como sí misma |
+| `testIamPermissions` | `200` con `storage.objects.get`/`list` | el `check` de O2·2 funciona tal cual (el emulador daba 404) |
+| paginación | `nextPageToken` de 144 caracteres, la segunda página `200` | lo que el emulador no tenía |
+| rango `bytes=0-9` / `bytes=-10` | `206` / **`206` con `Content-Range` por el final** | a diferencia de Azure, el rango por el final no pide un `HEAD` |
+| `x-goog-hash` | `crc32c` y `md5` | la huella de O2 |
+| `generation` exacta / inventada | `200` / `404 No such object` | fijar por generación, exacto |
+| `ifGenerationMatch` bueno / malo | `200` / **`412`** | el emulador lo ignoraba; aquí es una segunda guarda |
+| bucket privado sin identidad / que no existe | **`401`** «Anonymous caller does not have…» / **`404`** «bucket does not exist» (también con identidad) | a diferencia de Azure, se distinguen |
+| un bucket público (`cloud-samples-data`, `gcp-public-data-*`) **con un token válido de otra identidad** | `200`, y `testIamPermissions` da `list` y `get` | **la cuenta de la celda lee lo público sin modo nuevo**: D-O6 no hace falta en GCS (sí mirar `billing.requesterPays`, que cobraría a nuestro proyecto) |
+| un token basura a un bucket público | `401 Invalid Credentials` | como en Azure; ORE siempre manda uno válido |
+| el dueño del proyecto suplantando a `ore-driver-victor` / `ore-medios-victor` | `PERMISSION_DENIED` | ni el dueño saca un token de la celda: la mitad con identidad (y `signBlob`) se mide por ORE, en producción |
+
 ### O3 · hecho en el laboratorio (2026-10-09): Azure Blob / ADLS Gen2
 
 **O3·0, medido** (Azurite 3.37.0, `mcr.microsoft.com/azure-storage/azurite@sha256:830430c1…`): lista
