@@ -335,6 +335,17 @@ identidad; un objeto del lago de `t-victor` y buckets públicos de Google):
 | un token basura a un bucket público | `401 Invalid Credentials` | como en Azure; ORE siempre manda uno válido |
 | el dueño del proyecto suplantando a `ore-driver-victor` / `ore-medios-victor` | `PERMISSION_DENIED` | ni el dueño saca un token de la celda: la mitad con identidad (y `signBlob`) se mide por ORE, en producción |
 
+**GC1 · el bucket de origen** (2026-10-12): `gs://project-8853a180-450d-47be-b83-origen-gcs`
+(`europe-west1`, versionado, acceso uniforme, acceso público impedido, etiquetas
+`ore-uso=origen-de-pruebas`, `ore-adr=0061`), con lo de `cloud-samples-data`: `tablas/` (un Parquet,
+dos CSV y un JSON de `us-states`, cada uno en su carpeta) y `media/` (cinco imágenes, tres audios,
+tres PDF); 15 objetos, 1,9 MiB. `objectViewer` sólo para `ore-driver-victor` y `ore-medios-victor`.
+
+**GC2 · `--cuenta-medios` en la malla** (`25aff14b`): el binario la tenía desde O2·3, así que va
+sola. El aprovisionador re-rinde a la hora en punto; se adelantó con un Job desde el CronJob
+(`kubectl create job --from=cronjob/aprovisionador`, la pasada entera prevista para eso). Medido:
+`t-victor` dice `ore-medios-victor@…`, `t-demo` `ore-medios-demo@…`, sin reinicios.
+
 ### O3 · hecho en el laboratorio (2026-10-09): Azure Blob / ADLS Gen2
 
 **O3·0, medido** (Azurite 3.37.0, `mcr.microsoft.com/azure-storage/azurite@sha256:830430c1…`): lista
