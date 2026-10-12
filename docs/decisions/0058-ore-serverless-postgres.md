@@ -2120,3 +2120,11 @@ Tres trampas del guion, no del producto:
 Queda por hacer:
 - revisar en el navegador los estados de la interfaz; el SQL está probado en producción y la vista pasa `tsc`;
 - el paso 5, el cierre.
+
+#### P8·3 · Cerrado (2026-10-12)
+
+El usuario ha visto Tables en el navegador con sus tablas: «funciona de lujo». **P8·3 queda cerrado.** Lo que queda de él son deudas, cada una con su condición:
+- **P8·3b, editar filas desde la rejilla:** cuando se pida.
+- **Paginar por cursor:** si una tabla real pasa de varios millones de filas.
+
+Sigue P8·4: la vista general (Overview) y los ajustes.
