@@ -508,6 +508,7 @@ mod prueba {
             unicas: Vec::new(),
             foraneas: Vec::new(),
             filas: None,
+            filas_estimadas: None,
             clase: "table".into(),
             lee: None,
             cambia: None,

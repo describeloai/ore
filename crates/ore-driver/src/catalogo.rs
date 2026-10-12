@@ -127,6 +127,11 @@ pub const FORMA: &[(&str, Nivel, &str)] = &[
         Nivel::Tabla,
         "cuántas filas, si el origen las cuenta",
     ),
+    (
+        "rowsEstimate",
+        Nivel::Tabla,
+        "ORE 0062: cuántas filas, ESTIMADAS (de una muestra), cuando nadie las contó",
+    ),
     ("reads", Nivel::Tabla, "la cara `I`, opaca a esta pieza"),
     ("changes", Nivel::Tabla, "la cara `D`, opaca a esta pieza"),
     (
@@ -217,6 +222,11 @@ pub struct Tabla {
     pub unicas: Vec<Vec<String>>,
     pub foraneas: Vec<Foranea>,
     pub filas: Option<u64>,
+    /// ⭐ ORE 0062 · Las filas **estimadas** cuando nadie las contó: un CSV
+    /// grande, de los bytes que mide y los que mide una fila de su muestra.
+    /// Aparte de [`Tabla::filas`] y nunca mezcladas: quien pregunta «¿cero
+    /// filas?» (el inductor) sólo lee lo contado.
+    pub filas_estimadas: Option<u64>,
     /// `table`, `view` o `materializedView`, tal y como lo dijo el origen.
     pub clase: String,
     /// La cara `I` del objeto, **tal como la declaró el driver**: se transcribe,
@@ -336,6 +346,10 @@ impl Catalogo {
                     .collect(),
                 filas: t
                     .get("rows")
+                    .and_then(|(_, v)| v.as_str())
+                    .and_then(|s| s.parse().ok()),
+                filas_estimadas: t
+                    .get("rowsEstimate")
                     .and_then(|(_, v)| v.as_str())
                     .and_then(|s| s.parse().ok()),
                 clase: t
@@ -467,6 +481,9 @@ pub fn escribir(c: &Catalogo) -> String {
             }
             if let Some(n) = t.filas {
                 o.insert("rows".into(), Json::Int(n as i64));
+            }
+            if let Some(n) = t.filas_estimadas {
+                o.insert("rowsEstimate".into(), Json::Int(n as i64));
             }
             if let Some(x) = &t.lee {
                 o.insert("reads".into(), x.clone());
@@ -609,7 +626,8 @@ mod tests {
           "kind": "table",
           "object": "Nueva carpeta/ventas/pedidos/",
           "format": { "type": "parquet", "match": "**/*.parquet", "partitions": ["fecha"] },
-          "columns": [ { "name": "id", "type": "String" } ] }
+          "columns": [ { "name": "id", "type": "String" } ],
+          "rowsEstimate": 59800 }
       ],
       "objects": [
         { "name": "docs.contratos",

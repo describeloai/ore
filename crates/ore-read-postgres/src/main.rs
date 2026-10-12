@@ -639,6 +639,7 @@ fn armar(
                 // PostgreSQL no da un conteo fiable sin contar: la ausencia es
                 // una respuesta.
                 filas: None,
+                filas_estimadas: None,
                 clase: a.clase.to_string(),
                 // Las dos caras del objeto. Van EN EL CATALOGO y no en el
                 // inductor porque solo el driver las sabe: qué se puede empujar

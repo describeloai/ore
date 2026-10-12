@@ -37,6 +37,21 @@
 //! da su carpeta como nombre, o `part_00066` en la raíz: su nombre entero no
 //! dice nada.
 //!
+//! # Las filas (ORE 0062)
+//!
+//! Cada tabla dice cuántas filas tiene si se **contaron** (`rows`: el pie de
+//! un Parquet, un CSV que cabe en la muestra) o cuántas **se estiman**
+//! (`rowsEstimate`: un CSV grande, por los bytes de su muestra). Una tabla de
+//! varios ficheros suma lo de los que se leyeron, y si no se leyeron todos
+//! extrapola por bytes: entonces es estimada aunque cada pie fuera exacto.
+//!
+//! # Una carpeta no es un objeto
+//!
+//! Un objeto vacío cuyo nombre es la carpeta de otros (`processedManifest`,
+//! junto a `processedManifest/manifest.json`) es el marcador que dejan algunas
+//! herramientas al crear una carpeta (medido en el contenedor `mnist` de Azure
+//! Open Datasets). No es dato: se salta, como el que acaba en `/`.
+//!
 //! # Lo oculto no es dato
 //!
 //! Lo que empieza por `_` o por `.` —el fichero o una de sus carpetas— es lo
@@ -314,6 +329,7 @@ fn tabla(
         nombre,
         columnas: esquema.columnas,
         filas: esquema.filas,
+        filas_estimadas: esquema.filas_estimadas,
         clase: "table".into(),
         lee: Some(cara_i(bytes)),
         cambia: Some(cara_d()),
@@ -321,6 +337,30 @@ fn tabla(
         formato: Some(Json::obj(f)),
         ..Default::default()
     }
+}
+
+/// ⭐ 0062 · **Las filas de una tabla de varios ficheros**, de lo que se leyó
+/// de ellos: `(tamaño, contadas, estimadas)` por fichero leído, de `todos`, que
+/// pesan `bytes`. Contadas si se contaron TODOS; si no, estimadas: lo leído
+/// (contado o estimado) extrapolado por bytes. Si algún leído no dice nada,
+/// nada: una suma con un hueco no es una estimación.
+fn filas_de_varios(
+    leidos: &[(u64, Option<u64>, Option<u64>)],
+    todos: usize,
+    bytes: u64,
+) -> (Option<u64>, Option<u64>) {
+    if leidos.len() == todos && leidos.iter().all(|l| l.1.is_some()) {
+        return (Some(leidos.iter().filter_map(|l| l.1).sum()), None);
+    }
+    let Some(filas) = leidos.iter().map(|l| l.1.or(l.2)).sum::<Option<u64>>() else {
+        return (None, None);
+    };
+    let leido: u64 = leidos.iter().map(|l| l.0).sum();
+    if leido == 0 {
+        return (None, None);
+    }
+    let est = (filas as f64 * bytes as f64 / leido as f64).round() as u64;
+    (None, Some(est))
 }
 
 /// **El catálogo.** `prefijo` es el de la fuente (vacío o con barra final).
@@ -331,8 +371,17 @@ pub fn leer(
     avisos: &mut Vec<String>,
 ) -> Result<Catalogo, String> {
     let lista = o.listar(prefijo)?;
-    // Una «carpeta» creada desde la consola es un objeto vacío acabado en `/`.
-    let lista: Vec<&Objeto> = lista.iter().filter(|x| !x.clave.ends_with('/')).collect();
+    // Una «carpeta» creada desde la consola es un objeto vacío acabado en `/`;
+    // o uno vacío que se llama como la carpeta de otros (0062, `mnist`).
+    let carpetas: BTreeSet<&str> = lista
+        .iter()
+        .flat_map(|x| x.clave.match_indices('/').map(|(i, _)| &x.clave[..i]))
+        .collect();
+    let lista: Vec<&Objeto> = lista
+        .iter()
+        .filter(|x| !x.clave.ends_with('/'))
+        .filter(|x| !(x.tamano == 0 && carpetas.contains(x.clave.as_str())))
+        .collect();
     let antes = lista.len();
     let lista: Vec<&Objeto> = lista
         .into_iter()
@@ -465,17 +514,22 @@ pub fn leer(
         let base_carpeta = ultima(&raiz).map(identificador);
         if !particiones.is_empty() {
             // Una tabla Hive: el esquema del primero, las particiones como
-            // columnas, y las filas si todos los pies se leyeron.
+            // columnas, y las filas de los que se leyeron (0062).
             let esquema = esquema_de(o, f, items[idx[0]].obj, &ext)?;
-            let mut filas = esquema.filas;
-            if f == Formato::Parquet && idx.len() > 1 {
-                filas = idx
-                    .iter()
-                    .take(COMPARAR)
-                    .map(|&i| tabular::parquet(o, &items[i].obj.clave).ok()?.filas)
-                    .sum::<Option<u64>>()
-                    .filter(|_| idx.len() <= COMPARAR);
+            let mut leidos = vec![(
+                items[idx[0]].obj.tamano,
+                esquema.filas,
+                esquema.filas_estimadas,
+            )];
+            for &i in idx.iter().skip(1).take(COMPARAR - 1) {
+                let e = esquema_de(o, f, items[i].obj, &items[i].ext).ok();
+                leidos.push((
+                    items[i].obj.tamano,
+                    e.as_ref().and_then(|e| e.filas),
+                    e.as_ref().and_then(|e| e.filas_estimadas),
+                ));
             }
+            let (filas, filas_estimadas) = filas_de_varios(&leidos, idx.len(), bytes);
             let nombre = nombres.dar(&schema, &base_carpeta.unwrap_or_else(|| "raiz".into()));
             tablas.push(tabla(
                 nombre,
@@ -483,7 +537,11 @@ pub fn leer(
                 f,
                 Some(format!("**/*.{ext}")),
                 &particiones,
-                Esquema { filas, ..esquema },
+                Esquema {
+                    filas,
+                    filas_estimadas,
+                    ..esquema
+                },
                 bytes,
                 avisos,
             ));
@@ -506,11 +564,18 @@ pub fn leer(
                     idx.len()
                 ));
             }
+            let leidos: Vec<_> = idx
+                .iter()
+                .zip(&esquemas)
+                .map(|(&i, e)| (items[i].obj.tamano, e.filas, e.filas_estimadas))
+                .collect();
+            let (filas, filas_estimadas) = filas_de_varios(&leidos, idx.len(), bytes);
             let mut unido = if f == Formato::Jsonl {
                 let cols = unir(&esquemas);
                 Esquema {
                     columnas: cols,
                     filas: None,
+                    filas_estimadas: None,
                     separador: None,
                     avisos: esquemas
                         .iter_mut()
@@ -518,13 +583,10 @@ pub fn leer(
                         .collect(),
                 }
             } else {
-                let mut primero = esquemas.swap_remove(0);
-                primero.filas = None;
-                primero
+                esquemas.swap_remove(0)
             };
-            if f == Formato::Parquet {
-                unido.filas = None;
-            }
+            unido.filas = filas;
+            unido.filas_estimadas = filas_estimadas;
             let nombre = nombres.dar(&schema, &base_carpeta.unwrap_or_else(|| "raiz".into()));
             // `*`, no `**`: los de las subcarpetas son de su propia tabla.
             tablas.push(tabla(
@@ -547,6 +609,7 @@ pub fn leer(
                     Esquema {
                         columnas: Vec::new(),
                         filas: None,
+                        filas_estimadas: None,
                         separador: None,
                         avisos: Vec::new(),
                     },
@@ -997,5 +1060,65 @@ mod tests {
         );
         assert_eq!(tallo("Nueva carpeta/ventas 2026.csv"), "ventas_2026");
         assert_eq!(parte_de_spark("part-.parquet"), None);
+    }
+
+    /// 0062 · El contenedor `mnist` de Azure Open Datasets, en pequeño: un CSV
+    /// grande se estima, uno pequeño se cuenta, una tabla Hive suma, un Parquet
+    /// cuenta, y la carpeta vacía que se llama como otras no es un objeto.
+    #[test]
+    fn las_filas_se_cuentan_o_se_estiman_y_una_carpeta_no_es_un_objeto() {
+        let fila = "5,0,0,128,255\n"; // 14 bytes
+        let grande = fila.repeat(50_000).into_bytes();
+        let pequeno = fila.repeat(3).into_bytes();
+        let o = EnMemoria::con(&[
+            (
+                "train.csv",
+                [b"label,a,b,c,d\n".to_vec(), grande.clone()].concat(),
+            ),
+            // Otras columnas: no se une con `train.csv` (como en `mnist`).
+            ("labels.csv", b"label,x\n5,0\n7,1\n9,2\n".to_vec()),
+            (
+                "processed/dataset_filter=train/train.csv",
+                [b"label,a,b,c,d\n".to_vec(), grande].concat(),
+            ),
+            (
+                "processed/dataset_filter=test/t10k.csv",
+                [b"label,a,b,c,d\n".to_vec(), pequeno].concat(),
+            ),
+            ("green/part-0.parquet", un_parquet()),
+            ("processedManifest", Vec::new()),
+            ("processedManifest/manifest.json", b"{}".to_vec()),
+        ]);
+        let mut avisos = Vec::new();
+        let c = leer(&o, "mnist", "", &mut avisos).unwrap();
+
+        let t = por_nombre(&c, "default.train");
+        assert_eq!((t.filas, t.filas_estimadas), (None, Some(50_000)));
+        let t = por_nombre(&c, "default.labels");
+        assert_eq!((t.filas, t.filas_estimadas), (Some(3), None));
+        // Hive: uno contado y otro estimado dan una estimación de la suma.
+        let t = por_nombre(&c, "processed.processed");
+        assert_eq!((t.filas, t.filas_estimadas), (None, Some(50_003)));
+        let t = por_nombre(&c, "green.green");
+        assert_eq!((t.filas, t.filas_estimadas), (Some(0), None));
+
+        assert!(
+            c.objetos
+                .iter()
+                .all(|x| !x.prefijo.is_empty() || x.cuantos != 1 || x.bytes != 0),
+            "el marcador `processedManifest` no es un objeto: {:?}",
+            c.objetos.iter().map(|x| &x.nombre).collect::<Vec<_>>()
+        );
+        let m = conjunto(&c, "processedmanifest.processedmanifest");
+        assert_eq!(m.cuantos, 1);
+
+        // Y lo estimado viaja aparte en el catálogo.
+        let j = ore_driver::catalogo::escribir(&c);
+        assert!(j.contains("\"rowsEstimate\": 50000"), "{j}");
+        let de_vuelta = Catalogo::leer(&j).unwrap();
+        assert_eq!(
+            por_nombre(&de_vuelta, "default.train").filas_estimadas,
+            Some(50_000)
+        );
     }
 }

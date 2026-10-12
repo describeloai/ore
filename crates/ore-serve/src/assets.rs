@@ -17,6 +17,17 @@
 //! siguiente `GET` recalcula. Nada persiste: la caché son las últimas
 //! [`CABEZAS`] por proceso, y un directorio (el banco, los tests) no se cachea.
 //!
+//! # `estadisticas`, del catálogo de la fuente (ORE 0062)
+//!
+//! Un puntero a un origen (`Table`, `ObjectTable` del paquete de una fuente) no
+//! tiene transacciones, y su ficha decía «Rows —» siempre. Lo que el Job de
+//! catálogo vio está en el árbol —`packages/<fuente>/discover.catalog.json`, en
+//! el mismo commit que los punteros—: sus filas **contadas** (`rows`: el pie de
+//! un Parquet, `__TABLES__` de BigQuery) o **estimadas** (`rowsEstimate`: un CSV
+//! grande, por su muestra), y en un conjunto de objetos cuántos y cuánto pesan.
+//! Aquí se cuelga de cada puntero, diciendo cuál de las dos cosas es y de
+//! cuándo. No se guarda en ningún otro sitio: es del catálogo, y se rehace con él.
+//!
 //! # `version`, por fichero
 //!
 //! El núcleo deja `version: null` (no sabe de git). Aquí, en el clon que ya se
@@ -80,6 +91,7 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
         }
     }
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
+    anotar_estadisticas(raiz, &mut j);
     // `version` por fichero, sólo si el árbol tiene historia. Un proyecto
     // (0035 ①) tiene ruta como cualquier otra cosa —su manifiesto—, así que
     // quién lo creó y cuándo sale del mismo sitio y sin pedirle nada al árbol.
@@ -121,6 +133,81 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
         }
     }
     j
+}
+
+/// Lo que el catálogo de una fuente dice de un objeto suyo, por `<schema>.<nombre>`.
+fn del_catalogo(raiz: &Path, fuente: &str) -> Option<std::collections::BTreeMap<String, Json>> {
+    use ore_core::parse::Node;
+    let ruta = format!("packages/{fuente}/discover.catalog.json");
+    let texto = std::fs::read_to_string(raiz.join(&ruta)).ok()?;
+    let cat = ore_core::parse::parse(&texto).ok()?;
+    let num = |n: &Node, k: &str| -> Option<i64> { n.get(k)?.1.as_str()?.parse().ok() };
+    // De cuándo es: el último commit del catálogo, si el árbol tiene historia.
+    let cuando = version_de(raiz, &ruta).and_then(|v| match v {
+        Json::Obj(m) => m.get("cuando").cloned(),
+        _ => None,
+    });
+    let mut out = std::collections::BTreeMap::new();
+    for t in cat.get("tables").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let Some(nombre) = t.get("name").and_then(|(_, v)| v.as_str()) else {
+            continue;
+        };
+        let (filas, son) = match (num(t, "rows"), num(t, "rowsEstimate")) {
+            (Some(n), _) => (n, "contadas"),
+            (None, Some(n)) => (n, "estimadas"),
+            (None, None) => continue,
+        };
+        let mut m = vec![("filas", Json::Int(filas)), ("filas_son", Json::s(son))];
+        if let Some(c) = &cuando {
+            m.push(("catalogado", c.clone()));
+        }
+        out.insert(nombre.to_string(), Json::obj(m));
+    }
+    for o in cat.get("objects").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let Some(nombre) = o.get("name").and_then(|(_, v)| v.as_str()) else {
+            continue;
+        };
+        let (Some(n), Some(b)) = (num(o, "count"), num(o, "bytes")) else {
+            continue;
+        };
+        let mut m = vec![("objetos", Json::Int(n)), ("bytes", Json::Int(b))];
+        if let Some(c) = &cuando {
+            m.push(("catalogado", c.clone()));
+        }
+        out.insert(nombre.to_string(), Json::obj(m));
+    }
+    Some(out)
+}
+
+/// ⭐ 0062 · `estadisticas` en cada `Table` y `ObjectTable` de un paquete de
+/// fuente, de su catálogo (ver la cabecera). Un catálogo se lee una vez.
+fn anotar_estadisticas(raiz: &Path, j: &mut Json) {
+    let Json::Obj(m) = j else { return };
+    let Some(Json::Obj(items)) = m.get_mut("items") else {
+        return;
+    };
+    let mut catalogos: std::collections::BTreeMap<
+        String,
+        Option<std::collections::BTreeMap<String, Json>>,
+    > = Default::default();
+    for it in items.values_mut() {
+        let Json::Obj(it) = it else { continue };
+        if !matches!(it.get("kind"), Some(Json::Str(k)) if k == "Table" || k == "ObjectTable") {
+            continue;
+        }
+        let (Some(Json::Str(p)), Some(Json::Str(s)), Some(Json::Str(n))) =
+            (it.get("paquete"), it.get("schema"), it.get("name"))
+        else {
+            continue;
+        };
+        let clave = format!("{s}.{n}");
+        let cat = catalogos
+            .entry(p.clone())
+            .or_insert_with(|| del_catalogo(raiz, p));
+        if let Some(e) = cat.as_ref().and_then(|c| c.get(&clave)) {
+            it.insert("estadisticas".into(), e.clone());
+        }
+    }
 }
 
 /// `{commit, cuando, sujeto}` del último commit que tocó un fichero.
@@ -354,6 +441,79 @@ mod tests {
             panic!()
         };
         assert_eq!(r.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0062 · Un puntero a un origen lleva lo que su catálogo contó o estimó,
+    /// diciendo cuál de las dos cosas es; un conjunto de objetos, cuántos y
+    /// cuánto pesan.
+    #[test]
+    fn un_puntero_lleva_las_estadisticas_del_catalogo_de_su_fuente() {
+        let d = std::env::temp_dir().join(format!("ore-assets-stats-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("packages/lago/tables")).unwrap();
+        std::fs::create_dir_all(d.join("packages/lago/objects")).unwrap();
+        std::fs::write(
+            d.join("ontology.config.yaml"),
+            "apiVersion: oos.dev/v1alpha28\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\ndatasources:\n  - { name: lago, type: azure, connectionEnv: LAGO_URL }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/lago/package.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: lago, version: 0.1.0, status: active, domain: lago }\nspec: { owner: team:d }\n",
+        )
+        .unwrap();
+        for (n, o) in [("viajes", "part-0.parquet"), ("train", "train.csv")] {
+            std::fs::write(
+                d.join(format!("packages/lago/tables/{n}.yaml")),
+                format!("apiVersion: oos.dev/v1alpha16\nkind: Table\nmetadata: {{ name: {n}, namespace: lago }}\nspec:\n  datasource: lago\n  object: \"{o}\"\n  format: {{ type: csv }}\n  columns: {{ id: {{ type: Integer }} }}\n  reads: {{ fullScan: cheap }}\n  changes: {{ mode: retract, witness: listing }}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            d.join("packages/lago/objects/raiz_gz.yaml"),
+            "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: raiz_gz, namespace: lago }\nspec:\n  datasource: lago\n  prefix: \"\"\n  match: \"*.gz\"\n  media: archive\n  reads: { fullScan: cheap }\n  changes: { mode: retract, witness: listing }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/lago/discover.catalog.json"),
+            r#"{ "source": "lago",
+                 "tables": [ { "name": "default.viajes", "columns": [], "rows": 630889 },
+                             { "name": "default.train", "columns": [], "rowsEstimate": 59800 } ],
+                 "objects": [ { "name": "default.raiz_gz", "prefix": "", "media": "archive", "count": 4, "bytes": 11594722 } ] }"#,
+        )
+        .unwrap();
+        let j = indice_de(&d, Cabeza::default());
+        let Json::Obj(m) = &j else { panic!() };
+        let Json::Obj(items) = &m["items"] else {
+            panic!()
+        };
+        let est = |r: &str| -> Json {
+            let Json::Obj(it) = &items[r] else {
+                panic!("{r}")
+            };
+            it.get("estadisticas")
+                .cloned()
+                .unwrap_or_else(|| panic!("{r} sin estadisticas: {it:?}"))
+        };
+        assert_eq!(
+            est("table:lago.viajes"),
+            Json::obj([
+                ("filas", Json::Int(630889)),
+                ("filas_son", Json::s("contadas"))
+            ])
+        );
+        assert_eq!(
+            est("table:lago.train"),
+            Json::obj([
+                ("filas", Json::Int(59800)),
+                ("filas_son", Json::s("estimadas"))
+            ])
+        );
+        assert_eq!(
+            est("objecttable:lago.raiz_gz"),
+            Json::obj([("objetos", Json::Int(4)), ("bytes", Json::Int(11594722))])
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

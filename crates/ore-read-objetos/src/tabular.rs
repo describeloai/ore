@@ -12,6 +12,13 @@
 //!   `\u{feff}product_category_name`).
 //! - **JSONL**: los primeros 64 KB; la unión de las claves (medido: `usuario`
 //!   aparece el segundo día), y el tipo como lo dice el JSON.
+//!
+//! # Las filas (ORE 0062)
+//!
+//! Lo más barato que sea verdad: el pie de un Parquet las **cuenta**; un CSV o
+//! un JSONL que cabe en la muestra, también; uno más grande se **estima** con
+//! la misma muestra —bytes del fichero ÷ bytes por fila de la muestra—, lo que
+//! hace el crawler de Glue. Sin leer un byte más.
 
 use ore_driver::catalogo::Columna;
 use ore_objetos::Origen;
@@ -23,6 +30,8 @@ const MUESTRA: usize = 64 * 1024;
 pub struct Esquema {
     pub columnas: Vec<Columna>,
     pub filas: Option<u64>,
+    /// Las filas estimadas, cuando no se contaron (0062).
+    pub filas_estimadas: Option<u64>,
     /// Solo CSV: el separador, si no es la coma.
     pub separador: Option<char>,
     pub avisos: Vec<String>,
@@ -63,6 +72,7 @@ pub fn parquet(o: &dyn Origen, clave: &str) -> Result<Esquema, String> {
     Ok(Esquema {
         columnas,
         filas: u64::try_from(fm.num_rows()).ok(),
+        filas_estimadas: None,
         separador: None,
         avisos: Vec::new(),
     })
@@ -257,6 +267,33 @@ fn filas_csv(texto: &str, sep: char, cortado: bool) -> Vec<Vec<String>> {
     filas
 }
 
+/// ⭐ 0062 · **Las filas de un fichero de texto por su muestra**: contadas si la
+/// muestra es el fichero entero, estimadas si no. `cabecera`: los bytes de la
+/// cabecera (fuera de la cuenta); `hasta`: donde acaba la última fila entera de
+/// la muestra; `leidas`: cuántas filas de datos hay hasta ahí.
+///
+/// La estimación es `(tamaño − cabecera) ÷ bytes por fila`, redondeada: una
+/// muestra de filas que miden parecido (medido en MNIST: ±2 %) da un número del
+/// orden correcto, y se dice que es estimado.
+pub fn filas_de_la_muestra(
+    tamano: u64,
+    cortado: bool,
+    cabecera: u64,
+    hasta: u64,
+    leidas: u64,
+) -> (Option<u64>, Option<u64>) {
+    if !cortado {
+        return (Some(leidas), None);
+    }
+    let datos = hasta.saturating_sub(cabecera);
+    if leidas == 0 || datos == 0 {
+        return (None, None);
+    }
+    let por_fila = datos as f64 / leidas as f64;
+    let est = (tamano.saturating_sub(cabecera) as f64 / por_fila).round() as u64;
+    (None, Some(est.max(leidas)))
+}
+
 pub fn csv(o: &dyn Origen, clave: &str, tamano: u64, tsv: bool) -> Result<Esquema, String> {
     let bytes = o.rango(clave, &format!("0-{}", MUESTRA - 1))?;
     let cortado = (bytes.len() as u64) < tamano;
@@ -280,6 +317,22 @@ pub fn csv(o: &dyn Origen, clave: &str, tamano: u64, tsv: bool) -> Result<Esquem
     let Some((cabecera, datos)) = filas.split_first() else {
         return Err(format!("`{clave}` está vacío"));
     };
+    // Las filas: por los bytes de la muestra (con su BOM), no por el texto.
+    // Una cabecera con un salto entre comillas es rara: se toma su primera línea.
+    let fin_cabecera = bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(0, |i| i as u64 + 1);
+    let hasta = if cortado {
+        bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i as u64 + 1)
+    } else {
+        bytes.len() as u64
+    };
+    let (contadas, estimadas) =
+        filas_de_la_muestra(tamano, cortado, fin_cabecera, hasta, datos.len() as u64);
     let columnas = cabecera
         .iter()
         .enumerate()
@@ -305,7 +358,8 @@ pub fn csv(o: &dyn Origen, clave: &str, tamano: u64, tsv: bool) -> Result<Esquem
         .collect();
     Ok(Esquema {
         columnas,
-        filas: None,
+        filas: contadas,
+        filas_estimadas: estimadas,
         separador: (sep != ',').then_some(sep),
         avisos,
     })
@@ -322,6 +376,16 @@ pub fn jsonl(o: &dyn Origen, clave: &str, tamano: u64) -> Result<Esquema, String
     if cortado {
         lineas.pop();
     }
+    // Sin cabecera: cada línea no vacía es una fila (0062).
+    let hasta = if cortado {
+        bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i as u64 + 1)
+    } else {
+        bytes.len() as u64
+    };
+    let (contadas, estimadas) = filas_de_la_muestra(tamano, cortado, 0, hasta, lineas.len() as u64);
     let mut orden: Vec<String> = Vec::new();
     let mut vistas: std::collections::BTreeMap<String, Vec<Valor>> = Default::default();
     let mut malas = 0usize;
@@ -388,7 +452,8 @@ pub fn jsonl(o: &dyn Origen, clave: &str, tamano: u64) -> Result<Esquema, String
         .collect();
     Ok(Esquema {
         columnas,
-        filas: None,
+        filas: contadas,
+        filas_estimadas: estimadas,
         separador: None,
         avisos,
     })
@@ -432,6 +497,31 @@ mod tests {
         );
         assert!(e.avisos.iter().any(|a| a.contains("BOM")));
         assert!(e.separador.is_none());
+    }
+
+    /// 0062 · Un CSV que cabe en la muestra se cuenta; uno mayor se estima con
+    /// los bytes de sus filas, y lo estimado no se hace pasar por contado.
+    #[test]
+    fn las_filas_de_un_csv_se_cuentan_o_se_estiman() {
+        let fila = "1,abcdefgh\n"; // 11 bytes
+        let pequeno = format!("id,txt\n{}", fila.repeat(10));
+        // 100 000 filas: 1,1 MB, la muestra lee 64 KB.
+        let grande = format!("id,txt\n{}", fila.repeat(100_000));
+        let jl = "{\"a\": 1, \"b\": \"xy\"}\n".repeat(20_000);
+        let o = EnMemoria::con(&[
+            ("p.csv", pequeno.as_bytes().to_vec()),
+            ("g.csv", grande.as_bytes().to_vec()),
+            ("g.jsonl", jl.as_bytes().to_vec()),
+        ]);
+        let e = csv(&o, "p.csv", pequeno.len() as u64, false).unwrap();
+        assert_eq!((e.filas, e.filas_estimadas), (Some(10), None));
+
+        let e = csv(&o, "g.csv", grande.len() as u64, false).unwrap();
+        assert_eq!(e.filas, None, "lo que no se contó no es contado");
+        assert_eq!(e.filas_estimadas, Some(100_000));
+
+        let e = jsonl(&o, "g.jsonl", jl.len() as u64).unwrap();
+        assert_eq!((e.filas, e.filas_estimadas), (None, Some(20_000)));
     }
 
     #[test]

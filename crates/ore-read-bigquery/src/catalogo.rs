@@ -372,6 +372,7 @@ pub fn armar(fuente: &str, dataset: &str, filas: &[Fila]) -> String {
                     })
                     .collect(),
                 filas: a.filas,
+                filas_estimadas: None,
                 clase: a.clase.to_string(),
                 // Las dos caras, del objeto y no de quien lo consulta.
                 lee: Some(reads(a.particion.as_deref(), a.exige_filtro)),
