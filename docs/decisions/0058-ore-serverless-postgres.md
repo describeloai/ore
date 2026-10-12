@@ -1860,3 +1860,18 @@ El informe dio los despertares todos como «en frío» porque no se apuntó `poo
 - el soak largo (objetivos 8 y 9), si alguna vez hace falta;
 - la latencia de commit medida desde la región;
 - `libro-webhooks` y `p6.sh http-corto` por Cloudflare, cuando exista el nombre `api.`.
+
+#### El grupo `pg` en spot, mientras desarrollamos (2026-10-12)
+
+**Por qué.** Con la malla en horario fijo (0060), `pg` despierta a demanda, solo cuando se trabaja en Postgres. Su suelo con el producto despierto es de 2 `n2-standard-2`: unos 0,107 $/h cada uno normales y unos 0,03 $/h en spot. A demanda (~160 h de nodo al mes), eso son unos **17 $/mes normales y unos 5 $/mes en spot**.
+
+**Qué se hizo.** El grupo se recreó con el mismo nombre (`pg`) y `--spot`, porque un grupo no se puede pasar a spot y los guiones del 0060 lo nombran así. Lleva lo mismo que el anterior: KVM anidado, Ubuntu containerd, `ore.dev/pool=neon`, taint `ore.dev/neon`, Workload Identity, nodos privados, kubelet con 2 bajadas en paralelo y autoescalado 0–3.
+
+**Medido.**
+- `ore-pg` entero, listo en **585 s** desde 0 nodos, sobre 2 nodos spot;
+- `neonvm/kvm` disponible en los dos nodos;
+- una VM de cómputo, lista en **151 s** con la imagen bajándose en un nodo nuevo.
+
+**Lo que cuesta.** Spot puede quitar un nodo con 30 s de aviso: es un golpe como los de P7, con 1–3 min de corte, y los datos viven en disco y en GCS. A veces no hay capacidad spot en la zona.
+
+**Para clientes, otra cosa.** El almacenamiento y el plano irán en nodos normales, y el cómputo, en spot o en normales según el plan. Se decide en la puerta de producción.
