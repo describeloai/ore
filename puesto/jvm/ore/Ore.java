@@ -690,8 +690,11 @@ public final class Ore {
     /** {@code Ore.collection("db.schema.name")} (or {@code db.name}): a media collection. */
     public static Media.Collection collection(String name) { return new Media.Collection(name); }
 
-    /** The media kinds a collection is of (OOS v1alpha17). */
-    public static final List<String> MEDIA = List.of("document", "image", "audio", "video", "spreadsheet", "email");
+    /** The media kinds a collection is of: those of OOS v1alpha17 and, since v1alpha29, the new families, {@code archive} (kept as is) and {@code multimodal} (any family, formats optional). */
+    public static final List<String> MEDIA = List.of("document", "image", "audio", "video", "spreadsheet", "email",
+        "structured", "text", "geospatial", "model3d", "medical", "scientific", "design", "archive", "multimodal");
+    /** Those of v1alpha29: a collection of one of them is written with that version. */
+    static final List<String> MEDIA_V1ALPHA29 = MEDIA.subList(6, MEDIA.size());
 
     /** {@code create media collection name (media, formats)}: an empty <b>written</b> collection, which code fills with {@code collection(name).transaction()}. */
     public static Map<String, Object> createCollection(String name, String media, List<String> formats) throws Exception {
@@ -713,7 +716,7 @@ public final class Ore {
         if (!MEDIA.contains(media)) throw new IllegalArgumentException(que + ": `media` is one of " + String.join(", ", MEDIA) + ", not " + media);
         List<String> fs = new ArrayList<>();
         for (String f : formats == null ? List.<String>of() : formats) fs.add(f.toLowerCase(java.util.Locale.ROOT).replaceAll("^\\.+", ""));
-        if (fs.isEmpty() || new java.util.HashSet<>(fs).size() != fs.size() || !fs.stream().allMatch(f -> f.matches("^[a-z0-9][a-z0-9.+-]*$")))
+        if ((fs.isEmpty() && !media.equals("multimodal")) || new java.util.HashSet<>(fs).size() != fs.size() || !fs.stream().allMatch(f -> f.matches("^[a-z0-9][a-z0-9.+-]*$")))
             throw new IllegalArgumentException(que + ": `formats` is a list of distinct extensions (`png`, `pdf`), not " + formats);
         String[] p = partes(nombre);
         String ruta = p[1].equals(DEFAULT) ? "/documentos/MediaCollection/" + p[0] + "/" + p[2] : "/documentos/MediaCollection/" + p[0] + "/" + p[1] + "/" + p[2];
@@ -726,7 +729,8 @@ public final class Ore {
             }
             throw new IllegalStateException(que + ": a collection with that name already exists (`ifNotExists` leaves it as it is)");
         }
-        StringBuilder y = new StringBuilder("apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata:\n  name: ")
+        String version = MEDIA_V1ALPHA29.contains(media) ? "v1alpha29" : "v1alpha19";
+        StringBuilder y = new StringBuilder("apiVersion: oos.dev/" + version + "\nkind: MediaCollection\nmetadata:\n  name: ")
             .append(p[2]).append("\n  namespace: ").append(p[0]).append('\n');
         if (!p[1].equals(DEFAULT)) y.append("  schema: ").append(p[1]).append('\n');
         if (comment != null) y.append("  description: ").append(Json.escribir(comment)).append('\n');
@@ -737,7 +741,9 @@ public final class Ore {
         }
         y.append("spec:\n");
         if (owner != null) y.append("  owner: ").append(owner).append('\n');
-        y.append("  media: ").append(media).append("\n  formats: [").append(String.join(", ", fs)).append("]\n");
+        y.append("  media: ").append(media).append('\n');
+        // A `multimodal` without formats takes any file (v1alpha29 `01` §3).
+        if (!fs.isEmpty()) y.append("  formats: [").append(String.join(", ", fs)).append("]\n");
         if (retention != null) y.append("  retention: ").append(retention).append('\n');
         declare(y.toString());
         Result r = new Result();

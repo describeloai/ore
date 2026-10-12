@@ -741,7 +741,7 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
     })
 }
 
-const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…> formats (pdf, …) [from object table b.s.t [virtual]] [comment '…']`";
+const LA_COLECCION: &str = "`create media collection [if not exists] base.schema.nombre media <document|image|…|multimodal> formats (pdf, …) [from object table b.s.t [virtual]] [comment '…']`";
 const ALTER_COLLECTION: &str =
     "`alter media collection base.schema.name set managed` (or `set virtual`)";
 const DESCRIBE: &str =
@@ -805,18 +805,27 @@ fn crear_coleccion(
         match palabra(i + 1) {
             Some(m) => {
                 media = m.to_ascii_lowercase();
-                if !crate::document::MEDIOS.contains(&media.as_str()) {
+                // OOS v1alpha29: las familias nuevas, `archive` y `multimodal`
+                // (la colección se escribe en esa versión, `create_collection`).
+                let admitidos =
+                    crate::document::medios_de_coleccion(crate::document::ApiVersion::V1Alpha29);
+                if !admitidos.contains(&media.as_str()) {
                     fallos.push(
                         Fallo::new(format!("`{m}` no es un medio"), pos_en(ts, i + 1))
-                            .ayuda(format!("uno de: {}", crate::document::MEDIOS.join(", "))),
+                            .ayuda(format!("uno de: {}", admitidos.join(", "))),
                     );
                 }
                 i += 2;
             }
             None => {
                 fallos.push(
-                    Fallo::new("`media` va seguido del medio", pos_en(ts, i + 1))
-                        .ayuda(format!("uno de: {}", crate::document::MEDIOS.join(", "))),
+                    Fallo::new("`media` va seguido del medio", pos_en(ts, i + 1)).ayuda(format!(
+                        "uno de: {}",
+                        crate::document::medios_de_coleccion(
+                            crate::document::ApiVersion::V1Alpha29
+                        )
+                        .join(", ")
+                    )),
                 );
                 i += 1;
             }
@@ -880,7 +889,8 @@ fn crear_coleccion(
                 }
             }
         }
-    } else if fallos.is_empty() {
+    } else if fallos.is_empty() && media != crate::document::MULTIMODAL {
+        // Una `multimodal` puede no decirlos: admite cualquier fichero.
         fallos.push(
             Fallo::new(
                 "una colección dice qué extensiones admite: `formats (pdf)`",
@@ -2339,9 +2349,48 @@ SELECT * FROM ventas.demo_uc.clientes;
                 "create media collection p media image formats (png)",
                 "no dice",
             ),
+            (
+                "create media collection legal.archivo.p media binary formats (bin)",
+                "no es un medio",
+            ),
         ] {
             let f = falla(q);
             assert!(f.iter().any(|x| x.mensaje.contains(dice)), "{q}: {f:?}");
+        }
+        // OOS v1alpha29: las familias nuevas y `archive`, con sus formatos; una
+        // `multimodal`, sin ellos.
+        for (q, m, fs) in [
+            (
+                "create media collection l.a.mapas media geospatial formats (geojson, kml)",
+                "geospatial",
+                vec!["geojson", "kml"],
+            ),
+            (
+                "create media collection l.a.entregas media archive formats (zip)",
+                "archive",
+                vec!["zip"],
+            ),
+            (
+                "create media collection l.a.todo media multimodal",
+                "multimodal",
+                vec![],
+            ),
+        ] {
+            match &trozos(q)[0].sentencia {
+                Sentencia::CrearColeccion {
+                    media, formatos, ..
+                } => {
+                    assert_eq!(
+                        (
+                            media.as_str(),
+                            formatos.iter().map(String::as_str).collect::<Vec<_>>()
+                        ),
+                        (m, fs),
+                        "{q}"
+                    );
+                }
+                s => panic!("{q}: {s:?}"),
+            }
         }
     }
 

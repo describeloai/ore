@@ -1679,13 +1679,20 @@ def create_dataset(name, columns, key=None, if_not_exists=False):
 
 #: Los medios de una colección (v1alpha16 `02`): uno, y sabe lo que guarda.
 MEDIOS = ("document", "image", "audio", "video", "spreadsheet", "email")
+# OOS v1alpha29 (`01-las-familias`): las familias nuevas, `archive` guardado tal
+# cual, y `multimodal` —cualquier familia, `formats` opcional—. Una colección de
+# una de ellas se escribe en v1alpha29; las de siempre, como siempre.
+MEDIOS_V1ALPHA29 = ("structured", "text", "geospatial", "model3d", "medical", "scientific",
+                    "design", "archive", "multimodal")
+MEDIA = MEDIOS + MEDIOS_V1ALPHA29
 
 
 def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, retencion, origen=None,
                        en_sitio=False):
     base, ns, n = _partes(nombre)
     q = json.dumps  # un escalar de YAML entre comillas: el de JSON vale
-    lineas = ["apiVersion: oos.dev/v1alpha19", "kind: MediaCollection", "metadata:",
+    version = "v1alpha29" if media in MEDIOS_V1ALPHA29 else "v1alpha19"
+    lineas = ["apiVersion: oos.dev/%s" % version, "kind: MediaCollection", "metadata:",
               "  name: %s" % n, "  namespace: %s" % base]
     if ns != DEFAULT:
         lineas.append("  schema: %s" % ns)
@@ -1693,8 +1700,10 @@ def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, re
         lineas.append("  description: %s" % q(comentario, ensure_ascii=False))
     if etiquetas:
         lineas.append("  labels: { %s }" % ", ".join("%s: %s" % (k, v) for k, v in etiquetas.items()))
-    lineas += ["spec:"] + _owner(dueno) + ["  media: %s" % media,
-                                         "  formats: [%s]" % ", ".join(formatos)]
+    lineas += ["spec:"] + _owner(dueno) + ["  media: %s" % media]
+    if formatos:
+        # Una `multimodal` sin `formats` admite cualquier fichero (v1alpha29 `01` §3).
+        lineas.append("  formats: [%s]" % ", ".join(formatos))
     if origen:
         # 0049 B8: managed (copied into the lake) or, `virtual`, served in place.
         lineas.append("  from: { objectTable: %s }" % ".".join(_partes(origen)))
@@ -1707,7 +1716,7 @@ def _yaml_de_coleccion(nombre, media, formatos, dueno, comentario, etiquetas, re
 
 @_kw({"nombre": "name", "formatos": "formats", "dueno": "owner", "comentario": "comment",
       "etiquetas": "labels", "retencion": "retention", "si_no_existe": "if_not_exists"})
-def create_collection(name, media, formats, owner=None, comment=None, labels=None,
+def create_collection(name, media, formats=None, owner=None, comment=None, labels=None,
                       retention=None, if_not_exists=False, source=None, virtual=False):
     """`create media collection db.schema.c (media, formats)`: an empty
     **written** collection, which code fills with
@@ -1716,9 +1725,12 @@ def create_collection(name, media, formats, owner=None, comment=None, labels=Non
     the lake when the branch is merged) or, with `virtual=True`, served in
     place (0049 B8).
 
-    `media` is one of `MEDIOS` (`document`, `image`, `audio`, `video`,
-    `spreadsheet`, `email`); `formats`, the extensions it accepts (the first is
-    the primary one). `labels` (`{"gdpr.sensitivity": "high"}`) add to what is
+    `media` is one of `MEDIA`: `document`, `image`, `audio`, `video`,
+    `spreadsheet`, `email`, and since OOS v1alpha29 `structured`, `text`,
+    `geospatial`, `model3d`, `medical`, `scientific`, `design`, `archive`
+    (kept as is) and `multimodal` (any family). `formats`, the extensions it
+    accepts (the first is the primary one); optional only in a `multimodal`,
+    where without it any file goes in. `labels` (`{"gdpr.sensitivity": "high"}`) add to what is
     derived: they can raise, not lower. If it already exists it is an error, or
     `{created: False}` with `if_not_exists`. An OOS code comes back as
     `ValueError`. Returns `{collection, created}`.
@@ -1729,12 +1741,12 @@ def create_collection(name, media, formats, owner=None, comment=None, labels=Non
         name, formats, owner, comment, labels, retention, if_not_exists)
     nombre = _corto(_nombre_de(nombre), "create media collection: the name")
     que = "create media collection %s" % nombre
-    if media not in MEDIOS:
-        raise ValueError("%s: `media` is one of %s, not %r" % (que, ", ".join(MEDIOS), media))
+    if media not in MEDIA:
+        raise ValueError("%s: `media` is one of %s, not %r" % (que, ", ".join(MEDIA), media))
     if isinstance(formatos, str):
         formatos = [formatos]
     formatos = [f.lower().lstrip(".") for f in formatos or []]
-    if not formatos or len(set(formatos)) != len(formatos) or \
+    if (not formatos and media != "multimodal") or len(set(formatos)) != len(formatos) or \
             not all(re.match(r"^[a-z0-9][a-z0-9.+-]*$", f) for f in formatos):
         raise ValueError("%s: `formats` is a list of distinct extensions (`png`, `pdf`), not %r" % (que, formatos))
     ruta = _ruta_de_vista(nombre, "MediaCollection")
