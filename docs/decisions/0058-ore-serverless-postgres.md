@@ -1988,3 +1988,21 @@ El contrato, medido (18/18; 36 unidades):
 - todo queda apuntado: seis ejecuciones, tres con error.
 
 Siguen: el paso 5 (`lab/p81.sh`, en el laboratorio) y el 6 (producción: el binario, la malla con su go, `produccion/p81.sh`).
+
+#### P8·1 · Paso 5, en el laboratorio (2026-10-12)
+
+`lab/p81.sh`, verde a la primera, con un cómputo de verdad (Postgres 17 en un contenedor) y el reconciliador de verdad:
+
+| | medido |
+|---|---|
+| la contraseña | la guardada es la de crearla; en la base, cifrada (`v1:…`) |
+| `create table` + `insert` + `select` como el rol | **41 ms**; las filas con `null` de verdad; `current_user` es el rol; la tabla queda en el cómputo, en la base de la instancia |
+| error | `42601` en la posición 14 |
+| tope | 100 de 5.000 filas, con `truncada` |
+| solo lectura | insertar da `25006` |
+| otra organización | no ve el proyecto |
+| ~200 MB de resultado | cae el hijo; el plano contesta, y la consulta siguiente va bien |
+| **dormido, una consulta lo despierta** | dormido a los 64 s; la consulta despierta el cómputo en **1,6 s** (un contenedor, no una VM) y contesta en **40 ms**; los datos siguen ahí |
+| auditoría | 7 ejecuciones, 3 con error |
+
+El laboratorio se levanta ahora con `SIN_PROXY=1`, sin el proxy de Neon: su imagen son 7 GB de bajada y P8·1 no lo usa. **P8·1 queda cerrado en el laboratorio.** Sigue el paso 6, producción: el binario ya está en `main` (sin `--clave-contrasenas`, apagado), y lo que falta es la malla, con su go.
