@@ -191,6 +191,13 @@ pub enum ApiVersion {
     /// foránea expone sin pedir `exports` a su fuente. Quién lee qué es del
     /// acceso, al servir. Lo pidió ORE 0059 (2026-10-07), como Unity Catalog.
     V1Alpha28,
+    /// v1alpha29. **Las familias de medios.** `media` pasa de 8 palabras a 15
+    /// —`structured`, `text`, `geospatial`, `model3d`, `medical`,
+    /// `scientific`, `design`—; un `archive` puede ser una colección, y una
+    /// colección puede ser `multimodal` (cualquier familia, `formats`
+    /// opcional). La puerta es del documento. Lo pidió ORE 0061 AZ5
+    /// (2026-10-12): una base estándar sobre los `.gz` de `mnist` nacía vacía.
+    V1Alpha29,
 }
 
 impl ApiVersion {
@@ -221,6 +228,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha26,
         ApiVersion::V1Alpha27,
         ApiVersion::V1Alpha28,
+        ApiVersion::V1Alpha29,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -251,6 +259,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha26 => "oos.dev/v1alpha26",
             ApiVersion::V1Alpha27 => "oos.dev/v1alpha27",
             ApiVersion::V1Alpha28 => "oos.dev/v1alpha28",
+            ApiVersion::V1Alpha29 => "oos.dev/v1alpha29",
         }
     }
 
@@ -448,6 +457,43 @@ pub const MEDIOS: &[&str] = &[
     "archive",
     "binary",
 ];
+
+/// v1alpha29. Las familias que se suman (`01-las-familias` §1).
+pub const FAMILIAS_V1ALPHA29: &[&str] = &[
+    "structured",
+    "text",
+    "geospatial",
+    "model3d",
+    "medical",
+    "scientific",
+    "design",
+];
+
+/// v1alpha29. La colección de lo que no es de una sola familia (`01` §3):
+/// sólo en una `MediaCollection`, y sale de un `ObjectTable` de cualquiera.
+pub const MULTIMODAL: &str = "multimodal";
+
+/// El vocabulario de `media` de un `ObjectTable` en su versión.
+pub fn medios_de_objetos(v: ApiVersion) -> Vec<&'static str> {
+    let mut m = MEDIOS.to_vec();
+    if v >= ApiVersion::V1Alpha29 {
+        m.extend_from_slice(FAMILIAS_V1ALPHA29);
+    }
+    m
+}
+
+/// El vocabulario de `media` de una `MediaCollection` en su versión: nunca
+/// `binary`; `archive` y `multimodal` desde v1alpha29.
+pub fn medios_de_coleccion(v: ApiVersion) -> Vec<&'static str> {
+    let mut m: Vec<&'static str> = medios_de_objetos(v)
+        .into_iter()
+        .filter(|x| *x != "binary" && (*x != "archive" || v >= ApiVersion::V1Alpha29))
+        .collect();
+    if v >= ApiVersion::V1Alpha29 {
+        m.push(MULTIMODAL);
+    }
+    m
+}
 
 /// v1alpha16. Los ficheros que son filas (`03` §1).
 pub const FORMATOS_TABULARES: &[&str] = &["parquet", "csv", "jsonl"];
@@ -1389,17 +1435,8 @@ fn forma_de_object_table(n: &Node) -> Option<ShapeFailure> {
             ));
         }
     }
-    let media = n.get("media").and_then(|(_, v)| v.as_str()).unwrap_or("");
-    if !MEDIOS.contains(&media) {
-        return Some((
-            format!("`media: {media}` no es un tipo de medio"),
-            Some(format!(
-                "el vocabulario es cerrado: {}. Un formato (`pdf`, `jpeg`) no es un medio: es lo \
-                 que la coleccion admite en `formats`",
-                MEDIOS.join(", ")
-            )),
-        ));
-    }
+    // El vocabulario de `media` es de la versión del documento (v1alpha29):
+    // lo comprueba `validate::medio_por_version`.
     None
 }
 
@@ -1620,10 +1657,6 @@ fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
             "media",
             "el tipo de medio que guarda; una coleccion es de un tipo",
         ),
-        (
-            "formats",
-            "los formatos que admite; el primero es el primario",
-        ),
     ] {
         if n.get(clave).is_none() {
             return Some((
@@ -1632,20 +1665,22 @@ fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
             ));
         }
     }
+    // El vocabulario de `media` es de la versión del documento (v1alpha29):
+    // lo comprueba `validate::medio_por_version`. `formats` falta sólo en una
+    // `multimodal` (v1alpha29 `01` §3): sin ellos entra cualquier fichero.
     let media = n.get("media").and_then(|(_, v)| v.as_str()).unwrap_or("");
-    if !MEDIOS.contains(&media) || matches!(media, "archive" | "binary") {
+    if n.get("formats").is_none() && media != MULTIMODAL {
         return Some((
-            format!("`media: {media}` no es un medio de una coleccion"),
+            "una `MediaCollection` sin `formats`".to_string(),
             Some(
-                "una coleccion sabe lo que guarda: document, image, audio, video, spreadsheet o \
-                 email. `archive` y `binary` son legales en un `ObjectTable`; expandir un \
-                 contenedor es una transformacion que escribe otro conjunto"
+                "los formatos que admite; el primero es el primario. Sólo una `multimodal` \
+                 (v1alpha29) puede no decirlos"
                     .to_string(),
             ),
         ));
     }
     let formatos = n.get("formats").map(|(_, v)| v.items()).unwrap_or_default();
-    if formatos.is_empty() {
+    if n.get("formats").is_some() && formatos.is_empty() {
         return Some((
             "`formats` esta vacio".to_string(),
             Some("sin formatos, un item de cualquier formato entraria".to_string()),

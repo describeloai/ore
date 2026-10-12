@@ -2187,7 +2187,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         };
         let suyo = c.section("media").and_then(|m| m.as_str()).unwrap_or("");
         let del_origen = ot.section("media").and_then(|m| m.as_str()).unwrap_or("");
-        if suyo != del_origen {
+        // v1alpha29 · una `multimodal` sale de cualquier familia (`01` §3).
+        if suyo != del_origen && suyo != crate::document::MULTIMODAL {
             out.push(
                 Diagnostic::new(
                     Code::Oos2040,

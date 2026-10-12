@@ -284,8 +284,71 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     if kind == Kind::View && version >= document::ApiVersion::V1Alpha14 {
         forma_de_vista_sql(file, root, &mut diags);
     }
+    if matches!(kind, Kind::ObjectTable | Kind::MediaCollection) {
+        medio_por_version(file, root, kind, version, &mut diags);
+    }
 
     diags
+}
+
+/// ⭐ v1alpha29 · **El vocabulario de `media` es el de la versión del
+/// documento** (`01-las-familias` §5): un `ObjectTable` o una `MediaCollection`
+/// de v1alpha29 tiene las quince familias, `archive` como colección y
+/// `multimodal`; uno anterior, lo de v1alpha16. Un árbol que compilaba compila
+/// igual.
+fn medio_por_version(
+    file: &Path,
+    root: &Node,
+    kind: Kind,
+    version: document::ApiVersion,
+    out: &mut Vec<Diagnostic>,
+) {
+    let Some((_, m)) = root.get("spec").and_then(|(_, s)| s.get("media")) else {
+        return;
+    };
+    let media = m.as_str().unwrap_or("");
+    let (admitidos, que) = if kind == Kind::ObjectTable {
+        (document::medios_de_objetos(version), "un tipo de medio")
+    } else {
+        (
+            document::medios_de_coleccion(version),
+            "un medio de una colección",
+        )
+    };
+    if admitidos.contains(&media) {
+        return;
+    }
+    let por_que = if kind == Kind::ObjectTable && media == document::MULTIMODAL {
+        "`multimodal` es de un conjunto, no de un objeto: un `ObjectTable` es de una familia, o \
+         `binary` si no se sabe (v1alpha29 `01` §1)"
+            .to_string()
+    } else if kind == Kind::MediaCollection && media == "binary" {
+        "una colección sabe lo que guarda; lo que no se sabe qué es se guarda como `multimodal`, \
+         que es decirlo (v1alpha29 `01` §4)"
+            .to_string()
+    } else if version < document::ApiVersion::V1Alpha29
+        && (document::FAMILIAS_V1ALPHA29.contains(&media)
+            || media == document::MULTIMODAL
+            || (kind == Kind::MediaCollection && media == "archive"))
+    {
+        format!(
+            "`{media}` es de v1alpha29 (`01-las-familias`): el documento declara `{}`, y su \
+             vocabulario es {}",
+            version.as_str(),
+            admitidos.join(", ")
+        )
+    } else {
+        format!(
+            "el vocabulario es cerrado: {}. Un formato (`pdf`, `jpeg`) no es un medio: es lo que \
+             la colección admite en `formats`",
+            admitidos.join(", ")
+        )
+    };
+    out.push(
+        Diagnostic::new(Code::Oos1004, file, format!("`media: {media}` no es {que}"))
+            .at(m.pos())
+            .help(por_que),
+    );
 }
 
 /// Los dialectos en que una vista puede estar escrita (v1alpha14 §8).

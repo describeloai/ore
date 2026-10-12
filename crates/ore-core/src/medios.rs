@@ -73,6 +73,41 @@ pub fn tipo_por_bytes(b: &[u8]) -> Option<&'static str> {
         "application/gzip"
     } else if empieza(b"7z\xbc\xaf") {
         "application/x-7z-compressed"
+    // ── v1alpha29 · las familias nuevas: todas se sirven como descarga ──────
+    } else if b.len() >= 132 && &b[128..132] == b"DICM" {
+        "application/dicom"
+    } else if empieza(b"\x89HDF\r\n\x1a\n") {
+        "application/x-hdf5"
+    } else if empieza(b"CDF\x01") || empieza(b"CDF\x02") {
+        "application/x-netcdf"
+    } else if empieza(b"\x93NUMPY") {
+        "application/x-npy"
+    } else if empieza(b"SIMPLE  =") {
+        "application/fits"
+    } else if empieza(b"glTF") {
+        "model/gltf-binary"
+    } else if empieza(b"ISO-10303-21") {
+        "model/step"
+    } else if empieza(b"AC10") {
+        "image/vnd.dwg"
+    } else if empieza(b"LASF") {
+        "application/vnd.las"
+    } else if empieza(b"8BPS") {
+        "image/vnd.adobe.photoshop"
+    } else if empieza(b"%!PS-Adobe") {
+        "application/postscript"
+    } else if empieza(b"Rar!") {
+        "application/vnd.rar"
+    } else if empieza(b"BZh") {
+        "application/x-bzip2"
+    } else if empieza(b"\xfd7zXZ\0") {
+        "application/x-xz"
+    } else if empieza(b"\x28\xb5\x2f\xfd") {
+        "application/zstd"
+    } else if empieza(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
+        "application/x-ole-storage"
+    } else if empieza(b"<?xml") {
+        "application/xml"
     } else {
         return None;
     })
@@ -124,6 +159,24 @@ mod pruebas {
         assert_eq!(tipo_por_bytes(b"\0\0\0\x18ftypmp42"), Some("video/mp4"));
         assert_eq!(tipo_por_bytes(b"\0\0\0\x18ftypavif"), Some("image/avif"));
         assert_eq!(tipo_por_bytes(b"PK\x03\x04"), Some("application/zip"));
+        // v1alpha29: las familias nuevas.
+        let mut dicom = vec![0u8; 128];
+        dicom.extend_from_slice(b"DICM\x02\0");
+        assert_eq!(tipo_por_bytes(&dicom), Some("application/dicom"));
+        assert_eq!(
+            tipo_por_bytes(b"\x89HDF\r\n\x1a\n\0"),
+            Some("application/x-hdf5")
+        );
+        assert_eq!(tipo_por_bytes(b"glTF\x02\0\0\0"), Some("model/gltf-binary"));
+        assert_eq!(
+            tipo_por_bytes(b"8BPS\0\x01"),
+            Some("image/vnd.adobe.photoshop")
+        );
+        assert_eq!(tipo_por_bytes(b"<?xml version"), Some("application/xml"));
+        assert!(
+            !EN_LINEA.contains(&"application/xml"),
+            "lo que un navegador podría ejecutar, como descarga"
+        );
         assert_eq!(tipo_por_bytes(b"<html>"), None, "lo activo no se adivina");
         assert_eq!(tipo_por_bytes(b""), None);
     }
