@@ -31,7 +31,18 @@
 //! carpeta (o `default` en la raíz), el nombre la carpeta o el fichero, en
 //! identificador. El objeto de verdad —con sus espacios y sus mayúsculas— va
 //! aparte, en `object` o en `prefix`. Dos que se llamarían igual se
-//! distinguen con `_2`, aquí: el nombre es la clave del catálogo.
+//! distinguen con `_2`, aquí: el nombre es la clave del catálogo. Un nombre
+//! mide como mucho [`LARGO`] (lo que admite el resto de ORE, 64, con sitio para
+//! el `_2`). El fichero que escribe Spark (`part-00066-tid-…-c000.snappy.parquet`)
+//! da su carpeta como nombre, o `part_00066` en la raíz: su nombre entero no
+//! dice nada.
+//!
+//! # Lo oculto no es dato
+//!
+//! Lo que empieza por `_` o por `.` —el fichero o una de sus carpetas— es lo
+//! que Hadoop, Spark y Delta dejan al escribir (`_SUCCESS`, `_committed_…`,
+//! `_started_…`, `_temporary/`, `.crc`) y lo que sus lectores saltan. Aquí
+//! también: ni tabla ni objeto, y un aviso dice cuántos.
 
 use crate::medio::{self, Clase, Formato};
 use crate::tabular::{self, Esquema};
@@ -48,6 +59,8 @@ const CONFIRMAR: usize = 2;
 const SIN_EXTENSION: usize = 100;
 /// Cuántos ficheros de una carpeta se comparan para decidir si son una tabla.
 const COMPARAR: usize = 20;
+/// Lo que mide un identificador, como mucho: 64 menos el sitio de un `_NN`.
+pub const LARGO: usize = 60;
 
 /// Un identificador de OOS: minúsculas, `_` por lo demás, sin empezar por
 /// dígito. `Nueva carpeta` → `nueva_carpeta`; `Foto Portada 2026` →
@@ -71,11 +84,27 @@ pub fn identificador(s: &str) -> String {
         }
     }
     let out = out.trim_matches('_').to_string();
-    match out.chars().next() {
+    let out = match out.chars().next() {
         None => "x".into(),
         Some(c) if c.is_ascii_digit() => format!("x_{out}"),
         Some(_) => out,
-    }
+    };
+    // Sólo ASCII a estas alturas: cortar por bytes es cortar por caracteres.
+    out[..out.len().min(LARGO)].trim_end_matches('_').to_string()
+}
+
+/// Lo que Hadoop, Spark y Delta dejan al escribir y sus lectores saltan: un
+/// segmento del camino que empieza por `_` o por `.`.
+fn oculto(rel: &str) -> bool {
+    rel.split('/')
+        .any(|p| p.starts_with('_') || p.starts_with('.'))
+}
+
+/// `part-00066-tid-…-c000.snappy.parquet` → `Some("00066")`: un fichero de Spark.
+fn parte_de_spark(base: &str) -> Option<&str> {
+    let resto = base.strip_prefix("part-")?;
+    let n = resto.split(['-', '.']).next()?;
+    (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then_some(n)
 }
 
 /// Un objeto, ya situado y clasificado.
@@ -134,6 +163,13 @@ fn ultima(dir: &str) -> Option<&str> {
 
 fn tallo(rel: &str) -> String {
     let base = rel.rsplit('/').next().unwrap_or(rel);
+    // Un fichero de Spark se llama como su carpeta; en la raíz, `part_<n>`.
+    if let Some(n) = parte_de_spark(base) {
+        return match ultima(&rel[..rel.len() - base.len()]) {
+            Some(d) => identificador(d),
+            None => format!("part_{n}"),
+        };
+    }
     let t = base.rsplit_once('.').map(|(a, _)| a).unwrap_or(base);
     identificador(t)
 }
@@ -295,6 +331,22 @@ pub fn leer(
     let lista = o.listar(prefijo)?;
     // Una «carpeta» creada desde la consola es un objeto vacío acabado en `/`.
     let lista: Vec<&Objeto> = lista.iter().filter(|x| !x.clave.ends_with('/')).collect();
+    let antes = lista.len();
+    let lista: Vec<&Objeto> = lista
+        .into_iter()
+        .filter(|x| !oculto(&x.clave[prefijo.len().min(x.clave.len())..]))
+        .collect();
+    if lista.len() < antes {
+        avisos.push(format!(
+            "{} objeto(s) ocultos saltados (empiezan por `_` o `.`, como `_SUCCESS`: lo que dejan Spark y Hadoop al escribir)",
+            antes - lista.len()
+        ));
+    }
+    if lista.is_empty() && antes > 0 {
+        return Err(format!(
+            "bajo `{prefijo}` sólo hay objetos ocultos (empiezan por `_` o `.`): no hay datos que catalogar"
+        ));
+    }
     if lista.is_empty() {
         return Err(format!(
             "no hay ningún objeto bajo `{prefijo}`: o está vacío, o esta credencial no lo ve"
@@ -914,5 +966,31 @@ mod tests {
         assert_eq!(identificador("Foto Portada 2026"), "foto_portada_2026");
         assert_eq!(identificador("2026-01"), "x_2026_01");
         assert_eq!(identificador("año"), "ano");
+        // Nunca más de LARGO, y sin `_` al final del corte.
+        let largo = identificador(&"a_".repeat(80));
+        assert!(largo.len() <= LARGO && !largo.ends_with('_'), "{largo}");
+    }
+
+    /// Lo que deja Spark: los ocultos fuera, y el nombre de la parte, su carpeta.
+    #[test]
+    fn lo_de_spark_se_lee_como_spark() {
+        for o in [
+            "_SUCCESS",
+            "green/_committed_4753095944193949832",
+            "green/_started_1",
+            "x/_temporary/0/part-0.parquet",
+            ".hidden.csv",
+            "a/b.parquet.crc/.x",
+        ] {
+            assert!(oculto(o), "{o}");
+        }
+        for o in ["green/part-0.parquet", "ventas_2026.csv", "a/b_c.parquet"] {
+            assert!(!oculto(o), "{o}");
+        }
+        let parte = "part-00066-tid-4753095944193949832-fee7e113-666d-4114-9fcb-bcd3046479f3-2636-2.c000.snappy.parquet";
+        assert_eq!(tallo(parte), "part_00066");
+        assert_eq!(tallo(&format!("puYear=2019/puMonth=1/{parte}")), "pumonth_1");
+        assert_eq!(tallo("Nueva carpeta/ventas 2026.csv"), "ventas_2026");
+        assert_eq!(parte_de_spark("part-.parquet"), None);
     }
 }
