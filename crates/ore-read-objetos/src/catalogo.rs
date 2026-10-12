@@ -68,6 +68,11 @@ use ore_objetos::Objeto;
 use ore_objetos::Origen;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Los bytes que se leen para confirmar el tipo: [`medio::CABEZA`].
+fn rango_de_la_cabeza() -> String {
+    format!("0-{}", medio::CABEZA - 1)
+}
+
 /// Cuántos objetos de un grupo se abren para confirmar su tipo.
 const CONFIRMAR: usize = 2;
 /// Cuántos sin extensión se abren, como mucho, para saber qué son.
@@ -445,7 +450,9 @@ pub fn leer(
                     break;
                 }
                 sin_extension += 1;
-                let cab = o.rango(&items[i].obj.clave, "0-15").unwrap_or_default();
+                let cab = o
+                    .rango(&items[i].obj.clave, &rango_de_la_cabeza())
+                    .unwrap_or_default();
                 items[i].clase = medio::confirmar("", &cab).0;
             }
             continue;
@@ -456,7 +463,7 @@ pub fn leer(
                 continue;
             }
             intentos += 1;
-            let cab = match o.rango(&items[i].obj.clave, "0-15") {
+            let cab = match o.rango(&items[i].obj.clave, &rango_de_la_cabeza()) {
                 Ok(c) => c,
                 Err(e) => {
                     fallos += 1;

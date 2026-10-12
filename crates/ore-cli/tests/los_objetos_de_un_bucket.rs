@@ -10,7 +10,9 @@
 //! - **la clase de la base decide la colección**: la estándar copia todo lo
 //!   que entra, así que su `MediaCollection` es mantenida; la foránea es un
 //!   espejo, así que la suya es `virtual`;
-//! - un contenedor (`archive`) no es una colección: su puntero sí, y se dice.
+//! - ✏️ OOS v1alpha29: un contenedor (`archive`) **es** una colección, guardada
+//!   tal cual, en la estándar (antes no la tenía, y una base sobre los `.gz`
+//!   de `mnist` nacía vacía); la foránea, como con todo, lo expone.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -175,24 +177,31 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
             && s.contains("from: { objectTable: s3_ventas.nueva_carpeta.fotos }"),
         "{s}"
     );
-    // El zip no es una colección en ninguna, y se dice.
-    for base in ["fdb", "sdb"] {
+    // ✏️ v1alpha29: el zip es una colección `archive` en la estándar, de esa
+    //   versión; en la foránea, nada propio. Ninguna escribe un puntero.
+    let z = leer(&dir, "sdb/nueva_carpeta/collections/nueva_carpeta_zip.yaml");
+    for s in [
+        "apiVersion: oos.dev/v1alpha29",
+        "media: archive",
+        "formats: [zip]",
+    ] {
         assert!(
-            !dir.join(format!(
-                "packages/{base}/nueva_carpeta/collections/nueva_carpeta_zip.yaml"
-            ))
-            .exists(),
-            "{base}"
+            z.contains(s),
+            "sin `{s}`:
+{z}"
         );
+    }
+    assert!(
+        !dir.join("packages/fdb/nueva_carpeta/collections/nueva_carpeta_zip.yaml")
+            .exists()
+    );
+    for base in ["fdb", "sdb"] {
         assert!(
             !dir.join(format!("packages/{base}/nueva_carpeta/objects"))
                 .exists()
         );
     }
-    assert!(
-        dicho.contains("`nueva_carpeta.nueva_carpeta_zip` no es una colección"),
-        "{dicho}"
-    );
+    assert!(!dicho.contains("no es una colección"), "{dicho}");
 
     let (c, v) = ore(&dir, &["validate", "."]);
     assert_eq!(c, Some(0), "{v}");

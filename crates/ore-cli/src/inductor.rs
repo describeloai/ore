@@ -585,7 +585,7 @@ pub fn inducir_con_regla(
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
     let mut sin_copia: Vec<(String, &'static str)> = Vec::new();
-    let mut sin_coleccion: Vec<(String, &'static str)> = Vec::new();
+    let sin_coleccion: Vec<(String, &'static str)> = Vec::new();
 
     // ── El catálogo: lo que NO se modela ────────────────────────────────────
     //
@@ -714,9 +714,12 @@ pub fn inducir_con_regla(
     // `virtual`, servida desde el origen. Una copiada una a una en una foránea,
     // mantenida.
     //
-    // Un contenedor (`archive`) o lo que no se sabe qué es (`binary`) no es
-    // una colección (OOS: una colección sabe lo que guarda): la base nombra
-    // su puntero —la fuente lo escribe— y dice por qué no hay colección.
+    // ✏️ OOS v1alpha29 (`01-las-familias`): TODO conjunto tiene colección. Un
+    //   contenedor (`archive`) se guarda tal cual; lo que no se sabe qué es
+    //   (`binary`) va a una `multimodal`, que es decirlo. Antes los dos se
+    //   quedaban sin colección, y una base estándar sobre los `.gz` de `mnist`
+    //   nacía vacía (ORE 0061 AZ5). `sin_coleccion` queda para lo que algún
+    //   día no pueda tenerla, y se dice en el alta.
     for o in &cat.objetos {
         let sch = regla.schema_de(&o.nombre);
         if regla.fuente_aparte.is_none() {
@@ -728,18 +731,6 @@ pub fn inducir_con_regla(
                     paquete,
                 ),
             );
-        }
-        if matches!(o.medio.as_str(), "archive" | "binary") {
-            sin_coleccion.push((
-                o.nombre.clone(),
-                if o.medio == "archive" {
-                    "son contenedores (`archive`): abrirlos es una transformación que escribe \
-                     otro conjunto, y una colección sabe lo que guarda"
-                } else {
-                    "no se sabe qué son (`binary`): una colección sabe lo que guarda"
-                },
-            ));
-            continue;
         }
         let nombre = identificador(sin_schema(&o.nombre));
         ficheros.insert(
@@ -2505,9 +2496,16 @@ fn tabla_yaml(
 /// sin revisión.
 fn objetos_yaml(paquete: &str, fuente: &str, nombre: &str, o: &Objetos) -> String {
     let mut s = String::new();
+    // v1alpha29: una familia nueva (`geospatial`, `structured`…) es de esa
+    // versión —la puerta es del documento—; lo demás, como siempre.
+    let version = if ore_core::document::FAMILIAS_V1ALPHA29.contains(&o.medio.as_str()) {
+        "v1alpha29"
+    } else {
+        "v1alpha16"
+    };
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha16\n\
+        "apiVersion: oos.dev/{version}\n\
          kind: ObjectTable\n\
          metadata: {{ name: {nombre}, namespace: {paquete} }}\n\
          # {} objeto(s), {} bytes, cuando se leyó el catálogo.\n\
@@ -2582,25 +2580,50 @@ fn coleccion_yaml(
             formatos.push(e.clone());
         }
     }
+    // v1alpha29 · lo que no se sabe qué es se guarda como `multimodal`, sin
+    // `formats`: entra cualquier fichero (`01-las-familias` §3, §4). Y un
+    // conjunto sin extensiones (lo reconocieron los bytes: un DICOM sin
+    // `.dcm`) no tiene formatos que dar: también `multimodal`, que sale de
+    // cualquier familia.
+    let media = if o.medio == "binary" || formatos.is_empty() {
+        ore_core::document::MULTIMODAL
+    } else {
+        o.medio.as_str()
+    };
+    let version = if media == ore_core::document::MULTIMODAL
+        || media == "archive"
+        || ore_core::document::FAMILIAS_V1ALPHA29.contains(&media)
+    {
+        "v1alpha29"
+    } else {
+        "v1alpha16"
+    };
+    let formats = if media == ore_core::document::MULTIMODAL {
+        String::new()
+    } else {
+        format!(
+            "  formats: [{}]\n",
+            formatos
+                .iter()
+                .map(|f| escalar_yaml(f))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha16\n\
+        "apiVersion: oos.dev/{version}\n\
          kind: MediaCollection\n\
          metadata:\n  \
            name: {nombre}\n  \
            namespace: {paquete}\n\
          spec:\n  \
            owner: \"{owner}\"\n  \
-           media: {}\n  \
-           formats: [{}]\n  \
+           media: {}\n\
+         {formats}  \
            from: {{ objectTable: {} }}\n",
-        escalar_yaml(&o.medio),
-        formatos
-            .iter()
-            .map(|f| escalar_yaml(f))
-            .collect::<Vec<_>>()
-            .join(", "),
+        escalar_yaml(media),
         desde
     );
     if virtual_ {
@@ -3303,6 +3326,71 @@ pub fn informe_json(ind: &Induccion) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OOS v1alpha29 · Toda colección es posible: lo que no se sabe qué es va a
+    /// una `multimodal` sin `formats`; una familia nueva escribe su puntero y su
+    /// colección en v1alpha29; lo de antes, en v1alpha16 como siempre.
+    #[test]
+    fn toda_coleccion_es_posible_y_dice_su_version() {
+        let o = |medio: &str, ext: &[&str]| Objetos {
+            nombre: "datos.x".into(),
+            prefijo: "x/".into(),
+            medio: medio.into(),
+            extensiones: ext.iter().map(|e| e.to_string()).collect(),
+            ..Default::default()
+        };
+        let bin = coleccion_yaml(
+            "x",
+            "lago",
+            "user:v",
+            &o("binary", &["json", "sha256"]),
+            "f.datos.x",
+            false,
+        );
+        assert!(bin.contains("apiVersion: oos.dev/v1alpha29"), "{bin}");
+        assert!(
+            bin.contains("media: multimodal") && !bin.contains("formats"),
+            "{bin}"
+        );
+        let geo = coleccion_yaml(
+            "x",
+            "lago",
+            "user:v",
+            &o("geospatial", &["geojson"]),
+            "f.datos.x",
+            true,
+        );
+        assert!(
+            geo.contains("apiVersion: oos.dev/v1alpha29")
+                && geo.contains("media: geospatial")
+                && geo.contains("formats: [geojson]")
+                && geo.contains("virtual: true"),
+            "{geo}"
+        );
+        let pdf = coleccion_yaml(
+            "x",
+            "lago",
+            "user:v",
+            &o("document", &["pdf"]),
+            "f.datos.x",
+            false,
+        );
+        assert!(pdf.contains("apiVersion: oos.dev/v1alpha16"), "{pdf}");
+        // Reconocido por los bytes, sin extensión: no hay formatos que dar.
+        let sin = coleccion_yaml(
+            "x",
+            "lago",
+            "user:v",
+            &o("medical", &[]),
+            "f.datos.x",
+            false,
+        );
+        assert!(sin.contains("media: multimodal"), "{sin}");
+        assert!(
+            objetos_yaml("f", "f", "x", &o("geospatial", &["kml"])).contains("oos.dev/v1alpha29")
+        );
+        assert!(objetos_yaml("f", "f", "x", &o("binary", &[])).contains("oos.dev/v1alpha16"));
+    }
 
     /// 0061 AZ5 · Una base foránea sobre una fuente con un objeto en `default`
     /// (un fichero suelto en el prefijo de un bucket): su `include` lo nombra
