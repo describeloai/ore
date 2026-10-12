@@ -1956,3 +1956,35 @@ Neon **guarda las contraseñas de los roles cifradas**: por eso su consola tiene
    - *Hecho cuando*: verde, y los números al ADR.
 
 Después, P8·2: el editor de la consola contra este endpoint.
+
+#### P8·1 · Pasos 1–4, hechos (2026-10-12)
+
+| paso | hecho | la prueba |
+|---|---|---|
+| 1 · el cifrado | `secreto.rs`: AES-256-GCM, nonce de 96 bits de `/dev/urandom`, `v1:<nonce>:<cifrado>` en hex, la clave de `--clave-contrasenas` (32 bytes o 64 cifras hex) | unidades: ida y vuelta, otro rol u organización, otra clave y un byte cambiado, fuera |
+| 2 · guardarlas | migración `009-la-consola`: `plano.rol.contrasena_cifrada`, escrita al crear la instancia, al crear un rol y al regenerar su contraseña; una rama nueva la copia de su padre. La auditoría, en `plano.sql_ejecutado` (quién, la rama, el rol, la base, los ms, las filas y el código de error; el texto, no) | contrato |
+| 3 · verla | `GET …/roles/{n}/contrasena`: la guardada, o un 409 «regénerala» si es de antes | contrato: la de crear, la regenerada, otra organización recibe un 404, sin guardar da 409 |
+| 4 · ejecutar | `POST …/ramas/{r}/sql` | contrato, con el Postgres de las pruebas de cómputo |
+
+Cuatro cosas cambian del plan al hacerlo:
+
+1. ⭐ **El SQL lo ejecuta un proceso hijo** (`ore-postgres ejecutar-sql`), con un tope de memoria propio de 64 MiB (`RLIMIT_DATA`).
+   - El cliente de Postgres guarda en memoria todo el resultado antes de devolverlo, así que el tope de filas no protege la memoria.
+   - Un `select` sin límite sobre una tabla grande tumbaría al plano entero, que tiene 128 MiB.
+   - Con el hijo, revienta él: la API contesta 502 «no cabe en memoria: acótalo con LIMIT» y la siguiente consulta funciona.
+   - Probado con unos 200 MB de resultado.
+2. **El dato asociado es `organización/proyecto/rol`, sin la rama.** Una rama hereda los roles de su padre con la misma contraseña, y su fila se copia tal cual. Con la rama dentro, la copia no se descifraría.
+3. **En `ore-serve`**, ver la contraseña y el SQL son «usar», no «ver». El SQL tiene un plazo de respuesta de 210 s (despertar hasta 120 y ejecutar hasta 75), frente a los 30 del resto, y lleva `x-ore-quien` para la auditoría.
+4. **La respuesta**, por sentencia: `filas_afectadas`, y si devuelve filas, `columnas`, `filas` (texto, con `null` de verdad) y `truncada`; además, `ms` y `despertar_ms`. El error es el de Postgres, con `sqlstate`, mensaje, detalle, pista y posición. El protocolo simple no da la etiqueta (`CREATE TABLE`…), sólo cuántas filas.
+
+El contrato, medido (18/18; 36 unidades):
+- **corre como el rol elegido**: `current_user` es él;
+- tres sentencias, con un `null` de verdad;
+- `select 1 frm x` falla con `42601` en la **posición 14**: Postgres toma `frm` como alias, así que el error está en `x`;
+- 10 de 50 filas, con `truncada`;
+- en solo lectura, crear da `25006`;
+- otra organización y un rol que no existe reciben un 404, y sin contraseña guardada, un 409;
+- **un endpoint dormido lo despierta la consulta**: pide `despertar-endpoint` como el proxy y espera;
+- todo queda apuntado: seis ejecuciones, tres con error.
+
+Siguen: el paso 5 (`lab/p81.sh`, en el laboratorio) y el 6 (producción: el binario, la malla con su go, `produccion/p81.sh`).
