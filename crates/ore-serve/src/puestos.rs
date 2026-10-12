@@ -4809,10 +4809,9 @@ pub(crate) mod prueba {
         .unwrap_err();
         assert_eq!(r.codigo, 422);
         let j = r.cuerpo.jcs();
-        assert!(
-            j.contains("`Table` de una fuente") && j.contains("v.nadie"),
-            "{j}"
-        );
+        // 2026-10-12: un `select` lee el origen en vivo; lo que falla es lo
+        // que no existe, no la `Table`.
+        assert!(j.contains("v.nadie") && !j.contains("v.origen"), "{j}");
         assert!(
             j.contains("\"fichero\":\"packages/v/transforms/malo.sql\",\"linea\":2")
                 || (j.contains("\"linea\":2") && j.contains("\"columna\":6")),
