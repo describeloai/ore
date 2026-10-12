@@ -2071,7 +2071,10 @@ fn la_consola_ejecuta_sql_como_el_rol_elegido() {
         r#""sql":"select repeat('x', 1000000) from generate_series(1, 200)""#,
     );
     assert!(codigo == 502 && r.contains("no cabe"), "{codigo} {r}");
-    assert_eq!(sql(&s, "a", "consola", "sqlera", r#""sql":"select 1""#).0, 200);
+    assert_eq!(
+        sql(&s, "a", "consola", "sqlera", r#""sql":"select 1""#).0,
+        200
+    );
     // Otra organización no ve el proyecto; un rol que no existe, 404.
     assert_eq!(
         sql(&s, "b", "consola", "sqlera", r#""sql":"select 1""#).0,
