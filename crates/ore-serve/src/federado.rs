@@ -34,6 +34,18 @@ pub(crate) fn pasarela() -> String {
     std::env::var("ORE_PASARELA").unwrap_or_else(|_| "ore-federation:8099".into())
 }
 
+/// ⭐ **La pasarela, dicha al `ore` que planifica** (`federate`, `explain`).
+/// Con ella el reparto pregunta lo que sabe cada conector (`GET
+/// /v1/connectors`, 0057 B4·1) y no empuja lo que no sabe poner. `ore-serve`
+/// la tiene por defecto (`ore-federation:8099`) y el hijo no: sin esto el
+/// reparto suponía que todo conector ordena, y un `ORDER BY … LIMIT` sobre un
+/// CSV de GCS moría con «`orderBy`: el conector no lo sabe poner» en vez de
+/// ordenar DuckDB (medido en `t-victor`, 2026-10-12: la malla no pone
+/// `ORE_PASARELA`).
+fn entorno_del_plan() -> [(String, String); 1] {
+    [("ORE_PASARELA".to_string(), pasarela())]
+}
+
 const FINALES: [&str; 5] = [
     "ore-estado",
     "ore-motivo",
@@ -438,7 +450,7 @@ impl Servidor {
         let r = self.leyendo_en(rama, |raiz| {
             args.push("--path".into());
             args.push(raiz.to_string_lossy().into_owned());
-            match crate::mando::correr(&self.binario, raiz, &args) {
+            match crate::mando::correr_con(&self.binario, raiz, &args, &entorno_del_plan()) {
                 Ok(s) if s.bien() => {
                     salida = s
                         .stdout
@@ -534,7 +546,7 @@ impl Servidor {
         let r = self.leyendo_en(rama, |raiz| {
             args.push("--path".into());
             args.push(raiz.to_string_lossy().into_owned());
-            match crate::mando::correr(&self.binario, raiz, &args) {
+            match crate::mando::correr_con(&self.binario, raiz, &args, &entorno_del_plan()) {
                 Ok(s) if json && s.bien() => {
                     salida = s
                         .stdout
@@ -872,5 +884,18 @@ impl Drop for Desenmarcado {
         if let Some(f) = self.al_soltar.take() {
             f();
         }
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    /// El `ore` que planifica recibe siempre la pasarela de `ore-serve`: sin
+    /// ella el reparto no sabe qué sabe cada conector.
+    #[test]
+    fn el_plan_lleva_la_pasarela() {
+        let [(k, v)] = super::entorno_del_plan();
+        assert_eq!(k, "ORE_PASARELA");
+        assert_eq!(v, super::pasarela());
+        assert!(!v.is_empty());
     }
 }
