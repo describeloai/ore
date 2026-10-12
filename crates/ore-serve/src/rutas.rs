@@ -406,7 +406,7 @@ impl Servidor {
                     .get("authorization")
                     .and_then(|v| v.strip_prefix("Bearer "))
                     .map(str::to_string);
-                let r = self.escribiendo(sujeto, "alta de una fuente", |r| {
+                let mut r = self.escribiendo(sujeto, "alta de una fuente", |r| {
                     self.alta_de_fuente(r, &cuerpo, testigo.as_deref(), sujeto)
                 });
                 if r.codigo == 201 {
@@ -417,6 +417,18 @@ impl Servidor {
                         },
                         _ => String::new(),
                     };
+                    // ⭐ (0061 AZ5) Por la pasarela, el catálogo se lanza AHORA, con el
+                    //   árbol ya publicado: lee la fuente del árbol publicado, y dentro de
+                    //   `escribiendo` aún no estaba («`x` no está declarada»): ninguna alta
+                    //   se catalogaba sola desde 0053 F8·2.
+                    if self.por_la_pasarela() {
+                        let dueno = self.dueno_de_quien_crea(sujeto).ok();
+                        let encolado =
+                            self.encolar_catalogo_corrida(&nombre, sujeto, false, dueno.as_deref());
+                        if let Json::Obj(m) = &mut r.cuerpo {
+                            m.insert("encolado".into(), Json::s(encolado));
+                        }
+                    }
                     self.contar(crate::acceso::evento(
                         "fuente:crear",
                         &format!("fuente/{nombre}"),
@@ -1779,7 +1791,13 @@ impl Servidor {
                 // Se encola cuando la fuente va a quedar: después de la
                 // credencial, no antes (un 502 no publica el árbol, y un Job
                 // encolado para una fuente que no existe se quedaba en la cola).
-                let encolado = self.encolar_catalogo(&nombre, sujeto, &dueno);
+                // Por la pasarela, después de publicar (lo hace la ruta): catalogar
+                // lee el árbol publicado.
+                let encolado = if self.por_la_pasarela() {
+                    "al publicar el árbol, por la pasarela".to_string()
+                } else {
+                    self.encolar_catalogo(&nombre, sujeto, &dueno)
+                };
 
                 Respuesta::creado(Json::obj([
                     ("name", Json::s(nombre)),
