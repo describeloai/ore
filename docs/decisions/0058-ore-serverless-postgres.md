@@ -2128,3 +2128,45 @@ El usuario ha visto Tables en el navegador con sus tablas: «funciona de lujo».
 - **Paginar por cursor:** si una tabla real pasa de varios millones de filas.
 
 Sigue P8·4: la vista general (Overview) y los ajustes.
+
+#### P8·4a · El Overview: cerrado (2026-10-12)
+
+**D-P8c · El Overview no despierta nunca el cómputo.** Todo lo que enseña sale del plano y del pageserver; nada pasa por `/sql`. Abrir la página no cuesta un cómputo.
+
+1. **Consola 8484bfb.**
+   - El estado de cada cómputo se lee de `observado` y se refresca cada 10 s. Esto salda la deuda de P6·6. Los estados son:
+     - **Active**;
+     - **Idle**, desde cuándo, sacado de `dormido_en`;
+     - **Starting**;
+     - **Suspending**;
+     - **Repairing**;
+     - **Failed**;
+     - **Deleting**.
+   - Antes, un cómputo dormido salía como «Starting».
+   - El rail es de verdad: el cómputo de la rama por defecto (CU y *scale to zero*) y la instancia (ID, tenant, región, dueño y fecha de creación).
+   - Se quitó el uso inventado.
+2. **Plano a97dcca4.**
+   - Ruta nueva: `GET …/proyectos/{p}/almacenamiento`.
+   - Cada rama trae lo que dice el pageserver: tamaño lógico, tamaño físico, historia PITR y versión de Postgres.
+   - Sale de una sola llamada al controller, `GET /v1/tenant/{t}/timeline`, que devuelve todas las ramas a la vez.
+   - Esa llamada se hace sin la base tomada.
+   - La retención PITR (`RETENCION_PITR`, «1 day») es una constante del código que copia el `pitr_interval` de malla/83, porque el controller no la devuelve: su config del tenant viene vacía.
+3. **Consola f263fa0.**
+   - Hay una columna Storage por rama en el Overview y en Branches.
+   - El rail suma Data e History y enseña la retención y la versión.
+   - Se relee cada minuto.
+4. **Medido en producción** (`p84.sh`). El tiempo se mide dentro del pod de la celda: es el plano más el controller, sin la red de este PC. Cada cifra es el p50 de cinco llamadas, y se hicieron cuatro pasadas.
+
+| | 1 rama | 10 ramas |
+|---|---|---|
+| `GET …/almacenamiento` | 9 ms | 11–17 ms |
+| `GET …/ramas`, como referencia | 3–4 ms | 4–5 ms |
+
+Pasar de 1 a 10 ramas cuesta unos pocos ms, porque el controller contesta todas las ramas en una sola llamada. Con la relectura de cada minuto, el coste es despreciable.
+
+Una trampa del guion: `kubectl run -i` pierde lo que el pod escribe antes de engancharse a su salida. No se cuenta lo que sale de un pod; se comprueba el estado después.
+
+Fuera de P8·4a:
+- los CU-horas, que dependen de P10 (medición);
+- la tarjeta Monitoring, que es P8·5;
+- Settings y la lista de operaciones, que son **P8·4b**.
