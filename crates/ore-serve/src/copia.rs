@@ -40,20 +40,37 @@ use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::path::{Path, PathBuf};
 
-/// 0049 B8·3: ¿es este YAML una `MediaCollection` mantenida —con origen
-/// (`from`) y sin `virtual: true`—? Una escrita (sin `from`) no se copia de
-/// ningún sitio.
-pub(crate) fn es_coleccion_mantenida(texto: &str) -> bool {
-    let Ok(n) = parse::parse(texto) else {
-        return false;
-    };
+/// ¿Es este YAML una `MediaCollection` con origen (`from`), mantenida o
+/// virtual? `Some(virtual)`, o `None` si no lo es: una escrita (sin `from`) no
+/// se copia de ningún sitio.
+fn coleccion_con_origen(texto: &str) -> Option<bool> {
+    let n = parse::parse(texto).ok()?;
     if campo(&n, "kind").as_deref() != Some("MediaCollection") {
-        return false;
+        return None;
     }
-    let Some((_, spec)) = n.get("spec") else {
-        return false;
-    };
-    spec.get("from").is_some() && campo(spec, "virtual").as_deref() != Some("true")
+    let (_, spec) = n.get("spec")?;
+    spec.get("from")?;
+    Some(campo(spec, "virtual").as_deref() == Some("true"))
+}
+
+/// **¿Encola su pasada la escritura de una colección?** (`antes`: el YAML que
+/// había, si había). `Some(virtual)` si sí:
+///
+/// - 0049 B8·3: una que pasa a mantenida, o nace mantenida —sus bytes, al lago—;
+/// - 2026-10-12: una que nace con origen siendo **virtual**. No copia bytes,
+///   pero su primera transacción —el listado del origen— la hace también el
+///   Job, y sin esto sólo llegaba al re-catalogar la base (medido: la virtual
+///   `minst_standard11.processedmanifest.manifiestos_vivo`, creada desde SQL,
+///   `has no transaction yet`).
+///
+/// Lo que pasa de mantenida a virtual sigue con sus transacciones: no encola.
+pub(crate) fn pasada_al_escribir(antes: Option<&str>, ahora: &str) -> Option<bool> {
+    let era = antes.and_then(coleccion_con_origen);
+    match coleccion_con_origen(ahora)? {
+        false if era != Some(false) => Some(false),
+        true if era.is_none() => Some(true),
+        _ => None,
+    }
 }
 
 fn campo(n: &Node, k: &str) -> Option<String> {
@@ -401,15 +418,20 @@ impl Servidor {
     /// escribe (`EnRama`), y al fusionar `main` adopta lo copiado—. Con las
     /// reglas de siempre: sin conducto no se encola y se dice (OOS4011). Lo que
     /// devuelve va en la respuesta (`copy`); nunca tumba lo escrito.
+    ///
+    /// Una **virtual** que nace (`virtual_`) encola igual su primera pasada
+    /// —el listado, su transacción—, sin pedir el conducto: no cruza bytes
+    /// `materialization.payload` (spec 02 §6), la regla de `tras_inducir`.
     pub(crate) fn tras_mantener(
         &self,
         raiz: &Path,
         paquete: &str,
         coleccion: &str,
+        virtual_: bool,
         sujeto: &Identidad,
     ) -> Json {
         let dir = raiz.join("packages").join(paquete);
-        if let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
+        if !virtual_ && let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
             return Json::obj([
                 ("queued", Json::Bool(false)),
                 (
@@ -1176,6 +1198,47 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// Qué escritura de una colección encola su pasada: la que nace o pasa a
+    /// mantenida, y la virtual que nace (su primera transacción).
+    #[test]
+    fn una_coleccion_que_nace_con_origen_encola_su_pasada_tambien_virtual() {
+        let col = |spec: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha29
+kind: MediaCollection
+metadata: {{ name: c, namespace: b }}
+spec:
+  owner: team:b
+  media: multimodal
+{spec}"
+            )
+        };
+        let mantenida = col("  from: { objectTable: b.default.t }
+");
+        let virtual_ = col("  from: { objectTable: b.default.t }
+  virtual: true
+");
+        let escrita = col("");
+        let p = super::pasada_al_escribir;
+        assert_eq!(p(None, &mantenida), Some(false));
+        assert_eq!(p(None, &virtual_), Some(true));
+        assert_eq!(p(None, &escrita), None);
+        assert_eq!(p(Some(&escrita), &virtual_), Some(true));
+        assert_eq!(p(Some(&virtual_), &mantenida), Some(false));
+        // lo que ya era así no se vuelve a encolar
+        assert_eq!(p(Some(&mantenida), &mantenida), None);
+        assert_eq!(p(Some(&virtual_), &virtual_), None);
+        assert_eq!(p(Some(&mantenida), &virtual_), None);
+        assert_eq!(
+            p(
+                None,
+                "kind: Dataset
+"
+            ),
+            None
+        );
+    }
+
     use super::*;
 
     /// **Lo que se construye en una rama** (0044 C.2 ④): lo que ella cambió

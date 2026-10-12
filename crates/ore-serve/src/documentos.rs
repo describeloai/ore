@@ -1005,24 +1005,26 @@ impl Servidor {
         }
         // ⭐ 0049 B8·3: una colección que pasa a mantenida (o nace mantenida)
         //   encola su copia: mantenida es tener los bytes en el lago, no el
-        //   documento dicho.
+        //   documento dicho. Y una virtual que nace, su primera pasada: su
+        //   transacción (`copia::pasada_al_escribir`).
         let texto_de =
             |raiz: &Path| buscar(&documentos_de(raiz).0, k, ns, schema, n).map(|d| d.texto.clone());
-        let era_mantenida = k.nombre == "MediaCollection"
-            && texto_de(raiz).is_some_and(|t| crate::copia::es_coleccion_mantenida(&t));
+        let antes = (k.nombre == "MediaCollection")
+            .then(|| texto_de(raiz))
+            .flatten();
         let mut r =
             self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit, Some(sujeto));
         if k.nombre == "MediaCollection"
             && matches!(r.codigo, 200 | 201)
-            && !era_mantenida
-            && texto_de(raiz).is_some_and(|t| crate::copia::es_coleccion_mantenida(&t))
+            && let Some(virtual_) =
+                texto_de(raiz).and_then(|t| crate::copia::pasada_al_escribir(antes.as_deref(), &t))
         {
             let coleccion = if schema == ore_core::normalize::SCHEMA_POR_DEFECTO {
                 n.to_string()
             } else {
                 format!("{schema}.{n}")
             };
-            let copia = self.tras_mantener(raiz, ns, &coleccion, sujeto);
+            let copia = self.tras_mantener(raiz, ns, &coleccion, virtual_, sujeto);
             if let Json::Obj(m) = &mut r.cuerpo {
                 m.insert("copy".into(), copia);
             }
