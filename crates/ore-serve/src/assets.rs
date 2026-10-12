@@ -195,15 +195,33 @@ fn anotar_estadisticas(raiz: &Path, j: &mut Json) {
         if !matches!(it.get("kind"), Some(Json::Str(k)) if k == "Table" || k == "ObjectTable") {
             continue;
         }
-        let (Some(Json::Str(p)), Some(Json::Str(s)), Some(Json::Str(n))) =
-            (it.get("paquete"), it.get("schema"), it.get("name"))
-        else {
-            continue;
+        // Lo que una base foránea expone ES el documento de la fuente (`es`,
+        // v1alpha27): sus estadísticas, las del catálogo de esa fuente.
+        let de_la_fuente = match it.get("es") {
+            Some(Json::Str(r)) => r.split_once(':').and_then(|(_, qn)| {
+                let partes: Vec<&str> = qn.split('.').collect();
+                match partes.as_slice() {
+                    [p, s, n] => Some((p.to_string(), s.to_string(), n.to_string())),
+                    [p, n] => Some((p.to_string(), "default".to_string(), n.to_string())),
+                    _ => None,
+                }
+            }),
+            _ => None,
         };
-        let clave = format!("{s}.{n}");
+        let (p, clave) = match de_la_fuente {
+            Some((p, s, n)) => (p, format!("{s}.{n}")),
+            None => {
+                let (Some(Json::Str(p)), Some(Json::Str(s)), Some(Json::Str(n))) =
+                    (it.get("paquete"), it.get("schema"), it.get("name"))
+                else {
+                    continue;
+                };
+                (p.clone(), format!("{s}.{n}"))
+            }
+        };
         let cat = catalogos
             .entry(p.clone())
-            .or_insert_with(|| del_catalogo(raiz, p));
+            .or_insert_with(|| del_catalogo(raiz, &p));
         if let Some(e) = cat.as_ref().and_then(|c| c.get(&clave)) {
             it.insert("estadisticas".into(), e.clone());
         }
