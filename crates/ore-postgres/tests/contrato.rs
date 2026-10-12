@@ -42,6 +42,7 @@ fn servidor() -> Option<Servidor> {
             "007-dormir",
             "008-el-pool",
             "009-la-consola",
+            "010-los-ajustes",
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -209,6 +210,9 @@ impl Almacen for Apunta {
     fn lsn_en_instante(&self, t: &str, tl: &str, i: &str) -> Result<String, Fallo> {
         self.apuntar(format!("instante {t} {tl} {i}"))?;
         Ok("0/1A2B3C".into())
+    }
+    fn configurar_retencion(&self, t: &str, p: Option<&str>) -> Result<(), Fallo> {
+        self.apuntar(format!("retencion {t} {p:?}"))
     }
 }
 
@@ -2259,4 +2263,101 @@ fn lo_que_ocupa_cada_rama_lo_dice_el_pageserver() {
         404
     );
     pide(&s, "a", "DELETE", "/v1/postgres/proyectos/ocupa", "");
+}
+
+#[test]
+fn los_ajustes_de_la_instancia() {
+    // P8·4b: el nombre que se ve, los valores por defecto de un cómputo nuevo y la
+    // ventana de historia, que el reconciliador le pone al tenant en el controller.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let vuelta =
+        || ore_postgres::reconciliador::vuelta(&mut otra_conexion(), &almacen, &almacen).unwrap();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ajusta","dueno":"user:vera"}"#,
+    );
+    vuelta();
+    let tenant: String = otra_conexion()
+        .query_one("select tenant from plano.proyecto where id = 'ajusta'", &[])
+        .unwrap()
+        .get(0);
+    almacen.pedido();
+    let ajustes = "/v1/postgres/proyectos/ajusta/ajustes";
+
+    // Lo que no vale, antes de nada.
+    for mal in [
+        "{}",
+        r#"{"retencion_pitr":"25h"}"#,
+        r#"{"retencion_pitr":"6d"}"#,
+        r#"{"nombre":"  "}"#,
+        r#"{"cu_min":"2","cu_max":"1"}"#,
+        r#"{"dormir_tras":"30"}"#,
+    ] {
+        assert_eq!(pide(&s, "a", "POST", ajustes, mal).0, 400, "{mal}");
+    }
+    assert_eq!(
+        pide(&s, "b", "POST", ajustes, r#"{"nombre":"x"}"#).0,
+        404,
+        "otra organización"
+    );
+
+    let (codigo, r) = pide(
+        &s,
+        "a",
+        "POST",
+        ajustes,
+        r#"{"nombre":"Ventas EU","cu_min":"0.5","cu_max":"2","dormir_tras":"900","retencion_pitr":"6h"}"#,
+    );
+    assert_eq!(codigo, 202, "{r}");
+    assert_eq!(campo(&r, &["proyecto", "nombre"]), "Ventas EU");
+    assert_eq!(campo(&r, &["proyecto", "por_defecto", "cu_min"]), "0.5");
+    assert_eq!(campo(&r, &["proyecto", "retencion_pitr"]), "6h");
+    vuelta();
+    assert_eq!(
+        almacen.pedido(),
+        vec![format!("retencion {tenant} Some(\"6h\")")]
+    );
+    let (_, r) = pide(&s, "a", "GET", "/v1/postgres/proyectos/ajusta", "");
+    assert_eq!(campo(&r, &["retencion_propia"]), "true", "{r}");
+
+    // Un cómputo nuevo sin cu ni dormir_tras nace con los de la instancia.
+    let (codigo, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/ajusta/ramas/main/endpoints",
+        r#"{"id":"lee","tipo":"lectura"}"#,
+    );
+    assert_eq!(codigo, 202, "{r}");
+    assert_eq!(
+        (
+            campo(&r, &["endpoint", "cu", "min"]),
+            campo(&r, &["endpoint", "cu", "max"]),
+            campo(&r, &["endpoint", "dormir_tras"]),
+        ),
+        ("0.5".into(), "2".into(), "900".into()),
+        "{r}"
+    );
+    vuelta();
+
+    // `null` vuelve a la del pageserver; el nombre se queda.
+    let (codigo, r) = pide(&s, "a", "POST", ajustes, r#"{"retencion_pitr":null}"#);
+    assert_eq!(codigo, 202, "{r}");
+    assert_eq!(campo(&r, &["proyecto", "retencion_pitr"]), "1 day");
+    assert_eq!(campo(&r, &["proyecto", "nombre"]), "Ventas EU");
+    almacen.pedido();
+    vuelta();
+    assert!(
+        almacen
+            .pedido()
+            .contains(&format!("retencion {tenant} None")),
+        "sin retención propia"
+    );
+    pide(&s, "a", "DELETE", "/v1/postgres/proyectos/ajusta", "");
+    vuelta();
 }

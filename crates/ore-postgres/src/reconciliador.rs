@@ -864,6 +864,23 @@ fn intentar(c: &mut Client, a: &dyn Almacen, k: &dyn Computos, op: &Op) -> Resul
         // arranque de su cómputo (no se reinicia uno vivo por esto); `dormir_tras` lo lee el
         // reconciliador al decidir si duerme (P6·3).
         "configurar-endpoint" => Ok(()),
+        // P8·4b · Los ajustes de la instancia: el nombre y los valores por defecto ya valen;
+        // la ventana de historia se le pone al tenant en el controller (idempotente: se pone
+        // la que diga la base, o ninguna propia).
+        "configurar-proyecto" => {
+            let f = c
+                .query_one(
+                    "select tenant, retencion_pitr from plano.proyecto
+                      where organizacion = $1 and id = $2",
+                    &[&op.organizacion, &op.proyecto],
+                )
+                .map_err(bd)?;
+            let (tenant, retencion): (Option<String>, Option<String>) = (f.get(0), f.get(1));
+            match tenant {
+                Some(t) => a.configurar_retencion(&t, retencion.as_deref()),
+                None => Ok(()),
+            }
+        }
         // P6·3 · Dormir: se mira otra vez (una consulta pudo empezar desde que se decidió), se
         // para limpio (`/terminate`, con su LSN), se borra el cómputo y, cuando no queda nada con
         // su nombre, el endpoint queda `dormido`: sin cómputo, coste 0; los datos, en el almacén.

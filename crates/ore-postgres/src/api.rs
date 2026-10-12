@@ -8,6 +8,8 @@
 //!   DELETE /v1/postgres/proyectos/{p}             → 202 + operación
 //!   GET    /v1/postgres/proyectos/{p}/acceso         quién entra: IPs, bloqueo público, límites (P5·6)
 //!   GET    /v1/postgres/proyectos/{p}/almacenamiento lo que ocupa cada rama y la retención PITR (P8·4a)
+//!   POST   /v1/postgres/proyectos/{p}/ajustes        {"nombre", "cu_min", "cu_max", "dormir_tras",
+//!                                                     "retencion_pitr": "6h" | null} → 202 (P8·4b)
 //!   POST   /v1/postgres/proyectos/{p}/acceso         {"ips_permitidas": [...], "bloquear_publico": false,
 //!                                                     "limites": {"tcp": {"por_segundo", "rafaga"}, "ws", "http"}}
 //!                                                     → 202; lo que no viene, se queda como está
@@ -85,7 +87,8 @@ pub const RETENCION_PITR: &str = "1 day";
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
 const PROYECTO: &str = "id, celda, dueno,
     to_char(creado at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
-    deseado, observado, generacion, tenant";
+    deseado, observado, generacion, tenant,
+    nombre, defecto_cu_min, defecto_cu_max, defecto_dormir_tras, retencion_pitr";
 
 /// Y de una operación, para [`operacion_json`].
 const OPERACION: &str = "id, tipo, proyecto, estado, error,
@@ -154,6 +157,7 @@ impl Servidor {
             | Pedido::CrearBase(..)
             | Pedido::CambiarAcceso(_)
             | Pedido::AjustarEndpoint(..)
+            | Pedido::AjustarProyecto(_)
             | Pedido::Sql(..) => match analizar(&p.cuerpo) {
                 Ok(n) => Some(n),
                 Err(m) => return Respuesta::error(400, m),
@@ -199,6 +203,9 @@ impl Servidor {
             }
             Pedido::BorrarProyecto(id) => borrar_proyecto(c, &celda, id),
             Pedido::Acceso(id) => acceso(c, &celda, id),
+            Pedido::AjustarProyecto(id) => {
+                ajustar_proyecto(c, &celda, id, cuerpo.as_ref().expect("analizado"))
+            }
             Pedido::CambiarAcceso(id) => {
                 cambiar_acceso(c, &celda, id, cuerpo.as_ref().expect("analizado"))
             }
@@ -272,7 +279,7 @@ impl Servidor {
             };
             tenant_y_ramas(&mut base, celda, p)
         };
-        let (tenant, ramas) = match leido {
+        let (tenant, ramas, retencion) = match leido {
             Ok(x) => x,
             Err(Fallo(c, m)) => return Respuesta::error(c, m),
         };
@@ -305,19 +312,24 @@ impl Servidor {
             })
             .collect();
         Respuesta::ok(Json::obj([
-            ("retencion_pitr", Json::s(RETENCION_PITR)),
+            (
+                "retencion_pitr",
+                Json::s(retencion.as_deref().unwrap_or(RETENCION_PITR)),
+            ),
             ("ramas", Json::Arr(ramas)),
         ]))
     }
 }
 
-/// El tenant del proyecto (si ya lo tiene) y sus ramas vivas: `(id, timeline)`.
-type TenantYRamas = (Option<String>, Vec<(String, String)>);
+/// El tenant del proyecto (si ya lo tiene), sus ramas vivas `(id, timeline)` y su
+/// retención propia (P8·4b; `None`, la del pageserver).
+type TenantYRamas = (Option<String>, Vec<(String, String)>, Option<String>);
 
 /// El tenant del proyecto (si ya lo tiene) y sus ramas vivas, con su timeline.
 fn tenant_y_ramas(c: &mut Client, celda: &Celda, p: &str) -> Result<TenantYRamas, Fallo> {
     let Some(f) = c.query_opt(
-        "select tenant from plano.proyecto where organizacion = $1 and id = $2 and deseado = 'vivo'",
+        "select tenant, retencion_pitr from plano.proyecto
+          where organizacion = $1 and id = $2 and deseado = 'vivo'",
         &[&celda.organizacion, &p],
     )?
     else {
@@ -333,7 +345,7 @@ fn tenant_y_ramas(c: &mut Client, celda: &Celda, p: &str) -> Result<TenantYRamas
         .iter()
         .map(|r| (r.get(0), r.get(1)))
         .collect();
-    Ok((f.get(0), ramas))
+    Ok((f.get(0), ramas, f.get(1)))
 }
 
 /// Lo que una ruta pide.
@@ -363,6 +375,7 @@ pub enum Pedido<'a> {
     /// P8·1: ejecutar SQL en la rama, como un rol.
     Sql(&'a str, &'a str),
     Almacenamiento(&'a str),
+    AjustarProyecto(&'a str),
     BorrarRol(&'a str, &'a str, &'a str),
     Bases(&'a str, &'a str),
     CrearBase(&'a str, &'a str),
@@ -378,6 +391,7 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("DELETE", ["proyectos", p]) => Pedido::BorrarProyecto(p),
         ("GET", ["proyectos", p, "acceso"]) => Pedido::Acceso(p),
         ("GET", ["proyectos", p, "almacenamiento"]) => Pedido::Almacenamiento(p),
+        ("POST", ["proyectos", p, "ajustes"]) => Pedido::AjustarProyecto(p),
         ("POST", ["proyectos", p, "acceso"]) => Pedido::CambiarAcceso(p),
         ("GET", ["operaciones", o]) => Pedido::Operacion(o),
         ("GET", ["proyectos", p, "ramas"]) => Pedido::Ramas(p),
@@ -1180,11 +1194,20 @@ fn crear_endpoint(
             format!("`tipo` es `lectura-escritura` o `lectura`, no `{tipo}`"),
         ));
     }
-    let (cu_min, cu_max) = (cu(cuerpo, "cu_min", 0.25)?, cu(cuerpo, "cu_max", 1.0)?);
+    // P8·4b: lo que no viene, de los valores por defecto de la instancia.
+    let (d_min, d_max, d_dormir) = c
+        .query_opt(
+            "select defecto_cu_min, defecto_cu_max, defecto_dormir_tras from plano.proyecto
+              where organizacion = $1 and id = $2",
+            &[&celda.organizacion, &p],
+        )?
+        .map(|f| (f.get::<_, f64>(0), f.get::<_, f64>(1), f.get::<_, i32>(2)))
+        .unwrap_or((0.25, 1.0, 300));
+    let (cu_min, cu_max) = (cu(cuerpo, "cu_min", d_min)?, cu(cuerpo, "cu_max", d_max)?);
     if cu_min > cu_max {
         return Err(Fallo(400, "`cu_min` no puede pasar de `cu_max`".into()));
     }
-    let dormir = dormir_tras(cuerpo)?.unwrap_or(300);
+    let dormir = dormir_tras(cuerpo)?.unwrap_or(d_dormir);
     let mut tx = c.transaction()?;
     if rama_viva(&mut tx, celda, p, r)? != "lista" {
         return Err(Fallo(409, format!("la rama `{r}` aún no está lista")));
@@ -1848,7 +1871,131 @@ fn proyecto_json(f: &Row) -> Json {
     if let Some(t) = f.get::<_, Option<String>>(7) {
         v.push(("tenant", Json::s(t)));
     }
+    // P8·4b: el nombre que se ve (si no tiene, el id), los valores por defecto de un
+    // cómputo nuevo y la ventana de historia (la propia, o la del pageserver).
+    let id: String = f.get(0);
+    v.push((
+        "nombre",
+        Json::s(f.get::<_, Option<String>>(8).unwrap_or(id)),
+    ));
+    v.push((
+        "por_defecto",
+        Json::obj([
+            ("cu_min", Json::s(f.get::<_, f64>(9).to_string())),
+            ("cu_max", Json::s(f.get::<_, f64>(10).to_string())),
+            ("dormir_tras", Json::Int(f.get::<_, i32>(11) as i64)),
+        ]),
+    ));
+    let propia: Option<String> = f.get(12);
+    v.push((
+        "retencion_pitr",
+        Json::s(propia.as_deref().unwrap_or(RETENCION_PITR)),
+    ));
+    v.push(("retencion_propia", Json::Bool(propia.is_some())));
     Json::obj(v)
+}
+
+/// P8·4b · `6h` (de 0 a 24 horas): la ventana de historia que se le pone al tenant.
+pub fn retencion_valida(r: &str) -> bool {
+    r.strip_suffix('h')
+        .filter(|n| !n.is_empty() && n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| n <= 24)
+}
+
+/// P8·4b · Los ajustes de la instancia: el nombre que se ve, los valores por defecto de
+/// un cómputo nuevo y la ventana de historia. Lo que no viene se queda; `retencion_pitr`
+/// a `null` vuelve a la del pageserver. Es una operación: la historia la aplica el
+/// reconciliador en el controller; lo demás vale ya.
+fn ajustar_proyecto(
+    c: &mut Client,
+    celda: &Celda,
+    id: &str,
+    cuerpo: &Node,
+) -> Result<Respuesta, Fallo> {
+    let viene = |k: &str| cuerpo.get(k).is_some();
+    let nombre = match cuerpo.get("nombre").and_then(|(_, v)| v.as_str()) {
+        None => None,
+        Some(n) => {
+            let n = n.trim();
+            if n.is_empty() || n.chars().count() > 64 || n.chars().any(char::is_control) {
+                return Err(Fallo(
+                    400,
+                    "`nombre`: de 1 a 64 caracteres, sin saltos ni controles".into(),
+                ));
+            }
+            Some(n.to_string())
+        }
+    };
+    // `retencion_pitr`: "6h", o null para volver a la del pageserver.
+    let retencion: Option<Option<String>> = match cuerpo.get("retencion_pitr") {
+        None => None,
+        Some((_, v)) => match v.as_str() {
+            None | Some("null") | Some("~") | Some("") => Some(None),
+            Some(r) if retencion_valida(r) => Some(Some(r.to_string())),
+            Some(r) => {
+                return Err(Fallo(
+                    400,
+                    format!("`retencion_pitr` son horas, de `0h` a `24h`, o null; no `{r}`"),
+                ));
+            }
+        },
+    };
+    let dormir = dormir_tras(cuerpo)?;
+    if nombre.is_none()
+        && !viene("cu_min")
+        && !viene("cu_max")
+        && dormir.is_none()
+        && retencion.is_none()
+    {
+        return Err(Fallo(
+            400,
+            "nada que cambiar: `nombre`, `cu_min`, `cu_max`, `dormir_tras` o `retencion_pitr`"
+                .into(),
+        ));
+    }
+    let mut tx = c.transaction()?;
+    let Some(f) = tx.query_opt(
+        "select defecto_cu_min, defecto_cu_max from plano.proyecto
+          where organizacion = $1 and id = $2 and deseado = 'vivo' for update",
+        &[&celda.organizacion, &id],
+    )?
+    else {
+        return Err(no_hay_proyecto(id));
+    };
+    let (cu_min, cu_max) = (
+        cu(cuerpo, "cu_min", f.get(0))?,
+        cu(cuerpo, "cu_max", f.get(1))?,
+    );
+    if cu_min > cu_max {
+        return Err(Fallo(400, "`cu_min` no puede pasar de `cu_max`".into()));
+    }
+    let op = nueva_operacion(&mut tx, celda, id, "configurar-proyecto", None)?;
+    let cambia_retencion = retencion.is_some();
+    let nueva_retencion = retencion.flatten();
+    let fila = tx.query_one(
+        &format!(
+            "update plano.proyecto
+                set nombre = coalesce($3, nombre),
+                    defecto_cu_min = $4, defecto_cu_max = $5,
+                    defecto_dormir_tras = coalesce($6, defecto_dormir_tras),
+                    retencion_pitr = case when $7 then $8 else retencion_pitr end
+              where organizacion = $1 and id = $2
+          returning {PROYECTO}"
+        ),
+        &[
+            &celda.organizacion,
+            &id,
+            &nombre,
+            &cu_min,
+            &cu_max,
+            &dormir,
+            &cambia_retencion,
+            &nueva_retencion,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(aceptada(&op, Some(("proyecto", proyecto_json(&fila)))))
 }
 
 fn operacion_json(f: &Row) -> Json {

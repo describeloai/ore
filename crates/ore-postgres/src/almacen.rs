@@ -12,6 +12,8 @@
 //!   dónde      GET    /control/v1/tenant/{t} (`node_attached`) y /control/v1/node: el pageserver del
 //!              tenant, para la especificación de su cómputo (P4·3·1)
 //!   tamaños    GET    /v1/tenant/{t}/timeline  (todas sus ramas de una vez, ~6 ms; P8·4a)
+//!   historia   PUT    /v1/tenant/config        {tenant_id, pitr_interval}  (P8·4b; REEMPLAZA lo propio
+//!              del tenant: sin `pitr_interval`, vuelve a la del pageserver.toml)
 //! ```
 //!
 //! ⭐ Todo es **idempotente** visto desde aquí: «asegurar» un tenant que ya
@@ -99,6 +101,10 @@ pub trait Almacen: Send + Sync {
     /// laboratorio, las pruebas), nada.
     fn ocupa(&self, _tenant: &str) -> Result<Vec<Ocupa>, Fallo> {
         Ok(Vec::new())
+    }
+    /// P8·4b · La ventana de historia del tenant (`6h`); `None`, la del pageserver.
+    fn configurar_retencion(&self, _tenant: &str, _pitr: Option<&str>) -> Result<(), Fallo> {
+        Ok(())
     }
 }
 
@@ -281,6 +287,21 @@ impl Almacen for Neon {
         )?;
         clasificar("lo que ocupan las ramas", c, &r)?;
         ocupa_de(&r)
+    }
+
+    fn configurar_retencion(&self, tenant: &str, pitr: Option<&str>) -> Result<(), Fallo> {
+        let mut campos = vec![("tenant_id", Json::s(tenant))];
+        if let Some(p) = pitr {
+            campos.push(("pitr_interval", Json::s(p)));
+        }
+        let (c, r) = self.pedir(
+            &self.controlador,
+            &self.admin,
+            "PUT",
+            "/v1/tenant/config",
+            Some(&Json::obj(campos)),
+        )?;
+        clasificar("la ventana de historia", c, &r)
     }
 }
 
