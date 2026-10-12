@@ -178,6 +178,9 @@ lo que dura (copiar, catalogar), pero **leen por el motor**, no lanzando un cone
   origen; virtual, en vivo; materializada, su copia.
 - **`ore-core` `sql_del_arbol::cotejar`** · el rechazo de una `Table` y de un `ObjectTable` en el
   `FROM` («nunca del origen») pasa a: se lee por el Federation Engine si su conducto lo deja.
+  Hecho en el `.sql` el 2026-10-12: una sentencia que no escribe lee en vivo una `Table`, el
+  listado de un `ObjectTable` o una vista virtual sobre ellos (también lo que expone una base
+  foránea) —corre como `ore.sql()`—; escribir desde un origen sigue siendo la copia de F7·3.
 - **[`0018`](0018-la-ontologia-es-el-sistema-de-registro.md)** y
   **[`0029`](0029-donde-corre-una-funcion.md)** · no cambian: se escribe en la copia, nunca en el origen.
 

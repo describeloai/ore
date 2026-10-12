@@ -388,6 +388,20 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             let Some(qn) = d.qname() else { continue };
             vistas += 1;
             println!("{qn}");
+            // ⭐ Una colección que ya tiene su copia y cuya fuente esta pasada no
+            //   abrió se queda como estaba. El Job abre sólo las fuentes de lo
+            //   que se le pide, y sin `--vista` recorre todas las colecciones:
+            //   cada pasada por un dataset ponía en `error` las de otra fuente
+            //   (medido en `minst_standard11`: transacción 1 con sus ítems, y el
+            //   puntero en `error`). Pedida con `--vista`, o sin copia todavía,
+            //   la falta de credencial sí es su fallo, y lo dice.
+            if op.solo.is_empty()
+                && leer_puntero(&punteros, &qn).is_some()
+                && let Some(f) = crate::coleccion::fuente_sin_abrir(&pkg, path, d)
+            {
+                println!("  la fuente `{f}` no se abrió en esta pasada: se queda como estaba");
+                continue;
+            }
             let hecho = crate::coleccion::una(
                 &pkg,
                 path,

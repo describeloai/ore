@@ -396,6 +396,21 @@ pub(crate) fn fuente_de(raiz: &Path, d: &Loaded) -> Result<(String, String, Stri
     Ok((ds, tipo, env))
 }
 
+/// **La fuente de una colección, si esta pasada no la abrió**: su `datasource`
+/// cuando su credencial (`connectionEnv`) no está ni en el entorno ni en
+/// `.env.local`. El Job de la copia abre sólo las fuentes de lo que se le pide
+/// (`VISTAS`), y la pasada de `main` recorre todas las colecciones: listar una
+/// cuya fuente sigue cerrada no es un fallo suyo.
+pub(crate) fn fuente_sin_abrir(pkg: &Package, raiz: &Path, d: &Loaded) -> Option<String> {
+    let ds = objeto_de(pkg, d)
+        .ok()?
+        .section("datasource")
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let (_, env) = lector::declaracion(raiz, &ds).ok()?;
+    lector::url(raiz, &env, &ds).is_err().then_some(ds)
+}
+
 /// El `ObjectTable` del que sale una colección.
 fn objeto_de<'a>(pkg: &'a Package, d: &Loaded) -> Result<&'a Loaded, String> {
     let r = d

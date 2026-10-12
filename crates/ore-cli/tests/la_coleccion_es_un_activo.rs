@@ -188,3 +188,41 @@ fn el_indice_de_activos_lleva_su_puntero() {
     assert_eq!(valor(p.get("items").unwrap().1, "actuales"), "4");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// La pasada de `main` recorre todas las colecciones, y el Job abre sólo las
+/// fuentes de lo que se le pide: una colección con su copia y su fuente sin
+/// abrir se queda como estaba —no pasa a `error`—. Pedida con `--vista`, la
+/// falta de credencial sí es su fallo.
+#[test]
+fn una_coleccion_cuya_fuente_no_se_abrio_se_queda_como_estaba() {
+    let dir = arbol("sin-abrir");
+    let p = dir.join("datasets/legal/archivo/contratos.json");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, PUNTERO).unwrap();
+    let materializar = |extra: &[&str]| {
+        let s = Command::new(env!("CARGO_BIN_EXE_ore"))
+            .args(["materialize", ".", "--informe", "datasets"])
+            .args(extra)
+            .current_dir(&dir)
+            .env_remove("S3_VENTAS_URL")
+            .output()
+            .expect("no se pudo invocar `ore`");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&s.stdout),
+            String::from_utf8_lossy(&s.stderr)
+        )
+    };
+    let salida = materializar(&[]);
+    assert!(
+        salida.contains("la fuente `s3_ventas` no se abrió en esta pasada: se queda como estaba"),
+        "{salida}"
+    );
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), PUNTERO, "{salida}");
+    let salida = materializar(&["--vista", "legal.archivo.contratos"]);
+    let puntero = std::fs::read_to_string(&p).unwrap();
+    assert!(puntero.contains(r#""estado": "error""#), "{salida}\n{puntero}");
+    // y lo que tenía sigue: un fallo no borra la copia
+    assert!(puntero.contains(r#""transaccion": 1"#), "{puntero}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

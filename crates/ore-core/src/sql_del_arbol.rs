@@ -847,8 +847,14 @@ fn fallo_de_analisis(m: &str) -> Fallo {
 /// camino), dichas antes de correr en vez de en la celda:
 ///
 /// - se lee un `Dataset`, o una `View` cuya raíz de lectura es uno;
-/// - una `View` virtual no tiene nada debajo que leer, y una `Table` de una
-///   fuente se lee por un `Dataset` que la copie, nunca del origen;
+/// - una sentencia que **no escribe** lee también del origen, **en vivo**: una
+///   `Table`, el listado de un `ObjectTable` o una `View` virtual que acaba en
+///   ellos —de una fuente o lo que una base foránea expone—, como la `sql()`
+///   del SDK;
+/// - escribir desde el origen es una copia (`create or replace dataset … as
+///   select` desde una `Table`, F7·3); `insert` desde un origen, y escribir
+///   desde un `ObjectTable`, todavía no; una `View` virtual sin origen no tiene
+///   nada debajo que leer;
 /// - se escribe un `Dataset` **escrito** (sin `from`), exista o no todavía; uno
 ///   mantenido sale de su `from` y no se escribe a mano, y una `View`, una
 ///   `Table` o una `Entity` no se escriben.
@@ -942,6 +948,10 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
     // 0053 F7·3: escribir desde un origen es una copia; sólo `create or replace
     // dataset … as select`, y lo que lee del origen se lee así (no es un fallo).
     let copia = copia_desde_el_origen(pkg, u).is_some();
+    // Lo que no escribe lee el origen en vivo, como `sql()` en Python, Java o
+    // Node: en el puesto la sentencia es una celda `sql` (`ore.sql`), que lee
+    // por la pasarela con su conducto, su presupuesto y su actividad (0053).
+    let en_vivo = u.escribe.is_none();
     let hay_paquete = |p: &str| hay_base(pkg, p) || creado.bases.contains(p);
     let sin_paquete = |n: &Nombre| {
         Fallo::new(
@@ -975,7 +985,17 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             Some(d) if d.kind == Kind::Dataset => {}
             Some(d) if d.kind == Kind::View && copia => {}
             Some(d) if d.kind == Kind::View => {
-                if !vistas::se_lee_de_datasets(pkg, d) {
+                let del_origen = !crate::reparto::tablas_de_la_vista(pkg, d).is_empty();
+                if vistas::se_lee_de_datasets(pkg, d) || (del_origen && en_vivo) {
+                } else if del_origen {
+                    fallos.push(
+                        Fallo::new(
+                            format!("`{r}` es una `View` virtual sobre un origen: escribir desde ella es una copia, y una copia es `create or replace dataset … as select` (la rehace el Job); `insert` desde un origen todavía no"),
+                            n.pos,
+                        )
+                        .ayuda("`create or replace dataset b.s.d as select … from …`, o un `select` que no escribe, que la lee en vivo"),
+                    );
+                } else {
                     fallos.push(
                         Fallo::new(
                             format!("`{r}` es una `View` virtual: no tiene ningún dataset debajo del que leer"),
@@ -985,32 +1005,26 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
                     );
                 }
             }
-            Some(d) if d.kind == Kind::Table && copia => {}
-            Some(d) if d.kind == Kind::Table && u.escribe.is_some() => fallos.push(
+            Some(d) if d.kind == Kind::Table && (copia || en_vivo) => {}
+            Some(d) if d.kind == Kind::Table => fallos.push(
                 Fallo::new(
                     format!("`{r}` es una `Table` de un origen: escribir desde ella es una copia, y una copia es `create or replace dataset … as select` (la rehace el Job); `insert` desde un origen todavía no"),
                     n.pos,
                 )
-                .ayuda("`create or replace dataset b.s.d as select … from …`"),
+                .ayuda("`create or replace dataset b.s.d as select … from …`, o un `select` que no escribe, que la lee en vivo"),
             ),
-            Some(d) if d.kind == Kind::Table => fallos.push(
-                Fallo::new(
-                    format!("`{r}` es una `Table` de una fuente, no un dataset: se lee por un `Dataset` que la copie, nunca del origen"),
-                    n.pos,
-                )
-                .ayuda(format!("un `Dataset` con `from: {{ table: {r} }}`")),
-            ),
-            // v1alpha16: el listado de un origen se pregunta en el origen: no
-            // está en el lago que un `.sql` lee, y el mensaje dice por dónde.
+            // v1alpha16: el listado de un origen, una fila por objeto, se lee en
+            // vivo; escribir desde él todavía no (ni como copia).
+            Some(d) if d.kind == Kind::ObjectTable && en_vivo => {}
             Some(d) if d.kind == Kind::ObjectTable => fallos.push(
                 Fallo::new(
-                    format!("`{r}` es un `ObjectTable`, el listado de un origen: no está en el lago"),
+                    format!("`{r}` es un `ObjectTable`, el listado de un origen: se lee en vivo con un `select`, pero escribir desde él todavía no"),
                     n.pos,
                 )
-                .ayuda(
-                    "se pregunta con una vista de una base foránea (`SELECT key, size FROM …`), y \
-                     sus ficheros se tienen en una `MediaCollection`",
-                ),
+                .ayuda(format!(
+                    "un `select key, size from {r}` que no escribe lo lee en vivo; sus ficheros \
+                     se tienen en una colección: `create media collection … from object table {r}`"
+                )),
             ),
             // 0049 B7·1: a collection is a relation in `FROM`, one row per item
             // (`item`, `path`, `digest`, `size`, `content_type`, `modified`).

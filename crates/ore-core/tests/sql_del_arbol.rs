@@ -107,13 +107,50 @@ fn se_lee_un_dataset_o_una_vista_que_sale_de_uno() {
     );
 }
 
+/// Lo que no escribe lee el origen en vivo, como `sql()` del SDK: una `Table`,
+/// una `View` virtual sobre ella y el listado de un `ObjectTable`. Escribir
+/// desde el origen es una copia (`create or replace dataset … as select`) y
+/// nada más.
+#[test]
+fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_una_copia() {
+    let a = arbol("en-vivo");
+    escribe(
+        &a.0,
+        "packages/ventas/objecttables/docs_t.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: docs_t, namespace: ventas }\nspec:\n  datasource: pg\n  prefix: \"docs/\"\n  match: \"*.pdf\"\n  media: document\n  changes: { mode: retract, witness: listing }\n",
+    );
+    for q in [
+        "select * from ventas.pedidos_t",
+        "select id from ventas.virtual",
+        "select key, size from ventas.docs_t",
+        "select count(*) from ventas.pedidos_t join ventas.pedidos using (id)",
+        // la copia de siempre
+        "create or replace dataset ventas.copia as select * from ventas.pedidos_t",
+    ] {
+        assert_eq!(fallos(&a.0, q), vec![], "{q}");
+    }
+    let uno = |q: &str, que: &str| {
+        let f = fallos(&a.0, q);
+        assert!(f.len() == 1 && f[0].mensaje.contains(que), "{q}: {f:?}");
+        assert!(f[0].ayuda.as_deref().unwrap_or("").contains("en vivo"), "{q}: {f:?}");
+    };
+    uno(
+        "insert into ventas.nuevo select * from ventas.pedidos_t",
+        "escribir desde ella es una copia",
+    );
+    uno(
+        "insert into ventas.nuevo select id from ventas.virtual",
+        "`View` virtual sobre un origen",
+    );
+    uno(
+        "create or replace dataset ventas.lista as select key from ventas.docs_t",
+        "escribir desde él todavía no",
+    );
+}
+
 #[test]
 fn lo_que_no_se_lee_ni_se_escribe_se_dice() {
     let a = arbol("no-se-lee");
-    let f = fallos(&a.0, "select * from ventas.pedidos_t");
-    assert!(f[0].mensaje.contains("`Table` de una fuente"), "{f:?}");
-    let f = fallos(&a.0, "select * from ventas.virtual");
-    assert!(f[0].mensaje.contains("`View` virtual"), "{f:?}");
     let f = fallos(&a.0, "select * from ventas.nadie");
     assert!(
         f[0].mensaje
