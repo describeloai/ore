@@ -7,6 +7,7 @@
 //!   GET    /v1/postgres/proyectos/{p}
 //!   DELETE /v1/postgres/proyectos/{p}             → 202 + operación
 //!   GET    /v1/postgres/proyectos/{p}/acceso         quién entra: IPs, bloqueo público, límites (P5·6)
+//!   GET    /v1/postgres/proyectos/{p}/almacenamiento lo que ocupa cada rama y la retención PITR (P8·4a)
 //!   POST   /v1/postgres/proyectos/{p}/acceso         {"ips_permitidas": [...], "bloquear_publico": false,
 //!                                                     "limites": {"tcp": {"por_segundo", "rafaga"}, "ws", "http"}}
 //!                                                     → 202; lo que no viene, se queda como está
@@ -71,7 +72,15 @@ pub struct Servidor {
     /// P8·1: el SQL de la consola y las contraseñas guardadas (`--clave-contrasenas`).
     /// Sin ella, las contraseñas no se guardan y `…/sql` y `GET …/contrasena` dicen 404.
     pub consola: Option<crate::consola::Consola>,
+    /// P8·4a: el almacenamiento, para decir lo que ocupa cada rama. Sin él (el
+    /// laboratorio), `…/almacenamiento` dice 404.
+    pub almacen: Option<std::sync::Arc<dyn crate::almacen::Almacen>>,
 }
+
+/// P8·4a · La ventana PITR: la de `pitr_interval` en el `pageserver.toml` de
+/// malla/83-postgres-el-almacenamiento.yaml. El controller no la dice (su config del
+/// tenant viene vacía: no hay nada propio), así que se dice aquí; si cambia allí, aquí.
+pub const RETENCION_PITR: &str = "1 day";
 
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
 const PROYECTO: &str = "id, celda, dueno,
@@ -165,6 +174,10 @@ impl Servidor {
                 p.cabeceras.get("x-ore-quien").map(String::as_str),
             );
         }
+        // P8·4a: lo que ocupa, preguntado al pageserver SIN la base tomada.
+        if let Pedido::Almacenamiento(proy) = &pedido {
+            return self.almacenamiento(&celda, proy);
+        }
         let secreto = self.consola.as_ref().map(|c| &c.secreto);
         let Ok(mut base) = self.base.lock() else {
             return Respuesta::error(500, "la conexión quedó envenenada");
@@ -223,7 +236,7 @@ impl Servidor {
             ),
             Pedido::Contrasena(p, r, n) => nueva_contrasena(c, &celda, p, r, n, secreto),
             Pedido::VerContrasena(p, r, n) => ver_contrasena(c, &celda, p, r, n, secreto),
-            Pedido::Sql(..) => unreachable!("atendido arriba"),
+            Pedido::Sql(..) | Pedido::Almacenamiento(_) => unreachable!("atendido arriba"),
             Pedido::BorrarRol(p, r, n) => borrar_rol(c, &celda, p, r, n),
             Pedido::Bases(p, r) => bases(c, &celda, p, r),
             Pedido::CrearBase(p, r) => {
@@ -243,6 +256,84 @@ impl Servidor {
         }
         r.unwrap_or_else(|Fallo(codigo, m)| Respuesta::error(codigo, m))
     }
+}
+
+impl Servidor {
+    /// P8·4a · Lo que ocupa cada rama, según el pageserver, y la retención. La base,
+    /// sólo para leer el tenant y sus ramas (y que la celda los ve); al pageserver se le
+    /// pregunta ya sin ella: el plano no espera a nadie mientras contesta.
+    fn almacenamiento(&self, celda: &Celda, p: &str) -> Respuesta {
+        let Some(almacen) = self.almacen.as_ref() else {
+            return Respuesta::error(404, "el almacenamiento no está montado");
+        };
+        let leido = {
+            let Ok(mut base) = self.base.lock() else {
+                return Respuesta::error(500, "la conexión quedó envenenada");
+            };
+            tenant_y_ramas(&mut base, celda, p)
+        };
+        let (tenant, ramas) = match leido {
+            Ok(x) => x,
+            Err(Fallo(c, m)) => return Respuesta::error(c, m),
+        };
+        let Some(tenant) = tenant else {
+            return Respuesta::error(409, "el proyecto aún no tiene almacenamiento");
+        };
+        let ocupa = match almacen.ocupa(&tenant) {
+            Ok(o) => o,
+            Err(e) => {
+                return Respuesta {
+                    codigo: 503,
+                    cuerpo: Json::obj([
+                        ("error", Json::s(format!("el pageserver: {}", e.motivo()))),
+                        ("reintentar", Json::Bool(true)),
+                    ]),
+                };
+            }
+        };
+        let ramas = ramas
+            .into_iter()
+            .map(|(id, timeline)| {
+                let mut v = vec![("id", Json::s(id))];
+                if let Some(o) = ocupa.iter().find(|o| o.timeline == timeline) {
+                    v.push(("logico", Json::Int(o.logico as i64)));
+                    v.push(("fisico", Json::Int(o.fisico as i64)));
+                    v.push(("historia", Json::Int(o.historia as i64)));
+                    v.push(("postgres", Json::Int(o.postgres as i64)));
+                }
+                Json::obj(v)
+            })
+            .collect();
+        Respuesta::ok(Json::obj([
+            ("retencion_pitr", Json::s(RETENCION_PITR)),
+            ("ramas", Json::Arr(ramas)),
+        ]))
+    }
+}
+
+/// El tenant del proyecto (si ya lo tiene) y sus ramas vivas: `(id, timeline)`.
+type TenantYRamas = (Option<String>, Vec<(String, String)>);
+
+/// El tenant del proyecto (si ya lo tiene) y sus ramas vivas, con su timeline.
+fn tenant_y_ramas(c: &mut Client, celda: &Celda, p: &str) -> Result<TenantYRamas, Fallo> {
+    let Some(f) = c.query_opt(
+        "select tenant from plano.proyecto where organizacion = $1 and id = $2 and deseado = 'vivo'",
+        &[&celda.organizacion, &p],
+    )?
+    else {
+        return Err(no_hay_proyecto(p));
+    };
+    let ramas = c
+        .query(
+            "select id, timeline from plano.rama
+              where organizacion = $1 and proyecto = $2 and deseado = 'viva'
+              order by padre nulls first, id",
+            &[&celda.organizacion, &p],
+        )?
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect();
+    Ok((f.get(0), ramas))
 }
 
 /// Lo que una ruta pide.
@@ -271,6 +362,7 @@ pub enum Pedido<'a> {
     VerContrasena(&'a str, &'a str, &'a str),
     /// P8·1: ejecutar SQL en la rama, como un rol.
     Sql(&'a str, &'a str),
+    Almacenamiento(&'a str),
     BorrarRol(&'a str, &'a str, &'a str),
     Bases(&'a str, &'a str),
     CrearBase(&'a str, &'a str),
@@ -285,6 +377,7 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("GET", ["proyectos", p]) => Pedido::Proyecto(p),
         ("DELETE", ["proyectos", p]) => Pedido::BorrarProyecto(p),
         ("GET", ["proyectos", p, "acceso"]) => Pedido::Acceso(p),
+        ("GET", ["proyectos", p, "almacenamiento"]) => Pedido::Almacenamiento(p),
         ("POST", ["proyectos", p, "acceso"]) => Pedido::CambiarAcceso(p),
         ("GET", ["operaciones", o]) => Pedido::Operacion(o),
         ("GET", ["proyectos", p, "ramas"]) => Pedido::Ramas(p),

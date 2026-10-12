@@ -67,6 +67,7 @@ fn servidor() -> Option<Servidor> {
         proxy: None,
         dominio: Some("europe-west1.pg.paladio.io".into()),
         consola: Some(consola()),
+        almacen: Some(std::sync::Arc::new(Ocupado)),
     })
 }
 
@@ -208,6 +209,34 @@ impl Almacen for Apunta {
     fn lsn_en_instante(&self, t: &str, tl: &str, i: &str) -> Result<String, Fallo> {
         self.apuntar(format!("instante {t} {tl} {i}"))?;
         Ok("0/1A2B3C".into())
+    }
+}
+
+/// P8·4a · El almacenamiento que dice lo que ocupa: lo que la prueba deje en [`OCUPA`].
+struct Ocupado;
+static OCUPA: Mutex<Vec<ore_postgres::almacen::Ocupa>> = Mutex::new(Vec::new());
+
+impl Almacen for Ocupado {
+    fn asegurar_tenant(&self, _: &str) -> Result<(), Fallo> {
+        Ok(())
+    }
+    fn asegurar_timeline(&self, _: &str, _: &str, _: Option<Origen>) -> Result<(), Fallo> {
+        Ok(())
+    }
+    fn borrar_tenant(&self, _: &str) -> Result<(), Fallo> {
+        Ok(())
+    }
+    fn borrar_timeline(&self, _: &str, _: &str) -> Result<(), Fallo> {
+        Ok(())
+    }
+    fn pageserver_de(&self, _: &str) -> Result<String, Fallo> {
+        Ok("host=ps port=6400".into())
+    }
+    fn lsn_en_instante(&self, _: &str, _: &str, _: &str) -> Result<String, Fallo> {
+        Ok("0/1A2B3C".into())
+    }
+    fn ocupa(&self, _: &str) -> Result<Vec<ore_postgres::almacen::Ocupa>, Fallo> {
+        Ok(OCUPA.lock().unwrap().clone())
     }
 }
 
@@ -796,6 +825,7 @@ fn otro_servidor() -> Servidor {
         proxy: None,
         dominio: Some("europe-west1.pg.paladio.io".into()),
         consola: Some(consola()),
+        almacen: None,
     }
 }
 
@@ -2161,4 +2191,72 @@ fn el_sql_de_la_consola_despierta_al_dormido() {
         .unwrap()
         .get(0);
     assert_eq!(pedidos, 1, "lo pidió, como el proxy");
+}
+
+#[test]
+fn lo_que_ocupa_cada_rama_lo_dice_el_pageserver() {
+    // P8·4a: `GET …/almacenamiento` junta las ramas del plano con lo que dice el
+    // pageserver de su timeline; la retención, la del pageserver.toml.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"ocupa","dueno":"user:vera"}"#,
+    );
+    let timeline: String = otra_conexion()
+        .query_one(
+            "select timeline from plano.rama where proyecto = 'ocupa' and id = 'main'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    *OCUPA.lock().unwrap() = vec![ore_postgres::almacen::Ocupa {
+        timeline,
+        logico: 30900224,
+        fisico: 40378368,
+        historia: 347088,
+        postgres: 17,
+    }];
+    let (codigo, r) = pide(
+        &s,
+        "a",
+        "GET",
+        "/v1/postgres/proyectos/ocupa/almacenamiento",
+        "",
+    );
+    assert_eq!(codigo, 200, "{r}");
+    assert_eq!(campo(&r, &["retencion_pitr"]), "1 day");
+    assert!(
+        r.contains(
+            r#"{"fisico":40378368,"historia":347088,"id":"main","logico":30900224,"postgres":17}"#
+        ),
+        "{r}"
+    );
+    // Otra organización no lo ve; sin almacenamiento montado, no hay ruta.
+    assert_eq!(
+        pide(
+            &s,
+            "b",
+            "GET",
+            "/v1/postgres/proyectos/ocupa/almacenamiento",
+            ""
+        )
+        .0,
+        404
+    );
+    assert_eq!(
+        pide(
+            &otro_servidor(),
+            "a2",
+            "GET",
+            "/v1/postgres/proyectos/ocupa/almacenamiento",
+            ""
+        )
+        .0,
+        404
+    );
+    pide(&s, "a", "DELETE", "/v1/postgres/proyectos/ocupa", "");
 }

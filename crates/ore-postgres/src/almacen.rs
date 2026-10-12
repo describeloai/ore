@@ -11,6 +11,7 @@
 //!              pasa al pageserver que lleva el tenant)
 //!   dónde      GET    /control/v1/tenant/{t} (`node_attached`) y /control/v1/node: el pageserver del
 //!              tenant, para la especificación de su cómputo (P4·3·1)
+//!   tamaños    GET    /v1/tenant/{t}/timeline  (todas sus ramas de una vez, ~6 ms; P8·4a)
 //! ```
 //!
 //! ⭐ Todo es **idempotente** visto desde aquí: «asegurar» un tenant que ya
@@ -23,6 +24,7 @@
 //!   reintentar.
 
 use ore_core::json::Json;
+use ore_core::parse::Node;
 use ore_entrada::http::{Plazos, pedir_con};
 use std::path::Path;
 use std::time::Duration;
@@ -55,6 +57,19 @@ pub struct Origen<'a> {
     pub lsn: Option<&'a str>,
 }
 
+/// P8·4a · Lo que ocupa una rama, según el pageserver (`GET /v1/tenant/{t}/timeline`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ocupa {
+    pub timeline: String,
+    /// `current_logical_size`: lo que ocupan sus datos, lo que Neon llama *storage*.
+    pub logico: u64,
+    /// `current_physical_size`: sus capas en el disco del pageserver.
+    pub fisico: u64,
+    /// `pitr_history_size`: lo que guarda para volver atrás (la ventana PITR).
+    pub historia: u64,
+    pub postgres: u64,
+}
+
 /// Lo que el reconciliador necesita del almacenamiento.
 pub trait Almacen: Send + Sync {
     fn asegurar_tenant(&self, tenant: &str) -> Result<(), Fallo>;
@@ -80,6 +95,11 @@ pub trait Almacen: Send + Sync {
     /// `host=… port=…` del pageserver que lleva el tenant. Un tenant partido en
     /// varios shards no se sirve todavía: es definitivo.
     fn pageserver_de(&self, tenant: &str) -> Result<String, Fallo>;
+    /// P8·4a · Lo que ocupa cada rama del tenant. Sin almacenamiento de verdad (el
+    /// laboratorio, las pruebas), nada.
+    fn ocupa(&self, _tenant: &str) -> Result<Vec<Ocupa>, Fallo> {
+        Ok(Vec::new())
+    }
 }
 
 /// El de verdad: Neon, en `ore-pg`.
@@ -250,6 +270,49 @@ impl Almacen for Neon {
         clasificar("los pageservers", c, &r)?;
         direccion_del_nodo(&r, &nodo)
     }
+
+    fn ocupa(&self, tenant: &str) -> Result<Vec<Ocupa>, Fallo> {
+        let (c, r) = self.pedir(
+            &self.controlador,
+            &self.admin,
+            "GET",
+            &format!("/v1/tenant/{tenant}/timeline"),
+            None,
+        )?;
+        clasificar("lo que ocupan las ramas", c, &r)?;
+        ocupa_de(&r)
+    }
+}
+
+/// De `GET /v1/tenant/{t}/timeline`: lo que ocupa cada timeline. Un campo que falte
+/// vale 0 (un timeline recién creado aún no tiene tamaño lógico exacto).
+pub fn ocupa_de(cuerpo: &str) -> Result<Vec<Ocupa>, Fallo> {
+    // El analizador es de YAML: cualquier texto le vale (como un escalar). Una lista o nada.
+    if !cuerpo.trim_start().starts_with('[') {
+        return Err(Fallo::Reintentar(format!(
+            "no es una lista de timelines: {}",
+            recorte(cuerpo)
+        )));
+    }
+    let n = ore_core::parse::parse(cuerpo)
+        .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
+    let num = |t: &Node, k: &str| {
+        t.get(k)
+            .and_then(|(_, v)| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            .unwrap_or(0)
+    };
+    Ok(n.items()
+        .iter()
+        .filter_map(|t| {
+            Some(Ocupa {
+                timeline: t.get("timeline_id")?.1.as_str()?.to_string(),
+                logico: num(t, "current_logical_size"),
+                fisico: num(t, "current_physical_size"),
+                historia: num(t, "pitr_history_size"),
+                postgres: num(t, "pg_version"),
+            })
+        })
+        .collect())
 }
 
 impl Neon {
@@ -397,6 +460,36 @@ mod pruebas {
             clasificar("x", 401, ""),
             Err(Fallo::Definitivo(_))
         ));
+    }
+
+    #[test]
+    fn lo_que_ocupa_cada_rama() {
+        // Recortado de lo que contestó el controller en producción (P8·4a, `postgre`).
+        let r = r#"[{"tenant_id":"207d","timeline_id":"217e","current_logical_size":30900224,
+            "current_logical_size_is_accurate":true,"current_physical_size":40378368,
+            "pitr_history_size":347088,"pg_version":17,"state":"Active"},
+            {"tenant_id":"207d","timeline_id":"9a1b","pg_version":17}]"#;
+        assert_eq!(
+            ocupa_de(r).unwrap(),
+            vec![
+                Ocupa {
+                    timeline: "217e".into(),
+                    logico: 30900224,
+                    fisico: 40378368,
+                    historia: 347088,
+                    postgres: 17,
+                },
+                Ocupa {
+                    timeline: "9a1b".into(),
+                    logico: 0,
+                    fisico: 0,
+                    historia: 0,
+                    postgres: 17,
+                },
+            ]
+        );
+        assert_eq!(ocupa_de("[]").unwrap(), vec![]);
+        assert!(matches!(ocupa_de("<html>"), Err(Fallo::Reintentar(_))));
     }
 
     #[test]

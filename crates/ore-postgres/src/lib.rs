@@ -419,6 +419,7 @@ fn servir(args: &[String]) -> ExitCode {
     eprintln!("ore-postgres · {bind}");
     eprintln!("  celdas       la organización de cada una, de ore-iam en {iam}");
     let mut avisos = None;
+    let mut almacen_api: Option<std::sync::Arc<dyn almacen::Almacen>> = None;
     if arrancar_laboratorio(args, &url) {
         // P6·1: cómputos en Docker y almacenamiento de mentira (sólo con la feature `laboratorio`).
     } else {
@@ -458,6 +459,8 @@ fn servir(args: &[String]) -> ExitCode {
                     if dormir { "sí" } else { "no (sin `--dormir`)" }
                 );
                 reconciliador::arrancar(url.clone(), neon.clone(), computos.clone(), pool, dormir);
+                // P8·4a: lo que ocupa cada rama, por la API.
+                almacen_api = Some(neon.clone());
                 // P4·5: los avisos del controller, con la pública del almacenamiento.
                 match llaves::Publica::del_fichero(
                     &std::path::Path::new(&llaves).join("publica.pem"),
@@ -541,6 +544,7 @@ fn servir(args: &[String]) -> ExitCode {
         proxy,
         dominio,
         consola,
+        almacen: almacen_api,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,
