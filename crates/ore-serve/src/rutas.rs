@@ -221,6 +221,7 @@ pub(crate) fn no_escribe(seg: &[&str]) -> bool {
             | ["federation", "read"]
             | ["colecciones", _, _, _, "items", "resolver"]
             | ["media", _, _, _, "urls" | "verify"]
+            | ["objetos-en-vivo", _, _, _, "urls"]
     ) || matches!(seg, ["v1", .., "metrics"])
 }
 
@@ -1016,6 +1017,11 @@ impl Servidor {
                 self.media(rama, p, sujeto, b, s, c, op)
             }
             ("POST", ["media", b, s, c, "urls"]) => self.media(rama, p, sujeto, b, s, c, "urls"),
+            // La galería en vivo de un `ObjectTable` (lo que una base foránea
+            // expone): las URLs de sus objetos vigentes, firmadas en el origen.
+            ("POST", ["objetos-en-vivo", b, s, n, "urls"]) => {
+                self.urls_en_vivo(rama, p, sujeto, b, s, n)
+            }
             // 0049 H4: `verify`, leer y comparar con el digest.
             ("POST", ["media", b, s, c, "verify"]) => {
                 self.media(rama, p, sujeto, b, s, c, "verify")
@@ -3501,6 +3507,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         (
             "GET",
             "/preview/{kind}/{base}/{schema}/{nombre}",
+            con_identidad,
+        ),
+        (
+            "POST",
+            "/objetos-en-vivo/{base}/{schema}/{nombre}/urls",
             con_identidad,
         ),
         ("POST", "/paquetes/{nombre}/copia/rehacer", con_identidad),

@@ -234,9 +234,18 @@ impl Origen for Azure {
         disposicion: &str,
         segundos: u64,
     ) -> Result<Option<String>, String> {
-        // Un contenedor público (D-O6) no tiene con qué firmar: sin identidad no
-        // hay clave de delegación.
-        if self.es_publico() || version.is_empty() || etag_de(version).is_some() {
+        // El objeto vigente (sin versión, la galería en vivo): de un contenedor
+        // público, su URL tal cual —se lee sin identidad, y es lo que es—; de
+        // uno privado, una SAS de delegación sin versión (`sr=b`).
+        if version.is_empty() {
+            if self.es_publico() {
+                return Ok(Some(self.url_del_blob(clave)));
+            }
+            return Azure::firmar(self, clave, None, tipo, disposicion, segundos).map(Some);
+        }
+        // Un contenedor público (D-O6) no tiene con qué firmar una versión:
+        // sin identidad no hay clave de delegación.
+        if self.es_publico() || etag_de(version).is_some() {
             return Ok(None);
         }
         Azure::firmar(self, clave, Some(version), tipo, disposicion, segundos).map(Some)
@@ -249,6 +258,31 @@ mod tests {
 
     /// Una versión de verdad va como `versionid` y con su ETag; una que es un
     /// ETag, sólo como precondición.
+    /// La galería en vivo: el objeto vigente de un contenedor público es su URL
+    /// tal cual, sin identidad; una versión o un ETag, como siempre, no se firman.
+    #[test]
+    fn de_un_contenedor_publico_el_objeto_vigente_es_su_url() {
+        let a = Azure::de_url("az://azureopendatastorage/mnist?publico=1").unwrap();
+        assert_eq!(
+            Origen::firmar(&a, "processedManifest/manifest.json", "", "application/json", "inline", 300),
+            Ok(Some(
+                "https://azureopendatastorage.blob.core.windows.net/mnist/processedManifest/manifest.json"
+                    .to_string()
+            ))
+        );
+        assert_eq!(
+            Origen::firmar(
+                &a,
+                "x.json",
+                "\"0x8DD0A77EAF6000A\"",
+                "application/json",
+                "inline",
+                300
+            ),
+            Ok(None)
+        );
+    }
+
     #[test]
     fn la_version_se_parte_en_versionid_y_if_match() {
         assert_eq!(

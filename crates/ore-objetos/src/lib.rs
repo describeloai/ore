@@ -106,6 +106,10 @@ pub trait Origen {
     /// este origen (o este ítem) no da URLs firmadas, se abre por `content`.
     /// S3 firma sin red; GCS pide la firma a IAM (`signBlob`), que puede fallar
     /// (`Err`).
+    ///
+    /// ⭐ Una `version` **vacía** es el objeto **vigente**, sin fijar: lo que
+    /// pide la galería en vivo de un `ObjectTable` (lo que una base foránea
+    /// expone), que es el origen tal como está y no guarda historia.
     fn firmar(
         &self,
         clave: &str,

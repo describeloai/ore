@@ -34,6 +34,23 @@
 //!
 //! Las rutas de 0046 (`/colecciones/…/items`, `…/items/{huella}`,
 //! `…/items/resolver`) siguen hasta el relevo (0049 B6).
+//!
+//! # La galería en vivo de un `ObjectTable`
+//!
+//! `POST /objetos-en-vivo/{b}/{s}/{n}/urls` `{items: [{key, content_type?}],
+//! ttl_s?}`. Lo que una base foránea expone de un origen de objetos **es** su
+//! `ObjectTable` (OOS v1alpha27 `01` §3), y una foránea no puede tener una
+//! colección —ni virtual: guarda historia— (`OOS2049`). La consola lo enseña
+//! como una colección virtual **en vivo**: sus filas, del preview de siempre
+//! (`/preview/objecttable/…`, el listado por la pasarela), y sus bytes, por
+//! aquí: la URL del objeto **vigente** de cada clave, firmada en el origen.
+//!
+//! Lo que se comprueba es lo de una lectura en vivo, con el mismo plan
+//! (`ore federate`: la exposición de la foránea, el interruptor `federation` de
+//! la fuente, el conducto), y además que **cada clave es de ese
+//! `ObjectTable`** —bajo su prefijo y en su patrón—: firmar no deja leer nada
+//! que el listado no enseñe. La credencial, del custodio; lo firmado, a la
+//! actividad como cualquier URL servida.
 
 use crate::puestos::{Fijada, MediaDelPuesto};
 use crate::rutas::Servidor;
@@ -819,6 +836,154 @@ impl Servidor {
         r
     }
 
+    /// ⭐ **`POST /objetos-en-vivo/{b}/{s}/{n}/urls`**: las URLs de los objetos
+    /// vigentes de un `ObjectTable` —el suyo, o el que una base foránea
+    /// expone—, firmadas en el origen. Ver la cabecera.
+    pub(crate) fn urls_en_vivo(
+        &self,
+        rama: Option<&str>,
+        p: &Peticion,
+        sujeto: &Identidad,
+        b: &str,
+        s: &str,
+        n: &str,
+    ) -> Respuesta {
+        if let Err(m) = crate::rutas::token(b)
+            .and(crate::rutas::token(s))
+            .and(crate::rutas::token(n))
+        {
+            return problema(422, "media/peticion", m);
+        }
+        let cuerpo = match ore_core::parse::parse(&p.cuerpo) {
+            Ok(c) if !p.cuerpo.trim().is_empty() => c,
+            _ => {
+                return problema(
+                    400,
+                    "media/peticion",
+                    "the body is not JSON: `{items: [{key, content_type?}], ttl_s?}`",
+                );
+            }
+        };
+        let items = cuerpo.get("items").map(|(_, v)| v.items()).unwrap_or(&[]);
+        if items.is_empty() || items.len() > 1000 {
+            return problema(413, "media/limite", "1 to 1000 items per request");
+        }
+        let tabla = format!("{b}.{s}.{n}");
+        // El plan de una lectura en vivo: la exposición, el interruptor de la
+        // fuente y el conducto, como el preview que dio estas claves.
+        let desde_puesto = self.puesto_que_llama(p, sujeto).is_some();
+        let plan = match self.plan_federado(&tabla, &[], None, rama, desde_puesto) {
+            Ok(plan) => plan,
+            Err(r) => return r,
+        };
+        let texto = |k: &str| {
+            plan.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        if texto("ok") != "true" {
+            let http = texto("http").parse::<u16>().unwrap_or(422);
+            return problema(http, &texto("codigo"), texto("mensaje"));
+        }
+        let Some((_, listado)) = plan.get("listado") else {
+            return problema(
+                422,
+                "media/peticion",
+                format!("`{tabla}` is not an `ObjectTable`: its rows are not objects"),
+            );
+        };
+        let patron = listado
+            .get("match")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let prefijo = texto("objeto");
+        let mut pedidos = Vec::with_capacity(items.len());
+        for it in items {
+            let clave = it.get("key").and_then(|(_, v)| v.as_str()).unwrap_or("");
+            if !es_del_objecttable(clave, &prefijo, &patron) {
+                return problema(
+                    403,
+                    "media/no-es-del-objecttable",
+                    format!(
+                        "`{clave}` is not an object of `{tabla}`: only what its listing shows is signed"
+                    ),
+                );
+            }
+            let mut m = vec![("key", Json::s(clave))];
+            if let Some(t) = it.get("content_type").and_then(|(_, v)| v.as_str()) {
+                m.push(("content_type", Json::s(t)));
+            }
+            pedidos.push(Json::obj(m));
+        }
+        let (fuente, caduca) = match self.credencial_de_la_fuente(&texto("fuente"), &texto("env")) {
+            Ok(x) => x,
+            Err(r) => return r,
+        };
+        let pedido_ttl = cuerpo
+            .get("ttl_s")
+            .and_then(|(_, t)| t.as_str())
+            .and_then(|t| t.parse::<u64>().ok())
+            .unwrap_or(VIDA_DE_UN_PERMISO);
+        let ttl = match caduca {
+            Some(c) => pedido_ttl.min(vida_de_la_credencial(c, crate::datasets::ahora_ms())),
+            None => pedido_ttl,
+        };
+        let r = match pedir_a_medios(
+            "/origen/urls",
+            &Json::obj([
+                ("fuente", Json::s(fuente)),
+                ("items", Json::Arr(pedidos)),
+                ("ttl_s", Json::Int(ttl as i64)),
+            ]),
+        ) {
+            Ok((codigo, texto)) => match ore_core::parse::parse(texto.trim()) {
+                Ok(_) => Respuesta {
+                    codigo,
+                    cuerpo: Json::Crudo(texto.trim().to_string()),
+                },
+                Err(_) => problema(502, "media/origen", "`ore-medios` did not answer JSON"),
+            },
+            Err(r) => r,
+        };
+        // Lo firmado, a la actividad: un portador por clave, como cualquier URL.
+        if r.codigo == 200
+            && let Json::Crudo(t) = &r.cuerpo
+            && let Ok(n) = ore_core::parse::parse(t)
+        {
+            let firmados: Vec<Json> = n
+                .get("urls")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter(|u| u.get("url").is_some())
+                .map(|u| {
+                    Json::obj([
+                        ("huella", Json::s("")),
+                        ("blob", Json::s("")),
+                        (
+                            "clave",
+                            Json::s(u.get("key").and_then(|(_, v)| v.as_str()).unwrap_or("")),
+                        ),
+                        ("version", Json::s("")),
+                    ])
+                })
+                .collect();
+            if !firmados.is_empty() {
+                let m: BTreeMap<String, Json> = [
+                    ("coleccion".to_string(), Json::s(&tabla)),
+                    ("virtual".to_string(), Json::Bool(true)),
+                    ("segundos".to_string(), Json::Int(ttl as i64)),
+                ]
+                .into_iter()
+                .collect();
+                self.contar_lo_servido(p, rama, &m, &firmados);
+            }
+        }
+        r
+    }
+
     /// Lo firmado, a la actividad de la organización (`coleccion:servir`), como
     /// lo de 0046: quién, de qué colección, qué ítems y cuánto viven. La URL es
     /// un portador y el lago no sabe quién lee.
@@ -885,6 +1050,45 @@ impl Servidor {
 /// `content`: `307`, y en el cuerpo `url` —la del lago tal cual, o la de
 /// `ore-medios` con el permiso— más lo que vino (`version`, `item`…), sin
 /// reanalizarlo (`de_node` volvería `null` la cadena `"null"`).
+/// **El *glob* de `match`** (v1alpha16, el de `ObjectTable`): `*` no cruza `/`,
+/// `**` sí —y `**/` vale también por ninguna carpeta—, `?` es un carácter. El
+/// mismo que el de `ore-read-objetos` (`filas::casa`), que este proceso no
+/// enlaza: no lee orígenes (`ore-cli/tests/dependencias.rs`).
+fn casa(patron: &str, texto: &str) -> bool {
+    fn m(p: &[u8], t: &[u8]) -> bool {
+        match p {
+            [] => t.is_empty(),
+            [b'*', b'*', b'/', resto @ ..] => {
+                (0..=t.len()).any(|i| (i == 0 || t[i - 1] == b'/') && m(resto, &t[i..]))
+            }
+            [b'*', b'*', resto @ ..] => (0..=t.len()).any(|i| m(resto, &t[i..])),
+            [b'*', resto @ ..] => {
+                for i in 0..=t.len() {
+                    if m(resto, &t[i..]) {
+                        return true;
+                    }
+                    if i < t.len() && t[i] == b'/' {
+                        break;
+                    }
+                }
+                false
+            }
+            [b'?', resto @ ..] => !t.is_empty() && t[0] != b'/' && m(resto, &t[1..]),
+            [c, resto @ ..] => !t.is_empty() && t[0] == *c && m(resto, &t[1..]),
+        }
+    }
+    m(patron.as_bytes(), texto.as_bytes())
+}
+
+/// Si una clave es de un `ObjectTable`: bajo su prefijo y, si lo tiene, en su
+/// patrón (sobre la clave relativa). Sin patrón, todo lo que cuelga del prefijo.
+fn es_del_objecttable(clave: &str, prefijo: &str, patron: &str) -> bool {
+    let Some(rel) = clave.strip_prefix(prefijo) else {
+        return false;
+    };
+    !rel.is_empty() && (patron.is_empty() || casa(patron, rel))
+}
+
 /// Dónde lee el puesto los bytes (B3·4): `ORE_MEDIOS_CONTENIDO` si se dice; si
 /// no, el host de `ORE_MEDIOS_DIRECCION` en el puerto 8098, el único de
 /// `ore-medios` al que la red deja llegar al puesto.
@@ -929,6 +1133,41 @@ fn a_donde(direccion: &str, texto: &str) -> Respuesta {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// La galería en vivo sólo firma lo que el listado del `ObjectTable` enseña:
+    /// bajo su prefijo y en su patrón.
+    #[test]
+    fn solo_se_firma_lo_que_es_del_objecttable() {
+        assert!(es_del_objecttable(
+            "processedManifest/manifest.json",
+            "processedManifest/",
+            "*"
+        ));
+        assert!(!es_del_objecttable(
+            "processedManifest/spdx_2.2/x.json",
+            "processedManifest/",
+            "*"
+        ));
+        assert!(es_del_objecttable(
+            "processedManifest/spdx_2.2/x.json",
+            "processedManifest/",
+            ""
+        ));
+        assert!(!es_del_objecttable(
+            "otro/manifest.json",
+            "processedManifest/",
+            ""
+        ));
+        assert!(!es_del_objecttable(
+            "processedManifest/",
+            "processedManifest/",
+            ""
+        ));
+        assert!(es_del_objecttable("a.gz", "", "*.gz"));
+        assert!(!es_del_objecttable("train.csv", "", "*.gz"));
+        assert!(es_del_objecttable("v/2026/x.parquet", "v/", "**/*.parquet"));
+        assert!(es_del_objecttable("v/x.parquet", "v/", "**/*.parquet"));
+    }
 
     #[test]
     fn la_fuente_de_una_virtual_sale_de_su_objecttable_y_de_la_config() {

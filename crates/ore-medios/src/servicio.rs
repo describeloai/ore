@@ -11,6 +11,7 @@
 //! | `POST /indice/abrir` | el permiso de leer un ítem (B3·2) |
 //! | `POST /indice/derivaciones` | el registro de lo que `apply()` derivó (B9) |
 //! | `GET /contenido?permiso=…` | `open` / `read_range`: los bytes (B3·2) |
+//! | `POST /origen/urls` | la URL del objeto **vigente** de unas claves de un origen, sin índice: la galería en vivo de un `ObjectTable` |
 //! | `GET /salud` | si vive, y cuántos índices tiene |
 //!
 //! ⭐ `/contenido` es la única que **no** viene de `ore-serve`: la pide el
@@ -284,6 +285,10 @@ impl Servicio {
                 ("permisos", Json::Int(self.permisos.cuantos() as i64)),
                 ("transacciones", Json::Int(self.escrituras.cuantas() as i64)),
             ])),
+            ("POST", "/origen/urls") => match ore_core::parse::parse(&p.cuerpo) {
+                Ok(n) => urls_del_origen(&n),
+                Err(_) => problema(400, "media/peticion", "the body is not JSON"),
+            },
             (
                 "POST",
                 ruta @ ("/escritura/abrir" | "/escritura/confirmar" | "/escritura/abortar"),
@@ -799,6 +804,83 @@ impl Servicio {
             ),
         )]))
     }
+}
+
+/// ⭐ **La galería en vivo de un `ObjectTable`** (lo que una base foránea
+/// expone): la URL del objeto **vigente** de cada clave, firmada en su origen
+/// con la credencial que trajo `ore-serve` —que ya comprobó el acceso, el
+/// interruptor de la fuente y que cada clave es de ese `ObjectTable`—. Sin
+/// índice ni transacción: el origen tal como está. `{fuente, items: [{key,
+/// content_type?}], ttl_s}` → `{urls: [{key, url, expires_ms} | {key, error}]}`.
+fn urls_del_origen(n: &Node) -> Respuesta {
+    let pedidos = n.get("items").map(|(_, v)| v.items()).unwrap_or(&[]);
+    if pedidos.is_empty() || pedidos.len() > LIMITE {
+        return problema(
+            413,
+            "media/limite",
+            format!("1 to {LIMITE} items per request"),
+        );
+    }
+    let Some(fuente) = texto(n, "fuente") else {
+        return problema(
+            502,
+            "media/origen",
+            "a live item is signed at its source, and its source's credential did not arrive",
+        );
+    };
+    let o = match crate::origenes::de(fuente) {
+        Ok(o) => o,
+        Err(r) => return r,
+    };
+    let segundos = texto(n, "ttl_s")
+        .and_then(|t| t.parse::<u64>().ok())
+        .unwrap_or(TTL_POR_DEFECTO)
+        .clamp(TTL_MINIMO, TTL_MAXIMO);
+    let caduca_ms = ahora_ms() + (segundos as i64) * 1000;
+    let urls = pedidos
+        .iter()
+        .map(|p| {
+            let clave = p.get("key").and_then(|(_, v)| v.as_str()).unwrap_or("");
+            let tipo = p
+                .get("content_type")
+                .and_then(|(_, v)| v.as_str())
+                .filter(|t| !t.is_empty())
+                .unwrap_or("application/octet-stream");
+            let nombre = clave.rsplit('/').next().unwrap_or(clave);
+            let (_, disposicion) = ore_core::medios::disposicion(tipo, nombre);
+            match o.firmar(clave, "", tipo, &disposicion, segundos) {
+                Ok(Some(url)) => Json::obj([
+                    ("key", Json::s(clave)),
+                    ("url", Json::s(url)),
+                    ("expires_ms", Json::Int(caduca_ms)),
+                    ("ttl_s", Json::Int(segundos as i64)),
+                ]),
+                Ok(None) => Json::obj([
+                    ("key", Json::s(clave)),
+                    (
+                        "error",
+                        problema_json(
+                            501,
+                            "media/origen",
+                            "this source gives no URL for its objects (SharePoint, SFTP): it has no live gallery",
+                        ),
+                    ),
+                ]),
+                Err(e) => Json::obj([
+                    ("key", Json::s(clave)),
+                    (
+                        "error",
+                        problema_json(
+                            502,
+                            "media/origen",
+                            format!("the source did not sign the URL: {e}"),
+                        ),
+                    ),
+                ]),
+            }
+        })
+        .collect();
+    Respuesta::ok(Json::obj([("urls", Json::Arr(urls))]))
 }
 
 /// **La URL de un ítem en su origen** (0049 H3, ADR 0061 O0·3): la que firma

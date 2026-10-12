@@ -407,7 +407,7 @@ impl Servidor {
 
     /// El plan, de `ore federate`: la política de `main` a un directorio
     /// aparte, y el árbol de la rama.
-    fn plan_federado(
+    pub(crate) fn plan_federado(
         &self,
         tabla: &str,
         columnas: &[String],
