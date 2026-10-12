@@ -90,7 +90,9 @@ pub fn identificador(s: &str) -> String {
         Some(_) => out,
     };
     // Sólo ASCII a estas alturas: cortar por bytes es cortar por caracteres.
-    out[..out.len().min(LARGO)].trim_end_matches('_').to_string()
+    out[..out.len().min(LARGO)]
+        .trim_end_matches('_')
+        .to_string()
 }
 
 /// Lo que Hadoop, Spark y Delta dejan al escribir y sus lectores saltan: un
@@ -989,7 +991,10 @@ mod tests {
         }
         let parte = "part-00066-tid-4753095944193949832-fee7e113-666d-4114-9fcb-bcd3046479f3-2636-2.c000.snappy.parquet";
         assert_eq!(tallo(parte), "part_00066");
-        assert_eq!(tallo(&format!("puYear=2019/puMonth=1/{parte}")), "pumonth_1");
+        assert_eq!(
+            tallo(&format!("puYear=2019/puMonth=1/{parte}")),
+            "pumonth_1"
+        );
         assert_eq!(tallo("Nueva carpeta/ventas 2026.csv"), "ventas_2026");
         assert_eq!(parte_de_spark("part-.parquet"), None);
     }
