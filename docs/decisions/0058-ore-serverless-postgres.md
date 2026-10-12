@@ -2006,3 +2006,24 @@ Siguen: el paso 5 (`lab/p81.sh`, en el laboratorio) y el 6 (producción: el bina
 | auditoría | 7 ejecuciones, 3 con error |
 
 El laboratorio se levanta ahora con `SIN_PROXY=1`, sin el proxy de Neon: su imagen son 7 GB de bajada y P8·1 no lo usa. **P8·1 queda cerrado en el laboratorio.** Sigue el paso 6, producción: el binario ya está en `main` (sin `--clave-contrasenas`, apagado), y lo que falta es la malla, con su go.
+
+#### P8·1 · Paso 6, en producción (2026-10-12): cerrado
+
+En este orden:
+1. **El binario**: `ab85b662` llegó con `ddf46176`, que corrigió el formato de una prueba; sin ese arreglo, el CI no publicaba la imagen. Se desplegó con la consola apagada y aplicó la migración `009-la-consola`.
+2. **El Secret** `ore-postgres-consola`: 32 bytes en hex, generados en memoria y metidos por la entrada estándar de `kubectl`. Lo crea `malla/86-…sh`.
+3. **La malla** (`4778dd11`): `--clave-contrasenas` montado del Secret, y la salida del plano al 5432 de las VMs. El plano arranca con «consola: /sql y las contraseñas guardadas».
+
+`produccion/p81.sh`, en verde, con una VM de verdad (`pg` en spot):
+
+| | medido |
+|---|---|
+| la contraseña | la guardada es la de crearla |
+| `create table` + `insert` + `select` como el rol | **140 ms** |
+| `select 1` en caliente (del plano al cómputo y vuelta, con el proceso hijo) | **20 ms** · 20 · 20 |
+| error con su posición · tope · solo lectura | ✓ (`42601` en la posición 14 · 100 de 5.000 · `25006`) |
+| otra organización | no ve el proyecto |
+| **dormido, una consulta lo despierta** | **29,9 s** para despertar la VM y **80 ms** para la consulta; los datos siguen ahí |
+| auditoría | 8 ejecuciones, 2 con error |
+
+**P8·1 queda cerrado en producción.** Lo siguiente es P8·2: el editor SQL de la consola (`SqlEditorView`), con «Run» contra `POST …/sql` y «Mostrar contraseña» en Connect.
