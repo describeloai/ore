@@ -1108,7 +1108,35 @@ esac
 #
 # ⛔ SÓLO CREA, NUNCA ROTA (0054 I2): una clave nueva deja fuera a todos los
 #   SFTP que ya confían en la de antes. Si la pregunta no se sabe, no se toca.
-#   La pública, si falta, se saca de la privada (`ssh-keygen -y`), no al revés.
+#   La pública, si falta, se saca de la privada, no al revés.
+# ⚠️ Con `cryptography` de Python y no con `ssh-keygen`: dentro, el pod corre
+#   con un uid sin entrada en `/etc/passwd` y `ssh-keygen` se niega («No user
+#   exists for uid 65532», medido el 2026-10-12). Fuera, si no hay
+#   `cryptography`, `ssh-keygen`. Escribe <f> (privada, OpenSSH) y <f>.pub, o
+#   con `--publica` sólo <f>.pub desde <f>; dice la huella, nunca la clave.
+clave_ssh() { # [--publica] <fichero> <comentario>
+  local solo=""; [ "$1" = --publica ] && { solo=1; shift; }
+  "$PY" - "$1" "$2" "$solo" <<'PY' 2>/dev/null && return 0
+import base64, hashlib, os, sys
+from cryptography.hazmat.primitives import serialization as s
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+f, comentario, solo = sys.argv[1], sys.argv[2], sys.argv[3]
+if solo:
+    k = s.load_ssh_private_key(open(f, "rb").read(), None)
+else:
+    k = Ed25519PrivateKey.generate()
+    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, k.private_bytes(s.Encoding.PEM, s.PrivateFormat.OpenSSH, s.NoEncryption()))
+    os.close(fd)
+pub = k.public_key().public_bytes(s.Encoding.OpenSSH, s.PublicFormat.OpenSSH)
+open(f + ".pub", "wb").write(pub + b" " + comentario.encode() + b"\n")
+print("SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(pub.split()[1])).digest()).decode().rstrip("="))
+PY
+  if [ -n "$solo" ]; then ssh-keygen -y -f "$1" > "$1.pub" 2>/dev/null || return 1
+  else ssh-keygen -q -t ed25519 -N '' -C "$2" -f "$1" </dev/null >/dev/null 2>&1 || return 1
+  fi
+  ssh-keygen -lf "$1.pub" 2>/dev/null | cut -d' ' -f2
+}
 CLAVE_SFTP="$NS-sftp-clave"
 PUBLICA_SFTP="$NS-sftp-clave-publica"
 preguntar "$GCLOUD" secrets versions list "$CLAVE_SFTP" --filter=state:enabled --limit=1 --format='value(name)'
@@ -1125,14 +1153,14 @@ else
     ya "la clave SSH de la celda ($CLAVE_SFTP)"
   elif asegurar_secreto "$CLAVE_SFTP" --labels=proyecto=ore,inquilino="$NOMBRE"; then
     # ⛔ A un fichero y no a la salida; y se dice la huella, nunca la clave.
-    if ssh-keygen -q -t ed25519 -N '' -C "ore-$NOMBRE" -f "$TMP/sftp" </dev/null >/dev/null 2>&1; then
+    if HUELLA_SFTP=$(clave_ssh "$TMP/sftp" "ore-$NOMBRE"); then
       # Si la privada no quedó guardada, su pública tampoco se guarda: serían
       #   de dos claves distintas en la pasada siguiente.
       correr "$GCLOUD" secrets versions add "$CLAVE_SFTP" --data-file="$(ruta "$TMP/sftp")" \
-        && hecho "la clave SSH de la celda, nueva: $(ssh-keygen -lf "$TMP/sftp.pub" | cut -d' ' -f2)" \
+        && hecho "la clave SSH de la celda, nueva: $HUELLA_SFTP" \
         || rm -f "$TMP/sftp.pub"
     else
-      duda "generar la Ed25519 de la celda (ssh-keygen)"
+      duda "generar la Ed25519 de la celda"
     fi
   fi
   # La pública: si no tiene versión, de la privada.
@@ -1144,7 +1172,7 @@ else
   esac
   if [ -n "$FALTA_PUBLICA" ] && asegurar_secreto "$PUBLICA_SFTP" --labels=proyecto=ore,inquilino="$NOMBRE"; then
     [ -f "$TMP/sftp.pub" ] || { "$GCLOUD" secrets versions access latest --secret="$CLAVE_SFTP" --out-file="$(ruta "$TMP/sftp")" >/dev/null 2>&1 \
-      && chmod 0600 "$TMP/sftp" && ssh-keygen -y -f "$TMP/sftp" > "$TMP/sftp.pub" 2>/dev/null; }
+      && chmod 0600 "$TMP/sftp" && clave_ssh --publica "$TMP/sftp" "ore-$NOMBRE" >/dev/null; }
     if [ -s "$TMP/sftp.pub" ]; then
       correr "$GCLOUD" secrets versions add "$PUBLICA_SFTP" --data-file="$(ruta "$TMP/sftp.pub")" \
         && hecho "su pública, en $PUBLICA_SFTP"
@@ -1162,7 +1190,7 @@ else
     --role=roles/secretmanager.secretAccessor \
     && hecho "\`ore-serve-$NOMBRE\` puede leer la pública"
 fi
-unset CLAVE_SFTP PUBLICA_SFTP FALTA_PUBLICA
+unset CLAVE_SFTP PUBLICA_SFTP FALTA_PUBLICA HUELLA_SFTP
 
 # ── ⭐⭐ EL ADMIN DE SU FORJA, que ella misma acuña ──────────────────────────
 #
