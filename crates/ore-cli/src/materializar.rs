@@ -303,6 +303,18 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             fallos += 1;
             continue;
         }
+        // ⭐ Las fuentes que esta pasada no abrió, si no se pidió ésta (sin
+        //   `--vista`) y ya tiene su copia: si falla por leerlas, se queda como
+        //   estaba —como una colección—. Fresca, sale al día sin leerlas.
+        let cerradas: Vec<(String, String)> =
+            if op.solo.is_empty() && leer_puntero(&punteros, &qn).is_some() {
+                fuentes_de(&pkg, v)
+                    .into_iter()
+                    .filter_map(|f| crate::lector::sin_abrir(path, &f).map(|env| (f, env)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let hecho = if por_consulta {
             por_su_consulta(&pkg, path, v, &qn, &bundle, seco, recoger, op, &punteros)
         } else {
@@ -333,6 +345,23 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
                     println!("  {e}");
                     fallos += 1;
                 }
+            }
+            // Le tocaba leer una fuente que esta pasada no abrió: no es su
+            // fallo, y su copia sigue siendo la de la pasada anterior (medido:
+            // `standard_test.public.brain_embeddings`, en `error` tras la
+            // copia de una colección de Azure).
+            // Sólo si es ESO lo que falló —el error nombra su credencial—:
+            // otro error se dice como siempre.
+            Err(e)
+                if cerradas
+                    .iter()
+                    .any(|(_, env)| e.contains(&format!("`{env}`"))) =>
+            {
+                let f: Vec<&str> = cerradas.iter().map(|(f, _)| f.as_str()).collect();
+                println!(
+                    "  la fuente `{}` no se abrió en esta pasada: se queda como estaba",
+                    f.join("`, `")
+                );
             }
             Err(e) => {
                 for l in e.lines() {
@@ -1389,6 +1418,35 @@ fn retirar_informes_de_nadie(dir: &Path, vivas: &[String]) {
             println!("  informe de `{v}` retirado: la vista ya no está en el árbol");
         }
     }
+}
+
+/// **Las fuentes de las que lee una copia**: la de su raíz, o las de lo que lee
+/// su consulta (`Table` y `ObjectTable`). Lo que sale del lago, ninguna.
+fn fuentes_de(pkg: &Package, v: &Loaded) -> Vec<String> {
+    use ore_core::document::Kind;
+    if !vistas::por_consulta(pkg, v) {
+        return vistas::raiz(pkg, v)
+            .map(|r| vec![r.datasource])
+            .unwrap_or_default();
+    }
+    let sql = if vistas::es_sql(v) {
+        Some(v)
+    } else {
+        vistas::consulta_copiada(pkg, v).ok()
+    };
+    let mut f: Vec<String> = sql
+        .map(|s| {
+            vistas::lee_directo(pkg, s)
+                .into_iter()
+                .filter(|d| matches!(d.kind, Kind::Table | Kind::ObjectTable))
+                .filter_map(|d| d.section("datasource").and_then(|x| x.as_str()))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    f.sort();
+    f.dedup();
+    f
 }
 
 fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Result<(), String> {

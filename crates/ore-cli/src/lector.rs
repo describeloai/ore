@@ -145,6 +145,17 @@ pub fn declaracion(raiz: &Path, fuente: &str) -> Result<(String, String), Fallo>
     Ok((tipo, env))
 }
 
+/// **¿Abrió esta pasada la fuente `fuente`?** No, si su credencial
+/// (`connectionEnv`) no está ni en el entorno ni en `.env.local`. El Job de la
+/// copia abre sólo las fuentes de lo que se le pide (`VISTAS`) y, sin
+/// `--vista`, recorre todo: leer una cuya fuente sigue cerrada no es un fallo
+/// de lo leído. Una fuente que no está declarada no cuenta como cerrada (eso es
+/// otro fallo, y se dice). Devuelve la variable que falta.
+pub fn sin_abrir(raiz: &Path, fuente: &str) -> Option<String> {
+    let (_, env) = declaracion(raiz, fuente).ok()?;
+    url(raiz, &env, fuente).is_err().then_some(env)
+}
+
 /// El entorno del proceso manda; `.env.local` es el respaldo local.
 ///
 /// Que ORE lea `.env.local` no es comodidad: `source add` lo **escribe**, y un
