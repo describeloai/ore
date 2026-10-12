@@ -1879,15 +1879,23 @@ fn inducir_foranea(
 /// cada objeto del alcance por el nombre de su puntero en la fuente
 /// (`<schema>.<nombre>`), y los schemas en espejo (`espejo`, del origen) por
 /// el schema de esos punteros. Sin duplicados, en orden.
+///
+/// ⛔ Un puntero en `default` se nombra **con** su schema (`default.<nombre>`),
+///   aunque su forma corta en la fuente no lo lleve: una entrada de un trozo es
+///   un schema en espejo, y `part_00066` habría sido el espejo de un schema que
+///   no existe (ORE 0061 AZ5).
 pub fn include_de(
     cat: &Catalogo,
     refs: &BTreeMap<String, String>,
     espejo: &[String],
 ) -> Vec<String> {
     let sin_fuente = |r: &str| {
-        r.strip_prefix(&format!("{}.", cat.fuente))
-            .unwrap_or(r)
-            .to_string()
+        let s = r.strip_prefix(&format!("{}.", cat.fuente)).unwrap_or(r);
+        if s.contains('.') {
+            s.to_string()
+        } else {
+            format!("{}.{s}", ore_core::normalize::SCHEMA_POR_DEFECTO)
+        }
     };
     let mut out: BTreeSet<String> = BTreeSet::new();
     let schema_en_la_fuente = |s: &str| -> String {
@@ -3295,6 +3303,38 @@ pub fn informe_json(ind: &Induccion) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0061 AZ5 · Una base foránea sobre una fuente con un objeto en `default`
+    /// (un fichero suelto en el prefijo de un bucket): su `include` lo nombra
+    /// con el schema, nunca de un trozo —que sería un schema en espejo—; y un
+    /// espejo de `default` es `default`.
+    #[test]
+    fn el_include_nombra_el_schema_tambien_en_default() {
+        let cat = Catalogo::leer(
+            r#"{ "source": "azure_blob", "tables": [
+                { "name": "default.part_00066", "columns": [ { "name": "id", "type": "Integer" } ] },
+                { "name": "ventas.pedidos", "columns": [ { "name": "id", "type": "Integer" } ] }
+            ] }"#,
+        )
+        .unwrap();
+        let refs = referencias_a_la_fuente(&cat);
+        assert_eq!(
+            refs.get("default.part_00066").map(String::as_str),
+            Some("azure_blob.part_00066"),
+            "la forma corta de la fuente no cambia"
+        );
+        assert_eq!(
+            include_de(&cat, &refs, &[]),
+            vec![
+                "default.part_00066".to_string(),
+                "ventas.pedidos".to_string()
+            ]
+        );
+        assert_eq!(
+            include_de(&cat, &refs, &["default".to_string()]),
+            vec!["default".to_string(), "ventas.pedidos".to_string()]
+        );
+    }
 
     /// La regla de la base estándar (0033): una tabla CON clave sale con su
     /// `Dataset` (en `datasets/`, con el plan) y su tabla en `upsert` por esa

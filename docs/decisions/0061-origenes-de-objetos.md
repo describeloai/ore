@@ -422,6 +422,23 @@ basura en el público: la guarda estricta de que no viaja es el test de `ore-azu
 que oculta tenant, app y los pasos de la federación y construye `?publico=1`; la comprobación lista
 nivel público, listar, leer y versiones.
 
+**AZ5 · lo que destapó el alta en producción** (2026-10-12), cada uno arreglado de raíz:
+- **el alta no catalogaba** (`76bd25dd`): desde 0053 F8·2 el catálogo va por la pasarela y lee la
+  fuente del árbol publicado, pero el alta lo lanzaba dentro de `escribiendo`, antes de publicar
+  («no está declarada»). Ahora se lanza en la ruta, con el 201 ya publicado. Valía para toda alta.
+- **lo oculto y los nombres de Spark** (`877d0712`): el catálogo de objetos salta lo que empieza
+  por `_` o `.` (`_SUCCESS`, `_committed_*`…: lo que escriben Hadoop, Spark y Delta), un
+  `part-<n>-…` se llama como su carpeta (o `part_<n>` en la raíz), y ningún identificador pasa de
+  60 (Preview rechazaba uno de 90).
+- **la consola**: el esquema de un origen se enseña cuando están todas sus fichas (`a438d8e`); el
+  `default` vacío no se pinta junto a otros schemas (`11fa3ec`).
+- **una base foránea sobre lo que está en `default`** quedaba vacía: v1alpha27 sólo exponía lo
+  que declaraba `metadata.schema`, el puntero de un fichero suelto en el prefijo no lo declara, y
+  su `include` salía de un trozo (`part_00066`: el espejo de un schema que no existe). OOS
+  v1alpha28 §4 (`1a22392`, sin puerta de versión: sólo quita errores) expone `default` como
+  cualquier schema, y `include_de` lo nombra `default.<n>`. Caso
+  `v1alpha28/valid/a-foreign-package-exposes-from-default`; con la regla vieja, `OOS2018`.
+
 **AZ5 · pendiente**: el alta de `azureopendatastorage/nyctlc` (un mes) y `mnist` en producción —
 comprobar, descubrir, sync, colecciones mantenida y virtual, y leer desde un transform de Python y de
 Java—, y con ella si la malla sale a `*.blob.core.windows.net`.

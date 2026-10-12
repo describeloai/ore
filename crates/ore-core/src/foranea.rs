@@ -73,20 +73,25 @@ pub fn foranea<'a>(pkg: &'a Package, nombre: &str) -> Option<Foranea<'a>> {
     foraneas(pkg).into_iter().find(|f| f.nombre == nombre)
 }
 
-/// El schema que un documento **declara** (`metadata.schema`): sin él no se
-/// expone (v1alpha27 `01` §3.2). No es [`Loaded::schema`], que da `default`.
-fn schema_declarado(d: &Loaded) -> Option<&str> {
-    d.meta("schema").and_then(Node::as_str)
+/// El schema de un documento de la fuente: el que declara `metadata.schema`, o
+/// `default` si no lo declara ([`Loaded::schema`], v1alpha13 `01` §2).
+///
+/// ⭐ v1alpha28 `01` §4: un documento en `default` se expone como cualquier
+/// otro. v1alpha27 sólo exponía lo que declaraba su schema, y una fuente cuyo
+/// catálogo pone algo en `default` —los ficheros sueltos en el prefijo de un
+/// bucket— daba una base foránea vacía (ORE 0061 AZ5).
+fn schema_de(d: &Loaded) -> Option<&str> {
+    d.schema()
 }
 
 /// Los documentos de la fuente que esta base podría exponer por su schema y
-/// nombre: `Table` u `ObjectTable` de su `datasource`, con schema declarado.
+/// nombre: `Table` u `ObjectTable` de su `datasource`, en su schema.
 fn de_la_fuente<'a>(pkg: &'a Package, f: &Foranea<'_>) -> impl Iterator<Item = &'a Loaded> {
     let ds = f.datasource.to_string();
     pkg.docs.iter().filter(move |d| {
         matches!(d.kind, Kind::Table | Kind::ObjectTable)
             && d.section("datasource").and_then(Node::as_str) == Some(ds.as_str())
-            && schema_declarado(d).is_some()
+            && schema_de(d).is_some()
     })
 }
 
@@ -95,7 +100,7 @@ fn de_la_fuente<'a>(pkg: &'a Package, f: &Foranea<'_>) -> impl Iterator<Item = &
 pub fn expuestos<'a>(pkg: &'a Package, f: &Foranea<'_>) -> Vec<(String, &'a Loaded)> {
     de_la_fuente(pkg, f)
         .filter_map(|d| {
-            let s = schema_declarado(d)?;
+            let s = schema_de(d)?;
             let n = d.meta("name").and_then(Node::as_str)?;
             f.incluye(s, n)
                 .then(|| (crate::normalize::corto(f.nombre, s, n), d))
@@ -119,9 +124,8 @@ pub fn expuesto<'a>(pkg: &'a Package, qname: &str) -> Option<&'a Loaded> {
     if !f.incluye(s, n) {
         return None;
     }
-    let mut hay = de_la_fuente(pkg, &f).filter(|d| {
-        schema_declarado(d) == Some(s) && d.meta("name").and_then(Node::as_str) == Some(n)
-    });
+    let mut hay = de_la_fuente(pkg, &f)
+        .filter(|d| schema_de(d) == Some(s) && d.meta("name").and_then(Node::as_str) == Some(n));
     let uno = hay.next()?;
     hay.next().is_none().then_some(uno)
 }
