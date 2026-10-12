@@ -115,6 +115,9 @@ spec:
             # P6·7: dormir por inactividad. Solo con el proxy desplegado y probado desde internet: a un
             # endpoint dormido solo lo despierta una conexión que entra por el proxy.
             - --dormir
+            # P8·1: el SQL de la consola y las contraseñas guardadas, cifradas con esta clave.
+            - --clave-contrasenas
+            - /llaves/consola/clave
           env:
             - name: ORE_POSTGRES_URL
               valueFrom: { secretKeyRef: { name: ore-postgres-db, key: url } }
@@ -124,6 +127,8 @@ spec:
             - { name: llaves-computo, mountPath: /llaves/computo, readOnly: true }
             # P5·1: el token con que pregunta el proxy (`/proxy/…`).
             - { name: llaves-proxy, mountPath: /llaves/proxy, readOnly: true }
+            # P8·1: la clave de las contraseñas (la consola).
+            - { name: llaves-consola, mountPath: /llaves/consola, readOnly: true }
           readinessProbe:
             httpGet: { path: /salud, port: 8100 }
             initialDelaySeconds: 2
@@ -145,6 +150,8 @@ spec:
           secret: { secretName: ore-postgres-llaves }
         - name: llaves-proxy
           secret: { secretName: ore-postgres-proxy }
+        - name: llaves-consola
+          secret: { secretName: ore-postgres-consola }
 ---
 # Quién entra: el `ore-serve` de las celdas y (P4·5) el storage_controller con sus avisos.
 apiVersion: networking.k8s.io/v1
@@ -203,4 +210,5 @@ spec:
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ore-pg-computo } }
           podSelector: { matchLabels: { ore.dev/rol: postgres } }
-      ports: [{ protocol: TCP, port: 3080 }]
+      # P8·1: y su Postgres, para el SQL de la consola (la entrada de las VMs ya lo admite).
+      ports: [{ protocol: TCP, port: 3080 }, { protocol: TCP, port: 5432 }]

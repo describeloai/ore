@@ -85,4 +85,19 @@ print(json.dumps({"apiVersion": "v1", "kind": "Secret",
   "stringData": {"token": secrets.token_urlsafe(48)}}))' | kubectl apply -f - >/dev/null
   echo "   creado"
 fi
+
+# ── P8·1 · la clave con que ore-postgres cifra las contraseñas de los roles (la consola, D-P8a) ──
+# 32 bytes al azar, en hex, en memoria y por la entrada estándar de kubectl, como los de arriba.
+# ⛔ Perderla es perder las contraseñas guardadas (no los datos): habría que regenerarlas.
+echo "── el Secret ore-postgres-consola"
+if kubectl -n $NS get secret ore-postgres-consola >/dev/null 2>&1; then
+  echo "   ya existe (no se toca: rotarla es otra operación)"
+else
+  python -c '
+import json, secrets
+print(json.dumps({"apiVersion": "v1", "kind": "Secret",
+  "metadata": {"name": "ore-postgres-consola", "namespace": "ore-pg"},
+  "stringData": {"clave": secrets.token_hex(32)}}))' | kubectl apply -f - >/dev/null
+  echo "   creado"
+fi
 echo "ok"
