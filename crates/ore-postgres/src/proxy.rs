@@ -111,7 +111,7 @@ pub const PLAZO_DESPERTAR: Duration = Duration::from_secs(120);
 const MIRAR_CADA: Duration = Duration::from_millis(200);
 
 /// Lo que ve `wake_compute` en una mirada.
-enum Paso {
+pub(crate) enum Paso {
     /// Contestar ya (la dirección, o que no existe).
     Contestar(Respuesta),
     /// Aún no: arrancando, despertando o durmiéndose.
@@ -223,7 +223,7 @@ impl Proxy {
 }
 
 /// Una mirada: lo que hay, y si está dormido, pedir que despierte.
-fn mirar(c: &mut Client, vm: &str, puerto: u16) -> Paso {
+pub(crate) fn mirar(c: &mut Client, vm: &str, puerto: u16) -> Paso {
     let fila = match c.query_opt(
         "select e.observado, e.direccion, p.tenant, e.rama, e.organizacion, e.proyecto, e.id,
                 coalesce(e.computo, e.vm)
@@ -273,7 +273,7 @@ fn mirar(c: &mut Client, vm: &str, puerto: u16) -> Paso {
 }
 
 /// La base, tomada sólo para esto (y reabierta si se cayó).
-fn con_base<T>(
+pub(crate) fn con_base<T>(
     base: &Mutex<Client>,
     url: Option<&str>,
     f: impl FnOnce(&mut Client) -> T,

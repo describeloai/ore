@@ -40,7 +40,8 @@ fn servidor() -> Option<Servidor> {
             "005-quien-entra",
             "006-los-limites",
             "007-dormir",
-            "008-el-pool"
+            "008-el-pool",
+            "009-la-consola",
         ]
     );
     // Dos veces es una: no aplica nada.
@@ -65,7 +66,18 @@ fn servidor() -> Option<Servidor> {
         avisos: None,
         proxy: None,
         dominio: Some("europe-west1.pg.paladio.io".into()),
+        consola: Some(consola()),
     })
+}
+
+/// P8·1 · la consola de las pruebas: la clave, el binario del paquete como hijo y el
+/// puerto del Postgres de las pruebas, que hace de cómputo.
+fn consola() -> ore_postgres::consola::Consola {
+    ore_postgres::consola::Consola {
+        secreto: ore_postgres::secreto::Secreto::de_bytes(&[7; 32]).unwrap(),
+        ejecutable: env!("CARGO_BIN_EXE_ore-postgres").into(),
+        puerto: puerto_de_las_pruebas(),
+    }
 }
 
 /// Un almacenamiento (y un cómputo) que apunta lo que se le pide y contesta lo
@@ -77,6 +89,9 @@ struct Apunta {
     vms: Mutex<HashMap<String, String>>,
     /// P6·3: el `last_active` que dice cada VM.
     actividad: Mutex<HashMap<String, String>>,
+    /// P8·1: la IP que recibe una VM nueva (por defecto 10.1.0.1); el SQL de la consola
+    /// se conecta a ella, así que en sus pruebas es la del Postgres de las pruebas.
+    ip_nueva: Mutex<Option<String>>,
 }
 
 impl Computos for Apunta {
@@ -118,10 +133,14 @@ impl Computos for Apunta {
     }
     fn crear(&self, vm: &Vm, cfg: &str) -> Result<(), Fallo> {
         self.apuntar(format!("vm-crear {} {} {cfg}", vm.nombre, vm.endpoint))?;
-        self.vms
-            .lock()
-            .unwrap()
-            .insert(vm.nombre.into(), "10.1.0.1".into());
+        self.vms.lock().unwrap().insert(
+            vm.nombre.into(),
+            self.ip_nueva
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| "10.1.0.1".into()),
+        );
         Ok(())
     }
     fn listo(&self, _: &str, _: &str) -> Result<bool, Fallo> {
@@ -776,6 +795,7 @@ fn otro_servidor() -> Servidor {
         avisos: None,
         proxy: None,
         dominio: Some("europe-west1.pg.paladio.io".into()),
+        consola: Some(consola()),
     }
 }
 
@@ -1842,4 +1862,300 @@ fn un_despertar_que_vence_no_deja_el_endpoint_atascado() {
             .any(|p| p.starts_with(&format!("vm-crear {vm} "))),
         "otro cómputo"
     );
+}
+
+/// El host y el puerto del Postgres de las pruebas (`ORE_POSTGRES_PRUEBA_URL`), que en
+/// P8·1 hace también de cómputo: el SQL de la consola se ejecuta contra él.
+fn host_y_puerto_de_las_pruebas() -> (String, u16) {
+    let url = std::env::var("ORE_POSTGRES_PRUEBA_URL").unwrap_or_default();
+    let c: postgres::Config = url.parse().unwrap_or_default();
+    let host = match c.get_hosts().first() {
+        Some(postgres::config::Host::Tcp(h)) => h.clone(),
+        _ => "127.0.0.1".into(),
+    };
+    (host, c.get_ports().first().copied().unwrap_or(5432))
+}
+
+fn puerto_de_las_pruebas() -> u16 {
+    host_y_puerto_de_las_pruebas().1
+}
+
+/// Un proyecto listo de `user:<rol>` cuyo cómputo es el Postgres de las pruebas, donde
+/// existe su rol con la contraseña que dio la API. Devuelve (servidor, contraseña).
+fn proyecto_con_sql(id: &str, rol: &str) -> Option<(Servidor, String)> {
+    let s = servidor()?;
+    let almacen = Apunta::default();
+    let mut c2 = otra_conexion();
+    let (codigo, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        &format!(r#"{{"id":"{id}","dueno":"user:{rol}"}}"#),
+    );
+    assert_eq!(codigo, 202, "{r}");
+    let clave = campo(&r, &["rol", "contrasena"]);
+    ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+    let (host, _) = host_y_puerto_de_las_pruebas();
+    c2.execute(
+        "update plano.endpoint set ip_pod = $2 where proyecto = $1",
+        &[&id, &host],
+    )
+    .unwrap();
+    // El rol, en el «cómputo»: lo que haría compute_ctl con la especificación.
+    c2.batch_execute(&format!(
+        "drop role if exists {rol}; create role {rol} login password '{clave}'"
+    ))
+    .unwrap();
+    Some((s, clave))
+}
+
+/// La base del Postgres de las pruebas: el SQL de la consola entra en ella.
+fn base_de_las_pruebas() -> String {
+    let url = std::env::var("ORE_POSTGRES_PRUEBA_URL").unwrap_or_default();
+    let c: postgres::Config = url.parse().unwrap_or_default();
+    c.get_dbname().unwrap_or("postgres").to_string()
+}
+
+fn sql(s: &Servidor, token: &str, proyecto: &str, rol: &str, extra: &str) -> (u16, String) {
+    pide(
+        s,
+        token,
+        "POST",
+        &format!("/v1/postgres/proyectos/{proyecto}/ramas/main/sql"),
+        &format!(
+            r#"{{"base":"{}","rol":"{rol}",{extra}}}"#,
+            base_de_las_pruebas()
+        ),
+    )
+}
+
+#[test]
+fn la_contrasena_de_un_rol_se_guarda_cifrada_y_se_puede_ver() {
+    // P8·1: al crear la instancia y al regenerar la contraseña, se guarda cifrada; la
+    // consola la enseña («Mostrar contraseña»); otra organización, no.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let (_, r) = pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"cifra","dueno":"user:vera"}"#,
+    );
+    let clave = campo(&r, &["rol", "contrasena"]);
+    let almacen = Apunta::default();
+    ore_postgres::reconciliador::vuelta(&mut otra_conexion(), &almacen, &almacen).unwrap();
+    let ver = "/v1/postgres/proyectos/cifra/ramas/main/roles/vera/contrasena";
+    let (codigo, r) = pide(&s, "a", "GET", ver, "");
+    assert_eq!(
+        (codigo, campo(&r, &["contrasena"])),
+        (200, clave.clone()),
+        "{r}"
+    );
+    let guardada: String = otra_conexion()
+        .query_one(
+            "select contrasena_cifrada from plano.rol where proyecto = 'cifra' and nombre = 'vera'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert!(
+        guardada.starts_with("v1:") && !guardada.contains(&clave),
+        "{guardada}"
+    );
+    // Regenerada: la guardada es la nueva.
+    let (_, r) = pide(&s, "a", "POST", ver, "");
+    let nueva = campo(&r, &["rol", "contrasena"]);
+    assert_ne!(nueva, clave);
+    let (_, r) = pide(&s, "a", "GET", ver, "");
+    assert_eq!(campo(&r, &["contrasena"]), nueva);
+    // Otra organización no la ve; sin guardar (un rol de antes), 409 con qué hacer.
+    assert_eq!(pide(&s, "b", "GET", ver, "").0, 404);
+    otra_conexion()
+        .execute(
+            "update plano.rol set contrasena_cifrada = null where proyecto = 'cifra'",
+            &[],
+        )
+        .unwrap();
+    let (codigo, r) = pide(&s, "a", "GET", ver, "");
+    assert!(codigo == 409 && r.contains("regenérala"), "{codigo} {r}");
+}
+
+#[test]
+fn la_consola_ejecuta_sql_como_el_rol_elegido() {
+    // P8·1: varias sentencias, filas con null, el error con su posición, el tope, solo
+    // lectura, otra organización y un rol sin contraseña guardada; y queda apuntado.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((s, _)) = proyecto_con_sql("consola", "sqlera") else {
+        return;
+    };
+    let (codigo, r) = sql(
+        &s,
+        "a",
+        "consola",
+        "sqlera",
+        r#""sql":"create temp table t (x int); insert into t values (2), (1), (3); select x, null::text as n, current_user as quien from t order by x""#,
+    );
+    assert_eq!(codigo, 200, "{r}");
+    let n = parse::parse(&r).unwrap();
+    assert_eq!(
+        n.get("ok").and_then(|(_, v)| v.as_str()),
+        Some("true"),
+        "{r}"
+    );
+    let sentencias = n.get("sentencias").unwrap().1.items();
+    assert_eq!(sentencias.len(), 3, "{r}");
+    assert_eq!(
+        sentencias[1]
+            .get("filas_afectadas")
+            .and_then(|(_, v)| v.as_str()),
+        Some("3")
+    );
+    let select = &sentencias[2];
+    let columnas: Vec<&str> = select
+        .get("columnas")
+        .unwrap()
+        .1
+        .items()
+        .iter()
+        .filter_map(|c| c.as_str())
+        .collect();
+    assert_eq!(columnas, ["x", "n", "quien"]);
+    assert!(
+        r.contains(r#"["1",null,"sqlera"]"#),
+        "corre como el rol, con null de verdad: {r}"
+    );
+    assert!(
+        r.contains(r#""ms":"#) && r.contains(r#""despertar_ms":"#),
+        "{r}"
+    );
+    // El error de Postgres, con su posición: `frm` es un alias de `1`, así que falla en `x`.
+    let (_, r) = sql(&s, "a", "consola", "sqlera", r#""sql":"select 1 frm x""#);
+    assert!(
+        r.contains(r#""ok":false"#) && r.contains(r#""sqlstate":"42601""#),
+        "{r}"
+    );
+    assert!(r.contains(r#""posicion":14"#), "{r}");
+    // El tope: 10 de 50, y lo dice.
+    let (_, r) = sql(
+        &s,
+        "a",
+        "consola",
+        "sqlera",
+        r#""sql":"select generate_series(1, 50)","limite_filas":10"#,
+    );
+    let n = parse::parse(&r).unwrap();
+    let s0 = &n.get("sentencias").unwrap().1.items()[0];
+    assert_eq!(s0.get("filas").unwrap().1.items().len(), 10, "{r}");
+    assert_eq!(
+        s0.get("truncada").and_then(|(_, v)| v.as_str()),
+        Some("true")
+    );
+    // Solo lectura: crear no se deja (25006).
+    let (_, r) = sql(
+        &s,
+        "a",
+        "consola",
+        "sqlera",
+        r#""sql":"create temp table z (x int)","solo_lectura":true"#,
+    );
+    assert!(r.contains(r#""sqlstate":"25006""#), "{r}");
+    // Un resultado enorme (~200 MB) tumba al hijo, no al plano: 502 con qué hacer, y el
+    // plano sigue contestando.
+    let (codigo, r) = sql(
+        &s,
+        "a",
+        "consola",
+        "sqlera",
+        r#""sql":"select repeat('x', 1000000) from generate_series(1, 200)""#,
+    );
+    assert!(codigo == 502 && r.contains("no cabe"), "{codigo} {r}");
+    assert_eq!(sql(&s, "a", "consola", "sqlera", r#""sql":"select 1""#).0, 200);
+    // Otra organización no ve el proyecto; un rol que no existe, 404.
+    assert_eq!(
+        sql(&s, "b", "consola", "sqlera", r#""sql":"select 1""#).0,
+        404
+    );
+    assert_eq!(
+        sql(&s, "a", "consola", "nadie", r#""sql":"select 1""#).0,
+        404
+    );
+    // Apuntado, sin el texto.
+    let (n, con_error): (i64, i64) = {
+        let f = otra_conexion()
+            .query_one(
+                "select count(*), count(error) from plano.sql_ejecutado where proyecto = 'consola'",
+                &[],
+            )
+            .unwrap();
+        (f.get(0), f.get(1))
+    };
+    assert_eq!((n, con_error), (6, 3), "seis ejecutadas, tres con error");
+    // Sin contraseña guardada: 409 con qué hacer.
+    otra_conexion()
+        .execute(
+            "update plano.rol set contrasena_cifrada = null where proyecto = 'consola'",
+            &[],
+        )
+        .unwrap();
+    let (codigo, r) = sql(&s, "a", "consola", "sqlera", r#""sql":"select 1""#);
+    assert!(codigo == 409 && r.contains("regenérala"), "{codigo} {r}");
+}
+
+#[test]
+fn el_sql_de_la_consola_despierta_al_dormido() {
+    // P8·1: dormido, la consulta pide `despertar-endpoint` (como el proxy) y espera.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((s, _)) = proyecto_con_sql("despierta", "dormilona") else {
+        return;
+    };
+    let (host, _) = host_y_puerto_de_las_pruebas();
+    otra_conexion()
+        .execute(
+            "update plano.endpoint set observado = 'dormido', direccion = null, ip_pod = null
+              where proyecto = 'despierta'",
+            &[],
+        )
+        .unwrap();
+    // El reconciliador, en otro hilo: atiende el despertar y deja la dirección.
+    let hilo = std::thread::spawn(move || {
+        let almacen = Apunta::default();
+        *almacen.ip_nueva.lock().unwrap() = Some(host.clone());
+        let mut c2 = otra_conexion();
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            ore_postgres::reconciliador::vuelta(&mut c2, &almacen, &almacen).unwrap();
+            let listo: bool = c2
+                .query_one(
+                    "select observado = 'listo' from plano.endpoint where proyecto = 'despierta'",
+                    &[],
+                )
+                .unwrap()
+                .get(0);
+            if listo {
+                return true;
+            }
+        }
+        false
+    });
+    let (codigo, r) = sql(
+        &s,
+        "a",
+        "despierta",
+        "dormilona",
+        r#""sql":"select 42 as respuesta""#,
+    );
+    assert!(hilo.join().unwrap(), "el reconciliador lo despertó");
+    assert_eq!(codigo, 200, "{r}");
+    assert!(r.contains(r#"["42"]"#), "{r}");
+    let pedidos: i64 = otra_conexion()
+        .query_one(
+            "select count(*) from plano.operacion
+              where proyecto = 'despierta' and tipo = 'despertar-endpoint' and celda = 'proxy'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(pedidos, 1, "lo pidió, como el proxy");
 }

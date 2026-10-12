@@ -92,7 +92,7 @@ pool_fuera() {   # el pool fuera de la malla 86, en un worktree (el índice de C
     && git -C "$w" commit -q -am "0058 P7 corto: el pool fuera a la mitad (minuto 60)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && git -C "$w" push -q origin HEAD:main; git worktree remove --force "$w" )
-  kubectl -n flux-system annotate gitrepository flux-system reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite >/dev/null 2>&1
+  kubectl -n flux-system annotate gitrepository malla reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite >/dev/null 2>&1
   local t=$(date +%s)
   until ! k get deploy ore-postgres -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q pool-computos || [ $(( $(date +%s) - t )) -ge 600 ]; do sleep 5; done
   k rollout status deploy/ore-postgres --timeout=300s >/dev/null

@@ -59,6 +59,10 @@ impl Que<'_> {
 /// una ruta de `ore-postgres` (404, sin preguntar a nadie).
 pub(crate) fn que_pide<'a>(metodo: &str, resto: &[&'a str]) -> Option<Que<'a>> {
     match (metodo, resto) {
+        // P8·1: la contraseña guardada y el SQL de la consola son «usar», como las
+        // contraseñas de hoy: quien sólo ve una instancia no entra en sus datos.
+        ("GET", ["proyectos", _, "ramas", _, "roles", _, "contrasena"]) => Some(Que::Usar),
+        ("POST", ["proyectos", _, "ramas", _, "sql"]) => Some(Que::Usar),
         ("GET", ["proyectos", ..] | ["operaciones", _]) => Some(Que::Ver),
         ("POST", ["proyectos"]) => Some(Que::Crear),
         ("POST" | "DELETE", ["proyectos", _, "ramas", _, "roles", ..]) => Some(Que::Usar),
@@ -94,6 +98,18 @@ fn no_contesta(m: impl std::fmt::Display) -> Respuesta {
 
 /// Una petición a `ore-postgres` con el token de la celda: su código y su cuerpo.
 fn pedir(metodo: &str, camino: &str, cuerpo: Option<&Json>) -> Result<(u16, String), Respuesta> {
+    pedir_con(metodo, camino, cuerpo, None)
+}
+
+/// Con quién lo pide (`x-ore-quien`, para la auditoría del SQL de la consola, P8·1). El
+/// SQL espera además a que despierte el cómputo (hasta 120 s) y a la sentencia (hasta
+/// 75 s): su plazo es de 210 s, el del resto 30.
+fn pedir_con(
+    metodo: &str,
+    camino: &str,
+    cuerpo: Option<&Json>,
+    quien: Option<&str>,
+) -> Result<(u16, String), Respuesta> {
     let Some(direccion) = std::env::var(ENTORNO).ok().filter(|d| !d.is_empty()) else {
         return Err(no_contesta(format!(
             "esta celda no sabe dónde está (`{ENTORNO}`)"
@@ -103,15 +119,20 @@ fn pedir(metodo: &str, camino: &str, cuerpo: Option<&Json>) -> Result<(u16, Stri
         .token()
         .map_err(|e| no_contesta(format!("sin el token de la celda: {e}")))?;
     let autorizacion = format!("Bearer {token}");
+    let mut cabeceras = vec![("Authorization", autorizacion.as_str())];
+    if let Some(q) = quien {
+        cabeceras.push(("x-ore-quien", q));
+    }
+    let responder = if camino.ends_with("/sql") { 210 } else { 30 };
     ore_entrada::http::pedir_con(
         metodo,
         &direccion,
         camino,
-        &[("Authorization", &autorizacion)],
+        &cabeceras,
         cuerpo,
         ore_entrada::http::Plazos {
             conectar: Duration::from_secs(3),
-            responder: Duration::from_secs(30),
+            responder: Duration::from_secs(responder),
         },
     )
     .map_err(no_contesta)
@@ -209,7 +230,8 @@ impl Servidor {
                 Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
             }
         }
-        let (codigo, texto) = match pedir(&p.metodo, &camino, cuerpo.as_ref()) {
+        let quien = camino.ends_with("/sql").then_some(sujeto.persona.as_str());
+        let (codigo, texto) = match pedir_con(&p.metodo, &camino, cuerpo.as_ref(), quien) {
             Ok(x) => x,
             Err(r) => return r,
         };
@@ -243,6 +265,14 @@ mod pruebas {
         );
         assert_eq!(q("GET", "operaciones/op-1").as_deref(), Some("Ver"));
         assert_eq!(q("POST", "proyectos").as_deref(), Some("Crear"));
+        assert_eq!(
+            q("GET", "proyectos/ventas/ramas/main/roles/app/contrasena").as_deref(),
+            Some("Usar")
+        );
+        assert_eq!(
+            q("POST", "proyectos/ventas/ramas/main/sql").as_deref(),
+            Some("Usar")
+        );
         assert_eq!(
             q("POST", "proyectos/ventas/ramas/main/roles").as_deref(),
             Some("Usar")

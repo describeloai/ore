@@ -68,6 +68,9 @@ pub struct Servidor {
     /// P5·7: el dominio de la entrada pública (`europe-west1.pg.paladio.io`).
     /// Con él, cada endpoint dice su `host` y su `host_pool`; sin él, no los dice.
     pub dominio: Option<String>,
+    /// P8·1: el SQL de la consola y las contraseñas guardadas (`--clave-contrasenas`).
+    /// Sin ella, las contraseñas no se guardan y `…/sql` y `GET …/contrasena` dicen 404.
+    pub consola: Option<crate::consola::Consola>,
 }
 
 /// Lo que se elige de un proyecto, en el orden en que lo lee [`proyecto_json`].
@@ -141,12 +144,28 @@ impl Servidor {
             | Pedido::CrearRol(..)
             | Pedido::CrearBase(..)
             | Pedido::CambiarAcceso(_)
-            | Pedido::AjustarEndpoint(..) => match analizar(&p.cuerpo) {
+            | Pedido::AjustarEndpoint(..)
+            | Pedido::Sql(..) => match analizar(&p.cuerpo) {
                 Ok(n) => Some(n),
                 Err(m) => return Respuesta::error(400, m),
             },
             _ => None,
         };
+        // P8·1: el SQL de la consola toma la base sólo cuando la necesita (despertar espera).
+        if let Pedido::Sql(proy, rama) = &pedido {
+            let Some(consola) = self.consola.as_ref() else {
+                return Respuesta::error(404, "la consola no está montada (`--clave-contrasenas`)");
+            };
+            return consola.ejecutar(
+                &self.base,
+                self.url.as_deref(),
+                &celda,
+                (proy, rama),
+                cuerpo.as_ref().expect("analizado"),
+                p.cabeceras.get("x-ore-quien").map(String::as_str),
+            );
+        }
+        let secreto = self.consola.as_ref().map(|c| &c.secreto);
         let Ok(mut base) = self.base.lock() else {
             return Respuesta::error(500, "la conexión quedó envenenada");
         };
@@ -162,7 +181,9 @@ impl Servidor {
         let hacer = |c: &mut Client| match &pedido {
             Pedido::Proyectos => proyectos(c, &celda),
             Pedido::Proyecto(id) => proyecto(c, &celda, id),
-            Pedido::CrearProyecto => crear_proyecto(c, &celda, cuerpo.as_ref().expect("analizado")),
+            Pedido::CrearProyecto => {
+                crear_proyecto(c, &celda, cuerpo.as_ref().expect("analizado"), secreto)
+            }
             Pedido::BorrarProyecto(id) => borrar_proyecto(c, &celda, id),
             Pedido::Acceso(id) => acceso(c, &celda, id),
             Pedido::CambiarAcceso(id) => {
@@ -192,10 +213,17 @@ impl Servidor {
                 self.dominio.as_deref(),
             ),
             Pedido::Roles(p, r) => roles(c, &celda, p, r),
-            Pedido::CrearRol(p, r) => {
-                crear_rol(c, &celda, p, r, cuerpo.as_ref().expect("analizado"))
-            }
-            Pedido::Contrasena(p, r, n) => nueva_contrasena(c, &celda, p, r, n),
+            Pedido::CrearRol(p, r) => crear_rol(
+                c,
+                &celda,
+                p,
+                r,
+                cuerpo.as_ref().expect("analizado"),
+                secreto,
+            ),
+            Pedido::Contrasena(p, r, n) => nueva_contrasena(c, &celda, p, r, n, secreto),
+            Pedido::VerContrasena(p, r, n) => ver_contrasena(c, &celda, p, r, n, secreto),
+            Pedido::Sql(..) => unreachable!("atendido arriba"),
             Pedido::BorrarRol(p, r, n) => borrar_rol(c, &celda, p, r, n),
             Pedido::Bases(p, r) => bases(c, &celda, p, r),
             Pedido::CrearBase(p, r) => {
@@ -239,6 +267,10 @@ pub enum Pedido<'a> {
     Roles(&'a str, &'a str),
     CrearRol(&'a str, &'a str),
     Contrasena(&'a str, &'a str, &'a str),
+    /// P8·1: la contraseña guardada (la consola la enseña).
+    VerContrasena(&'a str, &'a str, &'a str),
+    /// P8·1: ejecutar SQL en la rama, como un rol.
+    Sql(&'a str, &'a str),
     BorrarRol(&'a str, &'a str, &'a str),
     Bases(&'a str, &'a str),
     CrearBase(&'a str, &'a str),
@@ -271,7 +303,11 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("POST", ["proyectos", p, "ramas", r, "roles", n, "contrasena"]) => {
             Pedido::Contrasena(p, r, n)
         }
+        ("GET", ["proyectos", p, "ramas", r, "roles", n, "contrasena"]) => {
+            Pedido::VerContrasena(p, r, n)
+        }
         ("DELETE", ["proyectos", p, "ramas", r, "roles", n]) => Pedido::BorrarRol(p, r, n),
+        ("POST", ["proyectos", p, "ramas", r, "sql"]) => Pedido::Sql(p, r),
         ("GET", ["proyectos", p, "ramas", r, "bases"]) => Pedido::Bases(p, r),
         ("POST", ["proyectos", p, "ramas", r, "bases"]) => Pedido::CrearBase(p, r),
         ("DELETE", ["proyectos", p, "ramas", r, "bases", b]) => Pedido::BorrarBase(p, r, b),
@@ -288,7 +324,8 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
             | ["proyectos", _, "ramas", _, "endpoints", _, "ajustes"]
             | ["proyectos", _, "ramas", _, "roles" | "bases"]
             | ["proyectos", _, "ramas", _, "roles" | "bases", _]
-            | ["proyectos", _, "ramas", _, "roles", _, "contrasena"],
+            | ["proyectos", _, "ramas", _, "roles", _, "contrasena"]
+            | ["proyectos", _, "ramas", _, "sql"],
         ) => {
             return Err(Respuesta::error(
                 405,
@@ -326,6 +363,8 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         Pedido::Roles(p, r)
         | Pedido::CrearRol(p, r)
         | Pedido::Contrasena(p, r, _)
+        | Pedido::VerContrasena(p, r, _)
+        | Pedido::Sql(p, r)
         | Pedido::BorrarRol(p, r, _)
         | Pedido::Bases(p, r)
         | Pedido::CrearBase(p, r)
@@ -337,7 +376,10 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
                 format!("no hay ninguna rama `{r}` en `{p}`"),
             ))
         }
-        Pedido::Contrasena(_, _, n) | Pedido::BorrarRol(_, _, n) | Pedido::BorrarBase(_, _, n)
+        Pedido::Contrasena(_, _, n)
+        | Pedido::VerContrasena(_, _, n)
+        | Pedido::BorrarRol(_, _, n)
+        | Pedido::BorrarBase(_, _, n)
             if !nombre_valido(n) =>
         {
             Err(Respuesta::error(
@@ -409,7 +451,12 @@ fn proyecto(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo>
     }
 }
 
-fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respuesta, Fallo> {
+fn crear_proyecto(
+    c: &mut Client,
+    celda: &Celda,
+    cuerpo: &Node,
+    secreto: Option<&crate::secreto::Secreto>,
+) -> Result<Respuesta, Fallo> {
     let texto = |k: &str| cuerpo.get(k).and_then(|(_, v)| v.as_str());
     let Some(id) = texto("id") else {
         return Err(Fallo(400, "falta `id`: el nombre del proyecto".into()));
@@ -463,10 +510,12 @@ fn crear_proyecto(c: &mut Client, celda: &Celda, cuerpo: &Node) -> Result<Respue
             if let Some(d) = dueno {
                 let rol = d.trim_start_matches("user:");
                 let (clave, verificador) = crate::scram::nueva().map_err(|e| Fallo(500, e))?;
+                let cifrada = cifrar(secreto, &celda.organizacion, id, rol, &clave)?;
                 tx.execute(
-                    "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador)
-                     values ($1, $2, 'main', $3, $4)",
-                    &[&celda.organizacion, &id, &rol, &verificador],
+                    "insert into plano.rol
+                       (organizacion, proyecto, rama, nombre, verificador, contrasena_cifrada)
+                     values ($1, $2, 'main', $3, $4, $5)",
+                    &[&celda.organizacion, &id, &rol, &verificador, &cifrada],
                 )?;
                 tx.execute(
                     "insert into plano.base (organizacion, proyecto, rama, nombre, dueno)
@@ -697,8 +746,8 @@ fn crear_rama(c: &mut Client, celda: &Celda, p: &str, cuerpo: &Node) -> Result<R
     };
     // P4·4: hereda los roles y las bases de su padre (ya están en sus datos).
     tx.execute(
-        "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador)
-         select organizacion, proyecto, $3, nombre, verificador from plano.rol
+        "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador, contrasena_cifrada)
+         select organizacion, proyecto, $3, nombre, verificador, contrasena_cifrada from plano.rol
           where organizacion = $1 and proyecto = $2 and rama = $4 and deseado = 'vivo'",
         &[&celda.organizacion, &p, &id, &padre],
     )?;
@@ -1256,18 +1305,21 @@ fn crear_rol(
     p: &str,
     r: &str,
     cuerpo: &Node,
+    secreto: Option<&crate::secreto::Secreto>,
 ) -> Result<Respuesta, Fallo> {
     let nombre = nombre_de(cuerpo, "nombre")?;
     let (clave, verificador) = crate::scram::nueva().map_err(|e| Fallo(500, e))?;
+    let cifrada = cifrar(secreto, &celda.organizacion, p, &nombre, &clave)?;
     let mut tx = c.transaction()?;
     rama_viva(&mut tx, celda, p, r)?;
     if tx.execute(
-        "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador)
-         values ($1, $2, $3, $4, $5)
+        "insert into plano.rol (organizacion, proyecto, rama, nombre, verificador, contrasena_cifrada)
+         values ($1, $2, $3, $4, $5, $6)
          on conflict (organizacion, proyecto, rama, nombre) do update
-           set verificador = excluded.verificador, deseado = 'vivo', creado = now()
+           set verificador = excluded.verificador, contrasena_cifrada = excluded.contrasena_cifrada,
+               deseado = 'vivo', creado = now()
            where plano.rol.deseado = 'borrado'",
-        &[&celda.organizacion, &p, &r, &nombre, &verificador],
+        &[&celda.organizacion, &p, &r, &nombre, &verificador, &cifrada],
     )? == 0
     {
         return Err(Fallo(409, format!("ya hay un rol `{nombre}` en `{r}`")));
@@ -1283,14 +1335,16 @@ fn nueva_contrasena(
     p: &str,
     r: &str,
     n: &str,
+    secreto: Option<&crate::secreto::Secreto>,
 ) -> Result<Respuesta, Fallo> {
     let (clave, verificador) = crate::scram::nueva().map_err(|e| Fallo(500, e))?;
+    let cifrada = cifrar(secreto, &celda.organizacion, p, n, &clave)?;
     let mut tx = c.transaction()?;
     rama_viva(&mut tx, celda, p, r)?;
     if tx.execute(
-        "update plano.rol set verificador = $5
+        "update plano.rol set verificador = $5, contrasena_cifrada = $6
           where organizacion = $1 and proyecto = $2 and rama = $3 and nombre = $4 and deseado = 'vivo'",
-        &[&celda.organizacion, &p, &r, &n, &verificador],
+        &[&celda.organizacion, &p, &r, &n, &verificador, &cifrada],
     )? == 0
     {
         return Err(Fallo(404, format!("no hay ningún rol `{n}` en `{r}`")));
@@ -1298,6 +1352,64 @@ fn nueva_contrasena(
     let op = configurar(&mut tx, celda, p, r)?;
     tx.commit()?;
     Ok(con_contrasena(&op, n, clave))
+}
+
+/// P8·1: la contraseña, cifrada para guardarla (nada sin `--clave-contrasenas`).
+fn cifrar(
+    secreto: Option<&crate::secreto::Secreto>,
+    organizacion: &str,
+    proyecto: &str,
+    rol: &str,
+    clave: &str,
+) -> Result<Option<String>, Fallo> {
+    secreto
+        .map(|s| {
+            s.cifrar(
+                clave,
+                &crate::secreto::asociado(organizacion, proyecto, rol),
+            )
+        })
+        .transpose()
+        .map_err(|e| Fallo(500, e))
+}
+
+/// P8·1 · `GET …/roles/{n}/contrasena`: la guardada, para «Mostrar contraseña».
+fn ver_contrasena(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    r: &str,
+    n: &str,
+    secreto: Option<&crate::secreto::Secreto>,
+) -> Result<Respuesta, Fallo> {
+    let Some(secreto) = secreto else {
+        return Err(Fallo(
+            404,
+            "la consola no está montada (`--clave-contrasenas`)".into(),
+        ));
+    };
+    rama_viva(c, celda, p, r)?;
+    let Some(f) = c.query_opt(
+        "select contrasena_cifrada from plano.rol
+          where organizacion = $1 and proyecto = $2 and rama = $3 and nombre = $4 and deseado = 'vivo'",
+        &[&celda.organizacion, &p, &r, &n],
+    )?
+    else {
+        return Err(Fallo(404, format!("no hay ningún rol `{n}` en `{r}`")));
+    };
+    let Some(cifrada) = f.get::<_, Option<String>>(0) else {
+        return Ok(crate::consola::sin_contrasena(n));
+    };
+    let clave = secreto
+        .descifrar(
+            &cifrada,
+            &crate::secreto::asociado(&celda.organizacion, p, n),
+        )
+        .map_err(|e| Fallo(500, e))?;
+    Ok(Respuesta::ok(Json::obj([
+        ("nombre", Json::s(n)),
+        ("contrasena", Json::s(clave)),
+    ])))
 }
 
 fn borrar_rol(

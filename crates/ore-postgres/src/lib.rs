@@ -27,6 +27,7 @@ pub mod avisos;
 pub mod base;
 pub mod celda;
 pub mod computos;
+pub mod consola;
 pub mod especificacion;
 pub mod kube;
 #[cfg(feature = "laboratorio")]
@@ -36,6 +37,7 @@ pub mod olvidar;
 pub mod proxy;
 pub mod reconciliador;
 pub mod scram;
+pub mod secreto;
 
 use ore_entrada::http;
 use std::net::TcpListener;
@@ -48,7 +50,7 @@ ore-postgres — el plano de control de ORE Serverless Postgres
   ore-postgres servir [--bind DIRECCION] [--iam DESTINO]
                       [--controlador DESTINO] [--safekeepers D1,D2,D3] [--llaves-almacen DIR]
                       [--llaves-proxy DIR] [--redis HOST:PUERTO] [--dominio DOMINIO]
-                      [--pool-computos N] [--dormir]
+                      [--pool-computos N] [--dormir] [--clave-contrasenas FICHERO]
   ore-postgres especificacion --computo NOMBRE --tenant T --timeline TL [--grupo G]
   ore-postgres token-computo NOMBRE
   ore-postgres kube-prueba [NAMESPACE-AJENO…]
@@ -79,6 +81,10 @@ ore-postgres — el plano de control de ORE Serverless Postgres
   `--dormir` duerme a los endpoints que pasan su `dormir_tras` sin actividad; sin
   él sólo se apunta la actividad. Se enciende con el proxy ya desplegado: a un
   endpoint dormido sólo lo despierta una conexión que entra por el proxy.
+
+  La consola (P8·1): con `--clave-contrasenas FICHERO` (32 bytes, o 64 cifras hex) las
+  contraseñas de los roles se guardan cifradas y se atiende `POST …/ramas/{r}/sql` y
+  `GET …/roles/{n}/contrasena`. Sin él, ni se guardan ni se atiende.
 ";
 
 fn valor(args: &[String], que: &str) -> Option<String> {
@@ -94,6 +100,8 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
         Some("especificacion") => especificacion_mando(&args),
         Some("token-computo") => token_mando(&args),
         Some("kube-prueba") => kube_prueba(&args[1..]),
+        // P8·1: el hijo que ejecuta el SQL de la consola (lo lanza `servir`, no una persona).
+        Some("ejecutar-sql") => consola::hijo_principal(),
         Some("-h" | "--help") => {
             print!("{USO}");
             ExitCode::SUCCESS
@@ -497,6 +505,34 @@ fn servir(args: &[String]) -> ExitCode {
         }
         None => eprintln!("  ⚠ SIN REDIS: el proxy tarda hasta 4 min en ver una contraseña nueva"),
     }
+    // P8·1: la consola, con la clave de las contraseñas.
+    let consola = match valor(args, "--clave-contrasenas") {
+        None => {
+            eprintln!("  consola      no (sin `--clave-contrasenas`)");
+            None
+        }
+        Some(f) => match (
+            secreto::Secreto::del_fichero(std::path::Path::new(&f)),
+            std::env::current_exe(),
+        ) {
+            (Ok(secreto), Ok(ejecutable)) => {
+                eprintln!("  consola      /sql y las contraseñas guardadas (clave de {f})");
+                Some(consola::Consola {
+                    secreto,
+                    ejecutable,
+                    puerto: 5432,
+                })
+            }
+            (Err(e), _) => {
+                eprintln!("  ⚠ SIN CONSOLA: {e}");
+                None
+            }
+            (_, Err(e)) => {
+                eprintln!("  ⚠ SIN CONSOLA: no sé dónde estoy: {e}");
+                None
+            }
+        },
+    };
     let servidor = api::Servidor {
         base: Mutex::new(base),
         celdas: Box::new(celda::PorOreIam::nuevo(&iam)),
@@ -504,6 +540,7 @@ fn servir(args: &[String]) -> ExitCode {
         avisos,
         proxy,
         dominio,
+        consola,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

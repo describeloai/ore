@@ -37,3 +37,11 @@ ed25519-compact.workspace = true
 # las raíces del sistema (`kube.rs`). La misma pareja que `ore-gcp`.
 ureq       = { version = "2", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
+
+# P8·1 · las contraseñas de los roles, cifradas (D-P8a): AES-256-GCM. Ya la trae el
+# workspace (`iceberg`); sin `getrandom`: el nonce sale de /dev/urandom (`scram::azar`).
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+
+# P8·1 · el hijo que ejecuta el SQL de la consola se pone a sí mismo un tope de memoria
+# (`setrlimit`): un resultado enorme lo tumba a él, no al plano.
+libc = "0.2"
