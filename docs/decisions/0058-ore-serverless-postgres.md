@@ -116,8 +116,9 @@ Primero **un Postgres serverless sano** y sólo entonces el catálogo. Cada hito
 | P5 | el proxy: conexión desde internet con TLS y SNI |
 | P6 | dormir y despertar desde un pool precalentado |
 | P7 | una aplicación real encima durante días |
-| P8 | operarlo: PITR, alertas, actualizaciones en rodaje, game day |
-| P9 | el producto alrededor: medición, cuotas y consola |
+| P8 | **la consola, con datos de verdad**: SQL, tablas, ajustes y monitorización (adelantada, decidido 2026-10-12) |
+| P9 | operarlo: PITR, alertas, actualizaciones en rodaje, game day |
+| P10 | el producto alrededor: medición, cuotas y documentación |
 | ⛔ | **puerta de producción**: cuota, nodos grandes, multizona, revisión de seguridad |
 
 **Fase II · Sus datos, activos del catálogo**
@@ -487,7 +488,12 @@ Cada hito, en orden, con lo que entra y cuándo está hecho.
     - dormir a mitad de migrar, que causó ~10 min sin servicio.
   - **Sin medir**: lo que necesita días (nada crece, noches sin nodo) y el commit desde la región.
 
-**P8 · Operarlo sin miedo**
+**P8 · La consola, con datos de verdad** (adelantada el 2026-10-12: sin consola no hay clientes, empezando por nosotros, y lo de operarlo protege a clientes que aún no hay; la puerta de producción sigue exigiendo P9)
+- Qué: lo que la consola ya enseña con datos de ejemplo (el editor SQL, las tablas, el rendimiento de las consultas, la monitorización, las operaciones) y lo que aún es una carcasa (los ajustes), con datos de verdad.
+- Hecho cuando: una persona crea una instancia, ejecuta SQL, ve sus tablas, cambia sus límites y ve su cómputo dormir y despertar, todo desde la consola.
+- El plan, por pasos: «P8 · La consola: el plan».
+
+**P9 · Operarlo sin miedo**
 - Qué:
   - PITR (una rama en un instante) y la retención;
   - métricas y alertas: el retraso de safekeeper a pageserver, las subidas a GCS, la salud del cómputo;
@@ -498,11 +504,10 @@ Cada hito, en orden, con lo que entra y cuándo está hecho.
   - un **game day** sobre el soak de P7 (matar el pageserver, un safekeeper y un nodo) da RPO 0 y un RTO medido;
   - una actualización del almacenamiento pasa sin que el cliente lo note.
 
-**P9 · El producto alrededor**
+**P10 · El producto alrededor**
 - Qué:
   - la medición: cómputo·s por CU, bytes, historia y salida;
   - las cuotas por organización y por proyecto;
-  - la consola: proyectos, ramas, endpoints, la cadena de conexión, el editor SQL y las métricas;
   - la documentación.
 - Hecho cuando: una organización se da de alta, crea su base y conecta su aplicación **sin nosotros**.
 
@@ -868,7 +873,7 @@ Queda vivo para P3: el pool `pg` (1 nodo) y la capa de almacenamiento, sin ning�
 - quién crea las VMs y fija sus límites: el plano de control, en P4;
 - el proxy: P5, con su rango reservado en P3·5;
 - dormir, despertar y el pool precalentado: P6;
-- la medición y la facturación: P9;
+- la medición y la facturación: P10;
 - nodos grandes: la puerta de producción.
 
 #### P3·1–P3·5 · hecho (2026-10-07)
@@ -1030,7 +1035,7 @@ aplicación ──────────────────────�
 - Con la audiencia del producto, el token sólo sirve para eso. Con la de `ore-iam`, `ore-postgres` podría preguntar `puede` y contar `hizo` como si fuera la celda.
 - La respuesta se guarda lo que diga `vale` (≤ 30 s) y nunca más allá del `exp` del token. Sin `ore-iam`, 503.
 
-**Fuera de P4**: la entrada pública (el proxy, P5); dormir, despertar y el pool (P6); la medida y la facturación (P9). P4 deja anotados los cambios de estado de cada endpoint, que es lo que P9 medirá.
+**Fuera de P4**: la entrada pública (el proxy, P5); dormir, despertar y el pool (P6); la medida y la facturación (P10). P4 deja anotados los cambios de estado de cada endpoint, que es lo que P9 medirá.
 
 **Los sub-pasos:**
 
@@ -1080,7 +1085,7 @@ Nuestras VMs ya se llaman `ep-<20 hex>`: el convenio de Neon.
 - al menos 2 réplicas, PodDisruptionBudget, parada que vacía, autoescalado por conexiones;
 - un balanceador L4 de paso directo (la IP del cliente llega tal cual, sin protocolo PROXY).
 
-⚠️ El clúster es **zonal** (`europe-west1-b`): dos réplicas cubren un pod o un nodo, no la zona. Regional es P8.
+⚠️ El clúster es **zonal** (`europe-west1-b`): dos réplicas cubren un pod o un nodo, no la zona. Regional es P9.
 
 **Los sub-pasos:**
 
@@ -1875,3 +1880,79 @@ El informe dio los despertares todos como «en frío» porque no se apuntó `poo
 **Lo que cuesta.** Spot puede quitar un nodo con 30 s de aviso: es un golpe como los de P7, con 1–3 min de corte, y los datos viven en disco y en GCS. A veces no hay capacidad spot en la zona.
 
 **Para clientes, otra cosa.** El almacenamiento y el plano irán en nodos normales, y el cómputo, en spot o en normales según el plan. Se decide en la puerta de producción.
+
+
+#### P8 · La consola: el plan (2026-10-12)
+
+**Lo que hay** (repasado en `rubix-platform`, `components/postgres/`):
+
+| sección | hoy |
+|---|---|
+| instancias (listar, crear), Connect, ramas (crear, también en un instante, y borrar) | **de verdad**, contra `/v1/postgres/…` |
+| resumen | las ramas son de verdad; el panel de la derecha y la gráfica son de ejemplo |
+| editor SQL, tablas, rendimiento de consultas, monitorización | el armazón es de verdad y los **datos son de ejemplo**: «Run» no ejecuta nada |
+| operaciones del sistema | filas de ejemplo: falta `GET …/operaciones` del proyecto |
+| ajustes, copias y restauración, Data API, Robin | carcasas |
+| el selector de rama de la barra lateral | de ejemplo (`RAMAS_MOCK`), sin conectar |
+
+El editor, las tablas, el rendimiento y media monitorización necesitan lo mismo: **que la consola ejecute SQL en una rama**. La API no lo permite, y la consola no guarda contraseñas (las enseña una vez).
+
+| paso | qué | desbloquea |
+|---|---|---|
+| **P8·1 · SQL en el plano** | `POST …/ramas/{r}/sql`, con las contraseñas guardadas cifradas | todo lo de abajo |
+| P8·2 · el editor SQL | «Run» de verdad (varias sentencias, resultados, el error de Postgres en su posición) y «Mostrar contraseña» en Connect | el editor |
+| P8·3 · las tablas | esquemas, tablas, columnas y filas paginadas, leídas del catálogo con P8·1; primero, sólo lectura | tablas |
+| P8·4 · ajustes y resumen | lo que la API ya tiene (CU mín/máx, `dormir_tras`, quién entra, borrar la instancia); el estado del cómputo en vivo (la deuda de P6·6); el panel de la derecha de verdad; el selector de rama; `GET …/operaciones` | ajustes, resumen, operaciones |
+| P8·5 · monitorización | `pg_stat_statements` con P8·1; una serie mínima muestreada por `ore-postgres` (CPU, RAM y CU de la VM, conexiones, tamaño) | monitorización |
+
+Fuera de P8: copias y restauración (la restauración es una rama en un instante, que ya existe; su pantalla, después), Data API y Robin.
+
+**D-P8a · Con qué identidad corre el SQL de la consola (decidido el 2026-10-12): la del rol elegido, con su contraseña guardada cifrada, como Neon.**
+
+Primero se eligió un rol interno, `ore_consola`, que haría `SET ROLE <el rol elegido>`. Al diseñarlo se vio que no se puede sin tocar el cómputo:
+- `compute_ctl` crea **todos** los roles de la especificación con `CREATE ROLE … CREATEROLE CREATEDB BYPASSRLS IN ROLE neon_superuser` (`spec_apply.rs`);
+- `SET ROLE ana` exige `GRANT ana TO ore_consola`, y en Postgres 17 eso sólo lo puede hacer `cloud_admin`, que sólo entra desde dentro de la VM;
+- hacerlo pide un parche en `compute_ctl` y recompilar la imagen de cómputo entera (la receta de 1 h 10 min), y es un parche más que pagar en cada rebase.
+
+Neon **guarda las contraseñas de los roles cifradas**: por eso su consola tiene «Reveal password», y su editor corre como el rol elegido.
+
+| | rol elegido, contraseña cifrada (**elegida**) | `ore_consola` + `SET ROLE` |
+|---|---|---|
+| el SQL corre | como el rol, con sus permisos exactos; lo que crea es suyo | igual, con un rol de paso |
+| cambia el cómputo | no | un parche en `compute_ctl` y recompilar la imagen |
+| sale además | «Mostrar contraseña» en Connect | — |
+| cuesta | contraseñas de clientes en reposo, cifradas (AES-256-GCM, la clave en un Secret de `ore-pg`); los roles que ya existen no tienen la suya: se regenera una vez para usarlos en la consola | un parche que mantener |
+
+**P8·1 · SQL en el plano, por pasos.** Se cierra cada paso antes del siguiente; el binario siempre antes que la malla.
+
+1. **El cifrado** (`ore-postgres/src/secreto.rs`).
+   - AES-256-GCM (la crate `aes-gcm`, ya en el workspace), con un nonce de 96 bits nuevo cada vez.
+   - Como dato asociado, `organización/proyecto/rama/rol`: una contraseña cifrada no vale si se copia a otro rol.
+   - Formato `v1:<nonce>:<cifrado>`, en base64.
+   - La clave son 32 bytes de un fichero, con el flag `--clave-contrasenas`. Sin él no se guarda nada, y el resto sigue como hoy.
+   - *Hecho cuando*: unidades (ida y vuelta; otro rol o un byte cambiado, fuera; otra clave, fuera).
+2. **Guardarlas** (migración `009-la-consola.sql`).
+   - `plano.rol.contrasena_cifrada` (nula si no se sabe), que se escribe al crear un rol (también el de la persona, al crear la instancia) y al regenerar su contraseña.
+   - La tabla `plano.sql_ejecutado`, de auditoría: cuándo, quién (el sujeto del token), organización, proyecto, rama, rol, ms, filas y código de error. **El texto del SQL no se guarda.**
+   - *Hecho cuando*: el contrato ve la columna rellena tras crear y regenerar, y vacía sin clave.
+3. **Verla**: `GET …/ramas/{r}/roles/{n}/contrasena` devuelve `{contrasena}`, o un 409 «no está guardada: regenérala» si no se sabe. En `ore-serve`, como «usar» (la potestad de las contraseñas de hoy), no como «ver». *Hecho cuando*: contrato, y otra organización recibe un 404.
+4. **Ejecutar**: `POST …/ramas/{r}/sql` con `{base, rol, sql, solo_lectura?, limite_filas?}`.
+   - **Despertar**: si el endpoint duerme, se pide `despertar-endpoint` como hace el proxy (se saca a una función común con `proxy::mirar`) y se espera hasta 120 s. Pasado ese tiempo, un 503 «aún despertando, reintenta».
+   - **Conectar** al cómputo directamente (`ip_pod:5432`, por la red de pods, como `/configure` al 3080), como el rol y con su contraseña descifrada; sin TLS, dentro del clúster.
+   - **Ejecutar** con `statement_timeout = 60 s` y `idle_in_transaction_session_timeout`. Con `solo_lectura`, `default_transaction_read_only = on`. Varias sentencias en un `simple_query`.
+   - **Responder**, por sentencia: la etiqueta (`SELECT 3`, `CREATE TABLE`…), las columnas, las filas como texto (con `null` de verdad), si se truncó y los ms. Tope de 1.000 filas y 5 MB: lo de más se lee y se descarta.
+   - **Si falla**: el error de Postgres tal cual (`sqlstate`, mensaje, detalle, pista y **posición**) con un 200 y `ok: false`. Es un error del SQL, no de la API.
+   - Cuenta como actividad del endpoint, como en Neon: una consulta desde la consola lo mantiene despierto.
+   - Se apunta en `plano.sql_ejecutado`.
+   - En `ore-serve`, `POST …/sql` es «usar».
+   - *Hecho cuando*:
+     - el contrato, con el Postgres de las pruebas haciendo de cómputo, cubre: ejecuta y devuelve filas; varias sentencias; el error con su posición; el tope trunca; con solo lectura, un `INSERT` falla; otra organización recibe un 404; sin contraseña guardada, un 409;
+     - con el cómputo de mentira, despierta.
+5. **El laboratorio** (`lab/p81.sh`): con el lab arriba, crea una instancia, `create table` + `insert` + `select`, un error con posición, el tope, solo lectura y otra organización. Duerme el endpoint y una consulta lo despierta y contesta. *Hecho cuando*: verde, y P8·1 se cierra en el laboratorio.
+6. **Producción**, en este orden:
+   1. el CI con los dos binarios (`ore-postgres` con el flag apagado, y `ore-serve` con las dos rutas);
+   2. la malla, con su go: el Secret de la clave (con el guion 86, generado allí, nunca en git), `--clave-contrasenas` en la malla 86 y la salida del plano al 5432 de las VMs (la entrada de las VMs ya la admite, por `ore.dev/pg-acceso`);
+   3. `produccion/p81.sh` desde el PC, como una celda: crear, ejecutar, error, tope, y **despertar desde dormido con una consulta**, con sus ms en frío y en caliente.
+   - *Hecho cuando*: verde, y los números al ADR.
+
+Después, P8·2: el editor de la consola contra este endpoint.
