@@ -5,7 +5,8 @@ contra un Graph de mentira—; la prueba contra GCS, Azure, un SFTP y un tenant 
 es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O5 en O5. **D-O6**
 (un contenedor público, sin identidad) hecha para Azure (AZ0–AZ3, 2026-10-11); **Azure cerrado en
 producción** contra Azure Open Datasets (AZ5–AZ6, 2026-10-12); **GCS cerrado en producción** con un
-bucket propio y las cuentas de la celda (GC0–GC3, 2026-10-12). Investigación:
+bucket propio y las cuentas de la celda (GC0–GC3, 2026-10-12); **Cloudflare R2 cerrado en
+producción**, el primer perfil de S3 probado contra una cuenta (R2·0–R2·3, 2026-10-12). Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -237,9 +238,46 @@ publica imágenes (Docker Hub y quay): el laboratorio usa esos dos.
 | O1·3 | `84377db6` | `pruebas-de-fuego/o1-los-que-hablan-s3.sh`: los dos emuladores por todos los verbos, la URL firmada con `curl`, la virtual por `ore-medios` (`laboratorio_s3.rs`) y un objeto reescrito **con el mismo tamaño** entre `versiones` y `bajar` (garage no lo copia; versity copia la versión listada): 13/13. Con `etag_de` roto a propósito, garage copia los bytes nuevos y la prueba falla |
 | O1·4 | (este) | [`docs/origenes-de-objetos.md`](../origenes-de-objetos.md): la URL, y un perfil por proveedor (endpoint, región, cómo fija), probado o «de su documentación» |
 
-**Deuda temporal**: R2, Wasabi, B2, Spaces, IBM y OCI se conectan por la misma API que los probados,
+**Deuda temporal**: Wasabi, B2, Spaces, IBM y OCI (R2 ya no: R2·3) se conectan por la misma API que los probados,
 pero ninguno se ha medido contra una cuenta suya; cada uno pasa a «probado» cuando su URL pase
 `o1-los-que-hablan-s3.sh`.
+
+### R2 · Cloudflare R2 de verdad (2026-10-12)
+
+El primero de los perfiles de O1 que pasa de «de su documentación» a probado, con una cuenta de verdad
+(la de la persona) y sin una línea de código: el driver de S3, la hoja de la consola
+(`R2Connection.tsx`) y D-O1 ya estaban.
+
+**R2·0 · medido en el código** (solo lectura): con `endpoint`, el bucket va en la ruta y la región es
+la que se pase (`auto`); `check` toma el `501` de `ListObjectVersions` por «fija: etag», no por un
+permiso; el conector `s3` de la federación lee por el driver, con el mismo `endpoint`. El único hueco:
+una colección **virtual** de un origen que sólo fija por ETag no da URL firmada (D-O1), y la consola
+sólo sabe pedir URLs, así que su galería sale sin miniaturas. **Se acepta tal cual, sin mensaje en la
+consola** (decidido por la persona, 2026-10-12): desde código se lee por `content`, y la mantenida se
+ve desde el lago.
+
+**R2·1 · el bucket**: `ore-origen-r2` en la cuenta de la persona (`WEUR`, Standard, sin jurisdicción),
+creado por la API de Cloudflare con el token `ore-c2` (al que la persona añadió *Workers R2 Storage ·
+Edit*), con los mismos 15 ficheros que el bucket de GC1 (`tablas/` y `media/`, 2 MB).
+
+**R2·2 · la fuente**: la persona crea un token de R2 *Object Read only* sobre ese bucket y da de alta
+la fuente por la hoja de R2; `r2_f` (foreign) y `r2_s` (standard) desde el catálogo.
+
+**R2·3 · de punta a punta en `t-victor`:**
+
+| qué | R2 de verdad |
+|---|---|
+| catálogo | la misma forma que el de GCS: 3 `Table` y 4 `ObjectTable` |
+| versión de cada ítem | **`etag:…`**: R2 contesta `501` a `ListObjectVersions`, como Garage |
+| huella | **R2 da el CRC64NVME** (`crc64nvme:…`), sin bajar el objeto |
+| copia | 3 datasets de 50 filas; 4 colecciones mantenidas; el sha256 de cada imagen en el lago = el del fichero subido |
+| la galería en vivo de la foreign | **con miniaturas**: firma el objeto vigente (sin versión que fijar), y la URL SigV4 con región `auto` abre en el navegador |
+| `SELECT … ORDER BY … LIMIT` en vivo (`.sql`) | bien |
+| Python | lago = en vivo (`equal: True`); las 11 mantenidas por su número mágico; **virtual = mantenida** (sha256 de las 5) |
+| Java (transform `R2Cierre`, `sandbox.r2_java`) | 10/10 `ok` |
+
+La virtual (`r2_s.media.imagenes_vivo`: 5 ítems, los 5 `etag:…`) se lee **sin URL firmada**: `content`
+da un permiso y `ore-medios` lee de R2 con `If-Match`. Era lo que sólo se había medido contra Garage.
 
 ### O2 · hecho en el laboratorio (2026-10-09): GCS
 

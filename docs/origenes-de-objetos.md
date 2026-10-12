@@ -1,7 +1,7 @@
 # Orígenes de objetos · cómo se conecta un bucket
 
 **Estado:** S3 en vivo (0046); los que hablan la API de S3, probados en el laboratorio (ADR
-[0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09); GCS, con su driver propio y probado
+[0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09), y Cloudflare R2 en producción (R2·3, 2026-10-12); GCS, con su driver propio y probado
 en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad; Azure Blob y ADLS Gen2,
 igual (O3, 2026-10-09), sin probar contra Azure de verdad; SFTP, en el laboratorio (O4, 2026-10-09), sin
 probar contra un servidor de un cliente; SharePoint y OneDrive, en el laboratorio contra un Graph de
@@ -34,7 +34,7 @@ s3://<bucket>[/<prefijo>]?region=<región>&role_arn=<arn:aws:iam::…:role/…> 
 | **AWS S3** | — | la del bucket | versión (`versionId`; `null` en un bucket sin versionar) | en vivo (0046) |
 | **VersityGW** | `http(s)://<host>:7070` | `us-east-1` | versión | laboratorio (O1) |
 | **Garage** | `http(s)://<host>:3900` | la de su `s3_region` | **ETag** (ignora `versionId`) | laboratorio (O1) |
-| **Cloudflare R2** | `https://<cuenta>.r2.cloudflarestorage.com` | `auto` | **ETag** (no hay versionado) | de su documentación |
+| **Cloudflare R2** | `https://<cuenta>.r2.cloudflarestorage.com` (o `.eu.` / `.fedramp.`) | `auto` | **ETag** (no hay versionado); da CRC64NVME | **en vivo** (0061 R2·3, 2026-10-12) |
 | **MinIO** | `http(s)://<host>:9000` | `us-east-1` | versión con erasure coding; si no, ETag | de su documentación¹ |
 | **Ceph RGW** | `http(s)://<host>` | la de su *zonegroup* | versión | de su documentación |
 | **Wasabi** | `https://s3.<región>.wasabisys.com` | la del bucket | versión | de su documentación |
