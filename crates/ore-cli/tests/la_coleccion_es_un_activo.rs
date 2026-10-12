@@ -221,7 +221,10 @@ fn una_coleccion_cuya_fuente_no_se_abrio_se_queda_como_estaba() {
     assert_eq!(std::fs::read_to_string(&p).unwrap(), PUNTERO, "{salida}");
     let salida = materializar(&["--vista", "legal.archivo.contratos"]);
     let puntero = std::fs::read_to_string(&p).unwrap();
-    assert!(puntero.contains(r#""estado": "error""#), "{salida}\n{puntero}");
+    assert!(
+        puntero.contains(r#""estado": "error""#),
+        "{salida}\n{puntero}"
+    );
     // y lo que tenía sigue: un fallo no borra la copia
     assert!(puntero.contains(r#""transaccion": 1"#), "{puntero}");
     let _ = std::fs::remove_dir_all(&dir);

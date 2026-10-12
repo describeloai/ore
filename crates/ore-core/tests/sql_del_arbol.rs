@@ -132,7 +132,10 @@ fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_una_copia() {
     let uno = |q: &str, que: &str| {
         let f = fallos(&a.0, q);
         assert!(f.len() == 1 && f[0].mensaje.contains(que), "{q}: {f:?}");
-        assert!(f[0].ayuda.as_deref().unwrap_or("").contains("en vivo"), "{q}: {f:?}");
+        assert!(
+            f[0].ayuda.as_deref().unwrap_or("").contains("en vivo"),
+            "{q}: {f:?}"
+        );
     };
     uno(
         "insert into ventas.nuevo select * from ventas.pedidos_t",
