@@ -2027,3 +2027,45 @@ En este orden:
 | auditoría | 8 ejecuciones, 2 con error |
 
 **P8·1 queda cerrado en producción.** Lo siguiente es P8·2: el editor SQL de la consola (`SqlEditorView`), con «Run» contra `POST …/sql` y «Mostrar contraseña» en Connect.
+
+#### P8·2 · El editor SQL, hecho (2026-10-12)
+
+En la consola (`rubix-platform` e861b0f), el editor ya ejecuta de verdad contra `POST …/sql`:
+- se elige rama, base y rol, y hay un interruptor de solo lectura;
+- ejecuta la selección o, si no hay selección, todo el texto;
+- el error de Postgres se marca en Monaco, en su posición;
+- la rejilla enseña la última sentencia que devuelve filas.
+
+Connect tiene ahora «Show password», que enseña la contraseña guardada (D-P8a). Los roles creados antes de P8·1 no la tienen guardada: hay que regenerarla una vez.
+
+**Hallazgo en producción.** Con `pg` en spot y un nodo, el primer despertar del día pidió un nodo nuevo y tardó unos 3–4 min. El plano espera 120 s y contesta 503 «aún despertando». La consola lo cubre reintentando cada 5 s, hasta 5 min, y avisa «Waking the compute…». Para clientes de verdad, la respuesta es dejar un nodo libre o encender el pool, no alargar la espera del plano. El usuario creó su primera tabla desde el editor. **P8·2 queda cerrado.**
+
+#### P8·3 · Las tablas: el plan (2026-10-12)
+
+**D-P8b · Tables usa el `POST …/sql` de P8·1, en solo lectura y como el rol elegido. No se añade ningún endpoint al plano (decidido el 2026-10-12).**
+- **Por qué no da más poder.** Ese rol ya puede correr cualquier SQL desde el editor, así que componer en la consola el SQL del catálogo no le da nada que no tuviera. Neon hace lo mismo en su Tables.
+- **Qué se gana.** No hay que compilar, ni pasar CI, ni tocar la malla, y despertar, auditoría, límites y errores ya vienen hechos.
+- **El coste.** Los valores llegan como texto, así que los tipos salen del catálogo y no del protocolo.
+
+Los pasos:
+0. Cerrar P8·2: commit de la consola y este ADR.
+1. **El SQL** (`components/postgres/catalogo.ts`, en el servidor de la consola):
+   - **la lista de la rama:** una sola consulta a `pg_namespace` y `pg_class` que devuelve un JSON. Trae los schemas y, en cada uno, sus tablas, vistas, vistas materializadas, tablas particionadas y foráneas, con las filas estimadas y el tamaño. Deja fuera `pg_catalog`, `information_schema` y `pg_toast`, y no trae columnas, para no pasar de 5 MB aunque haya miles de tablas;
+   - **la tabla elegida:** una sola llamada con tres sentencias:
+     - las columnas, con su tipo, si es nulable, la clave primaria y el default;
+     - el conteo: exacto si la tabla pesa menos de 50 MB o nunca se ha analizado, y estimado si no;
+     - la página: `select * from "s"."t" order by <pk> limit N offset M`, con los nombres citados en TypeScript.
+   - Las dos lecturas son Server Actions en solo lectura.
+2. **TablesView real.** Rama, base y rol; los schemas y las tablas de verdad; un botón para refrescar; la rejilla con paginación real. Fuera los datos de ejemplo.
+3. **Los estados:**
+   - el reintento mientras el cómputo despierta, compartido con el editor;
+   - si el rol no tiene contraseña guardada, se regenera;
+   - si el rol no tiene permiso, `42501` dicho en la rejilla;
+   - si la base está vacía, un enlace al editor.
+4. **Los números en producción** (`p83.sh`): 300 tablas y una de un millón de filas. Se mide, en caliente, la lista de la rama, la primera página, una página profunda (offset de 900.000) y el conteo.
+5. **El cierre:** este ADR, el commit y la memoria.
+
+Queda fuera de P8·3:
+- editar filas desde la rejilla (P8·3b);
+- el DDL desde la interfaz, que se escribe en el editor;
+- paginar por cursor, que solo entra si el paso 4 sale lento.
