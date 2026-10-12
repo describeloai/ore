@@ -49,9 +49,10 @@ services:
               --dominio, europe-west1.pg.paladio.io,
               --computos, "docker:172.29.51.9:2375", --red-computo, p5lab_lab, --imagen-computo, "p5lab-computo:2",
               --llaves-computo, /llaves/computo, --almacen-local, /almacen,
-              --arranque-computo, "${ARRANQUE:-0}", --pool-computos, "${POOL:-0}", "${DORMIR---dormir}"]
+              --arranque-computo, "${ARRANQUE:-0}", --pool-computos, "${POOL:-0}", "${DORMIR---dormir}",
+              --clave-contrasenas, /llaves/consola/clave]
     env_file: .secretos/plano.env
-    volumes: [ore-pruebas-t:/tt:ro, ./.secretos/proxy:/llaves/proxy:ro, ./.secretos/computo:/llaves/computo:ro, almacen:/almacen]
+    volumes: [ore-pruebas-t:/tt:ro, ./.secretos/proxy:/llaves/proxy:ro, ./.secretos/computo:/llaves/computo:ro, ./.secretos/consola:/llaves/consola:ro, almacen:/almacen]
     networks: { lab: { ipv4_address: 172.29.51.7 } }
     depends_on: { base: { condition: service_healthy }, iam: { condition: service_started }, redis: { condition: service_started }, docker-api: { condition: service_started } }
   docker-api:

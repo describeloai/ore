@@ -6,6 +6,7 @@
 #            la llave con que ore-postgres firma los tokens de los cómputos, y levanta compose.yaml.
 #            El binario de ore-postgres es el de /tt/p4pg (volumen ore-pruebas-t), con el backend de
 #            Docker: `cargo build --release -p ore-postgres --features laboratorio` (P6·1).
+#            SIN_PROXY=1 lo levanta sin el proxy de Neon (P8·1 no lo necesita).
 #   abajo    lo quita todo: los cómputos que creó ore-postgres, el volumen del almacén y .secretos/.
 #
 # Sourced (`source lab.sh`), da a las pruebas:
@@ -26,7 +27,7 @@ azar() { "$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(3
 
 arriba() {
   local S="$LAB/.secretos"
-  mkdir -p "$S/tls" "$S/proxy" "$S/computo"
+  mkdir -p "$S/tls" "$S/proxy" "$S/computo" "$S/consola"
   if [ ! -s "$S/tls/tls.crt" ]; then
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 7 \
       -subj "/CN=*.$DOMINIO" -addext "subjectAltName=DNS:*.$DOMINIO" \
@@ -41,13 +42,21 @@ arriba() {
   # La llave con que ore-postgres firma los tokens de los compute_ctl (Ed25519, PKCS#8).
   [ -s "$S/computo/privada.pem" ] || { openssl genpkey -algorithm ed25519 -out "$S/computo/privada.pem" 2>/dev/null
     chmod 644 "$S/computo/privada.pem"; }
+  # P8·1: la clave con que ore-postgres cifra las contraseñas de los roles (la consola).
+  [ -s "$S/consola/clave" ] || openssl rand -hex 32 > "$S/consola/clave"
   docker build -q -t p5lab-computo:2 "$LAB/computo" >/dev/null || return 1
   dc up -d --wait --wait-timeout 120 base iam redis docker-api cliente >/dev/null || return 1
   # La base vacía de las pruebas de contrato del crate (ORE_POSTGRES_PRUEBA_URL).
   dc exec -T base psql -U postgres -qc 'create database ore_postgres_prueba' >/dev/null 2>&1
-  dc up -d plano proxy >/dev/null || return 1
+  # SIN_PROXY=1: sin el proxy (su imagen `neon` son 7 GB de bajada; P8·1 no lo usa).
+  local espera='exec 3<>/dev/tcp/172.29.51.7/8100 && exec 4<>/dev/tcp/172.29.51.20/4432'
+  if [ -n "${SIN_PROXY:-}" ]; then
+    dc up -d plano >/dev/null || return 1; espera='exec 3<>/dev/tcp/172.29.51.7/8100'
+  else
+    dc up -d plano proxy >/dev/null || return 1
+  fi
   for _ in $(seq 1 60); do
-    dc exec -T cliente bash -c 'exec 3<>/dev/tcp/172.29.51.7/8100 && exec 4<>/dev/tcp/172.29.51.20/4432' 2>/dev/null && break
+    dc exec -T cliente bash -c "$espera" 2>/dev/null && break
     sleep 1
   done
   dc logs plano | tail -8
