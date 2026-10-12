@@ -167,6 +167,10 @@ fn java_de(dir: &Path, out: &mut Vec<PathBuf>) {
 ///   repositorio daba «unnamed classes are a preview feature»; dos `Example`
 ///   sin `package` darían «duplicate class»—. Sin repositorio registrado que lo
 ///   contenga, el paquete, como antes.
+/// ⭐ Y dentro del repositorio, javac compila sólo el fichero del build y lo que
+///   usa (`Arnes.compilar`, 2026-10-12): esto es lo que tiene a mano, no lo que
+///   se compila. Un snippet suelto del mismo repositorio —la semilla v6 que una
+///   actualización conserva— ya no tumba el build de otro transform.
 pub(crate) fn fuentes_java(
     raiz: &Path,
     codigo: &str,

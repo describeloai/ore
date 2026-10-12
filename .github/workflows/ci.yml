@@ -391,6 +391,10 @@ jobs:
         env:
           JM_LOCAL: "1"
         run: PYTHONUTF8=1 python3 pruebas-de-fuego/la-media-en-java.py
+      # 2026-10-12: el build de Java compila el fichero del build y lo que usa —un
+      # snippet de JShell que nadie usa no lo tumba—, con los jars de arriba.
+      - name: y el build de Java compila solo lo que el transform usa
+        run: PYTHONUTF8=1 python3 pruebas-de-fuego/el-build-de-java.py
       # 0053 F6·2: sql() lee el origen en vivo, contra un ore-serve de mentira.
       - name: y sql() lee en vivo lo que el reparto decide
         run: PYTHONUTF8=1 python3 pruebas-de-fuego/la-lectura-en-vivo-en-python.py

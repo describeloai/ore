@@ -29,8 +29,9 @@ import javax.tools.ToolProvider;
  *
  * <p>Lo mismo que el de Python, en el orden de Python:
  * <ol>
- *   <li><b>compilar</b> los {@code .java} del paquete con javac, en memoria del puesto (JT0:
- *       javac da la línea del fichero, JShell la de su snippet); un error es {@code syntax}
+ *   <li><b>compilar</b> el {@code .java} del build con javac, en memoria del puesto (JT0:
+ *       javac da la línea del fichero, JShell la de su snippet), y de los demás del
+ *       repositorio <b>sólo lo que usa</b> ({@link #compilar}); un error es {@code syntax}
  *       con su fichero y su línea;</li>
  *   <li><b>cargar</b> la clase del fichero con D15 armado: un {@code transform()} o un
  *       {@code write()} mientras carga —un bloque {@code static}, un inicializador— falla
@@ -103,34 +104,55 @@ public final class Arnes {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private static void fases(String fichero, String metodo, Map<String, Object> fuentes, Map<String, Object> build, boolean preview) throws Exception {
-
-        // ── 1 · compilar ─────────────────────────────────────────────────
-        Path dir = Files.createTempDirectory("ore-build");
+    /**
+     * <b>Compilar el fichero del build, y del resto del repositorio sólo lo que usa</b>
+     * (2026-10-12). Devuelve el directorio de las clases; un error es {@code syntax} con
+     * el fichero y la línea de quien no compila.
+     *
+     * <p>Antes javac compilaba TODOS los {@code .java} del repositorio, y uno que nadie usa
+     * —la semilla de la plantilla v6, un snippet de JShell que una actualización conserva—
+     * tumbaba el build de cualquier transform con «unnamed classes are a preview feature»
+     * (medido en {@code t-victor}, 2026-10-12). En Python se carga el fichero y lo que importa;
+     * aquí, lo mismo: a javac va <b>sólo {@code fichero}</b>, y los demás como
+     * {@code -sourcepath}, de donde javac saca lo que el fichero nombra
+     * ({@code -implicit:class}: también sus clases).
+     *
+     * <p>⭐ Cada fuente va bajo {@code src/} por su {@code package} —sin él, en la raíz—,
+     * porque javac busca en el {@code -sourcepath} por paquete y nombre, y en el árbol un
+     * {@code .java} vive en su carpeta ({@code packages/<p>/<repo>/transforms/}). Si dos se
+     * llaman igual en el mismo paquete, gana la del build; la otra sólo importaría si se usa.
+     */
+    static Path compilar(String fichero, Map<String, Object> fuentes, Path dir) throws Exception {
         Path src = dir.resolve("src"), clases = dir.resolve("clases");
         Files.createDirectories(clases);
-        List<Path> rutas = new ArrayList<>();
+        if (!fuentes.containsKey(fichero)) throw falla("syntax", "`" + fichero + "` is not among the sources of the build", fichero, null);
+        List<Map.Entry<String, Object>> orden = new ArrayList<>(fuentes.entrySet());
+        orden.sort(java.util.Comparator.comparing(e -> !e.getKey().equals(fichero))); // la del build, primero
         Map<Path, String> deVuelta = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> f : fuentes.entrySet()) {
+        Path objetivo = null;
+        for (Map.Entry<String, Object> f : orden) {
             String r = f.getKey();
             if (r.startsWith("/") || r.contains("\\") || List.of(r.split("/")).contains("..") || !r.endsWith(".java")) {
                 throw falla("syntax", "`" + r + "` is not a `.java` path of the tree", fichero, null);
             }
-            Path p = src.resolve(r);
+            String texto = String.valueOf(f.getValue());
+            Matcher m = PAQUETE.matcher(texto);
+            String paquete = m.find() ? m.group(1) : "";
+            Path p = (paquete.isEmpty() ? src : src.resolve(paquete.replace('.', '/'))).resolve(r.substring(r.lastIndexOf('/') + 1));
+            if (Files.exists(p)) continue;
             Files.createDirectories(p.getParent());
-            Files.writeString(p, String.valueOf(f.getValue()), StandardCharsets.UTF_8);
-            rutas.add(p);
+            Files.writeString(p, texto, StandardCharsets.UTF_8);
             deVuelta.put(p.toAbsolutePath().normalize(), r);
+            if (r.equals(fichero)) objetivo = p;
         }
-        if (!fuentes.containsKey(fichero)) throw falla("syntax", "`" + fichero + "` is not among the sources of the build", fichero, null);
         JavaCompiler javac = ToolProvider.getSystemJavaCompiler();
         if (javac == null) throw falla("syntax", "this job runs without a Java compiler: rebuild the image", fichero, null);
         DiagnosticCollector<JavaFileObject> dichos = new DiagnosticCollector<>();
         try (StandardJavaFileManager fm = javac.getStandardFileManager(dichos, Locale.ENGLISH, StandardCharsets.UTF_8)) {
             List<String> opciones = List.of("-d", clases.toString(), "-cp", String.join(java.io.File.pathSeparator, Agente.Kernel.classpath()),
+                "-sourcepath", src.toString(), "-implicit:class",
                 "-encoding", "UTF-8", "-proc:none", "-g", "-Xlint:none", "-nowarn");
-            boolean bien = javac.getTask(null, fm, dichos, opciones, null, fm.getJavaFileObjectsFromPaths(rutas)).call();
+            boolean bien = javac.getTask(null, fm, dichos, opciones, null, fm.getJavaFileObjectsFromPaths(List.of(objetivo))).call();
             if (!bien) {
                 Diagnostic<? extends JavaFileObject> d = dichos.getDiagnostics().stream()
                     .filter(x -> x.getKind() == Diagnostic.Kind.ERROR).findFirst().orElse(null);
@@ -145,6 +167,14 @@ public final class Arnes {
                 throw falla("syntax", "CompilationError: " + mensaje.strip(), donde, linea);
             }
         }
+        return clases;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void fases(String fichero, String metodo, Map<String, Object> fuentes, Map<String, Object> build, boolean preview) throws Exception {
+
+        // ── 1 · compilar ─────────────────────────────────────────────────
+        Path clases = compilar(fichero, fuentes, Files.createTempDirectory("ore-build"));
 
         // ── 2 · cargar, con D15 armado ───────────────────────────────────
         String fuente = String.valueOf(fuentes.get(fichero));
