@@ -3,8 +3,8 @@
 **Estado:** propuesto (2026-10-09). **O0–O5 hechos** (2026-10-09/10; O2–O5 en el laboratorio —SharePoint
 contra un Graph de mentira—; la prueba contra GCS, Azure, un SFTP y un tenant de SharePoint de verdad
 es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O5 en O5. **D-O6**
-(un contenedor público, sin identidad) hecha para Azure (AZ0–AZ3, 2026-10-11); la prueba en
-producción contra Azure Open Datasets (AZ5), pendiente. Investigación:
+(un contenedor público, sin identidad) hecha para Azure (AZ0–AZ3, 2026-10-11); **Azure cerrado en
+producción** contra Azure Open Datasets (AZ5–AZ6, 2026-10-12). Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -439,9 +439,46 @@ nivel público, listar, leer y versiones.
   cualquier schema, y `include_de` lo nombra `default.<n>`. Caso
   `v1alpha28/valid/a-foreign-package-exposes-from-default`; con la regla vieja, `OOS2018`.
 
-**AZ5 · pendiente**: el alta de `azureopendatastorage/nyctlc` (un mes) y `mnist` en producción —
-comprobar, descubrir, sync, colecciones mantenida y virtual, y leer desde un transform de Python y de
-Java—, y con ella si la malla sale a `*.blob.core.windows.net`.
+**AZ5 · lo que destapó después, también de raíz** (2026-10-12):
+- **las filas** de un puntero a un origen eran siempre «—»: ADR
+  [`0062`](0062-estadisticas-del-catalogo.md) (`3c623cbb`), las del catálogo de su fuente —contadas
+  del pie de un Parquet, estimadas de la muestra de un CSV o JSONL—.
+- **las familias de medios**: un `.gz` o un `.sha256` no tenían colección posible (`archive` y
+  `binary` fuera). OOS v1alpha29 —quince familias, `multimodal` sin formatos, la cabeza de los bytes
+  que no contradice un contenedor genérico— en ore-core, el catálogo, el inductor, el SDK y SQL
+  (`e9aa7d4c`, `1a043ecd`, `2c5bab4d`); la consola, con las familias de la spec.
+- **lo que una base foránea expone de un origen de objetos** es su `ObjectTable` (no puede tener
+  colecciones, `OOS2049`) y se enseña como una *virtual media collection* en vivo: sus filas por el
+  preview, sus bytes por `POST /objetos-en-vivo/{b}/{s}/{n}/urls` (el objeto vigente, firmado en el
+  origen; de un contenedor público, su URL) (`4fa258ab`, `ba928570`).
+- **un `SELECT` de un `.sql` sobre el origen** se rechazaba («nunca del origen») aunque corre como
+  `ore.sql()`: ahora lee en vivo, como Python, Java y Node; escribir desde el origen sigue siendo la
+  copia de 0053 F7·3 (`3a04a183`).
+- **la copia ponía en `error`** las colecciones cuya fuente la pasada no abría (el Job abre sólo las
+  de lo pedido y recorre todas): con su copia, se quedan como estaban (`3a04a183`). Y **una colección
+  virtual que nace** no encolaba su primera pasada —su transacción, el listado—: ahora sí, sin pedir
+  el conducto (`c5748f4b`).
+- **la vista previa de texto** (consola `9e14574`, `dd3c36f`): el servidor lee los primeros 256 KB
+  (UTF-16 incluido, el `.sha256` de mnist) y el visor los enseña en un Monaco de sólo lectura; la
+  galería, sus primeras líneas.
+
+**AZ6 · cerrado en producción** (2026-10-12, `t-victor`, `ore-serve` `c5748f4b`):
+
+| qué | contra | resultado |
+|---|---|---|
+| alta sin cuenta, comprobar, descubrir | `nyctlc` y `mnist` (contenedores públicos) | catálogo con tablas y object tables; la malla sale a `*.blob.core.windows.net` |
+| transform SQL / Python sobre el origen | `nyctlc` | `sandbox.az_zonas_lago` 10 filas; `sandbox.az_py_vivo` 2 filas |
+| `SELECT` en vivo desde un `.sql` | `blobminstfor.processedmanifest.processedmanifest` (lo que expone la foránea) | una fila por objeto de Azure |
+| colección mantenida `archive` | `minst_standard11.raiz_gz` | los cuatro `.gz` leídos del lago con `ore.collection(…).items()`: cabecera IDX `2051`/`2049`, `60000`/`10000` |
+| colección mantenida `multimodal` | `minst_standard11.processedmanifest.processedmanifest` | `sha256(manifest.json)` = su `.sha256` (UTF-16): `True` |
+| dos colecciones virtuales | `…manifiestos_vivo`, `…manifiestos_en_vivo` | transacción 1 en la misma pasada (3 ítems); los bytes, de Azure: `True` |
+
+**Lo que queda, dicho:** leer Azure desde un transform de **Java** no se ejercitó (el SDK de Java
+lee igual por `/federation/read`); la vista previa de structured en mapa (P3, geospatial) y la
+copia de un listado de `ObjectTable` a un dataset, por hacer; un dataset cuya fuente la pasada no
+abre y que no está al día sigue saliendo como fallo de la pasada (medido: `standard_test.public.
+brain_embeddings`), como les pasaba a las colecciones; re-catalogar renombra object tables
+(`processedmanifest` → `processedmanifest_json`…) y deja huérfanas sus colecciones.
 
 ### O4 · hecho en el laboratorio (2026-10-09): SFTP
 
