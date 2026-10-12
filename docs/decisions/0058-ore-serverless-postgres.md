@@ -2069,3 +2069,54 @@ Queda fuera de P8·3:
 - editar filas desde la rejilla (P8·3b);
 - el DDL desde la interfaz, que se escribe en el editor;
 - paginar por cursor, que solo entra si el paso 4 sale lento.
+
+#### P8·3 · Pasos 1–4, hechos (2026-10-12)
+
+En la consola:
+- 9b5c9c0: `components/postgres/catalogo.ts` y las acciones `catalogoDeRama` y `paginaDeRelacion`;
+- 2fda9ac: TablesView de verdad, con sus estados y el reintento al despertar, compartido con el editor.
+
+Todo es real:
+- se elige rama, base, rol y schema;
+- la rejilla pagina y enseña los tipos y la clave primaria;
+- se puede refrescar;
+- cada fallo tiene su mensaje:
+  - 42501: sin permiso;
+  - 42P01: la tabla ya no existe;
+  - la contraseña no está guardada;
+  - la página no cabe en 5 MB.
+
+El rol elegido se recuerda en el navegador y vale para el editor y para Tables.
+
+**Medido en producción** (`pruebas-de-fuego/ore-postgres/produccion/p83.sh`). Cada número es el p50 de tres. Son los ms del plano, del plano al cómputo y vuelta, en caliente; la consola suma su ore-serve y la red.
+
+La prueba usa 300 tablas y una de un millón de filas (93 MB). Prepararlas costó 13,5 s.
+
+| Qué | ms |
+|---|---|
+| La lista de la rama: 301 relaciones en un schema, 24 KB de JSON | **20–40** |
+| Una tabla pequeña: columnas, conteo exacto y página | 20 |
+| La tabla grande, página 1: columnas, sin `count(*)`, página | 20 |
+| La tabla grande, página del offset 900.000 | 120 |
+| Lo que costaría el `count(*)` de la grande, en caliente | 80 |
+
+**Hallazgo: en Neon, el tamaño de una relación es una pregunta al pageserver.** `pg_total_relation_size` costaba unos 16 ms por relación, y la primera lista tardaba **4,8 s**; sin el tamaño, 20 ms. Por eso:
+- los bytes de la lista salen de `relpages × block_size`, la estimación que apuntan VACUUM y ANALYZE;
+- el tamaño de verdad se pide una sola vez, el de la tabla elegida.
+
+Contar exacto o no lo decide ahora el propio SQL:
+
+`case when pg_relation_size(t) < 50 MB then (select count(*) …) end`
+
+El `count(*)` es un initPlan y no llega a ejecutarse si el `case` no lo pide. Lo confirma el plan: `Aggregate (never executed)`.
+
+Paginar por offset aguanta: 120 ms a 900.000 filas. El cursor (keyset) no hace falta por ahora.
+
+Tres trampas del guion, no del producto:
+- **Kubernetes cambia `$$` por `$`** en el `command` de un pod, y los pasos de `en` viajan así. Por eso el JSON escapa `'` y `$` como `'` y `$`.
+- **Git Bash se come una barra** al pasarle código a Python en Windows. Por eso no hay barras en el código Python del guion.
+- **En Windows, un argumento no puede pasar de 32 KB.** Por eso la respuesta entra a Python por la entrada estándar.
+
+Queda por hacer:
+- revisar en el navegador los estados de la interfaz; el SQL está probado en producción y la vista pasa `tsc`;
+- el paso 5, el cierre.
