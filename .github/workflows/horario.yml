@@ -1,12 +1,12 @@
 name: horario
 
-# ADR 0060 C1·3 · LA MALLA VIVE DE 08:00 A 00:00, HORA DE MADRID.
+# ADR 0060 C1 · LA MALLA VIVE DE 08:00 A 00:00, HORA DE MADRID. Este workflow es el brazo:
 #
-#   · a las 08:00 de Madrid: `malla/despertar.sh`. El cron de GitHub va en UTC y sin zona: se
-#     lanza a las 06:00 y a las 07:00 UTC y sólo actúa la pasada en la que en Madrid son las 8
-#     (06 UTC en verano, 07 en invierno), así que el cambio de hora no lo rompe.
-#   · a las 00:00 de Madrid duerme, pero DENTRO: la CronJob `dormir-de-noche`
-#     (malla/18-el-horario.yaml), porque el cron de GitHub no es fiable para eso.
+#   · a las 08:00 de Madrid lo lanza Cloud Scheduler (`ore-despertar`, `Europe/Madrid`), que hace
+#     el POST de la consola (`https://app.paladio.io/auth/despertar`). El cron de GitHub no: el
+#     2026-10-12 no corrió ni a las 06 ni a las 07 UTC.
+#   · a las 00:00 de Madrid duerme, DENTRO: la CronJob `dormir-de-noche`
+#     (malla/18-el-horario.yaml).
 #   · a mano o desde la consola (`workflow_dispatch`): `despertar` (`malla/despertar.sh`, que
 #     relanza el job `imagen` de la última corrida de `ci`), `dormir` (si no hay trabajo en
 #     Kueue) o `dormir-ya`. Despertada a mano fuera de horario, duerme en la siguiente pasada
@@ -15,12 +15,8 @@ name: horario
 # ⛔ La cuenta: `ore-horario`, federada desde el OIDC de GitHub y sólo para `main`
 #   (`repo:describeloai/ore:ref:refs/heads/main`). En Google sólo cambia el tamaño de los
 #   grupos de nodos (papel `oreHorario`); en el clúster, lo de `malla/18-el-horario.yaml`.
-# ⚠️ El cron de GitHub no es puntual (puede llegar minutos tarde, o no llegar): si un día no
-#   despierta a las 8, se despierta desde la consola.
 
 on:
-  schedule:
-    - cron: '0 6,7 * * *'
   workflow_dispatch:
     inputs:
       accion:
@@ -52,7 +48,7 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
-      ACCION: ${{ github.event_name == 'schedule' && 'a-las-8' || inputs.accion }}
+      ACCION: ${{ inputs.accion }}
     steps:
       - uses: actions/checkout@v5
 
@@ -69,11 +65,6 @@ jobs:
       - name: la malla, según la acción
         run: |
           echo "  acción: $ACCION"
-          if [ "$ACCION" = a-las-8 ]; then
-            H=$(TZ=Europe/Madrid date +%H)
-            if [ "$H" != 08 ]; then echo "  en Madrid son las $H, no las 08: esta pasada no toca"; exit 0; fi
-            ACCION=despertar
-          fi
           case "$ACCION" in
             despertar)
               if [ "${{ inputs.postgres }}" = true ]; then bash malla/despertar.sh --con-postgres

@@ -4,8 +4,8 @@
 La malla vive de 08:00 a 00:00, hora de Madrid. La CronJob `dormir-de-noche`
 (malla/18-el-horario.yaml, `timeZone: Europe/Madrid`) lo corre a las 00:00, 00:30… hasta las
 02:30: la primera pasada duerme, y las siguientes sólo hacen algo si un trabajo de Kueue la tuvo
-despierta (o alguien la despertó a mano de madrugada). Despertar a las 08:00 es de `horario.yml`:
-dormida no hay CronJob que corra. Dormir se decide dentro porque las CronJobs del clúster corren
+despierta (o alguien la despertó a mano de madrugada). Despertar a las 08:00 es de Cloud Scheduler
+(`ore-despertar`), por la consola y `horario.yml`: dormida no hay CronJob que corra. Dormir se decide dentro porque las CronJobs del clúster corren
 puntuales y el cron de GitHub no.
 
 Con un workload de Kueue admitido y sin terminar no duerme: la pasada siguiente vuelve a mirar.

@@ -1,8 +1,9 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # EL HORARIO — la malla vive de 08:00 a 00:00, hora de Madrid (ADR 0060 C1)
 #
-#   despertar  a las 08:00, `.github/workflows/horario.yml` (`malla/despertar.sh`): dormida
-#              no hay CronJob que corra. También a mano y desde la consola.
+#   despertar  a las 08:00, Cloud Scheduler (`ore-despertar`, `Europe/Madrid`) hace el POST de
+#              la consola, que lanza `.github/workflows/horario.yml` (`malla/despertar.sh`):
+#              dormida no hay CronJob que corra. También a mano y desde la consola.
 #   dormir     a las 00:00, la CronJob `dormir-de-noche` (abajo, `malla/dormir-de-noche.py`),
 #              DENTRO: las CronJobs del clúster corren puntuales y el cron de GitHub no. A
 #              mano, `horario.yml` (`malla/dormir.sh`).

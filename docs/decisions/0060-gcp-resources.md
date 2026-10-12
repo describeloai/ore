@@ -538,7 +538,7 @@ fijo, y fuera de él dormida. Cualquiera puede despertarla a mano desde la conso
 
 | | quién | cuándo |
 |---|---|---|
-| **despertar** | `.github/workflows/horario.yml` → `malla/despertar.sh` | cron `0 6,7 * * *` UTC; sólo actúa la pasada en la que en Madrid son las 8 (06 UTC en verano, 07 en invierno): el cambio de hora no lo rompe. Dormida no hay CronJob que corra, por eso va fuera |
+| **despertar** | Cloud Scheduler `ore-despertar` (`europe-west1`) → `POST https://app.paladio.io/auth/despertar` → `horario.yml` → `malla/despertar.sh` | `0 8 * * *` en `Europe/Madrid` (el cambio de hora lo lleva Scheduler), hasta 3 reintentos. Dormida no hay CronJob que corra, por eso va fuera. El cron de GitHub (`0 6,7` UTC) **no corrió el 2026-10-12** ni a las 06 ni a las 07: fuera |
 | **dormir** | la CronJob `dormir-de-noche` (`ore-system`, `timeZone: Europe/Madrid`) → `malla/dormir-de-noche.py` | `0,30 0-2 * * *`: la primera pasada duerme; las demás, sólo si un trabajo de Kueue la tuvo despierta. Dentro del clúster porque el cron de GitHub **no corrió ni una vez en dos horas** el 2026-10-10 (GitHub avisa: sus horarios se retrasan o no corren) |
 | **a mano** | la consola (`/auth/despertando` → `/auth/despertar`), `horario.yml` (`despertar`, `dormir`, `dormir-ya`), `curl -X POST https://app.paladio.io/auth/despertar` | cuando sea. Despertada de madrugada, duerme en la siguiente pasada de 00:00–02:30, o sigue hasta la medianoche siguiente |
 
@@ -597,7 +597,9 @@ metadatos y a las APIs de Google.
 - **`despertar.sh` da por listo un nodo `SchedulingDisabled`** (el dormir de las 18:35 lo dejó
   acordonado y sin borrar, con el grupo en objetivo 1): cada despertar esperaba 300 s a Kueue y
   fallaba. Y una corrida que esperó en vano a todas las entradas terminó «✓ despierta».
-- El cron de despertar es de GitHub: si un día no llega, se despierta desde la consola.
+- Despertar depende de que la consola de Vercel (`app.paladio.io`) tenga `RUBIX_DESPERTADOR_TOKEN`
+  (el 2026-10-12 no lo tenía: la consola de producción no podía despertar; la local sí). Si un día
+  no despierta a las 8, se despierta desde la consola.
 - **Para tenerla despierta de noche** (una ventana de pruebas): suspender la CronJob
   (`kubectl -n ore-system patch cronjob dormir-de-noche -p '{"spec":{"suspend":true}}'`) y
   reanudarla al acabar. La anotación `ore.dev/despierta-hasta` ya no cuenta —y Flux la borraba al
@@ -740,7 +742,7 @@ grupo de Postgres de `80-postgres-gcp.sh` (`n2-standard-2` **normal, no spot**, 
 2. **Todo spot** donde un reinicio no rompa nada. La forja y las bases tienen su disco persistente
    y aguantan que el nodo se vaya; lo que no aguante, a uno normal y pequeño.
 3. **El horario**: despertar va fuera del clúster (un `CronJob` que despierta no puede estar
-   dormido) y dormir, dentro. Hecho así en C1: `horario.yml` despierta a las 08:00 de Madrid y la
+   dormido) y dormir, dentro. Hecho así en C1: Cloud Scheduler despierta a las 08:00 de Madrid y la
    CronJob `dormir-de-noche` duerme a las 00:00. El orden importa: al dormir, primero lo que
    escribe (puestos, builds, Postgres); al despertar, primero el sistema.
 4. **A mano**: `malla/dormir.sh` y `malla/despertar.sh`, los mismos pasos, para un día de guardia
