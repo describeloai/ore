@@ -4,7 +4,8 @@
 contra un Graph de mentira—; la prueba contra GCS, Azure, un SFTP y un tenant de SharePoint de verdad
 es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O5 en O5. **D-O6**
 (un contenedor público, sin identidad) hecha para Azure (AZ0–AZ3, 2026-10-11); **Azure cerrado en
-producción** contra Azure Open Datasets (AZ5–AZ6, 2026-10-12). Investigación:
+producción** contra Azure Open Datasets (AZ5–AZ6, 2026-10-12); **GCS cerrado en producción** con un
+bucket propio y las cuentas de la celda (GC0–GC3, 2026-10-12). Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -345,6 +346,36 @@ tres PDF); 15 objetos, 1,9 MiB. `objectViewer` sólo para `ore-driver-victor` y 
 sola. El aprovisionador re-rinde a la hora en punto; se adelantó con un Job desde el CronJob
 (`kubectl create job --from=cronjob/aprovisionador`, la pasada entera prevista para eso). Medido:
 `t-victor` dice `ore-medios-victor@…`, `t-demo` `ore-medios-demo@…`, sin reinicios.
+
+**GC3 · cerrado en producción** (2026-10-12, `t-victor`, `ore-serve` `df32d1c5`, `puesto-jvm:1`
+`35660303`). El alta desde la consola (bucket y prefijo vacío, «las cuentas de esta celda»), el
+catálogo (tres tablas —Parquet, dos CSV— y cuatro object tables, con el JSON como `structured`),
+`gcs_f` (foránea, expone las siete) y `gcs_s` (estándar):
+
+| qué | contra | resultado |
+|---|---|---|
+| copia | `gcs_s` | tres datasets de 50 filas; cuatro colecciones mantenidas con su transacción 1 |
+| `SELECT … ORDER BY … LIMIT` en vivo desde un `.sql` | `gcs_f.tablas.us_states_2` (un CSV) | ordena DuckDB (ver abajo) |
+| Python, lago contra origen en vivo | `gcs_s.tablas.us_states` / `gcs_f.tablas.us_states` | 50 = 50, `equal: True` |
+| Python, bytes de las mantenidas | imágenes, PDF, audio (11) | número mágico de cada uno: `True` |
+| **colección virtual**: URLs V4 firmadas por `signBlob` como `ore-medios-victor` | `gcs_s.media.imagenes_vivo` | sha256 igual a la mantenida, los cinco |
+| **transform de Java** (Build) | origen en vivo, lago, PDF mantenidos, imágenes virtuales | `sandbox.gcs_java`: 10 filas, las 10 `ok` (leído del lago con DuckDB) |
+
+Lo que destapó, arreglado de raíz:
+- **el `ore` que planifica no sabía la pasarela** (`df32d1c5`): `ore-serve` la tiene por defecto y el
+  hijo (`ore federate`, `ore explain`) la lee de `ORE_PASARELA`, que la malla no pone; sin ella el
+  reparto suponía que todo conector ordena, y un `ORDER BY … LIMIT` sobre un CSV moría con «`orderBy`:
+  el conector no lo sabe poner». Valía para S3 y Azure también.
+- **el build de Java compilaba el repositorio entero** (`35660303`): un snippet de JShell que nadie
+  usa —la semilla v6 que una actualización conserva— lo tumbaba («unnamed classes are a preview
+  feature»). Ahora javac compila el fichero del build y lo que usa (`Arnes.compilar`, `-sourcepath`
+  por paquete); la consola dice el fichero de un error que es de otro (`140e05c`).
+
+**Lo que queda, dicho:** la suplantación (`?suplantar=`, el bucket de un cliente con su cuenta) no
+se ejercitó —G4, con go—; la consola presenta un `404` de bucket que no existe como «falta un
+permiso» (el driver sí lo distingue); la plantilla v6→v7 conserva la semilla de JShell (J4, sin
+go); el catálogo de un CSV sin cabecera da 784 columnas `"0"` (`OOS1001`, visto en
+`azure_blob_mnist`); y cada preemption del nodo spot del sistema deja la plataforma fuera ~4 min.
 
 ### O3 · hecho en el laboratorio (2026-10-09): Azure Blob / ADLS Gen2
 
