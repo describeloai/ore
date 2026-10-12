@@ -129,9 +129,21 @@ pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        return sftp(v("ORE_SFTP_CLAVE_PUBLICA"), v("ORE_IP_SALIDA"));
+        return sftp(clave_publica(v), v("ORE_IP_SALIDA"));
     }
     de_con(tipo, cuenta, ids_de_la_celda())
+}
+
+/// La pública de la celda: `ORE_SFTP_CLAVE_PUBLICA`, o el fichero que nombra
+/// `ORE_SFTP_CLAVE_PUBLICA_FICHERO`, que es como llega en una celda: el
+/// contenedor de inicio la trae del almacén, donde la dejó el aprovisionador.
+/// Se lee en cada petición: es una línea.
+fn clave_publica(v: impl Fn(&str) -> Option<String>) -> Option<String> {
+    v("ORE_SFTP_CLAVE_PUBLICA").or_else(|| {
+        let f = v("ORE_SFTP_CLAVE_PUBLICA_FICHERO")?;
+        let s = std::fs::read_to_string(f).ok()?;
+        Some(s.trim().to_string()).filter(|s| !s.is_empty())
+    })
 }
 
 /// ⭐ ADR 0061 O4·3 (D-O4) · **SFTP: la clave de esta celda.** ORE genera una
@@ -1018,6 +1030,34 @@ mod tests {
         assert!(
             j.contains("ORE_SFTP_CLAVE_PUBLICA") && j.contains("ORE_IP_SALIDA"),
             "{j}"
+        );
+    }
+
+    /// La pública, del entorno o del fichero que trae el contenedor de inicio;
+    /// un fichero vacío o que no está es «sin clave».
+    #[test]
+    fn la_clave_publica_llega_por_fichero() {
+        let d = std::env::temp_dir().join(format!("ore-sftp-pub-{}", std::process::id()));
+        std::fs::write(&d, "ssh-ed25519 AAAAC3Nza ore-victor\n").unwrap();
+        let f = d.to_string_lossy().to_string();
+        let por = |k: &'static str, val: String| move |n: &str| (n == k).then(|| val.clone());
+        assert_eq!(
+            clave_publica(por("ORE_SFTP_CLAVE_PUBLICA_FICHERO", f.clone())).as_deref(),
+            Some("ssh-ed25519 AAAAC3Nza ore-victor")
+        );
+        assert_eq!(
+            clave_publica(por("ORE_SFTP_CLAVE_PUBLICA", "ssh-ed25519 X".into())).as_deref(),
+            Some("ssh-ed25519 X")
+        );
+        std::fs::write(&d, "\n").unwrap();
+        assert_eq!(
+            clave_publica(por("ORE_SFTP_CLAVE_PUBLICA_FICHERO", f.clone())),
+            None
+        );
+        std::fs::remove_file(&d).unwrap();
+        assert_eq!(
+            clave_publica(por("ORE_SFTP_CLAVE_PUBLICA_FICHERO", f)),
+            None
         );
     }
 
