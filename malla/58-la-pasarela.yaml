@@ -65,6 +65,43 @@ spec:
       volumes:
         - name: tmp
           emptyDir: { sizeLimit: 256Mi }
+        # La clave SSH de la celda (0061 S1): en memoria, nunca en disco.
+        - name: clave
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+      # ⭐ 0061 S1 · LA CLAVE SSH DE LA CELDA, del almacén a un tmpfs: con ella
+      #   `ore-read-sftp` entra en el SFTP de un cliente (`ORE_SFTP_CLAVE`). La
+      #   deja allí el aprovisionador y sólo `ore-driver-<celda>` la lee.
+      #   OPCIONAL: una celda sin ella arranca igual, y el `check` de un SFTP
+      #   falla en `identidad` diciendo por qué.
+      initContainers:
+        - name: traer-la-clave-sftp
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # `--out-file` y no la salida: el valor no pasa por el registro.
+              if gcloud secrets versions access latest --secret=t-demo-sftp-clave \
+                   --out-file=/clave/sftp 2>/tmp/clave.err; then
+                chmod 0400 /clave/sftp
+                echo "clave SSH de la celda puesta · $(wc -c < /clave/sftp) bytes"
+              else
+                rm -f /clave/sftp
+                echo "sin clave SSH de la celda: $(tr '\n' ' ' < /tmp/clave.err | cut -c1-200)"
+              fi
+          resources:
+            requests: {cpu: "20m", memory: 96Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: clave, mountPath: /clave }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
       containers:
         - name: ore-federation
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
@@ -73,6 +110,7 @@ spec:
           env:
             - { name: HOME, value: /tmp }
             - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: ORE_SFTP_CLAVE, value: /clave/sftp }
           ports:
             - { name: http, containerPort: 8099 }
           # Lista cuando sus conectores contestan `capacidades`.
@@ -88,6 +126,7 @@ spec:
             limits:   {cpu: "1", memory: 1Gi}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: clave, mountPath: /clave, readOnly: true }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

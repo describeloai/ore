@@ -1097,6 +1097,73 @@ case $? in
   *) duda "el secreto $BASE_COFRE (quien lo lee)" ;;
 esac
 
+# ── ⭐ LA CLAVE SSH DE LA CELDA, para leer un SFTP (0061 D-O4, S1) ─────────
+#
+# Una Ed25519 por celda: el cliente pega su PÚBLICA en el `authorized_keys` del
+# usuario con el que se lee, y la privada no sale de la celda. Dos secretos:
+#   · `$NS-sftp-clave`, la privada: sólo `ore-driver-<celda>` la lee —la
+#     pasarela (`58-la-pasarela.yaml`) la trae a un tmpfs al arrancar—;
+#   · `$NS-sftp-clave-publica`: `ore-serve-<celda>` la lee para enseñarla en el
+#     asistente (`40-ore-serve.yaml`, `ORE_SFTP_CLAVE_PUBLICA_FICHERO`).
+#
+# ⛔ SÓLO CREA, NUNCA ROTA (0054 I2): una clave nueva deja fuera a todos los
+#   SFTP que ya confían en la de antes. Si la pregunta no se sabe, no se toca.
+#   La pública, si falta, se saca de la privada (`ssh-keygen -y`), no al revés.
+CLAVE_SFTP="$NS-sftp-clave"
+PUBLICA_SFTP="$NS-sftp-clave-publica"
+preguntar "$GCLOUD" secrets versions list "$CLAVE_SFTP" --filter=state:enabled --limit=1 --format='value(name)'
+SABIDO=$?
+if [ "$SABIDO" = 2 ]; then
+  duda "si $CLAVE_SFTP tiene version viva (la clave SSH de la celda)"
+elif [ -n "$SECO" ]; then
+  [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ] \
+    && ya "la clave SSH de la celda ($CLAVE_SFTP)" \
+    || haria "generar la Ed25519 de la celda y guardarla en $CLAVE_SFTP y $PUBLICA_SFTP"
+else
+  rm -f "$TMP/sftp" "$TMP/sftp.pub"
+  if [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ]; then
+    ya "la clave SSH de la celda ($CLAVE_SFTP)"
+  elif asegurar_secreto "$CLAVE_SFTP" --labels=proyecto=ore,inquilino="$NOMBRE"; then
+    # ⛔ A un fichero y no a la salida; y se dice la huella, nunca la clave.
+    if ssh-keygen -q -t ed25519 -N '' -C "ore-$NOMBRE" -f "$TMP/sftp" </dev/null >/dev/null 2>&1; then
+      # Si la privada no quedó guardada, su pública tampoco se guarda: serían
+      #   de dos claves distintas en la pasada siguiente.
+      correr "$GCLOUD" secrets versions add "$CLAVE_SFTP" --data-file="$(ruta "$TMP/sftp")" \
+        && hecho "la clave SSH de la celda, nueva: $(ssh-keygen -lf "$TMP/sftp.pub" | cut -d' ' -f2)" \
+        || rm -f "$TMP/sftp.pub"
+    else
+      duda "generar la Ed25519 de la celda (ssh-keygen)"
+    fi
+  fi
+  # La pública: si no tiene versión, de la privada.
+  preguntar "$GCLOUD" secrets versions list "$PUBLICA_SFTP" --filter=state:enabled --limit=1 --format='value(name)'
+  case $? in
+    0) [ -n "$RESPUESTA" ] && { ya "su pública ($PUBLICA_SFTP)"; FALTA_PUBLICA=""; } || FALTA_PUBLICA=1 ;;
+    1) FALTA_PUBLICA=1 ;;
+    *) FALTA_PUBLICA=""; duda "si $PUBLICA_SFTP tiene version viva" ;;
+  esac
+  if [ -n "$FALTA_PUBLICA" ] && asegurar_secreto "$PUBLICA_SFTP" --labels=proyecto=ore,inquilino="$NOMBRE"; then
+    [ -f "$TMP/sftp.pub" ] || { "$GCLOUD" secrets versions access latest --secret="$CLAVE_SFTP" --out-file="$(ruta "$TMP/sftp")" >/dev/null 2>&1 \
+      && chmod 0600 "$TMP/sftp" && ssh-keygen -y -f "$TMP/sftp" > "$TMP/sftp.pub" 2>/dev/null; }
+    if [ -s "$TMP/sftp.pub" ]; then
+      correr "$GCLOUD" secrets versions add "$PUBLICA_SFTP" --data-file="$(ruta "$TMP/sftp.pub")" \
+        && hecho "su pública, en $PUBLICA_SFTP"
+    else
+      duda "sacar la pública de $CLAVE_SFTP"
+    fi
+  fi
+  rm -f "$TMP/sftp" "$TMP/sftp.pub"
+  correr "$GCLOUD" secrets add-iam-policy-binding "$CLAVE_SFTP" \
+    --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor \
+    && hecho "\`ore-driver-$NOMBRE\` puede leer la privada, y nadie más del inquilino"
+  correr "$GCLOUD" secrets add-iam-policy-binding "$PUBLICA_SFTP" \
+    --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor \
+    && hecho "\`ore-serve-$NOMBRE\` puede leer la pública"
+fi
+unset CLAVE_SFTP PUBLICA_SFTP FALTA_PUBLICA
+
 # ── ⭐⭐ EL ADMIN DE SU FORJA, que ella misma acuña ──────────────────────────
 #
 # El secreto se crea VACIO aqui; la version la añade la forja del inquilino al

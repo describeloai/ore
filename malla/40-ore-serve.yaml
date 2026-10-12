@@ -188,6 +188,15 @@ spec:
                 chmod 0400 /testigo/agente-$p
               done
               echo "agente puesto · $(cat /testigo/agente-cliente)"
+              # ⭐ 0061 S1 · La PÚBLICA de la clave SSH de la celda, para que el
+              #   asistente de un SFTP la enseñe. No es un secreto, y es
+              #   OPCIONAL: sin ella el asistente dice que falta.
+              if gcloud secrets versions access latest --secret=t-demo-sftp-clave-publica \
+                   --out-file=/testigo/sftp.pub 2>/dev/null; then
+                echo "clave SSH pública · $(cut -d' ' -f1,3 /testigo/sftp.pub)"
+              else
+                echo "sin clave SSH pública de la celda todavía"
+              fi
           resources:
             requests: {cpu: "20m", memory: 96Mi}
             limits:   {cpu: "500m", memory: 256Mi}
@@ -351,6 +360,12 @@ spec:
             - /testigo/forja
           env:
             - { name: HOME, value: /tmp }
+            # ⭐ 0061 S1 · Lo que el asistente de un SFTP enseña: la pública de
+            #   la clave de la celda (la trae `traer-el-testigo`) y la IP por la
+            #   que salen sus drivers, la del NAT `salida-a-origenes` (una para
+            #   toda la malla, reservada): el cliente abre su puerto a ella.
+            - { name: ORE_SFTP_CLAVE_PUBLICA_FICHERO, value: /testigo/sftp.pub }
+            - { name: ORE_IP_SALIDA, value: "34.156.87.237" }
             # ── W1 ④ (0030) · LA COPIA, LEIDA DESDE AQUI ──────────────────
             #
             # `POST /vistas/{ns}/{n}/ejecutar` corre `ore ask`, que trae la

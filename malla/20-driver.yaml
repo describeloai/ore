@@ -89,6 +89,13 @@ spec:
       #   el renderizador emita la politica del Job — una por fuente, con lo
       #   que esa fuente necesita y nada mas. Queda escrito para que se
       #   encuentre el dia que haga falta.
+      #
+      # ✏️ 2026-10-12 · Y el 22, por SFTP (0061 O4, S1): el tercer puerto del
+      #   aviso de arriba. Lo mismo que el 5432: se puede llegar a cualquier SSH
+      #   de internet, y lo acota que el driver sólo sabe hablar SFTP con la
+      #   huella del host fijada y la clave de la celda. Un SFTP en otro puerto
+      #   (2222…) no llega hasta que la fuente declare el suyo (lo de arriba).
       ports:
         - { protocol: TCP, port: 443 }
         - { protocol: TCP, port: 5432 }
+        - { protocol: TCP, port: 22 }
