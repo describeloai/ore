@@ -327,6 +327,11 @@ spec:
             #   Se ENSEÑA, no se usa aquí: este proceso no habla con Google.
             - --cuenta-driver
             - ore-driver-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+            # ⭐ Y LA DE `ore-medios` (0061 O2·3): la que lee y firma los ítems de
+            #   un origen GCS. El cliente da `objectViewer` a las DOS en su bucket
+            #   (`GET /fuentes/credenciales/gcs`). También se enseña y no se usa.
+            - --cuenta-medios
+            - ore-medios-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
             # ⭐ EL GATEWAY DE MODELOS (0027 E1): el plano de control de Bastion
             #   B3, donde `POST /modelos` suscribe a esta celda en el mismo acto
             #   que escribe el documento. Por IP, como el API server del
