@@ -209,21 +209,33 @@ fn la_estandar_copia_sus_colecciones_y_la_foranea_las_sirve_en_sitio() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// ⭐ ADR 0061 O4·4 · **De una fuente que no versiona (un SFTP), la foránea
-/// mantiene sus colecciones**: exponer el `ObjectTable` sería servirlo en
-/// vivo —una colección virtual, que un SFTP no puede dar (D-O1)—, así que la
-/// base escribe las suyas, sin `virtual`, desde el puntero de la fuente.
+/// ⭐ ADR 0061 S2 · **De una fuente que no versiona (un SFTP), la foránea
+/// expone como cualquier otra**: su `package.yaml` con `spec.foreign` y el
+/// `include` de sus tablas y sus `ObjectTable` (el listado, en vivo), sin
+/// vistas ni colecciones propias. La estándar copia sus colecciones, nunca
+/// virtuales (D-O1). (O4·4 la hacía escribir vistas y copiar colecciones.)
 #[test]
-fn de_un_sftp_la_foranea_mantiene_sus_colecciones() {
+fn de_un_sftp_la_foranea_expone_y_la_estandar_mantiene() {
     let (dir, _) = arbol_de("sftp", "sftp");
-    let f = leer(&dir, "fdb/nueva_carpeta/collections/fotos.yaml");
-    assert!(
-        !f.contains("virtual")
-            && f.contains("from: { objectTable: s3_ventas.nueva_carpeta.fotos }"),
-        "{f}"
-    );
     let m = leer(&dir, "fdb/package.yaml");
-    assert!(!m.contains("include"), "la foránea no expone: {m}");
+    assert!(
+        m.contains("datasource: s3_ventas") && m.contains("nueva_carpeta.fotos"),
+        "la foránea expone: {m}"
+    );
+    for d in ["collections", "views", "datasets"] {
+        assert!(
+            !dir.join(format!("packages/fdb/nueva_carpeta/{d}")).exists(),
+            "la foránea escribe {d}"
+        );
+    }
+    let s = leer(&dir, "sdb/nueva_carpeta/collections/fotos.yaml");
+    assert!(
+        !s.contains("virtual")
+            && s.contains("from: { objectTable: s3_ventas.nueva_carpeta.fotos }"),
+        "{s}"
+    );
+    let (c, v) = ore(&dir, &["validate", "."]);
+    assert_eq!(c, Some(0), "{v}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

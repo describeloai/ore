@@ -2085,12 +2085,15 @@ fn descubrir(
     //   paquete, EXPONE las tablas de la fuente —su `package.yaml` con
     //   `spec.foreign`, nada más—. Sin paquete de la fuente (el CLI suelto),
     //   lo de antes: sus propias tablas y una vista por tabla.
-    //   ⭐ ADR 0061 O4·4: salvo de una fuente que no versiona (un SFTP): exponer
-    //   su `ObjectTable` sería servirlo en vivo —una colección virtual—, así
-    //   que la base escribe sus colecciones, mantenidas (D-O1).
+    //   ✏️ ADR 0061 S2 (2026-10-13): también de una fuente que no versiona (un
+    //   SFTP). O4·4 la excluía —«exponer su `ObjectTable` sería servirlo en
+    //   vivo, una colección virtual»— y con ello sus tablas volvían a ser
+    //   vistas y sus colecciones se copiaban DENTRO de la foránea. Exponer un
+    //   `ObjectTable` es exponer su listado, que se lee en vivo como el de
+    //   cualquiera; lo que un SFTP no puede dar es una colección virtual, y eso
+    //   lo niegan `coleccion::una` y `ore-medios`, no esto.
     if let Some(refs) = &regla.fuente_aparte
         && el_alcance.as_ref().is_some_and(|(a, _)| !a.estandar())
-        && !regla.sin_versiones
     {
         regla.expone = Some(inductor::include_de(&catalogo, refs, espejo));
     }
