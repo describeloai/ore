@@ -43,6 +43,12 @@ const CONJUNTOS: &[&str] = &[
     // v1alpha27: lo que una base foránea expone (`spec.foreign.include`); el
     // orden no dice nada —un schema o un objeto se exponen o no—.
     "include",
+    // v1alpha30 (el bloque de salud, `health.schema.json`: no es un documento
+    // y nunca se digiere, pero su esquema está en `schemas/`): las columnas que
+    // cambiaron en el origen; cada una cambió o no.
+    "added",
+    "removed",
+    "retyped",
     "predicatePushdown",
     "aggregatePushdown",
     "requiredFilters",
@@ -200,6 +206,10 @@ const SECUENCIAS: &[&str] = &[
     // El orden ES el significado.
     "levels",     // ascendente por restrictividad: el retículo entero
     "primaryKey", // en una clave compuesta el orden es significativo
+    // v1alpha30: los motivos de un bloque de salud, en el orden en que se dan.
+    // No es un documento; por defecto, secuencia (no se reordena lo que no se
+    // sabe si significa).
+    "reasons",
     // v1alpha16. `formats` de una coleccion: el PRIMERO es el primario, y
     // `[pdf, docx]` no dice lo mismo que `[docx, pdf]`. `partitions` de un
     // `ObjectTable` o de un `format`: el orden de las carpetas Hive del camino
