@@ -1171,7 +1171,7 @@ else
     *) FALTA_PUBLICA=""; duda "si $PUBLICA_SFTP tiene version viva" ;;
   esac
   if [ -n "$FALTA_PUBLICA" ] && asegurar_secreto "$PUBLICA_SFTP" --labels=proyecto=ore,inquilino="$NOMBRE"; then
-    [ -f "$TMP/sftp.pub" ] || { "$GCLOUD" secrets versions access latest --secret="$CLAVE_SFTP" --out-file="$(ruta "$TMP/sftp")" >/dev/null 2>&1 \
+    [ -f "$TMP/sftp.pub" ] || { "$GCLOUD" secrets versions access latest --secret="$CLAVE_SFTP" --out-file="$(ruta "$TMP/sftp")" >/dev/null \
       && chmod 0600 "$TMP/sftp" && clave_ssh --publica "$TMP/sftp" "ore-$NOMBRE" >/dev/null; }
     if [ -s "$TMP/sftp.pub" ]; then
       correr "$GCLOUD" secrets versions add "$PUBLICA_SFTP" --data-file="$(ruta "$TMP/sftp.pub")" \
