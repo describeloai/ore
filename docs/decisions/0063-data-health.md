@@ -822,7 +822,7 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 
 | | Paso | Lo que entrega | Dónde | Pone en verde |
 |---|---|---|---|---|
-| **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket) que se montan y se desmontan solos. Más una versión de laboratorio para el CI | `pruebas-de-fuego/salud/`, CI | — (todas en rojo) |
+| **S0** ✅ | **La vara** — **hecha** (2026-10-13, `pruebas-de-fuego/salud/vara.py`): ver «S0 · la vara» | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket) que se montan y se desmontan solos. Más una versión de laboratorio para el CI | `pruebas-de-fuego/salud/`, CI | — (todas en rojo) |
 | **S1** ✅ | **El vocabulario y lo que se debe** — **hecho** (2026-10-13): OOS v1alpha30, [`01-la-salud`](../../vendor/oos/spec/v1alpha30/01-la-salud.md) y `health.schema.json` (`oos` `887a7a0`) | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
 | **S2** ✅ | **Nunca a oscuras, y la hora verdadera** — **hecho, desplegado y medido en la copia** (2026-10-13, `1466340d`, en el clúster con `a5d6e184`; consola `9fb92ff`): ver «S2 · lo hecho» y «S2 y S3 · medidos» | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
 | **S3** ✅ | **No decir «al día» sin comprobar** (cierra PG1) — **hecho, desplegado y medido** (2026-10-13, `e1005d8d`): el verbo `cambio` en Postgres (contadores y `relfilenode`) y BigQuery (`lastModifiedTime`, sin *streaming*); la copia guarda la señal y decide con ella. Los objetos, el SFTP y el JSONL, todavía sin el verbo: ver «S2 y S3 · medidos» | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
@@ -890,6 +890,36 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 - **Las colecciones**, que tienen su propio puntero.
 - **Los punteros de antes de S2** no saben de cuándo son (`dataAsOf: null`) hasta su próxima copia.
   No se rellena con la hora del commit.
+
+### S0 · la vara (2026-10-13)
+
+`pruebas-de-fuego/salud/vara.py`: cada caso cambia el origen, pasa la copia de verdad (un Job con la
+plantilla de la copia de `main` de la cola, sólo sobre los datasets de la vara) y compara lo que ORE
+dice —el puntero y la salud de `/assets`, con el token del agente de la celda— con lo que la visión
+espera. Cada caso en rojo dice qué paso lo pone en verde. Corre en `victor`, en producción, en unos
+15 minutos, y deja un informe `vara-<fecha>.md`.
+
+| Caso | M | Lo que la visión espera | Paso |
+|---|---|---|---|
+| C1 | M1 | la copia sabe de cuándo son sus datos, y `/assets` lo dice | S2 |
+| C2 | M6 | sin cambios: «al día» comprobado, sin leer, `healthy` | S3 |
+| C3 | M2 | una fila actualizada (lo que `field` no ve) se copia | S3 |
+| C4 | P3 | una columna nueva se dice: `source-schema-changed` | S5 |
+| C5 | M8 | en vivo, una columna renombrada es *schema drift*, no «Not found» | S5 |
+| C6 | M5 | la copia que falla sirve lo último bueno, `degraded` | S2 |
+| C6b | P4 | y dice que el esquema del origen cambió | S5 |
+| C7 | P5 | un origen vaciado se retiene, no se publica con 0 filas | S4 |
+| C8 | M7 | sin origen: `refresh-failed`, y lo último bueno se sigue leyendo | S2 |
+
+Los orígenes son propios y pequeños, y la vara los deja en su estado base al empezar y al terminar:
+`ore_vara.pedidos` en el Neon de la fuente `postgresql_20260918_1920` (por un Job en la celda con la
+credencial del cofre: la URL no sale de ella) y `ventas.ore_vara_pedidos` en BigQuery.
+
+**Lo que la vara no monta sola, y por qué.** Volver a leer el catálogo de una fuente y retirar una
+base son gobierno: el agente de la celda no puede (`puerta_del_agente`), y la vara no se lo salta.
+Así que **una vez**, una persona recataloga las dos fuentes y crea cuatro bases: `vara_pg` y `vara_bq`
+(standard) y `vara_pg_f` y `vara_bq_f` (foreign). `python vara.py montar` lo comprueba y lo explica.
+La versión de laboratorio para el CI queda para después: hoy la vara mide en producción.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
