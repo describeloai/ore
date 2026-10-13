@@ -602,6 +602,8 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         "datos_de",
         "comprobado",
         "intento",
+        // 0063 S5a: lo que la copia vio distinto en el esquema del origen.
+        "esquema_origen",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());

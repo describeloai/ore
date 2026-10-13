@@ -327,11 +327,32 @@ fn cambio(t: &dyn rest::Transporte, peticion: &str) -> Result<String, String> {
     let en_streaming = r.get("streamingBuffer").is_some_and(|b| !b.is_null());
     let hora = r["lastModifiedTime"].as_str();
     let filas = r["numRows"].as_str().unwrap_or("");
+    // 0063 S5a: las columnas de ahora, con el tipo traducido como el catálogo.
+    let columnas: Vec<(String, Option<String>)> = r["schema"]["fields"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .filter_map(|f| {
+                    let nombre = f["name"].as_str()?.to_string();
+                    let tipo = f["type"].as_str().unwrap_or("");
+                    let tipo = if f["mode"].as_str() == Some("REPEATED") {
+                        format!("ARRAY<{tipo}>")
+                    } else {
+                        tipo.to_string()
+                    };
+                    Some((nombre, catalogo::traducir(&tipo)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(match hora {
-        Some(h) if es_tabla && !en_streaming => {
-            ore_driver::huella("modificada", Some(&format!("{h}:{filas}")), true)
-        }
-        _ => ore_driver::huella("modificada", None, false),
+        Some(h) if es_tabla && !en_streaming => ore_driver::huella_con_columnas(
+            "modificada",
+            Some(&format!("{h}:{filas}")),
+            true,
+            &columnas,
+        ),
+        _ => ore_driver::huella_con_columnas("modificada", None, false, &columnas),
     })
 }
 

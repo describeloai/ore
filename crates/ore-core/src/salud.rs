@@ -114,7 +114,59 @@ pub fn bloque(
         } else {
             "refresh-failed"
         };
-        motivos.push((DEGRADED, motivo(code, Some(&desde), razon.as_deref())));
+        let mut m = motivo(code, Some(&desde), razon.as_deref());
+        // §6: `refresh-held` dice qué guarda saltó (0063 S4: `zero-rows`).
+        if let (Json::Obj(o), Some(g)) = (&mut m, intento.as_ref().and_then(|i| campo(i, "guarda")))
+        {
+            o.insert("guard".into(), Json::s(g));
+        }
+        motivos.push((DEGRADED, m));
+    }
+    // ── El esquema del origen (0063 S5a) ────────────────────────────────────
+    //   Lo que la copia vio distinto de la `Table` declarada, con `columns`.
+    if let Some((_, e)) = puntero.and_then(|p| p.get("esquema_origen")) {
+        let lista = |k: &str| -> Vec<String> {
+            e.get(k)
+                .map(|(_, v)| {
+                    v.items()
+                        .iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (added, removed, retyped) = (lista("added"), lista("removed"), lista("retyped"));
+        if !(added.is_empty() && removed.is_empty() && retyped.is_empty()) {
+            let mut partes = Vec::new();
+            for (k, v) in [
+                ("removed", &removed),
+                ("added", &added),
+                ("retyped", &retyped),
+            ] {
+                if !v.is_empty() {
+                    partes.push(format!("{k} {}", v.join(", ")));
+                }
+            }
+            let mensaje = format!(
+                "the source no longer matches the declared table: {}",
+                partes.join("; ")
+            );
+            let mut m = motivo(
+                "source-schema-changed",
+                Some(campo(e, "visto").as_deref().unwrap_or(&hoy)),
+                Some(&mensaje),
+            );
+            if let Json::Obj(o) = &mut m {
+                let mut c = Vec::new();
+                for (k, v) in [("added", added), ("removed", removed), ("retyped", retyped)] {
+                    if !v.is_empty() {
+                        c.push((k, Json::Arr(v.into_iter().map(Json::s).collect())));
+                    }
+                }
+                o.insert("columns".into(), Json::obj(c));
+            }
+            motivos.push((DEGRADED, m));
+        }
     }
     if !hay_version {
         motivos.push((
@@ -270,6 +322,38 @@ mod tests {
     /// 0063 M5: la pasada falló por una columna renombrada y el puntero
     /// conserva la versión buena. Antes: «la copia no está hecha». Ahora se lee,
     /// `degraded`, con su motivo y su hora.
+    #[test]
+    fn el_esquema_del_origen_es_un_motivo_con_sus_columnas() {
+        let n = p(
+            r#"{"estado":"error","motivo":"falta `cliente`","metadata_location":"m",
+            "datos_de":"2026-10-13T15:00:00Z",
+            "intento":{"cuando":"2026-10-13T16:00:00Z","resultado":"error"},
+            "esquema_origen":{"added":["comprador"],"removed":["cliente"],"retyped":[],"visto":"2026-10-13T16:00:00Z"}}"#,
+        );
+        let b = bloque(Some(&n), None, 1_791_900_000, (false, false));
+        assert_eq!(estado(&b), "degraded");
+        let t = b.jcs();
+        assert!(t.contains(r#""code":"source-schema-changed""#), "{t}");
+        assert!(
+            t.contains(r#""columns":{"added":["comprador"],"removed":["cliente"]}"#),
+            "{t}"
+        );
+        assert!(t.contains("removed cliente; added comprador"), "{t}");
+    }
+
+    #[test]
+    fn retenida_dice_su_guarda() {
+        let n = p(
+            r#"{"estado":"error","motivo":"0 rows","metadata_location":"m",
+            "intento":{"cuando":"2026-10-13T16:00:00Z","resultado":"retenida","guarda":"zero-rows"}}"#,
+        );
+        let t = bloque(Some(&n), None, 1_791_900_000, (false, false)).jcs();
+        assert!(
+            t.contains(r#""code":"refresh-held""#) && t.contains(r#""guard":"zero-rows""#),
+            "{t}"
+        );
+    }
+
     #[test]
     fn un_refresco_fallido_no_apaga_lo_ultimo_bueno() {
         let n = p(

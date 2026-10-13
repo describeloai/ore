@@ -824,10 +824,33 @@ fn cambio(entrada: &str) -> Result<String, String> {
             &[&lectura::citado(&objeto)],
         )
         .map_err(|e| format!("no se pudo preguntar por `{objeto}`: {}", texto::causa(&e)))?;
+    // 0063 S5a: las columnas de ahora, para compararlas con la `Table` declarada.
+    let columnas: Vec<(String, Option<String>)> = cliente
+        .query(
+            "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod) \
+             FROM pg_attribute a WHERE a.attrelid = to_regclass($1) \
+             AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+            &[&lectura::citado(&objeto)],
+        )
+        .map(|filas| {
+            filas
+                .iter()
+                .map(|f| {
+                    let tipo: String = f.get(1);
+                    (f.get::<_, String>(0), escalar(&tipo).map(String::from))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(match fila {
         Some(f) => {
             let v: Vec<String> = (0..5).map(|i| f.get::<_, String>(i)).collect();
-            ore_driver::huella("contadores-y-forma", Some(&v.join(":")), true)
+            ore_driver::huella_con_columnas(
+                "contadores-y-forma",
+                Some(&v.join(":")),
+                true,
+                &columnas,
+            )
         }
         None => {
             let existe: bool = cliente

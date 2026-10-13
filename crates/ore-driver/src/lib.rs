@@ -620,7 +620,38 @@ pub fn testigo(modo: &str, valor: Option<&str>) -> String {
 /// garantizarlo —una réplica, una tabla con filas en *streaming*— contesta con
 /// `respalda: false` y sin valor, y la copia no se fía.
 pub fn huella(modo: &str, valor: Option<&str>, respalda: bool) -> String {
+    huella_con_columnas(modo, valor, respalda, &[])
+}
+
+/// **La huella, con la forma del origen** (ADR 0063 S5a): las columnas que el
+/// objeto tiene AHORA, con su tipo en el vocabulario de OOS (`None`: no se sabe
+/// traducir, y no se afirma nada de él). La copia las compara con la `Table`
+/// declarada. Sale de la misma pregunta que la huella: no cuesta otra.
+pub fn huella_con_columnas(
+    modo: &str,
+    valor: Option<&str>,
+    respalda: bool,
+    columnas: &[(String, Option<String>)],
+) -> String {
     let mut o = std::collections::BTreeMap::new();
+    if !columnas.is_empty() {
+        o.insert(
+            "columnas".to_string(),
+            ore_core::json::Json::Arr(
+                columnas
+                    .iter()
+                    .map(|(n, t)| {
+                        ore_core::json::Json::Arr(vec![
+                            ore_core::json::Json::s(n),
+                            t.as_deref()
+                                .map(ore_core::json::Json::s)
+                                .unwrap_or(ore_core::json::Json::Crudo("null".into())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
+    }
     o.insert("modo".to_string(), ore_core::json::Json::s(modo));
     if let Some(v) = valor.filter(|_| respalda) {
         o.insert("valor".to_string(), ore_core::json::Json::s(v));

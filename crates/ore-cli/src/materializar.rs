@@ -600,13 +600,18 @@ fn una(
     //   (como el testigo): si lo que se lee cambia durante la copia, la pasada
     //   siguiente lo ve. Un dataset del lago no la necesita: su testigo es su
     //   snapshot, que ya lo garantiza.
-    let (senal, fallo_de_la_senal) = match &origen_del_lago {
-        Some(_) => (None, None),
+    let (senal, columnas_del_origen, fallo_de_la_senal) = match &origen_del_lago {
+        Some(_) => (None, None, None),
         None => match senal_de(raiz_pkg, &r) {
-            Ok(s) => (s, None),
-            Err(e) => (None, Some(e)),
+            Ok((s, c)) => (s, c, None),
+            Err(e) => (None, None, Some(e)),
         },
     };
+    // ⭐ 0063 S5a · EL ESQUEMA DEL ORIGEN, de la misma pregunta que la señal.
+    let forma = columnas_del_origen
+        .as_deref()
+        .zip(declaradas(pkg, &r))
+        .and_then(|(o, d)| diferencia(&d, o));
 
     // ── ④ El puntero ────────────────────────────────────────────────────────
     //
@@ -658,13 +663,45 @@ fn una(
         );
     }
     // La misma cabecera que la última vez, y el dataset sigue ahí: al día.
+    // ⭐ 0063 S5a · Falta en el origen una columna que la copia lee: leer
+    //   fallaría igual («no tiene la columna»). Se dice qué cambió, no se lee,
+    //   y se sirve lo último bueno (S2).
+    if let Some(f) = &forma
+        && !seco
+    {
+        let lee = leidas(&r);
+        let faltan: Vec<&String> = f.removed.iter().filter(|c| lee.contains(*c)).collect();
+        if !faltan.is_empty() {
+            let motivo = format!(
+                "the source no longer has the declared column(s) {}: its schema changed ({})",
+                faltan
+                    .iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                f.texto()
+            );
+            return poner_forma(
+                Ok((
+                    format!("error · {motivo}"),
+                    Json::obj([("estado", Json::s("error")), ("motivo", Json::s(&motivo))]),
+                )),
+                Some(f),
+                puntero.as_ref(),
+            );
+        }
+    }
     if !rehacer && ve.deja_decir_ya_esta() && al_dia_con(puntero.as_ref(), &huella)? {
-        return ya_esta(
+        return poner_forma(
+            ya_esta(
+                puntero.as_ref(),
+                bundle,
+                recoger && !seco,
+                &dataset,
+                respalda(&testigo) || sin_cambios,
+            ),
+            forma.as_ref(),
             puntero.as_ref(),
-            bundle,
-            recoger && !seco,
-            &dataset,
-            respalda(&testigo) || sin_cambios,
         );
     }
     // ⭐ 0063 S3 · Con `log`, el testigo se movió (es del servidor: se mueve con
@@ -679,7 +716,11 @@ fn una(
         let anterior = self::cabecera(&plan.digest(), &esq, &previo, &clave, &obligatorias);
         let huella_anterior = ore_core::digest::de_bytes(anterior.as_bytes());
         if al_dia_con(puntero.as_ref(), &huella_anterior)? {
-            return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset, true);
+            return poner_forma(
+                ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset, true),
+                forma.as_ref(),
+                puntero.as_ref(),
+            );
         }
     }
     if seco {
@@ -875,19 +916,23 @@ fn una(
             (s, leidas)
         }
     };
-    informe_de(
-        &salida,
-        leidas,
-        &dataset,
-        &huella,
-        &plan.digest(),
-        &testigo,
-        bundle,
-        rehacer,
-        recoger && !seco,
-        datos_de.as_deref(),
-        senal.as_ref(),
-        filas_del_puntero(puntero.as_ref()),
+    poner_forma(
+        informe_de(
+            &salida,
+            leidas,
+            &dataset,
+            &huella,
+            &plan.digest(),
+            &testigo,
+            bundle,
+            rehacer,
+            recoger && !seco,
+            datos_de.as_deref(),
+            senal.as_ref(),
+            filas_del_puntero(puntero.as_ref()),
+        ),
+        forma.as_ref(),
+        puntero.as_ref(),
     )
 }
 
@@ -1354,7 +1399,13 @@ fn informe_de(
             Json::obj([
                 ("estado", Json::s("error")),
                 ("motivo", Json::s(&motivo)),
-                ("intento", intento(&ahora_iso(), "retenida", Some(&motivo))),
+                ("intento", {
+                    let mut i = intento(&ahora_iso(), "retenida", Some(&motivo));
+                    if let Json::Obj(o) = &mut i {
+                        o.insert("guarda".into(), Json::s("zero-rows"));
+                    }
+                    i
+                }),
             ]),
         ));
     }
@@ -1694,12 +1745,12 @@ fn intento(cuando: &str, resultado: &str, motivo: Option<&str>) -> ore_core::jso
 /// `Err` si el verbo **falló** (0063 S3b): la tabla ya no está, el origen no
 /// contesta. Un driver sin el verbo también falla, pero ése nunca guardó una
 /// señal: `la_senal` sólo trata el fallo como tal si la hubo antes.
-fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Result<Option<(String, String)>, String> {
+fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Result<LoQueDiceElOrigen, String> {
     let Ok((tipo, env)) = lector::declaracion(raiz_pkg, &r.datasource) else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let Ok(url) = lector::url(raiz_pkg, &env, &r.datasource) else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let salida = lector::preguntar(
         &tipo,
@@ -1710,12 +1761,180 @@ fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Result<Option<(String, String)
     )
     .map_err(|f| f.mensaje)?;
     let Ok(n) = ore_core::parse::parse(salida.trim()) else {
-        return Ok(None);
+        return Ok((None, None));
     };
+    // 0063 S5a: las columnas de ahora, aunque la señal no respalde (una tabla
+    // con *streaming* sigue teniendo forma).
+    let columnas = n.get("columnas").map(|(_, c)| {
+        c.items()
+            .iter()
+            .filter_map(|par| {
+                let par = par.items();
+                Some((
+                    par.first()?.as_str()?.to_string(),
+                    par.get(1).and_then(|t| t.as_str()).map(String::from),
+                ))
+            })
+            .collect::<Vec<_>>()
+    });
     if campo_de(&n, "respalda").as_deref() != Some("true") {
-        return Ok(None);
+        return Ok((None, columnas));
     }
-    Ok(campo_de(&n, "modo").zip(campo_de(&n, "valor")))
+    Ok((campo_de(&n, "modo").zip(campo_de(&n, "valor")), columnas))
+}
+
+/// La señal de cambio (si respalda) y las columnas que el origen tiene ahora.
+type LoQueDiceElOrigen = (
+    Option<(String, String)>,
+    Option<Vec<(String, Option<String>)>>,
+);
+
+/// **El esquema del origen frente al declarado** (0063 S5a; v1alpha30 §6,
+/// `source-schema-changed` con `columns`). Por nombre, y por tipo sólo donde
+/// los dos se saben en el vocabulario de OOS: de un tipo que no se traduce no
+/// se afirma que cambió.
+#[derive(Debug, Default, PartialEq)]
+struct FormaDelOrigen {
+    added: Vec<String>,
+    removed: Vec<String>,
+    retyped: Vec<String>,
+}
+
+impl FormaDelOrigen {
+    fn json(&self, visto: &str) -> ore_core::json::Json {
+        use ore_core::json::Json;
+        let l = |v: &[String]| Json::Arr(v.iter().map(Json::s).collect());
+        Json::obj([
+            ("added", l(&self.added)),
+            ("removed", l(&self.removed)),
+            ("retyped", l(&self.retyped)),
+            ("visto", Json::s(visto)),
+        ])
+    }
+    fn texto(&self) -> String {
+        let mut partes = Vec::new();
+        for (k, v) in [
+            ("quitadas", &self.removed),
+            ("nuevas", &self.added),
+            ("de otro tipo", &self.retyped),
+        ] {
+            if !v.is_empty() {
+                partes.push(format!("{k}: {}", v.join(", ")));
+            }
+        }
+        partes.join(" · ")
+    }
+}
+
+/// El tipo base de OOS: `Decimal(10,2)` y `Decimal` son el mismo; la precisión
+/// es una restricción, como en la traducción del driver.
+fn tipo_base(t: &str) -> &str {
+    t.split(['(', '<']).next().unwrap_or(t).trim()
+}
+
+fn diferencia(
+    declaradas: &[(String, Option<String>)],
+    origen: &[(String, Option<String>)],
+) -> Option<FormaDelOrigen> {
+    let de = |v: &[(String, Option<String>)]| -> BTreeMap<String, Option<String>> {
+        v.iter().cloned().collect()
+    };
+    let (d, o) = (de(declaradas), de(origen));
+    let f = FormaDelOrigen {
+        added: o.keys().filter(|k| !d.contains_key(*k)).cloned().collect(),
+        removed: d.keys().filter(|k| !o.contains_key(*k)).cloned().collect(),
+        retyped: d
+            .iter()
+            .filter_map(|(k, td)| {
+                let (Some(td), Some(Some(to))) = (td, o.get(k)) else {
+                    return None;
+                };
+                (tipo_base(td) != tipo_base(to)).then(|| k.clone())
+            })
+            .collect(),
+    };
+    (f != FormaDelOrigen::default()).then_some(f)
+}
+
+/// Las columnas que la `Table` raíz declara, con su tipo.
+fn declaradas(pkg: &Package, r: &vistas::Raiz) -> Option<Vec<(String, Option<String>)>> {
+    let qn = r.tabla.as_deref()?;
+    let t = pkg
+        .docs
+        .iter()
+        .find(|d| d.kind == ore_core::document::Kind::Table && d.qname().as_deref() == Some(qn))?;
+    let c = t.section("columns")?;
+    Some(
+        c.entries()
+            .iter()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.as_str()?.to_string(),
+                    v.get("type")
+                        .and_then(|(_, t)| t.as_str())
+                        .map(String::from),
+                ))
+            })
+            .collect(),
+    )
+}
+
+/// Las columnas físicas que la copia pide a la raíz: lo proyectado y lo que
+/// filtra.
+fn leidas(r: &vistas::Raiz) -> std::collections::BTreeSet<String> {
+    r.columnas
+        .values()
+        .cloned()
+        .chain(r.filtros.iter().map(|(c, _)| c.clone()))
+        .collect()
+}
+
+/// Lo que la pasada dice del esquema del origen, en su línea y en el puntero.
+/// Sin diferencia, el puntero no lo lleva: lo que se arregló deja de decirse.
+/// La hora es la de la primera vez que se vio ESTA diferencia.
+fn poner_forma(
+    hecho: Result<(String, ore_core::json::Json), String>,
+    forma: Option<&FormaDelOrigen>,
+    previo: Option<&ore_core::parse::Node>,
+) -> Result<(String, ore_core::json::Json), String> {
+    use ore_core::json::Json;
+    let (mut linea, mut j) = hecho?;
+    if let Json::Obj(m) = &mut j {
+        match forma {
+            Some(f) => {
+                let antes = previo
+                    .and_then(|p| p.get("esquema_origen"))
+                    .map(|(_, e)| e.clone());
+                let misma = antes.as_ref().is_some_and(|e| {
+                    let l = |k: &str| -> Vec<String> {
+                        e.get(k)
+                            .map(|(_, v)| {
+                                v.items()
+                                    .iter()
+                                    .filter_map(|x| x.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    };
+                    l("added") == f.added && l("removed") == f.removed && l("retyped") == f.retyped
+                });
+                let visto = antes
+                    .as_ref()
+                    .filter(|_| misma)
+                    .and_then(|e| campo_de(e, "visto"))
+                    .unwrap_or_else(ahora_iso);
+                m.insert("esquema_origen".into(), f.json(&visto));
+                linea.push_str(&format!(
+                    "\n  ⚠ el esquema del origen ya no es el declarado · {}",
+                    f.texto()
+                ));
+            }
+            None => {
+                m.remove("esquema_origen");
+            }
+        }
+    }
+    Ok((linea, j))
 }
 
 /// **Lo que la señal dice frente a la de la última copia** (0063 S3, S3b).
@@ -2676,6 +2895,99 @@ mod tests {
     }
 
     /// 0063 S3: la señal y el testigo que el puntero guardó, leídos de vuelta.
+    #[test]
+    fn el_esquema_del_origen_frente_al_declarado() {
+        let s = |v: &[(&str, Option<&str>)]| -> Vec<(String, Option<String>)> {
+            v.iter()
+                .map(|(n, t)| (n.to_string(), t.map(String::from)))
+                .collect()
+        };
+        let d = s(&[
+            ("id", Some("Integer")),
+            ("cliente", Some("String")),
+            ("total", Some("Decimal(10,2)")),
+        ]);
+        // Igual (la precisión no es otro tipo): nada que decir.
+        assert_eq!(
+            diferencia(
+                &d,
+                &s(&[
+                    ("id", Some("Integer")),
+                    ("cliente", Some("String")),
+                    ("total", Some("Decimal"))
+                ])
+            ),
+            None
+        );
+        // Renombrada: una quitada y una nueva.
+        let f = diferencia(
+            &d,
+            &s(&[
+                ("id", Some("Integer")),
+                ("comprador", Some("String")),
+                ("total", Some("Decimal")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            (f.removed.as_slice(), f.added.as_slice()),
+            (&["cliente".to_string()][..], &["comprador".to_string()][..])
+        );
+        // De otro tipo; y de un tipo que no se traduce no se afirma nada.
+        let f = diferencia(
+            &d,
+            &s(&[
+                ("id", Some("String")),
+                ("cliente", None),
+                ("total", Some("Decimal")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(f.retyped, vec!["id".to_string()]);
+        assert!(f.added.is_empty() && f.removed.is_empty());
+    }
+
+    #[test]
+    fn la_forma_entra_y_sale_del_puntero() {
+        use ore_core::json::Json;
+        let f = FormaDelOrigen {
+            added: vec!["nota".into()],
+            ..Default::default()
+        };
+        let previo = ore_core::parse::parse(
+            r#"{"esquema_origen":{"added":["nota"],"removed":[],"retyped":[],"visto":"2026-10-13T10:00:00Z"}}"#,
+        )
+        .unwrap();
+        let (l, j) = poner_forma(
+            Ok((
+                "copiada".into(),
+                Json::obj([("estado", Json::s("copiada"))]),
+            )),
+            Some(&f),
+            Some(&previo),
+        )
+        .unwrap();
+        assert!(l.contains("nuevas: nota"), "{l}");
+        assert!(
+            j.jcs().contains(r#""visto":"2026-10-13T10:00:00Z""#),
+            "la misma diferencia guarda su hora: {}",
+            j.jcs()
+        );
+        let (_, j) = poner_forma(
+            Ok((
+                "x".into(),
+                Json::obj([("esquema_origen", Json::s("viejo"))]),
+            )),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            !j.jcs().contains("esquema_origen"),
+            "lo que se arregló deja de decirse"
+        );
+    }
+
     #[test]
     fn un_origen_vaciado_se_retiene_y_un_rehacer_lo_publica() {
         // 0063 S4: 0 filas sobre una versión con 1000 se retiene…
