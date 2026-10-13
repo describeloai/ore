@@ -1,7 +1,7 @@
 # 0063 · Data Health — la salud, la frescura y la calidad de los activos del catálogo
 
 **Estado:** propuesto (2026-10-13). **H0 hecho**: el estado del arte, investigado el 2026-10-13, y la
-naturaleza del producto que se deriva de él. **H0b en curso: los fundamentos.** Lo que ORE ya tiene
+naturaleza del producto que se deriva de él. **H0b en curso: los fundamentos.** El paso 1, las definiciones, está escrito (F1–F3); el paso 2, medir ORE contra ellas (F4, M1–M8), espera su go. Lo que ORE ya tiene
 **no se da por bueno**: son hipótesis, que se miden en producción antes de construir encima. La
 primera, que el testigo dice si una copia va atrás, **era falsa** (ver «Corrección»). H-D3 y H-D8
 quedan **suspendidas** hasta H0b. **H1–H9 por decidir y construir**: no hay una línea de código
@@ -174,6 +174,195 @@ Fuentes: [Foundry Data Health](https://www.palantir.com/docs/foundry/data-health
 8. **Empujar a los dueños, que los consumidores tiren.** Avisos e incidencias a quien es dueño; el
    estado, en el catálogo, en la API y en el MCP.
 9. **ODCS para declarar, OpenLineage para los resultados**: es donde converge el mundo abierto.
+
+## Los fundamentos (H0b, 2026-10-13) — independientes de ORE
+
+Lo que sigue no menciona ORE a propósito. Son las definiciones con las que después se mide ORE (F4),
+y salen de la literatura, no de los vendedores. Lo marcado **[sin verificar]** se tomó de fuentes
+secundarias y se comprueba antes de citarlo como norma.
+
+### F1 · La frescura de una copia
+
+**Tres relojes y una posición.** Todo número de frescura dice de qué reloj es:
+
+- **τ_origen**: cuándo se confirmó un cambio en el origen (la hora del commit, `last-modified`).
+- **τ_lectura**: cuándo la copia observó el origen, es decir, cuándo tomó su posición o su
+  snapshot. No es cuándo terminó la copia, ni cuándo se publicó.
+- **ahora**: cuándo alguien lee.
+- **P**, la posición del origen (un LSN, un snapshot, el hash de un listado): no es un reloj, pero
+  es el único orden exacto.
+
+**Las magnitudes** (Cho y Garcia-Molina, SIGMOD 2000; Bouzeghoub y Peralta, IQIS 2004; Ballou et
+al., *Management Science* 1998):
+
+| Magnitud | Definición | Qué hace falta para medirla |
+|---|---|---|
+| **Punto de sincronía** (P\*, τ\*) | Hasta dónde está completa la copia: una **marca de agua** | Exacto con un log o un snapshot consistente. **Heurístico** con una columna cursor: lo que llega tarde con un cursor menor cae por debajo (Akidau et al., *The Dataflow Model*, VLDB 2015) |
+| **Retraso** (*currency*) | `ahora − τ*` | Guardar τ\*. Siempre se puede |
+| **Edad** (la *A* de Cho) | `ahora −` el primer cambio del origen que la copia no tiene; **0 si el origen no cambió** | Saber si el origen cambió **después de P\***, con una señal **del ámbito del activo**. Edad ≤ retraso |
+| **Obsolescencia** | Cuántos cambios del origen hay después de P\* | Sólo con un log |
+| **Puntualidad** (*timeliness*) | Si la edad o el retraso caben en la tolerancia **de quien consume** | Una tolerancia declarada. Es un contrato, no una propiedad del dato (Wang y Strong, JMIS 1996) |
+| **Frescura derivada** | `retraso(nodo) = max(retraso(entrada) + espera) + coste` | El linaje. Es una cota superior: lo derivado está tan viejo como su camino más viejo (Peralta y Bouzeghoub, 2004) |
+
+**Retraso y edad son dos números distintos**, y el honesto es la edad: «copiada hace 6 h, pero el
+origen no ha cambiado desde entonces» es edad 0. El retraso se mide siempre; la edad sólo si hay una
+señal de cambio con el ámbito del activo.
+
+**Resultados clásicos que se pueden usar** (Cho y Garcia-Molina, con cambios de Poisson):
+
+- Refrescar **tan a menudo como cambia** el origen sólo da un 63 % del tiempo fresco. Para un 80 %
+  hace falta refrescar unas 2 veces más a menudo de lo que cambia.
+- Un intervalo fijo es mejor que uno irregular.
+- Con un presupuesto fijo, refrescar **en proporción** a lo que cambia cada cosa es peor que
+  refrescar todo igual. Si el objetivo es la fracción fresca, lo que cambia demasiado deja de
+  refrescarse. Si el objetivo es la edad, se queda cerca de lo uniforme. **El objetivo decide la
+  política**, así que hay que elegirlo.
+- Sondear «¿cambió?» ve varios cambios entre dos sondeos como uno. Estimar con qué frecuencia cambia
+  un origen así tiene sesgo, y hay estimadores corregidos (Cho y Garcia-Molina, TOIT 2003)
+  **[sin verificar]**.
+
+**Qué garantiza una copia** (Terry, CACM 2013; Zhuge et al., SIGMOD 1995 **[sin verificar]**):
+
+- Una copia tomada de **un snapshot consistente** da un **prefijo consistente** y una
+  ***staleness* acotada** por el intervalo de refresco más lo que tarda en extraerse.
+- Tablas copiadas **por separado** no comparten instante: cada una es un prefijo distinto.
+- Una copia nunca da *read-your-writes* de lo que se escribe en el origen.
+
+**Cómo se detecta un cambio en el origen**, y qué no ve cada forma:
+
+| Mecanismo | Ve | No ve |
+|---|---|---|
+| Log (LSN, binlog, SCN) | Todo insert, update y delete, en orden | **La posición es del log entero, no de una tabla**. Hace falta filtrar por tabla (decodificación lógica) para saber si cambió **ésta** |
+| Columna cursor (`MAX(ts)`) | Inserts y updates que mueven la columna | Borrados, versiones intermedias, llegadas tardías con un cursor menor |
+| Diferencia de snapshots | El cambio neto | Los estados intermedios. Cuesta leerlo todo (Labio y Garcia-Molina, VLDB 1996) |
+| Listado, ETag, `last-modified` | Objetos creados, reemplazados o borrados | Lo que hay dentro, salvo por el objeto entero. `last-modified` da más información que el ETag |
+| Metadatos del motor (la hora de última modificación de una tabla, contadores de filas tocadas) | Que la tabla cambió | Depende del motor: hay contadores que se reinician y metadatos que no se actualizan con todo |
+
+**Las averías de frescura**, en el orden en que pasan:
+
+1. **No corrió** (el programador cayó, una credencial caducó). Se ve en la hora de la última copia
+   buena.
+2. **Corrió y no trajo nada** (el origen devolvió vacío, la partición no había llegado). Por la hora
+   de escritura parece fresca; se ve en el volumen o en el dato más reciente de dentro.
+3. **Corrió bien, pero el origen se paró aguas arriba.** La copia es fiel a un origen muerto. Lo
+   arregla el dueño del origen, no quien copia.
+4. **Llegó una parte.** Unas particiones o tablas sí y otras no.
+5. **Llegó tarde por debajo de la marca.** El cursor ya había pasado: sólo un log o una diferencia
+   lo ven.
+
+### F2 · La calidad de un dato
+
+**Definición operativa.** Para una versión D de un activo y la tarea T de quien lo usa, la calidad es
+**el conjunto de aserciones declaradas sobre D**.
+- Cada aserción es un predicado sobre una métrica con un ámbito.
+- Cada resultado es `pass`, `fail` o `unknown`, con su evidencia y su hora.
+- «Bueno para T» significa que toda aserción bloqueante pasa y ninguna es `unknown`.
+- Las dimensiones (completitud, validez…) son **etiquetas** para agrupar aserciones, no medidas.
+  Nadie se pone de acuerdo en cuáles son (Wand y Wang, CACM 1996), y una métrica mal definida lleva
+  a decisiones malas (Heinrich et al., JDIQ 2018).
+
+**La calidad es de quien consume** (*fitness for use*, Wang y Strong 1996). El estudio que lo
+fundó salió de preguntar a consumidores, y **la mitad de lo que llamaron calidad no se calcula del
+dato**: el contexto y la representación, es decir, qué significa, en qué unidad y si está
+documentado. Eso es metadato del catálogo, y es tan de primera como un check.
+
+**Los cuatro tipos de comprobación:**
+
+1. **Restricción**: un predicado por fila o por conjunto (tipo, no nulo, rango, patrón, clave,
+   referencia). Binaria, determinista y sin falsos positivos si la regla es cierta. Su base formal
+   son las dependencias, funcionales y condicionales (Fan y Geerts, 2012).
+2. **Métrica y umbral**: `m(D) ∈ [lo, hi]`. Toda restricción se reduce a esto (Deequ, VLDB 2018).
+3. **Test estadístico** entre lotes (χ², KS). **A escala, todo sale significativo**: en Google, con
+   100 M de filas y un 0,01 % de ruido, χ² dio falsa alarma 7 de cada 10 veces (Breck et al.,
+   MLSys 2019). Se usan distancias legibles, como el mayor cambio de probabilidad de un valor (L∞),
+   que además nombran el valor que se movió.
+4. **Anomalía aprendida** sobre la historia de una métrica (Holt-Winters en Uber, Deequ). **Sin
+   historia no hay nada que aprender.**
+
+**Lo que cuesta cada una** (de la arquitectura de Deequ):
+
+| Clase | Ejemplos | Coste |
+|---|---|---|
+| Por fila | Tipo, rango, patrón, no nulo | Una pasada, en flujo |
+| Agregado de una columna | Completitud, media, filas, distintos aproximados | Una pasada compartida; estado pequeño que se suma por partes |
+| Con agrupación | Unicidad, distintos exactos, dependencias | Barajar los datos; estado del tamaño de un histograma |
+| Entre tablas | Referencias, conciliar origen y copia | Un join o dos lecturas, y el linaje |
+| Con historia | Anomalías de volumen o de frescura, deriva, cambio de unidad | Una historia guardada; **inútil hasta tenerla** |
+
+**Lo que se rompe de verdad**, ordenado por la evidencia de frecuencia e impacto:
+
+| # | Avería | Evidencia | La señal más barata | Lo que tiene que declarar una persona |
+|---|---|---|---|---|
+| 1 | **Esquema que cambia** (columna nueva, quitada, otro tipo) | Google: columna nueva 10 % de los pipelines en 30 días, columna perdida 6 % (Breck 2019); tipos, el 33 % de las causas (Foidl et al., JSS 2024) | Comparar con el esquema declarado o el anterior: gratis | El esquema, y si se admiten columnas nuevas |
+| 2 | **Dato tarde o que falta** | Breck; Uber; Microsoft (Zhou et al., ICSE 2015) | F1 | La tolerancia |
+| 3 | **Volumen anómalo** (filas que caen o se disparan) | Auto-Validate-by-History, Microsoft (Tu et al., KDD 2023); Uber | Filas frente a la historia | Al principio nada; después la tolerancia y la estacionalidad |
+| 4 | **Ola de nulos o centinelas** (−1, `""`) | Breck; AVH (*timeouts* de RPC que dejan valores por defecto) | % de nulos y peso del valor más frecuente | Qué centinelas cuentan como falta; dónde se admite nulo |
+| 5 | **Valores nuevos en una categoría** | Breck: 6 % | El conjunto de distintos, L∞ | El dominio, o «dominio abierto» |
+| 6 | **Duplicados o clave rota** | Uber; Foidl | `1 − distintos(clave) / filas` | La clave |
+| 7 | **Codificación o formato** | Foidl: 17 % | % que cumple el patrón | El formato |
+| 8 | **Cambio de unidad o de convención** | AVH: días que pasan a horas, `en-gb` que pasa a `en-GB` | Desplazamiento de media o cuantiles | La unidad, como metadato |
+| 9 | **Origen y copia que divergen** | Uber (completitud entre etapas) | Conciliar filas o claves | El linaje |
+| 10 | **Una regla de negocio rota** | Uber; dependencias condicionales | Un predicado SQL | La regla: no se puede inferir |
+
+Las cinco primeras **pasan en silencio**: nada lanza un error (AVH). Y la evidencia más fuerte es
+de producción (Google, más de 700 pipelines); la de Foidl son 100 incidencias de proyectos abiertos,
+una muestra pequeña. Las encuestas de vendedores (Monte Carlo: 67 incidencias al mes, el 74 % las
+descubre el negocio) son indicativas y nada más.
+
+**Las trampas de medir:**
+
+- **La tasa base.** Con miles de columnas, una tasa de falsos positivos baja da muchas falsas
+  alarmas al día. Las alertas ignoradas son el modo de fallo documentado (Breck). Se presupuestan los
+  falsos positivos y se agrega antes de avisar (Uber agrega por tabla).
+- **La cascada.** Un lote tarde dispara a la vez frescura, volumen y completitud. Se ordenan los
+  requisitos, **primero la frescura**, y se exige que el fallo se sostenga en el tiempo (Uber: aviso
+  durante 3 h antes de escalar).
+- **Sin historia, «historia insuficiente», nunca `pass`.** Y la estacionalidad (el día de la
+  semana, el fin de mes) se compara con lo mismo de antes.
+- **`unknown` no es `pass`.** Una comprobación que no corrió, no tenía métrica o no aplica se ve
+  como desconocida. Y **la cobertura** (qué está comprobado y qué no) se enseña junto a los
+  resultados: en Google, sólo el 45 % de los pipelines podía disparar algunos tipos de anomalía.
+
+### F3 · Lo que los fundamentos obligan, antes de mirar ORE
+
+1. **Guardar el punto de sincronía de cada copia**, (P\*, τ\*), con τ\* = τ_lectura. Sin él no hay
+   ni retraso. Es lo primero.
+2. **Retraso y edad son dos números.** El retraso, siempre. La edad, cuando haya una señal de
+   cambio **con el ámbito del activo**, que hay que encontrar **por cada tipo de origen**.
+3. **Cada señal dice su garantía**: exacta (un log filtrado por tabla, un snapshot) o heurística (un
+   cursor), y qué no ve (borrados, llegadas tardías).
+4. **La tolerancia la declara alguien**: quien produce (un SLA) o quien consume (su tarea). Sin
+   ella, la frescura es `unknown` con el retraso a la vista.
+5. **Una política de refresco elige su objetivo**, fracción fresca o edad, porque las dos llevan a
+   políticas distintas.
+6. **El esquema es un artefacto revisado que puede cambiar**, y comparar con él es la comprobación
+   que más valor da.
+7. **Las reglas las pone una persona.** Inferir sólo propone (la clave, el dominio, la unidad).
+8. **Primero lo que se mide al escribir**, en una pasada. Lo que necesita historia, sólo cuando la
+   haya.
+9. **`unknown` y la cobertura, visibles.** La frescura se comprueba antes que el volumen.
+10. **Lo derivado acota su frescura por su camino más viejo** (máx-más).
+
+### F4 · ORE contra los fundamentos: qué se mide (paso 2, **pendiente de go**)
+
+Cada hipótesis se mide en producción, en un puesto, con un origen de prueba. Nada se da por bueno
+hasta medirlo.
+
+| | Hipótesis | Cómo se mide | Contra |
+|---|---|---|---|
+| **M1** | ¿Qué hora guarda una copia, y de qué reloj es? Hoy `cuando` sale del **commit** del puntero, que sería la publicación, no τ_lectura | Una copia de una tabla de Postgres: comparar la hora del commit, la del arranque del Job y la de lectura del testigo | F3·1 |
+| **M2** | Lo que cada modo de testigo dice del cambio **de un activo** (la tabla de la «Corrección») | Postgres: cambiar **otra** tabla, y no cambiar nada (¿se mueve el LSN solo, por *checkpoints*, *autovacuum* o el propio Neon?). BigQuery con cursor: actualizar una fila sin mover el cursor. Objetos: reescribir con el mismo contenido, y cambiar el contenido con el mismo tamaño, en S3, R2, GCS y Azure | F1, señales |
+| **M3** | ¿Qué señal de cambio **con el ámbito de la tabla** da cada origen, cuánto cuesta y cuánto se puede fiar? | Postgres: contadores de filas tocadas por tabla (se reinician al suspender el cómputo en Neon) y decodificación lógica filtrada. BigQuery: la hora de última modificación de la tabla. Objetos: `last-modified` por objeto. Para cada una, coste y fiabilidad | F3·2–3 |
+| **M4** | El informe de la copia, ¿es verdad? | `filas` y no nulos por columna, contra un `count` y un `count(col)` del origen. Y `esquema_cambiado` cuando el origen añade, quita o cambia el tipo de una columna: ¿qué hace la copia? | F2·1, F2·4 |
+| **M5** | ¿Una copia que falla deja servir la anterior? (¿es ORE *write-audit-publish*?) | Provocar un fallo a mitad (un nulo impuesto, un origen caído) y leer por SQL, Python y la vista previa | F3·8 |
+| **M6** | «Ya está» (`al_dia_con`), modo por modo | `none`: confirmado en PG1 (para siempre). `log`, `field` y `listing`: con los cambios de M2 | F1 |
+| **M7** | Las cinco averías de frescura: ¿cuáles ve ORE hoy? | Reproducir cada una y mirar qué dice el puntero, la consola y una lectura | F1, averías |
+| **M8** | Un activo **en vivo** (foreign database): ¿qué se sabe de su frescura? | Las mismas señales de M3, sin copia | F1 |
+
+Lo que hace falta del usuario para medir: **escribir en orígenes de prueba**, que son suyos:
+- una tabla en una base Neon de prueba;
+- un dataset de prueba en BigQuery;
+- objetos en buckets de prueba, nunca en `lakehouse` ni en `materialized-views`.
 
 ## Lo que ORE tendría y los demás no — hipótesis, por medir en H0b
 
