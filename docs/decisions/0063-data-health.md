@@ -9,7 +9,7 @@
    medido en producción. **Nada de lo que creíamos saber se da por bueno**; lo que salga de aquí
    es lo único que cuenta.
 4. **El producto**: qué construir, cómo y dónde. Sale de cruzar 1 y 2 con lo que 3 demuestre que
-   falta, está incompleto o está mal. **La visión está escrita**, y **el plan por capas propuesto** (capa 0 la verdad, siempre; 1 vigilancia y 2 perfilado, que se encienden; S0–S15 y siete decisiones antes de S1; 2026-10-13). Nada construido.
+   falta, está incompleto o está mal. **La visión está escrita**, y **el plan por capas propuesto, con S1 hecho** (la spec v1alpha30) (capa 0 la verdad, siempre; 1 vigilancia y 2 perfilado, que se encienden; S0–S15 y siete decisiones antes de S1; 2026-10-13). Nada construido.
 
 Una primera versión de esta ADR (H0, `a56185e8`) derivó un producto de lo que creíamos que ORE
 tenía. Una de sus premisas, que el testigo dice si una copia va atrás, era falsa (`241f287a`). Por
@@ -823,7 +823,7 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 | | Paso | Lo que entrega | Dónde | Pone en verde |
 |---|---|---|---|---|
 | **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket) que se montan y se desmontan solos. Más una versión de laboratorio para el CI | `pruebas-de-fuego/salud/`, CI | — (todas en rojo) |
-| **S1** | **El vocabulario y lo que se debe** | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
+| **S1** ✅ | **El vocabulario y lo que se debe** — **hecho** (2026-10-13): OOS v1alpha30, [`01-la-salud`](../../vendor/oos/spec/v1alpha30/01-la-salud.md) y `health.schema.json` (`oos` `887a7a0`) | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
 | **S2** | **Nunca a oscuras, y la hora verdadera** | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
 | **S3** | **No decir «al día» sin comprobar** (cierra PG1) | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
 | **S4** | **Retener lo raro** | Las guardas de D-E antes de publicar. Lo retenido no mueve el puntero, se sigue sirviendo lo último bueno, y la consola dice **Refresh held** con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve`, consola | **P5** |
