@@ -5,7 +5,7 @@
 1. **Los fundamentos** (escritos): qué son la frescura y la calidad, de la literatura y la evidencia
    empírica, sin mirar ORE.
 2. **Las buenas prácticas** (escritas): cómo lo resuelve la industria.
-3. **ORE medido contra los fundamentos** (M1–M8, **en curso**: M2 y M3 medidos el 2026-10-13): qué hay de verdad en nuestro stack,
+3. **ORE medido contra los fundamentos** (M1–M8, **medidos** el 2026-10-13): qué hay de verdad en nuestro stack,
    medido en producción. **Nada de lo que creíamos saber se da por bueno**; lo que salga de aquí
    es lo único que cuenta.
 4. **El producto**: qué construir, cómo y dónde. Sale de cruzar 1 y 2 con lo que 3 demuestre que
@@ -421,6 +421,94 @@ Lo que esto quiere decir:
   - En GCS, `md5Hash` evita los falsos cambios de la generación.
 - Y el testigo sigue sirviendo para lo que se diseñó, **retomar** una lectura (0016). Saber si un
   activo cambió es otra pregunta, y necesita su propia señal.
+
+### M1 y M4–M8 · medido (2026-10-13): lo que ORE hace con una copia y con una lectura en vivo
+
+**Cómo se midió.**
+- **Orígenes de prueba.** La misma tabla en dos sitios: 1000 filas, 100 nulos en `cliente`, valores
+  conocidos.
+  - Postgres: `ore_salud.pedidos` en Neon, fuente `pg_test`, testigo `log`.
+  - BigQuery: `ventas.ore_salud_pedidos`, fuente `bq_test`, testigo `none`.
+- **Bases.** Cuatro, creadas por la persona desde la consola (el camino real del producto): una
+  standard y una foreign por origen (`pg_test_s`, `pg_test_f`, `bq_test_s`, `bq_test_f`).
+- **Pasadas.** Cinco pasadas de copia **normales**, sin `REHACER`, que es lo que haría un refresco
+  periódico, con un cambio en el origen entre una y otra. Son Jobs con la plantilla de la malla
+  (`copiar-*`).
+- **Lecturas.** SQL y Python desde la consola y un puesto, la vista detallada del catálogo, y los
+  punteros del árbol.
+- **Antes**, el árbol de `victor` tal como estaba: 75 punteros y sus snapshots en el lago.
+
+**Las pasadas:**
+
+| | Cambio en el origen | `pg_test_s` (`log`) | `bq_test_s` (`none`) |
+|---|---|---|---|
+| P1 | Ninguno | **Recopia entera**: 1000 leídas. El driver no sabe leer el changelog, y el LSN se mueve solo (M2) | «ya está», sin leer una fila |
+| P2 | `UPDATE` de 9 filas, `DELETE` de 1, `INSERT` tardío de 1 (filas: 1000 → 1000; no nulos de `cliente`: 900 → 892) | Recopia; el informe dice 1000 y 892 ✓ | **«ya está»: la copia sigue en 900** |
+| P3 | Columna nueva `nota` | Recopia, **la ignora y no lo dice** (`esquema_cambiado: false`) | «ya está» |
+| P4 | `cliente` pasa a llamarse `cliente_x` | `estado: error`, con el motivo justo; el puntero **conserva** el snapshot anterior | **«ya está»** |
+| P5 | `TRUNCATE`: el origen se vacía | **`copiada` con 0 filas**: de 1000 a 0, sin un aviso | — |
+
+**Las lecturas tras P4** (el origen ya con `cliente_x`):
+
+| Activo | SQL y Python | La vista detallada del catálogo |
+|---|---|---|
+| `pg_test_s` (copia en `error`) | **Se niega**: «la copia no está hecha: el informe dice `error`». La copia buena de P3 está en el lago y nadie la puede leer | `State: error`; el esquema se sirve |
+| `bq_test_s` (copia «al-dia») | **1000 filas y 900 no nulos, sin aviso**. El origen tiene 892, y la columna ya no existe | `State: al-dia`; esquema y filas, «con normalidad» |
+| `pg_test_f`, `bq_test_f` (en vivo) | **Fallan**: «`ore_salud.pedidos` no tiene la columna `cliente`» | **«Not found»** con ese mismo texto, y **sin estado** |
+
+**Lo que dice cada M:**
+
+- **M1 · La hora.** La que se ve es la del **commit del puntero**, y cambia cuando cambia el puntero.
+  También cuando sólo pasa de `copiada` a `al-dia`. **τ_lectura no se guarda en ningún sitio.**
+  En el árbol de `victor`:
+  - `bq.ventas.pedidos` tenía su puntero de las 09:08 de hoy y sus datos son del **2 de octubre**.
+  - `s3_pedidos`, del **29 de septiembre**.
+  - La hora del snapshot de Iceberg es la cota más cercana que hay a τ_lectura, y nadie la enseña.
+- **M4 · El informe.**
+  - Cuando copia, **dice la verdad**: las filas y los no nulos por columna coinciden con el origen
+    (P2), y con el lago (`total-records` = `filas` en los 8 punteros revisados).
+  - Pero **sólo mide lo declarado**: una columna nueva del origen no se ve (P3).
+  - `esquema_cambiado` habla de la copia, no del origen. En los punteros de `victor` sigue en `true`
+    en pasadas que no copiaron nada.
+- **M5 · ¿Se sirve la copia anterior si la nueva falla? No.** El puntero conserva el snapshot, pero
+  `Puntero::hecho` (`materializar.rs:1287`) y el SDK sólo leen `copiada` o `al-dia`.
+  - **Una pasada fallida apaga el activo** hasta que otra salga bien. Es lo contrario de
+    *write-audit-publish*, que no publica lo malo y **sigue sirviendo lo bueno**.
+  - La consola sí enseña `State: error`.
+- **M6 · ¿Acierta «ya está»?**
+  - **Con `none`, no mira el origen.** Dice «al-dia» siempre: con datos cambiados (P2), con el
+    esquema roto (P4) y con el origen muerto. En `victor`, a las 09:08, `sftp_s.tablas.us_states`
+    dijo «al-dia» en la misma pasada en la que otra tabla del mismo SFTP falló con «no responde»
+    (la VM estaba borrada). Lo mismo `s3_pedidos`, con su credencial de S3 inexistente.
+  - **Con `log`, no acierta nunca «ya está»**: recopia entero en cada pasada, haya o no cambios
+    (P1).
+  - Un puntero de `minst_standard11` dice `al-dia` y lleva el motivo «la credencial no está
+    definida».
+- **M7 · Las averías de frescura.**
+
+  | Avería | ¿La ve ORE? |
+  |---|---|
+  | 1 · No corrió | **No.** No hay pasada periódica. Y el primer intento de P1 se colgó **5 min** resolviendo el DNS del IdP y murió; el Job lo reintentó y en ningún sitio queda rastro |
+  | 2 · Corrió y no trajo nada | **No.** Publica 0 filas como `copiada` (P5) |
+  | 3 · El origen se paró o murió | **No**, con `none` (SFTP y S3 de `victor`). Con `log`, se ve como error de lectura sólo si el origen no contesta |
+  | 4 · Llegó una parte | No medido: una tabla por dataset |
+  | 5 · Llegó tarde, por debajo de la marca | Con `log` y `none` no aplica (se copia entero). Con `field` no se vería (M2) |
+
+  Y el **cambio de esquema** (la avería de calidad n.º 1 de F2):
+  - una columna **nueva** pasa sin verse;
+  - una **renombrada** rompe la copia con `log`, pasa sin verse con `none` y rompe la lectura en
+    vivo.
+- **M8 · Lo que se sabe en vivo.**
+  - Una lectura en vivo es fresca por construcción: lee el origen al consultar.
+  - Pero el catálogo de la fuente **no se entera de que el origen cambió**: la `Table` sigue
+    declarando `cliente`.
+  - La consola lo enseña como **«Not found»**, aunque la tabla existe; lo que pasa es que su
+    esquema cambió.
+  - La lectura en vivo no tiene estado.
+
+**En una frase:** ante el mismo cambio del origen, la copia con testigo **se apaga**, la copia sin
+testigo **sirve lo viejo como fresco** y la lectura en vivo **se rompe al consultar**. Y en los tres
+casos **nadie se entera antes que el consumidor**.
 
 ## Lo que sigue
 
