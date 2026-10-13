@@ -9,7 +9,7 @@
    medido en producción. **Nada de lo que creíamos saber se da por bueno**; lo que salga de aquí
    es lo único que cuenta.
 4. **El producto**: qué construir, cómo y dónde. Sale de cruzar 1 y 2 con lo que 3 demuestre que
-   falta, está incompleto o está mal. **La visión está escrita** (2026-10-13); falta bajarla a piezas.
+   falta, está incompleto o está mal. **La visión está escrita**, y **el plan por pasos propuesto** (S0–S10, con seis decisiones antes de S1; 2026-10-13). Nada construido.
 
 Una primera versión de esta ADR (H0, `a56185e8`) derivó un producto de lo que creíamos que ORE
 tenía. Una de sus premisas, que el testigo dice si una copia va atrás, era falsa (`241f287a`). Por
@@ -713,13 +713,69 @@ cae, **una** incidencia en el origen y todos sus activos en `Degraded` con «sou
 - **Perfiles de distribución y deriva.**
 - **Conciliar** el origen con la copia, fila a fila.
 
-## Lo que sigue
+## Bajarla a tierra: el plan por pasos (propuesto, 2026-10-13)
 
-La visión está escrita. Lo siguiente es **bajarla a piezas**:
-- qué vive en la spec (el vocabulario, las promesas y lo que se le debe al consumidor);
-- qué vive en ORE (medir, retener, juzgar, servir y avisar);
-- qué vive en la consola;
-- en qué orden, empezando por lo que hoy hace más daño: **apagarse** (M5) y **decir «al-dia» sin
-  comprobar** (M6).
+### Cómo se construye
 
-Cada etapa con su plan, su go y su medida.
+- **Cortes verticales.** Cada paso entrega algo que se nota de punta a punta: lo que toca en la spec,
+  en ORE y en la consola, juntos. Ningún paso deja una pieza que nadie use todavía.
+- **Primero el daño que hoy existe.** El orden lo marca lo medido:
+  1. lo que **apaga** al consumidor (M5);
+  2. lo que le **miente** (M6);
+  3. lo que **publica basura** (P5);
+  4. lo que **se rompe al consultar** (M8).
+
+  Después, lo que vigila; al final, lo que se promete y se gobierna.
+- **La vara antes que el código.** Los escenarios M1–M8 pasan a ser **pruebas que tienen que salir
+  como dice la visión**. Hoy salen todas en rojo. Cada paso dice cuáles pone en verde, y se mide en
+  producción, como se midieron.
+- **Cada paso, su plan y su go.** Los que tocan la malla llevan además su go aparte (flag nuevo y
+  malla, nunca juntos). Los que tocan la spec suben su versión en `C:\oos`.
+
+### Las decisiones que hay que tomar antes de S1
+
+| | Decisión | Opciones | Recomendada |
+|---|---|---|---|
+| **D-A** | **Dónde vive lo medido en el tiempo**: comprobaciones, pasadas, monitores e incidencias | (a) commits en el árbol; (b) una tabla Iceberg en el lago de la celda, append-only, con la forma de OpenLineage; (c) Postgres de `ore-iam` | **(b)**. Se consulta por SQL como cualquier dataset, es de la celda, no llena el árbol de commits por hora (H0) y es donde vivirá la historia de los monitores aprendidos. El puntero sigue guardando lo que se sabe **al escribir** (`data as of`, la última buena) |
+| **D-B** | **El estado se guarda o se calcula** | Guardarlo, o calcularlo al pedirlo con lo medido, lo prometido y la hora | **Calcularlo** (medir no es juzgar). Cambiar una promesa recalifica sin reescribir nada |
+| **D-C** | **Sin promesa de frescura, ¿se refresca solo?** | No, o con una cadencia por defecto de la celda | **No se recopia**: el coste lo declara quien lo paga. **Pero se vigila**: la señal de cambio (S3) es barata y dice «el origen cambió después de *as of*». La copia sale atrasada con su edad, sin gastar una copia |
+| **D-D** | **La gramática de las promesas** | Un `Ruleset` que aprende a nombrar activos y ámbitos, o la promesa dentro del propio activo | **El `Ruleset`** (lo que ya decidió la spec, OOS1005): escala por ámbito y puede gobernarlo quien no es dueño del dato. `Dataset.freshness` pasa a ser la promesa *Fresh within* de ese dataset. ODCS, para importar y exportar |
+| **D-E** | **Qué se retiene por defecto** sin que nadie lo prometa | Nada, o unas guardas de base | **Guardas de base que retienen**: cero filas donde había, y una columna declarada que desaparece. **Avisan sin retener**: una caída brusca de volumen y una ola de nulos |
+| **D-F** | **Al leer algo degradado, por defecto** | Servirlo con aviso, o fallar | **Servir con aviso**. Fallar es opcional al leer (`strict=True`, `fresh_within=`). Un build se para sólo ante una promesa `Blocking` |
+
+### Los pasos
+
+| | Paso | Lo que entrega (de la visión) | Dónde | Pone en verde |
+|---|---|---|---|---|
+| **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket), que se montan y se desmontan solas. Más una versión de laboratorio para el CI (Postgres y S3 de mentira) | `pruebas-de-fuego/salud/`, CI | — (todas en rojo, y eso es lo que se mide) |
+| **S1** | **El vocabulario y lo que se le debe al consumidor** | Los cuatro estados, *data as of*, *checked* y *last good version* en la spec, con sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, y `unknown` ≠ `pass`. Sin código | `C:\oos` (v1alpha30) | — |
+| **S2** | **Nunca a oscuras, y la hora verdadera** | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer) aparte del intento fallido. SQL, Python y la vista previa leen lo último bueno y llevan un **bloque de salud** (estado, *as of*, motivo); la consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`, `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`ore/__init__.py`: `_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
+| **S3** | **No decir «al día» sin comprobar** (cierra PG1) | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. «Ya está» sólo si esa señal lo respalda. Si no, **Unverified** con su edad. `log` deja de recopiar entero cuando no ha cambiado nada | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
+| **S4** | **Retener lo raro** | Las guardas de base (D-E) antes de publicar. Lo retenido no mueve el puntero y se sigue sirviendo lo último bueno. **Refresh held** en la consola, con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve` (el verbo publicar), consola | **P5** (avería 2) |
+| **S5** | **El esquema del origen** | En cada pasada y en cada catálogo, el esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Las lecturas en vivo dicen **Schema drift**, no «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4, M8** |
+| **S6** | **El vigilante y la historia** | La pasada periódica por celda: comprueba las señales de cambio, recopia lo que tiene *Fresh within* y va a vencer, y deja **cada pasada registrada** (intentos, reintentos, fallos, duración). **La salud de cada origen**: si contesta y si la credencial vale. Todo, a la tabla de D-A. *Refresh overdue* | malla (**go aparte**: un CronJob sobre `48-la-copia`), `ore-cli`, la tabla de salud | **M7** (averías 1 y 3), el SFTP y el S3 muertos de `victor` |
+| **S7** | **Juzgar, propagar y servir** | El estado calculado (D-B): el peor gana, baja por el linaje, `Unknown` en gris. `GET /health` y `health` en `/assets`. Los puntos de color, el filtro «Needs attention» y la **pestaña Health** en la consola. El bloque de salud **en lo que recibe un agente**, con su política (decirlo o abstenerse) | `ore-core`, `ore-serve`, el agente del puesto, consola | La visión §1–§4 |
+| **S8** | **Las promesas** | La gramática (D-D) en la spec. *Fresh within* (desde `Dataset.freshness`), *Schema*, *Volume* y *Valid*. Las de biblioteca se calculan **en la misma pasada de la copia** (generaliza `sin_nulos`); las SQL, sobre el snapshot nuevo antes de publicar. `Blocking` retiene; `Warning` publica y anota. Un build se para ante una `Blocking` | `C:\oos`, `ore-store` (`carga.rs`), `materializar.rs`, 0055, consola (escribirlas) | La visión §10 y §12 |
+| **S9** | **Las incidencias y los avisos** | Una incidencia por causa (origen, esquema, pasada, promesa), con su ciclo (*open*, *acknowledged*, *resolved*), dueño (0052) y alcance por el linaje. Avisos **al cambiar el estado**. La **bandeja de Data Health** con *Acknowledge*, *Snooze*, *Expected* y *Refresh now* | `ore-serve`, la tabla de salud, `ore-iam` (a quién se avisa), consola | La visión §5 y §8 |
+| **S10** | **Gobierno y sugerencias** | La vista de la organización: salud, cumplimiento a 30 días, tiempos hasta detectar y resolver, cobertura y ruido. **Promesas sugeridas** desde lo observado; una persona las acepta | `ore-serve`, consola | La visión §11, y las métricas de «cómo se sabrá» |
+| *después* | Monitores aprendidos, perfiles y deriva, conciliación | — | Sobre la historia de S6 | — |
+
+### Por qué este orden
+
+- **S2–S5 arreglan lo que hoy hace daño** con la información que ORE ya tiene o que cuesta poco
+  tener. No necesitan el vigilante ni las promesas. Con ellos, ningún consumidor vuelve a ver un
+  activo apagado, ni un «al-dia» falso, ni 0 filas publicadas, ni un «Not found» por un esquema que
+  cambió.
+- **S6 es la primera pieza nueva de infraestructura**: el CronJob y la tabla de salud. Llega cuando
+  ya hay algo que registrar.
+- **S7 junta lo medido en un estado.** Llega cuando ya hay señales de verdad que juzgar; antes sería
+  pintar puntos sobre nada.
+- **S8–S10 son lo que la gente promete y gestiona.** Valen poco si lo de debajo no dice la verdad.
+
+### Lo que se mide en cada paso
+
+- La vara (S0) sobre los orígenes de prueba, en producción.
+- Cuánto cuesta lo nuevo: segundos por pasada, bytes facturados por pregunta en BigQuery, y conexiones
+  y WAL en Postgres.
+- Que nada de lo que ya funciona cambie. Lo que hoy dice la verdad (M4: el informe cuando copia) tiene
+  que seguir diciéndola, byte a byte.
