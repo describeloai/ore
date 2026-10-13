@@ -9,7 +9,7 @@
    medido en producción. **Nada de lo que creíamos saber se da por bueno**; lo que salga de aquí
    es lo único que cuenta.
 4. **El producto**: qué construir, cómo y dónde. Sale de cruzar 1 y 2 con lo que 3 demuestre que
-   falta, está incompleto o está mal. **La visión está escrita**, y **el plan por pasos propuesto** (S0–S10, con seis decisiones antes de S1; 2026-10-13). Nada construido.
+   falta, está incompleto o está mal. **La visión está escrita**, y **el plan por capas propuesto** (capa 0 la verdad, siempre; 1 vigilancia y 2 perfilado, que se encienden; S0–S15 y siete decisiones antes de S1; 2026-10-13). Nada construido.
 
 Una primera versión de esta ADR (H0, `a56185e8`) derivó un producto de lo que creíamos que ORE
 tenía. Una de sus premisas, que el testigo dice si una copia va atrás, era falsa (`241f287a`). Por
@@ -546,9 +546,12 @@ casos el primero en enterarse es el consumidor.
    última buena, marcada con su edad y su motivo (*write-audit-publish*; M5).
 3. **Saberlo antes que el consumidor.** El dueño se entera cuando el estado cambia, no cuando alguien
    consulta (M7, M8).
-4. **Vigilancia de base gratis; promesas encima.** Todo activo tiene desde el primer día su
-   frescura, su volumen, su esquema y sus nulos vigilados, sin configurar nada (F2: las averías 1–4
-   salen de lo que ya se mide al copiar). Sobre eso, el dueño **promete** lo que importa.
+4. **La verdad, siempre y gratis; la vigilancia, se enciende por ámbito.** Lo que ORE ya sabe en la
+   propia pasada de la copia lo dice siempre, sin configurar nada: la edad, la última buena, el
+   esquema del origen, las filas y los nulos (F2: las averías 1–4 salen de lo que ya se mide al
+   copiar). Lo que cuesta, porque toca el origen entre pasadas o escanea datos, **se enciende** por
+   base, por schema o por activo, como en Databricks. Y sobre todo eso, el dueño **promete** lo que
+   importa. Ver «Las tres capas».
 5. **Un solo vocabulario en todas partes.** El mismo estado, con las mismas palabras, en el catálogo,
    en SQL, en Python, en la vista previa, en el linaje, en los avisos y en lo que recibe un agente.
 6. **Explicar, no sólo marcar.** Todo estado que no es sano dice:
@@ -563,6 +566,36 @@ casos el primero en enterarse es el consumidor.
 8. **La salud es parte de la spec.** Las promesas son documentos del árbol: se revisan, se proponen
    y tienen versión, como el resto (0044, 0056).
 
+### Las tres capas: la verdad siempre, la vigilancia cuando se pide
+
+Lo que la plataforma **debe** al consumidor no es lo mismo que lo que **ofrece** vigilar.
+
+Databricks deja apagadas sus dos piezas de calidad por defecto: la detección de anomalías se activa
+por schema y el *profiling* por tabla. Lo hace porque las dos **gastan cómputo del cliente**. En
+cambio, una tabla Delta siempre dice cuándo se modificó, y las *expectations* de un pipeline
+siempre cuentan lo que falla. Lo mismo aquí:
+
+| Capa | Qué es | Cuesta | Por defecto |
+|---|---|---|---|
+| **0 · La verdad** | Todo lo que ORE ya sabe en la propia pasada de la copia: *data as of*, la última versión buena, el resultado de cada pasada, *Unverified* cuando no se puede comprobar, el esquema del origen comparado al copiar, las filas y los nulos del informe, las guardas que retienen, y las promesas que se comprueban al copiar | Nada que no cueste ya la copia | **Siempre**, sin interruptor: es que la plataforma no mienta |
+| **1 · Vigilancia** | **Entre pasadas**: preguntar al origen si cambió, si contesta y si la credencial vale; *Refresh overdue*; el esquema de lo que se lee en vivo antes de que alguien consulte; incidencias y avisos al dueño | Poco, pero **toca el origen del cliente** | **Apagada.** Se enciende **por base o por schema**, con un clic que dice qué hará y qué costará |
+| **2 · Perfilado y promesas caras** | Perfiles por columna y su historia, promesas SQL, y más adelante monitores aprendidos | **Escanea datos** | **Apagada.** Se enciende **por activo** |
+
+En la ficha de un activo:
+
+```
+ Health
+   Data as of Oct 13, 13:37 · last refresh failed · serving last good version   ← capa 0, siempre
+ Monitoring        Disabled   [Enable for database pg_test_s]                   ← capa 1
+   Checks the source between refreshes, alerts the owner, opens issues.
+ Profiling         Disabled   [Enable]                                          ← capa 2
+```
+
+**La honestidad no depende de un interruptor; el gasto, sí.**
+- Sin vigilancia, una copia sin señal de cambio dice *Unverified · as of Oct 2*: es honesta y
+  no sabe más.
+- Con vigilancia, dice además que el origen cambió dos horas después, y el dueño ya tiene el aviso.
+
 ### El vocabulario
 
 | Concepto | Qué es para quien lo ve |
@@ -572,7 +605,8 @@ casos el primero en enterarse es el consumidor.
 | **Checked** | Cuándo se comprobó por última vez que seguía igual. «Data as of 09:00 · checked 2 min ago · source unchanged since» es edad 0 (F1: retraso ≠ edad) |
 | **Last good version** | La versión que se sirve mientras la nueva no llega o no pasa |
 | **Promise** | Lo que el dueño promete del activo. Tipos: *Fresh within* (la tolerancia de F1), *Schema* (las columnas y sus tipos), *Volume* (filas esperadas), *Valid* (no nulo, único, rango, valores admitidos, una consulta SQL). Cada una, **Blocking** o **Warning** |
-| **Monitor** | Lo que se vigila sin que nadie lo pida: la pasada (si corrió y si acabó), el esquema del origen, el volumen, los nulos, el origen (si contesta, si la credencial vale) |
+| **Monitor** | Lo que se vigila. Siempre (capa 0): la pasada (si corrió y si acabó), el esquema del origen al copiar, el volumen y los nulos. Con la vigilancia encendida (capa 1): el origen entre pasadas (si cambió, si contesta, si la credencial vale) |
+| **Monitoring · Profiling** | Los dos interruptores: la capa 1 por base o schema, la capa 2 por activo. Los dos, apagados por defecto |
 | **Issue** | Una causa con su historia: abierta, reconocida o resuelta, con dueño, línea de tiempo y alcance. Agrupa todos los síntomas de esa causa |
 | **Coverage** | Qué tiene promesas, qué sólo tiene la vigilancia de base y qué no se puede comprobar (y por qué) |
 
@@ -626,7 +660,8 @@ la misma que la de una persona:
 
 Es lo que hoy no estandariza nadie (H0, §4): aquí sale de serie.
 
-**5 · Quien es dueño: la bandeja de Data Health.**
+**5 · Quien es dueño: la bandeja de Data Health** (con la vigilancia encendida; sin ella, el
+estado está en el catálogo, pero nadie avisa).
 - Ve las incidencias **por causa**, ordenadas por impacto, y no una alerta por activo.
 - Le llega el aviso (consola, correo o Slack) **cuando el estado cambia**.
 - Con un clic puede:
@@ -658,8 +693,10 @@ si la credencial vale, cuándo cambió su esquema por última vez y cuándo se c
 cae, **una** incidencia en el origen y todos sus activos en `Degraded` con «source unreachable since
 …». No hay «al-dia» con un origen muerto (M6).
 
-**9 · Cuando no se puede saber.** Un origen sin señal de cambio (`none`) no se disfraza:
-- Sin promesa, la copia dice **«Unverified · data as of Oct 2 (11 days ago)»**, en gris.
+**9 · Cuando no se puede saber.** Una copia que no se puede comprobar no se disfraza:
+- Sin promesa y sin vigilancia, dice **«Unverified · data as of Oct 2 (11 days ago)»**, en gris.
+- Con la vigilancia encendida, sabe además si el origen cambió después: **«Behind · the source
+  changed 2 h after this copy»**.
 - Con una promesa *Fresh within*, ORE la cumple recopiando a su ritmo, y el estado la refleja.
 
 **10 · Los builds.** Un Transform mira la salud de sus entradas:
@@ -713,69 +750,87 @@ cae, **una** incidencia en el origen y todos sus activos en `Degraded` con «sou
 - **Perfiles de distribución y deriva.**
 - **Conciliar** el origen con la copia, fila a fila.
 
-## Bajarla a tierra: el plan por pasos (propuesto, 2026-10-13)
+## Bajarla a tierra: el plan por capas (propuesto, 2026-10-13)
 
 ### Cómo se construye
 
-- **Cortes verticales.** Cada paso entrega algo que se nota de punta a punta: lo que toca en la spec,
-  en ORE y en la consola, juntos. Ningún paso deja una pieza que nadie use todavía.
-- **Primero el daño que hoy existe.** El orden lo marca lo medido:
-  1. lo que **apaga** al consumidor (M5);
-  2. lo que le **miente** (M6);
-  3. lo que **publica basura** (P5);
-  4. lo que **se rompe al consultar** (M8).
-
-  Después, lo que vigila; al final, lo que se promete y se gobierna.
-- **La vara antes que el código.** Los escenarios M1–M8 pasan a ser **pruebas que tienen que salir
-  como dice la visión**. Hoy salen todas en rojo. Cada paso dice cuáles pone en verde, y se mide en
-  producción, como se midieron.
-- **Cada paso, su plan y su go.** Los que tocan la malla llevan además su go aparte (flag nuevo y
-  malla, nunca juntos). Los que tocan la spec suben su versión en `C:\oos`.
+- **Por capas, y dentro de cada capa por cortes verticales.** Primero la capa 0 entera: lo que la
+  plataforma debe y hoy incumple. Luego la 1 y la 2, que se ofrecen. Cada paso toca a la vez lo que le
+  toque de la spec, de ORE y de la consola, y entrega algo que se nota.
+- **En la capa 0, primero el daño medido.** Lo que **apaga** al consumidor (M5), lo que le **miente**
+  (M6), lo que **publica basura** (P5) y lo que **se rompe al consultar** (P4, M8).
+- **La vara antes que el código.** Los escenarios M1–M8 pasan a ser pruebas que tienen que salir como
+  dice la visión. Hoy salen en rojo, y cada paso dice cuáles pone en verde. Se miden en producción.
+- **Cada paso, su plan y su go.** Lo que toca la malla lleva su go aparte (flag nuevo y malla, nunca
+  juntos). Lo que toca la spec sube su versión en `C:\oos`.
 
 ### Las decisiones que hay que tomar antes de S1
 
-| | Decisión | Opciones | Recomendada |
-|---|---|---|---|
-| **D-A** | **Dónde vive lo medido en el tiempo**: comprobaciones, pasadas, monitores e incidencias | (a) commits en el árbol; (b) una tabla Iceberg en el lago de la celda, append-only, con la forma de OpenLineage; (c) Postgres de `ore-iam` | **(b)**. Se consulta por SQL como cualquier dataset, es de la celda, no llena el árbol de commits por hora (H0) y es donde vivirá la historia de los monitores aprendidos. El puntero sigue guardando lo que se sabe **al escribir** (`data as of`, la última buena) |
-| **D-B** | **El estado se guarda o se calcula** | Guardarlo, o calcularlo al pedirlo con lo medido, lo prometido y la hora | **Calcularlo** (medir no es juzgar). Cambiar una promesa recalifica sin reescribir nada |
-| **D-C** | **Sin promesa de frescura, ¿se refresca solo?** | No, o con una cadencia por defecto de la celda | **No se recopia**: el coste lo declara quien lo paga. **Pero se vigila**: la señal de cambio (S3) es barata y dice «el origen cambió después de *as of*». La copia sale atrasada con su edad, sin gastar una copia |
-| **D-D** | **La gramática de las promesas** | Un `Ruleset` que aprende a nombrar activos y ámbitos, o la promesa dentro del propio activo | **El `Ruleset`** (lo que ya decidió la spec, OOS1005): escala por ámbito y puede gobernarlo quien no es dueño del dato. `Dataset.freshness` pasa a ser la promesa *Fresh within* de ese dataset. ODCS, para importar y exportar |
-| **D-E** | **Qué se retiene por defecto** sin que nadie lo prometa | Nada, o unas guardas de base | **Guardas de base que retienen**: cero filas donde había, y una columna declarada que desaparece. **Avisan sin retener**: una caída brusca de volumen y una ola de nulos |
-| **D-F** | **Al leer algo degradado, por defecto** | Servirlo con aviso, o fallar | **Servir con aviso**. Fallar es opcional al leer (`strict=True`, `fresh_within=`). Un build se para sólo ante una promesa `Blocking` |
+| | Decisión | Recomendada |
+|---|---|---|
+| **D-A** | **Dónde vive cada cosa medida** | Lo que se sabe **al escribir** (capa 0: *data as of*, la última buena, el resultado de la pasada, las promesas comprobadas al copiar), **en el puntero**, en el mismo commit que publica; su historia es el `git log`. Lo que se mide **en el tiempo** (capas 1 y 2: comprobaciones entre pasadas, incidencias, perfiles), en **una tabla Iceberg del lago de la celda**, append-only y con la forma de OpenLineage. Así no se llena el árbol de commits por hora, y se consulta por SQL |
+| **D-B** | **El estado se calcula, no se guarda** | Se calcula con lo medido, lo prometido y la hora. Una promesa que cambia recalifica sin reescribir nada. Y *Fresh within* se juzga **al leer**, con el reloj: no necesita a nadie vigilando para saber que una copia se pasó de plazo |
+| **D-C** | **Refrescar** | **Sin promesa, no se recopia sola** (el coste lo declara quien lo paga). **Con *Fresh within*, ORE refresca para cumplirla**: eso es mantener la copia, que es lo que la spec ya pide del mantenedor, así que es **capa 0**. Necesita la pasada periódica (la malla) |
+| **D-D** | **La gramática de las promesas** | **Un `Ruleset`** que aprende a nombrar activos y ámbitos (lo que la spec ya decidió, OOS1005). `Dataset.freshness` pasa a ser la *Fresh within* de ese dataset. ODCS, para importar y exportar |
+| **D-E** | **Qué retiene la capa 0 sin que nadie lo prometa** | **Retiene**: cero filas donde había, y una columna declarada que desaparece. **Avisa sin retener**: una caída brusca de volumen y una ola de nulos |
+| **D-F** | **Al leer algo degradado** | **Servir con aviso.** Fallar es opcional al leer (`strict=True`, `fresh_within=`). Un build se para sólo ante una promesa `Blocking` |
+| **D-G** | **Los interruptores** | La capa 1 se enciende **por base o por schema** y la capa 2 **por activo**. Las dos vienen apagadas. **El interruptor es un documento del árbol**, no un ajuste escondido: se revisa, se propone (0044) y tiene versión. La consola lo enciende con un commit, como cualquier otra decisión |
 
 ### Los pasos
 
-| | Paso | Lo que entrega (de la visión) | Dónde | Pone en verde |
+**Capa 0 · La verdad (siempre, sin interruptor)**
+
+| | Paso | Lo que entrega | Dónde | Pone en verde |
 |---|---|---|---|---|
-| **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket), que se montan y se desmontan solas. Más una versión de laboratorio para el CI (Postgres y S3 de mentira) | `pruebas-de-fuego/salud/`, CI | — (todas en rojo, y eso es lo que se mide) |
-| **S1** | **El vocabulario y lo que se le debe al consumidor** | Los cuatro estados, *data as of*, *checked* y *last good version* en la spec, con sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, y `unknown` ≠ `pass`. Sin código | `C:\oos` (v1alpha30) | — |
-| **S2** | **Nunca a oscuras, y la hora verdadera** | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer) aparte del intento fallido. SQL, Python y la vista previa leen lo último bueno y llevan un **bloque de salud** (estado, *as of*, motivo); la consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`, `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`ore/__init__.py`: `_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
-| **S3** | **No decir «al día» sin comprobar** (cierra PG1) | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. «Ya está» sólo si esa señal lo respalda. Si no, **Unverified** con su edad. `log` deja de recopiar entero cuando no ha cambiado nada | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
-| **S4** | **Retener lo raro** | Las guardas de base (D-E) antes de publicar. Lo retenido no mueve el puntero y se sigue sirviendo lo último bueno. **Refresh held** en la consola, con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve` (el verbo publicar), consola | **P5** (avería 2) |
-| **S5** | **El esquema del origen** | En cada pasada y en cada catálogo, el esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Las lecturas en vivo dicen **Schema drift**, no «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4, M8** |
-| **S6** | **El vigilante y la historia** | La pasada periódica por celda: comprueba las señales de cambio, recopia lo que tiene *Fresh within* y va a vencer, y deja **cada pasada registrada** (intentos, reintentos, fallos, duración). **La salud de cada origen**: si contesta y si la credencial vale. Todo, a la tabla de D-A. *Refresh overdue* | malla (**go aparte**: un CronJob sobre `48-la-copia`), `ore-cli`, la tabla de salud | **M7** (averías 1 y 3), el SFTP y el S3 muertos de `victor` |
-| **S7** | **Juzgar, propagar y servir** | El estado calculado (D-B): el peor gana, baja por el linaje, `Unknown` en gris. `GET /health` y `health` en `/assets`. Los puntos de color, el filtro «Needs attention» y la **pestaña Health** en la consola. El bloque de salud **en lo que recibe un agente**, con su política (decirlo o abstenerse) | `ore-core`, `ore-serve`, el agente del puesto, consola | La visión §1–§4 |
-| **S8** | **Las promesas** | La gramática (D-D) en la spec. *Fresh within* (desde `Dataset.freshness`), *Schema*, *Volume* y *Valid*. Las de biblioteca se calculan **en la misma pasada de la copia** (generaliza `sin_nulos`); las SQL, sobre el snapshot nuevo antes de publicar. `Blocking` retiene; `Warning` publica y anota. Un build se para ante una `Blocking` | `C:\oos`, `ore-store` (`carga.rs`), `materializar.rs`, 0055, consola (escribirlas) | La visión §10 y §12 |
-| **S9** | **Las incidencias y los avisos** | Una incidencia por causa (origen, esquema, pasada, promesa), con su ciclo (*open*, *acknowledged*, *resolved*), dueño (0052) y alcance por el linaje. Avisos **al cambiar el estado**. La **bandeja de Data Health** con *Acknowledge*, *Snooze*, *Expected* y *Refresh now* | `ore-serve`, la tabla de salud, `ore-iam` (a quién se avisa), consola | La visión §5 y §8 |
-| **S10** | **Gobierno y sugerencias** | La vista de la organización: salud, cumplimiento a 30 días, tiempos hasta detectar y resolver, cobertura y ruido. **Promesas sugeridas** desde lo observado; una persona las acepta | `ore-serve`, consola | La visión §11, y las métricas de «cómo se sabrá» |
-| *después* | Monitores aprendidos, perfiles y deriva, conciliación | — | Sobre la historia de S6 | — |
+| **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket) que se montan y se desmontan solos. Más una versión de laboratorio para el CI | `pruebas-de-fuego/salud/`, CI | — (todas en rojo) |
+| **S1** | **El vocabulario y lo que se debe** | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
+| **S2** | **Nunca a oscuras, y la hora verdadera** | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
+| **S3** | **No decir «al día» sin comprobar** (cierra PG1) | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
+| **S4** | **Retener lo raro** | Las guardas de D-E antes de publicar. Lo retenido no mueve el puntero, se sigue sirviendo lo último bueno, y la consola dice **Refresh held** con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve`, consola | **P5** |
+| **S5** | **El esquema del origen, al copiar y al catalogar** | El esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Queda en el informe y en el catálogo. Una lectura en vivo que lo encuentra dice **Schema drift**, nunca «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4**; M8 en lo que se dice al leer |
+| **S6** | **El estado, en todas partes** | El estado calculado (D-B) con lo que la capa 0 sabe: el peor gana, baja por el linaje, `Unknown` en gris. `GET /health` y `health` en `/assets`. En la consola, el punto de color y «as of» en cada fila, el filtro «Needs attention» y la sección Health. **El bloque de salud en lo que recibe un agente**, con su política | `ore-core`, `ore-serve`, el agente del puesto, consola | La visión §1–§4 sobre la capa 0 |
+| **S7** | **Las promesas que se comprueban al copiar** | La gramática (D-D) en la spec. *Schema*, *Volume* y *Valid* de biblioteca, calculadas **en la misma pasada** (generaliza `sin_nulos`, sin leer un byte más). `Blocking` retiene; `Warning` publica y anota. Un build se para ante una `Blocking`. *Fresh within* se juzga al leer (D-B) | `C:\oos`, `ore-store` (`carga.rs`), `materializar.rs`, 0055, consola (escribirlas) | La visión §10 y §12 |
+| **S8** | **El refresco que cumple *Fresh within*** | La pasada periódica por celda, que recopia lo que tiene *Fresh within* y va a vencer, con la señal de S3 para no copiar lo que no cambió. Cada pasada queda en su puntero (intentos, fallos, duración) | malla (**go aparte**: un CronJob sobre `48-la-copia`), `ore-cli` | M7, avería 1 en lo prometido |
+
+**Capa 1 · Vigilancia (por base o schema, apagada por defecto)**
+
+| | Paso | Lo que entrega | Dónde | Pone en verde |
+|---|---|---|---|---|
+| **S9** | **El interruptor y la tabla de salud** | *[Enable monitoring for database …]*, que escribe el documento (D-G) y explica qué hará y qué costará. La tabla de salud del lago (D-A). La cobertura: qué está vigilado y qué no | `C:\oos`, `ore-serve`, ore-store (la tabla), consola | — |
+| **S10** | **El vigilante** | **Entre pasadas**, sólo en lo encendido: la señal de cambio («el origen cambió después de *as of*»), **la salud de cada origen** (si contesta y si la credencial vale) y el **esquema de lo que se lee en vivo antes de que alguien consulte**. *Refresh overdue*. Todo, a la tabla de salud | La pasada de S8, ampliada; drivers; la tabla | **M7** (averías 1 y 3), **M8**, el SFTP y el S3 muertos de `victor` |
+| **S11** | **Las incidencias y los avisos** | Una incidencia por causa (origen, esquema, pasada, promesa), con su ciclo, su dueño (0052) y su alcance por el linaje. Avisos **al cambiar el estado**. La **bandeja de Data Health** con *Acknowledge*, *Snooze*, *Expected* y *Refresh now* | `ore-serve`, la tabla, `ore-iam` (a quién se avisa), consola | La visión §5 y §8 |
+
+**Capa 2 · Perfilado y promesas caras (por activo, apagada por defecto)**
+
+| | Paso | Lo que entrega | Dónde |
+|---|---|---|---|
+| **S12** | **El perfilado** | *[Enable profiling]* por activo: métricas por columna en cada versión (nulos, distintos, rangos, cuantiles) y su historia en la tabla de salud, con sus gráficas en la consola | `ore-store`, la tabla, consola |
+| **S13** | **Las promesas SQL** | Se evalúan sobre el snapshot nuevo **antes de publicar**; cuestan lo que cueste su consulta, y se dice | `ore-store`, `ore-motor`, consola |
+| **S14** | **Los monitores aprendidos** | La cadencia esperada y la estacionalidad del volumen, sobre la historia de S10 y S12. **Lo explícito gana** | Sobre la tabla de salud |
+
+**El gobierno (sobre lo que haya encendido)**
+
+| | Paso | Lo que entrega |
+|---|---|---|
+| **S15** | **La vista de la organización y las sugerencias** | Salud por base y por dueño, cumplimiento de *Fresh within* a 30 días, tiempos hasta detectar y resolver, **cobertura por capa** y ruido. Promesas sugeridas desde lo observado, que una persona acepta |
 
 ### Por qué este orden
 
-- **S2–S5 arreglan lo que hoy hace daño** con la información que ORE ya tiene o que cuesta poco
-  tener. No necesitan el vigilante ni las promesas. Con ellos, ningún consumidor vuelve a ver un
-  activo apagado, ni un «al-dia» falso, ni 0 filas publicadas, ni un «Not found» por un esquema que
-  cambió.
-- **S6 es la primera pieza nueva de infraestructura**: el CronJob y la tabla de salud. Llega cuando
-  ya hay algo que registrar.
-- **S7 junta lo medido en un estado.** Llega cuando ya hay señales de verdad que juzgar; antes sería
-  pintar puntos sobre nada.
-- **S8–S10 son lo que la gente promete y gestiona.** Valen poco si lo de debajo no dice la verdad.
+- **La capa 0 primero, porque es lo que hoy se incumple.** S2–S5 arreglan, con lo que ORE ya sabe en la
+  pasada, todo lo que M5–M8 sacaron a la luz. Ninguno necesita un interruptor, ni el vigilante, ni la
+  tabla de salud.
+- **S6 junta la capa 0 en un estado** cuando ya hay algo verdadero que juzgar.
+- **S7 y S8 cierran la capa 0**: lo prometido que se comprueba al copiar, y el refresco que cumple lo
+  prometido. S8 es la primera pieza de la malla, y lleva su go.
+- **La capa 1 reutiliza la pasada de S8** y añade lo que cuesta tocar el origen entre pasadas. Por eso
+  va detrás, y sólo donde se enciende.
+- **La capa 2 y el gobierno** valen poco hasta que lo de debajo diga la verdad y tenga historia.
 
 ### Lo que se mide en cada paso
 
 - La vara (S0) sobre los orígenes de prueba, en producción.
-- Cuánto cuesta lo nuevo: segundos por pasada, bytes facturados por pregunta en BigQuery, y conexiones
-  y WAL en Postgres.
-- Que nada de lo que ya funciona cambie. Lo que hoy dice la verdad (M4: el informe cuando copia) tiene
+- Cuánto cuesta lo nuevo, **por capa**: segundos por pasada, bytes facturados por pregunta en
+  BigQuery, y conexiones y WAL en Postgres. Lo de la capa 0 no puede costar más que la copia de hoy;
+  lo de las capas 1 y 2 se dice en su interruptor.
+- Que nada de lo que hoy funciona cambie. Lo que ya dice la verdad (M4: el informe cuando copia) tiene
   que seguir diciéndola, byte a byte.
