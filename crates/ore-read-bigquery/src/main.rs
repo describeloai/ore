@@ -181,6 +181,7 @@ fn verbo_(
             Ok(String::new())
         }
         "testigo" => testigo(t, entrada),
+        "cambio" => cambio(t, entrada),
         // **¿Responde esta fuente?** Lo más barato que hay: `SELECT 1`, sin
         // job. Contesta a la vez por el token, por el proyecto y por el permiso
         // de lanzar consultas en él.
@@ -306,6 +307,34 @@ fn tipos_de(
     Ok(out)
 }
 
+// ── ③b · Si la tabla cambió (ADR 0063 S3) ──────────────────────────────────
+
+/// **`lastModifiedTime` y `numRows` de `tables.get`**: sin job y sin coste (0 B
+/// facturados, unos 0,5 s), con el ámbito de la tabla (cambiar otra no la
+/// mueve), y ve lo que el cursor no ve: actualizaciones, borrados y filas
+/// tardías (0063 M2, M3).
+///
+/// **No respalda con filas en *streaming***: `insertAll` no movió
+/// `lastModifiedTime` ni `numRows` (M3). Si `tables.get` trae
+/// `streamingBuffer`, no se garantiza nada. Ni en lo que no es una tabla: en
+/// una vista, la hora es la de su definición, no la de sus datos.
+fn cambio(t: &dyn rest::Transporte, peticion: &str) -> Result<String, String> {
+    let (url, objeto) = ore_driver::leer_coordenada(peticion)?;
+    let proyecto = proyecto(&url)?;
+    let (dataset, tabla) = consultas::partes(&objeto)?;
+    let r = rest::tabla(t, &proyecto, dataset, tabla)?;
+    let es_tabla = r["type"].as_str().is_none_or(|k| k == "TABLE");
+    let en_streaming = r.get("streamingBuffer").is_some_and(|b| !b.is_null());
+    let hora = r["lastModifiedTime"].as_str();
+    let filas = r["numRows"].as_str().unwrap_or("");
+    Ok(match hora {
+        Some(h) if es_tabla && !en_streaming => {
+            ore_driver::huella("modificada", Some(&format!("{h}:{filas}")), true)
+        }
+        _ => ore_driver::huella("modificada", None, false),
+    })
+}
+
 // ── ③ · El testigo ──────────────────────────────────────────────────────────
 
 /// **Hasta dónde está el origen ahora.**
@@ -382,6 +411,31 @@ fn explorar(t: &dyn rest::Transporte, url: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use rest::pruebas::{Guion, grabada};
+
+    /// 0063 S3 · La señal de cambio: `lastModifiedTime` y `numRows`, sin
+    /// job; con filas en *streaming* o en una vista, no respalda (M3).
+    #[test]
+    fn la_senal_de_cambio_es_la_hora_de_la_tabla_salvo_en_streaming() {
+        let p = r#"{"url":"bigquery://p/ventas","objeto":"ventas.pedidos"}"#;
+        let tabla = serde_json::json!({"type": "TABLE", "lastModifiedTime": "1791891542407", "numRows": "4"});
+        let g = Guion::new(vec![Ok(tabla)]);
+        let s = cambio(&g, p).unwrap();
+        assert_eq!(
+            s,
+            r#"{"modo":"modificada","respalda":true,"valor":"1791891542407:4"}"#
+        );
+        assert!(g.pedidas.borrow()[0].starts_with("GET projects/p/datasets/ventas/tables/pedidos"));
+        let streaming = serde_json::json!({"type": "TABLE", "lastModifiedTime": "1", "numRows": "4",
+            "streamingBuffer": {"estimatedRows": "1"}});
+        let s = cambio(&Guion::new(vec![Ok(streaming)]), p).unwrap();
+        assert_eq!(s, r#"{"modo":"modificada","respalda":false}"#);
+        let vista = serde_json::json!({"type": "VIEW", "lastModifiedTime": "1"});
+        assert!(
+            cambio(&Guion::new(vec![Ok(vista)]), p)
+                .unwrap()
+                .contains("\"respalda\":false")
+        );
+    }
 
     #[test]
     fn el_proyecto_sale_de_la_url_y_el_dataset_no() {

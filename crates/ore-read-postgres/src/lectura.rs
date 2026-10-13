@@ -128,7 +128,7 @@ pub fn conectar(url: &str) -> Result<postgres::Client, Fallo> {
 
 /// `"esquema"."tabla"`, citado parte a parte: lo que `to_regclass` lee sin que
 /// un nombre pueda decir otra cosa.
-fn citado(objeto: &str) -> String {
+pub(crate) fn citado(objeto: &str) -> String {
     objeto
         .split('.')
         .map(|p| format!("\"{}\"", p.replace('"', "\"\"")))

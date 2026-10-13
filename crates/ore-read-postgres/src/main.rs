@@ -291,6 +291,8 @@ fn intentar() -> Result<String, String> {
         Some("leer") => ("leer", args.get(1).cloned().unwrap_or_default()),
         Some("catalogo") => ("catalogo", args.get(1).cloned().unwrap_or_default()),
         Some("testigo") => ("testigo", args.get(1).cloned().unwrap_or_default()),
+        // 0063 S3: si la tabla cambió, con su ámbito (el testigo es del servidor).
+        Some("cambio") => ("cambio", args.get(1).cloned().unwrap_or_default()),
         // 0053 F8: `check` y `explorar` tenían su rama más abajo, pero aquí
         // caían en `catalogo` (con «check» de fuente) y nunca llegaban a ella.
         Some(v @ ("check" | "explorar")) => (v, String::new()),
@@ -316,6 +318,9 @@ fn intentar() -> Result<String, String> {
     }
     if verbo == "testigo" {
         return testigo(&entrada);
+    }
+    if verbo == "cambio" {
+        return cambio(&entrada);
     }
     // **¿Responde esta fuente?** Conectar y nada mas. Contesta a la vez por la
     // red, por TLS, por la credencial y por `pg_hba.conf`, que son los cuatro
@@ -756,6 +761,61 @@ fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> J
 /// sin `wal_level = logical` no sale ningun cambio de este servidor, asi que un
 /// LSN no fecha nada que se pueda volver a pedir. Devolverlo igual seria dar una
 /// marca que no respalda un refresco.
+/// **El cuarto verbo: si ESTA tabla cambió** (ADR 0063 S3).
+///
+/// El LSN de `testigo` es del servidor entero: se mueve con cualquier tabla, y
+/// en Neon se movió solo, minuto a minuto (0063 M2). Lo que tiene el ámbito de
+/// la tabla son sus contadores (`pg_stat_user_tables`: filas insertadas,
+/// actualizadas y borradas) y su fichero (`relfilenode`, que cambia con un
+/// `TRUNCATE`, que los contadores no cuentan). Medido en M3: insertar en otra
+/// tabla no mueve los de ésta, y sobreviven a que el cómputo se suspenda.
+///
+/// # Cuándo no respalda
+///
+/// - **En una réplica**: lo que llega por la replicación no pasa por sus
+///   contadores.
+/// - **Con `track_counts` apagado**: no hay contadores.
+/// - **Si no es una tabla** (una vista, algo que no se ve): no hay de qué.
+///
+/// Un reinicio sucio pone los contadores a cero: la huella cambia y la copia se
+/// rehace. Es el lado bueno: copiar de más, nunca dar por igual lo que cambió.
+/// Lo que sí queda es una ventana: un backend vuelca sus contadores al
+/// terminar la transacción, y uno ocupado puede tardar en hacerlo.
+fn cambio(entrada: &str) -> Result<String, String> {
+    let (url, objeto) = ore_driver::leer_coordenada(entrada)?;
+    let tls = postgres_native_tls::MakeTlsConnector::new(
+        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
+    );
+    let mut cliente = postgres::Client::connect(&url, tls)
+        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
+    let replica: bool = cliente
+        .query_one("SELECT pg_is_in_recovery()", &[])
+        .map(|r| r.get(0))
+        .unwrap_or(true);
+    let contadores: String = cliente
+        .query_one("SELECT current_setting('track_counts')", &[])
+        .map(|r| r.get(0))
+        .unwrap_or_default();
+    if replica || contadores != "on" {
+        return Ok(ore_driver::huella("contadores", None, false));
+    }
+    let fila = cliente
+        .query_opt(
+            "SELECT c.relfilenode::text, s.n_tup_ins::text, s.n_tup_upd::text, s.n_tup_del::text \
+             FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid \
+             WHERE s.relid = to_regclass($1)",
+            &[&lectura::citado(&objeto)],
+        )
+        .map_err(|e| format!("no se pudo preguntar por `{objeto}`: {}", texto::causa(&e)))?;
+    Ok(match fila {
+        Some(f) => {
+            let v: Vec<String> = (0..4).map(|i| f.get::<_, String>(i)).collect();
+            ore_driver::huella("contadores", Some(&v.join(":")), true)
+        }
+        None => ore_driver::huella("contadores", None, false),
+    })
+}
+
 fn testigo(entrada: &str) -> Result<String, String> {
     let (url, _objeto) = ore_driver::leer_coordenada(entrada)?;
 

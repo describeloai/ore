@@ -340,7 +340,13 @@ pub fn preguntar(
         _ => {
             let mut c = vec![("url", Json::s(url))];
             c.extend(extra);
-            (vec!["testigo".to_string()], Json::obj(c).jcs())
+            // 0063 S3: `change` es el verbo `cambio`, con la coordenada del testigo.
+            let verbo = if ruta == "change" {
+                "cambio"
+            } else {
+                "testigo"
+            };
+            (vec![verbo.to_string()], Json::obj(c).jcs())
         }
     };
     ejecutar(&programa, &args, Some(&entrada))

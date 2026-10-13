@@ -84,7 +84,7 @@ impl Pasarela {
                 "POST",
                 [
                     "v1",
-                    v @ ("catalog" | "check" | "explore" | "witness" | "versions"),
+                    v @ ("catalog" | "check" | "explore" | "witness" | "change" | "versions"),
                 ],
             ) => self.preguntar(v, &p.cuerpo),
             ("POST", ["v1", "fetch"]) => self.bajar(&p.cuerpo),
@@ -96,7 +96,7 @@ impl Pasarela {
                 [
                     "v1",
                     "health" | "connectors" | "origins" | "catalog" | "check" | "explore"
-                    | "witness" | "versions" | "fetch",
+                    | "witness" | "change" | "versions" | "fetch",
                 ],
             ) => error(405, "operador", "método no admitido", false),
             _ => error(404, "objeto", "no hay tal ruta", false),
@@ -484,7 +484,12 @@ impl Pasarela {
                 if let Some(k) = cadena("cursor") {
                     c.push(("cursor", Json::s(k.as_str())));
                 }
-                ("testigo", vec!["testigo".to_string()], Json::obj(c).jcs())
+                // 0063 S3: `change` lleva la misma coordenada que `witness`.
+                if ruta == "change" {
+                    ("cambio", vec!["cambio".to_string()], Json::obj(c).jcs())
+                } else {
+                    ("testigo", vec!["testigo".to_string()], Json::obj(c).jcs())
+                }
             }
         };
         let turno = match self.fondo.turno(&origen, ruta) {

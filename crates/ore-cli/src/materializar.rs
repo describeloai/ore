@@ -596,6 +596,14 @@ fn una(
         Some(o) => o.testigo.clone(),
         None => testigo(pkg, raiz_pkg, v, &r)?,
     };
+    // ⭐ 0063 S3 · LA SEÑAL DE CAMBIO, con el ámbito de la tabla y antes de leer
+    //   (como el testigo): si lo que se lee cambia durante la copia, la pasada
+    //   siguiente lo ve. Un dataset del lago no la necesita: su testigo es su
+    //   snapshot, que ya lo garantiza.
+    let senal = match &origen_del_lago {
+        Some(_) => None,
+        None => senal_de(raiz_pkg, &r),
+    };
 
     // ── ④ El puntero ────────────────────────────────────────────────────────
     //
@@ -617,15 +625,47 @@ fn una(
     let hecho: Option<String> = puntero
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"));
+    // ⭐ 0063 S3 · Lo que la señal dice frente a la de la última copia.
+    //   - **Igual**: la tabla no cambió, lo garantiza su señal.
+    //   - **Distinta**: cambió, y «ya está» no vale aunque la cabecera sea la
+    //     misma (con `none` o `field` lo era siempre: PG1, 0063 M6).
+    //   - **Sin la de antes**, y con un testigo que no respalda: no hay desde
+    //     dónde comparar, y se copia una vez para tenerlo. Decir «ya está»
+    //     sería dar por buena una copia de la que no se sabe la edad.
+    let senal_previa = puntero.as_ref().and_then(senal_del_puntero);
+    let sin_cambios = senal.is_some() && senal == senal_previa;
+    let cambio_visto = senal.is_some() && senal_previa.is_some() && senal != senal_previa;
+    let sin_base = senal.is_some() && senal_previa.is_none() && !respalda(&testigo);
+    if sin_base && !rehacer && hecho.is_some() {
+        println!("  sin señal de la copia anterior: se copia para tener desde dónde comparar");
+    }
+    if cambio_visto && !rehacer {
+        println!("  la tabla cambió desde la última copia (su señal no es la misma)");
+    }
     // La misma cabecera que la última vez, y el dataset sigue ahí: al día.
-    if !rehacer && al_dia_con(puntero.as_ref(), &huella)? {
+    if !rehacer && !cambio_visto && !sin_base && al_dia_con(puntero.as_ref(), &huella)? {
         return ya_esta(
             puntero.as_ref(),
             bundle,
             recoger && !seco,
             &dataset,
-            respalda(&testigo),
+            respalda(&testigo) || sin_cambios,
         );
+    }
+    // ⭐ 0063 S3 · Con `log`, el testigo se movió (es del servidor: se mueve con
+    //   cualquier tabla, y en Neon solo) pero la señal de ESTA tabla no: lo que
+    //   hay sigue siendo cierto, y no se copia entera otra vez (0063 P1). Es la
+    //   cabecera de la copia anterior, con el testigo de entonces.
+    if !rehacer
+        && sin_cambios
+        && let Some(previo) = puntero.as_ref().and_then(testigo_del_puntero)
+        && previo != testigo
+    {
+        let anterior = self::cabecera(&plan.digest(), &esq, &previo, &clave, &obligatorias);
+        let huella_anterior = ore_core::digest::de_bytes(anterior.as_bytes());
+        if al_dia_con(puntero.as_ref(), &huella_anterior)? {
+            return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset, true);
+        }
     }
     if seco {
         return Ok((
@@ -718,6 +758,7 @@ fn una(
             rehacer,
             recoger && !seco,
             datos_de.as_deref(),
+            senal.as_ref(),
         );
     }
     let fichero = fichero_de(pkg, &r);
@@ -815,6 +856,7 @@ fn una(
         rehacer,
         recoger && !seco,
         datos_de.as_deref(),
+        senal.as_ref(),
     )
 }
 
@@ -1112,6 +1154,7 @@ fn por_su_consulta(
         op.rehacer,
         recoger && !seco,
         datos_de.as_deref(),
+        None,
     )
     .map(Some)
 }
@@ -1128,6 +1171,7 @@ fn informe_de(
     rehacer: bool,
     recoger: bool,
     datos_de: Option<&str>,
+    senal: Option<&(String, String)>,
 ) -> Result<(String, ore_core::json::Json), String> {
     use ore_core::json::Json;
     //
@@ -1252,6 +1296,13 @@ fn informe_de(
         m.insert("datos_de".into(), Json::s(d));
     }
     m.insert("intento".into(), intento(&ahora_iso(), "publicada", None));
+    // 0063 S3: la señal de cambio de lo que se copió, tomada antes de leer.
+    if let Some((modo, valor)) = senal {
+        m.insert(
+            "senal".into(),
+            Json::obj([("modo", Json::s(modo)), ("valor", Json::s(valor))]),
+        );
+    }
     let recogidas = recoger_dataset(recoger, dataset, &campo("metadata_location"), &mut m)?;
     Ok((
         format!(
@@ -1548,6 +1599,43 @@ fn intento(cuando: &str, resultado: &str, motivo: Option<&str>) -> ore_core::jso
 /// (ninguna confirmación en el servidor), `snapshot` (la misma versión) y
 /// `listing` (los mismos objetos con el mismo ETag) sí; `field` no ve ni
 /// actualizaciones ni borrados, y `none` no dice nada.
+/// **La señal de cambio de la raíz** (0063 S3): el verbo `cambio` del driver,
+/// por la pasarela si la hay. `None` si el driver no lo tiene o no respalda
+/// (una réplica, filas en *streaming*): entonces se decide como antes, por el
+/// testigo. No es un fallo de la copia: es no saber, y se dice como tal.
+fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Option<(String, String)> {
+    let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource).ok()?;
+    let url = lector::url(raiz_pkg, &env, &r.datasource).ok()?;
+    let salida = lector::preguntar(
+        &tipo,
+        &r.datasource,
+        "change",
+        &url,
+        vec![("objeto", ore_core::json::Json::s(&r.objeto))],
+    )
+    .ok()?;
+    let n = ore_core::parse::parse(salida.trim()).ok()?;
+    if campo_de(&n, "respalda").as_deref() != Some("true") {
+        return None;
+    }
+    Some((campo_de(&n, "modo")?, campo_de(&n, "valor")?))
+}
+
+/// La señal que el puntero guardó con la última copia publicada.
+fn senal_del_puntero(p: &ore_core::parse::Node) -> Option<(String, String)> {
+    let (_, s) = p.get("senal")?;
+    Some((campo_de(s, "modo")?, campo_de(s, "valor")?))
+}
+
+/// El testigo que el puntero guardó, como lo devuelve `testigo()`.
+fn testigo_del_puntero(p: &ore_core::parse::Node) -> Option<(String, Option<String>)> {
+    let (_, t) = p.get("testigo")?;
+    Some((
+        campo_de(t, "modo")?,
+        campo_de(t, "valor").filter(|v| !v.is_empty()),
+    ))
+}
+
 fn respalda(testigo: &(String, Option<String>)) -> bool {
     matches!(testigo.0.as_str(), "log" | "snapshot" | "listing") && testigo.1.is_some()
 }
@@ -2453,6 +2541,23 @@ mod tests {
         let p = Puntero::hecho(&d, "v.p").expect("lo último bueno se lee");
         assert_eq!(p.nombre(), "gs://b/catalogo/v/p/metadata/1.metadata.json");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0063 S3: la señal y el testigo que el puntero guardó, leídos de vuelta.
+    #[test]
+    fn la_senal_y_el_testigo_del_puntero_se_leen() {
+        let n = ore_core::parse::parse(
+            r#"{"senal":{"modo":"contadores","valor":"16384:1000:9:1"},
+                "testigo":{"modo":"none","valor":""}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            senal_del_puntero(&n),
+            Some(("contadores".into(), "16384:1000:9:1".into()))
+        );
+        assert_eq!(testigo_del_puntero(&n), Some(("none".into(), None)));
+        let viejo = ore_core::parse::parse(r#"{"estado":"al-dia"}"#).unwrap();
+        assert_eq!(senal_del_puntero(&viejo), None);
     }
 
     /// 0063 S2 (M6): «ya está» sólo comprueba si el testigo igual lo garantiza.

@@ -608,6 +608,30 @@ pub fn testigo(modo: &str, valor: Option<&str>) -> String {
     ore_core::json::Json::Obj(o).jcs()
 }
 
+/// **La respuesta del verbo `cambio`** (ADR 0063 S3): una huella del estado del
+/// objeto **con su ámbito** —la tabla, no el servidor—, para saber si cambió
+/// desde la última copia sin leer una fila.
+///
+/// No es el testigo. El testigo sirve para **retomar** una lectura y se mide en
+/// el orden del origen; y dice mal si un objeto cambió (0063 M2: `log` se mueve
+/// con cualquier tabla del servidor, `field` no ve actualizaciones ni
+/// borrados). La huella sólo se compara por igualdad: **igual** quiere decir que
+/// el objeto no cambió, si `respalda` es verdadero. Si el driver no puede
+/// garantizarlo —una réplica, una tabla con filas en *streaming*— contesta con
+/// `respalda: false` y sin valor, y la copia no se fía.
+pub fn huella(modo: &str, valor: Option<&str>, respalda: bool) -> String {
+    let mut o = std::collections::BTreeMap::new();
+    o.insert("modo".to_string(), ore_core::json::Json::s(modo));
+    if let Some(v) = valor.filter(|_| respalda) {
+        o.insert("valor".to_string(), ore_core::json::Json::s(v));
+    }
+    o.insert(
+        "respalda".to_string(),
+        ore_core::json::Json::Bool(respalda && valor.is_some()),
+    );
+    ore_core::json::Json::Obj(o).jcs()
+}
+
 pub fn fila(p: &Peticion, valores: &[Option<String>]) -> String {
     // `null` y la cadena vacía no son lo mismo, y un driver que los confundiera
     // haría indistinguible «no hay dato» de «hay dato y está vacío». El JSON de
