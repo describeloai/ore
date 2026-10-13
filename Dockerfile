@@ -175,7 +175,14 @@ RUN apk add --no-cache git postgresql-client py3-yaml
 #
 # ⚠️ Y hasta que esta imagen se publique, el `CronJob` de convergencia se niega
 #   a correr. Es el fallo por el lado bueno, y conviene saber que es ese.
-RUN python3 -m pip install --no-cache-dir --break-system-packages pyyaml && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
+#
+# ⚠️ 2026-10-13 · La imagen del Cloud SDK (`:alpine`, 589.0.0) dejó de traer su
+#   Python en `/usr/local/bin`: `python3` es ya el de Alpine, que tiene pyyaml por
+#   `apk` y no tiene `pip` («No module named pip»). El CI de 1466340d falló aquí.
+#   Así que `pip` sólo si `import yaml` no basta, y la comprobación de después
+#   sigue mandando: si no hay yaml para el `python3` que se resuelve, no se
+#   publica.
+RUN (python3 -c "import yaml" 2>/dev/null || python3 -m pip install --no-cache-dir --break-system-packages pyyaml) && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
 
 COPY --from=bin /b/ore                /usr/local/bin/ore
 # ⭐ 0053 F9·4 · UNA VÍA: los conectores FUERA DEL `PATH`. Sólo la pasarela
