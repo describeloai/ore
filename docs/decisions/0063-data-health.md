@@ -1,8 +1,11 @@
 # 0063 · Data Health — la salud, la frescura y la calidad de los activos del catálogo
 
 **Estado:** propuesto (2026-10-13). **H0 hecho**: el estado del arte, investigado el 2026-10-13, y la
-naturaleza del producto que se deriva de él. **H1–H9 por decidir y construir**: no hay una línea de
-código escrita.
+naturaleza del producto que se deriva de él. **H0b en curso: los fundamentos.** Lo que ORE ya tiene
+**no se da por bueno**: son hipótesis, que se miden en producción antes de construir encima. La
+primera, que el testigo dice si una copia va atrás, **era falsa** (ver «Corrección»). H-D3 y H-D8
+quedan **suspendidas** hasta H0b. **H1–H9 por decidir y construir**: no hay una línea de código
+escrita.
 
 ## Contexto
 
@@ -23,7 +26,7 @@ mapa del 2026-10-13:
 | `Dataset.freshness`, el *target lag* | spec v1alpha12 `01-dataset.md:102` | **Se declara y nada lo mide.** Ningún reloj la compara: ningún dataset sale degradado jamás |
 | «Superado, el dataset está degradado y **NO DEBE** servirse como fresco» | spec v1alpha1 `03-binding.md:224` | **ORE lo incumple**: no hay estado degradado en ninguna vía de lectura |
 | `degradado` en el código | `registro::frescura_comprobable` (`registro.rs:276`), `ore view` | Significa otra cosa: «la frescura **no se puede comprobar**» (`witness: none`), no «se ha pasado» |
-| El testigo (`none · snapshot · log · field · listing`) | ADR 0016, 0015; spec v1alpha8, v1alpha16 | Dice hasta dónde llega una copia. Es la mejor señal de frescura que existe, y sólo se usa para decir «ya está» |
+| El testigo (`none · snapshot · log · field · listing`) | ADR 0016, 0015; spec v1alpha8, v1alpha16 | Se diseñó para **retomar** una copia sin perder ni repetir (0016), no para decir si un activo cambió. Hoy sólo se usa para decir «ya está». Lo que vale como señal de frescura **depende del modo** y está por medir (ver «Corrección») |
 | El informe en el puntero (`datasets/**.json`) | `materializar.rs::informe_de` (:1059) | `estado` (`copiada · al-dia · error`), `motivo`, `filas`, `leidas`, `bytes`, **`columnas`** (no nulos por columna), `esquema_cambiado`, `testigo`. **Cuándo** sale del commit, no del fichero |
 | Una pasada que falla no borra el puntero | ADR 0031 §10 (:480) | Conserva lo que había y pone `estado: error` encima: **ya es *write-audit-publish*** |
 | «impone nunca nula» | ADR 0051; `ore-store::carga::sin_nulos` | La **única** comprobación que se ejecuta sobre los datos, y la única que niega una copia |
@@ -172,16 +175,33 @@ Fuentes: [Foundry Data Health](https://www.palantir.com/docs/foundry/data-health
    estado, en el catálogo, en la API y en el MCP.
 9. **ODCS para declarar, OpenLineage para los resultados**: es donde converge el mundo abierto.
 
-## Lo que ORE tiene y los demás no
+## Lo que ORE tendría y los demás no — hipótesis, por medir en H0b
 
-Antes de derivar nada, lo que hace distinto el problema en ORE.
+Lo que podría hacer distinto el problema en ORE. **Ninguna de estas afirmaciones está medida**, y la
+primera, tal y como se escribió en H0, era falsa. Cada una se confirma o se refuta en H0b, en
+producción, antes de que una decisión se apoye en ella.
 
-- **El testigo.** Todos miden la frescura con un reloj: la última escritura, o un `MAX(ts)`. ORE
-  sabe **hasta dónde llega** una copia en la versión del origen: un LSN, un snapshot, un cursor.
-  Eso resuelve lo que la industria no resuelve, porque un testigo comprobado igual al de la copia
-  quiere decir que **la copia está al día a esa hora**, aunque se escribiera hace una semana. Si el
-  testigo ha avanzado y la copia no, **la copia se ha quedado atrás**. Si el testigo no se mueve, **es
-  el origen el que no cambia**.
+### Corrección (2026-10-13): el testigo no dice si una copia va atrás
+
+En H0 se afirmó que un testigo que ha avanzado quiere decir que la copia va atrás, y uno que no se
+mueve, que el origen no cambia. **Leyendo el código de cada driver, no es así.** El testigo responde
+a otra pregunta, «¿desde dónde retomo sin perder ni repetir?» (0016), y lo que dice del cambio de
+**un** activo depende del modo:
+
+| Modo | Qué es, en el código | Igual ⇒ el activo no cambió | Avanzó ⇒ el activo cambió |
+|---|---|---|---|
+| `log` (Postgres) | `pg_current_wal_lsn()`, o `pg_last_wal_replay_lsn()` en una réplica; sólo con `wal_level=logical` (`ore-read-postgres/src/main.rs:745`). **El alcance es del servidor entero**, no de la tabla | **Sí**: si no hubo commits en el servidor, la tabla no cambió | **No**: avanza con cualquier commit de cualquier tabla del clúster |
+| `field` (BigQuery, JSONL) | `MAX(cursor)` de la columna declarada | **No**: no ve actualizaciones, borrados ni filas que llegan tarde con un cursor menor | **Sí**: hay filas nuevas que la copia no tiene |
+| `listing` (objetos) | `sha256` de la lista de `(clave, ETag, tamaño)` bajo el prefijo (`ore-read-objetos/src/catalogo.rs:736`) | **Sí**, si el ETag cambia siempre que cambia el contenido: **por medir** en cada origen | **Sí**, para lo que hay bajo el prefijo |
+| `none` | No hay marca | — | — |
+
+Ningún modo da las dos direcciones a la vez. Por tanto, **«la copia va atrás» y «el origen no
+cambia» no salen del testigo en general**: salen, como mucho, de la mitad de la tabla que cada modo
+sí garantiza. Y además hay que medir cuánto cuesta preguntarlo: un listado de un prefijo con miles de
+objetos no es gratis.
+
+### Las demás hipótesis
+
 - **El puntero es la publicación.** Una copia se publica con un commit del puntero, y si falla no se
   publica (0031 §10). **ORE ya es *write-audit-publish*** sin ramas de Iceberg. Sólo le falta
   auditar algo más que los nulos.
@@ -233,7 +253,9 @@ de Dagster:
 - `degraded` también sustituye en el código al «degradado» de hoy, que significa «no comprobable» y
   pasa a ser `unknown`. La palabra queda para lo que dice la spec.
 
-**H-D3 · La frescura se mide con el testigo, no con el reloj de escritura.** De una copia se
+**H-D3 · La frescura se mide con el testigo, no con el reloj de escritura.** ⚠️ **Suspendida
+hasta H0b**: se apoya en la afirmación corregida arriba. Queda escrita como estaba, para
+rehacerla con lo medido. De una copia se
 guardan dos tiempos: cuándo se tomó su testigo (`copiada_en`) y cuándo se comprobó por última vez
 que seguía igual (`comprobada_en`). Su **edad** es `ahora − max(copiada_en, comprobada_en)`.
 - **Con testigo**: comprobarlo es barato (el verbo `testigo` de 0016). Si es igual, la copia está
@@ -241,9 +263,9 @@ que seguía igual (`comprobada_en`). Su **edad** es `ahora − max(copiada_en, c
 - **Sin testigo** (`none`, una réplica sin `wal_level=logical`, BigQuery sin cursor): **la única
   manera de rejuvenecerla es volver a copiarla entera**, y la edad es la de la última copia. Lo
   dice el estado: «copiada hace 40 min, sin testigo». Y «ya está» deja de ser posible. Esto es PG1.
-- **Las dos señales, separadas.** «La copia va atrás» (el testigo ha avanzado: es nuestro, de ORE)
-  y «el origen no cambia» (el testigo no se mueve: es del dueño del origen). Son distintas, con
-  dueños distintos, y ORE las ve las dos.
+- **Las dos señales, separadas.** «La copia va atrás» (es de ORE) y «el origen no cambia» (es del
+  dueño del origen) son distintas y tienen dueños distintos. **Que ORE las vea las dos por el
+  testigo era falso** (ver «Corrección»): cada modo sólo da una dirección.
 
 **H-D4 · `freshness` es un objetivo que el vigilante intenta cumplir**, como `TARGET_LAG`, y la
 spec ya lo dice así.
@@ -279,7 +301,8 @@ escritura** (como `TRIGGER_ON_CHANGES`) y la frescura **al escribir y al vencer 
 modo automático de Foundry). La cadencia se deriva y no se configura. Lo que la spec decía, «ese
 motor es Soda, GX o dbt», cambia: **el motor es ORE**, y la spec sigue sin nombrarlo.
 
-**H-D8 · Medir de lo más barato que sea verdad** (como 0062), en tres niveles:
+**H-D8 · Medir de lo más barato que sea verdad** (como 0062), en tres niveles. ⚠️ **Suspendida
+hasta H0b**: el nivel 1 da por correctos el testigo y el informe de la copia, y no están medidos.
 1. **Gratis**: lo que el informe de la copia ya mide (`filas`, `bytes`, nulos por columna, esquema),
    el testigo, y las estadísticas del catálogo. Cubre volumen, completitud, esquema y frescura de
    **todo**, sin declarar nada.
@@ -337,6 +360,7 @@ Se avisa **cuando el estado cambia**, nunca por cada comprobación.
 | | Qué | Toca |
 |---|---|---|
 | **H0** | El estado del arte y la naturaleza del producto (este documento) | — · **hecho** |
+| **H0b** | **Los fundamentos**: definiciones operativas de frescura y calidad, independientes de ORE (qué se mide, con qué reloj, contra qué expectativa, qué avería detecta); el catálogo de averías reales; y **cada pieza de ORE medida en producción** contra esas definiciones. Después se rehacen H-D3 y H-D8 | — · **en curso** |
 | **H1** | **La forma en la spec** (v1alpha30): los `targets` de activos y ámbitos del `Ruleset`, `severity` cerrado, los cuatro estados y sus obligaciones (qué es `degraded`, qué es `unknown`, qué se debe al consumidor), la frescura medida por el testigo, el aviso de coste de `freshness` sin testigo. Con sus códigos OOS | `C:\oos`, submódulo |
 | **H2** | **Medir la frescura** (y arreglar PG1): `copiada_en` en el informe; sin testigo, «ya está» es imposible y rehacer siempre copia; `unknown` en vez del «degradado» de hoy | `materializar.rs`, `registro.rs` |
 | **H3** | **El vigilante**: la pasada periódica por celda. Comprueba testigos, recopia lo que tiene `freshness` y va a pasarse, y escribe lo medido en la tabla de salud | malla (**go aparte**), `ore-cli` |
