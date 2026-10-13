@@ -65,6 +65,10 @@ pub struct Conector {
     pub operadores: BTreeSet<String>,
     pub limit: bool,
     pub order_by: bool,
+    /// ADR 0061 · Cómo fija un objeto (`objetos.fija`: `version`, `etag` o
+    /// `ninguna`), si el conector lee objetos. `ninguna` (un SFTP) no da
+    /// colecciones virtuales (D-O1).
+    pub fija: Option<String>,
 }
 
 /// **Lo que cada conector declara**, de la respuesta de `GET /v1/connectors`
@@ -97,6 +101,11 @@ pub fn conectores_de_json(texto: &str) -> BTreeMap<String, Conector> {
                         .unwrap_or_default(),
                     limit: si("limit"),
                     order_by: si("orderBy"),
+                    fija: c
+                        .get("objetos")
+                        .and_then(|(_, o)| o.get("fija"))
+                        .and_then(|(_, v)| v.as_str())
+                        .map(String::from),
                 },
             ))
         })

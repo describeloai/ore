@@ -241,6 +241,7 @@ fn lo_que_el_conector_no_sabe_no_se_empuja() {
             operadores: ["eq".to_string()].into_iter().collect(),
             limit: false,
             order_by: false,
+            fija: None,
         },
     );
     let o = Opciones {

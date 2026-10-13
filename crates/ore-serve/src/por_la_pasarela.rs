@@ -68,7 +68,7 @@ fn motivo(r: &Respuesta) -> String {
 }
 
 /// `(tipo, connectionEnv)` de `fuente` en `ontology.config.yaml`.
-fn declaracion(raiz: &Path, fuente: &str) -> Result<(String, String), String> {
+pub(crate) fn declaracion(raiz: &Path, fuente: &str) -> Result<(String, String), String> {
     let config = std::fs::read_to_string(raiz.join("ontology.config.yaml"))
         .map_err(|e| format!("no se pudo leer `ontology.config.yaml`: {e}"))?;
     let config = ore_core::parse::parse(&config)

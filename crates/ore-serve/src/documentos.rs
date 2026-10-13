@@ -839,6 +839,70 @@ pub(crate) fn uno(raiz: &Path, kind: &str, ns: &str, schema: &str, n: &str) -> R
     Respuesta::ok(Json::Obj(m))
 }
 
+/// ⭐ ADR 0061 S2 (D-O1) · **¿Es una colección virtual que su origen no puede
+/// fijar?** Sale de un `ObjectTable` cuya fuente es de un tipo cuyo conector
+/// dice `fija: ninguna` (un SFTP): lo que cambie en el origen se serviría sin
+/// saberlo. Lo que no se encuentra no se niega aquí —el compilador y la copia
+/// lo dicen—; esto sólo adelanta la negativa de la copia.
+fn virtual_que_no_se_fija(
+    raiz: &Path,
+    doc: &Node,
+    fija: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let (_, spec) = doc.get("spec")?;
+    if spec.get("virtual").and_then(|(_, v)| v.as_str()) != Some("true") {
+        return None;
+    }
+    let ot = spec
+        .get("from")?
+        .1
+        .get("objectTable")?
+        .1
+        .as_str()?
+        .to_string();
+    let partes: Vec<&str> = ot.split('.').collect();
+    let fichero = match partes.as_slice() {
+        [p, s, _] => raiz.join("packages").join(p).join(s).join("objects"),
+        [p, _] => raiz.join("packages").join(p).join("objects"),
+        _ => return None,
+    }
+    .join(format!("{}.yaml", partes.last()?));
+    let texto = std::fs::read_to_string(fichero).ok()?;
+    let fuente = parse::parse(&texto)
+        .ok()?
+        .get("spec")?
+        .1
+        .get("datasource")?
+        .1
+        .as_str()?
+        .to_string();
+    let (tipo, _) = crate::por_la_pasarela::declaracion(raiz, &fuente).ok()?;
+    (fija(&tipo)?.as_str() == "ninguna").then(|| {
+        format!(
+            "a collection of `{ot}` can't be virtual: its source `{fuente}` ({tipo}) can't pin a              version, so a change at the origin would be served without anyone knowing. It can              only be managed (drop `virtual`: the copy in the lake is the version) — ADR 0061, D-O1"
+        )
+    })
+}
+
+/// Cómo fija un objeto el conector de `tipo`, según la pasarela (`GET
+/// /v1/connectors`). Sin pasarela, `None`: no se niega aquí, y la copia lo dirá.
+fn fija_del_conector(tipo: &str) -> Option<String> {
+    let (c, b) = ore_entrada::http::pedir_con(
+        "GET",
+        &crate::federado::pasarela(),
+        "/v1/connectors",
+        &[],
+        None,
+        ore_entrada::http::Plazos {
+            conectar: std::time::Duration::from_secs(3),
+            responder: std::time::Duration::from_secs(10),
+        },
+    )
+    .ok()?;
+    (c == 200).then_some(())?;
+    ore_core::reparto::conectores_de_json(&b).remove(tipo)?.fija
+}
+
 fn buscar<'a>(
     lista: &'a [Documento],
     k: &Kind,
@@ -1007,6 +1071,15 @@ impl Servidor {
         //   encola su copia: mantenida es tener los bytes en el lago, no el
         //   documento dicho. Y una virtual que nace, su primera pasada: su
         //   transacción (`copia::pasada_al_escribir`).
+        // ⭐ 0061 S2 · Una virtual sobre un origen que no fija versiones se niega
+        //   AQUÍ, al escribirla, y no en su primera pasada: allí se negaba
+        //   también, pero la colección quedaba creada y rota.
+        if k.nombre == "MediaCollection"
+            && let Ok((_, doc)) = documento_del_cuerpo(k, ns, schema, n, cuerpo)
+            && let Some(m) = virtual_que_no_se_fija(raiz, &doc, fija_del_conector)
+        {
+            return Respuesta::error(422, m);
+        }
         let texto_de =
             |raiz: &Path| buscar(&documentos_de(raiz).0, k, ns, schema, n).map(|d| d.texto.clone());
         let antes = (k.nombre == "MediaCollection")
@@ -1801,6 +1874,57 @@ fn escalar_yaml(raw: &str, style: Style) -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// 0061 S2 · Una virtual sobre un SFTP (`fija: ninguna`) se niega al
+    /// escribirla; la mantenida no, ni la virtual de un origen que fija, ni lo
+    /// que no se encuentra (eso lo dicen el compilador y la copia).
+    #[test]
+    fn una_virtual_sobre_un_origen_que_no_fija_se_niega_al_escribirla() {
+        let raiz = std::env::temp_dir().join(format!("ore-virtual-sftp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        std::fs::create_dir_all(raiz.join("packages/sftp/media/objects")).unwrap();
+        std::fs::create_dir_all(raiz.join("packages/r2/media/objects")).unwrap();
+        std::fs::write(
+            raiz.join("ontology.config.yaml"),
+            "datasources:\n  - { name: sftp, type: sftp, connectionEnv: A }\n  - { name: r2, type: s3, connectionEnv: B }\n",
+        )
+        .unwrap();
+        for f in ["sftp", "r2"] {
+            std::fs::write(
+                raiz.join(format!("packages/{f}/media/objects/imagenes.yaml")),
+                format!("kind: ObjectTable\nspec:\n  datasource: {f}\n  prefix: \"media/\"\n"),
+            )
+            .unwrap();
+        }
+        let fija = |t: &str| Some(if t == "sftp" { "ninguna" } else { "etag" }.to_string());
+        let col = |ot: &str, virtual_: bool| {
+            parse::parse(&format!(
+                "kind: MediaCollection\nspec:\n  media: image\n  from: {{ objectTable: {ot} }}\n{}",
+                if virtual_ { "  virtual: true\n" } else { "" }
+            ))
+            .unwrap()
+        };
+        let m = virtual_que_no_se_fija(&raiz, &col("sftp.media.imagenes", true), fija).unwrap();
+        assert!(m.contains("`sftp` (sftp)") && m.contains("D-O1"), "{m}");
+        assert!(virtual_que_no_se_fija(&raiz, &col("sftp.media.imagenes", false), fija).is_none());
+        assert!(virtual_que_no_se_fija(&raiz, &col("r2.media.imagenes", true), fija).is_none());
+        assert!(virtual_que_no_se_fija(&raiz, &col("otra.media.x", true), fija).is_none());
+        // Sin pasarela no se sabe, y no se niega aquí.
+        assert!(
+            virtual_que_no_se_fija(&raiz, &col("sftp.media.imagenes", true), |_| None).is_none()
+        );
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
+
+    /// `objetos.fija` de cada conector, de `GET /v1/connectors`.
+    #[test]
+    fn la_pasarela_dice_como_fija_cada_conector() {
+        let c = ore_core::reparto::conectores_de_json(
+            r#"{"conectores":{"sftp":{"operadores":["eq"],"objetos":{"fija":"ninguna"}},"postgres":{"limit":true}}}"#,
+        );
+        assert_eq!(c["sftp"].fija.as_deref(), Some("ninguna"));
+        assert_eq!(c["postgres"].fija, None);
+    }
 
     #[test]
     fn el_owner_entra_en_spec_sin_tocar_lo_demas() {
