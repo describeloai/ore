@@ -9,7 +9,7 @@
    medido en producción. **Nada de lo que creíamos saber se da por bueno**; lo que salga de aquí
    es lo único que cuenta.
 4. **El producto**: qué construir, cómo y dónde. Sale de cruzar 1 y 2 con lo que 3 demuestre que
-   falta, está incompleto o está mal. **No está escrito**, y no se escribe hasta tener 3.
+   falta, está incompleto o está mal. **La visión está escrita** (2026-10-13); falta bajarla a piezas.
 
 Una primera versión de esta ADR (H0, `a56185e8`) derivó un producto de lo que creíamos que ORE
 tenía. Una de sus premisas, que el testigo dice si una copia va atrás, era falsa (`241f287a`). Por
@@ -510,8 +510,216 @@ Lo que esto quiere decir:
 testigo **sirve lo viejo como fresco** y la lectura en vivo **se rompe al consultar**. Y en los tres
 casos **nadie se entera antes que el consumidor**.
 
+## El producto, como debería ser (la visión, 2026-10-13)
+
+Esta parte describe el producto **ideal**, mirado desde quien lo usa. No dice todavía en qué pieza vive
+cada cosa ni en qué orden se construye: eso viene después, y se recorta desde aquí. Cada rasgo sale
+de un fundamento (F), de una buena práctica, o de un fallo medido (M).
+
+### La promesa, en una frase
+
+**Cada activo del catálogo dice la verdad sobre sí mismo.** Dice de cuándo es lo que muestra, si es lo
+que dice ser y qué le pasa. Lo dice **antes de que nadie se tropiece con ello**. Y cuando algo se
+rompe, quien consume sigue trabajando con la última versión buena, sabiendo exactamente lo vieja que
+es, mientras su dueño ya está avisado.
+
+Hoy ORE hace lo contrario en los tres casos medidos. La copia con testigo se apaga (M5); la copia sin
+testigo sirve lo viejo como fresco (M6); la lectura en vivo se rompe al consultar (M8). Y en los tres
+casos el primero en enterarse es el consumidor.
+
+### Para quién
+
+| Quién | Qué necesita | Hoy (medido) |
+|---|---|---|
+| **Quien consume** (SQL, Python, un notebook, un dashboard) | «¿Me puedo fiar de esto ahora? ¿De cuándo es?», sin tener que preguntar a nadie | Un error, o un dato viejo sin aviso |
+| **Un agente** | La salud en lo que recibe, legible por máquina, para abstenerse o decirlo | Nada |
+| **Quien es dueño** de una base o de un dataset | Enterarse el primero, saber por qué, arreglarlo rápido y sin ruido | Se entera por el consumidor |
+| **Quien es dueño del origen** | Saber que su sistema dejó de cambiar, cambió de forma o dejó de contestar | Nadie se lo dice |
+| **Quien gobierna** la organización | Cuánto está vigilado, qué se cumple y qué falla a menudo | Nada |
+
+### Los principios
+
+1. **La verdad antes que la comodidad.** Nunca verde sin haberlo comprobado. Lo que no se sabe se
+   enseña como **desconocido**, en gris, con lo que sí se sabe al lado (F2: `unknown` no es `pass`;
+   M6).
+2. **Nunca apagar al consumidor.** Si la versión nueva no llega o no pasa, se sigue sirviendo la
+   última buena, marcada con su edad y su motivo (*write-audit-publish*; M5).
+3. **Saberlo antes que el consumidor.** El dueño se entera cuando el estado cambia, no cuando alguien
+   consulta (M7, M8).
+4. **Vigilancia de base gratis; promesas encima.** Todo activo tiene desde el primer día su
+   frescura, su volumen, su esquema y sus nulos vigilados, sin configurar nada (F2: las averías 1–4
+   salen de lo que ya se mide al copiar). Sobre eso, el dueño **promete** lo que importa.
+5. **Un solo vocabulario en todas partes.** El mismo estado, con las mismas palabras, en el catálogo,
+   en SQL, en Python, en la vista previa, en el linaje, en los avisos y en lo que recibe un agente.
+6. **Explicar, no sólo marcar.** Todo estado que no es sano dice:
+   - qué pasa;
+   - desde cuándo;
+   - por qué;
+   - a quién afecta aguas abajo;
+   - quién lo lleva;
+   - qué se puede hacer.
+7. **Silencioso por diseño.** Se avisa cuando el estado cambia, y una causa es **una** incidencia,
+   no cuarenta alertas (F2, las trampas de medir: la tasa base y la cascada).
+8. **La salud es parte de la spec.** Las promesas son documentos del árbol: se revisan, se proponen
+   y tienen versión, como el resto (0044, 0056).
+
+### El vocabulario
+
+| Concepto | Qué es para quien lo ve |
+|---|---|
+| **Health** | El estado del activo: **Healthy** (verde), **Warning** (ámbar), **Degraded** (rojo), **Unknown** (gris). Gana el peor de sus señales, y baja por el linaje: un activo con una raíz degradada lo dice |
+| **Data as of** | La hora del mundo que refleja: cuándo se leyó el origen (τ_lectura, F1). Es la hora principal, nunca la de un commit (M1) |
+| **Checked** | Cuándo se comprobó por última vez que seguía igual. «Data as of 09:00 · checked 2 min ago · source unchanged since» es edad 0 (F1: retraso ≠ edad) |
+| **Last good version** | La versión que se sirve mientras la nueva no llega o no pasa |
+| **Promise** | Lo que el dueño promete del activo. Tipos: *Fresh within* (la tolerancia de F1), *Schema* (las columnas y sus tipos), *Volume* (filas esperadas), *Valid* (no nulo, único, rango, valores admitidos, una consulta SQL). Cada una, **Blocking** o **Warning** |
+| **Monitor** | Lo que se vigila sin que nadie lo pida: la pasada (si corrió y si acabó), el esquema del origen, el volumen, los nulos, el origen (si contesta, si la credencial vale) |
+| **Issue** | Una causa con su historia: abierta, reconocida o resuelta, con dueño, línea de tiempo y alcance. Agrupa todos los síntomas de esa causa |
+| **Coverage** | Qué tiene promesas, qué sólo tiene la vigilancia de base y qué no se puede comprobar (y por qué) |
+
+### Las experiencias
+
+**1 · En el catálogo, en cada fila.** Un punto de color y «as of» al lado del nombre:
+
+```
+  ●  pedidos              Dataset   as of Oct 13, 13:37 · 2 h ago   ⚠ Degraded
+  ●  ore_salud_pedidos    Dataset   as of Oct 2 · 11 days ago       ◌ Unverified
+  ●  pedidos (live)       Table     live · schema drift             ⚠ Degraded
+```
+
+Bases y schemas suman a sus hijos («3 of 41 degraded»). Hay un filtro «Needs attention». Y el hover
+dice lo mismo, en corto.
+
+**2 · La pestaña Health de un activo.**
+
+```
+ pedidos · pg_test_s.ore_salud                                       ⚠ DEGRADED since 13:45
+ ─────────────────────────────────────────────────────────────────────────────────────────────
+ Serving the last good version · data as of Oct 13, 13:37 (2 h ago)
+ Why: the last refresh failed — the source renamed column `cliente` to `cliente_x` (13:44).
+ Impact: 2 downstream datasets, 1 dashboard · 14 reads in the last hour got this version.
+ Owner: victor · Issue #41 · acknowledged 13:52
+ [Accept the new schema]   [Refresh now]   [Open issue]
+
+ Freshness   ██████████████████▒▒▒▒░  copied · unchanged (verified) · failed · not run
+ Promises    Fresh within 1h ........ ✗ failing since 14:37
+             Schema ................. ✗ source changed (1 rename)
+             Valid: total ≥ 0 ....... ✓ 13:37
+ Monitors    Volume 1000 rows (±0 %) ✓ · Nulls `cliente` 10.8 % (was 10.0 %) ✓
+ History     schema changes · refreshes · issues
+```
+
+**3 · Al leer: el aviso viaja con el dato.**
+- **SQL y la vista previa**: una franja sobre el resultado, como esta:
+  «⚠ Degraded · data as of Oct 13, 13:37 (2 h ago) · last refresh failed: source column renamed ·
+  showing the last good version».
+- **Python**: el resultado lleva su salud (`df.attrs["health"]`) y un aviso de Python. Quien quiere
+  rigor lo pide al leer: `ore.sql(q, fresh_within="1h")` o `strict=True` falla en vez de servir lo
+  degradado.
+- **Una lectura en vivo** con el esquema cambiado dice «Schema drift», con la columna que cambió.
+  Nunca «Not found» (M8).
+
+**4 · Los agentes.** Cada resultado que recibe un agente lleva su bloque de salud. La política es
+la misma que la de una persona:
+- `Degraded` → lo dice al responder;
+- una promesa `Blocking` que falla → se abstiene salvo que se le insista;
+- `Unknown` → dice de cuándo es el dato.
+
+Es lo que hoy no estandariza nadie (H0, §4): aquí sale de serie.
+
+**5 · Quien es dueño: la bandeja de Data Health.**
+- Ve las incidencias **por causa**, ordenadas por impacto, y no una alerta por activo.
+- Le llega el aviso (consola, correo o Slack) **cuando el estado cambia**.
+- Con un clic puede:
+  - **Acknowledge**, para que los consumidores vean que alguien lo lleva;
+  - **Snooze** o **Expected**, para un mantenimiento del origen;
+  - **Refresh now**;
+  - **Accept the new schema**: propone el cambio al catálogo como una propuesta (0044);
+  - **Edit promise**.
+
+**6 · Cuando el origen cambia de forma.** Se detecta al pasar, no al consultar:
+- «Source added column `nota`» → *[Add to dataset]* *[Ignore]*.
+- «Source renamed `cliente` → `cliente_x`» → *[Map]* *[Accept]*.
+
+Las bases foráneas que leen ese origen quedan en la misma incidencia.
+
+**7 · Cuando lo que llega es raro: se retiene, no se publica.** La pasada que trae 0 filas donde
+había 1000 no se publica sola:
+
+```
+ Refresh held · the source returned 0 rows (last good: 1 000)
+ Serving the last good version.   [Publish anyway]   [Keep holding]
+```
+
+Es *write-audit-publish* con guardas de base: caída a cero, caída brusca de volumen, columna
+desaparecida. Y el dueño decide (M7, avería 2).
+
+**8 · Cuando el origen se cae o su credencial caduca.** El origen tiene salud propia: si contesta,
+si la credencial vale, cuándo cambió su esquema por última vez y cuándo se catalogó. Si un origen se
+cae, **una** incidencia en el origen y todos sus activos en `Degraded` con «source unreachable since
+…». No hay «al-dia» con un origen muerto (M6).
+
+**9 · Cuando no se puede saber.** Un origen sin señal de cambio (`none`) no se disfraza:
+- Sin promesa, la copia dice **«Unverified · data as of Oct 2 (11 days ago)»**, en gris.
+- Con una promesa *Fresh within*, ORE la cumple recopiando a su ritmo, y el estado la refleja.
+
+**10 · Los builds.** Un Transform mira la salud de sus entradas:
+- Una promesa `Blocking` que falla en una entrada **detiene el build**, como un *circuit breaker*,
+  y lo dice.
+- `Degraded` sin `Blocking`: construye, y la salida hereda el estado y el motivo.
+
+**11 · Quien gobierna: la vista de la organización.**
+- El porcentaje de activos sanos, por base y por dueño.
+- El cumplimiento de las promesas de frescura en 30 días.
+- Las incidencias abiertas y el tiempo medio hasta detectar y hasta resolver.
+- La cobertura.
+- Los activos más ruidosos.
+- Los orígenes en riesgo: credenciales que caducan, esquemas que cambian a menudo.
+
+**12 · Escribir una promesa.**
+- Desde la pestaña Health, con **plantillas y sugerencias sacadas de lo observado**, por ejemplo:
+  «this table changed every hour for the last 14 days — promise *Fresh within 2h*?».
+- También en el árbol, como documento.
+- Queda propuesta y revisada (0044), y desde ese momento se vigila. **Las sugerencias proponen;
+  una persona decide** (F2: las reglas las pone una persona).
+
+### Los escenarios medidos, como deberían acabar
+
+| Lo que pasó (M) | Hoy | En el producto |
+|---|---|---|
+| Columna renombrada; copia con testigo (P4) | Se apaga: SQL y Python fallan | `Degraded`, se sirve la última buena con su edad; Issue «source schema changed» al dueño; *[Accept]* |
+| Columna renombrada; copia sin testigo | «al-dia» y datos viejos | `Degraded`: el monitor de esquema del origen lo ve en la pasada |
+| Columna renombrada; lectura en vivo | «Not found» al consultar | «Schema drift» en el catálogo **antes** de consultar, en la misma Issue |
+| Datos cambiados sin testigo (P2) | «al-dia» con 900 donde hay 892 | «Unverified · as of …»; con *Fresh within*, se recopia y queda al día |
+| Columna nueva (P3) | Ignorada en silencio | «Source added column `nota`» → *[Add]* *[Ignore]* |
+| Origen vaciado (P5) | Publica 0 filas | *Refresh held*; se sirve la última buena; el dueño decide |
+| Origen muerto o credencial inválida | «al-dia» | La salud del origen en rojo; una Issue; sus activos `Degraded` |
+| Una pasada colgada y reintentada | Sin rastro | En la historia de refrescos, y como *Refresh overdue* si una promesa vence |
+| La hora (M1) | El commit del puntero | **Data as of** (τ_lectura) y **Checked** |
+
+### Cómo se sabrá que funciona
+
+- **Antes que el consumidor**: de cada Issue, la parte que el dueño conoció antes de la primera
+  lectura afectada. Objetivo: casi todas.
+- **Cero verdes sin comprobar**: ningún activo `Healthy` cuya última comprobación no lo respalde.
+- **Nunca a oscuras**: de las lecturas de un activo degradado, las que se sirvieron con aviso frente
+  a las que fallaron. Objetivo: que no falle ninguna salvo en modo estricto.
+- **Silencio**: avisos por Issue y falsas alarmas por semana.
+- **Cobertura**: los activos con promesas, con sólo la vigilancia de base, y los no comprobables.
+
+### Lo que la visión deja para después
+
+- **Monitores aprendidos.** La cadencia esperada y la estacionalidad del volumen, sobre la historia
+  guardada. Llegan cuando haya semanas de historia, y **lo explícito gana** (F2).
+- **Perfiles de distribución y deriva.**
+- **Conciliar** el origen con la copia, fila a fila.
+
 ## Lo que sigue
 
-Con M1–M8 medidos, cada fundamento (F3) queda en uno de tres sitios: **lo hay**, **está incompleto
-o mal** (y dónde), o **no existe**. De ese mapa, con las buenas prácticas al lado, sale el producto:
-qué se construye, en qué orden y en qué pieza. Hasta entonces no se decide nada.
+La visión está escrita. Lo siguiente es **bajarla a piezas**:
+- qué vive en la spec (el vocabulario, las promesas y lo que se le debe al consumidor);
+- qué vive en ORE (medir, retener, juzgar, servir y avisar);
+- qué vive en la consola;
+- en qué orden, empezando por lo que hoy hace más daño: **apagarse** (M5) y **decir «al-dia» sin
+  comprobar** (M6).
+
+Cada etapa con su plan, su go y su medida.
