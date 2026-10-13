@@ -6,7 +6,8 @@ es deuda temporal). D-O1 aplicada en O1, D-O2 en O2, D-O3 en O3, D-O4 en O4, D-O
 (un contenedor público, sin identidad) hecha para Azure (AZ0–AZ3, 2026-10-11); **Azure cerrado en
 producción** contra Azure Open Datasets (AZ5–AZ6, 2026-10-12); **GCS cerrado en producción** con un
 bucket propio y las cuentas de la celda (GC0–GC3, 2026-10-12); **Cloudflare R2 cerrado en
-producción**, el primer perfil de S3 probado contra una cuenta (R2·0–R2·3, 2026-10-12). Investigación:
+producción**, el primer perfil de S3 probado contra una cuenta (R2·0–R2·3, 2026-10-12); **SFTP cerrado
+en producción** contra un OpenSSH propio, con la clave de la celda (S0–S3, 2026-10-13). Investigación:
 [`o-origenes-de-objetos-estado-del-arte.md`](../investigacion/o-origenes-de-objetos-estado-del-arte.md).
 
 ## Contexto
@@ -669,6 +670,51 @@ Lo que destapó la prueba, arreglado aquí:
 El perfil, en [`origenes-de-objetos.md`](../origenes-de-objetos.md). **Deuda temporal de O4**, contra
 servidores de verdad: un OpenSSH de un cliente, uno de Windows (OpenSSH para Windows, Bitvise), uno
 viejo con `ssh-rsa` (`legado=1`), un chroot real, y la red (puerto 22 e IP de salida, con go).
+
+### S · SFTP de verdad (2026-10-12/13)
+
+Las tres piezas de red de O4·3 que faltaban, con go, y la prueba contra un OpenSSH montado como lo
+montaría un cliente.
+
+**S0 · el servidor**: una e2-micro (Debian 12, OpenSSH) en una red propia, con el 22 abierto sólo a
+la IP de salida de las celdas y a IAP; un usuario `ore` con chroot, sólo `internal-sftp`, sólo clave
+(su `authorized_keys` fuera del chroot, en `/etc/ssh/autorizadas/ore`), y los 15 ficheros de GC1.
+Borrada al cerrar, con su firewall y su red.
+
+**S1 · la celda** (`a607ccca`, `df25e186`, `a600a5c8`; `23945a3b` lo pule):
+
+| pieza | cómo |
+|---|---|
+| la clave de la celda | el aprovisionador genera la Ed25519 y la deja en el almacén: `t-<celda>-sftp-clave` (sólo `ore-driver-<celda>`) y `t-<celda>-sftp-clave-publica` (`ore-serve-<celda>`). **Sólo crea, nunca rota** (0054 I2); la pública, si falta, sale de la privada |
+| la privada en la pasarela | un contenedor de inicio la trae a un tmpfs (`ORE_SFTP_CLAVE=/clave/sftp`); opcional: sin ella la pasarela arranca y `check` falla en `identidad` |
+| la pública en el asistente | `ORE_SFTP_CLAVE_PUBLICA_FICHERO`, que trae el contenedor de inicio de `ore-serve` |
+| la IP de salida | `ORE_IP_SALIDA=34.156.87.237`, el NAT `salida-a-origenes` (una para toda la malla) |
+| el 22 | en `salida-del-driver`; otro puerto, cuando la fuente declare el suyo |
+
+Medido al generarla: dentro, el aprovisionador corre con un uid sin entrada en `/etc/passwd` y
+**`ssh-keygen` se niega** («No user exists for uid 65532»); la clave sale de `cryptography` de Python
+(OpenSSH, 0600), con la huella de `ssh-keygen -lf` y la pública derivada idéntica.
+
+**S2 · lo que destapó el alta**, arreglado:
+- **La foránea de un SFTP volvía a la forma de antes de 0057** —sus tablas como `View`, sus colecciones
+  copiadas dentro de la foránea—: O4·4 la excluía del `include` confundiendo exponer el listado de un
+  `ObjectTable` (en vivo, como el de cualquiera) con una colección virtual. Ahora expone como las demás
+  (`8b19d142`, test `de_un_sftp_la_foranea_expone_y_la_estandar_mantiene`).
+- **Una virtual sobre un SFTP se creaba** y la negaba después la copia, dejándola rota. Ahora
+  `/documentos` la niega con `422` al escribirla, por lo que el conector declara en la pasarela
+  (`objetos.fija: ninguna`), no por una lista de tipos (`9cac98b0`). La copia sigue siendo la segunda
+  barrera.
+
+**S3 · de punta a punta en `t-victor`**: `check` desde la celda (conexión, huella, identidad, listar);
+`sftp_f` sólo con `spec.foreign`; `sftp_s` con 3 datasets de 50 filas y 4 colecciones mantenidas, cada
+ítem `etag:<mtime>-<tamaño>`, el sha256 de cada imagen = el del fichero subido; SQL (en vivo, el
+listado, una copia desde el origen), Python (lago = en vivo; las 11 por su número mágico; **sftp ==
+r2**, los mismos bytes por dos orígenes) y Java (`sandbox.sftp_java`, 10/10). La virtual, negada al
+escribirla con su porqué.
+
+**Deuda**: no hay cómo **borrar una colección desde la consola** (ni `drop` en SQL: sólo `drop
+view`); la rota de S2 se retiró con un commit en el árbol. Y lo de O4 contra servidores de clientes:
+uno de Windows, uno viejo con `ssh-rsa` (`legado=1`), otro puerto que el 22.
 
 ### O5 · hecho en el laboratorio (2026-10-10): SharePoint / OneDrive
 

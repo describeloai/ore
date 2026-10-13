@@ -3,8 +3,8 @@
 **Estado:** S3 en vivo (0046); los que hablan la API de S3, probados en el laboratorio (ADR
 [0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09), y Cloudflare R2 en producción (R2·3, 2026-10-12); GCS, con su driver propio y probado
 en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad; Azure Blob y ADLS Gen2,
-igual (O3, 2026-10-09), sin probar contra Azure de verdad; SFTP, en el laboratorio (O4, 2026-10-09), sin
-probar contra un servidor de un cliente; SharePoint y OneDrive, en el laboratorio contra un Graph de
+igual (O3, 2026-10-09), sin probar contra Azure de verdad; SFTP, en el laboratorio (O4, 2026-10-09) y
+en producción contra un OpenSSH propio (S3, 2026-10-13); SharePoint y OneDrive, en el laboratorio contra un Graph de
 mentira (O5, 2026-10-10), sin probar contra un tenant.
 
 Un bucket es una **fuente** (`ontology.config.yaml`, `type: s3`, `gcs`, `azure`, `sftp` o `sharepoint`): de él salen `Table` con `format`
@@ -151,8 +151,9 @@ sftp://<usuario>@<host>[:<puerto>]/<ruta>?huella=SHA256:<huella del host>[&edad=
 ```
 
 Un servidor SFTP no versiona nada, así que **sus colecciones sólo pueden ser mantenidas** (D-O1): la
-versión es la copia en el lago, con su sha256. `discover` las escribe mantenidas también en una base
-foránea, y `ore` niega una virtual con su porqué.
+versión es la copia en el lago, con su sha256. Una base foránea expone sus tablas y el listado de sus
+objetos, en vivo, como la de cualquier otro origen; una colección virtual se niega al escribirla, con
+su porqué (lo que el conector declara: `fija: ninguna`).
 
 - **Identidad** (D-O4): una clave SSH Ed25519 **de la celda**, que genera ORE; el cliente sólo pega
   su parte pública en el `authorized_keys` del usuario con el que se lee (mejor uno que sólo lea esa
