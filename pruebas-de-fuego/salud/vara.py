@@ -7,13 +7,13 @@ pone en verde. No es un banco: corre contra `victor`, en producción (la memoria
 
 Los orígenes son propios y pequeños (1000 filas), y la vara los deja en su estado base al empezar
 y al terminar:
-  - Postgres (Neon, fuente `postgresql_20260918_1920`): `ore_vara.pedidos`, por un Job en la
+  - Postgres (Neon, fuente `pg_quality`): `ore_vara.pedidos`, por un Job en la
     celda con la credencial del cofre (`vara-pg.sh`). La URL no sale de la celda.
-  - BigQuery (fuente `bigquery_20260927_1428`): `ventas.ore_vara_pedidos`, por REST con el
+  - BigQuery (fuente `bq_quality`): `ventas.ore_vara_pedidos`, por REST con el
     `gcloud` de quien la corre.
 
-LO QUE SE MONTA UNA VEZ, Y LO HACE UNA PERSONA (`montar` lo explica): volver a leer el catálogo
-de las dos fuentes y crear cuatro bases — `vara_pg` y `vara_bq` (standard) y `vara_pg_f` y
+LO QUE SE MONTA UNA VEZ, Y LO HACE UNA PERSONA (`montar` lo explica): dar de alta (o volver a
+leer el catálogo de) las dos fuentes, con las tablas ya creadas, y crear cuatro bases — `vara_pg` y `vara_bq` (standard) y `vara_pg_f` y
 `vara_bq_f` (foreign). Recatalogar y retirar una base es gobierno: el agente de la celda no
 puede, y la vara no se lo salta.
 
@@ -39,7 +39,7 @@ PROYECTO = 'project-8853a180-450d-47be-b83'
 API = 'https://victor.ore.paladio.io'
 IDP = 'https://login.paladio.io/realms/rubix'
 GCLOUD = 'gcloud.cmd' if os.name == 'nt' else 'gcloud'
-FUENTE_PG, FUENTE_BQ = 'postgresql_20260918_1920', 'bigquery_20260927_1428'
+FUENTE_PG, FUENTE_BQ = 'pg_quality', 'bq_quality'
 # Los datasets de la vara: el puntero en el árbol, y la tabla de la foránea para leer en vivo.
 ORIGENES = {
     'pg': {'vista': 'vara_pg.ore_vara.pedidos', 'puntero': 'datasets/vara_pg/ore_vara/pedidos.json',
@@ -116,9 +116,9 @@ def lanzar(d):
 def pg(sql):
     """Una sentencia en el Postgres de la vara, por un Job en la celda (≈30 s)."""
     n = 'vara-pg-%d' % (time.time() * 1000 % 10 ** 9)
-    lanzar(job_en_la_celda(n, 'vara-pg.sh', {'SQL': sql}))
+    lanzar(job_en_la_celda(n, 'vara-pg.sh', {'SQL': sql, 'FUENTE': FUENTE_PG}))
     esperar_job(n, 300)
-    _, o = sh(['kubectl', '-n', NS, 'logs', 'job/' + n])
+    _, o = sh(['kubectl', '-n', NS, 'logs', 'job/' + n, '-c', 'medir'])
     sh(['kubectl', '-n', NS, 'delete', 'job', n, '--wait=false'])
     if '## ok' not in o:
         raise SystemExit('Postgres: %s' % o[-400:])
@@ -236,6 +236,11 @@ def pasar():
     lanzar(job_de_pasada(n, ','.join(o['vista'] for o in ORIGENES.values())))
     bien = esperar_job(n)
     _, log = sh(['kubectl', '-n', NS, 'logs', 'job/' + n, '-c', 'copiar'])
+    if not bien:  # lo que dijo el Job y cada contenedor, antes de borrarlo
+        log += sh(['kubectl', '-n', NS, 'describe', 'job', n])[1]
+        log += sh(['kubectl', '-n', NS, 'logs', 'job/' + n, '--all-containers', '--tail=60'])[1]
+    os.makedirs(S + 'vara-registros', exist_ok=True)
+    open(S + 'vara-registros/%s.log' % n, 'w', encoding='utf-8').write(log)
     sh(['kubectl', '-n', NS, 'delete', 'job', n, '--wait=false'])
     decir('pasada %d: %s' % (_n[0], 'terminó' if bien else 'FALLÓ el Job'))
     return log
@@ -280,9 +285,10 @@ def serve(metodo, camino, cuerpo=None):
     conf = 'url = "%s%s"\nrequest = "%s"\nheader = "authorization: Bearer %s"\n' % (API, camino, metodo, token())
     if cuerpo is not None:
         conf += 'header = "content-type: application/json"\ndata = %s\n' % json.dumps(json.dumps(cuerpo))
-    c, o = sh(['curl', '-s', '-m', '120', '-w', '\n%{http_code}', '-K', '-'], conf)
-    b, _, cod = o.rpartition('\n')
-    return (int(cod) if cod.strip().isdigit() else 0), b.encode()
+    # En bytes: una lectura en vivo contesta con un flujo Arrow, no con texto.
+    r = subprocess.run(['curl', '-s', '-m', '120', '-w', '\n%{http_code}', '-K', '-'], input=conf.encode(), capture_output=True)
+    b, _, cod = r.stdout.rpartition(b'\n')
+    return (int(cod) if cod.strip().isdigit() else 0), b
 
 
 def saludes():
@@ -302,9 +308,9 @@ def leer_en_vivo(k):
     """Una lectura en vivo de la foránea, por `/federation/read`: lo que SQL vería."""
     c, b = serve('POST', '/federation/read', {'tabla': ORIGENES[k]['foranea'], 'columnas': ['id', 'cliente'], 'limit': 5})
     try:
-        j = json.loads(b)
+        j = json.loads(b)  # un error es JSON; lo leído, Arrow
     except ValueError:
-        j = {}
+        j = {'bytes': len(b)}
     return c, j
 
 
@@ -453,7 +459,7 @@ def montar():
         return
     print("""
    Las tablas están en su estado base. Falta, UNA VEZ, desde la consola (es gobierno: el agente no puede):
-     1. Volver a leer el catálogo de las fuentes `%s` (Neon) y `%s` (BigQuery).
+     1. Dar de alta (o volver a leer el catálogo de) las fuentes `%s` (Neon) y `%s` (BigQuery).
      2. Crear cuatro bases sobre esas tablas, con «sólo» esa tabla:
           vara_pg    standard  ← %s · ore_vara.pedidos
           vara_pg_f  foreign   ← %s · ore_vara.pedidos

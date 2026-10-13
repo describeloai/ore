@@ -921,6 +921,20 @@ Así que **una vez**, una persona recataloga las dos fuentes y crea cuatro bases
 (standard) y `vara_pg_f` y `vara_bq_f` (foreign). `python vara.py montar` lo comprueba y lo explica.
 La versión de laboratorio para el CI queda para después: hoy la vara mide en producción.
 
+**La primera vuelta (2026-10-13 20:32, [`vara-20261013-2032.md`](../../pruebas-de-fuego/salud/vara-20261013-2032.md)):
+8 de 18 en verde.** Con las fuentes `pg_quality` y `bq_quality` y las bases `vara_*`, que dio de alta
+el usuario. En verde, C1–C3 en los dos orígenes, C6 en BigQuery y C8 en Postgres. En rojo, lo que se
+esperaba: C4, C5 y C6b (S5) y C7 (S4). Y **dos rojos que nadie esperaba, y los dos son huecos de S3**:
+
+- **C6 en Postgres: la señal no ve el esquema.** Añadir o renombrar una columna no mueve los
+  contadores de filas ni `relfilenode`. Con `cliente` renombrada, la copia dijo «ya está» y `healthy`
+  sobre una tabla que ya no la tiene. La señal tiene que llevar también la forma de la tabla
+  (`pg_attribute`: nombre, tipo, posición). En BigQuery, `lastModifiedTime` sí se mueve con el esquema.
+- **C8 en BigQuery: un fallo de la señal se tomó por «no hay señal».** Con la tabla borrada,
+  `tables.get` contesta 404, `senal_de` devuelve `None` como si el driver no tuviera el verbo, y con
+  el testigo `none` la copia dijo «al día». Que el verbo falle no es «no sé»: la copia tiene que
+  intentarlo, y fallar de verdad.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
