@@ -88,6 +88,9 @@
 # `target/debug`), git y python3 con pyarrow y pyiceberg.
 # ══════════════════════════════════════════════════════════════════════════════
 set -u
+# 0063 R1: lo que estas pruebas dejan huérfano es de hace segundos; sin esto,
+# la recogida espera un día.
+export ORE_RECOGER_GRACIA=0
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 PY=$(command -v python3 || command -v python) || { echo "hace falta python"; exit 2; }
 buscar() {
@@ -263,13 +266,13 @@ got=$(cd "$T/ramas" && find . -name '*.json' | sort | tr '\n' ' ')
 ok "1 · reclaman: de la rama, sólo lo suyo (base, nueva); copiaBase, heredada, no"
 
 A0=$(objetos)
-"$ORE" datasets "$T/mant" --recoger --edad 7d --reclaman "$T/no-esta" > "$T/sin.txt" 2>&1; rc=$?
+"$ORE" datasets "$T/mant" --recoger --edad 7d --gracia 0 --reclaman "$T/no-esta" > "$T/sin.txt" 2>&1; rc=$?
 [ "$rc" = 66 ] && [ "$(objetos)" = "$A0" ] || falla "2 · un --reclaman que no está: rc=$rc (y no 66), objetos $A0 → $(objetos) · $(cat "$T/sin.txt")"
 ( cd "$T/mant" && "$ORE" materialize . --recoger --informe datasets --reclaman "$T/no-esta" ) > "$T/sin2.txt" 2>&1; rc=$?
 [ "$rc" = 66 ] && [ "$(objetos)" = "$A0" ] || falla "2 · materialize con un --reclaman que no está: rc=$rc, objetos $A0 → $(objetos)"
 ok "2 · un --reclaman que no es un directorio: 66 y el bucket intacto ($A0 objetos), en las dos pasadas"
 
-"$ORE" datasets "$T/mant" --recoger --edad 7d --reclaman "$T/ramas" > "$T/mant.txt" 2>&1 || falla "3 · el mantenimiento: $(cat "$T/mant.txt")"
+"$ORE" datasets "$T/mant" --recoger --edad 7d --gracia 0 --reclaman "$T/ramas" > "$T/mant.txt" 2>&1 || falla "3 · el mantenimiento: $(cat "$T/mant.txt")"
 ( cd "$T/mant" && "$ORE" materialize . --recoger --informe datasets --reclaman "$T/ramas" ) > "$T/matr.txt" 2>&1 || falla "3 · la copia: $(cat "$T/matr.txt")"
 v="$(lee - base)/$(lee - soloMain)/$(lee - copiaBase) · $(lee "$RAMA" base)/$(lee "$RAMA" nueva)/$(lee "$RAMA" copiaBase)"
 [ "$v" = "20/4/20 · 25/3/20" ] || falla "3 · tras recoger main: $v · $(tr '\n' ' ' < "$T/mant.txt")"
@@ -280,7 +283,7 @@ ANTES=$(objetos); NUEVA=$(objetos catalogo/ventas/default/nueva/)
 git --git-dir="$FORJA" branch -D "$RAMA" -q
 rm -rf "$T/mant2"; git clone -q "$FORJA" "$T/mant2"
 ( cd "$T/mant2" && reclaman main "$T/ramas2" )
-"$ORE" datasets "$T/mant2" --recoger --edad 7d --reclaman "$T/ramas2" > "$T/mant2.txt" 2>&1 || falla "5 · el mantenimiento: $(cat "$T/mant2.txt")"
+"$ORE" datasets "$T/mant2" --recoger --edad 7d --gracia 0 --reclaman "$T/ramas2" > "$T/mant2.txt" 2>&1 || falla "5 · el mantenimiento: $(cat "$T/mant2.txt")"
 DESPUES=$(objetos)
 [ "$(objetos catalogo/ventas/default/nueva/)" = 0 ] && [ "$DESPUES" -lt "$((ANTES - NUEVA))" ] \
   || falla "5 · borrada la rama, lo suyo tenía que irse: $ANTES → $DESPUES objetos, nueva $NUEVA → $(objetos catalogo/ventas/default/nueva/)"
@@ -526,7 +529,7 @@ git clone -q "$FORJA" "$T/mant7"; git -C "$T/mant7" config core.autocrlf false
 B0=$(objetos blobs/sha256/)
 ( cd "$T/mant7" && "$ORE" collections . --recoger --gracia 0 --reclaman "$T/ramas7" ) > "$T/mant7.txt" 2>&1 \
   || falla "18 · el mantenimiento de las colecciones: $(cat "$T/mant7.txt")"
-( cd "$T/mant7" && "$ORE" datasets . --recoger --edad 0 --reclaman "$T/ramas7" ) >> "$T/mant7.txt" 2>&1 \
+( cd "$T/mant7" && "$ORE" datasets . --recoger --edad 0 --gracia 0 --reclaman "$T/ramas7" ) >> "$T/mant7.txt" 2>&1 \
   || falla "18 · el mantenimiento de los datasets: $(tail -3 "$T/mant7.txt")"
 v="$B0/$(objetos blobs/sha256/)/$(objetos colecciones/docs/default/raiz/metadata/ | grep -v '^0$' >/dev/null && echo manifiesto) · $(items "$RAMA" docs)"
 [ "$v" = "2/2/manifiesto · 2" ] || falla "18 · tras el mantenimiento de main (blobs antes/después, manifiesto · ítems en la rama): $v · $(tr '\n' ' ' < "$T/mant7.txt")"

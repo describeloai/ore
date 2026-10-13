@@ -1382,6 +1382,14 @@ fn recoger_dataset(
     {
         peticion.push(("edad_ms", Json::s((s * 1000).to_string())));
     }
+    // 0063 R1: lo huérfano espera su gracia (un día, la del almacén); una
+    // prueba que quiere verlo irse ya la pone a 0.
+    if let Some(s) = std::env::var("ORE_RECOGER_GRACIA")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+    {
+        peticion.push(("gracia_ms", Json::s((s * 1000).to_string())));
+    }
     let g = almacen("recoger", &Json::obj(peticion).jcs(), None)?;
     let n = |k: &str| campo_de(&g, k).unwrap_or_else(|| "0".into());
     if let Some(ml) = campo_de(&g, "metadata_location")

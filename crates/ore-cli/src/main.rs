@@ -1057,6 +1057,10 @@ enum Command {
         /// Cuanta historia conserva `--recoger`: `7d`, `12h`, `30m`, `0`.
         #[arg(long, value_name = "EDAD")]
         edad: Option<String>,
+        /// Con `--recoger`: lo huerfano solo se retira si lleva esto sin
+        /// tocarse (0063 R1; un dia si no se dice): `24h`, `0`.
+        #[arg(long, value_name = "GRACIA")]
+        gracia: Option<String>,
         /// Con `--recoger`: dice que se iria y no toca nada.
         #[arg(long)]
         seco: bool,
@@ -1342,6 +1346,7 @@ fn main() -> std::process::ExitCode {
             limite,
             recoger,
             edad,
+            gracia,
             seco,
             reclaman,
             confirmar,
@@ -1376,6 +1381,7 @@ fn main() -> std::process::ExitCode {
                     limite: *limite,
                     recoger: *recoger,
                     edad: edad.as_deref(),
+                    gracia: gracia.as_deref(),
                     seco: *seco,
                     confirmar: confirmar.as_deref(),
                     metadata_location: metadata_location.as_deref(),

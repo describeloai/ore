@@ -85,7 +85,7 @@ esac
 echo "── 6 · recoger: expiran los snapshots superados y se van sus ficheros ─"
 r=$(printf '{"dataset":"%s","metadata_location":"%s"}\n' "$DS" "$ml3" | "$BIN" recoger-seco) || { echo "$r"; exit 1; }
 [ "$(campo "$r" expirados)" = "2" ] && ok "en seco: 2 por expirar" || mal "seco: $r"
-r=$(printf '{"dataset":"%s","metadata_location":"%s"}\n' "$DS" "$ml3" | "$BIN" recoger) || { echo "$r"; exit 1; }
+r=$(printf '{"dataset":"%s","metadata_location":"%s","gracia_ms":"0"}\n' "$DS" "$ml3" | "$BIN" recoger) || { echo "$r"; exit 1; }
 ml4=$(campo "$r" metadata_location)
 [ "$(campo "$r" expirados)" = "2" ] && [ "$ml4" != "$ml3" ] && ok "2 expirados, puntero nuevo: $ml4" || mal "recoger: $r"
 [ "$(campo "$r" ficheros)" -ge 5 ] && ok "$(campo "$r" ficheros) ficheros que nadie nombraba, fuera" || mal "ficheros: $r"

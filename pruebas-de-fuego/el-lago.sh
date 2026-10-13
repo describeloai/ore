@@ -279,11 +279,13 @@ ok "5 · git log del puntero = la historia de la tabla: 3 versiones, con quién"
 # ── 6 · el mantenimiento, sobre punteros ─────────────────────────────────────
 git clone -q "$FORJA" "$TMP/mant"
 ANTES_OBJ=$(curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v2/datasets/ventas_salida/" | grep -o '<Key>[^<]*</Key>' | wc -l | tr -d ' ')
-salida=$("$ORE" datasets "$TMP/mant" --recoger --edad 0 --seco 2>&1) || { echo "$salida"; falla "6 · --recoger --seco"; }
+# `--gracia 0`: lo que esta prueba deja huérfano es de hace un segundo, y sin
+# decirlo la recogida espera un día (0063 R1).
+salida=$("$ORE" datasets "$TMP/mant" --recoger --edad 0 --gracia 0 --seco 2>&1) || { echo "$salida"; falla "6 · --recoger --seco"; }
 case "$salida" in *"en seco"*"expirado(s)"*) ;; *) falla "6 · --seco no dijo qué haría: $salida";; esac
 [ "$(curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v2/datasets/ventas_salida/" | grep -o '<Key>[^<]*</Key>' | wc -l | tr -d ' ')" = "$ANTES_OBJ" ] || falla "6 · --seco tocó el bucket"
 MLV=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$TMP/mant/datasets/ventas/default/salida.json")
-salida=$("$ORE" datasets "$TMP/mant" --recoger --edad 0 2>&1) || { echo "$salida"; falla "6 · --recoger"; }
+salida=$("$ORE" datasets "$TMP/mant" --recoger --edad 0 --gracia 0 2>&1) || { echo "$salida"; falla "6 · --recoger"; }
 case "$salida" in *"1 dataset"*"1 puntero(s) movido(s)"*) ;; *) falla "6 · recoger no expiró ni movió: $salida";; esac
 MLN=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$TMP/mant/datasets/ventas/default/salida.json")
 [ "$MLN" != "$MLV" ] || falla "6 · el puntero no se movió al metadata.json de expirar"

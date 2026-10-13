@@ -77,6 +77,9 @@ pub struct Opciones<'a> {
     pub recoger: bool,
     /// Cuánta historia conserva `--recoger`: `7d`, `12h`, `30m`, `0`.
     pub edad: Option<&'a str>,
+    /// Con `--recoger`: lo huérfano, sólo si lleva esto sin tocarse (0063 R1).
+    /// Sin decirlo, la del almacén: un día.
+    pub gracia: Option<&'a str>,
     pub seco: bool,
     pub confirmar: Option<&'a str>,
     pub metadata_location: Option<&'a str>,
@@ -574,6 +577,10 @@ pub(crate) fn edad_ms(s: &str) -> Result<i64, String> {
 /// que ningún puntero reclama: datasets sin puntero y sobres heredados que
 /// ningún puntero nombra ya.
 fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+    let gracia = match op.gracia {
+        Some(g) => Some(edad_ms(g).map_err(|m| (64, m))?),
+        None => None,
+    };
     let edad = match op.edad {
         Some(e) => Some(edad_ms(e).map_err(|m| (64, m))?),
         None => None,
@@ -601,6 +608,9 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         ];
         if let Some(e) = edad {
             pet.push(("edad_ms", Json::s(e.to_string())));
+        }
+        if let Some(g) = gracia {
+            pet.push(("gracia_ms", Json::s(g.to_string())));
         }
         let g = almacen(
             if op.seco { "recoger-seco" } else { "recoger" },
