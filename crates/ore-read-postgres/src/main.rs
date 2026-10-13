@@ -777,6 +777,20 @@ fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> J
 /// - **Con `track_counts` apagado**: no hay contadores.
 /// - **Si no es una tabla** (una vista, algo que no se ve): no hay de qué.
 ///
+/// # La forma, también (0063 S3b)
+///
+/// Los contadores cuentan filas, no columnas: añadir o renombrar una columna
+/// no los mueve, ni a `relfilenode` (medido en la vara, C6: con `cliente`
+/// renombrada, la copia dijo «ya está» y `healthy`). Por eso la huella lleva
+/// también la forma de la tabla: el `md5` de cada columna viva, en orden, con
+/// su tipo y si admite nulos.
+///
+/// # Si la tabla no está
+///
+/// Es un **error**, no «no respalda»: la copia que antes tenía señal no puede
+/// tomar un origen que ya no tiene la tabla por uno que no sabe contestar
+/// (la vara, C8).
+///
 /// Un reinicio sucio pone los contadores a cero: la huella cambia y la copia se
 /// rehace. Es el lado bueno: copiar de más, nunca dar por igual lo que cambió.
 /// Lo que sí queda es una ventana: un backend vuelca sus contadores al
@@ -801,7 +815,10 @@ fn cambio(entrada: &str) -> Result<String, String> {
     }
     let fila = cliente
         .query_opt(
-            "SELECT c.relfilenode::text, s.n_tup_ins::text, s.n_tup_upd::text, s.n_tup_del::text \
+            "SELECT c.relfilenode::text, s.n_tup_ins::text, s.n_tup_upd::text, s.n_tup_del::text, \
+               (SELECT md5(string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod) \
+                  || CASE WHEN a.attnotnull THEN ' not null' ELSE '' END, ',' ORDER BY a.attnum)) \
+                FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) \
              FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid \
              WHERE s.relid = to_regclass($1)",
             &[&lectura::citado(&objeto)],
@@ -809,10 +826,24 @@ fn cambio(entrada: &str) -> Result<String, String> {
         .map_err(|e| format!("no se pudo preguntar por `{objeto}`: {}", texto::causa(&e)))?;
     Ok(match fila {
         Some(f) => {
-            let v: Vec<String> = (0..4).map(|i| f.get::<_, String>(i)).collect();
-            ore_driver::huella("contadores", Some(&v.join(":")), true)
+            let v: Vec<String> = (0..5).map(|i| f.get::<_, String>(i)).collect();
+            ore_driver::huella("contadores-y-forma", Some(&v.join(":")), true)
         }
-        None => ore_driver::huella("contadores", None, false),
+        None => {
+            let existe: bool = cliente
+                .query_one(
+                    "SELECT to_regclass($1) IS NOT NULL",
+                    &[&lectura::citado(&objeto)],
+                )
+                .map(|r| r.get(0))
+                .map_err(|e| {
+                    format!("no se pudo preguntar por `{objeto}`: {}", texto::causa(&e))
+                })?;
+            if !existe {
+                return Err(format!("`{objeto}` no está en el origen"));
+            }
+            ore_driver::huella("contadores-y-forma", None, false)
+        }
     })
 }
 

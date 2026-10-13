@@ -600,9 +600,12 @@ fn una(
     //   (como el testigo): si lo que se lee cambia durante la copia, la pasada
     //   siguiente lo ve. Un dataset del lago no la necesita: su testigo es su
     //   snapshot, que ya lo garantiza.
-    let senal = match &origen_del_lago {
-        Some(_) => None,
-        None => senal_de(raiz_pkg, &r),
+    let (senal, fallo_de_la_senal) = match &origen_del_lago {
+        Some(_) => (None, None),
+        None => match senal_de(raiz_pkg, &r) {
+            Ok(s) => (s, None),
+            Err(e) => (None, Some(e)),
+        },
     };
 
     // ── ④ El puntero ────────────────────────────────────────────────────────
@@ -633,17 +636,29 @@ fn una(
     //     dónde comparar, y se copia una vez para tenerlo. Decir «ya está»
     //     sería dar por buena una copia de la que no se sabe la edad.
     let senal_previa = puntero.as_ref().and_then(senal_del_puntero);
-    let sin_cambios = senal.is_some() && senal == senal_previa;
-    let cambio_visto = senal.is_some() && senal_previa.is_some() && senal != senal_previa;
-    let sin_base = senal.is_some() && senal_previa.is_none() && !respalda(&testigo);
-    if sin_base && !rehacer && hecho.is_some() {
+    let ve = la_senal(
+        senal.as_ref(),
+        senal_previa.as_ref(),
+        fallo_de_la_senal.is_some(),
+        respalda(&testigo),
+    );
+    let sin_cambios = ve.sin_cambios;
+    if ve.sin_base && !rehacer && hecho.is_some() {
         println!("  sin señal de la copia anterior: se copia para tener desde dónde comparar");
     }
-    if cambio_visto && !rehacer {
+    if ve.cambio_visto && !rehacer {
         println!("  la tabla cambió desde la última copia (su señal no es la misma)");
     }
+    if let Some(e) = fallo_de_la_senal
+        .as_deref()
+        .filter(|_| ve.fallo_visto && !rehacer)
+    {
+        println!(
+            "  la señal de cambio no contestó ({e}): se intenta la copia, no se da por buena la anterior"
+        );
+    }
     // La misma cabecera que la última vez, y el dataset sigue ahí: al día.
-    if !rehacer && !cambio_visto && !sin_base && al_dia_con(puntero.as_ref(), &huella)? {
+    if !rehacer && ve.deja_decir_ya_esta() && al_dia_con(puntero.as_ref(), &huella)? {
         return ya_esta(
             puntero.as_ref(),
             bundle,
@@ -1600,12 +1615,20 @@ fn intento(cuando: &str, resultado: &str, motivo: Option<&str>) -> ore_core::jso
 /// `listing` (los mismos objetos con el mismo ETag) sí; `field` no ve ni
 /// actualizaciones ni borrados, y `none` no dice nada.
 /// **La señal de cambio de la raíz** (0063 S3): el verbo `cambio` del driver,
-/// por la pasarela si la hay. `None` si el driver no lo tiene o no respalda
-/// (una réplica, filas en *streaming*): entonces se decide como antes, por el
-/// testigo. No es un fallo de la copia: es no saber, y se dice como tal.
-fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Option<(String, String)> {
-    let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource).ok()?;
-    let url = lector::url(raiz_pkg, &env, &r.datasource).ok()?;
+/// por la pasarela si la hay. `Ok(None)` si no respalda (una réplica, filas en
+/// *streaming*) o no se puede preguntar: entonces se decide como antes, por el
+/// testigo. Es no saber, y se dice como tal.
+///
+/// `Err` si el verbo **falló** (0063 S3b): la tabla ya no está, el origen no
+/// contesta. Un driver sin el verbo también falla, pero ése nunca guardó una
+/// señal: `la_senal` sólo trata el fallo como tal si la hubo antes.
+fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Result<Option<(String, String)>, String> {
+    let Ok((tipo, env)) = lector::declaracion(raiz_pkg, &r.datasource) else {
+        return Ok(None);
+    };
+    let Ok(url) = lector::url(raiz_pkg, &env, &r.datasource) else {
+        return Ok(None);
+    };
     let salida = lector::preguntar(
         &tipo,
         &r.datasource,
@@ -1613,12 +1636,49 @@ fn senal_de(raiz_pkg: &Path, r: &vistas::Raiz) -> Option<(String, String)> {
         &url,
         vec![("objeto", ore_core::json::Json::s(&r.objeto))],
     )
-    .ok()?;
-    let n = ore_core::parse::parse(salida.trim()).ok()?;
+    .map_err(|f| f.mensaje)?;
+    let Ok(n) = ore_core::parse::parse(salida.trim()) else {
+        return Ok(None);
+    };
     if campo_de(&n, "respalda").as_deref() != Some("true") {
-        return None;
+        return Ok(None);
     }
-    Some((campo_de(&n, "modo")?, campo_de(&n, "valor")?))
+    Ok(campo_de(&n, "modo").zip(campo_de(&n, "valor")))
+}
+
+/// **Lo que la señal dice frente a la de la última copia** (0063 S3, S3b).
+#[derive(Debug, Default, PartialEq)]
+struct LaSenal {
+    /// La misma: la tabla no cambió, lo garantiza su señal.
+    sin_cambios: bool,
+    /// Distinta: cambió, y «ya está» no vale aunque la cabecera sea la misma.
+    cambio_visto: bool,
+    /// Sin la de antes, y con un testigo que no respalda: se copia una vez
+    /// para tener desde dónde comparar.
+    sin_base: bool,
+    /// La hubo y ahora el verbo falla: la tabla no está, o el origen no
+    /// contesta. Se intenta la copia; si el origen no está, falla de verdad.
+    fallo_visto: bool,
+}
+
+impl LaSenal {
+    fn deja_decir_ya_esta(&self) -> bool {
+        !self.cambio_visto && !self.sin_base && !self.fallo_visto
+    }
+}
+
+fn la_senal(
+    senal: Option<&(String, String)>,
+    previa: Option<&(String, String)>,
+    fallo: bool,
+    testigo_respalda: bool,
+) -> LaSenal {
+    LaSenal {
+        sin_cambios: senal.is_some() && senal == previa,
+        cambio_visto: senal.is_some() && previa.is_some() && senal != previa,
+        sin_base: senal.is_some() && previa.is_none() && !testigo_respalda,
+        fallo_visto: fallo && previa.is_some(),
+    }
 }
 
 /// La señal que el puntero guardó con la última copia publicada.
@@ -2544,6 +2604,27 @@ mod tests {
     }
 
     /// 0063 S3: la señal y el testigo que el puntero guardó, leídos de vuelta.
+    #[test]
+    fn la_senal_decide_y_su_fallo_no_es_no_saber() {
+        let a = ("contadores-y-forma".to_string(), "1:2:3:4:f".to_string());
+        let b = ("contadores-y-forma".to_string(), "1:2:3:4:g".to_string());
+        // La misma: ya está.
+        let v = la_senal(Some(&a), Some(&a), false, false);
+        assert!(v.sin_cambios && v.deja_decir_ya_esta());
+        // Distinta (la forma, aunque las filas no): se copia.
+        assert!(la_senal(Some(&b), Some(&a), false, false).cambio_visto);
+        // Sin la de antes y un testigo que no respalda: se copia una vez.
+        assert!(!la_senal(Some(&a), None, false, false).deja_decir_ya_esta());
+        assert!(la_senal(Some(&a), None, false, true).deja_decir_ya_esta());
+        // S3b: la hubo y ahora el verbo falla (la tabla no está): se intenta.
+        let v = la_senal(None, Some(&a), true, false);
+        assert!(v.fallo_visto && !v.deja_decir_ya_esta());
+        // Un driver sin el verbo nunca la guardó: su fallo es no saber.
+        assert!(la_senal(None, None, true, false).deja_decir_ya_esta());
+        // No respalda (`Ok(None)`): se decide por el testigo, como antes.
+        assert_eq!(la_senal(None, Some(&a), false, false), LaSenal::default());
+    }
+
     #[test]
     fn la_senal_y_el_testigo_del_puntero_se_leen() {
         let n = ore_core::parse::parse(
