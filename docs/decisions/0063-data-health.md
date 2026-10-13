@@ -826,8 +826,8 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 | **S1** ✅ | **El vocabulario y lo que se debe** — **hecho** (2026-10-13): OOS v1alpha30, [`01-la-salud`](../../vendor/oos/spec/v1alpha30/01-la-salud.md) y `health.schema.json` (`oos` `887a7a0`) | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
 | **S2** ✅ | **Nunca a oscuras, y la hora verdadera** — **hecho, desplegado y medido en la copia** (2026-10-13, `1466340d`, en el clúster con `a5d6e184`; consola `9fb92ff`): ver «S2 · lo hecho» y «S2 y S3 · medidos» | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
 | **S3** ✅ | **No decir «al día» sin comprobar** (cierra PG1) — **hecho, desplegado y medido** (2026-10-13, `e1005d8d`): el verbo `cambio` en Postgres (contadores y `relfilenode`) y BigQuery (`lastModifiedTime`, sin *streaming*); la copia guarda la señal y decide con ella. Los objetos, el SFTP y el JSONL, todavía sin el verbo: ver «S2 y S3 · medidos» | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
-| **S4** | **Retener lo raro** | Las guardas de D-E antes de publicar. Lo retenido no mueve el puntero, se sigue sirviendo lo último bueno, y la consola dice **Refresh held** con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve`, consola | **P5** |
-| **S5** | **El esquema del origen, al copiar y al catalogar** | El esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Queda en el informe y en el catálogo. Una lectura en vivo que lo encuentra dice **Schema drift**, nunca «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4**; M8 en lo que se dice al leer |
+| **S4** ✅ | **Retener lo raro** — **hecho, desplegado y medido** (2026-10-13, `2745ab7a`; C7 en verde): ver «R1, R2, S4 y S5 · lo hecho» | Las guardas de D-E antes de publicar. Lo retenido no mueve el puntero, se sigue sirviendo lo último bueno, y la consola dice **Refresh held** con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve`, consola | **P5** |
+| **S5** ✅ | **El esquema del origen, al copiar y al catalogar** — **hecho y desplegado** (2026-10-13, S5a `28aabd68`, S5b `a5fc920b`, S5c `21a8df6e`); S5a y S5b medidos (C4, C5, C6b en verde), S5c a mano: ver «R1, R2, S4 y S5 · lo hecho» | El esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Queda en el informe y en el catálogo. Una lectura en vivo que lo encuentra dice **Schema drift**, nunca «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4**; M8 en lo que se dice al leer |
 | **S6** | **El estado, en todas partes** | El estado calculado (D-B) con lo que la capa 0 sabe: el peor gana, baja por el linaje, `Unknown` en gris. `GET /health` y `health` en `/assets`. En la consola, el punto de color y «as of» en cada fila, el filtro «Needs attention» y la sección Health. **El bloque de salud en lo que recibe un agente**, con su política | `ore-core`, `ore-serve`, el agente del puesto, consola | La visión §1–§4 sobre la capa 0 |
 | **S7** | **Las promesas que se comprueban al copiar** | La gramática (D-D) en la spec. *Schema*, *Volume* y *Valid* de biblioteca, calculadas **en la misma pasada** (generaliza `sin_nulos`, sin leer un byte más). `Blocking` retiene; `Warning` publica y anota. Un build se para ante una `Blocking`. *Fresh within* se juzga al leer (D-B) | `C:\oos`, `ore-store` (`carga.rs`), `materializar.rs`, 0055, consola (escribirlas) | La visión §10 y §12 |
 | **S8** | **El refresco que cumple *Fresh within*** | La pasada periódica por celda, que recopia lo que tiene *Fresh within* y va a vencer, con la señal de S3 para no copiar lo que no cambió. Cada pasada queda en su puntero (intentos, fallos, duración) | malla (**go aparte**: un CronJob sobre `48-la-copia`), `ore-cli` | M7, avería 1 en lo prometido |
@@ -952,6 +952,62 @@ borra todo lo no alcanzable **sin mirar su edad** (`ORE_RECOGER_EDAD` sólo vale
 snapshots), y dos pasadas a la vez —la cola y la consola, o una repetida— bastan. Iceberg resuelve
 esto en `remove_orphan_files` con `older_than` (3 días por defecto). Y el dataset queda **sin
 salida**: ni una pasada ni un rehacer abren una base que no está.
+
+### R1, R2, S4 y S5 · lo hecho (2026-10-13)
+
+**R1 · la recogida no se lleva lo reciente** (`ae226c88`, `bfed52c3`). `Lago::huerfanos` sólo borra
+un fichero que nadie nombra si es más viejo que **la gracia**: 24 h por defecto, como el
+`older_than` de Iceberg pero más corta, porque aquí la pasada más larga dura minutos. Se ajusta con
+`ORE_RECOGER_GRACIA` en la copia y `--gracia` en `ore datasets mantener`; las pruebas que recogen al
+momento la ponen a 0. Dos pasadas a la vez ya no se borran una a otra.
+
+**R2 · una base que no está no bloquea.** Si la versión que nombra el puntero ya no está en el
+almacén, la copia lo dice («la versión que nombra el puntero ya no está en el almacén: se copia
+entera, como una tabla nueva») y copia entera en vez de fallar para siempre. Medido: `vara_bq`, la
+del borrado de la segunda vuelta, se curó sola en la siguiente pasada.
+
+**S4 · retener lo raro** (`2745ab7a`). La guarda de hoy es una: **0 filas sobre una versión
+publicada con filas**. La copia no publica. El puntero queda en `error` con su versión de antes y
+`intento {resultado: retenida, guarda: zero-rows}`, y la salud dice `refresh-held` con su `guard`,
+mientras se sigue sirviendo lo último bueno. Un **rehacer** publica de todas formas: es una persona
+diciendo «hazlo», y es lo que hace *[Publish anyway]* en la consola. Las copias de una vista SQL no
+llevan guarda: una vista vacía puede ser lo correcto.
+
+**S5a · el esquema del origen, al copiar** (`28aabd68`). El verbo `cambio` devuelve además las
+columnas de ahora, con su tipo en el vocabulario de OOS: `pg_attribute` en Postgres y
+`schema.fields` de `tables.get` en BigQuery. No cuesta otra pregunta. La copia las compara con la
+`Table` declarada y deja en el puntero `esquema_origen {added, removed, retyped, visto}`. La salud
+lo dice como `source-schema-changed` con sus `columns`. Si la copia lee una columna que se fue, no
+copia: falla con ese motivo y sirve lo último bueno (C6, C6b). Una columna sólo añadida se copia y
+se avisa (C4).
+
+**S5b · en vivo, *schema drift* y no «Not found»** (`a5fc920b`). Un código nuevo de los drivers,
+`esquema` (HTTP 409), distinto de `objeto` (404): la tabla está y le falta una columna que se pide.
+El mensaje dice qué falta y qué columnas tiene ahora. En BigQuery, el clasificador lleva
+«Unrecognized name» a `esquema`. La consola lo titula «The source schema changed».
+
+**S5c · *[Accept the new schema]*** (`21a8df6e`). `POST /datasets/{b}/{s}/{n}/esquema/aceptar`,
+sólo para una persona. Abre una rama (`esquema-<dataset>-<hora>`) y en ella:
+1. vuelve a leer el catálogo de la fuente (`ore source catalog` por la pasarela, con la credencial
+   del custodio), que regenera la `Table`;
+2. pone al día el `fields` de cada `Dataset` que se copia de esa tabla: un espejo pasa a las
+   columnas de ahora; con nombres propios sólo se quita lo que se fue, y sólo en los ficheros que
+   escribió la inducción;
+3. compara los diagnósticos antes y después: lo nuevo es lo que se rompería.
+
+Y abre la propuesta (0044) con todo eso dicho. Si no hay nada que aceptar, contesta 409 y retira la
+rama. La vara no lo mide: abrir propuestas está vetado al agente de la celda. Se prueba a mano desde
+la ficha.
+
+**La tercera vuelta (2026-10-13 23:35, [`vara-20261013-2335.md`](../../pruebas-de-fuego/salud/vara-20261013-2335.md),
+con `21a8df6e` desplegado): 18 de 18 en verde.** Lo nuevo de esta vuelta:
+- C4: la columna nueva se copia y se dice, `source-schema-changed`, con 1000 filas.
+- C5: la lectura en vivo de una columna renombrada contesta 409 `esquema` («`cliente` no está;
+  sus columnas son …») en los dos orígenes.
+- C6b: la copia que falla dice además que el esquema cambió.
+- C7: el origen vaciado se retiene, `refresh-held`, y se siguen sirviendo las 1000 filas.
+
+Todos los casos de la capa 0 que la vara sabe medir, en verde. Quedan S6–S8.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
