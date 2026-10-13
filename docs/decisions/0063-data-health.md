@@ -764,6 +764,46 @@ cae, **una** incidencia en el origen y todos sus activos en `Degraded` con «sou
 - **Cada paso, su plan y su go.** Lo que toca la malla lleva su go aparte (flag nuevo y malla, nunca
   juntos). Lo que toca la spec sube su versión en `C:\oos`.
 
+### La capa 0 es las cañerías, y también el suelo
+
+S1–S8 son lo que hace que lo demás funcione. Y son, al mismo tiempo, lo primero del producto que ve
+quien consume. Las dos cosas a la vez, y por eso van primero y no se apagan.
+
+**Las cañerías: lo que las capas 1 y 2 reutilizan, en vez de construir lo suyo.**
+
+| Pieza de la capa 0 | Lo que deja hecho | Quién lo reutiliza encima |
+|---|---|---|
+| **S1** · el vocabulario en la spec | Los cuatro estados, *data as of*, *checked*, *last good version*, las tres capas, el bloque de salud y sus motivos | **Todo**: las capas 1 y 2 hablan con esas palabras y devuelven ese bloque. Una incidencia (S11) es un motivo con historia; la cobertura (S9, S15) es qué capas están encendidas |
+| **S2** · la última buena y `datos_de` | La versión que se sirve mientras la nueva no llega, y la hora real de los datos | **S6**, porque la edad sale de `datos_de`. **S11**, porque una incidencia dura «desde» que dejó de haber una versión nueva. **S15**, porque el cumplimiento de *Fresh within* se mide sobre esa hora. **S10**: el vigilante compara «el origen cambió después de *as of*» con esa misma hora |
+| **S3** · la señal de cambio de cada driver | Una pregunta por tipo de origen, con el ámbito del activo: «¿cambió desde *as of*?». Su coste está medido (M3) | **S10**: el vigilante hace **la misma pregunta**, sólo que entre pasadas y donde se enciende. **S8**: el refresco no copia lo que no cambió. **S14**: los monitores aprendidos estiman la cadencia del origen con la historia de esas respuestas |
+| **S4** · retener antes de publicar | El camino «se escribe, se comprueba, se publica o se retiene», con *Publish anyway* | **S7** y **S13**: una promesa `Blocking` retiene **por ese mismo camino**. **S11**: una retención abre su incidencia |
+| **S5** · el esquema del origen frente al declarado | Un diff de esquema (nueva, quitada, renombrada, otro tipo) en la copia y en el catálogo, y el error *Schema drift* al leer en vivo | **S10**: el vigilante lo aplica a lo que se lee en vivo **antes** de que alguien consulte. **S7**: la promesa *Schema* es ese diff con una severidad. **S11**: un cambio de esquema es una causa, con todos sus activos debajo |
+| **S6** · el estado calculado | La función del estado: lo medido, lo prometido y la hora, el peor gana, baja por el linaje. Y por dónde llega a quien lee (`/health`, `/assets`, SQL, Python, la vista previa, los agentes) | **S11**: una incidencia se abre **cuando el estado cambia**, y su alcance es el linaje de S6. **S15**: la vista de la organización suma estados. Las capas 1 y 2 **sólo añaden señales** a esa función; no traen otra |
+| **S7** · las métricas en la pasada | Las promesas *Schema*, *Volume* y *Valid*, calculadas sobre los lotes que ya se leen. La forma de una promesa en el `Ruleset` | **S12**: el perfilado son **las mismas métricas, más y con historia**. **S13**: las promesas SQL son otra forma de la misma gramática. **S15**: sugerir una promesa es proponer un documento de esa gramática |
+| **S8** · la pasada periódica | Un CronJob por celda que recorre lo prometido y deja cada pasada registrada | **S10**: el vigilante **es esa pasada**, ampliada donde la vigilancia está encendida. No hay un segundo planificador |
+
+**Lo que no se reutiliza, porque es propio de cada capa:** la tabla de salud del lago (S9), que
+guarda lo medido entre pasadas; el interruptor por ámbito (S9); el ciclo de una incidencia y sus
+avisos (S11); y la historia de perfiles (S12). Es lo que cuesta, y por eso se enciende.
+
+**El suelo: lo que ya ve quien consume con sólo la capa 0, sin encender nada.**
+- Lo que se lee es **la última versión buena**, con su edad y su motivo, aunque la pasada haya
+  fallado (S2).
+- **Data as of** en cada fila del catálogo, nunca la hora de un commit (S2, S6).
+- **Unverified** donde hoy pone «al-dia» sin haber mirado (S3).
+- **Refresh held** donde hoy se publicarían 0 filas (S4).
+- **Schema drift** donde hoy dice «Not found» (S5).
+- El aviso **dentro del resultado** de SQL, de Python, de la vista previa y de lo que recibe un
+  agente (S6).
+- Lo prometido, cumplido o no, al copiar (S7), y refrescado a su ritmo (S8).
+
+Es **la promesa de la visión entera**: cada activo dice la verdad sobre sí mismo. Las capas 1 y 2
+añaden **saberlo antes**, **saberlo entre pasadas** y **saber más**.
+
+**Por eso la capa 0 no se puede apagar y va primero.** Lo que se construya encima de una plataforma
+que miente vigila mentiras. Eso es lo que pasó en M6: un monitor de frescura habría visto «al-dia»
+en una copia con el origen muerto, y lo habría dado por bueno.
+
 ### Las decisiones que hay que tomar antes de S1
 
 | | Decisión | Recomendada |
