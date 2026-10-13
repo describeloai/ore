@@ -101,7 +101,8 @@ industria tiene nombre se usa el suyo.
 | `codigo` | cuándo | reintentable |
 |---|---|---|
 | `operador` | un operador o un campo que no sabe expresar | no |
-| `objeto` | el objeto o una columna no existen en el origen | no |
+| `objeto` | el objeto no existe en el origen | no |
+| `esquema` | el objeto existe y le falta una columna que se pide: su esquema cambió (0063 S5b) | no |
 | `credencial` | el origen rechaza la credencial | no |
 | `tiempo` | se agotó `timeoutMs` | sí |
 | `conexion` | no se llega al origen | sí |
@@ -223,7 +224,7 @@ estado y sin hablar con el custodio. Sólo `ore-serve` puede llamarla (NetworkPo
   recicla tras un tiempo sin uso. La credencial vive en memoria mientras dura su conexión; no se
   escribe a disco.
 - **Errores antes del primer byte**: JSON `{"codigo", "mensaje", "reintentable"}` con el estado HTTP
-  correspondiente (`400` operador, `404` objeto, `502` origen o credencial, `503` saturado, `504`
+  correspondiente (`400` operador, `404` objeto, `409` esquema, `502` origen o credencial, `503` saturado, `504`
   tiempo).
 
 **Hecho código** (F3·1 y F3·2): `crates/ore-federation`, en la imagen `ore-drivers` junto a los

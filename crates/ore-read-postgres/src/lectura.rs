@@ -319,12 +319,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         let f = cols
             .iter()
             .find(|(n, _)| n == col)
-            .ok_or_else(|| {
-                Fallo::new(
-                    Codigo::Objeto,
-                    format!("`{}` no tiene la columna `{col}`", p.objeto),
-                )
-            })?
+            .ok_or_else(|| deriva(&p.objeto, col, &cols))?
             .1;
         let i = consulta
             .columnas
@@ -342,10 +337,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         .chain(p.orden.iter().map(|o| &o.columna))
     {
         if !cols.iter().any(|(n, _)| n == col) {
-            return Err(Fallo::new(
-                Codigo::Objeto,
-                format!("`{}` no tiene la columna `{col}`", p.objeto),
-            ));
+            return Err(deriva(&p.objeto, col, &cols));
         }
     }
     let esquema = Arc::new(Schema::new(
@@ -511,6 +503,21 @@ pub fn estimar(c: &mut postgres::Client, p: &Peticion) -> Result<String, Fallo> 
         ("fuente", Json::s("EXPLAIN")),
     ])
     .jcs())
+}
+
+/// **La tabla está y le falta una columna declarada** (ADR 0063 S5b): el
+/// esquema del origen cambió. `esquema` y no `objeto`, con lo que tiene ahora.
+fn deriva<T>(objeto: &str, col: &str, cols: &[(String, T)]) -> Fallo {
+    Fallo::new(
+        Codigo::Esquema,
+        format!(
+            "the source schema changed: `{objeto}` no longer has the column `{col}` (its columns now: {})",
+            cols.iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
 }
 
 #[cfg(test)]

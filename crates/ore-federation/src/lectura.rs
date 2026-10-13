@@ -127,6 +127,8 @@ pub fn http_de(c: Codigo) -> u16 {
     match c {
         Codigo::Operador => 400,
         Codigo::Objeto => 404,
+        // 0063 S5b: la tabla está; su forma no es la declarada.
+        Codigo::Esquema => 409,
         Codigo::Tiempo => 504,
         Codigo::Credencial | Codigo::Conexion | Codigo::Origen => 502,
     }

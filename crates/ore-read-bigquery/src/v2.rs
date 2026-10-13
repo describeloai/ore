@@ -64,11 +64,13 @@ pub fn fallo(m: String) -> Fallo {
         ]) {
             (Codigo::Credencial, false)
         } else if tiene(&[
-            "contestó 404",
-            "Not found",
+            "no longer has the column",
             "Unrecognized name",
             "no tiene la columna",
         ]) {
+            // 0063 S5b: la tabla está; una columna no.
+            (Codigo::Esquema, false)
+        } else if tiene(&["contestó 404", "Not found"]) {
             (Codigo::Objeto, false)
         } else if tiene(&["no se pudo hablar con BigQuery"]) {
             (Codigo::Conexion, true)
@@ -240,10 +242,19 @@ fn planear(t: &dyn rest::Transporte, p: &Peticion) -> Result<Plan, Fallo> {
                 .collect()
         })
         .unwrap_or_default();
+    // 0063 S5b: la tabla está y le falta una columna: el esquema cambió.
     let falta = |col: &str| {
         Fallo::new(
-            Codigo::Objeto,
-            format!("`{}` no tiene la columna `{col}`", p.objeto),
+            Codigo::Esquema,
+            format!(
+                "the source schema changed: `{}` no longer has the column `{col}` (its columns now: {})",
+                p.objeto,
+                campos
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         )
     };
     let mut salida = Vec::new();
@@ -511,11 +522,18 @@ mod tests {
 
     /// Una columna que no está es `objeto`, antes de lanzar nada.
     #[test]
-    fn una_columna_que_no_esta_es_objeto() {
+    fn una_columna_que_no_esta_es_esquema() {
+        // 0063 S5b: la tabla está y le falta la columna: su esquema cambió,
+        // no «no existe». Y dice lo que tiene ahora.
         let g = Guion::new(vec![Ok(tabla())]);
         let p = peticion(r#","filtros":[{"columna":"no_esta","operador":"eq","valor":"1"}]"#);
         let e = leer(&g, &p, &mut Vec::new()).expect_err("no está");
-        assert_eq!(e.codigo, Codigo::Objeto);
+        assert_eq!(e.codigo, Codigo::Esquema);
+        assert!(
+            e.mensaje.contains("no longer has the column `no_esta`"),
+            "{}",
+            e.mensaje
+        );
         assert_eq!(g.pedidas.borrow().len(), 1, "sólo `tables.get`");
     }
 

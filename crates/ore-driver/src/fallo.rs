@@ -18,8 +18,13 @@ pub enum Codigo {
     /// Un operador o un campo que el conector no sabe expresar. Es un defecto
     /// de quien pidió: sólo debía mandar lo que el conector declaró.
     Operador,
-    /// El objeto o una columna no existen en el origen.
+    /// El objeto no existe en el origen.
     Objeto,
+    /// **El objeto existe, pero su forma ya no es la declarada** (ADR 0063
+    /// S5b): le falta una columna que se pide. No es «no existe» —un 404 que
+    /// la consola pintaba «Not found» sobre una tabla que está ahí—: es que el
+    /// origen cambió, y el arreglo es otro (aceptar el esquema nuevo).
+    Esquema,
     /// El origen rechaza la credencial.
     Credencial,
     /// Se agotó `timeoutMs`.
@@ -31,9 +36,10 @@ pub enum Codigo {
 }
 
 impl Codigo {
-    pub const TODOS: [Codigo; 6] = [
+    pub const TODOS: [Codigo; 7] = [
         Codigo::Operador,
         Codigo::Objeto,
+        Codigo::Esquema,
         Codigo::Credencial,
         Codigo::Tiempo,
         Codigo::Conexion,
@@ -44,6 +50,7 @@ impl Codigo {
         match self {
             Codigo::Operador => "operador",
             Codigo::Objeto => "objeto",
+            Codigo::Esquema => "esquema",
             Codigo::Credencial => "credencial",
             Codigo::Tiempo => "tiempo",
             Codigo::Conexion => "conexion",

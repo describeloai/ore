@@ -115,7 +115,14 @@ pub fn leer(
     for (_, c) in &p.proyeccion {
         let campo = campos
             .get(c.as_str())
-            .ok_or_else(|| format!("`{}` no tiene la columna `{c}`", p.objeto))?;
+            .ok_or_else(|| {
+                // 0063 S5b: el clasificador lo lleva a `esquema`.
+                format!(
+                    "the source schema changed: `{}` no longer has the column `{c}` (its columns now: {})",
+                    p.objeto,
+                    campos.keys().copied().collect::<Vec<_>>().join(", ")
+                )
+            })?;
         let bq = campo["type"].as_str().unwrap_or("");
         if campo["mode"] == "REPEATED" || !TIPOS.contains(&bq) {
             return Ok(Lectura::Declina(format!(

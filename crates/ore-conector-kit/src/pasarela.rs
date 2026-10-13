@@ -1190,6 +1190,7 @@ fn crate_http(c: ore_driver::Codigo) -> u16 {
     match c {
         Operador => 400,
         Objeto => 404,
+        Esquema => 409,
         Tiempo => 504,
         Credencial | Conexion | Origen => 502,
     }
