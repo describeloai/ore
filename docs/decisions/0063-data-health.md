@@ -824,8 +824,8 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 |---|---|---|---|---|
 | **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket) que se montan y se desmontan solos. Más una versión de laboratorio para el CI | `pruebas-de-fuego/salud/`, CI | — (todas en rojo) |
 | **S1** ✅ | **El vocabulario y lo que se debe** — **hecho** (2026-10-13): OOS v1alpha30, [`01-la-salud`](../../vendor/oos/spec/v1alpha30/01-la-salud.md) y `health.schema.json` (`oos` `887a7a0`) | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
-| **S2** ✅ | **Nunca a oscuras, y la hora verdadera** — **hecho en código** (2026-10-13, `1466340d`; consola `9fb92ff`), por desplegar y medir: ver «S2 · lo hecho» | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
-| **S3** | **No decir «al día» sin comprobar** (cierra PG1) | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
+| **S2** ✅ | **Nunca a oscuras, y la hora verdadera** — **hecho, desplegado y medido en la copia** (2026-10-13, `1466340d`, en el clúster con `a5d6e184`; consola `9fb92ff`): ver «S2 · lo hecho» y «S2 y S3 · medidos» | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
+| **S3** ✅ | **No decir «al día» sin comprobar** (cierra PG1) — **hecho, desplegado y medido** (2026-10-13, `e1005d8d`): el verbo `cambio` en Postgres (contadores y `relfilenode`) y BigQuery (`lastModifiedTime`, sin *streaming*); la copia guarda la señal y decide con ella. Los objetos, el SFTP y el JSONL, todavía sin el verbo: ver «S2 y S3 · medidos» | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
 | **S4** | **Retener lo raro** | Las guardas de D-E antes de publicar. Lo retenido no mueve el puntero, se sigue sirviendo lo último bueno, y la consola dice **Refresh held** con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve`, consola | **P5** |
 | **S5** | **El esquema del origen, al copiar y al catalogar** | El esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Queda en el informe y en el catálogo. Una lectura en vivo que lo encuentra dice **Schema drift**, nunca «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4**; M8 en lo que se dice al leer |
 | **S6** | **El estado, en todas partes** | El estado calculado (D-B) con lo que la capa 0 sabe: el peor gana, baja por el linaje, `Unknown` en gris. `GET /health` y `health` en `/assets`. En la consola, el punto de color y «as of» en cada fila, el filtro «Needs attention» y la sección Health. **El bloque de salud en lo que recibe un agente**, con su política | `ore-core`, `ore-serve`, el agente del puesto, consola | La visión §1–§4 sobre la capa 0 |
@@ -890,6 +890,41 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 - **Las colecciones**, que tienen su propio puntero.
 - **Los punteros de antes de S2** no saben de cuándo son (`dataAsOf: null`) hasta su próxima copia.
   No se rellena con la hora del commit.
+
+### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
+
+Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
+los datasets dados.
+
+**S2: un refresco que falla deja lo último bueno.** Un rehacer de `sftp_s.tablas.us_states`, cuyo
+SFTP ya no existe. La pasada falla de verdad (`35.241.131.133:22` no contesta) y el puntero queda en
+`error` **con** su `metadata_location` y sus 50 filas, y con `intento {resultado: error, motivo}`.
+Antes de S2 ese puntero se quedaba sin versión y el dataset dejaba de leerse (M5). Falta el lado de
+quien lee: SQL con el aviso y la ficha en *Degraded*.
+
+**S3: la señal decide.** Dos copias de BigQuery (`bq.ventas.pedidos`, `bq.ventas.clientes`) y dos de
+Postgres (`standard_test.public.products`, `…prueba_de_pk`), todas con testigo `none`:
+
+| Pasada | Qué cambió en el origen | Lo que hizo la copia | Puntero |
+|---|---|---|---|
+| 1 | nada | las cuatro **copiadas**: «sin señal de la copia anterior» | `senal` guardada (`modificada` en BigQuery, `contadores` en Postgres), `datos_de` |
+| 2 | nada | las cuatro **«ya está» sin leer una fila** | `comprobado` posterior a `datos_de`, `intento: sin-cambios`; `datos_de` no se mueve |
+| 3 | `INSERT` de una fila en `ventas.pedidos` | **sólo `pedidos` copiada** (9 filas): «la tabla cambió» | `senal` nueva; las otras tres, comprobadas otra vez |
+| 4 | `DELETE` de esa fila | **sólo `pedidos` copiada** (8 filas) | lo que `field` no ve (M2) lo ve la señal |
+
+Antes de S3, con `none`, las cuatro decían «al día» sin preguntar, y la pasada 3 no habría copiado
+nada. Cada pasada, 30–38 s de Job. La tabla de prueba quedó como estaba.
+
+**Lo que la medida sacó a la luz, fuera de S2 y S3:**
+- **Un paquete que no compila hace que `ore view` salga con 65.** `azure_blob_mnist` (2026-10-12)
+  declara la columna `"0"` 784 veces: `ore discover` tomó como cabecera la primera fila del CSV de
+  MNIST, que son píxeles (OOS1001). La plantilla de `main` lo tolera desde 0053 (`beed5b7b`); los
+  Jobs de rama y de rehacer encolados antes de eso, no.
+- **La cola repite lo viejo.** Los Jobs de la cola caducan a las 24 h (`ttlSecondsAfterFinished`)
+  y Flux los vuelve a crear desde su fichero en `trabajo.git`. El 13 de octubre, a las 15:31 y
+  15:42, volvieron a correr siete *rehacer* del 5 y 6 de octubre, con el guion de entonces, y
+  fallaron. Un rehacer repetido copia entero sin que nadie lo haya pedido otra vez. Es la avería 1
+  de M7 al revés: trabajo que nadie pidió, y nadie lo ve.
 
 ### Por qué este orden
 
