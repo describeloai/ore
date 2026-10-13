@@ -245,13 +245,22 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 .filter_map(|x| x.as_str())
                 .map(String::from)
                 .collect();
-            recoger(
+            // 0063 R1: lo huérfano, sólo si lleva la gracia sin tocarse.
+            let gracia = campo("gracia_ms")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(GRACIA_HUERFANOS_MS);
+            let ahora = campo("ahora_ms")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or_else(crate::lago::ahora_ms);
+            recoger_con(
                 &lago,
                 &dataset,
                 &ml,
                 &tambien,
                 edad,
                 verbo == "recoger-seco",
+                gracia,
+                ahora,
             )
         }
         "aplicar" => aplicar(&lago, primera),
@@ -2093,6 +2102,11 @@ fn lago_cuenta(lago: &Lago) -> Result<Arc<dyn Almacen>, String> {
 /// Y lo que nombran las demás ramas (`tambien`, 0044 C.2 ②) no se retira: la
 /// tabla es una y cada rama tiene su cadena. Una que ya no se abre (su
 /// `metadata.json` no está) no nombra nada.
+///
+/// ⭐ 0063 R1 · Lo huérfano se retira sólo si lleva `gracia_ms` sin tocarse
+/// ([`Lago::huerfanos`]): lo que esta pasada no alcanza puede ser lo que otra
+/// acaba de publicar. Las pruebas, con la gracia de por defecto y `ahora`.
+#[cfg(test)]
 fn recoger(
     lago: &Lago,
     dataset: &str,
@@ -2100,6 +2114,34 @@ fn recoger(
     tambien: &[String],
     edad_ms: Option<i64>,
     seco: bool,
+) -> Result<String, String> {
+    recoger_con(
+        lago,
+        dataset,
+        metadata_location,
+        tambien,
+        edad_ms,
+        seco,
+        GRACIA_HUERFANOS_MS,
+        crate::lago::ahora_ms(),
+    )
+}
+
+/// **La gracia de lo huérfano** (0063 R1): un día. Una pasada dura minutos y
+/// un clon del árbol vive lo que ella; lo que de verdad nadie nombra espera un
+/// día más en el bucket, que cuesta céntimos. Iceberg usa tres.
+const GRACIA_HUERFANOS_MS: i64 = 24 * 3600 * 1000;
+
+#[allow(clippy::too_many_arguments)]
+fn recoger_con(
+    lago: &Lago,
+    dataset: &str,
+    metadata_location: &str,
+    tambien: &[String],
+    edad_ms: Option<i64>,
+    seco: bool,
+    gracia_ms: i64,
+    ahora_ms: i64,
 ) -> Result<String, String> {
     let tabla = lago.abrir(metadata_location, dataset)?;
     let otras: Vec<_> = tambien
@@ -2118,7 +2160,7 @@ fn recoger(
         }
         Some(e) => lago.expirar(&tabla, e, minimo)?,
     };
-    let ficheros = lago.huerfanos(&tabla, &otras, seco)?;
+    let ficheros = lago.huerfanos(&tabla, &otras, seco, gracia_ms, ahora_ms)?;
     Ok(Json::obj([
         ("edad_ms", edad.map(Json::Int).unwrap_or(Json::Int(-1))),
         ("expirados", Json::Int(expirados.len() as i64)),
@@ -2348,6 +2390,17 @@ mod tests {
                 .keys()
                 .filter(|k| k.starts_with(prefijo))
                 .cloned()
+                .collect())
+        }
+        fn listar_con_fecha(&self, prefijo: &str) -> Result<Vec<crate::almacen::Listado>, String> {
+            Ok(self
+                .listar(prefijo)?
+                .into_iter()
+                .map(|clave| crate::almacen::Listado {
+                    clave,
+                    tamano: 0,
+                    tocado_ms: 0,
+                })
                 .collect())
         }
         fn borrar(&self, clave: &str) -> Result<(), String> {
@@ -2715,6 +2768,27 @@ mod tests {
             let t = lago.abrir(m, d).unwrap();
             assert_eq!(Lago::filas_del_snapshot(&t), 1, "{m}");
         }
+
+        // 0063 R1 · LA CARRERA DE LA VARA: una pasada con un clon viejo (sólo
+        // ve `main`) recoge mientras lo de la rama es reciente. No se lo
+        // lleva: `ahora` cae dentro de la gracia de lo que escribió la otra.
+        let r = recoger_con(
+            &lago,
+            d,
+            &main,
+            &[],
+            None,
+            false,
+            GRACIA_HUERFANOS_MS,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(
+            campo(&r, "ficheros"),
+            "0",
+            "lo reciente no es huérfano: {r}"
+        );
+        assert!(lago.abrir(&rama, d).is_ok(), "la otra sigue abriendo");
 
         let r = recoger(&lago, d, &main, &[], None, false).unwrap();
         assert_ne!(

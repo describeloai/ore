@@ -715,7 +715,21 @@ fn una(
     // desde el que partir. Y si no hay dataset —primera vez, o un puntero
     // heredado que nombra un sobre— esto es exactamente lo que era: una copia
     // entera, y el dataset nace.
-    let base = hecho.clone();
+    // ⭐ 0063 R2 · UNA BASE QUE NO ESTÁ NO BLOQUEA. Si el `metadata.json` que
+    //   nombra el puntero ya no está en el almacén (lo retiró la recogida de
+    //   otra pasada, medido en la vara; o alguien vació el bucket), construir
+    //   sobre él falla en cada pasada y también al rehacer: el dataset queda
+    //   sin salida. Se copia entero, como una tabla nueva en el mismo sitio.
+    //   Lo que había ya no se puede servir de todos modos.
+    let base = match hecho.clone() {
+        Some(ml) if !esta_en_el_almacen(&ml)? => {
+            println!(
+                "  la versión que nombra el puntero ya no está en el almacén: se copia entera, como una tabla nueva\n    ({ml})"
+            );
+            None
+        }
+        b => b,
+    };
     let mismo_plan = puntero
         .as_ref()
         .and_then(|p| campo_de(p, "plan"))
@@ -938,7 +952,6 @@ fn ya_esta(
 /// La huella de la cabecera, y si el puntero ya la tiene y su dataset sigue en
 /// el bucket: lo que decide «ya está» (④), igual para las dos copias.
 fn al_dia_con(puntero: Option<&ore_core::parse::Node>, huella: &str) -> Result<bool, String> {
-    use ore_core::json::Json;
     let Some(p) = puntero else { return Ok(false) };
     let Some(ml) = campo_de(p, "metadata_location") else {
         return Ok(false);
@@ -946,9 +959,15 @@ fn al_dia_con(puntero: Option<&ore_core::parse::Node>, huella: &str) -> Result<b
     if campo_de(p, "cabecera").as_deref() != Some(huella) {
         return Ok(false);
     }
+    esta_en_el_almacen(&ml)
+}
+
+/// Si el `metadata.json` que nombra un puntero sigue en el almacén (un HEAD).
+fn esta_en_el_almacen(metadata_location: &str) -> Result<bool, String> {
+    use ore_core::json::Json;
     let b = almacen(
         "buscar",
-        &Json::obj([("metadata_location", Json::s(&ml))]).jcs(),
+        &Json::obj([("metadata_location", Json::s(metadata_location))]).jcs(),
         None,
     )?;
     Ok(campo_de(&b, "existe").as_deref() == Some("true"))

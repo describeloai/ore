@@ -1377,7 +1377,22 @@ impl Lago {
     ///   cada una con su cadena de `metadata.json`. Lo que nombre cualquiera de
     ///   ellas está vivo: sin esto, recoger desde `main` borraba lo que una rama
     ///   escribió en la tabla (medido, D0 M1), y al revés (M2).
-    pub fn huerfanos(&self, tabla: &Table, otras: &[Table], seco: bool) -> Result<usize, String> {
+    ///
+    /// ⭐ 0063 R1 · **Sólo lo que lleva más de `gracia_ms` sin tocarse.** Lo
+    /// que no alcanza la tabla que ESTA pasada ve puede ser lo que otra pasada
+    /// acaba de publicar sobre un puntero que esta no ve todavía: su clon del
+    /// árbol es de antes (medido en la vara: la cola repetida se llevó la
+    /// `00010` recién publicada, y el dataset quedó sin salida). Es el
+    /// `older_than` de `remove_orphan_files` en Iceberg. Un almacén que no sabe
+    /// la fecha dice que todo es de ahora, y no se lleva nada.
+    pub fn huerfanos(
+        &self,
+        tabla: &Table,
+        otras: &[Table],
+        seco: bool,
+        gracia_ms: i64,
+        ahora_ms: i64,
+    ) -> Result<usize, String> {
         let mut vivos = runtime().block_on(self.alcanzables(tabla))?;
         for o in otras {
             vivos.extend(runtime().block_on(self.alcanzables(o))?);
@@ -1385,7 +1400,8 @@ impl Lago {
         let cuenta = self.cuenta().map_err(err)?;
         let prefijo = format!("{}/", self.clave(tabla.metadata().location()).map_err(err)?);
         let mut n = 0usize;
-        for k in cuenta.listar(&prefijo)? {
+        for o in cuenta.listar_con_fecha(&prefijo)? {
+            let k = o.clave;
             // Sólo lo de la tabla: sus `metadata/` y `data/`. Lo demás bajo su
             // ubicación es de OTRA —`datasets/ventas_x` (la tabla `x` de
             // `ventas`) es prefijo de `datasets/ventas_x/default/n` (la base
@@ -1395,6 +1411,9 @@ impl Lago {
                 continue;
             }
             if vivos.contains(&self.uri(&k)) {
+                continue;
+            }
+            if o.tocado_ms.saturating_add(gracia_ms) > ahora_ms {
                 continue;
             }
             if !seco {
