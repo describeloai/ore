@@ -935,6 +935,24 @@ esperaba: C4, C5 y C6b (S5) y C7 (S4). Y **dos rojos que nadie esperaba, y los d
   el testigo `none` la copia dijo «al día». Que el verbo falle no es «no sé»: la copia tiene que
   intentarlo, y fallar de verdad.
 
+**S3b (`ce7d853a`, 2026-10-13) y la segunda vuelta: 10 de 18.** La huella de Postgres lleva la
+forma de la tabla (`contadores-y-forma`: el `md5` de cada columna viva) y una tabla que no está es
+un error del verbo; la copia que tenía señal y ve fallar el verbo lo intenta, en vez de darse por
+buena (`la_senal`). En la vuelta: C6 en Postgres y C8 en los dos, **en verde**, con «la señal de
+cambio no contestó (… no está en el origen): se intenta la copia» en el log. C4 en Postgres ya no
+dice `healthy`: la columna nueva se copia (sigue en rojo hasta S5). La vuelta se cortó al leer el
+último puntero (el DNS del clúster tardó 300 s en resolver la forja); C8 se leyó a mano.
+
+**Y lo que esa vuelta destapó, que es lo más grave hasta ahora: el recolector borra lo que otra
+pasada acaba de escribir.** A las 19:06:23 Flux volvió a crear `copiar-ee4bf960` (la cola que se
+repite). Clonó el árbol con el puntero de `vara_bq` en la `00009`, y su `--recoger` retiró «3
+fichero(s) que nadie nombraba»: entre ellos la `00010`, que la pasada de la vara acababa de publicar
+y a la que el puntero ya apuntaba. Su push se rechazó; el borrado no tiene vuelta. `Lago::huerfanos`
+borra todo lo no alcanzable **sin mirar su edad** (`ORE_RECOGER_EDAD` sólo vale para expirar
+snapshots), y dos pasadas a la vez —la cola y la consola, o una repetida— bastan. Iceberg resuelve
+esto en `remove_orphan_files` con `older_than` (3 días por defecto). Y el dataset queda **sin
+salida**: ni una pasada ni un rehacer abren una base que no está.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
