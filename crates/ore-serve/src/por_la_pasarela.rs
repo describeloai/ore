@@ -42,7 +42,7 @@ pub(crate) fn catalogando(fuente: &str) -> bool {
 }
 
 /// Sin la credencial: ni la `url` entera ni su clave (`esquema://u:clave@…`).
-fn tapar(texto: &str, url: &str) -> String {
+pub(crate) fn tapar(texto: &str, url: &str) -> String {
     let mut t = texto.replace(url, "***");
     if let Some(clave) = url
         .split_once("://")

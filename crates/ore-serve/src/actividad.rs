@@ -78,6 +78,12 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
         "/datasets/{}/{}/{}/confirmar",
         Es::Acto("dataset:confirmar"),
     ),
+    // 0063 S5c: una rama y una propuesta con el esquema nuevo del origen.
+    (
+        "POST",
+        "/datasets/{}/{}/{}/esquema/aceptar",
+        Es::Acto("esquema:aceptar"),
+    ),
     // el árbol
     ("POST", "/paquetes", Es::Acto("base:crear")),
     ("DELETE", "/paquetes/{}", Es::Acto("base:retirar")),

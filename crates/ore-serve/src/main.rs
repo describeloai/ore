@@ -54,6 +54,7 @@ mod documentos;
 mod ensayo;
 mod entorno;
 mod escritas;
+mod esquema;
 mod federado;
 mod federar;
 mod firma_viva;

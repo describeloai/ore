@@ -1076,6 +1076,11 @@ impl Servidor {
             ("POST", ["datasets", b, s, n, "confirmar"]) => {
                 self.confirmar_dataset(rama, sujeto, b, s, n, &p.cuerpo)
             }
+            // ⭐ 0063 S5c · aceptar el esquema nuevo del origen: una rama y una
+            //   propuesta, con lo que se rompería dicho. Sólo una persona.
+            ("POST", ["datasets", b, s, n, "esquema", "aceptar"]) => {
+                self.aceptar_esquema(sujeto, b, s, n)
+            }
             // ⭐ 0036 ④: con `X-Ore-Raiz`, sólo las que tocan SUS ficheros —la
             //   pestaña «Pull requests» de un repositorio—.
             ("GET", ["propuestas"]) => {
