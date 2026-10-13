@@ -824,7 +824,7 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 |---|---|---|---|---|
 | **S0** | **La vara** | M1–M8 como pruebas con el resultado de la visión, con orígenes de prueba propios (Neon, BigQuery, un bucket) que se montan y se desmontan solos. Más una versión de laboratorio para el CI | `pruebas-de-fuego/salud/`, CI | — (todas en rojo) |
 | **S1** ✅ | **El vocabulario y lo que se debe** — **hecho** (2026-10-13): OOS v1alpha30, [`01-la-salud`](../../vendor/oos/spec/v1alpha30/01-la-salud.md) y `health.schema.json` (`oos` `887a7a0`) | En la spec: los cuatro estados, *data as of*, *checked*, *last good version* y las tres capas. Sus obligaciones: no servir lo no comprobado como fresco, servir lo último bueno con su estado, `unknown` ≠ `pass`, y que la capa 0 no se puede apagar. Sin código | `C:\oos` (v1alpha30) | — |
-| **S2** | **Nunca a oscuras, y la hora verdadera** | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
+| **S2** ✅ | **Nunca a oscuras, y la hora verdadera** — **hecho en código** (2026-10-13, `1466340d`; consola `9fb92ff`), por desplegar y medir: ver «S2 · lo hecho» | Una pasada que falla deja servir **la última versión buena**, con su estado y su motivo. El puntero guarda **`datos_de`** (τ_lectura, tomada antes de leer). SQL, Python y la vista previa leen lo último bueno y llevan **el bloque de salud**. La consola enseña «as of», no el commit | `materializar.rs` (`informe_de`, `escribir_informe`), los lectores (`Puntero::hecho`; `ore-serve`: `puestos.rs`, `funciones.rs`, `copia.rs`), el SDK (`_o_el_error`, `sql`), `assets.rs`, consola | **M5, M1** |
 | **S3** | **No decir «al día» sin comprobar** (cierra PG1) | Un verbo nuevo de los drivers, **la señal de cambio con el ámbito del activo**, distinto del testigo (M3): `lastModifiedTime` en BigQuery, los contadores por tabla en Postgres, el hash de contenido en los objetos. **Se pregunta en la pasada**, no entre pasadas. «Ya está» sólo si esa señal lo respalda; si no, **Unverified** con su edad. `log` deja de recopiar entero cuando nada cambió | `ore-driver`, `ore-read-*`, `al_dia_con`, informe, consola | **M6**, P1, P2 |
 | **S4** | **Retener lo raro** | Las guardas de D-E antes de publicar. Lo retenido no mueve el puntero, se sigue sirviendo lo último bueno, y la consola dice **Refresh held** con *[Publish anyway]* | `materializar.rs`, `ore-store`, `ore-serve`, consola | **P5** |
 | **S5** | **El esquema del origen, al copiar y al catalogar** | El esquema del origen se compara con la `Table` declarada: columna nueva, quitada, renombrada o de otro tipo. Queda en el informe y en el catálogo. Una lectura en vivo que lo encuentra dice **Schema drift**, nunca «Not found». *[Accept the new schema]* abre una propuesta (0044) | `materializar.rs`, el Job de catálogo, `ore-federation` (el código del error), `ore-serve`, consola | **P3, P4**; M8 en lo que se dice al leer |
@@ -853,6 +853,43 @@ en una copia con el origen muerto, y lo habría dado por bueno.
 | | Paso | Lo que entrega |
 |---|---|---|
 | **S15** | **La vista de la organización y las sugerencias** | Salud por base y por dueño, cumplimiento de *Fresh within* a 30 días, tiempos hasta detectar y resolver, **cobertura por capa** y ruido. Promesas sugeridas desde lo observado, que una persona acepta |
+
+### S2 · lo hecho (2026-10-13)
+
+- **`ore_core::salud`**:
+  - `legible()`: hay qué leer con `copiada`, `al-dia` **y `error` con versión vigente**.
+  - `bloque()`: el bloque de v1alpha30 §6, calculado con el puntero, la `freshness` y una hora
+    que llega de fuera. Sin promesa y sin una comprobación **posterior** a los datos, `unknown`
+    (`unverified`). Con promesa, se juzga con el reloj.
+- **La copia** escribe en el puntero:
+  - **`datos_de`**: τ_lectura, tomada antes del testigo y de leer. Lo derivado del lago hereda la
+    de su dataset; la copia de una vista SQL, la más vieja de lo que lee.
+  - **`intento`** `{cuando, resultado, motivo}`.
+  - **`comprobado`**. «Ya está» sólo lo pone si el testigo igual lo **garantiza**: `log`,
+    `snapshot` o `listing`, no `field` ni `none` (M2). Si no, el intento es `sin-comprobar`.
+- **Leen lo último bueno**:
+  - `ore ask` e `invoke` (`Puntero::hecho`);
+  - los datos de un puesto, es decir SQL y Python, con el bloque de salud en la respuesta;
+  - las funciones;
+  - el recuento de copias hechas.
+- **`/assets`** lleva `salud` en cada `Dataset`, calculada **al servir** y no en la caché, porque
+  una promesa vence con el reloj.
+- **El SDK**:
+  - `HealthWarning` al leer algo `degraded` o `warning`, con de cuándo es y por qué;
+  - `attrs["health"]`;
+  - `strict=True` no lee lo degradado. Es el `strict` de quien llama, no el de un build (D-F).
+- **La consola**:
+  - la salud en la cabecera y en el raíl de la ficha;
+  - en la pestaña Copy: *Data as of*, *Checked*, *Fresh within*, el último refresco, *Serving
+    the last good version* y los motivos;
+  - en la lista, la hora de un dataset es su `dataAsOf`.
+
+**Lo que S2 deja para después:**
+- **Los datasets escritos** (`write()`, un Transform) no llevan `datos_de`. Su hora es la de sus
+  entradas, y eso es el linaje de S6. Hasta entonces son `unknown`.
+- **Las colecciones**, que tienen su propio puntero.
+- **Los punteros de antes de S2** no saben de cuándo son (`dataAsOf: null`) hasta su próxima copia.
+  No se rellena con la hora del commit.
 
 ### Por qué este orden
 
