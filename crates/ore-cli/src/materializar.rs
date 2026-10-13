@@ -788,6 +788,7 @@ fn una(
             recoger && !seco,
             datos_de.as_deref(),
             senal.as_ref(),
+            filas_del_puntero(puntero.as_ref()),
         );
     }
     let fichero = fichero_de(pkg, &r);
@@ -886,6 +887,7 @@ fn una(
         recoger && !seco,
         datos_de.as_deref(),
         senal.as_ref(),
+        filas_del_puntero(puntero.as_ref()),
     )
 }
 
@@ -1189,6 +1191,8 @@ fn por_su_consulta(
         recoger && !seco,
         datos_de.as_deref(),
         None,
+        // Una vista SQL puede dar 0 filas con razón (un filtro): sin guarda.
+        None,
     )
     .map(Some)
 }
@@ -1206,6 +1210,7 @@ fn informe_de(
     recoger: bool,
     datos_de: Option<&str>,
     senal: Option<&(String, String)>,
+    previas: Option<i64>,
 ) -> Result<(String, ore_core::json::Json), String> {
     use ore_core::json::Json;
     //
@@ -1337,6 +1342,22 @@ fn informe_de(
             Json::obj([("modo", Json::s(modo)), ("valor", Json::s(valor))]),
         );
     }
+    // ⭐ 0063 S4 · RETENER LO RARO, ANTES DE RECOGER. Si la recogida fuera
+    //   antes, expiraría sobre la versión retenida y podría llevarse lo que el
+    //   puntero sigue nombrando.
+    if let Some(motivo) = retener(rehacer, entero("filas"), previas) {
+        return Ok((
+            format!(
+                "retenida · {motivo}\n  lo escrito no se publica: el puntero sigue en la versión anterior ({})",
+                campo("metadata_location")
+            ),
+            Json::obj([
+                ("estado", Json::s("error")),
+                ("motivo", Json::s(&motivo)),
+                ("intento", intento(&ahora_iso(), "retenida", Some(&motivo))),
+            ]),
+        ));
+    }
     let recogidas = recoger_dataset(recoger, dataset, &campo("metadata_location"), &mut m)?;
     Ok((
         format!(
@@ -1347,6 +1368,30 @@ fn informe_de(
         ),
         Json::Obj(m),
     ))
+}
+
+/// **Las guardas de la capa 0** (0063 S4, D-E; v1alpha30 §4): un origen que
+/// devuelve **0 filas** cuando la versión publicada tiene alguna no se publica.
+/// Lo más probable es un origen vaciado por error (P5: se publicaba con 0
+/// filas), y servir lo último bueno con su estado es lo que §4 pide. Un
+/// **rehacer** publica de todas formas: es una persona diciendo «hazlo».
+///
+/// La columna perdida de D-E no necesita guarda: una columna declarada que el
+/// origen ya no tiene hace fallar la lectura, y S2 sirve lo último bueno. Una
+/// caída parcial (la mitad de filas) es de la capa 1, con historia.
+fn retener(rehacer: bool, filas: i64, previas: Option<i64>) -> Option<String> {
+    match previas {
+        Some(p) if !rehacer && filas == 0 && p > 0 => Some(format!(
+            "the source returned 0 rows and the published version has {p}: held, still serving the published version. Refresh it again to publish anyway"
+        )),
+        _ => None,
+    }
+}
+
+/// Las filas de la versión que el puntero publica, para las guardas.
+fn filas_del_puntero(p: Option<&ore_core::parse::Node>) -> Option<i64> {
+    p.and_then(|p| campo_de(p, "filas"))
+        .and_then(|f| f.parse().ok())
 }
 
 /// **`--recoger` sobre un dataset**: expira los snapshots superados y retira
@@ -1745,7 +1790,7 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
     // sigue ahí y sigue siendo cierto hasta su marca. Se conserva lo que decía
     // y se le pone encima el estado de hoy y su motivo.
     // 0063 S2: y queda el intento, con su hora y su motivo (v1alpha30 §4).
-    if m.get("estado") == Some(&Json::s("error")) {
+    if m.get("estado") == Some(&Json::s("error")) && !m.contains_key("intento") {
         let motivo = match m.get("motivo") {
             Some(Json::Str(t)) => Some(t.clone()),
             _ => None,
@@ -2631,6 +2676,60 @@ mod tests {
     }
 
     /// 0063 S3: la señal y el testigo que el puntero guardó, leídos de vuelta.
+    #[test]
+    fn un_origen_vaciado_se_retiene_y_un_rehacer_lo_publica() {
+        // 0063 S4: 0 filas sobre una versión con 1000 se retiene…
+        assert!(retener(false, 0, Some(1000)).is_some());
+        // …y un rehacer la publica; sin versión anterior, o vacía, no hay nada
+        // que proteger; y con filas, nada que retener.
+        assert_eq!(retener(true, 0, Some(1000)), None);
+        assert_eq!(retener(false, 0, None), None);
+        assert_eq!(retener(false, 0, Some(0)), None);
+        assert_eq!(retener(false, 3, Some(1000)), None);
+    }
+
+    #[test]
+    fn lo_retenido_se_escribe_sobre_lo_ultimo_bueno() {
+        use ore_core::json::Json;
+        let d = std::env::temp_dir().join(format!("ore-retenida-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        escribir_informe(
+            &d,
+            "v.p",
+            &Json::obj([
+                ("estado", Json::s("copiada")),
+                ("metadata_location", Json::s("gs://b/t/metadata/1.json")),
+                ("filas", Json::Int(1000)),
+            ]),
+        )
+        .unwrap();
+        escribir_informe(
+            &d,
+            "v.p",
+            &Json::obj([
+                ("estado", Json::s("error")),
+                ("motivo", Json::s("0 rows")),
+                (
+                    "intento",
+                    intento("2026-10-13T20:00:00Z", "retenida", Some("0 rows")),
+                ),
+            ]),
+        )
+        .unwrap();
+        let (_, n) = ore_core::punteros::leer_en(&d, "v.p").unwrap();
+        assert_eq!(campo_de(&n, "filas").as_deref(), Some("1000"));
+        assert_eq!(
+            ore_core::salud::legible(&n).as_deref(),
+            Some("gs://b/t/metadata/1.json"),
+            "se sigue sirviendo lo último bueno"
+        );
+        let (_, i) = n.get("intento").unwrap();
+        assert_eq!(campo_de(i, "resultado").as_deref(), Some("retenida"));
+        let b = ore_core::salud::bloque(Some(&n), None, 0, (false, false));
+        assert!(b.jcs().contains("refresh-held"), "{}", b.jcs());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn la_senal_decide_y_su_fallo_no_es_no_saber() {
         let a = ("contadores-y-forma".to_string(), "1:2:3:4:f".to_string());
