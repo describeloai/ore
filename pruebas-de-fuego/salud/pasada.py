@@ -1,6 +1,8 @@
 """Una pasada de copia como la de la malla, sólo sobre los datasets de prueba. Uso: pasada.py <nombre> [rehacer]"""
 import json, sys, time
-S = 'C:/Users/PC/AppData/Local/Temp/claude/C--ORE/8b0a9474-07d2-469a-b4bc-ca1102ef4b2a/scratchpad/'
+import os
+# copiar-base.json: `kubectl -n t-victor get job <copiar-…> -o json`, de una pasada de la malla.
+S = os.path.dirname(os.path.abspath(__file__)) + '/'
 nombre = sys.argv[1]; rehacer = len(sys.argv) > 2
 d = json.load(open(S + 'copiar-base.json', encoding='utf-8'))
 d = {'apiVersion': 'batch/v1', 'kind': 'Job',
