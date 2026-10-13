@@ -1142,8 +1142,9 @@ pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
                 &raiz.join(ore_core::punteros::CARPETA),
                 &format!("{paquete}.{v}"),
             )
-            .and_then(|(_, n)| campo(&n, "estado"))
-            .is_some_and(|e| e == "copiada" || e == "al-dia")
+            // 0063 S2: hecha es que haya una versión que leer, aunque el último
+            // refresco fallara (v1alpha30 §4).
+            .is_some_and(|(_, n)| ore_core::salud::legible(&n).is_some())
         })
         .count();
     Json::obj([

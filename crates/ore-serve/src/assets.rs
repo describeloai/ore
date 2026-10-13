@@ -181,6 +181,37 @@ fn del_catalogo(raiz: &Path, fuente: &str) -> Option<std::collections::BTreeMap<
 
 /// ⭐ 0062 · `estadisticas` en cada `Table` y `ObjectTable` de un paquete de
 /// fuente, de su catálogo (ver la cabecera). Un catálogo se lee una vez.
+/// **0063 S2 · La salud de cada dataset, al servir** (v1alpha30 §6). No va en
+/// el índice cacheado: una promesa de frescura se rompe con el reloj aunque el
+/// árbol no cambie. Se calcula aquí, con la hora de esta respuesta, de lo que
+/// el índice ya trae: el puntero y la `freshness` de `define`.
+pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
+    let Json::Obj(m) = j else { return };
+    let Some(Json::Obj(items)) = m.get_mut("items") else {
+        return;
+    };
+    for it in items.values_mut() {
+        let Json::Obj(it) = it else { continue };
+        if !matches!(it.get("kind"), Some(Json::Str(k)) if k == "Dataset") {
+            continue;
+        }
+        let promesa = match it.get("define") {
+            Some(Json::Obj(d)) => match d.get("freshness") {
+                Some(Json::Str(f)) => Some(f.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let puntero = match it.get("puntero") {
+            Some(p @ Json::Obj(_)) => ore_core::parse::parse(&p.jcs()).ok(),
+            _ => None,
+        };
+        let b =
+            ore_core::salud::bloque(puntero.as_ref(), promesa.as_deref(), ahora, (false, false));
+        it.insert("salud".into(), b);
+    }
+}
+
 fn anotar_estadisticas(raiz: &Path, j: &mut Json) {
     let Json::Obj(m) = j else { return };
     let Some(Json::Obj(items)) = m.get_mut("items") else {
@@ -323,6 +354,7 @@ impl Servidor {
                 if let Json::Obj(m) = &mut j {
                     m.insert("desde_cache".into(), Json::Bool(false));
                 }
+                anotar_salud(&mut j, crate::salud::ahora());
                 Respuesta::ok(j)
             }
             Arbol::Forja(forja) => {
@@ -350,6 +382,7 @@ impl Servidor {
                     if let Json::Obj(m) = &mut j {
                         m.insert("desde_cache".into(), Json::Bool(true));
                     }
+                    anotar_salud(&mut j, crate::salud::ahora());
                     return Respuesta::ok(j);
                 }
                 // ⭐ 0044 C.2 ③: el catálogo de una rama lee de `main` al día lo que
@@ -391,6 +424,7 @@ impl Servidor {
                 if let Json::Obj(m) = &mut j {
                     m.insert("desde_cache".into(), Json::Bool(false));
                 }
+                anotar_salud(&mut j, crate::salud::ahora());
                 Respuesta::ok(j)
             }
         }
@@ -402,7 +436,14 @@ mod tests {
     use super::*;
 
     fn arbol() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("ore-assets-serve-{}", std::process::id()));
+        arbol_en("indice")
+    }
+
+    /// Un árbol por prueba: dos pruebas en paralelo sobre el mismo directorio
+    /// se lo borraban la una a la otra.
+    fn arbol_en(nombre: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("ore-assets-serve-{nombre}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for sub in ["packages/v/tables", "packages/v/datasets", "datasets"] {
             std::fs::create_dir_all(d.join(sub)).unwrap();
@@ -459,6 +500,32 @@ mod tests {
             panic!()
         };
         assert_eq!(r.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0063 S2 · Cada dataset lleva su salud, calculada al servir: este
+    /// puntero (de antes de S2, sin `datos_de`) no sabe de cuándo es, y no se
+    /// inventa la hora del commit.
+    #[test]
+    fn cada_dataset_lleva_su_salud_al_servir() {
+        let d = arbol_en("salud");
+        let mut j = indice_de(&d, Cabeza::default());
+        anotar_salud(&mut j, 1_791_900_000);
+        let Json::Obj(m) = &j else { panic!() };
+        let Json::Obj(items) = &m["items"] else {
+            panic!()
+        };
+        let Json::Obj(ds) = &items["dataset:v.pedidos"] else {
+            panic!()
+        };
+        let t = ds["salud"].jcs();
+        assert!(t.contains("\"state\":\"unknown\""), "{t}");
+        assert!(t.contains("\"dataAsOf\":null"), "{t}");
+        // Una tabla no es una copia: su salud llega con la capa 1.
+        let Json::Obj(tb) = &items["table:v.origen"] else {
+            panic!()
+        };
+        assert!(!tb.contains_key("salud"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

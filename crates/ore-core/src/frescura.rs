@@ -37,6 +37,27 @@ pub fn epoca(iso: &str) -> Option<i64> {
     Some(dias * 86_400 + h * 3_600 + mi * 60 + s)
 }
 
+/// Segundos de época a un instante ISO-8601 en UTC, `AAAA-MM-DDTHH:MM:SSZ`: la
+/// vuelta de [`epoca`], con el mismo algoritmo civil (`civil_from_days`).
+pub fn iso(segundos: i64) -> String {
+    let (dias, resto) = (segundos.div_euclid(86_400), segundos.rem_euclid(86_400));
+    let z = dias + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        resto / 3_600,
+        resto % 3_600 / 60,
+        resto % 60
+    )
+}
+
 /// `30m`, `2h`, `7d` → segundos. El vocabulario es cerrado a propósito: un
 /// `freshnessSLA` con una unidad que nadie sabe leer se interpretaría como cero
 /// o como infinito, y las dos lecturas son peligrosas en direcciones opuestas.
@@ -143,6 +164,20 @@ pub fn alcance(marca: Option<&str>, instante: &str, retencion: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_vuelta_de_la_epoca_es_el_mismo_instante() {
+        assert_eq!(iso(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso(1_788_177_600), "2026-08-31T12:00:00Z");
+        // El bisiesto y el cambio de siglo, ida y vuelta.
+        for t in [
+            "2024-02-29T23:59:59Z",
+            "2000-03-01T00:00:00Z",
+            "1999-12-31T23:59:59Z",
+        ] {
+            assert_eq!(iso(epoca(t).unwrap()), t);
+        }
+    }
 
     #[test]
     fn la_epoca_y_la_duracion_se_leen_sin_biblioteca() {

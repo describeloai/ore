@@ -590,12 +590,8 @@ fn copia_de(raiz: &Path, over: &str) -> Result<String, Respuesta> {
         .map(|(_, n)| n);
     // Con qué se lee: el `metadata_location` del dataset o, mientras quede
     // alguno, la `clave` de un sobre heredado.
-    let clave = copia.as_ref().and_then(|n| {
-        let estado = campo(n, "estado").unwrap_or_default();
-        campo(n, "metadata_location")
-            .or_else(|| campo(n, "clave"))
-            .filter(|c| !c.is_empty() && matches!(estado.as_str(), "copiada" | "al-dia"))
-    });
+    // 0063 S2: lo último bueno también, aunque el último refresco fallara.
+    let clave = copia.as_ref().and_then(ore_core::salud::legible);
     clave.ok_or_else(|| {
         let estado = copia
             .as_ref()

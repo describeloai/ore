@@ -71,6 +71,7 @@ pub mod proyectos;
 pub mod punteros;
 pub mod reparto;
 pub mod repositorios;
+pub mod salud;
 pub mod schema;
 pub mod sdk;
 pub mod servir;

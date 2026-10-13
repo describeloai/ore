@@ -1115,12 +1115,22 @@ def over(view, format="pandas"):
             return sql("select * from %s" % vista, format=como)
         except Exception:  # noqa: BLE001
             raise sin_copia from None
+    saludes = {}
+    _salud_de(saludes, _corto(vista), r)
+    _avisar_salud(saludes, False)
     if r.get("_parquet"):
         # El sobre, ya en local: pyarrow lo lee más deprisa que nadie (13 M filas/s).
         import pyarrow.parquet as pq
 
-        return _como(_nunca_nulas(pq.read_table(r["_parquet"]), r, vista), como)
-    return _como(_nunca_nulas(_arrow(_duckdb().sql("select * from %s" % fuente)), r, vista), como)
+        return _con_salud(_como(_nunca_nulas(pq.read_table(r["_parquet"]), r, vista), como), saludes)
+    return _con_salud(_como(_nunca_nulas(_arrow(_duckdb().sql("select * from %s" % fuente)), r, vista), como), saludes)
+
+
+def _con_salud(salida, saludes):
+    """0063 S2: el bloque de salud de lo leído, en `attrs["health"]` (pandas)."""
+    if saludes and hasattr(salida, "attrs"):
+        salida.attrs["health"] = dict(saludes)
+    return salida
 
 
 def _nunca_nulas(tabla, r, vista):
@@ -1268,6 +1278,59 @@ class TruncatedReadWarning(UserWarning):
     whole answer (ADR 0053 F6). Filter more, or read from a copy."""
 
 
+class HealthWarning(UserWarning):
+    """What was read is not healthy (OOS v1alpha30, ADR 0063 S2): degraded —the
+    last refresh failed and this is the last good version, or its freshness
+    promise is broken— or warning. The data is served anyway; the result says
+    how it is in `.attrs["health"]`. Pass `strict=True` to fail instead."""
+
+
+class DegradedDataError(RuntimeError):
+    """`strict=True` and something read is degraded (OOS v1alpha30 §3.6)."""
+
+
+# Una advertencia de salud se dice cada vez: es del dato de esta lectura, no de
+# la línea de código que lee (el filtro por defecto la diría una sola vez).
+warnings.simplefilter("always", HealthWarning)
+
+_RAZONES = {
+    "refresh-failed": "the last refresh failed",
+    "refresh-held": "the last refresh was held",
+    "freshness-exceeded": "its freshness promise is broken",
+    "source-schema-changed": "the source schema changed",
+    "source-unreachable": "the source does not answer",
+    "upstream-degraded": "something it reads is degraded",
+    "behind-source": "the source changed after this data was read",
+    "guard-warning": "a guard warned",
+}
+
+
+def _salud_de(saludes, nombre, rd):
+    """0063 S2: el bloque de salud que ore-serve dio con lo que se lee."""
+    b = (rd or {}).get("salud")
+    if isinstance(b, dict):
+        saludes[nombre] = b
+
+
+def _avisar_salud(saludes, estricta):
+    """Lo que no está sano se dice al leer (v1alpha30 §3.1): una advertencia por
+    activo `degraded` o `warning`, con de cuándo es y por qué. `unknown` no
+    avisa —es lo normal de una copia que nadie comprueba— y queda en `attrs`."""
+    for nombre, b in sorted(saludes.items()):
+        estado = b.get("state")
+        if estado not in ("degraded", "warning"):
+            continue
+        razones = [r for r in (b.get("reasons") or []) if r.get("code") in _RAZONES]
+        por = "; ".join(_RAZONES[r["code"]] + (" (%s)" % r["message"] if r.get("message") else "") for r in razones)
+        texto = "`%s` is %s · data as of %s%s%s" % (
+            nombre, estado, b.get("dataAsOf") or "unknown",
+            " · " + por if por else "",
+            " · serving the last good version" if b.get("servingLastGood") else "")
+        if estricta and estado == "degraded":
+            raise DegradedDataError(texto)
+        warnings.warn(texto, HealthWarning, stacklevel=3)
+
+
 def _lectura_en_vivo(con, l, estricta):
     """0053 F6·2 · **Una lectura en vivo**, ya repartida por ore-serve: se pide a
     `/federation/read` —con su gobierno, su tope y su huella— y el Arrow queda en
@@ -1384,6 +1447,7 @@ def sql(query, format="pandas", strict=False):
     fuentes = dict(((r or {}).get("fuentes") or {}))
     for a in (fuentes.pop("__avisos", None) or {}).get("avisos", []):
         warnings.warn(a, stacklevel=2)
+    saludes = {}
     # 0053 F6·2: lo que se lee en vivo, primero (las vistas vivas lo nombran):
     # una lectura por tabla, y cada nombre que la dice, a ella.
     vivas = {}
@@ -1410,6 +1474,7 @@ def sql(query, format="pandas", strict=False):
             _registra(con, nombre, _q(tabla))
             continue
         _lee(nombre)
+        _salud_de(saludes, nombre, rd)
         fuente, _ = _fuente_de_respuesta(nombre, rd)
         _registra(con, nombre, fuente)
     # Las vistas vivas, al final: DuckDB enlaza una vista al crearla, y una que
@@ -1425,6 +1490,9 @@ def sql(query, format="pandas", strict=False):
 
         register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
         texto = r["query"]
+    # 0063 S2: lo que no está sano, dicho antes de leer; con `strict=True`
+    # (el de quien llama, no el de un build), lo degradado no se lee.
+    _avisar_salud(saludes, strict)
     r = con.execute(texto)
     if r.description is None:
         return None
@@ -1434,7 +1502,7 @@ def sql(query, format="pandas", strict=False):
         salida.attrs[MARCA_EN_VIVO] = sorted(vivas)
     if json_ and como == "pandas":
         salida.attrs[MARCA_JSON] = json_
-    return salida
+    return _con_salud(salida, saludes)
 
 
 def _marca_json(tabla, columnas):

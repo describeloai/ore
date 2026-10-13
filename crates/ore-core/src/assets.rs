@@ -597,6 +597,11 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         "escrito_por",
         // 0044 C.2 ③: en una rama, de dónde sale (`main` al día, o `rama`).
         "de",
+        // 0063 S2 (v1alpha30 §1): de cuándo son los datos, la última
+        // comprobación y el último intento. `cuando` es el commit: publicar.
+        "datos_de",
+        "comprobado",
+        "intento",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());

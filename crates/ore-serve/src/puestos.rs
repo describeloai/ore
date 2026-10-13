@@ -4339,8 +4339,10 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     // vigente de una tabla Iceberg, y el SDK lo lee por la raíz y la versión. Una
     // copia heredada trae `clave` (el sobre ORECOPY1); las dos formas conviven.
     let metadata_location = campo("metadata_location");
-    if !matches!(estado.as_str(), "copiada" | "al-dia")
-        || (clave.is_empty() && metadata_location.is_empty())
+    // ⭐ 0063 S2: un refresco fallido no apaga lo último bueno (v1alpha30 §4):
+    //   con `error` y una versión vigente, se sirve, y el bloque de salud dice
+    //   que es la última buena, de cuándo y por qué.
+    if ore_core::salud::legible(&n).is_none() || (clave.is_empty() && metadata_location.is_empty())
     {
         return Respuesta::error(
             409,
@@ -4354,7 +4356,23 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             ),
         );
     }
+    // v1alpha30 §3.1: el estado viaja con el dato. La promesa es la
+    // `freshness` del dataset (v1alpha12).
+    let promesa = pkg
+        .docs
+        .iter()
+        .find(|d| d.kind == Kind::Dataset && d.qname().as_deref() == Some(del_dataset.as_str()))
+        .and_then(|d| d.section("freshness"))
+        .and_then(|f| f.as_str())
+        .map(String::from);
+    let salud = ore_core::salud::bloque(
+        Some(&n),
+        promesa.as_deref(),
+        crate::salud::ahora(),
+        (false, false),
+    );
     Respuesta::ok(Json::obj([
+        ("salud", salud),
         ("vista", Json::s(vista)),
         ("dataset", Json::s(&del_dataset)),
         ("estado", Json::s(estado)),
@@ -4667,6 +4685,29 @@ pub(crate) mod prueba {
             "{}",
             r.cuerpo.jcs()
         );
+        // 0063 S2 (M5): la pasada siguiente falló, y el puntero conserva la
+        // versión buena. Se sirve —antes, 409 «no está hecha»—, y el bloque de
+        // salud dice que es la última buena, de cuándo y por qué.
+        std::fs::write(
+            d.join("datasets/v_pedidos.json"),
+            "{\"estado\":\"error\",\"motivo\":\"the source has no column `id`\",\"metadata_location\":\"gs://b/copias/v_pedidos/metadata/1.metadata.json\",\"datos_de\":\"2026-10-13T13:37:02Z\",\"intento\":{\"cuando\":\"2026-10-13T13:44:51Z\",\"resultado\":\"error\"}}",
+        )
+        .unwrap();
+        let r = datos_de(&d, "v", "pedidos", "v.pedidos");
+        assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
+        let t = r.cuerpo.jcs();
+        assert!(t.contains("copias/v_pedidos/metadata/1"), "{t}");
+        assert!(t.contains("\"state\":\"degraded\""), "{t}");
+        assert!(t.contains("\"servingLastGood\":true"), "{t}");
+        assert!(t.contains("refresh-failed"), "{t}");
+        assert!(t.contains("2026-10-13T13:37:02Z"), "{t}");
+        // Sin versión buena debajo, sigue sin haber qué leer.
+        std::fs::write(
+            d.join("datasets/v_pedidos.json"),
+            "{\"estado\":\"error\",\"motivo\":\"x\"}",
+        )
+        .unwrap();
+        assert_eq!(datos_de(&d, "v", "pedidos", "v.pedidos").codigo, 409);
         // La vista sobre el dataset NO da el puntero del dataset: leerlo con
         // `select *` era no aplicar la View. Va por `datos_de_vista`.
         let r = datos_de(&d, "v", "grandes", "v.grandes");

@@ -76,6 +76,7 @@ mod punteros;
 mod recuento;
 mod repositorios;
 mod rutas;
+mod salud;
 mod schemas;
 
 use ore_entrada::{http, identidad};

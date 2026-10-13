@@ -583,6 +583,15 @@ fn una(
         Some(d) => Some(origen_del_lago(raiz_pkg, d)?),
         None => None,
     };
+    // ⭐ 0063 S2 · `datos_de` (v1alpha30 §1, `dataAsOf`): de cuándo es lo que
+    //   esta pasada va a copiar. Se toma ANTES del testigo y de leer, que es la
+    //   cota fiel: lo que llegue al origen después ya no está en la copia. De
+    //   un dataset del lago, la suya: lo derivado no es más fresco que lo que
+    //   leyó (§2.2).
+    let datos_de = match &origen_del_lago {
+        Some(o) => o.datos_de.clone(),
+        None => Some(ahora_iso()),
+    };
     let testigo = match &origen_del_lago {
         Some(o) => o.testigo.clone(),
         None => testigo(pkg, raiz_pkg, v, &r)?,
@@ -610,7 +619,13 @@ fn una(
         .and_then(|p| campo_de(p, "metadata_location"));
     // La misma cabecera que la última vez, y el dataset sigue ahí: al día.
     if !rehacer && al_dia_con(puntero.as_ref(), &huella)? {
-        return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset);
+        return ya_esta(
+            puntero.as_ref(),
+            bundle,
+            recoger && !seco,
+            &dataset,
+            respalda(&testigo),
+        );
     }
     if seco {
         return Ok((
@@ -702,6 +717,7 @@ fn una(
             bundle,
             rehacer,
             recoger && !seco,
+            datos_de.as_deref(),
         );
     }
     let fichero = fichero_de(pkg, &r);
@@ -798,6 +814,7 @@ fn una(
         bundle,
         rehacer,
         recoger && !seco,
+        datos_de.as_deref(),
     )
 }
 
@@ -805,11 +822,17 @@ fn una(
 /// contestó a `sellar` o a `copiar`, que es la misma línea.
 /// **④ «Ya está»**: el puntero de antes, tal cual, con el estado de hoy. Las
 /// filas y las cuentas son las de la copia que ya estaba: nadie las recontó.
+///
+/// 0063 S2: `respaldado` dice si el testigo igual **garantiza** que el origen no
+/// cambió (v1alpha30 §3.2). Con `log`, `snapshot` o `listing`, sí: es
+/// `sin-cambios` y la hora es `comprobado`. Con `field` o `none`, no (0063 M2):
+/// «ya está» sin medida es `sin-comprobar`, y `comprobado` no se mueve.
 fn ya_esta(
     puntero: Option<&ore_core::parse::Node>,
     bundle: &str,
     recoger: bool,
     dataset: &str,
+    respaldado: bool,
 ) -> Result<(String, ore_core::json::Json), String> {
     use ore_core::json::Json;
     let ml = puntero
@@ -823,10 +846,33 @@ fn ya_esta(
     m.insert("bundle".into(), Json::s(bundle));
     m.insert("leidas".into(), Json::Int(0));
     m.remove("rehecha");
+    // Lo que dejó una pasada fallida ya no vale: esta la ha resuelto.
+    m.remove("motivo");
+    let cuando = ahora_iso();
+    if respaldado {
+        m.insert("comprobado".into(), Json::s(&cuando));
+    }
+    m.insert(
+        "intento".into(),
+        intento(
+            &cuando,
+            if respaldado {
+                "sin-cambios"
+            } else {
+                "sin-comprobar"
+            },
+            None,
+        ),
+    );
     let recogidas = recoger_dataset(recoger, dataset, &ml, &mut m)?;
     Ok((
         format!(
-            "ya está · {ml}\n  el puntero lo dijo sin leer una sola fila del origen{recogidas}"
+            "ya está · {ml}\n  el puntero lo dijo sin leer una sola fila del origen{}{recogidas}",
+            if respaldado {
+                ""
+            } else {
+                " · sin comprobar: el testigo de este origen no dice si cambió"
+            }
         ),
         Json::Obj(m),
     ))
@@ -906,6 +952,18 @@ fn por_su_consulta(
             .map(|t| format!("{t}@origen-{pasada}")),
     );
     marcas.sort();
+    // 0063 S2 · `datos_de`: el más viejo de lo que lee (v1alpha30 §2.2), y
+    // la pasada si lee un origen. Si alguno no lo sabe, no se sabe.
+    let datos_de: Option<String> = {
+        let mut ts: Vec<Option<String>> =
+            entradas.iter().map(|(_, o)| o.datos_de.clone()).collect();
+        if !servida.tablas.is_empty() {
+            ts.push(pasada.parse::<i64>().ok().map(ore_core::frescura::iso));
+        }
+        ts.into_iter()
+            .collect::<Option<Vec<String>>>()
+            .and_then(|v| v.into_iter().min())
+    };
     let testigo = ("snapshot".to_string(), Some(marcas.join(",")));
     let plan = ore_core::digest::de_bytes(servida.consulta.as_bytes());
     let obligatorias = obligatorias_de(pkg, d, &esq);
@@ -923,7 +981,9 @@ fn por_su_consulta(
             println!("  ya está: nada que calcular");
             return Ok(None);
         }
-        return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset).map(Some);
+        // Todas las marcas son snapshots del lago (una lectura del origen
+        // cambia de marca en cada pasada): iguales, nada cambió.
+        return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset, true).map(Some);
     }
     if seco {
         return Ok(Some((
@@ -1051,6 +1111,7 @@ fn por_su_consulta(
         bundle,
         op.rehacer,
         recoger && !seco,
+        datos_de.as_deref(),
     )
     .map(Some)
 }
@@ -1066,6 +1127,7 @@ fn informe_de(
     bundle: &str,
     rehacer: bool,
     recoger: bool,
+    datos_de: Option<&str>,
 ) -> Result<(String, ore_core::json::Json), String> {
     use ore_core::json::Json;
     //
@@ -1183,6 +1245,13 @@ fn informe_de(
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect();
+    // 0063 S2 (v1alpha30 §1): de cuándo son estos datos, y la pasada que los
+    // publicó. Sin `datos_de` —una copia de lo que no lo sabe— no se pone:
+    // mejor «no se sabe» que la hora de publicar.
+    if let Some(d) = datos_de {
+        m.insert("datos_de".into(), Json::s(d));
+    }
+    m.insert("intento".into(), intento(&ahora_iso(), "publicada", None));
     let recogidas = recoger_dataset(recoger, dataset, &campo("metadata_location"), &mut m)?;
     Ok((
         format!(
@@ -1303,7 +1372,9 @@ impl Puntero {
             metadata_location: campo_de(&n, "metadata_location"),
             clave: campo_de(&n, "clave"),
         };
-        if !matches!(estado.as_str(), "copiada" | "al-dia")
+        // 0063 S2: un refresco fallido no apaga lo último bueno (v1alpha30
+        // §4): con `error` y una versión vigente, se lee.
+        if ore_core::salud::legible(&n).is_none()
             || (p.metadata_location.is_none() && p.clave.is_none())
         {
             return Err(format!("su copia no está: el informe dice `{estado}`"));
@@ -1449,6 +1520,38 @@ fn fuentes_de(pkg: &Package, v: &Loaded) -> Vec<String> {
     f
 }
 
+/// La hora de ahora, ISO-8601 en UTC. La copia es ejecución, no compilación: aquí
+/// sí hay reloj (`ore_core::frescura` lo recibe; esto lo da).
+fn ahora_iso() -> String {
+    ore_core::frescura::iso(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    )
+}
+
+/// El último intento de una pasada (0063 S2): `{cuando, resultado, motivo?}`.
+fn intento(cuando: &str, resultado: &str, motivo: Option<&str>) -> ore_core::json::Json {
+    use ore_core::json::Json;
+    let mut m = vec![
+        ("cuando", Json::s(cuando)),
+        ("resultado", Json::s(resultado)),
+    ];
+    if let Some(t) = motivo {
+        m.push(("motivo", Json::s(t)));
+    }
+    Json::obj(m)
+}
+
+/// **Si un testigo igual garantiza que el origen no cambió** (0063 M2): `log`
+/// (ninguna confirmación en el servidor), `snapshot` (la misma versión) y
+/// `listing` (los mismos objetos con el mismo ETag) sí; `field` no ve ni
+/// actualizaciones ni borrados, y `none` no dice nada.
+fn respalda(testigo: &(String, Option<String>)) -> bool {
+    matches!(testigo.0.as_str(), "log" | "snapshot" | "listing") && testigo.1.is_some()
+}
+
 fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Result<(), String> {
     use ore_core::json::Json;
     std::fs::create_dir_all(dir)
@@ -1466,6 +1569,17 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
     // Una pasada que falla NO borra el puntero: el dataset de la anterior
     // sigue ahí y sigue siendo cierto hasta su marca. Se conserva lo que decía
     // y se le pone encima el estado de hoy y su motivo.
+    // 0063 S2: y queda el intento, con su hora y su motivo (v1alpha30 §4).
+    if m.get("estado") == Some(&Json::s("error")) {
+        let motivo = match m.get("motivo") {
+            Some(Json::Str(t)) => Some(t.clone()),
+            _ => None,
+        };
+        m.insert(
+            "intento".into(),
+            intento(&ahora_iso(), "error", motivo.as_deref()),
+        );
+    }
     if m.get("estado") == Some(&Json::s("error"))
         && let Some((_, n)) = ore_core::punteros::leer_en(dir, qn)
         && let Json::Obj(mut anterior) = Json::de_node(&n)
@@ -1663,6 +1777,8 @@ struct OrigenDelLago {
     testigo: (String, Option<String>),
     metadata_location: String,
     dataset: String,
+    /// 0063 S2: el `datos_de` de ese dataset. Lo derivado lo hereda (§2.2).
+    datos_de: Option<String>,
 }
 
 impl OrigenDelLago {
@@ -1723,6 +1839,7 @@ fn origen_del_lago(raiz_pkg: &Path, abajo: &Loaded) -> Result<OrigenDelLago, Str
         testigo,
         metadata_location,
         dataset,
+        datos_de: campo_de(&puntero, "datos_de"),
     })
 }
 
@@ -2294,6 +2411,78 @@ pub fn programa_del_almacen() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0063 S2 (M5, M1): una pasada que falla deja la versión buena **y su
+    /// hora** en el puntero, con el intento encima; y lo que queda se lee.
+    #[test]
+    fn un_refresco_fallido_deja_lo_ultimo_bueno_y_su_hora() {
+        use ore_core::json::Json;
+        let d = std::env::temp_dir().join(format!("ore-s2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dir = d.join(ore_core::punteros::CARPETA);
+        let buena = Json::obj([
+            ("estado", Json::s("copiada")),
+            (
+                "metadata_location",
+                Json::s("gs://b/catalogo/v/p/metadata/1.metadata.json"),
+            ),
+            ("datos_de", Json::s("2026-10-13T13:37:02Z")),
+            ("filas", Json::Int(1000)),
+        ]);
+        escribir_informe(&dir, "v.p", &buena).unwrap();
+        let fallo = Json::obj([
+            ("estado", Json::s("error")),
+            (
+                "motivo",
+                Json::s("`ore_salud.pedidos` no tiene la columna `cliente`"),
+            ),
+        ]);
+        escribir_informe(&dir, "v.p", &fallo).unwrap();
+        let (_, n) = ore_core::punteros::leer_en(&dir, "v.p").unwrap();
+        assert_eq!(campo_de(&n, "estado").as_deref(), Some("error"));
+        assert_eq!(
+            campo_de(&n, "datos_de").as_deref(),
+            Some("2026-10-13T13:37:02Z")
+        );
+        assert_eq!(campo_de(&n, "filas").as_deref(), Some("1000"));
+        let i = n.get("intento").map(|(_, i)| i.clone()).unwrap();
+        assert_eq!(campo_de(&i, "resultado").as_deref(), Some("error"));
+        assert!(campo_de(&i, "motivo").unwrap().contains("cliente"));
+        assert!(campo_de(&i, "cuando").unwrap().ends_with('Z'));
+        // Y se lee: `ore ask`, `ore invoke` y `ore datasets` también.
+        let p = Puntero::hecho(&d, "v.p").expect("lo último bueno se lee");
+        assert_eq!(p.nombre(), "gs://b/catalogo/v/p/metadata/1.metadata.json");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0063 S2 (M6): «ya está» sólo comprueba si el testigo igual lo garantiza.
+    #[test]
+    fn ya_esta_solo_comprueba_con_un_testigo_que_respalda() {
+        let t = |m: &str| (m.to_string(), Some("7".to_string()));
+        assert!(respalda(&t("log")) && respalda(&t("snapshot")) && respalda(&t("listing")));
+        assert!(!respalda(&t("field")) && !respalda(&t("none")));
+        assert!(!respalda(&("log".to_string(), None)));
+        let n = ore_core::parse::parse(
+            r#"{"estado":"error","motivo":"x","metadata_location":"m","datos_de":"2026-10-02T21:27:00Z"}"#,
+        )
+        .unwrap();
+        let (_, si) = ya_esta(Some(&n), "b", false, "d", true).unwrap();
+        let (_, no) = ya_esta(Some(&n), "b", false, "d", false).unwrap();
+        let (si, no) = (si.pretty(), no.pretty());
+        assert!(
+            si.contains("\"comprobado\"") && si.contains("sin-cambios"),
+            "{si}"
+        );
+        assert!(
+            !no.contains("\"comprobado\"") && no.contains("sin-comprobar"),
+            "{no}"
+        );
+        // Lo que se copió no cambia de hora, y el fallo de antes queda resuelto.
+        assert!(
+            no.contains("2026-10-02T21:27:00Z") && !no.contains("\"motivo\""),
+            "{no}"
+        );
+    }
 
     /// ORE 0051 P6 · Sin nada que imponer, **la cabecera de antes byte a
     /// byte** —es lo que hace que encender `.arbol/nulos.yaml` sólo rehaga las
