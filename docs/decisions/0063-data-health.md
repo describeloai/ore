@@ -5,7 +5,7 @@
 1. **Los fundamentos** (escritos): qué son la frescura y la calidad, de la literatura y la evidencia
    empírica, sin mirar ORE.
 2. **Las buenas prácticas** (escritas): cómo lo resuelve la industria.
-3. **ORE medido contra los fundamentos** (M1–M8, **en curso**): qué hay de verdad en nuestro stack,
+3. **ORE medido contra los fundamentos** (M1–M8, **en curso**: M2 y M3 medidos el 2026-10-13): qué hay de verdad en nuestro stack,
    medido en producción. **Nada de lo que creíamos saber se da por bueno**; lo que salga de aquí
    es lo único que cuenta.
 4. **El producto**: qué construir, cómo y dónde. Sale de cruzar 1 y 2 con lo que 3 demuestre que
@@ -347,6 +347,80 @@ se ha dado por supuesto.
 | **M6** | ¿Acierta «ya está», modo por modo? | Con `none`, nunca se refresca (visto en PG1) | Con los cambios de M2 | F1 |
 | **M7** | ¿Cuáles de las cinco averías de frescura ve ORE hoy? | — | Reproducir cada una y mirar el puntero, la consola y una lectura | F1 · averías |
 | **M8** | ¿Qué se sabe de la frescura de un activo en vivo (foreign database)? | — | Las señales de M3, sin copia | F1 |
+
+### M2 · medido (2026-10-13): qué dice cada testigo del cambio de un activo
+
+Se midió en orígenes reales, con objetos propios que se borraron al terminar:
+- **Postgres**: Neon, la fuente `postgresql_20260918_1920` de `victor`, con `wal_level=logical`. Un
+  esquema propio (`ore_salud_m2`), desde un Job de la celda, y el testigo tomado con **el binario del
+  driver** (`/opt/ore/conectores/ore-read-postgres testigo`).
+- **BigQuery**: un dataset propio en el proyecto de ORE (EU), con la **misma consulta del driver**
+  (`SELECT CAST(MAX(ts) AS STRING)`).
+- **Objetos**: un prefijo propio en el bucket de GC (`…-origen-gcs`, con versionado) y en el de R2
+  (`ore-origen-r2`). El testigo se **recalculó como lo hace el código** (`sha256` de
+  `clave\tetag\ttamaño` ordenado), con la generación como «etag» en GCS y el ETag en R2.
+
+Guiones en [`pruebas-de-fuego/salud/`](../../pruebas-de-fuego/salud/) (`m2pg.sh` como Job con `hacer-job.py`, `m2bq.py`, `m2obj.py`).
+
+| Lo que pasa en el origen | `log` · Postgres | `field` · BigQuery | `listing` · GCS | `listing` · R2 |
+|---|---|---|---|---|
+| Se actualiza el activo | se mueve ✓ | **no se mueve** ✗ | se mueve ✓ | se mueve ✓ |
+| Se borra una fila u objeto del activo | se mueve ✓ | **no se mueve** ✗ | se mueve ✓ | se mueve ✓ |
+| Llega una fila tarde (cursor menor) | se mueve ✓ | **no se mueve** ✗ | — | — |
+| Llega una fila nueva (cursor mayor, por DML o en *streaming*) | se mueve ✓ | se mueve ✓ | — | — |
+| Cambia **otro** activo | **se mueve** ✗ | no se mueve ✓ | no se mueve ✓ | no se mueve ✓ |
+| Nada cambia | **se mueve solo** ✗: en 4 min de reposo avanzó en cada intervalo de 60 s (≈ 260–470 bytes de WAL), sin ninguna escritura nuestra; quieto en una ventana de 20 s | quieto ✓ | quieto ✓ | quieto ✓ |
+| Se reescribe un objeto con **el mismo** contenido | — | — | **se mueve** ✗ (la generación cambia en cada escritura) | quieto ✓ (el ETag es el MD5) |
+| Cambian sólo los metadatos de un objeto | — | — | quieto ✓ | no se pudo probar |
+| Una lectura (`SELECT`) | quieto ✓ | quieto ✓ | — | — |
+| **Coste** de preguntarlo | **1,1–1,3 s** por llamada (proceso, TLS y conexión) | 0,45–0,85 s y **10 MB facturados** por llamada (el mínimo); 0 B si la caché de consultas acierta, que sólo pasa si la tabla no cambió | 160–200 ms (1–2 objetos) | 290–470 ms (1–2 objetos), por la API de Cloudflare |
+
+Lo que esto quiere decir:
+
+- **`log` (Postgres) sólo garantiza una dirección**: si es igual, el activo no cambió. Pero se mueve
+  con cualquier commit del servidor. En Neon, además, **se movió solo**, sin escrituras nuestras,
+  minuto a minuto; no se sabe si fue el propio Neon u otro cliente de esa base. En la práctica, dos
+  pasadas separadas por minutos casi nunca lo verán igual: **cada pasada creerá que hay cambios**.
+- **`field` (BigQuery) sólo garantiza la otra**: si se mueve, hay filas nuevas. Pero **no ve
+  actualizaciones, borrados ni filas tardías**. Un activo con cursor puede cambiar sin que el
+  testigo se entere. Si «ya está» se fía de él, **la copia queda vieja en silencio**: se confirma
+  en M6. Cuesta además 10 MB facturados en cada pregunta.
+- **`listing` es el único con ámbito exacto** (el prefijo) y que ve altas, bajas y cambios. En GCS
+  la generación da **falsos «cambió»** al reescribir lo mismo. El listado de GCS trae también el
+  `md5Hash`, que no los daría. En R2, el ETag de una subida simple es el MD5 y no los da; la subida
+  multiparte no se probó. Su coste crece con el número de objetos, y eso no se midió a escala.
+- **No medidos**:
+  - Azure: no hay credencial de escritura; los contenedores de prueba son públicos y de solo lectura.
+  - El S3 de AWS: la credencial de prueba caducó.
+  - SFTP: la VM se borró.
+  - JSONL: es `field`, como BigQuery, según el código.
+
+### M3 · medido (2026-10-13): las señales de cambio con el ámbito del activo
+
+| Origen | Señal | Ámbito | Qué ve | Qué no ve, o qué cuesta |
+|---|---|---|---|---|
+| Postgres | Contadores por tabla (`pg_stat_user_tables`: `n_tup_ins/upd/del`) | **La tabla** ✓: cambiar `b` no tocó los de `a` | Inserts, updates y deletes ✓ | Sólo dicen **cuántos**, no cuándo. Y tras suspenderse el cómputo: **sobrevivieron** (el cómputo se suspendió y volvió a arrancar a las 11:52 con los mismos valores; se creía que se perdían, y no). Un reinicio sucio sí los borra, según la documentación de Postgres; eso no se midió |
+| Postgres | Decodificación lógica (una ranura `test_decoding`) filtrada por tabla | **La tabla** ✓: 0 cambios de `a` entre 8 cuando sólo cambió `b`; 1 de 11, con la fila, cuando cambió `a` | Todo, en orden, con la fila | Hace falta `wal_level=logical`, el privilegio `REPLICATION` y **una ranura que retiene WAL en el origen** mientras no se consume: disco del cliente. Lee los cambios de todo el servidor para filtrar (718 ms para 11) |
+| Postgres | Hora de commit por fila (`track_commit_timestamp`) | — | — | **Apagado en Neon** |
+| Postgres | Hora de última modificación de una tabla | — | — | **No existe en Postgres** |
+| BigQuery | `lastModifiedTime` (`tables.get`, o `__TABLES__`) | **La tabla** ✓: cambiar o truncar `u` no lo movió | Update, delete, insert tardío ✓; **0 B facturados**, unos 0,5 s | **No se movió con una inserción en *streaming*** (`insertAll`), y `numRows` tampoco (5 s después). No se midió si se mueve cuando se vacía el búfer |
+| GCS | `updated` por objeto | El objeto ✓ | Cualquier escritura | También cambia **sólo con metadatos**: dice «se tocó», no «cambió el contenido». Para eso, `md5Hash` (o `crc32c`) |
+| R2 | `last-modified` por objeto | El objeto ✓ | Cualquier escritura | También cambia al **reescribir lo mismo**. Para el contenido, el ETag de una subida simple |
+
+Lo que esto quiere decir:
+
+- **Ningún origen da gratis y exacta la edad de un activo**, pero todos dan algo con su ámbito.
+  - BigQuery: `lastModifiedTime` es gratis y tiene el ámbito correcto, menos el *streaming*.
+  - Postgres: los contadores por tabla tienen el ámbito correcto, sobreviven a la suspensión, pero dicen cuántos cambios y no cuándo: hay que guardarlos y comparar,, o la
+    decodificación lógica, que es exacta y cuesta una ranura en el origen.
+  - Objetos: el listado con el hash de contenido.
+- **Lo que hoy usa ORE como testigo no es lo mejor que cada origen ofrece** para saber si un activo
+  cambió:
+  - En BigQuery, `lastModifiedTime` ve lo que `field` no ve, y no cuesta.
+  - En Postgres, los contadores o la decodificación tienen el ámbito que el LSN no tiene.
+  - En GCS, `md5Hash` evita los falsos cambios de la generación.
+- Y el testigo sigue sirviendo para lo que se diseñó, **retomar** una lectura (0016). Saber si un
+  activo cambió es otra pregunta, y necesita su propia señal.
 
 ## Lo que sigue
 

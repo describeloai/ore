@@ -1,0 +1,151 @@
+{
+ "apiVersion": "batch/v1",
+ "kind": "Job",
+ "metadata": {
+  "name": "medir-salud",
+  "namespace": "t-victor",
+  "labels": {
+   "ore.dev/rol": "driver",
+   "ore.dev/tenant": "victor",
+   "kueue.x-k8s.io/queue-name": "cola"
+  }
+ },
+ "spec": {
+  "backoffLimit": 0,
+  "ttlSecondsAfterFinished": 3600,
+  "template": {
+   "metadata": {
+    "labels": {
+     "ore.dev/rol": "driver",
+     "ore.dev/tenant": "victor"
+    }
+   },
+   "spec": {
+    "serviceAccountName": "driver",
+    "restartPolicy": "Never",
+    "nodeSelector": {
+     "ore.dev/pool": "system"
+    },
+    "tolerations": null,
+    "securityContext": {},
+    "initContainers": [
+     {
+      "args": [
+       "set -e\ngcloud secrets versions access latest \\\n  --secret=t-victor-forja-token --out-file=/puesto/forja\nchmod 0400 /puesto/forja\necho \"testigo puesto · $(wc -c < /puesto/forja) bytes\"\n# ⭐⭐ Y EL AGENTE, por el mismo camino. Hasta el 2026-09-13 venia de\n#   un `Secret` `idp-agente` puesto a mano y copiado entre\n#   inquilinos; ahora es el cliente de Keycloak de ESTE inquilino,\n#   que el aprovisionador crea en su paso ⑦ y deja en el almacen.\nfor p in cliente secreto; do\n  gcloud secrets versions access latest \\\n    --secret=t-victor-agente-$p --out-file=/puesto/agente-$p\n  chmod 0400 /puesto/agente-$p\ndone\necho \"agente puesto · $(cat /puesto/agente-cliente)\"\n"
+      ],
+      "command": [
+       "/bin/sh",
+       "-c"
+      ],
+      "env": [
+       {
+        "name": "HOME",
+        "value": "/tmp"
+       },
+       {
+        "name": "CLOUDSDK_CONFIG",
+        "value": "/tmp/.gcloud"
+       }
+      ],
+      "image": "europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main",
+      "imagePullPolicy": "IfNotPresent",
+      "name": "traer-el-testigo",
+      "resources": {
+       "limits": {
+        "cpu": "500m",
+        "memory": "256Mi"
+       },
+       "requests": {
+        "cpu": "50m",
+        "memory": "128Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       }
+      },
+      "terminationMessagePath": "/dev/termination-log",
+      "terminationMessagePolicy": "File",
+      "volumeMounts": [
+       {
+        "mountPath": "/puesto",
+        "name": "puesto"
+       }
+      ]
+     }
+    ],
+    "containers": [
+     {
+      "name": "medir",
+      "image": "europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main",
+      "imagePullPolicy": "Always",
+      "env": [
+       {
+        "name": "HOME",
+        "value": "/tmp"
+       },
+       {
+        "name": "ORGANIZACION",
+        "value": "victor"
+       },
+       {
+        "name": "EMISOR",
+        "value": "https://login.paladio.io"
+       },
+       {
+        "name": "DIRECCION",
+        "value": "http://idp-service.identidad.svc.cluster.local:8080"
+       },
+       {
+        "name": "REALM",
+        "value": "rubix"
+       }
+      ],
+      "command": [
+       "/bin/sh",
+       "-c",
+       "# lo pone hacer-job.py"
+      ],
+      "volumeMounts": [
+       {
+        "mountPath": "/puesto",
+        "name": "puesto",
+        "readOnly": true
+       }
+      ],
+      "resources": {
+       "requests": {
+        "cpu": "50m",
+        "memory": "128Mi"
+       },
+       "limits": {
+        "cpu": "500m",
+        "memory": "256Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       }
+      }
+     }
+    ],
+    "volumes": [
+     {
+      "emptyDir": {
+       "medium": "Memory"
+      },
+      "name": "puesto"
+     }
+    ]
+   }
+  }
+ }
+}
