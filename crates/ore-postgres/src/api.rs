@@ -31,6 +31,8 @@
 //!   GET    /v1/postgres/proyectos/{p}/ramas/{r}/bases
 //!   POST   /v1/postgres/proyectos/{p}/ramas/{r}/bases            {"nombre": "ventas", "dueno": "app"}  → 202
 //!   DELETE /v1/postgres/proyectos/{p}/ramas/{r}/bases/{b}        → 202
+//!   GET    /v1/postgres/proyectos/{p}/operaciones   ?estado=&limite=&desde=<op>: de la más nueva a la
+//!                                                     más vieja, por páginas (P8·4b)
 //!   GET    /v1/postgres/operaciones/{op}
 //! ```
 //!
@@ -93,7 +95,8 @@ const PROYECTO: &str = "id, celda, dueno,
 /// Y de una operación, para [`operacion_json`].
 const OPERACION: &str = "id, tipo, proyecto, estado, error,
     to_char(creada at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
-    to_char(terminada at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')";
+    to_char(terminada at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
+    rama, endpoint, (extract(epoch from terminada - creada) * 1000)::bigint";
 
 /// Un id nuevo de operación: lo pone la base, que es quien sabe dar uno único.
 const NUEVA_OPERACION: &str = "'op_' || replace(gen_random_uuid()::text, '-', '')";
@@ -210,6 +213,7 @@ impl Servidor {
                 cambiar_acceso(c, &celda, id, cuerpo.as_ref().expect("analizado"))
             }
             Pedido::Operacion(id) => operacion(c, &celda, id),
+            Pedido::Operaciones(id) => operaciones(c, &celda, id, &p.consulta),
             Pedido::Ramas(p) => ramas(c, &celda, p),
             Pedido::Rama(p, r) => rama(c, &celda, p, r),
             Pedido::CrearRama(p) => crear_rama(c, &celda, p, cuerpo.as_ref().expect("analizado")),
@@ -376,6 +380,8 @@ pub enum Pedido<'a> {
     Sql(&'a str, &'a str),
     Almacenamiento(&'a str),
     AjustarProyecto(&'a str),
+    /// P8·4b: las operaciones de una instancia, por páginas.
+    Operaciones(&'a str),
     BorrarRol(&'a str, &'a str, &'a str),
     Bases(&'a str, &'a str),
     CrearBase(&'a str, &'a str),
@@ -393,6 +399,7 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
         ("GET", ["proyectos", p, "almacenamiento"]) => Pedido::Almacenamiento(p),
         ("POST", ["proyectos", p, "ajustes"]) => Pedido::AjustarProyecto(p),
         ("POST", ["proyectos", p, "acceso"]) => Pedido::CambiarAcceso(p),
+        ("GET", ["proyectos", p, "operaciones"]) => Pedido::Operaciones(p),
         ("GET", ["operaciones", o]) => Pedido::Operacion(o),
         ("GET", ["proyectos", p, "ramas"]) => Pedido::Ramas(p),
         ("POST", ["proyectos", p, "ramas"]) => Pedido::CrearRama(p),
@@ -422,7 +429,11 @@ pub fn ruta<'a>(metodo: &str, resto: &[&'a str]) -> Result<Pedido<'a>, Respuesta
             _,
             ["proyectos"]
             | ["proyectos", _]
-            | ["proyectos", _, "acceso"]
+            | [
+                "proyectos",
+                _,
+                "acceso" | "almacenamiento" | "ajustes" | "operaciones",
+            ]
             | ["operaciones", _]
             | ["proyectos", _, "ramas"]
             | ["proyectos", _, "ramas", _]
@@ -706,6 +717,77 @@ fn operacion(c: &mut Client, celda: &Celda, id: &str) -> Result<Respuesta, Fallo
         Some(f) => Ok(Respuesta::ok(operacion_json(&f))),
         None => Err(Fallo(404, format!("no hay ninguna operación `{id}`"))),
     }
+}
+
+/// P8·4b: las operaciones de una instancia, de la más nueva a la más vieja, también las que
+/// pide el sistema (dormir, despertar, reparar). `?estado=` filtra; `?limite=` (1–200, 50)
+/// corta la página y `?desde=<op>` da la siguiente: las de antes de esa, la `siguiente` de la
+/// página anterior. Por `(creada, id)`, que no se mueve aunque entren nuevas mientras se pagina.
+fn operaciones(
+    c: &mut Client,
+    celda: &Celda,
+    p: &str,
+    consulta: &std::collections::BTreeMap<String, String>,
+) -> Result<Respuesta, Fallo> {
+    // Con la instancia borrándose, también: su `borrar-proyecto` es una de ellas.
+    if c.query_opt(
+        "select 1 from plano.proyecto where organizacion = $1 and id = $2",
+        &[&celda.organizacion, &p],
+    )?
+    .is_none()
+    {
+        return Err(no_hay_proyecto(p));
+    }
+    let limite: i64 = match consulta.get("limite").map(|l| l.parse::<i64>()) {
+        None => 50,
+        Some(Ok(n)) if (1..=200).contains(&n) => n,
+        Some(_) => return Err(Fallo(400, "`limite` va de 1 a 200".into())),
+    };
+    let estado = consulta.get("estado").map(String::as_str);
+    if let Some(e) = estado
+        && !["en-curso", "hecha", "fallida"].contains(&e)
+    {
+        return Err(Fallo(
+            400,
+            format!("`estado` es en-curso, hecha o fallida, no `{e}`"),
+        ));
+    }
+    let desde = consulta.get("desde").map(String::as_str);
+    if let Some(d) = desde
+        && c.query_opt(
+            "select 1 from plano.operacion where organizacion = $1 and proyecto = $2 and id = $3",
+            &[&celda.organizacion, &p, &d],
+        )?
+        .is_none()
+    {
+        return Err(Fallo(
+            400,
+            format!("`desde`: no hay ninguna operación `{d}` en `{p}`"),
+        ));
+    }
+    let filas = c.query(
+        &format!(
+            "select {OPERACION} from plano.operacion
+              where organizacion = $1 and proyecto = $2
+                and ($3::text is null or estado = $3)
+                and ($4::text is null
+                     or (creada, id) < (select creada, id from plano.operacion where id = $4))
+              order by creada desc, id desc
+              limit $5"
+        ),
+        &[&celda.organizacion, &p, &estado, &desde, &(limite + 1)],
+    )?;
+    let pagina = &filas[..filas.len().min(limite as usize)];
+    let mut v = vec![(
+        "operaciones",
+        Json::Arr(pagina.iter().map(operacion_json).collect()),
+    )];
+    if filas.len() > pagina.len()
+        && let Some(ultima) = pagina.last()
+    {
+        v.push(("siguiente", Json::s(ultima.get::<_, String>(0))));
+    }
+    Ok(Respuesta::ok(Json::obj(v)))
 }
 
 // ── la forma de lo que sale ────────────────────────────────────────────────
@@ -2013,6 +2095,16 @@ fn operacion_json(f: &Row) -> Json {
     }
     if let Some(t) = f.get::<_, Option<String>>(6) {
         v.push(("terminada", Json::s(t)));
+    }
+    // P8·4b: sobre qué actuó y cuánto tardó (desde que se pidió, cola incluida).
+    if let Some(r) = f.get::<_, Option<String>>(7) {
+        v.push(("rama", Json::s(r)));
+    }
+    if let Some(e) = f.get::<_, Option<String>>(8) {
+        v.push(("endpoint", Json::s(e)));
+    }
+    if let Some(ms) = f.get::<_, Option<i64>>(9) {
+        v.push(("duracion_ms", Json::Int(ms)));
     }
     Json::obj(v)
 }

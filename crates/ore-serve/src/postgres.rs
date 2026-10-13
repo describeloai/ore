@@ -71,6 +71,21 @@ pub(crate) fn que_pide<'a>(metodo: &str, resto: &[&'a str]) -> Option<Que<'a>> {
     }
 }
 
+/// P8·4b: la página de una lista (`desde`, `limite`, `estado`) pasa a `ore-postgres` tal cual;
+/// `ore-entrada` ya dejó sólo identificadores, que no hay que codificar. Lo demás, no.
+fn con_pagina(camino: &str, consulta: &std::collections::BTreeMap<String, String>) -> String {
+    let pagina: Vec<String> = consulta
+        .iter()
+        .filter(|(k, _)| ["desde", "limite", "estado"].contains(&k.as_str()))
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    if pagina.is_empty() {
+        camino.to_string()
+    } else {
+        format!("{camino}?{}", pagina.join("&"))
+    }
+}
+
 fn credencial() -> &'static dyn ore_acceso::Credencial {
     static C: OnceLock<Box<dyn ore_acceso::Credencial>> = OnceLock::new();
     C.get_or_init(
@@ -231,7 +246,8 @@ impl Servidor {
             }
         }
         let quien = camino.ends_with("/sql").then_some(sujeto.persona.as_str());
-        let (codigo, texto) = match pedir_con(&p.metodo, &camino, cuerpo.as_ref(), quien) {
+        let destino = con_pagina(&camino, &p.consulta);
+        let (codigo, texto) = match pedir_con(&p.metodo, &destino, cuerpo.as_ref(), quien) {
             Ok(x) => x,
             Err(r) => return r,
         };
@@ -251,6 +267,22 @@ impl Servidor {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn la_pagina_pasa_y_lo_demas_no() {
+        let c = |pares: &[(&str, &str)]| {
+            let m = pares
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            con_pagina("/v1/postgres/proyectos/p/operaciones", &m)
+        };
+        assert_eq!(c(&[]), "/v1/postgres/proyectos/p/operaciones");
+        assert_eq!(
+            c(&[("limite", "20"), ("desde", "op_1"), ("warehouse", "x")]),
+            "/v1/postgres/proyectos/p/operaciones?desde=op_1&limite=20"
+        );
+    }
 
     #[test]
     fn cada_ruta_pide_su_potestad() {

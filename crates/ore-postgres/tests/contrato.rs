@@ -253,12 +253,23 @@ fn pide(s: &Servidor, token: &str, metodo: &str, ruta: &str, cuerpo: &str) -> (u
     if !token.is_empty() {
         cabeceras.insert("authorization".into(), format!("Bearer {token}"));
     }
+    // `?k=v&…` va a `consulta`, como lo deja `ore-entrada`.
+    let (ruta, consulta) = match ruta.split_once('?') {
+        Some((r, q)) => (
+            r,
+            q.split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        ),
+        None => (ruta, BTreeMap::new()),
+    };
     let r = s.atender(&Peticion {
         metodo: metodo.into(),
         ruta: ruta.into(),
         cabeceras,
         cuerpo: cuerpo.into(),
-        consulta: BTreeMap::new(),
+        consulta,
     });
     (r.codigo, r.cuerpo.jcs())
 }
@@ -2359,5 +2370,94 @@ fn los_ajustes_de_la_instancia() {
         "sin retención propia"
     );
     pide(&s, "a", "DELETE", "/v1/postgres/proyectos/ajusta", "");
+    vuelta();
+}
+
+#[test]
+fn las_operaciones_de_la_instancia() {
+    // P8·4b: la lista, de la más nueva a la más vieja, con sobre qué actuó y cuánto tardó;
+    // por páginas que no se mueven aunque entren operaciones nuevas.
+    let _turno = UNA_A_LA_VEZ.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = servidor() else { return };
+    let almacen = Apunta::default();
+    let vuelta =
+        || ore_postgres::reconciliador::vuelta(&mut otra_conexion(), &almacen, &almacen).unwrap();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos",
+        r#"{"id":"opera","dueno":"user:vera"}"#,
+    );
+    vuelta();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/opera/ramas",
+        r#"{"id":"dev"}"#,
+    );
+    vuelta();
+    pide(
+        &s,
+        "a",
+        "POST",
+        "/v1/postgres/proyectos/opera/ajustes",
+        r#"{"nombre":"Opera"}"#,
+    );
+    vuelta();
+
+    let lista = "/v1/postgres/proyectos/opera/operaciones";
+    let tipos = |r: &str| -> Vec<String> {
+        let n = parse::parse(r).unwrap();
+        n.get("operaciones")
+            .unwrap()
+            .1
+            .items()
+            .iter()
+            .map(|o| o.get("tipo").unwrap().1.as_str().unwrap().to_string())
+            .collect()
+    };
+    let (codigo, r) = pide(&s, "a", "GET", lista, "");
+    assert_eq!(codigo, 200, "{r}");
+    assert_eq!(
+        tipos(&r),
+        ["configurar-proyecto", "crear-rama", "crear-proyecto"],
+        "{r}"
+    );
+    let n = parse::parse(&r).unwrap();
+    let rama = &n.get("operaciones").unwrap().1.items()[1];
+    assert_eq!(rama.get("rama").unwrap().1.as_str(), Some("dev"), "{r}");
+    assert!(
+        rama.get("duracion_ms").is_some(),
+        "hecha: sabe lo que tardó"
+    );
+    assert!(n.get("siguiente").is_none(), "no hay más");
+
+    // Página a página: una, y desde ella la siguiente.
+    let (_, r) = pide(&s, "a", "GET", &format!("{lista}?limite=1"), "");
+    assert_eq!(tipos(&r), ["configurar-proyecto"]);
+    let siguiente = campo(&r, &["siguiente"]);
+    let (_, r) = pide(
+        &s,
+        "a",
+        "GET",
+        &format!("{lista}?limite=2&desde={siguiente}"),
+        "",
+    );
+    assert_eq!(tipos(&r), ["crear-rama", "crear-proyecto"], "{r}");
+    let (_, r) = pide(&s, "a", "GET", &format!("{lista}?estado=fallida"), "");
+    assert!(tipos(&r).is_empty(), "{r}");
+
+    for mal in ["?limite=0", "?limite=201", "?estado=rara", "?desde=op_no"] {
+        assert_eq!(
+            pide(&s, "a", "GET", &format!("{lista}{mal}"), "").0,
+            400,
+            "{mal}"
+        );
+    }
+    assert_eq!(pide(&s, "b", "GET", lista, "").0, 404, "otra organización");
+    assert_eq!(pide(&s, "a", "POST", lista, "").0, 405);
+    pide(&s, "a", "DELETE", "/v1/postgres/proyectos/opera", "");
     vuelta();
 }
