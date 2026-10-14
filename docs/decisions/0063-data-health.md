@@ -1061,6 +1061,20 @@ contestaba `conexion`, fuera lo que fuera. Una tabla borrada habría sido «el o
   también en `GET /health` y en `/health/{fuente}`. Si todas sus copias la alcanzaron, no se afirma
   nada.
 
+**Medido (2026-10-14, `989b4962`).** Una pasada sobre el SFTP muerto: `sftp_s.media.audio` es
+`source-unreachable` con `intento.codigo: conexion`; el objeto en vivo `sftp.media.audio` lo hereda
+(`degraded`), y `/health/sftp` dice «1 of 7 copies could not reach this source» (las otras seis lo
+dirán en su próxima pasada: sus punteros son de antes). Hizo falta un arreglo más: el índice
+copiaba del puntero de una colección ocho campos fijos, sin `intento` ni `datos_de` (`e7808149`).
+La vara, cuarta vuelta (`vara-20261014-1117.md`): 21 de 23; C12 en verde en los dos orígenes (una
+tabla que no está no es un origen caído); C9 y C11 esperan la vista `pedidos_por_cliente` en `main`.
+
+**S6f, la consola** (2026-10-14, local, sin empujar): la sección Health en el raíl de la base y del
+schema con su suma y *Needs attention* (`f23a2c4`); la pestaña **Health** de un activo, que sustituye
+a «Data quality», por capas —el ahora con la acción de cada motivo, Freshness, lo que mira cada
+refresco, el linaje con su estado, y promesas, vigilancia y perfilado dichos como *Off*— (`bb6bce7`);
+y la barra de pestañas de una ficha, rehecha como botones con la activa por nombre (`dd81724`).
+
 **El orden y los commits.** Primero S6a y S6c juntos (ore-core y ore-serve: es lo que el resto
 consume), después S6b, S6e y S6d, y al final S6f y S6g en la consola. Cada uno se compila con fmt,
 clippy y las pruebas en Docker, y se mide desplegado.
