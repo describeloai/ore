@@ -623,6 +623,35 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
     Json::Obj(m)
 }
 
+/// **Lo que un activo promete** (OOS v1alpha31, 0063 S7a·3): cada promesa de
+/// su `spec.promises`, tal como se escribió, y `notEmptied` aunque no se
+/// escriba —es de serie—, marcada con `de_serie: true`. Lo medido llega con el
+/// puntero (S7c en adelante).
+fn promesas_declaradas(d: &Loaded) -> Json {
+    let mut lista: Vec<Json> = d
+        .section("promises")
+        .map(|n| n.items().iter().map(Json::de_node_fiel).collect())
+        .unwrap_or_default();
+    let de_serie = crate::promesas::DE_SERIE;
+    let mut hay = false;
+    for p in &mut lista {
+        if let Json::Obj(m) = p
+            && matches!(m.get("id"), Some(Json::Str(i)) if i == de_serie)
+        {
+            m.insert("de_serie".into(), Json::Bool(true));
+            hay = true;
+        }
+    }
+    if !hay {
+        lista.push(Json::obj([
+            ("id", Json::s(de_serie)),
+            ("severity", Json::s("error")),
+            ("de_serie", Json::Bool(true)),
+        ]));
+    }
+    Json::Arr(lista)
+}
+
 /// El resumen del puntero de una colección: su estado, su transacción, cuántos
 /// ítems tiene en cada estado y qué cambió en la última (0046 E8·1).
 fn puntero_de_coleccion(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
@@ -1322,6 +1351,11 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         // transacción y lo que tiene—, y el catálogo lo enseña igual.
         if d.kind == Kind::MediaCollection {
             it.insert("puntero".into(), puntero_de_coleccion(punteros, d));
+        }
+        // 0063 S7a·3: lo que promete (v1alpha31), para que la consola lo
+        // enseñe antes de que nada lo mida.
+        if matches!(d.kind, Kind::Dataset | Kind::MediaCollection) {
+            it.insert("promesas_declaradas".into(), promesas_declaradas(d));
         }
         // acceso
         let mut acceso: Vec<(&'static str, Json)> = vec![(

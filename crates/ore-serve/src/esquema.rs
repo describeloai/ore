@@ -435,6 +435,29 @@ spec:
         );
     }
 
+    /// 0063 S7a·3: aceptar el esquema reescribe `fields`, no las promesas. La
+    /// que mide una columna que se fue queda, y la propuesta la enseña como
+    /// `OOS2052` (paso ⑤): no se borra en silencio lo que alguien prometió.
+    #[test]
+    fn aceptar_el_esquema_no_toca_las_promesas() {
+        let t = format!(
+            "{}  promises:\n    - id: cliente_presente\n      column: cliente\n      metric: nullValues\n      mustBe: 0\n",
+            DATASET.replace("v1alpha13", "v1alpha31")
+        );
+        let c = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let nuevo = fields_al_dia(&t, &c(&["id", "comprador", "total"]), &c(&["cliente"])).unwrap();
+        assert!(
+            nuevo.ends_with("  promises:\n    - id: cliente_presente\n      column: cliente\n      metric: nullValues\n      mustBe: 0\n"),
+            "{nuevo}"
+        );
+        let d = ore_core::validate::validate_document(std::path::Path::new("x.yaml"), &nuevo);
+        assert_eq!(
+            d.iter().map(|x| x.code).collect::<Vec<_>>(),
+            vec![ore_core::code::Code::Oos2052],
+            "{d:?}"
+        );
+    }
+
     #[test]
     fn con_nombres_propios_solo_se_quita_lo_que_se_fue() {
         let t = DATASET.replace("    cliente: cliente", "    quien: cliente");

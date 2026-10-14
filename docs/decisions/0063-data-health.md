@@ -1377,6 +1377,20 @@ En `ore-core`: `promesas.rs` (la biblioteca y `validar`), `V1Alpha30`/`V1Alpha31
 claves de `Dataset` y `MediaCollection` desde v1alpha31, `OOS2052`/`OOS2053`, las listas del esquema
 en `normalize`. En `ore-cli`, `borrador_de_v1alpha31`: 11 de 11.
 
+**S7a·3, hecho (2026-10-14).** Lo que podía perder las promesas, y ya no:
+- **La re-inducción** (`review`, `model`, `copy`) reescribe entero lo que lleva la marca de `ore
+  discover`, y un `Dataset` inducido es lo primero a lo que un dueño le pondría promesas: las habría
+  perdido en la pasada siguiente. `escribir_paquete` pasa ahora el bloque `promises` de lo que había
+  a lo nuevo, y sube su `apiVersion` a v1alpha31 (`promesas::conservar`). No estaba en el plan:
+  salió al mirar quién reescribe un `Dataset`.
+- **`write()`** reescribe solo `columns` (`seguir_esquema`): las promesas y el `apiVersion` se
+  quedan. Probado.
+- ***Accept the new schema*** reescribe solo `fields`: la promesa de una columna que se fue se queda
+  y la propuesta la enseña como `OOS2052`. Probado.
+- **Subir la versión es neutro** para un `Dataset` de v1alpha12 y una colección de v1alpha19.
+- **`/assets`** lleva `promesas_declaradas` en cada `Dataset` y `MediaCollection`: lo escrito, y
+  `notEmptied` de serie (`de_serie: true`) aunque no se escriba.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre

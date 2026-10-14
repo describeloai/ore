@@ -2583,6 +2583,26 @@ mod tests {
         );
     }
 
+    /// 0063 S7a·3: lo que el registro de `write()` reescribe es `columns`; las
+    /// promesas de su dueño y su `apiVersion` se quedan como estaban.
+    #[test]
+    fn seguir_el_esquema_no_toca_las_promesas() {
+        use super::seguir_esquema;
+        use std::collections::BTreeMap;
+        let doc = "apiVersion: oos.dev/v1alpha31\nkind: Dataset\nmetadata: { name: resumen, namespace: ventas }\n# Un dataset escrito (0033): lo escribió `write()`\nspec:\n  owner: team:ventas\n  columns:\n    cliente: { type: String }\n    pedidos: { type: Integer }\n  promises:\n    - id: un_cliente_una_fila\n      column: cliente\n      metric: duplicateValues\n      mustBe: 0\n  changes: { mode: append }\n";
+        let cols: BTreeMap<String, String> = [("cliente", "String"), ("total", "Integer")]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let s = seguir_esquema(doc, &cols).unwrap();
+        assert!(s.starts_with("apiVersion: oos.dev/v1alpha31\n"), "{s}");
+        assert!(
+            s.contains("  promises:\n    - id: un_cliente_una_fila\n      column: cliente\n      metric: duplicateValues\n      mustBe: 0\n  changes: { mode: append }\n"),
+            "{s}"
+        );
+        assert_eq!(super::columnas_del_documento(&s), cols);
+    }
+
     use super::*;
 
     /// Lo que un cambio del catálogo REST dice de sí mismo, y las columnas

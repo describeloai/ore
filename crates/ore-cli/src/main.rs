@@ -2201,6 +2201,12 @@ fn escribir_paquete(
         } else {
             contenido.clone()
         };
+        // 0063 S7a·3: las promesas que su dueño añadió a lo inducido no se las
+        // lleva la re-inducción (`promesas::conservar`).
+        let texto = match std::fs::read_to_string(&ruta) {
+            Ok(viejo) if marcado => ore_core::promesas::conservar(&viejo, &texto),
+            _ => texto,
+        };
         std::fs::write(&ruta, texto)
             .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
     }

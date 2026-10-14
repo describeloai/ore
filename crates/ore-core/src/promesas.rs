@@ -562,6 +562,93 @@ fn severidad(
     }
 }
 
+/// **Lo que la re-inducción no se puede llevar** (S7a·3). `ore discover`
+/// regenera entero lo que lleva su marca, y un `Dataset` inducido al que su
+/// dueño añadió `promises` las perdería en la pasada siguiente. Si `viejo`
+/// —lo que había en el fichero— tiene un bloque `promises` en su `spec` y
+/// `nuevo` no, el bloque pasa tal cual al final del `spec` de `nuevo`, y su
+/// `apiVersion` sube a v1alpha31 si era anterior (la puerta es del documento;
+/// para estos `kind` subir es neutro). Lo demás de `nuevo`, intacto.
+pub fn conservar(viejo: &str, nuevo: &str) -> String {
+    let Some(bloque) = bloque_de_promesas(viejo) else {
+        return nuevo.to_string();
+    };
+    if bloque_de_promesas(nuevo).is_some() {
+        return nuevo.to_string();
+    }
+    let lineas: Vec<&str> = nuevo.lines().collect();
+    let Some(i) = lineas.iter().position(|l| *l == "spec:") else {
+        return nuevo.to_string();
+    };
+    // El final del `spec`: la siguiente clave de primer nivel, o el final.
+    let mut fin = lineas.len();
+    for (j, l) in lineas.iter().enumerate().skip(i + 1) {
+        if !l.is_empty() && !l.starts_with(' ') && !l.starts_with('#') {
+            fin = j;
+            break;
+        }
+    }
+    while fin > i + 1 && lineas[fin - 1].trim().is_empty() {
+        fin -= 1;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(lineas.len() + bloque.len());
+    for (j, l) in lineas.iter().enumerate() {
+        if j == fin {
+            out.extend(bloque.iter().cloned());
+        }
+        out.push(subir_version(l));
+    }
+    if fin == lineas.len() {
+        out.extend(bloque.iter().cloned());
+    }
+    let mut texto = out.join("\n");
+    if nuevo.ends_with('\n') {
+        texto.push('\n');
+    }
+    texto
+}
+
+/// El bloque `  promises:` del `spec` de un documento, con sus líneas.
+fn bloque_de_promesas(texto: &str) -> Option<Vec<String>> {
+    let lineas: Vec<&str> = texto.lines().collect();
+    let i = lineas.iter().position(|l| *l == "spec:")?;
+    let mut bloque = Vec::new();
+    let mut dentro = false;
+    for l in &lineas[i + 1..] {
+        if !l.is_empty() && !l.starts_with(' ') && !l.starts_with('#') {
+            break;
+        }
+        if dentro {
+            // Sigue mientras la línea sea suya: más sangrada, un `  -` de la
+            // lista a dos espacios, o en blanco.
+            if l.trim().is_empty() || l.starts_with("   ") || l.starts_with("  -") {
+                bloque.push(l.to_string());
+                continue;
+            }
+            break;
+        }
+        if l.starts_with("  promises:") {
+            dentro = true;
+            bloque.push(l.to_string());
+        }
+    }
+    while bloque.last().is_some_and(|l| l.trim().is_empty()) {
+        bloque.pop();
+    }
+    (!bloque.is_empty()).then_some(bloque)
+}
+
+/// `apiVersion: oos.dev/v1alphaN` con N < 31 pasa a v1alpha31.
+fn subir_version(l: &str) -> String {
+    if let Some(v) = l.strip_prefix("apiVersion: ")
+        && let Some(v) = ApiVersion::parse(v.trim())
+        && v < ApiVersion::V1Alpha31
+    {
+        return format!("apiVersion: {}", ApiVersion::V1Alpha31.as_str());
+    }
+    l.to_string()
+}
+
 /// Las columnas que el activo declara: las claves de `fields` (una copia) o
 /// de `columns` (uno escrito). `None` si no declara ninguna: entonces la
 /// columna se sabrá al medir (`unknown`, `01` §3).
@@ -748,6 +835,44 @@ mod pruebas {
         let mal = doc.replace("      unit: items\n", "      column: x\n");
         let d = diags(&mal);
         assert!(d[0].1.contains("no mide una columna"), "{d:?}");
+    }
+
+    #[test]
+    fn la_re_induccion_conserva_las_promesas() {
+        let viejo = "# ore discover: marca\napiVersion: oos.dev/v1alpha31\nkind: Dataset\nmetadata:\n  name: pedidos\n  namespace: ventas\nspec:\n  owner: \"user:victor\"\n  from: { table: pg.public.pedidos }\n  fields:\n    id: id\n  promises:\n    - id: volumen\n      metric: rowCount\n\n      mustBeGreaterOrEqualTo: 900\n  - id: id_unico\n    column: id\n    metric: duplicateValues\n    mustBe: 0\n";
+        let nuevo = "# ore discover: marca\napiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata:\n  name: pedidos\n  namespace: ventas\nspec:\n  owner: \"user:victor\"\n  from: { table: pg.public.pedidos }\n  fields:\n    id: id\n    total: total\n";
+        let c = conservar(viejo, nuevo);
+        assert_eq!(
+            c,
+            "# ore discover: marca\napiVersion: oos.dev/v1alpha31\nkind: Dataset\nmetadata:\n  name: pedidos\n  namespace: ventas\nspec:\n  owner: \"user:victor\"\n  from: { table: pg.public.pedidos }\n  fields:\n    id: id\n    total: total\n  promises:\n    - id: volumen\n      metric: rowCount\n\n      mustBeGreaterOrEqualTo: 900\n  - id: id_unico\n    column: id\n    metric: duplicateValues\n    mustBe: 0\n"
+        );
+        // Sin promesas en lo viejo, lo nuevo tal cual (y su versión también).
+        assert_eq!(conservar(nuevo, nuevo), nuevo);
+        // Una clave de primer nivel después del `spec` no se come el bloque.
+        let con_cola = format!("{nuevo}status: x\n");
+        assert!(conservar(viejo, &con_cola).ends_with("    mustBe: 0\nstatus: x\n"));
+        // Y lo conservado compila (sin la marca, que no es del documento).
+        let limpio = "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.orders }\n  fields: { id: id }\n";
+        let c = conservar(
+            &con("    - id: v\n      metric: rowCount\n      mustBe: 1\n"),
+            limpio,
+        );
+        assert!(c.starts_with("apiVersion: oos.dev/v1alpha31\n"), "{c}");
+        assert!(diags(&c).is_empty(), "{:?}", diags(&c));
+    }
+
+    #[test]
+    fn subir_la_version_es_neutro() {
+        // Un `Dataset` de v1alpha12 y una colección de v1alpha19, sin promesas:
+        // a v1alpha31 compilan igual.
+        let dataset = COPIA.replace("v1alpha31", "v1alpha12");
+        assert!(diags(&dataset).is_empty(), "{:?}", diags(&dataset));
+        assert!(diags(COPIA).is_empty(), "{:?}", diags(COPIA));
+        let coleccion = "apiVersion: oos.dev/v1alpha19\nkind: MediaCollection\nmetadata: { name: imagenes, namespace: lago }\nspec:\n  owner: team:data\n  media: image\n  formats: [jpeg]\n";
+        assert_eq!(
+            diags(coleccion).len(),
+            diags(&coleccion.replace("v1alpha19", "v1alpha31")).len()
+        );
     }
 
     #[test]
