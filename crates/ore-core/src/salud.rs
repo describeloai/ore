@@ -128,6 +128,37 @@ pub fn bloque(
         }
         motivos.push((DEGRADED, m));
     }
+    // ── Las promesas que fallaron (0063 S7c) ────────────────────────────────
+    //   Cada una que dio `fail` y no es la que retuvo (esa ya es
+    //   `refresh-held`): una `warning` que se publicó, o lo que se publicó de
+    //   todos modos. `guard-warning` con su `guard` (§6).
+    if let Some((_, ps)) = puntero.and_then(|p| p.get("promesas")) {
+        let retuvo = intento.as_ref().and_then(|i| campo(i, "guarda"));
+        let desde = intento_cuando.clone().unwrap_or_else(|| hoy.clone());
+        for p in ps.items() {
+            let id = campo(p, "id").unwrap_or_default();
+            if campo(p, "resultado").as_deref() != Some("fail")
+                || (estado == "error" && retuvo.as_deref() == Some(id.as_str()))
+            {
+                continue;
+            }
+            let unidad = if campo(p, "unidad").as_deref() == Some("percent") {
+                " %"
+            } else {
+                ""
+            };
+            let mensaje = format!(
+                "promise `{id}`: measured {}{unidad}, expected {}",
+                campo(p, "medido").unwrap_or_else(|| "nothing".into()),
+                campo(p, "esperado").unwrap_or_default()
+            );
+            let mut m = motivo("guard-warning", Some(&desde), Some(&mensaje));
+            if let Json::Obj(o) = &mut m {
+                o.insert("guard".into(), Json::s(&id));
+            }
+            motivos.push((WARNING, m));
+        }
+    }
     // ── El esquema del origen (0063 S5a) ────────────────────────────────────
     //   Lo que la copia vio distinto de la `Table` declarada, con `columns`.
     if let Some((_, e)) = puntero.and_then(|p| p.get("esquema_origen")) {
@@ -854,6 +885,35 @@ mod tests {
         assert!(
             t.contains(r#""code":"refresh-held""#) && t.contains(r#""guard":"zero-rows""#),
             "{t}"
+        );
+    }
+
+    /// 0063 S7c: la promesa que retuvo es `refresh-held` (una vez, no dos), y
+    /// la `warning` que falló es `guard-warning` con su porqué.
+    #[test]
+    fn las_promesas_que_fallan_se_dicen() {
+        let n = p(
+            r#"{"estado":"error","motivo":"promise `volumen`: measured 500, expected ≥ 900: held","metadata_location":"m",
+            "intento":{"cuando":"2026-10-14T16:00:00Z","resultado":"retenida","guarda":"volumen"},
+            "promesas":[
+              {"id":"volumen","resultado":"fail","medido":500,"esperado":"≥ 900","severidad":"error"},
+              {"id":"nulos","resultado":"fail","medido":"10.5","unidad":"percent","esperado":"≤ 1 %","severidad":"warning"},
+              {"id":"unico","resultado":"unknown","esperado":"= 0","severidad":"error","motivo":"too many"},
+              {"id":"notEmptied","resultado":"pass","medido":500,"esperado":"x","severidad":"error","de_serie":true}]}"#,
+        );
+        let t = bloque(Some(&n), None, 1_791_900_000, (false, false)).jcs();
+        assert!(
+            t.contains(r#""code":"refresh-held""#) && t.contains(r#""guard":"volumen""#),
+            "{t}"
+        );
+        assert_eq!(t.matches("volumen").count(), 2, "{t}");
+        assert!(
+            t.contains(r#""code":"guard-warning","guard":"nulos","message":"promise `nulos`: measured 10.5 %, expected ≤ 1 %""#),
+            "{t}"
+        );
+        assert!(
+            !t.contains("unico"),
+            "lo que no se midió no mueve el estado: {t}"
         );
     }
 

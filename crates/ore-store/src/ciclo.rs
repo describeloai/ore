@@ -201,13 +201,14 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             let dataset = campo("dataset").ok_or(
                 "a `sellar` le falta `dataset`: bajo qué nombre vive la tabla (`copias/<p>_<v>`)",
             )?;
-            sellar(
+            sellar_con(
                 &lago,
                 &cab,
                 &dataset,
                 campo("base").as_deref(),
                 bandera("fundir"),
                 lineas,
+                crate::medir::Medidor::de(&n),
             )
         }
         // La copia de una vista cuya raíz es una tabla del lago (0031 «(d)»):
@@ -229,6 +230,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 campo("base").as_deref(),
                 bandera("fundir"),
                 &origen,
+                crate::medir::Medidor::de(&n),
             )
         }
         "recoger" | "recoger-seco" => {
@@ -309,7 +311,14 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 .ok_or("a `sellar-arrow` le falta `dataset`: bajo qué nombre vive la copia")?;
             let archivo = campo("archivo")
                 .ok_or("a `sellar-arrow` le falta `archivo`: el Arrow que la consulta dejó")?;
-            sellar_arrow(&lago, &cab, &dataset, campo("base").as_deref(), &archivo)
+            sellar_arrow(
+                &lago,
+                &cab,
+                &dataset,
+                campo("base").as_deref(),
+                &archivo,
+                crate::medir::Medidor::de(&n),
+            )
         }
         "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
         "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
@@ -360,6 +369,27 @@ pub fn sellar<'a>(
     base: Option<&str>,
     fundir: bool,
     filas: impl Iterator<Item = &'a str>,
+) -> Result<String, String> {
+    sellar_con(
+        lago,
+        cab,
+        dataset,
+        base,
+        fundir,
+        filas,
+        crate::medir::Medidor::nada(),
+    )
+}
+
+/// `sellar`, contando lo que piden las promesas (0063 S7c).
+fn sellar_con<'a>(
+    lago: &Lago,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    base: Option<&str>,
+    fundir: bool,
+    filas: impl Iterator<Item = &'a str>,
+    medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     let llegadas: Vec<carga::Fila> = filas
         .map(objeto_plano)
@@ -421,6 +451,7 @@ pub fn sellar<'a>(
         columnas,
         sin_estrechar,
         None,
+        medidor,
     )
 }
 
@@ -451,6 +482,7 @@ fn copiar(
     base: Option<&str>,
     fundir: bool,
     origen: &ore_core::parse::Node,
+    medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     use arrow_array::{Array, RecordBatch, StringArray};
     use arrow_schema::{Field, Schema};
@@ -665,6 +697,7 @@ fn copiar(
         columnas,
         sin_estrechar,
         Some(leidas),
+        medidor,
     )
 }
 
@@ -724,6 +757,7 @@ fn sellar_arrow(
     dataset: &str,
     base: Option<&str>,
     archivo: &str,
+    medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     use arrow_array::{Array, RecordBatch};
     use arrow_schema::{Field, Schema};
@@ -813,6 +847,7 @@ fn sellar_arrow(
         columnas,
         BTreeMap::new(),
         Some(filas),
+        medidor,
     )
 }
 
@@ -887,6 +922,10 @@ fn sellar_flujo(
     let mut filas = 0usize;
     let mut no_nulos = vec![0usize; esquema.fields().len()];
     let mut hecho = false;
+    // 0063 S7c: lo que piden las promesas. Sin fundir, cada lote que pasa es
+    // de la versión que se publica; al fundir, la versión entera la tiene
+    // `confirmar_copia`, y se cuenta allí (no sobre el incremento).
+    let mut medidor = crate::medir::Medidor::de(n);
     // Al fundir, `confirmar_copia` mira todas las filas; sin fundir no hay
     // otra ocasión que esta, lote a lote, antes del snapshot (ORE 0051 P6).
     let mirar = !fundir;
@@ -907,6 +946,9 @@ fn sellar_flujo(
                         Ok(l)
                     })
                     .inspect(|l| {
+                        if !fundir {
+                            medidor.lote(l);
+                        }
                         filas += l.num_rows();
                         for (i, c) in l.columns().iter().enumerate() {
                             no_nulos[i] += c.len() - c.null_count();
@@ -940,6 +982,7 @@ fn sellar_flujo(
             cuentas(&esquema, &no_nulos),
             BTreeMap::new(),
             Some(filas),
+            medidor,
         );
     }
     let columnas_del_contrato =
@@ -956,6 +999,7 @@ fn sellar_flujo(
         &BTreeMap::new(),
         Some(filas),
         esquema_cambiado,
+        medidor.json(),
     ))
 }
 
@@ -991,6 +1035,7 @@ fn confirmar_copia(
     columnas: Json,
     sin_estrechar: BTreeMap<String, String>,
     leidas: Option<usize>,
+    mut medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     // `sellar` funde en texto antes de tipar; `copiar` funde aquí, en Arrow,
     // sobre los lotes vivos de la copia anterior llevados al esquema del lote.
@@ -1021,6 +1066,8 @@ fn confirmar_copia(
     for l in &lotes {
         carga::sin_nulos(l, &cab.obligatorias, desde, dataset)?;
         desde += l.num_rows();
+        // 0063 S7c: lo que piden las promesas, sobre la versión entera.
+        medidor.lote(l);
     }
 
     let (tabla, esquema, operacion, esquema_cambiado, propiedades_snapshot) =
@@ -1035,6 +1082,7 @@ fn confirmar_copia(
         &sin_estrechar,
         leidas,
         esquema_cambiado,
+        medidor.json(),
     ))
 }
 
@@ -1128,9 +1176,10 @@ fn respuesta(
     sin_estrechar: &BTreeMap<String, String>,
     leidas: Option<usize>,
     esquema_cambiado: bool,
+    promesas: Option<Json>,
 ) -> String {
     let t = &escrito.tabla;
-    Json::obj([
+    let mut r = Json::obj([
         ("bytes", Json::Int(escrito.bytes as i64)),
         ("columnas", columnas),
         ("esquema_cambiado", Json::Bool(esquema_cambiado)),
@@ -1177,8 +1226,13 @@ fn respuesta(
             ),
         ),
         ("ubicacion", Json::s(t.metadata().location())),
-    ])
-    .jcs()
+    ]);
+    // 0063 S7c: lo contado para las promesas. Sin nada pedido, la respuesta
+    // de siempre, byte a byte.
+    if let (Json::Obj(m), Some(p)) = (&mut r, promesas) {
+        m.insert("promesas".into(), p);
+    }
+    r.jcs()
 }
 
 /// **`escribir`: la primera mitad del verbo escribir** (0031 §11 ②). La tabla
@@ -2465,6 +2519,46 @@ mod tests {
 
     fn filas_de(lago: &Lago, ml: &str) -> Vec<carga::Fila> {
         lago.filas(&lago.abrir(ml, "copias/p_v").unwrap()).unwrap()
+    }
+
+    /// 0063 S7c: lo que las promesas piden se cuenta sobre la versión ENTERA
+    /// —al fundir, lo de antes con lo nuevo—, y sin nada pedido la respuesta
+    /// no cambia.
+    #[test]
+    fn las_promesas_se_cuentan_sobre_la_version_entera() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta);
+        let pedir = |j: &str| crate::medir::Medidor::de(&ore_core::parse::parse(j).unwrap());
+        let nada = r#"{"dataset":"copias/p_v"}"#;
+        let promesas = r#"{"promesas":[{"id":"sin_nombre","metric":"nullValues","column":"nombre"},{"id":"unico","metric":"duplicateValues","column":"nombre"}]}"#;
+        let s1 = sellar_con(
+            &lago,
+            &cabecera("7"),
+            "copias/p_v",
+            None,
+            false,
+            ["{\"id\":\"1\",\"nombre\":\"Ana\"}", "{\"id\":\"2\"}"].into_iter(),
+            pedir(nada),
+        )
+        .expect("sella");
+        assert!(!s1.contains("promesas"), "{s1}");
+        let ml1 = campo(&s1, "metadata_location");
+        // Fundiendo: llegan dos, una sustituye a la 2; la versión tiene tres.
+        let s2 = sellar_con(
+            &lago,
+            &cabecera("8"),
+            "copias/p_v",
+            Some(&ml1),
+            true,
+            ["{\"id\":\"2\",\"nombre\":\"Ana\"}", "{\"id\":\"3\"}"].into_iter(),
+            pedir(promesas),
+        )
+        .expect("funde");
+        assert_eq!(campo(&s2, "filas"), "3");
+        assert!(
+            s2.contains(r#""promesas":{"sin_nombre":{"cuenta":1},"unico":{"cuenta":1}}"#),
+            "{s2}"
+        );
     }
 
     /// **El ciclo entero sobre un almacén en memoria**: crear, «ya está»,
@@ -3936,7 +4030,16 @@ mod tests {
             "",
         ));
         let origen = n.get("origen").unwrap().1.clone();
-        let c = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).expect("copia");
+        let c = copiar(
+            &lago,
+            &cab,
+            "copias/ventas_v",
+            None,
+            false,
+            &origen,
+            crate::medir::Medidor::nada(),
+        )
+        .expect("copia");
         assert_eq!(campo(&c, "operacion"), "creada");
         assert_eq!(campo(&c, "filas"), "1", "{c}");
         assert_eq!(
@@ -3966,8 +4069,16 @@ mod tests {
         let ml_v = campo(&c, "metadata_location");
         let n = nodo(&peticion("[]", &format!(",\"base\":\"{ml_v}\"")));
         let origen = n.get("origen").unwrap().1.clone();
-        let c2 = copiar(&lago, &cab, "copias/ventas_v", Some(&ml_v), false, &origen)
-            .expect("copia entera");
+        let c2 = copiar(
+            &lago,
+            &cab,
+            "copias/ventas_v",
+            Some(&ml_v),
+            false,
+            &origen,
+            crate::medir::Medidor::nada(),
+        )
+        .expect("copia entera");
         assert_eq!(campo(&c2, "operacion"), "sobrescrita");
         assert_eq!(campo(&c2, "filas"), "5");
         let j: serde_json::Value = serde_json::from_str(&c2).unwrap();
@@ -3975,14 +4086,32 @@ mod tests {
         // una columna que el origen no tiene, y un filtro que no es del tipo: se dicen
         let n = nodo(&peticion("[]", "").replace("\"quien\":\"nombre\"", "\"quien\":\"apellido\""));
         let origen = n.get("origen").unwrap().1.clone();
-        let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
+        let e = copiar(
+            &lago,
+            &cab,
+            "copias/ventas_v",
+            None,
+            false,
+            &origen,
+            crate::medir::Medidor::nada(),
+        )
+        .unwrap_err();
         assert!(e.contains("`apellido`"), "{e}");
         let n = nodo(&peticion(
             "[{\"columna\":\"id\",\"operador\":\"eq\",\"valor\":\"tres\"}]",
             "",
         ));
         let origen = n.get("origen").unwrap().1.clone();
-        let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
+        let e = copiar(
+            &lago,
+            &cab,
+            "copias/ventas_v",
+            None,
+            false,
+            &origen,
+            crate::medir::Medidor::nada(),
+        )
+        .unwrap_err();
         assert!(e.contains("`id = tres`"), "{e}");
         // A5: un filtro que no casa con nada da una tabla de 0 filas con su
         // esquema y su cabecera, no «nada que escribir»
@@ -3991,7 +4120,16 @@ mod tests {
             "",
         ));
         let origen = n.get("origen").unwrap().1.clone();
-        let c = copiar(&lago, &cab, "copias/vacia", None, false, &origen).expect("copia vacía");
+        let c = copiar(
+            &lago,
+            &cab,
+            "copias/vacia",
+            None,
+            false,
+            &origen,
+            crate::medir::Medidor::nada(),
+        )
+        .expect("copia vacía");
         assert_eq!(campo(&c, "operacion"), "creada");
         assert_eq!(campo(&c, "filas"), "0", "{c}");
         let ml_vacia = campo(&c, "metadata_location");
@@ -4230,7 +4368,15 @@ mod tests {
         };
         de_la_consulta(&["id", "nombre"], &salida);
         let archivo = salida.to_string_lossy().to_string();
-        let c = sellar_arrow(&lago, &cab, "datasets/ventas_copia", None, &archivo).expect("sella");
+        let c = sellar_arrow(
+            &lago,
+            &cab,
+            "datasets/ventas_copia",
+            None,
+            &archivo,
+            crate::medir::Medidor::nada(),
+        )
+        .expect("sella");
         assert_eq!(campo(&c, "operacion"), "creada", "{c}");
         assert_eq!(campo(&c, "filas"), "3", "{c}");
         let l = leer(
@@ -4251,16 +4397,39 @@ mod tests {
         assert_eq!(filas[1]["nombre"], "n1");
         // rehacerla es sobrescribirla
         let ml_c = campo(&c, "metadata_location");
-        let c2 = sellar_arrow(&lago, &cab, "datasets/ventas_copia", Some(&ml_c), &archivo)
-            .expect("rehace");
+        let c2 = sellar_arrow(
+            &lago,
+            &cab,
+            "datasets/ventas_copia",
+            Some(&ml_c),
+            &archivo,
+            crate::medir::Medidor::nada(),
+        )
+        .expect("rehace");
         assert_eq!(campo(&c2, "operacion"), "sobrescrita", "{c2}");
         assert_eq!(campo(&c2, "filas"), "3", "{c2}");
         // lo que el contrato no declara, y lo que falta: se dicen
         de_la_consulta(&["id", "nombre", "total"], &salida);
-        let e = sellar_arrow(&lago, &cab, "datasets/ventas_copia", None, &archivo).unwrap_err();
+        let e = sellar_arrow(
+            &lago,
+            &cab,
+            "datasets/ventas_copia",
+            None,
+            &archivo,
+            crate::medir::Medidor::nada(),
+        )
+        .unwrap_err();
         assert!(e.contains("`total`") && e.contains("no la declara"), "{e}");
         de_la_consulta(&["id"], &salida);
-        let e = sellar_arrow(&lago, &cab, "datasets/ventas_copia", None, &archivo).unwrap_err();
+        let e = sellar_arrow(
+            &lago,
+            &cab,
+            "datasets/ventas_copia",
+            None,
+            &archivo,
+            crate::medir::Medidor::nada(),
+        )
+        .unwrap_err();
         assert!(
             e.contains("`nombre`") && e.contains("no la devolvió"),
             "{e}"

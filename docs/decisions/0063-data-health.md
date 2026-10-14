@@ -1413,6 +1413,24 @@ En `ore-core/src/promesas.rs`, puro y sin red; nada lo llama todavía (S7c):
   `warning` que fallan, y el motivo en inglés («promise `volumen`: measured 500, expected ≥ 900»).
   `Veredicto::json` es la forma del puntero (`promesas: [...]`).
 
+### S7c · las tablas, hecho en código (2026-10-14)
+
+- **`ore-store` cuenta** (`medir.rs`): la petición del verbo trae `promesas` (de `peticion`), y
+  `Medidor` cuenta sobre los lotes de la **versión entera**: sin fundir, en el bucle en flujo; al
+  fundir, en `confirmar_copia`, sobre lo de antes fundido con lo nuevo (el incremento no es la
+  versión). Nulos, ausentes, inválidos por lista o por rango (solo en columnas numéricas: `cast`
+  convertiría el texto en nulos y un rango sobre texto daría siempre 0) y duplicados exactos con
+  tope (`ORE_PROMESAS_MEMORIA`, 256 MiB). La respuesta lleva `promesas: {id: {cuenta} | {error}}`
+  solo si se pidió algo: sin promesas, la de siempre, byte a byte. `sellar` sigue pública con su
+  firma para `ore-medios`.
+- **`materializar.rs` juzga** (`juicio`, en lugar de `retener`): la guarda de S4 es ya
+  `notEmptied`, y una promesa `error` que falla retiene por el mismo camino, con su `id` como
+  guarda y el motivo «promise `volumen`: measured 500, expected ≥ 900: held…». Las `warning` que
+  fallan publican y se dicen en el informe. El puntero lleva `promesas: [veredictos]` solo si el
+  documento declara alguna. Vale para la copia de una tabla, la de una vista SQL y la del lago.
+- **`salud.rs`**: cada promesa que falló y no es la que retuvo es `guard-warning` con su `guard` y
+  su porqué; un `unknown` no mueve el estado (D-S7-5).
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre

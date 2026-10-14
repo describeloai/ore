@@ -802,8 +802,13 @@ fn una(
     // La petición del sellado lleva `dataset`, `base` y `fundir`, y la cabecera
     // que se sella **no**: qué contiene la copia y cómo se construyó son dos
     // cosas.
+    // 0063 S7c: lo que la pasada tiene que contar para las promesas del
+    // documento; sin promesas que cuenten, nada, y la petición de siempre.
+    let (promesas, declaradas) = promesas_de(v);
+    let pedido = pedir(&promesas);
     let peticion_de = |fundir: bool, extra: &str| {
         let mut e = format!("{{\"dataset\":\"{dataset}\",\"fundir\":{fundir},");
+        e.push_str(&pedido);
         if let Some(b) = &base {
             e.push_str(&format!("\"base\":\"{b}\","));
         }
@@ -830,6 +835,8 @@ fn una(
             datos_de.as_deref(),
             senal.as_ref(),
             filas_del_puntero(puntero.as_ref()),
+            &promesas,
+            declaradas,
         );
     }
     let fichero = fichero_de(pkg, &r);
@@ -930,6 +937,8 @@ fn una(
             datos_de.as_deref(),
             senal.as_ref(),
             filas_del_puntero(puntero.as_ref()),
+            &promesas,
+            declaradas,
         ),
         forma.as_ref(),
         puntero.as_ref(),
@@ -1215,7 +1224,9 @@ fn por_su_consulta(
     let leidas = campo_de(&peticion, "leidas")
         .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(0);
+    let (promesas, declaradas) = promesas_de(d);
     let mut e = format!("{{\"dataset\":\"{dataset}\",");
+    e.push_str(&pedir(&promesas));
     if let Some(b) = &base {
         e.push_str(&format!("\"base\":{},", Json::s(b).jcs()));
     }
@@ -1238,6 +1249,8 @@ fn por_su_consulta(
         None,
         // Una vista SQL puede dar 0 filas con razón (un filtro): sin guarda.
         None,
+        &promesas,
+        declaradas,
     )
     .map(Some)
 }
@@ -1256,6 +1269,8 @@ fn informe_de(
     datos_de: Option<&str>,
     senal: Option<&(String, String)>,
     previas: Option<i64>,
+    promesas: &[ore_core::promesas::Promesa],
+    declaradas: bool,
 ) -> Result<(String, ore_core::json::Json), String> {
     use ore_core::json::Json;
     //
@@ -1387,32 +1402,47 @@ fn informe_de(
             Json::obj([("modo", Json::s(modo)), ("valor", Json::s(valor))]),
         );
     }
-    // ⭐ 0063 S4 · RETENER LO RARO, ANTES DE RECOGER. Si la recogida fuera
-    //   antes, expiraría sobre la versión retenida y podría llevarse lo que el
-    //   puntero sigue nombrando.
-    if let Some(motivo) = retener(rehacer, entero("filas"), previas) {
+    // ⭐ 0063 S4 + S7c · RETENER LO QUE NO CUMPLE, ANTES DE RECOGER. Si la
+    //   recogida fuera antes, expiraría sobre la versión retenida y podría
+    //   llevarse lo que el puntero sigue nombrando. El juez mira cada promesa
+    //   —`notEmptied` siempre— con lo que `ore-store` contó en la pasada.
+    let (veredictos, retencion) = juicio(rehacer, promesas, entero("filas"), previas, salida);
+    let lo_prometido = Json::Arr(veredictos.iter().map(|v| v.json()).collect());
+    if let Some((motivo, guarda)) = retencion {
+        let mut r = vec![
+            ("estado", Json::s("error")),
+            ("motivo", Json::s(&motivo)),
+            ("intento", {
+                let mut i = intento(&ahora_iso(), "retenida", Some(&motivo));
+                if let Json::Obj(o) = &mut i {
+                    o.insert("guarda".into(), Json::s(&guarda));
+                }
+                i
+            }),
+        ];
+        if declaradas {
+            r.push(("promesas", lo_prometido));
+        }
         return Ok((
             format!(
                 "retenida · {motivo}\n  lo escrito no se publica: el puntero sigue en la versión anterior ({})",
                 campo("metadata_location")
             ),
-            Json::obj([
-                ("estado", Json::s("error")),
-                ("motivo", Json::s(&motivo)),
-                ("intento", {
-                    let mut i = intento(&ahora_iso(), "retenida", Some(&motivo));
-                    if let Json::Obj(o) = &mut i {
-                        o.insert("guarda".into(), Json::s("zero-rows"));
-                    }
-                    i
-                }),
-            ]),
+            Json::obj(r),
         ));
+    }
+    // Lo que una promesa `warning` vio, se publica y se dice.
+    let aviso_promesas: String = ore_core::promesas::avisos(&veredictos)
+        .into_iter()
+        .map(|v| format!("\n  ⚠ {}", ore_core::promesas::por_que(v)))
+        .collect();
+    if declaradas {
+        m.insert("promesas".into(), lo_prometido);
     }
     let recogidas = recoger_dataset(recoger, dataset, &campo("metadata_location"), &mut m)?;
     Ok((
         format!(
-            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · {como}{esquema_txt}{recogidas}{aviso_columnas}{aviso_tipos}",
+            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · {como}{esquema_txt}{recogidas}{aviso_columnas}{aviso_tipos}{aviso_promesas}",
             campo("metadata_location"),
             campo("filas"),
             campo("bytes"),
@@ -1430,13 +1460,84 @@ fn informe_de(
 /// La columna perdida de D-E no necesita guarda: una columna declarada que el
 /// origen ya no tiene hace fallar la lectura, y S2 sirve lo último bueno. Una
 /// caída parcial (la mitad de filas) es de la capa 1, con historia.
-fn retener(rehacer: bool, filas: i64, previas: Option<i64>) -> Option<String> {
-    match previas {
-        Some(p) if !rehacer && filas == 0 && p > 0 => Some(format!(
-            "the source returned 0 rows and the published version has {p}: held, still serving the published version. Refresh it again to publish anyway"
-        )),
-        _ => None,
+///
+/// 0063 S7c: la guarda es ya una promesa, `notEmptied`, y las demás promesas
+/// del documento pasan por el mismo juez (`ore_core::promesas`), con lo que
+/// `ore-store` contó (`promesas` de su respuesta). Devuelve lo que se dijo de
+/// cada una y, si retiene, el motivo y la guarda (el `id` de la promesa).
+fn juicio(
+    rehacer: bool,
+    promesas: &[ore_core::promesas::Promesa],
+    filas: i64,
+    previas: Option<i64>,
+    salida: &ore_core::parse::Node,
+) -> (Vec<ore_core::promesas::Veredicto>, Option<(String, String)>) {
+    use ore_core::promesas::{Medido, juzgar, por_que, retenida};
+    let medido = Medido {
+        total: u64::try_from(filas).ok(),
+        anterior: previas.and_then(|p| u64::try_from(p).ok()),
+        cuentas: cuentas_de(salida),
+    };
+    let veredictos = juzgar(promesas, &medido);
+    let retencion = if rehacer {
+        None
+    } else {
+        retenida(&veredictos).map(|v| {
+            let motivo = if v.de_serie {
+                format!(
+                    "the source returned 0 rows and the published version has {}: held, still serving the published version. Refresh it again to publish anyway",
+                    previas.unwrap_or(0)
+                )
+            } else {
+                format!(
+                    "{}: held, still serving the published version. Refresh it again to publish anyway",
+                    por_que(v)
+                )
+            };
+            (motivo, v.id.clone())
+        })
+    };
+    (veredictos, retencion)
+}
+
+/// 0063 S7c: las promesas del `Dataset` que se copia (con `notEmptied`
+/// siempre), y si declara alguna: sin declarar, el puntero no las lleva.
+fn promesas_de(d: &Loaded) -> (Vec<ore_core::promesas::Promesa>, bool) {
+    use ore_core::promesas::{Familia, de_documento};
+    (
+        de_documento(d.root.get("spec").map(|(_, s)| s), Familia::Tabular),
+        d.section("promises").is_some(),
+    )
+}
+
+/// Lo que la pasada tiene que contar, como trozo de la petición a `ore-store`
+/// (`"promesas":[…],`), o nada.
+fn pedir(promesas: &[ore_core::promesas::Promesa]) -> String {
+    match ore_core::promesas::peticion(promesas) {
+        ore_core::json::Json::Arr(a) if a.is_empty() => String::new(),
+        p => format!("\"promesas\":{},", p.jcs()),
     }
+}
+
+/// Lo que `ore-store` contó para cada promesa: `{id: {cuenta}}` o `{id: {error}}`.
+fn cuentas_de(salida: &ore_core::parse::Node) -> BTreeMap<String, Result<u64, String>> {
+    salida
+        .get("promesas")
+        .map(|(_, o)| {
+            o.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let id = k.as_str()?.to_string();
+                    let r = match (campo_de(v, "cuenta"), campo_de(v, "error")) {
+                        (Some(n), _) => n.parse::<u64>().map_err(|e| e.to_string()),
+                        (None, Some(e)) => Err(e),
+                        (None, None) => Err("the refresh said nothing of it".into()),
+                    };
+                    Some((id, r))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Las filas de la versión que el puntero publica, para las guardas.
@@ -2996,14 +3097,57 @@ mod tests {
 
     #[test]
     fn un_origen_vaciado_se_retiene_y_un_rehacer_lo_publica() {
-        // 0063 S4: 0 filas sobre una versión con 1000 se retiene…
-        assert!(retener(false, 0, Some(1000)).is_some());
+        use ore_core::promesas::{Familia, de_documento};
+        let de_serie = de_documento(None, Familia::Tabular);
+        let nada = ore_core::parse::parse("{}").unwrap();
+        let retener = |rehacer, filas, previas| juicio(rehacer, &de_serie, filas, previas, &nada).1;
+        // 0063 S4: 0 filas sobre una versión con 1000 se retiene, por `notEmptied`…
+        let (motivo, guarda) = retener(false, 0, Some(1000)).unwrap();
+        assert_eq!(guarda, "notEmptied");
+        assert!(motivo.starts_with("the source returned 0 rows"), "{motivo}");
         // …y un rehacer la publica; sin versión anterior, o vacía, no hay nada
         // que proteger; y con filas, nada que retener.
         assert_eq!(retener(true, 0, Some(1000)), None);
         assert_eq!(retener(false, 0, None), None);
         assert_eq!(retener(false, 0, Some(0)), None);
         assert_eq!(retener(false, 3, Some(1000)), None);
+    }
+
+    /// 0063 S7c: una promesa `error` que falla retiene con su `id`; una
+    /// `warning`, no; y lo que `ore-store` no pudo contar es `unknown`.
+    #[test]
+    fn las_promesas_retienen_o_avisan() {
+        use ore_core::promesas::{Familia, Resultado, de_documento};
+        let doc = ore_core::parse::parse(
+            "spec:\n  promises:\n    - id: volumen\n      metric: rowCount\n      mustBeGreaterOrEqualTo: 900\n    - id: nulos\n      column: cliente\n      metric: nullValues\n      unit: percent\n      mustBeLessOrEqualTo: 1\n      severity: warning\n    - id: unico\n      column: id\n      metric: duplicateValues\n      mustBe: 0\n",
+        )
+        .unwrap();
+        let ps = de_documento(doc.get("spec").map(|(_, s)| s), Familia::Tabular);
+        let salida = ore_core::parse::parse(
+            r#"{"filas":500,"promesas":{"nulos":{"cuenta":50},"unico":{"error":"too many distinct values"}}}"#,
+        )
+        .unwrap();
+        let (v, r) = juicio(false, &ps, 500, Some(1000), &salida);
+        let (motivo, guarda) = r.unwrap();
+        assert_eq!(guarda, "volumen");
+        assert!(
+            motivo.starts_with("promise `volumen`: measured 500, expected ≥ 900: held"),
+            "{motivo}"
+        );
+        let r: Vec<Resultado> = v.iter().map(|x| x.resultado).collect();
+        assert_eq!(
+            r,
+            vec![
+                Resultado::Fail,
+                Resultado::Fail,
+                Resultado::Unknown,
+                Resultado::Pass
+            ]
+        );
+        // Con 1000 filas, solo el aviso de los nulos: se publica.
+        let (v, r) = juicio(false, &ps, 1000, Some(1000), &salida);
+        assert!(r.is_none());
+        assert_eq!(ore_core::promesas::avisos(&v).len(), 1);
     }
 
     #[test]
