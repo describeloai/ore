@@ -1391,6 +1391,11 @@ en `normalize`. En `ore-cli`, `borrador_de_v1alpha31`: 11 de 11.
 - **`/assets`** lleva `promesas_declaradas` en cada `Dataset` y `MediaCollection`: lo escrito, y
   `notEmptied` de serie (`de_serie: true`) aunque no se escriba.
 
+**Medido en producción** (`70a3619e` desplegado, `victor`): `/assets` responde con 378 ítems, y los 92
+`Dataset` y `MediaCollection` llevan `promesas_declaradas` (hoy, solo `notEmptied` de serie). El
+árbol compila igual que antes: `/arbol/diagnosticos` da los mismos dos `OOS1001` de siempre
+(`azure_blob_mnist`, la cabecera de píxeles), ninguno nuevo.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
