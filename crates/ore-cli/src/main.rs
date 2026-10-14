@@ -1126,6 +1126,9 @@ enum Command {
         /// Con `--commit`/`--crear`: la retencion de una tabla que nace y no la trae (`7d`).
         #[arg(long, value_name = "EDAD")]
         retencion_defecto: Option<String>,
+        /// Con `--commit`: la `Idempotency-Key` de la peticion (un UUID; el mismo en sus reintentos).
+        #[arg(long, value_name = "UUID")]
+        idempotencia: Option<String>,
         /// `loadTable`: el LoadTableResult de la tabla, tal cual (con `--prestar`, la credencial).
         #[arg(long, value_name = "NS.TABLA")]
         cargar: Option<String>,
@@ -1366,6 +1369,7 @@ fn main() -> std::process::ExitCode {
             minimo,
             peticion,
             retencion_defecto,
+            idempotencia,
             cargar,
             prestar,
             leer,
@@ -1401,6 +1405,7 @@ fn main() -> std::process::ExitCode {
                     minimo: *minimo,
                     peticion: peticion.as_deref(),
                     retencion_defecto: retencion_defecto.as_deref(),
+                    idempotencia: idempotencia.as_deref(),
                     cargar: cargar.as_deref(),
                     prestar: *prestar,
                     leer: *leer,

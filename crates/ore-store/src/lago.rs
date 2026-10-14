@@ -96,10 +96,18 @@ pub const PROP_PLAN: &str = "ore.plan";
 pub const PROP_TESTIGO_MODO: &str = "ore.testigo.modo";
 pub const PROP_TESTIGO_VALOR: &str = "ore.testigo.valor";
 pub const PROP_DATASET: &str = "ore.dataset";
-/// **La clave de operación** (0031 §11 ④): quién escribió qué, como propiedad
-/// del snapshot. `write()` la pone; el catálogo la coteja con la ancestría
-/// antes de aplicar, y la misma operación dos veces no deja dos snapshots.
+/// **La huella de lo escrito** (0031 §11 ④): `write()` la pone (`semilla ·
+/// contenido`). El catálogo la coteja **sólo con el snapshot vigente** y sólo
+/// en `sobrescribir` y `upsert`: escribir lo que la tabla ya tiene no deja
+/// snapshot. No es la identidad de la petición: ésa es [`PROP_IDEMPOTENCIA`]
+/// (antes se cotejaba con toda la ancestría, y A → B → A perdía la tercera).
 pub const PROP_OPERACION: &str = "ore.operacion";
+/// **La identidad de la petición**: el `Idempotency-Key` de la spec REST de
+/// Iceberg (un UUID por operación lógica, que el cliente reutiliza sólo en sus
+/// reintentos). Lo escribe el catálogo al aplicar, no quien escribe los
+/// ficheros; una petición que llega otra vez con la misma clave encuentra su
+/// snapshot y no se aplica dos veces.
+pub const PROP_IDEMPOTENCIA: &str = "ore.idempotency-key";
 /// El modo de la escritura, en el resumen del snapshot (`upsert` es el que
 /// cambia algo: el catálogo declara la clave en la `Table`).
 pub const PROP_MODO: &str = "ore.modo";

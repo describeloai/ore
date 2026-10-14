@@ -29,9 +29,13 @@
 //! la `Table` es del lago o no existe todavía (una `View` o una `Table` de otra
 //! fuente no se escribe); **el puntero vigente es la base** contra la que se
 //! validan los requisitos (el CAS semántico: un `assert-ref-snapshot-id` que no
-//! cuadra es código 75 con `actual`); **la clave de operación** del snapshot
-//! (`ore.operacion`) se coteja con la ancestría y, si ya está, se contesta con
-//! lo que hay sin tocar nada; la tabla que nace recibe la retención por defecto
+//! cuadra es código 75 con `actual`); **la petición repetida** —la misma
+//! `Idempotency-Key` de la spec (`--idempotencia`) en un snapshot de la ventana—
+//! se contesta con lo que hay sin aplicar nada, y **la escritura que no cambia
+//! nada** —`sobrescribir`/`upsert` con la huella (`ore.operacion`) del snapshot
+//! VIGENTE— tampoco deja snapshot (antes la huella se cotejaba con toda la
+//! ancestría y A → B → A perdía la tercera: ver `docs/idempotencia.md`); la
+//! clave se escribe en el resumen del snapshot que nace; la tabla que nace recibe la retención por defecto
 //! si no la trae; la `Table` nace con las columnas de OOS traducidas del
 //! esquema de Iceberg (o las actualiza cuando el esquema evolucionó, si el
 //! documento es de los nuestros); y el puntero se mueve. Un `commitTransaction`
@@ -112,6 +116,9 @@ pub struct Opciones<'a> {
     pub peticion: Option<&'a str>,
     /// La retención de una tabla que nace y no la trae (`7d`); sin ella, no se declara.
     pub retencion_defecto: Option<&'a str>,
+    /// Con `--commit`: la `Idempotency-Key` de la petición (la spec REST de
+    /// Iceberg): un UUID por operación lógica, el mismo en sus reintentos.
+    pub idempotencia: Option<&'a str>,
     /// `--cargar p.t`: el `LoadTableResult` de la tabla.
     pub cargar: Option<&'a str>,
     /// Con `--cargar`/`--esbozar`: la credencial acotada a la tabla, prestada.
@@ -1590,6 +1597,26 @@ impl Cambio<'_> {
             })
             .next_back()
     }
+    /// Si el snapshot que trae **anexa** (`operation: append` en su resumen,
+    /// que la spec exige siempre; `ore.modo` sólo lo lleva un `upsert`).
+    /// Anexar lo mismo dos veces son dos operaciones: la huella no se coteja.
+    fn anexa(&self) -> bool {
+        self.nodo
+            .get("updates")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
+            .filter_map(|u| {
+                let m = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
+                m.get("operation")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            })
+            .next_back()
+            .as_deref()
+            == Some("append")
+    }
     /// La procedencia (`ore.procedencia` en el resumen del snapshot, JSON):
     /// de qué salió lo escrito, según quien lo escribió (W3.7 ③).
     fn procedencia(&self) -> Option<Json> {
@@ -1713,6 +1740,76 @@ fn aplicado_de(n: &Node) -> Aplicado {
     }
 }
 
+/// Cuánto honra el catálogo una `Idempotency-Key`: la ventana que la spec
+/// llama `idempotency-key-lifetime` (30 min) más una gracia por el reloj de
+/// quien sella el snapshot. Como la clave es un UUID, no reaparece nunca: la
+/// ventana es la promesa de la spec, no una defensa.
+const VENTANA_IDEMPOTENCIA_MS: i64 = (30 + 5) * 60 * 1000;
+
+/// Una `Idempotency-Key` con la forma de la spec: un UUID en texto (36).
+fn clave_bien_formada(c: &str) -> bool {
+    c.len() == 36
+        && c.char_indices().all(|(i, ch)| match i {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        })
+}
+
+/// Lo que ya está, antes de aplicar un cambio.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Ya {
+    /// Nada: se aplica.
+    Nada,
+    /// La misma petición (su `Idempotency-Key`) ya se aplicó: un reintento.
+    Hecha,
+    /// La tabla ya tiene exactamente esto: la huella del snapshot vigente, en
+    /// `sobrescribir` o `upsert`. No es idempotencia: no hay nada que hacer.
+    SinCambios,
+}
+
+/// **Qué hay ya** de un cambio, sobre la historia de la tabla (`ore-store
+/// historia`, `snapshots`). La identidad de una operación la pone quien
+/// escribe (la clave), no los datos: la huella sólo se coteja con lo VIGENTE,
+/// porque volver a un contenido de antes (A → B → A) es escribir.
+fn ya_esta(
+    snapshots: &[Node],
+    clave: Option<&str>,
+    huella: Option<&str>,
+    anexa: bool,
+    ahora_ms: i64,
+) -> Ya {
+    if let Some(k) = clave {
+        let hecha = snapshots.iter().any(|s| {
+            campo_de(s, "clave").as_deref() == Some(k)
+                && campo_de(s, "cuando_ms")
+                    .and_then(|t| t.parse::<i64>().ok())
+                    .is_some_and(|t| t >= ahora_ms - VENTANA_IDEMPOTENCIA_MS)
+        });
+        if hecha {
+            return Ya::Hecha;
+        }
+    }
+    if let Some(h) = huella
+        && !anexa
+        && snapshots
+            .iter()
+            .find(|s| campo_de(s, "vigente").as_deref() == Some("true"))
+            .and_then(|s| campo_de(s, "idempotencia"))
+            .as_deref()
+            == Some(h)
+    {
+        return Ya::SinCambios;
+    }
+    Ya::Nada
+}
+
+fn ahora_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// El CAS perdido, dicho con `actual` y con código 75.
 fn adelantado(op: &Opciones, tabla: &str, actual_ml: &str, actual_snap: &str, m: String) -> Fallo {
     if op.json {
@@ -1761,6 +1858,16 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         return Err((64, "la petición no trae ningún cambio".into()));
     }
     let defecto = retencion_defecto(op)?;
+    if let Some(k) = op.idempotencia
+        && !clave_bien_formada(k)
+    {
+        return Err((
+            64,
+            format!(
+                "`--idempotencia {k}`: una `Idempotency-Key` es un UUID en texto (36 caracteres)"
+            ),
+        ));
+    }
 
     // ── primero, todos: ¿a qué tabla, existe, cuál es la base, ya se hizo? ──
     struct Plan<'a> {
@@ -1773,7 +1880,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         previo: Option<Node>,
         lago: String,
         base: String,
-        repetida: bool,
+        ya: Ya,
     }
     let mut planes = Vec::new();
     for c in cambios {
@@ -1818,7 +1925,28 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             .as_ref()
             .and_then(|p| campo_de(p, "snapshot"))
             .unwrap_or_default();
-        if c.crea() && !base.is_empty() {
+        // Lo que ya está: la petición (su clave, en la ventana) o el contenido
+        // (la huella, contra el VIGENTE). Antes del `assert-create`: el
+        // reintento de una tabla que nació en el primer intento es un reintento.
+        let ya = if base.is_empty() || (op.idempotencia.is_none() && c.operacion().is_none()) {
+            Ya::Nada
+        } else {
+            let h = almacen(
+                "historia",
+                &Json::obj([
+                    ("dataset", Json::s(lago.clone())),
+                    ("metadata_location", Json::s(&base)),
+                ]),
+            )?;
+            ya_esta(
+                h.get("snapshots").map(|(_, v)| v.items()).unwrap_or(&[]),
+                op.idempotencia,
+                c.operacion().as_deref(),
+                c.anexa(),
+                ahora_ms(),
+            )
+        };
+        if c.crea() && !base.is_empty() && ya != Ya::Hecha {
             return Err(adelantado(
                 op,
                 &nombre,
@@ -1833,25 +1961,6 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 format!("no hay ningún dataset `{nombre}`: la tabla no existe todavía"),
             ));
         }
-        // La clave de operación en la ancestría: la misma escritura otra vez
-        // (la celda reejecutada, el reintento tras un 5xx) no deja snapshot.
-        let repetida = match (c.operacion(), base.is_empty()) {
-            (Some(clave), false) => {
-                let h = almacen(
-                    "historia",
-                    &Json::obj([
-                        ("dataset", Json::s(lago.clone())),
-                        ("metadata_location", Json::s(&base)),
-                    ]),
-                )?;
-                h.get("snapshots")
-                    .map(|(_, v)| v.items())
-                    .unwrap_or(&[])
-                    .iter()
-                    .any(|s| campo_de(s, "idempotencia").as_deref() == Some(clave.as_str()))
-            }
-            _ => false,
-        };
         planes.push(Plan {
             cambio: c,
             nombre,
@@ -1862,25 +1971,26 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             previo,
             lago,
             base,
-            repetida,
+            ya,
         });
     }
 
     // ── después, aplicar cada uno (los `metadata.json`), sin mover nada ─────
     let mut aplicados: Vec<Option<Aplicado>> = Vec::new();
     for p in &planes {
-        if p.repetida {
+        if p.ya != Ya::Nada {
             aplicados.push(None);
             continue;
         }
         let pet = format!(
-            "{{\"dataset\":{},\"metadata_location\":{},\"peticion\":{texto},\"cambio\":{},\"retencion_defecto\":{defecto}}}",
+            "{{\"dataset\":{},\"metadata_location\":{},\"peticion\":{texto},\"cambio\":{},\"retencion_defecto\":{defecto},\"idempotencia\":{}}}",
             lit(&p.lago.clone()),
             lit(&p.base),
             p.cambio
                 .indice
                 .map(|i| i.to_string())
                 .unwrap_or_else(|| "null".into()),
+            op.idempotencia.map(lit).unwrap_or_else(|| "null".into()),
         );
         let salida = match almacen_crudo("aplicar", &pet) {
             Ok(s) => s,
@@ -1917,7 +2027,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let mut lineas = Vec::new();
     for (p, a) in planes.iter().zip(aplicados) {
         let Some(a) = a else {
-            // la operación ya estaba: lo que hay, sin tocar nada
+            // ya estaba (la petición, o lo que escribe): lo que hay, sin tocar nada
             let snap = p
                 .previo
                 .as_ref()
@@ -1938,7 +2048,10 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                     Json::s(p.cambio.operacion().unwrap_or_default()),
                 ),
                 ("puntero_nuevo", Json::Bool(false)),
-                ("repetida", Json::Bool(true)),
+                // `repetida`: la tabla ya tenía esto (lo que el SDK llama
+                // `repeated`); `reintento`: la misma petición, ya aplicada.
+                ("reintento", Json::Bool(p.ya == Ya::Hecha)),
+                ("repetida", Json::Bool(p.ya == Ya::SinCambios)),
                 ("snapshot", Json::s(snap)),
                 ("tabla", Json::s(&p.nombre)),
                 ("tabla_nueva", Json::Bool(false)),
@@ -1997,6 +2110,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ("metadata_location", Json::s(&a.metadata_location)),
             ("operacion", Json::s(&a.operacion)),
             ("puntero_nuevo", Json::Bool(p.previo.is_none())),
+            ("reintento", Json::Bool(false)),
             ("repetida", Json::Bool(false)),
             ("snapshot", Json::s(&a.snapshot)),
             ("tabla", Json::s(&p.nombre)),
@@ -2021,8 +2135,10 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             println!(
                 "{} · {}{} · {} filas\n  {}",
                 g("tabla"),
-                if g("repetida") == "true" {
-                    "ya estaba (misma operación)"
+                if g("reintento") == "true" {
+                    "ya estaba (la misma petición)"
+                } else if g("repetida") == "true" {
+                    "ya estaba (lo mismo que la tabla tiene)"
                 } else if g("puntero_nuevo") == "true" {
                     "puntero nuevo"
                 } else {
@@ -2510,6 +2626,73 @@ fn salida(
 
 #[cfg(test)]
 mod tests {
+    /// La historia de una tabla como la da `ore-store historia` (de la más
+    /// reciente a la más vieja): `(clave, huella, cuando_ms, vigente)`.
+    fn historia(ss: &[(&str, &str, i64, bool)]) -> Vec<super::Node> {
+        ss.iter()
+            .map(|(k, h, t, v)| {
+                ore_core::parse::parse(&format!(
+                    r#"{{"clave":"{k}","idempotencia":"{h}","cuando_ms":{t},"vigente":{v}}}"#
+                ))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    /// El fallo medido en victor (2026-10-14): A → B → A perdía la tercera,
+    /// porque la huella de A estaba en la ancestría. Volver a un contenido de
+    /// antes es escribir.
+    #[test]
+    fn volver_a_un_contenido_de_antes_es_escribir() {
+        use super::{Ya, ya_esta};
+        let h = historia(&[("", "hB", 2_000, true), ("", "hA", 1_000, false)]);
+        assert_eq!(ya_esta(&h, None, Some("hA"), false, 3_000), Ya::Nada);
+        // …y lo que la tabla YA tiene no deja snapshot (la celda reejecutada)
+        assert_eq!(ya_esta(&h, None, Some("hB"), false, 3_000), Ya::SinCambios);
+        // anexar lo mismo otra vez son dos operaciones
+        assert_eq!(ya_esta(&h, None, Some("hB"), true, 3_000), Ya::Nada);
+        // sin huella (un cliente que no la pone) no se coteja nada
+        assert_eq!(ya_esta(&h, None, None, false, 3_000), Ya::Nada);
+    }
+
+    /// La `Idempotency-Key` (spec REST de Iceberg): la misma petición otra vez
+    /// es un reintento, también si anexa o si la tabla cambió después; fuera
+    /// de la ventana, ya no se honra.
+    #[test]
+    fn la_misma_peticion_es_un_reintento_en_su_ventana() {
+        use super::{VENTANA_IDEMPOTENCIA_MS as V, Ya, ya_esta};
+        let k = "0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f";
+        let h = historia(&[("", "hC", 10_000_000, true), (k, "hB", 9_000_000, false)]);
+        assert_eq!(ya_esta(&h, Some(k), Some("hB"), true, 9_500_000), Ya::Hecha);
+        assert_eq!(ya_esta(&h, Some(k), None, false, 9_000_000 + V), Ya::Hecha);
+        assert_eq!(
+            ya_esta(&h, Some(k), Some("hB"), true, 9_000_001 + V),
+            Ya::Nada
+        );
+        // otra clave: otra operación, aunque el contenido sea el de antes
+        let otra = "0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e10";
+        assert_eq!(
+            ya_esta(&h, Some(otra), Some("hB"), false, 9_500_000),
+            Ya::Nada
+        );
+        // y si lo que trae es lo vigente, nada que hacer
+        assert_eq!(
+            ya_esta(&h, Some(otra), Some("hC"), false, 9_500_000),
+            Ya::SinCambios
+        );
+    }
+
+    #[test]
+    fn una_idempotency_key_es_un_uuid() {
+        use super::clave_bien_formada as ok;
+        assert!(ok("0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f"));
+        assert!(ok("0192F0C4-7B2A-7C3E-9D41-5A6B7C8D9E0F"));
+        assert!(!ok("op-1"));
+        assert!(!ok("0192f0c47b2a7c3e9d415a6b7c8d9e0f"));
+        assert!(!ok("0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0g"));
+        assert!(!ok("0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f0"));
+    }
+
     /// 0063 S6b: lo escrito es tan viejo como lo más viejo que leyó; si de
     /// alguna entrada no se sabe, no se sabe.
     #[test]

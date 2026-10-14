@@ -391,6 +391,44 @@ ML8b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 [ "$(jq_ "$TMP/ficha.json" retencion.edad_ms)" = "604800000" ] || falla "8 · la ficha no enseña la retención con la que nació (7d): $(jq_ "$TMP/ficha.json" retencion.edad_ms)"
 ok "8 · la misma operación no deja snapshot ni toca el árbol; otra anexa; la base vieja es 75 con \`actual\`; una columna nueva regenera la Table sin perder lo añadido a mano; la ficha lo cuenta"
 
+# ── 8c · la idempotencia de la spec (docs/idempotencia.md) ───────────────────
+# Volver a un contenido de antes (A → B → A) es ESCRIBIR: la huella sólo se
+# coteja con el snapshot vigente (antes, con toda la ancestría, y la tercera se
+# perdía: medido en victor el 2026-10-14). Y la misma petición —su
+# `Idempotency-Key`— otra vez es un reintento, también si anexa.
+escribe ventas_idem sobrescribir "" hA 0 5 || falla "8c · escribir A"
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8c · commit A"; }
+MLA=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+escribe ventas_idem sobrescribir "$MLA" hB 0 7 || falla "8c · escribir B"
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8c · commit B"; }
+MLB=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+escribe ventas_idem sobrescribir "$MLB" hA 0 5 || falla "8c · escribir A otra vez"
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8c · commit A otra vez"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.repetida)" = "false" ] || falla "8c · A → B → A: la tercera tenía que escribirse: $(cat "$TMP/commit.json")"
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "5" ] || falla "8c · A → B → A: la tabla tenía que volver a 5 filas: $(cat "$TMP/commit.json")"
+MLA2=$(jq_ "$CL/datasets/ventas/default/idem.json" metadata_location)
+[ "$MLA2" != "$MLB" ] || falla "8c · A → B → A: el puntero no se movió"
+# lo que la tabla YA tiene no deja snapshot (la celda reejecutada)
+escribe ventas_idem sobrescribir "$MLA2" hA 0 5 || falla "8c · escribir A sobre A"
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8c · commit A sobre A"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.repetida)" = "true" ] && [ "$(jq_ "$TMP/commit.json" tablas.0.metadata_location)" = "$MLA2" ] || falla "8c · lo mismo que la tabla tiene tenía que ser \`repetida\`: $(cat "$TMP/commit.json")"
+# la misma petición dos veces (un reintento tras un 5xx), anexando
+K=0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f
+escribe ventas_idem anexar "$MLA2" hC 100 2 || falla "8c · escribir C"
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --idempotencia "$K" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8c · commit C con clave"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "7" ] || falla "8c · tras anexar C, 7 filas: $(cat "$TMP/commit.json")"
+MLC=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --idempotencia "$K" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8c · el reintento tenía que contestar 0"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.reintento)" = "true" ] && [ "$(jq_ "$TMP/commit.json" tablas.0.metadata_location)" = "$MLC" ] && [ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "7" ] || falla "8c · la misma clave tenía que ser un reintento sin snapshot: $(cat "$TMP/commit.json")"
+# sin la clave, la misma petición es otra operación sobre una base vieja: 75
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
+[ "$c" = "75" ] || falla "8c · sin clave, la base vieja tenía que ser 75 y fue $c: $(cat "$TMP/commit.json")"
+"$ORE" datasets "$CL" --commit --tabla ventas.idem --peticion "@$TMP/escrito.json" --idempotencia op-1 --json > /dev/null 2>&1; c=$?
+[ "$c" = "64" ] || falla "8c · una clave que no es un UUID tenía que ser 64 y fue $c"
+"$ORE" datasets "$CL" --ficha ventas.idem --json > "$TMP/ficha.json" 2>&1 || falla "8c · ficha"
+[ "$(jq_ "$TMP/ficha.json" snapshots.0.clave)" = "$K" ] || falla "8c · la ficha no enseña la clave de la petición: $(cat "$TMP/ficha.json")"
+ok "8c · A → B → A escribe la tercera; lo mismo que la tabla tiene no deja snapshot; la misma \`Idempotency-Key\` es un reintento (aunque anexe) y queda en el snapshot; sin ella, 75; una clave que no es un UUID, 64"
+
 # ── 9 · dos tablas en un commit, y lo que no se escribe ──────────────────────
 escribe ventas_escrita anexar "$ML8b" op-5 200 1 || falla "9 · escribir escrita"; cp "$TMP/escrito.json" "$TMP/e1.json"
 escribe ventas_otra sobrescribir "" op-6 0 4 || falla "9 · escribir otra"; cp "$TMP/escrito.json" "$TMP/e2.json"

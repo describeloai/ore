@@ -1620,9 +1620,30 @@ fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
             .transpose()
             .map_err(|e| format!("`requirements` no se entiende: {e}"))?
             .unwrap_or_default();
-        let cambios: Vec<iceberg::TableUpdate> = cuerpo
-            .get("updates")
-            .cloned()
+        // La clave de la petición (`Idempotency-Key`) va al resumen del
+        // snapshot que nace: la pone el catálogo, que es quien la recibió.
+        let mut updates = cuerpo.get("updates").cloned();
+        if let (Some(clave), Some(serde_json::Value::Array(us))) = (
+            j.get("idempotencia")
+                .and_then(|v| v.as_str())
+                .filter(|c| !c.is_empty()),
+            updates.as_mut(),
+        ) {
+            for u in us.iter_mut() {
+                if u.get("action").and_then(|a| a.as_str()) != Some("add-snapshot") {
+                    continue;
+                }
+                if let Some(serde_json::Value::Object(resumen)) =
+                    u.get_mut("snapshot").and_then(|s| s.get_mut("summary"))
+                {
+                    resumen.insert(
+                        lago::PROP_IDEMPOTENCIA.to_string(),
+                        serde_json::Value::String(clave.to_string()),
+                    );
+                }
+            }
+        }
+        let cambios: Vec<iceberg::TableUpdate> = updates
             .map(serde_json::from_value)
             .transpose()
             .map_err(|e| format!("`updates` no se entiende: {e}"))?
@@ -2078,7 +2099,11 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                     ("anadidas", n("added-records")),
                     ("retiradas", n("deleted-records")),
                     ("plan", prop(lago::PROP_PLAN)),
+                    // La huella de lo escrito (se llama así desde W3.6c: la
+                    // ficha la enseña con ese nombre) y la clave de la petición.
                     ("idempotencia", prop(lago::PROP_OPERACION)),
+                    ("clave", prop(lago::PROP_IDEMPOTENCIA)),
+                    ("modo", prop(lago::PROP_MODO)),
                     // De qué salió, si quien escribió lo dijo (W3.7 ③).
                     (
                         "procedencia",
