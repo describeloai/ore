@@ -1,0 +1,39 @@
+# M0 marimo: sonda con la forma de un puesto (rol de red puesto, cuenta puesto, cola Kueue).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sonda-marimo-m0
+  namespace: t-victor
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: victor
+    ore.dev/rol: puesto
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: puesto
+        ore.dev/tenant: victor
+    spec:
+      restartPolicy: Never
+      serviceAccountName: puesto
+      containers:
+        - name: sonda
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/sonda-marimo:m0
+          imagePullPolicy: Always
+          command: ["sleep", "3000"]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: ORE_SERVE, value: "http://ore-serve:8080" }
+          resources:
+            requests: {cpu: "100m", memory: 768Mi}
+            limits:   {cpu: "2", memory: 4Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }

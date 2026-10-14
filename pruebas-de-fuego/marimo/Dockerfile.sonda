@@ -1,0 +1,8 @@
+FROM europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+USER 0
+RUN pip freeze | sort > /m0-antes.txt && du -sk /usr/local/lib/python3.14/site-packages | cut -f1 > /m0-du-antes.txt
+# M0·a: con lo provisto como RESTRICCION (como la capa) y, si no resuelve, se dice
+RUN (pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check "marimo[sql]" -c /opt/ore/provisto.txt > /m0-pip.txt 2>&1 && echo con-restriccion > /m0-modo.txt) \
+ || (echo "--- sin restriccion ---" >> /m0-pip.txt; pip install --no-cache-dir --root-user-action=ignore --disable-pip-version-check "marimo[sql]" >> /m0-pip.txt 2>&1 && echo sin-restriccion > /m0-modo.txt)
+RUN pip freeze | sort > /m0-despues.txt && du -sk /usr/local/lib/python3.14/site-packages | cut -f1 > /m0-du-despues.txt
+USER 65532:65532
