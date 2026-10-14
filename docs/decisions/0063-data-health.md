@@ -1431,6 +1431,28 @@ En `ore-core/src/promesas.rs`, puro y sin red; nada lo llama todavía (S7c):
 - **`salud.rs`**: cada promesa que falló y no es la que retuvo es `guard-warning` con su `guard` y
   su porqué; un `unknown` no mueve el estado (D-S7-5).
 
+### S7f · la consola, hecha (2026-10-14; adelantada a S7d–S7e)
+
+Decidido con el usuario: la interfaz entera y no un mínimo, porque la visión ya la fija; lo que
+falte de la lógica (colecciones, `write()`) se ve como *Not checked yet* hasta que llegue.
+- **ORE** (`ec4826bf`, `4ac21887`): `POST /promesas` `{ref, promesas}` con la **lista entera** del
+  activo (añadir, editar, ablandar y quitar son la misma llamada): se compila primero (422 con
+  sus diagnósticos y nada creado) y, si compila, rama, `promesas::reescribir` (a v1alpha31) y
+  propuesta; sólo una persona (el agente, 403), operación `promesas:proponer`. `GET
+  /promesas/historia/{ref}`: lo que el juez dijo en los últimos 10 refrescos, del historial del
+  puntero en git (la ref va en el camino: la consulta sólo admite sus claves). El resumen del
+  puntero lleva `columnas`.
+- **Consola** (local, `5134763`, `38cb089`): la sección *Promises* de la pestaña Health, tras
+  *Checks on every refresh* (cada promesa en una frase, su severidad, el último resultado con lo
+  medido y lo esperado, la tendencia y su menú; `notEmptied` *Built-in*, sólo se ablanda); el
+  panel *Add / Edit promise* (los tipos de la familia, la columna con su tipo, el umbral sugerido
+  de lo medido, la severidad, la frase en vivo, el `id` y *Add another*; los diagnósticos del
+  compilador vuelven al panel); sugerencias del último refresco; el aviso de la propuesta
+  pendiente (por el nombre de su rama); *Promises* en el raíl de base y schema. La fila *Volume ·
+  zero-rows guard* se va (es `notEmptied`) y la última sección pasa a *Monitoring and profiling*.
+- **Falta medir**: el usuario crea las promesas de `vara_pg.ore_vara.pedidos` desde el panel, la
+  propuesta se fusiona y la vara corre C13–C15.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
