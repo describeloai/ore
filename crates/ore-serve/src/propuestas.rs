@@ -1540,10 +1540,10 @@ impl Servidor {
             m.insert("alDia".into(), Json::Bool(hoy == h));
         }
         // El significado y los diagnósticos salen de la rama misma, no de la forja.
-        let (semantico, diagnosticos) = if estado_de(&pr) == "abierta" {
+        let (semantico, diagnosticos, heredados) = if estado_de(&pr) == "abierta" {
             self.rama_frente_a(&rama, &base)
         } else {
-            (Json::Bool(false), Json::Arr(vec![]))
+            (Json::Bool(false), Json::Arr(vec![]), Json::Arr(vec![]))
         };
         // Con activos: lo que le falta para compilar sobre `main`, si algo.
         if let (Some((_, lleva, _)), Json::Arr(ds), Json::Obj(m)) =
@@ -1614,26 +1614,39 @@ impl Servidor {
             m.insert("diff".into(), Json::s(diff));
             m.insert("semantico".into(), semantico);
             m.insert("diagnosticos".into(), diagnosticos);
+            m.insert("diagnosticos_heredados".into(), heredados);
             m.insert("revisiones".into(), Json::Arr(revisiones));
         }
         Respuesta::ok(ficha)
     }
 
-    /// `ore diff <base> <rama>` y `ore validate` de la rama: `(semantico, diagnosticos)`.
-    /// Dos clones; medido, ~1 s cada uno.
-    fn rama_frente_a(&self, rama: &str, base: &str) -> (Json, Json) {
+    /// `ore diff <base> <rama>` y `ore validate` de la rama y de la base:
+    /// `(semantico, nuevos, heredados)`. Dos clones; medido, ~1 s cada uno.
+    ///
+    /// ⭐ 0063 S7f · UNA RAMA RESPONDE DE LO QUE EMPEORA, no de lo que ya estaba
+    ///   roto en su base. Contar todo lo de la rama bloqueaba toda propuesta de la
+    ///   celda mientras `main` tuviera un error (medido en victor el 2026-10-14:
+    ///   los dos `OOS1001` de `azure_blob_mnist` bloqueaban la #21, que no los
+    ///   toca). Es la regla de `empeora` al traer cambios. Lo heredado se dice
+    ///   aparte, y no bloquea. (El producto de los *checks* está por construir:
+    ///   esto es lo mínimo para que no mientan.)
+    fn rama_frente_a(&self, rama: &str, base: &str) -> (Json, Json, Json) {
+        let vacio = || (Json::Bool(false), Json::Arr(vec![]), Json::Arr(vec![]));
         let Some(forja) = self.forja() else {
-            return (Json::Bool(false), Json::Arr(vec![]));
+            return vacio();
         };
         let (Ok(de_rama), Ok(de_base)) =
             (forja.clonar_rama(Some(rama)), forja.clonar_rama(Some(base)))
         else {
-            return (Json::Bool(false), Json::Arr(vec![]));
+            return vacio();
         };
-        let diagnosticos = self
-            .diagnosticos_de(de_rama.ruta())
-            .map(|ds| Json::Arr(ds.iter().map(crate::arbol::con_posicion).collect()))
-            .unwrap_or(Json::Arr(vec![]));
+        let de = |raiz: &Path| -> Vec<Json> {
+            self.diagnosticos_de(raiz)
+                .map(|ds| ds.iter().map(crate::arbol::con_posicion).collect())
+                .unwrap_or_default()
+        };
+        let (nuevos, heredados) = separar(de(de_rama.ruta()), &de(de_base.ruta()));
+        let (diagnosticos, heredados) = (Json::Arr(nuevos), Json::Arr(heredados));
         let semantico = match crate::mando::correr(
             &self.binario,
             de_rama.ruta(),
@@ -1649,7 +1662,7 @@ impl Servidor {
                 .unwrap_or(Json::Bool(false)),
             _ => Json::Bool(false),
         };
-        (semantico, diagnosticos)
+        (semantico, diagnosticos, heredados)
     }
 
     /// `POST /propuestas/{n}/revisar {veredicto, texto?}`: `aprobar`,
@@ -1784,7 +1797,7 @@ impl Servidor {
         let base = hijo(&pr, "base")
             .and_then(|h| campo(h, "ref"))
             .unwrap_or_else(|| "main".into());
-        let (_, diagnosticos) = self.rama_frente_a(&rama, &base);
+        let (_, diagnosticos, _) = self.rama_frente_a(&rama, &base);
         if let Json::Arr(ds) = &diagnosticos
             && !ds.is_empty()
         {
@@ -2245,8 +2258,67 @@ impl Servidor {
     }
 }
 
+/// Lo que la rama trae de nuevo, y lo que ya estaba en su base: un diagnóstico
+/// es el mismo si dice lo mismo (código y mensaje) del mismo fichero; la línea
+/// no cuenta, que se mueve con cualquier cambio de encima.
+fn separar(rama: Vec<Json>, base: &[Json]) -> (Vec<Json>, Vec<Json>) {
+    let clave = |d: &Json| match d {
+        Json::Obj(m) => ["codigo", "fichero", "mensaje"]
+            .iter()
+            .map(|k| match m.get(*k) {
+                Some(Json::Str(s)) => s.clone(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>(),
+        _ => vec![],
+    };
+    let habia: std::collections::BTreeSet<Vec<String>> = base.iter().map(clave).collect();
+    rama.into_iter().partition(|d| !habia.contains(&clave(d)))
+}
+
 #[cfg(test)]
 mod tests {
+    /// 0063 S7f: lo que ya estaba roto en `main` no es de la rama (la #21 de
+    /// victor, bloqueada por los `OOS1001` de `azure_blob_mnist`).
+    #[test]
+    fn una_rama_responde_de_lo_que_empeora() {
+        use ore_core::json::Json;
+        let d = |c: &str, f: &str, m: &str, l: i64| {
+            Json::obj([
+                ("codigo", Json::s(c)),
+                ("fichero", Json::s(f)),
+                ("mensaje", Json::s(m)),
+                ("linea", Json::Int(l)),
+            ])
+        };
+        let mnist = |l| {
+            d(
+                "OOS1001",
+                "packages/azure_blob_mnist/tables/t.yaml",
+                "clave `0` declarada dos veces",
+                l,
+            )
+        };
+        let base = vec![mnist(12)];
+        // La misma, en otra línea (algo se movió encima), sigue siendo heredada.
+        let rama = vec![
+            mnist(14),
+            d(
+                "OOS2052",
+                "packages/v/datasets/p.yaml",
+                "la promesa `c` mide `x`",
+                20,
+            ),
+        ];
+        let (nuevos, heredados) = super::separar(rama, &base);
+        assert_eq!(nuevos.len(), 1);
+        assert!(nuevos[0].jcs().contains("OOS2052"));
+        assert_eq!(heredados.len(), 1);
+        // Sin nada roto en la base, todo es nuevo.
+        let (nuevos, heredados) = super::separar(vec![mnist(1)], &[]);
+        assert_eq!((nuevos.len(), heredados.len()), (1, 0));
+    }
+
     fn cambio(id: &str, ruta: &str, lee: &[&str]) -> ore_core::json::Json {
         use ore_core::json::Json;
         let (kind, nombre) = id.split_once(':').unwrap();
