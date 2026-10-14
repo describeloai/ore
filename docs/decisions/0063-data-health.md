@@ -1162,13 +1162,14 @@ Lo que faltaba de S6, hecho:
 | **S7a** | **La gramática** (D-D) | v1alpha31: un `Ruleset` puede nombrar **activos**. Un tercer objetivo, `assets: [<base>.<schema>.<nombre>, …]` (o una base o un schema entero), al lado de `atLeast` y `named`. Y una aserción `library` sobre un activo dice su `column`. `severity: error` es **Blocking** y `warning` es **Warning** (el vocabulario de la visión). `Dataset.freshness` sigue siendo la *Fresh within* de su dataset, como decidió D-D | `C:\oos` (v1alpha31, `02-ruleset` y su esquema), `ore-core` (compilar, diagnósticos) |
 | **S7b** | **Lo que se mide en la misma pasada** | Las métricas `library` de ODCS que no cuestan otra lectura: `rowCount`; `nullValues` y `missingValues` (de lo que ya se cuenta); `invalidValues` con `validValues` o un rango (`mustBeBetween` sobre el mínimo y el máximo de la columna); y `duplicateValues` sobre una columna (cuesta memoria: ver D-S7-2) | `ore-store` (`ciclo.rs`), `materializar.rs` |
 | **S7c** | **Retener o anotar** | La copia evalúa las aserciones que apuntan a lo que copia **antes de publicar**, por el camino de S4. Una `Blocking` que falla **retiene**: `refresh-held` con su `guard` (el `id` de la aserción). Una `Warning` publica y anota: `guard-warning` con su `guard`. El resultado de cada una queda en el puntero, `promesas: [{id, resultado, medido, esperado}]` (D-A), y *Publish anyway* sigue valiendo | `materializar.rs`, `ore-core/salud.rs` |
-| **S7d** | **El build se para** (la experiencia 10) | Un build (0055) mira la salud de sus entradas: si una tiene su último refresco retenido por una promesa `Blocking`, **no construye** y lo dice, con *Build anyway*. Con `degraded` sin `Blocking`, construye y la salida lo hereda por el linaje (S6a) | `ore-serve` (`builds.rs`) |
+| ~~S7d~~ | ~~El build se para~~ | **Retirada por D-S7-3:** el build no se para; no hay pieza | — |
 | **S7e** | **La consola** | La sección *Promises* de la pestaña Health: cada promesa con su resultado, lo medido y lo esperado. *Add promise*, con plantillas de lo observado («1 000 rows each refresh: promise *rowCount ≥ 900*?»), que escribe el `Ruleset` en una rama y abre su propuesta (0044) | consola |
 
 **La vara crece:**
 - **C13:** una promesa `Blocking` `rowCount ≥ 900` sobre `vara_pg` retiene una pasada de 500 filas.
 - **C14:** una `Warning` `nullValues(cliente) = 0` publica y lo anota (el 10 % de `cliente` es nulo).
-- **C15:** un build sobre lo retenido no construye.
+- **C15:** un build sobre lo retenido construye sobre su última versión buena, y la salida sale
+  `warning` · `upstream-degraded` con el `datos_de` de esa versión.
 
 **Lo que se mide además:**
 - lo que cuesta S7b por pasada (segundos y memoria) en `vara_pg` y en la copia más grande de
@@ -1181,15 +1182,20 @@ Lo que faltaba de S6, hecho:
   objetivo `assets`. Así una regla tiene dueño, versión y propuesta propios, y quien responde de
   la calidad puede no ser quien escribe el dataset. Lo otro sería `promises:` dentro del
   `Dataset`: más cerca, pero mezcla al dueño del dato con quien lo exige, que es lo que el
-  `Ruleset` existe para separar.
+  `Ruleset` existe para separar. **Abierta:** el `Ruleset` hoy no se usa en la práctica (no se
+  evalúa, la consola no lo enseña), y se valora `promises:` en el `Dataset`, junto a
+  `freshness`, con la forma de aserción de ODCS para que un `Ruleset` pueda nombrarlas después.
 - **D-S7-2 · `duplicateValues` en la pasada.** Contar duplicados exige recordar cada valor de la
-  columna. **Recomendación:** sí, exacto, y con un tope de memoria declarado. Si se pasa, la
+  columna. **Decidida (2026-10-14):** exacto, y con un tope de memoria declarado. Si se pasa, la
   aserción sale `unknown` («too many values to check in the copy») y no `pass`. La alternativa
   aproximada (HyperLogLog) no sirve para una promesa: «casi sin duplicados» no es una respuesta.
-- **D-S7-3 · El build ante una entrada retenida.** **Recomendación:** pararlo, con *Build anyway*.
-  Lo que se sirve de esa entrada es la última versión buena, que sí cumplía. Pero construir
-  encima propaga datos que alguien declaró que no deben avanzar, y el *circuit breaker* es la
-  experiencia 10 de la visión.
+- **D-S7-3 · El build ante una entrada retenida.** **Decidida (2026-10-14): no se para.** La
+  retención ya es el *circuit breaker*: lo que se sirve de esa entrada es su última versión
+  buena, que cumplía, así que el build no lee datos malos sino viejos. La salida lo dice sola:
+  `datos_de` = el de su entrada más vieja (S6b) y `warning` · `upstream-degraded` con la entrada
+  retenida (S6a). Sin *Build anyway*. Lo único que parar aportaría es el build que mezcla tiempos
+  (una entrada de hoy con otra retenida de ayer); si aparece en la práctica, será un aviso o una
+  opción del Transform, no un freno por defecto.
 
 **Lo que S7 deja fuera:**
 - **Las aserciones `sql`:** cuestan su consulta y van en S13, en la capa 2.
