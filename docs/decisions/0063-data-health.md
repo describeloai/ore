@@ -1396,6 +1396,23 @@ en `normalize`. En `ore-cli`, `borrador_de_v1alpha31`: 11 de 11.
 árbol compila igual que antes: `/arbol/diagnosticos` da los mismos dos `OOS1001` de siempre
 (`azure_blob_mnist`, la cabecera de píxeles), ninguno nuevo.
 
+### S7b · el juez, hecho (2026-10-14)
+
+En `ore-core/src/promesas.rs`, puro y sin red; nada lo llama todavía (S7c):
+- **`de_documento`**: las promesas de un activo, tipadas (`Comparador`, `Argumentos`), con
+  `notEmptied` siempre (la de serie en `error`, o la declarada con su severidad).
+- **`peticion`**: lo que la pasada tiene que contar, una entrada por promesa que cuenta algo (`id`,
+  `metric`, `column`, sus argumentos). Lo que sale del total (`rowCount`, `itemCount` y sus
+  cambios) no pide nada; sin promesas que cuenten, `[]`, y la pasada es la de siempre.
+- **`juzgar`**: con lo medido (`Medido`: el total, el de la versión anterior y la cuenta de cada
+  promesa, o por qué no se pudo), un `Veredicto` por promesa: `pass`, `fail` o `unknown`, lo medido
+  en su unidad (redondeado a dos decimales), lo esperado («≥ 900», «< 5 %») y el motivo de un
+  `unknown`. Sin medida, sin versión anterior para un cambio, o con la cuenta en error: `unknown`,
+  nunca `pass`.
+- **`retenida`**, **`avisos`** y **`por_que`**: la primera `error` que falla (la que retiene), las
+  `warning` que fallan, y el motivo en inglés («promise `volumen`: measured 500, expected ≥ 900»).
+  `Veredicto::json` es la forma del puntero (`promesas: [...]`).
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre

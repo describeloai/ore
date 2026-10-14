@@ -21,6 +21,7 @@
 use crate::code::Code;
 use crate::diag::Diagnostic;
 use crate::document::{ApiVersion, Kind};
+use crate::json::Json;
 use crate::parse::{Node, Style};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -719,6 +720,428 @@ fn lista(xs: &[&str]) -> String {
         .join(", ")
 }
 
+// ══ S7b · EL JUEZ ═══════════════════════════════════════════════════════════
+//
+// Tres pasos, y solo el del medio toca datos (S7c y S7d, en `ore-store` y en
+// la transacción de una colección):
+//
+// 1. `de_documento`: las promesas de un activo, ya tipadas, con `notEmptied`
+//    de serie. Lo mal escrito no llega aquí: el compilador lo paró (S7a).
+// 2. `peticion`: lo que la pasada tiene que contar, una entrada por promesa
+//    que cuenta algo. Sin promesas que cuenten, vacía: no se mide nada más.
+// 3. `juzgar`: con lo contado, `pass`, `fail` o `unknown` para cada una, con
+//    lo medido y lo esperado. `retenida` dice si alguna `error` falló.
+
+/// Lo que una promesa compara con lo medido (los nombres de ODCS).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Comparador {
+    Igual(f64),
+    Distinto(f64),
+    Mayor(f64),
+    MayorOIgual(f64),
+    Menor(f64),
+    MenorOIgual(f64),
+    Entre(f64, f64),
+    FueraDe(f64, f64),
+}
+
+impl Comparador {
+    fn de(p: &Node) -> Option<Comparador> {
+        let uno = |k: &str| p.get(k).and_then(|(_, v)| numero(v));
+        let dos = |k: &str| match p.get(k).map(|(_, v)| v.items()) {
+            Some([a, b]) => Some((numero(a)?, numero(b)?)),
+            _ => None,
+        };
+        COMPARADORES.iter().find_map(|c| match *c {
+            "mustBe" => uno(c).map(Comparador::Igual),
+            "mustNotBe" => uno(c).map(Comparador::Distinto),
+            "mustBeGreaterThan" => uno(c).map(Comparador::Mayor),
+            "mustBeGreaterOrEqualTo" => uno(c).map(Comparador::MayorOIgual),
+            "mustBeLessThan" => uno(c).map(Comparador::Menor),
+            "mustBeLessOrEqualTo" => uno(c).map(Comparador::MenorOIgual),
+            "mustBeBetween" => dos(c).map(|(a, b)| Comparador::Entre(a, b)),
+            "mustNotBeBetween" => dos(c).map(|(a, b)| Comparador::FueraDe(a, b)),
+            _ => None,
+        })
+    }
+
+    pub fn cumple(&self, x: f64) -> bool {
+        match *self {
+            Comparador::Igual(v) => x == v,
+            Comparador::Distinto(v) => x != v,
+            Comparador::Mayor(v) => x > v,
+            Comparador::MayorOIgual(v) => x >= v,
+            Comparador::Menor(v) => x < v,
+            Comparador::MenorOIgual(v) => x <= v,
+            Comparador::Entre(a, b) => a <= x && x <= b,
+            Comparador::FueraDe(a, b) => x < a || b < x,
+        }
+    }
+
+    /// Lo esperado, para quien lo lee (la consola, el puntero): en inglés.
+    pub fn texto(&self, pct: bool) -> String {
+        let n = |v: f64| format!("{}{}", cifra(v), if pct { " %" } else { "" });
+        match *self {
+            Comparador::Igual(v) => format!("= {}", n(v)),
+            Comparador::Distinto(v) => format!("≠ {}", n(v)),
+            Comparador::Mayor(v) => format!("> {}", n(v)),
+            Comparador::MayorOIgual(v) => format!("≥ {}", n(v)),
+            Comparador::Menor(v) => format!("< {}", n(v)),
+            Comparador::MenorOIgual(v) => format!("≤ {}", n(v)),
+            Comparador::Entre(a, b) => format!("between {} and {}", cifra(a), n(b)),
+            Comparador::FueraDe(a, b) => format!("not between {} and {}", cifra(a), n(b)),
+        }
+    }
+}
+
+/// Lo que algunas métricas necesitan para contar (`arguments`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Argumentos {
+    Ninguno,
+    /// `missingValues`: lo que además de nulo cuenta como ausente, en crudo.
+    Ausentes(Vec<String>),
+    /// `invalidValues` con `validValues`, en crudo: quien cuenta compara con
+    /// el texto del valor.
+    Validos(Vec<String>),
+    /// `between`: `[mínimo, máximo]`, cerrado.
+    Entre(f64, f64),
+    Formatos(Vec<String>),
+    Familias(Vec<String>),
+}
+
+/// Una promesa, tipada.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Promesa {
+    pub id: String,
+    /// `None` en `notEmptied`: no se escribe con métrica, es de serie.
+    pub metrica: Option<&'static str>,
+    pub columna: Option<String>,
+    pub argumentos: Argumentos,
+    pub porcentaje: bool,
+    pub comparador: Option<Comparador>,
+    /// `error` (Blocking) o no (`warning`).
+    pub bloquea: bool,
+    pub de_serie: bool,
+}
+
+/// **Las promesas de un activo** (`spec` de un `Dataset` o una
+/// `MediaCollection`), con `notEmptied` siempre: la declarada (que solo
+/// cambia su severidad) o la de serie, `error`. Lo que no se entiende se
+/// salta: el compilador ya lo dijo.
+pub fn de_documento(spec: Option<&Node>, familia: Familia) -> Vec<Promesa> {
+    let mut out = Vec::new();
+    let mut de_serie = Promesa {
+        id: DE_SERIE.into(),
+        metrica: None,
+        columna: None,
+        argumentos: Argumentos::Ninguno,
+        porcentaje: false,
+        comparador: None,
+        bloquea: true,
+        de_serie: true,
+    };
+    let lista = spec
+        .and_then(|s| s.get("promises"))
+        .map(|(_, l)| l.items())
+        .unwrap_or(&[]);
+    for p in lista {
+        let Some(id) = p.get("id").and_then(|(_, v)| v.as_str()) else {
+            continue;
+        };
+        let bloquea = p.get("severity").and_then(|(_, v)| v.as_str()) != Some("warning");
+        if id == DE_SERIE {
+            de_serie.bloquea = bloquea;
+            continue;
+        }
+        let Some(m) = p
+            .get("metric")
+            .and_then(|(_, v)| v.as_str())
+            .and_then(metrica)
+            .filter(|m| m.familia == familia)
+        else {
+            continue;
+        };
+        let Some(comparador) = Comparador::de(p) else {
+            continue;
+        };
+        let args = p.get("arguments").map(|(_, a)| a);
+        let crudos = |k: &str| -> Option<Vec<String>> {
+            Some(
+                args?
+                    .get(k)?
+                    .1
+                    .items()
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect(),
+            )
+        };
+        let entre = args.and_then(|a| match a.get("between").map(|(_, v)| v.items()) {
+            Some([x, y]) => Some(Argumentos::Entre(numero(x)?, numero(y)?)),
+            _ => None,
+        });
+        let argumentos = match m.nombre {
+            "missingValues" => Argumentos::Ausentes(crudos("missingValues").unwrap_or_default()),
+            "invalidValues" | "invalidSizes" => crudos("validValues")
+                .map(Argumentos::Validos)
+                .or(entre)
+                .unwrap_or(Argumentos::Ninguno),
+            "invalidFormats" => crudos("formats")
+                .map(Argumentos::Formatos)
+                .or_else(|| crudos("families").map(Argumentos::Familias))
+                .unwrap_or(Argumentos::Ninguno),
+            _ => Argumentos::Ninguno,
+        };
+        out.push(Promesa {
+            id: id.into(),
+            metrica: Some(m.nombre),
+            columna: p
+                .get("column")
+                .and_then(|(_, v)| v.as_str())
+                .map(String::from),
+            argumentos,
+            porcentaje: m.cambio || p.get("unit").and_then(|(_, v)| v.as_str()) == Some("percent"),
+            comparador: Some(comparador),
+            bloquea,
+            de_serie: false,
+        });
+    }
+    out.push(de_serie);
+    out
+}
+
+/// ¿Esta métrica sale del total (filas o ítems), o hay que contarla?
+fn del_total(metrica: &str) -> bool {
+    matches!(
+        metrica,
+        "rowCount" | "rowCountChange" | "itemCount" | "itemCountChange"
+    )
+}
+
+/// **Lo que la pasada tiene que contar** (va a `ore-store`, o a la transacción
+/// de la colección): una entrada por promesa que cuenta algo, con su `id`, su
+/// `metric`, su `column` y sus `arguments` tal como se escribieron. El total y
+/// los nulos ya se cuentan siempre: lo que solo necesita eso no pide nada.
+/// Sin nada que contar, una lista vacía, y la pasada es la de siempre.
+pub fn peticion(promesas: &[Promesa]) -> Json {
+    Json::Arr(
+        promesas
+            .iter()
+            .filter_map(|p| {
+                let m = p.metrica?;
+                if del_total(m) {
+                    return None;
+                }
+                let mut o: Vec<(&'static str, Json)> =
+                    vec![("id", Json::s(&p.id)), ("metric", Json::s(m))];
+                if let Some(c) = &p.columna {
+                    o.push(("column", Json::s(c)));
+                }
+                let lista = |xs: &[String]| Json::Arr(xs.iter().map(Json::s).collect());
+                match &p.argumentos {
+                    Argumentos::Ninguno => {}
+                    Argumentos::Ausentes(v) => o.push(("missingValues", lista(v))),
+                    Argumentos::Validos(v) => o.push(("validValues", lista(v))),
+                    Argumentos::Entre(a, b) => o.push((
+                        "between",
+                        Json::Arr(vec![Json::s(cifra(*a)), Json::s(cifra(*b))]),
+                    )),
+                    Argumentos::Formatos(v) => o.push(("formats", lista(v))),
+                    Argumentos::Familias(v) => o.push(("families", lista(v))),
+                }
+                Some(Json::obj(o))
+            })
+            .collect(),
+    )
+}
+
+/// **Lo que la pasada contó.**
+#[derive(Debug, Clone, Default)]
+pub struct Medido {
+    /// Las filas o los ítems de la versión que se va a publicar. `None` si no
+    /// se sabe (entonces todo lo que depende de él es `unknown`).
+    pub total: Option<u64>,
+    /// Los de la versión publicada anterior; `None` si no la hay.
+    pub anterior: Option<u64>,
+    /// Lo contado para cada promesa que lo pidió, por su `id`; o por qué no se
+    /// pudo (en inglés: lo lee el dueño). Lo que falta aquí es `unknown`.
+    pub cuentas: std::collections::BTreeMap<String, Result<u64, String>>,
+}
+
+/// El resultado de una promesa (`01` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resultado {
+    Pass,
+    Fail,
+    Unknown,
+}
+
+impl Resultado {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Resultado::Pass => "pass",
+            Resultado::Fail => "fail",
+            Resultado::Unknown => "unknown",
+        }
+    }
+}
+
+/// Lo que el juez dice de una promesa.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Veredicto {
+    pub id: String,
+    pub resultado: Resultado,
+    /// Lo medido, en la unidad de la promesa (% si `percent`).
+    pub medido: Option<f64>,
+    pub porcentaje: bool,
+    /// Lo esperado, en inglés («≥ 900», «= 0 %»).
+    pub esperado: String,
+    pub bloquea: bool,
+    pub de_serie: bool,
+    /// Por qué `unknown`, en inglés.
+    pub motivo: Option<String>,
+}
+
+impl Veredicto {
+    /// Para el puntero y el informe (`promesas: [...]`).
+    pub fn json(&self) -> Json {
+        let mut o: Vec<(&'static str, Json)> = vec![
+            ("id", Json::s(&self.id)),
+            ("resultado", Json::s(self.resultado.as_str())),
+            ("esperado", Json::s(&self.esperado)),
+            (
+                "severidad",
+                Json::s(if self.bloquea { "error" } else { "warning" }),
+            ),
+        ];
+        if let Some(x) = self.medido {
+            let v = if x.fract() == 0.0 && x.abs() < 9.0e15 {
+                Json::Int(x as i64)
+            } else {
+                Json::s(cifra(x))
+            };
+            o.push(("medido", v));
+        }
+        if self.porcentaje {
+            o.push(("unidad", Json::s("percent")));
+        }
+        if self.de_serie {
+            o.push(("de_serie", Json::Bool(true)));
+        }
+        if let Some(m) = &self.motivo {
+            o.push(("motivo", Json::s(m)));
+        }
+        Json::obj(o)
+    }
+}
+
+/// **El juez** (`01` §6): cada promesa contra lo medido.
+pub fn juzgar(promesas: &[Promesa], medido: &Medido) -> Vec<Veredicto> {
+    promesas.iter().map(|p| uno_de(p, medido)).collect()
+}
+
+fn uno_de(p: &Promesa, medido: &Medido) -> Veredicto {
+    let mut v = Veredicto {
+        id: p.id.clone(),
+        resultado: Resultado::Unknown,
+        medido: None,
+        porcentaje: p.porcentaje,
+        esperado: String::new(),
+        bloquea: p.bloquea,
+        de_serie: p.de_serie,
+        motivo: None,
+    };
+    let no_se = |mut v: Veredicto, m: &str| {
+        v.motivo = Some(m.to_string());
+        v
+    };
+    // `notEmptied`: una versión vacía tras una que no lo estaba.
+    let (Some(m), Some(c)) = (p.metrica, &p.comparador) else {
+        v.esperado = "not empty when the previous version had data".into();
+        let Some(t) = medido.total else {
+            return no_se(v, "the size of this version is not known");
+        };
+        v.medido = Some(t as f64);
+        v.resultado = if t == 0 && medido.anterior.is_some_and(|a| a > 0) {
+            Resultado::Fail
+        } else {
+            Resultado::Pass
+        };
+        return v;
+    };
+    v.esperado = c.texto(p.porcentaje);
+    let Some(total) = medido.total else {
+        return no_se(v, "the size of this version is not known");
+    };
+    let valor = match m {
+        "rowCount" | "itemCount" => total as f64,
+        "rowCountChange" | "itemCountChange" => match medido.anterior {
+            None => return no_se(v, "there is no previous version to compare with"),
+            Some(0) => return no_se(v, "the previous version was empty"),
+            Some(a) => (total as f64 - a as f64) / a as f64 * 100.0,
+        },
+        _ => match medido.cuentas.get(&p.id) {
+            None => return no_se(v, "this refresh did not measure it"),
+            Some(Err(m)) => return no_se(v, m),
+            Some(Ok(n)) if p.porcentaje => {
+                if total == 0 {
+                    0.0
+                } else {
+                    *n as f64 / total as f64 * 100.0
+                }
+            }
+            Some(Ok(n)) => *n as f64,
+        },
+    };
+    let valor = (valor * 100.0).round() / 100.0;
+    v.medido = Some(valor);
+    v.resultado = if c.cumple(valor) {
+        Resultado::Pass
+    } else {
+        Resultado::Fail
+    };
+    v
+}
+
+/// La primera promesa `error` que falló: la que retiene la versión.
+pub fn retenida(veredictos: &[Veredicto]) -> Option<&Veredicto> {
+    veredictos
+        .iter()
+        .find(|v| v.bloquea && v.resultado == Resultado::Fail)
+}
+
+/// Las `warning` que fallaron: se publica, y se anotan.
+pub fn avisos(veredictos: &[Veredicto]) -> Vec<&Veredicto> {
+    veredictos
+        .iter()
+        .filter(|v| !v.bloquea && v.resultado == Resultado::Fail)
+        .collect()
+}
+
+/// El motivo de una retención o un aviso, en inglés: «promise `volumen`:
+/// measured 500, expected ≥ 900».
+pub fn por_que(v: &Veredicto) -> String {
+    let medido = v
+        .medido
+        .map(|x| format!("{}{}", cifra(x), if v.porcentaje { " %" } else { "" }))
+        .unwrap_or_else(|| "nothing".into());
+    format!(
+        "promise `{}`: measured {medido}, expected {}",
+        v.id, v.esperado
+    )
+}
+
+/// Un número como se lee: sin `.0`, y con dos decimales como mucho.
+fn cifra(x: f64) -> String {
+    let r = (x * 100.0).round() / 100.0;
+    if r.fract() == 0.0 {
+        format!("{}", r as i64)
+    } else {
+        let s = format!("{r:.2}");
+        s.trim_end_matches('0').to_string()
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -872,6 +1295,149 @@ mod pruebas {
         assert_eq!(
             diags(coleccion).len(),
             diags(&coleccion.replace("v1alpha19", "v1alpha31")).len()
+        );
+    }
+
+    fn promesas(doc: &str) -> Vec<Promesa> {
+        let n = crate::parse::parse(doc).unwrap();
+        let familia = match n.get("kind").and_then(|(_, k)| k.as_str()) {
+            Some("MediaCollection") => Familia::Objetos,
+            _ => Familia::Tabular,
+        };
+        de_documento(n.get("spec").map(|(_, s)| s), familia)
+    }
+
+    #[test]
+    fn de_documento_tipa_y_pone_not_emptied() {
+        let ps = promesas(&con(
+            "    - id: volumen\n      metric: rowCount\n      mustBeGreaterOrEqualTo: 900\n    - id: rango\n      column: total\n      metric: invalidValues\n      arguments: { between: [0, \"10000.5\"] }\n      unit: percent\n      mustBeLessThan: \"0.5\"\n      severity: warning\n    - id: estado\n      column: cliente\n      metric: invalidValues\n      arguments: { validValues: [a, 1, true] }\n      mustBe: 0\n",
+        ));
+        assert_eq!(ps.len(), 4);
+        assert_eq!(ps[0].comparador, Some(Comparador::MayorOIgual(900.0)));
+        assert!(ps[0].bloquea && !ps[0].porcentaje);
+        assert_eq!(ps[1].argumentos, Argumentos::Entre(0.0, 10000.5));
+        assert_eq!(ps[1].comparador, Some(Comparador::Menor(0.5)));
+        assert!(!ps[1].bloquea && ps[1].porcentaje);
+        assert_eq!(
+            ps[2].argumentos,
+            Argumentos::Validos(vec!["a".into(), "1".into(), "true".into()])
+        );
+        assert!(ps[3].de_serie && ps[3].bloquea && ps[3].id == DE_SERIE);
+        // Ablandada: la misma, en `warning`, y una sola.
+        let ps = promesas(&con("    - id: notEmptied\n      severity: warning\n"));
+        assert_eq!(ps.len(), 1);
+        assert!(ps[0].de_serie && !ps[0].bloquea);
+        // Sin promesas: solo la de serie.
+        assert_eq!(promesas(COPIA).len(), 1);
+    }
+
+    #[test]
+    fn la_peticion_solo_pide_lo_que_hay_que_contar() {
+        // Sin promesas que cuenten, nada: la pasada es la de siempre.
+        assert_eq!(peticion(&promesas(COPIA)).jcs(), "[]");
+        let ps = promesas(&con(
+            "    - id: volumen\n      metric: rowCount\n      mustBe: 1\n    - id: cambio\n      metric: rowCountChange\n      mustBeGreaterThan: -50\n    - id: unico\n      column: id\n      metric: duplicateValues\n      mustBe: 0\n    - id: rango\n      column: total\n      metric: invalidValues\n      arguments: { between: [0, \"0.5\"] }\n      mustBe: 0\n",
+        ));
+        assert_eq!(
+            peticion(&ps).jcs(),
+            r#"[{"column":"id","id":"unico","metric":"duplicateValues"},{"between":["0","0.5"],"column":"total","id":"rango","metric":"invalidValues"}]"#
+        );
+    }
+
+    #[test]
+    fn el_juez() {
+        let ps = promesas(&con(
+            "    - id: volumen\n      metric: rowCount\n      mustBeGreaterOrEqualTo: 900\n    - id: caida\n      metric: rowCountChange\n      mustBeGreaterThan: -50\n    - id: nulos\n      column: cliente\n      metric: nullValues\n      unit: percent\n      mustBeLessOrEqualTo: 1\n      severity: warning\n    - id: unico\n      column: id\n      metric: duplicateValues\n      mustBe: 0\n",
+        ));
+        let mut m = Medido {
+            total: Some(500),
+            anterior: Some(1000),
+            ..Default::default()
+        };
+        m.cuentas.insert("nulos".into(), Ok(50));
+        m.cuentas
+            .insert("unico".into(), Err("too many values to check".into()));
+        let v = juzgar(&ps, &m);
+        let r: Vec<(&str, Resultado, Option<f64>)> = v
+            .iter()
+            .map(|x| (x.id.as_str(), x.resultado, x.medido))
+            .collect();
+        assert_eq!(
+            r,
+            vec![
+                ("volumen", Resultado::Fail, Some(500.0)),
+                ("caida", Resultado::Fail, Some(-50.0)),
+                ("nulos", Resultado::Fail, Some(10.0)),
+                ("unico", Resultado::Unknown, None),
+                ("notEmptied", Resultado::Pass, Some(500.0)),
+            ]
+        );
+        assert_eq!(
+            retenida(&v).map(por_que).as_deref(),
+            Some("promise `volumen`: measured 500, expected ≥ 900")
+        );
+        assert_eq!(avisos(&v).len(), 1);
+        assert_eq!(
+            por_que(avisos(&v)[0]),
+            "promise `nulos`: measured 10 %, expected ≤ 1 %"
+        );
+        assert_eq!(
+            v[3].json().jcs(),
+            r#"{"esperado":"= 0","id":"unico","motivo":"too many values to check","resultado":"unknown","severidad":"error"}"#
+        );
+        // Lo que no se midió es `unknown`, nunca `pass`; y sin anterior, el
+        // cambio tampoco se sabe.
+        let v = juzgar(
+            &ps,
+            &Medido {
+                total: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v[0].resultado, Resultado::Pass);
+        assert_eq!(v[1].resultado, Resultado::Unknown);
+        assert_eq!(v[2].resultado, Resultado::Unknown);
+        assert!(retenida(&v).is_none());
+    }
+
+    #[test]
+    fn not_emptied_y_la_coleccion() {
+        let ps = promesas(COPIA);
+        let vacia = |anterior| {
+            juzgar(
+                &ps,
+                &Medido {
+                    total: Some(0),
+                    anterior,
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(vacia(Some(10))[0].resultado, Resultado::Fail);
+        assert_eq!(vacia(Some(0))[0].resultado, Resultado::Pass);
+        assert_eq!(vacia(None)[0].resultado, Resultado::Pass);
+        assert_eq!(
+            juzgar(&ps, &Medido::default())[0].resultado,
+            Resultado::Unknown
+        );
+        let doc = "apiVersion: oos.dev/v1alpha31\nkind: MediaCollection\nmetadata: { name: i, namespace: l }\nspec:\n  owner: team:data\n  media: image\n  formats: [jpeg]\n  promises:\n    - id: solo\n      metric: invalidFormats\n      arguments: { families: [image] }\n      unit: percent\n      mustBeLessThan: 5\n    - id: borrado\n      metric: itemCountChange\n      mustBeGreaterThan: -20\n";
+        let ps = promesas(doc);
+        assert_eq!(ps[0].argumentos, Argumentos::Familias(vec!["image".into()]));
+        let mut m = Medido {
+            total: Some(40),
+            anterior: Some(100),
+            ..Default::default()
+        };
+        m.cuentas.insert("solo".into(), Ok(1));
+        let v = juzgar(&ps, &m);
+        assert_eq!((v[0].resultado, v[0].medido), (Resultado::Pass, Some(2.5)));
+        assert_eq!(
+            (v[1].resultado, v[1].medido),
+            (Resultado::Fail, Some(-60.0))
+        );
+        assert_eq!(
+            v[0].json().jcs(),
+            r#"{"esperado":"< 5 %","id":"solo","medido":"2.5","resultado":"pass","severidad":"error","unidad":"percent"}"#
         );
     }
 
