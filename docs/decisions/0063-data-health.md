@@ -1143,66 +1143,167 @@ Lo que faltaba de S6, hecho:
   `warning` con su causa, `unknown` con su hora.
 - **S6f · la consola** (local): ver «S6e, hecho».
 
-### S7 · el diseño (propuesto, 2026-10-14)
+### S7 · el diseño (rehecho, 2026-10-14)
+
+Sustituye al primer diseño del mismo día. Decidido con el usuario: **D-S7-1** las promesas van en
+el documento del activo; **la biblioteca es por familia de activo**; **las colecciones entran en
+S7**; **D-S7-2** duplicados exactos con tope; **D-S7-3** el build no se para (S6a y S6b ya lo dicen
+en la salida; esto deja sin efecto la última frase de D-F y el freno del build de la visión).
+
+**Los precedentes.** Escribir la promesa en la definición del activo es lo de dbt (`tests` en el
+YAML del modelo), Databricks DLT (`@dlt.expect…`), Foundry (Data Expectations sobre la salida, `FAIL`
+/ `WARN`) y Snowflake (Data Metric Functions sobre la tabla). Lo aparte (Soda, Great Expectations,
+Dataplex, un contrato ODCS) es para quien exige desde fuera: eso es S15 (gobierno), y por eso
+usamos los nombres de métrica de ODCS, para que un contrato pueda nombrar las mismas promesas.
 
 **Lo que hay.**
-- La spec ya tiene el documento: el `Ruleset` de v1alpha3, con `targets` y `assertions` en el
-  perfil de `quality` de ODCS (`type: library` y `sql`; `metric`, `mustBe`, `mustBeBetween`;
-  `dimension` y `severity`).
-- Pero hoy un `Ruleset` **solo apunta a propiedades** (`atLeast` por etiqueta, `named` por
-  nombre) y **nadie evalúa sus aserciones**: cuentan para la cobertura de gobierno y nada más.
-- La única promesa que se juzga es `Dataset.freshness` (al leer, S2).
-- La copia ya mide, en su pasada, las filas y los no nulos de cada columna (`ore-store`,
-  `ciclo.rs`, sobre los lotes de Arrow): ese es el sitio de lo demás.
+- La única promesa juzgada es `Dataset.freshness` (al leer, S2). `MediaCollection` no tiene.
+- La pasada de una tabla cuenta filas y no nulos por columna (`ore-store`, `ciclo.rs`, sobre los
+  lotes de Arrow). La de una colección escribe su manifiesto: por ítem, `camino`, `huella` (de
+  contenido), `formato`, `tamano` y `estado` (`actual`, `retirado`, `perdido`).
+- S4 retiene con una sola guarda fija, `zero-rows`, en `materializar.rs`.
+- El `Ruleset` (v1alpha3) solo cuenta para la cobertura de gobierno: no se evalúa ni se ve.
+
+**Los principios del diseño.**
+1. **Solo lo que sale de la pasada.** Una promesa de S7 no lee un byte más del origen ni del lago:
+   se mide sobre los lotes que ya pasan, o sobre el manifiesto que ya se escribe.
+2. **Solo se mide lo prometido.** La copia pide a `ore-store` las medidas que sus promesas
+   necesitan; una copia sin promesas no cambia ni un byte (ni de coste ni de puntero).
+3. **Un solo juez.** Las promesas se evalúan en un sitio (`ore_core::promesas`), con las medidas
+   como entrada, para la copia de una tabla, la de una colección y lo escrito con `write()`.
+4. **Promesa sin pasada, error de compilación.** Lo que se lee en vivo (una `View` sin copia, una
+   `Table` o `ObjectTable` de una base foránea) no tiene dónde comprobarse: eso es la capa 1.
+5. **Lo que no se pudo medir es `unknown`, nunca `pass`.**
+
+**La gramática (v1alpha31).** `spec.promises` en `Dataset` y en `MediaCollection`:
+
+```yaml
+kind: Dataset
+metadata: { name: pedidos }
+spec:
+  freshness: 1h
+  promises:
+    - id: volumen
+      metric: rowCount
+      mustBeGreaterThanOrEqualTo: 900
+      severity: error              # Blocking: si falla, la pasada no publica
+    - id: sin-caidas
+      metric: rowCountChange       # contra la versión publicada anterior
+      unit: percent
+      mustBeGreaterThan: -50
+      severity: error
+    - id: cliente-presente
+      column: cliente
+      metric: nullValues
+      unit: percent
+      mustBeLessThanOrEqualTo: 1
+      severity: warning            # Warning: publica y lo anota
+    - id: id-unico
+      column: id
+      metric: duplicateValues
+      mustBe: 0
+      severity: error
+    - id: estado-valido
+      column: estado
+      metric: invalidValues
+      arguments: { validValues: [pendiente, pagado, enviado, anulado] }
+      mustBe: 0
+      severity: warning
+```
+
+```yaml
+kind: MediaCollection
+metadata: { name: imagenes }
+spec:
+  promises:
+    - id: solo-imagenes
+      metric: invalidFormats
+      arguments: { families: [image] }   # las familias de v1alpha29, o formatos concretos
+      mustBe: 0
+      severity: warning
+    - id: sin-borrado-masivo
+      metric: itemCountChange
+      unit: percent
+      mustBeGreaterThan: -20
+      severity: error
+```
+
+Cada promesa: `id` único en su activo, `metric` de la biblioteca de su familia, `column` cuando la
+métrica es de columna, `unit` (`count` por defecto, o `percent`), `arguments` si la métrica los
+pide, un solo comparador (`mustBe`, `mustNotBe`, `mustBeGreaterThan[OrEqualTo]`,
+`mustBeLessThan[OrEqualTo]`, `mustBeBetween`) y `severity` (`error` = **Blocking**, `warning` =
+**Warning**). `description` opcional, para la consola.
+
+**La biblioteca, por familia.**
+
+| Familia | Métrica | Qué cuenta | De dónde sale |
+|---|---|---|---|
+| tabular | `rowCount` | filas de la versión | ya se cuenta |
+| tabular | `rowCountChange` | % de filas respecto de la versión publicada anterior | ya se cuenta (y el puntero anterior) |
+| tabular | `nullValues` | nulos de `column` | ya se cuenta |
+| tabular | `missingValues` | nulos y los valores de `arguments.missingValues` (`''`, `'N/A'`…) | un recorrido de la columna |
+| tabular | `invalidValues` | filas fuera de `validValues`, o fuera de `arguments.between: [min, max]` | un recorrido de la columna |
+| tabular | `duplicateValues` | filas cuyo valor (o la combinación de `columns`) ya apareció | memoria, exacto con tope (D-S7-2) |
+| objetos | `itemCount` | ítems actuales | el manifiesto |
+| objetos | `itemCountChange` | % de ítems actuales respecto de la transacción anterior | el manifiesto |
+| objetos | `emptyItems` | ítems de 0 bytes | el manifiesto |
+| objetos | `invalidFormats` | ítems fuera de `arguments.formats` o `arguments.families` | el manifiesto |
+| objetos | `invalidSizes` | ítems fuera de `arguments.between: [min, max]` bytes | el manifiesto |
+| objetos | `duplicateItems` | ítems actuales con la huella de otro (mismo contenido, otro camino) | el manifiesto |
+| objetos | `lostItems` | ítems `perdido` (una virtual no puede servirlos) | el manifiesto |
+
+Esquema y frescura no son métricas de la biblioteca: el esquema ya lo vigila S5 (`source-schema-
+changed`) y la frescura es `freshness`, que sigue siendo la *Fresh within* (D-D).
+
+**La guarda de S4 pasa a ser una promesa de serie.** `zero-rows` se convierte en la promesa
+implícita `no-vaciarse` (`rowCount > 0` si la anterior tenía filas, `Blocking`), igual para
+`itemCount` en las colecciones. La consola la enseña como *Built-in*. Quien la quiera más blanda la
+declara con su `id` y `severity: warning`; no se puede quitar.
 
 **Las piezas**
 
 | | Pieza | Qué | Dónde |
 |---|---|---|---|
-| **S7a** | **La gramática** (D-D) | v1alpha31: un `Ruleset` puede nombrar **activos**. Un tercer objetivo, `assets: [<base>.<schema>.<nombre>, …]` (o una base o un schema entero), al lado de `atLeast` y `named`. Y una aserción `library` sobre un activo dice su `column`. `severity: error` es **Blocking** y `warning` es **Warning** (el vocabulario de la visión). `Dataset.freshness` sigue siendo la *Fresh within* de su dataset, como decidió D-D | `C:\oos` (v1alpha31, `02-ruleset` y su esquema), `ore-core` (compilar, diagnósticos) |
-| **S7b** | **Lo que se mide en la misma pasada** | Las métricas `library` de ODCS que no cuestan otra lectura: `rowCount`; `nullValues` y `missingValues` (de lo que ya se cuenta); `invalidValues` con `validValues` o un rango (`mustBeBetween` sobre el mínimo y el máximo de la columna); y `duplicateValues` sobre una columna (cuesta memoria: ver D-S7-2) | `ore-store` (`ciclo.rs`), `materializar.rs` |
-| **S7c** | **Retener o anotar** | La copia evalúa las aserciones que apuntan a lo que copia **antes de publicar**, por el camino de S4. Una `Blocking` que falla **retiene**: `refresh-held` con su `guard` (el `id` de la aserción). Una `Warning` publica y anota: `guard-warning` con su `guard`. El resultado de cada una queda en el puntero, `promesas: [{id, resultado, medido, esperado}]` (D-A), y *Publish anyway* sigue valiendo | `materializar.rs`, `ore-core/salud.rs` |
-| ~~S7d~~ | ~~El build se para~~ | **Retirada por D-S7-3:** el build no se para; no hay pieza | — |
-| **S7e** | **La consola** | La sección *Promises* de la pestaña Health: cada promesa con su resultado, lo medido y lo esperado. *Add promise*, con plantillas de lo observado («1 000 rows each refresh: promise *rowCount ≥ 900*?»), que escribe el `Ruleset` en una rama y abre su propuesta (0044) | consola |
+| **S7a** | **La gramática** | v1alpha31: `promises` en `Dataset` y `MediaCollection`, la biblioteca por familia y su esquema. El compilador dice: promesa en un activo sin pasada; métrica de otra familia; columna que el documento no tiene; `id` repetido; comparador ausente o doble. Recatalogar y *Accept the new schema* conservan `promises`; una columna que desaparece deja su promesa `unknown` y lo dice en la propuesta | `C:\oos` (v1alpha31), `ore-core` (compilar, diagnósticos), `ore-cli` (recatálogo) |
+| **S7b** | **El juez** | `ore_core::promesas`: de las promesas, **las medidas que hacen falta**; de las medidas, el resultado de cada una (`pass`, `fail`, `unknown`) con lo medido y lo esperado. Puro y probado sin red | `ore-core` |
+| **S7c** | **Las tablas** | La copia pasa a `ore-store` las medidas pedidas y las calcula sobre los lotes de Arrow que ya pasan (un `HashSet` con tope para `duplicateValues`; `ORE_PROMESAS_MEMORIA`, 256 MiB por defecto). `materializar.rs` juzga antes de publicar, por el camino de S4: una `Blocking` que falla retiene (`refresh-held`, `guard` = su `id`); una `Warning` publica y anota (`guard-warning`). El puntero lleva `promesas: [{id, resultado, medido, esperado, severidad}]` | `ore-store` (`ciclo.rs`), `ore-cli` (`materializar.rs`) |
+| **S7d** | **Las colecciones** | Lo mismo en la transacción de una colección, mantenida o virtual, con las medidas del manifiesto. Retener es no mover el puntero a la transacción nueva | `ore-cli` (`coleccion.rs`) |
+| **S7e** | **Lo escrito** | `write()` y los builds pasan por el mismo juez al registrar el puntero. Una `Blocking` que falla no publica, y el puesto recibe el error con la promesa, lo medido y lo esperado, y la salida *Publish anyway* | `ore-store`, `ore-cli` (`datasets.rs`), SDK |
+| **S7f** | **La consola** | La sección *Promises* de la pestaña Health: cada promesa (las *Built-in* también) con su resultado, lo medido y lo esperado, y su historia en las últimas pasadas. *Add promise*: plantillas de lo que el puntero ya sabe («1 000 rows each refresh», «`cliente` 10 % empty», «only images in the last 3 refreshes»), que escriben el YAML en una rama y abren su propuesta (0044) | consola |
+
+**Las decisiones que quedan**
+- **D-S7-4 · `no-vaciarse` de serie.** **Recomendación:** sí, la guarda de S4 se expresa como una
+  promesa más: visible, con historia, y ablandable a `warning`, nunca quitada.
+- **D-S7-5 · Una promesa `unknown` no mueve el estado.** **Recomendación:** se enseña en *Promises*
+  con su motivo, pero el activo no pasa a `unknown` por ella: el estado lo dicen la frescura y lo
+  medido. Si no, una columna enorme pondría en `unknown` un activo sano.
+- **D-S7-6 · `write()` retenido.** **Recomendación:** igual que la copia: la versión se escribe y no
+  se publica, el puesto recibe el error con *Publish anyway*, y quien lee sigue en la anterior.
 
 **La vara crece:**
-- **C13:** una promesa `Blocking` `rowCount ≥ 900` sobre `vara_pg` retiene una pasada de 500 filas.
-- **C14:** una `Warning` `nullValues(cliente) = 0` publica y lo anota (el 10 % de `cliente` es nulo).
+- **C13:** `rowCount ≥ 900` (`Blocking`) sobre `vara_pg` retiene una pasada de 500 filas.
+- **C14:** `nullValues(cliente) ≤ 1 %` (`Warning`) publica y lo anota (el 10 % es nulo).
 - **C15:** un build sobre lo retenido construye sobre su última versión buena, y la salida sale
   `warning` · `upstream-degraded` con el `datos_de` de esa versión.
+- **C16:** `invalidFormats` (`Warning`) en una colección viva, con un `.txt` entre imágenes.
+- **C17:** `itemCountChange > -20 %` (`Blocking`) retiene una transacción que retira la mitad.
+- **C18:** `write()` desde un puesto con `duplicateValues(id) = 0` (`Blocking`) y un `id` repetido:
+  no publica, y el puesto lo dice.
 
 **Lo que se mide además:**
-- lo que cuesta S7b por pasada (segundos y memoria) en `vara_pg` y en la copia más grande de
-  `victor`;
+- lo que cuesta medir por pasada (segundos y memoria) en `vara_pg` y en la copia más grande de
+  `victor`, con todas las métricas y sin ninguna;
 - que una copia sin promesas no cambie ni un byte de su puntero.
 
-**Las decisiones que pide S7**
-
-- **D-S7-1 · Dónde se escriben las promesas.** **Recomendación:** en el `Ruleset` (D-D), con el
-  objetivo `assets`. Así una regla tiene dueño, versión y propuesta propios, y quien responde de
-  la calidad puede no ser quien escribe el dataset. Lo otro sería `promises:` dentro del
-  `Dataset`: más cerca, pero mezcla al dueño del dato con quien lo exige, que es lo que el
-  `Ruleset` existe para separar. **Abierta:** el `Ruleset` hoy no se usa en la práctica (no se
-  evalúa, la consola no lo enseña), y se valora `promises:` en el `Dataset`, junto a
-  `freshness`, con la forma de aserción de ODCS para que un `Ruleset` pueda nombrarlas después.
-- **D-S7-2 · `duplicateValues` en la pasada.** Contar duplicados exige recordar cada valor de la
-  columna. **Decidida (2026-10-14):** exacto, y con un tope de memoria declarado. Si se pasa, la
-  aserción sale `unknown` («too many values to check in the copy») y no `pass`. La alternativa
-  aproximada (HyperLogLog) no sirve para una promesa: «casi sin duplicados» no es una respuesta.
-- **D-S7-3 · El build ante una entrada retenida.** **Decidida (2026-10-14): no se para.** La
-  retención ya es el *circuit breaker*: lo que se sirve de esa entrada es su última versión
-  buena, que cumplía, así que el build no lee datos malos sino viejos. La salida lo dice sola:
-  `datos_de` = el de su entrada más vieja (S6b) y `warning` · `upstream-degraded` con la entrada
-  retenida (S6a). Sin *Build anyway*. Lo único que parar aportaría es el build que mezcla tiempos
-  (una entrada de hoy con otra retenida de ayer); si aparece en la práctica, será un aviso o una
-  opción del Transform, no un freno por defecto.
+**El orden:** S7a → S7b → S7c → S7d → S7e → S7f. S7c ya cierra C13–C15; S7d, C16–C17; S7e, C18.
 
 **Lo que S7 deja fuera:**
-- **Las aserciones `sql`:** cuestan su consulta y van en S13, en la capa 2.
-- **Las sugerencias aprendidas** (S14): S7e solo propone plantillas de lo que ya está en el
-  puntero.
-- **Los avisos al dueño** (S11).
-- **Importar y exportar ODCS:** el perfil ya está; el traductor, después.
+- **Las aserciones `sql`** y lo que cruza activos (integridad referencial): cuestan su consulta y
+  van en S13, en la capa 2.
+- **Las vistas en vivo y las bases foráneas:** sin pasada no hay dónde comprobar; capa 1 (S10).
+- **Las sugerencias aprendidas y la deriva** (S12, S14): S7f solo propone plantillas de lo medido.
+- **Los avisos al dueño** (S11) y el **`Ruleset` que exige desde fuera** (S15).
+- **Importar y exportar ODCS:** los nombres ya cuadran; el traductor, después.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
