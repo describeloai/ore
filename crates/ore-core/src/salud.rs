@@ -288,6 +288,434 @@ pub fn estado(bloque: &Json) -> &str {
     }
 }
 
+// ── 0063 S6a · El linaje (v1alpha30 §2.2) ───────────────────────────────────
+//
+//   Hasta S6 sólo tenía salud lo que tiene puntero. Lo derivado —una vista que
+//   no se copia, lo que se escribe desde algo— callaba aunque leyera de algo
+//   degradado, y una tabla en vivo no decía lo que sus copias ya habían visto.
+//   Aquí se junta, al servir, con el grafo del índice (`sale_de`).
+
+/// Lo que [`propagar`] sabe de un activo.
+#[derive(Debug, Clone, Default)]
+pub struct Nodo {
+    /// Su propia medida: el [`bloque`] del puntero de una copia o de una
+    /// colección, o lo que sus copias vieron de una tabla en vivo
+    /// ([`en_vivo`]). `None`: no la tiene (una vista sin copia, una tabla en
+    /// vivo de la que nada se sabe).
+    pub propio: Option<Json>,
+    /// `propio` es lo que las copias vieron de esta tabla en vivo. No vuelve a
+    /// bajar a las copias: lo vieron ellas, y ya lo dicen.
+    pub de_las_copias: bool,
+    /// De qué sale, por su ref del índice (`kind:qname`).
+    pub entradas: Vec<String>,
+    /// La `freshness` de una vista sin copia: se juzga con el más viejo de lo
+    /// que lee.
+    pub promesa: Option<String>,
+}
+
+/// Lo que una entrada le pasa a quien lee de ella.
+#[derive(Debug, Clone)]
+enum Entrada {
+    /// La ref no es un activo de este índice (`rota`, o de otra celda).
+    NoEsta,
+    /// En vivo y sin nada sabido, o un ciclo: no aporta ni quita.
+    EnVivo,
+    Con {
+        bloque: Json,
+        /// Las raíces degradadas de las que viene (ref → desde cuándo), si
+        /// ella no lo está: un activo con una raíz degradada lo dice.
+        raices: BTreeMap<String, String>,
+        de_las_copias: bool,
+    },
+}
+
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Cuánto empuja cada motivo (§6): el mismo orden que [`bloque`].
+fn rango_de_motivo(code: &str) -> u8 {
+    match code {
+        "freshness-exceeded"
+        | "refresh-failed"
+        | "refresh-held"
+        | "source-schema-changed"
+        | "source-unreachable" => 3,
+        "upstream-degraded" | "behind-source" | "guard-warning" => 2,
+        _ => 1,
+    }
+}
+
+fn nombre_de_estado(rango: u8) -> &'static str {
+    match rango {
+        3 => "degraded",
+        2 => "warning",
+        1 => "unknown",
+        _ => "healthy",
+    }
+}
+
+fn texto<'a>(b: &'a Json, k: &str) -> Option<&'a str> {
+    match b {
+        Json::Obj(m) => match m.get(k) {
+            Some(Json::Str(s)) => Some(s.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn motivos_de(b: &Json) -> Vec<Json> {
+    match b {
+        Json::Obj(m) => match m.get("reasons") {
+            Some(Json::Arr(a)) => a.clone(),
+            _ => vec![],
+        },
+        _ => vec![],
+    }
+}
+
+/// El nombre cualificado de una ref del índice: `asset` lo pide así (§6).
+fn cualificado(r: &str) -> &str {
+    r.split_once(':').map(|(_, q)| q).unwrap_or(r)
+}
+
+/// Desde cuándo está un bloque como está: el `since` más viejo de sus motivos.
+fn desde(b: &Json) -> Option<String> {
+    motivos_de(b)
+        .iter()
+        .filter_map(|m| texto(m, "since").map(String::from))
+        .filter(|s| !s.is_empty())
+        .min()
+}
+
+fn aguas_arriba(raiz: &str, desde: &str) -> Json {
+    let q = cualificado(raiz);
+    Json::obj([
+        ("code", Json::s("upstream-degraded")),
+        ("since", Json::s(desde)),
+        ("asset", Json::s(q)),
+        (
+            "message",
+            Json::s(format!("reads `{q}`, which is degraded")),
+        ),
+    ])
+}
+
+/// **Lo que las copias vieron de una tabla en vivo** (0063 D-S6-1). Una tabla
+/// que se lee en vivo no tiene *data as of* hasta que alguien la lee, y en el
+/// catálogo va sin estado («Live»). Pero si una copia suya vio que su esquema
+/// cambió (S5a) o que el origen no contesta (S6e), la tabla lo dice: es lo
+/// mismo que encontrará quien la lea. De cada motivo, el visto más tarde.
+pub fn en_vivo(motivos_de_sus_copias: &[Json], capas: (bool, bool)) -> Option<Json> {
+    let mut por_codigo: BTreeMap<String, Json> = BTreeMap::new();
+    for m in motivos_de_sus_copias {
+        let Some(code) = texto(m, "code") else {
+            continue;
+        };
+        if !matches!(code, "source-schema-changed" | "source-unreachable") {
+            continue;
+        }
+        let mas_tarde = por_codigo
+            .get(code)
+            .is_none_or(|v| texto(v, "since") < texto(m, "since"));
+        if mas_tarde {
+            por_codigo.insert(code.to_string(), m.clone());
+        }
+    }
+    if por_codigo.is_empty() {
+        return None;
+    }
+    Some(armar(
+        "degraded",
+        None,
+        None,
+        None,
+        None,
+        None,
+        por_codigo.into_values().collect(),
+        capas,
+    ))
+}
+
+/// El bloque de §6 de algo sin puntero propio: sin `lastRefresh`, y nunca
+/// sirviendo «lo último bueno» (no tiene versión que retener).
+#[allow(clippy::too_many_arguments)]
+fn armar(
+    state: &str,
+    datos_de: Option<String>,
+    comprobado: Option<String>,
+    retraso: Option<i64>,
+    edad: Option<i64>,
+    promesa: Option<&str>,
+    motivos: Vec<Json>,
+    capas: (bool, bool),
+) -> Json {
+    let mut freshness = vec![
+        ("lagSeconds", retraso.map(Json::Int).unwrap_or_else(nulo)),
+        ("ageSeconds", edad.map(Json::Int).unwrap_or_else(nulo)),
+    ];
+    if let Some(p) = promesa {
+        freshness.push(("promise", Json::s(p)));
+    }
+    Json::obj([
+        ("state", Json::s(state)),
+        ("dataAsOf", datos_de.map(Json::s).unwrap_or_else(nulo)),
+        ("checkedAt", comprobado.map(Json::s).unwrap_or_else(nulo)),
+        ("sourceChangedAt", nulo()),
+        ("freshness", Json::obj(freshness)),
+        ("servingLastGood", Json::Bool(false)),
+        ("reasons", Json::Arr(motivos)),
+        (
+            "layers",
+            Json::obj([
+                ("monitoring", Json::Bool(capas.0)),
+                ("profiling", Json::Bool(capas.1)),
+            ]),
+        ),
+    ])
+}
+
+/// **La salud por el linaje** (v1alpha30 §2.2), de todo el índice a la vez.
+///
+/// - Quien tiene medida propia la conserva, y si alguna raíz de la que sale
+///   está `degraded`, suma `upstream-degraded` con su `asset` y queda, al
+///   menos, en `warning`.
+/// - Quien no la tiene (una vista sin copia) la toma de lo que lee: su
+///   `dataAsOf` es el más viejo de sus entradas, y su `checkedAt`, la
+///   comprobación más vieja si todas la tienen. Una entrada `unknown` la deja
+///   `unknown` (`unverified`, nombrándola), igual que una que este índice no
+///   tiene. Lo que se lee en vivo no envejece nada.
+/// - Quien no tiene medida y sólo lee en vivo, sin nada sabido, **no tiene
+///   bloque**: es «Live» (0063 D-S6-1), ni `unknown` ni `healthy`.
+///
+/// Devuelve el bloque de cada ref que lo tiene. Un ciclo no aporta nada.
+pub fn propagar(
+    nodos: &BTreeMap<String, Nodo>,
+    ahora: i64,
+    capas: (bool, bool),
+) -> BTreeMap<String, Json> {
+    let mut memo: BTreeMap<String, Entrada> = BTreeMap::new();
+    for r in nodos.keys() {
+        visitar(r, nodos, ahora, capas, &mut memo, &mut BTreeSet::new());
+    }
+    memo.into_iter()
+        .filter_map(|(r, e)| match e {
+            Entrada::Con { bloque, .. } => Some((r, bloque)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn visitar(
+    r: &str,
+    nodos: &BTreeMap<String, Nodo>,
+    ahora: i64,
+    capas: (bool, bool),
+    memo: &mut BTreeMap<String, Entrada>,
+    pila: &mut BTreeSet<String>,
+) -> Entrada {
+    if let Some(e) = memo.get(r) {
+        return e.clone();
+    }
+    let Some(n) = nodos.get(r) else {
+        return Entrada::NoEsta;
+    };
+    if !pila.insert(r.to_string()) {
+        return Entrada::EnVivo;
+    }
+    let entradas: Vec<(String, Entrada)> = n
+        .entradas
+        .iter()
+        .filter(|e| e.as_str() != r)
+        .map(|e| (e.clone(), visitar(e, nodos, ahora, capas, memo, pila)))
+        .collect();
+    pila.remove(r);
+    let e = calcular(n, &entradas, ahora, capas);
+    memo.insert(r.to_string(), e.clone());
+    e
+}
+
+fn calcular(n: &Nodo, entradas: &[(String, Entrada)], ahora: i64, capas: (bool, bool)) -> Entrada {
+    // Las raíces degradadas de las que se sale. Lo que las copias vieron de una
+    // tabla en vivo no vuelve a una copia: ella lo vio, y ya lo dice.
+    let mut raices: BTreeMap<String, String> = BTreeMap::new();
+    for (er, e) in entradas {
+        let Entrada::Con {
+            bloque,
+            raices: suyas,
+            de_las_copias,
+        } = e
+        else {
+            continue;
+        };
+        if n.propio.is_some() && !n.de_las_copias && *de_las_copias {
+            continue;
+        }
+        if estado(bloque) == "degraded" {
+            let d = desde(bloque).unwrap_or_else(|| crate::frescura::iso(ahora));
+            raices.insert(er.clone(), d);
+        } else {
+            raices.extend(suyas.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+    }
+
+    // ── Con medida propia: la suya, y lo que viene de arriba ────────────────
+    if let Some(b) = &n.propio {
+        let mut b = b.clone();
+        if !raices.is_empty()
+            && let Json::Obj(m) = &mut b
+        {
+            let mut motivos = match m.remove("reasons") {
+                Some(Json::Arr(a)) => a,
+                _ => vec![],
+            };
+            motivos.extend(raices.iter().map(|(r, d)| aguas_arriba(r, d)));
+            let peor = motivos
+                .iter()
+                .filter_map(|x| texto(x, "code"))
+                .map(rango_de_motivo)
+                .max()
+                .unwrap_or(0);
+            m.insert("state".into(), Json::s(nombre_de_estado(peor)));
+            m.insert("reasons".into(), Json::Arr(motivos));
+        }
+        return Entrada::Con {
+            bloque: b,
+            raices,
+            de_las_copias: n.de_las_copias,
+        };
+    }
+
+    // ── Sin medida propia: la de lo que lee ─────────────────────────────────
+    let hoy = crate::frescura::iso(ahora);
+    let mut motivos: Vec<Json> = Vec::new();
+    // Lo que tiene hora: lo copiado. Lo que se lee en vivo no envejece nada.
+    let mut con_hora: Vec<(&String, &Json)> = Vec::new();
+    let mut alguna = false;
+    for (er, e) in entradas {
+        match e {
+            Entrada::NoEsta => {
+                alguna = true;
+                let q = cualificado(er);
+                motivos.push(motivo(
+                    "unverified",
+                    Some(&hoy),
+                    Some(&format!("reads `{q}`, which this catalog does not have")),
+                ));
+            }
+            Entrada::Con {
+                bloque,
+                de_las_copias,
+                ..
+            } => {
+                alguna = true;
+                if !de_las_copias {
+                    con_hora.push((er, bloque));
+                }
+            }
+            Entrada::EnVivo => {}
+        }
+    }
+    if !alguna {
+        return Entrada::EnVivo;
+    }
+    for (er, b) in &con_hora {
+        if estado(b) == "unknown" {
+            let q = cualificado(er);
+            motivos.push(motivo(
+                "unverified",
+                Some(texto(b, "dataAsOf").unwrap_or(&hoy)),
+                Some(&format!("reads `{q}`, whose freshness is not known")),
+            ));
+        }
+    }
+    let horas: Option<Vec<&str>> = con_hora.iter().map(|(_, b)| texto(b, "dataAsOf")).collect();
+    let datos_de = horas
+        .filter(|h| !h.is_empty())
+        .and_then(|h| h.into_iter().min_by_key(|t| epoca(t)).map(String::from));
+    let comprobaciones: Option<Vec<&str>> = con_hora
+        .iter()
+        .map(|(_, b)| texto(b, "checkedAt"))
+        .collect();
+    let comprobado = comprobaciones
+        .filter(|h| !h.is_empty())
+        .and_then(|h| h.into_iter().min_by_key(|t| epoca(t)).map(String::from));
+    let t_datos = datos_de.as_deref().and_then(epoca);
+    let t_comprobado = comprobado.as_deref().and_then(epoca);
+    let retraso = t_datos.map(|d| (ahora - d).max(0));
+    let edad = t_comprobado.map(|c| (ahora - c).max(0));
+    if let (Some(l), Some(e)) = (n.promesa.as_deref().and_then(duracion), edad.or(retraso))
+        && e > l
+    {
+        motivos.push(motivo(
+            "freshness-exceeded",
+            Some(&crate::frescura::iso(
+                t_comprobado.or(t_datos).unwrap_or(ahora) + l,
+            )),
+            None,
+        ));
+    }
+    motivos.extend(raices.iter().map(|(r, d)| aguas_arriba(r, d)));
+    let peor = motivos
+        .iter()
+        .filter_map(|x| texto(x, "code"))
+        .map(rango_de_motivo)
+        .max()
+        .unwrap_or(0);
+    let bloque = armar(
+        nombre_de_estado(peor),
+        datos_de,
+        comprobado,
+        retraso,
+        edad,
+        n.promesa.as_deref(),
+        motivos,
+        capas,
+    );
+    Entrada::Con {
+        bloque,
+        raices,
+        de_las_copias: false,
+    }
+}
+
+/// **La suma de un ámbito** (una base, un schema, el árbol): cuántos en cada
+/// estado, con lo desconocido aparte (§3.3: nunca como sano). Y
+/// `needsAttention` (0063 D-S6-2): lo `degraded`, lo `warning` y lo que nunca
+/// se copió —lo único `unknown` que pide que alguien haga algo—. Lo demás
+/// `unknown` es lo que no se puede comprobar: va aparte, como *Unverified*.
+pub fn sumar<'a>(bloques: impl IntoIterator<Item = &'a Json>) -> Json {
+    let (mut h, mut w, mut d, mut u, mut atencion) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    for b in bloques {
+        match estado(b) {
+            "healthy" => h += 1,
+            "warning" => {
+                w += 1;
+                atencion += 1;
+            }
+            "degraded" => {
+                d += 1;
+                atencion += 1;
+            }
+            _ => {
+                u += 1;
+                if motivos_de(b)
+                    .iter()
+                    .any(|m| texto(m, "code") == Some("never-refreshed"))
+                {
+                    atencion += 1;
+                }
+            }
+        }
+    }
+    Json::obj([
+        ("healthy", Json::Int(h)),
+        ("warning", Json::Int(w)),
+        ("degraded", Json::Int(d)),
+        ("unknown", Json::Int(u)),
+        ("needsAttention", Json::Int(atencion)),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +875,167 @@ mod tests {
             b.pretty().contains("2026-10-13T15:45:00Z"),
             "desde que venció"
         );
+    }
+
+    // ── S6a · el linaje ──────────────────────────────────────────────────────
+
+    fn copia(texto: &str) -> Nodo {
+        Nodo {
+            propio: Some(bloque(Some(&p(texto)), None, ahora(), (false, false))),
+            ..Nodo::default()
+        }
+    }
+    fn lee(de: &[&str]) -> Nodo {
+        Nodo {
+            entradas: de.iter().map(|s| s.to_string()).collect(),
+            ..Nodo::default()
+        }
+    }
+    const SANA: &str = r#"{"estado":"al-dia","metadata_location":"m","datos_de":"2026-10-13T15:00:00Z",
+        "comprobado":"2026-10-13T15:50:00Z","intento":{"cuando":"2026-10-13T15:50:00Z","resultado":"sin-cambios"}}"#;
+    const ROTA: &str = r#"{"estado":"error","metadata_location":"m","datos_de":"2026-10-13T12:00:00Z",
+        "motivo":"falta `cliente`","intento":{"cuando":"2026-10-13T13:44:51Z","resultado":"error"}}"#;
+
+    /// §2.2: lo que lee de una copia degradada está, al menos, en `warning`,
+    /// con `upstream-degraded` y el nombre de esa copia. Y su hora es la más
+    /// vieja de lo que lee.
+    #[test]
+    fn una_vista_sobre_una_copia_degradada_lo_dice() {
+        let mut n = BTreeMap::new();
+        n.insert("dataset:b.s.sana".to_string(), copia(SANA));
+        n.insert("dataset:b.s.rota".to_string(), copia(ROTA));
+        n.insert(
+            "view:b.s.junta".to_string(),
+            lee(&["dataset:b.s.sana", "dataset:b.s.rota"]),
+        );
+        let s = propagar(&n, ahora(), (false, false));
+        let v = &s["view:b.s.junta"];
+        assert_eq!(estado(v), "warning");
+        let t = v.jcs();
+        assert!(
+            t.contains(r#""asset":"b.s.rota","code":"upstream-degraded""#),
+            "{t}"
+        );
+        assert!(t.contains(r#""dataAsOf":"2026-10-13T12:00:00Z""#), "{t}");
+        // Ni lo último bueno ni un refresco: no tiene puntero.
+        assert!(t.contains(r#""servingLastGood":false"#) && !t.contains("lastRefresh"));
+    }
+
+    /// Una raíz degradada se dice a dos pasos: la vista de una vista también.
+    /// Y quien tiene medida propia la conserva y suma la de arriba.
+    #[test]
+    fn la_raiz_degradada_baja_por_todo_el_camino() {
+        let mut n = BTreeMap::new();
+        n.insert("dataset:b.s.rota".to_string(), copia(ROTA));
+        n.insert("view:b.s.uno".to_string(), lee(&["dataset:b.s.rota"]));
+        n.insert("view:b.s.dos".to_string(), lee(&["view:b.s.uno"]));
+        let mut escrito = copia(SANA);
+        escrito.entradas = vec!["view:b.s.dos".into()];
+        n.insert("dataset:b.s.escrito".to_string(), escrito);
+        let s = propagar(&n, ahora(), (false, false));
+        for r in ["view:b.s.dos", "dataset:b.s.escrito"] {
+            assert_eq!(estado(&s[r]), "warning", "{r}");
+            assert!(s[r].jcs().contains(r#""asset":"b.s.rota""#), "{r}");
+        }
+        // La medida propia del escrito sigue ahí.
+        assert!(
+            s["dataset:b.s.escrito"]
+                .jcs()
+                .contains("\"checkedAt\":\"2026-10-13T15:50:00Z\"")
+        );
+    }
+
+    /// Sobre copias sanas, una vista sin copia está sana: sus entradas se
+    /// comprobaron. Sobre una sin comprobar, `unknown`, nombrándola.
+    #[test]
+    fn una_vista_es_tan_sabida_como_lo_que_lee() {
+        let mut n = BTreeMap::new();
+        n.insert("dataset:b.s.sana".to_string(), copia(SANA));
+        n.insert(
+            "dataset:b.s.vieja".to_string(),
+            copia(
+                r#"{"estado":"al-dia","metadata_location":"m","datos_de":"2026-10-02T00:00:00Z"}"#,
+            ),
+        );
+        n.insert("view:b.s.a".to_string(), lee(&["dataset:b.s.sana"]));
+        n.insert("view:b.s.b".to_string(), lee(&["dataset:b.s.vieja"]));
+        n.insert("view:b.s.c".to_string(), lee(&["dataset:otra.celda"]));
+        let s = propagar(&n, ahora(), (false, false));
+        assert_eq!(estado(&s["view:b.s.a"]), "healthy");
+        assert!(s["view:b.s.a"].jcs().contains(r#""ageSeconds":600"#));
+        assert_eq!(estado(&s["view:b.s.b"]), "unknown");
+        assert!(
+            s["view:b.s.b"]
+                .jcs()
+                .contains("reads `b.s.vieja`, whose freshness is not known")
+        );
+        assert_eq!(estado(&s["view:b.s.c"]), "unknown");
+        assert!(
+            s["view:b.s.c"]
+                .jcs()
+                .contains("which this catalog does not have")
+        );
+    }
+
+    /// 0063 D-S6-1: lo que se lee en vivo, sin nada sabido, no tiene bloque.
+    /// Con lo que vio una copia suya, sí: y la vista en vivo encima lo hereda,
+    /// pero la copia no lo recibe de vuelta.
+    #[test]
+    fn lo_en_vivo_va_sin_estado_salvo_lo_que_vieron_sus_copias() {
+        let mut n = BTreeMap::new();
+        n.insert("table:f.s.t".to_string(), Nodo::default());
+        n.insert("view:foranea.s.t".to_string(), lee(&["table:f.s.t"]));
+        let s = propagar(&n, ahora(), (false, false));
+        assert!(!s.contains_key("table:f.s.t") && !s.contains_key("view:foranea.s.t"));
+
+        let deriva = r#"{"estado":"error","metadata_location":"m","datos_de":"2026-10-13T12:00:00Z",
+            "intento":{"cuando":"2026-10-13T13:00:00Z","resultado":"error"},
+            "esquema_origen":{"added":["comprador"],"removed":["cliente"],"visto":"2026-10-13T13:00:00Z"}}"#;
+        let mut c = copia(deriva);
+        c.entradas = vec!["table:f.s.t".into()];
+        let vistos = motivos_de(c.propio.as_ref().unwrap());
+        n.insert("dataset:std.s.t".to_string(), c);
+        n.insert(
+            "table:f.s.t".to_string(),
+            Nodo {
+                propio: en_vivo(&vistos, (false, false)),
+                de_las_copias: true,
+                ..Nodo::default()
+            },
+        );
+        let s = propagar(&n, ahora(), (false, false));
+        let t = &s["table:f.s.t"];
+        assert_eq!(estado(t), "degraded");
+        assert_eq!(motivos(t), ["source-schema-changed"]);
+        assert!(t.jcs().contains(r#""dataAsOf":null"#));
+        assert_eq!(estado(&s["view:foranea.s.t"]), "warning");
+        assert!(!s["dataset:std.s.t"].jcs().contains("upstream-degraded"));
+    }
+
+    #[test]
+    fn la_suma_cuenta_lo_desconocido_aparte() {
+        let nunca = bloque(None, None, ahora(), (false, false));
+        let sin_comprobar = bloque(
+            Some(&p(r#"{"estado":"al-dia","metadata_location":"m"}"#)),
+            None,
+            ahora(),
+            (false, false),
+        );
+        let rota = bloque(Some(&p(ROTA)), None, ahora(), (false, false));
+        let sana = bloque(Some(&p(SANA)), None, ahora(), (false, false));
+        let t = sumar([&nunca, &sin_comprobar, &rota, &sana]).jcs();
+        assert_eq!(
+            t,
+            r#"{"degraded":1,"healthy":1,"needsAttention":2,"unknown":2,"warning":0}"#
+        );
+    }
+
+    #[test]
+    fn un_ciclo_no_cuelga() {
+        let mut n = BTreeMap::new();
+        n.insert("view:a".to_string(), lee(&["view:b"]));
+        n.insert("view:b".to_string(), lee(&["view:a"]));
+        let _ = propagar(&n, ahora(), (false, false));
     }
 
     #[test]

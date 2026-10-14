@@ -914,6 +914,8 @@ impl Servidor {
             // ── 0034 ⑤ · el índice de assets: el árbol compilado, de memoria por cabeza ──
             ("GET", ["assets"]) => self.assets(rama, None),
             ("GET", ["assets", commit]) => self.assets(rama, Some(commit)),
+            // ── 0063 S6c · la salud, del mismo índice: el árbol, una base, un schema o un activo ──
+            ("GET", ["health", resto @ ..]) if resto.len() <= 2 => self.health(rama, resto),
             // ── 0035 ② · los proyectos: escribirlos ─────────────────────────
             // Leerlos NO tiene ruta: `GET /assets` ya los trae (0035 ①). Aquí
             // sólo lo que el árbol desnudo no sabe: la forma del manifiesto, el

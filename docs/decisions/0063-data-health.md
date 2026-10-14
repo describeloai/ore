@@ -1009,7 +1009,7 @@ con `21a8df6e` desplegado): 18 de 18 en verde.** Lo nuevo de esta vuelta:
 
 Todos los casos de la capa 0 que la vara sabe medir, en verde. Quedan S6–S8.
 
-### S6 · el diseño (propuesto, 2026-10-14)
+### S6 · el diseño (2026-10-14; S6a y S6c hechos)
 
 **Lo que hay.** Tras S2–S5 la salud sale de **un sitio**: el puntero de una copia. `/assets` la
 calcula al servir, pero **sólo para los `Dataset` copiados** (`anotar_salud`). La ficha la enseña, y
@@ -1042,6 +1042,8 @@ No hace falta tocar el origen ni gastar nada nuevo: **S6 junta lo que la capa 0 
 | **S6f** | **La consola** | En cada fila del árbol y de las listas, el punto de color, «as of …» y el motivo al pasar el ratón. En la base y el schema, «3 of 41 degraded · 5 unverified». El filtro **Needs attention**. La sección Health de la ficha también para vistas, datasets escritos y fuentes, con `upstream-degraded` enlazado a su entrada | `CatalogTreeSidebar`, `SchemaDetail`, `DatabaseDetail`, `AssetDetail`, `lib/server/assets.ts` |
 | **S6g** | **Los agentes** | El asistente de la consola recibe el bloque (por S6d) y su política, que es la de una persona: con `degraded`, lo dice al responder; con `unknown`, dice de cuándo es el dato; y no da por bueno lo que no lo está. Lo mismo, escrito en la descripción de las herramientas MCP | consola (`components/assistant`), `mcp.rs` |
 
+**S6a y S6c, hechos** (2026-10-14). `ore_core::salud::{propagar, en_vivo, sumar}` y, en `anotar_salud`, la salud de vistas, colecciones y tablas en vivo, más `salud` y `salud_por_schema` en cada paquete y la suma del árbol. `GET /health`, `/health/{base}[/{schema}]` y `/health/{kind:qname}`, del mismo índice. Lo que las copias vieron de una tabla no les vuelve como `upstream-degraded`.
+
 **El orden y los commits.** Primero S6a y S6c juntos (ore-core y ore-serve: es lo que el resto
 consume), después S6b, S6e y S6d, y al final S6f y S6g en la consola. Cada uno se compila con fmt,
 clippy y las pruebas en Docker, y se mide desplegado.
@@ -1060,7 +1062,7 @@ gobierno: el agente no puede crearla).
 - lo que cuesta propagar en cada `/assets` de `victor` (milisegundos, antes y después);
 - que ningún bloque de un `Dataset` copiado cambie, salvo lo que añade el linaje.
 
-**Las decisiones que pide S6**
+**Las decisiones** (tomadas por el usuario el 2026-10-14: las tres, como se recomendaron, y `never-refreshed` en *Needs attention*)
 
 - **D-S6-1 · Lo que se lee en vivo, en el catálogo.** Una `Table` o una vista sobre ella no tiene
   copia: no hay *data as of* hasta que alguien lee. **Recomendación:** en el catálogo, «Live» sin
@@ -1068,7 +1070,7 @@ gobierno: el agente no puede crearla).
   de esa tabla (`source-schema-changed`) o el origen que no contesta (S6e): entonces lleva ese
   motivo. Al leer, `dataAsOf` es la hora de la lectura. Pintarla `unknown` llenaría de gris todo
   lo que es en vivo por diseño, y `healthy` sin medida lo prohíbe §2.
-- **D-S6-2 · Needs attention.** **Recomendación:** que sean `degraded` y `warning`. `unknown` va
+- **D-S6-2 · Needs attention.** **Decidido:** `degraded`, `warning` y, de lo `unknown`, sólo `never-refreshed` (un dataset que nunca se copió pide que alguien haga algo). `unknown` va
   aparte, como «Unverified», con su propio filtro: §3.3 lo cuenta aparte, y mezclarlo ahogaría lo
   urgente en lo que sólo no está comprobado (los objetos, el SFTP y el JSONL no tienen señal todavía).
 - **D-S6-3 · La salud del origen (S6e) entra en S6.** **Recomendación: sí**, porque sale de las

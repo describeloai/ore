@@ -185,30 +185,237 @@ fn del_catalogo(raiz: &Path, fuente: &str) -> Option<std::collections::BTreeMap<
 /// el índice cacheado: una promesa de frescura se rompe con el reloj aunque el
 /// árbol no cambie. Se calcula aquí, con la hora de esta respuesta, de lo que
 /// el índice ya trae: el puntero y la `freshness` de `define`.
+///
+/// **0063 S6c · Y por el linaje, con sus sumas.** Lo que no tiene puntero toma
+/// la salud de lo que lee (`ore_core::salud::propagar`, v1alpha30 §2.2): una
+/// vista sin copia, lo escrito desde algo degradado. Una tabla en vivo no
+/// lleva salud (D-S6-1: «Live»), salvo lo que sus copias vieron de ella. Y cada
+/// paquete lleva `salud` (la suma de sus activos) y `salud_por_schema`; el
+/// índice, la suma del árbol.
 pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
+    use ore_core::salud::{Nodo, bloque, en_vivo, propagar, sumar};
+    const CAPAS: (bool, bool) = (false, false);
     let Json::Obj(m) = j else { return };
     let Some(Json::Obj(items)) = m.get_mut("items") else {
         return;
     };
-    for it in items.values_mut() {
+    let texto = |it: &std::collections::BTreeMap<String, Json>, k: &str| match it.get(k) {
+        Some(Json::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    // ── La medida propia: el puntero de una copia o de una colección ────────
+    let mut nodos: std::collections::BTreeMap<String, Nodo> = Default::default();
+    for (r, it) in items.iter() {
         let Json::Obj(it) = it else { continue };
-        if !matches!(it.get("kind"), Some(Json::Str(k)) if k == "Dataset") {
+        let kind = texto(it, "kind").unwrap_or_default();
+        if !matches!(
+            kind.as_str(),
+            "Dataset" | "MediaCollection" | "View" | "Table" | "ObjectTable"
+        ) {
             continue;
         }
         let promesa = match it.get("define") {
-            Some(Json::Obj(d)) => match d.get("freshness") {
-                Some(Json::Str(f)) => Some(f.clone()),
+            Some(Json::Obj(d)) => texto(d, "freshness"),
+            _ => None,
+        };
+        let propio = matches!(kind.as_str(), "Dataset" | "MediaCollection").then(|| {
+            let puntero = match it.get("puntero") {
+                Some(p @ Json::Obj(_)) => ore_core::parse::parse(&p.jcs()).ok(),
                 _ => None,
+            };
+            bloque(puntero.as_ref(), promesa.as_deref(), ahora, CAPAS)
+        });
+        let entradas = match it.get("relaciones") {
+            Some(Json::Arr(a)) => a
+                .iter()
+                .filter_map(|x| match x {
+                    Json::Obj(x) if texto(x, "tipo").as_deref() == Some("sale_de") => {
+                        texto(x, "ref")
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        };
+        nodos.insert(
+            r.clone(),
+            Nodo {
+                propio,
+                de_las_copias: false,
+                entradas,
+                promesa: (kind == "View").then_some(promesa).flatten(),
             },
-            _ => None,
+        );
+    }
+    // ── Lo que las copias vieron de la tabla en vivo de la que salen ────────
+    let mut vistos: std::collections::BTreeMap<String, Vec<Json>> = Default::default();
+    for n in nodos.values() {
+        let Some(Json::Obj(b)) = &n.propio else {
+            continue;
         };
-        let puntero = match it.get("puntero") {
-            Some(p @ Json::Obj(_)) => ore_core::parse::parse(&p.jcs()).ok(),
-            _ => None,
+        let Some(Json::Arr(motivos)) = b.get("reasons") else {
+            continue;
         };
-        let b =
-            ore_core::salud::bloque(puntero.as_ref(), promesa.as_deref(), ahora, (false, false));
+        for e in n
+            .entradas
+            .iter()
+            .filter(|e| e.starts_with("table:") || e.starts_with("objecttable:"))
+        {
+            vistos
+                .entry(e.clone())
+                .or_default()
+                .extend(motivos.iter().cloned());
+        }
+    }
+    for (t, motivos) in vistos {
+        if let Some(n) = nodos.get_mut(&t)
+            && n.propio.is_none()
+        {
+            n.propio = en_vivo(&motivos, CAPAS);
+            n.de_las_copias = n.propio.is_some();
+        }
+    }
+    // ── El linaje, y cada salud en su ítem ──────────────────────────────────
+    let saludes = propagar(&nodos, ahora, CAPAS);
+    // (paquete, schema) → los bloques, para las sumas.
+    let mut por_ambito: std::collections::BTreeMap<(String, String), Vec<Json>> =
+        Default::default();
+    for (r, b) in saludes {
+        let Some(Json::Obj(it)) = items.get_mut(&r) else {
+            continue;
+        };
+        let paquete = texto(it, "paquete").unwrap_or_default();
+        let schema = texto(it, "schema").unwrap_or_default();
+        por_ambito
+            .entry((paquete, schema))
+            .or_default()
+            .push(b.clone());
         it.insert("salud".into(), b);
+    }
+    // ── Las sumas: el árbol, cada paquete y cada schema (§3.3) ──────────────
+    m.insert("salud".into(), sumar(por_ambito.values().flatten()));
+    if let Some(Json::Arr(paquetes)) = m.get_mut("paquetes") {
+        for p in paquetes.iter_mut() {
+            let Json::Obj(p) = p else { continue };
+            let nombre = texto(p, "name").unwrap_or_default();
+            let suyos: Vec<(&String, &Vec<Json>)> = por_ambito
+                .iter()
+                .filter(|((pq, _), _)| *pq == nombre)
+                .map(|((_, s), b)| (s, b))
+                .collect();
+            p.insert(
+                "salud".into(),
+                sumar(suyos.iter().flat_map(|(_, b)| b.iter())),
+            );
+            p.insert(
+                "salud_por_schema".into(),
+                Json::Obj(
+                    suyos
+                        .iter()
+                        .map(|(s, b)| ((*s).clone(), sumar(b.iter())))
+                        .collect(),
+                ),
+            );
+        }
+    }
+}
+
+/// **`GET /health…`** (0063 S6c), del índice ya anotado:
+///
+/// | camino | qué |
+/// |---|---|
+/// | `[]` | la suma del árbol, y la de cada base y cada uno de sus schemas |
+/// | `[base]`, `[base, schema]` | la suma de ese ámbito y la salud de cada activo suyo que la tiene |
+/// | `[ref]` (`kind:qname`) | la salud de un activo; `null` si es en vivo sin nada sabido («Live») |
+///
+/// Por el camino y no por la consulta, como `/assets/{commit}`.
+pub(crate) fn salud_de(j: &Json, camino: &[&str]) -> Result<Json, Respuesta> {
+    let Json::Obj(m) = j else {
+        return Err(Respuesta::error(500, "el índice no es un objeto"));
+    };
+    let vacio = Default::default();
+    let items = match m.get("items") {
+        Some(Json::Obj(i)) => i,
+        _ => &vacio,
+    };
+    let paquetes: Vec<&std::collections::BTreeMap<String, Json>> = match m.get("paquetes") {
+        Some(Json::Arr(a)) => a
+            .iter()
+            .filter_map(|p| match p {
+                Json::Obj(p) => Some(p),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+    let nombre = |p: &std::collections::BTreeMap<String, Json>| match p.get("name") {
+        Some(Json::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let de = |k: &str, o: &std::collections::BTreeMap<String, Json>| {
+        o.get(k)
+            .cloned()
+            .unwrap_or_else(|| Json::Crudo("null".into()))
+    };
+    match camino {
+        [] => Ok(Json::obj([
+            ("salud", de("salud", m)),
+            (
+                "bases",
+                Json::Obj(
+                    paquetes
+                        .iter()
+                        .map(|p| {
+                            (
+                                nombre(p),
+                                Json::obj([
+                                    ("salud", de("salud", p)),
+                                    ("schemas", de("salud_por_schema", p)),
+                                ]),
+                            )
+                        })
+                        .collect(),
+                ),
+            ),
+        ])),
+        [r] if r.contains(':') => match items.get(*r) {
+            Some(Json::Obj(it)) => Ok(Json::obj([
+                ("ref", Json::s(*r)),
+                ("salud", de("salud", it)),
+            ])),
+            _ => Err(Respuesta::error(404, format!("no hay ningún activo `{r}`"))),
+        },
+        [base] | [base, _] => {
+            let base: &str = base;
+            let Some(p) = paquetes.iter().find(|p| nombre(p) == *base) else {
+                return Err(Respuesta::error(
+                    404,
+                    format!("no hay ninguna base `{base}`"),
+                ));
+            };
+            let schema = camino.get(1).copied();
+            let suma = match schema {
+                None => de("salud", p),
+                Some(s) => match p.get("salud_por_schema") {
+                    Some(Json::Obj(por)) => por
+                        .get(s)
+                        .cloned()
+                        .unwrap_or_else(|| ore_core::salud::sumar(std::iter::empty())),
+                    _ => ore_core::salud::sumar(std::iter::empty()),
+                },
+            };
+            let suyos = items
+                .iter()
+                .filter_map(|(r, it)| {
+                    let Json::Obj(it) = it else { return None };
+                    let es = |k: &str, v: &str| matches!(it.get(k), Some(Json::Str(x)) if x == v);
+                    let dentro = es("paquete", base) && schema.is_none_or(|s| es("schema", s));
+                    (dentro && it.contains_key("salud")).then(|| (r.clone(), de("salud", it)))
+                })
+                .collect();
+            Ok(Json::obj([("salud", suma), ("items", Json::Obj(suyos))]))
+        }
+        _ => Err(Respuesta::error(404, "no hay nada en ese camino")),
     }
 }
 
@@ -322,6 +529,19 @@ fn civil(z: i64) -> (i64, u32, u32) {
 }
 
 impl Servidor {
+    /// `GET /health…` (0063 S6c): del mismo índice, de memoria por cabeza, y
+    /// con la hora de esta respuesta. Ver [`salud_de`].
+    pub(crate) fn health(&self, rama: Option<&str>, camino: &[&str]) -> Respuesta {
+        let r = self.assets(rama, None);
+        if r.codigo != 200 {
+            return r;
+        }
+        match salud_de(&r.cuerpo, camino) {
+            Ok(j) => Respuesta::ok(j),
+            Err(e) => e,
+        }
+    }
+
     /// `GET /assets` (la rama, por la cabecera) y `GET /assets/{commit}`.
     pub(crate) fn assets(&self, rama: Option<&str>, commit: Option<&str>) -> Respuesta {
         let rama = rama.map(str::to_string);
@@ -526,6 +746,49 @@ mod tests {
             panic!()
         };
         assert!(!tb.contains_key("salud"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0063 S6c · Lo que una copia vio de su tabla (el esquema cambió) lo dice
+    /// la tabla en vivo; la base suma a sus activos, y `GET /health` lo da por
+    /// ámbito y por activo.
+    #[test]
+    fn la_tabla_dice_lo_que_vio_su_copia_y_la_base_suma() {
+        let d = arbol_en("salud-s6");
+        std::fs::write(
+            d.join("datasets/v_pedidos.json"),
+            r#"{"estado":"error","metadata_location":"m","datos_de":"2026-10-13T12:00:00Z",
+            "dataset":"datasets/v_pedidos","motivo":"falta `cliente`",
+            "intento":{"cuando":"2026-10-13T13:00:00Z","resultado":"error"},
+            "esquema_origen":{"added":["comprador"],"removed":["cliente"],"visto":"2026-10-13T13:00:00Z"}}"#,
+        )
+        .unwrap();
+        let mut j = indice_de(&d, Cabeza::default());
+        anotar_salud(&mut j, 1_791_900_000);
+        let Json::Obj(m) = &j else { panic!() };
+        let Json::Obj(items) = &m["items"] else {
+            panic!()
+        };
+        let Json::Obj(tb) = &items["table:v.origen"] else {
+            panic!()
+        };
+        let t = tb["salud"].jcs();
+        assert!(t.contains(r#""code":"source-schema-changed""#), "{t}");
+        assert!(t.contains(r#""state":"degraded""#), "{t}");
+        // La copia no lo recibe de vuelta como `upstream-degraded`: ya lo dice.
+        let Json::Obj(ds) = &items["dataset:v.pedidos"] else {
+            panic!()
+        };
+        assert!(!ds["salud"].jcs().contains("upstream-degraded"));
+
+        let todo = salud_de(&j, &[]).ok().unwrap().jcs();
+        assert!(todo.contains(r#""degraded":2"#), "{todo}");
+        let base = salud_de(&j, &["v"]).ok().unwrap().jcs();
+        assert!(base.contains(r#""needsAttention":2"#), "{base}");
+        assert!(base.contains("table:v.origen") && base.contains("dataset:v.pedidos"));
+        let uno = salud_de(&j, &["table:v.origen"]).ok().unwrap().jcs();
+        assert!(uno.contains("source-schema-changed"), "{uno}");
+        assert_eq!(salud_de(&j, &["nadie"]).err().map(|r| r.codigo), Some(404));
         let _ = std::fs::remove_dir_all(&d);
     }
 
