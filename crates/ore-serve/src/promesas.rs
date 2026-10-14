@@ -6,7 +6,7 @@
 //! | | Qué |
 //! |---|---|
 //! | `POST /promesas` `{ref, promesas: [...]}` | **la lista entera** del activo —añadir, editar, ablandar y quitar son la misma llamada—: se valida con el compilador (lo que no compila es un 422 con sus diagnósticos, y no se crea nada); si compila, una rama, el documento reescrito (`promesas::reescribir`, a v1alpha31) y la propuesta. Sólo una persona |
-//! | `GET /promesas/historia?ref=` | lo que el juez dijo en los últimos refrescos, del historial del puntero en git: nada que guardar aparte |
+//! | `GET /promesas/historia/{ref}` | lo que el juez dijo en los últimos refrescos, del historial del puntero en git: nada que guardar aparte |
 
 use crate::rutas::Servidor;
 use ore_core::document::Kind;
@@ -157,7 +157,7 @@ impl Servidor {
         ]))
     }
 
-    /// **`GET /promesas/historia?ref=`**: por refresco, cuándo, cómo acabó y
+    /// **`GET /promesas/historia/{ref}`**: por refresco, cuándo, cómo acabó y
     /// lo que el juez dijo de cada promesa, del más nuevo al más viejo.
     pub(crate) fn historia_de_promesas(&self, raiz: &Path, referencia: &str) -> Respuesta {
         let (_, qn) = match activo(referencia) {
