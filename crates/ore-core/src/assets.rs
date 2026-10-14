@@ -607,6 +607,9 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         // 0063 S6f: la señal de cambio (S3) con la que se comprobó, para la
         // pestaña Health («Change signal»).
         "senal",
+        // 0063 S7c: lo que el juez dijo de cada promesa en el último intento;
+        // de aquí sale `guard-warning` y la sección *Promises*.
+        "promesas",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());
@@ -675,6 +678,8 @@ fn puntero_de_coleccion(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         "datos_de",
         "comprobado",
         "intento",
+        // 0063 S7d: lo que el juez dijo de cada promesa de la colección.
+        "promesas",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());

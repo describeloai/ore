@@ -145,6 +145,8 @@ CAMBIOS = {
     'actualizar': ("UPDATE ore_vara.pedidos SET total = total + 1 WHERE id = 7",
                    "UPDATE {T} SET total = total + 1 WHERE id = 7"),
     'vaciar': ("DELETE FROM ore_vara.pedidos", "DELETE FROM {T} WHERE TRUE"),
+    # C13 (S7c): la mitad de las filas, por debajo de la promesa `volumen` (≥ 900).
+    'mitad': ("DELETE FROM ore_vara.pedidos WHERE id > 500", "DELETE FROM {T} WHERE id > 500"),
     'columna_nueva': ("ALTER TABLE ore_vara.pedidos ADD COLUMN nota text",
                       "ALTER TABLE {T} ADD COLUMN nota STRING"),
     'renombrar': ("ALTER TABLE ore_vara.pedidos RENAME COLUMN cliente TO comprador",
@@ -447,6 +449,47 @@ def correr():
         caso('C7', 'P5', 'un origen vaciado se retiene (refresh-held), no se publica', 'S4', k,
              (x.get('intento') or {}).get('resultado') == 'retenida' and x.get('filas') == 1000,
              'intento=%s, filas=%s, motivos=%s' % ((x.get('intento') or {}).get('resultado'), x.get('filas'), razones(s[k])))
+
+    # C13–C15 · las promesas (S7c). Sólo `vara_pg` las declara (una propuesta, una vez):
+    #   volumen (rowCount ≥ 900, error), cliente_presente (nulos ≤ 1 %, warning: la base
+    #   tiene un 10 %), id_unico (duplicados = 0, error) y total_en_rango (warning).
+    cambiar('base')
+    pasar()
+    p, s = punteros(), saludes()
+    x = p['pg'] or {}
+    pr = {q.get('id'): q for q in (x.get('promesas') or [])}
+    if not pr:
+        for cid, que in [('C14', 'una promesa warning que falla publica y lo dice (guard-warning)'),
+                         ('C13', 'una promesa error que falla retiene (refresh-held, guard = su id)'),
+                         ('C15', 'lo que lee de lo retenido lo dice por el linaje (upstream-degraded)')]:
+            caso(cid, '01 §6', que, 'S7c', 'pg', False,
+                 'el Dataset `%s` no declara `promises` (se añaden una vez, con una propuesta)' % ORIGENES['pg']['vista'])
+    else:
+        cp = pr.get('cliente_presente') or {}
+        caso('C14', '01 §6', 'una promesa warning que falla publica y lo dice (guard-warning)', 'S7c', 'pg',
+             x.get('estado') == 'copiada' and cp.get('resultado') == 'fail' and 'guard-warning' in razones(s['pg'])
+             and (pr.get('id_unico') or {}).get('resultado') == 'pass',
+             'estado=%s, cliente_presente=%s medido=%s, id_unico=%s, motivos=%s' % (
+                 x.get('estado'), cp.get('resultado'), cp.get('medido'), (pr.get('id_unico') or {}).get('resultado'), razones(s['pg'])))
+        cambiar('mitad')
+        pasar()
+        p, s = punteros(), saludes()
+        x = p['pg'] or {}
+        i = x.get('intento') or {}
+        guardas = [r.get('guard') for r in (s['pg'] or {}).get('reasons', []) if r.get('code') == 'refresh-held']
+        caso('C13', '01 §6', 'una promesa error que falla retiene (refresh-held, guard = su id)', 'S7c', 'pg',
+             i.get('resultado') == 'retenida' and i.get('guarda') == 'volumen' and x.get('filas') == 1000
+             and 'volumen' in guardas,
+             'intento=%s, guarda=%s, filas=%s, motivo=«%s»' % (i.get('resultado'), i.get('guarda'), x.get('filas'), (x.get('motivo') or '')[:90]))
+        c, v = salud_de('view:' + VISTA_PG)
+        if c == 404:
+            caso('C15', '§2.2', 'lo que lee de lo retenido lo dice por el linaje (upstream-degraded)', 'S7c', 'pg', False,
+                 'falta la vista `%s` (se crea una vez, desde la consola)' % VISTA_PG)
+        else:
+            arriba = [r.get('asset') for r in (v or {}).get('reasons', []) if r.get('code') == 'upstream-degraded']
+            caso('C15', '§2.2', 'lo que lee de lo retenido lo dice por el linaje (upstream-degraded)', 'S7c', 'pg',
+                 (v or {}).get('state') == 'warning' and ORIGENES['pg']['vista'] in arriba,
+                 'estado=%s, upstream=%s' % ((v or {}).get('state'), arriba))
 
     # C8 · el origen desaparece (M5/M7 → S2)
     cambiar('base')
