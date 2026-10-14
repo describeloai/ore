@@ -156,6 +156,22 @@ CAMBIOS = {
 }
 
 
+def promesas_de_vara_pg():
+    """Los `id` de las promesas de `vara_pg`, por lo que miden (de `/assets`)."""
+    c, b = serve('GET', '/assets')
+    it = (json.loads(b).get('items', {}) if c == 200 else {}).get('dataset:' + ORIGENES['pg']['vista']) or {}
+    out = {}
+    for q in it.get('promesas_declaradas') or []:
+        m, col = q.get('metric'), q.get('column')
+        if m == 'rowCount':
+            out['filas'] = q.get('id')
+        elif m == 'nullValues' and col == 'cliente':
+            out['nulos_cliente'] = q.get('id')
+        elif m == 'duplicateValues' and col == 'id':
+            out['unico_id'] = q.get('id')
+    return out
+
+
 def cambiar(que):
     decir('origen: %s' % que)
     p, b = CAMBIOS[que]
@@ -450,14 +466,16 @@ def correr():
              (x.get('intento') or {}).get('resultado') == 'retenida' and x.get('filas') == 1000,
              'intento=%s, filas=%s, motivos=%s' % ((x.get('intento') or {}).get('resultado'), x.get('filas'), razones(s[k])))
 
-    # C13–C15 · las promesas (S7c). Sólo `vara_pg` las declara (una propuesta, una vez):
-    #   volumen (rowCount ≥ 900, error), cliente_presente (nulos ≤ 1 %, warning: la base
-    #   tiene un 10 %), id_unico (duplicados = 0, error) y total_en_rango (warning).
+    # C13–C15 · las promesas (S7c). Sólo `vara_pg` las declara (desde la consola, una vez):
+    #   rowCount ≥ 900 (error), nulos de `cliente` (warning, por debajo del 10 % que tiene la
+    #   base) y duplicados de `id` = 0 (error). Se buscan por lo que miden, no por su `id`:
+    #   el nombre lo elige quien las escribe.
     cambiar('base')
     pasar()
     p, s = punteros(), saludes()
     x = p['pg'] or {}
     pr = {q.get('id'): q for q in (x.get('promesas') or [])}
+    ids = promesas_de_vara_pg()
     if not pr:
         for cid, que in [('C14', 'una promesa warning que falla publica y lo dice (guard-warning)'),
                          ('C13', 'una promesa error que falla retiene (refresh-held, guard = su id)'),
@@ -465,12 +483,14 @@ def correr():
             caso(cid, '01 §6', que, 'S7c', 'pg', False,
                  'el Dataset `%s` no declara `promises` (se añaden una vez, con una propuesta)' % ORIGENES['pg']['vista'])
     else:
-        cp = pr.get('cliente_presente') or {}
+        cp = pr.get(ids.get('nulos_cliente')) or {}
+        un = pr.get(ids.get('unico_id')) or {}
         caso('C14', '01 §6', 'una promesa warning que falla publica y lo dice (guard-warning)', 'S7c', 'pg',
              x.get('estado') == 'copiada' and cp.get('resultado') == 'fail' and 'guard-warning' in razones(s['pg'])
-             and (pr.get('id_unico') or {}).get('resultado') == 'pass',
-             'estado=%s, cliente_presente=%s medido=%s, id_unico=%s, motivos=%s' % (
-                 x.get('estado'), cp.get('resultado'), cp.get('medido'), (pr.get('id_unico') or {}).get('resultado'), razones(s['pg'])))
+             and un.get('resultado') == 'pass',
+             'estado=%s, %s=%s medido=%s, %s=%s, motivos=%s' % (
+                 x.get('estado'), ids.get('nulos_cliente'), cp.get('resultado'), cp.get('medido'),
+                 ids.get('unico_id'), un.get('resultado'), razones(s['pg'])))
         cambiar('mitad')
         pasar()
         p, s = punteros(), saludes()
@@ -478,8 +498,8 @@ def correr():
         i = x.get('intento') or {}
         guardas = [r.get('guard') for r in (s['pg'] or {}).get('reasons', []) if r.get('code') == 'refresh-held']
         caso('C13', '01 §6', 'una promesa error que falla retiene (refresh-held, guard = su id)', 'S7c', 'pg',
-             i.get('resultado') == 'retenida' and i.get('guarda') == 'volumen' and x.get('filas') == 1000
-             and 'volumen' in guardas,
+             i.get('resultado') == 'retenida' and i.get('guarda') == ids.get('filas') and x.get('filas') == 1000
+             and ids.get('filas') in guardas,
              'intento=%s, guarda=%s, filas=%s, motivo=«%s»' % (i.get('resultado'), i.get('guarda'), x.get('filas'), (x.get('motivo') or '')[:90]))
         c, v = salud_de('view:' + VISTA_PG)
         if c == 404:
