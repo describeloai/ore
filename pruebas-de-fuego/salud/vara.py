@@ -48,6 +48,9 @@ ORIGENES = {
            'foranea': 'vara_bq_f.ventas.ore_vara_pedidos', 'fuente': FUENTE_BQ, 'objeto': 'ventas.ore_vara_pedidos'},
 }
 BQ_T = '`%s.ventas.ore_vara_pedidos`' % PROYECTO
+# S6: una vista SQL sobre la copia de Postgres. La crea una persona, una vez (es gobierno):
+#   SELECT cliente, count(*) AS pedidos, sum(total) AS total FROM vara_pg.ore_vara.pedidos GROUP BY cliente
+VISTA_PG = 'vara_pg.ore_vara.pedidos_por_cliente'
 
 
 def sh(args, entrada=None):
@@ -304,6 +307,12 @@ def saludes():
     return salida
 
 
+def salud_de(ref):
+    """`GET /health/{kind:qname}` (0063 S6c): la salud de un activo, `None` si es en vivo sin nada sabido."""
+    c, b = serve('GET', '/health/' + ref)
+    return c, (json.loads(b).get('salud') if c == 200 else None)
+
+
 def leer_en_vivo(k):
     """Una lectura en vivo de la foránea, por `/federation/read`: lo que SQL vería."""
     c, b = serve('POST', '/federation/read', {'tabla': ORIGENES[k]['foranea'], 'columnas': ['id', 'cliente'], 'limit': 5})
@@ -398,6 +407,35 @@ def correr():
         caso('C6b', 'P4', 'y dice que el esquema del origen cambió', 'S5', k,
              'source-schema-changed' in razones(s[k]), 'motivos=%s' % razones(s[k]))
 
+    # C9–C11 · lo que lee de la copia degradada (S6): por el linaje, en la suma y al leer
+    copia = (s['pg'] or {})
+    c, v = salud_de('view:' + VISTA_PG)
+    if c == 404:
+        for cid, que, paso in [('C9', 'la vista sobre la copia degradada lo dice (upstream-degraded)', 'S6a'),
+                               ('C11', 'leerla lleva el bloque propagado', 'S6d')]:
+            caso(cid, '§2.2', que, paso, 'pg', False, 'falta la vista `%s` (se crea una vez, desde la consola)' % VISTA_PG)
+    else:
+        arriba = [r.get('asset') for r in (v or {}).get('reasons', []) if r.get('code') == 'upstream-degraded']
+        caso('C9', '§2.2', 'la vista sobre la copia degradada lo dice (upstream-degraded)', 'S6a', 'pg',
+             (v or {}).get('state') == 'warning' and ORIGENES['pg']['vista'] in arriba
+             and ((v or {}).get('dataAsOf') or '') <= (copia.get('dataAsOf') or '~'),
+             'estado=%s, upstream=%s, dataAsOf=%s (la copia: %s)' % ((v or {}).get('state'), arriba, (v or {}).get('dataAsOf'), copia.get('dataAsOf')))
+        b, e, n = VISTA_PG.split('.')
+        c, cuerpo = serve('GET', '/preview/view/%s/%s/%s' % (b, e, n))
+        try:
+            pv = json.loads(cuerpo)
+        except ValueError:
+            pv = {}
+        hs = pv.get('salud') or pv.get('health') or {}
+        caso('C11', '§3.1', 'leerla (la vista previa) lleva el bloque propagado', 'S6d', 'pg',
+             hs.get('state') == 'warning', 'HTTP %s, salud=%s' % (c, hs.get('state')))
+    c, b = serve('GET', '/health/vara_pg')
+    suma = (json.loads(b).get('salud') if c == 200 else None) or {}
+    espera = 2 if v is not None else 1
+    caso('C10', '§3.3', 'la base suma a sus activos (needsAttention)', 'S6c', 'pg',
+         suma.get('degraded') == 1 and suma.get('needsAttention') == espera,
+         'HTTP %s, suma=%s' % (c, suma))
+
     # C7 · el origen vaciado (P5 → S4): se retiene, no se publica con 0 filas
     cambiar('base')
     pasar()
@@ -422,6 +460,10 @@ def correr():
              x.get('estado') == 'error' and bool(x.get('metadata_location')) and 'refresh-failed' in razones(s[k])
              and (s[k] or {}).get('servingLastGood') is True,
              'estado=%s, motivos=%s, servingLastGood=%s' % (x.get('estado'), razones(s[k]), (s[k] or {}).get('servingLastGood')))
+        # C12 · el origen contestó («no está»): no es `source-unreachable` (guarda de S6e)
+        caso('C12', '§6', 'una tabla que no está no es un origen que no contesta', 'S6e', k,
+             'refresh-failed' in razones(s[k]) and 'source-unreachable' not in razones(s[k]),
+             'motivos=%s' % razones(s[k]))
 
     # Y la vara se deja como la encontró: la tabla base, copiada.
     cambiar('base')
