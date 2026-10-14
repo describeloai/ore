@@ -604,6 +604,9 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         "intento",
         // 0063 S5a: lo que la copia vio distinto en el esquema del origen.
         "esquema_origen",
+        // 0063 S6f: la señal de cambio (S3) con la que se comprobó, para la
+        // pestaña Health («Change signal»).
+        "senal",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());
@@ -637,6 +640,12 @@ fn puntero_de_coleccion(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
         "virtual",
         "snapshot",
         "metadata_location",
+        // 0063 S6e: lo mismo que el de un dataset, para su salud: de cuándo
+        // son sus datos, la última comprobación y el último intento (con el
+        // código de su fallo). Sin ellos, un origen caído era `refresh-failed`.
+        "datos_de",
+        "comprobado",
+        "intento",
     ] {
         if let Some(v) = p.get(k) {
             m.insert(k.to_string(), v.clone());
