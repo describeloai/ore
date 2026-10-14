@@ -279,7 +279,10 @@ pub fn main<P: Proveedor>() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(m) => {
-            eprintln!("{}: {m}", P::NOMBRE);
+            // 0063 S6e: tipado, como `leer`. La pasarela lo lee de esta última
+            // línea, y la copia distingue un origen que no contesta (o una
+            // credencial que no vale) de uno que contestó otra cosa.
+            eprintln!("{}: {}", P::NOMBRE, P::fallo(m).tapado("").linea());
             ExitCode::FAILURE
         }
     }

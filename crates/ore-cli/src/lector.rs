@@ -424,15 +424,7 @@ connection: close
                 let _ = c.read_to_string(&mut b);
             }
         }
-        let m = parse::parse(b.trim())
-            .ok()
-            .and_then(|n| {
-                n.get("mensaje")
-                    .and_then(|(_, v)| v.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_else(|| b.trim().chars().take(300).collect());
-        return Err(format!("la pasarela contestó {codigo}: {m}"));
+        return Err(de_la_pasarela(codigo, &b));
     }
     if !troceado {
         return Err("la pasarela no mandó un flujo (sin trailers no se sabe cómo acabó)".into());
@@ -523,15 +515,7 @@ pub fn bajar_por_la_pasarela(destino_pasarela: &str, cuerpo: &str) -> Result<Tro
     if codigo != 200 || !troceado {
         let mut b = String::new();
         let _ = std::io::Read::read_to_string(&mut c, &mut b);
-        let m = parse::parse(b.trim())
-            .ok()
-            .and_then(|n| {
-                n.get("mensaje")
-                    .and_then(|(_, v)| v.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_else(|| b.trim().chars().take(300).collect());
-        return Err(format!("la pasarela contestó {codigo}: {m}"));
+        return Err(de_la_pasarela(codigo, &b));
     }
     Ok(Troceado {
         c,
@@ -662,15 +646,39 @@ fn a_la_pasarela(destino: &str, metodo: &str, ruta: &str, cuerpo: &str) -> Resul
     if codigo == 200 {
         return Ok(cuerpo.to_string());
     }
-    let mensaje = parse::parse(cuerpo.trim())
-        .ok()
-        .and_then(|n| {
-            n.get("mensaje")
-                .and_then(|(_, v)| v.as_str())
-                .map(String::from)
-        })
-        .unwrap_or_else(|| cuerpo.trim().chars().take(300).collect());
-    Err(format!("la pasarela contestó {codigo}: {mensaje}"))
+    Err(de_la_pasarela(codigo, cuerpo))
+}
+
+const CONTESTO: &str = "la pasarela contestó ";
+
+/// **Un error de la pasarela, con su código del contrato** (0063 S6e):
+/// `la pasarela contestó 502 (conexion): …`. El código entre paréntesis es lo
+/// que la copia guarda en su intento ([`codigo_del_fallo`]) para distinguir un
+/// origen que no contesta de uno que contestó otra cosa, sin leer prosa.
+fn de_la_pasarela(http: u16, cuerpo: &str) -> String {
+    let n = parse::parse(cuerpo.trim()).ok();
+    let campo = |k: &str| {
+        n.as_ref()
+            .and_then(|n| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from))
+    };
+    let m = campo("mensaje").unwrap_or_else(|| cuerpo.trim().chars().take(300).collect());
+    match campo("codigo") {
+        Some(c) => format!("{CONTESTO}{http} ({c}): {m}"),
+        None => format!("{CONTESTO}{http}: {m}"),
+    }
+}
+
+/// El código del contrato de un error de la pasarela, si lo dice
+/// ([`de_la_pasarela`]): `conexion`, `credencial`, `objeto`…
+pub fn codigo_del_fallo(texto: &str) -> Option<String> {
+    let resto = &texto[texto.find(CONTESTO)? + CONTESTO.len()..];
+    let tras = resto.trim_start_matches(|c: char| c.is_ascii_digit());
+    if tras.len() == resto.len() {
+        return None;
+    }
+    let (codigo, _) = tras.strip_prefix(" (")?.split_once("):")?;
+    (!codigo.is_empty() && codigo.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+        .then(|| codigo.to_string())
 }
 
 /// Los verbos de un conector que **miran un origen** y que, con la pasarela,
@@ -1189,5 +1197,27 @@ mod pruebas_una_via {
         assert!(una_via_con("ore-read-s3", &a(&["bajar"]), true).is_err());
         assert!(una_via_con("ore-read-s3", &a(&["versiones"]), true).is_err());
         assert!(una_via_con("ore-store-gcs", &a(&["leer"]), true).is_ok());
+    }
+
+    /// 0063 S6e: el código del contrato viaja en el texto del error, y se lee
+    /// de vuelta; sin él (una pasarela de antes), no se inventa.
+    #[test]
+    fn el_codigo_de_la_pasarela_viaja_con_el_error() {
+        let e = de_la_pasarela(
+            502,
+            r#"{"codigo":"conexion","mensaje":"`1.2.3.4:22` no contesta","reintentable":true}"#,
+        );
+        assert_eq!(
+            e,
+            "la pasarela contestó 502 (conexion): `1.2.3.4:22` no contesta"
+        );
+        let motivo = format!("`ore-read-sftp versiones`: {e}");
+        assert_eq!(codigo_del_fallo(&motivo).as_deref(), Some("conexion"));
+        assert_eq!(codigo_del_fallo("la pasarela contestó 502: algo"), None);
+        assert_eq!(
+            codigo_del_fallo("la pasarela contestó 404 (objeto): `x` no está").as_deref(),
+            Some("objeto")
+        );
+        assert_eq!(codigo_del_fallo("nada que ver"), None);
     }
 }

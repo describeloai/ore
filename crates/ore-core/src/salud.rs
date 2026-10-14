@@ -109,8 +109,14 @@ pub fn bloque(
     if estado == "error" {
         let desde = intento_cuando.clone().unwrap_or_else(|| hoy.clone());
         let razon = puntero.and_then(|p| campo(p, "motivo"));
+        // 0063 S6e: con el código del contrato del fallo, un origen que no
+        // contestó, o cuya credencial no vale, es `source-unreachable` (§6): no
+        // es lo mismo que uno que contestó otra cosa.
+        let codigo = intento.as_ref().and_then(|i| campo(i, "codigo"));
         let code = if intento_resultado.as_deref() == Some("retenida") {
             "refresh-held"
+        } else if matches!(codigo.as_deref(), Some("conexion" | "credencial")) {
+            "source-unreachable"
         } else {
             "refresh-failed"
         };
@@ -678,6 +684,58 @@ fn calcular(n: &Nodo, entradas: &[(String, Entrada)], ahora: i64, capas: (bool, 
     }
 }
 
+/// **La salud de un origen, con lo que vieron sus copias** (0063 S6e, la
+/// parte de capa 0 de la experiencia 8). Si alguna copia suya no lo alcanzó
+/// en su última pasada (`source-unreachable`), el origen lo dice, con cuántas
+/// de cuántas y desde cuándo. Si ninguna, `None`: que todas lo alcanzaran no
+/// es una medida del origen entre pasadas (eso es la capa 1), y no se afirma.
+pub fn del_origen<'a>(
+    copias: impl IntoIterator<Item = &'a Json>,
+    capas: (bool, bool),
+) -> Option<Json> {
+    let (mut total, mut sin_llegar) = (0usize, Vec::new());
+    for b in copias {
+        total += 1;
+        if let Some(m) = motivos_de(b)
+            .into_iter()
+            .find(|m| texto(m, "code") == Some("source-unreachable"))
+        {
+            sin_llegar.push(m);
+        }
+    }
+    let desde = sin_llegar
+        .iter()
+        .filter_map(|m| texto(m, "since").map(String::from))
+        .min()?;
+    let ultimo = sin_llegar
+        .iter()
+        .max_by_key(|m| texto(m, "since").map(String::from))
+        .and_then(|m| texto(m, "message").map(String::from));
+    let mut m = vec![
+        ("code", Json::s("source-unreachable")),
+        ("since", Json::s(desde)),
+        (
+            "message",
+            Json::s(format!(
+                "{} of {total} copies could not reach this source{}",
+                sin_llegar.len(),
+                ultimo.map(|u| format!(": {u}")).unwrap_or_default()
+            )),
+        ),
+    ];
+    m.sort_by_key(|(k, _)| *k);
+    Some(armar(
+        "degraded",
+        None,
+        None,
+        None,
+        None,
+        None,
+        vec![Json::obj(m)],
+        capas,
+    ))
+}
+
 /// **La suma de un ámbito** (una base, un schema, el árbol): cuántos en cada
 /// estado, con lo desconocido aparte (§3.3: nunca como sano). Y
 /// `needsAttention` (0063 D-S6-2): lo `degraded`, lo `warning` y lo que nunca
@@ -1028,6 +1086,47 @@ mod tests {
             t,
             r#"{"degraded":1,"healthy":1,"needsAttention":2,"unknown":2,"warning":0}"#
         );
+    }
+
+    /// 0063 S6e: con el código del fallo, un origen que no contesta no es un
+    /// refresco que falló por otra cosa. Y el origen suma lo que vieron sus
+    /// copias; con todas bien, no afirma nada.
+    #[test]
+    fn un_origen_que_no_contesta_se_dice_y_se_suma() {
+        let caida = bloque(
+            Some(&p(
+                r#"{"estado":"error","metadata_location":"m","motivo":"la pasarela contestó 502 (conexion): no contesta",
+                "intento":{"cuando":"2026-10-13T13:44:51Z","resultado":"error","codigo":"conexion"}}"#,
+            )),
+            None,
+            ahora(),
+            (false, false),
+        );
+        assert_eq!(estado(&caida), "degraded");
+        assert_eq!(motivos(&caida)[0], "source-unreachable");
+        let no_esta = bloque(
+            Some(&p(
+                r#"{"estado":"error","metadata_location":"m","motivo":"no está",
+                "intento":{"cuando":"2026-10-13T13:44:51Z","resultado":"error","codigo":"objeto"}}"#,
+            )),
+            None,
+            ahora(),
+            (false, false),
+        );
+        assert_eq!(motivos(&no_esta)[0], "refresh-failed");
+        let sana = bloque(Some(&p(SANA)), None, ahora(), (false, false));
+        let o = del_origen([&caida, &no_esta, &sana], (false, false)).unwrap();
+        assert_eq!(estado(&o), "degraded");
+        assert!(
+            o.jcs()
+                .contains("1 of 3 copies could not reach this source"),
+            "{}",
+            o.jcs()
+        );
+        assert!(del_origen([&no_esta, &sana], (false, false)).is_none());
+        // Y la tabla en vivo de la copia caída lo dice también.
+        let t = en_vivo(&motivos_de(&caida), (false, false)).unwrap();
+        assert_eq!(motivos(&t), ["source-unreachable"]);
     }
 
     #[test]

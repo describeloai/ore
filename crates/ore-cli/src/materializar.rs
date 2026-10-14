@@ -2014,10 +2014,16 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
             Some(Json::Str(t)) => Some(t.clone()),
             _ => None,
         };
-        m.insert(
-            "intento".into(),
-            intento(&ahora_iso(), "error", motivo.as_deref()),
-        );
+        let mut i = intento(&ahora_iso(), "error", motivo.as_deref());
+        // 0063 S6e: el código del contrato, si el fallo lo dijo: con
+        // `conexion` o `credencial`, el origen no contestó (`source-unreachable`).
+        if let (Json::Obj(o), Some(c)) = (
+            &mut i,
+            motivo.as_deref().and_then(crate::lector::codigo_del_fallo),
+        ) {
+            o.insert("codigo".into(), Json::s(c));
+        }
+        m.insert("intento".into(), i);
     }
     if m.get("estado") == Some(&Json::s("error"))
         && let Some((_, n)) = ore_core::punteros::leer_en(dir, qn)

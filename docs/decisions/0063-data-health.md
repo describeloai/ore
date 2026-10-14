@@ -1009,7 +1009,7 @@ con `21a8df6e` desplegado): 18 de 18 en verde.** Lo nuevo de esta vuelta:
 
 Todos los casos de la capa 0 que la vara sabe medir, en verde. Quedan S6–S8.
 
-### S6 · el diseño (2026-10-14; S6a y S6c hechos)
+### S6 · el diseño (2026-10-14; S6a, S6c y S6e hechos)
 
 **Lo que hay.** Tras S2–S5 la salud sale de **un sitio**: el puntero de una copia. `/assets` la
 calcula al servir, pero **sólo para los `Dataset` copiados** (`anotar_salud`). La ficha la enseña, y
@@ -1043,6 +1043,23 @@ No hace falta tocar el origen ni gastar nada nuevo: **S6 junta lo que la capa 0 
 | **S6g** | **Los agentes** | El asistente de la consola recibe el bloque (por S6d) y su política, que es la de una persona: con `degraded`, lo dice al responder; con `unknown`, dice de cuándo es el dato; y no da por bueno lo que no lo está. Lo mismo, escrito en la descripción de las herramientas MCP | consola (`components/assistant`), `mcp.rs` |
 
 **S6a y S6c, hechos** (2026-10-14). `ore_core::salud::{propagar, en_vivo, sumar}` y, en `anotar_salud`, la salud de vistas, colecciones y tablas en vivo, más `salud` y `salud_por_schema` en cada paquete y la suma del árbol. `GET /health`, `/health/{base}[/{schema}]` y `/health/{kind:qname}`, del mismo índice. Lo que las copias vieron de una tabla no les vuelve como `upstream-degraded`.
+
+**S6e, hecho** (2026-10-14). Medido al desplegar S6c: 14 colecciones `degraded` en `victor`, todas de
+dos orígenes caídos (el S3 que no deja asumir su rol y el SFTP que ya no existe), y 15 activos más en
+`warning` por ellas. Eran 14 fallos sueltos; ahora son un motivo del origen. Y al hacerlo salió
+**un hueco de la pasarela**: todo fallo de un verbo simple (`change`, `versions`, `witness`…) se
+contestaba `conexion`, fuera lo que fuera. Una tabla borrada habría sido «el origen no contesta».
+- **La pasarela** respeta el código que el conector dejó en su última línea, tipada; lo que llega
+  sin tipar es `origen`, como en v1.
+- **Los lectores de objetos** tipan también sus verbos simples (`versiones`, `testigo`, `bajar`),
+  con el mismo clasificador que `leer`.
+- **La copia** lleva el código en el texto del error (`la pasarela contestó 502 (conexion): …`) y
+  lo guarda en `intento.codigo`.
+- **La salud**: con `conexion` o `credencial`, `source-unreachable` en vez de `refresh-failed`.
+  `tiempo` no: una consulta lenta no es un origen caído. Una tabla en vivo lo hereda de sus copias
+  (D-S6-1), y la fuente lleva `salud_del_origen` («2 of 3 copies could not reach this source»),
+  también en `GET /health` y en `/health/{fuente}`. Si todas sus copias la alcanzaron, no se afirma
+  nada.
 
 **El orden y los commits.** Primero S6a y S6c juntos (ore-core y ore-serve: es lo que el resto
 consume), después S6b, S6e y S6d, y al final S6f y S6g en la consola. Cada uno se compila con fmt,

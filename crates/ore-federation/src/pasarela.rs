@@ -551,7 +551,23 @@ impl Pasarela {
             Err(Tiro::Fallo(m)) => {
                 self.fondo.anotar(&origen, "error", ms);
                 eprintln!("{ruta} · {origen} · {tipo} · error · {}", tapar(&m));
-                error(502, "conexion", &tapar(&m), false)
+                // ⭐ 0063 S6e · El código que el conector dijo, si lo dijo (su
+                //   última línea, tipada). Antes todo fallo de un verbo era
+                //   `conexion`: una tabla que no está parecía un origen que no
+                //   contesta. Lo que llega sin tipar es del origen, como en v1.
+                match m
+                    .find('{')
+                    .and_then(|i| ore_core::parse::parse(&m[i..]).ok())
+                    .and_then(|n| ore_driver::Fallo::de_nodo(&n))
+                {
+                    Some(f) => error(
+                        crate::lectura::http_de(f.codigo),
+                        f.codigo.as_str(),
+                        &tapar(&f.mensaje),
+                        f.reintentable,
+                    ),
+                    None => error(502, "origen", &tapar(&m), false),
+                }
             }
         }
     }

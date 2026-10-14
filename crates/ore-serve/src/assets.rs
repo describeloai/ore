@@ -193,7 +193,7 @@ fn del_catalogo(raiz: &Path, fuente: &str) -> Option<std::collections::BTreeMap<
 /// paquete lleva `salud` (la suma de sus activos) y `salud_por_schema`; el
 /// índice, la suma del árbol.
 pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
-    use ore_core::salud::{Nodo, bloque, en_vivo, propagar, sumar};
+    use ore_core::salud::{Nodo, bloque, del_origen, en_vivo, propagar, sumar};
     const CAPAS: (bool, bool) = (false, false);
     let Json::Obj(m) = j else { return };
     let Some(Json::Obj(items)) = m.get_mut("items") else {
@@ -275,6 +275,23 @@ pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
             n.de_las_copias = n.propio.is_some();
         }
     }
+    // ── Cada origen, con lo que vieron sus copias (S6e) ─────────────────────
+    let mut por_origen: std::collections::BTreeMap<String, Vec<Json>> = Default::default();
+    for n in nodos.values().filter(|n| !n.de_las_copias) {
+        let Some(b) = &n.propio else { continue };
+        let fuentes: std::collections::BTreeSet<String> = n
+            .entradas
+            .iter()
+            .filter(|e| e.starts_with("table:") || e.starts_with("objecttable:"))
+            .filter_map(|e| match items.get(e) {
+                Some(Json::Obj(it)) => texto(it, "paquete"),
+                _ => None,
+            })
+            .collect();
+        for f in fuentes {
+            por_origen.entry(f).or_default().push(b.clone());
+        }
+    }
     // ── El linaje, y cada salud en su ítem ──────────────────────────────────
     let saludes = propagar(&nodos, ahora, CAPAS);
     // (paquete, schema) → los bloques, para las sumas.
@@ -316,6 +333,12 @@ pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
                         .collect(),
                 ),
             );
+            if let Some(o) = por_origen
+                .get(&nombre)
+                .and_then(|c| del_origen(c.iter(), CAPAS))
+            {
+                p.insert("salud_del_origen".into(), o);
+            }
         }
     }
 }
@@ -325,7 +348,7 @@ pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
 /// | camino | qué |
 /// |---|---|
 /// | `[]` | la suma del árbol, y la de cada base y cada uno de sus schemas |
-/// | `[base]`, `[base, schema]` | la suma de ese ámbito y la salud de cada activo suyo que la tiene |
+/// | `[base]`, `[base, schema]` | la suma de ese ámbito y la salud de cada activo suyo que la tiene; en una fuente, `origen`: lo que vieron sus copias (S6e) |
 /// | `[ref]` (`kind:qname`) | la salud de un activo; `null` si es en vivo sin nada sabido («Live») |
 ///
 /// Por el camino y no por la consulta, como `/assets/{commit}`.
@@ -371,6 +394,7 @@ pub(crate) fn salud_de(j: &Json, camino: &[&str]) -> Result<Json, Respuesta> {
                                 Json::obj([
                                     ("salud", de("salud", p)),
                                     ("schemas", de("salud_por_schema", p)),
+                                    ("origen", de("salud_del_origen", p)),
                                 ]),
                             )
                         })
@@ -413,7 +437,11 @@ pub(crate) fn salud_de(j: &Json, camino: &[&str]) -> Result<Json, Respuesta> {
                     (dentro && it.contains_key("salud")).then(|| (r.clone(), de("salud", it)))
                 })
                 .collect();
-            Ok(Json::obj([("salud", suma), ("items", Json::Obj(suyos))]))
+            Ok(Json::obj([
+                ("salud", suma),
+                ("origen", de("salud_del_origen", p)),
+                ("items", Json::Obj(suyos)),
+            ]))
         }
         _ => Err(Respuesta::error(404, "no hay nada en ese camino")),
     }
