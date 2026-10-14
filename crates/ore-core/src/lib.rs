@@ -65,6 +65,7 @@ pub mod paquetes;
 pub mod parse;
 pub mod pertenencia;
 pub mod politica;
+pub mod promesas;
 pub mod promover;
 pub mod propuesta;
 pub mod proyectos;

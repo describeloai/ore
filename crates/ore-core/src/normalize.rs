@@ -49,6 +49,11 @@ const CONJUNTOS: &[&str] = &[
     "added",
     "removed",
     "retyped",
+    // v1alpha31 (`promise.schema.json`): lo admitido, lo que cuenta como
+    // ausente y las familias de una promesa. Cada valor está o no está.
+    "validValues",
+    "missingValues",
+    "families",
     "predicatePushdown",
     "aggregatePushdown",
     "requiredFilters",
@@ -236,6 +241,13 @@ const SECUENCIAS: &[&str] = &[
     "normalize",        // una tubería de transformaciones
     "mustBeBetween",    // `[min, max]`
     "mustNotBeBetween", // igual
+    // v1alpha31 (`promise.schema.json`): la lista de promesas de cada familia,
+    // en el orden en que su dueño quiere leerlas, y el rango `[min, max]`. En
+    // el documento son `promises` y `between`, y sin clasificar ya no se
+    // reordenan.
+    "tabularPromises",
+    "objectPromises",
+    "range",
 ];
 
 /// Todo campo lista de los esquemas está en una de las dos listas.

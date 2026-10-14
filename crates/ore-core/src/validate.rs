@@ -287,6 +287,8 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     if matches!(kind, Kind::ObjectTable | Kind::MediaCollection) {
         medio_por_version(file, root, kind, version, &mut diags);
     }
+    // v1alpha31 · las promesas (`promesas.rs`): su forma, su columna y su nombre.
+    crate::promesas::validar(file, root, kind, version, &mut diags);
 
     diags
 }

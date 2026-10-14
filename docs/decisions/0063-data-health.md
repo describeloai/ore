@@ -1256,7 +1256,7 @@ Esquema y frescura no son métricas de la biblioteca: el esquema ya lo vigila S5
 changed`) y la frescura es `freshness`, que sigue siendo la *Fresh within* (D-D).
 
 **La guarda de S4 pasa a ser una promesa de serie.** `zero-rows` se convierte en la promesa
-implícita `no-vaciarse` (`rowCount > 0` si la anterior tenía filas, `Blocking`), igual para
+implícita `notEmptied` (`rowCount > 0` si la anterior tenía filas, `Blocking`), igual para
 `itemCount` en las colecciones. La consola la enseña como *Built-in*. Quien la quiera más blanda la
 declara con su `id` y `severity: warning`; no se puede quitar.
 
@@ -1281,7 +1281,7 @@ releen el dato para medirlo, y aquí la medida va montada en la pasada. Construi
 | **S7f** | **La consola** | La sección *Promises* de la pestaña Health: cada promesa (las *Built-in* también) con su resultado, lo medido y lo esperado, y su historia en las últimas pasadas. *Add promise*: plantillas de lo que el puntero ya sabe («1 000 rows each refresh», «`cliente` 10 % empty», «only images in the last 3 refreshes»), que escriben el YAML en una rama y abren su propuesta (0044) | consola |
 
 **Las decisiones (todas decididas el 2026-10-14)**
-- **D-S7-4 · `no-vaciarse` de serie.** **Decidida:** sí, la guarda de S4 se expresa como una
+- **D-S7-4 · `notEmptied` de serie.** **Decidida:** sí, la guarda de S4 se expresa como una
   promesa más: visible, con historia, y ablandable a `warning`, nunca quitada.
 - **D-S7-5 · Una promesa `unknown` no mueve el estado.** **Decidida:** se enseña en *Promises*
   con su motivo, pero el activo no pasa a `unknown` por ella: el estado lo dicen la frescura y lo
@@ -1340,7 +1340,7 @@ una promesa bien escrita compila y no cambia ninguna pasada.
 
 | Paso | Qué | Dónde | Hecho cuando |
 |---|---|---|---|
-| **S7a·1** | **La spec v1alpha31.** `00-scope` y `01-las-promesas` (gramática, biblioteca por familia, `no-vaciarse`, la puerta del documento, lo que no se comprueba en S7). `promise.schema.json` (la aserción de v1alpha3 + `column`, `arguments`, métricas por familia), `dataset.schema.json` y `media-collection.schema.json` de v1alpha31. Dos filas en `99-errors`. Casos: 4 válidos (dataset copiado, dataset escrito, colección, `no-vaciarse` ablandada) y 7 inválidos (antes de v1alpha31, en una `View`, métrica de otra familia, sin comparador, dos comparadores, columna que no existe, `id` repetido) | `C:\oos` | los casos escritos y el commit en `oos` |
+| **S7a·1** | **La spec v1alpha31.** `00-scope` y `01-las-promesas` (gramática, biblioteca por familia, `notEmptied`, la puerta del documento, lo que no se comprueba en S7). `promise.schema.json` (la aserción de v1alpha3 + `column`, `arguments`, métricas por familia), `dataset.schema.json` y `media-collection.schema.json` de v1alpha31. Dos filas en `99-errors`. Casos: 4 válidos (dataset copiado, dataset escrito, colección, `notEmptied` ablandada) y 7 inválidos (antes de v1alpha31, en una `View`, métrica de otra familia, sin comparador, dos comparadores, columna que no existe, `id` repetido) | `C:\oos` | los casos escritos y el commit en `oos` |
 | **S7a·2** | **El catálogo y el compilador.** `ApiVersion::V1Alpha31`; `promises` en las claves de `Dataset` y `MediaCollection`; las listas nuevas en `normalize` (`promises` secuencia; `validValues`, `missingValues`, `formats`, `families` conjuntos; `mustBeBetween` y `between` secuencias). `ore_core::promesas`: la **biblioteca** (métrica → familia, si lleva `column`, qué `arguments` y qué `unit` admite) y `validar`, que emite `OOS1006` (promesa mal formada, con el porqué) y `OOS2052` (columna que el activo no declara: `fields` en una copia, `columns` en uno escrito; si no declara ninguna, no se comprueba aquí y será `unknown` al medir) | `ore-core`, submódulo `vendor/oos` | los casos de conformidad de v1alpha31 pasan en `ore-core` |
 | **S7a·3** | **Que nada lo pierda.** Pruebas: subir la versión es neutro (mismos diagnósticos antes y después); el registro de `write()` conserva `promises` y el `apiVersion` al reescribir `columns`; *Accept the new schema* conserva `promises` y una columna quitada sale como `OOS2052`; el índice (`/assets`) lleva las promesas declaradas de cada activo (`promesas_declaradas`), para que la consola las enseñe antes de S7b | `ore-cli` (`datasets.rs`), `ore-serve` (`esquema.rs`, `assets.rs`) | las pruebas en verde y desplegado (`ore.dev/commit`) |
 
@@ -1359,6 +1359,23 @@ la vara con promesas en una rama compila sin ruido.
 
 **Orden y tiempo:** S7a·1 → S7a·2 → S7a·3, cada uno en su commit. S7a·2 es el grueso; S7a·1 y S7a·3,
 cortos.
+
+**S7a·1 y S7a·2, hechos (2026-10-14).** OOS v1alpha31 en `oos` (`6afd271`): `00-scope`,
+`01-las-promesas`, `promise.schema.json` (las dos bibliotecas como `$defs`; no hizo falta copiar los
+esquemas enteros de `Dataset` y `MediaCollection`) y once casos. Lo que cambió al escribirlo:
+- **La forma es `OOS1004`, no un código nuevo**: es la convención de la spec (v1alpha29 la usa para su
+  vocabulario). Los dos códigos nuevos son lo que el esquema no ve: `OOS2052` (la columna) y
+  `OOS2053` (el `id` repetido).
+- **Un `id` es un identificador** (`^[a-zA-Z][a-zA-Z0-9_]*$`): sin guiones. La promesa de serie se
+  llama `notEmptied`.
+- **Un umbral con decimales va entre comillas** (`"0.5"`): sin ellas es `OOS6003`, como en todo
+  documento.
+- **v1alpha30 entra también en `ApiVersion`**: no añadía claves, pero un documento que la declarara
+  daba `OOS1002`.
+
+En `ore-core`: `promesas.rs` (la biblioteca y `validar`), `V1Alpha30`/`V1Alpha31`, `promises` en las
+claves de `Dataset` y `MediaCollection` desde v1alpha31, `OOS2052`/`OOS2053`, las listas del esquema
+en `normalize`. En `ore-cli`, `borrador_de_v1alpha31`: 11 de 11.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 

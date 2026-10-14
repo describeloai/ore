@@ -198,6 +198,16 @@ pub enum ApiVersion {
     /// opcional). La puerta es del documento. Lo pidió ORE 0061 AZ5
     /// (2026-10-12): una base estándar sobre los `.gz` de `mnist` nacía vacía.
     V1Alpha29,
+    /// v1alpha30. **La salud de un activo.** Obligaciones de quien sirve, sin
+    /// clave ni código de documento: un documento que la declara compila
+    /// como uno de v1alpha29. Lo pidió ORE 0063 (2026-10-13).
+    V1Alpha30,
+    /// v1alpha31. **Las promesas de un activo.** `spec.promises` en un
+    /// `Dataset` y en una `MediaCollection`: la aserción `library` del
+    /// `Ruleset` con columna, argumentos y una biblioteca por familia
+    /// (`promesas.rs`). La puerta es del documento. Lo pidió ORE 0063 S7
+    /// (2026-10-14).
+    V1Alpha31,
 }
 
 impl ApiVersion {
@@ -229,6 +239,8 @@ impl ApiVersion {
         ApiVersion::V1Alpha27,
         ApiVersion::V1Alpha28,
         ApiVersion::V1Alpha29,
+        ApiVersion::V1Alpha30,
+        ApiVersion::V1Alpha31,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -260,6 +272,8 @@ impl ApiVersion {
             ApiVersion::V1Alpha27 => "oos.dev/v1alpha27",
             ApiVersion::V1Alpha28 => "oos.dev/v1alpha28",
             ApiVersion::V1Alpha29 => "oos.dev/v1alpha29",
+            ApiVersion::V1Alpha30 => "oos.dev/v1alpha30",
+            ApiVersion::V1Alpha31 => "oos.dev/v1alpha31",
         }
     }
 
@@ -1255,6 +1269,34 @@ impl Kind {
             // v1alpha19: la colección escrita dice lo que el código leyó
             // (`01-la-coleccion-escrita-deriva`). Antes, `derivedFrom` es
             // `OOS1005`.
+            // v1alpha31: las promesas (`01-las-promesas`). Antes, `promises`
+            // es `OOS1005`; y en lo que no se refresca (una `View`, una
+            // `Table`, un `ObjectTable`) no existe nunca.
+            Kind::MediaCollection if version >= ApiVersion::V1Alpha31 => &[
+                "owner",
+                "media",
+                "formats",
+                "from",
+                "virtual",
+                "retention",
+                "derivedFrom",
+                "promises",
+            ],
+            Kind::Dataset if version >= ApiVersion::V1Alpha31 => &[
+                "owner",
+                "from",
+                "fields",
+                "where",
+                "groupBy",
+                "having",
+                "freshness",
+                "columns",
+                "changes",
+                "derivedFrom",
+                "history",
+                "anchoredTo",
+                "promises",
+            ],
             Kind::MediaCollection if version >= ApiVersion::V1Alpha19 => &[
                 "owner",
                 "media",

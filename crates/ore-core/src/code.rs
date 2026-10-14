@@ -257,6 +257,10 @@ codes! {
     Oos2049 = "OOS2049", Reference, "una base foranea con algo que no es un Schema o una vista sin copia";
     Oos2050 = "OOS2050", Reference, "un nombre expuesto por una base foranea que no es unico";
     Oos2051 = "OOS2051", Reference, "lectura en vivo de una fuente sin federation";
+    // v1alpha31 · LAS PROMESAS. Lo que el esquema no puede ver: que la
+    // columna sea del activo, y que cada promesa tenga su nombre.
+    Oos2052 = "OOS2052", Reference, "una promesa nombra una columna que su activo no declara";
+    Oos2053 = "OOS2053", Reference, "dos promesas con el mismo id en un activo";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -553,6 +557,9 @@ mod tests {
             Code::Oos2049,
             Code::Oos2050,
             Code::Oos2051,
+            // v1alpha31: las promesas.
+            Code::Oos2052,
+            Code::Oos2053,
             // v1alpha25: el transform.
             Code::Oos2046,
             Code::Oos2047,
