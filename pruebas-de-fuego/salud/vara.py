@@ -383,8 +383,11 @@ def correr():
         x = p[k] or {}
         caso('C2', 'M6', 'nada cambió: «al día» comprobado, sin leer', 'S3', k,
              (x.get('intento') or {}).get('resultado') == 'sin-cambios' and (x.get('comprobado') or '') > (x.get('datos_de') or '~')
-             and (s[k] or {}).get('state') == 'healthy',
-             'intento=%s, comprobado=%s, estado=%s' % ((x.get('intento') or {}).get('resultado'), x.get('comprobado'), (s[k] or {}).get('state')))
+             # Sano, o `warning` sólo por una promesa `warning` (S7c): lo servido sigue
+             # incumpliéndola aunque nada haya cambiado, y decirlo es lo correcto.
+             and ((s[k] or {}).get('state') == 'healthy'
+                  or ((s[k] or {}).get('state') == 'warning' and set(razones(s[k])) <= {'guard-warning'})),
+             'intento=%s, comprobado=%s, estado=%s, motivos=%s' % ((x.get('intento') or {}).get('resultado'), x.get('comprobado'), (s[k] or {}).get('state'), razones(s[k])))
 
     # C3 · un UPDATE, que el cursor no ve (M2/M6 → S3)
     previos = {k: (p[k] or {}).get('datos_de') for k in ORIGENES}

@@ -1464,6 +1464,18 @@ falte de la lógica (colecciones, `write()`) se ve como *Not checked yet* hasta 
     Queda que `ore diff` las clasifique para quien lee (quitar o ablandar una promesa debilita la
     garantía): necesita una regla de compatibilidad en la spec.
 
+**S7c medido en producción** (vara 2026-10-14 23:13, `345ff4e8`, `vara-20261014-2313.md`): las
+promesas de `vara_pg.ore_vara.pedidos`, escritas desde el panel (propuesta #21: `row_count_3`
+rowCount ≥ 900 Blocking, `cliente_not_null` nulos ≤ 1 Warning, `id_unique` duplicados = 0
+Blocking).
+- **C14 ✅**: con la base, la copia se publica y lo dice: `cliente_not_null` *fail* (100 medidos),
+  `guard-warning`; `id_unique` *pass*.
+- **C13 ✅**: con 500 filas en el origen, retenida por `row_count_3` («measured 500, expected ≥
+  900: held»), sirviendo las 1000.
+- C15, C9 y C11 esperan la vista `vara_pg.ore_vara.pedidos_por_cliente` en `main`.
+- C5 salió 503 por un relevo de pods a las 23:02; repetido a mano, `409 esquema` en los dos. C2 en
+  pg esperaba `healthy` y era `warning` por la promesa: lo correcto; la vara ya lo admite.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
