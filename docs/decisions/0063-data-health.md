@@ -1009,6 +1009,78 @@ con `21a8df6e` desplegado): 18 de 18 en verde.** Lo nuevo de esta vuelta:
 
 Todos los casos de la capa 0 que la vara sabe medir, en verde. Quedan S6–S8.
 
+### S6 · el diseño (propuesto, 2026-10-14)
+
+**Lo que hay.** Tras S2–S5 la salud sale de **un sitio**: el puntero de una copia. `/assets` la
+calcula al servir, pero **sólo para los `Dataset` copiados** (`anotar_salud`). La ficha la enseña, y
+SQL y Python la reciben (`puestos.rs`). Todo lo demás calla:
+- una vista y un dataset escrito son `unknown` o no dicen nada, aunque lean de algo degradado;
+- una base o un schema no suman a sus hijos;
+- las funciones, `ore ask` y las herramientas MCP devuelven datos sin su bloque, y v1alpha30 §3.1
+  lo exige **con cada lectura**;
+- un origen que no contesta se ve como N copias que fallan, cada una por su cuenta.
+
+**Lo que ya está para construir encima:**
+- La spec ya tiene las reglas: §2.1 el peor gana, §2.2 baja por el linaje con `upstream-degraded`
+  y `asset`, y §3.3 lo desconocido se cuenta aparte.
+- El índice de `/assets` ya lleva el grafo: `relaciones` con `sale_de`/`produce` para las vistas,
+  los datasets (también los escritos, por `derivedFrom` o `procedencia.leidas`), las colecciones y
+  los modelos entrenados.
+- Los drivers ya distinguen el fallo (`Codigo`: `credencial`, `conexion`, `tiempo`, `origen`…).
+
+No hace falta tocar el origen ni gastar nada nuevo: **S6 junta lo que la capa 0 ya sabe**.
+
+**Las piezas**
+
+| | Pieza | Qué | Dónde |
+|---|---|---|---|
+| **S6a** | **El linaje, en el cálculo** | `salud::propagar(items, ahora)`: con el bloque propio de cada activo y sus `sale_de`, en orden topológico y a salvo de ciclos. Lo derivado: (1) si una entrada está `degraded`, `upstream-degraded` con `asset` y, al menos, `warning` (§2.2); (2) una entrada `unknown` deja `unknown` lo que no tenga medida propia, con `unverified` y el nombre de la entrada; (3) una vista sin copia toma como `dataAsOf` el más viejo de sus entradas. Una ref `rota` (otra celda, o que no resuelve) no degrada: no se sabe, y se dice. Y `salud::sumar(estados)`: `{healthy, warning, degraded, unknown}`, con lo desconocido aparte (§3.3) | `ore-core/src/salud.rs` |
+| **S6b** | **Lo escrito sabe de cuándo es** (el hueco que dejó S2) | Al escribir un dataset (`write()`, un build de Transform), la procedencia guarda el `datos_de` de cada entrada **tal como se leyó**, y el puntero lleva `datos_de` = el más viejo de esos. Se toma al escribir, no al servir: una entrada refrescada después no rejuvenece lo que se construyó antes | el SDK al escribir (`ore.procedencia` en el resumen del snapshot), `ore-cli/src/datasets.rs` al registrarla en el puntero |
+| **S6c** | **El estado, en `/assets` y en `GET /health`** | `anotar_salud` pasa a todo lo que se sirve (`Dataset`, `View`, `MediaCollection` con puntero) y aplica S6a. Cada base y cada schema llevan su `salud` sumada. `GET /health?ref=<ref>` da el bloque de un activo, y `GET /health?scope=<base>[.<schema>]` los de un ámbito con su suma, sin bajar el catálogo entero. Sale del mismo índice cacheado y de la hora de la respuesta | `ore-serve/src/assets.rs`, `rutas.rs` |
+| **S6d** | **El bloque, con cada lectura** (§3.1) | Las respuestas de una función (`invoke`, `funciones.rs`), de `ore ask` y de cada herramienta MCP (en `_meta.health`) llevan el bloque de lo que leyeron, **con la propagación**. Una lectura en vivo que va bien lleva `dataAsOf` = la hora de la lectura. La vista previa de la consola enseña la franja de la experiencia 3 | `ore-serve`, `ore-cli` (`preguntar.rs`, `invocar.rs`, `mcp.rs`), consola |
+| **S6e** | **La salud del origen, con lo que ven las copias** (la parte de capa 0 de la experiencia 8) | La copia guarda en `intento` el `codigo` del fallo. Con `credencial`, `conexion` o `tiempo`, el motivo es `source-unreachable` y no un `refresh-failed` genérico. La fuente (`DataSource`) lleva su propia salud: el peor de lo que vieron sus copias en su última pasada («2 of 3 copies could not reach it since 13:44»). Una fuente sin copias no dice nada: saberlo sin copiar es capa 1 | `materializar.rs`, `salud.rs`, `assets.rs` |
+| **S6f** | **La consola** | En cada fila del árbol y de las listas, el punto de color, «as of …» y el motivo al pasar el ratón. En la base y el schema, «3 of 41 degraded · 5 unverified». El filtro **Needs attention**. La sección Health de la ficha también para vistas, datasets escritos y fuentes, con `upstream-degraded` enlazado a su entrada | `CatalogTreeSidebar`, `SchemaDetail`, `DatabaseDetail`, `AssetDetail`, `lib/server/assets.ts` |
+| **S6g** | **Los agentes** | El asistente de la consola recibe el bloque (por S6d) y su política, que es la de una persona: con `degraded`, lo dice al responder; con `unknown`, dice de cuándo es el dato; y no da por bueno lo que no lo está. Lo mismo, escrito en la descripción de las herramientas MCP | consola (`components/assistant`), `mcp.rs` |
+
+**El orden y los commits.** Primero S6a y S6c juntos (ore-core y ore-serve: es lo que el resto
+consume), después S6b, S6e y S6d, y al final S6f y S6g en la consola. Cada uno se compila con fmt,
+clippy y las pruebas en Docker, y se mide desplegado.
+
+**La vara (S0) crece.** Hace falta, una vez y desde la consola, una vista SQL sobre `vara_pg` (es
+gobierno: el agente no puede crearla).
+
+| Caso | Lo que la visión espera | Paso |
+|---|---|---|
+| C9 | La vista sobre una copia degradada (C6) está en `warning` con `upstream-degraded` y el `asset`, y su `dataAsOf` no es posterior al de la copia | S6a, S6c |
+| C10 | `GET /health?scope=vara_pg` cuenta cada estado, con lo desconocido aparte | S6c |
+| C11 | Una lectura de esa vista por SQL lleva el bloque propagado | S6d |
+| C12 | Con la tabla borrada (C8), el motivo es `refresh-failed` y no `source-unreachable`: el origen contestó. El caso del origen que no contesta se mide a mano, porque cambiar la conexión de una fuente es gobierno | S6e |
+
+**Lo que se mide además:**
+- lo que cuesta propagar en cada `/assets` de `victor` (milisegundos, antes y después);
+- que ningún bloque de un `Dataset` copiado cambie, salvo lo que añade el linaje.
+
+**Las decisiones que pide S6**
+
+- **D-S6-1 · Lo que se lee en vivo, en el catálogo.** Una `Table` o una vista sobre ella no tiene
+  copia: no hay *data as of* hasta que alguien lee. **Recomendación:** en el catálogo, «Live» sin
+  punto de color, salvo que la capa 0 sepa algo de ella. Por ejemplo, el esquema que vio una copia
+  de esa tabla (`source-schema-changed`) o el origen que no contesta (S6e): entonces lleva ese
+  motivo. Al leer, `dataAsOf` es la hora de la lectura. Pintarla `unknown` llenaría de gris todo
+  lo que es en vivo por diseño, y `healthy` sin medida lo prohíbe §2.
+- **D-S6-2 · Needs attention.** **Recomendación:** que sean `degraded` y `warning`. `unknown` va
+  aparte, como «Unverified», con su propio filtro: §3.3 lo cuenta aparte, y mezclarlo ahogaría lo
+  urgente en lo que sólo no está comprobado (los objetos, el SFTP y el JSONL no tienen señal todavía).
+- **D-S6-3 · La salud del origen (S6e) entra en S6.** **Recomendación: sí**, porque sale de las
+  copias y no cuesta nada. Lo que exige preguntar al origen entre pasadas sigue en la capa 1 (S10).
+
+**Lo que S6 deja fuera:**
+- **Que un build se pare** ante una entrada degradada: eso es S7, con las promesas `Blocking`.
+- **Lo que vive en otra celda** (0059): una ref `rota` no propaga.
+- **«Construido con una versión vieja de su entrada»** (la entrada se refrescó después del build):
+  S6b lo hace honesto en `dataAsOf`, pero no lo nombra como motivo. Si hace falta, lo hará un motivo
+  `x-` o una versión de la spec.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
