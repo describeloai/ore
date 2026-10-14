@@ -1046,7 +1046,10 @@ export async function write(name, data, options) {
     if (p.status !== 0) throw new Error(`write(): ${(p.stderr?.toString("utf8") ?? "").trim().replace(/^error: /, "") || "the writer failed"}`);
     escrito = JSON.parse(p.stdout.toString("utf8"));
     claveOperacion = escrito.operacion || claveOperacion;
-    const [c, r] = await puesto.pedir("POST", v1Tabla(nombre), { identifier: { namespace: [ns], name: t }, requirements: escrito.requirements, updates: escrito.updates }, 120_000);
+    // La identidad de ESTE commit (la spec REST de Iceberg, `Idempotency-Key`):
+    // un UUIDv7 por commit construido. Sus reintentos la repiten y el catálogo
+    // no la aplica dos veces; tras un 409 el commit es otro (otra base): otra clave.
+    const [c, r] = await confirmar(v1Tabla(nombre), { identifier: { namespace: [ns], name: t }, requirements: escrito.requirements, updates: escrito.updates }, { "Idempotency-Key": uuid7() });
     if (c === 200) {
       const snap = r?.metadata?.["current-snapshot-id"];
       // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
@@ -1054,21 +1057,48 @@ export async function write(name, data, options) {
       return conAlias({ table: nombre, rows: escrito.filas, snapshot: String(snap ?? ""), metadata_location: r?.["metadata-location"] ?? "", operation: claveOperacion, repeated: base !== null && r?.["metadata-location"] === base });
     }
     if (c === 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
-    if (c >= 500) {
-      // el commit pudo entrar: se MIRA antes de darlo por perdido
-      const [c2, r2] = await puesto.pedir("GET", v1Tabla(nombre));
-      if (c2 === 200) {
-        const md = r2.metadata;
-        const vigente = (md.snapshots ?? []).find((x) => x["snapshot-id"] === md["current-snapshot-id"]);
-        if (vigente?.summary?.["ore.operacion"] === claveOperacion) {
-          return conAlias({ table: nombre, rows: escrito.filas, snapshot: String(md["current-snapshot-id"]), metadata_location: r2["metadata-location"], operation: claveOperacion, repeated: false });
-        }
-      }
-      throw new Error(`write(${nombre}): the catalog answered ${c} and the commit is not there: ${mensajeDe(r)}`);
+    if (c >= 500 || c === 0) {
+      throw new Error(`write(${nombre}): the catalog answered ${c || "nothing"} ${ESPERAS_MS.length + 1} times; every retry carried the same Idempotency-Key, so nothing was written twice: ${mensajeDe(r)}`);
     }
     throw new Error(`write(${nombre}): ${mensajeDe(r)}`);
   }
   throw new Error(`write(${nombre}): someone else wrote first four times; try again`);
+}
+
+/** Un UUIDv7 (RFC 9562): 48 bits de milisegundos, la versión, y azar. */
+function uuid7() {
+  const b = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  let ms = BigInt(Date.now());
+  for (let i = 5; i >= 0; i--) { b[i] = Number(ms & 0xffn); ms >>= 8n; }
+  b[6] = (b[6] & 0x0f) | 0x70;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+// Las esperas entre los reintentos de un commit: tres más, ~3,5 s.
+const ESPERAS_MS = [500, 1000, 2000];
+
+/**
+ * El commit al catálogo, y sus reintentos **con la misma `Idempotency-Key`**
+ * cuando la red o el catálogo fallan: un 5xx, un corte, o un 503 de un proxy
+ * después de que el commit SÍ entrara. Con la misma clave el catálogo contesta
+ * lo que hay sin aplicar nada dos veces (`docs/idempotencia.md`), así que
+ * reintentar es seguro. `[0, {error}]` si la red no contestó nunca.
+ */
+async function confirmar(ruta, cuerpo, cabeceras) {
+  let ultimo = [0, { error: "no answer" }];
+  for (const espera of [0, ...ESPERAS_MS]) {
+    if (espera) await new Promise((ok) => setTimeout(ok, espera));
+    try {
+      const [c, r] = await puesto.pedir("POST", ruta, cuerpo, 120_000, cabeceras);
+      if (c < 500) return [c, r];
+      ultimo = [c, r];
+    } catch (e) {
+      ultimo = [0, { error: String(e?.message ?? e) }]; // la red: un corte, un plazo
+    }
+  }
+  return ultimo;
 }
 
 // ── El JSON de la consola (0032 §1) ───────────────────────────────────────

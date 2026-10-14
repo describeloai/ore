@@ -105,6 +105,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+import uuid
 import warnings
 
 MAGIA = b"ORECOPY1"
@@ -2602,8 +2603,12 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
             peticion["esbozo"] = esbozo
         escrito = _escribir_ficheros(binario, env, peticion, ipc)
         clave = escrito.get("operacion") or clave
-        c, r = session.pedir("POST", _v1_tabla(nombre),
-                            {"identifier": {"namespace": [ns], "name": t}, "requirements": escrito["requirements"], "updates": escrito["updates"]}, plazo=120)
+        # La identidad de ESTE commit (la spec REST de Iceberg, `Idempotency-Key`):
+        # un UUIDv7 por commit construido. Sus reintentos la repiten y el catálogo
+        # no la aplica dos veces; tras un 409 el commit es otro (otra base): otra clave.
+        c, r = _confirmar(_v1_tabla(nombre),
+                          {"identifier": {"namespace": [ns], "name": t}, "requirements": escrito["requirements"], "updates": escrito["updates"]},
+                          {"Idempotency-Key": _uuid7()})
         if c == 200:
             snap = ((r or {}).get("metadata") or {}).get("current-snapshot-id")
             # la misma operación ya estaba: el catálogo contesta con lo que hay
@@ -2616,19 +2621,49 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
         if c == 409:
             # alguien escribió mientras tanto (o la tabla nació): otra vez sobre lo que hay
             continue
-        if c >= 500:
-            # el commit pudo entrar: se MIRA antes de reintentar
-            c2, r2 = session.pedir("GET", _v1_tabla(nombre))
-            if c2 == 200:
-                md = r2["metadata"]
-                vigente = [s for s in md.get("snapshots", []) if s.get("snapshot-id") == md.get("current-snapshot-id")]
-                if vigente and vigente[0].get("summary", {}).get("ore.operacion") == clave:
-                    return _Result({"table": nombre, "rows": escrito["filas"], "snapshot": str(md.get("current-snapshot-id")),
-                                    "metadata_location": r2["metadata-location"], "operation": clave, "repeated": False,
-                                    "mode": mode, "added": escrito.get("anadidas", 0), "before": escrito.get("antes", 0)})
-            raise RuntimeError("write(%s): the catalog answered %s and the commit is not there: %s" % (nombre, c, _mensaje(r)))
+        if c >= 500 or c == 0:
+            raise RuntimeError("write(%s): the catalog answered %s %d times; every retry carried the same "
+                               "Idempotency-Key, so nothing was written twice: %s" % (nombre, c or "nothing", len(_ESPERAS) + 1, _mensaje(r)))
         raise RuntimeError("write(%s): %s" % (nombre, _mensaje(r)))
     raise RuntimeError("write(%s): four times someone else wrote first; try again" % nombre)
+
+
+def _uuid7():
+    """Un UUIDv7 (RFC 9562): 48 bits de milisegundos, la versión, y azar.
+    `uuid.uuid7()` llega en Python 3.14 (la imagen del puesto); fuera de ella
+    —el CI corre con el Python del sistema— se construye igual a mano."""
+    if hasattr(uuid, "uuid7"):
+        return str(uuid.uuid7())
+    b = bytearray(os.urandom(16))
+    b[0:6] = (time.time_ns() // 1_000_000).to_bytes(6, "big")
+    b[6] = (b[6] & 0x0F) | 0x70
+    b[8] = (b[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(b)))
+
+
+# Las esperas entre los reintentos de un commit (segundos): tres más, ~3,5 s.
+_ESPERAS = (0.5, 1.0, 2.0)
+
+
+def _confirmar(ruta, cuerpo, cabeceras):
+    """El commit al catálogo, y sus reintentos **con la misma `Idempotency-Key`**
+    cuando la red o el catálogo fallan: un 5xx, un corte, o un 503 de un proxy
+    después de que el commit SÍ entrara. Con la misma clave el catálogo contesta
+    lo que hay sin aplicar nada dos veces (`docs/idempotencia.md`), así que
+    reintentar es seguro. `(0, {error})` si la red no contestó nunca."""
+    ultimo = (0, {"error": "no answer"})
+    for espera in (0,) + _ESPERAS:
+        if espera:
+            time.sleep(espera)
+        try:
+            c, r = session.pedir("POST", ruta, cuerpo, plazo=120, cabeceras=cabeceras)
+        except OSError as e:  # urllib.error.URLError, socket.timeout: la red
+            ultimo = (0, {"error": str(e)})
+            continue
+        if c < 500:
+            return c, r
+        ultimo = (c, r)
+    return ultimo
 
 
 # ── El JSON de la consola (0032 §1) ───────────────────────────────────────

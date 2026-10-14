@@ -1729,7 +1729,10 @@ public final class Ore {
             Map<String, Object> commit = new LinkedHashMap<>();
             commit.put("identifier", Map.of("namespace", List.of(ns), "name", t));
             commit.put("requirements", escrito.get("requirements")); commit.put("updates", escrito.get("updates"));
-            Respuesta c = puesto.pedir("POST", v1Tabla(nombre), commit, Duration.ofSeconds(120));
+            // La identidad de ESTE commit (la spec REST de Iceberg, `Idempotency-Key`):
+            // un UUIDv7 por commit construido. Sus reintentos la repiten y el catálogo
+            // no la aplica dos veces; tras un 409 el commit es otro (otra base): otra clave.
+            Respuesta c = confirmar(v1Tabla(nombre), commit, Map.of("Idempotency-Key", uuid7()));
             if (c.codigo() == 200) {
                 Map<String, Object> md = (Map<String, Object>) c.cuerpo().get("metadata");
                 Result out = new Result();
@@ -1740,27 +1743,58 @@ public final class Ore {
                 return alInforme(out);
             }
             if (c.codigo() == 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
-            if (c.codigo() >= 500) {
-                // el commit pudo entrar: se MIRA antes de darlo por perdido
-                Respuesta v = puesto.pedir("GET", v1Tabla(nombre), null, Duration.ofSeconds(30));
-                if (v.codigo() == 200) {
-                    Map<String, Object> md = (Map<String, Object>) v.cuerpo().get("metadata");
-                    Object actual = md.get("current-snapshot-id");
-                    for (Object sn : (List<Object>) md.getOrDefault("snapshots", List.of())) {
-                        Map<String, Object> m = (Map<String, Object>) sn;
-                        if (String.valueOf(m.get("snapshot-id")).equals(String.valueOf(actual)) && m.get("summary") instanceof Map<?, ?> su && claveOperacion.equals(String.valueOf(su.get("ore.operacion")))) {
-                            Result out = new Result();
-                            out.put("table", nombre); out.put("rows", escrito.get("filas")); out.put("snapshot", String.valueOf(actual));
-                            out.put("metadata_location", String.valueOf(v.cuerpo().get("metadata-location"))); out.put("operation", claveOperacion); out.put("repeated", false);
-                            return alInforme(out);
-                        }
-                    }
-                }
-                throw new IllegalStateException("write(" + nombre + "): the catalog answered " + c.codigo() + " and the commit is not there: " + mensajeDe(c));
+            if (c.codigo() >= 500 || c.codigo() == 0) {
+                throw new IllegalStateException("write(" + nombre + "): the catalog answered " + (c.codigo() == 0 ? "nothing" : String.valueOf(c.codigo()))
+                    + " " + (ESPERAS_MS.length + 1) + " times; every retry carried the same Idempotency-Key, so nothing was written twice: " + mensajeDe(c));
             }
             throw new IllegalStateException("write(" + nombre + "): " + mensajeDe(c));
         }
         throw new IllegalStateException("write(" + nombre + "): someone else wrote first four times; try again");
+    }
+
+    /** Un UUIDv7 (RFC 9562): 48 bits de milisegundos, la versión, y azar. */
+    static String uuid7() {
+        byte[] b = new byte[16];
+        new java.security.SecureRandom().nextBytes(b);
+        long ms = System.currentTimeMillis();
+        for (int i = 5; i >= 0; i--) { b[i] = (byte) (ms & 0xff); ms >>>= 8; }
+        b[6] = (byte) ((b[6] & 0x0f) | 0x70);
+        b[8] = (byte) ((b[8] & 0x3f) | 0x80);
+        long alto = 0, bajo = 0;
+        for (int i = 0; i < 8; i++) alto = (alto << 8) | (b[i] & 0xff);
+        for (int i = 8; i < 16; i++) bajo = (bajo << 8) | (b[i] & 0xff);
+        return new java.util.UUID(alto, bajo).toString();
+    }
+
+    /** Las esperas entre los reintentos de un commit: tres más, ~3,5 s. */
+    static final long[] ESPERAS_MS = {500, 1000, 2000};
+
+    /**
+     * El commit al catálogo, y sus reintentos <b>con la misma {@code Idempotency-Key}</b> cuando la
+     * red o el catálogo fallan: un 5xx, un corte, o un 503 de un proxy (que ni siquiera trae JSON)
+     * después de que el commit SÍ entrara. Con la misma clave el catálogo contesta lo que hay sin
+     * aplicar nada dos veces ({@code docs/idempotencia.md}), así que reintentar es seguro.
+     * Código 0 si la red no contestó nunca.
+     */
+    static Respuesta confirmar(String ruta, Object cuerpo, Map<String, String> cabeceras) throws InterruptedException {
+        Map<String, Object> sinRespuesta = new LinkedHashMap<>();
+        sinRespuesta.put("error", "no answer");
+        Respuesta ultimo = new Respuesta(0, sinRespuesta);
+        for (int i = 0; i <= ESPERAS_MS.length; i++) {
+            if (i > 0) Thread.sleep(ESPERAS_MS[i - 1]);
+            try {
+                Respuesta r = puesto.pedir("POST", ruta, cuerpo, Duration.ofSeconds(120), cabeceras);
+                if (r.codigo() < 500) return r;
+                ultimo = r;
+            } catch (InterruptedException e) {
+                throw e;
+            } catch (Exception e) { // la red (un corte, un plazo) o un cuerpo que no es JSON
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("error", String.valueOf(e.getMessage()));
+                ultimo = new Respuesta(0, m);
+            }
+        }
+        return ultimo;
     }
 
     /** 0049 JM3 · en un build cuya salida es una colección escrita: lo confirmado va al informe (los ítems, la transacción). */
