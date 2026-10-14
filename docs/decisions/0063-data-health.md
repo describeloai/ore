@@ -1114,6 +1114,85 @@ gobierno: el agente no puede crearla).
   S6b lo hace honesto en `dataAsOf`, pero no lo nombra como motivo. Si hace falta, lo hará un motivo
   `x-` o una versión de la spec.
 
+### S6 · cerrado (2026-10-14)
+
+Lo que faltaba de S6, hecho:
+
+- **S6d · el bloque con cada lectura** (`8e58f341`, `5997ee80`). Un ayudante de ore-serve,
+  `salud_del_activo`, da la salud del índice anotado, con el linaje. La llevan:
+  - la vista previa (lo leído en vivo, sin nada sabido, es de ese momento: `leido_en_vivo`);
+  - `datos_en`, es decir el SQL y el Python del puesto y lo que calcula `ore-motor`;
+  - una función de modelo encolada, con la salud de su `over`;
+  - `POST /vistas/…/ejecutar`, que es `ore ask` servido;
+  - y la cabecera de `ore ask` en local.
+
+  El servidor MCP de `ore-cli` no sirve datos (`ontology_schema`, `ontology_describe`): no hay
+  bloque que llevar. **Medido:** las cuatro vistas previas lo llevan, entre 1,3 y 5,3 s. La vista
+  sobre la colección S3 caída sale `warning` con su raíz, y la tabla en vivo `healthy` con la hora
+  de la lectura.
+- **S6b · lo escrito sabe de cuándo es** (`377dc1b0`). El SDK anota el `dataAsOf` de cada cosa que
+  lee y lo deja en la procedencia; al registrar, el puntero toma el más viejo, o `null` si de
+  alguna entrada no se sabe. Falta medirlo con un puesto nuevo, el de la imagen nueva.
+- **S6g · el asistente** (consola `8449835`, local). `ejecutar_vista` le pasa la salud, en corto y
+  antes de las filas, y el prompt del sistema lleva la política: `degraded` se dice al empezar,
+  `warning` con su causa, `unknown` con su hora.
+- **S6f · la consola** (local): ver «S6e, hecho».
+
+### S7 · el diseño (propuesto, 2026-10-14)
+
+**Lo que hay.**
+- La spec ya tiene el documento: el `Ruleset` de v1alpha3, con `targets` y `assertions` en el
+  perfil de `quality` de ODCS (`type: library` y `sql`; `metric`, `mustBe`, `mustBeBetween`;
+  `dimension` y `severity`).
+- Pero hoy un `Ruleset` **solo apunta a propiedades** (`atLeast` por etiqueta, `named` por
+  nombre) y **nadie evalúa sus aserciones**: cuentan para la cobertura de gobierno y nada más.
+- La única promesa que se juzga es `Dataset.freshness` (al leer, S2).
+- La copia ya mide, en su pasada, las filas y los no nulos de cada columna (`ore-store`,
+  `ciclo.rs`, sobre los lotes de Arrow): ese es el sitio de lo demás.
+
+**Las piezas**
+
+| | Pieza | Qué | Dónde |
+|---|---|---|---|
+| **S7a** | **La gramática** (D-D) | v1alpha31: un `Ruleset` puede nombrar **activos**. Un tercer objetivo, `assets: [<base>.<schema>.<nombre>, …]` (o una base o un schema entero), al lado de `atLeast` y `named`. Y una aserción `library` sobre un activo dice su `column`. `severity: error` es **Blocking** y `warning` es **Warning** (el vocabulario de la visión). `Dataset.freshness` sigue siendo la *Fresh within* de su dataset, como decidió D-D | `C:\oos` (v1alpha31, `02-ruleset` y su esquema), `ore-core` (compilar, diagnósticos) |
+| **S7b** | **Lo que se mide en la misma pasada** | Las métricas `library` de ODCS que no cuestan otra lectura: `rowCount`; `nullValues` y `missingValues` (de lo que ya se cuenta); `invalidValues` con `validValues` o un rango (`mustBeBetween` sobre el mínimo y el máximo de la columna); y `duplicateValues` sobre una columna (cuesta memoria: ver D-S7-2) | `ore-store` (`ciclo.rs`), `materializar.rs` |
+| **S7c** | **Retener o anotar** | La copia evalúa las aserciones que apuntan a lo que copia **antes de publicar**, por el camino de S4. Una `Blocking` que falla **retiene**: `refresh-held` con su `guard` (el `id` de la aserción). Una `Warning` publica y anota: `guard-warning` con su `guard`. El resultado de cada una queda en el puntero, `promesas: [{id, resultado, medido, esperado}]` (D-A), y *Publish anyway* sigue valiendo | `materializar.rs`, `ore-core/salud.rs` |
+| **S7d** | **El build se para** (la experiencia 10) | Un build (0055) mira la salud de sus entradas: si una tiene su último refresco retenido por una promesa `Blocking`, **no construye** y lo dice, con *Build anyway*. Con `degraded` sin `Blocking`, construye y la salida lo hereda por el linaje (S6a) | `ore-serve` (`builds.rs`) |
+| **S7e** | **La consola** | La sección *Promises* de la pestaña Health: cada promesa con su resultado, lo medido y lo esperado. *Add promise*, con plantillas de lo observado («1 000 rows each refresh: promise *rowCount ≥ 900*?»), que escribe el `Ruleset` en una rama y abre su propuesta (0044) | consola |
+
+**La vara crece:**
+- **C13:** una promesa `Blocking` `rowCount ≥ 900` sobre `vara_pg` retiene una pasada de 500 filas.
+- **C14:** una `Warning` `nullValues(cliente) = 0` publica y lo anota (el 10 % de `cliente` es nulo).
+- **C15:** un build sobre lo retenido no construye.
+
+**Lo que se mide además:**
+- lo que cuesta S7b por pasada (segundos y memoria) en `vara_pg` y en la copia más grande de
+  `victor`;
+- que una copia sin promesas no cambie ni un byte de su puntero.
+
+**Las decisiones que pide S7**
+
+- **D-S7-1 · Dónde se escriben las promesas.** **Recomendación:** en el `Ruleset` (D-D), con el
+  objetivo `assets`. Así una regla tiene dueño, versión y propuesta propios, y quien responde de
+  la calidad puede no ser quien escribe el dataset. Lo otro sería `promises:` dentro del
+  `Dataset`: más cerca, pero mezcla al dueño del dato con quien lo exige, que es lo que el
+  `Ruleset` existe para separar.
+- **D-S7-2 · `duplicateValues` en la pasada.** Contar duplicados exige recordar cada valor de la
+  columna. **Recomendación:** sí, exacto, y con un tope de memoria declarado. Si se pasa, la
+  aserción sale `unknown` («too many values to check in the copy») y no `pass`. La alternativa
+  aproximada (HyperLogLog) no sirve para una promesa: «casi sin duplicados» no es una respuesta.
+- **D-S7-3 · El build ante una entrada retenida.** **Recomendación:** pararlo, con *Build anyway*.
+  Lo que se sirve de esa entrada es la última versión buena, que sí cumplía. Pero construir
+  encima propaga datos que alguien declaró que no deben avanzar, y el *circuit breaker* es la
+  experiencia 10 de la visión.
+
+**Lo que S7 deja fuera:**
+- **Las aserciones `sql`:** cuestan su consulta y van en S13, en la capa 2.
+- **Las sugerencias aprendidas** (S14): S7e solo propone plantillas de lo que ya está en el
+  puntero.
+- **Los avisos al dueño** (S11).
+- **Importar y exportar ODCS:** el perfil ya está; el traductor, después.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
