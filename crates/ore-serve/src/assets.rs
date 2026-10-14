@@ -570,6 +570,40 @@ impl Servidor {
         }
     }
 
+    /// **0063 S6d · La salud de un activo, para que viaje con lo que se lee**
+    /// (v1alpha30 §3.1): la del índice anotado, con el linaje (S6a), por su
+    /// nombre cualificado. De lo que el índice tiene con ese nombre, la copia
+    /// antes que la vista y que la tabla. `None`: no está, o es en vivo sin
+    /// nada sabido (quien lee en vivo pone la de su lectura).
+    pub(crate) fn salud_del_activo(&self, rama: Option<&str>, qn: &str) -> Option<Json> {
+        let r = self.assets(rama, None);
+        if r.codigo != 200 {
+            return None;
+        }
+        let corto = ore_core::normalize::a_corto(qn);
+        let Json::Obj(m) = &r.cuerpo else { return None };
+        let Some(Json::Obj(items)) = m.get("items") else {
+            return None;
+        };
+        ["dataset", "collection", "view", "table", "objecttable"]
+            .iter()
+            .find_map(|k| match items.get(&format!("{k}:{corto}")) {
+                Some(Json::Obj(it)) => it.get("salud").cloned(),
+                _ => None,
+            })
+    }
+
+    /// Pone `salud` en una respuesta 200 que es un objeto, si se sabe.
+    pub(crate) fn con_salud(&self, mut r: Respuesta, rama: Option<&str>, qn: &str) -> Respuesta {
+        if r.codigo / 100 == 2
+            && let Some(s) = self.salud_del_activo(rama, qn)
+            && let Json::Obj(m) = &mut r.cuerpo
+        {
+            m.insert("salud".into(), s);
+        }
+        r
+    }
+
     /// `GET /assets` (la rama, por la cabecera) y `GET /assets/{commit}`.
     pub(crate) fn assets(&self, rama: Option<&str>, commit: Option<&str>) -> Respuesta {
         let rama = rama.map(str::to_string);

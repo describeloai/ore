@@ -836,6 +836,23 @@ impl Servidor {
 
     /// Lanza lo decidido: un trabajo con el arnés como celda, lo declarado
     /// como techo de lo que lee y nada que escribir.
+    /// ⭐ 0063 S6d · Una función de modelo encolada (202) lleva la salud de lo
+    /// que va a leer (`over`), tal como está al encolarla: quien invoca sabe de
+    /// cuándo son los datos y si se sirve lo último bueno (v1alpha30 §3.1).
+    pub(crate) fn con_salud_de_over(&self, r: Respuesta) -> Respuesta {
+        let over = match &r.cuerpo {
+            Json::Obj(m) => match m.get("over") {
+                Some(Json::Str(o)) => Some(o.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        match over {
+            Some(o) => self.con_salud(r, None, &o),
+            None => r,
+        }
+    }
+
     pub(crate) fn lanzar_funcion(&self, sujeto: &Identidad, plan: PlanPython) -> Respuesta {
         let rama = match self.rama_para_trabajo(sujeto) {
             Ok(r) => r,

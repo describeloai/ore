@@ -736,6 +736,23 @@ pub fn del_origen<'a>(
     ))
 }
 
+/// **Una lectura en vivo que fue bien** (0063 S6d, v1alpha30 §3.1): lo leído
+/// es del origen en ese momento. `dataAsOf` y `checkedAt` son la hora de la
+/// lectura, y la medida es la lectura misma: `healthy`, sin motivos.
+pub fn leido_en_vivo(ahora: i64, capas: (bool, bool)) -> Json {
+    let hoy = crate::frescura::iso(ahora);
+    armar(
+        "healthy",
+        Some(hoy.clone()),
+        Some(hoy),
+        Some(0),
+        Some(0),
+        None,
+        vec![],
+        capas,
+    )
+}
+
 /// **La suma de un ámbito** (una base, un schema, el árbol): cuántos en cada
 /// estado, con lo desconocido aparte (§3.3: nunca como sano). Y
 /// `needsAttention` (0063 D-S6-2): lo `degraded`, lo `warning` y lo que nunca
@@ -1127,6 +1144,13 @@ mod tests {
         // Y la tabla en vivo de la copia caída lo dice también.
         let t = en_vivo(&motivos_de(&caida), (false, false)).unwrap();
         assert_eq!(motivos(&t), ["source-unreachable"]);
+    }
+
+    #[test]
+    fn lo_leido_en_vivo_es_de_ahora() {
+        let b = leido_en_vivo(ahora(), (false, false));
+        assert_eq!(estado(&b), "healthy");
+        assert!(b.jcs().contains(&format!(r#""dataAsOf":"{AHORA}""#)));
     }
 
     #[test]

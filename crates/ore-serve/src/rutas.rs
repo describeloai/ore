@@ -1143,7 +1143,7 @@ impl Servidor {
                 });
                 match plan.into_inner() {
                     Some(plan) => self.lanzar_funcion(sujeto, plan),
-                    None => r,
+                    None => self.con_salud_de_over(r),
                 }
             }
             // 0038 P6c: `{ns}/{n}` es de `default`; `{b}/{s}/{n}`, de su schema.
@@ -1173,7 +1173,7 @@ impl Servidor {
                     self.leyendo(|r| self.invocar(r, &ns, &schema, &n, sujeto, &p.cuerpo, &plan));
                 match plan.into_inner() {
                     Some(plan) => self.lanzar_funcion(sujeto, plan),
-                    None => r,
+                    None => self.con_salud_de_over(r),
                 }
             }
             // ── 0030 W1 ④ · la pregunta, servida (`preguntar.rs`) ──────────
@@ -1182,15 +1182,18 @@ impl Servidor {
             ("POST", ["vistas", ns, n, "ejecutar"]) => {
                 let (ns, n) = (ns.to_string(), n.to_string());
                 let cuerpo = p.cuerpo.clone();
-                self.leyendo_en(rama, move |r| {
+                let r = self.leyendo_en(rama, |r| {
                     self.ejecutar(r, &ns, ore_core::normalize::SCHEMA_POR_DEFECTO, &n, &cuerpo)
-                })
+                });
+                // 0063 S6d: la salud de la vista viaja con sus filas.
+                self.con_salud(r, rama, &format!("{ns}.{n}"))
             }
             // 0038: con su schema, `/vistas/{base}/{schema}/{n}/ejecutar`.
             ("POST", ["vistas", b, s, n, "ejecutar"]) => {
                 let (b, s, n) = (b.to_string(), s.to_string(), n.to_string());
                 let cuerpo = p.cuerpo.clone();
-                self.leyendo_en(rama, move |r| self.ejecutar(r, &b, &s, &n, &cuerpo))
+                let r = self.leyendo_en(rama, |r| self.ejecutar(r, &b, &s, &n, &cuerpo));
+                self.con_salud(r, rama, &ore_core::normalize::corto(&b, &s, &n))
             }
             // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
             // El kind se resuelve contra `documentos::KINDS`: un kind que no

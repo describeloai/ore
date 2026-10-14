@@ -125,6 +125,21 @@ impl Servidor {
             }
             _ => self.en_vivo(p, sujeto, b, s, n, desde, limite),
         };
+        // ⭐ 0063 S6d · La salud viaja con lo que se ve (v1alpha30 §3.1): la
+        //   del índice, con el linaje; lo leído en vivo, si nada se sabe de
+        //   ello, es de este momento.
+        let qn = ore_core::normalize::corto(b, s, n);
+        let mut r = self.con_salud(r, rama, &qn);
+        if r.codigo == 200
+            && let Json::Obj(m) = &mut r.cuerpo
+            && !m.contains_key("salud")
+            && !matches!(kind, "dataset")
+        {
+            m.insert(
+                "salud".into(),
+                ore_core::salud::leido_en_vivo(crate::salud::ahora(), (false, false)),
+            );
+        }
         con_consulta(r, &consulta)
     }
 

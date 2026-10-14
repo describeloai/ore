@@ -2733,10 +2733,14 @@ impl Servidor {
                 if let Json::Obj(m) = &mut de_main.cuerpo {
                     m.insert("rama".into(), Json::s("main"));
                 }
-                return de_main;
+                // 0063 S6d: la salud, la de `main`, de donde sale.
+                return self.con_salud(de_main, None, &vista);
             }
         }
-        r
+        // ⭐ 0063 S6d · La salud con el linaje (S6a): la del índice manda
+        //   sobre la del puntero solo, que no sabe de lo que hay debajo; y una
+        //   View sin copia, que no tiene puntero, la lleva también.
+        self.con_salud(r, rama.as_deref(), &vista)
     }
 
     /// `POST /puestos/{id}/transform {nombre, inputs, output}` y
