@@ -1185,7 +1185,7 @@ spec:
   promises:
     - id: volumen
       metric: rowCount
-      mustBeGreaterThanOrEqualTo: 900
+      mustBeGreaterOrEqualTo: 900
       severity: error              # Blocking: si falla, la pasada no publica
     - id: sin-caidas
       metric: rowCountChange       # contra la versión publicada anterior
@@ -1196,7 +1196,7 @@ spec:
       column: cliente
       metric: nullValues
       unit: percent
-      mustBeLessThanOrEqualTo: 1
+      mustBeLessOrEqualTo: 1
       severity: warning            # Warning: publica y lo anota
     - id: id-unico
       column: id
@@ -1229,9 +1229,9 @@ spec:
 ```
 
 Cada promesa: `id` único en su activo, `metric` de la biblioteca de su familia, `column` cuando la
-métrica es de columna, `unit` (`count` por defecto, o `percent`), `arguments` si la métrica los
-pide, un solo comparador (`mustBe`, `mustNotBe`, `mustBeGreaterThan[OrEqualTo]`,
-`mustBeLessThan[OrEqualTo]`, `mustBeBetween`) y `severity` (`error` = **Blocking**, `warning` =
+métrica es de columna, `unit` (`rows` por defecto, o `percent`), `arguments` si la métrica los
+pide, un solo comparador (`mustBe`, `mustNotBe`, `mustBeGreaterThan`, `mustBeGreaterOrEqualTo`,
+`mustBeLessThan`, `mustBeLessOrEqualTo`, `mustBeBetween`, `mustNotBeBetween`) y `severity` (`error` = **Blocking**, `warning` =
 **Warning**). `description` opcional, para la consola.
 
 **La biblioteca, por familia.**
@@ -1313,6 +1313,52 @@ releen el dato para medirlo, y aquí la medida va montada en la pasada. Construi
 - **Las sugerencias aprendidas y la deriva** (S12, S14): S7f solo propone plantillas de lo medido.
 - **Los avisos al dueño** (S11) y el **`Ruleset` que exige desde fuera** (S15).
 - **Importar y exportar ODCS:** los nombres ya cuadran; el traductor, después.
+
+### S7a · el plan (propuesto, 2026-10-14)
+
+**Lo que S7a deja hecho:** un `Dataset` o una `MediaCollection` pueden declarar `promises`, y el
+compilador las acepta o dice exactamente qué está mal. Todavía no se mide ni se juzga nada (S7b–S7d):
+una promesa bien escrita compila y no cambia ninguna pasada.
+
+**Lo que ya hay y se aprovecha.**
+- La forma de la aserción ya está en la spec: la `assertion` del `Ruleset` de v1alpha3 (perfil de
+  ODCS v3.1), con `metric`, los operadores de ODCS (`mustBe`, `mustNotBe`, `mustBeGreaterThan`,
+  `mustBeGreaterOrEqualTo`, `mustBeLessThan`, `mustBeLessOrEqualTo`, `mustBeBetween`,
+  `mustNotBeBetween`), `unit: rows | percent` y `severity: error | warning`. La promesa es esa
+  aserción, de tipo `library`, con lo que le falta: `column`, `arguments` y las métricas nuevas.
+- Las claves de `spec` van por versión del documento (`document.rs`): basta con
+  `Kind::Dataset if version >= V1Alpha31` y lo mismo en `MediaCollection`. Un documento anterior
+  que escriba `promises` da `OOS1005` sin código nuevo.
+- `View`, `Table` y `ObjectTable` no admiten la clave, así que **«promesa sin pasada» es `OOS1005`**
+  (con el remedio en el mensaje: va en el `Dataset` o la colección que lo copia).
+- *Accept the new schema* (`esquema.rs`) solo reescribe el bloque `fields`: `promises` se conserva
+  sola, y una columna que se va sale en los diagnósticos de la propuesta (paso 5) con `OOS2052`.
+- Subir un `Dataset` o una `MediaCollection` de v1alpha12–19 a v1alpha31 es neutro: entre medias
+  solo cambian `media` (v1alpha29, que se amplía) y nada del `Dataset`.
+
+**Los pasos.** Cada uno se compila y se prueba (fmt, clippy `-D warnings`, tests) y se empuja solo.
+
+| Paso | Qué | Dónde | Hecho cuando |
+|---|---|---|---|
+| **S7a·1** | **La spec v1alpha31.** `00-scope` y `01-las-promesas` (gramática, biblioteca por familia, `no-vaciarse`, la puerta del documento, lo que no se comprueba en S7). `promise.schema.json` (la aserción de v1alpha3 + `column`, `arguments`, métricas por familia), `dataset.schema.json` y `media-collection.schema.json` de v1alpha31. Dos filas en `99-errors`. Casos: 4 válidos (dataset copiado, dataset escrito, colección, `no-vaciarse` ablandada) y 7 inválidos (antes de v1alpha31, en una `View`, métrica de otra familia, sin comparador, dos comparadores, columna que no existe, `id` repetido) | `C:\oos` | los casos escritos y el commit en `oos` |
+| **S7a·2** | **El catálogo y el compilador.** `ApiVersion::V1Alpha31`; `promises` en las claves de `Dataset` y `MediaCollection`; las listas nuevas en `normalize` (`promises` secuencia; `validValues`, `missingValues`, `formats`, `families` conjuntos; `mustBeBetween` y `between` secuencias). `ore_core::promesas`: la **biblioteca** (métrica → familia, si lleva `column`, qué `arguments` y qué `unit` admite) y `validar`, que emite `OOS1006` (promesa mal formada, con el porqué) y `OOS2052` (columna que el activo no declara: `fields` en una copia, `columns` en uno escrito; si no declara ninguna, no se comprueba aquí y será `unknown` al medir) | `ore-core`, submódulo `vendor/oos` | los casos de conformidad de v1alpha31 pasan en `ore-core` |
+| **S7a·3** | **Que nada lo pierda.** Pruebas: subir la versión es neutro (mismos diagnósticos antes y después); el registro de `write()` conserva `promises` y el `apiVersion` al reescribir `columns`; *Accept the new schema* conserva `promises` y una columna quitada sale como `OOS2052`; el índice (`/assets`) lleva las promesas declaradas de cada activo (`promesas_declaradas`), para que la consola las enseñe antes de S7b | `ore-cli` (`datasets.rs`), `ore-serve` (`esquema.rs`, `assets.rs`) | las pruebas en verde y desplegado (`ore.dev/commit`) |
+
+**Por defecto, salvo que se diga otra cosa:**
+- Los nombres son los de ODCS tal cual (`mustBeGreaterOrEqualTo`, `unit: rows | percent`); las
+  métricas de objetos y `rowCountChange` son nuestras, porque ODCS no las tiene.
+- `duplicateValues` es de **una** columna en S7. La clave compuesta (`id` + `linea`) llega después:
+  `columns` ya es un mapa en el `Dataset`, y el nombre de la lista hay que pensarlo.
+- `invalidValues` con `pattern` (regex) se deja fuera de S7: cuesta por fila y no lo pide nadie aún.
+- La **puerta es del documento**: para escribir `promises` el documento sube a v1alpha31. La consola
+  (S7f) lo sube sola al añadir la primera; el inductor sigue emitiendo lo de hoy.
+
+**Lo que se mide.** Nada en producción todavía: S7a no cambia ninguna pasada. Se comprueba que el
+árbol de `victor` compila igual con el binario nuevo (sin diagnósticos nuevos) y que un `Dataset` de
+la vara con promesas en una rama compila sin ruido.
+
+**Orden y tiempo:** S7a·1 → S7a·2 → S7a·3, cada uno en su commit. S7a·2 es el grueso; S7a·1 y S7a·3,
+cortos.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
