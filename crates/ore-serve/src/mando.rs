@@ -207,6 +207,7 @@ pub fn correr_con(
     entorno: &[(String, String)],
 ) -> Result<Salida, Negado> {
     permitido(args)?;
+    let t = std::time::Instant::now();
     let salida = Command::new(binario)
         .args(args)
         .envs(entorno.iter().map(|(k, v)| (k.as_str(), v.as_str())))
@@ -216,6 +217,7 @@ pub fn correr_con(
         // lo usan — el que lo usaría es el driver, que corre en otra parte.
         .output()
         .map_err(|e| Negado::ArgumentoImposible(format!("no se pudo ejecutar `ore`: {e}")))?;
+    crate::fases::ore(t.elapsed());
     Ok(Salida {
         codigo: salida.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&salida.stdout).into_owned(),

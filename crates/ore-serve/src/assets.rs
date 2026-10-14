@@ -657,9 +657,11 @@ impl Servidor {
                     None => c,
                 };
                 let clave = cabeza.clone().map(|c| (rama_nombre.clone(), con_main(c)));
+                let t = std::time::Instant::now();
                 if let Some(k) = &clave
                     && let Some(j) = self.assets_cache.lee(k)
                 {
+                    crate::fases::indice(true, t.elapsed());
                     let mut j = (*j).clone();
                     if let Json::Obj(m) = &mut j {
                         m.insert("desde_cache".into(), Json::Bool(true));
@@ -689,6 +691,7 @@ impl Servidor {
                     );
                 }
                 let cabeza_real = crate::documentos::cabeza_de(prestado.ruta()).or(cabeza);
+                let t = std::time::Instant::now();
                 let j = indice_de(
                     prestado.ruta(),
                     Cabeza {
@@ -697,6 +700,7 @@ impl Servidor {
                         generado: Some(ahora()),
                     },
                 );
+                crate::fases::indice(false, t.elapsed());
                 let j = Arc::new(j);
                 if let Some(c) = cabeza_real {
                     self.assets_cache

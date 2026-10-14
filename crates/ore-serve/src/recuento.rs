@@ -151,6 +151,7 @@ fn clase(s: &Servidor, p: &Peticion) -> &'static str {
 ///   buzón: la respuesta no lo espera.
 pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
     let t = Instant::now();
+    crate::fases::empezar();
     let (salida, rastro) = crate::acceso::con_testigo(p, || s.atender_flujo(p));
     if p.ruta.trim_matches('/') != "salud" {
         let codigo = match &salida {
@@ -159,13 +160,18 @@ pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
             Salida::Bytes(b) => b.codigo,
         };
         let clase = clase(s, p);
+        // L1 (`fases`): dónde se fue el tiempo, al final de la línea.
+        let fases = crate::fases::resumen()
+            .map(|f| format!(" · {f}"))
+            .unwrap_or_default();
         eprintln!(
-            "acceso · {} {} · {} · {} ms · {}",
+            "acceso · {} {} · {} · {} ms · {}{}",
             p.metodo,
             patron(&p.ruta),
             codigo,
             t.elapsed().as_millis(),
-            clase
+            clase,
+            fases
         );
         // Con sujeto: alguien lo hizo.
         if matches!(clase, "persona" | "delegado" | "agente") {

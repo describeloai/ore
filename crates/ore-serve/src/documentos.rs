@@ -1675,11 +1675,13 @@ pub(crate) fn relativo(raiz: &Path, f: &Path) -> String {
 // ── Lo que dice git ─────────────────────────────────────────────────────────
 
 pub(crate) fn git(raiz: &Path, args: &[&str]) -> Option<String> {
+    let t = std::time::Instant::now();
     let s = std::process::Command::new("git")
         .current_dir(raiz)
         .args(args)
         .output()
         .ok()?;
+    crate::fases::git(args, t.elapsed());
     if !s.status.success() {
         return None;
     }

@@ -147,10 +147,12 @@ impl Forja {
         for (k, v) in self.entorno() {
             c.env(k, v);
         }
+        let t = std::time::Instant::now();
         let s = c
             .args(args)
             .output()
             .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
+        crate::fases::git(args, t.elapsed());
         let err = String::from_utf8_lossy(&s.stderr).into_owned();
         if s.status.success() {
             return Ok(String::from_utf8_lossy(&s.stdout).into_owned());
@@ -1059,11 +1061,23 @@ fn espejos() -> &'static std::sync::Mutex<std::collections::HashMap<String, std:
     E.get_or_init(Default::default)
 }
 
+/// El candado del espejo, contando lo que se esperó (L1: [`crate::fases`]).
+/// Todo lector del árbol pasa por aquí, y quien lo tiene puede estar hablando
+/// con la forja: lo que espera el resto es lo que hay que ver.
+fn bloquear<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    let t = std::time::Instant::now();
+    let g = m.lock().unwrap_or_else(|x| x.into_inner());
+    crate::fases::candado(t.elapsed());
+    g
+}
+
 impl Forja {
     /// El espejo de esta forja, creado la primera vez. Por proceso: dos
     /// servidores en la misma máquina (las pruebas) no comparten directorio.
     fn espejo(&self) -> Result<std::sync::Arc<Espejo>, Fallo> {
+        let t = std::time::Instant::now();
         let mut todos = espejos().lock().unwrap_or_else(|e| e.into_inner());
+        crate::fases::candado(t.elapsed());
         if let Some(e) = todos.get(&self.url) {
             return Ok(e.clone());
         }
@@ -1148,7 +1162,7 @@ impl Forja {
         prefijo: &str,
     ) -> Result<Vec<(Option<String>, String, String)>, Fallo> {
         let e = self.espejo()?;
-        let _a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+        let _a = bloquear(&e.estado);
         self.al_dia(&e)?;
         let d = e.dir.to_string_lossy().into_owned();
         let principal = self
@@ -1218,7 +1232,7 @@ impl Forja {
 
     fn leer_del_espejo(&self, rama: Option<&str>) -> Result<std::sync::Arc<PathBuf>, Fallo> {
         let e = self.espejo()?;
-        let mut a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+        let mut a = bloquear(&e.estado);
         self.al_dia(&e)?;
         let c = self.commit_de(&e, rama)?;
         // ⭐ 0044 C.2 ③: en una rama, lo que no tocó se lee de `main` al día, así
@@ -1307,7 +1321,7 @@ impl Forja {
         let par = (|| {
             let e = self.espejo()?;
             let (c, m) = {
-                let _a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+                let _a = bloquear(&e.estado);
                 self.al_dia(&e)?;
                 (self.commit_de(&e, Some(rama))?, self.commit_de(&e, None)?)
             };
@@ -1499,7 +1513,7 @@ impl Forja {
     fn clonar_del_espejo(&self, rama: Option<&str>) -> Result<Prestado, Fallo> {
         let e = self.espejo()?;
         {
-            let _a = e.estado.lock().unwrap_or_else(|x| x.into_inner());
+            let _a = bloquear(&e.estado);
             self.al_dia(&e)?;
             self.commit_de(&e, rama)?;
         }
