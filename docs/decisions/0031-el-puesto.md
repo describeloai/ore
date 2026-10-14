@@ -238,7 +238,10 @@ medido (abajo) fijan **siete reglas**:
    `ore-serve` tiene `objectCreator` sobre el bucket y presta menos. Retirar es del
    mantenimiento (`53`), nunca del puesto. En local (S3 de mentira) presta las credenciales
    estáticas.
-4. **Idempotente por clave de operación.** Ningún cliente la trae (medido); `write()` la pone:
+4. **Idempotente por clave de operación.** *(Sustituida el 2026-10-14: ver [La idempotencia,
+   revisada](#la-idempotencia-revisada-2026-10-14). Cotejar la huella con toda la ancestría perdía
+   A → B → A; ahora la petición lleva `Idempotency-Key` y la huella sólo se coteja con lo vigente.)*
+   Ningún cliente la trae (medido); `write()` la pone:
    `ore.operacion = sha256(sesión · celda · nombre · modo · esquema · digest de la tabla)` como
    propiedad del snapshot, y el catálogo la coteja con la ancestría de la rama antes de aplicar:
    si ya está, contesta 200 con lo que hay y **no deja snapshot ni commit** (la celda
@@ -973,6 +976,77 @@ rodea ya no lee de fuera, pero lo que lea de sus `inputs` sin decirlo no aparece
 que el dueño (`user:<handle>` de quien creó, 0052) acepte la propuesta —y, para un `team:`,
 que **ore-iam** sepa qué equipos hay—; y los sobres heredados (`clave`, `ore/v1/`)
 dejan de leerse desde un puesto con la condición puesta: demo y victor tienen **0**.
+
+## La idempotencia, revisada (2026-10-14)
+
+Sustituye la regla 4 de §11 («idempotente por clave de operación»). Origen: el caso A → B → A,
+medido en M0·d de [0064](0064-notebooks.md).
+
+**El fallo.** `write()` perdía escrituras sin avisar. En victor (`sandbox.m0d_marimo`), fuera de
+cualquier cuaderno: `write(1000)`, `write(2000)`, `write(1000)` dejaba la tabla en 2000 filas y
+contestaba `repeated: true`; de cinco escrituras se perdían tres. La clave de operación era un hash
+del contenido (`ore.operacion`), y el catálogo la buscaba en **toda la ancestría**. Confundía «lo
+acabo de escribir» (un reintento, la celda reejecutada) con «lo escribí alguna vez» (volver a un
+estado de antes, que es escribir). Afectaba a todo lo que escribe por `write()`: la sesión, los
+cuadernos, Build y los trabajos. Con `append`, un lote igual a uno de hace semanas se descartaba.
+
+**Lo que hace el estándar.** Nadie deduplica por contenido. Se separan tres problemas:
+
+| Problema | Herramienta | Quién la usa |
+|---|---|---|
+| Dos escritores a la vez | concurrencia optimista: `requirements` → 409, refrescar y reconstruir | spec REST de Iceberg; aquí, el código 75 de siempre |
+| El reintento de **la misma petición** (red, 5xx, un 503 de un proxy **después** de que el commit entró) | **`Idempotency-Key`**: un UUIDv7 por operación lógica, el mismo **sólo** en sus reintentos. El servidor contesta lo equivalente sin aplicar nada | spec REST de Iceberg; Apache Polaris 1.7 |
+| Exactamente una vez **en un pipeline** | quién escribe + una secuencia creciente | Delta (`txnAppId`/`txnVersion`); Flink → Iceberg (`flink.job-id`, `flink.max-committed-checkpoint-id`) |
+
+La identidad de una operación la pone **quien escribe**, no los datos.
+
+**La regla.** Una clave hacía dos trabajos; ahora son dos cosas:
+
+| | Qué es | Con qué se compara |
+|---|---|---|
+| **la petición** | `Idempotency-Key` (UUIDv7) por commit construido; ore-serve la escribe en el resumen del snapshot (`ore.idempotency-key`) | los snapshots de la ventana (30 min + 5 de gracia). Un UUID no reaparece: buscarlo es correcto |
+| **el contenido** | `ore.operacion`, la huella de antes (sin cambios) | **sólo el snapshot vigente**, y **sólo si no anexa** (`operation: append` en el resumen; `ore.modo` sólo lo escribe un `upsert`). Escribir lo que la tabla ya tiene no deja snapshot: no es idempotencia, es «nada que hacer» |
+
+| Caso | Antes | Ahora |
+|---|---|---|
+| A → B → A (`overwrite`) | la tercera se perdía | tres snapshots |
+| la celda reejecutada sin cambios | `repeated`, sin snapshot | igual |
+| reintento tras 5xx o 503 con el commit dentro | `GET` y comparar (fallaba si otro escribía entre medias) | el SDK reenvía con la misma clave y el catálogo contesta lo que hay |
+| 409 | reconstruir | reconstruir **con otra clave** |
+| `append` del mismo lote, a propósito | se perdía | dos snapshots |
+| un SDK viejo sin cabecera | — | sin el fallo |
+
+`repeated` significa «la tabla ya tenía exactamente esto». Un reintento por clave devuelve lo que
+contestó la primera vez: un éxito. ore-serve exige la forma de un UUID (si no, 400) y la pasa como
+UN argumento a `ore datasets --commit --idempotencia=…`. **No se anuncia** `idempotency-key-lifetime`
+en `GET /v1/config`: anunciarla promete las 18 operaciones de la spec, y aquí sólo cubre las dos que
+confirman snapshots (`updateTable`, `commitTransaction`). `createTable` sin `stage-create` queda
+fuera hasta entonces.
+
+**Un fallo que salió al probarlo.** El caso A → B → A de `el-puesto.sh` destapó que **un ciclo en
+`derivedFrom` hundía ore-serve**. Leer A, escribir B, leer B y escribir A —lo normal en un
+cuaderno— deja `a ← b ← a`, y `flow::carga_de` (la vía 3: lo escrito lleva lo que leyó) tenía una
+guarda de ciclo **de cada llamada**: bajaba sin fin hasta reventar la pila, y caía ore-serve entero,
+para todo el inquilino. Ahora la guarda es de toda la recursión (`CARGANDO`, por hilo, como la
+`DERIVANDO` de las colecciones).
+
+| Paso | Commit | Prueba |
+|---|---|---|
+| **I1** el catálogo: `--idempotencia`, `ya_esta()`, la clave en el snapshot | `852c7be6` | `cargo test` (A → B → A, la clave en su ventana) · `el-lago.sh` 8c |
+| **I2** ore-serve lee `Idempotency-Key` (UUID o 400) | `cf651786` | `la_idempotency_key_se_mira_antes_de_pasarla` · `el-lago.sh` 13c: dos `append` de PyIceberg con la misma clave anexan una vez |
+| el ciclo en el linaje | `cf1a0fda` | `un_ciclo_en_el_linaje_no_hunde_la_carga`: sin el arreglo, «has overflowed its stack» |
+| **I3** los tres SDK: UUIDv7 por commit, reintentos con la misma (0,5, 1, 2 s), otra tras un 409 | `9f295372` | `el-puesto.sh` 10, 8 y 9: A → B → A en Python, Node y Java. `uuid.uuid7()` sólo existe en 3.14: fuera, a mano |
+| **I4** en producción | `861da51d` | `pruebas-de-fuego/idempotencia/i4.py` en un puesto de victor: 1000 → 2000 → 1000 → 3000 → 1000 deja cada vez lo escrito; cada snapshot con su clave UUIDv7; lo vigente → `repeated` sin snapshot; el ciclo y un `sql()` después con `/salud` 200 |
+
+**Fuera, y por qué.** La idempotencia de **pipelines** (quién escribe + secuencia) es de Build y de
+los trabajos programados ([0055](0055-transforms-in-code-repositories.md)); va aparte. Tampoco se
+tocan `createNamespace`, `dropTable` ni las vistas.
+
+Fuentes: [la spec REST de Iceberg](https://raw.githubusercontent.com/apache/iceberg/main/open-api/rest-catalog-open-api.yaml) ·
+[Apache Polaris 1.7.0](https://datalakehousehub.com/blog/apache-polaris-1-7-0) ·
+[la lista de desarrollo de Iceberg](https://amdatalakehouse.substack.com/p/apache-iceberg-dev-mailing-list-weekly-d25) ·
+[Delta, escrituras idempotentes](https://docs.delta.io/kernel/rust/writing/idempotent_writes) ·
+[Flink → Iceberg](https://www.mintlify.com/apache/iceberg/engines/flink/writes).
 
 ## Lo que se aparca
 

@@ -85,9 +85,13 @@ polars DataFrame, a pandas Series, or an Arrow Table / RecordBatch) as the lake 
   - `"upsert"`: needs `key=[…]`, the columns that identify a row. Rows of `data` replace the rows
     with the same key, the rest are added; the key is then declared on the dataset. `key` with any
     other mode is a `ValueError`.
-- **Idempotent**: writing the same table to the same name with the same mode again leaves no new
-  snapshot (`repeated` is `True`). If someone writes at the same time, it retries on top of what
-  is there; if the catalog fails, it checks whether the commit went in before reporting an error.
+- **Idempotent**, the way the Iceberg REST spec says. Each commit carries its own
+  `Idempotency-Key` (a UUIDv7); if the network or the catalog fails, `write()` sends the same
+  request again with the same key and the catalog answers what is there without applying it twice.
+  If someone writes at the same time (409), it rebuilds on top of what is there with a new key.
+- **`repeated`** is `True` when the table already held exactly this (overwriting with the content
+  it has now): no new snapshot. Going back to earlier content (A → B → A) **is** a write, and
+  appending the same rows twice appends twice.
 - **Types** follow the type contract: nested structs and lists are fine; `uint64`, a column of
   type `null`, a struct without fields and a list of lists are refused, naming the column. An
   empty table is refused.

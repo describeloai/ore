@@ -1083,7 +1083,7 @@ const ESPERAS_MS = [500, 1000, 2000];
  * El commit al catálogo, y sus reintentos **con la misma `Idempotency-Key`**
  * cuando la red o el catálogo fallan: un 5xx, un corte, o un 503 de un proxy
  * después de que el commit SÍ entrara. Con la misma clave el catálogo contesta
- * lo que hay sin aplicar nada dos veces (`docs/idempotencia.md`), así que
+ * lo que hay sin aplicar nada dos veces (ADR 0031, «La idempotencia, revisada»), así que
  * reintentar es seguro. `[0, {error}]` si la red no contestó nunca.
  */
 async function confirmar(ruta, cuerpo, cabeceras) {

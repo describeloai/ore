@@ -1773,7 +1773,7 @@ public final class Ore {
      * El commit al catálogo, y sus reintentos <b>con la misma {@code Idempotency-Key}</b> cuando la
      * red o el catálogo fallan: un 5xx, un corte, o un 503 de un proxy (que ni siquiera trae JSON)
      * después de que el commit SÍ entrara. Con la misma clave el catálogo contesta lo que hay sin
-     * aplicar nada dos veces ({@code docs/idempotencia.md}), así que reintentar es seguro.
+     * aplicar nada dos veces (ADR 0031, «La idempotencia, revisada»), así que reintentar es seguro.
      * Código 0 si la red no contestó nunca.
      */
     static Respuesta confirmar(String ruta, Object cuerpo, Map<String, String> cabeceras) throws InterruptedException {

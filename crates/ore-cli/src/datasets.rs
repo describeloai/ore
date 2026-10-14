@@ -34,7 +34,7 @@
 //! se contesta con lo que hay sin aplicar nada, y **la escritura que no cambia
 //! nada** —`sobrescribir`/`upsert` con la huella (`ore.operacion`) del snapshot
 //! VIGENTE— tampoco deja snapshot (antes la huella se cotejaba con toda la
-//! ancestría y A → B → A perdía la tercera: ver `docs/idempotencia.md`); la
+//! ancestría y A → B → A perdía la tercera: ver ADR 0031, «La idempotencia, revisada»); la
 //! clave se escribe en el resumen del snapshot que nace; la tabla que nace recibe la retención por defecto
 //! si no la trae; la `Table` nace con las columnas de OOS traducidas del
 //! esquema de Iceberg (o las actualiza cuando el esquema evolucionó, si el

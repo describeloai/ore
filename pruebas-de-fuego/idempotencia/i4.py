@@ -1,4 +1,4 @@
-"""I4 · la idempotencia en producción (docs/idempotencia.md), en un puesto REAL.
+"""I4 · la idempotencia en producción (ADR 0031, «La idempotencia, revisada»), en un puesto REAL.
 
 Corre dentro del pod de un puesto abierto DESPUÉS del despliegue (el SDK de la
 imagen nueva), como proceso aparte del agente, con la identidad del pod:

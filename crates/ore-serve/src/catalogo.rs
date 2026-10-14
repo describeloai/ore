@@ -56,7 +56,7 @@
 //! `x-ore-rama` (0030 W2) elige en qué rama se lee la tabla y en cuál se
 //! mueve el puntero: una sesión en una rama escribe en la suya (§11 ⑦).
 //!
-//! **`Idempotency-Key`** (la spec; `docs/idempotencia.md`): en `updateTable` y
+//! **`Idempotency-Key`** (la spec; ADR 0031, «La idempotencia, revisada»): en `updateTable` y
 //! `commitTransaction`, un UUID por operación lógica que el cliente reutiliza
 //! sólo en sus reintentos. Se mira aquí (forma de UUID, o 400: lo que llega de
 //! la red no viaja a la línea de órdenes sin mirarlo) y se pasa como UN

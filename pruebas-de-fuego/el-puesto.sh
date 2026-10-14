@@ -601,7 +601,7 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   celda 'over(\"hr.salida\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "10 · over(hr.salida) no es el mismo JSON que hr.lago: $(cuerpo)"
   # la misma escritura otra vez: repetida, y un solo snapshot
   celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); e[\"repetida\"]' && tiene "d['salida']['texto']=='True'" || falla "10 · la misma escritura tenía que ser repetida: $(cuerpo)"
-  # docs/idempotencia.md: volver a un contenido de antes (A → B → A) es escribir; la tercera se perdía
+  # ADR 0031, «La idempotencia, revisada»: volver a un contenido de antes (A → B → A) es escribir; la tercera se perdía
   celda 'import pyarrow as pa; r = [write(\"hr.aba\", pa.table({\"i\": pa.array(list(range(n)), pa.int64())}))[\"repetida\"] for n in (2, 3, 2)]; (r, over(\"hr.aba\", como=\"arrow\").num_rows)' && tiene "d['salida']['valor']==[[False, False, False], 2]" || falla "10 · A → B → A: la tercera escritura tenía que escribirse (2 filas): $(cuerpo)"
   [ "$(pide GET /datasets/hr/salida "$ANA")" = "200" ] && tiene "len(d['snapshots'])==1 and d['escrito_por']=='persona:ana' and d['snapshots'][0]['idempotencia']!=''" || falla "10 · la ficha: $(cuerpo)"
   # anexar un DataFrame de pandas: 5 filas, y el esquema se respeta

@@ -391,7 +391,7 @@ ML8b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 [ "$(jq_ "$TMP/ficha.json" retencion.edad_ms)" = "604800000" ] || falla "8 · la ficha no enseña la retención con la que nació (7d): $(jq_ "$TMP/ficha.json" retencion.edad_ms)"
 ok "8 · la misma operación no deja snapshot ni toca el árbol; otra anexa; la base vieja es 75 con \`actual\`; una columna nueva regenera la Table sin perder lo añadido a mano; la ficha lo cuenta"
 
-# ── 8c · la idempotencia de la spec (docs/idempotencia.md) ───────────────────
+# ── 8c · la idempotencia de la spec (ADR 0031, «La idempotencia, revisada») ───────────────────
 # Volver a un contenido de antes (A → B → A) es ESCRIBIR: la huella sólo se
 # coteja con el snapshot vigente (antes, con toda la ancestría, y la tercera se
 # perdía: medido en victor el 2026-10-14). Y la misma petición —su
@@ -651,7 +651,7 @@ c=$(pide POST /v1/namespaces/ventas/tables/py "{\"requirements\":[{\"type\":\"as
 c=$(pide POST /v1/namespaces/ventas/tables/nadie '{"requirements":[],"updates":[{"action":"set-properties","updates":{"x":"y"}}]}'); [ "$c" = "404" ] || falla "13 · commit sobre lo que no existe: $c"
 ok "13 · la credencial prestada acotada al prefijo (y sin pedirla, nada); 404, 400, 409 con \`actual\` y la forma de error de la spec"
 
-# ── 13c · `Idempotency-Key` por la puerta (docs/idempotencia.md, I2) ─────────
+# ── 13c · `Idempotency-Key` por la puerta (ADR 0031, «La idempotencia, revisada», I2) ─────────
 # PyIceberg manda la cabecera que se le diga (`header.…`). Dos `append` con la
 # MISMA clave: el segundo es un reintento —contesta lo que hay y no anexa—, y
 # la clave queda en el snapshot que nació. Una que no es un UUID: 400.

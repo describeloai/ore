@@ -3,7 +3,7 @@
 //! operación. Quien la recibe (ore-serve, en la cabecera) y quien la coteja
 //! (`ore datasets --commit --idempotencia`) comparten aquí qué forma tiene,
 //! para que lo que llega de la red no viaje a la línea de órdenes sin mirarlo.
-//! El diseño: `docs/idempotencia.md`.
+//! El diseño: ADR 0031, «La idempotencia, revisada».
 
 /// Una `Idempotency-Key` con la forma de la spec: un UUID en texto, 36
 /// caracteres (`8-4-4-4-12` hexadecimales). La spec pide UUIDv7, pero
