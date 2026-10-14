@@ -44,7 +44,7 @@ impl Servidor {
         };
 
         // ① El documento en `main`, y lo que sería: si no compila, aquí se para.
-        let mut hallado: Result<(String, String), Respuesta> = Err(Respuesta::error(
+        let mut hallado: Result<(String, String, String), Respuesta> = Err(Respuesta::error(
             404,
             format!("`{referencia}` is not in the tree"),
         ));
@@ -52,7 +52,7 @@ impl Servidor {
             hallado = documento(raiz, kind, &qn);
             Respuesta::ok(Json::obj([]))
         });
-        let (ruta, texto) = match hallado {
+        let (ruta, texto, id) = match hallado {
             Ok(x) => x,
             Err(r) => return r,
         };
@@ -118,7 +118,7 @@ impl Servidor {
             sujeto,
             &format!("Promises of `{qn}` (0063 S7f)"),
             |raiz| match documento(raiz, kind, &qn) {
-                Ok((ruta, t)) => {
+                Ok((ruta, t, _)) => {
                     let nuevo = ore_core::promesas::reescribir(&t, &promesas);
                     match std::fs::write(raiz.join(&ruta), nuevo) {
                         Ok(()) => Respuesta::ok(Json::obj([("ruta", Json::s(&ruta))])),
@@ -144,6 +144,9 @@ impl Servidor {
                 ("rama", Json::s(&rama)),
                 ("titulo", Json::s(format!("Promises of `{qn}`"))),
                 ("descripcion", Json::s(descripcion(&qn, &promesas))),
+                // Con alcance de ese activo (0044 E2): la propuesta lleva sólo
+                // él, y *Assets changed* dice qué le cambia (sus promesas).
+                ("activos", Json::Arr(vec![Json::s(&id)])),
             ])
             .jcs(),
         );
@@ -241,8 +244,9 @@ fn activo(referencia: &str) -> Result<(Kind, String), String> {
     Ok((kind, qn.to_string()))
 }
 
-/// El documento del activo en `raiz`: su ruta relativa y su texto.
-fn documento(raiz: &Path, kind: Kind, qn: &str) -> Result<(String, String), Respuesta> {
+/// El documento del activo en `raiz`: su ruta relativa, su texto y su id de
+/// activo (`Dataset:b.s.n`, el de una propuesta con alcance).
+fn documento(raiz: &Path, kind: Kind, qn: &str) -> Result<(String, String, String), Respuesta> {
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
     let corto = ore_core::normalize::a_corto(qn);
     let d = pkg
@@ -262,7 +266,7 @@ fn documento(raiz: &Path, kind: Kind, qn: &str) -> Result<(String, String), Resp
         .replace('\\', "/");
     let texto = std::fs::read_to_string(&d.path)
         .map_err(|e| Respuesta::error(500, format!("could not read `{ruta}`: {e}")))?;
-    Ok((ruta, texto))
+    Ok((ruta, texto, ore_core::normalize::doc_id(d)))
 }
 
 fn texto_de(j: &Json, k: &str) -> Option<String> {

@@ -35,6 +35,58 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
+/// 0063 S7f · Las promesas que un documento escribe (`spec.promises`), por su
+/// `id`, tal como se escribieron.
+fn promesas(d: &Loaded) -> BTreeMap<String, Json> {
+    d.section("promises")
+        .map(|l| {
+            l.items()
+                .iter()
+                .filter_map(|p| {
+                    let id = p.get("id").and_then(|(_, v)| v.as_str())?.to_string();
+                    Some((id, Json::de_node_fiel(p)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Lo que cambia de las promesas, de `antes` a `despues`: `{anadidas, quitadas,
+/// cambiadas: [{id, antes, despues}]}`; `None` si nada.
+fn cambio_de_promesas(
+    antes: &BTreeMap<String, Json>,
+    despues: &BTreeMap<String, Json>,
+) -> Option<Json> {
+    let solo = |de: &BTreeMap<String, Json>, sin: &BTreeMap<String, Json>| {
+        de.iter()
+            .filter(|(k, _)| !sin.contains_key(*k))
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<_>>()
+    };
+    let cambiadas: Vec<Json> = antes
+        .iter()
+        .filter_map(|(k, a)| {
+            let d = despues.get(k)?;
+            (a.jcs() != d.jcs()).then(|| {
+                Json::obj([
+                    ("id", Json::s(k.as_str())),
+                    ("antes", a.clone()),
+                    ("despues", d.clone()),
+                ])
+            })
+        })
+        .collect();
+    let (anadidas, quitadas) = (solo(despues, antes), solo(antes, despues));
+    if anadidas.is_empty() && quitadas.is_empty() && cambiadas.is_empty() {
+        return None;
+    }
+    Some(Json::obj([
+        ("anadidas", Json::Arr(anadidas)),
+        ("quitadas", Json::Arr(quitadas)),
+        ("cambiadas", Json::Arr(cambiadas)),
+    ]))
+}
+
 /// Un activo del árbol, por su identidad (`Kind:nombre`).
 struct Activo<'a> {
     doc: &'a Loaded,
@@ -579,6 +631,15 @@ impl Servidor {
                     ]),
                 ));
             }
+            // 0063 S7f · las promesas (v1alpha31), por su `id`: lo que la
+            // propuesta añade, quita o cambia de lo que el activo promete.
+            let (pa, pd) = (
+                x.map(|x| promesas(x.doc)).unwrap_or_default(),
+                y.map(|y| promesas(y.doc)).unwrap_or_default(),
+            );
+            if let Some(p) = cambio_de_promesas(&pa, &pd) {
+                m.push(("promesas", p));
+            }
             let (sa, sd) = (x.and_then(|x| sql(x.doc)), y.and_then(|y| sql(y.doc)));
             if sa != sd {
                 m.push((
@@ -672,6 +733,44 @@ impl Servidor {
 #[cfg(test)]
 mod pruebas {
     use std::collections::BTreeMap;
+
+    /// 0063 S7f: *Assets changed* dice qué promesas se añaden, se quitan o cambian.
+    #[test]
+    fn las_promesas_que_cambian() {
+        use ore_core::json::Json;
+        let p = |id: &str, sev: &str| {
+            Json::obj([
+                ("id", Json::s(id)),
+                ("metric", Json::s("rowCount")),
+                ("severity", Json::s(sev)),
+            ])
+        };
+        let m = |xs: Vec<Json>| -> BTreeMap<String, Json> {
+            xs.into_iter()
+                .map(|x| {
+                    let id = match &x {
+                        Json::Obj(o) => match o.get("id") {
+                            Some(Json::Str(s)) => s.clone(),
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    (id, x)
+                })
+                .collect()
+        };
+        let antes = m(vec![p("a", "error"), p("b", "error")]);
+        let despues = m(vec![p("a", "warning"), p("c", "error")]);
+        let c = super::cambio_de_promesas(&antes, &despues).unwrap().jcs();
+        assert!(c.contains(r#""anadidas":[{"id":"c""#), "{c}");
+        assert!(c.contains(r#""quitadas":[{"id":"b""#), "{c}");
+        assert!(
+            c.contains(r#""cambiadas":[{"antes":{"id":"a""#)
+                && c.contains(r#""severity":"warning""#),
+            "{c}"
+        );
+        assert!(super::cambio_de_promesas(&antes, &antes).is_none());
+    }
 
     /// La #9 de t-victor: el paquete ya estaba en `main`, igual, pero sin sus
     /// `discover.*`; la rama los tiene. Eso es un cambio del `Package`.
