@@ -57,5 +57,32 @@ class Salud(unittest.TestCase):
         self.assertEqual(saludes, {})
 
 
+
+class HoraDeLoLeido(unittest.TestCase):
+    """0063 S6b: lo escrito no es más nuevo que lo leído. La procedencia lleva la hora de
+    cada cosa leída, la más vieja si se leyó varias veces; lo que no se sabe, manda."""
+
+    def setUp(self):
+        import ore
+        ore._datos_de.clear()
+        ore._leidas.clear()
+
+    def test_la_procedencia_lleva_la_hora_de_lo_leido(self):
+        import ore
+        ore._leidas.extend(["a.x", "a.y", "a.salida"])
+        _salud_de({}, "a.x", {"salud": DEGRADADA})
+        _salud_de({}, "a.x", {"salud": dict(DEGRADADA, dataAsOf="2026-10-14T09:00:00Z")})
+        _salud_de({}, "a.y", {"salud": DESCONOCIDA})
+        p = ore._procedencia("a.salida")
+        self.assertEqual(p["leidas"], ["a.x", "a.y"])
+        self.assertEqual(p["datos_de"], {"a.x": "2026-10-13T13:37:02Z", "a.y": None})
+
+    def test_lo_desconocido_manda(self):
+        import ore
+        ore._anota_hora("a.x", None)
+        ore._anota_hora("a.x", "2026-10-14T09:00:00Z")
+        self.assertIsNone(ore._datos_de["a.x"])
+
+
 if __name__ == "__main__":
     unittest.main()

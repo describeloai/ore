@@ -1413,6 +1413,34 @@ fn puntero_del_lago(path: &Path, t: Tabla) -> (PathBuf, Option<Node>, String) {
 /// Escribe el puntero en su sitio: lo que había, con el estado nuevo encima;
 /// su `dataset`, el de su `metadata_location` si se sabe (donde están los
 /// bytes: es lo que reclama); y el de antes, fuera.
+/// **La hora de lo escrito** (0063 S6b): de la procedencia, el `datos_de`
+/// más viejo de lo que leyó (`inputs` o `leidas`). `None` si no leyó nada, o
+/// si de alguna entrada no se sabe: lo escrito no es más nuevo que lo leído,
+/// y no se adivina.
+fn datos_de_lo_escrito(pr: &Json) -> Option<String> {
+    let Json::Obj(m) = pr else { return None };
+    let Some(Json::Obj(horas)) = m.get("datos_de") else {
+        return None;
+    };
+    let Some(Json::Arr(leido)) = m.get("inputs").or_else(|| m.get("leidas")) else {
+        return None;
+    };
+    if leido.is_empty() {
+        return None;
+    }
+    let mut todas = Vec::new();
+    for l in leido {
+        let Json::Str(n) = l else { return None };
+        match horas.get(n) {
+            Some(Json::Str(h)) if ore_core::frescura::epoca(h).is_some() => todas.push(h.clone()),
+            _ => return None,
+        }
+    }
+    todas
+        .into_iter()
+        .min_by_key(|h| ore_core::frescura::epoca(h))
+}
+
 fn escribir_puntero(
     ruta: &Path,
     previo: Option<&Node>,
@@ -1949,6 +1977,16 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         // La procedencia de ESTE snapshot; una escritura sin ella deja la de
         // antes, que sigue siendo lo último que alguien dijo del dataset.
         if let Some(pr) = p.cambio.procedencia() {
+            // ⭐ 0063 S6b · De cuándo es lo escrito: el `datos_de` más viejo de
+            //   lo que leyó, tal como lo leyó (v1alpha30 §2.2). Si de alguna
+            //   entrada no se sabe, no se sabe: `null`, y no la de la
+            //   escritura de antes, que el puntero arrastraría.
+            campos.push((
+                "datos_de",
+                datos_de_lo_escrito(&pr)
+                    .map(Json::s)
+                    .unwrap_or_else(|| Json::Crudo("null".into())),
+            ));
             campos.push(("procedencia", pr));
         }
         escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
@@ -2471,6 +2509,27 @@ fn salida(
 
 #[cfg(test)]
 mod tests {
+    /// 0063 S6b: lo escrito es tan viejo como lo más viejo que leyó; si de
+    /// alguna entrada no se sabe, no se sabe.
+    #[test]
+    fn lo_escrito_es_de_cuando_lo_que_leyo() {
+        let pr = |t: &str| Json::de_node(&ore_core::parse::parse(t).unwrap());
+        let dos = pr(
+            r#"{"leidas":["a.x","a.y"],"datos_de":{"a.x":"2026-10-14T09:00:00Z","a.y":"2026-10-13T21:35:41Z"}}"#,
+        );
+        assert_eq!(
+            datos_de_lo_escrito(&dos).as_deref(),
+            Some("2026-10-13T21:35:41Z")
+        );
+        let una_sin =
+            pr(r#"{"leidas":["a.x","a.y"],"datos_de":{"a.x":"2026-10-14T09:00:00Z","a.y":null}}"#);
+        assert_eq!(datos_de_lo_escrito(&una_sin), None);
+        let falta = pr(r#"{"inputs":["a.x","a.y"],"datos_de":{"a.x":"2026-10-14T09:00:00Z"}}"#);
+        assert_eq!(datos_de_lo_escrito(&falta), None);
+        let de_antes = pr(r#"{"leidas":["a.x"]}"#);
+        assert_eq!(datos_de_lo_escrito(&de_antes), None);
+    }
+
     #[test]
     fn el_documento_sigue_el_esquema_sin_perder_lo_demas() {
         use super::seguir_esquema;

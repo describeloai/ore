@@ -102,6 +102,7 @@ import io
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 import warnings
@@ -409,6 +410,25 @@ def _desenvolver(crudo):
 
 # Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
 _leidas = []
+# 0063 S6b: de cuándo eran los datos de cada cosa leída (`dataAsOf`, tal como se leyó; lo
+# leído en vivo, la hora de la lectura). `None`: no se sabe. Va en la procedencia de lo que
+# se escribe, y ORE le pone al escrito el más viejo: lo escrito no es más nuevo que lo leído.
+_datos_de = {}
+
+
+def _anota_hora(nombre, cuando):
+    """La hora de lo leído, la más vieja si se lee varias veces; lo que no se sabe, manda."""
+    nombre = _corto(nombre)
+    if nombre in _datos_de and _datos_de[nombre] is None:
+        return
+    if cuando is None or nombre not in _datos_de:
+        _datos_de[nombre] = cuando
+    else:
+        _datos_de[nombre] = min(_datos_de[nombre], cuando)
+
+
+def _ahora_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 # 0053 F7·1: las `Table` que esta sesión leyó EN VIVO (`sql()` sobre un origen).
 _en_vivo = set()
 # La marca que `sql()` deja en lo que devuelve si leyó en vivo: `write()` la mira.
@@ -678,6 +698,9 @@ def _procedencia(nombre=None, anclada_a=None):
         p["transform"] = _transform.nombre
     else:
         p["leidas"] = sorted(l for l in _leidas if l != nombre)
+    # 0063 S6b: de cuándo era cada cosa leída, para la hora de lo escrito.
+    leido = p.get("inputs") or p.get("leidas") or []
+    p["datos_de"] = {n: _datos_de[n] for n in leido if n in _datos_de}
     if os.environ.get("ORE_CODIGO"):
         p["codigo"] = os.environ["ORE_CODIGO"]
     # 0055 B1: de qué build —`{id, transform, entrypoint, commit, output}`—,
@@ -1310,6 +1333,7 @@ def _salud_de(saludes, nombre, rd):
     b = (rd or {}).get("salud")
     if isinstance(b, dict):
         saludes[nombre] = b
+        _anota_hora(nombre, b.get("dataAsOf"))
 
 
 def _avisar_salud(saludes, estricta):
@@ -1460,6 +1484,10 @@ def sql(query, format="pandas", strict=False):
             _lee_en_vivo(l["tabla"], [n for n, x in fuentes.items() if n != l["tabla"]
                                       and ((x or {}).get("federada") or {}).get("tabla") == l["tabla"]], vistas_vivas)
             _en_vivo.add(l["tabla"])
+            # 0063 S6b: lo leído en vivo es de ahora, con cada nombre que lo dice.
+            for n in [l["tabla"]] + [n for n, x in fuentes.items()
+                                     if ((x or {}).get("federada") or {}).get("tabla") == l["tabla"]]:
+                _anota_hora(n, _ahora_iso())
             vivas[l["tabla"]] = _lectura_en_vivo(con, l, estricta)
         _registra(con, nombre, _q(vivas[l["tabla"]]))
     for nombre, rd in sorted(fuentes.items()):
