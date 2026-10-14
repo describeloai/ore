@@ -1060,3 +1060,48 @@ fn una_base_foranea_expone_los_items_de_su_fuente() {
     assert_eq!(vivo["items"], Json::Int(1));
     assert_eq!(p("pg")["type"], Json::s("source"));
 }
+
+/// **Un ciclo en el linaje no hunde a nadie** (2026-10-14). Leer A, escribir B,
+/// leer B y escribir A —lo normal en un cuaderno— deja `a ← b ← a` en
+/// `derivedFrom`. La carga de un dataset escrito baja por lo que leyó, y la
+/// guarda de ciclo era de cada llamada: A bajaba a B, B volvía a A, y así hasta
+/// reventar la pila (medido en `el-puesto.sh`: ore-serve caía entero, para todo
+/// el inquilino, al resolver un `sql()`). Ahora la guarda es de toda la
+/// recursión, y los dos llevan lo que el ciclo leyó de fuera.
+#[test]
+fn un_ciclo_en_el_linaje_no_hunde_la_carga() {
+    let t = arbol_en("ciclo");
+    for (n, de) in [("a", "[ventas.b, ventas.pedidos]"), ("b", "[ventas.a]")] {
+        escribe(
+            t.path(),
+            &format!("packages/ventas/datasets/{n}.yaml"),
+            &format!(
+                "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: {{ name: {n}, namespace: ventas }}\nspec:\n  owner: team:ventas\n  columns:\n    id: {{ type: Integer }}\n  changes: {{ mode: append }}\n  derivedFrom: {de}\n"
+            ),
+        );
+    }
+    let (pkg, _) = ore_core::validate::cargar_paquete(t.path());
+    let j = indice(
+        &pkg,
+        &punteros(t.path()),
+        &Cabeza {
+            cabeza: Some("abc".into()),
+            rama: Some("main".into()),
+            generado: None,
+        },
+    );
+    // `ventas.pedidos` lleva `email` (high): por el linaje, los dos lo llevan.
+    for n in ["dataset:ventas.a", "dataset:ventas.b"] {
+        let Json::Obj(ac) = &item(&j, n)["acceso"] else {
+            panic!("{n} sin acceso")
+        };
+        let Json::Obj(cl) = &ac["clasificacion"] else {
+            panic!("{n} sin clasificación")
+        };
+        assert_eq!(
+            cl.get("gdpr.sensitivity"),
+            Some(&Json::s("high")),
+            "{n}: {cl:?}"
+        );
+    }
+}

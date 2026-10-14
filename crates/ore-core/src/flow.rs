@@ -771,6 +771,14 @@ fn lo_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Vec<(String, &'a Loaded)> 
 }
 
 thread_local! {
+    /// Los datasets escritos cuya carga se está calculando ahora (vía 3 de
+    /// [`carga_de`]): un ciclo en `derivedFrom` (A ← B ← A) se corta aquí en
+    /// vez de bajar sin fin. Por hilo, como [`DERIVANDO`].
+    static CARGANDO: std::cell::RefCell<BTreeSet<String>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+}
+
+thread_local! {
     /// Las colecciones cuyo `derivedFrom` se está siguiendo ahora: una que
     /// deriva de una vista sobre su propio listado volvería sobre sí. La
     /// segunda vez se toma sin lo derivado —lo que ya se está sumando—.
@@ -1071,7 +1079,11 @@ pub fn carga_de(
         // campos de lo que leyó: el código no declara qué columna salió de
         // cuál, y quedarse corto no produce ningún síntoma (P4). Medido antes:
         // sin esto la etiqueta moría en `write()`. Recursivo (lo leído puede
-        // ser otro escrito), con guarda de ciclo.
+        // ser otro escrito), con guarda de ciclo **de toda la recursión**
+        // (`CARGANDO`): la de antes era de cada llamada (`vistos`), y A ← B ← A
+        // —leer A, escribir B, leer B, escribir A: lo normal en un cuaderno—
+        // volvía sin fin y hundía ore-serve por la pila (medido el 2026-10-14
+        // en `el-puesto.sh`, con el caso A → B → A de la idempotencia).
         //
         // v1alpha25 `01` §7: y lo que declara leer **el transform que lo
         // produce**, que se sabe antes de la primera escritura —`derivedFrom`
@@ -1084,7 +1096,10 @@ pub fn carga_de(
             let sqn = suelo.qname().unwrap_or_default();
             let mut vistos: BTreeSet<String> = BTreeSet::new();
             vistos.insert(vqn.clone());
-            vistos.insert(sqn);
+            vistos.insert(sqn.clone());
+            // Lo que ya se está calculando más arriba no se vuelve a bajar: lo
+            // suyo ya se está sumando allí.
+            let propio = CARGANDO.with(|c| c.borrow_mut().insert(sqn.clone()));
             let mut herencia: Labels = BTreeMap::new();
             for (nombre, desde) in &leidas {
                 let (nombre, desde) = (nombre.as_str(), *desde);
@@ -1115,7 +1130,7 @@ pub fn carga_de(
                     continue;
                 };
                 let lqn = leido.qname().unwrap_or_default();
-                if !vistos.insert(lqn) {
+                if !vistos.insert(lqn.clone()) || CARGANDO.with(|c| c.borrow().contains(&lqn)) {
                     continue;
                 }
                 for labels in carga_de(pkg, lat, efectivas, leido).values() {
@@ -1137,6 +1152,9 @@ pub fn carga_de(
                         );
                     }
                 }
+            }
+            if propio {
+                CARGANDO.with(|c| c.borrow_mut().remove(&sqn));
             }
         }
 
