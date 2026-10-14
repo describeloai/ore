@@ -1083,6 +1083,14 @@ impl Servidor {
             ("POST", ["datasets", b, s, n, "esquema", "aceptar"]) => {
                 self.aceptar_esquema(sujeto, b, s, n)
             }
+            // ⭐ 0063 S7f · las promesas de un activo: la lista entera, por una
+            //   rama y una propuesta (sólo una persona); y lo que el juez dijo en
+            //   los últimos refrescos, del historial del puntero.
+            ("POST", ["promesas"]) => self.proponer_promesas(sujeto, &p.cuerpo),
+            ("GET", ["promesas", "historia"]) => {
+                let r = p.consulta.get("ref").cloned().unwrap_or_default();
+                self.leyendo_en(rama, move |raiz| self.historia_de_promesas(raiz, &r))
+            }
             // ⭐ 0036 ④: con `X-Ore-Raiz`, sólo las que tocan SUS ficheros —la
             //   pestaña «Pull requests» de un repositorio—.
             ("GET", ["propuestas"]) => {

@@ -84,6 +84,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
         "/datasets/{}/{}/{}/esquema/aceptar",
         Es::Acto("esquema:aceptar"),
     ),
+    // 0063 S7f: una rama y una propuesta con las promesas de un activo.
+    ("POST", "/promesas", Es::Acto("promesas:proponer")),
     // el árbol
     ("POST", "/paquetes", Es::Acto("base:crear")),
     ("DELETE", "/paquetes/{}", Es::Acto("base:retirar")),

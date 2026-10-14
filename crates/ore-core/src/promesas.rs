@@ -639,6 +639,95 @@ fn bloque_de_promesas(texto: &str) -> Option<Vec<String>> {
     (!bloque.is_empty()).then_some(bloque)
 }
 
+/// **Escribir las promesas de un documento** (0063 S7f): el bloque `promises`
+/// pasa a ser `promesas` —la lista entera, cada una un objeto como el YAML—, y
+/// el `apiVersion` sube a v1alpha31. Con la lista vacía, el bloque se va (y la
+/// versión se queda). Lo demás del texto, intacto: comentarios y orden.
+pub fn reescribir(texto: &str, promesas: &[Json]) -> String {
+    let sin = quitar_bloque(texto);
+    if promesas.is_empty() {
+        return sin;
+    }
+    let mut bloque = String::from("spec:\n  promises:\n");
+    for p in promesas {
+        let Json::Obj(m) = p else { continue };
+        let mut primera = true;
+        let mut claves: Vec<&String> = m.keys().collect();
+        claves.sort_by_key(|k| orden_de_clave(k));
+        for k in claves {
+            let v = &m[k];
+            bloque.push_str(if primera { "    - " } else { "      " });
+            primera = false;
+            bloque.push_str(&format!("{k}: {}\n", yaml_de(v)));
+        }
+    }
+    conservar(&bloque, &sin)
+}
+
+/// El orden en que se escribe una promesa: lo que se lee primero, primero.
+fn orden_de_clave(k: &str) -> (usize, String) {
+    let i = ["id", "description", "metric", "column", "arguments", "unit"]
+        .iter()
+        .position(|x| *x == k)
+        .or_else(|| COMPARADORES.iter().position(|x| *x == k).map(|i| 10 + i))
+        .unwrap_or(if k == "severity" { 50 } else { 60 });
+    (i, k.to_string())
+}
+
+/// Un valor en YAML de una línea: un identificador o una palabra va tal cual;
+/// un decimal, entre comillas (`OOS6003`); lo demás, como cadena JSON, que es
+/// YAML válido.
+fn yaml_de(v: &Json) -> String {
+    match v {
+        Json::Int(i) => i.to_string(),
+        Json::Bool(b) => b.to_string(),
+        Json::Crudo(c) if c.parse::<f64>().is_ok() => format!("\"{c}\""),
+        Json::Crudo(c) => c.clone(),
+        Json::Str(s) => {
+            let llano = !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+                && !s.starts_with(['-', '.'])
+                && s.parse::<f64>().is_err()
+                && !matches!(
+                    s.as_str(),
+                    "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~"
+                );
+            if llano { s.clone() } else { Json::s(s).jcs() }
+        }
+        Json::Arr(xs) => format!(
+            "[{}]",
+            xs.iter().map(yaml_de).collect::<Vec<_>>().join(", ")
+        ),
+        Json::Obj(m) => format!(
+            "{{ {} }}",
+            m.iter()
+                .map(|(k, v)| format!("{k}: {}", yaml_de(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// El texto sin su bloque `promises` (si lo tenía).
+fn quitar_bloque(texto: &str) -> String {
+    let Some(bloque) = bloque_de_promesas(texto) else {
+        return texto.to_string();
+    };
+    let lineas: Vec<&str> = texto.lines().collect();
+    let Some(i) = lineas.iter().position(|l| l.starts_with("  promises:")) else {
+        return texto.to_string();
+    };
+    let mut out: Vec<&str> = Vec::with_capacity(lineas.len());
+    out.extend_from_slice(&lineas[..i]);
+    out.extend_from_slice(&lineas[(i + bloque.len()).min(lineas.len())..]);
+    let mut t = out.join("\n");
+    if texto.ends_with('\n') {
+        t.push('\n');
+    }
+    t
+}
+
 /// `apiVersion: oos.dev/v1alphaN` con N < 31 pasa a v1alpha31.
 fn subir_version(l: &str) -> String {
     if let Some(v) = l.strip_prefix("apiVersion: ")
@@ -1282,6 +1371,42 @@ mod pruebas {
         );
         assert!(c.starts_with("apiVersion: oos.dev/v1alpha31\n"), "{c}");
         assert!(diags(&c).is_empty(), "{:?}", diags(&c));
+    }
+
+    #[test]
+    fn reescribir_pone_quita_y_sustituye() {
+        let doc = "# ore discover: marca\napiVersion: oos.dev/v1alpha13\nkind: Dataset\nmetadata:\n  name: pedidos\n  namespace: ventas\nspec:\n  owner: \"user:victor\"\n  from: { table: ventas.orders }\n  fields:\n    id: id\n    cliente: customer\n    total: total\n";
+        let ps = |j: &str| -> Vec<Json> {
+            match Json::de_node_fiel(&crate::parse::parse(j).unwrap()) {
+                Json::Arr(a) => a,
+                _ => vec![],
+            }
+        };
+        let dos = ps(
+            r#"[{"severity":"warning","id":"cliente_presente","metric":"nullValues","column":"cliente","unit":"percent","mustBeLessOrEqualTo":0.5,"description":"llega del CRM: a veces sin cliente"},{"id":"estado","metric":"invalidValues","column":"total","arguments":{"between":[0,2000]},"mustBe":0},{"id":"notEmptied","severity":"warning"}]"#,
+        );
+        let c = reescribir(doc, &dos);
+        assert!(
+            c.starts_with("# ore discover: marca\napiVersion: oos.dev/v1alpha31\n"),
+            "{c}"
+        );
+        assert!(
+            c.ends_with("    total: total\n  promises:\n    - id: cliente_presente\n      description: \"llega del CRM: a veces sin cliente\"\n      metric: nullValues\n      column: cliente\n      unit: percent\n      mustBeLessOrEqualTo: \"0.5\"\n      severity: warning\n    - id: estado\n      metric: invalidValues\n      column: total\n      arguments: { between: [0, 2000] }\n      mustBe: 0\n    - id: notEmptied\n      severity: warning\n"),
+            "{c}"
+        );
+        let sin_marca = c.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert!(diags(&sin_marca).is_empty(), "{:?}", diags(&sin_marca));
+        // Sustituir: la lista nueva, no la suma.
+        let una = ps(r#"[{"id":"volumen","metric":"rowCount","mustBeGreaterOrEqualTo":900}]"#);
+        let c2 = reescribir(&c, &una);
+        assert!(
+            !c2.contains("cliente_presente") && c2.contains("- id: volumen"),
+            "{c2}"
+        );
+        assert_eq!(c2.matches("promises:").count(), 1);
+        // Vacía: el bloque se va; lo demás, como estaba.
+        let c3 = reescribir(&c2, &[]);
+        assert_eq!(c3, doc.replace("v1alpha13", "v1alpha31"));
     }
 
     #[test]
