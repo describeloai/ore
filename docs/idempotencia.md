@@ -86,7 +86,7 @@ Propongo la primera: nuestro SDK la manda igual, y anunciarla es una promesa a c
 | **I1** ✓ 2026-10-14 | **El catálogo**. La comprobación de la ancestría se sustituye por dos: (1) la clave de la petición en los snapshots de la ventana → respuesta equivalente con el estado vigente; (2) en `overwrite`, `ore.operacion` de la petición = la del **snapshot vigente** → nada que hacer. Al aplicar, el servidor escribe `ore.idempotency-key` en el resumen del snapshot nuevo. `historia` gana la clave y la hora de cada snapshot. | `ore-cli/src/datasets.rs`, `ore-store/src/ciclo.rs` (`historia`) | `cargo test`: A → B → A deja 3 snapshots; la misma clave dos veces deja 1 y contesta igual; `overwrite` igual al vigente → sin snapshot; `append` igual → snapshot; una clave fuera de la ventana no se honra; un snapshot viejo con `ore.operacion` en la historia ya no bloquea |
 | **I2** ✓ 2026-10-14 | **ore-serve**. Lee `Idempotency-Key` en `POST …/tables/{t}`, `POST …/tables` y `POST /transactions/commit`, comprueba la forma (36 caracteres; si no la tiene → 400) y la pasa al catálogo. La ventana es una constante (`PT30M`). Se quita el «no entra (todavía)» del encabezado de `catalogo.rs`. | `ore-serve/src/catalogo.rs` | `cargo test` de la ruta: con cabecera, sin ella, mal formada |
 | **I3** ✓ 2026-10-14 | **Los tres SDK**. Un UUIDv7 por commit construido (`uuid.uuid7()` en Python 3.14; generador propio de 20 líneas en Node y en Java). Tras un 5xx o un corte, **reenviar la misma petición** con la misma clave (3 veces, con espera). Tras un 409, reconstruir con una clave nueva. Se quita el «`GET` y comparar». `repeated` sólo cuando el servidor contesta con la misma base. | `puesto/python/ore/__init__.py`, `puesto/node/ore/index.mjs`, `puesto/jvm/ore/Ore.java` | `el-puesto.sh` 10, 8 y 9 siguen verdes, y ganan A → B → A en los tres lenguajes |
-| **I4** | **En producción**. Desplegar primero el servidor (I1 + I2 sirven a los SDK viejos) y después las imágenes del puesto. Repetir en victor la secuencia de `sandbox.m0d_marimo` y un reintento forzado. | malla (las imágenes), victor | 1000 → 2000 → 1000 → 3000 → 1000: la tabla tiene cada vez lo escrito |
+| **I4** ✓ 2026-10-14 | **En producción**. Desplegar primero el servidor (I1 + I2 sirven a los SDK viejos) y después las imágenes del puesto. Repetir en victor la secuencia de `sandbox.m0d_marimo` y un reintento forzado. | malla (las imágenes), victor | 1000 → 2000 → 1000 → 3000 → 1000: la tabla tiene cada vez lo escrito |
 | **I5** | **La regla, escrita**: el ADR 0031 (W3.6c) con la decisión y las fuentes, `docs/sdk.md` (qué significa `repeated`), y este fichero se borra. | docs | — |
 
 **I1, hecho (2026-10-14).** `ore datasets --commit --idempotencia <uuid>`. El catálogo decide con
@@ -132,6 +132,21 @@ anuncie. Pruebas:
 - **`el-puesto.sh`** gana A → B → A en los tres lenguajes (casos 10, 8 y 9).
 - **Ese caso destapó un fallo anterior**: un ciclo en `derivedFrom` (leer A, escribir B, leer B,
   escribir A) hundía ore-serve por la pila. Arreglado aparte (`02b5b7b7`, `flow.rs` `CARGANDO`).
+
+**I4, hecho en producción (2026-10-14).** Desplegado en `345ff4e8` (contiene `9f295372`).
+`pruebas-de-fuego/idempotencia/i4.py`, en un puesto de victor abierto después del despliegue
+(`models-python`, `test_project/modelsv1`):
+- A → B → A (1000 → 2000 → 1000 → 3000 → 1000 en `sandbox.m0d_marimo`): la tabla tiene cada vez
+  lo escrito;
+- cada snapshot nuevo lleva su `ore.idempotency-key`, un UUIDv7;
+- lo que la tabla ya tiene → `repeated`, 8 snapshots antes y 8 después;
+- el ciclo `sandbox.i4_ciclo_a ← _b ← _a` y un `sql()` después → 3 filas, y `/salud` 200.
+
+**Visto de paso (aparte, sin arreglar).** Con ore-serve en reposo, `loadTable` tarda 3,1–3,6 s.
+Pero al abrir el workspace la consola pide `GET /fuentes` (hasta 284 s) y `GET /arbol` (99 s), y
+mientras tanto todo lo demás espera (`loadTable` 116–273 s) **con la CPU parada** (45m de 500m):
+peticiones largas que hacen esperar a las demás. Cada `write()` de I4 tardó ~21 s. Para que los
+cuadernos sean impecables, esto se mide y se arregla aparte.
 
 **Lo que queda fuera:** la idempotencia de **pipelines** (quién escribe + secuencia, al estilo
 Delta y Flink). Es para Build y los trabajos programados (0055), y va aparte. Tampoco se toca
