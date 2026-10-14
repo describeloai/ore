@@ -194,7 +194,11 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         puntero.nombre()
     );
     if op.seco {
-        println!("{}", cabecera(op, &puntero, &rw, &columnas, 0, 0, 0).jcs());
+        let cab = cabecera(op, &puntero, &rw, &columnas, 0, 0, 0);
+        println!(
+            "{}",
+            con_salud(cab, salud_de_la_copia(path, &pkg, &de)).jcs()
+        );
         return Ok(());
     }
 
@@ -213,9 +217,10 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let filas: u64 = z.presentes().map(|(_, w)| w as u64).sum();
+    let cab = cabecera(op, &puntero, &rw, &columnas, filas, leidas, trabajo);
     println!(
         "{}",
-        cabecera(op, &puntero, &rw, &columnas, filas, leidas, trabajo).jcs()
+        con_salud(cab, salud_de_la_copia(path, &pkg, &de)).jcs()
     );
     for (f, w) in z.presentes() {
         let linea = Json::Obj(f.iter().map(|(k, v)| (k.clone(), plano(v))).collect()).jcs();
@@ -352,6 +357,7 @@ fn de_la_copia_de_una_consulta(
         ("leidas", Json::Int(leidas as i64)),
         ("trabajo", Json::Int(leidas as i64)),
     ]);
+    let cab = con_salud(cab, salud_de_la_copia(path, pkg, &de));
     println!("{}", cab.jcs());
     if op.seco {
         return Ok(());
@@ -606,6 +612,32 @@ fn cabecera(
         ("leidas", Json::Int(leidas as i64)),
         ("trabajo", Json::Int(trabajo as i64)),
     ])
+}
+
+/// ⭐ 0063 S6d · **El bloque de salud de la copia que contesta** (v1alpha30
+/// §3.1): viaja en la cabecera, con las filas, como en el puesto. Con la
+/// promesa del dataset (`freshness`) y la hora de ahora. Lo de debajo (el
+/// linaje, S6a) lo sabe el índice: lo pone `POST /vistas/…/ejecutar`.
+fn salud_de_la_copia(path: &Path, pkg: &ore_core::link::Package, de: &str) -> Json {
+    let n =
+        ore_core::punteros::leer_en(&path.join(ore_core::punteros::CARPETA), de).map(|(_, n)| n);
+    let promesa = pkg
+        .dataset(de)
+        .and_then(|d| d.section("freshness"))
+        .and_then(|f| f.as_str())
+        .map(String::from);
+    let ahora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    ore_core::salud::bloque(n.as_ref(), promesa.as_deref(), ahora, (false, false))
+}
+
+fn con_salud(mut cab: Json, salud: Json) -> Json {
+    if let Json::Obj(m) = &mut cab {
+        m.insert("salud".into(), salud);
+    }
+    cab
 }
 
 /// Un valor como escalar de JSON. El decimal va como cadena de dígitos: JSON
