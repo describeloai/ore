@@ -1260,6 +1260,15 @@ implícita `no-vaciarse` (`rowCount > 0` si la anterior tenía filas, `Blocking`
 `itemCount` en las colecciones. La consola la enseña como *Built-in*. Quien la quiera más blanda la
 declara con su `id` y `severity: warning`; no se puede quitar.
 
+**La biblioteca es nuestra, y son tres cosas.** No se adopta Great Expectations ni Soda: los dos
+releen el dato para medirlo, y aquí la medida va montada en la pasada. Construirla es:
+1. **el catálogo** (S7a): qué significa cada métrica, de qué familia es, qué `arguments` y qué
+   `unit` admite. Está en la spec, y el compilador lo hace cumplir;
+2. **los medidores** (S7c y S7d): el código que cuenta cada métrica sobre los lotes de Arrow o
+   sobre el manifiesto. Uno por métrica; añadir una métrica es añadir un medidor y su entrada en
+   el catálogo;
+3. **el juez** (S7b): compara lo medido con lo prometido, igual para todas.
+
 **Las piezas**
 
 | | Pieza | Qué | Dónde |
@@ -1271,13 +1280,13 @@ declara con su `id` y `severity: warning`; no se puede quitar.
 | **S7e** | **Lo escrito** | `write()` y los builds pasan por el mismo juez al registrar el puntero. Una `Blocking` que falla no publica, y el puesto recibe el error con la promesa, lo medido y lo esperado, y la salida *Publish anyway* | `ore-store`, `ore-cli` (`datasets.rs`), SDK |
 | **S7f** | **La consola** | La sección *Promises* de la pestaña Health: cada promesa (las *Built-in* también) con su resultado, lo medido y lo esperado, y su historia en las últimas pasadas. *Add promise*: plantillas de lo que el puntero ya sabe («1 000 rows each refresh», «`cliente` 10 % empty», «only images in the last 3 refreshes»), que escriben el YAML en una rama y abren su propuesta (0044) | consola |
 
-**Las decisiones que quedan**
-- **D-S7-4 · `no-vaciarse` de serie.** **Recomendación:** sí, la guarda de S4 se expresa como una
+**Las decisiones (todas decididas el 2026-10-14)**
+- **D-S7-4 · `no-vaciarse` de serie.** **Decidida:** sí, la guarda de S4 se expresa como una
   promesa más: visible, con historia, y ablandable a `warning`, nunca quitada.
-- **D-S7-5 · Una promesa `unknown` no mueve el estado.** **Recomendación:** se enseña en *Promises*
+- **D-S7-5 · Una promesa `unknown` no mueve el estado.** **Decidida:** se enseña en *Promises*
   con su motivo, pero el activo no pasa a `unknown` por ella: el estado lo dicen la frescura y lo
   medido. Si no, una columna enorme pondría en `unknown` un activo sano.
-- **D-S7-6 · `write()` retenido.** **Recomendación:** igual que la copia: la versión se escribe y no
+- **D-S7-6 · `write()` retenido.** **Decidida:** igual que la copia: la versión se escribe y no
   se publica, el puesto recibe el error con *Publish anyway*, y quien lee sigue en la anterior.
 
 **La vara crece:**
