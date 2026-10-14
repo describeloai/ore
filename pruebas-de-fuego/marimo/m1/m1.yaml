@@ -1,0 +1,117 @@
+# M1·a · el relevo de laboratorio en t-victor (0064). Desechable: se borra entero al acabar
+#   kubectl delete -f m1.yaml && kubectl delete configmap m1-codigo -n t-victor
+# El código va en el ConfigMap `m1-codigo` (relevo.py, tunel.py, cuaderno.py):
+#   kubectl create configmap m1-codigo -n t-victor --from-file=relevo.py --from-file=tunel.py --from-file=cuaderno.py
+#
+# ⛔ El relevo NO lleva `ore.dev/rol: control`: el Service `ore-serve` elige por esa etiqueta y le
+#   mandaría tráfico de verdad. Lleva un rol propio, y las dos políticas abren SÓLO sonda → relevo:8080.
+apiVersion: v1
+kind: Service
+metadata:
+  name: relevo-m1
+  namespace: t-victor
+spec:
+  selector: { ore.dev/rol: m1-relevo }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: m1-sonda-al-relevo
+  namespace: t-victor
+spec:
+  podSelector: { matchLabels: { ore.dev/m1: sonda } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { ore.dev/rol: m1-relevo } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: m1-entrada-al-relevo
+  namespace: t-victor
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: m1-relevo } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { ore.dev/m1: sonda } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: relevo-m1
+  namespace: t-victor
+  labels: { kueue.x-k8s.io/queue-name: cola, ore.dev/tenant: victor, ore.dev/rol: m1-relevo }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { ore.dev/tenant: victor, ore.dev/rol: m1-relevo }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      volumes: [{ name: codigo, configMap: { name: m1-codigo } }]
+      containers:
+        - name: relevo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/sonda-marimo:m0
+          command: ["python3", "-u", "/m1/relevo.py"]
+          ports: [{ containerPort: 8080 }]
+          volumeMounts: [{ name: codigo, mountPath: /m1 }]
+          resources:
+            requests: { cpu: "100m", memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }
+---
+# La sonda: la forma de un puesto (rol de red `puesto`, cuenta `puesto`) + marimo + el túnel.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sonda-m1
+  namespace: t-victor
+  labels: { kueue.x-k8s.io/queue-name: cola, ore.dev/tenant: victor, ore.dev/rol: puesto }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { ore.dev/tenant: victor, ore.dev/rol: puesto, ore.dev/m1: sonda }
+    spec:
+      restartPolicy: Never
+      serviceAccountName: puesto
+      volumes: [{ name: codigo, configMap: { name: m1-codigo } }]
+      containers:
+        - name: sonda
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/sonda-marimo:m0
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: M1_RELEVO, value: "ws://relevo-m1:8080/tunel" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /tmp/nb /tmp/.config/marimo
+              cp /m1/cuaderno.py /tmp/nb/cuaderno.py
+              printf '[server]\ntransport = "sse"\n\n[completion]\ncopilot = false\n\n[ai]\nenabled = false\n' > /tmp/.config/marimo/marimo.toml
+              marimo edit --headless --host 127.0.0.1 --port 2718 --base-url /m --no-token \
+                --no-sandbox --skip-update-check /tmp/nb > /tmp/marimo.log 2>&1 &
+              exec python3 -u /m1/tunel.py
+          volumeMounts: [{ name: codigo, mountPath: /m1 }]
+          resources:
+            requests: { cpu: "100m", memory: 768Mi }
+            limits: { cpu: "2", memory: 4Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }

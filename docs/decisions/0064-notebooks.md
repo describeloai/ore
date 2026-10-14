@@ -4,8 +4,9 @@
 
 1. **Lo que hay** (escrito): lo que ORE ya pone para un notebook, sin marimo.
 2. **Lo que es marimo** (escrito, con fuentes): cómo está hecho y cómo lo integra el sector.
-3. **Lo medido** (M0 y M0·d, **medidos** el 2026-10-14 en victor, el último en un puesto real).
-4. **La pregunta del editor** (escrita): el editor oficial frente a uno nuestro.
+3. **Lo medido** (M0, M0·d y M1·a, **medidos** el 2026-10-14 en victor; M0·d en un puesto real).
+4. **La pregunta del editor** (escrita): el editor oficial frente a uno nuestro. **La persona elige
+   probar el oficial** (2026-10-14), y M1·a lo hace funcionar entero por un relevo.
 5. **El producto** (pendiente): la visión y la decisión se escriben **al cerrar las medidas**
    (M1, el relevo de verdad). Hasta entonces nada de lo que sigue es una decisión.
 
@@ -88,6 +89,28 @@ corrió como proceso aparte del agente, igual que correría de verdad.
 | TTL | El agente cierra el puesto tras 1 800 s sin «celdas ni editor». Lo que pasa en marimo no cuenta. | La actividad del notebook tiene que contar, como la del editor (0050 P4). |
 | Semántica | Un nombre que empieza por `_` es **local a su celda** (me rompió la primera pasada). | Lo tienen que decir las semillas y la guía. |
 
+**M1·a** (2026-10-14): **el editor oficial a través de un relevo, sin entrada al pod.** Laboratorio
+desechable en t-victor ([`pruebas-de-fuego/marimo/m1/`](../../pruebas-de-fuego/marimo/m1/)):
+- una sonda con la forma de un puesto corre marimo (`--base-url /m`, transporte SSE) y un
+  **túnel que sale del pod** (`tunel.py`: un WebSocket hacia fuera, una petición por hilo);
+- un relevo (`relevo.py`, ~170 líneas, el papel de ore-serve) recibe al navegador y responde a
+  trozos tal como llega, niega lo que no sale del puesto y anota cada guardado;
+- dos NetworkPolicies temporales abren sólo sonda → relevo:8080, y el navegador llega al relevo por
+  `kubectl port-forward`.
+
+Todo se borró al acabar.
+
+| | Medida | Qué dice |
+|---|---|---|
+| Funciona | En el navegador integrado: la portada, el cuaderno, «Run all», el slider (widget vivo), la tabla interactiva (histogramas, Columns, Visualize, Explore), la celda SQL con su motor DuckDB y el markdown reactivo. Arrastrar el slider recalcula la tabla. El pod sigue sin internet y nadie entra en él. | **El diseño es viable**: el editor oficial entero funciona por SSE detrás de un prefijo y de un relevo al que el pod llama. |
+| Lo negado | El frontend pide `/api/packages/sandbox` al abrir; el relevo contesta 403 y el editor sigue. | El relevo de verdad debe contestar algo inocuo ahí, no un error. |
+| Latencia | Celda trivial / cadena reactiva de 3 celdas (p50): **directo en el pod 12,9 / 16,8 ms**; **por relevo + túnel dentro del clúster 15,3 / 20,1 ms**; desde la máquina de desarrollo por `port-forward` 148 / 152 ms. | **El relevo y el túnel añaden ~2,5–3 ms.** Lo de fuera es el `port-forward` (pasa por el API server): por el túnel de Cloudflare medimos 57 ms en M0, así que de punta a punta se esperan **~75 ms** (se confirma en M1·b). |
+| Primera carga | Un cuaderno pide **251 ficheros, 14 MiB**, **sin comprimir** (marimo ignora `Accept-Encoding`) y **sin `Cache-Control`** (sólo `ETag`). Todo atraviesa el túnel hasta el pod (p50 9,5 ms por fichero dentro del clúster). Los más grandes: `loro_wasm` 3,1 MB, `node-sql-parser` 2,4 MB, `index` 1,3 MB. gzip deja el `_static` entero en un tercio (25 → 8 MiB). | **Los ficheros del frontend no tienen que pasar por el pod.** Son idénticos para todos los puestos de una versión y llevan hash en el nombre: se pueden servir desde fuera (ore-serve o la caché de Cloudflare), comprimidos e inmutables. Al pod sólo deberían llegar el HTML, `/api` y `/sse`. |
+| Guardar | En 10 s escribiendo en cinco tandas hubo **3 POST de guardado** (uno por pausa de más de 1 s), y cada uno lleva **el cuaderno entero** (~1 KB). El fichero del pod refleja lo escrito. | Un commit por guardado no puede ser. El relevo tiene que **acumular** (borrador) y hacer el commit al agrupar o al guardar a mano. El cuerpo ya trae todo lo necesario para escribir el fichero sin pedírselo al pod. |
+| Reconexión | Recargar la página **conserva el kernel y sus salidas**. Pero si se recarga antes de que el relevo note que el flujo SSE viejo se cerró (tardó hasta 15 s), la pestaña nueva entra como **lectora** («connected as a reader · Take over»). | El relevo de verdad tiene que propagar la desconexión del navegador **al instante**, no al siguiente latido. |
+| Sesiones | Marimo abre **una sesión (un kernel) por fichero**, y una segunda conexión al mismo fichero no es dueña (403 en sus POST). En `edit` las sesiones **no caducan** al desconectarse: las cuatro de las medidas siguieron vivas, a 75 MiB cada una vacía. El cuaderno con 138 000 filas: 276 MiB. El servidor: 146. El túnel: 29. | Hay que fijar `--session-ttl` (o cerrarlas desde el relevo) y contar un kernel por cuaderno abierto en el presupuesto de memoria del puesto. |
+| Service worker | El navegador integrado no registró `public-files-sw.js`, aunque el relevo lo sirve bien (200). | Sin verificar en un navegador normal. Sólo sirve los ficheros de `public/`. |
+
 ## 4 · La pregunta del editor: el oficial o uno nuestro
 
 **Lo que pesa más es el hecho medido de que las salidas de marimo son HTML con elementos
@@ -157,13 +180,12 @@ propio sobre la reactividad de marimo (licencia sin verificar).
 
 ## Lo que falta medir antes de decidir
 
-- **M1 · el relevo de verdad**: navegador → túnel → ore-serve → correa → servidor de marimo, con
-  SSE, con el iframe y desde el subdominio aislado. Latencia por interacción, reconexión, y
-  cuántas sesiones aguanta ore-serve.
-- **Guardar → commit**: interceptar `POST /api/kernel/save` y el ritmo del autoguardado (1 s) frente
-  a la forja (un commit no puede ser por segundo).
-- **El presupuesto de memoria** de un puesto de notebooks (agente + pyright + servidor + kernel +
-  datos) y la petición que le toca a la clase.
+- **M1·b · el camino público** (toca Cloudflare y el DNS: con go aparte): el mismo relevo detrás
+  del túnel de Cloudflare, en un nombre aislado. Hay que ver si Cloudflare acumula el SSE o lo
+  corta por inactividad, la latencia de punta a punta, los ficheros del frontend servidos desde la
+  caché comprimidos, y la autenticación del origen aislado.
+- **El presupuesto de memoria** de un puesto de notebooks con el agente y pyright de verdad
+  (M0·d y M1·a dan las piezas: servidor ~146 MiB, ~75 MiB por kernel vacío, datos aparte).
 
 ## 5 · El producto
 
