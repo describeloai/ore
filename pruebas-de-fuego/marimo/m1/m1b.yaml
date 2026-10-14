@@ -1,0 +1,159 @@
+# M1·b · el relevo de laboratorio detrás de la puerta pública (0064). Desechable:
+#   kubectl delete -f m1b.yaml && kubectl delete configmap m1-codigo secret m1-token -n t-victor
+# Sin DNS ni Cloudflare nuevos: una RUTA (`/m1-lab`) en el nombre de siempre
+# (`victor.ore.paladio.io`); Envoy da el prefijo más largo, ore-serve sigue con `/`.
+#
+# ⛔ El editor queda accesible desde internet, así que:
+#   · el relevo exige un token (Secret `m1-token`, creado a mano y NUNCA en el repo):
+#     `/m1-lab/entrar?t=<token>` deja una cookie;
+#   · la sonda corre SIN credenciales (cuenta `default`, sin token montado, sin
+#     Workload Identity) y con la red de un puesto (sin internet): quien entrase
+#     tendría un Python sin nada a lo que llegar;
+#   · las políticas son NUEVAS y aditivas: no se edita ninguna de Flux.
+apiVersion: v1
+kind: Service
+metadata:
+  name: relevo-m1
+  namespace: t-victor
+spec:
+  selector: { ore.dev/rol: m1-relevo }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: m1-lab
+  namespace: t-victor
+spec:
+  parentRefs:
+    - { group: gateway.networking.k8s.io, kind: Gateway, name: puerta-tunel, namespace: ore-system, sectionName: ore }
+  hostnames: [victor.ore.paladio.io]
+  rules:
+    - matches: [{ path: { type: PathPrefix, value: /m1-lab } }]
+      backendRefs: [{ kind: Service, name: relevo-m1, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: m1-sonda-al-relevo
+  namespace: t-victor
+spec:
+  podSelector: { matchLabels: { ore.dev/m1: sonda } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { ore.dev/rol: m1-relevo } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: m1-entrada-al-relevo
+  namespace: t-victor
+spec:
+  podSelector: { matchLabels: { ore.dev/rol: m1-relevo } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { ore.dev/m1: sonda } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: envoy } }
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: m1-envoy-al-relevo
+  namespace: envoy-gateway-system
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: envoy } }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: t-victor } }
+          podSelector: { matchLabels: { ore.dev/rol: m1-relevo } }
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: relevo-m1
+  namespace: t-victor
+  labels: { kueue.x-k8s.io/queue-name: cola, ore.dev/tenant: victor, ore.dev/rol: m1-relevo }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { ore.dev/tenant: victor, ore.dev/rol: m1-relevo }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      volumes: [{ name: codigo, configMap: { name: m1-codigo } }]
+      containers:
+        - name: relevo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/sonda-marimo:m0
+          command: ["python3", "-u", "/m1/relevo.py"]
+          env:
+            - { name: M1_PREFIJO, value: /m1-lab }
+            - { name: M1_BASE, value: /m1-lab/m }
+            - name: M1_TOKEN
+              valueFrom: { secretKeyRef: { name: m1-token, key: token } }
+          ports: [{ containerPort: 8080 }]
+          volumeMounts: [{ name: codigo, mountPath: /m1 }]
+          resources:
+            requests: { cpu: "100m", memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sonda-m1
+  namespace: t-victor
+  labels: { kueue.x-k8s.io/queue-name: cola, ore.dev/tenant: victor, ore.dev/rol: puesto }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { ore.dev/tenant: victor, ore.dev/rol: puesto, ore.dev/m1: sonda }
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      volumes: [{ name: codigo, configMap: { name: m1-codigo } }]
+      containers:
+        - name: sonda
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/sonda-marimo:m0
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: M1_RELEVO, value: "ws://relevo-m1:8080/tunel" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /tmp/nb /tmp/.config/marimo
+              cp /m1/cuaderno.py /tmp/nb/cuaderno.py
+              for x in A B C D; do printf 'import marimo\napp = marimo.App()\n' > /tmp/nb/medida$x.py; done
+              printf '[server]\ntransport = "sse"\n\n[completion]\ncopilot = false\n\n[ai]\nenabled = false\n' > /tmp/.config/marimo/marimo.toml
+              marimo edit --headless --host 127.0.0.1 --port 2718 --base-url /m1-lab/m --no-token \
+                --no-sandbox --skip-update-check --session-ttl 120 /tmp/nb > /tmp/marimo.log 2>&1 &
+              exec python3 -u /m1/tunel.py
+          volumeMounts: [{ name: codigo, mountPath: /m1 }]
+          resources:
+            requests: { cpu: "100m", memory: 768Mi }
+            limits: { cpu: "2", memory: 4Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }

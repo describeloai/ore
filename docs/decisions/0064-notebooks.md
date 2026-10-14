@@ -4,11 +4,12 @@
 
 1. **Lo que hay** (escrito): lo que ORE ya pone para un notebook, sin marimo.
 2. **Lo que es marimo** (escrito, con fuentes): cómo está hecho y cómo lo integra el sector.
-3. **Lo medido** (M0, M0·d y M1·a, **medidos** el 2026-10-14 en victor; M0·d en un puesto real).
+3. **Lo medido** (M0, M0·d, M1·a y M1·b, **medidos** el 2026-10-14 en victor; M0·d en un puesto
+   real y M1·b por el camino público). **Las medidas del estudio están cerradas.**
 4. **La pregunta del editor** (escrita): el editor oficial frente a uno nuestro. **La persona elige
    probar el oficial** (2026-10-14), y M1·a lo hace funcionar entero por un relevo.
-5. **El producto** (pendiente): la visión y la decisión se escriben **al cerrar las medidas**
-   (M1, el relevo de verdad). Hasta entonces nada de lo que sigue es una decisión.
+5. **El producto** (pendiente): la visión y la decisión, ahora que las medidas están cerradas.
+   Hasta entonces nada de lo que sigue es una decisión.
 
 Investigación: [`marimo-estado-del-arte.md`](../investigacion/marimo-estado-del-arte.md).
 Medidas y sondas: [`marimo-m0.md`](../investigacion/marimo-m0.md) y
@@ -111,6 +112,34 @@ Todo se borró al acabar.
 | Sesiones | Marimo abre **una sesión (un kernel) por fichero**, y una segunda conexión al mismo fichero no es dueña (403 en sus POST). En `edit` las sesiones **no caducan** al desconectarse: las cuatro de las medidas siguieron vivas, a 75 MiB cada una vacía. El cuaderno con 138 000 filas: 276 MiB. El servidor: 146. El túnel: 29. | Hay que fijar `--session-ttl` (o cerrarlas desde el relevo) y contar un kernel por cuaderno abierto en el presupuesto de memoria del puesto. |
 | Service worker | El navegador integrado no registró `public-files-sw.js`, aunque el relevo lo sirve bien (200). | Sin verificar en un navegador normal. Sólo sirve los ficheros de `public/`. |
 
+**M1·b** (2026-10-14): **el mismo relevo por el camino público de verdad**: navegador → Cloudflare
+→ túnel `ore-malla` → Envoy (`puerta-tunel`) → relevo → túnel saliente → marimo.
+
+**Sin tocar DNS ni Cloudflare**: un `HTTPRoute` con prefijo `/m1-lab` en el nombre de siempre
+(`victor.ore.paladio.io`); Envoy da el prefijo más largo y ore-serve siguió en `/`, con `/salud` 200
+antes, durante y después.
+
+El editor quedó en internet, así que se cerró por tres lados:
+- un token con cookie (en un Secret, nunca en el repo, borrado al acabar);
+- una sonda **sin credenciales** (cuenta `default` sin token montado ni Workload Identity) y sin
+  internet;
+- políticas **nuevas y aditivas**, incluida la salida de Envoy hacia el relevo; no se editó ninguna
+  de Flux.
+
+Manifiestos en [`m1b.yaml`](../../pruebas-de-fuego/marimo/m1/m1b.yaml), y el corte en
+[`corte.py`](../../pruebas-de-fuego/marimo/m1/corte.py). Todo se borró al acabar.
+
+| | Medida | Qué dice |
+|---|---|---|
+| Latencia | Por el camino público con la conexión reutilizada (como un navegador): **celda p50 78–80 ms (p95 ~87)**, **cadena de 3 celdas p50 ~85 ms**. En el pod, sin relevo: 13,9 / 17,1. Con una TLS nueva por petición sale ~200 ms: es el apretón de manos. | Lo estimado en M1·a (~75 ms). La reactividad se nota inmediata. |
+| SSE por Cloudflare | `kernel-ready` en **1,6 s** por el camino público: Cloudflare **no retiene** el flujo. | El transporte SSE vale tal cual detrás de Cloudflare. |
+| El corte de la puerta | Un SSE quieto por el camino público **muere a los 301 s sin `close`**: es el `requestTimeout: 300s` de `plazo-de-la-puerta`. Los latidos de marimo (cada **20 s**) no lo evitan. | Hay que tolerarlo, o sacar la ruta de los cuadernos de ese techo con su propia política. |
+| …y el frontend | Con el corte simulado en el relevo a los 60 s: el frontend **reconecta solo** (abre un SSE nuevo) y sigue siendo dueño. Al mover el slider después, **111 507 filas recalculadas en 107 ms**. | **El corte se lleva sin que la persona lo note**: una reconexión cada 5 minutos, que reenvía el estado (19–138 KB medidos). |
+| Recargar | Con el relevo preguntando cada 0,5 s si el navegador se fue: **recargar entra como dueño y conserva el estado**. Pero **dos recargas en menos de 1 s siguen entrando como lectora** (es una carrera). | ore-serve sabe que es **la misma persona** y puede pedir el *takeover* (`/api/kernel/takeover`) por ella. |
+| Ficheros del frontend | Cloudflare los **comprime solo en brotli** (`index` 1,35 MB → 399 KB, `loro_wasm` 3,1 MB → 957 KB: ×3,4). Con `Cache-Control: public, max-age=31536000, immutable` (que pone el relevo; marimo no lo pone) **cachea los `.js`** (MISS → HIT: el segundo no llega al pod). El **`.wasm` sale `DYNAMIC`**: Cloudflare no lo cachea por defecto. | La clave de la caché es la URL, y la URL cuelga del `--base-url` de marimo. **Un prefijo por puesto duplicaría la caché por puesto**: los ficheros deben tener una ruta común por versión de marimo. El `.wasm` necesita una regla de caché o servirse desde otro sitio. |
+| Clientes que no son navegadores | Cloudflare niega el user-agent de `urllib` con el **error 1010** (Browser Integrity Check). | No afecta al navegador. Sí a la CLI y al SDK si un día hablan con los cuadernos por la puerta. |
+| El túnel | Al reiniciar el relevo, **el túnel del pod se reconecta solo** en ~1 s (cierre 1012 → abierto). | El relevo se puede desplegar sin tirar las sesiones abiertas (perdiendo sólo lo que estaba en vuelo). |
+
 ## 4 · La pregunta del editor: el oficial o uno nuestro
 
 **Lo que pesa más es el hecho medido de que las salidas de marimo son HTML con elementos
@@ -180,12 +209,13 @@ propio sobre la reactividad de marimo (licencia sin verificar).
 
 ## Lo que falta medir antes de decidir
 
-- **M1·b · el camino público** (toca Cloudflare y el DNS: con go aparte): el mismo relevo detrás
-  del túnel de Cloudflare, en un nombre aislado. Hay que ver si Cloudflare acumula el SSE o lo
-  corta por inactividad, la latencia de punta a punta, los ficheros del frontend servidos desde la
-  caché comprimidos, y la autenticación del origen aislado.
-- **El presupuesto de memoria** de un puesto de notebooks con el agente y pyright de verdad
-  (M0·d y M1·a dan las piezas: servidor ~146 MiB, ~75 MiB por kernel vacío, datos aparte).
+Lo que el estudio deja abierto se mide al construir, porque necesita la pieza de verdad:
+
+- **El origen aislado** (un nombre propio para el iframe): M1·b lo evitó a propósito para no tocar
+  el DNS. Su autenticación (cookie del origen aislado frente a la sesión de la consola) se
+  prueba con el relevo de verdad.
+- **El presupuesto de memoria** de un puesto de notebooks con el agente y pyright de verdad.
+  M0·d y M1·a dan las piezas: servidor ~146 MiB, ~75 MiB por kernel vacío, los datos aparte.
 
 ## 5 · El producto
 

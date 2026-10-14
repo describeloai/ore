@@ -7,6 +7,7 @@ reintenta. Nada entra al pod: el pod sale, como el agente sale a ore-serve.
 """
 import http.client
 import json
+import socket
 import os
 import struct
 import threading
@@ -18,6 +19,9 @@ RELEVO = os.environ.get("M1_RELEVO", "ws://relevo-m1:8080/tunel")
 MARIMO = int(os.environ.get("M1_MARIMO_PORT", "2718"))
 SALTO = {"connection", "keep-alive", "transfer-encoding", "proxy-connection"}
 cancelados = set()
+# M1·a: si el navegador se va, marimo tiene que enterarse YA (si no, la pestaña que
+# recarga entra como lectora). Al cancelar se cierra la conexión con marimo.
+conexiones = {}
 
 
 def marco(cab, datos=b""):
@@ -42,6 +46,7 @@ class Canal:
 def atender(canal, cab, cuerpo):
     rid = cab["id"]
     c = http.client.HTTPConnection("127.0.0.1", MARIMO, timeout=24 * 3600)
+    conexiones[rid] = c
     try:
         cabeceras = {k: v for k, v in cab["headers"] if k.lower() not in SALTO | {"host", "content-length"}}
         c.request(cab["method"], cab["path"], body=cuerpo or None, headers=cabeceras)
@@ -63,6 +68,7 @@ def atender(canal, cab, cuerpo):
             pass
     finally:
         cancelados.discard(rid)
+        conexiones.pop(rid, None)
         c.close()
 
 
@@ -78,6 +84,12 @@ def main():
                         threading.Thread(target=atender, args=(canal, cab, cuerpo), daemon=True).start()
                     elif cab["t"] == "cancel":
                         cancelados.add(cab["id"])
+                        c = conexiones.get(cab["id"])
+                        if c is not None and c.sock is not None:
+                            try:
+                                c.sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
         except Exception as e:  # noqa: BLE001
             print("túnel caído (%s): reintento en 1 s" % e, flush=True)
             time.sleep(1)

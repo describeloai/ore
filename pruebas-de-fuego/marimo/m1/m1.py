@@ -8,6 +8,7 @@ SSE, como el navegador, y cronometra POST → `idle` de la celda.
 """
 import http.client
 import json
+import os
 import re
 import statistics
 import sys
@@ -22,22 +23,50 @@ FICHERO = sys.argv[3] if len(sys.argv) > 3 else "medida.py"
 U = urllib.parse.urlsplit(BASE)
 # La protección de versión de marimo: el navegador lee el token del HTML y lo
 # manda en cada POST; aquí, igual.
-_HTML = urllib.request.urlopen(BASE + "/?file=" + FICHERO, timeout=30).read().decode()
+# M1·b: el token del laboratorio, si lo hay (la puerta pública lo exige).
+EXTRA = {"x-m1-token": os.environ["M1_TOKEN"]} if os.environ.get("M1_TOKEN") else {}
+# Cloudflare (Browser Integrity Check, error 1010) niega el user-agent de urllib.
+EXTRA["User-Agent"] = "Mozilla/5.0 (m1-lab)"
+
+
+def abrir_url(url, timeout=30):
+    return urllib.request.urlopen(urllib.request.Request(url, headers=dict(EXTRA)), timeout=timeout)
+
+
+_HTML = abrir_url(BASE + "/?file=" + FICHERO).read().decode()
 TOKEN = re.search(r'data-token="([^"]+)"', _HTML).group(1)
 
 
+_CON = {"c": None}
+
+
 def post(path, body):
-    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "Marimo-Session-Id": SID, "Marimo-Server-Token": TOKEN})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.status
+    """Por UNA conexión que dura (como un navegador): con una TLS nueva por POST
+    la medida por Cloudflare es el apretón de manos, no la celda (~200 ms)."""
+    cab = {"Content-Type": "application/json", "Marimo-Session-Id": SID, "Marimo-Server-Token": TOKEN, **EXTRA}
+    for intento in range(2):
+        if _CON["c"] is None:
+            con = http.client.HTTPSConnection if U.scheme == "https" else http.client.HTTPConnection
+            _CON["c"] = con(U.hostname, U.port, timeout=60)
+        try:
+            _CON["c"].request("POST", U.path + path, body=json.dumps(body), headers=cab)
+            r = _CON["c"].getresponse()
+            r.read()
+            if r.status >= 400:
+                raise RuntimeError("POST %s -> %s" % (path, r.status))
+            return r.status
+        except (http.client.HTTPException, OSError):
+            _CON["c"] = None
+            if intento:
+                raise
 
 
 class Flujo:
     def __init__(self):
         self.msgs, self.cond = [], threading.Condition()
-        c = http.client.HTTPConnection(U.hostname, U.port, timeout=600)
-        c.request("GET", U.path + f"/sse?session_id={SID}&file={FICHERO}")
+        con = http.client.HTTPSConnection if U.scheme == "https" else http.client.HTTPConnection
+        c = con(U.hostname, U.port, timeout=600)
+        c.request("GET", U.path + f"/sse?session_id={SID}&file={FICHERO}", headers=dict(EXTRA))
         self.r = c.getresponse()
         threading.Thread(target=self._leer, daemon=True).start()
 
@@ -100,7 +129,7 @@ def main():
     xs = []
     for _ in range(20):
         t = time.time()
-        urllib.request.urlopen(BASE + "/api/status", timeout=10).read()
+        abrir_url(BASE + "/api/status", timeout=10).read()
         xs.append((time.time() - t) * 1000)
     R["get_status_ms"] = pct(xs)
     correr(f, "t", "x = 0")
