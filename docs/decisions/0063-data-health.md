@@ -1132,7 +1132,12 @@ Lo que faltaba de S6, hecho:
   de la lectura.
 - **S6b · lo escrito sabe de cuándo es** (`377dc1b0`). El SDK anota el `dataAsOf` de cada cosa que
   lee y lo deja en la procedencia; al registrar, el puntero toma el más viejo, o `null` si de
-  alguna entrada no se sabe. Falta medirlo con un puesto nuevo, el de la imagen nueva.
+  alguna entrada no se sabe. La CI cazó que la procedencia pasaba por `Json::de_node` y un `null`
+  llegaba como la cadena `"null"`: ahora va por `de_node_fiel` (`f41631f0`). **Medido** con un
+  puesto nuevo: `sandbox.vara_derivado`, escrito desde `vara_pg.ore_vara.pedidos`, lleva
+  `datos_de: 2026-10-14T09:17:22Z` (la hora de su entrada, no la de la escritura) y sale `unknown`
+  por `unverified` con esa hora. Una escritura idéntica es `repeated` y no toca el puntero: para
+  medir hubo que cambiar el contenido.
 - **S6g · el asistente** (consola `8449835`, local). `ejecutar_vista` le pasa la salud, en corto y
   antes de las filas, y el prompt del sistema lleva la política: `degraded` se dice al empezar,
   `warning` con su causa, `unknown` con su hora.
