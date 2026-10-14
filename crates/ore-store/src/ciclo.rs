@@ -1225,12 +1225,9 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         .unwrap_or_default();
     let semilla = campo("semilla").unwrap_or_default();
     // La procedencia va al resumen del snapshot tal cual llegó (JCS): es del
-    // que escribe, y el catálogo la lleva al puntero sin interpretarla.
-    let procedencia = n
-        .get("procedencia")
-        .filter(|p| p.is_object())
-        .and_then(|p| ore_core::parse::parse(&p.to_string()).ok())
-        .map(|p| Json::de_node(&p).jcs());
+    // que escribe, y el catálogo la lleva al puntero sin interpretarla. Fiel:
+    // un `null` (la hora que no se sabe de lo leído, 0063 S6b) sigue nulo.
+    let procedencia = n.get("procedencia").and_then(procedencia_de);
     let clave_pedida = campo("operacion");
     let propiedades: HashMap<String, String> = n
         .get("propiedades")
@@ -1490,6 +1487,17 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         ("updates", json_de(&p.cambios)?),
     ])
     .jcs())
+}
+
+/// **La procedencia, fiel** (0063 S6b): el objeto que llegó, en JCS, con sus
+/// `null` nulos (la hora que no se sabe de algo leído). Por `de_node` salía la
+/// cadena `"null"`, y lo escrito parecía de una hora que nadie dijo.
+fn procedencia_de(p: &serde_json::Value) -> Option<String> {
+    if !p.is_object() {
+        return None;
+    }
+    let n = ore_core::parse::parse(&p.to_string()).ok()?;
+    Some(Json::de_node_fiel(&n).jcs())
 }
 
 /// Lo que `iceberg` serializa con serde (el JSON de la spec REST), como `Json`
@@ -2022,7 +2030,7 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                         "procedencia",
                         p.get(lago::PROP_PROCEDENCIA)
                             .and_then(|s| ore_core::parse::parse(s).ok())
-                            .map(|n| Json::de_node(&n))
+                            .map(|n| Json::de_node_fiel(&n))
                             .unwrap_or_else(|| Json::obj([])),
                     ),
                     (
@@ -2352,6 +2360,19 @@ fn objeto_plano(linea: &str) -> Result<carga::Fila, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_procedencia_lleva_sus_nulos_nulos() {
+        let p: serde_json::Value = serde_json::from_str(
+            r#"{"transform":"t","inputs":["a","b"],"datos_de":{"a":null,"b":"2026-10-14T09:17:22Z"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            procedencia_de(&p).unwrap(),
+            r#"{"datos_de":{"a":null,"b":"2026-10-14T09:17:22Z"},"inputs":["a","b"],"transform":"t"}"#
+        );
+        assert_eq!(procedencia_de(&serde_json::Value::Null), None);
+    }
     use std::sync::Mutex;
 
     /// Un almacén en memoria: lo justo para que el ciclo se pruebe sin red.

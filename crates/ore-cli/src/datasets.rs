@@ -1603,7 +1603,8 @@ impl Cambio<'_> {
                 let m = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
                 let p = m.get("ore.procedencia").and_then(|(_, v)| v.as_str())?;
                 let n = ore_core::parse::parse(p).ok()?;
-                match Json::de_node(&n) {
+                // Fiel: un `null` de `datos_de` (0063 S6b) sigue nulo en el puntero.
+                match Json::de_node_fiel(&n) {
                     j @ Json::Obj(_) => Some(j),
                     _ => None,
                 }
