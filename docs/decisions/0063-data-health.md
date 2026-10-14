@@ -1452,6 +1452,17 @@ falte de la lógica (colecciones, `write()`) se ve como *Not checked yet* hasta 
   zero-rows guard* se va (es `notEmptied`) y la última sección pasa a *Monitoring and profiling*.
 - **Falta medir**: el usuario crea las promesas de `vara_pg.ore_vara.pedidos` desde el panel, la
   propuesta se fusiona y la vara corre C13–C15.
+- **Lo que la #21 destapó** (la primera propuesta de promesas, 2026-10-14):
+  - **Los *checks* de una propuesta mentían** (`04ebe49a`): contaban todo diagnóstico de la rama,
+    y los dos `OOS1001` de `azure_blob_mnist`, en `main` desde el 12-oct, bloqueaban toda
+    propuesta de la celda. Ahora una rama responde de lo que **empeora** (la regla de `empeora`):
+    `diagnosticos` son los nuevos y bloquean; `diagnosticos_heredados`, lo que ya estaba, se dice
+    y no bloquea. ⚠️ **Es lo mínimo para que no mientan: el producto de los *checks* y sus
+    fallos (qué se comprueba, cómo se ve, quién lo salta) está por construir.**
+  - **La propuesta no decía qué cambiaba** (`40092b03`): se abre con alcance del activo
+    (`activos`), y *Assets changed* enumera las promesas añadidas, quitadas y cambiadas por `id`.
+    Queda que `ore diff` las clasifique para quien lee (quitar o ablandar una promesa debilita la
+    garantía): necesita una regla de compatibilidad en la spec.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
