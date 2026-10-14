@@ -1746,15 +1746,6 @@ fn aplicado_de(n: &Node) -> Aplicado {
 /// ventana es la promesa de la spec, no una defensa.
 const VENTANA_IDEMPOTENCIA_MS: i64 = (30 + 5) * 60 * 1000;
 
-/// Una `Idempotency-Key` con la forma de la spec: un UUID en texto (36).
-fn clave_bien_formada(c: &str) -> bool {
-    c.len() == 36
-        && c.char_indices().all(|(i, ch)| match i {
-            8 | 13 | 18 | 23 => ch == '-',
-            _ => ch.is_ascii_hexdigit(),
-        })
-}
-
 /// Lo que ya está, antes de aplicar un cambio.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Ya {
@@ -1859,7 +1850,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
     let defecto = retencion_defecto(op)?;
     if let Some(k) = op.idempotencia
-        && !clave_bien_formada(k)
+        && !ore_core::idempotencia::bien_formada(k)
     {
         return Err((
             64,
@@ -2680,17 +2671,6 @@ mod tests {
             ya_esta(&h, Some(otra), Some("hC"), false, 9_500_000),
             Ya::SinCambios
         );
-    }
-
-    #[test]
-    fn una_idempotency_key_es_un_uuid() {
-        use super::clave_bien_formada as ok;
-        assert!(ok("0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f"));
-        assert!(ok("0192F0C4-7B2A-7C3E-9D41-5A6B7C8D9E0F"));
-        assert!(!ok("op-1"));
-        assert!(!ok("0192f0c47b2a7c3e9d415a6b7c8d9e0f"));
-        assert!(!ok("0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0g"));
-        assert!(!ok("0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f0"));
     }
 
     /// 0063 S6b: lo escrito es tan viejo como lo más viejo que leyó; si de

@@ -52,6 +52,7 @@ pub mod funcion_propia;
 pub mod generar;
 pub mod governance;
 pub mod graphql;
+pub mod idempotencia;
 pub mod identidad;
 pub mod impacto;
 pub mod json;

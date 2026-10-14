@@ -84,7 +84,7 @@ Propongo la primera: nuestro SDK la manda igual, y anunciarla es una promesa a c
 | # | Qué | Dónde | Prueba |
 |---|---|---|---|
 | **I1** ✓ 2026-10-14 | **El catálogo**. La comprobación de la ancestría se sustituye por dos: (1) la clave de la petición en los snapshots de la ventana → respuesta equivalente con el estado vigente; (2) en `overwrite`, `ore.operacion` de la petición = la del **snapshot vigente** → nada que hacer. Al aplicar, el servidor escribe `ore.idempotency-key` en el resumen del snapshot nuevo. `historia` gana la clave y la hora de cada snapshot. | `ore-cli/src/datasets.rs`, `ore-store/src/ciclo.rs` (`historia`) | `cargo test`: A → B → A deja 3 snapshots; la misma clave dos veces deja 1 y contesta igual; `overwrite` igual al vigente → sin snapshot; `append` igual → snapshot; una clave fuera de la ventana no se honra; un snapshot viejo con `ore.operacion` en la historia ya no bloquea |
-| **I2** | **ore-serve**. Lee `Idempotency-Key` en `POST …/tables/{t}`, `POST …/tables` y `POST /transactions/commit`, comprueba la forma (36 caracteres; si no la tiene → 400) y la pasa al catálogo. La ventana es una constante (`PT30M`). Se quita el «no entra (todavía)» del encabezado de `catalogo.rs`. | `ore-serve/src/catalogo.rs` | `cargo test` de la ruta: con cabecera, sin ella, mal formada |
+| **I2** ✓ 2026-10-14 | **ore-serve**. Lee `Idempotency-Key` en `POST …/tables/{t}`, `POST …/tables` y `POST /transactions/commit`, comprueba la forma (36 caracteres; si no la tiene → 400) y la pasa al catálogo. La ventana es una constante (`PT30M`). Se quita el «no entra (todavía)» del encabezado de `catalogo.rs`. | `ore-serve/src/catalogo.rs` | `cargo test` de la ruta: con cabecera, sin ella, mal formada |
 | **I3** | **Los tres SDK**. Un UUIDv7 por commit construido (`uuid.uuid7()` en Python 3.14; generador propio de 20 líneas en Node y en Java). Tras un 5xx o un corte, **reenviar la misma petición** con la misma clave (3 veces, con espera). Tras un 409, reconstruir con una clave nueva. Se quita el «`GET` y comparar». `repeated` sólo cuando el servidor contesta con la misma base. | `puesto/python/ore/__init__.py`, `puesto/node/ore/index.mjs`, `puesto/jvm/ore/Ore.java` | `el-puesto.sh` 10, 8 y 9 siguen verdes, y ganan A → B → A en los tres lenguajes |
 | **I4** | **En producción**. Desplegar primero el servidor (I1 + I2 sirven a los SDK viejos) y después las imágenes del puesto. Repetir en victor la secuencia de `sandbox.m0d_marimo` y un reintento forzado. | malla (las imágenes), victor | 1000 → 2000 → 1000 → 3000 → 1000: la tabla tiene cada vez lo escrito |
 | **I5** | **La regla, escrita**: el ADR 0031 (W3.6c) con la decisión y las fuentes, `docs/sdk.md` (qué significa `repeated`), y este fichero se borra. | docs | — |
@@ -107,6 +107,20 @@ por `operation: append` en el resumen del snapshot, que la spec exige siempre.
   tercera; lo vigente → `repetida` sin snapshot; la misma clave anexando → `reintento` sin
   snapshot; sin clave → 75; una clave mal formada → 64; la ficha enseña la clave.
 - `el-lago.sh` entero en verde (0–15).
+
+**I2, hecho (2026-10-14).** ore-serve lee `Idempotency-Key` en `updateTable` y `commitTransaction`
+(`idempotencia_de`). Si no tiene forma de UUID → **400 `BadRequestException`**, y nada llega a la
+línea de órdenes. Si la tiene, la pasa como **un solo argumento** (`--idempotencia=<uuid>`), para que
+ni una forma válida pueda leerse como otra opción. La forma la comparten ore-serve y `ore`
+(`ore_core::idempotencia::bien_formada`).
+
+**`createTable` sin `stage-create`, fuera.** Nuestro SDK crea con `stage-create` + commit, que ya
+está cubierto, y PyIceberg y DuckDB sólo mandarían la cabecera si la anunciáramos. Entra cuando se
+anuncie. Pruebas:
+- `cargo test`: `la_idempotency_key_se_mira_antes_de_pasarla`;
+- `el-lago.sh` paso **13c**: dos `append` de PyIceberg con la misma clave por `/v1` anexan una vez
+  (15 filas y no 20), la clave queda en el snapshot, y una cabecera que no es un UUID da 400;
+- `el-lago.sh` entero en verde.
 
 **Lo que queda fuera:** la idempotencia de **pipelines** (quién escribe + secuencia, al estilo
 Delta y Flink). Es para Build y los trabajos programados (0055), y va aparte. Tampoco se toca

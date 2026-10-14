@@ -56,11 +56,21 @@
 //! `x-ore-rama` (0030 W2) elige en qué rama se lee la tabla y en cuál se
 //! mueve el puntero: una sesión en una rama escribe en la suya (§11 ⑦).
 //!
+//! **`Idempotency-Key`** (la spec; `docs/idempotencia.md`): en `updateTable` y
+//! `commitTransaction`, un UUID por operación lógica que el cliente reutiliza
+//! sólo en sus reintentos. Se mira aquí (forma de UUID, o 400: lo que llega de
+//! la red no viaja a la línea de órdenes sin mirarlo) y se pasa como UN
+//! argumento (`--idempotencia=<uuid>`); el catálogo la coteja con los
+//! snapshots de la ventana y la escribe en el que nace. Una petición repetida
+//! contesta lo que hay, sin aplicar nada. **No se anuncia** todavía
+//! (`idempotency-key-lifetime` en `config`): anunciarla promete las 18
+//! operaciones de la spec, y aquí sólo cubre las dos que confirman snapshots.
+//!
 //! # Lo que no entra (todavía)
 //!
-//! Renombrar, borrar tablas, `register`, métricas, el
-//! escaneo por el servidor, `Idempotency-Key` (ningún cliente la manda,
-//! medido; la clave de operación del snapshot hace ese trabajo).
+//! Renombrar, borrar tablas, `register`, métricas, el escaneo por el
+//! servidor, y la `Idempotency-Key` fuera de las dos rutas que confirman
+//! (`createTable` sin `stage-create` y los namespaces no la honran).
 
 use std::path::Path;
 
@@ -73,6 +83,33 @@ use crate::rutas::{Servidor, token};
 
 /// La cabecera con la que un cliente pide la credencial prestada.
 const DELEGACION: &str = "x-iceberg-access-delegation";
+
+/// La cabecera de la spec con la identidad de una operación (en minúsculas:
+/// así guarda las cabeceras `ore-entrada`).
+const IDEMPOTENCIA: &str = "idempotency-key";
+
+/// **La `Idempotency-Key` de la petición**, como el argumento que se le pasa
+/// a `ore datasets --commit`: `None` sin ella; 400 si no es un UUID. Va en UN
+/// argumento (`--idempotencia=…`) para que ni siquiera una forma válida pueda
+/// leerse como otra opción.
+fn idempotencia_de(p: &Peticion) -> Result<Option<String>, Respuesta> {
+    match p
+        .cabeceras
+        .get(IDEMPOTENCIA)
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        None => Ok(None),
+        Some(k) if ore_core::idempotencia::bien_formada(k) => {
+            Ok(Some(format!("--idempotencia={k}")))
+        }
+        Some(_) => Err(error(
+            400,
+            "BadRequestException",
+            "la `Idempotency-Key` no es un UUID en texto (36 caracteres)",
+        )),
+    }
+}
 
 /// Un error con la forma de la spec REST.
 fn error(codigo: u16, tipo: &str, mensaje: impl Into<String>) -> Respuesta {
@@ -727,6 +764,10 @@ impl Servidor {
                 let nombre = nombre_de(base, ns, t);
                 let peticion = p.cuerpo.clone();
                 let sujeto_s = sujeto.persona.clone();
+                let clave = match idempotencia_de(p) {
+                    Ok(c) => c,
+                    Err(r) => return r,
+                };
                 con_forma(
                     self.escribiendo_en(
                         rama,
@@ -757,6 +798,9 @@ impl Servidor {
                                 args.push("--retencion-defecto");
                                 args.push(d);
                             }
+                            if let Some(c) = &clave {
+                                args.push(c);
+                            }
                             let r = self.ore_crudo(raiz, &args, true);
                             if r.codigo >= 300 {
                                 return r;
@@ -783,6 +827,10 @@ impl Servidor {
                     Some(b) => con_la_base(&n, b),
                 };
                 let sujeto_s = sujeto.persona.clone();
+                let clave = match idempotencia_de(p) {
+                    Ok(c) => c,
+                    Err(r) => return r,
+                };
                 con_forma(
                     self.escribiendo_en(rama, sujeto, "escribir varias tablas", move |raiz| {
                         let defecto = self.retencion_defecto();
@@ -805,6 +853,9 @@ impl Servidor {
                         if let Some(d) = &defecto {
                             args.push("--retencion-defecto");
                             args.push(d);
+                        }
+                        if let Some(c) = &clave {
+                            args.push(c);
                         }
                         let r = self.ore_crudo(raiz, &args, true);
                         if r.codigo >= 300 {
@@ -1105,6 +1156,37 @@ fn paquetes(raiz: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La `Idempotency-Key` llega como UN argumento, sólo si es un UUID; lo
+    /// demás es 400 y no llega a la línea de órdenes.
+    #[test]
+    fn la_idempotency_key_se_mira_antes_de_pasarla() {
+        let con = |v: Option<&str>| Peticion {
+            metodo: "POST".into(),
+            ruta: "/v1/namespaces/ventas/tables/t".into(),
+            cabeceras: v
+                .map(|v| [(IDEMPOTENCIA.to_string(), v.to_string())].into())
+                .unwrap_or_default(),
+            cuerpo: "{}".into(),
+            consulta: Default::default(),
+        };
+        let k = "0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f";
+        assert_eq!(
+            idempotencia_de(&con(Some(k))).ok().flatten().as_deref(),
+            Some("--idempotencia=0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f")
+        );
+        assert_eq!(idempotencia_de(&con(None)).ok().flatten(), None);
+        assert_eq!(idempotencia_de(&con(Some("  "))).ok().flatten(), None);
+        for mala in [
+            "op-1",
+            "--sujeto=persona:bob",
+            "0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0g",
+        ] {
+            let r = idempotencia_de(&con(Some(mala))).expect_err(mala);
+            assert_eq!(r.codigo, 400, "{mala}");
+            assert!(r.cuerpo.jcs().contains("BadRequestException"));
+        }
+    }
 
     /// Los códigos de `ore` → los de la spec, con su tipo.
     #[test]

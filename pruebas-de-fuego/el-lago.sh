@@ -651,6 +651,37 @@ c=$(pide POST /v1/namespaces/ventas/tables/py "{\"requirements\":[{\"type\":\"as
 c=$(pide POST /v1/namespaces/ventas/tables/nadie '{"requirements":[],"updates":[{"action":"set-properties","updates":{"x":"y"}}]}'); [ "$c" = "404" ] || falla "13 · commit sobre lo que no existe: $c"
 ok "13 · la credencial prestada acotada al prefijo (y sin pedirla, nada); 404, 400, 409 con \`actual\` y la forma de error de la spec"
 
+# ── 13c · `Idempotency-Key` por la puerta (docs/idempotencia.md, I2) ─────────
+# PyIceberg manda la cabecera que se le diga (`header.…`). Dos `append` con la
+# MISMA clave: el segundo es un reintento —contesta lo que hay y no anexa—, y
+# la clave queda en el snapshot que nació. Una que no es un UUID: 400.
+K13=0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e13
+cat > "$TMP/py13c.py" <<'PY'
+import sys
+import pyarrow as pa
+from pyiceberg.catalog import load_catalog
+base, k = sys.argv[1], sys.argv[2]
+sin = load_catalog("ore", **{"type": "rest", "uri": base, "header.x-ore-sujeto": "persona:ana"})
+con = load_catalog("ore2", **{"type": "rest", "uri": base, "header.x-ore-sujeto": "persona:ana", "header.Idempotency-Key": k})
+def datos(desde, n):
+    return pa.table({"id": pa.array(range(desde, desde + n), pa.int64())})
+sin.create_table(("ventas", "idem13"), schema=datos(0, 1).schema).append(datos(0, 10))
+con.load_table(("ventas", "idem13")).append(datos(10, 5))
+con.load_table(("ventas", "idem13")).append(datos(10, 5))
+print(sin.load_table(("ventas", "idem13")).scan().to_arrow().num_rows)
+PY
+n13=$("$PY" "$TMP/py13c.py" "$BASE" "$K13" 2> "$TMP/py13c.err") || { tail -5 "$TMP/py13c.err"; falla "13c · PyIceberg con Idempotency-Key"; }
+[ "$n13" = "15" ] || falla "13c · la misma clave dos veces tenía que anexar UNA vez (15 filas) y hay $n13"
+[ "$(pide GET /v1/namespaces/ventas/tables/idem13)" = "200" ] || falla "13c · cargar idem13"
+"$PY" -c 'import json,sys
+m=json.load(open(sys.argv[1]))["metadata"]; ss=m["snapshots"]
+claves=[s.get("summary",{}).get("ore.idempotency-key","") for s in ss]
+sys.exit(0 if len(ss)==2 and claves.count(sys.argv[2])==1 else 1)' "$TMP/out.json" "$K13" \
+  || falla "13c · dos snapshots, uno con la clave: $(head -c 400 "$TMP/out.json")"
+c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' -H 'Idempotency-Key: --sujeto=persona:bob' "$BASE/v1/namespaces/ventas/tables/idem13" -d '{"requirements":[],"updates":[{"action":"set-properties","updates":{"x":"y"}}]}')
+[ "$c" = "400" ] && grep -q BadRequestException "$TMP/out.json" || falla "13c · una clave que no es un UUID tenía que ser 400 y fue $c: $(cat "$TMP/out.json")"
+ok "13c · Idempotency-Key por /v1: dos append de PyIceberg con la misma clave anexan una vez y la clave queda en el snapshot; una que no es un UUID, 400 BadRequestException"
+
 # ── 14 · materializar sobre el lago: Arrow, sin driver ───────────────────────
 ( cd "$CL" && git pull -q origin main ) || falla "14 · no se pudo traer el árbol"
 mkdir -p "$CL/packages/ventas/views"
