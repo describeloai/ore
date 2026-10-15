@@ -1475,6 +1475,26 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         }
         _ => lotes,
     };
+    // ⭐ 0063 S7e · LO QUE LAS PROMESAS PIDEN, CONTADO AQUÍ. Los lotes son ya
+    //   lo que se escribe: al sobrescribir y en un upsert (fundido con lo de
+    //   antes), la versión entera; al anexar a una tabla que existe, sólo lo
+    //   que llega, y eso se dice (`ore.promesas.filas`). Va al resumen del
+    //   snapshot: el catálogo juzga con ello antes de mover el puntero, sin
+    //   releer nada.
+    let mut medidor = match n.get("promesas") {
+        Some(p) if p.is_array() => ore_core::parse::parse(&format!("{{\"promesas\":{p}}}"))
+            .map(|n| crate::medir::Medidor::de(&n))
+            .map_err(|e| format!("`promesas` de la petición no analiza: {e:?}"))?,
+        _ => crate::medir::Medidor::nada(),
+    };
+    let solo_lo_que_llega = operacion == Operacion::Anexar && previa.is_some();
+    if solo_lo_que_llega {
+        medidor.solo_lo_que_llega();
+    }
+    for l in &lotes {
+        medidor.lote(l);
+    }
+    let promesas = medidor.json();
     let columnas = lago::columnas_de(&lotes[0]);
     // ORE 0051 P5: `sobrescribir` y `upsert` reescriben todos los ficheros;
     // `anexar` deja los que había, y ahí no se endurece nada.
@@ -1506,6 +1526,12 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
     if let Some(p) = &procedencia {
         resumen.insert(lago::PROP_PROCEDENCIA.to_string(), p.clone());
     }
+    if let Some(j) = &promesas {
+        resumen.insert(lago::PROP_PROMESAS.to_string(), j.jcs());
+        if solo_lo_que_llega {
+            resumen.insert(lago::PROP_PROMESAS_FILAS.to_string(), anadidas.to_string());
+        }
+    }
     let mut p = lago.preparar(&tabla, deseado, lotes, operacion, resumen)?;
     // La clave queda declarada en la tabla, para la siguiente escritura.
     if modo == "upsert"
@@ -1523,7 +1549,7 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
                 .collect(),
         )
     };
-    Ok(Json::obj([
+    let mut r = Json::obj([
         ("bytes", Json::Int(p.bytes as i64)),
         ("columnas", columnas_json(&tabla)),
         ("esquema_cambiado", Json::Bool(p.esquema_cambiado)),
@@ -1539,8 +1565,13 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         ("snapshot", Json::s(p.snapshot_id.to_string())),
         ("ubicacion", Json::s(tabla.metadata().location())),
         ("updates", json_de(&p.cambios)?),
-    ])
-    .jcs())
+    ]);
+    // 0063 S7e: lo contado, también en la respuesta (sin nada pedido, la de
+    // siempre); lo que vale es lo del resumen, que viaja con el commit.
+    if let (Json::Obj(m), Some(j)) = (&mut r, promesas) {
+        m.insert("promesas".into(), j);
+    }
+    Ok(r.jcs())
 }
 
 /// **La procedencia, fiel** (0063 S6b): el objeto que llegó, en JCS, con sus
@@ -2583,6 +2614,83 @@ mod tests {
         assert!(
             s2.contains(r#""promesas":{"sin_nombre":{"cuenta":1},"unico":{"cuenta":1}}"#),
             "{s2}"
+        );
+    }
+
+    /// 0063 S7e: un `write()` cuenta lo que piden las promesas en la misma
+    /// pasada en que escribe, y lo deja en el resumen del snapshot, que es lo
+    /// que viaja al commit. Sobrescribir cuenta la versión entera; anexar,
+    /// sólo lo que llega —y lo dice—, y los duplicados ahí no se saben.
+    #[test]
+    fn escribir_cuenta_lo_que_las_promesas_piden() {
+        use arrow_array::Int64Array;
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta);
+        let ds = "datasets/s7e_escrito";
+        let ids = |v: Vec<Option<i64>>| ipc_de(vec![("id", Arc::new(Int64Array::from(v)) as _)]);
+        let promesas = r#"[{"id":"id_unico","metric":"duplicateValues","column":"id"},{"id":"id_lleno","metric":"nullValues","column":"id"}]"#;
+        let resumen = |e: &str| -> serde_json::Value {
+            let j: serde_json::Value = serde_json::from_str(e).unwrap();
+            j["updates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|u| u["action"] == "add-snapshot")
+                .unwrap()["snapshot"]["summary"]
+                .clone()
+        };
+
+        // Sin promesas, la respuesta y el resumen de siempre.
+        let e0 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}_0\",\"operacion\":\"op-0\"}}"),
+            &ids(vec![Some(1)])[..],
+        )
+        .expect("escribe");
+        assert!(!e0.contains("promesas"), "{e0}");
+
+        // ① sobrescribir: la versión entera, un duplicado y un nulo.
+        let e1 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"operacion\":\"op-1\",\"promesas\":{promesas}}}"),
+            &ids(vec![Some(1), Some(2), Some(2), None])[..],
+        )
+        .expect("escribe");
+        let r1 = resumen(&e1);
+        assert_eq!(
+            r1["ore.promesas"], r#"{"id_lleno":{"cuenta":1},"id_unico":{"cuenta":1}}"#,
+            "{e1}"
+        );
+        assert!(r1.get("ore.promesas.filas").is_none(), "{r1}");
+        assert!(
+            e1.contains(r#""promesas":{"id_lleno":{"cuenta":1},"id_unico":{"cuenta":1}}"#),
+            "{e1}"
+        );
+        let ml1 = campo(
+            &aplicar_lo_escrito(&lago, &e1, ds, None),
+            "metadata_location",
+        );
+
+        // ② anexar: sólo lo que llega (2 filas), y el duplicado no se sabe.
+        let e2 = escribir(
+            &lago,
+            &format!(
+                "{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"operacion\":\"op-2\",\"base\":\"{ml1}\",\"promesas\":{promesas}}}"
+            ),
+            &ids(vec![Some(1), None])[..],
+        )
+        .expect("anexa");
+        let r2 = resumen(&e2);
+        assert_eq!(r2["ore.promesas.filas"], "2", "{r2}");
+        let contado: serde_json::Value =
+            serde_json::from_str(r2["ore.promesas"].as_str().unwrap()).unwrap();
+        assert_eq!(contado["id_lleno"]["cuenta"], 1);
+        assert!(
+            contado["id_unico"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("an append only sees the rows it adds"),
+            "{contado}"
         );
     }
 

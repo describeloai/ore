@@ -1497,6 +1497,56 @@ Lo que destapó: una colección recién publicada (estado `transaccion`) salía 
 —`salud::legible` no conocía ese estado—: arreglado. Y la fusión de una propuesta **con alcance**
 contaba lo heredado de `main` (`a7b368bb`, `lo_que_empeora`).
 
+### S7e · lo escrito: el diseño (2026-10-15) y S7e·1–2 en código
+
+`write()` no pasa por ninguna copia: el SDK pide la tabla (`loadTable`), corre **en el puesto**
+`ore-store escribir` —que tiene las filas en Arrow y escribe los ficheros sin confirmar— y manda el
+commit (`ore datasets --commit`), que aplica el `metadata.json` y mueve el puntero. Los builds van
+por el mismo camino. Así que el juez se pone en el commit, y lo que cuenta lo cuenta `escribir`:
+
+1. **La tabla dice qué contar**: `ore.promesas` en el `config` de `loadTable` (la `peticion` de
+   S7b, sólo lo de cada columna; lo del total no se pide). A quien sólo lee no se le dice.
+2. **`escribir` lo cuenta en su pasada**, con el medidor de S7c, sobre los lotes que escribe, y lo
+   deja en el **resumen del snapshot** (`ore.promesas`), que es lo que viaja con el commit.
+3. **El commit juzga antes de mover el puntero**, con las promesas del documento y lo del resumen.
+   Una `error` que falla **retiene**: lo escrito queda en el lago sin servir, el puntero sigue en
+   la versión anterior con `estado: error`, el intento `retenida` con su guarda, las promesas y
+   `version_retenida` (qué se escribió, cuándo y quién). El commit sale con 0 —ore-serve publica
+   el árbol, si no lo tiraría— y dice `retenida`. Una `warning` publica y va en `avisos`.
+   `--publicar-igual` publica de todos modos.
+
+**Las tres decisiones** (con el go de S7e·1–2):
+
+- **Al anexar**, lo de cada columna se cuenta sobre **las filas que llegan** (lo que hacen las
+  expectations de Databricks), y el porcentaje es sobre ellas (`ore.promesas.filas`,
+  `Medido.contadas`); `rowCount` y su cambio, sobre la versión entera; los **duplicados**, `unknown`
+  («an append only sees the rows it adds»): contra las filas de antes no se ven. Sobrescribir y
+  upsert (ya fundido) cuentan la versión entera.
+- **Mide el puesto**, con el binario de ORE: es gratis, va en la misma pasada y no relee nada. El
+  puesto ejecuta código del usuario y podría falsear las cuentas, como podría fabricar un commit a
+  mano: las promesas protegen de **errores**, no de quien quiere engañarlas; de eso se ocupan el
+  acceso y la propuesta. Un cliente de Iceberg que no cuenta (Spark) no trae `ore.promesas`: lo de
+  cada columna queda `unknown` (D-S7-5) y lo del total se juzga igual.
+- ***Publish anyway* también desde la consola**: publica la `version_retenida` (mueve el puntero a
+  ella), sin repetir la escritura. Es S7e·3.
+
+**Lo que queda dicho y no resuelto:** la primera versión de una tabla no tiene puntero que
+retener: si retiene, no se escribe puntero y la tabla sigue sin nacer (sólo `publish_anyway` desde
+el SDK la publica). En un `commitTransaction` cada tabla se juzga sola: una puede retener y otra
+publicarse. Y lo retenido sólo lo nombra el puntero: si la recogida retirara sus ficheros antes de
+publicarlo, *Publish anyway* desde la consola tiene que comprobar que siguen ahí.
+
+| Paso | Qué | Estado |
+|---|---|---|
+| S7e·1 | `ore-store escribir` cuenta y lo deja en el resumen del snapshot | en código |
+| S7e·2 | `ore datasets`: `ore.promesas` en `loadTable`; el commit juzga, retiene o avisa; `--publicar-igual`; `el-lago.sh` 8e | en código |
+| S7e·3 | ore-serve: el commit retenido es 422 tras publicar el árbol; *publish anyway* por cabecera; `POST …/publicar-retenida` | — |
+| S7e·4 | SDK: `PromiseHeldError`, `publish_anyway`, `HealthWarning`; pasar `ore.promesas` a `escribir` | — |
+| S7e·5 | C18 en un puesto | — |
+
+**S7e·1–2 no se empujan solos**: sin S7e·3, ore-serve contestaría 200 a un commit retenido y el
+`write()` creería que publicó. Van con S7e·3.
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre

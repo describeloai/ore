@@ -1055,6 +1055,10 @@ pub struct Medido {
     /// Lo contado para cada promesa que lo pidió, por su `id`; o por qué no se
     /// pudo (en inglés: lo lee el dueño). Lo que falta aquí es `unknown`.
     pub cuentas: std::collections::BTreeMap<String, Result<u64, String>>,
+    /// Sobre cuántas filas se contaron las `cuentas` (0063 S7e): en un
+    /// `write()` que anexa, sólo las que llegan; `None` es `total`. Es el
+    /// denominador de un porcentaje.
+    pub contadas: Option<u64>,
 }
 
 /// El resultado de una promesa (`01` §6).
@@ -1173,10 +1177,11 @@ fn uno_de(p: &Promesa, medido: &Medido) -> Veredicto {
             None => return no_se(v, "this refresh did not measure it"),
             Some(Err(m)) => return no_se(v, m),
             Some(Ok(n)) if p.porcentaje => {
-                if total == 0 {
+                let de = medido.contadas.unwrap_or(total);
+                if de == 0 {
                     0.0
                 } else {
-                    *n as f64 / total as f64 * 100.0
+                    *n as f64 / de as f64 * 100.0
                 }
             }
             Some(Ok(n)) => *n as f64,
@@ -1564,6 +1569,10 @@ mod pruebas {
             v[0].json().jcs(),
             r#"{"esperado":"< 5 %","id":"solo","medido":"2.5","resultado":"pass","severidad":"error","unidad":"percent"}"#
         );
+        // 0063 S7e: contado sobre lo que llega (un `write()` que anexa), el
+        // porcentaje es de eso: 1 de 4 son 25 %, no 1 de 40.
+        m.contadas = Some(4);
+        assert_eq!(juzgar(&ps, &m)[0].medido, Some(25.0));
     }
 
     #[test]

@@ -1477,6 +1477,7 @@ fn juicio(
         total: u64::try_from(filas).ok(),
         anterior: previas.and_then(|p| u64::try_from(p).ok()),
         cuentas: cuentas_de(salida),
+        contadas: None,
     };
     let veredictos = juzgar(promesas, &medido);
     let retencion = if rehacer {
@@ -1520,7 +1521,7 @@ fn pedir(promesas: &[ore_core::promesas::Promesa]) -> String {
 }
 
 /// Lo que `ore-store` contó para cada promesa: `{id: {cuenta}}` o `{id: {error}}`.
-fn cuentas_de(salida: &ore_core::parse::Node) -> BTreeMap<String, Result<u64, String>> {
+pub(crate) fn cuentas_de(salida: &ore_core::parse::Node) -> BTreeMap<String, Result<u64, String>> {
     salida
         .get("promesas")
         .map(|(_, o)| {

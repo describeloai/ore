@@ -8,6 +8,10 @@
 //! `{id: {cuenta: n}}`, o `{id: {error: "…"}}` si no se pudo (en inglés: lo lee
 //! el dueño). Sin nada pedido, no se cuenta nada y la respuesta no cambia.
 //!
+//! S7e: `escribir` (el `write()` de los SDK) cuenta igual sobre los lotes que
+//! escribe y lo deja además en el resumen del snapshot (`ore.promesas`); al
+//! anexar sólo ve lo que llega ([`Medidor::solo_lo_que_llega`]).
+//!
 //! | `metric` | Lo que se cuenta |
 //! |---|---|
 //! | `nullValues` | filas con la columna nula |
@@ -124,6 +128,21 @@ impl Medidor {
 
     pub fn vacio(&self) -> bool {
         self.pedidas.is_empty()
+    }
+
+    /// 0063 S7e: lo que pasa por aquí es sólo lo que llega (un `write()` que
+    /// anexa), no la versión entera. Lo de cada fila se cuenta igual —sobre
+    /// las filas añadidas—, pero un duplicado contra las filas que ya estaban
+    /// no se ve: no se sabe, en vez de un «0» que nadie midió.
+    pub fn solo_lo_que_llega(&mut self) {
+        for p in &mut self.pedidas {
+            if matches!(p.que, Que::Duplicados(..)) && p.cuenta.is_ok() {
+                p.cuenta = Err(
+                    "an append only sees the rows it adds: duplicates against the rows already there are not checked"
+                        .into(),
+                );
+            }
+        }
     }
 
     /// Un lote más de la versión que se va a publicar.

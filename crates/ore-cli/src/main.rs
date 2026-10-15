@@ -1143,6 +1143,9 @@ enum Command {
         /// paso el conducto: leer lo de otra persona se puede, escribirlo no).
         #[arg(long)]
         o_leer: bool,
+        /// Con `--commit`: publicar aunque una promesa `error` falle (0063 S7e).
+        #[arg(long)]
+        publicar_igual: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -1374,6 +1377,7 @@ fn main() -> std::process::ExitCode {
             prestar,
             leer,
             o_leer,
+            publicar_igual,
         } => {
             return datasets::datasets(
                 path,
@@ -1410,6 +1414,7 @@ fn main() -> std::process::ExitCode {
                     prestar: *prestar,
                     leer: *leer,
                     o_leer: *o_leer,
+                    publicar_igual: *publicar_igual,
                 },
             );
         }

@@ -312,9 +312,10 @@ cat > "$TMP/ipc.py" <<'PY'
 import sys
 import pyarrow as pa
 desde, n = int(sys.argv[1]), int(sys.argv[2])
-extra = len(sys.argv) > 3
+extra = "extra" in sys.argv[3:]
+dup = "dup" in sys.argv[3:]  # cada id, dos veces (0063 S7e)
 cols = {
-    "id": pa.array(range(desde, desde + n), pa.int64()),
+    "id": pa.array([desde + (i // 2 if dup else i) for i in range(n)], pa.int64()),
     "pais": pa.array(["ES", "PT"][i % 2] for i in range(n)),
     "total": pa.array([(desde + i) * 10 + 0.5 for i in range(n)], pa.float64()).cast(pa.decimal128(18, 2)),
     "cuando": pa.array([1_700_000_000_000_000 + desde + i for i in range(n)], pa.timestamp("us", tz="UTC")),
@@ -428,6 +429,62 @@ MLC=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 "$ORE" datasets "$CL" --ficha ventas.idem --json > "$TMP/ficha.json" 2>&1 || falla "8c · ficha"
 [ "$(jq_ "$TMP/ficha.json" snapshots.0.clave)" = "$K" ] || falla "8c · la ficha no enseña la clave de la petición: $(cat "$TMP/ficha.json")"
 ok "8c · A → B → A escribe la tercera; lo mismo que la tabla tiene no deja snapshot; la misma \`Idempotency-Key\` es un reintento (aunque anexe) y queda en el snapshot; sin ella, 75; una clave que no es un UUID, 64"
+
+# ── 8e · las promesas de lo que se escribe (0063 S7e) ────────────────────────
+# El dataset declara un id único (error) y un mínimo de filas (warning). La
+# tabla dice qué contar (`ore.promesas` en el `config` de `loadTable`),
+# `escribir` lo cuenta en su pasada, y el commit juzga antes de mover el
+# puntero: un id repetido RETIENE (lo escrito queda sin servir, y el puntero lo
+# dice), y `--publicar-igual` lo publica, con el aviso del mínimo.
+escribe ventas_promesa sobrescribir "" pr-1 0 5 || falla "8e · escribir la primera"
+"$ORE" datasets "$CL" --commit --tabla ventas.promesa --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8e · commit de la primera"; }
+MLP=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+DOC="$CL/packages/ventas/datasets/promesa.yaml"
+"$PY" - "$DOC" <<'PY' || falla "8e · no se pudieron declarar las promesas"
+import re, sys
+p = sys.argv[1]
+t = open(p, encoding="utf-8").read()
+t = re.sub(r"apiVersion: oos\.dev/v1alpha[0-9]+", "apiVersion: oos.dev/v1alpha31", t)
+assert t.rstrip("\n").splitlines()[-1].startswith("  "), "spec no es lo último"
+t = t.rstrip("\n") + """
+  promises:
+    - id: id_unico
+      column: id
+      metric: duplicateValues
+      mustBe: 0
+    - id: pocas
+      metric: rowCount
+      mustBeGreaterOrEqualTo: 10
+      severity: warning
+"""
+open(p, "w", encoding="utf-8").write(t)
+PY
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "8e · el árbol no compila con las promesas"; }
+"$ORE" datasets "$CL" --cargar ventas.promesa > "$TMP/carga.json" 2>&1 || { cat "$TMP/carga.json"; falla "8e · cargar"; }
+PIDE=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["config"].get("ore.promesas", ""))' "$TMP/carga.json")
+[ "$PIDE" = '[{"column":"id","id":"id_unico","metric":"duplicateValues"}]' ] || falla "8e · loadTable no dice qué contar (lo del total no se pide): $PIDE"
+# escribe, con lo que la tabla pidió, 6 filas con ids repetidos
+{ printf '{"dataset":"datasets/ventas_promesa","modo":"sobrescribir","base":"%s","operacion":"pr-2","promesas":%s}\n' "$MLP" "$PIDE"
+  "$PY" "$TMP/ipc.py" 0 6 dup; } | "$STORE" escribir > "$TMP/escrito.json" 2>"$TMP/escrito.err" || { cat "$TMP/escrito.err"; falla "8e · escribir con promesas"; }
+[ "$(jq_ "$TMP/escrito.json" promesas.id_unico.cuenta)" = "3" ] || falla "8e · escribir tenía que contar 3 ids repetidos: $(jq_ "$TMP/escrito.json" promesas)"
+"$ORE" datasets "$CL" --commit --tabla ventas.promesa --peticion "@$TMP/escrito.json" --sujeto persona:ana --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8e · el commit retenido sale con 0 (el árbol se publica)"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.retenida)" = "true" ] && [ "$(jq_ "$TMP/commit.json" tablas.0.guarda)" = "id_unico" ] || falla "8e · un id repetido tenía que retener: $(cat "$TMP/commit.json")"
+RET=$(jq_ "$TMP/commit.json" tablas.0.version_retenida)
+PUN="$CL/datasets/ventas/default/promesa.json"
+[ "$(jq_ "$PUN" metadata_location)" = "$MLP" ] || falla "8e · la retenida movió el puntero"
+[ "$(jq_ "$PUN" estado)" = "error" ] && [ "$(jq_ "$PUN" intento.resultado)" = "retenida" ] && [ "$(jq_ "$PUN" intento.guarda)" = "id_unico" ] || falla "8e · el puntero no dice que retuvo: $(cat "$PUN")"
+[ "$(jq_ "$PUN" version_retenida.metadata_location)" = "$RET" ] && [ "$(jq_ "$PUN" version_retenida.escrito_por)" = "persona:ana" ] || falla "8e · el puntero no dice qué retuvo: $(cat "$PUN")"
+case "$(jq_ "$PUN" motivo)" in "promise \`id_unico\`: measured 3, expected = 0: held"*) ;; *) falla "8e · el motivo: $(jq_ "$PUN" motivo)";; esac
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || falla "8e · el árbol no compila con la retenida"
+# publicar igual: lo mismo, y el puntero se mueve; el mínimo (warning) avisa
+"$ORE" datasets "$CL" --commit --tabla ventas.promesa --peticion "@$TMP/escrito.json" --publicar-igual --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8e · publicar igual"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "6" ] || falla "8e · publicar igual: 6 filas: $(cat "$TMP/commit.json")"
+case "$(jq_ "$TMP/commit.json" tablas.0.avisos.0)" in "promise \`pocas\`: measured 6, expected"*) ;; *) falla "8e · el mínimo tenía que avisar: $(cat "$TMP/commit.json")";; esac
+[ "$(jq_ "$PUN" estado)" = "copiada" ] && [ "$(jq_ "$PUN" intento.resultado)" = "publicada" ] || falla "8e · publicada, el puntero sigue en error: $(cat "$PUN")"
+grep -q version_retenida "$PUN" && falla "8e · publicada, el puntero aún dice version_retenida"
+[ "$(jq_ "$PUN" promesas.0.id)" = "id_unico" ] && [ "$(jq_ "$PUN" promesas.0.resultado)" = "fail" ] || falla "8e · el puntero no lleva lo que se dijo de cada promesa: $(cat "$PUN")"
+( cd "$CL" && git add -A && git commit -qm "promesa" && git push -q origin HEAD:main ) || falla "8e · no se pudo empujar"
+ok "8e · la tabla dice qué contar; escribir lo cuenta; un id repetido retiene (el puntero no se mueve y dice qué retuvo); --publicar-igual publica y el mínimo avisa"
 
 # ── 9 · dos tablas en un commit, y lo que no se escribe ──────────────────────
 escribe ventas_escrita anexar "$ML8b" op-5 200 1 || falla "9 · escribir escrita"; cp "$TMP/escrito.json" "$TMP/e1.json"

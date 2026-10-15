@@ -120,6 +120,13 @@ pub const PROP_PROCEDENCIA: &str = "ore.procedencia";
 /// comas: en el resumen del snapshot que las usó y como propiedad de la
 /// tabla, para que la siguiente escritura no tenga que repetirlas.
 pub const PROP_CLAVE: &str = "ore.clave";
+/// **Lo que las promesas pidieron contar** (0063 S7e), contado por `escribir`
+/// en la misma pasada en que escribe: `{id: {cuenta}|{error}}`, JSON canónico.
+/// El catálogo juzga con esto antes de mover el puntero.
+pub const PROP_PROMESAS: &str = "ore.promesas";
+/// Sobre cuántas filas se contó [`PROP_PROMESAS`] cuando no es la versión
+/// entera: un `anexar` sólo ve las que llegan.
+pub const PROP_PROMESAS_FILAS: &str = "ore.promesas.filas";
 /// **La retención, declarada en la tabla** (0031 §11 ⑥), con los nombres que
 /// Iceberg usa para lo mismo: cuánto vive un snapshot superado y cuántos se
 /// conservan como mínimo. Las lee `recoger`; sin ellas y sin `edad_ms`, no se

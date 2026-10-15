@@ -129,6 +129,9 @@ pub struct Opciones<'a> {
     /// Con `--prestar`: si el sujeto no lo escribió, la de leer en vez del 77
     /// (un `loadTable` desde un puesto, con el conducto ya pasado).
     pub o_leer: bool,
+    /// Con `--commit`: publicar aunque una promesa `error` falle (0063 S7e,
+    /// D-S7-6: el *Publish anyway* de quien escribe).
+    pub publicar_igual: bool,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
@@ -766,6 +769,27 @@ fn partes(nombre: &str) -> Result<Tabla<'_>, Fallo> {
         ));
     }
     Ok(Tabla { ns, schema, tabla })
+}
+
+/// 0063 S7e: las promesas del texto de un `Dataset` (con `notEmptied`
+/// siempre), y si declara alguna. Sin documento, sólo `notEmptied`.
+fn promesas_del_documento(texto: Option<&str>) -> (Vec<ore_core::promesas::Promesa>, bool) {
+    let n = texto.and_then(|t| ore_core::parse::parse(t).ok());
+    let spec = n.as_ref().and_then(|n| n.get("spec")).map(|(_, s)| s);
+    (
+        ore_core::promesas::de_documento(spec, ore_core::promesas::Familia::Tabular),
+        spec.and_then(|s| s.get("promises")).is_some(),
+    )
+}
+
+/// 0063 S7e: lo que las promesas del documento piden contar a quien escribe
+/// (el valor de [`PROMESAS`]), o nada si no piden nada.
+fn lo_que_piden(texto: &str) -> Option<String> {
+    let (promesas, _) = promesas_del_documento(Some(texto));
+    match ore_core::promesas::peticion(&promesas) {
+        Json::Arr(a) if a.is_empty() => None,
+        p => Some(p.jcs()),
+    }
 }
 
 /// La marca de los documentos que este verbo escribe: sólo esos se regeneran
@@ -1453,6 +1477,17 @@ fn escribir_puntero(
     previo: Option<&Node>,
     campos: Vec<(&str, Json)>,
 ) -> Result<(), Fallo> {
+    escribir_puntero_sin(ruta, previo, campos, &[])
+}
+
+/// [`escribir_puntero`], quitando antes de lo que había `quitar` (y siempre
+/// su `motivo`): lo que el estado nuevo ya no dice.
+fn escribir_puntero_sin(
+    ruta: &Path,
+    previo: Option<&Node>,
+    campos: Vec<(&str, Json)>,
+    quitar: &[&str],
+) -> Result<(), Fallo> {
     if let Some(padre) = ruta.parent() {
         std::fs::create_dir_all(padre)
             .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
@@ -1461,10 +1496,13 @@ fn escribir_puntero(
         Some(Json::Obj(m)) => m,
         _ => Default::default(),
     };
+    m.remove("motivo");
+    for k in quitar {
+        m.remove(*k);
+    }
     for (k, v) in campos {
         m.insert(k.into(), v);
     }
-    m.remove("motivo");
     if let Some(Json::Str(ml)) = m.get("metadata_location")
         && let Some(d) = ore_core::punteros::dataset_de_ubicacion(ml)
     {
@@ -1637,6 +1675,35 @@ impl Cambio<'_> {
                 }
             })
             .next_back()
+    }
+    /// Una propiedad del resumen del snapshot que trae (el último `add-snapshot`).
+    fn del_resumen(&self, k: &str) -> Option<String> {
+        self.nodo
+            .get("updates")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
+            .filter_map(|u| {
+                let m = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
+                m.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
+            })
+            .next_back()
+    }
+    /// 0063 S7e: lo que `ore-store escribir` contó para las promesas
+    /// (`ore.promesas`), y sobre cuántas filas si no fue la versión entera
+    /// (`ore.promesas.filas`). Un cliente que no lo cuenta no lo trae: lo de
+    /// cada columna queda `unknown`.
+    fn medido(&self) -> (BTreeMap<String, Result<u64, String>>, Option<u64>) {
+        let cuentas = self
+            .del_resumen("ore.promesas")
+            .and_then(|j| ore_core::parse::parse(&format!("{{\"promesas\":{j}}}")).ok())
+            .map(|n| crate::materializar::cuentas_de(&n))
+            .unwrap_or_default();
+        let contadas = self
+            .del_resumen("ore.promesas.filas")
+            .and_then(|f| f.parse().ok());
+        (cuentas, contadas)
     }
     /// Lo que el código leyó (`inputs` de un transform, o `leidas` de la
     /// sesión) y si la escritura sobrescribió (`ore.modo`): para `derivedFrom`.
@@ -2050,6 +2117,111 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ]));
             continue;
         };
+        // ⭐ 0063 S7e · LAS PROMESAS DE LO QUE SE ESCRIBE, ANTES DE MOVER EL
+        //   PUNTERO. Las del documento del dataset —`notEmptied` siempre—, con
+        //   lo que `ore-store escribir` contó en su pasada (el resumen del
+        //   snapshot) y el total de lo aplicado. Una `error` que falla deja lo
+        //   escrito en el lago sin servir (D-S7-6): el puntero sigue en la
+        //   versión anterior, dice que retuvo y cuál (`version_retenida`).
+        let tabla_t = Tabla {
+            ns: &p.ns,
+            schema: &p.schema,
+            tabla: &p.tabla,
+        };
+        let (promesas, declaradas) =
+            promesas_del_documento(documento_del_dataset(path, tabla_t)?.as_deref());
+        let publicada = p
+            .previo
+            .as_ref()
+            .filter(|x| campo_de(x, "metadata_location").is_some_and(|m| !m.is_empty()));
+        let (cuentas, contadas) = p.cambio.medido();
+        let previas = publicada
+            .and_then(|x| campo_de(x, "filas"))
+            .and_then(|f| f.parse::<u64>().ok());
+        let medido = ore_core::promesas::Medido {
+            total: u64::try_from(a.filas).ok(),
+            anterior: previas,
+            cuentas,
+            contadas,
+        };
+        let veredictos = ore_core::promesas::juzgar(&promesas, &medido);
+        let lo_prometido = Json::Arr(veredictos.iter().map(|v| v.json()).collect());
+        let retencion = ore_core::promesas::retenida(&veredictos).filter(|_| !op.publicar_igual);
+        if let Some(v) = retencion {
+            let motivo = if v.de_serie {
+                format!(
+                    "the write has 0 rows and the published version has {}: held, still serving the published version. Publish anyway to serve it",
+                    previas.unwrap_or(0)
+                )
+            } else {
+                format!(
+                    "{}: held, still serving the published version. Publish anyway to serve it",
+                    ore_core::promesas::por_que(v)
+                )
+            };
+            // Sin versión publicada no hay puntero que retener: lo escrito
+            // queda en el lago, y la tabla sigue sin nacer.
+            if publicada.is_some() {
+                let mut intento = crate::materializar::intento(
+                    &crate::materializar::ahora_iso(),
+                    "retenida",
+                    Some(&motivo),
+                );
+                if let Json::Obj(o) = &mut intento {
+                    o.insert("guarda".into(), Json::s(&v.id));
+                }
+                let mut campos = vec![
+                    ("estado", Json::s("error")),
+                    ("motivo", Json::s(&motivo)),
+                    ("intento", intento),
+                    (
+                        "version_retenida",
+                        Json::obj([
+                            ("metadata_location", Json::s(&a.metadata_location)),
+                            ("snapshot", Json::s(&a.snapshot)),
+                            ("filas", Json::Int(a.filas)),
+                            ("operacion", Json::s(&a.operacion)),
+                            ("escrito_por", Json::s(op.sujeto.unwrap_or_default())),
+                        ]),
+                    ),
+                ];
+                if declaradas {
+                    campos.push(("promesas", lo_prometido.clone()));
+                }
+                escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
+            }
+            lineas.push(Json::obj([
+                ("dataset", Json::s(p.lago.clone())),
+                ("filas", Json::Int(a.filas)),
+                ("guarda", Json::s(&v.id)),
+                ("metadata_location", Json::s(&p.base)),
+                ("motivo", Json::s(&motivo)),
+                ("operacion", Json::s(&a.operacion)),
+                ("promesas", lo_prometido),
+                ("puntero_nuevo", Json::Bool(false)),
+                ("reintento", Json::Bool(false)),
+                ("repetida", Json::Bool(false)),
+                ("retenida", Json::Bool(true)),
+                (
+                    "snapshot",
+                    Json::s(
+                        p.previo
+                            .as_ref()
+                            .and_then(|x| campo_de(x, "snapshot"))
+                            .unwrap_or_default(),
+                    ),
+                ),
+                ("tabla", Json::s(&p.nombre)),
+                ("tabla_nueva", Json::Bool(false)),
+                ("tabla_regenerada", Json::Bool(false)),
+                ("version_retenida", Json::s(&a.metadata_location)),
+            ]));
+            continue;
+        }
+        let avisos: Vec<Json> = ore_core::promesas::avisos(&veredictos)
+            .into_iter()
+            .map(|v| Json::s(ore_core::promesas::por_que(v)))
+            .collect();
         let clave = p.cambio.clave();
         let leyo = p.cambio.leyo();
         let anclada = p.cambio.anclada();
@@ -2079,6 +2251,21 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         if let Some(s) = op.sujeto {
             campos.push(("escrito_por", Json::s(s)));
         }
+        // 0063 S7e: lo que se dijo de cada promesa (sin declarar ninguna, el
+        // puntero no las lleva), y el intento, si el puntero ya contaba
+        // intentos: lo retenido de antes deja de ser lo último.
+        if declaradas {
+            campos.push(("promesas", lo_prometido.clone()));
+        }
+        if p.previo
+            .as_ref()
+            .is_some_and(|x| x.get("intento").is_some())
+        {
+            campos.push((
+                "intento",
+                crate::materializar::intento(&crate::materializar::ahora_iso(), "publicada", None),
+            ));
+        }
         // La procedencia de ESTE snapshot; una escritura sin ella deja la de
         // antes, que sigue siendo lo último que alguien dijo del dataset.
         if let Some(pr) = p.cambio.procedencia() {
@@ -2094,8 +2281,13 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ));
             campos.push(("procedencia", pr));
         }
-        escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
-        lineas.push(Json::obj([
+        escribir_puntero_sin(
+            &p.ruta,
+            p.previo.as_ref(),
+            campos,
+            &["promesas", "version_retenida"],
+        )?;
+        let mut linea = Json::obj([
             ("dataset", Json::s(p.lago.clone())),
             ("filas", Json::Int(a.filas)),
             ("metadata_location", Json::s(&a.metadata_location)),
@@ -2107,7 +2299,17 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ("tabla", Json::s(&p.nombre)),
             ("tabla_nueva", Json::Bool(tabla_nueva)),
             ("tabla_regenerada", Json::Bool(regenerada)),
-        ]));
+        ]);
+        // Sin promesas declaradas ni avisos, la línea de siempre.
+        if let Json::Obj(m) = &mut linea {
+            if declaradas {
+                m.insert("promesas".into(), lo_prometido);
+            }
+            if !avisos.is_empty() {
+                m.insert("avisos".into(), Json::Arr(avisos));
+            }
+        }
+        lineas.push(linea);
     }
     let j = Json::obj([("tablas", Json::Arr(lineas.clone()))]);
     if op.json {
@@ -2123,6 +2325,16 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 },
                 _ => String::new(),
             };
+            if g("retenida") == "true" {
+                println!(
+                    "{} · retenida · {}\n  lo escrito ({}) no se publica: el puntero sigue en {}",
+                    g("tabla"),
+                    g("motivo"),
+                    g("version_retenida"),
+                    g("metadata_location")
+                );
+                continue;
+            }
             println!(
                 "{} · {}{} · {} filas\n  {}",
                 g("tabla"),
@@ -2235,7 +2447,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// como los dos campos del `LoadTableResult` (`config` y
 /// `storage-credentials`), ya escritos.
 fn prestamo(lago: &str, op: &Opciones) -> Result<String, Fallo> {
-    prestamo_de(lago, op.prestar, op.leer, None)
+    prestamo_de(lago, op.prestar, op.leer, None, None)
 }
 
 /// La propiedad que dice, en el `config` de un `loadTable`, que lo prestado es
@@ -2244,6 +2456,15 @@ fn prestamo(lago: &str, op: &Opciones) -> Result<String, Fallo> {
 /// una credencial que no escribe.
 pub(crate) const SOLO_LECTURA: &str = "ore.solo-lectura";
 
+/// ⭐ 0063 S7e · **Lo que las promesas del dataset piden contar**, en el
+/// `config` de un `loadTable`: la lista de `ore_core::promesas::peticion`,
+/// como JSON en texto (el `config` es `string → string`). El `write()` de los
+/// SDK se la pasa a `ore-store escribir`, que lo cuenta en la misma pasada y lo
+/// deja en el resumen del snapshot; el commit juzga con eso. Un cliente de
+/// Iceberg que no la conoce la ignora: lo de cada columna queda sin medir
+/// (`unknown`), y lo del total se juzga igual.
+pub(crate) const PROMESAS: &str = "ore.promesas";
+
 /// La credencial acotada a `dataset` (su sitio en el bucket: `datasets/p_n`,
 /// o lo que diga el puntero —una copia mantenida vive en `copias/p_v`—).
 fn prestamo_de(
@@ -2251,9 +2472,14 @@ fn prestamo_de(
     prestar: bool,
     leer: bool,
     solo_lectura: Option<&str>,
+    promesas: Option<&str>,
 ) -> Result<String, Fallo> {
     if !prestar {
-        return Ok("\"config\":{}".into());
+        let config = match promesas {
+            Some(p) => Json::obj([(PROMESAS, Json::s(p))]).jcs(),
+            None => "{}".into(),
+        };
+        return Ok(format!("\"config\":{config}"));
     }
     let salida = almacen_crudo(
         "prestar",
@@ -2276,10 +2502,14 @@ fn prestamo_de(
     if let Some(m) = solo_lectura {
         config.insert(SOLO_LECTURA.into(), Json::s(m));
     }
+    let credencial = Json::Obj(config.clone()).jcs();
+    if let Some(p) = promesas {
+        config.insert(PROMESAS.into(), Json::s(p));
+    }
     let config = Json::Obj(config).jcs();
     let prefijo = campo_de(&n, "prefijo").unwrap_or_default();
     Ok(format!(
-        "\"config\":{config},\"storage-credentials\":[{{\"prefix\":{},\"config\":{config}}}]",
+        "\"config\":{config},\"storage-credentials\":[{{\"prefix\":{},\"config\":{credencial}}}]",
         lit(&prefijo)
     ))
 }
@@ -2298,9 +2528,9 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     // Un mantenido se carga para leerlo; su motivo va en el `config` (y es el
     // error del commit si se intenta escribir).
-    let mut solo_lectura = match documento_del_dataset(path, t) {
-        Ok(_) => None,
-        Err((65, m)) if m.contains("es un dataset mantenido") => Some(m),
+    let (mut solo_lectura, documento) = match documento_del_dataset(path, t) {
+        Ok(d) => (None, d),
+        Err((65, m)) if m.contains("es un dataset mantenido") => (Some(m), None),
         Err(e) => return Err(e),
     };
     let (_, previo, lago) = puntero_del_lago(path, t);
@@ -2339,7 +2569,17 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         .as_ref()
         .and_then(|p| campo_de(p, "dataset"))
         .unwrap_or_else(|| lago.clone());
-    let cred = prestamo_de(&sitio, op.prestar, leer, solo_lectura.as_deref())?;
+    // Lo que hay que contar sólo le sirve a quien escribe.
+    let promesas = documento
+        .filter(|_| solo_lectura.is_none() && !leer)
+        .and_then(|d| lo_que_piden(&d));
+    let cred = prestamo_de(
+        &sitio,
+        op.prestar,
+        leer,
+        solo_lectura.as_deref(),
+        promesas.as_deref(),
+    )?;
     println!(
         "{{\"metadata-location\":{},\"metadata\":{},{cred}}}",
         lit(&ml),
@@ -2770,6 +3010,73 @@ mod tests {
 
     /// Lo que un cambio del catálogo REST dice de sí mismo, y las columnas
     /// de un documento del lago.
+    #[test]
+    fn las_promesas_de_lo_que_se_escribe() {
+        // Lo que la tabla pide contar: lo de cada columna, no lo del total.
+        let doc = "apiVersion: oos.dev/v1alpha31\nkind: Dataset\nmetadata: { name: s, namespace: v }\nspec:\n  owner: team:v\n  columns:\n    id: { type: Integer }\n  promises:\n    - id: id_unico\n      column: id\n      metric: duplicateValues\n      mustBe: 0\n    - id: pocas\n      metric: rowCount\n      mustBeGreaterOrEqualTo: 10\n";
+        assert_eq!(
+            lo_que_piden(doc).as_deref(),
+            Some(r#"[{"column":"id","id":"id_unico","metric":"duplicateValues"}]"#)
+        );
+        let sin = "apiVersion: oos.dev/v1alpha31\nkind: Dataset\nmetadata: { name: s, namespace: v }\nspec:\n  owner: team:v\n";
+        assert_eq!(lo_que_piden(sin), None);
+        let (ps, declaradas) = promesas_del_documento(Some(sin));
+        assert!(!declaradas && ps.len() == 1 && ps[0].de_serie);
+        assert_eq!(promesas_del_documento(Some(doc)).0.len(), 3);
+
+        // Lo que `escribir` contó viaja en el resumen del snapshot.
+        let n = ore_core::parse::parse(
+            r#"{"updates":[{"action":"add-snapshot","snapshot":{"summary":{"operation":"append","ore.promesas":"{\"id_unico\":{\"error\":\"an append only sees the rows it adds\"},\"nulos\":{\"cuenta\":2}}","ore.promesas.filas":"4"}}}]}"#,
+        )
+        .unwrap();
+        let (cuentas, contadas) = Cambio {
+            nodo: &n,
+            indice: None,
+        }
+        .medido();
+        assert_eq!(contadas, Some(4));
+        assert_eq!(cuentas.get("nulos"), Some(&Ok(2)));
+        assert!(cuentas.get("id_unico").unwrap().is_err());
+        // Un cliente que no cuenta (Spark) no lo trae: nada medido.
+        let n = ore_core::parse::parse(r#"{"updates":[{"action":"add-snapshot","snapshot":{"summary":{"operation":"overwrite"}}}]}"#).unwrap();
+        let (cuentas, contadas) = Cambio {
+            nodo: &n,
+            indice: None,
+        }
+        .medido();
+        assert!(cuentas.is_empty() && contadas.is_none());
+
+        // Publicar quita lo que el estado nuevo ya no dice.
+        let d = std::env::temp_dir().join(format!("ore-s7e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let ruta = d.join("v/default/s.json");
+        let previo = ore_core::parse::parse(
+            r#"{"estado":"error","motivo":"held","version_retenida":{"filas":6},"promesas":[],"filas":5}"#,
+        )
+        .unwrap();
+        escribir_puntero_sin(
+            &ruta,
+            Some(&previo),
+            vec![("estado", Json::s("copiada"))],
+            &["promesas", "version_retenida"],
+        )
+        .unwrap();
+        let t = std::fs::read_to_string(&ruta).unwrap();
+        assert!(
+            t.contains("\"copiada\"")
+                && t.contains("\"filas\": 5")
+                && !t.contains("motivo")
+                && !t.contains("version_retenida")
+                && !t.contains("promesas"),
+            "{t}"
+        );
+        // Y retener pone su motivo (antes se quitaba DESPUÉS de ponerlo).
+        escribir_puntero(&ruta, Some(&previo), vec![("motivo", Json::s("otra"))]).unwrap();
+        let t = std::fs::read_to_string(&ruta).unwrap();
+        assert!(t.contains("\"motivo\": \"otra\""), "{t}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn el_cambio_dice_a_que_tabla_va_si_crea_y_su_operacion() {
         let n = ore_core::parse::parse(
