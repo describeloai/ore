@@ -128,7 +128,7 @@ pub struct Servidor {
     pub assets_cache: crate::assets::Cache,
     /// En qué se diferencia una rama de la de por defecto (ramas globales,
     /// fase 2), por las dos cabezas: `GET /ramas/{r}/cambios` de memoria.
-    pub cambios_cache: crate::assets::Cache,
+    pub cambios_cache: crate::assets::Cache<ore_core::json::Json>,
     /// ⭐ El puente a `ore-iam` (0047 A5). Sin él, P2 no existe y todo sigue como
     ///   era: quien tiene sesión da de alta fuentes, protege `main` y fusiona según
     ///   la política.

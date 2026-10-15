@@ -20,6 +20,38 @@ use std::time::Duration;
 /// A partir de aquí un `git` se dice en cuanto termina, con sus argumentos.
 pub const LENTO: Duration = Duration::from_secs(5);
 
+/// **Cuántos `git` locales a la vez** (F7a). L7, 50 usuarios sobre 1.000
+/// activos: 31 `git` a la vez sumaban 167 MiB de los 512 del pod, y con 0,5 CPU
+/// no iban más deprisa que de 8 en 8. Lo que espera, se cuenta como candado.
+pub const PROCESOS: usize = 8;
+
+static EN_MARCHA: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static LIBRE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// El turno de lanzar un proceso: se devuelve al soltarlo.
+pub struct Turno(());
+
+impl Drop for Turno {
+    fn drop(&mut self) {
+        let mut n = EN_MARCHA.lock().unwrap_or_else(|x| x.into_inner());
+        *n -= 1;
+        LIBRE.notify_one();
+    }
+}
+
+/// Espera a que haya sitio entre los [`PROCESOS`] que pueden ir a la vez.
+pub fn turno_de_proceso() -> Turno {
+    let t = std::time::Instant::now();
+    let mut n = EN_MARCHA.lock().unwrap_or_else(|x| x.into_inner());
+    while *n >= PROCESOS {
+        n = LIBRE.wait(n).unwrap_or_else(|x| x.into_inner());
+    }
+    *n += 1;
+    drop(n);
+    candado(t.elapsed());
+    Turno(())
+}
+
 #[derive(Default)]
 struct Fases {
     /// Las veces que se esperó al candado del espejo, y cuánto en total.

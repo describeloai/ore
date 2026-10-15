@@ -54,45 +54,71 @@ use std::sync::{Arc, Mutex};
 /// Cuántas cabezas se recuerdan como mucho (por proceso, entre todas las ramas).
 pub(crate) const CABEZAS: usize = 64;
 
-/// Cuánto pueden pesar entre todos los índices recordados, en bytes de su JSON.
-/// En memoria ocupan unas 7 veces más (L5: 1.000 activos, índice de 1,2 MB, y
-/// 48 MiB de tope llevaron ore-serve a 316 MiB anónimos): 8 MiB son ~55 MiB en
-/// un pod de 512. El más reciente se queda aunque pese más.
-pub(crate) const PESO: usize = 8 << 20;
+/// Cuánto pueden pesar en memoria, entre todos, los índices recordados ([`Pesa`]).
+/// Desde F7a se guardan como texto (un índice de 10.000 activos, ~12 MB), no
+/// como árbol: el árbol pesaba ~10 veces su JSON (L6: 80 MiB por 7,6 MB). El más
+/// reciente se queda aunque pese más.
+pub(crate) const PESO: usize = 64 << 20;
 
 /// `(rama, cabeza)`: lo que identifica un índice.
 type Clave = (String, String);
 
-/// La caché: `(rama, cabeza) → índice`, las últimas [`CABEZAS`] que quepan en
-/// [`PESO`], y las claves que alguien está haciendo.
-#[derive(Default)]
-pub(crate) struct Cache {
-    entradas: Mutex<Entradas>,
-    hecho: std::sync::Condvar,
+/// Lo que se guarda en la [`Cache`], con lo que ocupa en memoria.
+pub(crate) trait Pesa {
+    fn peso(&self) -> usize;
 }
 
-#[derive(Default)]
-struct Entradas {
+impl Pesa for Json {
+    fn peso(&self) -> usize {
+        self.jcs().len()
+    }
+}
+
+/// La caché: `(rama, cabeza) → índice`, las últimas [`CABEZAS`] que quepan en
+/// [`PESO`], y las claves que alguien está haciendo.
+pub(crate) struct Cache<T: Pesa = Guardado> {
+    entradas: Mutex<Entradas<T>>,
+    hecho: std::sync::Condvar,
+    /// ⭐ F7a: los índices se HACEN de uno en uno (no los que se sirven). Hacer
+    ///   uno de 10.000 activos lleva ore-serve a ~250 MiB (L6); dos a la vez, al
+    ///   OOM de L5. Quien llega espera a que acabe el de delante.
+    obras: Mutex<()>,
+}
+
+impl<T: Pesa> Default for Cache<T> {
+    fn default() -> Self {
+        Cache {
+            entradas: Mutex::new(Entradas {
+                lista: VecDeque::new(),
+                haciendo: Default::default(),
+            }),
+            hecho: Default::default(),
+            obras: Mutex::new(()),
+        }
+    }
+}
+
+struct Entradas<T> {
     /// Del más viejo al más nuevo, con su peso.
-    lista: VecDeque<(Clave, Arc<Json>, usize)>,
+    lista: VecDeque<(Clave, Arc<T>, usize)>,
     haciendo: std::collections::BTreeSet<Clave>,
 }
 
 /// Lo que da [`Cache::turno`]: el índice, o el turno de hacerlo.
-pub(crate) enum Turno<'a> {
-    Hecho(Arc<Json>),
+pub(crate) enum Turno<'a, T: Pesa = Guardado> {
+    Hecho(Arc<T>),
     /// Mientras viva, quien pida la misma clave espera; al soltarlo, mira.
     Mio {
-        _turno: Haciendo<'a>,
+        _turno: Haciendo<'a, T>,
     },
 }
 
-pub(crate) struct Haciendo<'a> {
-    cache: &'a Cache,
+pub(crate) struct Haciendo<'a, T: Pesa = Guardado> {
+    cache: &'a Cache<T>,
     clave: Clave,
 }
 
-impl Drop for Haciendo<'_> {
+impl<T: Pesa> Drop for Haciendo<'_, T> {
     fn drop(&mut self) {
         let mut e = self
             .cache
@@ -104,14 +130,14 @@ impl Drop for Haciendo<'_> {
     }
 }
 
-impl std::fmt::Debug for Cache {
+impl<T: Pesa> std::fmt::Debug for Cache<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Cache")
     }
 }
 
-impl Cache {
-    pub(crate) fn lee(&self, clave: &Clave) -> Option<Arc<Json>> {
+impl<T: Pesa> Cache<T> {
+    pub(crate) fn lee(&self, clave: &Clave) -> Option<Arc<T>> {
         let e = self.entradas.lock().ok()?;
         e.lista
             .iter()
@@ -119,8 +145,8 @@ impl Cache {
             .map(|(_, v, _)| v.clone())
     }
 
-    pub(crate) fn guarda(&self, clave: Clave, j: Arc<Json>) {
-        let peso = j.jcs().len();
+    pub(crate) fn guarda(&self, clave: Clave, j: Arc<T>) {
+        let peso = j.peso();
         if let Ok(mut e) = self.entradas.lock() {
             e.lista.retain(|(k, _, _)| *k != clave);
             e.lista.push_back((clave, j, peso));
@@ -136,7 +162,7 @@ impl Cache {
     /// haciendo, se espera a que acabe y se vuelve a mirar: diez peticiones a
     /// la misma rama hacen UN índice, no diez a la vez (L1 en victor: los
     /// índices rehechos en paralelo eran lo que se comía la memoria).
-    pub(crate) fn turno(&self, clave: &Clave) -> Turno<'_> {
+    pub(crate) fn turno(&self, clave: &Clave) -> Turno<'_, T> {
         let mut e = self.entradas.lock().unwrap_or_else(|x| x.into_inner());
         loop {
             if let Some((_, v, _)) = e.lista.iter().find(|(k, _, _)| k == clave) {
@@ -155,6 +181,356 @@ impl Cache {
             crate::fases::candado(t.elapsed());
         }
     }
+
+    /// El turno de HACER un índice (F7a): de uno en uno en todo el proceso.
+    pub(crate) fn obra(&self) -> std::sync::MutexGuard<'_, ()> {
+        let t = std::time::Instant::now();
+        let g = self.obras.lock().unwrap_or_else(|x| x.into_inner());
+        crate::fases::candado(t.elapsed());
+        g
+    }
+}
+
+// ── F7a · el índice guardado como TEXTO ─────────────────────────────────────
+//
+// L6 (10.000 activos): el índice como árbol `Json` ocupa ~80 MiB por 7,6 MB de
+// JSON, y servirlo de la caché lo CLONABA entero (otros 80 MiB) para ponerle la
+// salud de ahora. Con 50 usuarios, OOM. Ahora se guarda su texto con HUECOS
+// donde va lo que cambia al servir —la salud (depende del reloj) y
+// `desde_cache`—, más una mini-copia con sólo lo que la salud lee. Servir es
+// coser el texto con los valores de la salud, que se rehace como mucho cada
+// [`CUBO_SALUD`] segundos por índice. La respuesta es la MISMA, byte a byte
+// (`servido_es_lo_mismo_que_el_arbol_anotado`).
+
+/// Los kinds que llevan salud: los que [`anotar_salud`] mide.
+const CON_SALUD: &[&str] = &["Dataset", "MediaCollection", "View", "Table", "ObjectTable"];
+
+/// Cada cuántos segundos se rehace la salud de un índice guardado. Una promesa
+/// de frescura se mide en minutos u horas: 15 s no la cambian.
+const CUBO_SALUD: i64 = 15;
+
+/// Un índice guardado: su texto, con huecos, y lo que la salud necesita.
+///
+/// ⭐ Sólo TEXTO, ningún árbol: lo que pesa es lo que mide. Guardar la
+///   mini-copia como `Json` (y su anotada) ocupaba de verdad 2,6 veces y más lo
+///   que cualquier estimación decía (L6 con 30 ramas: 210 y 313 MiB).
+pub(crate) struct Guardado {
+    trozos: Vec<Trozo>,
+    /// Qué va en cada hueco.
+    lugares: Vec<Lugar>,
+    /// La mini-copia, en JSON: los ítems con `kind`, `paquete`, `schema` y, los
+    /// que tienen salud, lo que `anotar_salud` lee; y los paquetes por su nombre.
+    mini: String,
+    peso: usize,
+    salud: Mutex<Option<(i64, Arc<Anotado>)>>,
+}
+
+/// La salud de un índice guardado, a una hora: el texto de cada hueco que
+/// tiene valor.
+pub(crate) struct Anotado {
+    valores: std::collections::HashMap<usize, String>,
+}
+
+enum Trozo {
+    Texto(String),
+    /// `coma`: la clave va detrás de otra (`,"clave":…`). Si no, es la primera
+    /// del objeto y, sin valor, se escribe `null` —no pasa: ni `salud` ni
+    /// `desde_cache` ni las sumas de un paquete son nunca la primera—.
+    Hueco {
+        n: usize,
+        clave: &'static str,
+        coma: bool,
+    },
+}
+
+enum Lugar {
+    Raiz(&'static str),
+    Paquete(String, &'static str),
+    Item(String),
+}
+
+impl Lugar {
+    fn clave(&self) -> &'static str {
+        match self {
+            Lugar::Raiz(c) | Lugar::Paquete(_, c) => c,
+            Lugar::Item(_) => "salud",
+        }
+    }
+}
+
+impl Pesa for Guardado {
+    fn peso(&self) -> usize {
+        self.peso
+    }
+}
+
+fn marca(lugares: &mut Vec<Lugar>, l: Lugar) -> Json {
+    lugares.push(l);
+    Json::Crudo(format!("\u{1}{}\u{2}", lugares.len() - 1))
+}
+
+impl Guardado {
+    /// Guarda un índice recién hecho (sin salud ni `desde_cache`).
+    pub(crate) fn de(mut j: Json) -> Guardado {
+        let mini = mini_de(&j);
+        let mut lugares = Vec::new();
+        if let Json::Obj(m) = &mut j {
+            m.insert("salud".into(), marca(&mut lugares, Lugar::Raiz("salud")));
+            m.insert(
+                "desde_cache".into(),
+                marca(&mut lugares, Lugar::Raiz("desde_cache")),
+            );
+            if let Some(Json::Arr(ps)) = m.get_mut("paquetes") {
+                for p in ps.iter_mut() {
+                    let Json::Obj(p) = p else { continue };
+                    let nombre = match p.get("name") {
+                        Some(Json::Str(x)) => x.clone(),
+                        _ => continue,
+                    };
+                    for c in ["salud", "salud_por_schema", "salud_del_origen"] {
+                        p.insert(
+                            c.into(),
+                            marca(&mut lugares, Lugar::Paquete(nombre.clone(), c)),
+                        );
+                    }
+                }
+            }
+            if let Some(Json::Obj(items)) = m.get_mut("items") {
+                for (r, it) in items.iter_mut() {
+                    let Json::Obj(it) = it else { continue };
+                    if matches!(it.get("kind"), Some(Json::Str(k)) if CON_SALUD.contains(&k.as_str()))
+                    {
+                        it.insert("salud".into(), marca(&mut lugares, Lugar::Item(r.clone())));
+                    }
+                }
+            }
+        }
+        let texto = j.jcs();
+        drop(j);
+        let mini = mini.jcs();
+        let mut trozos = Vec::with_capacity(2 * lugares.len() + 1);
+        let mut resto = texto.as_str();
+        while let Some(i) = resto.find('\u{1}') {
+            let f = i + resto[i..].find('\u{2}').expect("la marca se cierra");
+            let n: usize = resto[i + 1..f].parse().expect("la marca es un número");
+            let clave = lugares[n].clave();
+            let antes = resto[..i]
+                .strip_suffix(&format!("\"{clave}\":"))
+                .expect("la marca va tras su clave");
+            let (antes, coma) = match antes.strip_suffix(',') {
+                Some(a) => (a, true),
+                None => (antes, false),
+            };
+            trozos.push(Trozo::Texto(antes.to_string()));
+            trozos.push(Trozo::Hueco { n, clave, coma });
+            resto = &resto[f + 1..];
+        }
+        trozos.push(Trozo::Texto(resto.to_string()));
+        // El texto, la mini-copia, y lo que ocupará la salud anotada (un valor
+        // por hueco) y cada hueco (su ruta).
+        let peso = texto.len()
+            + mini.len()
+            + lugares
+                .iter()
+                .map(|l| {
+                    160 + match l {
+                        Lugar::Item(r) | Lugar::Paquete(r, _) => r.len(),
+                        Lugar::Raiz(_) => 0,
+                    }
+                })
+                .sum::<usize>();
+        Guardado {
+            trozos,
+            lugares,
+            mini,
+            peso,
+            salud: Mutex::new(None),
+        }
+    }
+
+    /// La salud a la hora `ahora`, de la que hay si es del mismo cubo.
+    pub(crate) fn anotado(&self, ahora: i64) -> Arc<Anotado> {
+        let cubo = ahora.div_euclid(CUBO_SALUD);
+        let mut g = self.salud.lock().unwrap_or_else(|x| x.into_inner());
+        if let Some((c, a)) = g.as_ref()
+            && *c == cubo
+        {
+            return a.clone();
+        }
+        let mini = self.salud_anotada(ahora);
+        let mut valores = std::collections::HashMap::new();
+        {
+            let Json::Obj(m) = &mini else {
+                unreachable!("la mini-copia es un objeto")
+            };
+            let vacio = Default::default();
+            let items = match m.get("items") {
+                Some(Json::Obj(i)) => i,
+                _ => &vacio,
+            };
+            let paquetes: std::collections::HashMap<
+                &str,
+                &std::collections::BTreeMap<String, Json>,
+            > = match m.get("paquetes") {
+                Some(Json::Arr(a)) => a
+                    .iter()
+                    .filter_map(|p| match p {
+                        Json::Obj(p) => match p.get("name") {
+                            Some(Json::Str(n)) => Some((n.as_str(), p)),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Default::default(),
+            };
+            for (n, l) in self.lugares.iter().enumerate() {
+                let v = match l {
+                    Lugar::Raiz("desde_cache") => None,
+                    Lugar::Raiz(c) => m.get(*c),
+                    Lugar::Paquete(p, c) => paquetes.get(p.as_str()).and_then(|p| p.get(*c)),
+                    Lugar::Item(r) => match items.get(r) {
+                        Some(Json::Obj(it)) => it.get("salud"),
+                        _ => None,
+                    },
+                };
+                if let Some(v) = v {
+                    valores.insert(n, v.jcs());
+                }
+            }
+        }
+        let a = Arc::new(Anotado { valores });
+        *g = Some((cubo, a.clone()));
+        a
+    }
+
+    /// La mini-copia, anotada con la salud de `ahora`: lo que `GET /health` lee.
+    /// Se rehace del texto cada vez: no se guarda ningún árbol.
+    pub(crate) fn salud_anotada(&self, ahora: i64) -> Json {
+        let mut mini = ore_core::parse::parse(&self.mini)
+            .map(|n| Json::de_node_fiel(&n))
+            .unwrap_or_else(|_| Json::obj([]));
+        anotar_salud(&mut mini, ahora);
+        mini
+    }
+
+    /// La salud de un ítem (`kind:ns.nombre`) a la hora `ahora`, si la tiene.
+    pub(crate) fn salud_de_item(&self, ahora: i64, r: &str) -> Option<Json> {
+        let n = self
+            .lugares
+            .iter()
+            .position(|l| matches!(l, Lugar::Item(x) if x == r))?;
+        let a = self.anotado(ahora);
+        let v = a.valores.get(&n)?;
+        ore_core::parse::parse(v)
+            .ok()
+            .map(|n| Json::de_node_fiel(&n))
+    }
+
+    /// El cuerpo de la respuesta: el texto cosido con la salud y `desde_cache`.
+    pub(crate) fn cuerpo(&self, desde_cache: bool, a: &Anotado) -> String {
+        let largo: usize = self
+            .trozos
+            .iter()
+            .map(|t| match t {
+                Trozo::Texto(x) => x.len(),
+                Trozo::Hueco { .. } => 0,
+            })
+            .sum::<usize>()
+            + a.valores.values().map(|v| v.len() + 16).sum::<usize>()
+            + 32;
+        let mut s = String::with_capacity(largo);
+        for t in &self.trozos {
+            match t {
+                Trozo::Texto(x) => s.push_str(x),
+                Trozo::Hueco { n, clave, coma } => {
+                    let v = match &self.lugares[*n] {
+                        Lugar::Raiz("desde_cache") => {
+                            Some(if desde_cache { "true" } else { "false" })
+                        }
+                        _ => a.valores.get(n).map(String::as_str),
+                    };
+                    match (v, coma) {
+                        (Some(v), _) => {
+                            if *coma {
+                                s.push(',');
+                            }
+                            s.push('"');
+                            s.push_str(clave);
+                            s.push_str("\":");
+                            s.push_str(v);
+                        }
+                        (None, false) => {
+                            s.push('"');
+                            s.push_str(clave);
+                            s.push_str("\":null");
+                        }
+                        (None, true) => {}
+                    }
+                }
+            }
+        }
+        s
+    }
+}
+
+/// La mini-copia de un índice: cada ítem con `kind`, `paquete` y `schema`, y
+/// los que llevan salud con lo que [`anotar_salud`] lee (`define.freshness`,
+/// `puntero`, las relaciones `sale_de`); los paquetes, por su nombre.
+fn mini_de(j: &Json) -> Json {
+    let Json::Obj(m) = j else {
+        return Json::obj([]);
+    };
+    let mut items = std::collections::BTreeMap::new();
+    if let Some(Json::Obj(todos)) = m.get("items") {
+        for (r, it) in todos {
+            let Json::Obj(it) = it else { continue };
+            let mut x = std::collections::BTreeMap::new();
+            for k in ["kind", "paquete", "schema"] {
+                if let Some(v) = it.get(k) {
+                    x.insert(k.to_string(), v.clone());
+                }
+            }
+            if matches!(it.get("kind"), Some(Json::Str(k)) if CON_SALUD.contains(&k.as_str())) {
+                if let Some(Json::Obj(d)) = it.get("define")
+                    && let Some(f) = d.get("freshness")
+                {
+                    x.insert("define".into(), Json::obj([("freshness", f.clone())]));
+                }
+                if let Some(p) = it.get("puntero") {
+                    x.insert("puntero".into(), p.clone());
+                }
+                if let Some(Json::Arr(rs)) = it.get("relaciones") {
+                    x.insert(
+                        "relaciones".into(),
+                        Json::Arr(
+                            rs.iter()
+                                .filter(|r| {
+                                    matches!(r, Json::Obj(o) if matches!(o.get("tipo"), Some(Json::Str(t)) if t == "sale_de"))
+                                })
+                                .cloned()
+                                .collect(),
+                        ),
+                    );
+                }
+            }
+            items.insert(r.clone(), Json::Obj(x));
+        }
+    }
+    let paquetes = match m.get("paquetes") {
+        Some(Json::Arr(ps)) => ps
+            .iter()
+            .filter_map(|p| match p {
+                Json::Obj(p) => p.get("name").map(|n| Json::obj([("name", n.clone())])),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Json::obj([
+        ("items", Json::Obj(items)),
+        ("paquetes", Json::Arr(paquetes)),
+    ])
 }
 
 /// El índice de un árbol en disco: los punteros de `datasets/`, el paquete
@@ -707,15 +1083,23 @@ fn civil(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Lo que da [`Servidor::indice`]: de un directorio, el árbol ya anotado; de
+/// la forja, el guardado (F7a) y si salió de la caché.
+pub(crate) enum Indice {
+    Arbol(Json),
+    Guardado(Arc<Guardado>, bool),
+}
+
 impl Servidor {
     /// `GET /health…` (0063 S6c): del mismo índice, de memoria por cabeza, y
     /// con la hora de esta respuesta. Ver [`salud_de`].
     pub(crate) fn health(&self, rama: Option<&str>, camino: &[&str]) -> Respuesta {
-        let r = self.assets(rama, None);
-        if r.codigo != 200 {
-            return r;
-        }
-        match salud_de(&r.cuerpo, camino) {
+        let r = match self.indice(rama, None) {
+            Err(r) => return r,
+            Ok(Indice::Arbol(j)) => salud_de(&j, camino),
+            Ok(Indice::Guardado(g, _)) => salud_de(&g.salud_anotada(crate::salud::ahora()), camino),
+        };
+        match r {
             Ok(j) => Respuesta::ok(j),
             Err(e) => e,
         }
@@ -726,17 +1110,26 @@ impl Servidor {
     /// nombre cualificado. De lo que el índice tiene con ese nombre, la copia
     /// antes que la vista y que la tabla. `None`: no está, o es en vivo sin
     /// nada sabido (quien lee en vivo pone la de su lectura).
+    ///
+    /// ⭐ F7a: se pide en CADA lectura de un activo; antes clonaba el índice
+    ///   entero para mirar un ítem. Ahora lee la mini-copia anotada.
     pub(crate) fn salud_del_activo(&self, rama: Option<&str>, qn: &str) -> Option<Json> {
-        let r = self.assets(rama, None);
-        if r.codigo != 200 {
-            return None;
-        }
         let corto = ore_core::normalize::a_corto(qn);
-        let Json::Obj(m) = &r.cuerpo else { return None };
+        const KINDS: [&str; 5] = ["dataset", "collection", "view", "table", "objecttable"];
+        let j = match self.indice(rama, None).ok()? {
+            Indice::Arbol(j) => j,
+            Indice::Guardado(g, _) => {
+                let ahora = crate::salud::ahora();
+                return KINDS
+                    .iter()
+                    .find_map(|k| g.salud_de_item(ahora, &format!("{k}:{corto}")));
+            }
+        };
+        let Json::Obj(m) = &j else { return None };
         let Some(Json::Obj(items)) = m.get("items") else {
             return None;
         };
-        ["dataset", "collection", "view", "table", "objecttable"]
+        KINDS
             .iter()
             .find_map(|k| match items.get(&format!("{k}:{corto}")) {
                 Some(Json::Obj(it)) => it.get("salud").cloned(),
@@ -757,26 +1150,43 @@ impl Servidor {
 
     /// `GET /assets` (la rama, por la cabecera) y `GET /assets/{commit}`.
     pub(crate) fn assets(&self, rama: Option<&str>, commit: Option<&str>) -> Respuesta {
+        match self.indice(rama, commit) {
+            Err(r) => r,
+            Ok(Indice::Arbol(j)) => Respuesta::ok(j),
+            // El texto, tal cual: `Crudo` se escribe sin tocarlo.
+            Ok(Indice::Guardado(g, desde_cache)) => Respuesta::ok(Json::Crudo(
+                g.cuerpo(desde_cache, &g.anotado(crate::salud::ahora())),
+            )),
+        }
+    }
+
+    /// El índice de una rama o de un commit: del directorio, hecho y anotado;
+    /// de la forja, el guardado.
+    pub(crate) fn indice(
+        &self,
+        rama: Option<&str>,
+        commit: Option<&str>,
+    ) -> Result<Indice, Respuesta> {
         let rama = rama.map(str::to_string);
         let commit = commit.map(str::to_string);
         if let Some(r) = &rama
             && let Err(m) = crate::propuestas::nombre_de_rama_valido(r)
         {
-            return Respuesta::error(422, m);
+            return Err(Respuesta::error(422, m));
         }
         if let Some(c) = &commit
             && (c.len() < 4 || !c.chars().all(|x| x.is_ascii_hexdigit()))
         {
-            return Respuesta::error(422, format!("`{c}` no es un commit"));
+            return Err(Respuesta::error(422, format!("`{c}` no es un commit")));
         }
         match &self.arbol {
             // Un directorio: sin caché, sin ramas.
             Arbol::Directorio(d) => {
                 if rama.is_some() || commit.is_some() {
-                    return Respuesta::error(
+                    return Err(Respuesta::error(
                         422,
                         "este árbol es un directorio, no una forja: no hay rama ni commit que leer",
-                    );
+                    ));
                 }
                 let cabeza = Cabeza {
                     cabeza: crate::documentos::cabeza_de(d),
@@ -788,66 +1198,69 @@ impl Servidor {
                     m.insert("desde_cache".into(), Json::Bool(false));
                 }
                 anotar_salud(&mut j, crate::salud::ahora());
-                Respuesta::ok(j)
+                Ok(Indice::Arbol(j))
             }
             Arbol::Forja(forja) => {
                 let rama_nombre = rama.clone().unwrap_or_else(|| "main".to_string());
-                match commit {
+                let (g, desde_cache) = match commit {
                     None => self.assets_al_dia(forja, rama.as_deref(), rama_nombre),
                     Some(c) => self.assets_de_commit(forja, rama.as_deref(), rama_nombre, c),
-                }
+                }?;
+                Ok(Indice::Guardado(g, desde_cache))
             }
         }
     }
 
     /// El índice de lo último de una rama (o de `main`): del espejo, con la
     /// clave del árbol que se leería; de memoria si ya se hizo, y si no, hecho
-    /// una sola vez sobre el árbol de lectura compartido (F3b, F4).
+    /// una sola vez sobre el árbol de lectura compartido (F3b, F4), y de uno en
+    /// uno (F7a).
     fn assets_al_dia(
         &self,
         forja: &crate::git::Forja,
         rama: Option<&str>,
         rama_nombre: String,
-    ) -> Respuesta {
+    ) -> Result<(Arc<Guardado>, bool), Respuesta> {
         let t = std::time::Instant::now();
         // Sin espejo (`Err` que no es «no hay rama»), sin caché: se lee igual.
         let clave = match forja.clave_para_leer(rama) {
             Ok(c) => Some((rama_nombre.clone(), c)),
             Err(crate::git::Fallo::SinRama(r)) => {
-                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+                return Err(Respuesta::error(404, format!("no hay ninguna rama `{r}`")));
             }
             Err(_) => None,
         };
         let turno = clave.as_ref().map(|k| self.assets_cache.turno(k));
-        if let Some(Turno::Hecho(j)) = &turno {
+        if let Some(Turno::Hecho(g)) = &turno {
             crate::fases::indice(true, t.elapsed());
-            return servir(j, true);
+            return Ok((g.clone(), true));
         }
+        let _obra = self.assets_cache.obra();
         // ⭐ 0044 C.2 ③: el catálogo de una rama lee de `main` al día lo que
         //   ella no tocó. ⭐ F3b: del árbol de LECTURA compartido del espejo —el
         //   mismo que `/fuentes` o `/arbol`—, no de un clon para escribir.
         let (arbol, clave_real) = match forja.para_leer_con_clave(rama, clave.is_none()) {
             Err(crate::git::Fallo::SinRama(r)) => {
-                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+                return Err(Respuesta::error(404, format!("no hay ninguna rama `{r}`")));
             }
-            Err(e) => return Respuesta::error(502, e.to_string()),
+            Err(e) => return Err(Respuesta::error(502, e.to_string())),
             Ok(x) => x,
         };
         let t = std::time::Instant::now();
-        let j = Arc::new(indice_de(
+        let g = Arc::new(Guardado::de(indice_de(
             arbol.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(arbol.ruta()),
                 rama: Some(rama_nombre.clone()),
                 generado: Some(ahora()),
             },
-        ));
+        )));
         crate::fases::indice(false, t.elapsed());
         if let Some(c) = clave_real {
-            self.assets_cache.guarda((rama_nombre, c), j.clone());
+            self.assets_cache.guarda((rama_nombre, c), g.clone());
         }
         drop(turno);
-        servir(&j, false)
+        Ok((g, false))
     }
 
     /// `GET /assets/{commit}`: el catálogo como era —sin `main` superpuesto: eso
@@ -858,50 +1271,40 @@ impl Servidor {
         rama: Option<&str>,
         rama_nombre: String,
         commit: String,
-    ) -> Respuesta {
+    ) -> Result<(Arc<Guardado>, bool), Respuesta> {
         let clave = (rama_nombre.clone(), commit.clone());
         let t = std::time::Instant::now();
-        if let Some(j) = self.assets_cache.lee(&clave) {
+        if let Some(g) = self.assets_cache.lee(&clave) {
             crate::fases::indice(true, t.elapsed());
-            return servir(&j, true);
+            return Ok((g, true));
         }
+        let _obra = self.assets_cache.obra();
         let prestado = match forja.clonar_rama(rama) {
             Err(crate::git::Fallo::SinRama(r)) => {
-                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+                return Err(Respuesta::error(404, format!("no hay ninguna rama `{r}`")));
             }
-            Err(e) => return Respuesta::error(502, e.to_string()),
+            Err(e) => return Err(Respuesta::error(502, e.to_string())),
             Ok(p) => p,
         };
         if crate::documentos::git(prestado.ruta(), &["checkout", "-q", &commit]).is_none() {
-            return Respuesta::error(
+            return Err(Respuesta::error(
                 404,
                 format!("no hay ningún commit `{commit}` en `{rama_nombre}`"),
-            );
+            ));
         }
         let t = std::time::Instant::now();
-        let j = Arc::new(indice_de(
+        let g = Arc::new(Guardado::de(indice_de(
             prestado.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(prestado.ruta()).or(Some(commit)),
                 rama: Some(rama_nombre),
                 generado: Some(ahora()),
             },
-        ));
+        )));
         crate::fases::indice(false, t.elapsed());
-        self.assets_cache.guarda(clave, j.clone());
-        servir(&j, false)
+        self.assets_cache.guarda(clave, g.clone());
+        Ok((g, false))
     }
-}
-
-/// Un índice, como respuesta: diciendo si salió de memoria, y con la salud de
-/// ahora (que no se guarda: una promesa de frescura se rompe con el reloj).
-fn servir(j: &Json, desde_cache: bool) -> Respuesta {
-    let mut j = j.clone();
-    if let Json::Obj(m) = &mut j {
-        m.insert("desde_cache".into(), Json::Bool(desde_cache));
-    }
-    anotar_salud(&mut j, crate::salud::ahora());
-    Respuesta::ok(j)
 }
 
 #[cfg(test)]
@@ -1036,6 +1439,73 @@ mod tests {
     /// 0063 S2 · Cada dataset lleva su salud, calculada al servir: este
     /// puntero (de antes de S2, sin `datos_de`) no sabe de cuándo es, y no se
     /// inventa la hora del commit.
+    #[test]
+    fn servido_es_lo_mismo_que_el_arbol_anotado() {
+        // F7a: el texto cosido es, byte a byte, el árbol anotado de siempre —con
+        // salud en lo que la tiene, sin ella en lo que no (la tabla en vivo sin
+        // nada sabido), y las sumas de cada base—, a dos horas distintas, y desde
+        // la caché o no.
+        for (fixture, puntero) in [
+            ("f7a-a", None),
+            (
+                "f7a-b",
+                Some(
+                    r#"{"estado":"error","metadata_location":"m","datos_de":"2026-10-13T12:00:00Z",
+            "dataset":"datasets/v_pedidos","motivo":"falta `cliente`",
+            "intento":{"cuando":"2026-10-13T13:00:00Z","resultado":"error"},
+            "esquema_origen":{"added":["comprador"],"removed":["cliente"],"visto":"2026-10-13T13:00:00Z"}}"#,
+                ),
+            ),
+        ] {
+            let d = arbol_en(fixture);
+            if let Some(p) = puntero {
+                std::fs::write(d.join("datasets/v_pedidos.json"), p).unwrap();
+            }
+            let j = indice_de(&d, Cabeza::default());
+            let g = Guardado::de(j.clone());
+            for (ahora, dc) in [(1_791_900_000, false), (1_760_400_000, true)] {
+                let mut esperado = j.clone();
+                if let Json::Obj(m) = &mut esperado {
+                    m.insert("desde_cache".into(), Json::Bool(dc));
+                }
+                anotar_salud(&mut esperado, ahora);
+                assert_eq!(
+                    g.cuerpo(dc, &g.anotado(ahora)),
+                    esperado.jcs(),
+                    "{fixture} {ahora}"
+                );
+                // Y la salud por ámbito, de la mini-copia, la misma; y la de un
+                // activo (la que viaja con cada lectura).
+                let anotada = g.salud_anotada(ahora);
+                for camino in [
+                    &[][..],
+                    &["v"][..],
+                    &["dataset:v.pedidos"][..],
+                    &["table:v.origen"][..],
+                ] {
+                    assert_eq!(
+                        salud_de(&anotada, camino).map(|x| x.jcs()).ok(),
+                        salud_de(&esperado, camino).map(|x| x.jcs()).ok(),
+                        "{fixture} {camino:?}"
+                    );
+                }
+                let Json::Obj(m) = &esperado else { panic!() };
+                let Json::Obj(items) = &m["items"] else {
+                    panic!()
+                };
+                for r in ["dataset:v.pedidos", "table:v.origen"] {
+                    let Json::Obj(it) = &items[r] else { panic!() };
+                    assert_eq!(
+                        g.salud_de_item(ahora, r).map(|x| x.jcs()),
+                        it.get("salud").map(|x| x.jcs()),
+                        "{fixture} {r}"
+                    );
+                }
+            }
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     #[test]
     fn cada_dataset_lleva_su_salud_al_servir() {
         let d = arbol_en("salud");
@@ -1177,7 +1647,7 @@ mod tests {
 
     #[test]
     fn un_indice_se_hace_una_vez_aunque_lo_pidan_a_la_vez() {
-        let c = Arc::new(Cache::default());
+        let c = Arc::new(Cache::<Json>::default());
         let hechos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let k: Clave = ("r".into(), "c+m".into());
         let hilos: Vec<_> = (0..8)
@@ -1203,7 +1673,7 @@ mod tests {
 
     #[test]
     fn la_cache_no_pasa_de_su_peso_pero_guarda_el_ultimo() {
-        let c = Cache::default();
+        let c = Cache::<Json>::default();
         let grande = |n: usize| Arc::new(Json::s("x".repeat(n)));
         c.guarda(("a".into(), "1".into()), grande(PESO / 2));
         c.guarda(("b".into(), "1".into()), grande(PESO / 2));

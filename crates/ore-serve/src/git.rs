@@ -270,6 +270,7 @@ impl Forja {
         for (k, v) in self.entorno() {
             c.env(k, v);
         }
+        let _turno = crate::fases::turno_de_proceso();
         let t = std::time::Instant::now();
         c.args(args);
         let s = salida_con_plazo(c, PLAZO_GIT, entrada)
