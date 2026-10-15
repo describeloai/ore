@@ -173,3 +173,60 @@ mira una rama.
 La decisión (`manda`) no cambia. Pruebas: ore-serve entero (234), `la-propuesta.sh` 1–10 y
 `los-datos-en-una-rama.sh` 1–15 (lectura, escritura, cambios y fusión en una rama, contra la
 forja).
+
+**F3b (2026-10-15).** Leer una rama sin clonarla y sin un candado para todo (`ore-serve/src/git.rs`):
+- el `fetch` del espejo, **compartido**: quien llega mientras otro trae, o antes de que empiece el
+  siguiente, se sirve de ese;
+- la lista de árboles, con un candado corto, y cada árbol **montado fuera de él, una vez por
+  clave** (quien pide la misma rama mientras se monta, espera a ese montaje);
+- `/assets` sin commit lee el árbol de lectura compartido, no un clon para escribir;
+  `ARBOLES` 8 → 16.
+
+**F4 (2026-10-15).** La caché del índice (`ore-serve/src/assets.rs`):
+- la clave sale del espejo (`clave_para_leer`), no de dos `ls-remote`;
+- caben 64 índices mientras no pasen de `PESO` bytes de JSON;
+- un índice se hace **una sola vez por clave** (`Cache::turno`).
+
+`PESO` empezó en 48 MiB y L5 lo tumbó: en memoria un índice pesa **~7 veces su JSON**. Bajó a
+8 MiB (`43d67add`).
+
+Pruebas: ore-serve 237, `la-propuesta.sh` 1–10, `los-datos-en-una-rama.sh` 1–15. Los pasos 16, 17
+y 20 de este último (las colecciones en una rama) fallan igual con F3a: con F3a no llegaron a
+correr porque faltaba `ore-read-s3`. No son de F3b ni de F4.
+
+## L5 · a escala (Docker, ore-serve release con 0,5 CPU y 512 MiB, forja `file://`, 50 ramas, 221 commits en `main`)
+
+`pruebas-de-fuego/lentitud/l5.sh`. Cada cifra es p50 / máx en ms y errores/peticiones. Los
+errores son agotar los 300 s o el servidor muerto.
+
+| Escenario | Antes (F1+F2) | F3b+F4 |
+|---|---|---|
+| 1.000 · 1 usuario · `/assets` rama | 55.204, 2 peticiones en 60 s | **1.968 / 2.505**, 59 peticiones |
+| 1.000 · 1 · `/fuentes` rama | 7.866 | **1.018 / 2.491** |
+| 1.000 · 10 · `/assets` rama | 170.441 / 191.658 | **4.905 / 32.424** |
+| 1.000 · 10 · `/fuentes` rama | 41.068 / 59.610 | 11.213 / 17.289 |
+| 1.000 · 50 | 300 s, 22/67 errores, 252 MiB | **OOM** (511 MiB), 513 peticiones |
+| 10.000 · 1 | 300 s en `/assets` rama, 114 MiB | 24.523 y luego **OOM** |
+| 10.000 · 10 | todo ~300 s, 476 MiB | 141–191 s, 363 MiB |
+| 10.000 · 50 | todo 300 s, 493 MiB | **OOM** |
+
+Los candados dejan de contar (0–1,3 s, antes 246 s). Lo que queda es **CPU** (montar una rama:
+9–15 s de `git` local con 10 a la vez) y **memoria**: hay más peticiones en marcha a la vez, y
+nada las limita.
+
+## L6 · la memoria de UN índice a 10.000 activos (`l6-memoria.sh`, una petición cada vez)
+
+| | |
+|---|---|
+| JSON de `/assets` | **11,7 MB** (main) y 11,8 MB (rama) |
+| hacerlo | 9–18 s de índice, más 1–9 s de `git` local |
+| memoria anónima tras el primero | **224 MiB**; con dos, 296 MiB |
+| pico del cgroup al hacer el primero | **431 MiB** de 512, sin carga |
+| caché | 11,7 MB > `PESO`: sólo se guarda el último, y en la segunda vuelta falla siempre |
+
+**Conclusión de L5 y L6: a 10.000 activos el problema ya no son los candados ni `git`. Es la
+forma del índice.** `/assets` es el catálogo ENTERO —11,7 MB de JSON— hecho en memoria de una vez
+(un pico de ~400 MiB) y rehecho entero para cada rama y cada commit de `main`, aunque una rama
+comparte con `main` casi todos sus paquetes. Ningún ajuste de topes lo arregla. Hace falta un índice
+**por paquete, direccionado por contenido** (el hash del árbol git de cada paquete, que es el mismo
+en todas las ramas que no lo tocan) y **servido por partes**.
