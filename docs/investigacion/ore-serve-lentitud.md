@@ -153,3 +153,23 @@ Pruebas:
 - `una_forja_que_calla_se_abandona_en_segundos`: el caso B de L3, que sin plazo pasaba de 6
   minutos, se abandona en ~10 s con «Operation too slow»;
 - `lo_que_se_pasa_del_plazo_se_mata`.
+
+**Medido tras F1 y F2 en victor (2026-10-15, la persona cambiando de rama):**
+- `/assets` en rama, de 20–25 s a **5,5–6,3 s**: índice 0,5–1,7 s (antes 17,6–18,4), pero
+  **197–235 `git` locales, 4,8–5,2 s**;
+- `/fuentes` en rama, 2 s con **89 `git`**.
+
+Lo que queda es **montar la rama**. `superponer` lanzaba un `git cat-file` por cada puntero que
+`main` movió, y `ocultar_al_dia` dos más por puntero (`cat-file -e` y `update-index`). Es un
+coste por puntero y por petición: con 10.000 activos, ~20.000 procesos por cada vez que alguien
+mira una rama.
+
+**F3a (2026-10-15).** La superposición, por lotes:
+- los blobs de `main`, en **un** `git cat-file --batch` (`blobs_por_lote`; `salida_con_plazo`
+  gana la entrada por stdin);
+- «¿está en HEAD?», de **un** `ls-tree`;
+- `--skip-worktree`, en lotes de 200.
+
+La decisión (`manda`) no cambia. Pruebas: ore-serve entero (234), `la-propuesta.sh` 1–10 y
+`los-datos-en-una-rama.sh` 1–15 (lectura, escritura, cambios y fusión en una rama, contra la
+forja).

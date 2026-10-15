@@ -134,14 +134,26 @@ pub(crate) const PLAZO_GIT: std::time::Duration = std::time::Duration::from_secs
 fn salida_con_plazo(
     mut c: Command,
     plazo: std::time::Duration,
+    entrada: Option<Vec<u8>>,
 ) -> std::io::Result<Option<std::process::Output>> {
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::process::Stdio;
     let mut h = c
-        .stdin(Stdio::null())
+        .stdin(if entrada.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // La entrada, en su hilo: escribirla aquí entera antes de leer la salida
+    // puede atascar a los dos si las tuberías se llenan.
+    if let (Some(e), Some(mut stdin)) = (entrada, h.stdin.take()) {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&e);
+        });
+    }
     let leer = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut b = Vec::new();
@@ -201,6 +213,56 @@ impl Forja {
     }
 
     fn git(&self, dir: Option<&Path>, args: &[&str]) -> Result<String, Fallo> {
+        self.ejecutar(dir, args, None)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    /// **Muchos blobs en UN proceso** (F3a): `git cat-file --batch`, con los
+    /// hashes por la entrada. Lo que no está, no viene. Antes era un
+    /// `git cat-file blob <h>` por blob: con la CPU del pod, ~25 ms cada uno.
+    fn blobs_por_lote(
+        &self,
+        pre: &[&str],
+        hashes: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<u8>>, Fallo> {
+        let mut fuera = std::collections::HashMap::new();
+        if hashes.is_empty() {
+            return Ok(fuera);
+        }
+        let mut args: Vec<&str> = pre.to_vec();
+        args.extend(["cat-file", "--batch"]);
+        let mut entrada = hashes.join("\n").into_bytes();
+        entrada.push(b'\n');
+        let b = self.ejecutar(None, &args, Some(entrada))?;
+        // `<hash> <tipo> <tamaño>\n<contenido>\n`, o `<pedido> missing\n`.
+        let mut i = 0;
+        while i < b.len() {
+            let Some(fin) = b[i..].iter().position(|x| *x == b'\n') else {
+                break;
+            };
+            let cab = String::from_utf8_lossy(&b[i..i + fin]).into_owned();
+            i += fin + 1;
+            let partes: Vec<&str> = cab.split(' ').collect();
+            let [h, _, tam] = partes.as_slice() else {
+                continue; // `missing`
+            };
+            let Ok(n) = tam.parse::<usize>() else {
+                continue;
+            };
+            let hasta = (i + n).min(b.len());
+            fuera.insert(h.to_string(), b[i..hasta].to_vec());
+            i = hasta + 1;
+        }
+        Ok(fuera)
+    }
+
+    /// Un `git` de la forja, con su plazo (F2), y la salida en bytes.
+    fn ejecutar(
+        &self,
+        dir: Option<&Path>,
+        args: &[&str],
+        entrada: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, Fallo> {
         let mut c = Command::new("git");
         if let Some(d) = dir {
             c.current_dir(d);
@@ -210,7 +272,7 @@ impl Forja {
         }
         let t = std::time::Instant::now();
         c.args(args);
-        let s = salida_con_plazo(c, PLAZO_GIT)
+        let s = salida_con_plazo(c, PLAZO_GIT, entrada)
             .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
         crate::fases::git(args, t.elapsed());
         let Some(s) = s else {
@@ -227,7 +289,7 @@ impl Forja {
         };
         let err = String::from_utf8_lossy(&s.stderr).into_owned();
         if s.status.success() {
-            return Ok(String::from_utf8_lossy(&s.stdout).into_owned());
+            return Ok(s.stdout);
         }
         let bajo = err.to_ascii_lowercase();
         Err(if adelantado(&bajo) {
@@ -1421,12 +1483,28 @@ impl Forja {
     /// no tiene, en el `info/exclude` del clon (que es suyo, no del espejo).
     fn ocultar_al_dia(&self, dir: &Path, al_dia: &AlDia) -> Result<(), Fallo> {
         let mut excluir = vec![format!("/{AL_DIA}")];
+        // ⭐ F3a: lo que HEAD tiene, de UN `ls-tree` (antes, un `cat-file -e`
+        //   por ruta), y `--skip-worktree` por lotes (antes, un `update-index`
+        //   por ruta): ~200 procesos por rama en victor, 2 + uno por cada 200.
+        let mut args = vec!["ls-tree", "-r", "--name-only", "HEAD", "--"];
+        args.extend(ore_core::punteros::CARPETAS_AL_DIA);
+        let en_head: std::collections::BTreeSet<String> = self
+            .git(Some(dir), &args)?
+            .lines()
+            .map(String::from)
+            .collect();
+        let mut ocultas = Vec::new();
         for (ruta, _, _) in &al_dia.rutas {
-            if self.en_head(dir, ruta) {
-                self.git(Some(dir), &["update-index", "--skip-worktree", "--", ruta])?;
+            if en_head.contains(ruta) {
+                ocultas.push(ruta.as_str());
             } else {
                 excluir.push(format!("/{ruta}"));
             }
+        }
+        for lote in ocultas.chunks(200) {
+            let mut args = vec!["update-index", "--skip-worktree", "--"];
+            args.extend(lote);
+            self.git(Some(dir), &args)?;
         }
         let f = dir.join(".git").join("info").join("exclude");
         let mut t = std::fs::read_to_string(&f).unwrap_or_default();
@@ -1525,9 +1603,11 @@ impl Forja {
         rutas.extend(en_main.keys());
         rutas.extend(en_base.keys());
         let mut al_dia = AlDia::default();
+        // ⭐ F3a: lo que hay que traer de `main`, primero; los blobs, en UN
+        //   `cat-file --batch` (antes, uno por puntero que `main` movió).
+        let mut traer: Vec<(&String, &str)> = Vec::new();
         for ruta in rutas {
             let r = en_rama.get(ruta).map(String::as_str);
-            let f = dir.join(ruta);
             match manda(
                 r,
                 en_base.get(ruta).map(String::as_str),
@@ -1542,22 +1622,30 @@ impl Forja {
                         .push((ruta.clone(), "main", Some(h.to_string())));
                 }
                 Manda::Main(h) => {
-                    let texto = git(&["cat-file", "blob", h])?;
-                    if let Some(p) = f.parent() {
-                        let _ = std::fs::create_dir_all(p);
-                    }
-                    std::fs::write(&f, texto)
-                        .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
+                    traer.push((ruta, h));
                     al_dia
                         .rutas
                         .push((ruta.clone(), "main", Some(h.to_string())));
                 }
                 Manda::Ninguno if r.is_some() => {
-                    let _ = std::fs::remove_file(&f);
+                    let _ = std::fs::remove_file(dir.join(ruta));
                     al_dia.rutas.push((ruta.clone(), "ninguno", None));
                 }
                 Manda::Ninguno => {}
             }
+        }
+        let hashes: Vec<&str> = traer.iter().map(|(_, h)| *h).collect();
+        let blobs = self.blobs_por_lote(pre, &hashes)?;
+        for (ruta, h) in traer {
+            let texto = blobs
+                .get(h)
+                .ok_or_else(|| Fallo::Git(format!("`{h}` ({ruta}) no está en el espejo")))?;
+            let f = dir.join(ruta);
+            if let Some(p) = f.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            std::fs::write(&f, texto)
+                .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
         }
         {
             let j = ore_core::json::Json::obj([
@@ -1630,7 +1718,7 @@ mod pruebas {
         let t = std::time::Instant::now();
         let mut c = Command::new("sleep");
         c.arg("30");
-        let s = salida_con_plazo(c, std::time::Duration::from_millis(500)).unwrap();
+        let s = salida_con_plazo(c, std::time::Duration::from_millis(500), None).unwrap();
         assert!(s.is_none());
         assert!(
             t.elapsed() < std::time::Duration::from_secs(5),
@@ -1640,7 +1728,7 @@ mod pruebas {
         // y lo que acaba a tiempo trae su salida
         let mut c = Command::new("git");
         c.arg("--version");
-        let s = salida_con_plazo(c, std::time::Duration::from_secs(10))
+        let s = salida_con_plazo(c, std::time::Duration::from_secs(10), None)
             .unwrap()
             .unwrap();
         assert!(String::from_utf8_lossy(&s.stdout).starts_with("git version"));
