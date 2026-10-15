@@ -249,12 +249,12 @@ def cola_quieta(plazo=1200):
 _n = [0]
 
 
-def pasar():
-    """Una pasada de copia sobre los dos datasets de la vara. Devuelve su log."""
+def pasar(vistas=None):
+    """Una pasada de copia sobre los dos datasets de la vara (o sobre `vistas`). Devuelve su log."""
     cola_quieta()
     _n[0] += 1
     n = 'vara-pasada-%d-%d' % (_n[0], time.time() % 10 ** 6)
-    lanzar(job_de_pasada(n, ','.join(o['vista'] for o in ORIGENES.values())))
+    lanzar(job_de_pasada(n, ','.join(vistas or [o['vista'] for o in ORIGENES.values()])))
     bien = esperar_job(n)
     _, log = sh(['kubectl', '-n', NS, 'logs', 'job/' + n, '-c', 'copiar'])
     if not bien:  # lo que dijo el Job y cada contenedor, antes de borrarlo
@@ -582,6 +582,134 @@ def desmontar():
     print('   hecho. Las bases vara_pg, vara_pg_f, vara_bq y vara_bq_f se retiran desde la consola.')
 
 
+# ── S7d · las promesas de una colección ─────────────────────────────────────
+#
+# Sobre las dos colecciones de GCS que ya hay —`gcs_s.media.imagenes`, mantenida, e
+# `imagenes_vivo`, virtual—, que salen de `media/imagenes/` del bucket propio de 0061 (GC3,
+# versionado). Sus promesas las escribe una persona desde la consola, una vez (las dos):
+#   Allowed formats · families: image · Warning      (la del `.txt`)
+#   Item count change · more than -20 % · Blocking   (la del borrado)
+# Lo que se toca en el bucket se deja como estaba: las cinco imágenes, sin el `.txt`.
+
+BUCKET = 'gs://%s-origen-gcs' % PROYECTO
+IMAGENES = BUCKET + '/media/imagenes/'
+COLECCIONES = {
+    'mantenida': {'vista': 'gcs_s.media.imagenes', 'puntero': 'datasets/gcs_s/media/imagenes.json'},
+    'virtual': {'vista': 'gcs_s.media.imagenes_vivo', 'puntero': 'datasets/gcs_s/media/imagenes_vivo.json'},
+}
+
+
+def punteros_de(cosas):
+    t = ore_serve('cd /tmp && ([ -d vara-arbol ] || %s clone -q %s/ontologia.git vara-arbol) && cd vara-arbol && '
+                  '%s pull -q && for f in %s; do echo "@@$f"; cat "$f" 2>/dev/null || echo null; echo; done'
+                  % (GIT, FORJA, GIT, ' '.join(o['puntero'] for o in cosas.values())))
+    salida = {}
+    for b in t.split('@@')[1:]:
+        f, _, j = b.partition('\n')
+        clave = next(k for k, o in cosas.items() if o['puntero'] == f.strip())
+        salida[clave] = json.loads(j) if j.strip() not in ('', 'null') else None
+    return salida
+
+
+def asset_de(ref):
+    c, b = serve('GET', '/assets')
+    return (json.loads(b).get('items', {}) if c == 200 else {}).get(ref) or {}
+
+
+def promesas_de_coleccion(vista):
+    """Los `id` de sus promesas por lo que miden: formatos y cambio de ítems."""
+    out = {}
+    for q in asset_de('collection:' + vista).get('promesas_declaradas') or []:
+        if q.get('metric') == 'invalidFormats':
+            out['formatos'] = q.get('id')
+        elif q.get('metric') == 'itemCountChange':
+            out['cambio'] = q.get('id')
+    return out
+
+
+def gs(*args):
+    c, o = sh([GCLOUD, 'storage'] + list(args))
+    if c != 0:
+        raise SystemExit('gcloud storage %s: %s' % (' '.join(args), o[-300:]))
+    return o
+
+
+def colecciones():
+    t0 = time.time()
+    print('== la vara de S7d (promesas de una colección) · %s' % time.strftime('%Y-%m-%d %H:%M'))
+    ids = {k: promesas_de_coleccion(o['vista']) for k, o in COLECCIONES.items()}
+    faltan = [COLECCIONES[k]['vista'] for k, i in ids.items() if set(i) != {'formatos', 'cambio'}]
+    if faltan:
+        raise SystemExit('faltan sus promesas (Allowed formats y Item count change, desde la consola) en: %s'
+                         % ', '.join(faltan))
+    vistas = [o['vista'] for o in COLECCIONES.values()]
+    copia = S + 'vara-registros/imagenes/'
+    os.makedirs(copia, exist_ok=True)
+    gs('cp', IMAGENES + '*', copia)
+    nombres = sorted(f for f in os.listdir(copia) if not f.endswith('.txt'))
+    decir('origen: %d imágenes guardadas en local' % len(nombres))
+    try:
+        pasar(vistas)
+
+        # C16 · un fichero que no es imagen entre las imágenes: avisa y publica
+        notas = copia + 'notas.txt'
+        open(notas, 'w', encoding='utf-8').write('no soy una imagen\n')
+        gs('cp', notas, IMAGENES + 'notas.txt')
+        decir('origen: notas.txt entre las imágenes')
+        pasar(vistas)
+        p = punteros_de(COLECCIONES)
+        for k, o in COLECCIONES.items():
+            x = p[k] or {}
+            v = {q.get('id'): q for q in (x.get('promesas') or [])}.get(ids[k]['formatos']) or {}
+            s = asset_de('collection:' + o['vista']).get('salud') or {}
+            caso('C16', '01 §6', 'un formato que no es de la colección: la promesa warning avisa y publica', 'S7d', k,
+                 x.get('estado') == 'transaccion' and v.get('resultado') == 'fail' and 'guard-warning' in razones(s),
+                 'estado=%s, %s=%s medido=%s, motivos=%s' % (x.get('estado'), ids[k]['formatos'], v.get('resultado'),
+                                                             v.get('medido'), razones(s)))
+
+        # C17 · el origen pierde 3 de 5: la promesa blocking del cambio retiene
+        gs('rm', IMAGENES + 'notas.txt')
+        for f in nombres[:3]:
+            gs('rm', IMAGENES + f)
+        decir('origen: sin notas.txt y sin %d de %d imágenes' % (3, len(nombres)))
+        pasar(vistas)
+        p = punteros_de(COLECCIONES)
+        for k, o in COLECCIONES.items():
+            x = p[k] or {}
+            i = x.get('intento') or {}
+            s = asset_de('collection:' + o['vista']).get('salud') or {}
+            caso('C17', '01 §6', 'un borrado masivo: la promesa blocking retiene y se sirve lo de antes', 'S7d', k,
+                 i.get('resultado') == 'retenida' and i.get('guarda') == ids[k]['cambio']
+                 and (x.get('items') or {}).get('actuales') == len(nombres) and 'refresh-held' in razones(s),
+                 'intento=%s, guarda=%s, actuales=%s, motivo=«%s»' % (i.get('resultado'), i.get('guarda'),
+                                                                     (x.get('items') or {}).get('actuales'),
+                                                                     (x.get('motivo') or '')[:90]))
+
+        # C17b · el origen se vacía: `notEmptied`, de serie, falla también
+        for f in nombres[3:]:
+            gs('rm', IMAGENES + f)
+        decir('origen: sin ninguna imagen')
+        pasar(vistas)
+        p = punteros_de(COLECCIONES)
+        for k, o in COLECCIONES.items():
+            x = p[k] or {}
+            v = {q.get('id'): q for q in (x.get('promesas') or [])}.get('notEmptied') or {}
+            caso('C17b', '01 §5', 'una colección vaciada no se publica (notEmptied)', 'S7d', k,
+                 (x.get('intento') or {}).get('resultado') == 'retenida' and v.get('resultado') == 'fail'
+                 and (x.get('items') or {}).get('actuales') == len(nombres),
+                 'intento=%s, notEmptied=%s, actuales=%s' % ((x.get('intento') or {}).get('resultado'), v.get('resultado'),
+                                                            (x.get('items') or {}).get('actuales')))
+    finally:
+        # Como estaba: las imágenes, sin el `.txt`; y una pasada que lo publique.
+        for f in nombres:
+            gs('cp', copia + f, IMAGENES + f)
+        sh([GCLOUD, 'storage', 'rm', IMAGENES + 'notas.txt'])
+        decir('origen: las %d imágenes de vuelta' % len(nombres))
+        pasar(vistas)
+    print(informe(int(time.time() - t0)))
+
+
 if __name__ == '__main__':
     fase = sys.argv[1] if len(sys.argv) > 1 else ''
-    {'montar': montar, 'correr': correr, 'desmontar': desmontar}.get(fase, lambda: sys.exit(__doc__))()
+    {'montar': montar, 'correr': correr, 'desmontar': desmontar, 'colecciones': colecciones}.get(
+        fase, lambda: sys.exit(__doc__))()
