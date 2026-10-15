@@ -230,3 +230,17 @@ forma del índice.** `/assets` es el catálogo ENTERO —11,7 MB de JSON— hech
 comparte con `main` casi todos sus paquetes. Ningún ajuste de topes lo arregla. Hace falta un índice
 **por paquete, direccionado por contenido** (el hash del árbol git de cada paquete, que es el mismo
 en todas las ramas que no lo tocan) y **servido por partes**.
+
+## L6 en victor (2026-10-15, `43d67add`, la persona cambiando de rama)
+
+| Petición | Antes de F1 | F1+F2 | F3b+F4 |
+|---|---|---|---|
+| `/assets` en rama | 20–25 s | 5,5–6,3 s, ~200 `git` | **0,7–1,2 s** (índice 0,3–0,7 s), 12–15 `git` |
+| `/assets` vuelta a una rama | — | igual (fallaba siempre) | **0,64 s**, de la caché (0,4 s son el `fetch`) |
+| `/assets` en `main`, en frío | — | — | 2,0 s |
+| `/fuentes` en rama | 0,9–8,3 s, 89–94 `git` | 2 s, 89 `git` | **0,36–1,0 s**, 4–10 `git` |
+| `/ramas/{}/{}/cambios` | — | — | 2,1–3,4 s (`ore` 0,35–1,1 s, `git` 0,6–0,8 s) |
+| `/ramas` | 1,1–1,8 s | — | 0,8–1,3 s |
+
+Memoria: 25 MiB anónimos, 20 MiB de ficheros y **pico de 100 MiB** con 5 árboles montados, de 512
+MiB. Sin reinicios. **23 procesos `git` zombis** en ~20 minutos: lo de F5 (`tini`) sigue pendiente.
