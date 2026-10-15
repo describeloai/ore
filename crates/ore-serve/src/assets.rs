@@ -54,9 +54,11 @@ use std::sync::{Arc, Mutex};
 /// Cuántas cabezas se recuerdan como mucho (por proceso, entre todas las ramas).
 pub(crate) const CABEZAS: usize = 64;
 
-/// Cuánto pueden pesar entre todos los índices recordados, en bytes de su JSON
-/// (en memoria ocupan algo más). El más reciente se queda aunque pese más.
-pub(crate) const PESO: usize = 48 << 20;
+/// Cuánto pueden pesar entre todos los índices recordados, en bytes de su JSON.
+/// En memoria ocupan unas 7 veces más (L5: 1.000 activos, índice de 1,2 MB, y
+/// 48 MiB de tope llevaron ore-serve a 316 MiB anónimos): 8 MiB son ~55 MiB en
+/// un pod de 512. El más reciente se queda aunque pese más.
+pub(crate) const PESO: usize = 8 << 20;
 
 /// `(rama, cabeza)`: lo que identifica un índice.
 type Clave = (String, String);
