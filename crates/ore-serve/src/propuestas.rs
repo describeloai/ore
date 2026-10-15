@@ -1368,7 +1368,9 @@ impl Servidor {
             Err(e) => return de_git(e),
         };
         // Lo que ya se sabe: si `main` + esto compila, y si no, qué le falta.
-        let diagnosticos = self.diagnosticos_de(hecha.clon.ruta()).unwrap_or_default();
+        let diagnosticos = self
+            .lo_que_empeora(hecha.clon.ruta(), base)
+            .unwrap_or_default();
         let faltan = if diagnosticos.is_empty() {
             Vec::new()
         } else {
@@ -1618,6 +1620,24 @@ impl Servidor {
             m.insert("revisiones".into(), Json::Arr(revisiones));
         }
         Respuesta::ok(ficha)
+    }
+
+    /// ⭐ 0063 S7f · Los diagnósticos de `raiz` (la base con lo propuesto) que
+    ///   la base no tenía: una propuesta con alcance responde de lo que
+    ///   empeora, igual que una rama (`rama_frente_a`). Medido en victor el
+    ///   2026-10-15: la de promesas de `gcs_s.media.imagenes`, con alcance, no
+    ///   se fusionaba por los dos `OOS1001` de `azure_blob_mnist` de `main`.
+    fn lo_que_empeora(&self, raiz: &Path, base: &str) -> Result<Vec<Json>, Respuesta> {
+        let ds = self.diagnosticos_de(raiz)?;
+        if ds.is_empty() {
+            return Ok(ds);
+        }
+        let de_base = self
+            .forja()
+            .and_then(|f| f.clonar_rama(Some(base)).ok())
+            .map(|c| self.diagnosticos_de(c.ruta()).unwrap_or_default())
+            .unwrap_or_default();
+        Ok(separar(ds, &de_base).0)
     }
 
     /// `ore diff <base> <rama>` y `ore validate` de la rama y de la base:
@@ -1951,7 +1971,7 @@ impl Servidor {
             Ok(s) => s,
             Err(r) => return r,
         };
-        match self.diagnosticos_de(nueva.clon.ruta()) {
+        match self.lo_que_empeora(nueva.clon.ruta(), &base) {
             Ok(ds) if !ds.is_empty() => {
                 let faltan = self.faltan(&rama, &ds, &lleva);
                 return Respuesta {
