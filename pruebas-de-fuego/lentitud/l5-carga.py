@@ -104,7 +104,8 @@ def sembrar(a):
                       "ramas": a.ramas, "commits_main": a.historia + 21, "validate": valida}))
 
 
-RUTAS = ["/assets", "/fuentes", "/arbol", "/ramas"]
+# `/ramas` habla con la API de la forja (Gitea): una forja `file://` no la tiene.
+RUTAS = ["/assets", "/fuentes", "/arbol"]
 
 
 def cargar(a):

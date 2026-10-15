@@ -1138,13 +1138,27 @@ fn primera(s: &str) -> String {
 //   falla, se clona como antes.
 
 /// Cuántos árboles por commit se guardan (los que nadie esté leyendo).
-const ARBOLES: usize = 8;
+const ARBOLES: usize = 16;
 
+// ⭐ F3b (2026-10-15): antes, UN candado por espejo para todo —el `fetch`, montar
+//   el `worktree`, superponer `main` y el `git status`—: con 50 ramas a la vez,
+//   cada petición esperaba a que se montaran las de delante (L5, 1.000 activos y
+//   50 usuarios: `candado 2×246 s`). Ahora son tres cosas:
+//   · el `fetch`, uno a la vez y COMPARTIDO: quien llega mientras otro trae, o
+//     antes de que empiece el siguiente, se sirve de ese —trae lo que había
+//     cuando llegó, que es lo que prometía—;
+//   · la lista de árboles, un candado corto (buscar, apuntar, soltar);
+//   · montar un árbol, fuera del candado, y una sola vez por clave: quien pide
+//     la misma rama mientras se monta, espera a ESE montaje.
 struct Espejo {
     /// El repositorio `--bare`.
     dir: PathBuf,
-    /// El `fetch`, los `worktree` y su lista, de uno en uno.
+    /// La lista de árboles, y qué se está montando.
     estado: std::sync::Mutex<Arboles>,
+    /// Avisa cuando acaba un montaje.
+    montado: std::sync::Condvar,
+    /// Cuándo EMPEZÓ el último `fetch` que acabó bien.
+    traido: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 #[derive(Default)]
@@ -1152,6 +1166,8 @@ struct Arboles {
     /// clave (el commit; en una rama con datos al día, `rama+main`) → su
     /// árbol y el `git status` que tiene que tener, del más viejo al más nuevo.
     hechos: Vec<(String, std::sync::Arc<PathBuf>, String)>,
+    /// Las claves que alguien está montando ahora.
+    montando: std::collections::BTreeSet<String>,
     creados: u64,
 }
 
@@ -1242,13 +1258,23 @@ impl Forja {
         let e = std::sync::Arc::new(Espejo {
             dir,
             estado: Default::default(),
+            montado: Default::default(),
+            traido: Default::default(),
         });
         todos.insert(self.url.clone(), e.clone());
         Ok(e)
     }
 
     /// El espejo, al día: todas las ramas de la forja, y las borradas fuera.
+    /// **Compartido** (F3b): si otro `fetch` empezó después de que esta
+    /// petición llegara, ya trae lo que había al llegar, y se usa ese.
     fn al_dia(&self, e: &Espejo) -> Result<(), Fallo> {
+        let llegada = std::time::Instant::now();
+        let mut traido = bloquear(&e.traido);
+        if traido.is_some_and(|t| t >= llegada) {
+            return Ok(());
+        }
+        let empieza = std::time::Instant::now();
         let d = e.dir.to_string_lossy().into_owned();
         self.git(
             None,
@@ -1261,8 +1287,9 @@ impl Forja {
                 "origin",
                 "+refs/heads/*:refs/heads/*",
             ],
-        )
-        .map(|_| ())
+        )?;
+        *traido = Some(empieza);
+        Ok(())
     }
 
     /// El commit de una rama del espejo (`None`: la de por defecto).
@@ -1296,7 +1323,6 @@ impl Forja {
         prefijo: &str,
     ) -> Result<Vec<(Option<String>, String, String)>, Fallo> {
         let e = self.espejo()?;
-        let _a = bloquear(&e.estado);
         self.al_dia(&e)?;
         let d = e.dir.to_string_lossy().into_owned();
         let principal = self
@@ -1357,86 +1383,173 @@ impl Forja {
     /// último de la forja, sin clonarlo: un `fetch` y el `worktree` de su
     /// commit, que se comparte. Si el espejo falla, un clon como antes.
     pub fn para_leer(&self, rama: Option<&str>) -> Result<ParaLeer, Fallo> {
-        match self.leer_del_espejo(rama) {
-            Ok(a) => Ok(ParaLeer::Compartido(a)),
+        self.para_leer_con_clave(rama, true).map(|(a, _)| a)
+    }
+
+    /// **Qué árbol se leería, sin montarlo** (F4): el espejo al día y la clave
+    /// del árbol de lectura —el commit; en una rama por detrás de `main`,
+    /// `rama+main`—. Es lo que identifica el índice de `/assets`: un `fetch`
+    /// compartido y dos `rev-parse`, en vez de preguntar a la forja dos veces.
+    pub fn clave_para_leer(&self, rama: Option<&str>) -> Result<String, Fallo> {
+        let e = self.espejo()?;
+        self.al_dia(&e)?;
+        Ok(self.clave_de(&e, rama)?.0)
+    }
+
+    /// Como [`Forja::para_leer`], y la clave del árbol (`None`: no vino del
+    /// espejo). Con `traer = false`, el espejo como está: quien acaba de pedir
+    /// [`Forja::clave_para_leer`] no trae dos veces.
+    pub fn para_leer_con_clave(
+        &self,
+        rama: Option<&str>,
+        traer: bool,
+    ) -> Result<(ParaLeer, Option<String>), Fallo> {
+        match self.leer_del_espejo(rama, traer) {
+            Ok((a, clave)) => Ok((ParaLeer::Compartido(a), Some(clave))),
             Err(Fallo::SinRama(r)) => Err(Fallo::SinRama(r)),
-            Err(_) => self.clonar_de_la_forja(rama).map(ParaLeer::Propio),
+            Err(_) => Ok((ParaLeer::Propio(self.clonar_de_la_forja(rama)?), None)),
         }
     }
 
-    fn leer_del_espejo(&self, rama: Option<&str>) -> Result<std::sync::Arc<PathBuf>, Fallo> {
-        let e = self.espejo()?;
-        let mut a = bloquear(&e.estado);
-        self.al_dia(&e)?;
-        let c = self.commit_de(&e, rama)?;
+    /// `(clave, commit de la rama, commit de main)`.
+    fn clave_de(&self, e: &Espejo, rama: Option<&str>) -> Result<(String, String, String), Fallo> {
+        let c = self.commit_de(e, rama)?;
         // ⭐ 0044 C.2 ③: en una rama, lo que no tocó se lee de `main` al día, así
         //   que el árbol depende también de la cabeza de `main`.
-        let m = self.commit_de(&e, None)?;
+        let m = self.commit_de(e, None)?;
         let clave = if rama.is_some() && m != c {
             format!("{c}+{m}")
         } else {
             c.clone()
         };
-        if let Some(i) = a.hechos.iter().position(|(h, _, _)| *h == clave) {
-            let (_, dir, huella) = &a.hechos[i];
-            // Como quedó, o se rehace: un árbol compartido que alguien tocó ya
-            // no es el commit que dice ser.
-            let limpio = dir.is_dir()
-                && self
-                    .git(Some(dir), &["status", "--porcelain", "--ignored"])
-                    .is_ok_and(|s| s.trim() == huella.trim());
-            if limpio {
-                let dir = dir.clone();
-                let par = a.hechos.remove(i);
-                a.hechos.push(par);
-                return Ok(dir);
-            }
-            let (_, viejo, _) = a.hechos.remove(i);
-            self.quitar_arbol(&e, &viejo);
+        Ok((clave, c, m))
+    }
+
+    fn leer_del_espejo(
+        &self,
+        rama: Option<&str>,
+        traer: bool,
+    ) -> Result<(std::sync::Arc<PathBuf>, String), Fallo> {
+        let e = self.espejo()?;
+        if traer {
+            self.al_dia(&e)?;
         }
-        a.creados += 1;
-        let dir = e.dir.with_extension(format!("arbol-{}", a.creados));
+        let (clave, c, m) = self.clave_de(&e, rama)?;
+        loop {
+            let mut a = bloquear(&e.estado);
+            if let Some(i) = a.hechos.iter().position(|(h, _, _)| *h == clave) {
+                let par = a.hechos.remove(i);
+                let (dir, huella) = (par.1.clone(), par.2.clone());
+                a.hechos.push(par);
+                drop(a);
+                // Como quedó, o se rehace: un árbol compartido que alguien tocó
+                // ya no es el commit que dice ser. Fuera del candado (F3b): un
+                // `status` de un árbol grande no hace esperar a las demás ramas.
+                let limpio = dir.is_dir()
+                    && self
+                        .git(Some(&dir), &["status", "--porcelain", "--ignored"])
+                        .is_ok_and(|s| s.trim() == huella.trim());
+                if limpio {
+                    return Ok((dir, clave));
+                }
+                let mut a = bloquear(&e.estado);
+                if let Some(i) = a
+                    .hechos
+                    .iter()
+                    .position(|(_, p, _)| std::sync::Arc::ptr_eq(p, &dir))
+                {
+                    a.hechos.remove(i);
+                }
+                drop(a);
+                self.quitar_arbol(&e, &dir);
+                continue;
+            }
+            if a.montando.contains(&clave) {
+                // Otro lo está montando: se espera a ese montaje, y se vuelve a
+                // mirar (si falló, se monta aquí).
+                let t = std::time::Instant::now();
+                drop(e.montado.wait(a).unwrap_or_else(|x| x.into_inner()));
+                crate::fases::candado(t.elapsed());
+                continue;
+            }
+            a.montando.insert(clave.clone());
+            a.creados += 1;
+            let n = a.creados;
+            drop(a);
+            let hecho = self.montar(&e, n, &c, (clave != c).then_some(m.as_str()));
+            let mut a = bloquear(&e.estado);
+            a.montando.remove(&clave);
+            e.montado.notify_all();
+            let (dir, huella) = hecho?;
+            let dir = std::sync::Arc::new(dir);
+            a.hechos.push((clave.clone(), dir.clone(), huella));
+            // Los viejos que nadie lee, fuera (después, sin el candado).
+            let mut fuera = Vec::new();
+            while a.hechos.len() > ARBOLES {
+                let Some(i) = a
+                    .hechos
+                    .iter()
+                    .position(|(_, p, _)| std::sync::Arc::strong_count(p) == 1)
+                else {
+                    break;
+                };
+                fuera.push(a.hechos.remove(i).1);
+            }
+            drop(a);
+            for viejo in fuera {
+                self.quitar_arbol(&e, &viejo);
+            }
+            return Ok((dir, clave));
+        }
+    }
+
+    /// Monta el árbol `n` del commit `c` —con `main` superpuesto si viene `m`—
+    /// y devuelve su `git status`, la huella de cómo tiene que seguir. Sin el
+    /// candado: dos `worktree add` a la vez son seguros (git marca el que nace
+    /// como `locked` y `worktree prune` lo respeta), y leer objetos también.
+    fn montar(
+        &self,
+        e: &Espejo,
+        n: u64,
+        c: &str,
+        m: Option<&str>,
+    ) -> Result<(PathBuf, String), Fallo> {
+        let dir = e.dir.with_extension(format!("arbol-{n}"));
         let _ = std::fs::remove_dir_all(&dir);
         let (d, dir_s) = (
             e.dir.to_string_lossy().into_owned(),
             dir.to_string_lossy().into_owned(),
         );
-        self.git(
-            None,
-            &[
-                "--git-dir",
-                &d,
-                "-c",
-                "core.autocrlf=false",
-                "worktree",
-                "add",
-                "--quiet",
-                "--detach",
-                &dir_s,
-                &c,
-            ],
-        )?;
-        if clave != c {
-            self.superponer(&["--git-dir", &d], &dir, &c, &m)?;
+        let hecho = (|| {
+            self.git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "-c",
+                    "core.autocrlf=false",
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    &dir_s,
+                    c,
+                ],
+            )?;
+            if let Some(m) = m {
+                self.superponer(&["--git-dir", &d], &dir, c, m)?;
+            }
+            Ok(self
+                .git(Some(&dir), &["status", "--porcelain", "--ignored"])
+                .unwrap_or_default())
+        })();
+        match hecho {
+            Ok(huella) => Ok((dir, huella)),
+            Err(x) => {
+                self.quitar_arbol(e, &dir);
+                Err(x)
+            }
         }
-        let huella = self
-            .git(Some(&dir), &["status", "--porcelain", "--ignored"])
-            .unwrap_or_default();
-        let dir = std::sync::Arc::new(dir);
-        a.hechos.push((clave, dir.clone(), huella));
-        // Los viejos que nadie lee, fuera.
-        while a.hechos.len() > ARBOLES {
-            let Some(i) = a
-                .hechos
-                .iter()
-                .position(|(_, p, _)| std::sync::Arc::strong_count(p) == 1)
-            else {
-                break;
-            };
-            let (_, viejo, _) = a.hechos.remove(i);
-            self.quitar_arbol(&e, &viejo);
-        }
-        Ok(dir)
     }
 
     fn quitar_arbol(&self, e: &Espejo, dir: &Path) {
@@ -1454,11 +1567,8 @@ impl Forja {
     pub fn clonar_rama_al_dia(&self, rama: &str) -> Result<(Prestado, AlDia), Fallo> {
         let par = (|| {
             let e = self.espejo()?;
-            let (c, m) = {
-                let _a = bloquear(&e.estado);
-                self.al_dia(&e)?;
-                (self.commit_de(&e, Some(rama))?, self.commit_de(&e, None)?)
-            };
+            self.al_dia(&e)?;
+            let (c, m) = (self.commit_de(&e, Some(rama))?, self.commit_de(&e, None)?);
             let p = self.clonar_del_espejo(Some(rama))?;
             let d = e.dir.to_string_lossy().into_owned();
             let al_dia = if c != m {
@@ -1672,11 +1782,8 @@ impl Forja {
     /// `origin` en la forja. `None` si el espejo no se pudo usar.
     fn clonar_del_espejo(&self, rama: Option<&str>) -> Result<Prestado, Fallo> {
         let e = self.espejo()?;
-        {
-            let _a = bloquear(&e.estado);
-            self.al_dia(&e)?;
-            self.commit_de(&e, rama)?;
-        }
+        self.al_dia(&e)?;
+        self.commit_de(&e, rama)?;
         let destino = temporal();
         let prestado = Prestado(destino.clone());
         let (d, destino_s) = (
@@ -1962,6 +2069,74 @@ mod pruebas {
             "lo escrito no llegó a la forja, o el espejo no lo trajo"
         );
         drop(a);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F3b · **Muchas ramas a la vez**: cada lectura ve SU rama (el `fetch`
+    /// compartido y los montajes fuera del candado no las cruzan), y quienes
+    /// piden la misma rama a la vez comparten un solo árbol.
+    #[test]
+    fn muchas_ramas_a_la_vez_cada_una_la_suya() {
+        let d = temporal();
+        let pelada = d.join("arbol.git");
+        let otro = d.join("otro");
+        std::fs::create_dir_all(&otro).unwrap();
+        let corre = |args: &[&str], cwd: &Path| {
+            let s = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "s")
+                .env("GIT_AUTHOR_EMAIL", "s@x")
+                .env("GIT_COMMITTER_NAME", "s")
+                .env("GIT_COMMITTER_EMAIL", "s@x")
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        let pel = pelada.to_str().unwrap().to_string();
+        corre(&["init", "-q", "--bare", "-b", "main", &pel], &d);
+        corre(&["init", "-q", "-b", "main"], &otro);
+        std::fs::write(otro.join("a.txt"), "main\n").unwrap();
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "main"], &otro);
+        corre(&["push", "-q", &pel, "HEAD:main"], &otro);
+        const RAMAS: usize = 6;
+        for i in 0..RAMAS {
+            corre(&["checkout", "-q", "-b", &format!("r{i}"), "main"], &otro);
+            std::fs::write(otro.join("a.txt"), format!("r{i}\n")).unwrap();
+            corre(&["commit", "-qam", "r"], &otro);
+            corre(&["push", "-q", &pel, &format!("r{i}")], &otro);
+        }
+        let f = std::sync::Arc::new(Forja {
+            url: format!("file://{}", pelada.to_string_lossy().replace('\\', "/")),
+            testigo: String::new(),
+        });
+        let hilos: Vec<_> = (0..RAMAS * 3)
+            .map(|k| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    let r = format!("r{}", k % RAMAS);
+                    let a = f.para_leer(Some(&r)).unwrap();
+                    assert!(matches!(a, ParaLeer::Compartido(_)), "no vino del espejo");
+                    let t = std::fs::read_to_string(a.ruta().join("a.txt")).unwrap();
+                    (r, t, a.ruta().to_path_buf())
+                })
+            })
+            .collect();
+        let mut dirs: std::collections::BTreeMap<String, std::collections::BTreeSet<PathBuf>> =
+            Default::default();
+        for h in hilos {
+            let (r, t, dir) = h.join().unwrap();
+            assert_eq!(t, format!("{r}\n"), "la rama `{r}` leyó otra");
+            dirs.entry(r).or_default().insert(dir);
+        }
+        for (r, ds) in &dirs {
+            assert_eq!(ds.len(), 1, "`{r}` se montó más de una vez: {ds:?}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

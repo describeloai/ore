@@ -17,6 +17,16 @@
 //! siguiente `GET` recalcula. Nada persiste: la caché son las últimas
 //! [`CABEZAS`] por proceso, y un directorio (el banco, los tests) no se cachea.
 //!
+//! ⭐ F4 (2026-10-15): eran 4 cabezas entre TODAS las ramas, y una rama lleva
+//! en la clave la cabeza de `main`: con más de 4 ramas mirándose, o con `main`
+//! moviéndose, la caché no acertaba nunca fuera de `main` (L2, L1 en victor) y
+//! cada petición rehacía el índice —varias a la vez, el mismo—. Ahora:
+//! · la clave sale del espejo ([`crate::git::Forja::clave_para_leer`]: un
+//!   `fetch` compartido), no de dos `ls-remote` por petición;
+//! · caben [`CABEZAS`] índices mientras no pesen más de [`PESO`] entre todos;
+//! · un índice se hace UNA vez por clave: quien lo pide mientras se hace,
+//!   espera a ese ([`Cache::turno`]).
+//!
 //! # `estadisticas`, del catálogo de la fuente (ORE 0062)
 //!
 //! Un puntero a un origen (`Table`, `ObjectTable` del paquete de una fuente) no
@@ -41,16 +51,55 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-/// Cuántas cabezas se recuerdan (por proceso, entre todas las ramas).
-pub(crate) const CABEZAS: usize = 4;
+/// Cuántas cabezas se recuerdan como mucho (por proceso, entre todas las ramas).
+pub(crate) const CABEZAS: usize = 64;
+
+/// Cuánto pueden pesar entre todos los índices recordados, en bytes de su JSON
+/// (en memoria ocupan algo más). El más reciente se queda aunque pese más.
+pub(crate) const PESO: usize = 48 << 20;
 
 /// `(rama, cabeza)`: lo que identifica un índice.
 type Clave = (String, String);
 
-/// La caché: `(rama, cabeza) → índice`, las últimas [`CABEZAS`].
+/// La caché: `(rama, cabeza) → índice`, las últimas [`CABEZAS`] que quepan en
+/// [`PESO`], y las claves que alguien está haciendo.
 #[derive(Default)]
 pub(crate) struct Cache {
-    entradas: Mutex<VecDeque<(Clave, Arc<Json>)>>,
+    entradas: Mutex<Entradas>,
+    hecho: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct Entradas {
+    /// Del más viejo al más nuevo, con su peso.
+    lista: VecDeque<(Clave, Arc<Json>, usize)>,
+    haciendo: std::collections::BTreeSet<Clave>,
+}
+
+/// Lo que da [`Cache::turno`]: el índice, o el turno de hacerlo.
+pub(crate) enum Turno<'a> {
+    Hecho(Arc<Json>),
+    /// Mientras viva, quien pida la misma clave espera; al soltarlo, mira.
+    Mio {
+        _turno: Haciendo<'a>,
+    },
+}
+
+pub(crate) struct Haciendo<'a> {
+    cache: &'a Cache,
+    clave: Clave,
+}
+
+impl Drop for Haciendo<'_> {
+    fn drop(&mut self) {
+        let mut e = self
+            .cache
+            .entradas
+            .lock()
+            .unwrap_or_else(|x| x.into_inner());
+        e.haciendo.remove(&self.clave);
+        self.cache.hecho.notify_all();
+    }
 }
 
 impl std::fmt::Debug for Cache {
@@ -62,16 +111,46 @@ impl std::fmt::Debug for Cache {
 impl Cache {
     pub(crate) fn lee(&self, clave: &Clave) -> Option<Arc<Json>> {
         let e = self.entradas.lock().ok()?;
-        e.iter().find(|(k, _)| k == clave).map(|(_, v)| v.clone())
+        e.lista
+            .iter()
+            .find(|(k, _, _)| k == clave)
+            .map(|(_, v, _)| v.clone())
     }
 
     pub(crate) fn guarda(&self, clave: Clave, j: Arc<Json>) {
+        let peso = j.jcs().len();
         if let Ok(mut e) = self.entradas.lock() {
-            e.retain(|(k, _)| *k != clave);
-            e.push_back((clave, j));
-            while e.len() > CABEZAS {
-                e.pop_front();
+            e.lista.retain(|(k, _, _)| *k != clave);
+            e.lista.push_back((clave, j, peso));
+            while e.lista.len() > 1
+                && (e.lista.len() > CABEZAS || e.lista.iter().map(|x| x.2).sum::<usize>() > PESO)
+            {
+                e.lista.pop_front();
             }
+        }
+    }
+
+    /// **El índice de `clave`, o el turno de hacerlo** (F4). Si otro lo está
+    /// haciendo, se espera a que acabe y se vuelve a mirar: diez peticiones a
+    /// la misma rama hacen UN índice, no diez a la vez (L1 en victor: los
+    /// índices rehechos en paralelo eran lo que se comía la memoria).
+    pub(crate) fn turno(&self, clave: &Clave) -> Turno<'_> {
+        let mut e = self.entradas.lock().unwrap_or_else(|x| x.into_inner());
+        loop {
+            if let Some((_, v, _)) = e.lista.iter().find(|(k, _, _)| k == clave) {
+                return Turno::Hecho(v.clone());
+            }
+            if e.haciendo.insert(clave.clone()) {
+                return Turno::Mio {
+                    _turno: Haciendo {
+                        cache: self,
+                        clave: clave.clone(),
+                    },
+                };
+            }
+            let t = std::time::Instant::now();
+            e = self.hecho.wait(e).unwrap_or_else(|x| x.into_inner());
+            crate::fases::candado(t.elapsed());
         }
     }
 }
@@ -711,80 +790,116 @@ impl Servidor {
             }
             Arbol::Forja(forja) => {
                 let rama_nombre = rama.clone().unwrap_or_else(|| "main".to_string());
-                // La cabeza, sin clonar: es lo que decide si se sirve de memoria.
-                let cabeza = match &commit {
-                    Some(c) => Some(c.clone()),
-                    None => forja.cabeza_de(&rama_nombre),
-                };
-                // ⭐ 0044 C.2 ③: en una rama, lo que no tocó sale de `main` al día,
-                //   así que la clave lleva también la cabeza de `main`.
-                let de_main = match (rama.as_deref(), &commit) {
-                    (Some(r), None) if r != "main" => forja.cabeza_de("main"),
-                    _ => None,
-                };
-                let con_main = |c: String| match &de_main {
-                    Some(m) => format!("{c}+{m}"),
-                    None => c,
-                };
-                let clave = cabeza.clone().map(|c| (rama_nombre.clone(), con_main(c)));
-                let t = std::time::Instant::now();
-                if let Some(k) = &clave
-                    && let Some(j) = self.assets_cache.lee(k)
-                {
-                    crate::fases::indice(true, t.elapsed());
-                    let mut j = (*j).clone();
-                    if let Json::Obj(m) = &mut j {
-                        m.insert("desde_cache".into(), Json::Bool(true));
-                    }
-                    anotar_salud(&mut j, crate::salud::ahora());
-                    return Respuesta::ok(j);
+                match commit {
+                    None => self.assets_al_dia(forja, rama.as_deref(), rama_nombre),
+                    Some(c) => self.assets_de_commit(forja, rama.as_deref(), rama_nombre, c),
                 }
-                // ⭐ 0044 C.2 ③: el catálogo de una rama lee de `main` al día lo que
-                //   ella no tocó (salvo un commit pedido: eso es la historia).
-                let clonado = match (rama.as_deref(), &commit) {
-                    (Some(r), None) => forja.clonar_rama_al_dia(r).map(|(p, _)| p),
-                    _ => forja.clonar_rama(rama.as_deref()),
-                };
-                let prestado = match clonado {
-                    Err(crate::git::Fallo::SinRama(r)) => {
-                        return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
-                    }
-                    Err(e) => return Respuesta::error(502, e.to_string()),
-                    Ok(p) => p,
-                };
-                if let Some(c) = &commit
-                    && crate::documentos::git(prestado.ruta(), &["checkout", "-q", c]).is_none()
-                {
-                    return Respuesta::error(
-                        404,
-                        format!("no hay ningún commit `{c}` en `{rama_nombre}`"),
-                    );
-                }
-                let cabeza_real = crate::documentos::cabeza_de(prestado.ruta()).or(cabeza);
-                let t = std::time::Instant::now();
-                let j = indice_de(
-                    prestado.ruta(),
-                    Cabeza {
-                        cabeza: cabeza_real.clone(),
-                        rama: Some(rama_nombre.clone()),
-                        generado: Some(ahora()),
-                    },
-                );
-                crate::fases::indice(false, t.elapsed());
-                let j = Arc::new(j);
-                if let Some(c) = cabeza_real {
-                    self.assets_cache
-                        .guarda((rama_nombre, con_main(c)), j.clone());
-                }
-                let mut j = (*j).clone();
-                if let Json::Obj(m) = &mut j {
-                    m.insert("desde_cache".into(), Json::Bool(false));
-                }
-                anotar_salud(&mut j, crate::salud::ahora());
-                Respuesta::ok(j)
             }
         }
     }
+
+    /// El índice de lo último de una rama (o de `main`): del espejo, con la
+    /// clave del árbol que se leería; de memoria si ya se hizo, y si no, hecho
+    /// una sola vez sobre el árbol de lectura compartido (F3b, F4).
+    fn assets_al_dia(
+        &self,
+        forja: &crate::git::Forja,
+        rama: Option<&str>,
+        rama_nombre: String,
+    ) -> Respuesta {
+        let t = std::time::Instant::now();
+        // Sin espejo (`Err` que no es «no hay rama»), sin caché: se lee igual.
+        let clave = match forja.clave_para_leer(rama) {
+            Ok(c) => Some((rama_nombre.clone(), c)),
+            Err(crate::git::Fallo::SinRama(r)) => {
+                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+            }
+            Err(_) => None,
+        };
+        let turno = clave.as_ref().map(|k| self.assets_cache.turno(k));
+        if let Some(Turno::Hecho(j)) = &turno {
+            crate::fases::indice(true, t.elapsed());
+            return servir(j, true);
+        }
+        // ⭐ 0044 C.2 ③: el catálogo de una rama lee de `main` al día lo que
+        //   ella no tocó. ⭐ F3b: del árbol de LECTURA compartido del espejo —el
+        //   mismo que `/fuentes` o `/arbol`—, no de un clon para escribir.
+        let (arbol, clave_real) = match forja.para_leer_con_clave(rama, clave.is_none()) {
+            Err(crate::git::Fallo::SinRama(r)) => {
+                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+            }
+            Err(e) => return Respuesta::error(502, e.to_string()),
+            Ok(x) => x,
+        };
+        let t = std::time::Instant::now();
+        let j = Arc::new(indice_de(
+            arbol.ruta(),
+            Cabeza {
+                cabeza: crate::documentos::cabeza_de(arbol.ruta()),
+                rama: Some(rama_nombre.clone()),
+                generado: Some(ahora()),
+            },
+        ));
+        crate::fases::indice(false, t.elapsed());
+        if let Some(c) = clave_real {
+            self.assets_cache.guarda((rama_nombre, c), j.clone());
+        }
+        drop(turno);
+        servir(&j, false)
+    }
+
+    /// `GET /assets/{commit}`: el catálogo como era —sin `main` superpuesto: eso
+    /// es la historia—, en un clon que se mueve a ese commit.
+    fn assets_de_commit(
+        &self,
+        forja: &crate::git::Forja,
+        rama: Option<&str>,
+        rama_nombre: String,
+        commit: String,
+    ) -> Respuesta {
+        let clave = (rama_nombre.clone(), commit.clone());
+        let t = std::time::Instant::now();
+        if let Some(j) = self.assets_cache.lee(&clave) {
+            crate::fases::indice(true, t.elapsed());
+            return servir(&j, true);
+        }
+        let prestado = match forja.clonar_rama(rama) {
+            Err(crate::git::Fallo::SinRama(r)) => {
+                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+            }
+            Err(e) => return Respuesta::error(502, e.to_string()),
+            Ok(p) => p,
+        };
+        if crate::documentos::git(prestado.ruta(), &["checkout", "-q", &commit]).is_none() {
+            return Respuesta::error(
+                404,
+                format!("no hay ningún commit `{commit}` en `{rama_nombre}`"),
+            );
+        }
+        let t = std::time::Instant::now();
+        let j = Arc::new(indice_de(
+            prestado.ruta(),
+            Cabeza {
+                cabeza: crate::documentos::cabeza_de(prestado.ruta()).or(Some(commit)),
+                rama: Some(rama_nombre),
+                generado: Some(ahora()),
+            },
+        ));
+        crate::fases::indice(false, t.elapsed());
+        self.assets_cache.guarda(clave, j.clone());
+        servir(&j, false)
+    }
+}
+
+/// Un índice, como respuesta: diciendo si salió de memoria, y con la salud de
+/// ahora (que no se guarda: una promesa de frescura se rompe con el reloj).
+fn servir(j: &Json, desde_cache: bool) -> Respuesta {
+    let mut j = j.clone();
+    if let Json::Obj(m) = &mut j {
+        m.insert("desde_cache".into(), Json::Bool(desde_cache));
+    }
+    anotar_salud(&mut j, crate::salud::ahora());
+    Respuesta::ok(j)
 }
 
 #[cfg(test)]
@@ -1059,6 +1174,48 @@ mod tests {
     }
 
     #[test]
+    fn un_indice_se_hace_una_vez_aunque_lo_pidan_a_la_vez() {
+        let c = Arc::new(Cache::default());
+        let hechos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let k: Clave = ("r".into(), "c+m".into());
+        let hilos: Vec<_> = (0..8)
+            .map(|_| {
+                let (c, hechos, k) = (c.clone(), hechos.clone(), k.clone());
+                std::thread::spawn(move || match c.turno(&k) {
+                    Turno::Hecho(j) => (*j).clone(),
+                    Turno::Mio { _turno: _t } => {
+                        hechos.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        let j = Arc::new(Json::Int(7));
+                        c.guarda(k.clone(), j.clone());
+                        (*j).clone()
+                    }
+                })
+            })
+            .collect();
+        for h in hilos {
+            assert_eq!(h.join().unwrap(), Json::Int(7));
+        }
+        assert_eq!(hechos.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn la_cache_no_pasa_de_su_peso_pero_guarda_el_ultimo() {
+        let c = Cache::default();
+        let grande = |n: usize| Arc::new(Json::s("x".repeat(n)));
+        c.guarda(("a".into(), "1".into()), grande(PESO / 2));
+        c.guarda(("b".into(), "1".into()), grande(PESO / 2));
+        assert!(c.lee(&("a".into(), "1".into())).is_none(), "pasó del peso");
+        assert!(c.lee(&("b".into(), "1".into())).is_some());
+        c.guarda(("c".into(), "1".into()), grande(PESO * 2));
+        assert!(
+            c.lee(&("c".into(), "1".into())).is_some(),
+            "el último se queda"
+        );
+        assert_eq!(c.entradas.lock().unwrap().lista.len(), 1);
+    }
+
+    #[test]
     fn la_cache_recuerda_las_ultimas_cabezas_y_olvida_la_mas_vieja() {
         let c = Cache::default();
         for i in 0..(CABEZAS + 1) {
@@ -1074,7 +1231,7 @@ mod tests {
         );
         // la misma clave otra vez no duplica
         c.guarda(("main".into(), "c1".into()), Arc::new(Json::Int(99)));
-        assert_eq!(c.entradas.lock().unwrap().len(), CABEZAS);
+        assert_eq!(c.entradas.lock().unwrap().lista.len(), CABEZAS);
     }
 
     #[test]
