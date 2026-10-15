@@ -126,6 +126,63 @@ impl Servidor {
     /// ⭐ Con `x-ore-rama`, el puntero se mueve **en esa rama** (0044 C D2), como
     ///   en `/v1`: antes iba a `main` dijera lo que dijera la cabecera (medido,
     ///   D0 M5). Sin ella, lo de siempre.
+    /// ⭐ 0063 S7e · **Publish anyway, desde la consola**: el puntero pasa a
+    /// la versión que una promesa `error` retuvo, sin repetir la escritura
+    /// (`ore datasets --publicar-retenida`). Sólo una persona: la ruta no
+    /// está entre los verbos de un puesto (`puerta_del_agente`). Donde se
+    /// escribió lo retenido —la rama, o `main`—, ahí se publica.
+    pub(crate) fn publicar_retenida(
+        &self,
+        rama: Option<&str>,
+        sujeto: &Identidad,
+        b: &str,
+        s: &str,
+        n: &str,
+    ) -> Respuesta {
+        if let Err(m) = token(b).and(token(s)).and(token(n)) {
+            return Respuesta::error(422, m);
+        }
+        let nombre = ore_core::normalize::corto(b, s, n);
+        let args: Vec<String> = vec![
+            "datasets".into(),
+            ".".into(),
+            "--publicar-retenida".into(),
+            nombre.clone(),
+            "--json".into(),
+            "--sujeto".into(),
+            sujeto.persona.clone(),
+        ];
+        let mensaje = format!("publicar la versión retenida de `{nombre}`");
+        let hacer = |raiz: &std::path::Path| {
+            let s = match mando::correr(&self.binario, raiz, &args) {
+                Ok(s) => s,
+                Err(e) => return Respuesta::error(500, e.to_string()),
+            };
+            match s.codigo {
+                0 => Respuesta::ok(
+                    s.stdout
+                        .lines()
+                        .rev()
+                        .find(|l| l.trim_start().starts_with('{'))
+                        .and_then(|l| ore_core::parse::parse(l).ok())
+                        .map(|n| Json::de_node(&n))
+                        .unwrap_or_else(|| Json::obj([("tabla", Json::s(&nombre))])),
+                ),
+                65 if primera_de(&s.stderr).contains("no hay ningún dataset") => {
+                    Respuesta::error(404, primera_de(&s.stderr))
+                }
+                65 => Respuesta::error(409, primera_de(&s.stderr)),
+                64 => Respuesta::error(400, primera_de(&s.stderr)),
+                77 => Respuesta::error(403, primera_de(&s.stderr)),
+                _ => Respuesta::error(502, primera_de(&s.stderr)),
+            }
+        };
+        match rama {
+            None => self.escribiendo(sujeto, &mensaje, hacer),
+            Some(_) => self.escribiendo_en(rama, sujeto, &mensaje, hacer),
+        }
+    }
+
     pub(crate) fn confirmar_dataset(
         &self,
         rama: Option<&str>,

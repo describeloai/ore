@@ -132,6 +132,9 @@ pub struct Opciones<'a> {
     /// Con `--commit`: publicar aunque una promesa `error` falle (0063 S7e,
     /// D-S7-6: el *Publish anyway* de quien escribe).
     pub publicar_igual: bool,
+    /// `--publicar-retenida p.t`: publicar la versión que una promesa retuvo
+    /// (0063 S7e: el *Publish anyway* de la consola).
+    pub publicar_retenida: Option<&'a str>,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
@@ -145,6 +148,8 @@ pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
         esbozar(path, n, op)
     } else if let Some(n) = op.cargar {
         cargar(path, n, op)
+    } else if let Some(n) = op.publicar_retenida {
+        publicar_retenida(path, n, op)
     } else if let Some(n) = op.retencion {
         retencion(path, n, op)
     } else if let Some(n) = op.muestra {
@@ -1708,47 +1713,16 @@ impl Cambio<'_> {
     /// Lo que el código leyó (`inputs` de un transform, o `leidas` de la
     /// sesión) y si la escritura sobrescribió (`ore.modo`): para `derivedFrom`.
     fn leyo(&self) -> Option<Leyo> {
-        let pr = self.procedencia()?;
-        let Json::Obj(m) = pr else { return None };
-        let lista = m.get("inputs").or_else(|| m.get("leidas"))?;
-        let Json::Arr(items) = lista else { return None };
-        let nombres = items
-            .iter()
-            .filter_map(|i| match i {
-                Json::Str(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect();
-        let modo = self
-            .nodo
-            .get("updates")
-            .map(|(_, v)| v.items())
-            .unwrap_or(&[])
-            .iter()
-            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
-            .filter_map(|u| {
-                let s = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
-                s.get("ore.modo")
-                    .and_then(|(_, v)| v.as_str())
-                    .map(String::from)
-            })
-            .next_back();
-        Some(Leyo {
-            nombres,
-            reemplaza: modo.as_deref() != Some("anexar") && modo.as_deref() != Some("upsert"),
-        })
+        leyo_de(
+            &self.procedencia()?,
+            self.del_resumen("ore.modo").as_deref(),
+        )
     }
     /// La clave del upsert (`ore.clave` en el resumen del snapshot que lo hizo).
     /// La colección a la que la escritura ancla la tabla (0049 B5·1): la
     /// procedencia dice `anclada_a`.
     fn anclada(&self) -> Option<String> {
-        match self.procedencia()? {
-            Json::Obj(m) => match m.get("anclada_a") {
-                Some(Json::Str(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
+        anclada_de(&self.procedencia()?)
     }
 
     fn clave(&self) -> Option<Vec<String>> {
@@ -1772,6 +1746,36 @@ impl Cambio<'_> {
                 )
             })
             .next_back()
+    }
+}
+
+/// Lo que una procedencia dice que se leyó, y si la escritura (`ore.modo`)
+/// reemplazó lo que había: para `derivedFrom`.
+fn leyo_de(pr: &Json, modo: Option<&str>) -> Option<Leyo> {
+    let Json::Obj(m) = pr else { return None };
+    let lista = m.get("inputs").or_else(|| m.get("leidas"))?;
+    let Json::Arr(items) = lista else { return None };
+    let nombres = items
+        .iter()
+        .filter_map(|i| match i {
+            Json::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    Some(Leyo {
+        nombres,
+        reemplaza: modo != Some("anexar") && modo != Some("upsert"),
+    })
+}
+
+/// La colección a la que una procedencia ancla la tabla (`anclada_a`).
+fn anclada_de(pr: &Json) -> Option<String> {
+    match pr {
+        Json::Obj(m) => match m.get("anclada_a") {
+            Some(Json::Str(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -2174,16 +2178,36 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                     ("estado", Json::s("error")),
                     ("motivo", Json::s(&motivo)),
                     ("intento", intento),
-                    (
-                        "version_retenida",
-                        Json::obj([
+                    ("version_retenida", {
+                        // Y lo que el documento necesitará si se publica
+                        // (`--publicar-retenida`): retener no lo regenera.
+                        let mut vr = vec![
                             ("metadata_location", Json::s(&a.metadata_location)),
                             ("snapshot", Json::s(&a.snapshot)),
                             ("filas", Json::Int(a.filas)),
                             ("operacion", Json::s(&a.operacion)),
                             ("escrito_por", Json::s(op.sujeto.unwrap_or_default())),
-                        ]),
-                    ),
+                            (
+                                "columnas",
+                                Json::Obj(
+                                    a.columnas_oos
+                                        .iter()
+                                        .map(|(k, v)| (k.clone(), Json::s(v)))
+                                        .collect(),
+                                ),
+                            ),
+                        ];
+                        if let Some(c) = p.cambio.clave() {
+                            vr.push(("clave", Json::Arr(c.iter().map(Json::s).collect())));
+                        }
+                        if let Some(m) = p.cambio.del_resumen("ore.modo") {
+                            vr.push(("modo", Json::s(m)));
+                        }
+                        if let Some(pr) = p.cambio.procedencia() {
+                            vr.push(("procedencia", pr));
+                        }
+                        Json::obj(vr)
+                    }),
                 ];
                 if declaradas {
                     campos.push(("promesas", lo_prometido.clone()));
@@ -2358,6 +2382,134 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 g("metadata_location")
             );
         }
+    }
+    Ok(())
+}
+
+/// ⭐ 0063 S7e · **Publish anyway, desde la consola**: el puntero pasa a la
+/// versión que una promesa `error` retuvo (`version_retenida`), sin repetir la
+/// escritura. Lo que retener no hizo se hace ahora: el documento sigue el
+/// esquema de lo que se publica y el puntero toma su procedencia. Si lo
+/// retenido ya no está en el lago (lo recogió el mantenimiento), se dice y no
+/// se mueve nada.
+fn publicar_retenida(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let t = partes(nombre)?;
+    documento_del_dataset(path, t)?;
+    let (ruta, previo, _) = puntero_del_lago(path, t);
+    let previo = previo.ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
+    // Publicarlo es escribirlo: de quien lo escribió, como un commit.
+    de_quien_lo_escribio(Some(&previo), nombre, op.sujeto)?;
+    let Some((_, vr)) = previo.get("version_retenida") else {
+        return Err((
+            65,
+            format!("`{nombre}` has no held version to publish: it is serving its latest write"),
+        ));
+    };
+    let ml = campo_de(vr, "metadata_location")
+        .filter(|m| !m.is_empty())
+        .ok_or((
+            65,
+            format!("the held version of `{nombre}` does not say where it is"),
+        ))?;
+    if almacen_crudo(
+        "metadatos",
+        &format!("{{\"metadata_location\":{}}}", lit(&ml)),
+    )
+    .is_err()
+    {
+        return Err((
+            65,
+            format!("the held version of `{nombre}` is no longer in the lake: write it again"),
+        ));
+    }
+    let columnas: BTreeMap<String, String> = vr
+        .get("columnas")
+        .map(|(_, c)| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let clave: Option<Vec<String>> = vr.get("clave").map(|(_, c)| {
+        c.items()
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect()
+    });
+    let pr = vr
+        .get("procedencia")
+        .map(|(_, p)| Json::de_node_fiel(p))
+        .filter(|p| matches!(p, Json::Obj(_)));
+    let modo = campo_de(vr, "modo");
+    let leyo = pr.as_ref().and_then(|p| leyo_de(p, modo.as_deref()));
+    let anclada = pr.as_ref().and_then(anclada_de);
+    // Sin columnas (un puntero retenido de antes de guardarlas) el documento
+    // se queda como está: regenerarlo con nada lo vaciaría.
+    let regenerada = if columnas.is_empty() {
+        false
+    } else {
+        asegurar_dataset_de(
+            path,
+            t,
+            &columnas,
+            clave.as_deref(),
+            leyo.as_ref(),
+            op.owner,
+            anclada.as_deref(),
+        )?
+        .1
+    };
+    let filas: i64 = campo_de(vr, "filas")
+        .and_then(|f| f.parse().ok())
+        .unwrap_or(0);
+    let por = op.sujeto.unwrap_or_default();
+    let mut campos = vec![
+        ("estado", Json::s("copiada")),
+        ("metadata_location", Json::s(&ml)),
+        (
+            "snapshot",
+            Json::s(campo_de(vr, "snapshot").unwrap_or_default()),
+        ),
+        ("filas", Json::Int(filas)),
+        (
+            "operacion",
+            Json::s(campo_de(vr, "operacion").unwrap_or_default()),
+        ),
+        (
+            "intento",
+            crate::materializar::intento(
+                &crate::materializar::ahora_iso(),
+                "publicada",
+                Some(&format!("published anyway by {por}")),
+            ),
+        ),
+    ];
+    if let Some(e) = campo_de(vr, "escrito_por").filter(|e| !e.is_empty()) {
+        campos.push(("escrito_por", Json::s(e)));
+    }
+    if let Some(pr) = pr {
+        campos.push((
+            "datos_de",
+            datos_de_lo_escrito(&pr)
+                .map(Json::s)
+                .unwrap_or_else(|| Json::Crudo("null".into())),
+        ));
+        campos.push(("procedencia", pr));
+    }
+    escribir_puntero_sin(&ruta, Some(&previo), campos, &["version_retenida"])?;
+    let j = Json::obj([
+        ("filas", Json::Int(filas)),
+        ("metadata_location", Json::s(&ml)),
+        ("publicada", Json::Bool(true)),
+        ("publicada_por", Json::s(por)),
+        ("tabla", Json::s(nombre)),
+        ("tabla_regenerada", Json::Bool(regenerada)),
+    ]);
+    if op.json {
+        println!("{}", j.jcs());
+    } else {
+        println!("{nombre} · publicada la versión retenida · {filas} filas\n  {ml}");
     }
     Ok(())
 }

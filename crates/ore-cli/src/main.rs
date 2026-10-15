@@ -1146,6 +1146,9 @@ enum Command {
         /// Con `--commit`: publicar aunque una promesa `error` falle (0063 S7e).
         #[arg(long)]
         publicar_igual: bool,
+        /// Publica la version que una promesa retuvo (0063 S7e).
+        #[arg(long, value_name = "PAQUETE.TABLA")]
+        publicar_retenida: Option<String>,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -1378,6 +1381,7 @@ fn main() -> std::process::ExitCode {
             leer,
             o_leer,
             publicar_igual,
+            publicar_retenida,
         } => {
             return datasets::datasets(
                 path,
@@ -1415,6 +1419,7 @@ fn main() -> std::process::ExitCode {
                     leer: *leer,
                     o_leer: *o_leer,
                     publicar_igual: *publicar_igual,
+                    publicar_retenida: publicar_retenida.as_deref(),
                 },
             );
         }

@@ -1083,6 +1083,11 @@ impl Servidor {
             ("POST", ["datasets", b, s, n, "esquema", "aceptar"]) => {
                 self.aceptar_esquema(sujeto, b, s, n)
             }
+            // ⭐ 0063 S7e · Publish anyway: la versión que una promesa retuvo.
+            //   Sólo una persona (no es un verbo de un puesto).
+            ("POST", ["datasets", b, s, n, "publicar-retenida"]) => {
+                self.publicar_retenida(rama, sujeto, b, s, n)
+            }
             // ⭐ 0063 S7f · las promesas de un activo: la lista entera, por una
             //   rama y una propuesta (sólo una persona); y lo que el juez dijo en
             //   los últimos refrescos, del historial del puntero.

@@ -1540,12 +1540,25 @@ publicarlo, *Publish anyway* desde la consola tiene que comprobar que siguen ah�
 |---|---|---|
 | S7e·1 | `ore-store escribir` cuenta y lo deja en el resumen del snapshot | en código |
 | S7e·2 | `ore datasets`: `ore.promesas` en `loadTable`; el commit juzga, retiene o avisa; `--publicar-igual`; `el-lago.sh` 8e | en código |
-| S7e·3 | ore-serve: el commit retenido es 422 tras publicar el árbol; *publish anyway* por cabecera; `POST …/publicar-retenida` | — |
+| S7e·3 | ore-serve: el commit retenido es 422 tras publicar el árbol; *publish anyway* por cabecera; `POST …/publicar-retenida` | en código |
 | S7e·4 | SDK: `PromiseHeldError`, `publish_anyway`, `HealthWarning`; pasar `ore.promesas` a `escribir` | — |
 | S7e·5 | C18 en un puesto | — |
 
 **S7e·1–2 no se empujan solos**: sin S7e·3, ore-serve contestaría 200 a un commit retenido y el
 `write()` creería que publicó. Van con S7e·3.
+
+**S7e·3, cómo quedó.** Dentro del árbol el commit retenido es un 200 con una marca
+(`ore.retenidas`), porque un código ≥ 300 tiraría el árbol y con él la retención; fuera, la marca
+se vuelve **422 `PromiseHeldException`**, con el motivo como `message` (lo que el SDK enseña) y
+`error.retenidas` (tabla, guarda, motivo, versión retenida, promesas). Igual en
+`transactions/commit`, con el motivo de cada tabla. `x-ore-publicar-igual: true` pasa
+`--publicar-igual`: lo usa el `publish_anyway=True` del SDK, y también un build (un agente), porque
+es quien escribe el que decide publicar lo suyo. **`POST /datasets/{b}/{s}/{n}/publicar-retenida`**
+es el *Publish anyway* de la consola: `ore datasets --publicar-retenida` mueve el puntero a
+`version_retenida`, regenera el documento con lo que la retención guardó (columnas, clave, modo,
+procedencia) y deja el intento `publicada` con «published anyway by …». Sólo una persona (no es un
+verbo de un puesto: 403 a un agente), sólo quien puede escribir el dataset (77 → 403), 409 si no
+hay nada retenido o si lo retenido ya no está en el lago. `el-lago.sh` 13e lo recorre por HTTP.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 

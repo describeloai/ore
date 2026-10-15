@@ -739,6 +739,50 @@ c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-t
 [ "$c" = "400" ] && grep -q BadRequestException "$TMP/out.json" || falla "13c · una clave que no es un UUID tenía que ser 400 y fue $c: $(cat "$TMP/out.json")"
 ok "13c · Idempotency-Key por /v1: dos append de PyIceberg con la misma clave anexan una vez y la clave queda en el snapshot; una que no es un UUID, 400 BadRequestException"
 
+# ── 13e · una promesa que retiene, por la puerta (0063 S7e·3) ─────────────────
+# `ventas.promesa` (8e) promete un id único. Por /v1: loadTable dice qué
+# contar; el commit de ids repetidos es 422 `PromiseHeldException` y el árbol
+# SÍ se publica (el puntero dice que retuvo); `publicar-retenida` lo sirve sin
+# repetir la escritura; y `x-ore-publicar-igual: true` publica de una vez.
+punt13() { git -C "$FORJA" show main:datasets/ventas/default/promesa.json > "$TMP/p13.json" && jq_ "$TMP/p13.json" "$1"; }
+cuerpo13() { "$PY" -c 'import json,sys; e=json.load(open(sys.argv[1])); print(json.dumps({"requirements":e["requirements"],"updates":e["updates"]}))' "$TMP/escrito.json" > "$TMP/c13.json"; }
+escribe13() { # op → $TMP/escrito.json, sobre lo que la tabla dice ahora
+  [ "$(pide GET /v1/namespaces/ventas/tables/promesa)" = "200" ] || return 1
+  local ml pide_
+  ml=$(campo metadata-location)
+  pide_=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["config"].get("ore.promesas",""))' "$TMP/out.json")
+  [ -n "$pide_" ] || { echo "loadTable no dice qué contar: $(head -c 300 "$TMP/out.json")" >&2; return 1; }
+  { printf '{"dataset":"datasets/ventas_promesa","modo":"sobrescribir","base":"%s","operacion":"%s","promesas":%s}\n' "$ml" "$1" "$pide_"
+    "$PY" "$TMP/ipc.py" 0 8 dup; } | "$STORE" escribir > "$TMP/escrito.json" 2>"$TMP/escrito.err" || { cat "$TMP/escrito.err" >&2; return 1; }
+  cuerpo13
+}
+escribe13 pr-13a || falla "13e · escribir sobre lo que la tabla dice"
+ML13=$(punt13 metadata_location)
+c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' "$BASE/v1/namespaces/ventas/tables/promesa" -d "@$TMP/c13.json")
+[ "$c" = "422" ] && [ "$(campo error.type)" = "PromiseHeldException" ] || falla "13e · un id repetido tenía que ser 422 PromiseHeldException y fue $c: $(cat "$TMP/out.json")"
+case "$(campo error.message)" in "promise \`id_unico\`: measured 4, expected = 0: held"*"Publish anyway"*) ;; *) falla "13e · el mensaje: $(campo error.message)";; esac
+[ "$(campo error.retenidas.0.guarda)" = "id_unico" ] || falla "13e · el 422 no dice qué retuvo: $(cat "$TMP/out.json")"
+[ "$(punt13 metadata_location)" = "$ML13" ] || falla "13e · el 422 movió el puntero"
+[ "$(punt13 intento.resultado)" = "retenida" ] || falla "13e · el árbol no se publicó con la retención: $(cat "$TMP/p13.json")"
+RET13=$(punt13 version_retenida.metadata_location)
+[ "$(punt13 version_retenida.filas)" = "8" ] || falla "13e · la versión retenida: $(cat "$TMP/p13.json")"
+# Publish anyway desde la consola: sin repetir la escritura
+c=$(pide POST /datasets/ventas/default/promesa/publicar-retenida '{}')
+[ "$c" = "200" ] && [ "$(campo publicada)" = "true" ] || falla "13e · publicar-retenida tenía que ser 200 y fue $c: $(cat "$TMP/out.json")"
+[ "$(punt13 metadata_location)" = "$RET13" ] && [ "$(punt13 estado)" = "copiada" ] && [ "$(punt13 filas)" = "8" ] || falla "13e · publicar-retenida no movió el puntero a lo retenido: $(cat "$TMP/p13.json")"
+grep -q version_retenida "$TMP/p13.json" && falla "13e · publicada, el puntero aún dice version_retenida"
+case "$(punt13 intento.motivo)" in "published anyway by persona:ana") ;; *) falla "13e · el intento no dice quién publicó: $(cat "$TMP/p13.json")";; esac
+c=$(pide POST /datasets/ventas/default/promesa/publicar-retenida '{}'); [ "$c" = "409" ] || falla "13e · sin nada retenido tenía que ser 409 y fue $c: $(cat "$TMP/out.json")"
+# Un agente no publica lo retenido: sólo una persona
+c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agente:puesto-x' -H 'content-type: application/json' "$BASE/datasets/ventas/default/promesa/publicar-retenida" -d '{}')
+[ "$c" = "403" ] || falla "13e · un agente tenía que recibir 403 y fue $c: $(cat "$TMP/out.json")"
+# Publish anyway desde el write(): la cabecera
+escribe13 pr-13b || falla "13e · escribir otra vez"
+c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' -H 'x-ore-publicar-igual: true' "$BASE/v1/namespaces/ventas/tables/promesa" -d "@$TMP/c13.json")
+[ "$c" = "200" ] || falla "13e · con x-ore-publicar-igual tenía que publicar y fue $c: $(cat "$TMP/out.json")"
+[ "$(punt13 metadata_location)" = "$(campo metadata-location)" ] && [ "$(punt13 estado)" = "copiada" ] || falla "13e · x-ore-publicar-igual no movió el puntero: $(cat "$TMP/p13.json")"
+ok "13e · por /v1: loadTable dice qué contar; un id repetido es 422 PromiseHeldException y el árbol dice que retuvo; publicar-retenida lo sirve sin reescribir (una vez; un agente, 403); x-ore-publicar-igual publica"
+
 # ── 14 · materializar sobre el lago: Arrow, sin driver ───────────────────────
 ( cd "$CL" && git pull -q origin main ) || falla "14 · no se pudo traer el árbol"
 mkdir -p "$CL/packages/ventas/views"

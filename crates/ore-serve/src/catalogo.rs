@@ -88,6 +88,79 @@ const DELEGACION: &str = "x-iceberg-access-delegation";
 /// así guarda las cabeceras `ore-entrada`).
 const IDEMPOTENCIA: &str = "idempotency-key";
 
+/// ⭐ 0063 S7e · **Publicar aunque una promesa retenga** (D-S7-6): el
+/// `publish_anyway=True` del `write()` de los SDK. `true` pasa
+/// `--publicar-igual` al commit; cualquier otra cosa, nada.
+const PUBLICAR_IGUAL: &str = "x-ore-publicar-igual";
+
+fn publicar_igual(p: &Peticion) -> bool {
+    p.cabeceras
+        .get(PUBLICAR_IGUAL)
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+}
+
+/// La marca, en el cuerpo de una respuesta 200 dentro del árbol, de un commit
+/// que retuvo: el árbol se publica (el puntero dice que retuvo) y fuera se
+/// vuelve 422 ([`retenida_es_422`]).
+const RETENIDAS: &str = "ore.retenidas";
+
+/// Las tablas que el commit retuvo (`retenida: true` en su línea), o nada.
+fn retenidas_de(r: &Respuesta) -> Option<Json> {
+    let texto = match &r.cuerpo {
+        Json::Crudo(t) => t.clone(),
+        otro => otro.jcs(),
+    };
+    let n = ore_core::parse::parse(&texto).ok()?;
+    let lista: Vec<Json> = n
+        .get("tablas")
+        .map(|(_, t)| t.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter(|t| t.get("retenida").and_then(|(_, v)| v.as_str()) == Some("true"))
+        .map(|t| {
+            let campo = |k: &str| t.get(k).map(|(_, v)| Json::de_node_fiel(v));
+            Json::obj(
+                ["tabla", "guarda", "motivo", "version_retenida", "promesas"]
+                    .into_iter()
+                    .filter_map(|k| Some((k, campo(k)?))),
+            )
+        })
+        .collect();
+    (!lista.is_empty()).then_some(Json::Arr(lista))
+}
+
+/// **El commit retenido es 422** (`PromiseHeldException`), DESPUÉS de que
+/// el árbol se publicara: lo escrito no se sirve, y el error dice por qué y
+/// cómo publicarlo igual. `retenidas` va junto al mensaje.
+fn retenida_es_422(r: Respuesta) -> Respuesta {
+    let Json::Obj(m) = &r.cuerpo else { return r };
+    let Some(Json::Arr(lista)) = m.get(RETENIDAS) else {
+        return r;
+    };
+    let texto = |t: &Json, k: &str| match t {
+        Json::Obj(o) => match o.get(k) {
+            Some(Json::Str(s)) => s.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let mensaje = match lista.as_slice() {
+        [t] => texto(t, "motivo"),
+        ts => ts
+            .iter()
+            .map(|t| format!("`{}`: {}", texto(t, "tabla"), texto(t, "motivo")))
+            .collect::<Vec<_>>()
+            .join("; "),
+    };
+    let mut e = error(422, "PromiseHeldException", mensaje);
+    if let Json::Obj(o) = &mut e.cuerpo
+        && let Some(Json::Obj(err)) = o.get_mut("error")
+    {
+        err.insert("retenidas".into(), Json::Arr(lista.clone()));
+    }
+    e
+}
+
 /// **La `Idempotency-Key` de la petición**, como el argumento que se le pasa
 /// a `ore datasets --commit`: `None` sin ella; 400 si no es un UUID. Va en UN
 /// argumento (`--idempotencia=…`) para que ni siquiera una forma válida pueda
@@ -768,8 +841,9 @@ impl Servidor {
                     Ok(c) => c,
                     Err(r) => return r,
                 };
+                let igual = publicar_igual(p);
                 con_forma(
-                    self.escribiendo_en(
+                    retenida_es_422(self.escribiendo_en(
                         rama,
                         sujeto,
                         &format!("escribir `{nombre}`"),
@@ -801,15 +875,21 @@ impl Servidor {
                             if let Some(c) = &clave {
                                 args.push(c);
                             }
+                            if igual {
+                                args.push("--publicar-igual");
+                            }
                             let r = self.ore_crudo(raiz, &args, true);
                             if r.codigo >= 300 {
                                 return r;
+                            }
+                            if let Some(l) = retenidas_de(&r) {
+                                return Respuesta::ok(Json::obj([(RETENIDAS, l)]));
                             }
                             // `{"metadata-location", "metadata"}`: lo que la spec
                             // devuelve tras un commit, sin credencial.
                             self.cargar(raiz, &nombre, false, "", false)
                         },
-                    ),
+                    )),
                     true,
                 )
             }
@@ -831,38 +911,50 @@ impl Servidor {
                     Ok(c) => c,
                     Err(r) => return r,
                 };
+                let igual = publicar_igual(p);
                 con_forma(
-                    self.escribiendo_en(rama, sujeto, "escribir varias tablas", move |raiz| {
-                        let defecto = self.retencion_defecto();
-                        let dueno = match self.dueno_de_quien_crea(sujeto) {
-                            Ok(d) => d,
-                            Err(r) => return r,
-                        };
-                        let mut args = vec![
-                            "datasets",
-                            ".",
-                            "--commit",
-                            "--peticion",
-                            &peticion,
-                            "--sujeto",
-                            &sujeto_s,
-                            "--owner",
-                            &dueno,
-                            "--json",
-                        ];
-                        if let Some(d) = &defecto {
-                            args.push("--retencion-defecto");
-                            args.push(d);
-                        }
-                        if let Some(c) = &clave {
-                            args.push(c);
-                        }
-                        let r = self.ore_crudo(raiz, &args, true);
-                        if r.codigo >= 300 {
-                            return r;
-                        }
-                        Respuesta::sin_contenido()
-                    }),
+                    retenida_es_422(self.escribiendo_en(
+                        rama,
+                        sujeto,
+                        "escribir varias tablas",
+                        move |raiz| {
+                            let defecto = self.retencion_defecto();
+                            let dueno = match self.dueno_de_quien_crea(sujeto) {
+                                Ok(d) => d,
+                                Err(r) => return r,
+                            };
+                            let mut args = vec![
+                                "datasets",
+                                ".",
+                                "--commit",
+                                "--peticion",
+                                &peticion,
+                                "--sujeto",
+                                &sujeto_s,
+                                "--owner",
+                                &dueno,
+                                "--json",
+                            ];
+                            if let Some(d) = &defecto {
+                                args.push("--retencion-defecto");
+                                args.push(d);
+                            }
+                            if let Some(c) = &clave {
+                                args.push(c);
+                            }
+                            if igual {
+                                args.push("--publicar-igual");
+                            }
+                            let r = self.ore_crudo(raiz, &args, true);
+                            if r.codigo >= 300 {
+                                return r;
+                            }
+                            if let Some(l) = retenidas_de(&r) {
+                                return Respuesta::ok(Json::obj([(RETENIDAS, l)]));
+                            }
+                            Respuesta::sin_contenido()
+                        },
+                    )),
                     true,
                 )
             }
@@ -1156,6 +1248,43 @@ fn paquetes(raiz: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0063 S7e·3: la línea `retenida` del commit es una marca dentro del
+    /// árbol (200, para que se publique) y 422 `PromiseHeldException` fuera,
+    /// con el motivo como mensaje y lo retenido junto a él. Lo demás pasa igual.
+    #[test]
+    fn un_commit_retenido_es_422_fuera_del_arbol() {
+        let linea = r#"{"tablas":[{"tabla":"ventas.otra","retenida":false},{"tabla":"ventas.p","retenida":true,"guarda":"id_unico","motivo":"promise `id_unico`: measured 4, expected = 0: held, still serving the published version. Publish anyway to serve it","version_retenida":"memory://x/00002.metadata.json","promesas":[{"id":"id_unico","resultado":"fail"}]}]}"#;
+        let l = retenidas_de(&Respuesta::ok(Json::Crudo(linea.into()))).expect("retiene");
+        let dentro = Respuesta::ok(Json::obj([(RETENIDAS, l)]));
+        assert_eq!(dentro.codigo, 200);
+        let fuera = retenida_es_422(dentro);
+        assert_eq!(fuera.codigo, 422);
+        let j = fuera.cuerpo.jcs();
+        assert!(j.contains(r#""type":"PromiseHeldException""#), "{j}");
+        assert!(
+            j.contains(r#""message":"promise `id_unico`: measured 4"#),
+            "{j}"
+        );
+        assert!(
+            j.contains(r#""guarda":"id_unico""#) && !j.contains("ventas.otra"),
+            "{j}"
+        );
+        // Sin retenida, nada cambia.
+        let ok = r#"{"tablas":[{"tabla":"ventas.p","retenida":false}]}"#;
+        assert!(retenidas_de(&Respuesta::ok(Json::Crudo(ok.into()))).is_none());
+        assert_eq!(retenida_es_422(Respuesta::ok(Json::obj([]))).codigo, 200);
+        // Dos tablas retenidas: cada una con su nombre.
+        let dos = linea.replace(
+            r#""tabla":"ventas.otra","retenida":false"#,
+            r#""tabla":"ventas.otra","retenida":true,"motivo":"m2""#,
+        );
+        let l = retenidas_de(&Respuesta::ok(Json::Crudo(dos))).unwrap();
+        let j = retenida_es_422(Respuesta::ok(Json::obj([(RETENIDAS, l)])))
+            .cuerpo
+            .jcs();
+        assert!(j.contains("`ventas.otra`: m2; `ventas.p`: promise"), "{j}");
+    }
 
     /// La `Idempotency-Key` llega como UN argumento, sólo si es un UUID; lo
     /// demás es 400 y no llega a la línea de órdenes.

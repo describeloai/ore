@@ -84,6 +84,12 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
         "/datasets/{}/{}/{}/esquema/aceptar",
         Es::Acto("esquema:aceptar"),
     ),
+    // 0063 S7e: publicar la versión que una promesa retuvo (sólo una persona).
+    (
+        "POST",
+        "/datasets/{}/{}/{}/publicar-retenida",
+        Es::Acto("dataset:publicar-retenida"),
+    ),
     // 0063 S7f: una rama y una propuesta con las promesas de un activo.
     ("POST", "/promesas", Es::Acto("promesas:proponer")),
     // el árbol
