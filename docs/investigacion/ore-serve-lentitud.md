@@ -244,3 +244,51 @@ en todas las ramas que no lo tocan) y **servido por partes**.
 
 Memoria: 25 MiB anónimos, 20 MiB de ficheros y **pico de 100 MiB** con 5 árboles montados, de 512
 MiB. Sin reinicios. **23 procesos `git` zombis** en ~20 minutos: lo de F5 (`tini`) sigue pendiente.
+
+## F7a · el índice guardado como texto (2026-10-15, `89940f9c`)
+
+L6 a 10.000 activos, medido por fases (un CPU entero):
+
+| Fase | Tiempo | Memoria |
+|---|---|---|
+| cargar y compilar | 0,8–1,0 s | 64 MiB |
+| punteros | 0,45–0,55 s | +16 MiB |
+| proyectar | 1,8–2,4 s | +80 MiB |
+| serializar (7,6 MB) | 0,13–0,15 s | +8 MiB |
+| clonar para servir | 0,12–0,15 s | +82 MiB |
+
+Conclusión: el árbol `Json` ocupa ~10 veces su texto, y cada respuesta de la caché lo clonaba.
+`con_salud` también, en CADA lectura de un activo.
+
+Cambios:
+- **La caché guarda el texto con huecos** (la salud, que depende del reloj, y `desde_cache`) y una
+  mini-copia en JSON con lo que la salud lee.
+- **La salud se rehace como mucho cada 15 s** por índice y se cose al texto.
+- **La respuesta es la misma byte a byte** (`servido_es_lo_mismo_que_el_arbol_anotado`).
+- **Los índices se hacen de uno en uno** (`Cache::obra`).
+- **`git` local, de 8 en 8** (`fases::PROCESOS`).
+- **El peso de una entrada son sus bytes:** 30 ramas en caché, 91 MiB (210–313 MiB guardando
+  árboles).
+
+**⚠ L5, L6 y L7 se midieron primero con binarios glibc, y producción es musl** (Alpine). Con
+glibc, 50 hilos dejan memoria retenida en sus arenas de malloc. L7 a 1.000 activos y 50
+usuarios: ore-serve **505 MiB y OOM** con glibc; 87 MiB con `MALLOC_ARENA_MAX=2`; **41 MiB con
+musl**. Los OOM de L5 con F3b+F4 eran en parte de esto. Desde aquí se mide con musl
+(`/target/l5-musl`, compilado en `rust:1.90-alpine` como la imagen).
+
+### L5 con musl y F7a
+
+| Escenario | `/assets` en rama p50 / máx | `/fuentes` en rama p50 | Memoria pico | Errores |
+|---|---|---|---|---|
+| 1.000 · 1 | **2,0 / 4,9 s** | 0,8 s | 196 MiB | 0 |
+| 1.000 · 10 | 20 / 72 s | 10,9 s | 222 MiB | 0 |
+| 1.000 · 50 | 84 / 109 s | 28 s | 341 MiB | **0 (antes, OOM)** |
+| 10.000 · 1 | 28 / 30 s | 6,3 s | 462 MiB | 0 (antes, OOM) |
+| 10.000 · 10 | 129 / 215 s | 5,8 s | 493 MiB | 0 |
+| 10.000 · 50 | 300 s | 300 s | 509 MiB | todas por plazo; vivo, sin OOM |
+
+La memoria del pico incluye la caché de ficheros de los árboles montados.
+
+**La memoria está resuelta: ningún OOM.** Lo que queda es **CPU**. Con 0,5 CPU, cada índice
+nuevo cuesta ~2 s a 1.000 activos y ~25 s a 10.000, y 50 ramas en frío hacen cola de uno en uno
+(`candado 9×121 s`). Una rama comparte con `main` casi todo, pero se rehace entera: eso es F7b.
