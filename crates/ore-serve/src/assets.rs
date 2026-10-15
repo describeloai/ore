@@ -98,11 +98,34 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
     if crate::documentos::cabeza_de(raiz).is_some()
         && let Json::Obj(m) = &mut j
     {
+        // ⭐ F1 (2026-10-15): todas las versiones en UNA pasada de `git log`. Antes
+        //   era un `git log -1 -- <ruta>` por ruta: en victor, 438 documentos ×
+        //   26 ms = 11,6 s en el pod (0,5 CPU), y `/assets` en una rama tardaba
+        //   20–25 s (medido con L1: «índice rehecho 18 s, git-local 474×»). Una
+        //   pasada: 190–219 ms en el mismo pod, y la MISMA versión para 599
+        //   documentos y 144 carpetas (comparado una a una sobre el árbol de victor).
+        let mut rutas = std::collections::BTreeSet::new();
+        for clave in ["items", "proyectos", "repositorios"] {
+            let lista: Vec<&Json> = match m.get(clave) {
+                Some(Json::Obj(o)) => o.values().collect(),
+                Some(Json::Arr(a)) => a.iter().collect(),
+                _ => Vec::new(),
+            };
+            for x in lista {
+                if let Json::Obj(x) = x
+                    && let Some(Json::Str(ruta)) = x.get("ruta")
+                {
+                    rutas.insert(ruta.trim_end_matches('/').to_string());
+                }
+            }
+        }
+        let versiones = versiones_de(raiz, &rutas);
+        let de = |ruta: &str| versiones.get(ruta.trim_end_matches('/')).cloned();
         if let Some(Json::Obj(items)) = m.get_mut("items") {
             for it in items.values_mut() {
                 if let Json::Obj(it) = it
                     && let Some(Json::Str(ruta)) = it.get("ruta")
-                    && let Some(v) = version_de(raiz, ruta)
+                    && let Some(v) = de(ruta)
                 {
                     it.insert("version".into(), v);
                 }
@@ -112,7 +135,7 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
             for p in ps.iter_mut() {
                 if let Json::Obj(p) = p
                     && let Some(Json::Str(ruta)) = p.get("ruta")
-                    && let Some(v) = version_de(raiz, ruta)
+                    && let Some(v) = de(ruta)
                 {
                     p.insert("version".into(), v);
                 }
@@ -125,7 +148,7 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
             for r in rs.iter_mut() {
                 if let Json::Obj(r) = r
                     && let Some(Json::Str(ruta)) = r.get("ruta")
-                    && let Some(v) = version_de(raiz, ruta)
+                    && let Some(v) = de(ruta)
                 {
                     r.insert("version".into(), v);
                 }
@@ -500,6 +523,53 @@ fn version_de(raiz: &Path, ruta: &str) -> Option<Json> {
         raiz,
         &["log", "-1", "--format=%h%x1f%aI%x1f%ae", "--", ruta],
     )?;
+    version_de_cabecera(&s)
+}
+
+/// **Las versiones de muchas rutas en UNA pasada** (F1): `git log --name-only`
+/// sobre toda la historia, del commit más reciente al más viejo, y cada ruta se
+/// queda con el primero que la toca —a ella o a algo debajo: un repositorio es
+/// una carpeta—. Es lo mismo que `git log -1 -- <ruta>` para cada una (medido:
+/// 599 documentos y 144 carpetas de victor, ninguna distinta), en un proceso.
+/// Salida de `-z`: `\x01<cabecera>\0\n<ruta>\0<ruta>\0…`.
+fn versiones_de(
+    raiz: &Path,
+    rutas: &std::collections::BTreeSet<String>,
+) -> std::collections::HashMap<String, Json> {
+    let mut fuera = std::collections::HashMap::new();
+    if rutas.is_empty() {
+        return fuera;
+    }
+    let Some(s) = crate::documentos::git(
+        raiz,
+        &["log", "-z", "--format=%x01%h%x1f%aI%x1f%ae", "--name-only"],
+    ) else {
+        return fuera;
+    };
+    let mut faltan: std::collections::BTreeSet<&str> = rutas.iter().map(String::as_str).collect();
+    for reg in s.split('\u{1}').skip(1) {
+        let (cab, resto) = reg.split_once('\0').unwrap_or((reg, ""));
+        let mut version: Option<Option<Json>> = None;
+        for f in resto.trim_start_matches('\n').split('\0') {
+            let mut p = f;
+            while !p.is_empty() {
+                if faltan.remove(p)
+                    && let Some(v) = version.get_or_insert_with(|| version_de_cabecera(cab))
+                {
+                    fuera.insert(p.to_string(), v.clone());
+                }
+                p = p.rfind('/').map(|i| &p[..i]).unwrap_or("");
+            }
+        }
+        if faltan.is_empty() {
+            break;
+        }
+    }
+    fuera
+}
+
+/// `{commit, cuando, sujeto}` de una cabecera `%h%x1f%aI%x1f%ae`.
+fn version_de_cabecera(s: &str) -> Option<Json> {
     let mut p = s.split('\u{1f}');
     let commit = p.next()?.trim().to_string();
     if commit.is_empty() {
@@ -720,6 +790,63 @@ impl Servidor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F1: una pasada de `git log` da, para cada ruta —fichero o carpeta—, lo
+    /// mismo que `git log -1 -- <ruta>`; con una ruta tocada varias veces, la
+    /// última; y con una que la historia no conoce, nada.
+    #[test]
+    fn una_pasada_da_la_misma_version_que_una_por_ruta() {
+        let d = std::env::temp_dir().join(format!("ore-f1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("packages/p/repo")).unwrap();
+        let git = |a: &[&str]| {
+            let s = std::process::Command::new("git")
+                .current_dir(&d)
+                .args(["-c", "user.name=ana", "-c", "user.email=ana@sujeto.invalid"])
+                .args(a)
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{a:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        for (f, t) in [
+            ("packages/p/a.yaml", "1"),
+            ("packages/p/b.yaml", "1"),
+            ("packages/p/a.yaml", "2"),
+            ("packages/p/repo/x.py", "1"),
+            ("otra.txt", "1"),
+        ] {
+            std::fs::write(d.join(f), t).unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", f]);
+        }
+        let rutas: std::collections::BTreeSet<String> = [
+            "packages/p/a.yaml",
+            "packages/p/b.yaml",
+            "packages/p/repo",
+            "packages/p",
+            "packages/p/nadie.yaml",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let v = versiones_de(&d, &rutas);
+        for r in &rutas {
+            assert_eq!(
+                v.get(r).map(|j| j.jcs()),
+                version_de(&d, r).map(|j| j.jcs()),
+                "{r}"
+            );
+        }
+        assert!(!v.contains_key("packages/p/nadie.yaml"));
+        assert_eq!(v.get("packages/p/repo"), v.get("packages/p"));
+        assert_ne!(v.get("packages/p/a.yaml"), v.get("packages/p/b.yaml"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn arbol() -> std::path::PathBuf {
         arbol_en("indice")
