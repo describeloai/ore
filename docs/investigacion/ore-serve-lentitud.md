@@ -142,3 +142,14 @@ repositorio— se queda con el primer commit que la toca a ella o a algo debajo.
 - Sobre una copia del árbol de victor, **la misma versión** que `git log -1 -- <ruta>` para 599
   documentos y 144 carpetas (0 distintas).
 - Prueba: `una_pasada_da_la_misma_version_que_una_por_ruta`.
+
+**F2 (2026-10-15).** Plazos a git en `Forja::git` (`ore-serve/src/git.rs`):
+- `http.lowSpeedLimit=1000`, `http.lowSpeedTime=10` en el entorno de cada `git`;
+- **`PLAZO_GIT` = 60 s** al proceso: `salida_con_plazo` lo mata y no espera a su hijo HTTP;
+- un cuelgue se dice (`plazo · git … · matado a los 60 s`) y la petición recibe «la forja no
+  responde: no contestó en 60 s» en vez de quedarse colgada con el candado tomado.
+
+Pruebas:
+- `una_forja_que_calla_se_abandona_en_segundos`: el caso B de L3, que sin plazo pasaba de 6
+  minutos, se abandona en ~10 s con «Operation too slow»;
+- `lo_que_se_pasa_del_plazo_se_mata`.

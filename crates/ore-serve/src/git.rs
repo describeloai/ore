@@ -119,12 +119,62 @@ impl Drop for Prestado {
     }
 }
 
+/// **El plazo duro de un `git` de la forja** (F2). Lo que `http.lowSpeedLimit`
+/// no ve —una conexión que no llega a abrirse: 135 s medidos en L3— y cualquier
+/// otro cuelgue se cortan aquí, para que nadie retenga el candado del espejo
+/// indefinidamente. Holgado: un clon entero de victor son 3,2 s en el pod (y
+/// 5–12 s con la CPU disputada).
+pub(crate) const PLAZO_GIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Corre `c` como mucho `plazo`; `None` si se pasó (y se mató). La salida se lee
+/// en dos hilos —si no, una salida grande llenaría la tubería y el hijo se
+/// pararía—, y al matarlo **no se espera a esos hilos**: el hijo de `git` que
+/// habla HTTP puede seguir vivo con la tubería abierta hasta que el `lowSpeed`
+/// o el kernel lo cierren, y esperarlo sería volver a colgarse.
+fn salida_con_plazo(
+    mut c: Command,
+    plazo: std::time::Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut h = c
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let leer = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = r.read_to_end(&mut b);
+            b
+        })
+    };
+    let salida = leer(Box::new(h.stdout.take().expect("stdout con tubería")));
+    let error = leer(Box::new(h.stderr.take().expect("stderr con tubería")));
+    let t = std::time::Instant::now();
+    loop {
+        if let Some(status) = h.try_wait()? {
+            return Ok(Some(std::process::Output {
+                status,
+                stdout: salida.join().unwrap_or_default(),
+                stderr: error.join().unwrap_or_default(),
+            }));
+        }
+        if t.elapsed() >= plazo {
+            let _ = h.kill();
+            let _ = h.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 impl Forja {
     /// Los ajustes que van por el ENTORNO y no por la línea de órdenes.
     fn entorno(&self) -> Vec<(String, String)> {
         vec![
             ("GIT_TERMINAL_PROMPT".into(), "0".into()),
-            ("GIT_CONFIG_COUNT".into(), "2".into()),
+            ("GIT_CONFIG_COUNT".into(), "4".into()),
             ("GIT_CONFIG_KEY_0".into(), "http.extraheader".into()),
             (
                 "GIT_CONFIG_VALUE_0".into(),
@@ -136,6 +186,17 @@ impl Forja {
             // a su causa y cuesta media hora encontrar.
             ("GIT_CONFIG_KEY_1".into(), "safe.directory".into()),
             ("GIT_CONFIG_VALUE_1".into(), "*".into()),
+            // ⭐ F2 (2026-10-15): una forja que deja de mandar datos se abandona a
+            //   los 10 s. Sin esto, medido en L3 (git 2.49.1): una forja que acepta
+            //   y calla, o que se queda a medias, tiene a `git` esperando MÁS DE 6
+            //   MINUTOS sin rendirse —con el candado del espejo tomado y todo
+            //   ore-serve detrás: el atasco del 14 de octubre—. Con esto, 10 s.
+            //   No cubre una conexión que no llega a abrirse (135 s, lo que dicta
+            //   el kernel): eso lo corta [`PLAZO_GIT`].
+            ("GIT_CONFIG_KEY_2".into(), "http.lowSpeedLimit".into()),
+            ("GIT_CONFIG_VALUE_2".into(), "1000".into()),
+            ("GIT_CONFIG_KEY_3".into(), "http.lowSpeedTime".into()),
+            ("GIT_CONFIG_VALUE_3".into(), "10".into()),
         ]
     }
 
@@ -148,11 +209,22 @@ impl Forja {
             c.env(k, v);
         }
         let t = std::time::Instant::now();
-        let s = c
-            .args(args)
-            .output()
+        c.args(args);
+        let s = salida_con_plazo(c, PLAZO_GIT)
             .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
         crate::fases::git(args, t.elapsed());
+        let Some(s) = s else {
+            eprintln!(
+                "plazo · git {} · matado a los {} s",
+                args.iter().take(4).copied().collect::<Vec<_>>().join(" "),
+                PLAZO_GIT.as_secs()
+            );
+            return Err(Fallo::NoResponde(format!(
+                "no contestó en {} s (`git {}`)",
+                PLAZO_GIT.as_secs(),
+                args.first().copied().unwrap_or_default()
+            )));
+        };
         let err = String::from_utf8_lossy(&s.stderr).into_owned();
         if s.status.success() {
             return Ok(String::from_utf8_lossy(&s.stdout).into_owned());
@@ -1550,6 +1622,55 @@ fn temporal() -> PathBuf {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// F2: lo que se pasa del plazo se mata y se dice (`None`), sin esperarlo.
+    #[cfg(unix)]
+    #[test]
+    fn lo_que_se_pasa_del_plazo_se_mata() {
+        let t = std::time::Instant::now();
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        let s = salida_con_plazo(c, std::time::Duration::from_millis(500)).unwrap();
+        assert!(s.is_none());
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
+        // y lo que acaba a tiempo trae su salida
+        let mut c = Command::new("git");
+        c.arg("--version");
+        let s = salida_con_plazo(c, std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&s.stdout).starts_with("git version"));
+    }
+
+    /// F2: una forja que acepta la conexión y calla —el caso B de L3: más de 6
+    /// minutos sin el plazo— se abandona en ~10 s (`http.lowSpeedTime`).
+    #[test]
+    fn una_forja_que_calla_se_abandona_en_segundos() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut quietas = Vec::new();
+            for c in l.incoming().flatten() {
+                quietas.push(c); // acepta y no dice nada
+            }
+        });
+        let f = Forja {
+            url: format!("http://127.0.0.1:{puerto}/r.git"),
+            testigo: String::new(),
+        };
+        let t = std::time::Instant::now();
+        let e = f
+            .git(None, &["ls-remote", "--heads", &f.url])
+            .expect_err("una forja que calla no contesta");
+        let d = t.elapsed();
+        // Es el plazo de `lowSpeed` lo que corta, no otra cosa que falle antes.
+        assert!(e.to_string().contains("too slow"), "{e} ({d:?})");
+        assert!(d < std::time::Duration::from_secs(30), "tardó {d:?}");
+    }
 
     #[test]
     fn el_testigo_no_aparece_en_los_argumentos() {
