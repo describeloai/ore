@@ -345,6 +345,112 @@ pub fn transaccion(
     c
 }
 
+/// ⭐ 0063 S7d · **LO QUE LA TRANSACCIÓN DEJA, MEDIDO PARA LAS PROMESAS** (OOS
+///   v1alpha31 `01` §3, la biblioteca de objetos). Del manifiesto que ya está en
+///   memoria —lo de antes con lo que cambia encima— y del listado que el lector
+///   acaba de dar, sin leer un byte más:
+///
+/// | `metric` | Lo que se cuenta |
+/// |---|---|
+/// | `itemCount`, `itemCountChange` | los ítems actuales (y los de la transacción anterior) |
+/// | `emptyItems` | actuales de 0 bytes |
+/// | `invalidFormats` | lo del LISTADO fuera de la lista: también lo que la colección descartó por sus `formats`, que nunca entra (si no, una promesa sobre sus propios formatos siempre daría 0) |
+/// | `invalidSizes` | actuales fuera del rango |
+/// | `duplicateItems` | actuales con el contenido de otro: en la mantenida, el sha256 de sus bytes; en la virtual, la huella del listado sólo si es un hash de contenido que distingue (`huella_fiable`); si no, no se sabe |
+/// | `lostItems` | los `perdido` que siguen en el manifiesto |
+#[allow(clippy::too_many_arguments)]
+pub fn medir(
+    promesas: &[ore_core::promesas::Promesa],
+    antes: &[Item],
+    filas: &[Item],
+    vigentes: &[Vigente],
+    anterior: Option<u64>,
+    virtual_: bool,
+    huella_fiable: bool,
+) -> ore_core::promesas::Medido {
+    use ore_core::promesas::{Argumentos, Medido};
+    let mut estado: BTreeMap<(String, String), &Item> = antes.iter().map(|i| (i.id(), i)).collect();
+    for f in filas {
+        estado.insert(f.id(), f);
+    }
+    let actuales: Vec<&Item> = estado
+        .values()
+        .copied()
+        .filter(|i| i.estado == "actual")
+        .collect();
+    let perdidos = estado.values().filter(|i| i.estado == "perdido").count() as u64;
+    let mut m = Medido {
+        total: Some(actuales.len() as u64),
+        anterior,
+        ..Default::default()
+    };
+    for p in promesas {
+        let Some(metrica) = p.metrica else { continue };
+        let cuenta: Result<u64, String> = match metrica {
+            "emptyItems" => Ok(actuales.iter().filter(|i| i.tamano == 0).count() as u64),
+            "lostItems" => Ok(perdidos),
+            "invalidSizes" => match p.argumentos {
+                Argumentos::Entre(a, b) => Ok(actuales
+                    .iter()
+                    .filter(|i| (i.tamano as f64) < a || (i.tamano as f64) > b)
+                    .count() as u64),
+                _ => Err("the promise gives no size range".into()),
+            },
+            "invalidFormats" => {
+                let vale: Box<dyn Fn(&str) -> bool> = match &p.argumentos {
+                    Argumentos::Formatos(fs) => {
+                        let fs: BTreeSet<String> =
+                            fs.iter().map(|f| formato_de(&format!("x.{f}"))).collect();
+                        Box::new(move |formato: &str| fs.contains(formato))
+                    }
+                    Argumentos::Familias(fs) => {
+                        let fs: BTreeSet<String> = fs.iter().cloned().collect();
+                        Box::new(move |formato: &str| {
+                            ore_core::medios::familia_de_extension(formato)
+                                .is_some_and(|f| fs.contains(f))
+                        })
+                    }
+                    _ => Box::new(|_: &str| true),
+                };
+                Ok(vigentes
+                    .iter()
+                    .filter(|v| !vale(&formato_de(&v.camino)))
+                    .count() as u64)
+            }
+            "duplicateItems" => {
+                if !virtual_ {
+                    let con: Vec<&str> = actuales
+                        .iter()
+                        .map(|i| i.blob.as_str())
+                        .filter(|b| !b.is_empty())
+                        .collect();
+                    let distintos: BTreeSet<&str> = con.iter().copied().collect();
+                    Ok((con.len() - distintos.len()) as u64)
+                } else if huella_fiable && actuales.iter().all(|i| !i.huella.is_empty()) {
+                    let distintos: BTreeSet<(&str, i64)> = actuales
+                        .iter()
+                        .map(|i| (i.huella.as_str(), i.tamano))
+                        .collect();
+                    Ok((actuales.len() - distintos.len()) as u64)
+                } else {
+                    Err("the source gives no content hash that tells duplicates apart: a maintained copy (its bytes in the lake) can check it".into())
+                }
+            }
+            // Las de total (`itemCount`, `itemCountChange`) no cuentan nada aparte.
+            _ => continue,
+        };
+        m.cuentas.insert(p.id.clone(), cuenta);
+    }
+    m
+}
+
+/// ¿La huella que da el lector de `tipo` es un hash de contenido que distingue
+/// duplicados? MD5 (Azure) y CRC64-NVME (S3) sí; CRC32C (GCS) es corto —con
+/// cien mil ficheros, una colisión es lo esperable— y SFTP no da ninguna.
+pub fn huella_fiable(tipo: &str) -> bool {
+    matches!(tipo, "azure" | "s3")
+}
+
 /// **La fecha de lo que cambia**: lo que sale de la vista actual guarda cuándo
 /// (si no lo tenía ya: un retirado que se pierde conserva su fecha), y lo que
 /// vuelve la pierde. Aparte de [`transaccion`], que es pura en el tiempo.
@@ -1031,6 +1137,75 @@ pub fn una(
         return Ok(Some((format!("haría la {linea}"), Json::obj([]))));
     }
 
+    // ⭐ 0063 S7d · LAS PROMESAS, ANTES DE SELLAR. Los bytes ya están en el
+    //   lago (si es mantenida); falta publicar. Una `error` que falla RETIENE:
+    //   ni se sella el manifiesto, ni se mueve el puntero, ni el testigo, así
+    //   que la pasada siguiente recalcula la misma transacción (sin bajar otra
+    //   vez: los bytes ya están) hasta que el origen se arregle o alguien la
+    //   rehaga (*Publish anyway*). `notEmptied` es la guarda de vacío que las
+    //   colecciones no tenían.
+    let promesas = ore_core::promesas::de_documento(
+        d.root.get("spec").map(|(_, s)| s),
+        ore_core::promesas::Familia::Objetos,
+    );
+    let declaradas = d.section("promises").is_some();
+    let anterior = puntero
+        .as_ref()
+        .filter(|_| ml.is_some())
+        .and_then(|p| p.get("items"))
+        .and_then(|(_, i)| campo_de(i, "actuales"))
+        .and_then(|n| n.parse::<u64>().ok());
+    let medido = medir(
+        &promesas,
+        &antes,
+        &c.filas,
+        &vigentes,
+        anterior,
+        virtual_,
+        huella_fiable(&tipo),
+    );
+    let veredictos = ore_core::promesas::juzgar(&promesas, &medido);
+    let lo_prometido = Json::Arr(veredictos.iter().map(|v| v.json()).collect());
+    if !rehacer && let Some(v) = ore_core::promesas::retenida(&veredictos) {
+        let motivo = if v.de_serie {
+            format!(
+                "the source now lists 0 items and the published version has {}: held, still serving the published version. Refresh it again to publish anyway",
+                anterior.unwrap_or(0)
+            )
+        } else {
+            format!(
+                "{}: held, still serving the published version. Refresh it again to publish anyway",
+                ore_core::promesas::por_que(v)
+            )
+        };
+        let mut m: BTreeMap<String, Json> = match puntero.as_ref().map(Json::de_node) {
+            Some(Json::Obj(m)) => m,
+            _ => Default::default(),
+        };
+        m.insert("kind".into(), Json::s("MediaCollection"));
+        m.insert("estado".into(), Json::s("error"));
+        m.insert("motivo".into(), Json::s(&motivo));
+        let mut i = crate::materializar::intento(
+            &crate::materializar::ahora_iso(),
+            "retenida",
+            Some(&motivo),
+        );
+        if let Json::Obj(o) = &mut i {
+            o.insert("guarda".into(), Json::s(&v.id));
+        }
+        m.insert("intento".into(), i);
+        if declaradas {
+            m.insert("promesas".into(), lo_prometido);
+        }
+        return Ok(Some((
+            format!("retenida · {motivo}\n  {linea}"),
+            Json::Obj(m),
+        )));
+    }
+    for v in ore_core::promesas::avisos(&veredictos) {
+        linea.push_str(&format!("\n  ⚠ {}", ore_core::promesas::por_que(v)));
+    }
+
     let esquema: BTreeMap<String, ore_core::types::Type> = COLUMNAS
         .iter()
         .chain(if virtual_ {
@@ -1108,6 +1283,12 @@ pub fn una(
         }
     }
     m.insert("estado".into(), Json::s("transaccion"));
+    // 0063 S7d: lo que el juez dijo, si el documento promete algo.
+    if declaradas {
+        m.insert("promesas".into(), lo_prometido);
+    } else {
+        m.remove("promesas");
+    }
     m.insert("transaccion".into(), Json::Int(tx));
     // B8·3: lo que a esta transacción (de una mantenida) le falta en el lago.
     m.insert("por_copiar".into(), Json::Int(quedan_por_copiar));
@@ -1324,6 +1505,57 @@ mod tests {
             m.insert(f.id(), f.clone());
         }
         m.into_values().collect()
+    }
+
+    /// 0063 S7d: lo que las promesas de una colección miden sobre la
+    /// transacción, sin leer nada más; y que una `error` que falla retiene.
+    #[test]
+    fn las_promesas_de_una_coleccion() {
+        use ore_core::promesas::{Familia, Resultado, de_documento, juzgar, retenida};
+        let spec = ore_core::parse::parse(
+            "spec:\n  promises:\n    - id: solo_imagenes\n      metric: invalidFormats\n      arguments: { families: [image] }\n      mustBe: 0\n      severity: warning\n    - id: sin_vacios\n      metric: emptyItems\n      mustBe: 0\n    - id: sin_repetidas\n      metric: duplicateItems\n      mustBe: 0\n      severity: warning\n    - id: borrado\n      metric: itemCountChange\n      mustBeGreaterThan: -20\n    - id: tamano\n      metric: invalidSizes\n      arguments: { between: [1, 100] }\n      mustBe: 0\n      severity: warning\n",
+        )
+        .unwrap();
+        let ps = de_documento(spec.get("spec").map(|(_, s)| s), Familia::Objetos);
+        let mut vs = vec![
+            vig("a.jpg", "1", "h1"),
+            vig("b.png", "1", "h1"),
+            vig("c.jpg", "1", "h3"),
+        ];
+        vs[2].tamano = 0;
+        let notas = vig("notas.txt", "1", "h4");
+        let mut con_txt = vs.clone();
+        con_txt.push(notas);
+        // La colección admite jpg y png: el `.txt` no entra, pero la promesa lo ve.
+        let fs = vec!["jpg".to_string(), "png".to_string()];
+        let c = transaccion(&[], &con_txt, &BTreeSet::new(), &fs, 1);
+        assert_eq!(c.fuera_de_formato, 1);
+        let m = medir(&ps, &[], &c.filas, &con_txt, None, true, true);
+        assert_eq!(m.total, Some(3));
+        let ok = |id: &str| m.cuentas.get(id).cloned();
+        assert_eq!(ok("solo_imagenes"), Some(Ok(1)));
+        assert_eq!(ok("sin_vacios"), Some(Ok(1)));
+        assert_eq!(
+            ok("sin_repetidas"),
+            Some(Ok(1)),
+            "`a.jpg` y `b.png`: misma huella y mismo tamaño"
+        );
+        assert_eq!(ok("tamano"), Some(Ok(1)));
+        // Con un hash que no distingue (GCS), los duplicados de una virtual no se saben.
+        let m2 = medir(&ps, &[], &c.filas, &con_txt, None, true, false);
+        assert!(matches!(m2.cuentas.get("sin_repetidas"), Some(Err(_))));
+        // La de serie: 0 ítems sobre una que tenía 10 retiene; y el borrado masivo también.
+        let antes = fijar(&[], &c);
+        let vacia = transaccion(&antes, &[], &BTreeSet::new(), &fs, 2);
+        let m3 = medir(&ps, &antes, &vacia.filas, &[], Some(3), true, true);
+        assert_eq!(m3.total, Some(0));
+        let v = juzgar(&ps, &m3);
+        let r = retenida(&v).unwrap();
+        assert_eq!(r.id, "borrado", "la primera `error` que falla");
+        assert!(
+            v.iter()
+                .any(|x| x.id == "notEmptied" && x.resultado == Resultado::Fail)
+        );
     }
 
     fn estado<'a>(items: &'a [Item], clave: &str, version: &str) -> &'a str {

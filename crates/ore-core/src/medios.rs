@@ -146,6 +146,89 @@ pub fn disposicion(tipo: &str, nombre: &str) -> (&'static str, String) {
     )
 }
 
+/// ⭐ OOS v1alpha29 (`01-las-familias` §1) · **La familia que propone cada
+/// extensión.** Una extensión es de una sola familia; lo que no está aquí no
+/// propone nada, y deciden los bytes.
+pub const FAMILIAS_POR_EXTENSION: &[(&str, &[&str])] = &[
+    (
+        "document",
+        &[
+            "pdf", "doc", "docx", "ppt", "pptx", "odt", "odp", "rtf", "txt", "md", "html", "htm",
+            "epub", "xps", "pages", "key",
+        ],
+    ),
+    (
+        "image",
+        &[
+            "jpg", "jpeg", "png", "gif", "tif", "tiff", "webp", "bmp", "heic", "heif", "avif",
+            "svg", "ico", "jp2", "dng", "cr2", "nef", "arw",
+        ],
+    ),
+    (
+        "audio",
+        &[
+            "wav", "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac", "aiff", "aif", "wma", "sph",
+        ],
+    ),
+    (
+        "video",
+        &[
+            "mp4", "m4v", "mov", "avi", "mkv", "webm", "mpg", "mpeg", "ts", "m2ts", "wmv", "flv",
+            "3gp",
+        ],
+    ),
+    (
+        "spreadsheet",
+        &["xlsx", "xlsm", "xlsb", "xls", "ods", "numbers"],
+    ),
+    ("email", &["eml", "msg", "mbox"]),
+    ("structured", &["json", "xml", "yaml", "yml", "toml"]),
+    (
+        "text",
+        &[
+            "log", "sha256", "sha1", "md5", "ini", "conf", "cfg", "py", "js", "java", "scala",
+            "kt", "rs", "go", "c", "h", "cpp", "cs", "rb", "php", "sh", "ps1", "sql", "r", "ipynb",
+        ],
+    ),
+    (
+        "geospatial",
+        &[
+            "geojson", "kml", "kmz", "gpx", "gml", "gpkg", "shp", "shx", "dbf", "prj", "cpg",
+            "las", "laz",
+        ],
+    ),
+    (
+        "model3d",
+        &[
+            "stl", "obj", "ply", "glb", "gltf", "fbx", "3ds", "dwg", "dxf", "step", "stp", "iges",
+            "igs", "usdz",
+        ],
+    ),
+    ("medical", &["dcm", "dicom", "nii", "hl7", "edf"]),
+    (
+        "scientific",
+        &[
+            "h5", "hdf5", "he5", "nc", "nc4", "netcdf", "npy", "npz", "fits", "fit", "mat",
+        ],
+    ),
+    (
+        "design",
+        &["psd", "ai", "eps", "indd", "sketch", "fig", "xd"],
+    ),
+    (
+        "archive",
+        &["zip", "tar", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar"],
+    ),
+];
+
+/// La familia de medios de una extensión (en minúscula, sin el punto), o `None`.
+pub fn familia_de_extension(ext: &str) -> Option<&'static str> {
+    FAMILIAS_POR_EXTENSION
+        .iter()
+        .find(|(_, exts)| exts.contains(&ext))
+        .map(|(f, _)| *f)
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;

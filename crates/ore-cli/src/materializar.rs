@@ -1812,7 +1812,7 @@ fn fuentes_de(pkg: &Package, v: &Loaded) -> Vec<String> {
 
 /// La hora de ahora, ISO-8601 en UTC. La copia es ejecución, no compilación: aquí
 /// sí hay reloj (`ore_core::frescura` lo recibe; esto lo da).
-fn ahora_iso() -> String {
+pub(crate) fn ahora_iso() -> String {
     ore_core::frescura::iso(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1822,7 +1822,7 @@ fn ahora_iso() -> String {
 }
 
 /// El último intento de una pasada (0063 S2): `{cuando, resultado, motivo?}`.
-fn intento(cuando: &str, resultado: &str, motivo: Option<&str>) -> ore_core::json::Json {
+pub(crate) fn intento(cuando: &str, resultado: &str, motivo: Option<&str>) -> ore_core::json::Json {
     use ore_core::json::Json;
     let mut m = vec![
         ("cuando", Json::s(cuando)),
