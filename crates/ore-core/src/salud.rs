@@ -45,7 +45,13 @@ fn campo(n: &Node, k: &str) -> Option<String> {
 /// haber tenido antes una buena.
 pub fn legible(n: &Node) -> Option<String> {
     let estado = campo(n, "estado").unwrap_or_default();
-    if !matches!(estado.as_str(), "copiada" | "al-dia" | "error") {
+    // `transaccion`: lo que una colección publica (0046 E8·1). Sin él, una
+    // colección recién refrescada salía `never-refreshed` (medido en la vara
+    // de S7d, 2026-10-15) hasta la pasada siguiente sin cambios.
+    if !matches!(
+        estado.as_str(),
+        "copiada" | "al-dia" | "error" | "transaccion"
+    ) {
         return None;
     }
     campo(n, "metadata_location").or_else(|| campo(n, "clave"))
@@ -873,6 +879,16 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("removed cliente; added comprador"), "{t}");
+    }
+
+    #[test]
+    fn una_coleccion_recien_publicada_tiene_version() {
+        let n = p(
+            r#"{"estado":"transaccion","metadata_location":"gs://b/c/metadata/2.json","datos_de":"2026-10-15T12:24:00Z"}"#,
+        );
+        assert_eq!(legible(&n).as_deref(), Some("gs://b/c/metadata/2.json"));
+        let t = bloque(Some(&n), None, 1_791_900_000, (false, false)).jcs();
+        assert!(!t.contains("never-refreshed"), "{t}");
     }
 
     #[test]

@@ -1476,6 +1476,27 @@ Blocking).
 - C5 salió 503 por un relevo de pods a las 23:02; repetido a mano, `409 esquema` en los dos. C2 en
   pg esperaba `healthy` y era `warning` por la promesa: lo correcto; la vara ya lo admite.
 
+### S7d · las colecciones, hecho y medido (2026-10-15)
+
+`caf99fdc`: `coleccion::medir` cuenta, del manifiesto en memoria y del listado, la biblioteca de
+objetos (actuales y su cambio, vacíos, formatos —también lo que la colección descarta por sus
+`formats`—, tamaños, duplicados —sha256 en la mantenida; en la virtual sólo con md5 o crc64nvme,
+no con el crc32c de GCS— y perdidos). Se juzga tras bajar los bytes y antes de sellar; una `error`
+que falla **retiene** sin sellar el manifiesto ni mover el puntero ni el testigo; `notEmptied` es
+la primera guarda de vacío de una colección; rehacer publica de todos modos. La tabla extensión →
+familia pasó a `ore-core`.
+
+**Medido** (`vara.py colecciones`, `vara-20261015-1424.md`, 6/6) sobre `gcs_s.media.imagenes`
+(mantenida) e `imagenes_vivo` (virtual), con sus promesas escritas desde el panel (#22 y la de
+`imagenes`): **C16** un `.txt` entre las imágenes → `allowed_formats` *fail* (1), publica con
+`guard-warning`; **C17** 3 de 5 borradas → retenida por `item_count_change` («measured -60 %,
+expected > -20 %»), se siguen sirviendo 5; **C17b** vaciada → `notEmptied` *fail*, retenida. El
+bucket quedó como estaba.
+
+Lo que destapó: una colección recién publicada (estado `transaccion`) salía `never-refreshed`
+—`salud::legible` no conocía ese estado—: arreglado. Y la fusión de una propuesta **con alcance**
+contaba lo heredado de `main` (`a7b368bb`, `lo_que_empeora`).
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre
