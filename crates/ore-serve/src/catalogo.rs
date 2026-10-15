@@ -132,6 +132,53 @@ fn retenidas_de(r: &Respuesta) -> Option<Json> {
 /// **El commit retenido es 422** (`PromiseHeldException`), DESPUÉS de que
 /// el árbol se publicara: lo escrito no se sirve, y el error dice por qué y
 /// cómo publicarlo igual. `retenidas` va junto al mensaje.
+/// 0063 S7e·4: lo que las promesas `warning` dijeron al publicar (`avisos` de
+/// cada línea del commit), en el orden en que vinieron.
+fn avisos_de(r: &Respuesta) -> Vec<String> {
+    let texto = match &r.cuerpo {
+        Json::Crudo(t) => t.clone(),
+        otro => otro.jcs(),
+    };
+    let Ok(n) = ore_core::parse::parse(&texto) else {
+        return Vec::new();
+    };
+    n.get("tablas")
+        .map(|(_, t)| t.items())
+        .unwrap_or(&[])
+        .iter()
+        .flat_map(|t| {
+            t.get("avisos")
+                .map(|(_, a)| a.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|a| a.as_str().map(String::from))
+        })
+        .collect()
+}
+
+/// **Los avisos, con la respuesta del commit**: `ore.avisos` junto al
+/// `LoadTableResult`, sólo si los hay (sin ellos, la respuesta de la spec byte
+/// a byte). Un cliente de Iceberg ignora lo que no conoce; el `write()` de los
+/// SDK los dice como `HealthWarning`. El resultado es texto tal cual (lleva
+/// `null` y números que el JSON del núcleo no modela): se añade al final.
+fn con_avisos(r: Respuesta, avisos: Vec<String>) -> Respuesta {
+    if avisos.is_empty() || r.codigo >= 300 {
+        return r;
+    }
+    let Json::Crudo(t) = &r.cuerpo else {
+        return r;
+    };
+    let t = t.trim_end();
+    let Some(sin) = t.strip_suffix('}') else {
+        return r;
+    };
+    let lista = Json::Arr(avisos.into_iter().map(Json::s).collect()).jcs();
+    Respuesta {
+        codigo: r.codigo,
+        cuerpo: Json::Crudo(format!("{sin},\"ore.avisos\":{lista}}}")),
+    }
+}
+
 fn retenida_es_422(r: Respuesta) -> Respuesta {
     let Json::Obj(m) = &r.cuerpo else { return r };
     let Some(Json::Arr(lista)) = m.get(RETENIDAS) else {
@@ -886,8 +933,9 @@ impl Servidor {
                                 return Respuesta::ok(Json::obj([(RETENIDAS, l)]));
                             }
                             // `{"metadata-location", "metadata"}`: lo que la spec
-                            // devuelve tras un commit, sin credencial.
-                            self.cargar(raiz, &nombre, false, "", false)
+                            // devuelve tras un commit, sin credencial; y lo que
+                            // una promesa `warning` vio (0063 S7e·4).
+                            con_avisos(self.cargar(raiz, &nombre, false, "", false), avisos_de(&r))
                         },
                     )),
                     true,
@@ -1284,6 +1332,28 @@ mod tests {
             .cuerpo
             .jcs();
         assert!(j.contains("`ventas.otra`: m2; `ventas.p`: promise"), "{j}");
+    }
+
+    /// 0063 S7e·4: lo que una `warning` vio va con la respuesta del commit
+    /// (`ore.avisos`), y sin avisos la respuesta es la de la spec tal cual.
+    #[test]
+    fn los_avisos_van_con_la_respuesta_del_commit() {
+        let linea = r#"{"tablas":[{"tabla":"ventas.p","avisos":["promise `pocas`: measured 8, expected ≥ 10"]}]}"#;
+        let avisos = avisos_de(&Respuesta::ok(Json::Crudo(linea.into())));
+        assert_eq!(avisos.len(), 1);
+        let cargado = Respuesta::ok(Json::Crudo(
+            r#"{"metadata-location":"m","metadata":{"x":null}}"#.into(),
+        ));
+        let r = con_avisos(cargado, avisos);
+        let Json::Crudo(t) = &r.cuerpo else {
+            panic!("crudo")
+        };
+        assert_eq!(
+            t,
+            r#"{"metadata-location":"m","metadata":{"x":null},"ore.avisos":["promise `pocas`: measured 8, expected ≥ 10"]}"#
+        );
+        let igual = con_avisos(Respuesta::ok(Json::Crudo("{\"a\":1}".into())), vec![]);
+        assert!(matches!(&igual.cuerpo, Json::Crudo(t) if t == "{\"a\":1}"));
     }
 
     /// La `Idempotency-Key` llega como UN argumento, sólo si es un UUID; lo

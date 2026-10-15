@@ -115,7 +115,7 @@ MAGIA = b"ORECOPY1"
 #: (`ore_core::sdk::API`), so a session on an older SDK says so.
 API = 2
 
-__all__ = ["API", "display", "HTML", "Markdown", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
+__all__ = ["API", "display", "HTML", "Markdown", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "PromiseHeldError", "HealthWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
            "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
            "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
@@ -1313,6 +1313,34 @@ class DegradedDataError(RuntimeError):
     """`strict=True` and something read is degraded (OOS v1alpha30 §3.6)."""
 
 
+class PromiseHeldError(RuntimeError):
+    """A `write()` broke an `error` promise of the dataset (OOS v1alpha31,
+    ADR 0063 S7e): what was written stays in the lake, unserved, and the
+    dataset keeps serving its previous version. `promise`, `measured` and
+    `expected` say which and why; `held` is where the written version is, and
+    `promises` what was said of each one. To serve it anyway, write again with
+    `publish_anyway=True`, or use Publish anyway in the console."""
+
+    def __init__(self, message, table=None, promise=None, measured=None, expected=None, held=None, promises=None):
+        super().__init__(message)
+        self.table, self.promise, self.measured, self.expected = table, promise, measured, expected
+        self.held, self.promises = held, promises or []
+
+
+def _retenida(nombre, e):
+    """0063 S7e·4: el 422 `PromiseHeldException` de ore-serve, como el error
+    que el código puede atrapar (`except ore.PromiseHeldError`)."""
+    retenidas = e.get("retenidas") or [{}]
+    t = retenidas[0] if isinstance(retenidas[0], dict) else {}
+    guarda = t.get("guarda")
+    promesas = t.get("promesas") or []
+    dicha = next((v for v in promesas if isinstance(v, dict) and v.get("id") == guarda), {})
+    return PromiseHeldError("write(%s): %s" % (nombre, e.get("message", "held by a promise")),
+                            table=nombre, promise=guarda, measured=dicha.get("medido"),
+                            expected=dicha.get("esperado"), held=t.get("version_retenida"),
+                            promises=promesas)
+
+
 # Una advertencia de salud se dice cada vez: es del dato de esta lectura, no de
 # la línea de código que lee (el filtro por defecto la diría una sola vez).
 warnings.simplefilter("always", HealthWarning)
@@ -2496,7 +2524,7 @@ def _resultado_de_crear(objeto, creado):
 
 
 @_kw({"nombre": "name", "datos": "data", "modo": "mode", "clave": "key", "anclada_a": "anchored_to"})
-def write(name, data, mode="overwrite", key=None, anchored_to=None):
+def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyway=False):
     """Write `data` (a pandas or polars DataFrame, or an Arrow Table) as the
     lake dataset `<database>.<schema>.<name>`. The code never touches the
     bucket: the table goes to `ore-store` with a credential the catalog vends,
@@ -2512,7 +2540,14 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
     `anchored_to="db.schema.collection"` (0049 B5·1): an **anchored table**
     on that collection (`_item`, `_anchor`, `_anchor_id`, `_anchor_parent`,
     `_derivation`, `_status`); it merges by `_anchor_id`, so no `upsert`.
-    `Collection.apply()` writes it."""
+    `Collection.apply()` writes it.
+
+    **Promises** (OOS v1alpha31, ADR 0063 S7e): what the dataset promises is
+    checked before the new version is served. A broken `error` promise raises
+    `PromiseHeldError` —the write stays in the lake, unserved, and the dataset
+    keeps its previous version—; `publish_anyway=True` serves it anyway. A
+    broken `warning` promise is served and said as a `HealthWarning` (also in
+    the result, `warnings`)."""
     import hashlib
 
     nombre, datos, clave, anclada_a = name, data, key, anchored_to
@@ -2597,6 +2632,13 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
         peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla, "procedencia": _procedencia(nombre, anclada_a)}
         if clave_upsert:
             peticion["clave"] = clave_upsert
+        # 0063 S7e: lo que las promesas del dataset piden contar, contado por
+        # `ore-store` en la misma pasada en que escribe; el commit juzga.
+        if config.get("ore.promesas"):
+            try:
+                peticion["promesas"] = json.loads(config["ore.promesas"])
+            except ValueError:
+                pass
         if base:
             peticion["base"] = base
         else:
@@ -2606,10 +2648,17 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
         # La identidad de ESTE commit (la spec REST de Iceberg, `Idempotency-Key`):
         # un UUIDv7 por commit construido. Sus reintentos la repiten y el catálogo
         # no la aplica dos veces; tras un 409 el commit es otro (otra base): otra clave.
+        cabeceras = {"Idempotency-Key": _uuid7()}
+        if publish_anyway:
+            cabeceras["x-ore-publicar-igual"] = "true"
         c, r = _confirmar(_v1_tabla(nombre),
                           {"identifier": {"namespace": [ns], "name": t}, "requirements": escrito["requirements"], "updates": escrito["updates"]},
-                          {"Idempotency-Key": _uuid7()})
+                          cabeceras)
         if c == 200:
+            # Lo que una promesa `warning` vio: se publicó, y se dice.
+            avisos = [a for a in ((r or {}).get("ore.avisos") or []) if isinstance(a, str)]
+            for a in avisos:
+                warnings.warn("write(%s): %s" % (nombre, a), HealthWarning, stacklevel=2)
             snap = ((r or {}).get("metadata") or {}).get("current-snapshot-id")
             # la misma operación ya estaba: el catálogo contesta con lo que hay
             # (el mismo puntero) y no deja nada
@@ -2617,10 +2666,14 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None):
             return _Result({"table": nombre, "rows": escrito["filas"], "snapshot": str(snap or ""),
                             "metadata_location": (r or {}).get("metadata-location", ""),
                             "operation": clave, "repeated": repetida, "mode": mode,
-                            "added": escrito.get("anadidas", 0), "before": escrito.get("antes", 0)})
+                            "added": escrito.get("anadidas", 0), "before": escrito.get("antes", 0),
+                            "warnings": avisos})
         if c == 409:
             # alguien escribió mientras tanto (o la tabla nació): otra vez sobre lo que hay
             continue
+        e = (r or {}).get("error") if isinstance(r, dict) else None
+        if c == 422 and isinstance(e, dict) and e.get("type") == "PromiseHeldException":
+            raise _retenida(nombre, e)
         if c >= 500 or c == 0:
             raise RuntimeError("write(%s): the catalog answered %s %d times; every retry carried the same "
                                "Idempotency-Key, so nothing was written twice: %s" % (nombre, c or "nothing", len(_ESPERAS) + 1, _mensaje(r)))

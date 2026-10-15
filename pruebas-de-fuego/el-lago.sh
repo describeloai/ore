@@ -780,6 +780,8 @@ c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agent
 escribe13 pr-13b || falla "13e · escribir otra vez"
 c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' -H 'x-ore-publicar-igual: true' "$BASE/v1/namespaces/ventas/tables/promesa" -d "@$TMP/c13.json")
 [ "$c" = "200" ] || falla "13e · con x-ore-publicar-igual tenía que publicar y fue $c: $(cat "$TMP/out.json")"
+"$PY" -c 'import json,sys; a=json.load(open(sys.argv[1])).get("ore.avisos") or [""]; sys.exit(0 if a[0].startswith("promise `pocas`: measured 8") else 1)' "$TMP/out.json" \
+  || falla "13e · el mínimo (warning) tenía que avisar en la respuesta: $(head -c 300 "$TMP/out.json")"
 [ "$(punt13 metadata_location)" = "$(campo metadata-location)" ] && [ "$(punt13 estado)" = "copiada" ] || falla "13e · x-ore-publicar-igual no movió el puntero: $(cat "$TMP/p13.json")"
 ok "13e · por /v1: loadTable dice qué contar; un id repetido es 422 PromiseHeldException y el árbol dice que retuvo; publicar-retenida lo sirve sin reescribir (una vez; un agente, 403); x-ore-publicar-igual publica"
 

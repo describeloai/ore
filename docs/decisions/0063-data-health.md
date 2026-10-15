@@ -1541,7 +1541,7 @@ publicarlo, *Publish anyway* desde la consola tiene que comprobar que siguen ah�
 | S7e·1 | `ore-store escribir` cuenta y lo deja en el resumen del snapshot | en código |
 | S7e·2 | `ore datasets`: `ore.promesas` en `loadTable`; el commit juzga, retiene o avisa; `--publicar-igual`; `el-lago.sh` 8e | en código |
 | S7e·3 | ore-serve: el commit retenido es 422 tras publicar el árbol; *publish anyway* por cabecera; `POST …/publicar-retenida` | en código |
-| S7e·4 | SDK: `PromiseHeldError`, `publish_anyway`, `HealthWarning`; pasar `ore.promesas` a `escribir` | — |
+| S7e·4 | SDK: `PromiseHeldError`, `publish_anyway`, `HealthWarning`; pasar `ore.promesas` a `escribir` | Python en código; Java y Node después |
 | S7e·5 | C18 en un puesto | — |
 
 **S7e·1–2 no se empujan solos**: sin S7e·3, ore-serve contestaría 200 a un commit retenido y el
@@ -1559,6 +1559,13 @@ es el *Publish anyway* de la consola: `ore datasets --publicar-retenida` mueve e
 procedencia) y deja el intento `publicada` con «published anyway by …». Sólo una persona (no es un
 verbo de un puesto: 403 a un agente), sólo quien puede escribir el dataset (77 → 403), 409 si no
 hay nada retenido o si lo retenido ya no está en el lago. `el-lago.sh` 13e lo recorre por HTTP.
+
+**S7e·4, el SDK de Python.** `write()` pasa a `escribir` lo que `loadTable` pide contar; el 422 es
+`ore.PromiseHeldError` (un `RuntimeError`: el código de antes que atrapaba eso sigue igual) con
+`promise`, `measured`, `expected`, `held` y `promises`; `publish_anyway=True` manda
+`x-ore-publicar-igual`; y lo que una `warning` vio llega como `HealthWarning` y en `warnings` del
+resultado. Para eso el commit publicado devuelve `ore.avisos` junto al `LoadTableResult`, sólo si
+hay alguno (un cliente de Iceberg lo ignora). Java y Node, con su paso propio.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
