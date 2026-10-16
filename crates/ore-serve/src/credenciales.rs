@@ -772,6 +772,7 @@ fn postgres(publica: Option<String>, ip: Option<String>) -> Json {
                             ),
                         ])]),
                     ),
+                    ("clavePublica", Json::s(publica.clone().unwrap_or_default())),
                     (
                         "ipDeSalida",
                         Json::s(ip.unwrap_or_else(|| {

@@ -365,6 +365,33 @@ a IPs públicas y sólo para `ore.dev/rol: driver`. El 5432 entra en el rango.
 Lo medido de paso: el `sshd_config` de Alpine trae `AllowTcpForwarding no`, y sshd se queda con la
 **primera** aparición. Es lo primero que fallará con un bastión real, y el error ya lo nombra.
 
+### PG4c · La consola, al día con el driver (2026-10-16)
+
+El paso 3 del alta («Connection details»), para Postgres, era la hoja genérica de una base con host:
+- los cinco modos SSL de libpq, **con `disable` por defecto**;
+- un certificado de cliente y una CA como **rutas** de fichero;
+- «Allow Unauthorized Certs».
+
+**Y nada de eso llegaba a la URL**: `direccionDe` componía sólo `postgresql://usuario:clave@host:puerto/base`.
+
+`rubix-platform` d54d27a cambia eso con una hoja propia, `PostgresConnection.tsx`:
+- **TLS:** «verificar el certificado y el nombre» (por defecto, sin `sslmode`) o «sólo el certificado»
+  (`verify-ca`).
+- **La CA, pegada como PEM** y compuesta como `sslrootcert`.
+- **Los no admitidos**, que salen del asistente: en claro, cualquier certificado y la CA como fichero.
+- **«Mi base no está en internet»:** bastión, puerto, usuario y huella. Enseña la clave pública de la
+  celda y el comando para el `authorized_keys`. El asistente gana `clavePublica` en el modo
+  `tunel-ssh`.
+
+La dirección enseñada tapa la CA como `(PEM)`. Una cadena de conexión escrita a mano sigue mandando,
+tal cual. Comprobado así:
+- la composición de la URL, en 6 casos: por defecto, `verify-ca`, PEM, túnel, túnel sin huella y
+  cadena a mano;
+- `tsc` sin errores en el asistente.
+
+**Sin verla en el navegador:** el banco no arranca mientras otra sesión tiene el `next dev` del mismo
+directorio, y la consola real pide iniciar sesión.
+
 ## Lo que no se hace aquí
 
 - Otros motores: MySQL, SQL Server, Oracle, Snowflake. Irán en su propio ADR, que reutilizará D-PG1,
