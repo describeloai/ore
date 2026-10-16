@@ -391,3 +391,37 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **Lo que esto deja en la copia:** una `Table` de BigQuery con `Geography` llega hoy como WKT por el
     driver, y la copia la dejaría como texto con su aviso hasta G3·2 (`ST_ASBINARY`). PostGIS ya entrega
     hex EWKB, que la copia acepta.
+- **2026-10-16 · G2·0 medido: el paso de `binary` a `geometry`** (`pruebas-de-fuego/geo/g20/`,
+  laboratorio local). Los ficheros de datos los escribe Rust (`parquet` 58): uno con GEOMETRY nativo
+  y otro con el mismo WKB plano. Se leen con Iceberg Java 1.11 + Spark 4.1 y con DuckDB 1.5.6.
+
+  | | Spark 4.1 | DuckDB `iceberg` | Iceberg Java genérico |
+  |---|---|---|---|
+  | **A · hoy**: columna `binary`, fichero GEOMETRY nativo | lee | lee (BLOB; `ST_GeomFromWKB`) | **falla**: *Unsupported logical type: GEOMETRY* |
+  | A · columna `binary`, fichero plano | lee | lee (BLOB) | lee |
+  | paso por la API (`updateColumn`) | — | — | **rechazado**: *Cannot change column type: binary → geometry* |
+  | paso solo en metadatos, tabla **v2** | — | — | **rechazado**: *Invalid schema for v2* (`geometry` es de v3) |
+  | paso solo en metadatos, tabla **v3** | — | — | aceptado (mismo id de campo, esquema nuevo) |
+  | **C · tras el paso**, fichero nativo | **falla** la versión actual (*Cannot convert unsupported type to Spark: geometry*); **lee el snapshot de antes** | **lee como `GEOMETRY`** | falla (el tipo lógico) |
+  | C · tras el paso, fichero plano | falla la actual; lee el de antes | **falla** (*BLOB → GEOMETRY*) | lee (`ByteBuffer`) |
+
+  - **Decisión G2·0:**
+    1. **Las tablas geo nacen en v3**, con la columna `binary` y la propiedad `ore.geo.<col>`. Una
+       tabla v2 no puede pasar nunca a `geometry` sin reescribirse.
+    2. **Los ficheros, con el tipo lógico GEOMETRY** (G2·1, como se decidió). Es lo que deja a DuckDB,
+       nuestro motor, leer la columna como `GEOMETRY` en cuanto se dé el paso, sin reescribir un
+       byte. Con ficheros planos, el paso rompería a DuckDB.
+    3. **El paso se puede dar solo en metadatos, sin reescribir datos, y conserva legibles los
+       snapshots de antes.** Lo escribe ORE en sus metadatos, porque la API de Iceberg no lo admite
+       como promoción. Así queda confirmado, y acotado a v3, el «sin reescribir» que G1·1 había dejado
+       en duda.
+    4. **Pero no se da todavía.** Hoy rompería a Spark y al lector genérico de Java. Se da por tabla
+       cuando la matriz de adopción (G2·5) pase sobre una tabla ya promovida, y esa fila entra en la
+       matriz.
+  - **Lo que se acepta a cambio:** con ficheros GEOMETRY nativos, el lector genérico de Iceberg Java
+    1.11 no lee la tabla ni con la columna `binary`. Spark y DuckDB sí. Afecta a quien use la API
+    genérica de Java (Flink, herramientas propias). Entra en la matriz de G2·5 y en D: comprobarlo con
+    Iceberg 1.12 y, si sigue, informar upstream.
+  - **Otro detalle medido:** `parquet` 58 omite el CRS en el tipo lógico cuando es `OGC:CRS84` (el
+    de por defecto en Parquet). Está bien según la spec de Parquet, pero G2·1 lo escribe explícito
+    en la clave `geo` (T5).

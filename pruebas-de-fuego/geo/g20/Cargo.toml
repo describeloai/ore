@@ -1,0 +1,11 @@
+[package]
+name = "g20"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+arrow-array = "58"
+arrow-schema = "58"
+parquet = { version = "=58.4.0", features = ["geospatial"] }
+parquet-geospatial = "=58.4.0"
+geoarrow-array = "0.8"
+geoarrow-schema = "0.8"
