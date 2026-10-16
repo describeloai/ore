@@ -1,8 +1,8 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido** y **PG1 cerrado en producción**; **PG2, PG4, PG4c y PG5 hechos en el laboratorio** y **PG3 escrito**, sin desplegar (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0–PG5 y PG4c en producción** (2026-10-16); **cerrado por ahora**; Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
-PG7 (sabores y `check`) o el CDC; se empuja todo junto al final. Investigación:
+PG6, PG7 y el CDC, cuando se retome. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
 **Decide** cómo lee ORE el Postgres de un cliente cuando es una base gestionada, privada o con una CA
 propia, y cómo entra el CDC. Toca [`0008`](0008-el-protocolo-del-driver.md) (el contrato del driver),
@@ -405,6 +405,25 @@ directorio, y la consola real pide iniciar sesión.
 mínima en nuestro proyecto (con go, por el coste) y medir que el token de Workload Identity de un Job
 entra. No hace falta tocar la malla: los Jobs ya tienen la cuenta, y la salida al 443 para la API de
 IAM y al 5432 de Cloud SQL ya está abierta.
+
+### PG2–PG5 · En producción (2026-10-16)
+
+- **Desplegados** en `806f6f71` y `7ad56333`. La primera CI falló sólo en `fuentes-reales`: exigía que
+  un `interval` se negara, y desde PG2 llega como su texto. Se corrigió el test y la segunda CI quedó
+  verde, imagen incluida.
+- **La consola** (`rubix-platform` d54d27a y ba432f7) está empujada a `master`.
+- **Neon, con el binario nuevo** (`pg0-de-verdad.sh`, Job en `t-victor`):
+  - `verify-full` y `verify-ca` conectan; `disable` y `prefer` se niegan, diciendo qué hacer;
+  - catálogo: 49 tablas en 1,3 s, **las 49 con `rowsEstimate`** (en PG0, ninguna) y nunca `rows`;
+  - los tipos, como antes: las 2 columnas `Time` son `time` sin zona, así que no hay deriva;
+  - Arrow ×2, `servir` ×3 y 4 lectores a la vez: 20/20 por el pooler y directo.
+- **Queda por comprobar en la celda:**
+  - que Flux aplicó la malla: el rango 1024–65535 de PG3 y la clave en el Job de catálogo de PG4;
+  - un Postgres real en otro puerto o detrás de un bastión;
+  - una Cloud SQL real para PG5.
+
+**Postgres como origen queda cerrado por ahora** (2026-10-16). Siguen abiertos PG6 (IAM de AWS y Azure),
+PG7 (sabores y `check`) y el CDC.
 
 ## Lo que no se hace aquí
 
