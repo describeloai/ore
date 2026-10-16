@@ -245,3 +245,78 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
     verbo de **enriquecer**. Queda por investigar qué se ofrece de serie (OSM/Overture, límites, Catastro,
     INE, Copernicus) y cómo se licencia lo premium.
   - **P5**, explicada con ventajas e inconvenientes, pendiente de decisión.
+- **2026-10-16 · P5 decidida:** publicar como servidor estándar (OGC API Features/Tiles, STAC) es un
+  **objetivo a largo plazo**. El sustrato se diseña para que no lo impida, y se construye después del
+  mapa propio.
+- **2026-10-16 · Medidas T1–T4** (guiones y salidas en el *scratchpad* de la sesión; números de una
+  máquina local, para comparar opciones, no para dimensionar producción):
+
+  **T1 · Iceberg y la geometría.**
+  - **`iceberg` de Rust 0.10.1** (la última, 2026-08-01, la que usa ORE):
+    - **sabe de v3** (metadatos, *row lineage*, `UpgradeFormatVersion`; `ore-store` ya acepta
+      `format-version: 3`, `ciclo.rs:1835`);
+    - **pero no tiene los tipos `geometry`/`geography`**: `PrimitiveType` acaba en `Binary`
+      (`spec/datatypes.rs:210-250`). No hay *issue* ni PR visible en `apache/iceberg-rust`.
+  - **Consecuencia 1:** hoy ORE ni siquiera podría **abrir** una tabla v3 ajena con columna `geometry`
+    (Snowflake ya la tiene en GA desde 2026-05-07, y AWS S3 Tables también). Afecta a los orígenes
+    lakehouse (§2).
+  - **Consecuencia 2:** el escritor de `iceberg` deriva el esquema Arrow del de Iceberg
+    (`writer/file_writer/parquet_writer.rs:527`). Una geometría pasaría como `Binary` sin tipo ni
+    estadísticas.
+  - **Lo que sí está:** `parquet` 58.4 (el de ORE), con su *feature* `geospatial`, escribe y lee los
+    **tipos lógicos GEOMETRY/GEOGRAPHY** de Parquet y sus **estadísticas espaciales por grupo de
+    filas** (bbox), y los ve en Arrow como la extensión `geoarrow.wkb`
+    (`arrow/schema/extension.rs:68-80`, `column/writer/mod.rs:1227`). Además, el escritor de ORE ya pasa
+    `WriterProperties` (`lago.rs:937`), por donde pueden ir los metadatos GeoParquet.
+  - **Referencia:** [Snowflake v3 GA con geometry/geography](https://docs.snowflake.com/release-notes/2026/other/2026-05-07-iceberg-v3-ga),
+    [S3 Tables v3](https://dev.classmethod.jp/articles/20261012-amazon-s3-tables-iceberg-v3/),
+    [Iceberg geo (Wherobots)](https://wherobots.com/blog/iceberg-geo-technical-insights-and-implementation-strategies/).
+
+  **T2 · El motor de consulta: DuckDB 1.5.6** (el mismo en el puesto, `ore-motor`, Node y la JVM).
+  - **El tipo `GEOMETRY` ya está en el núcleo de DuckDB**, sin extensión.
+  - Las extensiones de la imagen están preinstaladas y cerradas (`iceberg`, `avro`, `httpfs`, `json`,
+    `icu`; `Dockerfile:433`, con `autoinstall_known_extensions=false`). **No están `spatial` ni `h3`.**
+  - **`spatial`:** 78 MB, **167 funciones ST_\***, y un **GDAL vectorial de 54 drivers** dentro
+    (OpenFileGDB, GPKG, Shapefile, KML, FlatGeobuf; **sin GTiff, GRIB ni netCDF**).
+  - **`h3`** (de la comunidad): 512 KB, 76 funciones.
+  - **5 M de puntos** (península): generar 2,4 s; ordenar por Hilbert 1,5 s; a Parquet 1,2 s (135 MB).
+    Una consulta por zona (Madrid, 0,5°) tarda 0,39 s con `ST_Intersects` y 0,11 s con el bbox (`&&`).
+    H3 res 8 de 5 M puntos: 0,52 s. GDAL lee y escribe GeoJSON, Shapefile, GPKG, FlatGeobuf y KML con
+    20 000 elementos en 0,04–0,44 s.
+  - **Lo que DuckDB escribe en Parquet:** metadatos **GeoParquet 1.0** (un bbox **por fichero** en la
+    clave `geo`), **no** el tipo lógico GEOMETRY nativo, y sin bbox por grupo de filas.
+
+  **T3 · GeoArrow en Rust, y lo que casa con lo nuestro.**
+  - Versiones: `geoarrow` 0.9 (2026-09-11) exige **Arrow 59**, igual que `geoparquet` 0.9 y
+    `geodatafusion` 0.6 (DataFusion 55). ORE está en **Arrow 58**, fijado por `iceberg` 0.10.1. Con
+    Arrow 58 casan **`geoarrow` 0.8** y `parquet-geospatial` 58.4. Para Arrow 59 hay que esperar a una
+    versión de `iceberg` que lo use.
+  - **Prueba en Rust** (Arrow 58 + `parquet` 58.4 geospatial): 2 M puntos en 0,87 s y 71 MB, con tipo
+    lógico `Geometry` y **bbox por grupo de filas**.
+  - **El mismo fichero, en DuckDB 1.5.6:** sin extensión lo lee como `GEOMETRY`, ve el bbox de cada
+    grupo (`parquet_metadata().geo_bbox`), y con `spatial` filtra por zona.
+  - **La interoperabilidad Rust (escritura) ↔ DuckDB (lectura) del Parquet geo nativo funciona hoy.**
+  - Otros: `geo` 0.33, `h3o` 0.11, `wkb` 0.9, `flatgeobuf` 6, `geozero` 0.15, `proj` 0.31, `gdal` 0.19.
+
+  **T4 · El coste de GDAL.**
+  - **Vectorial:** viene **gratis** con la extensión `spatial` de DuckDB (78 MB), con la File
+    Geodatabase de Esri incluida.
+  - **GDAL completo** (Debian bookworm, `gdal-bin`): **GDAL 3.6.2** (de 2023, viejo), **+263 MB**,
+    144 drivers ráster y 79 vectoriales: GTiff, COG, GRIB, netCDF, Zarr, JP2, HDF5, OpenFileGDB, GPKG,
+    Shapefile, LIBKML, FlatGeobuf. Para compilar los *bindings* de Rust hacen falta **+507 MB** más
+    (`libgdal-dev`).
+  - Un GDAL moderno (3.10+, con GeoParquet y Zarr v3) no viene en Debian estable: habría que traer la
+    imagen oficial de OSGeo o compilarlo.
+
+  **Lo que dicen T1–T4 juntos:**
+  1. **El dato vectorial puede ir ya como Parquet geo nativo** (tipo GEOMETRY y bbox por grupo),
+     escrito desde Rust y leído por nuestro DuckDB. Lo que falta es que **Iceberg lo sepa**: o
+     escribimos los ficheros de datos con nuestro escritor y los registramos en Iceberg como `binary`
+     (v2/v3) hasta que `iceberg-rust` traiga el tipo, o contribuimos el tipo a `iceberg-rust`.
+  2. **El cómputo ST_\* y H3 está a una extensión de distancia** (`spatial` + `h3`, unos 79 MB) en el
+     motor que ya tenemos, en todas sus versiones (Python, Node, JVM).
+  3. **GDAL vectorial ya lo tenemos dentro de `spatial`.** El ráster y lo multidimensional (COG, GRIB,
+     netCDF, Zarr) piden un GDAL completo y moderno, mejor como **servicio convertidor aparte** que
+     dentro de cada imagen.
+  4. **El cuello de botella de versiones es `iceberg-rust`**: fija Arrow 58 y no tiene tipos geo.
+     Merece seguimiento y, probablemente, contribución.
