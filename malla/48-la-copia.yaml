@@ -182,6 +182,9 @@ spec:
             - { name: GIT_CONFIG_VALUE_1, value: "*" }
             - { name: VISTAS, value: "olist.customers" }
             - { name: REHACER, value: "" }
+            # ⭐ 0063 S8: vacío es la copia de siempre; con la franja, la pasada
+            #   programada (sólo `VISTAS`, en `main`, como siempre).
+            - { name: PROGRAMADA, value: "" }
             # ⭐ 0044 C D4: vacío es `main`; con rama, se construye en ella.
             - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
@@ -250,7 +253,7 @@ spec:
                 # shellcheck disable=SC2086
                 ore materialize . --preparar /trabajo/calculo --rehacer $SOLO \
                   || echo "⚠️ alguna copia por consulta no se preparó: su informe lo dirá"
-              elif [ -n "$RAMA" ]; then
+              elif [ -n "$RAMA" ] || [ -n "$PROGRAMADA" ]; then
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
                 # shellcheck disable=SC2086
                 ore materialize . --preparar /trabajo/calculo $SOLO \
@@ -312,6 +315,13 @@ spec:
             #   al puntero, lee el origen entero SOLO para `VISTAS`, y sobrescribe
             #   el dataset (un snapshot nuevo). Dos peticiones son dos Jobs.
             - { name: REHACER, value: "" }
+            # ⭐ 0063 S8 · PROGRAMADA: vacío es la copia de siempre. Con la franja
+            #   dentro, es el refresco que cumple `freshness`: lo encola
+            #   `ore-serve --refrescar` para las copias que van a vencer, y la
+            #   pasada copia SÓLO `VISTAS`, en `main`, con lo de siempre —la señal
+            #   de cambio, «ya está», las promesas—. No es rehacer. Una franja,
+            #   un Job.
+            - { name: PROGRAMADA, value: "" }
             # ⭐ 0044 C D4: vacío es `main`; con rama, se construye en ella.
             - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
@@ -460,6 +470,12 @@ spec:
                 # shellcheck disable=SC2086
                 ore materialize . $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se construyó: su informe en datasets/ lo dice"
+              elif [ -n "$PROGRAMADA" ]; then
+                echo "### refresco programado ($PROGRAMADA): $VISTAS (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
+                SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+                # shellcheck disable=SC2086
+                ore materialize . $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
+                  || echo "⚠️ algún dataset no se refrescó: su informe en datasets/ lo dice"
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 ore materialize . --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
