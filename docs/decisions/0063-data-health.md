@@ -1542,7 +1542,7 @@ publicarlo, *Publish anyway* desde la consola tiene que comprobar que siguen ah�
 | S7e·2 | `ore datasets`: `ore.promesas` en `loadTable`; el commit juzga, retiene o avisa; `--publicar-igual`; `el-lago.sh` 8e | en código |
 | S7e·3 | ore-serve: el commit retenido es 422 tras publicar el árbol; *publish anyway* por cabecera; `POST …/publicar-retenida` | en código |
 | S7e·4 | SDK: `PromiseHeldError`, `publish_anyway`, `HealthWarning`; pasar `ore.promesas` a `escribir` | Python en código; Java y Node después |
-| S7e·5 | C18 en un puesto | — |
+| S7e·5 | C18 en un puesto | **medido** (2026-10-16) |
 
 **S7e·1–2 no se empujan solos**: sin S7e·3, ore-serve contestaría 200 a un commit retenido y el
 `write()` creería que publicó. Van con S7e·3.
@@ -1566,6 +1566,29 @@ hay nada retenido o si lo retenido ya no está en el lago. `el-lago.sh` 13e lo r
 `x-ore-publicar-igual`; y lo que una `warning` vio llega como `HealthWarning` y en `warnings` del
 resultado. Para eso el commit publicado devuelve `ore.avisos` junto al `LoadTableResult`, sólo si
 hay alguno (un cliente de Iceberg lo ignora). Java y Node, con su paso propio.
+
+**C18, medido** (2026-10-16, en una sesión de `victor`, con `2dd890e3` en el clúster y en la
+imagen del puesto), sobre `sandbox.vara_derivado` con `id_unique` (`duplicateValues(id) = 0`,
+`error`) fusionada en `main`. Un `write()` con un `id` repetido (1000 filas) lanzó
+`PromiseHeldError` («promise `id_unique`: measured 1, expected = 0: held, still serving the
+published version…»; `e.promise, e.measured, e.expected` = `id_unique 1 = 0`). El puntero
+(`d3bb71b`) siguió en la versión `00001` de 999 filas con `estado: error`, intento `retenida`,
+guarda `id_unique` y la versión retenida de 1000 filas. `publish_anyway=True` la publicó
+(`6dca4a3`, 1000 filas, `id_unique` en `fail` en la historia), y el `write()` de vuelta la dejó
+sana (`442e598`, 999, `pass`). `GET /promesas/historia` cuenta las tres. C18 no entra en
+`vara.py`: escribe un dataset que es de una persona, y la vara corre como agente.
+
+### S7 · cerrado (2026-10-16)
+
+Las promesas se escriben en el documento del activo (v1alpha31), se miden en la misma pasada que
+copia, refresca una colección o escribe, y las juzga el mismo juez antes de publicar: C13–C18 en
+verde en `victor`. **Queda como deuda, escrita y no construida:** Java (`Ore.java`) y Node
+(`index.mjs`) —un `write()` retenido ya falla con el motivo, como error genérico, y lo de cada
+columna queda `unknown`—; las colecciones escritas desde código (`Collection.apply`, las
+transacciones de media), que no se juzgan; el modal de *Publish anyway* en la consola (la ruta
+`publicar-retenida` está desplegada); los checks de las propuestas (provisionales); `ore diff` de
+promesas; y en la consola, la numeración de los `id` sugeridos, la unidad por defecto y el aviso en
+las colecciones foráneas.
 
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
