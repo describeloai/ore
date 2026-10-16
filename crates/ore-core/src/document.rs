@@ -208,12 +208,6 @@ pub enum ApiVersion {
     /// (`promesas.rs`). La puerta es del documento. Lo pidió ORE 0063 S7
     /// (2026-10-14).
     V1Alpha31,
-    /// v1alpha32. **Los tipos geo.** `Geometry<subtipo, crs>` y
-    /// `Geography<subtipo>` como tipos de columna y de propiedad: WKB en orden
-    /// x/y, el CRS fiel al origen, y en Parquet el tipo lógico y la clave
-    /// GeoParquet a la vez (`01-la-geometria`). Lo pidió ORE 0067 G1
-    /// (2026-10-16).
-    V1Alpha32,
 }
 
 impl ApiVersion {
@@ -247,7 +241,6 @@ impl ApiVersion {
         ApiVersion::V1Alpha29,
         ApiVersion::V1Alpha30,
         ApiVersion::V1Alpha31,
-        ApiVersion::V1Alpha32,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -281,7 +274,6 @@ impl ApiVersion {
             ApiVersion::V1Alpha29 => "oos.dev/v1alpha29",
             ApiVersion::V1Alpha30 => "oos.dev/v1alpha30",
             ApiVersion::V1Alpha31 => "oos.dev/v1alpha31",
-            ApiVersion::V1Alpha32 => "oos.dev/v1alpha32",
         }
     }
 

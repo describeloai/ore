@@ -225,18 +225,6 @@ pub enum Type {
     /// referencia se guarda tal como se escribió y la resuelve el enlazado
     /// (`OOS2018`), como `backedBy`.
     Media(String),
-    /// v1alpha32. `Geometry<Polygon, EPSG:25830>`: geometría **plana** con su
-    /// subtipo (`Any`, `Point`, …, con `Z`/`M`/`ZM`) y su CRS, fiel al origen
-    /// (`01-la-geometria` §1). Por defecto `Any` y `OGC:CRS84`.
-    Geometry {
-        subtipo: String,
-        crs: String,
-    },
-    /// v1alpha32. `Geography<LineString>`: sobre el elipsoide, aristas
-    /// geodésicas, CRS siempre `OGC:CRS84` (`01-la-geometria` §2).
-    Geography {
-        subtipo: String,
-    },
 }
 
 impl Type {
@@ -279,17 +267,6 @@ impl std::fmt::Display for Type {
             }
             Type::Vector(n) => write!(f, "Vector<{n}>"),
             Type::Anchor => f.write_str("Anchor"),
-            // v1alpha32 · la forma canónica omite lo que vale por defecto: el
-            // subtipo `Any` y el CRS `OGC:CRS84` (`01-la-geometria` §1).
-            Type::Geometry { subtipo, crs } => match (subtipo.as_str(), crs.as_str()) {
-                (GEO_SUBTIPO_DEFECTO, CRS_DEFECTO) => f.write_str("Geometry"),
-                (s, CRS_DEFECTO) => write!(f, "Geometry<{s}>"),
-                (s, c) => write!(f, "Geometry<{s}, {c}>"),
-            },
-            Type::Geography { subtipo } if subtipo == GEO_SUBTIPO_DEFECTO => {
-                f.write_str("Geography")
-            }
-            Type::Geography { subtipo } => write!(f, "Geography<{subtipo}>"),
             Type::Decimal { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
             Type::Parametric {
                 ctor,
@@ -387,8 +364,6 @@ pub enum TypeError {
     DecimalFueraDeRango(String),
     /// v1alpha17. Un tipo compuesto mal formado (OOS3007), con el porqué.
     Compuesto(String),
-    /// v1alpha32. Un tipo geo mal formado (OOS3008), con el porqué.
-    Geo(String),
 }
 
 /// v1alpha17. La dimensión máxima de un `Vector<n>`: la de pgvector, que es la
@@ -407,120 +382,6 @@ impl Type {
             _ => false,
         }
     }
-
-    /// v1alpha32. **Si el tipo es de v1alpha32**: lleva, a cualquier
-    /// profundidad, una `Geometry` o una `Geography`. En un documento de antes
-    /// es un tipo que no existía (`OOS3001`).
-    pub fn es_de_v1alpha32(&self) -> bool {
-        match self {
-            Type::Geometry { .. } | Type::Geography { .. } => true,
-            Type::List(t) => t.es_de_v1alpha32(),
-            Type::Struct(campos) => campos.iter().any(|(_, t)| t.es_de_v1alpha32()),
-            _ => false,
-        }
-    }
-
-    /// v1alpha32. ¿Es una geometría (plana o sobre el elipsoide)?
-    pub fn es_geo(&self) -> bool {
-        matches!(self, Type::Geometry { .. } | Type::Geography { .. })
-    }
-}
-
-/// v1alpha32. Los subtipos de `Geometry` y `Geography` (`01-la-geometria` §1).
-pub const GEO_SUBTIPOS: &[&str] = &[
-    "Any",
-    "Point",
-    "LineString",
-    "Polygon",
-    "MultiPoint",
-    "MultiLineString",
-    "MultiPolygon",
-    "GeometryCollection",
-];
-
-/// v1alpha32. El subtipo y el CRS por defecto: cualquier geometría, en WGS 84
-/// con los ejes longitud/latitud (el de GeoJSON, GeoParquet e Iceberg).
-pub const GEO_SUBTIPO_DEFECTO: &str = "Any";
-pub const CRS_DEFECTO: &str = "OGC:CRS84";
-
-/// v1alpha32. Un subtipo con su dimensión, canónico (`Point Z`), o el porqué.
-fn geo_subtipo(s: &str) -> Result<String, TypeError> {
-    let mut partes = s.split_whitespace();
-    let base = partes.next().unwrap_or("");
-    let dim = partes.next();
-    if partes.next().is_some() {
-        return Err(TypeError::Geo(format!(
-            "`{s}`: un subtipo es un nombre y, si acaso, `Z`, `M` o `ZM`"
-        )));
-    }
-    if !GEO_SUBTIPOS.contains(&base) {
-        return Err(TypeError::Geo(format!(
-            "`{base}` no es un subtipo de geometría: {}",
-            GEO_SUBTIPOS.join(" · ")
-        )));
-    }
-    match dim {
-        None => Ok(base.to_string()),
-        Some(d @ ("Z" | "M" | "ZM")) => Ok(format!("{base} {d}")),
-        Some(d) => Err(TypeError::Geo(format!(
-            "`{d}` no es una dimensión: `Z`, `M` o `ZM`, como en WKT"
-        ))),
-    }
-}
-
-/// v1alpha32. Un CRS como código de autoridad, `AUTORIDAD:CÓDIGO`.
-fn geo_crs(s: &str) -> Result<String, TypeError> {
-    let valido = s.split_once(':').is_some_and(|(a, c)| {
-        !a.is_empty()
-            && !c.is_empty()
-            && a.chars()
-                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
-            && c.chars().all(|ch| ch.is_ascii_alphanumeric())
-    });
-    if valido {
-        Ok(s.to_string())
-    } else {
-        Err(TypeError::Geo(format!(
-            "`{s}` no es un CRS: se escribe `AUTORIDAD:CÓDIGO` (`EPSG:25830`, `OGC:CRS84`)"
-        )))
-    }
-}
-
-/// v1alpha32. Lo que sigue a `Geometry` o a `Geography` (§1, §2, §5).
-fn geo(ctor: &str, resto: &str) -> Result<Type, TypeError> {
-    let args = if resto.is_empty() {
-        Vec::new()
-    } else {
-        let Some(dentro) = resto.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
-            return Err(TypeError::Geo(format!(
-                "`{ctor}{resto}` no se cierra: `{ctor}<subtipo, crs>`"
-            )));
-        };
-        partir_por_comas(dentro)
-    };
-    if args.len() > 2 {
-        return Err(TypeError::Geo(format!(
-            "`{ctor}` lleva como mucho subtipo y CRS, y aquí hay {}",
-            args.len()
-        )));
-    }
-    let subtipo = match args.first() {
-        Some(s) => geo_subtipo(s)?,
-        None => GEO_SUBTIPO_DEFECTO.to_string(),
-    };
-    if ctor == "Geography" {
-        if let Some(c) = args.get(1) {
-            return Err(TypeError::Geo(format!(
-                "una `Geography` está siempre en `OGC:CRS84` y no lleva CRS (`{c}`): para otro CRS, `Geometry<{subtipo}, {c}>`"
-            )));
-        }
-        return Ok(Type::Geography { subtipo });
-    }
-    let crs = match args.get(1) {
-        Some(c) => geo_crs(c)?,
-        None => CRS_DEFECTO.to_string(),
-    };
-    Ok(Type::Geometry { subtipo, crs })
 }
 
 /// Parte `a, b<c, d>, e` por las comas de primer nivel.
@@ -622,12 +483,7 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
             return Ok(Type::List(Box::new(Type::Scalar(inner.to_string()))));
         }
         return match dentro(inner, "en una lista")? {
-            // v1alpha32: una lista de geometrías (las posiciones de una
-            // trayectoria, `01-la-geometria` §5).
-            t @ (Type::Struct(_)
-            | Type::Anchor
-            | Type::Geometry { .. }
-            | Type::Geography { .. }) => Ok(Type::List(Box::new(t))),
+            t @ (Type::Struct(_) | Type::Anchor) => Ok(Type::List(Box::new(t))),
             _ => Err(TypeError::Desconocido),
         };
     }
@@ -647,14 +503,6 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
     }
     if s == "Anchor" {
         return Ok(Type::Anchor);
-    }
-    // v1alpha32: los tipos geo (`01-la-geometria`).
-    for ctor in ["Geometry", "Geography"] {
-        if let Some(resto) = s.strip_prefix(ctor)
-            && (resto.is_empty() || resto.starts_with('<'))
-        {
-            return geo(ctor, resto.trim());
-        }
     }
 
     if let Some(resto) = s.strip_prefix("Decimal<") {
@@ -873,29 +721,7 @@ fn tipo_suelto(e: &Loaded, t: &Node, out: &mut Vec<Diagnostic>) {
                     ),
                 )
             }
-            // v1alpha32: los tipos geo, igual.
-            Ok(ty)
-                if ty.es_de_v1alpha32()
-                    && e.version()
-                        .is_some_and(|v| v < crate::document::ApiVersion::V1Alpha32) =>
-            {
-                out.push(
-                    Diagnostic::new(
-                        Code::Oos3001,
-                        &e.path,
-                        format!("`{s}` es un tipo de v1alpha32"),
-                    )
-                    .at(t.pos())
-                    .help(
-                        "`Geometry<…>` y `Geography<…>` llegan con v1alpha32: declara \
-                         `apiVersion: oos.dev/v1alpha32` en el documento",
-                    ),
-                )
-            }
             Ok(_) => {}
-            Err(TypeError::Geo(porque)) => out.push(
-                Diagnostic::new(Code::Oos3008, &e.path, format!("`{s}` · {porque}")).at(t.pos()),
-            ),
             Err(TypeError::Compuesto(porque)) => out.push(
                 Diagnostic::new(Code::Oos3007, &e.path, format!("`{s}` · {porque}")).at(t.pos()),
             ),
@@ -1214,38 +1040,6 @@ mod tests {
         );
     }
 
-    /// v1alpha32 (`01-la-geometria` §5): un tipo geo mal formado es `Geo`
-    /// (OOS3008), con el porqué; uno bien formado es de v1alpha32.
-    #[test]
-    fn un_tipo_geo_mal_formado_dice_por_que() {
-        for (t, dice) in [
-            ("Geometry<Circle>", "no es un subtipo"),
-            ("Geometry<Point W>", "no es una dimensión"),
-            ("Geometry<Polygon, 25830>", "AUTORIDAD:CÓDIGO"),
-            ("Geometry<Point, EPSG:4326, EPSG:3857>", "como mucho"),
-            ("Geography<Point, EPSG:4326>", "siempre en `OGC:CRS84`"),
-            ("Geometry<Point", "no se cierra"),
-        ] {
-            match parse_type(t) {
-                Err(TypeError::Geo(porque)) => assert!(porque.contains(dice), "{t}: {porque}"),
-                otro => panic!("{t}: {otro:?}"),
-            }
-        }
-        assert!(parse_type("Geometry<Point>").unwrap().es_de_v1alpha32());
-        assert!(
-            parse_type("list<Geography<LineString>>")
-                .unwrap()
-                .es_de_v1alpha32()
-        );
-        assert!(parse_type("Struct<a: Geometry>").unwrap().es_de_v1alpha32());
-        assert!(!parse_type("Struct<a: String>").unwrap().es_de_v1alpha32());
-        // Un nombre que empieza igual no es una geometría.
-        assert!(matches!(
-            parse_type("GeometryX"),
-            Err(TypeError::Desconocido)
-        ));
-    }
-
     /// **`parse_type(t.to_string()) == t`**, sobre el conjunto cerrado entero y
     /// las tres formas compuestas.
     ///
@@ -1269,21 +1063,6 @@ mod tests {
         casos.push("Vector<768>".into());
         casos.push("Anchor".into());
         casos.push("list<Anchor>".into());
-        // v1alpha32: los tipos geo, en su forma canónica.
-        for g in [
-            "Geometry",
-            "Geometry<Point>",
-            "Geometry<Polygon, EPSG:25830>",
-            "Geometry<Any, EPSG:3857>",
-            "Geometry<Point Z, EPSG:4979>",
-            "Geometry<MultiLineString ZM>",
-            "Geography",
-            "Geography<LineString>",
-            "list<Geometry<Point>>",
-            "Struct<lugar: Geometry<Point>, cuando: DateTime>",
-        ] {
-            casos.push(g.into());
-        }
         for c in casos {
             let t = parse_type(&c).unwrap_or_else(|_| panic!("`{c}` tenia que analizar"));
             assert_eq!(t.to_string(), c, "la vuelta no coincide");
@@ -1295,16 +1074,6 @@ mod tests {
             parse_type("Quantity<km,1>").unwrap().to_string(),
             "Quantity<km, 1>"
         );
-        // v1alpha32: lo que vale por defecto no se escribe.
-        for (laxa, canonica) in [
-            ("Geometry<Any, OGC:CRS84>", "Geometry"),
-            ("Geometry<Point,OGC:CRS84>", "Geometry<Point>"),
-            ("Geometry< Point >", "Geometry<Point>"),
-            ("Geography<Any>", "Geography"),
-            ("Geometry<Point  Z>", "Geometry<Point Z>"),
-        ] {
-            assert_eq!(parse_type(laxa).unwrap().to_string(), canonica, "{laxa}");
-        }
     }
 
     /// v1alpha17 · la forma laxa de un struct converge en la canónica, y el

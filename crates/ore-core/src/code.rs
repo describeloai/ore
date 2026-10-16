@@ -290,10 +290,6 @@ codes! {
     // puesto (un `Struct` vacio, un `Vector` sin dimension, una referencia
     // dentro de un struct).
     Oos3007 = "OOS3007", Type, "tipo compuesto mal formado";
-    // v1alpha32 · un tipo geo mal formado: un subtipo que no existe, una
-    // dimension que no es Z/M/ZM, un CRS sin autoridad, mas de dos argumentos
-    // o un CRS en `Geography` (`01-la-geometria` §5).
-    Oos3008 = "OOS3008", Type, "tipo geo mal formado";
 
     // ── OOS4xxx · gobernanza y flujo ────────────────────────────────────────
     Oos4001 = "OOS4001", Flow, "violación de la regla de flujo por propagación";
@@ -552,8 +548,6 @@ mod tests {
             // v1alpha17: anclar.
             Code::Oos2041,
             Code::Oos3007,
-            // v1alpha32 · el tipo geo mal formado.
-            Code::Oos3008,
             // v1alpha18: promover.
             Code::Oos2042,
             Code::Oos2043,

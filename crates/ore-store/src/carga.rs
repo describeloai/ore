@@ -98,11 +98,6 @@ pub fn arrow_de_forma(f: &Forma) -> DataType {
         ),
         Forma::Lista(f) => DataType::List(Arc::new(Field::new(ELEMENTO, arrow_de_forma(f), true))),
         Forma::Vector(_) => DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true))),
-        // v1alpha32: WKB. La extensión `geoarrow.wkb` y su CRS van en los
-        // metadatos del campo (`Forma::geoarrow_metadatos`), y el tipo lógico
-        // de Parquet y la clave GeoParquet los pone el escritor del lago
-        // (ORE 0067 G2).
-        Forma::Geo { .. } => DataType::Binary,
     }
 }
 
