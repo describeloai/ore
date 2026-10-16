@@ -337,7 +337,7 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
     - **sabe de v3** (metadatos, *row lineage*, `UpgradeFormatVersion`; `ore-store` ya acepta
       `format-version: 3`, `ciclo.rs:1835`);
     - **pero no tiene los tipos `geometry`/`geography`**: `PrimitiveType` acaba en `Binary`
-      (`spec/datatypes.rs:210-250`). No hay *issue* ni PR visible en `apache/iceberg-rust`.
+      (`spec/datatypes.rs:210-250`). *(Corregido el 2026-10-16: sí hay PR, ver la bitácora de [`0067`](0067-geo-formats.md).)*
   - **Consecuencia 1:** hoy ORE ni siquiera podría **abrir** una tabla v3 ajena con columna `geometry`
     (Snowflake ya la tiene en GA desde 2026-05-07, y AWS S3 Tables también). Afecta a los orígenes
     lakehouse (§2).

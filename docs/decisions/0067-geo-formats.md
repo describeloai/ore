@@ -109,3 +109,29 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
 - **2026-10-16 ·** Abierto, separado de 0066 cuando éste pasó a ser el bastión. El plan G0–G3 sale de
   allí, acotado al formato: la vara mide sólo lo del formato, se añade la matriz de adopción (G2·5), y
   las direcciones sólo se marcan (geocodificar es transversal).
+- **2026-10-16 · El código de G0·1–G1·3 se rebobina:** se hizo sin un enfoque ni una hoja de ruta
+  diseñados. Primero el diseño de G0–G3, después el código. El banco (G0·1) queda en el bucket, salvo
+  Overture, que no se llegó a subir y sólo existe en local.
+- **2026-10-16 · Iceberg sin tipo geo: B + D (decidido).**
+  - **Por qué Snowflake y S3 Tables sí lo tienen:** la v3 de la especificación ya define `geometry` y
+    `geography`. Snowflake tiene su propia implementación, y S3 Tables se apoya en la de Java, que es
+    la de referencia. ORE usa `iceberg-rust`, que va por detrás en v3.
+  - **Estado de `iceberg-rust`** (corrige T1): la última versión sigue siendo la 0.10.1, pero el tipo
+    está en revisión en una serie de tres PR de wirybeaver:
+    [2933](https://github.com/apache/iceberg-rust/pull/2933) (tipos y CRS, lista para revisión),
+    [3341](https://github.com/apache/iceberg-rust/pull/3341) (lectura, borrador) y
+    [3342](https://github.com/apache/iceberg-rust/pull/3342) (escritura con el tipo lógico Parquet,
+    borrador).
+    - Aún no escriben los límites espaciales en el manifiesto, ni la clave GeoParquet `geo`.
+    - `main` ya está en Arrow 59.2: la próxima versión lleva a ORE de Arrow 58 a 59.
+  - **B · escritor propio, como puente:** ORE escribe el Parquet definitivo (GEOMETRY nativo con CRS,
+    `geoarrow.wkb` y la clave `geo`) y lo registra en Iceberg con la columna `binary` y propiedades
+    `ore.geo.<col>`. Lo provisional es sólo el tipo de la columna en Iceberg.
+  - **D · contribuir:** probar la serie de PR contra el banco y aportar lo que falte (los límites
+    espaciales del manifiesto).
+  - **Aparte:** preparar el salto a Arrow 59 sin que coincida con G2.
+  - **Riesgo, se mide antes de comprometerse:** `binary` → `geometry` no es una promoción válida en
+    Iceberg. Hay que medir si reescribir sólo los metadatos mantiene legibles los snapshots viejos y
+    DuckDB y Spark lo aceptan. Si no, las tablas geo nacen en v3 cuando llegue el tipo, y las
+    existentes se migran con una reescritura medida. Se corrige así el «sin reescribir datos» de la
+    decisión 2.
