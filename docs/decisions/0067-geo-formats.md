@@ -323,3 +323,27 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     - **conformidad: `borrador_de_v1alpha32` 14/14**, el resto de la suite 31/31.
   - **Lo que no hace todavía:** la copia por texto sigue dejando una geometría como `string`. Llevarla
     por `geo::valor_de_texto` y `campo` es G1·3.
+- **2026-10-16 · G1·3 hecho: la copia hasta el lote.**
+  - **`carga::lote`**: una columna cuyo tipo es una geometría va por `columna_geo`. Cada valor pasa por
+    `geo::valor_de_texto` (hex → WKB validado contra subtipo, dimensiones, SRID y rango → WKB ISO) y
+    la columna sale como `Binary` con su `campo` marcado (`geoarrow.wkb` y el CRS).
+  - **La regla de lo que no analiza**, la de siempre: un valor que no es una geometría de la columna
+    (un WKT, un polígono en una columna de puntos) deja la columna entera como texto, y
+    `sin_estrechar` dice cuántos, el primero y por qué.
+  - **`carga::leer`** (lo que se lee del lago para fundir) devuelve una columna binaria como su hex
+    ISO, así que fundir y volver a sellar da los mismos bytes.
+  - **Hallazgo de la prueba de punta a punta:** lo que se escribe `Binary` vuelve de la tabla Iceberg
+    como `LargeBinary` (así traduce `iceberg` su `binary`). Sin aceptarlo, fundir sobre una copia con
+    geometría habría fallado en producción.
+  - **Pruebas** (`ore-store` 64/64):
+    - `la_copia_lleva_la_geometria_al_lote`: el EWKB de PostGIS, una nula, Parquet de ida y vuelta, y
+      un WKT y un polígono que dejan la columna como texto;
+    - `una_copia_con_geometria_llega_al_lago`: `sellar` en el lago en memoria da una tabla Iceberg
+      con `geom: binary` y WKB ISO; fundir sobre ella conserva la de antes y añade una `POINT EMPTY`.
+  - **V1 en verde, en local** con el `ore` de la rama (`vara-v1-local.sh`). Sobre el catálogo real
+    de `banco_geo_pg`, la `Table` de municipios con `geom: Geometry<MultiPolygon, EPSG:25830>` en
+    v1alpha32 da `ok · sin errores`; en v1alpha31, `OOS3001 … es un tipo de v1alpha32`. En victor se
+    verá con la vara cuando se despliegue (al empujar). El V1 de `vara-celda.sh` ahora sube el
+    documento a v1alpha32.
+  - **Hasta G2·1** el escritor de `iceberg` pierde la marca `geoarrow.wkb` en el fichero (T1): los
+    bytes ya son los definitivos, y las dos marcas de Parquet las pone G2·1.

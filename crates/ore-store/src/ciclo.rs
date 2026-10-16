@@ -2577,6 +2577,60 @@ mod tests {
         lago.filas(&lago.abrir(ml, "copias/p_v").unwrap()).unwrap()
     }
 
+    /// v1alpha32 (ORE 0067 G1·3) · **Una copia con geometría, de punta a
+    /// punta**: el texto de PostGIS (EWKB en hexadecimal) se sella en una tabla
+    /// Iceberg como `binary` con WKB ISO, fundir sobre ella la lee y la vuelve a
+    /// escribir igual, y la respuesta no dice `sin_estrechar`.
+    #[test]
+    fn una_copia_con_geometria_llega_al_lago() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let mut cab = cabecera("1");
+        cab.esquema = [
+            ("id".to_string(), "Integer".to_string()),
+            ("geom".to_string(), "Geometry<Point>".to_string()),
+        ]
+        .into();
+        let pg = "0101000020E6100000406A1327F7BB0DC053E8BCC62E454440";
+        let iso = "0101000000406A1327F7BB0DC053E8BCC62E454440";
+        let s1 = sellar_con(
+            &lago,
+            &cab,
+            "copias/p_v",
+            None,
+            false,
+            [format!("{{\"id\":\"1\",\"geom\":\"{pg}\"}}"), "{\"id\":\"2\"}".to_string()].iter().map(String::as_str),
+            crate::medir::Medidor::de(&ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap()),
+        )
+        .expect("sella");
+        assert!(s1.contains(r#""sin_estrechar":{}"#), "{s1}");
+        let ml1 = campo(&s1, "metadata_location");
+        let t = lago.abrir(&ml1, "copias/p_v").unwrap();
+        let tipo = t.metadata().current_schema().field_by_name("geom").unwrap().field_type.to_string();
+        assert_eq!(tipo, "binary");
+        let filas = filas_de(&lago, &ml1);
+        assert_eq!(filas[0]["geom"], iso);
+        assert!(!filas[1].contains_key("geom"));
+        // Fundir lee la geometría del lago (como su hexadecimal) y la vuelve a sellar.
+        let s2 = sellar_con(
+            &lago,
+            &{
+                let mut c = cabecera("2");
+                c.esquema = cab.esquema.clone();
+                c
+            },
+            "copias/p_v",
+            Some(&ml1),
+            true,
+            ["{\"id\":\"3\",\"geom\":\"0101000000000000000000F87F000000000000F87F\"}"].into_iter(),
+            crate::medir::Medidor::de(&ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap()),
+        )
+        .expect("funde");
+        assert_eq!(campo(&s2, "filas"), "3");
+        let filas = filas_de(&lago, &campo(&s2, "metadata_location"));
+        assert_eq!(filas[0]["geom"], iso);
+        assert_eq!(filas[2]["geom"], "0101000000000000000000F87F000000000000F87F");
+    }
+
     /// 0063 S7c: lo que las promesas piden se cuenta sobre la versión ENTERA
     /// —al fundir, lo de antes con lo nuevo—, y sin nada pedido la respuesta
     /// no cambia.

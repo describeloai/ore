@@ -472,6 +472,27 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
     let mut sin_estrechar = BTreeMap::new();
 
     for (nombre, tipo) in esquema {
+        // v1alpha32 (ORE 0067 G1·3): una geometría no es un escalar. Su texto
+        // es el WKB en hexadecimal, que se lee, se valida contra el tipo y se
+        // guarda como `Binary` con la marca `geoarrow.wkb`. La regla de lo que
+        // no analiza es la misma: un valor que no es una geometría de la
+        // columna deja la columna entera como texto, y el informe lo dice.
+        if let Ok(t) = ore_core::types::parse_type(tipo)
+            && let forma @ Forma::Geo { .. } = Forma::de(&t)
+        {
+            match columna_geo(nombre, tipo, &forma, filas) {
+                Ok(col) => {
+                    campos.push(campo(nombre, &forma));
+                    columnas.push(col);
+                }
+                Err(porque) => {
+                    sin_estrechar.insert(nombre.clone(), porque);
+                    campos.push(Field::new(nombre, arrow_de(&Fisico::Texto), true));
+                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new()));
+                }
+            }
+            continue;
+        }
         let pedido = fisico_de(tipo);
         // Primero se analiza todo; solo si TODO analiza se estrecha. Un valor
         // que no cabe no tira la copia ni se vuelve nulo: la columna se queda
@@ -493,6 +514,47 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
         lote,
         sin_estrechar,
     })
+}
+
+/// v1alpha32 (ORE 0067 G1·3) · **Una columna geo desde el texto**: cada valor,
+/// por [`ore_core::geo::valor_de_texto`] (hexadecimal → WKB validado contra
+/// subtipo, dimensiones, SRID y rango → WKB ISO). `Err` dice cuántos no son
+/// del tipo, enseña el primero y por qué, como [`analizar_columna`].
+fn columna_geo(nombre: &str, tipo: &str, forma: &Forma, filas: &[Fila]) -> Result<ArrayRef, String> {
+    let Forma::Geo {
+        subtipo,
+        crs,
+        esferica,
+    } = forma
+    else {
+        unreachable!("solo se llama con una geometría")
+    };
+    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut malos = 0usize;
+    let mut primero: Option<(&str, String)> = None;
+    for f in filas {
+        match f.get(nombre) {
+            None => b.append_null(),
+            Some(t) => match ore_core::geo::valor_de_texto(t, subtipo, crs, *esferica) {
+                Ok(wkb) => b.append_value(wkb),
+                Err(porque) => {
+                    malos += 1;
+                    b.append_null();
+                    primero.get_or_insert((t, porque));
+                }
+            },
+        }
+    }
+    match primero {
+        None => Ok(Arc::new(b.finish()) as ArrayRef),
+        Some((p, porque)) => {
+            let muestra: String = p.chars().take(40).collect();
+            Err(format!(
+                "{malos} de {} valores no son `{tipo}`: el primero es `{muestra}` ({porque}); la                  columna se queda como texto",
+                filas.len()
+            ))
+        }
+    }
 }
 
 /// Analiza una columna entera con su físico. `Err` dice cuántos valores no son
@@ -606,10 +668,25 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
     for lote in lector {
         let lote = lote.map_err(|e| format!("un lote de la carga no se lee: {e}"))?;
         let esquema = lote.schema();
+        // v1alpha32 (ORE 0067 G1·3): una columna binaria es una geometría
+        // (la única que esta carga escribe así), y vuelve como su WKB en
+        // hexadecimal: el texto que se analizó al sellar, así que fundir y
+        // volver a sellar da los mismos bytes. Se escribe `Binary` y la tabla
+        // Iceberg la devuelve `LargeBinary` (así traduce `iceberg` su
+        // `binary`): las dos son lo mismo aquí.
+        let es_binaria = |d: &DataType| matches!(d, DataType::Binary | DataType::LargeBinary);
+        let binaria: Vec<bool> = esquema
+            .fields()
+            .iter()
+            .map(|c| es_binaria(c.data_type()))
+            .collect();
         let fisicos: Vec<Fisico> = esquema
             .fields()
             .iter()
             .map(|c| {
+                if es_binaria(c.data_type()) {
+                    return Ok(Fisico::Texto);
+                }
                 fisico_del_arrow(c.data_type()).ok_or_else(|| {
                     format!(
                         "la columna `{}` es `{}` y esta carga no lo escribe",
@@ -629,7 +706,17 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
                 if col.is_null(i) {
                     continue;
                 }
-                let v = texto_en(col, &fisicos[c], i);
+                let v = if binaria[c] {
+                    use arrow_array::cast::AsArray;
+                    col.as_binary_opt::<i32>()
+                        .map(|a| ore_core::geo::a_hex(a.value(i)))
+                        .or_else(|| {
+                            col.as_binary_opt::<i64>()
+                                .map(|a| ore_core::geo::a_hex(a.value(i)))
+                        })
+                } else {
+                    texto_en(col, &fisicos[c], i)
+                };
                 if let Some(v) = v {
                     f.insert(campo.name().clone(), v);
                 }
@@ -1127,6 +1214,56 @@ pub fn fundir(anteriores: Vec<Fila>, delta: Vec<Fila>, clave: &[String]) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    /// v1alpha32 (ORE 0067 G1·3) · **La copia de una columna geo**: el texto del
+    /// driver (el EWKB de PostGIS, en hexadecimal) sale del lote como `Binary`
+    /// marcado con WKB ISO; el Parquet vuelve por `leer` como el hexadecimal
+    /// ISO, y volver a sellarlo da los mismos bytes. Un valor que no es del
+    /// tipo deja la columna como texto y lo dice.
+    #[test]
+    fn la_copia_lleva_la_geometria_al_lote() {
+        use arrow_array::{Array, BinaryArray};
+        let pg = "0101000020E6100000406A1327F7BB0DC053E8BCC62E454440";
+        let iso = "0101000000406A1327F7BB0DC053E8BCC62E454440";
+        let esquema = BTreeMap::from([
+            ("geom".to_string(), "Geometry<Point>".to_string()),
+            ("id".to_string(), "Integer".to_string()),
+        ]);
+        let filas: Vec<Fila> = vec![
+            BTreeMap::from([("id".into(), "1".into()), ("geom".into(), pg.into())]),
+            BTreeMap::from([("id".into(), "2".into())]),
+        ];
+        let Lote { lote: l, sin_estrechar } = lote(&esquema, &filas).unwrap();
+        assert!(sin_estrechar.is_empty(), "{sin_estrechar:?}");
+        let campo_geom = l.schema().field_with_name("geom").unwrap().clone();
+        assert_eq!(campo_geom.data_type(), &DataType::Binary);
+        assert_eq!(campo_geom.metadata()["ARROW:extension:name"], GEOARROW_WKB);
+        assert_eq!(campo_geom.metadata()["ARROW:extension:metadata"], r#"{"crs":"OGC:CRS84"}"#);
+        let col = l.column_by_name("geom").unwrap().as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(ore_core::geo::a_hex(col.value(0)), iso);
+        assert!(col.is_null(1));
+        // Por el Parquet y de vuelta: el hexadecimal ISO, y la nula sigue nula.
+        let mut buf = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut buf, l.schema(), None).unwrap();
+        w.write(&l).unwrap();
+        w.close().unwrap();
+        let vuelta = leer(&buf).unwrap();
+        assert_eq!(vuelta[0]["geom"], iso);
+        assert!(!vuelta[1].contains_key("geom"));
+        let otra = lote(&esquema, &vuelta).unwrap().lote;
+        assert_eq!(otra.column_by_name("geom").unwrap().to_data(), l.column_by_name("geom").unwrap().to_data());
+        // Un WKT, o un polígono en una columna de puntos: la columna se queda texto.
+        for (malo, dice) in [
+            ("POINT(1 2)", "WKT"),
+            ("010300000000000000", "un `Polygon` en una columna `Point`"),
+        ] {
+            let filas = vec![BTreeMap::from([("id".into(), "1".into()), ("geom".into(), malo.into())])];
+            let Lote { lote: l, sin_estrechar } = lote(&esquema, &filas).unwrap();
+            let e = &sin_estrechar["geom"];
+            assert!(e.contains("no son `Geometry<Point>`") && e.contains(dice), "{e}");
+            assert_eq!(l.schema().field_with_name("geom").unwrap().data_type(), &DataType::Utf8);
+        }
+    }
+
     /// v1alpha32 (ORE 0067 G1·2) · **Ida y vuelta del contrato entre capas**:
     /// el hexadecimal del protocolo → WKB validado → una columna de Arrow con
     /// la marca `geoarrow.wkb` y su CRS → otra vez el hexadecimal. Con nula,
