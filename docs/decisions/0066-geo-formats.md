@@ -320,3 +320,78 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
      dentro de cada imagen.
   4. **El cuello de botella de versiones es `iceberg-rust`**: fija Arrow 58 y no tiene tipos geo.
      Merece seguimiento y, probablemente, contribución.
+- **2026-10-16 · Medidas T5–T8:**
+
+  **T5 · Python y Java del puesto, y cómo viaja la geometría.**
+  - **Python** (pyarrow 25.0.1, pandas 3.0.6, DuckDB 1.5.6, lo que lleva la imagen).
+    - `shapely` y `h3` están en las sugeridas, no instaladas.
+    - pyarrow lee el Parquet GEOMETRY nativo como `binary` **con** la marca `geoarrow.wkb` en los
+      metadatos del campo. DuckDB → Arrow (el camino del SDK) también lo entrega como `geoarrow.wkb`.
+    - A pandas llega como `bytearray` (WKB): sin tipo geo.
+    - **GeoPandas:** `read_parquet` **rechaza** un fichero que sólo lleve el tipo nativo («Missing geo
+      metadata»: exige la clave GeoParquet `geo`). En cambio, `GeoDataFrame.from_arrow` sobre
+      `geoarrow.wkb` sí funciona: 2 M puntos en 2,2 s, y de DuckDB a Arrow a GeoDataFrame en 3,9 s.
+      `to_parquet` escribe la clave `geo` (GeoParquet) sin tipo nativo, y DuckDB lo lee como
+      `GEOMETRY`.
+    - **El CRS se perdió por el camino** (`crs=None`): el fichero de la prueba no lo declaraba
+      explícitamente. Hay que escribirlo siempre explícito, en los dos sitios.
+    - Coste: `shapely` + `h3`, +12 MB; `geopandas` + `pyproj`, +141 MB; `geoarrow-pyarrow`, +9 MB.
+  - **JVM:** no hay librería de geometría. JTS 1.20 pesa 1,2 MB, Sedona-common 1.9, 2,1 MB y H3 4.1.1,
+    1,1 MB. DuckDB por JDBC es el mismo motor (con `spatial` y `h3`).
+  - **Conclusión:** **escribir los dos metadatos a la vez** (el tipo lógico GEOMETRY nativo **y** la
+    clave GeoParquet `geo`, con CRS explícito) hace el fichero legible por todo el ecosistema:
+    DuckDB, GeoPandas, Sedona y los lectores antiguos. Y el SDK debe entregar un GeoDataFrame, no
+    bytes.
+
+  **T6 · Teselas vectoriales (MVT) al vuelo.** DuckDB `spatial` tiene `ST_AsMVT`, `ST_AsMVTGeom` y
+  `ST_TileEnvelope`. Prueba: 5 M de puntos y 200 000 polígonos en Parquet ordenado por Hilbert,
+  máquina local de 16 núcleos, cada tesela leyendo del fichero como un servicio sin estado.
+
+  | caso | elementos | tiempo | tamaño |
+  |---|---|---|---|
+  | puntos z14 / z12 / z10 (Madrid) | 11 / 285 / 4 806 | ~105 ms | 0–118 KB |
+  | puntos z8 | 76 419 | 246 ms | 1,9 MB |
+  | puntos z6 | 1 252 859 | 2 033 ms | **31,8 MB** |
+  | puntos con filtro de permisos (5 de 50 grupos), z12 / z8 / z6 | 31 / 7 719 / 125 416 | 88 / 87 / 216 ms | 1 KB–3,2 MB |
+  | polígonos z14 → z8 | 2 → 3 097 | 54–185 ms | hasta 263 KB |
+  | puntos agregados en H3 res 5 en z6 / res 3 en z4 | 992 / 50 celdas | 330 / 380 ms | — |
+
+  - **Al vuelo funciona hasta zoom medio** (unos 100 ms de suelo por tesela, que es abrir el Parquet).
+  - **El filtro de permisos es gratis**, incluso acelera, porque es un `WHERE` más.
+  - **A zoom bajo no se pueden mandar los puntos crudos** (31 MB por tesela): hay que **agregar**
+    (H3, ~350 ms) o **precalcular** (PMTiles) las pirámides de lo grande.
+  - Para producción, el suelo de ~100 ms pide caché de teselas y de metadatos del Parquet.
+
+  **T7 · La geografía que hay en las fuentes reales** (`geo-t7-censo.sh`, Jobs en `t-victor` y
+  `t-demo`; 18 fuentes):
+  - **Ninguna columna con tipo geo del origen.** Ningún Postgres tiene PostGIS (uno tiene `vector`), y
+    BigQuery no tiene `GEOGRAPHY`.
+  - **La geografía es implícita:**
+    - **3 tablas con pares lat/lon en `numeric`** (`flujos_migratorios_estorninos`, `hangars`,
+      `registros_instalaciones_ngs`);
+    - **15 columnas de dirección o lugar** (ciudad, estado, código postal, país, dirección: Olist,
+      `clientes`, `censo_poblacional`…).
+
+    Hubo un falso positivo por nombre (`longitud_focal_mm`).
+  - **Confirma la tesis de §1** con nuestros propios datos: la geometría casi nunca llega como tal.
+    Llega como coordenadas en números o como direcciones, y la **inducción del tipo** y la
+    **geocodificación** son la puerta de entrada.
+  - **Hace falta un banco de pruebas geo propio:** un Postgres con PostGIS, BigQuery `GEOGRAPHY`,
+    GeoParquet, Shapefile, `.gdb`, COG y posiciones con tiempo, con volúmenes de verdad.
+
+  **T8 · El mapa de la consola** (`rubix-platform`).
+  - **Base:** **MapLibre GL 5.24 + react-map-gl 8**, unas 3 500 líneas en `components/map`: globo,
+    mapa base CARTO Positron, satélite de Esri, dibujo y edición de formas, medidas, panel de capas,
+    histograma, selección, menú de solapes, «añadir al mapa».
+  - **Pero todo sobre datos de ejemplo** (`mock.ts`: tres tipos de objeto declarados a mano) y sin
+    API.
+  - **Pinta un marcador DOM por objeto** (`MapDataLayer`): sirve para cientos, no para millones.
+  - **Fuentes `geojson`**, sin teselas vectoriales ni ráster propias.
+  - **El satélite de Esri es de uso no comercial** (lo dice `basemaps.ts`): para la GA hace falta un
+    proveedor con licencia.
+  - **Conclusión:** la interfaz está avanzada y es reutilizable; lo que falta es lo de abajo.
+    - capas por **teselas vectoriales** de ORE (fuente `vector` de MapLibre, o deck.gl para millones
+      de puntos y lo geotemporal);
+    - un **endpoint de teselas** con permisos;
+    - **ráster** desde COG;
+    - y la conexión con el catálogo en vez de `mock.ts`.
