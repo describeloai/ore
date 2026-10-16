@@ -242,3 +242,18 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
       - Todo, lejos del objetivo de copia (≥ 100 000 filas/s), salvo los CSV.
   - **Lo que falta para cerrar G0:** el alta de las tres fuentes (una persona), la tabla v3 ajena
     (Spark) y Catastro/PNOA.
+- **2026-10-16 · La tabla Iceberg v3 ajena (G0·2), solo el esquema.** Ningún escritor publicado escribe
+  hoy datos `geometry` en Iceberg v3:
+  - **pyiceberg 0.12** no escribe v3;
+  - **Spark 4.1 + Iceberg 1.11** no traduce el `GEOMETRY` de Spark (*«Not a supported type»*);
+  - **la API Java de Iceberg 1.11** crea la tabla, pero su escritor Parquet dice *«Unsupported type for
+    Parquet: geometry»*. Las PR que lo traen (`apache/iceberg` 17161, 17509) llegaron a `main` después
+    de 1.11.
+
+  Queda en el banco una tabla **v3 con `geom: geometry` y sin filas**
+  (`g0-iceberg-v3.sh` + `.scala`, catálogo JDBC en `lakehouse/catalogo.db`). Sirve para V6 en lo que
+  hoy rompe `iceberg-rust`, que es abrir el esquema. Los datos se le añaden cuando salga Iceberg 1.12.
+  **Lo dice el propio ecosistema:** el tipo geo de Iceberg está recién llegando también en Java y en
+  Python, no solo en Rust.
+- **G0 cerrado, salvo el alta de las tres fuentes** (la hace una persona) y Catastro/PNOA, que pasan a
+  deuda del banco.
