@@ -132,7 +132,7 @@ pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
         return if tipo == "sftp" {
             sftp(clave_publica(v), v("ORE_IP_SALIDA"))
         } else {
-            postgres(clave_publica(v), v("ORE_IP_SALIDA"))
+            postgres(clave_publica(v), v("ORE_IP_SALIDA"), cuenta)
         };
     }
     de_con(tipo, cuenta, ids_de_la_celda())
@@ -714,7 +714,79 @@ fn gcs(driver: Option<&str>, medios: Option<&str>) -> Json {
 /// ⭐ ADR 0065 PG4 (D-PG3) · **Detrás de un bastión**: la misma clave SSH de
 /// la celda que SFTP, en el `authorized_keys` de un bastión que ve la base, y
 /// su huella fijada. TLS sigue de punta a punta por dentro del túnel.
-fn postgres(publica: Option<String>, ip: Option<String>) -> Json {
+///
+/// ⭐ ADR 0065 PG5 (D-PG2) · **Cloud SQL y AlloyDB, sin contraseña**: el
+/// token de Google de la cuenta de la celda (la de BigQuery y GCS) va como
+/// contraseña. El usuario IAM es la cuenta sin `.gserviceaccount.com`.
+fn postgres(publica: Option<String>, ip: Option<String>, cuenta: Option<&str>) -> Json {
+    let cuenta_o = cuenta.unwrap_or("{cuenta}");
+    let usuario_iam = cuenta_o
+        .trim_end_matches(".gserviceaccount.com")
+        .to_string();
+    let paso = |para: &str, comando: String| {
+        Json::obj([("para", Json::s(para)), ("comando", Json::s(comando))])
+    };
+    let mut iam = vec![
+        ("modo", Json::s("iam-gcp")),
+        ("recomendado", Json::Bool(false)),
+        (
+            "dice",
+            Json::s(
+                "Cloud SQL o AlloyDB: la celda entra con su cuenta de Google, sin contraseña que \
+                 guardar. Activa la autenticación IAM en la instancia, crea el usuario IAM de la \
+                 cuenta de la celda y dale lectura dentro de la base.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s(format!(
+                "postgres://{}@<host>[:<puerto>]/<base>?iam=gcp",
+                usuario_iam.replace('@', "%40")
+            )),
+        ),
+        ("usuario", Json::s(&usuario_iam)),
+        (
+            "pasos",
+            Json::Arr(vec![
+                paso(
+                    "activar IAM en la instancia (Cloud SQL; `--database-flags` sustituye las que ya tenga: añádelas)",
+                    "gcloud sql instances patch <instancia> --database-flags=cloudsql.iam_authentication=on".into(),
+                ),
+                paso(
+                    "crear el usuario IAM de la celda",
+                    format!(
+                        "gcloud sql users create {usuario_iam} --instance=<instancia> --type=cloud_iam_service_account"
+                    ),
+                ),
+                paso(
+                    "dejarla entrar en la instancia",
+                    format!(
+                        "gcloud projects add-iam-policy-binding <proyecto> --member=serviceAccount:{cuenta_o} --role=roles/cloudsql.instanceUser --condition=None"
+                    ),
+                ),
+                paso(
+                    "darle lectura dentro de la base",
+                    format!(
+                        "GRANT USAGE ON SCHEMA public TO \"{usuario_iam}\"; GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{usuario_iam}\";"
+                    ),
+                ),
+                paso(
+                    "en AlloyDB, en vez de los dos primeros",
+                    format!(
+                        "gcloud alloydb instances update <instancia> --cluster=<clúster> --region=<región> --database-flags=alloydb.iam_authentication=on && gcloud alloydb users create {usuario_iam} --cluster=<clúster> --region=<región> --type=IAM_BASED"
+                    ),
+                ),
+            ]),
+        ),
+    ];
+    if cuenta.is_none() {
+        iam.push((
+            "sinCuenta",
+            Json::s(
+                "esta celda no dice todavía su cuenta (`--cuenta-driver`): los comandos salen con su hueco",
+            ),
+        ));
+    }
     let no = |modo: &str, porque: &str| {
         Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
     };
@@ -739,6 +811,7 @@ fn postgres(publica: Option<String>, ip: Option<String>) -> Json {
                         ),
                     ),
                 ]),
+                Json::obj(iam),
                 Json::obj([
                     ("modo", Json::s("tunel-ssh")),
                     ("recomendado", Json::Bool(false)),
@@ -804,7 +877,7 @@ fn postgres(publica: Option<String>, ip: Option<String>) -> Json {
 
 pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -> Json {
     match tipo {
-        "postgres" | "postgresql" => postgres(None, None),
+        "postgres" | "postgresql" => postgres(None, None, cuenta),
         "bigquery" => {
             let mut celda = vec![
                 ("modo", Json::s("celda")),

@@ -254,6 +254,8 @@ pub fn explicar(e: &postgres::Error) -> String {
 pub fn abrir(url: &str) -> Result<postgres::Client, Fallo> {
     // ADR 0065 PG4: el túnel SSH, si la URL lo pide, sale antes que nada.
     let (url_base, bastion) = crate::tunel::separar(url)?;
+    // ADR 0065 PG5: el IAM de Google, que pone la contraseña.
+    let (url_base, iam) = crate::iam::separar(&url_base)?;
     let plan = planear(&url_base, laboratorio())?;
     let tls = conector(&plan)?;
     let (texto, por_tunel) = match &bastion {
@@ -267,6 +269,21 @@ pub fn abrir(url: &str) -> Result<postgres::Client, Fallo> {
     let mut config: postgres::Config = texto
         .parse()
         .map_err(|e| Fallo::new(Codigo::Conexion, format!("la URL no es de Postgres: {e}")))?;
+    if let Some(i) = &iam {
+        if config.get_user().is_none_or(str::is_empty) {
+            return Err(Fallo::new(
+                Codigo::Credencial,
+                "con `iam=gcp` la URL nombra el usuario IAM (la cuenta sin `.gserviceaccount.com`)",
+            ));
+        }
+        if config.get_password().is_some() {
+            return Err(Fallo::new(
+                Codigo::Credencial,
+                "con `iam=gcp` la URL no lleva contraseña: la pone el token de Google",
+            ));
+        }
+        config.password(crate::iam::token(i)?);
+    }
     if por_tunel {
         // A la base por el reenvío (su puerto ya va en la URL); el nombre del
         // host se queda para TLS.
@@ -282,6 +299,8 @@ pub fn abrir(url: &str) -> Result<postgres::Client, Fallo> {
         let mut f = crate::lectura::fallo_de(&e);
         if e.as_db_error().is_none() {
             f.mensaje = format!("no se pudo conectar: {}", explicar(&e));
+        } else if iam.is_some() && f.codigo == Codigo::Credencial {
+            f.mensaje.push_str(crate::iam::pista());
         }
         f
     })?;

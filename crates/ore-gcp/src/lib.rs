@@ -180,6 +180,50 @@ pub fn identidad(audiencia: &str) -> Result<String, String> {
         .map_err(|e| format!("el token de identidad no se pudo leer: {e}"))
 }
 
+/// **El token de OTRA cuenta**, suplantándola con la de la celda
+/// (`generateAccessToken`, una hora): la cuenta del cliente que éste deja
+/// suplantar dándole a la de la celda `roles/iam.serviceAccountTokenCreator`
+/// sobre la suya. Lo usa el IAM de Cloud SQL de `ore-read-postgres` (ADR 0065
+/// PG5); `ore-gcs` tiene su propia copia, con su caché.
+///
+/// `ORE_GCP_IAM` cambia la API (`https://iamcredentials.googleapis.com/v1`),
+/// para el laboratorio.
+pub fn suplantar(base: &Credencial, cuenta: &str, alcances: &[&str]) -> Result<String, String> {
+    let api = std::env::var("ORE_GCP_IAM")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://iamcredentials.googleapis.com/v1".into());
+    let alcances = alcances
+        .iter()
+        .map(|a| format!("\"{a}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let cuerpo = format!("{{\"scope\":[{alcances}],\"lifetime\":\"3600s\"}}");
+    let texto = cliente()?
+        .post(&format!(
+            "{api}/projects/-/serviceAccounts/{cuenta}:generateAccessToken"
+        ))
+        .set("authorization", &format!("Bearer {}", base.token()?))
+        .set("content-type", "application/json")
+        .timeout(Duration::from_secs(10))
+        .send_string(&cuerpo)
+        .map_err(|e| match e {
+            ureq::Error::Status(403, _) => format!(
+                "no se pudo suplantar `{cuenta}` (403): el cliente tiene que dar a la cuenta de                  esta celda `roles/iam.serviceAccountTokenCreator` sobre la suya"
+            ),
+            e => format!("no se pudo suplantar `{cuenta}`: {e}"),
+        })?
+        .into_string()
+        .map_err(|e| format!("la respuesta de la suplantación no se pudo leer: {e}"))?;
+    ore_core::parse::parse(&texto)
+        .ok()
+        .and_then(|n| {
+            n.get("accessToken")
+                .and_then(|(_, v)| v.as_str().map(String::from))
+        })
+        .ok_or_else(|| "la suplantación no devolvió `accessToken`".into())
+}
+
 /// Un cliente HTTPS con el TLS de la plataforma.
 pub fn cliente() -> Result<ureq::Agent, String> {
     let tls = native_tls::TlsConnector::new()

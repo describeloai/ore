@@ -66,6 +66,7 @@ use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::process::ExitCode;
 
+mod iam;
 mod lectura;
 mod senal;
 mod texto;

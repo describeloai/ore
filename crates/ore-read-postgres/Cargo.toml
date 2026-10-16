@@ -28,6 +28,10 @@ ore-sql = { path = "../ore-sql" }
 # celda y la huella fijada. Trae `ssh2` (libssh2), que ya estaba en el árbol.
 ore-sftp = { path = "../ore-sftp" }
 
+# ADR 0065 PG5 · el token de Google de la celda (Workload Identity) como
+# contraseña de Cloud SQL y AlloyDB, y la suplantación de una cuenta del cliente.
+ore-gcp = { path = "../ore-gcp" }
+
 # rust-postgres, el driver de referencia del ecosistema. `postgres` es el
 # envoltorio bloqueante: este programa hace UNA consulta y termina, y no tiene
 # nada que hacer con un planificador asíncrono.

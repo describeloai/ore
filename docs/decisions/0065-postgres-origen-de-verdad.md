@@ -1,8 +1,8 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** **PG3 escrito** y **PG4 hecho en el laboratorio** (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** **PG3 escrito** , **PG4** y **PG5 hechos en el laboratorio** (2026-10-16); Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
-PG5 (IAM de GCP); se empuja todo junto al final. Investigación:
+PG7 (sabores y `check`) o el CDC; se empuja todo junto al final. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
 **Decide** cómo lee ORE el Postgres de un cliente cuando es una base gestionada, privada o con una CA
 propia, y cómo entra el CDC. Toca [`0008`](0008-el-protocolo-del-driver.md) (el contrato del driver),
@@ -391,6 +391,20 @@ tal cual. Comprobado así:
 
 **Sin verla en el navegador:** el banco no arranca mientras otra sesión tiene el `next dev` del mismo
 directorio, y la consola real pide iniciar sesión.
+
+### PG5 · IAM de Google: hecho en el laboratorio (2026-10-16)
+
+| paso | qué |
+|---|---|
+| **PG5·1** | **`crates/ore-read-postgres/src/iam.rs`.** `iam=gcp` en la URL: el *access token* de la celda (`ore_gcp::Credencial::del_entorno`: Workload Identity en GKE, `ORE_GCP_TOKEN` en local), pedido en **cada conexión**, va como contraseña. El usuario es la cuenta sin `.gserviceaccount.com` (`ore-driver-<celda>@<proyecto>.iam`, con la `@` como `%40`). Con `suplanta=<cuenta del cliente>` el token es el de esa cuenta: `ore_gcp::suplantar` (`generateAccessToken`, alcances `sqlservice.login` y `cloud-platform`; `ORE_GCP_IAM` para el laboratorio). Con `iam=gcp`, una contraseña en la URL o la falta de usuario se niegan, y una autenticación rechazada dice qué mirar: la bandera de la instancia, el usuario IAM y `roles/cloudsql.instanceUser`. `iam=aws` o `iam=azure` dicen «PG6» |
+| **PG5·2** | **El asistente**: modo `iam-gcp` con el usuario IAM de la celda (sale de `--cuenta-driver`), el formato y los cinco comandos. Cloud SQL: la bandera (avisando de que `--database-flags` sustituye las que ya hay), el usuario IAM y el rol. Dentro de la base, el `GRANT`. AlloyDB, en su variante |
+| **PG5·3** | **La consola** (`rubix-platform`, en la hoja de PG4c): «Cómo entra», usuario y contraseña o «la cuenta de Google de esta celda». Con IAM no hay campo de contraseña, el usuario sale del asistente, se enseñan los pasos y se puede suplantar una cuenta propia. URL: 9/9 casos (los 6 de PG4c y 3 de IAM). `tsc` limpio |
+| **PG5·4** | **[`pruebas-de-fuego/pg5-iam-gcp.sh`](../../pruebas-de-fuego/pg5-iam-gcp.sh): 11/11.** Un Postgres con usuarios «IAM» cuya contraseña es el token que les toca, `ORE_GCP_TOKEN` en el papel de Workload Identity y una API de IAM de mentira. (1) La celda: `check`, `catalogo`, Arrow y v1. (2) Con contraseña en la URL y (3) sin usuario: se niegan. (4) Token no aceptado: dice qué mirar. (5) Suplantando: entra y lee como la cuenta del cliente. (6) Suplantación no concedida: 403 y el rol. (7) `iam=aws`: PG6 |
+
+**Lo que falta, y es deuda:** la prueba contra una Cloud SQL de verdad. Pide crear una instancia
+mínima en nuestro proyecto (con go, por el coste) y medir que el token de Workload Identity de un Job
+entra. No hace falta tocar la malla: los Jobs ya tienen la cuenta, y la salida al 443 para la API de
+IAM y al 5432 de Cloud SQL ya está abierta.
 
 ## Lo que no se hace aquí
 
