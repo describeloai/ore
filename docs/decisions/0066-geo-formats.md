@@ -206,3 +206,17 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
 - **2026-10-16 ·** Abierto. Recogido el vertical (§1), la lista limpia de orígenes (§2), el estado del
   código (§3), el modelo de «formato» (§4), la hipótesis de trabajo (§5) y las preguntas (§6). Sin
   código.
+- **2026-10-16 · Decisiones de producto (P1–P4):**
+  - **P1 · Polivalencia.** No hay una primera aplicación: la visión se apoya en la flexibilidad de los
+    estándares, que son el fundamento, y en las capas de abstracción que cada caso de uso vaya
+    pidiendo. El orden de §5.4 lo deciden la base común y las medidas, no un vertical concreto.
+  - **P2 · El sustrato soporta cargas masivas y concurrencia desde el primer momento.** El
+    particionado, el orden espacial, las estadísticas espaciales y el servir con concurrencia son
+    requisitos del primer paso, no una optimización posterior.
+  - **P3 · CRS:** fiel al origen y WGS 84 para servir. Aprobado.
+  - **P4 · La aplicación es un mapa**, todavía lejos de estar terminada.
+  - **P5–P8**, explicadas y pendientes de respuesta: publicar como servidor estándar (OGC API/STAC
+    para el QGIS o ArcGIS de los clientes); calcular con ráster, no sólo guardarlo y pintarlo; el
+    valor de redes (alto), 3D (medio-alto) y BIM (más tarde); datos de referencia de serie para todos.
+  - **T1–T8 son medidas**, y son el fundamento del plan: dan los números y la información fehaciente
+    con la que se diseña.
