@@ -257,3 +257,10 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   Python, no solo en Rust.
 - **G0 cerrado, salvo el alta de las tres fuentes** (la hace una persona) y Catastro/PNOA, que pasan a
   deuda del banco.
+- **2026-10-16 · G0 CERRADO.** Las tres fuentes están dadas de alta en victor y su catálogo se lee
+  (`fuentes-del-banco.sh`):
+  - `banco_geo_pg`: las cuatro tablas geo, más las de sistema de PostGIS;
+  - `banco_geo_bq`: `lugares` y `municipios`;
+  - `banco_geo_gcs`: 4 tablas y 6 conjuntos de objetos.
+
+  Catastro y PNOA quedan como deuda del banco. Siguiente: G1.
