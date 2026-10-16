@@ -1590,6 +1590,51 @@ transacciones de media), que no se juzgan; el modal de *Publish anyway* en la co
 promesas; y en la consola, la numeración de los `id` sugeridos, la unidad por defecto y el aviso en
 las colecciones foráneas.
 
+### S8 · el refresco que cumple *Fresh within*: el diseño (2026-10-16) y S8·1–2 en código
+
+Hasta S8 una copia sólo se rehace al decidirla, al cambiar la lista de copias o a mano: con
+`freshness` declarada, Health dice la verdad (`freshness-exceeded`) y nadie la arregla. **Sólo
+entran las copias que declaran `freshness`** (`Dataset` con `from`): el cliente lo activa al
+declararlo. Una `MediaCollection` no tiene `freshness` en la spec, y lo escrito lo refresca quien
+lo escribe. Medido el 2026-10-16: de las 39 copias de `victor`, ninguna la declara.
+
+**Las decisiones (con el go de S8·1–2):**
+- **D-S8-1 · Decide ore-serve, no un CronJob.** Un CronJob levanta un pod cada N minutos aunque
+  nada venza (cuota, y puede despertar un nodo del pool privado). ore-serve ya tiene, en el índice
+  de `/assets`, la frescura de cada copia: encola sólo cuando toca.
+- **D-S8-2 · Al 80 % de `freshness`**, mirando cada `--refrescar` segundos, desde lo último que se
+  sabe (la comprobación sin cambios, o la hora de los datos): con `1h`, a los 48 min.
+- **D-S8-3 · Tras un fallo, espera creciente** (la cadencia por 2, 4, 8…, como mucho un periodo
+  de `freshness`). Cuenta como fallo lo que no renueva la frescura: `error`, `retenida` y
+  `sin-comprobar` —«ya está» sin medida: sin señal de cambio, una pasada normal no la respalda—.
+
+**Cómo quedó:** `ore_core::refresco` (puro: `del_indice`, `observar`, `toca`) y el vigilante de
+`ore-serve` (`refresco.rs`, `--refrescar SEGUNDOS`, apagado por defecto). Cada vuelta lee el índice
+de `main`, encola UNA pasada para lo que toca (`cola::rendir_programada`, fichero
+`48-la-copia-prog-<h>.yaml`, franja redondeada a la cadencia: dos vueltas de la misma franja son
+el mismo Job), no vuelve a encolar lo que está en vuelo, y retira de la cola lo programado que ya
+pasó (2 h). `GET /refresco` dice qué copias vencen, cuándo y por qué.
+
+**Lo que destapó: la plantilla de la copia no tiene el modo que S8 necesita.** En `main`, la
+pasada normal copia **todas** las vistas del árbol (y sólo abre las credenciales de `VISTAS`);
+rehacer restringe a `VISTAS` pero publica de todos modos (sin promesas ni «ya está»); con `RAMA`
+restringe, pero superpone ramas. Y el nombre del Job sale del contenido: las mismas vistas, el
+mismo Job, que Flux no repite. Hace falta **un cuarto modo**, `PROGRAMADA` (la franja): sólo
+`VISTAS`, en `main`, con la semántica de siempre. Es un cambio de `malla/48-la-copia.yaml` (el
+hueco `- { name: PROGRAMADA, value: "" }` en sus dos contenedores y la rama `--vista $SOLO` sin
+`--rehacer`) y converger el inquilino: **va en S8·3, con su go**. Hasta entonces el vigilante,
+encendido, dice «hay que converger este inquilino» y no encola nada.
+
+Y una deuda que S8 hizo ver: los ficheros de *rehacer* (`48-la-copia-rehacer-*`) no los retira
+nadie de la cola.
+
+| Paso | Qué | Estado |
+|---|---|---|
+| S8·1 | `ore_core::refresco`: qué vence y por qué, la espera tras un fallo | en código |
+| S8·2 | ore-serve: el vigilante, `rendir_programada`, retirar lo pasado, `GET /refresco` | en código |
+| S8·3 | malla: el modo `PROGRAMADA` en `48-la-copia.yaml`, converger `t-victor` y encender `--refrescar` | **go aparte** |
+| S8·4 | C19 en `victor`: `freshness: 15m`; sin cambios, `checkedAt` avanza sin copiar; con cambio, copia antes de vencer | — |
+
 ### S2 y S3 · medidos (2026-10-13, en `victor`, con `e1005d8d` desplegado)
 
 Pasadas con la plantilla de la copia de `main` (`pruebas-de-fuego/salud/pasada.py`), sólo sobre

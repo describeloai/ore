@@ -143,6 +143,9 @@ pub struct Servidor {
     pub agente: Option<crate::agente::Agente>,
     /// Las transacciones abiertas de las colecciones escritas (0049 B4b·2).
     pub escritas: crate::escritas::Escritas,
+    /// ⭐ 0063 S8 · El vigilante del refresco (`--refrescar`). `None` ⇒ apagado:
+    ///   las copias se rehacen como siempre, al decidirlas o a mano.
+    pub refresco: Option<crate::refresco::Vigilante>,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -1094,6 +1097,9 @@ impl Servidor {
             ("POST", ["promesas"]) => self.proponer_promesas(sujeto, &p.cuerpo),
             // La ref va en el camino (`dataset:b.s.n`): la consulta sólo admite
             // las claves de `CONSULTA_ADMITIDA`, y por la URL no entran datos.
+            // ⭐ 0063 S8 · qué copias con `freshness` vencen y qué encoló el
+            //   vigilante. Sólo leer.
+            ("GET", ["refresco"]) => self.estado_del_refresco(),
             ("GET", ["promesas", "historia", r]) => {
                 let r = r.to_string();
                 self.leyendo_en(rama, move |raiz| self.historia_de_promesas(raiz, &r))

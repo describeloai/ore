@@ -241,6 +241,56 @@ pub fn rendir_rehacer(
     Ok((format!("48-la-copia-rehacer-{h}.yaml"), salida))
 }
 
+/// El hueco del modo programado en `malla/48-la-copia.yaml` (0063 S8).
+pub const PROGRAMADA_DE_LA_COPIA: &str = "name: PROGRAMADA, value: \"\"";
+
+/// Los ficheros que el refresco programado deja en la cola.
+pub const PREFIJO_PROGRAMADA: &str = "48-la-copia-prog-";
+
+/// ⭐ 0063 S8 · **La pasada programada**: el Job de la copia en `main` SÓLO
+/// para `vistas` (las que van a incumplir su `freshness`) y con la semántica de
+/// siempre —la señal de cambio, «ya está», las promesas—, no la de rehacer.
+/// `PROGRAMADA` lleva la franja (ISO): dos vueltas de la misma franja con las
+/// mismas vistas rinden el mismo fichero, y la siguiente franja, otro Job. Una
+/// plantilla sin el hueco es un error con su remedio: converger el inquilino.
+pub fn rendir_programada(
+    plantilla: &str,
+    vistas: &[String],
+    franja: &str,
+) -> Result<(String, String), String> {
+    if !plantilla.contains(PROGRAMADA_DE_LA_COPIA) {
+        return Err(format!(
+            "`{PLANTILLA_COPIA}` no sabe del refresco programado (no trae el hueco \
+             `PROGRAMADA`): hay que converger este inquilino"
+        ));
+    }
+    let (_, t) = rendir_copia(plantilla, vistas, None)?;
+    let t = t.replace(
+        PROGRAMADA_DE_LA_COPIA,
+        &format!("name: PROGRAMADA, value: \"{franja}\""),
+    );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let mut salida = String::new();
+    for linea in t.lines() {
+        if linea.starts_with("  name: copiar-") {
+            salida.push_str(&format!("  name: copiar-prog-{h}\n"));
+        } else {
+            salida.push_str(linea);
+            salida.push('\n');
+        }
+    }
+    Ok((format!("{PREFIJO_PROGRAMADA}{h}.yaml"), salida))
+}
+
+/// La franja de un fichero programado (lo que lleva `PROGRAMADA`), para
+/// retirar los que ya pasaron.
+pub fn franja_de(texto: &str) -> Option<&str> {
+    let i = texto.find("name: PROGRAMADA, value: \"")? + "name: PROGRAMADA, value: \"".len();
+    let resto = &texto[i..];
+    Some(&resto[..resto.find('"')?]).filter(|f| !f.is_empty())
+}
+
 /// La plantilla de la invocación (0029 F4a I3), sin función, que el
 /// aprovisionador deja en la cola junto a las otras dos.
 pub const PLANTILLA_INVOCACION: &str = "plantilla-invocacion.txt";
@@ -823,6 +873,47 @@ pub fn job_de(texto: &str) -> Option<&str> {
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    /// 0063 S8: la pasada programada es otro Job por franja, con `PROGRAMADA`
+    /// en todos los contenedores; la misma franja y las mismas vistas, el mismo
+    /// fichero; y una plantilla sin el hueco se dice, no se adivina.
+    #[test]
+    fn la_pasada_programada_es_un_job_por_franja() {
+        let p = "metadata:\n  name: copiar-00000000\nenv:\n  - { name: VISTAS, value: \"olist.customers\" }\n  - { name: REHACER, value: \"\" }\n  - { name: PROGRAMADA, value: \"\" }\n  - { name: RAMA, value: \"\" }\nenv2:\n  - { name: PROGRAMADA, value: \"\" }\n";
+        let v = vec!["vara_pg.ore_vara.pedidos".to_string()];
+        let (f, t) = rendir_programada(p, &v, "2026-10-16T08:00:00Z").unwrap();
+        assert!(
+            f.starts_with(PREFIJO_PROGRAMADA) && f.ends_with(".yaml"),
+            "{f}"
+        );
+        assert!(t.contains("  name: copiar-prog-"), "{t}");
+        assert_eq!(
+            t.matches("name: PROGRAMADA, value: \"2026-10-16T08:00:00Z\"")
+                .count(),
+            2,
+            "{t}"
+        );
+        assert!(
+            t.contains("name: REHACER, value: \"\"") && t.contains("name: RAMA, value: \"\""),
+            "{t}"
+        );
+        assert!(t.contains("value: \"vara_pg.ore_vara.pedidos\""), "{t}");
+        assert_eq!(franja_de(&t), Some("2026-10-16T08:00:00Z"));
+        assert_eq!(
+            rendir_programada(p, &v, "2026-10-16T08:00:00Z").unwrap().0,
+            f
+        );
+        assert_ne!(
+            rendir_programada(p, &v, "2026-10-16T08:01:00Z").unwrap().0,
+            f
+        );
+        let sin = p.replace("  - { name: PROGRAMADA, value: \"\" }\n", "");
+        assert!(
+            rendir_programada(&sin, &v, "x")
+                .unwrap_err()
+                .contains("converger")
+        );
+    }
 
     /// **La copia en una rama** (0044 C.2 ④): otro Job y otro fichero, con la
     /// rama dentro; sin rama, lo de siempre; y una plantilla sin el hueco

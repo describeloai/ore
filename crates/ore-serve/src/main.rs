@@ -77,6 +77,7 @@ mod proyectos;
 mod puestos;
 mod punteros;
 mod recuento;
+mod refresco;
 mod repositorios;
 mod rutas;
 mod salud;
@@ -150,6 +151,9 @@ ore-serve — el plano de control de ORE
                          no es nadie aqui
   --perfiles FICHERO     la lista de certificacion, de un fichero en vez de
                          la cola (`perfiles.json`): el banco de pruebas
+  --refrescar SEGUNDOS   0063 S8: cada tantos segundos, encola la pasada de
+                         las copias que van a incumplir su `freshness` (con
+                         `--cola`). Sin el, no se refresca nada solo
   -h, --help             esto
 ";
 
@@ -203,6 +207,8 @@ struct Opciones {
     emisor_pods: Option<String>,
     jwks_pods: Option<PathBuf>,
     pods_de: Option<String>,
+    /// `--refrescar SEGUNDOS` (0063 S8): la cadencia del vigilante del refresco.
+    refrescar: Option<i64>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -233,6 +239,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         emisor_pods: None,
         jwks_pods: None,
         pods_de: None,
+        refrescar: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -272,6 +279,15 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--emisor-pods" => o.emisor_pods = Some(valor("--emisor-pods")?),
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
+            "--refrescar" => {
+                let v = valor("--refrescar")?;
+                o.refrescar = Some(
+                    v.parse::<i64>()
+                        .ok()
+                        .filter(|s| *s >= 10)
+                        .ok_or_else(|| format!("`--refrescar {v}`: segundos, 10 o más"))?,
+                )
+            }
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -539,6 +555,21 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // ⭐ 0063 S8 · el vigilante del refresco: sólo con `--refrescar` y una cola.
+    let refresco = match (o.refrescar, &cola) {
+        (Some(s), Some(_)) => {
+            eprintln!("  refresco programado: cada {s} s, lo que va a incumplir su `freshness`");
+            Some(refresco::Vigilante::nuevo(s))
+        }
+        (Some(_), None) => {
+            eprintln!("✗ `--refrescar` encola en la cola de trabajo: va con `--cola`");
+            return ExitCode::from(64);
+        }
+        (None, _) => {
+            eprintln!("  refresco programado: no (sin `--refrescar`)");
+            None
+        }
+    };
     let servidor = rutas::Servidor {
         binario: o.ore,
         arbol,
@@ -569,7 +600,22 @@ fn main() -> ExitCode {
         acceso,
         agente,
         escritas: escritas::Escritas::default(),
+        refresco,
     };
+    let servidor = std::sync::Arc::new(servidor);
+    if let Some(v) = &servidor.refresco {
+        let s = std::sync::Arc::clone(&servidor);
+        let cadencia = std::time::Duration::from_secs(v.cadencia as u64);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(cadencia);
+                let dicho = s.refrescar(crate::salud::ahora());
+                if !dicho.is_empty() {
+                    eprintln!("{dicho}");
+                }
+            }
+        });
+    }
 
     match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {
         Ok(()) => ExitCode::SUCCESS,
