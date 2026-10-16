@@ -50,6 +50,7 @@ pub mod foranea;
 pub mod frescura;
 pub mod funcion_propia;
 pub mod generar;
+pub mod geo;
 pub mod governance;
 pub mod graphql;
 pub mod idempotencia;

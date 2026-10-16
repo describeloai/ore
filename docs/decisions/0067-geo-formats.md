@@ -286,3 +286,40 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **Los casos los corre ORE en G1·2** (`borrador_de_v1alpha32` en la suite de conformidad): hasta
     entonces ningún marcador recorre `conformance/v1alpha32`. Al empujar, `C:\oos` va antes que ORE:
     el submódulo apunta a un commit de OOS que todavía no está en su remoto.
+- **2026-10-16 · G1·2 hecho: el contrato en ORE.**
+  - **Tipos** (`ore-core/types.rs`):
+    - `Geometry { subtipo, crs }` y `Geography { subtipo }`, con su forma canónica;
+    - `OOS3001` en un documento anterior a v1alpha32; `OOS3008` para un tipo geo mal formado, con el
+      porqué (incluidas las dimensiones en `Any` y `Geometry<>`);
+    - `geo_como_clave`: una columna geo en la `key` de una `Table`/`Dataset` o en la `primaryKey` de
+      una entidad es `OOS3008`;
+    - las columnas de `View` siguen sin comprobarse por tipo, como hasta ahora: añadirlas puede sacar
+      diagnósticos en árboles que hoy compilan, y va aparte.
+  - **La forma** (`tipos.rs`): `Forma::Geo { subtipo, crs, esferica }` y los metadatos de
+    `geoarrow.wkb`, con el CRS siempre explícito y `edges: spherical` en una `Geography`. `Fisico` de
+    una geometría es texto, como lo compuesto: es lo que viaja por el protocolo, y su valor lo lee
+    `geo`.
+  - **El valor** (`ore-core/geo.rs`, nuevo, sin dependencias):
+    - el hex WKB de ida y vuelta (acepta el `\x` de un `bytea`, y da una pista si llega un WKT);
+    - la lectura **entera** de WKB ISO y EWKB en cualquier orden de bytes, con recuentos comprobados
+      contra lo que queda y la profundidad acotada;
+    - la normalización a WKB ISO *little-endian* sin SRID (el mismo valor, los mismos bytes, venga de
+      PostGIS o de un GeoParquet);
+    - la vacía (`POINT EMPTY`, recuento 0) como valor, distinta de la nula;
+    - el subtipo y las dimensiones contra la columna; el SRID contra el CRS (`0` no dice nada; `4326`
+      casa con `OGC:CRS84`); el rango de una `Geography`; y el bbox.
+  - **Arrow** (`ore-store/carga.rs`): `campo(nombre, forma)` da el `Field` con
+    `ARROW:extension:name = geoarrow.wkb` y su CRS.
+  - **GraphQL**: el escalar `GeoJSON` (RFC 7946, WGS 84), declarado en el SDL como todo escalar
+    propio.
+  - **El SDK de las firmas** (`ore.tipos` en Functions y Transforms) **pasa a G2·3**, con el
+    `GeoDataFrame`. Es otra superficie (`ore-code/firma.rs`), y sin lectura geo en el puesto no tiene
+    qué entregar.
+  - **Pruebas:**
+    - `ore-core`, 378 de 378, con 6 nuevas de WKB: el EWKB de PostGIS que midió la vara, big-endian y
+      `Z`, vacía, lo compuesto, lo roto y el tipo de la columna;
+    - `ore-store`, `una_geometria_va_y_vuelve_por_arrow`: hex → WKB → Arrow con la marca → hex, con
+      nula, vacía, `Z` y un WKB roto;
+    - **conformidad: `borrador_de_v1alpha32` 14/14**, el resto de la suite 31/31.
+  - **Lo que no hace todavía:** la copia por texto sigue dejando una geometría como `string`. Llevarla
+    por `geo::valor_de_texto` y `campo` es G1·3.

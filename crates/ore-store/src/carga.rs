@@ -98,8 +98,31 @@ pub fn arrow_de_forma(f: &Forma) -> DataType {
         ),
         Forma::Lista(f) => DataType::List(Arc::new(Field::new(ELEMENTO, arrow_de_forma(f), true))),
         Forma::Vector(_) => DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true))),
+        // v1alpha32: WKB. La extensión `geoarrow.wkb` y su CRS van en los
+        // metadatos del campo (`Forma::geoarrow_metadatos`), y el tipo lógico
+        // de Parquet y la clave GeoParquet los pone el escritor del lago
+        // (ORE 0067 G2).
+        Forma::Geo { .. } => DataType::Binary,
     }
 }
+
+/// v1alpha32 (ORE 0067 G1·2) · **El campo de Arrow de una columna**: su tipo
+/// y, si es una geometría, la extensión `geoarrow.wkb` con su CRS en los
+/// metadatos (`01-la-geometria` §4). La marca va en el campo, no en el tipo:
+/// es lo que GeoArrow lee, y lo que pyarrow y DuckDB entregan como geometría.
+pub fn campo(nombre: &str, f: &Forma) -> Field {
+    let c = Field::new(nombre, arrow_de_forma(f), true);
+    match f.geoarrow_metadatos() {
+        Some(m) => c.with_metadata(std::collections::HashMap::from([
+            ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
+            ("ARROW:extension:metadata".to_string(), m),
+        ])),
+        None => c,
+    }
+}
+
+/// El nombre de la extensión de GeoArrow para WKB.
+pub const GEOARROW_WKB: &str = "geoarrow.wkb";
 
 /// El nombre del elemento de una lista, el de Iceberg y Parquet.
 pub const ELEMENTO: &str = "element";
@@ -1104,6 +1127,75 @@ pub fn fundir(anteriores: Vec<Fila>, delta: Vec<Fila>, clave: &[String]) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    /// v1alpha32 (ORE 0067 G1·2) · **Ida y vuelta del contrato entre capas**:
+    /// el hexadecimal del protocolo → WKB validado → una columna de Arrow con
+    /// la marca `geoarrow.wkb` y su CRS → otra vez el hexadecimal. Con nula,
+    /// vacía, `Z` y un WKB roto, que no llega a la columna.
+    #[test]
+    fn una_geometria_va_y_vuelve_por_arrow() {
+        use arrow_array::{Array, BinaryArray};
+        let forma = Forma::de(&ore_core::types::parse_type("Geometry<Any, EPSG:4326>").unwrap());
+        let Forma::Geo {
+            subtipo,
+            crs,
+            esferica,
+        } = &forma
+        else {
+            unreachable!()
+        };
+        let entrada = [
+            Some("0101000020E6100000406A1327F7BB0DC053E8BCC62E454440"), // EWKB de PostGIS
+            None,                                                       // nula
+            Some("0101000000000000000000F87F000000000000F87F"),         // POINT EMPTY
+            Some("01E9030000000000000000F03F00000000000000400000000000000840"), // POINT Z (1 2 3)
+        ];
+        let valores: Vec<Option<Vec<u8>>> = entrada
+            .iter()
+            .map(|v| v.map(|h| ore_core::geo::valor_de_texto(h, subtipo, crs, *esferica).unwrap()))
+            .collect();
+        let columna = BinaryArray::from_iter(valores.iter().map(|v| v.as_deref()));
+        let c = campo("geom", &forma);
+        assert_eq!(c.data_type(), &DataType::Binary);
+        assert_eq!(c.metadata()["ARROW:extension:name"], GEOARROW_WKB);
+        assert_eq!(
+            c.metadata()["ARROW:extension:metadata"],
+            r#"{"crs":"EPSG:4326"}"#
+        );
+        assert!(columna.is_null(1) && !columna.is_null(2));
+        let vuelta: Vec<Option<String>> = (0..columna.len())
+            .map(|i| (!columna.is_null(i)).then(|| ore_core::geo::a_hex(columna.value(i))))
+            .collect();
+        assert_eq!(
+            vuelta,
+            vec![
+                Some("0101000000406A1327F7BB0DC053E8BCC62E454440".into()), // ISO, sin SRID
+                None,
+                Some("0101000000000000000000F87F000000000000F87F".into()),
+                Some("01E9030000000000000000F03F00000000000000400000000000000840".into()),
+            ]
+        );
+        // Lo roto no llega a la columna: lo dice quien escribe.
+        assert!(ore_core::geo::valor_de_texto("0101000000", subtipo, crs, *esferica).is_err());
+        // Una geografía lleva sus aristas en la marca.
+        let g = campo(
+            "ruta",
+            &Forma::de(&ore_core::types::parse_type("Geography<LineString>").unwrap()),
+        );
+        assert_eq!(
+            g.metadata()["ARROW:extension:metadata"],
+            r#"{"crs":"OGC:CRS84","edges":"spherical"}"#
+        );
+        // Una columna sin geometría no lleva marca.
+        assert!(
+            campo(
+                "id",
+                &Forma::de(&ore_core::types::parse_type("String").unwrap())
+            )
+            .metadata()
+            .is_empty()
+        );
+    }
+
     use super::*;
 
     fn esquema() -> BTreeMap<String, String> {

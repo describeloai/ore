@@ -515,6 +515,10 @@ fn grafo(crudo: &str) -> Result<String, String> {
         // v1alpha16. El valor de una referencia a un ítem es su huella: una
         // cadena. Lo que hay al otro lado se sirve aparte, firmado.
         Type::Media(_) => "String".to_string(),
+        // v1alpha32 (`01-la-geometria` §5). Una geometría es el escalar
+        // `GeoJSON`: un objeto *Geometry* de RFC 7946 en WGS 84. Es para servir
+        // a una aplicación; el valor exacto (WKB con su CRS) va por Arrow.
+        Type::Geometry { .. } | Type::Geography { .. } => "GeoJSON".to_string(),
     })
 }
 
