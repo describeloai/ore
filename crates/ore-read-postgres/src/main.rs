@@ -45,16 +45,20 @@
 //! de la fuente llega como primer argumento, porque no es un secreto y el
 //! catálogo tiene que decir de dónde viene.
 //!
-//! # Lo que este lector NO emite, y es una decisión
+//! # Las filas: estimadas, nunca contadas
 //!
-//! **El número de filas.** `pg_class.reltuples` es la estimación del
-//! planificador, no un recuento: vale `-1` hasta que alguien ejecuta `ANALYZE`, y
-//! en la base de pruebas valía `-1` para una tabla con cincuenta filas dentro. El
-//! inductor propone revisar una tabla con cero filas por si es un resto; darle una
-//! estimación sin analizar le haría proponer borrar tablas vivas. Un `count(*)`
-//! por tabla sería un hecho, y también un escaneo completo del almacén. Entre una
-//! conjetura barata y un hecho carísimo, no emitir nada es lo correcto: el campo
-//! es opcional justamente para esto.
+//! **`rows` no se emite.** `pg_class.reltuples` es la estimación del
+//! planificador, no un recuento: vale `-1` hasta que alguien ejecuta `ANALYZE`
+//! (PG0: también en una tabla recién cargada con 3200 filas). El inductor propone
+//! revisar una tabla con `rows = 0` por si es un resto; darle una estimación le
+//! haría proponer borrar tablas vivas. Un `count(*)` por tabla sería un hecho, y
+//! también un escaneo completo del almacén.
+//!
+//! **`rowsEstimate` sí** (ADR 0065 D-PG5, 0062): el inductor no lo lee, y la
+//! ficha del activo lo enseña como estimado. Por orden: `reltuples` si es ≥ 0;
+//! si no, `n_live_tup` si es > 0 (sube con cada inserción, sin esperar a
+//! `ANALYZE`); si no, nada. Una particionada suma sus hojas. Sale en la misma
+//! consulta del catálogo, sin coste.
 
 use ore_core::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
@@ -104,6 +108,19 @@ SELECT n.nspname                            AS esquema,
               WHERE e.enumtypid = a.atttypid
               ORDER BY e.enumsortorder)     AS valores,
        d.description                        AS descripcion,
+       -- ADR 0065 D-PG5: la estimación, de las tablas y vistas materializadas.
+       CASE WHEN c.relkind = 'p' THEN
+              (SELECT sum(CASE WHEN h.reltuples >= 0 THEN h.reltuples
+                               ELSE NULLIF(hs.n_live_tup, 0) END)
+                 FROM pg_partition_tree(c.oid) pt
+                 JOIN pg_class h ON h.oid = pt.relid
+                 LEFT JOIN pg_stat_user_tables hs ON hs.relid = h.oid
+                WHERE pt.isleaf)
+            WHEN c.relkind IN ('r', 'm') THEN
+              CASE WHEN c.reltuples >= 0 THEN c.reltuples
+                   ELSE NULLIF((SELECT s.n_live_tup FROM pg_stat_user_tables s
+                                 WHERE s.relid = c.oid), 0) END
+       END::bigint                          AS estimadas,
        EXISTS (SELECT 1 FROM pg_constraint p
                 WHERE p.conrelid = c.oid AND p.contype = 'p'
                   AND a.attnum = ANY (p.conkey)) AS clave,
@@ -335,7 +352,7 @@ fn intentar() -> Result<String, String> {
         let (url, _) = ore_driver::leer_coordenada(&entrada)?;
         let mut cliente = tls::abrir(&url).map_err(|f| f.mensaje)?;
         let filas = cliente
-            .query(
+            .query_typed(
                 "SELECT nspname FROM pg_namespace                  WHERE nspname NOT IN ('pg_catalog', 'information_schema')                    AND nspname !~ '^pg_' ORDER BY nspname",
                 &[],
             )
@@ -364,9 +381,9 @@ fn intentar() -> Result<String, String> {
     let mut cliente = tls::abrir(url).map_err(|f| f.mensaje)?;
 
     let filas = cliente
-        .query(CATALOGO, &[])
+        .query_typed(CATALOGO, &[])
         .map_err(|e| format!("la consulta del catálogo falló: {}", texto::causa(&e)))?;
-    let unicas = cliente.query(UNICAS, &[]).map_err(|e| {
+    let unicas = cliente.query_typed(UNICAS, &[]).map_err(|e| {
         format!(
             "la consulta de claves alternativas falló: {}",
             texto::causa(&e)
@@ -377,7 +394,7 @@ fn intentar() -> Result<String, String> {
     // este programa: si el clúster no está en `logical`, ningún objeto suyo
     // emite cambios, y decir otra cosa sería inventarlo.
     let wal_level: String = cliente
-        .query_one("SELECT current_setting('wal_level')", &[])
+        .query_typed_one("SELECT current_setting('wal_level')", &[])
         .map(|r| r.get::<_, String>(0))
         .unwrap_or_else(|_| String::new());
     if wal_level != "logical" {
@@ -415,7 +432,7 @@ fn escalar(pg: &str) -> Option<&'static str> {
     Some(match base {
         "smallint" | "integer" | "bigint" | "int2" | "int4" | "int8" | "oid" | "smallserial"
         | "serial" | "bigserial" => "Integer",
-        "numeric" | "decimal" | "money" => "Decimal",
+        "numeric" | "decimal" => "Decimal",
         "real" | "double precision" | "float4" | "float8" => "Float",
         "boolean" | "bool" => "Boolean",
         "text" | "character varying" | "character" | "varchar" | "char" | "bpchar" | "name"
@@ -424,7 +441,12 @@ fn escalar(pg: &str) -> Option<&'static str> {
         // `Opaque` diría que no se puede mirar dentro, y sí se puede.
         "uuid" => "String",
         "date" => "Date",
-        "time without time zone" | "time with time zone" | "time" | "timetz" => "Time",
+        "time without time zone" | "time" => "Time",
+        // ADR 0065 D-PG4: el catálogo dice lo que la lectura da. Un `timetz`
+        // lleva un desfase que `Time` no tiene, y `money` se escribe con el
+        // símbolo de la moneda del servidor (`$12.34`): los dos salen como su
+        // texto, y prometer `Time` o `Decimal` era prometer lo que no se lee.
+        "time with time zone" | "timetz" | "money" => "Opaque",
         "timestamp without time zone" | "timestamp" => "DateTime",
         // La distinción existe en los dos sistemas de tipos y se conserva.
         "timestamp with time zone" | "timestamptz" => "DateTimeTz",
@@ -443,11 +465,18 @@ fn escalar(pg: &str) -> Option<&'static str> {
 /// - Una **enumeración** (`typtype = 'e'`) es `String` **más sus valores**, que
 ///   el esquema de OOS admite como secuencia. Es información que Postgres tiene y
 ///   BigQuery no: dejarla caer haría este lector peor que su fuente.
-/// - Un **array** es `list<X>` si `X` se sabe traducir.
+/// - Un **array** es `list<X>` si `X` es un escalar exacto (lo que la lectura
+///   da como una lista de Arrow); de otra cosa, `Opaque`: sale como su texto.
 fn traducir(tipo: &str, familia: &str, base: Option<&str>) -> Option<String> {
     let t = tipo.trim();
     if let Some(dentro) = t.strip_suffix("[]") {
-        return escalar(dentro.trim()).map(|e| format!("list<{e}>"));
+        let d = dentro.trim();
+        let x = decimal(d).or_else(|| escalar(d).map(String::from))?;
+        return Some(if lectura::exacto(&x) {
+            format!("list<{x}>")
+        } else {
+            "Opaque".into()
+        });
     }
     match familia {
         "d" => {
@@ -519,6 +548,8 @@ struct Acc {
     clave: Vec<String>,
     /// destino -> pares (columna local, columna del destino), en orden.
     foraneas: BTreeMap<String, Vec<(String, String)>>,
+    /// La estimación de filas (D-PG5), si la hay.
+    estimadas: Option<i64>,
 }
 
 fn armar(
@@ -574,6 +605,7 @@ fn armar(
                 columnas: Vec::new(),
                 clave: Vec::new(),
                 foraneas: BTreeMap::new(),
+                estimadas: f.get::<_, Option<i64>>("estimadas"),
             }
         });
 
@@ -632,9 +664,9 @@ fn armar(
                     })
                     .collect(),
                 // PostgreSQL no da un conteo fiable sin contar: la ausencia es
-                // una respuesta.
+                // una respuesta. Lo que sí da es su estimación (D-PG5).
                 filas: None,
-                filas_estimadas: None,
+                filas_estimadas: a.estimadas.and_then(|n| u64::try_from(n).ok()),
                 clase: a.clase.to_string(),
                 // Las dos caras del objeto. Van EN EL CATALOGO y no en el
                 // inductor porque solo el driver las sabe: qué se puede empujar
@@ -789,34 +821,37 @@ fn cambio(entrada: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(entrada)?;
     let mut cliente = tls::abrir(&url).map_err(|f| f.mensaje)?;
     let replica: bool = cliente
-        .query_one("SELECT pg_is_in_recovery()", &[])
+        .query_typed_one("SELECT pg_is_in_recovery()", &[])
         .map(|r| r.get(0))
         .unwrap_or(true);
     let contadores: String = cliente
-        .query_one("SELECT current_setting('track_counts')", &[])
+        .query_typed_one("SELECT current_setting('track_counts')", &[])
         .map(|r| r.get(0))
         .unwrap_or_default();
     if replica || contadores != "on" {
         return Ok(ore_driver::huella("contadores", None, false));
     }
     let fila = cliente
-        .query_opt(
+        .query_typed_opt(
             "SELECT c.relfilenode::text, s.n_tup_ins::text, s.n_tup_upd::text, s.n_tup_del::text, \
                (SELECT md5(string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod) \
                   || CASE WHEN a.attnotnull THEN ' not null' ELSE '' END, ',' ORDER BY a.attnum)) \
                 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) \
              FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid \
              WHERE s.relid = to_regclass($1)",
-            &[&lectura::citado(&objeto)],
+            &[(&lectura::citado(&objeto) as &(dyn postgres::types::ToSql + Sync), postgres::types::Type::TEXT)],
         )
         .map_err(|e| format!("no se pudo preguntar por `{objeto}`: {}", texto::causa(&e)))?;
     // 0063 S5a: las columnas de ahora, para compararlas con la `Table` declarada.
     let columnas: Vec<(String, Option<String>)> = cliente
-        .query(
+        .query_typed(
             "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod) \
              FROM pg_attribute a WHERE a.attrelid = to_regclass($1) \
              AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
-            &[&lectura::citado(&objeto)],
+            &[(
+                &lectura::citado(&objeto) as &(dyn postgres::types::ToSql + Sync),
+                postgres::types::Type::TEXT,
+            )],
         )
         .map(|filas| {
             filas
@@ -840,9 +875,12 @@ fn cambio(entrada: &str) -> Result<String, String> {
         }
         None => {
             let existe: bool = cliente
-                .query_one(
+                .query_typed_one(
                     "SELECT to_regclass($1) IS NOT NULL",
-                    &[&lectura::citado(&objeto)],
+                    &[(
+                        &lectura::citado(&objeto) as &(dyn postgres::types::ToSql + Sync),
+                        postgres::types::Type::TEXT,
+                    )],
                 )
                 .map(|r| r.get(0))
                 .map_err(|e| {
@@ -862,7 +900,7 @@ fn testigo(entrada: &str) -> Result<String, String> {
     let mut cliente = tls::abrir(&url).map_err(|f| f.mensaje)?;
 
     let wal_level: String = cliente
-        .query_one("SELECT current_setting('wal_level')", &[])
+        .query_typed_one("SELECT current_setting('wal_level')", &[])
         .map(|r| r.get::<_, String>(0))
         .unwrap_or_default();
     if wal_level != "logical" {
@@ -883,8 +921,8 @@ fn testigo(entrada: &str) -> Result<String, String> {
     // falla, en vez de decidirlo por una bandera: quien conecta sabe a que
     // servidor va, y este programa no tiene por que preguntarselo.
     let lsn: Option<String> = cliente
-        .query_one("SELECT pg_current_wal_lsn()::text", &[])
-        .or_else(|_| cliente.query_one("SELECT pg_last_wal_replay_lsn()::text", &[]))
+        .query_typed_one("SELECT pg_current_wal_lsn()::text", &[])
+        .or_else(|_| cliente.query_typed_one("SELECT pg_last_wal_replay_lsn()::text", &[]))
         .ok()
         .and_then(|r| r.try_get::<_, String>(0).ok());
 
@@ -932,31 +970,25 @@ fn filas(peticion: &str) -> Result<String, String> {
     })?;
 
     let mut cliente = tls::abrir(&p.url).map_err(|f| f.mensaje)?;
+    // Los lógicos, para escribirlos como siempre (`true`, no el `t` del texto).
+    let formas = lectura::columnas(&mut cliente, &p.objeto).map_err(|f| f.mensaje)?;
 
-    cliente
-        .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-        .map_err(|e| {
-            format!(
-                "no se pudo abrir la sesión en solo lectura: {}",
-                texto::causa(&e)
-            )
-        })?;
-
-    // Cada parámetro va como texto y lo coacciona el servidor (`texto.rs`):
-    // un `String` del crate solo acepta columnas de texto, y una clave sobre
-    // un `int4` fallaba en el cliente.
-    let parametros: Vec<texto::Parametro> = c
-        .parametros
-        .iter()
-        .map(|v| texto::Parametro(v.clone()))
-        .collect();
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = parametros
-        .iter()
-        .map(|v| v as &(dyn postgres::types::ToSql + Sync))
-        .collect();
-    let resultado = cliente
-        .query(c.texto.as_str(), &refs)
+    // ADR 0065 PG2: por el protocolo simple, con los parámetros como literales
+    // que el servidor coacciona (un `$1` sobre un `int4` sigue siendo un
+    // `int4`) y sin sentencias con nombre: detrás de un pooler en modo
+    // transacción, dos lectores a la vez chocaban (`42P05`, PG0).
+    let mut tx = cliente
+        .build_transaction()
+        .read_only(true)
+        .start()
+        .map_err(|e| format!("no se pudo abrir la transacción: {}", texto::causa(&e)))?;
+    let resultado = tx
+        .batch_execute(&lectura::ajustes(None))
+        .and_then(|_| tx.simple_query(&lectura::en_linea(&c)))
+        .map(lectura::filas_de)
         .map_err(|e| format!("la consulta falló: {}\n  {}", texto::causa(&e), c.texto))?;
+    tx.commit()
+        .map_err(|e| format!("no se pudo cerrar la transacción: {}", texto::causa(&e)))?;
 
     let mut out = String::new();
     for fila in &resultado {
@@ -981,9 +1013,16 @@ fn filas(peticion: &str) -> Result<String, String> {
                 continue;
             };
             let v = fila
-                .try_get::<_, Option<texto::Texto>>(i)
+                .try_get(i)
                 .map_err(|e| format!("la columna `{col}` no se pudo leer: {}", texto::causa(&e)))?;
-            valores.push(v.map(|t| t.0));
+            let logico = formas.iter().any(|(n, f)| {
+                n == col && *f == lectura::Forma::Escalar(Some(ore_core::tipos::Fisico::Logico))
+            });
+            valores.push(v.map(|t| match (logico, t) {
+                (true, "t") => "true".to_string(),
+                (true, "f") => "false".to_string(),
+                (_, t) => t.to_string(),
+            }));
         }
         out.push_str(&ore_driver::fila(&p, &valores));
         out.push('\n');
@@ -994,6 +1033,33 @@ fn filas(peticion: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR 0065 D-PG4: el catálogo dice lo que la lectura da. Un array es una
+    /// lista sólo si su escalar es exacto; `timetz` y `money` salen como texto.
+    #[test]
+    fn el_catalogo_dice_lo_que_la_lectura_da() {
+        for (pg, oos) in [
+            ("integer[]", Some("list<Integer>")),
+            ("text[]", Some("list<String>")),
+            ("numeric(10,2)[]", Some("list<Decimal<10, 2>>")),
+            ("numeric[]", Some("Opaque")),
+            ("jsonb[]", Some("Opaque")),
+            ("time with time zone", Some("Opaque")),
+            ("money", Some("Opaque")),
+            ("vector(3)", None),
+        ] {
+            assert_eq!(traducir(pg, "b", None).as_deref(), oos, "{pg}");
+            // Y la lectura: lista donde el catálogo dice lista, texto donde no.
+            let f = lectura::Forma::de(pg, "b", None);
+            match oos {
+                Some(o) if o.starts_with("list<") => {
+                    assert!(matches!(f, lectura::Forma::Lista(_)), "{pg}: {f:?}")
+                }
+                Some(o) if lectura::exacto(o) => {}
+                _ => assert_eq!(f, lectura::Forma::Escalar(None), "{pg}"),
+            }
+        }
+    }
 
     /// La distinción que los dos sistemas de tipos hacen y que se conserva.
     #[test]
@@ -1018,7 +1084,7 @@ mod tests {
             ("numeric(5)", "Decimal<5, 0>"),
             ("numeric(50,2)", "String"),
             ("numeric", "Decimal"),
-            ("money", "Decimal"),
+            ("money", "Opaque"),
         ] {
             assert_eq!(traducir(pg, "b", None).as_deref(), Some(oos), "{pg}");
         }

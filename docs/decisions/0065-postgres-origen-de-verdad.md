@@ -1,8 +1,8 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido** y **PG1 cerrado en producción** (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** (2026-10-16); Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
-PG2, esperando el go. Investigación:
+desplegar PG2 y medirlo contra Neon. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
 **Decide** cómo lee ORE el Postgres de un cliente cuando es una base gestionada, privada o con una CA
 propia, y cómo entra el CDC. Toca [`0008`](0008-el-protocolo-del-driver.md) (el contrato del driver),
@@ -288,6 +288,40 @@ Las tres esperan a que alguien las pida.
 | Arrow ×2, `servir` ×3, 4 lectores a la vez (pooler y directo) | 20/20 | 20/20 |
 
 **PG1 queda cerrado.** Siguiente: PG2 (tipos, filas estimadas y sentencias sin nombre).
+
+### PG2 · Tipos, filas y pooler: hecho en el laboratorio (2026-10-16)
+
+**Una decisión de diseño cubre a la vez D-PG4 y D-PG6: las lecturas van por el protocolo simple.**
+- `leer` en Arrow abre una transacción de sólo lectura y hace `DECLARE ore_lectura NO SCROLL CURSOR FOR …`
+  y `FETCH 8192` lote a lote. Antes iba por un portal con una sentencia con nombre.
+- `leer` v1 y `estimar` hacen una sola consulta simple.
+- Las consultas del catálogo, `testigo`, `cambio` y `explorar` usan `query_typed`, la sentencia sin
+  nombre.
+
+Con eso:
+- **no queda ninguna sentencia con nombre** (D-PG6), así que un pooler en modo transacción sin
+  *prepared statements* deja de chocar;
+- **cada valor llega como el texto que escribe el propio Postgres** (D-PG4), así que no queda ningún
+  tipo que no se sepa leer.
+
+| paso | qué |
+|---|---|
+| **PG2·1** | **Los parámetros, como literales** (`lectura::en_linea`). `'7'` sin tipo: el servidor lo coacciona igual que el parámetro en texto que se mandaba, así que un `$1` sobre un `int4` sigue siendo `int4`. Las comillas se doblan. Un `$n` dentro de un identificador o de un literal no se toca. **La sesión se fija en cada transacción** con `SET LOCAL` (detrás de un pooler un `SET` de sesión se pierde): `standard_conforming_strings`, UTC, ISO, `IntervalStyle`, `extra_float_digits = 1` y `bytea_output = hex`. Es lo que hace canónico el texto |
+| **PG2·2** | **Tipos (D-PG4).** Lo exacto se analiza con `ore_core::tipos`, como antes. Normalización: `t`/`f` pasan a `true`/`false`. `infinity`/`-infinity` en fecha, `timestamp` y `timestamptz` van a 9999-12-31 / 0001-01-01; `NaN` o infinito en un `numeric(p,s)` van a nulo. Las dos cosas se avisan por stderr, contadas por columna. **Un array de un escalar exacto es una lista de Arrow** (`List<Int64>`, `List<Utf8>`, `List<Bool>`, `List<Timestamp tz>`…), sacada de su texto (`elementos`: comillas, `NULL` y límites `[2:3]=`). Uno de dos dimensiones se niega nombrando la columna. Todo lo demás sale como su texto. `texto.rs` pierde el decodificador binario (`Texto`, `Parametro`) y se queda con `causa` |
+| **PG2·3** | **El catálogo dice lo que la lectura da.** `exacto` es una sola función para las dos. Un array es `list<X>` si X es exacto y `Opaque` si no; `timetz` y `money` pasan a `Opaque` (antes `Time` y `Decimal`, que no se leían). Un test lo coteja por tipo, y la prueba de fuego columna a columna contra el esquema Arrow. Los errores nombran la columna de la tabla y no el alias |
+| **PG2·4** | **Filas estimadas (D-PG5)**, en la misma consulta del catálogo: `reltuples` si es ≥ 0; si no, `n_live_tup` si es > 0; si no, nada. Una particionada suma sus hojas (`pg_partition_tree`). Sale como `rowsEstimate`; **`rows` nunca**: el inductor sólo lee `rows` para proponer «cero filas», y una estimación no puede llevarle a borrar una tabla viva |
+| **PG2·5** | **[`pruebas-de-fuego/pg2-tipos-filas-pooler.sh`](../../pruebas-de-fuego/pg2-tipos-filas-pooler.sh): todo verde.** (a) Las **45 columnas** (las 38 de PG0 más arrays de `bool`, `timestamptz`, `numeric(6,2)` y `bool`) se leen por v1 y por Arrow, y **el tipo Arrow de cada una es el que dice el catálogo**: 0 mal, frente a 27 negadas en PG0. PostGIS sale como su EWKB en hexadecimal. (b) `a_2d` con dos dimensiones se niega nombrando la columna. (c) v1 escribe como antes: `true`, `\xdeadbeef`, `0.1`, `12.50`, `2026-10-16 08:00:00+00`. (d) Filas: antes de `ANALYZE`, `t1=210` y `parte=4000` por `n_live_tup` y `vacia` sin estimación; después, por `reltuples`, con `vacia=0`; nunca `rows`. (e) PgBouncer en modo transacción **sin *prepared statements*** y `default_pool_size=1`: 4 `servir` + 4 v1 a la vez dan **20/20 y 12/12**, frente a 14/20 y 7/12 en PG0. `estimar` también va por el pooler. `pg1-tls.sh` repetido: 17/17, cancelar incluido |
+
+**Lo que cambia para quien ya tiene fuentes:**
+- una columna `timetz` o `money` pasa de `Time`/`Decimal` a `Opaque` en el catálogo, y su huella de
+  `cambio` (que lleva el tipo de cada columna) se mueve una vez;
+- las tablas ganan `rowsEstimate`.
+
+Las Neon de producción no tienen arrays (PG0); sus tipos `Time` habrá que comprobarlos al desplegar.
+
+**Lo que no entra en PG2 (D-PG4, esperan a que se pidan):** `vector` como `FixedSizeList<Float32>`,
+PostGIS como WKB binario con GeoArrow, `hstore` como `Map`, `interval` como `Interval` y los
+compuestos como `Struct`. Hoy los cinco salen como su texto, que es exacto.
 
 ## Lo que no se hace aquí
 
