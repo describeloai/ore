@@ -454,6 +454,21 @@ pub fn esquema_deseado(
         .map_err(|e| format!("el esquema no construye: {e}"))
 }
 
+/// ORE 0067 G2·1. El manifiesto de datos en la versión de la tabla.
+trait PorVersion {
+    fn build_by_version(self, v3: bool) -> iceberg::spec::ManifestWriter;
+}
+
+impl PorVersion for ManifestWriterBuilder {
+    fn build_by_version(self, v3: bool) -> iceberg::spec::ManifestWriter {
+        if v3 {
+            self.build_v3_data()
+        } else {
+            self.build_v2_data()
+        }
+    }
+}
+
 /// v1alpha17 (0049 B1). **Los ids de los hijos de una columna anidada**, como
 /// metadato `PARQUET:field_id` de cada `Field`: los de `base` —la columna de la
 /// tabla que ya existe— por nombre, y uno nuevo para lo que no está. Un escalar
@@ -921,13 +936,49 @@ impl Lago {
         // El escritor nace con el primer lote que trae filas: sin filas no hay
         // fichero, y el snapshot lleva la lista vacía (A5).
         let arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&esquema).map_err(err)?);
+        // ORE 0067 G2·1: si los lotes traen una columna geo (la marca
+        // `geoarrow.wkb` que pone la carga), los ficheros los escribe ORE
+        // (`lago_geo`), la tabla pasa a v3 (G2·0) y guarda el tipo en
+        // `ore.geo.<columna>`.
+        let mut lotes = lotes.peekable();
+        let geo: Vec<crate::lago_geo::ColumnaGeo> = match lotes.peek() {
+            Some(Ok(l)) => crate::lago_geo::columnas_geo(&l.schema()),
+            _ => Vec::new(),
+        };
+        if !geo.is_empty() {
+            if meta.format_version() < iceberg::spec::FormatVersion::V3 {
+                cambios.push(TableUpdate::UpgradeFormatVersion {
+                    format_version: iceberg::spec::FormatVersion::V3,
+                });
+            }
+            cambios.push(TableUpdate::SetProperties {
+                updates: geo.iter().map(crate::lago_geo::propiedad).collect(),
+            });
+        }
+        let mut en_curso: Option<crate::lago_geo::FicheroGeo> = None;
+        let mut ficheros_geo: Vec<DataFile> = Vec::new();
+        let subir = |f: crate::lago_geo::FicheroGeo| {
+            let io = io.clone();
+            let esquema = esquema.clone();
+            async move {
+                let (cuerpo, pm) = f.cerrar()?;
+                let ruta = format!("{}/data/{}.parquet", meta.location(), uuid::Uuid::new_v4());
+                let n = cuerpo.len() as u64;
+                io.new_output(&ruta)
+                    .map_err(err)?
+                    .write(Bytes::from(cuerpo))
+                    .await
+                    .map_err(err)?;
+                crate::lago_geo::data_file(&pm, ruta, n, &esquema, meta.default_partition_spec_id())
+            }
+        };
         let mut escritor = None;
         for lote in lotes {
             let lote = lote?;
             if lote.num_rows() == 0 {
                 continue;
             }
-            if escritor.is_none() {
+            if escritor.is_none() && geo.is_empty() {
                 let ubicacion = DefaultLocationGenerator::new(meta).map_err(err)?;
                 let nombres = DefaultFileNameGenerator::new(
                     uuid::Uuid::new_v4().to_string(),
@@ -968,14 +1019,29 @@ impl Lago {
                 .map_err(err)?;
             let lote = RecordBatch::try_new(arrow.clone(), columnas)
                 .map_err(|e| format!("el lote no casa con el esquema de la tabla: {e}"))?;
-            if let Some(w) = escritor.as_mut() {
+            if !geo.is_empty() {
+                if en_curso.is_none() {
+                    en_curso = Some(crate::lago_geo::FicheroGeo::nuevo(&arrow, &geo)?);
+                }
+                let f = en_curso.as_mut().expect("recién abierto");
+                f.escribir(&lote)?;
+                // El mismo tamaño objetivo que el escritor de `iceberg`.
+                if f.tamano() >= FICHERO_OBJETIVO {
+                    let f = en_curso.take().expect("abierto");
+                    ficheros_geo.push(subir(f).await?);
+                }
+            } else if let Some(w) = escritor.as_mut() {
                 w.write(lote).await.map_err(err)?;
             }
         }
-        let ficheros: Vec<DataFile> = match escritor {
+        if let Some(f) = en_curso.take() {
+            ficheros_geo.push(subir(f).await?);
+        }
+        let mut ficheros: Vec<DataFile> = match escritor {
             Some(mut w) => w.close().await.map_err(err)?,
             None => Vec::new(),
         };
+        ficheros.extend(ficheros_geo);
         let bytes: u64 = ficheros.iter().map(|f| f.file_size_in_bytes()).sum();
 
         // ── los manifiestos ─────────────────────────────────────────────────
@@ -988,6 +1054,11 @@ impl Lago {
         };
         let commit = uuid::Uuid::new_v4();
         let secuencia = meta.next_sequence_number();
+        // ORE 0067 G2·1: una tabla v3 (las geo nacen así, G2·0) lleva linaje de
+        // filas: manifiestos y lista v3, y el snapshot con su `row_range`. Es
+        // lo que hace la transacción de `iceberg` (`transaction/snapshot.rs`).
+        let v3 = meta.format_version() >= iceberg::spec::FormatVersion::V3 || !geo.is_empty();
+        let primera_fila = meta.next_row_id();
         let mut contador = 0u32;
         let mut nuevo_manifiesto = |io: &FileIO| -> iceberg::Result<iceberg::spec::ManifestWriter> {
             let ruta = format!("{}/metadata/{commit}-m{contador}.avro", meta.location());
@@ -998,7 +1069,7 @@ impl Lago {
                 esquema.clone(),
                 meta.default_partition_spec().as_ref().clone(),
             )
-            .build_v2_data())
+            .build_by_version(v3))
         };
         let mut manifiestos = Vec::new();
         if !ficheros.is_empty() {
@@ -1064,13 +1135,24 @@ impl Lago {
             meta.location()
         );
         let salida = io.new_output(&ruta_lista).map_err(err)?;
-        let mut lista = ManifestListWriter::v2(
-            salida.writer().await.map_err(err)?,
-            snapshot_id,
-            meta.current_snapshot_id(),
-            secuencia,
-        );
+        let mut lista = if v3 {
+            ManifestListWriter::v3(
+                salida.writer().await.map_err(err)?,
+                snapshot_id,
+                meta.current_snapshot_id(),
+                secuencia,
+                Some(primera_fila),
+            )
+        } else {
+            ManifestListWriter::v2(
+                salida.writer().await.map_err(err)?,
+                snapshot_id,
+                meta.current_snapshot_id(),
+                secuencia,
+            )
+        };
         lista.add_manifests(manifiestos.into_iter()).map_err(err)?;
+        let siguiente_fila = lista.next_row_id();
         lista.close().await.map_err(err)?;
 
         let mut resumen = SnapshotSummaryCollector::default();
@@ -1118,8 +1200,13 @@ impl Lago {
                 },
                 additional_properties: props,
             })
-            .with_schema_id(schema_id)
-            .build();
+            .with_schema_id(schema_id);
+        let snapshot = match siguiente_fila {
+            Some(n) => snapshot
+                .with_row_range(primera_fila, n - primera_fila)
+                .build(),
+            None => snapshot.build(),
+        };
         // Los requisitos: la tabla que se abrió sigue siendo esa (uuid) y
         // `main` sigue donde estaba. Una tabla que todavía no tiene
         // `metadata.json` es una que nace en este commit: `assert-create`, y

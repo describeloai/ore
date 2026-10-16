@@ -425,3 +425,46 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **Otro detalle medido:** `parquet` 58 omite el CRS en el tipo lógico cuando es `OGC:CRS84` (el
     de por defecto en Parquet). Está bien según la spec de Parquet, pero G2·1 lo escribe explícito
     en la clave `geo` (T5).
+- **2026-10-16 · G2·1 hecho: el escritor de las tablas geo.**
+  - **v3 en el escritor de siempre.** Hallazgo: `ore-store` armaba los snapshots a mano con
+    manifiestos v2, y una tabla v3 los rechazaba (*first-row-id must be set for format version >=
+    v3*). Ahora, como hace la transacción de `iceberg`, una tabla v3 lleva manifiestos y lista v3 y su
+    `row_range` en el snapshot. Prueba: `una_tabla_v3_acepta_los_snapshots_del_escritor`.
+  - **`lago_geo.rs`.** Si los lotes traen una columna con la marca `geoarrow.wkb`:
+    - la tabla pasa a v3, y cada columna geo deja `ore.geo.<col>` con `{"type", "crs", "edges"}`
+      (`carga::campo` lleva el tipo de OOS en `ore:type`);
+    - los ficheros los escribe ORE con `parquet` (*feature* `geospatial`), que pone el tipo lógico
+      GEOMETRY/GEOGRAPHY y el bbox por grupo de filas;
+    - la clave GeoParquet `geo` 1.1.0 lleva `WKB`, los tipos vistos, el bbox, `edges` y el **CRS en
+      PROJJSON**;
+    - se parten al mismo tamaño objetivo que los de `iceberg` y se registran con su `DataFile`.
+
+    Las tablas sin geo no cambian de camino.
+  - **El PROJJSON viaja con el binario** (`crs_projjson.json`, 403 KB, 172 CRS: WGS 84/CRS84, ETRS89 y
+    sus UTM, ED50, las 120 UTM de WGS 84, Web Mercator, LAEA, los nacionales europeos y
+    norteamericanos habituales). Lo generó `crs-projjson.py` con pyproj 3.7.2 / PROJ 9.5.1.
+    - **Medido:** pyproj no acepta un PROJJSON mínimo (solo autoridad y código), así que hace falta
+      el objeto entero.
+    - Un CRS que no está en la tabla va como `crs: null` en la clave (desconocido). El código sigue
+      en el tipo lógico y en la propiedad. Ampliar la tabla es regenerarla.
+  - **El `DataFile`** lleva filas, tamaño, valores y nulos por columna de primer nivel. **Sin cotas**
+    en el manifiesto: las funciones de `iceberg` que las calculan son privadas. Las estadísticas por
+    grupo de filas siguen en el fichero, y la geometría tiene su bbox. Queda como deuda: la poda por
+    manifiesto de las columnas escalares de una tabla geo.
+  - **Pruebas** (`ore-store` 65/65): `una_copia_con_geometria_llega_al_lago` comprueba la tabla v3,
+    `ore.geo.geom`, el tipo lógico GEOMETRY y la clave `geo` con el PROJJSON de `OGC:CRS84`. Fundir
+    lee de nuevo esos ficheros. Workspace entero sin avisos y conformidad 31/31.
+  - **V3, medida en local** (`examples/vara-v3-escribir.rs`, 1 M de puntos, almacén en memoria):
+    - **escribir 2,18 M filas/s** (objetivo ≥ 1 M: cumple);
+    - **tipar 0,97 M filas/s** (hex → WKB validado → Arrow);
+    - la copia entera por texto da 143 000 filas/s, y el resto del tiempo es el camino de texto de
+      `sellar` (JSON fila a fila), no el formato. Por eso G3 debe traer la geometría de los drivers
+      en Arrow;
+    - el fichero: 21,4 MB para 1 M de puntos.
+  - **Adopción, primera comprobación** (`v5-adopcion-local.py`, la matriz entera es G2·5):
+    - **DuckDB** lo lee como `GEOMETRY` con `geo_bbox` por grupo;
+    - **GeoPandas** `read_parquet` da 1 M de filas con `OGC:CRS84`;
+    - **pyarrow** ve la clave `geo`, el PROJJSON y la marca `geoarrow.wkb`, pero su `logical_type`
+      sale `None` (esta versión no lo nombra; a la matriz).
+  - **Lo que queda para G2·2:** hoy cada fichero es un solo grupo de filas de hasta 1 M (lo de
+    `parquet` por defecto), sin orden espacial.

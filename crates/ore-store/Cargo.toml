@@ -38,7 +38,8 @@ iceberg = "0.10.1"
 # 56 hasta W3.6a). `iceberg` escribe los ficheros de datos; aqui se leen —para
 # fundir un incremento con lo que habia, y para `leer`— y se construye el
 # RecordBatch tipado. SNAPPY es Rust puro; zstd entra por `iceberg` (avro).
-parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+# `geospatial` (ORE 0067 G2·1): el tipo lógico GEOMETRY/GEOGRAPHY desde la marca `geoarrow.wkb`.
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "geospatial"] }
 arrow-array  = "58"
 arrow-schema = "58"
 # W3.6c (0031 §11): `escribir` recibe la tabla Arrow por IPC (lo que el SDK

@@ -112,14 +112,38 @@ pub fn arrow_de_forma(f: &Forma) -> DataType {
 /// es lo que GeoArrow lee, y lo que pyarrow y DuckDB entregan como geometría.
 pub fn campo(nombre: &str, f: &Forma) -> Field {
     let c = Field::new(nombre, arrow_de_forma(f), true);
-    match f.geoarrow_metadatos() {
-        Some(m) => c.with_metadata(std::collections::HashMap::from([
-            ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
-            ("ARROW:extension:metadata".to_string(), m),
-        ])),
-        None => c,
+    match (f.geoarrow_metadatos(), f) {
+        (
+            Some(m),
+            Forma::Geo {
+                subtipo,
+                crs,
+                esferica,
+            },
+        ) => {
+            // ORE 0067 G2·1: y el tipo de OOS, para que el lago lo guarde en
+            // `ore.geo.<columna>` sin volver a analizar nada.
+            let tipo = if *esferica {
+                format!("Geography<{subtipo}>")
+            } else {
+                format!("Geometry<{subtipo}, {crs}>")
+            };
+            let tipo = ore_core::types::parse_type(&tipo)
+                .map(|t| t.to_string())
+                .unwrap_or(tipo);
+            c.with_metadata(std::collections::HashMap::from([
+                ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
+                ("ARROW:extension:metadata".to_string(), m),
+                (META_TIPO.to_string(), tipo),
+            ]))
+        }
+        _ => c,
     }
 }
+
+/// ORE 0067 G2·1 · La clave de los metadatos de un campo que lleva su tipo de
+/// OOS (solo en las columnas geo, que Arrow no sabe nombrar enteras).
+pub const META_TIPO: &str = "ore:type";
 
 /// El nombre de la extensión de GeoArrow para WKB.
 pub const GEOARROW_WKB: &str = "geoarrow.wkb";
@@ -520,7 +544,12 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
 /// por [`ore_core::geo::valor_de_texto`] (hexadecimal → WKB validado contra
 /// subtipo, dimensiones, SRID y rango → WKB ISO). `Err` dice cuántos no son
 /// del tipo, enseña el primero y por qué, como [`analizar_columna`].
-fn columna_geo(nombre: &str, tipo: &str, forma: &Forma, filas: &[Fila]) -> Result<ArrayRef, String> {
+fn columna_geo(
+    nombre: &str,
+    tipo: &str,
+    forma: &Forma,
+    filas: &[Fila],
+) -> Result<ArrayRef, String> {
     let Forma::Geo {
         subtipo,
         crs,
@@ -1232,13 +1261,24 @@ mod tests {
             BTreeMap::from([("id".into(), "1".into()), ("geom".into(), pg.into())]),
             BTreeMap::from([("id".into(), "2".into())]),
         ];
-        let Lote { lote: l, sin_estrechar } = lote(&esquema, &filas).unwrap();
+        let Lote {
+            lote: l,
+            sin_estrechar,
+        } = lote(&esquema, &filas).unwrap();
         assert!(sin_estrechar.is_empty(), "{sin_estrechar:?}");
         let campo_geom = l.schema().field_with_name("geom").unwrap().clone();
         assert_eq!(campo_geom.data_type(), &DataType::Binary);
         assert_eq!(campo_geom.metadata()["ARROW:extension:name"], GEOARROW_WKB);
-        assert_eq!(campo_geom.metadata()["ARROW:extension:metadata"], r#"{"crs":"OGC:CRS84"}"#);
-        let col = l.column_by_name("geom").unwrap().as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(
+            campo_geom.metadata()["ARROW:extension:metadata"],
+            r#"{"crs":"OGC:CRS84"}"#
+        );
+        let col = l
+            .column_by_name("geom")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
         assert_eq!(ore_core::geo::a_hex(col.value(0)), iso);
         assert!(col.is_null(1));
         // Por el Parquet y de vuelta: el hexadecimal ISO, y la nula sigue nula.
@@ -1250,17 +1290,32 @@ mod tests {
         assert_eq!(vuelta[0]["geom"], iso);
         assert!(!vuelta[1].contains_key("geom"));
         let otra = lote(&esquema, &vuelta).unwrap().lote;
-        assert_eq!(otra.column_by_name("geom").unwrap().to_data(), l.column_by_name("geom").unwrap().to_data());
+        assert_eq!(
+            otra.column_by_name("geom").unwrap().to_data(),
+            l.column_by_name("geom").unwrap().to_data()
+        );
         // Un WKT, o un polígono en una columna de puntos: la columna se queda texto.
         for (malo, dice) in [
             ("POINT(1 2)", "WKT"),
             ("010300000000000000", "un `Polygon` en una columna `Point`"),
         ] {
-            let filas = vec![BTreeMap::from([("id".into(), "1".into()), ("geom".into(), malo.into())])];
-            let Lote { lote: l, sin_estrechar } = lote(&esquema, &filas).unwrap();
+            let filas = vec![BTreeMap::from([
+                ("id".into(), "1".into()),
+                ("geom".into(), malo.into()),
+            ])];
+            let Lote {
+                lote: l,
+                sin_estrechar,
+            } = lote(&esquema, &filas).unwrap();
             let e = &sin_estrechar["geom"];
-            assert!(e.contains("no son `Geometry<Point>`") && e.contains(dice), "{e}");
-            assert_eq!(l.schema().field_with_name("geom").unwrap().data_type(), &DataType::Utf8);
+            assert!(
+                e.contains("no son `Geometry<Point>`") && e.contains(dice),
+                "{e}"
+            );
+            assert_eq!(
+                l.schema().field_with_name("geom").unwrap().data_type(),
+                &DataType::Utf8
+            );
         }
     }
 

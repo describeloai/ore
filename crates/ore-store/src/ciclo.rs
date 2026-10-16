@@ -2577,13 +2577,76 @@ mod tests {
         lago.filas(&lago.abrir(ml, "copias/p_v").unwrap()).unwrap()
     }
 
+    /// ORE 0067 G2·1 (medida) · **¿Entra un snapshot en una tabla v3?** El
+    /// escritor arma los snapshots a mano con manifiestos v2; v3 pide linaje de
+    /// filas. Se crea la tabla, se sube a v3 y se escriben dos snapshots.
+    #[test]
+    fn una_tabla_v3_acepta_los_snapshots_del_escritor() {
+        use iceberg::spec::{FormatVersion, NestedField, PrimitiveType, Schema, Type};
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let esquema = Schema::builder()
+            .with_fields(vec![Arc::new(NestedField::optional(
+                1,
+                "id",
+                Type::Primitive(PrimitiveType::Long),
+            ))])
+            .build()
+            .unwrap();
+        let t = lago.crear("copias/v3", esquema, HashMap::new()).unwrap();
+        let t = lago
+            .confirmar(
+                &t,
+                vec![iceberg::TableUpdate::UpgradeFormatVersion {
+                    format_version: FormatVersion::V3,
+                }],
+                vec![],
+            )
+            .expect("sube a v3");
+        assert_eq!(t.metadata().format_version(), FormatVersion::V3);
+        let lote = |v: i64| {
+            arrow_array::RecordBatch::try_new(
+                Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                    "id",
+                    arrow_schema::DataType::Int64,
+                    true,
+                )])),
+                vec![Arc::new(arrow_array::Int64Array::from(vec![v])) as arrow_array::ArrayRef],
+            )
+            .unwrap()
+        };
+        let esquema = t.metadata().current_schema().as_ref().clone();
+        let t = lago
+            .instantanea(
+                &t,
+                esquema.clone(),
+                vec![lote(1)],
+                Operacion::Anexar,
+                HashMap::new(),
+            )
+            .expect("primer snapshot en v3")
+            .tabla;
+        let t = lago
+            .instantanea(
+                &t,
+                esquema,
+                vec![lote(2)],
+                Operacion::Anexar,
+                HashMap::new(),
+            )
+            .expect("segundo snapshot en v3")
+            .tabla;
+        assert_eq!(t.metadata().format_version(), FormatVersion::V3);
+        assert_eq!(lago.filas(&t).unwrap().len(), 2);
+    }
+
     /// v1alpha32 (ORE 0067 G1·3) · **Una copia con geometría, de punta a
     /// punta**: el texto de PostGIS (EWKB en hexadecimal) se sella en una tabla
     /// Iceberg como `binary` con WKB ISO, fundir sobre ella la lee y la vuelve a
     /// escribir igual, y la respuesta no dice `sin_estrechar`.
     #[test]
     fn una_copia_con_geometria_llega_al_lago() {
-        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let memoria = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(memoria.clone());
         let mut cab = cabecera("1");
         cab.esquema = [
             ("id".to_string(), "Integer".to_string()),
@@ -2598,18 +2661,93 @@ mod tests {
             "copias/p_v",
             None,
             false,
-            [format!("{{\"id\":\"1\",\"geom\":\"{pg}\"}}"), "{\"id\":\"2\"}".to_string()].iter().map(String::as_str),
-            crate::medir::Medidor::de(&ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap()),
+            [
+                format!("{{\"id\":\"1\",\"geom\":\"{pg}\"}}"),
+                "{\"id\":\"2\"}".to_string(),
+            ]
+            .iter()
+            .map(String::as_str),
+            crate::medir::Medidor::de(
+                &ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
+            ),
         )
         .expect("sella");
         assert!(s1.contains(r#""sin_estrechar":{}"#), "{s1}");
         let ml1 = campo(&s1, "metadata_location");
         let t = lago.abrir(&ml1, "copias/p_v").unwrap();
-        let tipo = t.metadata().current_schema().field_by_name("geom").unwrap().field_type.to_string();
+        let tipo = t
+            .metadata()
+            .current_schema()
+            .field_by_name("geom")
+            .unwrap()
+            .field_type
+            .to_string();
         assert_eq!(tipo, "binary");
         let filas = filas_de(&lago, &ml1);
         assert_eq!(filas[0]["geom"], iso);
         assert!(!filas[1].contains_key("geom"));
+        // ORE 0067 G2·1: la tabla es v3 y guarda el tipo; el fichero lo escribe
+        // ORE, con el tipo lógico GEOMETRY y la clave GeoParquet `geo`.
+        assert_eq!(
+            t.metadata().format_version(),
+            iceberg::spec::FormatVersion::V3
+        );
+        assert_eq!(
+            t.metadata()
+                .properties()
+                .get("ore.geo.geom")
+                .map(String::as_str),
+            Some(r#"{"crs":"OGC:CRS84","type":"Geometry<Point>"}"#)
+        );
+        let datos: Vec<Vec<u8>> = memoria
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| k.contains("/data/") && k.ends_with(".parquet"))
+            .map(|(_, v)| v.clone())
+            .collect();
+        assert_eq!(datos.len(), 1);
+        let r =
+            parquet::file::reader::SerializedFileReader::new(bytes::Bytes::from(datos[0].clone()))
+                .unwrap();
+        use parquet::file::reader::FileReader;
+        let fm = r.metadata().file_metadata();
+        let col = fm
+            .schema_descr()
+            .columns()
+            .iter()
+            .find(|c| c.name() == "geom")
+            .unwrap()
+            .clone();
+        assert!(
+            matches!(
+                col.logical_type_ref(),
+                Some(parquet::basic::LogicalType::Geometry { .. })
+            ),
+            "{:?}",
+            col.logical_type_ref()
+        );
+        let geo = fm
+            .key_value_metadata()
+            .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
+            .and_then(|k| k.value.clone())
+            .expect("la clave geo");
+        let geo: serde_json::Value = serde_json::from_str(&geo).unwrap();
+        assert_eq!(geo["version"], "1.1.0");
+        assert_eq!(geo["primary_column"], "geom");
+        assert_eq!(geo["columns"]["geom"]["encoding"], "WKB");
+        assert_eq!(
+            geo["columns"]["geom"]["geometry_types"],
+            serde_json::json!(["Point"])
+        );
+        assert_eq!(geo["columns"]["geom"]["crs"]["id"]["authority"], "OGC");
+        assert_eq!(geo["columns"]["geom"]["crs"]["id"]["code"], "CRS84");
+        assert!(
+            geo["columns"]["geom"]["bbox"]
+                .as_array()
+                .is_some_and(|b| b.len() == 4)
+        );
         // Fundir lee la geometría del lago (como su hexadecimal) y la vuelve a sellar.
         let s2 = sellar_con(
             &lago,
@@ -2622,13 +2760,18 @@ mod tests {
             Some(&ml1),
             true,
             ["{\"id\":\"3\",\"geom\":\"0101000000000000000000F87F000000000000F87F\"}"].into_iter(),
-            crate::medir::Medidor::de(&ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap()),
+            crate::medir::Medidor::de(
+                &ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
+            ),
         )
         .expect("funde");
         assert_eq!(campo(&s2, "filas"), "3");
         let filas = filas_de(&lago, &campo(&s2, "metadata_location"));
         assert_eq!(filas[0]["geom"], iso);
-        assert_eq!(filas[2]["geom"], "0101000000000000000000F87F000000000000F87F");
+        assert_eq!(
+            filas[2]["geom"],
+            "0101000000000000000000F87F000000000000F87F"
+        );
     }
 
     /// 0063 S7c: lo que las promesas piden se cuenta sobre la versión ENTERA
