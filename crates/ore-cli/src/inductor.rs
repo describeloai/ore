@@ -142,6 +142,11 @@ pub enum Clase {
     /// concepto acuñado sin esta pregunta sería una decisión con aspecto de
     /// tomada.
     Clasificacion,
+    /// v1alpha32 (ORE 0067 G1·3) · Dos columnas numéricas que parecen la
+    /// latitud y la longitud de un punto. La geometría casi nunca llega como
+    /// tal (0066 T7: ni una columna geo en 18 fuentes, y tres tablas con pares
+    /// lat/lon): se propone, no se impone.
+    Geo,
 }
 
 /// **Cómo se contesta** una clase de pregunta. Vive aquí, junto a `Clase`, y no
@@ -198,7 +203,8 @@ impl Clase {
             | Clase::Concepto
             | Clase::Relacion
             | Clase::Familia
-            | Clase::Dueno => Forma::Palabra,
+            | Clase::Dueno
+            | Clase::Geo => Forma::Palabra,
         }
     }
 
@@ -215,6 +221,7 @@ impl Clase {
             Clase::Familia => "familia",
             Clase::Dueno => "dueno",
             Clase::Clasificacion => "clasificacion",
+            Clase::Geo => "geo",
         }
     }
 }
@@ -815,6 +822,24 @@ pub fn inducir_con_regla(
                  entidad o puede ser un informe sobre ella. Emitirla como \
                  entidad sin mas duplicaria el concepto",
                 vec!["entidad".into(), OMITIR.into()],
+            ));
+        }
+
+        // v1alpha32 (ORE 0067 G1·3): un par latitud/longitud se propone como
+        // punto. La respuesta se guarda en las decisiones, y quien la aplica es
+        // la copia, que construye la geometría (G3·4).
+        if let Some((lat, lon)) = par_lat_lon(t)
+            && dec.de(&id(Clase::Geo, &t.nombre)).is_none()
+        {
+            pendientes.push(pendiente(
+                Clase::Geo,
+                &t.nombre,
+                &t.nombre,
+                format!("`{lat}` y `{lon}` parecen la latitud y la longitud de un punto"),
+                "la geografía casi nunca llega como geometría: llega como dos números. \
+                 Confirmarlo hace de la pareja un `Geometry<Point>` (OGC:CRS84, longitud y \
+                 latitud) que la copia construye; si no lo son, `no`",
+                vec!["si".into(), "no".into()],
             ));
         }
 
@@ -1961,6 +1986,57 @@ fn handle(h: &str) -> bool {
 /// el separador, así que eso declara una propiedad `2>`. Lo dijo `ore validate`
 /// —`OOS1005`, clave desconocida— sobre un documento que nadie escribió a mano,
 /// que es justo la clase de error que un emisor tiene que hacer imposible.
+/// v1alpha32 (ORE 0067 G1·3) · ¿Lleva la tabla una columna geo? Entonces su
+/// `Table` y su entidad son de v1alpha32: emitirlas en otra versión sería
+/// `OOS3001` en el propio paquete inducido.
+fn lleva_geo(t: &Tabla) -> bool {
+    t.columnas.iter().any(|c| {
+        c.tipo
+            .as_deref()
+            .and_then(|x| ore_core::types::parse_type(x).ok())
+            .is_some_and(|x| x.es_de_v1alpha32())
+    })
+}
+
+/// v1alpha32 (ORE 0067 G1·3) · **El par latitud/longitud de una tabla**, si lo
+/// hay: dos columnas numéricas (no enteras) cuyos nombres, partidos por `_`,
+/// llevan una `lat`/`latitude`/`latitud` y la otra `lon`/`lng`/`long`/
+/// `longitude`/`longitud`, **con el mismo resto** (`latitud_actual` va con
+/// `longitud_actual`). Hace falta la pareja: `longitud_focal_mm` sola no es
+/// nada (el falso positivo que midió 0066 T7). Si hay más de un par, el primero
+/// en el orden de la tabla.
+fn par_lat_lon(t: &Tabla) -> Option<(String, String)> {
+    const LAT: &[&str] = &["lat", "latitude", "latitud"];
+    const LON: &[&str] = &["lon", "lng", "long", "longitude", "longitud"];
+    let numerica = |c: &ore_driver::catalogo::Columna| {
+        c.tipo
+            .as_deref()
+            .is_some_and(|x| x == "Float" || x.starts_with("Decimal"))
+    };
+    // El nombre sin la palabra de la coordenada: lo que tiene que coincidir.
+    let resto = |nombre: &str, palabras: &[&str]| -> Option<String> {
+        let partes: Vec<String> = nombre.to_lowercase().split('_').map(String::from).collect();
+        let i = partes.iter().position(|p| palabras.contains(&p.as_str()))?;
+        let mut r = partes.clone();
+        r.remove(i);
+        Some(r.join("_"))
+    };
+    for la in t.columnas.iter().filter(|c| numerica(c)) {
+        let Some(r) = resto(&la.nombre, LAT) else {
+            continue;
+        };
+        if let Some(lo) = t
+            .columnas
+            .iter()
+            .filter(|c| numerica(c) && c.nombre != la.nombre)
+            .find(|c| resto(&c.nombre, LON).as_deref() == Some(r.as_str()))
+        {
+            return Some((la.nombre.clone(), lo.nombre.clone()));
+        }
+    }
+    None
+}
+
 fn en_flujo(tipo: &str) -> String {
     if tipo.contains([',', '{', '}', '[', ']', ':']) {
         entrecomillar(tipo)
@@ -2031,7 +2107,7 @@ fn entidad_yaml(
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha8\n\
+        "apiVersion: oos.dev/{}\n\
          kind: Entity\n\
          metadata:\n  \
            name: {nombre}\n  \
@@ -2039,7 +2115,13 @@ fn entidad_yaml(
            labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
            nature: entity\n  \
-           backedBy: {vista}\n"
+           backedBy: {vista}\n",
+        // v1alpha32: una entidad con una propiedad geo es de v1alpha32.
+        if lleva_geo(t) {
+            "v1alpha32"
+        } else {
+            "v1alpha8"
+        },
     );
     if clave.is_empty() {
         s.push_str(
@@ -2373,7 +2455,10 @@ fn tabla_yaml(
          spec:\n  \
            datasource: {fuente}\n  \
            object: {}\n",
-        if garantiza {
+        if lleva_geo(t) {
+            // v1alpha32: una columna geo es de v1alpha32 (`01-la-geometria`).
+            "v1alpha32"
+        } else if garantiza {
             "v1alpha22"
         } else if t.formato.is_some() {
             "v1alpha16"
@@ -3326,6 +3411,81 @@ pub fn informe_json(ind: &Induccion) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v1alpha32 (ORE 0067 G1·3): los pares lat/lon de las tablas reales que
+    /// midió 0066 T7, y su falso positivo.
+    #[test]
+    fn el_par_lat_lon_se_propone_y_el_falso_positivo_no() {
+        let col = |n: &str, t: &str| ore_driver::catalogo::Columna {
+            nombre: n.into(),
+            tipo: Some(t.into()),
+            ..Default::default()
+        };
+        let tabla = |n: &str, cs: Vec<ore_driver::catalogo::Columna>| Tabla {
+            nombre: n.into(),
+            columnas: cs,
+            clase: "table".into(),
+            ..Default::default()
+        };
+        let estorninos = tabla(
+            "public.flujos_migratorios_estorninos",
+            vec![
+                col("id", "Integer"),
+                col("latitud_actual", "Decimal<9, 6>"),
+                col("longitud_actual", "Decimal<9, 6>"),
+                col("punto_origen_ciudad", "String"),
+            ],
+        );
+        assert_eq!(
+            par_lat_lon(&estorninos),
+            Some(("latitud_actual".into(), "longitud_actual".into()))
+        );
+        let hangares = tabla(
+            "public.hangars",
+            vec![
+                col("longitude", "Decimal<10, 6>"),
+                col("latitude", "Decimal<9, 6>"),
+            ],
+        );
+        assert_eq!(
+            par_lat_lon(&hangares),
+            Some(("latitude".into(), "longitude".into()))
+        );
+        // Dos pares: cada latitud con la longitud de su mismo resto.
+        let viaje = tabla(
+            "viajes",
+            vec![
+                col("origen_lat", "Float"),
+                col("destino_lat", "Float"),
+                col("destino_lng", "Float"),
+                col("origen_lng", "Float"),
+            ],
+        );
+        assert_eq!(
+            par_lat_lon(&viaje),
+            Some(("origen_lat".into(), "origen_lng".into()))
+        );
+        // Sola, sin pareja, una «longitud» no es nada.
+        let telescopios = tabla(
+            "public.telescopios",
+            vec![
+                col("longitud_focal_mm", "Integer"),
+                col("apertura", "Float"),
+            ],
+        );
+        assert_eq!(par_lat_lon(&telescopios), None);
+        // En texto o en enteros no se propone: no son coordenadas medidas.
+        let texto = tabla("t", vec![col("lat", "String"), col("lon", "String")]);
+        assert_eq!(par_lat_lon(&texto), None);
+        let enteros = tabla("t", vec![col("lat", "Integer"), col("lon", "Integer")]);
+        assert_eq!(par_lat_lon(&enteros), None);
+        // Una columna geo lleva la tabla a v1alpha32; sin ella, no.
+        assert!(!lleva_geo(&estorninos));
+        let con_geo = tabla("t", vec![col("lugar", "Geometry<Point, EPSG:25830>")]);
+        assert!(lleva_geo(&con_geo));
+        assert_eq!(Clase::Geo.prefijo(), "geo");
+        assert_eq!(Clase::Geo.forma(), Forma::Palabra);
+    }
 
     /// OOS v1alpha29 · Toda colección es posible: lo que no se sabe qué es va a
     /// una `multimodal` sin `formats`; una familia nueva escribe su puntero y su
