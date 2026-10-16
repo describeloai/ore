@@ -63,14 +63,14 @@ fi
 # solo lectura pedida al servidor— siguen corriendo y son del driver, no del
 # ejecutor.
 
-# ── 6 · Cada tipo llega como texto, y lo que no se sabe leer se niega ────────
+# ── 6 · Cada tipo llega como texto, nunca vacío ─────────────────────────────
 #
 # El driver leia cada columna como `String` y convertia el fallo de conversion
 # en nulo: un float8, un int8, un numeric, una fecha o un bool salian VACIOS y la
 # copia decia `copiada`. Se midio en demo (medida W1 §B): products con 2 de 9
-# columnas. Ahora cada valor se decodifica del cable por su tipo y se escribe
-# como Postgres lo escribiria; y un tipo que no se sabe leer FALLA nombrando la
-# columna, en vez de callar.
+# columnas. Desde ADR 0065 PG2 cada valor llega en el texto que escribe el propio
+# Postgres (el protocolo simple, con la sesión fijada): no queda tipo que no se
+# sepa leer.
 psql "$PG_URL" -q <<'SQL'
 DROP TABLE IF EXISTS tipos;
 CREATE TABLE tipos (
@@ -86,10 +86,9 @@ pide() {
 }
 fila=$(pide '"id":"id","grande":"grande","real8":"real8","exacto":"exacto","si":"si","dia":"dia","instante":"instante","uuid":"uuid","doc":"doc","texto":"texto","vacio":"vacio"')
 igual "$fila" '{"dia":"2020-02-29","doc":"{\"a\": 1}","exacto":"10.50","grande":"9007199254740993","id":"1","instante":"2020-02-29 10:00:00.5+00","real8":"12.5","si":"true","texto":"hola","uuid":"12345678-9abc-def0-1234-56789abcdef0"}'   "cada tipo llega como texto, exacto, y el nulo es la propiedad ausente"
+# ADR 0065 PG2 (D-PG4): lo que no se tipa con exactitud viaja como el texto que escribe
+# Postgres, en vez de negarse (antes: «un interval tenia que negarse»).
 salida=$(pide '"id":"id","lapso":"lapso"')
-case "$salida" in
-  *'`lapso`'*'`interval`'*) ;;
-  *) falla "un interval tenia que negarse nombrando la columna y el tipo; salio: $salida";;
-esac
+igual "$salida" '{"id":"1","lapso":"1 day"}' "un interval llega como su texto de Postgres"
 
 echo "OK · fuentes reales (1-2, 6; 3-5 se fueron con ore-exec)"
