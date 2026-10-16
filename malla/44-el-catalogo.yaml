@@ -144,6 +144,17 @@ spec:
                 chmod 0400 /puesto/agente-$p
               done
               echo "agente puesto · $(cat /puesto/agente-cliente)"
+              # ⭐ ADR 0065 PG4 · LA CLAVE SSH DE LA CELDA (la de SFTP, 0061 S1):
+              #   con ella `ore-read-postgres` entra por el bastión de un
+              #   cliente (`ssh=` en la URL). OPCIONAL, como en la pasarela: sin
+              #   ella el catálogo de lo demás sigue, y el de un túnel dice por qué.
+              if gcloud secrets versions access latest --secret=t-demo-sftp-clave                    --out-file=/puesto/sftp 2>/tmp/clave.err; then
+                chmod 0400 /puesto/sftp
+                echo "clave SSH de la celda puesta · $(wc -c < /puesto/sftp) bytes"
+              else
+                rm -f /puesto/sftp
+                echo "sin clave SSH de la celda: $(tr '\n' ' ' < /tmp/clave.err | cut -c1-200)"
+              fi
           resources:
             requests: {cpu: "50m", memory: 128Mi}
             limits:   {cpu: "500m", memory: 256Mi}
@@ -193,6 +204,8 @@ spec:
             - { name: EMISOR, value: "https://login.paladio.io" }
             - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
             - { name: REALM, value: "rubix" }
+            # ADR 0065 PG4: el túnel SSH de un Postgres entra con la clave de la celda.
+            - { name: ORE_SFTP_CLAVE, value: /puesto/sftp }
             # ⭐ Quién soy: el fallo lo lleva, y ore-serve lo compara con el Job
             #   que haya en la cola para saber si alguien pulsó «Reintentar».
             - name: JOB

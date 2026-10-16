@@ -122,14 +122,18 @@ pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
     if tipo == "sharepoint" {
         return sharepoint(id_de("ORE_ID_DRIVER"), id_de("ORE_ID_MEDIOS"));
     }
-    if tipo == "sftp" {
+    if tipo == "sftp" || tipo == "postgres" || tipo == "postgresql" {
         let v = |k: &str| {
             std::env::var(k)
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        return sftp(clave_publica(v), v("ORE_IP_SALIDA"));
+        return if tipo == "sftp" {
+            sftp(clave_publica(v), v("ORE_IP_SALIDA"))
+        } else {
+            postgres(clave_publica(v), v("ORE_IP_SALIDA"))
+        };
     }
     de_con(tipo, cuenta, ids_de_la_celda())
 }
@@ -706,7 +710,11 @@ fn gcs(driver: Option<&str>, medios: Option<&str>) -> Json {
 /// siempre verificado.** Sin `sslmode`, el driver verifica la cadena y el
 /// nombre del host; con una CA que no es pública (RDS, Cloud SQL, Supabase,
 /// Aiven), su PEM va en la URL (`sslrootcert`). En claro, no.
-fn postgres() -> Json {
+///
+/// ⭐ ADR 0065 PG4 (D-PG3) · **Detrás de un bastión**: la misma clave SSH de
+/// la celda que SFTP, en el `authorized_keys` de un bastión que ve la base, y
+/// su huella fijada. TLS sigue de punta a punta por dentro del túnel.
+fn postgres(publica: Option<String>, ip: Option<String>) -> Json {
     let no = |modo: &str, porque: &str| {
         Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
     };
@@ -714,22 +722,64 @@ fn postgres() -> Json {
         ("tipo", Json::s("postgres")),
         (
             "modos",
-            Json::Arr(vec![Json::obj([
-                ("modo", Json::s("cadena")),
-                ("recomendado", Json::Bool(true)),
-                (
-                    "dice",
-                    Json::s(
-                        "La credencial va dentro de la cadena de conexión, cifrada en el custodio;                          mejor un usuario que sólo lee. TLS se verifica siempre (la cadena y el                          nombre del host). Si tu proveedor firma con su propia CA (RDS, Cloud SQL,                          Supabase, Aiven), pega su PEM, codificado en la URL, en `sslrootcert`; si                          el certificado no lleva el nombre por el que conectas, `sslmode=verify-ca`.",
+            Json::Arr(vec![
+                Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el custodio;                          mejor un usuario que sólo lee. TLS se verifica siempre (la cadena y el                          nombre del host). Si tu proveedor firma con su propia CA (RDS, Cloud SQL,                          Supabase, Aiven), pega su PEM, codificado en la URL, en `sslrootcert`; si                          el certificado no lleva el nombre por el que conectas, `sslmode=verify-ca`.",
+                        ),
                     ),
-                ),
-                (
-                    "formato",
-                    Json::s(
-                        "postgres://<usuario>:<contraseña>@<host>[:<puerto>]/<base>[?sslmode=verify-full|verify-ca][&sslrootcert=<PEM de la CA, codificado>]",
+                    (
+                        "formato",
+                        Json::s(
+                            "postgres://<usuario>:<contraseña>@<host>[:<puerto>]/<base>[?sslmode=verify-full|verify-ca][&sslrootcert=<PEM de la CA, codificado>]",
+                        ),
                     ),
-                ),
-            ])]),
+                ]),
+                Json::obj([
+                    ("modo", Json::s("tunel-ssh")),
+                    ("recomendado", Json::Bool(false)),
+                    (
+                        "dice",
+                        Json::s(
+                            "Si tu base no está en internet: la celda entra por un bastión SSH tuyo que                          sí la ve, con su propia clave. Pega su parte pública en el authorized_keys                          del usuario del bastión (que pueda reenviar, `AllowTcpForwarding`) y fija                          la huella del bastión, que la prueba te enseña. El host de la URL es el de                          la base visto desde el bastión, y TLS se verifica contra él.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "postgres://<usuario>:<contraseña>@<host de la base>[:<puerto>]/<base>?ssh=<usuario>@<bastión>[:<puerto>]&ssh_huella=SHA256:<huella del bastión>",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![Json::obj([
+                            (
+                                "para",
+                                Json::s("dejar entrar a la celda en el bastión, sólo con su clave"),
+                            ),
+                            (
+                                "comando",
+                                Json::s(format!(
+                                    "echo '{}' >> ~<usuario>/.ssh/authorized_keys",
+                                    publica
+                                        .as_deref()
+                                        .unwrap_or("<la clave pública de la celda>")
+                                )),
+                            ),
+                        ])]),
+                    ),
+                    (
+                        "ipDeSalida",
+                        Json::s(ip.unwrap_or_else(|| {
+                            "esta celda no dice todavía su IP de salida (`ORE_IP_SALIDA`)".into()
+                        })),
+                    ),
+                ]),
+            ]),
         ),
         (
             "noAdmitidos",
@@ -753,7 +803,7 @@ fn postgres() -> Json {
 
 pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -> Json {
     match tipo {
-        "postgres" | "postgresql" => postgres(),
+        "postgres" | "postgresql" => postgres(None, None),
         "bigquery" => {
             let mut celda = vec![
                 ("modo", Json::s("celda")),
@@ -1168,6 +1218,8 @@ mod tests {
             "verify-ca",
             "\"en-claro\"",
             "\"cualquier-certificado\"",
+            "\"tunel-ssh\"",
+            "ssh_huella",
         ] {
             assert!(j.contains(x), "{x}: {j}");
         }

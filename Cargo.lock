@@ -2845,6 +2845,7 @@ dependencies = [
  "native-tls",
  "ore-core",
  "ore-driver",
+ "ore-sftp",
  "ore-sql",
  "postgres",
  "postgres-native-tls",

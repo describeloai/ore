@@ -70,6 +70,7 @@ mod lectura;
 mod senal;
 mod texto;
 mod tls;
+mod tunel;
 
 /// Un documento, una consulta.
 ///

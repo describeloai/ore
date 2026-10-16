@@ -1,8 +1,8 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** y **PG3 escrito** (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** **PG3 escrito** y **PG4 hecho en el laboratorio** (2026-10-16); Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
-PG4 (túnel SSH); se empuja todo junto al final. Investigación:
+PG5 (IAM de GCP); se empuja todo junto al final. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
 **Decide** cómo lee ORE el Postgres de un cliente cuando es una base gestionada, privada o con una CA
 propia, y cómo entra el CDC. Toca [`0008`](0008-el-protocolo-del-driver.md) (el contrato del driver),
@@ -350,6 +350,20 @@ a IPs públicas y sólo para `ore.dev/rol: driver`. El 5432 entra en el rango.
 |---|---|
 | **PG3·1** | `malla/20-driver.yaml`: los puertos son `443`, `22` y `1024–65535`. `gen-inquilino.py --comprobar`: «la plantilla y el renderizador dicen lo mismo». Victor renderizado lleva el rango. `kubectl apply --dry-run=server` acepta el de demo y el de victor |
 | **PG3·2** | **Sin aplicar**: entra con el despliegue final (Flux, al converger), después del binario de PG1/PG2. Quedará comprobar desde un Job de victor que un Postgres en el 6543 llega (el pooler de Supabase, cuando haya proyecto) |
+
+### PG4 · Túnel SSH: hecho en el laboratorio (2026-10-16)
+
+| paso | qué |
+|---|---|
+| **PG4·1** | **`ore-sftp` presta su sesión.** `ore_sftp::sesion` hace el saludo, compara la huella **antes** de autenticar y entra con la clave de la celda (`ORE_SFTP_CLAVE`): la identidad de D-O4, sin copiarla. `Fuente::bastion` construye la coordenada de un bastión. `conectar` de SFTP pasa a usarla, sin cambiar su comportamiento |
+| **PG4·2** | **`crates/ore-read-postgres/src/tunel.rs`.** La URL lleva `ssh=<usuario>@<bastión>[:<puerto>]&ssh_huella=SHA256:<…>[&ssh_legado=1]`; `separar` lo quita antes que nada. `abrir` comprueba ya el bastión y el camino hasta la base: el primer canal `direct-tcpip` se abre al empezar, así que el error sale con su causa (la huella, la clave, «¿llega a la base y permite el reenvío, `AllowTcpForwarding`?»). Después deja un reenvío en `127.0.0.1:<efímero>`, dentro del proceso, con una sesión SSH y su canal por cada conexión aceptada (cancelar abre la suya). El bombeo va sin bloquear: un canal de `ssh2` no se lee y escribe desde dos hilos |
+| **PG4·3** | **TLS de punta a punta.** `tls::abrir` escribe el puerto del reenvío en la URL y pone `hostaddr = 127.0.0.1`: el **nombre** del host sigue siendo el de la base, y el certificado se verifica contra él, no contra el bastión. De paso, `sslrootcert` deja de convertir `+` en espacio (un PEM en base64 lo lleva; libpq tampoco lo hace) |
+| **PG4·4** | **El asistente** tiene un segundo modo, `tunel-ssh`: el formato, el comando con la clave pública de la celda para el `authorized_keys` del bastión, y la IP de salida |
+| **PG4·5** | **La clave, en el Job de catálogo** (`malla/44-el-catalogo.yaml`). Su init ya traía secretos a un tmpfs: ahora trae también `t-<celda>-sftp-clave` a `/puesto/sftp`. Es **opcional**, como en la pasarela, y va con `ORE_SFTP_CLAVE`. La copia y la comprobación, cuando hay pasarela, pasan por ella, que ya la tenía. `gen-inquilino.py --comprobar` en verde. **Sin aplicar**: entra con el despliegue final |
+| **PG4·6** | **[`pruebas-de-fuego/pg4-tunel-ssh.sh`](../../pruebas-de-fuego/pg4-tunel-ssh.sh): 13/13.** La base (TLS, CA propia) en una red Docker **interna**; el bastión (OpenSSH) en las dos; el driver sólo en la pública. (1) Sin túnel no se alcanza. (2) Sin huella: no autentica y enseña la vista. (3) Con huella y CA: `check`, `catalogo`, Arrow, v1 y `servir` ×3, con TLS verificando `pgdb`. (4) Huella ajena: se niega sin autenticar. (5) Clave que el bastión no tiene: se niega y dice `authorized_keys`. (6) Host que el bastión no alcanza y (7) bastión sin reenvío: lo dicen. (8) SIGTERM a mitad de un flujo: la sesión desaparece del origen (1 → 0). (9) 4 lectores a la vez, cada uno con su túnel: 20/20 |
+
+Lo medido de paso: el `sshd_config` de Alpine trae `AllowTcpForwarding no`, y sshd se queda con la
+**primera** aparición. Es lo primero que fallará con un bastión real, y el error ya lo nombra.
 
 ## Lo que no se hace aquí
 

@@ -53,7 +53,8 @@ fn laboratorio() -> bool {
     std::env::var("ORE_PG_LABORATORIO").as_deref() == Ok("1")
 }
 
-/// `%XX` y `+` de un valor de la URL.
+/// `%XX` de un valor de la URL. `+` se queda: un PEM en base64 lo lleva, y
+/// libpq tampoco lo lee como espacio.
 fn descodificar(v: &str) -> String {
     let b = v.as_bytes();
     let mut s = Vec::with_capacity(b.len());
@@ -71,7 +72,6 @@ fn descodificar(v: &str) -> String {
                     Err(_) => s.push(b'%'),
                 }
             }
-            b'+' => s.push(b' '),
             x => s.push(x),
         }
         i += 1;
@@ -252,12 +252,26 @@ pub fn explicar(e: &postgres::Error) -> String {
 /// **Abre una sesión** con `url`: TLS según D-PG1, 10 s para conectar, el
 /// nombre de la aplicación y de sólo lectura.
 pub fn abrir(url: &str) -> Result<postgres::Client, Fallo> {
-    let plan = planear(url, laboratorio())?;
+    // ADR 0065 PG4: el túnel SSH, si la URL lo pide, sale antes que nada.
+    let (url_base, bastion) = crate::tunel::separar(url)?;
+    let plan = planear(&url_base, laboratorio())?;
     let tls = conector(&plan)?;
-    let mut config: postgres::Config = plan
-        .url
+    let (texto, por_tunel) = match &bastion {
+        None => (plan.url.clone(), false),
+        Some(b) => {
+            let (_, host, puerto) = crate::tunel::destino(&plan.url, 0)?;
+            let local = crate::tunel::abrir(b, &host, puerto)?;
+            (crate::tunel::destino(&plan.url, local)?.0, true)
+        }
+    };
+    let mut config: postgres::Config = texto
         .parse()
         .map_err(|e| Fallo::new(Codigo::Conexion, format!("la URL no es de Postgres: {e}")))?;
+    if por_tunel {
+        // A la base por el reenvío (su puerto ya va en la URL); el nombre del
+        // host se queda para TLS.
+        config.hostaddr(std::net::IpAddr::from([127, 0, 0, 1]));
+    }
     config.ssl_mode(match &plan.modo {
         Modo::Laboratorio(m) => *m,
         _ => SslMode::Require,

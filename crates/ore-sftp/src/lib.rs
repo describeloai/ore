@@ -26,6 +26,9 @@
 
 mod origen;
 
+/// El de `ssh2` que usa esta crate, para quien abre canales con [`sesion`].
+pub use ssh2;
+
 use std::io::{Read, Seek, SeekFrom};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -67,6 +70,29 @@ pub struct Fuente {
     /// `ssh-rsa` con SHA-1 y los KEX viejos.
     pub legado: bool,
     contrasena: Option<String>,
+}
+
+impl Fuente {
+    /// Un bastión SSH (ADR 0065 PG4): sin ruta y sin contraseña; entra con la
+    /// clave de la celda.
+    pub fn bastion(
+        usuario: &str,
+        host: &str,
+        puerto: u16,
+        huella: Option<String>,
+        legado: bool,
+    ) -> Fuente {
+        Fuente {
+            usuario: usuario.to_string(),
+            host: host.to_string(),
+            puerto,
+            prefijo: String::new(),
+            huella,
+            edad: EDAD,
+            legado,
+            contrasena: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for Fuente {
@@ -333,7 +359,10 @@ fn saludar(f: &Fuente) -> Result<(ssh2::Session, String), Fallo> {
     Ok((s, vista))
 }
 
-fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
+/// **Una sesión SSH autenticada** con la identidad de D-O4: la huella del host
+/// comparada antes de autenticar y la clave de la celda (`ORE_SFTP_CLAVE`).
+/// La usa también el túnel de `ore-read-postgres` (ADR 0065 PG4, D-PG3).
+pub fn sesion(f: &Fuente) -> Result<ssh2::Session, Fallo> {
     let (s, vista) = saludar(f)?;
     match &f.huella {
         None => {
@@ -387,6 +416,11 @@ fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
             ),
         )
     })?;
+    Ok(s)
+}
+
+fn conectar(f: &Fuente) -> Result<Conexion, Fallo> {
+    let s = sesion(f)?;
     let sftp = s
         .sftp()
         .map_err(|e| Fallo::de(Tipo::Otro, format!("the SFTP subsystem does not open: {e}")))?;
