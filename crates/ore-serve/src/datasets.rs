@@ -48,6 +48,14 @@ pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>>
             .filter_map(|(ruta, _)| {
                 let rel = Path::new(ruta.as_str()?);
                 let dentro: std::path::PathBuf = rel.components().skip(1).collect();
+                // ⭐ F7b·1: el puntero sólo se lee si su nombre no sale de la
+                //   ruta (la forma vieja, `datasets/<p>_<n>.json`). Antes se
+                //   leía y analizaba cada uno: 3,2 s por rama con 10.000
+                //   activos y medio CPU (medido), para nada en la forma de hoy.
+                let clave = ore_core::punteros::clave_de(&dentro, None);
+                if dentro.components().count() != 1 {
+                    return clave;
+                }
                 let nodo = std::fs::read_to_string(raiz.join(rel))
                     .ok()
                     .and_then(|t| ore_core::parse::parse(&t).ok());

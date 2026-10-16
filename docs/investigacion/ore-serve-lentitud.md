@@ -292,3 +292,41 @@ La memoria del pico incluye la caché de ficheros de los árboles montados.
 **La memoria está resuelta: ningún OOM.** Lo que queda es **CPU**. Con 0,5 CPU, cada índice
 nuevo cuesta ~2 s a 1.000 activos y ~25 s a 10.000, y 50 ramas en frío hacen cola de uno en uno
 (`candado 9×121 s`). Una rama comparte con `main` casi todo, pero se rehace entera: eso es F7b.
+
+## F7b · lo que cuesta un índice de rama, por fases (2026-10-16)
+
+Medido con un binario instrumentado (musl, medio CPU, 10.000 activos):
+
+| Fase | `main` | rama |
+|---|---|---|
+| montar el árbol (`worktree add` de 20.000 ficheros, más `status`) | 7,6 s | 7,7 s |
+| `cargar_paquete` | 3,7 s | 3,2 s |
+| punteros | 1,2 s | 1,4 s |
+| `de_main` (de dónde sale cada puntero) | 0 | **3,2 s** |
+| proyectar (el bucle de 10.000 ítems) | 4,0 s | 4,7 s |
+| `Guardado::de` | 1,5 s | 1,5 s |
+| total de la petición | 23,5 s | 27,9 s |
+
+**F7b·1 (hecho).** `de_main` volvía a leer y analizar cada puntero heredado de `main` sólo para
+saber su nombre. En la forma de hoy (`datasets/<p>/<schema>/<n>.json`) el nombre sale de la
+ruta; ahora sólo se lee el puntero en la forma vieja (`datasets/<p>_<n>.json`).
+
+**F7b·2 (medido y apartado).** El árbol de una rama, montado a partir del de `main` por enlaces
+duros, escribiendo sólo lo que difiere (`git diff --raw --no-abbrev m c`), con prueba de que da
+el mismo árbol que montarlo entero.
+
+A/B (`l8-ab.sh`): dos vueltas alternadas, servidor recién arrancado, `main` y tres ramas en frío.
+
+| | `main` | ramas (6 peticiones) | media de las ramas | git local de una rama |
+|---|---|---|---|---|
+| F7a | 24,5 · 25,8 s | 23,0 · 25,7 · 31,0 · 26,3 · 25,8 · 27,1 s | **26,5 s** | 5,1–6,3 s |
+| F7a + F7b·1+2 | 26,0 · 25,6 s | 25,7 · 27,3 · 25,6 · 26,5 · 28,4 · 27,7 s | **26,9 s** | 3,7–5,1 s |
+
+Sin instrumentar, montar entero costaba menos que lo medido con el binario instrumentado, y la
+ganancia (~1–2 s de ~26) queda en el ruido. **F7b·2 no se sube**: sus enlaces duros compartidos
+con `main` son un riesgo que no paga. Queda en un `stash` local («F7b-2 derivar desde main»).
+
+**Lo que sí pesa en una rama de 10.000 activos:**
+- **el índice**, ~15 s: parsear y proyectar todo (F7b·3 y F7b·4);
+- **servir: ~5–6 s**, incluso desde la caché. F7a guarda la mini-copia como texto, y cada 15 s
+  se vuelve a parsear entera para recalcular la salud. Es lo siguiente.
