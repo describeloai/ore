@@ -124,7 +124,9 @@ if not p:
     print("V1|banco_geo_pg|-|-|sin Table de municipios en la inducción")
 else:
     s = open(p).read()
-    s2 = re.sub(r"^(\s*)geom\s*:\s*\{.*\}\s*$", r'\1geom: { type: "Geometry<MultiPolygon, EPSG:25830>" }', s, count=1, flags=re.M)
+    s2 = re.sub(r"^(\s*)geom\s*:\s*\{.*\}\s*$", r'\1geom: { type: "Geometry<MultiPolygon, EPSG:25830>", physicalType: "geometry(MultiPolygon,25830)" }', s, count=1, flags=re.M)
+    # Una columna geo es de v1alpha32 (`01-la-geometria` §6): el documento sube de versión.
+    s2 = re.sub(r"apiVersion: oos.dev/v1alpha[0-9]+", "apiVersion: oos.dev/v1alpha32", s2, count=1)
     os.makedirs("/tmp/v/v1/packages/geo/tables", exist_ok=True)
     open("/tmp/v/v1/packages/geo/tables/municipios.yaml", "w").write(s2)
     print("V1|banco_geo_pg|municipios|geom|declarada: " + ("Geometry<MultiPolygon, EPSG:25830>" if s2 != s else "no se encontró la columna"))
