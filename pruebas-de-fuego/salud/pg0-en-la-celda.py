@@ -33,6 +33,7 @@ def main():
     d['metadata']['name'] = nombre
     k = d['spec']['template']['spec']['containers'][0]
     k['command'] = ['/bin/sh', '-c', open(S + guion, encoding='utf-8').read()]
+    k['imagePullPolicy'] = 'Always'  # :main se mueve; la cache del nodo daria el binario de antes
     k['env'] = [e for e in k['env'] if e['name'] not in ('FUENTE', 'NS')] + [
         {'name': 'FUENTE', 'value': fuente}, {'name': 'NS', 'value': ns}]
     d['spec']['activeDeadlineSeconds'] = 600

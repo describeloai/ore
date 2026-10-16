@@ -1,8 +1,8 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido** y **PG1 hecho en el laboratorio** (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0 medido** y **PG1 cerrado en producción** (2026-10-16); Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
-desplegar PG1 y medirlo contra Neon. Investigación:
+PG2, esperando el go. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
 **Decide** cómo lee ORE el Postgres de un cliente cuando es una base gestionada, privada o con una CA
 propia, y cómo entra el CDC. Toca [`0008`](0008-el-protocolo-del-driver.md) (el contrato del driver),
@@ -269,9 +269,25 @@ Después se lanza `pg0-en-la-celda.py <fuente>`. El guion ya prueba la fuente y 
 
 Las tres esperan a que alguien las pida.
 
-**Falta para cerrar PG1:** desplegarlo (merge a `main`; la imagen `ore-drivers:main` sólo sale de la
-punta) y repetir `pg0-de-verdad.sh` contra Neon con el binario nuevo. La CI tiene que pasar en verde
-con `ORE_PG_LABORATORIO=1`.
+#### PG1 · En producción (2026-10-16): cerrado
+
+- **Desplegado.** `fe9d51a5` en `main`. La CI quedó en verde con `ORE_PG_LABORATORIO=1`, incluidos
+  `conectores`, `descubrimiento`, `fuentes-reales` y `los-verbos`, que usan su Postgres sin TLS. La
+  imagen `ore-drivers:main` se publicó.
+- **Neon, con el binario nuevo** (`pg0-de-verdad.sh`, Job en `t-victor`). El lanzador ahora pide
+  `imagePullPolicy: Always`, porque `:main` se mueve y la caché del nodo daría el binario de antes.
+
+| | antes (PG0) | ahora |
+|---|---|---|
+| la URL tal cual (`require` + `channel_binding`) | ok | ok |
+| sin `sslmode`, `require` | ok | ok |
+| `verify-full`, `verify-ca` | «invalid connection string» | **ok** |
+| `disable` | «db error» | **se niega**, diciendo por qué y qué poner |
+| `prefer` | ok | **se niega**, diciendo por qué y qué poner |
+| catálogo | 49 tablas, 1,6 s | 49 tablas, 1,5 s |
+| Arrow ×2, `servir` ×3, 4 lectores a la vez (pooler y directo) | 20/20 | 20/20 |
+
+**PG1 queda cerrado.** Siguiente: PG2 (tipos, filas estimadas y sentencias sin nombre).
 
 ## Lo que no se hace aquí
 
