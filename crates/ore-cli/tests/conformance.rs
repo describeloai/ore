@@ -1611,6 +1611,15 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
 }
 
 #[test]
+fn borrador_de_v1alpha32() {
+    marcador(
+        "v1alpha32",
+        "los tipos geo",
+        "BORRADOR · OOS v1alpha32 · los tipos geo",
+    );
+}
+
+#[test]
 fn borrador_de_v1alpha31() {
     marcador(
         "v1alpha31",

@@ -83,6 +83,32 @@ pub enum Forma {
     /// de tamaño fijo). La dimensión es del contrato, y la comprueba quien
     /// escribe.
     Vector(u16),
+    /// v1alpha32 (ORE 0067 G1·2). **Una geometría**: WKB en orden x/y, que en
+    /// Arrow es `Binary` con la extensión `geoarrow.wkb` y el CRS en sus
+    /// metadatos, y en Parquet el tipo lógico `GEOMETRY`/`GEOGRAPHY` y la clave
+    /// GeoParquet a la vez (`01-la-geometria` §4). `esferica` es `Geography`.
+    Geo {
+        subtipo: String,
+        crs: String,
+        esferica: bool,
+    },
+}
+
+impl Forma {
+    /// v1alpha32. Los metadatos de la extensión `geoarrow.wkb` de una
+    /// geometría: el CRS siempre explícito (medido en ORE 0066 T5: implícito,
+    /// se pierde por el camino) y `edges: spherical` en una `Geography`.
+    pub fn geoarrow_metadatos(&self) -> Option<String> {
+        let Forma::Geo { crs, esferica, .. } = self else {
+            return None;
+        };
+        let crs = crate::json::Json::s(crs).jcs();
+        Some(if *esferica {
+            format!("{{\"crs\":{crs},\"edges\":\"spherical\"}}")
+        } else {
+            format!("{{\"crs\":{crs}}}")
+        })
+    }
 }
 
 /// Los campos de una referencia a medio, en su orden y con su tipo: la forma de
@@ -139,6 +165,16 @@ impl Forma {
             Type::Vector(n) => Forma::Vector(*n),
             Type::Media(_) => campos(CAMPOS_DE_MEDIA_REF),
             Type::Anchor => campos(CAMPOS_DE_ANCLA),
+            Type::Geometry { subtipo, crs } => Forma::Geo {
+                subtipo: subtipo.clone(),
+                crs: crs.clone(),
+                esferica: false,
+            },
+            Type::Geography { subtipo } => Forma::Geo {
+                subtipo: subtipo.clone(),
+                crs: crate::types::CRS_DEFECTO.to_string(),
+                esferica: true,
+            },
             otro => Forma::Escalar(Fisico::de(otro)),
         }
     }
@@ -184,6 +220,10 @@ impl Fisico {
             | Type::Struct(_)
             | Type::Vector(_)
             | Type::Anchor => Fisico::Texto,
+            // v1alpha32: por el protocolo de texto de un driver, una geometría
+            // viaja como texto (su WKB en hexadecimal, o WKT); su forma de
+            // verdad es `Forma::Geo`, por Arrow (ORE 0067 G1·2).
+            Type::Geometry { .. } | Type::Geography { .. } => Fisico::Texto,
         }
     }
 
@@ -553,6 +593,37 @@ fn numero(t: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// v1alpha32 (ORE 0067 G1·2): una geometría tiene su forma, con el CRS
+    /// siempre explícito en los metadatos de `geoarrow.wkb`.
+    #[test]
+    fn una_geometria_es_wkb_con_su_crs() {
+        let t = crate::types::parse_type("Geometry<Polygon, EPSG:25830>").unwrap();
+        let f = Forma::de(&t);
+        assert_eq!(
+            f,
+            Forma::Geo {
+                subtipo: "Polygon".into(),
+                crs: "EPSG:25830".into(),
+                esferica: false
+            }
+        );
+        assert_eq!(f.geoarrow_metadatos().unwrap(), r#"{"crs":"EPSG:25830"}"#);
+        let g = Forma::de(&crate::types::parse_type("Geography").unwrap());
+        assert_eq!(
+            g.geoarrow_metadatos().unwrap(),
+            r#"{"crs":"OGC:CRS84","edges":"spherical"}"#
+        );
+        let d = Forma::de(&crate::types::parse_type("Geometry").unwrap());
+        assert_eq!(d.geoarrow_metadatos().unwrap(), r#"{"crs":"OGC:CRS84"}"#);
+        assert_eq!(Fisico::de(&t), Fisico::Texto);
+        assert!(
+            Forma::de(&crate::types::parse_type("String").unwrap())
+                .geoarrow_metadatos()
+                .is_none()
+        );
+    }
+
     use super::*;
     use crate::types::parse_type;
 

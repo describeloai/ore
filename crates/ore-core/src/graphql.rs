@@ -515,6 +515,10 @@ fn grafo(crudo: &str) -> Result<String, String> {
         // v1alpha16. El valor de una referencia a un ítem es su huella: una
         // cadena. Lo que hay al otro lado se sirve aparte, firmado.
         Type::Media(_) => "String".to_string(),
+        // v1alpha32. Una geometría viaja como el escalar de lo que el esquema
+        // no desglosa, hasta que la superficie de GraphQL tenga su escalar
+        // GeoJSON (ORE 0066, la línea de servir).
+        Type::Geometry { .. } | Type::Geography { .. } => escalar("Opaque").to_string(),
     })
 }
 
