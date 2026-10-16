@@ -86,7 +86,9 @@ def main():
                     "jsonpath={.spec.template.metadata.annotations.ore\\.dev/commit}"])
     print(f"vara geo {fecha} · ore-serve en {commit[:8]}", flush=True)
     t0 = time.time()
-    celda = job(f"vara-geo-celda-{marca}", ["/bin/sh", "-c", open(S + "vara-celda.sh", encoding="utf-8").read()])
+    guion = open(S + "vara-celda.sh", encoding="utf-8").read().replace(
+        "__V2_JUZGAR__", open(S + "v2-juzgar.py", encoding="utf-8").read())
+    celda = job(f"vara-geo-celda-{marca}", ["/bin/sh", "-c", guion])
     print("  celda hecha", flush=True)
     v4 = job(f"vara-geo-v4-{marca}", ["python3", "-c", open(S + "vara-v4.py", encoding="utf-8").read()],
              imagen=PUESTO, cuenta="puesto")

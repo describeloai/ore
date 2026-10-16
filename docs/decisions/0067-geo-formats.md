@@ -347,3 +347,47 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     documento a v1alpha32.
   - **Hasta G2·1** el escritor de `iceberg` pierde la marca `geoarrow.wkb` en el fichero (T1): los
     bytes ya son los definitivos, y las dos marcas de Parquet las pone G2·1.
+- **2026-10-16 · G1·4 hecho: la inducción propone el tipo geo.**
+  - **El tipo nativo, sin preguntar** (`geo_del_catalogo`, al empezar la inducción): `tipo_geo_nativo`
+    lee el `physicalType` del origen.
+    - `geometry(MultiPolygon,25830)` → `Geometry<MultiPolygon, EPSG:25830>`, con `PointZ`/`…M`/`…ZM`
+      como dimensiones.
+    - `geography(…,4326)` y el `GEOGRAPHY` de BigQuery → `Geography<…>`, aunque el driver dijera
+      `Opaque` o nada.
+    - Una `geometry` sin SRID no dice su CRS y no se adivina: queda la pregunta de tipo.
+
+    La `Table` y la entidad con una columna geo salen en v1alpha32 (`lleva_geo`).
+  - **Las tablas de sistema de PostGIS** (`spatial_ref_sys`, `geometry_columns`,
+    `geography_columns`, `raster_*`) ya no se inducen como si fueran del cliente.
+  - **Se pregunta, no se impone** (la clase `geo/` de la cola):
+    - el **par lat/lon** (`geo/<tabla>`, `si`/`no`), por nombre con el mismo resto y solo entre
+      columnas numéricas;
+    - el **texto que dice geometría** (`geo/<tabla>.<col>`, `wkt`/`geojson`/`no`);
+    - las **direcciones** (`geo/<tabla>:direccion`, `geocodificable`/`no`): una columna que lo diga
+      entera (`direccion`, `address`, `ubicacion`…) o dos partes (ciudad y estado, ciudad y código
+      postal); una sola parte es un atributo.
+
+    Las respuestas las aplica la copia (G3·4).
+  - **El rango de la pareja lat/lon no lo comprueba la inducción**: el catálogo no trae muestra ni
+    mínimos y máximos. Pasa a G3·4, donde la copia construye el punto (fuera de rango: la regla de lo
+    que no analiza). Es un cambio respecto al plan, que pedía el rango aquí.
+  - **V2, medida en local** con el `ore` de la rama sobre los catálogos reales del banco
+    (`v2-juzgar.py`, que la vara de la celda lleva ya dentro):
+    - **exhaustividad 9/16**, que son **9/9 de lo que G1 puede**: los 4 nativos de PostGIS, los 2 de
+      BigQuery, el par, el WKT y las direcciones;
+    - los 7 que faltan son de **G3·3**: la clave `geo` del GeoParquet, y GeoJSON, GPKG, KML,
+      FlatGeobuf, `.gdb` y Shapefile, que hoy el driver da como objetos de medios;
+    - **precisión 1,00**.
+  - **Falsos positivos en las fuentes reales: ninguno.** 11 catálogos de victor y demo (389 tablas,
+    las mismas bases repetidas), con 7 propuestas distintas:
+    - los 3 pares lat/lon de T7, sin `longitud_focal_mm`;
+    - las direcciones de Olist (`customer_city`/`customer_state` y las de `sellers`),
+      `clientes.direccion` y los orígenes y destinos de `flujos_migratorios_estorninos`.
+
+    `observatorios.ubicacion_geografica` se escapaba, y entra con `ubicacion`.
+  - **Pruebas:** `ore-cli` 163/163, con `el_tipo_geo_nativo_se_da_sin_preguntar` y
+    `el_texto_geo_y_las_direcciones_se_preguntan`; la suite entera en verde salvo la prueba de CR, que
+    en Docker no puede llamar a `git` desde un worktree (en la CI sí).
+  - **Lo que esto deja en la copia:** una `Table` de BigQuery con `Geography` llega hoy como WKT por el
+    driver, y la copia la dejaría como texto con su aviso hasta G3·2 (`ST_ASBINARY`). PostGIS ya entrega
+    hex EWKB, que la copia acepta.

@@ -689,6 +689,7 @@ fn peticion(clase: Clase) -> &'static str {
         Clase::Relacion => "`si` si es una relación de verdad; `no` si es coincidencia",
         Clase::Familia => "`separadas`, `omitir`, o la columna de tiempo para unirlas",
         Clase::Dueno => "Quién responde por este paquete: `team:<handle>` o `user:<handle>`",
+        Clase::Geo => "`si` si son la latitud y la longitud de un punto; `no` si no lo son",
         Clase::Clasificacion => {
             "Cómo se clasifica: `<eje>: <nivel>`, o `sin_clasificar` si no es sensible"
         }

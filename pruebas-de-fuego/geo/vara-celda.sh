@@ -72,45 +72,11 @@ for F in banco_geo_pg banco_geo_bq banco_geo_gcs; do
   cd /tmp/v/ws && timeout 300 ore discover --from /tmp/v/$F.cat.json --out packages/$F --name $F --owner team:geo >/tmp/v/d.out 2>&1
   echo "V2|$F|discover|-|rc=$? $(tail -c 160 /tmp/v/d.out | tr '\n' ' ')"
 done
-python3 - <<'PY'
-import glob, json, os, re
-# La verdad del banco: (fuente, tabla, columna) → lo que debería proponerse.
-VERDAD = [
-    ("banco_geo_pg", "municipios", "geom", "Geometry<MultiPolygon, EPSG:25830>"),
-    ("banco_geo_pg", "lugares", "geom", "Geometry<Point>"),
-    ("banco_geo_pg", "lugares_geog", "geog", "Geography<Point>"),
-    ("banco_geo_pg", "carreteras", "geom", "Geometry"),
-    ("banco_geo_bq", "lugares", "geo", "Geography"),
-    ("banco_geo_bq", "municipios", "geo", "Geography"),
-    ("banco_geo_gcs", "lugares_madrid_latlon", "lat+lon", "par lat/lon → Geometry<Point>"),
-    ("banco_geo_gcs", "lugares_madrid_wkt", "wkt", "WKT → Geometry"),
-    ("banco_geo_gcs", "lugares_madrid_direcciones", "direccion", "geocodificable"),
-    ("banco_geo_gcs", "municipios_madrid", "geom", "GeoParquet → Geometry<MultiPolygon>"),
-] + [("banco_geo_gcs", f"municipios_madrid.{e}", "geom", "Geometry<MultiPolygon>") for e in ("geojson", "gpkg", "kml", "fgb", "gdb", "shp.zip")]
-cats = {f: json.load(open(f"/tmp/v/{f}.cat.json")) for f in ("banco_geo_pg", "banco_geo_bq", "banco_geo_gcs")}
-aciertos = 0
-for f, t, c, quiero in VERDAD:
-    if "." in t:
-        ext = t.split(".", 1)[1].split(".")[0]
-        objs = [(o["name"], o.get("media")) for o in cats[f].get("objects", []) if ext in o.get("extensions", []) or ext in o["name"]]
-        print(f"V2|{f}|{t}|{c}|quiero: {quiero} · propone: nada, es un objeto de medios {objs} · fallo")
-        continue
-    texto = ""
-    for p in glob.glob(f"/tmp/v/ws/packages/{f}/**/*", recursive=True):
-        if os.path.isfile(p) and t in os.path.basename(p):
-            texto += open(p, encoding="utf-8", errors="replace").read()
-    tipo = "—"
-    for col in c.split("+"):
-        m = re.search(rf"^\s*{re.escape(col)}\s*:\s*(.+)$", texto, re.M)
-        if m:
-            tipo = m.group(1).strip()[:90]
-            break
-    m = re.search(r"\btype\s*:\s*\"?([A-Za-z]+)", tipo)
-    geo = bool(m and m.group(1) in ("Geometry", "Geography")) or (c not in ("geom", "geog", "geo") and re.search(r"geo/|geocodific", texto) is not None)
-    aciertos += geo
-    print(f"V2|{f}|{t}|{c}|quiero: {quiero} · propone: {tipo} · {'acierto' if geo else 'fallo'}")
-print(f"V2|resumen|-|-|exhaustividad {aciertos}/{len(VERDAD)}")
+# El juez de V2 es v2-juzgar.py: vara.py lo pone dentro del heredoc de abajo.
+cat > /tmp/v/v2-juzgar.py <<'PY'
+__V2_JUZGAR__
 PY
+python3 /tmp/v/v2-juzgar.py /tmp/v/ws
 
 # ── V1 · declarar una columna geo ──
 # Un árbol con una sola Table (la de municipios que indujo PostGIS) y `geom` declarada como geometría:

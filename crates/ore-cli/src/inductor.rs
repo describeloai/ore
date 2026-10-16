@@ -142,6 +142,11 @@ pub enum Clase {
     /// concepto acuñado sin esta pregunta sería una decisión con aspecto de
     /// tomada.
     Clasificacion,
+    /// v1alpha32 (ORE 0067 G1·3) · Dos columnas numéricas que parecen la
+    /// latitud y la longitud de un punto. La geometría casi nunca llega como
+    /// tal (0066 T7: ni una columna geo en 18 fuentes, y tres tablas con pares
+    /// lat/lon): se propone, no se impone.
+    Geo,
 }
 
 /// **Cómo se contesta** una clase de pregunta. Vive aquí, junto a `Clase`, y no
@@ -198,7 +203,8 @@ impl Clase {
             | Clase::Concepto
             | Clase::Relacion
             | Clase::Familia
-            | Clase::Dueno => Forma::Palabra,
+            | Clase::Dueno
+            | Clase::Geo => Forma::Palabra,
         }
     }
 
@@ -215,6 +221,7 @@ impl Clase {
             Clase::Familia => "familia",
             Clase::Dueno => "dueno",
             Clase::Clasificacion => "clasificacion",
+            Clase::Geo => "geo",
         }
     }
 }
@@ -581,6 +588,10 @@ pub fn inducir_con_regla(
     {
         return inducir_foranea(cat, paquete, dec, include);
     }
+    // v1alpha32 (ORE 0067 G1·4): el tipo geo nativo del origen se da sin
+    // preguntar, y las tablas de sistema de PostGIS no son del cliente.
+    let geo = geo_del_catalogo(cat);
+    let cat = &geo;
     let estandar = regla.estandar;
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
@@ -816,6 +827,61 @@ pub fn inducir_con_regla(
                  entidad sin mas duplicaria el concepto",
                 vec!["entidad".into(), OMITIR.into()],
             ));
+        }
+
+        // v1alpha32 (ORE 0067 G1·3): un par latitud/longitud se propone como
+        // punto. La respuesta se guarda en las decisiones, y quien la aplica es
+        // la copia, que construye la geometría (G3·4).
+        if let Some((lat, lon)) = par_lat_lon(t)
+            && dec.de(&id(Clase::Geo, &t.nombre)).is_none()
+        {
+            pendientes.push(pendiente(
+                Clase::Geo,
+                &t.nombre,
+                &t.nombre,
+                format!("`{lat}` y `{lon}` parecen la latitud y la longitud de un punto"),
+                "la geografía casi nunca llega como geometría: llega como dos números. \
+                 Confirmarlo hace de la pareja un `Geometry<Point>` (OGC:CRS84, longitud y \
+                 latitud) que la copia construye; si no lo son, `no`",
+                vec!["si".into(), "no".into()],
+            ));
+        }
+        // v1alpha32 (ORE 0067 G1·4): una columna de texto que por su nombre
+        // parece una geometría escrita (WKT o GeoJSON). Sin muestra no se
+        // sabe cuál de las dos: se pregunta, y la copia la construye (G3·4).
+        for col in texto_geo(t) {
+            let sujeto = format!("{}.{col}", t.nombre);
+            if dec.de(&id(Clase::Geo, &sujeto)).is_none() {
+                pendientes.push(pendiente(
+                    Clase::Geo,
+                    &sujeto,
+                    &t.nombre,
+                    format!("`{col}` es texto y su nombre dice geometría"),
+                    "una geometría escrita llega como WKT (`POINT(-3.7 40.4)`) o como \
+                     GeoJSON. Contestar cuál hace de la columna un `Geometry` (OGC:CRS84) \
+                     que la copia construye; si no es una geometría, `no`",
+                    vec!["wkt".into(), "geojson".into(), "no".into()],
+                ));
+            }
+        }
+        // Y las direcciones: solo se marcan como geocodificables. Geocodificar
+        // es transversal (0066 §7), no del formato.
+        let dirs = direcciones(t);
+        if !dirs.is_empty() {
+            let sujeto = format!("{}:direccion", t.nombre);
+            if dec.de(&id(Clase::Geo, &sujeto)).is_none() {
+                let nombres: Vec<String> = dirs.iter().map(|c| format!("`{c}`")).collect();
+                pendientes.push(pendiente(
+                    Clase::Geo,
+                    &sujeto,
+                    &t.nombre,
+                    format!("{} parecen una dirección", nombres.join(", ")),
+                    "una dirección es la geografía que más llega y la que no tiene \
+                     coordenadas. Marcarla `geocodificable` la deja lista para cuando la \
+                     plataforma geocodifique; si no lo es, `no`",
+                    vec!["geocodificable".into(), "no".into()],
+                ));
+            }
         }
 
         // Una columna cuyo tipo el lector no supo traducir no se emite: no hay
@@ -1961,6 +2027,250 @@ fn handle(h: &str) -> bool {
 /// el separador, así que eso declara una propiedad `2>`. Lo dijo `ore validate`
 /// —`OOS1005`, clave desconocida— sobre un documento que nadie escribió a mano,
 /// que es justo la clase de error que un emisor tiene que hacer imposible.
+/// v1alpha32 (ORE 0067 G1·4) · **El tipo geo nativo de un origen**, desde el
+/// tipo que el origen dice (`physicalType`): `geometry(MultiPolygon,25830)` de
+/// PostGIS es `Geometry<MultiPolygon, EPSG:25830>`; `geography(Point,4326)`,
+/// `Geography<Point>`; `GEOGRAPHY` de BigQuery, `Geography`. Una `geometry`
+/// sin SRID no dice su CRS y no se adivina (`None`: queda la pregunta de tipo).
+fn tipo_geo_nativo(origen: &str) -> Option<String> {
+    let o = origen.trim().to_ascii_lowercase();
+    if o == "geography" {
+        return Some("Geography".into());
+    }
+    let (ctor, args) = if let Some(r) = o.strip_prefix("geometry(") {
+        ("Geometry", r)
+    } else if let Some(r) = o.strip_prefix("geography(") {
+        ("Geography", r)
+    } else {
+        return None;
+    };
+    let args = args.strip_suffix(')')?;
+    let mut partes = args.split(',').map(str::trim);
+    let crudo = partes.next()?;
+    let srid: u32 = partes.next()?.parse().ok()?;
+    // PostGIS: `PointZ`, `MultiPolygonM`, `GeometryZM`… → subtipo y dimensión de OOS.
+    let (base, dim) = ["zm", "z", "m"]
+        .iter()
+        .find_map(|d| {
+            crudo
+                .strip_suffix(d)
+                .filter(|b| SUBTIPO_PG.iter().any(|(pg, _)| pg == b))
+                .map(|b| (b, *d))
+        })
+        .unwrap_or((crudo, ""));
+    let (_, subtipo) = SUBTIPO_PG.iter().find(|(pg, _)| *pg == base)?;
+    let subtipo = match dim {
+        "" => subtipo.to_string(),
+        d => format!("{subtipo} {}", d.to_ascii_uppercase()),
+    };
+    let t = if ctor == "Geography" {
+        if srid != 4326 {
+            return None;
+        }
+        format!("Geography<{subtipo}>")
+    } else if srid == 0 {
+        return None;
+    } else {
+        format!("Geometry<{subtipo}, EPSG:{srid}>")
+    };
+    // La forma canónica (sin lo que vale por defecto), por el mismo analizador;
+    // lo que no analiza (`Any Z`) no se propone.
+    ore_core::types::parse_type(&t).ok().map(|x| x.to_string())
+}
+
+/// Los subtipos de PostGIS (en minúsculas) y su nombre en OOS.
+const SUBTIPO_PG: &[(&str, &str)] = &[
+    ("geometry", "Any"),
+    ("point", "Point"),
+    ("linestring", "LineString"),
+    ("polygon", "Polygon"),
+    ("multipoint", "MultiPoint"),
+    ("multilinestring", "MultiLineString"),
+    ("multipolygon", "MultiPolygon"),
+    ("geometrycollection", "GeometryCollection"),
+];
+
+/// Las tablas que PostGIS pone en la base y no son del cliente: su catálogo
+/// de geometrías y de sistemas de referencia (medido en la vara de 0067 G0).
+const SISTEMA_POSTGIS: &[&str] = &[
+    "spatial_ref_sys",
+    "geometry_columns",
+    "geography_columns",
+    "raster_columns",
+    "raster_overviews",
+];
+
+/// v1alpha32 (ORE 0067 G1·4) · **El catálogo, con lo geo resuelto**: cada
+/// columna con un tipo geo nativo lo lleva como `tipo` (aunque el driver dijera
+/// `Opaque` o nada), y las tablas de sistema de PostGIS salen.
+fn geo_del_catalogo(cat: &Catalogo) -> Catalogo {
+    let mut c = cat.clone();
+    c.tablas.retain(|t| {
+        let corto = t.nombre.rsplit('.').next().unwrap_or(&t.nombre);
+        !SISTEMA_POSTGIS.contains(&corto)
+    });
+    for t in &mut c.tablas {
+        for col in &mut t.columnas {
+            if let Some(g) = col.origen.as_deref().and_then(tipo_geo_nativo) {
+                col.tipo = Some(g);
+            }
+        }
+    }
+    c
+}
+
+/// Las palabras de un nombre de columna, en minúsculas.
+fn palabras(nombre: &str) -> Vec<String> {
+    nombre
+        .to_lowercase()
+        .split(['_', ' ', '-'])
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// v1alpha32 (ORE 0067 G1·4) · Las columnas de texto que por su nombre parecen
+/// una geometría escrita.
+fn texto_geo(t: &Tabla) -> Vec<String> {
+    const GEO: &[&str] = &[
+        "wkt",
+        "geojson",
+        "geom",
+        "geometry",
+        "geometria",
+        "the_geom",
+        "shape",
+        "geog",
+        "geography",
+    ];
+    t.columnas
+        .iter()
+        .filter(|c| c.tipo.as_deref() == Some("String"))
+        .filter(|c| {
+            let n = c.nombre.to_lowercase();
+            GEO.contains(&n.as_str()) || palabras(&n).iter().any(|p| p == "wkt" || p == "geojson")
+        })
+        .map(|c| c.nombre.clone())
+        .collect()
+}
+
+/// v1alpha32 (ORE 0067 G1·4) · Las columnas de texto que por su nombre parecen
+/// parte de una dirección. Hace falta una que lo diga entera (`direccion`,
+/// `address`), o dos partes (una ciudad y un código postal…): `ciudad` sola es
+/// un atributo, no una dirección.
+fn direcciones(t: &Tabla) -> Vec<String> {
+    const ENTERA: &[&str] = &[
+        "direccion",
+        "dirección",
+        "address",
+        "domicilio",
+        "freeform",
+        "ubicacion",
+        "ubicación",
+        "location",
+    ];
+    const PARTE: &[&str] = &[
+        "calle",
+        "street",
+        "ciudad",
+        "city",
+        "localidad",
+        "locality",
+        "municipio",
+        "cp",
+        "postcode",
+        "postal",
+        "zip",
+        "zipcode",
+        "provincia",
+        "state",
+        "pais",
+        "país",
+        "country",
+    ];
+    let lleva = |c: &&ore_driver::catalogo::Columna, de: &[&str]| {
+        c.tipo.as_deref() == Some("String")
+            && palabras(&c.nombre).iter().any(|p| de.contains(&p.as_str()))
+    };
+    let entera: Vec<String> = t
+        .columnas
+        .iter()
+        .filter(|c| lleva(c, ENTERA))
+        .map(|c| c.nombre.clone())
+        .collect();
+    let partes: Vec<String> = t
+        .columnas
+        .iter()
+        .filter(|c| lleva(c, PARTE))
+        .map(|c| c.nombre.clone())
+        .collect();
+    if !entera.is_empty() {
+        let mut v = entera;
+        v.extend(
+            partes
+                .into_iter()
+                .filter(|p| !v.contains(p))
+                .collect::<Vec<_>>(),
+        );
+        v
+    } else if partes.len() >= 2 {
+        partes
+    } else {
+        Vec::new()
+    }
+}
+
+/// v1alpha32 (ORE 0067 G1·3) · ¿Lleva la tabla una columna geo? Entonces su
+/// `Table` y su entidad son de v1alpha32: emitirlas en otra versión sería
+/// `OOS3001` en el propio paquete inducido.
+fn lleva_geo(t: &Tabla) -> bool {
+    t.columnas.iter().any(|c| {
+        c.tipo
+            .as_deref()
+            .and_then(|x| ore_core::types::parse_type(x).ok())
+            .is_some_and(|x| x.es_de_v1alpha32())
+    })
+}
+
+/// v1alpha32 (ORE 0067 G1·3) · **El par latitud/longitud de una tabla**, si lo
+/// hay: dos columnas numéricas (no enteras) cuyos nombres, partidos por `_`,
+/// llevan una `lat`/`latitude`/`latitud` y la otra `lon`/`lng`/`long`/
+/// `longitude`/`longitud`, **con el mismo resto** (`latitud_actual` va con
+/// `longitud_actual`). Hace falta la pareja: `longitud_focal_mm` sola no es
+/// nada (el falso positivo que midió 0066 T7). Si hay más de un par, el primero
+/// en el orden de la tabla.
+fn par_lat_lon(t: &Tabla) -> Option<(String, String)> {
+    const LAT: &[&str] = &["lat", "latitude", "latitud"];
+    const LON: &[&str] = &["lon", "lng", "long", "longitude", "longitud"];
+    let numerica = |c: &ore_driver::catalogo::Columna| {
+        c.tipo
+            .as_deref()
+            .is_some_and(|x| x == "Float" || x.starts_with("Decimal"))
+    };
+    // El nombre sin la palabra de la coordenada: lo que tiene que coincidir.
+    let resto = |nombre: &str, palabras: &[&str]| -> Option<String> {
+        let partes: Vec<String> = nombre.to_lowercase().split('_').map(String::from).collect();
+        let i = partes.iter().position(|p| palabras.contains(&p.as_str()))?;
+        let mut r = partes.clone();
+        r.remove(i);
+        Some(r.join("_"))
+    };
+    for la in t.columnas.iter().filter(|c| numerica(c)) {
+        let Some(r) = resto(&la.nombre, LAT) else {
+            continue;
+        };
+        if let Some(lo) = t
+            .columnas
+            .iter()
+            .filter(|c| numerica(c) && c.nombre != la.nombre)
+            .find(|c| resto(&c.nombre, LON).as_deref() == Some(r.as_str()))
+        {
+            return Some((la.nombre.clone(), lo.nombre.clone()));
+        }
+    }
+    None
+}
+
 fn en_flujo(tipo: &str) -> String {
     if tipo.contains([',', '{', '}', '[', ']', ':']) {
         entrecomillar(tipo)
@@ -2031,7 +2341,7 @@ fn entidad_yaml(
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha8\n\
+        "apiVersion: oos.dev/{}\n\
          kind: Entity\n\
          metadata:\n  \
            name: {nombre}\n  \
@@ -2039,7 +2349,13 @@ fn entidad_yaml(
            labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
            nature: entity\n  \
-           backedBy: {vista}\n"
+           backedBy: {vista}\n",
+        // v1alpha32: una entidad con una propiedad geo es de v1alpha32.
+        if lleva_geo(t) {
+            "v1alpha32"
+        } else {
+            "v1alpha8"
+        },
     );
     if clave.is_empty() {
         s.push_str(
@@ -2373,7 +2689,10 @@ fn tabla_yaml(
          spec:\n  \
            datasource: {fuente}\n  \
            object: {}\n",
-        if garantiza {
+        if lleva_geo(t) {
+            // v1alpha32: una columna geo es de v1alpha32 (`01-la-geometria`).
+            "v1alpha32"
+        } else if garantiza {
             "v1alpha22"
         } else if t.formato.is_some() {
             "v1alpha16"
@@ -3326,6 +3645,235 @@ pub fn informe_json(ind: &Induccion) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v1alpha32 (ORE 0067 G1·4): el tipo nativo de PostGIS y de BigQuery, como
+    /// lo dieron las fuentes del banco (V7), y lo que no se adivina.
+    #[test]
+    fn el_tipo_geo_nativo_se_da_sin_preguntar() {
+        for (origen, tipo) in [
+            (
+                "geometry(MultiPolygon,25830)",
+                Some("Geometry<MultiPolygon, EPSG:25830>"),
+            ),
+            ("geometry(Point,4326)", Some("Geometry<Point, EPSG:4326>")),
+            ("geometry(Geometry,4326)", Some("Geometry<Any, EPSG:4326>")),
+            (
+                "geometry(PointZ,4979)",
+                Some("Geometry<Point Z, EPSG:4979>"),
+            ),
+            (
+                "geometry(MultiLineStringZM,25830)",
+                Some("Geometry<MultiLineString ZM, EPSG:25830>"),
+            ),
+            ("geography(Point,4326)", Some("Geography<Point>")),
+            ("geography(Geometry,4326)", Some("Geography")),
+            ("GEOGRAPHY", Some("Geography")),
+            // Sin SRID no se sabe el CRS; `Any` no lleva dimensión; ni un `text`.
+            ("geometry", None),
+            ("geometry(Point,0)", None),
+            ("geometry(GeometryZ,4326)", None),
+            ("text", None),
+        ] {
+            assert_eq!(tipo_geo_nativo(origen).as_deref(), tipo, "{origen}");
+        }
+        let col = |n: &str, t: Option<&str>, o: &str| ore_driver::catalogo::Columna {
+            nombre: n.into(),
+            tipo: t.map(String::from),
+            origen: Some(o.into()),
+            ..Default::default()
+        };
+        let tabla = |n: &str, cs| Tabla {
+            nombre: n.into(),
+            columnas: cs,
+            clase: "table".into(),
+            ..Default::default()
+        };
+        let cat = Catalogo {
+            fuente: "banco_geo_pg".into(),
+            tablas: vec![
+                tabla(
+                    "public.municipios",
+                    vec![
+                        col("id", Some("String"), "text"),
+                        col("geom", None, "geometry(MultiPolygon,25830)"),
+                    ],
+                ),
+                tabla(
+                    "public.spatial_ref_sys",
+                    vec![col("srid", Some("Integer"), "integer")],
+                ),
+                tabla(
+                    "banco_geo.lugares",
+                    vec![col("geo", Some("Opaque"), "GEOGRAPHY")],
+                ),
+            ],
+            objetos: vec![],
+        };
+        let g = geo_del_catalogo(&cat);
+        let nombres: Vec<&str> = g.tablas.iter().map(|t| t.nombre.as_str()).collect();
+        assert_eq!(nombres, ["public.municipios", "banco_geo.lugares"]);
+        assert_eq!(
+            g.tablas[0].columnas[1].tipo.as_deref(),
+            Some("Geometry<MultiPolygon, EPSG:25830>")
+        );
+        assert_eq!(g.tablas[1].columnas[0].tipo.as_deref(), Some("Geography"));
+        // Y la Table que sale es de v1alpha32, con el tipo y la cita del origen.
+        let ind = inducir(&cat, "banco");
+        let t = ind
+            .ficheros
+            .iter()
+            .find(|(k, _)| k.contains("tables") && k.contains("unicipios"))
+            .map(|(_, v)| v.clone())
+            .expect("la Table de municipios");
+        assert!(t.contains("apiVersion: oos.dev/v1alpha32"), "{t}");
+        assert!(t.contains(r#"geom: { type: "Geometry<MultiPolygon, EPSG:25830>", physicalType: "geometry(MultiPolygon,25830)" }"#), "{t}");
+        assert!(
+            !ind.ficheros
+                .keys()
+                .any(|k| k.contains("spatial_ref_sys") || k.contains("Spatial_ref_sys"))
+        );
+    }
+
+    /// v1alpha32 (ORE 0067 G1·4): el texto que dice geometría y las
+    /// direcciones, con los nombres de las tablas reales (T7) y del banco.
+    #[test]
+    fn el_texto_geo_y_las_direcciones_se_preguntan() {
+        let col = |n: &str, t: &str| ore_driver::catalogo::Columna {
+            nombre: n.into(),
+            tipo: Some(t.into()),
+            ..Default::default()
+        };
+        let tabla = |cs: Vec<ore_driver::catalogo::Columna>| Tabla {
+            nombre: "t".into(),
+            columnas: cs,
+            clase: "table".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            texto_geo(&tabla(vec![col("id", "String"), col("wkt", "String")])),
+            ["wkt"]
+        );
+        assert_eq!(
+            texto_geo(&tabla(vec![col("area_geojson", "String")])),
+            ["area_geojson"]
+        );
+        // Un `geom` que ya es geometría, o un número, no es texto que preguntar.
+        assert!(
+            texto_geo(&tabla(vec![
+                col("geom", "Geometry<Point>"),
+                col("shape", "Integer")
+            ]))
+            .is_empty()
+        );
+        // El CSV de direcciones del banco: dirección entera, localidad y cp.
+        assert_eq!(
+            direcciones(&tabla(vec![
+                col("id", "String"),
+                col("direccion", "String"),
+                col("localidad", "String"),
+                col("cp", "String")
+            ])),
+            ["direccion", "localidad", "cp"]
+        );
+        // Olist: ciudad y estado (dos partes), sin dirección entera.
+        assert_eq!(
+            direcciones(&tabla(vec![
+                col("customer_city", "String"),
+                col("customer_state", "String"),
+                col("customer_zip_code_prefix", "Integer")
+            ])),
+            ["customer_city", "customer_state"]
+        );
+        // Una ubicación escrita (los observatorios de T7) también es una dirección.
+        assert_eq!(
+            direcciones(&tabla(vec![col("ubicacion_geografica", "String")])),
+            ["ubicacion_geografica"]
+        );
+        // Una sola parte es un atributo; y el falso positivo de T7 no es texto.
+        assert!(
+            direcciones(&tabla(vec![
+                col("ciudad", "String"),
+                col("nombre", "String")
+            ]))
+            .is_empty()
+        );
+        assert!(direcciones(&tabla(vec![col("punto_origen_ciudad", "String")])).is_empty());
+    }
+
+    /// v1alpha32 (ORE 0067 G1·3): los pares lat/lon de las tablas reales que
+    /// midió 0066 T7, y su falso positivo.
+    #[test]
+    fn el_par_lat_lon_se_propone_y_el_falso_positivo_no() {
+        let col = |n: &str, t: &str| ore_driver::catalogo::Columna {
+            nombre: n.into(),
+            tipo: Some(t.into()),
+            ..Default::default()
+        };
+        let tabla = |n: &str, cs: Vec<ore_driver::catalogo::Columna>| Tabla {
+            nombre: n.into(),
+            columnas: cs,
+            clase: "table".into(),
+            ..Default::default()
+        };
+        let estorninos = tabla(
+            "public.flujos_migratorios_estorninos",
+            vec![
+                col("id", "Integer"),
+                col("latitud_actual", "Decimal<9, 6>"),
+                col("longitud_actual", "Decimal<9, 6>"),
+                col("punto_origen_ciudad", "String"),
+            ],
+        );
+        assert_eq!(
+            par_lat_lon(&estorninos),
+            Some(("latitud_actual".into(), "longitud_actual".into()))
+        );
+        let hangares = tabla(
+            "public.hangars",
+            vec![
+                col("longitude", "Decimal<10, 6>"),
+                col("latitude", "Decimal<9, 6>"),
+            ],
+        );
+        assert_eq!(
+            par_lat_lon(&hangares),
+            Some(("latitude".into(), "longitude".into()))
+        );
+        // Dos pares: cada latitud con la longitud de su mismo resto.
+        let viaje = tabla(
+            "viajes",
+            vec![
+                col("origen_lat", "Float"),
+                col("destino_lat", "Float"),
+                col("destino_lng", "Float"),
+                col("origen_lng", "Float"),
+            ],
+        );
+        assert_eq!(
+            par_lat_lon(&viaje),
+            Some(("origen_lat".into(), "origen_lng".into()))
+        );
+        // Sola, sin pareja, una «longitud» no es nada.
+        let telescopios = tabla(
+            "public.telescopios",
+            vec![
+                col("longitud_focal_mm", "Integer"),
+                col("apertura", "Float"),
+            ],
+        );
+        assert_eq!(par_lat_lon(&telescopios), None);
+        // En texto o en enteros no se propone: no son coordenadas medidas.
+        let texto = tabla("t", vec![col("lat", "String"), col("lon", "String")]);
+        assert_eq!(par_lat_lon(&texto), None);
+        let enteros = tabla("t", vec![col("lat", "Integer"), col("lon", "Integer")]);
+        assert_eq!(par_lat_lon(&enteros), None);
+        // Una columna geo lleva la tabla a v1alpha32; sin ella, no.
+        assert!(!lleva_geo(&estorninos));
+        let con_geo = tabla("t", vec![col("lugar", "Geometry<Point, EPSG:25830>")]);
+        assert!(lleva_geo(&con_geo));
+        assert_eq!(Clase::Geo.prefijo(), "geo");
+        assert_eq!(Clase::Geo.forma(), Forma::Palabra);
+    }
 
     /// OOS v1alpha29 · Toda colección es posible: lo que no se sabe qué es va a
     /// una `multimodal` sin `formats`; una familia nueva escribe su puntero y su
