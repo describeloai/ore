@@ -248,6 +248,14 @@ spec:
             #   ningún otro.
             - --cola
             - http://forja.t-demo.svc.cluster.local:3000/t-demo/trabajo.git
+            # ⭐ 0063 S8 · EL REFRESCO QUE CUMPLE `freshness`. Cada minuto mira qué
+            #   copias declaran `freshness` y van a vencerla (al 80 %), y encola a
+            #   esta misma cola UNA pasada sólo para ellas (`48-la-copia.yaml`,
+            #   modo `PROGRAMADA`). Lo enciende el cliente al declarar
+            #   `freshness` en un dataset: sin ninguna, no encola nada, y no hay
+            #   pod. `GET /refresco` dice qué vence y por qué.
+            - --refrescar
+            - "60"
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.
