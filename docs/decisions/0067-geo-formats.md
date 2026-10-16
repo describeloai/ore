@@ -196,3 +196,49 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   su sitio en el código y su «hecho cuando» en un caso de la vara (V1–V7). Añadidos frente al plan
   anterior: G0·4 (los objetivos de P2, propuestos para aprobar), la tabla v3 ajena en el banco, G2·0 (el
   paso a v3 medido antes de escribir) y D dentro de G2·4.
+- **2026-10-16 · G0, con el go del diseño.** Revertido el código anterior al diseño (`6350dbf2`,
+  `00d67d1d`; OOS `65ff514`). Los objetivos de P2 de G0·4 quedan como se propusieron.
+  - **G0·1 · El bucket, completo** (salvo Catastro y PNOA, que siguen pendientes). Overture se volvió a
+    recortar, porque el volumen local se perdió al reiniciar Docker: edificios 34 104 964, carreteras
+    10 581 570, lugares 2 180 990, límites 29 667 (`g0-overture.py`). Lectura del bucket para las cuentas
+    del driver, de medios y del puesto de victor. `LEEME.md` al día.
+  - **G0·2 · Las fuentes, cargadas; el alta, pendiente de una persona.**
+    - **Ficheros** en `ficheros/` (`g0-ficheros.py`).
+    - **PostGIS** en Neon, base `banco_geo` (`g0-postgis.sh`, en la celda): `municipios` en
+      `geometry(MultiPolygon,25830)`, `lugares` en `geometry(Point,4326)`, `lugares_geog` en
+      `geography`, y `carreteras` (300 000 tramos, por los 0,5 GB de Neon) en `geometry(Geometry,4326)`.
+    - **BigQuery** `banco_geo`, con `GEOGRAPHY` (`g0-bigquery.py`).
+    - **`POST /fuentes` desde el agente da 403:** dar de alta una fuente es gobierno. Las tres
+      (`banco_geo_pg`, `banco_geo_bq`, `banco_geo_gcs`) las da de alta una persona. La vara no lo
+      necesita: lee los catálogos con las URLs del cofre.
+    - **La tabla Iceberg v3 ajena, pendiente:** pyiceberg 0.12 trae `GeometryType` pero **no escribe
+      v3** (*«Writing V3 is not yet supported»*). Se escribirá con Spark + Iceberg Java.
+  - **G0·3 · La vara** (`pruebas-de-fuego/geo/vara.py`): Jobs en victor, unos 90 s. **Línea base**
+    (`vara-20261016-2130.md`):
+    - **V1 · rojo.** `Geometry<MultiPolygon, EPSG:25830>` en una `Table` da `OOS3001` («no es un tipo de
+      OOS»).
+    - **V2 · 0/16.** PostGIS deja solo `physicalType: geometry(MultiPolygon,25830)`, sin `type`.
+      BigQuery propone `Opaque`. El par lat/lon queda como `Float` y el WKT como `String`. La geometría
+      del GeoParquet llega como `binary`. GeoJSON, GPKG, KML, FlatGeobuf, `.gdb` y el Shapefile en zip
+      son **objetos de medios** (familia `geospatial` o `binary`), no tablas. Además, la inducción mete
+      las tablas de sistema de PostGIS (`geometry_columns`, `spatial_ref_sys`) como si fueran del
+      cliente.
+    - **V3, V5, V6 · rojo, sin nada que medir todavía:** ORE no escribe geometría y falta la tabla v3.
+    - **V4 · el techo de fuera** (DuckDB del puesto sobre los 34 M de edificios de Overture en el bucket,
+      filtrando por `bbox`, 340 grupos de filas):
+      - descarta entre el **87 y el 97 %** de los grupos según la ciudad;
+      - con un lector, de **0,6 a 2,8 s**;
+      - con concurrencia, p95 de **2,6 s con 1 lector, 3,6 s con 8 y 13 s con 32**.
+
+      Objetivo: p95 < 1 s con 32 lectores y ≥ 95 % de descarte. El orden y el tamaño de grupo (G2·2)
+      tienen recorrido.
+    - **V7:**
+      - **PostGIS** entrega **EWKB en hexadecimal** (con el SRID dentro), el CRS solo en
+        `sourceType`, y unas 45 000 filas/s en Arrow.
+      - **BigQuery** entrega **WKT** (`POINT(-3.71 40.60)`), con el aviso de que `GEOGRAPHY` «por REST
+        viaja como texto», y 19 000 filas/s.
+      - **GCS:** un GeoParquet no se lee: `geom` es `Binary` en el fichero y la tabla dice `String`.
+        Los CSV van a unas 250 000 filas/s.
+      - Todo, lejos del objetivo de copia (≥ 100 000 filas/s), salvo los CSV.
+  - **Lo que falta para cerrar G0:** el alta de las tres fuentes (una persona), la tabla v3 ajena
+    (Spark) y Catastro/PNOA.
