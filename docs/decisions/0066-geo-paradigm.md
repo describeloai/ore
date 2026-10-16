@@ -1,9 +1,13 @@
-# 0066 · Geo formats — el dato geoespacial y geotemporal, de punta a punta
+# 0066 · Geo paradigm — el bastión del dato geoespacial y geotemporal
 
-**Estado:** abierto (2026-10-16); **plan propuesto en §7, esperando el go** (primero G0 + G1). Es el **bastión de trabajo del vertical**: aquí se acumula lo
-aprendido, lo investigado, lo medido y, después, lo decidido y construido. **Nada se construye hasta
-el go del plan** (§7). **Decide**, cuando se cierre: cómo representa, tipa, calcula y
-sirve ORE el dato geoespacial y geotemporal. Toca [`0032`](0032-el-contrato-de-tipos.md) (tipos),
+**Estado:** abierto (2026-10-16), y no se cierra: es el **bastión del vertical**. Aquí están los
+**fundamentos y las primeras aproximaciones** del paradigma geoespacial y geotemporal de ORE: el
+vertical, los orígenes, lo que hay, las decisiones de producto, la hipótesis de trabajo y las medidas.
+Aquí nacen los conceptos, y desde aquí se expande en ADRs propios, cada uno acotado y cerrable. El
+primero es [`0067 · Geo formats`](0067-geo-formats.md) (G0–G3: el banco, el tipo, el lago vectorial y
+los códecs). Las siguientes líneas de expansión están en §7.
+
+Toca [`0032`](0032-el-contrato-de-tipos.md) (tipos),
 [`0033`](0033-el-dataset.md) (el lago), [`0043`](0043-ore-arrow-stream.md) (Arrow),
 [`0046`](0046-ore-media.md) y [`0061`](0061-origenes-de-objetos.md) (objetos y colecciones),
 [`0047`](0047-ore-access-control.md) (quién ve qué, también en un mapa),
@@ -163,13 +167,10 @@ geometría, y **3D/BIM** (3D Tiles, IFC).
     (`.gdb`), Shapefile, GeoPackage, KML/KMZ, GML, GRIB, NetCDF, JPEG2000.
 - **Salida:** exportar a Shapefile, GeoPackage, GeoJSON o CSV bajo petición, y teselas.
 
-### 5.4 Orden tentativo (se fija tras §6)
+### 5.4 Orden (fijado en 2026-10-16)
 
-1. El tipo y el vectorial canónico, con GeoArrow desde PostGIS y BigQuery.
-2. ST_*, H3, MVT y la vista de mapa: la primera aplicación geo de punta a punta.
-3. Objetos en movimiento.
-4. Ráster (COG + STAC).
-5. Zarr, COPC y la publicación OGC API.
+Primero los fundamentos del formato, en [`0067`](0067-geo-formats.md): el banco, el tipo, el lago
+vectorial canónico y los códecs. Después, las líneas de expansión de §7, cada una con su ADR.
 
 ## 6. Lo que hay que saber antes de diseñar los pasos
 
@@ -199,137 +200,73 @@ geometría, y **3D/BIM** (3D Tiles, IFC).
 | T7 | **Lo que hay hoy en BigQuery y PostGIS de verdad** (victor: el Neon `pg_quality` y las tablas de BigQuery): columnas geo, CRS, tamaños | el primer caso de prueba sale de datos que ya tenemos |
 | T8 | **La consola** (`rubix-platform`): qué componentes de mapa existen y qué espera el diseño | encaja la vista de mapa con lo que ya hay |
 
-## 7. El plan (propuesto 2026-10-16, esperando el go)
+## 7. Las líneas de expansión
 
-Sale de las decisiones P1–P8 y de las medidas T1–T8 (§8). **Tres reglas** lo ordenan:
-1. **Polivalencia (P1):** cada etapa construye una capa común (el tipo, el lago, el cómputo, el
-   servir) que sirve a cualquier caso de uso, no una aplicación concreta.
-2. **Masivo y concurrente desde el principio (P2):** cada etapa cierra con un objetivo de volumen y
-   de latencia medido sobre el banco de G0, no sólo con que funcione.
-3. **Lo de siempre:** primero el laboratorio, después producción; el binario antes que la malla; y el
-   ADR al cerrar cada etapa.
+Lo que viene **después de los fundamentos de [`0067`](0067-geo-formats.md)**, apoyado en ellos. Cada
+línea se abre con su propio ADR cuando llegue, con sus medidas y su plan. Lo de abajo es la primera
+aproximación, escrita el 2026-10-16 con lo medido en T1–T8. Las tres reglas de 0067 (polivalencia,
+masivo desde el principio y laboratorio antes que producción) valen igual.
 
-| etapa | qué | por qué en este orden |
-|---|---|---|
-| **G0 · El banco geo** | datos de verdad y a escala para medir todo lo demás | T7: no tenemos ni una columna con geometría real |
-| **G1 · El tipo** | `Geometry` y `Geography` en OOS y en el catálogo, y su inducción | es la base de todo; sin tipo, la geometría es texto |
-| **G2 · El lago geo** | escribir y leer geometría nativa en Iceberg/Parquet, con orden espacial y estadísticas | el sustrato masivo (P2) |
-| **G3 · Los orígenes entregan geometría** | PostGIS, BigQuery, ficheros vectoriales, lat/lon y direcciones | el dato llega tipado desde lo que ya conectamos |
-| **G4 · El cómputo** | ST_\*, H3, *joins* espaciales y enriquecer, en SQL, Python y Java | transformar y modelar con geometría |
-| **G5 · Servir y el mapa** | teselas con permisos y el mapa de la consola sobre el catálogo | la primera aplicación geo de punta a punta |
-| **G6 · Lo geotemporal** | posiciones, trayectorias e índice espaciotemporal | el diferencial; pide G2, G4 y G5 |
-| **G7 · Ráster** | COG + STAC, cálculo ráster y teselas ráster | P6: guardar y calcular |
-| **G8 · Referencia de serie** | activos públicos compartidos y enriquecer, al estilo del Data Observatory | P8; reutiliza G1–G5 |
-| **G9 · Redes y 3D** | grafos con geometría, LiDAR (COPC) y cubos (Zarr) | P7 |
-| **G10 · Publicar estándares** | OGC API Features/Tiles y STAC | P5: largo plazo |
-
-**Transversales**, que acompañan a las etapas cuando las piden:
-- **geocodificación** (G3, G8);
+**Transversales**, que acompañan a las líneas cuando las piden:
+- **geocodificación** (orígenes con direcciones, referencia de serie);
 - **seguir y contribuir a `iceberg-rust`** (tipos geo y Arrow 59, T1/T3);
-- **la imagen**: `spatial` y `h3` en DuckDB, y un servicio GDAL aparte para ráster (T2, T4);
+- **un servicio GDAL moderno aparte** para ráster y multidimensional (T4);
 - **las *egress policies*** para código del cliente (§2).
 
-### G0 · El banco geo
+### E1 · El cómputo
 
 | paso | qué |
 |---|---|
-| G0·1 | **Un bucket de pruebas nuestro** (GCS) con datos abiertos a escala real. **Vectorial**: Overture (edificios y lugares de España, GeoParquet), límites administrativos, Catastro (INSPIRE). **Movimiento**: AIS abierto (danés o NOAA, cientos de millones de posiciones). **Ráster**: Sentinel-2 COG y un MDT del IGN. **LiDAR**: un PNOA en COPC. Cada uno con su licencia anotada |
-| G0·2 | **Fuentes de prueba en victor**: un Postgres con PostGIS (Neon o Supabase lo traen), un dataset BigQuery con `GEOGRAPHY`, y ficheros Shapefile, GPKG, `.gdb`, KML, GeoJSON, CSV con lat/lon y direcciones en S3/GCS |
-| G0·3 | **La vara geo**: un guion repetible (como la vara de Data Health) que mide en un puesto de victor. Mide: escribir N, consultar por zona, *join* espacial, tesela p50/p95 con N concurrentes y trayectoria de un objeto. Fija **los objetivos de P2**: volumen (p. ej. 1 000 M de puntos y 10 M de polígonos) y latencia (tesela p95, consulta por zona p95, *join* de referencia) |
-
-**Hecho cuando:** los datos están en el bucket y en las fuentes, y la vara corre contra el estado de
-hoy y deja la línea base.
-
-### G1 · El tipo
-
-| paso | qué |
-|---|---|
-| G1·1 | **OOS** (spec en `C:\oos` y *bump* del submódulo). `Geometry<subtipo, CRS>` (Point, LineString, Polygon, Multi\*, GeometryCollection; subtipo opcional) y `Geography<subtipo>` (esférica, siempre WGS 84) como tipos de columna de `Table` y de propiedad de entidad. CRS por código (`EPSG:25830`) o PROJJSON. `physicalType` cita el del origen |
-| G1·2 | **El contrato en ORE**: `Fisico::Geometria { crs, subtipo }` en `ore-core` y su Arrow (`geoarrow.wkb` con CRS en los metadatos de la extensión). El contrato de nulos (0051) se extiende a «geometría vacía frente a nula» |
-| G1·3 | **La inducción propone el tipo**: el tipo nativo del origen; pares lat/lon numéricos con rango válido (la regla de T7, sin falsos positivos por nombre: la medida decide); WKT/GeoJSON en texto; columnas de dirección marcadas como «geocodificables». Se propone, no se impone: queda en la propuesta para confirmar |
-
-**Hecho cuando:** un árbol declara columnas geo, compila, y la inducción propone bien sobre el banco
-(precisión y exhaustividad medidas).
-
-### G2 · El lago geo
-
-| paso | qué |
-|---|---|
-| G2·1 | **El escritor**: los ficheros de datos los escribe ORE con `parquet` 58 (*feature* `geospatial`), **con el tipo lógico GEOMETRY y la clave GeoParquet `geo` a la vez, y el CRS explícito en los dos** (T3, T5). Se registran en Iceberg con la columna `binary` y propiedades de tabla `ore.geo.<col>` (tipo, CRS) hasta que `iceberg-rust` traiga el tipo. Entonces se migra a `geometry` de v3, sin reescribir datos |
-| G2·2 | **El orden y las estadísticas**: ordenar por Hilbert (u opcionalmente por celda H3 + tiempo) al escribir, grupos de filas de tamaño medido, bbox por grupo (nativo), y una columna H3 opcional a la resolución que diga la vara. El particionado de las tablas grandes también lo decide la vara (P2) |
-| G2·3 | **La lectura**: `spatial` y `h3` preinstaladas en las imágenes de DuckDB (Python, Node, JVM: unos 79 MB). Se mide el descarte de grupos por bbox en consultas por zona con Iceberg (la extensión `iceberg` de DuckDB) y con Parquet directo |
-| G2·4 | **Leer tablas v3 ajenas con `geometry`** (Snowflake, S3 Tables): sin el tipo en `iceberg-rust`, hoy ni se abren (T1). O se contribuye el tipo, o se lee el esquema tolerando el tipo desconocido. Se decide midiendo |
-
-**Hecho cuando:** la vara escribe y consulta el volumen objetivo con descarte espacial medido, y
-GeoPandas, DuckDB y Sedona leen los ficheros sin conversión.
-
-### G3 · Los orígenes entregan geometría
-
-| paso | qué |
-|---|---|
-| G3·1 | **PostGIS**: `geometry`/`geography` como WKB con su SRID (hoy llega como EWKB en texto, 0065 PG2), en Arrow como `geoarrow.wkb` |
-| G3·2 | **BigQuery** `GEOGRAPHY` → WKB (hoy es `Opaque`) |
-| G3·3 | **Ficheros vectoriales** en los almacenes de objetos: GeoParquet como formato de `Table`; GeoJSON, Shapefile (también en zip), GeoPackage, KML/KMZ, FlatGeobuf y la File Geodatabase de Esri por el GDAL que trae `spatial` (T2/T4). Catálogo con tipo de geometría, CRS, extensión y número de elementos. Mantenida para los que no son nativos de nube, virtual para GeoParquet y FlatGeobuf |
-| G3·4 | **Lat/lon y direcciones**: la geometría se construye al copiar desde los pares lat/lon confirmados; las direcciones van a la cola de geocodificación (transversal) |
-| G3·5 | **El resto de bases con geometría** según llegue cada origen de §2 (Oracle Spatial, SQL Server, Snowflake, Databricks, MySQL), con el mismo contrato |
-
-**Hecho cuando:** cada origen del banco llega al lago con su geometría tipada y su CRS, y la vara de
-copia cumple el volumen.
-
-### G4 · El cómputo
-
-| paso | qué |
-|---|---|
-| G4·1 | **SQL**: ST_\* (OGC) y H3 en el editor, las vistas, `ore-motor` y los transforms SQL, con `ore-sql` sabiendo los tipos geo |
-| G4·2 | **Python**: el SDK entrega GeoDataFrame (`from_arrow` sobre `geoarrow.wkb`) y acepta GeoDataFrame al escribir; `shapely`, `geopandas`, `pyproj` y `h3` en la imagen (+150 MB, T5) |
-| G4·3 | **Java**: JTS y H3 (unos 2,3 MB) y la geometría por Arrow |
-| G4·4 | **Enriquecer**: un *join* espacial (puntos en polígonos, agregación por zona o celda) como verbo de primera clase, base de G8 |
+| E1·1 | **SQL**: ST_\* (OGC) y H3 en el editor, las vistas, `ore-motor` y los transforms SQL, con `ore-sql` sabiendo los tipos geo |
+| E1·2 | **Python**: el SDK entrega GeoDataFrame (`from_arrow` sobre `geoarrow.wkb`) y acepta GeoDataFrame al escribir; `shapely`, `geopandas`, `pyproj` y `h3` en la imagen (+150 MB, T5) |
+| E1·3 | **Java**: JTS y H3 (unos 2,3 MB) y la geometría por Arrow |
+| E1·4 | **Enriquecer**: un *join* espacial (puntos en polígonos, agregación por zona o celda) como verbo de primera clase, base de E5 |
 
 **Hecho cuando:** los *joins* espaciales de la vara (por ejemplo 1 000 M de puntos contra los
 municipios) cumplen su objetivo en los tres lenguajes.
 
-### G5 · Servir y el mapa
+### E2 · Servir y el mapa
 
 | paso | qué |
 |---|---|
-| G5·1 | **El endpoint de teselas**: MVT al vuelo desde el lago con el filtro de permisos del catálogo (0047), con caché de teselas y de metadatos (T6: unos 100 ms de suelo sin caché) |
-| G5·2 | **Zoom bajo**: agregación H3 automática y pirámides precalculadas (PMTiles) para lo grande. La vara decide los umbrales |
-| G5·3 | **La consola**: las capas salen del catálogo (fuera `mock.ts`), con fuente `vector` de MapLibre y deck.gl para millones de puntos. La interfaz que ya existe se reutiliza (T8). Vista previa de mapa en la ficha del activo (la P3 de las familias de medios). Mapa base y satélite con licencia comercial |
-| G5·4 | **Acciones desde el mapa**: dibujar o editar una forma escribe en la propiedad tipada, con propuesta y gobierno |
+| E2·1 | **El endpoint de teselas**: MVT al vuelo desde el lago con el filtro de permisos del catálogo (0047), con caché de teselas y de metadatos (T6: unos 100 ms de suelo sin caché) |
+| E2·2 | **Zoom bajo**: agregación H3 automática y pirámides precalculadas (PMTiles) para lo grande. La vara decide los umbrales |
+| E2·3 | **La consola**: las capas salen del catálogo (fuera `mock.ts`), con fuente `vector` de MapLibre y deck.gl para millones de puntos. La interfaz que ya existe se reutiliza (T8). Vista previa de mapa en la ficha del activo (la P3 de las familias de medios). Mapa base y satélite con licencia comercial |
+| E2·4 | **Acciones desde el mapa**: dibujar o editar una forma escribe en la propiedad tipada, con propuesta y gobierno |
 
 **Hecho cuando:** un usuario añade al mapa una capa del catálogo de 100 M de elementos, navega con
 la latencia objetivo con N usuarios concurrentes, y cada uno ve sólo lo que puede ver.
 
-### G6 · Lo geotemporal
+### E3 · Lo geotemporal
 
 | paso | qué |
 |---|---|
-| G6·1 | **El modelo**: una tabla de posiciones (`id, t, geometría, atributos`) como tipo de activo, ordenada por celda + tiempo, y su tabla derivada de trayectorias: líneas con medida temporal, segmentadas por paradas o viajes |
-| G6·2 | **El cómputo**: trayectoria de un objeto, quién estuvo en una zona entre dos fechas, cercanía espaciotemporal (encuentros) y paradas |
-| G6·3 | **El mapa**: deslizador de tiempo, animación y estela, con teselas por ventana de tiempo |
-| G6·4 | **La entrada continua**: micro-lotes ya; *streaming* cuando exista ORE Streaming (§2) |
+| E3·1 | **El modelo**: una tabla de posiciones (`id, t, geometría, atributos`) como tipo de activo, ordenada por celda + tiempo, y su tabla derivada de trayectorias: líneas con medida temporal, segmentadas por paradas o viajes |
+| E3·2 | **El cómputo**: trayectoria de un objeto, quién estuvo en una zona entre dos fechas, cercanía espaciotemporal (encuentros) y paradas |
+| E3·3 | **El mapa**: deslizador de tiempo, animación y estela, con teselas por ventana de tiempo |
+| E3·4 | **La entrada continua**: micro-lotes ya; *streaming* cuando exista ORE Streaming (§2) |
 
 **Hecho cuando:** la vara reproduce los cientos de millones de posiciones AIS del banco con consultas
 espaciotemporales y animación en el mapa dentro de objetivo.
 
-### G7 · Ráster
+### E4 · Ráster
 
 | paso | qué |
 |---|---|
-| G7·1 | **COG + STAC**: el ráster como objeto COG con su tabla índice Iceberg (huella, fecha, bandas, nubosidad), catalogado como activo. Los orígenes STAC de §2 entran aquí |
-| G7·2 | **Un servicio GDAL aparte**, moderno (3.10+, imagen OSGeo), para convertir a COG y calcular (T4) |
-| G7·3 | **Cálculo ráster**: índices (NDVI…), álgebra de bandas, pendiente y orientación, estadísticas zonales contra el vectorial, y mosaicos. Por transforms |
-| G7·4 | **Teselas ráster dinámicas** desde COG con permisos, en el mismo mapa |
+| E4·1 | **COG + STAC**: el ráster como objeto COG con su tabla índice Iceberg (huella, fecha, bandas, nubosidad), catalogado como activo. Los orígenes STAC de §2 entran aquí |
+| E4·2 | **Un servicio GDAL aparte**, moderno (3.10+, imagen OSGeo), para convertir a COG y calcular (T4) |
+| E4·3 | **Cálculo ráster**: índices (NDVI…), álgebra de bandas, pendiente y orientación, estadísticas zonales contra el vectorial, y mosaicos. Por transforms |
+| E4·4 | **Teselas ráster dinámicas** desde COG con permisos, en el mismo mapa |
 
-### G8 · Referencia de serie
+### E5 · Referencia de serie
 
 | paso | qué |
 |---|---|
-| G8·1 | **El catálogo público**: límites administrativos, Overture (edificios, lugares, carreteras), Catastro, INE y Copernicus. Activos compartidos para todas las organizaciones (0059), sin copia por cliente, con licencia y procedencia |
-| G8·2 | **Enriquecer** (G4·4) contra ellos desde la interfaz y desde código |
-| G8·3 | **Premium y de terceros**: el modelo de licencia (como el de CARTO), cuando haya demanda |
+| E5·1 | **El catálogo público**: límites administrativos, Overture (edificios, lugares, carreteras), Catastro, INE y Copernicus. Activos compartidos para todas las organizaciones (0059), sin copia por cliente, con licencia y procedencia |
+| E5·2 | **Enriquecer** (E1·4) contra ellos desde la interfaz y desde código |
+| E5·3 | **Premium y de terceros**: el modelo de licencia (como el de CARTO), cuando haya demanda |
 
-### G9 · Redes y 3D
+### E6 · Redes y 3D
 
 - **Redes** como grafo de nodos y aristas con geometría: conectividad, afectados aguas abajo y rutas.
 - **LiDAR** en COPC con su tabla índice.
@@ -338,19 +275,16 @@ espaciotemporales y animación en el mapa dentro de objetivo.
 
 Cada uno se abre con su propia medida cuando llegue.
 
-### G10 · Publicar estándares
+### E7 · Publicar estándares
 
-OGC API Features y Tiles sobre lo de G5, y STAC sobre lo de G7, con los mismos permisos. Largo plazo
-(P5); el sustrato no lo impide desde G1.
-
-**El primer go que se pide es G0 + G1.** G2 depende de los dos, y el resto se pide etapa a etapa con
-sus números.
+OGC API Features y Tiles sobre lo de E2, y STAC sobre lo de E4, con los mismos permisos. Largo plazo
+(P5); el sustrato no lo impide desde 0067.
 
 ## 8. Bitácora
 
 Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el orden en que pasa.
 
-- **2026-10-16 ·** Abierto. Recogido el vertical (§1), la lista limpia de orígenes (§2), el estado del
+- **2026-10-16 ·** Abierto (como «0066 · Geo formats»). Recogido el vertical (§1), la lista limpia de orígenes (§2), el estado del
   código (§3), el modelo de «formato» (§4), la hipótesis de trabajo (§5) y las preguntas (§6). Sin
   código.
 - **2026-10-16 · Decisiones de producto (P1–P4):**
@@ -542,3 +476,8 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
     - un **endpoint de teselas** con permisos;
     - **ráster** desde COG;
     - y la conexión con el catálogo en vez de `mock.ts`.
+- **2026-10-16 · Reestructurado.** El plan G0–G10 mezclaba los fundamentos del formato con el producto
+  entero del vertical. Este ADR pasa a ser el **bastión** (fundamentos y primeras aproximaciones del
+  paradigma geo y geotemporal; de aquí nacen los conceptos y desde aquí se expande). **G0–G3 se van a
+  [`0067 · Geo formats`](0067-geo-formats.md)**, acotado al formato: su representación, su distribución
+  y su adopción. G4–G10 quedan aquí como líneas de expansión E1–E7 (§7).
