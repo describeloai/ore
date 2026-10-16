@@ -330,3 +330,29 @@ con `main` son un riesgo que no paga. Queda en un `stash` local («F7b-2 derivar
 - **el índice**, ~15 s: parsear y proyectar todo (F7b·3 y F7b·4);
 - **servir: ~5–6 s**, incluso desde la caché. F7a guarda la mini-copia como texto, y cada 15 s
   se vuelve a parsear entera para recalcular la salud. Es lo siguiente.
+
+## La salud al servir (2026-10-16)
+
+Medido a 10.000 activos (musl, medio CPU): un `/assets` servido de la caché tardaba **4,6–4,8 s**,
+y 4,1–4,5 s eran rehacer la salud porque la petición caía en un cubo de 15 s nuevo:
+
+| Parte | Tiempo |
+|---|---|
+| parsear la mini-copia | 1,9–2,5 s |
+| pasarla a `Json` | 0,2–0,26 s |
+| `anotar_salud` | 1,5–1,7 s |
+| sacar los valores | ~0,4 s |
+| coser la respuesta | 11 ms |
+
+**Arreglo: *stale-while-revalidate*** (`Guardado::reciente`):
+- si la salud guardada es de otro cubo, se sirve igual y UN hilo la rehace aparte;
+- sólo la primera vez de un índice se espera;
+- `GET /health` y las pruebas siguen con `anotado`, a la hora exacta.
+
+Prueba: `la_salud_vieja_se_sirve_mientras_se_rehace` (la de antes enseguida, y la nueva, igual a
+la calculada a esa hora).
+
+| `/assets` de `main`, 10.000 activos | Antes | Ahora |
+|---|---|---|
+| en frío | 22,9 s | 24,0 s (igual: es el índice) |
+| de la caché, en un cubo nuevo | **4,6–4,8 s** | **0,14–0,19 s** (99 ms en el servidor, 84 del `fetch`) |

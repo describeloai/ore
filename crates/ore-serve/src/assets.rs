@@ -223,6 +223,8 @@ pub(crate) struct Guardado {
     mini: String,
     peso: usize,
     salud: Mutex<Option<(i64, Arc<Anotado>)>>,
+    /// Si alguien está rehaciendo la salud aparte ([`Guardado::reciente`]).
+    rehaciendo: std::sync::atomic::AtomicBool,
 }
 
 /// La salud de un índice guardado, a una hora: el texto de cada hueco que
@@ -345,10 +347,12 @@ impl Guardado {
             mini,
             peso,
             salud: Mutex::new(None),
+            rehaciendo: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    /// La salud a la hora `ahora`, de la que hay si es del mismo cubo.
+    /// La salud a la hora `ahora`, de la que hay si es del mismo cubo. La de
+    /// `GET /health` y las pruebas: exacta, y quien la pide espera a que se haga.
     pub(crate) fn anotado(&self, ahora: i64) -> Arc<Anotado> {
         let cubo = ahora.div_euclid(CUBO_SALUD);
         let mut g = self.salud.lock().unwrap_or_else(|x| x.into_inner());
@@ -357,6 +361,50 @@ impl Guardado {
         {
             return a.clone();
         }
+        let a = Arc::new(self.calcular(ahora));
+        *g = Some((cubo, a.clone()));
+        a
+    }
+
+    /// **La salud para servir** (stale-while-revalidate). Si la que hay es de
+    /// otro cubo, se sirve igual y UN hilo la rehace aparte; sólo la primera vez
+    /// se espera. Medido a 10.000 activos con medio CPU: rehacerla son 4,1–4,5 s
+    /// (parsear la mini-copia 1,9–2,5 s y `anotar_salud` 1,5–1,7 s) y coserla,
+    /// 11 ms: lo pagaba entero quien caía en un cubo nuevo. Una promesa de
+    /// frescura se mide en minutos u horas: unos segundos de retraso no cambian
+    /// lo que dice.
+    pub(crate) fn reciente(self: &Arc<Self>, ahora: i64) -> Arc<Anotado> {
+        use std::sync::atomic::Ordering;
+        let cubo = ahora.div_euclid(CUBO_SALUD);
+        let vieja = {
+            let g = self.salud.lock().unwrap_or_else(|x| x.into_inner());
+            match g.as_ref() {
+                Some((c, a)) if *c == cubo => return a.clone(),
+                Some((_, a)) => Some(a.clone()),
+                None => None,
+            }
+        };
+        let Some(vieja) = vieja else {
+            return self.anotado(ahora);
+        };
+        if !self.rehaciendo.swap(true, Ordering::SeqCst) {
+            let yo = self.clone();
+            std::thread::spawn(move || {
+                let a = Arc::new(yo.calcular(ahora));
+                let mut g = yo.salud.lock().unwrap_or_else(|x| x.into_inner());
+                if g.as_ref().is_none_or(|(c, _)| *c < cubo) {
+                    *g = Some((cubo, a));
+                }
+                drop(g);
+                yo.rehaciendo.store(false, Ordering::SeqCst);
+            });
+        }
+        vieja
+    }
+
+    /// La salud a la hora `ahora`, calculada: la mini-copia anotada y, de ella,
+    /// el texto de cada hueco.
+    fn calcular(&self, ahora: i64) -> Anotado {
         let mini = self.salud_anotada(ahora);
         let mut valores = std::collections::HashMap::new();
         {
@@ -399,9 +447,7 @@ impl Guardado {
                 }
             }
         }
-        let a = Arc::new(Anotado { valores });
-        *g = Some((cubo, a.clone()));
-        a
+        Anotado { valores }
     }
 
     /// La mini-copia, anotada con la salud de `ahora`: lo que `GET /health` lee.
@@ -414,13 +460,12 @@ impl Guardado {
         mini
     }
 
-    /// La salud de un ítem (`kind:ns.nombre`) a la hora `ahora`, si la tiene.
-    pub(crate) fn salud_de_item(&self, ahora: i64, r: &str) -> Option<Json> {
+    /// La salud de un ítem (`kind:ns.nombre`) en `a`, si la tiene.
+    pub(crate) fn salud_de_item(&self, a: &Anotado, r: &str) -> Option<Json> {
         let n = self
             .lugares
             .iter()
             .position(|l| matches!(l, Lugar::Item(x) if x == r))?;
-        let a = self.anotado(ahora);
         let v = a.valores.get(&n)?;
         ore_core::parse::parse(v)
             .ok()
@@ -1119,10 +1164,10 @@ impl Servidor {
         let j = match self.indice(rama, None).ok()? {
             Indice::Arbol(j) => j,
             Indice::Guardado(g, _) => {
-                let ahora = crate::salud::ahora();
+                let a = g.reciente(crate::salud::ahora());
                 return KINDS
                     .iter()
-                    .find_map(|k| g.salud_de_item(ahora, &format!("{k}:{corto}")));
+                    .find_map(|k| g.salud_de_item(&a, &format!("{k}:{corto}")));
             }
         };
         let Json::Obj(m) = &j else { return None };
@@ -1155,7 +1200,7 @@ impl Servidor {
             Ok(Indice::Arbol(j)) => Respuesta::ok(j),
             // El texto, tal cual: `Crudo` se escribe sin tocarlo.
             Ok(Indice::Guardado(g, desde_cache)) => Respuesta::ok(Json::Crudo(
-                g.cuerpo(desde_cache, &g.anotado(crate::salud::ahora())),
+                g.cuerpo(desde_cache, &g.reciente(crate::salud::ahora())),
             )),
         }
     }
@@ -1496,7 +1541,7 @@ mod tests {
                 for r in ["dataset:v.pedidos", "table:v.origen"] {
                     let Json::Obj(it) = &items[r] else { panic!() };
                     assert_eq!(
-                        g.salud_de_item(ahora, r).map(|x| x.jcs()),
+                        g.salud_de_item(&g.anotado(ahora), r).map(|x| x.jcs()),
                         it.get("salud").map(|x| x.jcs()),
                         "{fixture} {r}"
                     );
@@ -1504,6 +1549,36 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// La salud para servir: la primera vez, calculada; en otro cubo, la de
+    /// antes enseguida y la nueva cuando acaba el hilo que la rehace —la misma
+    /// que calculada a esa hora—.
+    #[test]
+    fn la_salud_vieja_se_sirve_mientras_se_rehace() {
+        let d = arbol_en("swr");
+        let j = indice_de(&d, Cabeza::default());
+        let g = Arc::new(Guardado::de(j.clone()));
+        let (t0, t1) = (1_791_900_000, 1_791_900_000 + 7 * 86_400);
+        let a0 = g.reciente(t0);
+        assert!(Arc::ptr_eq(&a0, &g.reciente(t0)), "el mismo cubo, la misma");
+        let otra = g.reciente(t1);
+        assert!(Arc::ptr_eq(&a0, &otra), "en otro cubo se sirve la de antes");
+        let t = std::time::Instant::now();
+        let nueva = loop {
+            let x = g.reciente(t1);
+            if !Arc::ptr_eq(&x, &a0) {
+                break x;
+            }
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(20),
+                "no se rehízo"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let fresca = Guardado::de(j).anotado(t1);
+        assert_eq!(g.cuerpo(true, &nueva), g.cuerpo(true, &fresca));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
