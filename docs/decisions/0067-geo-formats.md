@@ -264,3 +264,25 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - `banco_geo_gcs`: 4 tablas y 6 conjuntos de objetos.
 
   Catastro y PNOA quedan como deuda del banco. Siguiente: G1.
+- **2026-10-16 · G1·1 hecho: OOS v1alpha32** (`C:\oos` `3597dda`; `vendor/oos` en `15781970`; sin
+  empujar). Sale del contrato entre capas:
+  - **`00-scope`**: lo medido en la vara de G0 (0/16 tipadas, `OOS3001` al declarar). Queda fuera un CRS
+    sin código de autoridad: PROJJSON es como se escribe en Parquet, no como se declara.
+  - **`01-la-geometria`**:
+    - `Geometry<subtipo, crs>` y `Geography<subtipo>`, con valores por defecto `Any` y `OGC:CRS84` y
+      una forma canónica que los omite;
+    - el valor en WKB ISO x/y; el SRID no va en el valor (un EWKB se acepta si casa con el CRS);
+      nula ≠ vacía; el subtipo y las dimensiones se cumplen al escribir;
+    - la correspondencia con Arrow, Parquet (las dos marcas), Iceberg, DuckDB, PostGIS, BigQuery,
+      Snowflake, SQL Server, Oracle y GeoParquet; `physicalType` cita el del origen;
+    - §4.1: mientras el formato de tabla no tiene el tipo, binario + contrato, y pasar al tipo cambia
+      el esquema, no los bytes (sin prometer «sin reescribir», por el riesgo de G2·0);
+    - §5: **en texto, hex WKB, nunca WKT ni GeoJSON**; en GraphQL, el escalar `GeoJSON` en WGS 84;
+    - §6: el ensanche, dónde vale (columna, propiedad, `Struct`, `list`; **no como clave**) y los
+      errores: `OOS3001` antes de v1alpha32, `OOS3008` para un tipo geo mal formado o una columna geo
+      como clave.
+  - **14 casos de conformidad**, 4 válidos y 10 inválidos, con el molde ligero de v1alpha31.
+  - **`OOS3008`** en el registro de errores.
+  - **Los casos los corre ORE en G1·2** (`borrador_de_v1alpha32` en la suite de conformidad): hasta
+    entonces ningún marcador recorre `conformance/v1alpha32`. Al empujar, `C:\oos` va antes que ORE:
+    el submódulo apunta a un commit de OOS que todavía no está en su remoto.
