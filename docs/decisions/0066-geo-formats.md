@@ -220,3 +220,28 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
     valor de redes (alto), 3D (medio-alto) y BIM (más tarde); datos de referencia de serie para todos.
   - **T1–T8 son medidas**, y son el fundamento del plan: dan los números y la información fehaciente
     con la que se diseña.
+- **2026-10-16 · Decisiones P6–P8:**
+  - **P6 · Ráster: guardarlo y calcular con él.** Hay que poder hacer índices, estadísticas zonales,
+    pendientes o láminas de inundación dentro de la plataforma, no sólo pintar. Hace falta cómputo
+    ráster (§5.2, capa 3).
+  - **P7 · Redes y 3D entran; BIM todavía no.** Redes como grafo con geometría: conectividad,
+    afectados aguas abajo, rutas. 3D: modelos de ciudad y LiDAR.
+  - **P8 · Datos de referencia de serie: sí.** El referente es el **Data Observatory de CARTO**
+    ([catálogo](https://carto.com/data-library),
+    [suscripción](https://docs.carto.com/carto-user-manual/data-observatory/subscribing-to-public-and-premium-datasets),
+    [enriquecer](https://carto.com/blog/enrich-spatial-analysis-bigquery-snowflake/)):
+    - un catálogo de más de 12 000 datasets espaciales: demografía, geografías, movilidad, POIs,
+      tráfico, medio ambiente, financieros, inmobiliario, comportamiento y derivados;
+    - **públicos** (suscripción gratuita, licencia perpetua) y **premium** (de terceros como
+      Mastercard, Experian o SafeGraph, con licencia que CARTO tramita);
+    - suscribirse no copia por ETL: el dataset **aparece en el warehouse del cliente** (BigQuery,
+      Snowflake, Databricks, Redshift, PostgreSQL o el de CARTO);
+    - se usa con su *Analytics Toolbox*: más de 100 funciones espaciales, H3/Quadbin y
+      **enriquecimiento**, un *join* espacial que agrega variables del catálogo sobre los polígonos o
+      la malla del cliente.
+
+    En ORE encaja como **activos públicos compartidos del catálogo**: visibles desde todas las
+    organizaciones (0059), sin copia por cliente (0053), con licencia y procedencia en el activo y un
+    verbo de **enriquecer**. Queda por investigar qué se ofrece de serie (OSM/Overture, límites, Catastro,
+    INE, Copernicus) y cómo se licencia lo premium.
+  - **P5**, explicada con ventajas e inconvenientes, pendiente de decisión.
