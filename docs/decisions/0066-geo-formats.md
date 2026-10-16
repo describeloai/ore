@@ -1,8 +1,8 @@
 # 0066 · Geo formats — el dato geoespacial y geotemporal, de punta a punta
 
 **Estado:** abierto (2026-10-16); **plan propuesto en §7, esperando el go** (primero G0 + G1). Es el **bastión de trabajo del vertical**: aquí se acumula lo
-aprendido, lo investigado, lo medido y, después, lo decidido y construido. Todavía **no hay plan por
-pasos*: hasta el go del plan (§7). **Decide**, cuando se cierre: cómo representa, tipa, calcula y
+aprendido, lo investigado, lo medido y, después, lo decidido y construido. **Nada se construye hasta
+el go del plan** (§7). **Decide**, cuando se cierre: cómo representa, tipa, calcula y
 sirve ORE el dato geoespacial y geotemporal. Toca [`0032`](0032-el-contrato-de-tipos.md) (tipos),
 [`0033`](0033-el-dataset.md) (el lago), [`0043`](0043-ore-arrow-stream.md) (Arrow),
 [`0046`](0046-ore-media.md) y [`0061`](0061-origenes-de-objetos.md) (objetos y colecciones),
