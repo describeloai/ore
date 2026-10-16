@@ -95,7 +95,20 @@ spec:
       #   de internet, y lo acota que el driver sólo sabe hablar SFTP con la
       #   huella del host fijada y la clave de la celda. Un SFTP en otro puerto
       #   (2222…) no llega hasta que la fuente declare el suyo (lo de arriba).
+      #
+      # ✏️ 2026-10-16 · ADR 0065 PG3: el rango 1024–65535, y no un puerto por
+      #   fuente. Lo de arriba («que el renderizador emita la política del Job»)
+      #   no casa con la malla: la cola sólo puede crear `batch/jobs` —que
+      #   ore-serve escriba políticas sería el gobernado escribiendo su
+      #   gobierno— y la pasarela es UN pod que lee todas las fuentes. Un
+      #   Postgres en el 6543 (el pooler de Supabase) o en el puerto aleatorio de
+      #   Aiven no llegaba. Lo que se añade es poco: el 443 ya alcanza a
+      #   cualquier host público, y en un driver sólo corre lo que manda su
+      #   plantilla. Lo que acota sigue igual: sólo IPs públicas y sólo
+      #   `ore.dev/rol: driver`. Restringir por destino (`host:puerto`, como las
+      #   egress policies de Foundry o las network policies de Databricks
+      #   serverless) es otra pieza, cuando un cliente la pida.
       ports:
         - { protocol: TCP, port: 443 }
-        - { protocol: TCP, port: 5432 }
         - { protocol: TCP, port: 22 }
+        - { protocol: TCP, port: 1024, endPort: 65535 }

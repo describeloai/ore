@@ -1,8 +1,8 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** y **PG3 escrito** (2026-10-16); Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
-desplegar PG2 y medirlo contra Neon. Investigación:
+PG4 (túnel SSH); se empuja todo junto al final. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
 **Decide** cómo lee ORE el Postgres de un cliente cuando es una base gestionada, privada o con una CA
 propia, y cómo entra el CDC. Toca [`0008`](0008-el-protocolo-del-driver.md) (el contrato del driver),
@@ -322,6 +322,34 @@ Las Neon de producción no tienen arrays (PG0); sus tipos `Time` habrá que comp
 **Lo que no entra en PG2 (D-PG4, esperan a que se pidan):** `vector` como `FixedSizeList<Float32>`,
 PostGIS como WKB binario con GeoArrow, `hstore` como `Map`, `interval` como `Interval` y los
 compuestos como `Struct`. Hoy los cinco salen como su texto, que es exacto.
+
+### PG3 · El puerto: un rango, no una política por fuente (2026-10-16)
+
+**D-PG3 se corrige.** Lo que el plan decía —«la fuente declara su puerto y el renderizador emite la
+`NetworkPolicy` del Job»— no casa con la malla, por dos razones:
+- la cola sólo puede crear `batch/jobs`: que ore-serve escriba políticas sería el gobernado escribiendo
+  su gobierno (`13-el-inquilino-reconciliado.yaml`, `cola.rs`);
+- la pasarela es **un** pod que lee todas las fuentes, así que una política por Job no la cubriría.
+
+**Lo que hace el sector:**
+- Foundry exige *network egress policies* (DNS para HTTP(S); CIDR y puerto para lo demás) que aprueba
+  el *Information Security Officer*.
+- Snowflake usa `NETWORK RULE … MODE = EGRESS` con `host:puerto`.
+- Databricks serverless tiene *network policies* opcionales («todos los destinos» o «restringido»),
+  sólo en sus planes altos.
+- Fivetran y Airbyte no restringen su salida.
+
+**Decidido:** `salida-del-driver` abre **TCP 1024–65535** (`endPort`), además del 443 y el 22, siempre
+a IPs públicas y sólo para `ore.dev/rol: driver`. El 5432 entra en el rango.
+- Lo que se añade es poco: el 443 ya alcanza a cualquier host público, y en un driver sólo corre lo
+  que manda su plantilla.
+- Restringir por destino (`host:puerto` aprobado por un rol, con `FQDNNetworkPolicy` de GKE) es otra
+  pieza, para cuando un cliente regulado la pida.
+
+| paso | qué |
+|---|---|
+| **PG3·1** | `malla/20-driver.yaml`: los puertos son `443`, `22` y `1024–65535`. `gen-inquilino.py --comprobar`: «la plantilla y el renderizador dicen lo mismo». Victor renderizado lleva el rango. `kubectl apply --dry-run=server` acepta el de demo y el de victor |
+| **PG3·2** | **Sin aplicar**: entra con el despliegue final (Flux, al converger), después del binario de PG1/PG2. Quedará comprobar desde un Job de victor que un Postgres en el 6543 llega (el pooler de Supabase, cuando haya proyecto) |
 
 ## Lo que no se hace aquí
 
