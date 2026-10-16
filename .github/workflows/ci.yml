@@ -53,6 +53,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: never
   RUSTFLAGS: -D warnings
+  # ADR 0065 PG1 · el Postgres de los servicios de la CI no habla TLS, y el
+  # driver niega el texto plano salvo en el laboratorio. Nunca en producción.
+  ORE_PG_LABORATORIO: "1"
   # Las globs de `paths-ignore` en las de `case`, donde `*` sí cruza `/`.
   SOLO_PAPEL: >-
     docs/*

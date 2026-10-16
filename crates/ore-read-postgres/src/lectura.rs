@@ -66,22 +66,19 @@ pub type Token = Arc<Mutex<Sesion>>;
 #[derive(Default)]
 pub struct Sesion {
     pub token: Option<postgres::CancelToken>,
+    /// El conector con el que se abrió (ADR 0065 D-PG1): cancelar habla TLS
+    /// con la misma CA.
+    pub tls: Option<postgres_native_tls::MakeTlsConnector>,
     pub cancelada: bool,
-}
-
-fn tls() -> Result<postgres_native_tls::MakeTlsConnector, Fallo> {
-    native_tls::TlsConnector::new()
-        .map(postgres_native_tls::MakeTlsConnector::new)
-        .map_err(|e| Fallo::origen(format!("no se pudo preparar TLS: {e}")))
 }
 
 /// Cancela en el origen lo que corre en la sesión de `token`, si algo corre.
 pub fn cancelar(token: &Token) {
     let t = token.lock().ok().and_then(|mut s| {
         s.cancelada = true;
-        s.token.clone()
+        Some((s.token.clone()?, s.tls.clone()?))
     });
-    if let (Some(t), Ok(tls)) = (t, tls()) {
+    if let Some((t, tls)) = t {
         let _ = t.cancel_query(tls);
     }
 }
@@ -112,18 +109,10 @@ pub fn fallo_de(e: &postgres::Error) -> Fallo {
     Fallo::origen(causa)
 }
 
-/// **Abre una sesión**, de sólo lectura, con un plazo para conectar y su
-/// nombre de aplicación (para que quien mire `pg_stat_activity` la vea).
+/// **Abre una sesión**: TLS según D-PG1 (ADR 0065), de sólo lectura, con un
+/// plazo para conectar y su nombre de aplicación (`crate::tls::abrir`).
 pub fn conectar(url: &str) -> Result<postgres::Client, Fallo> {
-    let mut config: postgres::Config = url
-        .parse()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("la URL no es de Postgres: {e}")))?;
-    config.connect_timeout(Duration::from_secs(10));
-    config.application_name("ore-read-postgres");
-    let mut c = config.connect(tls()?).map_err(|e| fallo_de(&e))?;
-    c.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-        .map_err(|e| fallo_de(&e))?;
-    Ok(c)
+    crate::tls::abrir(url)
 }
 
 /// `"esquema"."tabla"`, citado parte a parte: lo que `to_regclass` lee sin que
@@ -371,6 +360,7 @@ pub fn leer(
     let plan = planear(c, p)?;
     if let Ok(mut s) = token.lock() {
         s.token = Some(c.cancel_token());
+        s.tls = crate::tls::conector_de(&p.url);
         s.cancelada = false;
     }
     let ps = parametros(&plan.consulta);

@@ -65,6 +65,7 @@ use std::process::ExitCode;
 mod lectura;
 mod senal;
 mod texto;
+mod tls;
 
 /// Un documento, una consulta.
 ///
@@ -332,17 +333,13 @@ fn intentar() -> Result<String, String> {
     // una URL de BigQuery nombra UN dataset; esta abarca su fuente entera.
     if verbo == "explorar" {
         let (url, _) = ore_driver::leer_coordenada(&entrada)?;
-        let tls = postgres_native_tls::MakeTlsConnector::new(
-            native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-        );
-        let mut cliente = postgres::Client::connect(&url, tls)
-            .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
+        let mut cliente = tls::abrir(&url).map_err(|f| f.mensaje)?;
         let filas = cliente
             .query(
                 "SELECT nspname FROM pg_namespace                  WHERE nspname NOT IN ('pg_catalog', 'information_schema')                    AND nspname !~ '^pg_' ORDER BY nspname",
                 &[],
             )
-            .map_err(|e| format!("la consulta de esquemas fallo: {e}"))?;
+            .map_err(|e| format!("la consulta de esquemas fallo: {}", texto::causa(&e)))?;
         let contiene: Vec<Json> = filas
             .iter()
             .map(|f| Json::obj([("nombre", Json::s(f.get::<_, String>(0)))]))
@@ -355,33 +352,26 @@ fn intentar() -> Result<String, String> {
     }
     if verbo == "check" {
         let (url, _) = ore_driver::leer_coordenada(&entrada)?;
-        let tls = postgres_native_tls::MakeTlsConnector::new(
-            native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-        );
-        return Ok(match postgres::Client::connect(&url, tls) {
+        // La causa entera, con qué hacer (ADR 0065 PG0: aquí salía sólo
+        // «error performing TLS handshake», sin decir que faltaba la CA).
+        return Ok(match tls::abrir(&url) {
             Ok(_) => ore_driver::comprobacion(true, None),
-            Err(e) => ore_driver::comprobacion(false, Some(&e.to_string())),
+            Err(f) => ore_driver::comprobacion(false, Some(&f.mensaje)),
         });
     }
     let url = entrada.trim();
 
-    let tls = postgres_native_tls::MakeTlsConnector::new(
-        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-    );
-    let mut cliente = postgres::Client::connect(url, tls)
-        // El mensaje del servidor va entero: «password authentication failed» y
-        // «no pg_hba.conf entry» se arreglan solos en cuanto se leen, y
-        // resumirlos los convierte en una tarde. Y va por `causa`: `{e}` a
-        // secas decía «db error», que es lo que se leyó en victor el
-        // 2026-09-18 en trece copias seguidas sin saber por qué.
-        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
+    let mut cliente = tls::abrir(url).map_err(|f| f.mensaje)?;
 
     let filas = cliente
         .query(CATALOGO, &[])
-        .map_err(|e| format!("la consulta del catálogo falló: {e}"))?;
-    let unicas = cliente
-        .query(UNICAS, &[])
-        .map_err(|e| format!("la consulta de claves alternativas falló: {e}"))?;
+        .map_err(|e| format!("la consulta del catálogo falló: {}", texto::causa(&e)))?;
+    let unicas = cliente.query(UNICAS, &[]).map_err(|e| {
+        format!(
+            "la consulta de claves alternativas falló: {}",
+            texto::causa(&e)
+        )
+    })?;
 
     // El sondeo de la cara `D`. Es una pregunta al servidor y no una opción de
     // este programa: si el clúster no está en `logical`, ningún objeto suyo
@@ -797,11 +787,7 @@ fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> J
 /// terminar la transacción, y uno ocupado puede tardar en hacerlo.
 fn cambio(entrada: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(entrada)?;
-    let tls = postgres_native_tls::MakeTlsConnector::new(
-        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-    );
-    let mut cliente = postgres::Client::connect(&url, tls)
-        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
+    let mut cliente = tls::abrir(&url).map_err(|f| f.mensaje)?;
     let replica: bool = cliente
         .query_one("SELECT pg_is_in_recovery()", &[])
         .map(|r| r.get(0))
@@ -873,11 +859,7 @@ fn cambio(entrada: &str) -> Result<String, String> {
 fn testigo(entrada: &str) -> Result<String, String> {
     let (url, _objeto) = ore_driver::leer_coordenada(entrada)?;
 
-    let tls = postgres_native_tls::MakeTlsConnector::new(
-        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-    );
-    let mut cliente = postgres::Client::connect(&url, tls)
-        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
+    let mut cliente = tls::abrir(&url).map_err(|f| f.mensaje)?;
 
     let wal_level: String = cliente
         .query_one("SELECT current_setting('wal_level')", &[])
@@ -949,15 +931,16 @@ fn filas(peticion: &str) -> Result<String, String> {
         unreachable!("`POSTGRES` no exige tipos")
     })?;
 
-    let tls = postgres_native_tls::MakeTlsConnector::new(
-        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-    );
-    let mut cliente = postgres::Client::connect(&p.url, tls)
-        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
+    let mut cliente = tls::abrir(&p.url).map_err(|f| f.mensaje)?;
 
     cliente
         .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-        .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "no se pudo abrir la sesión en solo lectura: {}",
+                texto::causa(&e)
+            )
+        })?;
 
     // Cada parámetro va como texto y lo coacciona el servidor (`texto.rs`):
     // un `String` del crate solo acepta columnas de texto, y una clave sobre
@@ -973,7 +956,7 @@ fn filas(peticion: &str) -> Result<String, String> {
         .collect();
     let resultado = cliente
         .query(c.texto.as_str(), &refs)
-        .map_err(|e| format!("la consulta falló: {e}\n  {}", c.texto))?;
+        .map_err(|e| format!("la consulta falló: {}\n  {}", texto::causa(&e), c.texto))?;
 
     let mut out = String::new();
     for fila in &resultado {

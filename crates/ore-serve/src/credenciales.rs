@@ -702,8 +702,58 @@ fn gcs(driver: Option<&str>, medios: Option<&str>) -> Json {
 }
 
 /// Lo mismo, con los IDs de la celda dados (las pruebas no tocan el entorno).
+/// ⭐ ADR 0065 PG1 (D-PG1) · **Postgres: la credencial en la cadena, y TLS
+/// siempre verificado.** Sin `sslmode`, el driver verifica la cadena y el
+/// nombre del host; con una CA que no es pública (RDS, Cloud SQL, Supabase,
+/// Aiven), su PEM va en la URL (`sslrootcert`). En claro, no.
+fn postgres() -> Json {
+    let no = |modo: &str, porque: &str| {
+        Json::obj([("modo", Json::s(modo)), ("porque", Json::s(porque))])
+    };
+    Json::obj([
+        ("tipo", Json::s("postgres")),
+        (
+            "modos",
+            Json::Arr(vec![Json::obj([
+                ("modo", Json::s("cadena")),
+                ("recomendado", Json::Bool(true)),
+                (
+                    "dice",
+                    Json::s(
+                        "La credencial va dentro de la cadena de conexión, cifrada en el custodio;                          mejor un usuario que sólo lee. TLS se verifica siempre (la cadena y el                          nombre del host). Si tu proveedor firma con su propia CA (RDS, Cloud SQL,                          Supabase, Aiven), pega su PEM, codificado en la URL, en `sslrootcert`; si                          el certificado no lleva el nombre por el que conectas, `sslmode=verify-ca`.",
+                    ),
+                ),
+                (
+                    "formato",
+                    Json::s(
+                        "postgres://<usuario>:<contraseña>@<host>[:<puerto>]/<base>[?sslmode=verify-full|verify-ca][&sslrootcert=<PEM de la CA, codificado>]",
+                    ),
+                ),
+            ])]),
+        ),
+        (
+            "noAdmitidos",
+            Json::Arr(vec![
+                no(
+                    "en-claro",
+                    "`sslmode=disable`, `allow` o `prefer` dejan la contraseña y los datos a la                      vista de quien esté en medio; y `prefer` baja a texto plano sin avisar",
+                ),
+                no(
+                    "cualquier-certificado",
+                    "aceptar el certificado de cualquiera es dejar que otro se haga pasar por tu                      base y reciba la contraseña",
+                ),
+                no(
+                    "fichero",
+                    "`sslrootcert` con una ruta: el driver corre en un Job sin tus ficheros; el PEM                      va dentro de la URL",
+                ),
+            ]),
+        ),
+    ])
+}
+
 pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -> Json {
     match tipo {
+        "postgres" | "postgresql" => postgres(),
         "bigquery" => {
             let mut celda = vec![
                 ("modo", Json::s("celda")),
@@ -1108,13 +1158,18 @@ mod tests {
         assert!(j.contains("{idDriver}") && j.contains("sinIds"), "{j}");
     }
 
-    /// Las demás familias: la credencial va en la cadena.
+    /// Postgres: la credencial va en la cadena, y TLS siempre (ADR 0065 PG1).
     #[test]
-    fn postgres_va_en_la_cadena() {
-        assert!(
-            de("postgres", None, None)
-                .jcs()
-                .contains("\"modo\":\"cadena\"")
-        );
+    fn postgres_va_en_la_cadena_y_verifica_tls() {
+        let j = de("postgres", None, None).jcs();
+        for x in [
+            "\"modo\":\"cadena\"",
+            "sslrootcert",
+            "verify-ca",
+            "\"en-claro\"",
+            "\"cualquier-certificado\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
     }
 }

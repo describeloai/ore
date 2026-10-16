@@ -37,5 +37,5 @@ docker exec "$PG" psql -U ore -d m3 -c '\timing on' -c 'select * from ventas lim
 
 docker run --rm --network "$RED" -v "$RAIZ/pruebas-de-fuego:/m:ro" -v "$ORE_CONECTOR:/usr/local/bin/ore-read-postgres:ro" \
   -v "$(dirname "$SALIDA"):/salida" -v ore-pip-cache:/root/.cache/pip \
-  -e PG_URL="postgres://ore:ore@$PG:5432/m3?sslmode=disable" -e M3_FILAS="$FILAS" -e M3_SALIDA="/salida/$(basename "$SALIDA")" \
+  -e ORE_PG_LABORATORIO=1 -e PG_URL="postgres://ore:ore@$PG:5432/m3?sslmode=disable" -e M3_FILAS="$FILAS" -e M3_SALIDA="/salida/$(basename "$SALIDA")" \
   python:3.12-slim bash -c 'apt-get update -qq >/dev/null && apt-get install -y -qq musl >/dev/null 2>&1; pip install -q pyarrow 2>/dev/null; python3 /m/medida-f0-el-conector-de-postgres.py'
