@@ -1,6 +1,6 @@
 # 0065 · Postgres como origen, de verdad
 
-**Estado:** propuesto (2026-10-16). **PG0 medido**, **PG1 cerrado en producción** y **PG2 hecho en el laboratorio** **PG3 escrito** , **PG4** y **PG5 hechos en el laboratorio** (2026-10-16); Supabase
+**Estado:** propuesto (2026-10-16). **PG0 medido** y **PG1 cerrado en producción**; **PG2, PG4, PG4c y PG5 hechos en el laboratorio** y **PG3 escrito**, sin desplegar (2026-10-16); Supabase
 pendiente de un proyecto. Cuatro decisiones corregidas por la medida (D-PG1, D-PG4, D-PG5, D-PG6). Siguiente:
 PG7 (sabores y `check`) o el CDC; se empuja todo junto al final. Investigación:
 [`p-postgres-origen-estado-del-arte.md`](../investigacion/p-postgres-origen-estado-del-arte.md).
