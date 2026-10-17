@@ -634,9 +634,50 @@ public final class Ore {
                 }
             }
             Object tok = credencial.get("gcs.oauth2.token");
-            return iceberg(String.valueOf(m), tok == null ? null : String.valueOf(tok));
+            return conGeo(iceberg(String.valueOf(m), tok == null ? null : String.valueOf(tok)), r);
         }
-        return "read_parquet('" + rutaSql(parquetDe(vista, r)) + "')";
+        return conGeo("read_parquet('" + rutaSql(parquetDe(vista, r)) + "')", r);
+    }
+
+    /**
+     * ORE 0067 G2·3·4: las columnas que el puntero dice geo ({@code geo}, de los tipos del árbol)
+     * se leen como {@code GEOMETRY} con su CRS, no como el BLOB que es la columna {@code binary}
+     * de Iceberg (G2·0). Dentro del puesto funcionan las {@code ST_*}, y a la salida Arrow lleva la
+     * marca {@code geoarrow.wkb} con el CRS. Una {@code Geography} se lee como {@code GEOMETRY} en
+     * {@code OGC:CRS84} (lo esférico es E1).
+     */
+    static String conGeo(String fuente, Map<String, Object> r) throws Exception {
+        if (!(r.get("geo") instanceof Map<?, ?> geo) || geo.isEmpty()) return fuente;
+        cargar(duckdb(), "spatial");
+        List<String> cambios = new ArrayList<>();
+        new java.util.TreeMap<>(geo).forEach((c, g) -> {
+            String col = String.valueOf(c).replace("\"", "\"\"");
+            Object crs = g instanceof Map<?, ?> x ? x.get("crs") : null;
+            cambios.add("ST_GeomFromWKB(\"" + col + "\")::GEOMETRY('" + q(crs == null ? "OGC:CRS84" : crs) + "') as \"" + col + "\"");
+        });
+        return "(select * replace (" + String.join(", ", cambios) + ") from " + fuente + ")";
+    }
+
+    /**
+     * ORE 0067 G2·3·4: el CRS de una columna geo que se escribe, por su tipo: {@code geometry}
+     * ({@code OGC:CRS84}), {@code geometry(EPSG:25830)}, o el de OOS ({@code Geometry<Point,
+     * EPSG:25830>}, {@code Geography<…>}). {@code null} si no es geo.
+     */
+    static String crsDeGeo(String t) {
+        if (t == null) return null;
+        String x = t.trim();
+        Matcher m = Pattern.compile("^(?i:geometry)(?:\\((.+)\\))?$").matcher(x);
+        if (m.matches()) return m.group(1) == null ? "OGC:CRS84" : m.group(1).trim();
+        if (x.matches("^Geography(<.*>)?$")) return "OGC:CRS84";
+        m = Pattern.compile("^Geometry(?:<([^,>]*)(?:,\\s*([^>]+))?>)?$").matcher(x);
+        if (m.matches()) return m.group(2) == null ? "OGC:CRS84" : m.group(2).trim();
+        return null;
+    }
+
+    /** ORE 0067 G2·3·4: ¿lleva el campo la marca {@code geoarrow.wkb}? */
+    static boolean esGeo(Field f) {
+        Map<String, String> md = f.getMetadata();
+        return md != null && "geoarrow.wkb".equals(md.get("ARROW:extension:name"));
     }
 
     /** Where the image leaves DuckDB's preinstalled extensions. */
@@ -1354,6 +1395,9 @@ public final class Ore {
 
     /** El tipo de Iceberg del esquema con el que la tabla se esboza (lo mismo que `ore-store` hace al escribir, 0032). */
     private static String tipoIceberg(String columna, String t) {
+        // ORE 0067 G2·3·4: en la tabla Iceberg una geometría es `binary` hasta que el formato
+        // tenga el tipo (G2·0); su tipo lo guarda `ore.geo.<col>`.
+        if (crsDeGeo(t) != null) return "binary";
         switch (t) {
             case "bool": return "boolean";
             case "int8": case "int16": case "int32": case "int64": case "uint8": case "uint16": case "uint32": return "long";
@@ -1374,6 +1418,15 @@ public final class Ore {
 
     /** El campo de Arrow de un tipo con el nombre de {@code pyarrow}. */
     private static Field campoArrow(String nombre, String t) {
+        // ORE 0067 G2·3·4: una geometría es su WKB con la marca `geoarrow.wkb` y su CRS, que es
+        // lo que `ore-store` (`carga::normalizar`) acepta y lleva al escritor geo.
+        String crs = crsDeGeo(t);
+        if (crs != null) {
+            Map<String, String> md = new LinkedHashMap<>();
+            md.put("ARROW:extension:name", "geoarrow.wkb");
+            md.put("ARROW:extension:metadata", "{\"crs\":\"" + crs.replace("\"", "") + "\"}");
+            return new Field(nombre, new FieldType(true, ArrowType.Binary.INSTANCE, null, md), null);
+        }
         ArrowType tipo;
         switch (t) {
             case "bool": tipo = ArrowType.Bool.INSTANCE; break;
@@ -1413,6 +1466,8 @@ public final class Ore {
         else if (v instanceof TimeMicroVector t) t.setSafe(i, (x instanceof LocalTime l ? l.toNanoOfDay() : LocalTime.parse(String.valueOf(x)).toNanoOfDay()) / 1000L);
         else if (v instanceof TimeStampMicroTZVector t) t.setSafe(i, micros(x));
         else if (v instanceof TimeStampMicroVector t) t.setSafe(i, micros(x));
+        // ORE 0067 G2·3·4: una geometría, su WKB (`byte[]`) o el WKB en hexadecimal.
+        else if (v instanceof VarBinaryVector b) b.setSafe(i, x instanceof byte[] bs ? bs : java.util.HexFormat.of().parseHex(String.valueOf(x).replaceFirst("^\\\\x", "")));
         else throw new IllegalArgumentException("write(): column `" + v.getName() + "` (" + tipo + ") cannot be filled");
     }
 
@@ -1528,6 +1583,8 @@ public final class Ore {
             return l;
         }
         if (enLista && t instanceof ArrowType.FloatingPoint fp && fp.getPrecision() != FloatingPointPrecision.DOUBLE) return "float";
+        // ORE 0067 G2·3·4: la geometría que viene de DuckDB (`over()`, `sql()`) lleva su marca.
+        if (esGeo(f)) return "binary";
         return tipoIceberg(columna, arrowName(f));
     }
 

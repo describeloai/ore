@@ -1467,6 +1467,20 @@ mod tests {
         assert!(normalizar(&lote(Field::new("geom", DataType::LargeBinary, true), col)).is_err());
     }
 
+    /// ORE 0067 G2·3·4 · **El Parquet que escribe DuckDB** (lo que `write()` de
+    /// Node manda, `formato: parquet`): GEOMETRY con el CRS en PROJJSON en el
+    /// tipo lógico. `parquet` lo da como la marca `geoarrow.wkb`, y `normalizar`
+    /// saca de él `EPSG:25830`.
+    #[test]
+    fn el_parquet_geo_de_duckdb_llega_con_su_crs() {
+        let bytes = include_bytes!("../tests/cuerpos/geo-duckdb-25830.parquet");
+        let lotes = lotes_de_parquet(bytes).unwrap();
+        let n = normalizar(&lotes[0]).unwrap();
+        let f = n.schema().field_with_name("geom").unwrap().clone();
+        assert_eq!(f.metadata()["ARROW:extension:metadata"], r#"{"crs":"EPSG:25830"}"#, "{:?}", lotes[0].schema());
+        assert_eq!(f.metadata()[META_TIPO], "Geometry<Any, EPSG:25830>");
+    }
+
     /// v1alpha32 (ORE 0067 G1·3) · **La copia de una columna geo**: el texto del
     /// driver (el EWKB de PostGIS, en hexadecimal) sale del lote como `Binary`
     /// marcado con WKB ISO; el Parquet vuelve por `leer` como el hexadecimal

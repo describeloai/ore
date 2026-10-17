@@ -635,3 +635,28 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     hará G2·3·5) pasa, y la suite del SDK da 108 pruebas, todas en verde. `ore-core` 379/379.
     `ore-serve` 241/243: las 2 de `git.rs` fallan igual sin este cambio, porque en Docker no hay
     `git` del worktree.
+- **2026-10-17 · G2·3·4 hecho: Node y JVM leen y escriben geometría.**
+  - **Leer** (los dos): `conGeo` envuelve la fuente de un dataset con el `geo` del puntero, como
+    `_con_geo` en Python. La columna es `GEOMETRY` con su CRS dentro del puesto, y Arrow sale con la
+    marca `geoarrow.wkb`.
+  - **Escribir en Node:** `write()` arma un Parquet con DuckDB (no Arrow). Una columna con tipo
+    `geometry`, `geometry(EPSG:25830)` o el de OOS (`Geometry<Point, EPSG:25830>`, `Geography<…>`) y
+    valores WKB (`Uint8Array` o hexadecimal) se agrega como BLOB y se saca como
+    `GEOMETRY('<crs>')` con `geoparquet_version 'BOTH'`. En el esbozo de Iceberg es `binary`.
+    **Medido:** DuckDB pone en el tipo lógico el **PROJJSON completo** como cadena. `parquet` lo da
+    como la marca, y `crs_de_geoarrow` saca `EPSG:25830` de su `id` (prueba de Rust
+    `el_parquet_geo_de_duckdb_llega_con_su_crs`, con ese fichero de DuckDB como dato de prueba).
+  - **Escribir en la JVM:** `write()` manda Arrow IPC.
+    - Un campo con la marca `geoarrow.wkb` (el que da DuckDB en `over()`/`sql()`) es `binary` en el
+      esbozo.
+    - En `List<Map>`/`Rows`, el tipo `geometry(…)` se vuelve un campo `Binary` marcado con su CRS,
+      relleno con `byte[]` o hexadecimal.
+    - `ore-store` lo lleva al escritor geo como en Python.
+  - **Pruebas** (en las imágenes reales, con `spatial` preinstalada a mano, como hará G2·3·5; sin
+    ella, lo de DuckDB se salta):
+    - **Node** `pruebas/geo.test.mjs`: el CRS por el tipo, `write()` da GEOMETRY en `EPSG:25830` con
+      `ST_Area` 1 000 000, y leer convierte el BLOB en `GEOMETRY`. La suite de Node, 16/16. Para
+      probarlo sin servidor, el SDK exporta `__geo` (interno, no es interfaz).
+    - **JVM** `pruebas/GeoPrueba.java`, que se compila junto a `Ore.java` y se corre a mano porque la
+      JVM no tiene corredor de pruebas: el CRS por el tipo, el IPC con la marca y el CRS, `binary` en
+      Iceberg, WKB y nula, y leer como `GEOMETRY` con `ST_Area`.

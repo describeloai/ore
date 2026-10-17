@@ -458,10 +458,37 @@ async function fuenteDeRespuesta(vista, r) {
         if (c === 200 && l?.config?.["s3.access-key-id"]) s3 = l.config;
       }
     }
-    return [await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]), r];
+    return [await conGeo(await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]), r), r];
   }
   const [f] = await parquetDe(vista, r);
-  return [`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r];
+  return [await conGeo(`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r), r];
+}
+
+/** ORE 0067 G2·3·4: las columnas que el puntero dice geo (`geo`, de los tipos
+ *  del árbol) se leen como `GEOMETRY` con su CRS, no como el BLOB que es la
+ *  columna `binary` de Iceberg (G2·0). Dentro del puesto funcionan las `ST_*`,
+ *  y a la salida Arrow lleva la marca `geoarrow.wkb` con el CRS. Una
+ *  `Geography` se lee como `GEOMETRY` en `OGC:CRS84` (lo esférico es E1). */
+async function conGeo(fuente, r) {
+  const geo = Object.entries(r.geo ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  if (geo.length === 0) return fuente;
+  await cargar(await duckdb(), "spatial");
+  const q = (x) => x.replaceAll('"', '""');
+  const cambios = geo.map(([c, g]) => `ST_GeomFromWKB("${q(c)}")::GEOMETRY('${(g.crs ?? "OGC:CRS84").replaceAll("'", "''")}') as "${q(c)}"`);
+  return `(select * replace (${cambios.join(", ")}) from ${fuente})`;
+}
+
+/** ORE 0067 G2·3·4: el CRS de una columna geo que se escribe, por su tipo:
+ *  `geometry` (OGC:CRS84), `geometry(EPSG:25830)`, o el de OOS
+ *  (`Geometry<Point, EPSG:25830>`, `Geography<…>`). `null` si no es geo. */
+function crsDeGeo(t) {
+  if (typeof t !== "string") return null;
+  let m = /^geometry(?:\((.+)\))?$/i.exec(t.trim());
+  if (m) return (m[1] ?? "OGC:CRS84").trim();
+  if (/^Geography(<.*>)?$/.test(t.trim())) return "OGC:CRS84";
+  m = /^Geometry(?:<([^,>]*)(?:,\s*([^>]+))?>)?$/.exec(t.trim());
+  if (m) return (m[2] ?? "OGC:CRS84").trim();
+  return null;
 }
 
 /** `iceberg_scan` sobre la raíz de la tabla y la versión del puntero (con
@@ -858,6 +885,9 @@ async function secretoS3(con, cfg) {
 
 /** El tipo de DuckDB de un tipo de Arrow (la vuelta de `arrowName`). */
 function tipoDuck(t) {
+  // ORE 0067 G2·3·4: una geometría se agrega como su WKB (BLOB) y se escribe
+  // como GEOMETRY con su CRS al sacar el Parquet (`parquetDe_`).
+  if (crsDeGeo(t)) return "BLOB";
   const simples = {
     bool: "BOOLEAN", int8: "TINYINT", int16: "SMALLINT", int32: "INTEGER", int64: "BIGINT", uint8: "UTINYINT", uint16: "USMALLINT", uint32: "UINTEGER",
     float: "FLOAT", double: "DOUBLE", string: "VARCHAR", "date32[day]": "DATE", "time64[us]": "TIME", "timestamp[us]": "TIMESTAMP",
@@ -873,6 +903,9 @@ function tipoDuck(t) {
  *  hace al escribir, 0032): lo que el contrato no tiene se niega aquí, con el
  *  nombre de la columna, antes de mandar nada. */
 function tipoIceberg(columna, t) {
+  // ORE 0067 G2·3·4: en la tabla Iceberg una geometría es `binary` hasta que el
+  // formato tenga el tipo (G2·0); su tipo lo guarda `ore.geo.<col>`.
+  if (crsDeGeo(t)) return "binary";
   const simples = {
     bool: "boolean", int8: "long", int16: "long", int32: "long", int64: "long", uint8: "long", uint16: "long", uint32: "long",
     float: "double", double: "double", string: "string", "date32[day]": "date", "time64[us]": "time",
@@ -937,6 +970,12 @@ async function parquetDe_(nombres, tipos, columnas) {
         v = BigInt(Math.trunc(v));
       } else if (typeof v === "string" && tipo === "date32[day]") {
         v = dateValueFromDate(new Date(v + "T00:00:00Z"));
+      } else if (crsDeGeo(tipo)) {
+        // Una geometría: su WKB (Uint8Array o Buffer), o el WKB en hexadecimal.
+        const b = typeof v === "string" ? Buffer.from(v.replace(/^\\x/, ""), "hex") : v;
+        if (!(b instanceof Uint8Array)) throw new Error(`write(): column \`${nombres[c]}\` is a geometry: its values are WKB (Uint8Array) or WKB in hex`);
+        ap.appendBlob(new Uint8Array(b));
+        continue;
       }
       ap.appendValue(v);
     }
@@ -944,7 +983,16 @@ async function parquetDe_(nombres, tipos, columnas) {
   }
   ap.closeSync();
   const f = join(tmpdir(), `${t}.parquet`);
-  await con.run(`copy "${t}" to '${f.replaceAll("'", "''").replaceAll("\\", "/")}' (format parquet)`);
+  // ORE 0067 G2·3·4: las geometrías, como GEOMETRY con su CRS (tipo lógico de
+  // Parquet, que `ore-store` lee con la marca `geoarrow.wkb` y su CRS).
+  const geos = nombres.filter((n) => crsDeGeo(tipos[n]));
+  let sel = `"${t}"`;
+  if (geos.length) {
+    await cargar(con, "spatial");
+    const q = (x) => x.replaceAll('"', '""');
+    sel = `(select * replace (${geos.map((g) => `ST_GeomFromWKB("${q(g)}")::GEOMETRY('${crsDeGeo(tipos[g]).replaceAll("'", "''")}') as "${q(g)}"`).join(", ")}) from "${t}")`;
+  }
+  await con.run(`copy ${sel} to '${f.replaceAll("'", "''").replaceAll("\\", "/")}' (format parquet${geos.length ? ", geoparquet_version 'BOTH'" : ""})`);
   await con.run(`drop table "${t}"`);
   const bytes = readFileSync(f);
   try { unlinkSync(f); } catch {}
@@ -1253,3 +1301,6 @@ export default {
   // los nombres de antes (alias, el mismo objeto)
   persona, puesto, nombreArrow, LIMITE, EXTENSIONES, tabla, jsonDe, media, medias, mediaDe,
 };
+
+/** Interno, para las pruebas del SDK (ORE 0067 G2·3·4): no es parte de la interfaz. */
+export const __geo = { conGeo, crsDeGeo, parquetDe_, duckdb };
