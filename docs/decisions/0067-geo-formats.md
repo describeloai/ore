@@ -116,6 +116,52 @@ conversión. Es donde vive B + D.
 | **G2·4 · Las tablas v3 ajenas, y D** | Abrir la tabla v3 de G0·2: o con `iceberg-rust` con la serie de PR (2933, 3341, 3342) cuando salga, o tolerando el tipo desconocido mientras tanto (el esquema se lee, la columna llega como `geoarrow.wkb`). **D:** probar la serie de PR contra el banco, comentarlo upstream, y aportar los límites espaciales del manifiesto | `ore-store`; `apache/iceberg-rust` | **V6** en verde, y la contribución abierta |
 | **G2·5 · La matriz de adopción** | Lo que escribe ORE lo leen, sin conversión y con su CRS: DuckDB (núcleo y `spatial`), pyarrow, GeoPandas, Sedona/Spark y GDAL (`ogrinfo`); y se carga en BigQuery y en Snowflake. Una prueba de fuego la deja fija y corre en cada cambio del escritor | `pruebas-de-fuego/geo/` | **V5** en verde para todos |
 
+#### G2·3 · La lectura, en detalle (diseñado el 2026-10-17)
+
+**Objetivo:** que quien trabaja en un puesto (notebook, transform, función) y quien usa los SDK de Python,
+Node y JVM **lea, calcule y escriba** geometrías del lago como geometrías, con su CRS, sin traer nada a mano.
+
+**Lo que hay hoy (medido o leído en el código):**
+- **Los SDK no leen de ore-serve.** Piden un puntero (`GET /puestos/<id>/datos/<vista>`: `metadata_location`,
+  credencial, o la consulta de una `View`) y leen el lago con DuckDB `iceberg_scan` (Python
+  `puesto/python/ore/__init__.py` `_fuente_de`/`_iceberg`; Node `index.mjs` `fuenteDe`; JVM `Ore.java`).
+  Como la columna es `binary` en Iceberg (G2·0), **DuckDB la entrega como BLOB**: nadie sabe que es una
+  geometría ni en qué CRS.
+- **`write()` no pasa por ore-serve:** el SDK manda Arrow IPC al binario `ore-store` dentro del puesto, y
+  `carga::normalizar` **rechaza** la columna binaria (el brazo de «lo que el contrato 0032 no tiene»).
+- **Las imágenes** (`puesto-python`, `puesto-node`, `puesto-jvm`) preinstalan `iceberg`, `avro`, `httpfs`,
+  `json` e `icu` (Dockerfile 433, 531 y `Extensiones.java:19`), no `spatial` ni `h3`, y el puesto **no
+  tiene salida a internet** para bajarlas (medido en G2·2).
+- **La consulta por zona necesita `&&`** (G2·2): `ST_Intersects` solo no descarta grupos.
+
+**Las piezas:**
+
+| paso | qué | dónde | hecho cuando |
+|---|---|---|---|
+| **G2·3·0 · Medir el paquete de Python** | Qué hace falta para un `GeoDataFrame` con su CRS desde el Arrow de DuckDB: `geopandas` + `shapely` + `pyproj` (T5: +141 MB) frente a `shapely` solo, o `geoarrow-pyarrow` (+9 MB) sin `GeoDataFrame`. Se mide sobre la imagen `puesto-python` de verdad: MB añadidos, tiempo de 1 M de filas a `GeoDataFrame`, y que el CRS llegue. **Propuesta, a confirmar con el número:** `geopandas` en la imagen, porque `GeoDataFrame` es lo que el ecosistema espera (T5) | local, imagen del puesto | la decisión en el ADR |
+| **G2·3·1 · El puntero dice qué es geo** | La respuesta de `datos` lleva `geo: {columna: {type, crs, edges}}` para cada columna geo de lo que se lee, sacado de los **tipos del árbol** (el `Dataset`, la `Table`, las columnas de la `View`), que son la fuente de verdad, y no de las propiedades `ore.geo.<col>` de la tabla (esas son para quien lea la tabla sin el árbol). También para los datasets que forman una `View` | `ore-serve` (`puestos.rs`, la respuesta de `datos`) | la respuesta de `datos` de una tabla geo de prueba trae su `geo` |
+| **G2·3·2 · El SDK de Python lee geometría** | Con `geo` en el puntero, la fuente envuelve cada columna geo: `ST_GeomFromWKB(col)` (con su CRS, `GEOMETRY('EPSG:25830')` en DuckDB 1.5), así que **dentro del puesto la columna es `GEOMETRY`** y las `ST_*` funcionan sin conversión. A la salida: **Arrow** con `geoarrow.wkb` y su CRS; **pandas** (lo de siempre) da un **`GeoDataFrame`** con su CRS cuando la tabla tiene geometría; **polars**, la columna WKB con su marca. `sql()` igual. Lo mismo para una `View` (sus datasets entran como vistas de DuckDB, ya envueltas) | `puesto/python/ore` | prueba del SDK: una tabla geo leída por `over()` da un `GeoDataFrame` con `OGC:CRS84` o `EPSG:25830`, y `ST_Area` corre en `sql()` |
+| **G2·3·3 · El SDK de Python escribe geometría** | `write()` de un `GeoDataFrame` o de un Arrow con `geoarrow.wkb`: `normalizar` acepta una columna **binaria con la marca `geoarrow.wkb`** (la sin marca se sigue rechazando), valida cada WKB contra el tipo (`geo::comprobar`) y conserva la marca, así que el lago toma el camino del escritor geo (G2·1, G2·2). El CRS que da GeoPandas es PROJJSON: se lleva a `AUTORIDAD:CÓDIGO` por su `id` (y si no lo trae, se niega con su porqué). El tipo de la columna que se declara en el `Iceberg` del `write()` (`_tipo_iceberg`) es `binary` | `carga::normalizar`, `puesto/python/ore` (`write`) | un `GeoDataFrame` escrito y vuelto a leer da los mismos WKB, el mismo CRS, y el fichero tiene GEOMETRY + clave `geo` |
+| **G2·3·4 · Node y JVM** | La misma envoltura al leer (`fuenteDe`, `Ore.java`): Arrow con `geoarrow.wkb` y su CRS (no hay un `GeoDataFrame` en esos lenguajes; el valor es WKB, y GeoArrow lo entienden sus bibliotecas). Al escribir, lo mismo que G2·3·3 por el mismo `ore-store` | `puesto/node/ore`, `puesto/jvm/ore` | sus pruebas de lectura y escritura con una columna geo |
+| **G2·3·5 · Las imágenes** | `spatial` y `h3` (de la comunidad) preinstaladas en las tres imágenes, junto a las cinco de hoy, y cargadas de serie en las conexiones del SDK que tocan una tabla geo. Lo que decida G2·3·0 en `provisto.txt` (Python). Se apunta cuánto crece cada imagen | `Dockerfile` (433, 531), `Extensiones.java`, `provisto.txt` | las imágenes construyen y su tamaño queda en el ADR |
+| **G2·3·6 · La firma de una función** | `ore.tipos.Geometry` en las firmas de Functions y Transforms (`Geometry["Point", "EPSG:25830"]`, como `Media[…]`): lo que el documento declara como `Geometry<…>` (lo aplazado de G1·2) | `ore-code` (`firma.rs`, `python/derivar.rs`, el oráculo) | una función con un parámetro `Geometry` deriva su tipo de OOS |
+| **G2·3·7 · La consulta por zona, bien hecha** | Un ayudante en los SDK: `ore.geo.en_zona(columna, xmin, ymin, xmax, ymax)` que devuelve `col && caja AND ST_Intersects(col, caja)`, y la guía del SDK que explica por qué (G2·2: sin `&&`, el fichero entero) | los tres SDK, su guía | aparece en la guía y en una prueba |
+
+**La medida en victor (V5 parcial, y lo que dice «hecho»):** un guion de puesto, en la imagen nueva, que
+sobre una tabla geo del lago (la copia de `banco_geo_pg.municipios` y los 34 M de edificios escritos por
+ORE) hace: `over()` → `GeoDataFrame` con su CRS; una consulta `ST_*` y una H3 con `en_zona`; y `write()`
+de vuelta, leído otra vez igual. Con tiempos para 1 M de filas.
+
+**El orden:** primero lo local, con commits en la rama (G2·3·0, ·3, ·2, ·6, ·7, ·4; ·1 en ore-serve se
+prueba en sus pruebas). Las imágenes (·5) y la medida en victor exigen **empujar**: es el primer paso de
+0067 que no se puede cerrar sin desplegar, y se hace al final, con todo lo de G0–G2 a la vez (OOS antes que
+ORE).
+
+**Lo que no entra:** reproyectar al leer (el CRS llega como está; reproyectar es cómputo, E1, o servir
+en WGS 84, E2), los teselados y el servir (E2), y el `Geography` esférico en DuckDB, que no tiene
+geometría esférica: una `Geography` se lee como `GEOMETRY` con su marca `edges: spherical` en Arrow, y
+el cómputo esférico es de E1.
+
 **Hecho cuando:** la vara escribe y consulta el volumen objetivo con descarte espacial medido (V3, V4),
 la matriz de adopción está en verde (V5) y la tabla v3 ajena se abre (V6).
 
@@ -510,3 +556,4 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **V3 de nuevo:** escribir baja de 2,18 a **0,81 M filas/s**, por debajo del objetivo de 1 M. Cada
     WKB se lee tres veces (tipar, ordenar y resumir la clave `geo`). Deuda medida: leerlo una vez.
     1 M de puntos dan 10 grupos de 100 000.
+- **2026-10-17 · G2·3 diseñado** (en el plan, «G2·3 · La lectura, en detalle»): el puntero de `datos` dice qué columnas son geo (desde los tipos del árbol), los SDK envuelven la columna con `ST_GeomFromWKB` y su CRS, pandas da un `GeoDataFrame`, `normalizar` acepta el binario con la marca `geoarrow.wkb`, `spatial` y `h3` en las tres imágenes, `ore.tipos.Geometry` en las firmas y un `en_zona` con `&&`. Lo local primero; las imágenes y la medida en victor, al empujar. Esperando el go.
