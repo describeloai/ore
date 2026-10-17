@@ -21,3 +21,4 @@
 # son bytes, no texto, y un CR dentro es contenido.
 crates/ore-store/tests/cuerpos/** -text
 puesto/python/pruebas/cuerpos/** -text
+puesto/node/pruebas/cuerpos/** -text

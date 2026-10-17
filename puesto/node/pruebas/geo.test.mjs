@@ -75,7 +75,7 @@ test("intersectsBox: el filtro lleva && y ST_Intersects, y filtra", async (t) =>
 // de las propiedades `ore.geo.<col>` de la tabla (la de `cuerpos/geo-v3-ore` la selló ORE).
 test("sin geo en el puntero, lo toma de la tabla", async () => {
   const { readdirSync } = await import("node:fs");
-  const raiz = process.env.ORE_CUERPOS ?? new URL("../../python/pruebas/cuerpos/geo-v3-ore", import.meta.url).pathname;
+  const raiz = process.env.ORE_CUERPOS ?? new URL("./cuerpos/geo-v3-ore", import.meta.url).pathname;
   const ml = join(raiz, "metadata", readdirSync(join(raiz, "metadata")).find((f) => f.endsWith(".metadata.json")));
   const geo = await __geo.geoDeLaTabla(ml);
   assert.equal(geo.geom.crs, "EPSG:25830");
