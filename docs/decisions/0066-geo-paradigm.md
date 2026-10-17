@@ -234,6 +234,12 @@ municipios) cumplen su objetivo en los tres lenguajes.
 | E2·3 | **La consola**: las capas salen del catálogo (fuera `mock.ts`), con fuente `vector` de MapLibre y deck.gl para millones de puntos. La interfaz que ya existe se reutiliza (T8). Vista previa de mapa en la ficha del activo (la P3 de las familias de medios). Mapa base y satélite con licencia comercial |
 | E2·4 | **Acciones desde el mapa**: dibujar o editar una forma escribe en la propiedad tipada, con propuesta y gobierno |
 
+**Información de entrada (CARTO, verificado el 2026-10-17; detalle en la bitácora):**
+- **Lo normal es dinámico:** una consulta por tesela recortada a su caja, que simplifica y descarta por zoom y agrega puntos en una malla. Lleva un límite de elementos y un plazo por tesela, con una caché en capas, sobre una tabla ordenada por índice espacial.
+- **El tileset precalculado es para lo que lo dinámico no alcanza.** Se combinan: tileset a zoom bajo y dinámico a zoom alto.
+- **Tileset** es una tabla `z/x/y` + MVT, con una fila de metadatos (`bounds`, zooms, `tilestats`). **Raster** es RaQuet: Parquet por bloques Quadbin con bandas y metadatos. Los dos viven en el catálogo junto a las tablas, con vista previa propia.
+- **CARTO no da frescura automática** (hay que regenerar a mano). En ORE: kind `Tileset` (solo si se precalcula), con linaje a la versión de su Dataset, Data Health, reconstrucción solo de las teselas tocadas, caché direccionada por instantánea y permisos explícitos.
+
 **Hecho cuando:** un usuario añade al mapa una capa del catálogo de 100 M de elementos, navega con
 la latencia objetivo con N usuarios concurrentes, y cada uno ve sólo lo que puede ver.
 
