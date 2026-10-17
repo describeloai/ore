@@ -2102,6 +2102,14 @@ def _oos_de_duckdb(tipo):
         if dentro and dentro.startswith("Decimal<"):
             dentro = "Decimal"
         return "list<%s>" % dentro if dentro and not dentro.startswith("list<") else None
+    # ORE 0066 E1·1: `GEOMETRY('EPSG:25830')` → `Geometry<Any, EPSG:25830>`.
+    # DuckDB no sabe el subtipo (`Any`); lo que pasa tal cual de su fuente lo
+    # pone `ore-serve` al escribir la vista. Sin CRS no hay tipo: se dice al
+    # crear la vista (`_SIN_CRS`).
+    m = re.match(r"^GEOMETRY\('([^']+)'\)$", (tipo or "").strip(), re.I)
+    if m:
+        crs = m.group(1)
+        return "Geometry" if crs.upper() == "OGC:CRS84" else "Geometry<Any, %s>" % crs
     base = re.sub(r"\(.*\)$", "", t).strip()
     if base in _ENTEROS:
         return "Integer"
@@ -2114,6 +2122,25 @@ def _oos_de_duckdb(tipo):
 
 
 _NOMBRE_DE_COLUMNA = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _es_geo(t):
+    return bool(re.match(r"^(Geometry|Geography)\b", t or ""))
+
+
+def _crs_del_contrato(t):
+    from ore import lsp_sql
+    return lsp_sql.crs_de_oos(t)
+
+
+def _mismo_tipo(antes, ahora):
+    """¿El contrato no cambia? Igual, o `ahora` es la geometría sin subtipo que
+    describe DuckDB y `antes` el tipo exacto que puso `ore-serve` con el mismo
+    CRS (E1·1): al escribirla, lo vuelve a poner."""
+    if antes == ahora:
+        return True
+    return (_es_geo(antes) and _es_geo(ahora) and re.match(r"^Geometry(<Any, |$)", ahora) is not None
+            and _crs_del_contrato(antes) == _crs_del_contrato(ahora))
 
 
 def _rama_del_puesto():
@@ -2140,6 +2167,9 @@ def _describir(sql, que):
             cat.legibles.setdefault(n, i)
         leidos = [n for _, _, n, _ in lsp_sql.nombres([t[1] for t in lsp_sql.tokens(sql)])]
         with cat.candado:
+            # ORE 0066 E1·1: `ST_*` o `h3_*` aunque no lea una tabla geo.
+            if re.search(r"\b(st|h3)_[a-z]", sql, re.I):
+                cat.cargar_geo()
             cat.asegurar(leidos)
         # 0057 C2: si lee una colección, la vista es v1alpha17 (`04` §3).
         coleccion = any((cat.legibles.get(n) or {}).get("kind") == "MediaCollection" for n in leidos)
@@ -2156,6 +2186,9 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno, lee_co
     # Una vista que lee una colección, desde v1alpha17 (`04` §3); las demás,
     # en la de siempre: no cambian de reglas por esto.
     version = "v1alpha17" if lee_coleccion else "v1alpha14"
+    # ORE 0066 E1·1: una columna geo, desde v1alpha32 (que trae lo de antes).
+    if any(_es_geo(t) for t in contrato.values()):
+        version = "v1alpha32"
     lineas = ["apiVersion: oos.dev/%s" % version, "kind: View", "metadata:", "  name: %s" % v, "  namespace: %s" % base]
     if ns != DEFAULT:
         lineas.append("  schema: %s" % ns)
@@ -2228,6 +2261,10 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
         if c.lower() in vistos:
             raise ValueError("%s: `%s` appears twice: each column of the contract needs its own name (`… as other`)" % (que, c))
         vistos.add(c.lower())
+        if (t or "").strip().upper() == "GEOMETRY":
+            raise ValueError("%s: `%s` is a geometry with no CRS (`ST_Point`, `ST_GeomFromText` and "
+                             "`ST_Transform` give none), and a CRS is never guessed: say it with "
+                             "`ST_SetCRS(…, 'EPSG:4326')`" % (que, c))
         oos = _oos_de_duckdb(t)
         if oos is None:
             raise ValueError("%s: `%s` is %s, and OOS has no such type: take its fields out (`s.field as x`) or "
@@ -2236,7 +2273,8 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
     estado = "replaced" if existe else "created"
     if existe and anterior:
         quitadas = [c for c in anterior if c not in contrato]
-        cambiadas = ["%s (%s → %s)" % (c, anterior[c], contrato[c]) for c in anterior if c in contrato and contrato[c] != anterior[c]]
+        cambiadas = ["%s (%s → %s)" % (c, anterior[c], contrato[c]) for c in anterior
+                     if c in contrato and not _mismo_tipo(anterior[c], contrato[c])]
         if (quitadas or cambiadas) and not evolucion:
             rompe = (["removes " + ", ".join(quitadas)] if quitadas else []) +                     (["changes " + ", ".join(cambiadas)] if cambiadas else [])
             raise ValueError("%s: replacing it breaks its contract —%s— and its readers stop finding what they read. "
@@ -2246,7 +2284,9 @@ def create_view(name, sql, columns=None, comment=None, owner=None, or_replace=Fa
         if nuevas:
             print("%s · adds %s to the contract" % (nombre, ", ".join(nuevas)))
     texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno, lee_coleccion)
-    _poner(que, _ruta_de_vista(nombre), texto)
+    r = _poner(que, _ruta_de_vista(nombre), texto)
+    # ORE 0066 E1·1: lo geo que pasa tal cual, con el tipo exacto de su fuente.
+    contrato.update((r or {}).get("columnasGeo") or {})
     hecho = _Result({"view": nombre, "status": estado, "columns": contrato})
     if materializada:
         copia = _corto(copy, "create view: the copy") if copy else nombre + "_copia"

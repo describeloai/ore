@@ -762,7 +762,9 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     for d in pkg
         .docs
         .iter()
-        .filter(|d| matches!(d.kind, Kind::Table | Kind::Dataset))
+        // ORE 0066 E1·1: y las de una `View` (su contrato), que no se miraban: una
+        // geometría en v1alpha14 pasaba sin `OOS3001`.
+        .filter(|d| matches!(d.kind, Kind::Table | Kind::Dataset | Kind::View))
     {
         tipos_de_seccion(d, "columns", &mut out);
     }

@@ -1040,6 +1040,34 @@ fn comprobar_cabeza(
     Ok(())
 }
 
+/// ORE 0066 E1·1 · Reescribe en `fichero` el contrato de la vista recién
+/// escrita con el tipo exacto de lo geo que pasa tal cual
+/// (`vistas::geo_exacto_de_vista`), y dice qué cambió. Si algo no se puede
+/// leer, la vista queda como llegó.
+fn geo_exacto(
+    raiz: &Path,
+    fichero: &Path,
+    texto: &str,
+) -> Vec<(String, ore_core::types::Type, ore_core::types::Type)> {
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    let Some(v) = pkg.docs.iter().find(|d| {
+        d.path == fichero
+            || (d.path.ends_with(fichero.file_name().unwrap_or_default())
+                && std::fs::canonicalize(&d.path).ok() == std::fs::canonicalize(fichero).ok())
+    }) else {
+        return vec![];
+    };
+    let cambios = ore_core::vistas::geo_exacto_de_vista(&pkg, v);
+    if cambios.is_empty() {
+        return cambios;
+    }
+    let nuevo = ore_core::vistas::con_tipos_de_columna(texto, &cambios);
+    if nuevo == texto || std::fs::write(fichero, &nuevo).is_err() {
+        return vec![];
+    }
+    cambios
+}
+
 impl Servidor {
     /// `PUT /documentos/{kind}/{ns}/{n}` con el documento en JSON (`metadata`
     /// y `spec`; el nombre y el espacio los pone la ruta) o con `yaml` tal
@@ -1189,6 +1217,13 @@ impl Servidor {
                 format!("no se pudo escribir `{}`: {e}", relativo(raiz, &fichero)),
             );
         }
+        // ORE 0066 E1·1: lo geo que pasa tal cual por una vista SQL, con el tipo
+        // exacto de su fuente (DuckDB sólo describe `Geometry<Any, CRS>`).
+        let geo_exacto = if k.nombre == "View" {
+            geo_exacto(raiz, &fichero, &texto)
+        } else {
+            vec![]
+        };
         // ── compilar antes de empujar: ¿empeora? ────────────────────────────
         let corto = ore_core::normalize::corto(ns, schema, n);
         let sin_hablar = match self.empeora(raiz, &antes, &format!("{} `{corto}`", k.articulo)) {
@@ -1216,6 +1251,17 @@ impl Servidor {
         ];
         if fichero.starts_with(raiz.join("packages")) {
             ficha.push(("paquete", Json::s(ns)));
+        }
+        if !geo_exacto.is_empty() {
+            ficha.push((
+                "columnasGeo",
+                Json::Obj(
+                    geo_exacto
+                        .iter()
+                        .map(|(c, _, t)| (c.clone(), Json::s(t.to_string())))
+                        .collect(),
+                ),
+            ));
         }
         if !sin_hablar.is_empty() {
             // Conceptos que esta escritura deja sin nadie que los hable: entró,
@@ -1877,6 +1923,84 @@ fn escalar_yaml(raw: &str, style: Style) -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// ORE 0066 E1·1 · **Al escribir una vista, lo geo que pasa tal cual lleva
+    /// el tipo de su fuente**: el SDK escribe `Geometry<Any, CRS>` (lo que
+    /// describe DuckDB), y el fichero queda con `Geometry<Point, EPSG:4326>` y
+    /// `Geography<Point>`; lo derivado, en `Any`.
+    #[test]
+    fn la_vista_lleva_el_tipo_geo_exacto_de_su_fuente() {
+        let d = std::env::temp_dir().join(format!("ore-vista-geo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("packages/geo/datasets")).unwrap();
+        std::fs::create_dir_all(d.join("packages/geo/views")).unwrap();
+        std::fs::write(
+            d.join("ontology.config.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: x, version: 0.1.0 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/geo/package.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: geo, version: 0.1.0, status: active, domain: geo }\nspec: { owner: team:geo }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/geo/datasets/lugares.yaml"),
+            "apiVersion: oos.dev/v1alpha32\nkind: Dataset\nmetadata: { name: lugares, namespace: geo }\n\
+             spec:\n  owner: team:geo\n  columns:\n    id: { type: Integer }\n    \
+             geom: { type: \"Geometry<Point, EPSG:4326>\" }\n    geog: { type: \"Geography<Point>\" }\n  \
+             changes: { mode: append }\n",
+        )
+        .unwrap();
+        let vista = "apiVersion: oos.dev/v1alpha32\nkind: View\nmetadata:\n  name: zonas\n  namespace: geo\n\
+             spec:\n  owner: team:geo\n  dialect: duckdb\n  sql: |\n    \
+             select id, geom, geog, ST_Buffer(geom, 1) as zona from geo.lugares\n  columns:\n    \
+             id: { type: \"Integer\" }\n    geom: { type: \"Geometry<Any, EPSG:4326>\" }\n    \
+             geog: { type: \"Geometry\" }\n    zona: { type: \"Geometry<Any, EPSG:4326>\" }\n";
+        let f = d.join("packages/geo/views/zonas.yaml");
+        std::fs::write(&f, vista).unwrap();
+        let cambios: Vec<(String, String)> = geo_exacto(&d, &f, vista)
+            .into_iter()
+            .map(|(c, _, t)| (c, t.to_string()))
+            .collect();
+        assert_eq!(
+            cambios,
+            vec![
+                ("geom".to_string(), "Geometry<Point, EPSG:4326>".to_string()),
+                ("geog".to_string(), "Geography<Point>".to_string()),
+            ]
+        );
+        let t = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            t.contains("geom: { type: \"Geometry<Point, EPSG:4326>\" }"),
+            "{t}"
+        );
+        assert!(t.contains("geog: { type: \"Geography<Point>\" }"), "{t}");
+        assert!(
+            t.contains("zona: { type: \"Geometry<Any, EPSG:4326>\" }"),
+            "{t}"
+        );
+        // Y el compilador no le pone pegas: una vista v1alpha32 con columnas geo.
+        let suyos: Vec<String> = ore_core::validate::validate_package(&d)
+            .into_iter()
+            .filter(|x| x.file.ends_with("zonas.yaml"))
+            .map(|x| format!("{:?} {}", x.code, x.message))
+            .collect();
+        assert!(suyos.is_empty(), "{suyos:?}");
+        // En v1alpha14 la misma vista no vale: la geometría llega con v1alpha32.
+        std::fs::write(&f, t.replace("oos.dev/v1alpha32", "oos.dev/v1alpha14")).unwrap();
+        assert!(
+            ore_core::validate::validate_package(&d)
+                .iter()
+                .any(|x| x.file.ends_with("zonas.yaml") && format!("{:?}", x.code) == "Oos3001"),
+            "en v1alpha14, OOS3001: {:?}",
+            ore_core::validate::validate_package(&d)
+                .iter()
+                .map(|x| format!("{} {:?} {}", x.file.display(), x.code, x.message))
+                .collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// 0061 S2 · Una virtual sobre un SFTP (`fija: ninguna`) se niega al
     /// escribirla; la mantenida no, ni la virtual de un origen que fija, ni lo

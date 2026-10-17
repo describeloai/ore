@@ -697,6 +697,92 @@ pub fn geo_de(pkg: &Package, d: &Loaded) -> BTreeMap<String, crate::types::Type>
     de(pkg, d, 0)
 }
 
+/// ORE 0066 E1·1 · **El tipo exacto de lo geo que pasa tal cual por una vista
+/// SQL.** El contrato de una vista lo describe DuckDB en el puesto, y DuckDB
+/// sabe el CRS de una geometría pero no su subtipo ni si es `Geography`: el SDK
+/// escribe `Geometry<Any, CRS>`. Una columna que sale **directa** de una sola
+/// columna geo de su fuente (el linaje de `vista_sql`), con el mismo CRS, lleva
+/// el tipo de esa fuente: `Geometry<Point, EPSG:4326>`, o `Geography<…>` si el
+/// CRS es `OGC:CRS84` (como la lee DuckDB). Una derivada (`ST_Buffer`…) se
+/// queda en `Any`: es lo que se sabe. Devuelve `(columna, declarado, exacto)`
+/// de lo que cambia.
+pub fn geo_exacto_de_vista(
+    pkg: &Package,
+    v: &Loaded,
+) -> Vec<(String, crate::types::Type, crate::types::Type)> {
+    use crate::types::{GEO_SUBTIPO_DEFECTO, Type};
+    let Some(sql) = crate::linaje::como_sql(v) else {
+        return vec![];
+    };
+    let columnas_de =
+        |n: &str| fuente_sql(pkg, n, v).map(|f| columnas_que_expone(pkg, f).into_iter().collect());
+    let Ok(c) = crate::vista_sql::analizar(&sql, &columnas_de) else {
+        return vec![];
+    };
+    let declarados = tipos_de_columnas(v);
+    let mut out = vec![];
+    for col in &c.columnas {
+        let Some(
+            d @ Type::Geometry {
+                subtipo,
+                crs: crs_declarado,
+            },
+        ) = declarados
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&col.nombre))
+            .map(|(_, t)| t)
+        else {
+            continue;
+        };
+        if subtipo != GEO_SUBTIPO_DEFECTO || col.directas.len() != 1 || !col.derivadas.is_empty() {
+            continue;
+        }
+        let r = col.directas.iter().next().expect("una");
+        let Some(t) = fuente_sql(pkg, &r.fuente, v).and_then(|f| {
+            geo_de(pkg, f)
+                .into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&r.columna))
+                .map(|(_, t)| t)
+        }) else {
+            continue;
+        };
+        let casa = match &t {
+            Type::Geometry { crs, .. } => crs == crs_declarado,
+            Type::Geography { .. } => crs_declarado == crate::types::CRS_DEFECTO,
+            _ => false,
+        };
+        if casa && &t != d {
+            out.push((col.nombre.clone(), d.clone(), t));
+        }
+    }
+    out
+}
+
+/// El texto de un documento con el `type` de esas columnas cambiado, en la
+/// forma en que el SDK escribe el contrato de una vista
+/// (`    col: { type: "…"… }`). Lo que no tiene esa forma no se toca.
+pub fn con_tipos_de_columna(
+    texto: &str,
+    cambios: &[(String, crate::types::Type, crate::types::Type)],
+) -> String {
+    let mut out = String::with_capacity(texto.len());
+    for linea in texto.split_inclusive('\n') {
+        let dentro = linea.trim_start();
+        let cambio = cambios.iter().find(|(c, de, _)| {
+            dentro.starts_with(&format!("{c}:")) && linea.contains(&format!("type: \"{de}\""))
+        });
+        match cambio {
+            Some((_, de, a)) => out.push_str(&linea.replacen(
+                &format!("type: \"{de}\""),
+                &format!("type: \"{a}\""),
+                1,
+            )),
+            None => out.push_str(linea),
+        }
+    }
+    out
+}
+
 /// Una propiedad que la entidad exige y su columna no garantiza
 /// ([`exigidas_sin_garantia`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3544,6 +3630,58 @@ mod tests {
             "    employeeId: employee_id\n    nationalId: { column: national_id, physicalType: varchar(16) }\n    pais: country\n",
             "  where: { deleted: 'false', country: [ES, PT] }\n",
         )
+    }
+
+    /// ORE 0066 E1·1 · **Lo geo que pasa tal cual por una vista lleva el tipo de
+    /// su fuente**: DuckDB describe `Geometry<Any, CRS>` y el árbol sabe el
+    /// subtipo y si es `Geography`. Lo derivado se queda en `Any`, y un CRS que
+    /// no casa no se toca.
+    #[test]
+    fn lo_geo_que_pasa_tal_cual_lleva_el_tipo_de_su_fuente() {
+        let lugares = doc(
+            Kind::Dataset,
+            "apiVersion: oos.dev/v1alpha32\nkind: Dataset\nmetadata: { name: lugares, namespace: geo }\n\
+             spec:\n  owner: team:geo\n  columns:\n    id: { type: Integer }\n    \
+             geom: { type: \"Geometry<Point, EPSG:4326>\" }\n    \
+             geog: { type: \"Geography<Point>\" }\n  changes: { mode: append }\n",
+        );
+        let vista = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha32\nkind: View\nmetadata: { name: zonas, namespace: geo }\n\
+             spec:\n  owner: team:geo\n  dialect: duckdb\n  sql: |\n    \
+             select id, geom, geom as otra, geog, ST_Buffer(geom, 1) as zona, geom as mal from geo.lugares\n  \
+             columns:\n    id: { type: \"Integer\" }\n    geom: { type: \"Geometry<Any, EPSG:4326>\" }\n    \
+             otra: { type: \"Geometry<Any, EPSG:4326>\" }\n    geog: { type: \"Geometry\" }\n    \
+             zona: { type: \"Geometry<Any, EPSG:4326>\" }\n    mal: { type: \"Geometry<Any, EPSG:25830>\" }\n",
+        );
+        let pkg = paquete(vec![config(), lugares, vista]);
+        let v = pkg
+            .docs
+            .iter()
+            .find(|d| d.kind == Kind::View)
+            .expect("la vista");
+        let cambios = geo_exacto_de_vista(&pkg, v);
+        let dicho: Vec<(String, String)> = cambios
+            .iter()
+            .map(|(c, _, t)| (c.clone(), t.to_string()))
+            .collect();
+        assert_eq!(
+            dicho,
+            vec![
+                ("geom".to_string(), "Geometry<Point, EPSG:4326>".to_string()),
+                ("otra".to_string(), "Geometry<Point, EPSG:4326>".to_string()),
+                ("geog".to_string(), "Geography<Point>".to_string()),
+            ],
+            "zona es derivada y mal no casa su CRS"
+        );
+        let texto = con_tipos_de_columna(
+            "    geom: { type: \"Geometry<Any, EPSG:4326>\" }\n    geog: { type: \"Geometry\", description: \"x\" }\n    zona: { type: \"Geometry<Any, EPSG:4326>\" }\n",
+            &cambios,
+        );
+        assert_eq!(
+            texto,
+            "    geom: { type: \"Geometry<Point, EPSG:4326>\" }\n    geog: { type: \"Geography<Point>\", description: \"x\" }\n    zona: { type: \"Geometry<Any, EPSG:4326>\" }\n"
+        );
     }
 
     /// ORE 0067 G2·3·1 · **Las columnas geo de lo que se lee**: de la `Table`

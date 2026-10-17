@@ -95,6 +95,12 @@ def tipo_duckdb(t):
     m = re.match(r"^(Money|Quantity)<[^,]+,\s*(\d+)>$", t)
     if m:
         return "DECIMAL(38, %s)" % min(int(m.group(2)), 18)
+    # ORE 0066 E1·1: una geometría, con su CRS en el tipo (DuckDB 1.5 lo lleva
+    # por `ST_Buffer`, `ST_Centroid`… y niega mezclar dos). `Geography`, en
+    # OGC:CRS84, como la lee el SDK: DuckDB no tiene geometría esférica.
+    crs = crs_de_oos(t)
+    if crs:
+        return "GEOMETRY('%s')" % crs
     # `Decimal<p, s>` (0032 T4): la precisión y la escala del tipo, no las de
     # por defecto. Antes caía en VARCHAR y DuckDB lo trataba como texto.
     m = re.match(r"^Decimal<\s*(\d+)\s*,\s*(\d+)\s*>$", t)
@@ -102,6 +108,16 @@ def tipo_duckdb(t):
         return "DECIMAL(%s, %s)" % (m.group(1), m.group(2))
     return {"Integer": "BIGINT", "Decimal": "DECIMAL(38, 18)", "Float": "DOUBLE", "Boolean": "BOOLEAN",
             "Date": "DATE", "Time": "TIME", "DateTime": "TIMESTAMP", "DateTimeTz": "TIMESTAMPTZ"}.get(t, "VARCHAR")
+
+
+def crs_de_oos(t):
+    """El CRS de un tipo geo de OOS (`Geometry<Point, EPSG:4326>` → `EPSG:4326`;
+    sin CRS, o `Geography`, `OGC:CRS84`), o `None` si no es geo."""
+    m = re.match(r"^(Geometry|Geography)(?:<(.*)>)?$", (t or "").strip())
+    if not m:
+        return None
+    partes = [x.strip() for x in (m.group(2) or "").split(",")]
+    return partes[1] if m.group(1) == "Geometry" and len(partes) > 1 and partes[1] else "OGC:CRS84"
 
 
 def _q(n):
@@ -186,6 +202,7 @@ class Catalogo:
         self.paquetes = sorted(self.schemas)
         self.candado = threading.Lock()
         self.hechas = set()
+        self.geo = False
         import duckdb
         # Una conexion PROPIA: nada que ver con la de las celdas (`ore._duckdb()`).
         # Un catalogo por base y un schema por schema (0038), como en `sql()`.
@@ -200,12 +217,26 @@ class Catalogo:
     def cols(self, n):
         return [(c.get("name"), c.get("type")) for c in (self.legibles.get(n) or {}).get("expone", [])]
 
+    def cargar_geo(self):
+        """ORE 0066 E1·1: `spatial` y `h3`, una vez y sólo si hace falta (cargar
+        `spatial` cuesta 0,16 s). Vienen en la imagen: sin red."""
+        if self.geo:
+            return
+        self.geo = True
+        for ext in ("spatial", "h3"):
+            try:
+                self.con.execute("load %s" % ext)
+            except Exception:
+                pass
+
     def asegurar(self, nombres):
         """Las tablas vacias de estos nombres, si faltan. Con el candado tomado."""
         for n in nombres:
             if n in self.hechas or (n not in self.legibles and n not in self.ajenas):
                 continue
             i = self.legibles.get(n) or self.ajenas[n]
+            if any(crs_de_oos(c.get("type")) for c in i.get("expone", [])):
+                self.cargar_geo()
             cols = ", ".join("%s %s" % (_q(c["name"]), tipo_duckdb(c.get("type"))) for c in i.get("expone", []))
             b, s_, t = _q(i["paquete"]), _q(i["schema"]), _q(i["name"])
             self.con.execute("create table %s.%s.%s (%s)" % (b, s_, t, cols or "x VARCHAR"))
