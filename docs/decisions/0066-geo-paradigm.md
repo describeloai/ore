@@ -222,6 +222,18 @@ masivo desde el principio y laboratorio antes que producción) valen igual.
 | E1·3 | **Java**: JTS y H3 (unos 2,3 MB) y la geometría por Arrow |
 | E1·4 | **Enriquecer**: un *join* espacial (puntos en polígonos, agregación por zona o celda) como verbo de primera clase, base de E5 |
 
+**Información de entrada (medida el 2026-10-17): qué sabe hoy ORE de los tipos de una función SQL.**
+- El compilador no deduce tipos de funciones SQL. El contrato de una View (`spec.columns`) lo **describe DuckDB en el puesto** (`create_view` → `_describir`): `describe <consulta>` sobre tablas vacías creadas desde el índice del árbol (`lsp_sql.Catalogo`). Así una función normal sale bien tipada sin catálogo propio (`upper` → `String`, `round(x/3, 2)` → `Float`). El compilador solo coteja el documento.
+- **Con geometría hay tres huecos**, medidos con el código real del SDK:
+  1. `tipo_duckdb` no conoce `Geometry`: la tabla vacía la crea `VARCHAR`. `select geom` describe `String`, y la geometría se pierde en silencio.
+  2. El catálogo no carga `spatial`: `ST_Buffer` no existe para él. Con `spatial`, `ST_Buffer(VARCHAR)` no casa.
+  3. `_oos_de_duckdb` no conoce `GEOMETRY`: falla con «OOS has no such type». Y una View se escribe en v1alpha14, donde `Geometry` es `OOS3001` (llega con v1alpha32).
+- **DuckDB 1.5 ya hace casi todo** si la columna es `GEOMETRY('EPSG:4326')`:
+  - `ST_Buffer`, `ST_Centroid` y `ST_Union_Agg` conservan el CRS en el tipo; `ST_Area` y `ST_Distance` dan `DOUBLE`; `ST_SetCRS` lo pone; `h3_latlng_to_cell` da `UBIGINT`.
+  - `ST_Intersects` entre CRS distintos **lo rechaza al compilar** («different coordinate reference systems»).
+  - Lo que no lleva: el CRS de `ST_Transform`, `ST_Point` y `ST_GeomFromText` (sale `GEOMETRY` sin CRS) y el subtipo (`Point`, `Polygon`), que DuckDB no tipa.
+- **Las Functions del árbol desde SQL** (0049 B7·2, `sql_functions.duckdb_type`) tampoco tipan `Geometry` todavía.
+
 **Hecho cuando:** los *joins* espaciales de la vara (por ejemplo 1 000 M de puntos contra los
 municipios) cumplen su objetivo en los tres lenguajes.
 
