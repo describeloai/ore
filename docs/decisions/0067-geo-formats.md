@@ -873,3 +873,21 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **El estado de hoy (B):** se lee en todas partes **como binario** (salvo DuckDB sin `spatial`), y como geometría por el SDK de ORE (G2·3). No se rompe nada que funcione hoy.
   - **Sedona 1.9.1 pesa 11,4 GB descomprimida**; GDAL `ubuntu-full` 3,4 GB.
 - **2026-10-17 · Sedona sale de la matriz.** Es un lector del cliente y su resultado depende de su versión, no de dónde corre. Queda como hecho: **Sedona 1.9.1 (Spark 4.0.1) no lee GEOMETRY, ni en Parquet ni en Iceberg v3; la tabla de hoy, como binario**. Se vuelve a mirar cuando salga una Sedona sobre Spark 4.1. En victor, la matriz corre DuckDB, pyarrow y GeoPandas (la imagen del puesto), GDAL, Spark 4.1 con Iceberg 1.12, Iceberg Java y BigQuery, sobre las tablas que escribe el ORE desplegado.
+- **2026-10-17 · Paso 5 en victor, primera pasada (la celda `g2-celda.py`, en una sesión de una persona: un Job del agente no puede ser dueño de lo que crea, 0052).**
+  - **Verde:** la imagen trae geopandas 1.2.0, shapely 2.2.0, DuckDB 1.5.6, `spatial` y `h3`. `ore.write` escribe geometría (100 000 puntos, los dos fijos de 177 filas y la tabla ajena). **V6 lee la tabla v3 ajena del banco como `GEOMETRY('OGC:CRS84')`, 214 328 filas**, y la copia al lago.
+  - **Hallazgo:** releer lo escrito con `write()` fallaba (*GEOMETRY → BLOB*). Esa tabla no tiene tipos en el árbol, el puntero llega sin `geo` y DuckDB, sin `spatial`, no convierte los ficheros GEOMETRY. En local no salía porque las pruebas siempre daban `geo`. **Arreglo** (`f32f230b`, `2c1cbf0f`): sin `geo` en el puntero, los tres SDK lo toman de `ore.geo.<col>` de la tabla, con prueba sobre una tabla real sellada por ORE (`cuerpos/geo-v3-ore`), que falla sin el arreglo.
+- **2026-10-17 · BigQuery (G2·5·3), el fichero A que escribió victor, por `bigquery.py` (API REST):**
+  - **OGC:CRS84:** se carga como **GEOGRAPHY**, todas las geometrías a **0,0 m** de las originales. Los WKB difieren en el último bit porque pasan por S2, así que no son idénticos byte a byte: ámbar razonado, que se acepta.
+  - **EPSG:25830: rojo, límite de BigQuery** (*only the default, 'OGC:CRS84', is supported* en GeoParquet). Quien cargue en BigQuery reproyecta antes a CRS84; es cómputo, de E1.
+- **G2·5·5 · La decisión de promover (escrita):**
+  1. Las tablas geo de ORE **siguen en B** (`binary` + `ore.geo.<col>`): no rompen nada que funcione hoy y el SDK de ORE las lee como geometría.
+  2. **Se promueven a C** (`geometry(<CRS>)` explícito) **en el mismo paso** en que `ore-store` sube a `iceberg` 0.11 (que trae el tipo) con `parquet` 59 (que escribe bien el CRS del tipo lógico). Con eso quedan en verde DuckDB, Spark 4.1 en lon/lat, Iceberg Java 1.12, pyarrow, GeoPandas y GDAL.
+  3. **Nunca subir `parquet` sin promover:** con el CRS bien escrito, `iceberg_scan` de DuckDB ya no lee la columna `binary` (medido).
+  4. Se quita la lente en ese mismo paso.
+- **La deuda de G2, acotada:**
+  - **`iceberg` 0.11 + Arrow/`parquet` 59 + promover + quitar la lente**, un paso propio con su CI, cuando salga 0.11;
+  - **el trabajo de CI de la matriz ligera** (DuckDB, pyarrow y GeoPandas sobre los fijos cuando cambian `lago_geo.rs`, `carga.rs` o el PROJJSON);
+  - **D** (comentarios upstream), que se publican con permiso;
+  - Snowflake, en ámbar sin cuenta;
+  - Sedona, a remirar sobre Spark 4.1;
+  - las de antes: el ritmo de V3, las cotas de manifiesto de las columnas escalares en tablas geo y la comprobación de tipos en las Views.
