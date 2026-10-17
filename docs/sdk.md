@@ -160,6 +160,50 @@ def area_of(parcel: Geometry["MultiPolygon", "EPSG:25830"]) -> float:
 `Geometry["Point"]` is in `OGC:CRS84`; `Geography["LineString"]` is on the ellipsoid. A call passes the
 geometry as WKB in hex, and the function receives a shapely geometry.
 
+### Reading geo files: GeoJSON, Shapefile, GeoPackage, KML, FlatGeobuf, File Geodatabase
+
+A **GeoParquet** in an object source is a table: its geometry column has its type and CRS. The other
+vector formats are read **in the session** with DuckDB's `ST_Read`, which the session image already
+has (GDAL, no internet needed). Open the file from its object source (or a local copy) and query it like
+a table:
+
+```python
+import ore
+
+# One layer per call; `ST_Read_Meta` lists the layers, their geometry column and CRS.
+lugares = ore.sql("select * from ST_Read('/data/municipios.geojson')")          # GeoJSON
+gpkg    = ore.sql("select * from ST_Read('/data/municipios.gpkg', layer = 'municipios')")
+kml     = ore.sql("select * from ST_Read('/data/municipios.kml')")
+fgb     = ore.sql("select * from ST_Read('/data/municipios.fgb')")
+gdb     = ore.sql("select * from ST_Read('/data/municipios.gdb')")              # the geometry is `SHAPE`
+shp     = ore.sql("select * from ST_Read('/vsizip//data/municipios_shp.zip')")  # a zipped Shapefile, as is
+meta    = ore.sql("select * from ST_Read_Meta('/data/municipios.gpkg')")
+```
+
+What to know, measured on the platform's test bank:
+
+- The geometry column is `geom`, except in a File Geodatabase (`SHAPE`).
+- The result is a GeoDataFrame with the file's CRS (also for a Shapefile, whose `.prj` has no authority
+  code: the session resolves it). `ST_Read_Meta` shows it per layer.
+- A Shapefile has no multi-types: a layer of multipolygons comes back as `POLYGON`.
+- `sql()` loads the geo functions when the query uses them (`ST_*`, `h3_*`).
+- To keep the result in the lake, write it: `ore.write("db.schema.municipios", lugares)`; it keeps its CRS.
+
+### A latitude/longitude pair
+
+When the source has two numeric columns for latitude and longitude, `ore discover` asks whether they are
+a point. Answering `si` adds a SQL transform next to the asset (`transforms/<asset>_puntos.sql`) that
+writes `<asset>_puntos` with every column and `geom`, a `Geometry<Point>` in OGC:CRS84:
+
+```sql
+CREATE OR REPLACE DATASET db.default.lugares_puntos AS
+SELECT *, ST_Point("lon", "lat") AS geom
+FROM db.default.lugares
+```
+
+A text column that holds WKT or GeoJSON is typed `Geometry` once you answer `wkt` or `geojson`; the copy
+converts it, with no transform.
+
 ## Creating things
 
 These are what an SQL script's `create …` statements run; you can call them from Python too.

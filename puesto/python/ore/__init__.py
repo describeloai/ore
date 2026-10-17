@@ -819,6 +819,19 @@ def _geo_de_la_tabla(metadata_location):
     return geo
 
 
+def _geo_si_lo_pide(con, texto):
+    """ORE 0067 G3·6: una consulta que usa `ST_*` (también `ST_Read`, que lee
+    GeoJSON, Shapefile, GeoPackage…) o `h3_*` carga `spatial` y `h3` aunque no
+    toque una tabla geo. Solo entonces: `spatial` tarda 0,16 s en cargarse."""
+    import re
+    if re.search(r"\b(st|h3)_[a-z]", texto, re.I):
+        _cargar(con, "spatial")
+        try:
+            con.execute("load h3")
+        except Exception:
+            pass
+
+
 def _con_geo(fuente, r):
     """ORE 0067 G2·3·2: las columnas que el puntero dice geo (`geo`, de los tipos del
     árbol) se leen como `GEOMETRY` con su CRS, no como el BLOB que es la columna
@@ -1552,6 +1565,7 @@ def sql(query, format="pandas", strict=False):
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() needs a query")
     con = _duckdb()
+    _geo_si_lo_pide(con, texto)
     # Sin puesto no hay árbol, y sin un punto no hay `a.b`: el motor solo.
     codigo, r = (session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": texto})
                  if session.id and "." in texto else (200, {}))

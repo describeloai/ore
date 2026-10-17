@@ -759,6 +759,11 @@ export async function sql(text, options) {
   if (typeof texto !== "string" || !texto.trim()) throw new Error("sql() takes a query");
   const { limite, estricto, como } = opciones(options);
   const con = await duckdb();
+  // ORE 0067 G3·6: `ST_*` (también `ST_Read`) o `h3_*` cargan `spatial` y `h3`, solo entonces.
+  if (/\b(st|h3)_[a-z]/i.test(texto)) {
+    await cargar(con, "spatial");
+    try { await con.run("load h3"); } catch { /* sin h3 */ }
+  }
   // El texto entero a ore-serve (`POST /puestos/{id}/sql`): él dice qué nombres
   // del árbol lee —tokenizador y árbol como filtro, sin regex— y los resuelve
   // como `over()`, en una ida y vuelta.

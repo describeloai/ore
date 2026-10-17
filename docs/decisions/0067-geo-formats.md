@@ -992,3 +992,7 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     - la lectura da la columna geo como el **hex de su WKB**, que es lo que el códec convierte, y no como un `cast` a texto de bytes que no son UTF-8.
     - Pruebas con tres ficheros reales (DuckDB `Geometry<Point, EPSG:25830>`, ORE `Geometry<Any, EPSG:25830>`, Iceberg Java `Geometry`) y la lectura de sus valores.
   - El *workspace* queda verde, salvo las tres pruebas que solo fallan en Docker.
+- **2026-10-17 · G3·6 hecho: la guía (`docs/sdk.md`, «Reading geo files»).** Explica `ST_Read` para GeoJSON, GPKG, KML, FlatGeobuf, GDB y SHP en zip (`/vsizip/`), `ST_Read_Meta`, el par lat/lon y las columnas WKT/GeoJSON.
+  - **Hallazgo al probarla en la imagen:** `ore.sql("… ST_Read(…)")` fallaba (*st_read is not in the catalog*), porque el SDK solo cargaba `spatial` al leer una tabla geo. **Arreglo en los tres SDK:** una consulta con `ST_*` o `h3_*` carga `spatial` y `h3` (0,16 s y 0,02 s, solo cuando se piden). Prueba `test_st_y_h3_sin_tabla_geo`.
+  - Con los ficheros del banco, en la imagen y sin red, cada ejemplo da un **GeoDataFrame de 183 filas con OGC:CRS84**, también el SHP, cuyo `.prj` no lleva autoridad. En la GDB la columna se llama `SHAPE`.
+  - Python 106/106 (8 saltadas, como siempre), Node 18/18, JVM ok.

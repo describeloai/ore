@@ -82,3 +82,19 @@ class UnaTablaEscritaPorOre(unittest.TestCase):
         self.assertIsInstance(g, geopandas.GeoDataFrame)
         self.assertEqual(g.crs.to_epsg(), 25830)
         self.assertEqual(g.geometry.iloc[0].geom_type, "Point")
+
+
+@unittest.skipIf(geopandas is None, "sin geopandas")
+class SqlConFuncionesGeo(unittest.TestCase):
+    """ORE 0067 G3·6: `ST_*` (y `ST_Read`) o `h3_*` en `sql()` cargan `spatial` y
+    `h3` aunque la consulta no toque una tabla geo (antes: «st_read is not in
+    the catalog»)."""
+
+    def test_st_y_h3_sin_tabla_geo(self):
+        con = ore._duckdb()
+        try:
+            con.execute("load h3")
+        except Exception:
+            self.skipTest("sin h3 en este entorno")
+        r = ore.sql("select ST_AsText(ST_Point(1, 2)) p, h3_latlng_to_cell(40.4, -3.7, 8) c", format="arrow")
+        self.assertEqual(r.column("p").to_pylist(), ["POINT (1 2)"])

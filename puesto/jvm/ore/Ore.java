@@ -1398,6 +1398,11 @@ public final class Ore {
         String texto = text; int limite = limit; boolean estricto = strict || BUILD != null;
         if (texto == null || texto.isBlank()) throw new IllegalArgumentException("sql() takes a query");
         Connection con = duckdb();
+        // ORE 0067 G3·6: `ST_*` (también `ST_Read`) o `h3_*` cargan `spatial` y `h3`, solo entonces.
+        if (Pattern.compile("\\b(st|h3)_[a-z]", Pattern.CASE_INSENSITIVE).matcher(texto).find()) {
+            cargar(con, "spatial");
+            try (Statement h = con.createStatement()) { h.execute("load h3"); } catch (SQLException e) { /* sin h3 */ }
+        }
         Set<String> vivas = registrar(con, texto, estricto);
         Rows filas = filasDe(exportar(con.createStatement(), texto, 8192), limite, estricto, null, "sql()");
         filas.readLive = List.copyOf(vivas);
