@@ -996,3 +996,23 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **Hallazgo al probarla en la imagen:** `ore.sql("… ST_Read(…)")` fallaba (*st_read is not in the catalog*), porque el SDK solo cargaba `spatial` al leer una tabla geo. **Arreglo en los tres SDK:** una consulta con `ST_*` o `h3_*` carga `spatial` y `h3` (0,16 s y 0,02 s, solo cuando se piden). Prueba `test_st_y_h3_sin_tabla_geo`.
   - Con los ficheros del banco, en la imagen y sin red, cada ejemplo da un **GeoDataFrame de 183 filas con OGC:CRS84**, también el SHP, cuyo `.prj` no lleva autoridad. En la GDB la columna se llama `SHAPE`.
   - Python 106/106 (8 saltadas, como siempre), Node 18/18, JVM ok.
+- **2026-10-17 · V7 en victor** (`vara-20261017-1924.md`, ore-serve y `ore-drivers` en `d40d68ff`), frente a la línea base del 16-oct:
+
+  | caso | 16-oct | 17-oct |
+  |---|---|---|
+  | **V2 · la inducción** sobre PostGIS y BigQuery | 0 aciertos | **6/6** (las cuatro tablas de PostGIS, con su CRS, y las dos de BigQuery como `Geography`) |
+  | **V7 · PostGIS**, el catálogo | sin tipo | `Geometry<MultiPolygon, EPSG:25830>`, `Geometry<Point, EPSG:4326>`, `Geometry<Any, EPSG:4326>` y `Geography<Point>` |
+  | V7 · PostGIS, los valores | EWKB en hex | los mismos (los convierte el códec, medido en local de punta a punta); Arrow entre 39 000 y 43 000 filas/s |
+  | **V7 · BigQuery** | `Opaque`, WKT | **`Geography`**, en WKT (el códec lo convierte); Arrow a 15 400 filas/s |
+  | **V7 · GeoParquet** (GCS) | `String` | **`Geometry<MultiPolygon>`** (OGC:CRS84), por su clave `geo` |
+  | V7 · CSV con lat/lon y con WKT | `Float` / `String` | igual en el catálogo: se tipan con la respuesta a la inducción (G3·4), no en el driver |
+
+  - Sin fallos del guion. La línea de V1 dice «no se encontró la columna»: el guion busca `geom` en el paquete inducido con una forma de antes. **Es un fallo del arnés**, y `validate` da `rc=0`.
+- **2026-10-17 · G3 CERRADO.** Cada origen del banco llega tipado y con su CRS: PostGIS y BigQuery por su catálogo, GeoParquet por su clave `geo`, las columnas WKT y GeoJSON y los pares lat/lon por la respuesta a la inducción, y los demás formatos por `ST_Read` en la sesión. Toda geometría entra al lago por **un solo códec**, `a_wkb`.
+  - **La deuda de G3, acotada:**
+    1. **El ritmo de copia**: PostGIS a unas 40 000 filas/s y BigQuery a 15 400, frente al objetivo de ≥ 100 000. La palanca está medida: geometría en binario desde el driver (`ST_AsBinary` y `ST_ASBINARY` en la consulta) en vez de texto hex o WKT.
+    2. **La copia de punta a punta en victor**, desde el alta de las fuentes del banco (la hace una persona) hasta el lago, y la transformación lat/lon con el Build.
+    3. La línea V1 de la vara (arnés).
+    4. Los formatos de fichero como `Table` nativas de un origen.
+    5. Oracle, SQL Server, Snowflake, Databricks y MySQL, cuando llegue cada origen.
+- **ADR 0067: G0–G3 cerrados.** Lo que sigue son las líneas de 0066 (E1 cómputo, E2 servir, E4 ráster…) y la deuda acotada de cada etapa.
