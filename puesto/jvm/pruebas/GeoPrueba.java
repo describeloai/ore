@@ -43,6 +43,15 @@ public class GeoPrueba {
         igual(Ore.crsDeGeo("Geography<LineString>"), "OGC:CRS84", "Geography");
         igual(Ore.crsDeGeo("string"), null, "lo que no es geo");
 
+        // ORE 0067, medido en victor: sin `geo` en el puntero, el SDK lo toma de la tabla.
+        java.nio.file.Path raiz = java.nio.file.Path.of(System.getenv().getOrDefault("ORE_CUERPOS", "puesto/python/pruebas/cuerpos/geo-v3-ore"), "metadata");
+        String ml;
+        try (var fs = java.nio.file.Files.list(raiz)) {
+            ml = fs.map(java.nio.file.Path::toString).filter(n -> n.endsWith(".metadata.json")).findFirst().orElseThrow();
+        }
+        Map<String, Object> geoTabla = Ore.geoDeLaTabla(ml.replace('\\', '/'));
+        igual(((Map<String, Object>) geoTabla.get("geom")).get("crs"), "EPSG:25830", "el geo de la tabla, por sus propiedades");
+
         // write(): una List<Map> con una columna `geometry(EPSG:25830)` va como WKB marcado.
         List<Map<String, Object>> filas = new ArrayList<>();
         Map<String, Object> f1 = new LinkedHashMap<>(); f1.put("id", "a"); f1.put("geom", cuadrado()); filas.add(f1);

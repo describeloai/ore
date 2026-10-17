@@ -70,3 +70,14 @@ test("intersectsBox: el filtro lleva && y ST_Intersects, y filtra", async (t) =>
   const n = (await con.runAndReadAll(`select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where ${intersectsBox("geom", 0, 0, 5, 5)}`)).getRows()[0][0];
   assert.equal(Number(n), 1);
 });
+
+// ORE 0067, medido en victor: lo que escribe `write()` llega sin `geo` en el puntero; el SDK lo toma
+// de las propiedades `ore.geo.<col>` de la tabla (la de `cuerpos/geo-v3-ore` la selló ORE).
+test("sin geo en el puntero, lo toma de la tabla", async () => {
+  const { readdirSync } = await import("node:fs");
+  const raiz = process.env.ORE_CUERPOS ?? new URL("../../python/pruebas/cuerpos/geo-v3-ore", import.meta.url).pathname;
+  const ml = join(raiz, "metadata", readdirSync(join(raiz, "metadata")).find((f) => f.endsWith(".metadata.json")));
+  const geo = await __geo.geoDeLaTabla(ml);
+  assert.equal(geo.geom.crs, "EPSG:25830");
+  assert.equal(geo.geom.type, "Geometry<Any, EPSG:25830>");
+});

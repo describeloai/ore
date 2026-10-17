@@ -634,7 +634,13 @@ public final class Ore {
                 }
             }
             Object tok = credencial.get("gcs.oauth2.token");
-            return conGeo(iceberg(String.valueOf(m), tok == null ? null : String.valueOf(tok)), r);
+            String fuente = iceberg(String.valueOf(m), tok == null ? null : String.valueOf(tok));
+            if (!(r.get("geo") instanceof Map<?, ?> g) || g.isEmpty()) {
+                Map<String, Object> conTabla = new LinkedHashMap<>(r);
+                conTabla.put("geo", geoDeLaTabla(String.valueOf(m)));
+                return conGeo(fuente, conTabla);
+            }
+            return conGeo(fuente, r);
         }
         return conGeo("read_parquet('" + rutaSql(parquetDe(vista, r)) + "')", r);
     }
@@ -689,6 +695,35 @@ public final class Ore {
         String c = String.join(".", partes);
         String caja = "ST_MakeEnvelope(" + xmin + ", " + ymin + ", " + xmax + ", " + ymax + ")";
         return "(" + c + " && " + caja + " AND ST_Intersects(" + c + ", " + caja + "))";
+    }
+
+    /**
+     * ORE 0067 · Las columnas geo de una tabla por sus propiedades {@code ore.geo.<col>} (las del
+     * escritor, G2·1), cuando el puntero no trae {@code geo}: lo que escribe {@code write()} no tiene
+     * tipos en el árbol, y sus ficheros GEOMETRY no se leen como {@code binary} sin {@code spatial}
+     * (medido en victor). Con la credencial que {@code iceberg} dejó; si no se puede, nada.
+     */
+    static Map<String, Object> geoDeLaTabla(String metadataLocation) {
+        String url = metadataLocation.startsWith("gs://") ? "https://storage.googleapis.com/" + metadataLocation.substring(5) : metadataLocation;
+        Map<String, Object> geo = new LinkedHashMap<>();
+        try (Statement st = duckdb().createStatement();
+             ResultSet rs = st.executeQuery("select content from read_text('" + url.replace("'", "''") + "')")) {
+            if (!rs.next()) return geo;
+            Object props = Json.objeto(rs.getString(1)).get("properties");
+            if (!(props instanceof Map<?, ?> p)) return geo;
+            for (Map.Entry<?, ?> e : p.entrySet()) {
+                String k = String.valueOf(e.getKey());
+                if (!k.startsWith("ore.geo.") || k.equals("ore.geo.lente")) continue;
+                try {
+                    geo.put(k.substring("ore.geo.".length()), Json.objeto(String.valueOf(e.getValue())));
+                } catch (RuntimeException x) {
+                    // una propiedad que no es JSON no es nuestra
+                }
+            }
+        } catch (Exception x) {
+            return geo;
+        }
+        return geo;
     }
 
     /** ORE 0067 G2·3·4: ¿lleva el campo la marca {@code geoarrow.wkb}? */

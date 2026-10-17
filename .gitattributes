@@ -20,3 +20,4 @@
 # Los cuerpos binarios de las pruebas de ore-store (Parquet de verdad, 0067 G2·3·3):
 # son bytes, no texto, y un CR dentro es contenido.
 crates/ore-store/tests/cuerpos/** -text
+puesto/python/pruebas/cuerpos/** -text

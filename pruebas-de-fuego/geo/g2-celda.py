@@ -5,7 +5,7 @@
 #           leídos con los mismos lectores y el mismo juicio que en local.
 #   V6      la tabla v3 ajena del banco (Iceberg 1.12): leída, copiada con ore.write y releída.
 # Deja PAQUETE.medida_g2_*. Copia la salida entera de vuelta.
-PAQUETE = "geo"
+PAQUETE = "test_project"
 
 import glob, hashlib, json, os, subprocess, sys, time, traceback
 import duckdb, geopandas, shapely, numpy as np
@@ -30,6 +30,9 @@ def bajar(vista, destino):
     """La tabla de `vista` entera a `destino`, con la credencial que `datos` presta para ella."""
     _, r = ore._fuente_de(vista)
     raiz = r["metadata_location"].rsplit("/metadata/", 1)[0]
+    # La credencial prestada vale para la URL https del bucket (la que usa el SDK).
+    if raiz.startswith("gs://"):
+        raiz = "https://storage.googleapis.com/" + raiz[5:]
     n = 0
     for ruta, contenido in ore._duckdb().execute("select filename, content from read_blob('%s/**')" % raiz).fetchall():
         p = destino + "/" + ruta[len(raiz) + 1:]

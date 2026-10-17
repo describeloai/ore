@@ -784,10 +784,39 @@ def _fuente_de_respuesta(vista, r):
                 c, l = session.pedir("GET", _v1_tabla(_corto(vista)), cabeceras=_DELEGAR)
                 if c == 200 and (l or {}).get("config", {}).get("s3.access-key-id"):
                     _s3 = l["config"]
-        return _con_geo(_iceberg(r["metadata_location"], cred.get("gcs.oauth2.token")), r), r
+        fuente = _iceberg(r["metadata_location"], cred.get("gcs.oauth2.token"))
+        if not r.get("geo"):
+            r["geo"] = _geo_de_la_tabla(r["metadata_location"])
+        return _con_geo(fuente, r), r
     f, r = _parquet_de(vista, r)
     r["_parquet"] = f
     return _con_geo("read_parquet('%s')" % f.replace("'", "''").replace("\\", "/"), r), r
+
+
+def _geo_de_la_tabla(metadata_location):
+    """ORE 0067 · Las columnas geo de una tabla por sus propiedades `ore.geo.<col>`
+    (las que pone el escritor, G2·1), cuando el puntero no trae `geo`: lo que se
+    escribe con `write()` no tiene tipos en el árbol. Medido en victor: sin esto,
+    `over()` de una tabla geo recién escrita fallaba, porque sus ficheros son
+    GEOMETRY y DuckDB sin `spatial` no los convierte a BLOB. Se lee el
+    `metadata.json` con la credencial que `_iceberg` ya dejó; si no se puede,
+    nada (no se rompe una lectura por esto)."""
+    url = metadata_location
+    if url.startswith("gs://"):
+        url = "https://storage.googleapis.com/" + url[5:]
+    try:
+        texto = _duckdb().execute("select content from read_text(?)", [url]).fetchone()[0]
+        props = json.loads(texto).get("properties") or {}
+    except Exception:
+        return {}
+    geo = {}
+    for k, v in props.items():
+        if k.startswith("ore.geo.") and k != "ore.geo.lente":
+            try:
+                geo[k[len("ore.geo."):]] = json.loads(v)
+            except ValueError:
+                pass
+    return geo
 
 
 def _con_geo(fuente, r):

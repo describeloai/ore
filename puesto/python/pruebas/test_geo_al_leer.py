@@ -58,3 +58,27 @@ class GeoAlLeer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(geopandas is None, "sin geopandas")
+class UnaTablaEscritaPorOre(unittest.TestCase):
+    """ORE 0067, medido en victor el 2026-10-17: una tabla geo que escribe `write()`
+    no tiene tipos en el árbol, y el puntero llega sin `geo`. Sus ficheros son
+    GEOMETRY (G2·1) y DuckDB sin `spatial` no los lee como la columna `binary` de
+    Iceberg. El SDK toma entonces el `geo` de las propiedades `ore.geo.<col>`.
+    La tabla de `cuerpos/geo-v3-ore` la selló el escritor de ORE (los fijos de
+    EPSG:25830 de la matriz, `examples/v5-fijos.rs`)."""
+
+    def test_sin_geo_en_el_puntero_lo_toma_de_la_tabla(self):
+        import glob
+        raiz = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cuerpos", "geo-v3-ore")
+        ml = glob.glob(os.path.join(raiz, "metadata", "*.metadata.json"))[0].replace("\\", "/")
+        r = {"metadata_location": ml}
+        fuente, r = ore._fuente_de_respuesta("p.geo", r)
+        self.assertEqual(r["geo"]["geom"]["crs"], "EPSG:25830")
+        t = ore._duckdb().sql("select * from %s order by id" % fuente).to_arrow_table()
+        self.assertEqual(t.num_rows, 177)
+        g = ore._como(t, "pandas")
+        self.assertIsInstance(g, geopandas.GeoDataFrame)
+        self.assertEqual(g.crs.to_epsg(), 25830)
+        self.assertEqual(g.geometry.iloc[0].geom_type, "Point")

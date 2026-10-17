@@ -458,10 +458,34 @@ async function fuenteDeRespuesta(vista, r) {
         if (c === 200 && l?.config?.["s3.access-key-id"]) s3 = l.config;
       }
     }
-    return [await conGeo(await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]), r), r];
+    const fuente = await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]);
+    if (!r.geo || Object.keys(r.geo).length === 0) r.geo = await geoDeLaTabla(r.metadata_location);
+    return [await conGeo(fuente, r), r];
   }
   const [f] = await parquetDe(vista, r);
   return [await conGeo(`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r), r];
+}
+
+/** ORE 0067 · Las columnas geo de una tabla por sus propiedades `ore.geo.<col>`
+ *  (las del escritor, G2·1), cuando el puntero no trae `geo`: lo que escribe
+ *  `write()` no tiene tipos en el árbol, y sus ficheros GEOMETRY no se leen como
+ *  `binary` sin `spatial` (medido en victor). Con la credencial que `iceberg`
+ *  dejó; si no se puede, nada. */
+async function geoDeLaTabla(metadataLocation) {
+  const url = metadataLocation.startsWith("gs://") ? "https://storage.googleapis.com/" + metadataLocation.slice(5) : metadataLocation;
+  let props;
+  try {
+    const r = await (await duckdb()).runAndReadAll(`select content from read_text('${url.replaceAll("'", "''")}')`);
+    props = JSON.parse(String(r.getColumns()[0][0])).properties ?? {};
+  } catch {
+    return {};
+  }
+  const geo = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (!k.startsWith("ore.geo.") || k === "ore.geo.lente") continue;
+    try { geo[k.slice("ore.geo.".length)] = JSON.parse(v); } catch { /* una propiedad que no es JSON no es nuestra */ }
+  }
+  return geo;
 }
 
 /** ORE 0067 G2·3·4: las columnas que el puntero dice geo (`geo`, de los tipos
@@ -1318,4 +1342,4 @@ export function intersectsBox(column, xmin, ymin, xmax, ymax) {
 }
 
 /** Interno, para las pruebas del SDK (ORE 0067 G2·3·4): no es parte de la interfaz. */
-export const __geo = { conGeo, crsDeGeo, parquetDe_, duckdb };
+export const __geo = { geoDeLaTabla, conGeo, crsDeGeo, parquetDe_, duckdb };
