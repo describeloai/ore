@@ -1477,7 +1477,12 @@ mod tests {
         let lotes = lotes_de_parquet(bytes).unwrap();
         let n = normalizar(&lotes[0]).unwrap();
         let f = n.schema().field_with_name("geom").unwrap().clone();
-        assert_eq!(f.metadata()["ARROW:extension:metadata"], r#"{"crs":"EPSG:25830"}"#, "{:?}", lotes[0].schema());
+        assert_eq!(
+            f.metadata()["ARROW:extension:metadata"],
+            r#"{"crs":"EPSG:25830"}"#,
+            "{:?}",
+            lotes[0].schema()
+        );
         assert_eq!(f.metadata()[META_TIPO], "Geometry<Any, EPSG:25830>");
     }
 

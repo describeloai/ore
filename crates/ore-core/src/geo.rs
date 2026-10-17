@@ -192,8 +192,8 @@ impl Lector<'_> {
             let mut xy = [0f64; 2];
             for k in 0..dims.n() {
                 let v = self.f64(le)?;
-                if k < 2 {
-                    xy[k] = v;
+                if let Some(c) = xy.get_mut(k) {
+                    *c = v;
                 }
                 if !v.is_nan() {
                     todo_nan = false;
@@ -336,7 +336,7 @@ pub fn a_hex(b: &[u8]) -> String {
 pub fn de_hex(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
     let s = s.strip_prefix("\\x").unwrap_or(s);
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(format!(
             "`{}…` no es hexadecimal: tiene un número impar de cifras",
             corto(s)

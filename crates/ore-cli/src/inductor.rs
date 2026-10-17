@@ -2039,10 +2039,8 @@ fn tipo_geo_nativo(origen: &str) -> Option<String> {
     }
     let (ctor, args) = if let Some(r) = o.strip_prefix("geometry(") {
         ("Geometry", r)
-    } else if let Some(r) = o.strip_prefix("geography(") {
-        ("Geography", r)
     } else {
-        return None;
+        ("Geography", o.strip_prefix("geography(")?)
     };
     let args = args.strip_suffix(')')?;
     let mut partes = args.split(',').map(str::trim);
