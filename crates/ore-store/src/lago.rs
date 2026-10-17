@@ -612,11 +612,17 @@ impl Lago {
     /// guarda. No hay catálogo que consultar; el fichero ES el estado.
     pub fn abrir(&self, metadata_location: &str, dataset: &str) -> Result<Table, String> {
         let io = self.file_io();
-        let meta = runtime()
-            .block_on(TableMetadata::read_from(&io, metadata_location))
-            .map_err(|e| {
-                format!("`{metadata_location}` no se pudo abrir como tabla Iceberg: {e}")
-            })?;
+        let no_abre =
+            |e: String| format!("`{metadata_location}` no se pudo abrir como tabla Iceberg: {e}");
+        let bytes = runtime()
+            .block_on(async { io.new_input(metadata_location)?.read().await })
+            .map_err(|e| no_abre(e.to_string()))?;
+        // ORE 0067 G2·4·1: un v3 con `geometry`/`geography` pasa por la lente
+        // (`iceberg` 0.10 no lo deserializa); los demás, tal cual.
+        let mut j: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| no_abre(e.to_string()))?;
+        crate::lago_geo::lente(&mut j);
+        let meta: TableMetadata = serde_json::from_value(j).map_err(|e| no_abre(e.to_string()))?;
         self.tabla(meta, Some(metadata_location.to_string()), dataset)
             .map_err(err)
     }
@@ -668,6 +674,19 @@ impl Lago {
         cambios: Vec<TableUpdate>,
         requisitos: Vec<TableRequirement>,
     ) -> Result<Table, String> {
+        // ORE 0067 G2·4·1: lo que se leyó por la lente no se escribe encima.
+        if tabla
+            .metadata()
+            .properties()
+            .contains_key(crate::lago_geo::PROP_LENTE)
+        {
+            return Err(format!(
+                "`{}` tiene columnas `geometry`/`geography` de Iceberg v3, que ORE lee como \
+                 binario y aún no sabe escribir (`iceberg` 0.10, ORE 0067 G2·4): la tabla es de \
+                 solo lectura para ORE; cópiala a una tabla de ORE para escribir",
+                tabla.metadata_location().unwrap_or("la tabla")
+            ));
+        }
         // Una tabla sin `metadata_location` todavía no existe para nadie: sus
         // requisitos (`assert-create`) se comprueban contra «ninguna».
         let actual = tabla.metadata_location().map(String::from);

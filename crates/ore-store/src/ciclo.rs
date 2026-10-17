@@ -1383,7 +1383,10 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
     // ESE esbozo, y el commit con `assert-create` la hace nacer tal cual.
     let esbozo = match n.get("esbozo") {
         Some(e) if e.is_object() => {
-            let meta: iceberg::spec::TableMetadata = serde_json::from_value(e.clone())
+            // ORE 0067 G2·4·1: también el esbozo pasa por la lente.
+            let mut e = e.clone();
+            crate::lago_geo::lente(&mut e);
+            let meta: iceberg::spec::TableMetadata = serde_json::from_value(e)
                 .map_err(|e| format!("`esbozo` no es un metadata.json de Iceberg: {e}"))?;
             Some(lago.esbozada(meta, &dataset)?)
         }
@@ -2580,6 +2583,113 @@ mod tests {
     /// ORE 0067 G2·1 (medida) · **¿Entra un snapshot en una tabla v3?** El
     /// escritor arma los snapshots a mano con manifiestos v2; v3 pide linaje de
     /// filas. Se crea la tabla, se sube a v3 y se escriben dos snapshots.
+    /// ORE 0067 G2·4·1 · La lente: tres `metadata.json` v3 con `geometry` que
+    /// `iceberg` 0.10 no deserializa —el ajeno del banco (sin filas), una
+    /// tabla de ORE promovida solo en metadatos y una que escribe Spark 4.1 con
+    /// Iceberg 1.12— se abren con `geom` binaria y su `ore.geo.geom`, y un
+    /// commit encima se niega.
+    #[test]
+    fn la_lente_abre_las_tablas_v3_con_geometria_y_no_escribe_encima() {
+        use iceberg::spec::{PrimitiveType, Type};
+        let fijos = [
+            (
+                "g24-banco-v3",
+                include_str!("../tests/cuerpos/g24-banco-v3.metadata.json"),
+            ),
+            (
+                "g24-ore-promovida",
+                include_str!("../tests/cuerpos/g24-ore-promovida.metadata.json"),
+            ),
+            (
+                "g24-spark",
+                include_str!("../tests/cuerpos/g24-spark-iceberg-1.12.metadata.json"),
+            ),
+        ];
+        for (nombre, json) in fijos {
+            assert!(
+                serde_json::from_str::<iceberg::spec::TableMetadata>(json).is_err(),
+                "{nombre}: `iceberg` 0.10 ya lo abre sin lente: es hora de quitarla"
+            );
+            let memoria = Arc::new(Memoria::default());
+            let ml = format!("memory://pruebas/ajena/{nombre}/metadata/00001-x.metadata.json");
+            memoria.0.lock().unwrap().insert(
+                ml.trim_start_matches("memory://pruebas/").to_string(),
+                json.as_bytes().to_vec(),
+            );
+            let lago = Lago::nuevo(memoria);
+            let t = lago
+                .abrir(&ml, "ajena/t")
+                .unwrap_or_else(|e| panic!("{nombre}: {e}"));
+            let geom = t.metadata().current_schema().field_by_name("geom").unwrap();
+            assert_eq!(
+                *geom.field_type,
+                Type::Primitive(PrimitiveType::Binary),
+                "{nombre}"
+            );
+            let p = t.metadata().properties();
+            let g: serde_json::Value = serde_json::from_str(&p["ore.geo.geom"]).unwrap();
+            assert_eq!(g["crs"], "OGC:CRS84", "{nombre}: {g}");
+            assert!(p.contains_key(crate::lago_geo::PROP_LENTE), "{nombre}");
+            let e = lago
+                .confirmar(
+                    &t,
+                    vec![iceberg::TableUpdate::SetProperties {
+                        updates: [("x".to_string(), "y".to_string())].into(),
+                    }],
+                    vec![],
+                )
+                .unwrap_err();
+            assert!(e.contains("solo lectura"), "{nombre}: {e}");
+        }
+        // Y lo que no tiene geo no cambia.
+        let mut j: serde_json::Value = serde_json::json!({"current-schema-id": 0,
+            "schemas": [{"schema-id": 0, "fields": [{"id": 1, "name": "n", "type": "long"}]}]});
+        assert!(!crate::lago_geo::lente(&mut j));
+        assert!(j.get("properties").is_none());
+    }
+
+    /// Las formas de Iceberg y su `ore.geo.<col>`, también anidadas.
+    #[test]
+    fn la_lente_traduce_cada_forma_del_tipo() {
+        let mut j: serde_json::Value = serde_json::json!({"current-schema-id": 1, "schemas": [
+        {"schema-id": 0, "fields": [{"id": 1, "name": "viejo", "type": "geometry"}]},
+        {"schema-id": 1, "fields": [
+            {"id": 1, "name": "a", "type": "geometry(EPSG:25830)"},
+            {"id": 2, "name": "b", "type": "geography(OGC:CRS84, vincenty)"},
+            {"id": 3, "name": "c", "type": "geography"},
+            {"id": 4, "name": "d", "type": {"type": "list", "element-id": 5, "element-required": false, "element": "geometry"}},
+        ]}]});
+        assert!(crate::lago_geo::lente(&mut j));
+        let s = &j["schemas"][1]["fields"];
+        for i in 0..3 {
+            assert_eq!(s[i]["type"], "binary");
+        }
+        assert_eq!(s[3]["type"]["element"], "binary");
+        assert_eq!(j["schemas"][0]["fields"][0]["type"], "binary");
+        let p = &j["properties"];
+        let a: serde_json::Value = serde_json::from_str(p["ore.geo.a"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            a,
+            serde_json::json!({"type": "Geometry<Any, EPSG:25830>", "crs": "EPSG:25830"})
+        );
+        let b: serde_json::Value = serde_json::from_str(p["ore.geo.b"].as_str().unwrap()).unwrap();
+        assert_eq!(b["edges"], "vincenty");
+        let c: serde_json::Value = serde_json::from_str(p["ore.geo.c"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            c,
+            serde_json::json!({"type": "Geography", "crs": "OGC:CRS84", "edges": "spherical"})
+        );
+        assert!(p.get("ore.geo.viejo").is_none() && p.get("ore.geo.d").is_none());
+        // Una geo solo dentro de una lista también la deja de solo lectura.
+        let mut l: serde_json::Value = serde_json::json!({"current-schema-id": 0, "schemas": [
+            {"schema-id": 0, "fields": [{"id": 1, "name": "d", "type":
+                {"type": "list", "element-id": 2, "element-required": false, "element": "geometry"}}]}]});
+        assert!(crate::lago_geo::lente(&mut l));
+        assert!(l["properties"].get(crate::lago_geo::PROP_LENTE).is_some());
+        // El tipo que deja es de OOS.
+        assert!(ore_core::types::parse_type(a["type"].as_str().unwrap()).is_ok());
+    }
+
     #[test]
     fn una_tabla_v3_acepta_los_snapshots_del_escritor() {
         use iceberg::spec::{FormatVersion, NestedField, PrimitiveType, Schema, Type};

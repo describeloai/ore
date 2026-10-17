@@ -421,6 +421,135 @@ pub fn data_file(
         .map_err(|e| format!("el DataFile no se construye: {e}"))
 }
 
+/// La propiedad que deja la lente: la tabla se leyó con sus `geometry` /
+/// `geography` vistas como `binary`, y no se escribe encima (ver [`lente`]).
+pub const PROP_LENTE: &str = "ore.geo.lente";
+
+/// ORE 0067 G2·4·1 · **La lente**: `iceberg` 0.10 no abre un `metadata.json`
+/// v3 con `geometry` o `geography` (no deserializa: ni el esquema), sea de una
+/// tabla ajena o de una de ORE ya promovida. Antes de dárselo, cada columna geo
+/// de cada esquema pasa a `binary` con su mismo id, y la tabla gana la
+/// propiedad `ore.geo.<col>` (tipo de OOS, CRS y `edges`) de las de primer
+/// nivel del esquema actual, que es como ORE escribe las suyas: lo demás de ORE
+/// ya la lee como geometría. Y [`PROP_LENTE`], que la deja **de solo lectura**
+/// para ORE: escribir encima reescribiría un esquema ajeno con `binary`. Se
+/// quita con `iceberg` 0.11 (PR 2933). Devuelve si cambió algo.
+pub fn lente(meta: &mut serde_json::Value) -> bool {
+    let actual = meta.get("current-schema-id").and_then(|v| v.as_i64());
+    let mut vistas: Vec<(String, String)> = Vec::new();
+    let mut cambio = false;
+    if let Some(esquemas) = meta.get_mut("schemas").and_then(|v| v.as_array_mut()) {
+        for e in esquemas {
+            let es_actual = e.get("schema-id").and_then(|v| v.as_i64()) == actual;
+            if let Some(campos) = e.get_mut("fields").and_then(|v| v.as_array_mut()) {
+                for c in campos {
+                    let nombre = c
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let Some(t) = c.get_mut("type") else { continue };
+                    let (cambiado, prop) = binario_de(t);
+                    cambio |= cambiado;
+                    if let (Some(prop), true) = (prop, es_actual) {
+                        vistas.push((nombre, prop));
+                    }
+                }
+            }
+        }
+    }
+    if !cambio {
+        return false;
+    }
+    let props = meta
+        .as_object_mut()
+        .expect("un metadata.json es un objeto")
+        .entry("properties")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(p) = props.as_object_mut() {
+        for (nombre, prop) in vistas {
+            p.entry(format!("{PROP_GEO}{nombre}"))
+                .or_insert(prop.into());
+        }
+        p.insert(
+            PROP_LENTE.into(),
+            "iceberg 0.10: geometry y geography leídas como binary".into(),
+        );
+    }
+    true
+}
+
+/// Un tipo de Iceberg (también anidado: `struct`, `list`, `map`) con sus geo a
+/// `binary`: si cambió algo y, de uno geo de primer nivel, el valor de
+/// `ore.geo.<col>` (una geo dentro de una lista o un `struct` no tiene propiedad).
+fn binario_de(t: &mut serde_json::Value) -> (bool, Option<String>) {
+    match t {
+        serde_json::Value::String(s) => match propiedad_de_iceberg(s) {
+            Some(prop) => {
+                *t = "binary".into();
+                (true, Some(prop))
+            }
+            None => (false, None),
+        },
+        serde_json::Value::Object(o) => {
+            let mut cambio = false;
+            for k in ["element", "key", "value"] {
+                if let Some(x) = o.get_mut(k) {
+                    cambio |= binario_de(x).0;
+                }
+            }
+            if let Some(cs) = o.get_mut("fields").and_then(|v| v.as_array_mut()) {
+                for c in cs {
+                    if let Some(x) = c.get_mut("type") {
+                        cambio |= binario_de(x).0;
+                    }
+                }
+            }
+            (cambio, None)
+        }
+        _ => (false, None),
+    }
+}
+
+/// `geometry`, `geometry(EPSG:25830)`, `geography`, `geography(C, vincenty)`:
+/// la propiedad `ore.geo.<col>` que ORE escribiría para esa columna.
+fn propiedad_de_iceberg(s: &str) -> Option<String> {
+    let s = s.trim();
+    let (ctor, resto) = if let Some(r) = s.strip_prefix("geometry") {
+        ("Geometry", r)
+    } else {
+        ("Geography", s.strip_prefix("geography")?)
+    };
+    let args: Vec<String> = match resto.trim() {
+        "" => vec![],
+        r => r
+            .strip_prefix('(')?
+            .strip_suffix(')')?
+            .split(',')
+            .map(|a| a.trim().to_string())
+            .collect(),
+    };
+    let crs = args
+        .first()
+        .filter(|c| !c.is_empty())
+        .cloned()
+        .unwrap_or_else(|| ore_core::types::CRS_DEFECTO.to_string());
+    let mut m = serde_json::Map::new();
+    let tipo = if ctor == "Geometry" && crs != ore_core::types::CRS_DEFECTO {
+        format!("Geometry<Any, {crs}>")
+    } else {
+        ctor.to_string()
+    };
+    m.insert("type".into(), tipo.into());
+    m.insert("crs".into(), crs.into());
+    if ctor == "Geography" {
+        // El algoritmo de las aristas (`spherical` por defecto en la spec).
+        let a = args.get(1).map(String::as_str).unwrap_or("spherical");
+        m.insert("edges".into(), a.into());
+    }
+    Some(serde_json::Value::Object(m).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

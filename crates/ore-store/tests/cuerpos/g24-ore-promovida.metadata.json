@@ -1,0 +1,115 @@
+{
+ "format-version": 3,
+ "table-uuid": "01a149ad-f568-746e-89c4-4b1eb6dd9fc8",
+ "location": "file:///g/ore/tabla/ore/v2/copias/vara_v3",
+ "last-sequence-number": 1,
+ "last-updated-ms": 1792237499765,
+ "last-column-id": 2,
+ "schemas": [
+  {
+   "schema-id": 0,
+   "type": "struct",
+   "fields": [
+    {
+     "id": 1,
+     "name": "geom",
+     "required": false,
+     "type": "binary"
+    },
+    {
+     "id": 2,
+     "name": "id",
+     "required": false,
+     "type": "long"
+    }
+   ]
+  },
+  {
+   "schema-id": 1,
+   "type": "struct",
+   "fields": [
+    {
+     "id": 1,
+     "name": "geom",
+     "required": false,
+     "type": "geometry"
+    },
+    {
+     "id": 2,
+     "name": "id",
+     "required": false,
+     "type": "long"
+    }
+   ]
+  }
+ ],
+ "current-schema-id": 1,
+ "partition-specs": [
+  {
+   "spec-id": 0,
+   "fields": []
+  }
+ ],
+ "default-spec-id": 0,
+ "last-partition-id": 999,
+ "properties": {
+  "ore.geo.geom": "{\"crs\":\"OGC:CRS84\",\"type\":\"Geometry<Point>\"}",
+  "ore.cabecera": "{\"clave\":[],\"conducto\":\"materialization.payload\",\"esquema\":{\"geom\":\"Geometry<Point>\",\"id\":\"Integer\"},\"plan\":\"sha256:vara-v3\",\"testigo\":{\"modo\":\"log\",\"valor\":\"1\"}}",
+  "ore.dataset": "copias/vara_v3",
+  "ore.conducto": "materialization.payload"
+ },
+ "current-snapshot-id": 2104059670172670719,
+ "snapshot-log": [
+  {
+   "snapshot-id": 2104059670172670719,
+   "timestamp-ms": 1792237499765
+  }
+ ],
+ "sort-orders": [
+  {
+   "order-id": 0,
+   "fields": []
+  }
+ ],
+ "default-sort-order-id": 0,
+ "refs": {
+  "main": {
+   "snapshot-id": 2104059670172670719,
+   "type": "branch"
+  }
+ },
+ "next-row-id": 1000,
+ "snapshots": [
+  {
+   "snapshot-id": 2104059670172670719,
+   "sequence-number": 1,
+   "timestamp-ms": 1792237499765,
+   "manifest-list": "file:///g/ore/tabla/ore/v2/copias/vara_v3/metadata/snap-2104059670172670719-0-ab782308-ca4e-4152-b859-33a698314df6.avro",
+   "summary": {
+    "operation": "append",
+    "added-files-size": "26273",
+    "ore.testigo.valor": "1",
+    "total-data-files": "1",
+    "total-position-deletes": "0",
+    "ore.testigo.modo": "log",
+    "added-records": "1000",
+    "total-delete-files": "0",
+    "total-equality-deletes": "0",
+    "ore.plan": "sha256:vara-v3",
+    "ore.cabecera": "{\"clave\":[],\"conducto\":\"materialization.payload\",\"esquema\":{\"geom\":\"Geometry<Point>\",\"id\":\"Integer\"},\"plan\":\"sha256:vara-v3\",\"testigo\":{\"modo\":\"log\",\"valor\":\"1\"}}",
+    "added-data-files": "1",
+    "total-records": "1000",
+    "total-files-size": "26273"
+   },
+   "schema-id": 0,
+   "first-row-id": 0,
+   "added-rows": 1000
+  }
+ ],
+ "metadata-log": [
+  {
+   "timestamp-ms": 1792237499765,
+   "metadata-file": "spark/ore/tabla/ore/v2/copias/vara_v3/metadata\\00000-7f6754d4-442e-420f-ac80-e3c3de2d0763.metadata.json"
+  }
+ ]
+}
