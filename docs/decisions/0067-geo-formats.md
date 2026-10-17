@@ -313,6 +313,63 @@ contrato entre capas en el driver (hex WKB en texto o `geoarrow.wkb` en Arrow).
 **Hecho cuando:** cada origen del banco llega al lago con su geometría tipada y su CRS, V7 cumple el
 objetivo de copia, y la matriz de adopción (V5) sigue en verde.
 
+#### G3 · En detalle (diseñado el 2026-10-17, con el foco en rápido y fiable)
+
+**Lo que hay hoy (leído en el código el 2026-10-17):**
+- **PostGIS** (`ore-read-postgres`): el catálogo lee `format_type`, pero `geometry(...)` no tiene traducción: la
+  columna queda **sin tipo**, con el tipo crudo en `physicalType`. Los valores llegan como **EWKB en hex**,
+  igual por texto que por Arrow (`Utf8`, sin marca).
+- **BigQuery**: `GEOGRAPHY` es `Opaque`. La Storage API la rechaza y se lee por REST **en WKT**.
+- **Ficheros**: `.parquet` es `Table`, pero nadie lee la clave `geo`, así que `geom` sale como `String`.
+  GeoJSON, KML, GPKG y SHP son objetos de medios (`geospatial`). `.fgb` y `.gdb`, ni eso.
+- **La inducción** (G1·4) ya propone `Geometry<Sub, EPSG:n>` y `Geography` desde el tipo crudo, y pregunta
+  por los pares lat/lon y por las columnas WKT/GeoJSON. Nadie aplica todavía las respuestas.
+- **La copia por texto** (`carga::columna_geo`) ya acepta hex WKB/EWKB, comprueba el SRID y escribe con la marca.
+  **No** entiende WKT ni GeoJSON.
+- **⚠️ La copia por Arrow** (`sellar-flujo`, `carga::al_contrato`) hace un `cast` sin geo: un `Utf8` con hex
+  que el contrato dice `Geometry` se guardaría como **los bytes del texto hex**, sin marca. Sin probar; es
+  lo primero que se mide.
+
+**La idea que lo hace rápido y fiable: un solo códec, en un solo sitio.** Toda geometría que entra al
+lago pasa por **una función** de `ore-core::geo` (`a_wkb`): acepta WKB, EWKB (binario o hex, con
+comprobación del SRID), WKT/EWKT y GeoJSON, y devuelve ISO WKB validado contra el tipo. **La llama la
+entrada del lago**, tanto por texto (`columna_geo`) como por Arrow (`al_contrato`). Así, cada driver solo
+tiene que **tipar la columna en su catálogo** y dejar el valor como ya lo da. No se toca la consulta de
+ningún driver, y un formato de valor nuevo se arregla en un único sitio con su prueba.
+
+| paso | qué | dónde | hecho cuando |
+|---|---|---|---|
+| **G3·0 · Sondas (local, ~1 h)** | (a) Confirmar el fallo de Arrow: una copia `formato: arrow` de una columna `Geometry` desde un PostGIS local (`postgis/postgis` en Docker con las cuatro tablas del banco, recortadas). (b) Qué cuesta un parser de WKT/GeoJSON: el *crate* `wkt` + `geojson` frente a uno propio, en dependencias y en filas/s. (c) Si `ST_Read` de `spatial` (ya en la imagen del puesto) lee los siete formatos del banco **sin red**, con su CRS | `pruebas-de-fuego/geo/g3/` | tabla en la bitácora; el diseño se corrige si algo contradice |
+| **G3·1 · El códec** | `ore_core::geo::a_wkb(valor, tipo)`, con su prueba sobre el corpus de los fijos de V5 (los 7 subtipos en WKB, EWKB, WKT, EWKT y GeoJSON, generados con shapely como oráculo). `columna_geo` lo usa por texto y `al_contrato` por Arrow (arregla el fallo de G3·0a). El tipo canónico de un tipo crudo (`tipo_geo_nativo`) pasa de la inducción a `ore-core`, para que driver e inducción digan lo mismo | `ore-core::geo`, `ore-store::carga` | el corpus entero da los mismos WKB; las dos entradas del lago, también |
+| **G3·2 · PostGIS** | El catálogo tipa con la función compartida (`geometry(Sub,SRID)` → `Geometry<Sub, EPSG:SRID>`, `geography` → `Geography<Sub>`). Sin SRID o sin subtipo, la columna queda sin tipo y la inducción pregunta, como hoy. Valores, los de siempre (EWKB hex) | `ore-read-postgres` | V7 PostGIS: las cuatro tablas tipadas, con CRS, por texto y por Arrow |
+| **G3·3 · BigQuery** | `GEOGRAPHY` → `Geography`. Valores, el WKT de siempre, que ahora entiende el códec. (Pedir `ST_ASBINARY` para ganar ritmo es una mejora aparte, solo si V7 no llega al objetivo) | `ore-read-bigquery` | V7 BigQuery: las dos tablas como `Geography` |
+| **G3·4 · Columnas de texto y lat/lon** | **WKT/GeoJSON**: si la respuesta a la inducción es `wkt` o `geojson`, la columna se declara `Geometry<…>` y el códec la convierte en la copia. **Sin cambio de spec.** **Lat/lon**: si la respuesta es `si`, la inducción propone una **`View`** con `ST_Point(lon, lat)` sobre el dataset, que el puesto ya ejecuta (`spatial`). **Sin cambio de spec y sin código en la copia.** Las direcciones solo se marcan, como hoy | `ore-cli` (inducción), `ore-core::geo` | V7 CSV: el CSV con WKT llega como geometría y el de lat/lon tiene su vista con puntos |
+| **G3·5 · GeoParquet** | `ore-read-objetos` lee la clave `geo` del pie: la columna pasa a `Geometry<Sub, CRS>` (con el CRS desde el PROJJSON `id`) y el valor es su WKB binario, sin conversión | `ore-read-objetos` (`tabular.rs`) | V7: el GeoParquet del banco llega tipado, y uno escrito por ORE (G2) da la vuelta |
+| **G3·6 · Los demás formatos de fichero** | **Si la sonda (c) lo confirma**, GeoJSON, SHP, GPKG, KML, FlatGeobuf y GDB se leen hoy **en el puesto** con `ST_Read` (en una `View`, una transformación o `ore.sql`). Se documenta en la guía del SDK con un ejemplo por formato. Convertirlos en `Table` nativas de un origen queda como deuda acotada | `docs/sdk.md` | la guía lo dice, y la vara lee los siete en un puesto |
+
+**Lo que no entra:** Oracle, SQL Server, Snowflake, Databricks y MySQL (se hacen cuando llegue cada
+origen); geocodificar; reproyectar al copiar (es E1). Tampoco `ST_ASBINARY` en BigQuery, mientras no
+haga falta.
+
+**Requisito de una persona, antes de la medida:** el alta de las tres fuentes del banco en victor
+(`banco_geo_pg`, `banco_geo_bq`, `banco_geo_gcs`), pendiente desde G0. La hace una persona porque el
+agente recibe 403 de gobierno.
+
+**El orden y el ritmo:**
+1. G3·0, las sondas.
+2. G3·1, el códec, que es lo que hace fiable todo lo demás.
+3. G3·2 y G3·3, cada uno un cambio pequeño en el catálogo de su driver.
+4. G3·4 y G3·5.
+5. G3·6, la guía.
+
+Todo en local con commits en la rama, y la suite entera antes de **un solo empuje**. **CI: ~20 min**,
+porque toca `ore-store` y las imágenes del puesto se reconstruyen. Después, **una sola celda** en victor
+desde una sesión tuya: copiar cada fuente del banco y comprobar el tipo, el CRS y las filas (V7).
+
+**Hecho cuando:** V7 tipa, con su CRS, las cuatro tablas de PostGIS, las dos de BigQuery, el GeoParquet,
+el CSV con WKT y la vista de lat/lon, en victor; el corpus del códec está en verde en el CI; y la guía
+cubre los demás formatos.
+
 ### Después de G3
 
 En este mismo ADR y con su propia medida, la representación canónica (sólo como formato) de las otras
@@ -900,3 +957,4 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **V6, verde:** la tabla v3 ajena se lee como `GEOMETRY('OGC:CRS84')` (214 328 filas), se copia con `ore.write` y se relee como GeoDataFrame con OGC:CRS84 y **el mismo md5 de los WKB**.
   - **V5 en prod:** queda como deuda volver a correr la matriz sobre los ficheros de victor. Descargarlos con `read_blob` sobre https no admite `*`, y es un problema del arnés, no del producto. Los ficheros salen del mismo `ore-store` medido en local, y BigQuery cargó uno escrito por victor.
 - **2026-10-17 · G2 CERRADO.** El lago geo escribe (v3, GEOMETRY nativo, clave `geo` con PROJJSON, Hilbert con grupos de 100 000) y lee (los tres SDK, GeoDataFrame con su CRS, filtro por zona con `&&`, H3). Abre las tablas v3 ajenas, con la lente de solo lectura. Su adopción está medida (matriz local y BigQuery). La deuda, la de la entrada del borrador más la matriz sobre ficheros de victor. **Siguiente: G3.**
+- **2026-10-17 · G3 diseñado** (en el plan, «G3 · En detalle»): un solo códec (`ore_core::geo::a_wkb`: WKB, EWKB, WKT y GeoJSON) en la entrada del lago, por texto y por Arrow; los drivers solo tipan su catálogo; lat/lon como una `View` con `ST_Point`; GeoParquet por su clave `geo`; los demás formatos por `ST_Read` en el puesto. Hallazgo al leer el código: la copia por Arrow guardaría el hex como bytes (a confirmar en G3·0). Esperando el go.
