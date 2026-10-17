@@ -230,6 +230,126 @@ fn destino_de(nombre: &str, dt: &DataType, en_lista: bool) -> Result<DataType, S
     })
 }
 
+/// ORE 0067 G2·3·3 · **Una geometría que llega por IPC**: la columna binaria
+/// con la marca `geoarrow.wkb`. Su CRS sale de los metadatos de la extensión,
+/// como `AUTORIDAD:CÓDIGO` (el de ORE) o como PROJJSON con su `id` (el de
+/// GeoPandas y DuckDB); sin CRS se niega, porque uno que no se sabe no es
+/// `OGC:CRS84` (`01-la-geometria` §1). Cada valor se lee y valida
+/// (`geo::comprobar`) y se guarda en WKB ISO. El subtipo es `Any`: lo que
+/// declara el documento, si lo declara, manda en la tabla.
+fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRef)>, String> {
+    use arrow_array::Array;
+    use arrow_array::cast::AsArray;
+    if campo
+        .metadata()
+        .get("ARROW:extension:name")
+        .map(String::as_str)
+        != Some(GEOARROW_WKB)
+    {
+        return Ok(None);
+    }
+    let nombre = campo.name();
+    let meta = campo
+        .metadata()
+        .get("ARROW:extension:metadata")
+        .cloned()
+        .unwrap_or_default();
+    let (crs, esferica) =
+        crs_de_geoarrow(&meta).map_err(|e| format!("la columna `{nombre}` · {e}"))?;
+    let valor = |i: usize| -> Option<&[u8]> {
+        if col.is_null(i) {
+            return None;
+        }
+        col.as_binary_opt::<i32>()
+            .map(|a| a.value(i))
+            .or_else(|| col.as_binary_opt::<i64>().map(|a| a.value(i)))
+            .or_else(|| col.as_binary_view_opt().map(|a| a.value(i)))
+    };
+    if !matches!(
+        col.data_type(),
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+    ) {
+        return Err(format!(
+            "la columna `{nombre}` lleva la marca `geoarrow.wkb` y es `{}`: WKB es binario",
+            col.data_type()
+        ));
+    }
+    let mut b = arrow_array::builder::BinaryBuilder::new();
+    for i in 0..col.len() {
+        match valor(i) {
+            None => b.append_null(),
+            Some(v) => {
+                let w = ore_core::geo::leer(v)
+                    .and_then(|w| ore_core::geo::comprobar(&w, "Any", &crs, esferica).map(|_| w))
+                    .map_err(|e| format!("la columna `{nombre}`, fila {i}: {e}"))?;
+                b.append_value(&w.iso);
+            }
+        }
+    }
+    let forma = Forma::Geo {
+        subtipo: ore_core::types::GEO_SUBTIPO_DEFECTO.to_string(),
+        crs,
+        esferica,
+    };
+    Ok(Some((forma, Arc::new(b.finish()) as ArrayRef)))
+}
+
+/// El CRS (`AUTORIDAD:CÓDIGO`) y si las aristas son esféricas, desde los
+/// metadatos de la extensión `geoarrow.wkb`: `{"crs": "EPSG:25830"}`,
+/// `{"crs": {…PROJJSON con "id": {"authority": "EPSG", "code": 25830}}}` o
+/// `{"crs_type": "projjson", "crs": {…}}`, y `"edges": "spherical"`.
+pub fn crs_de_geoarrow(meta: &str) -> Result<(String, bool), String> {
+    let j: serde_json::Value = if meta.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(meta)
+            .map_err(|e| format!("los metadatos de `geoarrow.wkb` no son JSON: {e}"))?
+    };
+    let esferica = j["edges"].as_str() == Some("spherical");
+    let crs = match &j["crs"] {
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            // Un PROJJSON en una cadena (algunas versiones lo serializan así).
+            if s.starts_with('{') {
+                let o: serde_json::Value =
+                    serde_json::from_str(s).map_err(|e| format!("el CRS no es PROJJSON: {e}"))?;
+                codigo_de_projjson(&o)?
+            } else {
+                s.to_string()
+            }
+        }
+        o @ serde_json::Value::Object(_) => codigo_de_projjson(o)?,
+        _ => {
+            return Err(
+                "llega sin CRS: una geometría sin CRS no se escribe (uno que no se sabe no es \
+                        `OGC:CRS84`). Dale uno antes de escribir (`gdf.set_crs(\"EPSG:4326\")`)"
+                    .into(),
+            );
+        }
+    };
+    // Que sea un CRS de OOS (`AUTORIDAD:CÓDIGO`): lo dice el analizador del tipo.
+    ore_core::types::parse_type(&format!("Geometry<Any, {crs}>"))
+        .map_err(|_| format!("`{crs}` no es un CRS que ORE sepa nombrar (`AUTORIDAD:CÓDIGO`)"))?;
+    Ok((crs, esferica))
+}
+
+/// El `AUTORIDAD:CÓDIGO` de un PROJJSON, por su `id` (o el primero de `ids`).
+fn codigo_de_projjson(o: &serde_json::Value) -> Result<String, String> {
+    let id = if o["id"].is_object() {
+        &o["id"]
+    } else {
+        &o["ids"][0]
+    };
+    match (id["authority"].as_str(), &id["code"]) {
+        (Some(a), serde_json::Value::Number(n)) => Ok(format!("{a}:{n}")),
+        (Some(a), serde_json::Value::String(c)) => Ok(format!("{a}:{c}")),
+        _ => Err(format!(
+            "el CRS `{}` no trae su código de autoridad (`id`): ORE guarda el CRS por su código",
+            o["name"].as_str().unwrap_or("sin nombre")
+        )),
+    }
+}
+
 /// **El mismo tipo, sin los ids**: dos `DataType` que solo difieren en los
 /// metadatos de sus hijos (el `PARQUET:field_id` que pone el esquema de la
 /// tabla) son la misma forma.
@@ -320,6 +440,14 @@ pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
     let mut columnas = Vec::with_capacity(lote.num_columns());
     for (campo, col) in lote.schema().fields().iter().zip(lote.columns()) {
         let nombre = campo.name();
+        // ORE 0067 G2·3·3: una columna binaria con la marca `geoarrow.wkb` es una
+        // geometría (la que da GeoPandas, DuckDB o un `write()` de otro SDK). Sin
+        // la marca, un binario se sigue negando abajo.
+        if let Some((forma, valores)) = geo_que_llega(campo, col)? {
+            campos.push(self::campo(nombre, &forma));
+            columnas.push(valores);
+            continue;
+        }
         let destino = destino_de(nombre, campo.data_type(), false)?;
         let valores = if col.data_type() == &destino {
             col.clone()
@@ -1243,6 +1371,102 @@ pub fn fundir(anteriores: Vec<Fila>, delta: Vec<Fila>, clave: &[String]) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    /// ORE 0067 G2·3·3 · **Lo que llega por IPC con la marca `geoarrow.wkb`**:
+    /// el CRS de GeoPandas (PROJJSON con `id`), de ORE (`AUTORIDAD:CÓDIGO`) o
+    /// ninguno (se niega); el WKB se valida y queda ISO; sin marca, un binario
+    /// se sigue negando.
+    #[test]
+    fn normalizar_acepta_la_geometria_marcada() {
+        use arrow_array::{Array, BinaryArray, Int64Array};
+        let projjson = r#"{"crs": {"$schema": "https://proj.org/schemas/v0.7/projjson.schema.json", "type": "ProjectedCRS", "name": "ETRS89 / UTM zone 30N", "id": {"authority": "EPSG", "code": 25830}}}"#;
+        assert_eq!(
+            crs_de_geoarrow(projjson).unwrap(),
+            ("EPSG:25830".to_string(), false)
+        );
+        assert_eq!(
+            crs_de_geoarrow(r#"{"crs":"OGC:CRS84","edges":"spherical"}"#).unwrap(),
+            ("OGC:CRS84".to_string(), true)
+        );
+        assert_eq!(
+            crs_de_geoarrow(
+                r#"{"crs_type":"projjson","crs":{"ids":[{"authority":"OGC","code":"CRS84"}]}}"#
+            )
+            .unwrap()
+            .0,
+            "OGC:CRS84"
+        );
+        assert!(crs_de_geoarrow("{}").unwrap_err().contains("sin CRS"));
+        assert!(
+            crs_de_geoarrow(r#"{"crs":{"type":"GeographicCRS","name":"propio"}}"#)
+                .unwrap_err()
+                .contains("código de autoridad")
+        );
+
+        let ewkb =
+            ore_core::geo::de_hex("0101000020E6100000406A1327F7BB0DC053E8BCC62E454440").unwrap();
+        let marca = |m: &str| {
+            std::collections::HashMap::from([
+                ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
+                ("ARROW:extension:metadata".to_string(), m.to_string()),
+            ])
+        };
+        let lote = |campo: Field, col: ArrayRef| {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, true),
+                    campo,
+                ])),
+                vec![Arc::new(arrow_array::Int32Array::from(vec![1, 2])), col],
+            )
+            .unwrap()
+        };
+        let col: ArrayRef = Arc::new(arrow_array::LargeBinaryArray::from(vec![
+            Some(ewkb.as_slice()),
+            None,
+        ]));
+        let n = normalizar(&lote(
+            Field::new("geom", DataType::LargeBinary, true)
+                .with_metadata(marca(r#"{"crs":"EPSG:4326"}"#)),
+            col.clone(),
+        ))
+        .unwrap();
+        let f = n.schema().field_with_name("geom").unwrap().clone();
+        assert_eq!(f.data_type(), &DataType::Binary);
+        assert_eq!(
+            f.metadata()["ARROW:extension:metadata"],
+            r#"{"crs":"EPSG:4326"}"#
+        );
+        assert_eq!(f.metadata()[META_TIPO], "Geometry<Any, EPSG:4326>");
+        let g = n
+            .column_by_name("geom")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert_eq!(
+            ore_core::geo::a_hex(g.value(0)),
+            "0101000000406A1327F7BB0DC053E8BCC62E454440"
+        );
+        assert!(g.is_null(1));
+        assert!(
+            n.column_by_name("id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .is_some()
+        );
+        // El SRID del EWKB no casa con el CRS declarado: se niega con la fila.
+        let e = normalizar(&lote(
+            Field::new("geom", DataType::LargeBinary, true)
+                .with_metadata(marca(r#"{"crs":"EPSG:25830"}"#)),
+            col.clone(),
+        ))
+        .unwrap_err();
+        assert!(e.contains("fila 0") && e.contains("reproyectar"), "{e}");
+        // Sin marca, un binario sigue sin tener sitio en el contrato.
+        assert!(normalizar(&lote(Field::new("geom", DataType::LargeBinary, true), col)).is_err());
+    }
+
     /// v1alpha32 (ORE 0067 G1·3) · **La copia de una columna geo**: el texto del
     /// driver (el EWKB de PostGIS, en hexadecimal) sale del lote como `Binary`
     /// marcado con WKB ISO; el Parquet vuelve por `leer` como el hexadecimal

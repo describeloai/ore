@@ -1232,10 +1232,19 @@ impl Lago {
                 },
             ]
         } else {
+            // ORE 0067 G2·3·3: una tabla geo nace en v3 (G2·0). Los cimientos
+            // llevan ya esa versión: si llevaran la de partida (v2) delante de la
+            // subida a v3, quien rehace la tabla desde cero (`desde_cero`) la
+            // construiría en v3 y luego intentaría «bajarla» a v2.
+            let version = if v3 && meta.format_version() < iceberg::spec::FormatVersion::V3 {
+                iceberg::spec::FormatVersion::V3
+            } else {
+                meta.format_version()
+            };
             let mut cimientos = vec![
                 TableUpdate::AssignUuid { uuid: meta.uuid() },
                 TableUpdate::UpgradeFormatVersion {
-                    format_version: meta.format_version(),
+                    format_version: version,
                 },
             ];
             if !esquema_cambiado {

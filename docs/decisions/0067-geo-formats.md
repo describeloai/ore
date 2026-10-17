@@ -578,3 +578,32 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     DuckDB y GDAL de `spatial`; quien quiera `read_file` en su código añade `pyogrio` en la capa de su
     repositorio. Con geometría, pandas da un `GeoDataFrame`; si la imagen no trae `geopandas` (una
     anterior), da el Arrow con su marca y lo avisa.
+- **2026-10-17 · G2·3·3 hecho: el SDK de Python escribe geometría.**
+  - **`carga::normalizar`** (lo que `ore-store escribir` hace con el Arrow IPC de un `write()`):
+    - una columna binaria (también `LargeBinary` y `BinaryView`) **con la marca `geoarrow.wkb`** es una
+      geometría (`geo_que_llega`), y sin la marca un binario se sigue negando;
+    - su CRS sale de la marca (`crs_de_geoarrow`): una cadena `AUTORIDAD:CÓDIGO` (la de ORE), o
+      PROJJSON con su `id` o `ids` (la de GeoPandas y DuckDB), en objeto o en cadena;
+    - **sin CRS se niega** (uno que no se sabe no es `OGC:CRS84`, `01-la-geometria` §1), y también
+      un PROJJSON sin código de autoridad;
+    - cada WKB se lee y valida (`geo::comprobar`, que también comprueba el SRID de un EWKB) y queda en
+      WKB ISO; un valor roto se dice con su fila;
+    - sale con la marca canónica de ORE y `ore:type` (`Geometry<Any, …>`), así que el lago toma el
+      escritor geo (G2·1, G2·2).
+  - **Hallazgo de la prueba de punta a punta:** una tabla geo **nueva** escrita por `write()` no se
+    podía confirmar (*Cannot downgrade FormatVersion from v3 to v2*). Los cimientos de la tabla
+    llevaban la versión de partida (v2) delante de la subida a v3, y quien la rehace desde cero la
+    construía en v3 y luego intentaba bajarla. Ahora los cimientos llevan ya v3.
+  - **El SDK de Python:** `_arrow_de` reconoce un `GeoDataFrame` (antes que pandas, porque es su
+    subclase) y lo pasa a Arrow con `to_arrow(geometry_encoding="WKB")`. `_es_geo` reconoce la columna
+    marcada (en los metadatos o, con `geoarrow-pyarrow`, en el tipo), y la tabla que se esboza la
+    declara `binary`.
+  - **Pruebas:**
+    - `ore-store` 69/69, con `normalizar_acepta_la_geometria_marcada` (CRS de GeoPandas, de ORE,
+      `ids`, sin CRS, sin código, SRID que no casa, binario sin marca) y
+      `un_write_con_geometria_llega_al_escritor_geo` (IPC como lo da GeoPandas, con `EPSG:25830` en
+      PROJJSON → tabla v3, `ore.geo.geom`, GEOMETRY y clave `geo` con su CRS, y se lee igual);
+    - el SDK, con `test_geo_al_escribir` en la imagen del puesto con `geopandas` 1.2.0: 106 pruebas,
+      todas en verde.
+  - **Lo que queda para G2·3·2:** leerla de vuelta como geometría. Hoy el SDK la lee como BLOB, porque
+    el puntero aún no dice qué columnas son geo (G2·3·1).

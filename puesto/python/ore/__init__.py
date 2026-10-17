@@ -1628,12 +1628,28 @@ def _tipo_iceberg(columna, t, ids=None, en_lista=False):
     raise ValueError("write(): column `%s` is `%s`, which the type contract (0032) does not have" % (columna, s))
 
 
+def _es_geo(campo):
+    """ORE 0067 G2·3·3: ¿es una geometría? Una columna binaria con la marca
+    `geoarrow.wkb` (la de GeoPandas, DuckDB y ORE). En la tabla Iceberg es `binary`
+    hasta que el formato tenga el tipo (G2·0); su tipo lo guarda `ore.geo.<col>`."""
+    md = campo.metadata or {}
+    # Sin la extensión registrada en pyarrow, la marca va en los metadatos del
+    # campo; registrada (geoarrow-pyarrow), en el tipo.
+    return (md.get(b"ARROW:extension:name") == b"geoarrow.wkb"
+            or getattr(campo.type, "extension_name", None) == "geoarrow.wkb")
+
+
 def _arrow_de(datos):
     """Lo que se escribe, como `pyarrow.Table`: pandas, polars, Table o RecordBatch."""
     import pyarrow as pa
 
     if isinstance(datos, pa.Table):
         return datos
+    # ORE 0067 G2·3·3: un GeoDataFrame (antes que pandas: es una subclase) va
+    # como Arrow con la geometría en WKB y su marca `geoarrow.wkb`, con el CRS en
+    # PROJJSON; `ore-store` lo lleva a su código y lo escribe como geometría.
+    if type(datos).__name__ == "GeoDataFrame" and hasattr(datos, "to_arrow"):
+        return pa.table(datos.to_arrow(geometry_encoding="WKB", index=False))
     if isinstance(datos, pa.RecordBatch):
         return pa.Table.from_batches([datos])
     if type(datos).__module__.startswith("polars") and hasattr(datos, "to_arrow"):
@@ -2598,7 +2614,8 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
     n = len(tabla_arrow.schema)
     ids = iter(range(n + 1, 10**7))
     esquema = {"type": "struct", "schema-id": 0, "fields": [
-        {"id": i + 1, "name": f.name, "type": _tipo_iceberg(f.name, f.type, ids), "required": False} for i, f in enumerate(tabla_arrow.schema)]}
+        {"id": i + 1, "name": f.name, "type": "binary" if _es_geo(f) else _tipo_iceberg(f.name, f.type, ids), "required": False}
+        for i, f in enumerate(tabla_arrow.schema)]}
     ipc = _ipc(tabla_arrow)
     # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
     # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de

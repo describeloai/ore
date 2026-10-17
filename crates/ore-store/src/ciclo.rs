@@ -2814,6 +2814,122 @@ mod tests {
         );
     }
 
+    /// ORE 0067 G2·3·3 · **Un `write()` con geometría**, como lo manda el SDK
+    /// de un `GeoDataFrame` (Arrow IPC con la marca `geoarrow.wkb` y el CRS en
+    /// PROJJSON): llega al escritor geo, la tabla es v3 con `ore.geo.geom`, y el
+    /// fichero lleva GEOMETRY y la clave `geo` con su CRS.
+    #[test]
+    fn un_write_con_geometria_llega_al_escritor_geo() {
+        use arrow_schema::{DataType, Field, Schema};
+        let memoria = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(memoria.clone());
+        let punto = |x: f64, y: f64| {
+            let mut w = vec![1u8, 1, 0, 0, 0];
+            w.extend_from_slice(&x.to_le_bytes());
+            w.extend_from_slice(&y.to_le_bytes());
+            w
+        };
+        let crs = r#"{"crs": {"type": "ProjectedCRS", "name": "ETRS89 / UTM zone 30N", "id": {"authority": "EPSG", "code": 25830}}}"#;
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("geom", DataType::LargeBinary, true).with_metadata(HashMap::from([
+                (
+                    "ARROW:extension:name".to_string(),
+                    "geoarrow.wkb".to_string(),
+                ),
+                ("ARROW:extension:metadata".to_string(), crs.to_string()),
+            ])),
+        ]));
+        let p1 = punto(440000.0, 4474000.0);
+        let p2 = punto(441000.0, 4475000.0);
+        let lote = arrow_array::RecordBatch::try_new(
+            esquema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2])),
+                Arc::new(arrow_array::LargeBinaryArray::from(vec![
+                    Some(p1.as_slice()),
+                    Some(p2.as_slice()),
+                ])),
+            ],
+        )
+        .unwrap();
+        let mut ipc = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut ipc, &esquema).unwrap();
+            w.write(&lote).unwrap();
+            w.finish().unwrap();
+        }
+        let ds = "datasets/g233";
+        let e = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"operacion\":\"op-g233\"}}"),
+            &ipc[..],
+        )
+        .expect("escribe");
+        let ml = campo(
+            &aplicar_lo_escrito(&lago, &e, ds, None),
+            "metadata_location",
+        );
+        let t = lago.abrir(&ml, ds).unwrap();
+        assert_eq!(
+            t.metadata().format_version(),
+            iceberg::spec::FormatVersion::V3
+        );
+        assert_eq!(
+            t.metadata()
+                .properties()
+                .get("ore.geo.geom")
+                .map(String::as_str),
+            Some(r#"{"crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
+        );
+        let datos: Vec<Vec<u8>> = memoria
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| k.contains("g233") && k.contains("/data/") && k.ends_with(".parquet"))
+            .map(|(_, v)| v.clone())
+            .collect();
+        assert_eq!(datos.len(), 1, "un fichero de datos");
+        let r =
+            parquet::file::reader::SerializedFileReader::new(bytes::Bytes::from(datos[0].clone()))
+                .unwrap();
+        use parquet::file::reader::FileReader;
+        let fm = r.metadata().file_metadata();
+        let col = fm
+            .schema_descr()
+            .columns()
+            .iter()
+            .find(|c| c.name() == "geom")
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            col.logical_type_ref(),
+            Some(parquet::basic::LogicalType::Geometry { .. })
+        ));
+        let geo: serde_json::Value = serde_json::from_str(
+            fm.key_value_metadata()
+                .unwrap()
+                .iter()
+                .find(|k| k.key == "geo")
+                .unwrap()
+                .value
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(geo["columns"]["geom"]["crs"]["id"]["code"], 25830);
+        let filas = lago.filas(&t).unwrap();
+        assert_eq!(filas.len(), 2);
+        assert_eq!(
+            filas
+                .iter()
+                .filter(|f| f.get("geom") == Some(&ore_core::geo::a_hex(&p1)))
+                .count(),
+            1
+        );
+    }
+
     /// 0063 S7e: un `write()` cuenta lo que piden las promesas en la misma
     /// pasada en que escribe, y lo deja en el resumen del snapshot, que es lo
     /// que viaja al commit. Sobrescribir cuenta la versión entera; anexar,
