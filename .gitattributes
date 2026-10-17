@@ -16,3 +16,7 @@
 # excepciones. Si algún día necesita una, se fija aquí: el guardián de
 # `crates/ore-cli/tests/arbol.rs` la lee de este fichero en vez de repetirla.
 * text=auto eol=lf
+
+# Los cuerpos binarios de las pruebas de ore-store (Parquet de verdad, 0067 G2·3·3):
+# son bytes, no texto, y un CR dentro es contenido.
+crates/ore-store/tests/cuerpos/** -text
