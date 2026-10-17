@@ -9,7 +9,8 @@ s = copy.deepcopy([x for x in m["schemas"] if x["schema-id"] == m["current-schem
 s["schema-id"] = max(x["schema-id"] for x in m["schemas"]) + 1
 for f in s["fields"]:
     if f["name"] == "geom":
-        f["type"] = "geometry" if crs == "OGC:CRS84" else "geometry(%s)" % crs
+        # Explícito también el de por defecto: DuckDB no da CRS a un `geometry` a secas (G2·5).
+        f["type"] = "geometry(%s)" % crs
 m["schemas"].append(s)
 m["current-schema-id"] = s["schema-id"]
 m["metadata-log"] = m.get("metadata-log", []) + [{"timestamp-ms": m["last-updated-ms"], "metadata-file": md}]
