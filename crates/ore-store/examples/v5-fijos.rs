@@ -21,7 +21,12 @@ impl Almacen for Memoria {
         self.0.clone()
     }
     fn leer(&self, c: &str) -> Result<Option<String>, String> {
-        Ok(self.1.lock().unwrap().get(c).map(|b| String::from_utf8_lossy(b).into_owned()))
+        Ok(self
+            .1
+            .lock()
+            .unwrap()
+            .get(c)
+            .map(|b| String::from_utf8_lossy(b).into_owned()))
     }
     fn existe(&self, c: &str) -> Result<bool, String> {
         Ok(self.1.lock().unwrap().contains_key(c))
@@ -35,13 +40,24 @@ impl Almacen for Memoria {
         Ok(true)
     }
     fn listar(&self, p: &str) -> Result<Vec<String>, String> {
-        Ok(self.1.lock().unwrap().keys().filter(|k| k.starts_with(p)).cloned().collect())
+        Ok(self
+            .1
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.starts_with(p))
+            .cloned()
+            .collect())
     }
     fn listar_con_fecha(&self, p: &str) -> Result<Vec<Listado>, String> {
         Ok(self
             .listar(p)?
             .into_iter()
-            .map(|clave| Listado { clave, tamano: 0, tocado_ms: 0 })
+            .map(|clave| Listado {
+                clave,
+                tamano: 0,
+                tocado_ms: 0,
+            })
             .collect())
     }
     fn borrar(&self, c: &str) -> Result<(), String> {
@@ -56,15 +72,23 @@ impl Almacen for Memoria {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let fijos: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&a[1]).expect("lee los fijos")).expect("JSON");
+        serde_json::from_str(&std::fs::read_to_string(&a[1]).expect("lee los fijos"))
+            .expect("JSON");
     let salida = &a[2];
-    let raiz = a.get(3).cloned().unwrap_or_else(|| format!("file://{salida}"));
+    let raiz = a
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| format!("file://{salida}"));
     for (crs, f) in fijos.as_object().expect("un objeto por CRS") {
         let carpeta = crs.replace(':', "-");
         let base = format!("{raiz}/{carpeta}/tabla");
         let almacen = Arc::new(Memoria(base.clone(), Mutex::default()));
         let lago = Lago::nuevo(almacen.clone());
-        let tipo = if crs == "OGC:CRS84" { "Geometry".to_string() } else { format!("Geometry<Any, {crs}>") };
+        let tipo = if crs == "OGC:CRS84" {
+            "Geometry".to_string()
+        } else {
+            format!("Geometry<Any, {crs}>")
+        };
         let cab = Cabecera {
             plan: "sha256:v5-fijos".into(),
             esquema: [
@@ -73,7 +97,10 @@ fn main() {
                 ("geom".to_string(), tipo),
             ]
             .into(),
-            testigo: Testigo { modo: "log".into(), valor: Some("1".into()) },
+            testigo: Testigo {
+                modo: "log".into(),
+                valor: Some("1".into()),
+            },
             clave: vec![],
             conducto: "materialization.payload".into(),
             obligatorias: Default::default(),
@@ -92,8 +119,15 @@ fn main() {
                 serde_json::Value::Object(o).to_string()
             })
             .collect();
-        let r = sellar(&lago, &cab, "v5", None, false, filas.iter().map(String::as_str))
-            .unwrap_or_else(|e| panic!("{crs}: {e}"));
+        let r = sellar(
+            &lago,
+            &cab,
+            "v5",
+            None,
+            false,
+            filas.iter().map(String::as_str),
+        )
+        .unwrap_or_else(|e| panic!("{crs}: {e}"));
         let m = almacen.1.lock().unwrap();
         for (k, v) in m.iter() {
             let rel = k.trim_start_matches(&format!("{base}/"));
@@ -104,7 +138,12 @@ fn main() {
                 std::fs::write(format!("{salida}/{carpeta}/ore-geo.parquet"), v).unwrap();
             }
         }
-        let ml = m.keys().filter(|k| k.ends_with(".metadata.json")).max().cloned().unwrap_or_default();
+        let ml = m
+            .keys()
+            .filter(|k| k.ends_with(".metadata.json"))
+            .max()
+            .cloned()
+            .unwrap_or_default();
         println!("V5F|{crs}|{} filas|{ml}|{}", filas.len(), r.len());
     }
 }
