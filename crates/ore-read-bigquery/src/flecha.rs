@@ -14,7 +14,7 @@
 //!
 //! - el objeto no es una tabla (una vista no se lee por esta API);
 //! - una columna es de un tipo cuyo Arrow no es el texto de siempre (`STRUCT`,
-//!   `ARRAY`, `BIGNUMERIC`, `BYTES`, `JSON`, `GEOGRAPHY`…): por REST viajan como
+//!   `ARRAY`, `BIGNUMERIC`, `BYTES`, `JSON`…): por REST viajan como
 //!   JSON o como texto canónico, y aquí saldrían con otra forma;
 //! - un filtro no se sabe escribir como literal seguro (la API no admite
 //!   parámetros);
@@ -55,6 +55,9 @@ const TIPOS: &[&str] = &[
     "DATETIME",
     "TIME",
     "TIMESTAMP",
+    // ORE 0067: la Storage Read da una `GEOGRAPHY` como texto WKT, como REST;
+    // el códec del lago la convierte. Por REST iba a 15 400 filas/s.
+    "GEOGRAPHY",
 ];
 
 /// Cuántos streams se piden como mucho. El servidor da menos si la tabla es
