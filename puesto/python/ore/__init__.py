@@ -3008,3 +3008,7 @@ def __getattr__(nombre):
 
 def __dir__():
     return sorted(set(globals()) | set(_ALIAS))
+
+
+# ORE 0067 G2·3·7: `ore.geo.intersects_box`, sin importarlo aparte.
+from . import geo  # noqa: E402,F401

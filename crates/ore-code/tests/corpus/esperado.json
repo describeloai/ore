@@ -412,6 +412,55 @@
    }
   }
  ],
+ "geo.py": [
+  {
+   "name": "area_de",
+   "entrypoint": "funciones/geo.py:area_de",
+   "input": [
+    [
+     "parcela",
+     "Geometry<MultiPolygon, EPSG:25830>",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Float"
+   }
+  },
+  {
+   "name": "centro",
+   "entrypoint": "funciones/geo.py:centro",
+   "input": [
+    [
+     "zona",
+     "Geometry",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Geometry<Point>"
+   }
+  },
+  {
+   "name": "tramos",
+   "entrypoint": "funciones/geo.py:tramos",
+   "input": [
+    [
+     "ruta",
+     "Geography<LineString>",
+     true
+    ],
+    [
+     "cortes",
+     "list<Geometry<Point, EPSG:4326>>",
+     true
+    ]
+   ],
+   "output": {
+    "valor": "Integer"
+   }
+  }
+ ],
  "invalid_a_document_without_its_decorator.py": [],
  "invalid_a_function_without_its_document.py": [
   {

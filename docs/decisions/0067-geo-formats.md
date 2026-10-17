@@ -660,3 +660,28 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     - **JVM** `pruebas/GeoPrueba.java`, que se compila junto a `Ore.java` y se corre a mano porque la
       JVM no tiene corredor de pruebas: el CRS por el tipo, el IPC con la marca y el CRS, `binary` en
       Iceberg, WKB y nula, y leer como `GEOMETRY` con `ST_Area`.
+- **2026-10-17 · G2·3·6 y G2·3·7 hechos: los tipos geo en las firmas, y el filtro por zona.**
+  - **Firmas** (`ore-code`):
+    - `ore.tipos.Geometry["MultiPolygon", "EPSG:25830"]`, `Geometry["Point"]`, `Geometry` y
+      `Geography["LineString"]` derivan su tipo de OOS canónico (`Tipo::Geo`), y la `Function` sale
+      en **v1alpha32**;
+    - la forma canónica se hace en `ore-code` con una comprobación ligera (subtipo, dimensión,
+      `AUTORIDAD:CÓDIGO`), porque `ore-core` depende de `ore-code` y no al revés; el resto
+      (`OOS3008`) lo dice el compilador;
+    - el oráculo de CPython deriva lo mismo, y un fichero nuevo del corpus, `funciones/geo.py`, deja
+      su instantánea.
+  - **En el SDK de Python:** `ore.tipos.Geometry`/`Geography` son un `Annotated` con la marca `_Geo`.
+    El contrato de la función acepta WKB, WKB en hexadecimal (lo que viaja en texto) o una geometría
+    de shapely, y entrega una de shapely (WKB si shapely no está).
+  - **El filtro por zona:** por la regla del SDK en inglés, `en_zona` del diseño se llama
+    **`intersects_box`** (Python, `ore.geo.intersects_box`) e **`intersectsBox`** (Node,
+    `Ore.intersectsBox` en Java). Devuelve `(col && caja AND ST_Intersects(col, caja))`, comprueba
+    las cuatro coordenadas y cita la columna (también `t.geom`).
+  - **La guía:** `docs/sdk.md` tiene una sección **Geometry**: cómo se lee en cada SDK, por qué
+    `intersects_box` (las medidas de G2·2), cómo se escribe en cada uno (con su CRS, o se niega) y
+    las firmas. La tabla de tipos de las plantillas de repositorio (`clases.rs`) no se toca aquí:
+    cambiarla es una versión nueva de plantilla, y va con el empuje.
+  - **Pruebas:**
+    - `ore-code`, entero en verde;
+    - Python 112 (con `test_geo_tipos`), Node 17/17 y la JVM (`GeoPrueba`), todas en sus imágenes
+      reales con `spatial` preinstalada a mano.

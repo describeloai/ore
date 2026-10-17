@@ -674,6 +674,23 @@ public final class Ore {
         return null;
     }
 
+    /**
+     * ORE 0067 G2·3·7 · The SQL filter for the rows of {@code column} that touch the box, in the
+     * column's CRS: {@code col && box AND ST_Intersects(col, box)}. Measured over 34 M buildings:
+     * {@code ST_Intersects} alone reads the whole file; {@code &&} lets DuckDB skip row groups.
+     */
+    public static String intersectsBox(String column, double xmin, double ymin, double xmax, double ymax) {
+        if (column == null || column.isEmpty()) throw new IllegalArgumentException("intersectsBox(): the column is a name, like `geom` or `t.geom`");
+        double[] v = { xmin, ymin, xmax, ymax };
+        for (double x : v) if (!Double.isFinite(x)) throw new IllegalArgumentException("intersectsBox(): the box is four finite numbers");
+        if (xmin > xmax || ymin > ymax) throw new IllegalArgumentException("intersectsBox(): the box is (xmin, ymin, xmax, ymax), and here min > max");
+        List<String> partes = new ArrayList<>();
+        for (String p : column.split("\\.")) partes.add("\"" + p.replace("\"", "\"\"") + "\"");
+        String c = String.join(".", partes);
+        String caja = "ST_MakeEnvelope(" + xmin + ", " + ymin + ", " + xmax + ", " + ymax + ")";
+        return "(" + c + " && " + caja + " AND ST_Intersects(" + c + ", " + caja + "))";
+    }
+
     /** ORE 0067 G2·3·4: ¿lleva el campo la marca {@code geoarrow.wkb}? */
     static boolean esGeo(Field f) {
         Map<String, String> md = f.getMetadata();

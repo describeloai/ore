@@ -120,6 +120,41 @@ else:
     _DeMedia = object
 
 
+class _Geo:
+    """La marca de una geometría en un `Annotated` (ORE 0067 G2·3·6): su tipo de OOS."""
+
+    def __init__(self, tipo):
+        self.tipo = tipo
+
+    def __repr__(self):
+        return self.tipo
+
+
+class Geometry:
+    """`Geometry["Point", "EPSG:25830"]` (or `Geometry["Point"]`, `Geometry`) is
+    `Geometry<Point, EPSG:25830>`: a geometry with its CRS (OOS v1alpha32). A
+    function receives it as a shapely geometry (as WKB `bytes` if shapely is not
+    installed) and returns one of those, or WKB."""
+
+    def __class_getitem__(cls, args):
+        args = args if isinstance(args, tuple) else (args,)
+        if not (1 <= len(args) <= 2 and all(isinstance(a, str) and a for a in args)):
+            raise TypeError('`Geometry[...]` takes the subtype and, if any, the CRS: `Geometry["Point", "EPSG:25830"]`')
+        crs = args[1] if len(args) == 2 else "OGC:CRS84"
+        tipo = ("Geometry<%s>" % args[0] if args[0] != "Any" else "Geometry") if crs == "OGC:CRS84" else "Geometry<%s, %s>" % args
+        return typing.Annotated[object, _Geo(tipo)]
+
+
+class Geography:
+    """`Geography["LineString"]` is `Geography<LineString>`: on the ellipsoid,
+    always in OGC:CRS84 (OOS v1alpha32)."""
+
+    def __class_getitem__(cls, sub):
+        if not (isinstance(sub, str) and sub):
+            raise TypeError('`Geography[...]` takes the subtype: `Geography["LineString"]`')
+        return typing.Annotated[object, _Geo("Geography" if sub == "Any" else "Geography<%s>" % sub)]
+
+
 class Media(_DeMedia):
     """`Media["db.schema.collection"]` is `Media<db.schema.collection>`: a
     reference to an item of that collection (`ore.medios.MediaRef`), not its

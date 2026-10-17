@@ -19,7 +19,8 @@ const NO_SON_CAMPOS: &[&str] = &[
 
 const TIPOS: &str = "una firma usa `int`, `float`, `str`, `bool`, `date`, `time`, `datetime`, \
                      `bytes`, `Decimal`, `list[T]` y `Optional[T]` (o `T | None`); de `ore.tipos`, \
-                     `DateTimeTz`, `Money[\"EUR\", 2]`, `Quantity[\"km\", 1]`, `Media[\"a.b.c\"]` y \
+                     `DateTimeTz`, `Money[\"EUR\", 2]`, `Quantity[\"km\", 1]`, `Media[\"a.b.c\"]`, \
+                     `Geometry[\"Point\", \"EPSG:25830\"]`, `Geography[\"Point\"]` y \
                      `Annotated[Decimal, Precision(p, s)]`; y una `@dataclass` del mismo fichero";
 
 fn escalar(q: &str) -> Option<Tipo> {
@@ -35,7 +36,55 @@ fn escalar(q: &str) -> Option<Tipo> {
         "datetime.time" => Tipo::Time,
         "builtins.bytes" => Tipo::Opaque,
         "ore.tipos.DateTimeTz" => Tipo::DateTimeTz,
+        // ORE 0067 G2·3·6: sin argumentos, cualquier geometría en OGC:CRS84.
+        "ore.tipos.Geometry" => Tipo::Geo("Geometry".into()),
+        "ore.tipos.Geography" => Tipo::Geo("Geography".into()),
         _ => return None,
+    })
+}
+
+/// ORE 0067 G2·3·6 · La forma canónica de `Geometry<…>`/`Geography<…>` desde sus
+/// argumentos (`01-la-geometria` §1: lo que vale por defecto, `Any` y `OGC:CRS84`, no
+/// se escribe). Lo comprueba por encima: el subtipo, la dimensión y que el CRS sea
+/// `AUTORIDAD:CÓDIGO`; el resto (`OOS3008`) lo dice el compilador al validar el
+/// documento. Aquí y no con `ore_core::types`: `ore-core` depende de `ore-code`.
+fn geo_canonico(ctor: &str, args: &[&str]) -> Option<String> {
+    const SUBTIPOS: &[&str] = &[
+        "Any",
+        "Point",
+        "LineString",
+        "Polygon",
+        "MultiPoint",
+        "MultiLineString",
+        "MultiPolygon",
+        "GeometryCollection",
+    ];
+    let mut sub = args[0].split_whitespace();
+    let base = sub.next()?;
+    let dim = sub.next();
+    if sub.next().is_some() || !SUBTIPOS.contains(&base) {
+        return None;
+    }
+    let subtipo = match dim {
+        None => base.to_string(),
+        Some(d @ ("Z" | "M" | "ZM")) if base != "Any" => format!("{base} {d}"),
+        Some(_) => return None,
+    };
+    let crs = args.get(1).map(|c| c.trim()).unwrap_or("OGC:CRS84");
+    let bien = crs.split_once(':').is_some_and(|(a, c)| {
+        !a.is_empty()
+            && !c.is_empty()
+            && a.chars()
+                .all(|x| x.is_ascii_uppercase() || x.is_ascii_digit())
+            && c.chars().all(|x| x.is_ascii_alphanumeric())
+    });
+    if !bien {
+        return None;
+    }
+    Some(match (crs, subtipo.as_str()) {
+        ("OGC:CRS84", "Any") => ctor.to_string(),
+        ("OGC:CRS84", s) => format!("{ctor}<{s}>"),
+        (c, s) => format!("{ctor}<{s}, {c}>"),
     })
 }
 
@@ -43,7 +92,9 @@ fn escalar(q: &str) -> Option<Tipo> {
 fn de_donde(n: &str) -> Option<&'static str> {
     Some(match n {
         "date" | "datetime" | "time" => "datetime",
-        "DateTimeTz" | "Money" | "Quantity" | "Media" | "Precision" => "ore.tipos",
+        "DateTimeTz" | "Money" | "Quantity" | "Media" | "Precision" | "Geometry" | "Geography" => {
+            "ore.tipos"
+        }
         "Decimal" => "decimal",
         "Optional" | "List" | "Union" | "Annotated" | "ClassVar" => "typing",
         "dataclass" | "field" => "dataclasses",
@@ -530,6 +581,39 @@ impl Resolutor<'_> {
                         .ayuda("`Media[\"base.schema.coleccion\"]`"));
                     };
                     return Ok((Tipo::Media(c.to_string()), false));
+                }
+                // ORE 0067 G2·3·6 · `Geometry["Point", "EPSG:25830"]`, `Geometry["Point"]`,
+                // `Geography["LineString"]`: el tipo de OOS (`01-la-geometria`), canónico.
+                (Some(q @ ("ore.tipos.Geometry" | "ore.tipos.Geography")), args) => {
+                    let ctor = if q.ends_with("Geometry") {
+                        "Geometry"
+                    } else {
+                        "Geography"
+                    };
+                    let partes: Option<Vec<&str>> = args.iter().map(|a| literal(a)).collect();
+                    let max = if ctor == "Geometry" { 2 } else { 1 };
+                    let tipo = partes
+                        .filter(|p| !p.is_empty() && p.len() <= max)
+                        .and_then(|p| geo_canonico(ctor, &p));
+                    let Some(tipo) = tipo else {
+                        return Err(Fallo::new(
+                            *r,
+                            format!(
+                                "`{ctor}[…]` lleva el subtipo{}, entre comillas",
+                                if ctor == "Geometry" {
+                                    " y, si acaso, el CRS"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        )
+                        .ayuda(if ctor == "Geometry" {
+                            "`Geometry[\"Point\", \"EPSG:25830\"]`"
+                        } else {
+                            "`Geography[\"LineString\"]`"
+                        }));
+                    };
+                    return Ok((Tipo::Geo(tipo), false));
                 }
                 _ => return Err(self.sin_traduccion(base, hasta, *r)),
             }

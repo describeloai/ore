@@ -112,6 +112,54 @@ compiled before it is pushed, committed as the person who opened the session, on
 branch. Returns `{kind, name, file, commit, created}`. A document the compiler rejects is a
 `ValueError` with the diagnostics.
 
+## Geometry (ORE 0067)
+
+A column declared `Geometry<…>` or `Geography<…>` (OOS v1alpha32) is a geometry with its CRS, in every SDK.
+
+**Reading.** `over()` and `sql()` read it as a DuckDB `GEOMETRY` with its CRS, so the `ST_*` functions of
+`spatial` work on it as is. Out of the session:
+
+| SDK | What arrives |
+|---|---|
+| Python, `format="pandas"` (the default) | a **`geopandas.GeoDataFrame`** with its CRS |
+| Python, `format="arrow"` / Node / JVM | Arrow, the geometry as WKB with the `geoarrow.wkb` mark and its CRS |
+| Python, `format="polars"` | the WKB column with its mark |
+
+A `Geography` is read as a `GEOMETRY` in `OGC:CRS84`: DuckDB has no spherical geometry.
+
+**Filtering by area: use `intersects_box`.** `ST_Intersects` alone reads the whole table (measured over
+34 M buildings: 19–30 s per city). DuckDB skips row groups only by their bounding boxes, through `&&`.
+`intersects_box` writes both:
+
+```python
+f = ore.geo.intersects_box("geom", -3.75, 40.38, -3.65, 40.46)  # xmin, ymin, xmax, ymax, in the column's CRS
+madrid = ore.sql(f"select * from buildings where {f}")              # 0.4–0.6 s instead of 20 s
+```
+
+In Node it is `intersectsBox(...)`; in Java, `Ore.intersectsBox(...)`.
+
+**Writing.** `write()` takes the geometry as it comes, and it must carry its CRS: a geometry without one
+is refused, since an unknown CRS is not WGS 84.
+
+| SDK | How |
+|---|---|
+| Python | a `GeoDataFrame` (`gdf.set_crs("EPSG:25830")` if it has none), or Arrow with the `geoarrow.wkb` mark |
+| Node | rows or columns with the type `geometry(EPSG:25830)` (or `Geometry<Point, EPSG:25830>`), values as WKB (`Uint8Array` or hex) |
+| JVM | what `over()`/`sql()` returned, or a `List<Map>` with the type `geometry(EPSG:25830)` and WKB (`byte[]` or hex) |
+
+**In a function signature** (Python), from `ore.tipos`:
+
+```python
+from ore.tipos import Geometry, Geography
+
+@function
+def area_of(parcel: Geometry["MultiPolygon", "EPSG:25830"]) -> float:
+    return parcel.area   # a shapely geometry
+```
+
+`Geometry["Point"]` is in `OGC:CRS84`; `Geography["LineString"]` is on the ellipsoid. A call passes the
+geometry as WKB in hex, and the function receives a shapely geometry.
+
 ## Creating things
 
 These are what an SQL script's `create …` statements run; you can call them from Python too.

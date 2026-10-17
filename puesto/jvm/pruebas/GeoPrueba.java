@@ -89,6 +89,13 @@ public class GeoPrueba {
             igual(rs.getString(1).startsWith("GEOMETRY"), true, "el BLOB se lee como GEOMETRY");
             igual(rs.getDouble(2), 1_000_000.0, "y ST_Area funciona");
         }
+        // G2·3·7 · intersectsBox: && y ST_Intersects, y filtra.
+        igual(Ore.intersectsBox("t.geom", 0, 0, 5, 5).startsWith("(\"t\".\"geom\" && ST_MakeEnvelope(0.0, 0.0, 5.0, 5.0) AND ST_Intersects("), true, "intersectsBox lleva los dos");
+        try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery(
+                "select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where " + Ore.intersectsBox("geom", 0, 0, 5, 5))) {
+            rs.next();
+            igual(rs.getLong(1), 1L, "e intersectsBox filtra");
+        }
         System.out.println("## ok");
     }
 }

@@ -232,6 +232,9 @@ def _anotado(que, v, t):
     """Un `Annotated` de `ore.tipos` (v1alpha20 `01`): lo de Python, y lo que OOS añade."""
     base, *metas = typing.get_args(t)
     marcas = {type(m).__name__: m for m in metas}
+    geo = marcas.get("_Geo")
+    if geo is not None:
+        return _geometria(que, v, geo)
     col = marcas.get("_DeColeccion")
     if col is not None:
         from .medios import MediaRef
@@ -264,6 +267,33 @@ def _anotado(que, v, t):
     if u is not None and _cifras(v)[1] > u.precision:
         raise ContractError("`%s` is `%r` and got %s: it has more than %d decimals" % (que, u, v, u.precision))
     return v
+
+
+def _geometria(que, v, geo):
+    """ORE 0067 G2·3·6: una geometría llega como WKB (`bytes`), WKB en hexadecimal
+    (lo que viaja en texto, `01-la-geometria` §5) o una geometría de shapely; se
+    entrega como geometría de shapely, o como WKB si shapely no está."""
+    if v is None:
+        return None
+    try:
+        import shapely
+    except ImportError:
+        shapely = None
+    if isinstance(v, str):
+        try:
+            v = bytes.fromhex(v[2:] if v.startswith("\\x") else v)
+        except ValueError:
+            raise ContractError("`%s` is `%r` and got %s, which is not WKB in hex" % (que, geo, _corto(v))) from None
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        if shapely is None:
+            return bytes(v)
+        try:
+            return shapely.from_wkb(bytes(v))
+        except Exception as e:
+            raise ContractError("`%s` is `%r` and got WKB that does not read: %s" % (que, geo, e)) from None
+    if shapely is not None and isinstance(v, shapely.Geometry):
+        return v
+    raise ContractError("`%s` is `%r` and got %s, which is not a geometry (WKB, WKB in hex, or shapely)" % (que, geo, _corto(v)))
 
 
 def _tipos_de(f):

@@ -59,3 +59,14 @@ test("leer: con `geo` en el puntero, el BLOB es GEOMETRY con su CRS", async (t) 
   assert.match(String(tipo), /GEOMETRY/);
   assert.equal(area, 1_000_000);
 });
+
+test("intersectsBox: el filtro lleva && y ST_Intersects, y filtra", async (t) => {
+  const { intersectsBox } = await import("../ore/index.mjs");
+  assert.equal(intersectsBox("t.geom", 0, 0, 5, 5), '("t"."geom" && ST_MakeEnvelope(0, 0, 5, 5) AND ST_Intersects("t"."geom", ST_MakeEnvelope(0, 0, 5, 5)))');
+  assert.throws(() => intersectsBox("geom", "1", 0, 2, 2), TypeError);
+  assert.throws(() => intersectsBox("geom", 2, 0, 1, 2), RangeError);
+  if (!(await conSpatial())) return t.skip("sin spatial");
+  const con = await duckdb();
+  const n = (await con.runAndReadAll(`select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where ${intersectsBox("geom", 0, 0, 5, 5)}`)).getRows()[0][0];
+  assert.equal(Number(n), 1);
+});

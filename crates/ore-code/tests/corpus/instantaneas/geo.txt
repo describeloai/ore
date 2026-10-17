@@ -1,0 +1,34 @@
+── area_de → functions/area_de.yaml
+# generado por ore desde funciones/geo.py:area_de · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha32
+kind: Function
+metadata: { name: area_de, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/geo.py:area_de
+  input:
+    parcela: { type: 'Geometry<MultiPolygon, EPSG:25830>', required: true }
+  output: { type: Float }
+── centro → functions/centro.yaml
+# generado por ore desde funciones/geo.py:centro · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha32
+kind: Function
+metadata: { name: centro, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/geo.py:centro
+  input:
+    zona: { type: Geometry, required: true }
+  output: { type: Geometry<Point> }
+── tramos → functions/tramos.yaml
+# generado por ore desde funciones/geo.py:tramos · se edita el def, no este fichero
+apiVersion: oos.dev/v1alpha32
+kind: Function
+metadata: { name: tramos, namespace: ventas }
+spec:
+  runtime: python
+  entrypoint: funciones/geo.py:tramos
+  input:
+    ruta: { type: Geography<LineString>, required: true }
+    cortes: { type: 'list<Geometry<Point, EPSG:4326>>', required: true }
+  output: { type: Integer }

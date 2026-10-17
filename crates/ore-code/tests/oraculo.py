@@ -32,6 +32,9 @@ ESCALARES = {
     "datetime.time": "Time",
     "builtins.bytes": "Opaque",
     "ore.tipos.DateTimeTz": "DateTimeTz",
+    # ORE 0067 G2·3·6.
+    "ore.tipos.Geometry": "Geometry",
+    "ore.tipos.Geography": "Geography",
 }
 BUILTINS = {"int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes", "object", "type"}
 LISTAS = {"builtins.list", "typing.List"}
@@ -197,6 +200,17 @@ class Modulo:
                         and all(x and all((ch.isascii() and ch.isalnum()) or ch == "_" for ch in x) for x in c.value.split("."))):
                     raise NoSeDeriva("Media sin una colección literal")
                 return "Media<%s>" % c.value, False
+            if base in ("ore.tipos.Geometry", "ore.tipos.Geography"):
+                ctor = base.rsplit(".", 1)[1]
+                if not (args and len(args) <= (2 if ctor == "Geometry" else 1)
+                        and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in args)):
+                    raise NoSeDeriva("%s sin subtipo literal" % ctor)
+                sub = args[0].value
+                crs = args[1].value if len(args) == 2 else "OGC:CRS84"
+                # La forma canónica: lo que vale por defecto no se escribe.
+                if crs == "OGC:CRS84":
+                    return ("%s<%s>" % (ctor, sub) if sub != "Any" else ctor), False
+                return "Geometry<%s, %s>" % (sub, crs), False
             raise NoSeDeriva("tipo sin traducción")
         q = self.cualificar(e, hasta)
         if q and q.startswith("<local>.") and q[len("<local>."):] in self.clases:

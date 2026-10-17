@@ -1302,5 +1302,20 @@ export default {
   persona, puesto, nombreArrow, LIMITE, EXTENSIONES, tabla, jsonDe, media, medias, mediaDe,
 };
 
+/** ORE 0067 G2·3·7 · The SQL filter for the rows of `column` that touch the box, in the column's
+ *  CRS: `col && box AND ST_Intersects(col, box)`. Measured over 34 M buildings: `ST_Intersects`
+ *  alone reads the whole file; `&&` lets DuckDB skip row groups by their bounding boxes. */
+export function intersectsBox(column, xmin, ymin, xmax, ymax) {
+  if (typeof column !== "string" || column === "") throw new TypeError("intersectsBox(): the column is a name, like `geom` or `t.geom`");
+  const caja = Object.entries({ xmin, ymin, xmax, ymax }).map(([n, v]) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) throw new TypeError(`intersectsBox(): \`${n}\` is a finite number, not ${JSON.stringify(v)}`);
+    return String(v);
+  });
+  if (xmin > xmax || ymin > ymax) throw new RangeError("intersectsBox(): the box is (xmin, ymin, xmax, ymax), and here min > max");
+  const c = column.split(".").map((p) => `"${p.replaceAll('"', '""')}"`).join(".");
+  const sobre = `ST_MakeEnvelope(${caja.join(", ")})`;
+  return `(${c} && ${sobre} AND ST_Intersects(${c}, ${sobre}))`;
+}
+
 /** Interno, para las pruebas del SDK (ORE 0067 G2·3·4): no es parte de la interfaz. */
 export const __geo = { conGeo, crsDeGeo, parquetDe_, duckdb };

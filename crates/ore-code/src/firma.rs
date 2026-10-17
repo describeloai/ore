@@ -72,9 +72,23 @@ pub enum Tipo {
     Struct(Vec<(String, Tipo)>),
     /// `ore.tipos.Media["base.schema.coleccion"]`.
     Media(String),
+    /// ORE 0067 G2·3·6 · `ore.tipos.Geometry[…]` y `ore.tipos.Geography[…]`: el tipo
+    /// de OOS ya canónico (`Geometry<Point, EPSG:25830>`, `Geography`), v1alpha32.
+    Geo(String),
 }
 
 impl Tipo {
+    /// ORE 0067 G2·3·6 · Si lleva, a cualquier profundidad, una geometría: el
+    /// documento de la función es entonces de v1alpha32.
+    pub fn de_v1alpha32(&self) -> bool {
+        match self {
+            Tipo::Geo(_) => true,
+            Tipo::Lista(t) => t.de_v1alpha32(),
+            Tipo::Struct(cs) => cs.iter().any(|(_, t)| t.de_v1alpha32()),
+            _ => false,
+        }
+    }
+
     /// Si es de v1alpha20, a cualquier profundidad: lo que la tabla de
     /// v1alpha18 no derivaba.
     pub fn de_v1alpha20(&self) -> bool {
@@ -126,6 +140,7 @@ impl fmt::Display for Tipo {
                 f.write_str(">")
             }
             Tipo::Media(c) => write!(f, "Media<{c}>"),
+            Tipo::Geo(t) => f.write_str(t),
         }
     }
 }
@@ -196,6 +211,15 @@ impl Firma {
         // Una función de TypeScript nace en v1alpha23: antes no había `node`.
         if self.runtime() == "node" {
             return "oos.dev/v1alpha23";
+        }
+        // ORE 0067 G2·3·6: una geometría es de v1alpha32.
+        let geo = self.entrada.iter().any(|c| c.tipo.de_v1alpha32())
+            || match &self.salida {
+                Salida::Valor(t) => t.de_v1alpha32(),
+                Salida::Campos(cs) => cs.iter().any(|c| c.tipo.de_v1alpha32()),
+            };
+        if geo {
+            return "oos.dev/v1alpha32";
         }
         let nuevo = self.entrada.iter().any(|c| c.tipo.de_v1alpha20())
             || match &self.salida {
