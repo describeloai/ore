@@ -162,6 +162,106 @@ en WGS 84, E2), los teselados y el servir (E2), y el `Geography` esférico en Du
 geometría esférica: una `Geography` se lee como `GEOMETRY` con su marca `edges: spherical` en Arrow, y
 el cómputo esférico es de E1.
 
+#### El patrón de iteración rápida (G2·4 y G2·5, escrito el 2026-10-17)
+
+G2·2 tardó unas dos horas por medir a ciegas en victor: la cuota no se miró antes y no hubo un ensayo
+pequeño. G2·4 y G2·5 se hacen con un patrón fijo de cuatro tiempos, y cada paso lo sigue:
+
+1. **Sonda** (minutos, local): la pregunta más pequeña que decide el paso, contestada con un fichero o
+   un metadato real del banco antes de escribir código. Si contradice el diseño, se corrige el diseño
+   antes del código.
+2. **Arnés** (un comando, menos de 5 min, sin nube): fijos pequeños y deterministas que viven en el
+   repositorio (cientos de filas, todos los subtipos, dos CRS, nulos y vacíos), imágenes de Docker con
+   versión exacta y una salida en líneas `V<n>|lector|caso|-|resultado` que la vara ya sabe leer.
+3. **Caso**: lo que dice «hecho» es una fila de la vara en verde, y el arnés queda en la vara para
+   siempre.
+4. **Nube solo al final** y solo para lo que exige nube: BigQuery, Snowflake y los ficheros grandes
+   de victor. Antes de lanzar, la cuota y un ensayo de una fila.
+
+Las sondas de hoy ya han cambiado el diseño de G2·4 (abajo).
+
+#### G2·4 · Las tablas v3 ajenas, en detalle (diseñado el 2026-10-17)
+
+**Lo que hay hoy (sondas del 2026-10-17):**
+- **`iceberg` 0.10.1 no abre el `metadata.json` de la tabla ajena del banco.** Falla al deserializar
+  (*data did not match any variant of untagged enum TableMetadataEnum*), es decir, no llega ni al
+  esquema. Y lo mismo pasaría con **las tablas de ORE el día que se promuevan** a `geometry` (G2·0
+  punto 4). Ese es el riesgo de verdad, más que la tabla ajena.
+- **DuckDB 1.5.6 (`iceberg`) sí la abre** y da `geom` como `GEOMETRY`.
+- **ORE no tiene hoy por dónde meter una tabla Iceberg ajena**: no hay `register` en `/v1`
+  (`catalogo.rs`) ni un origen Iceberg. Los catálogos abiertos (Iceberg REST, Glue, Unity) son una
+  línea de 0066 §2, no de este ADR.
+- **Nadie escribe todavía filas `geometry` en Iceberg v3** (G0·2): la tabla del banco tiene el
+  esquema, pero no tiene datos.
+
+**El objetivo, reformulado:** que ningún `metadata.json` v3 con `geometry`/`geography` rompa a ORE,
+sea ajeno o propio y ya promovido. Que el puesto lea y copie una tabla así. Y tener una tabla v3 con
+filas `geometry` de verdad para la matriz (G2·5), sin esperar a Iceberg 1.12. Dar entrada a catálogos
+ajenos no entra aquí.
+
+| paso | qué | dónde | hecho cuando |
+|---|---|---|---|
+| **G2·4·0 · Sondas** | (a) La serie de PR (2933 y 3341) en un *crate* aparte, fuera del *workspace*, con `iceberg` por git a la rama de la serie: ¿deserializa el `metadata.json` del banco? ¿Lee un fichero GEOMETRY de ORE? (b) DuckDB lee la tabla de ORE promovida a mano (el `metadata.json` editado), con filas. (c) Spark 4.1 e Iceberg Java 1.11 contra esa misma tabla promovida, y 1.12 si ya ha salido | `pruebas-de-fuego/geo/g24/`, local | tabla de resultados en la bitácora |
+| **G2·4·1 · La lente** | `ore-store` abre cualquier `metadata.json` v3 geo: antes de dárselo a `iceberg`, reescribe en memoria cada `geometry(C)`/`geography(C, A)` del esquema (también en `schemas[]` históricos) a `binary`, conservando el id del campo, y pone `ore.geo.<col>` con tipo, CRS y `edges`. **Solo lectura**: un commit sobre una tabla que pasó por la lente se niega con su porqué mientras `iceberg` no escriba el tipo, para no reescribir un esquema ajeno con `binary`. Se quita cuando salga la serie de PR | `ore-store` (`lago.rs` `abrir`/`esbozada`, nuevo `lago_geo::lente`) | prueba: el `metadata.json` del banco (fijo en `tests/`) se abre, el esquema tiene `geom` binaria y la propiedad, y un commit encima se niega |
+| **G2·4·2 · La tabla v3 con filas** | ORE escribe la tabla del banco que hoy nadie escribe: copia `lugares_madrid` con su escritor geo (v3, binaria) y la **promueve solo en metadatos** a `geometry` (lo medido en G2·0), con un ejemplo `examples/promover-geo.rs` que deja un `metadata.json` nuevo con el mismo id de campo. Va en `lakehouse/ajena/lugares_madrid_ore/` del banco. **No es promover las tablas de ORE** (eso sigue esperando a la matriz) | `ore-store/examples`, banco | DuckDB y la lente la leen con las mismas filas y los mismos WKB |
+| **G2·4·3 · El puesto la lee y la copia (V6)** | Con la lente, `iceberg_scan` sobre una tabla v3 ajena en el puesto da `GEOMETRY`, porque DuckDB ya lo hace, y `ore.write` de esa lectura llega al escritor geo. V6 en la vara: abrir el esquema (lente), leer las filas (DuckDB) y copiarla al lago de ORE con su CRS. Es lectura por SQL del puesto; no hay alta de un catálogo | `vara.py` (V6), un guion de puesto | **V6 en verde** en victor con la tabla de G2·4·2 |
+| **G2·4·4 · D, hacia fuera** | Con lo de G2·4·0: un comentario en la serie de PR con el `metadata.json` del banco como fijo de prueba y lo que se vio, y el fallo del lector genérico de Java (GEOMETRY nativo, G2·0) si sigue en 1.12. **Publicar en GitHub pide tu permiso, comentario a comentario.** Los límites espaciales del manifiesto quedan como contribución aparte, cuando la serie esté fusionada | `apache/iceberg-rust`, `apache/iceberg` | los comentarios escritos (y publicados si das el go) |
+
+**Lo que no entra:** dar entrada a catálogos ajenos (Iceberg REST, Glue, Unity, S3 Tables), que es
+una línea de 0066 §2 con su ADR propio; promover las tablas de ORE (esperan a la matriz); y escribir
+en tablas ajenas.
+
+#### G2·5 · La matriz de adopción, en detalle (diseñado el 2026-10-17)
+
+**Pregunta:** lo que escribe ORE, ¿lo lee cada herramienta del ecosistema sin conversión, como
+geometría y con su CRS?
+
+**Los artefactos (filas)**, generados por un solo ejemplo determinista (`examples/v5-fijos.rs`, con el
+escritor de verdad, `lago_geo`):
+- **A · el fichero**: el Parquet de datos de ORE, con GEOMETRY nativo y la clave `geo`.
+- **B · la tabla de hoy**: Iceberg v3 con la columna `binary` y `ore.geo.<col>`.
+- **C · la tabla promovida**: B promovida solo en metadatos a `geometry` (G2·4·2). Esta columna decide
+  el punto 4 de G2·0.
+
+Cada artefacto, en dos versiones: `EPSG:25830` y `OGC:CRS84`. Con puntos, líneas, multipolígonos con
+agujero, una colección, una geometría vacía y un nulo. Unos 200 filas en total.
+
+**Los lectores (columnas)**, cada uno en Docker con versión exacta:
+- DuckDB 1.5.6 sin `spatial`, con `spatial` y con `iceberg` (B y C);
+- pyarrow 25 (y `geoarrow-pyarrow` si hace falta para nombrar el tipo);
+- GeoPandas 1.2 (`read_parquet`);
+- GDAL 3.x (`ogrinfo` sobre A, imagen `ghcr.io/osgeo/gdal`);
+- Sedona sobre Spark 4 (A como GeoParquet, B y C como Iceberg);
+- Spark 4.1 + Iceberg 1.11 sin Sedona (B y C) y el lector genérico de Iceberg Java (B y C);
+- BigQuery (`bq load` de A como Parquet, y como GeoParquet). Va en la nube, en el dataset `banco_geo`;
+- **Snowflake:** no hay cuenta de ORE. Queda en ámbar hasta que haya una, y se dice así en la matriz.
+
+**Qué mira cada celda:** que lea sin paso intermedio; que la columna llegue como geometría (no como
+binario); el CRS (que diga el mismo); el número de filas; una suma de control de los WKB (`md5` de los
+WKB en orden de `id`); y el bbox. Verde si todo cuadra. Ámbar si lee pero pierde algo (el CRS o el
+tipo), y se dice qué. Rojo si no lee.
+
+| paso | qué | dónde | hecho cuando |
+|---|---|---|---|
+| **G2·5·0 · Sonda** | Que las imágenes existan y arranquen sin red con la versión elegida (GDAL, Sedona, Spark con Iceberg). Lo que cuesta cada una en disco, contra los 175 GB de la memoria «Docker y el disco C:». Si Sedona no tiene imagen para Spark 4.1, se usa su `pip` sobre la de Spark | local | las versiones en la bitácora |
+| **G2·5·1 · Los fijos** | `examples/v5-fijos.rs` escribe A, B y C en una carpeta, sin red y siempre igual (orden y semilla fijos, sin marcas de tiempo en lo que se compara). Las sumas de control esperadas, en `pruebas-de-fuego/geo/v5/esperado.json` | `ore-store/examples` | dos corridas dan los mismos bytes en A |
+| **G2·5·2 · El arnés** | `pruebas-de-fuego/geo/v5-matriz.py` monta la carpeta en cada imagen y corre su lector (un guion por lector, en `v5/`), y escribe `V5|lector|artefacto-crs|-|verde/ámbar/rojo: …`. Imprime la matriz y deja `v5-<fecha>.md`. Un `--solo <lector>` para iterar sobre una columna | `pruebas-de-fuego/geo/v5*` | corre entero en local en menos de 5 min |
+| **G2·5·3 · La nube** | BigQuery: un Job de victor sube A al bucket del banco y hace `bq load` en `banco_geo`, con la misma comprobación. Snowflake, en ámbar | `vara.py` (V5) | V5 en la vara, con BigQuery |
+| **G2·5·4 · Fijarla** | Un trabajo de CI que corre el arnés cuando cambian `lago_geo.rs`, `carga.rs` o `crs_projjson.json`, con los lectores locales más ligeros (DuckDB, pyarrow, GeoPandas y GDAL). Spark y Sedona, en la vara | `.github/workflows` | el CI falla si una celda que estaba en verde deja de estarlo |
+| **G2·5·5 · Decidir** | Con la columna C: si Spark, Sedona y Java leen la tabla promovida, se escribe cuándo promover las tablas de ORE (G2·0 punto 4). Si no, qué falta y dónde informarlo (lo de D) | el ADR | la decisión, escrita |
+
+**El orden de los dos, entrelazados para no esperar:**
+1. G2·4·0 y G2·5·0, las sondas, a la vez.
+2. G2·5·1 y G2·5·2, con A y B.
+3. G2·4·1, la lente.
+4. G2·4·2: la tabla C, que entra en la matriz.
+5. G2·5·5: la decisión.
+6. Con el siguiente empuje, G2·4·3 y G2·5·3 en victor.
+7. G2·5·4, en el CI.
+8. G2·4·4, D, con tu permiso para publicar.
+
+Todo en local, con commits en la rama, salvo los pasos 6 y 8.
+
 **Hecho cuando:** la vara escribe y consulta el volumen objetivo con descarte espacial medido (V3, V4),
 la matriz de adopción está en verde (V5) y la tabla v3 ajena se abre (V6).
 
@@ -685,3 +785,4 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     - `ore-code`, entero en verde;
     - Python 112 (con `test_geo_tipos`), Node 17/17 y la JVM (`GeoPrueba`), todas en sus imágenes
       reales con `spatial` preinstalada a mano.
+- **2026-10-17 · G2·4 y G2·5 diseñados** (en el plan, «El patrón de iteración rápida» y los dos «en detalle»). Las sondas de hoy dicen que `iceberg` 0.10.1 no abre el `metadata.json` v3 con `geometry` (ni el ajeno ni uno nuestro promovido), que DuckDB 1.5.6 sí lo abre, y que ORE no tiene entrada para tablas ajenas. Así que G2·4 es una lente de solo lectura en `ore-store` más una tabla v3 con filas escrita por ORE, y no un registro de catálogos. G2·5 es una matriz de tres artefactos por diez lectores, con su arnés local. Esperando el go.
