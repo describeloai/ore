@@ -497,6 +497,8 @@ async function conGeo(fuente, r) {
   const geo = Object.entries(r.geo ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   if (geo.length === 0) return fuente;
   await cargar(await duckdb(), "spatial");
+  // Y H3 (G2·3·5, de community): en la imagen está; fuera, si no, no se exige.
+  try { await (await duckdb()).run("load h3"); } catch { /* sin h3 */ }
   const q = (x) => x.replaceAll('"', '""');
   const cambios = geo.map(([c, g]) => `ST_GeomFromWKB("${q(c)}")::GEOMETRY('${(g.crs ?? "OGC:CRS84").replaceAll("'", "''")}') as "${q(c)}"`);
   return `(select * replace (${cambios.join(", ")}) from ${fuente})`;

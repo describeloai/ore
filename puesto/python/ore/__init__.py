@@ -831,6 +831,11 @@ def _con_geo(fuente, r):
         return fuente
     con = _duckdb()
     _cargar(con, "spatial")
+    # Y H3 (G2·3·5, de community): en la imagen está; fuera, si no, no se exige.
+    try:
+        con.execute("load h3")
+    except Exception:
+        pass
     cambios = ", ".join('ST_GeomFromWKB("%s")::GEOMETRY(\'%s\') as "%s"' % (
         c.replace('"', '""'), (g.get("crs") or "OGC:CRS84").replace("'", "''"), c.replace('"', '""')) for c, g in sorted(geo.items()))
     return "(select * replace (%s) from %s)" % (cambios, fuente)

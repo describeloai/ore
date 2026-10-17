@@ -655,6 +655,8 @@ public final class Ore {
     static String conGeo(String fuente, Map<String, Object> r) throws Exception {
         if (!(r.get("geo") instanceof Map<?, ?> geo) || geo.isEmpty()) return fuente;
         cargar(duckdb(), "spatial");
+        // Y H3 (G2·3·5, de community): en la imagen está; fuera, si no, no se exige.
+        try (Statement h = duckdb().createStatement()) { h.execute("load h3"); } catch (SQLException e) { /* sin h3 */ }
         List<String> cambios = new ArrayList<>();
         new java.util.TreeMap<>(geo).forEach((c, g) -> {
             String col = String.valueOf(c).replace("\"", "\"\"");
