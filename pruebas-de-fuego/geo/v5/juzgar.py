@@ -10,7 +10,9 @@ import json
 import sys
 
 EQUIVALENTES = {
-    "OGC:CRS84": {"OGC:CRS84", "CRS84", "OGC:84", "WGS 84 (CRS84)"},
+    # EPSG:4326 solo cambia el orden de los ejes en su definición; el WKB va siempre en lon/lat, y
+    # Spark (srid 4326) y GDAL lo nombran así: se acepta, y el motivo lo dice.
+    "OGC:CRS84": {"OGC:CRS84", "CRS84", "OGC:84", "WGS 84 (CRS84)", "EPSG:4326"},
     "EPSG:25830": {"EPSG:25830"},
 }
 

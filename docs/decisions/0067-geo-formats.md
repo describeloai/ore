@@ -857,3 +857,18 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **Y lo que eso tapa:** con el CRS bien escrito (probado con un `with_parquet_schema` propio), A pasa a verde en DuckDB y en GDAL (EPSG:25830; OGC:CRS84 lo da como EPSG:4326). Pero **B se rompe**: `iceberg_scan` de DuckDB no convierte una columna `binary` cuyo fichero es GEOMETRY con CRS (*failed to cast GEOMETRY('EPSG:25830') to BLOB*); sin CRS sí. Es decir, **el lector de ORE (G2·3) funciona hoy gracias a ese fallo**. El arreglo **se deshace**: romper la lectura de ORE es peor que un CRS que DuckDB no ve en el fichero suelto.
   - **Lo que se concluye para G2·5·5 (decidir):** el estado bueno es C, una tabla promovida a `geometry(<CRS>)` explícito. Ahí DuckDB, con el CRS bien escrito o sin él, da verde. Pasar ahí exige que ORE escriba tablas con `geometry`, es decir `iceberg` 0.11 (con `parquet` 59, que trae el CRS bien). Entra en la deuda «`iceberg` 0.11 y Arrow 59»: **al subir, promover a la vez; nunca subir `parquet` sin promover**, porque B se rompería.
   - `promover.py` escribe el CRS explícito también para OGC:CRS84: con `geometry` a secas, DuckDB no da CRS.
+- **2026-10-17 · Paso 4, segunda mitad: los lectores de JVM, en local** (`v5/lectores-spark.scala`, `v5/local-jvm.sh`; Spark 4.0 no corre `-I`, por eso va con `:load`). La matriz entera, en local, con los ficheros de hoy (CRS con comillas, *tal cual*) y entre paréntesis lo que cambia con el CRS bien escrito (*arreglado*: `with_parquet_schema`, o `parquet` 59):
+
+  | lector | A · fichero | B · tabla de hoy | C · promovida |
+  |---|---|---|---|
+  | DuckDB sin `spatial` | ámbar (sin WKB) | **rojo** | ámbar (sin WKB) |
+  | DuckDB con `spatial` | ámbar: sin CRS (*arreglado*: verde) | ámbar: BLOB (*arreglado*: **rojo**) | **verde** |
+  | pyarrow, GeoPandas | **verde** | — | — |
+  | GDAL 3.13.3 | ámbar: sin CRS (*arreglado*: verde) | — | — |
+  | Spark 4.1 + Iceberg 1.12 | **rojo**: Spark no lee GEOMETRY de un Parquet suelto (*PARQUET_TYPE_ILLEGAL*), arreglado o no | ámbar: `BinaryType` | rojo: EPSG:25830 no lo admite Spark (*ST_INVALID_CRS_VALUE*); CRS84 rojo por las comillas (*arreglado*: **verde**, `GeometryType(4326)`) |
+  | Iceberg Java 1.12 genérico | — | ámbar: `binary` | **verde** en los dos CRS |
+  | Sedona 1.9.1 (Spark 4.0.1) | **rojo**: su Parquet no lee el pie con GEOMETRY | ámbar: `BinaryType` | rojo: *Cannot convert unsupported type to Spark: geometry* |
+
+  - **El estado bueno es «C con el CRS bien escrito»:** verde en DuckDB, Spark (lon/lat), Iceberg Java, pyarrow, GeoPandas y GDAL. Quedan fuera Spark con CRS proyectados (es de Spark 4.1) y Sedona sobre Spark 4.0 (espera a una versión de Sedona sobre Spark 4.1).
+  - **El estado de hoy (B):** se lee en todas partes **como binario** (salvo DuckDB sin `spatial`), y como geometría por el SDK de ORE (G2·3). No se rompe nada que funcione hoy.
+  - **Sedona 1.9.1 pesa 11,4 GB descomprimida**; GDAL `ubuntu-full` 3,4 GB.
