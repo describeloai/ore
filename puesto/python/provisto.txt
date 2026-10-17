@@ -18,14 +18,18 @@
 # dibuje en la celda (el backend `ore._mpl`), y lo que arrastra (`contourpy`,
 # `cycler`, `fonttools`, `kiwisolver`, `pyparsing`): 42, unos 75 MB. Las versiones,
 # las de `pip install matplotlib && pip freeze` sobre esta lista en python:3.14-slim.
+# 2026-10-17 (0067 G2·3·5): `geopandas`, `shapely` y `pyproj`, para que `ore.read`
+# entregue un GeoDataFrame con su CRS; SIN `pyogrio` (la E/S de ficheros geo,
+# +49 MB): por eso el Dockerfile instala con `--no-deps` (la lista ya es entera): 45.
 certifi==2026.7.22
 cffi==2.1.1
-contourpy==1.4.0
 charset-normalizer==3.5.2
+contourpy==1.4.0
 cryptography==50.0.2
 cycler==0.12.1
 duckdb==1.5.6
 fonttools==4.66.1
+geopandas==1.2.0
 google-api-core==2.40.0
 google-auth==2.59.1
 google-cloud-core==2.8.0
@@ -51,12 +55,14 @@ pyarrow==25.0.1
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
-pyparsing==3.3.3
 Pygments==2.21.0
+pyparsing==3.3.3
 pypdfium2==5.14.0
+pyproj==3.8.0
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 requests==2.34.2
+shapely==2.2.0
 six==1.17.0
 typing_extensions==4.16.0
 urllib3==2.8.0

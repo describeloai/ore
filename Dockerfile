@@ -406,9 +406,9 @@ FROM python:3.14-slim AS puesto-python
 #   versión: cada construcción podía traer otra cosa). La misma lista la lee
 #   ore-serve para enseñar lo que la sesión trae.
 COPY puesto/python/provisto.txt /opt/ore/provisto-fijado.txt
-RUN pip install --no-cache-dir -r /opt/ore/provisto-fijado.txt \
+RUN pip install --no-cache-dir --no-deps -r /opt/ore/provisto-fijado.txt \
  && pip freeze > /entorno-1.txt \
- && python -c "import pandas, pyarrow, duckdb, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
+ && python -c "import pandas, pyarrow, duckdb, geopandas, shapely, pyproj, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
 # ⭐⭐ LO QUE ESTA IMAGEN PONE, ESCRITO PARA QUE OTRO LO LEA (0031 W3.2 · el
 #   orden). Es el gemelo exacto de `puesto/jvm/jars.txt`: el Job que resuelve
 #   la capa lo lee para NO bajar lo que aquí ya está —el `pyarrow` y el
@@ -424,13 +424,15 @@ RUN mkdir -p /opt/ore && pip freeze | sort > /opt/ore/provisto.txt \
       || { echo "✗ pip freeze no es puesto/python/provisto.txt: regenera la lista"; exit 1; }; } \
  && test "$(wc -l < /opt/ore/provisto.txt)" -ge 4 \
  && echo "provisto por la imagen: $(wc -l < /opt/ore/provisto.txt) paquetes" >> /entorno-1.txt
+# ⭐ 0067 G2·3·5 · y `spatial` y `h3` (community): las columnas geo se leen como
+#   GEOMETRY y las `ST_*` corren dentro del puesto.
 # ⭐ Las extensiones de DuckDB que leen el LAGO (0031 §10, medido en
 #   `medida-w3-lago.py`): `iceberg` (con `avro`, `httpfs`, `json`, `icu` detrás)
 #   PREINSTALADAS aquí, donde hay red, en /opt/ore/duckdb —de la versión exacta
 #   de DuckDB de este enlace—. El pod no sale a internet: sin esto, la primera
 #   celda que las pidiera se colgaría 120 s contra la NetworkPolicy. El SDK abre
 #   DuckDB con `extension_directory` ahí y `autoinstall_known_extensions=false`.
-RUN python -c "import duckdb; c = duckdb.connect(); c.execute(\"set extension_directory = '/opt/ore/duckdb'\"); [c.execute('install ' + e) for e in ('iceberg', 'avro', 'httpfs', 'json', 'icu')]; c.execute('load iceberg'); c.execute('load httpfs'); print('lago ·', duckdb.__version__, sorted(r[0] for r in c.execute('select extension_name from duckdb_extensions() where loaded').fetchall()))" \
+RUN python -c "import duckdb; c = duckdb.connect(); c.execute(\"set extension_directory = '/opt/ore/duckdb'\"); [c.execute('install ' + e) for e in ('iceberg', 'avro', 'httpfs', 'json', 'icu', 'spatial')]; c.execute('install h3 from community'); c.execute('load iceberg'); c.execute('load httpfs'); c.execute('load spatial'); c.execute('load h3'); print('lago ·', duckdb.__version__, sorted(r[0] for r in c.execute('select extension_name from duckdb_extensions() where loaded').fetchall()))" \
  && du -sh /opt/ore/duckdb >> /entorno-1.txt
 
 # El agente y el SDK (`puesto/python/`): lo unico nuestro en la imagen. `ore`
@@ -528,7 +530,7 @@ RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
 #   Y `nanoarrow` (community, 0057 B4·2·2): `@duckdb/node-api` no registra Arrow
 #   (medido en 1.5.5), y lo que el SDK lee en vivo de un origen llega en Arrow
 #   IPC; `read_arrow` lo lee de un fichero. Sin red en el puesto: va aquí.
-RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.DuckDBInstance.create();const c=await i.connect();await c.run(\"set extension_directory = '/opt/ore/duckdb'\");for(const e of ['iceberg','avro','httpfs','json','icu'])await c.run('install '+e);await c.run('install nanoarrow from community');await c.run('load iceberg');await c.run('load httpfs');await c.run('load nanoarrow');console.log('lago ·',d.version(),(await c.runAndReadAll('select extension_name from duckdb_extensions() where loaded')).getColumns()[0].sort().join(' '))})().catch(e=>{console.error(e);process.exit(1)})" \
+RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.DuckDBInstance.create();const c=await i.connect();await c.run(\"set extension_directory = '/opt/ore/duckdb'\");for(const e of ['iceberg','avro','httpfs','json','icu','spatial'])await c.run('install '+e);await c.run('install nanoarrow from community');await c.run('install h3 from community');await c.run('load spatial');await c.run('load h3');await c.run('load iceberg');await c.run('load httpfs');await c.run('load nanoarrow');console.log('lago ·',d.version(),(await c.runAndReadAll('select extension_name from duckdb_extensions() where loaded')).getColumns()[0].sort().join(' '))})().catch(e=>{console.error(e);process.exit(1)})" \
  && du -sh /opt/ore/duckdb >> /entorno-1.txt
 # El SDK al lado del agente (`./ore/index.mjs`, como en `puesto/node/`) y como
 # paquete `ore` para las celdas-módulo (un enlace en node_modules). ⛔ Medido en

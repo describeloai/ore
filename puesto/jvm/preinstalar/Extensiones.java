@@ -16,7 +16,11 @@ public class Extensiones {
         Class.forName("org.duckdb.DuckDBDriver");
         try (Connection c = DriverManager.getConnection("jdbc:duckdb:"); Statement s = c.createStatement()) {
             s.execute("set extension_directory = '" + (a.length > 0 ? a[0] : "/opt/ore/duckdb") + "'");
-            for (String e : new String[] {"iceberg", "avro", "httpfs", "json", "icu"}) s.execute("install " + e);
+            for (String e : new String[] {"iceberg", "avro", "httpfs", "json", "icu", "spatial"}) s.execute("install " + e);
+            // ORE 0067 G2·3·5: H3, de community.
+            s.execute("install h3 from community");
+            s.execute("load spatial");
+            s.execute("load h3");
             s.execute("load iceberg");
             s.execute("load httpfs");
             try (ResultSet r = s.executeQuery("select version(), string_agg(extension_name, ' ' order by extension_name) from duckdb_extensions() where loaded")) {
