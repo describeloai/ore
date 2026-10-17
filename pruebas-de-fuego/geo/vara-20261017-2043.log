@@ -1,0 +1,690 @@
+V7|banco_geo_pg|catalogo|-|rc=0 en 0 ms 
+V7|banco_geo_pg|public.carreteras|-|tabla: 4 columnas, filas 300000, formato null
+V7|banco_geo_pg|public.carreteras|geom|catálogo: {"sourceType": "geometry(Geometry,4326)", "type": "Geometry<Any, EPSG:4326>"}
+V7|banco_geo_pg|public.carreteras|geom|texto: {"geom":"0102000020E61000000300000001C68E215B6112C048AEF60BD14244403A2B5899DF5F12C0FFA21529DE42444013D6C6D8095F12C06F6F6D97EC424440"} ⏎ {"geom":"0102000020E61000000A000000D64B9D91526212C0106D1162783F444079324976B66112C0C5ABAC6D8A3F44406FB2B
+V7|banco_geo_pg|public.carreteras|*|arrow: rc=0, 65.1 MB en 3.3 s, 91,160 filas/s 
+V7|banco_geo_pg|public.geography_columns|-|tabla: 7 columnas, filas None, formato null
+V7|banco_geo_pg|public.geometry_columns|-|tabla: 7 columnas, filas None, formato null
+V7|banco_geo_pg|public.lugares|-|tabla: 4 columnas, filas 214328, formato null
+V7|banco_geo_pg|public.lugares|geom|catálogo: {"sourceType": "geometry(Point,4326)", "type": "Geometry<Point, EPSG:4326>"}
+V7|banco_geo_pg|public.lugares|geom|texto: {"geom":"0101000020E6100000406A1327F7BB0DC053E8BCC62E454440"} ⏎ {"geom":"0101000020E6100000040EF492F7B80DC006181207BB4C4440"}
+V7|banco_geo_pg|public.lugares|*|arrow: rc=0, 24.7 MB en 2.2 s, 95,482 filas/s 
+V7|banco_geo_pg|public.lugares_geog|-|tabla: 4 columnas, filas 214328, formato null
+V7|banco_geo_pg|public.lugares_geog|geog|catálogo: {"sourceType": "geography(Point,4326)", "type": "Geography<Point>"}
+V7|banco_geo_pg|public.lugares_geog|geog|texto: {"geog":"0101000020E6100000406A1327F7BB0DC053E8BCC62E454440"} ⏎ {"geog":"0101000020E6100000040EF492F7B80DC006181207BB4C4440"}
+V7|banco_geo_pg|public.lugares_geog|*|arrow: rc=0, 24.7 MB en 2.5 s, 84,432 filas/s 
+V7|banco_geo_pg|public.municipios|-|tabla: 4 columnas, filas 183, formato null
+V7|banco_geo_pg|public.municipios|geom|catálogo: {"sourceType": "geometry(MultiPolygon,25830)", "type": "Geometry<MultiPolygon, EPSG:25830>"}
+V7|banco_geo_pg|public.municipios|geom|texto: {"geom":"0106000020E6640000010000000103000000010000007B000000A100F29619BB1B4190CD9626466051418DEB519945BB1B41CE361866656051412400E7A1F1BC1B41ED386AE68A6051418E344DA40CBF1B41B9733124BE605141F89C5C18B9BF1B416E305FA4D06051412A2D8528A1BF1B411E5
+V7|banco_geo_pg|public.municipios|*|arrow: rc=0, 1.2 MB en 1.6 s, 116 filas/s 
+V7|banco_geo_pg|public.spatial_ref_sys|-|tabla: 5 columnas, filas 8500, formato null
+V7|banco_geo_bq|catalogo|-|rc=0 en 0 ms 
+V7|banco_geo_bq|banco_geo.lugares|-|tabla: 4 columnas, filas 214328, formato null
+V7|banco_geo_bq|banco_geo.lugares|geo|catálogo: {"sourceType": "GEOGRAPHY", "type": "Geography"}
+V7|banco_geo_bq|banco_geo.lugares|geo|texto: {"geo":"POINT(-3.7157059 40.6022626)"} ⏎ {"geo":"POINT(-3.71586 40.61012)"}
+V7|banco_geo_bq|banco_geo.lugares|*|arrow: rc=0, 25.7 MB en 11.6 s, 18,526 filas/s ore-read-bigquery: aviso · por consulta: la columna `geo` es `GEOGRAPHY`, que por REST viaja como texto o JSON y en Arrow tendría otra forma
+ore-read-bigquery: 
+V7|banco_geo_bq|banco_geo.municipios|-|tabla: 4 columnas, filas 183, formato null
+V7|banco_geo_bq|banco_geo.municipios|geo|catálogo: {"sourceType": "GEOGRAPHY", "type": "Geography"}
+V7|banco_geo_bq|banco_geo.municipios|geo|texto: {"geo":"POLYGON((-3.5440824 41.1453272, -3.5439606 41.1464537, -3.5426966 41.1478109, -3.541106 41.1496647, -3.5405977 41.1503337, -3.5406693 41.1503682, -3.5394172 41.1523334, -3.5377146 41.1550678, -3.5373155 41.1568755, -3.5365421 41.160
+V7|banco_geo_bq|banco_geo.municipios|*|arrow: rc=0, 1.6 MB en 0.8 s, 217 filas/s ore-read-bigquery: aviso · por consulta: la columna `geo` es `GEOGRAPHY`, que por REST viaja como texto o JSON y en Arrow tendría otra forma
+ore-read-bigquery: 
+V7|banco_geo_bq|banco_geo.v5_ore_ogc_crs84|-|tabla: 3 columnas, filas 177, formato null
+V7|banco_geo_bq|banco_geo.v5_ore_ogc_crs84|geom|catálogo: {"sourceType": "GEOGRAPHY", "type": "Geography"}
+V7|banco_geo_bq|banco_geo.v5_ore_ogc_crs84|geom|texto: {"geom":"LINESTRING(-3.75 40.38, -3.749 40.38)"} ⏎ {"geom":"LINESTRING(-3.749 40.381, -3.748 40.381)"}
+V7|banco_geo_bq|banco_geo.v5_ore_ogc_crs84|*|arrow: rc=0, 0.0 MB en 0.4 s, 450 filas/s ore-read-bigquery: aviso · por consulta: la columna `geom` es `GEOGRAPHY`, que por REST viaja como texto o JSON y en Arrow tendría otra forma
+ore-read-bigquery:
+V7|banco_geo_gcs|catalogo|-|rc=0 en 0 ms ore-read-gcs: aviso · catalogado con 22 peticiones y 31 KB leídos: 4 tablas y 6 conjuntos de objetos 
+V7|banco_geo_gcs|objetos:default.raiz_zip|-|{"bytes": 754957, "count": 1, "extensions": ["zip"], "match": "*.zip", "media": "archive", "prefix": "ficheros/"}
+V7|banco_geo_gcs|objetos:default.raiz_fgb|-|{"bytes": 1180104, "count": 1, "extensions": ["fgb"], "match": "*.fgb", "media": "binary", "prefix": "ficheros/"}
+V7|banco_geo_gcs|objetos:default.raiz_geojson|-|{"bytes": 2010251, "count": 1, "extensions": ["geojson"], "match": "*.geojson", "media": "geospatial", "prefix": "ficheros/"}
+V7|banco_geo_gcs|objetos:default.raiz_gpkg|-|{"bytes": 1425408, "count": 1, "extensions": ["gpkg"], "match": "*.gpkg", "media": "geospatial", "prefix": "ficheros/"}
+V7|banco_geo_gcs|objetos:default.raiz_kml|-|{"bytes": 1647782, "count": 1, "extensions": ["kml"], "match": "*.kml", "media": "geospatial", "prefix": "ficheros/"}
+V7|banco_geo_gcs|objetos:municipios_madrid_gdb.municipios_madrid_gdb|-|{"bytes": 521899, "count": 20, "extensions": ["gdbindexes", "gdbtable", "gdbtablx", "spx"], "media": "binary", "prefix": "ficheros/municipios_madrid.gdb/"}
+V7|banco_geo_gcs|default.municipios_madrid|-|tabla: 4 columnas, filas 183, formato {"type": "parquet"}
+V7|banco_geo_gcs|default.municipios_madrid|geom|catálogo: {"sourceType": "binary", "type": "Geometry<MultiPolygon>"}
+V7|banco_geo_gcs|default.municipios_madrid|geom|texto: este driver sólo contesta en Arrow
+V7|banco_geo_gcs|default.municipios_madrid|*|arrow: rc=0, 2.3 MB en 0.2 s, 1,162 filas/s ore-read-gcs: aviso · 183 filas de 1 ficheros (0 descartados por partición, 0 grupos de filas por estadísticas), con 2 peticiones y 1 KB de cuerpo
+
+V7|banco_geo_gcs|default.lugares_madrid_direcciones|-|tabla: 7 columnas, filas 206090, formato {"type": "csv"}
+V7|banco_geo_gcs|default.lugares_madrid_latlon|-|tabla: 6 columnas, filas 215351, formato {"type": "csv"}
+V7|banco_geo_gcs|default.lugares_madrid_latlon|lat|catálogo: {"type": "Float"}
+V7|banco_geo_gcs|default.lugares_madrid_latlon|lon|catálogo: {"type": "Float"}
+V7|banco_geo_gcs|default.lugares_madrid_latlon|lat|texto: este driver sólo contesta en Arrow
+V7|banco_geo_gcs|default.lugares_madrid_latlon|*|arrow: rc=0, 22.8 MB en 1.3 s, 169,416 filas/s ore-read-gcs: aviso · 214328 filas de 1 ficheros (0 descartados por partición, 0 grupos de filas por estadísticas), con 2 peticiones y 1 KB de cuerpo
+
+V7|banco_geo_gcs|default.lugares_madrid_wkt|-|tabla: 5 columnas, filas 215016, formato {"type": "csv"}
+V7|banco_geo_gcs|default.lugares_madrid_wkt|wkt|catálogo: {"type": "String"}
+V7|banco_geo_gcs|default.lugares_madrid_wkt|wkt|texto: este driver sólo contesta en Arrow
+V7|banco_geo_gcs|default.lugares_madrid_wkt|*|arrow: rc=0, 26.9 MB en 1.2 s, 176,838 filas/s ore-read-gcs: aviso · 214328 filas de 1 ficheros (0 descartados por partición, 0 grupos de filas por estadísticas), con 2 peticiones y 1 KB de cuerpo
+
+V2|banco_geo_pg|discover|-|rc=0 Las tablas la referencian, así que `ore validate` dirá OOS2004 por cada una.   `ore source add --name banco_geo_pg <url>` la declara sin escribir el secreto. 
+V2|banco_geo_bq|discover|-|rc=0 Las tablas la referencian, así que `ore validate` dirá OOS2004 por cada una.   `ore source add --name banco_geo_bq <url>` la declara sin escribir el secreto. 
+V2|banco_geo_gcs|discover|-|rc=0 as tablas la referencian, así que `ore validate` dirá OOS2004 por cada una.   `ore source add --name banco_geo_gcs <url>` la declara sin escribir el secreto. 
+V2|banco_geo_pg|municipios|geom|quiero `Geometry<MultiPolygon, EPSG:25830>` · propone `Geometry<MultiPolygon, EPSG:25830>` · acierto
+V2|banco_geo_pg|lugares|geom|quiero `Geometry<Point, EPSG:4326>` · propone `Geometry<Point, EPSG:4326>` · acierto
+V2|banco_geo_pg|lugares_geog|geog|quiero `Geography<Point>` · propone `Geography<Point>` · acierto
+V2|banco_geo_pg|carreteras|geom|quiero `Geometry<Any, EPSG:4326>` · propone `Geometry<Any, EPSG:4326>` · acierto
+V2|banco_geo_bq|lugares|geo|quiero `Geography` · propone `Geography` · acierto
+V2|banco_geo_bq|municipios|geo|quiero `Geography` · propone `Geography` · acierto
+V2|banco_geo_gcs|lugares_madrid_latlon|lat+lon|quiero la pregunta `geo/default.lugares_madrid_latlon` · está · acierto
+V2|banco_geo_gcs|lugares_madrid_wkt|wkt|quiero la pregunta `geo/default.lugares_madrid_wkt.wkt` · está · acierto
+V2|banco_geo_gcs|lugares_madrid_direcciones|direccion|quiero la pregunta `geo/default.lugares_madrid_direcciones:direccion` · está · acierto
+V2|banco_geo_gcs|municipios_madrid|geom|todavía no: G3·3 (el driver de ficheros no lee la clave `geo` del GeoParquet) · fallo esperado
+V2|banco_geo_gcs|municipios_madrid.geojson|geom|todavía no: G3·3 (un objeto de medios, no una tabla) · fallo esperado
+V2|banco_geo_gcs|municipios_madrid.gpkg|geom|todavía no: G3·3 (un objeto de medios, no una tabla) · fallo esperado
+V2|banco_geo_gcs|municipios_madrid.kml|geom|todavía no: G3·3 (un objeto de medios, no una tabla) · fallo esperado
+V2|banco_geo_gcs|municipios_madrid.fgb|geom|todavía no: G3·3 (un objeto de medios, no una tabla) · fallo esperado
+V2|banco_geo_gcs|municipios_madrid.gdb|geom|todavía no: G3·3 (un objeto de medios, no una tabla) · fallo esperado
+V2|banco_geo_gcs|municipios_madrid.shp.zip|geom|todavía no: G3·3 (un objeto de medios, no una tabla) · fallo esperado
+V2|resumen|-|-|exhaustividad 9/16 (9/9 de lo que G1 puede; el resto es de G3) · precisión 0.82 · falsos positivos 2 ['bq:V5_ore_ogc_crs84__v5_ore_ogc_crs84.yaml:geom', 'gcs:Municipios_madrid__municipios_madrid.yaml:geom']
+V1|banco_geo_pg|municipios|geom|declarada: no se encontró la columna
+V1|banco_geo_pg|validate|-|rc=0 
+## ok
+
+V4|metadatos|-|-|340 grupos de filas, leídos en 0.4 s
+V4|madrid|1 lector|-|62480 edificios · grupos que tocan la zona 42/340 (descarte 87.6 %) · 2.07 s
+
+ 13% ▕████▉                                 ▏ (~13 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.06 elapsed)     
+V4|barcelona|1 lector|-|81887 edificios · grupos que tocan la zona 46/340 (descarte 86.5 %) · 2.15 s
+V4|valencia|1 lector|-|39387 edificios · grupos que tocan la zona 32/340 (descarte 90.6 %) · 1.45 s
+V4|sevilla|1 lector|-|43265 edificios · grupos que tocan la zona 34/340 (descarte 90.0 %) · 1.79 s
+V4|bilbao|1 lector|-|7683 edificios · grupos que tocan la zona 23/340 (descarte 93.2 %) · 0.56 s
+V4|zaragoza|1 lector|-|23796 edificios · grupos que tocan la zona 39/340 (descarte 88.5 %) · 1.18 s
+V4|malaga|1 lector|-|27592 edificios · grupos que tocan la zona 16/340 (descarte 95.3 %) · 0.56 s
+V4|coruna|1 lector|-|14295 edificios · grupos que tocan la zona 11/340 (descarte 96.8 %) · 0.65 s
+
+ 12% ▕████▌                                 ▏ (~14 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~13 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~12 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~11 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~11 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~9 seconds remaining)    
+ 12% ▕████▌                                 ▏ (~8 seconds remaining)    
+ 12% ▕████▌                                 ▏ (~9 seconds remaining)    
+ 12% ▕████▌                                 ▏ (<1 second remaining)     
+ 12% ▕████▌                                 ▏ (~13 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~12 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~11 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~10 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~9 seconds remaining)    
+ 12% ▕████▌                                 ▏ (~8 seconds remaining)    
+ 12% ▕████▌                                 ▏ (~13 seconds remaining)   
+ 12% ▕████▌                                 ▏ (<1 second remaining)     
+ 12% ▕████▌                                 ▏ (~13 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~12 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~11 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~10 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~14 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.04 elapsed)     
+V4|concurrencia|1 lectores|-|16 consultas en 25.2 s · p50 1.56 s · p95 2.21 s
+
+  6% ▕██▎                                   ▏ (~28 seconds remaining)   
+  7% ▕██▋                                   ▏ (~26 seconds remaining)   
+  8% ▕███                                   ▏ (~22 seconds remaining)   
+  8% ▕███                                   ▏ (~24 seconds remaining)   
+  8% ▕███                                   ▏ (~24 seconds remaining)   
+  8% ▕███                                   ▏ (~27 seconds remaining)   
+  8% ▕███                                   ▏ (~26 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~22 seconds remaining)   
+  9% ▕███▍                                  ▏ (~23 seconds remaining)   
+  9% ▕███▍                                  ▏ (~24 seconds remaining)   
+  9% ▕███▍                                  ▏ (~22 seconds remaining)   
+  9% ▕███▍                                  ▏ (~21 seconds remaining)   
+  9% ▕███▍                                  ▏ (~20 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (~23 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (~22 seconds remaining)   
+  9% ▕███▍                                  ▏ (~26 seconds remaining)   
+  9% ▕███▍                                  ▏ (~21 seconds remaining)   
+  9% ▕███▍                                  ▏ (~17 seconds remaining)   
+  9% ▕███▍                                  ▏ (~20 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (~16 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (~23 seconds remaining)   
+  9% ▕███▍                                  ▏ (~17 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~23 seconds remaining)   
+  9% ▕███▍                                  ▏ (~16 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.53 elapsed)     
+
+ 11% ▕████▏                                 ▏ (~21 seconds remaining)   
+  9% ▕███▍                                  ▏ (~25 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.63 elapsed)     
+
+ 10% ▕███▊                                  ▏ (~26 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~20 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~19 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~18 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~17 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~21 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~21 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.90 elapsed)     
+
+ 11% ▕████▏                                 ▏ (~25 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~25 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:03.28 elapsed)     
+
+ 12% ▕████▌                                 ▏ (~25 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~25 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~24 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~23 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~22 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~21 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~25 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~24 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~23 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~25 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:03.72 elapsed)     
+
+  7% ▕██▋                                   ▏ (~26 seconds remaining)   
+  8% ▕███                                   ▏ (~26 seconds remaining)   
+  7% ▕██▋                                   ▏ (~27 seconds remaining)   
+  7% ▕██▋                                   ▏ (~25 seconds remaining)   
+  8% ▕███                                   ▏ (~26 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~25 seconds remaining)   
+  9% ▕███▍                                  ▏ (~26 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~24 seconds remaining)   
+  9% ▕███▍                                  ▏ (~25 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~23 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~24 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~23 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~24 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.68 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:03.18 elapsed)     
+
+ 10% ▕███▊                                  ▏ (~24 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~23 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~22 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:03.13 elapsed)     
+
+  8% ▕███                                   ▏ (~22 seconds remaining)   
+  9% ▕███▍                                  ▏ (~22 seconds remaining)   
+  9% ▕███▍                                  ▏ (~21 seconds remaining)   
+  9% ▕███▍                                  ▏ (~20 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (~17 seconds remaining)   
+  9% ▕███▍                                  ▏ (~16 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (~14 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (<1 second remaining)     
+  9% ▕███▍                                  ▏ (~4 seconds remaining)    
+  9% ▕███▍                                  ▏ (~20 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (~17 seconds remaining)   
+  9% ▕███▍                                  ▏ (~16 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (<1 second remaining)     
+  9% ▕███▍                                  ▏ (~4 seconds remaining)    
+  9% ▕███▍                                  ▏ (~20 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (~17 seconds remaining)   
+  9% ▕███▍                                  ▏ (~16 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (~14 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (<1 second remaining)     
+  9% ▕███▍                                  ▏ (~4 seconds remaining)    
+  9% ▕███▍                                  ▏ (~20 seconds remaining)   
+  9% ▕███▍                                  ▏ (~19 seconds remaining)   
+  9% ▕███▍                                  ▏ (~18 seconds remaining)   
+  9% ▕███▍                                  ▏ (~17 seconds remaining)   
+  9% ▕███▍                                  ▏ (~16 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (~15 seconds remaining)   
+  9% ▕███▍                                  ▏ (~1.3 minutes remaining)  
+  9% ▕███▍                                  ▏ (~24 seconds remaining)   
+  9% ▕███▍                                  ▏ (~8 seconds remaining)    
+  9% ▕███▍                                  ▏ (~9 seconds remaining)    
+  9% ▕███▍                                  ▏ (~22 seconds remaining)   
+  9% ▕███▍                                  ▏ (~21 seconds remaining)   
+  9% ▕███▍                                  ▏ (~22 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~22 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~21 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~21 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.30 elapsed)     
+
+ 10% ▕███▊                                  ▏ (~18 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~18 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:02.28 elapsed)     
+V4|concurrencia|8 lectores|-|16 consultas en 7.4 s · p50 2.89 s · p95 4.04 s
+
+100% ▕██████████████████████████████████████▏ (00:00:02.72 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.04 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.04 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.04 elapsed)     
+
+  2% ▕▊                                     ▏ (~1.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.1 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  0% ▕                                      ▏ (~4.6 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (<1 second remaining)     
+  2% ▕▊                                     ▏ (~1.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (<1 second remaining)     
+  2% ▕▊                                     ▏ (~1.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (<1 second remaining)     
+  2% ▕▊                                     ▏ (~1.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.0 minutes remaining)  
+  1% ▕▍                                     ▏ (~4.4 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (<1 second remaining)     
+  2% ▕▊                                     ▏ (~1.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.3 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:02.94 elapsed)     
+
+  0% ▕                                      ▏ (~11.7 minutes remaining) 
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  1% ▕▍                                     ▏ (~3.3 minutes remaining)  
+  0% ▕                                      ▏ (~3.7 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.6 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.2 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  1% ▕▍                                     ▏ (~2.7 minutes remaining)  
+  1% ▕▍                                     ▏ (~2.7 minutes remaining)  
+  0% ▕                                      ▏ (~6.8 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.1 minutes remaining)  
+  0% ▕                                      ▏ (~8.8 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.8 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:06.89 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:04.00 elapsed)     
+
+  5% ▕█▉                                    ▏ (~1.5 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.0 minutes remaining)  
+  1% ▕▍                                     ▏ (~6.4 minutes remaining)  
+  2% ▕▊                                     ▏ (~4.9 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.6 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.8 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.7 minutes remaining)  
+  4% ▕█▌                                    ▏ (~3.0 minutes remaining)  
+  8% ▕███                                   ▏ (~1.4 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.2 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.5 minutes remaining)  
+  5% ▕█▉                                    ▏ (~2.3 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.9 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.1 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.3 minutes remaining)  
+  6% ▕██▎                                   ▏ (~2.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.8 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:06.66 elapsed)     
+
+  3% ▕█▏                                    ▏ (~2.8 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.6 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.4 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.6 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.5 minutes remaining)  
+  8% ▕███                                   ▏ (~2.2 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.4 minutes remaining)  
+ 11% ▕████▏                                 ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.9 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.7 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.0 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.7 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.0 minutes remaining)  
+  6% ▕██▎                                   ▏ (~3.0 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.5 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.2 minutes remaining)  
+ 10% ▕███▊                                  ▏ (~1.4 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.3 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:08.55 elapsed)     
+
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  6% ▕██▎                                   ▏ (~2.1 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.3 minutes remaining)  
+  8% ▕███                                   ▏ (~1.2 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.1 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.9 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:08.69 elapsed)     
+
+  5% ▕█▉                                    ▏ (~2.1 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.2 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.2 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.0 minutes remaining)  
+ 12% ▕████▌                                 ▏ (~1.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.6 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.9 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.3 minutes remaining)  
+ 10% ▕███▊                                  ▏ (~1.3 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.8 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.3 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.4 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.7 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:12.12 elapsed)     
+
+  4% ▕█▌                                    ▏ (~2.2 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.8 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.4 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.4 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:12.85 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:11.25 elapsed)     
+
+ 11% ▕████▏                                 ▏ (~54 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:13.03 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:11.46 elapsed)     
+
+  7% ▕██▋                                   ▏ (~47 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:13.54 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:11.34 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.81 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:14.36 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:12.08 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:03.29 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:11.31 elapsed)     
+
+  8% ▕███                                   ▏ (~45 seconds remaining)   
+  9% ▕███▍                                  ▏ (~45 seconds remaining)   
+ 11% ▕████▏                                 ▏ (~54 seconds remaining)   
+  3% ▕█▏                                    ▏ (~1.7 minutes remaining)  
+ 13% ▕████▉                                 ▏ (~1.2 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:10.51 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:11.66 elapsed)     
+
+ 10% ▕███▊                                  ▏ (~41 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:07.75 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:15.31 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:11.74 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.94 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:15.16 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:12.23 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:14.42 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:12.55 elapsed)     
+
+ 12% ▕████▌                                 ▏ (~39 seconds remaining)   
+ 13% ▕████▉                                 ▏ (~39 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:10.86 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:08.63 elapsed)     
+100% ▕██████████████████████████████████████▏ (00:00:05.32 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:08.95 elapsed)     
+
+
+100% ▕██████████████████████████████████████▏ (00:00:14.26 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.08 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:03.27 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.06 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.12 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.38 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:02.21 elapsed)     
+
+  2% ▕▊                                     ▏ (~1.1 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:02.07 elapsed)     
+
+  5% ▕█▉                                    ▏ (~1.0 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.1 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.1 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.0 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.1 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.3 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.0 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.3 minutes remaining)  
+  8% ▕███                                   ▏ (~51 seconds remaining)   
+  6% ▕██▎                                   ▏ (~1.0 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.3 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.0 minutes remaining)  
+  9% ▕███▍                                  ▏ (~52 seconds remaining)   
+  9% ▕███▍                                  ▏ (~51 seconds remaining)   
+  5% ▕█▉                                    ▏ (~1.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~50 seconds remaining)   
+  9% ▕███▍                                  ▏ (~49 seconds remaining)   
+  7% ▕██▋                                   ▏ (~58 seconds remaining)   
+  9% ▕███▍                                  ▏ (~48 seconds remaining)   
+  9% ▕███▍                                  ▏ (~47 seconds remaining)   
+  0% ▕                                      ▏ (~10.6 minutes remaining) 
+  9% ▕███▍                                  ▏ (~46 seconds remaining)   
+  9% ▕███▍                                  ▏ (~45 seconds remaining)   
+  9% ▕███▍                                  ▏ (~44 seconds remaining)   
+  9% ▕███▍                                  ▏ (~43 seconds remaining)   
+  7% ▕██▋                                   ▏ (~1.0 minutes remaining)  
+  9% ▕███▍                                  ▏ (~42 seconds remaining)   
+  1% ▕▍                                     ▏ (~2.3 minutes remaining)  
+  9% ▕███▍                                  ▏ (~41 seconds remaining)   
+  2% ▕▊                                     ▏ (~2.1 minutes remaining)  
+  9% ▕███▍                                  ▏ (~52 seconds remaining)   
+  6% ▕██▎                                   ▏ (~1.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.0 minutes remaining)  
+ 10% ▕███▊                                  ▏ (~52 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:06.98 elapsed)     
+
+  1% ▕▍                                     ▏ (~3.0 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.0 minutes remaining)  
+  1% ▕▍                                     ▏ (~2.7 minutes remaining)  
+  0% ▕                                      ▏ (~4.2 minutes remaining)  
+  1% ▕▍                                     ▏ (~3.6 minutes remaining)  
+  2% ▕▊                                     ▏ (~1.9 minutes remaining)  
+  0% ▕                                      ▏ (~4.3 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.2 minutes remaining)  
+  1% ▕▍                                     ▏ (~3.1 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.1 minutes remaining)  
+  1% ▕▍                                     ▏ (~7.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.0 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.9 minutes remaining)  
+  1% ▕▍                                     ▏ (~3.3 minutes remaining)  
+  0% ▕                                      ▏ (~4.4 minutes remaining)  
+  0% ▕                                      ▏ (~11.6 minutes remaining) 
+  0% ▕                                      ▏ (~12.6 minutes remaining) 
+  0% ▕                                      ▏ (~6.0 minutes remaining)  
+  1% ▕▍                                     ▏ (~4.0 minutes remaining)  
+  1% ▕▍                                     ▏ (~4.5 minutes remaining)  
+  1% ▕▍                                     ▏ (~3.2 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.8 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.4 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.4 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.4 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.4 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.7 minutes remaining)  
+ 11% ▕████▏                                 ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.5 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.4 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.4 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:06.01 elapsed)     
+
+  0% ▕                                      ▏ (~4.4 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~4.5 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.8 minutes remaining)  
+  3% ▕█▏                                    ▏ (~3.7 minutes remaining)  
+  5% ▕█▉                                    ▏ (~2.1 minutes remaining)  
+  3% ▕█▏                                    ▏ (~4.1 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.8 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.5 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.8 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.7 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.4 minutes remaining)  
+  5% ▕█▉                                    ▏ (~2.0 minutes remaining)  
+  2% ▕▊                                     ▏ (~3.5 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.9 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.6 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.7 minutes remaining)  
+ 12% ▕████▌                                 ▏ (~1.3 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.4 minutes remaining)  
+ 10% ▕███▊                                  ▏ (~1.3 minutes remaining)  
+  3% ▕█▏                                    ▏ (~2.7 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:09.70 elapsed)     
+
+  4% ▕█▌                                    ▏ (~2.6 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.3 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.8 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.4 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.5 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.8 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.5 minutes remaining)  
+  2% ▕▊                                     ▏ (~2.5 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.3 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.4 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.1 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:06.90 elapsed)     
+
+  9% ▕███▍                                  ▏ (~1.1 minutes remaining)  
+  4% ▕█▌                                    ▏ (~2.2 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.2 minutes remaining)  
+  7% ▕██▋                                   ▏ (~3.9 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.1 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.2 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.1 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:09.41 elapsed)     
+
+  9% ▕███▍                                  ▏ (~1.1 minutes remaining)  
+  8% ▕███                                   ▏ (~1.1 minutes remaining)  
+  8% ▕███                                   ▏ (~1.1 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:11.86 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.12 elapsed)     
+
+  8% ▕███                                   ▏ (~3.9 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.7 minutes remaining)  
+ 11% ▕████▏                                 ▏ (~1.0 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~59 seconds remaining)   
+ 10% ▕███▊                                  ▏ (~1.0 minutes remaining)  
+  8% ▕███                                   ▏ (~1.5 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:09.69 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.68 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.49 elapsed)     
+
+ 13% ▕████▉                                 ▏ (~56 seconds remaining)   
+ 12% ▕████▌                                 ▏ (~1.0 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:10.23 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:06.97 elapsed)     
+
+ 10% ▕███▊                                  ▏ (~4.1 minutes remaining)  
+ 12% ▕████▌                                 ▏ (~3.7 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:14.47 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.97 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.24 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:07.81 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:07.46 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.48 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:08.06 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.57 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.25 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.61 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.29 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:08.05 elapsed)     
+
+ 13% ▕████▉                                 ▏ (~4.0 minutes remaining)  
+100% ▕██████████████████████████████████████▏ (00:00:09.26 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.08 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:07.35 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.91 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:08.96 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.89 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:10.88 elapsed)     
+
+100% ▕██████████████████████████████████████▏ (00:00:09.95 elapsed)     
+V4|concurrencia|32 lectores|-|64 consultas en 35.5 s · p50 13.18 s · p95 17.82 s
+## ok

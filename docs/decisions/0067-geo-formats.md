@@ -1029,3 +1029,12 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     | 2,1 M puntos (179 MiB) | 61 000 | 283 000–302 000 | **530 000** |
 
   - **Lo que queda:** una tabla de unos 200 000 puntos a 100 ms se queda en ~90 000. La mitad del tiempo es abrir la conexión (unos 10 viajes), que no depende del driver. V7 en victor lo confirma o no.
+  - **V7 en victor** (`vara-20261017-2043.md`, imagen de drivers `823cd51f`), contra Neon:
+
+    | tabla | 17-oct, antes | ahora |
+    |---|---|---|
+    | `lugares` (214 328 puntos) | 43 080 | **95 482** |
+    | `lugares_geog` | 43 139 | **84 432** |
+    | `carreteras` (300 000 líneas) | 39 324 | **91 160** |
+
+    Unas 2,2 veces más rápido, y por debajo de 100 000 en tablas de este tamaño, como predecía la medida en local: la mitad del tiempo es abrir la conexión a Neon. Una tabla de varios millones, en local a la misma distancia, va a 530 000. **Siguiente palanca, si hace falta:** abrir las conexiones de los tramos a la vez que la principal y bajar el umbral; o acercar el banco a victor (Neon está lejos), que no es del driver.
