@@ -482,3 +482,18 @@ Lo aprendido, investigado, medido y decidido se apunta aquí, con fecha, en el o
   [`0067 · Geo formats`](0067-geo-formats.md)**, acotado al formato: su representación, su distribución
   y su adopción. G4–G10 quedan aquí como líneas de expansión E1–E7 (§7).
 - **2026-10-17 · Entrada de diseño para E2 y E4: el kind lo dice el contrato de uso, no el formato.** CARTO pone `tileset` y `raster` al mismo nivel que `table` en su warehouse, aunque físicamente los tres son tablas: un tileset es una fila por tesela (`z/x/y` + MVT) con sus metadatos (zooms, bbox, campos), derivado de una tabla y servido por su servidor de mapas; un raster es una tabla de píxeles por celda quadbin, con bandas y metadatos, que lee el visor. Cada uno tiene su vista previa (filas, mapa, imagen), sus operaciones (una tesela no se une), su linaje y su frescura. Para ORE: el ráster de E4·1 (COG + tabla índice) y, si T6 decide precalcular, las teselas de E2 son **kinds propios** (`Raster`, `Tileset`) derivados de un `Dataset`, con su linaje y su frescura; no son datasets escondidos. Contado de memoria del producto de CARTO; verificar su esquema antes de diseñar E2/E4.
+- **2026-10-17 · CARTO, verificado en su documentación** (corrige la entrada anterior, escrita de memoria):
+  - **Tileset:** una tabla del warehouse con una fila por tesela (`z`, `x`, `y`, `data` con el MVT) y una fila especial `z = -1` con los metadatos en JSON: `bounds`, `center`, `zmin`, `zmax` y `tilestats` (por propiedad: tipo, min, max, media, suma). Hay tres clases: simple (las geometrías, descartando lo que no se ve), de agregación de puntos (celdas por tesela) y de índice espacial (H3/Quadbin). Se genera por procedimientos del Analytics Toolbox o por Workflows, y hay que regenerarlo cuando cambia el origen: no hay frescura automática. Opciones: `zoom_min`/`zoom_max` (0–12), `tile_extent` 4096, `tile_buffer` 16, `max_tile_size_kb`, `max_tile_features`, `tile_feature_order` y `drop_fraction_as_needed`.
+  - **Por defecto, teselas dinámicas:**
+    - una consulta al warehouse por tesela, recortada a su caja, que simplifica por zoom, descarta lo que no se ve y agrega puntos en una malla global;
+    - un límite de elementos y un plazo por tesela (si se pasa, la tesela sale vacía);
+    - caché en varias capas (CDN, resultados).
+
+    El tileset es para cuando lo dinámico se pasa de plazo o de límite, y se combinan: tileset a zoom bajo y dinámico a zoom alto. Es lo que midió T6.
+  - **Raster:** tablas en formato **RaQuet** (v0.5.0, Parquet): una fila por bloque de 256 px con su celda Quadbin, las bandas como binario comprimido y una fila `block = 0` con los metadatos (tamaño, bounds, zooms, y por banda tipo, nodata, color y estadísticas con histograma). Siempre en EPSG:3857, ordenado por Quadbin y con grupos de 200 filas para el acceso por tesela. Las pirámides son los zooms. Se carga con `raster-loader` desde un COG GoogleMapsCompatible y no se consulta con el editor SQL. Hay una extensión de DuckDB (`raquet`, comunidad).
+  - **En su catálogo** (Data Explorer) los tres viven juntos. El tileset tiene su vista previa con tamaño, filas y estadísticas de tamaño de tesela por zoom, y «Create map». Cómo distingue los kinds en la interfaz no está documentado.
+  - **Para ORE:** confirma los dos kinds (Tileset solo si se precalcula; Raster en E4). Donde ORE puede ir más allá, con lo que ya tiene:
+    - linaje y frescura automáticos en Data Health, contra la versión del Dataset del que salen;
+    - reconstruir solo las teselas que tocan los ficheros cambiados;
+    - una caché direccionada por la instantánea, sin invalidar nada;
+    - permisos explícitos sobre lo precalculado.
