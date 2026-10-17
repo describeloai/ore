@@ -44,6 +44,8 @@ def juzgar(esp, crs, d):
             distintos[f["subtipo"]] += 1
     if distintos:
         faltas.append("WKB distintos: " + ", ".join("%s ×%d" % kv for kv in sorted(distintos.items())))
+    if d.get("nota"):
+        faltas.append(d["nota"])
     if not faltas:
         return "verde", "%s, %s, %d filas" % (d.get("tipo"), visto, len(wkb))
     return "ámbar", "; ".join(faltas)
