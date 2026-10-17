@@ -607,3 +607,31 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
       todas en verde.
   - **Lo que queda para G2·3·2:** leerla de vuelta como geometría. Hoy el SDK la lee como BLOB, porque
     el puntero aún no dice qué columnas son geo (G2·3·1).
+- **2026-10-17 · G2·3·1 y G2·3·2 hechos: el puntero dice qué es geo, y el SDK de Python lo lee como
+  geometría.**
+  - **`ore_core::vistas::geo_de`** da las columnas geo de lo que se lee, con su tipo, sacadas de los
+    tipos del árbol:
+    - lo que el documento declara (un dataset escrito, una vista SQL, una `Table`);
+    - lo de su `from` (una `Table`, una vista u otro dataset), por `fields` si renombra o elige, o
+      todo si copia entera;
+    - en una consulta, lo que pasa tal cual de su fuente.
+
+    Lo que no se sabe no se dice. Prueba: `las_columnas_geo_de_lo_que_se_lee`.
+  - **`ore-serve`:** la respuesta de `datos` de un dataset lleva `geo: {columna: {type, crs, edges?}}`
+    (vacío si no hay ninguna). Va en `datos_de`, así que la llevan también los datasets que forman una
+    `View`.
+  - **El SDK de Python:**
+    - `_con_geo` envuelve la fuente de un dataset con geometría (`iceberg_scan` o `read_parquet`) en
+      `select * replace (ST_GeomFromWKB(col)::GEOMETRY('<crs>') as col …)`, así que dentro del puesto
+      la columna es `GEOMETRY` y las `ST_*` funcionan;
+    - a la salida, DuckDB pone la marca `geoarrow.wkb` con el CRS en PROJJSON;
+    - **con pandas, un `GeoDataFrame` con su CRS** (`_como`); sin `geopandas`, el pandas de siempre
+      en WKB, con un aviso;
+    - una `Geography` se lee como `GEOMETRY` en `OGC:CRS84`: DuckDB no tiene geometría esférica, y
+      lo esférico es cómputo (E1).
+  - **Pruebas:** `test_geo_al_leer`. Sin `geo` es el BLOB de siempre; con `geo`, `ST_Area` da
+    1 000 000 m², Arrow lleva la marca y pandas da un `GeoDataFrame` en `EPSG:25830`. En la imagen de
+    hoy se salta, porque no trae `spatial`. Con `spatial` preinstalada en `/opt/ore/duckdb` (lo que
+    hará G2·3·5) pasa, y la suite del SDK da 108 pruebas, todas en verde. `ore-core` 379/379.
+    `ore-serve` 241/243: las 2 de `git.rs` fallan igual sin este cambio, porque en Docker no hay
+    `git` del worktree.

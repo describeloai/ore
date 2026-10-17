@@ -615,6 +615,88 @@ pub fn nulabilidad_de_vista(
     de(pkg, d, 0)
 }
 
+/// ORE 0067 G2·3·1 · **Las columnas geo de lo que se lee, con su tipo**: lo
+/// que el SDK necesita para leer como geometría lo que en la tabla Iceberg es
+/// `binary` (G2·0). La fuente de verdad son los tipos del árbol:
+/// - los que el documento declara en `columns` (un dataset escrito, una vista
+///   SQL, una `Table`);
+/// - los de su `from` (una `Table`, una vista, otro dataset), por `fields` si
+///   renombra o elige, o todos si copia entera;
+/// - en una consulta (vista SQL, dataset que la copia), los de las columnas que
+///   pasan tal cual de su fuente.
+///
+/// Lo que no se sabe no se dice: una columna sin tipo geo resoluble no sale.
+pub fn geo_de(pkg: &Package, d: &Loaded) -> BTreeMap<String, crate::types::Type> {
+    fn de(pkg: &Package, d: &Loaded, prof: usize) -> BTreeMap<String, crate::types::Type> {
+        // Un ciclo es `OOS2019`; aquí sólo no se da la vuelta para siempre.
+        if prof > 32 {
+            return BTreeMap::new();
+        }
+        let mut out: BTreeMap<String, crate::types::Type> = tipos_de_columnas(d)
+            .into_iter()
+            .filter(|(_, t)| t.es_geo())
+            .collect();
+        if !matches!(d.kind, Kind::Dataset | Kind::View) {
+            return out;
+        }
+        let debajo = match fuente(d) {
+            Some(Fuente::Tabla(q)) => pkg
+                .docs
+                .iter()
+                .find(|x| x.kind == Kind::Table && x.qname().as_deref() == Some(q.as_str())),
+            Some(Fuente::Vista(q)) | Some(Fuente::Dataset(q)) => pkg.docs.iter().find(|x| {
+                matches!(x.kind, Kind::View | Kind::Dataset)
+                    && x.qname().as_deref() == Some(q.as_str())
+            }),
+            _ => None,
+        };
+        if let Some(s) = debajo {
+            let m = de(pkg, s, prof + 1);
+            let fs = campos(d);
+            if fs.is_empty() {
+                for (c, t) in m {
+                    out.entry(c).or_insert(t);
+                }
+            } else {
+                for (campo, col) in fs {
+                    if let Some(t) = m.get(&col) {
+                        out.entry(campo).or_insert_with(|| t.clone());
+                    }
+                }
+            }
+        }
+        // Una consulta: lo que pasa tal cual de una fuente lleva su tipo.
+        if let Some(sql) = crate::linaje::como_sql(d) {
+            let columnas_de = |n: &str| {
+                fuente_sql(pkg, n, d).map(|f| columnas_que_expone(pkg, f).into_iter().collect())
+            };
+            if let Ok(c) = crate::vista_sql::analizar(&sql, &columnas_de) {
+                for col in &c.columnas {
+                    if col.directas.len() != 1
+                        || !col.derivadas.is_empty()
+                        || out.contains_key(&col.nombre)
+                    {
+                        continue;
+                    }
+                    let r = col.directas.iter().next().expect("una");
+                    if let Some(t) = fuente_sql(pkg, &r.fuente, d)
+                        .map(|f| de(pkg, f, prof + 1))
+                        .and_then(|m| {
+                            m.into_iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case(&r.columna))
+                                .map(|(_, t)| t)
+                        })
+                    {
+                        out.insert(col.nombre.clone(), t);
+                    }
+                }
+            }
+        }
+        out
+    }
+    de(pkg, d, 0)
+}
+
 /// Una propiedad que la entidad exige y su columna no garantiza
 /// ([`exigidas_sin_garantia`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3462,6 +3544,65 @@ mod tests {
             "    employeeId: employee_id\n    nationalId: { column: national_id, physicalType: varchar(16) }\n    pais: country\n",
             "  where: { deleted: 'false', country: [ES, PT] }\n",
         )
+    }
+
+    /// ORE 0067 G2·3·1 · **Las columnas geo de lo que se lee**: de la `Table`
+    /// de PostGIS a su copia (entera, o renombrando con `fields`), un dataset
+    /// escrito que las declara, y lo que no es geo no sale.
+    #[test]
+    fn las_columnas_geo_de_lo_que_se_lee() {
+        let tabla = doc(
+            Kind::Table,
+            "apiVersion: oos.dev/v1alpha32\nkind: Table\nmetadata: { name: municipios, namespace: geo }\n\
+             spec:\n  datasource: erp\n  object: public.municipios\n  columns:\n    \
+             id: { type: String }\n    \
+             geom: { type: \"Geometry<MultiPolygon, EPSG:25830>\" }\n    \
+             centro: { type: \"Geography<Point>\" }\n  reads: { fullScan: cheap }\n  changes: { mode: retract, witness: log }\n",
+        );
+        let copia = doc(
+            Kind::Dataset,
+            "apiVersion: oos.dev/v1alpha32\nkind: Dataset\nmetadata: { name: municipios_copia, namespace: geo }\n\
+             spec:\n  owner: team:geo\n  from: { table: geo.municipios }\n",
+        );
+        let renombra = doc(
+            Kind::Dataset,
+            "apiVersion: oos.dev/v1alpha32\nkind: Dataset\nmetadata: { name: limites, namespace: geo }\n\
+             spec:\n  owner: team:geo\n  from: { table: geo.municipios }\n  fields:\n    codigo: id\n    limite: geom\n",
+        );
+        let escrito = doc(
+            Kind::Dataset,
+            "apiVersion: oos.dev/v1alpha32\nkind: Dataset\nmetadata: { name: rutas, namespace: geo }\n\
+             spec:\n  owner: team:geo\n  columns:\n    id: { type: String }\n    \
+             traza: { type: \"Geometry<LineString>\" }\n  changes: { mode: append }\n",
+        );
+        let pkg = paquete(vec![config(), tabla, copia, renombra, escrito]);
+        let geo = |q: &str| -> Vec<(String, String)> {
+            geo_de(&pkg, pkg.dataset(q).unwrap())
+                .into_iter()
+                .map(|(c, t)| (c, t.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            geo("geo.municipios_copia"),
+            vec![
+                ("centro".to_string(), "Geography<Point>".to_string()),
+                (
+                    "geom".to_string(),
+                    "Geometry<MultiPolygon, EPSG:25830>".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            geo("geo.limites"),
+            vec![(
+                "limite".to_string(),
+                "Geometry<MultiPolygon, EPSG:25830>".to_string()
+            )]
+        );
+        assert_eq!(
+            geo("geo.rutas"),
+            vec![("traza".to_string(), "Geometry<LineString>".to_string())]
+        );
     }
 
     #[test]

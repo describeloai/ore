@@ -4238,6 +4238,28 @@ pub(crate) fn celda_de_unidad(
 /// lo que el puntero diga. Una Table es 409 «sin dataset»: no hay camino por el
 /// que esta ruta llegue a un origen. Y una View también es 409 aquí: se lee por
 /// su pregunta (`datos_de_vista`), nunca por el puntero de su raíz.
+/// ORE 0067 G2·3·1 · `{columna: {type, crs, edges?}}` para el puntero.
+fn geo_del_puntero(geo: &std::collections::BTreeMap<String, ore_core::types::Type>) -> Json {
+    use ore_core::types::Type;
+    Json::Obj(
+        geo.iter()
+            .filter_map(|(c, t)| {
+                let (crs, esferica) = match t {
+                    Type::Geometry { crs, .. } => (crs.clone(), false),
+                    Type::Geography { .. } => (ore_core::types::CRS_DEFECTO.to_string(), true),
+                    _ => return None,
+                };
+                let mut m: Vec<(&str, Json)> =
+                    vec![("type", Json::s(t.to_string())), ("crs", Json::s(crs))];
+                if esferica {
+                    m.push(("edges", Json::s("spherical")));
+                }
+                Some((c.clone(), Json::obj(m)))
+            })
+            .collect(),
+    )
+}
+
 fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     // ¿Existe el documento? El puntero de algo que no está es un 404, no un 409.
     // Un dataset se lee por su puntero; una vista, por su pregunta; una tabla,
@@ -4375,8 +4397,18 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
         crate::salud::ahora(),
         (false, false),
     );
+    // ORE 0067 G2·3·1: qué columnas son geometría, con su tipo, CRS y aristas,
+    // de los tipos del árbol. En la tabla Iceberg son `binary` (G2·0) y DuckDB
+    // las daría como BLOB: con esto el SDK las lee como `GEOMETRY`.
+    let geo = pkg
+        .docs
+        .iter()
+        .find(|d| d.kind == Kind::Dataset && d.qname().as_deref() == Some(del_dataset.as_str()))
+        .map(|d| geo_del_puntero(&ore_core::vistas::geo_de(&pkg, d)))
+        .unwrap_or_else(|| Json::Obj(Default::default()));
     Respuesta::ok(Json::obj([
         ("salud", salud),
+        ("geo", geo),
         ("vista", Json::s(vista)),
         ("dataset", Json::s(&del_dataset)),
         ("estado", Json::s(estado)),

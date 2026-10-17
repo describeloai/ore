@@ -784,10 +784,27 @@ def _fuente_de_respuesta(vista, r):
                 c, l = session.pedir("GET", _v1_tabla(_corto(vista)), cabeceras=_DELEGAR)
                 if c == 200 and (l or {}).get("config", {}).get("s3.access-key-id"):
                     _s3 = l["config"]
-        return _iceberg(r["metadata_location"], cred.get("gcs.oauth2.token")), r
+        return _con_geo(_iceberg(r["metadata_location"], cred.get("gcs.oauth2.token")), r), r
     f, r = _parquet_de(vista, r)
     r["_parquet"] = f
-    return "read_parquet('%s')" % f.replace("'", "''").replace("\\", "/"), r
+    return _con_geo("read_parquet('%s')" % f.replace("'", "''").replace("\\", "/"), r), r
+
+
+def _con_geo(fuente, r):
+    """ORE 0067 G2·3·2: las columnas que el puntero dice geo (`geo`, de los tipos del
+    árbol) se leen como `GEOMETRY` con su CRS, no como el BLOB que es la columna
+    `binary` de Iceberg (G2·0). Dentro del puesto funcionan las `ST_*`, y a la
+    salida Arrow lleva la marca `geoarrow.wkb` con el CRS (DuckDB la pone). Una
+    `Geography` se lee como `GEOMETRY` en `OGC:CRS84`: DuckDB no tiene geometría
+    esférica (lo esférico es cómputo, E1)."""
+    geo = r.get("geo") or {}
+    if not geo:
+        return fuente
+    con = _duckdb()
+    _cargar(con, "spatial")
+    cambios = ", ".join('ST_GeomFromWKB("%s")::GEOMETRY(\'%s\') as "%s"' % (
+        c.replace('"', '""'), (g.get("crs") or "OGC:CRS84").replace("'", "''"), c.replace('"', '""')) for c, g in sorted(geo.items()))
+    return "(select * replace (%s) from %s)" % (cambios, fuente)
 
 
 def _iceberg(metadata_location, prestada=None):
@@ -897,6 +914,18 @@ def _como(tabla, como):
     if como == "pandas":
         import pandas as pd
 
+        # ORE 0067 G2·3·2: con geometría, un GeoDataFrame con su CRS (lo que el
+        # ecosistema espera, 0066 T5); sin geopandas en la imagen, el pandas de
+        # siempre con la columna en WKB, y se avisa.
+        if any((f.metadata or {}).get(b"ARROW:extension:name") == b"geoarrow.wkb" for f in tabla.schema):
+            try:
+                import geopandas
+
+                return geopandas.GeoDataFrame.from_arrow(tabla)
+            except ImportError:
+                import warnings
+
+                warnings.warn("this table has geometry and geopandas is not installed: the geometry comes as WKB bytes")
         return tabla.to_pandas(types_mapper=pd.ArrowDtype)
     if como == "polars":
         import polars as pl
