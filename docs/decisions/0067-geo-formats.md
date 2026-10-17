@@ -891,3 +891,12 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - Snowflake, en ámbar sin cuenta;
   - Sedona, a remirar sobre Spark 4.1;
   - las de antes: el ritmo de V3, las cotas de manifiesto de las columnas escalares en tablas geo y la comprobación de tipos en las Views.
+- **2026-10-17 · Paso 5 en victor, segunda pasada (`g2-celda.py` y `g2-celda-resto.py`, con la imagen de `2c1cbf0f`):**
+  - **G2·3·5, verde:**
+    - `write` de 100 000 puntos en EPSG:25830;
+    - `over` da un **GeoDataFrame con EPSG:25830 y las mismas geometrías**;
+    - el filtro por zona con `intersects_box` da **1 011 filas, exactamente las esperadas**;
+    - H3 da 580 celdas sobre las 100 000 filas. Necesitó `load h3` a mano; desde `b13a8c49` el SDK lo carga junto a `spatial`.
+  - **V6, verde:** la tabla v3 ajena se lee como `GEOMETRY('OGC:CRS84')` (214 328 filas), se copia con `ore.write` y se relee como GeoDataFrame con OGC:CRS84 y **el mismo md5 de los WKB**.
+  - **V5 en prod:** queda como deuda volver a correr la matriz sobre los ficheros de victor. Descargarlos con `read_blob` sobre https no admite `*`, y es un problema del arnés, no del producto. Los ficheros salen del mismo `ore-store` medido en local, y BigQuery cargó uno escrito por victor.
+- **2026-10-17 · G2 CERRADO.** El lago geo escribe (v3, GEOMETRY nativo, clave `geo` con PROJJSON, Hilbert con grupos de 100 000) y lee (los tres SDK, GeoDataFrame con su CRS, filtro por zona con `&&`, H3). Abre las tablas v3 ajenas, con la lente de solo lectura. Su adopción está medida (matriz local y BigQuery). La deuda, la de la entrada del borrador más la matriz sobre ficheros de victor. **Siguiente: G3.**
