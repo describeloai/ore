@@ -93,6 +93,7 @@ for f in ("/tmp/cat-pgv.json", "/tmp/cat-pgis.json"):
             cat[(t["name"].split(".")[-1], c["name"])] = c.get("type")
 def esperado(oos):
     if oos is None or oos in ("Opaque", "Decimal") or oos == "String": return "string"
+    if oos.startswith(("Geometry", "Geography")): return "binary"  # ORE 0067: el EWKB, en binario
     if oos.startswith("list<"): return "list<item: %s>" % esperado(oos[5:-1])
     if oos.startswith("Decimal<"):
         p, s = oos[8:-1].split(","); return "decimal128(%s, %s)" % (p.strip(), s.strip())

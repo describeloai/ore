@@ -1016,3 +1016,16 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     4. Los formatos de fichero como `Table` nativas de un origen.
     5. Oracle, SQL Server, Snowflake, Databricks y MySQL, cuando llegue cada origen.
 - **ADR 0067: G0–G3 cerrados.** Lo que sigue son las líneas de 0066 (E1 cómputo, E2 servir, E4 ráster…) y la deuda acotada de cada etapa.
+- **2026-10-17 · Deuda 1, el ritmo de copia de PostGIS (`ore-read-postgres`).**
+  - **Lo medido antes de tocar:** en local, con PostGIS en Docker y 100 ms de RTT simulados (`tc netem`), el driver de antes da 39 000–43 000 filas/s, lo mismo que victor contra Neon. Sin latencia da 400 000. El freno es la red (viajes de ida y vuelta y el arranque lento de TCP), no la CPU.
+  - **Uno · la geometría en binario.** El protocolo simple lo da todo en texto: `ST_AsBinary` habría llegado como hex. La lectura pasa al protocolo extendido con una sentencia **sin nombre** (`query_typed_raw`, sirve detrás de un pooler en modo transacción) y en flujo, sin un `FETCH` por lote. La geometría se pide como `geom::bytea` (su EWKB) y sale como `Binary`, que convierte el códec del lago. Lo demás se pide por su función de salida (`format('%s', …)`), el mismo texto de antes. Un tipo de extensión en el resultado colgaba la lectura: `tokio-postgres` preguntaba por él con las filas a medio llegar.
+  - **Dos · en tramos.** Una tabla o vista materializada de 48 MiB o más, leída entera (sin `limit`, orden ni claves), en un primario con Postgres 14 o posterior, se lee con 4 conexiones. Cada una lee su rango de `ctid` desde la misma instantánea exportada (`pg_export_snapshot`, `REPEATABLE READ`), así que lo leído es de un instante. Además, dos viajes fijos menos por lectura.
+  - **Medida a 100 ms** (`pruebas-de-fuego/geo/ritmo/medir.py`; md5 idéntico al de antes en las cuatro tablas):
+
+    | tabla | antes | binario | binario + tramos |
+    |---|---|---|---|
+    | 214 000 puntos (18 MiB) | 41 000 | 90 000 | 91 000–94 000 (una conexión) |
+    | 300 000 líneas (57 MiB) | 39 000 | 85 000 | 102 000 |
+    | 2,1 M puntos (179 MiB) | 61 000 | 283 000–302 000 | **530 000** |
+
+  - **Lo que queda:** una tabla de unos 200 000 puntos a 100 ms se queda en ~90 000. La mitad del tiempo es abrir la conexión (unos 10 viajes), que no depende del driver. V7 en victor lo confirma o no.

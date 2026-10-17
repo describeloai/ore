@@ -3,16 +3,19 @@
 //!
 //! # Cinco decisiones
 //!
-//! 1. **Por un cursor, de [`LOTE`] en [`LOTE`] filas.** `client.query` juntaba
-//!    el resultado entero antes de escribir una fila: el kit midió 388 MiB y el
-//!    primer byte a los 32,9 s para 10⁶ filas (F2·1). Un cursor dentro de una
-//!    transacción de sólo lectura trae cada vez un lote, que sale por stdout
-//!    antes de pedir el siguiente: la memoria es la de un lote. **Por el
-//!    protocolo simple** (ADR 0065 PG2, D-PG6): `DECLARE … CURSOR` y `FETCH`,
-//!    sin sentencias con nombre. Con ellas, detrás de un pooler en modo
-//!    transacción sin *prepared statements* (Supavisor, pgbouncer < 1.21) dos
-//!    lectores a la vez chocaban: `42P05 prepared statement "s0" already
-//!    exists`, 14/20 en PG0. Los parámetros van como literales (`en_linea`).
+//! 1. **En flujo, de [`LOTE`] en [`LOTE`] filas.** `client.query` juntaba el
+//!    resultado entero antes de escribir una fila: el kit midió 388 MiB y el
+//!    primer byte a los 32,9 s para 10⁶ filas (F2·1). Las filas llegan por
+//!    `query_typed_raw`, que las va dando según llegan (el canal de
+//!    `tokio-postgres` es de uno: el servidor espera a que se lean), y salen
+//!    por stdout de lote en lote: la memoria es la de un lote. **Con una
+//!    sentencia sin nombre** (ADR 0065 PG2, D-PG6): con nombre, detrás de un
+//!    pooler en modo transacción sin *prepared statements* (Supavisor,
+//!    pgbouncer < 1.21) dos lectores a la vez chocaban (`42P05 prepared
+//!    statement "s0" already exists`, 14/20 en PG0); la sin nombre se prepara,
+//!    se ata y se ejecuta en el mismo viaje. Los parámetros van como literales
+//!    (`en_linea`). Hasta ORE 0067 era un cursor por el protocolo simple, con
+//!    un viaje de ida y vuelta por lote y todo en texto (`FETCH`).
 //! 2. **El tipo de cada columna, del catálogo**, con la misma traducción que
 //!    `catalogo` (`traducir`): es la que escribió la `Table` del árbol, así que
 //!    el tipo Arrow es el de la tabla. Sólo lo exacto se tipa —enteros,
@@ -20,14 +23,19 @@
 //!    (`numeric` sin precisión, lo opaco, las listas) sale como texto y el
 //!    almacén lo estrecha como hasta ahora. Un valor que no cabe en su tipo es
 //!    un error con su columna y su fila, nunca un nulo.
-//! 3. **El valor llega en su texto canónico y de ahí va a su tipo**: el
-//!    protocolo simple da el texto de Postgres, con la sesión fijada
+//! 3. **El valor llega en su texto canónico y de ahí va a su tipo**: la
+//!    consulta pide cada columna por su función de salida (`format('%s', …)`,
+//!    el texto que daba el protocolo simple), con la sesión fijada
 //!    (`ajustes`: UTC, ISO, `extra_float_digits`), y `ore_core::tipos` lo
 //!    analiza, el mismo analizador con el que el almacén estrecha. Así cualquier
 //!    tipo se lee (PG0: se negaban 27 de 38): lo que no se tipa con exactitud
 //!    sale como su texto (D-PG4). Un array de un escalar exacto es una lista de
 //!    Arrow. `infinity` en una fecha va a 9999-12-31 (y `-infinity` a
 //!    0001-01-01), y `NaN` o infinito en un decimal, a nulo, las dos con aviso.
+//!    **La geometría no** (ORE 0067): una columna `geometry`/`geography`
+//!    tipada (`Geometry<…>`, `Geography<…>`) llega en binario, el EWKB de su
+//!    `send`, y sale como `Binary`, que el códec del lago convierte. En hex
+//!    eran el doble de bytes.
 //! 4. **El tiempo, en el origen**: `SET LOCAL statement_timeout` y, entre lote y
 //!    lote, el reloj de la petición.
 //! 5. **Cancelar, en el origen**: el `CancelToken` de la sesión en curso queda
@@ -36,8 +44,8 @@
 
 use crate::texto;
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -71,8 +79,7 @@ pub const CAPACIDADES: Capacidades = Capacidades {
 pub type Token = Arc<Mutex<Sesion>>;
 
 /// Lo que se cancela: la consulta que corre en el origen (`token`) y, entre
-/// un `FETCH` y el siguiente —cuando en el origen no corre nada—, la marca
-/// que el bucle mira (0053 F3·2: sin ella, cancelar a mitad de un flujo no
+/// un lote y el siguiente, la marca que el bucle mira (0053 F3·2: sin ella, cancelar a mitad de un flujo no
 /// paraba el bucle, que pedía lotes hasta el final).
 #[derive(Default)]
 pub struct Sesion {
@@ -81,16 +88,19 @@ pub struct Sesion {
     /// con la misma CA.
     pub tls: Option<postgres_native_tls::MakeTlsConnector>,
     pub cancelada: bool,
+    /// Las sesiones de los tramos de una lectura repartida (ORE 0067).
+    pub tramos: Vec<(postgres::CancelToken, postgres_native_tls::MakeTlsConnector)>,
 }
 
 /// Cancela en el origen lo que corre en la sesión de `token`, si algo corre.
 pub fn cancelar(token: &Token) {
-    let t = token.lock().ok().and_then(|mut s| {
-        s.cancelada = true;
-        Some((s.token.clone()?, s.tls.clone()?))
-    });
-    if let Some((t, tls)) = t {
-        let _ = t.cancel_query(tls);
+    let Ok(mut s) = token.lock() else { return };
+    s.cancelada = true;
+    if let (Some(t), Some(tls)) = (&s.token, &s.tls) {
+        let _ = t.cancel_query(tls.clone());
+    }
+    for (t, tls) in &s.tramos {
+        let _ = t.cancel_query(tls.clone());
     }
 }
 
@@ -166,10 +176,18 @@ pub(crate) fn exacto(oos: &str) -> bool {
 pub(crate) enum Forma {
     Escalar(Option<Fisico>),
     Lista(Fisico),
+    /// ORE 0067: `geometry`/`geography` con su tipo de OOS, en binario (EWKB).
+    Geo,
 }
 
 impl Forma {
     pub(crate) fn de(formato: &str, familia: &str, base: Option<&str>) -> Forma {
+        if crate::traducir(formato, familia, base)
+            .and_then(|t| ore_core::types::parse_type(&t).ok())
+            .is_some_and(|t| t.es_geo())
+        {
+            return Forma::Geo;
+        }
         match formato.trim().strip_suffix("[]") {
             Some(dentro) => match fisico(dentro.trim(), "b", None) {
                 Some(f) => Forma::Lista(f),
@@ -183,6 +201,24 @@ impl Forma {
         match self {
             Forma::Escalar(f) => f.as_ref(),
             Forma::Lista(f) => Some(f),
+            Forma::Geo => None,
+        }
+    }
+
+    /// Cómo la pide la consulta: la geometría tal cual (binario) y lo demás
+    /// por su función de salida, que es el texto canónico (un `::text` no lo
+    /// es: `true` por `t`, la máscara de un `inet`, sin los blancos de un
+    /// `char(n)`).
+    fn en_la_consulta(&self, col: &str) -> String {
+        let c = format!("ore_q.\"{}\"", col.replace('"', "\"\""));
+        match self {
+            // `::bytea`, el EWKB de su `send`, con un tipo que el protocolo
+            // conoce: un tipo de extensión en el resultado hace que
+            // `tokio-postgres` pregunte por él (otra consulta) con las filas a
+            // medio llegar, y las dos se esperan para siempre en cuanto no
+            // caben en el búfer (pasaba a partir de unos cientos de puntos).
+            Forma::Geo => format!("{c}::bytea"),
+            _ => format!("CASE WHEN {c} IS NULL THEN NULL ELSE format('%s', {c}) END"),
         }
     }
 }
@@ -192,12 +228,29 @@ pub(crate) fn columnas(
     c: &mut postgres::Client,
     objeto: &str,
 ) -> Result<Vec<(String, Forma)>, Fallo> {
+    columnas_y_paginas(c, objeto).map(|(cols, _)| cols)
+}
+
+/// Las columnas de un objeto, por nombre, con su forma.
+type Columnas = Vec<(String, Forma)>;
+
+/// Las columnas y, en el mismo viaje, las páginas del objeto si se puede leer
+/// en tramos (`paginas_a_repartir`): una tabla o vista materializada de un
+/// primario con Postgres 14 o más.
+fn columnas_y_paginas(
+    c: &mut postgres::Client,
+    objeto: &str,
+) -> Result<(Columnas, Option<i64>), Fallo> {
     let citado = citado(objeto);
     let filas = c
         .query_typed(
             "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), t.typtype::text, \
                     CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) END, \
-                    to_regclass($1) IS NOT NULL \
+                    to_regclass($1) IS NOT NULL, \
+                    CASE WHEN current_setting('server_version_num')::int >= 140000 \
+                          AND NOT pg_is_in_recovery() \
+                          AND (SELECT relkind IN ('r', 'm') FROM pg_class WHERE oid = o.r) \
+                         THEN pg_relation_size(o.r) / current_setting('block_size')::int8 END \
              FROM (SELECT to_regclass($1) AS r) o \
              LEFT JOIN pg_attribute a ON a.attrelid = o.r AND a.attnum > 0 AND NOT a.attisdropped \
              LEFT JOIN pg_type t ON t.oid = a.atttypid \
@@ -214,7 +267,8 @@ pub(crate) fn columnas(
             format!("`{objeto}` no existe en el origen (o no se puede ver)"),
         ));
     }
-    Ok(filas
+    let paginas: Option<i64> = filas.first().and_then(|f| f.get(5));
+    let cols = filas
         .iter()
         .filter_map(|f| {
             let nombre: Option<String> = f.get(0);
@@ -226,12 +280,14 @@ pub(crate) fn columnas(
                 Forma::de(&formato?, &familia.unwrap_or_default(), base.as_deref()),
             ))
         })
-        .collect())
+        .collect();
+    Ok((cols, paginas))
 }
 
 fn tipo_arrow(f: &Forma) -> DataType {
     match f {
         Forma::Escalar(f) => tipo_escalar(f.as_ref()),
+        Forma::Geo => DataType::Binary,
         Forma::Lista(f) => {
             DataType::List(Arc::new(Field::new("item", tipo_escalar(Some(f)), true)))
         }
@@ -265,6 +321,8 @@ enum Col {
     Hora(Time64MicrosecondBuilder),
     FechaHora(TimestampMicrosecondBuilder),
     Instante(TimestampMicrosecondBuilder),
+    /// ORE 0067: el EWKB de una geometría.
+    Geo(BinaryBuilder),
     /// Una lista: los elementos en su columna, y dónde empieza cada fila.
     Lista {
         dentro: Box<Col>,
@@ -372,6 +430,7 @@ impl Col {
     fn de(f: &Forma) -> Col {
         match f {
             Forma::Escalar(f) => Col::nueva(f.as_ref()),
+            Forma::Geo => Col::Geo(BinaryBuilder::new()),
             Forma::Lista(f) => Col::Lista {
                 dentro: Box::new(Col::nueva(Some(f))),
                 fisico: *f,
@@ -441,6 +500,7 @@ impl Col {
             Col::Hora(b) => b.len(),
             Col::FechaHora(b) => b.len(),
             Col::Instante(b) => b.len(),
+            Col::Geo(b) => b.len(),
             Col::Lista { nulos, .. } => nulos.len(),
         }
     }
@@ -457,6 +517,7 @@ impl Col {
                 Col::Hora(b) => b.append_null(),
                 Col::FechaHora(b) => b.append_null(),
                 Col::Instante(b) => b.append_null(),
+                Col::Geo(b) => b.append_null(),
                 Col::Lista { .. } => unreachable!("una lista se pone por `poner`"),
             }
             return Ok(());
@@ -498,6 +559,7 @@ impl Col {
             Col::Hora(b) => Arc::new(b.finish()),
             Col::FechaHora(b) => Arc::new(b.finish()),
             Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
+            Col::Geo(b) => Arc::new(b.finish()),
             Col::Lista {
                 dentro,
                 offsets,
@@ -528,6 +590,8 @@ struct Plan {
     /// Por propiedad: su posición en el resultado, su forma y su columna.
     salida: Vec<(String, usize, Forma, String)>,
     esquema: Arc<Schema>,
+    /// Las páginas del objeto, si se puede leer en tramos (ORE 0067).
+    paginas: Option<i64>,
 }
 
 fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
@@ -539,7 +603,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         unreachable!("`POSTGRES` no exige tipos")
     })
     .map_err(Fallo::operador)?;
-    let cols = columnas(c, &p.objeto)?;
+    let (cols, paginas) = columnas_y_paginas(c, &p.objeto)?;
     let mut salida = Vec::new();
     for (prop, col) in &p.proyeccion {
         let f = cols
@@ -577,6 +641,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         consulta,
         salida,
         esquema,
+        paginas,
     })
 }
 
@@ -669,22 +734,104 @@ pub fn leer(
         s.token = Some(c.cancel_token());
         s.tls = crate::tls::conector_de(&p.url);
         s.cancelada = false;
+        s.tramos.clear();
     }
-    let mut tx = c
-        .build_transaction()
-        .read_only(true)
-        .start()
-        .map_err(|e| fallo_de(&e))?;
-    tx.batch_execute(&ajustes(p.timeout_ms))
-        .map_err(|e| fallo_de(&e))?;
-    tx.batch_execute(&format!(
-        "DECLARE ore_lectura NO SCROLL CURSOR FOR {}",
-        en_linea(&plan.consulta)
-    ))
-    .map_err(|e| fallo_de(&e))?;
-    let mut avisos: BTreeMap<(String, Aviso), u64> = BTreeMap::new();
+    let paginas = paginas_a_repartir(&plan, p);
     let mut escritor = arrow_ipc::writer::StreamWriter::try_new(&mut *salida, &plan.esquema)
         .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
+    let mut escribir = |lote: &RecordBatch| -> Result<(), Fallo> {
+        escritor
+            .write(lote)
+            .and_then(|_| escritor.flush())
+            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+    };
+    let mut avisos: BTreeMap<(String, Aviso), u64> = BTreeMap::new();
+    let n = match paginas {
+        None => {
+            // Abrir la transacción y fijar la sesión, en un solo viaje.
+            let abrir = format!("START TRANSACTION READ ONLY; {}", ajustes(p.timeout_ms));
+            en_transaccion(c, &abrir, |c, _| {
+                let mut filas = c
+                    .query_typed_raw(&sql_de(&plan, &plan.consulta), sin_parametros())
+                    .map_err(|e| fallo_de(&e))?;
+                por_lotes(&mut filas, &plan, p, token, inicio, &mut avisos, |l| {
+                    escribir(&l)
+                })
+            })?
+        }
+        Some(paginas) => en_tramos(c, &plan, p, token, inicio, paginas, &mut avisos, escribir)?,
+    };
+    escritor
+        .finish()
+        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    for ((columna, aviso), k) in &avisos {
+        eprintln!("ore-read-postgres: aviso · `{columna}`: {k} {aviso}");
+    }
+    if let Ok(mut s) = token.lock() {
+        s.token = None;
+        s.tramos.clear();
+    }
+    Ok(n)
+}
+
+/// La consulta que se manda: sólo lo que sale, en el orden de `salida`, la
+/// geometría en binario y lo demás por su texto (`Forma::en_la_consulta`).
+fn sql_de(plan: &Plan, consulta: &ore_sql::Consulta) -> String {
+    format!(
+        "SELECT {} FROM ({}) AS ore_q",
+        plan.salida
+            .iter()
+            .map(|(_, _, f, col)| f.en_la_consulta(col))
+            .collect::<Vec<_>>()
+            .join(", "),
+        en_linea(consulta)
+    )
+}
+
+/// `abrir` (que empieza una transacción; sus filas, a `hacer`), `hacer` y
+/// `COMMIT`. Si algo falla, `ROLLBACK`: la sesión queda como estaba y puede
+/// volver a usarse (`servir`).
+fn en_transaccion<T>(
+    c: &mut postgres::Client,
+    abrir: &str,
+    hacer: impl FnOnce(&mut postgres::Client, Vec<postgres::SimpleQueryRow>) -> Result<T, Fallo>,
+) -> Result<T, Fallo> {
+    let hecho = c
+        .simple_query(abrir)
+        .map_err(|e| fallo_de(&e))
+        .and_then(|m| hacer(c, filas_de(m)));
+    match hecho {
+        Ok(t) => {
+            c.batch_execute("COMMIT").map_err(|e| fallo_de(&e))?;
+            Ok(t)
+        }
+        Err(f) => {
+            let _ = c.batch_execute("ROLLBACK");
+            Err(f)
+        }
+    }
+}
+
+fn sin_parametros() -> std::iter::Empty<(
+    &'static (dyn postgres::types::ToSql + Sync),
+    postgres::types::Type,
+)> {
+    std::iter::empty()
+}
+
+/// **Las filas, de [`LOTE`] en [`LOTE`]**, en Arrow, a `dar`. Entre lote y
+/// lote mira el reloj de la petición y la marca de cancelar. Devuelve las
+/// filas.
+fn por_lotes(
+    filas: &mut postgres::RowIter<'_>,
+    plan: &Plan,
+    p: &Peticion,
+    token: &Token,
+    inicio: Instant,
+    avisos: &mut BTreeMap<(String, Aviso), u64>,
+    mut dar: impl FnMut(RecordBatch) -> Result<(), Fallo>,
+) -> Result<u64, Fallo> {
+    use postgres::fallible_iterator::FallibleIterator;
     let mut n: u64 = 0;
     loop {
         if let Some(ms) = p.timeout_ms
@@ -698,23 +845,37 @@ pub fn leer(
         if token.lock().map(|s| s.cancelada).unwrap_or(false) {
             return Err(Fallo::origen(format!("cancelada con {n} filas leídas")));
         }
-        let filas = filas_de(
-            tx.simple_query(&format!("FETCH {LOTE} FROM ore_lectura"))
-                .map_err(|e| fallo_de(&e))?,
-        );
-        if filas.is_empty() {
-            break;
-        }
         let mut cols: Vec<Col> = plan.salida.iter().map(|(_, _, f, _)| Col::de(f)).collect();
-        for (k, fila) in filas.iter().enumerate() {
-            for ((prop, i, f, columna), col) in plan.salida.iter().zip(cols.iter_mut()) {
-                let v = fila.try_get(*i).map_err(|e| {
-                    Fallo::origen(format!(
-                        "la columna `{columna}` no se pudo leer: {}",
-                        texto::causa(&e)
-                    ))
-                })?;
-                if let Some(a) = col.poner(f.escalar(), v).map_err(|e| {
+        let mut k: usize = 0;
+        let mut fin = false;
+        while k < LOTE {
+            let Some(fila) = filas.next().map_err(|e| fallo_de(&e))? else {
+                fin = true;
+                break;
+            };
+            for (i, ((prop, _, f, columna), col)) in
+                plan.salida.iter().zip(cols.iter_mut()).enumerate()
+            {
+                let v = fila
+                    .try_get::<_, Option<Crudo>>(i)
+                    .map_err(|e| {
+                        Fallo::origen(format!(
+                            "la columna `{columna}` no se pudo leer: {}",
+                            texto::causa(&e)
+                        ))
+                    })?
+                    .map(|c| c.0);
+                let puesto = match (&mut *col, v) {
+                    (Col::Geo(b), Some(v)) => {
+                        b.append_value(v);
+                        Ok(None)
+                    }
+                    (col, v) => match v.map(std::str::from_utf8).transpose() {
+                        Ok(t) => col.poner(f.escalar(), t),
+                        Err(e) => Err(format!("no es texto: {e}")),
+                    },
+                };
+                if let Some(a) = puesto.map_err(|e| {
                     Fallo::origen(format!(
                         "`{prop}` (la columna `{columna}`), fila {}: {e}",
                         n + k as u64 + 1
@@ -723,38 +884,220 @@ pub fn leer(
                     *avisos.entry((columna.clone(), a)).or_default() += 1;
                 }
             }
+            k += 1;
         }
-        let arrays = cols
-            .iter_mut()
-            .map(Col::fin)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(Fallo::origen)?;
-        let lote = RecordBatch::try_new(plan.esquema.clone(), arrays)
-            .map_err(|e| Fallo::origen(format!("el lote no casa: {e}")))?;
-        escritor
-            .write(&lote)
-            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))?;
-        escritor
-            .flush()
-            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))?;
-        n += filas.len() as u64;
-        if filas.len() < LOTE {
-            break;
+        if k > 0 {
+            let arrays = cols
+                .iter_mut()
+                .map(Col::fin)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Fallo::origen)?;
+            dar(RecordBatch::try_new(plan.esquema.clone(), arrays)
+                .map_err(|e| Fallo::origen(format!("el lote no casa: {e}")))?)?;
+            n += k as u64;
+        }
+        if fin {
+            return Ok(n);
         }
     }
-    escritor
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
-    tx.batch_execute("CLOSE ore_lectura")
-        .map_err(|e| fallo_de(&e))?;
-    tx.commit().map_err(|e| fallo_de(&e))?;
-    for ((columna, aviso), k) in &avisos {
-        eprintln!("ore-read-postgres: aviso · `{columna}`: {k} {aviso}");
+}
+
+/// Cuántas conexiones leen a la vez una tabla grande (ORE 0067).
+const TRAMOS: i64 = 4;
+
+/// Desde cuántas páginas de 8 KiB (48 MiB) se reparte: por debajo, abrir las
+/// conexiones cuesta más viajes de los que ahorra. Medido a 100 ms del origen:
+/// 18 MiB (214 000 puntos) van a 90 000 filas/s con una y a 76 000 con cuatro;
+/// 57 MiB, a 85 000 y 94 000; 179 MiB (2,1 M), a 283 000 y 496 000.
+const PAGINAS_PARA_REPARTIR: i64 = 6144;
+
+/// **¿Se lee en tramos?** ORE 0067: a 100 ms del origen, una conexión no pasa
+/// de unas 90 000 filas/s, por los viajes y por la ventana de TCP; varias, cada
+/// una con su trozo de la tabla por `ctid`, se suman. Sólo cuando el orden no
+/// importa y se lee entera (sin `limit`, sin orden, sin claves: una copia), de
+/// una tabla o vista materializada con [`PAGINAS_PARA_REPARTIR`] páginas o
+/// más, en un primario (exportar la instantánea no se puede en una réplica)
+/// de Postgres 14 o más (antes no hay *TID Range Scan*, y cada tramo
+/// recorrería la tabla entera): eso lo pregunta `columnas_y_paginas`, en el
+/// mismo viaje. Devuelve las páginas.
+fn paginas_a_repartir(plan: &Plan, p: &Peticion) -> Option<i64> {
+    if p.limit.is_some() || !p.orden.is_empty() || !p.claves.is_empty() {
+        return None;
     }
-    if let Ok(mut s) = token.lock() {
-        s.token = None;
+    plan.paginas.filter(|n| *n >= PAGINAS_PARA_REPARTIR)
+}
+
+/// **Leer en tramos** desde una misma instantánea: la conexión de la
+/// petición abre una transacción `REPEATABLE READ` y la exporta; cada tramo
+/// abre la suya con esa instantánea (`SET TRANSACTION SNAPSHOT`) y lee su
+/// rango de páginas (`ctid`), el último sin cota de arriba. Lo leído es lo de
+/// un instante, como con una conexión. Los lotes llegan por un canal acotado y
+/// se escriben en el orden en que llegan. Si un tramo falla, se cancelan los
+/// demás y el error es el suyo.
+#[allow(clippy::too_many_arguments)]
+fn en_tramos(
+    c: &mut postgres::Client,
+    plan: &Plan,
+    p: &Peticion,
+    token: &Token,
+    inicio: Instant,
+    paginas: i64,
+    avisos: &mut BTreeMap<(String, Aviso), u64>,
+    escribir: impl FnMut(&RecordBatch) -> Result<(), Fallo>,
+) -> Result<u64, Fallo> {
+    // Abrirla y exportar su instantánea, en un viaje.
+    en_transaccion(
+        c,
+        "START TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; \
+         SELECT pg_export_snapshot()",
+        |_, filas| {
+            let instantanea = filas
+                .first()
+                .and_then(|f| f.get(0))
+                .ok_or_else(|| Fallo::origen("pg_export_snapshot no devolvió nada"))?
+                .to_string();
+            tramos_desde(
+                &instantanea,
+                plan,
+                p,
+                token,
+                inicio,
+                paginas,
+                avisos,
+                escribir,
+            )
+        },
+    )
+}
+
+/// Los tramos, cada uno en su conexión con la instantánea `instantanea`.
+#[allow(clippy::too_many_arguments)]
+fn tramos_desde(
+    instantanea: &str,
+    plan: &Plan,
+    p: &Peticion,
+    token: &Token,
+    inicio: Instant,
+    paginas: i64,
+    avisos: &mut BTreeMap<(String, Aviso), u64>,
+    mut escribir: impl FnMut(&RecordBatch) -> Result<(), Fallo>,
+) -> Result<u64, Fallo> {
+    let paso = (paginas + TRAMOS - 1) / TRAMOS;
+    let tramos: Vec<String> = (0..TRAMOS)
+        .map(|i| {
+            let mut q = p.clone();
+            let cota = |op: &str, pagina: i64| ore_driver::Filtro {
+                columna: "ctid".into(),
+                operador: op.into(),
+                valor: ore_driver::Valor::Uno(format!("({pagina},0)")),
+            };
+            if i > 0 {
+                q.filtros.push(cota("ge", i * paso));
+            }
+            if i < TRAMOS - 1 {
+                q.filtros.push(cota("lt", (i + 1) * paso));
+            }
+            ore_sql::preparar(&q, &ore_sql::dialectos::POSTGRES, &q.objeto, || {
+                unreachable!("`POSTGRES` no exige tipos")
+            })
+            .map(|consulta| sql_de(plan, &consulta))
+            .map_err(Fallo::operador)
+        })
+        .collect::<Result<_, _>>()?;
+    let abrir = format!(
+        "START TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; \
+         SET TRANSACTION SNAPSHOT '{instantanea}'; {}",
+        ajustes(p.timeout_ms)
+    );
+    let parar = || {
+        if let Ok(mut s) = token.lock() {
+            s.cancelada = true;
+            for (t, tls) in &s.tramos {
+                let _ = t.cancel_query(tls.clone());
+            }
+        }
+    };
+    let (dar, lotes) =
+        std::sync::mpsc::sync_channel::<Result<RecordBatch, Fallo>>(2 * TRAMOS as usize);
+    std::thread::scope(|s| {
+        let hilos: Vec<_> = tramos
+            .iter()
+            .map(|sql| {
+                let dar = dar.clone();
+                let abrir = &abrir;
+                s.spawn(move || {
+                    let mut suyos = BTreeMap::new();
+                    let leido = (|| {
+                        let mut c = conectar(&p.url)?;
+                        if let (Ok(mut s), Some(tls)) =
+                            (token.lock(), crate::tls::conector_de(&p.url))
+                        {
+                            s.tramos.push((c.cancel_token(), tls));
+                        }
+                        en_transaccion(&mut c, abrir, |c, _| {
+                            let mut filas = c
+                                .query_typed_raw(sql, sin_parametros())
+                                .map_err(|e| fallo_de(&e))?;
+                            por_lotes(&mut filas, plan, p, token, inicio, &mut suyos, |l| {
+                                dar.send(Ok(l))
+                                    .map_err(|_| Fallo::origen("la lectura ya terminó"))
+                            })
+                        })
+                    })();
+                    if let Err(f) = leido {
+                        let _ = dar.send(Err(f));
+                    }
+                    suyos
+                })
+            })
+            .collect();
+        drop(dar);
+        let mut n: u64 = 0;
+        let mut fallo: Option<Fallo> = None;
+        for lote in lotes {
+            match lote.and_then(|l| {
+                escribir(&l)?;
+                Ok(l.num_rows() as u64)
+            }) {
+                Ok(k) => n += k,
+                Err(f) => {
+                    // El primero es la causa; los de después, los tramos
+                    // que se cancelaron por él.
+                    if fallo.is_none() {
+                        fallo = Some(f);
+                        parar();
+                    }
+                }
+            }
+        }
+        for h in hilos {
+            for (clave, k) in h.join().unwrap_or_default() {
+                *avisos.entry(clave).or_default() += k;
+            }
+        }
+        match fallo {
+            Some(f) => Err(f),
+            None => Ok(n),
+        }
+    })
+}
+
+/// **El valor tal como llega**, en el formato binario del protocolo: para la
+/// geometría, su EWKB; para lo demás, que la consulta pide como texto, sus
+/// bytes en UTF-8.
+struct Crudo<'a>(&'a [u8]);
+
+impl<'a> postgres::types::FromSql<'a> for Crudo<'a> {
+    fn from_sql(
+        _: &postgres::types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Crudo(raw))
     }
-    Ok(n)
+
+    fn accepts(_: &postgres::types::Type) -> bool {
+        true
+    }
 }
 
 /// **Estimar**: lo que el planificador de Postgres cree que devolvería la
