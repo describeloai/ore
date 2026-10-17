@@ -976,3 +976,10 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   - **La copia por Arrow, arreglada:** `sellar-flujo` declara las columnas geo con su marca (`carga::campo_del_oos`), y `al_contrato` las pasa por el códec, nunca por un `cast`. Con un valor que no es del tipo, para el lote diciendo la fila. La prueba `un_flujo_con_geometria_en_texto_llega_como_wkb` cubre EWKB en hex, WKT y un nulo: tabla v3, `ore.geo.geom` y el WKB ISO.
   - **`tipo_geo_nativo` pasa a `ore_core::geo::tipo_nativo`**: el driver y la inducción dicen lo mismo.
   - El cierre de dependencias de `ore-cli` pasa de 183 a 190 *crates*, decidido (`tests/dependencias.rs`). Todo el *workspace* queda verde, salvo las tres pruebas que solo fallan en Docker por el `.git` del *worktree*.
+- **2026-10-17 · G3·2 y G3·3 hechos: PostGIS y BigQuery tipan su catálogo.**
+  - **PostGIS** (`ore-read-postgres`, `traducir`): `geometry(Sub,SRID)` y `geography(Sub,4326)` se tipan con `ore_core::geo::tipo_nativo`, la misma función que la inducción. Una `geometry` sin SRID o sin subtipo queda **sin tipo**, y la inducción pregunta. La lectura no cambia: el tipo no es «exacto», así que el valor sale como texto (EWKB en hex). Prueba: `postgis_se_tipa_con_su_crs`.
+  - **BigQuery** (`ore-read-bigquery`): `GEOGRAPHY` pasa a `Geography`, y el valor sigue llegando en WKT por REST. `ARRAY<GEOGRAPHY>` sigue como `list<Opaque>`. Prueba: `geography_es_geography`.
+  - **Medido en local, de punta a punta, contra un PostGIS de verdad** (`postgis/postgis` en Docker, con las cuatro formas del banco y una `geometry` libre):
+    - el catálogo da `Geometry<MultiPolygon, EPSG:25830>`, `Geometry<Point, EPSG:4326>`, `Geometry<LineString, EPSG:4326>` y `Geography<Point>`, y la libre queda sin tipo;
+    - el flujo Arrow del driver (`leer`, `formato: arrow`) da `Utf8` con EWKB en hex, y `al_contrato` lo convierte en **WKB ISO, sin el SRID, con la marca y su CRS** (en `Geography`, con `edges: spherical`).
+  - El valor de BigQuery en WKT ya lo cubren el corpus del códec y la prueba del flujo (G3·1). La medida contra el BigQuery real va con la de victor.

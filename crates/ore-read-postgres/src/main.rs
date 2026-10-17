@@ -471,6 +471,15 @@ fn escalar(pg: &str) -> Option<&'static str> {
 ///   da como una lista de Arrow); de otra cosa, `Opaque`: sale como su texto.
 fn traducir(tipo: &str, familia: &str, base: Option<&str>) -> Option<String> {
     let t = tipo.trim();
+    // ORE 0067 G3·2: PostGIS. `geometry(MultiPolygon,25830)` →
+    // `Geometry<MultiPolygon, EPSG:25830>`, `geography(Point,4326)` →
+    // `Geography<Point>`, con la misma función que la inducción. Sin SRID o
+    // sin subtipo no dice su CRS y no se adivina: sin tipo, y la inducción
+    // pregunta. El valor sale como siempre (EWKB en hex) y lo convierte el
+    // códec de entrada del lago.
+    if let Some(g) = ore_core::geo::tipo_nativo(t) {
+        return Some(g);
+    }
     if let Some(dentro) = t.strip_suffix("[]") {
         let d = dentro.trim();
         let x = decimal(d).or_else(|| escalar(d).map(String::from))?;
@@ -1035,6 +1044,31 @@ fn filas(peticion: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ORE 0067 G3·2: PostGIS se tipa como la inducción (`tipo_nativo`), y el
+    /// valor sale como texto (EWKB en hex), que convierte el códec del lago.
+    #[test]
+    fn postgis_se_tipa_con_su_crs() {
+        for (pg, oos) in [
+            (
+                "geometry(MultiPolygon,25830)",
+                Some("Geometry<MultiPolygon, EPSG:25830>"),
+            ),
+            ("geometry(Point,4326)", Some("Geometry<Point, EPSG:4326>")),
+            (
+                "geometry(LineStringZ,4326)",
+                Some("Geometry<LineString Z, EPSG:4326>"),
+            ),
+            ("geography(Point,4326)", Some("Geography<Point>")),
+            // Sin SRID no dice su CRS: sin tipo, y la inducción pregunta.
+            ("geometry", None),
+            ("geometry(Point,0)", None),
+        ] {
+            assert_eq!(traducir(pg, "b", None).as_deref(), oos, "{pg}");
+        }
+        // Y no es un tipo «exacto»: la lectura lo da como texto.
+        assert!(!lectura::exacto("Geometry<Point, EPSG:4326>"));
+    }
 
     /// ADR 0065 D-PG4: el catálogo dice lo que la lectura da. Un array es una
     /// lista sólo si su escalar es exacto; `timetz` y `money` salen como texto.

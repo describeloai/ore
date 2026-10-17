@@ -145,7 +145,11 @@ fn tipo_oos(bq: &str) -> Option<&'static str> {
         // `TIMESTAMP` en BigQuery es un instante absoluto; `DATETIME` es civil.
         // La distinción existe en los dos sistemas de tipos y se conserva.
         "TIMESTAMP" => "DateTimeTz",
-        "BYTES" | "JSON" | "GEOGRAPHY" | "INTERVAL" => "Opaque",
+        // ORE 0067 G3·3: una `GEOGRAPHY` es una geometría sobre la esfera, en
+        // OGC:CRS84. Llega en WKT (por REST) y la convierte el códec de entrada
+        // del lago (`ore_core::geo::a_wkb`).
+        "GEOGRAPHY" => "Geography",
+        "BYTES" | "JSON" | "INTERVAL" => "Opaque",
         _ => return None,
     })
 }
@@ -156,6 +160,10 @@ fn tipo_oos(bq: &str) -> Option<&'static str> {
 pub(crate) fn traducir(bq: &str) -> Option<String> {
     let t = bq.trim();
     if let Some(dentro) = t.strip_prefix("ARRAY<").and_then(|r| r.strip_suffix('>')) {
+        // Una lista de geografías no se copia como geometría (G3·3): su texto.
+        if dentro.trim() == "GEOGRAPHY" {
+            return Some("list<Opaque>".into());
+        }
         return tipo_oos(dentro).map(|e| format!("list<{e}>"));
     }
     decimal(t).or_else(|| tipo_oos(t).map(String::from))
@@ -395,6 +403,22 @@ pub fn armar(fuente: &str, dataset: &str, filas: &[Fila]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ORE 0067 G3·3: `GEOGRAPHY` es `Geography` (llega en WKT y lo convierte
+    /// el códec del lago); una lista de geografías sigue siendo su texto.
+    #[test]
+    fn geography_es_geography() {
+        assert_eq!(traducir("GEOGRAPHY").as_deref(), Some("Geography"));
+        assert_eq!(
+            traducir("ARRAY<GEOGRAPHY>").as_deref(),
+            Some("list<Opaque>")
+        );
+        let f = serde_json::json!({"name": "geo", "type": "GEOGRAPHY", "mode": "NULLABLE"});
+        assert!(
+            crate::v2::fisico(&f).is_none(),
+            "una geografía viaja como texto"
+        );
+    }
     use crate::rest::pruebas::{Guion, grabada};
 
     /// Las filas exactas que devolvió `bq` sobre `rubix_demo_ventas`, recortadas.
