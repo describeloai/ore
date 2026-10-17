@@ -515,6 +515,9 @@ struct Columna {
     nombre: String,
     fisico: Fisico,
     particion: bool,
+    /// ORE 0067 G3·5: una geometría (GeoParquet). Su WKB sale como hex, que es
+    /// lo que el protocolo de texto lleva y el códec del lago convierte.
+    geo: bool,
 }
 
 struct Plan {
@@ -651,6 +654,10 @@ impl Plan {
                 nombre: col.to_string(),
                 fisico: fisico_de(tipos.get(col).copied()),
                 particion: f.particiones.iter().any(|x| x == col),
+                geo: tipos
+                    .get(col)
+                    .and_then(|t| ore_core::types::parse_type(t).ok())
+                    .is_some_and(|t| t.es_geo()),
             });
             plan.indice.insert(col.to_string(), plan.cols.len() - 1);
             plan.cols.len() - 1
@@ -1361,6 +1368,22 @@ fn parquet(
                         )
                     });
                 }
+                if c.geo
+                    && let Some(a) = lote.column_by_name(&c.nombre)
+                    && matches!(
+                        a.data_type(),
+                        DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+                    )
+                {
+                    let b = arrow_cast::cast(a, &DataType::Binary).map_err(|e| e.to_string())?;
+                    use arrow_array::Array;
+                    use arrow_array::cast::AsArray;
+                    let b = b.as_binary::<i32>();
+                    let hex: StringArray = (0..b.len())
+                        .map(|i| (!b.is_null(i)).then(|| ore_core::geo::a_hex(b.value(i))))
+                        .collect();
+                    return Ok(Arc::new(hex) as ArrayRef);
+                }
                 match lote.column_by_name(&c.nombre) {
                     None => Ok(arrow_array::new_null_array(&tipo, n)),
                     Some(a) if *a.data_type() == tipo => Ok(a.clone()),
@@ -1774,6 +1797,37 @@ mod tests {
             b.column_by_name("unidades").unwrap().data_type(),
             &DataType::Int64
         );
+    }
+
+    /// ORE 0067 G3·5 · **Un GeoParquet**: la columna `Geometry` sale como el
+    /// hex de su WKB (lo que el códec del lago convierte), y no como un `cast` a
+    /// texto de bytes que no son UTF-8.
+    #[test]
+    fn un_geoparquet_da_su_wkb_en_hex() {
+        let f = std::fs::read(format!(
+            "{}/tests/cuerpos/geo-duckdb-25830.parquet",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let o = EnMemoria::con(&[("g/a.parquet", f)]);
+        let p = peticion(
+            "parquet",
+            "g/a.parquet",
+            &["geom"],
+            &[("geom", "Geometry<Point, EPSG:25830>")],
+        );
+        let (b, _) = filas(&o, &p, UMBRAL).expect("lee");
+        let v = texto(&b, "geom");
+        assert!(!v.is_empty());
+        let primero = v.iter().flatten().next().expect("un valor").clone();
+        let w = ore_core::geo::a_wkb(
+            ore_core::geo::Valor::Texto(&primero),
+            "Point",
+            "EPSG:25830",
+            false,
+        )
+        .expect("el códec lo entiende");
+        assert_eq!(ore_core::geo::leer(&w).unwrap().subtipo(), "Point");
     }
 
     /// **Un Parquet grande, por rangos**: por encima del umbral se leen el pie

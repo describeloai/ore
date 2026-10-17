@@ -55,11 +55,15 @@ pub fn parquet(o: &dyn Origen, clave: &str) -> Result<Esquema, String> {
     let esquema =
         parquet::arrow::parquet_to_arrow_schema(fm.schema_descr(), fm.key_value_metadata())
             .map_err(|e| format!("el esquema de `{clave}` no se traduce: {e}"))?;
+    // ORE 0067 G3·5: las geometrías, por la clave GeoParquet `geo` o por el tipo
+    // lógico GEOMETRY/GEOGRAPHY (lo que escribe Iceberg Java, sin la clave).
+    let geo = geo_de_parquet(fm);
     let columnas = esquema
         .fields()
         .iter()
         .map(|f| {
             let (tipo, fisico) = de_arrow(f.data_type());
+            let tipo = geo.get(f.name()).cloned().or(tipo);
             Columna {
                 nombre: f.name().clone(),
                 tipo,
@@ -76,6 +80,92 @@ pub fn parquet(o: &dyn Origen, clave: &str) -> Result<Esquema, String> {
         separador: None,
         avisos: Vec::new(),
     })
+}
+
+/// ORE 0067 G3·5 · El tipo de OOS de cada columna geo de un Parquet: de la
+/// clave GeoParquet `geo` (1.0/1.1: `encoding: WKB`, `geometry_types`, `crs` en
+/// PROJJSON con su `id`, `edges`) y, si no la trae, del tipo lógico
+/// GEOMETRY/GEOGRAPHY. Sin `crs` en la clave es OGC:CRS84 (lo dice GeoParquet);
+/// con `crs: null` («desconocido») no se tipa: no se adivina un CRS.
+pub fn geo_de_parquet(
+    fm: &parquet::file::metadata::FileMetaData,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let clave = fm
+        .key_value_metadata()
+        .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
+        .and_then(|k| k.value.as_deref())
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok());
+    if let Some(cols) = clave.as_ref().and_then(|g| g["columns"].as_object()) {
+        for (nombre, c) in cols {
+            if c["encoding"]
+                .as_str()
+                .is_some_and(|e| !e.eq_ignore_ascii_case("wkb"))
+            {
+                continue;
+            }
+            let crs = match c.get("crs") {
+                None => Some(ore_core::types::CRS_DEFECTO.to_string()),
+                Some(serde_json::Value::Null) => None,
+                Some(p) => crs_de_projjson(p),
+            };
+            let Some(crs) = crs else { continue };
+            let tipos: Vec<&str> = c["geometry_types"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let sub = match tipos.as_slice() {
+                [uno] => uno.to_string(),
+                _ => ore_core::types::GEO_SUBTIPO_DEFECTO.to_string(),
+            };
+            let t = if c["edges"].as_str() == Some("spherical") {
+                format!("Geography<{sub}>")
+            } else {
+                format!("Geometry<{sub}, {crs}>")
+            };
+            if let Ok(t) = ore_core::types::parse_type(&t) {
+                out.insert(nombre.clone(), t.to_string());
+            }
+        }
+    }
+    for col in fm.schema_descr().columns() {
+        let nombre = col.path().string();
+        if out.contains_key(&nombre) {
+            continue;
+        }
+        use parquet::basic::LogicalType as L;
+        let t = match col.logical_type_ref() {
+            Some(L::Geometry { crs }) => format!(
+                "Geometry<Any, {}>",
+                crs.as_deref()
+                    .map(|c| c.trim_matches('"'))
+                    .unwrap_or(ore_core::types::CRS_DEFECTO)
+            ),
+            Some(L::Geography { .. }) => "Geography".to_string(),
+            _ => continue,
+        };
+        if let Ok(t) = ore_core::types::parse_type(&t) {
+            out.insert(nombre, t.to_string());
+        }
+    }
+    out
+}
+
+/// El `AUTORIDAD:CÓDIGO` de un CRS en PROJJSON (por su `id`, o el primero de
+/// `ids`), o una cadena que ya lo es.
+fn crs_de_projjson(p: &serde_json::Value) -> Option<String> {
+    if let Some(s) = p.as_str() {
+        return Some(s.to_string());
+    }
+    let id = p
+        .get("id")
+        .or_else(|| p.get("ids").and_then(|i| i.get(0)))?;
+    let auth = id["authority"].as_str()?;
+    let code = match &id["code"] {
+        serde_json::Value::String(s) => s.clone(),
+        n => n.to_string(),
+    };
+    Some(format!("{auth}:{code}"))
 }
 
 /// Del tipo de Arrow al de OOS, con el físico escrito como lo escribe
@@ -463,6 +553,29 @@ pub fn jsonl(o: &dyn Origen, clave: &str, tamano: u64) -> Result<Esquema, String
 mod tests {
     use super::*;
     use ore_objetos::memoria::EnMemoria;
+
+    /// ORE 0067 G3·5 · Un Parquet con geometría se tipa: por la clave `geo`
+    /// (DuckDB, ORE) o por el tipo lógico (Iceberg Java, que no la escribe).
+    #[test]
+    fn un_geoparquet_se_tipa_con_su_crs() {
+        let c = |f: &str| {
+            std::fs::read(format!("{}/tests/cuerpos/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        };
+        for (f, col, tipo) in [
+            (
+                "geo-duckdb-25830.parquet",
+                "geom",
+                "Geometry<Point, EPSG:25830>",
+            ),
+            ("geo-ore-25830.parquet", "geom", "Geometry<Any, EPSG:25830>"),
+            ("geo-iceberg-java-crs84.parquet", "geom", "Geometry"),
+        ] {
+            let o = EnMemoria::con(&[(f, c(f))]);
+            let e = parquet(&o, f).unwrap();
+            let t = e.columnas.iter().find(|x| x.nombre == col).unwrap();
+            assert_eq!(t.tipo.as_deref(), Some(tipo), "{f}");
+        }
+    }
 
     fn tipos(e: &Esquema) -> Vec<(String, Option<String>)> {
         e.columnas

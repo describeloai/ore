@@ -22,3 +22,4 @@
 crates/ore-store/tests/cuerpos/** -text
 puesto/python/pruebas/cuerpos/** -text
 puesto/node/pruebas/cuerpos/** -text
+crates/ore-read-objetos/tests/cuerpos/** -text

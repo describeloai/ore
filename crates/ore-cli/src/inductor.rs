@@ -691,6 +691,9 @@ pub fn inducir_con_regla(
                 ),
             );
         }
+        if let Some((ruta, sql)) = puntos_sql(t, dec, paquete, &sch, &vista) {
+            ficheros.insert(ruta, sql);
+        }
         // 0033: lo que se copia es un `Dataset` con el plan de la vista dentro;
         // la vista sólo existe cuando NO se copia (la pregunta sobre lo de fuera).
         ficheros.insert(
@@ -1036,6 +1039,9 @@ pub fn inducir_con_regla(
                 ),
             );
         }
+        if let Some((ruta, sql)) = puntos_sql(t, dec, paquete, &sch, &vista) {
+            ficheros.insert(ruta, sql);
+        }
         ficheros.insert(
             en_schema(
                 &sch,
@@ -1226,6 +1232,24 @@ fn clave_de(t: &Tabla, dec: &Decisiones) -> Vec<String> {
 /// de escalares la habría rechazado.
 fn con_tipos(t: &Tabla, dec: &Decisiones) -> Tabla {
     let mut t = t.clone();
+    // ORE 0067 G3·4: una columna de texto que alguien confirmó como WKT o
+    // GeoJSON es una geometría (OGC:CRS84, como dice la pregunta): la copia la
+    // convierte con el códec de entrada (`ore_core::geo::a_wkb`).
+    let escritas: Vec<String> = texto_geo(&t)
+        .into_iter()
+        .filter(|col| {
+            dec.de(&id(Clase::Geo, &format!("{}.{col}", t.nombre)))
+                .and_then(Respuesta::palabra)
+                .is_some_and(|p| p.eq_ignore_ascii_case("wkt") || p.eq_ignore_ascii_case("geojson"))
+        })
+        .collect();
+    for c in t
+        .columnas
+        .iter_mut()
+        .filter(|c| escritas.contains(&c.nombre))
+    {
+        c.tipo = Some("Geometry".into());
+    }
     for c in t.columnas.iter_mut().filter(|c| c.tipo.is_none()) {
         let Some(r) = dec.de(&id(Clase::Tipo, &format!("{}.{}", t.nombre, c.nombre))) else {
             continue;
@@ -2213,6 +2237,44 @@ fn par_lat_lon(t: &Tabla) -> Option<(String, String)> {
         }
     }
     None
+}
+
+/// ORE 0067 G3·4 · **El punto de un par lat/lon confirmado**: una transformación
+/// SQL junto al activo (`transforms/<vista>_puntos.sql`) que escribe
+/// `<vista>_puntos` con todas sus columnas y `geom`, un `Geometry<Point>` en
+/// OGC:CRS84 (`ST_Point(lon, lat)`). Sin cambiar la spec y sin código en la
+/// copia: lo ejecuta el puesto, que tiene `spatial`. `None` si nadie lo
+/// confirmó.
+fn puntos_sql(
+    t: &Tabla,
+    dec: &Decisiones,
+    paquete: &str,
+    sch: &str,
+    vista: &str,
+) -> Option<(String, String)> {
+    let (lat, lon) = par_lat_lon(t)?;
+    let si = dec
+        .de(&id(Clase::Geo, &t.nombre))
+        .and_then(Respuesta::palabra)
+        .is_some_and(|p| p.eq_ignore_ascii_case("si") || p.eq_ignore_ascii_case("sí"));
+    if !si {
+        return None;
+    }
+    let schema = if en_default(sch) { "default" } else { sch };
+    let q = |x: &str| format!("\"{}\"", x.replace('"', "\"\""));
+    let sql = format!(
+        "-- ORE 0067 G3·4 · El punto de `{lat}` y `{lon}` (confirmado en la inducción).\n\
+         -- `ST_Point(longitud, latitud)` en OGC:CRS84; las filas sin coordenadas, sin punto.\n\
+         CREATE OR REPLACE DATASET {paquete}.{schema}.{vista}_puntos AS\n\
+         SELECT *, ST_Point({lo}, {la}) AS geom\n\
+         FROM {paquete}.{schema}.{vista}\n",
+        la = q(&lat),
+        lo = q(&lon),
+    );
+    Some((
+        en_schema(sch, format!("transforms/{vista}_puntos.sql")),
+        sql,
+    ))
 }
 
 fn en_flujo(tipo: &str) -> String {
@@ -3817,6 +3879,69 @@ mod tests {
         assert!(lleva_geo(&con_geo));
         assert_eq!(Clase::Geo.prefijo(), "geo");
         assert_eq!(Clase::Geo.forma(), Forma::Palabra);
+    }
+
+    /// ORE 0067 G3·4 · Las respuestas geo se aplican: una columna confirmada
+    /// como WKT o GeoJSON es `Geometry` (la convierte el códec en la copia), y
+    /// un par lat/lon confirmado deja una transformación SQL con `ST_Point`.
+    #[test]
+    fn las_respuestas_geo_se_aplican() {
+        let col = |n: &str, t: &str| ore_driver::catalogo::Columna {
+            nombre: n.into(),
+            tipo: Some(t.into()),
+            ..Default::default()
+        };
+        let t = Tabla {
+            nombre: "lugares".into(),
+            columnas: vec![
+                col("id", "Integer"),
+                col("wkt", "String"),
+                col("lat", "Float"),
+                col("lon", "Float"),
+            ],
+            clase: "table".into(),
+            ..Default::default()
+        };
+        // Sin respuestas, nada cambia.
+        let nada = Decisiones::default();
+        assert_eq!(
+            con_tipos(&t, &nada).columnas[1].tipo.as_deref(),
+            Some("String")
+        );
+        assert!(puntos_sql(&t, &nada, "banco", "default", "lugares").is_none());
+        let mut dec = Decisiones::default();
+        dec.responder(
+            id(Clase::Geo, "lugares.wkt"),
+            Respuesta::Palabra("wkt".into()),
+        );
+        dec.responder(id(Clase::Geo, "lugares"), Respuesta::Palabra("si".into()));
+        assert_eq!(
+            con_tipos(&t, &dec).columnas[1].tipo.as_deref(),
+            Some("Geometry")
+        );
+        let (ruta, sql) = puntos_sql(&t, &dec, "banco", "default", "lugares").unwrap();
+        assert_eq!(ruta, "transforms/lugares_puntos.sql");
+        assert!(
+            sql.contains("CREATE OR REPLACE DATASET banco.default.lugares_puntos AS"),
+            "{sql}"
+        );
+        assert!(sql.contains(r#"ST_Point("lon", "lat") AS geom"#), "{sql}");
+        assert!(sql.contains("FROM banco.default.lugares"), "{sql}");
+        // Y la transformación se deriva: lee `lugares` y escribe `lugares_puntos`.
+        let g = ore_core::transformar::derivar_sql(&sql, &ruta).expect("deriva");
+        assert_eq!(g.transforms.len(), 1, "{sql}");
+        // `no` no aplica nada.
+        let mut no = Decisiones::default();
+        no.responder(
+            id(Clase::Geo, "lugares.wkt"),
+            Respuesta::Palabra("no".into()),
+        );
+        no.responder(id(Clase::Geo, "lugares"), Respuesta::Palabra("no".into()));
+        assert_eq!(
+            con_tipos(&t, &no).columnas[1].tipo.as_deref(),
+            Some("String")
+        );
+        assert!(puntos_sql(&t, &no, "banco", "default", "lugares").is_none());
     }
 
     /// OOS v1alpha29 · Toda colección es posible: lo que no se sabe qué es va a

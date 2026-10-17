@@ -983,3 +983,12 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     - el catálogo da `Geometry<MultiPolygon, EPSG:25830>`, `Geometry<Point, EPSG:4326>`, `Geometry<LineString, EPSG:4326>` y `Geography<Point>`, y la libre queda sin tipo;
     - el flujo Arrow del driver (`leer`, `formato: arrow`) da `Utf8` con EWKB en hex, y `al_contrato` lo convierte en **WKB ISO, sin el SRID, con la marca y su CRS** (en `Geography`, con `edges: spherical`).
   - El valor de BigQuery en WKT ya lo cubren el corpus del códec y la prueba del flujo (G3·1). La medida contra el BigQuery real va con la de victor.
+- **2026-10-17 · G3·4 y G3·5 hechos.**
+  - **WKT y GeoJSON** (`inductor.rs`, `con_tipos`): una columna de texto que la inducción confirmó como `wkt` o `geojson` se declara `Geometry` (OGC:CRS84), y la copia la convierte con el códec. No cambia la spec.
+  - **Lat/lon** (`puntos_sql`): un par confirmado con `si` deja una transformación SQL junto al activo, `transforms/<vista>_puntos.sql`, con `CREATE OR REPLACE DATASET <db>.<schema>.<vista>_puntos AS SELECT *, ST_Point("lon", "lat") AS geom FROM …`. ORE la deriva (`derivar_sql`, comprobado en la prueba) y la ejecuta el puesto, que tiene `spatial`. **Se elige una transformación y no una `View`**, porque una `View` de un paquete inducido es una proyección de campos, no SQL. No cambia la spec ni hay código en la copia. **A comprobar en victor:** que el Build escribe la salida GEOMETRY de DuckDB con su marca (`normalizar`, G2·3·3).
+  - Prueba: `las_respuestas_geo_se_aplican` (`wkt`, `si` y `no`).
+  - **GeoParquet** (`ore-read-objetos`):
+    - `tabular::geo_de_parquet` tipa por la clave `geo` (encoding WKB, `geometry_types`, el CRS desde el `id` del PROJJSON, sin `crs` es OGC:CRS84, con `crs: null` no se tipa, y `edges: spherical` da `Geography`) o, sin clave, por el tipo lógico GEOMETRY/GEOGRAPHY (lo que escribe Iceberg Java);
+    - la lectura da la columna geo como el **hex de su WKB**, que es lo que el códec convierte, y no como un `cast` a texto de bytes que no son UTF-8.
+    - Pruebas con tres ficheros reales (DuckDB `Geometry<Point, EPSG:25830>`, ORE `Geometry<Any, EPSG:25830>`, Iceberg Java `Geometry`) y la lectura de sus valores.
+  - El *workspace* queda verde, salvo las tres pruebas que solo fallan en Docker.
