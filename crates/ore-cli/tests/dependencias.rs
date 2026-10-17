@@ -135,7 +135,14 @@ const VETADAS: &[(&str, &str)] = &[
 /// `oxc_diagnostics` trae para pintar errores y no se puede apagar (`oxc_ast` lo
 /// pide con sus *features* por defecto). Ninguno vetado; ninguno habla con
 /// nadie ni lee el reloj.
-const CIERRE: usize = 183;
+///
+/// **183 → 190 con el códec de entrada de la geometría (0067 G3·1, 2026-10-17).**
+/// `ore-core::geo::a_wkb` lee WKT y GeoJSON (lo que dan BigQuery y las columnas
+/// de texto) con `wkt` 0.14 y `geojson` 1.0, que traen `geo-types`,
+/// `geo-traits`, `approx`, `serde_json` y poco más. Medidos en G3·0: 0,7 y 1,2 M
+/// de geometrías/s; un parser propio sería menos fiable. Ninguno vetado; ninguno
+/// habla con nadie ni lee el reloj.
+const CIERRE: usize = 190;
 
 /// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
 /// eso no se mira contra los vetos, con **quién** lo pide como dependencia de

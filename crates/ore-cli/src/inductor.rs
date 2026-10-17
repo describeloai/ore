@@ -2027,66 +2027,12 @@ fn handle(h: &str) -> bool {
 /// el separador, así que eso declara una propiedad `2>`. Lo dijo `ore validate`
 /// —`OOS1005`, clave desconocida— sobre un documento que nadie escribió a mano,
 /// que es justo la clase de error que un emisor tiene que hacer imposible.
-/// v1alpha32 (ORE 0067 G1·4) · **El tipo geo nativo de un origen**, desde el
-/// tipo que el origen dice (`physicalType`): `geometry(MultiPolygon,25830)` de
-/// PostGIS es `Geometry<MultiPolygon, EPSG:25830>`; `geography(Point,4326)`,
-/// `Geography<Point>`; `GEOGRAPHY` de BigQuery, `Geography`. Una `geometry`
-/// sin SRID no dice su CRS y no se adivina (`None`: queda la pregunta de tipo).
+/// v1alpha32 (ORE 0067 G1·4) · El tipo geo nativo de un origen: vive en
+/// `ore_core::geo::tipo_nativo` (G3·1), para que el driver y la inducción digan
+/// lo mismo.
 fn tipo_geo_nativo(origen: &str) -> Option<String> {
-    let o = origen.trim().to_ascii_lowercase();
-    if o == "geography" {
-        return Some("Geography".into());
-    }
-    let (ctor, args) = if let Some(r) = o.strip_prefix("geometry(") {
-        ("Geometry", r)
-    } else {
-        ("Geography", o.strip_prefix("geography(")?)
-    };
-    let args = args.strip_suffix(')')?;
-    let mut partes = args.split(',').map(str::trim);
-    let crudo = partes.next()?;
-    let srid: u32 = partes.next()?.parse().ok()?;
-    // PostGIS: `PointZ`, `MultiPolygonM`, `GeometryZM`… → subtipo y dimensión de OOS.
-    let (base, dim) = ["zm", "z", "m"]
-        .iter()
-        .find_map(|d| {
-            crudo
-                .strip_suffix(d)
-                .filter(|b| SUBTIPO_PG.iter().any(|(pg, _)| pg == b))
-                .map(|b| (b, *d))
-        })
-        .unwrap_or((crudo, ""));
-    let (_, subtipo) = SUBTIPO_PG.iter().find(|(pg, _)| *pg == base)?;
-    let subtipo = match dim {
-        "" => subtipo.to_string(),
-        d => format!("{subtipo} {}", d.to_ascii_uppercase()),
-    };
-    let t = if ctor == "Geography" {
-        if srid != 4326 {
-            return None;
-        }
-        format!("Geography<{subtipo}>")
-    } else if srid == 0 {
-        return None;
-    } else {
-        format!("Geometry<{subtipo}, EPSG:{srid}>")
-    };
-    // La forma canónica (sin lo que vale por defecto), por el mismo analizador;
-    // lo que no analiza (`Any Z`) no se propone.
-    ore_core::types::parse_type(&t).ok().map(|x| x.to_string())
+    ore_core::geo::tipo_nativo(origen)
 }
-
-/// Los subtipos de PostGIS (en minúsculas) y su nombre en OOS.
-const SUBTIPO_PG: &[(&str, &str)] = &[
-    ("geometry", "Any"),
-    ("point", "Point"),
-    ("linestring", "LineString"),
-    ("polygon", "Polygon"),
-    ("multipoint", "MultiPoint"),
-    ("multilinestring", "MultiLineString"),
-    ("multipolygon", "MultiPolygon"),
-    ("geometrycollection", "GeometryCollection"),
-];
 
 /// Las tablas que PostGIS pone en la base y no son del cliente: su catálogo
 /// de geometrías y de sistemas de referencia (medido en la vara de 0067 G0).

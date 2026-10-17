@@ -17,11 +17,13 @@
 //! mismos bytes venga de donde venga, que es lo que el digest y las
 //! estadísticas necesitan.
 //!
-//! # Por qué aquí y sin dependencias
+//! # Por qué aquí
 //!
-//! Porque lo usan la copia (`ore-store`), los drivers y las pruebas, y el
-//! núcleo no trae dependencias de terceros. WKB son siete tipos y una regla de
-//! anidamiento: cien líneas que se prueban enteras abajo.
+//! Porque lo usan la copia (`ore-store`), los drivers y las pruebas. WKB son
+//! siete tipos y una regla de anidamiento: se lee aquí, sin dependencias. WKT y
+//! GeoJSON (G3·1, [`a_wkb`]) los leen los *crates* `wkt` y `geojson` (medidos en
+//! G3·0: 0,7 y 1,2 M de geometrías/s), y se escriben a WKB aquí, para que lo
+//! valide el mismo [`leer`].
 
 /// El tipo de geometría de un WKB (los siete de OGC Simple Features).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,9 +388,8 @@ pub fn valor_de_texto(
     crs: &str,
     esferica: bool,
 ) -> Result<Vec<u8>, String> {
-    let w = leer(&de_hex(hex)?)?;
-    comprobar(&w, subtipo, crs, esferica)?;
-    Ok(w.iso)
+    // ORE 0067 G3·1: por el códec, que además de hex WKB entiende WKT y GeoJSON.
+    a_wkb(Valor::Texto(hex), subtipo, crs, esferica)
 }
 
 /// Lo de [`valor_de_texto`] sobre un WKB ya leído.
@@ -414,9 +415,421 @@ pub fn comprobar(w: &Wkb, subtipo: &str, crs: &str, esferica: bool) -> Result<()
     Ok(())
 }
 
+/// v1alpha32 (ORE 0067 G1·4, aquí desde G3·1) · **El tipo geo nativo de un origen**, desde el
+/// tipo que el origen dice (`physicalType`): `geometry(MultiPolygon,25830)` de
+/// PostGIS es `Geometry<MultiPolygon, EPSG:25830>`; `geography(Point,4326)`,
+/// `Geography<Point>`; `GEOGRAPHY` de BigQuery, `Geography`. Una `geometry`
+/// sin SRID no dice su CRS y no se adivina (`None`: queda la pregunta de tipo).
+pub fn tipo_nativo(origen: &str) -> Option<String> {
+    let o = origen.trim().to_ascii_lowercase();
+    if o == "geography" {
+        return Some("Geography".into());
+    }
+    let (ctor, args) = if let Some(r) = o.strip_prefix("geometry(") {
+        ("Geometry", r)
+    } else {
+        ("Geography", o.strip_prefix("geography(")?)
+    };
+    let args = args.strip_suffix(')')?;
+    let mut partes = args.split(',').map(str::trim);
+    let crudo = partes.next()?;
+    let srid: u32 = partes.next()?.parse().ok()?;
+    // PostGIS: `PointZ`, `MultiPolygonM`, `GeometryZM`… → subtipo y dimensión de OOS.
+    let (base, dim) = ["zm", "z", "m"]
+        .iter()
+        .find_map(|d| {
+            crudo
+                .strip_suffix(d)
+                .filter(|b| SUBTIPO_PG.iter().any(|(pg, _)| pg == b))
+                .map(|b| (b, *d))
+        })
+        .unwrap_or((crudo, ""));
+    let (_, subtipo) = SUBTIPO_PG.iter().find(|(pg, _)| *pg == base)?;
+    let subtipo = match dim {
+        "" => subtipo.to_string(),
+        d => format!("{subtipo} {}", d.to_ascii_uppercase()),
+    };
+    let t = if ctor == "Geography" {
+        if srid != 4326 {
+            return None;
+        }
+        format!("Geography<{subtipo}>")
+    } else if srid == 0 {
+        return None;
+    } else {
+        format!("Geometry<{subtipo}, EPSG:{srid}>")
+    };
+    // La forma canónica (sin lo que vale por defecto), por el mismo analizador;
+    // lo que no analiza (`Any Z`) no se propone.
+    crate::types::parse_type(&t).ok().map(|x| x.to_string())
+}
+
+/// Los subtipos de PostGIS (en minúsculas) y su nombre en OOS.
+const SUBTIPO_PG: &[(&str, &str)] = &[
+    ("geometry", "Any"),
+    ("point", "Point"),
+    ("linestring", "LineString"),
+    ("polygon", "Polygon"),
+    ("multipoint", "MultiPoint"),
+    ("multilinestring", "MultiLineString"),
+    ("multipolygon", "MultiPolygon"),
+    ("geometrycollection", "GeometryCollection"),
+];
+
+// ── ORE 0067 G3·1 · El códec de entrada ─────────────────────────────────────
+
+/// Una geometría como llega de un origen: texto (lo que da un driver por el
+/// protocolo de texto, o una columna `Utf8` de Arrow) o bytes (`Binary`).
+#[derive(Debug, Clone, Copy)]
+pub enum Valor<'a> {
+    Texto(&'a str),
+    Bytes(&'a [u8]),
+}
+
+/// **ORE 0067 G3·1 · El códec de entrada del lago.** Toda geometría que entra
+/// pasa por aquí, por texto o por Arrow: WKB o EWKB (en binario o en hex, con
+/// `\x` delante o sin él), WKT o EWKT (`SRID=4326;POINT(…)`) y GeoJSON (la
+/// geometría, no un `Feature`). Devuelve el WKB ISO validado contra el tipo de
+/// la columna, como [`valor_de_texto`]. Un origen nuevo que dé otra forma se
+/// arregla aquí, con su caso en el corpus, y no en su driver.
+pub fn a_wkb(v: Valor, subtipo: &str, crs: &str, esferica: bool) -> Result<Vec<u8>, String> {
+    let w = match v {
+        Valor::Bytes(b) if matches!(b.first(), Some(0 | 1)) => leer(b)?,
+        Valor::Bytes(b) => match std::str::from_utf8(b) {
+            Ok(t) => de_texto(t)?,
+            Err(_) => {
+                return Err(
+                    "ni WKB ni texto: el primer byte no es un orden de bytes de WKB".into(),
+                );
+            }
+        },
+        Valor::Texto(t) => de_texto(t)?,
+    };
+    comprobar(&w, subtipo, crs, esferica)?;
+    Ok(w.iso)
+}
+
+fn de_texto(t: &str) -> Result<Wkb, String> {
+    let s = t.trim();
+    let s = s.strip_prefix("\\x").unwrap_or(s);
+    if s.starts_with('{') {
+        return de_geojson(s);
+    }
+    if !s.is_empty() && s.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return leer(&de_hex(s)?);
+    }
+    let (srid, wkt) = match s.get(..5) {
+        Some(p) if p.eq_ignore_ascii_case("SRID=") => {
+            let (n, resto) = s[5..]
+                .split_once(';')
+                .ok_or_else(|| format!("`{}…` es EWKT sin `;` tras el SRID", corto(s)))?;
+            let n: u32 = n
+                .trim()
+                .parse()
+                .map_err(|_| format!("`{}…`: el SRID del EWKT no es un número", corto(s)))?;
+            (Some(n), resto)
+        }
+        _ => (None, s),
+    };
+    let mut w = de_wkt(wkt)?;
+    w.srid = srid;
+    Ok(w)
+}
+
+/// Escribe WKB ISO (*little-endian*) y lo pasa por [`leer`], que es quien
+/// valida: el códec no tiene reglas propias.
+struct Escritor(Vec<u8>);
+
+impl Escritor {
+    fn cabecera(&mut self, base: Base, dims: Dims, n: Option<usize>) {
+        self.0.push(1);
+        let t = base as u32 + if dims.z { 1000 } else { 0 } + if dims.m { 2000 } else { 0 };
+        self.0.extend_from_slice(&t.to_le_bytes());
+        if let Some(n) = n {
+            self.0.extend_from_slice(&(n as u32).to_le_bytes());
+        }
+    }
+    fn coord(&mut self, c: &[f64]) {
+        for x in c {
+            self.0.extend_from_slice(&x.to_le_bytes());
+        }
+    }
+    fn fin(self) -> Result<Wkb, String> {
+        leer(&self.0)
+    }
+}
+
+fn wkt_dims(d: wkt::types::Dimension) -> Dims {
+    use wkt::types::Dimension as D;
+    Dims {
+        z: matches!(d, D::XYZ | D::XYZM),
+        m: matches!(d, D::XYM | D::XYZM),
+    }
+}
+
+fn wkt_coord(c: &wkt::types::Coord<f64>, d: Dims) -> Vec<f64> {
+    let mut v = vec![c.x, c.y];
+    if d.z {
+        v.push(c.z.unwrap_or(f64::NAN));
+    }
+    if d.m {
+        v.push(c.m.unwrap_or(f64::NAN));
+    }
+    v
+}
+
+fn de_wkt(s: &str) -> Result<Wkb, String> {
+    let g: wkt::Wkt<f64> = s.parse().map_err(|e| {
+        format!(
+            "`{}…` no es una geometría en WKB, WKT ni GeoJSON (WKT: {e})",
+            corto(s)
+        )
+    })?;
+    let mut e = Escritor(Vec::new());
+    escribir_wkt(&mut e, &g);
+    e.fin()
+}
+
+fn escribir_wkt(e: &mut Escritor, g: &wkt::Wkt<f64>) {
+    use wkt::Wkt as W;
+    let linea = |e: &mut Escritor, l: &wkt::types::LineString<f64>, d: Dims| {
+        e.0.extend_from_slice(&(l.coords().len() as u32).to_le_bytes());
+        for c in l.coords() {
+            e.coord(&wkt_coord(c, d));
+        }
+    };
+    let poligono = |e: &mut Escritor, p: &wkt::types::Polygon<f64>, d: Dims| {
+        e.0.extend_from_slice(&(p.rings().len() as u32).to_le_bytes());
+        for r in p.rings() {
+            linea(e, r, d);
+        }
+    };
+    let punto = |e: &mut Escritor, p: &wkt::types::Point<f64>, d: Dims| {
+        e.cabecera(Base::Point, d, None);
+        match p.coord() {
+            Some(c) => e.coord(&wkt_coord(c, d)),
+            None => e.coord(&vec![f64::NAN; d.n()]),
+        }
+    };
+    match g {
+        W::Point(p) => punto(e, p, wkt_dims(p.dimension())),
+        W::LineString(l) => {
+            let d = wkt_dims(l.dimension());
+            e.cabecera(Base::LineString, d, None);
+            linea(e, l, d);
+        }
+        W::Polygon(p) => {
+            let d = wkt_dims(p.dimension());
+            e.cabecera(Base::Polygon, d, None);
+            poligono(e, p, d);
+        }
+        W::MultiPoint(m) => {
+            let d = wkt_dims(m.dimension());
+            e.cabecera(Base::MultiPoint, d, Some(m.points().len()));
+            for p in m.points() {
+                punto(e, p, d);
+            }
+        }
+        W::MultiLineString(m) => {
+            let d = wkt_dims(m.dimension());
+            e.cabecera(Base::MultiLineString, d, Some(m.line_strings().len()));
+            for l in m.line_strings() {
+                e.cabecera(Base::LineString, d, None);
+                linea(e, l, d);
+            }
+        }
+        W::MultiPolygon(m) => {
+            let d = wkt_dims(m.dimension());
+            e.cabecera(Base::MultiPolygon, d, Some(m.polygons().len()));
+            for p in m.polygons() {
+                e.cabecera(Base::Polygon, d, None);
+                poligono(e, p, d);
+            }
+        }
+        W::GeometryCollection(c) => {
+            let d = wkt_dims(c.dimension());
+            e.cabecera(Base::GeometryCollection, d, Some(c.geometries().len()));
+            for h in c.geometries() {
+                escribir_wkt(e, h);
+            }
+        }
+    }
+}
+
+fn de_geojson(s: &str) -> Result<Wkb, String> {
+    let g: geojson::Geometry = s
+        .parse()
+        .map_err(|e| format!("`{}…` no es una geometría GeoJSON: {e}", corto(s)))?;
+    let mut e = Escritor(Vec::new());
+    escribir_geojson(&mut e, &g.value)?;
+    e.fin()
+}
+
+/// Las dimensiones de un GeoJSON: XY, o Z si las posiciones traen tres números
+/// (RFC 7946 no tiene M).
+fn gj_dims(v: &geojson::GeometryValue) -> Dims {
+    use geojson::GeometryValue as G;
+    let n = match v {
+        G::Point { coordinates } => coordinates.as_slice().len(),
+        G::MultiPoint { coordinates } | G::LineString { coordinates } => {
+            coordinates.first().map_or(2, |p| p.as_slice().len())
+        }
+        G::MultiLineString { coordinates } | G::Polygon { coordinates } => coordinates
+            .iter()
+            .flatten()
+            .next()
+            .map_or(2, |p| p.as_slice().len()),
+        G::MultiPolygon { coordinates } => coordinates
+            .iter()
+            .flatten()
+            .flatten()
+            .next()
+            .map_or(2, |p| p.as_slice().len()),
+        G::GeometryCollection { .. } => 2,
+    };
+    Dims {
+        z: n >= 3,
+        m: false,
+    }
+}
+
+fn escribir_geojson(e: &mut Escritor, v: &geojson::GeometryValue) -> Result<(), String> {
+    use geojson::GeometryValue as G;
+    let d = gj_dims(v);
+    let pos = |e: &mut Escritor, p: &geojson::Position| -> Result<(), String> {
+        let c = p.as_slice();
+        if c.len() < 2 {
+            return Err("una posición GeoJSON con menos de dos números".into());
+        }
+        e.coord(&c[..d.n().min(c.len())]);
+        if c.len() < d.n() {
+            e.coord(&[f64::NAN]);
+        }
+        Ok(())
+    };
+    let linea = |e: &mut Escritor, l: &[geojson::Position]| -> Result<(), String> {
+        e.0.extend_from_slice(&(l.len() as u32).to_le_bytes());
+        l.iter().try_for_each(|p| pos(e, p))
+    };
+    let poligono = |e: &mut Escritor, p: &[Vec<geojson::Position>]| -> Result<(), String> {
+        e.0.extend_from_slice(&(p.len() as u32).to_le_bytes());
+        p.iter().try_for_each(|r| linea(e, r))
+    };
+    match v {
+        G::Point { coordinates } => {
+            e.cabecera(Base::Point, d, None);
+            pos(e, coordinates)?;
+        }
+        G::LineString { coordinates } => {
+            e.cabecera(Base::LineString, d, None);
+            linea(e, coordinates)?;
+        }
+        G::Polygon { coordinates } => {
+            e.cabecera(Base::Polygon, d, None);
+            poligono(e, coordinates)?;
+        }
+        G::MultiPoint { coordinates } => {
+            e.cabecera(Base::MultiPoint, d, Some(coordinates.len()));
+            for p in coordinates {
+                e.cabecera(Base::Point, d, None);
+                pos(e, p)?;
+            }
+        }
+        G::MultiLineString { coordinates } => {
+            e.cabecera(Base::MultiLineString, d, Some(coordinates.len()));
+            for l in coordinates {
+                e.cabecera(Base::LineString, d, None);
+                linea(e, l)?;
+            }
+        }
+        G::MultiPolygon { coordinates } => {
+            e.cabecera(Base::MultiPolygon, d, Some(coordinates.len()));
+            for p in coordinates {
+                e.cabecera(Base::Polygon, d, None);
+                poligono(e, p)?;
+            }
+        }
+        G::GeometryCollection { geometries } => {
+            e.cabecera(Base::GeometryCollection, d, Some(geometries.len()));
+            for h in geometries {
+                escribir_geojson(e, &h.value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ORE 0067 G3·1 · El corpus del códec (`tests/geo-corpus.json`, con shapely
+    /// como oráculo: `tests/geo-corpus.py`): cada geometría, en sus cinco formas
+    /// y como bytes y como texto, da el mismo WKB ISO.
+    #[test]
+    fn el_codec_da_el_mismo_wkb_en_todas_las_formas() {
+        let c: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/geo-corpus.json")).unwrap();
+        let mut n = 0;
+        for caso in c.as_array().unwrap() {
+            let iso = caso["iso"].as_str().unwrap();
+            let sub = caso["subtipo"].as_str().unwrap();
+            for (forma, v) in caso["formas"].as_object().unwrap() {
+                let v = v.as_str().unwrap();
+                let w = a_wkb(Valor::Texto(v), sub, "EPSG:4326", false)
+                    .unwrap_or_else(|e| panic!("{sub} · {forma}: {e}"));
+                assert_eq!(a_hex(&w), iso, "{sub} · {forma} · texto");
+                // Lo mismo como bytes: el binario de WKB, y el texto en un `Binary`.
+                let b = if forma.ends_with("_hex") {
+                    de_hex(v).unwrap()
+                } else {
+                    v.as_bytes().to_vec()
+                };
+                let w = a_wkb(Valor::Bytes(&b), sub, "EPSG:4326", false)
+                    .unwrap_or_else(|e| panic!("{sub} · {forma} · bytes: {e}"));
+                assert_eq!(a_hex(&w), iso, "{sub} · {forma} · bytes");
+                n += 1;
+            }
+        }
+        assert!(n >= 55, "{n}");
+    }
+
+    #[test]
+    fn el_codec_dice_por_que_no() {
+        let e = a_wkb(Valor::Texto("hola"), "Any", "OGC:CRS84", false).unwrap_err();
+        assert!(e.contains("WKB, WKT ni GeoJSON"), "{e}");
+        // El SRID de un EWKT que no casa con la columna.
+        let e = a_wkb(
+            Valor::Texto("SRID=25830;POINT(1 2)"),
+            "Any",
+            "OGC:CRS84",
+            false,
+        )
+        .unwrap_err();
+        assert!(e.contains("reproyectar"), "{e}");
+        // El subtipo.
+        let e = a_wkb(Valor::Texto("POINT(1 2)"), "Polygon", "OGC:CRS84", false).unwrap_err();
+        assert!(e.contains("Point"), "{e}");
+        // Una `Geography` fuera de rango.
+        let e = a_wkb(
+            Valor::Texto(r#"{"type":"Point","coordinates":[440000,4474000]}"#),
+            "Any",
+            "OGC:CRS84",
+            true,
+        )
+        .unwrap_err();
+        assert!(e.contains("Geography"), "{e}");
+        // `\x` delante (lo que da `bytea` de Postgres por texto).
+        assert!(
+            a_wkb(
+                Valor::Texto("\\x0101000000000000000000F03F0000000000000040"),
+                "Point",
+                "OGC:CRS84",
+                false
+            )
+            .is_ok()
+        );
+    }
 
     /// WKB ISO little-endian a mano: cabecera y dobles.
     fn wkb(tipo: u32, cuerpo: &[u8]) -> Vec<u8> {

@@ -891,7 +891,7 @@ fn sellar_flujo(
     n: &ore_core::parse::Node,
     lector: impl std::io::Read,
 ) -> Result<String, String> {
-    use arrow_schema::{Field, Schema};
+    use arrow_schema::Schema;
     let cab = leer_cabecera(primera)?;
     let campo = |k: &str| -> Option<String> {
         n.get(k)
@@ -904,10 +904,11 @@ fn sellar_flujo(
     let base = campo("base");
     let fundir = campo("fundir").is_some_and(|v| v == "true");
 
+    // ORE 0067 G3·1: las columnas geo, con su marca: las convierte el códec.
     let esquema = Arc::new(Schema::new(
         cab.esquema
             .iter()
-            .map(|(n, t)| Field::new(n, carga::arrow_del_oos(t), true))
+            .map(|(n, t)| carga::campo_del_oos(n, t))
             .collect::<Vec<_>>(),
     ));
     let cola = std::rc::Rc::new(std::cell::Cell::new([0u8; 8]));
@@ -4757,6 +4758,81 @@ mod tests {
         format!(
             "{{\"dataset\":\"{ds}\",\"clave\":[],\"conducto\":\"materialization.payload\",\"esquema\":{{\"id\":\"String\",\"total\":\"Decimal<10, 2>\",\"ts\":\"DateTimeTz\"}},\"plan\":\"sha256:p\",\"testigo\":{{\"modo\":\"none\"}}}}"
         )
+    }
+
+    /// ORE 0067 G3·1 · Medido en G3·0: por Arrow, una columna `Geometry` que
+    /// llega como texto (lo que da PostGIS: EWKB en hex; BigQuery: WKT) se
+    /// guardaba con los bytes del texto. Ahora pasa por el códec: WKB ISO, con la
+    /// marca, y la tabla geo (v3, `ore.geo.geom`). Un valor que no es del tipo
+    /// para el lote, con la fila.
+    #[test]
+    fn un_flujo_con_geometria_en_texto_llega_como_wkb() {
+        let esquema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Utf8, false),
+            arrow_schema::Field::new("geom", arrow_schema::DataType::Utf8, true),
+        ]));
+        let flujo = |geoms: Vec<Option<&str>>| {
+            let n = geoms.len();
+            let lote = arrow_array::RecordBatch::try_new(
+                esquema.clone(),
+                vec![
+                    Arc::new(arrow_array::StringArray::from(
+                        (0..n).map(|i| i.to_string()).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(arrow_array::StringArray::from(geoms)),
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            w.write(&lote).unwrap();
+            w.finish().unwrap();
+            drop(w);
+            bytes
+        };
+        let primera = |ds: &str| {
+            format!(
+                "{{\"dataset\":\"{ds}\",\"clave\":[],\"conducto\":\"materialization.payload\",\"esquema\":{{\"id\":\"String\",\"geom\":\"Geometry<Point>\"}},\"plan\":\"sha256:p\",\"testigo\":{{\"modo\":\"none\"}}}}"
+            )
+        };
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let ds = "copias/flujo_geo";
+        let p = primera(ds);
+        // EWKB en hex con SRID 4326 (PostGIS), WKT (BigQuery) y un nulo.
+        let bytes = flujo(vec![
+            Some("0101000020E6100000000000000000F03F0000000000000040"),
+            Some("POINT(3 4)"),
+            None,
+        ]);
+        let r = sellar_flujo(&lago, &p, &nodo(&p), &bytes[..]).expect("sella");
+        let ml = campo(&r, "metadata_location");
+        let t = lago.abrir(&ml, ds).unwrap();
+        assert_eq!(
+            t.metadata().format_version(),
+            iceberg::spec::FormatVersion::V3
+        );
+        assert!(
+            t.metadata().properties().contains_key("ore.geo.geom"),
+            "{r}"
+        );
+        let filas = filas_de(&lago, &ml);
+        let geom: std::collections::BTreeMap<String, String> = filas
+            .iter()
+            .map(|f| (f["id"].clone(), f.get("geom").cloned().unwrap_or_default()))
+            .collect();
+        assert_eq!(geom["0"], "0101000000000000000000F03F0000000000000040");
+        assert_eq!(geom["1"], "010100000000000000000008400000000000001040");
+        assert_eq!(geom["2"], "");
+        // Un valor que no es geometría para el lote, diciendo la fila.
+        let p = primera("copias/flujo_geo_mal");
+        let e = sellar_flujo(
+            &lago,
+            &p,
+            &nodo(&p),
+            &flujo(vec![Some("POINT(1 1)"), Some("hola")])[..],
+        )
+        .unwrap_err();
+        assert!(e.contains("fila 1") && e.contains("geom"), "{e}");
     }
 
     /// El flujo entero se sella lote a lote: dos lotes, sus filas, el decimal

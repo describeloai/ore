@@ -79,6 +79,84 @@ fn arrow_de(f: &Fisico) -> DataType {
 ///
 /// v1alpha17: lo compuesto con su forma entera (0049 B1): un struct, una lista
 /// y un vector, que es una lista de `float32` en el lago.
+/// ORE 0067 G3·1 · El campo de Arrow de una columna del contrato, **con la marca
+/// `geoarrow.wkb` y su CRS si es geo** (lo que no hace [`arrow_del_oos`], que da
+/// solo el tipo): es lo que dice a [`al_contrato`] que esa columna pasa por el
+/// códec, y al lago que la escriba el escritor geo.
+pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
+    match ore_core::types::parse_type(oos) {
+        Ok(t) => campo(nombre, &Forma::de(&t)),
+        Err(_) => Field::new(nombre, arrow_de(&Fisico::Texto), true),
+    }
+}
+
+/// ORE 0067 G3·1 · Una columna geo del flujo de un driver, por el códec: texto
+/// (hex WKB/EWKB, WKT, GeoJSON) o binario, a WKB ISO validado contra su tipo.
+/// En Arrow un valor que no es del tipo no deja la columna como texto (como en
+/// la copia por texto): para el lote entero, con la fila y el porqué.
+fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef, String> {
+    use arrow_array::Array;
+    use arrow_array::cast::AsArray;
+    let tipo = campo.metadata().get(META_TIPO).cloned().unwrap_or_default();
+    let Ok(t) = ore_core::types::parse_type(&tipo) else {
+        return Err(format!("`{}`: `{tipo}` no es un tipo geo", campo.name()));
+    };
+    let Forma::Geo {
+        subtipo,
+        crs,
+        esferica,
+    } = Forma::de(&t)
+    else {
+        return Err(format!("`{}`: `{tipo}` no es un tipo geo", campo.name()));
+    };
+    let valor = |i: usize| -> Option<ore_core::geo::Valor<'_>> {
+        use ore_core::geo::Valor as V;
+        if col.is_null(i) {
+            return None;
+        }
+        Some(match col.data_type() {
+            DataType::Utf8 => V::Texto(col.as_string::<i32>().value(i)),
+            DataType::LargeUtf8 => V::Texto(col.as_string::<i64>().value(i)),
+            DataType::Utf8View => V::Texto(col.as_string_view().value(i)),
+            DataType::Binary => V::Bytes(col.as_binary::<i32>().value(i)),
+            DataType::LargeBinary => V::Bytes(col.as_binary::<i64>().value(i)),
+            DataType::BinaryView => V::Bytes(col.as_binary_view().value(i)),
+            _ => return None,
+        })
+    };
+    if !matches!(
+        col.data_type(),
+        DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Utf8View
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+    ) {
+        return Err(format!(
+            "la columna `{}` es `{tipo}` y llega como `{}`: una geometría llega como texto o como binario",
+            campo.name(),
+            col.data_type()
+        ));
+    }
+    let mut b = arrow_array::builder::BinaryBuilder::new();
+    for i in 0..col.len() {
+        match valor(i) {
+            None => b.append_null(),
+            Some(v) => match ore_core::geo::a_wkb(v, &subtipo, &crs, esferica) {
+                Ok(w) => b.append_value(w),
+                Err(porque) => {
+                    return Err(format!(
+                        "la columna `{}` es `{tipo}` y el valor de la fila {i} no lo es: {porque}",
+                        campo.name()
+                    ));
+                }
+            },
+        }
+    }
+    Ok(Arc::new(b.finish()) as ArrayRef)
+}
+
 pub fn arrow_del_oos(oos: &str) -> DataType {
     match ore_core::types::parse_type(oos) {
         Ok(t) => arrow_de_forma(&Forma::de(&t)),
@@ -1220,6 +1298,16 @@ pub fn al_contrato(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBa
                     campo.name()
                 )
             })?;
+            // ORE 0067 G3·1: una geometría pasa por el códec, nunca por un `cast`
+            // (medido en G3·0: `Utf8` → `Binary` guardaba los bytes del texto hex).
+            if campo
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str)
+                == Some(GEOARROW_WKB)
+            {
+                return geo_al_contrato(col, campo);
+            }
             if col.data_type() == campo.data_type() {
                 return Ok(col.clone());
             }
@@ -1537,9 +1625,20 @@ mod tests {
             otra.column_by_name("geom").unwrap().to_data(),
             l.column_by_name("geom").unwrap().to_data()
         );
-        // Un WKT, o un polígono en una columna de puntos: la columna se queda texto.
+        // ORE 0067 G3·1: un WKT entra por el códec (antes se quedaba texto).
+        let wkt = vec![BTreeMap::from([
+            ("id".into(), "1".into()),
+            ("geom".into(), "POINT(1 2)".into()),
+        ])];
+        let l = lote(&esquema, &wkt).unwrap().lote;
+        assert_eq!(
+            leer_geom_hex(&l),
+            "0101000000000000000000F03F0000000000000040"
+        );
+        // Lo que no es geometría, o un polígono en una columna de puntos: la
+        // columna se queda texto.
         for (malo, dice) in [
-            ("POINT(1 2)", "WKT"),
+            ("hola", "WKB, WKT ni GeoJSON"),
             ("010300000000000000", "un `Polygon` en una columna `Point`"),
         ] {
             let filas = vec![BTreeMap::from([
@@ -1560,6 +1659,16 @@ mod tests {
                 &DataType::Utf8
             );
         }
+    }
+
+    fn leer_geom_hex(l: &RecordBatch) -> String {
+        use arrow_array::cast::AsArray;
+        ore_core::geo::a_hex(
+            l.column_by_name("geom")
+                .unwrap()
+                .as_binary::<i32>()
+                .value(0),
+        )
     }
 
     /// v1alpha32 (ORE 0067 G1·2) · **Ida y vuelta del contrato entre capas**:

@@ -965,3 +965,14 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
   | **(a) Copia por Arrow** | **Confirmado**: `al_contrato` convierte un `Utf8` con EWKB en hex a `Binary` **guardando los bytes del texto** (50 bytes que empiezan por `0101` en ASCII) y sin la marca `geoarrow.wkb`. La copia de PostGIS por Arrow escribiría geometría corrupta en cuanto la columna tenga tipo | G3·1 lo arregla, y se tiene que hacer **antes** de G3·2: tipar PostGIS sin el códec sería peor que hoy |
   | **(b) WKT y GeoJSON** | Los *crates* `wkt` 0.14 y `geojson` 1.0, sobre `geo-types` 0.7.20 (**ya está en el *workspace***): **731 000 polígonos/s** en WKT y **1,2 M/s** en GeoJSON, frente al objetivo de copia de ≥ 100 000 filas/s. Arrastran poco | se usan los *crates*; un parser propio sería menos fiable |
   | **(c) `ST_Read` en la imagen del puesto, sin red** | Lee **los siete** formatos del banco: GeoJSON, GPKG, KML, FlatGeobuf, GDB, SHP en zip (`/vsizip/`) y GeoParquet, con 183 municipios cada uno y en menos de 0,7 s. CRS: OGC:CRS84 (KML: EPSG:4326). **Dos detalles**: el SHP da su CRS en WKT de Esri **sin autoridad** (`.prj`) y como `Polygon` (no `MultiPolygon`), y en la GDB la columna se llama `SHAPE` | G3·6 confirmado tal cual. La guía dirá cómo leer el CRS de un SHP y el nombre de la columna en una GDB |
+- **2026-10-17 · G3·1 hecho: el códec de entrada.**
+  - **`ore_core::geo::a_wkb(Valor, subtipo, crs, esférica)`** entiende:
+    - WKB y EWKB, en binario y en hex (también con `\x` delante);
+    - WKT y EWKT (`SRID=n;…`), con el *crate* `wkt`;
+    - GeoJSON, con el *crate* `geojson`.
+
+    Escribe WKB ISO y lo valida con el mismo `leer` y `comprobar` de G1·2: el códec no tiene reglas propias. `valor_de_texto` es ahora el códec por texto, así que la copia por texto también entiende WKT y GeoJSON.
+  - **El corpus** está en `crates/ore-core/tests/geo-corpus.json`, generado con shapely como oráculo (`geo-corpus.py`): 10 geometrías (los 7 subtipos, con agujero, con Z y el punto vacío) en 6 formas, como texto y como bytes, y todas dan el mismo WKB ISO. Hay además una prueba de lo que se niega: lo que no es geometría, un SRID que no casa, el subtipo y una `Geography` fuera de rango.
+  - **La copia por Arrow, arreglada:** `sellar-flujo` declara las columnas geo con su marca (`carga::campo_del_oos`), y `al_contrato` las pasa por el códec, nunca por un `cast`. Con un valor que no es del tipo, para el lote diciendo la fila. La prueba `un_flujo_con_geometria_en_texto_llega_como_wkb` cubre EWKB en hex, WKT y un nulo: tabla v3, `ore.geo.geom` y el WKB ISO.
+  - **`tipo_geo_nativo` pasa a `ore_core::geo::tipo_nativo`**: el driver y la inducción dicen lo mismo.
+  - El cierre de dependencias de `ore-cli` pasa de 183 a 190 *crates*, decidido (`tests/dependencias.rs`). Todo el *workspace* queda verde, salvo las tres pruebas que solo fallan en Docker por el `.git` del *worktree*.
