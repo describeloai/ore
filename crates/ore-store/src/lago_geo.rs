@@ -41,6 +41,109 @@ pub struct ColumnaGeo {
     pub esferica: bool,
 }
 
+/// **El tamaño del grupo de filas de un fichero geo** (ORE 0067 G2·2, medido
+/// con V4 sobre los 34 M de edificios en victor): con orden Hilbert, 100 000
+/// filas descartan el 98,5–99,4 % de los grupos en una consulta por ciudad, con
+/// la misma latencia que 25 000 (p95 0,6–0,7 s con un lector) y la cuarta parte
+/// de metadatos; 400 000 es más lento y no cabe en memoria con lectores
+/// concurrentes.
+pub const GRUPO_DE_FILAS: usize = 100_000;
+
+/// **El orden Hilbert** (ORE 0067 G2·2): las filas, ordenadas por el índice de
+/// Hilbert del centro del bbox de `columna` en una rejilla de 2¹⁶ × 2¹⁶ sobre la
+/// extensión de los datos. Es lo que hace que el bbox de cada grupo de filas
+/// sea pequeño, y con él el descarte: medido en V4, de un 87–97 % sin orden a
+/// un 98,5–99,8 % con él, y la consulta por zona de 2,3 s a 0,6 s (p95). Es
+/// global: los ficheros en que luego se parte salen con rangos espaciales
+/// contiguos. Las nulas y las vacías van al final.
+pub fn ordenar_hilbert(lotes: Vec<RecordBatch>, columna: &str) -> Result<Vec<RecordBatch>, String> {
+    use arrow_array::Array;
+    use arrow_array::cast::AsArray;
+    let Some(primero) = lotes.first() else {
+        return Ok(lotes);
+    };
+    let esquema = primero.schema();
+    let todo = arrow_select::concat::concat_batches(&esquema, &lotes)
+        .map_err(|e| format!("los lotes no se juntan para ordenar: {e}"))?;
+    let Some(col) = todo.column_by_name(columna) else {
+        return Ok(vec![todo]);
+    };
+    let valor = |i: usize| -> Option<&[u8]> {
+        if col.is_null(i) {
+            return None;
+        }
+        col.as_binary_opt::<i32>()
+            .map(|a| a.value(i))
+            .or_else(|| col.as_binary_opt::<i64>().map(|a| a.value(i)))
+    };
+    let centros: Vec<Option<(f64, f64)>> = (0..todo.num_rows())
+        .map(|i| {
+            valor(i)
+                .and_then(|b| ore_core::geo::leer(b).ok())
+                .and_then(|w| w.bbox)
+                .map(|[x0, y0, x1, y1]| ((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+        })
+        .collect();
+    let mut ext = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (x, y) in centros.iter().flatten() {
+        ext = [
+            ext[0].min(*x),
+            ext[1].min(*y),
+            ext[2].max(*x),
+            ext[3].max(*y),
+        ];
+    }
+    let celda = |v: f64, lo: f64, hi: f64| -> u32 {
+        if hi > lo {
+            (((v - lo) / (hi - lo)) * 65535.0)
+                .round()
+                .clamp(0.0, 65535.0) as u32
+        } else {
+            0
+        }
+    };
+    let claves: Vec<u64> = centros
+        .iter()
+        .map(|c| match c {
+            Some((x, y)) => hilbert(celda(*x, ext[0], ext[2]), celda(*y, ext[1], ext[3])),
+            None => u64::MAX,
+        })
+        .collect();
+    let mut orden: Vec<u32> = (0..todo.num_rows() as u32).collect();
+    orden.sort_by_key(|i| claves[*i as usize]);
+    let indices = arrow_array::UInt32Array::from(orden);
+    let ordenado = arrow_select::take::take_record_batch(&todo, &indices)
+        .map_err(|e| format!("las filas no se reordenan: {e}"))?;
+    Ok(vec![ordenado])
+}
+
+/// El índice de Hilbert de la celda `(x, y)` en una rejilla de 2¹⁶ × 2¹⁶ (el
+/// algoritmo clásico de rotar y acumular por cuadrantes).
+fn hilbert(mut x: u32, mut y: u32) -> u64 {
+    const N: u32 = 1 << 16;
+    let mut d: u64 = 0;
+    let mut s = N / 2;
+    while s > 0 {
+        let rx = u32::from(x & s > 0);
+        let ry = u32::from(y & s > 0);
+        d += u64::from(s) * u64::from(s) * u64::from((3 * rx) ^ ry);
+        if ry == 0 {
+            if rx == 1 {
+                x = N - 1 - x;
+                y = N - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        s /= 2;
+    }
+    d
+}
+
 /// Las columnas geo de un esquema de Arrow: las que llevan la extensión
 /// `geoarrow.wkb`.
 pub fn columnas_geo(esquema: &ArrowSchema) -> Vec<ColumnaGeo> {
@@ -147,6 +250,7 @@ impl FicheroGeo {
         ));
         let props = parquet::file::properties::WriterProperties::builder()
             .set_compression(parquet::basic::Compression::SNAPPY)
+            .set_max_row_group_row_count(Some(GRUPO_DE_FILAS))
             .build();
         let escritor =
             parquet::arrow::ArrowWriter::try_new(Vec::new(), esquema.clone(), Some(props))
@@ -315,4 +419,73 @@ pub fn data_file(
         ))
         .build()
         .map_err(|e| format!("el DataFile no se construye: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La curva visita las cuatro esquinas de la rejilla en su orden, y dos
+    /// celdas vecinas tienen índices cercanos (lo que hace pequeño el bbox de
+    /// un grupo de filas).
+    #[test]
+    fn la_curva_de_hilbert() {
+        let m = 65535;
+        assert_eq!(hilbert(0, 0), 0);
+        assert!(hilbert(0, m) < hilbert(m, m) && hilbert(m, m) < hilbert(m, 0));
+        assert_eq!(hilbert(1, 0).abs_diff(hilbert(0, 0)), 1);
+    }
+
+    /// El orden junta lo cercano: tres puntos de Madrid y tres de Barcelona,
+    /// mezclados, salen agrupados por ciudad; una nula va al final.
+    #[test]
+    fn el_orden_hilbert_junta_lo_cercano() {
+        use arrow_array::{Array, BinaryArray, Int64Array};
+        use arrow_schema::{DataType, Field};
+        let p = |x: f64, y: f64| {
+            let mut w = vec![1u8, 1, 0, 0, 0];
+            w.extend_from_slice(&x.to_le_bytes());
+            w.extend_from_slice(&y.to_le_bytes());
+            w
+        };
+        let geoms = [
+            Some(p(-3.70, 40.41)),
+            Some(p(2.17, 41.38)),
+            None,
+            Some(p(-3.71, 40.42)),
+            Some(p(2.16, 41.39)),
+            Some(p(-3.69, 40.40)),
+            Some(p(2.18, 41.40)),
+        ];
+        let esquema = Arc::new(ArrowSchema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("geom", DataType::Binary, true),
+        ]));
+        let lote = RecordBatch::try_new(
+            esquema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..7)),
+                Arc::new(BinaryArray::from_iter(geoms.iter().map(|g| g.as_deref()))),
+            ],
+        )
+        .unwrap();
+        let o = ordenar_hilbert(vec![lote.slice(0, 4), lote.slice(4, 3)], "geom").unwrap();
+        let ids: Vec<i64> = o[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        let madrid = [0i64, 3, 5];
+        let ciudad: Vec<bool> = ids[..6].iter().map(|i| madrid.contains(i)).collect();
+        // Seis con geometría: tres de una ciudad seguidos de tres de la otra.
+        assert!(
+            ciudad == [true, true, true, false, false, false]
+                || ciudad == [false, false, false, true, true, true],
+            "{ids:?}"
+        );
+        assert_eq!(ids[6], 2, "la nula, al final");
+        assert!(o[0].column(1).is_null(6));
+    }
 }

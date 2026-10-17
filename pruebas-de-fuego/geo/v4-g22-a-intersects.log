@@ -1,0 +1,15 @@
+V4|a_tal_cual|metadatos|-|338 grupos de filas, leídos en 0.3 s
+V4|a_tal_cual|madrid|-|grupos 42/338 (descarte 87.6 %) · bbox 2.74 s (62480) · ST_Intersects 30.01 s (62477) · && 2.87 s (62477)
+V4|a_tal_cual|barcelona|-|grupos 46/338 (descarte 86.4 %) · bbox 3.37 s (81887) · ST_Intersects 30.30 s (81885) · && 2.32 s (81886)
+V4|a_tal_cual|valencia|-|grupos 32/338 (descarte 90.5 %) · bbox 1.64 s (39387) · ST_Intersects 21.19 s (39381) · && 1.92 s (39382)
+V4|a_tal_cual|sevilla|-|grupos 34/338 (descarte 89.9 %) · bbox 1.55 s (43265) · ST_Intersects 19.51 s (43261) · && 2.25 s (43261)
+V4|a_tal_cual|bilbao|-|grupos 23/338 (descarte 93.2 %) · bbox 1.04 s (7683) · ST_Intersects 19.80 s (7682) · && 1.37 s (7682)
+V4|a_tal_cual|zaragoza|-|grupos 39/338 (descarte 88.5 %) · bbox 1.84 s (23796) · ST_Intersects 21.65 s (23796) · && 2.20 s (23796)
+V4|a_tal_cual|malaga|-|grupos 16/338 (descarte 95.3 %) · bbox 0.82 s (27592) · ST_Intersects 19.82 s (27590) · && 1.15 s (27591)
+V4|a_tal_cual|coruna|-|grupos 11/338 (descarte 96.7 %) · bbox 0.62 s (14295) · ST_Intersects 19.13 s (14294) · && 0.65 s (14294)
+V4|a_tal_cual|concurrencia|1 lectores|16 consultas en 318.8 s · p50 19.11 s · p95 20.86 s
+## falla: el Job no acabó bien (/1)
+      Reason:       OOMKilled
+  Type    Reason     Age    From               Message
+
+[exited with code 0]

@@ -468,3 +468,45 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
       sale `None` (esta versión no lo nombra; a la matriz).
   - **Lo que queda para G2·2:** hoy cada fichero es un solo grupo de filas de hasta 1 M (lo de
     `parquet` por defecto), sin orden espacial.
+- **2026-10-17 · G2·2 hecho: el orden y las estadísticas, decididos por V4 en victor.**
+  - **Las variantes:** los 34 M de edificios de Overture, escritos cinco veces con DuckDB
+    (`geoparquet_version 'BOTH'`: GEOMETRY nativo, `geo_bbox` por grupo y clave `geo`), en
+    `gs://…-banco-geo/g22/`. **Corrige T2:** DuckDB 1.5.6 **sí** escribe el tipo lógico nativo si se le
+    pide `V2` o `BOTH`; por defecto (`V1`) solo pone la clave.
+  - **Cómo se midió:** en un puesto de victor contra GCS (`vara-v4-g22.py`, lanzado con
+    `correr-v4-g22.py`), con `spatial` y `h3` traídas del bucket, porque el puesto no tiene salida a
+    internet (`puesto-extensiones.py`; meterlas en la imagen es G2·3). Pod de 4 GiB, el máximo de la
+    cola. Dos pasadas completas con números casi iguales (`v4-g22-abcd.log`, `v4-g22-20261017-1106.log`)
+    y la de H3 y particiones (`v4-g22-20261017-1115.log`).
+
+  | variante | descarte de grupos | 1 lector p95 | 8 lectores p95 | 32 lectores p95 |
+  |---|---|---|---|---|
+  | A · tal cual, grupo de 100 000 | 86–97 % | 2,3–2,5 s | 17–29 s | 80–86 s |
+  | **B · Hilbert, 100 000** | **98,5–99,4 %** | **0,62–0,74 s** | 5,2–5,8 s | 14,6–14,9 s |
+  | C · Hilbert, 25 000 | 99,3–99,8 % | 0,60–0,71 s | 4,2–4,7 s | 15,7–17,4 s |
+  | D · Hilbert, 400 000 | 96,5–98,8 % | 1,3 s | sin memoria (110 MB por lector) | — |
+  | E · Hilbert, particionado por H3 r3 (90 ficheros) | 5–7 ficheros | 1,0 s | 5,3 s | 20,2 s |
+
+  - **Hallazgo: `ST_Intersects` solo no descarta nada.** Tarda 19–30 s por zona, el fichero entero.
+    `geom && caja` sí usa `geo_bbox` (0,4–2,9 s, como las columnas `bbox` de Overture). La consulta
+    por zona exacta es `geom && caja AND ST_Intersects(geom, caja)`. Quien genere SQL sobre el lago
+    (el cómputo, E1; el servir, E2) tiene que añadir el `&&`, y la guía del SDK lo dirá (G2·3).
+  - **Decisión G2·2:**
+    1. **Orden Hilbert al escribir:** el índice de Hilbert del centro del bbox, en una rejilla de
+       2¹⁶ × 2¹⁶ sobre la extensión de los datos, global, con las nulas y vacías al final. Es lo que
+       más gana: entre 3 y 4 veces menos latencia y descarte del 99 %.
+    2. **Grupos de 100 000 filas.** Misma latencia que 25 000 con la cuarta parte de metadatos;
+       400 000 es más lento y no cabe en memoria con lectores concurrentes.
+    3. **Sin columna H3 de serie.** Precalculada no gana nada (0,49 s frente a 0,43 s calculándola al
+       vuelo sobre la zona ya descartada). Se calcula cuando se pida (E1).
+    4. **Sin particionado** a este tamaño: un solo fichero ordenado descarta mejor que 90 ficheros
+       por celda. Se vuelve a medir con los 1 000 M de posiciones (lo geotemporal, después de G3).
+  - **El objetivo de P2 con 32 lectores** (p95 < 1 s) **no se cumple en un solo pod**: da 15 s. Es la
+    CPU de un pod de 4 núcleos atendiendo 32 consultas, no el fichero (con un lector, 0,6 s). Queda
+    para la capa de servir (E2): varios lectores, caché de metadatos y de teselas (0066 T6).
+  - **En el escritor** (`lago_geo.rs`): `ordenar_hilbert` antes de escribir y
+    `GRUPO_DE_FILAS = 100_000`. Pruebas `la_curva_de_hilbert` y `el_orden_hilbert_junta_lo_cercano`;
+    `ore-store` 67/67.
+  - **V3 de nuevo:** escribir baja de 2,18 a **0,81 M filas/s**, por debajo del objetivo de 1 M. Cada
+    WKB se lee tres veces (tipar, ordenar y resumir la clave `geo`). Deuda medida: leerlo una vez.
+    1 M de puntos dan 10 grupos de 100 000.

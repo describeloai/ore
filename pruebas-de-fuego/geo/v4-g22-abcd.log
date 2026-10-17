@@ -1,0 +1,53 @@
+V4|a_tal_cual|metadatos|-|338 grupos de filas, leídos en 0.1 s
+V4|a_tal_cual|madrid|-|grupos 42/338 (descarte 87.6 %) · bbox 1.78 s (62480) · && + ST_Intersects 2.30 s (62477) · && 2.17 s (62477)
+V4|a_tal_cual|barcelona|-|grupos 46/338 (descarte 86.4 %) · bbox 1.90 s (81887) · && + ST_Intersects 2.08 s (81885) · && 2.00 s (81886)
+V4|a_tal_cual|valencia|-|grupos 32/338 (descarte 90.5 %) · bbox 1.40 s (39387) · && + ST_Intersects 5.60 s (39381) · && 3.24 s (39382)
+V4|a_tal_cual|sevilla|-|grupos 34/338 (descarte 89.9 %) · bbox 1.56 s (43265) · && + ST_Intersects 2.48 s (43261) · && 1.77 s (43261)
+V4|a_tal_cual|bilbao|-|grupos 23/338 (descarte 93.2 %) · bbox 0.97 s (7683) · && + ST_Intersects 1.27 s (7682) · && 1.19 s (7682)
+V4|a_tal_cual|zaragoza|-|grupos 39/338 (descarte 88.5 %) · bbox 1.50 s (23796) · && + ST_Intersects 1.95 s (23796) · && 1.91 s (23796)
+V4|a_tal_cual|malaga|-|grupos 16/338 (descarte 95.3 %) · bbox 0.73 s (27592) · && + ST_Intersects 1.00 s (27590) · && 0.95 s (27591)
+V4|a_tal_cual|coruna|-|grupos 11/338 (descarte 96.7 %) · bbox 0.53 s (14295) · && + ST_Intersects 0.60 s (14294) · && 0.63 s (14294)
+V4|a_tal_cual|concurrencia|1 lectores|16 consultas en 33.0 s · p50 1.78 s · p95 2.32 s
+V4|a_tal_cual|concurrencia|8 lectores|16 consultas en 28.4 s · p50 11.73 s · p95 16.78 s
+V4|a_tal_cual|concurrencia|32 lectores|64 consultas en 126.0 s · p50 45.19 s · p95 86.35 s
+V4|b_hilbert_100k|metadatos|-|340 grupos de filas, leídos en 0.2 s
+V4|b_hilbert_100k|madrid|-|grupos 4/340 (descarte 98.8 %) · bbox 0.46 s (62480) · && + ST_Intersects 0.83 s (62477) · && 0.43 s (62477)
+V4|b_hilbert_100k|barcelona|-|grupos 5/340 (descarte 98.5 %) · bbox 0.53 s (81887) · && + ST_Intersects 0.78 s (81885) · && 0.60 s (81886)
+V4|b_hilbert_100k|valencia|-|grupos 3/340 (descarte 99.1 %) · bbox 0.43 s (39387) · && + ST_Intersects 0.55 s (39381) · && 0.46 s (39382)
+V4|b_hilbert_100k|sevilla|-|grupos 2/340 (descarte 99.4 %) · bbox 0.37 s (43265) · && + ST_Intersects 0.59 s (43261) · && 0.36 s (43261)
+V4|b_hilbert_100k|bilbao|-|grupos 3/340 (descarte 99.1 %) · bbox 0.47 s (7683) · && + ST_Intersects 0.41 s (7682) · && 0.37 s (7682)
+V4|b_hilbert_100k|zaragoza|-|grupos 2/340 (descarte 99.4 %) · bbox 0.48 s (23796) · && + ST_Intersects 0.64 s (23796) · && 0.34 s (23796)
+V4|b_hilbert_100k|malaga|-|grupos 2/340 (descarte 99.4 %) · bbox 0.39 s (27592) · && + ST_Intersects 0.73 s (27590) · && 0.35 s (27591)
+V4|b_hilbert_100k|coruna|-|grupos 2/340 (descarte 99.4 %) · bbox 0.45 s (14295) · && + ST_Intersects 0.55 s (14294) · && 0.55 s (14294)
+V4|b_hilbert_100k|concurrencia|1 lectores|16 consultas en 16.1 s · p50 0.51 s · p95 0.74 s
+V4|b_hilbert_100k|concurrencia|8 lectores|16 consultas en 11.0 s · p50 2.48 s · p95 5.83 s
+V4|b_hilbert_100k|concurrencia|32 lectores|64 consultas en 41.9 s · p50 7.35 s · p95 14.63 s
+V4|c_hilbert_25k|metadatos|-|1282 grupos de filas, leídos en 0.4 s
+V4|c_hilbert_25k|madrid|-|grupos 9/1282 (descarte 99.3 %) · bbox 0.79 s (62480) · && + ST_Intersects 0.67 s (62477) · && 0.46 s (62477)
+V4|c_hilbert_25k|barcelona|-|grupos 9/1282 (descarte 99.3 %) · bbox 0.90 s (81887) · && + ST_Intersects 0.56 s (81885) · && 0.41 s (81886)
+V4|c_hilbert_25k|valencia|-|grupos 6/1282 (descarte 99.5 %) · bbox 0.73 s (39387) · && + ST_Intersects 0.49 s (39381) · && 0.43 s (39382)
+V4|c_hilbert_25k|sevilla|-|grupos 4/1282 (descarte 99.7 %) · bbox 0.45 s (43265) · && + ST_Intersects 0.39 s (43261) · && 0.36 s (43261)
+V4|c_hilbert_25k|bilbao|-|grupos 5/1282 (descarte 99.6 %) · bbox 0.57 s (7683) · && + ST_Intersects 0.39 s (7682) · && 0.34 s (7682)
+V4|c_hilbert_25k|zaragoza|-|grupos 3/1282 (descarte 99.8 %) · bbox 0.48 s (23796) · && + ST_Intersects 0.40 s (23796) · && 0.33 s (23796)
+V4|c_hilbert_25k|malaga|-|grupos 4/1282 (descarte 99.7 %) · bbox 0.60 s (27592) · && + ST_Intersects 0.38 s (27590) · && 0.32 s (27591)
+V4|c_hilbert_25k|coruna|-|grupos 5/1282 (descarte 99.6 %) · bbox 0.58 s (14295) · && + ST_Intersects 0.36 s (14294) · && 0.35 s (14294)
+V4|c_hilbert_25k|concurrencia|1 lectores|16 consultas en 15.2 s · p50 0.40 s · p95 0.71 s
+V4|c_hilbert_25k|concurrencia|8 lectores|16 consultas en 9.8 s · p50 1.84 s · p95 4.15 s
+V4|c_hilbert_25k|concurrencia|32 lectores|64 consultas en 39.3 s · p50 8.28 s · p95 17.39 s
+V4|d_hilbert_400k|metadatos|-|85 grupos de filas, leídos en 0.1 s
+V4|d_hilbert_400k|madrid|-|grupos 3/85 (descarte 96.5 %) · bbox 0.60 s (62480) · && + ST_Intersects 1.25 s (62477) · && 1.06 s (62477)
+V4|d_hilbert_400k|barcelona|-|grupos 3/85 (descarte 96.5 %) · bbox 0.61 s (81887) · && + ST_Intersects 1.14 s (81885) · && 1.21 s (81886)
+V4|d_hilbert_400k|valencia|-|grupos 3/85 (descarte 96.5 %) · bbox 0.62 s (39387) · && + ST_Intersects 1.18 s (39381) · && 1.07 s (39382)
+V4|d_hilbert_400k|sevilla|-|grupos 1/85 (descarte 98.8 %) · bbox 0.56 s (43265) · && + ST_Intersects 1.03 s (43261) · && 0.72 s (43261)
+V4|d_hilbert_400k|bilbao|-|grupos 1/85 (descarte 98.8 %) · bbox 0.37 s (7683) · && + ST_Intersects 0.78 s (7682) · && 0.93 s (7682)
+V4|d_hilbert_400k|zaragoza|-|grupos 1/85 (descarte 98.8 %) · bbox 0.64 s (23796) · && + ST_Intersects 0.96 s (23796) · && 1.03 s (23796)
+V4|d_hilbert_400k|malaga|-|grupos 1/85 (descarte 98.8 %) · bbox 0.54 s (27592) · && + ST_Intersects 1.08 s (27590) · && 1.25 s (27591)
+V4|d_hilbert_400k|coruna|-|grupos 2/85 (descarte 97.6 %) · bbox 0.57 s (14295) · && + ST_Intersects 1.04 s (14294) · && 0.90 s (14294)
+V4|d_hilbert_400k|concurrencia|1 lectores|16 consultas en 24.5 s · p50 1.06 s · p95 1.37 s
+Traceback (most recent call last):
+_duckdb.OutOfMemoryException: Out of Memory Error: failed to allocate data of size 128.0 MiB (41.3 MiB/104.9 MiB used)
+## falla: el Job no acabó bien (/1)
+      Reason:       Error
+  Type    Reason     Age    From               Message
+
+[exited with code 0]

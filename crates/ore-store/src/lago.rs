@@ -955,6 +955,18 @@ impl Lago {
                 updates: geo.iter().map(crate::lago_geo::propiedad).collect(),
             });
         }
+        // G2·2: las filas de una tabla geo se escriben en orden Hilbert (todas:
+        // la copia ya las tiene en memoria), y los ficheros salen contiguos.
+        let lotes: Box<dyn Iterator<Item = Result<RecordBatch, String>> + '_> = if geo.is_empty() {
+            Box::new(lotes)
+        } else {
+            let todos = lotes.collect::<Result<Vec<_>, _>>()?;
+            Box::new(
+                crate::lago_geo::ordenar_hilbert(todos, &geo[0].nombre)?
+                    .into_iter()
+                    .map(Ok),
+            )
+        };
         let mut en_curso: Option<crate::lago_geo::FicheroGeo> = None;
         let mut ficheros_geo: Vec<DataFile> = Vec::new();
         let subir = |f: crate::lago_geo::FicheroGeo| {
