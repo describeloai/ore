@@ -557,3 +557,24 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     WKB se lee tres veces (tipar, ordenar y resumir la clave `geo`). Deuda medida: leerlo una vez.
     1 M de puntos dan 10 grupos de 100 000.
 - **2026-10-17 · G2·3 diseñado** (en el plan, «G2·3 · La lectura, en detalle»): el puntero de `datos` dice qué columnas son geo (desde los tipos del árbol), los SDK envuelven la columna con `ST_GeomFromWKB` y su CRS, pandas da un `GeoDataFrame`, `normalizar` acepta el binario con la marca `geoarrow.wkb`, `spatial` y `h3` en las tres imágenes, `ore.tipos.Geometry` en las firmas y un `en_zona` con `&&`. Lo local primero; las imágenes y la medida en victor, al empujar. Esperando el go.
+- **2026-10-17 · G2·3·0 medido: el paquete de Python** (`g230-paquete-python.py`,
+  `g230b-sin-pyogrio.py`, en la imagen `puesto-python:1` real, de 325 MB, sobre el millón de puntos que
+  escribe ORE).
+
+  | opción | añade a la imagen | 1 M de filas desde el Arrow de DuckDB | CRS |
+  |---|---|---|---|
+  | `geopandas` completo | 157 MB (de ellos `pyogrio` y su GDAL, 106 MB) | `GeoDataFrame`, 1,13 s | sí (`EPSG:25830`) |
+  | **`geopandas` + `shapely` + `pyproj`, sin `pyogrio`** | **49 MB** | **`GeoDataFrame`, 0,88 s** | **sí** |
+  | `shapely` solo | 9 MB | geometrías sueltas, 1,14 s | no (shapely no lo lleva) |
+  | `geoarrow-pyarrow` | 9 MB | Arrow tipado, no un DataFrame | se perdió |
+
+  - **DuckDB ya entrega `geoarrow.wkb` con el CRS en PROJJSON completo** (trae PROJ dentro), también
+    con `::GEOMETRY('EPSG:25830')`. El Arrow del SDK sale bien sin ningún paquete.
+  - **De vuelta:** `GeoDataFrame.to_arrow(geometry_encoding="WKB")` da `geoarrow.wkb` con el CRS en
+    PROJJSON en 0,94 s. Es lo que recibirá `write()` (G2·3·3), que lo pasa a `AUTORIDAD:CÓDIGO` por su
+    `id`.
+  - **Decisión G2·3·0:** `geopandas` 1.2.0 + `shapely` 2.2.0 + `pyproj` 3.8.0 en `provisto.txt`, **sin
+    `pyogrio`**: +49 MB (325 → unos 374 MB, un 15 %). Leer ficheros (`read_file`) lo hace ORE con
+    DuckDB y GDAL de `spatial`; quien quiera `read_file` en su código añade `pyogrio` en la capa de su
+    repositorio. Con geometría, pandas da un `GeoDataFrame`; si la imagen no trae `geopandas` (una
+    anterior), da el Arrow con su marca y lo avisa.
