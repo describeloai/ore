@@ -250,17 +250,46 @@ tipo), y se dice qué. Rojo si no lee.
 | **G2·5·4 · Fijarla** | Un trabajo de CI que corre el arnés cuando cambian `lago_geo.rs`, `carga.rs` o `crs_projjson.json`, con los lectores locales más ligeros (DuckDB, pyarrow, GeoPandas y GDAL). Spark y Sedona, en la vara | `.github/workflows` | el CI falla si una celda que estaba en verde deja de estarlo |
 | **G2·5·5 · Decidir** | Con la columna C: si Spark, Sedona y Java leen la tabla promovida, se escribe cuándo promover las tablas de ORE (G2·0 punto 4). Si no, qué falta y dónde informarlo (lo de D) | el ADR | la decisión, escrita |
 
-**El orden de los dos, entrelazados para no esperar:**
-1. G2·4·0 y G2·5·0, las sondas, a la vez.
-2. G2·5·1 y G2·5·2, con A y B.
-3. G2·4·1, la lente.
-4. G2·4·2: la tabla C, que entra en la matriz.
-5. G2·5·5: la decisión.
-6. Con el siguiente empuje, G2·4·3 y G2·5·3 en victor.
-7. G2·5·4, en el CI.
-8. G2·4·4, D, con tu permiso para publicar.
+**Revisado con las sondas del 2026-10-17 (bitácora): cinco pasos que cierran G2.**
 
-Todo en local, con commits en la rama, salvo los pasos 6 y 8.
+**Hecho cuando:**
+- **G2·4:**
+  1. la lente abre tres fijos guardados en `tests/`: el `metadata.json` del banco, una tabla de ORE
+     promovida y una que escribe Spark con Iceberg 1.12; en los tres `geom` es `binary` con
+     `ore.geo.<col>` y su CRS, y un commit encima se niega con su porqué;
+  2. la tabla ajena del banco tiene filas, escritas por Spark 4.1 + Iceberg 1.12;
+  3. **V6 en verde en victor**: un puesto la lee (`iceberg_scan`, `GEOMETRY`), la copia con
+     `ore.write` y la vuelve a leer con las mismas filas, la misma suma de los WKB y el mismo CRS.
+- **G2·5:**
+  1. **V5 en la vara de victor**: A, B y C son tablas geo que escribe el ORE desplegado en el lago de
+     victor, y cada lector corre en un Job de victor;
+  2. ninguna celda en rojo sin su porqué; las ámbar llevan motivo y siguiente paso;
+  3. BigQuery con su celda;
+  4. la decisión de promover, escrita con la columna C;
+  5. la parte ligera (DuckDB, pyarrow, GeoPandas) en el CI cuando cambia el escritor: es la red de
+     seguridad, no la medida.
+
+**Los cinco pasos:**
+
+| paso | qué | dónde |
+|---|---|---|
+| **1** | Las sondas, el «hecho cuando» y la deuda, en el ADR | aquí |
+| **2** | La lente (G2·4·1), con los tres fijos y su prueba | `ore-store`, local |
+| **3** | La tabla ajena con filas: Spark 4.1 + Iceberg 1.12 escribe `lugares_madrid` en `lakehouse/` del banco (G2·4·2, ya sin promoción a mano) | local, contra el bucket del banco |
+| **4** | La matriz. Un arnés local con `--solo <lector>` para iterar (no es el veredicto). Los guiones de los lectores, los mismos en local y en victor. Un repositorio remoto de Artifact Registry como espejo de Docker Hub y ghcr, para que victor baje las imágenes de Google sin que se suban desde aquí. Antes, que Spark + Sedona quepan en `--memory 4g`: si no, Spark en modo local con el *heap* acotado, sin agrandar la cola. El trabajo ligero del CI | `pruebas-de-fuego/geo/v5*`, `.github/workflows` |
+| **5** | **Un solo empuje**, con la suite entera pasada antes en local. En victor, por este orden: la medida de G2·3·5 (el SDK y la vara), un ensayo de una fila por lector, V6 y V5 (con BigQuery). Al final, la decisión de promover | victor |
+
+**Para no atascarse**, dos lecciones de hoy: la suite entera en local antes de cada empuje (tres
+vueltas de CI de 20 minutos por no hacerlo), y en victor siempre un ensayo pequeño antes de la medida
+(G2·2).
+
+**Deuda acotada:**
+- **`iceberg` 0.11 y Arrow 59.** La lente se quita cuando se publique `iceberg` 0.11, que trae el
+  tipo (PR 2933, ya en `main`). Hacerlo sube Arrow de 58 a 59 en todo el *workspace*: va en su propio
+  paso, con su propio CI. Hasta entonces, una tabla que pasa por la lente es de solo lectura para ORE.
+- **Snowflake**, en ámbar hasta que haya una cuenta.
+- **D** (comentar la serie de PR y el lector de Java) no bloquea el cierre de G2. Se publica con
+  permiso.
 
 **Hecho cuando:** la vara escribe y consulta el volumen objetivo con descarte espacial medido (V3, V4),
 la matriz de adopción está en verde (V5) y la tabla v3 ajena se abre (V6).
@@ -786,3 +815,30 @@ de expansión E1–E7 de [`0066`](0066-geo-paradigm.md) §7, cada una con su ADR
     - Python 112 (con `test_geo_tipos`), Node 17/17 y la JVM (`GeoPrueba`), todas en sus imágenes
       reales con `spatial` preinstalada a mano.
 - **2026-10-17 · G2·4 y G2·5 diseñados** (en el plan, «El patrón de iteración rápida» y los dos «en detalle»). Las sondas de hoy dicen que `iceberg` 0.10.1 no abre el `metadata.json` v3 con `geometry` (ni el ajeno ni uno nuestro promovido), que DuckDB 1.5.6 sí lo abre, y que ORE no tiene entrada para tablas ajenas. Así que G2·4 es una lente de solo lectura en `ore-store` más una tabla v3 con filas escrita por ORE, y no un registro de catálogos. G2·5 es una matriz de tres artefactos por diez lectores, con su arnés local. Esperando el go.
+- **2026-10-17 · Las sondas de G2·4·0 y G2·5·0** (`C:\tmp\g24`, en local; los guiones entran en
+  `pruebas-de-fuego/geo/g24/` con el paso 2).
+
+  | qué | lo visto |
+  |---|---|
+  | `iceberg` 0.10.1 · `metadata.json` del banco | **no lo abre** (*data did not match any variant of untagged enum TableMetadataEnum*) |
+  | `iceberg` `main` (`697abcee`, Arrow 59.3.1) · el del banco, el de ORE promovido y el de Spark | **los abre**: `geom` es `Geometry(crs OGC:CRS84)`. La PR 2933 se fusionó el 16-oct; 3341 y 3342 siguen abiertas; la última versión sigue siendo la 0.10.1 |
+  | DuckDB 1.5.6 · tabla de ORE antes y después de promoverla a mano | antes `BLOB` y después **`GEOMETRY`**, con las mismas 1 000 filas (`iceberg_scan` con la raíz y `version`) |
+  | **Iceberg 1.12.0 (ya publicado)** + Spark 4.1 | con `spark.sql.geospatial.enabled=true`, **crea v3 con `geometry(4326)` y escribe y lee filas** (`st_setsrid(st_geomfromwkb(…), 4326)`). En Iceberg queda `geometry(OGC:CRS84)` y en Parquet el tipo lógico GEOMETRY, **sin la clave GeoParquet `geo`**. Un binario no se inserta en la columna. `geometry(OGC:CRS84)` no se acepta en el DDL de Spark; `geometry(any)` sí |
+  | Iceberg 1.12 · Spark lee la tabla de ORE | antes de promover, `BinaryType`; después, **`GeometryType(4326)`**, 1 000 filas las dos |
+  | Iceberg 1.12 · el lector genérico de Java | **lee los ficheros GEOMETRY de ORE** (1 000 filas, `ByteBuffer`), en las dos versiones. Con 1.11 fallaba (G2·0) |
+  | DuckDB · la tabla de Spark | `GEOMETRY('OGC:CRS84')` por fichero y por `iceberg_scan` |
+  | GDAL `ubuntu-small` 3.11.4 | sin el driver de Parquet |
+  | GDAL `ubuntu-full` 3.11.4 | **no abre** el fichero de ORE (*Thrift LogicalType that is not recognized*: su Arrow no conoce GEOMETRY) |
+  | **GDAL `ubuntu-full` 3.13.3** (3,4 GB) | lee el fichero de ORE (Point, 1 000, extensión correcta) **con el SRS `unknown`**, ámbar en la matriz. El de Spark lo da con `EPSG:4326`. Hipótesis a medir en el paso 4: GDAL toma el CRS del tipo lógico, donde `parquet` 58 lo omite si es `OGC:CRS84`, y no de la clave `geo` |
+  | Sedona | `latest` es Spark 4.0.1 con un *jar* SNAPSHOT: no sirve como versión fija. `1.9.1` pesa 4 GB; se mide en el paso 4 |
+
+  - **Lo que cambia en el plan:**
+    - la tabla ajena con filas la escribe Spark con Iceberg 1.12; no hace falta promover a mano
+      (G2·4·2);
+    - **lente o `iceberg` `main`: lente**. `main` es el arreglo definitivo, pero sin versión
+      publicada y con el salto de Arrow 58 → 59 en todo el *workspace* (deuda acotada en el plan);
+    - **V5 es en victor** sobre tablas que escribe el ORE desplegado (memoria «medir en prod»); el
+      arnés local queda para iterar.
+  - **Lo de hoy en el CI:** tres vueltas por no pasar la suite entera en local antes de empujar: el
+    formato y clippy de lo geo, el Parquet de prueba sin `-text` (`.gitattributes`) y `shapely` aún
+    en las sugeridas (28). `a99b1b80` en verde y desplegado en victor (`ore.dev/commit`).
