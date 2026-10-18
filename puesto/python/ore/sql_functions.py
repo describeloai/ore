@@ -11,6 +11,13 @@ what works in Python works in SQL.
 A function read as rows always gives DuckDB a list of rows: a list of
 structs as it is; one struct, a list of one; anything else, rows of one column,
 `value`.
+
+A geometry (ORE 0068 C1·1) crosses as WKB: DuckDB 1.5 does not take a GEOMETRY
+back from Python. The function is registered as `<internal>_wkb` on `BLOB`, and
+a macro under the internal name casts each geometry to the CRS its parameter
+declares (another CRS is refused when the query binds), passes it as WKB, and
+reads what comes back with the CRS of the output. Its contract receives a
+shapely geometry, as from Python. Inside a `Struct` or a `list`, not yet.
 """
 
 import dataclasses
@@ -44,13 +51,27 @@ def _q(n):
     return '"%s"' % str(n).replace('"', '""')
 
 
+def _crs(t):
+    """The CRS of a geo OOS type (`Geography` and a bare `Geometry` are
+    `OGC:CRS84`), or `None` if it is not geo."""
+    from .lsp_sql import crs_de_oos
+
+    return crs_de_oos(t)
+
+
 def duckdb_type(t):
-    """The DuckDB type of an OOS type as a `Function` document writes it."""
+    """The DuckDB type of an OOS type as a `Function` document writes it. A
+    geometry is only typed as a parameter or the value a function returns
+    (`register` passes it as WKB and puts its CRS back): inside a `Struct` or a
+    `list` it is not, yet (0068 C1·1)."""
     from .medios import _CAMPOS_ITEM
 
     t = (t or "").strip()
     if t in _SIMPLES:
         return _SIMPLES[t]
+    if _crs(t):
+        raise TypeError("SQL cannot pass `%s` inside a `Struct` or a `list` yet: a geometry goes to and "
+                        "from SQL as a parameter or as the value a function returns" % t)
     m = re.match(r"^(\w+)<(.*)>$", t, re.S)
     if not m:
         raise TypeError("SQL cannot type `%s`" % t)
@@ -98,6 +119,11 @@ def _a_duckdb(v):
         return {k: _a_duckdb(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
         return [_a_duckdb(x) for x in v]
+    # A geometry goes back as WKB: the macro `register` writes reads it with its CRS.
+    if type(v).__module__.startswith("shapely"):
+        import shapely
+
+        return shapely.to_wkb(v)
     return v
 
 
@@ -138,11 +164,21 @@ def register(con, calls, resolve):
         if faltan:
             raise TypeError("`%s` needs `%s` and SQL gives it %d arguments"
                             % (c["name"], "`, `".join(faltan), n))
-        params = [duckdb_type((entrada.get(p.name) or {}).get("type", "String")) for p in firma[:n]]
+        tipos = [(entrada.get(p.name) or {}).get("type", "String") for p in firma[:n]]
         tipo = _tipo_de_salida(spec)
         filas = None
         if c.get("table"):
             tipo, filas = _como_filas(tipo)
+        # 0068 C1·1: DuckDB 1.5 does not take a GEOMETRY back from a Python
+        # function, so a geometry crosses as WKB (`BLOB`) and a macro under the
+        # internal name gives it its type and CRS on both sides. A geometry in
+        # another CRS is refused when the query binds, as in a View.
+        crs_in = [_crs(t) for t in tipos]
+        crs_out = _crs(tipo)
+        geo = any(crs_in) or crs_out is not None
+        params = ["BLOB" if crs else duckdb_type(t) for t, crs in zip(tipos, crs_in)]
+        salida = "BLOB" if crs_out else duckdb_type(tipo)
+        udf = c["internal"] + "_wkb" if geo else c["internal"]
 
         def uno(*args, _f=f, _filas=filas):
             r = _a_duckdb(_f(*args))
@@ -151,8 +187,17 @@ def register(con, calls, resolve):
         llamar = _con_aridad(n, uno)
 
         try:
-            con.remove_function(c["internal"])
+            con.remove_function(udf)
         except Exception:  # noqa: BLE001 — not registered yet
             pass
-        con.create_function(c["internal"], llamar, params, duckdb_type(tipo))
+        con.create_function(udf, llamar, params, salida)
+        if geo:
+            con.execute("load spatial")
+            args = ["a%d" % i for i in range(n)]
+            dentro = ", ".join("ST_AsWKB(%s::GEOMETRY('%s'))" % (a, crs.replace("'", "''")) if crs else a
+                               for a, crs in zip(args, crs_in))
+            cuerpo = "%s(%s)" % (_q(udf), dentro)
+            if crs_out:
+                cuerpo = "ST_SetCRS(ST_GeomFromWKB(%s), '%s')" % (cuerpo, crs_out.replace("'", "''"))
+            con.execute("create or replace macro %s(%s) as %s" % (_q(c["internal"]), ", ".join(args), cuerpo))
 

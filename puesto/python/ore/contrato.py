@@ -104,6 +104,11 @@ def convertir(que, v, t):
     `ContractError` if it does not fit."""
     if t is _NADA or t is typing.Any or t is object:
         return v
+    # `Geometry` o `Geography` a secas (sin `[...]`) es la de subtipo `Any`, como
+    # dice su docstring (0068 C1·1: se trataba como una clase y negaba el WKB).
+    from . import tipos as _t
+    if t is _t.Geometry or t is _t.Geography:
+        t = t["Any"]
     if typing.get_origin(t) is typing.Annotated:
         return _anotado(que, v, t)
     if v is None:
