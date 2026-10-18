@@ -312,17 +312,17 @@ topes al disco. Resultados en `resultados/20261018-pool.jsonl`.
 | P2 el dialecto | **Casi portable:** SpatialBench sólo cambia Q5 y Q12 entre los dos, y los once casos que terminan en ambos dan lo mismo. **ORE no traduce el SQL:** documenta las diferencias, y la tabla se escribe con C1·1 |
 | P3 dónde corren las Views | **Se describen siempre en DuckDB** (es el compilador de tipos de E1·1) y **se ejecutan en el motor del repositorio**. Como el SQL es casi el mismo, una View sirve en los dos |
 | P4 el *join* a escala | **Índice difundido** (R-tree) cuando un lado cabe en memoria, que es el caso de enriquecer. Partición espacial (`RangeJoin`) sólo cuando los dos son grandes. **Heavyweight difunde el lado pequeño por sí mismo**: regla de ORE, no pista del cliente (C3). H3 como estrategia de *join* no hace falta todavía |
-| P5 objetivos | Propuestos abajo, para aprobar |
+| P5 objetivos | En C0·5, aprobados |
 | P6 la forma de enriquecer | El punto-en-polígono difundido (B2) **es** enriquecer, y es un *join*. Recomendación: **un operador** (Transform o Pipelines) que genera ese *join* con la difusión puesta, **no un kind nuevo**. Se decide en C4·1 |
 
-#### C0·5 · Los objetivos, para aprobar
+#### C0·5 · Los objetivos (aprobados 2026-10-18)
 
 En un nodo de 16 vCPU y 64 GB. Son la línea base medida hoy; C2 y C3 no pueden empeorarla.
 
 | motor | objetivo |
 |---|---|
 | **Lightweight** (DuckDB) | Q1–Q9 de SpatialBench escala 10 en **< 15 s** cada una; Q1–Q4, Q7–Q9 a escala 100 en **< 60 s**. B1–B4 sobre el banco entero en **< 20 s**. Lo que no cabe (Q5 a escala 100, Q10–Q12) **falla con un error claro** que aconseja Heavyweight, sin tumbar el puesto |
-| **Heavyweight** (Spark + Sedona) | **Termina todo SpatialBench a escala 100** (hoy no terminan Q6, Q8, Q10, Q11 ni Q12) en **< 10 min** por consulta con 4 nodos (C3). Enriquecer (B2) a la altura de DuckDB (**< 20 s**) en un nodo. Q10 sin error |
+| **Heavyweight** (Spark + Sedona) | **Termina todo SpatialBench a escala 100** (hoy no terminan Q6, Q8, Q10, Q11 ni Q12) en **< 10 min** por consulta con **2 nodos** de 16 vCPU (C3; 32 vCPU, lo que cabe en la cuota global de hoy). Enriquecer (B2) a la altura de DuckDB (**< 20 s**) en un nodo. Q10 sin error |
 
 **Lo que queda fuera de C0:** Spark en varios nodos (C3) y DuckDB en la forma del producto, dentro
 de un puesto de victor (C2).
@@ -416,6 +416,8 @@ El ADR pasa de hoja de ruta a imagen.
     (273 GB) y perdió lo medido.
   - **Lo que lo arregló:** subir cada resultado según sale, poder reanudar y poner topes de disco.
   - Siguiente: aprobar los objetivos y cerrar C0.
+- **2026-10-18 · C0 CERRADO.** Objetivos de C0·5 aprobados, con Heavyweight referido a 2 nodos (32 vCPU,
+  la cuota de hoy). Siguiente: C1, el contrato en los frameworks.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
