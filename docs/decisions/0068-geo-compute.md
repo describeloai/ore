@@ -156,6 +156,25 @@ desde 0067 G2·3), E1·3 es C1·3 y E1·4 es C4. C0, C2 y C3 son nuevos: E1 daba
 
 **Hecho cuando:** informe en victor, las preguntas de §5 respondidas y los objetivos aprobados.
 
+**Resultado (CERRADO 2026-10-18).** El detalle va en las subsecciones de abajo.
+
+- **Heavyweight es Spark 4.1 + Sedona 1.9.1.** Lo nativo de Spark 4.1 sólo lee y escribe el tipo. Los
+  jars de Sedona van en el classpath de la aplicación: dos JTS en dos cargadores rompen el *join*.
+- **Los dos motores dan lo mismo** en todo lo que terminó en ambos, y el SQL espacial es casi portable
+  (SpatialBench sólo cambia Q5 y Q12). ORE no traduce el SQL.
+- **DuckDB es el rápido mientras cabe**: entre 2 y 25 veces sobre un nodo de 16 vCPU. El banco entero
+  (34 M de edificios, 115,7 M de posiciones AIS) le cuesta entre 7 y 18 s por caso.
+- **Spark + Sedona termina lo que DuckDB no**: Q5 a escala 100 en 345 s y Q12 en 257 s.
+- **Heavyweight tiene que difundir el lado pequeño por sí mismo.** Sin difusión, el punto-en-polígono
+  pasa de 14,5 s a más de 600 s.
+- **Las Views se describen en DuckDB y se ejecutan en el motor del repositorio.** Enriquecer es un
+  *join* difundido: un operador, no un kind.
+- **Los objetivos de C0·5 están aprobados**, con Heavyweight referido a 2 nodos.
+- **Abierto para C3:**
+  - Q10, el `LEFT JOIN` espacial, falla en Sedona;
+  - Q6 y Q8 a escala 100 pasan de 600 s;
+  - Spark en varios nodos no se ha medido.
+
 #### C0·0 · El previo (hecho 2026-10-18)
 
 Lo que no sabíamos antes de medir, resuelto en una sentada. Guiones en `pruebas-de-fuego/geo/c0/`.
@@ -333,8 +352,8 @@ de un puesto de victor (C2).
 |---|---|---|
 | C1·1 SQL | empujar el paso 1 (hecho en local) · Functions del árbol desde SQL con geometría · `ore-sql` y el motor con tipos geo | no |
 | C1·2 Python | cierre: TypeScript con geometría en la firma y lo que falte | no |
-| C1·3 Java | JTS y la geometría por Arrow, en Functions y Java Transforms | poco (la versión de JTS) |
-| C1·4 Spark | el contrato de lo que escribe un Transform Heavyweight, con su CRS | sí |
+| C1·3 Java | JTS y la geometría por Arrow, en Functions y Java Transforms | ya no: C0 fija **JTS 1.20.0**, la que trae Spark 4.1 |
+| C1·4 Spark | el contrato de lo que escribe un Transform Heavyweight, con su CRS | ya no: C0 fija **Spark 4.1 + Sedona 1.9.1** |
 
 **Hecho cuando:** una View, un Transform Lightweight y uno Heavyweight dan el mismo contrato con CRS
 para la misma operación, y el compilador niega mezclar CRS.
