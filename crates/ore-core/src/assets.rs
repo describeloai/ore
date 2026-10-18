@@ -1634,6 +1634,8 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                         .map(Json::Int)
                         .unwrap_or(Json::Crudo("null".into())),
                 ),
+                // ORE 0068 C2·1: dónde corre lo que se construye en él.
+                ("motor", Json::s(r.motor.nombre())),
                 ("paquete", Json::s(&r.paquete)),
                 ("carpeta", Json::s(&r.carpeta)),
                 (

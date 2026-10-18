@@ -36,6 +36,7 @@
 //! declarar nada.
 use crate::rutas::Servidor;
 use ore_core::json::Json;
+use ore_core::repositorios::Motor;
 use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::path::Path;
@@ -70,6 +71,8 @@ fn carpeta_valida(c: &str) -> Result<(), String> {
 struct Cuerpo {
     nombre: String,
     plantilla: &'static ore_core::clases::Clase,
+    /// ORE 0068 C2·1: el motor, si el cuerpo lo dice.
+    motor: Option<Motor>,
 }
 
 fn del_cuerpo(texto: &str) -> Result<Cuerpo, Respuesta> {
@@ -99,12 +102,43 @@ fn del_cuerpo(texto: &str) -> Result<Cuerpo, Respuesta> {
             ),
         )
     })?;
-    Ok(Cuerpo { nombre, plantilla })
+    // ORE 0068 C2·1 · El motor: Lightweight (DuckDB en el puesto) o Heavyweight (Spark).
+    // Heavyweight es de lo que se construye: una clase que no escribe datos no tiene
+    // nada que correr en Spark.
+    let motor = match ore_core::manifiesto::campo(&n, "motor") {
+        None => None,
+        Some(m) => Some(Motor::de(&m).ok_or_else(|| {
+            Respuesta::error(
+                422,
+                format!("`motor: {m}` no es un motor: {}", Motor::NOMBRES),
+            )
+        })?),
+    };
+    if motor == Some(Motor::Heavyweight) && !plantilla.escribe {
+        return Err(Respuesta::error(
+            422,
+            format!(
+                "`{}` no construye datos: Heavyweight es para los repositorios de transforms",
+                plantilla.id
+            ),
+        ));
+    }
+    Ok(Cuerpo {
+        nombre,
+        plantilla,
+        motor,
+    })
 }
 
 /// El manifiesto, escrito por el servidor: escalares de una línea y entre
 /// comillas, para que un nombre con `---` dentro no cierre el encabezado.
-fn manifiesto(nombre: &str, plantilla: &str, version: i64, prosa: Option<&str>) -> String {
+fn manifiesto(
+    nombre: &str,
+    plantilla: &str,
+    version: i64,
+    motor: Motor,
+    prosa: Option<&str>,
+) -> String {
     let escalar = |v: &str| {
         let limpio: String = v
             .chars()
@@ -116,10 +150,11 @@ fn manifiesto(nombre: &str, plantilla: &str, version: i64, prosa: Option<&str>) 
         )
     };
     format!(
-        "---\nnombre: {}\nplantilla: {}\nplantillaVersion: {}\n---\n\n{}\n",
+        "---\nnombre: {}\nplantilla: {}\nplantillaVersion: {}\nmotor: {}\n---\n\n{}\n",
         escalar(nombre),
         plantilla,
         version,
+        motor.nombre(),
         prosa.unwrap_or(PROSA)
     )
 }
@@ -166,6 +201,7 @@ fn ficha(r: &ore_core::repositorios::Repositorio, semilla: &[String], nueva: boo
                 .map(Json::Int)
                 .unwrap_or(Json::Crudo("null".into())),
         ),
+        ("motor", Json::s(r.motor.nombre())),
         ("paquete", Json::s(&r.paquete)),
         ("carpeta", Json::s(&r.carpeta)),
         ("manifiesto", Json::s(&r.manifiesto)),
@@ -385,6 +421,7 @@ impl Servidor {
             &c.nombre,
             c.plantilla.id,
             c.plantilla.version,
+            c.motor.unwrap_or_default(),
             guia.as_deref(),
         );
         if let Err(e) = std::fs::write(dir.join("README.md"), texto) {
@@ -494,6 +531,7 @@ impl Servidor {
         let mut tenia: Option<i64> = None;
         let mut nombre = String::new();
         let mut prosa: Option<String> = None;
+        let mut motor = Motor::default();
         let leido = self.leyendo(|r| {
             let Some(rep) = ore_core::repositorios::leer(r)
                 .into_iter()
@@ -503,6 +541,7 @@ impl Servidor {
             };
             clase = rep.plantilla.as_deref().and_then(ore_core::clases::de);
             tenia = rep.plantilla_version;
+            motor = rep.motor;
             nombre = rep.nombre.clone().unwrap_or_else(|| rep.carpeta.clone());
             prosa = std::fs::read_to_string(r.join(&rep.manifiesto))
                 .ok()
@@ -609,7 +648,7 @@ impl Servidor {
                     .and_then(|x| x.split_once('/'))
                     .unwrap_or(("", ""));
                 let prosa = prosa_o_guia(prosa_de_antes.as_deref(), clase, paquete, carpeta);
-                let texto = manifiesto(&nombre_del_commit, id, version, prosa.as_deref());
+                let texto = manifiesto(&nombre_del_commit, id, version, motor, prosa.as_deref());
                 if let Err(e) = std::fs::write(dir.join("README.md"), texto) {
                     return Respuesta::error(
                         500,
@@ -674,11 +713,15 @@ impl Servidor {
     pub(crate) fn escribir_repositorio(&self, raiz: &Path, ruta: &str, cuerpo: &str) -> Respuesta {
         let ruta = ruta.trim_matches('/');
         let leidos = ore_core::repositorios::leer(raiz);
-        if !leidos.iter().any(|r| r.ruta == ruta) {
+        let Some(existente) = leidos.iter().find(|r| r.ruta == ruta) else {
             return Respuesta::error(404, format!("`{ruta}` no es un repositorio"));
-        }
+        };
         let c = match del_cuerpo(cuerpo) {
             Ok(c) => c,
+            Err(r) => return r,
+        };
+        let motor = match motor_del_put(ruta, existente.motor, c.motor) {
+            Ok(m) => m,
             Err(r) => return r,
         };
         let n = match ore_core::parse::parse(cuerpo) {
@@ -696,6 +739,7 @@ impl Servidor {
             &c.nombre,
             c.plantilla.id,
             version,
+            motor,
             prosa_de(&antes).as_deref(),
         );
         if let Err(e) = std::fs::write(&f, texto) {
@@ -706,6 +750,23 @@ impl Servidor {
             return Respuesta::error(500, format!("`{ruta}` no se relee como repositorio"));
         };
         Respuesta::ok(ficha(r, &[], false))
+    }
+}
+
+/// ORE 0068 C2·1 · **El motor tras un `PUT`**: el que tenía. Se elige al crear el
+/// repositorio y no se cambia (D1): lo que se construyó en uno no se rehace en el
+/// otro sin que nadie lo vea. Decir el mismo, o no decirlo, vale; otro, 409.
+fn motor_del_put(ruta: &str, tenia: Motor, pedido: Option<Motor>) -> Result<Motor, Respuesta> {
+    match pedido {
+        Some(m) if m != tenia => Err(Respuesta::error(
+            409,
+            format!(
+                "`{ruta}` es {} y el motor de un repositorio se elige al crearlo: crea otro repositorio para {}",
+                tenia.nombre(),
+                m.nombre()
+            ),
+        )),
+        _ => Ok(tenia),
     }
 }
 
@@ -726,6 +787,56 @@ fn dueno_valido(d: &str) -> bool {
 mod pruebas {
     use super::*;
 
+    /// ORE 0068 C2·1 · El motor: se dice al crear (Heavyweight sólo en lo que
+    /// construye), va al manifiesto, se relee, y un `PUT` no lo cambia.
+    #[test]
+    fn el_motor_se_elige_al_crear_y_no_se_cambia() {
+        let cuerpo = |extra: &str| {
+            format!("{{\"nombre\": \"Zonas\", \"plantilla\": \"transforms-python\"{extra}}}")
+        };
+        assert_eq!(del_cuerpo(&cuerpo("")).ok().unwrap().motor, None);
+        let c = del_cuerpo(&cuerpo(", \"motor\": \"heavyweight\""))
+            .ok()
+            .unwrap();
+        assert_eq!(c.motor, Some(Motor::Heavyweight));
+        let mal = del_cuerpo(&cuerpo(", \"motor\": \"turbo\"")).err().unwrap();
+        assert_eq!(mal.codigo, 422);
+        let f = del_cuerpo(
+            "{\"nombre\": \"R\", \"plantilla\": \"functions-python\", \"motor\": \"heavyweight\"}",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(f.codigo, 422, "Heavyweight es de lo que construye");
+        // Al manifiesto, y se relee.
+        let m = manifiesto("Zonas", "transforms-python", 9, Motor::Heavyweight, None);
+        assert!(m.contains("\nmotor: heavyweight\n"), "{m}");
+        let d = std::env::temp_dir().join(format!("ore-motor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("packages/geo/zonas")).unwrap();
+        std::fs::write(d.join("packages/geo/zonas/README.md"), &m).unwrap();
+        let r = ore_core::repositorios::leer(&d);
+        assert_eq!(r[0].motor, Motor::Heavyweight);
+        assert!(
+            ficha(&r[0], &[], false)
+                .jcs()
+                .contains("\"motor\":\"heavyweight\"")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        // El PUT: el mismo o nada, se queda; otro, 409.
+        assert_eq!(
+            motor_del_put("p/z", Motor::Heavyweight, None).ok(),
+            Some(Motor::Heavyweight)
+        );
+        assert_eq!(
+            motor_del_put("p/z", Motor::Heavyweight, Some(Motor::Heavyweight)).ok(),
+            Some(Motor::Heavyweight)
+        );
+        let e = motor_del_put("p/z", Motor::Lightweight, Some(Motor::Heavyweight))
+            .err()
+            .unwrap();
+        assert_eq!(e.codigo, 409);
+    }
+
     #[test]
     fn el_dueno_de_la_base_del_sistema_es_un_owner_de_oos() {
         assert!(dueno_valido("team:victor"));
@@ -745,7 +856,7 @@ mod pruebas {
         let guia = prosa_o_guia(None, ts, "ventas", "riesgo").unwrap();
         assert!(guia.starts_with("# TypeScript functions"), "{guia}");
         assert!(guia.contains("riesgoInvoiceStatus.ts") && !guia.contains("{{"));
-        let m = manifiesto("Riesgo", ts.id, ts.version, Some(&guia));
+        let m = manifiesto("Riesgo", ts.id, ts.version, Motor::default(), Some(&guia));
         assert_eq!(prosa_de(&m).as_deref(), Some(guia.as_str()));
         assert_eq!(
             prosa_o_guia(Some(PROSA), ts, "ventas", "riesgo"),
@@ -776,7 +887,13 @@ mod pruebas {
 
     #[test]
     fn el_manifiesto_no_lo_puede_cerrar_un_nombre() {
-        let m = manifiesto("Churn\n---\nplantilla: models", "transforms", 1, None);
+        let m = manifiesto(
+            "Churn\n---\nplantilla: models",
+            "transforms",
+            1,
+            Motor::default(),
+            None,
+        );
         assert_eq!(m.matches("\n---\n").count(), 1, "{m}");
         assert!(m.contains("plantillaVersion: 1"), "{m}");
     }
@@ -785,7 +902,13 @@ mod pruebas {
     fn la_prosa_se_conserva() {
         let viejo = "---\nnombre: X\nplantilla: transforms\n---\n\nLo mío, escrito a mano.\n";
         assert_eq!(prosa_de(viejo).as_deref(), Some("Lo mío, escrito a mano."));
-        let m = manifiesto("Y", "models", 2, prosa_de(viejo).as_deref());
+        let m = manifiesto(
+            "Y",
+            "models",
+            2,
+            Motor::default(),
+            prosa_de(viejo).as_deref(),
+        );
         assert!(m.ends_with("Lo mío, escrito a mano.\n"), "{m}");
     }
 

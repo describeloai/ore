@@ -48,10 +48,44 @@ pub struct Repositorio {
     pub plantilla: Option<String>,
     /// Con qué versión de la clase se creó. La compara el producto (0036 ⑥).
     pub plantilla_version: Option<i64>,
+    /// ORE 0068 C2·1 · **El motor**: dónde corre lo que se construye en él. Se elige al
+    /// crearlo y no se cambia. Sin la clave, `Lightweight` (lo de siempre).
+    pub motor: Motor,
     /// La ruta del manifiesto.
     pub manifiesto: String,
     /// Por qué no se entiende. Se lista igual: el índice enseña lo que hay.
     pub roto: Option<String>,
+}
+
+/// ORE 0068 C2·1 · **El motor de un repositorio** (D1): Lightweight es DuckDB en el
+/// puesto; Heavyweight, Spark 4.1 con Sedona. Como en Foundry: se elige al crear el
+/// repositorio, en un banner, y no se cambia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Motor {
+    #[default]
+    Lightweight,
+    Heavyweight,
+}
+
+impl Motor {
+    /// Los nombres del manifiesto y de la API.
+    pub const NOMBRES: &'static str = "`lightweight` o `heavyweight`";
+
+    /// El motor por su nombre (`lightweight`, `heavyweight`), o `None`.
+    pub fn de(s: &str) -> Option<Motor> {
+        match s.trim() {
+            "lightweight" => Some(Motor::Lightweight),
+            "heavyweight" => Some(Motor::Heavyweight),
+            _ => None,
+        }
+    }
+
+    pub fn nombre(self) -> &'static str {
+        match self {
+            Motor::Lightweight => "lightweight",
+            Motor::Heavyweight => "heavyweight",
+        }
+    }
 }
 
 impl Repositorio {
@@ -153,8 +187,20 @@ pub fn leer(raiz: &Path) -> Vec<Repositorio> {
                     let nombre = manifiesto::campo(&n, "nombre");
                     let version = manifiesto::campo(&n, "plantillaVersion")
                         .and_then(|v| v.parse::<i64>().ok());
+                    // ORE 0068 C2·1: sin `motor`, Lightweight; uno que no existe se lista
+                    // roto (y como Lightweight, que es lo que corre).
+                    let escrito = manifiesto::campo(&n, "motor");
+                    let motor = escrito.as_deref().map(Motor::de);
+                    let roto = if nombre.is_none() {
+                        Some("sin `nombre`".to_string())
+                    } else if let (Some(e), Some(None)) = (&escrito, &motor) {
+                        Some(format!("`motor: {e}` no es {}", Motor::NOMBRES))
+                    } else {
+                        None
+                    };
                     out.push(Repositorio {
-                        roto: nombre.is_none().then(|| "sin `nombre`".to_string()),
+                        roto,
+                        motor: motor.flatten().unwrap_or_default(),
                         ruta,
                         paquete: paquete.clone(),
                         carpeta,
@@ -173,6 +219,45 @@ pub fn leer(raiz: &Path) -> Vec<Repositorio> {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// ORE 0068 C2·1 · El motor del manifiesto: sin la clave, Lightweight; uno que
+    /// no existe, roto (y Lightweight, que es lo que corre).
+    #[test]
+    fn el_motor_del_manifiesto() {
+        let d = std::env::temp_dir().join(format!("ore-core-motor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for (c, m) in [
+            ("a", ""),
+            ("b", "motor: heavyweight\n"),
+            ("c", "motor: turbo\n"),
+        ] {
+            std::fs::create_dir_all(d.join("packages/geo").join(c)).unwrap();
+            std::fs::write(
+                d.join("packages/geo").join(c).join("README.md"),
+                format!(
+                    "---\nnombre: {c}\nplantilla: transforms-python\nplantillaVersion: 9\n{m}---\n"
+                ),
+            )
+            .unwrap();
+        }
+        let mut r = leer(&d);
+        r.sort_by(|x, y| x.carpeta.cmp(&y.carpeta));
+        assert_eq!(
+            (r[0].motor, r[0].roto.is_none()),
+            (Motor::Lightweight, true)
+        );
+        assert_eq!(
+            (r[1].motor, r[1].roto.is_none()),
+            (Motor::Heavyweight, true)
+        );
+        assert_eq!(r[2].motor, Motor::Lightweight);
+        assert!(
+            r[2].roto.as_deref().unwrap_or("").contains("turbo"),
+            "{:?}",
+            r[2].roto
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
     use std::path::Path;
 
     /// Un directorio que se borra solo: ore-core no depende de `tempfile`.
