@@ -39,6 +39,11 @@ def v1(t):
     return json.load(urllib.request.urlopen(q))["metadata"]
 
 
+def vigente(m):
+    """El snapshot vigente (`current-snapshot-id`): el orden de `snapshots` no lo garantiza nadie."""
+    return next(s for s in m["snapshots"] if s["snapshot-id"] == m["current-snapshot-id"])
+
+
 from ore import spark as pesado  # noqa: E402
 
 # La identidad de la sesión del SDK la pone el agente en un puesto; aquí, la de ana.
@@ -70,7 +75,7 @@ def transform():
 
 caso("3 · transform: buffer y write()", transform,
      lambda r: r["rows"] == 5 and r["geo"]["zona"]["type"] == "Geometry<Polygon, EPSG:25830>")
-caso("3b · procedencia en el snapshot", lambda: json.loads(v1("zonas")["snapshots"][-1]["summary"]["ore.procedencia"]),
+caso("3b · procedencia en el snapshot", lambda: json.loads(vigente(v1("zonas"))["summary"]["ore.procedencia"]),
      lambda r: isinstance(r, dict) and "abc1234" in json.dumps(r))
 caso("3c · el área, como DuckDB (31 214 m²)", lambda: ore.over("geo.zonas").selectExpr(
     "round(ST_Area(zona)) a").distinct().collect(), lambda r: [x.a for x in r] == [31214.0])
@@ -80,8 +85,8 @@ caso("4 · append", lambda: dict(ore.write("geo.lugares", puntos, mode="append")
      lambda r: r["rows"] == 10 and r["mode"] == "append")
 caso("4b · ore.geo sigue", lambda: v1("lugares")["properties"].get("ore.geo.geom"), lambda r: r and "25830" in r)
 # ore.modo, la palabra de ore-store: lo que ORE mira para saber si se reemplazó lo que había
-caso("4c · ore.modo de cada escritura", lambda: (v1("zonas")["snapshots"][-1]["summary"].get("ore.modo"),
-                                                  v1("lugares")["snapshots"][-1]["summary"].get("ore.modo")),
+caso("4c · ore.modo de cada escritura", lambda: (vigente(v1("zonas"))["summary"].get("ore.modo"),
+                                                  vigente(v1("lugares"))["summary"].get("ore.modo")),
      lambda r: r == ("sobrescribir", "anexar"))
 
 # 5 · lo que se niega

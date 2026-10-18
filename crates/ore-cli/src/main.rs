@@ -1143,6 +1143,12 @@ enum Command {
         /// paso el conducto: leer lo de otra persona se puede, escribirlo no).
         #[arg(long)]
         o_leer: bool,
+        /// Con `--prestar`: la ruta de /v1 donde se refresca la credencial (0068 C2·3).
+        #[arg(long, value_name = "RUTA")]
+        refrescar: Option<String>,
+        /// Con `--cargar --prestar`: solo las storage-credentials (loadCredentials, 0068 C2·3).
+        #[arg(long)]
+        solo_credenciales: bool,
         /// Con `--commit`: publicar aunque una promesa `error` falle (0063 S7e).
         #[arg(long)]
         publicar_igual: bool,
@@ -1380,6 +1386,8 @@ fn main() -> std::process::ExitCode {
             prestar,
             leer,
             o_leer,
+            refrescar,
+            solo_credenciales,
             publicar_igual,
             publicar_retenida,
         } => {
@@ -1418,6 +1426,8 @@ fn main() -> std::process::ExitCode {
                     prestar: *prestar,
                     leer: *leer,
                     o_leer: *o_leer,
+                    refrescar: refrescar.as_deref(),
+                    solo_credenciales: *solo_credenciales,
                     publicar_igual: *publicar_igual,
                     publicar_retenida: publicar_retenida.as_deref(),
                 },

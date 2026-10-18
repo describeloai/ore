@@ -270,6 +270,8 @@ fn de_ore(codigo: i32, stderr: &str, commit: bool) -> Respuesta {
 fn tabla_de(p: &Peticion, base: Option<&str>, seg: &[&str]) -> Option<String> {
     match seg {
         ["namespaces", ns, "tables", t] => Some(nombre_de(base, ns, t)),
+        // 0068 C2·3: refrescar la credencial de una tabla es cargarla otra vez.
+        ["namespaces", ns, "tables", t, "credentials"] => Some(nombre_de(base, ns, t)),
         // Crear una tabla: el nombre va en el cuerpo.
         ["namespaces", ns, "tables"] if p.metodo == "POST" => ore_core::parse::parse(&p.cuerpo)
             .ok()
@@ -367,11 +369,29 @@ fn con_forma(r: Respuesta, commit: bool) -> Respuesta {
 }
 
 fn primera_de(stderr: &str) -> String {
-    stderr
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .map(|l| l.trim_start_matches("error: ").to_string())
-        .unwrap_or_else(|| "falló sin decir por qué".into())
+    let mut lineas = stderr.lines().filter(|l| !l.trim().is_empty());
+    let Some(primera) = lineas.next() else {
+        return "falló sin decir por qué".into();
+    };
+    let mut m = primera.trim_start_matches("error: ").to_string();
+    // ORE 0068 C2·3 · Una primera línea que acaba en `:` anuncia su porqué
+    // debajo («el dataset `x` no compila con esas columnas:» y el diagnóstico):
+    // sin él, el cliente recibía la frase a medias. Unas pocas líneas, acotadas.
+    if m.trim_end().ends_with(':') {
+        for l in lineas.take(6) {
+            m.push(' ');
+            m.push_str(l.trim());
+        }
+        if m.len() > 800 {
+            let corte = (0..=800)
+                .rev()
+                .find(|i| m.is_char_boundary(*i))
+                .unwrap_or(0);
+            m.truncate(corte);
+            m.push('…');
+        }
+    }
+    m
 }
 
 /// La última línea JSON de lo que `ore` imprimió, **tal cual** (un
@@ -383,6 +403,31 @@ fn ultima_json(stdout: &str) -> Option<String> {
         .map(str::trim)
         .find(|l| l.starts_with('{'))
         .map(String::from)
+}
+
+/// ORE 0068 C2·3 · **Un namespace de varios niveles** (`a\u{1f}b`, como lo
+/// codifica la spec REST): en ORE no hay ninguno —la base es el `prefix` y el
+/// schema el namespace (0038 P4)—, así que lo que se busque en él NO EXISTE,
+/// que es un 404, no un 400. Importa por Spark: una tabla de metadatos
+/// (`ore_geo.default.lugares.snapshots`) la pide primero como la tabla
+/// `snapshots` del namespace `default.lugares`, y sólo con un 404 la busca
+/// como lo que es (medido en C2·3 pieza 2: con el 400 fallaba).
+fn de_varios_niveles(ns: &str) -> bool {
+    ns.contains('\u{1f}') || ns.to_ascii_uppercase().contains("%1F")
+}
+
+fn no_hay_varios_niveles(ns: &str, nombre: &str, tipo: &str) -> Respuesta {
+    let ns = ns
+        .replace('\u{1f}', ".")
+        .replace("%1F", ".")
+        .replace("%1f", ".");
+    error(
+        404,
+        tipo,
+        format!(
+            "no hay `{ns}.{nombre}`: un namespace de ORE tiene un nivel (la base es el `prefix`)"
+        ),
+    )
 }
 
 fn ns_valido(ns: &str) -> Result<(), Respuesta> {
@@ -701,7 +746,23 @@ impl Servidor {
                     false,
                 )
             }
-            ("GET" | "HEAD", ["namespaces", ns, "tables", t]) => {
+            // ⭐ 0068 C2·3 · `loadCredentials` (`…/credentials`) por el MISMO camino
+            //   que `loadTable`: el conducto, el techo, la credencial de leer para
+            //   una entrada. Iceberg la pide antes de que caduque la prestada (la de
+            //   GCS, una hora): sin ella, un build de más se quedaba sin el bucket.
+            ("GET" | "HEAD", ["namespaces", ns, "tables", t])
+            | ("GET", ["namespaces", ns, "tables", t, "credentials"]) => {
+                let credenciales = seg.len() == 5;
+                // Dónde se refresca, relativo a la `uri` del catálogo, como las rutas de la spec.
+                let refresco = format!(
+                    "v1/{}namespaces/{ns}/tables/{t}/credentials",
+                    base.map(|b| format!("{b}/")).unwrap_or_default()
+                );
+                let prestar = prestar || credenciales;
+                // 0068 C2·3: un namespace de varios niveles no existe en ORE.
+                if de_varios_niveles(ns) {
+                    return no_hay_varios_niveles(ns, t, "NoSuchTableException");
+                }
                 if let Err(r) = ns_valido(ns).and_then(|_| ns_valido(t)) {
                     return r;
                 }
@@ -744,10 +805,17 @@ impl Servidor {
                         }
                         // Desde un puesto, lo de otra persona se lee: la
                         // credencial de leer, no el 403 de escribir.
-                        let r = if en_preview || lee_una_entrada {
-                            self.cargar_para_leer(raiz, &nombre, prestar)
+                        let extra: Vec<&str> = if credenciales {
+                            vec!["--solo-credenciales"]
+                        } else if prestar {
+                            vec!["--refrescar", &refresco]
                         } else {
-                            self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto)
+                            vec![]
+                        };
+                        let r = if en_preview || lee_una_entrada {
+                            self.cargar_para_leer(raiz, &nombre, prestar, &extra)
+                        } else {
+                            self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto, &extra)
                         };
                         if cabeza && r.codigo == 200 {
                             Respuesta::sin_contenido()
@@ -794,6 +862,10 @@ impl Servidor {
                 )
             }
             ("GET" | "HEAD", ["namespaces", ns, "views", v]) => {
+                // 0068 C2·3: un namespace de varios niveles no existe en ORE.
+                if de_varios_niveles(ns) {
+                    return no_hay_varios_niveles(ns, v, "NoSuchViewException");
+                }
                 if let Err(r) = ns_valido(ns).and_then(|_| ns_valido(v)) {
                     return r;
                 }
@@ -825,6 +897,11 @@ impl Servidor {
                 if let Err(r) = ns_valido(nombre) {
                     return r;
                 }
+                // 0068 C2·3: Spark escribe con la credencial que da crear, y la refresca ahí.
+                let refresco = format!(
+                    "v1/{}namespaces/{ns}/tables/{nombre}/credentials",
+                    base.map(|b| format!("{b}/")).unwrap_or_default()
+                );
                 let nombre = nombre_de(base, ns, nombre);
                 let esbozo = cuerpo
                     .get("stage-create")
@@ -885,7 +962,14 @@ impl Servidor {
                                 if r.codigo >= 300 {
                                     return r;
                                 }
-                                self.cargar(raiz, &nombre, prestar, &sujeto_s, false)
+                                self.cargar(
+                                    raiz,
+                                    &nombre,
+                                    prestar,
+                                    &sujeto_s,
+                                    false,
+                                    &["--refrescar", &refresco],
+                                )
                             },
                         ),
                         true,
@@ -953,7 +1037,10 @@ impl Servidor {
                             // `{"metadata-location", "metadata"}`: lo que la spec
                             // devuelve tras un commit, sin credencial; y lo que
                             // una promesa `warning` vio (0063 S7e·4).
-                            con_avisos(self.cargar(raiz, &nombre, false, "", false), avisos_de(&r))
+                            con_avisos(
+                                self.cargar(raiz, &nombre, false, "", false, &[]),
+                                avisos_de(&r),
+                            )
                         },
                     )),
                     true,
@@ -1188,6 +1275,7 @@ impl Servidor {
         prestar: bool,
         sujeto: &str,
         o_leer: bool,
+        extra: &[&str],
     ) -> Respuesta {
         let mut args = vec!["datasets", ".", "--cargar", nombre];
         if prestar {
@@ -1198,6 +1286,7 @@ impl Servidor {
             if o_leer {
                 args.push("--o-leer");
             }
+            args.extend(extra);
         }
         self.ore_crudo(raiz, &args, false)
     }
@@ -1205,10 +1294,17 @@ impl Servidor {
     /// 0055 P1 · El `LoadTableResult` en un Preview: con `vended-credentials`,
     /// la credencial de leer (`--leer`), también sobre lo que la persona
     /// escribió. Un Preview no escribe ni un fichero suelto en el lago.
-    fn cargar_para_leer(&self, raiz: &Path, nombre: &str, prestar: bool) -> Respuesta {
+    fn cargar_para_leer(
+        &self,
+        raiz: &Path,
+        nombre: &str,
+        prestar: bool,
+        extra: &[&str],
+    ) -> Respuesta {
         let mut args = vec!["datasets", ".", "--cargar", nombre];
         if prestar {
             args.extend(["--prestar", "--leer"]);
+            args.extend(extra);
         }
         self.ore_crudo(raiz, &args, false)
     }
@@ -1314,6 +1410,41 @@ fn paquetes(raiz: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ORE 0068 C2·3 · Un namespace de varios niveles, como lo manda Spark
+    /// para una tabla de metadatos, es «no existe» (404 con su tipo), no un
+    /// 400: sólo con el 404 la busca como tabla de metadatos.
+    #[test]
+    fn un_namespace_de_varios_niveles_no_existe() {
+        assert!(de_varios_niveles("default\u{1f}lugares"));
+        assert!(de_varios_niveles("default%1Flugares") && de_varios_niveles("default%1flugares"));
+        assert!(!de_varios_niveles("default"));
+        let r = no_hay_varios_niveles("default\u{1f}lugares", "snapshots", "NoSuchTableException");
+        assert_eq!(r.codigo, 404);
+        let j = r.cuerpo.jcs();
+        assert!(j.contains("NoSuchTableException"), "{j}");
+        assert!(j.contains("no hay `default.lugares.snapshots`"), "{j}");
+    }
+
+    /// ORE 0068 C2·3 · El porqué de un error que lo anuncia («…:») llega al
+    /// cliente; uno de una línea, como siempre.
+    #[test]
+    fn el_porque_que_se_anuncia_no_se_pierde() {
+        assert_eq!(
+            primera_de("error: no hay ningún dataset `x`\n"),
+            "no hay ningún dataset `x`"
+        );
+        let m = primera_de(
+            "error: el dataset `geo.l` no compila con esas columnas:\n  OOS3008 · `Geometry<…>` llega con v1alpha32\n",
+        );
+        assert_eq!(
+            m,
+            "el dataset `geo.l` no compila con esas columnas: OOS3008 · `Geometry<…>` llega con v1alpha32"
+        );
+        assert_eq!(primera_de(""), "falló sin decir por qué");
+        let largo = format!("error: x:\n{}\n", "ñ".repeat(900));
+        assert!(primera_de(&largo).ends_with('…'));
+    }
 
     /// 0063 S7e·3: la línea `retenida` del commit es una marca dentro del
     /// árbol (200, para que se publique) y 422 `PromiseHeldException` fuera,

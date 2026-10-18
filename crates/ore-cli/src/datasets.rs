@@ -129,6 +129,12 @@ pub struct Opciones<'a> {
     /// Con `--prestar`: si el sujeto no lo escribió, la de leer en vez del 77
     /// (un `loadTable` desde un puesto, con el conducto ya pasado).
     pub o_leer: bool,
+    /// ORE 0068 C2·3 · Con `--prestar`: la ruta de `/v1` donde se refresca la
+    /// credencial (`…/tables/{t}/credentials`), que se anuncia en el `config`.
+    pub refrescar: Option<&'a str>,
+    /// ORE 0068 C2·3 · Con `--cargar --prestar`: sólo las `storage-credentials`
+    /// (el `loadCredentials` de la spec), sin bajar el `metadata.json`.
+    pub solo_credenciales: bool,
     /// Con `--commit`: publicar aunque una promesa `error` falle (0063 S7e,
     /// D-S7-6: el *Publish anyway* de quien escribe).
     pub publicar_igual: bool,
@@ -1932,6 +1938,7 @@ fn adelantado(op: &Opciones, tabla: &str, actual_ml: &str, actual_snap: &str, m:
 /// se aplican todos antes de mover ningún puntero.
 fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let texto = cuerpo_de(op)?;
+    geo_del_cuerpo(&texto)?;
     let n = ore_core::parse::parse(&texto)
         .map_err(|e| (64, format!("la petición no analiza: {e:?}")))?;
     let cambios: Vec<Cambio> = match n.get("table-changes") {
@@ -2550,10 +2557,105 @@ fn publicar_retenida(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fal
 /// **La tabla nace de un `createTable`** (sin `stage-create`): el `metadata.json`
 /// v0 por `ore-store aplicar` con `crear`, la `Table` con sus columnas, el
 /// puntero. Es lo que un `POST /v1/namespaces/{ns}/tables` hace.
+/// ORE 0068 C2·3 · **Lo geo que un cliente manda al catálogo, antes de tocar
+/// el lago** (crear, esbozar, commit). Lo que no va es un 400 que dice cómo,
+/// con el código 64:
+/// - **un tipo geo nativo de Iceberg v3** (`geometry(…)`, `geography(…)`) en
+///   cualquier columna: el lago de ORE guarda la geometría como WKB (`binary`)
+///   con su `ore.geo.<col>` (0067 G2). Medido en C2·4 (S6): Spark 4.1 con
+///   `GEOMETRY(4326)` acababa en un 500 `CommitStateUnknown` —`ore-store` no
+///   abre el tipo—, que le dice al cliente que quizá se escribió;
+/// - **una `ore.geo.<col>` que no se sostiene**: ha de ser JSON con su `crs`, y
+///   su `type`, si lo dice, un tipo geo de OOS con ese mismo CRS. Hasta hoy era
+///   «una cadena JSON que nadie comprueba» (C2·4), y de ella sale el tipo que
+///   el árbol registra (`lago::columnas_oos`).
+fn geo_del_cuerpo(texto: &str) -> Result<(), Fallo> {
+    use ore_core::parse::Node;
+    // Lo que no analiza lo dice quien lo lea; esto sólo mira lo geo.
+    let Ok(n) = ore_core::parse::parse(texto) else {
+        return Ok(());
+    };
+    fn recorrer(n: &Node, campo: Option<&str>) -> Result<(), Fallo> {
+        let campo = n.get("name").and_then(|(_, v)| v.as_str()).or(campo);
+        // Un tipo de Iceberg sólo está en un campo de un esquema (`id`), o en
+        // el elemento de una lista (`element-id`) o la clave y el valor de un
+        // mapa (`key-id`, `value-id`): no en una propiedad que se llame `type`.
+        let tiene = |k: &str| n.get(k).is_some();
+        for (k, v) in n.entries() {
+            let clave = k.as_str().unwrap_or("");
+            if let Some(t) = v.as_str() {
+                let tl = t.trim().to_lowercase();
+                let es_tipo = match clave {
+                    "type" => tiene("id"),
+                    "element" => tiene("element-id"),
+                    "key" => tiene("key-id"),
+                    "value" => tiene("value-id"),
+                    _ => false,
+                };
+                if es_tipo && (tl.starts_with("geometry") || tl.starts_with("geography")) {
+                    let c = campo.unwrap_or("?");
+                    return Err((
+                        64,
+                        format!(
+                            "`{c}` es `{t}`, el tipo geo nativo de Iceberg v3, y el lago de ORE guarda la geometría como WKB (`binary`) con su `ore.geo.{c}`: escríbela con `ST_AsBinary` y di su CRS en `ore.geo.{c}` (el SDK de ORE lo hace solo)"
+                        ),
+                    ));
+                }
+                if let Some(col) = clave.strip_prefix("ore.geo.") {
+                    ore_geo_bien(col, t)?;
+                }
+            }
+            recorrer(v, campo)?;
+        }
+        for i in n.items() {
+            recorrer(i, campo)?;
+        }
+        Ok(())
+    }
+    recorrer(&n, None)
+}
+
+/// Una `ore.geo.<col>`: JSON con su `crs`, y su `type`, si lo dice, un tipo geo
+/// de OOS con ese mismo CRS (`Geography` va siempre en `OGC:CRS84`).
+fn ore_geo_bien(col: &str, valor: &str) -> Result<(), Fallo> {
+    let mal = |por: String| Err((64, format!("`ore.geo.{col}` = `{valor}`: {por}")));
+    // Un objeto JSON: el analizador es de YAML, y un texto suelto también le vale.
+    let v = match ore_core::parse::parse(valor) {
+        Ok(v @ ore_core::parse::Node::Mapping { .. }) => v,
+        _ => return mal("no es JSON (un objeto con su `crs`)".into()),
+    };
+    let Some(crs) = v.get("crs").and_then(|(_, c)| c.as_str()) else {
+        return mal("le falta `crs` (`EPSG:25830`, `OGC:CRS84`…)".into());
+    };
+    let partes: Vec<&str> = crs.split(':').collect();
+    if partes.len() != 2 || partes.iter().any(|p| p.is_empty()) {
+        return mal(format!("`{crs}` no es un CRS (`AUTORIDAD:CÓDIGO`)"));
+    }
+    let Some(t) = v.get("type").and_then(|(_, t)| t.as_str()) else {
+        return Ok(());
+    };
+    let tipo_crs = match ore_core::types::parse_type(t) {
+        Ok(ore_core::types::Type::Geometry { crs, .. }) => crs,
+        Ok(ore_core::types::Type::Geography { .. }) => ore_core::types::CRS_DEFECTO.to_string(),
+        _ => {
+            return mal(format!(
+                "`{t}` no es un tipo geo de OOS (`Geometry<Point, {crs}>`)"
+            ));
+        }
+    };
+    if !tipo_crs.eq_ignore_ascii_case(crs) {
+        return mal(format!(
+            "el tipo dice `{tipo_crs}` y `crs` dice `{crs}`: una columna, un CRS"
+        ));
+    }
+    Ok(())
+}
+
 fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     let ns = t.ns;
     let texto = cuerpo_de(op)?;
+    geo_del_cuerpo(&texto)?;
     if !path
         .join("packages")
         .join(ns)
@@ -2632,8 +2734,35 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// como los dos campos del `LoadTableResult` (`config` y
 /// `storage-credentials`), ya escritos.
 fn prestamo(lago: &str, op: &Opciones) -> Result<String, Fallo> {
-    prestamo_de(lago, op.prestar, op.leer, None, None)
+    prestamo_de(lago, op.prestar, op.leer, None, None, None).map(|p| p.campos())
 }
+
+/// Lo prestado, en los dos campos del `LoadTableResult`, ya escritos:
+/// `"config":{…}` y, si se prestó, `"storage-credentials":[…]`.
+struct Prestamo {
+    config: String,
+    credenciales: Option<String>,
+}
+
+impl Prestamo {
+    fn campos(&self) -> String {
+        match &self.credenciales {
+            Some(c) => format!("{},{c}", self.config),
+            None => self.config.clone(),
+        }
+    }
+}
+
+/// ORE 0068 C2·3 · **Dónde se refresca la credencial**, en el `config` de un
+/// `loadTable`: Iceberg (1.12) la pide ahí antes de que caduque —la de GCS dura
+/// una hora y un build pesado puede durar más— con la misma identidad del
+/// catálogo. Las dos claves de cada FileIO: GCS y S3 (R2 y el laboratorio).
+const REFRESCO: [&str; 4] = [
+    "gcs.oauth2.refresh-credentials-endpoint",
+    "gcs.oauth2.refresh-credentials-enabled",
+    "client.refresh-credentials-endpoint",
+    "client.refresh-credentials-enabled",
+];
 
 /// La propiedad que dice, en el `config` de un `loadTable`, que lo prestado es
 /// sólo para leer y por qué. Un cliente de Iceberg ignora lo que no conoce; el
@@ -2658,13 +2787,17 @@ fn prestamo_de(
     leer: bool,
     solo_lectura: Option<&str>,
     promesas: Option<&str>,
-) -> Result<String, Fallo> {
+    refrescar: Option<&str>,
+) -> Result<Prestamo, Fallo> {
     if !prestar {
         let config = match promesas {
             Some(p) => Json::obj([(PROMESAS, Json::s(p))]).jcs(),
             None => "{}".into(),
         };
-        return Ok(format!("\"config\":{config}"));
+        return Ok(Prestamo {
+            config: format!("\"config\":{config}"),
+            credenciales: None,
+        });
     }
     let salida = almacen_crudo(
         "prestar",
@@ -2691,12 +2824,32 @@ fn prestamo_de(
     if let Some(p) = promesas {
         config.insert(PROMESAS.into(), Json::s(p));
     }
+    // Sólo lo que caduca se refresca, y con las claves de su FileIO: la de GCS
+    // trae su `token-expires-at`; una de S3 temporal, su `session-token`. Las
+    // claves fijas de R2 no caducan, y anunciarles un refresco hace que S3FileIO
+    // exija un `session-token` que no tienen (medido en el laboratorio: no leía).
+    if let Some(r) = refrescar {
+        let caduca = |k: &str| config.contains_key(k);
+        let por_fileio = [
+            (caduca("gcs.oauth2.token-expires-at"), &REFRESCO[..2]),
+            (caduca("s3.session-token"), &REFRESCO[2..]),
+        ];
+        for (si, claves) in por_fileio {
+            if si {
+                config.insert(claves[0].into(), Json::s(r));
+                config.insert(claves[1].into(), Json::s("true"));
+            }
+        }
+    }
     let config = Json::Obj(config).jcs();
     let prefijo = campo_de(&n, "prefijo").unwrap_or_default();
-    Ok(format!(
-        "\"config\":{config},\"storage-credentials\":[{{\"prefix\":{},\"config\":{credencial}}}]",
-        lit(&prefijo)
-    ))
+    Ok(Prestamo {
+        config: format!("\"config\":{config}"),
+        credenciales: Some(format!(
+            "\"storage-credentials\":[{{\"prefix\":{},\"config\":{credencial}}}]",
+            lit(&prefijo)
+        )),
+    })
 }
 
 /// **`loadTable`**: el `LoadTableResult` de la spec REST, tal cual —el
@@ -2746,6 +2899,16 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         solo_lectura = Some(m);
     }
     let leer = op.leer || solo_lectura.is_some();
+    // ORE 0068 C2·3 · `loadCredentials`: lo mismo que se prestaría, sin el resto.
+    if op.solo_credenciales {
+        let sitio = previo
+            .as_ref()
+            .and_then(|p| campo_de(p, "dataset"))
+            .unwrap_or_else(|| lago.clone());
+        let p = prestamo_de(&sitio, true, leer, solo_lectura.as_deref(), None, None)?;
+        println!("{{{}}}", p.credenciales.unwrap_or_default());
+        return Ok(());
+    }
     let metadatos = almacen_crudo(
         "metadatos",
         &format!("{{\"metadata_location\":{}}}", lit(&ml)),
@@ -2764,7 +2927,9 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         leer,
         solo_lectura.as_deref(),
         promesas.as_deref(),
-    )?;
+        op.refrescar,
+    )?
+    .campos();
     println!(
         "{{\"metadata-location\":{},\"metadata\":{},{cred}}}",
         lit(&ml),
@@ -2780,6 +2945,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     let ns = t.ns;
     let texto = cuerpo_de(op)?;
+    geo_del_cuerpo(&texto)?;
     if !path
         .join("packages")
         .join(ns)
@@ -3042,6 +3208,63 @@ fn salida(
 
 #[cfg(test)]
 mod tests {
+    /// ORE 0068 C2·3 · Lo geo del cuerpo: el tipo nativo de v3 (S6 de C2·4,
+    /// lo que manda Spark con `GEOMETRY(4326)`) es un 400 con su remedio, en
+    /// un campo, una lista o un mapa; y una `ore.geo.<col>` ha de sostenerse.
+    #[test]
+    fn lo_geo_del_cuerpo_se_comprueba_antes_del_lago() {
+        let g = super::geo_del_cuerpo;
+        // S6: lo que Spark 4.1 manda al crear la tabla.
+        let s6 = r#"{"name":"nativa","schema":{"type":"struct","fields":[{"id":1,"name":"id","required":false,"type":"long"},{"id":2,"name":"g","required":false,"type":"geometry(EPSG:4326)"}]}}"#;
+        let (c, m) = g(s6).unwrap_err();
+        assert_eq!(c, 64);
+        assert!(
+            m.contains("`g` es `geometry(EPSG:4326)`") && m.contains("ST_AsBinary"),
+            "{m}"
+        );
+        // En una lista, y en un `add-schema` de un commit.
+        let lista = r#"{"updates":[{"action":"add-schema","schema":{"type":"struct","fields":[{"id":3,"name":"rutas","required":false,"type":{"type":"list","element-id":4,"element":"geography","element-required":false}}]}}]}"#;
+        assert!(g(lista).unwrap_err().1.contains("`rutas` es `geography`"));
+        // Una propiedad que se llama `type` no es un tipo de Iceberg.
+        assert!(g(r#"{"properties":{"type":"geometry de la red"}}"#).is_ok());
+        // Lo de siempre pasa: WKB en `binary` con su `ore.geo`.
+        let bien = r#"{"name":"t","schema":{"type":"struct","fields":[{"id":1,"name":"g","required":false,"type":"binary"}]},"properties":{"ore.geo.g":"{\"crs\":\"EPSG:25830\",\"type\":\"Geometry<Point, EPSG:25830>\"}"}}"#;
+        assert!(g(bien).is_ok(), "{:?}", g(bien));
+        let set = |v: &str| {
+            format!(
+                r#"{{"updates":[{{"action":"set-properties","updates":{{"ore.geo.g":{}}}}}]}}"#,
+                ore_core::json::Json::s(v).jcs()
+            )
+        };
+        assert!(g(&set(r#"{"crs":"OGC:CRS84"}"#)).is_ok());
+        assert!(
+            g(&set(
+                r#"{"crs":"OGC:CRS84","type":"Geography","edges":"spherical"}"#
+            ))
+            .is_ok()
+        );
+        for (v, por) in [
+            ("no es json {", "no es JSON"),
+            (
+                r#"{"type":"Geometry<Point, EPSG:25830>"}"#,
+                "le falta `crs`",
+            ),
+            (r#"{"crs":"25830"}"#, "no es un CRS"),
+            (
+                r#"{"crs":"EPSG:25830","type":"String"}"#,
+                "no es un tipo geo",
+            ),
+            (
+                r#"{"crs":"EPSG:4326","type":"Geometry<Point, EPSG:25830>"}"#,
+                "una columna, un CRS",
+            ),
+        ] {
+            let (c, m) = g(&set(v)).unwrap_err();
+            assert_eq!(c, 64);
+            assert!(m.contains(por), "{v} → {m}");
+        }
+    }
+
     /// ORE 0068 · Una columna geo sube el documento a v1alpha32 (la de sus
     /// tipos), sea de la versión que sea; sin columnas geo, o ya en ella o en
     /// otra posterior, no se toca. Y el documento nuevo, con ella, compila.

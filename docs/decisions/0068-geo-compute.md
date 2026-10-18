@@ -643,6 +643,26 @@ el Job.
    tiene geometría sigue en v1alpha12, y `ore validate` pasa después de los builds. Queda verlo en
    victor al cerrar C1.
 
+**Pieza 3 · `/v1` comprueba (hecha en local, `pruebas-de-fuego/geo/c2/v1-comprueba/`, 12/12 con
+Spark contra el banco).**
+
+| qué | cómo |
+|---|---|
+| **S6: el `GEOMETRY` nativo de v3 → 400** | `ore datasets` mira el cuerpo antes de tocar el lago (crear, esbozar, commit): un tipo `geometry(…)`/`geography(…)` en un campo, una lista o un mapa es un 400 que dice cómo: «escríbela con `ST_AsBinary` y di su CRS en `ore.geo.<col>`». Ya no es un 500 `CommitStateUnknown`, y no queda nada |
+| **`ore.geo.<col>` se sostiene o no entra** | ha de ser un objeto JSON con su `crs` (`AUTORIDAD:CÓDIGO`) y, si dice `type`, un tipo geo de OOS con ese mismo CRS. Al crear y en un `ALTER`: 400 con el porqué. Es de donde sale el tipo del árbol, y hasta hoy no lo miraba nadie |
+| **un namespace de dos niveles → 404** | en ORE no hay ninguno (la base es el `prefix`): lo que se busque en él no existe. Con el 404, Spark encuentra sus tablas de metadatos (`ore_geo.default.lugares.snapshots`); con el 400 de antes, fallaban |
+| **el porqué que se anuncia, entero** | un error cuya primera línea acaba en «:» llega con las líneas que lo explican (acotado): «no compila con esas columnas:» llegaba sin el diagnóstico |
+| **`GET …/tables/{t}/credentials`** (`loadCredentials`) | por el **mismo camino que `loadTable`** (conducto, techo, la de leer para una entrada): las `storage-credentials`, sin bajar el `metadata.json`. Y `loadTable` y crear la tabla **anuncian dónde refrescar, sólo lo que caduca**: la credencial de GCS (`gcs.oauth2.token-expires-at`) con las claves de GCS, una de S3 temporal (`s3.session-token`) con las de S3. Las claves fijas de R2 no: anunciarles un refresco hace que `S3FileIO` exija un `session-token` que no tienen (medido: dejaba de leer) |
+
+Medido además: el `VendedCredentialsProvider` de Iceberg pide `…/credentials` con la identidad del
+catálogo y lo lee (con las claves fijas del banco, dice que no son temporales, que es lo esperado).
+**Lo que sólo se ve en victor:** el refresco de GCS de verdad, en un build de más de una hora (el
+manejador de GCS se identifica con un `AuthManager`, el de la identidad del puesto).
+
+**Queda de esta pieza, con nombre:** mezclar dos CRS en una tabla a lo largo de escrituras (un
+`append` en otro CRS) no se niega en el servidor; el `ore.geo` de cada escritura lo pone quien
+escribe, de sus datos.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |
