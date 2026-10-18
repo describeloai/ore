@@ -125,17 +125,26 @@ def crs_de_oos(t):
 _CAST_DE_CRS = re.compile(r"Cannot cast GEOMETRY with CRS '([^']+)' to GEOMETRY with different CRS '([^']+)'")
 
 
+_MEZCLA_DE_CRS = re.compile(r"Cannot call function '(\w+)' with geometries of different coordinate reference "
+                            r"systems.*?is in '([^']+)' which is not compatible with '([^']+)'", re.S)
+
+
 def dicho_geo(mensaje):
-    """Un error geo de DuckDB dicho como ORE, o `None` (0068 C1·1). Mezclar CRS
-    en una función ya lo dice DuckDB con su remedio; el cast no: es lo que se ve
-    al pasar a una Function del árbol (o a una columna) una geometría en otro CRS
-    que el que declara."""
+    """Un error geo de DuckDB dicho como ORE, en una línea y con su remedio, o
+    `None` (0068 C1·1). Mezclar CRS en una función (DuckDB lo dice en tres
+    líneas, y el editor enseña la primera), y el cast a otro CRS: lo que se ve al
+    pasar a una Function del árbol, o a una columna, una geometría en otro CRS."""
+    m = _MEZCLA_DE_CRS.search(mensaje or "")
+    if m:
+        f, de, a = m.group(1), m.group(2), m.group(3)
+        return ("`%s` gets geometries in two CRS, `%s` and `%s`, and ORE never reprojects on its own: reproject "
+                "one with `ST_Transform(g, '%s', '%s')`" % (f, de, a, de, a))
     m = _CAST_DE_CRS.search(mensaje or "")
-    if not m:
-        return None
-    de, a = m.group(1), m.group(2)
-    return ("a geometry in `%s` goes where `%s` is declared (a function's parameter or a column), and ORE never "
-            "reprojects on its own: reproject it with `ST_Transform(g, '%s', '%s')`" % (de, a, de, a))
+    if m:
+        de, a = m.group(1), m.group(2)
+        return ("a geometry in `%s` goes where `%s` is declared (a function's parameter or a column), and ORE never "
+                "reprojects on its own: reproject it with `ST_Transform(g, '%s', '%s')`" % (de, a, de, a))
+    return None
 
 
 def _q(n):
@@ -253,6 +262,28 @@ class Catalogo:
                 self.con.execute("load %s" % ext)
             except Exception:
                 pass
+
+    def funciones_geo(self):
+        """{nombre en minúsculas: (nombre, [firma, …], descripción)} de las
+        funciones `ST_*` y `h3_*` que DuckDB carga (0068 C1·1), para completar y
+        explicar. Una vez: carga `spatial` y `h3` si no lo estaban."""
+        if getattr(self, "_funciones_geo", None) is None:
+            with self.candado:
+                self.cargar_geo()
+                filas = self.con.execute(
+                    "select function_name, parameters, parameter_types, return_type, description "
+                    "from duckdb_functions() where function_type in ('scalar', 'aggregate', 'table') "
+                    "and (lower(function_name) like 'st\\_%' escape '\\' "
+                    "or lower(function_name) like 'h3\\_%' escape '\\') order by function_name").fetchall()
+            out = {}
+            for n, ps, ts, r, d in filas:
+                firma = "%s(%s)%s" % (n, ", ".join("%s %s" % (p, t) for p, t in zip(ps or [], ts or [])),
+                                      " → %s" % r if r else "")
+                _, firmas, desc = out.setdefault(n.lower(), (n, [], d or ""))
+                if firma not in firmas:
+                    firmas.append(firma)
+            self._funciones_geo = out
+        return self._funciones_geo
 
     def preparar(self, sql, nombres):
         """Lo que `sql` necesita para describirse: lo geo si usa `ST_*` o `h3_*`
@@ -424,7 +455,11 @@ def completar(texto, cursor, cat):
             if c not in vistos:
                 vistos.add(c)
                 out.append((c, 5, "%s · %s" % (t or "untyped", n)))
-    return out + [(a, 6, al[a]) for a in sorted(al) if a not in al.values()]
+    out += [(a, 6, al[a]) for a in sorted(al) if a not in al.values()]
+    # 0068 C1·1: tras `st_` o `h3_`, las funciones geo, con su primera firma.
+    if m and re.match(r"(st|h3)_", m.group(0), re.I):
+        out += [(n, 3, firmas[0]) for n, firmas, _ in cat.funciones_geo().values()]
+    return out
 
 
 def _posicion(texto, mensaje):
@@ -582,7 +617,7 @@ def diagnosticar(texto, cat):
         p = _posicion(s, m) or (0, 0)
         if "at end of input" in m and _al_final(s, *p):
             continue  # se esta escribiendo
-        msg = m.split("\n")[0]
+        msg = dicho_geo(m) or m.split("\n")[0]
         sug = re.search(r"Candidate bindings: (.*)", m)
         if sug:
             msg += " · did you mean %s?" % sug.group(1).split(",")[0].strip()
@@ -625,6 +660,16 @@ def explicar(texto, linea, col, cat):
         if conductos:
             partes.append("conduits: " + conductos)
         return "\n\n".join(partes)
+    # 0068 C1·1: una función geo, con sus firmas y lo que hace.
+    if re.match(r"(st|h3)_\w+$", palabra):
+        f = cat.funciones_geo().get(palabra)
+        if f:
+            n, firmas, desc = f
+            partes = ["**%s**" % n, "\n".join("`%s`" % x for x in firmas[:4])
+                      + ("\n\n… and %d more" % (len(firmas) - 4) if len(firmas) > 4 else "")]
+            if desc:
+                partes.append(desc)
+            return "\n\n".join(partes)
     ini, fin = la_del_cursor(texto, desplazamiento(texto, linea, col))
     al = alias_de(tokens(texto[ini:fin]), cat)
     if "." in palabra:

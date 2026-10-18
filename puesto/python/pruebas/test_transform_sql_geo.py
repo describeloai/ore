@@ -62,7 +62,7 @@ class TransformSqlGeo(unittest.TestCase):
         self.assertEqual(como.schema.field("geom").metadata, t.schema.field("geom").metadata)
 
     def test_mezclar_crs_se_niega(self):
-        with self.assertRaisesRegex(duckdb.Error, "(?s)different coordinate reference systems.*ST_Transform"):
+        with self.assertRaisesRegex(duckdb.Error, "(?s)two CRS.*ST_Transform.*different coordinate reference systems"):
             ore.sql("select ST_Intersects(%s, %s) as x" % (UTM, WGS), format="arrow")
 
     def test_el_cast_de_otro_crs_se_dice_como_ore(self):

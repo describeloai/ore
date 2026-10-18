@@ -121,8 +121,32 @@ class ElEditor(unittest.TestCase):
 
     def test_mezclar_crs_se_subraya(self):
         d = self.diagnosticos("select ST_Intersects(geom, utm) as x from geo.default.lugares")
-        self.assertTrue(any("coordinate reference system" in m for m in d), d)
-        self.assertFalse(any("unrecognized coordinate system" in m for m in d), d)
+        # Dicho como ORE, en una línea y con su remedio (pieza 4).
+        self.assertEqual(d, ["`ST_Intersects` gets geometries in two CRS, `EPSG:4326` and `EPSG:25830`, and ORE "
+                             "never reprojects on its own: reproject one with "
+                             "`ST_Transform(g, 'EPSG:4326', 'EPSG:25830')`"])
+
+    def test_completa_las_funciones_geo(self):
+        texto = "select st_bu"
+        items, _ = lsp_sql.completar_lista(texto, len(texto), lsp_sql.Catalogo(INDICE))
+        buffer = [x for x in items if x[0] == "ST_Buffer"]
+        self.assertEqual(len(buffer), 1, items[:5])
+        self.assertEqual(buffer[0][1], 3)  # Function
+        self.assertIn("GEOMETRY", buffer[0][2])
+        texto = "select h3_latlng"
+        items, _ = lsp_sql.completar_lista(texto, len(texto), lsp_sql.Catalogo(INDICE))
+        self.assertIn("h3_latlng_to_cell", [x[0] for x in items])
+
+    def test_sin_st_no_ofrece_funciones(self):
+        texto = "select geo"
+        items, _ = lsp_sql.completar_lista(texto, len(texto), lsp_sql.Catalogo(INDICE))
+        self.assertFalse([x for x in items if x[1] == 3])
+
+    def test_explica_una_funcion_geo(self):
+        texto = "select ST_Buffer(utm, 100) from geo.default.lugares"
+        h = lsp_sql.explicar(texto, 0, 10, lsp_sql.Catalogo(INDICE))
+        self.assertTrue(h.startswith("**ST_Buffer**"), h)
+        self.assertIn("ST_Buffer(", h)
 
     def test_st_sin_tabla_geo_carga_spatial(self):
         self.assertEqual(self.diagnosticos("select ST_AsText(ST_Point(1, 2)) as p from geo.default.lugares"), [])
