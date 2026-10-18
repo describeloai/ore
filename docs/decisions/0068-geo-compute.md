@@ -435,6 +435,31 @@ son de cada Build (C2·3). La construcción se demuestra como uid 65532 (`puesto
 `puesto-python` añade 1,13 GB sin comprimir (Spark 824 MB y el JDK 308), en capas que el nodo baja una
 vez.
 
+**Pieza 2 · contra `/v1`, con la imagen (hecha en local).** El laboratorio de C2·4 con
+`IMAGEN=ore-puesto-spark:local` (`medir.sh`): como el uid de los puestos, sin `--packages` ni ivy, y
+sin decirle extensiones ni serializador; sólo el catálogo, como lo dirá el Build. **Igual que C2·4:**
+S1–S3 van (v2, 2 *snapshots*, ORE conserva `ore.geo.geom`), S5 da 31 214 m² en las tres filas y
+escribe `ore.geo.zona`, y S6 sigue en el 500 (su 400 es de C2·3).
+
+**El orden de los ejes en EPSG:4326** (`ejes.py`, los dos motores en la misma imagen, el mismo punto):
+
+| motor | `ST_Transform(g, 'EPSG:25830', 'EPSG:4326')` |
+|---|---|
+| DuckDB 1.5.6, por defecto | `POINT (40.4145 -3.7072)`: **lat/lon**, el orden de la autoridad EPSG |
+| DuckDB con `set geometry_always_xy = true` (o `always_xy := true`, o a `'OGC:CRS84'`) | `POINT (-3.7072 40.4145)` |
+| Sedona 1.9.1 (GeoTools) | `POINT (-3.7072 40.4145)`; con `'OGC:CRS84'` **falla** |
+
+**Lo que dice:**
+1. **Es un hueco de Lightweight, no de Spark:** GeoParquet guarda siempre x = longitud, y DuckDB por
+   defecto escribe lat/lon en 4326. Nadie en ORE fija hoy `geometry_always_xy`: un `ST_Transform` a
+   4326 en un Transform de SQL, Python, Node o Java deja los puntos traspuestos en el lago. **El
+   remedio es una línea por puesto** (`set geometry_always_xy = true` donde se carga `spatial`), y
+   entra en el cierre de C1 con su prueba en los tres puestos.
+2. Con él, los dos motores dan el mismo punto con una diferencia de 4·10⁻⁸ grados (unos 4 mm: PROJ
+   frente a GeoTools). Para comparar resultados entre motores se tolera menos de 1 cm.
+3. Sedona no reconoce `'OGC:CRS84'`, que es el CRS por defecto de Iceberg para la geografía. El arnés
+   de Heavyweight (C2·3) lo dice como `EPSG:4326`, que en Sedona ya es lon/lat.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |

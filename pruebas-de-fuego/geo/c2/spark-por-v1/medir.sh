@@ -5,6 +5,7 @@
 #   2 · bash pruebas-de-fuego/geo/c2/spark-por-v1/medir.sh [fichero.sql]
 #       SEGUIR=1  no rehace el banco (para un .sql que lee lo que dejó otro)
 #       SEDONA=1  con Sedona 1.9.1 (sedona.sql)
+#       IMAGEN=ore-puesto-spark:local  con la imagen pesada del producto (C2·2), no la oficial
 # El banco (rust:1, banco.sh) y Spark en la MISMA red (la del banco): todo en 127.0.0.1.
 set -euo pipefail
 raiz="$(cd "$(dirname "$0")/../../../.." && pwd -W 2>/dev/null || pwd)"
@@ -26,14 +27,22 @@ if [ "${SEGUIR:-}" != 1 ]; then
 fi
 echo "== el banco: ore-serve en 127.0.0.1:8080, el S3 de mentira en :9000"
 
-echo "== Spark 4.1 + Iceberg $ICEBERG por /v1 ($sql)"
-MSYS_NO_PATHCONV=1 docker run --rm --network container:c2-banco -u 0 -e HOME=/tmp \
-  -v "$raiz/pruebas-de-fuego/geo/c2/spark-por-v1":/c2:ro -v c2-ivy:/ivy \
-  apache/spark:4.1.0-scala2.13-java17-python3-ubuntu /opt/spark/bin/spark-sql -S \
-  --packages "$PAQUETES" \
-  --conf spark.jars.ivy=/ivy \
-  --conf "spark.sql.extensions=$EXTENSIONES" \
-  --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
+echo "== Spark 4.1 + Iceberg $ICEBERG por /v1 ($sql) · ${IMAGEN:-apache/spark + ivy}"
+if [ -n "${IMAGEN:-}" ]; then
+  # ⭐ 0068 C2·2 pieza 2 · LA IMAGEN DEL PUESTO (`puesto-spark`): como el uid de los puestos, sin
+  #   --packages ni ivy (todo va dentro) y sin extensiones ni serializador (los pone su
+  #   `spark-defaults.conf`, con Sedona siempre). Aquí sólo se dice el catálogo, como hará el Build.
+  SPARK=(docker run --rm --network container:c2-banco
+         -v "$raiz/pruebas-de-fuego/geo/c2/spark-por-v1":/c2:ro "$IMAGEN" spark-sql -S)
+else
+  SPARK=(docker run --rm --network container:c2-banco -u 0 -e HOME=/tmp
+         -v "$raiz/pruebas-de-fuego/geo/c2/spark-por-v1":/c2:ro -v c2-ivy:/ivy
+         apache/spark:4.1.0-scala2.13-java17-python3-ubuntu /opt/spark/bin/spark-sql -S
+         --packages "$PAQUETES" --conf spark.jars.ivy=/ivy
+         --conf "spark.sql.extensions=$EXTENSIONES"
+         --conf spark.serializer=org.apache.spark.serializer.KryoSerializer)
+fi
+MSYS_NO_PATHCONV=1 "${SPARK[@]}" \
   --conf spark.sql.catalog.ore=org.apache.iceberg.spark.SparkCatalog \
   --conf spark.sql.catalog.ore.type=rest \
   --conf spark.sql.catalog.ore.uri=http://127.0.0.1:8080 \
