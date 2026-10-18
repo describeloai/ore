@@ -1040,6 +1040,7 @@ mod pruebas {
             cabeceras: BTreeMap::new(),
             cuerpo: cuerpo.into(),
             consulta: BTreeMap::new(),
+            consulta_cruda: String::new(),
         });
         (r.codigo, r.cuerpo.jcs())
     }
@@ -1089,6 +1090,7 @@ mod pruebas {
             cabeceras,
             cuerpo: String::new(),
             consulta,
+            consulta_cruda: String::new(),
         }) {
             Salida::Bytes(mut b) => {
                 let mut v = Vec::new();
@@ -1193,6 +1195,7 @@ mod pruebas {
                 cabeceras: BTreeMap::new(),
                 cuerpo: format!("{{{BASE},\"path\":\"docs/a.pdf\"}}"),
                 consulta: BTreeMap::new(),
+                consulta_cruda: String::new(),
             });
             match salida {
                 Salida::Una(x) => assert_eq!(x.codigo, 404, "{m} {r}"),
@@ -1205,6 +1208,7 @@ mod pruebas {
             cabeceras: BTreeMap::new(),
             cuerpo: String::new(),
             consulta: BTreeMap::new(),
+            consulta_cruda: String::new(),
         });
         match salida {
             Salida::Una(x) => assert_eq!(x.codigo, 401, "sin permiso"),

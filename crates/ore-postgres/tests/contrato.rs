@@ -253,16 +253,18 @@ fn pide(s: &Servidor, token: &str, metodo: &str, ruta: &str, cuerpo: &str) -> (u
     if !token.is_empty() {
         cabeceras.insert("authorization".into(), format!("Bearer {token}"));
     }
-    // `?k=v&…` va a `consulta`, como lo deja `ore-entrada`.
-    let (ruta, consulta) = match ruta.split_once('?') {
+    // `?k=v&…` va a `consulta`, como lo deja `ore-entrada`; `consulta_cruda` es
+    // la misma cadena sin filtrar (0064: el túnel de marimo la lee tal cual).
+    let (ruta, consulta, consulta_cruda) = match ruta.split_once('?') {
         Some((r, q)) => (
             r,
             q.split('&')
                 .filter_map(|kv| kv.split_once('='))
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            q.to_string(),
         ),
-        None => (ruta, BTreeMap::new()),
+        None => (ruta, BTreeMap::new(), String::new()),
     };
     let r = s.atender(&Peticion {
         metodo: metodo.into(),
@@ -270,6 +272,7 @@ fn pide(s: &Servidor, token: &str, metodo: &str, ruta: &str, cuerpo: &str) -> (u
         cabeceras,
         cuerpo: cuerpo.into(),
         consulta,
+        consulta_cruda,
     });
     (r.codigo, r.cuerpo.jcs())
 }
@@ -1187,6 +1190,7 @@ fn el_proxy_pregunta_por_el_secreto_del_rol_y_la_direccion_del_computo() {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            consulta_cruda: String::new(),
         })
     };
     let acceso = "/proxy/get_endpoint_access_control";
@@ -1456,6 +1460,7 @@ fn un_aviso_del_controller_reconfigura_los_computos_del_tenant() {
                 r#"{{"tenant_id":"{tenant}","stripe_size":null,"shards":[{{"node_id":2,"shard_number":0}}]}}"#
             ),
             consulta: BTreeMap::new(),
+            consulta_cruda: String::new(),
         })
     };
     // Sin token, con otro scope o con una celda: no.
@@ -1618,6 +1623,7 @@ fn un_endpoint_sin_actividad_duerme_y_uno_con_actividad_no() {
             consulta: [("endpointish".to_string(), vm.clone())]
                 .into_iter()
                 .collect(),
+            consulta_cruda: String::new(),
         })
     };
     std::thread::scope(|hilos| {

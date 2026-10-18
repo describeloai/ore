@@ -80,6 +80,9 @@ PLANTILLAS = [
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
     "43-la-entrada.yaml",
+    # ⭐ El origen aislado de marimo (0064 Pieza 4): un segundo hostname, el
+    #   mismo backend — lo que separa los dos orígenes es el navegador.
+    "69-la-entrada-de-notebooks.yaml",
     # ⭐ La media de la celda (0049 B2·4): el índice de las colecciones y la
     #   firma en lote, en un proceso vivo; `ore-serve` decide y esto sirve.
     "45-ore-medios.yaml",
@@ -300,7 +303,7 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 
 
-def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copias=()):
+def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=()):
     """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
     (0025): de el salen el namespace, la cola, las cuentas y la forja. `arbol`
     es `<propietario>/<repo>` tal como lo guarda `iam.celda.arbol`; por defecto,
@@ -318,6 +321,9 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
     # compartido sirve sin coste por cliente (E6, opcion `b`). El que traiga su
     # dominio lo dice, y entonces el certificado depende de SU DNS.
     entrada = entrada or "%s.ore.paladio.io" % nombre
+    # 0064 Pieza 4: el origen aislado de marimo — UN nombre más por inquilino
+    # (nunca por cuaderno: el tope de Cloudflare for SaaS es 100 en total).
+    entrada_notebooks = entrada_notebooks or "%s-nb.ore.paladio.io" % nombre
     salida = {}
     for f in PLANTILLAS:
         t = (MALLA / f).read_text(encoding="utf-8")
@@ -327,6 +333,10 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
         #   —`ontologia.acme.com`— no comparte ni una letra con el derivado, asi
         #   que tiene que sustituirse la cadena completa o no se escribe nunca.
         t = t.replace("%s.ore.paladio.io" % MODELO, entrada)
+        # 0064 Pieza 4: igual que `entrada`, la cadena entera, antes que el
+        # namespace — `demo-nb.ore.paladio.io` no comparte ni una letra con
+        # el derivado de otro inquilino si no se sustituye de una pieza.
+        t = t.replace("%s-nb.ore.paladio.io" % MODELO, entrada_notebooks)
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("cq-%s" % MODELO, "cq-%s" % nombre)
         t = t.replace("serve-%s" % MODELO, "serve-%s" % nombre)
@@ -1249,7 +1259,15 @@ def main(argv):
         print("✗ `%s` no sirve como nombre de organizacion." % organizacion, file=sys.stderr)
         return 65
     copias = [c for c in (valor("--copias") or "").split(",") if c]
-    hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes, organizacion, copias)
+    hecho = render(
+        nombre,
+        arbol=valor("--arbol"),
+        entrada=valor("--entrada"),
+        entrada_notebooks=valor("--entrada-notebooks"),
+        fuentes=fuentes,
+        organizacion=organizacion,
+        copias=copias,
+    )
     # ⭐ Y el enganche, a OTRO directorio (0025 E6): no es del compartimento, es
     #   lo que dice que el compartimento se obedece. `demo` y `prueba` no lo
     #   tienen rendido: esta en `13-…` a mano, y se dice.

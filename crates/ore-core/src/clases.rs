@@ -1331,10 +1331,16 @@ pub fn de(id: &str) -> Option<&'static Clase> {
     CLASES.iter().find(|c| c.id == id)
 }
 
-/// El entorno de puesto que pide una clase por su lenguaje: `python`, `node`
-/// o `jvm`. `None` cuando no hay código (`semantics`) o el lenguaje no corre
-/// en ninguno — y entonces manda lo que pida quien abre, como antes de ⑧b.
+/// El entorno de puesto que pide una clase: primero por su **familia**
+/// (0064: Analytics y Models llevan marimo, aunque su lenguaje sea Python
+/// como el de Transforms y Functions — la familia manda antes que el
+/// lenguaje), y si no, por su lenguaje: `python`, `node` o `jvm`. `None`
+/// cuando no hay código (`semantics`) o el lenguaje no corre en ninguno — y
+/// entonces manda lo que pida quien abre, como antes de ⑧b.
 pub fn entorno_de(clase: &Clase) -> Option<&'static str> {
+    if matches!(clase.familia, "analytics" | "models") {
+        return Some("python-notebooks");
+    }
     match clase.lenguaje {
         "python" | "sql" => Some("python"),
         "typescript" | "javascript" | "node" => Some("node"),
@@ -2078,6 +2084,21 @@ spec: {{ owner: \"team:x\" }}
         assert_eq!(
             entorno_de(de("functions-typescript").unwrap()),
             Some("node")
+        );
+    }
+
+    /// 0064: la familia manda antes que el lenguaje. `analytics-python` y
+    /// `models-python` son Python como `transforms-python`, pero su puesto
+    /// lleva marimo y no comparte imagen con Transforms ni con Functions.
+    #[test]
+    fn el_entorno_de_notebooks_sale_de_la_familia() {
+        assert_eq!(
+            entorno_de(de("analytics-python").unwrap()),
+            Some("python-notebooks")
+        );
+        assert_eq!(
+            entorno_de(de("models-python").unwrap()),
+            Some("python-notebooks")
         );
     }
 

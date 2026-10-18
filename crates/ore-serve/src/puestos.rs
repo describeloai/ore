@@ -68,7 +68,7 @@ use crate::rutas::Servidor;
 /// puesto).
 pub(crate) const PUESTO: &str = "x-ore-puesto";
 use ore_core::json::Json;
-use ore_entrada::http::{Emisor, Flujo, Respuesta, Salida};
+use ore_entrada::http::{Bytes, Emisor, Flujo, Respuesta, Salida};
 use ore_entrada::identidad::Identidad;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -298,6 +298,32 @@ pub(crate) struct Puesto {
     /// 0055 P1 · La celda de Preview que corre ahora, si corre una: mientras
     /// corre, `transform` es su techo y nada de lo que el puesto pida escribe.
     pub ensayando: Option<u64>,
+    /// 0064 Pieza 3 · lo que el navegador pide y espera a que el agente lo
+    /// lleve a marimo — el gemelo de `lsp_al_servidor`, pero cada petición es
+    /// SUYA (método/ruta/cabeceras/cuerpo), no un mensaje LSP suelto.
+    pub marimo_entrada: VecDeque<Json>,
+    /// Como `lsp_generacion`: un agente que se reinicia abre un flujo nuevo y
+    /// el viejo se despide solo.
+    pub marimo_generacion: u64,
+    /// Una cola POR petición: a diferencia del LSP (un consola, un agente),
+    /// aquí hay tantas respuestas en vuelo como peticiones abiertas a la vez
+    /// — cada una es su propia conexión HTTP del navegador.
+    pub marimo_respuestas: BTreeMap<u64, ColaMarimo>,
+    pub marimo_siguiente: u64,
+    /// 0064 Pieza 4 · el secreto del origen aislado: generado perezosamente
+    /// (sólo si alguien pide entrar por `<tenant>-nb.ore.paladio.io`), vive
+    /// mientras viva el puesto — mismo radio que un `x-ore-pod` filtrado.
+    pub marimo_cookie: Option<String>,
+}
+
+/// Lo que el agente trajo de marimo para UNA petición del navegador.
+#[derive(Debug, Default)]
+pub(crate) struct ColaMarimo {
+    /// Llega una vez, al principio: sin ella nadie puede contestar al
+    /// navegador (no se puede mandar un cuerpo sin estado ni cabeceras antes).
+    pub cabecera: Option<(u16, Vec<(String, String)>)>,
+    pub trozos: VecDeque<Vec<u8>>,
+    pub fin: bool,
 }
 
 /// Lo declarado por el transform que corre en este puesto.
@@ -544,6 +570,9 @@ pub(crate) fn declara_capa(entorno: &str) -> bool {
     entorno == crate::entorno::PYTHON
         || entorno == crate::entorno::JVM
         || entorno == crate::entorno::NODE
+        // 0064: un puesto de notebooks declara dependencias como cualquier
+        // repositorio de Python — las resuelve la misma capa de siempre.
+        || entorno == "python-notebooks"
 }
 
 /// En qué entorno corre un lenguaje (`sql`: en el que haya → `python` si hay que
@@ -557,9 +586,13 @@ pub(crate) fn entorno_de(lenguaje: &str) -> Option<&'static str> {
     }
 }
 
-/// ¿Corre este lenguaje en este entorno? `sql` corre en todos.
+/// ¿Corre este lenguaje en este entorno? `sql` corre en todos. Y una celda
+/// `python` (o `sql`, de sobra) corre también en `python-notebooks` (0064):
+/// es el mismo runtime de Python, con marimo encima, no otro lenguaje.
 fn corre_en(lenguaje: &str, entorno: &str) -> bool {
-    lenguaje == "sql" || entorno_de(lenguaje) == Some(entorno)
+    lenguaje == "sql"
+        || entorno_de(lenguaje) == Some(entorno)
+        || (entorno == "python-notebooks" && entorno_de(lenguaje) == Some("python"))
 }
 
 pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
@@ -1113,18 +1146,15 @@ impl Servidor {
         if es_agente(sujeto) {
             return Respuesta::error(403, "un agente no abre puestos: los abre una persona");
         }
-        let (lenguaje, rama, repositorio) = if cuerpo.trim().is_empty() {
-            ("python".to_string(), None, None)
+        let (lenguaje, lenguaje_pedido, rama, repositorio) = if cuerpo.trim().is_empty() {
+            ("python".to_string(), false, None, None)
         } else {
             let n = match ore_core::parse::parse(cuerpo) {
                 Ok(n) => n,
                 Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
             };
-            let l = n
-                .get("lenguaje")
-                .and_then(|(_, v)| v.as_str())
-                .unwrap_or("python")
-                .to_string();
+            let campo_lenguaje = n.get("lenguaje").and_then(|(_, v)| v.as_str());
+            let l = campo_lenguaje.unwrap_or("python").to_string();
             let r = n
                 .get("rama")
                 .and_then(|(_, v)| v.as_str())
@@ -1139,13 +1169,13 @@ impl Servidor {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            (l, r, rep)
+            (l, campo_lenguaje.is_some(), r, rep)
         };
         let repositorio = match crate::entorno::alcance_valido(repositorio.as_deref()) {
             Ok(a) => a,
             Err(r) => return r,
         };
-        let Some(entorno) = entorno_de(&lenguaje) else {
+        let Some(mut entorno) = entorno_de(&lenguaje) else {
             return Respuesta::error(
                 422,
                 format!(
@@ -1217,17 +1247,27 @@ impl Servidor {
                 //   otro. Se dice con su nombre en vez de abrir el que no es, y
                 //   la consola lo manda ya resuelto: las clases viajan en el
                 //   índice (`clases[]`) con su `lenguaje`.
+                //
+                // ⭐ 0064: sin `lenguaje` explícito en el cuerpo, manda la
+                //   clase, no el valor por defecto ("python"): un
+                //   `analytics-python`/`models-python` abre su propio entorno
+                //   (`python-notebooks`), no el genérico de su lenguaje. Sólo
+                //   es un 422 cuando la persona SÍ pidió un lenguaje y choca
+                //   con el de su clase.
                 if let Some(c) = c
                     && let Some(suyo) = ore_core::clases::entorno_de(c)
                     && suyo != entorno
                 {
-                    return Respuesta::error(
-                        422,
-                        format!(
-                            "`{}` es un repositorio `{}`: su puesto es `{suyo}`, no `{entorno}` (pide `lenguaje: {}`)",
-                            a, c.id, c.lenguaje
-                        ),
-                    );
+                    if lenguaje_pedido {
+                        return Respuesta::error(
+                            422,
+                            format!(
+                                "`{}` es un repositorio `{}`: su puesto es `{suyo}`, no `{entorno}` (pide `lenguaje: {}`)",
+                                a, c.id, c.lenguaje
+                            ),
+                        );
+                    }
+                    entorno = suyo;
                 }
                 if let Some(c) = c
                     && !c.ejecuta
@@ -1383,6 +1423,11 @@ impl Servidor {
             colecciones_leidas: BTreeSet::new(),
             ensayando: None,
             decision: decision.clone(),
+            marimo_entrada: VecDeque::new(),
+            marimo_generacion: 0,
+            marimo_respuestas: BTreeMap::new(),
+            marimo_siguiente: 0,
+            marimo_cookie: None,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -1666,6 +1711,11 @@ impl Servidor {
             colecciones_leidas: BTreeSet::new(),
             ensayando: None,
             decision: decision.clone(),
+            marimo_entrada: VecDeque::new(),
+            marimo_generacion: 0,
+            marimo_respuestas: BTreeMap::new(),
+            marimo_siguiente: 0,
+            marimo_cookie: None,
         };
         p.celdas.insert(
             1,
@@ -2477,6 +2527,270 @@ impl Servidor {
             escribir: Box::new(move |e: &mut Emisor<'_>| {
                 emitir_lsp(&puestos, &id, e, None, desde);
             }),
+        })
+    }
+
+    // ── marimo (0064 Pieza 3): el túnel ──────────────────────────────────────
+    //
+    // ⭐ EL MISMO PATRÓN QUE EL LSP, GENERALIZADO. `ore-serve` no tiene
+    //   WebSocket ni runtime async (`ore-entrada::http` es bloqueante, un hilo
+    //   por conexión — a propósito, "no es un websocket"): el túnel es la
+    //   correa de siempre, llevando una petición HTTP entera (método, ruta,
+    //   cabeceras, cuerpo) en vez de un mensaje LSP suelto, y una respuesta
+    //   que puede no acabar nunca (el `/sse` de marimo) en vez de una salida.
+    //
+    // ⛔ ESTE SERVIDOR TAMPOCO ENTIENDE MARIMO, por la misma razón que no
+    //   entiende LSP: es el CONDUCTO. Lo único que mira es la lista de rutas
+    //   que NO salen del puesto (paquetes, terminal, MCP, IA) y si la ruta es
+    //   el guardado, para medirlo — nunca el cuerpo.
+
+    /// `GET /puestos/{id}/marimo/entrada`: el flujo por el que el agente
+    /// RECIBE las peticiones del navegador. Igual que `flujo_lsp_del_agente`.
+    pub(crate) fn flujo_marimo_del_agente(&self, sujeto: &Identidad, id: &str) -> Salida {
+        let generacion = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            let p = match Self::reclamar(&mut lista, sujeto, id) {
+                Ok(p) => p,
+                Err(r) => return Salida::Una(r),
+            };
+            p.marimo_generacion += 1;
+            p.marimo_generacion
+        };
+        self.puestos.campana.notify_all();
+        let puestos = Arc::clone(&self.puestos);
+        let id = id.to_string();
+        Salida::Flujo(Flujo {
+            tipo: "text/event-stream",
+            escribir: Box::new(move |e: &mut Emisor<'_>| {
+                emitir_marimo(&puestos, &id, e, generacion);
+            }),
+        })
+    }
+
+    /// `POST /puestos/{id}/marimo/salida {respuestas: [...]}`: lo que marimo
+    /// contestó. Lo manda el agente. Igual que `lsp_del_servidor`, pero cada
+    /// trozo va a la cola DE SU PETICIÓN (`marimo_respuestas[id]`), no a una
+    /// cola compartida — aquí hay tantas respuestas en vuelo como peticiones
+    /// abiertas del navegador.
+    pub(crate) fn marimo_del_servidor(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let respuestas = match respuestas_marimo_de(cuerpo) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        for r in respuestas {
+            let cola = p.marimo_respuestas.entry(r.id).or_default();
+            match r.cuerpo {
+                CuerpoMarimo::Cabecera { estado, cabeceras } => {
+                    // ⛔ Saltadas: `emitir_bytes` ya pone su propia
+                    //   `transfer-encoding`/`connection` (sin `largo`, va
+                    //   troceado); una segunda copia del agente sería un
+                    //   cuerpo que no se puede leer, no sólo redundante.
+                    let cabeceras = cabeceras
+                        .into_iter()
+                        .filter(|(k, _)| {
+                            !matches!(
+                                k.to_ascii_lowercase().as_str(),
+                                "content-length" | "transfer-encoding" | "connection" | "keep-alive"
+                            )
+                        })
+                        .collect();
+                    cola.cabecera = Some((estado, cabeceras));
+                }
+                CuerpoMarimo::Trozo(datos) => cola.trozos.push_back(datos),
+                CuerpoMarimo::Fin => cola.fin = true,
+            }
+        }
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta::sin_contenido()
+    }
+
+    // ── marimo (0064 Pieza 4): el origen aislado ────────────────────────────
+    //
+    // ⭐ No hay cookies en ningún otro sitio de este servidor: la consola
+    //   habla por `Authorization`, puesto por su JS. Pero el iframe de marimo
+    //   corre el JS DE MARIMO, que no sabe de nuestra cabecera — sólo manda
+    //   lo que el navegador adjunta solo. De ahí esta puerta nueva.
+
+    /// `POST /puestos/{id}/marimo/cookie`: la consola (autenticada como
+    /// siempre) pide el secreto del puesto para poder navegar el iframe al
+    /// origen aislado. Perezoso: si nadie lo pide, no existe.
+    pub(crate) fn cookie_marimo(&self, sujeto: &Identidad, id: &str) -> Respuesta {
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let Some(p) = lista.get_mut(id) else {
+            return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
+        };
+        if p.persona != sujeto.persona {
+            return Respuesta::error(403, "ese puesto es de otra persona");
+        }
+        let token = p.marimo_cookie.get_or_insert_with(|| aleatorio_hex(16)).clone();
+        Respuesta::ok(Json::obj([("token", Json::s(token))]))
+    }
+
+    /// `GET /puestos/{id}/marimo/entrar?token=...`: el canje. SIN autenticar
+    /// —el token de la URL ES la credencial—, llamado desde
+    /// `<tenant>-nb.ore.paladio.io` tras la navegación que hace la consola.
+    /// Si casa, dos cosas a la vez: la cookie (para todo lo que siga, dentro
+    /// de `/puestos/{id}/marimo/`) y la redirección a la portada de marimo.
+    pub(crate) fn entrar_marimo(&self, id: &str, consulta_cruda: &str) -> Salida {
+        let Some(token) = parametro_de(consulta_cruda, "token") else {
+            return Salida::Una(Respuesta::error(400, "falta `token`"));
+        };
+        let lista = self.puestos.lista.lock().unwrap();
+        let Some(p) = lista.get(id) else {
+            return Salida::Una(Respuesta::error(404, format!("no hay ningún puesto `{id}`")));
+        };
+        if p.marimo_cookie.as_deref() != Some(token.as_str()) {
+            return Salida::Una(Respuesta::error(403, "token inválido"));
+        }
+        drop(lista);
+        Salida::Bytes(Bytes {
+            codigo: 303,
+            cabeceras: vec![
+                ("location".into(), format!("/puestos/{id}/marimo/")),
+                (
+                    "set-cookie".into(),
+                    format!(
+                        "ore_nb={token}; Path=/puestos/{id}/marimo; HttpOnly; Secure; SameSite=Lax"
+                    ),
+                ),
+            ],
+            largo: Some(0),
+            lector: Box::new(std::io::empty()),
+            finales: None,
+        })
+    }
+
+    /// Cualquier otra sub-ruta bajo `/puestos/{id}/marimo/`: el navegador
+    /// hablando con marimo a través del túnel. No es un `match` literal —la
+    /// profundidad la decide marimo, no nosotros— así que esto lo llama
+    /// `atender_flujo` por prefijo, antes de su `match`.
+    ///
+    /// `sujeto`: `None` cuando la petición no trae (ni pudo resolver) un
+    /// `Authorization` — el caso normal desde el origen aislado, que sólo
+    /// manda la cookie. Autoriza una cosa U OTRA, nunca exige las dos.
+    pub(crate) fn proxy_marimo(
+        &self,
+        sujeto: Option<&Identidad>,
+        id: &str,
+        metodo: &str,
+        resto: &[&str],
+        cabeceras: &std::collections::BTreeMap<String, String>,
+        consulta_cruda: &str,
+        cuerpo: &str,
+    ) -> Salida {
+        {
+            let lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get(id) else {
+                return Salida::Una(Respuesta::error(
+                    404,
+                    format!("no hay ningún puesto `{id}`"),
+                ));
+            };
+            let dueno = sujeto.is_some_and(|s| s.persona == p.persona);
+            let cookie = cabeceras
+                .get("cookie")
+                .and_then(|c| valor_de_cookie(c, "ore_nb"))
+                .is_some_and(|t| p.marimo_cookie.as_deref() == Some(t.as_str()));
+            if !dueno && !cookie {
+                return Salida::Una(Respuesta::error(403, "ese puesto es de otra persona"));
+            }
+        }
+        let camino = format!("/{}", resto.join("/"));
+        // ⭐ Lo que no sale del puesto (calcado de `relevo.py`, el laboratorio
+        //   M1): paquetes, terminal, MCP, IA y el LSP (que ya tiene su propia
+        //   correa — no se duplica aquí). 403 antes de tocar la cola del
+        //   agente: ni siquiera se le molesta con esto.
+        if MARIMO_NEGADAS.iter().any(|n| camino.starts_with(*n)) {
+            return Salida::Una(Respuesta::error(
+                403,
+                format!("esto no sale del puesto (`{camino}`)"),
+            ));
+        }
+        let ruta_completa = if consulta_cruda.is_empty() {
+            camino.clone()
+        } else {
+            format!("{camino}?{consulta_cruda}")
+        };
+        let peticion_id = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get_mut(id) else {
+                return Salida::Una(Respuesta::error(
+                    404,
+                    format!("no hay ningún puesto `{id}`"),
+                ));
+            };
+            if p.estado == Estado::Cerrado {
+                return Salida::Una(Respuesta::error(410, "el puesto está cerrado"));
+            }
+            p.marimo_siguiente += 1;
+            let peticion_id = p.marimo_siguiente;
+            // 0064: sólo se MIDE el guardado, no se intercepta — convertirlo
+            // en un commit es una decisión de producto todavía abierta.
+            if metodo == "POST" && camino.ends_with("/api/kernel/save") {
+                eprintln!("marimo · guardado en el puesto {id}: {} bytes", cuerpo.len());
+            }
+            p.marimo_entrada.push_back(Json::obj([
+                ("t", Json::s("peticion")),
+                ("id", Json::Int(peticion_id as i64)),
+                ("metodo", Json::s(metodo)),
+                ("ruta", Json::s(&ruta_completa)),
+                (
+                    "cabeceras",
+                    Json::Arr(
+                        cabeceras
+                            .iter()
+                            .map(|(k, v)| Json::Arr(vec![Json::s(k.as_str()), Json::s(v.as_str())]))
+                            .collect(),
+                    ),
+                ),
+                ("cuerpo", Json::s(b64_codificar(cuerpo.as_bytes()))),
+            ]));
+            p.marimo_respuestas.insert(peticion_id, ColaMarimo::default());
+            peticion_id
+        };
+        self.puestos.campana.notify_all();
+        // Bloquea hasta que llegue la cabecera (igual que `relevo.py`:
+        // `head = await q.get()` antes de poder devolver nada) — sin una
+        // cabecera no hay con qué contestar al navegador.
+        let limite = Instant::now() + Duration::from_secs(30);
+        let (codigo, cabeceras_salida) = loop {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get_mut(id) else {
+                return Salida::Una(Respuesta::error(404, "el puesto ya no está"));
+            };
+            if let Some(c) = p.marimo_respuestas.get(&peticion_id).and_then(|c| c.cabecera.clone()) {
+                break c;
+            }
+            if p.estado == Estado::Cerrado || perdido(p) || Instant::now() >= limite {
+                p.marimo_respuestas.remove(&peticion_id);
+                let vencido = Instant::now() >= limite;
+                return Salida::Una(Respuesta::error(
+                    if vencido { 504 } else { 410 },
+                    if vencido { "marimo no contestó a tiempo" } else { "el puesto se acabó" },
+                ));
+            }
+            let _ = self
+                .puestos
+                .campana
+                .wait_timeout(lista, Duration::from_millis(500))
+                .unwrap();
+        };
+        Salida::Bytes(Bytes {
+            codigo,
+            cabeceras: cabeceras_salida,
+            largo: None,
+            lector: Box::new(LectorMarimo {
+                puestos: Arc::clone(&self.puestos),
+                id: id.to_string(),
+                peticion_id,
+            }),
+            finales: None,
         })
     }
 
@@ -4628,6 +4942,341 @@ fn emitir_lsp(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 0064 Pieza 3 · el túnel de marimo
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lo que no sale del puesto (calcado de `relevo.py`, el laboratorio M1
+/// borrado al medir): paquetes, terminal, MCP, IA. El LSP tiene su propia
+/// correa (arriba) y no se duplica aquí.
+const MARIMO_NEGADAS: [&str; 5] = [
+    "/api/packages",
+    "/api/kernel/install_missing_packages",
+    "/terminal",
+    "/mcp",
+    "/api/ai",
+];
+
+/// El flujo por el que el agente recoge las peticiones del navegador. Mismo
+/// motor que `emitir_lsp`, pero una sola dirección (siempre consume, nunca
+/// repite: no hay un "marimo/consola" que retome por `last-event-id`).
+fn emitir_marimo(puestos: &Puestos, id: &str, e: &mut Emisor<'_>, generacion: u64) {
+    let fin = Instant::now() + VIDA;
+    loop {
+        let (relevado, hay) = {
+            let lista = puestos.lista.lock().unwrap();
+            match lista.get(id) {
+                Some(p) => (p.marimo_generacion != generacion, !p.marimo_entrada.is_empty()),
+                None => (false, false),
+            }
+        };
+        if relevado {
+            e.evento(
+                "fin",
+                None,
+                &Json::obj([("motivo", Json::s("otro flujo del agente recoge"))]),
+            );
+            return;
+        }
+        if hay && !e.vivo() {
+            return;
+        }
+        let (peticiones, fuera) = {
+            let mut lista = puestos.lista.lock().unwrap();
+            let Some(p) = lista.get_mut(id) else {
+                drop(lista);
+                e.evento(
+                    "fin",
+                    None,
+                    &Json::obj([("motivo", Json::s("el puesto ya no está"))]),
+                );
+                return;
+            };
+            let fuera = p.estado == Estado::Cerrado || perdido(p);
+            let peticiones: Vec<Json> = if generacion != p.marimo_generacion {
+                Vec::new()
+            } else {
+                p.marimo_entrada.drain(..).collect()
+            };
+            (peticiones, fuera)
+        };
+        for m in peticiones {
+            if !e.evento("marimo", None, &m) {
+                return;
+            }
+        }
+        if fuera {
+            e.evento(
+                "fin",
+                None,
+                &Json::obj([("motivo", Json::s("el puesto se acabó"))]),
+            );
+            return;
+        }
+        if Instant::now() >= fin {
+            e.evento("fin", None, &Json::obj([("motivo", Json::s("vuelve"))]));
+            return;
+        }
+        if !e.latido() {
+            return;
+        }
+        let lista = puestos.lista.lock().unwrap();
+        let _ = puestos.campana.wait_timeout(lista, LATIDO).unwrap();
+    }
+}
+
+enum CuerpoMarimo {
+    Cabecera { estado: u16, cabeceras: Vec<(String, String)> },
+    Trozo(Vec<u8>),
+    Fin,
+}
+
+struct RespuestaMarimo {
+    id: u64,
+    cuerpo: CuerpoMarimo,
+}
+
+/// `{"respuestas": [{"id":1,"t":"head","estado":200,"cabeceras":[[k,v],...]}
+/// | {"id":1,"t":"chunk","datos":"<base64>"} | {"id":1,"t":"end"}, ...]}`
+fn respuestas_marimo_de(cuerpo: &str) -> Result<Vec<RespuestaMarimo>, Respuesta> {
+    let Ok(nodo) = ore_core::parse::parse(cuerpo) else {
+        return Err(Respuesta::error(400, "el cuerpo no es JSON"));
+    };
+    let Json::Obj(m) = crate::rutas::de_node(&nodo) else {
+        return Err(Respuesta::error(422, "el cuerpo no es un objeto JSON"));
+    };
+    let Some(Json::Arr(rs)) = m.get("respuestas") else {
+        return Err(Respuesta::error(422, "falta `respuestas`, y es una lista"));
+    };
+    if rs.len() > 200 {
+        return Err(Respuesta::error(413, "demasiadas de golpe (máximo 200)"));
+    }
+    let mal = || Respuesta::error(422, "una respuesta mal formada");
+    let mut fuera = Vec::with_capacity(rs.len());
+    for r in rs {
+        let Json::Obj(r) = r else {
+            return Err(mal());
+        };
+        let Some(Json::Int(id)) = r.get("id") else {
+            return Err(mal());
+        };
+        let Some(Json::Str(t)) = r.get("t") else {
+            return Err(mal());
+        };
+        let cuerpo = match t.as_str() {
+            "head" => {
+                let Some(Json::Int(estado)) = r.get("estado") else {
+                    return Err(mal());
+                };
+                let Some(Json::Arr(cs)) = r.get("cabeceras") else {
+                    return Err(mal());
+                };
+                let mut cabeceras = Vec::with_capacity(cs.len());
+                for c in cs {
+                    let Json::Arr(kv) = c else {
+                        return Err(mal());
+                    };
+                    let [Json::Str(k), Json::Str(v)] = kv.as_slice() else {
+                        return Err(mal());
+                    };
+                    cabeceras.push((k.clone(), v.clone()));
+                }
+                CuerpoMarimo::Cabecera {
+                    estado: *estado as u16,
+                    cabeceras,
+                }
+            }
+            "chunk" => {
+                let Some(Json::Str(datos)) = r.get("datos") else {
+                    return Err(mal());
+                };
+                let Some(datos) = b64_decodificar(datos) else {
+                    return Err(Respuesta::error(422, "`datos` no es base64"));
+                };
+                CuerpoMarimo::Trozo(datos)
+            }
+            "end" => CuerpoMarimo::Fin,
+            _ => return Err(mal()),
+        };
+        fuera.push(RespuestaMarimo {
+            id: *id as u64,
+            cuerpo,
+        });
+    }
+    Ok(fuera)
+}
+
+/// Como `b64url` en `ore-entrada::oidc` ("treinta líneas y ninguna
+/// dependencia"): un cuerpo de marimo puede ser binario (un `.wasm`), y JSON
+/// sólo lleva texto. Base64 normal (con relleno): viaja dentro de JSON, no en
+/// una URL, así que no hace falta la variante `url`.
+const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn b64_codificar(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for trozo in bytes.chunks(3) {
+        let b = [trozo[0], *trozo.get(1).unwrap_or(&0), *trozo.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        for i in 0..4 {
+            if i <= trozo.len() {
+                s.push(B64[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
+}
+
+fn b64_decodificar(s: &str) -> Option<Vec<u8>> {
+    let mut acumulado: u32 = 0;
+    let mut bits = 0;
+    let mut fuera = Vec::with_capacity(s.len() * 3 / 4);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => continue,
+            _ => return None,
+        };
+        acumulado = (acumulado << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            fuera.push((acumulado >> bits) as u8);
+        }
+    }
+    Some(fuera)
+}
+
+/// 0064 Pieza 4 · el secreto del origen aislado. Mismo principio que
+/// `ore_iam::id::nuevo` ("128 bits del SISTEMA, en hex — una invitación
+/// predecible es una invitación que se puede adivinar"), reescrito aquí
+/// porque `ore-serve` no importa `ore-iam`: `n` bytes, no un prefijo.
+fn aleatorio_hex(n: usize) -> String {
+    let mut b = vec![0u8; n];
+    #[cfg(unix)]
+    {
+        use std::io::Read as _;
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut b))
+            .expect("el sistema no da aleatoriedad, y sin ella no se emite el secreto");
+    }
+    #[cfg(not(unix))]
+    {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        for trozo in b.chunks_mut(8) {
+            let r = RandomState::new().build_hasher().finish().to_le_bytes();
+            trozo.copy_from_slice(&r[..trozo.len()]);
+        }
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// `a=1; ore_nb=XYZ; b=2` → el valor de `nombre`, si está. Sin librería: una
+/// cabecera `cookie` es `clave=valor` separado por `; `, nada más raro.
+fn valor_de_cookie(cabecera: &str, nombre: &str) -> Option<String> {
+    cabecera.split(';').find_map(|par| {
+        let (k, v) = par.trim().split_once('=')?;
+        (k == nombre).then(|| v.to_string())
+    })
+}
+
+/// `a=1&token=XYZ&b=2` → el valor de `nombre`, de la cadena de consulta SIN
+/// filtrar (`Peticion::consulta_cruda`, Pieza 3). Sin decodificar `%XX`: el
+/// secreto que esto lee es hexadecimal puro, nunca lleva nada que escapar.
+fn parametro_de(consulta: &str, nombre: &str) -> Option<String> {
+    consulta.split('&').find_map(|par| {
+        let (k, v) = par.split_once('=')?;
+        (k == nombre).then(|| v.to_string())
+    })
+}
+
+/// El `Read` de una respuesta de marimo en marcha: bloquea hasta que haya un
+/// trozo o el fin, con un poll de 0,5 s (el intervalo que M1·b midió
+/// necesario para no perder la carrera de una recarga rápida — más corto que
+/// los `LATIDO` de 10 s del LSP). Se autotermina a los `VIDA` (240 s, el
+/// balanceador corta igual; el frontend de marimo ya reconecta solo).
+struct LectorMarimo {
+    puestos: Arc<Puestos>,
+    id: String,
+    peticion_id: u64,
+}
+
+impl std::io::Read for LectorMarimo {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let fin = Instant::now() + VIDA;
+        loop {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get_mut(&self.id) else {
+                return Ok(0);
+            };
+            let Some(cola) = p.marimo_respuestas.get_mut(&self.peticion_id) else {
+                return Ok(0);
+            };
+            if let Some(trozo) = cola.trozos.pop_front() {
+                let n = trozo.len().min(buf.len());
+                buf[..n].copy_from_slice(&trozo[..n]);
+                // Lo que no cupo, para la próxima lectura: no se pierde.
+                if n < trozo.len() {
+                    cola.trozos.push_front(trozo[n..].to_vec());
+                }
+                return Ok(n);
+            }
+            if cola.fin {
+                // El agente ya dijo "end": sabe que esto acabó, no hace
+                // falta avisarle de nada más.
+                p.marimo_respuestas.remove(&self.peticion_id);
+                return Ok(0);
+            }
+            if Instant::now() >= fin {
+                // A diferencia de arriba: el agente NO sabe que nos rendimos
+                // —marimo podría seguir mandando—, así que esto es un
+                // `cancelar` como el de `Drop`, no un final silencioso.
+                p.marimo_respuestas.remove(&self.peticion_id);
+                p.marimo_entrada.push_back(Json::obj([
+                    ("t", Json::s("cancelar")),
+                    ("id", Json::Int(self.peticion_id as i64)),
+                ]));
+                drop(lista);
+                self.puestos.campana.notify_all();
+                return Ok(0);
+            }
+            let _ = self
+                .puestos
+                .campana
+                .wait_timeout(lista, Duration::from_millis(500))
+                .unwrap();
+        }
+    }
+}
+
+impl Drop for LectorMarimo {
+    /// El navegador se fue (`ore-entrada` deja de leer tras el primer fallo
+    /// de escritura, y es aquí —y sólo aquí— donde nos enteramos): se lo dice
+    /// al agente para que corte la conexión local a marimo YA, no cuando el
+    /// agente note por su cuenta que nadie lee la respuesta.
+    fn drop(&mut self) {
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let Some(p) = lista.get_mut(&self.id) else {
+            return;
+        };
+        let habia = p.marimo_respuestas.remove(&self.peticion_id).is_some();
+        if habia {
+            p.marimo_entrada.push_back(Json::obj([
+                ("t", Json::s("cancelar")),
+                ("id", Json::Int(self.peticion_id as i64)),
+            ]));
+        }
+        drop(lista);
+        self.puestos.campana.notify_all();
+    }
+}
+
 /// El cuerpo del flujo: mira, suelta el candado, escribe, espera la campana.
 fn emitir_puesto(puestos: &Puestos, id: &str, desde: u64, e: &mut Emisor<'_>) {
     let fin = Instant::now() + VIDA;
@@ -5234,6 +5883,13 @@ pub(crate) mod prueba {
         assert!(corre_en("sql", "node") && corre_en("sql", "jvm") && corre_en("sql", "python"));
         assert!(corre_en("typescript", "node") && !corre_en("typescript", "python"));
         assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
+        // 0064: python y sql corren también en el puesto de notebooks; otro
+        // lenguaje, no.
+        assert!(
+            corre_en("python", "python-notebooks")
+                && corre_en("sql", "python-notebooks")
+                && !corre_en("java", "python-notebooks")
+        );
     }
 
     pub(crate) fn un_puesto(agente: &str) -> Puesto {
@@ -5263,6 +5919,11 @@ pub(crate) mod prueba {
             colecciones_leidas: BTreeSet::new(),
             ensayando: None,
             decision: None,
+            marimo_entrada: VecDeque::new(),
+            marimo_generacion: 0,
+            marimo_respuestas: BTreeMap::new(),
+            marimo_siguiente: 0,
+            marimo_cookie: None,
         }
     }
 

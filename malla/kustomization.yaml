@@ -187,6 +187,7 @@ configMapGenerator:
       - 41-el-cofre.yaml
       - 42-el-arbol.yaml
       - 43-la-entrada.yaml
+      - 69-la-entrada-de-notebooks.yaml
       - 45-ore-medios.yaml
       - 44-el-catalogo.yaml
       - 46-la-forja-del-inquilino.yaml

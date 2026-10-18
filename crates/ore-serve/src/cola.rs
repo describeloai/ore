@@ -608,7 +608,9 @@ const ENTORNO_MODELO: &str = "puesto-entorno-modelo:1";
 /// los tres, porque el cliente de la nube vive en él.
 const ENTORNO_VALOR_MODELO: &str = "entorno-modelo";
 /// Los entornos que tienen imagen (`Dockerfile`, el job `construir` de ci.yml).
-pub const ENTORNOS: [&str; 4] = ["python", "node", "jvm", SPARK];
+/// `python-notebooks` (0064): Analytics y Models, con marimo — su familia
+/// manda antes que su lenguaje (`ore_core::clases::entorno_de`).
+pub const ENTORNOS: [&str; 5] = ["python", "node", "jvm", SPARK, "python-notebooks"];
 
 /// ORE 0068 C2·3 · **El motor Heavyweight**: `puesto-spark:1`, el puesto de
 /// Python más Spark 4.1 y Sedona (C2·2). Lo elige el `motor` del repositorio
@@ -782,6 +784,19 @@ pub fn rendir_puesto(
         RECURSOS_DEL_PUESTO_PESADO
             .iter()
             .fold(t, |t, (de, a)| t.replacen(de, a, 1))
+    } else if entorno == "python-notebooks" {
+        // ⭐ 0064: `python-notebooks` sube SU petición de memoria (no el límite,
+        //   que ya es 4Gi, ni `ORE_MEMORIA_MB`, que sigue repartiendo sobre el
+        //   mismo tope): M0·d midió hasta 730 MiB con un DataFrame mediano, y
+        //   768Mi de petición deja ese puesto como primer candidato a desalojo
+        //   bajo presión de memoria. `assert!` en vez de un `.replace()` mudo:
+        //   si el texto base cambia y deja de traer "memory: 768Mi", que la
+        //   construcción lo diga en vez de dejar la petición sin subir en silencio.
+        assert!(
+            t.contains("memory: 768Mi"),
+            "`{PLANTILLA_PUESTO}` no trae `memory: 768Mi`: la petición de memoria de `python-notebooks` no se puede subir"
+        );
+        t.replace("memory: 768Mi", "memory: 1536Mi")
     } else {
         t
     };
@@ -1342,6 +1357,34 @@ env:
         assert!(job5.starts_with("trabajo-ana-1a2b3c4d-"), "{job5}");
         assert!(t5.contains("value: \"packages/p/transforms/x.py@abc123\""));
         assert!(t5.contains(&format!("name: {job5}")));
+    }
+
+    /// 0064: `python-notebooks` es un entorno con imagen propia (no 500 al
+    /// abrirlo) y sube SU petición de memoria sin tocar el límite ni los
+    /// demás entornos.
+    #[test]
+    fn notebooks_tiene_su_imagen_y_sube_la_peticion_de_memoria() {
+        let p = "name: puesto-00000000
+image: registro/ore/puesto-entorno-modelo:1
+env:
+  - { name: PUESTO, value: \"puesto-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+  - { name: CAPA, value: \"capa-modelo\" }
+  - { name: ABIERTO, value: \"abierto-modelo\" }
+  - { name: ENTORNO, value: \"entorno-modelo\" }
+resources:
+  requests: { cpu: \"100m\", memory: 768Mi }
+  limits:   { cpu: \"2\", memory: 4Gi }
+";
+        let (f, t, job) = rendir_puesto(p, "puesto-noa", "", "", "1", "python-notebooks", "").unwrap();
+        assert_eq!(f, "51-el-puesto-noa.yaml");
+        assert!(job.starts_with("puesto-noa-"));
+        assert!(t.contains("image: registro/ore/puesto-python-notebooks:1"));
+        assert!(t.contains("memory: 1536Mi") && !t.contains("memory: 768Mi"));
+        assert!(t.contains("memory: 4Gi"), "el límite no se toca");
+        // Los demás entornos no se ven afectados.
+        let (_, tp, _) = rendir_puesto(p, "puesto-ana", "", "", "1", "python", "").unwrap();
+        assert!(tp.contains("memory: 768Mi") && !tp.contains("memory: 1536Mi"));
     }
 
     #[test]

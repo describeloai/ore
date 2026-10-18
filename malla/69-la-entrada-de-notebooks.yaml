@@ -1,0 +1,57 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA ENTRADA DE NOTEBOOKS — el origen aislado de marimo (0064 Pieza 4)
+#
+# Calco exacto de `43-la-entrada.yaml` (léela primero: la misma `HTTPRoute` +
+# `NetworkPolicy`, el mismo backend `ore-serve` — lo que separa los dos
+# orígenes es el NAVEGADOR, no el servidor). La única diferencia es el
+# hostname: un segundo nombre por inquilino, no uno por cuaderno.
+#
+# ⛔ Y NO es un proceso aparte. `ore-serve` no mira el `Host` de la petición:
+#   el aislamiento lo da la política de mismo-origen del navegador (una
+#   cookie puesta en `<tenant>-nb.ore.paladio.io` no viaja a
+#   `<tenant>.ore.paladio.io`, y viceversa) — no hace falta que el servidor
+#   sepa por qué puerta entró cada petición.
+#
+# ⚠️ El tope de Cloudflare for SaaS (100 nombres en el plan gratuito, medido
+#   en `cloudflare-saas.py`) es la razón de que esto sea UN nombre por
+#   INQUILINO, compartido por todos sus cuadernos — nunca uno por repositorio
+#   ni por celda de marimo.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: entrada-de-notebooks
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  parentRefs:
+    - name: puerta-tunel
+      namespace: ore-system
+      sectionName: ore
+  hostnames:
+    - demo-nb.ore.paladio.io
+  rules:
+    - backendRefs:
+        - name: ore-serve
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-de-notebooks-de-la-puerta-del-tunel
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: envoy }
+      ports:
+        - protocol: TCP
+          port: 8080

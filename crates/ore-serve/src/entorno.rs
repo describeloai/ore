@@ -137,6 +137,9 @@ pub(crate) fn informe_ruta(digest: &str) -> String {
 pub(crate) const PYTHON: &str = "python";
 pub(crate) const JVM: &str = "jvm";
 pub(crate) const NODE: &str = "node";
+/// 0064: Analytics y Models, con marimo — declara capa como `PYTHON` (la
+/// misma lista de provistas: ver `provistas_de` y `solo_provistas`).
+pub(crate) const NOTEBOOKS: &str = "python-notebooks";
 
 // ── ⭐ ORE 0050 L6·1b · LO QUE LA IMAGEN DE CADA PUESTO TRAE ──────────────
 //   Las MISMAS listas que el Dockerfile instala y que la capa no copia (manda
@@ -146,6 +149,23 @@ pub(crate) const NODE: &str = "node";
 //   binarios las mira: `ci/huella-de-los-binarios.py`).
 const PROVISTO_NODE: &str = include_str!("../../../puesto/node/provisto.txt");
 const PROVISTO_PYTHON: &str = include_str!("../../../puesto/python/provisto.txt");
+/// 0064: lo que SUMA `puesto-python-notebooks:1` sobre `puesto-python:1` —
+/// marimo, pyiceberg y sqlglot, fijados con el mismo contrato de `pip freeze`
+/// que `provisto.txt`. Sin esto, declarar `pyiceberg` en un repositorio de
+/// notebooks pediría una capa que baje lo que la imagen ya trae.
+const PROVISTO_PYTHON_NOTEBOOKS: &str =
+    include_str!("../../../puesto/python/notebooks-provisto.txt");
+
+fn provistas_python(t: &str) -> impl Iterator<Item = Provista> + '_ {
+    lineas_de(t).filter_map(|l| {
+        let (n, v) = l.split_once("==")?;
+        Some(Provista {
+            nombre: n.trim().into(),
+            version: v.trim().into(),
+            tipos: false,
+        })
+    })
+}
 
 /// El intérprete de `puesto-python:1` (`Dockerfile`, `FROM python:3.14-slim`),
 /// como lo nombran las ruedas: `cp314`. Lo fija una prueba contra el Dockerfile.
@@ -217,19 +237,20 @@ pub(crate) fn provistas_de(entorno: &str) -> Vec<Provista> {
                 tipos: false,
             }))
             .collect(),
+        NOTEBOOKS => std::iter::once(Provista {
+            nombre: "ore".into(),
+            version: SDK_PYTHON.into(),
+            tipos: false,
+        })
+        .chain(provistas_python(PROVISTO_PYTHON))
+        .chain(provistas_python(PROVISTO_PYTHON_NOTEBOOKS))
+        .collect(),
         _ => std::iter::once(Provista {
             nombre: "ore".into(),
             version: SDK_PYTHON.into(),
             tipos: false,
         })
-        .chain(lineas_de(PROVISTO_PYTHON).filter_map(|l| {
-            let (n, v) = l.split_once("==")?;
-            Some(Provista {
-                nombre: n.trim().into(),
-                version: v.trim().into(),
-                tipos: false,
-            })
-        }))
+        .chain(provistas_python(PROVISTO_PYTHON))
         .collect(),
     }
 }
@@ -282,16 +303,18 @@ pub(crate) fn declaradas_en(entorno: &str, texto: &str) -> Vec<String> {
     }
 }
 
-/// El entorno de `/entorno/<lenguaje>`: `python`, `jvm` o `node`, y nada más.
+/// El entorno de `/entorno/<lenguaje>`: `python`, `jvm`, `node` o
+/// `python-notebooks`, y nada más.
 pub(crate) fn entorno_valido(e: &str) -> Result<&'static str, Respuesta> {
     match e {
         PYTHON => Ok(PYTHON),
         JVM => Ok(JVM),
         NODE => Ok(NODE),
+        NOTEBOOKS => Ok(NOTEBOOKS),
         otro => Err(Respuesta::error(
             404,
             format!(
-                "`{otro}` no declara entorno: `python` (`pyproject.toml`), `jvm` (`pom.xml`) o `node` (`package.json`)"
+                "`{otro}` no declara entorno: `python` (`pyproject.toml`), `jvm` (`pom.xml`), `node` (`package.json`) o `python-notebooks` (`pyproject.toml`, como `python`)"
             ),
         )),
     }
@@ -694,7 +717,7 @@ pub(crate) struct Entorno {
 pub(crate) fn solo_provistas(declarado: &[String], entorno: &str) -> Option<Vec<String>> {
     let trae = provistas_de(entorno);
     let normal = |n: &str| -> String {
-        if entorno == PYTHON {
+        if entorno == PYTHON || entorno == NOTEBOOKS {
             let mut o = String::new();
             for c in n.trim().to_lowercase().chars() {
                 let c = if matches!(c, '_' | '.') { '-' } else { c };
@@ -1288,6 +1311,16 @@ mod prueba {
         );
     }
 
+    /// 0064: el entorno de notebooks trae TODO lo de `python` (mismo `_mpl`,
+    /// mismo pandas) MÁS marimo — ninguna de las dos listas se pisa.
+    #[test]
+    fn las_provistas_de_notebooks_suman_las_de_python_mas_marimo() {
+        let nb = provistas_de(NOTEBOOKS);
+        assert!(nb.iter().any(|p| p.nombre == "pandas"), "{nb:?}");
+        assert!(nb.iter().any(|p| p.nombre == "marimo"), "{nb:?}");
+        assert_eq!(nb.len(), provistas_de(PYTHON).len() + provistas_python(PROVISTO_PYTHON_NOTEBOOKS).count());
+    }
+
     #[test]
     fn un_commit_que_toca_la_declaracion_de_un_repositorio_la_dice() {
         assert_eq!(
@@ -1442,6 +1475,13 @@ mod prueba {
             solo_provistas(&["com.google.guava:guava:33.0.0-jre".into()], JVM),
             None
         );
+        // 0064: notebooks ve lo de python (PEP 503 incluido) Y lo que suma la
+        // imagen (marimo).
+        assert_eq!(
+            solo_provistas(&["Pandas>=2".into(), "marimo==0.25.1".into()], NOTEBOOKS),
+            Some(vec![])
+        );
+        assert_eq!(solo_provistas(&["polars".into()], NOTEBOOKS), None);
 
         // Y el entorno: `lista`, sin digest (sin capa), con los avisos.
         let r = std::env::temp_dir().join(format!("ore-provistas-{}", std::process::id()));
@@ -1861,9 +1901,11 @@ lint = ["ruff"]
         assert_eq!(entorno_valido("python").ok(), Some(PYTHON));
         assert_eq!(entorno_valido("jvm").ok(), Some(JVM));
         assert_eq!(entorno_valido("node").ok(), Some(NODE));
+        assert_eq!(entorno_valido("python-notebooks").ok(), Some(NOTEBOOKS));
         assert_eq!(fichero_de(JVM), "pom.xml");
         assert_eq!(fichero_de(PYTHON), "pyproject.toml");
         assert_eq!(fichero_de(NODE), "package.json");
+        assert_eq!(fichero_de(NOTEBOOKS), "pyproject.toml");
         let r = entorno_valido("ruby").unwrap_err();
         assert_eq!(r.codigo, 404);
     }

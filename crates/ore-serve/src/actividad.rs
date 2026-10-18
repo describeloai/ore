@@ -192,6 +192,10 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/puestos/{}/explain", Es::Datos),
     ("POST", "/puestos/{}/lsp", Es::Datos),
     ("POST", "/puestos/{}/lsp/salida", Es::Datos),
+    // 0064 Pieza 3: lo que marimo contestó, entregado por el agente.
+    ("POST", "/puestos/{}/marimo/salida", Es::Datos),
+    // 0064 Pieza 4: la consola pide el secreto del origen aislado.
+    ("POST", "/puestos/{}/marimo/cookie", Es::Datos),
     // 0049 B2·3: el latido del agente no cambia nada del árbol ni de los datos.
     ("POST", "/puestos/{}/latido", Es::Datos),
     // El agente cierra su puesto por inactividad: el mismo acto que DELETE.

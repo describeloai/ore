@@ -1106,6 +1106,7 @@ pub(crate) mod pruebas {
             cabeceras: BTreeMap::new(),
             cuerpo,
             consulta: BTreeMap::new(),
+            consulta_cruda: String::new(),
         });
         let t = if r.codigo == 204 {
             "{}".to_string()
@@ -1143,6 +1144,7 @@ pub(crate) mod pruebas {
                     ("path".to_string(), camino.to_string()),
                 ]
                 .into(),
+                consulta_cruda: String::new(),
             },
             &mut &bytes[..],
             bytes.len() as u64,

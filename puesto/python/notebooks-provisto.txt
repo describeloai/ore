@@ -1,0 +1,57 @@
+# Lo que SUMA la imagen `puesto-python-notebooks:1` sobre `puesto-python:1`
+# (`Dockerfile`, etapa `puesto-python-notebooks`): marimo, y lo que M0·d usó
+# para leer el lago desde un cuaderno (`pyiceberg`, `sqlglot`). UNA LISTA, TRES
+# LECTORES (ORE 0050 L6·1b, como `puesto/python/provisto.txt`): el Dockerfile
+# instala EXACTAMENTE esto (y falla si `pip freeze` dice otra cosa) y
+# `ore-serve` lo suma a lo de `provisto.txt` en `GET /entorno/python-notebooks`
+# (`entorno::PROVISTO_PYTHON_NOTEBOOKS`).
+#
+# Lo que pedimos es `marimo pyiceberg sqlglot` —PELADO, sin el extra `[sql]`
+# de marimo: arrastra `polars` (+49 MB) que el producto decidió no pedir
+# (`docs/investigacion/marimo-m0.md:61`, "sqlglot sin polars obligatorio")—;
+# el resto de esta lista es lo que arrastran, contra `provisto.txt` como
+# restricción (no toca pandas, pyarrow ni duckdb). Cambiarlo es regenerar la
+# lista entera, no tocar una línea:
+#   docker run --rm --user 0 europe-west1-docker.pkg.dev/<proyecto>/ore/puesto-python:1 sh -c \
+#     "pip install -q marimo pyiceberg sqlglot -c /opt/ore/provisto.txt && pip freeze | sort"
+#   (y quitar de esa salida lo que YA está en `puesto/python/provisto.txt`)
+# Fijada el 2026-10-18 contra la imagen `puesto-python:1` en vivo (medida, no
+# estimada): site-packages +304 MB (592936 → 904636 KB), de los que 111 MB son
+# `marimo/_lsp/copilot` (que esta imagen quita, ver el Dockerfile).
+Markdown==3.11.1
+PyYAML==6.0.3
+annotated-types==0.8.0
+anyio==4.15.1
+cachetools==7.2.3
+click==8.5.0
+docutils==0.23
+fsspec==2026.9.0
+h11==0.16.0
+itsdangerous==2.2.0
+jedi==0.20.1
+loro==1.16.2
+marimo==0.25.1
+markdown-it-py==4.2.0
+mdurl==0.1.2
+mmh3==5.3.1
+msgspec==0.22.0
+narwhals==2.27.1
+parso==0.8.7
+psutil==7.2.2
+pydantic==2.14.1
+pydantic_core==2.50.1
+pyiceberg==0.12.0
+pymdown-extensions==11.0.2
+pyroaring==1.2.0
+python-multipart==0.0.32
+pyzmq==27.2.0
+rich==15.0.0
+sqlglot==30.23.0
+starlette==1.9.0
+strictyaml==1.7.3
+tenacity==9.2.1
+tomlkit==0.15.2
+typing-inspection==0.4.4
+uvicorn==0.54.0
+websockets==17.2
+zstandard==0.25.0

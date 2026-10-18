@@ -82,6 +82,17 @@ if os.path.isdir(CAPA_DEV) and CAPA_DEV not in sys.path:
 os.environ.setdefault("MPLBACKEND", "module://ore._mpl")
 import ore  # noqa: E402 — el SDK, al lado de este fichero
 
+# 0064 · `marimo_proc`/`marimo_tunel` SÓLO existen en la imagen
+# `puesto-python-notebooks:1` (Analytics y Models, por su familia —
+# `ore_core::clases::entorno_de`). En el resto de entornos el `import` falla
+# y el agente sigue exactamente igual que siempre: ninguna rama nueva se activa.
+try:
+    import marimo_proc  # noqa: E402
+    import marimo_tunel  # noqa: E402
+except ImportError:
+    marimo_proc = None
+    marimo_tunel = None
+
 FILAS_MAXIMAS = 200
 
 
@@ -923,12 +934,33 @@ def main():
     if not trabajo:
         correa = Correa(p, testigo)
         threading.Thread(target=correa.escuchar, daemon=True).start()
-    log("%s %s · ore-serve %s · TTL %ds · almacén %s" % ("trabajo" if trabajo else "puesto", p.id, p.servidor, ttl, p.almacen))
+    # 0064 · Analytics y Models: marimo arranca con el puesto, no a la primera
+    # celda (a diferencia de pyright, ES la interfaz de este entorno). Un
+    # trabajo (`TRABAJO`, una sola celda y fuera) no lo necesita.
+    marimo = None
+    if marimo_proc is not None and correa is not None:
+        try:
+            with correa.repo.candado:
+                correa.repo.materializar()
+            marimo = marimo_proc.arrancar(os.environ.get("TRABAJO_DIR", "/trabajo"))
+            # 0064 Pieza 3: el túnel es lo que de verdad lleva tráfico del
+            # navegador a marimo — y lo que marca `marimo.actividad` para
+            # que el TTL de abajo deje de ver siempre `0.0`.
+            marimo_tunel.arrancar(p, testigo, marimo)
+        except Exception as e:  # noqa: BLE001 — sin marimo, el puesto sigue siendo útil
+            log("marimo no arrancó (%s)" % e)
+    log("%s %s · ore-serve %s · TTL %ds · almacén %s%s" % (
+        "trabajo" if trabajo else "puesto", p.id, p.servidor, ttl, p.almacen,
+        " · marimo" if marimo else ""))
     ultimo = time.time()
     while True:
-        # P4: lo que el editor pide (escribir, probar, comprobar) también cuenta.
-        if time.time() - max(ultimo, correa.actividad if correa else 0) > ttl:
+        # P4: lo que el editor pide (escribir, probar, comprobar) también
+        # cuenta, y lo de marimo (0064) también — hoy siempre 0.0: hace falta
+        # el relevo (Pieza 3) para que haya tráfico de verdad que observar.
+        if time.time() - max(ultimo, correa.actividad if correa else 0, marimo.actividad if marimo else 0) > ttl:
             log("sin actividad (celdas ni editor) durante %ds: cierro" % ttl)
+            if marimo:
+                marimo.detener()
             # Fuera de la cola: si no, Flux recrea el Job (el servidor barre
             # igualmente lo perdido; esto lo adelanta).
             try:
@@ -951,6 +983,8 @@ def main():
             continue
         if codigo == 410:
             log("el puesto está cerrado: adiós")
+            if marimo:
+                marimo.detener()
             return 0
         if codigo != 200:
             log("pendiente contestó %s: %s · reintento en 5 s" % (codigo, r))

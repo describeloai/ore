@@ -557,6 +557,94 @@ USER 65532:65532
 RUN cd /tmp && python3 /opt/ore/spark/comprobar.py
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Etapa 6b · puesto-python-notebooks:1 — Analytics y Models, con marimo (0064)
+#
+# `FROM puesto-python`, no `python:3.14-slim`: el DuckDB con las extensiones
+# del lago, pyright, el SDK y el agente ya están — esta etapa SÓLO SUMA lo que
+# Analytics y Models necesitan de más. `ore_core::clases::entorno_de` manda
+# estas dos clases a este entorno por su FAMILIA (no por su lenguaje, que
+# sigue siendo `python` como Transforms y Functions): ninguna otra clase paga
+# este peso.
+#
+# ⭐ Medido en el laboratorio (M0/M0·d, ADR 0064): `marimo[sql]` resuelve sin
+#   conflicto contra `provisto.txt` como restricción, pero el extra `[sql]`
+#   arrastra `polars` (+49 MB) que nadie pidió — el producto decidió **sqlglot
+#   sin polars obligatorio** (`docs/investigacion/marimo-m0.md:61`), así que
+#   aquí se instala `marimo` PELADO (sin `[sql]`) más `sqlglot` y `pyiceberg`
+#   sueltos, los tres con la MISMA restricción que ya trae la imagen — para
+#   que instalar marimo no reabra la pregunta de qué versión de pandas o
+#   pyarrow corre una celda.
+FROM puesto-python AS puesto-python-notebooks
+USER 0
+
+# ⭐ UNA LISTA, TRES LECTORES, como `provisto.txt` (0050 L6·1b): el Dockerfile
+#   instala EXACTAMENTE esto, y `ore-serve` la suma a la de `provisto.txt`
+#   (`entorno::PROVISTO_PYTHON_NOTEBOOKS`) en `GET /entorno/python-notebooks`.
+COPY puesto/python/notebooks-provisto.txt /opt/ore/notebooks-provisto-fijado.txt
+RUN pip install --no-cache-dir -r /opt/ore/notebooks-provisto-fijado.txt -c /opt/ore/provisto.txt \
+ && python -c "import marimo, pyiceberg, sqlglot; print('notebooks ·', marimo.__version__, pyiceberg.__version__, sqlglot.__version__)"
+# ⛔ Y se genera AQUÍ, de la instalación de verdad (gemelo de la comprobación
+#   de `provisto.txt` arriba): si lo que suma esta imagen no es exactamente lo
+#   fijado, la construcción falla — no un entorno de notebooks que diga traer
+#   una cosa y traiga otra.
+RUN pip freeze | sort > /opt/ore/freeze-notebooks.txt \
+ && { cat /opt/ore/provisto.txt /opt/ore/notebooks-provisto-fijado.txt | grep -v '^#' | grep . | sort | diff - /opt/ore/freeze-notebooks.txt \
+      || { echo "✗ pip freeze no es provisto.txt + notebooks-provisto.txt: regenera la lista"; exit 1; }; } \
+ && echo "provisto por notebooks: $(grep -vc '^#' /opt/ore/notebooks-provisto-fijado.txt) paquete(s) de más" >> /entorno-1.txt
+
+# ⭐ El servidor de Copilot (113 MB, medido en M0: `docs/investigacion/
+#   marimo-m0.md:22`), empaquetado DENTRO de `marimo` (no es un paquete propio
+#   de PyPI) e inútil: el puesto no sale a internet. `test -d` antes de
+#   borrar: si una versión futura de marimo mueve esa carpeta, que la
+#   construcción lo diga en vez de dejar pasar el peso en silencio.
+RUN ANTES=$(du -sk /usr/local/lib/python3.14/site-packages | cut -f1) \
+ && COPILOT=/usr/local/lib/python3.14/site-packages/marimo/_lsp/copilot \
+ && test -d "$COPILOT" || { echo "✗ marimo ya no trae _lsp/copilot: revisa dónde vive Copilot en esta versión"; exit 1; } \
+ && rm -rf "$COPILOT" \
+ && DESPUES=$(du -sk /usr/local/lib/python3.14/site-packages | cut -f1) \
+ && BAJADO=$(( (ANTES - DESPUES) / 1024 )) \
+ && echo "sin copilot: ${BAJADO} MB menos de site-packages" >> /entorno-1.txt \
+ && test "$BAJADO" -gt 50 || { echo "✗ quitar Copilot bajó sólo ${BAJADO} MB (se esperaban ~113): revisa la ruta"; exit 1; }
+
+# ⭐ La config por defecto (M0/M1, ADR 0064): SSE —el transporte que cruza el
+#   relevo (Pieza 3)—, sin autoinstanciar celdas al abrir, y sin Copilot (ya
+#   no está, y además apagado en la config: cinturón y tirantes).
+#
+# ⚠️ ABIERTO A VERIFICAR (Pieza 2): el puesto real pone `HOME=/tmp`
+#   (`malla/51-el-puesto.yaml`), igual que esta sonda — marimo resuelve su
+#   config en `$HOME/.config/marimo/marimo.toml`, y nada monta un volumen
+#   sobre `/tmp`, así que esto debería sobrevivir al arranque del contenedor.
+#   Confirmarlo con un puesto de verdad antes de dar la Pieza 2 por buena; si
+#   marimo ofrece una variable de entorno para fijar la ruta sin depender de
+#   `$HOME`, preferirla a esto.
+RUN mkdir -p /tmp/.config/marimo \
+ && printf '[server]\ntransport = "sse"\n\n[runtime]\nauto_instantiate = false\n\n[completion]\ncopilot = false\n' > /tmp/.config/marimo/marimo.toml \
+ && chmod -R a+rX /tmp/.config
+
+# ⭐ Pieza 2 y 3 (0064): el agente de `puesto-python:1` ya está (heredado de
+#   `FROM puesto-python`); estos tres SÓLO existen aquí, y es lo que
+#   distingue "la imagen trae marimo" de "el agente lo arranca y lo expone":
+#   - `marimo_proc.py`: el agente lo importa con un `try` — su sola presencia
+#     es la señal de que este es un puesto de notebooks (sin variable de
+#     entorno nueva que mantener en el Job).
+#   - `sitecustomize.py`: CPython lo importa SOLO en cualquier proceso que
+#     arranque con `/opt/ore` en `PYTHONPATH` —el kernel de marimo incluido—,
+#     antes de ejecutar nada más: así el SDK se autoconfigura con el token del
+#     pod sin una celda de arranque visible en el `.py` de la persona.
+#   - `marimo_tunel.py` (Pieza 3): el flujo saliente hacia `ore-serve` que
+#     lleva el tráfico del navegador a marimo — sin él, marimo corre pero
+#     nadie de fuera lo alcanza.
+COPY puesto/python/marimo_proc.py puesto/python/sitecustomize.py puesto/python/marimo_tunel.py /opt/ore/
+# Y SE PRUEBA AQUÍ (mismo espíritu que la comprobación del SDK de la etapa
+# base): si esto no importa, la imagen no se construye.
+RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import marimo_proc, marimo_tunel; print('marimo_proc y marimo_tunel listos')"
+
+USER 65532:65532
+WORKDIR /trabajo
+# El mismo agente que `puesto-python:1` (W3.4): aquí SÍ arranca marimo (0064 Pieza 2).
+CMD ["python3", "/opt/ore/agente.py"]
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Etapa 7 · puesto-node:1 — el ENTORNO 1 de TS/JS (0031 W3.4)
 #
 # Node 24 quita los tipos de TypeScript por sí mismo (sin tsc ni esbuild:

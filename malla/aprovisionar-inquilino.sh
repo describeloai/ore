@@ -1985,6 +1985,28 @@ if [ -n "$ENTRADA" ]; then
   fi
 fi
 
+# ── ⑧c El origen aislado de marimo (0064 Pieza 4) ─────────────────────────
+#
+# Mismo alta que ⑧b, un nombre más: `<celda>-nb.ore.paladio.io`. Por
+# convención, no por columna de `iam` —`entrada_notebooks` no existe en la
+# base, sólo en `gen-inquilino.py`—, así que una celda con `entrada` propia
+# (dominio del cliente) no queda cubierta aquí: ese caso se decide aparte.
+if [ -n "$ENTRADA" ] && [ "$ENTRADA" = "$NOMBRE.ore.paladio.io" ]; then
+  ENTRADA_NOTEBOOKS="$NOMBRE-nb.ore.paladio.io"
+  SAAS="${SAAS:-$(dirname "${GEN:-$RAIZ/malla/gen-inquilino.py}")/cloudflare-saas.py}"
+  if [ -n "$SECO" ]; then
+    haria "dar de alta \`$ENTRADA_NOTEBOOKS\` en Cloudflare (el origen aislado de marimo)"
+  else
+    SALIDA=$("$PY" "$(ruta "$SAAS")" asegurar "$ENTRADA_NOTEBOOKS" 2>&1); R=$?
+    case $R in
+      0) ya "en Cloudflare: $SALIDA" ;;
+      3) hecho "en Cloudflare: $SALIDA" ;;
+      4) echo "  ⚠ $SALIDA" ;;
+      *) NO_SE="$SALIDA"; duda "\`$ENTRADA_NOTEBOOKS\` en Cloudflare" ;;
+    esac
+  fi
+fi
+
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑨ LA CELDA, APROVISIONADA — y lo que este script sigue sin hacer"
 # ══════════════════════════════════════════════════════════════════════════

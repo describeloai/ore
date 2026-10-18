@@ -93,6 +93,13 @@ pub struct Peticion {
     /// De la cadena de consulta, **sólo** lo que [`CONSULTA_ADMITIDA`] nombra,
     /// y sólo si es un identificador: todo lo demás se descarta, como siempre.
     pub consulta: BTreeMap<String, String>,
+    /// 0064 Pieza 3 · la cadena de consulta **tal cual**, sin filtrar — SÓLO
+    /// para un conducto que no la interpreta (el proxy de marimo bajo
+    /// `/puestos/{id}/marimo/…`, igual que este servidor ya no entiende LSP a
+    /// propósito). Nadie más la mira: `consulta` sigue siendo la única
+    /// cadena de consulta que un handler normal puede leer. Vacía si no
+    /// había `?` en la URL.
+    pub consulta_cruda: String,
 }
 
 /// Lo único que entra por la URL: **`warehouse`**, la base que un cliente de
@@ -752,9 +759,9 @@ fn leer_cabeza(
     // aquí se manejan nombres de fuentes y decisiones de gobierno. Salvo el
     // nombre que la spec de Iceberg pone ahí (`warehouse`, [`CONSULTA_ADMITIDA`]).
     let sin_fragmento = destino.split('#').next().unwrap_or("/");
-    let (ruta, consulta) = match sin_fragmento.split_once('?') {
-        Some((r, q)) => (r.to_string(), consulta_admitida(q)),
-        None => (sin_fragmento.to_string(), BTreeMap::new()),
+    let (ruta, consulta, consulta_cruda) = match sin_fragmento.split_once('?') {
+        Some((r, q)) => (r.to_string(), consulta_admitida(q), q.to_string()),
+        None => (sin_fragmento.to_string(), BTreeMap::new(), String::new()),
     };
 
     let mut cabeceras = BTreeMap::new();
@@ -782,6 +789,7 @@ fn leer_cabeza(
             cabeceras,
             cuerpo: String::new(),
             consulta,
+            consulta_cruda,
         },
         lector,
         largo,

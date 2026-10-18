@@ -265,6 +265,7 @@ impl Servidor {
             ("GET", ["puestos", _, "flujo"])
                 | ("GET", ["puestos", _, "lsp", "agente"])
                 | ("GET", ["puestos", _, "lsp", "consola"])
+                | ("GET", ["puestos", _, "marimo", "entrada"])
                 | ("POST", ["federation", "read"])
         );
         if es_flujo {
@@ -291,10 +292,50 @@ impl Servidor {
                 ["puestos", id, "lsp", "consola"] => {
                     self.flujo_lsp_de_la_consola(&sujeto, id, desde)
                 }
+                // 0064 Pieza 3: el agente recoge las peticiones del navegador.
+                ["puestos", id, "marimo", "entrada"] => self.flujo_marimo_del_agente(&sujeto, id),
                 // 0053 F4: la lectura en vivo de un origen, en flujo Arrow.
                 ["federation", "read"] => self.leer_federado(p, &sujeto),
                 _ => Salida::Una(Respuesta::error(404, "esa ruta no existe")),
             };
+        }
+        // 0064 Pieza 3/4: cualquier OTRA sub-ruta bajo `/puestos/{id}/marimo/`
+        // es el navegador hablando con marimo a través del túnel. No es un
+        // `match` literal porque la profundidad la decide marimo, no
+        // nosotros (`/api/kernel/run`, `/assets/x.js`, `/sse`…) — y por eso
+        // vive aquí, antes del `match` de siempre, no dentro de él.
+        // `.../marimo/salida` y `.../marimo/cookie` son la excepción: el
+        // `POST` del agente y el de la consola, respuestas corrientes
+        // (`con_sujeto`), no un proxy.
+        if seg.len() >= 3
+            && seg[0] == "puestos"
+            && seg[2] == "marimo"
+            && !matches!(seg.get(3), Some(&"salida") | Some(&"cookie"))
+        {
+            // 0064 Pieza 4 · el canje del origen aislado: el token de la URL
+            // ES la credencial — nunca pasa por `self.quien`, que exigiría
+            // un `Authorization` que un `<a href>` recién llegado no trae.
+            if p.metodo == "GET" && seg.get(3) == Some(&"entrar") && seg.len() == 4 {
+                return self.entrar_marimo(seg[1], &p.consulta_cruda);
+            }
+            // El resto del proxy: `Authorization` si lo hay (la consola, en
+            // SU origen), o nada (el origen aislado, que sólo manda la
+            // cookie) — `proxy_marimo` decide con cuál de las dos autoriza.
+            let sujeto = self.quien(p).ok();
+            if let Some(s) = &sujeto
+                && let Some(r) = puerta_del_agente(p, s, &seg)
+            {
+                return Salida::Una(r);
+            }
+            return self.proxy_marimo(
+                sujeto.as_ref(),
+                seg[1],
+                p.metodo.as_str(),
+                &seg[3..],
+                &p.cabeceras,
+                &p.consulta_cruda,
+                &p.cuerpo,
+            );
         }
         let r = self.atender(p);
         // 0049 B3·3: el 307 de `content` sale con su `Location`.
@@ -893,6 +934,12 @@ impl Servidor {
             ("POST", ["puestos", id, "lsp", "salida"]) => {
                 self.lsp_del_servidor(sujeto, id, &p.cuerpo)
             }
+            // 0064 Pieza 3: lo que marimo contestó, entregado por el agente.
+            ("POST", ["puestos", id, "marimo", "salida"]) => {
+                self.marimo_del_servidor(sujeto, id, &p.cuerpo)
+            }
+            // 0064 Pieza 4: la consola pide el secreto del origen aislado.
+            ("POST", ["puestos", id, "marimo", "cookie"]) => self.cookie_marimo(sujeto, id),
             ("POST", ["puestos", id, "celdas", n, "salida"]) => match n.parse::<u64>() {
                 Ok(n) => self.salida_del_puesto(sujeto, id, n, &p.cuerpo),
                 Err(_) => Respuesta::error(422, "la celda es un número"),

@@ -233,6 +233,7 @@ impl Servidor {
             ])
             .jcs(),
             consulta: Default::default(),
+            consulta_cruda: String::new(),
         };
         let mut bytes = match self.leer_federado(&lectura, sujeto) {
             Salida::Bytes(b) => b,
@@ -423,6 +424,7 @@ impl Servidor {
                 cabeceras: p.cabeceras.clone(),
                 cuerpo: String::new(),
                 consulta,
+                consulta_cruda: String::new(),
             };
             let r = self.media(rama, &pagina, sujeto, b, s, c, "items");
             if r.codigo != 200 {
@@ -523,6 +525,7 @@ impl Servidor {
             cabeceras: p.cabeceras.clone(),
             cuerpo: Json::obj(cuerpo).jcs(),
             consulta: Default::default(),
+            consulta_cruda: String::new(),
         };
         let mut bytes = match self.leer_federado(&lectura, sujeto) {
             Salida::Bytes(b) => b,
@@ -703,6 +706,7 @@ mod pruebas {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            consulta_cruda: String::new(),
         }
     }
 
