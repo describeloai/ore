@@ -50,6 +50,80 @@ class ElMotor(unittest.TestCase):
         write.assert_not_called()
 
 
+class ElSqlPesado(unittest.TestCase):
+    """2b · `sql()` en Heavyweight: la consulta que da ore-serve, sobre las vistas de `over()`."""
+
+    def setUp(self):
+        self.sesion = mock.MagicMock()
+        self.sesion.sql.side_effect = lambda q: ("corrida", q)
+        p = mock.patch.object(pesado, "sesion", return_value=self.sesion)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_registra_las_vistas_con_over_y_corre_la_reescrita(self):
+        respuesta = {"spark": {"consulta": "select * from `ore__geo__default__lugares` l",
+                               "vistas": [["`ore__geo__default__lugares`", "geo.lugares"]]}}
+        df = mock.MagicMock()
+        with mock.patch.object(ore.session, "id", "trabajo-ana-1"), \
+                mock.patch.object(ore.session, "pedir", return_value=(200, respuesta)) as pedir, \
+                mock.patch.object(pesado, "over", return_value=df) as over:
+            r = pesado.sql("select * from geo.lugares l")
+        pedir.assert_called_once_with("POST", "/puestos/trabajo-ana-1/sql",
+                                      {"texto": "select * from geo.lugares l", "para": "spark"})
+        over.assert_called_once_with("geo.lugares")
+        df.createOrReplaceTempView.assert_called_once_with("ore__geo__default__lugares")
+        self.assertEqual(r, ("corrida", "select * from `ore__geo__default__lugares` l"))
+
+    def test_sin_puesto_o_sin_nombres_es_spark_tal_cual(self):
+        with mock.patch.object(ore.session, "id", ""), mock.patch.object(ore.session, "pedir") as pedir:
+            self.assertEqual(pesado.sql("select 1 from geo.t"), ("corrida", "select 1 from geo.t"))
+        with mock.patch.object(ore.session, "id", "p"), mock.patch.object(ore.session, "pedir") as pedir2:
+            self.assertEqual(pesado.sql("select 1"), ("corrida", "select 1"))
+        pedir.assert_not_called()
+        pedir2.assert_not_called()
+
+    def test_lo_que_ore_serve_niega_se_dice(self):
+        with mock.patch.object(ore.session, "id", "p"), \
+                mock.patch.object(ore.session, "pedir", return_value=(422, {"error": "la consulta no se analiza"})):
+            with self.assertRaisesRegex(RuntimeError, "no se analiza"):
+                pesado.sql("select from where geo.t")
+
+
+class ElInsertPesado(unittest.TestCase):
+    """2b · `insert into` en Heavyweight: las columnas sin nombre y los tipos, de la tabla."""
+
+    def test_los_ayudantes_de_la_celda_despachan_al_pesado(self):
+        with mock.patch.dict(os.environ, {"ORE_MOTOR": "heavyweight"}), \
+                mock.patch.object(pesado, "por_posicion", return_value="pp") as pp, \
+                mock.patch.object(pesado, "como_la_tabla", return_value="ct") as ct:
+            self.assertEqual(ore._por_posicion("df", "geo.t", [1]), "pp")
+            self.assertEqual(ore._como_la_tabla("df", "geo.t"), "ct")
+        pp.assert_called_once_with("df", "geo.t", [1])
+        ct.assert_called_once_with("df", "geo.t")
+
+    def test_una_columna_sin_nombre_toma_la_de_su_posicion(self):
+        class Df:
+            columns = ["id", "(0.5)"]
+
+            def toDF(self, *c):
+                return list(c)
+
+        md = {"current-schema-id": 0, "schemas": [{"schema-id": 0, "fields": [
+            {"name": "id", "type": "long"}, {"name": "peso", "type": "double"}]}]}
+        with mock.patch.object(pesado, "_metadatos", return_value=(200, md)):
+            self.assertEqual(pesado.por_posicion(Df(), "geo.t", [1]), ["id", "peso"])
+        with mock.patch.object(pesado, "_metadatos", return_value=(404, {})):
+            with self.assertRaisesRegex(RuntimeError, "does not exist yet"):
+                pesado.por_posicion(Df(), "geo.t", [1])
+
+    def test_el_tipo_de_spark_de_cada_primitivo(self):
+        self.assertEqual(pesado._tipo_spark("long"), "bigint")
+        self.assertEqual(pesado._tipo_spark("timestamp"), "timestamp_ntz")
+        self.assertEqual(pesado._tipo_spark("timestamptz"), "timestamp")
+        self.assertEqual(pesado._tipo_spark("decimal(10, 2)"), "decimal(10, 2)")
+        self.assertIsNone(pesado._tipo_spark({"type": "struct"}))
+
+
 class LaMemoria(unittest.TestCase):
     """Medido (pieza 0): la JVM ocupa el heap + ~0,8 GiB; Python, ~130 MB."""
 

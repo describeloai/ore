@@ -1822,6 +1822,10 @@ def _por_posicion(tabla_arrow, nombre, posiciones):
     `select` que no lo tiene —una expresión sin alias, `0.5`, `sum(x)`— toma el
     de la columna de la tabla en su misma posición, como en SQL (decidido
     2026-09-24). `posiciones` las dice el analizador (desde 0)."""
+    if os.environ.get("ORE_MOTOR") == "heavyweight":  # 0068 C2·3 2b: un DataFrame de Spark
+        from . import spark as _pesado
+
+        return _pesado.por_posicion(tabla_arrow, nombre, posiciones)
     nombre = _corto(nombre)
     c, r = session.pedir("GET", _v1_tabla(nombre), cabeceras=_DELEGAR)
     primera = posiciones[0] + 1
@@ -2393,6 +2397,10 @@ def _como_la_tabla(tabla_arrow, nombre):
     TIMESTAMPTZ y la columna puede ser TIMESTAMP; `1` es INTEGER y la columna
     BIGINT—. Lo que no se convierte sin perder se deja, y `write()` dice por qué
     no cabe. Si el dataset aún no existe, sus tipos son los de lo que llega."""
+    if os.environ.get("ORE_MOTOR") == "heavyweight":  # 0068 C2·3 2b: un DataFrame de Spark
+        from . import spark as _pesado
+
+        return _pesado.como_la_tabla(tabla_arrow, nombre)
     import pyarrow as pa
 
     nombre = _corto(nombre)

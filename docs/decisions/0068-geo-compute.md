@@ -601,6 +601,15 @@ siempre (un `from`/`join` de dos o tres partes que no es una CTE), y la columna 
 nombre entero pasa a la vista. Corta por caracteres, no por bytes. Probada con los casos de la
 sonda y los de las columnas cualificadas; `ore-core` 384/384, clippy limpio.
 
+**2b·2 · `sql()` pesado (hecha en local).** **La celda de un SQL transform no cambia:** ya llama
+`sql(consulta)`, `_por_posicion` y `_como_la_tabla`, y con el motor pesado cada uno despacha a Spark.
+`sql()` pide a ore-serve la consulta para Spark (`POST /puestos/{id}/sql` con `para: "spark"`: el
+mismo reclamo del puesto, y nada de las fuentes de DuckDB), registra cada vista con `over()` y la
+corre; lo mismo vale para `ore.sql()` desde un `.py`. El `insert` tiene su versión en Spark: una
+columna sin nombre toma la de la tabla en su posición, y cada columna va al tipo de la suya (salvo la
+geometría, que la tabla guarda en WKB y `write()` convierte). `ore-serve` 246 (los dos de `git` del
+*worktree*, aparte), el SDK 160/160 en la imagen, y el laboratorio del SDK pesado sigue 15/15.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |

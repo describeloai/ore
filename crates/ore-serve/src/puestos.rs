@@ -511,6 +511,31 @@ const LENGUAJES: [&str; 5] = ["python", "sql", "typescript", "javascript", "java
 /// ¿Este entorno declara sus dependencias en el árbol? `python` desde W3.2
 /// (`pyproject.toml`), `jvm` desde 0037 ③c (`pom.xml`) y `node` desde 0050 R3
 /// T5b (`package.json`): los tres.
+/// ORE 0068 C2·3 2b · `POST /puestos/{id}/sql {texto, para: "spark"}`: la
+/// consulta con cada nombre del árbol que lee cambiado por su vista temporal, y
+/// las vistas (`[[vista, nombre], …]`) que `ore.spark.sql()` registra con
+/// `over()` antes de correrla (`ore_core::sql_del_arbol::consulta_para_spark`).
+pub(crate) fn para_spark(texto: &str) -> Respuesta {
+    match ore_core::sql_del_arbol::consulta_para_spark(texto) {
+        Ok(p) => Respuesta::ok(Json::obj([(
+            "spark",
+            Json::obj([
+                ("consulta", Json::s(&p.consulta)),
+                (
+                    "vistas",
+                    Json::Arr(
+                        p.vistas
+                            .iter()
+                            .map(|(v, n)| Json::Arr(vec![Json::s(v), Json::s(n)]))
+                            .collect(),
+                    ),
+                ),
+            ]),
+        )])),
+        Err(e) => Respuesta::error(422, e),
+    }
+}
+
 pub(crate) fn declara_capa(entorno: &str) -> bool {
     entorno == crate::entorno::PYTHON
         || entorno == crate::entorno::JVM
@@ -3023,16 +3048,26 @@ impl Servidor {
                 Err(r) => return r,
             }
         };
-        let texto = match ore_core::parse::parse(cuerpo) {
-            Ok(n) => n
-                .get("texto")
-                .and_then(|(_, v)| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+        let (texto, para) = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => {
+                let campo = |k: &str| {
+                    n.get(k)
+                        .and_then(|(_, v)| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                };
+                (campo("texto"), campo("para"))
+            }
             Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
         };
         if texto.trim().is_empty() {
             return Respuesta::error(422, "sql() quiere una consulta");
+        }
+        // ORE 0068 C2·3 2b · Heavyweight: la consulta para Spark y las vistas que el
+        // SDK registra con `over()` (que lee por `/v1`, con su techo). Nada se
+        // resuelve aquí: Spark no lee las fuentes de DuckDB.
+        if para == "spark" {
+            return para_spark(&texto);
         }
         self.fuentes_de_sql(rama, &texto, &|n| self.datos_del_puesto(sujeto, id, n))
     }
@@ -5701,5 +5736,25 @@ pub(crate) mod prueba {
         assert!(f.contains(r#""preview":{"estado":"succeeded""#), "{f}");
         // Lo escrito, tal cual: el nulo sigue siendo nulo.
         assert!(f.contains(r#""filas":[[1],[null]]"#), "{f}");
+    }
+
+    /// ORE 0068 C2·3 2b · Lo que `sql()` pesado recibe: la consulta reescrita y
+    /// sus vistas; una que no se analiza, 422 con el porqué.
+    #[test]
+    fn la_consulta_para_spark_va_con_sus_vistas() {
+        let r = para_spark("select count(*) from geo.lugares l join geo.lugares m on l.id = m.id");
+        assert_eq!(r.codigo, 200);
+        let j = r.cuerpo.jcs();
+        assert!(
+            j.contains(r#""vistas":[["`ore__geo__default__lugares`","geo.lugares"]]"#),
+            "{j}"
+        );
+        assert!(
+            j.contains("from `ore__geo__default__lugares` l join `ore__geo__default__lugares` m"),
+            "{j}"
+        );
+        let r = para_spark("select from where");
+        assert_eq!(r.codigo, 422);
+        assert!(r.cuerpo.jcs().contains("no se analiza"));
     }
 }

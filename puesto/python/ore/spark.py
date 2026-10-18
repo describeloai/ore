@@ -103,13 +103,25 @@ def _tabla(nombre):
     return "`%s`.`%s`.`%s`" % (cat, ns, t)
 
 
-def _geo_de(nombre):
-    """`{columna: {"crs": …, "type": …}}`: lo que la tabla dice de sus columnas geo (`ore.geo.*`)."""
+def _metadatos(nombre):
+    """`(código, metadata)` de la tabla por `/v1` (`loadTable`): su esquema vigente y sus propiedades."""
     base, ns, t = _partes(_corto(nombre))
     c, r = session.pedir("GET", "/v1/%s/namespaces/%s/tables/%s" % (base, ns, t))
+    return c, (((r or {}).get("metadata") or {}) if c == 200 else (r or {}))
+
+
+def _campos(md):
+    """Los campos del esquema vigente de una tabla: `[{name, type, …}]`."""
+    esquema = next((s for s in md.get("schemas", []) if s.get("schema-id") == md.get("current-schema-id")), None)
+    return (esquema or md.get("schema") or {}).get("fields", [])
+
+
+def _geo_de(nombre):
+    """`{columna: {"crs": …, "type": …}}`: lo que la tabla dice de sus columnas geo (`ore.geo.*`)."""
+    c, md = _metadatos(nombre)
     if c != 200:
         return {}
-    props = ((r or {}).get("metadata") or {}).get("properties") or {}
+    props = md.get("properties") or {}
     geo = {}
     for k, v in props.items():
         if k.startswith("ore.geo."):
@@ -160,9 +172,77 @@ def over(view):
 
 
 def sql(query):
-    """Spark SQL, con el catálogo `ore` por defecto. ⚠️ Las columnas geo de lo que se lee llegan
-    como WKB (`binary`): `over()` las convierte, una sentencia no (C2·3 pieza 2b)."""
-    return sesion().sql(query)
+    """Spark SQL sobre los datasets del árbol, como `over()` los da (2b): ore-serve dice la consulta
+    con cada nombre del árbol que lee cambiado por una vista temporal (`POST /puestos/{id}/sql`
+    con `para: "spark"`), cada vista se registra con `over()` —la geometría, convertida y con su
+    SRID— y se corre la consulta. Sin puesto (o sin un `a.b` en el texto), Spark tal cual, con el
+    catálogo `ore` por defecto."""
+    s = sesion()
+    if not session.id or "." not in query:
+        return s.sql(query)
+    c, r = session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": query, "para": "spark"})
+    if c != 200:
+        raise RuntimeError("sql(): %s" % ((r or {}).get("error") if isinstance(r, dict) else r))
+    p = r["spark"]
+    for vista, nombre in p["vistas"]:
+        over(nombre).createOrReplaceTempView(vista.strip("`"))
+    return s.sql(p["consulta"])
+
+
+def por_posicion(df, nombre, posiciones):
+    """`insert into p.t select …` en Spark: una columna sin nombre toma la de la tabla en su
+    posición, como `_por_posicion` en Lightweight (decidido 2026-09-24)."""
+    nombre = _corto(nombre)
+    c, md = _metadatos(nombre)
+    primera = posiciones[0] + 1
+    if c == 404:
+        raise RuntimeError("insert into %s: the table does not exist yet, and column %d of the select has no name "
+                           "to take: give it one (`… as name`)" % (nombre, primera))
+    if c != 200:
+        raise RuntimeError("insert into %s: ore-serve answered %s" % (nombre, c))
+    de_la_tabla = [f["name"] for f in _campos(md)]
+    columnas = list(df.columns)
+    for p in posiciones:
+        if p >= len(de_la_tabla):
+            raise RuntimeError("insert into %s: column %d of the select has no name and the table only has %d: "
+                               "give it one (`… as name`)" % (nombre, p + 1, len(de_la_tabla)))
+        columnas[p] = de_la_tabla[p]
+    return df.toDF(*columnas)
+
+
+#: El tipo de Spark de un primitivo de Iceberg (lo que `insert` convierte al tipo de su columna).
+_SPARK_DE_ICEBERG = {"boolean": "boolean", "int": "int", "long": "bigint", "float": "float", "double": "double",
+                     "date": "date", "timestamp": "timestamp_ntz", "timestamptz": "timestamp", "string": "string",
+                     "binary": "binary"}
+
+
+def _tipo_spark(t):
+    if not isinstance(t, str):
+        return None
+    if t.startswith("decimal("):
+        return t
+    return _SPARK_DE_ICEBERG.get(t)
+
+
+def como_la_tabla(df, nombre):
+    """`insert into b.s.d …` en Spark: cada columna, al tipo de la suya en el dataset, como
+    `_como_la_tabla`. Una geometría no (la tabla la guarda en WKB; `write()` la convierte); si el
+    dataset aún no existe, sus tipos son los de lo que llega."""
+    from pyspark.sql import functions as F
+
+    c, md = _metadatos(nombre)
+    if c != 200:
+        return df
+    tipos = {f["name"]: _tipo_spark(f.get("type")) for f in _campos(md)}
+    geo = {k[len("ore.geo."):] for k in (md.get("properties") or {}) if k.startswith("ore.geo.")}
+    cols = []
+    for f in df.schema.fields:
+        destino = tipos.get(f.name)
+        if destino and f.name not in geo and not _es_geometria(f.dataType) and f.dataType.simpleString() != destino:
+            cols.append(F.col("`%s`" % f.name).cast(destino).alias(f.name))
+        else:
+            cols.append(F.col("`%s`" % f.name))
+    return df.select(*cols)
 
 
 def _es_geometria(tipo):
@@ -239,4 +319,4 @@ def write(nombre, df, mode="overwrite"):
                     "engine": "spark", "geo": contrato})
 
 
-__all__ = ["activo", "sesion", "over", "sql", "write", "DEFAULT"]
+__all__ = ["activo", "sesion", "over", "sql", "write", "por_posicion", "como_la_tabla", "DEFAULT"]
