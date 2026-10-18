@@ -122,6 +122,22 @@ def crs_de_oos(t):
     return partes[1] if m.group(1) == "Geometry" and len(partes) > 1 and partes[1] else "OGC:CRS84"
 
 
+_CAST_DE_CRS = re.compile(r"Cannot cast GEOMETRY with CRS '([^']+)' to GEOMETRY with different CRS '([^']+)'")
+
+
+def dicho_geo(mensaje):
+    """Un error geo de DuckDB dicho como ORE, o `None` (0068 C1·1). Mezclar CRS
+    en una función ya lo dice DuckDB con su remedio; el cast no: es lo que se ve
+    al pasar a una Function del árbol (o a una columna) una geometría en otro CRS
+    que el que declara."""
+    m = _CAST_DE_CRS.search(mensaje or "")
+    if not m:
+        return None
+    de, a = m.group(1), m.group(2)
+    return ("a geometry in `%s` goes where `%s` is declared (a function's parameter or a column), and ORE never "
+            "reprojects on its own: reproject it with `ST_Transform(g, '%s', '%s')`" % (de, a, de, a))
+
+
 def _q(n):
     return '"%s"' % str(n).replace('"', '""')
 

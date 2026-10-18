@@ -1627,7 +1627,15 @@ def sql(query, format="pandas", strict=False):
     # 0063 S2: lo que no está sano, dicho antes de leer; con `strict=True`
     # (el de quien llama, no el de un build), lo degradado no se lee.
     _avisar_salud(saludes, strict)
-    r = con.execute(texto)
+    try:
+        r = con.execute(texto)
+    except Exception as e:  # noqa: BLE001 — sólo se reescribe lo geo; lo demás sube tal cual
+        from .lsp_sql import dicho_geo
+
+        dicho = dicho_geo(str(e))
+        if dicho is None:
+            raise
+        raise type(e)("%s\n(%s)" % (dicho, str(e).splitlines()[0])) from None
     if r.description is None:
         return None
     json_ = [d[0] for d in r.description if str(d[1]).upper() == "JSON"]
@@ -2382,16 +2390,19 @@ def _como_la_tabla(tabla_arrow, nombre):
     md = r["metadata"]
     esquema = next((s for s in md.get("schemas", []) if s.get("schema-id") == md.get("current-schema-id")), None) or md.get("schema") or {}
     tipos = {f["name"]: f["type"] for f in esquema.get("fields", []) if isinstance(f.get("type"), str)}
-    columnas = []
+    columnas, campos = [], []
     for campo, col in zip(tabla_arrow.schema, tabla_arrow.columns):
         destino = _arrow_de_iceberg(tipos.get(campo.name))
-        if destino is not None and campo.type != destino:
+        if destino is not None and campo.type != destino and not _es_geo(campo):
             try:
                 col = col.cast(destino)
             except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
                 pass
         columnas.append(col)
-    return pa.table(columnas, names=tabla_arrow.column_names)
+        # El campo con sus metadatos: una geometría lleva en él su marca y su CRS
+        # (`geoarrow.wkb`), y sin ellos `write()` la mandaba como bytes (0068 C1·1).
+        campos.append(campo.with_type(col.type))
+    return pa.table(columnas, schema=pa.schema(campos, metadata=tabla_arrow.schema.metadata))
 
 
 #: Los modos de `write()`: los de ahora y los de antes → la palabra que viaja.
