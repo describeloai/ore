@@ -17,3 +17,7 @@ com/fasterxml/jackson/datatype/jackson-datatype-jsr310 2.18.2
 org/slf4j/slf4j-api 2.0.16
 org/slf4j/slf4j-nop 2.0.16
 commons-codec/commons-codec 1.17.1
+# ORE 0068 C1·3: la geometría como objeto (JTS, la versión que trae Spark 4.1, para que Heavyweight
+# no tenga dos) y H3 (la versión de `h3` de Python). Sin dependencias; 1,2 y 1,3 MB.
+org/locationtech/jts/jts-core 1.20.0
+com/uber/h3 4.5.0

@@ -135,6 +135,40 @@ public class GeoPrueba {
         } catch (java.lang.reflect.InvocationTargetException e) {
             igual(String.valueOf(e.getCause().getMessage()).contains("ST_SetCRS"), true, "y write() la niega, con su remedio");
         }
+
+        // ORE 0068 C1·3 pieza 3 · La geometría como objeto (JTS 1.20.0) y H3 de Java.
+        var g = Ore.geometry(calc.get(0).get("zona"));
+        igual(g.getGeometryType(), "Polygon", "Ore.geometry(): un objeto de JTS");
+        igual(Math.abs(g.getArea() - Math.PI * 100 * 100) < 0.01 * Math.PI * 100 * 100, true, "y JTS calcula: el área de un círculo de 100 m");
+        igual(Ore.geometry(null), null, "null es null");
+        var centro = g.getCentroid();
+        centro.setSRID(25830);
+        List<Map<String, Object>> conJts = new ArrayList<>();
+        Map<String, Object> fj = new LinkedHashMap<>(); fj.put("id", 1L); fj.put("centro", centro); conJts.add(fj);
+        byte[] ipc4 = (byte[]) ipcDe.invoke(null, conJts, new ArrayList<Map<String, Object>>());
+        try (var a = new RootAllocator(); var rd = new ArrowStreamReader(new ByteArrayInputStream(ipc4), a)) {
+            rd.loadNextBatch();
+            Field fc = rd.getVectorSchemaRoot().getSchema().findField("centro");
+            igual(fc.getMetadata().get("ARROW:extension:metadata"), "{\"crs\":\"EPSG:25830\"}", "write() de JTS: el CRS de su SRID");
+            byte[] w = ((VarBinaryVector) rd.getVectorSchemaRoot().getVector("centro")).getObject(0);
+            igual(Ore.geometry(w).equalsExact(centro, 1e-9), true, "y su WKB vuelve a ser la misma geometría");
+        }
+        var sinSrid = g.getCentroid();
+        List<Map<String, Object>> malJts = new ArrayList<>();
+        Map<String, Object> fm = new LinkedHashMap<>(); fm.put("p", sinSrid); malJts.add(fm);
+        try {
+            ipcDe.invoke(null, malJts, new ArrayList<Map<String, Object>>());
+            throw new AssertionError("una geometría de JTS sin SRID tenía que fallar");
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            igual(String.valueOf(e.getCause().getMessage()).contains("setSRID"), true, "JTS sin SRID se niega, con su remedio");
+        }
+        var h3 = com.uber.h3core.H3Core.newInstance();
+        try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery(
+                "select h3_h3_to_string(h3_latlng_to_cell(40.4168, -3.7038, 9)), h3_h3_to_string(h3_latlng_to_cell(55.6761, 12.5683, 12))")) {
+            rs.next();
+            igual(h3.latLngToCellAddress(40.4168, -3.7038, 9), rs.getString(1), "H3 de Java: la misma celda que en SQL (res 9)");
+            igual(h3.latLngToCellAddress(55.6761, 12.5683, 12), rs.getString(2), "y en res 12");
+        }
         System.out.println("## ok");
     }
 }

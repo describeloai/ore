@@ -735,6 +735,29 @@ public final class Ore {
     }
 
     /**
+     * ORE 0068 C1·3 · <b>A geometry as a JTS object</b> (JTS 1.20.0, the one Spark 4.1 brings): from
+     * what a geometry column gives ({@code byte[]}, its WKB) or WKB in hex. What shapely is in Python.
+     * Its CRS is the column's ({@code rows.types}): set it as the SRID to write it back without
+     * declaring the column. {@code null} for {@code null}.
+     */
+    public static org.locationtech.jts.geom.Geometry geometry(Object wkb) {
+        if (wkb == null) return null;
+        byte[] b = wkb instanceof byte[] bs ? bs : java.util.HexFormat.of().parseHex(String.valueOf(wkb).replaceFirst("^\\\\x", ""));
+        try {
+            return new org.locationtech.jts.io.WKBReader().read(b);
+        } catch (org.locationtech.jts.io.ParseException e) {
+            throw new IllegalArgumentException("geometry(): it is not WKB: " + e.getMessage(), e);
+        }
+    }
+
+    /** El WKB de una geometría de JTS: con Z si la lleva, en little endian, sin SRID (el CRS va en la marca). */
+    static byte[] wkbDe(org.locationtech.jts.geom.Geometry g) {
+        org.locationtech.jts.geom.Coordinate c = g.getCoordinate();
+        int dim = c != null && !Double.isNaN(c.getZ()) ? 3 : 2;
+        return new org.locationtech.jts.io.WKBWriter(dim, org.locationtech.jts.io.ByteOrderValues.LITTLE_ENDIAN).write(g);
+    }
+
+    /**
      * ORE 0068 C1·3 · El CRS ({@code AUTORIDAD:CÓDIGO}) de los metadatos de {@code geoarrow.wkb}:
      * {@code {"crs": "EPSG:25830"}} (el SDK), o el PROJJSON con su {@code id} (DuckDB:
      * {@code {"crs_type": "projjson", "crs": {…, "id": {"authority": "EPSG", "code": 25830}}}}). Lo
@@ -1526,7 +1549,8 @@ public final class Ore {
         String crs = crsDeGeo(t);
         if ("?".equals(crs)) {
             throw new IllegalArgumentException("write(): column `" + nombre + "` is a geometry with no CRS, and a CRS is "
-                + "never guessed: say it in the query with `ST_SetCRS(…, 'EPSG:4326')`");
+                + "never guessed: say it in the query with `ST_SetCRS(…, 'EPSG:4326')`, give a JTS geometry its SRID "
+                + "(`g.setSRID(25830)`), or declare the column `geometry(EPSG:…)`");
         }
         if (crs != null) {
             Map<String, String> md = new LinkedHashMap<>();
@@ -1574,7 +1598,10 @@ public final class Ore {
         else if (v instanceof TimeStampMicroTZVector t) t.setSafe(i, micros(x));
         else if (v instanceof TimeStampMicroVector t) t.setSafe(i, micros(x));
         // ORE 0067 G2·3·4: una geometría, su WKB (`byte[]`) o el WKB en hexadecimal.
-        else if (v instanceof VarBinaryVector b) b.setSafe(i, x instanceof byte[] bs ? bs : java.util.HexFormat.of().parseHex(String.valueOf(x).replaceFirst("^\\\\x", "")));
+        // ORE 0068 C1·3: y una geometría de JTS, como su WKB.
+        else if (v instanceof VarBinaryVector b) b.setSafe(i, x instanceof byte[] bs ? bs
+            : x instanceof org.locationtech.jts.geom.Geometry g ? wkbDe(g)
+            : java.util.HexFormat.of().parseHex(String.valueOf(x).replaceFirst("^\\\\x", "")));
         else throw new IllegalArgumentException("write(): column `" + v.getName() + "` (" + tipo + ") cannot be filled");
     }
 
@@ -2210,6 +2237,8 @@ public final class Ore {
         if (v instanceof java.time.LocalDateTime) return "timestamp[us]";
         if (v instanceof java.time.Instant || v instanceof java.util.Date) return "timestamp[us, tz=UTC]";
         if (v instanceof byte[]) return "binary";
+        // ORE 0068 C1·3: una geometría de JTS lleva su CRS en su SRID (EPSG); sin él, no se adivina.
+        if (v instanceof org.locationtech.jts.geom.Geometry g) return g.getSRID() > 0 ? "geometry(EPSG:" + g.getSRID() + ")" : "geometry(?)";
         if (v instanceof Map) return "struct";
         if (v instanceof Iterable || v instanceof Object[]) return "list";
         return v.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT);
