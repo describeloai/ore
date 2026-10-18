@@ -13,7 +13,9 @@ try:
     assert s.conf.get("spark.sedona.crs.geotools") == "all", "spark-defaults.conf no se lee"
     for c in ("org.apache.iceberg.spark.SparkCatalog", "org.apache.iceberg.rest.RESTCatalog",
               "org.apache.iceberg.gcp.gcs.GCSFileIO", "org.apache.iceberg.aws.s3.S3FileIO",
-              "org.apache.sedona.sql.SedonaSqlExtensions"):
+              "org.apache.sedona.sql.SedonaSqlExtensions",
+              # C2·3: la identidad del puesto en cada petición, compilada aquí.
+              "ore.spark.IdentidadDelPuesto"):
         s._jvm.java.lang.Class.forName(c)
     a = s.sql("select round(ST_Area(ST_Buffer(ST_Point(440000, 4474000), 100))) a").first().a
     assert a == 31214, a

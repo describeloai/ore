@@ -533,6 +533,36 @@ No se abre una sesión `spark`: el pesado lo elige un Build, nunca un lenguaje. 
 Build pesado corre el arnés de siempre (DuckDB) en la imagen pesada. De paso, `h3` sale de las
 sugeridas de Python, porque desde C1·2 lo trae la imagen.
 
+**Pieza 2 · el arnés PySpark, para Python (hecha en local).** La celda de un build Heavyweight dice
+antes su motor (`con_el_motor`: `ORE_MOTOR=heavyweight`), y con él **los mismos nombres del SDK son
+Spark** (`puesto/python/ore/spark.py`): `over()` da un DataFrame de Spark, `sql()` es Spark SQL y
+`write()` escribe un DataFrame de Spark. **Spark escribe sus ficheros y hace el commit por `/v1`; lo de
+ORE lo pone el SDK:**
+- **la geometría**: cada columna de Sedona sale como WKB, y la tabla dice `ore.geo.<col>` sacado de
+  los datos en una pasada (un SRID por columna, o no se escribe, como en Python, Node y Java; el
+  subtipo, o `Any`). Al leer, al revés: lo que tiene `ore.geo.<col>` llega como geometría con su
+  SRID (`OGC:CRS84` como 4326, que en Sedona ya es lon/lat);
+- **la procedencia**, en el resumen del snapshot (`snapshot-property.ore.procedencia`), la misma que
+  `write()`, con el build y lo leído;
+- **el techo y el Preview**, antes del motor: lo que no se escribe no se escribe con ninguno.
+La identidad va por `IdentidadDelPuesto` (el `AuthManager` de la pieza 0, compilado en la imagen; en
+el laboratorio, la de cabecera) y el heap sale de `ORE_MEMORIA_MB` (el pod menos 1,5 GiB, y el 80 %:
+4 GiB → 2 GiB, 48 GiB → 37 GiB). Medido antes de escribirlo (`pruebas-de-fuego/geo/c2/arnes-spark/`):
+`createOrReplace`, `overwrite`, `append`, `tableProperty` y `snapshot-property` van por `/v1`, y
+Sedona no toma un `binary` como geometría sin convertir. **De punta a punta, 15/15** (`medir.sh
+sdk.py`): escribir puntos y leerlos como geometría con su SRID, un transform de *buffers* (31 214 m²,
+lo de DuckDB) con su procedencia, `append` sin perder `ore.geo`, y se niegan la geometría sin CRS, dos
+CRS en una columna, `upsert`, un pandas y escribir fuera del techo. El SDK, 154/154 en la imagen.
+
+**Lo que queda, con nombre:**
+- **2b · SQL en Heavyweight.** En una sentencia, las entradas se nombran dentro del texto: llegan
+  como WKB y `ST_*` no las toma (`over()` sí las convierte). Necesita su diseño (la sentencia ya la
+  analiza ORE, que sabe sus `inputs`).
+- **`/v1` contesta 400 a un namespace de dos niveles**, y Spark busca así sus tablas de metadatos
+  (`t.snapshots`): con un 404 las encontraría. Va a la pieza 3.
+- Las **promesas de columna** quedan `unknown` en Heavyweight (las de filas, como `notEmptied`, se
+  juzgan igual): el SDK no las cuenta todavía. `upsert` y las tablas ancladas, tampoco.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |

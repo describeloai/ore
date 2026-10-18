@@ -905,6 +905,21 @@ pub(crate) fn entorno_del_build(
     }
 }
 
+/// ORE 0068 C2·3 · La celda de un build Heavyweight: la de siempre (el arnés
+/// de Python o la sentencia de SQL), diciendo antes el motor. Con
+/// `ORE_MOTOR=heavyweight`, `over()`, `sql()` y `write()` del SDK son Spark
+/// (`ore/spark.py`): los mismos nombres, otro motor (decidido 2026-10-18).
+pub(crate) fn con_el_motor(entorno: &str, celda: String) -> String {
+    if entorno != crate::cola::SPARK {
+        return celda;
+    }
+    format!(
+        "# ORE 0068 C2·3 · un build Heavyweight: los mismos nombres, en Spark.\n\
+         import os as _os_motor\n\
+         _os_motor.environ[\"ORE_MOTOR\"] = \"heavyweight\"\n\n{celda}"
+    )
+}
+
 /// El repositorio registrado (en `main`) que contiene `codigo`: el de ruta más
 /// larga que lo tiene dentro. `(ruta, plantilla)`.
 fn repositorio_de<'a>(
@@ -1041,7 +1056,7 @@ impl Servidor {
                 h.lenguaje,
                 h.codigo.clone(),
                 commit.clone(),
-                h.celda,
+                con_el_motor(entorno, h.celda),
                 Vec::new(),
                 Some(techo),
                 None,
@@ -2321,6 +2336,13 @@ plantillaVersion: 7
             entorno_del_build("python", Motor::default(), None).ok(),
             Some("python")
         );
+        // Y la celda del pesado dice su motor antes de nada; la ligera, intacta.
+        let c = con_el_motor(crate::cola::SPARK, "print(1)".into());
+        assert!(
+            c.contains("ORE_MOTOR\"] = \"heavyweight\"") && c.ends_with("\n\nprint(1)"),
+            "{c}"
+        );
+        assert_eq!(con_el_motor("python", "print(1)".into()), "print(1)");
     }
 
     #[test]

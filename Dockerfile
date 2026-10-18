@@ -519,6 +519,8 @@ CMD ["python3", "/opt/ore/agente.py"]
 #     /etc/passwd.
 #   · `ST_Transform` baja la definición EPSG de internet salvo con
 #     `spark.sedona.crs.geotools=all` (`puesto/spark/spark-defaults.conf`).
+#   · (C2·3) la identidad del pod caduca y `header.*` de Iceberg se lee una
+#     vez: `IdentidadDelPuesto` (un `AuthManager`) la lee en cada petición.
 #
 # Sin agente propio todavía: lo que lanza un Build Heavyweight es C2·3.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -537,6 +539,9 @@ RUN pip install --no-cache-dir --no-deps -r /opt/ore/spark-src/provisto.txt \
         "https://repo1.maven.org/maven2/$g/$v/$n" "$SPARK_HOME/jars/$n" || exit 1; done \
  && mkdir -p /opt/ore/spark/conf && cp /opt/ore/spark-src/spark-defaults.conf /opt/ore/spark/conf/ \
  && cp /opt/ore/spark-src/comprobar.py /opt/ore/spark/comprobar.py \
+ && mkdir -p /tmp/identidad && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*" \
+      -d /tmp/identidad /opt/ore/spark-src/IdentidadDelPuesto.java \
+ && jar cf "$SPARK_HOME/jars/ore-spark-identidad.jar" -C /tmp/identidad . && rm -rf /tmp/identidad \
  && echo 'ore:x:65532:65532:ore:/tmp:/usr/sbin/nologin' >> /etc/passwd \
  && echo 'ore:x:65532:' >> /etc/group \
  && echo "spark · $(pip show pyspark | grep ^Version) · $(ls $SPARK_HOME/jars | wc -l) jars · $(java -version 2>&1 | head -1)" >> /entorno-1.txt

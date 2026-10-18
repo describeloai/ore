@@ -1202,8 +1202,15 @@ def model(ref):
 def over(view, format="pandas"):
     """Read the dataset or view `<database>.<schema>.<name>`: a DataFrame with
     Arrow types (`format="pandas"`, the default), a `pyarrow.Table`
-    (`format="arrow"`) or a polars DataFrame (`format="polars"`)."""
+    (`format="arrow"`) or a polars DataFrame (`format="polars"`).
+
+    In a Heavyweight repository (ORE 0068), a Spark DataFrame, with its
+    geometry columns as Sedona geometries in their CRS."""
     vista, como = view, format
+    if os.environ.get("ORE_MOTOR") == "heavyweight":
+        from . import spark as _pesado
+
+        return _pesado.over(vista)
     try:
         fuente, r = _fuente_de(vista)
     except (LookupError, RuntimeError) as sin_copia:
@@ -1559,6 +1566,11 @@ def sql(query, format="pandas", strict=False):
     Returns what `over()` returns for `format` (pandas, arrow or polars), or
     `None` for a statement without a result."""
     texto, como, estricta = query, format, strict
+    # ORE 0068 C2·3: en un repositorio Heavyweight, Spark SQL (un DataFrame de Spark).
+    if os.environ.get("ORE_MOTOR") == "heavyweight":
+        from . import spark as _pesado
+
+        return _pesado.sql(texto)
     # 0057 B4·6: en un build, una lectura en vivo cortada hace fallar el build:
     # lo que escribe no puede ser un dataset a medias (ni un agregado de una parte).
     estricta = estricta or bool(os.environ.get("ORE_BUILD"))
@@ -2730,6 +2742,14 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
         if nombre != _ensayando["output"]:
             raise PermissionError("`%s` is not the output of `%s` (%s): a transform only writes what it declares" % (nombre, _ensayando["transform"], _ensayando["output"]))
         return _ensayar_escritura(nombre, datos, mode)
+    # ORE 0068 C2·3: en un repositorio Heavyweight escribe Spark (por /v1), y lo de ORE
+    # —la geometría con su CRS, la procedencia— lo pone `ore.spark`. El techo, arriba, igual.
+    if os.environ.get("ORE_MOTOR") == "heavyweight":
+        if clave_upsert or anclada_a is not None:
+            raise NotImplementedError("write(): `upsert` and anchored tables are not in Heavyweight yet (ORE 0068 C2·3)")
+        from . import spark as _pesado
+
+        return _pesado.write(nombre, datos, mode)
     # 0053 F7·1: guardar en el lago lo que se leyó de un origen EN VIVO es una
     # copia, y una copia no se hace aquí: tiene su conducto
     # (`materialization.payload`), no tiene el tope de una lectura en vivo y la
