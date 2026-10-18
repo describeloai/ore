@@ -1760,6 +1760,171 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
     None
 }
 
+// ── ORE 0068 C2·3 2b · La consulta para Spark (Heavyweight) ─────────────────
+
+/// Lo que una consulta necesita para correr en Spark: el texto, con cada nombre
+/// del árbol que lee sustituido por su vista temporal, y las vistas que hay que
+/// registrar antes (`(vista, nombre corto)`, cada una una vez, en el orden en
+/// que aparecen).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParaSpark {
+    pub consulta: String,
+    pub vistas: Vec<(String, String)>,
+}
+
+/// La vista temporal de Spark de un nombre del árbol: `ore__<base>__<schema>__<nombre>`,
+/// entre comillas invertidas (una parte: Spark no tiene vistas temporales de varias).
+pub fn vista_de_spark(n: &Nombre) -> String {
+    format!("`ore__{}__{}__{}`", n.paquete, n.schema, n.nombre)
+}
+
+/// **La consulta para Spark** (0068 C2·3 2b): el MISMO texto, con cada nombre
+/// del árbol que la consulta lee —un `from`/`join` de dos o tres partes que no
+/// es una CTE: la regla de [`Lectura`]— sustituido por su vista temporal, que el
+/// arnés registra con `over()` (la geometría llega convertida y con su SRID). Y
+/// una columna cualificada con ese nombre entero (`geo.lugares.id`) pasa a
+/// cualificarse con la vista: reescrito el `from`, ese prefijo ya no nombraría
+/// nada (2b·0). Nada más se toca ni se reimprime: corre lo que se escribió.
+///
+/// Las posiciones de `sqlparser` son línea y columna en CARACTERES (2b·0: con
+/// acentos antes, contar bytes cortaría mal), así que se corta por caracteres.
+pub fn consulta_para_spark(consulta: &str) -> Result<ParaSpark, String> {
+    use sqlparser::ast::Expr;
+
+    let frases = Parser::parse_sql(&DuckDbDialect {}, consulta)
+        .map_err(|e| format!("la consulta no se analiza: {e}"))?;
+
+    #[derive(Default)]
+    struct Spark {
+        ctes: Vec<Vec<String>>,
+        // (primera, última) parte de cada lectura, y su nombre
+        lecturas: Vec<(
+            sqlparser::tokenizer::Span,
+            sqlparser::tokenizer::Span,
+            Nombre,
+        )>,
+        // las partes escritas (en minúsculas) de cada lectura, para sus columnas cualificadas
+        escritas: Vec<(Vec<String>, Nombre)>,
+        // las columnas de tres o cuatro partes: (sus partes, el span de cada una)
+        cualificadas: Vec<Vec<(String, sqlparser::tokenizer::Span)>>,
+    }
+    impl Visitor for Spark {
+        type Break = ();
+        fn pre_visit_query(&mut self, q: &Query) -> ControlFlow<()> {
+            let n = q
+                .with
+                .as_ref()
+                .map(|w| {
+                    w.cte_tables
+                        .iter()
+                        .map(|c| c.alias.name.value.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.ctes.push(n);
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _q: &Query) -> ControlFlow<()> {
+            self.ctes.pop();
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_table_factor(&mut self, t: &TableFactor) -> ControlFlow<()> {
+            if let TableFactor::Table {
+                name, args: None, ..
+            } = t
+            {
+                let p = partes(name);
+                if p.len() == 1 && self.ctes.iter().any(|s| s.contains(&p[0].value)) {
+                    return ControlFlow::Continue(());
+                }
+                if (2..=3).contains(&p.len())
+                    && p.len() == name.0.len()
+                    && let Some(n) = nombre_del_arbol(name, &mut Vec::new())
+                {
+                    self.escritas.push((
+                        p.iter().map(|i| i.value.to_lowercase()).collect(),
+                        n.clone(),
+                    ));
+                    self.lecturas.push((p[0].span, p[p.len() - 1].span, n));
+                }
+            }
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<()> {
+            if let Expr::CompoundIdentifier(ids) = e
+                && (3..=4).contains(&ids.len())
+            {
+                self.cualificadas.push(
+                    ids.iter()
+                        .map(|i| (i.value.to_lowercase(), i.span))
+                        .collect(),
+                );
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut v = Spark::default();
+    for f in &frases {
+        let _ = f.visit(&mut v);
+    }
+
+    // Línea y columna (en base 1, en caracteres) → índice de carácter.
+    let chars: Vec<char> = consulta.chars().collect();
+    let mut lineas = vec![0usize];
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '\n' {
+            lineas.push(i + 1);
+        }
+    }
+    let indice = |l: sqlparser::tokenizer::Location| -> Option<usize> {
+        let ini = *lineas.get((l.line as usize).checked_sub(1)?)?;
+        let i = ini + (l.column as usize).checked_sub(1)?;
+        (i <= chars.len()).then_some(i)
+    };
+
+    let mut trozos: Vec<(usize, usize, String)> = Vec::new();
+    let mut vistas: Vec<(String, String)> = Vec::new();
+    for (primera, ultima, n) in &v.lecturas {
+        let (Some(a), Some(b)) = (indice(primera.start), indice(ultima.end)) else {
+            return Err(format!(
+                "`{}` no tiene posición en la consulta",
+                n.referencia()
+            ));
+        };
+        let vista = vista_de_spark(n);
+        if !vistas.iter().any(|(v, _)| *v == vista) {
+            vistas.push((vista.clone(), n.referencia()));
+        }
+        trozos.push((a, b, vista));
+    }
+    // Una columna cualificada con el nombre entero de una lectura: su prefijo, a la vista.
+    for c in &v.cualificadas {
+        let prefijo: Vec<String> = c[..c.len() - 1].iter().map(|(s, _)| s.clone()).collect();
+        if let Some((_, n)) = v.escritas.iter().find(|(e, _)| *e == prefijo)
+            && let (Some(a), Some(b)) = (indice(c[0].1.start), indice(c[c.len() - 2].1.end))
+        {
+            trozos.push((a, b, vista_de_spark(n)));
+        }
+    }
+    trozos.sort();
+    trozos.dedup();
+    let mut out = String::with_capacity(consulta.len() + 32 * trozos.len());
+    let mut i = 0;
+    for (a, b, vista) in trozos {
+        if a < i {
+            return Err("dos nombres de la consulta se solapan".to_string());
+        }
+        out.extend(&chars[i..a]);
+        out.push_str(&vista);
+        i = b;
+    }
+    out.extend(&chars[i..]);
+    Ok(ParaSpark {
+        consulta: out,
+        vistas,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2017,5 +2182,89 @@ mod tests {
         let f = falla("select from where hr.a");
         assert!(f[0].mensaje.starts_with("la frase no analiza"), "{f:?}");
         assert!(f[0].pos.is_some(), "{f:?}");
+    }
+
+    /// ORE 0068 C2·3 2b · La consulta para Spark: cada nombre del árbol que se
+    /// lee, a su vista temporal, en el texto tal cual (los casos de la sonda de
+    /// 2b·0, `pruebas-de-fuego/geo/c2/sql-spark/sonda-spans`), y la columna
+    /// cualificada con el nombre entero, también.
+    #[test]
+    fn la_consulta_para_spark_lee_de_las_vistas_y_no_toca_nada_mas() {
+        let s = |q: &str| consulta_para_spark(q).unwrap();
+        let l = "`ore__geo__default__lugares`";
+        let z = "`ore__geo__default__zonas`";
+
+        let r = s(
+            "select z.id, count(*) n from geo.zonas z join geo.lugares l \
+                   on ST_Contains(z.zona, l.geom) group by z.id",
+        );
+        assert_eq!(
+            r.consulta,
+            format!(
+                "select z.id, count(*) n from {z} z join {l} l \
+                 on ST_Contains(z.zona, l.geom) group by z.id"
+            )
+        );
+        assert_eq!(
+            r.vistas,
+            vec![
+                (z.to_string(), "geo.zonas".to_string()),
+                (l.to_string(), "geo.lugares".to_string())
+            ]
+        );
+        // Tres partes, y otro schema: su vista lo dice y su nombre corto también.
+        let r = s("select * from geo.default.lugares, geo.ventas.t");
+        assert_eq!(
+            r.consulta,
+            format!("select * from {l}, `ore__geo__ventas__t`")
+        );
+        assert_eq!(r.vistas[1].1, "geo.ventas.t");
+        // El mismo nombre dos veces: una vista.
+        let r = s("select a.id from geo.lugares a join geo.lugares b on a.id = b.id + 1");
+        assert_eq!(
+            r.consulta,
+            format!("select a.id from {l} a join {l} b on a.id = b.id + 1")
+        );
+        assert_eq!(r.vistas.len(), 1);
+        // Entre comillas.
+        assert_eq!(
+            s("select * from \"geo\".\"lugares\"").consulta,
+            format!("select * from {l}")
+        );
+        // Una CTE que se llama como una tabla (una parte) no es del árbol.
+        assert_eq!(
+            s("with lugares as (select * from geo.lugares where id > 1) select * from lugares")
+                .consulta,
+            format!("with lugares as (select * from {l} where id > 1) select * from lugares")
+        );
+        // Subconsultas e IN.
+        assert_eq!(
+            s("select * from geo.zonas where id in (select id from geo.lugares)").consulta,
+            format!("select * from {z} where id in (select id from {l})")
+        );
+        // Cadenas y comentarios, intactos; y varias líneas, con acentos antes.
+        assert_eq!(
+            s("select 'año geo.lugares' as t -- geo.lugares\nfrom\n  geo.lugares").consulta,
+            format!("select 'año geo.lugares' as t -- geo.lugares\nfrom\n  {l}")
+        );
+        // 2b·0 · la columna cualificada con el nombre entero: su prefijo, a la vista.
+        assert_eq!(
+            s("select geo.lugares.id, l2.id from geo.lugares, geo.zonas l2").consulta,
+            format!("select {l}.id, l2.id from {l}, {z} l2")
+        );
+        assert_eq!(
+            s("select geo.default.lugares.nombre from geo.default.lugares").consulta,
+            format!("select {l}.nombre from {l}")
+        );
+        // Una alias de dos partes no es un nombre del árbol: `l.geom` no se toca.
+        assert_eq!(
+            s("select l.geom from geo.lugares l").consulta,
+            format!("select l.geom from {l} l")
+        );
+        // Lo que no lee del árbol, igual.
+        let r = s("select 1 + 1");
+        assert_eq!(r.consulta, "select 1 + 1");
+        assert!(r.vistas.is_empty());
+        assert!(consulta_para_spark("select from where").is_err());
     }
 }

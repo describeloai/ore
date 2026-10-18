@@ -593,6 +593,14 @@ el contrato se describe en DuckDB (P3) y lo corre Spark; lo que sólo es de Duck
 | `list(x)` | `array_agg(x)` (o `collect_list`) |
 | `h3_latlng_to_cell(lat, lng, r)` y los `h3_*` | `ST_H3CellIDs(geom, r, false)` y los `ST_H3*` de Sedona |
 
+**2b·1 · `consulta_para_spark` (hecha en local).** En `ore-core` (`sql_del_arbol`), junto a quien ya
+sabe qué lee una sentencia: devuelve el texto con cada nombre del árbol que lee sustituido por su
+vista (`` `ore__<base>__<schema>__<nombre>` ``, una parte entre comillas invertidas) y las vistas que
+hay que registrar, `(vista, nombre corto)`, una vez cada una. La regla de qué es una lectura es la de
+siempre (un `from`/`join` de dos o tres partes que no es una CTE), y la columna cualificada con el
+nombre entero pasa a la vista. Corta por caracteres, no por bytes. Probada con los casos de la
+sonda y los de las columnas cualificadas; `ore-core` 384/384, clippy limpio.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |
