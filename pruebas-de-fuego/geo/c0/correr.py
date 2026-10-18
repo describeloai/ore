@@ -112,11 +112,16 @@ def huella(filas):
 def con_duckdb():
     import duckdb
     c = duckdb.connect()
-    c.execute("set extension_directory = '/opt/ore/duckdb'")
+    c.execute("set extension_directory = '%s'" % os.environ.get("C0_EXT", "/opt/ore/duckdb"))
     for e in ("spatial", "h3"):
         c.execute("load " + e)
     if os.environ.get("C0_MEMORIA"):
         c.execute("set memory_limit = '%s'" % os.environ["C0_MEMORIA"])
+    # Un tope al disco de desborde: si una consulta lo pasa, falla ella y no tumba el nodo
+    # (el 18-oct el pod se desalojó con 273 GB de disco efímero).
+    if os.environ.get("C0_TMP"):
+        c.execute("set temp_directory = '%s'" % os.environ["C0_TMP"])
+        c.execute("set max_temp_directory_size = '%s'" % os.environ.get("C0_TMP_MAX", "80GB"))
     for t in (TABLAS_BANCO if conjunto == "banco" else TABLAS_SB):
         p = os.path.join(datos, t + ".parquet")
         if os.path.exists(p) or os.path.isdir(p):

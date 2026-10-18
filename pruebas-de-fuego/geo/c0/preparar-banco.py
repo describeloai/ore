@@ -9,16 +9,16 @@ Sale:
   ais.parquet         mmsi, t, sog, geom                               puntos AIS (lo que haya en <ais_dir>)
 Ordenado por la curva de Hilbert, como lo dejaría el lago (0067 G2·2).
 """
-import sys, time
+import os, sys, time
 import duckdb
 
 ov, ais, out = sys.argv[1:4]
 c = duckdb.connect()
-c.execute("set extension_directory = '/opt/ore/duckdb'")
+c.execute("set extension_directory = '%s'" % os.environ.get("C0_EXT", "/opt/ore/duckdb"))
 c.execute("load spatial")
 c.execute("set preserve_insertion_order = false")
 c.execute(f"set temp_directory = '{out}/tmp'")
-c.execute("set memory_limit = '4GB'")
+c.execute("set memory_limit = '%s'" % os.environ.get("C0_MEMORIA", "4GB"))
 
 
 def paso(nombre, sql):

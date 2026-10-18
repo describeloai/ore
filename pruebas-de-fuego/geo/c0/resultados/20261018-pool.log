@@ -1,0 +1,75 @@
+recuperados 0
+[12:42:07] preparar el pod
+== DuckDB 1.5.6
+spatial y h3 1.5.6
+== Sedona 1.9.1
+== SpatialBench
+== El banco desde el bucket
+[12:49:48] fase preparar hecha
+[12:49:48] banco (7 días de AIS)
+municipios: 8,655 filas en 0.7 s
+lugares: 2,180,990 filas en 0.8 s
+edificios: 34,104,964 filas en 31.4 s
+ais: 115,671,830 filas en 22.5 s
+[12:50:47] fase banco hecha
+[12:50:47] SpatialBench escala 10
+[12:53:52] fase sf10 hecha
+[12:53:52] SpatialBench escala 100
+[13:11:18] fase sf100 hecha
+/dev/sda1       390G   66G  325G  17% /trabajo
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q10", "estado": "limite", "segundos": 1200, "nota": "primer intento, 12:22
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q11", "estado": "limite", "segundos": 1200, "nota": "primer intento, 12:22
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q12", "estado": "limite", "segundos": 1200, "nota": "primer intento, 12:22
+[13:11:19] ensayo
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q1", "estado": "bien", "segundos": 5.82, "filas": 100, "huella": "2bdffb14
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q1", "estado": "bien", "segundos": 11.08, "filas": 100, "huella": "2bdffb14
+[13:11:48] duckdb
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q2", "estado": "bien", "segundos": 1.5, "filas": 1, "huella": "4b62e420219
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q3", "estado": "bien", "segundos": 2.11, "filas": 79, "huella": "c409a75e5
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q4", "estado": "bien", "segundos": 7.44, "filas": 243, "huella": "4d089db1
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q5", "estado": "bien", "segundos": 11.17, "filas": 100, "huella": "b868693
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q6", "estado": "bien", "segundos": 1.96, "filas": 3, "huella": "c50ca39b29
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q7", "estado": "bien", "segundos": 1.87, "filas": 100, "huella": "5a7931cf
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q8", "estado": "bien", "segundos": 3.86, "filas": 100, "huella": "e91eaeda
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q9", "estado": "bien", "segundos": 0.26, "filas": 100, "huella": "d1cd8e79
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q1", "estado": "bien", "segundos": 10.47, "filas": 100, "huella": "563cfc
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q2", "estado": "bien", "segundos": 10.9, "filas": 1, "huella": "032e0b800
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q3", "estado": "bien", "segundos": 11.1, "filas": 84, "huella": "0f5b74aa
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q4", "estado": "bien", "segundos": 22.85, "filas": 614, "huella": "79ef90
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q5", "estado": "error", "segundos": 321.65, "error": "Out of Memory Error
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q6", "estado": "bien", "segundos": 91.58, "filas": 19, "huella": "cef633d
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q7", "estado": "bien", "segundos": 34.39, "filas": 100, "huella": "1a3140
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q8", "estado": "bien", "segundos": 36.03, "filas": 100, "huella": "4c7b06
+{"motor": "duckdb", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q9", "estado": "bien", "segundos": 0.5, "filas": 100, "huella": "b872da88
+{"motor": "duckdb", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b1", "estado": "bien", "segundos": 12.04, "filas": 1, "huella": "6eb19f6b91f20f3b",
+{"motor": "duckdb", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b2", "estado": "bien", "segundos": 18.38, "filas": 1, "huella": "5bfd4be2577e3d70",
+{"motor": "duckdb", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b3", "estado": "bien", "segundos": 12.35, "filas": 1, "huella": "31114ca86ded4b36",
+{"motor": "duckdb", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b4", "estado": "bien", "segundos": 6.58, "filas": 1, "huella": "f49629c31ad6f8a6", 
+[13:22:16] spark
+{"motor": "spark", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b1", "estado": "bien", "segundos": 13.88, "filas": 1, "huella": "6eb19f6b91f20f3b", 
+{"motor": "spark", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b2d", "estado": "bien", "segundos": 14.51, "filas": 1, "huella": "5bfd4be2577e3d70",
+{"motor": "spark", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b3d", "estado": "bien", "segundos": 86.72, "filas": 1, "huella": "31114ca86ded4b36",
+{"motor": "spark", "conjunto": "banco", "datos": "/trabajo/banco", "caso": "b4", "estado": "bien", "segundos": 29.46, "filas": 1, "huella": "f49629c31ad6f8a6", 
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q2d", "estado": "bien", "segundos": 18.17, "filas": 1, "huella": "4b62e4202
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q3", "estado": "bien", "segundos": 13.35, "filas": 79, "huella": "c409a75e5
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q4", "estado": "bien", "segundos": 17.36, "filas": 243, "huella": "4d089db1
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q5", "estado": "bien", "segundos": 54.0, "filas": 100, "huella": "b86869309
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q6", "estado": "bien", "segundos": 55.06, "filas": 3, "huella": "c50ca39b29
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q7", "estado": "bien", "segundos": 13.91, "filas": 100, "huella": "5a7931cf
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q8", "estado": "bien", "segundos": 26.04, "filas": 100, "huella": "e91eaeda
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q9", "estado": "bien", "segundos": 7.3, "filas": 100, "huella": "d1cd8e791c
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q10", "estado": "error", "segundos": 8.27, "error": "An error occurred whil
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q11", "estado": "limite", "segundos": 600}
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf10", "caso": "q12", "estado": "bien", "segundos": 256.79, "filas": 100, "huella": "ac477e
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q1", "estado": "bien", "segundos": 68.57, "filas": 100, "huella": "563cfc8
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q2d", "estado": "bien", "segundos": 125.22, "filas": 1, "huella": "032e0b8
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q3", "estado": "bien", "segundos": 63.52, "filas": 84, "huella": "0f5b74aa
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q4", "estado": "bien", "segundos": 75.27, "filas": 614, "huella": "79ef908
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q5", "estado": "bien", "segundos": 344.77, "filas": 100, "huella": "9aa31e
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q6", "estado": "limite", "segundos": 600}
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q7", "estado": "bien", "segundos": 79.64, "filas": 100, "huella": "1a31409
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q8", "estado": "limite", "segundos": 600}
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q9", "estado": "bien", "segundos": 6.5, "filas": 100, "huella": "b872da885
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q10", "estado": "error", "segundos": 11.17, "error": "An error occurred wh
+{"motor": "spark", "conjunto": "spatialbench", "datos": "/trabajo/sb/sf100", "caso": "q12", "estado": "limite", "segundos": 600}
+[14:30:44] fin

@@ -1,0 +1,29 @@
+# ORE 0068 C0 · El pod de medida en el pool efímero c0-medida (n2-standard-16 spot, 64 GB).
+# Los dos motores en el mismo nodo: Spark 4.1 (la imagen oficial) + Sedona 1.9.1 y DuckDB 1.5.6
+# (pip, la versión del puesto). /trabajo es el disco del nodo (400 GB pd-balanced).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: c0
+  namespace: c0-medida
+spec:
+  serviceAccountName: c0
+  restartPolicy: Never
+  nodeSelector: { ore.dev/pool: c0-medida }
+  tolerations:
+    - { key: ore.dev/c0, operator: Equal, value: "true", effect: NoSchedule }
+  containers:
+    - name: c0
+      image: apache/spark:4.1.0-scala2.13-java17-python3-ubuntu
+      securityContext: { runAsUser: 0 }
+      command: ["sleep", "infinity"]
+      env:
+        - { name: HOME, value: /trabajo/home }
+      resources:
+        requests: { cpu: "14", memory: 56Gi }
+        limits: { memory: 58Gi }
+      volumeMounts:
+        - { name: trabajo, mountPath: /trabajo }
+  volumes:
+    - name: trabajo
+      emptyDir: {}

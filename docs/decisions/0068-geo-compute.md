@@ -244,12 +244,88 @@ el mismo para los dos motores. Contiene:
 
    Lo de dentro va ahora a volúmenes, y los resultados se escriben desde fuera.
 
-**Lo que falta, y dónde:** la escala, que no cabe en local. Se mide en un pool efímero de GKE:
-- Q10–Q12;
-- SpatialBench a escala 10 y 100;
-- el AIS de 7 días;
-- Spark en varios nodos;
-- DuckDB en la forma del producto (un puesto de victor).
+#### C0·1–C0·3 · A escala (pool efímero, 2026-10-18)
+
+**Dónde:** un nodo spot `n2-standard-16` (16 vCPU, 64 GB) en un pool `c0-medida` de `ore-mesh`. Se
+creó para medir y se borró al acabar, junto con su espacio de nombres y su permiso sobre el bucket.
+Los dos motores, por turnos y solos en el nodo:
+- DuckDB 1.5.6 con 48 GB;
+- Spark 4.1 + Sedona 1.9.1 en `local[16]`, con 40 GB y una consulta por proceso.
+
+**Los límites:** 1 200 s en DuckDB y 600 s en Spark (la versión acotada). Lo que agotó a escala 10 no
+se lanzó a escala 100.
+
+**Los datos:**
+- SpatialBench a escala 10 (60 M viajes) y a escala 100 (600 M);
+- el banco con los **7 días de AIS (115,7 M posiciones)**.
+
+**Los guiones:** `pool/acotada.sh` sube cada resultado al bucket según sale, es idempotente y pone
+topes al disco. Resultados en `resultados/20261018-pool.jsonl`.
+
+| caso | DuckDB SF10 | Spark SF10 | DuckDB SF100 | Spark SF100 |
+|---|---|---|---|---|
+| Q1 KNN por radio | 5,8 s | 11,1 s | 10,5 s | 68,6 s |
+| Q2 zona (Spark: join difundido) | 1,5 s | 18,2 s | 10,9 s | 125 s |
+| Q3 | 2,1 s | 13,4 s | 11,1 s | 63,5 s |
+| Q4 punto en polígono | 7,4 s | 17,4 s | 22,9 s | 75,3 s |
+| Q5 agregación espacial | 11,2 s | 54,0 s | **sin memoria** (80 GB de desborde) | **345 s** |
+| Q6 | 2,0 s | 55,1 s | 91,6 s | > 600 s |
+| Q7 | 1,9 s | 13,9 s | 34,4 s | 79,6 s |
+| Q8 cercanía viaje–edificio | 3,9 s | 26,0 s | 36,0 s | > 600 s |
+| Q9 IoU de edificios | 0,3 s | 7,3 s | 0,5 s | 6,5 s |
+| Q10 LEFT JOIN espacial | > 1 200 s | error en 8 s | — | error |
+| Q11 doble punto en polígono | > 1 200 s | > 600 s | — | — |
+| Q12 KNN join | > 1 200 s | **257 s** | — | > 600 s |
+
+| caso del banco (34 M edificios, 115,7 M AIS) | DuckDB | Spark + Sedona |
+|---|---|---|
+| B1 zona | 12,0 s | 13,9 s |
+| B2 punto en polígono | 18,4 s | **14,5 s** (difundiendo) |
+| B3 cercanía 20 m | 12,4 s | 86,7 s (difundiendo) |
+| B4 H3 res. 8 sobre 115,7 M | 6,6 s | 29,5 s |
+
+**Lo que dice la escala:**
+1. **Las huellas coinciden en todo lo que terminó en los dos motores**, también entre las variantes
+   difundidas y las originales.
+2. **DuckDB sigue siendo el rápido hasta donde llega**, entre 2 y 25 veces. Pero a escala 100 ya no
+   llega a todo:
+   - Q5 se queda sin memoria y sin disco de desborde;
+   - Q10–Q12 no acaban ni a escala 10.
+3. **Spark + Sedona termina lo que DuckDB no**: Q5 a escala 100 en 345 s y Q12 a escala 10 en 257 s.
+   En un solo nodo es más lento en todo lo demás. Heavyweight vale por lo que no cabe, no por la
+   velocidad.
+4. **Con la difusión, Spark empata o gana en punto-en-polígono sobre el banco** (B2: 14,5 s frente a
+   18,4 s), que es la forma de enriquecer.
+5. **Lo abierto en Spark:**
+   - Q10 (`LEFT JOIN` con predicado espacial) falla en 8 s: Sedona no indexa el *join* externo (por
+     confirmar con la traza entera);
+   - Q6 y Q8 a escala 100 pasan de 600 s;
+   - Spark en varios nodos no se ha medido.
+
+   Las tres cosas van a C3.
+
+#### Las preguntas de §5, respondidas por C0
+
+| # | respuesta |
+|---|---|
+| P1 Spark geo | Spark 4.1 **con Sedona 1.9.1** (C0·0) |
+| P2 el dialecto | **Casi portable:** SpatialBench sólo cambia Q5 y Q12 entre los dos, y los once casos que terminan en ambos dan lo mismo. **ORE no traduce el SQL:** documenta las diferencias, y la tabla se escribe con C1·1 |
+| P3 dónde corren las Views | **Se describen siempre en DuckDB** (es el compilador de tipos de E1·1) y **se ejecutan en el motor del repositorio**. Como el SQL es casi el mismo, una View sirve en los dos |
+| P4 el *join* a escala | **Índice difundido** (R-tree) cuando un lado cabe en memoria, que es el caso de enriquecer. Partición espacial (`RangeJoin`) sólo cuando los dos son grandes. **Heavyweight difunde el lado pequeño por sí mismo**: regla de ORE, no pista del cliente (C3). H3 como estrategia de *join* no hace falta todavía |
+| P5 objetivos | Propuestos abajo, para aprobar |
+| P6 la forma de enriquecer | El punto-en-polígono difundido (B2) **es** enriquecer, y es un *join*. Recomendación: **un operador** (Transform o Pipelines) que genera ese *join* con la difusión puesta, **no un kind nuevo**. Se decide en C4·1 |
+
+#### C0·5 · Los objetivos, para aprobar
+
+En un nodo de 16 vCPU y 64 GB. Son la línea base medida hoy; C2 y C3 no pueden empeorarla.
+
+| motor | objetivo |
+|---|---|
+| **Lightweight** (DuckDB) | Q1–Q9 de SpatialBench escala 10 en **< 15 s** cada una; Q1–Q4, Q7–Q9 a escala 100 en **< 60 s**. B1–B4 sobre el banco entero en **< 20 s**. Lo que no cabe (Q5 a escala 100, Q10–Q12) **falla con un error claro** que aconseja Heavyweight, sin tumbar el puesto |
+| **Heavyweight** (Spark + Sedona) | **Termina todo SpatialBench a escala 100** (hoy no terminan Q6, Q8, Q10, Q11 ni Q12) en **< 10 min** por consulta con 4 nodos (C3). Enriquecer (B2) a la altura de DuckDB (**< 20 s**) en un nodo. Q10 sin error |
+
+**Lo que queda fuera de C0:** Spark en varios nodos (C3) y DuckDB en la forma del producto, dentro
+de un puesto de victor (C2).
 
 ### C1 · El contrato en los frameworks
 
@@ -332,6 +408,14 @@ El ADR pasa de hoja de ruta a imagen.
   Spark + Sedona 1.9.1, que corre sobre 4.1 con los jars en el classpath de la aplicación (P1 respondida).
   El AIS son ~127 M de posiciones; SpatialBench se instala con `cargo`; Spark se mide en un pool
   efímero (la cuota es ahora de 32 vCPU). Siguiente: C0·1–C0·5.
+- **2026-10-18 · C0·1–C0·3 medidos.** Primero el laboratorio local y luego un pool efímero
+  (`n2-standard-16` spot, borrado al acabar). Los dos motores dan lo mismo. DuckDB es el rápido
+  mientras cabe; Spark + Sedona termina lo que DuckDB no (Q5 a escala 100, Q12). Spark necesita que ORE
+  difunda el lado pequeño. P1–P4 y P6 respondidas; los objetivos de C0·5, propuestos.
+  - **Un tropiezo:** el primer intento en el pool murió a las 12:31 por disco efímero lleno
+    (273 GB) y perdió lo medido.
+  - **Lo que lo arregló:** subir cada resultado según sale, poder reanudar y poner topes de disco.
+  - Siguiente: aprobar los objetivos y cerrar C0.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
