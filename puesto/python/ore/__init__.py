@@ -2124,7 +2124,8 @@ def _oos_de_duckdb(tipo):
 _NOMBRE_DE_COLUMNA = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _es_geo(t):
+def _es_tipo_geo(t):
+    """¿Es geo este tipo de OOS (texto)? La de un campo de Arrow es `_es_geo`."""
     return bool(re.match(r"^(Geometry|Geography)\b", t or ""))
 
 
@@ -2139,7 +2140,7 @@ def _mismo_tipo(antes, ahora):
     CRS (E1·1): al escribirla, lo vuelve a poner."""
     if antes == ahora:
         return True
-    return (_es_geo(antes) and _es_geo(ahora) and re.match(r"^Geometry(<Any, |$)", ahora) is not None
+    return (_es_tipo_geo(antes) and _es_tipo_geo(ahora) and re.match(r"^Geometry(<Any, |$)", ahora) is not None
             and _crs_del_contrato(antes) == _crs_del_contrato(ahora))
 
 
@@ -2167,10 +2168,8 @@ def _describir(sql, que):
             cat.legibles.setdefault(n, i)
         leidos = [n for _, _, n, _ in lsp_sql.nombres([t[1] for t in lsp_sql.tokens(sql)])]
         with cat.candado:
-            # ORE 0066 E1·1: `ST_*` o `h3_*` aunque no lea una tabla geo.
-            if re.search(r"\b(st|h3)_[a-z]", sql, re.I):
-                cat.cargar_geo()
-            cat.asegurar(leidos)
+            # ORE 0066 E1·1: lo geo si usa `ST_*` o `h3_*`, y las tablas que lee.
+            cat.preparar(sql, leidos)
         # 0057 C2: si lee una colección, la vista es v1alpha17 (`04` §3).
         coleccion = any((cat.legibles.get(n) or {}).get("kind") == "MediaCollection" for n in leidos)
         try:
@@ -2187,7 +2186,7 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno, lee_co
     # en la de siempre: no cambian de reglas por esto.
     version = "v1alpha17" if lee_coleccion else "v1alpha14"
     # ORE 0066 E1·1: una columna geo, desde v1alpha32 (que trae lo de antes).
-    if any(_es_geo(t) for t in contrato.values()):
+    if any(_es_tipo_geo(t) for t in contrato.values()):
         version = "v1alpha32"
     lineas = ["apiVersion: oos.dev/%s" % version, "kind: View", "metadata:", "  name: %s" % v, "  namespace: %s" % base]
     if ns != DEFAULT:
@@ -2657,6 +2656,16 @@ def _resultado_de_crear(objeto, creado):
 
 
 @_kw({"nombre": "name", "datos": "data", "modo": "mode", "clave": "key", "anclada_a": "anchored_to"})
+def _esquema_iceberg(schema):
+    """El esquema Iceberg que `write()` esboza de un esquema de Arrow. Los ids como
+    los reparte Iceberg al crear: primero las columnas, luego los hijos de cada una
+    (v1alpha17, 0049 B1). Una geometría (`geoarrow.wkb`) es `binary` (0067 G2·0)."""
+    ids = iter(range(len(schema) + 1, 10**7))
+    return {"type": "struct", "schema-id": 0, "fields": [
+        {"id": i + 1, "name": f.name, "type": "binary" if _es_geo(f) else _tipo_iceberg(f.name, f.type, ids), "required": False}
+        for i, f in enumerate(schema)]}
+
+
 def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyway=False):
     """Write `data` (a pandas or polars DataFrame, or an Arrow Table) as the
     lake dataset `<database>.<schema>.<name>`. The code never touches the
@@ -2726,13 +2735,7 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:
         raise ValueError("write(): the table has no rows")
-    # Los ids como los reparte Iceberg al crear: primero las columnas, luego los
-    # hijos de cada una (v1alpha17, 0049 B1).
-    n = len(tabla_arrow.schema)
-    ids = iter(range(n + 1, 10**7))
-    esquema = {"type": "struct", "schema-id": 0, "fields": [
-        {"id": i + 1, "name": f.name, "type": "binary" if _es_geo(f) else _tipo_iceberg(f.name, f.type, ids), "required": False}
-        for i, f in enumerate(tabla_arrow.schema)]}
+    esquema = _esquema_iceberg(tabla_arrow.schema)
     ipc = _ipc(tabla_arrow)
     # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
     # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de

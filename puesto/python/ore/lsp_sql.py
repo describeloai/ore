@@ -51,6 +51,8 @@ import threading
 import time
 
 DEMORA = 0.3
+# Una consulta que usa funciones geo (0066 E1·1): carga `spatial` y `h3`.
+GEO_EN_SQL = re.compile(r"\b(st|h3)_[a-z]", re.I)
 VENTANA = 20000
 TOPE_BINDER = 100000
 # Lo que dura el indice antes de volver a pedirlo (en segundo plano).
@@ -207,6 +209,13 @@ class Catalogo:
         # Una conexion PROPIA: nada que ver con la de las celdas (`ore._duckdb()`).
         # Un catalogo por base y un schema por schema (0038), como en `sql()`.
         self.con = duckdb.connect()
+        # Las extensiones de la imagen, donde las deja (`ore.EXTENSIONES`): con el
+        # directorio por defecto, en el puesto `spatial` no carga y una tabla geo
+        # da «unrecognized coordinate system» (0068 C1·1 pieza 0).
+        import os
+        from ore import EXTENSIONES
+        if os.path.isdir(EXTENSIONES):
+            self.con.execute("set extension_directory = '%s'" % EXTENSIONES)
         # 0053: lo que se lee en vivo (una Table, el listado de un ObjectTable)
         #   también existe para DuckDB, vacío y con sus columnas: sin esto, la
         #   nota «se lee en vivo» llegaba con un «Catalog … does not exist» rojo.
@@ -228,6 +237,14 @@ class Catalogo:
                 self.con.execute("load %s" % ext)
             except Exception:
                 pass
+
+    def preparar(self, sql, nombres):
+        """Lo que `sql` necesita para describirse: lo geo si usa `ST_*` o `h3_*`
+        (aunque no lea una tabla geo) y las tablas vacías de lo que lee. Con el
+        candado tomado."""
+        if GEO_EN_SQL.search(sql or ""):
+            self.cargar_geo()
+        self.asegurar(nombres)
 
     def asegurar(self, nombres):
         """Las tablas vacias de estos nombres, si faltan. Con el candado tomado."""
@@ -535,7 +552,7 @@ def diagnosticar(texto, cat):
         with cat.candado:
             try:
                 ts_s = tokens(s)
-                cat.asegurar({n for _, _, n, _ in nombres([t[1] for t in ts_s])})
+                cat.preparar(s, {n for _, _, n, _ in nombres([t[1] for t in ts_s])})
                 # ⛔ UNA sentencia: con varias, DuckDB EJECUTA las que siguen.
                 cat.con.execute(PREFIJO + s)
                 continue

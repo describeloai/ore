@@ -18,9 +18,16 @@ import ore
 from ore import lsp_sql
 
 try:
+    import os
+
     import duckdb
 
-    duckdb.connect().execute("load spatial")
+    _c = duckdb.connect()
+    # Donde las deja la imagen del puesto (con el directorio por defecto, ahí no
+    # carga y esto se saltaba en silencio: 0068 C1·1 pieza 0).
+    if os.path.isdir(ore.EXTENSIONES):
+        _c.execute("set extension_directory = '%s'" % ore.EXTENSIONES)
+    _c.execute("load spatial")
     SPATIAL = True
 except Exception:
     SPATIAL = False
@@ -99,6 +106,26 @@ class ContratoDeLaVista(unittest.TestCase):
         self.assertEqual(r["columns"], {"id": "Integer", "n": "String"})
         self.assertIn("apiVersion: oos.dev/v1alpha14", yaml)
         self.assertIsNone(re.search(r"Geometry", yaml))
+
+
+@unittest.skipIf(not SPATIAL, "sin spatial")
+class ElEditor(unittest.TestCase):
+    """0068 C1·1 pieza 0: los diagnósticos del editor con geometría, con el
+    catálogo cargando `spatial` de donde lo deja la imagen."""
+
+    def diagnosticos(self, sql):
+        return [d.get("message", "") for d in lsp_sql.diagnosticar(sql, lsp_sql.Catalogo(INDICE))]
+
+    def test_bien_no_dice_nada(self):
+        self.assertEqual(self.diagnosticos("select ST_Buffer(utm, 100) as z from geo.default.lugares"), [])
+
+    def test_mezclar_crs_se_subraya(self):
+        d = self.diagnosticos("select ST_Intersects(geom, utm) as x from geo.default.lugares")
+        self.assertTrue(any("coordinate reference system" in m for m in d), d)
+        self.assertFalse(any("unrecognized coordinate system" in m for m in d), d)
+
+    def test_st_sin_tabla_geo_carga_spatial(self):
+        self.assertEqual(self.diagnosticos("select ST_AsText(ST_Point(1, 2)) as p from geo.default.lugares"), [])
 
 
 if __name__ == "__main__":

@@ -38,6 +38,15 @@ class GeoAlEscribir(unittest.TestCase):
         de_vuelta = pa.ipc.open_stream(ore._ipc(t)).read_all()
         self.assertTrue(ore._es_geo(de_vuelta.schema.field("geometry")))
 
+    def test_el_esquema_que_esboza_write(self):
+        # 0068 C1·1 pieza 0: una `_es_geo(t)` de texto tapó a esta y `write()`
+        # fallaba con cualquier tabla. El esquema, con geo y sin geo.
+        gdf = geopandas.GeoDataFrame(
+            {"id": [1], "nombre": ["a"]}, geometry=[shapely.Point(1, 2)], crs="EPSG:4326")
+        campos = ore._esquema_iceberg(ore._arrow_de(gdf).schema)["fields"]
+        self.assertEqual([(c["name"], c["type"]) for c in campos],
+                         [("id", "long"), ("nombre", "string"), ("geometry", "binary")])
+
 
 if __name__ == "__main__":
     unittest.main()
