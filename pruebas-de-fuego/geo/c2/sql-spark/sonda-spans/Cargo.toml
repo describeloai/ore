@@ -1,0 +1,12 @@
+[package]
+name = "sonda-spans"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# ORE 0068 C2·3 2b·0 · ¿Se puede reescribir cada nombre del árbol de una sentencia por su span, sin
+# reimprimirla? El mismo sqlparser que `ore-core` (0.63, dialecto DuckDB).
+[dependencies]
+sqlparser = { version = "0.63", default-features = false, features = ["std", "visitor"] }
+
+[workspace]

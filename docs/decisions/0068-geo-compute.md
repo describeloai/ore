@@ -563,6 +563,36 @@ CRS en una columna, `upsert`, un pandas y escribir fuera del techo. El SDK, 154/
 - Las **promesas de columna** quedan `unknown` en Heavyweight (las de filas, como `notEmptied`, se
   juzgan igual): el SDK no las cuenta todavía. `upsert` y las tablas ancladas, tampoco.
 
+**Pieza 2b · SQL en Heavyweight: el diseño (aprobado 2026-10-18).** En una sentencia, las entradas
+se nombran dentro del texto, y Spark las lee del catálogo como WKB. **ORE reescribe los nombres:**
+la consulta para Spark es el mismo texto con cada nombre del árbol que lee sustituido, por su
+*span*, por una vista temporal (`ore__<base>__<schema>__<nombre>`) que se registra con `over()`, así
+que la geometría se convierte en un solo sitio y nada se reimprime. Descartadas: una regla de
+Catalyst que convierta toda tabla de ORE al leerla (Spark resuelve las referencias del padre en la
+misma pasada en que nace la relación: la regla cambiaría el tipo de una columna ya resuelta como
+`binary`), y que quien escribe convierta a mano. **El dialecto** es el de C0 (P2: ORE no traduce):
+el contrato se describe en DuckDB (P3) y lo corre Spark; lo que sólo es de DuckDB falla en el build.
+
+**2b·0 · el previo (`pruebas-de-fuego/geo/c2/sql-spark/`).**
+1. **La reescritura por *spans*** (`sonda-spans`, el sqlparser 0.63 de `ore-core` y su regla de las
+   CTE): **10/10**. Dos y tres partes, entre comillas, el mismo nombre dos veces, una CTE que se
+   llama como una tabla, subconsultas e `IN`, nombres en cadenas y comentarios intactos, varias
+   líneas y acentos (las columnas de sqlparser cuentan caracteres, no bytes). **Un hallazgo:** una
+   columna cualificada con el nombre entero de la tabla (`geo.lugares.id`) se queda sin su tabla tras
+   reescribir el `from`: 2b·1 reescribe también ese prefijo.
+2. **El SQL escrito como en DuckDB, en Spark sobre las vistas** (`dialecto.py`): **18/22 van tal
+   cual**, entre ellos el *join* con `ST_Contains` y `group by`, `ST_DWithin`, `ST_Distance`,
+   `ST_Transform` con 3 argumentos y con 2 (lon/lat), `ST_Union_Agg`, `::`, `ilike`, `count(*)
+   filter (where …)`, `string_agg`, `array_agg`, `date_trunc`; y el SRID llega por la vista.
+   **No van en Spark:**
+
+| DuckDB | en Spark |
+|---|---|
+| `qualify …` | una subconsulta con la ventana y un `where` |
+| `select * exclude (c)` | `select * except (c)` |
+| `list(x)` | `array_agg(x)` (o `collect_list`) |
+| `h3_latlng_to_cell(lat, lng, r)` y los `h3_*` | `ST_H3CellIDs(geom, r, false)` y los `ST_H3*` de Sedona |
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |
