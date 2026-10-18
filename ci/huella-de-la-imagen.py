@@ -44,6 +44,8 @@ IMAGENES = {
     "capa-python": "capa-python", "idp": "idp", "drivers": "ore-drivers", "serve": "ore-serve",
     "iam": "ore-iam", "cofre": "ore-cofre", "postgres-plano": "ore-postgres",
     "puesto-python": "puesto-python", "puesto-node": "puesto-node", "puesto-jvm": "puesto-jvm",
+    # ORE 0068 C2·2: el motor Heavyweight. `FROM puesto-python`: lo que rehace aquélla, rehace ésta.
+    "puesto-spark": "puesto-spark",
 }
 BIN = "bin"  # `FROM ${BINARIOS} AS bin`: la que sustituye la huella de los binarios
 

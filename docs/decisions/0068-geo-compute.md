@@ -367,7 +367,7 @@ devuelta por una invocación HTTP, que hoy `toWire` resume).
 | paso | qué |
 |---|---|
 | C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia (hecho en local) |
-| C2·2 | la imagen pesada con geo (lo que diga C0). **Antes que los Builds** (reordenado 2026-10-18): corren en ella |
+| C2·2 | la imagen pesada con geo (lo que diga C0). **Antes que los Builds** (reordenado 2026-10-18): corren en ella. Hecho en local |
 | C2·3 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark con la pila de Java Transforms |
 | C2·4 | **(era C1·4)** el contrato de lo que escribe un Transform Heavyweight, con su CRS: Spark escribe por el catálogo `/v1` de ORE (lo admite; medido con PyIceberg y DuckDB, nunca con Spark) la geometría en WKB `binary` con su `ore.geo.<col>`, que es el estado de hoy del lago (0067 G2). Spark 4.1 nativo no admite CRS proyectados (0067: EPSG:25830 da `ST_INVALID_CRS_VALUE`) |
 
@@ -459,6 +459,15 @@ escribe `ore.geo.zona`, y S6 sigue en el 500 (su 400 es de C2·3).
    frente a GeoTools). Para comparar resultados entre motores se tolera menos de 1 cm.
 3. Sedona no reconoce `'OGC:CRS84'`, que es el CRS por defecto de Iceberg para la geografía. El arnés
    de Heavyweight (C2·3) lo dice como `EPSG:4326`, que en Sedona ya es lon/lat.
+
+**Pieza 3 · al CI (hecha en local).** `puesto-spark` entra en `IMAGENES` (`ci/huella-de-la-imagen.py`)
+y en las etiquetas que se mueven (`puesto-spark:1` y `en-uso`, en `ci.yml`). Su huella sigue la
+cadena: **lo que rehace `puesto-python` rehace `puesto-spark`, y no al revés** (la prueba lo dice con
+dos casos nuevos). Con `--comprobar`, las 15 imágenes del CI cuadran con el Dockerfile. Queda medir en
+el ensayo del CI, con el empuje del cierre, el disco del *runner*: es la imagen más grande que
+construye.
+
+**C2·2, cerrado en local.**
 
 ### C3 · El *join* espacial a escala
 

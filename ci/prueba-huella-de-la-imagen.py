@@ -12,7 +12,8 @@ import tempfile
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "ci/compilar-binarios.sh"]
-BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "puesto-python", "puesto-node", "puesto-jvm"]
+BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "puesto-python", "puesto-node", "puesto-jvm",
+       "puesto-spark"]
 
 
 # Los binarios que el Dockerfile copia: el mapa de las pruebas por binario.
@@ -32,7 +33,10 @@ def tocar(raiz, ruta, texto="\n# tocado por la prueba\n"):
 
 
 CASOS = [
-    ("un fichero del puesto de Python", lambda r: tocar(r, "puesto/python/agente.py"), {"puesto-python"}),
+    # ⭐ 0068 C2·2: `puesto-spark` sale de `puesto-python`, así que lo que rehace una rehace la otra…
+    ("un fichero del puesto de Python", lambda r: tocar(r, "puesto/python/agente.py"), {"puesto-python", "puesto-spark"}),
+    # …y no al revés.
+    ("la lista de jars del puesto pesado", lambda r: tocar(r, "puesto/spark/jars.txt"), {"puesto-spark"}),
     ("la lista de Node (la capa y el puesto)", lambda r: tocar(r, "puesto/node/provisto.txt", "\n"), {"capa-node", "puesto-node"}),
     ("el guion del informador", lambda r: tocar(r, "malla/informar.sh"), {"informador"}),
     ("el tema del login", lambda r: tocar(r, next(os.path.join(d, f)[len(r) + 1:] for d, _, fs in os.walk(os.path.join(r, "identidad/tema")) for f in fs)), {"idp"}),
@@ -41,7 +45,7 @@ CASOS = [
     ("una etapa nueva que nadie usa", lambda r: tocar(r, "Dockerfile", "\nFROM alpine:3.22 AS otra\n"), set()),
     ("una instrucción de la etapa serve",
      lambda r: cambiar(r, "RUN apk add --no-cache git ca-certificates", "RUN apk add --no-cache git ca-certificates curl"), {"serve"}),
-    ("una etapa de la que copia otra (pyright)", lambda r: cambiar(r, "ARG PYRIGHT=", "ARG PYRIGHT=9"), {"puesto-python"}),
+    ("una etapa de la que copia otra (pyright)", lambda r: cambiar(r, "ARG PYRIGHT=", "ARG PYRIGHT=9"), {"puesto-python", "puesto-spark"}),
 ]
 
 
@@ -65,7 +69,7 @@ def main():
             ("la huella de todos los binarios", None, set(BIN)),
             # ADR 0060 B2: una huella por binario; cada imagen, sólo las de lo que copia.
             ("la huella de ore-serve", None, {"serve"}),
-            ("la huella de ore-store-gcs", None, {"serve", "drivers", "puesto-python", "puesto-node", "puesto-jvm"}),
+            ("la huella de ore-store-gcs", None, {"serve", "drivers", "puesto-python", "puesto-node", "puesto-jvm", "puesto-spark"}),
             ("la huella de ore-iam", None, {"iam"}),
             ("FORZAR", None, set(antes)),
         ]
