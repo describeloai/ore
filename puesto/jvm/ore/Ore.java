@@ -734,6 +734,29 @@ public final class Ore {
         return md != null && "geoarrow.wkb".equals(md.get("ARROW:extension:name"));
     }
 
+    /**
+     * ORE 0068 C1·3 · El CRS ({@code AUTORIDAD:CÓDIGO}) de los metadatos de {@code geoarrow.wkb}:
+     * {@code {"crs": "EPSG:25830"}} (el SDK), o el PROJJSON con su {@code id} (DuckDB:
+     * {@code {"crs_type": "projjson", "crs": {…, "id": {"authority": "EPSG", "code": 25830}}}}). Lo
+     * que lee {@code carga::crs_de_geoarrow} en ore-store. {@code ?} si no lo lleva.
+     */
+    @SuppressWarnings("unchecked")
+    static String crsDeGeoarrow(String meta) {
+        Object j;
+        try { j = meta == null || meta.isBlank() ? null : Json.leer(meta); } catch (RuntimeException e) { return "?"; }
+        Object c = j instanceof Map<?, ?> m ? m.get("crs") : null;
+        if (c instanceof String s) {
+            if (!s.trim().startsWith("{")) return s.trim();
+            try { c = Json.leer(s); } catch (RuntimeException e) { return "?"; }
+        }
+        if (c instanceof Map<?, ?> o && o.get("id") instanceof Map<?, ?> id && id.get("authority") != null && id.get("code") != null) {
+            Object code = id.get("code");
+            if (code instanceof Number n && n.doubleValue() == Math.rint(n.doubleValue())) code = n.longValue();
+            return id.get("authority") + ":" + code;
+        }
+        return "?";
+    }
+
     /** Where the image leaves DuckDB's preinstalled extensions. */
     public static final Path EXTENSIONS = Path.of("/opt/ore/duckdb");
     /** @deprecated use {@link #EXTENSIONS}. */
@@ -1141,14 +1164,35 @@ public final class Ore {
         public List<String> readLive() { return readLive; }
     }
 
-    /** Un lector de Arrow atado a su {@code ResultSet}: cerrarlo cierra los dos. */
+    /**
+     * Un lector de Arrow atado a su {@code ResultSet}: cerrarlo cierra los dos.
+     *
+     * <p>⛔ ORE 0068 C1·3 · DENTRO DE UNA TRANSACCIÓN. Con autocommit, el JDBC de DuckDB (1.5.5 y 1.5.6,
+     * medido) no exporta una {@code GEOMETRY} con CRS: al poner el CRS en la marca
+     * {@code geoarrow.wkb} pide la transacción, que ya se cerró («ActiveTransaction called without
+     * active transaction»), y {@code sql()} de un {@code ST_Buffer} fallaba entero. Abierta aquí, se
+     * cierra al cerrar el lector; si quien llama ya tenía una, se usa la suya.
+     */
     private static ArrowReader exportar(Statement st, String texto, int lote) throws SQLException {
-        ResultSet rs = st.executeQuery(texto);
-        ArrowReader lector = (ArrowReader) ((org.duckdb.DuckDBResultSet) rs).arrowExportStream(asignador, lote);
+        java.sql.Connection con = st.getConnection();
+        boolean propia = con.getAutoCommit();
+        if (propia) con.setAutoCommit(false);
+        ResultSet rs;
+        ArrowReader lector;
+        try {
+            rs = st.executeQuery(texto);
+            lector = (ArrowReader) ((org.duckdb.DuckDBResultSet) rs).arrowExportStream(asignador, lote);
+        } catch (SQLException | RuntimeException e) {
+            if (propia) { try { con.rollback(); } catch (SQLException ignorada) { /* ya falló */ } con.setAutoCommit(true); }
+            throw e;
+        }
         return new ArrowReader(asignador) {
             @Override public boolean loadNextBatch() throws IOException { return lector.loadNextBatch(); }
             @Override public long bytesRead() { return lector.bytesRead(); }
-            @Override protected void closeReadSource() throws IOException { try { lector.close(); rs.close(); st.close(); } catch (SQLException e) { throw new IOException(e); } }
+            @Override protected void closeReadSource() throws IOException {
+                try { lector.close(); rs.close(); st.close(); if (propia) { con.commit(); con.setAutoCommit(true); } }
+                catch (SQLException e) { throw new IOException(e); }
+            }
             @Override protected org.apache.arrow.vector.types.pojo.Schema readSchema() throws IOException { return lector.getVectorSchemaRoot().getSchema(); }
             @Override public VectorSchemaRoot getVectorSchemaRoot() throws IOException { return lector.getVectorSchemaRoot(); }
         };
@@ -1480,6 +1524,10 @@ public final class Ore {
         // ORE 0067 G2·3·4: una geometría es su WKB con la marca `geoarrow.wkb` y su CRS, que es
         // lo que `ore-store` (`carga::normalizar`) acepta y lleva al escritor geo.
         String crs = crsDeGeo(t);
+        if ("?".equals(crs)) {
+            throw new IllegalArgumentException("write(): column `" + nombre + "` is a geometry with no CRS, and a CRS is "
+                + "never guessed: say it in the query with `ST_SetCRS(…, 'EPSG:4326')`");
+        }
         if (crs != null) {
             Map<String, String> md = new LinkedHashMap<>();
             md.put("ARROW:extension:name", "geoarrow.wkb");
@@ -2015,6 +2063,10 @@ public final class Ore {
     /** A field's Arrow type, with the name {@code pyarrow} gives it. */
     public static String arrowName(Field f) {
         ArrowType t = f.getType();
+        // ORE 0068 C1·3: una geometría marcada es `geometry(<CRS>)`, el nombre que `write()` lee, y
+        // así unas Rows de `sql()` se escriben con su geometría y su CRS (eran `binary`, y se perdía).
+        // Sin CRS, `geometry(?)`: `write()` lo niega (un CRS nunca se adivina).
+        if (esGeo(f)) return "geometry(" + crsDeGeoarrow(f.getMetadata().get("ARROW:extension:metadata")) + ")";
         if (t instanceof ArrowType.Int x) return (x.getIsSigned() ? "int" : "uint") + x.getBitWidth();
         if (t instanceof ArrowType.FloatingPoint x) return switch (x.getPrecision()) { case HALF -> "halffloat"; case SINGLE -> "float"; case DOUBLE -> "double"; };
         if (t instanceof ArrowType.Bool) return "bool";

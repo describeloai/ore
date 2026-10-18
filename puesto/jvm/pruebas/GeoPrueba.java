@@ -18,8 +18,8 @@ import org.apache.arrow.vector.types.pojo.Field;
 
 /**
  * La geometría en el SDK de la JVM (ORE 0067 G2·3·4). Fuera del paquete de la imagen: se compila
- * junto a {@code Ore.java} y se corre con {@code java ore.GeoPrueba}. Sin {@code spatial} (la imagen
- * de hoy no la trae, G2·3·5), lo de DuckDB se salta y lo dice.
+ * junto a {@code Ore.java} y se corre con {@code java ore.GeoPrueba} (en la imagen del puesto JVM:
+ * {@code bash pruebas-de-fuego/geo/c1/jvm-en-la-imagen.sh}). Sin {@code spatial}, lo de DuckDB se salta y lo dice.
  */
 public class GeoPrueba {
     static void igual(Object a, Object b, String que) {
@@ -104,6 +104,36 @@ public class GeoPrueba {
                 "select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where " + Ore.intersectsBox("geom", 0, 0, 5, 5))) {
             rs.next();
             igual(rs.getLong(1), 1L, "e intersectsBox filtra");
+        }
+
+        // ORE 0068 C1·3 · Lo que un Java Transform lee de una geometría calculada, y lo que escribe.
+        String zona = "select 1 as id, ST_Buffer(ST_SetCRS(ST_Point(440000, 4474000), 'EPSG:25830'), 100) as zona";
+        Ore.Rows calc = Ore.sql(zona);
+        igual(calc.types.get("zona"), "geometry(EPSG:25830)", "sql() de una geometría con CRS: su tipo");
+        igual(calc.get(0).get("zona") instanceof byte[], true, "y su valor, el WKB");
+        igual(con.getAutoCommit(), true, "la transacción del lector, cerrada");
+        List<Map<String, Object>> esq2 = new ArrayList<>();
+        byte[] ipc2 = (byte[]) ipcDe.invoke(null, calc, esq2);
+        try (var a = new RootAllocator(); var rd = new ArrowStreamReader(new ByteArrayInputStream(ipc2), a)) {
+            rd.loadNextBatch();
+            Field fz = rd.getVectorSchemaRoot().getSchema().findField("zona");
+            igual(fz.getMetadata().get("ARROW:extension:metadata"), "{\"crs\":\"EPSG:25830\"}", "leer y escribir: la marca y su CRS");
+        }
+        byte[] ipc3 = (byte[]) ipcDe.invoke(null, Ore.arrowSql(zona), new ArrayList<Map<String, Object>>());
+        try (var a = new RootAllocator(); var rd = new ArrowStreamReader(new ByteArrayInputStream(ipc3), a)) {
+            rd.loadNextBatch();
+            Field fz = rd.getVectorSchemaRoot().getSchema().findField("zona");
+            igual(Ore.crsDeGeoarrow(fz.getMetadata().get("ARROW:extension:metadata")), "EPSG:25830", "arrowSql() también, con su CRS");
+        }
+        igual(Ore.crsDeGeoarrow("{\"crs\":\"OGC:CRS84\"}"), "OGC:CRS84", "el CRS escrito tal cual");
+        igual(Ore.crsDeGeoarrow("{}"), "?", "sin CRS");
+        Ore.Rows sin = Ore.sql("select ST_Point(1, 2) as p");
+        igual(sin.types.get("p"), "geometry(?)", "una geometría sin CRS se dice");
+        try {
+            ipcDe.invoke(null, sin, new ArrayList<Map<String, Object>>());
+            throw new AssertionError("write() de una geometría sin CRS tenía que fallar");
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            igual(String.valueOf(e.getCause().getMessage()).contains("ST_SetCRS"), true, "y write() la niega, con su remedio");
         }
         System.out.println("## ok");
     }
