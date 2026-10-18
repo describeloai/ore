@@ -368,7 +368,7 @@ devuelta por una invocación HTTP, que hoy `toWire` resume).
 |---|---|
 | C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia (hecho en local) |
 | C2·2 | la imagen pesada con geo (lo que diga C0). **Antes que los Builds** (reordenado 2026-10-18): corren en ella. Hecho en local |
-| C2·3 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark con la pila de Java Transforms |
+| C2·3 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark en `puesto-spark` (piezas abajo) |
 | C2·4 | **(era C1·4)** el contrato de lo que escribe un Transform Heavyweight, con su CRS: Spark escribe por el catálogo `/v1` de ORE (lo admite; medido con PyIceberg y DuckDB, nunca con Spark) la geometría en WKB `binary` con su `ore.geo.<col>`, que es el estado de hoy del lago (0067 G2). Spark 4.1 nativo no admite CRS proyectados (0067: EPSG:25830 da `ST_INVALID_CRS_VALUE`) |
 
 **Hecho cuando:** un repositorio de cada clase, creado desde su banner, corre un *join* espacial en su
@@ -468,6 +468,57 @@ el ensayo del CI, con el empuje del cierre, el disco del *runner*: es la imagen 
 construye.
 
 **C2·2, cerrado en local.**
+
+#### C2·3 · Los Builds Heavyweight
+
+**Lo que hay (previo, 2026-10-18).** Un Build es un *trabajo*: el mismo Job de un puesto
+(`malla/51-el-puesto.yaml`), que corre una celda —el arnés, por HTTP— y termina. La imagen la decide
+el lenguaje del Transform (Java → `jvm`; Python y SQL → `python`), con los recursos fijos de la
+plantilla (2 CPU / 4 Gi) y `cola::ENTORNOS` sin `spark`. El Build no lee el `Motor`. `/v1` sabe qué
+Transform y qué salida escribe (el puesto que llama), pero no sella nada: `ore.geo.*` llega como
+propiedad del cliente (lo calcula el `ore-store` del puesto) y se copia sin mirarla. El 500 de S6
+nace en `ore-store` (iceberg 0.10 no abre `geometry`), que sale con 69 y `/v1` lo da por
+`CommitStateUnknown`; ore-cli puede negarlo antes con 64, que ya es 400. En el clúster no hay pool
+pesado (cuota global 4/32 vCPU), y `cq-victor` tiene 1,5 CPU en `jobs`.
+
+**Decidido (2026-10-18):**
+- **La API de Python en Heavyweight son los mismos nombres** (`@transform`, `over`, `write`); `over()`
+  da un DataFrame de Spark. Quien sabe escribir un Transform lo reconoce; cada motor rinde con su tipo.
+- **El pool pesado es `n2-highmem-8` *spot*** (8 vCPU, 64 GB), con escala a cero: Spark come memoria
+  y C0 midió con 64 GB.
+
+| pieza | qué |
+|---|---|
+| 0 | el previo en el banco (abajo) |
+| 1 | el motor elige el entorno: `Donde` lleva el `motor`; Heavyweight → `entorno=spark` (`puesto-spark:1`), con plantilla y recursos propios. TypeScript en Heavyweight, 422 |
+| 2 | el arnés PySpark (Python y SQL): `over()` → DataFrame; `write()` pasa la geometría de Sedona a WKB, sella `ore.geo` con su SRID y la procedencia, por `/v1` e idempotente. La identidad, por el `AuthManager` del pod; la memoria, por regla |
+| 3 | `/v1` comprueba: S6 es 400 con su remedio; un `ore.geo` que contradiga el contrato del Dataset se niega. Y sirve `…/credentials`, para que un Build de más de una hora no se quede sin GCS |
+| 4 | Spark Java (`Dataset<Row>`) |
+| 5 | Preview como Job corto |
+| 6 | el pool `pesado`, su *flavor* de Kueue y su cuota (toca producción: go aparte), y la celda en victor: un repositorio Heavyweight corre un *join* espacial |
+
+**Pieza 0 · el puesto pesado de verdad (2026-10-18, `pruebas-de-fuego/geo/c2/trabajo-spark/`).**
+El banco de C2·4 (ore-serve con su cola y su plantilla) y, en su red, **el agente de Python dentro de
+`puesto-spark`** con el límite del pod (4 GiB, `ORE_MEMORIA_MB`). Ana abre el puesto, el agente lo
+reclama y cada celda es PySpark.
+
+| caso | resultado |
+|---|---|
+| el agente corre una celda que monta Spark | **va**: la sesión arranca en 9–12 s dentro del proceso del agente (la JVM es su hija, por py4j). No hace falta otro agente |
+| escribir por `/v1` con la identidad del puesto | **va**: `x-ore-puesto` + la del agente, como el SDK. Sin `ore.procedencia` ni `ore.geo`: Spark no los pone, los pondrá el arnés |
+| **la identidad que cambia** mientras corre | `header.*` de Iceberg se lee **una vez**, y el token del pod dura 3600 s (el kubelet reescribe el fichero): un Build de más de una hora se quedaría fuera. **El SPI `AuthManager` de Iceberg 1.12** (`rest.auth.type` = una clase) lo resuelve: `AuthPod.java`, 30 líneas, lee la identidad del fichero **en cada petición**. Medido cambiando el fichero a mitad de sesión: **va · 403 «ese puesto no es de este agente» · va** |
+| la credencial prestada | GCS presta ~55 min (`gcs.oauth2.token-expires-at`). El cliente de Iceberg sabe refrescarla (`OAuth2RefreshCredentialsHandler`, `/v1/…/credentials`), **pero ORE no sirve ese endpoint** |
+| la memoria (4 GiB, `spark.driver.memory` 2g y 3g) | la JVM ocupa **el heap + ~0,8 GiB**; Python, 129 MB. Un `ST_Contains` de **20M puntos × 20k polígonos**: 9,9M pares en 18 s (2g) y 22 s (3g), pico 2,9 y 3,1 GiB, **sin que lo mate el límite** |
+
+**Lo que dice para las piezas:**
+1. **Un Build Heavyweight es el puesto de siempre con otra imagen:** el agente, la cola, el
+   reclamo y la celda no cambian. La pieza 1 es elegir `spark` y sus recursos.
+2. **La identidad va por `AuthPod`** (en la imagen, como jar), no por `header.x-ore-pod`.
+3. **`spark.driver.memory` lo pone el arnés desde `ORE_MEMORIA_MB`**, como la JVM del puesto Java
+   (`MaxRAMPercentage=50`): el pod menos ~1 GiB de la JVM fuera del heap y ~0,5 GiB de Python. En el
+   pod pesado (~52 GiB de límite en un `n2-highmem-8`), del orden de 44g; se confirma en victor.
+4. **`…/credentials` entra en la pieza 3**: sin él, un Build pesado de más de ~55 min falla al leer o
+   escribir en GCS.
 
 ### C3 · El *join* espacial a escala
 
