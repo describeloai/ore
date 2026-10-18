@@ -705,6 +705,39 @@ fn copiar(
 /// los *position deletes* aplicados—, en un fichero Arrow IPC (stream). Es lo
 /// que el paso que ejecuta la consulta de una vista SQL recibe en vez de una
 /// credencial del bucket.
+/// ORE 0068 C1·1 · **Las columnas geo de una tabla, marcadas**: Iceberg las guarda
+/// `binary` y su tipo va en `ore.geo.<col>` (0067 G2·1), así que lo que se vuelca
+/// llegaba como bytes sin CRS y la copia de una vista con `ST_*` no podía leerlas.
+/// Con la marca `geoarrow.wkb` y su CRS, DuckDB (con `spatial`) las lee como
+/// `GEOMETRY('<crs>')`. Una propiedad que no se entiende deja la columna como estaba.
+fn marcar_geo(
+    esquema: &arrow_schema::SchemaRef,
+    props: &HashMap<String, String>,
+) -> arrow_schema::SchemaRef {
+    let campos = esquema.fields().iter().map(|f| {
+        let Some(p) = props.get(&format!("{}{}", crate::lago_geo::PROP_GEO, f.name())) else {
+            return f.as_ref().clone();
+        };
+        let j: serde_json::Value = serde_json::from_str(p).unwrap_or_default();
+        let crs = j["crs"].as_str().unwrap_or(ore_core::types::CRS_DEFECTO);
+        let tipo = match j["type"].as_str() {
+            Some(t) => t.to_string(),
+            None if j["edges"].as_str() == Some("spherical") => "Geography".to_string(),
+            None => format!("Geometry<Any, {crs}>"),
+        };
+        let marcado = carga::campo_del_oos(f.name(), &tipo);
+        if marcado.data_type() == f.data_type() && !marcado.metadata().is_empty() {
+            marcado
+        } else {
+            f.as_ref().clone()
+        }
+    });
+    Arc::new(arrow_schema::Schema::new_with_metadata(
+        campos.collect::<Vec<_>>(),
+        esquema.metadata().clone(),
+    ))
+}
+
 fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
@@ -727,6 +760,7 @@ fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
                 .map_err(|e| format!("el esquema de `{dataset}` no pasa a Arrow: {e}"))?,
         ),
     };
+    let esquema = marcar_geo(&esquema, t.metadata().properties());
     let f = std::fs::File::create(&archivo)
         .map_err(|e| format!("no se pudo crear `{archivo}`: {e}"))?;
     let mut w = arrow_ipc::writer::StreamWriter::try_new(std::io::BufWriter::new(f), &esquema)
@@ -734,7 +768,9 @@ fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
     let mut filas = 0usize;
     for l in &lotes {
         filas += l.num_rows();
-        w.write(l)
+        let l = arrow_array::RecordBatch::try_new(esquema.clone(), l.columns().to_vec())
+            .map_err(|e| format!("`{dataset}` no casa con su esquema marcado: {e}"))?;
+        w.write(&l)
             .map_err(|e| format!("no se pudo escribir `{archivo}`: {e}"))?;
     }
     w.finish()
@@ -751,6 +787,40 @@ fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
 /// (la cabecera), cada una en el físico de 0032 que declara: una que la
 /// consulta no trae, o que no convierte, se dice con su nombre y no se sella
 /// nada. La copia de una vista se rehace entera (decisión D): sobrescribe.
+/// ORE 0068 C1·1 · Una geometría que la consulta devuelve marcada (`geoarrow.wkb`)
+/// en otro CRS que el que su contrato declara no se sella: sería reproyectar en
+/// silencio (0066 D5). Sin marca, o el contrato sin geo, nada que mirar.
+fn crs_como_el_contrato(
+    contrato: &arrow_schema::Field,
+    devuelto: &arrow_schema::Schema,
+) -> Result<(), String> {
+    let meta = |f: &arrow_schema::Field| {
+        (f.metadata().get("ARROW:extension:name").map(String::as_str) == Some(carga::GEOARROW_WKB))
+            .then(|| {
+                f.metadata()
+                    .get("ARROW:extension:metadata")
+                    .cloned()
+                    .unwrap_or_default()
+            })
+    };
+    let (Some(esperado), Ok(d)) = (meta(contrato), devuelto.field_with_name(contrato.name()))
+    else {
+        return Ok(());
+    };
+    let Some(llega) = meta(d) else {
+        return Ok(());
+    };
+    let (a, _) = carga::crs_de_geoarrow(&esperado)?;
+    let (b, _) = carga::crs_de_geoarrow(&llega)?;
+    if a != b {
+        return Err(format!(
+            "la columna `{}` llega en `{b}` y su contrato dice `{a}`: reproyecta con `ST_Transform` en la consulta",
+            contrato.name()
+        ));
+    }
+    Ok(())
+}
+
 fn sellar_arrow(
     lago: &Lago,
     cab: &sobre::Cabecera,
@@ -760,16 +830,18 @@ fn sellar_arrow(
     medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     use arrow_array::{Array, RecordBatch};
-    use arrow_schema::{Field, Schema};
+    use arrow_schema::Schema;
 
     let f =
         std::fs::File::open(archivo).map_err(|e| format!("no se pudo abrir `{archivo}`: {e}"))?;
     let lector = arrow_ipc::reader::StreamReader::try_new(std::io::BufReader::new(f), None)
         .map_err(|e| format!("`{archivo}` no es Arrow IPC: {e}"))?;
+    // ORE 0068 C1·1: cada columna con su campo, y una geometría con su marca y
+    // el CRS de su contrato; así el lago la escribe geo (`ore.geo.<col>`).
     let esquema = Arc::new(Schema::new(
         cab.esquema
             .iter()
-            .map(|(n, t)| Field::new(n, carga::arrow_del_oos(t), true))
+            .map(|(n, t)| carga::campo_del_oos(n, t))
             .collect::<Vec<_>>(),
     ));
     let mut lotes: Vec<RecordBatch> = Vec::new();
@@ -795,7 +867,14 @@ fn sellar_arrow(
                     f.name()
                 )
             })?;
-            columnas.push(if c.data_type() == f.data_type() {
+            crs_como_el_contrato(f, &lote.schema())?;
+            // Una geometría, por el códec de 0067 (valida el WKB contra su tipo),
+            // nunca por un `cast`.
+            let geo = f.metadata().get("ARROW:extension:name").map(String::as_str)
+                == Some(carga::GEOARROW_WKB);
+            columnas.push(if geo {
+                carga::geo_al_contrato(c, f)?
+            } else if c.data_type() == f.data_type() {
                 c.clone()
             } else {
                 arrow_cast::cast(c, f.data_type()).map_err(|e| {
@@ -2923,6 +3002,145 @@ mod tests {
             s2.contains(r#""promesas":{"sin_nombre":{"cuenta":1},"unico":{"cuenta":1}}"#),
             "{s2}"
         );
+    }
+
+    /// ORE 0068 C1·1 pieza 2 · **La copia de una vista con geometría**: `volcar`
+    /// entrega la columna geo marcada (`geoarrow.wkb` con el CRS de su
+    /// `ore.geo.<col>`), `sellar-arrow` la sella geo con el CRS de su contrato, y
+    /// una que llega en otro CRS no se sella.
+    #[test]
+    fn la_copia_de_una_vista_con_geometria_conserva_su_crs() {
+        use arrow_schema::{DataType, Field, Schema};
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let punto = |x: f64, y: f64| {
+            let mut w = vec![1u8, 1, 0, 0, 0];
+            w.extend_from_slice(&x.to_le_bytes());
+            w.extend_from_slice(&y.to_le_bytes());
+            w
+        };
+        let geoarrow = |crs: &str| {
+            HashMap::from([
+                (
+                    "ARROW:extension:name".to_string(),
+                    "geoarrow.wkb".to_string(),
+                ),
+                (
+                    "ARROW:extension:metadata".to_string(),
+                    format!("{{\"crs\": \"{crs}\"}}"),
+                ),
+            ])
+        };
+        let ipc_de = |crs: &str| {
+            let esquema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("geom", DataType::Binary, true).with_metadata(geoarrow(crs)),
+            ]));
+            let p = punto(440000.0, 4474000.0);
+            let lote = arrow_array::RecordBatch::try_new(
+                esquema.clone(),
+                vec![
+                    Arc::new(arrow_array::Int64Array::from(vec![1])),
+                    Arc::new(arrow_array::BinaryArray::from(vec![Some(p.as_slice())])),
+                ],
+            )
+            .unwrap();
+            let mut ipc = Vec::new();
+            {
+                let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut ipc, &esquema).unwrap();
+                w.write(&lote).unwrap();
+                w.finish().unwrap();
+            }
+            ipc
+        };
+        let ds = "datasets/c11_lugares";
+        let e = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"operacion\":\"op-c11\"}}"),
+            &ipc_de("EPSG:25830")[..],
+        )
+        .expect("escribe");
+        let ml = campo(
+            &aplicar_lo_escrito(&lago, &e, ds, None),
+            "metadata_location",
+        );
+        let dir = std::env::temp_dir().join(format!("ore-volcar-geo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entrada = dir.join("entrada.arrow");
+        volcar(
+            &lago,
+            &nodo(
+                &Json::obj([
+                    ("metadata_location", Json::s(&ml)),
+                    ("dataset", Json::s(ds)),
+                    ("archivo", Json::s(entrada.to_string_lossy())),
+                ])
+                .jcs(),
+            ),
+        )
+        .expect("vuelca");
+        let lector =
+            arrow_ipc::reader::StreamReader::try_new(std::fs::File::open(&entrada).unwrap(), None)
+                .unwrap();
+        let geom = lector.schema().field_with_name("geom").unwrap().clone();
+        assert_eq!(
+            geom.metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("geoarrow.wkb")
+        );
+        let (crs, _) =
+            carga::crs_de_geoarrow(&geom.metadata()["ARROW:extension:metadata"]).unwrap();
+        assert_eq!(crs, "EPSG:25830");
+
+        let cab = sobre::Cabecera {
+            plan: "sha256:vista-geo".into(),
+            esquema: [
+                ("id".to_string(), "Integer".to_string()),
+                ("geom".to_string(), "Geometry<Any, EPSG:25830>".to_string()),
+            ]
+            .into(),
+            testigo: sobre::Testigo {
+                modo: "snapshot".into(),
+                valor: Some("geo.lugares@1".into()),
+            },
+            clave: Vec::new(),
+            conducto: "materialization.payload".into(),
+            obligatorias: Default::default(),
+        };
+        let salida = dir.join("salida.arrow");
+        std::fs::write(&salida, ipc_de("EPSG:25830")).unwrap();
+        let c = sellar_arrow(
+            &lago,
+            &cab,
+            "datasets/c11_copia",
+            None,
+            &salida.to_string_lossy(),
+            crate::medir::Medidor::nada(),
+        )
+        .expect("sella");
+        let t = lago
+            .abrir(&campo(&c, "metadata_location"), "datasets/c11_copia")
+            .unwrap();
+        assert_eq!(
+            t.metadata()
+                .properties()
+                .get("ore.geo.geom")
+                .map(String::as_str),
+            Some(r#"{"crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
+        );
+        // Otro CRS que el del contrato: no se sella, y se dice cómo arreglarlo.
+        std::fs::write(&salida, ipc_de("OGC:CRS84")).unwrap();
+        let e = sellar_arrow(
+            &lago,
+            &cab,
+            "datasets/c11_copia_mal",
+            None,
+            &salida.to_string_lossy(),
+            crate::medir::Medidor::nada(),
+        )
+        .unwrap_err();
+        assert!(e.contains("OGC:CRS84") && e.contains("ST_Transform"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ORE 0067 G2·3·3 · **Un `write()` con geometría**, como lo manda el SDK

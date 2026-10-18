@@ -94,7 +94,7 @@ pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
 /// (hex WKB/EWKB, WKT, GeoJSON) o binario, a WKB ISO validado contra su tipo.
 /// En Arrow un valor que no es del tipo no deja la columna como texto (como en
 /// la copia por texto): para el lote entero, con la fila y el porqué.
-fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef, String> {
+pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef, String> {
     use arrow_array::Array;
     use arrow_array::cast::AsArray;
     let tipo = campo.metadata().get(META_TIPO).cloned().unwrap_or_default();

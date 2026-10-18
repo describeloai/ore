@@ -42,6 +42,26 @@ def _conexion():
     return con
 
 
+def _es_geo(consulta, tablas):
+    from ore import _es_geo as campo_geo
+    from ore.lsp_sql import GEO_EN_SQL
+
+    return bool(GEO_EN_SQL.search(consulta)) or any(campo_geo(f) for _, t in tablas for f in t.schema)
+
+
+def _cargar_geo(con):
+    """`spatial` y `h3` de la imagen (sin red, como todo aquí)."""
+    from ore import EXTENSIONES
+
+    if os.path.isdir(EXTENSIONES):
+        con.execute("set extension_directory = '%s'" % EXTENSIONES)
+    con.execute("load spatial")
+    try:
+        con.execute("load h3")
+    except Exception:  # noqa: BLE001 — de community: si no está, lo geo sigue
+        pass
+
+
 def calcular(aqui):
     """Compute one copy: `aqui` is `DIR/<copy>/`, with `peticion.json` and `entradas/`.
     Writes `salida.arrow` and returns the number of rows."""
@@ -52,8 +72,14 @@ def calcular(aqui):
     con = _conexion()
     esquema = p["esquema_de_datasets"]
     con.execute("create schema if not exists %s" % _q(esquema))
-    for i, (nombre, rel) in enumerate(sorted(p["entradas"].items())):
-        tabla = ipc.open_stream(os.path.join(aqui, rel)).read_all()
+    tablas = [(nombre, ipc.open_stream(os.path.join(aqui, rel)).read_all())
+              for nombre, rel in sorted(p["entradas"].items())]
+    # 0068 C1·1: lo geo ANTES de registrar. `volcar` marca cada columna geo con su
+    # CRS (`geoarrow.wkb`); sin `spatial` cargado, DuckDB la lee como GEOMETRY sin
+    # CRS, en silencio. Y una consulta con `ST_*` o `h3_*` los necesita igual.
+    if _es_geo(p["consulta"], tablas):
+        _cargar_geo(con)
+    for i, (nombre, tabla) in enumerate(tablas):
         # La tabla de Arrow, sin copiarla, bajo el nombre que la consulta usa.
         con.register("__entrada_%d" % i, tabla)
         con.execute(
