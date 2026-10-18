@@ -610,6 +610,32 @@ columna sin nombre toma la de la tabla en su posición, y cada columna va al tip
 geometría, que la tabla guarda en WKB y `write()` convierte). `ore-serve` 246 (los dos de `git` del
 *worktree*, aparte), el SDK 160/160 en la imagen, y el laboratorio del SDK pesado sigue 15/15.
 
+**2b·3 · un Build Heavyweight de punta a punta (2026-10-18, `pruebas-de-fuego/geo/c2/build-pesado/`).**
+El banco con el `ore-serve` de C2·3, dos datasets geo sembrados con el SDK pesado, un repositorio
+`transforms-sql` y otro `transforms-python`, los dos `motor: heavyweight`; `ore transforms generate`
+y `ore validate` limpios; `POST /builds` como ana, y **el agente del trabajo en `puesto-spark`**, como
+el Job.
+
+| build | resultado |
+|---|---|
+| SQL · `ST_Contains` entre dos tablas geo, con `group by` | **va** en Spark (`entorno: spark`): 4 filas, **las mismas que sin Spark** (shapely con la resolución de Sedona: `{0: 4, 1: 7, 2: 7, 3: 3}`), y la procedencia con el build y sus dos entradas |
+| SQL · una geometría calculada (`ST_Centroid`) | **va**: WKB con `ore.geo.centro` = `Geometry<Point, EPSG:25830>`, sacado de los datos |
+| Python · `over()` → `ST_Difference(ST_Buffer(…))` → `write()` | **va**: `Geometry<Polygon, EPSG:25830>` |
+| Python · lee lo que no declara | **se niega** (403: «no es una entrada … ni su output: un transform sólo lee lo que declara»), y no queda nada |
+
+**Lo que destapó:**
+1. **Spark lee sus entradas por `/v1`, y «lo declarado manda» lo negaba**: mientras corre un
+   transform, el catálogo sólo cargaba su output (leer iba por `datos`, que Spark no tiene). Arreglado
+   en el catálogo: **una entrada declarada se carga con el mismo conducto que `datos`
+   (`lectura_desde_puesto`) y con la credencial que sólo lee**; lo demás sigue siendo 403, y una
+   lectura negada se dice como lectura. El laboratorio de la pieza 2 corría como ana, sin techo: no
+   lo vio.
+2. **`ore.modo`**: Spark no lo ponía, y ORE lo mira para saber si una escritura reemplazó lo que
+   había. El SDK pesado lo pone (`sobrescribir` / `anexar`, las palabras de `ore-store`).
+3. **El árbol registra la geometría como `String`** (`centro: { type: String }` en el `Dataset` que
+   ORE escribe): `asegurar_dataset_de` no mira `ore.geo`. **Es la deuda de C1** (el contrato del
+   árbol tras un Build), en los dos motores: se arregla y se ve en victor al cerrar C1.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |

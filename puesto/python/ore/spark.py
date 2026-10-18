@@ -290,7 +290,11 @@ def write(nombre, df, mode="overwrite"):
     salida = df.select(*[F.expr("ST_AsBinary(`%s`)" % c).alias(c) if c in contrato else F.col(c) for c in df.columns])
     destino = _tabla(nombre)
     procedencia = json.dumps(_procedencia(nombre, None), sort_keys=True)
-    w = salida.writeTo(destino).using("iceberg").option("snapshot-property.ore.procedencia", procedencia)
+    # `ore.modo`, la palabra que pone `ore-store`: ORE dice con ella si la escritura reemplazó lo
+    # que había (`derivedFrom`, el puntero). Sin ella, un `append` contaría como reemplazo.
+    w = (salida.writeTo(destino).using("iceberg")
+         .option("snapshot-property.ore.procedencia", procedencia)
+         .option("snapshot-property.ore.modo", {"overwrite": "sobrescribir", "append": "anexar"}[mode]))
     for c, g in contrato.items():
         w = w.tableProperty("ore.geo." + c, json.dumps(g, separators=(",", ":")))
     existe = sesion().catalog.tableExists(destino.replace("`", ""))

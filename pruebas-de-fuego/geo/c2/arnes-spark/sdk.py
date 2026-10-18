@@ -79,6 +79,10 @@ caso("3c · el área, como DuckDB (31 214 m²)", lambda: ore.over("geo.zonas").s
 caso("4 · append", lambda: dict(ore.write("geo.lugares", puntos, mode="append")),
      lambda r: r["rows"] == 10 and r["mode"] == "append")
 caso("4b · ore.geo sigue", lambda: v1("lugares")["properties"].get("ore.geo.geom"), lambda r: r and "25830" in r)
+# ore.modo, la palabra de ore-store: lo que ORE mira para saber si se reemplazó lo que había
+caso("4c · ore.modo de cada escritura", lambda: (v1("zonas")["snapshots"][-1]["summary"].get("ore.modo"),
+                                                  v1("lugares")["snapshots"][-1]["summary"].get("ore.modo")),
+     lambda r: r == ("sobrescribir", "anexar"))
 
 # 5 · lo que se niega
 caso("5 · geometría sin CRS", lambda: ore.write("geo.mal", s.sql("select id, ST_Point(id, id) g from range(2)")), "falla")

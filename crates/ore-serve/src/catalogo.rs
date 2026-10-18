@@ -459,21 +459,39 @@ impl Servidor {
         // `output`. Lo demás —cargar otra tabla para escribirla, crearla,
         // commitear sobre ella— es 403 con lo declarado, en el servidor y no
         // en el SDK. Leer va por `datos`, que lo acota igual.
-        if let Some(id) = del_puesto.as_deref()
+        //
+        // ⭐ 0068 C2·3 · Salvo que lea **una de sus entradas declaradas** por
+        //   aquí: Spark (Heavyweight) no tiene `datos`, lee por `loadTable`. Se
+        //   carga con el mismo conducto que `datos` (abajo,
+        //   `lectura_desde_puesto`) y **con la credencial que sólo lee**: una
+        //   entrada no se escribe aunque se pida la delegación.
+        let lee_una_entrada = matches!(p.metodo.as_str(), "GET" | "HEAD")
+            && del_puesto
+                .as_deref()
+                .and_then(|id| self.transform_de(id))
+                .zip(tabla_de(p, base, seg))
+                .is_some_and(|(t, tabla)| t.inputs.contains(&tabla) && tabla != t.output);
+        if !lee_una_entrada
+            && let Some(id) = del_puesto.as_deref()
             && let Some(t) = self.transform_de(id)
             && let Some(tabla) = tabla_de(p, base, seg)
             && tabla != t.output
         {
-            return con_forma(
-                Respuesta::error(
-                    403,
-                    format!(
-                        "`{tabla}` no es el output de `{}` (`{}`): un transform sólo escribe lo que declara",
-                        t.nombre, t.output
-                    ),
-                ),
-                false,
-            );
+            // Una lectura (Spark carga lo que lee) se dice como lectura (0068 C2·3).
+            let m = if matches!(p.metodo.as_str(), "GET" | "HEAD") {
+                format!(
+                    "`{tabla}` no es una entrada de `{}` ({}) ni su output (`{}`): un transform sólo lee lo que declara",
+                    t.nombre,
+                    t.inputs.join(", "),
+                    t.output
+                )
+            } else {
+                format!(
+                    "`{tabla}` no es el output de `{}` (`{}`): un transform sólo escribe lo que declara",
+                    t.nombre, t.output
+                )
+            };
+            return con_forma(Respuesta::error(403, m), false);
         }
         // Desde un puesto —o un agente sin él—: lo que se lee pasa por el
         // conducto (0031 W3.7 gobierno ②), sea una tabla o una View.
@@ -726,7 +744,7 @@ impl Servidor {
                         }
                         // Desde un puesto, lo de otra persona se lee: la
                         // credencial de leer, no el 403 de escribir.
-                        let r = if en_preview {
+                        let r = if en_preview || lee_una_entrada {
                             self.cargar_para_leer(raiz, &nombre, prestar)
                         } else {
                             self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto)
