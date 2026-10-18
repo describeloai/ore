@@ -366,9 +366,9 @@ devuelta por una invocación HTTP, que hoy `toWire` resume).
 
 | paso | qué |
 |---|---|
-| C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia |
-| C2·2 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark con la pila de Java Transforms |
-| C2·3 | la imagen pesada con geo (lo que diga C0) |
+| C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia (hecho en local) |
+| C2·2 | la imagen pesada con geo (lo que diga C0). **Antes que los Builds** (reordenado 2026-10-18): corren en ella |
+| C2·3 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark con la pila de Java Transforms |
 | C2·4 | **(era C1·4)** el contrato de lo que escribe un Transform Heavyweight, con su CRS: Spark escribe por el catálogo `/v1` de ORE (lo admite; medido con PyIceberg y DuckDB, nunca con Spark) la geometría en WKB `binary` con su `ore.geo.<col>`, que es el estado de hoy del lago (0067 G2). Spark 4.1 nativo no admite CRS proyectados (0067: EPSG:25830 da `ST_INVALID_CRS_VALUE`) |
 
 **Hecho cuando:** un repositorio de cada clase, creado desde su banner, corre un *join* espacial en su
@@ -395,9 +395,33 @@ hoy, por `/v1` sólo habían escrito PyIceberg y DuckDB.
    escritor de ORE: un lector de fuera ve bytes. Se iguala cuando el lago promueva (0067: `iceberg`
    0.11).
 3. **El `ore.geo.<col>` lo tiene que poner ORE, no el cliente:** a mano es una cadena JSON que nadie
-   comprueba. Lo pone el Transform Heavyweight desde el contrato de su salida (C2·2).
+   comprueba. Lo pone el Transform Heavyweight desde el contrato de su salida (C2·3).
 4. El `GEOMETRY` nativo de Spark (y los CRS proyectados, que Spark 4.1 no admite) se niega con un 400 y
    su remedio (`ST_AsBinary`).
+
+#### C2·2 · La imagen pesada: el previo (2026-10-18)
+
+**Prototipo** (`pruebas-de-fuego/geo/c2/puesto-spark/`): el Python del puesto (`python:3.14-slim`) con
+el JDK de Java Transforms (temurin 21, copiado) y Spark por `pip install pyspark==4.1.0`, que trae sus
+jars; encima, Iceberg 1.12.0 (runtime y los *bundles* de GCP y de AWS), Sedona 1.9.1 (shaded y
+`geotools-wrapper`) y `apache-sedona` de Python. La sonda corre **sin red** (`--network none`).
+
+| caso | resultado |
+|---|---|
+| Spark 4.1 en **Java 21** (el laboratorio de C2·4 iba en el 17) | **va**: la sesión local con Iceberg y Sedona arranca en 8 s |
+| PySpark 4.1 y Sedona en **Python 3.14** | **va**, el mismo Python que el puesto. Sedona en Python pide `pandas` y no lo instala; `pyarrow` lo pide `toPandas` por Arrow (y el SDK) |
+| las clases, todas dentro | `GCSFileIO` (el lago de producción es GCS: `/v1` presta `gcs.oauth2.token`), `S3FileIO` (R2 y el laboratorio), `RESTCatalog`, Sedona |
+| `ST_Buffer` en EPSG:25830 | **31 214 m²**, la misma que DuckDB y que C2·4; también desde un DataFrame de shapely |
+| `ST_Transform` 25830→4326 **sin red** | **por defecto, no**: proj4sedona (el de Sedona 1.9) **baja la definición EPSG de spatialreference.org**. Con `spark.sedona.crs.geotools=all`, GeoTools la lleva dentro: `POINT (-3.7072 40.4145)`, en orden lon/lat. `true` y `vector` siguen saliendo a la red |
+| el uid 65532 (el de todos los puestos) | **Spark no arranca**: el `UnixLoginModule` de Hadoop pide el nombre del usuario (`invalid null input: name`), y `HADOOP_USER_NAME` no basta. Un `ore` en `/etc/passwd` lo arregla |
+| `javac` (Spark Java) y la CLI `spark-sql` | **van** (la CLI tarda 19 s en arrancar) |
+| el tamaño | **1,05 GB comprimida** (la de Python, 1,53 GB sin comprimir). De ello: Spark 779 MB (692 MB de jars, de los que Sedona 79, el *bundle* de GCP 69 y el de AWS 66), el JDK 295, pyarrow 167 |
+
+**Lo que dice para la etapa (pieza 1):** la variante A vale y no hace falta el tarball de Apache. La
+imagen lleva `/etc/passwd` con `ore`, `pandas` y `pyarrow`, y un `spark-defaults.conf` con
+`spark.sedona.crs.geotools=all`: **sin eso, un `ST_Transform` en el puesto falla** (el puesto no sale a
+internet). Queda por mirar en la pieza 2 el orden de los ejes frente a DuckDB, que en 4326 puede dar
+lat/lon: un mismo Transform no puede dar puntos distintos según el motor.
 
 ### C3 · El *join* espacial a escala
 
