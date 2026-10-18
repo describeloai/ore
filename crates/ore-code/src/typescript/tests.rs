@@ -229,6 +229,50 @@ fn media_de_una_coleccion() {
     assert!(tipo_de("Media", ORE).is_err());
 }
 
+/// ORE 0068 C1·2 · Una geometría en la firma, con su subtipo y su CRS, en su forma
+/// canónica de OOS (la misma que deriva Python); lo que no es, se dice.
+#[test]
+fn una_geometria_con_su_crs() {
+    let geo = "import type { Geometry, Geography } from \"ore\";";
+    let es = |p: &str| tipo_de(p, geo);
+    assert_eq!(
+        es("Geometry<\"Point\", \"EPSG:25830\">"),
+        Ok(Tipo::Geo("Geometry<Point, EPSG:25830>".into()))
+    );
+    assert_eq!(
+        es("Geometry<\"MultiPolygon Z\", \"EPSG:4326\">"),
+        Ok(Tipo::Geo("Geometry<MultiPolygon Z, EPSG:4326>".into()))
+    );
+    // Lo que vale por defecto (`Any`, `OGC:CRS84`) no se escribe.
+    assert_eq!(es("Geometry"), Ok(Tipo::Geo("Geometry".into())));
+    assert_eq!(
+        es("Geometry<\"Point\">"),
+        Ok(Tipo::Geo("Geometry<Point>".into()))
+    );
+    assert_eq!(
+        es("Geometry<\"Any\", \"OGC:CRS84\">"),
+        Ok(Tipo::Geo("Geometry".into()))
+    );
+    assert_eq!(
+        es("Geography<\"Point\">"),
+        Ok(Tipo::Geo("Geography<Point>".into()))
+    );
+    assert_eq!(
+        es("Geometry<\"Point\", \"EPSG:25830\">[]").map(|t| t.to_string()),
+        Ok("list<Geometry<Point, EPSG:25830>>".into())
+    );
+    let e = es("Geometry<\"Punto\">").unwrap_err();
+    assert!(e[0].contains("subtipo de OGC"), "{e:?}");
+    let e = es("Geometry<\"Point\", \"25830\">").unwrap_err();
+    assert!(e[0].contains("AUTORIDAD:CÓDIGO"), "{e:?}");
+    assert!(es("Geography<\"Point\", \"EPSG:4326\">").is_err());
+    let e = es("Geometry<Point>").unwrap_err();
+    assert!(e[0].contains("cadenas literales"), "{e:?}");
+    // Sin importar: la ayuda dice de dónde.
+    let e = tipo_de("Geometry", "").unwrap_err();
+    assert!(e.iter().any(|m| m.contains("no está definido")), "{e:?}");
+}
+
 #[test]
 fn los_nombres_se_leen_por_lo_que_son() {
     // Sin importar: no es el de `ore`, y la ayuda lo dice.

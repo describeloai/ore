@@ -62,6 +62,22 @@ export interface MediaRef<C extends string = string> {
 /** `Media<"db.schema.collection">`: a reference to an item of that collection. */
 export type Media<C extends string> = MediaRef<C>;
 
+/** The subtypes of a geometry (OGC), with their `Z`, `M` or `ZM` (ORE 0068 C1·2). */
+export type GeometrySubtype =
+  | "Any" | "Point" | "LineString" | "Polygon" | "MultiPoint" | "MultiLineString" | "MultiPolygon"
+  | "GeometryCollection" | `${"Point" | "LineString" | "Polygon" | "MultiPoint" | "MultiLineString" | "MultiPolygon" | "GeometryCollection"} ${"Z" | "M" | "ZM"}`;
+
+/**
+ * `Geometry<"Point", "EPSG:25830">`: a geometry with its subtype and its CRS (OOS
+ * v1alpha32; `Geometry` alone is any, in OGC:CRS84). In code it is its WKB
+ * (`Uint8Array`); the contract also takes WKB in hex. ORE never reprojects: a
+ * value in another CRS is refused where it is declared.
+ */
+export type Geometry<S extends GeometrySubtype = "Any", C extends string = "OGC:CRS84"> = Uint8Array;
+
+/** `Geography<"Point">`: a geometry on the ellipsoid, always in OGC:CRS84. Its WKB, as `Geometry`. */
+export type Geography<S extends GeometrySubtype = "Any"> = Uint8Array;
+
 /** What `export const config = { … }` may say, all of it literal (OOS v1alpha23 `01` §4). */
 export interface Config {
   /** The view whose rows the function works on; its first parameter is the row. */

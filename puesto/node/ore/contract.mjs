@@ -75,6 +75,16 @@ export function parseType(text) {
   const type = () => {
     const name = token();
     ws();
+    // ORE 0068 C1·2: `Geometry<Point, EPSG:25830>`, `Geography<Point>` (su CRS y
+    // su subtipo llevan `:` y espacios, que `token` corta): lo de dentro, tal cual.
+    if (name === "Geometry" || name === "Geography") {
+      if (s[i] !== "<") return { k: "Geo", ctor: name, sub: "Any", crs: "OGC:CRS84" };
+      const k = s.indexOf(">", i);
+      if (k < 0) throw new Error(`\`>\` expected in \`${s}\``);
+      const [sub, crs] = s.slice(i + 1, k).split(",").map((x) => x.trim());
+      i = k + 1;
+      return { k: "Geo", ctor: name, sub: sub || "Any", crs: crs || "OGC:CRS84" };
+    }
     if (s[i] !== "<") {
       if (["Struct", "list", "Money", "Quantity", "Media"].includes(name)) {
         throw new Error(`\`${name}\` without its arguments in \`${s}\``);
@@ -137,6 +147,9 @@ function shown(t) {
     case "Decimal": return t.p === undefined ? "Decimal" : `Decimal<${t.p}, ${t.s}>`;
     case "Money": case "Quantity": return `${t.k}<${t.unit}, ${t.s}>`;
     case "Media": return `Media<${t.collection}>`;
+    case "Geo": return t.crs === "OGC:CRS84"
+      ? (t.sub === "Any" ? t.ctor : `${t.ctor}<${t.sub}>`)
+      : `${t.ctor}<${t.sub}, ${t.crs}>`;
     case "BigInt": return "Integer (bigint)";
     default: return t.k;
   }
@@ -285,6 +298,21 @@ export function convert(what, v, type) {
       }
       if (v.collection !== t.collection) throw bad(`: an item of \`${v.collection}\``);
       return v;
+    }
+    case "Geo": {
+      // ORE 0068 C1·2: una geometría es su WKB (`Uint8Array`, también un `Buffer`),
+      // o el WKB en hexadecimal (lo que viaja en texto, `01-la-geometria` §5). Sin
+      // dependencias: el contrato mira que lo sea por encima (el orden de bytes y la
+      // cabecera); el tipo y el CRS los garantiza quien la escribe o la lee.
+      let b = v;
+      if (typeof b === "string") {
+        const h = b.startsWith("\\x") ? b.slice(2) : b;
+        if (!/^(?:[0-9a-fA-F]{2})+$/.test(h)) throw bad(", which is not WKB in hex");
+        b = Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
+      }
+      if (!(b instanceof Uint8Array)) throw bad(", which is not a geometry (WKB as a `Uint8Array`, or WKB in hex)");
+      if (b.length < 5 || (b[0] !== 0 && b[0] !== 1)) throw bad(", which is not WKB (it starts with its byte order, 0 or 1)");
+      return b;
     }
     default:
       throw new ContractError(`\`${what}\`: \`${shown(t)}\` is not a type of a signature`);

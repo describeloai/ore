@@ -1,5 +1,5 @@
 // La geometría en el SDK de Node (ORE 0067 G2·3·4): `node --test "puesto/node/pruebas/*.test.mjs"`.
-// Sin `spatial` (la imagen de hoy no la trae, G2·3·5) las pruebas de DuckDB se saltan.
+// En la imagen del puesto de Node `spatial` está (/opt/ore/duckdb): `bash pruebas-de-fuego/geo/c1/node-en-la-imagen.sh`. Fuera, sin él, las de DuckDB se saltan.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";

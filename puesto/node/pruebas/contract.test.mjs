@@ -15,6 +15,30 @@ test("el tipo canónico se lee", () => {
   assert.throws(() => parseType("list<"));
 });
 
+// ORE 0068 C1·2: una geometría es su WKB, con el tipo canónico que deriva `ore-code`.
+test("una geometría: su WKB, o el WKB en hexadecimal", () => {
+  assert.deepEqual(parseType("Geometry<Point, EPSG:25830>"), { k: "Geo", ctor: "Geometry", sub: "Point", crs: "EPSG:25830" });
+  assert.deepEqual(parseType("Geometry<MultiPolygon Z, EPSG:4326>"), { k: "Geo", ctor: "Geometry", sub: "MultiPolygon Z", crs: "EPSG:4326" });
+  assert.deepEqual(parseType("Geometry"), { k: "Geo", ctor: "Geometry", sub: "Any", crs: "OGC:CRS84" });
+  assert.deepEqual(parseType("Geography<Point>"), { k: "Geo", ctor: "Geography", sub: "Point", crs: "OGC:CRS84" });
+  assert.deepEqual(parseType("list<Geometry<Point, EPSG:25830>>").of.crs, "EPSG:25830");
+  // POINT(1 2) en WKB (little endian).
+  const hex = "0101000000000000000000f03f0000000000000040";
+  const wkb = Uint8Array.from(hex.match(/../g), (x) => parseInt(x, 16));
+  const t = "Geometry<Point, EPSG:25830>";
+  assert.equal(convert("g", wkb, t), wkb);
+  assert.deepEqual(convert("g", hex, t), wkb);
+  assert.deepEqual(convert("g", "\\x" + hex, t), wkb);
+  assert.deepEqual(convert("g", Buffer.from(hex, "hex"), t), Buffer.from(hex, "hex"));
+  assert.equal(convert("g", null, t), null);
+  mal(() => convert("g", "POINT(1 2)", t), /`g` is `Geometry<Point, EPSG:25830>`.*not WKB in hex/);
+  mal(() => convert("g", { x: 1 }, t), /not a geometry/);
+  mal(() => convert("g", Uint8Array.from([7, 1, 0, 0, 0]), t), /not WKB/);
+  // Lo que devuelve, con la misma regla.
+  assert.equal(checkOutput("f", wkb, { type: t }), wkb);
+  mal(() => checkOutput("f", 3, { type: "Geometry" }), /`Geometry`/);
+});
+
 test("los enteros: number exacto o bigint, según lo declarado", () => {
   assert.equal(convert("n", 3, "Integer"), 3);
   assert.equal(convert("n", "3", "Integer"), 3);

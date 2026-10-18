@@ -9,8 +9,9 @@ use std::cell::RefCell;
 
 const TIPOS: &str = "una firma usa `string`, `number`, `boolean`, `bigint`, `Date`, `Uint8Array`, \
                      `T[]` y `T | null`; de `ore`, `Integer`, `Decimal<p, s>`, `Money<\"EUR\", 2>`, \
-                     `Quantity<\"km\", 1>`, `LocalDate`, `LocalTime`, `LocalDateTime` y \
-                     `Media<\"a.b.c\">`; y un `interface` o un `type` de objeto del mismo fichero";
+                     `Quantity<\"km\", 1>`, `LocalDate`, `LocalTime`, `LocalDateTime`, \
+                     `Media<\"a.b.c\">`, `Geometry<\"Point\", \"EPSG:25830\">` y \
+                     `Geography<\"Point\">`; y un `interface` o un `type` de objeto del mismo fichero";
 
 const LITERAL: &str = "se lee sin ejecutar el fichero: escribe el valor tal cual, entre comillas";
 
@@ -24,6 +25,8 @@ const DEL_SDK: &[&str] = &[
     "LocalTime",
     "LocalDateTime",
     "Media",
+    "Geometry",
+    "Geography",
     "Config",
 ];
 
@@ -371,6 +374,37 @@ impl<'m> Resolutor<'m> {
                 _ => Err(Fallo::new(r, "`Media<…>` nombra una colección, entre comillas")
                     .ayuda("`Media<\"base.schema.coleccion\">`")),
             },
+            // ORE 0068 C1·2: una geometría con su subtipo y su CRS (`Geometry<"Point",
+            // "EPSG:25830">`), o `Geography<"Point">` (siempre en OGC:CRS84). Sin
+            // argumentos, cualquiera en OGC:CRS84. En el código es su WKB (`Uint8Array`).
+            g @ ("Geometry" | "Geography") => {
+                let cadenas: Option<Vec<&str>> = args
+                    .iter()
+                    .map(|a| match a {
+                        T::Cadena(c, _) => Some(c.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let (ejemplo, tope) = if g == "Geometry" {
+                    ("Geometry<\"Point\", \"EPSG:25830\">", 2)
+                } else {
+                    ("Geography<\"Point\">", 1)
+                };
+                match cadenas {
+                    Some(c) if c.is_empty() => Ok((Tipo::Geo(g.to_string()), false)),
+                    Some(c) if c.len() <= tope => crate::firma::geo_canonico(g, &c)
+                        .map(|t| (Tipo::Geo(t), false))
+                        .ok_or_else(|| {
+                            Fallo::new(
+                                r,
+                                format!("`{g}<…>` lleva un subtipo de OGC (`Point`, `Polygon`…) y, en `Geometry`, un CRS `AUTORIDAD:CÓDIGO`"),
+                            )
+                            .ayuda(format!("`{ejemplo}`"))
+                        }),
+                    _ => Err(Fallo::new(r, format!("`{g}<…>` lleva sus argumentos como cadenas literales"))
+                        .ayuda(format!("`{ejemplo}`: {LITERAL}"))),
+                }
+            }
             "Config" => Err(Fallo::new(r, "`Config` es el tipo de `config`, no el de un valor")
                 .ayuda(TIPOS)),
             otro => Err(Fallo::new(r, format!("`ore` no tiene el tipo `{otro}`")).ayuda(TIPOS)),
