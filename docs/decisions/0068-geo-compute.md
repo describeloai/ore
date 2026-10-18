@@ -175,6 +175,82 @@ Lo que no sabíamos antes de medir, resuelto en una sentada. Guiones en `pruebas
 - C0·3 mide DuckDB 1.5.6 frente a Spark + Sedona. SedonaDB entra como referencia del estado del arte, no como candidato (D1 no cambia).
 - C0·2 genera la escala 100 en el pool efímero, no en local.
 
+#### C0·1–C0·3 · El laboratorio (local, 2026-10-18)
+
+**Para qué:** comprobar que los casos corren y dan lo mismo en los dos motores antes de pagar por
+medir a escala. Las cifras son de una máquina de desarrollo (Docker con 16 hilos y 5,8 GiB, 4 GB por
+motor): sirven para comparar formas, no como objetivos.
+
+**El banco de cómputo** (`preparar-banco.py`): Parquet con la geometría en WKB, ordenado por Hilbert,
+el mismo para los dos motores. Contiene:
+- `edificios`: 34,1 M, 6,4 GB, con copia en EPSG:25830;
+- `lugares`: 2,2 M, también con copia en 25830;
+- `municipios`: 8 655 polígonos, la `locality` de Overture;
+- `ais`: un día, 18,1 M de posiciones.
+
+**Los casos del banco:**
+
+| caso | qué mide |
+|---|---|
+| B1 | filtro por zona: los edificios del término de Madrid |
+| B2 | punto en polígono, la forma de enriquecer: cada lugar con su municipio |
+| B3 | cercanía en metros: pares lugar–edificio a 20 m o menos |
+| B4 | agregación H3: posiciones AIS por celda de resolución 8 |
+
+**Cómo se corre** (`correr.sh`, `correr.py` y `cotejar.py`):
+- las 12 de SpatialBench, en el dialecto de cada motor, sacadas de su repositorio (commit `8e44bdd`);
+- los casos B1–B4;
+- un límite de 600 s por caso;
+- para cotejar, una huella de cada resultado: los flotantes y los `Decimal` a 4 decimales, y los
+  intervalos en segundos.
+
+| caso | DuckDB 1.5.6 | Spark 4.1 + Sedona 1.9.1 | ¿igual? |
+|---|---|---|---|
+| B1 zona | 8,0 s | 24,7 s | sí (159 802 edificios) |
+| B2 punto en polígono | 29,6 s | > 600 s; **37 s difundiendo `municipios`** | sí (2 300 045 lugares en 7 992 municipios) |
+| B3 cercanía 20 m | 7,0 s | 298 s; 151 s difundiendo `lugares` | sí (8 881 138 pares) |
+| B4 H3 res. 8 | 1,6 s | 7,7 s | sí (115 602 celdas) |
+| SB Q1 KNN por radio | 0,3 s | 11,5 s | sí |
+| SB Q2 zona por subconsulta | 0,5 s | 392 s; **7,9 s como join difundido** | sí |
+| SB Q3 | 0,5 s | 7,1 s | sí |
+| SB Q4 | 1,9 s | 92 s | sí |
+| SB Q5 agregación espacial | 13,7 s | 33 s | sí |
+| SB Q6 | 2,0 s | 101 s | sí, la muestra (la huella se rehizo tras normalizar) |
+| SB Q7–Q9 | 0,8 / 1,0 / 0,1 s | 7,9 / 5,2 / 1,5 s | sí |
+| SB Q10 | 355 s | el proceso muere: sin memoria | — |
+| SB Q11 | sin memoria | ídem | — |
+| SB Q12 KNN join | > 600 s | ídem | — |
+
+**Lo que dice:**
+1. **Los dos motores dan lo mismo** en todo lo que terminó. El dialecto de SpatialBench sólo cambia en
+   Q5 y Q12, así que el SQL espacial es casi portable (P2 se inclina a «ORE no traduce»).
+2. **En una máquina, DuckDB gana siempre**, entre 3 y 40 veces. Es lo esperado: Spark paga el arranque
+   de cada etapa y la lectura de WKB en la JVM. Lightweight no es un modo pobre: es el rápido mientras
+   cabe.
+3. **Spark sin difusión se planifica mal.** Hay dos trampas, y las dos se arreglan sin cambiar la
+   semántica:
+   - el lado pequeño, por encima de los 10 MB de `autoBroadcastJoinThreshold`, lleva a un `RangeJoin`
+     que reparte las dos tablas;
+   - una geometría en subconsulta escalar se evalúa fila a fila, sin índice.
+
+   **Heavyweight tiene que difundir el lado pequeño por sí mismo:** una regla del planificador de ORE
+   o la configuración de Sedona, no una pista que escriba el cliente. Entra en C3.
+4. **Q10–Q12 no caben a 4 GB en ninguno de los dos.** Es la frontera que SpatialBench publicó para
+   DuckDB, y es justo donde Heavyweight tiene que demostrar su valor: con más memoria y varios nodos.
+5. **Tres trampas del laboratorio, ya resueltas en los guiones:**
+   - Docker no lee bien un Parquet de 4 GB por el montaje de Windows (`Cannot allocate memory`);
+   - el directorio temporal de la sesión no es visible para Docker;
+   - un motor que muere a media corrida perdía lo ya medido.
+
+   Lo de dentro va ahora a volúmenes, y los resultados se escriben desde fuera.
+
+**Lo que falta, y dónde:** la escala, que no cabe en local. Se mide en un pool efímero de GKE:
+- Q10–Q12;
+- SpatialBench a escala 10 y 100;
+- el AIS de 7 días;
+- Spark en varios nodos;
+- DuckDB en la forma del producto (un puesto de victor).
+
 ### C1 · El contrato en los frameworks
 
 | paso | qué | ¿espera a C0? |
