@@ -1,0 +1,7 @@
+# Lo que el puesto pesado (ORE 0068 C2·2) instala ENCIMA de `puesto/python/provisto.txt`: Spark por
+# `pyspark` (trae sus jars) y Sedona de Python. Con `--no-deps`: pandas, pyarrow, numpy y shapely son
+# los del puesto de Python, no otros (medido en la pieza 0: Sedona pide shapely y attrs; pyspark, py4j).
+pyspark==4.1.0
+py4j==0.10.9.9
+apache-sedona==1.9.1
+attrs==26.1.0

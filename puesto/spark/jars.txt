@@ -1,0 +1,11 @@
+# Los jars que el puesto pesado (ORE 0068 C2·2, etapa puesto-spark) pone ENCIMA de los de Spark
+# (los trae `pyspark`): Iceberg para el catálogo /v1 de ORE y Sedona para lo geo.
+# Una línea por jar: `grupo/artefacto versión`, como `puesto/jvm/jars.txt`.
+#
+# ⭐ Los dos bundles de Iceberg: GCP porque el lago de producción es GCS (`/v1` presta
+#   `gcs.oauth2.token`), AWS porque R2 y el laboratorio hablan S3 (`s3.access-key-id`).
+org/apache/iceberg/iceberg-spark-runtime-4.1_2.13 1.12.0
+org/apache/iceberg/iceberg-gcp-bundle 1.12.0
+org/apache/iceberg/iceberg-aws-bundle 1.12.0
+org/apache/sedona/sedona-spark-shaded-4.1_2.13 1.9.1
+org/datasyslab/geotools-wrapper 1.9.1-33.5

@@ -401,7 +401,8 @@ hoy, por `/v1` sólo habían escrito PyIceberg y DuckDB.
 
 #### C2·2 · La imagen pesada: el previo (2026-10-18)
 
-**Prototipo** (`pruebas-de-fuego/geo/c2/puesto-spark/`): el Python del puesto (`python:3.14-slim`) con
+**Prototipo** (pieza 0; su Dockerfile se quitó al llegar la etapa, la sonda sigue en
+`pruebas-de-fuego/geo/c2/puesto-spark/`): el Python del puesto (`python:3.14-slim`) con
 el JDK de Java Transforms (temurin 21, copiado) y Spark por `pip install pyspark==4.1.0`, que trae sus
 jars; encima, Iceberg 1.12.0 (runtime y los *bundles* de GCP y de AWS), Sedona 1.9.1 (shaded y
 `geotools-wrapper`) y `apache-sedona` de Python. La sonda corre **sin red** (`--network none`).
@@ -422,6 +423,17 @@ imagen lleva `/etc/passwd` con `ore`, `pandas` y `pyarrow`, y un `spark-defaults
 `spark.sedona.crs.geotools=all`: **sin eso, un `ST_Transform` en el puesto falla** (el puesto no sale a
 internet). Queda por mirar en la pieza 2 el orden de los ejes frente a DuckDB, que en 4326 puede dar
 lat/lon: un mismo Transform no puede dar puntos distintos según el motor.
+
+**Pieza 1 · la etapa `puesto-spark` (hecha en local).** `FROM puesto-python`: **es el puesto de Python
+más Spark**, con el mismo pandas, pyarrow, shapely y DuckDB fijados, y el mismo SDK. Encima: el JDK de
+temurin 21, `puesto/spark/provisto.txt` (pyspark 4.1.0, py4j, apache-sedona 1.9.1 y attrs, con
+`--no-deps`), `puesto/spark/jars.txt` (Iceberg y Sedona, en el formato de `puesto/jvm/jars.txt`),
+`puesto/spark/spark-defaults.conf` (Iceberg y Sedona siempre, Kryo, `crs.geotools=all`, Arrow, sin
+interfaz web) y `ore` en `/etc/passwd`. El catálogo `ore` no va en la imagen: su URI y su identidad
+son de cada Build (C2·3). La construcción se demuestra como uid 65532 (`puesto/spark/comprobar.py`), y
+`en-la-imagen.sh` pasa la sonda sin red: **16/16**, sin `SPARK_LOCAL_IP`. **1,26 GB comprimida**; sobre
+`puesto-python` añade 1,13 GB sin comprimir (Spark 824 MB y el JDK 308), en capas que el nodo baja una
+vez.
 
 ### C3 · El *join* espacial a escala
 

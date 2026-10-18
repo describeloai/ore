@@ -1,7 +1,7 @@
-"""ORE 0068 C2·2 pieza 0 · La sonda del prototipo: corre DENTRO de la imagen, con `--network none`.
-Una línea `OK|FALLA · caso · detalle` por caso; al final, el resumen. Nada se descarga: si un jar
-falta, lo dice el caso que lo necesita.
-    docker run --rm --network none ore-puesto-spark:previo python /sonda.py
+"""ORE 0068 C2·2 · La sonda de la imagen pesada: corre DENTRO, con `--network none`. Una línea
+`OK|FALLA · caso · detalle` por caso; al final, el resumen. Nada se descarga: si un jar falta, lo dice
+el caso que lo necesita. Contra la etapa `puesto-spark` la sesión NO se configura aquí: lo que vale es
+lo que la imagen pone. La lanza `en-la-imagen.sh`.
 """
 import os, platform, subprocess, sys, time
 
@@ -27,7 +27,9 @@ caso("java", lambda: subprocess.run(["java", "-version"], capture_output=True, t
 import pyspark  # noqa: E402
 
 caso("pyspark", lambda: pyspark.__version__)
-jars = open("/spark-jars.txt").read().strip()
+# El prototipo (pieza 0) apuntaba sus jars en /spark-jars.txt; la etapa `puesto-spark` dice SPARK_HOME.
+PROTOTIPO = os.path.exists("/spark-jars.txt")
+jars = open("/spark-jars.txt").read().strip() if PROTOTIPO else os.path.join(os.environ["SPARK_HOME"], "jars")
 caso("jars", lambda: f"{len(os.listdir(jars))} jars, {sum(os.path.getsize(os.path.join(jars, j)) for j in os.listdir(jars)) // 2**20} MiB")
 
 from pyspark.sql import SparkSession  # noqa: E402
@@ -37,17 +39,18 @@ spark = None
 
 def sesion():
     global spark
-    spark = (SparkSession.builder.master("local[*]").appName("previo")
-             .config("spark.ui.enabled", "false")
-             .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,"
-                                             "org.apache.sedona.sql.SedonaSqlExtensions")
-             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-             .config("spark.kryo.registrator", "org.apache.sedona.core.serde.SedonaKryoRegistrator")
-             # ⚠️ Medido (pieza 0): sin esto `ST_Transform` (proj4sedona) baja la definición EPSG de
-             #   spatialreference.org; con `all`, GeoTools la lleva dentro. `true` y `vector` no bastan.
-             .config("spark.sedona.crs.geotools", "all")
-             .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-             .config("spark.sql.catalog.ore", "org.apache.iceberg.spark.SparkCatalog")
+    spark = SparkSession.builder.master("local[*]").appName("previo")
+    if PROTOTIPO:  # en la etapa de verdad, todo esto lo pone `spark-defaults.conf`
+        spark = (spark.config("spark.ui.enabled", "false")
+                 .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,"
+                                                 "org.apache.sedona.sql.SedonaSqlExtensions")
+                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+                 .config("spark.kryo.registrator", "org.apache.sedona.core.serde.SedonaKryoRegistrator")
+                 # ⚠️ Medido (pieza 0): sin esto `ST_Transform` (proj4sedona) baja la definición EPSG de
+                 #   spatialreference.org; con `all`, GeoTools la lleva dentro. `true` y `vector` no bastan.
+                 .config("spark.sedona.crs.geotools", "all")
+                 .config("spark.sql.execution.arrow.pyspark.enabled", "true"))
+    spark = (spark.config("spark.sql.catalog.ore", "org.apache.iceberg.spark.SparkCatalog")
              .config("spark.sql.catalog.ore.type", "rest")
              .config("spark.sql.catalog.ore.uri", "http://127.0.0.1:1")
              .getOrCreate())
@@ -55,6 +58,7 @@ def sesion():
 
 
 caso("sesión local con Iceberg y Sedona (Java 21)", sesion)
+caso("lo que pone la imagen (spark.sedona.crs.geotools)", lambda: spark.conf.get("spark.sedona.crs.geotools"))
 
 
 def clase(n):

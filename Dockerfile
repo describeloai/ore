@@ -499,6 +499,52 @@ WORKDIR /trabajo
 CMD ["python3", "/opt/ore/agente.py"]
 
 # ═══════════════════════════════════════════════════════════════════════════
+# puesto-spark — EL MOTOR HEAVYWEIGHT (ORE 0068 C2·2)
+#
+# ⭐ ES EL PUESTO DE PYTHON MÁS SPARK, no otra imagen: el mismo Python, el
+#   mismo pandas, pyarrow, shapely y DuckDB fijados, y el mismo SDK. Lo que un
+#   repositorio Heavyweight construye corre en Spark 4.1 con Sedona 1.9.1, y
+#   lo que el SDK lee y describe sigue siendo lo de siempre (las Views se
+#   describen en DuckDB, 0068 P3). Medido en la pieza 0
+#   (`pruebas-de-fuego/geo/c2/puesto-spark/`): 15/15 sin red.
+#
+# El JDK es el de Java Transforms (temurin 21, copiado: la misma versión que
+# `puesto-jvm`), para Spark y para el `javac` de Spark Java. Spark llega por
+# `pyspark`, que trae sus jars; encima, los de `puesto/spark/jars.txt`
+# (bajados con Python: la base `slim` no trae curl, y no se instala por esto).
+#
+# ⛔ Lo que la pieza 0 encontró y aquí se arregla:
+#   · el uid 65532 no tiene nombre, y el `UnixLoginModule` de Hadoop lo exige
+#     (`invalid null input: name`; `HADOOP_USER_NAME` no basta): `ore` en
+#     /etc/passwd.
+#   · `ST_Transform` baja la definición EPSG de internet salvo con
+#     `spark.sedona.crs.geotools=all` (`puesto/spark/spark-defaults.conf`).
+#
+# Sin agente propio todavía: lo que lanza un Build Heavyweight es C2·3.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM puesto-python AS puesto-spark
+USER 0
+ENV JAVA_HOME=/opt/java/openjdk \
+    SPARK_HOME=/usr/local/lib/python3.14/site-packages/pyspark \
+    SPARK_CONF_DIR=/opt/ore/spark/conf
+ENV PATH=$JAVA_HOME/bin:$SPARK_HOME/bin:$PATH
+COPY --from=eclipse-temurin:21-jdk-noble /opt/java/openjdk /opt/java/openjdk
+COPY puesto/spark /opt/ore/spark-src
+RUN pip install --no-cache-dir --no-deps -r /opt/ore/spark-src/provisto.txt \
+ && test -d "$SPARK_HOME/jars" \
+ && grep -v '^#' /opt/ore/spark-src/jars.txt | grep . | while read -r g v; do n="${g##*/}-$v.jar"; \
+      python3 -c "import sys, urllib.request as u; u.urlretrieve(sys.argv[1], sys.argv[2])" \
+        "https://repo1.maven.org/maven2/$g/$v/$n" "$SPARK_HOME/jars/$n" || exit 1; done \
+ && mkdir -p /opt/ore/spark/conf && cp /opt/ore/spark-src/spark-defaults.conf /opt/ore/spark/conf/ \
+ && cp /opt/ore/spark-src/comprobar.py /opt/ore/spark/comprobar.py \
+ && echo 'ore:x:65532:65532:ore:/tmp:/usr/sbin/nologin' >> /etc/passwd \
+ && echo 'ore:x:65532:' >> /etc/group \
+ && echo "spark · $(pip show pyspark | grep ^Version) · $(ls $SPARK_HOME/jars | wc -l) jars · $(java -version 2>&1 | head -1)" >> /entorno-1.txt
+USER 65532:65532
+# ⭐ Y se demuestra como el uid de los puestos (el fallo de Hadoop sólo se ve así).
+RUN cd /tmp && python3 /opt/ore/spark/comprobar.py
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Etapa 7 · puesto-node:1 — el ENTORNO 1 de TS/JS (0031 W3.4)
 #
 # Node 24 quita los tipos de TypeScript por sí mismo (sin tsc ni esbuild:
