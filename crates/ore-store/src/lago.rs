@@ -1703,14 +1703,37 @@ pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> String {
 
 /// Las columnas de un esquema de Iceberg como escalares de OOS.
 pub fn columnas_oos(tabla: &Table) -> BTreeMap<String, String> {
+    let props = tabla.metadata().properties();
     tabla
         .metadata()
         .current_schema()
         .as_struct()
         .fields()
         .iter()
-        .map(|f| (f.name.clone(), oos_de_iceberg(&f.field_type)))
+        .map(|f| {
+            let t = tipo_geo(props, &f.name).unwrap_or_else(|| oos_de_iceberg(&f.field_type));
+            (f.name.clone(), t)
+        })
         .collect()
+}
+
+/// ORE 0068 · **El tipo OOS de una columna geo**, de lo que la tabla dice de
+/// ella (`ore.geo.<col>`): en el lago la geometría es WKB (`binary`), y sin
+/// esto el `Dataset` que ORE escribe la registraba como `String` —medido en
+/// C2·3 2b·3, con los dos motores—. El `type` de la propiedad, si OOS lo
+/// entiende; si sólo dice el CRS, `Geometry` (en `OGC:CRS84`) o
+/// `Geometry<Any, CRS>`. Sin propiedad, o ilegible, `None`: lo de siempre.
+fn tipo_geo(props: &std::collections::HashMap<String, String>, col: &str) -> Option<String> {
+    let v: serde_json::Value =
+        serde_json::from_str(props.get(&format!("{}{col}", crate::lago_geo::PROP_GEO))?).ok()?;
+    let t = match v.get("type").and_then(|t| t.as_str()) {
+        Some(t) => t.to_string(),
+        None => match v.get("crs").and_then(|c| c.as_str()) {
+            None | Some(ore_core::types::CRS_DEFECTO) => "Geometry".to_string(),
+            Some(c) => format!("Geometry<Any, {c}>"),
+        },
+    };
+    ore_core::types::parse_type(&t).ok().map(|_| t)
 }
 
 /// Las columnas de un esquema de Iceberg, por nombre y tipo, para el informe.
@@ -1723,6 +1746,52 @@ pub fn columnas_iceberg(tabla: &Table) -> BTreeMap<String, String> {
         .iter()
         .map(|f| (f.name.clone(), f.field_type.to_string()))
         .collect()
+}
+
+#[cfg(test)]
+mod tipo_geo_del_arbol {
+    //! ORE 0068 · Lo que el `Dataset` del árbol dice de una columna geo: el tipo
+    //! de su `ore.geo.<col>`, no el `String` de sus bytes.
+    use super::tipo_geo;
+    use std::collections::HashMap;
+
+    fn props(col: &str, v: &str) -> HashMap<String, String> {
+        HashMap::from([(format!("ore.geo.{col}"), v.to_string())])
+    }
+
+    #[test]
+    fn la_columna_geo_lleva_su_tipo_y_su_crs() {
+        // Lo que escriben ore-store y el SDK pesado: el tipo entero.
+        let p = props(
+            "centro",
+            r#"{"crs":"EPSG:25830","type":"Geometry<Point, EPSG:25830>"}"#,
+        );
+        assert_eq!(
+            tipo_geo(&p, "centro").as_deref(),
+            Some("Geometry<Point, EPSG:25830>")
+        );
+        // Sin `type`: del CRS.
+        let p = props("g", r#"{"crs":"EPSG:4258"}"#);
+        assert_eq!(
+            tipo_geo(&p, "g").as_deref(),
+            Some("Geometry<Any, EPSG:4258>")
+        );
+        let p = props("g", r#"{"crs":"OGC:CRS84"}"#);
+        assert_eq!(tipo_geo(&p, "g").as_deref(), Some("Geometry"));
+        // La lente (un v3 ajeno): `Geography`.
+        let p = props(
+            "g",
+            r#"{"type":"Geography","crs":"OGC:CRS84","edges":"spherical"}"#,
+        );
+        assert_eq!(tipo_geo(&p, "g").as_deref(), Some("Geography"));
+        // Otra columna, una propiedad ilegible o un tipo que OOS no entiende: lo de siempre.
+        assert_eq!(tipo_geo(&p, "otra"), None);
+        assert_eq!(tipo_geo(&props("g", "no es json"), "g"), None);
+        assert_eq!(
+            tipo_geo(&props("g", r#"{"type":"Geometry<Circle>"}"#), "g"),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

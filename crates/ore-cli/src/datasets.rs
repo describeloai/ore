@@ -1103,6 +1103,7 @@ fn asegurar_dataset_de(
             }
         }
     };
+    s = con_la_version_de_sus_tipos(s, columnas);
     if let Some(c) = &cambios {
         s = con_cambios(&s, c);
     }
@@ -1154,6 +1155,38 @@ fn asegurar_dataset_de(
         ));
     }
     Ok((nueva, !nueva))
+}
+
+/// ORE 0068 · **La versión que sus tipos piden.** Una columna geo
+/// (`Geometry<…>`, `Geography<…>`, ahora que el lago dice su tipo:
+/// `lago::columnas_oos` lee `ore.geo.<col>`) es de OOS v1alpha32: un documento
+/// anterior —el nuevo nace en v1alpha12, 13 o 19; uno que ya estaba sigue al
+/// esquema en la suya— no compilaría (`OOS3008`). Sube a v1alpha32, que lo
+/// acepta todo lo de antes; sin columnas geo, nada cambia.
+fn con_la_version_de_sus_tipos(s: String, columnas: &BTreeMap<String, String>) -> String {
+    const GEO: u32 = 32;
+    let geo = columnas
+        .values()
+        .any(|t| ore_core::types::parse_type(t).is_ok_and(|t| t.es_de_v1alpha32()));
+    if !geo {
+        return s;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut hecho = false;
+    for l in s.split_inclusive('\n') {
+        if !hecho
+            && let Some(v) = l.trim_end().strip_prefix("apiVersion: oos.dev/v1alpha")
+            && let Ok(n) = v.parse::<u32>()
+        {
+            hecho = true;
+            if n < GEO {
+                out.push_str(&format!("apiVersion: oos.dev/v1alpha{GEO}\n"));
+                continue;
+            }
+        }
+        out.push_str(l);
+    }
+    out
 }
 
 /// El dataset escrito desde cero: lo que `write()` sabe de él.
@@ -3009,6 +3042,51 @@ fn salida(
 
 #[cfg(test)]
 mod tests {
+    /// ORE 0068 · Una columna geo sube el documento a v1alpha32 (la de sus
+    /// tipos), sea de la versión que sea; sin columnas geo, o ya en ella o en
+    /// otra posterior, no se toca. Y el documento nuevo, con ella, compila.
+    #[test]
+    fn una_columna_geo_sube_el_documento_a_v1alpha32() {
+        use std::collections::BTreeMap;
+        let cols = |g: Option<&str>| {
+            let mut m = BTreeMap::from([("id".to_string(), "Integer".to_string())]);
+            if let Some(g) = g {
+                m.insert("geom".to_string(), g.to_string());
+            }
+            m
+        };
+        let doc = |v: &str| {
+            format!(
+                "apiVersion: oos.dev/{v}\nkind: Dataset\nmetadata: {{ name: t, namespace: geo }}\n"
+            )
+        };
+        let geo = cols(Some("Geometry<Point, EPSG:25830>"));
+        for v in ["v1alpha12", "v1alpha13", "v1alpha19"] {
+            assert_eq!(
+                super::con_la_version_de_sus_tipos(doc(v), &geo),
+                doc("v1alpha32"),
+                "{v}"
+            );
+        }
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha33"), &geo),
+            doc("v1alpha33")
+        );
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(None)),
+            doc("v1alpha12")
+        );
+        // `Geography` también; un `String` no.
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(Some("Geography"))),
+            doc("v1alpha32")
+        );
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(Some("String"))),
+            doc("v1alpha12")
+        );
+    }
+
     /// La historia de una tabla como la da `ore-store historia` (de la más
     /// reciente a la más vieja): `(clave, huella, cuando_ms, vigente)`.
     fn historia(ss: &[(&str, &str, i64, bool)]) -> Vec<super::Node> {

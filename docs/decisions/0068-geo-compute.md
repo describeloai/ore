@@ -632,9 +632,16 @@ el Job.
    lo vio.
 2. **`ore.modo`**: Spark no lo ponía, y ORE lo mira para saber si una escritura reemplazó lo que
    había. El SDK pesado lo pone (`sobrescribir` / `anexar`, las palabras de `ore-store`).
-3. **El árbol registra la geometría como `String`** (`centro: { type: String }` en el `Dataset` que
-   ORE escribe): `asegurar_dataset_de` no mira `ore.geo`. **Es la deuda de C1** (el contrato del
-   árbol tras un Build), en los dos motores: se arregla y se ve en victor al cerrar C1.
+3. **El árbol registraba la geometría como `String`** (`centro: { type: String }` en el `Dataset`
+   que ORE escribe). Era la deuda de C1 (el contrato del árbol tras un Build), en los dos motores.
+   **Arreglado (2026-10-18):** `lago::columnas_oos` lee `ore.geo.<col>` —su `type` si OOS lo entiende;
+   si sólo dice el CRS, `Geometry` o `Geometry<Any, CRS>`—, y como esos tipos son de OOS v1alpha32,
+   el documento que ORE escribe sube a v1alpha32 cuando lleva una columna geo
+   (`con_la_version_de_sus_tipos`: medido, en v1alpha12 no compila, `OOS3008`). En el laboratorio, las
+   entradas dicen `Geometry<Point, EPSG:25830>` y `Geometry<Polygon, EPSG:25830>`, las salidas de los
+   builds `Geometry<Point, EPSG:25830>` y `Geometry<Polygon, EPSG:25830>` en v1alpha32, la que no
+   tiene geometría sigue en v1alpha12, y `ore validate` pasa después de los builds. Queda verlo en
+   victor al cerrar C1.
 
 ### C3 · El *join* espacial a escala
 
