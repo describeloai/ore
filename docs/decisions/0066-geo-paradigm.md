@@ -215,6 +215,8 @@ masivo desde el principio y laboratorio antes que producción) valen igual.
 
 ### E1 · El cómputo
 
+**Se desarrolla en [`0068 · Geo compute`](0068-geo-compute.md)** (2026-10-18): E1·1 es C1·1, E1·2 es C1·2, E1·3 es C1·3 y E1·4 es C4; 0068 añade la vara (C0), el motor por repositorio (C2) y el *join* a escala (C3).
+
 | paso | qué |
 |---|---|
 | E1·1 | **SQL**: ST_\* (OGC) y H3 en el editor, las vistas, `ore-motor` y los transforms SQL, con `ore-sql` sabiendo los tipos geo |
