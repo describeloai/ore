@@ -135,13 +135,13 @@ solo match, agregados si hay varios. Sale un Dataset nuevo; las filas de *X* no 
 
 ```
  C0 vara y sondas ───────────────────┐
- C1·1 SQL ──┐                         ├─► C1·4 Spark ─┐
- C1·2 Python ├─ (en paralelo con C0)  C2 motor ───────┼─► C3 join a escala ─► C4 enriquecer ─► cierre
- C1·3 Java ─┘                         └───────────────┘
+ C1·1 SQL ──┐                         │
+ C1·2 Python ├─ (en paralelo con C0)  ├─► C2 motor (con Spark) ─► C3 join a escala ─► C4 enriquecer ─► cierre
+ C1·3 Java ─┘                         │
 ```
 
 C1·1–C1·3 son trabajo de framework y no esperan a ninguna decisión de motor: van en paralelo con C0.
-C1·4, el resto de C2, C3 y C4 esperan a C0. De E1 en 0066: E1·1 es C1·1, E1·2 es C1·2 (casi entero
+C2 (con lo que era C1·4), C3 y C4 esperan a C0. De E1 en 0066: E1·1 es C1·1, E1·2 es C1·2 (casi entero
 desde 0067 G2·3), E1·3 es C1·3 y E1·4 es C4. C0, C2 y C3 son nuevos: E1 daba por hecho un motor.
 
 ### C0 · La vara y las sondas (sin código de producto)
@@ -350,13 +350,17 @@ de un puesto de victor (C2).
 
 | paso | qué | ¿espera a C0? |
 |---|---|---|
-| C1·1 SQL | empujar el paso 1 (hecho en local) · Functions del árbol desde SQL con geometría · `ore-sql` y el motor con tipos geo | no |
-| C1·2 Python | cierre: TypeScript con geometría en la firma y lo que falte | no |
-| C1·3 Java | JTS y la geometría por Arrow, en Functions y Java Transforms | ya no: C0 fija **JTS 1.20.0**, la que trae Spark 4.1 |
-| C1·4 Spark | el contrato de lo que escribe un Transform Heavyweight, con su CRS | ya no: C0 fija **Spark 4.1 + Sedona 1.9.1** |
+| paso | qué | estado |
+|---|---|---|
+| C1·1 SQL | Views con su tipo exacto · Functions del árbol desde SQL con geometría (UDF sobre WKB + macro con el CRS) · la vista con copia (`volcar` marca, `calcular` carga `spatial`, `sellar-arrow` sella geo) · Transform SQL · el editor (errores dichos como ORE, completar y explicar `st_`/`h3_`) | hecho en local |
+| C1·2 Python | `h3` en la imagen · `Geometry`/`Geography` en las firmas de TypeScript · DuckDB 1.5.6 también en Node. `pyogrio` fuera (decidido: los ficheros geo los lee `ST_Read`) | hecho en local |
+| C1·3 Java | Java solo tiene Transforms (no Functions). La geometría calculada llega (el JDBC no la exporta sin transacción) y vuelve con su CRS · JTS 1.20.0 y H3 4.5.0 · JDBC 1.5.6.0: **los tres puestos, el mismo DuckDB** | hecho en local |
+| ~~C1·4 Spark~~ | **pasa a C2** (decidido 2026-10-18): Heavyweight todavía no existe en el producto, y su contrato se mide con su motor | — |
 
-**Hecho cuando:** una View, un Transform Lightweight y uno Heavyweight dan el mismo contrato con CRS
-para la misma operación, y el compilador niega mezclar CRS.
+**Hecho cuando:** una View, un Transform SQL y uno de Python o Java dan el mismo contrato con CRS para
+la misma operación, y los tres niegan mezclar CRS. El de Spark, en C2. Al cerrar: la suite completa, un
+solo empuje y una celda en victor (el contrato que expone el árbol tras un Build real, y una geometría
+devuelta por una invocación HTTP, que hoy `toWire` resume).
 
 ### C2 · El motor por repositorio
 
@@ -365,9 +369,35 @@ para la misma operación, y el compilador niega mezclar CRS.
 | C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia |
 | C2·2 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark con la pila de Java Transforms |
 | C2·3 | la imagen pesada con geo (lo que diga C0) |
+| C2·4 | **(era C1·4)** el contrato de lo que escribe un Transform Heavyweight, con su CRS: Spark escribe por el catálogo `/v1` de ORE (lo admite; medido con PyIceberg y DuckDB, nunca con Spark) la geometría en WKB `binary` con su `ore.geo.<col>`, que es el estado de hoy del lago (0067 G2). Spark 4.1 nativo no admite CRS proyectados (0067: EPSG:25830 da `ST_INVALID_CRS_VALUE`) |
 
 **Hecho cuando:** un repositorio de cada clase, creado desde su banner, corre un *join* espacial en su
 motor.
+
+#### C2·4 · El laboratorio de Spark contra `/v1` (2026-10-18)
+
+**Montaje** (`pruebas-de-fuego/geo/c2/spark-por-v1/`): un `ore-serve` de verdad (*release*, en `rust:1`)
+con su S3 de mentira, y Spark 4.1 + Iceberg 1.12.0 (+ Sedona 1.9.1) en la red de ese contenedor, con
+identidad de cabecera y `vended-credentials`. Es el primer *commit* desde Spark que se mide: hasta
+hoy, por `/v1` sólo habían escrito PyIceberg y DuckDB.
+
+| caso | resultado |
+|---|---|
+| S1 · crear el *namespace* y la tabla, `INSERT` | **va**: Iceberg v2, `geom` en `binary`, y **ORE conserva `ore.geo.geom`** (`{"crs":"EPSG:25830","type":"Geometry<Point, EPSG:25830>"}`), con su `ore.dataset` |
+| S2–S3 · leer, añadir un segundo *commit* | **va**: 2 *snapshots*, 3 filas |
+| S5 · Sedona calcula (`ST_Buffer` en EPSG:25830) y escribe WKB con su `ore.geo.zona` | **va**: el área de cada *buffer*, 31 214 m², **la misma que da DuckDB** (C1·1) |
+| S6 · el `GEOMETRY(4326)` nativo de Spark (v3) | **ORE lo niega, pero mal**: un 500 `CommitStateUnknownException` (`ore-store-r2` no abre el tipo `geometry` de v3; `iceberg` 0.10). «Estado desconocido» le dice a Spark que quizá se escribió: tiene que ser un 400 que diga cómo escribirla |
+
+**Lo que dice:**
+1. **El contrato de Heavyweight es el de hoy del lago:** WKB en `binary` con su `ore.geo.<col>` (CRS y
+   tipo), escrito por `/v1`. Los SDK de ORE la leen como geometría (0067: `ore.geo.*` de la tabla).
+2. Spark la deja en v2 sin el tipo lógico `GEOMETRY` del Parquet ni la clave GeoParquet que pone el
+   escritor de ORE: un lector de fuera ve bytes. Se iguala cuando el lago promueva (0067: `iceberg`
+   0.11).
+3. **El `ore.geo.<col>` lo tiene que poner ORE, no el cliente:** a mano es una cadena JSON que nadie
+   comprueba. Lo pone el Transform Heavyweight desde el contrato de su salida (C2·2).
+4. El `GEOMETRY` nativo de Spark (y los CRS proyectados, que Spark 4.1 no admite) se niega con un 400 y
+   su remedio (`ST_AsBinary`).
 
 ### C3 · El *join* espacial a escala
 
