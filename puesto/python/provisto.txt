@@ -21,6 +21,8 @@
 # 2026-10-17 (0067 G2·3·5): `geopandas`, `shapely` y `pyproj`, para que `ore.read`
 # entregue un GeoDataFrame con su CRS; SIN `pyogrio` (la E/S de ficheros geo,
 # +49 MB): por eso el Dockerfile instala con `--no-deps` (la lista ya es entera): 45.
+# 2026-10-18 (0068 C1·2): `h3` 4.5.0, el H3 de Python (lo que `h3_*` es en SQL), sin dependencias:
+# 2,6 MB. `pyogrio` sigue fuera (decidido: los ficheros geo los lee `ST_Read` desde SQL): 46.
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -37,6 +39,7 @@ google-cloud-storage==3.16.0
 google-crc32c==1.9.0
 google-resumable-media==2.11.0
 googleapis-common-protos==1.75.5
+h3==4.5.0
 idna==3.20
 iniconfig==2.3.0
 Jinja2==3.1.6

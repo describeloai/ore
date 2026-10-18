@@ -408,7 +408,7 @@ FROM python:3.14-slim AS puesto-python
 COPY puesto/python/provisto.txt /opt/ore/provisto-fijado.txt
 RUN pip install --no-cache-dir --no-deps -r /opt/ore/provisto-fijado.txt \
  && pip freeze > /entorno-1.txt \
- && python -c "import pandas, pyarrow, duckdb, geopandas, shapely, pyproj, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
+ && python -c "import pandas, pyarrow, duckdb, geopandas, shapely, pyproj, h3, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__, 'h3', h3.__version__)"
 # ⭐⭐ LO QUE ESTA IMAGEN PONE, ESCRITO PARA QUE OTRO LO LEA (0031 W3.2 · el
 #   orden). Es el gemelo exacto de `puesto/jvm/jars.txt`: el Job que resuelve
 #   la capa lo lee para NO bajar lo que aquí ya está —el `pyarrow` y el
