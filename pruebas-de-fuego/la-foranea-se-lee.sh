@@ -302,7 +302,7 @@ PJ=""
 JAVAC=$(command -v javac || true); JAVA=$(command -v java || true)
 if [ -n "$JAVAC" ] && "$JAVAC" -version 2>&1 | grep -qE '^javac (2[1-9]|[3-9][0-9])'; then
   LIB="${ORE_JARS:-${TMPDIR:-/tmp}/ore-jars}"; mkdir -p "$LIB"
-  [ -f "$LIB/duckdb_jdbc.jar" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/duckdb_jdbc.jar" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar"
+  [ -f "$LIB/duckdb_jdbc.jar" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/duckdb_jdbc.jar" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.6.0/duckdb_jdbc-1.5.6.0.jar"
   grep -v '^#' "$RAIZ/puesto/jvm/jars.txt" | while read -r g v; do n="${g##*/}-$v.jar"; [ -f "$LIB/$n" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/$n" "https://repo1.maven.org/maven2/$g/$v/$n"; done
   SEP=":"; LIB_CP="$LIB"; CLASES="$TMP/clases"; mkdir -p "$CLASES"; CLASES_CP="$CLASES"
   case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";"; LIB_CP="$(cd "$LIB" && pwd -W)"; CLASES_CP="$(cd "$CLASES" && pwd -W)";; esac

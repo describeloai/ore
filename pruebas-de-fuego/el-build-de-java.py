@@ -9,7 +9,7 @@ roto que se usa falla con SU fichero y su línea, y `package` manda.
 import glob, os, shutil, subprocess, sys, urllib.request
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DUCKDB_JDBC = "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar"
+DUCKDB_JDBC = "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.6.0/duckdb_jdbc-1.5.6.0.jar"
 
 
 def jars():

@@ -43,7 +43,7 @@ T0 = time.time()
 RAIZ = banco.RAIZ
 LOCAL = os.environ.get("JM_LOCAL") == "1"
 IMAGEN = os.environ.get("JM_IMAGEN", "europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-jvm:1")
-DUCKDB_JDBC = "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar"
+DUCKDB_JDBC = "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.6.0/duckdb_jdbc-1.5.6.0.jar"
 filtro = sys.argv[1] if len(sys.argv) > 1 else ""
 
 # 1 · el banco. Escucha en el bucle local; desde Docker, Docker Desktop lleva

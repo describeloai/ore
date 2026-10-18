@@ -610,7 +610,7 @@ CMD ["node", "/opt/ore/agente.mjs"]
 # ═══════════════════════════════════════════════════════════════════════════
 FROM eclipse-temurin:21-jdk-noble AS puesto-jvm
 
-ARG DUCKDB_JDBC=1.5.5.1
+ARG DUCKDB_JDBC=1.5.6.0
 COPY puesto/jvm /opt/ore/src
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN mkdir -p /opt/ore/lib /opt/ore/clases \
@@ -673,7 +673,7 @@ ARG MAVEN=3.9.9
 ARG MAVEN_SHA512=a555254d6b53d267965a3404ecb14e53c3827c09c3b94b5678835887ab404556bfaf78dcfe03ba76fa2508649dca8531c74bca4d5846513522404d48e8c4ac8b
 # ⚠️ LA MISMA que `puesto-jvm`, y tiene que seguir siéndolo: es uno de los jars
 #   que la imagen del puesto pone, así que entra en la lista de `provided`.
-ARG DUCKDB_JDBC=1.5.5.1
+ARG DUCKDB_JDBC=1.5.6.0
 
 RUN curl -fsSL -o /tmp/maven.tar.gz \
       "https://archive.apache.org/dist/maven/maven-3/${MAVEN}/binaries/apache-maven-${MAVEN}-bin.tar.gz" \

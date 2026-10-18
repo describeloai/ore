@@ -165,7 +165,7 @@ const JARS_JVM: &str = include_str!("../../../puesto/jvm/jars.txt");
 pub(crate) const SDK_PYTHON: &str = "1.0.0";
 /// El `duckdb_jdbc` del puesto JVM: no está en `jars.txt` sino en el
 /// `ARG DUCKDB_JDBC` del Dockerfile (un test los compara).
-const DUCKDB_JDBC: &str = "1.5.5.1";
+const DUCKDB_JDBC: &str = "1.5.6.0";
 
 /// Un paquete que la sesión trae sin que nadie lo declare.
 #[derive(Debug, PartialEq)]

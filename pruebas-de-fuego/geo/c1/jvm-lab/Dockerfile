@@ -3,7 +3,7 @@
 #   docker build -f pruebas-de-fuego/geo/c1/jvm-lab/Dockerfile [--build-arg DUCKDB_JDBC=1.5.6.0] -t ore-puesto-jvm:local .
 FROM eclipse-temurin:21-jdk-noble AS puesto-jvm
 
-ARG DUCKDB_JDBC=1.5.5.1
+ARG DUCKDB_JDBC=1.5.6.0
 COPY puesto/jvm /opt/ore/src
 RUN mkdir -p /opt/ore/lib /opt/ore/clases \
  && curl -fsSL -o /opt/ore/lib/duckdb_jdbc.jar \
