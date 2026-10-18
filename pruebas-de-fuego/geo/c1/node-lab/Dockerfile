@@ -14,7 +14,7 @@ WORKDIR /opt/ore
 #   R3 T5b): la capa de Node no la copia y avisa si un repositorio pide otra.
 #   UNA LISTA, DOS LECTORES; si no coinciden, la construcción falla aquí.
 COPY puesto/node/provisto.txt /opt/ore/provisto.txt
-RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
+RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.6-r.1 \
  && v=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@duckdb/node-api/package.json','utf8')).version") \
  && { grep -qx "@duckdb/node-api@$v" /opt/ore/provisto.txt || { echo "✗ provisto.txt no dice @duckdb/node-api@$v, la de la imagen"; exit 1; }; } \
  && npm ls --depth=0 > /entorno-1.txt \

@@ -521,7 +521,7 @@ WORKDIR /opt/ore
 #   R3 T5b): la capa de Node no la copia y avisa si un repositorio pide otra.
 #   UNA LISTA, DOS LECTORES; si no coinciden, la construcción falla aquí.
 COPY puesto/node/provisto.txt /opt/ore/provisto.txt
-RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
+RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.6-r.1 \
  && v=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@duckdb/node-api/package.json','utf8')).version") \
  && { grep -qx "@duckdb/node-api@$v" /opt/ore/provisto.txt || { echo "✗ provisto.txt no dice @duckdb/node-api@$v, la de la imagen"; exit 1; }; } \
  && npm ls --depth=0 > /entorno-1.txt \
@@ -778,7 +778,7 @@ RUN set -e; mkdir -p /tmp/p/arbol; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
     grep -q '"dayjs@1.11.13"' /tmp/p/t/informe.json; \
     grep -q '"dev:@types/lodash@4.17.20"' /tmp/p/t/informe.json; \
-    grep -q 'you asked for @duckdb/node-api 1.4.0, and this session brings 1.5.5-r.5' /tmp/p/t/informe.json; \
+    grep -q 'you asked for @duckdb/node-api 1.4.0, and this session brings 1.5.6-r.1' /tmp/p/t/informe.json; \
     grep -q 'you asked for typescript 5.8.3, and this session brings 5.9.3' /tmp/p/t/informe.json; \
     grep -q '"suma"' /tmp/p/t/informe.json; \
     grep -q '"sumaTipos"' /tmp/p/t/informe.json; \

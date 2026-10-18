@@ -1246,7 +1246,7 @@ mod prueba {
         );
         assert!(node.contains(&Provista {
             nombre: "@duckdb/node-api".into(),
-            version: "1.5.5-r.5".into(),
+            version: "1.5.6-r.1".into(),
             tipos: false
         }));
         assert!(node.contains(&Provista {

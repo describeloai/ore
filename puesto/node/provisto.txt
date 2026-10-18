@@ -2,7 +2,8 @@
 # UNA LISTA, DOS LECTORES: el Dockerfile instala esto, y la capa de Node
 # (`puesto/node/capa/capa.mjs`) no lo copia —manda el contenedor— y avisa si un
 # repositorio pide otra versión. Cambiarlo es cambiar la imagen, no un Job.
-@duckdb/node-api@1.5.5-r.5
+# 2026-10-18 (0068 C1·2): 1.5.6, el mismo DuckDB que el puesto de Python.
+@duckdb/node-api@1.5.6-r.1
 ore@1.0.0
 # ⭐ L3·2 · LO QUE SÓLO TIPA (` tipos` detrás): en `/opt/ore/tipos`, nunca en
 #   el `node_modules` de lo que corre. El `tsc` y el servidor de lenguaje del
