@@ -233,17 +233,17 @@ mod prueba {
         assert_eq!(decodificar("100%"), "100%");
     }
 
-    /// P5·3: las de Python, veintiocho (eran treinta; `pillow` la trae la
-    /// imagen desde 0049 B9, y `shapely` desde 0067 G2·3·5), cuatro al grupo
-    /// `dev`, sin lo descartado.
+    /// P5·3: las de Python, veintisiete (eran treinta; `pillow` la trae la
+    /// imagen desde 0049 B9, `shapely` desde 0067 G2·3·5 y `h3` desde 0068
+    /// C1·2), cuatro al grupo `dev`, sin lo descartado.
     #[test]
-    fn las_sugeridas_de_python_son_veintiocho_y_las_de_probar_van_a_dev() {
+    fn las_sugeridas_de_python_son_veintisiete_y_las_de_probar_van_a_dev() {
         let s = sugeridas_de(crate::entorno::PYTHON);
-        assert_eq!(s.len(), 28, "{s:?}");
+        assert_eq!(s.len(), 27, "{s:?}");
         let mut n: Vec<&str> = s.iter().map(|x| x.nombre.as_str()).collect();
         n.sort();
         n.dedup();
-        assert_eq!(n.len(), 28);
+        assert_eq!(n.len(), 27);
         let dev: Vec<&str> = s
             .iter()
             .filter(|x| x.dev)

@@ -26,6 +26,7 @@ use crate::rutas::Servidor;
 use ore_core::document::Kind;
 use ore_core::json::Json;
 use ore_core::parse::Node;
+use ore_core::repositorios::Motor;
 use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::path::{Path, PathBuf};
@@ -878,6 +879,32 @@ fn diagnostico_suelto(code: &str, mensaje: String, fichero: &str) -> Respuesta {
     }
 }
 
+/// ORE 0068 C2·3 · **Dónde corre el build**, por el motor de su repositorio:
+/// Lightweight, donde siempre (`python` o `jvm`, el lenguaje lo dice);
+/// Heavyweight, en el puesto pesado (`spark`) lo de Python y SQL. Java en
+/// Heavyweight se niega hasta que Spark Java llegue (pieza 4): correrlo en el
+/// puesto ligero sería mentir sobre el motor que se eligió.
+pub(crate) fn entorno_del_build(
+    entorno: &'static str,
+    motor: Motor,
+    repositorio: Option<&str>,
+) -> Result<&'static str, Respuesta> {
+    match (motor, entorno) {
+        (Motor::Lightweight, e) => Ok(e),
+        (Motor::Heavyweight, "python") => Ok(crate::cola::SPARK),
+        (Motor::Heavyweight, _) => Err(con_motivo(
+            Respuesta::error(
+                422,
+                format!(
+                    "`{}` is a Heavyweight repository, and Java transforms do not build on Spark yet",
+                    repositorio.unwrap_or_default()
+                ),
+            ),
+            "not_buildable",
+        )),
+    }
+}
+
 /// El repositorio registrado (en `main`) que contiene `codigo`: el de ruta más
 /// larga que lo tiene dentro. `(ruta, plantilla)`.
 fn repositorio_de<'a>(
@@ -912,9 +939,13 @@ impl Servidor {
         // un registro, 0036 ⑤); y, sin rama dicha, en qué repositorio está el
         // código, para tomar la rama de la persona en él.
         let mut registrados: Vec<(String, String)> = Vec::new();
+        // 0068 C2·3: el motor de cada uno, que decide dónde corren sus builds.
+        let mut motores: std::collections::BTreeMap<String, Motor> = Default::default();
         let mut repo_en_main: Option<String> = None;
         let r = self.leyendo(|raiz| {
-            registrados = ore_core::repositorios::leer(raiz)
+            let leidos = ore_core::repositorios::leer(raiz);
+            motores = leidos.iter().map(|r| (r.ruta.clone(), r.motor)).collect();
+            registrados = leidos
                 .into_iter()
                 .map(|r| (r.ruta, r.plantilla.unwrap_or_default()))
                 .collect();
@@ -984,6 +1015,15 @@ impl Servidor {
                     "not_buildable",
                 );
             }
+            let motor = repositorio
+                .as_ref()
+                .and_then(|r| motores.get(r))
+                .copied()
+                .unwrap_or_default();
+            let entorno = match entorno_del_build(h.entorno, motor, repositorio.as_deref()) {
+                Ok(e) => e,
+                Err(r) => return r,
+            };
             let repositorio_del_build = repositorio.clone();
             // 0049 B4·2: lo que lee y es una colección, fijado al lanzar.
             let fijadas = self.fijar_colecciones(rama.as_deref(), &h.inputs);
@@ -997,7 +1037,7 @@ impl Servidor {
             let mut r = self.lanzar_trabajo(
                 sujeto,
                 rama.clone(),
-                h.entorno,
+                entorno,
                 h.lenguaje,
                 h.codigo.clone(),
                 commit.clone(),
@@ -2248,6 +2288,39 @@ plantillaVersion: 7
         assert_eq!(r.codigo, 404);
         assert!(error(&r).contains("is not in this branch"), "{}", error(&r));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ORE 0068 C2·3 · El motor del repositorio decide dónde corre su build:
+    /// Lightweight como siempre; Heavyweight, Python y SQL en el puesto pesado,
+    /// y Java negado con su motivo (hasta Spark Java). Sin repositorio
+    /// registrado no hay motor: el de siempre.
+    #[test]
+    fn el_motor_del_repositorio_decide_donde_corre_el_build() {
+        assert_eq!(
+            entorno_del_build("python", Motor::Lightweight, Some("r")).ok(),
+            Some("python")
+        );
+        assert_eq!(
+            entorno_del_build("jvm", Motor::Lightweight, Some("r")).ok(),
+            Some("jvm")
+        );
+        assert_eq!(
+            entorno_del_build("python", Motor::Heavyweight, Some("r")).ok(),
+            Some(crate::cola::SPARK)
+        );
+        let r =
+            entorno_del_build("jvm", Motor::Heavyweight, Some("packages/geo/pesado")).unwrap_err();
+        assert_eq!(r.codigo, 422);
+        let j = r.cuerpo.jcs();
+        assert!(j.contains("not_buildable"), "{j}");
+        assert!(
+            j.contains("`packages/geo/pesado` is a Heavyweight repository"),
+            "{j}"
+        );
+        assert_eq!(
+            entorno_del_build("python", Motor::default(), None).ok(),
+            Some("python")
+        );
     }
 
     #[test]

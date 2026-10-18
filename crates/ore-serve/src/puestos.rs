@@ -234,7 +234,8 @@ pub(crate) struct Puesto {
     /// nombra cada evento que sale del puesto — la celda habla con el token de su
     /// pod, y sin ella `ore-iam` no sabría a quién anotarlo. `None` sin puente.
     pub decision: Option<String>,
-    /// `python`, `node` o `jvm`: la imagen (`cola::ENTORNOS`).
+    /// `python`, `node` o `jvm`: la imagen (`cola::ENTORNOS`); y `spark`, el
+    /// puesto pesado, sólo para el build de un repositorio Heavyweight (0068 C2·3).
     pub entorno: String,
     pub rama: Option<String>,
     pub fichero: String,
@@ -1120,7 +1121,13 @@ impl Servidor {
                 422,
                 format!(
                     "`{lenguaje}` no tiene puesto: python, sql, typescript, javascript o java (o un entorno: {})",
-                    cola::ENTORNOS.join(", ")
+                    // El pesado no se abre: lo elige el motor de un build (0068 C2·3).
+                    cola::ENTORNOS
+                        .iter()
+                        .filter(|e| **e != cola::SPARK)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             );
         };
@@ -1695,6 +1702,8 @@ impl Servidor {
         alcance: Option<&str>,
         sujeto: &Identidad,
     ) -> Result<String, Respuesta> {
+        // 0068 C2·3: el pesado lleva la capa de Python (su imagen sale de la de Python).
+        let entorno = cola::entorno_de_la_capa(entorno);
         if !declara_capa(entorno) {
             return Ok(String::new());
         }

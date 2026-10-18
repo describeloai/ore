@@ -42,7 +42,6 @@ pypdf	Files	Read, split and merge PDF files
 orjson	Formats	Fast JSON serialization
 PyYAML	Formats	Read and write YAML
 sqlglot	Formats	Parse, transpile and format SQL across dialects
-h3	Geo	Uber's H3 hexagonal grid index
 networkx	Graphs	Graphs and network analysis
 hypothesis	Testing	Property-based testing: generate test cases from strategies	dev
 pytest-mock	Testing	The mocker fixture for pytest	dev

@@ -608,7 +608,43 @@ const ENTORNO_MODELO: &str = "puesto-entorno-modelo:1";
 /// los tres, porque el cliente de la nube vive en él.
 const ENTORNO_VALOR_MODELO: &str = "entorno-modelo";
 /// Los entornos que tienen imagen (`Dockerfile`, el job `construir` de ci.yml).
-pub const ENTORNOS: [&str; 3] = ["python", "node", "jvm"];
+pub const ENTORNOS: [&str; 4] = ["python", "node", "jvm", SPARK];
+
+/// ORE 0068 C2·3 · **El motor Heavyweight**: `puesto-spark:1`, el puesto de
+/// Python más Spark 4.1 y Sedona (C2·2). Lo elige el `motor` del repositorio
+/// para sus Builds, nunca un lenguaje: no hay celda «spark».
+pub const SPARK: &str = "spark";
+
+/// El entorno cuyas dependencias declaradas (la capa) lleva uno: `spark` sale
+/// de `puesto-python` (`FROM puesto-python`), así que su capa es la de Python
+/// —las mismas ruedas, resueltas contra el mismo intérprete—, y `traer-la-capa`
+/// baja ruedas.
+pub fn entorno_de_la_capa(entorno: &str) -> &str {
+    if entorno == SPARK { "python" } else { entorno }
+}
+
+/// ⭐ Y los recursos del puesto pesado (0068 C2·3), sobre los de la plantilla:
+/// `(lo que trae, lo que pone)`. Un `n2-highmem-8` (8 vCPU, 64 GB; decidido
+/// 2026-10-18) deja ~57 GiB al pod tras lo que GKE reserva y sus DaemonSets:
+/// 48 GiB son el pod entero, con margen. Pedir 7 CPU es lo que hace que Kueue
+/// sólo lo admita en el *flavor* pesado (los demás tienen 1 y 1,5).
+/// `ORE_MEMORIA_MB` dice lo mismo que `limits.memory` (`gen-inquilino` ⑱): el
+/// arnés reparte desde ahí (pieza 0: la JVM ocupa el heap + ~0,8 GiB). Se
+/// confirman en victor (pieza 6).
+const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 3] = [
+    (
+        "requests: {cpu: \"100m\", memory: 768Mi}",
+        "requests: {cpu: \"7\", memory: 48Gi}",
+    ),
+    (
+        "limits:   {cpu: \"2\", memory: 4Gi}",
+        "limits:   {cpu: \"8\", memory: 48Gi}",
+    ),
+    (
+        "name: ORE_MEMORIA_MB, value: \"4096\"",
+        "name: ORE_MEMORIA_MB, value: \"49152\"",
+    ),
+];
 
 /// La etiqueta que abre la salida al gateway de modelos a un trabajo del
 /// puesto (0050 P4): la selecciona `salida-al-modelo-de-una-funcion`
@@ -674,6 +710,15 @@ pub fn rendir_puesto(
             "`{PLANTILLA_PUESTO}` no trae el hueco `value: \"{TRABAJO_MODELO}\"`: hay que converger este inquilino para correr un trabajo"
         ));
     }
+    if entorno == SPARK {
+        for (de, _) in RECURSOS_DEL_PUESTO_PESADO {
+            if plantilla.matches(de).count() != 1 {
+                return Err(format!(
+                    "`{PLANTILLA_PUESTO}` no trae (una vez) `{de}`: los recursos del puesto pesado se ponen sobre ellos, y `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
+                ));
+            }
+        }
+    }
     for (de, a) in [
         (PUESTO_MODELO, id),
         (RAMA_MODELO, rama),
@@ -713,15 +758,23 @@ pub fn rendir_puesto(
             &format!("value: \"{ABIERTO_MODELO}\""),
             &format!("value: \"{abierto}\""),
         )
+        // `traer-la-capa` sólo distingue ruedas, jars y npm: el pesado baja ruedas.
         .replace(
             &format!("value: \"{ENTORNO_VALOR_MODELO}\""),
-            &format!("value: \"{entorno}\""),
+            &format!("value: \"{}\"", entorno_de_la_capa(entorno)),
         )
         .replace(ENTORNO_MODELO, &format!("puesto-{entorno}:1"))
         .replace(
             &format!("value: \"{TRABAJO_MODELO}\""),
             &format!("value: \"{trabajo}\""),
         );
+    let t = if entorno == SPARK {
+        RECURSOS_DEL_PUESTO_PESADO
+            .iter()
+            .fold(t, |t, (de, a)| t.replacen(de, a, 1))
+    } else {
+        t
+    };
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
     // Un trabajo (`trabajo-<persona>-<hex>`) se llama por su id: no es «el
@@ -1088,6 +1141,48 @@ mod prueba {
         assert!(url_sin_secreto("sftp://ore:clave@h/datos/").is_err());
         assert!(url_sin_secreto("sftp://h/datos/").is_err());
         assert!(url_sin_secreto("sftp://ore@h/?clave=x").is_err());
+    }
+
+    /// ORE 0068 C2·3 · El puesto pesado, sobre la plantilla de verdad: su
+    /// imagen, la capa de Python (sale de `puesto-python`) y sus recursos, con
+    /// `ORE_MEMORIA_MB` diciendo lo mismo que `limits.memory`. Los demás
+    /// entornos no cambian; y una plantilla sin los recursos de siempre no se
+    /// adivina.
+    #[test]
+    fn el_puesto_pesado_lleva_su_imagen_la_capa_de_python_y_sus_recursos() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        let (f, t, job) = rendir_puesto(
+            p,
+            "trabajo-ana-1a2b3c4d",
+            "",
+            "capa-0123456789ab",
+            "1",
+            SPARK,
+            "packages/geo/t/x.py@abc",
+        )
+        .unwrap();
+        assert_eq!(f, "54-el-trabajo-ana-1a2b3c4d.yaml");
+        assert!(job.starts_with("trabajo-ana-1a2b3c4d-"));
+        assert!(t.contains("/ore/puesto-spark:1"), "{t}");
+        assert!(t.contains("{ name: ENTORNO, value: \"python\" }"), "{t}");
+        assert!(t.contains("requests: {cpu: \"7\", memory: 48Gi}"));
+        assert!(t.contains("limits:   {cpu: \"8\", memory: 48Gi}"));
+        assert!(t.contains("name: ORE_MEMORIA_MB, value: \"49152\""));
+        assert!(!t.contains("memory: 4Gi}") && !t.contains("value: \"4096\""));
+        // 48 GiB = 49152 MiB: lo que el pod dice que mide es lo que mide (⑱).
+        assert_eq!(48 * 1024, 49152);
+
+        let (_, tp, _) =
+            rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").unwrap();
+        assert!(tp.contains("/ore/puesto-python:1") && tp.contains("value: \"4096\""));
+        assert!(!tp.contains("48Gi"));
+
+        let sin = p.replace("memory: 768Mi}", "memory: 1Gi}");
+        let e = rendir_puesto(&sin, "trabajo-ana-1a2b3c4d", "", "", "1", SPARK, "x.py@abc")
+            .unwrap_err();
+        assert!(e.contains("puesto pesado"), "{e}");
+        assert_eq!(entorno_de_la_capa(SPARK), "python");
+        assert_eq!(entorno_de_la_capa("jvm"), "jvm");
     }
 
     /// 0050 P4: la etiqueta que abre la puerta va en el POD (que es lo que la

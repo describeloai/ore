@@ -520,6 +520,19 @@ reclama y cada celda es PySpark.
 4. **`…/credentials` entra en la pieza 3**: sin él, un Build pesado de más de ~55 min falla al leer o
    escribir en GCS.
 
+**Pieza 1 · el motor elige el entorno (hecha en local).** `POST /builds` lee el `motor` de cada
+repositorio registrado, y `entorno_del_build` decide: Lightweight, donde siempre; Heavyweight, Python y
+SQL en `spark`; Java en Heavyweight, **422 `not_buildable`** hasta Spark Java (pieza 4), porque
+correrlo en el puesto ligero sería mentir sobre el motor elegido. En la cola, `spark` es un entorno
+con imagen (`puesto-spark:1`) que **lleva la capa de Python** (`entorno_de_la_capa`: su imagen sale de
+la de Python, y `traer-la-capa` baja ruedas) y **sus recursos**, puestos sobre los de la plantilla:
+pide 7 CPU / 48 GiB y limita a 8 CPU / 48 GiB, con `ORE_MEMORIA_MB` = 49152 (⑱). Pedir 7 CPU hace que
+Kueue sólo lo admita en el *flavor* pesado (pieza 6): hasta entonces, un Build Heavyweight se queda en
+la cola, que es la verdad. Una plantilla que no traiga los recursos de siempre no se adivina (error).
+No se abre una sesión `spark`: el pesado lo elige un Build, nunca un lenguaje. Hasta la pieza 2, el
+Build pesado corre el arnés de siempre (DuckDB) en la imagen pesada. De paso, `h3` sale de las
+sugeridas de Python, porque desde C1·2 lo trae la imagen.
+
 ### C3 · El *join* espacial a escala
 
 | paso | qué |
