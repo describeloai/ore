@@ -25,7 +25,7 @@ import json
 import os
 import sys
 
-from ore import _arrow, _derrame, _q, _tropo_mb
+from ore import _arrow, _derrame, _ejes_xy, _q, _tropo_mb
 
 
 def _conexion():
@@ -56,6 +56,8 @@ def _cargar_geo(con):
     if os.path.isdir(EXTENSIONES):
         con.execute("set extension_directory = '%s'" % EXTENSIONES)
     con.execute("load spatial")
+    # 0068 · x es la longitud, siempre (`ore._ejes_xy`): lo mismo que en la celda.
+    _ejes_xy(con)
     try:
         con.execute("load h3")
     except Exception:  # noqa: BLE001 — de community: si no está, lo geo sigue

@@ -996,10 +996,16 @@ public final class Ore {
 
     /** {@code LOAD} de una extensión: en la imagen está preinstalada; fuera, si falta, se instala una vez. */
     private static void cargar(Connection con, String extension) throws SQLException {
-        try (Statement s = con.createStatement()) { s.execute("load " + extension); return; } catch (SQLException e) {
+        try (Statement s = con.createStatement()) { s.execute("load " + extension); } catch (SQLException e) {
             if (Files.isDirectory(EXTENSIONS)) throw new SQLException("the image does not ship DuckDB's `" + extension + "` extension: it must be preinstalled in " + EXTENSIONS, e);
+            try (Statement s = con.createStatement()) { s.execute("install " + extension); s.execute("load " + extension); }
         }
-        try (Statement s = con.createStatement()) { s.execute("install " + extension); s.execute("load " + extension); }
+        // ORE 0068 (cierre de C1) · x es la longitud, siempre: lo que guarda el lago y lo que hace
+        // Sedona. Sin esto, un ST_Transform a 4326 da lat/lon y las distancias esféricas de un
+        // lon/lat del lago salen mal (medido: pruebas-de-fuego/geo/c1/ejes/). Después de `load spatial`.
+        if (extension.equals("spatial")) {
+            try (Statement s = con.createStatement()) { s.execute("set geometry_always_xy = true"); }
+        }
     }
 
     /** La copia de la vista como Parquet local, bajado UNA vez por sesión (la clave es el digest del artefacto). */

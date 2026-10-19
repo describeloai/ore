@@ -923,6 +923,17 @@ def _cargar(con, extension):
             raise RuntimeError("the image lacks the DuckDB extension `%s`: it must be preinstalled in %s" % (extension, EXTENSIONES))
         con.execute("install %s" % extension)
         con.execute("load %s" % extension)
+    if extension == "spatial":
+        _ejes_xy(con)
+
+
+def _ejes_xy(con):
+    """ORE 0068 (cierre de C1) · **x es la longitud, siempre**: lo que guarda el lago (GeoParquet,
+    WKB) y lo que hace Sedona. Sin esto, el DuckDB de `spatial` toma el orden de la autoridad EPSG
+    (en 4326, lat/lon): un `ST_Transform` a 4326 deja los puntos traspuestos, y uno desde 4326, las
+    distancias y las áreas esféricas de un lon/lat del lago salen mal (Sol–Barcelona, 659 km en vez
+    de 507: medido en `pruebas-de-fuego/geo/c1/ejes/`). Va después de `load spatial`: antes no existe."""
+    con.execute("set geometry_always_xy = true")
 
 
 def _token_de_google():

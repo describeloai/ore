@@ -645,6 +645,10 @@ async function cargar(con, extension, repositorio) {
     if (existsSync(EXTENSIONES)) throw new Error(`the image does not ship DuckDB's \`${extension}\` extension: it must be preinstalled in ${EXTENSIONES}`);
     await con.run(`install ${extension}${repositorio ? " from " + repositorio : ""}`); await con.run(`load ${extension}`);
   }
+  // ORE 0068 (cierre de C1) · x es la longitud, siempre: lo que guarda el lago y lo que hace
+  // Sedona. Sin esto, un ST_Transform a 4326 da lat/lon y las distancias esféricas de un lon/lat
+  // del lago salen mal (medido: pruebas-de-fuego/geo/c1/ejes/). Después de `load spatial`.
+  if (extension === "spatial") await con.run("set geometry_always_xy = true");
 }
 
 

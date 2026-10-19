@@ -169,6 +169,12 @@ public class GeoPrueba {
             igual(h3.latLngToCellAddress(40.4168, -3.7038, 9), rs.getString(1), "H3 de Java: la misma celda que en SQL (res 9)");
             igual(h3.latLngToCellAddress(55.6761, 12.5683, 12), rs.getString(2), "y en res 12");
         }
+        // ORE 0068 (cierre de C1): x es la longitud, siempre (`geometry_always_xy` al cargar spatial).
+        Object p = Ore.sql("select ST_AsText(ST_Transform(ST_Point(440000, 4474000), 'EPSG:25830', 'EPSG:4326')) p").get(0).get("p");
+        igual(String.valueOf(p).startsWith("POINT (-3.707"), true, "a 4326 sale lon/lat: " + p);
+        double d = ((Number) Ore.sql("select ST_Distance_Spheroid(ST_Point(-3.7072, 40.4145), ST_Point(2.1734, 41.3851)) / 1000 d")
+            .get(0).get("d")).doubleValue();
+        igual(Math.abs(d - 507) < 2, true, "Sol–Barcelona desde lon/lat, 507 km (sin el ajuste, 659): " + d);
         System.out.println("## ok");
     }
 }

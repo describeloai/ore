@@ -193,6 +193,8 @@ def register(con, calls, resolve):
         con.create_function(udf, llamar, params, salida)
         if geo:
             con.execute("load spatial")
+            # 0068 · x es la longitud, siempre (`ore._ejes_xy`).
+            con.execute("set geometry_always_xy = true")
             args = ["a%d" % i for i in range(n)]
             dentro = ", ".join("ST_AsWKB(%s::GEOMETRY('%s'))" % (a, crs.replace("'", "''")) if crs else a
                                for a, crs in zip(args, crs_in))

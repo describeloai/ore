@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { __geo } from "../ore/index.mjs";
+import { __geo, sql } from "../ore/index.mjs";
 
 const { conGeo, crsDeGeo, parquetDe_, duckdb } = __geo;
 
@@ -80,4 +80,14 @@ test("sin geo en el puntero, lo toma de la tabla", async () => {
   const geo = await __geo.geoDeLaTabla(ml);
   assert.equal(geo.geom.crs, "EPSG:25830");
   assert.equal(geo.geom.type, "Geometry<Any, EPSG:25830>");
+});
+
+// ORE 0068 (cierre de C1): x es la longitud, siempre — lo que guarda el lago y hace Sedona. El SDK
+// pone `geometry_always_xy` al cargar spatial (medido: pruebas-de-fuego/geo/c1/ejes/).
+test("los ejes: a 4326 sale lon/lat, y la distancia esférica de un lon/lat es la de verdad", async (t) => {
+  if (!(await conSpatial())) return t.skip("sin spatial");
+  const [{ p }] = await sql("select ST_AsText(ST_Transform(ST_Point(440000, 4474000), 'EPSG:25830', 'EPSG:4326')) p");
+  assert.match(String(p), /^POINT \(-3\.707/);
+  const [{ d }] = await sql("select ST_Distance_Spheroid(ST_Point(-3.7072, 40.4145), ST_Point(2.1734, 41.3851)) / 1000 d");
+  assert.ok(Math.abs(Number(d) - 507) < 2, `Sol–Barcelona ${d} km (sin el ajuste, 659)`);
 });

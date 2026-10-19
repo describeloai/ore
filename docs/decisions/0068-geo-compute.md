@@ -362,6 +362,37 @@ la misma operación, y los tres niegan mezclar CRS. El de Spark, en C2. Al cerra
 solo empuje y una celda en victor (el contrato que expone el árbol tras un Build real, y una geometría
 devuelta por una invocación HTTP, que hoy `toWire` resume).
 
+**Cierre de C1 · x es la longitud, siempre (hecho en local, 2026-10-19).** Lo que encontró C2·2: los
+tres puestos cargaban `spatial` sin `geometry_always_xy`, y el DuckDB 1.5.6 de `spatial` toma
+entonces el orden de la autoridad EPSG, que en 4326 es lat/lon. El lago guarda x = longitud
+(GeoParquet, WKB) y Sedona trabaja así. **El previo** (`pruebas-de-fuego/geo/c1/ejes/previo.py`)
+dice que el hueco era mayor que los puntos traspuestos:
+
+| caso | sin el ajuste | con él |
+|---|---|---|
+| `ST_Transform` 25830 → 4326 | `POINT (40.4145 -3.7072)` (lat/lon) | `POINT (-3.7072 40.4145)` |
+| `ST_Transform` 4326 → 25830 **de un lon/lat del lago** | `POINT (5860699 -565092)`: fuera de España | `POINT (439999.96 4474004.4)` |
+| `ST_Distance_Spheroid` Sol–Barcelona, desde lon/lat | **659 km** | **507 km** (la de verdad) |
+| `ST_Area_Spheroid` de 0,01° × 0,01° a 40° N | 1,2 km² | 0,9 km² (la de verdad) |
+| la ida y vuelta 25830 → 4326 → 25830, `ST_X`, el WKB | iguales | iguales |
+| `always_xy := false` en la llamada | lat/lon | lat/lon: quien lo pida, lo tiene |
+
+Antes de `load spatial` el ajuste no existe (lo trae la extensión), y vale para la conexión: los SDK
+usan una por proceso. **Puesto en los tres SDK, donde se carga `spatial`:**
+- Python: `_cargar`, más `_ejes_xy`, y también en `calcular.py` (la vista con copia) y en
+  `sql_functions.py` (las Functions geo desde SQL);
+- Node y Java: `cargar`.
+
+Así lo tienen también el puesto pesado (el mismo SDK de Python) y todo lo que corre en DuckDB.
+**Por la API pública de cada SDK** (`ejes/medir.sh sdk`): los tres dan `POINT (-3.7072 40.4145)` y
+507 km. Lo mismo queda en las suites: `test_ejes_xy.py` (Python), `geo.test.mjs` (Node) y
+`GeoPrueba.java` (Java). El SDK, 163 pruebas en `puesto-python` y en `puesto-spark`.
+
+**Lo que cambia para quien ya tenía código:** un Transform que llevara un `ST_Transform` a 4326, o
+`ST_Distance_Spheroid` sobre datos del lago, da otro resultado (el bueno) en su próximo build. Lo ya
+escrito con los ejes traspuestos se queda como está: en victor se mira al cerrar C1 (columnas en
+4326 cuyas «longitudes» caen fuera de ±90 o en el rango de las latitudes de los datos).
+
 ### C2 · El motor por repositorio
 
 | paso | qué |
@@ -454,7 +485,8 @@ escribe `ore.geo.zona`, y S6 sigue en el 500 (su 400 es de C2·3).
    defecto escribe lat/lon en 4326. Nadie en ORE fija hoy `geometry_always_xy`: un `ST_Transform` a
    4326 en un Transform de SQL, Python, Node o Java deja los puntos traspuestos en el lago. **El
    remedio es una línea por puesto** (`set geometry_always_xy = true` donde se carga `spatial`), y
-   entra en el cierre de C1 con su prueba en los tres puestos.
+   entra en el cierre de C1 con su prueba en los tres puestos. **Hecho** (C1, «x es la longitud,
+   siempre»): el hueco también estropeaba las distancias y áreas esféricas de un lon/lat del lago.
 2. Con él, los dos motores dan el mismo punto con una diferencia de 4·10⁻⁸ grados (unos 4 mm: PROJ
    frente a GeoTools). Para comparar resultados entre motores se tolera menos de 1 cm.
 3. Sedona no reconoce `'OGC:CRS84'`, que es el CRS por defecto de Iceberg para la geografía. El arnés
