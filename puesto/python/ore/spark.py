@@ -116,11 +116,12 @@ def _campos(md):
     return (esquema or md.get("schema") or {}).get("fields", [])
 
 
-def _geo_de(nombre):
+def _geo_de(nombre, md=None):
     """`{columna: {"crs": …, "type": …}}`: lo que la tabla dice de sus columnas geo (`ore.geo.*`)."""
-    c, md = _metadatos(nombre)
-    if c != 200:
-        return {}
+    if md is None:
+        c, md = _metadatos(nombre)
+        if c != 200:
+            return {}
     props = md.get("properties") or {}
     geo = {}
     for k, v in props.items():
@@ -143,9 +144,42 @@ def _srid(crs):
     return None
 
 
+# ORE 0068 C3·a · Lo que se difunde en un join espacial: un dataset geo con pocas filas Y pocos bytes.
+#   Spark sólo difunde por los bytes de los ficheros (`autoBroadcastJoinThreshold`, 10 MB): 8 000
+#   polígonos detallados pesan 37 MB, no se difundían y el join tardaba 1,6× más (previo de C3).
+#   Medido en victor (20 M puntos, heap 38 g): difundir gana hasta ~100 k polígonos (24,9 s frente a
+#   30,6 s de `RangeJoin`); con 300 k ya pierde (37,4 frente a 30,5 s), con 1 M por 3× y casi sin
+#   memoria (41 de 48 GB), y 5 M no caben. El catálogo da las filas; el techo de bytes guarda de
+#   pocas filas enormes.
+DIFUNDIR_FILAS = 150_000
+DIFUNDIR_BYTES = 48 << 20
+
+
+def _tamano(md):
+    """`(filas, bytes)` del snapshot vigente de una tabla, de su resumen; `(None, None)` si no lo dice."""
+    actual = md.get("current-snapshot-id")
+    snap = next((x for x in md.get("snapshots") or [] if x.get("snapshot-id") == actual), None)
+    resumen = (snap or {}).get("summary") or {}
+    try:
+        return int(resumen["total-records"]), int(resumen["total-files-size"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+
+
+def _se_difunde(filas, bytes_):
+    """¿Se difunde un dataset geo de `filas` y `bytes_`? Sin saberlo, no: lo que hace Spark solo."""
+    if filas is None or bytes_ is None:
+        return False
+    tope_f = int(os.environ.get("ORE_DIFUNDIR_FILAS") or DIFUNDIR_FILAS)
+    tope_b = int(os.environ.get("ORE_DIFUNDIR_BYTES") or DIFUNDIR_BYTES)
+    return filas <= tope_f and bytes_ <= tope_b
+
+
 def over(view):
     """Un dataset del lago como DataFrame de Spark, con sus columnas geo como geometría de Sedona
-    con su SRID (de `ore.geo.<col>`)."""
+    con su SRID (de `ore.geo.<col>`). Uno geo pequeño (`_se_difunde`) va marcado para difundirse: en
+    un join espacial, Sedona lo indexa entero en cada ejecutor (`BroadcastIndexJoin`). La marca
+    sigue en SQL, porque las vistas de `sql()` salen de aquí (2b)."""
     from pyspark.sql import functions as F
 
     from . import _leidas
@@ -154,7 +188,10 @@ def over(view):
     # Lo leído va a la procedencia de lo que se escriba (fuera de un transform), como en Lightweight.
     if _corto(view) not in _leidas:
         _leidas.append(_corto(view))
-    geo = _geo_de(view)
+    c, md = _metadatos(view)
+    if c != 200:
+        return df
+    geo = _geo_de(view, md)
     if not geo:
         return df
     cols = []
@@ -168,7 +205,8 @@ def over(view):
         if s is not None:
             e = "ST_SetSRID(%s, %d)" % (e, s)
         cols.append(F.expr(e).alias(c))
-    return df.select(*cols)
+    df = df.select(*cols)
+    return F.broadcast(df) if _se_difunde(*_tamano(md)) else df
 
 
 def sql(query):

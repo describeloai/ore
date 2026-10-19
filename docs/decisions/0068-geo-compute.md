@@ -962,11 +962,31 @@ C0 solo quedan los resultados en el bucket: los datos se borraron con su pool.
 | **C3·c · el Build en varios nodos** | el Build pesado pasa a ser el Job indexado de N pods de arriba; un Job `batch/v1` de N pods ya lo admite Kueue de una vez. Hay que subir `cq-<celda>-pesado` y la cuota del inquilino a N × 7 CPU / 48 GiB, y el pool a N nodos |
 | **C3·d · la vara a escala 100** | SpatialBench entero con C3·a a C3·c, con **la opción A** (2 × `n2-highmem-8`, el pool de hoy; elegida el 2026-10-19). El objetivo de C0·5 era con 32 vCPU: se mide con 16 y se dice |
 
+**C3·a · difundir lo pequeño (hecho en local, 2026-10-19).** `over()` marca para difundir
+(`F.broadcast`) un dataset **geo** con **≤ 150 000 filas y ≤ 48 MiB**, según el snapshot vigente que da
+el catálogo (`total-records`, `total-files-size`; los dos de la misma llamada a `/v1` que ya hacía).
+La marca sigue en SQL, porque sus vistas salen de `over()`, y en Java, que llama a Python. Sin esos
+datos no se marca nada y Spark decide como siempre. `ORE_DIFUNDIR_FILAS` y `ORE_DIFUNDIR_BYTES` lo
+cambian (para las pruebas). El umbral, medido en victor (`pruebas-de-fuego/geo/c3/a/memoria.py`, 20 M
+puntos, heap 38 g):
+
+| polígonos | Parquet | difundidos | `RangeJoin` (sin difundir) |
+|---|---|---|---|
+| 8 000 detallados | 37 MB | **17,7 s** | 28,2 s |
+| 100 000 | 21,6 MB | **24,9 s**, pico 18,9 GB | 30,6 s, 8,8 GB |
+| 300 000 | 64,2 MB | 37,4 s, 27,8 GB | **30,5 s**, 10,8 GB |
+| 1 000 000 | 184,6 MB | 113 s, 41 GB de 48 | **36,9 s**, 19 GB |
+| 5 000 000 | — | sin memoria | — |
+
+Difundir sólo compensa con el lado pequeño de verdad. Por encima, la partición espacial de Sedona
+(`RangeJoin`) es más rápida y gasta la mitad: **el umbral es una frontera de velocidad, no sólo de
+memoria**. Pruebas: `test_motor_pesado.py` (`LaDifusion`) y los casos 9 y 9b del arnés de Spark
+(20/20).
+
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
   otros pods. El `AuthPod` del *driver* ya está; falta ver que las credenciales prestadas les llegan;
 - **Kueue con un Job de N pods en `cola-pesada`**: la medida corrió sin Kueue, en su namespace;
-- **la memoria del índice difundido** cuando el lado «pequeño» tiene millones de filas;
 - **Q6, Q8, Q11 y Q12 a escala 100**, que son C3·d.
 
 ### C4 · Enriquecer

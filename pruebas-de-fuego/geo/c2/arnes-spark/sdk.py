@@ -116,6 +116,23 @@ caso("8 · table() de un DataFrame de Spark", lambda: (lambda t: (t["total"], le
      [c["name"] for c in t["columnas"]], isinstance(t["filas"][0][1], str) and t["filas"][0][1][:2]))(
      ore.table(ore.over("geo.lugares").select("id", "geom").orderBy("id"), 3)),
      lambda r: r[0] == 10 and r[1] == 3 and r[2] == ["id", "geom"] and r[3] in ("01", "00"))
+def plan_del_join(umbral):
+    """C3·a · El join espacial de `geo.zonas` (5 polígonos, geo) con `geo.lugares` por `over()`: qué hace
+    Spark con el umbral de filas `umbral` (sin tocar el de bytes de Spark, que difundiría igual)."""
+    os.environ["ORE_DIFUNDIR_FILAS"] = str(umbral)
+    s.conf.set("spark.sql.autoBroadcastJoinThreshold", "-1")
+    try:
+        z, p = ore.over("geo.zonas").alias("z"), ore.over("geo.lugares").alias("p")
+        r = z.join(p, __import__("pyspark.sql.functions", fromlist=["expr"]).expr("ST_Contains(z.zona, p.geom)"))
+        plan = r._jdf.queryExecution().executedPlan().toString()
+        return ("BroadcastIndexJoin" in plan, r.count())
+    finally:
+        os.environ.pop("ORE_DIFUNDIR_FILAS", None)
+        s.conf.unset("spark.sql.autoBroadcastJoinThreshold")
+
+
+caso("9 · over() difunde un dataset geo pequeño", lambda: plan_del_join(1000), lambda r: r[0] and r[1] >= 5)
+caso("9b · y uno por encima del umbral, no", lambda: plan_del_join(1), lambda r: not r[0] and r[1] >= 5)
 caso("8b · table() que cabe no cuenta aparte", lambda: ore.table(ore.sql("select id from geo.zonas"), 200)["total"],
      lambda r: r == 5)
 

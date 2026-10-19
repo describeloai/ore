@@ -89,6 +89,30 @@ class ElSqlPesado(unittest.TestCase):
                 pesado.sql("select from where geo.t")
 
 
+class LaDifusion(unittest.TestCase):
+    """C3·a · Un dataset geo se difunde en un join espacial si tiene pocas filas Y pocos bytes, del
+    snapshot vigente que da el catálogo; sin saberlo, no (lo que haga Spark solo)."""
+
+    def _md(self, filas, bytes_, vigente=2):
+        return {"current-snapshot-id": vigente, "snapshots": [
+            {"snapshot-id": 1, "summary": {"total-records": "9", "total-files-size": "9"}},
+            {"snapshot-id": 2, "summary": {"total-records": str(filas), "total-files-size": str(bytes_)}}]}
+
+    def test_el_tamano_es_el_del_snapshot_vigente(self):
+        self.assertEqual(pesado._tamano(self._md(8000, 37 << 20)), (8000, 37 << 20))
+        self.assertEqual(pesado._tamano(self._md(8000, 1, vigente=1)), (9, 9))
+        self.assertEqual(pesado._tamano({}), (None, None))
+
+    def test_pocas_filas_y_pocos_bytes(self):
+        with mock.patch.dict(os.environ, {"ORE_DIFUNDIR_FILAS": "", "ORE_DIFUNDIR_BYTES": ""}):
+            self.assertTrue(pesado._se_difunde(8000, 37 << 20))
+            self.assertFalse(pesado._se_difunde(pesado.DIFUNDIR_FILAS + 1, 1))
+            self.assertFalse(pesado._se_difunde(10, pesado.DIFUNDIR_BYTES + 1))
+            self.assertFalse(pesado._se_difunde(None, None))
+        with mock.patch.dict(os.environ, {"ORE_DIFUNDIR_FILAS": "5"}):
+            self.assertFalse(pesado._se_difunde(8000, 1))
+
+
 class LaMuestraPesada(unittest.TestCase):
     """6c · `table()` de un DataFrame de Spark (la muestra del informe de un build): su cabeza, de
     `ore.spark.cabeza`, y el total; contar sólo cuando la cabeza se llena."""

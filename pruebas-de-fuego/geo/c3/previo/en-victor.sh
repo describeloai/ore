@@ -57,6 +57,6 @@ while :; do
 done
 POD=$(kubectl -n $NS get pods -l job-name=$N -o name | head -1)
 echo "== estado: $e · $(( $(date -u +%s) - T0 )) s desde que se creó"
-kubectl -n $NS logs $POD 2>/dev/null | grep '^C3|'
+kubectl -n $NS logs $POD 2>/dev/null | grep -E '^C3[A-Z]*[|]'
 kubectl -n $NS logs $POD 2>/dev/null | grep -E "Traceback|Error|Exception" | grep -v "^\s*at " | head -5
 kubectl -n $NS delete job $N --wait=false >/dev/null 2>&1; kubectl -n $NS delete configmap $N >/dev/null 2>&1
