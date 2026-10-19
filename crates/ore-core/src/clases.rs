@@ -342,24 +342,59 @@ FROM (VALUES ('ES', 3),
              ('PT', 1)) AS t(country, n)
 "##;
 
-const ANALYTICS_PY: &str = "\
-# An analysis READS and declares nothing. Its class enforces that: an
-# `analytics` repository writes no data even if the code asks to (ADR 0036 ⑤).
-# Here you explore, count and decide what to do next.
-#
-# The session already provides `over` and `sql`; the import changes nothing at
-# run time, it lets your editor know them (ADR 0037 ③a).
+/// La semilla de `analytics-python` (v6): **un notebook de marimo** (0064). La
+/// consola abre un `.py` de un repositorio Analytics en marimo sólo si es un
+/// notebook (`marimo.App`); uno que no lo es va a Monaco. Las celdas son las del
+/// ejemplo de antes: leer con `over` y contar con `sql`.
+const ANALYTICS_PY: &str = r##"import marimo
 
-from ore import over, sql
+__generated_with = "0.25.1"
+app = marimo.App(width="medium")
 
-# Names have three parts, `database.schema.name` (ADR 0038): in the `default`
-# schema, `database.name` is enough.
-SOURCE = \"my_db.my_schema.my_dataset\"
 
-rows = over(SOURCE)
-print(SOURCE, \"→\", len(rows), \"rows\")
-print(sql(f\"select count(*) as n from {SOURCE}\"))
-";
+@app.cell
+def _():
+    import marimo as mo
+    from ore import over, sql
+    return mo, over, sql
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # An analysis
+
+    An analysis **reads** and declares nothing: an `analytics` repository writes no
+    data even if the code asks to. Explore, count and decide what to do next.
+
+    Names have three parts, `database.schema.name`; in the `default` schema,
+    `database.name` is enough.
+    """)
+    return
+
+
+@app.cell
+def _():
+    SOURCE = "my_db.my_schema.my_dataset"
+    return (SOURCE,)
+
+
+@app.cell
+def _(SOURCE, over):
+    rows = over(SOURCE)
+    rows
+    return (rows,)
+
+
+@app.cell
+def _(SOURCE, sql):
+    sql(f"select count(*) as n from {SOURCE}")
+    return
+
+
+if __name__ == "__main__":
+    app.run()
+"##;
 
 const MODELS_PY: &str = "\
 # Training a model. Declare the result as a `TrainedModel` with its
@@ -1149,7 +1184,8 @@ pub const CLASES: &[Clase] = &[
         // 4: la semilla nombra en tres partes (0038 P7).
         // 5: la semilla, en inglés: prosa, identificadores y rutas (SDK S4a).
         // Actualizar deja lo de antes (`analisis/ejemplo.py`): es de quien lo tenga.
-        version: 5,
+        // 6: el ejemplo es un notebook de marimo (0064).
+        version: 6,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("analysis/example.py", ANALYTICS_PY),
@@ -1952,6 +1988,8 @@ spec: {{ owner: \"team:x\" }}
                 }
                 let importado: Vec<&str> = texto
                     .lines()
+                    // En un notebook de marimo el import va dentro de su celda.
+                    .map(str::trim_start)
                     .filter(|l| l.starts_with("from ore import "))
                     .flat_map(|l| l.trim_start_matches("from ore import ").split(", "))
                     .map(str::trim)

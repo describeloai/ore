@@ -2807,7 +2807,7 @@ impl Servidor {
         Salida::Bytes(Bytes {
             codigo: 303,
             cabeceras: vec![
-                ("location".into(), format!("/puestos/{id}/marimo/")),
+                ("location".into(), destino_de_marimo(id, consulta_cruda)),
                 ("set-cookie".into(), cookie_de_marimo(id, &token)),
             ],
             largo: Some(0),
@@ -5378,6 +5378,53 @@ fn aleatorio_hex(n: usize) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// A dónde va el canje (`/marimo/entrar?token=…&file=…`): la portada de marimo
+/// o, con `file`, **ese notebook** (`?file=<ruta desde la raíz del árbol>`, medido
+/// en marimo 0.25.1: abre el notebook sin pasar por la portada). Sin `file`, o
+/// con uno que no sea una ruta relativa y limpia de un `.py`, la portada.
+fn destino_de_marimo(id: &str, consulta_cruda: &str) -> String {
+    let portada = format!("/puestos/{id}/marimo/");
+    let Some(crudo) = parametro_de(consulta_cruda, "file") else {
+        return portada;
+    };
+    let limpio = |c: char| c.is_ascii_alphanumeric() || "._~%-".contains(c);
+    let ruta = decodificar_url(&crudo);
+    let valida = !crudo.is_empty()
+        && crudo.chars().all(limpio)
+        && ruta.ends_with(".py")
+        && !ruta.starts_with('/')
+        && ruta
+            .split('/')
+            .all(|t| !t.is_empty() && t != "." && t != ".." && !t.contains('\\'));
+    if valida {
+        format!("{portada}?file={crudo}")
+    } else {
+        portada
+    }
+}
+
+/// `analysis%2Fexample.py` → `analysis/example.py`; lo que no es un `%XX`
+/// válido se queda.
+fn decodificar_url(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut o = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(a), Some(z)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            o.push((a * 16 + z) as u8);
+            i += 3;
+        } else {
+            o.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&o).into_owned()
+}
+
 /// La cookie del origen aislado de marimo (0064 Pieza 4). El cuaderno vive en un
 /// iframe de `<celda>-nb.ore.paladio.io` dentro de la página de la consola, que
 /// puede ser OTRO sitio (la consola en localhost, o en un dominio propio): ahí una
@@ -5636,6 +5683,32 @@ pub(crate) mod prueba {
         assert!(!es_asset_de_marimo("GET", "/assets/a-1.js", "v=2"));
         assert!(!es_asset_de_marimo("POST", "/assets/a-1.js", ""));
         assert!(!es_asset_de_marimo("GET", "/api/kernel", ""));
+    }
+
+    /// El canje lleva al notebook que pide la consola, y sólo a una ruta limpia.
+    #[test]
+    fn el_canje_lleva_al_notebook_pedido() {
+        let d = |q: &str| destino_de_marimo("puesto-a", q);
+        let f = "packages%2Fp%2Fanalytics%2Fanalysis%2Fexample.py";
+        assert_eq!(
+            d(&format!("token=x&file={f}")),
+            format!("/puestos/puesto-a/marimo/?file={f}")
+        );
+        assert_eq!(d("token=x"), "/puestos/puesto-a/marimo/");
+        for malo in [
+            "%2Fetc%2Fpasswd.py",
+            "packages%2F..%2F..%2Fx.py",
+            "a%2F%2Fb.py",
+            "packages%2Fnotas.md",
+            "a.py%0d%0aset-cookie:x",
+            "a%5Cb.py",
+        ] {
+            assert_eq!(
+                d(&format!("token=x&file={malo}")),
+                "/puestos/puesto-a/marimo/",
+                "{malo}"
+            );
+        }
     }
 
     /// La cookie de marimo viaja en un iframe de otro sitio (la consola en localhost,
