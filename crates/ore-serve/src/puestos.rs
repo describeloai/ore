@@ -486,6 +486,11 @@ impl std::fmt::Debug for Puestos {
 /// capa, la misma rama y el mismo «lo mío». El repositorio es la unidad de
 /// trabajo, así que la sesión es suya: del alcance se toma **la última
 /// carpeta**, que es como se llama el repositorio para quien trabaja.
+/// Lo más largo que puede ser el id de un puesto: su Job se llama
+/// `<id>-<8 hex>`, y ese nombre es el valor de la etiqueta `job-name` de su pod,
+/// que Kubernetes corta en 63. 63 − 9 = 54.
+pub(crate) const ID_MAXIMO: usize = 54;
+
 pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> String {
     let corto = |s: &str, n: usize| {
         let s = cola::nombre_de_objeto(s);
@@ -507,19 +512,37 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
         //
         //   ⛔ Y en 63: el Job se llama `<id>-<8 hex>` y su nombre es el valor de
         //   la etiqueta `job-name` de su pod. Antes, con un `sub` de UUID y un
-        //   repositorio largo, daba 68 y el Job no se creaba. Ahora, como mucho:
-        //   7 + 16 + 1 + 6 + 1 + 12 + 1 + 6 = 50, y con el `-<8 hex>`, 59.
+        //   repositorio largo, daba 68 y el Job no se creaba.
+        //
+        //   ⛔⛔ (0068, 2026-10-19) Y CON CUALQUIER ENTORNO. La cuenta de arriba
+        //   suponía uno de 6 (`python`): `python-notebooks` (0064) son 16, y en
+        //   victor el Job de un notebook dio 70 — Flux aplica la cola entera o
+        //   nada, así que paró TODOS los Jobs de la celda. Ahora lo legible se
+        //   reparte lo que dejan las partes fijas ([`ID_MAXIMO`]): con un entorno
+        //   de hasta 10 (`python`, `node`, `jvm`, `spark`), 16 + 12 como siempre
+        //   —el mismo id de antes—; con uno más largo, menos de cada uno.
         Some(ruta) => {
             let repo = ruta.rsplit('/').next().unwrap_or(ruta);
             let h = ore_core::digest::de_bytes(format!("{persona}\n{ruta}").as_bytes());
             let h = &h["sha256:".len().."sha256:".len() + 6];
+            // `puesto-` + `-{entorno}-` + `-{h}`.
+            let libre = ID_MAXIMO.saturating_sub(7 + entorno.len() + 2 + 1 + 6);
+            let de_repo = 12.min(libre / 2).max(1);
+            let de_persona = 16.min(libre.saturating_sub(de_repo)).max(1);
             format!(
                 "puesto-{}-{entorno}-{}-{h}",
-                corto(sin_prefijo, 16),
-                corto(repo, 12)
+                corto(sin_prefijo, de_persona),
+                corto(repo, de_repo)
             )
         }
-        None => format!("puesto-{}-{entorno}", corto(sin_prefijo, 24)),
+        None => {
+            // `puesto-` + `-{entorno}`.
+            let libre = ID_MAXIMO.saturating_sub(7 + 1 + entorno.len());
+            format!(
+                "puesto-{}-{entorno}",
+                corto(sin_prefijo, 24.min(libre).max(1))
+            )
+        }
     }
 }
 
@@ -5905,6 +5928,41 @@ pub(crate) mod prueba {
             Some("packages/un_paquete_muy_largo/una_carpeta_de_repositorio_larguisima"),
         );
         assert!(largo.len() + 9 <= 63, "{largo} ({})", largo.len() + 9);
+        // ⛔ 0068 (2026-10-19) · Y con CUALQUIER entorno: el de notebooks (16) daba
+        //   un Job de 70 en victor y paraba la cola entera de la celda.
+        for entorno in crate::cola::ENTORNOS {
+            for repo in [
+                Some("packages/un_paquete_muy_largo/una_carpeta_de_repositorio_larguisima"),
+                None,
+            ] {
+                let id = id_de("21e8ffd9-5aae-4797-a9f9-b81bde8e1780", entorno, repo);
+                assert!(
+                    id.len() <= ID_MAXIMO && id.contains(&format!("-{entorno}")),
+                    "{entorno}: {id} ({} + 9 > 63)",
+                    id.len()
+                );
+            }
+        }
+        let nb = id_de(
+            "21e8ffd9-5aae-4797-a9f9-b81bde8e1780",
+            "python-notebooks",
+            Some("packages/ml/model-marimo"),
+        );
+        assert!(
+            nb.starts_with("puesto-21e8ffd9-5a-python-notebooks-model-marim-")
+                && nb.len() + 9 <= 63,
+            "{nb}"
+        );
+        // Y con los entornos de siempre, el MISMO id que antes (16 + 12): lo que
+        // estaba en la cola de victor sigue llamándose igual.
+        assert!(
+            id_de(
+                "21e8ffd9-5aae-4797-a9f9-b81bde8e1780",
+                "python",
+                Some("packages/geo/pesado-python")
+            )
+            .starts_with("puesto-21e8ffd9-5aae-47-python-pesado-pytho-")
+        );
         assert_eq!(
             id_de("persona:ana", "python", Some("  ")),
             "puesto-ana-python",
