@@ -2716,7 +2716,6 @@ def _resultado_de_crear(objeto, creado):
     return pa.table({"object": [objeto], "status": [estado]})
 
 
-@_kw({"nombre": "name", "datos": "data", "modo": "mode", "clave": "key", "anclada_a": "anchored_to"})
 def _esquema_iceberg(schema):
     """El esquema Iceberg que `write()` esboza de un esquema de Arrow. Los ids como
     los reparte Iceberg al crear: primero las columnas, luego los hijos de cada una
@@ -2727,6 +2726,10 @@ def _esquema_iceberg(schema):
         for i, f in enumerate(schema)]}
 
 
+# ⚠️ El decorador va pegado a `write`: en 728c3ef8 `_esquema_iceberg` quedó en medio, el alias se lo
+#   llevó ella y `write(..., modo=…)` dejó de valer (lo cazó `el-puesto.sh` ⑩ en el CI). Lo vigila
+#   `test_write_conserva_sus_alias`.
+@_kw({"nombre": "name", "datos": "data", "modo": "mode", "clave": "key", "anclada_a": "anchored_to"})
 def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyway=False):
     """Write `data` (a pandas or polars DataFrame, or an Arrow Table) as the
     lake dataset `<database>.<schema>.<name>`. The code never touches the
