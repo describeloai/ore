@@ -1252,13 +1252,17 @@ impl Servidor {
                 //   clase, no el valor por defecto ("python"): un
                 //   `analytics-python`/`models-python` abre su propio entorno
                 //   (`python-notebooks`), no el genérico de su lenguaje. Sólo
-                //   es un 422 cuando la persona SÍ pidió un lenguaje y choca
-                //   con el de su clase.
+                //   es un 422 cuando la persona SÍ pidió un lenguaje que no es
+                //   el DE LA CLASE (`lenguaje != c.lenguaje`) — pedir
+                //   `lenguaje: python` para un `models-python` es exactamente
+                //   lo que la clase ya dice, aunque su entorno (con familia)
+                //   no sea el genérico `python`: la consola pide siempre por
+                //   lenguaje, nunca por entorno (0064 Pieza 5).
                 if let Some(c) = c
                     && let Some(suyo) = ore_core::clases::entorno_de(c)
                     && suyo != entorno
                 {
-                    if lenguaje_pedido {
+                    if lenguaje_pedido && lenguaje != c.lenguaje {
                         return Respuesta::error(
                             422,
                             format!(
