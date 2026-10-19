@@ -41,6 +41,26 @@ spec:
       value: "true"
       effect: NoSchedule
 ---
+# ── ⭐ El sabor `pesado` (ADR 0068 C2·3 pieza 6, 2026-10-19) ───────────────────
+#
+# Los nodos del pool `pesado` (`73-el-pool-pesado.sh`: n2-highmem-8 spot, de 0 a 2): donde
+# corren los Builds y los Previews Heavyweight (Spark). Lo nombra SÓLO la `ClusterQueue`
+# `cq-<celda>-pesado` (`11-el-inquilino.yaml`), a la que lleva `cola-pesada`: ninguna cola
+# ligera lo tiene, así que un puesto de 768 MiB que no quepa en `system` ni en `jobs` espera
+# en vez de encender un nodo de 64 GB. La tolerancia la inyecta Kueue, como en `jobs`.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: pesado
+spec:
+  nodeLabels:
+    ore.dev/pool: pesado
+  tolerations:
+    - key: ore.dev/pesado
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+---
 # ⛔ LO DEMÁS SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
 #
 # Aquí vivían el `Namespace` de `t-demo`, su `ClusterQueue`, su `LocalQueue`, sus

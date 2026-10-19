@@ -15,7 +15,7 @@
 #      su grupo está en pie.
 #   3. `cordon` + `drain` de los nodos: Keycloak, las bases y las forjas se paran
 #      limpias (C1·0: 130 s), no de golpe.
-#   4. `sistema-spot`, `jobs-s` y `pg` a 0 (`pg`, además, sin autoescalado: sin
+#   4. `sistema-spot`, `jobs-s`, `pesado` y `pg` a 0 (`pg`, además, sin autoescalado: sin
 #      taint, el autoescalador lo subía por los pods de kube-system; ADR 0060 A1).
 #
 # Necesita `gcloud` y `kubectl` autenticados. Idempotente: dormida, no hace nada.
@@ -79,7 +79,8 @@ paso "nodos vaciados"
 # ── 4 · a 0 ────────────────────────────────────────────────────────────────
 gcloud container node-pools update pg --cluster "$CLUSTER" --zone "$ZONA" --project "$P" \
   --no-enable-autoscaling --quiet >/dev/null 2>&1 || true
-for POOL in sistema-spot jobs-s pg; do
+# (0068 pieza 6) y `pesado`: escala a cero solo, pero dormida no se deja nada en pie.
+for POOL in sistema-spot jobs-s pg pesado; do
   gcloud container clusters resize "$CLUSTER" --node-pool "$POOL" --num-nodes 0 \
     --zone "$ZONA" --project "$P" --quiet >/dev/null 2>&1 &
 done

@@ -129,6 +129,42 @@ metadata:
 spec:
   clusterQueue: cq-demo
 ---
+# ── ⭐ La cola PESADA (ADR 0068 C2·3 pieza 6, 2026-10-19) ──────────────────────
+#
+# Un Build o un Preview Heavyweight (Spark) pide 7 CPU / 48 GiB (`cola.rs`,
+# `RECURSOS_DEL_PUESTO_PESADO`) y va a `cola-pesada`; nada más va ahí. Su
+# `ClusterQueue` sólo tiene el sabor `pesado` (`10-kueue.yaml`, el pool de
+# `73-el-pool-pesado.sh`) y su cuota es UN puesto pesado: dos celdas, dos nodos
+# de 8 (decidido 2026-10-18). Sin cohorte y sin prestar: lo que una celda no usa
+# no lo toma otra, que encendería un tercer nodo que el pool no tiene.
+#
+# ⛔ Aparte de `cq-demo` A PROPÓSITO: con el sabor pesado detrás de `system` y
+#   `jobs` en la misma cola, un puesto ligero que no cupiera desbordaría a un
+#   nodo de 64 GB. Y uno pesado no puede caer en uno ligero.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-demo-pesado
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: pesado
+          resources:
+            - name: cpu
+              nominalQuota: "7"
+            - name: memory
+              nominalQuota: "48Gi"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: cola-pesada
+  namespace: t-demo
+spec:
+  clusterQueue: cq-demo-pesado
+---
 # La misma base que `ore-system`: se niega por defecto, se abre después.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -164,9 +200,12 @@ metadata:
   name: cuota
   namespace: t-demo
 spec:
+  # ⭐ (0068 pieza 6) 12 CPU / 64 GiB: un puesto pesado (7 / 48Gi) más las dos
+  #   colas ligeras llenas (1+1,5 CPU, 4+5 GiB) y lo que corre siempre. Con 36Gi
+  #   el pod pesado no nacía: Kueue lo admitía y la cuota lo negaba.
   hard:
-    requests.cpu: "10"
-    requests.memory: 36Gi
+    requests.cpu: "12"
+    requests.memory: 64Gi
     count/jobs.batch: "50"
 ---
 # ── Y la puerta a la forja, por el otro lado ───────────────────────────────────
