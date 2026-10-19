@@ -15,7 +15,9 @@ try:
               "org.apache.iceberg.gcp.gcs.GCSFileIO", "org.apache.iceberg.aws.s3.S3FileIO",
               "org.apache.sedona.sql.SedonaSqlExtensions",
               # C2·3: la identidad del puesto en cada petición, compilada aquí.
-              "ore.spark.IdentidadDelPuesto"):
+              "ore.spark.IdentidadDelPuesto",
+              # C2·3 pieza 4: Spark Java (el SDK, el arnés y la anotación de siempre).
+              "ore.Ore", "ore.ArnesDeSpark", "ore.Transform", "ore.Puente"):
         s._jvm.java.lang.Class.forName(c)
     a = s.sql("select round(ST_Area(ST_Buffer(ST_Point(440000, 4474000), 100))) a").first().a
     assert a == 31214, a

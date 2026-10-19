@@ -26,7 +26,8 @@ MSYS_NO_PATHCONV=1 docker run --rm --network container:c2-banco -v "$aqui":/l:ro
 echo "== 2 · el repositorio Heavyweight y sus .sql"
 ex bash /repo/pruebas-de-fuego/geo/c2/build-pesado/repo.sh
 
-for salida in geo.conteo geo.centros geo.anillos geo.fuera; do
+# (pieza 4: y los de Java, con SALIDAS="geo.conteo geo.anillos_java …")
+for salida in ${SALIDAS:-geo.conteo geo.centros geo.anillos geo.fuera geo.anillos_java geo.conteo_java geo.fuera_java geo.rompe_java}; do
   echo "== 3 · POST /builds $salida"
   r=$(ex curl -s -X POST -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' \
         -d "{\"output\":\"$salida\"}" http://127.0.0.1:8080/builds)
@@ -41,7 +42,7 @@ for salida in geo.conteo geo.centros geo.anillos geo.fuera; do
     | grep -v -E "WARN|^\s+at |log4j|setLogLevel|NativeCodeLoader|Stage [0-9]|^\s*$" | tail -6 | cut -c1-260 || true
   echo "== 5 · lo que el build dice"
   ex curl -s -H 'x-ore-sujeto: persona:ana' "http://127.0.0.1:8080/builds/$bid" \
-    | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error') or {}; m=[l for l in (e.get('mensaje') or '').splitlines() if 'Exception' in l or 'Error' in l][:1]; print('  ', d.get('estado'), '· filas', d.get('filas'), '·', m[0][:220] if m else '')"
+    | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error') or {}; m=[l for l in (e.get('mensaje') or '').splitlines() if 'Exception' in l or 'Error' in l][:1]; print('  ', d.get('estado'), '· filas', d.get('filas'), '·', {k: v for k, v in e.items() if k != 'mensaje'} or '', '·', m[0][:220] if m else (e.get('mensaje') or '')[:220])"
   echo "== 6 · lo que el lago dice de $salida"
   t=${salida#geo.}
   ex curl -s -H 'x-ore-sujeto: persona:ana' "http://127.0.0.1:8080/v1/geo/namespaces/default/tables/$t" | python3 -c "

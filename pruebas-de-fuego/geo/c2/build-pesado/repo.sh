@@ -43,6 +43,87 @@ def fuera():
     # lee lo que NO declara: el catálogo lo niega (lo declarado manda)
     return write("geo.fuera", over("geo.lugares"))
 PY
+# y uno de Java (C2·3 pieza 4): los mismos nombres con `Dataset<Row>`, en la JVM de Spark
+mkdir -p packages/geo/pesadojava/transforms/geo
+printf -- '---\nnombre: PesadoJava\nplantilla: transforms-java\nplantillaVersion: 1\nmotor: heavyweight\n---\nJava transforms en Spark.\n' \
+  > packages/geo/pesadojava/README.md
+cat > packages/geo/pesadojava/transforms/geo/Medidas.java <<'JAVA'
+package geo;
+
+/** De apoyo: otra clase del repositorio, que javac encuentra por el -sourcepath. */
+final class Medidas {
+    static final int ANCHO = 50;
+
+    static String anillo(String col) {
+        return "ST_Difference(ST_Buffer(" + col + ", " + ANCHO + "), " + col + ")";
+    }
+}
+JAVA
+cat > packages/geo/pesadojava/transforms/geo/AnillosJava.java <<'JAVA'
+package geo;
+
+import static ore.Ore.*;
+
+import ore.Transform;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+
+public class AnillosJava {
+    /** Un anillo de 50 m alrededor de cada zona, en Java. */
+    @Transform(inputs = {"geo.zonas"}, output = "geo.anillos_java")
+    public static Object anillos() throws Exception {
+        Dataset<Row> z = over("geo.zonas");
+        return write("geo.anillos_java", z.selectExpr("id", Medidas.anillo("zona") + " AS anillo"));
+    }
+}
+JAVA
+cat > packages/geo/pesadojava/transforms/geo/ConteoJava.java <<'JAVA'
+package geo;
+
+import static ore.Ore.*;
+
+import ore.Transform;
+
+public class ConteoJava {
+    /** El join espacial de conteo.sql, con sql() desde Java. */
+    @Transform(inputs = {"geo.zonas", "geo.lugares"}, output = "geo.conteo_java")
+    public static Object conteo() throws Exception {
+        return write("geo.conteo_java", sql(
+            "SELECT z.id, count(*) AS n FROM geo.zonas z JOIN geo.lugares l ON ST_Contains(z.zona, l.geom) GROUP BY z.id"));
+    }
+}
+JAVA
+cat > packages/geo/pesadojava/transforms/geo/FueraJava.java <<'JAVA'
+package geo;
+
+import static ore.Ore.*;
+
+import ore.Transform;
+
+public class FueraJava {
+    /** Lee lo que NO declara: se niega. */
+    @Transform(inputs = {"geo.zonas"}, output = "geo.fuera_java")
+    public static Object fuera() throws Exception {
+        return write("geo.fuera_java", over("geo.lugares"));
+    }
+}
+JAVA
+cat > packages/geo/pesadojava/transforms/geo/RompeJava.java <<'JAVA'
+package geo;
+
+import static ore.Ore.*;
+
+import ore.Transform;
+
+public class RompeJava {
+    /** Un error del código: su línea llega al build. */
+    @Transform(inputs = {"geo.zonas"}, output = "geo.rompe_java")
+    public static Object rompe() throws Exception {
+        String nada = null;
+        return write("geo.rompe_java", over("geo.zonas").limit(nada.length()));
+    }
+}
+JAVA
 echo "== los datasets que el árbol tiene"
 ls packages/geo/ 2>/dev/null | tr '\n' ' '; echo
 for f in $(ls packages/geo/*/datasets/*.yaml packages/geo/datasets/*.yaml 2>/dev/null); do

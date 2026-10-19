@@ -493,7 +493,7 @@ pesado (cuota global 4/32 vCPU), y `cq-victor` tiene 1,5 CPU en `jobs`.
 | 1 | el motor elige el entorno: `Donde` lleva el `motor`; Heavyweight → `entorno=spark` (`puesto-spark:1`), con plantilla y recursos propios. TypeScript en Heavyweight, 422 |
 | 2 | el arnés PySpark (Python y SQL): `over()` → DataFrame; `write()` pasa la geometría de Sedona a WKB, sella `ore.geo` con su SRID y la procedencia, por `/v1` e idempotente. La identidad, por el `AuthManager` del pod; la memoria, por regla |
 | 3 | `/v1` comprueba: S6 es 400 con su remedio; un `ore.geo` que contradiga el contrato del Dataset se niega. Y sirve `…/credentials`, para que un Build de más de una hora no se quede sin GCS |
-| 4 | Spark Java (`Dataset<Row>`) |
+| 4 | Spark Java (`Dataset<Row>`): **hecha en local** |
 | 5 | Preview como Job corto |
 | 6 | el pool `pesado`, su *flavor* de Kueue y su cuota (toca producción: go aparte), y la celda en victor: un repositorio Heavyweight corre un *join* espacial |
 
@@ -662,6 +662,73 @@ manejador de GCS se identifica con un `AuthManager`, el de la identidad del pues
 **Queda de esta pieza, con nombre:** mezclar dos CRS en una tabla a lo largo de escrituras (un
 `append` en otro CRS) no se niega en el servidor; el `ore.geo` de cada escritura lo pone quien
 escribe, de sus datos.
+
+**Pieza 4 · Spark Java (hecha en local).** Un Transform de Java en un repositorio Heavyweight se
+escribe con **los mismos nombres** (`import static ore.Ore.*`, `@Transform`, `over`, `sql`, `write`),
+y `over()` y `sql()` dan un **`Dataset<Row>`** con la geometría de Sedona y su SRID:
+
+```java
+@Transform(inputs = {"geo.zonas"}, output = "geo.anillos_java")
+public static Object anillos() throws Exception {
+    Dataset<Row> z = over("geo.zonas");
+    return write("geo.anillos_java", z.selectExpr("id", "ST_Difference(ST_Buffer(zona, 50), zona) AS anillo"));
+}
+```
+
+**Corre en la JVM de Spark del puesto pesado, y lo de ORE sigue en un solo sitio.** El build va a
+`spark`, con el agente de Python, como uno de Python. Su celda es de Python
+(`arnes_java_en_spark`): pone el motor y la procedencia y llama a `_ore._java_en_spark`. Este paso,
+`ore.ArnesDeSpark` (en `ore-spark-sdk.jar`, dentro de la imagen), compila el fichero con javac
+**dentro del driver**, con el classpath del driver y, del repositorio, sólo lo que usa (lo de
+Lightweight). Luego carga la clase con D15 armado y halla el `@Transform`. Python le pone el techo
+(el `transform()` de siempre, con lo que declara la anotación) y lo llama. El `ore.Ore` de
+Heavyweight sólo reenvía: `over`, `sql` y `write` vuelven al SDK de Python por py4j (`ore.Puente`,
+que implementa Python), y los `Dataset<Row>` van por referencia. **La geometría con su CRS, la
+procedencia, el techo y `ore.modo` tienen una sola implementación**, y los dos lenguajes dan lo
+mismo porque es la misma. `@Transform` y el JSON son los ficheros de Lightweight, copiados en la
+imagen: un `@Transform` es el mismo en los dos motores (el servidor lo deriva igual).
+
+Descartado: una imagen pesada con el agente de JShell (el classpath del puesto Java, con Arrow 19 y
+Jackson, choca con los jars de Spark, y haría falta otra imagen), y reescribir en Java lo que el SDK
+de Python ya hace sobre Spark (dos implementaciones del contrato geo).
+
+**El previo** (`pruebas-de-fuego/geo/c2/spark-java/previo.py`, sin red y como uid 65532): **10/10**.
+
+| caso | resultado |
+|---|---|
+| javac dentro del driver de Spark | **va**: 0,9 s en frío y 0,8 s en caliente. El lanzador de Spark ya da el classpath expandido, jar a jar |
+| Java pide a Python y recibe un `Dataset<Row>` (py4j, al revés) | **va**: `over → selectExpr(ST_Buffer) → write` da 31 214 m² |
+| un error de compilación, un NPE del usuario, un `AnalysisException` | llegan con la línea de su fichero |
+| un `PermissionError` de Python (el techo) desde Java | llega como `Py4JException` con el traceback; el SDK lo guarda y lo dice como Python lo dijo |
+
+**De punta a punta** (`build-pesado/medir.sh`, el agente en `ore-puesto-spark:local`): cuatro builds
+de Java junto a los de SQL y Python.
+
+| build | resultado |
+|---|---|
+| `geo.anillos_java` (`over` + una clase de apoyo) | **succeeded**, 4 filas, `ore.geo.anillo` `Geometry<Polygon, EPSG:25830>` y su procedencia; **igual que el de Python** (54 852 m²) |
+| `geo.conteo_java` (`sql()` con `ST_Contains`) | **succeeded**, **igual que el SQL y que shapely** (`cotejar.py`) |
+| `geo.fuera_java` (lee lo que no declara) | **failed**, `runtime` en su línea: el catálogo lo niega, como en Python |
+| `geo.rompe_java` (un NPE) | **failed**, `runtime`, línea 12, con el mensaje de Java |
+
+**Los fallos** (`spark-java/fallos.py`, con el SDK de verdad y sin banco): **8/8**. Van al informe,
+cada uno con su tipo, su fichero y su línea:
+- no compila (en su fichero o en el de apoyo);
+- `not-a-transform`;
+- D15 (`over()` en un `static`);
+- `write()` fuera del techo;
+- una geometría sin CRS;
+- un `AnalysisException`;
+- un método que no escribe, que se dice como en Lightweight.
+
+`comprobar.py` de la imagen carga `ore.Ore`, `ore.ArnesDeSpark`, `ore.Transform` y `ore.Puente`
+como uid 65532. El SDK, 160/160 en la imagen; ore-serve, `builds` 20/20.
+
+**Queda, con nombre:**
+- el editor de un repositorio Java Heavyweight: el puesto de sesión es el de Java ligero, y su
+  `ore.Ore` da `Rows`. El código con `Dataset<Row>` no compila allí (el Preview de Java pesado es
+  la pieza 5);
+- `upsert` y las tablas ancladas, como en Python.
 
 ### C3 · El *join* espacial a escala
 

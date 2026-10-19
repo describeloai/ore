@@ -323,4 +323,98 @@ def write(nombre, df, mode="overwrite"):
                     "engine": "spark", "geo": contrato})
 
 
-__all__ = ["activo", "sesion", "over", "sql", "write", "por_posicion", "como_la_tabla", "DEFAULT"]
+class _Puente:
+    """Lo que el Java de un build pide (`ore.Puente`, pieza 4): los mismos `over`, `sql` y `write` de
+    este SDK, con el techo y todo. Los `Dataset<Row>` van por referencia (`_jdf`). Lo que lanza se
+    guarda, para decirlo como es: py4j lo daría a Java envuelto en un `Py4JException`."""
+
+    def __init__(self):
+        self.error = None
+
+    def _guardar(self, f):
+        try:
+            return f()
+        except Exception as e:  # noqa: BLE001
+            self.error = e
+            raise
+
+    def over(self, nombre):
+        from . import over as _over
+
+        return self._guardar(lambda: _over(nombre)._jdf)
+
+    def sql(self, consulta):
+        from . import sql as _sql
+
+        return self._guardar(lambda: _sql(consulta)._jdf)
+
+    def write(self, nombre, datos, modo):
+        from pyspark.sql import DataFrame
+
+        from . import write as _write
+
+        return self._guardar(lambda: json.dumps(dict(_write(nombre, DataFrame(datos, sesion()), mode=modo)), default=str))
+
+    class Java:
+        implements = ["ore.Puente"]
+
+
+#: Lo que dice py4j cuando lo que falló fue Python, llamado desde Java.
+_DESDE_PYTHON = "An exception was raised by the Python Proxy"
+
+
+def java(especificacion):
+    """ORE 0068 C2·3 pieza 4 · **El build de un transform de Java en Spark.** El código Java corre
+    en la JVM de Spark de este proceso: `ore.ArnesDeSpark` lo compila (javac, en el driver), carga
+    su clase con D15 armado y halla el `@Transform`; aquí se le pone el techo —el `transform()` de
+    siempre, con lo que la anotación declara— y se llama. Su `over()`, `sql()` y `write()`
+    (`ore.Ore`, los mismos nombres con `Dataset<Row>`) vuelven a este SDK por `_Puente`: lo de ORE
+    está en un solo sitio. Cada fallo va al informe con su tipo, su fichero y su línea, como en
+    Lightweight. `especificacion`: `{fichero, metodo, fuentes}`."""
+    from py4j.protocol import Py4JJavaError
+    from pyspark.java_gateway import ensure_callback_server_started
+
+    from . import _informe_del_build, _para_el_informe, transform
+
+    s = sesion()
+    ensure_callback_server_started(s.sparkContext._gateway)
+    puente = _Puente()
+    jvm = s._jvm
+    jvm.ore.Ore.puente(puente)
+    fichero, metodo = especificacion["fichero"], especificacion["metodo"]
+
+    def falla(tipo, mensaje, linea, en):
+        _para_el_informe({"error": {"tipo": tipo, "fichero": en, "linea": linea}})
+        return RuntimeError("%s (%s, line %d)" % (mensaje, en, linea) if linea else mensaje)
+
+    def de_java(e):
+        j = e.java_exception
+        if j.getClass().getName() != "ore.ArnesDeSpark$Falla":
+            return falla("runtime", "%s: %s" % (j.getClass().getSimpleName(), j.getMessage()), None, fichero)
+        linea = j.linea()
+        mensaje = j.getMessage()
+        # Lo que falló en Python (el techo, una geometría sin CRS…) se dice como Python lo dijo,
+        # con la línea del Java que lo pidió.
+        if puente.error is not None and _DESDE_PYTHON in (mensaje or ""):
+            mensaje = "%s: %s" % (type(puente.error).__name__, puente.error)
+        return falla(j.tipo(), mensaje, linea if linea >= 0 else None, j.fichero())
+
+    try:
+        prep = jvm.ore.ArnesDeSpark.preparar(json.dumps({k: especificacion[k] for k in ("fichero", "metodo", "fuentes")}))
+    except Py4JJavaError as e:
+        raise de_java(e) from None
+
+    def llamar():
+        puente.error = None
+        return prep.llamar()
+
+    llamar.__name__ = metodo
+    corre = transform(list(prep.inputs()), prep.output())(llamar)
+    try:
+        hecho = corre()
+    except Py4JJavaError as e:
+        raise de_java(e) from None
+    _informe_del_build(corre.output, fichero, metodo, json.loads(hecho) if hecho else None)
+
+
+__all__ = ["activo", "sesion", "over", "sql", "write", "por_posicion", "como_la_tabla", "java", "DEFAULT"]

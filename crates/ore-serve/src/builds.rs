@@ -57,6 +57,9 @@ pub(crate) struct Hallado {
     /// va su celda (`python` o `java`).
     pub entorno: &'static str,
     pub lenguaje: &'static str,
+    /// ORE 0068 C2·3 pieza 4 · De un transform de Java, la celda de su build
+    /// en Spark (Python: `arnes_java_en_spark`), si su repositorio es Heavyweight.
+    pub en_spark: Option<String>,
 }
 
 /// 0055 T1·7 (JT3) · Cuánto código Java viaja en la celda de un build: los
@@ -365,10 +368,14 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
         } else {
             ("python", "python")
         };
+        let mut en_spark = None;
         let celda = match c.runtime.as_str() {
             // 0055 T1·7 (JT3): los `.java` del paquete, y el método.
             "java" => {
                 let fuentes = fuentes_java(raiz, &codigo, None)?;
+                en_spark = Some(arnes_java_en_spark(
+                    &documento, &codigo, &c.clave, &fuentes, &build,
+                ));
                 arnes_java(
                     &documento,
                     &codigo,
@@ -439,6 +446,7 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
             celda,
             entorno,
             lenguaje,
+            en_spark,
         });
     }
     Ok(hallados)
@@ -738,21 +746,7 @@ pub(crate) fn arnes_java(
         ModoJava::Build(b) => ("build", b.clone(), "construir", "build"),
         ModoJava::Preview { output } => ("output", Json::s(output), "ensayar", "Preview"),
     };
-    let espec = Json::obj([
-        ("fichero", Json::s(fichero)),
-        ("metodo", Json::s(metodo)),
-        (clave, valor),
-        (
-            "fuentes",
-            Json::Obj(
-                fuentes
-                    .iter()
-                    .map(|(r, t)| (r.clone(), Json::s(t)))
-                    .collect(),
-            ),
-        ),
-    ])
-    .jcs();
+    let espec = espec_java(fichero, metodo, fuentes, Some((clave, valor))).jcs();
     let mut trozos = Vec::new();
     let mut actual = String::new();
     for c in espec.chars() {
@@ -769,6 +763,76 @@ pub(crate) fn arnes_java(
          ore.Arnes.{llamada}(String.join(\"\",\n    {}));\n",
         trozos.join(",\n    ")
     )
+}
+
+/// Lo que el arnés de Java recibe: `{fichero, metodo, fuentes}` y, si se da,
+/// la procedencia del build o la salida del Preview.
+fn espec_java(
+    fichero: &str,
+    metodo: &str,
+    fuentes: &[(String, String)],
+    extra: Option<(&'static str, Json)>,
+) -> Json {
+    let mut m = vec![
+        ("fichero", Json::s(fichero)),
+        ("metodo", Json::s(metodo)),
+        (
+            "fuentes",
+            Json::Obj(
+                fuentes
+                    .iter()
+                    .map(|(r, t)| (r.clone(), Json::s(t)))
+                    .collect(),
+            ),
+        ),
+    ];
+    if let Some(e) = extra {
+        m.push(e);
+    }
+    Json::obj(m)
+}
+
+/// ORE 0068 C2·3 pieza 4 · **La celda del build de un transform de Java en un
+/// repositorio Heavyweight**: Python, en el agente de `puesto-spark`. Pone el
+/// motor y la procedencia (como el arnés de Python) y llama a
+/// `_ore._java_en_spark`, que compila el código con javac en la JVM de Spark,
+/// carga su clase con D15 armado y llama al método dentro de su techo; su
+/// `over()`, `sql()` y `write()` (`ore.Ore`, con `Dataset<Row>`) vuelven al
+/// SDK de Python. Lo de fuera entra como literal de cadena JSON.
+pub(crate) fn arnes_java_en_spark(
+    documento: &str,
+    fichero: &str,
+    metodo: &str,
+    fuentes: &[(String, String)],
+    build: &Json,
+) -> String {
+    let cad = |s: &str| Json::s(s).jcs();
+    let cabecera: String = documento.chars().filter(|c| !c.is_control()).collect();
+    format!(
+        "# El arnés de un build de Java en Spark (ORE 0068 C2·3 pieza 4): {cabecera}\n\
+         import json as _json\n\
+         import os as _os\n\
+         _os.environ[\"ORE_MOTOR\"] = \"heavyweight\"\n\
+         {guarda}\
+         _COMMIT = (_os.environ.get(\"ORE_CODIGO\") or \"\").rpartition(\"@\")[2]\n\
+         _os.environ[\"ORE_BUILD\"] = _json.dumps(dict(_json.loads({build}), id=_ore.session.id, commit=_COMMIT))\n\
+         if not hasattr(_ore, \"_java_en_spark\"):\n    \
+         raise RuntimeError(\"this job runs an older ORE SDK, which cannot build Java on Spark: rebuild the image\")\n\
+         _ore._java_en_spark(_json.loads({espec}))\n",
+        guarda = ore_core::sdk::guarda_python(),
+        build = cad(&build.jcs()),
+        espec = cad(&espec_java(fichero, metodo, fuentes, None).jcs()),
+    )
+}
+
+/// La celda de un build y el lenguaje en que va, donde corre: en `spark`, la
+/// de Java es la de Python que la corre en Spark (pieza 4), y las demás dicen
+/// antes su motor (`con_el_motor`).
+fn celda_en(entorno: &'static str, h: &Hallado) -> (String, &'static str) {
+    match &h.en_spark {
+        Some(c) if entorno == crate::cola::SPARK => (c.clone(), "python"),
+        _ => (con_el_motor(entorno, h.celda.clone()), h.lenguaje),
+    }
 }
 
 /// Un literal de cadena de Java con `s` dentro.
@@ -881,9 +945,10 @@ fn diagnostico_suelto(code: &str, mensaje: String, fichero: &str) -> Respuesta {
 
 /// ORE 0068 C2·3 · **Dónde corre el build**, por el motor de su repositorio:
 /// Lightweight, donde siempre (`python` o `jvm`, el lenguaje lo dice);
-/// Heavyweight, en el puesto pesado (`spark`) lo de Python y SQL. Java en
-/// Heavyweight se niega hasta que Spark Java llegue (pieza 4): correrlo en el
-/// puesto ligero sería mentir sobre el motor que se eligió.
+/// Heavyweight, en el puesto pesado (`spark`): Python y SQL, y desde la pieza 4
+/// Java, que corre en la JVM de Spark (`arnes_java_en_spark`). Lo que no tenga
+/// cómo correr en Spark se niega: correrlo en el puesto ligero sería mentir
+/// sobre el motor que se eligió.
 pub(crate) fn entorno_del_build(
     entorno: &'static str,
     motor: Motor,
@@ -891,12 +956,12 @@ pub(crate) fn entorno_del_build(
 ) -> Result<&'static str, Respuesta> {
     match (motor, entorno) {
         (Motor::Lightweight, e) => Ok(e),
-        (Motor::Heavyweight, "python") => Ok(crate::cola::SPARK),
-        (Motor::Heavyweight, _) => Err(con_motivo(
+        (Motor::Heavyweight, "python" | "jvm") => Ok(crate::cola::SPARK),
+        (Motor::Heavyweight, otro) => Err(con_motivo(
             Respuesta::error(
                 422,
                 format!(
-                    "`{}` is a Heavyweight repository, and Java transforms do not build on Spark yet",
+                    "`{}` is a Heavyweight repository, and what runs in `{otro}` does not build on Spark",
                     repositorio.unwrap_or_default()
                 ),
             ),
@@ -1049,14 +1114,15 @@ impl Servidor {
                 fijadas,
                 techo: true,
             };
+            let (celda, lenguaje) = celda_en(entorno, &h);
             let mut r = self.lanzar_trabajo(
                 sujeto,
                 rama.clone(),
                 entorno,
-                h.lenguaje,
+                lenguaje,
                 h.codigo.clone(),
                 commit.clone(),
-                con_el_motor(entorno, h.celda),
+                celda,
                 Vec::new(),
                 Some(techo),
                 None,
@@ -1741,6 +1807,18 @@ mod tests {
         // `\u0041` del código no es un escape de la celda).
         assert!(celda.contains("\\\\u0041"), "{celda}");
         assert!(celda.contains(r#"\"metodo\":\"resumen\""#), "{celda}");
+        // ORE 0068 C2·3 pieza 4: y en Spark, la celda es de Python —en el agente
+        // de `puesto-spark`— con lo mismo dentro; fuera de Spark, la de siempre.
+        let (pesada, lenguaje) = celda_en(crate::cola::SPARK, &h[0]);
+        assert_eq!(lenguaje, "python");
+        assert!(
+            pesada.contains("_ore._java_en_spark(_json.loads(")
+                && pesada.contains("ORE_MOTOR\"] = \"heavyweight\"")
+                && pesada.contains("Ayuda.java")
+                && pesada.contains(r#"\"metodo\":\"resumen\""#),
+            "{pesada}"
+        );
+        assert_eq!(celda_en("jvm", &h[0]), (celda.clone(), "java"));
         // Por el fichero, también; y el porqué si no tiene nada.
         let h = bien(hallar(
             &d,
@@ -2306,8 +2384,8 @@ plantillaVersion: 7
     }
 
     /// ORE 0068 C2·3 · El motor del repositorio decide dónde corre su build:
-    /// Lightweight como siempre; Heavyweight, Python y SQL en el puesto pesado,
-    /// y Java negado con su motivo (hasta Spark Java). Sin repositorio
+    /// Lightweight como siempre; Heavyweight, Python, SQL y (pieza 4) Java en el
+    /// puesto pesado, y lo demás negado con su motivo. Sin repositorio
     /// registrado no hay motor: el de siempre.
     #[test]
     fn el_motor_del_repositorio_decide_donde_corre_el_build() {
@@ -2323,8 +2401,12 @@ plantillaVersion: 7
             entorno_del_build("python", Motor::Heavyweight, Some("r")).ok(),
             Some(crate::cola::SPARK)
         );
+        assert_eq!(
+            entorno_del_build("jvm", Motor::Heavyweight, Some("r")).ok(),
+            Some(crate::cola::SPARK)
+        );
         let r =
-            entorno_del_build("jvm", Motor::Heavyweight, Some("packages/geo/pesado")).unwrap_err();
+            entorno_del_build("node", Motor::Heavyweight, Some("packages/geo/pesado")).unwrap_err();
         assert_eq!(r.codigo, 422);
         let j = r.cuerpo.jcs();
         assert!(j.contains("not_buildable"), "{j}");

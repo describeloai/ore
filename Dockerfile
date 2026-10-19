@@ -522,7 +522,8 @@ CMD ["python3", "/opt/ore/agente.py"]
 #   · (C2·3) la identidad del pod caduca y `header.*` de Iceberg se lee una
 #     vez: `IdentidadDelPuesto` (un `AuthManager`) la lee en cada petición.
 #
-# Sin agente propio todavía: lo que lanza un Build Heavyweight es C2·3.
+# El agente es el de Python: también para Java (C2·3 pieza 4), cuyo código se
+# compila y corre en la JVM de Spark, con `ore.Ore` en `ore-spark-sdk.jar`.
 # ═══════════════════════════════════════════════════════════════════════════
 FROM puesto-python AS puesto-spark
 USER 0
@@ -532,6 +533,9 @@ ENV JAVA_HOME=/opt/java/openjdk \
 ENV PATH=$JAVA_HOME/bin:$SPARK_HOME/bin:$PATH
 COPY --from=eclipse-temurin:21-jdk-noble /opt/java/openjdk /opt/java/openjdk
 COPY puesto/spark /opt/ore/spark-src
+# (C2·3 pieza 4) Spark Java: el SDK de Java de Heavyweight (`puesto/spark/ore`) y, de Lightweight, la
+#   anotación `@Transform` y el JSON, los mismos ficheros: un `@Transform` es uno en los dos motores.
+COPY puesto/jvm/ore/Transform.java puesto/jvm/ore/Json.java /opt/ore/spark-src/ore/
 RUN pip install --no-cache-dir --no-deps -r /opt/ore/spark-src/provisto.txt \
  && test -d "$SPARK_HOME/jars" \
  && grep -v '^#' /opt/ore/spark-src/jars.txt | grep . | while read -r g v; do n="${g##*/}-$v.jar"; \
@@ -542,6 +546,9 @@ RUN pip install --no-cache-dir --no-deps -r /opt/ore/spark-src/provisto.txt \
  && mkdir -p /tmp/identidad && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*" \
       -d /tmp/identidad /opt/ore/spark-src/IdentidadDelPuesto.java \
  && jar cf "$SPARK_HOME/jars/ore-spark-identidad.jar" -C /tmp/identidad . && rm -rf /tmp/identidad \
+ && mkdir -p /tmp/sdk && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*" \
+      -d /tmp/sdk /opt/ore/spark-src/ore/*.java \
+ && jar cf "$SPARK_HOME/jars/ore-spark-sdk.jar" -C /tmp/sdk . && rm -rf /tmp/sdk \
  && echo 'ore:x:65532:65532:ore:/tmp:/usr/sbin/nologin' >> /etc/passwd \
  && echo 'ore:x:65532:' >> /etc/group \
  && echo "spark · $(pip show pyspark | grep ^Version) · $(ls $SPARK_HOME/jars | wc -l) jars · $(java -version 2>&1 | head -1)" >> /entorno-1.txt

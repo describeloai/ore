@@ -2439,6 +2439,14 @@ _CLAVES_DEL_APPLY = ("items", "new", "recomputed", "skipped", "errors", "removed
                      "files_written", "files_retired", "written")
 
 
+def _java_en_spark(especificacion):
+    """ORE 0068 C2·3 pieza 4 · La celda del build de un transform de Java en un repositorio
+    Heavyweight: corre en la JVM de Spark de este proceso (`ore.spark.java`)."""
+    from . import spark as _pesado
+
+    return _pesado.java(especificacion)
+
+
 def _informe_del_build(salida, fichero, def_, hecho):
     """0055 · Lo que un build deja dicho al acabar, lo mismo en Java (`ore.Arnes`): la línea del
     log según lo que devolvió el `def` —un `write()`, un `apply()` o el commit de una colección

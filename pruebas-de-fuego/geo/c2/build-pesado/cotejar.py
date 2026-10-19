@@ -20,3 +20,12 @@ escrito = {r.id: r.n for r in ore.over("geo.conteo").collect()}
 centros = ore.over("geo.centros").selectExpr("id", "ST_SRID(centro) s", "round(ST_X(centro)) x", "area").orderBy("id").collect()
 print("conteo · escrito %s · esperado %s · %s" % (escrito, esperado, "IGUAL" if escrito == esperado else "DISTINTO"))
 print("centros · %s" % [(c.id, c.s, c.x, c.area) for c in centros])
+# pieza 4: lo de Java, lo mismo que lo de SQL y Python
+try:
+    java = {r.id: r.n for r in ore.over("geo.conteo_java").collect()}
+    print("conteo_java · %s · %s" % (java, "IGUAL" if java == esperado else "DISTINTO"))
+    a = lambda t, c: sorted((r.id, r.s, r.a) for r in ore.over(t).selectExpr("id", "ST_SRID(%s) s" % c, "round(ST_Area(%s)) a" % c).collect())
+    py, jv = a("geo.anillos", "anillo"), a("geo.anillos_java", "anillo")
+    print("anillos_java · %s · %s" % (jv[:2], "IGUAL que Python" if py == jv else "DISTINTO de Python %s" % py[:2]))
+except Exception as e:  # noqa: BLE001
+    print("java · %s: %s" % (type(e).__name__, str(e).splitlines()[0][:200]))
