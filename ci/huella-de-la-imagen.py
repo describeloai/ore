@@ -46,6 +46,8 @@ IMAGENES = {
     "puesto-python": "puesto-python", "puesto-node": "puesto-node", "puesto-jvm": "puesto-jvm",
     # ORE 0068 C2·2: el motor Heavyweight. `FROM puesto-python`: lo que rehace aquélla, rehace ésta.
     "puesto-spark": "puesto-spark",
+    # ORE 0064: Analytics y Models, con marimo. `FROM puesto-python`, igual que `puesto-spark`.
+    "puesto-python-notebooks": "puesto-python-notebooks",
 }
 BIN = "bin"  # `FROM ${BINARIOS} AS bin`: la que sustituye la huella de los binarios
 

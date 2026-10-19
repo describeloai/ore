@@ -1085,7 +1085,8 @@ jobs:
           R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
           PIDS=""
           for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main \
-                    ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 puesto-spark:1 capa-jvm:1 capa-node:1 capa-python:1 idp:main; do
+                    ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 puesto-spark:1 puesto-python-notebooks:1 \
+                    capa-jvm:1 capa-node:1 capa-python:1 idp:main; do
             # `en-uso` va con la que se mueve: la limpieza del registro la guarda por ese
             # prefijo (malla/registro-limpieza.json, ADR 0060 A2). `:1` no sirve para eso:
             # la regla casa por prefijo y `1` es también el principio de un commit.
