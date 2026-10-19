@@ -26,6 +26,11 @@ HOST = "127.0.0.1"
 _SALTO = {"connection", "keep-alive", "transfer-encoding", "proxy-connection"}
 _SALTO_PETICION = _SALTO | {"host", "content-length"}
 
+# La consola abre el iframe en cuanto el puesto existe, y marimo tarda ~2 s en
+# escuchar (victor, 2026-10-19: la primera petición llegó 0,8 s antes y fue un
+# 502). Mientras marimo no acepte conexiones, se espera hasta esto.
+ESPERA_A_MARIMO = 30.0
+
 
 def log(*a):
     print("marimo-tunel ·", *a, flush=True)
@@ -90,7 +95,16 @@ class Tunel:
         try:
             cabeceras = {k: v for k, v in m.get("cabeceras", []) if k.lower() not in _SALTO_PETICION}
             cuerpo = base64.b64decode(m["cuerpo"]) if m.get("cuerpo") else None
-            c.request(m["metodo"], m["ruta"], body=cuerpo, headers=cabeceras)
+            limite = time.time() + ESPERA_A_MARIMO
+            while True:
+                try:
+                    c.request(m["metodo"], m["ruta"], body=cuerpo, headers=cabeceras)
+                    break
+                except ConnectionRefusedError:
+                    if time.time() >= limite or rid in self.cancelados:
+                        raise
+                    c.close()
+                    time.sleep(0.25)
             r = c.getresponse()
             self.marimo.actividad = time.time()
             self._encolar({
@@ -105,6 +119,7 @@ class Tunel:
                 self._encolar({"id": rid, "t": "chunk", "datos": base64.b64encode(d).decode("ascii")})
             self._encolar({"id": rid, "t": "end"})
         except Exception as e:  # noqa: BLE001 — el navegador ve un 502, no un flujo colgado
+            log("%s %s: 502 (%s: %s)" % (m.get("metodo"), m.get("ruta", "").split("?")[0], type(e).__name__, e))
             self._encolar({
                 "id": rid, "t": "head", "estado": 502,
                 "cabeceras": [("content-type", "text/plain")],
