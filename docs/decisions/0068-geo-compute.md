@@ -1011,88 +1011,120 @@ espacial), en el arnés de Spark con la regla puesta (20/20) y en `comprobar.py`
 la exige. **En victor, Q10 con 20 M puntos: 34,3 s** (`RIGHT JOIN`, 44,8 s), con las mismas cuentas. El
 previo, sin ella: más de 300 s.
 
-**C3·c · el Build en varios nodos (DISEÑO, 2026-10-19, sin código).** Hoy un Build pesado es un pod
-(`rendir_puesto` con `RECURSOS_DEL_PUESTO_PESADO`: 7 CPU / 48 GiB, `local[*]`). Lo que cambia, y lo que
-no:
+**C3·c · el Build elástico (DISEÑO, 2026-10-19, sin código).** El primer diseño, un Job de N pods con N
+sacado del historial del Transform, se descartó por reactivo: un Build tenía que fallar o tardar para
+que el siguiente llevara más nodos. Antes de rehacerlo se reunió lo que hace la industria y lo que dan
+Spark, Kueue y GKE (`docs/investigacion/c3c-spark-elastico.md`). Este es el diseño que sale de ahí.
 
-*Lo que no cambia.* Una sesión interactiva y un Preview siguen con un pod y `local[*]`. Un Build de un
-nodo sale **byte a byte igual que hoy**: mismo Job, mismo nombre, mismo `sesion()`. Lo multinodo es otro
-camino que sólo se toma con N > 1.
+*La idea.* **ORE pone los límites y Spark decide dentro, según la carga**, igual que Databricks,
+Dataproc Serverless o EMR Serverless. El Build arranca con un ejecutor. Si hay tareas esperando, el
+driver pide más (*dynamic allocation*) y el autoescalador de GKE enciende los nodos. Un ejecutor ocioso
+se devuelve y el nodo vacío se apaga. El mismo Build puede usar un nodo para leer y dos para el join.
+**Los nodos dan velocidad, no evitan el OOM**: eso lo hacen las defensas de memoria del punto 4, que
+valen igual con un nodo que con seis.
 
-*1 · Cómo decide ORE los nodos* (`nodos_del_build`, una función pura en `ore-serve`, que se llama al
-encolar el Build):
+*Lo que no cambia.* Las sesiones interactivas y los Previews pesados siguen en un pod con `local[*]`.
+El lago, el SDK, `over()`, C3·a y C3·b quedan como están.
 
-| orden | señal | regla | de dónde |
+*1 · Las piezas de un Build pesado*
+
+| pieza | dónde | qué es |
+|---|---|---|
+| **el driver** | el pod del agente de hoy (`trabajo-<quien>-<hex>`), con menos recursos (2 CPU / 16 GiB) y **en un nodo normal** (D2) | Spark en modo cliente contra `k8s://https://kubernetes.default.svc`; un Service sin IP para él; puertos fijos (7078 driver, 7079 bloques) |
+| **los ejecutores** | pods que crea el driver, en el pool `pesado` (*spot*), uno por nodo: 7 cores / 40 g + *overhead* | imagen `puesto-spark:1` por digest, cuenta `ejecutor` sin token de Kubernetes, dueño el pod del driver (mueren con él) |
+| **los límites** | `ore-serve` al rendir el Build | `minExecutors 1`, `initialExecutors 1`, `maxExecutors = min(nodos del pool, lo que deja la cuota de la celda)`; `executorIdleTimeout 60s`; `shuffleTracking` |
+
+**«ORE decide los nodos», en concreto:** ORE fija el techo (pool y cuota) y el suelo (1). El número de
+cada momento lo decide la carga: las tareas pendientes de Spark. Si se cumplen los 400 M o los 240 s
+del diseño anterior, no es por regla escrita, sino porque la carga los pide.
+
+*2 · Las decisiones*
+
+| | decisión | por qué | lo que se pierde |
 |---|---|---|---|
-| 1 | el último Build **del mismo Transform** falló por memoria | 2 | su informe (`trabajos/<id>.json`: `error.tipo`, o el pod `OOMKilled`) |
-| 2 | el último Build del mismo Transform tardó más del **objetivo** | 2 | su informe (`ms`) |
-| 3 | si ese Build ya fue con 2 y, estimado a 1 nodo (`ms × 1,85`, lo medido), queda bajo el objetivo | 1 | lo mismo |
-| 4 | sin historial: **las filas de las entradas** pasan de un umbral | 2 | el catálogo (`total-records`, lo que ya lee C3·a) |
-| 5 | lo demás | 1 | — |
-| tope | lo que tenga el pool (2) | `min(N, 2)` | constante, con el pool |
+| **D1** | **los ejecutores, fuera de Kueue.** Kueue admite el driver; a los ejecutores los limitan la `ResourceQuota` de la celda, `maxExecutors` y el máximo del pool | la vía de Kueue para pods sueltos es un apaño que su equipo cerró como «not planned», y `SparkApplication` rechaza el *dynamic allocation*. El pool de ejecutores lo usan solo ejecutores, así que Kueue no se equivoca sobre lo suyo | no hay reparto justo entre celdas: si dos coinciden, la que llegó primero tiene más nodos y la otra espera ejecutores (Spark sigue con los que tiene). El informe lo dice |
+| **D2** | **el driver fuera de *spot***, en un pool normal pequeño (`pesado-driver`: `n2-highmem-4`, 0–1 nodos, dos drivers caben) con su propio sabor de Kueue | perder un ejecutor se recomputa; perder el driver pierde el Build entero. Es lo que recomiendan todas | ~0,25 $/h mientras haya un Build. Cuota: 10 + 4 + 16 = 30 de 32 |
+| **D3** | **si *spot* se lleva un ejecutor, se recomputa** (sin `fallbackStorage` en esta pieza) | con 15 s de aviso no da tiempo a migrar un *shuffle*; `decommission` activado para lo que sí dé tiempo | un Build alcanzado por *spot* tarda más. Si el previo lo mide caro, `fallbackStorage` en GCS va después |
+| **D4** | **`spark.authenticate`** entre el driver y sus ejecutores | la política de red deja que los pods de Spark de una celda se hablen; sin esto, el Build de una persona podría pedir bloques al de otra en la misma celda | nada: es un secreto por aplicación que Spark genera y pasa a sus ejecutores |
 
-El objetivo y el umbral, provisionales hasta medirlos en C3·c4: **240 s** y **400 M filas**. De dónde
-salen: el previo hizo 200 M puntos en 116 s en un nodo y 64 s en dos, pero el segundo nodo cuesta
-arrancarlo (~60–90 s si el pool está frío), así que dos sólo compensan cuando uno pasa de unos 4 min.
-No hay mando para el cliente en esta pieza: si hace falta, después, como `compute.nodes` en el
-Transform.
+*3 · La seguridad: el driver puede crear pods*
 
-**El informe del Build dice cuántos nodos y por qué**: `nodos: 2`, `porque: "el build anterior tardó
-612 s (objetivo 240 s)"`, y los ejecutores que llegaron de verdad (lo cuenta el *driver*).
+El código del cliente corre en el proceso del driver, así que puede usar su permiso. Tres capas:
+1. **Una cuenta propia** del driver pesado (`driver-pesado`), con un `Role` en el namespace: `pods`,
+   `services` y `configmaps` (crear, ver, borrar). Una sesión interactiva no la lleva nunca.
+2. **Una ValidatingAdmissionPolicy** sobre lo que crea esa cuenta, y solo eso:
+   - la imagen `puesto-spark` por digest y la cuenta `ejecutor`, sin token;
+   - volúmenes solo `configMap` y `emptyDir`;
+   - sin `hostNetwork`, sin privilegios ni *capabilities*, `runAsNonRoot`;
+   - límite de memoria ≤ 48 GiB, dueño un Pod, la etiqueta `spark-role: executor` y la tolerancia del
+     pool `pesado`.
 
-*2 · El Job de N nodos.* Lo que el previo corrió a mano (`multinodo.sh`), rendido por `ore-serve` en el
-mismo fichero `54-el-trabajo-<quien>.yaml`, que Flux aplica y `prune` retira entero:
-- **Job indexado** (`completionMode: Indexed`, `completions = parallelism = N`) con
-  `successPolicy: succeededIndexes "0"`, un **Service sin IP** con `subdomain` y antiafinidad por nodo;
-- **una NetworkPolicy del Build**: los pods de ESE Job se hablan entre sí (los puertos de Spark, fijados:
-  7077 *master*, 7078 *driver*, 7079 bloques, más los del *worker*), y nada más. El rol `puesto` sigue
-  negando todo lo demás. En `c3-medida` no había políticas: por eso funcionó sin ella;
-- **el pod 0** es el de hoy (el agente, su token, la capa) y además el *master* y un *worker*; **los
-  demás** sólo un *worker*. Lo decide la entrada de la imagen por `JOB_COMPLETION_INDEX`; la capa la
-  traen todos (las UDF de Python corren en los ejecutores);
-- **`podFailurePolicy`**: un pod expulsado por *spot* (`DisruptionTarget`) no cuenta como fallo; Spark
-  rehace lo que se perdió en ese ejecutor. Si se va el pod 0, el Build falla, como hoy con un nodo.
+   Un Service o un ConfigMap que cree también pasan por ella: solo los de Spark, con su etiqueta.
+3. **Pod Security `restricted`** en el namespace, por si la política tuviera un hueco.
 
-*3 · El SDK.* `sesion()` con `ORE_SPARK_MASTER` puesto va contra el *master* con los puertos fijos, un
-ejecutor por nodo (7 núcleos; memoria repartida desde `ORE_MEMORIA_MB`: el pod 0 lleva además el
-*driver*) y `shuffle.partitions = 64 × N`. Sin la variable, `local[*]` como hoy.
+La política no puede comprobar que el dueño sea un driver de verdad. El peor caso es un pod de ejecutor
+falso con nuestra imagen, sin token y dentro de la cuota de su celda: lo mismo que ya puede hacer un
+Build.
 
-*4 · La cola y la cuota.* Kueue (v0.19.3 en victor) admite el Job de N pods como **una sola carga**: los
-pods que admite arrancan juntos, así que no hay *driver* esperando a un *worker* que no llega. Cambia la malla:
-- `cq-<celda>-pesado` entra en una **cohorte `pesado`**: 7 CPU / 48 GiB nominales por celda y lo que la
-  otra no usa se presta. La cohorte suma lo que tiene el pool (2 nodos), así que nunca enciende un tercero.
-  El «sin cohorte» de la pieza 6 era para no pasar del pool; con la cohorte del tamaño del pool, tampoco;
-- **admisión parcial** (`kueue.x-k8s.io/job-min-parallelism: "1"`): si la otra celda ocupa un nodo, el
-  Build arranca con uno en vez de esperar. El informe dice entonces «pedí 2, me dieron 1»;
-- la `ResourceQuota` del inquilino sube de 12 CPU / 64 GiB a **19 CPU / 112 GiB** (un nodo pesado más).
+*4 · Las defensas contra el OOM* (en `spark-defaults.conf` y `sesion()`, con un nodo o con seis):
 
-*5 · Lo que hay que despejar ANTES de construir (C3·c0, el previo de esta pieza).* En victor, sin
-tocar `ore-serve` ni la cola de nadie: un namespace de medida con su propia `ClusterQueue` del sabor
-`pesado` (en una cohorte de prueba), las políticas de red del rol `puesto` copiadas y el Job de
-`multinodo.sh` pasado por Kueue:
-1. Kueue admite el Job indexado con `successPolicy`, y la admisión parcial lo deja en 1 cuando sólo
-   hay sitio para 1 (y el *driver* sigue con lo que hay);
-2. con las políticas del puesto más la del Build, Spark se encuentra; sin la del Build, no;
-3. el tiempo de arranque de verdad: pool a 0 → 2 nodos listos → ejecutores; es lo que fija el umbral;
-4. expulsar a mano el pod 1 a mitad: el Build termina bien, más lento.
+| causa | defensa |
+|---|---|
+| un lado difundido grande | C3·a (≤ 150 k filas, ≤ 48 MiB), ya hecho |
+| `collect()` o `toPandas()` grande en el driver | `spark.driver.maxResultSize` acorde al driver (4 g): un error claro, no un `OOMKilled` |
+| sesgo en un join por igualdad | AQE `skewJoin`, activado por defecto |
+| **sesgo en un join espacial** (AQE no lo ve) | `sedona.join.numpartition` según los ejecutores vivos (la guía de Sedona: de 2 a 8 veces las particiones), y KDB-tree. Lo fija el previo, punto 5 |
+| la memoria de Python (UDF) | `spark.executor.pyspark.memory` con un tope, y *overhead* 0,4: lo que se pase falla con un error de Python |
+| particiones grandes | `maxPartitionBytes` 128 MB; AQE junta las pequeñas |
+| un Build sin defensa | el informe dice **qué tarea** se quedó sin memoria y en qué etapa, no solo «OOM» |
 
-**La identidad de los ejecutores con el lago** no se puede medir sin el Build de verdad: los ejecutores
-leen y escriben con las credenciales que presta el catálogo, que Iceberg serializa en su `FileIO` y
-viajan con la tarea. Se comprueba en C3·c4, con el primer Build de dos nodos; si no llegan, ese paso
-lo dice y se arregla ahí.
+*5 · La red* (NetworkPolicy de la celda, fija en la malla, no una por Build):
+- **driver:** recibe en 7078 y 7079 solo de pods `spark-role: executor` de su namespace, y sale además
+  al API server;
+- **ejecutores:** 7079 entre ellos y salida al driver; sin internet, solo Google por la vía privada, como
+  el puesto.
 
-*6 · Los pasos.*
+*6 · El informe del Build.* Ejecutores (máximo, media y nodos), cuánto esperó cada uno, si el pool o la
+cuota cortaron (`pidió 4, el pool dio 2`), ejecutores perdidos por *spot*, bytes derramados a disco, y
+el OOM con su tarea si lo hubo. Lo lee el *listener* de Spark del driver; el SDK lo manda con el
+resultado.
+
+*7 · El previo (C3·c0), antes de construir.* En victor, en un namespace de medida con la cuenta, el
+`Role`, la política y la red de arriba copiados; el driver es un Job a mano. Se borra al acabar.
+
+| # | qué se mide | qué decide |
+|---|---|---|
+| 1 | el escalado a mitad de un Build: carga → pod pendiente → nodo → ejecutor | `schedulerBacklogTimeout`, y si compensa |
+| 2 | que la política niega un pod arbitrario creado desde el código y deja pasar el ejecutor | la política, cerrada |
+| 3 | cuánto retiene el *shuffle tracking* un nodo que sobra | `shuffleTracking.timeout` |
+| 4 | expulsar un nodo de ejecutores a mitad | D3 (recomputar) o `fallbackStorage` |
+| 5 | un join espacial sesgado con un ejecutor | `numpartition` y las defensas de Sedona |
+| 6 | una UDF de Python que se pasa de memoria | `pyspark.memory` y el *overhead* |
+| 7 | dos Builds de dos celdas a la vez | lo que dice el informe en D1 |
+| 8 | la imagen del ejecutor en un nodo nuevo | — |
+| 9 | **un Build pequeño** elástico en frío frente al de hoy (un pod) | si el pequeño elástico se queda dentro de 30 s del de hoy, **todo Build es elástico**; si no, los pequeños siguen en un pod y se decide por el tamaño de las entradas |
+
+Y lo que solo se ve con el lago de verdad, en c5:
+- **las credenciales del lago en los ejecutores**: viajan en el `FileIO` de Iceberg. Si refrescarlas
+  llama al catálogo desde un ejecutor, `IdentidadDelPuesto` lee el token del pod, que el ejecutor no
+  tiene;
+- que la imagen pip de Spark trae lo que pide un ejecutor de Kubernetes: `spark-kubernetes`, el
+  `entrypoint.sh` y el `decom.sh` de la distribución. Si no, c1 los añade.
+
+*8 · Los pasos*
 
 | paso | qué | dónde |
 |---|---|---|
-| C3·c0 | el previo de arriba (1–4) | victor, namespace de medida, se borra al acabar |
-| C3·c1 | la imagen: la entrada por índice; `sesion()` con `ORE_SPARK_MASTER` | local: dos contenedores en una red de Docker, datos pequeños |
-| C3·c2 | `ore-serve`: `nodos_del_build` (pruebas unitarias de la tabla), el rendido de N pods (Service, política, Job), el informe con `nodos` y `porque`. Detrás de `--builds-multinodo` (apagado: N = 1 siempre) | local |
-| C3·c3 | la malla: la cohorte, la admisión parcial y la cuota. **Primero el binario, luego la malla, luego el *flag***, cada uno por separado | victor |
-| C3·c4 | medido en victor: el Build de un Transform geo grande pide 2 por tamaño, y el siguiente por historial; los ejecutores con el lago; se fijan el objetivo y el umbral | victor |
+| C3·c0 | el previo de arriba | victor, namespace de medida |
+| C3·c1 | la imagen: la entrada de ejecutor y `decom.sh` | local |
+| C3·c2 | el SDK: `sesion()` en modo Kubernetes con los límites y las defensas; el *listener* del informe | local (el arnés de Spark) |
+| C3·c3 | `ore-serve`: el Build pesado con la cuenta del driver, su Service, la plantilla de ejecutor (ConfigMap), los límites y el informe. Detrás de `--builds-elasticos` (apagado: el Build de hoy) | local |
+| C3·c4 | la malla: el pool `pesado-driver` y su sabor, la cuenta, el `Role`, la política, la red y la cuota. **Binario, luego malla, luego *flag***, cada uno por separado | victor |
+| C3·c5 | Builds reales: uno pequeño y uno grande que escala, con el lago, y un nodo expulsado a mano | victor |
 
-**Hecho cuando:** un Build que ORE decide con 2 nodos escribe en el lago lo mismo que con 1, más rápido,
-y su informe dice cuántos nodos usó y por qué; un Build pequeño sigue en 1, igual que hoy.
+**Hecho cuando:** un Build grande escala solo y escribe lo mismo que con un nodo, más rápido; uno
+pequeño no paga por ello (punto 9); ninguno de la vara acaba en `OOMKilled` sin un error que diga qué
+tarea fue; y el informe dice cuántos nodos usó y qué lo limitó.
 
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
