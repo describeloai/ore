@@ -595,6 +595,13 @@ fn emitir_bytes(flujo: &mut TcpStream, mut b: Bytes) {
         if k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']) {
             continue;
         }
+        // Cómo va el cuerpo lo dice esto, abajo, y nadie más: una respuesta de
+        // marimo traía su `content-length` y salía con él Y troceada (RFC 9112
+        // §6.1 lo prohíbe; Cloudflare la cortaba: «Failed to fetch dynamically
+        // imported module», victor 2026-10-19), o con dos `content-length`.
+        if k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
         cabeza.push_str(&format!("{k}: {v}\r\n"));
     }
     match b.largo {
@@ -1256,6 +1263,9 @@ mod pruebas_del_flujo {
                     codigo: 206,
                     cabeceras: vec![
                         ("content-range".into(), "bytes 0-3/30".into()),
+                        // Lo que traía marimo: su largo y su troceado no salen.
+                        ("Content-Length".into(), "999".into()),
+                        ("transfer-encoding".into(), "gzip".into()),
                         ("x-colada".into(), "a\r\nset-cookie: x".into()),
                     ],
                     largo: sabido.then_some(4),
@@ -1269,9 +1279,15 @@ mod pruebas_del_flujo {
         assert!(t.contains("content-range: bytes 0-3/30\r\n"), "{t}");
         assert!(t.contains("content-length: 4\r\n"), "{t}");
         assert!(!t.contains("set-cookie") && !t.contains("x-colada"), "{t}");
+        assert!(
+            !t.contains("999") && !t.contains("transfer-encoding"),
+            "{t}"
+        );
         assert!(t.ends_with("\r\n\r\n%PDF"), "{t:?}");
         let t = pedir_crudo(puerto, "/troceado");
         assert!(t.contains("transfer-encoding: chunked"), "{t}");
+        assert!(!t.to_ascii_lowercase().contains("content-length"), "{t}");
+        assert_eq!(t.matches("transfer-encoding").count(), 1, "{t}");
         assert_eq!(destrocear(t.split_once("\r\n\r\n").unwrap().1), "%PDF");
     }
 
