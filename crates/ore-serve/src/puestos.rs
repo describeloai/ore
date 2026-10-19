@@ -2692,6 +2692,7 @@ impl Servidor {
     /// `sujeto`: `None` cuando la petición no trae (ni pudo resolver) un
     /// `Authorization` — el caso normal desde el origen aislado, que sólo
     /// manda la cookie. Autoriza una cosa U OTRA, nunca exige las dos.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn proxy_marimo(
         &self,
         sujeto: Option<&Identidad>,

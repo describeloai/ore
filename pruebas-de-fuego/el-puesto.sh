@@ -1249,7 +1249,10 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   # el analytics abre, y su ficha lo dice
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"python","repositorio":"packages/hr/mirar"}')" = "201" ] \
     || falla "17 · abrir el puesto del analytics: $(cuerpo)"
-  tiene "d['id'].startswith('puesto-ana-python-mirar-') and d['plantilla']=='analytics-python' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
+  # ⭐ 0064: analytics abre `python-notebooks` (la familia manda antes que el
+  #   lenguaje, `ore_core::clases::entorno_de`), y el id lo dice — un puesto es
+  #   por persona y ENTORNO, no por lenguaje.
+  tiene "d['id'].startswith('puesto-ana-python-notebooks-mirar-') and d['plantilla']=='analytics-python' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
     || falla "17 · la ficha del puesto no dice su clase: $(cuerpo)"
   # R3 · el id lleva el hash de la ruta entera: se lee de la ficha.
   PM=$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['id'])" "$TMP/r.json")
