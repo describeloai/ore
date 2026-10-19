@@ -23,6 +23,7 @@ use crate::builds::{con_motivo, diagnostico_json};
 use crate::puestos::{Ensayo, Transform};
 use crate::rutas::Servidor;
 use ore_core::json::Json;
+use ore_core::repositorios::Motor;
 use ore_core::transformar::DelEditor;
 use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
@@ -315,6 +316,18 @@ impl Servidor {
             Ok(t) => t,
             Err(r) => return r,
         };
+        // ORE 0068 C2·3 pieza 5: en un repositorio Heavyweight, un Job corto de Spark.
+        let mut donde = (None, None, Motor::default());
+        let r = self.leyendo(|raiz| {
+            donde = crate::builds::repositorio_del_fichero(raiz, &p.fichero);
+            Respuesta::ok(Json::obj([]))
+        });
+        if r.codigo != 200 {
+            return crate::builds::con_motivo_por_defecto(r);
+        }
+        if donde.2 == Motor::Heavyweight {
+            return self.ensayar_en_spark(sujeto, id, &p, def, t, donde.0, donde.1);
+        }
         // 0049 B10·4: de SQL, por ahora sólo la colección que da su consulta
         // (lo demás, ADR 0055 P4). `transform` es el ordinal de la sentencia.
         let sql = if runtime(&p.fichero) == "sql" {
@@ -393,6 +406,114 @@ impl Servidor {
         } else {
             crate::builds::con_motivo_por_defecto(r)
         }
+    }
+
+    /// ORE 0068 C2·3 pieza 5 · **El Preview de un repositorio Heavyweight es un
+    /// Job corto** (decidido 2026-10-18): un trabajo en `spark` —el puesto
+    /// pesado, como su build— cuya única celda es el arnés del Preview, con el
+    /// techo de lo que el código del editor declara y sin escribir nada (la
+    /// misma puerta que en una sesión: la celda lleva su `Ensayo`), ni siquiera
+    /// su informe. La sesión `id` sólo dice de quién es y en qué rama lee. 202
+    /// con `{trabajo, celda: 1, preview}`: el resultado se espera en
+    /// `GET /puestos/{trabajo}/celdas/1`, como el de una celda.
+    #[allow(clippy::too_many_arguments)]
+    fn ensayar_en_spark(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        p: &Pedido,
+        def: String,
+        t: DelEditor,
+        repositorio: Option<String>,
+        clase: Option<&'static ore_core::clases::Clase>,
+    ) -> Respuesta {
+        let rt = runtime(&p.fichero);
+        if rt == "sql" {
+            return con_motivo(
+                Respuesta::error(
+                    422,
+                    "Preview of SQL statements comes later (ADR 0055 P4), also in a Heavyweight repository: build it, or run its `SELECT`",
+                ),
+                "not_supported",
+            );
+        }
+        let Some((persona, rama)) =
+            self.con_los_puestos(|l| l.get(id).map(|x| (x.persona.clone(), x.rama.clone())))
+        else {
+            return con_motivo(
+                Respuesta::error(404, format!("no hay ningún puesto `{id}`")),
+                "error",
+            );
+        };
+        if persona != sujeto.persona {
+            return con_motivo(
+                Respuesta::error(403, "ese puesto es de otra persona"),
+                "forbidden",
+            );
+        }
+        let fijadas = self.fijar_colecciones(rama.as_deref(), &t.inputs);
+        let mut fuentes = None;
+        if rt == "java" {
+            let r = self.leyendo_en(rama.as_deref(), |raiz| {
+                match crate::builds::fuentes_java(raiz, &p.fichero, Some(&p.contenido)) {
+                    Ok(f) => {
+                        fuentes = Some(f);
+                        Respuesta::ok(Json::obj([]))
+                    }
+                    Err(r) => r,
+                }
+            });
+            if r.codigo != 200 {
+                return crate::builds::con_motivo_por_defecto(r);
+            }
+        }
+        let celda = crate::builds::celda_de_preview_pesado(
+            &p.fichero,
+            &p.contenido,
+            &def,
+            &t.output,
+            fuentes.as_deref(),
+        );
+        let ensayo = Ensayo {
+            techo: Transform {
+                nombre: def.clone(),
+                inputs: t.inputs.clone(),
+                output: t.output.clone(),
+                fijadas,
+                techo: true,
+            },
+            fichero: p.fichero.clone(),
+            def,
+        };
+        let mut r = self.lanzar_trabajo(
+            sujeto,
+            rama,
+            crate::cola::SPARK,
+            "python",
+            p.fichero.clone(),
+            "editor".into(),
+            celda,
+            Vec::new(),
+            None,
+            None,
+            crate::puestos::Donde {
+                repositorio,
+                clase,
+                build: None,
+                ensayo: Some(ensayo),
+            },
+        );
+        if r.codigo != 202 {
+            return crate::builds::con_motivo_por_defecto(r);
+        }
+        if let Json::Obj(m) = &mut r.cuerpo {
+            if let Some(trabajo) = m.get("id").cloned() {
+                m.insert("trabajo".into(), trabajo);
+            }
+            m.insert("celda".into(), Json::Int(1));
+            m.insert("preview".into(), transform_json(&t, rt));
+        }
+        r
     }
 }
 

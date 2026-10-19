@@ -374,7 +374,11 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
             "java" => {
                 let fuentes = fuentes_java(raiz, &codigo, None)?;
                 en_spark = Some(arnes_java_en_spark(
-                    &documento, &codigo, &c.clave, &fuentes, &build,
+                    &documento,
+                    &codigo,
+                    &c.clave,
+                    &fuentes,
+                    ModoJava::Build(&build),
                 ));
                 arnes_java(
                     &documento,
@@ -798,31 +802,97 @@ fn espec_java(
 /// `_ore._java_en_spark`, que compila el código con javac en la JVM de Spark,
 /// carga su clase con D15 armado y llama al método dentro de su techo; su
 /// `over()`, `sql()` y `write()` (`ore.Ore`, con `Dataset<Row>`) vuelven al
-/// SDK de Python. Lo de fuera entra como literal de cadena JSON.
+/// SDK de Python. Lo de fuera entra como literal de cadena JSON. En un Preview
+/// (pieza 5, un Job corto), sin procedencia y con la salida que el código del
+/// editor declara: `write()` no escribe, y lo que escribiría va al informe.
 pub(crate) fn arnes_java_en_spark(
     documento: &str,
     fichero: &str,
     metodo: &str,
     fuentes: &[(String, String)],
-    build: &Json,
+    modo: ModoJava<'_>,
 ) -> String {
     let cad = |s: &str| Json::s(s).jcs();
     let cabecera: String = documento.chars().filter(|c| !c.is_control()).collect();
+    let (que, entorno, extra) = match modo {
+        ModoJava::Build(b) => (
+            "build",
+            format!(
+                "_COMMIT = (_os.environ.get(\"ORE_CODIGO\") or \"\").rpartition(\"@\")[2]\n\
+                 _os.environ[\"ORE_BUILD\"] = _json.dumps(dict(_json.loads({}), id=_ore.session.id, commit=_COMMIT))\n",
+                cad(&b.jcs())
+            ),
+            None,
+        ),
+        ModoJava::Preview { output } => (
+            "Preview",
+            "# Un Preview no es un build: ni su procedencia ni su informe.\n\
+             _os.environ.pop(\"ORE_BUILD\", None)\n"
+                .to_string(),
+            Some(("output", Json::s(output))),
+        ),
+    };
     format!(
-        "# El arnés de un build de Java en Spark (ORE 0068 C2·3 pieza 4): {cabecera}\n\
+        "# El arnés de un {que} de Java en Spark (ORE 0068 C2·3): {cabecera}\n\
          import json as _json\n\
          import os as _os\n\
          _os.environ[\"ORE_MOTOR\"] = \"heavyweight\"\n\
          {guarda}\
-         _COMMIT = (_os.environ.get(\"ORE_CODIGO\") or \"\").rpartition(\"@\")[2]\n\
-         _os.environ[\"ORE_BUILD\"] = _json.dumps(dict(_json.loads({build}), id=_ore.session.id, commit=_COMMIT))\n\
+         {entorno}\
          if not hasattr(_ore, \"_java_en_spark\"):\n    \
-         raise RuntimeError(\"this job runs an older ORE SDK, which cannot build Java on Spark: rebuild the image\")\n\
+         raise RuntimeError(\"this job runs an older ORE SDK, which cannot run Java on Spark: rebuild the image\")\n\
          _ore._java_en_spark(_json.loads({espec}))\n",
         guarda = ore_core::sdk::guarda_python(),
-        build = cad(&build.jcs()),
-        espec = cad(&espec_java(fichero, metodo, fuentes, None).jcs()),
+        espec = cad(&espec_java(fichero, metodo, fuentes, extra).jcs()),
     )
+}
+
+/// ORE 0068 C2·3 pieza 5 · **La celda de un Preview Heavyweight**, que corre
+/// en un Job corto de `spark`: la del Preview de siempre con el motor dicho
+/// (Python) o la de Java en Spark. SQL todavía no tiene Preview (0055 P4).
+pub(crate) fn celda_de_preview_pesado(
+    fichero: &str,
+    contenido: &str,
+    def: &str,
+    output: &str,
+    fuentes_java: Option<&[(String, String)]>,
+) -> String {
+    match fuentes_java {
+        Some(f) => arnes_java_en_spark(fichero, fichero, def, f, ModoJava::Preview { output }),
+        None => con_el_motor(
+            crate::cola::SPARK,
+            arnes_de_preview(fichero, contenido, def, output),
+        ),
+    }
+}
+
+/// ORE 0068 C2·3 · El repositorio registrado (en `main`) del fichero, su clase
+/// y su motor: lo que decide dónde corre su build y su Preview.
+pub(crate) fn repositorio_del_fichero(
+    raiz: &Path,
+    fichero: &str,
+) -> (
+    Option<String>,
+    Option<&'static ore_core::clases::Clase>,
+    Motor,
+) {
+    let leidos = ore_core::repositorios::leer(raiz);
+    let registrados: Vec<(String, String)> = leidos
+        .iter()
+        .map(|r| (r.ruta.clone(), r.plantilla.clone().unwrap_or_default()))
+        .collect();
+    match repositorio_de(&registrados, fichero) {
+        Some((r, plantilla)) => (
+            Some(r.clone()),
+            ore_core::clases::de(plantilla),
+            leidos
+                .iter()
+                .find(|x| &x.ruta == r)
+                .map(|x| x.motor)
+                .unwrap_or_default(),
+        ),
+        None => (None, None, Motor::default()),
+    }
 }
 
 /// La celda de un build y el lenguaje en que va, donde corre: en `spark`, la
@@ -1136,6 +1206,7 @@ impl Servidor {
                         repositorio: repositorio_del_build,
                         creado_s: ahora_s(),
                     }),
+                    ensayo: None,
                 },
             );
             if r.codigo != 202 {
@@ -1819,6 +1890,31 @@ mod tests {
             "{pesada}"
         );
         assert_eq!(celda_en("jvm", &h[0]), (celda.clone(), "java"));
+        // Pieza 5: su Preview en Spark, sin procedencia y con la salida del editor.
+        let fuentes = vec![(
+            "packages/ventas/etl/Resumen.java".to_string(),
+            "class Resumen {}".to_string(),
+        )];
+        let pv = celda_de_preview_pesado(
+            "packages/ventas/etl/Resumen.java",
+            "",
+            "resumen",
+            "ventas.resumen_java",
+            Some(&fuentes),
+        );
+        assert!(
+            pv.contains("_os.environ.pop(\"ORE_BUILD\", None)")
+                && !pv.contains("_os.environ[\"ORE_BUILD\"]")
+                && pv.contains(r#"\"output\":\"ventas.resumen_java\""#)
+                && pv.contains("_ore._java_en_spark("),
+            "{pv}"
+        );
+        let py = celda_de_preview_pesado("p/x.py", "print(1)", "f", "a.b", None);
+        assert!(
+            py.contains("ORE_MOTOR\"] = \"heavyweight\"")
+                && py.contains("_ore._ensayo(_SALIDA, _DEF)"),
+            "{py}"
+        );
         // Por el fichero, también; y el porqué si no tiene nada.
         let h = bien(hallar(
             &d,

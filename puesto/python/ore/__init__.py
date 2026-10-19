@@ -619,6 +619,17 @@ def _ensayo(output, transform=None):
 def _ensayar_escritura(nombre, datos, mode):
     """`write()` en un Preview: lo que escribiría, sin escribir. La última
     escritura es la que se enseña."""
+    # ORE 0068 C2·3 pieza 5: en Heavyweight, un DataFrame de Spark (con lo que
+    # `write()` comprobaría de su geometría).
+    if os.environ.get("ORE_MOTOR") == "heavyweight":
+        from . import spark as _pesado
+
+        vista, contrato = _pesado.ensayar_escritura(datos, mode, _FILAS_DEL_PREVIEW)
+        _ensayando["visto"] = dict(vista, output=nombre, mode=mode)
+        n = vista["total"]
+        return _Result({"table": nombre, "rows": n, "snapshot": "", "metadata_location": "", "operation": "",
+                        "repeated": False, "mode": mode, "added": n, "before": 0, "preview": True,
+                        "engine": "spark", "geo": contrato})
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:
         raise ValueError("write(): the table has no rows")

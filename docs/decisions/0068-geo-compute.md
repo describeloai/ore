@@ -494,7 +494,7 @@ pesado (cuota global 4/32 vCPU), y `cq-victor` tiene 1,5 CPU en `jobs`.
 | 2 | el arnés PySpark (Python y SQL): `over()` → DataFrame; `write()` pasa la geometría de Sedona a WKB, sella `ore.geo` con su SRID y la procedencia, por `/v1` e idempotente. La identidad, por el `AuthManager` del pod; la memoria, por regla |
 | 3 | `/v1` comprueba: S6 es 400 con su remedio; un `ore.geo` que contradiga el contrato del Dataset se niega. Y sirve `…/credentials`, para que un Build de más de una hora no se quede sin GCS |
 | 4 | Spark Java (`Dataset<Row>`): **hecha en local** |
-| 5 | Preview como Job corto |
+| 5 | Preview como Job corto: **hecha en local** |
 | 6 | el pool `pesado`, su *flavor* de Kueue y su cuota (toca producción: go aparte), y la celda en victor: un repositorio Heavyweight corre un *join* espacial |
 
 **Pieza 0 · el puesto pesado de verdad (2026-10-18, `pruebas-de-fuego/geo/c2/trabajo-spark/`).**
@@ -729,6 +729,42 @@ como uid 65532. El SDK, 160/160 en la imagen; ore-serve, `builds` 20/20.
   `ore.Ore` da `Rows`. El código con `Dataset<Row>` no compila allí (el Preview de Java pesado es
   la pieza 5);
 - `upsert` y las tablas ancladas, como en Python.
+
+**Pieza 5 · el Preview, un Job corto (hecha en local).** El Preview de un fichero de un repositorio
+Heavyweight **no corre en la sesión**: corre en un trabajo de `spark`, el puesto pesado de su build,
+porque la sesión no tiene Spark. Es el mismo Preview de siempre:
+- el texto del editor, sin guardar;
+- el techo de lo que ese código declara;
+- `write()` no escribe, y lo que escribiría va al informe.
+Sólo cambia dónde corre.
+
+| qué | cómo |
+|---|---|
+| **la ruta, la de siempre** | `POST /puestos/{sesion}/preview`. Si el repositorio del fichero (registrado en `main`) es Heavyweight, ORE lanza el trabajo (`ensayar_en_spark`) y contesta **202 `{trabajo, celda: 1, preview}`**. La sesión sólo dice de quién es y en qué rama se lee |
+| **sin escribir nada** | la celda del trabajo lleva su `Ensayo`, como la de una sesión: el servidor pone el techo al empezarla y la puerta del Preview (`puerta_del_preview`) niega cualquier escritura hasta su salida. **Y el informe del trabajo no va al árbol** (`trabajos/<id>.json`): un Preview no deja nada |
+| **la celda** (`celda_de_preview_pesado`) | Python: el arnés del Preview con el motor dicho. Java: `arnes_java_en_spark` en modo Preview (sin procedencia, con la salida que declara el editor) |
+| **el `write()` ensayado en Spark** (`spark.ensayar_escritura`) | lo que comprobaría `write()`: un DataFrame de Spark, el modo y un CRS por columna geo. Y la forma del Preview de Lightweight: las primeras 100 filas (la geometría en **WKT**), el total y el tipo con que nacería cada columna (la geometría, `binary` con su `ore.geo`) |
+| **SQL** | **422 `not_supported`**, como en Lightweight (0055 P4) |
+| **la consola** | espera la celda en `trabajo` si lo hay (`GET /puestos/{trabajo}/celdas/1`), y si no en la sesión. Lo demás, igual |
+
+**Medido de punta a punta** (`pruebas-de-fuego/geo/c2/preview-pesado/`, el agente del trabajo en
+`ore-puesto-spark:local`, con el texto del editor cambiado): **7/7**.
+- Python y Java ensayan el texto del editor (un *buffer* de 80 m y una columna más que no están en
+  el árbol). Cada uno da 4 filas, la geometría `Geometry<Polygon, EPSG:25830>` y su primera fila en
+  WKT.
+- Leer lo que no declara, escribir fuera del techo (Java) y no compilar fallan con su tipo, su
+  fichero y su línea.
+- SQL da 422.
+- Al final no existe ninguna de las salidas y el árbol no tiene ningún informe de trabajo.
+- **El agente, de arrancar a terminar: 13–25 s**. Unos 10 s son la sesión de Spark: en un fallo de
+  compilación de Java, Spark arranca antes de compilar.
+
+**Queda, con nombre:**
+- **lo que tarda de verdad**: en producción se suman el *pod* y, con el pool a cero, el nodo (pieza
+  6). Un Preview pesado que tarda un minuto en un nodo frío es de esperar: no es la sesión ligera;
+- el editor de Java de un repositorio Heavyweight (el LSP de la sesión es el de Java ligero);
+- comprobar en el navegador que la consola lo enseña (sin ORE con Heavyweight detrás, no se puede
+  ver aún).
 
 ### C3 · El *join* espacial a escala
 

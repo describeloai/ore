@@ -323,6 +323,40 @@ def write(nombre, df, mode="overwrite"):
                     "engine": "spark", "geo": contrato})
 
 
+def ensayar_escritura(df, mode, limite):
+    """ORE 0068 C2·3 pieza 5 · `write()` en un Preview Heavyweight: lo que escribiría, sin escribir.
+    Lo mismo que comprueba `write()` (un DataFrame de Spark, el modo, un CRS por columna geo) y,
+    para la consola, la forma del Preview de Lightweight (`table()`): las primeras `limite` filas
+    —la geometría, en WKT—, el total, y el tipo con que cada columna nacería en el lago (la
+    geometría, `binary` con su `ore.geo`). `(vista, contrato_geo)`."""
+    from pyspark.sql import DataFrame
+    from pyspark.sql import functions as F
+
+    from . import _tipo_iceberg, table
+
+    if not isinstance(df, DataFrame):
+        raise TypeError("write(): in a Heavyweight repository `data` is a Spark DataFrame (from `over()` or `sql()`), "
+                        "not %s" % type(df).__name__)
+    if mode not in ("overwrite", "append"):
+        raise NotImplementedError("write(mode=%r): a Heavyweight repository writes `overwrite` or `append` (C2·3)" % mode)
+    geos = [f.name for f in df.schema.fields if _es_geometria(f.dataType)]
+    contrato = _contrato_geo(df, geos) if geos else {}
+    total = df.count()
+    if total == 0:
+        raise ValueError("write(): the table has no rows")
+    cabeza = df.select(*[F.expr("ST_AsText(`%s`)" % c).alias(c) if c in contrato else F.col("`%s`" % c)
+                         for c in df.columns]).limit(limite).toArrow()
+    vista = table(cabeza, limite)
+    vista["total"] = total
+    ids = iter(range(len(cabeza.schema) + 1, 10**7))
+    for c, f in zip(vista["columnas"], cabeza.schema):
+        if f.name in contrato:
+            c.update({"type": contrato[f.name]["type"], "iceberg": "binary", "geo": contrato[f.name]})
+        else:
+            c["iceberg"] = _tipo_iceberg(f.name, f.type, ids)
+    return vista, contrato
+
+
 class _Puente:
     """Lo que el Java de un build pide (`ore.Puente`, pieza 4): los mismos `over`, `sql` y `write` de
     este SDK, con el techo y todo. Los `Dataset<Row>` van por referencia (`_jdf`). Lo que lanza se
@@ -370,7 +404,23 @@ def java(especificacion):
     siempre, con lo que la anotación declara— y se llama. Su `over()`, `sql()` y `write()`
     (`ore.Ore`, los mismos nombres con `Dataset<Row>`) vuelven a este SDK por `_Puente`: lo de ORE
     está en un solo sitio. Cada fallo va al informe con su tipo, su fichero y su línea, como en
-    Lightweight. `especificacion`: `{fichero, metodo, fuentes}`."""
+    Lightweight. `especificacion`: `{fichero, metodo, fuentes}` y, en un Preview (pieza 5),
+    `output`: la salida que el código del editor declara; entonces `write()` no escribe y lo que
+    escribiría va al informe (`preview`), como en el arnés del Preview de Python."""
+    from . import _ensayo
+
+    salida = especificacion.get("output")
+    if salida is None:
+        return _java(especificacion, None)
+    _ensayo(salida, especificacion["metodo"])
+    try:
+        _java(especificacion, salida)
+    finally:
+        visto = _ensayo(None)
+    return visto
+
+
+def _java(especificacion, preview):
     from py4j.protocol import Py4JJavaError
     from pyspark.java_gateway import ensure_callback_server_started
 
@@ -414,7 +464,17 @@ def java(especificacion):
         hecho = corre()
     except Py4JJavaError as e:
         raise de_java(e) from None
-    _informe_del_build(corre.output, fichero, metodo, json.loads(hecho) if hecho else None)
+    if preview is None:
+        _informe_del_build(corre.output, fichero, metodo, json.loads(hecho) if hecho else None)
+        return
+    from . import _ensayando
+
+    visto = (_ensayando or {}).get("visto")
+    if visto is None:
+        raise falla("not-written", "`%s` returned without calling `write()`: there is nothing to preview" % metodo,
+                    None, fichero)
+    print("%s · preview of %s:%s · %d rows · nothing was written" % (visto["output"], fichero, metodo, visto["total"]))
+    _para_el_informe({"preview": visto})
 
 
 __all__ = ["activo", "sesion", "over", "sql", "write", "por_posicion", "como_la_tabla", "java", "DEFAULT"]

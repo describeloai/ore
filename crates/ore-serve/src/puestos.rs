@@ -198,6 +198,10 @@ pub(crate) struct Donde {
     /// La clase del repositorio, leída de `main`: el techo de lo que escribe.
     pub clase: Option<&'static ore_core::clases::Clase>,
     pub build: Option<Construccion>,
+    /// ORE 0068 C2·3 pieza 5 · Si el trabajo es un Preview (el de un repositorio
+    /// Heavyweight, un Job corto): su celda corre con su techo y sin escribir
+    /// nada, como en una sesión, y su informe no va al árbol.
+    pub ensayo: Option<Ensayo>,
 }
 
 /// Lo que un build construye (0055 B1): el `Transform` del árbol del que salió.
@@ -1590,6 +1594,7 @@ impl Servidor {
             repositorio,
             clase,
             build,
+            ensayo,
         } = donde;
         // La capa, como al abrir un puesto (W3.2): la del árbol si está lista;
         // si no, se encola y 409 para que se vuelva a pedir. La de SU
@@ -1673,7 +1678,7 @@ impl Servidor {
                 empezada: None,
                 salida: None,
                 lote: None,
-                ensayo: None,
+                ensayo,
             },
         );
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -1809,12 +1814,13 @@ impl Servidor {
     /// puesto se cierra y sale de la cola. Lo que la consola enseña en Data ›
     /// Jobs es el Job (por el informador); lo que queda es esto.
     fn informar_trabajo(&self, agente: &Identidad, id: &str, n: u64) {
-        let (persona, rama, fichero, mut informe, funcion) = {
+        let (persona, rama, fichero, mut informe, funcion, es_ensayo) = {
             let lista = self.puestos.lista.lock().unwrap();
             let Some(p) = lista.get(id) else { return };
             let Some(t) = &p.trabajo else { return };
             let funcion = t.funcion.clone();
             let Some(c) = p.celdas.get(&n) else { return };
+            let es_ensayo = c.ensayo.is_some();
             let salida = c.salida.clone().unwrap_or(Json::obj([]));
             let (tipo, ms) = match ore_core::parse::parse(&salida.jcs()) {
                 Ok(s) => (
@@ -1888,6 +1894,7 @@ impl Servidor {
                 ])
                 .con_si("build", build),
                 funcion,
+                es_ensayo,
             )
         };
         let quien = Identidad {
@@ -1926,21 +1933,29 @@ impl Servidor {
             Some(f) => format!("Invocar: {} ({})", f.qn, f.corrida),
             None => format!("Trabajo {id}"),
         };
-        let r = self.escribiendo_en(rama.as_deref(), &quien, &mensaje, |raiz| {
-            for (ruta, texto) in
-                std::iter::once((&ruta, &texto)).chain(resultado.as_ref().map(|(r, t)| (r, t)))
-            {
-                let f = raiz.join(ruta);
-                if let Some(d) = f.parent() {
-                    let _ = std::fs::create_dir_all(d);
+        // 0068 C2·3 pieza 5: un Preview no escribe nada, tampoco su informe (lo
+        // que la consola lee es su celda, `GET /puestos/{id}/celdas/1`).
+        let r = if es_ensayo {
+            Respuesta::ok(Json::obj([]))
+        } else {
+            self.escribiendo_en(rama.as_deref(), &quien, &mensaje, |raiz| {
+                for (ruta, texto) in
+                    std::iter::once((&ruta, &texto)).chain(resultado.as_ref().map(|(r, t)| (r, t)))
+                {
+                    let f = raiz.join(ruta);
+                    if let Some(d) = f.parent() {
+                        let _ = std::fs::create_dir_all(d);
+                    }
+                    if let Err(e) = std::fs::write(&f, texto) {
+                        return Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}"));
+                    }
                 }
-                if let Err(e) = std::fs::write(&f, texto) {
-                    return Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}"));
-                }
-            }
-            Respuesta::ok(Json::obj([("fichero", Json::s(&ruta))]))
-        });
-        if let Json::Obj(m) = &mut informe {
+                Respuesta::ok(Json::obj([("fichero", Json::s(&ruta))]))
+            })
+        };
+        if let Json::Obj(m) = &mut informe
+            && !es_ensayo
+        {
             m.insert("fichero".into(), Json::s(&ruta));
             if let Json::Obj(c) = &r.cuerpo
                 && let Some(Json::Str(commit)) = c.get("commit")
