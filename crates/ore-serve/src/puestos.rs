@@ -388,6 +388,120 @@ pub(crate) struct Puestos {
     /// si no, el barrido vería en la cola el fichero de un puesto que aún no
     /// está en la memoria, y se lo llevaría.
     cola: Mutex<()>,
+    /// Los *assets* de marimo ya servidos ([`AssetsDeMarimo`]).
+    assets_marimo: Mutex<AssetsDeMarimo>,
+}
+
+/// **Los *assets* de marimo, de ore-serve** (0064). La portada de marimo son
+/// ~100 ficheros (Vite: trozos de JS, fuentes, estilos) que llegaban todos por
+/// el túnel del puesto, a la vez (68 en victor, 2026-10-19). Son estáticos y su
+/// nombre lleva el hash de su contenido (`assets/ErrorBoundary-BeE1cdgM.js`):
+/// el mismo nombre es el mismo fichero en cualquier puesto. Así que el primero
+/// que pasa entero se guarda aquí, y los siguientes no salen de ore-serve.
+#[derive(Default)]
+struct AssetsDeMarimo {
+    por_ruta: BTreeMap<String, Arc<AssetDeMarimo>>,
+    bytes: usize,
+}
+
+struct AssetDeMarimo {
+    cabeceras: Vec<(String, String)>,
+    cuerpo: Arc<[u8]>,
+}
+
+/// Lo más que se guarda de un *asset*, y de todos.
+const ASSET_MAXIMO: usize = 8 << 20;
+const ASSETS_MAXIMO: usize = 64 << 20;
+
+/// ¿Esta petición puede salir de [`AssetsDeMarimo`]? Un `GET` de `/assets/…`
+/// sin consulta.
+fn es_asset_de_marimo(metodo: &str, camino: &str, consulta: &str) -> bool {
+    metodo == "GET"
+        && camino.starts_with("/assets/")
+        && !camino.contains("..")
+        && consulta.is_empty()
+}
+
+/// La codificación (`content-encoding`) de unas cabeceras, si la hay.
+fn codificacion(cabeceras: &[(String, String)]) -> Option<&str> {
+    cabeceras
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+        .map(|(_, v)| v.as_str())
+        .filter(|v| !v.eq_ignore_ascii_case("identity"))
+}
+
+impl Puestos {
+    /// El *asset* guardado, si quien pide acepta su codificación.
+    fn asset_de_marimo(&self, camino: &str, acepta: &str) -> Option<Arc<AssetDeMarimo>> {
+        let a = self
+            .assets_marimo
+            .lock()
+            .unwrap()
+            .por_ruta
+            .get(camino)
+            .cloned()?;
+        match codificacion(&a.cabeceras) {
+            Some(c)
+                if !acepta
+                    .split(',')
+                    .any(|x| x.trim().split(';').next() == Some(c)) =>
+            {
+                None
+            }
+            _ => Some(a),
+        }
+    }
+
+    fn guardar_asset_de_marimo(
+        &self,
+        camino: &str,
+        cabeceras: Vec<(String, String)>,
+        cuerpo: Vec<u8>,
+    ) {
+        let mut g = self.assets_marimo.lock().unwrap();
+        if g.por_ruta.contains_key(camino) || g.bytes + cuerpo.len() > ASSETS_MAXIMO {
+            return;
+        }
+        g.bytes += cuerpo.len();
+        g.por_ruta.insert(
+            camino.to_string(),
+            Arc::new(AssetDeMarimo {
+                cabeceras,
+                cuerpo: cuerpo.into(),
+            }),
+        );
+    }
+}
+
+/// Lee una respuesta de marimo y, si acaba entera y cabe, la deja en
+/// [`AssetsDeMarimo`]. Lo que lee el navegador no cambia.
+struct GuardarAsset {
+    interior: LectorMarimo,
+    camino: String,
+    cabeceras: Vec<(String, String)>,
+    cuerpo: Option<Vec<u8>>,
+}
+
+impl std::io::Read for GuardarAsset {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.interior.read(buf)?;
+        if n > 0 {
+            if let Some(c) = self.cuerpo.as_mut() {
+                if c.len() + n > ASSET_MAXIMO {
+                    self.cuerpo = None;
+                } else {
+                    c.extend_from_slice(&buf[..n]);
+                }
+            }
+        } else if self.interior.completo
+            && let Some(c) = self.cuerpo.take()
+        {
+            let puestos = Arc::clone(&self.interior.puestos);
+            puestos.guardar_asset_de_marimo(&self.camino, std::mem::take(&mut self.cabeceras), c);
+        }
+        Ok(n)
+    }
 }
 
 /// Cada cuánto se barre la cola ([`barrer_la_cola`]).
@@ -2749,6 +2863,22 @@ impl Servidor {
                 format!("esto no sale del puesto (`{camino}`)"),
             ));
         }
+        let asset = es_asset_de_marimo(metodo, &camino, consulta_cruda);
+        if asset {
+            let acepta = cabeceras
+                .get("accept-encoding")
+                .map(String::as_str)
+                .unwrap_or("");
+            if let Some(a) = self.puestos.asset_de_marimo(&camino, acepta) {
+                return Salida::Bytes(Bytes {
+                    codigo: 200,
+                    cabeceras: a.cabeceras.clone(),
+                    largo: Some(a.cuerpo.len() as u64),
+                    lector: Box::new(std::io::Cursor::new(Arc::clone(&a.cuerpo))),
+                    finales: None,
+                });
+            }
+        }
         let ruta_completa = if consulta_cruda.is_empty() {
             camino.clone()
         } else {
@@ -2830,15 +2960,27 @@ impl Servidor {
                 .wait_timeout(lista, Duration::from_millis(500))
                 .unwrap();
         };
+        let lector = LectorMarimo {
+            puestos: Arc::clone(&self.puestos),
+            id: id.to_string(),
+            peticion_id,
+            completo: false,
+        };
+        let lector: Box<dyn std::io::Read + Send> = if asset && codigo == 200 {
+            Box::new(GuardarAsset {
+                interior: lector,
+                camino,
+                cabeceras: cabeceras_salida.clone(),
+                cuerpo: Some(Vec::new()),
+            })
+        } else {
+            Box::new(lector)
+        };
         Salida::Bytes(Bytes {
             codigo,
             cabeceras: cabeceras_salida,
             largo: None,
-            lector: Box::new(LectorMarimo {
-                puestos: Arc::clone(&self.puestos),
-                id: id.to_string(),
-                peticion_id,
-            }),
+            lector,
             finales: None,
         })
     }
@@ -5277,6 +5419,8 @@ struct LectorMarimo {
     puestos: Arc<Puestos>,
     id: String,
     peticion_id: u64,
+    /// El agente dijo «end»: el cuerpo llegó entero (no se cortó ni venció).
+    completo: bool,
 }
 
 impl std::io::Read for LectorMarimo {
@@ -5303,6 +5447,7 @@ impl std::io::Read for LectorMarimo {
                 // El agente ya dijo "end": sabe que esto acabó, no hace
                 // falta avisarle de nada más.
                 p.marimo_respuestas.remove(&self.peticion_id);
+                self.completo = true;
                 return Ok(0);
             }
             if Instant::now() >= fin {
@@ -5429,6 +5574,69 @@ fn emitir_puesto(puestos: &Puestos, id: &str, desde: u64, e: &mut Emisor<'_>) {
 #[cfg(test)]
 pub(crate) mod prueba {
     use super::*;
+
+    /// Un *asset* de marimo que llega entero por el túnel se guarda, y el
+    /// siguiente sale de ore-serve; uno cortado no se guarda; uno comprimido
+    /// sólo se da a quien acepta su codificación.
+    #[test]
+    fn los_assets_de_marimo_se_sirven_desde_ore_serve() {
+        use std::io::Read;
+        let puestos = Arc::new(Puestos::default());
+        let leer = |peticion_id: u64, fin: bool, camino: &str| {
+            {
+                let mut lista = puestos.lista.lock().unwrap();
+                let p = lista
+                    .entry("puesto-a".into())
+                    .or_insert_with(|| un_puesto("agente:a"));
+                p.marimo_respuestas.insert(
+                    peticion_id,
+                    ColaMarimo {
+                        cabecera: None,
+                        trozos: vec![b"abc".to_vec(), b"def".to_vec()].into(),
+                        fin,
+                    },
+                );
+            }
+            let mut g = GuardarAsset {
+                interior: LectorMarimo {
+                    puestos: Arc::clone(&puestos),
+                    id: "puesto-a".into(),
+                    peticion_id,
+                    completo: false,
+                },
+                camino: camino.into(),
+                cabeceras: vec![("content-encoding".into(), "gzip".into())],
+                cuerpo: Some(Vec::new()),
+            };
+            let mut s = Vec::new();
+            if fin {
+                g.read_to_end(&mut s).unwrap();
+            } else {
+                let mut b = [0u8; 6];
+                g.read_exact(&mut b).unwrap();
+                s.extend_from_slice(&b);
+                drop(g);
+            }
+            s
+        };
+        assert_eq!(leer(1, true, "/assets/a-1.js"), b"abcdef");
+        let a = puestos
+            .asset_de_marimo("/assets/a-1.js", "gzip, br")
+            .unwrap();
+        assert_eq!(&a.cuerpo[..], b"abcdef");
+        assert!(
+            puestos
+                .asset_de_marimo("/assets/a-1.js", "identity")
+                .is_none()
+        );
+        // cortado a mitad (el navegador se fue): no se guarda
+        assert_eq!(leer(2, false, "/assets/b-2.js"), b"abcdef");
+        assert!(puestos.asset_de_marimo("/assets/b-2.js", "gzip").is_none());
+        assert!(es_asset_de_marimo("GET", "/assets/a-1.js", ""));
+        assert!(!es_asset_de_marimo("GET", "/assets/a-1.js", "v=2"));
+        assert!(!es_asset_de_marimo("POST", "/assets/a-1.js", ""));
+        assert!(!es_asset_de_marimo("GET", "/api/kernel", ""));
+    }
 
     /// La cookie de marimo viaja en un iframe de otro sitio (la consola en localhost,
     /// el cuaderno en `-nb`): `SameSite=None` y particionada, nunca `Lax`; y la que
