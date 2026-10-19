@@ -2576,7 +2576,12 @@ impl Servidor {
     /// trozo va a la cola DE SU PETICIÓN (`marimo_respuestas[id]`), no a una
     /// cola compartida — aquí hay tantas respuestas en vuelo como peticiones
     /// abiertas del navegador.
-    pub(crate) fn marimo_del_servidor(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+    pub(crate) fn marimo_del_servidor(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
         let respuestas = match respuestas_marimo_de(cuerpo) {
             Ok(r) => r,
             Err(r) => return r,
@@ -2599,7 +2604,10 @@ impl Servidor {
                         .filter(|(k, _)| {
                             !matches!(
                                 k.to_ascii_lowercase().as_str(),
-                                "content-length" | "transfer-encoding" | "connection" | "keep-alive"
+                                "content-length"
+                                    | "transfer-encoding"
+                                    | "connection"
+                                    | "keep-alive"
                             )
                         })
                         .collect();
@@ -2632,7 +2640,10 @@ impl Servidor {
         if p.persona != sujeto.persona {
             return Respuesta::error(403, "ese puesto es de otra persona");
         }
-        let token = p.marimo_cookie.get_or_insert_with(|| aleatorio_hex(16)).clone();
+        let token = p
+            .marimo_cookie
+            .get_or_insert_with(|| aleatorio_hex(16))
+            .clone();
         Respuesta::ok(Json::obj([("token", Json::s(token))]))
     }
 
@@ -2647,7 +2658,10 @@ impl Servidor {
         };
         let lista = self.puestos.lista.lock().unwrap();
         let Some(p) = lista.get(id) else {
-            return Salida::Una(Respuesta::error(404, format!("no hay ningún puesto `{id}`")));
+            return Salida::Una(Respuesta::error(
+                404,
+                format!("no hay ningún puesto `{id}`"),
+            ));
         };
         if p.marimo_cookie.as_deref() != Some(token.as_str()) {
             return Salida::Una(Respuesta::error(403, "token inválido"));
@@ -2737,7 +2751,10 @@ impl Servidor {
             // 0064: sólo se MIDE el guardado, no se intercepta — convertirlo
             // en un commit es una decisión de producto todavía abierta.
             if metodo == "POST" && camino.ends_with("/api/kernel/save") {
-                eprintln!("marimo · guardado en el puesto {id}: {} bytes", cuerpo.len());
+                eprintln!(
+                    "marimo · guardado en el puesto {id}: {} bytes",
+                    cuerpo.len()
+                );
             }
             p.marimo_entrada.push_back(Json::obj([
                 ("t", Json::s("peticion")),
@@ -2755,7 +2772,8 @@ impl Servidor {
                 ),
                 ("cuerpo", Json::s(b64_codificar(cuerpo.as_bytes()))),
             ]));
-            p.marimo_respuestas.insert(peticion_id, ColaMarimo::default());
+            p.marimo_respuestas
+                .insert(peticion_id, ColaMarimo::default());
             peticion_id
         };
         self.puestos.campana.notify_all();
@@ -2768,7 +2786,11 @@ impl Servidor {
             let Some(p) = lista.get_mut(id) else {
                 return Salida::Una(Respuesta::error(404, "el puesto ya no está"));
             };
-            if let Some(c) = p.marimo_respuestas.get(&peticion_id).and_then(|c| c.cabecera.clone()) {
+            if let Some(c) = p
+                .marimo_respuestas
+                .get(&peticion_id)
+                .and_then(|c| c.cabecera.clone())
+            {
                 break c;
             }
             if p.estado == Estado::Cerrado || perdido(p) || Instant::now() >= limite {
@@ -2776,7 +2798,11 @@ impl Servidor {
                 let vencido = Instant::now() >= limite;
                 return Salida::Una(Respuesta::error(
                     if vencido { 504 } else { 410 },
-                    if vencido { "marimo no contestó a tiempo" } else { "el puesto se acabó" },
+                    if vencido {
+                        "marimo no contestó a tiempo"
+                    } else {
+                        "el puesto se acabó"
+                    },
                 ));
             }
             let _ = self
@@ -4970,7 +4996,10 @@ fn emitir_marimo(puestos: &Puestos, id: &str, e: &mut Emisor<'_>, generacion: u6
         let (relevado, hay) = {
             let lista = puestos.lista.lock().unwrap();
             match lista.get(id) {
-                Some(p) => (p.marimo_generacion != generacion, !p.marimo_entrada.is_empty()),
+                Some(p) => (
+                    p.marimo_generacion != generacion,
+                    !p.marimo_entrada.is_empty(),
+                ),
                 None => (false, false),
             }
         };
@@ -5030,7 +5059,10 @@ fn emitir_marimo(puestos: &Puestos, id: &str, e: &mut Emisor<'_>, generacion: u6
 }
 
 enum CuerpoMarimo {
-    Cabecera { estado: u16, cabeceras: Vec<(String, String)> },
+    Cabecera {
+        estado: u16,
+        cabeceras: Vec<(String, String)>,
+    },
     Trozo(Vec<u8>),
     Fin,
 }
@@ -5119,7 +5151,11 @@ const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 fn b64_codificar(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for trozo in bytes.chunks(3) {
-        let b = [trozo[0], *trozo.get(1).unwrap_or(&0), *trozo.get(2).unwrap_or(&0)];
+        let b = [
+            trozo[0],
+            *trozo.get(1).unwrap_or(&0),
+            *trozo.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         for i in 0..4 {
             if i <= trozo.len() {

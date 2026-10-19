@@ -1517,6 +1517,7 @@ mod tests {
                 .unwrap_or_default(),
             cuerpo: "{}".into(),
             consulta: Default::default(),
+            consulta_cruda: String::new(),
         };
         let k = "0192f0c4-7b2a-7c3e-9d41-5a6b7c8d9e0f";
         assert_eq!(

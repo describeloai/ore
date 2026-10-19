@@ -4218,6 +4218,7 @@ mod la_puerta_del_agente {
             cabeceras: Default::default(),
             cuerpo: String::new(),
             consulta: Default::default(),
+            consulta_cruda: String::new(),
         };
         let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
         puerta_del_agente(&p, &agente(), &seg)

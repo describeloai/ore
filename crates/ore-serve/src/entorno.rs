@@ -1318,7 +1318,10 @@ mod prueba {
         let nb = provistas_de(NOTEBOOKS);
         assert!(nb.iter().any(|p| p.nombre == "pandas"), "{nb:?}");
         assert!(nb.iter().any(|p| p.nombre == "marimo"), "{nb:?}");
-        assert_eq!(nb.len(), provistas_de(PYTHON).len() + provistas_python(PROVISTO_PYTHON_NOTEBOOKS).count());
+        assert_eq!(
+            nb.len(),
+            provistas_de(PYTHON).len() + provistas_python(PROVISTO_PYTHON_NOTEBOOKS).count()
+        );
     }
 
     #[test]

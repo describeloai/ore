@@ -1376,7 +1376,8 @@ resources:
   requests: { cpu: \"100m\", memory: 768Mi }
   limits:   { cpu: \"2\", memory: 4Gi }
 ";
-        let (f, t, job) = rendir_puesto(p, "puesto-noa", "", "", "1", "python-notebooks", "").unwrap();
+        let (f, t, job) =
+            rendir_puesto(p, "puesto-noa", "", "", "1", "python-notebooks", "").unwrap();
         assert_eq!(f, "51-el-puesto-noa.yaml");
         assert!(job.starts_with("puesto-noa-"));
         assert!(t.contains("image: registro/ore/puesto-python-notebooks:1"));
