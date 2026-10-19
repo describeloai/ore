@@ -2694,12 +2694,7 @@ impl Servidor {
             codigo: 303,
             cabeceras: vec![
                 ("location".into(), format!("/puestos/{id}/marimo/")),
-                (
-                    "set-cookie".into(),
-                    format!(
-                        "ore_nb={token}; Path=/puestos/{id}/marimo; HttpOnly; Secure; SameSite=Lax"
-                    ),
-                ),
+                ("set-cookie".into(), cookie_de_marimo(id, &token)),
             ],
             largo: Some(0),
             lector: Box::new(std::io::empty()),
@@ -5241,6 +5236,19 @@ fn aleatorio_hex(n: usize) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// La cookie del origen aislado de marimo (0064 Pieza 4). El cuaderno vive en un
+/// iframe de `<celda>-nb.ore.paladio.io` dentro de la página de la consola, que
+/// puede ser OTRO sitio (la consola en localhost, o en un dominio propio): ahí una
+/// cookie `SameSite=Lax` ni se guarda ni viaja, y marimo da 403 (visto en victor el
+/// 2026-10-19). `SameSite=None; Partitioned` (CHIPS) sí viaja en el iframe, y sólo
+/// en él: queda atada a la página de arriba que la recibió, así que otro sitio que
+/// abra la URL no la lleva. `HttpOnly` y `Secure`, como antes.
+fn cookie_de_marimo(id: &str, token: &str) -> String {
+    format!(
+        "ore_nb={token}; Path=/puestos/{id}/marimo; HttpOnly; Secure; SameSite=None; Partitioned"
+    )
+}
+
 /// `a=1; ore_nb=XYZ; b=2` → el valor de `nombre`, si está. Sin librería: una
 /// cabecera `cookie` es `clave=valor` separado por `; `, nada más raro.
 fn valor_de_cookie(cabecera: &str, nombre: &str) -> Option<String> {
@@ -5421,6 +5429,29 @@ fn emitir_puesto(puestos: &Puestos, id: &str, desde: u64, e: &mut Emisor<'_>) {
 #[cfg(test)]
 pub(crate) mod prueba {
     use super::*;
+
+    /// La cookie de marimo viaja en un iframe de otro sitio (la consola en localhost,
+    /// el cuaderno en `-nb`): `SameSite=None` y particionada, nunca `Lax`; y la que
+    /// se pone es la que `proxy_marimo` lee.
+    #[test]
+    fn la_cookie_de_marimo_viaja_en_el_iframe() {
+        let c = cookie_de_marimo("puesto-a", "0f1e");
+        for parte in [
+            "HttpOnly",
+            "Secure",
+            "SameSite=None",
+            "Partitioned",
+            "Path=/puestos/puesto-a/marimo",
+        ] {
+            assert!(c.split("; ").any(|p| p == parte), "{parte} en {c}");
+        }
+        assert!(!c.contains("Lax"));
+        let (par, _) = c.split_once("; ").unwrap();
+        assert_eq!(
+            valor_de_cookie(&format!("x=1; {par}"), "ore_nb").as_deref(),
+            Some("0f1e")
+        );
+    }
 
     /// **Un lector, un camino** (0031 §10, 0033): un dataset resuelve por su
     /// puntero en `datasets/`; una View no (se lee por su pregunta); una View
