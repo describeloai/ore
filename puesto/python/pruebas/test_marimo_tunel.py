@@ -89,6 +89,20 @@ class LaEntrega(unittest.TestCase):
         self.assertEqual([m["t"] for m in enviado], ["head", "end"])
         self.assertEqual((t.salientes, t.fallos), ([], 0))
 
+    def test_la_salida_va_en_lotes_que_ore_serve_lee(self):
+        # La portada de marimo: ~100 respuestas de un trozo de 64 KiB. Juntas
+        # pasaban de 1 MiB y ore-serve no las leía nunca.
+        trozo = "A" * (88 * 1024)
+        t = self._tunel([(204, None)] * 20)
+        t.salientes = [{"id": n, "t": "chunk", "datos": trozo} for n in range(100)]
+        while t.salientes:
+            self.assertTrue(t._entregar_una_vez())
+        lotes = [c.kwargs["cuerpo"]["respuestas"] for c in t.p.pedir.call_args_list]
+        self.assertGreater(len(lotes), 1)
+        for lote in lotes:
+            self.assertLess(len(__import__("json").dumps({"respuestas": lote})), 1 << 20)
+        self.assertEqual([m["id"] for lote in lotes for m in lote], list(range(100)))
+
     def test_lo_que_ore_serve_niega_no_vuelve(self):
         t = self._tunel([(400, {"error": "no"})])
         t.salientes = [{"id": 1, "t": "head"}]

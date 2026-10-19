@@ -31,6 +31,12 @@ _SALTO_PETICION = _SALTO | {"host", "content-length"}
 # 502). Mientras marimo no acepte conexiones, se espera hasta esto.
 ESPERA_A_MARIMO = 30.0
 
+# Lo más que lleva un `POST .../marimo/salida`: ore-serve no lee un cuerpo de
+# más de 1 MiB (`CUERPO_MAXIMO`) y corta la conexión. La portada de marimo son
+# ~100 ficheros a la vez: juntos pasaban de largo y no entraban nunca (victor,
+# 2026-10-19). Un trozo es de 64 KiB (~88 KiB en base64): caben de sobra.
+LOTE_MAXIMO = 768 * 1024
+
 
 def log(*a):
     print("marimo-tunel ·", *a, flush=True)
@@ -157,7 +163,9 @@ class Tunel:
         `ore-entrada` no tiene keep-alive."""
         while self.vivo:
             time.sleep(0.02)
-            self._entregar_una_vez()
+            # Lote tras lote mientras quede algo y entre (`_primer_lote`).
+            while self._entregar_una_vez() and self.salientes:
+                pass
 
     def _entregar_una_vez(self):
         """Un lote a ore-serve. Si no llega porque ore-serve está lleno (503) o
@@ -167,7 +175,7 @@ class Tunel:
         llenaron las 64 conexiones de ore-serve, la salida dio 503, se tiró, y
         cada *asset* acabó en 504 a los 30 s: la página, en blanco."""
         with self.candado:
-            lote, self.salientes = self.salientes, []
+            lote, self.salientes = _primer_lote(self.salientes)
         if not lote:
             return True
         self.p._cabeceras = self.testigo.cabeceras()
@@ -191,6 +199,17 @@ class Tunel:
             return False
         log("la salida de marimo no se aceptó: %s %s" % (codigo, r))
         return True
+
+
+def _primer_lote(salientes):
+    """`(lote, resto)`: lo primero de `salientes` que cabe en `LOTE_MAXIMO`,
+    en orden y al menos un mensaje."""
+    tam = 0
+    for i, m in enumerate(salientes):
+        tam += len(json.dumps(m)) + 2
+        if i and tam > LOTE_MAXIMO:
+            return salientes[:i], salientes[i:]
+    return salientes, []
 
 
 def arrancar(p, testigo, marimo):
