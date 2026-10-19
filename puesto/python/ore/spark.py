@@ -323,6 +323,16 @@ def write(nombre, df, mode="overwrite"):
                     "engine": "spark", "geo": contrato})
 
 
+def cabeza(df, limite):
+    """Las primeras `limite` filas de un DataFrame de Spark, en Arrow, para `table()`: la geometría,
+    en WKB en hexadecimal, como viaja en texto (OOS v1alpha32 01 §5)."""
+    from pyspark.sql import functions as F
+
+    geos = {f.name for f in df.schema.fields if _es_geometria(f.dataType)}
+    return df.select(*[F.expr("lower(hex(ST_AsBinary(`%s`)))" % c).alias(c) if c in geos else F.col("`%s`" % c)
+                       for c in df.columns]).limit(limite).toArrow()
+
+
 def ensayar_escritura(df, mode, limite):
     """ORE 0068 C2·3 pieza 5 · `write()` en un Preview Heavyweight: lo que escribiría, sin escribir.
     Lo mismo que comprueba `write()` (un DataFrame de Spark, el modo, un CRS por columna geo) y,

@@ -89,6 +89,25 @@ class ElSqlPesado(unittest.TestCase):
                 pesado.sql("select from where geo.t")
 
 
+class LaMuestraPesada(unittest.TestCase):
+    """6c · `table()` de un DataFrame de Spark (la muestra del informe de un build): su cabeza, de
+    `ore.spark.cabeza`, y el total; contar sólo cuando la cabeza se llena."""
+
+    def _df(self, cuenta):
+        df = type("DataFrame", (), {"__module__": "pyspark.sql.dataframe", "toArrow": None,
+                                    "count": lambda self: cuenta})()
+        return df
+
+    def test_la_cabeza_viene_de_spark_y_cuenta_si_no_cabe(self):
+        import pyarrow as pa
+
+        with mock.patch.object(pesado, "cabeza", return_value=pa.table({"id": [1, 2], "g": ["0101", "0102"]})) as c:
+            t = ore.table(self._df(20000), 2)
+            self.assertEqual((t["total"], t["filas"], t["limite"]), (20000, [[1, "0101"], [2, "0102"]], 2))
+            self.assertEqual(ore.table(self._df(None), 200)["total"], 2)
+        self.assertEqual(c.call_count, 2)
+
+
 class ElInsertPesado(unittest.TestCase):
     """2b · `insert into` en Heavyweight: las columnas sin nombre y los tipos, de la tabla."""
 

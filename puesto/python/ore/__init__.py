@@ -3037,9 +3037,17 @@ def table(value, limit=200):
             pass
         if t is None and type(valor).__module__.startswith("polars") and hasattr(valor, "to_arrow"):
             t = valor.to_arrow()
+    # ORE 0068 6c: un DataFrame de Spark (Heavyweight) trae sólo su cabeza, y la
+    # geometría en WKB en hexadecimal, como en su Preview; se cuenta sólo si no cabe.
+    contado = None
+    if t is None and type(valor).__module__.startswith("pyspark") and hasattr(valor, "toArrow"):
+        from . import spark as _pesado
+
+        t = _pesado.cabeza(valor, limite)
+        contado = t.num_rows if t.num_rows < limite else valor.count()
     if t is None:
         return None
-    total = t.num_rows
+    total = t.num_rows if contado is None else contado
     cabeza = t.slice(0, limite)
     json_ |= {f.name for f in cabeza.schema if (f.metadata or {}).get(MARCA_JSON.encode())}
     # SQL·1: una columna JSON va como `json`, y cada valor, ya leído (un objeto).

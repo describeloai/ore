@@ -111,4 +111,12 @@ caso("6 · fuera del techo", fuera_del_techo, "falla")
 # 7 · sql(): Spark SQL con el catálogo ore por defecto
 caso("7 · sql()", lambda: ore.sql("select count(*) n from geo.zonas").first().n, lambda r: r == 5)
 
+# 8 · table(): la muestra del informe de un build (6c: con Spark daba None y el informe fallaba)
+caso("8 · table() de un DataFrame de Spark", lambda: (lambda t: (t["total"], len(t["filas"]),
+     [c["name"] for c in t["columnas"]], isinstance(t["filas"][0][1], str) and t["filas"][0][1][:2]))(
+     ore.table(ore.over("geo.lugares").select("id", "geom").orderBy("id"), 3)),
+     lambda r: r[0] == 10 and r[1] == 3 and r[2] == ["id", "geom"] and r[3] in ("01", "00"))
+caso("8b · table() que cabe no cuenta aparte", lambda: ore.table(ore.sql("select id from geo.zonas"), 200)["total"],
+     lambda r: r == 5)
+
 print("\n%d/%d casos" % (sum(casos), len(casos)))
