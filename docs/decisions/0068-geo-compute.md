@@ -421,13 +421,18 @@ binario: va con la consola.
 
 | paso | qué |
 |---|---|
-| C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia (hecho en local) |
-| C2·2 | la imagen pesada con geo (lo que diga C0). **Antes que los Builds** (reordenado 2026-10-18): corren en ella. Hecho en local |
-| C2·3 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark en `puesto-spark` (piezas abajo) |
+| C2·1 | el banner en la consola al crear el repositorio; el repositorio guarda su motor y no se cambia (**en victor**) |
+| C2·2 | la imagen pesada con geo (lo que diga C0). **Antes que los Builds** (reordenado 2026-10-18): corren en ella. **En victor** |
+| C2·3 | sus Transforms y Builds corren en su motor: DuckDB en el puesto, Spark en `puesto-spark` (piezas abajo; **en victor**) |
 | C2·4 | **(era C1·4)** el contrato de lo que escribe un Transform Heavyweight, con su CRS: Spark escribe por el catálogo `/v1` de ORE (lo admite; medido con PyIceberg y DuckDB, nunca con Spark) la geometría en WKB `binary` con su `ore.geo.<col>`, que es el estado de hoy del lago (0067 G2). Spark 4.1 nativo no admite CRS proyectados (0067: EPSG:25830 da `ST_INVALID_CRS_VALUE`) |
 
 **Hecho cuando:** un repositorio de cada clase, creado desde su banner, corre un *join* espacial en su
 motor.
+
+**C2 CERRADO (2026-10-19).** En victor, tres repositorios Heavyweight creados desde la consola
+(Python, SQL y Java) corrieron el *join* de 20 M puntos × 20 k polígonos en el pool pesado, en Spark +
+Sedona, y los tres dieron lo mismo: **20 000 zonas y 11 129 901 pares**. El Lightweight lo corre
+DuckDB desde C1. Cómo se llegó, en la pieza 6 de C2·3; lo que queda, con nombre, al final de ella.
 
 #### C2·4 · El laboratorio de Spark contra `/v1` (2026-10-18)
 
@@ -549,9 +554,9 @@ pesado (cuota global 4/32 vCPU), y `cq-victor` tiene 1,5 CPU en `jobs`.
 | 1 | el motor elige el entorno: `Donde` lleva el `motor`; Heavyweight → `entorno=spark` (`puesto-spark:1`), con plantilla y recursos propios. TypeScript en Heavyweight, 422 |
 | 2 | el arnés PySpark (Python y SQL): `over()` → DataFrame; `write()` pasa la geometría de Sedona a WKB, sella `ore.geo` con su SRID y la procedencia, por `/v1` e idempotente. La identidad, por el `AuthManager` del pod; la memoria, por regla |
 | 3 | `/v1` comprueba: S6 es 400 con su remedio; un `ore.geo` que contradiga el contrato del Dataset se niega. Y sirve `…/credentials`, para que un Build de más de una hora no se quede sin GCS |
-| 4 | Spark Java (`Dataset<Row>`): **hecha en local** |
-| 5 | Preview como Job corto: **hecha en local** |
-| 6 | el pool `pesado`, su *flavor* de Kueue y su cuota (toca producción: go aparte), y la celda en victor: un repositorio Heavyweight corre un *join* espacial |
+| 4 | Spark Java (`Dataset<Row>`): **en victor** |
+| 5 | Preview como Job corto: **en victor** |
+| 6 | el pool `pesado`, su *flavor* de Kueue y su cuota, y la celda en victor: un repositorio Heavyweight corre un *join* espacial: **hecha** |
 
 **Pieza 0 · el puesto pesado de verdad (2026-10-18, `pruebas-de-fuego/geo/c2/trabajo-spark/`).**
 El banco de C2·4 (ore-serve con su cola y su plantilla) y, en su red, **el agente de Python dentro de
@@ -799,7 +804,7 @@ Sólo cambia dónde corre.
 | **la ruta, la de siempre** | `POST /puestos/{sesion}/preview`. Si el repositorio del fichero (registrado en `main`) es Heavyweight, ORE lanza el trabajo (`ensayar_en_spark`) y contesta **202 `{trabajo, celda: 1, preview}`**. La sesión sólo dice de quién es y en qué rama se lee |
 | **sin escribir nada** | la celda del trabajo lleva su `Ensayo`, como la de una sesión: el servidor pone el techo al empezarla y la puerta del Preview (`puerta_del_preview`) niega cualquier escritura hasta su salida. **Y el informe del trabajo no va al árbol** (`trabajos/<id>.json`): un Preview no deja nada |
 | **la celda** (`celda_de_preview_pesado`) | Python: el arnés del Preview con el motor dicho. Java: `arnes_java_en_spark` en modo Preview (sin procedencia, con la salida que declara el editor) |
-| **el `write()` ensayado en Spark** (`spark.ensayar_escritura`) | lo que comprobaría `write()`: un DataFrame de Spark, el modo y un CRS por columna geo. Y la forma del Preview de Lightweight: las primeras 100 filas (la geometría en **WKT**), el total y el tipo con que nacería cada columna (la geometría, `binary` con su `ore.geo`) |
+| **el `write()` ensayado en Spark** (`spark.ensayar_escritura`) | lo que comprobaría `write()`: un DataFrame de Spark, el modo y un CRS por columna geo. Y la forma del Preview de Lightweight: las primeras 100 filas (la geometría en **WKB en hexadecimal**, cierre de C1), el total y el tipo con que nacería cada columna (la geometría, `binary` con su `ore.geo`) |
 | **SQL** | **422 `not_supported`**, como en Lightweight (0055 P4) |
 | **la consola** | espera la celda en `trabajo` si lo hay (`GET /puestos/{trabajo}/celdas/1`), y si no en la sesión. Lo demás, igual |
 
@@ -821,6 +826,55 @@ Sólo cambia dónde corre.
 - el editor de Java de un repositorio Heavyweight (el LSP de la sesión es el de Java ligero);
 - comprobar en el navegador que la consola lo enseña (sin ORE con Heavyweight detrás, no se puede
   ver aún).
+
+**Pieza 6 · el pool pesado y la celda en victor (hecha, 2026-10-19).** Tres pasos, cada uno con su go.
+
+*6a · empujar.* C1 y C2 (piezas 0–5) a `main` tras la suite completa, y la consola (el paso *Select
+compute* y el Preview que espera en su trabajo). victor quedó en `04a837d6` con `puesto-spark:1` en el
+registro. Dos arreglos por el camino: el `@_kw` de `write` fuera de sitio y las pruebas de `h3`, que
+se saltan donde no está la extensión (el *runner* trae `spatial` y no `h3`).
+
+*6b · la malla* (`1b614dde`):
+
+| qué | cómo |
+|---|---|
+| **el pool** | `pesado`: `n2-highmem-8` *spot*, de 0 a 2 nodos, *taint* `ore.dev/pesado`, 100 GB `pd-balanced`, *image streaming*. Lo crea `malla/73-el-pool-pesado.sh` (en seco por defecto; `APLICAR=1`), que antes mira la máquina y la cuota |
+| **el *flavor*** | `pesado` en `malla/10-kueue.yaml`: el `nodeLabel` `ore.dev/pool=pesado` y la tolerancia |
+| **la cola** | por celda, `cq-<celda>-pesado` **sin cohorte** (7 CPU / 48 GiB: un Build pesado a la vez por celda) y su LocalQueue `cola-pesada`; `cola.rs` manda ahí el trabajo `spark` |
+| **la cuota** | la ResourceQuota del inquilino sube a 12 CPU / 64 GiB: con 36 GiB el pod pesado no cabía |
+| **dormir** | `dormir.sh` y `dormir-de-noche.py` también llevan el pool a 0 |
+
+*6c · la celda* (`pruebas-de-fuego/geo/c2/celda-victor/`). Primero sin consola: un Job de medida en
+`cola-pesada` con `puesto-spark:1` corre el *join* (`frio.sh`, `join.py`). Después, desde la consola,
+tres repositorios Heavyweight (`consola/`): `sembrar.py` genera los datos en Spark, y el conteo se
+escribe en SQL, en Python y en Java.
+
+| medida | valor |
+|---|---|
+| **en frío** (el pool a 0) | **115 s**: el nodo, listo a los 46 s; la imagen, 1,8 s con *streaming*; la sesión de Spark, 16 s; el *join*, 26 s |
+| **en caliente** | **49 s** |
+| el *join* | 20 M × 20 k → **11 129 901 pares**, pico de 10 GiB en un pod de 48 GiB |
+| los Builds de la consola | 23–43 s cada uno, en el nodo pesado. **Los tres conteos, iguales** (cotejados con un Preview) |
+| el nodo | se retira unos 11 min después del último Job |
+| **el coste** | *spot* `n2` en EMEA: 0,00788 $/vCPU·h y 0,001054 $/GiB·h, unos **0,13 $/h** el nodo; un Build en frío, unos **0,03 $** |
+| el Preview pesado | 11–15 s con el nodo caliente |
+
+**Lo que arregló la celda** (encontrado en victor, no en el laboratorio):
+- **el id de un puesto cabe en 63** con cualquier entorno (`e9772bec`): el Job de un puesto de
+  notebooks medía 70, y como Flux aplica la cola de golpe, un Job que no valida paraba la cola entera
+  de la celda;
+- **la muestra del informe de un Build pesado** (`54947f1e`): `table()` no conocía el DataFrame de
+  Spark y el informe decía «could not be read». Ahora trae sólo la cabeza, con la geometría en WKB en
+  hex, y cuenta el total sólo si no cabe.
+
+**Queda, con nombre** (ninguna para C2):
+- **un reinicio de ore-serve pierde los Builds en curso**: guarda en memoria los puestos y los
+  trabajos vivos, y al arrancar barre la cola;
+- **el editor de un repositorio Heavyweight**: en Python, pyright no resuelve `pyspark` (la sesión es
+  `puesto-python`, sin él; o `pyspark-client` o sus tipos); en Java, el LSP es el de Java ligero;
+- `upsert` y las tablas ancladas, en Heavyweight;
+- la muestra de Lightweight da la geometría en base64 (va con la consola, cierre de C1);
+- la deriva de victor cuenta `jwks-pods`, que es el mismo caso que `jwks` (exento).
 
 ### C3 · El *join* espacial a escala
 
@@ -890,6 +944,10 @@ El ADR pasa de hoja de ruta a imagen.
   - Siguiente: aprobar los objetivos y cerrar C0.
 - **2026-10-18 · C0 CERRADO.** Objetivos de C0·5 aprobados, con Heavyweight referido a 2 nodos (32 vCPU,
   la cuota de hoy). Siguiente: C1, el contrato en los frameworks.
+- **2026-10-19 · C2 CERRADO.** Las piezas 4 (Spark Java) y 5 (el Preview, un Job corto), el cierre de
+  C1 (los ejes y la geometría en WKB en hex) y la pieza 6: el empuje, el pool pesado con su *flavor*,
+  su cola y su cuota, y la celda en victor. 20 M × 20 k en 115 s en frío y 49 s en caliente, unos
+  0,03 $ por Build; SQL, Python y Java, el mismo conteo. Siguiente: C3, el *join* a escala.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
