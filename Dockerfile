@@ -549,7 +549,7 @@ RUN pip install --no-cache-dir --no-deps -r /opt/ore/spark-src/provisto.txt \
  && cp /opt/ore/spark-src/comprobar.py /opt/ore/spark/comprobar.py \
  && mkdir -p /tmp/identidad && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*" \
       -d /tmp/identidad /opt/ore/spark-src/IdentidadDelPuesto.java \
- && jar cf "$SPARK_HOME/jars/ore-spark-identidad.jar" -C /tmp/identidad . && rm -rf /tmp/identidad \
+ && jar cf "$SPARK_HOME/jars/ore-spark-identidad.jar" -C /tmp/identidad . && rm -rf /tmp/identidad  && mkdir -p /tmp/reglas && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*"       -d /tmp/reglas /opt/ore/spark-src/ReglasDeOre.java  && jar cf "$SPARK_HOME/jars/ore-spark-reglas.jar" -C /tmp/reglas . && rm -rf /tmp/reglas \
  && mkdir -p /tmp/sdk && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*" \
       -d /tmp/sdk /opt/ore/spark-src/ore/*.java \
  && jar cf "$SPARK_HOME/jars/ore-spark-sdk.jar" -C /tmp/sdk . && rm -rf /tmp/sdk \

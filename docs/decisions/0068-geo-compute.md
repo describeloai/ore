@@ -983,6 +983,34 @@ Difundir sólo compensa con el lado pequeño de verdad. Por encima, la partició
 memoria**. Pruebas: `test_motor_pesado.py` (`LaDifusion`) y los casos 9 y 9b del arnés de Spark
 (20/20).
 
+**C3·b · el `LEFT JOIN` espacial (hecho en local, 2026-10-19).** Antes de escribir nada, la
+documentación de Sedona (Optimizer) aclaró el previo: Sedona **sí** indexa un join externo espacial si el
+lado que no se conserva va difundido («Left outer - broadcast right»), y documenta una reescritura para
+cuando no se puede (Q10: zonas `LEFT JOIN` viajes, con los viajes como lado grande). Medido a mano
+(`c3/b/formas.py`, 20 M puntos):
+
+| forma | *join* | tiempo |
+|---|---|---|
+| `puntos LEFT JOIN zonas` con las zonas marcadas (lo que ya da C3·a) | `BroadcastIndexJoin` | 25,6 s |
+| Q10 a la Sedona, con el id que ya tiene la tabla | `BroadcastIndexJoin` + igualdad | 15,5 s |
+| Q10 a la Sedona, con id numerado (en un CTE) | lo mismo | 33,1 s |
+
+Las tres dan las mismas cuentas. **La regla** (`puesto/spark/ReglasDeOre.java`, en `spark.sql.extensions`,
+compilada en `ore-spark-reglas.jar` por la etapa `puesto-spark`) entra en el analizador (post-hoc):
+- detecta un `LEFT` o `RIGHT JOIN` con un predicado de Sedona que mira a los dos lados;
+- lo deja como está si el lado que hay que difundir ya va marcado (también bajo una vista o un alias,
+  como lo deja `over()`), porque Sedona ya lo indexa;
+- si no, lo reescribe: el lado conservado se numera en un CTE (`__ore_k`, `monotonically_increasing_id`;
+  Spark calcula una vez un CTE no determinista usado dos veces, así que el número es el mismo), un *join*
+  interno espacial devuelve ese número y las columnas del otro lado, y un join externo por igualdad las
+  une. Salen las mismas columnas, en el mismo orden.
+
+Probado en local (`c3/b/regla.sh`, 6/6: se reescribe, da lo mismo que la forma a mano, `select *`
+conserva columnas y filas, `RIGHT JOIN` igual, no toca lo difundido ni un `LEFT JOIN` sin predicado
+espacial), en el arnés de Spark con la regla puesta (20/20) y en `comprobar.py` de la imagen, que ahora
+la exige. **En victor, Q10 con 20 M puntos: 34,3 s** (`RIGHT JOIN`, 44,8 s), con las mismas cuentas. El
+previo, sin ella: más de 300 s.
+
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
   otros pods. El `AuthPod` del *driver* ya está; falta ver que las credenciales prestadas les llegan;

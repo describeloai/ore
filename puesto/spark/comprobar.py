@@ -17,10 +17,16 @@ try:
               # C2·3: la identidad del puesto en cada petición, compilada aquí.
               "ore.spark.IdentidadDelPuesto",
               # C2·3 pieza 4: Spark Java (el SDK, el arnés y la anotación de siempre).
-              "ore.Ore", "ore.ArnesDeSpark", "ore.Transform", "ore.Puente"):
+              "ore.Ore", "ore.ArnesDeSpark", "ore.Transform", "ore.Puente",
+              # C3·b: las reglas de ORE (spark.sql.extensions).
+              "ore.spark.ReglasDeOre"):
         s._jvm.java.lang.Class.forName(c)
     a = s.sql("select round(ST_Area(ST_Buffer(ST_Point(440000, 4474000), 100))) a").first().a
     assert a == 31214, a
+    # C3·b: la regla está puesta, no sólo compilada: un LEFT JOIN espacial sale reescrito.
+    q = s.sql("select * from (select ST_Point(0, 0) g) a left join (select ST_Point(0, 0) h) b on ST_Intersects(a.g, b.h)")
+    assert "__ore_k" in q._jdf.queryExecution().analyzed().toString(), "ReglasDeOre no está en spark.sql.extensions"
+    assert q.count() == 1
     import sedona.spark  # noqa: F401  (Sedona de Python, contra el shapely del puesto)
     print(f"puesto-spark · Spark {s.version} · Java {s._jvm.java.lang.System.getProperty('java.version')} · "
           f"Python {sys.version.split()[0]} · uid {os.getuid()} · ST_Buffer {a:.0f} m²")

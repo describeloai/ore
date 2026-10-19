@@ -12,7 +12,9 @@ IMAGEN=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-spa
 ENV=""
 for kv in "$@"; do ENV="$ENV
             - {name: ${kv%%=*}, value: \"${kv#*=}\"}"; done
-kubectl -n $NS create configmap $N --from-file=prog.py="$aqui/$PROG" >/dev/null
+# CON="a.jar b.txt": ficheros más junto al guion, en /m (relativos a este directorio).
+MAS=""; for f in ${CON:-}; do MAS="$MAS --from-file=$(basename "$f")=$aqui/$f"; done
+kubectl -n $NS create configmap $N --from-file=prog.py="$aqui/$PROG" $MAS >/dev/null
 T0=$(date -u +%s)
 cat <<YAML | kubectl create -f - >/dev/null
 apiVersion: batch/v1
