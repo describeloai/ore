@@ -886,6 +886,89 @@ escribe en SQL, en Python y en Java.
 
 **Hecho cuando:** los casos de *join* de la vara cumplen su objetivo en los dos motores.
 
+#### C3 · El previo (2026-10-19, medido en victor)
+
+Medido en el pool `pesado` de victor (`n2-highmem-8` *spot*), con `puesto-spark:1` y los recursos de un
+Build pesado (7 CPU / 48 GiB, heap 38 g). Sin persona y sin lago: los datos los genera Spark dentro del pod.
+Laboratorio en `pruebas-de-fuego/geo/c3/previo/`: `en-victor.sh` corre un guion como Job de medida en
+`cola-pesada`, y `multinodo.sh` corre N pods en el namespace de medida `c3-medida`, que se borra al
+acabar. En local no se puede: WSL tiene 6 GB y el caso grande tumbó Docker dos veces.
+
+**1 · Cuándo difunde Spark el lado pequeño, solo** (`difusion.py`, 20 M puntos):
+
+| caso | lo que estima Spark de los polígonos | *join* | tiempo |
+|---|---|---|---|
+| 6c (20 k buffers), en memoria | 1,1 MB | difunde | 14,0 s |
+| 6c, desde Parquet (como lee un Build) | 4,4 MB | difunde | 14,2 s |
+| «municipios» (8 000 polígonos de 513 vértices), en memoria | 0,4 MB | difunde | 15,9 s |
+| **«municipios», desde Parquet** | **37,2 MB** | **`RangeJoin`** | **28,2 s** |
+| «municipios», desde Parquet, difundido a mano | 37,2 MB | difunde | 17,7 s |
+
+Spark difunde si **el tamaño de los ficheros** del lado pequeño baja de
+`spark.sql.autoBroadcastJoinThreshold`, que son 10 MB; `sedona.join.autoBroadcastJoinThreshold` no está
+puesto. Unos polígonos detallados pasan de ahí con pocas filas, y el *join* tarda 1,6× más. En 6c entró
+por poco: 20 k círculos simples ocupan 4 MB. **La regla de ORE hace falta**, y tiene que mirar las
+filas, no los bytes en disco.
+
+**2 · Q10, el `LEFT JOIN` espacial** (`q10.py`, 20 M puntos y 22 k zonas, 2 000 de ellas sin puntos):
+
+| forma | *join* | tiempo |
+|---|---|---|
+| `zonas LEFT JOIN puntos` (la de SpatialBench) | `BroadcastNestedLoopJoin` | > 300 s |
+| `puntos LEFT JOIN zonas` | `BroadcastNestedLoopJoin` | > 300 s |
+| **reescrita: el *join* interno y, aparte, las zonas sin pareja con 0** | `BroadcastIndexJoin` + `SortMergeJoin` por `id` | **16,4 s**, las 22 000 zonas y las 2 000 vacías |
+
+Sedona 1.9.1 **no indexa un *join* externo con predicado espacial, en ningún sentido**: cae en el
+producto cartesiano. El fallo de C0 a los 8 s era eso mismo, sin memoria. La reescritura da el mismo
+resultado y usa el índice. Además, **cancelar un producto cartesiano no para sus tareas**, que son un
+bucle de CPU: la medida siguiente salió contaminada y hubo que repetirla sola.
+
+**3 · Spark en varios nodos dentro del modelo de un Build** (`multinodo.sh`). Un **Job indexado** de N
+pods, uno por nodo, con un Service sin IP para que se encuentren:
+- el pod 0 lleva el *master* de Spark *standalone* y el *driver*;
+- todos llevan un *worker*;
+- `successPolicy` (`succeededIndexes: "0"`, GA en Kubernetes 1.35) da el Job por terminado cuando
+  acaba el pod 0, y Kubernetes cierra los demás.
+
+No hace falta instalar nada en el clúster: ni Spark Operator, ni JobSet, ni permisos para crear pods
+desde el *driver*. La imagen ya trae `spark-class`. 200 M puntos:
+
+| caso | 1 nodo | 2 nodos | aceleración |
+|---|---|---|---|
+| sesión con todos los ejecutores | 7,3 s | 7,2 s | — |
+| 6c (× 20 k buffers), difundido | 116,3 s | **63,6 s** | **1,83×** |
+| «municipios» (× 8 000 detallados), difundido | 134,7 s | **72,5 s** | **1,86×** |
+
+Escala casi lineal. Los pares cambian unas décimas por mil entre corridas porque los puntos son
+`rand()` y salen distintos según el reparto; no es un error.
+
+**4 · El coste de medir a escala 100.** El dinero no limita (*spot* `n2`: 0,00788 $/vCPU·h y
+0,001054 $/GiB·h); la cuota sí, con 28 de 32 vCPU libres:
+
+| opción | nodos | vCPU | cuota | la sesión (~3 h) |
+|---|---|---|---|---|
+| A · el pool de hoy | 2 × `n2-highmem-8` | 16 | cabe | ~0,8 $ |
+| B · el objetivo de C0·5 | 2 × `n2-highmem-16` | 32 | **no** (hacen falta 36: pedir 48) | ~1,6 $ |
+
+A eso se suma generar la escala 100 (17 min en C0) y guardar sus 56 GB mientras dure (céntimos). De
+C0 solo quedan los resultados en el bucket: los datos se borraron con su pool.
+
+**El *approach* que propone el previo:**
+
+| pieza | qué |
+|---|---|
+| **C3·a · la regla de difusión** | en un *join* espacial, ORE difunde el lado que tenga **pocas filas** (en el catálogo están las cuentas de cada dataset), sin mirar sus bytes en disco. Se pone con `sedona.join.autoBroadcastJoinThreshold` o con la pista `broadcast`. El techo, medido: cuánta memoria se come el índice difundido de un lado grande |
+| **C3·b · el `LEFT JOIN` espacial** | ORE lo reescribe en la reescritura que ya hace para Spark (`consulta_para_spark`, 2b): el *join* interno más las filas sin pareja (*anti join* por clave). Mientras Sedona no lo indexe |
+| **C3·c · el Build en varios nodos** | el Build pesado pasa a ser el Job indexado de N pods de arriba; un Job `batch/v1` de N pods ya lo admite Kueue de una vez. Hay que subir `cq-<celda>-pesado` y la cuota del inquilino a N × 7 CPU / 48 GiB, y el pool a N nodos |
+| **C3·d · la vara a escala 100** | SpatialBench entero con C3·a a C3·c, con la opción A o la B de arriba |
+
+**Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
+- **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
+  otros pods. El `AuthPod` del *driver* ya está; falta ver que las credenciales prestadas les llegan;
+- **Kueue con un Job de N pods en `cola-pesada`**: la medida corrió sin Kueue, en su namespace;
+- **la memoria del índice difundido** cuando el lado «pequeño» tiene millones de filas;
+- **Q6, Q8, Q11 y Q12 a escala 100**, que son C3·d.
+
 ### C4 · Enriquecer
 
 | paso | qué |
@@ -948,6 +1031,10 @@ El ADR pasa de hoja de ruta a imagen.
   C1 (los ejes y la geometría en WKB en hex) y la pieza 6: el empuje, el pool pesado con su *flavor*,
   su cola y su cuota, y la celda en victor. 20 M × 20 k en 115 s en frío y 49 s en caliente, unos
   0,03 $ por Build; SQL, Python y Java, el mismo conteo. Siguiente: C3, el *join* a escala.
+- **2026-10-19 · C3, el previo.** Medido en victor: Spark difunde el lado pequeño solo por los bytes de
+  sus ficheros (10 MB), así que hace falta una regla de ORE; el `LEFT JOIN` espacial cae en el producto
+  cartesiano (> 300 s) y su reescritura tarda 16,4 s; un Build en varios nodos cabe en un Job indexado
+  con Spark *standalone* y escala 1,83× con 2 nodos. El *approach*, C3·a a C3·d. Siguiente: el go.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
