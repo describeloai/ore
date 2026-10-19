@@ -67,8 +67,12 @@ pub const CUERPO_MAXIMO: usize = 1 << 20;
 /// `content-length` antes de leer un byte.
 pub const SUBIDA_MAXIMA: u64 = 5 << 30;
 
-/// Cuántas conexiones se atienden a la vez. Cada una es un hilo.
-const CONEXIONES: usize = 64;
+/// Cuántas conexiones se atienden a la vez. Cada una es un hilo, casi siempre
+/// parado: su pila es memoria reservada, no ocupada. Eran 64 hasta que la
+/// portada de marimo (0064, por el túnel del puesto) pidió **68 *assets* a la
+/// vez** en victor (2026-10-19): cada uno espera su cabecera en un hilo, la
+/// respuesta del puesto que la trae ya no entraba, y todo acabó en 504.
+const CONEXIONES: usize = 256;
 
 /// Cuántos flujos abiertos a la vez, **aparte** de las peticiones. La mitad:
 /// un flujo es un hilo parado casi todo el tiempo, pero es un hilo, y quien
@@ -459,7 +463,7 @@ where
                 //   Estaba escrito como una línea DESPUÉS de atender, y esa línea
                 //   **no corre si el manejador entra en pánico**. Un pánico mata
                 //   sólo su hilo —el proceso sigue— pero deja el contador inflado,
-                //   y `CONEXIONES` es un techo: **64 pánicos y este servidor deja
+                //   y `CONEXIONES` es un techo: **256 pánicos y este servidor deja
                 //   de aceptar nada, para siempre, sin decir por qué**.
                 //
                 //   Medido el 2026-09-08 con un pánico de verdad: un `f.get(4)`
@@ -1167,6 +1171,40 @@ mod pruebas_del_flujo {
         assert_eq!(cuerpo.matches("event: celda").count(), 3, "{cuerpo:?}");
         assert!(cuerpo.contains(": latido"), "{cuerpo:?}");
         assert!(t.ends_with("0\r\n\r\n"), "{t:?}");
+    }
+
+    /// El caso de marimo (0064): 100 peticiones esperan cada una su cabecera, y
+    /// la que la trae (la salida del puesto) **todavía entra**. Con 64 plazas no
+    /// entraba, y las que esperaban caían en 504.
+    #[test]
+    fn cien_que_esperan_no_dejan_fuera_a_la_que_las_suelta() {
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        let suelta = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let s = Arc::clone(&suelta);
+        std::thread::spawn(move || {
+            let _ = servir_con_flujos(escucha, move |p| {
+                let (m, c) = &*s;
+                if p.ruta == "/suelta" {
+                    *m.lock().unwrap() = true;
+                    c.notify_all();
+                } else {
+                    let g = m.lock().unwrap();
+                    drop(c.wait_while(g, |listo| !*listo).unwrap());
+                }
+                Salida::Una(Respuesta::ok(Json::obj([("ok", Json::Bool(true))])))
+            });
+        });
+        let esperan: Vec<_> = (0..100)
+            .map(|_| std::thread::spawn(move || pedir_crudo(puerto, "/espera")))
+            .collect();
+        std::thread::sleep(Duration::from_millis(500));
+        let t = pedir_crudo(puerto, "/suelta");
+        assert!(t.starts_with("HTTP/1.1 200"), "{t}");
+        for h in esperan {
+            let t = h.join().unwrap();
+            assert!(t.starts_with("HTTP/1.1 200"), "{t}");
+        }
     }
 
     /// Y si el que leía se va, `evento` lo dice y el que emite para. Sin esto,

@@ -46,6 +46,7 @@ class Tunel:
         self.salientes = []
         self.conexiones = {}
         self.cancelados = set()
+        self.fallos = 0
 
     def escuchar(self):
         """Calco de `Correa.escuchar`: se reconecta sola."""
@@ -156,18 +157,40 @@ class Tunel:
         `ore-entrada` no tiene keep-alive."""
         while self.vivo:
             time.sleep(0.02)
+            self._entregar_una_vez()
+
+    def _entregar_una_vez(self):
+        """Un lote a ore-serve. Si no llega porque ore-serve está lleno (503) o
+        la conexión se corta, el lote **vuelve delante** y se reintenta, en
+        orden: tirarlo deja al navegador sin la cabecera o con un cuerpo a
+        medias. En victor (2026-10-19) los ~30 *assets* de la portada de marimo
+        llenaron las 64 conexiones de ore-serve, la salida dio 503, se tiró, y
+        cada *asset* acabó en 504 a los 30 s: la página, en blanco."""
+        with self.candado:
+            lote, self.salientes = self.salientes, []
+        if not lote:
+            return True
+        self.p._cabeceras = self.testigo.cabeceras()
+        try:
+            codigo, r = self.p.pedir(
+                "POST", "/puestos/%s/marimo/salida" % self.p.id, cuerpo={"respuestas": lote})
+        except Exception as e:  # noqa: BLE001 — la red se cae; se reintenta
+            codigo, r = None, e
+        if codigo in (200, 201, 202, 204):
+            if self.fallos:
+                log("la salida de marimo vuelve a entrar tras %d intento(s)" % self.fallos)
+            self.fallos = 0
+            return True
+        if codigo is None or codigo in (429, 502, 503, 504):
             with self.candado:
-                lote, self.salientes = self.salientes, []
-            if not lote:
-                continue
-            self.p._cabeceras = self.testigo.cabeceras()
-            try:
-                codigo, r = self.p.pedir(
-                    "POST", "/puestos/%s/marimo/salida" % self.p.id, cuerpo={"respuestas": lote})
-                if codigo not in (200, 201, 202, 204):
-                    log("la salida de marimo no se aceptó: %s %s" % (codigo, r))
-            except Exception as e:  # noqa: BLE001 — la red se cae; se sigue
-                log("no pude entregar %d respuesta(s) de marimo: %s" % (len(lote), e))
+                self.salientes = lote + self.salientes
+            self.fallos += 1
+            if self.fallos == 1:
+                log("la salida de marimo no entró (%s): reintento" % (codigo or r))
+            time.sleep(min(0.05 * self.fallos, 1.0))
+            return False
+        log("la salida de marimo no se aceptó: %s %s" % (codigo, r))
+        return True
 
 
 def arrancar(p, testigo, marimo):

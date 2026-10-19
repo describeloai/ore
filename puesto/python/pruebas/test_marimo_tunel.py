@@ -68,5 +68,33 @@ class LaEsperaAMarimo(unittest.TestCase):
         self.assertEqual(salientes[0]["estado"], 502)
 
 
+class LaEntrega(unittest.TestCase):
+    """Lo que no entra en ore-serve (503, conexión cortada) vuelve delante y se
+    reintenta en orden; lo que ore-serve niega de verdad (400) no."""
+
+    def _tunel(self, respuestas):
+        p = mock.MagicMock()
+        p.id = "puesto-a"
+        p.pedir.side_effect = respuestas
+        return marimo_tunel.Tunel(p=p, testigo=mock.MagicMock(), marimo=mock.MagicMock())
+
+    def test_un_503_y_un_corte_se_reintentan_en_orden(self):
+        t = self._tunel([(503, {}), ConnectionResetError("reset"), (204, None)])
+        t.salientes = [{"id": 1, "t": "head"}]
+        self.assertFalse(t._entregar_una_vez())
+        t._encolar({"id": 1, "t": "end"})
+        self.assertFalse(t._entregar_una_vez())
+        self.assertTrue(t._entregar_una_vez())
+        enviado = t.p.pedir.call_args_list[-1].kwargs["cuerpo"]["respuestas"]
+        self.assertEqual([m["t"] for m in enviado], ["head", "end"])
+        self.assertEqual((t.salientes, t.fallos), ([], 0))
+
+    def test_lo_que_ore_serve_niega_no_vuelve(self):
+        t = self._tunel([(400, {"error": "no"})])
+        t.salientes = [{"id": 1, "t": "head"}]
+        self.assertTrue(t._entregar_una_vez())
+        self.assertEqual(t.salientes, [])
+
+
 if __name__ == "__main__":
     unittest.main()
