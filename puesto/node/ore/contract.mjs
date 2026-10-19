@@ -412,14 +412,16 @@ export async function call(fn, signature, args = {}, o = {}) {
 
 /**
  * A value of a result, as JSON can carry it and the console reads it: a
- * `bigint` as the string of its digits, a `Date` in ISO (UTC), a
- * `Uint8Array` by its size.
+ * `bigint` as the string of its digits, a `Date` in ISO (UTC), a geometry
+ * (its WKB, a `Uint8Array`: the only bytes a signature returns) as WKB in hex,
+ * which is how a geometry travels in text (OOS v1alpha32 `01` §5).
  */
 export function toWire(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === "bigint") return String(v);
   if (v instanceof Date) return v.toISOString();
-  if (v instanceof Uint8Array) return { bytes: v.length };
+  // ORE 0068 (cierre de C1): antes, `{ bytes: n }`, y la geometría se perdía.
+  if (v instanceof Uint8Array) return Array.from(v, (b) => b.toString(16).padStart(2, "0")).join("");
   if (Array.isArray(v)) return v.map(toWire);
   if (typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toWire(x)]));
   if (typeof v === "number" && !Number.isFinite(v)) return String(v);

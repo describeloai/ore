@@ -393,6 +393,30 @@ Así lo tienen también el puesto pesado (el mismo SDK de Python) y todo lo que 
 escrito con los ejes traspuestos se queda como está: en victor se mira al cerrar C1 (columnas en
 4326 cuyas «longitudes» caen fuera de ±90 o en el rango de las latitudes de los datos).
 
+**Cierre de C1 · la geometría que devuelve una función, por su invocación (hecho en local).** El
+hueco era mayor de lo que se había anotado («`toWire` la resume»):
+
+| SDK | antes | ahora |
+|---|---|---|
+| Python | **la invocación fallaba**: el contrato entrega la geometría como shapely, y la tabla de Arrow del arnés no la toma (`ArrowInvalid`) | WKB en hex (`_plano` del arnés, `funciones.rs`) |
+| Node | `{"bytes": 21}`: la geometría se perdía | WKB en hex (`contract.toWire`) |
+
+Es lo que pide la spec (v1alpha32 `01` §5): en texto (una fila JSON, una muestra), una geometría es
+su **WKB en hexadecimal**, nunca WKT ni GeoJSON. En una firma no hay otros bytes que una geometría
+(un `Uint8Array` es `Opaque`, que también sale en hex). **Medido con las celdas de verdad**
+(`pruebas-de-fuego/geo/c1/invocar/`): una prueba de ore-serve las escribe y se corren en las imágenes
+de Python y de Node; las dos dan el mismo `POINT` en WKB en hex. **Y por la misma regla**, el Preview
+pesado (pieza 5) da sus filas geo en WKB en hex, y no en WKT.
+
+**Queda, con nombre:** el Preview y la muestra de Lightweight (`table()`) dan una columna binaria en
+base64; para una geometría, la spec dice hex. Tocarlo cambia el formato de la consola para todo lo
+binario: va con la consola.
+
+**Y para el empuje de la pieza 6:**
+- `cola.rs`: un trabajo pesado va a `cola-pesada` (el diseño de la pieza 6).
+- `capa-jvm` se construye (C1·3 la había dejado sin construir): 16 jars provistos, entre ellos JTS
+  1.20.0 y H3 4.5.0, así que un repositorio que los declare los recibe del puesto.
+
 ### C2 · El motor por repositorio
 
 | paso | qué |

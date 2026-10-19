@@ -77,7 +77,7 @@ def main():
             bien = (ficha.get("estado") == "succeeded" and visto.get("total") == 4 and "de" in cols
                     and geo.get("type") == "Geometry<Polygon, EPSG:25830>" and geo.get("iceberg") == "binary"
                     and isinstance(fila[list(cols).index("anillo")], str)
-                    and fila[list(cols).index("anillo")].startswith("POLYGON"))
+                    and fila[list(cols).index("anillo")].startswith("0103000000"))  # WKB en hex de un Polygon (01 §5)
             dicho = "total %s · columnas %s · %s" % (visto.get("total"), [(k, v["type"]) for k, v in cols.items()],
                                                      str(fila[list(cols).index("anillo")])[:40] if "anillo" in cols else "")
         else:

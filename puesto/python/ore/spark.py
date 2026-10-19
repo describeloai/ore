@@ -327,8 +327,9 @@ def ensayar_escritura(df, mode, limite):
     """ORE 0068 C2·3 pieza 5 · `write()` en un Preview Heavyweight: lo que escribiría, sin escribir.
     Lo mismo que comprueba `write()` (un DataFrame de Spark, el modo, un CRS por columna geo) y,
     para la consola, la forma del Preview de Lightweight (`table()`): las primeras `limite` filas
-    —la geometría, en WKT—, el total, y el tipo con que cada columna nacería en el lago (la
-    geometría, `binary` con su `ore.geo`). `(vista, contrato_geo)`."""
+    —la geometría, en WKB en hexadecimal, como viaja en texto (OOS v1alpha32 01 §5)—, el total, y
+    el tipo con que cada columna nacería en el lago (la geometría, `binary` con su `ore.geo`).
+    `(vista, contrato_geo)`."""
     from pyspark.sql import DataFrame
     from pyspark.sql import functions as F
 
@@ -344,7 +345,7 @@ def ensayar_escritura(df, mode, limite):
     total = df.count()
     if total == 0:
         raise ValueError("write(): the table has no rows")
-    cabeza = df.select(*[F.expr("ST_AsText(`%s`)" % c).alias(c) if c in contrato else F.col("`%s`" % c)
+    cabeza = df.select(*[F.expr("lower(hex(ST_AsBinary(`%s`)))" % c).alias(c) if c in contrato else F.col("`%s`" % c)
                          for c in df.columns]).limit(limite).toArrow()
     vista = table(cabeza, limite)
     vista["total"] = total

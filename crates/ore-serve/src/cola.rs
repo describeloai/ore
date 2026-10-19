@@ -631,7 +631,17 @@ pub fn entorno_de_la_capa(entorno: &str) -> &str {
 /// `ORE_MEMORIA_MB` dice lo mismo que `limits.memory` (`gen-inquilino` ⑱): el
 /// arnés reparte desde ahí (pieza 0: la JVM ocupa el heap + ~0,8 GiB). Se
 /// confirman en victor (pieza 6).
-const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 3] = [
+///
+/// ⭐ (pieza 6, decidido 2026-10-19) **Y su cola es otra**: `cola-pesada`, que
+/// lleva a la `ClusterQueue` del pool pesado y a nada más (`malla/11`). Con el
+/// sabor pesado en la cola de siempre, un puesto ligero que no cupiera en
+/// `system` ni en `jobs` encendería un nodo de 64 GB; y uno pesado no puede
+/// caer en un nodo ligero.
+const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
+    (
+        "kueue.x-k8s.io/queue-name: cola\n",
+        "kueue.x-k8s.io/queue-name: cola-pesada\n",
+    ),
     (
         "requests: {cpu: \"100m\", memory: 768Mi}",
         "requests: {cpu: \"7\", memory: 48Gi}",
@@ -1169,12 +1179,19 @@ mod prueba {
         assert!(t.contains("limits:   {cpu: \"8\", memory: 48Gi}"));
         assert!(t.contains("name: ORE_MEMORIA_MB, value: \"49152\""));
         assert!(!t.contains("memory: 4Gi}") && !t.contains("value: \"4096\""));
+        // Pieza 6: su propia cola, la del pool pesado.
+        assert!(
+            t.contains("kueue.x-k8s.io/queue-name: cola-pesada\n"),
+            "{t}"
+        );
+        assert!(!t.contains("kueue.x-k8s.io/queue-name: cola\n"), "{t}");
         // 48 GiB = 49152 MiB: lo que el pod dice que mide es lo que mide (⑱).
         assert_eq!(48 * 1024, 49152);
 
         let (_, tp, _) =
             rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").unwrap();
         assert!(tp.contains("/ore/puesto-python:1") && tp.contains("value: \"4096\""));
+        assert!(tp.contains("kueue.x-k8s.io/queue-name: cola\n"));
         assert!(!tp.contains("48Gi"));
 
         let sin = p.replace("memory: 768Mi}", "memory: 1Gi}");

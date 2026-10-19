@@ -646,7 +646,8 @@ named like its file, with an optional `export const config = { over, reads, mode
   derived signature declares, the row first with `over`, and the output checked; a value that does
   not fit throws `ContractError` (`.side` is `input` or `output`, `.parameter` the culprit).
   Node erases types before running, so the contract reads the **derived signature**, not the code.
-  `contract.toWire(v)` turns a result into JSON (`bigint` → string, `Date` → ISO).
+  `contract.toWire(v)` turns a result into JSON (`bigint` → string, `Date` → ISO, a geometry or any
+  `Uint8Array` → WKB in hex, how a geometry travels in text).
 
 ## JVM
 

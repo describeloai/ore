@@ -1186,11 +1186,19 @@ def _donde(e):
 
 def _plano(v):
     """Lo compuesto, como objetos y listas: un `Struct`, una lista de ellos, una
-    referencia a un ítem (v1alpha20)."""
+    referencia a un ítem (v1alpha20). Y una geometría (de shapely, o su WKB),
+    como viaja en texto: WKB en hexadecimal (OOS v1alpha32 01 §5; ORE 0068,
+    cierre de C1: antes, shapely no cabía en la tabla y la invocación fallaba)."""
     if _dc.is_dataclass(v) and not isinstance(v, type):
         return {{c.name: _plano(getattr(v, c.name)) for c in _dc.fields(v)}}
     if isinstance(v, (list, tuple)):
         return [_plano(x) for x in v]
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return bytes(v).hex()
+    if type(v).__module__.startswith("shapely"):
+        import shapely as _shapely
+
+        return _shapely.to_wkb(v, hex=True).lower()
     return v
 
 
@@ -1397,6 +1405,58 @@ mod tests_python {
         assert!(celda.trim_end().ends_with("export default filas;"));
         // Sin `{` ni `}` sueltos de `format!`: cada `${…}` del JavaScript, entero.
         assert!(celda.contains("`la invocación pasó de limits.timeout (${PLAZO}s)`"));
+    }
+
+    /// ORE 0068 (cierre de C1) · Una función que devuelve una geometría: el
+    /// arnés de Python la da en WKB en hex (01 §5), y el de Node pasa por
+    /// `toWire`, que hace lo mismo. Con `ORE_CELDAS_GEO=<dir>`, las dos celdas
+    /// se escriben ahí para correrlas en las imágenes
+    /// (`pruebas-de-fuego/geo/c1/invocar/medir.sh`).
+    #[test]
+    fn las_celdas_de_una_funcion_que_da_una_geometria() {
+        let parametros = Json::obj([("x", Json::Int(1))]);
+        let modelos = Json::Obj(Default::default());
+        let py = "import shapely\nfrom ore.tipos import Geometry\n\n\n\
+                  def centro(x: int) -> Geometry[\"Point\", \"EPSG:25830\"]:\n    \
+                  return shapely.Point(440000 + x, 4474000)\n";
+        let celda_py = arnes(&Arnes {
+            funcion: "geo.centro",
+            fichero: "packages/geo/f/functions/centro.py",
+            fuente: py,
+            def: "centro",
+            parametros: &parametros,
+            modelos: &modelos,
+            over: None,
+            plazo: 30,
+        });
+        assert!(celda_py.contains("return _shapely.to_wkb(v, hex=True).lower()"));
+        let ts = "import type { Geometry } from \"ore\";\n\
+                  export default function centro(x: number): Geometry<\"Point\", \"EPSG:25830\"> {\n  \
+                  return Uint8Array.from(Buffer.from(\"0101000000\" + \"0000000000da1a41\" + \"0000000004115141\", \"hex\"));\n}\n";
+        let d = ore_code::typescript::derivar(ts, "f/functions/centro.ts");
+        let firma = firma_del_contrato(d.funciones[0].resultado.as_ref().unwrap());
+        assert!(
+            firma.jcs().contains("Geometry<Point, EPSG:25830>"),
+            "{}",
+            firma.jcs()
+        );
+        let celda_ts = arnes_node(
+            &Arnes {
+                funcion: "geo.centro",
+                fichero: "packages/geo/f/functions/centro.ts",
+                fuente: ts,
+                def: "",
+                parametros: &parametros,
+                modelos: &modelos,
+                over: None,
+                plazo: 30,
+            },
+            &firma,
+        );
+        if let Ok(dir) = std::env::var("ORE_CELDAS_GEO") {
+            std::fs::write(format!("{dir}/celda.py"), &celda_py).unwrap();
+            std::fs::write(format!("{dir}/celda.mjs"), &celda_ts).unwrap();
+        }
     }
 
     #[test]

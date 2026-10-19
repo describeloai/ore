@@ -112,7 +112,8 @@ test("lo que vuelve viaja en JSON", () => {
   assert.deepEqual(toWire({ a: 1n, b: new Date("2026-10-03T00:00:00Z"), c: new Uint8Array(3), d: [2n] }), {
     a: "1",
     b: "2026-10-03T00:00:00.000Z",
-    c: { bytes: 3 },
+    // ORE 0068: los bytes de un resultado son una geometría, en WKB en hex (01 §5).
+    c: "000000",
     d: ["2"],
   });
   assert.equal(checkOutput("f", undefined, { type: "String" }), undefined);
