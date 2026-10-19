@@ -1,0 +1,126 @@
+# ORE 0068 C3·c0 · El laboratorio del Build elástico, como lo dice el diseño (ADR 0068, C3·c): un namespace de
+# medida con Pod Security `restricted`, la cuenta del driver (`driver-pesado`) con su Role, la del ejecutor
+# sin token, la ValidatingAdmissionPolicy sobre lo que crea el driver, y la red de Spark. `c0.sh` lo aplica
+# con `envsubst` (NS, IMAGEN, API) y lo borra al acabar. Sin Kueue: eso no es lo que se mide aquí.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NS}
+  labels:
+    ore.dev/medida: c3c0
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: driver-pesado, namespace: ${NS}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: ejecutor, namespace: ${NS}}
+automountServiceAccountToken: false
+---
+# Lo que Spark necesita en modo cliente: crear, ver y borrar los pods de ejecutor y su ConfigMap.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: driver-pesado, namespace: ${NS}}
+rules:
+  - apiGroups: [""]
+    resources: [pods, configmaps]
+    verbs: [create, get, list, watch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: driver-pesado, namespace: ${NS}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: driver-pesado}
+subjects: [{kind: ServiceAccount, name: driver-pesado, namespace: ${NS}}]
+---
+# ⭐ El código del cliente corre en el driver y tiene su token: lo que cree esa cuenta tiene que ser un
+#   ejecutor de verdad (nuestra imagen por digest, sin token, sin volúmenes del nodo, sin privilegios,
+#   con tope de memoria y un pod por dueño) o el ConfigMap de Spark. Nada más.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: ${NS}-lo-que-crea-el-driver}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "configmaps"]
+  matchConditions:
+    - name: la-cuenta-del-driver
+      expression: "request.userInfo.username.startsWith('system:serviceaccount:') && request.userInfo.username.endsWith(':driver-pesado')"
+  variables:
+    - name: pod
+      expression: "request.resource.resource == 'pods'"
+  validations:
+    - expression: "!variables.pod || object.spec.containers.all(c, c.image == '${IMAGEN}')"
+      message: "un ejecutor lleva la imagen pesada por digest"
+    - expression: "!variables.pod || (object.spec.serviceAccountName == 'ejecutor' && has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)"
+      message: "un ejecutor va con la cuenta ejecutor y sin token"
+    - expression: "!variables.pod || !has(object.spec.volumes) || object.spec.volumes.all(v, has(v.configMap) || has(v.emptyDir))"
+      message: "un ejecutor solo monta configMap y emptyDir"
+    - expression: "!variables.pod || !has(object.spec.initContainers) || size(object.spec.initContainers) == 0"
+      message: "un ejecutor no lleva initContainers"
+    - expression: "!variables.pod || ((!has(object.spec.hostNetwork) || !object.spec.hostNetwork) && (!has(object.spec.hostPID) || !object.spec.hostPID) && (!has(object.spec.hostIPC) || !object.spec.hostIPC))"
+      message: "un ejecutor no usa la red ni los procesos del nodo"
+    - expression: "!variables.pod || object.spec.containers.all(c, has(c.resources.limits) && has(c.resources.limits.memory) && quantity(c.resources.limits.memory).compareTo(quantity('48Gi')) <= 0)"
+      message: "un ejecutor lleva límite de memoria, como mucho 48Gi"
+    - expression: "!variables.pod || (has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(o, o.kind == 'Pod' && has(o.controller) && o.controller))"
+      message: "un ejecutor tiene por dueño el pod del driver"
+    - expression: "!variables.pod || (has(object.metadata.labels) && 'spark-role' in object.metadata.labels && object.metadata.labels['spark-role'] == 'executor')"
+      message: "un ejecutor lleva spark-role: executor"
+    # c0: sin esto, un «ejecutor» creado a mano sin nodeSelector cayó en el nodo del sistema.
+    - expression: "!variables.pod || (has(object.spec.nodeSelector) && 'ore.dev/pool' in object.spec.nodeSelector && object.spec.nodeSelector['ore.dev/pool'] == 'pesado')"
+      message: "un ejecutor va al pool pesado"
+    - expression: "variables.pod || (has(object.metadata.labels) && 'spark-app-selector' in object.metadata.labels)"
+      message: "solo el ConfigMap de Spark"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: ${NS}-lo-que-crea-el-driver}
+spec:
+  policyName: ${NS}-lo-que-crea-el-driver
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: ${NS}}
+---
+# La red: se niega todo; DNS; los pods de Spark del namespace se hablan en 7078 (driver) y 7079 (bloques);
+# el driver sale además al API server. Sin internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: nada, namespace: ${NS}}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: spark, namespace: ${NS}}
+spec:
+  podSelector: {matchLabels: {c3c0-spark: "si"}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {c3c0-spark: "si"}}}]
+      ports: [{protocol: TCP, port: 7078}, {protocol: TCP, port: 7079}]
+  egress:
+    - to: [{podSelector: {matchLabels: {c3c0-spark: "si"}}}]
+      ports: [{protocol: TCP, port: 7078}, {protocol: TCP, port: 7079}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: driver-al-api, namespace: ${NS}}
+spec:
+  podSelector: {matchLabels: {c3c0-rol: driver}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: ${API}/32}}]
+      ports: [{protocol: TCP, port: 443}]

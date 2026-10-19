@@ -1,0 +1,33 @@
+# ORE 0068 C3·c0 · El reparto entre celdas, con los ejecutores en Kueue (como pods sueltos). Dos colas de
+# medida en una cohorte propia, cada una con UN ejecutor garantizado (7 CPU / 42 GiB: 34g de heap + 4g de
+# overhead + 4g de Python) en el sabor `pesado`; lo que una no usa lo toma prestado la otra, y lo
+# recupera echando al prestado (`reclaimWithinCohort`). `c0.sh` con KUEUE=1 lo aplica; BORRAR=1 lo borra.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata: {name: cq-c3c0-a}
+spec:
+  namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: c3c0}}
+  cohortName: c3c0
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: pesado
+          resources:
+            - {name: cpu, nominalQuota: "7"}
+            - {name: memory, nominalQuota: "42Gi"}
+  preemption: {reclaimWithinCohort: Any, withinClusterQueue: Never}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata: {name: cq-c3c0-b}
+spec:
+  namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: c3c0b}}
+  cohortName: c3c0
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: pesado
+          resources:
+            - {name: cpu, nominalQuota: "7"}
+            - {name: memory, nominalQuota: "42Gi"}
+  preemption: {reclaimWithinCohort: Any, withinClusterQueue: Never}

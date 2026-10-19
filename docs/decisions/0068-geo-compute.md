@@ -1042,7 +1042,7 @@ del diseño anterior, no es por regla escrita, sino porque la carga los pide.
 
 | | decisión | por qué | lo que se pierde |
 |---|---|---|---|
-| **D1** | **los ejecutores, fuera de Kueue.** Kueue admite el driver; a los ejecutores los limitan la `ResourceQuota` de la celda, `maxExecutors` y el máximo del pool | la vía de Kueue para pods sueltos es un apaño que su equipo cerró como «not planned», y `SparkApplication` rechaza el *dynamic allocation*. El pool de ejecutores lo usan solo ejecutores, así que Kueue no se equivoca sobre lo suyo | no hay reparto justo entre celdas: si dos coinciden, la que llegó primero tiene más nodos y la otra espera ejecutores (Spark sigue con los que tiene). El informe lo dice |
+| **D1** | ~~los ejecutores, fuera de Kueue~~ → **en Kueue, medido en c0 (punto 7)**. Antes: Kueue admite el driver; a los ejecutores los limitan la `ResourceQuota` de la celda, `maxExecutors` y el máximo del pool | la vía de Kueue para pods sueltos es un apaño que su equipo cerró como «not planned», y `SparkApplication` rechaza el *dynamic allocation*. El pool de ejecutores lo usan solo ejecutores, así que Kueue no se equivoca sobre lo suyo | no hay reparto justo entre celdas: si dos coinciden, la que llegó primero tiene más nodos y la otra espera ejecutores (Spark sigue con los que tiene). El informe lo dice |
 | **D2** | **el driver fuera de *spot***, en un pool normal pequeño (`pesado-driver`: `n2-highmem-4`, 0–1 nodos, dos drivers caben) con su propio sabor de Kueue | perder un ejecutor se recomputa; perder el driver pierde el Build entero. Es lo que recomiendan todas | ~0,25 $/h mientras haya un Build. Cuota: 10 + 4 + 16 = 30 de 32 |
 | **D3** | **si *spot* se lleva un ejecutor, se recomputa** (sin `fallbackStorage` en esta pieza) | con 15 s de aviso no da tiempo a migrar un *shuffle*; `decommission` activado para lo que sí dé tiempo | un Build alcanzado por *spot* tarda más. Si el previo lo mide caro, `fallbackStorage` en GCS va después |
 | **D4** | **`spark.authenticate`** entre el driver y sus ejecutores | la política de red deja que los pods de Spark de una celda se hablen; sin esto, el Build de una persona podría pedir bloques al de otra en la misma celda | nada: es un secreto por aplicación que Spark genera y pasa a sus ejecutores |
@@ -1125,6 +1125,50 @@ Y lo que solo se ve con el lago de verdad, en c5:
 **Hecho cuando:** un Build grande escala solo y escribe lo mismo que con un nodo, más rápido; uno
 pequeño no paga por ello (punto 9); ninguno de la vara acaba en `OOMKilled` sin un error que diga qué
 tarea fue; y el informe dice cuántos nodos usó y qué lo limitó.
+
+**C3·c0 · el previo del Build elástico (medido en victor, 2026-10-19).** Laboratorio en
+`pruebas-de-fuego/geo/c3/c0/`:
+- `c0.sh` corre un driver a mano en el namespace de medida `c3c0`, con Pod Security `restricted`, las
+  cuentas, el Role, la política y la red del diseño (`laboratorio.yaml`);
+- el driver va en el pool `pesado-driver`, creado con `malla/74-el-pool-del-driver.sh`: n2-highmem-4
+  normal, de 0 a 1 nodos;
+- los ejecutores, en `pesado` (*spot*);
+- `dos-celdas.sh` lanza dos celdas a la vez.
+
+La imagen es `puesto-spark:1` sin cambios: trae `spark-kubernetes` 4.1.0, y la entrada del ejecutor y
+`decom.sh` van en un ConfigMap (`ejecutor.sh`, `decom.sh`).
+
+| # | qué | resultado |
+|---|---|---|
+| 1 | **escalar a mitad de un Build** (200 M × 20 k, máximo 2) | empieza con 1 ejecutor y **pide el 2.º él solo**: 44 s desde que lo pide hasta el nodo listo y el ejecutor dentro. **79,4 s**, frente a 116 s en un pod (previo) y 64 s con 2 nodos fijos |
+| 2 | **la política** | **9/9**: niega otra imagen, la cuenta del driver, quitar el dueño, 100 Gi, salir del pool pesado y un ConfigMap cualquiera (422). Un `hostPath` lo para antes Pod Security (403), y un Secret, el Role (403). El ejecutor de Spark pasa. **Hallazgo:** sin la regla del pool, un «ejecutor» hecho a mano cayó en el nodo del sistema; la regla se añadió |
+| 3 | **lo que retiene el *shuffle*** | con `shuffleTracking.timeout 120s` y ocioso 60 s, el segundo nodo se devuelve **152 s** después del join |
+| 4 | **perder un ejecutor a mitad** (borrado con 15 s de gracia, como *spot*) | Spark lo repone en 18 s y el Build da **las mismas cuentas** (111 249 591 pares): 83,9 s. D3 (recomputar) basta |
+| 5 | **join espacial sesgado** (100 M puntos, 90 % en 200 m², 300 k zonas, `RangeJoin`, 1 ejecutor) | **con la rejilla de Sedona por defecto** (`spatitionside=left`, la de las zonas, que son uniformes): **un solo core** trabajando, más de 9 min y lejos de acabar. **Con la rejilla sobre los puntos** (`right`): los 7 cores, **687 s, 655 M pares, sin OOM** (22 GB). La referencia uniforme: 1121 s, 839 M pares. Por par, el sesgado con la rejilla buena (0,95 M/s) va como el uniforme (0,75 M/s). **El sesgo espacial no da OOM: da un solo core. Se arregla haciendo la rejilla sobre el lado grande** |
+| 6 | **UDF de Python que pide 8 GB** con `pyspark.memory 4g` | **`MemoryError` de Python** en 19 s, sin pod muerto |
+| 7 | **dos celdas a la vez** (dos Builds grandes, máximo 2 cada uno) | **ejecutores fuera de Kueue (D1 tal cual): B pasa unos 100 s sin ningún ejecutor** hasta que A acaba. **Con los ejecutores en Kueue** (cola de la celda, cohorte, 1 ejecutor garantizado por celda, `reclaimWithinCohort`): Kueue echa el ejecutor prestado de A, B tiene el suyo en **32 s**, A sigue con 1 y B sube a 2 cuando A acaba. Los dos dan las cuentas bien |
+| 8 | **la imagen en un nodo nuevo** | el ejecutor, **4 s** (*streaming*); el driver, 13 s |
+| 9 | **un Build pequeño del todo en frío** (los dos pools a 0; 20 M × 20 k) | **~170 s**, frente a **115 s** del pod único de hoy (6c): +53 s, por encima de los 30 s del criterio. El camino es en serie: el nodo del driver (49 s), el driver arranca y pide el ejecutor (26 s), el nodo del ejecutor (37 s) y el join (51 s). **Los Builds pequeños siguen en un pod**, como hoy; el elástico, para los grandes |
+
+Otros detalles:
+- **La sesión espera 30 s** a que se registren los ejecutores (`minRegisteredResourcesRatio`). Se pone a
+  0: las tareas ya esperan a su ejecutor.
+- **Al cerrar, Spark intenta borrar Services y PVC** por etiqueta y el Role se lo niega. Es ruido en el
+  log, sin efecto. No se le da ese permiso.
+
+**Lo que cambia en el diseño:**
+- **D1 se invierte: los ejecutores van en Kueue**, como pods sueltos (la vía de Kueue para
+  `spark-submit`: `queue-name`, `managed` y `pod-suspending-parent`). Cada celda tiene **un ejecutor
+  garantizado** en su `ClusterQueue` y presta y recupera en la cohorte. El riesgo (Kueue no lo da por API
+  estable) se cubre fijando la versión de Kueue y pasando `dos-celdas.sh` antes de subirla.
+- **La rejilla de Sedona, sobre el lado grande** (`sedona.join.spatitionside`). En c2, el SDK la fija
+  con las filas del catálogo, igual que C3·a.
+- **Pequeño en un pod, grande elástico.** Lo decide `ore-serve` al encolar con las filas de las entradas,
+  que da el catálogo (lo mismo que ya lee C3·a). El umbral, provisional en 100 M filas, se fija en c5 con
+  la vara. No es reactivo: el modo sale del tamaño estimado antes de correr, nunca de un fallo.
+- Se confirman D2, D3 y D4, la política (más la regla del pool) y la red.
+- El pool `pesado-driver` queda creado y a 0 nodos (`malla/74`): no cuesta nada mientras no haya Build.
+
 
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde

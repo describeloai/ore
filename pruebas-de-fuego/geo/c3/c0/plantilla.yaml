@@ -1,0 +1,20 @@
+# ORE 0068 C3·c0 · La plantilla del pod de ejecutor (`spark.kubernetes.executor.podTemplateFile`). Spark pone
+# encima la imagen, los recursos, `spark-role: executor`, el dueño (el pod del driver) y su ConfigMap.
+apiVersion: v1
+kind: Pod
+metadata:
+  labels: {c3c0-spark: "si"}
+spec:
+  serviceAccountName: ejecutor
+  automountServiceAccountToken: false
+  securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+  nodeSelector: {ore.dev/pool: pesado}
+  tolerations: [{key: ore.dev/pesado, operator: Equal, value: "true", effect: NoSchedule}]
+  volumes: [{name: ore, configMap: {name: c3c0-ejecutor, defaultMode: 0555}}]
+  containers:
+    - name: ejecutor
+      command: ["bash", "/ore/ejecutor.sh"]
+      workingDir: /tmp
+      env: [{name: HOME, value: /tmp}]
+      volumeMounts: [{name: ore, mountPath: /ore}]
+      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
