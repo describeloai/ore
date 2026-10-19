@@ -960,7 +960,7 @@ C0 solo quedan los resultados en el bucket: los datos se borraron con su pool.
 | **C3·a · la regla de difusión** | en un *join* espacial, ORE difunde el lado que tenga **pocas filas** (en el catálogo están las cuentas de cada dataset), sin mirar sus bytes en disco. Se pone con `sedona.join.autoBroadcastJoinThreshold` o con la pista `broadcast`. El techo, medido: cuánta memoria se come el índice difundido de un lado grande |
 | **C3·b · el `LEFT JOIN` espacial** | ORE lo reescribe en la reescritura que ya hace para Spark (`consulta_para_spark`, 2b): el *join* interno más las filas sin pareja (*anti join* por clave). Mientras Sedona no lo indexe |
 | **C3·c · el Build en varios nodos** | el Build pesado pasa a ser el Job indexado de N pods de arriba; un Job `batch/v1` de N pods ya lo admite Kueue de una vez. Hay que subir `cq-<celda>-pesado` y la cuota del inquilino a N × 7 CPU / 48 GiB, y el pool a N nodos |
-| **C3·d · la vara a escala 100** | SpatialBench entero con C3·a a C3·c, con la opción A o la B de arriba |
+| **C3·d · la vara a escala 100** | SpatialBench entero con C3·a a C3·c, con **la opción A** (2 × `n2-highmem-8`, el pool de hoy; elegida el 2026-10-19). El objetivo de C0·5 era con 32 vCPU: se mide con 16 y se dice |
 
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
