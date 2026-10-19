@@ -28,7 +28,10 @@ class H3EnPython(unittest.TestCase):
         c = duckdb.connect()
         if os.path.isdir(ore.EXTENSIONES):
             c.execute("set extension_directory = '%s'" % ore.EXTENSIONES)
-        c.execute("load h3")
+        try:
+            c.execute("load h3")
+        except Exception:  # noqa: BLE001 — de community: la imagen la trae, el runner del CI no
+            self.skipTest("sin la extensión h3 de DuckDB")
         for lat, lng in PUNTOS:
             for res in (5, 9, 12):
                 sql = c.execute("select h3_h3_to_string(h3_latlng_to_cell(?, ?, ?))", [lat, lng, res]).fetchone()[0]

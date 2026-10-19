@@ -31,6 +31,12 @@ try:
     SPATIAL = True
 except Exception:
     SPATIAL = False
+# `h3` es de community: la imagen la trae, el runner del CI no (con `spatial` sí). Lo de h3, sólo con él.
+try:
+    _c.execute("load h3")
+    H3 = True
+except Exception:
+    H3 = False
 
 INDICE = {"items": {"a": {"kind": "Dataset", "paquete": "geo", "schema": "default", "name": "lugares",
                           "expone": [{"name": "id", "type": "Integer"}, {"name": "nombre", "type": "String"},
@@ -78,11 +84,14 @@ class ContratoDeLaVista(unittest.TestCase):
         return r, (puestos[0] if puestos else "")
 
     def test_lo_que_pasa_tal_cual_y_lo_derivado(self):
-        r, yaml = self.crear("select id, geom, ST_Buffer(utm, 100) as zona, ST_Area(utm) as a, "
-                             "h3_latlng_to_cell(40.4, -3.7, 9) as celda from geo.lugares",
+        celda = ", h3_latlng_to_cell(40.4, -3.7, 9) as celda" if H3 else ""
+        r, yaml = self.crear("select id, geom, ST_Buffer(utm, 100) as zona, ST_Area(utm) as a%s "
+                             "from geo.lugares" % celda,
                              columnas_geo={"geom": "Geometry<Point, EPSG:4326>"})
-        self.assertEqual(r["columns"], {"id": "Integer", "geom": "Geometry<Point, EPSG:4326>",
-                                        "zona": "Geometry<Any, EPSG:25830>", "a": "Float", "celda": "Integer"})
+        esperado = {"id": "Integer", "geom": "Geometry<Point, EPSG:4326>", "zona": "Geometry<Any, EPSG:25830>", "a": "Float"}
+        if H3:
+            esperado["celda"] = "Integer"
+        self.assertEqual(r["columns"], esperado)
         # Lo que el SDK escribe: el CRS de DuckDB, y la versión que trae los tipos geo.
         self.assertIn("apiVersion: oos.dev/v1alpha32", yaml)
         self.assertIn('geom: { type: "Geometry<Any, EPSG:4326>" }', yaml)
@@ -133,6 +142,8 @@ class ElEditor(unittest.TestCase):
         self.assertEqual(len(buffer), 1, items[:5])
         self.assertEqual(buffer[0][1], 3)  # Function
         self.assertIn("GEOMETRY", buffer[0][2])
+        if not H3:
+            return
         texto = "select h3_latlng"
         items, _ = lsp_sql.completar_lista(texto, len(texto), lsp_sql.Catalogo(INDICE))
         self.assertIn("h3_latlng_to_cell", [x[0] for x in items])
