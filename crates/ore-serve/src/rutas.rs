@@ -3820,6 +3820,11 @@ mod pruebas {
         );
         assert!(sin_credencial("mongodb://u:x@m1:27017,m2:27017/app?replicaSet=rs0").is_err());
         assert!(sin_credencial("mongodb://localhost:27017").is_ok());
+        // ADR 0070 M3: Cassandra lleva la suya en la autoridad, con varios hosts y con la
+        // contraseña codificada; una URL sin credencial pasa.
+        assert!(sin_credencial("cassandra://ore:p%40ss@h1:9042,h2:9042/ventas").is_err());
+        assert!(sin_credencial("cassandra://ore@h:9042/ventas?tls=true").is_err());
+        assert!(sin_credencial("cassandra://h:9042/ventas?contacto=solo").is_ok());
         assert!(sin_credencial("https://host/x?password=abc").is_err());
         assert!(sin_credencial("https://host/x?token=abc").is_err());
     }

@@ -990,6 +990,12 @@ mod tests {
         // Atlas: `mongodb+srv` y `mongodb` son el mismo lector.
         assert_eq!(esquema("mongodb+srv://h/db").as_deref(), Some("mongodb"));
         assert_eq!(esquema("mongodb://h:27017").as_deref(), Some("mongodb"));
+        // Cassandra no necesita normalizarse: `cassandra://` ya es el tipo, y el lector es
+        // `ore-read-cassandra`.
+        assert_eq!(
+            esquema("cassandra://u:p@h:9042,h2/ks").as_deref(),
+            Some("cassandra")
+        );
         assert_eq!(esquema("SNOWFLAKE://acc/db").as_deref(), Some("snowflake"));
         assert_eq!(esquema("db2-luw://h/db").as_deref(), Some("db2_luw"));
         assert_eq!(esquema("host:5432/db"), None);
