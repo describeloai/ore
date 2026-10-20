@@ -1147,6 +1147,41 @@ filtro del rectángulo, y lo hace con un `RangeJoin`.
 - **Q6 sigue siendo lenta:** 504–719 s con 2 ejecutores, y > 900 s con uno. Es la pieza del lado
   pequeño tras un filtro (más arriba), que queda para después con Q10–Q12.
 
+**C3 · el previo de Q10–Q12 (victor, 2026-10-20).** Dónde se va el tiempo, antes de arreglar nada
+(`c3/d/lentas.py` y `lentas2.py`, con `medir.sh PREVIO=…`). La línea de tiempo por etapa la saca el
+propio script del `statusTracker`, porque la UI de Spark está apagada en la imagen. 2 ejecutores de
+7 cores, 15 min por medida.
+- **`zone` pesa mucho más de lo que parece:** 1 033 509 polígonos de Overture que se solapan (país,
+  estado, condado, municipio), con **340 M de vértices**. 2 659 pasan de 10 000 vértices, y el mayor
+  tiene 345 461.
+- **Un hallazgo de producción, la rejilla de C3·b2 no se aplicaba.** Spark descartaba
+  `sedona.join.spatitionside` de `spark-defaults.conf` porque no empieza por `spark.`, así que la
+  imagen corría con la rejilla por defecto de Sedona, sobre el lado pequeño. Arreglado en local
+  (`spark.sedona.join.spatitionside`, comprobado con `SedonaConf`), y `comprobar.py` lo exige.
+
+| medida | resultado |
+|---|---|
+| el join de Q10/Q11 tal cual (rejilla mal) | 3 de 512 tareas del join en 2,5 min: horas |
+| sin subdividir, rejilla bien | se cae un ejecutor a los 385 s |
+| `zone` subdividida a ≤ 256 vértices, en 112 tareas y guardada | 343 s, 3,35 M piezas |
+| el join con las piezas, rejilla bien | 42 de 153 tareas en 750 s: **~45 min** |
+| Q11 entera con las piezas | > 15 min |
+| Q12, KNN con 4 tareas (por defecto) | 4 de 14 cores |
+| Q12 con `numpartition` 112 | 64 tareas, 22 en ~580 s: **~28 min** |
+
+**Lo que dice:**
+1. **Q10 y Q11 son mucho cálculo de verdad:** 600 M puntos contra 3,35 M de piezas, unas 10 horas-core.
+   Subdividir es imprescindible (sin hacerlo, el join no avanza o tumba un ejecutor), pero no basta.
+   Con 16 vCPU son ~45 min por join, y con los 32 del objetivo de C0·5, ~20.
+2. **Q12 estaba mal repartida**, con el KNN en 4 tareas. Con más particiones usa todos los cores, pero
+   sigue en ~28 min.
+3. **Bajar de 10 min pide otro algoritmo, no ajustes:** indexar puntos y polígonos en celdas H3 (como
+   Databricks Mosaic). Las celdas interiores de un polígono se resuelven sin geometría y solo se refinan
+   las del borde. Es una pieza de diseño propia, con su previo.
+4. **Una corrección:** tras la primera ronda estimé ~5 min para el join subdividido. Era una mala
+   lectura de las etapas (la que medí era la lectura de los viajes, no el join). La segunda ronda lo
+   midió de verdad.
+
 ### CE · El Build elástico
 
 **Su responsabilidad:** cómo corre un Build pesado (Heavyweight, Spark) en uno o varios nodos, **sea cual
@@ -1636,6 +1671,10 @@ El ADR pasa de hoja de ruta a imagen.
   cohorte `pesado`, cuota, cuentas con Workload Identity, política y red). SpatialBench a escala 100 con
   2 × 8 vCPU: 8 de 12 terminan (Q6 y Q8 por primera vez), huellas de C0 o DuckDB. Lo nuevo: el disco
   efímero desaloja a los ejecutores en Q11. Siguiente: C3·e (disco, regla de Q2, Q10–Q12).
+- **2026-10-20 · C3, el previo de Q10–Q12.** `zone` son 340 M vértices; subdividir es imprescindible,
+  pero el join sigue en ~45 min con 16 vCPU, y Q12 en ~28 min con el KNN bien repartido. Bajar de 10 min
+  pide otro algoritmo (H3 a la Mosaic). Hallazgo: la rejilla de C3·b2 no se aplicaba (faltaba el prefijo
+  `spark.`); arreglada en local, y `comprobar.py` la exige.
 - **2026-10-20 · C3·e: Q2 y Q6.** `DifundirLaSubconsulta`: Q2 a escala 100 de > 600 s a 126 s con
   la huella de C0 (regla.sh 15/15). Q6 cotejada con DuckDB: las mismas 19 zonas y conteos; la huella
   distinta sale del `AVG(INTERVAL)` de DuckDB con duraciones de ≥ 1 día o negativas (369 s de error
