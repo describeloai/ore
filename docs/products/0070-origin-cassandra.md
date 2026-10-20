@@ -192,7 +192,7 @@ columna del cursor, el cambio no se ve. Va al informe del catálogo.
 | **M3 · cableado** | `fuente.rs`, `credenciales.rs`, `rutas.rs`, banco del kit, imagen, CI con `cassandra:5` | **hecho** (2026-10-20), fusionado |
 | **M4 · cambios** | cursor sobre SAI, barrido de claves | |
 | **M5 · consola** | hoja de Cassandra y de Astra en el asistente | **la hoja de Cassandra, hecha** (en `rubix-platform`, sin commitear); la de Astra no |
-| **M6 · prueba de fuego** | contra un Astra real y un Cassandra con autenticación | **hecho** (2026-10-20) contra un Cassandra con autenticación; **no** contra Astra ni con TLS |
+| **M6 · prueba de fuego** | contra un Astra real y un Cassandra con autenticación | **hecho** (2026-10-20) contra un Cassandra con autenticación y, en la sección 6, con **TLS real** (§TLS); **no** contra Astra |
 
 ### M1 · hecho (2026-10-20)
 
@@ -395,8 +395,8 @@ olvidé en el propio script). Por eso se sabotea el conector, una protección ca
 | `orderBy` se ignora en silencio | **4l** |
 
 **Lo que esta prueba no cubre**, dicho: **no corre contra Astra** ni contra un clúster en la nube (el laboratorio es un
-`cassandra:5` en Docker con autenticación); **el camino de TLS real no se ha ejercitado** —solo se comprueba que apagar la
-verificación se rechaza, no que `UseSSL=TRUE` conecte contra un certificado de verdad—; es un solo nodo y un solo centro de datos
+`cassandra:5` en Docker con autenticación); **el TLS real se ejercita en la sección 6** (§TLS), que necesita el laboratorio de `tls-lab.sh` y
+no corre en el CI; es un solo nodo y un solo centro de datos
 (la consistencia, `peers_v2` y el reparto de rangos entre nodos no se miden); **no corre en el CI** (necesita un Cassandra con
 un rol que escribe), aunque su sección 5, el kit, sí corre allí (M3); y no cubre `estimar` ni el incremental (M4).
 
@@ -405,7 +405,100 @@ pyasyncore pyasynchat` (el driver usa `asyncore`, que ya no viene en la bibliote
 al driver de Rust, un traductor de direcciones para que todo vaya al punto de contacto cuando el nodo anuncia una dirección que
 no se alcanza (Docker).
 
-**Sin medir todavía:** Astra de verdad (bundle, TLS, límites del plan gratuito), TLS propio,
+### TLS real · hecho (2026-10-20)
+
+**Qué es «TLS real».** Hasta aquí la prueba de fuego solo comprobaba que **apagar** la verificación se rechaza. Nunca se
+había hecho un *handshake* contra un servidor con un certificado de verdad, que es lo único que dice si `UseSSL = TRUE`
+sirve. «Real» quiere decir: un servidor que presenta una cadena de certificados, un cliente que la acepta o la rechaza por
+las razones correctas, y la prueba de que, cuando la rechaza, **no manda ni un byte** (la contraseña no sale).
+
+**Lo medido** (2026-10-20, una CA propia, `SSL_CERT_FILE`, y un servidor TLS que hace el *handshake* con el certificado que
+le den; ORE con `?tls=true&contacto=solo`):
+
+| el servidor presenta | URL | resultado |
+|---|---|---|
+| certificado de la CA, con `IP:127.0.0.1` y `DNS:localhost` | por IP | **acepta** (TLS 1.3) |
+| el mismo | por **nombre** (`localhost`) | **acepta** (casa por la IP, que es la del nodo) |
+| certificado de la CA **solo con `DNS:localhost`** | por nombre (`localhost`) | **RECHAZA** |
+| el mismo | por IP | rechaza |
+| certificado de la CA de **otra IP y otro nombre** | por IP | rechaza |
+| certificado válido de **otra CA** que no es de confianza | por IP | rechaza |
+
+Y en las tres que rechaza, el servidor **no recibe ningún byte de aplicación**: el handshake muere antes y la credencial no sale.
+
+**El hallazgo.** El driver verifica el certificado contra la **dirección IP del nodo** (`set_ip`, en `scylla` 1.9) y **nunca
+contra un nombre**. Lo dice su código, y el experimento lo confirma: un certificado perfectamente válido para el nombre que el
+usuario escribió (`DNS:localhost` para `localhost`) se **rechaza** si no lleva además la IP. Esto no es un agujero —es más
+estricto que verificar solo el nombre—, pero tiene dos consecuencias:
+
+1. **Un clúster con certificados «de nombre» (lo normal) no se puede conectar**: el certificado tiene que incluir la IP del
+   nodo. Y detrás de un balanceador, NAT o Kubernetes, la IP que ve el driver (`contacto=solo`) no es la que el certificado
+   trae.
+2. **Lo que escribimos era falso.** La hoja y el comentario del transporte decían que se verificaba «el certificado y su
+   nombre». Corregido a lo que pasa de verdad.
+
+**Diseño (y está hecho).**
+
+1. **Verificar por IP *o* por el nombre de la URL.** La cadena sigue verificándose contra las CA de confianza (el almacén del
+   sistema, más `SSL_CERT_FILE`/`SSL_CERT_DIR`); no cambia. Lo que se añade: un `set_verify_callback` que **solo perdona un
+   error, `X509_V_ERR_IP_ADDRESS_MISMATCH`, en el certificado final (profundidad 0), y solo si `check_host` lo da por bueno
+   con alguno de los nombres de la URL**. Cualquier otro error —cadena, caducado, revocado, otra CA— sigue siendo un error. Con
+   varios puntos de contacto vale el nombre de cualquiera de ellos.
+2. **Mínimo TLS 1.2, explícito** (`set_min_proto_version`): hoy depende de la política de OpenSSL del sistema.
+3. **Un error que se entienda.** `certificate verify failed` sale como `conexion` **no reintentable**, con la razón (cadena,
+   caducado, IP/nombre) y diciendo que **no se ha enviado la credencial**.
+4. **Lo que queda fuera de v1, dicho:** certificado de cliente (mTLS), una CA propia **por fichero** (el driver corre en un Job
+   sin tus ficheros), y el SNI de un proxy (Astra, con su *bundle*).
+
+**Cómo se prueba.**
+
+- **`crates/ore-cassandra/tests/tls.rs`, que corre en el CI sin Cassandra.** Un servidor TLS **en el propio proceso**
+  (`openssl::ssl::SslAcceptor`) con certificados que genera el test con el crate `openssl` (sin depender de la línea de
+  órdenes). Una matriz: la CA de confianza con IP / solo con nombre (por nombre y por IP) / con otra IP y otro nombre / de otra
+  CA / caducado / con la cadena incompleta / un servidor sin TLS / TLS 1.1. Cada caso afirma **qué hizo el servidor** (aceptó
+  o no el *handshake*) y que, si rechazó, **recibió 0 bytes de aplicación**.
+- **El laboratorio, para el camino de punta a punta.** Un `cassandra:5` con `client_encryption_options` y un certificado con
+  `IP:127.0.0.1` y `DNS:localhost`; la sección 6 de `cassandra.sh` hace con él lo que hace con el de Docker sin TLS
+  (`check`, `catalogo`, una copia) y además lo rompe: una CA que no es de confianza y una IP que el certificado no trae.
+- **Sabotajes**, como en M6: el *callback* que acepta cualquier error, `set_verify(NONE)`, y quitar el mínimo de TLS.
+
+**Hecho** (`crates/ore-cassandra/src/tls.rs`, `tests/tls.rs`, `pruebas-de-fuego/cassandra/tls-lab.sh` y la sección 6 de
+`cassandra.sh`):
+
+- **La verificación por IP *o* por el nombre de la URL**, como se diseñó: el *callback* perdona solo
+  `X509_V_ERR_IP_ADDRESS_MISMATCH` en el certificado final, y solo si el certificado lleva (como `dNSName` del SAN) el nombre de un
+  host de la URL. La comparación de nombres es propia (`openssl` 0.10.81 no trae `check_host`): sin mirar mayúsculas ni el punto
+  final, comodín solo de **una** etiqueta entera y con dos más detrás, y un nombre con un carácter de control no casa.
+- **Mínimo TLS 1.2, explícito**, y un error que se entiende: `conexion` **no reintentable**, con la razón de OpenSSL y «no se
+  envió la credencial»; y, para un cliente sin TLS contra un servidor que lo exige, «¿El servidor exige TLS? Prueba con `tls=true`».
+- **`tests/tls.rs` (11 casos) corre en el CI sin Cassandra**: un servidor TLS en el propio proceso, certificados que genera el test.
+  El certificado con la IP se acepta por IP y por nombre; **el que solo trae el nombre se acepta por el nombre de la URL** (lo que
+  antes se rechazaba) y se **rechaza** si la URL es una IP; se rechazan otra IP y otro nombre, un comodín ajeno, una CA que no es de
+  confianza, un certificado **caducado aunque el nombre case**, una cadena incompleta (y completa se acepta), un servidor sin TLS,
+  y TLS 1.1. En cada rechazo el servidor **no recibe ni un byte de aplicación**, y en ningún caso aparece la contraseña.
+- **Un Cassandra de verdad con TLS** (`tls-lab.sh`: una CA propia, un certificado con `IP:127.0.0.1` y `DNS:localhost`, y
+  `client_encryption_options` con `optional: false`). La sección 6: `check` entra por la IP y por el nombre; el catálogo y la copia
+  por TLS casan con el otro cliente (que también verifica) y no enseñan el keyspace ajeno; **con otra CA el certificado no se
+  acepta**, dice por qué (`self-signed certificate in certificate chain`) y no se envía la credencial; y sin `tls=true` dice qué
+  probar. 9 comprobaciones.
+
+**Y se probó a sí mismo.** Siete sabotajes, uno a uno: aceptar cualquier certificado, perdonar la IP sin mirar el nombre,
+perdonar **cualquier** error si el nombre casa, un comodín de varias etiquetas, un certificado malo que se reintenta, y quitar el
+mínimo de TLS 1.2 se ponen rojos en `tests/tls.rs` o en las unitarias; y aceptar cualquier certificado también pone rojo, en la
+sección 6, el caso de la otra CA. **El sabotaje del mínimo de TLS 1.2 salió verde al principio**: el OpenSSL de esta máquina ya
+rechaza TLS 1.1 por su política, así que el servidor de prueba no lo distingue. Se cubrió comprobando la propiedad del contexto
+(`min_proto_version`), que es lo único que lo impide en una máquina con `MinProtocol = TLSv1`.
+
+**Lo que costó.** (1) **El cliente de Python** (el «otro cliente») solo habla TLS con el reactor `asyncore` (`pyasyncore`): con el de
+`asyncio` llegan registros TLS donde espera tramas CQL. (2) Python 3.13 y OpenSSL exigen que la CA declare ser una (`basicConstraints`,
+`keyUsage`) y que la hoja lleve `serverAuth` y `authorityKeyIdentifier`: el laboratorio genera certificados completos, que es lo que
+tendría uno de verdad.
+
+**Lo que no cubre**, dicho: la CA de confianza es la del sistema o la de `SSL_CERT_FILE`, y **no hay forma de llevar una CA privada a
+un Job** (eso es protocolo nuevo, y se decidiría aparte); **no hay mTLS**; **Astra**, que es un proxy con SNI y un *bundle*, no es
+esto; **el laboratorio no corre en el CI** (`tests/tls.rs` sí) y es un solo nodo.
+
+**Sin medir todavía:** Astra de verdad (bundle, límites del plan gratuito),
 Cassandra 4.x (sin SAI: su `ALLOW FILTERING` y el modo `none`), varios nodos y varios centros de datos
 (consistencia, `peers_v2`), particiones enormes y con muchos *tombstones*, SAI sobre texto (`LIKE`,
 analizadores), `USING TIMEOUT`/*speculative retry*, y los compatibles (DSE, HCD, Keyspaces, ScyllaDB).
