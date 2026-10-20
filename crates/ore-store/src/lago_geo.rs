@@ -191,8 +191,32 @@ pub fn propiedad(c: &ColumnaGeo) -> (String, String) {
     }
     (
         format!("{PROP_GEO}{}", c.nombre),
-        serde_json::Value::Object(m).to_string(),
+        ordenado(serde_json::Value::Object(m)),
     )
+}
+
+/// **El JSON con las claves en orden**, sea cual sea la feature de `serde_json`.
+///
+/// Sin `preserve_order` el mapa ya va ordenado; con ella —y `bson`, que trae el
+/// cliente de MongoDB, la enciende para todo el espacio de trabajo— sale en el
+/// orden en que se insertó. Estos bytes se sellan en el lago y en el fichero
+/// (`ore.geo.<col>`, la clave `geo`): que dependan de qué crate se compiló al lado
+/// es lo que no puede pasar.
+fn ordenado(v: serde_json::Value) -> String {
+    fn rec(v: serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => {
+                let mut e: Vec<_> = m.into_iter().map(|(k, v)| (k, rec(v))).collect();
+                e.sort_by(|a, b| a.0.cmp(&b.0));
+                serde_json::Value::Object(e.into_iter().collect())
+            }
+            serde_json::Value::Array(a) => {
+                serde_json::Value::Array(a.into_iter().map(rec).collect())
+            }
+            otro => otro,
+        }
+    }
+    rec(v).to_string()
 }
 
 /// El PROJJSON de un CRS por su código, de la tabla que viaja con el binario
@@ -364,12 +388,11 @@ fn clave_geo(geo: &[ColumnaGeo], resumen: &BTreeMap<String, Resumen>) -> String 
         }
         columnas.insert(g.nombre.clone(), c.into());
     }
-    serde_json::json!({
+    ordenado(serde_json::json!({
         "version": "1.1.0",
         "primary_column": geo.first().map(|g| g.nombre.clone()).unwrap_or_default(),
         "columns": columnas,
-    })
-    .to_string()
+    }))
 }
 
 /// **El `DataFile` de un fichero escrito aquí**, con las métricas que se
