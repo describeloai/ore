@@ -1,32 +1,37 @@
-//! **Los verbos que son de Phoenix** y no del esqueleto: `check`, `testigo` y `cambio`. Los cuatro de lectura
-//! (`capacidades`, `leer`, `estimar`, `servir`) están en [`crate::lectura`]. `catalogo` y `explorar` son de M3
-//! (ficha 0071 §6): se contestan con un error que lo dice, no con un catálogo a medias.
+//! **Los verbos que son de Phoenix** y no del esqueleto: `catalogo`, `check`, `explorar`, `testigo` y
+//! `cambio`. Los cuatro de lectura (`capacidades`, `leer`, `estimar`, `servir`) están en [`crate::lectura`].
 //!
 //! Cada uno recibe lo que llega por stdin y devuelve la línea que sale por stdout, o el motivo del fallo
 //! (que va a stderr, literal, sin la credencial).
 
+use crate::esquema::{Objeto, Tabla as TablaPhoenix};
 use crate::lectura::partir_objeto;
 use crate::transporte::{Conexion, fallo_de};
 use ore_avatica::Valor;
+use ore_core::json::Json;
+use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
 use ore_driver::{Codigo, Fallo};
+use std::collections::BTreeSet;
 use std::process::ExitCode;
 
 /// El `main` de lo que no son los cuatro verbos v2: lee stdin y despacha.
-pub fn otros(verbo: &str, _args: &[String]) -> ExitCode {
+pub fn otros(verbo: &str, args: &[String]) -> ExitCode {
     let mut entrada = String::new();
     if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut entrada) {
         eprintln!("ore-read-phoenix: no se pudo leer stdin: {e}");
         return ExitCode::FAILURE;
     }
     let hecho = match verbo {
+        "catalogo" => catalogo(
+            entrada.trim(),
+            args.first().map_or("phoenix", String::as_str),
+        ),
         "check" => check(&entrada),
+        "explorar" => explorar(&entrada),
         "testigo" => testigo(&entrada),
         "cambio" => cambio(&entrada),
-        "catalogo" | "explorar" => Err(format!(
-            "`{verbo}` todavía no está en este origen: es del hito M3 de la ficha 0071 (se lee con `leer` si ya conoces la tabla)"
-        )),
         otro => Err(format!(
-            "verbo desconocido `{otro}` (capacidades, leer, servir, check, testigo, cambio)"
+            "verbo desconocido `{otro}` (capacidades, leer, servir, catalogo, check, explorar, testigo, cambio)"
         )),
     };
     match hecho {
@@ -95,6 +100,151 @@ pub fn check(entrada: &str) -> Result<String, String> {
         Ok(()) => ore_driver::comprobacion(true, None),
         Err(f) => ore_driver::comprobacion(false, Some(&texto(f, &url))),
     })
+}
+
+/// **`catalogo`**: cada tabla y vista que la URL deja ver, con los tipos de `getColumns` (no se infiere
+/// nada) y su clave. Una tabla que no se deja catalogar no tumba el catálogo: se salta con su aviso y su
+/// motivo; solo falla si no se pudo con ninguna. No lleva `filas_estimadas`: el `EXPLAIN` de Phoenix se
+/// equivoca (X0 §3.9) y eso es de `estimar`.
+pub fn catalogo(url: &str, fuente: &str) -> Result<String, String> {
+    if url.is_empty() {
+        return Err("no llegó nada por stdin. `catalogo` espera la URL de Phoenix por ahí".into());
+    }
+    let c = Conexion::abrir(url).map_err(|f| texto(f, url))?;
+    let mut tablas = Vec::new();
+    let mut saltadas: Vec<String> = Vec::new();
+    for o in c.objetos().map_err(|f| texto(f, url))? {
+        let objeto = nombre_de(&o);
+        match c.tabla(o.esquema.as_deref(), &o.nombre) {
+            Ok(t) => {
+                for a in avisos(&c, &o, &t) {
+                    eprintln!("ore-read-phoenix: aviso · `{objeto}`: {a}");
+                }
+                tablas.push(tabla_de(&t, &o));
+            }
+            Err(f) => {
+                let no_esta = f.codigo == Codigo::Objeto;
+                let mut m = texto(f, url);
+                // `getTables` la lista y `getColumns` no la ve: una vista de inquilino (X0 §3.5).
+                if no_esta && c.destino.tenant.is_none() {
+                    m.push_str("; si es una vista de inquilino, abre con `tenant=`");
+                }
+                eprintln!("ore-read-phoenix: aviso · `{objeto}` no se cataloga: {m}");
+                saltadas.push(m);
+            }
+        }
+    }
+    if tablas.is_empty()
+        && let Some(m) = saltadas.first()
+    {
+        return Err(format!(
+            "ninguna de las {} tablas se pudo catalogar; la primera: {m}",
+            saltadas.len()
+        ));
+    }
+    Ok(escribir(&Catalogo {
+        fuente: fuente.to_string(),
+        tablas,
+        objetos: Vec::new(),
+    }))
+}
+
+fn nombre_de(o: &Objeto) -> String {
+    match &o.esquema {
+        Some(e) => format!("{e}.{}", o.nombre),
+        None => o.nombre.clone(),
+    }
+}
+
+/// Lo que quien cataloga debe saber de esta tabla y el catálogo no puede llevar.
+fn avisos(c: &Conexion, o: &Objeto, t: &TablaPhoenix) -> Vec<String> {
+    let mut a = Vec::new();
+    if let Some(n) = o.sal {
+        a.push(format!(
+            "lleva sal ({n} cubos): la clave física no es el orden de la tabla"
+        ));
+    }
+    if o.multi_tenant && c.destino.tenant.is_none() {
+        a.push(
+            "es multi-tenant y la URL no lleva `tenant=`: lee las filas de todos los inquilinos"
+                .into(),
+        );
+    }
+    if t.columnas.iter().any(|k| k.es_date) {
+        a.push("tiene columnas `DATE`: se leen como `DateTimeTz` (Phoenix guarda la hora)".into());
+    }
+    a
+}
+
+/// Una tabla o vista de Phoenix, como la tabla del catálogo.
+fn tabla_de(t: &TablaPhoenix, o: &Objeto) -> Tabla {
+    let clave = t.clave_primaria();
+    let columnas = t
+        .columnas
+        .iter()
+        .map(|k| Columna {
+            nombre: k.nombre.clone(),
+            tipo: Some(k.tipo.oos()),
+            // El tipo de Phoenix tal cual (`UNSIGNED_INT`, `INTEGER ARRAY`): con él, el motor sabe lo que el
+            // escalar no lleva.
+            origen: Some(k.tipo_phoenix.clone()),
+            obligatoria: !k.anulable || clave.contains(&k.nombre),
+            valores: Vec::new(),
+            descripcion: None,
+        })
+        .collect();
+    Tabla {
+        nombre: t.objeto(),
+        columnas,
+        clave,
+        clase: if o.vista { "view" } else { "table" }.to_string(),
+        lee: Some(lee()),
+        cambia: Some(cambios()),
+        ..Tabla::default()
+    }
+}
+
+/// La cara `I`: este origen no empuja nada todavía (M4), y leer una tabla de Phoenix entera es lo que
+/// cuesta: `expensive`.
+fn lee() -> Json {
+    Json::obj([
+        ("predicatePushdown", Json::Arr(Vec::new())),
+        ("fullScan", Json::s("expensive")),
+    ])
+}
+
+/// La cara `D`: Phoenix no tiene change streams; el cursor sobre `ROW_TIMESTAMP` es de M7.
+fn cambios() -> Json {
+    Json::obj([("mode", Json::s("none")), ("witness", Json::s("none"))])
+}
+
+/// **`explorar`**: los esquemas con tablas o vistas que la URL deja ver (los de Phoenix no son más que un
+/// prefijo del nombre). Lo que `catalogo` recorre si la URL no nombra uno.
+pub fn explorar(entrada: &str) -> Result<String, String> {
+    let (url, _) = ore_driver::leer_coordenada(entrada)?;
+    let c = Conexion::abrir(&url).map_err(|f| texto(f, &url))?;
+    let objetos = c.objetos().map_err(|f| texto(f, &url))?;
+    let esquemas: BTreeSet<&str> = objetos
+        .iter()
+        .filter_map(|o| o.esquema.as_deref())
+        .collect();
+    let sueltas = objetos.iter().filter(|o| o.esquema.is_none()).count();
+    let contiene: Vec<Json> = esquemas
+        .iter()
+        .map(|e| Json::obj([("nombre", Json::s(*e))]))
+        .collect();
+    let mut nota = match &c.destino.esquema {
+        Some(e) => format!("la URL nombra el esquema `{e}`: el catálogo recorre solo ese"),
+        None => {
+            "la URL no nombra un esquema: el catálogo recorre todos, menos `SYSTEM`".to_string()
+        }
+    };
+    if sueltas > 0 {
+        nota.push_str(&format!(
+            "; además hay {sueltas} tabla(s) sin esquema (se catalogan con el resto)"
+        ));
+    }
+    Ok(Json::obj([("contiene", Json::Arr(contiene)), ("nota", Json::s(nota))]).pretty())
 }
 
 /// **`testigo`**: Phoenix no sabe fecharse por tabla. Una columna `ROW_TIMESTAMP` daría un cursor (M7), pero no

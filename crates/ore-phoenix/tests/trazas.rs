@@ -33,6 +33,19 @@ const CARPETA: &str = concat!(
     "/../../pruebas-de-fuego/phoenix/trazas"
 );
 
+/// Cómo se casa una petición con lo grabado: por nombre y en orden, salvo `getColumns`, que se casa por
+/// tabla (el catálogo puede pedir un subconjunto de las que se grabaron).
+fn clave(nombre: &str, mensaje: &[u8]) -> String {
+    if nombre == "ColumnsRequest" {
+        let c = ore_avatica::proto::ColumnsRequest::decode(mensaje).unwrap();
+        return format!(
+            "ColumnsRequest:{}:{}",
+            c.schema_pattern, c.table_name_pattern
+        );
+    }
+    nombre.to_string()
+}
+
 /// Un servidor que contesta con lo grabado, por nombre de petición y en orden, juntando varias trazas.
 fn reproducir(trazas: &[&str]) -> Servidor {
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -47,24 +60,36 @@ fn reproducir(trazas: &[&str]) -> Servidor {
             };
             let p =
                 WireMessage::decode(b64.decode(p.as_str().unwrap()).unwrap().as_slice()).unwrap();
-            let nombre = p.name.trim_start_matches(PREFIJO_PETICION).to_string();
+            let nombre = clave(
+                p.name.trim_start_matches(PREFIJO_PETICION),
+                &p.wrapped_message,
+            );
             cola.entry(nombre).or_default().push_back((
                 e["estado"].as_u64().unwrap() as u16,
                 b64.decode(r.as_str().unwrap()).unwrap(),
             ));
         }
     }
+    // Una tabla que no se grabó: el servidor contesta con las columnas de otra, y quien lee filtra por
+    // nombre exacto y no la encuentra (lo que haría un `getColumns` real de una tabla que no existe).
+    let ajena = cola
+        .iter()
+        .find(|(k, _)| k.starts_with("ColumnsRequest:"))
+        .and_then(|(_, q)| q.front().cloned());
     let cola = Mutex::new(cola);
     Servidor::arrancar(move |r| {
         if let Some((estado, cuerpo)) = cola
             .lock()
             .unwrap()
-            .get_mut(&r.nombre)
+            .get_mut(&clave(&r.nombre, &r.mensaje))
             .and_then(|q| q.pop_front())
         {
             return Some(Respuesta { estado, cuerpo });
         }
         match r.nombre.as_str() {
+            "ColumnsRequest" if ajena.is_some() => ajena
+                .clone()
+                .map(|(estado, cuerpo)| Respuesta { estado, cuerpo }),
             "CloseStatementRequest" => Some(Respuesta::avatica(
                 200,
                 "CloseStatementResponse",
@@ -340,4 +365,187 @@ fn la_contrasena_no_sale_en_el_error_de_una_url_mala() {
 fn las_capacidades_que_se_declaran() {
     let c: Capacidades = Phoenix::CAPACIDADES;
     assert_eq!(c.conector, "ore-read-phoenix");
+}
+
+// ── M3 · el catálogo, con la traza `catalogo_completo` (getTables de todo y getColumns de cada una) ──
+
+fn catalogo_de(url: &str) -> Result<ore_driver::catalogo::Catalogo, String> {
+    let texto = ore_phoenix::verbos::catalogo(url, "phoenix")?;
+    Ok(ore_driver::catalogo::Catalogo::leer(&texto).expect("el lector del catálogo lo entiende"))
+}
+
+fn nombres(c: &ore_driver::catalogo::Catalogo) -> Vec<&str> {
+    c.tablas.iter().map(|t| t.nombre.as_str()).collect()
+}
+
+#[test]
+fn el_catalogo_trae_tablas_y_vistas_sin_el_sistema_ni_indices_ni_vistas_de_inquilino() {
+    let s = reproducir(&["catalogo_completo"]);
+    let c = catalogo_de(&url(&s)).expect("catálogo");
+    let n = nombres(&c);
+    for esperado in [
+        "SUELTA",
+        "ORE_X0.PEDIDOS",
+        "ORE_X0.PEDIDOS_CERRADOS",
+        "ORE_X0.SALADA",
+        "ORE_X0.INQUILINOS",
+        "ORE_X0.TIPOS",
+        "ORE_X0.minusculas",
+        "ORE_X0_AJENO.SECRETOS",
+    ] {
+        assert!(n.contains(&esperado), "falta {esperado}: {n:?}");
+    }
+    // Ni el catálogo de Phoenix, ni un índice, ni las vistas de inquilino que `getColumns` no ve.
+    assert!(
+        !n.iter()
+            .any(|x| x.starts_with("SYSTEM") || x.contains("IDX_") || x.contains("VISTA_T")),
+        "{n:?}"
+    );
+    // Las sin esquema primero, luego por esquema y nombre.
+    let con_esquema = n.iter().position(|x| x.contains('.')).unwrap();
+    assert!(n[..con_esquema].contains(&"SUELTA"), "{n:?}");
+    assert!(n[con_esquema..].iter().all(|x| x.contains('.')), "{n:?}");
+    let resto = n[con_esquema..].to_vec();
+    let mut ordenado = resto.clone();
+    ordenado.sort();
+    assert_eq!(resto, ordenado);
+}
+
+#[test]
+fn la_tabla_del_catalogo_lleva_tipos_clave_y_las_dos_caras() {
+    let s = reproducir(&["catalogo_completo"]);
+    let c = catalogo_de(&url(&s)).unwrap();
+    let t = |n: &str| c.tablas.iter().find(|t| t.nombre == n).unwrap();
+    let pedidos = t("ORE_X0.PEDIDOS");
+    assert_eq!(pedidos.clave, ["ID"]);
+    assert_eq!(pedidos.clase, "table");
+    let col = |t: &ore_driver::catalogo::Tabla, n: &str| {
+        t.columnas.iter().find(|k| k.nombre == n).unwrap().clone()
+    };
+    assert_eq!(
+        col(pedidos, "IMPORTE").tipo.as_deref(),
+        Some("Decimal<12, 2>")
+    );
+    assert_eq!(col(pedidos, "CREADO").tipo.as_deref(), Some("DateTimeTz"));
+    assert!(col(pedidos, "ID").obligatoria && !col(pedidos, "CLIENTE").obligatoria);
+    // El tipo de Phoenix, tal cual.
+    let tipos = t("ORE_X0.TIPOS");
+    assert_eq!(col(tipos, "T_UINT").origen.as_deref(), Some("UNSIGNED_INT"));
+    assert_eq!(col(tipos, "T_UINT").tipo.as_deref(), Some("Integer"));
+    assert_eq!(
+        col(tipos, "T_AINT").origen.as_deref(),
+        Some("INTEGER ARRAY")
+    );
+    assert_eq!(tipos.clave, ["K1", "K2"]);
+    // Una vista es una vista; el nombre en minúsculas citado se conserva tal cual.
+    assert_eq!(t("ORE_X0.PEDIDOS_CERRADOS").clase, "view");
+    assert_eq!(
+        col(t("ORE_X0.minusculas"), "Mixta").origen.as_deref(),
+        Some("VARCHAR")
+    );
+    // Las dos caras: no empuja nada (M4) y leer entero es caro; sin cambios.
+    let lee = pedidos.lee.clone().unwrap().jcs();
+    assert!(
+        lee.contains("\"predicatePushdown\":[]") && lee.contains("\"fullScan\":\"expensive\""),
+        "{lee}"
+    );
+    assert_eq!(
+        pedidos.cambia.clone().unwrap().jcs(),
+        r#"{"mode":"none","witness":"none"}"#
+    );
+    // No se inventa un número que el `EXPLAIN` no sabe dar (X0 §3.9).
+    assert!(c.tablas.iter().all(|t| t.filas_estimadas.is_none()));
+}
+
+#[test]
+fn si_la_url_nombra_un_esquema_solo_se_cataloga_ese() {
+    let s = reproducir(&["catalogo_completo"]);
+    let c = catalogo_de(&format!("{}/ORE_X0", url(&s))).unwrap();
+    let n = nombres(&c);
+    assert!(n.contains(&"ORE_X0.PEDIDOS"));
+    assert!(
+        n.iter().all(|x| x.starts_with("ORE_X0.")),
+        "ni `SUELTA` ni `ORE_X0_AJENO`: {n:?}"
+    );
+}
+
+#[test]
+fn explorar_lista_los_esquemas_y_dice_lo_que_recorre() {
+    let s = reproducir(&["catalogo_completo"]);
+    let out =
+        ore_phoenix::verbos::explorar(&format!(r#"{{"url":"{}"}}"#, url(&s))).expect("explorar");
+    assert!(
+        out.contains("\"ORE_X0\"") && out.contains("\"ORE_X0_AJENO\""),
+        "{out}"
+    );
+    assert!(!out.contains("\"nombre\": \"SYSTEM\""), "{out}");
+    assert!(out.contains("sin esquema"), "{out}");
+}
+
+#[test]
+fn si_ninguna_tabla_se_deja_catalogar_es_un_error_que_lo_dice() {
+    // Todo lo que `getTables` lista, `getColumns` lo niega (como una base de solo vistas de inquilino).
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let texto = std::fs::read_to_string(format!("{CARPETA}/catalogo_completo.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&texto).unwrap();
+    let mut tablas = None;
+    let mut negada = None;
+    for e in json.as_array().unwrap() {
+        let (Some(p), Some(r)) = (e.get("peticion"), e.get("respuesta")) else {
+            continue;
+        };
+        let p = WireMessage::decode(b64.decode(p.as_str().unwrap()).unwrap().as_slice()).unwrap();
+        let r = b64.decode(r.as_str().unwrap()).unwrap();
+        let estado = e["estado"].as_u64().unwrap() as u16;
+        if p.name.ends_with("TablesRequest") && tablas.is_none() {
+            tablas = Some((estado, r));
+        } else if p.name.ends_with("ColumnsRequest") && estado == 500 && negada.is_none() {
+            negada = Some((estado, r));
+        }
+    }
+    let (tablas, negada) = (tablas.unwrap(), negada.unwrap());
+    let s = Servidor::arrancar(move |r| match r.nombre.as_str() {
+        "TablesRequest" => Some(Respuesta {
+            estado: tablas.0,
+            cuerpo: tablas.1.clone(),
+        }),
+        "ColumnsRequest" => Some(Respuesta {
+            estado: negada.0,
+            cuerpo: negada.1.clone(),
+        }),
+        otro => match otro {
+            "OpenConnectionRequest" => Some(Respuesta::avatica(
+                200,
+                "OpenConnectionResponse",
+                &ore_avatica::proto::OpenConnectionResponse::default(),
+            )),
+            _ => Some(Respuesta::avatica(
+                200,
+                "CloseConnectionResponse",
+                &CloseConnectionResponse::default(),
+            )),
+        },
+    });
+    let e = catalogo_de(&url(&s)).unwrap_err();
+    assert!(e.contains("ninguna de las") && e.contains("tenant="), "{e}");
+    assert!(e.contains("Phoenix 1012"), "el motivo literal: {e}");
+}
+
+#[test]
+fn el_catalogo_no_enseña_la_contrasena_si_la_conexion_falla() {
+    // Puerto 1: nadie escucha.
+    let e =
+        ore_phoenix::verbos::catalogo("phoenix://ana:secreto-9@127.0.0.1:1?tls=true", "phoenix")
+            .unwrap_err();
+    assert!(!e.contains("secreto-9"), "{e}");
+    let e =
+        ore_phoenix::verbos::explorar(r#"{"url":"phoenix://ana:secreto-9@127.0.0.1:1?tls=true"}"#)
+            .unwrap_err();
+    assert!(!e.contains("secreto-9"), "{e}");
+}
+
+#[test]
+fn catalogo_sin_url_se_dice() {
+    let e = ore_phoenix::verbos::catalogo("", "phoenix").unwrap_err();
+    assert!(e.contains("stdin"), "{e}");
 }

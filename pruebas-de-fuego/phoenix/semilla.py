@@ -52,6 +52,16 @@ sql("UPSERT INTO ore_x0.tipos (k1, k2) VALUES ('b', 2)")  # todo nulo salvo la c
 sql("""CREATE TABLE IF NOT EXISTS ore_x0.pedidos (
     id BIGINT NOT NULL PRIMARY KEY, cliente VARCHAR, importe DECIMAL(12,2),
     creado TIMESTAMP, estado VARCHAR)""")
+# ── M3 · lo que el catálogo tiene que saber distinguir ───────────────────────
+# un índice (getTables lo da como INDEX: no es una tabla; uno sobre tabla inmutable, que no pide el codec WAL de
+# los índices mutables), una tabla sin esquema y una en minúsculas citada
+sql("CREATE TABLE IF NOT EXISTS ore_x0.inmutable (id BIGINT NOT NULL PRIMARY KEY, estado VARCHAR) IMMUTABLE_ROWS = true")
+sql("CREATE INDEX IF NOT EXISTS idx_inmutable_estado ON ore_x0.inmutable (estado)")
+sql("CREATE TABLE IF NOT EXISTS suelta (id BIGINT NOT NULL PRIMARY KEY, v VARCHAR)")
+sql('CREATE TABLE IF NOT EXISTS ore_x0."minusculas" (id BIGINT NOT NULL PRIMARY KEY, "Mixta" VARCHAR)')
+sql("UPSERT INTO suelta VALUES (1, 'sin esquema')")
+sql("""UPSERT INTO ore_x0."minusculas" VALUES (1, 'citada')""")
+
 cur.execute("SELECT COUNT(*) FROM ore_x0.pedidos")
 if cur.fetchone()[0] == 0:
     for i in range(1, 1025):

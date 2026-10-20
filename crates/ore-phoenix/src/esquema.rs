@@ -156,6 +156,61 @@ pub fn desde_metadatos(
     }))
 }
 
+/// Lo que `getTables` dice de una tabla o vista, antes de pedirle sus columnas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Objeto {
+    pub esquema: Option<String>,
+    pub nombre: String,
+    pub vista: bool,
+    /// Los cubos de la sal (`SALT_BUCKETS`), si la tabla la lleva.
+    pub sal: Option<u32>,
+    pub multi_tenant: bool,
+}
+
+/// Las tablas y vistas de un `getTables`, sin el esquema `SYSTEM` (el catálogo de Phoenix), ordenadas por
+/// esquema y nombre. `TABLE_TYPE` distinto de `TABLE`/`VIEW` (un índice, una tabla del sistema) no entra.
+pub fn objetos_desde(m: &ore_avatica::Tabla) -> Result<Vec<Objeto>, String> {
+    let idx = |n: &str| {
+        m.indice(n).ok_or_else(|| {
+            format!("`getTables` no trae la columna `{n}`: no es un Phoenix que se entienda")
+        })
+    };
+    let (i_esq, i_tab, i_tipo) = (idx("TABLE_SCHEM")?, idx("TABLE_NAME")?, idx("TABLE_TYPE")?);
+    let (i_sal, i_mt) = (m.indice("SALT_BUCKETS"), m.indice("MULTI_TENANT"));
+    let mut v: Vec<Objeto> = Vec::new();
+    for f in &m.filas {
+        let Valor::Texto(nombre) = &f[i_tab] else {
+            continue;
+        };
+        let esquema = match &f[i_esq] {
+            Valor::Texto(s) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        if esquema.as_deref() == Some("SYSTEM") {
+            continue;
+        }
+        let vista = match &f[i_tipo] {
+            Valor::Texto(t) if t == "TABLE" => false,
+            Valor::Texto(t) if t == "VIEW" => true,
+            _ => continue,
+        };
+        let sal = i_sal.and_then(|i| match &f[i] {
+            Valor::Entero(n) if *n > 0 => Some(*n as u32),
+            _ => None,
+        });
+        let multi_tenant = i_mt.is_some_and(|i| matches!(&f[i], Valor::Bool(true)));
+        v.push(Objeto {
+            esquema,
+            nombre: nombre.clone(),
+            vista,
+            sal,
+            multi_tenant,
+        });
+    }
+    v.sort_by(|a, b| (&a.esquema, &a.nombre).cmp(&(&b.esquema, &b.nombre)));
+    Ok(v)
+}
+
 #[cfg(test)]
 pub(crate) mod pruebas {
     use super::*;
@@ -405,5 +460,59 @@ pub(crate) mod pruebas {
         };
         let e = desde_metadatos(None, "T", &m).unwrap_err();
         assert!(e.contains("TABLE_SCHEM"), "{e}");
+    }
+
+    #[test]
+    fn los_objetos_de_get_tables_sin_el_sistema_ni_los_indices() {
+        let col = |n: &str| ColAvatica {
+            nombre: n.into(),
+            ..col("x")
+        };
+        let fila =
+            |e: Valor, n: &str, ty: &str, sal: Valor, mt: Valor| vec![e, t(n), t(ty), sal, mt];
+        let m = ore_avatica::Tabla {
+            columnas: [
+                "TABLE_SCHEM",
+                "TABLE_NAME",
+                "TABLE_TYPE",
+                "SALT_BUCKETS",
+                "MULTI_TENANT",
+            ]
+            .into_iter()
+            .map(col)
+            .collect(),
+            filas: vec![
+                fila(
+                    t("SYSTEM"),
+                    "CATALOG",
+                    "TABLE",
+                    Valor::Nulo,
+                    Valor::Bool(false),
+                ),
+                fila(t("ORE_X0"), "SALADA", "TABLE", n(4), Valor::Bool(false)),
+                fila(t("ORE_X0"), "IDX", "INDEX", Valor::Nulo, Valor::Nulo),
+                fila(t("ORE_X0"), "INQ", "TABLE", Valor::Nulo, Valor::Bool(true)),
+                fila(t("ORE_X0"), "CERRADOS", "VIEW", Valor::Nulo, Valor::Nulo),
+                fila(
+                    Valor::Nulo,
+                    "SUELTA",
+                    "TABLE",
+                    Valor::Nulo,
+                    Valor::Bool(false),
+                ),
+            ],
+        };
+        let o = objetos_desde(&m).unwrap();
+        let nombres: Vec<_> = o.iter().map(|x| x.nombre.as_str()).collect();
+        assert_eq!(nombres, ["SUELTA", "CERRADOS", "INQ", "SALADA"]);
+        assert_eq!(o[0].esquema, None);
+        assert!(o[1].vista && !o[2].vista);
+        assert!(o[2].multi_tenant && !o[3].multi_tenant);
+        assert_eq!((o[3].sal, o[2].sal), (Some(4), None));
+        let sin = ore_avatica::Tabla {
+            columnas: vec![],
+            filas: vec![],
+        };
+        assert!(objetos_desde(&sin).unwrap_err().contains("TABLE_SCHEM"));
     }
 }

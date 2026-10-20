@@ -272,3 +272,67 @@ fn check_testigo_y_cambio() {
         .is_err()
     );
 }
+
+// ── M3 · el catálogo contra el laboratorio ─────────────────────────────────────────────────────────────
+
+fn catalogo_lab(url: &str) -> ore_driver::catalogo::Catalogo {
+    let texto = verbos::catalogo(url, "phoenix").expect("catálogo");
+    ore_driver::catalogo::Catalogo::leer(&texto).expect("lo entiende el lector")
+}
+
+#[test]
+fn el_catalogo_del_laboratorio_tiene_lo_que_hay_y_nada_de_lo_que_no_se_lee() {
+    let Some(u) = url() else { return };
+    let c = catalogo_lab(&u);
+    let n: Vec<&str> = c.tablas.iter().map(|t| t.nombre.as_str()).collect();
+    for esperado in [
+        "SUELTA",
+        "ORE_X0.PEDIDOS",
+        "ORE_X0.PEDIDOS_CERRADOS",
+        "ORE_X0.SALADA",
+        "ORE_X0.EVENTOS",
+        "ORE_X0.INQUILINOS",
+        "ORE_X0.INMUTABLE",
+        "ORE_X0.minusculas",
+        "ORE_X0_AJENO.SECRETOS",
+    ] {
+        assert!(n.contains(&esperado), "falta {esperado}: {n:?}");
+    }
+    // Ni el sistema, ni el índice, ni las vistas de inquilino (sin `tenant=` no se leen).
+    assert!(
+        !n.iter()
+            .any(|x| x.starts_with("SYSTEM") || x.contains("IDX_") || x.contains("VISTA_T")),
+        "{n:?}"
+    );
+    // Lo que cataloga, se lee: la tabla con minúsculas citadas y la sin esquema.
+    for objeto in ["ORE_X0.minusculas", "SUELTA"] {
+        let p = peticion(objeto, &[("id", "ID")]).unwrap();
+        assert!(leer(&p).expect(objeto).1 >= 1, "{objeto}");
+    }
+}
+
+#[test]
+fn con_tenant_las_vistas_de_inquilino_entran_en_el_catalogo() {
+    let Some(u) = url() else { return };
+    let c = catalogo_lab(&format!("{u}?tenant=t1"));
+    let n: Vec<&str> = c.tablas.iter().map(|t| t.nombre.as_str()).collect();
+    assert!(n.contains(&"ORE_X0.VISTA_T1"), "{n:?}");
+    let v = c
+        .tablas
+        .iter()
+        .find(|t| t.nombre == "ORE_X0.VISTA_T1")
+        .unwrap();
+    assert_eq!(v.clase, "view");
+}
+
+#[test]
+fn un_esquema_en_la_url_limita_el_catalogo_y_explorar_lo_lista() {
+    let Some(u) = url() else { return };
+    let c = catalogo_lab(&format!("{u}/ORE_X0"));
+    assert!(c.tablas.iter().all(|t| t.nombre.starts_with("ORE_X0.")));
+    let out = verbos::explorar(&format!(r#"{{"url":"{u}"}}"#)).expect("explorar");
+    assert!(
+        out.contains("\"ORE_X0\"") && out.contains("\"ORE_X0_AJENO\""),
+        "{out}"
+    );
+}

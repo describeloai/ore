@@ -82,6 +82,26 @@ def catalogo():
     c.close()
 
 
+def catalogo_completo():
+    """Lo que hace `catalogo` de ore-phoenix: `getTables` de todo (TABLE y VIEW) y `getColumns` de cada una,
+    en el orden de (esquema, nombre) con las sin esquema primero. La vista de inquilino contesta con su error."""
+    c, cl, cid = abrir()
+    rs = cl.get_tables(cid, typeList=["TABLE", "VIEW"])
+    cols = [x.column_name for x in rs.signature.columns]
+    objetos = []
+    for r in rs.first_frame.rows:
+        v = [x.scalar_value.string_value for x in r.value]
+        e, n = v[cols.index("TABLE_SCHEM")], v[cols.index("TABLE_NAME")]
+        if e != "SYSTEM":
+            objetos.append((e, n))
+    for e, n in sorted(objetos, key=lambda o: (o[0] != "", o[0], o[1])):
+        try:
+            cl.get_columns(cid, schemaPattern=e, tableNamePattern=n)
+        except Exception:
+            pass  # el error queda grabado, que es lo que se quiere
+    c.close()
+
+
 def error_tabla():
     c, cl, cid = abrir()
     sid = cl.create_statement(cid)
@@ -105,6 +125,6 @@ def tiempo_limite():
     cl.prepare_and_execute(cid, sid, "SELECT COUNT(*) FROM ore_x0.pedidos a, ore_x0.pedidos b WHERE a.importe = b.importe", first_frame_max_size=10)
 
 
-for nombre, f in [("lectura_paginada", lectura_paginada), ("todos_los_tipos", todos_los_tipos), ("catalogo", catalogo),
+for nombre, f in [("lectura_paginada", lectura_paginada), ("todos_los_tipos", todos_los_tipos), ("catalogo", catalogo), ("catalogo_completo", catalogo_completo),
                   ("error_tabla", error_tabla), ("statement_perdido", statement_perdido), ("tiempo_limite", tiempo_limite)]:
     traza(nombre, f)

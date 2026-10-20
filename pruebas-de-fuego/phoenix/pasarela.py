@@ -109,8 +109,6 @@ c, out, err = directo("testigo", json.dumps({"url": URL}))
 comprobar("testigo: none", json.loads(out).get("modo") == "none", out.decode())
 c, out, err = directo("cambio", json.dumps({"url": URL, "objeto": "ORE_X0.PEDIDOS"}))
 comprobar("cambio: no respalda", json.loads(out).get("respalda") is False, out.decode())
-c, out, err = directo("catalogo", URL)
-comprobar("catalogo: dice que es de M3 y no se inventa un catálogo", c != 0 and "M3" in err and not out, err[:200])
 
 print("== 4 · la pasarela")
 carpeta = tempfile.mkdtemp(prefix="ore-conectores-")
@@ -118,6 +116,20 @@ shutil.copy(LECTOR, os.path.join(carpeta, "ore-read-phoenix" + (".exe" if LECTOR
 puerto = 18099
 g = subprocess.Popen([PASARELA, "--escucha", f"127.0.0.1:{puerto}", "--conectores", carpeta],
                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+# ── M3 · el catálogo y explorar, por el binario ──────────────────────────────────────────────────────────
+rc, out, err = directo("catalogo", URL)
+cat = json.loads(out) if rc == 0 else {}
+nombres = [t["name"] for t in cat.get("tables", [])]
+comprobar("catalogo: sale con 0 y trae las tablas y vistas", rc == 0 and "ORE_X0.PEDIDOS" in nombres and "ORE_X0.PEDIDOS_CERRADOS" in nombres, f"{rc} {err[:200]}")
+comprobar("catalogo: ni el sistema, ni índices, ni vistas de inquilino", not any(n.startswith("SYSTEM") or "IDX_" in n or "VISTA_T" in n for n in nombres), str(nombres))
+comprobar("catalogo: lo que no cataloga lo dice en stderr, con su salida", "VISTA_T1" in err and "tenant=" in err and "SALADA" in err, err[:300])
+comprobar("catalogo: la tabla lleva tipo de Phoenix y clave", any(t["name"] == "ORE_X0.TIPOS" and t.get("primaryKey") == ["K1", "K2"] and any(c.get("sourceType") == "UNSIGNED_INT" for c in t["columns"]) for t in cat.get("tables", [])), "")
+rc, out, err = directo("explorar", json.dumps({"url": URL}))
+comprobar("explorar: lista los esquemas", rc == 0 and b"ORE_X0_AJENO" in out, f"{rc} {err[:200]}")
+rc, out, err = directo("catalogo", "phoenix://ana:" + SECRETO + "@127.0.0.1:1?tls=true")
+comprobar("catalogo: la contraseña no sale si la conexión falla", rc != 0 and SECRETO not in err and SECRETO.encode() not in out, err[:200])
 
 
 def http_(metodo, ruta, cuerpo=None):

@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**M1 y M2 hechos:** el cliente Avatica (`ore-avatica`) y el conector `ore-read-phoenix` (§6). **Sin construir:** el catálogo (M3), los filtros y el kit (M4). **Sin medir:** autenticación, TLS, permisos,
+**M1, M2 y M3 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix` y su catálogo (§6). **Sin construir:** los filtros y el kit (M4). **Sin medir:** autenticación, TLS, permisos,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -267,7 +267,7 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 | **X0 · medir** | **Hecho (2026-10-20):** laboratorio reproducible, semilla, trazas grabadas, este documento. |
 | **M1 · el cliente Avatica** | **Hecho (2026-10-20)**, ver abajo. `ore-avatica`: abrir, ejecutar, paginar, cerrar, metadatos, errores; los cuatro invariantes; servidor falso con las trazas; contra el PQS real. |
 | **M2 · leer** | **Hecho (2026-10-20)**, ver abajo. `ore-phoenix` + `ore-read-phoenix`: tipos a Arrow, `leer` en streaming con memoria acotada, `check`, `servir`; `-p`/`TODOS`/`COPY` (la guarda `lista_de_origenes`); pasarela. |
-| **M3 · catálogo** | `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (decidir: ocultar las vistas de inquilino o pedir `TenantId`), permisos si el PQS los da. |
+| **M3 · catálogo** | **Hecho (2026-10-20)**, ver abajo. `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (se saltan con aviso; `tenant=` las abre). Permisos: sin medir. |
 | **M4 · filtros y estimar** | Traducción exacta, residual, vocabulario cerrado, `estimar` honesto; el kit (14 casos); `ci.yml` con el laboratorio. |
 | **M5 · rendimiento y robustez** | Partición por rangos de la clave en paralelo; tiempos límite; cierre de statements; PQS caído, statement perdido, reintentos. |
 | **M6 · seguridad** | BASIC/DIGEST solo sobre HTTPS; TLS con el diseño de 0070; secretos fuera de los errores; el mínimo de TLS 1.2. |
@@ -388,6 +388,34 @@ reproducirlo todavía con esa memoria.
 sale con 143 tras avisar): el PQS lo retiene hasta que caduque; cerrar el statement al cancelar es de M5. Y el
 conector **no ha corrido en el CI** todavía: la parte sin laboratorio (unitarias, las trazas, la guarda) sí; el
 laboratorio y `pasarela.py`, no.
+
+### M3 · hecho (2026-10-20)
+
+`catalogo` y `explorar` en `ore-phoenix` (`verbos.rs`), sin crates nuevos.
+
+- **Cómo recorre.** Un `getTables` (`TABLE` y `VIEW`) da los objetos; después **un `getColumns` por tabla**, porque
+  el de un esquema entero falla con `1012` si hay una sola vista de inquilino (§3.5). Sin `SYSTEM`, sin índices
+  (`TABLE_TYPE = INDEX`), ordenado: las tablas sin esquema primero, luego por esquema y nombre. Si la URL nombra un
+  esquema, solo ese (igualdad exacta: el patrón trata `_` como comodín).
+- **Lo que trae cada tabla.** Nombre `ESQUEMA.TABLA` (con las minúsculas citadas tal cual), tipo de OOS
+  (`type`), el de Phoenix (`sourceType`: `UNSIGNED_INT`, `INTEGER ARRAY`…), clave primaria por `KEY_SEQ`, obligatoria
+  si la clave o `NOT NULL`, `kind` `table`/`view`, `reads` (`predicatePushdown: []`, `fullScan: expensive`) y
+  `changes: none/none`. **No lleva `filas_estimadas`**: el `EXPLAIN` se equivocó ×3,6 (§3.9); es de `estimar` (M4).
+- **Las vistas de inquilino** se saltan con un aviso en stderr que nombra la tabla, el motivo literal de Phoenix y la
+  salida (`tenant=`). Con `tenant=` entran. Una tabla **multi-tenant** se cataloga con un aviso: sin `tenant=` lee los
+  inquilinos de todos. Otros avisos: sal (cubos) y columnas `DATE` (se leen como `DateTimeTz`).
+- **Una tabla que no se deja catalogar no tumba el catálogo**; solo falla si no se cataloga ninguna.
+- **`explorar`** lista los esquemas con tablas o vistas y dice si hay tablas sin esquema.
+- **Permisos: sin medir.** El laboratorio no tiene ACL de HBase; `catalogo` lista lo que `getTables` enseña.
+
+**Pruebas.** Unitarias (`objetos_desde`); 7 con la traza real `catalogo_completo` (18 intercambios, con los dos `500` de
+las vistas de inquilino; la reproducción casa `getColumns` por tabla, no por orden); 3 contra el laboratorio (que
+lo catalogado se lee; `tenant=`; esquema en la URL); la pasarela (6 comprobaciones, 39 en total). El laboratorio gana
+una tabla sin esquema, una en minúsculas citada y una tabla inmutable con índice (el índice mutable pide el códec WAL
+en `hbase-site.xml`). **Cuatro sabotajes, los cuatro muerden:** sin el filtro `SYSTEM`, sin el filtro de esquema exacto,
+una tabla mala que tumba el catálogo, y `obligatoria` sin mirar `NOT NULL`.
+
+**Lo que M3 no hace, dicho:** filtros y `estimar` (M4); permisos; metadatos de `ROW_TIMESTAMP` (M7).
 
 ## 7. Fuera de este producto
 

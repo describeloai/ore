@@ -4,7 +4,7 @@
 //! Los errores de Phoenix llegan por el PQS **todos con código −1 y estado `00000`**: el de Phoenix va dentro
 //! del texto (`ERROR 1012 (42M03): Table undefined…`). [`error_sql`] lo extrae y [`fallo_de`] lo clasifica.
 
-use crate::esquema::{Tabla, desde_metadatos};
+use crate::esquema::{Objeto, Tabla, desde_metadatos, objetos_desde};
 use crate::url::{Destino, analizar};
 use ore_avatica::Error;
 use ore_driver::{Codigo, Fallo};
@@ -52,6 +52,22 @@ impl Conexion {
             };
             Fallo::new(Codigo::Objeto, format!("la tabla `{objeto}` no existe en Phoenix (los nombres distinguen mayúsculas: `ESQUEMA.TABLA`)"))
         })
+    }
+
+    /// Las tablas y vistas (`getTables`) del esquema que nombra la URL, o de todos. Sin columnas: esas se
+    /// piden de una en una (`tabla`), porque un `getColumns` de un esquema falla entero si alguna vista de
+    /// inquilino lo ensucia (X0 §3.5).
+    pub fn objetos(&self) -> Result<Vec<Objeto>, Fallo> {
+        let m = self
+            .avatica
+            .tablas(self.destino.esquema.as_deref(), None, &["TABLE", "VIEW"])
+            .map_err(fallo_de)?;
+        let mut o = objetos_desde(&m).map_err(|e| Fallo::new(Codigo::Origen, e))?;
+        // El patrón trata `_` como comodín: solo vale el esquema exacto.
+        if let Some(e) = &self.destino.esquema {
+            o.retain(|x| x.esquema.as_deref() == Some(e.as_str()));
+        }
+        Ok(o)
     }
 
     /// Ejecuta una consulta y devuelve su lectura frame a frame.
