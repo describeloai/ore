@@ -134,11 +134,16 @@ solo match, agregados si hay varios. Sale un Dataset nuevo; las filas de *X* no 
 ## 6. El plan
 
 ```
- C0 vara y sondas ───────────────────┐
- C1·1 SQL ──┐                         │
- C1·2 Python ├─ (en paralelo con C0)  ├─► C2 motor (con Spark) ─► C3 join a escala ─► C4 enriquecer ─► cierre
- C1·3 Java ─┘                         │
+ C0 vara y sondas ───────────────────┐                          ┌─► C3 join a escala ──┐
+ C1·1 SQL ──┐                         │                          │       (C3·d mide los dos)
+ C1·2 Python ├─ (en paralelo con C0)  ├─► C2 motor (con Spark) ──┤                      ├─► C4 enriquecer ─► cierre
+ C1·3 Java ─┘                         │                          └─► CE Build elástico ─┘
 ```
+
+**C3 y CE se separan por responsabilidad.** C3 es **qué** se calcula bien en un *join* espacial: las
+reglas del planificador (difundir, `LEFT JOIN`, la rejilla, Q2) y la vara. CE es **dónde y con cuántos
+nodos** corre cualquier Build pesado, con sus defensas de memoria y de disco. Una regla de C3 vale con un
+nodo o con seis; CE no sabe de geometría. La vara (C3·d) mide los dos juntos.
 
 C1·1–C1·3 son trabajo de framework y no esperan a ninguna decisión de motor: van en paralelo con C0.
 C2 (con lo que era C1·4), C3 y C4 esperan a C0. De E1 en 0066: E1·1 es C1·1, E1·2 es C1·2 (casi entero
@@ -923,25 +928,6 @@ producto cartesiano. El fallo de C0 a los 8 s era eso mismo, sin memoria. La ree
 resultado y usa el índice. Además, **cancelar un producto cartesiano no para sus tareas**, que son un
 bucle de CPU: la medida siguiente salió contaminada y hubo que repetirla sola.
 
-**3 · Spark en varios nodos dentro del modelo de un Build** (`multinodo.sh`). Un **Job indexado** de N
-pods, uno por nodo, con un Service sin IP para que se encuentren:
-- el pod 0 lleva el *master* de Spark *standalone* y el *driver*;
-- todos llevan un *worker*;
-- `successPolicy` (`succeededIndexes: "0"`, GA en Kubernetes 1.35) da el Job por terminado cuando
-  acaba el pod 0, y Kubernetes cierra los demás.
-
-No hace falta instalar nada en el clúster: ni Spark Operator, ni JobSet, ni permisos para crear pods
-desde el *driver*. La imagen ya trae `spark-class`. 200 M puntos:
-
-| caso | 1 nodo | 2 nodos | aceleración |
-|---|---|---|---|
-| sesión con todos los ejecutores | 7,3 s | 7,2 s | — |
-| 6c (× 20 k buffers), difundido | 116,3 s | **63,6 s** | **1,83×** |
-| «municipios» (× 8 000 detallados), difundido | 134,7 s | **72,5 s** | **1,86×** |
-
-Escala casi lineal. Los pares cambian unas décimas por mil entre corridas porque los puntos son
-`rand()` y salen distintos según el reparto; no es un error.
-
 **4 · El coste de medir a escala 100.** El dinero no limita (*spot* `n2`: 0,00788 $/vCPU·h y
 0,001054 $/GiB·h); la cuota sí, con 28 de 32 vCPU libres:
 
@@ -959,8 +945,8 @@ C0 solo quedan los resultados en el bucket: los datos se borraron con su pool.
 |---|---|
 | **C3·a · la regla de difusión** | en un *join* espacial, ORE difunde el lado que tenga **pocas filas** (en el catálogo están las cuentas de cada dataset), sin mirar sus bytes en disco. Se pone con `sedona.join.autoBroadcastJoinThreshold` o con la pista `broadcast`. El techo, medido: cuánta memoria se come el índice difundido de un lado grande |
 | **C3·b · el `LEFT JOIN` espacial** | ORE lo reescribe en la reescritura que ya hace para Spark (`consulta_para_spark`, 2b): el *join* interno más las filas sin pareja (*anti join* por clave). Mientras Sedona no lo indexe |
-| **C3·c · el Build en varios nodos** | el Build pesado pasa a ser el Job indexado de N pods de arriba; un Job `batch/v1` de N pods ya lo admite Kueue de una vez. Hay que subir `cq-<celda>-pesado` y la cuota del inquilino a N × 7 CPU / 48 GiB, y el pool a N nodos |
-| **C3·d · la vara a escala 100** | SpatialBench entero con C3·a a C3·c, con **la opción A** (2 × `n2-highmem-8`, el pool de hoy; elegida el 2026-10-19). El objetivo de C0·5 era con 32 vCPU: se mide con 16 y se dice |
+| ~~C3·c · el Build en varios nodos~~ → **CE, apartado propio** | el Build pesado pasa a ser el Job indexado de N pods de arriba; un Job `batch/v1` de N pods ya lo admite Kueue de una vez. Hay que subir `cq-<celda>-pesado` y la cuota del inquilino a N × 7 CPU / 48 GiB, y el pool a N nodos |
+| **C3·d · la vara a escala 100** | SpatialBench entero con C3·a, C3·b y el Build elástico (CE), con **la opción A** (2 × `n2-highmem-8`, el pool de hoy; elegida el 2026-10-19). El objetivo de C0·5 era con 32 vCPU: se mide con 16 y se dice |
 
 **C3·a · difundir lo pequeño (hecho en local, 2026-10-19).** `over()` marca para difundir
 (`F.broadcast`) un dataset **geo** con **≤ 150 000 filas y ≤ 48 MiB**, según el snapshot vigente que da
@@ -1011,240 +997,15 @@ espacial), en el arnés de Spark con la regla puesta (20/20) y en `comprobar.py`
 la exige. **En victor, Q10 con 20 M puntos: 34,3 s** (`RIGHT JOIN`, 44,8 s), con las mismas cuentas. El
 previo, sin ella: más de 300 s.
 
-**C3·c · el Build elástico (DISEÑO, 2026-10-19, sin código).** El primer diseño, un Job de N pods con N
-sacado del historial del Transform, se descartó por reactivo: un Build tenía que fallar o tardar para
-que el siguiente llevara más nodos. Antes de rehacerlo se reunió lo que hace la industria y lo que dan
-Spark, Kueue y GKE (`docs/investigacion/c3c-spark-elastico.md`). Este es el diseño que sale de ahí.
-
-*La idea.* **ORE pone los límites y Spark decide dentro, según la carga**, igual que Databricks,
-Dataproc Serverless o EMR Serverless. El Build arranca con un ejecutor. Si hay tareas esperando, el
-driver pide más (*dynamic allocation*) y el autoescalador de GKE enciende los nodos. Un ejecutor ocioso
-se devuelve y el nodo vacío se apaga. El mismo Build puede usar un nodo para leer y dos para el join.
-**Los nodos dan velocidad, no evitan el OOM**: eso lo hacen las defensas de memoria del punto 4, que
-valen igual con un nodo que con seis.
-
-*Lo que no cambia.* Las sesiones interactivas y los Previews pesados siguen en un pod con `local[*]`.
-El lago, el SDK, `over()`, C3·a y C3·b quedan como están.
-
-*1 · Las piezas de un Build pesado*
-
-| pieza | dónde | qué es |
-|---|---|---|
-| **el driver** | el pod del agente de hoy (`trabajo-<quien>-<hex>`), con menos recursos (2 CPU / 16 GiB) y **en un nodo normal** (D2) | Spark en modo cliente contra `k8s://https://kubernetes.default.svc`; un Service sin IP para él; puertos fijos (7078 driver, 7079 bloques) |
-| **los ejecutores** | pods que crea el driver, en el pool `pesado` (*spot*), uno por nodo: 7 cores / 40 g + *overhead* | imagen `puesto-spark:1` por digest, cuenta `ejecutor` sin token de Kubernetes, dueño el pod del driver (mueren con él) |
-| **los límites** | `ore-serve` al rendir el Build | `minExecutors 1`, `initialExecutors 1`, `maxExecutors = min(nodos del pool, lo que deja la cuota de la celda)`; `executorIdleTimeout 60s`; `shuffleTracking` |
-
-**«ORE decide los nodos», en concreto:** ORE fija el techo (pool y cuota) y el suelo (1). El número de
-cada momento lo decide la carga: las tareas pendientes de Spark. Si se cumplen los 400 M o los 240 s
-del diseño anterior, no es por regla escrita, sino porque la carga los pide.
-
-*2 · Las decisiones*
-
-| | decisión | por qué | lo que se pierde |
-|---|---|---|---|
-| **D1** | ~~los ejecutores, fuera de Kueue~~ → **en Kueue, medido en c0 (punto 7)**. Antes: Kueue admite el driver; a los ejecutores los limitan la `ResourceQuota` de la celda, `maxExecutors` y el máximo del pool | la vía de Kueue para pods sueltos es un apaño que su equipo cerró como «not planned», y `SparkApplication` rechaza el *dynamic allocation*. El pool de ejecutores lo usan solo ejecutores, así que Kueue no se equivoca sobre lo suyo | no hay reparto justo entre celdas: si dos coinciden, la que llegó primero tiene más nodos y la otra espera ejecutores (Spark sigue con los que tiene). El informe lo dice |
-| **D2** | **el driver fuera de *spot***, en un pool normal pequeño (`pesado-driver`: `n2-highmem-4`, 0–1 nodos, dos drivers caben) con su propio sabor de Kueue | perder un ejecutor se recomputa; perder el driver pierde el Build entero. Es lo que recomiendan todas | ~0,25 $/h mientras haya un Build. Cuota: 10 + 4 + 16 = 30 de 32 |
-| **D3** | **si *spot* se lleva un ejecutor, se recomputa** (sin `fallbackStorage` en esta pieza) | con 15 s de aviso no da tiempo a migrar un *shuffle*; `decommission` activado para lo que sí dé tiempo | un Build alcanzado por *spot* tarda más. Si el previo lo mide caro, `fallbackStorage` en GCS va después |
-| **D4** | **`spark.authenticate`** entre el driver y sus ejecutores | la política de red deja que los pods de Spark de una celda se hablen; sin esto, el Build de una persona podría pedir bloques al de otra en la misma celda | nada: es un secreto por aplicación que Spark genera y pasa a sus ejecutores |
-
-*3 · La seguridad: el driver puede crear pods*
-
-El código del cliente corre en el proceso del driver, así que puede usar su permiso. Tres capas:
-1. **Una cuenta propia** del driver pesado (`driver-pesado`), con un `Role` en el namespace: `pods`,
-   `services` y `configmaps` (crear, ver, borrar). Una sesión interactiva no la lleva nunca.
-2. **Una ValidatingAdmissionPolicy** sobre lo que crea esa cuenta, y solo eso:
-   - la imagen `puesto-spark` por digest y la cuenta `ejecutor`, sin token;
-   - volúmenes solo `configMap` y `emptyDir`;
-   - sin `hostNetwork`, sin privilegios ni *capabilities*, `runAsNonRoot`;
-   - límite de memoria ≤ 48 GiB, dueño un Pod, la etiqueta `spark-role: executor` y la tolerancia del
-     pool `pesado`.
-
-   Un Service o un ConfigMap que cree también pasan por ella: solo los de Spark, con su etiqueta.
-3. **Pod Security `restricted`** en el namespace, por si la política tuviera un hueco.
-
-La política no puede comprobar que el dueño sea un driver de verdad. El peor caso es un pod de ejecutor
-falso con nuestra imagen, sin token y dentro de la cuota de su celda: lo mismo que ya puede hacer un
-Build.
-
-*4 · Las defensas contra el OOM* (en `spark-defaults.conf` y `sesion()`, con un nodo o con seis):
-
-| causa | defensa |
-|---|---|
-| un lado difundido grande | C3·a (≤ 150 k filas, ≤ 48 MiB), ya hecho |
-| `collect()` o `toPandas()` grande en el driver | `spark.driver.maxResultSize` acorde al driver (4 g): un error claro, no un `OOMKilled` |
-| sesgo en un join por igualdad | AQE `skewJoin`, activado por defecto |
-| **sesgo en un join espacial** (AQE no lo ve) | `sedona.join.numpartition` según los ejecutores vivos (la guía de Sedona: de 2 a 8 veces las particiones), y KDB-tree. Lo fija el previo, punto 5 |
-| la memoria de Python (UDF) | `spark.executor.pyspark.memory` con un tope, y *overhead* 0,4: lo que se pase falla con un error de Python |
-| particiones grandes | `maxPartitionBytes` 128 MB; AQE junta las pequeñas |
-| un Build sin defensa | el informe dice **qué tarea** se quedó sin memoria y en qué etapa, no solo «OOM» |
-
-*5 · La red* (NetworkPolicy de la celda, fija en la malla, no una por Build):
-- **driver:** recibe en 7078 y 7079 solo de pods `spark-role: executor` de su namespace, y sale además
-  al API server;
-- **ejecutores:** 7079 entre ellos y salida al driver; sin internet, solo Google por la vía privada, como
-  el puesto.
-
-*6 · El informe del Build.* Ejecutores (máximo, media y nodos), cuánto esperó cada uno, si el pool o la
-cuota cortaron (`pidió 4, el pool dio 2`), ejecutores perdidos por *spot*, bytes derramados a disco, y
-el OOM con su tarea si lo hubo. Lo lee el *listener* de Spark del driver; el SDK lo manda con el
-resultado.
-
-*7 · El previo (C3·c0), antes de construir.* En victor, en un namespace de medida con la cuenta, el
-`Role`, la política y la red de arriba copiados; el driver es un Job a mano. Se borra al acabar.
-
-| # | qué se mide | qué decide |
-|---|---|---|
-| 1 | el escalado a mitad de un Build: carga → pod pendiente → nodo → ejecutor | `schedulerBacklogTimeout`, y si compensa |
-| 2 | que la política niega un pod arbitrario creado desde el código y deja pasar el ejecutor | la política, cerrada |
-| 3 | cuánto retiene el *shuffle tracking* un nodo que sobra | `shuffleTracking.timeout` |
-| 4 | expulsar un nodo de ejecutores a mitad | D3 (recomputar) o `fallbackStorage` |
-| 5 | un join espacial sesgado con un ejecutor | `numpartition` y las defensas de Sedona |
-| 6 | una UDF de Python que se pasa de memoria | `pyspark.memory` y el *overhead* |
-| 7 | dos Builds de dos celdas a la vez | lo que dice el informe en D1 |
-| 8 | la imagen del ejecutor en un nodo nuevo | — |
-| 9 | **un Build pequeño** elástico en frío frente al de hoy (un pod) | si el pequeño elástico se queda dentro de 30 s del de hoy, **todo Build es elástico**; si no, los pequeños siguen en un pod y se decide por el tamaño de las entradas |
-
-Y lo que solo se ve con el lago de verdad, en c5:
-- **las credenciales del lago en los ejecutores**: viajan en el `FileIO` de Iceberg. Si refrescarlas
-  llama al catálogo desde un ejecutor, `IdentidadDelPuesto` lee el token del pod, que el ejecutor no
-  tiene;
-- que la imagen pip de Spark trae lo que pide un ejecutor de Kubernetes: `spark-kubernetes`, el
-  `entrypoint.sh` y el `decom.sh` de la distribución. Si no, c1 los añade.
-
-*8 · Los pasos*
-
-| paso | qué | dónde |
-|---|---|---|
-| C3·c0 | el previo de arriba | victor, namespace de medida |
-| C3·c1 | la imagen: la entrada de ejecutor y `decom.sh` | local |
-| C3·c2 | el SDK: `sesion()` en modo Kubernetes con los límites y las defensas; el *listener* del informe | local (el arnés de Spark) |
-| C3·c3 | `ore-serve`: el Build pesado con la cuenta del driver, su Service, la plantilla de ejecutor (ConfigMap), los límites y el informe. Detrás de `--builds-elasticos` (apagado: el Build de hoy) | local |
-| C3·c4 | la malla: el pool `pesado-driver` y su sabor, la cuenta, el `Role`, la política, la red y la cuota. **Binario, luego malla, luego *flag***, cada uno por separado | victor |
-| C3·c5 | Builds reales: uno pequeño y uno grande que escala, con el lago, y un nodo expulsado a mano | victor |
-
-**Hecho cuando:** un Build grande escala solo y escribe lo mismo que con un nodo, más rápido; uno
-pequeño no paga por ello (punto 9); ninguno de la vara acaba en `OOMKilled` sin un error que diga qué
-tarea fue; y el informe dice cuántos nodos usó y qué lo limitó.
-
-**C3·c0 · el previo del Build elástico (medido en victor, 2026-10-19).** Laboratorio en
-`pruebas-de-fuego/geo/c3/c0/`:
-- `c0.sh` corre un driver a mano en el namespace de medida `c3c0`, con Pod Security `restricted`, las
-  cuentas, el Role, la política y la red del diseño (`laboratorio.yaml`);
-- el driver va en el pool `pesado-driver`, creado con `malla/74-el-pool-del-driver.sh`: n2-highmem-4
-  normal, de 0 a 1 nodos;
-- los ejecutores, en `pesado` (*spot*);
-- `dos-celdas.sh` lanza dos celdas a la vez.
-
-La imagen es `puesto-spark:1` sin cambios: trae `spark-kubernetes` 4.1.0, y la entrada del ejecutor y
-`decom.sh` van en un ConfigMap (`ejecutor.sh`, `decom.sh`).
-
-| # | qué | resultado |
-|---|---|---|
-| 1 | **escalar a mitad de un Build** (200 M × 20 k, máximo 2) | empieza con 1 ejecutor y **pide el 2.º él solo**: 44 s desde que lo pide hasta el nodo listo y el ejecutor dentro. **79,4 s**, frente a 116 s en un pod (previo) y 64 s con 2 nodos fijos |
-| 2 | **la política** | **9/9**: niega otra imagen, la cuenta del driver, quitar el dueño, 100 Gi, salir del pool pesado y un ConfigMap cualquiera (422). Un `hostPath` lo para antes Pod Security (403), y un Secret, el Role (403). El ejecutor de Spark pasa. **Hallazgo:** sin la regla del pool, un «ejecutor» hecho a mano cayó en el nodo del sistema; la regla se añadió |
-| 3 | **lo que retiene el *shuffle*** | con `shuffleTracking.timeout 120s` y ocioso 60 s, el segundo nodo se devuelve **152 s** después del join |
-| 4 | **perder un ejecutor a mitad** (borrado con 15 s de gracia, como *spot*) | Spark lo repone en 18 s y el Build da **las mismas cuentas** (111 249 591 pares): 83,9 s. D3 (recomputar) basta |
-| 5 | **join espacial sesgado** (100 M puntos, 90 % en 200 m², 300 k zonas, `RangeJoin`, 1 ejecutor) | **con la rejilla de Sedona por defecto** (`spatitionside=left`, la de las zonas, que son uniformes): **un solo core** trabajando, más de 9 min y lejos de acabar. **Con la rejilla sobre los puntos** (`right`): los 7 cores, **687 s, 655 M pares, sin OOM** (22 GB). La referencia uniforme: 1121 s, 839 M pares. Por par, el sesgado con la rejilla buena (0,95 M/s) va como el uniforme (0,75 M/s). **El sesgo espacial no da OOM: da un solo core. Se arregla haciendo la rejilla sobre el lado grande** |
-| 6 | **UDF de Python que pide 8 GB** con `pyspark.memory 4g` | **`MemoryError` de Python** en 19 s, sin pod muerto |
-| 7 | **dos celdas a la vez** (dos Builds grandes, máximo 2 cada uno) | **ejecutores fuera de Kueue (D1 tal cual): B pasa unos 100 s sin ningún ejecutor** hasta que A acaba. **Con los ejecutores en Kueue** (cola de la celda, cohorte, 1 ejecutor garantizado por celda, `reclaimWithinCohort`): Kueue echa el ejecutor prestado de A, B tiene el suyo en **32 s**, A sigue con 1 y B sube a 2 cuando A acaba. Los dos dan las cuentas bien |
-| 8 | **la imagen en un nodo nuevo** | el ejecutor, **4 s** (*streaming*); el driver, 13 s |
-| 9 | **un Build pequeño del todo en frío** (los dos pools a 0; 20 M × 20 k) | **~170 s**, frente a **115 s** del pod único de hoy (6c): +53 s, por encima de los 30 s del criterio. El camino es en serie: el nodo del driver (49 s), el driver arranca y pide el ejecutor (26 s), el nodo del ejecutor (37 s) y el join (51 s). **Los Builds pequeños siguen en un pod**, como hoy; el elástico, para los grandes |
-
-Otros detalles:
-- **La sesión espera 30 s** a que se registren los ejecutores (`minRegisteredResourcesRatio`). Se pone a
-  0: las tareas ya esperan a su ejecutor.
-- **Al cerrar, Spark intenta borrar Services y PVC** por etiqueta y el Role se lo niega. Es ruido en el
-  log, sin efecto. No se le da ese permiso.
-
-**Lo que cambia en el diseño:**
-- **D1 se invierte: los ejecutores van en Kueue**, como pods sueltos (la vía de Kueue para
-  `spark-submit`: `queue-name`, `managed` y `pod-suspending-parent`). Cada celda tiene **un ejecutor
-  garantizado** en su `ClusterQueue` y presta y recupera en la cohorte. El riesgo (Kueue no lo da por API
-  estable) se cubre fijando la versión de Kueue y pasando `dos-celdas.sh` antes de subirla.
-- **La rejilla de Sedona, sobre el lado grande** (`sedona.join.spatitionside`). En c2, el SDK la fija
-  con las filas del catálogo, igual que C3·a.
-- **Pequeño en un pod, grande elástico.** Lo decide `ore-serve` al encolar con las filas de las entradas,
-  que da el catálogo (lo mismo que ya lee C3·a). El umbral, provisional en 100 M filas, se fija en c5 con
-  la vara. No es reactivo: el modo sale del tamaño estimado antes de correr, nunca de un fallo.
-- Se confirman D2, D3 y D4, la política (más la regla del pool) y la red.
-- El pool `pesado-driver` queda creado y a 0 nodos (`malla/74`): no cuesta nada mientras no haya Build.
-
-
-**C3·c1–c3 · hechos en local (2026-10-20).** Con lo que cambió c0: los ejecutores van en Kueue, lo
-pequeño va en un pod y la rejilla se hace sobre el lado grande.
-
-- **c1 · la imagen.** `puesto/spark/ejecutor.sh` (la rama `executor` del `entrypoint.sh` de Spark 4.1.0)
-  y `decom.sh` (el `preStop`: SIGPWR a la JVM, que es el PID 1) se instalan en `/opt/ore/spark/`. Spark
-  por pip ya trae `spark-kubernetes`.
-- **c2 · el SDK** (`ore/spark.py`). `sesion()` sigue siendo local salvo con `ORE_SPARK_ELASTICO=<techo>`.
-  En ese caso este pod es el driver: Spark va contra la API de Kubernetes con la cuenta del pod y lleva
-  los puertos fijos de c0. La asignación es dinámica: mínimo 1, máximo el techo, ocioso 60 s,
-  *shuffle tracking* 120 s y `minRegisteredResourcesRatio` a 0. Lleva además *decommission* y
-  `spark.authenticate`. Cada ejecutor (34g + 4g + 4g de Python, 7 cores) va a `cola-pesada` como pod
-  suelto de Kueue, con la plantilla que exige la política (cuenta `ejecutor` sin token, pool pesado,
-  `/opt/ore/spark/ejecutor.sh`). Pruebas: `test_motor_pesado.py` (`ElBuildElastico`); la suite del SDK en la imagen
-  (167/167) y el arnés de Spark (20/20) con la imagen derivada `ore-puesto-spark:c3c`.
-- **c2 · la rejilla** (`ReglasDeOre.LadoGrandeALaDerecha`, una regla del optimizador). En un join
+**C3·b2 · la rejilla sobre el lado grande (hecho; empujado con CE·2, 2026-10-20).** Es la defensa
+del *join* espacial contra el sesgo que midió CE·0 (punto 5): la rejilla de Sedona por defecto deja un
+solo core trabajando.
+- (`ReglasDeOre.LadoGrandeALaDerecha`, una regla del optimizador). En un join
   interno espacial no difundido pone a la derecha del predicado el lado con más filas (o bytes):
   gira `ST_Contains` ↔ `ST_Within`, `ST_Covers` ↔ `ST_CoveredBy`, y a `ST_Intersects` y `ST_DWithin`
   les da la vuelta. `spark-defaults.conf` hace la rejilla sobre la derecha
-  (`sedona.join.spatitionside right`): la configuración medida en c0. `ST_Contains(zona, punto)`, la forma
+  (`sedona.join.spatitionside right`): la configuración medida en CE·0. `ST_Contains(zona, punto)`, la forma
   de siempre, no se toca. `c3/b/regla.sh`: 10/10 (los 6 de C3·b, más los 4 nuevos).
-- **c3 · `ore-serve`.**
-  - Con `--builds-elasticos FILAS`, al abrir un Build pesado suma las filas de sus entradas (el
-    `total-records` del snapshot vigente, por `ore datasets --cargar`). Por encima del umbral, el Build
-    es elástico con techo `TECHO_DE_EJECUTORES` (2, el pool); por debajo, o si no se sabe, un pod.
-  - Lo dice en los `avisos` del Build: `compute`, `inputRows`, `maxExecutors` y `reason`.
-  - `cola::al_driver_elastico` hace driver el trabajo pesado ya rendido: 1,5 CPU / 12 GiB, la cuenta
-    `driver-pesado`, `ore.dev/spark: driver` en el pod, y `ORE_SPARK_ELASTICO`, `ORE_SPARK_IMAGEN`, su
-    nombre y su IP. Sigue en `cola-pesada`, y Kueue le da el sabor del driver.
-  - Si la plantilla cambia sin enterarse, falla.
-  - Sin el *flag*, nada cambia. Pruebas: el modo por el tamaño, las filas del snapshot vigente y el
-    driver sobre la plantilla real de la malla; ore-serve 257/259 (fallan los 2 de git en Docker, por el
-    worktree), clippy y fmt limpios.
-
-**C3·c4 · la malla, escrita en local y comprobada en seco (2026-10-20).**
-- **`22-el-build-elastico.yaml`**, una plantilla nueva del inquilino que da de alta `gen-inquilino.py` y
-  la kustomization:
-  - las cuentas `driver-pesado` (la misma cuenta de Google que el puesto, más su enlace de Workload
-    Identity en el aprovisionador ③) y `ejecutor` (sin token);
-  - el Role (pods y ConfigMaps);
-  - la ValidatingAdmissionPolicy de la celda, la de c0 más estas reglas:
-    - la imagen como `…/puesto-spark:1` o por digest;
-    - sin root ni privilegios;
-    - el ejecutor a `cola-pesada`, para que no se salte Kueue.
-  - la red `spark-del-driver` y `spark-del-ejecutor`:
-    - 7078/7079 entre los pods `ore.dev/spark`;
-    - el driver al API server;
-    - los ejecutores a Google por la vía privada.
-  - la cola del driver, `cq-<celda>-driver` / `cola-driver`, con 1,5 CPU / 12 GiB en el sabor
-    `pesado-driver`. `cola::al_driver_elastico` manda ahí al driver.
-- **`10-kueue.yaml`**: el sabor `pesado-driver`, con el pool de `74-el-pool-del-driver.sh`, que ya
-  existe en victor a 0 nodos.
-- **`11-el-inquilino.yaml`**:
-  - `cq-<celda>-pesado` entra en la cohorte `pesado` con `reclaimWithinCohort: Any`, que es lo medido en
-    c0;
-  - la cuota pasa a 20 CPU / 112 GiB.
-- **Pod Security `restricted` se queda fuera.** La política ya exige al ejecutor lo que exigiría
-  `restricted`, y antes de ponerla en la celda hay que comprobar los puestos de hoy.
-- **Comprobado en seco:**
-  - `gen-inquilino.py --comprobar` y `--comprobar-plantillas` dan verde;
-  - victor rendido: `22` y el sabor pasan `kubectl apply --dry-run=server`, CEL de la política incluido;
-  - `kubectl diff` de `11` en victor da exactamente la cohorte, el *reclaim* y la cuota.
-
-**El orden del empuje**, como siempre: binario, luego malla, luego *flag*.
-1. **El código** (C3·a, C3·b y c1–c3; c4 solo cambia la cola del driver en `cola.rs`). El *flag* está
-   apagado, así que ningún Build se hace elástico. **Pero van en vivo para todo Build pesado** la
-   difusión de C3·a, la regla del `LEFT JOIN` de C3·b y la rejilla sobre el lado grande.
-2. **La malla**: el sabor, `22` y `11` en cada celda. Va con el aprovisionador (el enlace de Workload
-   Identity) y la convergencia de los inquilinos.
-3. **El *flag*** (`--builds-elasticos` en `40-ore-serve.yaml`, para victor) y c5.
-
-**Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
-- **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
-  otros pods. El `AuthPod` del *driver* ya está; falta ver que las credenciales prestadas les llegan;
-- **Kueue con un Job de N pods en `cola-pesada`**: la medida corrió sin Kueue, en su namespace;
-- **Q6, Q8, Q11 y Q12 a escala 100**, que son C3·d.
 
 **C3·d · SpatialBench a escala 100 con el Build elástico (medido en victor, 2026-10-20).**
 - **Cómo:** la escala 100 se generó en el pool `pesado` (`pruebas-de-fuego/geo/c3/d/generar.sh`) y se
@@ -1290,53 +1051,23 @@ pequeño va en un pod y la rejilla se hace sobre el lado grande.
    - El shuffle de un *join* de 600 M filas lo llena.
    - Es la misma trampa que tumbó el primer intento de C0, que se quedó sin disco con 273 GB.
    - **Los ejecutores de producción tienen el mismo hueco**, porque la plantilla del SDK no pide
-     `ephemeral-storage`. Es la defensa de disco que falta junto a las de memoria de C3·c.
+     `ephemeral-storage`. Es la defensa de disco que falta junto a las de memoria del Build elástico (CE·6).
 4. **Q2 en SQL crudo sigue sin terminar.** Una geometría que sale de una subconsulta escalar se evalúa
    fila a fila. La difusión de C3·a la pone `over()` del SDK, y no hay regla del planificador que la
    ponga en el SQL. Es un hueco de `ReglasDeOre`, no del autoescalado.
 5. **El segundo nodo gana en lo pesado** (Q5 −37 %, Q6 y Q8 pasan a terminar) y **no gana nada en lo
-   ligero** (Q1, Q3, Q4 y Q9, ±10 %), que es el reparto que ya fijó c3: los Builds pequeños se quedan en
+   ligero** (Q1, Q3, Q4 y Q9, ±10 %), que es el reparto que ya fijó CE·3: los Builds pequeños se quedan en
    un pod. Q7 es la excepción, el doble de lento, sin causa medida.
 
-**C3·e · el disco, Q2 y el cierre de la vara (diseño, 2026-10-20, por aprobar).**
-
-*El disco del ejecutor.*
-- **Lo que hay:**
-  - el pool `pesado` arranca con 100 GB de `pd-balanced`, sin SSD local;
-  - Spark en Kubernetes vuelca el shuffle a un `emptyDir` (`spark-local-dir-1`), que vive en ese disco;
-  - la plantilla del SDK no pide `ephemeral-storage`.
-  - Cuando el disco baja del umbral del kubelet (10 %), **desaloja a todo el nodo**: los dos ejecutores
-    a la vez.
-- **Lo que no vale:** agrandar el `pd-balanced`.
-  - `SSD_TOTAL_GB` es de 500 GB en la región y el `pd-balanced` cuenta en ella (hoy 70 usados; con los
-    dos pools llenos, 250).
-  - `pd-standard` no cuenta, pero rinde ~60 MB/s a 500 GB: lento para un shuffle.
-- **Lo que se propone:**
-  1. **SSD local NVMe en el pool `pesado`**, `--ephemeral-storage-local-ssd count=1`: 375 GB por nodo.
-     - Kubernetes pone ahí el almacenamiento efímero, con lo que el `emptyDir` del shuffle y el
-       *spill* de DuckDB de un Build de un pod caen en la SSD.
-     - `LOCAL_SSD_TOTAL_GB` no tiene límite y `PREEMPTIBLE_LOCAL_SSD_GB` es 0. Las spot gastan la cuota
-       normal, como ya pasa con las CPU; e0 lo confirma creando el pool.
-     - Cuesta unos céntimos la hora por nodo, solo mientras el nodo existe (el pool escala a 0).
-     - Es varias veces más rápida que el `pd-balanced`, así que el shuffle también gana.
-     - Un pool no cambia de disco en caliente: `73-el-pool-pesado.sh` lo **recrea** (borrar y crear)
-       mientras está a 0 nodos, con la misma etiqueta y el mismo *taint*. Kueue y la malla no cambian.
-  2. **El ejecutor pide disco**: `ephemeral-storage` con *request* y *limit* en la plantilla del SDK
-     (`_plantilla_del_ejecutor`) y en la de C3·d.
-     - El planificador lo cuenta.
-     - Si un ejecutor se pasa, **el kubelet mata a ese pod, no al nodo**. Spark repite sus tareas en
-       otro (la misma defensa que C3·c midió al perder un ejecutor).
-     - El tamaño sale de e0: el pico medido en Q10/Q11 más un margen, por debajo de lo asignable del nodo.
-     - El pod de un Build pesado de un nodo (`RECURSOS_DEL_PUESTO_PESADO`) pide lo mismo.
-  3. **La política** de la celda (`22`) añade un tope de `ephemeral-storage` a lo que crea el driver,
-     como ya hace con la memoria.
+**C3·e · Q2 y el cierre de la vara (diseño, 2026-10-20, por aprobar).** El disco del ejecutor que
+destapó C3·d no es del *join*: lo llena cualquier *shuffle*, y va en **CE·6**. Aquí queda lo del *join*.
 
 *Q2 · la geometría de una subconsulta escalar.*
 - **Lo que pasa:** en `ST_Intersects(t.pickup, (SELECT z.geom … LIMIT 1))`, Spark calcula una vez la
   subconsulta y la deja como valor. Pero Sedona no la reconoce como el lado de un *join*: con 600 M
   filas, en cada una deserializa el polígono del condado y lo cruza sin índice.
   - La forma con la pista de difusión (q2d de C0) planifica un `BroadcastIndexJoin`: 125 s en un nodo.
-- **La regla** (`DifundirLaSubconsulta`, en `ReglasDeOre`, junto a las de C3·b y c2):
+- **La regla** (`DifundirLaSubconsulta`, en `ReglasDeOre`, junto a las de C3·b y C3·b2):
   - **Cuándo:** un `Filter` cuyo conjunto de condiciones con `AND` tiene un predicado espacial del mapa
     `GIRO` (Contains, Within, Covers, CoveredBy, Intersects o DWithin).
     - Un lado del predicado usa solo columnas del hijo.
@@ -1375,7 +1106,7 @@ filtro del rectángulo, y lo hace con un `RangeJoin`.
   - Si la diferencia es de representación (el promedio de un intervalo), la regla de la huella se
     documenta; si es de valores, es un fallo y se persigue.
 
-*Los pasos.*
+*Los pasos* (los de C3·e y los de CE·6 van juntos: una corrida mide los dos, y un empuje los lleva).
 - **e0 · previo en victor, sin código de producto** (la escala 100 sigue en el bucket):
   - un pool temporal `c3e-ssd` (n2-highmem-8 spot, SSD local, 0–2) con etiqueta propia, que no toca
     `pesado`;
@@ -1384,11 +1115,329 @@ filtro del rectángulo, y lo hace con un `RangeJoin`.
   - Q2 como q2d y Q6 difundido a mano, para cuantificar la regla y la pieza aparte;
   - el cotejo de Q6 con DuckDB.
   - Después, el pool, el namespace y el permiso temporal se borran. Menos de 1 $.
-- **e1 · en local:** `DifundirLaSubconsulta` con `regla.py`; `ephemeral-storage` en las plantillas (el
-  SDK y `cola.rs`) y en la política; `73-el-pool-pesado.sh` con la SSD; el ADR.
+- **e1 · en local:** C3·e, `DifundirLaSubconsulta` con `regla.py`; CE·6, `ephemeral-storage` en las
+  plantillas (el SDK y `cola.rs`) y en la política, y `73-el-pool-pesado.sh` con la SSD; el ADR.
 - **e2 · el empuje, con permiso:** binario, luego malla, luego recrear el pool `pesado` a 0 nodos (con
   permiso aparte: un Build pesado que llegue en ese minuto espera en Kueue).
-- **e3 · la vara entera otra vez en victor**, y C3 se cierra en el ADR.
+- **e3 · la vara entera otra vez en victor**: C3 se cierra, y CE·6 con ella. CE se cierra con CE·5.
+
+### CE · El Build elástico
+
+**Su responsabilidad:** cómo corre un Build pesado (Heavyweight, Spark) en uno o varios nodos, **sea cual
+sea el cómputo**: *join*, agregación, ordenación, ventana, UDF o escritura. ORE pone los límites (el suelo,
+el techo, la cuota y las defensas) y Spark decide dentro según la carga. No sabe nada de geometría.
+- **De dónde viene.** Nació en C3, como C3·c, porque el *join* a escala fue el primer cómputo que pidió más
+  de un nodo. Los commits hasta el 2026-10-20 lo llaman CE·0–CE·4: son CE·0–CE·4.
+- **Medido también sin *join*.** En C3·d, Q1, Q3, Q5, Q7 y Q9 (filtros, KNN por radio y agregación)
+  corrieron elásticas. Q5, una agregación pura, bajó de 345 s a 216 s con el segundo nodo.
+- **Lo que es de C3 y no de aquí:** la difusión (C3·a), el `LEFT JOIN` (C3·b), la rejilla sobre el lado
+  grande (C3·b2) y la regla de Q2 (C3·e). Son reglas del *join*; el Build elástico las corre como corre
+  cualquier otra.
+
+| paso | qué | estado |
+|---|---|---|
+| CE·0 | el previo | medido en victor, 2026-10-19 |
+| CE·1 | la imagen: la entrada del ejecutor y `decom.sh` | en vivo |
+| CE·2 | el SDK: `sesion()` en modo Kubernetes | en vivo |
+| CE·3 | `ore-serve`: el modo por las filas de entrada, el driver y los avisos, detrás de `--builds-elasticos` | en vivo, *flag* apagado |
+| CE·4 | la malla: cola del driver, cohorte, cuota, cuentas, política y red | en vivo, convergida 2026-10-20 |
+| CE·5 | el *flag* en victor y Builds reales con el lago | pendiente |
+| CE·6 | el disco del ejecutor | diseño, por aprobar |
+
+**El previo de C3 que lo originó (punto 3, 2026-10-19): Spark en varios nodos dentro del modelo de un
+Build** (`multinodo.sh`). Un **Job indexado** de N pods, uno por nodo, con un Service sin IP para que se encuentren:
+- el pod 0 lleva el *master* de Spark *standalone* y el *driver*;
+- todos llevan un *worker*;
+- `successPolicy` (`succeededIndexes: "0"`, GA en Kubernetes 1.35) da el Job por terminado cuando
+  acaba el pod 0, y Kubernetes cierra los demás.
+
+No hace falta instalar nada en el clúster: ni Spark Operator, ni JobSet, ni permisos para crear pods
+desde el *driver*. La imagen ya trae `spark-class`. 200 M puntos:
+
+| caso | 1 nodo | 2 nodos | aceleración |
+|---|---|---|---|
+| sesión con todos los ejecutores | 7,3 s | 7,2 s | — |
+| 6c (× 20 k buffers), difundido | 116,3 s | **63,6 s** | **1,83×** |
+| «municipios» (× 8 000 detallados), difundido | 134,7 s | **72,5 s** | **1,86×** |
+
+Escala casi lineal. Los pares cambian unas décimas por mil entre corridas porque los puntos son
+`rand()` y salen distintos según el reparto; no es un error.
+
+**El diseño (2026-10-19).** El primer diseño, un Job de N pods con N
+sacado del historial del Transform, se descartó por reactivo: un Build tenía que fallar o tardar para
+que el siguiente llevara más nodos. Antes de rehacerlo se reunió lo que hace la industria y lo que dan
+Spark, Kueue y GKE (`docs/investigacion/c3c-spark-elastico.md`). Este es el diseño que sale de ahí.
+
+*La idea.* **ORE pone los límites y Spark decide dentro, según la carga**, igual que Databricks,
+Dataproc Serverless o EMR Serverless. El Build arranca con un ejecutor. Si hay tareas esperando, el
+driver pide más (*dynamic allocation*) y el autoescalador de GKE enciende los nodos. Un ejecutor ocioso
+se devuelve y el nodo vacío se apaga. El mismo Build puede usar un nodo para leer y dos para el join.
+**Los nodos dan velocidad, no evitan el OOM**: eso lo hacen las defensas de memoria del punto 4, que
+valen igual con un nodo que con seis.
+
+*Lo que no cambia.* Las sesiones interactivas y los Previews pesados siguen en un pod con `local[*]`.
+El lago, el SDK, `over()`, C3·a y C3·b quedan como están.
+
+*1 · Las piezas de un Build pesado*
+
+| pieza | dónde | qué es |
+|---|---|---|
+| **el driver** | el pod del agente de hoy (`trabajo-<quien>-<hex>`), con menos recursos (2 CPU / 16 GiB) y **en un nodo normal** (DE2) | Spark en modo cliente contra `k8s://https://kubernetes.default.svc`; un Service sin IP para él; puertos fijos (7078 driver, 7079 bloques) |
+| **los ejecutores** | pods que crea el driver, en el pool `pesado` (*spot*), uno por nodo: 7 cores / 40 g + *overhead* | imagen `puesto-spark:1` por digest, cuenta `ejecutor` sin token de Kubernetes, dueño el pod del driver (mueren con él) |
+| **los límites** | `ore-serve` al rendir el Build | `minExecutors 1`, `initialExecutors 1`, `maxExecutors = min(nodos del pool, lo que deja la cuota de la celda)`; `executorIdleTimeout 60s`; `shuffleTracking` |
+
+**«ORE decide los nodos», en concreto:** ORE fija el techo (pool y cuota) y el suelo (1). El número de
+cada momento lo decide la carga: las tareas pendientes de Spark. Si se cumplen los 400 M o los 240 s
+del diseño anterior, no es por regla escrita, sino porque la carga los pide.
+
+*2 · Las decisiones* (DE1–DE4, las del Build elástico; no confundir con D1–D5 del ADR)
+
+| | decisión | por qué | lo que se pierde |
+|---|---|---|---|
+| **DE1** | ~~los ejecutores, fuera de Kueue~~ → **en Kueue, medido en CE·0 (punto 7)**. Antes: Kueue admite el driver; a los ejecutores los limitan la `ResourceQuota` de la celda, `maxExecutors` y el máximo del pool | la vía de Kueue para pods sueltos es un apaño que su equipo cerró como «not planned», y `SparkApplication` rechaza el *dynamic allocation*. El pool de ejecutores lo usan solo ejecutores, así que Kueue no se equivoca sobre lo suyo | no hay reparto justo entre celdas: si dos coinciden, la que llegó primero tiene más nodos y la otra espera ejecutores (Spark sigue con los que tiene). El informe lo dice |
+| **DE2** | **el driver fuera de *spot***, en un pool normal pequeño (`pesado-driver`: `n2-highmem-4`, 0–1 nodos, dos drivers caben) con su propio sabor de Kueue | perder un ejecutor se recomputa; perder el driver pierde el Build entero. Es lo que recomiendan todas | ~0,25 $/h mientras haya un Build. Cuota: 10 + 4 + 16 = 30 de 32 |
+| **DE3** | **si *spot* se lleva un ejecutor, se recomputa** (sin `fallbackStorage` en esta pieza) | con 15 s de aviso no da tiempo a migrar un *shuffle*; `decommission` activado para lo que sí dé tiempo | un Build alcanzado por *spot* tarda más. Si el previo lo mide caro, `fallbackStorage` en GCS va después |
+| **DE4** | **`spark.authenticate`** entre el driver y sus ejecutores | la política de red deja que los pods de Spark de una celda se hablen; sin esto, el Build de una persona podría pedir bloques al de otra en la misma celda | nada: es un secreto por aplicación que Spark genera y pasa a sus ejecutores |
+
+*3 · La seguridad: el driver puede crear pods*
+
+El código del cliente corre en el proceso del driver, así que puede usar su permiso. Tres capas:
+1. **Una cuenta propia** del driver pesado (`driver-pesado`), con un `Role` en el namespace: `pods`,
+   `services` y `configmaps` (crear, ver, borrar). Una sesión interactiva no la lleva nunca.
+2. **Una ValidatingAdmissionPolicy** sobre lo que crea esa cuenta, y solo eso:
+   - la imagen `puesto-spark` por digest y la cuenta `ejecutor`, sin token;
+   - volúmenes solo `configMap` y `emptyDir`;
+   - sin `hostNetwork`, sin privilegios ni *capabilities*, `runAsNonRoot`;
+   - límite de memoria ≤ 48 GiB, dueño un Pod, la etiqueta `spark-role: executor` y la tolerancia del
+     pool `pesado`.
+
+   Un Service o un ConfigMap que cree también pasan por ella: solo los de Spark, con su etiqueta.
+3. **Pod Security `restricted`** en el namespace, por si la política tuviera un hueco.
+
+La política no puede comprobar que el dueño sea un driver de verdad. El peor caso es un pod de ejecutor
+falso con nuestra imagen, sin token y dentro de la cuota de su celda: lo mismo que ya puede hacer un
+Build.
+
+*4 · Las defensas contra el OOM* (en `spark-defaults.conf` y `sesion()`, con un nodo o con seis):
+
+| causa | defensa |
+|---|---|
+| un lado difundido grande | C3·a (≤ 150 k filas, ≤ 48 MiB), ya hecho |
+| `collect()` o `toPandas()` grande en el driver | `spark.driver.maxResultSize` acorde al driver (4 g): un error claro, no un `OOMKilled` |
+| sesgo en un join por igualdad | AQE `skewJoin`, activado por defecto |
+| **sesgo en un join espacial** (AQE no lo ve) | `sedona.join.numpartition` según los ejecutores vivos (la guía de Sedona: de 2 a 8 veces las particiones), y KDB-tree. Lo fija el previo, punto 5 |
+| la memoria de Python (UDF) | `spark.executor.pyspark.memory` con un tope, y *overhead* 0,4: lo que se pase falla con un error de Python |
+| particiones grandes | `maxPartitionBytes` 128 MB; AQE junta las pequeñas |
+| un Build sin defensa | el informe dice **qué tarea** se quedó sin memoria y en qué etapa, no solo «OOM» |
+
+*5 · La red* (NetworkPolicy de la celda, fija en la malla, no una por Build):
+- **driver:** recibe en 7078 y 7079 solo de pods `spark-role: executor` de su namespace, y sale además
+  al API server;
+- **ejecutores:** 7079 entre ellos y salida al driver; sin internet, solo Google por la vía privada, como
+  el puesto.
+
+*6 · El informe del Build.* Ejecutores (máximo, media y nodos), cuánto esperó cada uno, si el pool o la
+cuota cortaron (`pidió 4, el pool dio 2`), ejecutores perdidos por *spot*, bytes derramados a disco, y
+el OOM con su tarea si lo hubo. Lo lee el *listener* de Spark del driver; el SDK lo manda con el
+resultado.
+
+*7 · El previo (CE·0), antes de construir.* En victor, en un namespace de medida con la cuenta, el
+`Role`, la política y la red de arriba copiados; el driver es un Job a mano. Se borra al acabar.
+
+| # | qué se mide | qué decide |
+|---|---|---|
+| 1 | el escalado a mitad de un Build: carga → pod pendiente → nodo → ejecutor | `schedulerBacklogTimeout`, y si compensa |
+| 2 | que la política niega un pod arbitrario creado desde el código y deja pasar el ejecutor | la política, cerrada |
+| 3 | cuánto retiene el *shuffle tracking* un nodo que sobra | `shuffleTracking.timeout` |
+| 4 | expulsar un nodo de ejecutores a mitad | DE3 (recomputar) o `fallbackStorage` |
+| 5 | un join espacial sesgado con un ejecutor | `numpartition` y las defensas de Sedona |
+| 6 | una UDF de Python que se pasa de memoria | `pyspark.memory` y el *overhead* |
+| 7 | dos Builds de dos celdas a la vez | lo que dice el informe en DE1 |
+| 8 | la imagen del ejecutor en un nodo nuevo | — |
+| 9 | **un Build pequeño** elástico en frío frente al de hoy (un pod) | si el pequeño elástico se queda dentro de 30 s del de hoy, **todo Build es elástico**; si no, los pequeños siguen en un pod y se decide por el tamaño de las entradas |
+
+Y lo que solo se ve con el lago de verdad, en CE·5:
+- **las credenciales del lago en los ejecutores**: viajan en el `FileIO` de Iceberg. Si refrescarlas
+  llama al catálogo desde un ejecutor, `IdentidadDelPuesto` lee el token del pod, que el ejecutor no
+  tiene;
+- que la imagen pip de Spark trae lo que pide un ejecutor de Kubernetes: `spark-kubernetes`, el
+  `entrypoint.sh` y el `decom.sh` de la distribución. Si no, CE·1 los añade.
+
+*8 · Los pasos*
+
+| paso | qué | dónde |
+|---|---|---|
+| CE·0 | el previo de arriba | victor, namespace de medida |
+| CE·1 | la imagen: la entrada de ejecutor y `decom.sh` | local |
+| CE·2 | el SDK: `sesion()` en modo Kubernetes con los límites y las defensas; el *listener* del informe | local (el arnés de Spark) |
+| CE·3 | `ore-serve`: el Build pesado con la cuenta del driver, su Service, la plantilla de ejecutor (ConfigMap), los límites y el informe. Detrás de `--builds-elasticos` (apagado: el Build de hoy) | local |
+| CE·4 | la malla: el pool `pesado-driver` y su sabor, la cuenta, el `Role`, la política, la red y la cuota. **Binario, luego malla, luego *flag***, cada uno por separado | victor |
+| CE·5 | Builds reales: uno pequeño y uno grande que escala, con el lago, y un nodo expulsado a mano | victor |
+
+**Hecho cuando:** un Build grande escala solo y escribe lo mismo que con un nodo, más rápido; uno
+pequeño no paga por ello (punto 9); ninguno de la vara acaba en `OOMKilled` sin un error que diga qué
+tarea fue; y el informe dice cuántos nodos usó y qué lo limitó.
+
+**CE·0 · el previo del Build elástico (medido en victor, 2026-10-19).** Laboratorio en
+`pruebas-de-fuego/geo/c3/c0/`:
+- `c0.sh` corre un driver a mano en el namespace de medida `c3c0`, con Pod Security `restricted`, las
+  cuentas, el Role, la política y la red del diseño (`laboratorio.yaml`);
+- el driver va en el pool `pesado-driver`, creado con `malla/74-el-pool-del-driver.sh`: n2-highmem-4
+  normal, de 0 a 1 nodos;
+- los ejecutores, en `pesado` (*spot*);
+- `dos-celdas.sh` lanza dos celdas a la vez.
+
+La imagen es `puesto-spark:1` sin cambios: trae `spark-kubernetes` 4.1.0, y la entrada del ejecutor y
+`decom.sh` van en un ConfigMap (`ejecutor.sh`, `decom.sh`).
+
+| # | qué | resultado |
+|---|---|---|
+| 1 | **escalar a mitad de un Build** (200 M × 20 k, máximo 2) | empieza con 1 ejecutor y **pide el 2.º él solo**: 44 s desde que lo pide hasta el nodo listo y el ejecutor dentro. **79,4 s**, frente a 116 s en un pod (previo) y 64 s con 2 nodos fijos |
+| 2 | **la política** | **9/9**: niega otra imagen, la cuenta del driver, quitar el dueño, 100 Gi, salir del pool pesado y un ConfigMap cualquiera (422). Un `hostPath` lo para antes Pod Security (403), y un Secret, el Role (403). El ejecutor de Spark pasa. **Hallazgo:** sin la regla del pool, un «ejecutor» hecho a mano cayó en el nodo del sistema; la regla se añadió |
+| 3 | **lo que retiene el *shuffle*** | con `shuffleTracking.timeout 120s` y ocioso 60 s, el segundo nodo se devuelve **152 s** después del join |
+| 4 | **perder un ejecutor a mitad** (borrado con 15 s de gracia, como *spot*) | Spark lo repone en 18 s y el Build da **las mismas cuentas** (111 249 591 pares): 83,9 s. DE3 (recomputar) basta |
+| 5 | **join espacial sesgado** (100 M puntos, 90 % en 200 m², 300 k zonas, `RangeJoin`, 1 ejecutor) | **con la rejilla de Sedona por defecto** (`spatitionside=left`, la de las zonas, que son uniformes): **un solo core** trabajando, más de 9 min y lejos de acabar. **Con la rejilla sobre los puntos** (`right`): los 7 cores, **687 s, 655 M pares, sin OOM** (22 GB). La referencia uniforme: 1121 s, 839 M pares. Por par, el sesgado con la rejilla buena (0,95 M/s) va como el uniforme (0,75 M/s). **El sesgo espacial no da OOM: da un solo core. Se arregla haciendo la rejilla sobre el lado grande** |
+| 6 | **UDF de Python que pide 8 GB** con `pyspark.memory 4g` | **`MemoryError` de Python** en 19 s, sin pod muerto |
+| 7 | **dos celdas a la vez** (dos Builds grandes, máximo 2 cada uno) | **ejecutores fuera de Kueue (DE1 tal cual): B pasa unos 100 s sin ningún ejecutor** hasta que A acaba. **Con los ejecutores en Kueue** (cola de la celda, cohorte, 1 ejecutor garantizado por celda, `reclaimWithinCohort`): Kueue echa el ejecutor prestado de A, B tiene el suyo en **32 s**, A sigue con 1 y B sube a 2 cuando A acaba. Los dos dan las cuentas bien |
+| 8 | **la imagen en un nodo nuevo** | el ejecutor, **4 s** (*streaming*); el driver, 13 s |
+| 9 | **un Build pequeño del todo en frío** (los dos pools a 0; 20 M × 20 k) | **~170 s**, frente a **115 s** del pod único de hoy (6c): +53 s, por encima de los 30 s del criterio. El camino es en serie: el nodo del driver (49 s), el driver arranca y pide el ejecutor (26 s), el nodo del ejecutor (37 s) y el join (51 s). **Los Builds pequeños siguen en un pod**, como hoy; el elástico, para los grandes |
+
+Otros detalles:
+- **La sesión espera 30 s** a que se registren los ejecutores (`minRegisteredResourcesRatio`). Se pone a
+  0: las tareas ya esperan a su ejecutor.
+- **Al cerrar, Spark intenta borrar Services y PVC** por etiqueta y el Role se lo niega. Es ruido en el
+  log, sin efecto. No se le da ese permiso.
+
+**Lo que cambia en el diseño:**
+- **DE1 se invierte: los ejecutores van en Kueue**, como pods sueltos (la vía de Kueue para
+  `spark-submit`: `queue-name`, `managed` y `pod-suspending-parent`). Cada celda tiene **un ejecutor
+  garantizado** en su `ClusterQueue` y presta y recupera en la cohorte. El riesgo (Kueue no lo da por API
+  estable) se cubre fijando la versión de Kueue y pasando `dos-celdas.sh` antes de subirla.
+- **La rejilla de Sedona, sobre el lado grande** (`sedona.join.spatitionside`). En CE·2, el SDK la fija
+  con las filas del catálogo, igual que C3·a.
+- **Pequeño en un pod, grande elástico.** Lo decide `ore-serve` al encolar con las filas de las entradas,
+  que da el catálogo (lo mismo que ya lee C3·a). El umbral, provisional en 100 M filas, se fija en CE·5 con
+  la vara. No es reactivo: el modo sale del tamaño estimado antes de correr, nunca de un fallo.
+- Se confirman DE2, DE3 y DE4, la política (más la regla del pool) y la red.
+- El pool `pesado-driver` queda creado y a 0 nodos (`malla/74`): no cuesta nada mientras no haya Build.
+
+
+**CE·1–CE·3 · hechos en local (2026-10-20).** Con lo que cambió CE·0: los ejecutores van en Kueue, lo
+pequeño va en un pod y la rejilla se hace sobre el lado grande.
+
+- **CE·1 · la imagen.** `puesto/spark/ejecutor.sh` (la rama `executor` del `entrypoint.sh` de Spark 4.1.0)
+  y `decom.sh` (el `preStop`: SIGPWR a la JVM, que es el PID 1) se instalan en `/opt/ore/spark/`. Spark
+  por pip ya trae `spark-kubernetes`.
+- **CE·2 · el SDK** (`ore/spark.py`). `sesion()` sigue siendo local salvo con `ORE_SPARK_ELASTICO=<techo>`.
+  En ese caso este pod es el driver: Spark va contra la API de Kubernetes con la cuenta del pod y lleva
+  los puertos fijos de CE·0. La asignación es dinámica: mínimo 1, máximo el techo, ocioso 60 s,
+  *shuffle tracking* 120 s y `minRegisteredResourcesRatio` a 0. Lleva además *decommission* y
+  `spark.authenticate`. Cada ejecutor (34g + 4g + 4g de Python, 7 cores) va a `cola-pesada` como pod
+  suelto de Kueue, con la plantilla que exige la política (cuenta `ejecutor` sin token, pool pesado,
+  `/opt/ore/spark/ejecutor.sh`). Pruebas: `test_motor_pesado.py` (`ElBuildElastico`); la suite del SDK en la imagen
+  (167/167) y el arnés de Spark (20/20) con la imagen derivada `ore-puesto-spark:c3c`.
+- **CE·3 · `ore-serve`.**
+  - Con `--builds-elasticos FILAS`, al abrir un Build pesado suma las filas de sus entradas (el
+    `total-records` del snapshot vigente, por `ore datasets --cargar`). Por encima del umbral, el Build
+    es elástico con techo `TECHO_DE_EJECUTORES` (2, el pool); por debajo, o si no se sabe, un pod.
+  - Lo dice en los `avisos` del Build: `compute`, `inputRows`, `maxExecutors` y `reason`.
+  - `cola::al_driver_elastico` hace driver el trabajo pesado ya rendido: 1,5 CPU / 12 GiB, la cuenta
+    `driver-pesado`, `ore.dev/spark: driver` en el pod, y `ORE_SPARK_ELASTICO`, `ORE_SPARK_IMAGEN`, su
+    nombre y su IP. Sigue en `cola-pesada`, y Kueue le da el sabor del driver.
+  - Si la plantilla cambia sin enterarse, falla.
+  - Sin el *flag*, nada cambia. Pruebas: el modo por el tamaño, las filas del snapshot vigente y el
+    driver sobre la plantilla real de la malla; ore-serve 257/259 (fallan los 2 de git en Docker, por el
+    worktree), clippy y fmt limpios.
+
+**CE·4 · la malla, escrita en local y comprobada en seco (2026-10-20).**
+- **`22-el-build-elastico.yaml`**, una plantilla nueva del inquilino que da de alta `gen-inquilino.py` y
+  la kustomization:
+  - las cuentas `driver-pesado` (la misma cuenta de Google que el puesto, más su enlace de Workload
+    Identity en el aprovisionador ③) y `ejecutor` (sin token);
+  - el Role (pods y ConfigMaps);
+  - la ValidatingAdmissionPolicy de la celda, la de CE·0 más estas reglas:
+    - la imagen como `…/puesto-spark:1` o por digest;
+    - sin root ni privilegios;
+    - el ejecutor a `cola-pesada`, para que no se salte Kueue.
+  - la red `spark-del-driver` y `spark-del-ejecutor`:
+    - 7078/7079 entre los pods `ore.dev/spark`;
+    - el driver al API server;
+    - los ejecutores a Google por la vía privada.
+  - la cola del driver, `cq-<celda>-driver` / `cola-driver`, con 1,5 CPU / 12 GiB en el sabor
+    `pesado-driver`. `cola::al_driver_elastico` manda ahí al driver.
+- **`10-kueue.yaml`**: el sabor `pesado-driver`, con el pool de `74-el-pool-del-driver.sh`, que ya
+  existe en victor a 0 nodos.
+- **`11-el-inquilino.yaml`**:
+  - `cq-<celda>-pesado` entra en la cohorte `pesado` con `reclaimWithinCohort: Any`, que es lo medido en
+    CE·0;
+  - la cuota pasa a 20 CPU / 112 GiB.
+- **Pod Security `restricted` se queda fuera.** La política ya exige al ejecutor lo que exigiría
+  `restricted`, y antes de ponerla en la celda hay que comprobar los puestos de hoy.
+- **Comprobado en seco:**
+  - `gen-inquilino.py --comprobar` y `--comprobar-plantillas` dan verde;
+  - victor rendido: `22` y el sabor pasan `kubectl apply --dry-run=server`, CEL de la política incluido;
+  - `kubectl diff` de `11` en victor da exactamente la cohorte, el *reclaim* y la cuota.
+
+**El orden del empuje**, como siempre: binario, luego malla, luego *flag*.
+1. **El código** (C3·a, C3·b y CE·1–CE·3; CE·4 solo cambia la cola del driver en `cola.rs`). El *flag* está
+   apagado, así que ningún Build se hace elástico. **Pero van en vivo para todo Build pesado** la
+   difusión de C3·a, la regla del `LEFT JOIN` de C3·b y la rejilla sobre el lado grande.
+2. **La malla**: el sabor, `22` y `11` en cada celda. Va con el aprovisionador (el enlace de Workload
+   Identity) y la convergencia de los inquilinos.
+3. **El *flag*** (`--builds-elasticos` en `40-ore-serve.yaml`, para victor) y CE·5.
+
+**Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
+- **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
+  otros pods. El `AuthPod` del *driver* ya está; falta ver que las credenciales prestadas les llegan;
+- ~~**Kueue con un Job de N pods en `cola-pesada`**~~: resuelto por DE1 invertida (ejecutores como pods
+  sueltos en Kueue), medido en CE·0 y en C3·d;
+- ~~**Q6, Q8, Q11 y Q12 a escala 100**~~: medidas en C3·d.
+
+**CE·6 · el disco del ejecutor (diseño, 2026-10-20, por aprobar).** Lo destapó C3·d en Q11, pero vale
+para cualquier *shuffle*: un `groupBy`, un `distinct`, una ordenación o una ventana sobre 600 M filas
+llenan el disco igual que un *join*. Es la defensa de disco que faltaba junto a las de memoria del
+diseño (punto 4). El tamaño del *request* sale del previo e0 de C3·e, que mide las dos cosas en la misma
+corrida.
+
+- **Lo que hay:**
+  - el pool `pesado` arranca con 100 GB de `pd-balanced`, sin SSD local;
+  - Spark en Kubernetes vuelca el shuffle a un `emptyDir` (`spark-local-dir-1`), que vive en ese disco;
+  - la plantilla del SDK no pide `ephemeral-storage`.
+  - Cuando el disco baja del umbral del kubelet (10 %), **desaloja a todo el nodo**: los dos ejecutores
+    a la vez.
+- **Lo que no vale:** agrandar el `pd-balanced`.
+  - `SSD_TOTAL_GB` es de 500 GB en la región y el `pd-balanced` cuenta en ella (hoy 70 usados; con los
+    dos pools llenos, 250).
+  - `pd-standard` no cuenta, pero rinde ~60 MB/s a 500 GB: lento para un shuffle.
+- **Lo que se propone:**
+  1. **SSD local NVMe en el pool `pesado`**, `--ephemeral-storage-local-ssd count=1`: 375 GB por nodo.
+     - Kubernetes pone ahí el almacenamiento efímero, con lo que el `emptyDir` del shuffle y el
+       *spill* de DuckDB de un Build de un pod caen en la SSD.
+     - `LOCAL_SSD_TOTAL_GB` no tiene límite y `PREEMPTIBLE_LOCAL_SSD_GB` es 0. Las spot gastan la cuota
+       normal, como ya pasa con las CPU; e0 lo confirma creando el pool.
+     - Cuesta unos céntimos la hora por nodo, solo mientras el nodo existe (el pool escala a 0).
+     - Es varias veces más rápida que el `pd-balanced`, así que el shuffle también gana.
+     - Un pool no cambia de disco en caliente: `73-el-pool-pesado.sh` lo **recrea** (borrar y crear)
+       mientras está a 0 nodos, con la misma etiqueta y el mismo *taint*. Kueue y la malla no cambian.
+  2. **El ejecutor pide disco**: `ephemeral-storage` con *request* y *limit* en la plantilla del SDK
+     (`_plantilla_del_ejecutor`) y en la de C3·d.
+     - El planificador lo cuenta.
+     - Si un ejecutor se pasa, **el kubelet mata a ese pod, no al nodo**. Spark repite sus tareas en
+       otro (la misma defensa que CE·0 midió al perder un ejecutor, punto 4).
+     - El tamaño sale de e0: el pico medido en Q10/Q11 más un margen, por debajo de lo asignable del nodo.
+     - El pod de un Build pesado de un nodo (`RECURSOS_DEL_PUESTO_PESADO`) pide lo mismo.
+  3. **La política** de la celda (`22`) añade un tope de `ephemeral-storage` a lo que crea el driver,
+     como ya hace con la memoria.
+
+**Lo que el Build elástico no hace todavía (deuda, con nombre):**
+- **Decide el modo por las filas de entrada, no por el trabajo.** Un Build con pocas filas y cálculo
+  pesado (un `explode` que multiplica filas, una UDF cara) se queda en un pod: falla limpio por sus
+  defensas de memoria, pero no escala. Opción por diseñar: arrancar en un pod y pasar a elástico si
+  Spark ve trabajo pendiente.
+- **Solo Heavyweight.** Un repositorio Lightweight (DuckDB) es un pod: escala en vertical, no en nodos
+  (D1 del ADR).
+- **El informe del Build** (diseño, punto 6: ejecutores usados, qué los limitó, bytes derramados) no está
+  escrito. Hoy los avisos dicen el modo, las filas y el techo. Entra en CE·5.
 
 ### C4 · Enriquecer
 
@@ -1460,6 +1509,11 @@ El ADR pasa de hoja de ruta a imagen.
   cohorte `pesado`, cuota, cuentas con Workload Identity, política y red). SpatialBench a escala 100 con
   2 × 8 vCPU: 8 de 12 terminan (Q6 y Q8 por primera vez), huellas de C0 o DuckDB. Lo nuevo: el disco
   efímero desaloja a los ejecutores en Q11. Siguiente: C3·e (disco, regla de Q2, Q10–Q12).
+- **2026-10-20 · El ADR, reorganizado.** El Build elástico sale de C3 a su propio apartado, **CE**
+  (antes C3·c0–c4, ahora CE·0–CE·4, y sus decisiones DE1–DE4). C3 se queda con el *join*: C3·a, C3·b, la
+  rejilla (C3·b2, antes en c2), la vara (C3·d) y Q2 (C3·e). El disco del ejecutor pasa a CE·6, porque lo
+  llena cualquier *shuffle*. Se anota la deuda de CE: el modo por filas y no por trabajo, solo
+  Heavyweight y el informe del Build. Siguiente: e0, que mide C3·e y CE·6 en la misma corrida.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
