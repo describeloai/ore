@@ -3097,6 +3097,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "mongodb",
+ "ore-cassandra",
  "ore-core",
  "ore-driver",
  "ore-gcp",
@@ -3333,6 +3334,14 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "ureq",
+]
+
+[[package]]
+name = "ore-read-cassandra"
+version = "0.1.0"
+dependencies = [
+ "ore-cassandra",
+ "ore-driver",
 ]
 
 [[package]]

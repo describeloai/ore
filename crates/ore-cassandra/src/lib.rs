@@ -25,12 +25,16 @@
 //! filas y tipos escritos a mano.
 
 pub mod esquema;
+pub mod lectura;
 pub mod lote;
 pub mod residual;
 pub mod tipos;
 pub mod traductor;
 pub mod transporte;
 pub mod url;
+pub mod verbos;
 
 pub use esquema::{Columna, Indice, Rol, Tabla};
+/// Lo que el driver entrega por celda, para quien no quiera depender de `scylla` (el kit).
+pub use scylla::value::{CqlDecimal, CqlValue};
 pub use tipos::{Cql, Tipo};

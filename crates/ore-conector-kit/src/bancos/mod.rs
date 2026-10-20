@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 
 pub mod azure;
 pub mod bigquery;
+#[cfg(feature = "cassandra")]
+pub mod cassandra;
 pub mod gcs;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;

@@ -6,6 +6,7 @@
 //! `frozen<list<int>>` (medido en X0).
 
 use ore_core::tipos::Fisico;
+use std::fmt;
 
 /// Un tipo de CQL, tal como lo escribe `system_schema`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,61 @@ impl Cql {
         match self {
             Cql::Frozen(t) => t.sin_frozen(),
             otro => otro,
+        }
+    }
+}
+
+impl fmt::Display for Cql {
+    /// El texto de CQL, como lo escribe `system_schema`: lo que el catálogo cita
+    /// como `physicalType`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Cql::Ascii => f.write_str("ascii"),
+            Cql::Text => f.write_str("text"),
+            Cql::TinyInt => f.write_str("tinyint"),
+            Cql::SmallInt => f.write_str("smallint"),
+            Cql::Int => f.write_str("int"),
+            Cql::BigInt => f.write_str("bigint"),
+            Cql::Counter => f.write_str("counter"),
+            Cql::Varint => f.write_str("varint"),
+            Cql::Float => f.write_str("float"),
+            Cql::Double => f.write_str("double"),
+            Cql::Decimal => f.write_str("decimal"),
+            Cql::Boolean => f.write_str("boolean"),
+            Cql::Blob => f.write_str("blob"),
+            Cql::Inet => f.write_str("inet"),
+            Cql::Timestamp => f.write_str("timestamp"),
+            Cql::Date => f.write_str("date"),
+            Cql::Time => f.write_str("time"),
+            Cql::Duration => f.write_str("duration"),
+            Cql::Uuid => f.write_str("uuid"),
+            Cql::TimeUuid => f.write_str("timeuuid"),
+            Cql::List(t) => write!(f, "list<{t}>"),
+            Cql::Set(t) => write!(f, "set<{t}>"),
+            Cql::Map(k, v) => write!(f, "map<{k}, {v}>"),
+            Cql::Tuple(v) => {
+                f.write_str("tuple<")?;
+                for (i, t) in v.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                f.write_str(">")
+            }
+            Cql::Udt(n) => {
+                let simple = n
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                    && !n.is_empty();
+                if simple {
+                    f.write_str(n)
+                } else {
+                    write!(f, "\"{n}\"")
+                }
+            }
+            Cql::Vector(t, n) => write!(f, "vector<{t}, {n}>"),
+            Cql::Frozen(t) => write!(f, "frozen<{t}>"),
         }
     }
 }
@@ -242,6 +298,9 @@ pub enum Tipo {
     Instante,
     /// `date`.
     Fecha,
+    /// Solo por una declaración de la tabla (`DateTime`, sin zona): la hora de
+    /// pared, en UTC, de un `timestamp`.
+    FechaHora,
     /// `time`: nanosegundos en CQL, microsegundos en OOS. Si el valor trae
     /// nanosegundos sueltos **no cabe**, y se dice (0032 §4).
     Hora,
@@ -300,6 +359,7 @@ impl Tipo {
             Tipo::Logico => Fisico::Logico,
             Tipo::Instante => Fisico::Instante,
             Tipo::Fecha => Fisico::Fecha,
+            Tipo::FechaHora => Fisico::FechaHora,
             Tipo::Hora => Fisico::Hora,
             Tipo::Decimal { precision, escala } => Fisico::Decimal {
                 precision: *precision,
@@ -324,6 +384,7 @@ impl Tipo {
             Tipo::Logico => "Boolean".into(),
             Tipo::Instante => "DateTimeTz".into(),
             Tipo::Fecha => "Date".into(),
+            Tipo::FechaHora => "DateTime".into(),
             Tipo::Hora => "Time".into(),
             Tipo::Decimal { precision, escala } => format!("Decimal<{precision}, {escala}>"),
             Tipo::Binario => "Opaque".into(),
@@ -338,7 +399,7 @@ impl Tipo {
             Tipo::Entero => "int/bigint",
             Tipo::Real => "double",
             Tipo::Logico => "boolean",
-            Tipo::Instante => "timestamp",
+            Tipo::Instante | Tipo::FechaHora => "timestamp",
             Tipo::Fecha => "date",
             Tipo::Hora => "time",
             Tipo::Decimal { .. } | Tipo::DecimalLibre => "decimal",
@@ -387,6 +448,7 @@ impl Tipo {
             ) => Ok(Tipo::Decimal { precision, escala }),
             (Fisico::Fecha, _, Tipo::Fecha) => Ok(Tipo::Fecha),
             (Fisico::Instante, _, Tipo::Instante) => Ok(Tipo::Instante),
+            (Fisico::FechaHora, _, Tipo::Instante) => Ok(Tipo::FechaHora),
             (Fisico::Hora, _, Tipo::Hora) => Ok(Tipo::Hora),
             (Fisico::Texto, Type::Scalar(s), _) => Err(format!(
                 "la tabla declara `{declarado}` ({s}) y este origen no lo lee: usa `String`"
@@ -464,6 +526,21 @@ mod tests {
     }
 
     #[test]
+    fn el_texto_de_vuelta_es_el_de_system_schema() {
+        for s in [
+            "int",
+            "frozen<list<int>>",
+            "map<text, frozen<tuple<int, text>>>",
+            "vector<float, 3>",
+            "frozen<direccion>",
+            "frozen<\"Mi Tipo\">",
+            "set<uuid>",
+        ] {
+            assert_eq!(cql(s).to_string(), s);
+        }
+    }
+
+    #[test]
     fn lo_mal_formado_se_dice() {
         for s in [
             "",
@@ -503,5 +580,7 @@ mod tests {
         assert!(Tipo::Texto.declarado("Integer").is_err());
         assert!(Tipo::Binario.declarado("String").is_ok());
         assert!(Tipo::Entero.declarado("Boolean").is_err());
+        assert_eq!(Tipo::Instante.declarado("DateTime"), Ok(Tipo::FechaHora));
+        assert_eq!(Tipo::FechaHora.oos(), "DateTime");
     }
 }

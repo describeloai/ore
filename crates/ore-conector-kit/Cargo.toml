@@ -43,5 +43,10 @@ mongodb = { version = "=3.9.1", optional = true, default-features = false, featu
     "sync", "openssl-tls", "dns-resolver", "compat-3-0-0",
 ] }
 
+# El banco de Cassandra (`--banco cassandra`): carga la semilla con el transporte de
+# `ore-cassandra` (el driver de ScyllaDB/Cassandra, ~110 crates).
+ore-cassandra = { path = "../ore-cassandra", optional = true }
+
 [features]
 mongodb = ["dep:mongodb"]
+cassandra = ["dep:ore-cassandra"]

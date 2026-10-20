@@ -457,3 +457,84 @@ fn los_errores_son_los_siete_codigos() {
     let e = c.tabla("ore_prueba", "no_existe").unwrap_err();
     assert_eq!(e.codigo, Codigo::Objeto);
 }
+
+#[test]
+fn el_rol_solo_ve_lo_que_puede_leer() {
+    let Some(u) = url() else { return };
+    let c = Conexion::abrir(&u).unwrap();
+    let p = c.permisos().unwrap();
+    assert!(p.puede_leer("ore_prueba", "eventos"));
+    // `system_schema` enseña `otra.secreta` (X0 §3.5); el rol no la lee, y no se cataloga.
+    assert!(c.tablas("otra").unwrap().contains(&"secreta".to_string()));
+    assert!(!p.puede_leer("otra", "secreta"));
+    assert!(!p.ve_keyspace("otra"));
+
+    // Sin keyspace en la URL, el catálogo recorre los que el rol ve: ni `otra` ni el sistema.
+    let sin_ks = u.replacen("/ore_prueba", "/", 1);
+    let cat = ore_cassandra::verbos::catalogo(&sin_ks, "cass").unwrap();
+    assert!(cat.contains("ore_prueba.eventos"), "{cat}");
+    assert!(
+        !cat.contains("otra.") && !cat.contains("secreta"),
+        "no se enseña lo ajeno"
+    );
+    assert!(
+        !cat.contains("system_schema") && !cat.contains("system."),
+        "ni el sistema"
+    );
+    let ex = ore_cassandra::verbos::explorar(&format!(r#"{{"url":"{sin_ks}"}}"#)).unwrap();
+    assert!(ex.contains("ore_prueba") && !ex.contains("otra"), "{ex}");
+}
+
+#[test]
+fn check_dice_la_causa_literal() {
+    let Some(u) = url() else { return };
+    let ok = ore_cassandra::verbos::check(&format!(r#"{{"url":"{u}"}}"#)).unwrap();
+    assert_eq!(ok, r#"{"ok":true}"#);
+    let mala = u.replacen(":lector@", ":MALA@", 1);
+    if mala != u {
+        let r = ore_cassandra::verbos::check(&format!(r#"{{"url":"{mala}"}}"#)).unwrap();
+        assert!(
+            r.contains(r#""ok":false"#) && r.contains("incorrect"),
+            "{r}"
+        );
+        assert!(!r.contains("MALA"), "la contraseña no sale: {r}");
+    }
+    let r = ore_cassandra::verbos::check(r#"{"url":"cassandra://u:p@127.0.0.1:1/x"}"#).unwrap();
+    assert!(r.contains(r#""ok":false"#), "{r}");
+}
+
+#[test]
+fn la_misma_peticion_da_la_misma_salida_en_el_mismo_orden() {
+    let Some(u) = url() else { return };
+    let c = Conexion::abrir(&u).unwrap();
+    let Ok(t) = c.tabla("ore_prueba", "grande") else {
+        eprintln!("sin la tabla `grande`: se salta");
+        return;
+    };
+    let plan = traducir(&pet("grande", &["id"], vec![]), &t, &Opciones::default())
+        .unwrap()
+        .plan;
+    // Cuatro rangos leen a la vez y contestan cuando pueden; la salida no depende de
+    // quién contestó antes.
+    let a: Vec<i64> = c
+        .leer(&plan, &t, 4)
+        .unwrap()
+        .iter()
+        .map(|f| entero(f, 0))
+        .collect();
+    let b: Vec<i64> = c
+        .leer(&plan, &t, 4)
+        .unwrap()
+        .iter()
+        .map(|f| entero(f, 0))
+        .collect();
+    let uno: Vec<i64> = c
+        .leer(&plan, &t, 1)
+        .unwrap()
+        .iter()
+        .map(|f| entero(f, 0))
+        .collect();
+    assert_eq!(a.len(), 300_000);
+    assert_eq!(a, b, "dos lecturas, dos órdenes");
+    assert_eq!(a, uno, "el paralelo no cambia el orden");
+}
