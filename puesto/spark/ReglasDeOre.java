@@ -98,7 +98,7 @@ public class ReglasDeOre implements scala.Function1<SparkSessionExtensions, Boxe
   // rejilla hecha sobre las zonas (uniformes), los puntos densos caen en UNA celda y el join se queda en
   // un core (> 9 min sin acabar); con la rejilla sobre los puntos, los 7 cores, 687 s y sin OOM. AQE no
   // lo ve: Sedona reparte por su cuenta. Sedona hace la rejilla con el argumento del predicado que dice
-  // `sedona.join.spatitionside` (`right` en `spark-defaults.conf`) y el índice con el otro: esta regla
+  // `spark.sedona.join.spatitionside` (`right` en `spark-defaults.conf`) y el índice con el otro: esta regla
   // pone el lado con más filas (o más bytes, si Spark no sabe las filas) a la DERECHA del predicado.
   // `ST_Contains(zona, punto)`, la forma de siempre, no se toca.
 

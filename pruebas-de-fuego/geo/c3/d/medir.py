@@ -136,6 +136,11 @@ def huella(filas):
 
 
 consultas = json.load(open("/m/consultas.json"))
+# Un previo en vez de las consultas (`PREVIO=lentas.py bash medir.sh`): con esta sesión y estas tablas.
+if os.path.exists("/m/previo.py"):
+    exec(open("/m/previo.py").read())
+    s.stop()
+    raise SystemExit(0)
 for caso, sql in consultas.items():
     if SOLO and caso not in SOLO:
         continue

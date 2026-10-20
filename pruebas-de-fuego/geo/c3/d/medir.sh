@@ -5,6 +5,7 @@
 # (`puesto-spark:1`). Saca las líneas `C3D|` y la línea de tiempo de los pods.
 #   bash pruebas-de-fuego/geo/c3/d/medir.sh [MAX=2] [LIMITE_S=600] [CASOS=q1,q10] [MUESTRA=20]
 #   REGLAS=locales bash …/medir.sh CASOS=q2      # con las ReglasDeOre de c3/b/regla.sh, no las de la imagen
+#   PREVIO="lentas.py lentas2.py" bash …/medir.sh EXPERIMENTOS=R2,R3,R4   # un previo (sus ficheros, juntos) en vez de las consultas
 #   BORRAR=1 bash pruebas-de-fuego/geo/c3/d/medir.sh    # retira el permiso de lectura y el namespace
 # Prepara solo lo que falte: el namespace, la cuenta `sb` y un permiso TEMPORAL de LECTURA sobre el
 # bucket del banco (los datos de la escala 100 ya están: los subió `generar.sh`).
@@ -41,7 +42,8 @@ YAML
 J=d-$(date +%H%M%S)
 kubectl -n $NS create configmap $J --from-file=medir.py="$aqui/medir.py" --from-file=plantilla.yaml="$aqui/plantilla.yaml" \
   --from-file=consultas.json="$aqui/consultas.json" \
-  $( [ "${REGLAS:-}" = locales ] && echo --from-file=ore-spark-reglas.jar="$aqui/../b/ore-spark-reglas.jar" ) >/dev/null
+  $( [ "${REGLAS:-}" = locales ] && echo --from-file=ore-spark-reglas.jar="$aqui/../b/ore-spark-reglas.jar" ) \
+  $( [ -n "${PREVIO:-}" ] && { for f in $PREVIO; do cat "$aqui/$f"; echo; done > /tmp/previo-$J.py; echo --from-file=previo.py=/tmp/previo-$J.py; } ) >/dev/null
 ENV=""; for kv in "$@"; do ENV="$ENV
             - {name: ${kv%%=*}, value: \"${kv#*=}\"}"; done
 T0=$(date -u +%s); echo "== $J · $* · $(date -u +%T)"
