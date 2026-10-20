@@ -660,7 +660,8 @@ const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
 
 /// ⭐ 0068 C3·c · **El Build elástico.** Un Build pesado con entradas grandes
 /// no es un pod de 7 CPU / 48 GiB con `local[*]`: es su DRIVER (este pod,
-/// pequeño y fuera de *spot*: el sabor `pesado-driver`, `malla/74`), que pide
+/// pequeño y fuera de *spot*: su cola `cola-driver` y el sabor `pesado-driver`,
+/// `malla/22` y `malla/74`), que pide
 /// a Kubernetes los ejecutores según la carga, cada uno a la cola de su celda
 /// (`spark.py`, `_elastico`). Medido en victor (C3·c0): escala de 1 a 2 solo,
 /// 200 M × 20 k en 79 s frente a 116 s en un pod; perder un ejecutor da las
@@ -670,7 +671,12 @@ const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
 /// Lo que cambia sobre el trabajo pesado ya rendido: los recursos del driver,
 /// su cuenta (`driver-pesado`: puede crear ejecutores, y la política de la
 /// celda dice cuáles), su etiqueta de red y lo que el SDK necesita saber.
-const DEL_PESADO_AL_DRIVER: [(&str, &str); 4] = [
+const DEL_PESADO_AL_DRIVER: [(&str, &str); 5] = [
+    // Su cola (`malla/22`): el sabor `pesado-driver`, uno por celda.
+    (
+        "kueue.x-k8s.io/queue-name: cola-pesada\n",
+        "kueue.x-k8s.io/queue-name: cola-driver\n",
+    ),
     (
         "requests: {cpu: \"7\", memory: 48Gi}",
         "requests: {cpu: \"1500m\", memory: 12Gi}",
@@ -1295,8 +1301,8 @@ mod prueba {
 
     /// 0068 C3·c · El driver de un Build elástico, sobre la plantilla de
     /// verdad: pequeño, con su cuenta, su etiqueta de red en el POD, y lo que el
-    /// SDK necesita (el techo, la imagen, su nombre y su IP); sigue en
-    /// `cola-pesada` (Kueue le da el sabor del driver). Sin el trabajo pesado
+    /// SDK necesita (el techo, la imagen, su nombre y su IP); y su cola,
+    /// `cola-driver` (`malla/22`). Sin el trabajo pesado
     /// de siempre, no se adivina.
     #[test]
     fn el_driver_elastico_es_el_trabajo_pesado_en_pequeno_y_con_su_cuenta() {
@@ -1326,7 +1332,8 @@ mod prueba {
         assert!(d.contains("serviceAccountName: driver-pesado\n"));
         assert!(!d.contains("serviceAccountName: puesto\n"));
         assert!(d.contains("        ore.dev/rol: puesto\n        ore.dev/spark: driver\n"));
-        assert!(d.contains("kueue.x-k8s.io/queue-name: cola-pesada\n"));
+        assert!(d.contains("kueue.x-k8s.io/queue-name: cola-driver\n"));
+        assert!(!d.contains("queue-name: cola-pesada"));
         // Es YAML que se lee.
         ore_core::parse::parse(&d).unwrap();
         // Lo ligero no se hace driver.
