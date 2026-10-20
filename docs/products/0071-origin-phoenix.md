@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**Sin construir:** el cliente Rust, el conector, el kit. **Sin medir:** autenticación, TLS, permisos,
+**M1 hecho:** el cliente Avatica en Rust (`ore-avatica`, §6). **Sin construir:** el conector, el kit. **Sin medir:** autenticación, TLS, permisos,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -176,7 +176,14 @@ particionado se hará por la clave (§4).
 
 ### 3.8 Errores y tiempo límite
 
-| caso | `error_code` | `sql_state` | código ORE |
+**Corregido en M1 con los bytes reales.** El PQS entrega **todo** error SQL en un HTTP 500 con un `ErrorResponse`
+cuyo `error_code` es **−1 (4294967295)** y `sql_state` **`00000`**: Phoenix no los pasa. El código de Phoenix va
+**dentro del texto** del mensaje (`TableNotFoundException: ERROR 1012 (42M03): Table undefined. tableName=NO_EXISTE`,
+encadenado con ` -> `) y en la pila de Java del campo `exceptions`. Los números de la tabla son los que `phoenixdb`
+extrae de ese texto; ORE los extrae igual (`ERROR <n> (<estado>)`, en `ore-phoenix`, M2). `ore-avatica` entrega el
+error tal como llegó (`Error::Servidor`) y no interpreta Phoenix.
+
+| caso | `error_code` (de Phoenix, en el texto) | `sql_state` | código ORE |
 |---|---|---|---|
 | tabla que no existe | 1012 | 42M03 | `objeto` |
 | columna que no existe | 504 | 42703 | `esquema` |
@@ -185,11 +192,13 @@ particionado se hará por la clave (§4).
 | división por cero | 202 | 22012 | `origen` |
 | **tiempo límite** | **−1 (4294967295)** | **00000** | `tiempo` |
 
-**El tiempo límite no trae código:** llega como un error genérico cuyo texto dice
-`SQLTimeoutException: … allotted time: 1500 ms`; hay que reconocerlo por el texto. Se activa con la
-propiedad **`phoenix.query.timeoutMs` de `OpenConnection`** (medido con 1 500 ms: cortó a los 2,3 s). Mientras
-no haya medición de lo contrario, **no hay `killOp`**: el tiempo límite es del servidor, y el cliente cierra
-el *statement*.
+**El tiempo límite no trae código propio** y hay que reconocerlo por el texto, que tiene **dos formas**:
+`SQLTimeoutException: … allotted time: 1500 ms` en una consulta simple, y `TimeoutException` a secas
+(`Encountered exception in sub plan [0] execution → java.util.concurrent.TimeoutException`) dentro de una unión.
+Se activa con la propiedad **`phoenix.query.timeoutMs` de `OpenConnection`** (1 500 ms cortó a los 2,3 s; 300 ms en
+una unión de 262 144², a los 0,7 s). **Tras el error el servidor deja de trabajar** (CPU del PQS de vuelta al 1,7 %
+en cuanto el cliente recibe el error): no hay un `killOp` que llamar, pero tampoco una consulta zombi. El cliente
+cierra el *statement*.
 
 ### 3.9 `estimar`
 
@@ -256,13 +265,61 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 | hito | qué entrega |
 |---|---|
 | **X0 · medir** | **Hecho (2026-10-20):** laboratorio reproducible, semilla, trazas grabadas, este documento. |
-| **M1 · el cliente Avatica** | `ore-avatica`: abrir, ejecutar, paginar, cerrar, metadatos, errores; los cuatro invariantes; servidor falso con las trazas; contra el PQS real. |
+| **M1 · el cliente Avatica** | **Hecho (2026-10-20)**, ver abajo. `ore-avatica`: abrir, ejecutar, paginar, cerrar, metadatos, errores; los cuatro invariantes; servidor falso con las trazas; contra el PQS real. |
 | **M2 · leer** | `ore-phoenix` + `ore-read-phoenix`: tipos a Arrow, `leer` en streaming con memoria acotada, `check`, `servir`; `-p`/`TODOS`/`COPY` (la guarda `lista_de_origenes`); pasarela. |
 | **M3 · catálogo** | `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (decidir: ocultar las vistas de inquilino o pedir `TenantId`), permisos si el PQS los da. |
 | **M4 · filtros y estimar** | Traducción exacta, residual, vocabulario cerrado, `estimar` honesto; el kit (14 casos); `ci.yml` con el laboratorio. |
 | **M5 · rendimiento y robustez** | Partición por rangos de la clave en paralelo; tiempos límite; cierre de statements; PQS caído, statement perdido, reintentos. |
 | **M6 · seguridad** | BASIC/DIGEST solo sobre HTTPS; TLS con el diseño de 0070; secretos fuera de los errores; el mínimo de TLS 1.2. |
 | **M7 · incremental** | `ROW_TIMESTAMP` (§5). |
+
+### M1 · hecho (2026-10-20)
+
+**`crates/ore-avatica`**, el cliente del protocolo, sin saber nada de Phoenix: `Conexion::abrir` (con las propiedades
+de `OpenConnection`), `ejecutar` → `Lectura` (frame a frame, cierra el statement al soltarla o al acabar),
+`esquemas`/`tablas`/`columnas` (metadatos leídos enteros, con paginación), `Valor` (nulo, bool, entero, real, texto,
+bytes, decimal **exacto como texto**, lista) y `Columna` (nombre, tipo de Phoenix, `rep`, precisión, escala,
+componente de un `ARRAY`), y `Error` (red, tiempo agotado, HTTP ajeno, servidor, protocolo, statement perdido,
+truncado) con `reintentable()` y `es_tiempo_limite()`.
+
+- **Sin un crate nuevo en el árbol:** `prost` (solo `derive`) y `ureq` ya estaban; `Cargo.lock` gana únicamente la
+  entrada de `ore-avatica` (+10 líneas) y `dependencias.rs` sigue en 193. Los mensajes **no se escriben a mano**:
+  `pruebas-de-fuego/phoenix/generar_proto.py` los genera de los descriptores de Avatica (los de `phoenixdb`), con
+  los números de campo del propio protocolo, y `proto.rs` se regenera idéntico.
+- **Los cuatro invariantes (§3.3), cada uno con su prueba:** el primer frame se pide con tamaño (y `filas_por_frame ≤ 0`
+  se rechaza al abrir); `missing_statement` y `missing_results` son `StatementPerdido`; el `Fetch` lleva las filas
+  leídas y **nunca se reintenta**; un frame sin filas ni `done` es `Truncado` (y cierra el statement).
+- **`reintentable()` no es «repite esta petición»:** es «se puede empezar de nuevo la operación entera»: red, tiempo
+  agotado, un 502/503/504 de un balanceador y un statement perdido sí; un error SQL, el tiempo límite de Phoenix y
+  lo que el protocolo no prevé, no (volverían a pasar).
+- **Pruebas (34, corren en el CI sin laboratorio):** 4 unitarias; **6 con los bytes grabados de un PQS real**
+  (lectura paginada, los 23 tipos —incluido el decimal exacto, `DATE` en días y `TIMESTAMP` en milisegundos—,
+  catálogo, error de tabla, statement perdido, tiempo límite); **18** de protocolo con mensajes fabricados (los cuatro
+  invariantes, un `done` sin filas, la sesión compartida entre conexión y lectura, un `ExecuteResponse` sin firma o
+  con dos resultados, otra respuesta, una página de balanceador, un puerto sin servidor, un servidor mudo, la
+  credencial *Basic*, un metadato en varios frames, identificadores distintos). Más **6 contra el laboratorio**
+  (`PHOENIX_LAB_URL`): un barrido de 262 144 filas sin una de más ni de menos y en orden, cuatro lecturas en
+  paralelo por rangos de la clave, los tipos, el catálogo (sal, clave primaria), los errores reales y el tiempo límite.
+- **Se probó a sí mismo: diez sabotajes**, uno a uno (no pedir el tamaño del primer frame; ignorar `missing_*`; mandar
+  siempre `offset 0`; no tratar «sin filas ni done» como error; que el `Debug` enseñe la contraseña; soltar una
+  lectura sin cerrar el statement; reintentar un error del servidor; aceptar credenciales en la URL; no recortar un
+  cuerpo ajeno; no mandar la credencial), y cada uno pone rojo la prueba que debía. Con cargo en `--no-fail-fast`
+  porque, si no, el primer binario rojo oculta los demás.
+- **Rendimiento medido** (262 144 filas, frames de 10 000 y 20 000, una conexión): **~35 000 filas/s** en *release*
+  (22 800 en *debug*: el *debug* de `prost` es lento, y no es lo que se despliega) y **×2,2** con 4 conexiones en
+  paralelo por rangos de la clave (3,4 s). Es del orden de lo que da `phoenixdb` (40 600 filas/s con frames de 10 000): el cuello es el PQS, no el cliente.
+- **Lo que costó.** (1) La documentación de Avatica no dice que la respuesta de `PrepareAndExecute` es un
+  `ExecuteResponse` con una lista; (2) el error SQL no trae el código de Phoenix (§3.8); (3) la traza de «tiempo
+  límite» de X0 no era determinista —esa vez la consulta terminó antes—, y se regrabó con una unión pesada y un límite
+  de 300 ms; (4) el `TIMESTAMP` solo llega en milisegundos, y no se arregla en el cliente.
+- **Sin explicar:** dos veces, justo tras varias consultas pesadas (la unión de 262 144² con el *heap* del PQS en
+  512 MB), la **apertura** de 3 de 4 conexiones simultáneas devolvió un reset de TCP (`os error 10054`). No se ha
+  vuelto a reproducir (0 de 75 aperturas simultáneas, 0 de 3 repeticiones del test, desde Python o desde Rust). Lo
+  coherente es un PQS agobiado por el *heap*, pero **no está demostrado**; por eso un reset al abrir es
+  `Error::Red` y reintentable (con un identificador nuevo), y el laboratorio sigue con `-Xmx512m`.
+- **No hecho:** TLS propio (se usa el de `native-tls` del sistema para `https://`), autenticación distinta de
+  *Basic*, un `ExecuteRequest` con parámetros (los literales los escapa `ore-phoenix`, §3.6), y contra
+  Phoenix ≥ 5.2.
 
 ## 7. Fuera de este producto
 

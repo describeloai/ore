@@ -99,10 +99,10 @@ def statement_perdido():
 
 
 def tiempo_limite():
-    c = phoenixdb.connect(URL, autocommit=True, **{"phoenix.query.timeoutMs": "1500"})
+    c = phoenixdb.connect(URL, autocommit=True, **{"phoenix.query.timeoutMs": "300"})
     cl, cid = c._client, c._id
     sid = cl.create_statement(cid)
-    cl.prepare_and_execute(cid, sid, "SELECT COUNT(*) FROM ore_x0.pedidos a, ore_x0.pedidos b WHERE a.id < 40000 AND b.id < 40000 AND a.importe = b.importe", first_frame_max_size=10)
+    cl.prepare_and_execute(cid, sid, "SELECT COUNT(*) FROM ore_x0.pedidos a, ore_x0.pedidos b WHERE a.importe = b.importe", first_frame_max_size=10)
 
 
 for nombre, f in [("lectura_paginada", lectura_paginada), ("todos_los_tipos", todos_los_tipos), ("catalogo", catalogo),

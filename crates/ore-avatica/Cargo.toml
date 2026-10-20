@@ -1,0 +1,26 @@
+# El cliente del protocolo Avatica (Apache Calcite) para ORE (ficha 0071, M1): lo que habla el Phoenix
+# Query Server. No sabe nada de Phoenix: abre una conexión, ejecuta, pagina, cierra y lee los
+# metadatos; los tipos y el SQL son de `ore-phoenix` (M2).
+#
+# No existe un cliente Avatica en Rust. El protocolo son ocho mensajes protobuf sobre HTTP
+# (`pruebas-de-fuego/phoenix/`, X0). Va con `prost` (con `derive`, sin `prost-build`: los mensajes
+# se generan de los descriptores con `generar_proto.py`) y `ureq`, que ya están en el árbol: no
+# entra ningún crate nuevo en `Cargo.lock`. Lo vigila `crates/ore-cli/tests/dependencias.rs`.
+[package]
+name        = "ore-avatica"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Cliente del protocolo Avatica (protobuf sobre HTTP): el del Phoenix Query Server"
+
+[dependencies]
+prost = "0.14"
+# Como el resto de la pila de ORE: OpenSSL del sistema y no rustls.
+ureq  = { version = "2", default-features = false, features = ["native-tls"] }
+
+[dev-dependencies]
+# Las trazas grabadas del PQS (`pruebas-de-fuego/phoenix/trazas/*.json`): JSON con bytes en base64.
+serde_json = "1"
+base64     = "0.22"

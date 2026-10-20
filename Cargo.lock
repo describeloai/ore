@@ -3021,6 +3021,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-avatica"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "prost",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "ore-azure"
 version = "0.1.0"
 dependencies = [
