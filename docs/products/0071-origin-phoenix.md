@@ -207,6 +207,42 @@ búsqueda puntual (`1 ROWS 115 BYTES`). Sin estadísticas (el caso por defecto d
 cargada) **no hay estimación**. `COUNT(*)` es exacto pero **cuesta un barrido** (1 s por 262 144 filas).
 Consecuencia: `estimar` devuelve lo que `EXPLAIN` sepa y, si no, **dice que no lo sabe**; no se inventa.
 
+### 3.12 Lo que Phoenix hace con los filtros del kit (medido para M4, 2026-10-20)
+
+Se cargó la semilla `tipos` del kit en una tabla de Phoenix y se pasó cada filtro del caso 2 escrito como lo
+emitiría el conector. **Lo que coincide con SQL:** `=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `IS [NOT] NULL` y `LIKE`
+(sensible a mayúsculas, `%` y `_`) sobre enteros (también `-9223372036854775808` como literal), `DECIMAL`, `DOUBLE`,
+`BOOLEAN`, `DATE` y `TIMESTAMP`; un nulo no casa con `<>` ni con `NOT IN`. `ORDER BY … NULLS LAST` vale en los dos
+sentidos (sin él, Phoenix pone los nulos **primero** en `ASC` y en `DESC`) y `LIMIT` se combina con él.
+
+**Lo que no coincide, y qué hace el conector:**
+
+| hallazgo | consecuencia |
+|---|---|
+| **La barra invertida es un escape dentro de un literal de texto.** `'a'` guarda `a` + retroceso (``); `'x'` deja el literal **sin cerrar**. | El escape duplica **las comillas y las barras**. Con solo las comillas (como en Cassandra) el valor se corrompe y un valor con `'` rompe la sentencia: es el mismo defecto que una inyección. Test y sabotaje propios. |
+| **`LIKE` trata `\_` y `\%` como comodín escapado** (no hay `ESCAPE`: error de sintaxis); DuckDB trata la barra como un carácter. | Un patrón con barra **se rechaza** (`operador`), no se aproxima. |
+| **La cadena vacía es nulo** (`''` se guarda como `NULL`), y el literal `''` en un filtro también: `<> ''`, `> ''` y `>= ''` no devuelven nada. | El literal vacío se normaliza: `eq ''` y `lt/le ''` → nada, `neq/gt/ge ''` → `IS NOT NULL`, `in` descarta el `''`. El banco del kit declara «el vacío es nulo». |
+| **`TIMESTAMP` guarda nanosegundos** y los compara exactos (`= …59.999999` casa, `= …59.999` no), pero Avatica entrega milisegundos. | La precisión sigue declarada en milisegundos (§3.4). El banco carga milisegundos, como el de Mongo. |
+| `TO_TIMESTAMP(…, 'SSSSSS')` interpreta los microsegundos como **milisegundos** (año 2100). | Los literales de instante se escriben `TIMESTAMP '…'`; los de fecha, `TO_DATE(…, 'yyyy-MM-dd', 'GMT')`. |
+| `IN ()` es un error de sintaxis; `local` (una columna de la semilla) es palabra **reservada**. | `in` vacío → `1 = 0`; los identificadores van siempre entre comillas (ya lo hace M2). |
+| `NaN` e `Infinity` no se pueden escribir como literal. | Un filtro de `DOUBLE` con `NaN` se rechaza. |
+| `TO_CHAR(<entero>)` mete separadores de miles (`fila-1,001`). | La carga del banco usa `CAST(… AS VARCHAR)`. |
+
+**`estimar` no se puede hacer honesto con `EXPLAIN`.** Sus columnas son estructuradas (`EST_ROWS_READ`,
+`EST_BYTES_READ`), pero con estadísticas el número es de la tabla **y no del filtro**: `PEDIDOS` da 933 450 filas (real
+262 144) **también** con `id BETWEEN 10 AND 200` (real 191), y `SALADA` da 2 735 415 (real 40). Sin estadísticas no hay
+número (`kit_tipos`, `kit_grande`). Solo es exacto en un `POINT LOOKUP` (1 fila) y en un `LIMIT n`. Decisión: **M4 no
+declara `estimar`** (el caso 14 sale «no aplica», como en Cassandra y MongoDB) y el catálogo sigue sin `filas_estimadas`.
+
+**Orden y coste.** `ORDER BY` por la clave: 0,03 s para las 10 primeras de 262 144; por una columna que no es clave:
+3,2 s (`SERVER TOP 10 ROWS SORTED BY`). Ordenar 1,02 M filas por una no clave **sin límite** funciona, en flujo, 45,8 s.
+
+**Cargar 10⁶ filas dentro de Phoenix:** `UPSERT INTO t SELECT id + n, … FROM t WHERE id <= n` duplicando; 1 000 → 1 024 000
+filas en 72 s, sin sacar un dato del servidor (el `ejecutar` de `ore-avatica` basta: no hace falta `ExecuteBatch`).
+
+**Un objeto lento para los casos 8 y 10:** Phoenix no tiene `sleep` ni vistas con uniones, pero una vista con un
+`REGEXP_SUBSTR` sin coincidencias sobre 1 M filas tarda **23 s** sin dar ninguna fila. Sirve.
+
 ### 3.10 `ROW_TIMESTAMP` y lecturas en el tiempo
 
 - Una columna `ROW_TIMESTAMP` en la clave convierte el filtro en un recorte de ficheros de HBase:
