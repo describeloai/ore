@@ -33,6 +33,7 @@ import java.util.Set;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.SparkSessionExtensions;
 import org.apache.spark.sql.catalyst.expressions.Alias;
+import org.apache.spark.sql.catalyst.expressions.And;
 import org.apache.spark.sql.catalyst.expressions.Attribute;
 import org.apache.spark.sql.catalyst.expressions.AttributeSet;
 import org.apache.spark.sql.catalyst.expressions.EqualTo;
@@ -40,6 +41,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression;
 import org.apache.spark.sql.catalyst.expressions.MonotonicallyIncreasingID;
 import org.apache.spark.sql.catalyst.expressions.NamedExpression;
 import org.apache.spark.sql.catalyst.expressions.NamedExpression$;
+import org.apache.spark.sql.catalyst.expressions.ScalarSubquery;
 import org.apache.spark.sql.catalyst.plans.Inner$;
 import org.apache.spark.sql.catalyst.plans.JoinType;
 import org.apache.spark.sql.catalyst.plans.LeftOuter$;
@@ -48,6 +50,7 @@ import org.apache.spark.sql.catalyst.plans.logical.BROADCAST$;
 import org.apache.spark.sql.catalyst.plans.logical.CTERelationDef;
 import org.apache.spark.sql.catalyst.plans.logical.CTERelationDef$;
 import org.apache.spark.sql.catalyst.plans.logical.CTERelationRef;
+import org.apache.spark.sql.catalyst.plans.logical.Filter;
 import org.apache.spark.sql.catalyst.plans.logical.HintInfo;
 import org.apache.spark.sql.catalyst.plans.logical.Join;
 import org.apache.spark.sql.catalyst.plans.logical.JoinHint;
@@ -72,6 +75,12 @@ public class ReglasDeOre implements scala.Function1<SparkSessionExtensions, Boxe
       @Override
       public Rule<LogicalPlan> apply(SparkSession s) {
         return new JoinExternoEspacial();
+      }
+    });
+    e.injectPostHocResolutionRule(new scala.runtime.AbstractFunction1<SparkSession, Rule<LogicalPlan>>() {
+      @Override
+      public Rule<LogicalPlan> apply(SparkSession s) {
+        return new DifundirLaSubconsulta();
       }
     });
     e.injectOptimizerRule(new scala.runtime.AbstractFunction1<SparkSession, Rule<LogicalPlan>>() {
@@ -255,6 +264,96 @@ public class ReglasDeOre implements scala.Function1<SparkSessionExtensions, Boxe
 
     static boolean difunde(Option<HintInfo> h) {
       return h.isDefined() && h.get().strategy().isDefined() && h.get().strategy().get() == BROADCAST$.MODULE$;
+    }
+  }
+
+  // ── C3·e · La geometría de una subconsulta escalar, difundida ──────────────────────────────────────
+  //
+  // Q2 de SpatialBench: `WHERE ST_Intersects(t.punto, (SELECT z.geom FROM zone z WHERE … LIMIT 1))`. Spark
+  // calcula la subconsulta una vez, pero Sedona no la ve como el lado de un join: en cada una de las 600 M
+  // filas deserializa el polígono y lo cruza sin índice (> 600 s en C3·d). Con el polígono como lado
+  // difundido de un join (q2d de C0, a mano) es un `BroadcastIndexJoin`: 125 s en un nodo.
+  //
+  //   Filter(… AND P(a, (subconsulta)) AND …, hijo)
+  //     →   Project(hijo.*, Filter(…, Join(hijo, BROADCAST(subconsulta), Inner, P(a, g))))
+  //
+  // Solo si el predicado es un conjunto del AND (no dentro de un OR ni de un NOT: ahí el NULL de una
+  // subconsulta vacía cambia el sentido), el otro argumento usa columnas del hijo, y la subconsulta no está
+  // correlacionada, da una columna y como mucho UNA fila (`maxRows`, el `LIMIT 1` de Q2). Entonces da lo
+  // mismo: con 0 filas el predicado es NULL y el Filter lo descarta todo, como un join interno contra nada;
+  // con 1, el mismo cruce. En el analizador (post-hoc): la marca de difundir la recoge el optimizador.
+
+  public static class DifundirLaSubconsulta extends Rule<LogicalPlan> {
+    @Override
+    public LogicalPlan apply(LogicalPlan plan) {
+      return plan.transformUp(PartialFunction.fromFunction(DifundirLaSubconsulta::reescribir));
+    }
+
+    static LogicalPlan reescribir(LogicalPlan nodo) {
+      if (!(nodo instanceof Filter f)) {
+        return nodo;
+      }
+      LogicalPlan hijo = f.child();
+      AttributeSet suyas = hijo.outputSet();
+      List<Expression> partes = new ArrayList<>();
+      conjuntos(f.condition(), partes);
+      for (int i = 0; i < partes.size(); i++) {
+        Expression x = partes.get(i);
+        if (!GIRO.containsKey(x.getClass().getSimpleName()) || x.children().size() < 2) {
+          continue;
+        }
+        for (int k = 0; k < 2; k++) {
+          Expression a = x.children().apply(k);
+          Expression b = x.children().apply(1 - k);
+          List<ScalarSubquery> qs = new ArrayList<>();
+          subconsultas(b, qs);
+          if (qs.size() != 1 || a.references().isEmpty() || !a.references().subsetOf(suyas)
+              || !b.references().isEmpty()) {
+            continue;
+          }
+          ScalarSubquery q = qs.get(0);
+          LogicalPlan sub = q.plan();
+          Option<Object> filas = sub.maxRows();
+          if (!q.outerAttrs().isEmpty() || sub.output().size() != 1 || filas.isEmpty()
+              || ((Long) filas.get()) > 1) {
+            continue;
+          }
+          Attribute g = sub.output().head();
+          Expression p = x.transform(PartialFunction.fromFunction(
+              (Expression e) -> e instanceof ScalarSubquery s2 && s2.exprId().equals(q.exprId()) ? g : e));
+          Join join = new Join(hijo, new ResolvedHint(sub, new HintInfo(Option.apply(BROADCAST$.MODULE$))),
+              Inner$.MODULE$, Option.apply(p), JoinHint.NONE());
+          Expression resto = null;
+          for (int r = 0; r < partes.size(); r++) {
+            if (r != i) {
+              resto = resto == null ? partes.get(r) : new And(resto, partes.get(r));
+            }
+          }
+          LogicalPlan arriba = resto == null ? join : new Filter(resto, join);
+          return new Project(seq(new ArrayList<NamedExpression>(lista(hijo.output()))), arriba);
+        }
+      }
+      return nodo;
+    }
+
+    /** Los conjuntos de un AND, en orden. */
+    static void conjuntos(Expression e, List<Expression> out) {
+      if (e instanceof And y) {
+        conjuntos(y.left(), out);
+        conjuntos(y.right(), out);
+      } else {
+        out.add(e);
+      }
+    }
+
+    static void subconsultas(Expression e, List<ScalarSubquery> out) {
+      if (e instanceof ScalarSubquery q) {
+        out.add(q);
+        return;
+      }
+      for (Expression c : ReglasDeOre.<Expression>lista(e.children())) {
+        subconsultas(c, out);
+      }
     }
   }
 

@@ -97,4 +97,23 @@ caso("9 · ST_Intersects(punto, zona) se gira y da lo mismo",
 pd = s.sql("select count(*) n from puntos p join zonas_dif z on ST_Within(p.geom, z.zona)")
 caso("10 · con un lado difundido no se gira", "st_within" in optimizado(pd).lower(), optimizado(pd)[:120])
 
+# ── C3·e · DifundirLaSubconsulta: la geometría de una subconsulta escalar, como lado difundido ──────
+SUB = "(select z.zona from zonas z where z.id = %d limit 1)"
+REF2 = "select /*+ BROADCAST(z) */ count(*) n from puntos p join zonas z on ST_Intersects(p.geom, z.zona) where z.id = %d"
+q2 = s.sql("select count(*) n from puntos p where ST_Intersects(p.geom, %s)" % (SUB % 7))
+r2 = s.sql(REF2 % 7).first().n
+caso("11 · Q2 (subconsulta con LIMIT 1) usa el índice y da lo mismo que q2d",
+     "BroadcastIndexJoin" in plan(q2) and q2.first().n == r2 and r2 > 0, "%s · %d/%d" % (plan(q2), q2.first().n, r2))
+q0 = s.sql("select count(*) n from puntos p where ST_Intersects(p.geom, %s)" % (SUB % -1))
+caso("12 · una subconsulta sin filas da 0", q0.first().n == 0, "%s · %d" % (plan(q0), q0.first().n))
+qo = s.sql("select count(*) n from puntos p where p.id < 10 or ST_Intersects(p.geom, %s)" % (SUB % 7))
+caso("13 · dentro de un OR no se toca", "BroadcastIndexJoin" not in plan(qo), "%s" % plan(qo))
+ql = s.sql("select count(*) n from puntos p where ST_Intersects(p.geom, (select z.zona from zonas z where z.id = 7))")
+caso("14 · sin cota de filas (sin LIMIT) no se toca, y da lo mismo",
+     "BroadcastIndexJoin" not in plan(ql) and ql.first().n == r2, "%s · %d" % (plan(ql), ql.first().n))
+qa = s.sql("select count(*) n from puntos p where p.id %% 2 = 0 and ST_Intersects(p.geom, %s)" % (SUB % 7))
+ra = s.sql((REF2 % 7) + " and p.id % 2 = 0").first().n
+caso("15 · con otra condición al lado se reescribe igual",
+     "BroadcastIndexJoin" in plan(qa) and qa.first().n == ra, "%s · %d/%d" % (plan(qa), qa.first().n, ra))
+
 print("\n%d/%d casos" % (sum(casos), len(casos)))

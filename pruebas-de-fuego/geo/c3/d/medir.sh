@@ -4,6 +4,7 @@
 # `c3d-medida` (el de `generar.sh`, con la cuenta `sb` que lee el bucket). Con la imagen desplegada
 # (`puesto-spark:1`). Saca las líneas `C3D|` y la línea de tiempo de los pods.
 #   bash pruebas-de-fuego/geo/c3/d/medir.sh [MAX=2] [LIMITE_S=600] [CASOS=q1,q10] [MUESTRA=20]
+#   REGLAS=locales bash …/medir.sh CASOS=q2      # con las ReglasDeOre de c3/b/regla.sh, no las de la imagen
 #   BORRAR=1 bash pruebas-de-fuego/geo/c3/d/medir.sh    # retira el permiso de lectura y el namespace
 # Prepara solo lo que falte: el namespace, la cuenta `sb` y un permiso TEMPORAL de LECTURA sobre el
 # bucket del banco (los datos de la escala 100 ya están: los subió `generar.sh`).
@@ -39,7 +40,8 @@ subjects: [{kind: ServiceAccount, name: sb, namespace: $NS}]
 YAML
 J=d-$(date +%H%M%S)
 kubectl -n $NS create configmap $J --from-file=medir.py="$aqui/medir.py" --from-file=plantilla.yaml="$aqui/plantilla.yaml" \
-  --from-file=consultas.json="$aqui/consultas.json" >/dev/null
+  --from-file=consultas.json="$aqui/consultas.json" \
+  $( [ "${REGLAS:-}" = locales ] && echo --from-file=ore-spark-reglas.jar="$aqui/../b/ore-spark-reglas.jar" ) >/dev/null
 ENV=""; for kv in "$@"; do ENV="$ENV
             - {name: ${kv%%=*}, value: \"${kv#*=}\"}"; done
 T0=$(date -u +%s); echo "== $J · $* · $(date -u +%T)"

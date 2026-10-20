@@ -21,6 +21,10 @@ MAX = int(os.environ.get("MAX", "2"))
 LIMITE = int(os.environ.get("LIMITE_S", "600"))
 DATOS = os.environ["DATOS"]          # gs://…/spatialbench/sf100
 MUESTRA = int(os.environ.get("MUESTRA", "0"))  # cuántas filas imprimir por consulta
+CRUDO = os.environ.get("CRUDO") == "1"         # y sin normalizar (repr), para cotejar con otro motor
+# Unas `ReglasDeOre` por delante de las de la imagen (`/m/ore-spark-reglas.jar`, de `c3/b/regla.sh`): para
+# medir una regla antes de desplegarla. Las reglas corren en el driver: basta con su classpath.
+REGLAS = "/m/ore-spark-reglas.jar" if os.path.exists("/m/ore-spark-reglas.jar") else None
 SOLO = set(filter(None, os.environ.get("CASOS", "").split(",")))
 SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 
@@ -75,10 +79,12 @@ b = (SparkSession.builder.master("k8s://https://kubernetes.default.svc:443").app
      # El conector 3.0.4 no casa con la lectura vectorizada del Hadoop de Spark 4.1
      # (`NoSuchMethodError` en `VectoredReadUtils.validateRangeRequest`): Parquet lee como siempre.
      .config("spark.hadoop.parquet.hadoop.vectored.io.enabled", "false"))
+if REGLAS:
+    b = b.config("spark.driver.extraClassPath", REGLAS)
 s = b.getOrCreate()
 s.sparkContext.setLogLevel("ERROR")
 sc = s.sparkContext._jsc.sc()
-linea("sesion", s="%.1f" % (time.time() - T0))
+linea("sesion", s="%.1f" % (time.time() - T0), reglas="locales" if REGLAS else "imagen")
 
 vivos = {"n": -1, "max": 0}
 
@@ -163,6 +169,8 @@ for caso, sql in consultas.items():
     linea(caso, estado="bien", s="%.1f" % (time.time() - t), filas=len(r["f"]), huella=huella(r["f"]),
           join=join, ejecutores_max=vivos["max"])
     if MUESTRA:  # las filas normalizadas, para cotejar una huella que no casa
-        for f in sorted(json.dumps(norma(list(f)), default=str) for f in r["f"])[:MUESTRA]:
+        filas = sorted((repr(tuple(f)) for f in r["f"]) if CRUDO else
+                       (json.dumps(norma(list(f)), default=str) for f in r["f"]))
+        for f in filas[:MUESTRA]:
             print("C3D|%s|fila|%s" % (caso, f), flush=True)
 s.stop()
