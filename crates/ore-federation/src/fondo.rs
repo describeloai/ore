@@ -237,6 +237,37 @@ impl Fondo {
         })
     }
 
+    /// **Los tipos que hay en una carpeta de conectores**: cada `ore-read-<tipo>`
+    /// que es un fichero, en orden. Es lo que carga la pasarela cuando no se le
+    /// dice `--tipos`: un origen nuevo que se despliega junto a ella entra solo, y
+    /// no hay una lista que se olvide (un `mongodb` que se compiló, se copió a la
+    /// imagen y no estaba en la lista dio un 400 en producción).
+    ///
+    /// Se salta lo que no es un conector —`ore-read-x.d`, `.pdb`, `.exe` de
+    /// Windows— y [`SOLO_LOCALES`]: lo que lee ficheros **de la propia máquina**
+    /// no se ofrece por la red, por mucho que esté en la carpeta.
+    pub fn descubrir_tipos(dir: &Path) -> Vec<String> {
+        let mut tipos: Vec<String> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| {
+                let nombre = e.file_name().into_string().ok()?;
+                let nombre = nombre.strip_suffix(".exe").unwrap_or(&nombre);
+                let tipo = nombre.strip_prefix("ore-read-")?;
+                let valido = !tipo.is_empty()
+                    && tipo
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                (valido && !SOLO_LOCALES.contains(&tipo)).then(|| tipo.to_string())
+            })
+            .collect();
+        tipos.sort();
+        tipos.dedup();
+        tipos
+    }
+
     pub fn programa(&self, tipo: &str) -> PathBuf {
         self.conectores.join(format!("ore-read-{tipo}"))
     }
@@ -485,6 +516,10 @@ impl Fondo {
     }
 }
 
+/// Los lectores que leen **del disco de la máquina** y no de un origen en la red:
+/// están en la imagen para `ore`, y la pasarela no los ofrece.
+const SOLO_LOCALES: &[&str] = &["jsonl"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,5 +550,32 @@ mod tests {
         assert!(f.esperar(&o, true).is_ok(), "soltada la copia, entra otra");
         let m = &f.estado()[0].4;
         assert_eq!(m.verbos.get("check"), Some(&1));
+    }
+
+    /// Un conector nuevo en la carpeta entra sin tocar ninguna lista; lo que no es
+    /// un conector, y lo que lee del disco local, no.
+    #[test]
+    fn la_carpeta_dice_los_tipos() {
+        let dir = std::env::temp_dir().join(format!("ore-tipos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ore-read-directorio")).unwrap();
+        for f in [
+            "ore-read-postgres",
+            "ore-read-mongodb.exe",
+            "ore-read-cassandra",
+            "ore-read-jsonl",
+            "ore-read-postgres.d",
+            "ore-read-postgres.pdb",
+            "ore-federation",
+            "otra-cosa",
+        ] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        assert_eq!(
+            Fondo::descubrir_tipos(&dir),
+            ["cassandra", "mongodb", "postgres"]
+        );
+        assert!(Fondo::descubrir_tipos(&dir.join("no-existe")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

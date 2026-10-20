@@ -1,12 +1,14 @@
 //! `ore-federation`: la pasarela del Federation Engine, un servicio por celda.
 //!
 //! ```text
-//! ore-federation [--escucha 0.0.0.0:8099] [--conectores <dir>] [--tipos postgres,mongodb,bigquery,s3,gcs,azure,sftp,sharepoint]
+//! ore-federation [--escucha 0.0.0.0:8099] [--conectores <dir>] [--tipos postgres,mongodb,…]
 //! ```
 //!
 //! `--conectores` es donde están los `ore-read-<tipo>` (por defecto, junto a
-//! este binario: en la imagen `ore-drivers` viven juntos). Las cotas salen del
-//! entorno (`ORE_FED_*`, ver [`ore_federation::cotas`]).
+//! este binario: en la imagen `ore-drivers` viven juntos). Sin `--tipos`, carga
+//! **todos los `ore-read-<tipo>` que haya ahí** (menos los que leen del disco
+//! local): un origen nuevo entra con desplegarlo, sin una lista que tocar. Las
+//! cotas salen del entorno (`ORE_FED_*`, ver [`ore_federation::cotas`]).
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -38,12 +40,14 @@ fn main() -> ExitCode {
             .and_then(|e| e.parent().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("."))
     });
-    let tipos: Vec<String> = valor("--tipos")
-        .unwrap_or_else(|| "postgres,mongodb,bigquery,s3,gcs,azure,sftp,sharepoint".into())
-        .split(',')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
+    let tipos: Vec<String> = match valor("--tipos") {
+        Some(lista) => lista
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        None => Fondo::descubrir_tipos(&conectores),
+    };
     let cotas = match Cotas::del_entorno() {
         Ok(c) => c,
         Err(e) => {

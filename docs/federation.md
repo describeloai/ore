@@ -200,6 +200,12 @@ estado y sin hablar con el custodio. Sólo `ore-serve` puede llamarla (NetworkPo
 | orígenes | `GET /v1/origins` | por origen: lecturas activas, en cola, latencias, errores |
 | salud | `GET /v1/health` | vivo y con conectores |
 
+**Qué familias carga.** Sin `--tipos`, todo `ore-read-<tipo>` que haya en la carpeta de conectores
+(menos los que leen del disco de la máquina, `jsonl`): un origen nuevo entra con desplegarlo, no hay
+una lista que olvidar. `GET /v1/connectors` dice lo que cargó. Que cada conector del espacio de
+trabajo llegue a la imagen lo vigila `crates/ore-federation/tests/lista_de_origenes.rs`
+(`compilar-binarios.sh` y el `Dockerfile`).
+
 **`POST /v1/read`**
 
 ```json
