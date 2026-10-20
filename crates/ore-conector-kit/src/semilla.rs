@@ -210,7 +210,9 @@ pub fn valores() -> Vec<Vec<Option<Valor>>> {
                             .analizar(t)
                             .unwrap_or_else(|| panic!("`{t}` no es un {}", c.tipo));
                         match v {
-                            Valor::Instante(us) if ms => Valor::Instante(us.div_euclid(1000) * 1000),
+                            Valor::Instante(us) if ms => {
+                                Valor::Instante(us.div_euclid(1000) * 1000)
+                            }
                             Valor::FechaHora(us) if ms => {
                                 Valor::FechaHora(us.div_euclid(1000) * 1000)
                             }

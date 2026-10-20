@@ -1013,21 +1013,30 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                                 ("para", Json::s("Atlas: el usuario que solo lee")),
                                 (
                                     "comando",
-                                    Json::s("Database Access → Add New Database User → Specific Privileges → rol `read` sobre `<base>`"),
+                                    Json::s(
+                                        "Database Access → Add New Database User → Specific Privileges → rol `read` sobre `<base>`",
+                                    ),
                                 ),
                             ]),
                             Json::obj([
                                 ("para", Json::s("Atlas: que la celda llegue al clúster")),
                                 (
                                     "comando",
-                                    Json::s("Network Access → Add IP Address → la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)"),
+                                    Json::s(
+                                        "Network Access → Add IP Address → la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)",
+                                    ),
                                 ),
                             ]),
                             Json::obj([
-                                ("para", Json::s("Un despliegue propio: el usuario que solo lee")),
+                                (
+                                    "para",
+                                    Json::s("Un despliegue propio: el usuario que solo lee"),
+                                ),
                                 (
                                     "comando",
-                                    Json::s("db.getSiblingDB(\"<base>\").createUser({user: \"ore_lector\", pwd: \"<contraseña>\", roles: [{role: \"read\", db: \"<base>\"}]})"),
+                                    Json::s(
+                                        "db.getSiblingDB(\"<base>\").createUser({user: \"ore_lector\", pwd: \"<contraseña>\", roles: [{role: \"read\", db: \"<base>\"}]})",
+                                    ),
                                 ),
                             ]),
                         ]),

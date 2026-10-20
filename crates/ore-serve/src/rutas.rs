@@ -3815,7 +3815,9 @@ mod pruebas {
         assert!(sin_credencial("postgres://ana:clave@host/db").is_err());
         // ADR 0069 M5: MongoDB lleva la suya en la autoridad, también con varios hosts
         // y con la contraseña codificada (`%40` es una arroba que no parte la URL).
-        assert!(sin_credencial("mongodb+srv://ore:p%40ss@cluster0.abc.mongodb.net/ventas").is_err());
+        assert!(
+            sin_credencial("mongodb+srv://ore:p%40ss@cluster0.abc.mongodb.net/ventas").is_err()
+        );
         assert!(sin_credencial("mongodb://u:x@m1:27017,m2:27017/app?replicaSet=rs0").is_err());
         assert!(sin_credencial("mongodb://localhost:27017").is_ok());
         assert!(sin_credencial("https://host/x?password=abc").is_err());

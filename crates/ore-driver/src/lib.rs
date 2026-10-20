@@ -899,8 +899,8 @@ mod tests {
                 ("importe".to_string(), "Decimal<12, 2>".to_string())
             ]
         );
-        let sin = leer_peticion(r#"{"url":"x","objeto":"b.c","proyeccion":{"f":"fecha"}}"#)
-            .unwrap();
+        let sin =
+            leer_peticion(r#"{"url":"x","objeto":"b.c","proyeccion":{"f":"fecha"}}"#).unwrap();
         assert!(sin.tipos.is_empty());
     }
 

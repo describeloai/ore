@@ -22,12 +22,12 @@
 //! reproducen una cinta grabada y no hablan con BigQuery.
 //! Ninguna URL sale en el informe.
 
+#[cfg(feature = "mongodb")]
+use ore_conector_kit::bancos::mongodb::Mongo;
 use ore_conector_kit::bancos::{
     Banco, azure::Azure, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3, sftp::Sftp,
     sharepoint::SharePoint,
 };
-#[cfg(feature = "mongodb")]
-use ore_conector_kit::bancos::mongodb::Mongo;
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
 use ore_core::json::Json;

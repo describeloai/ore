@@ -3416,8 +3416,7 @@ mod tests {
         assert_eq!(campo_de_la_tabla(con_formato).0, "fichero");
 
         // Y de punta a punta: la petición que sale la lee un driver.
-        let p = peticion("x://y", &raiz(), None, None, None, false, Some(&solo))
-            .expect("petición");
+        let p = peticion("x://y", &raiz(), None, None, None, false, Some(&solo)).expect("petición");
         assert!(p.contains(r#""tipos":[["fecha","Date"]]"#), "{p}");
         assert!(!p.contains("fichero"), "{p}");
         let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
