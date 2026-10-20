@@ -891,6 +891,36 @@ escribe en SQL, en Python y en Java.
 
 **Hecho cuando:** los casos de *join* de la vara cumplen su objetivo en los dos motores.
 
+**C3 CERRADO por ahora (2026-10-20).** Lo que se podía arreglar con reglas del planificador y
+configuración está hecho, en producción y medido. Lo que pide otro algoritmo queda como pieza propia.
+- **Hecho:** difundir lo pequeño (C3·a), el `LEFT JOIN` espacial (C3·b), la rejilla sobre el lado
+  grande (C3·b2, que no se aplicaba hasta el arreglo del prefijo `spark.`) y la geometría de una
+  subconsulta (C3·e, Q2).
+- **Lo que da Heavyweight a escala 100 con 16 vCPU** (2 × `n2-highmem-8`, la cuota de hoy):
+
+| consulta | tiempo | ¿< 10 min? |
+|---|---|---|
+| Q1, Q3, Q4, Q9 | 6–64 s | sí |
+| Q2 (con C3·e) | 126 s con un ejecutor | sí |
+| Q5, Q7, Q8 | 157–438 s | sí |
+| Q6 | 504–719 s | al límite |
+| Q10, Q11 | ~45 min por join espacial (medido por etapas) | no |
+| Q12 | ~28 min con el KNN bien repartido | no |
+
+  Todas las que terminan dan la huella de C0 o la de DuckDB. La de Q6 difiere por el `AVG(INTERVAL)`
+  de DuckDB, y el resultado bueno es el de Spark.
+- **El objetivo de C0·5 no se cumple en Q10–Q12** (era con 32 vCPU; con ellos serían ~20 y ~14 min).
+  Lo que falta no son reglas ni nodos: son 600 M puntos contra 340 M vértices, unas 10 horas-core.
+- **Queda, con nombre:**
+  - **el join por celdas H3** (C3·h, por diseñar con su previo): indexar puntos y polígonos en celdas
+    para que el interior se resuelva sin geometría. Es la vía para bajar Q10–Q12 de 10 min;
+  - **las particiones del KNN según los cores** (`spark.sedona.join.numpartition` en el modo elástico):
+    con 112, Q12 pasa de 4 a 64 tareas. Es una línea en el SDK, con su medida;
+  - **el lado pequeño tras un filtro** (Q6: 19 zonas por `RangeJoin`): una decisión en tiempo de
+    ejecución;
+  - **subdividir automáticamente los polígonos enormes** (el previo lo midió imprescindible): va con
+    C3·h, que también los trocea.
+
 #### C3 · El previo (2026-10-19, medido en victor)
 
 Medido en el pool `pesado` de victor (`n2-highmem-8` *spot*), con `puesto-spark:1` y los recursos de un
@@ -1671,6 +1701,9 @@ El ADR pasa de hoja de ruta a imagen.
   cohorte `pesado`, cuota, cuentas con Workload Identity, política y red). SpatialBench a escala 100 con
   2 × 8 vCPU: 8 de 12 terminan (Q6 y Q8 por primera vez), huellas de C0 o DuckDB. Lo nuevo: el disco
   efímero desaloja a los ejecutores en Q11. Siguiente: C3·e (disco, regla de Q2, Q10–Q12).
+- **2026-10-20 · C3 CERRADO por ahora.** 8 de 12 consultas de SpatialBench por debajo de 10 min a
+  escala 100 con 16 vCPU, Q6 al límite, y Q10–Q12 lejos (~45 y ~28 min). Las reglas (C3·a, b, b2 y e)
+  están en producción. Siguiente, cuando se decida: el join por celdas H3 (C3·h).
 - **2026-10-20 · C3, el previo de Q10–Q12.** `zone` son 340 M vértices; subdividir es imprescindible,
   pero el join sigue en ~45 min con 16 vCPU, y Q12 en ~28 min con el KNN bien repartido. Bajar de 10 min
   pide otro algoritmo (H3 a la Mosaic). Hallazgo: la rejilla de C3·b2 no se aplicaba (faltaba el prefijo
