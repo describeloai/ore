@@ -137,6 +137,10 @@ def comprobar_reglas(reglas, raiz, repo="ore"):
                 paquete, sep, ref = m.groups()
                 if "$" in ref or (paquete, sep, ref) in vistas:
                     continue
+                # Un digest a medias no cita una imagen: es un prefijo que se compara, como el
+                # `puesto-spark@sha256:` con que la política de `22` acepta cualquier digest.
+                if sep == "@" and not re.fullmatch(r"sha256:[0-9a-f]{64}", ref):
+                    continue
                 vistas.add((paquete, sep, ref))
                 tag = VAN_JUNTAS.get(ref, ref)
                 ok = any(
