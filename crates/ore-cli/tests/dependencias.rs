@@ -149,7 +149,14 @@ const VETADAS: &[(&str, &str)] = &[
 /// `portable-atomic` de `once_cell`. `cargo tree -p ore-cli` no los trae: ningún
 /// binario de `ore` los compila. Se sube el tope porque este guardián cuenta
 /// desde el lock; cuando `ore-mongodb` salga del espacio de trabajo, bájalo.
-const CIERRE: usize = 192;
+///
+/// **192 → 193 con el crate `ore-cassandra` (0070 M1, 2026-10-20): tampoco es
+/// una dependencia nueva de `ore`.** `scylla-cql` trae su propio `lz4_flex`, y con
+/// dos versiones en el lock `Cargo.lock` desambigua los nombres (`lz4_flex
+/// 0.13.1`): el guardián cuenta uno más. Medido: `cargo tree -p ore-cli` no trae
+/// nada de `scylla`, `tokio-openssl`, `dashmap` ni `arc-swap`. Cuando
+/// `ore-cassandra` salga del espacio de trabajo, bájalo.
+const CIERRE: usize = 193;
 
 /// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
 /// eso no se mira contra los vetos, con **quién** lo pide como dependencia de
@@ -311,8 +318,11 @@ fn el_firmante_no_sabe_hablar_por_la_red() {
     // cuelga `indexmap`, `hashbrown`, `equivalent` y `allocator-api2` de
     // `serde_json`. El firmante no compila `preserve_order` (`cargo tree -p
     // ore-firmar-s3`); es la unión de features del lockfile, no su código.
+    // 27 → 28 (0070 M1): `scylla` trae un segundo `hashbrown` (0.14 y 0.17.1) y el
+    // lock desambigua los nombres; el guardián cuenta uno más. `cargo tree -p
+    // ore-firmar-s3` no cambia (17 crates, ninguno de la pila de Cassandra).
     assert!(
-        cierre.len() <= 27,
+        cierre.len() <= 28,
         "el cierre del firmante creció a {} crates: {}",
         cierre.len(),
         cierre.iter().cloned().collect::<Vec<_>>().join(", ")

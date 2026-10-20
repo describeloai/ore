@@ -1,0 +1,39 @@
+# Cassandra como origen (ficha 0070, M1): el traductor de una `Peticion` a CQL, los
+# tipos CQL a Arrow y el transporte. Lo usará `ore-read-cassandra` (M2).
+#
+# Vive FUERA del cierre de `ore-cli`, igual que `ore-mongodb` y `ore-read-postgres`:
+# el driver asíncrono trae `tokio` y ~110 crates (medido en X0: 112 con `openssl-010`)
+# que no alcanzan al compilador. Lo vigila `crates/ore-cli/tests/dependencias.rs`.
+[package]
+name        = "ore-cassandra"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Cassandra como origen: la petición a CQL, los tipos CQL a Arrow y el transporte"
+
+[dependencies]
+# El protocolo (`Peticion`, `Filtro`, `Fallo`) y el contrato de tipos (`Fisico`).
+ore-core   = { path = "../ore-core" }
+ore-driver = { path = "../ore-driver" }
+
+# El driver. Compatible con Apache Cassandra según sus mantenedores y medido en X0
+# contra 5.0.9. OpenSSL y no rustls, como el resto de la pila de ORE. Sin las
+# features de `bigdecimal`/`num-bigint`: `decimal` y `varint` llegan como bytes y se
+# convierten aquí, sin pasar por `f64`.
+scylla = { version = "=1.9.0", default-features = false, features = ["openssl-010"] }
+tokio  = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+async-trait = "0.1"
+# El UUID de un enlace y el contexto de TLS (que el driver pide como el de `openssl`).
+uuid    = "1"
+openssl = "0.10"
+
+# Arrow, el mismo que el resto de lectores (arrow 58).
+arrow-array  = "58"
+arrow-schema = "58"
+arrow-ipc    = "58"
+
+# Una colección o un UDT, como texto JSON.
+serde_json = "1"
