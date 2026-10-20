@@ -11,7 +11,7 @@ import tempfile
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
-COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "ci/compilar-binarios.sh"]
+COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
 BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "puesto-python", "puesto-node", "puesto-jvm",
        "puesto-spark", "puesto-python-notebooks"]
 
@@ -37,6 +37,8 @@ CASOS = [
     # así que lo que rehace una rehace las tres…
     ("un fichero del puesto de Python", lambda r: tocar(r, "puesto/python/agente.py"), {"puesto-python", "puesto-spark", "puesto-python-notebooks"}),
     # …y no al revés.
+    # ⭐ 0064: el commit de `marimo-frontend` que fija el CI cambia la imagen de notebooks, y sólo ella.
+    ("el commit de marimo-frontend", lambda r: tocar(r, "ci/marimo-frontend.ref", "\n"), {"puesto-python-notebooks"}),
     ("la lista de jars del puesto pesado", lambda r: tocar(r, "puesto/spark/jars.txt"), {"puesto-spark"}),
     ("la lista de Node (la capa y el puesto)", lambda r: tocar(r, "puesto/node/provisto.txt", "\n"), {"capa-node", "puesto-node"}),
     ("el guion del informador", lambda r: tocar(r, "malla/informar.sh"), {"informador"}),

@@ -1049,6 +1049,33 @@ jobs:
         if: steps.plan.outputs.necesarios != ''
         run: printf 'FROM scratch\nCOPY . /b/\n' | docker build -q -t ore-binarios:local -f - .binarios >/dev/null
 
+      # ⭐ 0064: el frontend de notebooks (repo `marimo-frontend`) sólo si hay que
+      #   CONSTRUIR `puesto-python-notebooks` (si se reutiliza, ni se mira). El
+      #   commit está fijado en `ci/marimo-frontend.ref` —y entra en la huella de
+      #   esa imagen—. Se construye como imagen local y `publicar` la nombra con
+      #   `--build-arg MARIMO_FRONTEND`, como hace con `ore-binarios:local`.
+      #   ⚠️ El repo es privado: `MARIMO_FRONTEND_TOKEN` (un PAT o un deploy
+      #   token con lectura de ese repo) tiene que existir en los secretos.
+      - name: el frontend de notebooks, si esa imagen se construye
+        id: nbfront
+        if: steps.punta.outputs.sigue == 'si'
+        run: |
+          if grep -q '^puesto-python-notebooks .* construir$' /tmp/plan.txt; then
+            echo "ref=$(tr -d '[:space:]' < ci/marimo-frontend.ref)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.nbfront.outputs.ref
+        with:
+          repository: describeloai/marimo-frontend
+          ref: ${{ steps.nbfront.outputs.ref }}
+          token: ${{ secrets.MARIMO_FRONTEND_TOKEN }}
+          path: .marimo-frontend
+
+      - name: el frontend de notebooks, construido
+        if: steps.nbfront.outputs.ref
+        run: docker build -q -t marimo-frontend:local .marimo-frontend >/dev/null
+
       - name: las imagenes, cada una por su huella, con la etiqueta del commit
         if: steps.punta.outputs.sigue == 'si'
         run: |
@@ -1067,6 +1094,7 @@ jobs:
               # Sólo si hay binarios locales se nombran: si no, ninguna de las que
               # se construyen los copia (lo dijo el plan).
               docker image inspect ore-binarios:local >/dev/null 2>&1 && ARGS="--build-arg BINARIOS=ore-binarios:local"
+              [ "$ETAPA" = puesto-python-notebooks ] && docker image inspect marimo-frontend:local >/dev/null 2>&1                 && ARGS="$ARGS --build-arg MARIMO_FRONTEND=marimo-frontend:local"
               docker build -q --target "$ETAPA" $ARGS \
                 -t "$REGISTRO/$IMAGEN:h-$HUELLA" -t "$REGISTRO/$IMAGEN:$ETIQUETA" . >/tmp/log-$ETAPA.txt 2>&1 \
                 || { tail -30 /tmp/log-$ETAPA.txt; return 1; }
