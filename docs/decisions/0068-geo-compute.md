@@ -1459,6 +1459,25 @@ medida corta de Q11 y CE·5; Q2 y la vara entera quedan para después).
   4. una medida corta de Q11 en victor;
   5. el *flag* (CE·5).
 
+**CE·6 · en vivo y medido (2026-10-20).** El pool `pesado` se recreó con la SSD a 0 nodos. Las dos
+celdas convergieron con la cola y la política nuevas, y victor y demo quedaron desplegados en `f144e409`.
+- **Un tropiezo del camino:** la política de `22` cita `puesto-spark@sha256:` como prefijo, y
+  `simular-limpieza.py` lo leía como una imagen sin proteger.
+  - `plano-de-control` estuvo en rojo desde el empuje de la malla de CE·4 (`d3365988`), y ningún commit
+    de main se desplegó en ese tiempo.
+  - Arreglado en `f144e409`: el comprobador solo cuenta como cita un digest completo.
+- **Q11 sola a escala 100**, con 2 ejecutores y 1 800 s de límite:
+  - **el disco ya no es el problema**: el pico fue de 27 GiB usados en el nodo (18 GiB el ejecutor), a
+    los 265 s, y luego se quedó plano, con más de 320 GiB libres en cada nodo, sin desalojos;
+  - el ejecutor lleva los 250Gi de la plantilla, y Spark le suma la CPU y la memoria;
+  - **Q11 sigue sin terminar en 30 min**: tras el *shuffle* son 25 min de cálculo del doble *join*. Es
+    velocidad del *join* (C3), no fiabilidad de CE.
+  - En C3·d el disco se llenó porque las 12 consultas corrían en una sola sesión y el `shuffleTracking`
+    conserva el *shuffle* de las anteriores. Un Build largo con muchas etapas puede acumular igual, y el
+    tope de 250Gi es lo que lo contiene.
+  - Los ejecutores tardaron más en frío que en C3·d (el 1.º a los 115 s, el 2.º a los 234 s), en un pool
+    recién creado.
+
 **Lo que el Build elástico no hace todavía (deuda, con nombre):**
 - **Decide el modo por las filas de entrada, no por el trabajo.** Un Build con pocas filas y cálculo
   pesado (un `explode` que multiplica filas, una UDF cara) se queda en un pod: falla limpio por sus
