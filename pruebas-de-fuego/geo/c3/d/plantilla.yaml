@@ -1,0 +1,17 @@
+# ORE 0068 C3·d · El pod de un ejecutor: como el de c0, con la cuenta `sb` (Workload Identity: lee el bucket
+# del banco) y la entrada de la imagen desplegada (/opt/ore/spark/ejecutor.sh, c1).
+apiVersion: v1
+kind: Pod
+metadata:
+  labels: {c3d: "si"}
+spec:
+  serviceAccountName: sb
+  securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+  nodeSelector: {ore.dev/pool: pesado}
+  tolerations: [{key: ore.dev/pesado, operator: Equal, value: "true", effect: NoSchedule}]
+  containers:
+    - name: ejecutor
+      command: ["bash", "/opt/ore/spark/ejecutor.sh"]
+      workingDir: /tmp
+      env: [{name: HOME, value: /tmp}]
+      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}

@@ -1246,6 +1246,66 @@ pequeño va en un pod y la rejilla se hace sobre el lado grande.
 - **Kueue con un Job de N pods en `cola-pesada`**: la medida corrió sin Kueue, en su namespace;
 - **Q6, Q8, Q11 y Q12 a escala 100**, que son C3·d.
 
+**C3·d · SpatialBench a escala 100 con el Build elástico (medido en victor, 2026-10-20).**
+- **Cómo:** la escala 100 se generó en el pool `pesado` (`pruebas-de-fuego/geo/c3/d/generar.sh`) y se
+  subió al bucket del banco, `spatialbench/sf100/`. Hay 56 GB, de los que `trip` son 39,4 GB.
+  - El driver va en `pesado-driver`, con 1 a 2 ejecutores de 7 cores en `pesado` (`medir.sh`).
+  - Imagen desplegada `puesto-spark:1`, con `ReglasDeOre`: la regla de C3·b y la rejilla sobre el lado
+    grande. Las consultas son el SQL de SpatialBench tal cual (commit `8e44bdd`), sin las pistas de C0.
+  - Límite de 600 s por consulta y huella al estilo de C0.
+  - El Parquet se lee con `gcs-connector` 3.0.4 *shaded*, que con el Hadoop de Spark 4.1 necesita
+    `parquet.hadoop.vectored.io.enabled=false`.
+
+| consulta | C0 Spark, 1 nodo de 16 vCPU | C3·d, 2 × 8 vCPU | huella |
+|---|---|---|---|
+| Q1 | 68,6 s | **62,3 s** | = C0 |
+| Q2, el SQL original | > 600 s (125 s con la pista de difusión, q2d) | **> 600 s** | — |
+| Q3 | 63,5 s | 63,3 s | = C0 |
+| Q4 | 75,3 s | 64,4 s | = C0 |
+| Q5 | 345 s | **216 s** | = C0 |
+| Q6 | > 600 s | **564 s; 504 s repetida** | 19 filas como DuckDB (ver abajo) |
+| Q7 | 79,6 s | 157 s | = C0 |
+| Q8 | > 600 s | **438 s** | = DuckDB |
+| Q9 | 6,5 s | 6,5 s | = C0 |
+| Q10 | error | **> 600 s, sin error** | — |
+| Q11 | sin memoria | > 600 s; **desalojo por disco** | — |
+| Q12 | > 600 s | > 600 s | — |
+
+**Lo que dice:**
+1. **Ocho de doce terminan, dos más que en C0**: Q6 y Q8, en 2 nodos de 8 vCPU (la opción A, 16 vCPU
+   en total; el objetivo de C0·5 era con 32). Q10 ya no falla: llega al límite. Todo lo que termina da la
+   huella de C0 o la de DuckDB.
+   - Q6 sale con las 19 filas de DuckDB, pero la huella no coincide.
+   - C0 solo guardó dos filas de DuckDB, y las dos son idénticas a las nuestras.
+   - La repetición da la misma huella, así que es determinista.
+   - **Queda abierto:** cotejar las 17 restantes con DuckDB. El sospechoso es el redondeo a 0,1 s del
+     promedio de un intervalo, que C0 ya vio en los microsegundos.
+2. **El autoescalado responde en producción:**
+   - de 0 a 2 ejecutores en 20 s al arrancar;
+   - perdidos los dos a la vez, el driver pidió otros, esperó a que el *autoscaler* les hiciera sitio
+     (pool `pesado` al máximo, 2 nodos) y siguió con la consulta siguiente sin intervención.
+3. **El fallo nuevo no es memoria: es disco.** A las 11:27 y 11:31 UTC, durante Q11, el kubelet
+   **desalojó a los dos ejecutores por `ephemeral-storage`**.
+   - El pool `pesado` arranca con 100 GB de `pd-balanced` y sin SSD local.
+   - El shuffle de un *join* de 600 M filas lo llena.
+   - Es la misma trampa que tumbó el primer intento de C0, que se quedó sin disco con 273 GB.
+   - **Los ejecutores de producción tienen el mismo hueco**, porque la plantilla del SDK no pide
+     `ephemeral-storage`. Es la defensa de disco que falta junto a las de memoria de C3·c.
+4. **Q2 en SQL crudo sigue sin terminar.** Una geometría que sale de una subconsulta escalar se evalúa
+   fila a fila. La difusión de C3·a la pone `over()` del SDK, y no hay regla del planificador que la
+   ponga en el SQL. Es un hueco de `ReglasDeOre`, no del autoescalado.
+5. **El segundo nodo gana en lo pesado** (Q5 −37 %, Q6 y Q8 pasan a terminar) y **no gana nada en lo
+   ligero** (Q1, Q3, Q4 y Q9, ±10 %), que es el reparto que ya fijó c3: los Builds pequeños se quedan en
+   un pod. Q7 es la excepción, el doble de lento, sin causa medida.
+
+**Lo que queda para cerrar C3 (C3·e, por aprobar):**
+- **El disco del ejecutor:**
+  - SSD local en el pool `pesado` (`ephemeral-storage-local-ssd`);
+  - pedir `ephemeral-storage` en la plantilla del SDK, para que el planificador lo cuente y un exceso
+    mate al pod y no al nodo.
+- **La regla de difusión para la subconsulta escalar** (Q2).
+- **Q10–Q12 otra vez**, con el disco arreglado, y Q6 cotejado con DuckDB.
+
 ### C4 · Enriquecer
 
 | paso | qué |
@@ -1312,6 +1372,10 @@ El ADR pasa de hoja de ruta a imagen.
   sus ficheros (10 MB), así que hace falta una regla de ORE; el `LEFT JOIN` espacial cae en el producto
   cartesiano (> 300 s) y su reescritura tarda 16,4 s; un Build en varios nodos cabe en un Job indexado
   con Spark *standalone* y escala 1,83× con 2 nodos. El *approach*, C3·a a C3·d. Siguiente: el go.
+- **2026-10-20 · C3·c4 en vivo y C3·d medido.** La malla convergida en demo y victor (cola del driver,
+  cohorte `pesado`, cuota, cuentas con Workload Identity, política y red). SpatialBench a escala 100 con
+  2 × 8 vCPU: 8 de 12 terminan (Q6 y Q8 por primera vez), huellas de C0 o DuckDB. Lo nuevo: el disco
+  efímero desaloja a los ejecutores en Q11. Siguiente: C3·e (disco, regla de Q2, Q10–Q12).
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
