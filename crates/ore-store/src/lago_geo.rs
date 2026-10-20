@@ -177,13 +177,17 @@ pub fn columnas_geo(esquema: &ArrowSchema) -> Vec<ColumnaGeo> {
 
 /// El valor de la propiedad `ore.geo.<columna>`.
 pub fn propiedad(c: &ColumnaGeo) -> (String, String) {
+    // ⛔ Las claves en orden alfabético AL INSERTAR: con `preserve_order` de
+    //   serde_json (lo enciende `bson`, de 0069, al compilar el workspace junto)
+    //   el mapa guarda el orden de inserción; sin él, los ordena. Así sale el
+    //   mismo texto de las dos maneras (el CI lo cazó el 2026-10-20).
     let mut m = serde_json::Map::new();
-    if let Some(t) = &c.tipo {
-        m.insert("type".into(), t.clone().into());
-    }
     m.insert("crs".into(), c.crs.clone().into());
     if c.esferica {
         m.insert("edges".into(), "spherical".into());
+    }
+    if let Some(t) = &c.tipo {
+        m.insert("type".into(), t.clone().into());
     }
     (
         format!("{PROP_GEO}{}", c.nombre),
