@@ -1429,6 +1429,36 @@ corrida.
   3. **La política** de la celda (`22`) añade un tope de `ephemeral-storage` a lo que crea el driver,
      como ya hace con la memoria.
 
+**CE·6 · hecho en local (2026-10-20), opción A** (lo mínimo para encender el *flag*: el disco, una
+medida corta de Q11 y CE·5; Q2 y la vara entera quedan para después).
+- **Medido antes de escribir:** un nodo `n2-highmem-8` *spot* con una SSD local se crea sin problemas de
+  cuota y da **281 GiB de `ephemeral-storage` asignables** (de 368). Se creó en un pool temporal y se
+  borró en 3 min.
+- **250 Gi por pod pesado**, como *request* y como *limit*. Va un ejecutor por nodo, y con ese tope ni
+  un ejecutor que se pase lleva el nodo al umbral de desalojo del kubelet (~37 GiB libres): cae ese
+  pod, no el nodo.
+  - **El ejecutor** (`spark.py`, `EJECUTOR_DISCO`): en su plantilla. Spark añade CPU y memoria a esos
+    recursos, no los sustituye.
+  - **El puesto pesado de un pod** (`cola.rs`, `RECURSOS_DEL_PUESTO_PESADO`): un Build o un Preview
+    pesados derraman igual.
+  - **El driver no** (`DEL_PESADO_AL_DRIVER` lo quita): no vuelca *shuffle* y su cola no cubre disco.
+- **La cola pesada cubre el disco** (`11`, `ephemeral-storage` 250Gi por celda en el sabor `pesado`).
+  Kueue, con su configuración por defecto, no admite un pod que pide un recurso que la cola no declara.
+- **La política** (`22`) exige al ejecutor un límite de disco de como mucho 250Gi.
+- **El pool** (`73`): SSD local (`--ephemeral-storage-local-ssd count=1`). `RECREAR=1` borra y crea el
+  pool de antes, solo si está a 0 nodos.
+- **Comprobado:** `gen-inquilino` en verde; `11` y `22` de victor pasan `dry-run=server` (el CEL nuevo
+  incluido) y su diff es solo el disco; el SDK, 175/175 en `puesto-python` y `test_motor_pesado` 17/17
+  en la imagen de Spark.
+- **El orden del empuje, al revés que otras veces.** Aquí el binario es el que necesita lo nuevo:
+  el puesto pesado pide 250Gi, que no existen sin la SSD ni se admiten sin la cola. Así que:
+  1. el pool con la SSD (`RECREAR=1`, a 0 nodos);
+  2. la malla (`11` y `22`). Es compatible hacia atrás: el *flag* está apagado, así que no hay
+     ejecutores que la política pueda parar;
+  3. el binario y las imágenes;
+  4. una medida corta de Q11 en victor;
+  5. el *flag* (CE·5).
+
 **Lo que el Build elástico no hace todavía (deuda, con nombre):**
 - **Decide el modo por las filas de entrada, no por el trabajo.** Un Build con pocas filas y cálculo
   pesado (un `explode` que multiplica filas, una UDF cara) se queda en un pod: falla limpio por sus

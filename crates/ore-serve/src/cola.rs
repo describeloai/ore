@@ -639,6 +639,12 @@ pub fn entorno_de_la_capa(entorno: &str) -> &str {
 /// sabor pesado en la cola de siempre, un puesto ligero que no cupiera en
 /// `system` ni en `jobs` encendería un nodo de 64 GB; y uno pesado no puede
 /// caer en un nodo ligero.
+///
+/// ⭐ 0068 CE·6 · **Y su disco**: 250 Gi de `ephemeral-storage`, en la SSD local
+/// del pool pesado (281 GiB asignables, medido el 2026-10-20). Sin pedirlo, un
+/// *shuffle* grande llenaba el disco y el kubelet desalojaba el NODO entero
+/// (C3·d, Q11); con el tope, si se pasa cae este pod y con un error que lo dice.
+/// La `ClusterQueue` pesada lo cubre (`malla/11`), o Kueue no lo admitiría.
 const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
     (
         "kueue.x-k8s.io/queue-name: cola\n",
@@ -646,11 +652,11 @@ const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
     ),
     (
         "requests: {cpu: \"100m\", memory: 768Mi}",
-        "requests: {cpu: \"7\", memory: 48Gi}",
+        "requests: {cpu: \"7\", memory: 48Gi, ephemeral-storage: 250Gi}",
     ),
     (
         "limits:   {cpu: \"2\", memory: 4Gi}",
-        "limits:   {cpu: \"8\", memory: 48Gi}",
+        "limits:   {cpu: \"8\", memory: 48Gi, ephemeral-storage: 250Gi}",
     ),
     (
         "name: ORE_MEMORIA_MB, value: \"4096\"",
@@ -677,12 +683,14 @@ const DEL_PESADO_AL_DRIVER: [(&str, &str); 5] = [
         "kueue.x-k8s.io/queue-name: cola-pesada\n",
         "kueue.x-k8s.io/queue-name: cola-driver\n",
     ),
+    // El driver no vuelca *shuffle* (lo hacen sus ejecutores) y su cola no
+    // cubre disco: vuelve a no pedirlo.
     (
-        "requests: {cpu: \"7\", memory: 48Gi}",
+        "requests: {cpu: \"7\", memory: 48Gi, ephemeral-storage: 250Gi}",
         "requests: {cpu: \"1500m\", memory: 12Gi}",
     ),
     (
-        "limits:   {cpu: \"8\", memory: 48Gi}",
+        "limits:   {cpu: \"8\", memory: 48Gi, ephemeral-storage: 250Gi}",
         "limits:   {cpu: \"2\", memory: 12Gi}",
     ),
     (
@@ -1272,8 +1280,8 @@ mod prueba {
         assert!(job.starts_with("trabajo-ana-1a2b3c4d-"));
         assert!(t.contains("/ore/puesto-spark:1"), "{t}");
         assert!(t.contains("{ name: ENTORNO, value: \"python\" }"), "{t}");
-        assert!(t.contains("requests: {cpu: \"7\", memory: 48Gi}"));
-        assert!(t.contains("limits:   {cpu: \"8\", memory: 48Gi}"));
+        assert!(t.contains("requests: {cpu: \"7\", memory: 48Gi, ephemeral-storage: 250Gi}"));
+        assert!(t.contains("limits:   {cpu: \"8\", memory: 48Gi, ephemeral-storage: 250Gi}"));
         assert!(t.contains("name: ORE_MEMORIA_MB, value: \"49152\""));
         assert!(!t.contains("memory: 4Gi}") && !t.contains("value: \"4096\""));
         // Pieza 6: su propia cola, la del pool pesado.
@@ -1324,6 +1332,7 @@ mod prueba {
         );
         assert!(d.contains("limits:   {cpu: \"2\", memory: 12Gi}"));
         assert!(!d.contains("48Gi") && !d.contains("49152"));
+        assert!(!d.contains("ephemeral-storage"), "{d}");
         assert!(d.contains("name: ORE_MEMORIA_MB, value: \"12288\" }"));
         assert!(d.contains("name: ORE_SPARK_ELASTICO, value: \"2\" }"));
         assert!(d.contains("name: ORE_SPARK_IMAGEN, value: \"europe-west1-docker.pkg.dev/"));

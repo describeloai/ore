@@ -7,8 +7,13 @@
 #                  pesado: lo enciende el autoescalador cuando Kueue admite uno en el sabor
 #                  `pesado` (`10-kueue.yaml`) y lo apaga al sobrar. Taint ore.dev/pesado (sólo
 #                  entra quien lo tolera, y lo inyecta el sabor) y etiqueta ore.dev/pool=pesado.
-#                  Disco pd-balanced de 100 GB: la imagen (1,26 GB comprimida) y lo que Spark
-#                  derrame en /tmp. Image streaming (GCFS): un nodo frío no espera a bajar la
+#                  Disco de arranque pd-balanced de 100 GB y **una SSD local NVMe de 375 GB
+#                  para el almacenamiento efímero** (CE·6, 2026-10-20): ahí van el `emptyDir`
+#                  del *shuffle* de los ejecutores y lo que Spark o DuckDB derramen en /tmp.
+#                  281 GiB asignables por nodo (medido); cada pod pesado pide 250Gi. Con 100 GB
+#                  de pd-balanced, el *shuffle* de Q11 a escala 100 llenó el disco y el kubelet
+#                  desalojó el nodo entero (C3·d). Agrandar el pd-balanced no cabe en
+#                  SSD_TOTAL_GB (500 en la región); LOCAL_SSD_TOTAL_GB no tiene límite. Image streaming (GCFS): un nodo frío no espera a bajar la
 #                  imagen entera (se mide en 6c). Lo demás, como `jobs-s`: COS, nodos privados,
 #                  Workload Identity, arranque seguro.
 #
@@ -17,11 +22,14 @@
 #                  + pesado 16) son 26/32.
 #
 # ⭐ EN SECO POR DEFECTO: comprueba y dice lo que haría. `APLICAR=1` lo hace. Idempotente: si el
-#   pool ya existe, sólo ajusta el autoescalado (NODOS_MAX). Y el orden: el pool ANTES que la malla
+#   pool ya existe, sólo ajusta el autoescalado (NODOS_MAX). Un pool no cambia de disco en
+#   caliente: si el que existe no tiene la SSD, `RECREAR=1` lo borra y lo crea, y sólo si está a 0
+#   nodos (un Build pesado que llegue en ese minuto espera en Kueue). Y el orden: el pool ANTES que la malla
 #   (el sabor y las colas): una cola sin nodos deja un build admitido y su pod en Pending.
 #
 #   bash malla/73-el-pool-pesado.sh              # en seco
 #   APLICAR=1 bash malla/73-el-pool-pesado.sh    # de verdad
+#   APLICAR=1 RECREAR=1 bash malla/73-el-pool-pesado.sh   # el de antes de CE·6, sin SSD
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 P=project-8853a180-450d-47be-b83
@@ -32,6 +40,7 @@ POOL=pesado
 MAQUINA=n2-highmem-8
 NODOS_MAX=${NODOS_MAX:-2}
 APLICAR=${APLICAR:-}
+RECREAR=${RECREAR:-}
 
 haz() {
   if [ -n "$APLICAR" ]; then "$@"; else echo "   (en seco) $*" | sed 's/--project [^ ]*/--project …/'; fi
@@ -57,13 +66,26 @@ else
   haz gcloud services enable containerfilesystem.googleapis.com --project $P
 fi
 
-echo "── pool $POOL ($MAQUINA spot, 0–$NODOS_MAX)"
-if ! gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P >/dev/null 2>&1; then
+echo "── pool $POOL ($MAQUINA spot, 0–$NODOS_MAX, SSD local)"
+crear=1
+if gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P >/dev/null 2>&1; then
+  ssd=$(gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P     --format="value(config.ephemeralStorageLocalSsdConfig.localSsdCount)")
+  if [ "${ssd:-0}" -ge 1 ]; then
+    crear=
+  else
+    echo "   existe SIN la SSD local"
+    [ -n "$RECREAR" ] || { echo "⛔ RECREAR=1 para borrarlo y crearlo con ella (a 0 nodos)"; exit 1; }
+    nodos=$(kubectl get nodes -l ore.dev/pool=$POOL --no-headers 2>/dev/null | wc -l)
+    [ "$nodos" -eq 0 ] || { echo "⛔ tiene $nodos nodos: se recrea sólo a 0"; exit 1; }
+    haz gcloud container node-pools delete $POOL --cluster $CLUSTER --zone $ZONA --project $P --quiet
+  fi
+fi
+if [ -n "$crear" ]; then
   haz gcloud container node-pools create $POOL --cluster $CLUSTER --zone $ZONA --project $P \
     --machine-type $MAQUINA --spot --num-nodes 0 \
     --enable-autoscaling --min-nodes 0 --max-nodes "$NODOS_MAX" --location-policy ANY \
     --image-type COS_CONTAINERD --enable-image-streaming \
-    --disk-type pd-balanced --disk-size 100 \
+    --disk-type pd-balanced --disk-size 100 --ephemeral-storage-local-ssd count=1 \
     --node-labels ore.dev/pool=pesado --node-taints ore.dev/pesado=true:NoSchedule \
     --enable-private-nodes --workload-metadata GKE_METADATA \
     --shielded-secure-boot --shielded-integrity-monitoring \
@@ -74,5 +96,5 @@ else
     --enable-autoscaling --min-nodes 0 --max-nodes "$NODOS_MAX" --location-policy ANY --quiet
 fi
 [ -n "$APLICAR" ] && gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P \
-  --format="value(name,config.machineType,config.spot,autoscaling.maxNodeCount,status)" | sed 's/^/   /'
+  --format="value(name,config.machineType,config.spot,config.ephemeralStorageLocalSsdConfig.localSsdCount,autoscaling.maxNodeCount,status)" | sed 's/^/   /'
 if [ -n "$APLICAR" ]; then echo "── hecho de verdad"; else echo "── hecho en seco (APLICAR=1 para crearlo)"; fi

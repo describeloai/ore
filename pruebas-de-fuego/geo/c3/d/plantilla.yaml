@@ -15,3 +15,4 @@ spec:
       workingDir: /tmp
       env: [{name: HOME, value: /tmp}]
       securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+      resources: {requests: {ephemeral-storage: 250Gi}, limits: {ephemeral-storage: 250Gi}}

@@ -112,6 +112,10 @@ spec:
       message: "un ejecutor corre sin root y sin privilegios"
     - expression: "!variables.pod || object.spec.containers.all(c, has(c.resources.limits) && has(c.resources.limits.memory) && quantity(c.resources.limits.memory).compareTo(quantity('48Gi')) <= 0)"
       message: "un ejecutor lleva límite de memoria, como mucho 48Gi"
+    # CE·6 · y de disco: el *shuffle* va a la SSD local del nodo; sin límite, un ejecutor la llena
+    # y el kubelet desaloja el nodo entero.
+    - expression: "!variables.pod || object.spec.containers.all(c, has(c.resources.limits) && 'ephemeral-storage' in c.resources.limits && quantity(c.resources.limits['ephemeral-storage']).compareTo(quantity('250Gi')) <= 0)"
+      message: "un ejecutor lleva límite de disco (ephemeral-storage), como mucho 250Gi"
     - expression: "!variables.pod || (has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(o, o.kind == 'Pod' && has(o.controller) && o.controller))"
       message: "un ejecutor tiene por dueño el pod del driver"
     - expression: "!variables.pod || (has(object.metadata.labels) && 'spark-role' in object.metadata.labels && object.metadata.labels['spark-role'] == 'executor')"

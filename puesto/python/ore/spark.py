@@ -105,6 +105,7 @@ def sesion():
 EJECUTOR_CORES = 7
 # 34g de heap + 4g de overhead + 4g de Python = 42 GiB por ejecutor: cabe en un n2-highmem-8.
 EJECUTOR_HEAP, EJECUTOR_OVERHEAD, EJECUTOR_PYTHON = "34g", "4g", "4g"
+EJECUTOR_DISCO = "250Gi"  # CE·6: de los 281 GiB asignables de la SSD local de un nodo pesado
 PLANTILLA_DEL_EJECUTOR = "/tmp/ore-ejecutor.yaml"
 CUENTA = "/var/run/secrets/kubernetes.io/serviceaccount"
 
@@ -131,6 +132,10 @@ def _plantilla_del_ejecutor():
         "      workingDir: /tmp",
         "      env: [{name: HOME, value: /tmp}]",
         "      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}",
+        # CE·6 · Su disco, en la SSD local del pool: el *shuffle* va a un `emptyDir`. Spark añade la
+        # CPU y la memoria a estos recursos, no los sustituye.
+        "      resources: {requests: {ephemeral-storage: %s}, limits: {ephemeral-storage: %s}}"
+        % (EJECUTOR_DISCO, EJECUTOR_DISCO),
         ""])
 
 

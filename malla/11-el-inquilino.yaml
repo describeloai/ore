@@ -160,7 +160,9 @@ spec:
     reclaimWithinCohort: Any
     withinClusterQueue: Never
   resourceGroups:
-    - coveredResources: ["cpu", "memory"]
+    # CE·6 · El disco va cubierto: el puesto pesado y cada ejecutor piden 250Gi de la SSD local,
+    # y Kueue no admite lo que pide un recurso que la cola no declara.
+    - coveredResources: ["cpu", "memory", "ephemeral-storage"]
       flavors:
         - name: pesado
           resources:
@@ -168,6 +170,8 @@ spec:
               nominalQuota: "7"
             - name: memory
               nominalQuota: "48Gi"
+            - name: ephemeral-storage
+              nominalQuota: "250Gi"
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: LocalQueue

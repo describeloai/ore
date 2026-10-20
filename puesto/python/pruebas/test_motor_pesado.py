@@ -152,7 +152,8 @@ class ElBuildElastico(unittest.TestCase):
         with open(c["spark.kubernetes.executor.podTemplateFile"]) as f:
             p = f.read()
         for lo in ("serviceAccountName: ejecutor", "automountServiceAccountToken: false",
-                   "nodeSelector: {ore.dev/pool: pesado}", "/opt/ore/spark/ejecutor.sh", "runAsNonRoot: true"):
+                   "nodeSelector: {ore.dev/pool: pesado}", "/opt/ore/spark/ejecutor.sh", "runAsNonRoot: true",
+                   "limits: {ephemeral-storage: 250Gi}"):
             self.assertIn(lo, p)
 
 
