@@ -1298,13 +1298,97 @@ pequeño va en un pod y la rejilla se hace sobre el lado grande.
    ligero** (Q1, Q3, Q4 y Q9, ±10 %), que es el reparto que ya fijó c3: los Builds pequeños se quedan en
    un pod. Q7 es la excepción, el doble de lento, sin causa medida.
 
-**Lo que queda para cerrar C3 (C3·e, por aprobar):**
-- **El disco del ejecutor:**
-  - SSD local en el pool `pesado` (`ephemeral-storage-local-ssd`);
-  - pedir `ephemeral-storage` en la plantilla del SDK, para que el planificador lo cuente y un exceso
-    mate al pod y no al nodo.
-- **La regla de difusión para la subconsulta escalar** (Q2).
-- **Q10–Q12 otra vez**, con el disco arreglado, y Q6 cotejado con DuckDB.
+**C3·e · el disco, Q2 y el cierre de la vara (diseño, 2026-10-20, por aprobar).**
+
+*El disco del ejecutor.*
+- **Lo que hay:**
+  - el pool `pesado` arranca con 100 GB de `pd-balanced`, sin SSD local;
+  - Spark en Kubernetes vuelca el shuffle a un `emptyDir` (`spark-local-dir-1`), que vive en ese disco;
+  - la plantilla del SDK no pide `ephemeral-storage`.
+  - Cuando el disco baja del umbral del kubelet (10 %), **desaloja a todo el nodo**: los dos ejecutores
+    a la vez.
+- **Lo que no vale:** agrandar el `pd-balanced`.
+  - `SSD_TOTAL_GB` es de 500 GB en la región y el `pd-balanced` cuenta en ella (hoy 70 usados; con los
+    dos pools llenos, 250).
+  - `pd-standard` no cuenta, pero rinde ~60 MB/s a 500 GB: lento para un shuffle.
+- **Lo que se propone:**
+  1. **SSD local NVMe en el pool `pesado`**, `--ephemeral-storage-local-ssd count=1`: 375 GB por nodo.
+     - Kubernetes pone ahí el almacenamiento efímero, con lo que el `emptyDir` del shuffle y el
+       *spill* de DuckDB de un Build de un pod caen en la SSD.
+     - `LOCAL_SSD_TOTAL_GB` no tiene límite y `PREEMPTIBLE_LOCAL_SSD_GB` es 0. Las spot gastan la cuota
+       normal, como ya pasa con las CPU; e0 lo confirma creando el pool.
+     - Cuesta unos céntimos la hora por nodo, solo mientras el nodo existe (el pool escala a 0).
+     - Es varias veces más rápida que el `pd-balanced`, así que el shuffle también gana.
+     - Un pool no cambia de disco en caliente: `73-el-pool-pesado.sh` lo **recrea** (borrar y crear)
+       mientras está a 0 nodos, con la misma etiqueta y el mismo *taint*. Kueue y la malla no cambian.
+  2. **El ejecutor pide disco**: `ephemeral-storage` con *request* y *limit* en la plantilla del SDK
+     (`_plantilla_del_ejecutor`) y en la de C3·d.
+     - El planificador lo cuenta.
+     - Si un ejecutor se pasa, **el kubelet mata a ese pod, no al nodo**. Spark repite sus tareas en
+       otro (la misma defensa que C3·c midió al perder un ejecutor).
+     - El tamaño sale de e0: el pico medido en Q10/Q11 más un margen, por debajo de lo asignable del nodo.
+     - El pod de un Build pesado de un nodo (`RECURSOS_DEL_PUESTO_PESADO`) pide lo mismo.
+  3. **La política** de la celda (`22`) añade un tope de `ephemeral-storage` a lo que crea el driver,
+     como ya hace con la memoria.
+
+*Q2 · la geometría de una subconsulta escalar.*
+- **Lo que pasa:** en `ST_Intersects(t.pickup, (SELECT z.geom … LIMIT 1))`, Spark calcula una vez la
+  subconsulta y la deja como valor. Pero Sedona no la reconoce como el lado de un *join*: con 600 M
+  filas, en cada una deserializa el polígono del condado y lo cruza sin índice.
+  - La forma con la pista de difusión (q2d de C0) planifica un `BroadcastIndexJoin`: 125 s en un nodo.
+- **La regla** (`DifundirLaSubconsulta`, en `ReglasDeOre`, junto a las de C3·b y c2):
+  - **Cuándo:** un `Filter` cuyo conjunto de condiciones con `AND` tiene un predicado espacial del mapa
+    `GIRO` (Contains, Within, Covers, CoveredBy, Intersects o DWithin).
+    - Un lado del predicado usa solo columnas del hijo.
+    - El otro contiene una `ScalarSubquery` **no correlacionada** y con `maxRows ≤ 1`, como el
+      `LIMIT 1` de Q2.
+  - **Qué hace:** pasa el predicado a un `Join` interno con el plan de la subconsulta, marcado como
+    difundido, y proyecta de vuelta las columnas del hijo. El resto de condiciones se quedan en el
+    `Filter`.
+  - **Por qué no cambia el resultado:**
+    - con 0 filas en la subconsulta, el predicado da `NULL` y el `Filter` lo descarta todo, igual que
+      un `Join` interno contra nada;
+    - con 1 fila, es el mismo cruce.
+    - **No se toca** un predicado dentro de un `OR` o de un `NOT`, porque ahí el `NULL` cambia el
+      sentido; ni una subconsulta correlacionada o sin cota de filas.
+  - **Pruebas en `regla.py`:**
+    - Q2 en forma de subconsulta planifica `BroadcastIndexJoin` y da la misma cuenta que q2d;
+    - una subconsulta sin filas da 0;
+    - en un `OR` o correlacionada, el plan no cambia.
+
+*Lo que no es Q2 pero se le parece.* Q6 tarda 504 s en cruzar `trip` con las **19 zonas** que pasan el
+filtro del rectángulo, y lo hace con un `RangeJoin`.
+- Que el lado sea pequeño solo se sabe después del filtro, y Catalyst no lo estima.
+- e0 mide cuánto se gana difundiéndolo a mano. **Si es mucho**, una decisión en tiempo de ejecución (el
+  lado filtrado se cuenta antes de planificar el *join*) es una pieza aparte, por diseñar. No entra en
+  C3·e.
+
+*La vara.*
+- **Q10–Q12** se repiten con el disco arreglado y **límite de 1 800 s**, para tener el tiempo real y no
+  solo «> 600». El objetivo de C0·5 (< 10 min) era con 32 vCPU.
+  - Con la cuota de hoy, `CPUS_ALL_REGIONS` es 32, y el pool `pesado` no pasa de 2 × 8. Si no llegan,
+    se dice y se cuantifica cuánto haría falta, sin subir la cuota.
+- **Q6 con DuckDB:**
+  - un pod en el pool `pesado` baja `trip` y `zone` del bucket a la SSD, corre Q6 en DuckDB 1.5.6 (la
+    imagen del puesto) e imprime las 19 filas **sin redondear**;
+  - Spark imprime lo mismo (`MUESTRA` en crudo).
+  - Si la diferencia es de representación (el promedio de un intervalo), la regla de la huella se
+    documenta; si es de valores, es un fallo y se persigue.
+
+*Los pasos.*
+- **e0 · previo en victor, sin código de producto** (la escala 100 sigue en el bucket):
+  - un pool temporal `c3e-ssd` (n2-highmem-8 spot, SSD local, 0–2) con etiqueta propia, que no toca
+    `pesado`;
+  - Q10, Q11 y Q12 con el pico de disco por nodo (las estadísticas del kubelet cada 15 s), lo que da el
+    tamaño del *request*;
+  - Q2 como q2d y Q6 difundido a mano, para cuantificar la regla y la pieza aparte;
+  - el cotejo de Q6 con DuckDB.
+  - Después, el pool, el namespace y el permiso temporal se borran. Menos de 1 $.
+- **e1 · en local:** `DifundirLaSubconsulta` con `regla.py`; `ephemeral-storage` en las plantillas (el
+  SDK y `cola.rs`) y en la política; `73-el-pool-pesado.sh` con la SSD; el ADR.
+- **e2 · el empuje, con permiso:** binario, luego malla, luego recrear el pool `pesado` a 0 nodos (con
+  permiso aparte: un Build pesado que llegue en ese minuto espera en Kueue).
+- **e3 · la vara entera otra vez en victor**, y C3 se cierra en el ADR.
 
 ### C4 · Enriquecer
 
