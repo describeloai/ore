@@ -261,6 +261,10 @@ codes! {
     // columna sea del activo, y que cada promesa tenga su nombre.
     Oos2052 = "OOS2052", Reference, "una promesa nombra una columna que su activo no declara";
     Oos2053 = "OOS2053", Reference, "dos promesas con el mismo id en un activo";
+    // v1alpha33 · el enriquecimiento nombra una columna que su dataset no
+    // tiene, una `geometry` que no es geo (o que falta y no es unica), o un
+    // `as` que repite una columna del objetivo (`01-enrich` §4).
+    Oos2054 = "OOS2054", Reference, "un enriquecimiento nombra una columna que no esta";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -295,6 +299,9 @@ codes! {
     // o un CRS en `Geography`, y una columna geo como clave
     // (`01-la-geometria` §6).
     Oos3008 = "OOS3008", Type, "tipo geo mal formado";
+    // v1alpha33 · un enriquecimiento con dos CRS, que mide en metros en un CRS
+    // geografico, o con un metodo que no casa (`01-enrich` §4).
+    Oos3009 = "OOS3009", Type, "enriquecimiento con CRS, metros o metodo que no casan";
 
     // ── OOS4xxx · gobernanza y flujo ────────────────────────────────────────
     Oos4001 = "OOS4001", Flow, "violación de la regla de flujo por propagación";
@@ -567,6 +574,9 @@ mod tests {
             // v1alpha31: las promesas.
             Code::Oos2052,
             Code::Oos2053,
+            // v1alpha33: el enriquecimiento.
+            Code::Oos2054,
+            Code::Oos3009,
             // v1alpha25: el transform.
             Code::Oos2046,
             Code::Oos2047,

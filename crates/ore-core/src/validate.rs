@@ -1021,6 +1021,9 @@ fn recolectar(root: &Path, dir: &Path, fuera: &[Vec<String>], out: &mut Vec<Path
                 continue;
             }
             recolectar(root, &p, fuera, out);
+        } else if crate::enriquecer::es_fuente(&p) {
+            // v1alpha33: un `.enrich.yaml` es código, como un `.sql`: lo lee
+            // `transformar`, no es un documento del árbol.
         } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml")
             || p.extension()
                 .is_some_and(|x| x == "cedar" || x == "cedarschema" || x == "oob")

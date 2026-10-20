@@ -214,6 +214,11 @@ pub enum ApiVersion {
     /// GeoParquet a la vez (`01-la-geometria`). Lo pidió ORE 0067 G1
     /// (2026-10-16).
     V1Alpha32,
+    /// v1alpha33. **El enriquecimiento.** `runtime: enrich` en un `Transform`:
+    /// su código es un `.enrich.yaml` —el objetivo, las capas, la relación y lo
+    /// que se toma, con su reparto— (`01-enrich`, `enriquecer.rs`). La puerta
+    /// es del documento. Lo pidió ORE 0068 C4 (2026-10-20).
+    V1Alpha33,
 }
 
 impl ApiVersion {
@@ -248,6 +253,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha30,
         ApiVersion::V1Alpha31,
         ApiVersion::V1Alpha32,
+        ApiVersion::V1Alpha33,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -282,6 +288,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha30 => "oos.dev/v1alpha30",
             ApiVersion::V1Alpha31 => "oos.dev/v1alpha31",
             ApiVersion::V1Alpha32 => "oos.dev/v1alpha32",
+            ApiVersion::V1Alpha33 => "oos.dev/v1alpha33",
         }
     }
 
@@ -1612,11 +1619,11 @@ fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
         );
     };
     for (clave, ayuda) in [
-        ("runtime", "`python`, `sql` o `java`"),
+        ("runtime", "`python`, `sql`, `java` o `enrich`"),
         (
             "entrypoint",
-            "`<ruta>.py:<def>`, `<ruta>.sql:<n>` o `<ruta>.java:<método>`, desde la carpeta del \
-             paquete",
+            "`<ruta>.py:<def>`, `<ruta>.sql:<n>`, `<ruta>.java:<método>` o \
+             `<ruta>.enrich.yaml:<n>`, desde la carpeta del paquete",
         ),
         ("inputs", "lo que el código lee; puede ser `[]`"),
         ("output", "lo que el código escribe"),
@@ -1638,13 +1645,34 @@ fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
         "sql" => crate::transformar::entrypoint_sql(entrypoint).is_some(),
         // v1alpha25 `01` §5.5 (ORE 0055 T1·7): un método `@Transform` de Java.
         "java" => ore_code::java::entrypoint(entrypoint).is_some(),
+        // v1alpha33 `01-enrich` (ORE 0068 C4): un documento de un `.enrich.yaml`.
+        // La puerta es del documento.
+        "enrich"
+            if raiz
+                .get("apiVersion")
+                .and_then(|(_, v)| v.as_str())
+                .and_then(ApiVersion::parse)
+                .is_some_and(|v| v >= ApiVersion::V1Alpha33) =>
+        {
+            crate::enriquecer::entrypoint(entrypoint).is_some()
+        }
+        "enrich" => {
+            return Some((
+                "`runtime: enrich` llega con v1alpha33".to_string(),
+                Some(
+                    "un `Transform` de un `.enrich.yaml` es `apiVersion: oos.dev/v1alpha33`: el \
+                     que `ore` deriva"
+                        .to_string(),
+                ),
+            ));
+        }
         otro => {
             return Some((
                 format!("`runtime: {otro}` no es el de un transform"),
                 Some(
-                    "`python` (un `@transform`), `sql` (una sentencia que escribe) o `java` (un \
-                     `@Transform`). TypeScript entra cuando su declaración se pueda leer sin \
-                     ejecutar"
+                    "`python` (un `@transform`), `sql` (una sentencia que escribe), `java` (un \
+                     `@Transform`) o `enrich` (un documento de un `.enrich.yaml`). TypeScript \
+                     entra cuando su declaración se pueda leer sin ejecutar"
                         .to_string(),
                 ),
             ));
@@ -1659,6 +1687,9 @@ fn forma_de_transform(raiz: &Node) -> Option<ShapeFailure> {
                 } else if runtime == "java" {
                     "`<ruta>.java:<método>`: relativa a la carpeta del paquete, con `/`, sin \
                      `..`; el método, de la clase del fichero"
+                } else if runtime == "enrich" {
+                    "`<ruta>.enrich.yaml:<n>`: relativa a la carpeta del paquete, con `/`, sin \
+                     `..`; `n`, el documento, desde 1"
                 } else {
                     "`<ruta>.sql:<n>`: relativa a la carpeta del paquete, con `/`, sin `..`; `n`, \
                      la sentencia, desde 1"

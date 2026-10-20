@@ -497,7 +497,11 @@ fn transforms_del_paquete(
     }
 
     let mut ficheros = Vec::new();
-    crate::promover::ficheros_con(carpeta, &[".py", ".sql", ".java"], &mut ficheros);
+    crate::promover::ficheros_con(
+        carpeta,
+        &[".py", ".sql", ".java", crate::enriquecer::EXTENSION],
+        &mut ficheros,
+    );
     ficheros.sort();
     let mut vivos: BTreeSet<String> = BTreeSet::new();
     // Un fichero que no se analiza no dice qué transforms tiene: lo suyo se queda.
@@ -511,6 +515,50 @@ fn transforms_del_paquete(
             continue;
         };
         let ruta = rel.to_string_lossy().replace('\\', "/");
+        // v1alpha33 · un `.enrich.yaml`: un transform por documento. Uno que no
+        // se deriva conserva el suyo (está vivo), y lo dice OOS2043.
+        if ruta.ends_with(crate::enriquecer::EXTENSION) {
+            match crate::enriquecer::leer(&fuente) {
+                Ok(docs) => {
+                    for (n, e) in docs {
+                        vivos.insert(format!("{ruta}:{n}"));
+                        match e {
+                            Ok(e) => producciones.push((f.clone(), e.produccion(&ruta, n))),
+                            Err(fallos) => {
+                                for x in fallos {
+                                    p.diagnosticos.push(
+                                        Diagnostic::new(
+                                            Code::Oos2043,
+                                            &f,
+                                            format!(
+                                                "enrichment {n} is not derived: {}",
+                                                x.mensaje
+                                            ),
+                                        )
+                                        .at(x.pos),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(motivo) => {
+                    rotos.insert(ruta);
+                    p.diagnosticos.push(
+                        Diagnostic::new(
+                            Code::Oos2043,
+                            &f,
+                            format!(
+                                "this file is not YAML, so its enrichments are not derived: {}",
+                                motivo.mensaje
+                            ),
+                        )
+                        .at(motivo.pos),
+                    );
+                }
+            }
+            continue;
+        }
         if ruta.ends_with(".sql") {
             match crate::transformar::derivar_sql(&fuente, &ruta) {
                 Ok(g) => {

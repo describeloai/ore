@@ -878,9 +878,14 @@ pub(crate) fn generar_funciones(
 ) -> Vec<Generado> {
     let solo: std::collections::BTreeSet<PathBuf> = tocadas
         .iter()
-        // 0055 T1·7: un `.java` puede tener `@Transform`.
+        // 0055 T1·7: un `.java` puede tener `@Transform`. v1alpha33: un
+        // `.enrich.yaml` es un transform por documento.
         .filter(|r| {
-            r.ends_with(".py") || r.ends_with(".ts") || r.ends_with(".sql") || r.ends_with(".java")
+            r.ends_with(".py")
+                || r.ends_with(".ts")
+                || r.ends_with(".sql")
+                || r.ends_with(".java")
+                || r.ends_with(ore_core::enriquecer::EXTENSION)
         })
         .map(|r| raiz.join(r.trim_matches('/')))
         .collect();

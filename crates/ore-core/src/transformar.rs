@@ -195,6 +195,9 @@ enum Leido {
         fuente: String,
         c: ore_code::java::Clase,
     },
+    /// v1alpha33 · un `.enrich.yaml`: sus documentos, cada uno el suyo o sus
+    /// fallos (`enriquecer`).
+    Enrich(crate::enriquecer::Fichero),
 }
 
 fn leer<'a>(
@@ -206,7 +209,9 @@ fn leer<'a>(
         .entry(fichero.to_path_buf())
         .or_insert_with(|| {
             let fuente = std::fs::read_to_string(fichero).ok()?;
-            if ruta.ends_with(".sql") {
+            if ruta.ends_with(crate::enriquecer::EXTENSION) {
+                Some(Leido::Enrich(crate::enriquecer::leer(&fuente)))
+            } else if ruta.ends_with(".sql") {
                 Some(Leido::Sql(derivar_sql(&fuente, ruta)))
             } else if ruta.ends_with(".py") {
                 let d = ore_code::python::derivar(&fuente, ruta);
@@ -247,6 +252,57 @@ fn sql_roto(
             d = d.at(p);
         }
         out.push(d);
+    }
+}
+
+/// v1alpha33 · `OOS2043` por un `.enrich.yaml` que no es YAML, una vez por
+/// fichero.
+fn enrich_roto(
+    fichero: &Path,
+    motivo: &crate::enriquecer::Fallo,
+    out: &mut Vec<Diagnostic>,
+    dichos: &mut BTreeSet<PathBuf>,
+) {
+    if dichos.insert(fichero.to_path_buf()) {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2043,
+                fichero,
+                format!(
+                    "this file is not YAML, so its enrichments are not derived: {}",
+                    motivo.mensaje
+                ),
+            )
+            .at(motivo.pos)
+            .help(
+                "a `.enrich.yaml` is a list of YAML documents separated by `---`, one enrichment \
+                 each. Its documents stay as they were until it parses",
+            ),
+        );
+    }
+}
+
+/// v1alpha33 · `OOS2043`: cada razón por la que el documento `n` de un
+/// `.enrich.yaml` no se deriva, en su sitio.
+fn enrich_no_se_deriva(
+    fichero: &Path,
+    n: usize,
+    fallos: &[crate::enriquecer::Fallo],
+    out: &mut Vec<Diagnostic>,
+) {
+    for f in fallos {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2043,
+                fichero,
+                format!("enrichment {n} is not derived: {}", f.mensaje),
+            )
+            .at(f.pos)
+            .help(
+                "an enrichment has `output`, `target: { dataset }` and `layers`, each with \
+                 `dataset`, `relation` and `take` (`01-enrich` §2)",
+            ),
+        );
     }
 }
 
@@ -406,6 +462,8 @@ fn sitio_de(l: &Leido, clave: &str) -> Option<Sitio> {
         }
         Leido::Sql(Ok(g)) => g.sitios.get(&clave.parse().ok()?).cloned(),
         Leido::Sql(Err(_)) => None,
+        Leido::Enrich(Ok(f)) => Some(f.get(&clave.parse().ok()?)?.as_ref().ok()?.sitio()),
+        Leido::Enrich(Err(_)) => None,
         Leido::Java { fuente, c } => {
             let x = c.transforms.iter().find(|x| x.nombre == clave)?;
             let lineas = Lineas::new(fuente);
@@ -474,6 +532,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     let mut nombrados: BTreeSet<(PathBuf, String)> = BTreeSet::new();
     let mut rotos: BTreeSet<PathBuf> = BTreeSet::new();
     let mut coherentes: Vec<(&Loaded, PathBuf, String)> = Vec::new();
+    // v1alpha33: los de `runtime: enrich` que son el de su código, para lo que
+    // se comprueba sobre el árbol (`enriquecer::comprobar`).
+    let mut enriquecidos: Vec<(&Loaded, PathBuf, usize)> = Vec::new();
 
     for t in pkg.of(Kind::Transform) {
         // La forma la comprobó el despacho (`OOS1004`): aquí ya es una.
@@ -486,6 +547,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             "python" => crate::promover::entrypoint(texto).map(|(r, n)| (r, n.to_string())),
             "sql" => entrypoint_sql(texto).map(|(r, n)| (r, n.to_string())),
             "java" => ore_code::java::entrypoint(texto).map(|(r, m)| (r, m.to_string())),
+            "enrich" => crate::enriquecer::entrypoint(texto).map(|(r, n)| (r, n.to_string())),
             _ => None,
         };
         let Some((ruta, clave)) = leido else { continue };
@@ -510,6 +572,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         };
         nombrados.insert((fichero.clone(), clave.clone()));
 
+        // La de un enriquecimiento se calcula: no la guarda el fichero leído.
+        let propia: Produccion;
         let produccion = match l {
             Leido::Python { fuente, d } => {
                 // ── OOS2043 · es Python del puesto ───────────────────────
@@ -664,11 +728,52 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 };
                 p
             }
+            Leido::Enrich(Err(motivo)) => {
+                enrich_roto(&fichero, motivo, out, &mut rotos);
+                continue;
+            }
+            Leido::Enrich(Ok(f)) => {
+                let n: usize = clave.parse().unwrap_or(0);
+                // ── OOS2042 · el documento está ──────────────────────────
+                let Some(e) = f.get(&n) else {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2042,
+                            &t.path,
+                            format!(
+                                "`entrypoint: {texto}`: `{ruta}` has {} document{}",
+                                f.len(),
+                                if f.len() == 1 { "" } else { "s" }
+                            ),
+                        )
+                        .at(nodo.pos())
+                        .help(
+                            "`<path>.enrich.yaml:<n>` names the `n`-th document of the file, \
+                             from 1, separated by `---`",
+                        ),
+                    );
+                    continue;
+                };
+                // ── OOS2043 · se deriva ──────────────────────────────────
+                match e {
+                    Err(fallos) => {
+                        enrich_no_se_deriva(&fichero, n, fallos, out);
+                        continue;
+                    }
+                    Ok(e) => {
+                        propia = e.produccion(ruta, n);
+                        &propia
+                    }
+                }
+            }
         };
 
         // ── OOS2013 · y es este documento ────────────────────────────────
         if coherencia(t, produccion, out) {
             coherentes.push((t, fichero.clone(), clave.clone()));
+            if runtime == "enrich" {
+                enriquecidos.push((t, fichero.clone(), clave.parse().unwrap_or(0)));
+            }
         }
     }
 
@@ -678,7 +783,11 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // (`OOS2030`), donde el código es de la sesión, sin más.
     for (carpeta, _) in paquetes_publicables(pkg) {
         let mut ficheros = Vec::new();
-        ficheros_con(&carpeta, &[".py", ".sql", ".java"], &mut ficheros);
+        ficheros_con(
+            &carpeta,
+            &[".py", ".sql", ".java", crate::enriquecer::EXTENSION],
+            &mut ficheros,
+        );
         ficheros.sort();
         for f in ficheros {
             if carpeta_del_paquete(&f, &pkg.root) != carpeta {
@@ -690,7 +799,10 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             let ruta = rel.to_string_lossy().replace('\\', "/");
             if !leidos.contains_key(&f)
                 && !std::fs::read_to_string(&f).is_ok_and(|t| {
-                    if ruta.ends_with(".sql") {
+                    // v1alpha33: todo documento de un `.enrich.yaml` es un transform.
+                    if ruta.ends_with(crate::enriquecer::EXTENSION) {
+                        true
+                    } else if ruta.ends_with(".sql") {
                         puede_escribir(&t)
                     } else if ruta.ends_with(".java") {
                         ore_code::java::puede_tener_transforms(&t)
@@ -770,6 +882,33 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                         }
                     }
                 }
+                Leido::Enrich(Err(motivo)) => enrich_roto(&f, motivo, out, &mut rotos),
+                Leido::Enrich(Ok(docs)) => {
+                    for (n, e) in docs {
+                        if nombrados.contains(&(f.clone(), n.to_string())) {
+                            continue;
+                        }
+                        match e {
+                            Err(fallos) => enrich_no_se_deriva(&f, *n, fallos, out),
+                            Ok(e) => {
+                                let p = e.produccion(&ruta, *n);
+                                out.push(
+                                    Diagnostic::new(
+                                        Code::Oos2013,
+                                        &f,
+                                        format!(
+                                            "enrichment {n} writes `{}` and has no document: no \
+                                             `Transform` of the package has `entrypoint: {}`",
+                                            p.output, p.entrypoint
+                                        ),
+                                    )
+                                    .at(e.pos)
+                                    .help(DERIVAR),
+                                );
+                            }
+                        }
+                    }
+                }
                 Leido::Sql(Err(motivo)) => sql_roto(&f, motivo, out, &mut rotos),
                 Leido::Sql(Ok(g)) => {
                     for (n, p) in &g.transforms {
@@ -812,6 +951,15 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             continue;
         };
         al_codigo(d, t, fichero, &sitio, &pkg.root);
+    }
+
+    // ── OOS2054 · OOS3009 · lo que un enriquecimiento dice del árbol ─────
+    for (t, fichero, n) in enriquecidos {
+        if let Some(Some(Leido::Enrich(Ok(docs)))) = leidos.get(&fichero)
+            && let Some(Ok(e)) = docs.get(&n)
+        {
+            crate::enriquecer::comprobar(pkg, t, e, &fichero, out);
+        }
     }
 }
 

@@ -19,6 +19,19 @@ use std::fmt::Write;
 /// La versión que deriva un `Transform`: la que trae el `kind`.
 pub const API_VERSION: &str = "oos.dev/v1alpha25";
 
+/// La de uno de `runtime: enrich`, que llega con v1alpha33 (`01-enrich`): la
+/// puerta es del documento, así que sólo él la sube.
+pub const API_VERSION_ENRICH: &str = "oos.dev/v1alpha33";
+
+/// La versión del documento que deriva una producción.
+pub fn api_version(p: &Produccion) -> &'static str {
+    if p.runtime == "enrich" {
+        API_VERSION_ENRICH
+    } else {
+        API_VERSION
+    }
+}
+
 /// La primera línea de un documento derivado. Es la marca que deja a la
 /// herramienta borrar el de un transform que ya no existe sin tocar nunca otro
 /// fichero (v1alpha25 `01` §9).
@@ -27,9 +40,10 @@ pub const MARCA: &str = "# derivado por ore desde";
 /// Lo que un transform declara, tal como el código lo da (v1alpha25 `01` §5.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Produccion {
-    /// `python` o `sql`.
+    /// `python`, `sql`, `java` o (v1alpha33) `enrich`.
     pub runtime: &'static str,
-    /// `<ruta>.py:<def>` o `<ruta>.sql:<n>`, desde la carpeta del paquete.
+    /// `<ruta>.py:<def>`, `<ruta>.sql:<n>`, `<ruta>.java:<método>` o
+    /// `<ruta>.enrich.yaml:<n>`, desde la carpeta del paquete.
     pub entrypoint: String,
     /// Python: la primera línea no vacía de la docstring. SQL: nunca.
     pub descripcion: Option<String>,
@@ -117,7 +131,7 @@ pub fn documento_con_dueno(p: &Produccion, paquete: &str, owner: Option<&str>) -
         "{MARCA} {} · se edita el código, no este fichero",
         p.entrypoint
     );
-    let _ = writeln!(s, "apiVersion: {API_VERSION}");
+    let _ = writeln!(s, "apiVersion: {}", api_version(p));
     s.push_str("kind: Transform\nmetadata:\n");
     let _ = writeln!(s, "  name: {}", escalar(&p.nombre()));
     let _ = writeln!(s, "  namespace: {}", escalar(paquete));

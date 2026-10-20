@@ -1856,7 +1856,7 @@ motor. Eso se mide como primer punto de C4·2 y C4·3, contra PostGIS, que es su
 
 | paso | qué | dónde | hecho cuando |
 |---|---|---|---|
-| C4·1 | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
+| C4·1 ✅ local | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
 | C4·2 | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
 | C4·3 | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
 | C4·4 | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
@@ -1955,6 +1955,13 @@ El ADR pasa de hoja de ruta a imagen.
   fuente `.enrich.yaml` (código, como un `.sql`), el grano conservado, el reparto por variable y metros
   sólo con un CRS métrico (D-C4-1 a D-C4-8). Sin previo aparte: lo desconocido se mide al empezar C4·2
   y C4·3. Siguiente: C4·1 en código.
+- **2026-10-20 · C4·1 hecho en local.** OOS v1alpha33 (`01-enrich`, `OOS2054`, `OOS3009`, 9 casos)
+  y en ORE: `enriquecer.rs` (lee el `.enrich.yaml`, deriva el `Transform`, comprueba columnas, CRS,
+  metros y métodos, y da el esquema de salida), `runtime: enrich` con su puerta en v1alpha33, el
+  `.enrich.yaml` fuera del cargador de documentos y dentro de la derivación al guardar. Conformidad
+  32/32 (v1alpha33 9/9), `ore-core` entero y clippy en verde. Construirlo aún responde 422: es C4·2.
+  Pendiente de C4·1: el esquema JSON del editor (va con C4·5) y los tipos de una View (hoy se comprueba
+  sólo por nombre). Siguiente: C4·2, el generador de DuckDB.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),

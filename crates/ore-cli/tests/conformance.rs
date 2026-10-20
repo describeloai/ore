@@ -1611,6 +1611,15 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
 }
 
 #[test]
+fn borrador_de_v1alpha33() {
+    marcador(
+        "v1alpha33",
+        "el enriquecimiento",
+        "BORRADOR · OOS v1alpha33 · el enriquecimiento",
+    );
+}
+
+#[test]
 fn borrador_de_v1alpha32() {
     marcador(
         "v1alpha32",
