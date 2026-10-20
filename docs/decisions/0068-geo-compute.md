@@ -1121,6 +1121,32 @@ filtro del rectángulo, y lo hace con un `RangeJoin`.
   permiso aparte: un Build pesado que llegue en ese minuto espera en Kueue).
 - **e3 · la vara entera otra vez en victor**: C3 se cierra, y CE·6 con ella. CE se cierra con CE·5.
 
+**C3·e · Q2 y Q6, hechos (2026-10-20).**
+- **`DifundirLaSubconsulta`**, en `ReglasDeOre` (analizador, post-hoc), escrita como se diseñó arriba:
+  - **en local**, `c3/b/regla.sh` da 15/15, con 5 casos nuevos: Q2 usa el índice y da lo mismo que q2d;
+    una subconsulta sin filas da 0; en un `OR` no se toca; sin `LIMIT` no se toca y da lo mismo; con
+    otra condición al lado, se reescribe igual;
+  - **en victor, a escala 100**, con la regla cargada desde el jar local (`medir.sh REGLAS=locales`; las
+    reglas corren en el driver): **Q2, de > 600 s a 126 s con un ejecutor**, `BroadcastIndexJoin` y la
+    huella de C0. Es lo que daba q2d escrita a mano, ahora con el SQL de SpatialBench tal cual.
+- **Q6, cotejada con DuckDB** (`cotejar-q6.sh`: DuckDB 1.5.6 sobre una copia en la SSD de un nodo
+  pesado, 38 s; y Spark con las filas en crudo, `CRUDO=1`):
+  - las 19 zonas y sus conteos son idénticos;
+  - la duración media difiere en los grupos grandes (Arizona: 6144,82 s en Spark, 6145,16 s en
+    DuckDB);
+  - **la causa es el `AVG` de un intervalo en DuckDB**, que guarda y promedia los días y los
+    microsegundos por separado. Con duraciones de un día o más o negativas, no es la media de las
+    duraciones;
+  - los datos de SpatialBench tienen de las dos clases: 413 500 viajes de ≥ 1 día (hasta 13) y
+    duraciones de hasta −24 h;
+  - el diagnóstico (`intervalos.sql`), sobre los 600 M: `avg(intervalo)` da 6468,145 s y la media
+    exacta en milisegundos 6099,145 s, **369 s de diferencia**; en 19 viajes sin rarezas, idénticos;
+  - **Spark da la media exacta** (su intervalo es un número de microsegundos), así que **su Q6 es la
+    buena** y la huella distinta no es un error de ORE;
+  - para cotejar entre motores, una duración se compara en milisegundos enteros, no como intervalo.
+- **Q6 sigue siendo lenta:** 504–719 s con 2 ejecutores, y > 900 s con uno. Es la pieza del lado
+  pequeño tras un filtro (más arriba), que queda para después con Q10–Q12.
+
 ### CE · El Build elástico
 
 **Su responsabilidad:** cómo corre un Build pesado (Heavyweight, Spark) en uno o varios nodos, **sea cual
@@ -1610,6 +1636,10 @@ El ADR pasa de hoja de ruta a imagen.
   cohorte `pesado`, cuota, cuentas con Workload Identity, política y red). SpatialBench a escala 100 con
   2 × 8 vCPU: 8 de 12 terminan (Q6 y Q8 por primera vez), huellas de C0 o DuckDB. Lo nuevo: el disco
   efímero desaloja a los ejecutores en Q11. Siguiente: C3·e (disco, regla de Q2, Q10–Q12).
+- **2026-10-20 · C3·e: Q2 y Q6.** `DifundirLaSubconsulta`: Q2 a escala 100 de > 600 s a 126 s con
+  la huella de C0 (regla.sh 15/15). Q6 cotejada con DuckDB: las mismas 19 zonas y conteos; la huella
+  distinta sale del `AVG(INTERVAL)` de DuckDB con duraciones de ≥ 1 día o negativas (369 s de error
+  sobre la tabla entera); Spark es exacto. Siguiente: Q10–Q12, empezando por medir dónde se va el tiempo.
 - **2026-10-20 · CE CERRADO por ahora.** CE·6 en vivo (SSD local, 250Gi por pod pesado; Q11 sin
   desalojo, pico de disco 27 GiB). El flag encendido en todas las celdas. El primer Build real desde la
   consola destapó el 401 del driver (`d83b088c`) y luego fue de punta a punta: elástico, escala solo,

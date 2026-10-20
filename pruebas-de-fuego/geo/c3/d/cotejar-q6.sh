@@ -5,6 +5,7 @@
 # Un Job en el namespace de medida (`medir.sh` lo prepara: la cuenta `sb` lee el bucket), en un nodo `pesado`:
 # baja `trip` y `zone` (45 GB) a su SSD local y corre Q6 allí. Imprime `Q6D|fila|…`.
 #   bash pruebas-de-fuego/geo/c3/d/cotejar-q6.sh
+#   SQL=fichero.sql bash …/cotejar-q6.sh   # otra consulta sobre las mismas tablas (un diagnóstico)
 set -uo pipefail
 export PYTHONUTF8=1
 NS=c3d-medida
@@ -13,9 +14,9 @@ P=project-8853a180-450d-47be-b83
 IMAGEN=europe-west1-docker.pkg.dev/$P/ore/puesto-python:1
 kubectl get sa sb -n $NS >/dev/null 2>&1 || { echo "⛔ sin $NS/sb: antes, medir.sh (prepara el namespace y el permiso)"; exit 1; }
 J=q6d-$(date +%H%M%S)
-python3 - "$aqui/consultas.json" > "/tmp/$J.py" <<'PY'
+python3 - "$aqui/consultas.json" "${SQL:-}" > "/tmp/$J.py" <<'PY'
 import json, sys
-q6 = json.load(open(sys.argv[1]))["q6"]
+q6 = open(sys.argv[2]).read() if len(sys.argv) > 2 and sys.argv[2] else json.load(open(sys.argv[1]))["q6"]
 print('''import datetime, decimal, json, os, time, urllib.request
 B = "%s"
 def tok():
