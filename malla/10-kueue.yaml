@@ -61,6 +61,25 @@ spec:
       value: "true"
       effect: NoSchedule
 ---
+# ── ⭐ El sabor `pesado-driver` (ADR 0068 C3·c, 2026-10-20) ───────────────────
+#
+# Los nodos del pool `pesado-driver` (`74-el-pool-del-driver.sh`: n2-highmem-4
+# NORMAL, de 0 a 1): el driver de un Build elástico. Fuera de spot a propósito:
+# perder un ejecutor se recomputa, perder el driver pierde el Build. Lo nombra
+# SÓLO `cq-<celda>-driver` (`22-el-build-elastico.yaml`).
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: pesado-driver
+spec:
+  nodeLabels:
+    ore.dev/pool: pesado-driver
+  tolerations:
+    - key: ore.dev/pesado-driver
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+---
 # ⛔ LO DEMÁS SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
 #
 # Aquí vivían el `Namespace` de `t-demo`, su `ClusterQueue`, su `LocalQueue`, sus

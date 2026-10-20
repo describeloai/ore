@@ -141,12 +141,24 @@ spec:
 # ⛔ Aparte de `cq-demo` A PROPÓSITO: con el sabor pesado detrás de `system` y
 #   `jobs` en la misma cola, un puesto ligero que no cupiera desbordaría a un
 #   nodo de 64 GB. Y uno pesado no puede caer en uno ligero.
+#
+# ✏️ 2026-10-20 (0068 C3·c) · Y ahora en una COHORTE, `pesado`: un Build elástico
+#   pide sus ejecutores (7 CPU / 42 GiB cada uno, pods sueltos de Kueue) a esta
+#   cola, y una celda toma prestado el nodo que la otra no usa. Cuando la otra lo
+#   quiere, Kueue echa al prestado (`reclaimWithinCohort`). Medido en C3·c0: sin
+#   esto, el segundo Build pasaba ~100 s sin ningún ejecutor; con esto, 32 s.
+#   Lo nominal de la cohorte sigue siendo un nodo por celda: no enciende más
+#   nodos de los que el pool tiene.
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
   name: cq-demo-pesado
 spec:
   namespaceSelector: {}
+  cohortName: pesado
+  preemption:
+    reclaimWithinCohort: Any
+    withinClusterQueue: Never
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
@@ -203,9 +215,13 @@ spec:
   # ⭐ (0068 pieza 6) 12 CPU / 64 GiB: un puesto pesado (7 / 48Gi) más las dos
   #   colas ligeras llenas (1+1,5 CPU, 4+5 GiB) y lo que corre siempre. Con 36Gi
   #   el pod pesado no nacía: Kueue lo admitía y la cuota lo negaba.
+  #
+  # ✏️ (0068 C3·c) 20 CPU / 112 GiB: un Build elástico es su driver (1,5 / 12Gi)
+  #   y hasta dos ejecutores (7 / 42Gi cada uno, el segundo prestado de la
+  #   cohorte), más las colas ligeras y lo que corre siempre.
   hard:
-    requests.cpu: "12"
-    requests.memory: 64Gi
+    requests.cpu: "20"
+    requests.memory: 112Gi
     count/jobs.batch: "50"
 ---
 # ── Y la puerta a la forja, por el otro lado ───────────────────────────────────

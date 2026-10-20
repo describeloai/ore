@@ -654,6 +654,10 @@ enlace "ore-driver-$NOMBRE" driver
 enlace "ore-forja-$NOMBRE" forja
 enlace "ore-informador-$NOMBRE" informador
 enlace "ore-puesto-$NOMBRE" puesto
+# ⭐ (0068 C3·c) Y el driver de un Build elástico (`22-el-build-elastico.yaml`): la
+#   MISMA cuenta de Google que el puesto, con otra cuenta de Kubernetes, que es la
+#   que puede pedir ejecutores. Lo que lee y escribe en Google, lo de un puesto.
+enlace "ore-puesto-$NOMBRE" driver-pesado
 # ⭐ Y la de la MEDIA (0049 B4b): `ore-medios` corría como `ore-serve-<n>` (deuda
 #   dicha en 0049 y en `45-ore-medios.yaml`). Es el proceso que habla con los
 #   orígenes y recibe los bytes de los puestos, y desde B4b el ÚNICO que escribe

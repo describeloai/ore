@@ -1,0 +1,220 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL BUILD ELÁSTICO — el driver que pide sus ejecutores (ADR 0068 C3·c)
+#
+# Un Build pesado con entradas grandes (`ore-serve --builds-elasticos`) es su
+# DRIVER —el pod del agente, pequeño, en el pool `pesado-driver` (normal, no
+# spot: `74-el-pool-del-driver.sh`)— que pide a Kubernetes los EJECUTORES según
+# la carga (Spark, dynamic allocation; `puesto/python/ore/spark.py`). Medido en
+# victor antes de escribirlo (C3·c0, `pruebas-de-fuego/geo/c3/c0/`).
+#
+# ⛔ El código del cliente corre en el proceso del driver y tiene su token: esa
+#   cuenta puede crear pods. Por eso, tres cosas y no una:
+#   · su cuenta propia, `driver-pesado` (una sesión interactiva no la lleva
+#     nunca: `cola::al_driver_elastico` sólo la pone en un Build), con un Role
+#     que sólo da pods y ConfigMaps del namespace;
+#   · la ValidatingAdmissionPolicy: lo que esa cuenta crea es un ejecutor de
+#     verdad o el ConfigMap de Spark, nada más (medida 9/9 en c0, y la regla
+#     del pool salió de allí: sin ella, un «ejecutor» hecho a mano cayó en el
+#     nodo del sistema);
+#   · la red: el driver y sus ejecutores se hablan en 7078/7079, el driver sale
+#     al API server, los ejecutores a Google por la vía privada. Nada más.
+#     Y `spark.authenticate` entre ellos (el SDK), para que dos Builds de la
+#     misma celda no se pidan bloques.
+#
+# ⭐ Cada ejecutor va a `cola-pesada` como pod suelto de Kueue (la política lo
+#   exige): Kueue garantiza a cada celda su nodo pesado y presta el de la otra
+#   (cohorte `pesado`, `11-el-inquilino.yaml`). Medido en c0: sin Kueue, el
+#   segundo Build pasó ~100 s sin ejecutores; con Kueue, 32 s.
+#   Y el driver va a SU cola (`cola-driver`, sabor `pesado-driver`).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: driver-pesado
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: puesto
+  annotations:
+    # La MISMA cuenta de Google que el puesto: lee la capa y lo que lee un
+    # puesto, y escribe con el token que presta el catálogo. El enlace de
+    # Workload Identity lo hace el aprovisionador (③).
+    iam.gke.io/gcp-service-account: ore-puesto-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ejecutor
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+# Un ejecutor no habla con Kubernetes ni suplanta a nadie de Google: lee y
+# escribe el lago con las credenciales que el catálogo le prestó al driver.
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: driver-pesado
+  namespace: t-demo
+rules:
+  # Lo que Spark necesita en modo cliente: crear, ver y borrar sus ejecutores y
+  # el ConfigMap con su configuración. Al cerrar intenta borrar Services y PVC
+  # por etiqueta y se le niega: ruido en el log, sin efecto (c0).
+  - apiGroups: [""]
+    resources: [pods, configmaps]
+    verbs: [create, get, list, watch, delete, deletecollection]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: driver-pesado
+  namespace: t-demo
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: driver-pesado}
+subjects: [{kind: ServiceAccount, name: driver-pesado, namespace: t-demo}]
+---
+# ── Lo que la cuenta del driver puede crear ──────────────────────────────────
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: t-demo-lo-que-crea-el-driver
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "configmaps"]
+  matchConditions:
+    - name: la-cuenta-del-driver
+      expression: "request.userInfo.username == 'system:serviceaccount:t-demo:driver-pesado'"
+  variables:
+    - name: pod
+      expression: "request.resource.resource == 'pods'"
+  validations:
+    # El driver pasa su propia imagen (`ORE_SPARK_IMAGEN`): la etiqueta del
+    # entorno o un digest del mismo repositorio, ninguna otra.
+    - expression: "!variables.pod || object.spec.containers.all(c, c.image == 'europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-spark:1' || c.image.startsWith('europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-spark@sha256:'))"
+      message: "un ejecutor lleva la imagen pesada"
+    - expression: "!variables.pod || (object.spec.serviceAccountName == 'ejecutor' && has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)"
+      message: "un ejecutor va con la cuenta ejecutor y sin token"
+    - expression: "!variables.pod || !has(object.spec.volumes) || object.spec.volumes.all(v, has(v.configMap) || has(v.emptyDir))"
+      message: "un ejecutor solo monta configMap y emptyDir"
+    - expression: "!variables.pod || !has(object.spec.initContainers) || size(object.spec.initContainers) == 0"
+      message: "un ejecutor no lleva initContainers"
+    - expression: "!variables.pod || ((!has(object.spec.hostNetwork) || !object.spec.hostNetwork) && (!has(object.spec.hostPID) || !object.spec.hostPID) && (!has(object.spec.hostIPC) || !object.spec.hostIPC))"
+      message: "un ejecutor no usa la red ni los procesos del nodo"
+    - expression: "!variables.pod || (has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) && object.spec.securityContext.runAsNonRoot && object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) && !c.securityContext.allowPrivilegeEscalation && (!has(c.securityContext.privileged) || !c.securityContext.privileged)))"
+      message: "un ejecutor corre sin root y sin privilegios"
+    - expression: "!variables.pod || object.spec.containers.all(c, has(c.resources.limits) && has(c.resources.limits.memory) && quantity(c.resources.limits.memory).compareTo(quantity('48Gi')) <= 0)"
+      message: "un ejecutor lleva límite de memoria, como mucho 48Gi"
+    - expression: "!variables.pod || (has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(o, o.kind == 'Pod' && has(o.controller) && o.controller))"
+      message: "un ejecutor tiene por dueño el pod del driver"
+    - expression: "!variables.pod || (has(object.metadata.labels) && 'spark-role' in object.metadata.labels && object.metadata.labels['spark-role'] == 'executor')"
+      message: "un ejecutor lleva spark-role: executor"
+    # c0: sin esto, un «ejecutor» creado a mano sin nodeSelector cayó en el nodo del sistema.
+    - expression: "!variables.pod || (has(object.spec.nodeSelector) && 'ore.dev/pool' in object.spec.nodeSelector && object.spec.nodeSelector['ore.dev/pool'] == 'pesado')"
+      message: "un ejecutor va al pool pesado"
+    # Y por Kueue: sin la cola, un ejecutor se saltaría el reparto entre celdas.
+    - expression: "!variables.pod || (has(object.metadata.labels) && 'kueue.x-k8s.io/queue-name' in object.metadata.labels && object.metadata.labels['kueue.x-k8s.io/queue-name'] == 'cola-pesada')"
+      message: "un ejecutor va a cola-pesada"
+    - expression: "variables.pod || (has(object.metadata.labels) && 'spark-app-selector' in object.metadata.labels)"
+      message: "solo el ConfigMap de Spark"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: t-demo-lo-que-crea-el-driver
+spec:
+  policyName: t-demo-lo-que-crea-el-driver
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: t-demo}
+---
+# ── La red del driver y de sus ejecutores ────────────────────────────────────
+#
+# El driver lleva además `ore.dev/rol: puesto` (es el pod del agente): su salida
+# de siempre (`21-el-puesto.yaml`) más esto.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spark-del-driver
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels: {ore.dev/spark: driver}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {ore.dev/spark: ejecutor}}}]
+      ports: [{protocol: TCP, port: 7078}, {protocol: TCP, port: 7079}]
+  egress:
+    - to: [{podSelector: {matchLabels: {ore.dev/spark: ejecutor}}}]
+      ports: [{protocol: TCP, port: 7079}]
+    # El API server del clúster (el `Endpoints` de `default/kubernetes`): para
+    # pedir sus ejecutores. Medido en c0.
+    - to: [{ipBlock: {cidr: 10.10.0.2/32}}]
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spark-del-ejecutor
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels: {ore.dev/spark: ejecutor}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {ore.dev/spark: driver}}
+        - podSelector: {matchLabels: {ore.dev/spark: ejecutor}}
+      ports: [{protocol: TCP, port: 7079}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to: [{podSelector: {matchLabels: {ore.dev/spark: driver}}}]
+      ports: [{protocol: TCP, port: 7078}, {protocol: TCP, port: 7079}]
+    - to: [{podSelector: {matchLabels: {ore.dev/spark: ejecutor}}}]
+      ports: [{protocol: TCP, port: 7079}]
+    # El lago, por la vía privada de Google (`72-google-en-privado.sh`), como el puesto.
+    - to:
+        - ipBlock: { cidr: 199.36.153.8/30 }
+      ports: [{protocol: TCP, port: 443}]
+---
+# ── La cola del driver ───────────────────────────────────────────────────────
+#
+# Un driver (1,5 CPU / 12 GiB) a la vez por celda, en el sabor `pesado-driver`
+# (`10-kueue.yaml`): dos celdas caben en un `n2-highmem-4`. Aparte de
+# `cq-demo-pesado` a propósito: con el sabor del driver detrás del pesado en una
+# cola, un driver que no cupiera caería en un nodo spot de 64 GB.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-demo-driver
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: pesado-driver
+          resources:
+            - name: cpu
+              nominalQuota: "1500m"
+            - name: memory
+              nominalQuota: "12Gi"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: cola-driver
+  namespace: t-demo
+spec:
+  clusterQueue: cq-demo-driver

@@ -183,6 +183,7 @@ configMapGenerator:
       - 11-el-inquilino.yaml
       - 20-driver.yaml
       - 21-el-puesto.yaml
+      - 22-el-build-elastico.yaml
       - 40-ore-serve.yaml
       - 41-el-cofre.yaml
       - 42-el-arbol.yaml

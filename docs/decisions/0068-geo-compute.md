@@ -1203,20 +1203,42 @@ pequeño va en un pod y la rejilla se hace sobre el lado grande.
     driver sobre la plantilla real de la malla; ore-serve 257/259 (fallan los 2 de git en Docker, por el
     worktree), clippy y fmt limpios.
 
-**Lo que c4 (la malla) tiene que poner**, por orden: binario, luego malla, luego *flag*.
-1. Las cuentas `driver-pesado` (Workload Identity con la misma cuenta de Google que `puesto`, más su
-   enlace) y `ejecutor` (sin token).
-2. El Role del driver.
-3. La ValidatingAdmissionPolicy de `c0/laboratorio.yaml`, con la imagen permitida como
-   `…/puesto-spark:1` o por digest: el driver pasa su propia etiqueta.
-4. Pod Security `restricted` en la celda. Antes hay que comprobar que los puestos de hoy la cumplen; si
-   no, la política sola.
-5. La red: driver ↔ ejecutores en 7078/7079 por `ore.dev/spark`, el driver al API server, y los
-   ejecutores a Google por la vía privada.
-6. `cq-<celda>-pesado`: el sabor `pesado-driver` (los drivers) delante de `pesado` (un pod pequeño o los
-   ejecutores), en una cohorte con *reclaim*, con un nodo pesado garantizado por celda.
-7. La cuota del namespace.
-8. Que los ejecutores lleguen al lago: c5.
+**C3·c4 · la malla, escrita en local y comprobada en seco (2026-10-20).**
+- **`22-el-build-elastico.yaml`**, una plantilla nueva del inquilino que da de alta `gen-inquilino.py` y
+  la kustomization:
+  - las cuentas `driver-pesado` (la misma cuenta de Google que el puesto, más su enlace de Workload
+    Identity en el aprovisionador ③) y `ejecutor` (sin token);
+  - el Role (pods y ConfigMaps);
+  - la ValidatingAdmissionPolicy de la celda, la de c0 más estas reglas:
+    - la imagen como `…/puesto-spark:1` o por digest;
+    - sin root ni privilegios;
+    - el ejecutor a `cola-pesada`, para que no se salte Kueue.
+  - la red `spark-del-driver` y `spark-del-ejecutor`:
+    - 7078/7079 entre los pods `ore.dev/spark`;
+    - el driver al API server;
+    - los ejecutores a Google por la vía privada.
+  - la cola del driver, `cq-<celda>-driver` / `cola-driver`, con 1,5 CPU / 12 GiB en el sabor
+    `pesado-driver`. `cola::al_driver_elastico` manda ahí al driver.
+- **`10-kueue.yaml`**: el sabor `pesado-driver`, con el pool de `74-el-pool-del-driver.sh`, que ya
+  existe en victor a 0 nodos.
+- **`11-el-inquilino.yaml`**:
+  - `cq-<celda>-pesado` entra en la cohorte `pesado` con `reclaimWithinCohort: Any`, que es lo medido en
+    c0;
+  - la cuota pasa a 20 CPU / 112 GiB.
+- **Pod Security `restricted` se queda fuera.** La política ya exige al ejecutor lo que exigiría
+  `restricted`, y antes de ponerla en la celda hay que comprobar los puestos de hoy.
+- **Comprobado en seco:**
+  - `gen-inquilino.py --comprobar` y `--comprobar-plantillas` dan verde;
+  - victor rendido: `22` y el sabor pasan `kubectl apply --dry-run=server`, CEL de la política incluido;
+  - `kubectl diff` de `11` en victor da exactamente la cohorte, el *reclaim* y la cuota.
+
+**El orden del empuje**, como siempre: binario, luego malla, luego *flag*.
+1. **El código** (C3·a, C3·b y c1–c3; c4 solo cambia la cola del driver en `cola.rs`). El *flag* está
+   apagado, así que ningún Build se hace elástico. **Pero van en vivo para todo Build pesado** la
+   difusión de C3·a, la regla del `LEFT JOIN` de C3·b y la rejilla sobre el lado grande.
+2. **La malla**: el sabor, `22` y `11` en cada celda. Va con el aprovisionador (el enlace de Workload
+   Identity) y la convergencia de los inquilinos.
+3. **El *flag*** (`--builds-elasticos` en `40-ore-serve.yaml`, para victor) y c5.
 
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde

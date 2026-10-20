@@ -76,6 +76,9 @@ PLANTILLAS = [
     "20-driver.yaml",
     # ⭐ La red del puesto (0031 W3.1): la salida de una sesión, con nombre.
     "21-el-puesto.yaml",
+    # ⭐ El Build elástico (0068 C3·c): la cuenta del driver, lo que puede
+    #   crear, su red y su cola.
+    "22-el-build-elastico.yaml",
     "40-ore-serve.yaml",
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
