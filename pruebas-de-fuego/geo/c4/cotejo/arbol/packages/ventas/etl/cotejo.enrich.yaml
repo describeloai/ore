@@ -1,0 +1,27 @@
+# ORE 0068 C4·2 · el cotejo con PostGIS (pruebas-de-fuego/geo/c4/cotejo/cotejar.sh)
+output: ventas.cotejo
+target: { dataset: ventas.clientes }
+layers:
+  - dataset: ventas.municipios
+    relation: within
+    take:
+      - { as: municipio, column: nombre }
+  - dataset: ventas.competidores
+    relation: intersects
+    around: 500
+    take:
+      - { as: competidores_500m, count: true }
+      - { as: ventas_500m, column: ventas, method: sum }
+  - dataset: ventas.competidores
+    relation: { nearest: 1, maxDistance: 5000 }
+    take:
+      - { as: competidor_cercano, column: nombre }
+      - { as: dist_competidor, distance: true }
+  - dataset: ventas.secciones
+    relation: intersects
+    around: 500
+    take:
+      - { as: poblacion_500m, column: poblacion, method: extensive }
+      - { as: renta_500m, column: renta_media, method: intensive }
+      - { as: uso_500m, column: uso, method: majority }
+      - { as: seccion, column: id }

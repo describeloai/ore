@@ -1,0 +1,8 @@
+apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: ventas }
+spec:
+  owner: team:security
+  conduits:
+    materialization.payload:
+      acme.sensitivity: internal

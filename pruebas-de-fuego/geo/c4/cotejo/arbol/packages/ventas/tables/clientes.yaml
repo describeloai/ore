@@ -1,0 +1,11 @@
+apiVersion: oos.dev/v1alpha32
+kind: Table
+metadata: { name: clientes, namespace: ventas }
+spec:
+  datasource: erp
+  object: 'public.clientes'
+  columns:
+    cliente_id: { physicalType: 'text', type: 'String' }
+    ubicacion: { physicalType: 'geometry(Point,25830)', type: 'Geometry<Point, EPSG:25830>' }
+  reads: { predicatePushdown: [eq], fullScan: cheap }
+  changes: { mode: retract, witness: log }

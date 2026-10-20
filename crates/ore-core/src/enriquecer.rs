@@ -996,6 +996,240 @@ pub fn esquema_de_salida(
     Some(out)
 }
 
+// ── El cómputo: el SQL de DuckDB (C4·2) ─────────────────────────────────────
+//
+// Medido en victor con los límites de un puesto Lightweight (2 CPU, 4 GiB,
+// DuckDB 1.5.6, previo de C4·2): toda relación cae en `SPATIAL_JOIN` (el
+// R-tree de DuckDB), también `ST_DWithin`; el más cercano como *join* a
+// `maxDistance` con su rango es ~3,5× más rápido que un `lateral` con `limit`.
+// Por eso, por capa, un CTE de pares (`pN`) y uno de agregados (`cN`), y la
+// salida es el objetivo entero con un LEFT JOIN de cada uno (D-C4-2).
+
+/// Un identificador entre comillas dobles, como lo lee DuckDB.
+fn id(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// Un número de metros, como literal SQL.
+fn num(x: f64) -> String {
+    if x.fract() == 0.0 && x.abs() < 1e15 {
+        format!("{}", x as i64)
+    } else {
+        format!("{x}")
+    }
+}
+
+/// La columna geo de una lectura y su tipo, si se sabe; sin diagnósticos (los
+/// dio la puerta). `Err` si no se puede saber cuál es.
+fn geometria(
+    pkg: &Package,
+    desde: &Loaded,
+    l: &Lectura,
+) -> Result<(String, Option<Type>), String> {
+    let k = conocido(pkg, &l.dataset, desde);
+    if let Some(k) = &k
+        && let Some((g, t)) = geo_de(l, k, Path::new(""), &mut Vec::new())
+    {
+        return Ok((g, Some(t)));
+    }
+    match &l.geometry {
+        Some((g, _)) => Ok((g.clone(), k.and_then(|k| k.tipos.get(g).cloned()))),
+        None => Err(format!(
+            "`{}`: its geometry column is not known before it is built; say it with `geometry:`",
+            l.dataset
+        )),
+    }
+}
+
+/// **El SQL de DuckDB de un enriquecimiento**: una sentencia
+/// `create or replace dataset … as …` del guion de ORE, que se construye
+/// como la de un `.sql` (`runtime: sql`). Lee los nombres tal como el fichero
+/// los escribe.
+pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<String, String> {
+    let (g_obj, t_obj) = geometria(pkg, desde, &e.objetivo)?;
+    let obj_poligonal = t_obj.as_ref().is_some_and(poligonal);
+    let mut ctes = vec![format!(
+        "t as (select *, row_number() over () __ore_k from {})",
+        e.objetivo.dataset
+    )];
+    let mut columnas: Vec<String> = Vec::new();
+    let mut joins: Vec<String> = Vec::new();
+    for (i, c) in e.capas.iter().enumerate() {
+        let n = i + 1;
+        let (g_capa, t_capa) = geometria(pkg, desde, &c.lectura)?;
+        let capa_poligonal = t_capa.as_ref().is_none_or(poligonal);
+        let por_area = c.take.iter().any(|x| match &x.que {
+            Que::Columna { metodo, .. } => {
+                metodo.por_area() || matches!(metodo, Metodo::Value | Metodo::Majority)
+            }
+            _ => false,
+        });
+        let gt = format!("t.{}", id(&g_obj));
+        let gl = format!("l.{}", id(&g_capa));
+        // El área del objetivo: la suya, o la de `around`.
+        let (desde_t, area_t, pred) = match (&c.relacion, c.around) {
+            (Relacion::Nearest { max, .. }, _) => (
+                "t".to_string(),
+                None,
+                format!("ST_DWithin({gt}, {gl}, {})", num(*max)),
+            ),
+            (r, Some(a)) if por_area || !matches!(r, Relacion::Intersects) => {
+                let b = "t.__ore_b".to_string();
+                let p = match r {
+                    Relacion::Within => format!("ST_Within({b}, {gl})"),
+                    Relacion::Contains => format!("ST_Contains({b}, {gl})"),
+                    _ => format!("ST_Intersects({b}, {gl})"),
+                };
+                (
+                    format!(
+                        "(select __ore_k, ST_Buffer({}, {}) __ore_b from t) t",
+                        id(&g_obj),
+                        num(a)
+                    ),
+                    Some(b),
+                    p,
+                )
+            }
+            (_, Some(a)) => (
+                "t".to_string(),
+                None,
+                format!("ST_DWithin({gt}, {gl}, {})", num(a)),
+            ),
+            (r, None) => {
+                let p = match r {
+                    Relacion::Within => format!("ST_Within({gt}, {gl})"),
+                    Relacion::Contains => format!("ST_Contains({gt}, {gl})"),
+                    _ => format!("ST_Intersects({gt}, {gl})"),
+                };
+                ("t".to_string(), obj_poligonal.then(|| gt.clone()), p)
+            }
+        };
+        // Lo que cada par lleva: las columnas que se toman, el solape y la
+        // distancia con su rango.
+        let mut lleva: Vec<String> = vec!["t.__ore_k".into()];
+        // En el orden en que se toman: el alias `__ore_c_<i>` es su posición
+        // (el cotejo con PostGIS lo destapó con un conjunto ordenado).
+        let mut vistas: Vec<&str> = Vec::new();
+        for x in &c.take {
+            if let Que::Columna { columna, .. } = &x.que
+                && !vistas.contains(&columna.as_str())
+            {
+                vistas.push(columna);
+                lleva.push(format!("l.{} __ore_c_{}", id(columna), vistas.len()));
+            }
+        }
+        let alias = |col: &str| {
+            let i = vistas.iter().position(|v| *v == col).unwrap_or(0) + 1;
+            format!("__ore_c_{i}")
+        };
+        let solape = match (&area_t, capa_poligonal) {
+            (Some(a), true) => Some(format!("ST_Area(ST_Intersection({a}, {gl}))")),
+            _ => None,
+        };
+        if let Some(s) = &solape {
+            lleva.push(format!("{s} __ore_a"));
+            lleva.push(format!("ST_Area({gl}) __ore_al"));
+        }
+        let cercano = match c.relacion {
+            Relacion::Nearest { k, .. } => Some(k),
+            _ => None,
+        };
+        // El más cercano: con k = 1, `arg_min` sobre los pares a `maxDistance`
+        // (lo medido); con k > 1, el rango de cada par y sólo los k primeros.
+        let uno = cercano == Some(1);
+        if cercano.is_some() {
+            lleva.push(format!("ST_Distance({gt}, {gl}) __ore_d"));
+        }
+        if cercano.is_some() && !uno {
+            lleva.push(format!(
+                "row_number() over (partition by t.__ore_k order by ST_Distance({gt}, {gl}), \
+                 ST_AsWKB({gl})) __ore_r"
+            ));
+        }
+        let mut pares = format!(
+            "p{n} as (select {} from {desde_t} join {} l on {pred}",
+            lleva.join(", "),
+            c.lectura.dataset
+        );
+        if let Some(k) = cercano.filter(|_| !uno) {
+            pares.push_str(&format!(" qualify __ore_r <= {k}"));
+        }
+        pares.push(')');
+        ctes.push(pares);
+
+        // Los agregados, por fila del objetivo.
+        let mut aggs: Vec<String> = vec!["__ore_k".into()];
+        let mut mayorias: Vec<(String, String)> = Vec::new();
+        for x in &c.take {
+            let como = id(&x.como);
+            let expr = match &x.que {
+                Que::Contar => {
+                    columnas.push(format!("coalesce(c{n}.{como}, 0) {como}"));
+                    aggs.push(if uno {
+                        format!("least(count(*), 1) {como}")
+                    } else {
+                        format!("count(*) {como}")
+                    });
+                    continue;
+                }
+                Que::Distancia => "min(__ore_d)".to_string(),
+                Que::Columna {
+                    columna, metodo, ..
+                } => {
+                    let v = alias(columna);
+                    match metodo {
+                        // Con k = 1, todo lo que se toma es del más cercano.
+                        Metodo::Avg if uno => format!("arg_min({v}, __ore_d)::double"),
+                        _ if uno => format!("arg_min({v}, __ore_d)"),
+                        Metodo::Value if cercano.is_some() => format!("arg_min({v}, __ore_r)"),
+                        Metodo::Value if solape.is_some() => {
+                            format!("first({v} order by __ore_a desc, {v})")
+                        }
+                        Metodo::Value => format!("min({v})"),
+                        Metodo::Sum => format!("sum({v})"),
+                        Metodo::Avg => format!("avg({v})"),
+                        Metodo::Min => format!("min({v})"),
+                        Metodo::Max => format!("max({v})"),
+                        Metodo::Extensive => format!("sum({v} * __ore_a / nullif(__ore_al, 0))"),
+                        Metodo::Intensive => {
+                            format!("sum({v} * __ore_a) / nullif(sum(__ore_a), 0)")
+                        }
+                        Metodo::Majority => {
+                            let peso = if solape.is_some() { "sum(__ore_a)" } else { "count(*)" };
+                            let m = format!("m{n}_{}", mayorias.len() + 1);
+                            ctes.push(format!(
+                                "{m} as (select __ore_k, first(__ore_v order by __ore_w desc, \
+                                 __ore_v) {como} from (select __ore_k, {v} __ore_v, {peso} __ore_w \
+                                 from p{n} group by 1, 2) group by 1)"
+                            ));
+                            mayorias.push((m.clone(), como.clone()));
+                            columnas.push(format!("{m}.{como}"));
+                            continue;
+                        }
+                    }
+                }
+            };
+            columnas.push(format!("c{n}.{como}"));
+            aggs.push(format!("{expr} {como}"));
+        }
+        ctes.push(format!(
+            "c{n} as (select {} from p{n} group by 1)",
+            aggs.join(", ")
+        ));
+        joins.push(format!("left join c{n} using (__ore_k)"));
+        for (m, _) in mayorias {
+            joins.push(format!("left join {m} using (__ore_k)"));
+        }
+    }
+    Ok(format!(
+        "create or replace dataset {} as\nwith {}\nselect t.* exclude (__ore_k), {}\nfrom t {}",
+        e.output,
+        ctes.join(",\n"),
+        columnas.join(", "),
+        joins.join(" ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1057,6 +1291,58 @@ layers:
                 ("dist_competidor", "Float"),
             ]
         );
+    }
+
+    /// C4·2 · el SQL de DuckDB del caso de conformidad: el guion de ORE lo lee
+    /// como una sentencia que escribe la salida y lee el objetivo y las capas.
+    #[test]
+    fn el_sql_de_duckdb_es_una_sentencia_del_guion() {
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos/conformance/v1alpha33/valid/an-enrich-transform/input");
+        let (pkg, _) = crate::validate::cargar_paquete(&raiz);
+        let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
+        let f = std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
+        let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
+        let sql = sql_duckdb(&pkg, t, &e).expect("se genera");
+        println!("{sql}");
+        let trozos = crate::sql_del_arbol::guion::guion(&sql).unwrap_or_else(|f| panic!("{f:?}\n{sql}"));
+        let crate::sql_del_arbol::guion::Sentencia::Unidad(u) = &trozos[0].sentencia else {
+            panic!("no es una unidad: {sql}");
+        };
+        let escribe = u.escribe.as_ref().expect("escribe");
+        assert_eq!(escribe.destino.referencia(), "ventas.clientes_enriquecidos");
+        let lee: BTreeSet<String> = u.lee.iter().map(|n| n.referencia()).collect();
+        assert_eq!(
+            lee,
+            ["ventas.clientes", "ventas.competidores", "ventas.municipios"]
+                .map(String::from)
+                .into()
+        );
+        // Lo medido: el más cercano con k = 1 es `arg_min`, sin ventana.
+        assert!(sql.contains("arg_min(__ore_c_1, __ore_d)") && !sql.contains("qualify"), "{sql}");
+        assert!(sql.contains("ST_DWithin(t.\"ubicacion\", l.\"geom\", 500)"), "{sql}");
+    }
+
+    /// El SQL de DuckDB de `ENRICH_ARBOL` + `ENRICH_FICHERO` (documento 1), en
+    /// `ENRICH_SALIDA`: lo usa el cotejo con PostGIS
+    /// (`pruebas-de-fuego/geo/c4/cotejo`). El árbol, sin diagnósticos.
+    #[test]
+    #[ignore = "lo corre pruebas-de-fuego/geo/c4/cotejo/cotejar.sh"]
+    fn escribe_el_sql_de_un_arbol() {
+        let raiz = std::path::PathBuf::from(std::env::var("ENRICH_ARBOL").unwrap());
+        let (pkg, mut diags) = crate::validate::cargar_paquete(&raiz);
+        crate::transformar::comprobar(&pkg, &mut diags);
+        let errores: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_str().starts_with("OOS2") || d.code.as_str().starts_with("OOS3"))
+            .collect();
+        assert!(errores.is_empty(), "{errores:#?}");
+        let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
+        let f = std::fs::read_to_string(raiz.join(std::env::var("ENRICH_FICHERO").unwrap())).unwrap();
+        let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
+        let sql = sql_duckdb(&pkg, t, &e).expect("se genera");
+        crate::sql_del_arbol::guion::guion(&sql).unwrap_or_else(|f| panic!("{f:?}\n{sql}"));
+        std::fs::write(std::env::var("ENRICH_SALIDA").unwrap(), &sql).unwrap();
     }
 
     #[test]

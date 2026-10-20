@@ -1,0 +1,14 @@
+apiVersion: oos.dev/v1alpha32
+kind: Table
+metadata: { name: secciones, namespace: ventas }
+spec:
+  datasource: erp
+  object: 'public.secciones'
+  columns:
+    id: { physicalType: 'text', type: 'String' }
+    poblacion: { physicalType: 'integer', type: 'Integer' }
+    renta_media: { physicalType: 'double precision', type: 'Float' }
+    uso: { physicalType: 'text', type: 'String' }
+    geom: { physicalType: 'geometry(MultiPolygon,25830)', type: 'Geometry<MultiPolygon, EPSG:25830>' }
+  reads: { predicatePushdown: [eq], fullScan: cheap }
+  changes: { mode: retract, witness: log }

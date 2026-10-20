@@ -1,0 +1,13 @@
+apiVersion: oos.dev/v1alpha32
+kind: Table
+metadata: { name: municipios, namespace: ventas }
+spec:
+  datasource: erp
+  object: 'public.municipios'
+  columns:
+    ine: { physicalType: 'text', type: 'String' }
+    nombre: { physicalType: 'text', type: 'String' }
+    poblacion: { physicalType: 'integer', type: 'Integer' }
+    geom: { physicalType: 'geometry(MultiPolygon,25830)', type: 'Geometry<MultiPolygon, EPSG:25830>' }
+  reads: { predicatePushdown: [eq], fullScan: cheap }
+  changes: { mode: retract, witness: log }

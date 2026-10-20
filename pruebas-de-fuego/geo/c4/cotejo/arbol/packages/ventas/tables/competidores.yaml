@@ -1,0 +1,13 @@
+apiVersion: oos.dev/v1alpha32
+kind: Table
+metadata: { name: competidores, namespace: ventas }
+spec:
+  datasource: erp
+  object: 'public.competidores'
+  columns:
+    id: { physicalType: 'text', type: 'String' }
+    nombre: { physicalType: 'text', type: 'String' }
+    ventas: { physicalType: 'integer', type: 'Integer' }
+    geom: { physicalType: 'geometry(Point,25830)', type: 'Geometry<Point, EPSG:25830>' }
+  reads: { predicatePushdown: [eq], fullScan: cheap }
+  changes: { mode: retract, witness: log }

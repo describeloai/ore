@@ -1,0 +1,5 @@
+apiVersion: oos.dev/v1alpha1
+kind: Lattice
+metadata: { name: sensitivity, namespace: acme }
+spec:
+  levels: [public, internal, confidential]

@@ -1,0 +1,11 @@
+# derivado por ore desde etl/cotejo.enrich.yaml:1 · se edita el código, no este fichero
+apiVersion: oos.dev/v1alpha33
+kind: Transform
+metadata:
+  name: ventas__cotejo
+  namespace: ventas
+spec:
+  runtime: enrich
+  entrypoint: etl/cotejo.enrich.yaml:1
+  inputs: [ventas.clientes, ventas.municipios, ventas.competidores, ventas.secciones]
+  output: ventas.cotejo

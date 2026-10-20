@@ -1857,10 +1857,34 @@ motor. Eso se mide como primer punto de C4·2 y C4·3, contra PostGIS, que es su
 | paso | qué | dónde | hecho cuando |
 |---|---|---|---|
 | C4·1 ✅ local | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
-| C4·2 | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
+| C4·2 ✅ local | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
 | C4·3 | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
 | C4·4 | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
 | C4·5 | la consola: formulario sobre el `.enrich.yaml` y «Enrich» en la ficha del dataset (crea el fichero en una rama, como propuesta) | rubix-platform | enriquecer desde la ficha |
+
+**C4·2, lo medido** (2026-10-20, victor, un Job con los límites de un puesto Lightweight: 2 CPU, 4 GiB,
+DuckDB 1.5.6; datos sintéticos con forma de España en EPSG:25830: 8 000 municipios de ~500 vértices, 36 000
+secciones, 100 000 competidores; `pruebas-de-fuego/geo/c4/previo`):
+
+| forma | 100 k clientes | 1 M clientes | plan |
+|---|---|---|---|
+| `within` (municipio) | 1,7 s | 13,5 s | `SPATIAL_JOIN` |
+| `count` a 500 m (`ST_DWithin`) | 0,2 s | 1,4 s | `SPATIAL_JOIN` |
+| `nearest` con `lateral … limit 1` | 2,9 s | 24,0 s | `SPATIAL_JOIN` + `HASH_JOIN` |
+| **`nearest` como *join* a `maxDistance` + `arg_min`** | 0,8 s | **10,5 s** | `SPATIAL_JOIN` |
+| `extensive` + `intensive` (buffer ∩ secciones) | 2,4 s | 23,9 s | `SPATIAL_JOIN` |
+| **las cuatro capas, la consulta entera** | 2,6 s | **26,5 s** | |
+
+Decidido con ello: toda relación es un *join* que DuckDB indexa (R-tree), `ST_DWithin` incluido; el más
+cercano con k = 1 es `arg_min` sobre los pares a `maxDistance` (2,3× el `lateral`), y con k > 1 el rango de
+cada par (`qualify`), sin medir todavía. Un millón de filas enriquecidas con cuatro capas cabe en un puesto
+ligero en medio minuto.
+
+**C4·2, el cotejo con PostGIS** (`pruebas-de-fuego/geo/c4/cotejo`, laboratorio de Docker): el SQL que genera
+ORE, en el DuckDB de la imagen del puesto, contra una respuesta de PostGIS 16 escrita a mano, 20 000
+clientes: las diez columnas iguales fila a fila (tolerancia 1e-6) — `value` por solape, `count`, `sum`, el
+más cercano y su distancia, `extensive`, `intensive` y `majority`. Destapó un fallo (el alias de cada columna
+tomada salía de un conjunto ordenado, no del orden del fichero), arreglado antes de cerrar.
 
 **Fuera de C4, escrito:**
 - la estadística zonal de ráster (0066 E4);
@@ -1962,6 +1986,12 @@ El ADR pasa de hoja de ruta a imagen.
   32/32 (v1alpha33 9/9), `ore-core` entero y clippy en verde. Construirlo aún responde 422: es C4·2.
   Pendiente de C4·1: el esquema JSON del editor (va con C4·5) y los tipos de una View (hoy se comprueba
   sólo por nombre). Siguiente: C4·2, el generador de DuckDB.
+- **2026-10-20 · C4·2 hecho en local.** El previo en victor (la consulta entera de cuatro capas, 1 M de
+  clientes, 26,5 s en un puesto ligero; `nearest` como *join* + `arg_min`, 2,3× el `lateral`), el
+  generador (`enriquecer::sql_duckdb`: un CTE de pares y uno de agregados por capa, LEFT JOIN de vuelta) y
+  el brazo `enrich` del Build, que construye la sentencia generada por el camino de un `.sql`. Cotejado
+  con PostGIS: diez columnas iguales en 20 000 filas. Heavyweight responde 422 hasta C4·3; el Preview de
+  un `enrich`, con el de las sentencias SQL (0055 P4). Siguiente: C4·3, el generador de Spark.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),

@@ -99,11 +99,16 @@ pub(crate) fn pedido(cuerpo: &str) -> Result<(Que, Option<String>), Respuesta> {
             if f.starts_with('/')
                 || f.contains('\\')
                 || f.split('/').any(|s| s == ".." || s.is_empty())
-                || !(f.ends_with(".py") || f.ends_with(".sql") || f.ends_with(".java"))
+                || !(f.ends_with(".py")
+                    || f.ends_with(".sql")
+                    || f.ends_with(".java")
+                    || f.ends_with(ore_core::enriquecer::EXTENSION))
             {
                 return Err(Respuesta::error(
                     422,
-                    format!("`{f}` is not a `.py`, `.sql` or `.java` path of the tree"),
+                    format!(
+                        "`{f}` is not a `.py`, `.sql`, `.java` or `.enrich.yaml` path of the tree"
+                    ),
                 ));
             }
             Que::Fichero(f)
@@ -411,6 +416,63 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                 // el `Transform` —lee el origen en vivo y `write()`—, también
                 // si lee de un origen. La copia mantenida (0053 F7·3) es lo de
                 // una sesión: aquí el build ya es el trabajo que copia.
+                let (celda, _) = match &t.sentencia {
+                    ore_core::sql_del_arbol::guion::Sentencia::Unidad(u) => {
+                        crate::puestos::celda_de_unidad(
+                            &codigo,
+                            u,
+                            ore_core::sql_del_arbol::anchored_to(&pkg, u).as_deref(),
+                        )
+                    }
+                    _ => crate::puestos::celda_de_sentencia(&codigo, t, &pkg),
+                };
+                format!("{}{celda}", preludio_sql(&build))
+            }
+            // ORE 0068 C4·2 · un enriquecimiento: ORE escribe la sentencia
+            // (`enriquecer::sql_duckdb`) y se construye como la de un `.sql`.
+            "enrich" => {
+                if repositorio_del_fichero(raiz, &codigo).2 == Motor::Heavyweight {
+                    return Err(con_motivo(
+                        Respuesta::error(
+                            422,
+                            format!(
+                                "`{codigo}` is in a Heavyweight repository: enrichments build on \
+                                 Spark with ADR 0068 C4·3; on DuckDB (Lightweight) they build now"
+                            ),
+                        ),
+                        "not_buildable",
+                    ));
+                }
+                let n: usize = c.clave.parse().unwrap_or(0);
+                let Ok(docs) = ore_core::enriquecer::leer(&fuente) else {
+                    return Err(diagnostico_suelto(
+                        "OOS2043",
+                        format!("`{codigo}` is not YAML"),
+                        &codigo,
+                    ));
+                };
+                let Some(Ok(e)) = docs.get(&n) else {
+                    return Err(diagnostico_suelto(
+                        "OOS2043",
+                        format!("enrichment {n} of `{codigo}` is not derived"),
+                        &codigo,
+                    ));
+                };
+                let sql = ore_core::enriquecer::sql_duckdb(&pkg, c.t, e).map_err(|m| {
+                    con_motivo(Respuesta::error(422, format!("`{codigo}`: {m}")), "not_buildable")
+                })?;
+                let trozos = ore_core::sql_del_arbol::guion::guion(&sql).map_err(|f| {
+                    Respuesta::error(
+                        500,
+                        format!(
+                            "the SQL ore wrote for `{codigo}` does not parse ({}): this is a bug of ore",
+                            f.first().map(|x| x.mensaje.as_str()).unwrap_or_default()
+                        ),
+                    )
+                })?;
+                let Some(t) = trozos.first() else {
+                    return Err(Respuesta::error(500, "ore wrote no SQL for the enrichment"));
+                };
                 let (celda, _) = match &t.sentencia {
                     ore_core::sql_del_arbol::guion::Sentencia::Unidad(u) => {
                         crate::puestos::celda_de_unidad(
@@ -1901,6 +1963,63 @@ mod tests {
             assert_eq!(mal(pedido(malo)).codigo, 422, "{malo}");
         }
         assert_eq!(mal(pedido("")).codigo, 400);
+    }
+
+    /// ORE 0068 C4·2 · un enriquecimiento: su documento lo deriva el commit, y
+    /// su build es la sentencia que ORE escribe, por el camino de un `.sql`.
+    #[test]
+    fn un_enriquecimiento_se_construye_con_el_sql_que_escribe_ore() {
+        fn copiar(de: &Path, a: &Path) {
+            std::fs::create_dir_all(a).unwrap();
+            for e in std::fs::read_dir(de).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    copiar(&p, &a.join(e.file_name()));
+                } else {
+                    std::fs::copy(&p, a.join(e.file_name())).unwrap();
+                }
+            }
+        }
+        let d = std::env::temp_dir().join(format!("builds-enrich-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        copiar(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../pruebas-de-fuego/geo/c4/cotejo/arbol"),
+            &d,
+        );
+        let doc = d.join("packages/ventas/etl/pipeline/ventas.cotejo.yaml");
+        let a_mano = std::fs::read_to_string(&doc).unwrap();
+        std::fs::remove_file(&doc).unwrap();
+        let (pkg, _) = ore_core::validate::cargar_paquete(&d);
+        let plan = ore_core::generar::plan_de_transforms(&pkg, None, Some("user:ana"));
+        assert!(plan.diagnosticos.is_empty(), "{:?}", plan.diagnosticos);
+        ore_core::generar::aplicar(&plan).unwrap();
+        // El que deriva el commit es el del árbol del cotejo, más su dueño.
+        let derivado = std::fs::read_to_string(&doc).unwrap();
+        assert_eq!(derivado, format!("{a_mano}  owner: user:ana\n"));
+
+        let h = bien(hallar(&d, &Que::Output("ventas.cotejo".into())));
+        assert_eq!(h[0].entrypoint, "etl/cotejo.enrich.yaml:1");
+        assert_eq!(
+            h[0].inputs,
+            [
+                "ventas.clientes",
+                "ventas.municipios",
+                "ventas.competidores",
+                "ventas.secciones"
+            ]
+        );
+        let celda = &h[0].celda;
+        assert!(celda.contains("ORE_BUILD"), "{celda}");
+        assert!(celda.contains("@transform("), "{celda}");
+        assert!(celda.contains("ST_DWithin"), "{celda}");
+        // Por fichero, también.
+        let h = bien(hallar(
+            &d,
+            &Que::Fichero("packages/ventas/etl/cotejo.enrich.yaml".into()),
+        ));
+        assert_eq!(h[0].output, "ventas.cotejo");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
