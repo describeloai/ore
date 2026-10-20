@@ -337,7 +337,7 @@ topes al disco. Resultados en `resultados/20261018-pool.jsonl`.
 | P3 dónde corren las Views | **Se describen siempre en DuckDB** (es el compilador de tipos de E1·1) y **se ejecutan en el motor del repositorio**. Como el SQL es casi el mismo, una View sirve en los dos |
 | P4 el *join* a escala | **Índice difundido** (R-tree) cuando un lado cabe en memoria, que es el caso de enriquecer. Partición espacial (`RangeJoin`) sólo cuando los dos son grandes. **Heavyweight difunde el lado pequeño por sí mismo**: regla de ORE, no pista del cliente (C3). H3 como estrategia de *join* no hace falta todavía |
 | P5 objetivos | En C0·5, aprobados |
-| P6 la forma de enriquecer | El punto-en-polígono difundido (B2) **es** enriquecer, y es un *join*. Recomendación: **un operador** (Transform o Pipelines) que genera ese *join* con la difusión puesta, **no un kind nuevo**. Se decide en C4·1 |
+| P6 la forma de enriquecer | El punto-en-polígono difundido (B2) **es** enriquecer, y es un *join*. Recomendación: **un operador** (Transform o Pipelines) que genera ese *join* con la difusión puesta, **no un kind nuevo**. **Decidida en C4·1 (2026-10-20): `runtime: enrich` del `Transform`** |
 
 #### C0·5 · Los objetivos (aprobados 2026-10-18)
 
@@ -1678,15 +1678,195 @@ Lightweight.
 - **El nodo `pesado` con SSD tardó ~100 s en encenderse**, frente a 37 s en CE·0 sin SSD. Por medir si
   es la SSD (su formateo) o fue esa vez.
 
-### C4 · Enriquecer
+### C4 · Enrich, el producto
 
-| paso | qué |
+> **Borrador de iteración (2026-10-20).** El diseño está acordado; el pipeline de pasos se limpia al
+> cerrar C4, como el resto del ADR.
+
+**Qué es.** Enrich añade a cada fila de un dataset lo que dicen otras capas según dónde está, **sin
+cambiar cuántas filas tiene**. Eso lo separa de un *join*: un *join* puede multiplicar filas (1:N); un
+enriquecimiento devuelve siempre una fila por fila de entrada. Si hay varias coincidencias, las agrega;
+si no hay ninguna, deja la fila con nulos.
+
+**Lo que dicen otras plataformas** (investigado el 2026-10-20):
+- **CARTO:** `ENRICH_POINTS`, `ENRICH_POLYGONS`, `ENRICH_GRID` y `ENRICH_POLYGONS_WEIGHTED` en el
+  Analytics Toolbox, y los mismos como componentes de Workflows. Van con el Data Observatory, y cada
+  variable lleva su `agg_method`.
+- **Esri:** Enrich Layer y GeoEnrichment, con área de estudio (anillo, tiempo en coche) y reparto por
+  puntos de población. Al lado, Summarize Within, Summarize Nearby y Join Features.
+- **Foundry:** no lo nombra. Ofrece *joins* geo en Pipeline Builder (intersección, distancia, kNN), y
+  `geospatial-tools` es legado.
+- **BigQuery:** `ST_REGIONSTATS`, estadística zonal de ráster.
+- **Databricks y Snowflake:** sin verbo; CARTO lo pone encima.
+- **Sedona:** `RS_ZonalStats`.
+
+La teoría es la interpolación por área (`tobler`), con variables extensivas, intensivas y categóricas.
+**Nadie** guarda de qué capa y de qué versión sale cada columna, ni hereda las etiquetas de la capa,
+ni marca el resultado viejo cuando la capa cambia, ni enriquece a una fecha. Eso es lo que ORE ya sabe
+hacer, y es lo que distingue el producto.
+
+**Los cuatro ejes del verbo:**
+1. **Qué se enriquece:** puntos, líneas, polígonos o celdas. El área de estudio (`around`) hace que el
+   valor signifique *alrededor de*, no *en*.
+2. **La relación:** dentro, intersecta o el más cercano.
+3. **Lo que se toma:** columnas, conteos, distancia.
+4. **Cómo se reparte cada variable:** extensiva, intensiva, categórica o identificador. Si se reparte
+   mal, sale un número equivocado sin dar error.
+
+#### C4·1 · La forma (decidida): `runtime: enrich`, un Transform más
+
+Responde a P6. **No es un kind nuevo**, es un runtime del `Transform` (0055), con un precedente:
+`runtime: model` de la Function. Hereda todo lo que ya existe:
+- Build y Preview;
+- una salida (D2);
+- el linaje;
+- las etiquetas, que bajan por el Transform desde **todas** sus entradas;
+- la programación;
+- el modo elástico (CE).
+
+Se descartaron:
+- **A · un kind `Enrichment`:** duplica Build, Preview, programación y salida.
+- **C · solo `ore.enrich()` en el SDK:** es código opaco; la consola y el linaje por columna no
+  sabrían qué se tomó. Queda como el mismo motor expuesto en el SDK.
+
+**El fuente es código, como un `.sql`.** El `Transform` se sigue derivando del código (0055 D10):
+
+| | `sql` | `enrich` |
+|---|---|---|
+| lo que escribe el usuario | `ventas/resumen.sql` | `ventas/clientes.enrich.yaml` |
+| `entrypoint` | `ventas/resumen.sql:1` | `ventas/clientes.enrich.yaml:1` (el documento n, separados por `---`) |
+| el documento derivado | `runtime: sql`, `inputs`, `output` | `runtime: enrich`, `inputs` = objetivo + capas, `output` |
+
+```yaml
+output: ventas.clientes_enriquecidos
+target: {dataset: ventas.clientes, geometry: ubicacion}
+layers:
+  - dataset: ref.ign.municipios
+    relation: within
+    take:
+      - {as: municipio, column: nombre}                    # value
+  - dataset: ref.ine.secciones
+    relation: intersects
+    around: 500                                            # metros: área de estudio
+    take:
+      - {as: poblacion_500m, column: poblacion, method: extensive}
+      - {as: renta_500m, column: renta_media, method: intensive}
+  - dataset: ventas.competidores
+    relation: intersects
+    around: 500
+    take:
+      - {as: competidores_500m, count: true}
+  - dataset: ventas.competidores
+    relation: {nearest: 1, max_distance: 5000}
+    take:
+      - {as: competidor_cercano, column: nombre}
+      - {as: dist_competidor, distance: true}
+```
+
+**El vocabulario es corto a propósito:**
+- **`relation`:** `within`, `intersects`, `contains` o `{nearest: k, max_distance: m}`. «A menos de
+  500 m» es `intersects` con `around: 500`.
+- **`around`:** si lo que se toma no necesita área, ORE genera `ST_DWithin` (exacto, sin buffer); si se
+  pondera por área, construye el buffer.
+
+| `method` | qué hace | cuándo vale |
+|---|---|---|
+| `value` (por defecto con `column`) | copia; con varias coincidencias, la de **más solape** (área o longitud) y, si empatan, la de clave menor: determinista | identificadores, nombres |
+| `count` | cuántas coinciden; 0 si ninguna | siempre |
+| `sum` · `avg` · `min` · `max` | sobre las que coinciden, sin ponderar | números |
+| `extensive` | Σ valor × área(∩) / área(rasgo): conserva totales | población, empleos; capa de polígonos y objetivo con área |
+| `intensive` | Σ valor × área(∩) / Σ área(∩) | tasas, medias, densidades; lo mismo |
+| `majority` | la categoría con más área (o más rasgos, si son puntos) | uso del suelo |
+| `distance` | metros al más cercano | sólo con `nearest` |
+
+**Lo que comprueba el compilador** (diagnósticos OOS, antes de construir):
+1. El objetivo y las capas resuelven y tienen columna geo (`ore.geo.<col>`); si hay varias, `geometry:`.
+2. **Un solo CRS** (D5). El mensaje propone una View reproyectada.
+3. **Metros sólo con un CRS métrico.** `around`, `max_distance`, `extensive` e `intensive` exigen un
+   CRS proyectado en metros (p. ej. EPSG:25830). En v1, 4326 da error y propone reproyectar: ni grados
+   disfrazados de metros, ni esferoide. `within` e `intersects` sin ponderar valen con cualquier CRS.
+4. El método casa con la geometría: `extensive` sobre puntos da error y propone `sum`.
+5. Tipos numéricos donde hace falta; los `as` no se repiten ni pisan columnas del objetivo.
+6. **El esquema de salida se conoce antes de correr:** el del objetivo más una columna por `take`, cada
+   una con su tipo (`count` → `bigint`; `distance` y los ponderados → `double`; `value` → el de la capa).
+
+**Decisiones:**
+
+| | decisión |
 |---|---|
-| C4·1 | la forma (lo decide C0): kind, tipo de Transform u operador de Pipelines |
-| C4·2 | las relaciones (contiene, intersecta, a distancia, el más cercano) y lo que se toma (columnas, agregados, ponderado por área) |
-| C4·3 | el cómputo generado por motor, con la comprobación de CRS |
-| C4·4 | el gobierno: los permisos de la capa se heredan, linaje a las dos fuentes, frescura |
-| C4·5 | la consola: enriquecer desde la ficha del activo |
+| D-C4-1 | la forma: `runtime: enrich` del `Transform`; una salida (D2), varias capas por Transform |
+| D-C4-2 | **el grano:** siempre una fila por fila del objetivo, todas conservadas (LEFT). El 1:N es un Transform `sql` |
+| D-C4-3 | las columnas de salida: las del objetivo + una por `take`, con `as` obligatorio (nada de `var_sum` generados) |
+| D-C4-4 | el reparto se declara por `take`. Su valor por defecto saldrá de un metadato de la columna en la capa (`extensive`, `intensive`, `categorical`, `identifier`, como el `agg_method` de CARTO), cuando exista |
+| D-C4-5 | **siempre se puede salir:** «ver el SQL» y «convertir a `sql»` (escribe el `.sql` y quita el `.enrich.yaml`) |
+| D-C4-6 | la versión de la capa: v1 lee el snapshot vigente y la procedencia lo anota; enriquecer a una fecha queda como deuda |
+| D-C4-7 | `value` con varias coincidencias: más solape, y si empatan, la clave menor (no error) |
+| D-C4-8 | metros sólo con un CRS métrico en v1 |
+
+#### El cómputo que se genera
+
+Un CTE por capa, agregado por fila del objetivo, y LEFT JOIN de vuelta (D-C4-2):
+
+```sql
+with t as (select *, <id de fila> __ore_k from ventas.clientes),
+c1 as (select t.__ore_k, arg_max(l.nombre, <solape>) municipio
+       from t join ref.ign.municipios l on ST_Within(t.ubicacion, l.geom) group by 1),
+c2 as (select t.__ore_k,
+              sum(l.poblacion * ST_Area(ST_Intersection(b, l.geom)) / ST_Area(l.geom)) poblacion_500m,
+              sum(l.renta_media * ST_Area(ST_Intersection(b, l.geom)))
+                / sum(ST_Area(ST_Intersection(b, l.geom))) renta_500m
+       from (select __ore_k, ST_Buffer(ubicacion, 500) b from t) t
+       join ref.ine.secciones l on ST_Intersects(t.b, l.geom) group by 1),
+c3 as (select t.__ore_k, count(*) competidores_500m
+       from t join ventas.competidores l on ST_DWithin(t.ubicacion, l.geom, 500) group by 1)
+select <columnas de t>, c1.municipio, c2.poblacion_500m, c2.renta_500m,
+       coalesce(c3.competidores_500m, 0) competidores_500m
+from t left join c1 using (__ore_k) left join c2 using (__ore_k) left join c3 using (__ore_k)
+```
+
+Las diferencias entre motores las resuelve el generador, no el usuario:
+
+| | DuckDB (Lightweight) | Spark + Sedona (Heavyweight) |
+|---|---|---|
+| id de fila | `row_number() over ()` | `monotonically_increasing_id()`, el de C3·b: `row_number` sin partición lo metería todo en una tarea |
+| quitar `__ore_k` | `exclude` | la lista de columnas (el esquema se conoce) |
+| `value` | `arg_max` | `max_by` |
+| `nearest` | `lateral` con `ST_DWithin(max_distance)` y `order by ST_Distance limit k` ⚠ sin R-tree | el *join* KNN de Sedona (`ST_KNN`) |
+| difundir la capa pequeña | — | la pone el Build: registra cada lectura con `over()` (`consulta_para_spark`), que difunde por tamaño (C3·a). El hueco del SQL crudo no le afecta |
+
+En el Build (`builds.rs`), el texto generado entra en el mismo `celda_de_sentencia` que una sentencia
+`sql`, y Preview por el mismo camino (`ensayo.rs`).
+
+#### El gobierno
+
+| | cómo |
+|---|---|
+| permisos de la capa | ya está: las etiquetas bajan por el Transform desde todas las entradas (`transformar.rs`, `flow.rs`) |
+| linaje a las fuentes | ya está: `inputs` = objetivo + capas |
+| **linaje por columna** | nuevo, y casi gratis por ser declarativo: `poblacion_500m ← ine.secciones.poblacion · extensive · intersects 500 m`, en la ficha del activo |
+| qué versión de la capa | la procedencia del Build anota cada lectura con su snapshot (0063 S6b) |
+| **viejo cuando la capa cambia** | falta: el motivo «construido con una versión vieja de su entrada», pendiente en 0063. Se hace en C4·4 para **todo** Transform |
+| a una fecha | deuda (D-C4-6) |
+
+#### Pasos (borrador de iteración: rápido, en local, un empuje al final)
+
+**Sin previo aparte.** Lo desconocido de C4 no cambia la forma (C4·1), sólo cómo genera el SQL cada
+motor. Eso se mide como primer punto de C4·2 y C4·3, contra PostGIS, que es su «hecho cuando». Si
+`nearest` en DuckDB no da la talla, se cambia el generador sin tocar la forma.
+
+| paso | qué | dónde | hecho cuando |
+|---|---|---|---|
+| C4·1 | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
+| C4·2 | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
+| C4·3 | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
+| C4·4 | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
+| C4·5 | la consola: formulario sobre el `.enrich.yaml` y «Enrich» en la ficha del dataset (crea el fichero en una rama, como propuesta) | rubix-platform | enriquecer desde la ficha |
+
+**Fuera de C4, escrito:**
+- la estadística zonal de ráster (0066 E4);
+- el reparto dasimétrico y el suavizado por anillos H3;
+- los isócronos, que necesitan una red de calles;
+- el catálogo de capas de referencia (0066 E5): Enrich trabaja con cualquier dataset con geometría.
 
 **Hecho cuando:** «enriquece clientes con municipios» y «cuenta competidores a 500 m» dan el mismo
 resultado que PostGIS, heredan las etiquetas de la capa y se marcan viejos cuando ella cambia.
@@ -1770,6 +1950,11 @@ El ADR pasa de hoja de ruta a imagen.
   rejilla (C3·b2, antes en c2), la vara (C3·d) y Q2 (C3·e). El disco del ejecutor pasa a CE·6, porque lo
   llena cualquier *shuffle*. Se anota la deuda de CE: el modo por filas y no por trabajo, solo
   Heavyweight y el informe del Build. Siguiente: e0, que mide C3·e y CE·6 en la misma corrida.
+- **2026-10-20 · C4·1, Enrich como producto.** Investigado fuera (CARTO, Esri, Foundry, BigQuery,
+  Sedona, `tobler`) y dentro (0055, 0063, 0066 E5). Decidido: `runtime: enrich` del `Transform`, con un
+  fuente `.enrich.yaml` (código, como un `.sql`), el grano conservado, el reparto por variable y metros
+  sólo con un CRS métrico (D-C4-1 a D-C4-8). Sin previo aparte: lo desconocido se mide al empezar C4·2
+  y C4·3. Siguiente: C4·1 en código.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
