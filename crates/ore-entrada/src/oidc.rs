@@ -248,14 +248,19 @@ impl Emisor {
     ///
     /// Devuelve `agente:puesto/<id>/<apertura>`: un puesto, en una apertura.
     ///
-    /// ⛔ Sólo del `namespace` y de la `cuenta` que se dicen: un token de otro
+    /// ⛔ Sólo del `namespace` y de las `cuentas` que se dicen: un token de otro
     ///   inquilino, o de un pod que no es un puesto, no es nadie aquí.
+    ///
+    /// ✏️ 0068 CE·5 · *Las* cuentas: el driver de un Build elástico es un puesto
+    ///   que corre como `driver-pesado` (puede crear sus ejecutores; `malla/22`).
+    ///   Lo que lo hace puesto no cambia: la audiencia la declara ore-serve en su
+    ///   Job y ninguna de las dos cuentas puede pedir otro token.
     pub fn verificar_puesto(
         &self,
         token: &str,
         ahora: i64,
         namespace: &str,
-        cuenta: &str,
+        cuentas: &[&str],
     ) -> Result<Identidad, SinIdentidad> {
         let prefijo = format!("{}/", self.aud);
         let cuerpo = self.cuerpo_verificado(&format!("Bearer {}", token.trim()), ahora, &|a| {
@@ -295,8 +300,11 @@ impl Emisor {
             return Err(mal(format!("el pod es de `{ns}`, no de `{namespace}`")));
         }
         let sa = dentro("serviceaccount", Some("name"));
-        if sa != cuenta {
-            return Err(mal(format!("el pod corre como `{sa}`, no como `{cuenta}`")));
+        if !cuentas.contains(&sa.as_str()) {
+            return Err(mal(format!(
+                "el pod corre como `{sa}`, no como `{}`",
+                cuentas.join("` ni `")
+            )));
         }
         if dentro("pod", Some("name")).is_empty() {
             return Err(mal("el token no está ligado a un pod".into()));
@@ -626,7 +634,9 @@ mod pruebas {
             "ore-serve/puestos",
             Llaves::leer(&jwks).unwrap(),
         );
-        let v = |t: &str| e.verificar_puesto(t, 1_700_000_000, "t-victor", "puesto");
+        let v = |t: &str| {
+            e.verificar_puesto(t, 1_700_000_000, "t-victor", &["puesto", "driver-pesado"])
+        };
         let id = v(&c(
             "ore-serve/puestos/puesto-ana-python-raw-1a2b3c/1759400000",
             "t-victor",
@@ -645,6 +655,15 @@ mod pruebas {
         assert!(v(&c("ore-serve/puestos/a/b/c", "t-victor", "puesto")).is_err());
         assert!(v(&c("ore-serve/puestos/p/1", "t-demo", "puesto")).is_err());
         assert!(v(&c("ore-serve/puestos/p/1", "t-victor", "ore-serve")).is_err());
+        // CE·5 · El driver de un Build elástico es el mismo puesto con otra cuenta;
+        // la del ejecutor (sin token, además) no lo es.
+        assert_eq!(
+            v(&c("ore-serve/puestos/p/1", "t-victor", "driver-pesado"))
+                .unwrap()
+                .persona,
+            "agente:puesto/p/1"
+        );
+        assert!(v(&c("ore-serve/puestos/p/1", "t-victor", "ejecutor")).is_err());
         // Un token de persona no es un puesto.
         assert!(v(&token(&k, CABEZA, &cuerpo(""))).is_err());
         // Y la firma manda: cambiar el puesto declarado rompe el token.

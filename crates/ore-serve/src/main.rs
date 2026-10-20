@@ -357,13 +357,19 @@ fn main() -> ExitCode {
             match ore_entrada::oidc::Emisor::del_fichero(iss, cola::AUDIENCIA_DE_PUESTOS, jwks) {
                 Ok(e) => {
                     let linea = format!(
-                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuenta puesto",
+                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto y driver-pesado",
                         cola::AUDIENCIA_DE_PUESTOS,
                         e.cuantas(),
                         jwks.display()
                     );
                     (
-                        Some(identidad::con_pods(base, e, ns.clone(), "puesto".into())),
+                        Some(identidad::con_pods(
+                            base,
+                            e,
+                            ns.clone(),
+                            // 0068 CE·5: el driver de un Build elástico (`malla/22`).
+                            vec!["puesto".into(), "driver-pesado".into()],
+                        )),
                         linea,
                     )
                 }

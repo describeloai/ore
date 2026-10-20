@@ -269,10 +269,13 @@ pub fn con_pods(
     base: Proveedor,
     emisor: crate::oidc::Emisor,
     namespace: String,
-    cuenta: String,
+    cuentas: Vec<String>,
 ) -> Proveedor {
     Box::new(move |cabeceras| match cabeceras.get(CABECERA_POD) {
-        Some(t) => emisor.verificar_puesto(t, ahora(), &namespace, &cuenta),
+        Some(t) => {
+            let cuentas: Vec<&str> = cuentas.iter().map(String::as_str).collect();
+            emisor.verificar_puesto(t, ahora(), &namespace, &cuentas)
+        }
         None => base(cabeceras),
     })
 }
