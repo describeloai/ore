@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::error::Error;
 use crate::proto::{
     CloseConnectionRequest, CloseConnectionResponse, CloseStatementRequest, CloseStatementResponse,
-    ColumnsRequest, CreateStatementRequest, CreateStatementResponse, ExecuteResponse, FetchRequest,
-    FetchResponse, Frame, OpenConnectionRequest, OpenConnectionResponse, PrepareAndExecuteRequest,
+    ColumnsRequest, ConnectionProperties, ConnectionSyncRequest, ConnectionSyncResponse,
+    CreateStatementRequest, CreateStatementResponse, ExecuteResponse, FetchRequest, FetchResponse,
+    Frame, OpenConnectionRequest, OpenConnectionResponse, PrepareAndExecuteRequest,
     ResultSetResponse, SchemasRequest, TablesRequest,
 };
 use crate::transporte::{Opciones, Transporte};
@@ -108,6 +109,20 @@ impl Conexion {
 
     /// Ejecuta una consulta y devuelve su lectura, **sin traer más que el primer frame**.
     pub fn ejecutar(&self, sql: &str) -> Result<Lectura, Error> {
+        let (statement_id, rs) = self.lanzar(sql)?;
+        Lectura::de(self.sesion.clone(), statement_id, rs)
+    }
+
+    /// Ejecuta una orden que no devuelve filas (`CREATE`, `UPSERT`, `DROP`) y dice cuántas filas tocó. **Solo
+    /// para cargar datos**: el conector de lectura no la llama. Cierra el statement.
+    pub fn ejecutar_orden(&self, sql: &str) -> Result<u64, Error> {
+        let (statement_id, rs) = self.lanzar(sql)?;
+        cerrar_statement(&self.sesion, statement_id);
+        Ok(rs.update_count)
+    }
+
+    /// `PrepareAndExecute` de una sentencia: el statement abierto y su primer resultado.
+    fn lanzar(&self, sql: &str) -> Result<(u32, ResultSetResponse), Error> {
         let s = &self.sesion;
         let c: CreateStatementResponse = s.t.llamar(
             "CreateStatementRequest",
@@ -147,7 +162,26 @@ impl Conexion {
             )));
         }
         let rs = e.results.into_iter().next().expect("uno");
-        Lectura::de(self.sesion.clone(), c.statement_id, rs)
+        Ok((c.statement_id, rs))
+    }
+
+    /// Activa el *autocommit* de la sesión (`ConnectionSyncRequest`). **Solo para cargar datos**: el conector
+    /// de lectura no lo llama, y sin él un `UPSERT` queda sin confirmar en la sesión.
+    pub fn autocommit(&self, si: bool) -> Result<(), Error> {
+        let s = &self.sesion;
+        let _: ConnectionSyncResponse = s.t.llamar(
+            "ConnectionSyncRequest",
+            &ConnectionSyncRequest {
+                connection_id: s.id.clone(),
+                conn_props: Some(ConnectionProperties {
+                    auto_commit: si,
+                    has_auto_commit: true,
+                    ..Default::default()
+                }),
+            },
+            "ConnectionSyncResponse",
+        )?;
+        Ok(())
     }
 
     /// Los esquemas (`SchemasRequest`). `patron` es un patrón JDBC (`%`, `_`); `None` = todos.

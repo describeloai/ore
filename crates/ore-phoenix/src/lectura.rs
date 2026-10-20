@@ -15,11 +15,12 @@
 //! guardan en la sesión (`servir` reutiliza la conexión). Los tipos que la petición declara (`tipos`) mandan
 //! si el dato los puede llevar ([`Tipo::declarado`]); si no, es `esquema`, con la columna.
 //!
-//! # Qué se empuja en M2
+//! # Qué se empuja
 //!
-//! **La proyección y el `LIMIT`.** Ningún filtro (`operadores` vacío): lo que se pida con un filtro, una clave,
-//! un cursor o un orden se **rechaza** con `operador`, nunca se ignora (ficha 0071 §6, M4 los trae). El motor
-//! filtra lo que el conector no sabe.
+//! **La proyección, los diez operadores, el `orderBy` (con los nulos al final) y el `LIMIT`**, traducidos por
+//! [`crate::traductor`]: Phoenix los resuelve con la semántica de SQL, así que no hay residual. Lo que no se sabe
+//! escribir exacto (un `like` con barra, un `NaN`, una columna binaria) y lo que no se empuja todavía (el recorte
+//! por clave y el rango) se **rechaza** con `operador`, nunca se ignora.
 //!
 //! # El flujo
 //!
@@ -31,6 +32,7 @@
 use crate::esquema::{Tabla, citar};
 use crate::lote::{Constructor, ErrorLote};
 use crate::tipos::Tipo;
+use crate::traductor;
 use crate::transporte::{Conexion, fallo_de};
 use arrow_ipc::writer::StreamWriter;
 use ore_avatica::Valor;
@@ -95,18 +97,18 @@ pub fn con_declarados(t: &Tabla, tipos: &[(String, String)], objeto: &str) -> Re
     Ok(t)
 }
 
-/// Lo que M2 no sabe empujar, rechazado con `operador` (§6). `Capacidades::admite` ya rechaza los filtros, el
-/// `orderBy` y lo que no se declara; esto es lo demás de la petición: el recorte por clave y el rango.
+/// Lo que no se empuja todavía, rechazado con `operador`. `Capacidades::admite` ya rechaza lo que no se declara;
+/// esto es lo demás de la petición: el recorte por clave y el rango (M7).
 pub fn rechazar_lo_que_no_se_empuja(p: &Peticion) -> Result<(), Fallo> {
     Phoenix::CAPACIDADES.admite(p)?;
     if !p.claves.is_empty() {
         return Err(Fallo::operador(
-            "el recorte por clave todavía no se empuja a Phoenix (ficha 0071, M4)",
+            "el recorte por clave todavía no se empuja a Phoenix (ficha 0071)",
         ));
     }
     if p.cursor.is_some() || p.start.is_some() || p.end.is_some() {
         return Err(Fallo::operador(
-            "el rango (cursor, start, end) todavía no se empuja a Phoenix (ficha 0071, M4/M7)",
+            "el rango (cursor, start, end) todavía no se empuja a Phoenix (ficha 0071, M7)",
         ));
     }
     Ok(())
@@ -155,6 +157,8 @@ pub fn consulta(p: &Peticion, t: &Tabla) -> Result<(String, Vec<String>), Fallo>
         expresiones.join(", "),
         t.objeto_citado()
     );
+    sql.push_str(&traductor::donde(&p.filtros, t)?);
+    sql.push_str(&traductor::orden(&p.orden, t)?);
     if let Some(n) = p.limit {
         sql.push_str(&format!(" LIMIT {n}"));
     }
@@ -204,10 +208,11 @@ impl Origen for Phoenix {
     const CAPACIDADES: Capacidades = Capacidades {
         conector: "ore-read-phoenix",
         version: env!("CARGO_PKG_VERSION"),
-        // M2 no empuja ningún filtro: lo que se pida se rechaza (M4 los trae).
-        operadores: &[],
+        // Los diez, sin residual: Phoenix los resuelve con la semántica de SQL (§3.12).
+        operadores: ore_driver::OPERADORES,
         limit: true,
-        order_by: false,
+        order_by: true,
+        // `EXPLAIN` da el número de la tabla y no el del filtro (§3.12): no se declara lo que no se sabe.
         estimar: false,
         servir: true,
     };
@@ -395,6 +400,32 @@ mod pruebas {
     }
 
     #[test]
+    fn el_select_lleva_el_where_el_orden_y_el_limit_en_ese_orden() {
+        use ore_driver::{Filtro, Orden};
+        let t = pedidos();
+        let mut p = peticion(&[("id", "ID")]);
+        p.filtros = vec![
+            Filtro::uno("ESTADO", "eq", "o'neil\\"),
+            Filtro::uno("ID", "ge", "10"),
+        ];
+        p.orden = vec![Orden {
+            columna: "ID".into(),
+            descendente: true,
+        }];
+        p.limit = Some(3);
+        let (sql, leidas) = consulta(&p, &t).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"ID\" FROM \"ORE_X0\".\"PEDIDOS\" WHERE \"ESTADO\" = 'o''neil\\\\' AND \"ID\" >= 10 ORDER BY \"ID\" DESC NULLS LAST LIMIT 3"
+        );
+        // Una columna filtrada que no se pide no entra en lo que se lee.
+        assert_eq!(leidas, ["ID"]);
+        // Un filtro sobre una columna que no está es `esquema`, no se ignora.
+        p.filtros = vec![Filtro::uno("NO_EXISTE", "eq", "1")];
+        assert_eq!(consulta(&p, &t).unwrap_err().codigo, Codigo::Esquema);
+    }
+
+    #[test]
     fn dos_propiedades_de_la_misma_columna_la_piden_una_vez() {
         let t = pedidos();
         let (sql, leidas) =
@@ -481,20 +512,19 @@ mod pruebas {
         use ore_driver::{Filtro, Orden};
         let base = peticion(&[("id", "ID")]);
         assert!(rechazar_lo_que_no_se_empuja(&base).is_ok());
+        // Los diez operadores y el orden se declaran: ya no se rechazan aquí. Un operador fuera del
+        // vocabulario sí.
         let mut p = base.clone();
         p.filtros = vec![Filtro::uno("ID", "eq", "1")];
-        let e = rechazar_lo_que_no_se_empuja(&p).unwrap_err();
-        assert_eq!(e.codigo, Codigo::Operador);
-        assert!(e.mensaje.contains("`eq` sobre `ID`"), "{}", e.mensaje);
-        let mut p = base.clone();
         p.orden = vec![Orden {
             columna: "ID".into(),
             descendente: false,
         }];
-        assert_eq!(
-            rechazar_lo_que_no_se_empuja(&p).unwrap_err().codigo,
-            Codigo::Operador
-        );
+        assert!(rechazar_lo_que_no_se_empuja(&p).is_ok());
+        p.filtros = vec![Filtro::uno("ID", "regex", "1")];
+        let e = rechazar_lo_que_no_se_empuja(&p).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Operador);
+        assert!(e.mensaje.contains("`regex` sobre `ID`"), "{}", e.mensaje);
         let mut p = base.clone();
         p.clave_columnas = vec!["ID".into()];
         p.claves = vec![vec!["1".into()]];
@@ -558,7 +588,10 @@ mod pruebas {
     fn el_conector_declara_lo_que_sabe() {
         let c = Phoenix::CAPACIDADES;
         assert_eq!(c.conector, "ore-read-phoenix");
-        assert!(c.operadores.is_empty() && c.limit && c.servir && !c.order_by && !c.estimar);
+        assert_eq!(c.operadores, ore_driver::OPERADORES);
+        assert!(c.limit && c.servir && c.order_by);
+        // `EXPLAIN` no sabe el coste de un filtro (§3.12): no se declara.
+        assert!(!c.estimar);
         // Y la declaración es JSON canónico válido.
         assert!(c.json().contains("\"conector\":\"ore-read-phoenix\""));
     }

@@ -17,6 +17,8 @@ pub mod cassandra;
 pub mod gcs;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
+#[cfg(feature = "phoenix")]
+pub mod phoenix;
 pub mod postgres;
 pub mod s3;
 pub mod sftp;
@@ -80,6 +82,12 @@ pub trait Banco {
     /// Si el origen guarda las fechas en milisegundos (BSON `Date`): lo que la
     /// semilla trae en microsegundos no llega a existir en él.
     fn milisegundos(&self) -> bool {
+        false
+    }
+
+    /// Si el origen no distingue la cadena vacía del nulo (Phoenix guarda `''` como `NULL`): lo que la semilla trae
+    /// como `''` no llega a existir en él, y el kit espera un nulo.
+    fn vacio_es_nulo(&self) -> bool {
         false
     }
 

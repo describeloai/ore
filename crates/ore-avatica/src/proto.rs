@@ -191,6 +191,22 @@ pub struct FetchResponse {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
+pub struct ConnectionSyncRequest {
+    #[prost(string, tag = "1")]
+    pub connection_id: String,
+    #[prost(message, optional, tag = "2")]
+    pub conn_props: Option<ConnectionProperties>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ConnectionSyncResponse {
+    #[prost(message, optional, tag = "1")]
+    pub conn_props: Option<ConnectionProperties>,
+    #[prost(message, optional, tag = "2")]
+    pub metadata: Option<RpcMetadata>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
 pub struct SchemasRequest {
     #[prost(string, tag = "1")]
     pub catalog: String,
@@ -298,6 +314,26 @@ pub struct Frame {
     pub done: bool,
     #[prost(message, repeated, tag = "3")]
     pub rows: Vec<Row>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ConnectionProperties {
+    #[prost(bool, tag = "1")]
+    pub is_dirty: bool,
+    #[prost(bool, tag = "2")]
+    pub auto_commit: bool,
+    #[prost(bool, tag = "7")]
+    pub has_auto_commit: bool,
+    #[prost(bool, tag = "3")]
+    pub read_only: bool,
+    #[prost(bool, tag = "8")]
+    pub has_read_only: bool,
+    #[prost(uint32, tag = "4")]
+    pub transaction_isolation: u32,
+    #[prost(string, tag = "5")]
+    pub catalog: String,
+    #[prost(string, tag = "6")]
+    pub schema: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

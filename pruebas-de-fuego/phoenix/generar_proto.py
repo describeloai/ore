@@ -28,6 +28,7 @@ RAIZ = [
     "CloseStatementRequest", "CloseStatementResponse",
     "PrepareAndExecuteRequest", "ExecuteResponse",
     "FetchRequest", "FetchResponse",
+    "ConnectionSyncRequest", "ConnectionSyncResponse",
     "SchemasRequest", "TablesRequest", "ColumnsRequest",
     "ErrorResponse",
 ]

@@ -1,7 +1,7 @@
 //! `ore-kit`: los 14 casos contra un conector.
 //!
 //! ```text
-//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra [--casos 1,2,5]
+//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra|phoenix [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
 //!         [--pasarela <ore-federation>]
 //! ```
@@ -26,6 +26,8 @@
 use ore_conector_kit::bancos::cassandra::Cassandra;
 #[cfg(feature = "mongodb")]
 use ore_conector_kit::bancos::mongodb::Mongo;
+#[cfg(feature = "phoenix")]
+use ore_conector_kit::bancos::phoenix::Phoenix;
 use ore_conector_kit::bancos::{
     Banco, azure::Azure, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3, sftp::Sftp,
     sharepoint::SharePoint,
@@ -113,15 +115,18 @@ fn intentar() -> Result<bool, String> {
         "mongodb" => Box::new(Mongo::new(&entorno("MONGO_KIT_URL")?)?),
         #[cfg(feature = "cassandra")]
         "cassandra" => Box::new(Cassandra::new(&entorno("CASSANDRA_KIT_URL")?)?),
+        #[cfg(feature = "phoenix")]
+        "phoenix" => Box::new(Phoenix::new(&entorno("PHOENIX_KIT_URL")?)?),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb o cassandra                  (los dos últimos, con `--features mongodb` o `--features cassandra`)"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb, cassandra o phoenix                  (los tres últimos, con `--features mongodb`, `cassandra` o `phoenix`)"
             ));
         }
     };
     eprintln!("ore-kit: cargando la semilla en {familia}…");
     banco.cargar()?;
     ore_conector_kit::semilla::en_milisegundos(banco.milisegundos());
+    ore_conector_kit::semilla::en_vacio_es_nulo(banco.vacio_es_nulo());
     let c = Conector::new(PathBuf::from(&conector));
     eprintln!("ore-kit: {conector}");
     let resultados = match &pasarela {

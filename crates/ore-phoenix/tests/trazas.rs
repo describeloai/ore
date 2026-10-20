@@ -330,7 +330,8 @@ fn un_tiempo_limite_de_la_peticion_abre_su_propia_conexion() {
 fn lo_que_no_se_empuja_se_rechaza_antes_de_hablar_con_el_servidor() {
     let s = reproducir(&["catalogo", "todos_los_tipos"]);
     let mut p = peticion_de_tipos(&s);
-    p.filtros = vec![ore_driver::Filtro::uno("K1", "eq", "a")];
+    // Un operador fuera del vocabulario: los diez se empujan, este no existe.
+    p.filtros = vec![ore_driver::Filtro::uno("K1", "regex", "a")];
     let e = leer(&p).unwrap_err();
     assert_eq!(e.codigo, Codigo::Operador);
     // Ni siquiera se preguntó por la tabla: un filtro no se ignora, ni se paga una consulta para rechazarlo.
@@ -548,4 +549,43 @@ fn el_catalogo_no_enseña_la_contrasena_si_la_conexion_falla() {
 fn catalogo_sin_url_se_dice() {
     let e = ore_phoenix::verbos::catalogo("", "phoenix").unwrap_err();
     assert!(e.contains("stdin"), "{e}");
+}
+
+#[test]
+fn los_filtros_el_orden_y_el_limit_salen_en_el_sql_que_recibe_el_servidor() {
+    let s = reproducir(&["catalogo", "todos_los_tipos"]);
+    let mut p = peticion_de_tipos(&s);
+    p.proyeccion = vec![("k".into(), "K1".into())];
+    p.tipos.clear();
+    p.filtros = vec![
+        ore_driver::Filtro::uno("K1", "neq", r"a\' OR 1=1 --"),
+        ore_driver::Filtro::uno("K1", "gt", ""),
+        ore_driver::Filtro::uno("K2", "ge", "2"),
+    ];
+    p.orden = vec![ore_driver::Orden {
+        columna: "K2".into(),
+        descendente: true,
+    }];
+    p.limit = Some(10);
+    let _ = leer(&p); // lo grabado no es la respuesta de esta consulta: no importa
+    let sql: Vec<ore_avatica::proto::PrepareAndExecuteRequest> = s.de("PrepareAndExecuteRequest");
+    assert_eq!(
+        sql[0].sql,
+        r#"SELECT "K1" FROM "ORE_X0"."TIPOS" WHERE "K1" <> 'a\\'' OR 1=1 --' AND "K1" IS NOT NULL AND "K2" >= 2 ORDER BY "K2" DESC NULLS LAST LIMIT 10"#
+    );
+}
+
+#[test]
+fn un_filtro_que_no_se_sabe_escribir_no_llega_al_servidor() {
+    let s = reproducir(&["catalogo", "todos_los_tipos"]);
+    let mut p = peticion_de_tipos(&s);
+    p.filtros = vec![ore_driver::Filtro::uno("T_DOUBLE", "eq", "NaN")];
+    let e = leer(&p).unwrap_err();
+    assert_eq!(e.codigo, Codigo::Operador);
+    assert!(
+        !s.nombres()
+            .contains(&"PrepareAndExecuteRequest".to_string()),
+        "{:?}",
+        s.nombres()
+    );
 }

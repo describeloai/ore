@@ -23,6 +23,7 @@ pub mod esquema;
 pub mod lectura;
 pub mod lote;
 pub mod tipos;
+pub mod traductor;
 pub mod transporte;
 pub mod url;
 pub mod verbos;
