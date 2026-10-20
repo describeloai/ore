@@ -1858,7 +1858,7 @@ motor. Eso se mide como primer punto de C4·2 y C4·3, contra PostGIS, que es su
 |---|---|---|---|
 | C4·1 ✅ local | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
 | C4·2 ✅ local | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
-| C4·3 | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
+| C4·3 ✅ local | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
 | C4·4 | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
 | C4·5 | la consola: formulario sobre el `.enrich.yaml` y «Enrich» en la ficha del dataset (crea el fichero en una rama, como propuesta) | rubix-platform | enriquecer desde la ficha |
 
@@ -1885,6 +1885,22 @@ ORE, en el DuckDB de la imagen del puesto, contra una respuesta de PostGIS 16 es
 clientes: las diez columnas iguales fila a fila (tolerancia 1e-6) — `value` por solape, `count`, `sum`, el
 más cercano y su distancia, `extensive`, `intensive` y `majority`. Destapó un fallo (el alias de cada columna
 tomada salía de un conjunto ordenado, no del orden del fichero), arreglado antes de cerrar.
+
+**C4·3, Spark.** El mismo generador con un dialecto (`enriquecer::Dialecto`): comillas invertidas,
+`monotonically_increasing_id()` como número de fila (el de C3·b), `min_by` por `arg_min`, `min_by` sobre
+`named_struct(-peso, valor)` por `first(… order by …)`, el rango de k > 1 en una subconsulta (Spark no tiene
+`qualify`) y las columnas del objetivo una a una (no hay `exclude`). Lo leen el guion y
+`consulta_para_spark`, y el Build lo construye en el motor del repositorio.
+- **Cotejo con PostGIS** (el mismo laboratorio, imagen `puesto-spark` con su `spark-defaults` y las
+  `ReglasDeOre`, objetivo en 8 particiones): las diez columnas iguales en 20 000 filas. El número de fila
+  sale el mismo en los cinco CTE que lo leen (medido; la razón probable, sin verificar: Spark no
+  copia en línea un CTE no determinista). Es un riesgo escrito: si un día no lo fuera, el cotejo lo dice.
+- **En victor** (Build elástico, `c3/d/medir.sh` con `PREVIO`, las capas del previo de C4·2): 1 M de
+  clientes en **100 s** con un ejecutor y 10 M en **448 s** con dos, pico de disco 6 GiB. Los *joins*
+  espaciales son `BroadcastIndexJoin` salvo uno, un `RangeJoin` de 13 tareas que se lleva ~200 s de los
+  448: una capa por encima del umbral de difusión de C3·a (municipios: ~4 M de vértices, ~64 MB) y
+  repartida con las particiones de la capa. Es la deuda de particiones de C3; para Enrich, la palanca es
+  difundir capas de referencia más grandes que 48 MiB (los ejecutores tienen 34 GiB). Por medir.
 
 **Fuera de C4, escrito:**
 - la estadística zonal de ráster (0066 E4);
@@ -1992,6 +2008,11 @@ El ADR pasa de hoja de ruta a imagen.
   el brazo `enrich` del Build, que construye la sentencia generada por el camino de un `.sql`. Cotejado
   con PostGIS: diez columnas iguales en 20 000 filas. Heavyweight responde 422 hasta C4·3; el Preview de
   un `enrich`, con el de las sentencias SQL (0055 P4). Siguiente: C4·3, el generador de Spark.
+- **2026-10-20 · C4·3 hecho en local.** El generador de Spark (un dialecto del mismo generador) y el
+  Build en Heavyweight. Cotejado con PostGIS en la imagen pesada (diez columnas, 20 000 filas, 8
+  particiones) y corrido en victor: 1 M en 100 s, 10 M en 448 s, con un `RangeJoin` de 13 tareas como
+  cuello (una capa por encima del umbral de difusión). Siguiente: C4·4, el linaje por columna y el
+  motivo de la entrada vieja.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),

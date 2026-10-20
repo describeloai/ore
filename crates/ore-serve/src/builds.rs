@@ -428,21 +428,14 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                 };
                 format!("{}{celda}", preludio_sql(&build))
             }
-            // ORE 0068 C4·2 · un enriquecimiento: ORE escribe la sentencia
-            // (`enriquecer::sql_duckdb`) y se construye como la de un `.sql`.
+            // ORE 0068 C4·2–C4·3 · un enriquecimiento: ORE escribe la sentencia
+            // para el motor de su repositorio (`enriquecer::sql`, DuckDB o
+            // Spark) y se construye como la de un `.sql`.
             "enrich" => {
-                if repositorio_del_fichero(raiz, &codigo).2 == Motor::Heavyweight {
-                    return Err(con_motivo(
-                        Respuesta::error(
-                            422,
-                            format!(
-                                "`{codigo}` is in a Heavyweight repository: enrichments build on \
-                                 Spark with ADR 0068 C4·3; on DuckDB (Lightweight) they build now"
-                            ),
-                        ),
-                        "not_buildable",
-                    ));
-                }
+                let dialecto = match repositorio_del_fichero(raiz, &codigo).2 {
+                    Motor::Heavyweight => ore_core::enriquecer::Dialecto::Spark,
+                    Motor::Lightweight => ore_core::enriquecer::Dialecto::DuckDb,
+                };
                 let n: usize = c.clave.parse().unwrap_or(0);
                 let Ok(docs) = ore_core::enriquecer::leer(&fuente) else {
                     return Err(diagnostico_suelto(
@@ -458,7 +451,7 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                         &codigo,
                     ));
                 };
-                let sql = ore_core::enriquecer::sql_duckdb(&pkg, c.t, e).map_err(|m| {
+                let sql = ore_core::enriquecer::sql(&pkg, c.t, e, dialecto).map_err(|m| {
                     con_motivo(Respuesta::error(422, format!("`{codigo}`: {m}")), "not_buildable")
                 })?;
                 let trozos = ore_core::sql_del_arbol::guion::guion(&sql).map_err(|f| {

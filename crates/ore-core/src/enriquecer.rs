@@ -996,18 +996,69 @@ pub fn esquema_de_salida(
     Some(out)
 }
 
-// ── El cómputo: el SQL de DuckDB (C4·2) ─────────────────────────────────────
+// ── El cómputo: el SQL de cada motor (C4·2 DuckDB, C4·3 Spark) ──────────────
 //
 // Medido en victor con los límites de un puesto Lightweight (2 CPU, 4 GiB,
 // DuckDB 1.5.6, previo de C4·2): toda relación cae en `SPATIAL_JOIN` (el
 // R-tree de DuckDB), también `ST_DWithin`; el más cercano como *join* a
-// `maxDistance` con su rango es ~3,5× más rápido que un `lateral` con `limit`.
+// `maxDistance` con `arg_min` es 2,3× más rápido que un `lateral` con `limit`.
 // Por eso, por capa, un CTE de pares (`pN`) y uno de agregados (`cN`), y la
-// salida es el objetivo entero con un LEFT JOIN de cada uno (D-C4-2).
+// salida es el objetivo entero con un LEFT JOIN de cada uno (D-C4-2). En Spark
+// la misma forma: Sedona hace de cada *join* espacial un `RangeJoin` o un
+// `DistanceJoin`, y el lado pequeño lo difunde `over()` (C3·a).
+//
+// Las dos sentencias las lee antes el guion de ORE (`sqlparser`, dialecto de
+// DuckDB, que acepta las comillas invertidas de Spark) y la de Spark, además,
+// `consulta_para_spark`: lo escrito aquí es lo que entienden los dos.
 
-/// Un identificador entre comillas dobles, como lo lee DuckDB.
-fn id(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
+/// El motor para el que se escribe la sentencia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialecto {
+    DuckDb,
+    Spark,
+}
+
+impl Dialecto {
+    /// Un identificador: entre comillas dobles en DuckDB, invertidas en Spark
+    /// (donde las dobles son una cadena).
+    fn id(self, s: &str) -> String {
+        match self {
+            Dialecto::DuckDb => format!("\"{}\"", s.replace('"', "\"\"")),
+            Dialecto::Spark => format!("`{}`", s.replace('`', "``")),
+        }
+    }
+
+    /// El número de cada fila del objetivo. En Spark, el de C3·b: un
+    /// `row_number()` sin partición lo metería todo en una tarea.
+    fn numero_de_fila(self) -> &'static str {
+        match self {
+            Dialecto::DuckDb => "row_number() over ()",
+            Dialecto::Spark => "monotonically_increasing_id()",
+        }
+    }
+
+    /// El valor de `v` en la fila de menor `clave`.
+    fn arg_min(self, v: &str, clave: &str) -> String {
+        match self {
+            Dialecto::DuckDb => format!("arg_min({v}, {clave})"),
+            Dialecto::Spark => format!("min_by({v}, {clave})"),
+        }
+    }
+
+    /// El valor de `v` con más `peso` y, si empatan, el menor `v`.
+    fn el_de_mas(self, v: &str, peso: &str) -> String {
+        match self {
+            Dialecto::DuckDb => format!("first({v} order by {peso} desc, {v})"),
+            Dialecto::Spark => format!("min_by({v}, named_struct('w', -{peso}, 'v', {v}))"),
+        }
+    }
+
+    fn wkb(self, g: &str) -> String {
+        match self {
+            Dialecto::DuckDb => format!("ST_AsWKB({g})"),
+            Dialecto::Spark => format!("ST_AsBinary({g})"),
+        }
+    }
 }
 
 /// Un número de metros, como literal SQL.
@@ -1041,18 +1092,65 @@ fn geometria(
     }
 }
 
-/// **El SQL de DuckDB de un enriquecimiento**: una sentencia
-/// `create or replace dataset … as …` del guion de ORE, que se construye
-/// como la de un `.sql` (`runtime: sql`). Lee los nombres tal como el fichero
-/// los escribe.
+/// Las columnas del objetivo **en su orden**: las de `columns`, como se
+/// declaran; si no, las que expone (ordenadas por nombre).
+fn columnas_en_orden(pkg: &Package, desde: &Loaded, nombre: &str) -> Option<Vec<String>> {
+    let q = cualificar(nombre, desde);
+    let d = pkg.table(&q).or_else(|| pkg.dataset(&q));
+    if let Some(cs) = d.and_then(|d| d.section("columns")) {
+        let v: Vec<String> = cs
+            .entries()
+            .iter()
+            .filter_map(|(k, _)| k.as_str().map(str::to_string))
+            .collect();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    conocido(pkg, nombre, desde).map(|k| k.columnas.into_iter().collect())
+}
+
+/// **El SQL de DuckDB de un enriquecimiento** (C4·2): ver [`sql`].
 pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<String, String> {
+    sql(pkg, desde, e, Dialecto::DuckDb)
+}
+
+/// **El de Spark con Sedona** (C4·3): ver [`sql`].
+pub fn sql_spark(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<String, String> {
+    sql(pkg, desde, e, Dialecto::Spark)
+}
+
+/// **La sentencia de un enriquecimiento**: `create or replace dataset … as …`
+/// del guion de ORE, que se construye como la de un `.sql` (`runtime: sql`) en
+/// el motor de su repositorio. Lee los nombres tal como el fichero los escribe.
+pub fn sql(
+    pkg: &Package,
+    desde: &Loaded,
+    e: &Enriquecimiento,
+    d: Dialecto,
+) -> Result<String, String> {
     let (g_obj, t_obj) = geometria(pkg, desde, &e.objetivo)?;
     let obj_poligonal = t_obj.as_ref().is_some_and(poligonal);
     let mut ctes = vec![format!(
-        "t as (select *, row_number() over () __ore_k from {})",
+        "t as (select *, {} __ore_k from {})",
+        d.numero_de_fila(),
         e.objetivo.dataset
     )];
-    let mut columnas: Vec<String> = Vec::new();
+    // Las del objetivo: en DuckDB, `t.* exclude`; en Spark, una a una.
+    let mut columnas: Vec<String> = match d {
+        Dialecto::DuckDb => vec!["t.* exclude (__ore_k)".into()],
+        Dialecto::Spark => columnas_en_orden(pkg, desde, &e.objetivo.dataset)
+            .ok_or_else(|| {
+                format!(
+                    "`{}`: its columns are not known before it is built, and Spark names them one \
+                     by one",
+                    e.objetivo.dataset
+                )
+            })?
+            .iter()
+            .map(|c| format!("t.{}", d.id(c)))
+            .collect(),
+    };
     let mut joins: Vec<String> = Vec::new();
     for (i, c) in e.capas.iter().enumerate() {
         let n = i + 1;
@@ -1064,8 +1162,8 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
             }
             _ => false,
         });
-        let gt = format!("t.{}", id(&g_obj));
-        let gl = format!("l.{}", id(&g_capa));
+        let gt = format!("t.{}", d.id(&g_obj));
+        let gl = format!("l.{}", d.id(&g_capa));
         // El área del objetivo: la suya, o la de `around`.
         let (desde_t, area_t, pred) = match (&c.relacion, c.around) {
             (Relacion::Nearest { max, .. }, _) => (
@@ -1083,7 +1181,7 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
                 (
                     format!(
                         "(select __ore_k, ST_Buffer({}, {}) __ore_b from t) t",
-                        id(&g_obj),
+                        d.id(&g_obj),
                         num(a)
                     ),
                     Some(b),
@@ -1115,7 +1213,7 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
                 && !vistas.contains(&columna.as_str())
             {
                 vistas.push(columna);
-                lleva.push(format!("l.{} __ore_c_{}", id(columna), vistas.len()));
+                lleva.push(format!("l.{} __ore_c_{}", d.id(columna), vistas.len()));
             }
         }
         let alias = |col: &str| {
@@ -1142,26 +1240,27 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
         }
         if cercano.is_some() && !uno {
             lleva.push(format!(
-                "row_number() over (partition by t.__ore_k order by ST_Distance({gt}, {gl}), \
-                 ST_AsWKB({gl})) __ore_r"
+                "row_number() over (partition by t.__ore_k order by ST_Distance({gt}, {gl}), {}) \
+                 __ore_r",
+                d.wkb(&gl)
             ));
         }
-        let mut pares = format!(
-            "p{n} as (select {} from {desde_t} join {} l on {pred}",
+        let pares = format!(
+            "select {} from {desde_t} join {} l on {pred}",
             lleva.join(", "),
             c.lectura.dataset
         );
-        if let Some(k) = cercano.filter(|_| !uno) {
-            pares.push_str(&format!(" qualify __ore_r <= {k}"));
-        }
-        pares.push(')');
-        ctes.push(pares);
+        // Sólo los k primeros: sin `qualify`, que Spark no tiene.
+        ctes.push(match cercano.filter(|_| !uno) {
+            Some(k) => format!("p{n} as (select * from ({pares}) where __ore_r <= {k})"),
+            None => format!("p{n} as ({pares})"),
+        });
 
         // Los agregados, por fila del objetivo.
         let mut aggs: Vec<String> = vec!["__ore_k".into()];
-        let mut mayorias: Vec<(String, String)> = Vec::new();
+        let mut mayorias: Vec<String> = Vec::new();
         for x in &c.take {
-            let como = id(&x.como);
+            let como = d.id(&x.como);
             let expr = match &x.que {
                 Que::Contar => {
                     columnas.push(format!("coalesce(c{n}.{como}, 0) {como}"));
@@ -1179,12 +1278,12 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
                     let v = alias(columna);
                     match metodo {
                         // Con k = 1, todo lo que se toma es del más cercano.
-                        Metodo::Avg if uno => format!("arg_min({v}, __ore_d)::double"),
-                        _ if uno => format!("arg_min({v}, __ore_d)"),
-                        Metodo::Value if cercano.is_some() => format!("arg_min({v}, __ore_r)"),
-                        Metodo::Value if solape.is_some() => {
-                            format!("first({v} order by __ore_a desc, {v})")
+                        Metodo::Avg if uno => {
+                            format!("cast({} as double)", d.arg_min(&v, "__ore_d"))
                         }
+                        _ if uno => d.arg_min(&v, "__ore_d"),
+                        Metodo::Value if cercano.is_some() => d.arg_min(&v, "__ore_r"),
+                        Metodo::Value if solape.is_some() => d.el_de_mas(&v, "__ore_a"),
                         Metodo::Value => format!("min({v})"),
                         Metodo::Sum => format!("sum({v})"),
                         Metodo::Avg => format!("avg({v})"),
@@ -1198,12 +1297,12 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
                             let peso = if solape.is_some() { "sum(__ore_a)" } else { "count(*)" };
                             let m = format!("m{n}_{}", mayorias.len() + 1);
                             ctes.push(format!(
-                                "{m} as (select __ore_k, first(__ore_v order by __ore_w desc, \
-                                 __ore_v) {como} from (select __ore_k, {v} __ore_v, {peso} __ore_w \
-                                 from p{n} group by 1, 2) group by 1)"
+                                "{m} as (select __ore_k, {} {como} from (select __ore_k, {v} \
+                                 __ore_v, {peso} __ore_w from p{n} group by 1, 2) w group by 1)",
+                                d.el_de_mas("__ore_v", "__ore_w")
                             ));
-                            mayorias.push((m.clone(), como.clone()));
                             columnas.push(format!("{m}.{como}"));
+                            mayorias.push(m);
                             continue;
                         }
                     }
@@ -1217,12 +1316,12 @@ pub fn sql_duckdb(pkg: &Package, desde: &Loaded, e: &Enriquecimiento) -> Result<
             aggs.join(", ")
         ));
         joins.push(format!("left join c{n} using (__ore_k)"));
-        for (m, _) in mayorias {
+        for m in mayorias {
             joins.push(format!("left join {m} using (__ore_k)"));
         }
     }
     Ok(format!(
-        "create or replace dataset {} as\nwith {}\nselect t.* exclude (__ore_k), {}\nfrom t {}",
+        "create or replace dataset {} as\nwith {}\nselect {}\nfrom t {}",
         e.output,
         ctes.join(",\n"),
         columnas.join(", "),
@@ -1323,6 +1422,30 @@ layers:
         assert!(sql.contains("ST_DWithin(t.\"ubicacion\", l.\"geom\", 500)"), "{sql}");
     }
 
+    /// C4·3 · el de Spark del mismo caso: lo leen el guion y
+    /// `consulta_para_spark`, numera con `monotonically_increasing_id`, nombra
+    /// las columnas del objetivo una a una y no lleva nada de DuckDB.
+    #[test]
+    fn el_sql_de_spark_lo_leen_el_guion_y_consulta_para_spark() {
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos/conformance/v1alpha33/valid/an-enrich-transform/input");
+        let (pkg, _) = crate::validate::cargar_paquete(&raiz);
+        let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
+        let f = std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
+        let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
+        let s = sql_spark(&pkg, t, &e).expect("se genera");
+        crate::sql_del_arbol::guion::guion(&s).unwrap_or_else(|f| panic!("{f:?}\n{s}"));
+        let p = crate::sql_del_arbol::consulta_para_spark(s.split_once(" as\n").unwrap().1)
+            .unwrap_or_else(|f| panic!("{f}\n{s}"));
+        assert_eq!(p.vistas.len(), 3, "{:?}", p.vistas);
+        assert!(s.contains("monotonically_increasing_id() __ore_k"), "{s}");
+        assert!(s.contains("select t.`cliente_id`, t.`ubicacion`, c1.`municipio`"), "{s}");
+        assert!(s.contains("min_by(__ore_c_1, __ore_d)"), "{s}");
+        for duckdb in ["exclude", "qualify", "arg_min", "first(", "\"", "::"] {
+            assert!(!s.contains(duckdb), "`{duckdb}` en el SQL de Spark:\n{s}");
+        }
+    }
+
     /// El SQL de DuckDB de `ENRICH_ARBOL` + `ENRICH_FICHERO` (documento 1), en
     /// `ENRICH_SALIDA`: lo usa el cotejo con PostGIS
     /// (`pruebas-de-fuego/geo/c4/cotejo`). El árbol, sin diagnósticos.
@@ -1340,9 +1463,17 @@ layers:
         let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
         let f = std::fs::read_to_string(raiz.join(std::env::var("ENRICH_FICHERO").unwrap())).unwrap();
         let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
-        let sql = sql_duckdb(&pkg, t, &e).expect("se genera");
-        crate::sql_del_arbol::guion::guion(&sql).unwrap_or_else(|f| panic!("{f:?}\n{sql}"));
-        std::fs::write(std::env::var("ENRICH_SALIDA").unwrap(), &sql).unwrap();
+        let salida = std::path::PathBuf::from(std::env::var("ENRICH_SALIDA").unwrap());
+        for (d, nombre) in [(Dialecto::DuckDb, "enrich.sql"), (Dialecto::Spark, "enrich-spark.sql")] {
+            let s = sql(&pkg, t, &e, d).expect("se genera");
+            crate::sql_del_arbol::guion::guion(&s).unwrap_or_else(|f| panic!("{f:?}\n{s}"));
+            if d == Dialecto::Spark {
+                // Lo que lee la sentencia de Spark también lo reescribe `consulta_para_spark`.
+                let consulta = s.split_once(" as\n").unwrap().1;
+                crate::sql_del_arbol::consulta_para_spark(consulta).unwrap_or_else(|f| panic!("{f}\n{s}"));
+            }
+            std::fs::write(salida.join(nombre), &s).unwrap();
+        }
     }
 
     #[test]
