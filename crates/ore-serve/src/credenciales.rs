@@ -984,6 +984,96 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ])]),
             ),
         ]),
+        // MongoDB (ADR 0069 M3): Atlas o cualquier despliegue. La credencial va
+        // en la cadena, al custodio; lo que se enseña es el usuario que solo
+        // lee y el acceso de red, que es donde Atlas se atasca la primera vez.
+        "mongodb" | "mongodb_srv" => Json::obj([
+            ("tipo", Json::s("mongodb")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el                              custodio. Crea un usuario que solo lea, con el rol `read` sobre la                              base que quieres conectar. TLS se verifica siempre; Atlas firma con                              una CA pública y no hace falta más.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "mongodb+srv://<usuario>:<contraseña>@<cluster>.<id>.mongodb.net/<base>  ·                               mongodb://<usuario>:<contraseña>@<host>[:<puerto>][,<host>…]/<base>[?replicaSet=<nombre>]",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("Atlas: el usuario que solo lee")),
+                                (
+                                    "comando",
+                                    Json::s("Database Access → Add New Database User → Specific Privileges → rol `read` sobre `<base>`"),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Atlas: que la celda llegue al clúster")),
+                                (
+                                    "comando",
+                                    Json::s("Network Access → Add IP Address → la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)"),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Un despliegue propio: el usuario que solo lee")),
+                                (
+                                    "comando",
+                                    Json::s("db.getSiblingDB(\"<base>\").createUser({user: \"ore_lector\", pwd: \"<contraseña>\", roles: [{role: \"read\", db: \"<base>\"}]})"),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("tls-inseguro")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsInsecure` y `tlsAllowInvalidCertificates` aceptan el certificado de                                  cualquiera: otro se haría pasar por tu clúster y recibiría la contraseña",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("ca-por-fichero")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsCAFile` con una ruta: el driver corre en un Job sin tus ficheros.                                  Una CA privada todavía no se admite",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("usuario-con-escritura")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una fuente lee: con `atlasAdmin`, `root` o `readWrite` el driver podría                                  más de lo que hace, y con `read` basta",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("aws-iam")),
+                        (
+                            "porque",
+                            Json::s("la autenticación por IAM de AWS (`MONGODB-AWS`) aún no está"),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // Las demás familias llevan su credencial dentro de la cadena de
         // conexión, que va al custodio: no hay nada que conceder aparte.
         otro => Json::obj([
@@ -1280,6 +1370,27 @@ mod tests {
         // Sin IDs, los huecos y el porqué.
         let j = de_con("s3", None, None).jcs();
         assert!(j.contains("{idDriver}") && j.contains("sinIds"), "{j}");
+    }
+
+    /// MongoDB: la credencial va en la cadena, el usuario solo lee, y lo que el
+    /// driver rechaza se dice con su porqué (ADR 0069 M3).
+    #[test]
+    fn mongodb_va_en_la_cadena_con_un_usuario_que_solo_lee() {
+        for tipo in ["mongodb", "mongodb_srv"] {
+            let j = de(tipo, None, None).jcs();
+            for x in [
+                "\"tipo\":\"mongodb\"",
+                "\"modo\":\"cadena\"",
+                "mongodb+srv://",
+                "rol `read`",
+                "Network Access",
+                "\"tls-inseguro\"",
+                "\"usuario-con-escritura\"",
+                "\"aws-iam\"",
+            ] {
+                assert!(j.contains(x), "{tipo}: {x}: {j}");
+            }
+        }
     }
 
     /// Postgres: la credencial va en la cadena, y TLS siempre (ADR 0065 PG1).

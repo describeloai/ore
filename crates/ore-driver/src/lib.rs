@@ -2,7 +2,7 @@
 //! vuelve.
 //!
 //! La petición es un **fragmento del plan**, no SQL
-//! (`docs/decisions/0008-el-protocolo-del-driver.md`): la misma para todos los
+//! (`docs/products/0008-el-protocolo-del-driver.md`): la misma para todos los
 //! drivers, y **traducir es del driver**. Si viajara SQL, el ejecutor tendría
 //! que conocer el dialecto de cada origen, y añadir una familia de fuentes
 //! dejaría de ser un binario nuevo para ser un cambio en el planificador.
@@ -49,6 +49,10 @@ pub mod capacidades;
 /// tipados, lo que un conector declara y el bucle de `servir`.
 pub mod fallo;
 pub mod servir;
+
+/// **El esqueleto de un origen v2**: los verbos, `SIGTERM` y las sesiones de
+/// `servir`, escritos una vez.
+pub mod origen;
 
 pub use fallo::{Codigo, Fallo, tapar};
 
@@ -188,6 +192,18 @@ pub struct Peticion {
     /// por partición), nunca sus bytes. `Some(match)`, con su patrón si lo
     /// declara (`""` sin él).
     pub listado: Option<String>,
+
+    // ── Los tipos declarados · ADR 0069 M3 ──────────────────────────────────
+    /// **Lo que la tabla declara de sus columnas**: columna física → tipo de OOS
+    /// (`Date`, `Decimal<12, 2>`…), en la clave `tipos` de primer nivel.
+    ///
+    /// Es para los orígenes **sin esquema** —MongoDB—, donde el dato no lleva lo
+    /// que la tabla sabe: un `Date` es un instante en BSON, un `Decimal128` no
+    /// tiene precisión. Los que tienen catálogo (Postgres, BigQuery) lo
+    /// ignoran: su catálogo manda. Una columna que no está aquí se entrega
+    /// como el origen la tiene. Los ficheros llevan los suyos dentro de
+    /// `fichero.tipos`.
+    pub tipos: Vec<(String, String)>,
 }
 
 /// El `format` de una `Table` de ficheros, y los tipos congelados de sus
@@ -501,6 +517,19 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         limit: natural(&n, "limit")?,
         orden,
         timeout_ms: natural(&n, "timeoutMs")?,
+        // `[[columna, tipo], …]`, como en `fichero.tipos`.
+        tipos: n
+            .get("tipos")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|par| match par.items() {
+                        [c, t] => Some((c.as_str()?.to_string(), t.as_str()?.to_string())),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     if p.objeto.is_empty() {
         return Err("la petición no nombra ningún objeto".into());
@@ -578,7 +607,7 @@ pub fn leer_coordenada(texto: &str) -> Result<(String, String), String> {
 
 /// **La respuesta del tercer verbo: hasta dónde está el origen ahora.**
 ///
-/// Normativo: [ADR 0016](../../../docs/decisions/0016-el-testigo-y-el-rango.md),
+/// Normativo: [ADR 0016](../../../docs/products/0016-el-testigo-y-el-rango.md),
 /// decisión A. La petición es la misma `Peticion` —basta `url` y `objeto`— y
 /// esto es lo que vuelve: un ordinal y **nada más**.
 ///
@@ -852,6 +881,27 @@ mod tests {
     fn una_proyeccion_vacia_se_rechaza() {
         let texto = r#"{"objeto":"t","proyeccion":{},"url":"x"}"#;
         assert!(leer_peticion(texto).is_err());
+    }
+
+    /// Los tipos que la tabla declara llegan en `tipos`, par a par, y sin ellos
+    /// la lista queda vacía.
+    #[test]
+    fn los_tipos_declarados_llegan_en_la_peticion() {
+        let con = leer_peticion(
+            r#"{"url":"x","objeto":"b.c","proyeccion":{"f":"fecha"},
+                "tipos":[["fecha","Date"],["importe","Decimal<12, 2>"]]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            con.tipos,
+            [
+                ("fecha".to_string(), "Date".to_string()),
+                ("importe".to_string(), "Decimal<12, 2>".to_string())
+            ]
+        );
+        let sin = leer_peticion(r#"{"url":"x","objeto":"b.c","proyeccion":{"f":"fecha"}}"#)
+            .unwrap();
+        assert!(sin.tipos.is_empty());
     }
 
     /// La fila sale con **propiedades**, no con columnas físicas.

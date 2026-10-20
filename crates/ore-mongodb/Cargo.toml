@@ -1,0 +1,38 @@
+# MongoDB como origen (ficha 0069, M1): el traductor de una `Peticion` a MQL, los
+# tipos BSON a Arrow, y el transporte. Lo usa `ore-read-mongodb` (M2).
+#
+# Vive FUERA del cierre de `ore-cli`, igual que `ore-read-postgres`: el cliente
+# oficial de MongoDB trae un runtime asíncrono y ~220 crates (medido en X0:
+# 223 con `mongodb+srv` y OpenSSL; Postgres tiene 114), y ninguno de los dos
+# alcanza al compilador. Lo vigila `crates/ore-cli/tests/dependencias.rs`.
+[package]
+name        = "ore-mongodb"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "MongoDB como origen: la petición a MQL, los tipos BSON a Arrow y el transporte"
+
+[dependencies]
+# El protocolo (`Peticion`, `Filtro`, `Fallo`) y el contrato de tipos (`Fisico`).
+ore-core   = { path = "../ore-core" }
+ore-driver = { path = "../ore-driver" }
+
+# El cliente oficial. `sync`: los drivers de ORE son síncronos (el cliente lleva
+# su runtime dentro). OpenSSL y no rustls, como el resto de la pila de ORE
+# (`native-tls` en Postgres): confía en las CA del sistema, que es donde el
+# cliente pone la suya. `dns-resolver` es lo que resuelve `mongodb+srv` (Atlas).
+# `compat-3-0-0` deja `mongodb::bson` en bson 2.x. Sin `aws-auth` (suma ~90
+# crates): el IAM de AWS será una feature aparte.
+mongodb = { version = "=3.9.1", default-features = false, features = [
+    "sync", "openssl-tls", "dns-resolver", "compat-3-0-0",
+] }
+
+# Arrow, el mismo que el resto de lectores (arrow 58).
+arrow-array  = "58"
+arrow-schema = "58"
+arrow-ipc    = "58"
+
+# Un documento o un array, como texto JSON (extended JSON relajado).
+serde_json = "1"

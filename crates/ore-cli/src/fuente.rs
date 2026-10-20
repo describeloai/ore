@@ -635,6 +635,9 @@ fn esquema(url: &str) -> Option<String> {
     let s = s.to_ascii_lowercase().replace(['-', '+'], "_");
     Some(match s.as_str() {
         "postgresql" => "postgres".into(),
+        // `mongodb+srv://` (Atlas) es el mismo driver: el `+srv` es cómo se
+        // encuentra el servidor (DNS), no otro origen.
+        "mongodb_srv" => "mongodb".into(),
         "gs" => "gcs".into(),
         "az" => "azure".into(),
         _ => s,
@@ -984,6 +987,9 @@ mod tests {
             Some("postgres")
         );
         assert_eq!(esquema("postgresql://h/db").as_deref(), Some("postgres"));
+        // Atlas: `mongodb+srv` y `mongodb` son el mismo lector.
+        assert_eq!(esquema("mongodb+srv://h/db").as_deref(), Some("mongodb"));
+        assert_eq!(esquema("mongodb://h:27017").as_deref(), Some("mongodb"));
         assert_eq!(esquema("SNOWFLAKE://acc/db").as_deref(), Some("snowflake"));
         assert_eq!(esquema("db2-luw://h/db").as_deref(), Some("db2_luw"));
         assert_eq!(esquema("host:5432/db"), None);

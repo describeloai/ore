@@ -48,6 +48,19 @@ no alcanza BigQuery, y sin `BQ_URL` la prueba se salta diciéndolo. Los tests de
 driver leen en su lugar respuestas grabadas de verdad
 (`crates/ore-read-bigquery/tests/rest/`, que regenera `grabar-bigquery-rest.py`).
 
+**`mongodb.sh`** lleva MongoDB de punta a punta contra un **Atlas de verdad** y con el usuario de
+**solo lectura** —alta, `discover`, una copia calculada en DuckDB, la misma por la pasarela— y rompe
+cada protección a propósito para ver que muerde: TLS apagado por URL (las tres formas), una contraseña
+que Atlas rechaza, un operador fuera del vocabulario, una columna de tipos mezclados que no se filtra
+como SQL, un tipo declarado que el dato no lleva, el tiempo cortado en el servidor, una escritura
+con el rol de la fuente, un changelog que se intenta filtrar, y que ninguna orden escriba la
+contraseña. Lo que se compara con el origen lo dice **otro cliente** (`mongodb/origen.py`, pymongo):
+una copia que casa porque el conector se compara consigo mismo no demuestra nada. Con `MONGO_URL` (un
+replica set local que escribe) corre además el kit de conformidad, el kit por la pasarela y los
+cambios de verdad; con `MONGO_CADUCAR=1`, trunca su oplog para ver una posición **caducada** de
+verdad. `SOLO=4` corre sólo las protecciones (un minuto). Y la propia prueba se prueba: sabotear una
+protección del conector la pone roja en la comprobación que debía (ficha 0069, M6).
+
 Y hay una que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
 es Rust y entra en `cargo test --workspace` como cualquier otra, porque `cedar-policy`
 es una dependencia y no un servicio.
@@ -59,6 +72,7 @@ pruebas-de-fuego/graphql.sh          # necesita node
 pruebas-de-fuego/fuentes-reales.sh   # necesita docker
 pruebas-de-fuego/descubrimiento.sh   # necesita docker, y `ore` en el PATH
 BQ_URL=bigquery://<proyecto>/ventas pruebas-de-fuego/bigquery-real.sh   # a mano: gcloud y la semilla
+MONGO_ATLAS_URL=mongodb+srv://<lector>:<clave>@<cluster>/ore_prueba pruebas-de-fuego/mongodb.sh   # a mano: un Atlas de desarrollo, usuario de solo lectura
 ```
 
 Las tres las corre `ci.yml` en cada empujón, que es el punto. Y cada una tiene

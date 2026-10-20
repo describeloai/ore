@@ -1,0 +1,16 @@
+# El lector de MongoDB (ficha 0069, M2): el binario `ore-read-mongodb`. Todo lo
+# que sabe de MongoDB vive en `ore-mongodb`; esto es el `main`.
+#
+# Como `ore-read-postgres`, fuera del cierre de `ore-cli`.
+[package]
+name        = "ore-read-mongodb"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El lector de MongoDB de ORE: Atlas o cualquier despliegue compatible"
+
+[dependencies]
+ore-driver  = { path = "../ore-driver" }
+ore-mongodb = { path = "../ore-mongodb" }

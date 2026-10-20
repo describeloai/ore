@@ -142,7 +142,14 @@ const VETADAS: &[(&str, &str)] = &[
 /// `geo-traits`, `approx`, `serde_json` y poco más. Medidos en G3·0: 0,7 y 1,2 M
 /// de geometrías/s; un parser propio sería menos fiable. Ninguno vetado; ninguno
 /// habla con nadie ni lee el reloj.
-const CIERRE: usize = 190;
+///
+/// **190 → 192 con el crate `ore-mongodb` (0069 M1, 2026-10-19): no es una
+/// dependencia nueva de `ore`, es el lockfile.** `bson` pide `getrandom/js`, y
+/// la unión de features del `Cargo.lock` cuelga `critical-section` y
+/// `portable-atomic` de `once_cell`. `cargo tree -p ore-cli` no los trae: ningún
+/// binario de `ore` los compila. Se sube el tope porque este guardián cuenta
+/// desde el lock; cuando `ore-mongodb` salga del espacio de trabajo, bájalo.
+const CIERRE: usize = 192;
 
 /// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
 /// eso no se mira contra los vetos, con **quién** lo pide como dependencia de
@@ -179,7 +186,7 @@ fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
         culpables.is_empty(),
         "el binario `ore` ha ganado capacidades que su documentación dice que no tiene:\n{}\n\n\
          Si de verdad hace falta, el sitio es un crate aparte —como \
-         `ore-read-postgres`— y la razón va en `docs/decisions/`.",
+         `ore-read-postgres`— y la razón va en `docs/products/`.",
         culpables.join("\n")
     );
 }
@@ -300,8 +307,12 @@ fn el_firmante_no_sabe_hablar_por_la_red() {
         "`ore-firmar-s3` ha ganado lo que la imagen de `ore-serve` promete no tener:\n{}",
         culpables.join("\n")
     );
+    // 24 → 27 (0069 M1): `bson` enciende `serde_json/preserve_order` y el lock
+    // cuelga `indexmap`, `hashbrown`, `equivalent` y `allocator-api2` de
+    // `serde_json`. El firmante no compila `preserve_order` (`cargo tree -p
+    // ore-firmar-s3`); es la unión de features del lockfile, no su código.
     assert!(
-        cierre.len() <= 24,
+        cierre.len() <= 27,
         "el cierre del firmante creció a {} crates: {}",
         cierre.len(),
         cierre.iter().cloned().collect::<Vec<_>>().join(", ")
@@ -365,7 +376,7 @@ fn el_arbol_no_crece_sin_que_nadie_lo_diga() {
 /// Y el reloj es la evidencia, no el argumento: el compilador contesta *qué dice
 /// este documento* y el evaluador *puede ESTE principal*, que necesita una
 /// petición. `ore validate` no tiene peticiones
-/// (`docs/decisions/0007-enlazar-el-evaluador-de-cedar.md`).
+/// (`docs/products/0007-enlazar-el-evaluador-de-cedar.md`).
 /// ⚠️ **El evaluador ya no está en ninguna parte.** `ore-exec` era el único que
 /// enlazaba `cedar-policy`, y se retiró con el paradigma de bindings del que era
 /// el camino de lectura. Lo que decidió el ADR 0007 —que evaluar no es de

@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 pub mod azure;
 pub mod bigquery;
 pub mod gcs;
+#[cfg(feature = "mongodb")]
+pub mod mongodb;
 pub mod postgres;
 pub mod s3;
 pub mod sftp;
@@ -71,6 +73,12 @@ pub trait Banco {
     /// Lo que el origen cobró desde la última vez que se preguntó (caso 14).
     fn facturado(&mut self) -> Option<u64> {
         None
+    }
+
+    /// Si el origen guarda las fechas en milisegundos (BSON `Date`): lo que la
+    /// semilla trae en microsegundos no llega a existir en él.
+    fn milisegundos(&self) -> bool {
+        false
     }
 
     /// Cierra lo que un caso dejara vivo en el origen.

@@ -204,6 +204,10 @@ COPY --from=bin /b/ore-read-sftp      /opt/ore/conectores/ore-read-sftp
 # ADR 0061 O5·3: una biblioteca de SharePoint, por Graph, con la cuenta de la celda federada.
 COPY --from=bin /b/ore-read-sharepoint /opt/ore/conectores/ore-read-sharepoint
 RUN ! command -v ore-read-postgres && ! command -v ore-read-s3  && test -x /opt/ore/conectores/ore-read-postgres  && echo "una vía: los conectores, fuera del PATH (/opt/ore/conectores)"
+# ADR 0069 M3: MongoDB —Atlas o un despliegue propio—, por la cadena de conexion. Sale
+# por el puerto del cliente (27017, o el de `mongodb+srv`): la NetworkPolicy de los
+# drivers tiene que dejarlo.
+COPY --from=bin /b/ore-read-mongodb   /opt/ore/conectores/ore-read-mongodb
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation

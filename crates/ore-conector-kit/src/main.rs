@@ -1,7 +1,7 @@
 //! `ore-kit`: los 14 casos contra un conector.
 //!
 //! ```text
-//! ore-kit --conector <binario> --banco postgres|s3|bigquery [--casos 1,2,5]
+//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
 //!         [--pasarela <ore-federation>]
 //! ```
@@ -26,6 +26,8 @@ use ore_conector_kit::bancos::{
     Banco, azure::Azure, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3, sftp::Sftp,
     sharepoint::SharePoint,
 };
+#[cfg(feature = "mongodb")]
+use ore_conector_kit::bancos::mongodb::Mongo;
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
 use ore_core::json::Json;
@@ -105,14 +107,17 @@ fn intentar() -> Result<bool, String> {
             &std::env::var("BQ_KIT_UBICACION").unwrap_or_else(|_| "EU".into()),
             std::env::var("ORE_BQ_CINTA_MODO").map_or(true, |m| m != "reproducir"),
         )),
+        #[cfg(feature = "mongodb")]
+        "mongodb" => Box::new(Mongo::new(&entorno("MONGO_KIT_URL")?)?),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint o bigquery"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery o mongodb                  (este, con `--features mongodb`)"
             ));
         }
     };
     eprintln!("ore-kit: cargando la semilla en {familia}…");
     banco.cargar()?;
+    ore_conector_kit::semilla::en_milisegundos(banco.milisegundos());
     let c = Conector::new(PathBuf::from(&conector));
     eprintln!("ore-kit: {conector}");
     let resultados = match &pasarela {

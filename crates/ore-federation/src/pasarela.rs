@@ -246,15 +246,10 @@ impl Pasarela {
             return error(400, "operador", "falta `origen`, o no es un nombre", false);
         };
         let Some(tipo) = cadena("tipo") else {
-            return error(400, "operador", "falta `tipo`", false);
+            return self.sin_conector(None);
         };
         let Some(caps) = self.conectores.get(&tipo) else {
-            return error(
-                400,
-                "operador",
-                &format!("no hay conector de `{tipo}`"),
-                false,
-            );
+            return self.sin_conector(Some(&tipo));
         };
         let Some(url) = cadena("url").filter(|u| !u.is_empty()) else {
             return error(400, "operador", "falta `url`", false);
@@ -432,6 +427,47 @@ impl Pasarela {
         }
     }
 
+    /// **Por qué no se puede atender el tipo de una petición**, dicho entero.
+    ///
+    /// Antes contestaba `falta `tipo`, o no hay conector de ese tipo`: dos causas distintas
+    /// en una frase, sin el tipo que llegó ni los que hay. Quien lo veía en la consola no podía
+    /// saber si había escrito mal la petición o si la pasarela era vieja. Son cosas distintas y
+    /// se arreglan en sitios distintos.
+    fn sin_conector(&self, tipo: Option<&str>) -> Salida {
+        let tiene = self
+            .conectores
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tiene = if tiene.is_empty() {
+            "ninguno".to_string()
+        } else {
+            tiene
+        };
+        match tipo {
+            None => error(
+                400,
+                "operador",
+                "la petición no trae `tipo` (el de la fuente: `postgres`, `mongodb`…)",
+                false,
+            ),
+            Some(t) => error(
+                400,
+                "operador",
+                &[
+                    format!("esta pasarela no tiene conector de tipo `{t}`. "),
+                    format!("Los que cargó al arrancar: {tiene}. "),
+                    format!("Si `{t}` es un tipo válido, la imagen de la pasarela es anterior a su "),
+                    "conector: hay que actualizarla y reiniciarla (`GET /v1/connectors` dice qué cargó)"
+                        .to_string(),
+                ]
+                .concat(),
+                false,
+            ),
+        }
+    }
+
     /// **`POST /v1/{catalog,check,explore,witness}`** (0053 F8): el verbo del
     /// conector, de un tiro, en la cola del origen. Cuerpo: `{origen, tipo,
     /// url}` y, para `witness`, `objeto` y quizá `cursor`. Responde lo que el
@@ -445,20 +481,16 @@ impl Pasarela {
         let Some(origen) = cadena("origen").filter(|v| nombre_valido(v, false)) else {
             return error(400, "operador", "falta `origen`, o no es un nombre", false);
         };
-        let Some(tipo) = cadena("tipo").filter(|t| self.conectores.contains_key(t)) else {
-            return error(
-                400,
-                "operador",
-                "falta `tipo`, o no hay conector de ese tipo",
-                false,
-            );
+        let pedido = cadena("tipo");
+        let Some(tipo) = pedido.clone().filter(|t| self.conectores.contains_key(t)) else {
+            return self.sin_conector(pedido.as_deref());
         };
         let Some(url) = cadena("url").filter(|u| !u.is_empty()) else {
             return error(400, "operador", "falta `url`", false);
         };
         let coordenada = || Json::obj([("url", Json::s(url.as_str()))]).jcs();
         // El verbo del conector y su entrada: `catalogo` recibe la URL a
-        // secas; los demás, una coordenada (`docs/decisions/0008`).
+        // secas; los demás, una coordenada (`docs/products/0008`).
         let (verbo, args, entrada) = match ruta {
             "catalog" => (
                 "catalogo",
@@ -587,13 +619,9 @@ impl Pasarela {
         let Some(origen) = cadena("origen").filter(|v| nombre_valido(v, false)) else {
             return error(400, "operador", "falta `origen`, o no es un nombre", false);
         };
-        let Some(tipo) = cadena("tipo").filter(|t| self.conectores.contains_key(t)) else {
-            return error(
-                400,
-                "operador",
-                "falta `tipo`, o no hay conector de ese tipo",
-                false,
-            );
+        let pedido = cadena("tipo");
+        let Some(tipo) = pedido.clone().filter(|t| self.conectores.contains_key(t)) else {
+            return self.sin_conector(pedido.as_deref());
         };
         let Some(url) = cadena("url").filter(|u| !u.is_empty()) else {
             return error(400, "operador", "falta `url`", false);

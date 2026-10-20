@@ -1,5 +1,5 @@
 //! `ore materialize` — **el ciclo**, los seis pasos del
-//! [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md).
+//! [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md).
 //!
 //! | | qué | quién |
 //! |---|---|---|
@@ -885,7 +885,7 @@ fn una(
     // refresco es proporcional al cambio o al tamaño.
     //
     // Se cuenta aquí y no en el banco de pruebas porque es la unidad que
-    // [ADR 0014](../../../docs/decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
+    // [ADR 0014](../../../docs/products/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
     // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
     // dentro de una prueba no sería una unidad, sería un apaño.
     let (salida, leidas) = match filas {
@@ -2229,7 +2229,7 @@ pub(crate) fn paquete_del_fichero(raiz: &Path, fichero: &Path) -> Option<String>
 /// «ya está», y la copia no se refresca nunca. Sirve para poblar una vez; no
 /// sirve para mantener.
 ///
-/// Cerrarlo es un verbo más en [ADR 0008](../../../docs/decisions/0008-el-protocolo-del-driver.md)
+/// Cerrarlo es un verbo más en [ADR 0008](../../../docs/products/0008-el-protocolo-del-driver.md)
 /// —`testigo <url> <objeto>`— y es una decisión de protocolo, no de este módulo.
 fn testigo(
     pkg: &Package,
@@ -2609,7 +2609,7 @@ fn leer_del_origen(
             ));
         }
         if let Some(f) = pkg.table(t).and_then(fichero_de_la_tabla) {
-            peticion.push(("fichero", f));
+            peticion.push(campo_de_la_tabla(f));
         }
         let rel = format!("entradas/{t}.arrow");
         let destino = aqui.join(&rel);
@@ -2692,9 +2692,25 @@ fn leer_del_origen(
 /// columna, como lo lleva la petición.
 fn fichero_de_la_tabla(t: &Loaded) -> Option<ore_core::json::Json> {
     use ore_core::json::Json;
-    let formato = t.section("format")?;
-    let tipos = t
-        .section("columns")
+    let tipos = tipos_de_la_tabla(t);
+    // Sin `format` no es una tabla de ficheros, pero sus tipos viajan igual
+    // (ADR 0069 M3): ver [`campo_de_la_tabla`].
+    let Some(formato) = t.section("format") else {
+        return (!tipos.is_empty()).then(|| Json::obj([("tipos", Json::Arr(tipos))]));
+    };
+    Some(Json::obj([
+        ("format", Json::de_node(formato)),
+        ("tipos", Json::Arr(tipos)),
+    ]))
+}
+
+/// **Los tipos que la tabla declara de sus columnas**, `[[columna, tipo], …]` en
+/// el orden de la tabla. Es lo que un origen sin esquema (MongoDB) no puede
+/// deducir del dato: una `Date` es un instante en BSON, un `Decimal128` no
+/// lleva precisión. Los que tienen catálogo lo ignoran (`Peticion::tipos`).
+pub(crate) fn tipos_de_la_tabla(t: &Loaded) -> Vec<ore_core::json::Json> {
+    use ore_core::json::Json;
+    t.section("columns")
         .map(|c| {
             c.entries()
                 .iter()
@@ -2704,11 +2720,23 @@ fn fichero_de_la_tabla(t: &Loaded) -> Option<ore_core::json::Json> {
                 })
                 .collect()
         })
-        .unwrap_or_default();
-    Some(Json::obj([
-        ("format", Json::de_node(formato)),
-        ("tipos", Json::Arr(tipos)),
-    ]))
+        .unwrap_or_default()
+}
+
+/// **Dónde va lo que la tabla aporta a la petición**: el bloque con `format` es
+/// el `fichero` de una tabla de ficheros; el que solo trae `tipos`, la clave
+/// `tipos` de primer nivel.
+pub(crate) fn campo_de_la_tabla(
+    bloque: ore_core::json::Json,
+) -> (&'static str, ore_core::json::Json) {
+    use ore_core::json::Json;
+    match &bloque {
+        Json::Obj(m) if !m.contains_key("format") => (
+            "tipos",
+            m.get("tipos").cloned().unwrap_or(Json::Arr(Vec::new())),
+        ),
+        _ => ("fichero", bloque),
+    }
 }
 
 /// Lo que el driver contestó: filas de texto, o un flujo Arrow sin leer.
@@ -2782,19 +2810,11 @@ fn encauzar(
 fn fichero_de(pkg: &Package, r: &vistas::Raiz) -> Option<ore_core::json::Json> {
     use ore_core::json::Json;
     let t = pkg.table(r.tabla.as_deref()?)?;
-    let formato = t.section("format")?;
-    let tipos = t
-        .section("columns")
-        .map(|c| {
-            c.entries()
-                .iter()
-                .filter_map(|(k, v)| {
-                    let tipo = v.get("type").and_then(|(_, t)| t.as_str())?;
-                    Some(Json::Arr(vec![Json::s(k.as_str()?), Json::s(tipo)]))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let tipos = tipos_de_la_tabla(t);
+    // Sin `format`, solo los tipos (ADR 0069 M3): `peticion` los pone en `tipos`.
+    let Some(formato) = t.section("format") else {
+        return (!tipos.is_empty()).then(|| Json::obj([("tipos", Json::Arr(tipos))]));
+    };
     // Una lista y no un objeto: el orden de las columnas es el del fichero
     // cuando un CSV no tiene cabecera, y un objeto JSON sale ordenado.
     Some(Json::obj([
@@ -2888,7 +2908,7 @@ fn peticion(
     // driver no los vuelve a deducir: lo que el catálogo dedujo y alguien
     // confirmó es lo que manda (03 §1.1).
     if let Some(f) = fichero {
-        campos.push(("fichero", f.clone()));
+        campos.push(campo_de_la_tabla(f.clone()));
     }
     Ok(Json::obj(campos).jcs())
 }
@@ -3378,6 +3398,31 @@ mod tests {
         );
         let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
         assert_eq!(leida.filtros, [ore_driver::Filtro::uno("id", "eq", "7")]);
+    }
+
+    /// **Los tipos de la tabla viajan** (ADR 0069 M3): el bloque con `format` es
+    /// el `fichero` de siempre; el que solo trae `tipos`, la clave `tipos` de
+    /// primer nivel, que el driver lee en `Peticion::tipos`.
+    #[test]
+    fn los_tipos_de_una_tabla_sin_formato_van_en_tipos() {
+        use ore_core::json::Json;
+        let tipos = Json::Arr(vec![Json::Arr(vec![Json::s("fecha"), Json::s("Date")])]);
+        let solo = Json::obj([("tipos", tipos.clone())]);
+        assert_eq!(campo_de_la_tabla(solo.clone()), ("tipos", tipos));
+        let con_formato = Json::obj([
+            ("format", Json::obj([("type", Json::s("csv"))])),
+            ("tipos", Json::Arr(vec![])),
+        ]);
+        assert_eq!(campo_de_la_tabla(con_formato).0, "fichero");
+
+        // Y de punta a punta: la petición que sale la lee un driver.
+        let p = peticion("x://y", &raiz(), None, None, None, false, Some(&solo))
+            .expect("petición");
+        assert!(p.contains(r#""tipos":[["fecha","Date"]]"#), "{p}");
+        assert!(!p.contains("fichero"), "{p}");
+        let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
+        assert_eq!(leida.tipos, [("fecha".to_string(), "Date".to_string())]);
+        assert!(leida.fichero.is_none());
     }
 
     /// **El rango sobre una columna**: lleva `cursor`, y `start` es exclusivo.

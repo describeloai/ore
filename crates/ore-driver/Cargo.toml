@@ -17,3 +17,8 @@ description = "El protocolo que comparten los lectores de ORE"
 
 [dependencies]
 ore-core = { path = "../ore-core" }
+
+# `SIGTERM` cancela en el origen (`origen::al_terminar`). Ya esta en el arbol: la
+# traen los lectores.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

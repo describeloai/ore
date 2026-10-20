@@ -185,8 +185,19 @@ pub const FILAS: &[[Option<&str>; 9]] = &[
     ],
 ];
 
+static MILISEGUNDOS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// **El origen guarda milisegundos** (BSON `Date`): lo que la semilla trae en
+/// microsegundos se pierde al escribirlo, antes de que el conector lo vea, y el
+/// kit espera lo que el origen **tiene**. Lo declara el banco
+/// ([`crate::bancos::Banco::milisegundos`]).
+pub fn en_milisegundos(si: bool) {
+    MILISEGUNDOS.store(si, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Las filas de `tipos`, ya como valores.
 pub fn valores() -> Vec<Vec<Option<Valor>>> {
+    let ms = MILISEGUNDOS.load(std::sync::atomic::Ordering::Relaxed);
     FILAS
         .iter()
         .map(|f| {
@@ -194,9 +205,17 @@ pub fn valores() -> Vec<Vec<Option<Valor>>> {
                 .zip(TIPOS)
                 .map(|(v, c)| {
                     v.map(|t| {
-                        c.fisico()
+                        let v = c
+                            .fisico()
                             .analizar(t)
-                            .unwrap_or_else(|| panic!("`{t}` no es un {}", c.tipo))
+                            .unwrap_or_else(|| panic!("`{t}` no es un {}", c.tipo));
+                        match v {
+                            Valor::Instante(us) if ms => Valor::Instante(us.div_euclid(1000) * 1000),
+                            Valor::FechaHora(us) if ms => {
+                                Valor::FechaHora(us.div_euclid(1000) * 1000)
+                            }
+                            otro => otro,
+                        }
                     })
                 })
                 .collect()

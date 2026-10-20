@@ -306,19 +306,8 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
             ),
         ),
     ];
+    let tipos = crate::materializar::tipos_de_la_tabla(t);
     if let Some(formato) = t.section("format") {
-        let tipos = t
-            .section("columns")
-            .map(|c| {
-                c.entries()
-                    .iter()
-                    .filter_map(|(k, v)| {
-                        let tipo = v.get("type").and_then(|(_, t)| t.as_str())?;
-                        Some(Json::Arr(vec![Json::s(k.as_str()?), Json::s(tipo)]))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         o.push((
             "fichero",
             Json::obj([
@@ -326,6 +315,10 @@ fn intentar(p: &Pedido) -> Result<Json, No> {
                 ("tipos", Json::Arr(tipos)),
             ]),
         ));
+    } else if !tipos.is_empty() {
+        // Sin `format` no es una tabla de ficheros; sus tipos viajan igual
+        // (ADR 0069 M3) para el origen que no los tiene en el dato.
+        o.push(("tipos", Json::Arr(tipos)));
     }
     // 0053 F9·1: el listado de un `ObjectTable` (su prefijo es el objeto).
     if let Some(m) = &l.listado {
