@@ -219,7 +219,7 @@ sentidos (sin él, Phoenix pone los nulos **primero** en `ASC` y en `DESC`) y `L
 
 | hallazgo | consecuencia |
 |---|---|
-| **La barra invertida es un escape dentro de un literal de texto.** `'a'` guarda `a` + retroceso (``); `'x'` deja el literal **sin cerrar**. | El escape duplica **las comillas y las barras**. Con solo las comillas (como en Cassandra) el valor se corrompe y un valor con `'` rompe la sentencia: es el mismo defecto que una inyección. Test y sabotaje propios. |
+| **La barra invertida es un escape dentro de un literal de texto.** `'a\b'` guarda `a` + un retroceso (`\x08`); `'x\'` deja el literal **sin cerrar**. | El escape duplica **las comillas y las barras**. Con solo las comillas (como en Cassandra) el valor se corrompe y un valor que acabe en `\` rompe la sentencia y deja pasar lo que venga detrás: es una inyección. Test y sabotaje propios. |
 | **`LIKE` trata `\_` y `\%` como comodín escapado** (no hay `ESCAPE`: error de sintaxis); DuckDB trata la barra como un carácter. | Un patrón con barra **se rechaza** (`operador`), no se aproxima. |
 | **La cadena vacía es nulo** (`''` se guarda como `NULL`), y el literal `''` en un filtro también: `<> ''`, `> ''` y `>= ''` no devuelven nada. | El literal vacío se normaliza: `eq ''` y `lt/le ''` → nada, `neq/gt/ge ''` → `IS NOT NULL`, `in` descarta el `''`. El banco del kit declara «el vacío es nulo». |
 | **`TIMESTAMP` guarda nanosegundos** y los compara exactos (`= …59.999999` casa, `= …59.999` no), pero Avatica entrega milisegundos. | La precisión sigue declarada en milisegundos (§3.4). El banco carga milisegundos, como el de Mongo. |
