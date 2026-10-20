@@ -218,6 +218,14 @@ pub fn celda(v: &CqlValue, tipo: &Tipo) -> Result<Valor, ErrorCelda> {
             }
             otro => Err(inesperado("timestamp", otro)),
         },
+        Tipo::FechaHora => match v {
+            CqlValue::Timestamp(t) => {
+                t.0.checked_mul(1000)
+                    .map(Valor::FechaHora)
+                    .ok_or_else(|| ErrorCelda::NoCabe("la hora no cabe en microsegundos".into()))
+            }
+            otro => Err(inesperado("timestamp", otro)),
+        },
         Tipo::Fecha => match v {
             CqlValue::Date(d) => Ok(Valor::Fecha(dias(d.0))),
             otro => Err(inesperado("date", otro)),
@@ -556,6 +564,7 @@ enum Col {
     Logico(BooleanBuilder),
     Instante(TimestampMicrosecondBuilder),
     Fecha(Date32Builder),
+    FechaHora(TimestampMicrosecondBuilder),
     Hora(Time64MicrosecondBuilder),
     Texto(StringBuilder),
 }
@@ -600,6 +609,10 @@ impl Constructor {
                     Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
                 ),
                 Tipo::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
+                Tipo::FechaHora => (
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    Col::FechaHora(TimestampMicrosecondBuilder::new()),
+                ),
                 Tipo::Hora => (
                     DataType::Time64(TimeUnit::Microsecond),
                     Col::Hora(Time64MicrosecondBuilder::new()),
@@ -668,6 +681,7 @@ impl Constructor {
                     Col::Logico(b) => Arc::new(b.finish()),
                     Col::Instante(b) => Arc::new(b.finish()),
                     Col::Fecha(b) => Arc::new(b.finish()),
+                    Col::FechaHora(b) => Arc::new(b.finish()),
                     Col::Hora(b) => Arc::new(b.finish()),
                     Col::Texto(b) => Arc::new(b.finish()),
                 }
@@ -697,6 +711,8 @@ fn añadir(c: &mut Campo, v: Option<Valor>) -> Result<(), ErrorLote> {
         (Col::Logico(b), Some(Valor::Logico(x))) => b.append_value(x),
         (Col::Instante(b), None) => b.append_null(),
         (Col::Instante(b), Some(Valor::Instante(x))) => b.append_value(x),
+        (Col::FechaHora(b), None) => b.append_null(),
+        (Col::FechaHora(b), Some(Valor::FechaHora(x))) => b.append_value(x),
         (Col::Fecha(b), None) => b.append_null(),
         (Col::Fecha(b), Some(Valor::Fecha(x))) => b.append_value(x),
         (Col::Hora(b), None) => b.append_null(),

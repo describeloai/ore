@@ -1256,11 +1256,16 @@ pub fn correr(
         .map(PathBuf::from)
         .ok_or("el conector no tiene directorio")?;
     let esperado = format!("ore-read-{}", b.familia());
-    if ruta_conector
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        != Some(esperado.clone())
-    {
+    // En Windows el binario es `ore-read-<tipo>.exe`; la pasarela lo lanza sin la
+    // extensión y el sistema la pone.
+    let nombre = ruta_conector.file_name().map(|n| {
+        let n = n.to_string_lossy().into_owned();
+        match n.strip_suffix(".exe") {
+            Some(sin) if cfg!(windows) => sin.to_string(),
+            _ => n,
+        }
+    });
+    if nombre != Some(esperado.clone()) {
         return Err(format!(
             "la pasarela busca `{esperado}` junto a los demás; el conector se llama `{}`",
             ruta_conector.display()

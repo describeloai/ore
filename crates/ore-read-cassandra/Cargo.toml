@@ -1,0 +1,16 @@
+# El lector de Cassandra (ficha 0070, M2): el binario `ore-read-cassandra`. Todo lo
+# que sabe de Cassandra vive en `ore-cassandra`; esto es el `main`.
+#
+# Como `ore-read-mongodb` y `ore-read-postgres`, fuera del cierre de `ore-cli`.
+[package]
+name        = "ore-read-cassandra"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El lector de Cassandra de ORE: Apache Cassandra 4.x y 5.x"
+
+[dependencies]
+ore-driver    = { path = "../ore-driver" }
+ore-cassandra = { path = "../ore-cassandra" }

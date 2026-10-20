@@ -6,7 +6,7 @@ casi todo lo que SQL daría por hecho —filtrar por cualquier columna, ordenar,
 servidor lo niega o lo cobra.
 
 **Estado:** X0 medido (2026-10-20) contra `cassandra:5` (5.0.9) en Docker, con autenticación y un rol
-de solo lectura, y contra el crate `scylla` 1.9; **M1 hecho** (el crate `ore-cassandra`, §6). **Sin medir:** Astra de verdad (cuenta, *secure connect
+de solo lectura, y contra el crate `scylla` 1.9; **M1 y M2 hechos** (el crate `ore-cassandra` y el binario `ore-read-cassandra`, §6). **Sin medir:** Astra de verdad (cuenta, *secure connect
 bundle*), TLS, varios nodos, Cassandra 4.x. **Hoja de ruta mientras se desarrolla; al cerrarse, la
 imagen** de lo que es el origen Cassandra en ORE.
 
@@ -188,7 +188,7 @@ columna del cursor, el cambio no se ve. Va al informe del catálogo.
 |---|---|---|
 | **M0 · medir** | este documento | **hecho** salvo lo de abajo |
 | **M1 · crate y traductor** | `ore-cassandra`: tipos CQL→Arrow, traductor petición→CQL (puro) con el filtrado en cliente | **hecho** (2026-10-20) |
-| **M2 · `ore-read-cassandra`** | `catalogo`, `leer` por rangos, `check`, `explorar`, `capacidades`, `testigo`; el kit | |
+| **M2 · `ore-read-cassandra`** | `catalogo`, `leer` por rangos, `check`, `explorar`, `capacidades`, `testigo`; el kit | **hecho** (2026-10-20) |
 | **M3 · cableado** | `fuente.rs`, `credenciales.rs`, `rutas.rs`, banco del kit, imagen, CI con `cassandra:5` | |
 | **M4 · cambios** | cursor sobre SAI, barrido de claves | |
 | **M5 · consola** | hoja de Cassandra y de Astra en el asistente | |
@@ -252,6 +252,69 @@ del firmante de 27 a 28, igual que con MongoDB (190 → 192). Se sube el tope co
 **Todavía no hay**: el binario `ore-read-cassandra` y el flujo Arrow IPC enmarcado (M2), el catálogo
 filtrado por los permisos del rol (el transporte lista `system_schema` tal cual), `estimar`, `servir`,
 el cursor del incremental (M4), TLS contra un servidor (se construye el contexto, sin medir) y Astra.
+
+### M2 · hecho (2026-10-20)
+
+El binario **`ore-read-cassandra`** (`crates/ore-read-cassandra`, un `main` de una línea sobre
+`ore_driver::origen`) con los verbos del protocolo, y su **banco del kit**. **El kit de conformidad lo
+pasa por las dos puertas**, contra el Cassandra con autenticación de X0:
+
+| puerta | pasan | fallan | no aplican |
+|---|---|---|---|
+| el conector directo (14 casos) | **11** | 0 | 3 (9, 10, 14) |
+| por la pasarela de verdad (10 casos) | **9** | 0 | 1 (el de las colecciones de objetos), estable en tres ejecuciones seguidas |
+
+Los «no aplica» son honestos: el 9 (una lectura no puede escribir: no hay SQL), el 10 (**no hay nada
+lento que cancelar**: ni `killOp` ni una consulta que dure más que una página) y el 14 (`estimar` no se
+declara). Lo medido: el caso 7 lee **10⁶ filas en 10 s** (~99 000 filas/s con todo el proceso, Arrow por
+stdout y 47 MB), en 123 lotes y con el primer byte a los 654 ms; el 8, `tiempo` a los 415 ms con
+`timeoutMs: 1`; el 11, 100 peticiones en 1,9 s por **una** sesión (otra credencial, otra); el 12, ninguna
+credencial en 44 salidas y la mala sale como `credencial`.
+
+| verbo | qué hace |
+|---|---|
+| `capacidades` | los diez operadores (lo que el servidor no sabe lo filtra el conector), `limit` sí, `orderBy` no, `estimar` no, `servir` sí |
+| `leer` | Arrow IPC en flujo, un lote cada 8 192 filas **mientras los rangos siguen leyendo**; la cabecera se escribe *después* de preparar la sentencia y el anillo, así que lo que falla ahí sale como un error limpio |
+| `catalogo` | las tablas de los keyspaces que el rol puede leer: tipos de OOS de `system_schema` con el tipo CQL citado (`sourceType`), `primaryKey`, `fullScan: expensive`, `changes: none`. **Filtra por permisos** (`LIST ALL PERMISSIONS`): `otra.secreta` no sale. Las filas estimadas son las particiones de `system.size_estimates`, solo si la tabla no tiene clustering |
+| `check` | abre, pregunta versión y partidor, calcula el anillo y, si la URL nombra un keyspace, lee **una fila de una tabla**; el motivo del fallo va literal y sin la contraseña |
+| `explorar` | los keyspaces que el rol ve |
+| `testigo` | `none`: Cassandra no sabe fecharse y no se inventa «ahora» (ADR 0016) |
+| `cambio` | `respalda: false`; si la tabla no está, es un error |
+
+**Lo que se aprendió construyéndolo, y no estaba en X0:**
+
+- **La salida tiene que ser determinista.** Con 4 rangos leyendo a la vez, la primera versión entregaba
+  las filas en el orden en que contestaban, y el caso 1 de la pasarela (el mismo flujo que el conector
+  directo) fallaba **a veces**: había pasado por suerte. Ahora cada rango tiene su canal acotado y se
+  entregan **un rango tras otro** en el orden del anillo (o los juegos en el de la petición): leen a la
+  vez como mucho `paralelo`, los que van por delante se paran cuando su canal se llena, y la memoria no
+  pasa de `paralelo × canal × trozo` filas. El rendimiento no cambió (300 000 filas en ~1,8 s).
+- **Una sesión no son sus conexiones.** El driver abre varias por nodo. El conector se presenta en
+  `system_views.clients` con `APPLICATION_NAME` y un `CLIENT_ID` distinto por sesión, y el banco las
+  cuenta por él.
+- **El banco del kit también era una sesión.** Usaba el mismo `Conexion` y se presentaba con el nombre
+  del conector: el caso «el ocioso se cierra» veía siempre una sesión viva (la suya) y fallaba. Ahora
+  `Conexion::abrir_como` le da su propio nombre.
+- **Un falso positivo del caso 12 que enseña:** con la contraseña `cassandra` el kit decía que la
+  credencial salía en 3 salidas. Era el nombre del conector en sus mensajes. Con una contraseña única,
+  ninguna. El laboratorio usa un rol con contraseña propia.
+- **Cancelar es dejar de pedir páginas.** Sin `killOp`, soltar los cursores y abortar las tareas es lo
+  que hay, y el servidor acaba solo la página que tuviera en curso (107 ms medidos en X0 §3.5).
+- **`DateTime` declarado.** La semilla del kit distingue `DateTime` (sin zona) de `DateTimeTz`, y en
+  Cassandra los dos son un `timestamp`: lo que los separa es lo que la tabla declara en la petición,
+  como en MongoDB. `Tipo::FechaHora` solo existe por esa declaración.
+- **La guarda de la lista de orígenes funcionó a la primera:** con el crate `ore-read-cassandra` creado
+  y sin cablear, `lista_de_origenes` avisó de que faltaban el `-p`, `TODOS` y el `COPY` del `Dockerfile`.
+  Quedan cableados. Como la pasarela descubre los conectores de su carpeta, **no hay que tocar
+  `--tipos`**: con la imagen nueva carga `cassandra` sola.
+- El kit no encontraba el conector en Windows: exige que se llame `ore-read-<tipo>` y es `….exe`.
+  Compara ya sin la extensión (solo en Windows).
+
+**Todavía no hay**: el servicio de CI con `cassandra:5` y los pasos del kit (`ci.yml`), el cableado de
+`fuente.rs`, `credenciales.rs` y `rutas.rs` (M3), `estimar`, el cursor del incremental (M4), TLS contra
+un servidor (se construye el contexto, sin medir) y Astra. **La imagen con `ore-read-cassandra` está
+sin construir**: compila nativo en Windows (MSVC); la compilación en Alpine/musl, como la de
+`ore-read-mongodb`, queda por ver en el CI.
 
 **Sin medir todavía:** Astra de verdad (bundle, TLS, límites del plan gratuito), TLS propio,
 Cassandra 4.x (sin SAI: su `ALLOW FILTERING` y el modo `none`), varios nodos y varios centros de datos

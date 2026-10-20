@@ -424,6 +424,9 @@ fn bind(c: &Columna, v: &Analizado) -> Option<Bind> {
         (Tipo::Instante, Analizado::Instante(us)) => {
             (us % 1000 == 0).then_some(Bind::Instante(us / 1000))
         }
+        (Tipo::FechaHora, Analizado::FechaHora(us)) => {
+            (us % 1000 == 0).then_some(Bind::Instante(us / 1000))
+        }
         (Tipo::Fecha, Analizado::Fecha(d)) => Some(Bind::Fecha(*d)),
         (Tipo::Hora, Analizado::Hora(us)) => us.checked_mul(1000).map(Bind::Hora),
         (Tipo::Uuid, Analizado::Texto(s)) => uuid_canonico(s).map(Bind::Uuid),
@@ -446,10 +449,24 @@ fn uuid_canonico(s: &str) -> Option<String> {
 fn empuja(c: &Columna, op: &str) -> bool {
     let orden = matches!(op, "lt" | "le" | "gt" | "ge");
     match (&c.tipo, op) {
-        (Tipo::Entero | Tipo::Texto | Tipo::Instante | Tipo::Fecha | Tipo::Hora, "eq" | "in") => {
-            true
-        }
-        (Tipo::Entero | Tipo::Texto | Tipo::Instante | Tipo::Fecha | Tipo::Hora, _) => orden,
+        (
+            Tipo::Entero
+            | Tipo::Texto
+            | Tipo::Instante
+            | Tipo::FechaHora
+            | Tipo::Fecha
+            | Tipo::Hora,
+            "eq" | "in",
+        ) => true,
+        (
+            Tipo::Entero
+            | Tipo::Texto
+            | Tipo::Instante
+            | Tipo::FechaHora
+            | Tipo::Fecha
+            | Tipo::Hora,
+            _,
+        ) => orden,
         (Tipo::Logico | Tipo::Uuid, "eq" | "in") => true,
         // `float` y `double` se comparan con otra anchura en el servidor; los
         // decimales y los enteros sin tope, con otra escala; `inet`, con otro

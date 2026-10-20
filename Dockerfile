@@ -208,6 +208,10 @@ RUN ! command -v ore-read-postgres && ! command -v ore-read-s3  && test -x /opt/
 # por el puerto del cliente (27017, o el de `mongodb+srv`): la NetworkPolicy de los
 # drivers tiene que dejarlo.
 COPY --from=bin /b/ore-read-mongodb   /opt/ore/conectores/ore-read-mongodb
+# ADR 0070 M2: Cassandra —un clúster propio o Astra—, por `cassandra://`. Sale por el
+# puerto nativo (9042, o el que diga la URL): la NetworkPolicy de los drivers tiene que
+# dejarlo. Sin `ore-federation --tipos`: la pasarela carga lo que hay en esta carpeta.
+COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation

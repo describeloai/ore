@@ -1,7 +1,7 @@
 //! `ore-kit`: los 14 casos contra un conector.
 //!
 //! ```text
-//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb [--casos 1,2,5]
+//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
 //!         [--pasarela <ore-federation>]
 //! ```
@@ -22,6 +22,8 @@
 //! reproducen una cinta grabada y no hablan con BigQuery.
 //! Ninguna URL sale en el informe.
 
+#[cfg(feature = "cassandra")]
+use ore_conector_kit::bancos::cassandra::Cassandra;
 #[cfg(feature = "mongodb")]
 use ore_conector_kit::bancos::mongodb::Mongo;
 use ore_conector_kit::bancos::{
@@ -109,9 +111,11 @@ fn intentar() -> Result<bool, String> {
         )),
         #[cfg(feature = "mongodb")]
         "mongodb" => Box::new(Mongo::new(&entorno("MONGO_KIT_URL")?)?),
+        #[cfg(feature = "cassandra")]
+        "cassandra" => Box::new(Cassandra::new(&entorno("CASSANDRA_KIT_URL")?)?),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery o mongodb                  (este, con `--features mongodb`)"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb o cassandra                  (los dos últimos, con `--features mongodb` o `--features cassandra`)"
             ));
         }
     };
