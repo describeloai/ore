@@ -921,6 +921,53 @@ configuración está hecho, en producción y medido. Lo que pide otro algoritmo 
   - **subdividir automáticamente los polígonos enormes** (el previo lo midió imprescindible): va con
     C3·h, que también los trocea.
 
+**Deuda de rendimiento conocida: Q10–Q12 a escala 100 (investigada el 2026-10-20; sin medir aún).** Se
+investigó antes de diseñar, y se deja aquí para cuando toque.
+- **Dónde estamos.** ~16 000 puntos por core y segundo en el join de Q10. Las referencias publicadas:
+  - Sedona sobre Spark (Wherobots, 2023, polígonos más simples): ~55 000;
+  - el join híbrido por celdas H3 de Databricks (2022): ~95 000;
+  - los motores nativos, SedonaDB (Rust) y DuckDB, a escala 10: 150 000–180 000.
+
+  Nadie ha publicado Q10–Q12 a escala 100 terminando en un clúster: Sedona en 144 vCPU no termina en
+  10 h, y Databricks Serverless solo termina Q11, en ~78 min (blog de Sedona, enero de 2026). El
+  objetivo de C0·5 no tiene precedente.
+- **Las vías, de más barata a más cara:**
+  - **A · ajustes.** Subdividir más fino (64–128 vértices; ~5× en PostGIS con países) y repartir el KNN
+    según los cores (`spark.sedona.join.numpartition`; Q12 de 4 a 64 tareas).
+  - **A′ · no decodificar el WKB en cada fila.** Q10 y Q11 hacen `ST_GeomFromWKB` sobre 600 M de
+    puntos, y Q11 dos veces. Guardar el punto ya como geometría, o sus coordenadas en columnas.
+  - **B · el equi-join por celdas que documenta Sedona** (`ST_S2CellIDs` o `ST_H3CellIDs` con cobertura
+    completa, igualdad por celda y `ST_Contains` para refinar). Sedona lo propone justo para
+    «geometrías complicadas y solapadas». No hay cifras publicadas con polígonos de este tamaño.
+  - **C · C3·h, el join por celdas H3 con celdas interiores y de borde** (los «chips» de Mosaic):
+    - cada punto, a su celda;
+    - cada polígono, a sus celdas: interiores (dentro sin geometría) y de borde (refinadas contra el
+      trozo del polígono dentro de la celda);
+    - equi-join por el número de la celda;
+    - el índice de los polígonos se calcula una vez y se guarda en el lago.
+
+    Lo que falta para hacerlo:
+    - Sedona trae h3-java 4.1.1, sin los modos de contención (`CONTAINMENT_FULL` y `OVERLAPPING`
+      llegaron en la 4.3.0). DuckDB y h3-py ya los tienen;
+    - recortar el polígono a cada celda de borde;
+    - un margen para el desacuerdo entre las aristas geodésicas de H3 y los tests planos;
+    - partir en el antimeridiano y validar las geometrías de Overture;
+    - una resolución por nivel administrativo (o celdas compactadas), porque los polígonos se solapan
+      de país a municipio.
+  - **D · un motor nativo para lo que cabe en un nodo.** SedonaDB (Rust, DataFusion y Arrow, mismo
+    dialecto `ST_*`) hizo Q10/Q11/Q12 a escala 10 en 42/98/146 s con 8 vCPU. ORE ya es Rust. Pero
+    sería un tercer motor, joven (0.x) y de un solo nodo, y no hay cifras suyas a escala 100.
+- **El contrapeso.** Lo último de Databricks (Spatial SQL, GA en junio de 2026, «17× frente a Sedona
+  1.7») volvió a R-tree con un join por rangos nativo en Photon (C++), con geometría como tipo nativo,
+  sin H3 visible. Mosaic, su vía H3, está archivado desde agosto de 2026. La lección: la mayor parte
+  de la diferencia viene de ejecutar el join en código nativo, no de la rejilla.
+- **Cuando se retome:** un previo con A, A′, B y SedonaDB a escala 100 en un nodo con SSD (una tarde,
+  < 2 $), y con eso decidir entre ajustar Spark, C3·h o un camino nativo.
+- **Fuentes:** sedona.apache.org (Optimizer y blog del 08-01-2026), databricks.com (blogs del
+  13-12-2022, 18-12-2025 y la GA de 2026), github.com/databrickslabs/mosaic, h3geo.org,
+  duckdb.org/2025/08/08/spatial-joins, sedona.apache.org/spatialbench, wherobots.com (2023, 2026),
+  crunchydata.com (06-11-2025), Kipf et al. ICDE 2018.
+
 #### C3 · El previo (2026-10-19, medido en victor)
 
 Medido en el pool `pesado` de victor (`n2-highmem-8` *spot*), con `puesto-spark:1` y los recursos de un
